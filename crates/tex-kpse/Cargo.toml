@@ -1,0 +1,6 @@
+[package]
+name = "tex-kpse"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]

@@ -1,0 +1,15 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/tex-core",
+    "crates/tex-kpse",
+    "crates/tex-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+
+[workspace.dependencies]
+flate2 = "1.0"
+libc = "0.2"

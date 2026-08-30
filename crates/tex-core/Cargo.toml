@@ -1,0 +1,8 @@
+[package]
+name = "tex-core"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+tex-kpse = { path = "../tex-kpse" }
+flate2 = { workspace = true }

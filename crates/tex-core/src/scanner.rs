@@ -1,0 +1,452 @@
+//! Tokenizer: raw token production from input sources with TeX's N/M/S
+//! scanning states, ^^ notation, comments, control-sequence scanning.
+//!
+//! Line model: each file source holds the raw bytes; the current line is
+//! materialized in `line_buf` (without its newline). "End of line" is
+//! `line_peek() == None`. State: 0 = new line (N), 1 = mid line (M),
+//! 2 = skip spaces (S).
+
+use crate::engine::Engine;
+use crate::input::{PAR_END, Source, EOF_MARKER};
+use crate::token::*;
+
+impl Engine {
+    /// Fetch the next raw token from the input stack (no expansion).
+    pub fn get_next_raw(&mut self) -> Token {
+        loop {
+            if self.input.stack.is_empty() {
+                return EOF_MARKER;
+            }
+            let si = self.input.stack.len() - 1;
+            match self.input.stack[si] {
+                Source::TokList { .. } => {
+                    if let Some(t) = self.toklist_next(si) {
+                        return t;
+                    }
+                    continue; // list popped; retry
+                }
+                Source::File { .. } => match self.file_next_token(si) {
+                    Some(t) => return t,
+                    None => continue, // file popped; retry
+                },
+            }
+        }
+    }
+
+    fn toklist_next(&mut self, si: usize) -> Option<Token> {
+        let s = match &mut self.input.stack[si] {
+            Source::TokList { toks, pos, params, param_idx, param_pos, in_param, name, .. } => {
+                loop {
+                    if *in_param {
+                        let p = &params[*param_idx];
+                        if *param_pos < p.len() {
+                            let t = p[*param_pos];
+                            *param_pos += 1;
+                            if std::env::var("SPTRACE").map(|v|v=="1").unwrap_or(false) && t == crate::token::Token::space() {
+                                eprintln!("SPPOP2 list={} idx={}", name, param_idx);
+                            }
+                            return Some(t);
+                        }
+                        *in_param = false;
+                        *param_idx += 1;
+                        continue;
+                    }
+                    if *pos < toks.len() {
+                        let t = toks[*pos];
+                        *pos += 1;
+                        if std::env::var("SPTRACE").map(|v|v=="1").unwrap_or(false) && t == crate::token::Token::space() {
+                            eprintln!("SPPOP list={} pos={}", name, pos);
+                        }
+                        if t.0 >= 0x4000_0000 && t.0 < 0x8000_0000 {
+                            let n = (t.0 & 0x3FFF_FFFF) as usize;
+                            if n >= 1 && n <= params.len() {
+                                *param_idx = n - 1;
+                                *param_pos = 0;
+                                *in_param = true;
+                                if std::env::var("SUBTRACE").map(|v|v=="1").unwrap_or(false) {
+                                    eprintln!("SUB-enter {} idx={} arglen={}", name, n, params[n-1].len());
+                                }
+                                continue;
+                            } else if std::env::var("SUBTRACE").map(|v|v=="1").unwrap_or(false) {
+                                eprintln!("SUB-OOR {} n={} params={}", name, n, params.len());
+                            }
+                        }
+                        if std::env::var("SUBTRACE").map(|v|v=="1").unwrap_or(false) {
+                            let nm = if t.is_cs() { String::from_utf8_lossy(self.cs.name(t.cs_id())).into_owned() } else { format!("cc{}", t.cc()) };
+                            eprintln!("TOK {} pos={} tok={}", name, pos, nm);
+                        }
+                        return Some(t);
+                    }
+                    break;
+                }
+            }
+            _ => unreachable!(),
+        };
+        let _ = s;
+        self.input.stack.remove(si);
+        None
+    }
+
+    /// One token from the file source at `si`; None if the file is exhausted
+    /// (in which case the source is popped by the caller via get_next_raw? no:
+    /// file_finished pops here).
+    fn file_next_token(&mut self, si: usize) -> Option<Token> {
+        let r = self.file_next_token_inner(si);
+        if std::env::var("FILETRACE").map(|v|v=="1").unwrap_or(false) {
+            let ln = match self.input.stack.get(si) { Some(Source::File { line_no, .. }) => *line_no, _ => 0 };
+            let nm = match r { Some(t) if t.is_cs() => format!("\\{}", String::from_utf8_lossy(self.cs.name(t.cs_id()))), Some(t) => format!("cc{}:{}", t.cc(), t.chr()), None => "POP".into() };
+            eprintln!("FTOK si={} line={} -> {}", si, ln, nm);
+        }
+        r
+    }
+
+    fn file_next_token_inner(&mut self, si: usize) -> Option<Token> {
+        loop {
+            let (done, at_eof) = match &self.input.stack[si] {
+                Source::File { done, at_eof, .. } => (*done, *at_eof),
+                _ => unreachable!(),
+            };
+            if done {
+                self.input.stack.remove(si);
+                self.line_buf = None;
+                self.line_reload = true;
+                return None;
+            }
+            // honor \endinput: stop at end of the current line
+            if self.line_buf.is_none() {
+                let ending = match &self.input.stack.get(si) {
+                    Some(crate::input::Source::File { ending, .. }) => *ending,
+                    _ => false,
+                };
+                if ending {
+                    let d = match &mut self.input.stack[si] {
+                        crate::input::Source::File { done, .. } => done,
+                        _ => unreachable!(),
+                    };
+                    *d = true;
+                    continue;
+                }
+            }
+            // ensure a line buffer
+            if self.line_buf.is_none() {
+                if !self.file_load_line(si) {
+                    // EOF: implicit \par once, then done
+                    if !at_eof {
+                        let a = match &mut self.input.stack[si] {
+                            Source::File { at_eof, .. } => at_eof,
+                            _ => unreachable!(),
+                        };
+                        *a = true;
+                        return Some(PAR_END);
+                    }
+                    let d = match &mut self.input.stack[si] {
+                        Source::File { done, .. } => done,
+                        _ => unreachable!(),
+                    };
+                    *d = true;
+                    continue;
+                }
+            }
+            let st = match &self.input.stack[si] {
+                Source::File { state, .. } => *state,
+                _ => unreachable!(),
+            };
+            match st {
+                0 => {
+                    // new line state: skip leading spaces; empty line => \par
+                    let mut any = false;
+                    while let Some(b) = self.line_peek() {
+                        let cat = self.eqtb.cat[b as usize];
+                        if cat == CAT_SPACE {
+                            self.line_pos += 1;
+                            continue;
+                        }
+                        any = true;
+                        break;
+                    }
+                    if !any && self.line_peek().is_none() {
+                        if !any && self.line_pos == 0 {
+                            // truly empty line -> \par; consume and reload
+                            self.line_buf = None;
+                            self.line_reload = true;
+                            return Some(PAR_END);
+                        }
+                        // line had only spaces: consume, no token
+                        self.line_buf = None;
+                        self.line_reload = true;
+                        continue;
+                    }
+                    let b = self.line_peek().unwrap();
+                    self.line_pos += 1;
+                    let s = match &mut self.input.stack[si] {
+                        Source::File { state, .. } => state,
+                        _ => unreachable!(),
+                    };
+                    *s = 1;
+                    if let Some(t) = self.tokenize_char(b, si) {
+                        return Some(t);
+                    }
+                    // comment or otherwise consumed rest of line: loop
+                }
+                1 => {
+                    let b = match self.line_peek() {
+                        Some(b) => b,
+                        None => {
+                            // end of line: endline char token (usually space)
+                            let el = self.eqtb.int_params[crate::prim::IntParam::EndLineChar.idx() as usize];
+                            let s = match &mut self.input.stack[si] {
+                                Source::File { state, .. } => state,
+                                _ => unreachable!(),
+                            };
+                            *s = 0;
+                            self.line_buf = None;
+                            self.line_reload = true;
+                            if el < 0 {
+                                continue;
+                            }
+                            let cat = self.eqtb.cat[el as u8 as usize];
+                            if std::env::var("DEFTRACE").map(|v|v=="1").unwrap_or(false) {
+                                eprintln!("EOL state->0");
+                            }
+                            if cat == CAT_EOL {
+                                return Some(Token::space());
+                            }
+                            if cat == CAT_IGNORED || cat == CAT_INVALID {
+                                continue;
+                            }
+                            return Some(Token::char(cat, el as u32));
+                        }
+                    };
+                    self.line_pos += 1;
+                    let cat_b = self.eqtb.cat[b as usize];
+                    if let Some(t) = self.tokenize_char(b, si) {
+                        if cat_b == CAT_SPACE {
+                            // mid_line + spacer: state <- skip_blanks
+                            let s2 = match &mut self.input.stack[si] {
+                                Source::File { state, .. } => state,
+                                _ => unreachable!(),
+                            };
+                            *s2 = 2;
+                        }
+                        return Some(t);
+                    }
+                }
+                2 => {
+                    // skip spaces
+                    let mut skipped = false;
+                    while let Some(b) = self.line_peek() {
+                        let cat = self.eqtb.cat[b as usize];
+                        if cat == CAT_SPACE {
+                            self.line_pos += 1;
+                            skipped = true;
+                            continue;
+                        }
+                        break;
+                    }
+                    let _ = skipped;
+                    let b = match self.line_peek() {
+                        Some(b) => b,
+                        None => {
+                            // line end in skip-spaces: no space token
+                            self.line_buf = None;
+                            self.line_reload = true;
+                            continue;
+                        }
+                    };
+                    self.line_pos += 1;
+                    let s = match &mut self.input.stack[si] {
+                        Source::File { state, .. } => state,
+                        _ => unreachable!(),
+                    };
+                    *s = 1;
+                    if let Some(t) = self.tokenize_char(b, si) {
+                        return Some(t);
+                    }
+                }
+                _ => unreachable!(),
+            }
+        }
+    }
+
+    fn line_peek(&self) -> Option<u8> {
+        self.line_buf.as_ref().and_then(|b| b.get(self.line_pos).copied())
+    }
+
+    /// Load next line into the buffer; false at EOF.
+    fn file_load_line(&mut self, si: usize) -> bool {
+        let mut loaded: Option<(u32, Vec<u8>)> = None;
+        let chunk = match &mut self.input.stack[si] {
+            Source::File { data, pos, line_no, .. } => {
+                if *pos >= data.len() {
+                    return false;
+                }
+                let rest = &data[*pos..];
+                let nl = rest.iter().position(|&b| b == b'\n').map(|i| i + 1).unwrap_or(rest.len());
+                let mut line = rest[..nl].to_vec();
+                *pos += nl;
+                *line_no += 1;
+                if line.last() == Some(&b'\n') {
+                    line.pop();
+                    if line.last() == Some(&b'\r') {
+                        line.pop();
+                    }
+                }
+                loaded = Some((*line_no, line.clone()));
+                line
+            }
+            _ => unreachable!(),
+        };
+        if std::env::var("ARGTRACE").map(|v|v=="1").unwrap_or(false) {
+            if let Some((ln, line)) = &loaded {
+                eprintln!("LOAD line {} buf={:?}", ln, String::from_utf8_lossy(line));
+            }
+        }
+        self.line_buf = Some(chunk);
+        self.line_pos = 0;
+        self.line_reload = false;
+        true
+    }
+
+    /// Tokenize a consumed character. None = rest of line consumed (comment);
+    /// caller should re-loop.
+    fn tokenize_char(&mut self, b: u8, si: usize) -> Option<Token> {
+        let cat = self.eqtb.cat[b as usize];
+        if std::env::var("TOKTRACE").is_ok() {
+            eprintln!("TOK b={:?} ({}) cat={}", b as char, b, cat);
+        }
+        match cat {
+            CAT_COMMENT => {
+                self.line_buf = None;
+                self.line_reload = true;
+                let s = match &mut self.input.stack[si] {
+                    Source::File { state, .. } => state,
+                    _ => unreachable!(),
+                };
+                if *s == 1 {
+                    *s = 2;
+                }
+                None
+            }
+            CAT_ESCAPE => {
+                // scan control-sequence name
+                let mut name: Vec<u8> = Vec::new();
+                let mut end_state = 1u8;
+                loop {
+                    let nb = match self.line_peek() {
+                        Some(b) => b,
+                        None => {
+                            // escape at line end: empty cs; endline consumed
+                            self.line_buf = None;
+                            self.line_reload = true;
+                            break;
+                        }
+                    };
+                    if name.is_empty() {
+                        // first char: ^^ notation applies; decides word vs symbol
+                        self.line_pos += 1;
+                        let c = self.expand_sup(nb, si);
+                        let ccat = self.eqtb.cat[c as usize];
+                                            if ccat == CAT_LETTER {
+                        name.push(c);
+                        // control word: following blanks are skipped (tex.web
+                        // state <- skip_blanks after a letter-class cs)
+                        end_state = 2;
+                        continue;
+                    }
+                        // single-char control symbol (or active char via ^^)
+                        name.push(c);
+                        if c == b' ' {
+                            end_state = 2;
+                        }
+                        break;
+                    }
+                    // continuation: raw bytes, letters only (tex.web); the
+                    // terminator byte stays in the buffer for the next token
+                    let ccat = self.eqtb.cat[nb as usize];
+                    if ccat == CAT_LETTER {
+                        self.line_pos += 1;
+                        name.push(nb);
+                        continue;
+                    }
+                    break;
+                }
+                let s = match &mut self.input.stack[si] {
+                    Source::File { state, .. } => state,
+                    _ => unreachable!(),
+                };
+                *s = end_state;
+                let id = self.cs.intern(&name);
+                Some(Token::from_cs(id))
+            }
+            CAT_SUPER => {
+                let c = self.expand_sup(b, si);
+                let ccat = self.eqtb.cat[c as usize];
+                if ccat == CAT_ACTIVE {
+                    // an active char produced via ^^ notation is a control sequence
+                    let id = self.cs.intern(&[c]);
+                    Some(Token::from_cs(id))
+                } else if ccat == CAT_SPACE {
+                    Some(Token::space())
+                } else {
+                    Some(Token::char(ccat, c as u32))
+                }
+            }
+            CAT_ACTIVE => {
+                // active chars behave as control sequences (tex.web eqtb slots)
+                let id = self.cs.intern(&[b]);
+                Some(Token::from_cs(id))
+            }
+            CAT_SPACE => {
+                // tex.web §347: every spacer token has character code 32
+                Some(Token::space())
+            }
+            CAT_IGNORED | CAT_INVALID => None,
+            _ => Some(Token::char(cat, b as u32)),
+        }
+    }
+
+    /// ^^-notation expansion with repetition (TeX does up to 3 levels).
+    fn expand_sup(&mut self, first: u8, _si: usize) -> u8 {
+        let mut c = first;
+        loop {
+            if self.eqtb.cat[c as usize] != CAT_SUPER {
+                return c;
+            }
+            let b2 = match self.line_peek() {
+                Some(b) => b,
+                None => return c,
+            };
+            if b2 != c {
+                return c;
+            }
+            self.line_pos += 1; // consume second ^ (or matching char)
+            let b3 = match self.line_peek() {
+                Some(b) => b,
+                None => return c,
+            };
+            self.line_pos += 1;
+            let is_hex = |x: u8| matches!(x, b'0'..=b'9' | b'a'..=b'f' | b'A'..=b'F');
+            if is_hex(b3) {
+                let b4 = match self.line_peek() {
+                    Some(b) => b,
+                    None => return c,
+                };
+                if is_hex(b4) {
+                    self.line_pos += 1;
+                    let hv = |x: u8| -> u8 {
+                        match x {
+                            b'0'..=b'9' => x - b'0',
+                            b'a'..=b'f' => x - b'a' + 10,
+                            _ => x - b'A' + 10,
+                        }
+                    };
+                    c = hv(b3) * 16 + hv(b4);
+                    continue;
+                }
+                c = b3 ^ 64;
+                continue;
+            }
+            c = b3 ^ 64;
+        }
+    }
+}

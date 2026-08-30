@@ -1,0 +1,8 @@
+target/
+*.pdf
+*.log
+*.aux
+*.bbl
+*.blg
+*.out
+*.toc

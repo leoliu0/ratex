@@ -1,0 +1,20 @@
+[package]
+name = "tex-cli"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "pdflatex"
+path = "src/bin/pdflatex.rs"
+
+[[bin]]
+name = "tex-bibtex"
+path = "src/bin/bibtex.rs"
+
+[[bin]]
+name = "texmk"
+path = "src/bin/texmk.rs"
+
+[dependencies]
+tex-core = { path = "../tex-core" }
+tex-kpse = { path = "../tex-kpse" }

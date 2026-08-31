@@ -484,10 +484,19 @@ impl Engine {
             eprintln!("ENDBOX kinds={} saved={} targets={} pars={}", self.box_kinds.len(), self.saved_lists.len(), self.box_targets.len(), self.par_saves);
         }
         if self.box_kinds.is_empty() {
+            eprintln!("TMBOX ring=[{}] pushed={:?}",
+                self.tok_ring.iter().rev().take(24).map(|(v, ln)| format!("{v:#x}@{ln}")).collect::<Vec<_>>().join(" "),
+                self.pushed.iter().rev().take(8).map(|x| format!("{:#x}", x.0)).collect::<Vec<_>>());
             self.error("Too many }'s");
             return;
         }
         let kind = self.box_kinds.pop().unwrap_or(0);
+        // tex.web end_gracefully: closing a vertical box group while a
+        // paragraph is running inside it forces the \par first, so the
+        // packed lines join the vbox instead of being vpack-discarded
+        if matches!(kind, 1 | 2 | 3 | 8) && self.mode == Mode::Horizontal {
+            self.par_primitive();
+        }
         let target = self.box_targets.pop().flatten();
         let shift = self.box_shifts.pop().unwrap_or(0);
         let inner = std::mem::replace(&mut self.cur_list, Vec::new());
@@ -583,14 +592,17 @@ impl Engine {
             }
         }
         // store or append
+        if self.shipout_pending {
+            // \shipout<hbox|vbox|...>: the completed box IS the page; clear
+            // the box-255 target do_shipout parked so it cannot leak
+            self.setbox_target = None;
+            self.shipout_pending = false;
+            self.ship_box(Some(node));
+            return;
+        }
         if let Some(idx) = self.setbox_target.take() {
             self.eqtb.assign_box(idx, Some(node), self.global_flag);
             self.global_flag = false;
-            return;
-        }
-        if self.shipout_pending {
-            self.shipout_pending = false;
-            self.ship_box(Some(node));
             return;
         }
         if let Some((d, is_hmove)) = self.pending_box_shift.take() {
@@ -1246,13 +1258,13 @@ impl Engine {
         let content = std::mem::take(&mut self.cur_list);
         let lines = self.break_paragraph(content);
         // restore vertical context
-        let (_, _, pd, sf) = self.saved_lists.pop().unwrap_or((Mode::Vertical, Vec::new(), self.prev_depth, self.space_factor));
+        let (saved_mode, _, pd, sf) = self.saved_lists.pop().unwrap_or((Mode::Vertical, Vec::new(), self.prev_depth, self.space_factor));
         self.prev_depth = pd;
         self.space_factor = sf;
         // interline glue construction happens in page builder; append lines vbox
         let vbox = lines;
-        match self.par_page_lists.pop() {
-            Some(mut page) => {
+        match (saved_mode, self.par_page_lists.pop()) {
+            (Mode::Vertical, Some(mut page)) => {
                 // paragraph was at outer level
                 page.push(vbox);
                 self.page_list = page;
@@ -1260,9 +1272,20 @@ impl Engine {
                 self.cur_list = Vec::new();
                 self.build_page();
             }
-            None => {
-                self.cur_list.push(vbox);
+            (Mode::InternalVertical, Some(mut inner)) => {
+                // paragraph started inside a \vbox/\vtop: resume that list
+                inner.push(vbox);
+                self.cur_list = inner;
                 self.mode = Mode::InternalVertical;
+            }
+            (_, outer) => {
+                if let Some(mut inner) = outer {
+                    inner.push(vbox);
+                    self.cur_list = inner;
+                } else {
+                    self.cur_list.push(vbox);
+                }
+                self.mode = saved_mode;
             }
         }
     }

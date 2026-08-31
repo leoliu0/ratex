@@ -10,6 +10,7 @@
 //!   - runs bibtex when the .aux has \bibdata and citations are undefined,
 //!     the .bbl is missing, or the .aux citation set changed since bibtex
 //!   - at most MAX_PASSES pdflatex passes
+//!   - on success reports the output PDF path, its page count, and pass counts
 //!
 //! Exit codes: 0 = converged, 1 = engine/bibtex failure or no convergence,
 //! 2 = usage error.
@@ -97,6 +98,7 @@ fn parse_args(argv: &[String]) -> Result<Options, String> {
                 passthrough.push(format!("-interaction={mode}"));
             }
             "-halt-on-error" => passthrough.push(a.clone()),
+            "-pdf" | "--pdf" => {} // PDF output is the only mode; accept and drop like latexmk
             "-h" | "-help" | "--help" => {
                 usage();
                 std::process::exit(0);
@@ -184,6 +186,62 @@ fn file_hash(p: &Path) -> (bool, u64) {
 
 fn snapshot(paths: &[PathBuf]) -> Vec<(bool, u64)> {
     paths.iter().map(|p| file_hash(p)).collect()
+}
+
+fn find_sub(hay: &[u8], needle: &[u8]) -> Option<usize> {
+    if hay.len() < needle.len() {
+        return None;
+    }
+    hay.windows(needle.len()).position(|w| w == needle)
+}
+
+/// Page count from an "Output written on <file> (N pages, M bytes)." summary
+/// line (real pdflatex convention; singular "1 page").
+fn pages_from_output(text: &str) -> Option<u32> {
+    let i = text.find("Output written on ")?;
+    let tail = &text[i + "Output written on ".len()..];
+    let paren = tail.find('(')?;
+    let after = tail[paren + 1..].trim_start();
+    let digits: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
+    if digits.is_empty() || !after[digits.len()..].starts_with(" page") {
+        return None;
+    }
+    digits.parse().ok()
+}
+
+/// Page count of a produced PDF: `/Count` of the `/Type /Pages` page-tree
+/// root, else a scan for `/Type /Page` page objects. None when the file is
+/// missing or its structure is not recognizable (compressed object streams).
+fn pdf_pages(p: &Path) -> Option<u32> {
+    let data = std::fs::read(p).ok()?;
+    if let Some(i) = find_sub(&data, b"/Type /Pages") {
+        let tail = &data[i..];
+        if let Some(c) = find_sub(tail, b"/Count ") {
+            let after = &tail[c + "/Count ".len()..];
+            let end = after
+                .iter()
+                .position(|b| !b.is_ascii_digit())
+                .unwrap_or(after.len());
+            if end > 0 {
+                if let Ok(s) = std::str::from_utf8(&after[..end]) {
+                    if let Ok(n) = s.parse::<u32>() {
+                        return Some(n);
+                    }
+                }
+            }
+        }
+    }
+    let mut n = 0u32;
+    let mut from = 0usize;
+    while let Some(pos) = find_sub(&data[from..], b"/Type /Page") {
+        let at = from + pos;
+        // "/Type /Pages" (the tree root) must not count as a page object
+        if data.get(at + "/Type /Page".len()) != Some(&b's') {
+            n += 1;
+        }
+        from = at + "/Type /Page".len();
+    }
+    if n > 0 { Some(n) } else { None }
 }
 
 fn scan_signals(text: &str, job: &str) -> Signals {
@@ -292,6 +350,7 @@ fn real_main() -> i32 {
     let mut bibtex_runs = 0u32;
     let mut passes = 0u32;
     let mut converged = false;
+    let mut last_output = String::new();
     if let Some(d) = &opt.out_dir {
         if let Err(e) = std::fs::create_dir_all(d) {
             eprintln!("texmk: cannot create output directory {d}: {e}");
@@ -337,6 +396,7 @@ fn real_main() -> i32 {
             Some(log) => format!("{output}\n{log}"),
             None => output,
         };
+        last_output = combined.clone();
         let aux_text = read_text(&aux_path).unwrap_or_default();
         let cites = aux_citations(&aux_text);
         let bibdata = aux_has_bibdata(&aux_text);
@@ -416,18 +476,31 @@ fn real_main() -> i32 {
     }
 
     if !converged {
-        eprintln!("texmk: giving up after {MAX_PASSES} passes");
+        eprintln!("texmk: build FAILED: no convergence after {MAX_PASSES} pdflatex pass(es)");
         return 1;
     }
-    if !opt.silent {
-        eprintln!(
-            "texmk: stable after {passes} pdflatex pass(es){}",
-            if bibtex_runs > 0 {
-                format!(", {bibtex_runs} bibtex run(s)")
-            } else {
-                String::new()
-            },
-        );
+    let pdf_path = artifact_path(&opt.out_dir, &job, ".pdf");
+    let pages = pages_from_output(&last_output).or_else(|| pdf_pages(&pdf_path));
+    let bib_note = if bibtex_runs > 0 {
+        format!(", {bibtex_runs} bibtex run(s)")
+    } else {
+        String::new()
+    };
+    match pages {
+        Some(n) => eprintln!(
+            "texmk: build OK: {} ({} page{}, {passes} pdflatex pass(es){bib_note})",
+            pdf_path.display(),
+            n,
+            if n == 1 { "" } else { "s" }
+        ),
+        None if pdf_path.is_file() => eprintln!(
+            "texmk: build OK: {} (page count unknown, {passes} pdflatex pass(es){bib_note})",
+            pdf_path.display()
+        ),
+        None => {
+            eprintln!("texmk: build FAILED: no output written to {}", pdf_path.display());
+            return 1;
+        }
     }
     0
 }

@@ -17,9 +17,6 @@ impl Engine {
     fn main_loop(&mut self) {
         while !self.end_occurred {
             let t = self.get_token();
-            if std::env::var("PCTRACE").map(|v|v=="1").unwrap_or(false) && t.is_cs() && self.cs.name(t.cs_id()) == b"gdef" {
-                eprintln!("MAINLOOP-GOT-GDEF line={}", self.input.current_file_line());
-            }
             if t == crate::input::EOF_MARKER {
                 break;
             }
@@ -28,12 +25,11 @@ impl Engine {
     }
 
     pub fn dispatch(&mut self, t: Token) {
-        if std::env::var("PCTRACE").map(|v|v=="1").unwrap_or(false) && t.is_cs() && self.cs.name(t.cs_id()) == b"gdef" {
-            eprintln!("DISPATCH-GDEF line={} pushed={:?}", self.input.current_file_line(), self.pushed.iter().rev().take(3).map(|x| if x.is_cs() { format!("\\{}", String::from_utf8_lossy(self.cs.name(x.cs_id()))) } else { format!("{}{}", x.cc(), x.chr() as u8 as char) }).collect::<Vec<_>>());
-        }
+        let ln = self.input.current_file_line();
+        let fnm = self.input.current_file_name();
+
         if t.is_cs() {
             let id = t.cs_id();
-            // font selector
             if let Some(Equiv::FontRef(f)) = self.eqtb.resolve(id).cloned() {
                 self.cur_font = f;
                 self.space_factor = 1000;
@@ -63,8 +59,40 @@ impl Engine {
                 match self.eqtb.resolve(id).cloned() {
                     None => {
                         let name = String::from_utf8_lossy(self.cs.name(id)).into_owned();
-                        if name == "::x" || name == "q__cs_nil" {
-                            eprintln!("UNDEF \\{} L{} macros={:?}", name, self.input.current_file_line(), self.last_macros);
+                        if name == "::x"
+                            || name == "q__cs_nil"
+                            || name.contains("msg_expandable_error")
+                            || name == "exp_args:Noooo"
+                        {
+                            let st: Vec<String> = self
+                                .input
+                                .stack
+                                .iter()
+                                .rev()
+                                .take(8)
+                                .map(|src| match src {
+                                    crate::input::Source::TokList {
+                                        name, pos, toks, ..
+                                    } => format!("T:{} {}/{}", name, pos, toks.len()),
+                                    crate::input::Source::File { name, line_no, .. } => {
+                                        format!(
+                                            "F:{}#{}",
+                                            name.split('/').last().unwrap_or(name),
+                                            line_no
+                                        )
+                                    }
+                                })
+                                .collect();
+                            eprintln!(
+                                "UNDEF \\{} L{} file={} macros={:?} ifs={} level={} stack=[{}]",
+                                name,
+                                self.input.current_file_line(),
+                                self.input.current_file_name(),
+                                self.last_macros,
+                                self.if_stack.len(),
+                                self.eqtb.cur_level,
+                                st.join(" << ")
+                            );
                         }
                         self.error(&format!("Undefined control sequence \\{}", name));
                     }
@@ -118,6 +146,13 @@ impl Engine {
                 _ => {}
             }
         }
+    }
+
+    pub fn clear_prefixes(&mut self) {
+        self.global_flag = false;
+        self.long_flag = false;
+        self.outer_flag = false;
+        self.protected_flag = false;
     }
 
     /// Handle assignment-prefix primitives; returns true if consumed.
@@ -205,7 +240,7 @@ impl Engine {
                 self.scan_optional_equals();
                 let v = self.scan_int();
                 self.eqtb.assign_count(idx, v, self.global_flag);
-                self.global_flag = false;
+                self.clear_prefixes();
                 true
             }
             Dimen => {
@@ -213,7 +248,7 @@ impl Engine {
                 self.scan_optional_equals();
                 let v = self.scan_dimen(false, false);
                 self.eqtb.assign_dimen(idx, v, self.global_flag);
-                self.global_flag = false;
+                self.clear_prefixes();
                 true
             }
             Skip => {
@@ -221,7 +256,7 @@ impl Engine {
                 self.scan_optional_equals();
                 let v = self.scan_glue(false);
                 self.eqtb.assign_skip(idx, v, self.global_flag);
-                self.global_flag = false;
+                self.clear_prefixes();
                 true
             }
             MuSkip => {
@@ -229,7 +264,7 @@ impl Engine {
                 self.scan_optional_equals();
                 let v = self.scan_glue(true);
                 self.eqtb.assign_muskip(idx, v, self.global_flag);
-                self.global_flag = false;
+                self.clear_prefixes();
                 true
             }
             Wd | Ht | Dp => {
@@ -245,7 +280,7 @@ impl Engine {
                 self.scan_optional_equals();
                 let toks = Rc::new(self.scan_token_list());
                 self.eqtb.assign_toks_reg(idx, toks, self.global_flag);
-                self.global_flag = false;
+                self.clear_prefixes();
                 true
             }
             Box => {
@@ -277,7 +312,7 @@ impl Engine {
                 self.scan_optional_equals();
                 let v = self.scan_int();
                 self.eqtb.assign(t, Equiv::CharDef(v.max(0) as u32), true);
-                self.global_flag = false;
+                self.clear_prefixes();
                 true
             }
             MathCharDef => {
@@ -286,7 +321,7 @@ impl Engine {
                 self.scan_optional_equals();
                 let v = self.scan_int();
                 self.eqtb.assign(t, Equiv::MathCharDef(v as u16), true);
-                self.global_flag = false;
+                self.clear_prefixes();
                 true
             }
             FontDimen => {
@@ -297,7 +332,7 @@ impl Engine {
                 if idx > 0 {
                     self.eqtb.assign_font_param(f, idx as usize - 1, v, self.global_flag);
                 }
-                self.global_flag = false;
+                self.clear_prefixes();
                 true
             }
             HyphenChar => {
@@ -305,7 +340,7 @@ impl Engine {
                 self.scan_optional_equals();
                 let v = self.scan_int();
                 self.eqtb.assign_hyphen_char(f, v, self.global_flag);
-                self.global_flag = false;
+                self.clear_prefixes();
                 true
             }
             SkewChar => {
@@ -313,7 +348,7 @@ impl Engine {
                 self.scan_optional_equals();
                 let v = self.scan_int();
                 self.eqtb.assign_skew_char(f, v, self.global_flag);
-                self.global_flag = false;
+                self.clear_prefixes();
                 true
             }
             IntP(ip) => {
@@ -328,28 +363,28 @@ impl Engine {
                         self.eqtb.assign_int_param(ip, v, self.global_flag);
                     }
                 }
-                self.global_flag = false;
+                self.clear_prefixes();
                 true
             }
             DimP(dp) => {
                 self.scan_optional_equals();
                 let v = self.scan_dimen(false, false);
                 self.eqtb.assign_dim_param(dp, v, self.global_flag);
-                self.global_flag = false;
+                self.clear_prefixes();
                 true
             }
             GlueP(gp) => {
                 self.scan_optional_equals();
                 let v = self.scan_glue(false);
                 self.eqtb.assign_glue_param(gp, v, self.global_flag);
-                self.global_flag = false;
+                self.clear_prefixes();
                 true
             }
             ToksP(tp) => {
                 self.scan_optional_equals();
                 let toks = Rc::new(self.scan_token_list());
                 self.eqtb.assign_toks_param(tp, toks, self.global_flag);
-                self.global_flag = false;
+                self.clear_prefixes();
                 true
             }
             _ => false,
@@ -364,63 +399,63 @@ impl Engine {
                 self.scan_optional_equals();
                 let v = self.scan_int();
                 self.eqtb.assign_int_param(ip, v, self.global_flag);
-                self.global_flag = false;
+                self.clear_prefixes();
                 true
             }
             Some(Equiv::Prim(Prim::DimP(dp))) => {
                 self.scan_optional_equals();
                 let v = self.scan_dimen(false, false);
                 self.eqtb.assign_dim_param(dp, v, self.global_flag);
-                self.global_flag = false;
+                self.clear_prefixes();
                 true
             }
             Some(Equiv::Prim(Prim::GlueP(gp))) => {
                 self.scan_optional_equals();
                 let v = self.scan_glue(false);
                 self.eqtb.assign_glue_param(gp, v, self.global_flag);
-                self.global_flag = false;
+                self.clear_prefixes();
                 true
             }
             Some(Equiv::Prim(Prim::ToksP(tp))) => {
                 self.scan_optional_equals();
                 let toks = Rc::new(self.scan_token_list());
                 self.eqtb.assign_toks_param(tp, toks, self.global_flag);
-                self.global_flag = false;
+                self.clear_prefixes();
                 true
             }
             Some(Equiv::CountReg(i)) => {
                 self.scan_optional_equals();
                 let v = self.scan_int();
                 self.eqtb.assign_count(i, v, self.global_flag);
-                self.global_flag = false;
+                self.clear_prefixes();
                 true
             }
             Some(Equiv::DimenReg(i)) => {
                 self.scan_optional_equals();
                 let v = self.scan_dimen(false, false);
                 self.eqtb.assign_dimen(i, v, self.global_flag);
-                self.global_flag = false;
+                self.clear_prefixes();
                 true
             }
             Some(Equiv::SkipReg(i)) => {
                 self.scan_optional_equals();
                 let v = self.scan_glue(false);
                 self.eqtb.assign_skip(i, v, self.global_flag);
-                self.global_flag = false;
+                self.clear_prefixes();
                 true
             }
             Some(Equiv::MuSkipReg(i)) => {
                 self.scan_optional_equals();
                 let v = self.scan_glue(true);
                 self.eqtb.assign_muskip(i, v, self.global_flag);
-                self.global_flag = false;
+                self.clear_prefixes();
                 true
             }
             Some(Equiv::ToksReg(i)) => {
                 self.scan_optional_equals();
                 let toks = Rc::new(self.scan_token_list());
                 self.eqtb.assign_toks_reg(i, toks, self.global_flag);
-                self.global_flag = false;
+                self.clear_prefixes();
                 true
             }
             _ => false,
@@ -434,7 +469,7 @@ impl Engine {
     pub fn define_value(&mut self, e: Equiv) {
         let t = self.scan_definable_cs();
         self.eqtb.assign(t, e, self.global_flag);
-        self.global_flag = false;
+        self.clear_prefixes();
     }
 
     /// scan a cs for definitions (non-expanding, like tex.web's get_token)
@@ -457,6 +492,7 @@ impl Engine {
     fn do_def_register(&mut self, mk: impl Fn(&mut Self, u16) -> Equiv) {
         // tex.web: \countdef/\dimendef/\skipdef/\toksdef assignments are always \global
         let t = self.scan_definable_cs();
+
         if std::env::var("DEFWATCH").map(|v|v=="1").unwrap_or(false)
             && self.cs.name(t) == b"def" {
             let ring: Vec<std::string::String> = self.tok_ring.iter().rev().take(30).map(|(v, ln)| format!("{:#x}@{}", v, ln)).collect();
@@ -466,7 +502,7 @@ impl Engine {
         let idx = self.scan_reg_num();
         let e = mk(self, idx);
         self.eqtb.assign(t, e, true);
-        self.global_flag = false;
+        self.clear_prefixes();
     }
 
     /// \def/\gdef/\edef/\xdef
@@ -474,68 +510,63 @@ impl Engine {
         let global = self.global_flag || p == Prim::GDef || p == Prim::XDef;
         let expanded = p == Prim::EDef || p == Prim::XDef;
         let target = self.scan_definable_cs();
-        if std::env::var("DBT").map(|v|v=="1").unwrap_or(false) && self.cs.name(target) == b"ifx" {
-            let st: Vec<String> = self.input.stack.iter().rev().take(4).map(|src| match src {
-                crate::input::Source::TokList { name, pos, toks, .. } => {
-                    let rest: Vec<String> = toks[(*pos).min(toks.len())..].iter().take(8).map(|t| {
-                        if t.is_cs() { format!("\\{}", String::from_utf8_lossy(self.cs.name(t.cs_id()))) }
-                        else { format!("{}{}", t.cc(), t.chr() as u8 as char) }
-                    }).collect();
-                    format!("T:{} {}/{} [{}]", name, pos, toks.len(), rest.join(" "))
-                }
-                crate::input::Source::File { name, line_no, .. } => format!("F:{}#{}", name, line_no),
-            }).collect();
-            eprintln!("DBT do_def(ifx) stack=[{}]", st.join(" << "));
-            // no exit
-        }
-        if std::env::var("XTRACE").map(|v|v=="1").unwrap_or(false) && expanded {
-            eprintln!("XDEF-ENTER target={} line={} buf={:?} pushed={:?}", String::from_utf8_lossy(self.cs.name(target)), self.input.current_file_line(), self.current_line_text(), self.pushed.iter().rev().take(5).map(|x| if x.is_cs() { format!("\\{}", String::from_utf8_lossy(self.cs.name(x.cs_id()))) } else { format!("{}{}", x.cc(), x.chr() as u8 as char) }).collect::<Vec<_>>());
-        }
-        if std::env::var("PCTRACE").map(|v|v=="1").unwrap_or(false) && self.cs.name(target) == b"@preamblecmds" {
-            eprintln!("PCDEF-ENTER line={} pushed={:?}", self.input.current_file_line(), self.pushed.iter().rev().take(4).map(|x| if x.is_cs() { format!("\\{}", String::from_utf8_lossy(self.cs.name(x.cs_id()))) } else { format!("{}{}", x.cc(), x.chr() as u8 as char) }).collect::<Vec<_>>());
-        }
         // parameter text
         let mut params: Vec<Vec<Token>> = Vec::new();
         let mut num_params = 0u8;
+        let mut hash_brace: Option<Token> = None; // tex.web §473 #{ append
         self.def_prefix.clear();
         loop {
-            // tex.web scans the parameter text with get_token (NON-expanding):
-            // defined macros must NOT expand inside a \def param/delimiter text
+            // tex.web scans the parameter text with get_token (NON-expanding)
             let t = self.raw_token();
             if t == crate::input::EOF_MARKER {
                 self.error("File ended in definition");
                 self.end_occurred = true;
-                if std::env::var("IFTRACE").map(|v|v=="1").unwrap_or(false) { eprintln!("ENDOCC crates/tex-core/src/control.rs:418 line={}", self.input.current_file_line()); }
                 return;
             }
             if t.is_char() && t.cc() == 1 {
-                // body starts; push back the brace
-                { let __pt = t; if std::env::var("PUSHWATCH").map(|w|w=="1").unwrap_or(false) && __pt.is_cs() && self.cs.name(__pt.cs_id()) == b"ifx" && self.input.current_file_line() > 9000 { eprintln!("PUSHIFX crates/tex-core/src/control.rs:{} line={}", {line!()}, self.input.current_file_line()); } self.pushed.push(__pt); }
+                self.pushed.push(t);
                 break;
             }
-            if t.is_cs() && self.cur_prim == Some(Prim::Def) {
-                // \def#1#{...} style: delimiter is left brace
+            // A parameter reference spliced from an outer macro body arrives
+            // as a PAR_REF token (cc field 0), not a cat-6 char token; tex.web
+            // treats these as ordinary #n parameters when a \def's param text
+            // is itself built by expansion (expl3 conditional wrappers).
+            if t.0 >= crate::expand::PAR_REF_FLAG && t.0 < 0x8000_0000 {
+                let n = (t.0 & 0x3FFF_FFFF) as u32;
+                num_params += 1;
+                params.push(Vec::new());
+                if n != num_params as u32 || num_params > 9 {
+                    self.error("Illegal parameter number");
+                }
+                continue;
             }
             if t.is_char() && t.cc() == 6 {
                 // #n or #{
-                let t2 = self.raw_token();
+                let mut t2 = self.raw_token();
+                while t2.is_char() && (t2.cc() == 10 || t2.cc() == 0) {
+                    t2 = self.raw_token();
+                }
                 if t2.is_char() && t2.cc() == 6 {
-                    // ## -> literal #
                     if let Some(last) = params.last_mut() {
                         last.push(Token::char(6, b'#' as u32));
                     }
                     continue;
                 }
                 if t2.is_char() && t2.cc() == 1 {
-                    // #{ : the left brace is the delimiter of the last param
-                    num_params = params.len() as u8;
-                    if num_params > 0 {
-                        params[num_params as usize - 1] = vec![Token::char(1, b'{' as u32)];
+                    // tex.web §476 (hash_brace): `#{` — the brace becomes the
+                    // last parameter's delimiter; param text ends here WITHOUT
+                    // consuming the body-opening brace (collect_def_body starts
+                    // already inside the group, unbalance=1) and a copy of the
+                    // brace is appended to the END of the body (§473) so the
+                    // group the grab consumed is reopened at call time.
+                    if let Some(last) = params.last_mut() {
+                        last.push(Token::char(1, b'{' as u32));
+                    } else {
+                        num_params += 1;
+                        params.push(vec![Token::char(1, b'{' as u32)]);
                     }
-                    // body starts at the brace (already consumed)
-                    let body = self.collect_def_body(expanded, true);
-                    self.finish_def(target, num_params, params, body, global);
-                    return;
+                    hash_brace = Some(t2);
+                    break;
                 }
                 let n = t2.chr();
                 num_params += 1;
@@ -546,50 +577,51 @@ impl Engine {
                 }
                 continue;
             }
-            // delimiter text for previous param (or prefix before any #)
             match params.last_mut() {
                 Some(last) => last.push(t),
                 None => self.def_prefix.push(t),
             }
         }
-        let body = self.collect_def_body(expanded, false);
+        let mut body = self.collect_def_body(target, expanded, hash_brace.is_some());
+        if let Some(hb) = hash_brace {
+            body.push(hb);
+        }
+        if std::env::var("DEFTOOL").is_ok() {
+            eprintln!("FINISH {} np={} prefix=[{}] params=[{}] body=[{}]",
+                String::from_utf8_lossy(self.cs.name(target)), num_params,
+                self.tokens_to_string(&self.def_prefix),
+                params.iter().map(|p| format!("{{{}}}", self.tokens_to_string(p))).collect::<Vec<_>>().join(","),
+                self.tokens_to_string(&body));
+        }
         self.finish_def(target, num_params, params, body, global);
     }
 
     fn finish_def(&mut self, target: CsId, num_params: u8, params: Vec<Vec<Token>>, body: Vec<Token>, global: bool) {
-        if std::env::var("PCTRACE").map(|v|v=="1").unwrap_or(false) && self.cs.name(target) == b"@preamblecmds" {
-            eprintln!("PCDEF line={} body={}", self.input.current_file_line(), self.tokens_to_string(&body));
-        }
-        if std::env::var("DEFDUMP").map(|v|v=="1").unwrap_or(false) {
-            let nm = String::from_utf8_lossy(self.cs.name(target)).into_owned();
-            if nm.contains("clist_if_wrap") || nm.contains("tl_trim_spaces_aux") || nm.contains("clist_wrap_item") || nm.contains("clist_sanitize") || nm.contains("clist_trim_next") {
-                eprintln!("DEFDUMP {} params={} delim={} body_hex={}", nm, num_params,
-                    params.iter().map(|d| d.iter().map(|t| format!("{:#x}", t.0)).collect::<Vec<_>>().join(",")).collect::<Vec<_>>().join(" | "),
-                    body.iter().map(|t| format!("{:#x}", t.0)).collect::<Vec<_>>().join(","));
-            }
-        }
-        if std::env::var("DEFTRACE").map(|v|v=="1").unwrap_or(false) {
-            let nm = String::from_utf8_lossy(self.cs.name(target)).into_owned();
-            if std::env::var("DEFALL").map(|v|v=="1").unwrap_or(false) || nm == "e@alloc" || nm == "e@ch@ck" {
-                eprintln!("DEF {} nparams={} params={:?} body={}", nm, num_params,
-                    params.iter().map(|d| self.tokens_to_string(d)).collect::<Vec<_>>(),
-                    self.tokens_to_string(&body));
-            }
-        }
-        let m = Macro { num_params, params, body, prefix: std::mem::take(&mut self.def_prefix), long: self.long_flag, outer: self.outer_flag, protected: self.protected_flag };
+        let m = Macro {
+            num_params,
+            params,
+            body,
+            prefix: std::mem::take(&mut self.def_prefix),
+            long: self.long_flag,
+            outer: self.outer_flag,
+            protected: self.protected_flag,
+        };
         self.long_flag = false;
         self.outer_flag = false;
         self.protected_flag = false;
         self.eqtb.assign(target, Equiv::Macro(Rc::new(m)), global);
-        self.global_flag = false;
+        self.clear_prefixes();
     }
 
     /// collect macro body until the closing brace at depth 0
-    fn collect_def_body(&mut self, expanded: bool, brace_consumed: bool) -> Vec<Token> {
+    fn collect_def_body(&mut self, target: CsId, expanded: bool, brace_consumed: bool) -> Vec<Token> {
+        let prev_expanded_scan = self.in_expanded_scan;
+        if expanded {
+            self.in_expanded_scan = true;
+        }
         let mut out = Vec::new();
         let mut depth = 1i32;
         if !brace_consumed {
-            // expect {
             self.skip_spaces_relax();
             let t = self.get_token();
             if !(t.is_char() && t.cc() == 1) {
@@ -599,24 +631,44 @@ impl Engine {
                     format!("cc{}:{}", t.cc(), t.chr())
                 };
                 self.error(&format!("Missing {{ inserted (def body, got {})", got));
+                self.in_expanded_scan = prev_expanded_scan;
                 return out;
             }
         }
-        let mut pending_param: Option<u32> = None;
-        let dbg_edef = self.input.current_file_line() == 2802
-            && self.input.current_file_name().contains("expl3-code");
         loop {
+            if expanded {
+                let raw = self.raw_token();
+                if raw.is_cs() {
+                    let mut id = raw.cs_id();
+                    for _ in 0..1024 {
+                        match self.eqtb.get(id) {
+                            Some(Equiv::Alias(next)) => id = *next,
+                            _ => break,
+                        }
+                    }
+                    if let Some(Equiv::Prim(Prim::UnExpanded)) = self.eqtb.get(id) {
+                        self.skip_spaces_relax();
+                        let nxt = self.raw_token();
+                        if nxt.is_cs() {
+                            if let Some(Equiv::ToksReg(i)) = self.eqtb.resolve(nxt.cs_id()).cloned() {
+                                let toks = (*self.eqtb.toks[i as usize]).clone();
+                                out.extend(toks);
+                                continue;
+                            }
+                        }
+                        self.pushed.push(nxt);
+                        let toks = self.scan_general_text();
+                        out.extend(toks);
+                        continue;
+                    }
+                }
+                self.pushed.push(raw);
+            }
             let t = if expanded { self.get_token() } else { self.raw_token() };
-            if std::env::var("CDBTRACE").map(|v|v=="1").unwrap_or(false) && self.input.current_file_name().contains("expl3-code") && self.input.current_file_line() >= 8394 && self.input.current_file_line() <= 8412 {
-                eprintln!("CDB line={} t={:#x}", self.input.current_file_line(), t.0);
-            }
-            if dbg_edef && expanded {
-                eprintln!("COLLECT got {:#018x} cs={}", t.0, if t.is_cs() { String::from_utf8_lossy(self.cs.name(t.cs_id())).into_owned() } else { format!("cc{} chr={}", t.cc(), t.chr()) });
-            }
             if t == crate::input::EOF_MARKER {
-                self.error("File ended while scanning macro body");
+                self.error(&format!("File ended while scanning macro body for \\{} depth={}", String::from_utf8_lossy(self.cs.name(target)), depth));
                 self.end_occurred = true;
-                if std::env::var("IFTRACE").map(|v|v=="1").unwrap_or(false) { eprintln!("ENDOCC crates/tex-core/src/control.rs:500 line={}", self.input.current_file_line()); }
+                self.in_expanded_scan = prev_expanded_scan;
                 return out;
             }
             if t.is_char() {
@@ -626,14 +678,13 @@ impl Engine {
                 } else if cc == 2 {
                     depth -= 1;
                     if depth == 0 {
+                        self.in_expanded_scan = prev_expanded_scan;
                         return out;
                     }
                 }
                 if cc == 6 {
-                    // param reference or ##
                     let t2 = self.raw_token();
                     if t2.is_char() && t2.cc() == 6 {
-                        // ## -> single literal # token (cat 6, chr '#')
                         out.push(Token::char(6, b'#' as u32));
                         continue;
                     }
@@ -647,15 +698,9 @@ impl Engine {
                         continue;
                     }
                     out.push(t);
-                    { let __pt = t2; if std::env::var("PUSHWATCH").map(|w|w=="1").unwrap_or(false) && __pt.is_cs() && self.cs.name(__pt.cs_id()) == b"ifx" && self.input.current_file_line() > 9000 { eprintln!("PUSHIFX crates/tex-core/src/control.rs:{} line={}", {line!()}, self.input.current_file_line()); } self.pushed.push(__pt); }
+                    self.pushed.push(t2);
                     continue;
                 }
-            }
-            if let Some(_p) = pending_param {
-                pending_param = None;
-            }
-            if dbg_edef {
-                eprintln!("EDEF tok {:#x} cs={}", t.0, if t.is_cs() { String::from_utf8_lossy(self.cs.name(t.cs_id())).into_owned() } else { String::new() });
             }
             out.push(t);
         }
@@ -665,8 +710,6 @@ impl Engine {
     fn do_let(&mut self, future: bool) {
         let target = self.scan_definable_cs();
         if future {
-            // \futurelet A B C: A := meaning(C); then B and C execute.
-            // target (A) already scanned; grab exactly B and C.
             let tb = self.raw_token();
             let tc = self.raw_token();
             if tc.is_cs() {
@@ -708,7 +751,7 @@ impl Engine {
                 self.eqtb.assign(target, Equiv::CharTok(t.0), self.global_flag);
             }
         }
-        self.global_flag = false;
+        self.clear_prefixes();
     }
 
     /// copy meaning from src cs to dst cs (TeX \let semantics)

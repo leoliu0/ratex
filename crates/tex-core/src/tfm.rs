@@ -209,16 +209,30 @@ pub fn parse_tfm(data: &[u8], tfm_name: &str, at_size: i32) -> Result<Font, Stri
         let b1 = data[o + 1];
         let b2 = data[o + 2];
         let b3 = data[o + 3];
-        let wi = (b0 & 0x3F) as usize;
-        let tag = b0 >> 6;
-        let rem = b3;
+        // TFM char_info byte layout (tex.web §543): b0 = width index (full
+        // byte); b1 = height<<4 | depth; b2 = italic<<2 | tag; b3 = remainder
+        let wi = b0 as usize;
         let hi = (b1 >> 4) as usize;
         let di = (b1 & 15) as usize;
-        let ii = (b2 >> 6) as usize;
-        let w = if wi == 0 { 0 } else { scale(widths[wi]) };
-        let h = if hi == 0 { 0 } else { scale(heights[hi]) };
-        let d = if di == 0 { 0 } else { scale(depths[di]) };
-        let it = if ii == 0 { 0 } else { scale(italics[ii]) };
+        let ii = (b2 >> 2) as usize;
+        let tag = b2 & 3;
+        let rem = b3;
+        let w = match wi {
+            0 => 0,
+            _ => scale(widths.get(wi).copied().unwrap_or(0)),
+        };
+        let h = match hi {
+            0 => 0,
+            _ => scale(heights.get(hi).copied().unwrap_or(0)),
+        };
+        let d = match di {
+            0 => 0,
+            _ => scale(depths.get(di).copied().unwrap_or(0)),
+        };
+        let it = match ii {
+            0 => 0,
+            _ => scale(italics.get(ii).copied().unwrap_or(0)),
+        };
         chars.push(CharInfo { width: w, height: h, depth: d, italic: it, tag, remainder: rem });
     }
 

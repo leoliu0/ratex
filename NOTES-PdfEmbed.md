@@ -115,3 +115,34 @@ link" cleanly.
 - Verified in driver: c-leaders rule = one 30pt x 1pt rect; x-leaders
   box copies (\"..\") render at spread positions and text-extract;
   pdfinfo/mutool clean on the updated /tmp/hello.pdf.
+
+## Fonts/ToUnicode round (PdfFont-5, done)
+- pdftex.map parser (`fontload::parse_map_line`) rewritten: quote-aware
+  tokenizer (sections may fuse `".167 SlantFont"`), `<[foo.enc` = encoding
+  FILE (was mis-parsed as a PFB name — broke all newtx embeds), `<<` =
+  font without re-encoding, basename stripping, MapEntry gains `enc_name`
+  for the `" T1Encoding ReEncodeFont "` form (resolved as <name>.enc via
+  kpse when no explicit vector file). Slant/Extend accept separated and
+  fused value tokens. 8 parser unit tests.
+- /ToUnicode: `pdf_fonts::glyph_to_unicode` — merged AGL + pdfglyphlist +
+  texglyphlist static table (4558 entries, tex overrides; texglyphlist
+  multi-scalar semantics: first comma group, space-separated scalars
+  concatenated, e.g. Germandbls -> "SS" per glyphtounicode.tex), then
+  uniXXXX/uXXXXXX conventions, variant suffix stripping (a.sc -> a).
+  `EmbedFont.to_unicode` built in make_embed_font from the encoding diff
+  (non-identity slots only); `pdffile::to_unicode_cmap` emits a
+  flate-compressed bfchar CMap (/ToUnicode ref in the font dict).
+- build.rs fixes blocking real shipouts: (1) end_box checks
+  shipout_pending BEFORE setbox_target (\shipout<vbox> was storing into
+  \box255 and shipping nothing); (2) end_gracefully: closing a vbox group
+  mid-paragraph forces \par (chars were vpack-discarded -> empty pages);
+  (3) end_paragraph restores into the vbox list when saved_mode is
+  InternalVertical (was hijacking paragraphs to the page list).
+- pdftex.rs: \pdfmapfile/\pdfmapline participate in the lazy default-map
+  load (FormatCache contract): +/-/remove ensure the default db first,
+  `=`-replace clears + mark_map_loaded so it is never re-added.
+- Smoke (plain-mode shipout of an inline-hyperref doc): cmr10 +
+  ntx-Regular-tlf-t1 fully embedded (FontFile segments sum exactly to
+  /Length), /ToUnicode x2, URI + named-dest link annots with glyph-tight
+  rects, /Names tree with /XYZ and /FitBH; pdfinfo 0 errors, mutool
+  clean, pdftotext extracts cleanly. Unit tests: fontload 8, pdf_fonts 3.

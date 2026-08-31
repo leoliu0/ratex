@@ -21,6 +21,9 @@ pub enum Source {
         /// pending ParEnd to deliver once
         pending_par: bool,
         at_eof: bool,
+        line_buf: Option<Vec<u8>>,
+        line_pos: usize,
+        line_reload: bool,
     },
     TokList {
         toks: Vec<Token>,
@@ -55,9 +58,11 @@ impl InputStack {
             done: false,
             pending_par: false,
             at_eof: false,
+            line_buf: None,
+            line_pos: 0,
+            line_reload: true,
         });
     }
-
     pub fn push_toks(&mut self, toks: Vec<Token>, name: &str) {
         self.stack.push(Source::TokList {
             toks,

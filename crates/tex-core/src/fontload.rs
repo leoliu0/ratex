@@ -1,17 +1,17 @@
-//! \font loading: TFM lookup via kpse, pdftex.map resolution, encoding
-//! files, and the FontResolver implementation on Engine.
-
-use crate::engine::Engine;
-use crate::eqtb::Equiv;
-use crate::prim::Prim;
-use crate::tfm::{parse_tfm, Font};
 use std::rc::Rc;
+use crate::engine::Engine;
+use crate::tfm::{Font, parse_tfm};
+use crate::eqtb::Equiv;
 
 #[derive(Clone)]
 pub struct MapEntry {
     pub tfm: String,
     pub fontname: String,
+    /// encoding vector FILE from `<[foo.enc` / `<foo.enc`
     pub enc_file: Option<String>,
+    /// encoding NAME inside the quoted options (`" T1Encoding ReEncodeFont "`);
+    /// resolved as `<name>.enc` through kpathsea when no explicit file is given
+    pub enc_name: Option<String>,
     pub pfb: Option<String>,
     pub slant: f64,
     pub extend: f64,
@@ -22,21 +22,37 @@ pub struct FontLoader {
     pub map: std::collections::HashMap<String, MapEntry>,
     pub tfm_cache: std::collections::HashMap<(String, i32), Rc<Font>>,
     pub enc_cache: std::collections::HashMap<String, Rc<Vec<String>>>,
+    /// pdftex.map is loaded on first font lookup, not at construction:
+    /// the find forces kpse database setup, which is pure startup waste
+    /// for format-booted runs that never select a mapped font.
+    map_loaded: bool,
 }
 
 impl FontLoader {
     pub fn new() -> Self {
-        let mut loader = FontLoader {
+        FontLoader {
             kpse: tex_kpse::Kpse::new(),
             map: std::collections::HashMap::new(),
             tfm_cache: std::collections::HashMap::new(),
             enc_cache: std::collections::HashMap::new(),
-        };
-        loader.load_map("pdftex.map");
-        loader
+            map_loaded: false,
+        }
+    }
+    /// Load pdftex.map on first use (idempotent).
+    pub fn ensure_map(&mut self) {
+        if !self.map_loaded {
+            self.load_map("pdftex.map");
+        }
+    }
+
+    /// Record that an explicit map operation took over (e.g. \pdfmapfile
+    /// `=`-replace cleared `map`): suppresses the deferred default load.
+    pub fn mark_map_loaded(&mut self) {
+        self.map_loaded = true;
     }
 
     pub fn load_map(&mut self, name: &str) {
+        self.map_loaded = true;
         let Some(path) = self.kpse.find(name, tex_kpse::Format::Map) else { return };
         let Ok(text) = std::fs::read_to_string(path) else { return };
         for line in text.lines() {
@@ -51,6 +67,7 @@ impl FontLoader {
     }
 
     pub fn load_tfm(&mut self, name: &str, at: i32) -> Option<Rc<Font>> {
+        self.ensure_map();
         let key = (name.to_string(), at);
         if let Some(f) = self.tfm_cache.get(&key) {
             return Some(f.clone());
@@ -62,6 +79,13 @@ impl FontLoader {
             if let Some(enc) = &me.enc_file {
                 font.enc_name = Some(enc.clone());
                 font.encoding = self.load_enc(enc).map(|e| (*e).clone());
+            } else if let Some(en) = &me.enc_name {
+                // no explicit vector file: try the named encoding as
+                // <name>.enc (e.g. TeXBase1Encoding alongside <8r.enc)
+                if let Some(e) = self.load_enc(en) {
+                    font.enc_name = Some(en.clone());
+                    font.encoding = Some((*e).clone());
+                }
             }
             if let Some(pfb) = &me.pfb {
                 font.type1_path = Some(pfb.clone());
@@ -94,60 +118,113 @@ impl FontLoader {
     }
 }
 
+/// Split a map line into bare tokens and quoted option sections. Quotes
+/// toggle sections and may be attached to the first/last word of a section
+/// (`".167 SlantFont"`), as emitted by updmap and dvips maps alike.
+fn split_map_tokens(line: &str) -> (Vec<String>, Vec<String>) {
+    let mut bare = Vec::new();
+    let mut quoted = Vec::new();
+    let mut cur = String::new();
+    let mut in_quote = false;
+    for c in line.chars() {
+        match c {
+            '"' => {
+                if in_quote {
+                    quoted.push(std::mem::take(&mut cur));
+                }
+                in_quote = !in_quote;
+            }
+            c if c.is_whitespace() && !in_quote => {
+                if !cur.is_empty() {
+                    bare.push(std::mem::take(&mut cur));
+                }
+            }
+            c => cur.push(c),
+        }
+    }
+    if !cur.is_empty() {
+        if in_quote {
+            quoted.push(cur);
+        } else {
+            bare.push(cur);
+        }
+    }
+    (bare, quoted)
+}
+
+fn basename(p: &str) -> &str {
+    p.rsplit('/').next().unwrap_or(p)
+}
+
+/// Parse one pdftex.map entry:
+/// `tfm psname [<enc-file>|<[enc-file]|<<font-file|<font-file> ["option words"]`
+/// Option words: `<num> SlantFont` / `<num> ExtendFont` / `<name> ReEncodeFont`
+/// (num may also be fused: `.167SlantFont`).
 pub fn parse_map_line(line: &str) -> Option<MapEntry> {
-    let mut it = line.split_whitespace();
+    let (bare, quoted) = split_map_tokens(line);
+    let mut it = bare.into_iter();
     let tfm = it.next()?.to_string();
     let fontname = it.next()?.to_string();
-    let mut enc_file = None;
-    let mut pfb = None;
+    let mut enc_file: Option<String> = None;
+    let mut enc_name: Option<String> = None;
+    let mut pfb: Option<String> = None;
     let mut slant = 0.0;
     let mut extend = 1.0;
-    let mut expect_enc = false;
-    let mut expect_pfb = false;
     for tok in it {
-        if expect_enc {
-            enc_file = Some(tok.to_string());
-            expect_enc = false;
-            continue;
-        }
-        if expect_pfb {
-            let f = tok.trim_start_matches('"');
-            pfb = Some(f.to_string());
-            expect_pfb = false;
-            continue;
-        }
-        if let Some(e) = tok.strip_prefix('@') {
-            // @enc-file@ form
-            if e.ends_with('@') {
-                enc_file = Some(e[..e.len() - 1].to_string());
+        if let Some(rest) = tok.strip_prefix('<') {
+            // `<<` (include without re-encoding) takes the same file kind
+            let rest = rest.trim_start_matches('<');
+            let rest = rest.strip_prefix('[').unwrap_or(rest);
+            if rest.is_empty() {
+                continue;
             }
-            continue;
+            if rest.ends_with(".enc") {
+                if enc_file.is_none() {
+                    enc_file = Some(basename(rest).to_string());
+                }
+            } else if pfb.is_none() {
+                pfb = Some(basename(rest).to_string());
+            }
         }
-        match tok {
-            "<" | "<<" => expect_pfb = true,
-            "\"" => {}
-            _ => {
-                if let Some(v) = tok.strip_suffix("SlantFont") {
-                    slant = v.parse().unwrap_or(0.0);
-                } else if let Some(v) = tok.strip_suffix("ExtendFont") {
-                    extend = v.parse().unwrap_or(1.0);
-                } else if tok.ends_with(".enc") {
-                    enc_file = Some(tok.to_string());
-                } else if tok == "ReEncodeFont" {
-                } else if tok.starts_with('<') {
-                    let f = tok.trim_start_matches('<');
-                    if f.ends_with(".enc") {
-                        enc_file = Some(f.to_string());
-                    } else if !f.is_empty() {
-                        pfb = Some(f.to_string());
+    }
+    for section in quoted {
+        let mut prev: Option<String> = None;
+        for w in section.split_whitespace() {
+            let (word, fused) = match (w.strip_suffix("SlantFont"), w.strip_suffix("ExtendFont")) {
+                (Some(v), _) => (v, 1),
+                (_, Some(v)) => (v, 2),
+                (None, None) => ("", 0),
+            };
+            match fused {
+                1 => {
+                    slant = if word.is_empty() {
+                        prev.as_deref().and_then(|p| p.parse().ok()).unwrap_or(slant)
+                    } else {
+                        word.parse().unwrap_or(slant)
+                    };
+                    prev = None;
+                }
+                2 => {
+                    extend = if word.is_empty() {
+                        prev.as_deref().and_then(|p| p.parse().ok()).unwrap_or(extend)
+                    } else {
+                        word.parse().unwrap_or(extend)
+                    };
+                    prev = None;
+                }
+                _ => {
+                    if w == "ReEncodeFont" {
+                        if let Some(p) = prev.take().filter(|p| p.parse::<f64>().is_err()) {
+                            enc_name = Some(p);
+                        }
+                    } else {
+                        prev = Some(w.to_string());
                     }
-                } else if tok.starts_with('"') {
-                    // quoted options: skip
                 }
             }
         }
     }
-    Some(MapEntry { tfm, fontname, enc_file, pfb, slant, extend })
+    Some(MapEntry { tfm, fontname, enc_file, enc_name, pfb, slant, extend })
 }
 
 // ---------- Engine integration ----------
@@ -251,7 +328,7 @@ impl Engine {
         self.eqtb.font_cs.push(cs);
         self.eqtb.assign(cs, Equiv::FontRef(id), self.global_flag);
         self.global_flag = false;
-        self.term.push_str(&format!("{} at {}\n", name, self.scaled_to_string(at)));
+        self.term.push_str(&format!("{} at {}\n", name, self.scaled_to_string(self.eqtb.fonts[id as usize].at_size)));
     }
 
     pub fn scan_pdf_origin(&mut self) -> u8 {
@@ -269,80 +346,81 @@ impl Engine {
         let toks = self.scan_general_text_expanded();
         self.write_tokens_to_string(&toks)
     }
+}
 
-    pub fn scan_link_attr(&mut self) -> String {
-        self.skip_spaces_relax();
-        let t = self.get_token();
-        if t.is_cs() && self.cs.name(t.cs_id()) == b"user" {
-            self.scan_pdf_string()
-        } else {
-            self.pushed.push(t);
-            String::new()
-        }
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn plain_pfb_entry() {
+        let e = parse_map_line("cmr10 CMR10 <cmr10.pfb").unwrap();
+        assert_eq!(e.tfm, "cmr10");
+        assert_eq!(e.fontname, "CMR10");
+        assert_eq!(e.pfb.as_deref(), Some("cmr10.pfb"));
+        assert_eq!(e.enc_file, None);
+        assert_eq!(e.enc_name, None);
+        assert_eq!(e.slant, 0.0);
     }
 
-    pub fn scan_link_dest(&mut self) -> (Option<String>, Option<String>) {
-        self.skip_spaces_relax();
-        let t = self.get_token();
-        if !t.is_cs() {
-            return (None, None);
-        }
-        match self.cs.name(t.cs_id()) {
-            b"url" => {
-                let s = self.scan_general_text();
-                let text = self.write_tokens_to_string(&s);
-                (Some(text), None)
-            }
-            b"name" => {
-                let s = self.scan_general_text();
-                let text = self.write_tokens_to_string(&s);
-                (None, Some(text))
-            }
-            _ => (None, None),
-        }
+    #[test]
+    fn updmap_bracket_enc_entry() {
+        // real TeX Live line (newtx): <[ntx-ec-tlf.enc must be an
+        // ENCODING file, not a font file
+        let e = parse_map_line(
+            "ntx-Regular-tlf-t1 TeXGyreTermesX-Regular \" encntx-ec-tlf ReEncodeFont \" <[ntx-ec-tlf.enc <ztmr.pfb",
+        )
+        .unwrap();
+        assert_eq!(e.enc_file.as_deref(), Some("ntx-ec-tlf.enc"));
+        assert_eq!(e.enc_name.as_deref(), Some("encntx-ec-tlf"));
+        assert_eq!(e.pfb.as_deref(), Some("ztmr.pfb"));
     }
 
-    pub fn do_pdfdest(&mut self) {
-        // \pdfdest name {name} xyz
-        self.skip_spaces_relax();
-        let t = self.get_token();
-        if t.is_cs() && self.cs.name(t.cs_id()) == b"name" {
-            let s = self.scan_general_text();
-            let name = self.write_tokens_to_string(&s);
-            self.skip_spaces_relax();
-            let t2 = self.get_token();
-            let kind = if t2.is_cs() && self.cs.name(t2.cs_id()) == b"fitbh" { 1 } else { 0 };
-            let node = crate::boxes::Node::Whatsit(crate::boxes::WhatIt::PdfDest { name, kind });
-            match self.mode {
-                crate::engine::Mode::Vertical | crate::engine::Mode::InternalVertical => self.vlist_append(node),
-                _ => self.cur_list.push(node),
-            }
-        }
+    #[test]
+    fn cmsuper_named_encoding_entry() {
+        let e = parse_map_line(
+            "ecrm1000 SFRM1000 \" T1Encoding ReEncodeFont \" <cm-super-t1.enc <sfrm1000.pfb",
+        )
+        .unwrap();
+        assert_eq!(e.enc_file.as_deref(), Some("cm-super-t1.enc"));
+        assert_eq!(e.enc_name.as_deref(), Some("T1Encoding"));
+        assert_eq!(e.pfb.as_deref(), Some("sfrm1000.pfb"));
     }
 
-    pub fn do_pdfoutline(&mut self) {
-        // \pdfoutline goto name{dest} count -<n> {text}
-        let mut dest = String::new();
-        self.skip_spaces_relax();
-        let t = self.get_token();
-        if t.is_cs() && self.cs.name(t.cs_id()) == b"goto" {
-            self.skip_spaces_relax();
-            let t2 = self.get_token();
-            if t2.is_cs() && self.cs.name(t2.cs_id()) == b"name" {
-                let s = self.scan_general_text();
-                dest = self.write_tokens_to_string(&s);
-            }
-        }
-        let mut count = 0i32;
-        self.skip_spaces_relax();
-        let t3 = self.get_token();
-        if t3.is_cs() && self.cs.name(t3.cs_id()) == b"count" {
-            count = self.scan_int();
-        } else {
-            self.pushed.push(t3);
-        }
-        let toks = self.scan_general_text();
-        let title = self.write_tokens_to_string(&toks);
-        self.pdf_outlines.push((title, dest, count));
+    #[test]
+    fn slant_with_separate_value() {
+        let e = parse_map_line("rtcxl rtcxr \".167 SlantFont\" <rtcxr.pfb").unwrap();
+        assert!((e.slant - 0.167).abs() < 1e-9);
+        assert_eq!(e.pfb.as_deref(), Some("rtcxr.pfb"));
+    }
+
+    #[test]
+    fn slant_with_separate_value_in_open_quote() {
+        let e = parse_map_line(
+            "pbkdo8r URWBookmanL-DemiBold \" .167 SlantFont TeXBase1Encoding ReEncodeFont \" <8r.enc <ubkd8a.pfb",
+        )
+        .unwrap();
+        assert!((e.slant - 0.167).abs() < 1e-9);
+        assert_eq!(e.enc_file.as_deref(), Some("8r.enc"));
+        assert_eq!(e.enc_name.as_deref(), Some("TeXBase1Encoding"));
+    }
+
+    #[test]
+    fn double_angle_means_no_reencode() {
+        let e = parse_map_line("foo Foo <<foo.pfb").unwrap();
+        assert_eq!(e.pfb.as_deref(), Some("foo.pfb"));
+    }
+
+    #[test]
+    fn path_components_are_stripped() {
+        let e = parse_map_line("foo Foo <fonts/enc/foo.enc <fonts/type1/foo.pfb").unwrap();
+        assert_eq!(e.enc_file.as_deref(), Some("foo.enc"));
+        assert_eq!(e.pfb.as_deref(), Some("foo.pfb"));
+    }
+
+    #[test]
+    fn extend_fused_form() {
+        let e = parse_map_line("foo Foo \"1.5ExtendFont\" <foo.pfb").unwrap();
+        assert!((e.extend - 1.5).abs() < 1e-9);
     }
 }

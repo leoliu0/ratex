@@ -48,7 +48,7 @@ use std::cell::RefCell;
 
 use crate::boxes::{Glue, Node, NodeList};
 use crate::engine::{Engine, Mode, ScannerStatus};
-use crate::eqtb::LevelType;
+use crate::eqtb::{Equiv, LevelType};
 use crate::prim::{DimParam, GlueParam, Prim, ToksParam};
 use crate::token::Token;
 
@@ -94,7 +94,6 @@ const CELL_SRC: &str = "<align-cell>";
 const PEEK_SRC: &str = "<align-peek>";
 
 /// saved outer alignment state for nested \halign (tabular in a p-cell)
-#[derive(Default)]
 struct AlignSave {
     preamble: Vec<ColSpec>,
     rows: Vec<Vec<Cell>>,
@@ -105,6 +104,7 @@ struct AlignSave {
     in_noalign: bool,
     state: i32,
     done: bool,
+    to: Option<(i32, bool)>,
 }
 
 thread_local! {
@@ -128,6 +128,13 @@ impl Engine {
         self as *const Engine as usize
     }
 
+    /// true when an outer alignment state is saved for this engine (we are
+    /// the inner \halign of a nesting)
+    fn align_has_save(&self) -> bool {
+        let key = self.engine_key();
+        ALIGN_STACK.with(|s| s.borrow().iter().any(|(k, _)| *k == key))
+    }
+
     // ------------------------------------------------------------------
     // \halign
     // ------------------------------------------------------------------
@@ -146,21 +153,45 @@ impl Engine {
                 in_noalign: self.align_in_noalign,
                 state: self.align_state,
                 done: self.align_done,
+                to: self.align_to,
             };
             let key = self.engine_key();
             ALIGN_STACK.with(|s| s.borrow_mut().push((key, save)));
         }
-        if !self.mode.is_v() {
+        // tex.web: \halign inside a display formula is legal only as the
+        // whole formula (\eqalign-style); other modes enter the alignment
+        if matches!(self.mode, Mode::DisplayMath) {
+            self.error("Improper \\halign inside $$'s");
+            self.align_nested_restore();
+            return;
+        }
+        if self.mode == Mode::Horizontal {
+            // tex.web negates unrestricted horizontal mode (giving the
+            // alignment valign-like semantics); LaTeX never uses this form,
+            // tabular wraps its \halign in \hbox (restricted mode)
             self.error("\\halign in horizontal mode");
             self.align_nested_restore();
             return;
         }
         self.scanner_status = ScannerStatus::Aligning;
         self.align_preamble.clear();
+        // \halign to <dimen> / \halign spread <dimen> (tex.web scan_spec)
+        self.align_to = None;
+        if self.scan_keyword(b"to") {
+            let d = self.scan_dimen(false, false);
+            self.align_to = Some((d, false));
+        } else if self.scan_keyword(b"spread") {
+            let d = self.scan_dimen(false, false);
+            self.align_to = Some((d, true));
+        }
         if !self.scan_align_preamble() {
-            self.scanner_status = ScannerStatus::Normal;
-            self.align_state = PH_IDLE;
+            let nested = self.align_has_save();
             self.align_nested_restore();
+            if !nested {
+                self.scanner_status = ScannerStatus::Normal;
+                self.align_state = PH_IDLE;
+                self.align_to = None;
+            }
             return;
         }
         // enter the alignment group (build.rs end_box pops this for kind 7
@@ -206,6 +237,7 @@ impl Engine {
             self.align_in_noalign = sv.in_noalign;
             self.align_state = sv.state;
             self.align_done = sv.done;
+            self.align_to = sv.to;
         }
     }
 
@@ -287,6 +319,9 @@ impl Engine {
                 }
             }
             if in_u {
+                if cur.u_part.is_empty() && t.is_char() && t.cc() == 10 {
+                    continue;
+                }
                 cur.u_part.push(t);
             } else {
                 cur.v_part.push(t);
@@ -337,7 +372,7 @@ impl Engine {
         self.align_cur_row[col].span = spec.span;
         self.align_state = PH_U;
         // \omit may be the very first token of the cell: peek (expanding)
-        let t = self.get_token();
+        let t = self.align_peek_expanding();
         if t == crate::input::EOF_MARKER {
             self.error("File ended while starting an alignment cell");
             self.end_occurred = true;
@@ -367,7 +402,6 @@ impl Engine {
             self.input.stack.pop();
         }
     }
-
     /// token terminating a close stream. The \crcr primitive token is used
     /// (not CELL_END_TOKEN): scanners may look ahead across the close
     /// stream (e.g. \hskip's fill check), and a scanner swallowing
@@ -394,7 +428,11 @@ impl Engine {
         self.align_state |= PH_CLOSE;
         let mut close: Vec<Token> = Vec::new();
         if !omit {
-            if let Some(spec) = self.align_preamble.get(col) {
+            // tex.web fin_col: the v part played at the end of a cell is
+            // that of the LAST entry the cell covers (cur_align advances
+            // through spanned columns)
+            let last = col + self.align_cur_row.get(col).map(|c| c.span as usize).unwrap_or(0);
+            if let Some(spec) = self.align_preamble.get(last) {
                 close.extend(spec.v_part.iter().cloned());
             }
         }
@@ -412,7 +450,12 @@ impl Engine {
             // one at the end of every v part) is structural noise
             return;
         }
-        if self.align_phase() == PH_IDLE {
+        if self.align_phase() == PH_IDLE
+            || self.box_kinds.last() != Some(&CELL_GROUP_KIND)
+        {
+            // tex.web: & reaching main_control inside a nested group of a
+            // cell (braces hide it from the row) is "Misplaced alignment
+            // tab"; PH_IDLE covers & between rows and at the row boundary
             self.error("Misplaced alignment tab character &");
             return;
         }
@@ -448,9 +491,10 @@ impl Engine {
             }
             return;
         }
-        if self.align_phase() == PH_IDLE {
-            // \cr between rows: the row inspection consumes those; a
-            // leftover one here is ignored
+        if self.align_phase() == PH_IDLE || self.box_kinds.last() != Some(&CELL_GROUP_KIND) {
+            // \cr between rows is consumed by the row inspection; a \cr
+            // inside a nested group of a cell is misplaced (tex.web)
+            self.error("Misplaced \\cr");
             return;
         }
         if self.align_phase() == PH_U {
@@ -504,7 +548,7 @@ impl Engine {
         if self.align_phase() == PH_U {
             self.align_discard_u_part();
         }
-        let t = self.get_token();
+        let t = self.align_peek_expanding();
         if t == crate::input::EOF_MARKER {
             self.error("File ended after \\span");
             self.end_occurred = true;
@@ -529,12 +573,6 @@ impl Engine {
         }
     }
 
-    // ------------------------------------------------------------------
-    // \noalign
-    // ------------------------------------------------------------------
-
-
-    // ------------------------------------------------------------------
     // cell completion (at dispatch level, from the \crcr sentinel)
     // ------------------------------------------------------------------
 
@@ -557,6 +595,7 @@ impl Engine {
         self.eqtb.pop_level();
         let (om, ol, pd, sf) = self.saved_lists.pop().unwrap();
         self.cur_list = ol;
+        self.mode = om; // tex.web unsave: the enclosing level's mode returns
         self.prev_depth = pd;
         self.space_factor = sf;
         Some(inner)
@@ -632,11 +671,40 @@ impl Engine {
         self.align_row_inspect();
     }
 
+    /// peek one token, expanding macros and skipping spaces first:
+    /// tex.web's align_peek uses get_x_token, so row boundaries see through
+    /// macros like a \noalign wrapper defined as \def\br{\noalign{\hrule}}
+    fn align_peek_expanding(&mut self) -> Token {
+        for _ in 0..200 {
+            let t = self.get_token();
+            if t == crate::input::EOF_MARKER {
+                return t;
+            }
+            if t.is_char() && t.cc() == 10 {
+                continue;
+            }
+            if !t.is_cs() {
+                return t;
+            }
+            let macro_def = match self.eqtb.resolve(t.cs_id()) {
+                Some(Equiv::Macro(m)) => Some(m.clone()),
+                _ => None,
+            };
+            if let Some(m) = macro_def {
+                self.expand_macro(t.cs_id(), &m);
+                continue;
+            }
+            return t;
+        }
+        self.error("Expansion depth exceeded in alignment lookahead");
+        self.get_token()
+    }
+
     /// after a \cr (or at alignment start): decide between \noalign, another
     /// \cr, the alignment's closing brace, or the next row's first cell.
     fn align_row_inspect(&mut self) {
         loop {
-            let t = self.get_token();
+            let t = self.align_peek_expanding();
             if t == crate::input::EOF_MARKER {
                 self.error("File ended during an alignment");
                 self.end_occurred = true;
@@ -705,25 +773,24 @@ impl Engine {
                 }
             }
         }
-        // pass 2: spanning cells widen the covered columns if needed
-        spans.sort_by_key(|&(_, s, _)| s);
-        for (c, s, w) in spans {
-            if ncols == 0 || c >= ncols {
-                continue;
-            }
-            let lo = c;
-            let hi = (c + s).min(ncols - 1);
-            let n = (hi - lo + 1) as i64;
-            let avail: i64 = (lo..=hi).map(|i| widths[i] as i64).sum::<i64>()
-                + s as i64 * tabskip.width as i64;
-            if w as i64 > avail {
-                let deficit = w as i64 - avail;
-                let share = deficit / n;
-                let rem = deficit % n;
-                for (k, i) in (lo..=hi).enumerate() {
-                    widths[i] += (share + if (k as i64) < rem { 1 } else { 0 }) as i32;
+        // pass 2: tex.web's left-to-right relaxation (fin_align). A cell
+        // spanning columns i..j contributes `natural - sum_{k=i}^{j-1}
+        // (tabskip_k + w_k)` to the width of its LAST column j; widths are
+        // finalized left to right, so the prefix uses final values.
+        for j in 0..ncols {
+            let mut w = widths[j] as i64;
+            for &(c, s, nat) in &spans {
+                // a span reaching past the last column is clamped into it
+                // (tex.web routes surplus & material into the final column)
+                let end = (c + s).min(ncols.saturating_sub(1));
+                if end != j {
+                    continue;
                 }
+                let pre: i64 =
+                    (c..j).map(|k| widths[k] as i64 + tabskip.width as i64).sum();
+                w = w.max(nat as i64 - pre);
             }
+            widths[j] = w.max(0) as i32;
         }
         self.align_col_widths = widths.clone();
 
@@ -769,12 +836,38 @@ impl Engine {
                     (lo..=hi).map(|i| widths[i] as i64).sum::<i64>()
                         + s as i64 * tabskip.width as i64
                 };
-                // the "unset box" pass: re-pack to the final column width
-                let inner = match cell.packed {
+                // the "unset box" pass: re-pack to the final column width.
+                // tex.web freezes finite glue (stretch/shrink order 0)
+                // whenever the cell carries higher-order stretch/shrink, so
+                // \hfil stretches but \hskip3pt plus1pt does not
+                let mut inner = match cell.packed {
                     Some(Node::Box { list, .. }) => list,
                     Some(other) => vec![other],
                     None => Vec::new(),
                 };
+                let (mut s_ord, mut h_ord) = (0u8, 0u8);
+                for node in &inner {
+                    if let Node::Glue(g) = node {
+                        if g.stretch != 0 {
+                            s_ord = s_ord.max(g.stretch_order);
+                        }
+                        if g.shrink != 0 {
+                            h_ord = h_ord.max(g.shrink_order);
+                        }
+                    }
+                }
+                if s_ord > 0 || h_ord > 0 {
+                    for node in &mut inner {
+                        if let Node::Glue(g) = node {
+                            if s_ord > 0 && g.stretch_order == 0 {
+                                g.stretch = 0;
+                            }
+                            if h_ord > 0 && g.shrink_order == 0 {
+                                g.shrink = 0;
+                            }
+                        }
+                    }
+                }
                 line.push(
                     crate::boxes::hpack(inner, Some(target as i32), crate::boxes::HBOX, &self.eqtb)
                         .node,
@@ -788,7 +881,34 @@ impl Engine {
                 }
                 g += 1;
             }
-            let rowbox = crate::boxes::hpack(line, None, crate::boxes::HBOX, &self.eqtb).node;
+            // \halign to/spread: every row is packed to the alignment width
+            // (tex.web packages the preamble prototype row to the target and
+            // gives every row its width); the difference lands in the
+            // tabskip glue between columns
+            let rowbox = match self.align_to {
+                None => crate::boxes::hpack(line, None, crate::boxes::HBOX, &self.eqtb).node,
+                Some((d, false)) => {
+                    crate::boxes::hpack(line, Some(d), crate::boxes::HBOX, &self.eqtb).node
+                }
+                Some((d, true)) => {
+                    let nat = crate::boxes::hpack(line, None, crate::boxes::HBOX, &self.eqtb).node;
+                    let w = match &nat {
+                        Node::Box { w, .. } => *w,
+                        _ => 0,
+                    };
+                    let list = match nat {
+                        Node::Box { list, .. } => list,
+                        other => vec![other],
+                    };
+                    crate::boxes::hpack(
+                        list,
+                        Some(w.saturating_add(d)),
+                        crate::boxes::HBOX,
+                        &self.eqtb,
+                    )
+                    .node
+                }
+            };
             let (h, d) = match &rowbox {
                 Node::Box { h, d, .. } => (*h, *d),
                 _ => (0, 0),
@@ -805,8 +925,14 @@ impl Engine {
         self.align_done = false;
         self.align_in_noalign = false;
         self.align_state = PH_IDLE;
-        self.scanner_status = ScannerStatus::Normal;
+        let nested = self.align_has_save();
         self.align_nested_restore();
+        if !nested {
+            // a nested \halign (tabular in a p-cell) must leave
+            // scanner_status at Aligning so the outer alignment continues
+            self.scanner_status = ScannerStatus::Normal;
+            self.align_to = None;
+        }
         // append like a box result (setbox0=\halign{...} assigns instead)
         if let Some(idx) = self.setbox_target.take() {
             self.eqtb.assign_box(idx, Some(vbox), self.global_flag);
@@ -978,10 +1104,14 @@ mod tests {
         assert_eq!(e.align_col_widths.len(), 3);
         let (w, list) = vbox_of(&e);
         assert_eq!(list.len(), 1, "single row: {:?}", list);
-        // the spanning cell was widened over columns 1 and 2
+        // tex.web fin_align: a span contributes only to its LAST column;
+        // 'bb' is covered by columns 1-2, so column 1 stays 0 and column 2
+        // carries the natural width w(bb)
+        let f = &e.eqtb.fonts[e.cur_font as usize];
+        let wb = f.char_width(b'b');
         let (w1, w2) = (e.align_col_widths[1], e.align_col_widths[2]);
-        assert!(w1 > 0, "span deficit distributed: {:?}", e.align_col_widths);
-        assert!((w1 - w2).abs() <= 1, "equal split: {:?}", e.align_col_widths);
+        assert_eq!(w1, 0, "col 1 stays 0: {:?}", e.align_col_widths);
+        assert_eq!(w2, wb * 2, "col 2 gets span: {:?}", e.align_col_widths);
         let r = row_of(&list[0]);
         assert_eq!(r.len(), 3, "cell, tabskip, span cell: {:?}", r);
         assert_eq!(box_w(&r[2]), w1 + w2);
@@ -989,10 +1119,235 @@ mod tests {
     }
 
     #[test]
-    fn valign_errors_gracefully() {
-        let e = run("\\valign{#\\cr a\\cr}\n");
-        assert!(e.error_count > 0, "valign should report an error");
-        assert!(e.end_occurred, "valign stops the job cleanly");
+    fn span_deficit_lands_on_last_column() {
+        // tex.web: w_j = max over spans ending at j of
+        // w_ij - sum_{k=i}^{j-1}(tabskip_k + w_k); the wide \multicolumn
+        // cell widens only column 2, columns 0 and 1 stay natural
+        let e = run(concat!(
+            "\\font\\cmr=cmr10 \\cmr\n",
+            "\\halign{#\\hfil& #\\hfil& #\\hfil\\cr a&b&c\\cr \\span\\omit XXXXX\\cr}\n",
+        ));
+        assert_eq!(e.error_count, 0, "errors:\n{}", e.term);
+        let f = &e.eqtb.fonts[e.cur_font as usize];
+        let w = |ch: u8| f.char_width(ch) as i64;
+        let widths = e.align_col_widths.clone();
+        assert_eq!(widths[0] as i64, w(b'a'));
+        let nat = w(b'X') * 5;
+        let expect1 = nat - w(b'a');
+        assert_eq!(widths[1] as i64, expect1, "deficit on column 1 (last column of 2-col span)");
+        assert_eq!(widths[2] as i64, w(b'c'), "col 2 stays natural");
+    }
+
+    #[test]
+    fn tabular_style_halign_in_hbox() {
+        // LaTeX tabular wraps its \halign in \hbox: the alignment must be
+        // legal in restricted horizontal mode and land as a box in the
+        // surrounding \hbox
+        let e = run(concat!(
+            "\\font\\cmr=cmr10 \\cmr\n",
+            "\\hbox{\\halign{#\\hfil& #\\hfil\\cr a&bb\\cr ccc&d\\cr}}\n",
+        ));
+        assert_eq!(e.error_count, 0, "errors:\n{}", e.term);
+        // the page list holds the outer hbox
+        let outer = e
+            .page_list
+            .iter()
+            .find(|n| matches!(n, Node::Box { kind, .. } if *kind == crate::boxes::HBOX))
+            .expect("outer hbox on page list");
+        let inner = match outer {
+            Node::Box { list, .. } => list,
+            _ => unreachable!(),
+        };
+        assert_eq!(inner.len(), 1, "alignment vbox inside hbox: {:?}", inner);
+        match &inner[0] {
+            Node::Box { w, .. } => {
+                let (w0, w1) = (e.align_col_widths[0], e.align_col_widths[1]);
+                assert!(w0 > 0 && w1 > 0);
+                assert_eq!(*w, w0 + w1);
+            }
+            other => panic!("expected alignment vbox: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn halign_to_and_spread_widths() {
+        // \tabskip with fil stretch absorbs the to/spread difference
+        let e = run(concat!(
+            "\\font\\cmr=cmr10 \\cmr\n",
+            "\\tabskip=0pt plus 1fil\n",
+            "\\vbox{\\halign to 120pt{#\\hfil& #\\hfil\\cr a&bb\\cr ccc&d\\cr}}\n",
+        ));
+        assert_eq!(e.error_count, 0, "errors:\n{}", e.term);
+        let (_, list) = vbox_of(&e);
+        let target = 120 * 65536;
+        for n in list.iter().filter(|n| matches!(n, Node::Box { .. })) {
+            match n {
+                Node::Box { w, .. } => assert_eq!(*w, target, "row packed to 120pt"),
+                _ => unreachable!(),
+            }
+        }
+        // column widths stay natural under `to`
+        let f = &e.eqtb.fonts[e.cur_font as usize];
+        let wc3 = f.char_width(b'c') * 3;
+        assert_eq!(e.align_col_widths[0], wc3, "natural col 0");
+
+        let e2 = run(concat!(
+            "\\font\\cmr=cmr10 \\cmr\n",
+            "\\tabskip=0pt plus 1fil\n",
+            "\\vbox{\\halign spread 20pt{#\\hfil& #\\hfil\\cr a&bb\\cr}}\n",
+        ));
+        assert_eq!(e2.error_count, 0, "errors:\n{}", e2.term);
+        let (_, list2) = vbox_of(&e2);
+        let f2 = &e2.eqtb.fonts[e2.cur_font as usize];
+        let nat = f2.char_width(b'a') + f2.char_width(b'b') * 2;
+        match &list2[0] {
+            Node::Box { w, .. } => assert_eq!(*w, nat + 20 * 65536, "spread row width"),
+            other => panic!("expected row box: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn nested_halign_keeps_outer_aligning() {
+        // an inner \halign inside a cell must restore scanner_status so the
+        // outer alignment's \cr still works
+        let e = run(concat!(
+            "\\font\\cmr=cmr10 \\cmr\n",
+            "\\vbox{\\halign{#\\hfil\\cr \\vbox{\\halign{#\\hfil\\cr xx\\cr y\\cr}}\\cr}}\n",
+        ));
+        assert_eq!(e.error_count, 0, "errors:\n{}", e.term);
+        let (_, list) = vbox_of(&e);
+        assert_eq!(list.len(), 1, "one outer row: {:?}", list);
+        // the page list holds the outer \vbox, which holds the alignment
+        // vbox, which holds the single row
+        let align_box = match &list[0] {
+            Node::Box { list: al, .. } => al,
+            other => panic!("expected alignment vbox: {:?}", other),
+        };
+        let row = row_of(&align_box[0]);
+        // the cell holds the inner alignment's vbox
+        match &row[0] {
+            Node::Box { list: inner_cell, .. } => {
+                assert!(matches!(inner_cell[0], Node::Box { .. }), "{:?}", inner_cell)
+            }
+            other => panic!("expected cell box: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn crcr_terminates_row() {
+        let e = run(concat!(
+            "\\font\\cmr=cmr10 \\cmr\n",
+            "\\halign{#\\cr a\\crcr bb\\crcr}\n",
+        ));
+        assert_eq!(e.error_count, 0, "errors:\n{}", e.term);
+        let (_, list) = vbox_of(&e);
+        assert_eq!(list.len(), 3, "2 rows + glue: {:?}", list);
+        assert_eq!(e.align_col_widths[0], {
+            let f = &e.eqtb.fonts[e.cur_font as usize];
+            f.char_width(b'b') * 2
+        });
+    }
+
+    #[test]
+    fn ampersand_in_braces_is_misplaced() {
+        // braces hide & from the row: tex.web reports a misplaced tab
+        // instead of splitting the cell
+        let e = run(concat!(
+            "\\font\\cmr=cmr10 \\cmr\n",
+            "\\halign{#\\cr {a&b}\\cr}\n",
+        ));
+        assert!(e.error_count >= 1, "expected misplaced tab error");
+        assert!(e.term.contains("alignment tab"), "{}", e.term);
+    }
+
+    #[test]
+    fn finite_glue_frozen_in_unset_box() {
+        // tex.web unset boxes: finite glue (order 0) does not stretch when
+        // higher-order (\hfil) stretch is present
+        let e = run(concat!(
+            "\\font\\cmr=cmr10 \\cmr\n",
+            "\\halign{#\\hskip 0pt plus 2pt\\hfil\\cr a\\cr bb\\cr}\n",
+        ));
+        assert_eq!(e.error_count, 0, "errors:\n{}", e.term);
+        let (_, list) = vbox_of(&e);
+        let f = &e.eqtb.fonts[e.cur_font as usize];
+        let deficit = f.char_width(b'b') * 2 - f.char_width(b'a');
+        let r = row_of(&list[0]);
+        match &r[0] {
+            Node::Box { glue_sign, glue_set, .. } => {
+                assert_eq!(*glue_sign, 1, "stretching");
+                // only the 1fil glue stretches: glue_set = deficit / fil
+                let expected = deficit as f64 / 65536.0;
+                assert!(
+                    (glue_set - expected).abs() < 1e-3,
+                    "fil-only stretch: glue_set={} expected={}",
+                    glue_set,
+                    expected
+                );
+            }
+            other => panic!("expected cell box: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn booktabs_style_table_skeleton() {
+        // a LaTeX-tabular-shaped alignment inside \hbox: \toprule-like
+        // \noalign rule before the first row, a \multicolumn header
+        // (\span\omit), body rows, \midrule, and a \bottomrule followed by
+        // \crcr before the closing brace (like \endtabular)
+        let e = run(concat!(
+            "\\font\\cmr=cmr10 \\cmr\n",
+            "\\def\\br{\\noalign{\\hrule}}\n",
+            "\\hbox{\\halign{\\hfil#& \\hfil#\\hfil& #\\hfil\\cr\n",
+            "\\br\n",
+            "\\span\\omit \\hfil Header\\hfil\\cr\n",
+            "\\br\n",
+            "a&bb&ccc\\cr\n",
+            "d&e&f\\cr\n",
+            "\\br\n",
+            "\\crcr}}\n",
+        ));
+        assert_eq!(e.error_count, 0, "errors:\n{}", e.term);
+        // alignment vbox sits inside the hbox
+        let outer = e
+            .page_list
+            .iter()
+            .find(|n| matches!(n, Node::Box { kind, .. } if *kind == crate::boxes::HBOX))
+            .expect("outer hbox on page list");
+        let align_box = match outer {
+            Node::Box { list, .. } => match &list[0] {
+                Node::Box { list, .. } => list,
+                other => panic!("expected alignment vbox: {:?}", other),
+            },
+            _ => unreachable!(),
+        };
+        // 3 rules + 3 rows, interleaved with glue; every noalign rule is a
+        // vbox wrapping one hrule
+        let boxes: Vec<&Node> = align_box
+            .iter()
+            .filter(|n| matches!(n, Node::Box { .. }))
+            .collect();
+        assert_eq!(boxes.len(), 6, "rules + rows: {:?}", align_box);
+        let rules = align_box
+            .iter()
+            .filter_map(|n| match n {
+                Node::Box { kind: crate::boxes::VBOX, list, .. } => Some(list),
+                _ => None,
+            })
+            .flat_map(|l| l.iter())
+            .filter(|n| matches!(n, Node::Rule { .. }))
+            .count();
+        assert_eq!(rules, 3, "top/mid/bottom rules");
+        // the \multicolumn header spans all three columns
+        let w = |ch: u8| e.eqtb.fonts[e.cur_font as usize].char_width(ch) as i64;
+        let expect_w2 = (w(b'H') + w(b'e') + w(b'a') + w(b'd') + w(b'r'))
+            - e.align_col_widths[0] as i64
+            - e.align_col_widths[1] as i64;
+        assert!(
+            e.align_col_widths[2] as i64 >= expect_w2 - 1,
+            "header deficit on col 2: {:?}",
+            e.align_col_widths
+        );
     }
 
     #[test]
@@ -1028,4 +1383,5 @@ mod tests {
         assert_eq!(box_w(&inner[0]), w);
         assert_eq!(box_w(&inner[2]), w);
     }
+
 }

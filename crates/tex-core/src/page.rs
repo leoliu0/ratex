@@ -485,15 +485,32 @@ impl Engine {
                 self.dead_cycles
             ));
             let b = self.eqtb.boxed[255].take();
-            self.ship_box(b);
+            if !self.ini_mode {
+                self.ship_box(b);
+            }
+            self.dead_cycles = 0;
             return;
         }
 
         let toks = (*self.eqtb.tok_params[ToksParam::Output.idx() as usize]).clone();
+        if toks.is_empty() {
+            // TeXbook default output: \shipout\box255
+            let b = self.eqtb.boxed[255].take();
+            if !self.ini_mode {
+                self.ship_box(b);
+            }
+            self.dead_cycles = 0;
+            return;
+        }
         self.in_output = true;
         self.output_depth += 1;
         self.input.push_toks(toks, "<output>");
         self.input.push_toks(vec![OUT_END_TOKEN], "<endoutput>");
+    }
+
+    /// Eject the current page prefix (used by `\end`).
+    pub fn eject_page(&mut self, cut: usize) {
+        self.fire_up(cut, -0x4000_0000);
     }
 
     /// assemble class `num`'s material (leftover in `\box N` plus this

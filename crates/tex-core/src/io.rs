@@ -269,52 +269,83 @@ use std::io::BufReader;
     }
 
     pub fn scan_file_name(&mut self) -> String {
+        self.skip_spaces_relax();
         let mut name = Vec::new();
-        let mut quoted = false;
-        loop {
-            // raw: a CS (e.g. \ifeof on the next line) must not expand
-            // while we are still collecting the name.
-            let t = self.raw_token();
-            if t == crate::input::EOF_MARKER {
-                break;
-            }
-            if t.is_cs() {
-                self.pushed.push(t);
-                break;
-            }
-            let cc = t.cc();
-            let c = t.chr() as u8;
-            if !quoted && (cc == 10 || cc == 5) {
-                if name.is_empty() {
-                    continue;
-                }
-                break;
-            }
-            if !quoted && (c == b'{' || c == b'}') {
-                self.pushed.push(t);
-                break;
-            }
-            if c == b'"' && (cc == 12 || cc == 11) {
-                // pdfTeX quoted filename: "name with spaces.tex"
-                if !quoted && name.is_empty() {
-                    quoted = true;
-                    continue;
-                }
-                if quoted {
+        let t = self.get_x_raw();
+        if t == crate::input::EOF_MARKER {
+            return String::new();
+        }
+        if t.is_char() && (t.cc() == 1 || t.chr() == b'{' as u32) {
+            // LaTeX \input{filename.tex} syntax
+            let mut depth = 1i32;
+            loop {
+                let t2 = self.get_x_raw();
+                if t2 == crate::input::EOF_MARKER {
                     break;
                 }
+                if t2.is_char() {
+                    if t2.cc() == 1 || t2.chr() == b'{' as u32 {
+                        depth += 1;
+                    } else if t2.cc() == 2 || t2.chr() == b'}' as u32 {
+                        depth -= 1;
+                        if depth == 0 {
+                            break;
+                        }
+                    }
+                    name.push(t2.chr() as u8);
+                } else if t2.is_cs() {
+                    name.extend_from_slice(self.cs.name(t2.cs_id()));
+                }
             }
-            if !quoted && cc != 11 && cc != 12 {
-                self.pushed.push(t);
+            return String::from_utf8_lossy(&name).trim().to_string();
+        }
+        if t.is_char() && t.chr() == b'"' as u32 {
+            // pdfTeX quoted filename: "name with spaces.tex"
+            loop {
+                let t2 = self.get_x_raw();
+                if t2 == crate::input::EOF_MARKER {
+                    break;
+                }
+                if t2.is_char() && t2.chr() == b'"' as u32 {
+                    break;
+                }
+                if t2.is_char() {
+                    name.push(t2.chr() as u8);
+                } else if t2.is_cs() {
+                    name.extend_from_slice(self.cs.name(t2.cs_id()));
+                }
+            }
+            return String::from_utf8_lossy(&name).trim().to_string();
+        }
+        // standard TeX \input filename.tex (unquoted). tex.web scan_file_name:
+        // cs tokens TERMINATE the name (and are reread); only chars accumulate.
+        let mut cur = t;
+        loop {
+            if cur == crate::input::EOF_MARKER {
                 break;
             }
-            name.push(c);
+            if cur.is_space() || (cur.is_char() && cur.cc() == 10) {
+                break;
+            }
+            if cur.is_cs() {
+                self.pushed.push(cur);
+                break;
+            }
+            if cur.is_char() {
+                let c = cur.chr() as u8;
+                if c == b' ' || c == b'\t' || c == b'\r' || c == b'\n' {
+                    break;
+                }
+                name.push(c);
+            }
+            cur = self.raw_token();
         }
-        String::from_utf8_lossy(&name).to_string()
+        String::from_utf8_lossy(&name).trim().to_string()
     }
 
     pub fn do_show(&mut self) {
-        let t = self.get_token();
+        // tex.web \show grabs the target with get_name (NON-expanding)
+        let t = self.raw_token();
         let text = self.meaning_of(t);
         self.term.push_str(&format!("> {}\n", text));
         self.log.push_str(&format!("> {}\n", text));
@@ -332,6 +363,20 @@ use std::io::BufReader;
                 // tex.web §1289: lccode/uccode 0 = leave unchanged
                 if mapped != 0 {
                     *t = Token::char(t.cc(), mapped as u32);
+                }
+            } else {
+                let name = self.cs.name(t.cs_id());
+                if name.len() == 1 {
+                    let c = name[0];
+                    let mapped = if up {
+                        self.eqtb.uc_code[c as usize]
+                    } else {
+                        self.eqtb.lc_code[c as usize]
+                    };
+                    if mapped != 0 && mapped != c {
+                        let new_id = self.cs.intern(&[mapped]);
+                        *t = Token::from_cs(new_id);
+                    }
                 }
             }
         }

@@ -33,6 +33,32 @@ pub fn make_embed_font(
         }
         None => (Vec::new(), 0, 0, 0, parse_metrics(b"")),
     };
+    // no external encoding: adopt the font's own /Encoding array (if
+    // the cleartext declares one) so extractors see accurate glyph names
+    let encoding_diff = match encoding {
+        Some(e) => Some(e.to_vec()),
+        None => pfb.and_then(|bytes| {
+            let prog = parse_type1(bytes);
+            let end = prog.length1.min(prog.data.len());
+            crate::pdf_fonts::builtin_encoding(&prog.data[..end])
+        }),
+    };
+    // /ToUnicode: resolve every encoded slot through the glyph list,
+    // keeping only non-identity mappings (ASCII slots extract natively)
+    let to_unicode = encoding_diff
+        .iter()
+        .flat_map(|d| d.iter().enumerate())
+        .filter_map(|(slot, g)| {
+            if g.is_empty() || slot > 255 {
+                return None;
+            }
+            let uni = crate::pdf_fonts::glyph_to_unicode(g)?;
+            if slot < 0x80 && uni.len() == 1 && uni.as_bytes()[0] == slot as u8 {
+                return None;
+            }
+            Some((slot as u8, uni))
+        })
+        .collect();
     EmbedFont {
         obj_font: 0,
         base_font,
@@ -40,16 +66,7 @@ pub fn make_embed_font(
         length1,
         length2,
         length3,
-        // no external encoding: adopt the font's own /Encoding array (if
-        // the cleartext declares one) so extractors see accurate glyph names
-        encoding_diff: match encoding {
-            Some(e) => Some(e.to_vec()),
-            None => pfb.and_then(|bytes| {
-                let prog = parse_type1(bytes);
-                let end = prog.length1.min(prog.data.len());
-                crate::pdf_fonts::builtin_encoding(&prog.data[..end])
-            }),
-        },
+        encoding_diff,
         first_char,
         last_char,
         widths: widths_1000,
@@ -61,6 +78,7 @@ pub fn make_embed_font(
         cap_height: metrics.cap_height,
         stem_v: metrics.stem_v,
         flags: 4,
+        to_unicode,
     }
 }
 
@@ -154,22 +172,28 @@ pub fn write_pdf(doc: &PdfDoc) -> Vec<u8> {
 
     // Collect named destinations first (first definition wins, sorted),
     // so the names object is only allocated when needed.
-    let mut named: Vec<(String, usize, f64, f64, u8)> = Vec::new();
+    let mut named: Vec<(String, usize, f64, f64, u8, Option<f64>)> = Vec::new();
     for (pi, page) in doc.pages.iter().enumerate() {
-        for (name, x, y, kind) in &page.dests {
-            if !named.iter().any(|(n, ..)| n == name) {
-                named.push((name.clone(), pi, *x, *y, *kind));
+        for dest in &page.dests {
+            if !named.iter().any(|(n, ..)| n == &dest.name) {
+                named.push((dest.name.clone(), pi, dest.x, dest.y, dest.kind, dest.zoom));
             }
         }
     }
     named.sort_by(|a, b| a.0.as_bytes().cmp(b.0.as_bytes()));
-    let names_obj = if named.is_empty() { 0 } else { b.alloc() };
+    let names_obj = if named.is_empty() && doc.names_extra.is_empty() {
+        0
+    } else {
+        b.alloc()
+    };
 
-    // Font objects: font dict, descriptor, optional font file.
+    // Font objects: font dict, descriptor, optional font file and
+    // optional /ToUnicode CMap.
     struct FontObjs {
         font: usize,
         desc: usize,
         file: Option<usize>,
+        tounicode: Option<usize>,
     }
     let font_objs: Vec<FontObjs> = doc
         .fonts
@@ -178,7 +202,8 @@ pub fn write_pdf(doc: &PdfDoc) -> Vec<u8> {
             let font = b.alloc();
             let desc = b.alloc();
             let file = if f.font_file.is_empty() { None } else { Some(b.alloc()) };
-            FontObjs { font, desc, file }
+            let tounicode = if f.to_unicode.is_empty() { None } else { Some(b.alloc()) };
+            FontObjs { font, desc, file, tounicode }
         })
         .collect();
 
@@ -226,11 +251,15 @@ pub fn write_pdf(doc: &PdfDoc) -> Vec<u8> {
             }
             enc.push_str(" ] >>");
         }
+        let tounicode_ref = match fo.tounicode {
+            Some(o) => format!(" /ToUnicode {} 0 R", o),
+            None => String::new(),
+        };
         b.set(
             fo.font,
             format!(
-                "<< /Type /Font /Subtype /Type1 /BaseFont /{} /FirstChar {} /LastChar {} /Widths {} /FontDescriptor {} 0 R{} >>",
-                escape_pdf_name(&f.base_font), first, last, widths, fo.desc, enc
+                "<< /Type /Font /Subtype /Type1 /BaseFont /{} /FirstChar {} /LastChar {} /Widths {} /FontDescriptor {} 0 R{}{} >>",
+                escape_pdf_name(&f.base_font), first, last, widths, fo.desc, enc, tounicode_ref
             ),
         );
         let mut desc = format!(
@@ -256,6 +285,9 @@ pub fn write_pdf(doc: &PdfDoc) -> Vec<u8> {
                 false,
             );
         }
+        if let Some(to) = fo.tounicode {
+            b.set_stream(to, "", to_unicode_cmap(&f.to_unicode).as_bytes(), true);
+        }
     }
 
     // ---- emit pages
@@ -278,11 +310,22 @@ pub fn write_pdf(doc: &PdfDoc) -> Vec<u8> {
         } else {
             format!(" /Annots [ {}]", annots_res)
         };
+        let page_attr = String::from_utf8_lossy(&page.attr_extra);
         b.set(
             *page_obj,
             format!(
-                "<< /Type /Page /Parent {} 0 R /MediaBox [0 0 {} {}] /Contents {} 0 R /Resources << /Font << {} >> /ProcSet [/PDF /Text] >>{} >>",
-                pages_obj, page.width, page.height, content_obj, fonts_res, annots
+                "<< /Type /Page /Parent {} 0 R /MediaBox [0 0 {} {}] /Contents {} 0 R /Resources << /Font << {} >> /ProcSet [/PDF /Text] >>{}{} >>",
+                pages_obj,
+                page.width,
+                page.height,
+                content_obj,
+                fonts_res,
+                annots,
+                if page_attr.trim().is_empty() {
+                    String::new()
+                } else {
+                    format!(" {}", page_attr)
+                }
             ),
         );
     }
@@ -292,27 +335,50 @@ pub fn write_pdf(doc: &PdfDoc) -> Vec<u8> {
         .iter()
         .map(|(_, p, _)| format!("{} 0 R", p))
         .collect();
+    let pages_attr = String::from_utf8_lossy(&doc.pages_attr);
     b.set(
         pages_obj,
         format!(
-            "<< /Type /Pages /Count {} /Kids [ {} ] >>",
+            "<< /Type /Pages /Count {} /Kids [ {} ]{} >>",
             page_objs.len(),
-            kids.join(" ")
+            kids.join(" "),
+            if pages_attr.trim().is_empty() {
+                String::new()
+            } else {
+                format!(" {}", pages_attr)
+            }
         ),
     );
 
     // ---- emit named destination tree
     if names_obj != 0 {
-        let mut body = String::from("<< /Names [ ");
-        for (name, pi, x, y, kind) in &named {
-            let page_ref = page_objs[*pi].1;
-            let term = match kind {
-                1 => format!("/FitBH {}", num(*y)),
-                _ => format!("/XYZ {} {} null", num(*x), num(*y)),
-            };
-            body.push_str(&format!("({}) [{} 0 R {}] ", escape_string(name), page_ref, term));
+        let mut body = String::from("<< ");
+        if !named.is_empty() {
+            body.push_str("/Names [ ");
+            for (name, pi, x, y, kind, zoom) in &named {
+                let page_ref = page_objs[*pi].1;
+                let term = match kind {
+                    1 => "/Fit".to_string(),
+                    2 => format!("/FitH {}", num(*y)),
+                    3 => format!("/FitV {}", num(*x)),
+                    4 => "/FitB".to_string(),
+                    5 => format!("/FitBH {}", num(*y)),
+                    6 => format!("/FitBV {}", num(*x)),
+                    7 => format!("/FitR {} {} {} {}", num(*x), num(*y), num(*x), num(*y)),
+                    _ => format!(
+                        "/XYZ {} {} {}",
+                        num(*x),
+                        num(*y),
+                        zoom.map(|z| num(z)).unwrap_or_else(|| "null".to_string())
+                    ),
+                };
+                body.push_str(&format!("({}) [{} 0 R {}] ", escape_string(name), page_ref, term));
+            }
+            body.push_str(" ] ");
         }
-        body.push_str(" ] >>");
+        // \pdfnames entries merge into the same /Names dictionary
+        body.push_str(&String::from_utf8_lossy(&doc.names_extra));
+        body.push_str(" >>");
         b.set(names_obj, body);
     }
 
@@ -409,8 +475,12 @@ pub fn write_pdf(doc: &PdfDoc) -> Vec<u8> {
 fn emit_annot(b: &mut PdfBuilder, obj: usize, a: &Annot) {
     let [x0, y0, x1, y1] = a.rect;
     let mut body = format!(
-        "<< /Type /Annot /Subtype /Link /Rect [{} {} {} {}] /Border [0 0 0]",
-        num(x0), num(y0), num(x1), num(y1)
+        "<< /Type /Annot /Subtype {} /Rect [{} {} {} {}] /Border [0 0 0]",
+        a.subtype.as_deref().unwrap_or("/Link"),
+        num(x0),
+        num(y0),
+        num(x1),
+        num(y1)
     );
     if let Some(uri) = &a.uri {
         body.push_str(&format!(
@@ -427,4 +497,38 @@ fn emit_annot(b: &mut PdfBuilder, obj: usize, a: &Annot) {
     }
     body.push_str(" >>");
     b.set(obj, body);
+}
+/// Build a /ToUnicode CMap stream body from (code, Unicode string) pairs.
+/// The stream is written flate-compressed; bfchar blocks are chunked at
+/// 100 entries (PDF limit).
+fn to_unicode_cmap(map: &[(u8, String)]) -> String {
+    let mut s = String::from(
+        "/CIDInit /ProcSet findresource begin\n\
+         12 dict begin\n\
+         begincmap\n\
+         /CIDSystemInfo << /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> def\n\
+         /CMapName /Adobe-Identity-UCS def\n\
+         /CMapType 2 def\n\
+         1 begincodespacerange\n\
+         <00> <FF>\n\
+         endcodespacerange\n",
+    );
+    for chunk in map.chunks(100) {
+        s.push_str(&format!("{} beginbfchar\n", chunk.len()));
+        for (code, uni) in chunk {
+            let mut hex = String::new();
+            for u in uni.encode_utf16() {
+                hex += &format!("{:04X}", u);
+            }
+            s.push_str(&format!("<{:02X}> <{}>\n", code, hex));
+        }
+        s.push_str("endbfchar\n");
+    }
+    s.push_str(
+        "endcmap\n\
+         CMapName currentdict /CMap defineresource pop\n\
+         end\n\
+         end",
+    );
+    s
 }

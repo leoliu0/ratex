@@ -22,6 +22,7 @@ impl Engine {
         let (replace, name) = match arg.as_bytes()[0] {
             b'+' => (false, arg[1..].trim().to_string()),
             b'-' => {
+                self.font_loader.ensure_map();
                 let _ = &arg[1..]; // removal unsupported; entry provenance untracked
                 return;
             }
@@ -32,7 +33,13 @@ impl Engine {
             return;
         }
         if replace {
+            // `=` replaces the whole database: the deferred default map
+            // must not be re-added on top of it afterwards
             self.font_loader.map.clear();
+            self.font_loader.mark_map_loaded();
+        } else {
+            // `+`/plain adds layer on top of the default database
+            self.font_loader.ensure_map();
         }
         self.font_loader.load_map(&name);
     }
@@ -46,11 +53,13 @@ impl Engine {
             return;
         }
         if line.as_bytes()[0] == b'-' {
+            self.font_loader.ensure_map();
             if let Some(tfm) = line[1..].split_whitespace().next() {
                 self.font_loader.map.remove(tfm);
             }
             return;
         }
+        self.font_loader.ensure_map();
         if let Some(e) = parse_map_line(line) {
             self.font_loader.map.insert(e.tfm.clone(), e);
         }

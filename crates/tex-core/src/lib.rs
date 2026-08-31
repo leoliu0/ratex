@@ -14,6 +14,7 @@ pub mod io;
 pub mod expand;
 pub mod scan;
 pub mod eqtb;
+pub mod format;
 pub mod fontiface;
 pub mod fonts;
 pub mod hyphen;

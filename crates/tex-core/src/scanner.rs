@@ -100,6 +100,41 @@ impl Engine {
         r
     }
 
+    fn file_line_peek(&self, si: usize) -> Option<u8> {
+        match self.input.stack.get(si) {
+            Some(Source::File { line_buf: Some(buf), line_pos, .. }) => buf.get(*line_pos).copied(),
+            _ => None,
+        }
+    }
+
+    fn file_line_advance(&mut self, si: usize) {
+        if let Some(Source::File { line_pos, .. }) = self.input.stack.get_mut(si) {
+            *line_pos += 1;
+        }
+    }
+
+    fn file_line_clear(&mut self, si: usize) {
+        if let Some(Source::File { line_buf, line_pos, line_reload, .. }) = self.input.stack.get_mut(si) {
+            *line_buf = None;
+            *line_pos = 0;
+            *line_reload = true;
+        }
+    }
+
+    fn file_line_is_none(&self, si: usize) -> bool {
+        match self.input.stack.get(si) {
+            Some(Source::File { line_buf, .. }) => line_buf.is_none(),
+            _ => true,
+        }
+    }
+
+    fn file_line_pos(&self, si: usize) -> usize {
+        match self.input.stack.get(si) {
+            Some(Source::File { line_pos, .. }) => *line_pos,
+            _ => 0,
+        }
+    }
+
     fn file_next_token_inner(&mut self, si: usize) -> Option<Token> {
         loop {
             let (done, at_eof) = match &self.input.stack[si] {
@@ -107,13 +142,12 @@ impl Engine {
                 _ => unreachable!(),
             };
             if done {
+
                 self.input.stack.remove(si);
-                self.line_buf = None;
-                self.line_reload = true;
                 return None;
             }
             // honor \endinput: stop at end of the current line
-            if self.line_buf.is_none() {
+            if self.file_line_is_none(si) {
                 let ending = match &self.input.stack.get(si) {
                     Some(crate::input::Source::File { ending, .. }) => *ending,
                     _ => false,
@@ -128,17 +162,8 @@ impl Engine {
                 }
             }
             // ensure a line buffer
-            if self.line_buf.is_none() {
+            if self.file_line_is_none(si) {
                 if !self.file_load_line(si) {
-                    // EOF: implicit \par once, then done
-                    if !at_eof {
-                        let a = match &mut self.input.stack[si] {
-                            Source::File { at_eof, .. } => at_eof,
-                            _ => unreachable!(),
-                        };
-                        *a = true;
-                        return Some(PAR_END);
-                    }
                     let d = match &mut self.input.stack[si] {
                         Source::File { done, .. } => done,
                         _ => unreachable!(),
@@ -155,29 +180,27 @@ impl Engine {
                 0 => {
                     // new line state: skip leading spaces; empty line => \par
                     let mut any = false;
-                    while let Some(b) = self.line_peek() {
+                    while let Some(b) = self.file_line_peek(si) {
                         let cat = self.eqtb.cat[b as usize];
                         if cat == CAT_SPACE {
-                            self.line_pos += 1;
+                            self.file_line_advance(si);
                             continue;
                         }
                         any = true;
                         break;
                     }
-                    if !any && self.line_peek().is_none() {
-                        if !any && self.line_pos == 0 {
+                    if !any && self.file_line_peek(si).is_none() {
+                        if !any && self.file_line_pos(si) == 0 {
                             // truly empty line -> \par; consume and reload
-                            self.line_buf = None;
-                            self.line_reload = true;
+                            self.file_line_clear(si);
                             return Some(PAR_END);
                         }
                         // line had only spaces: consume, no token
-                        self.line_buf = None;
-                        self.line_reload = true;
+                        self.file_line_clear(si);
                         continue;
                     }
-                    let b = self.line_peek().unwrap();
-                    self.line_pos += 1;
+                    let b = self.file_line_peek(si).unwrap();
+                    self.file_line_advance(si);
                     let s = match &mut self.input.stack[si] {
                         Source::File { state, .. } => state,
                         _ => unreachable!(),
@@ -189,7 +212,7 @@ impl Engine {
                     // comment or otherwise consumed rest of line: loop
                 }
                 1 => {
-                    let b = match self.line_peek() {
+                    let b = match self.file_line_peek(si) {
                         Some(b) => b,
                         None => {
                             // end of line: endline char token (usually space)
@@ -199,8 +222,7 @@ impl Engine {
                                 _ => unreachable!(),
                             };
                             *s = 0;
-                            self.line_buf = None;
-                            self.line_reload = true;
+                            self.file_line_clear(si);
                             if el < 0 {
                                 continue;
                             }
@@ -217,7 +239,7 @@ impl Engine {
                             return Some(Token::char(cat, el as u32));
                         }
                     };
-                    self.line_pos += 1;
+                    self.file_line_advance(si);
                     let cat_b = self.eqtb.cat[b as usize];
                     if let Some(t) = self.tokenize_char(b, si) {
                         if cat_b == CAT_SPACE {
@@ -234,26 +256,25 @@ impl Engine {
                 2 => {
                     // skip spaces
                     let mut skipped = false;
-                    while let Some(b) = self.line_peek() {
+                    while let Some(b) = self.file_line_peek(si) {
                         let cat = self.eqtb.cat[b as usize];
                         if cat == CAT_SPACE {
-                            self.line_pos += 1;
+                            self.file_line_advance(si);
                             skipped = true;
                             continue;
                         }
                         break;
                     }
                     let _ = skipped;
-                    let b = match self.line_peek() {
+                    let b = match self.file_line_peek(si) {
                         Some(b) => b,
                         None => {
                             // line end in skip-spaces: no space token
-                            self.line_buf = None;
-                            self.line_reload = true;
+                            self.file_line_clear(si);
                             continue;
                         }
                     };
-                    self.line_pos += 1;
+                    self.file_line_advance(si);
                     let s = match &mut self.input.stack[si] {
                         Source::File { state, .. } => state,
                         _ => unreachable!(),
@@ -268,15 +289,10 @@ impl Engine {
         }
     }
 
-    fn line_peek(&self) -> Option<u8> {
-        self.line_buf.as_ref().and_then(|b| b.get(self.line_pos).copied())
-    }
-
     /// Load next line into the buffer; false at EOF.
     fn file_load_line(&mut self, si: usize) -> bool {
-        let mut loaded: Option<(u32, Vec<u8>)> = None;
         let chunk = match &mut self.input.stack[si] {
-            Source::File { data, pos, line_no, .. } => {
+            Source::File { name, data, pos, line_no, .. } => {
                 if *pos >= data.len() {
                     return false;
                 }
@@ -285,25 +301,24 @@ impl Engine {
                 let mut line = rest[..nl].to_vec();
                 *pos += nl;
                 *line_no += 1;
+                if name.ends_with("latex.ltx") && *line_no % 5000 == 0 {
+                    eprintln!("LATEX_LTX_PROGRESS L{}", *line_no);
+                }
                 if line.last() == Some(&b'\n') {
                     line.pop();
                     if line.last() == Some(&b'\r') {
                         line.pop();
                     }
                 }
-                loaded = Some((*line_no, line.clone()));
                 line
             }
-            _ => unreachable!(),
+            _ => return false,
         };
-        if std::env::var("ARGTRACE").map(|v|v=="1").unwrap_or(false) {
-            if let Some((ln, line)) = &loaded {
-                eprintln!("LOAD line {} buf={:?}", ln, String::from_utf8_lossy(line));
-            }
+        if let Some(Source::File { line_buf, line_pos, line_reload, .. }) = self.input.stack.get_mut(si) {
+            *line_buf = Some(chunk);
+            *line_pos = 0;
+            *line_reload = false;
         }
-        self.line_buf = Some(chunk);
-        self.line_pos = 0;
-        self.line_reload = false;
         true
     }
 
@@ -316,8 +331,7 @@ impl Engine {
         }
         match cat {
             CAT_COMMENT => {
-                self.line_buf = None;
-                self.line_reload = true;
+                self.file_line_clear(si);
                 let s = match &mut self.input.stack[si] {
                     Source::File { state, .. } => state,
                     _ => unreachable!(),
@@ -332,27 +346,26 @@ impl Engine {
                 let mut name: Vec<u8> = Vec::new();
                 let mut end_state = 1u8;
                 loop {
-                    let nb = match self.line_peek() {
+                    let nb = match self.file_line_peek(si) {
                         Some(b) => b,
                         None => {
                             // escape at line end: empty cs; endline consumed
-                            self.line_buf = None;
-                            self.line_reload = true;
+                            self.file_line_clear(si);
                             break;
                         }
                     };
                     if name.is_empty() {
                         // first char: ^^ notation applies; decides word vs symbol
-                        self.line_pos += 1;
+                        self.file_line_advance(si);
                         let c = self.expand_sup(nb, si);
                         let ccat = self.eqtb.cat[c as usize];
-                                            if ccat == CAT_LETTER {
-                        name.push(c);
-                        // control word: following blanks are skipped (tex.web
-                        // state <- skip_blanks after a letter-class cs)
-                        end_state = 2;
-                        continue;
-                    }
+                        if ccat == CAT_LETTER {
+                            name.push(c);
+                            // control word: following blanks are skipped (tex.web
+                            // state <- skip_blanks after a letter-class cs)
+                            end_state = 2;
+                            continue;
+                        }
                         // single-char control symbol (or active char via ^^)
                         name.push(c);
                         if c == b' ' {
@@ -364,7 +377,7 @@ impl Engine {
                     // terminator byte stays in the buffer for the next token
                     let ccat = self.eqtb.cat[nb as usize];
                     if ccat == CAT_LETTER {
-                        self.line_pos += 1;
+                        self.file_line_advance(si);
                         name.push(nb);
                         continue;
                     }
@@ -405,46 +418,45 @@ impl Engine {
         }
     }
 
-    /// ^^-notation expansion with repetition (TeX does up to 3 levels).
-    fn expand_sup(&mut self, first: u8, _si: usize) -> u8 {
+    /// ^^-notation expansion with repetition (tex.web §377): the result
+    /// re-enters the loop if its catcode is superscript again. Hex pairs use
+    /// lowercase digits only (verified against pdfTeX: `^^4A` -> 't'+'A').
+    fn expand_sup(&mut self, first: u8, si: usize) -> u8 {
         let mut c = first;
         loop {
             if self.eqtb.cat[c as usize] != CAT_SUPER {
                 return c;
             }
-            let b2 = match self.line_peek() {
+            let b2 = match self.file_line_peek(si) {
                 Some(b) => b,
                 None => return c,
             };
             if b2 != c {
                 return c;
             }
-            self.line_pos += 1; // consume second ^ (or matching char)
-            let b3 = match self.line_peek() {
+            self.file_line_advance(si); // consume second matching char
+            let b3 = match self.file_line_peek(si) {
                 Some(b) => b,
                 None => return c,
             };
-            self.line_pos += 1;
-            let is_hex = |x: u8| matches!(x, b'0'..=b'9' | b'a'..=b'f' | b'A'..=b'F');
+            self.file_line_advance(si);
+            let is_hex = |x: u8| matches!(x, b'0'..=b'9' | b'a'..=b'f');
             if is_hex(b3) {
-                let b4 = match self.line_peek() {
+                let b4 = match self.file_line_peek(si) {
                     Some(b) => b,
-                    None => return c,
+                    None => {
+                        c = b3 ^ 64;
+                        continue;
+                    }
                 };
                 if is_hex(b4) {
-                    self.line_pos += 1;
+                    self.file_line_advance(si);
                     let hv = |x: u8| -> u8 {
-                        match x {
-                            b'0'..=b'9' => x - b'0',
-                            b'a'..=b'f' => x - b'a' + 10,
-                            _ => x - b'A' + 10,
-                        }
+                        if x <= b'9' { x - b'0' } else { x - b'a' + 10 }
                     };
                     c = hv(b3) * 16 + hv(b4);
                     continue;
                 }
-                c = b3 ^ 64;
-                continue;
             }
             c = b3 ^ 64;
         }

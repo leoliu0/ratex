@@ -29,44 +29,7 @@ fn main() {
 
     let mut eng = Engine::new(ini || !plain);
     eng.init_primitives();
-    eng.out_dir = out_dir;
-    // US-English hyphenation (initex-less boot path; latex.ltx also \inputs
-    // hyphen.tex once \patterns/\hyphenation are wired in the engine)
-    if let Ok((np, ne)) = eng.hyphen_trie.load_hyphen_file(std::path::Path::new("/usr/share/texmf-dist/tex/generic/hyphen/hyphen.tex")) {
-        eprintln!("PROG: hyphenation loaded: {} patterns, {} exceptions", np, ne);
-    }
-    // defaults (iniTeX)
-    eng.eqtb.dim_params[DimParam::HSize.idx() as usize] = 655360 * 25 / 10; // 6.25in? 6.25*72.27pt*65536
-    eng.eqtb.dim_params[DimParam::HSize.idx() as usize] = (6.25 * 72.27 * 65536.0) as i32;
-    eng.eqtb.dim_params[DimParam::VSize.idx() as usize] = (8.75 * 72.27 * 65536.0) as i32;
-    eng.eqtb.dim_params[DimParam::MaxDepth.idx() as usize] = (4.0 * 65536.0) as i32;
-    eng.eqtb.dim_params[DimParam::ParIndent.idx() as usize] = (1.5 * 65536.0 * 10.0) as i32; // 15pt
-    eng.eqtb.int_params[IntParam::EndLineChar.idx() as usize] = 13;
-    eng.eqtb.int_params[IntParam::EscapeChar.idx() as usize] = 92;
-    eng.eqtb.int_params[IntParam::NewLineChar.idx() as usize] = 10;
-    eng.eqtb.int_params[IntParam::MaxDeadCycles.idx() as usize] = 25;
-    eng.eqtb.int_params[tex_core::prim::IntParam::EtxVersion.idx() as usize] = 2;
-    eng.eqtb.int_params[IntParam::LeftHyphenMin.idx() as usize] = 2;
-    eng.eqtb.int_params[IntParam::RightHyphenMin.idx() as usize] = 3;
-    eng.eqtb.int_params[IntParam::Tolerance.idx() as usize] = 200;
-    eng.eqtb.int_params[IntParam::Pretolerance.idx() as usize] = 100;
-    eng.eqtb.int_params[IntParam::LinePenalty.idx() as usize] = 10;
-    // TeX82 box-warning defaults (tex.web init)
-    eng.eqtb.dim_params[DimParam::Hfuzz.idx() as usize] = 6554; // 0.1pt
-    eng.eqtb.dim_params[DimParam::Vfuzz.idx() as usize] = 6554;
-    eng.eqtb.dim_params[DimParam::OverfullRule.idx() as usize] = 327_680; // 5pt
-    eng.eqtb.dim_params[DimParam::BoxMaxDepth.idx() as usize] = 262_144; // 4pt
-    eng.eqtb.int_params[IntParam::HBadness.idx() as usize] = 1000;
-    eng.eqtb.int_params[IntParam::VBadness.idx() as usize] = 1000;
-    eng.eqtb.int_params[IntParam::HyphenPenalty.idx() as usize] = 50;
-    eng.eqtb.int_params[IntParam::ExHyphenPenalty.idx() as usize] = 50;
-    eng.eqtb.int_params[IntParam::ClubPenalty.idx() as usize] = 150;
-    eng.eqtb.int_params[IntParam::WidowPenalty.idx() as usize] = 150;
-    // default font: cmr10 at 10pt
-
-
-    eng.add_nullfont();
-
+    eng.out_dir = out_dir.clone();
     let job = jobname.unwrap_or_else(|| {
         std::path::Path::new(&file)
             .file_stem()
@@ -74,31 +37,100 @@ fn main() {
             .unwrap_or_else(|| "texput".to_string())
     });
     eng.job_name = job.clone();
-
-    eprintln!("PROG: engine ready");
     if !plain && !ini {
-        eprintln!("PROG: booting latex.ltx");
-        // boot LaTeX2e from the real latex.ltx
-        eng.input_file("latex.ltx");
-        eng.run();
-        if eng.format_done {
-            eng.end_occurred = false;
-            eng.input.stack.clear();
-            eng.line_buf = None;
-            eng.line_reload = true;
-            let ej = (*eng.eqtb.tok_params[tex_core::prim::ToksParam::EveryJob.idx() as usize]).clone();
-            if !ej.is_empty() {
-                eng.input.push_toks(ej, "<everyjob>");
+        let exe_fmt = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|d| d.join("pdflatex.fmt")));
+        let cand_paths = [
+            Some(std::path::PathBuf::from("pdflatex.fmt")),
+            exe_fmt.clone(),
+            Some(std::path::PathBuf::from("/tmp/pdflatex.fmt")),
+        ];
+        let mut loaded = false;
+        for cand in cand_paths.into_iter().flatten() {
+            if cand.exists() {
+                let t0 = std::time::Instant::now();
+                // load in place: the engine (and its kpse/ls-R setup) is reused
+                match tex_core::format::load_format_into(&cand, &mut eng) {
+                    Ok(()) => {
+                        loaded = true;
+                        eprintln!(
+                            "PROG: format loaded from {} in {:.1} ms",
+                            cand.display(),
+                            t0.elapsed().as_secs_f64() * 1000.0
+                        );
+                        break;
+                    }
+                    Err(e) => eprintln!("PROG: format at {} unusable ({})", cand.display(), e),
+                }
             }
-        } else {
-            eprintln!("LaTeX format boot failed; last file {} line {}", eng.input.current_file_name(), eng.input.current_file_line());
-            print!("{}", eng.term);
-            std::process::exit(1);
         }
+        if !loaded {
+            eprintln!("PROG: booting latex.ltx");
+            // Hyphenation for raw boot
+            let _ = eng.hyphen_trie.load_hyphen_file(std::path::Path::new("/usr/share/texmf-dist/tex/generic/hyphen/hyphen.tex"));
+            eng.add_nullfont();
+            eng.input_file("latex.ltx");
+            eng.run();
+            if eng.format_done {
+                let dump_target = exe_fmt.unwrap_or_else(|| std::path::PathBuf::from("pdflatex.fmt"));
+                match tex_core::format::save_format(&eng, &dump_target) {
+                    Ok(n) => eprintln!("PROG: format dumped to {} ({} bytes)", dump_target.display(), n),
+                    Err(e) => eprintln!("PROG: format dump skipped: {}", e),
+                }
+            } else {
+                eprintln!("LaTeX format boot failed; last file {} line {}", eng.input.current_file_name(), eng.input.current_file_line());
+                print!("{}", eng.term);
+                std::process::exit(1);
+            }
+        }
+        eng.end_occurred = false;
+        eng.input.stack.clear();
+        let ej = (*eng.eqtb.tok_params[tex_core::prim::ToksParam::EveryJob.idx() as usize]).clone();
+        if !ej.is_empty() {
+            eng.input.push_toks(ej, "<everyjob>");
+        }
+    } else {
+        let _ = eng.hyphen_trie.load_hyphen_file(std::path::Path::new("/usr/share/texmf-dist/tex/generic/hyphen/hyphen.tex"));
+        eng.eqtb.dim_params[DimParam::HSize.idx() as usize] = (6.25 * 72.27 * 65536.0) as i32;
+        eng.eqtb.dim_params[DimParam::VSize.idx() as usize] = (8.75 * 72.27 * 65536.0) as i32;
+        eng.eqtb.dim_params[DimParam::MaxDepth.idx() as usize] = (4.0 * 65536.0) as i32;
+        eng.eqtb.dim_params[DimParam::ParIndent.idx() as usize] = (1.5 * 65536.0 * 10.0) as i32;
+        eng.eqtb.int_params[IntParam::EndLineChar.idx() as usize] = 13;
+        eng.eqtb.int_params[IntParam::EscapeChar.idx() as usize] = 92;
+        eng.eqtb.int_params[IntParam::NewLineChar.idx() as usize] = 10;
+        eng.eqtb.int_params[IntParam::MaxDeadCycles.idx() as usize] = 25;
+        eng.eqtb.int_params[tex_core::prim::IntParam::EtxVersion.idx() as usize] = 2;
+        eng.eqtb.int_params[IntParam::LeftHyphenMin.idx() as usize] = 2;
+        eng.eqtb.int_params[IntParam::RightHyphenMin.idx() as usize] = 3;
+        eng.eqtb.int_params[IntParam::Tolerance.idx() as usize] = 200;
+        eng.eqtb.int_params[IntParam::Pretolerance.idx() as usize] = 100;
+        eng.eqtb.int_params[IntParam::LinePenalty.idx() as usize] = 10;
+        eng.eqtb.dim_params[DimParam::Hfuzz.idx() as usize] = 6554;
+        eng.eqtb.dim_params[DimParam::Vfuzz.idx() as usize] = 6554;
+        eng.eqtb.dim_params[DimParam::OverfullRule.idx() as usize] = 327_680;
+        eng.eqtb.dim_params[DimParam::BoxMaxDepth.idx() as usize] = 262_144;
+        eng.eqtb.int_params[IntParam::HBadness.idx() as usize] = 1000;
+        eng.eqtb.int_params[IntParam::VBadness.idx() as usize] = 1000;
+        eng.eqtb.int_params[IntParam::HyphenPenalty.idx() as usize] = 50;
+        eng.eqtb.int_params[IntParam::ExHyphenPenalty.idx() as usize] = 50;
+        eng.eqtb.int_params[IntParam::ClubPenalty.idx() as usize] = 150;
+        eng.eqtb.int_params[IntParam::WidowPenalty.idx() as usize] = 150;
+        eng.add_nullfont();
     }
     eprintln!("PROG: running user file");
     if eng.input_file(&file) {
         eng.run();
+    }
+    // -ini mode: the file ended in \dump — write the format and exit,
+    // like initex does.
+    if ini && eng.format_done {
+        match tex_core::format::save_format(&eng, std::path::Path::new("pdflatex.fmt")) {
+            Ok(n) => eprintln!("PROG: format dumped to pdflatex.fmt ({} bytes)", n),
+            Err(e) => eprintln!("PROG: format dump failed: {}", e),
+        }
+        print!("{}", eng.term);
+        std::process::exit(if eng.error_count > 0 { 1 } else { 0 });
     }
     print!("{}", eng.term);
     // write PDF if pages were shipped

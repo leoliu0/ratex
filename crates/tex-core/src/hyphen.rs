@@ -6,6 +6,7 @@
 
 use std::collections::HashMap;
 
+#[derive(Debug)]
 pub struct Trie {
     /// node transitions: node_id -> (byte -> node_id)
     pub trans: Vec<HashMap<u8, usize>>,

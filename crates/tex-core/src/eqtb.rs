@@ -278,7 +278,7 @@ impl Eqtb {
     pub fn assign(&mut self, id: CsId, equiv: Equiv, global: bool) {
         let entry = self.map.entry(id).or_insert(EqEntry { equiv: None, level: LEVEL_ONE });
         if !global && entry.level < self.cur_level {
-            let old = entry.equiv.take();
+            let old = entry.equiv.clone();
             let ol = entry.level;
             self.save_stack.push(SaveItem::Eq(id, old, ol));
         }
@@ -289,7 +289,7 @@ impl Eqtb {
     pub fn undefine(&mut self, id: CsId, global: bool) {
         let entry = self.map.entry(id).or_insert(EqEntry { equiv: None, level: LEVEL_ONE });
         if !global && entry.level < self.cur_level && entry.equiv.is_some() {
-            let old = entry.equiv.take();
+            let old = entry.equiv.clone();
             let ol = entry.level;
             self.save_stack.push(SaveItem::Eq(id, old, ol));
         }
@@ -380,6 +380,7 @@ impl Eqtb {
         });
     }
     pub fn assign_cat(&mut self, c: u8, v: u8, global: bool) {
+
         Self::slot(&mut self.cat, &mut self.cat_levels, c as usize, v, global, self.cur_level, &mut self.save_stack, |old, ol| {
             SaveItem::Cat(c, old, ol)
         });
@@ -449,87 +450,117 @@ impl Eqtb {
         self.save_stack.push(SaveItem::Level(self.cur_level, ty));
     }
 
-    /// close the current level; returns its type
     pub fn pop_level(&mut self) -> LevelType {
-        if self.cur_level <= LEVEL_ONE || self.save_stack.is_empty() {
-            return LevelType::Group;
-        }
         let mut ty = LevelType::Group;
         while let Some(item) = self.save_stack.pop() {
             match item {
-                SaveItem::Level(l, t) => {
-                    debug_assert_eq!(l, self.cur_level, "unbalanced save stack");
+                SaveItem::Level(lvl, t) => {
+                    self.cur_level = lvl - 1;
                     ty = t;
                     break;
                 }
                 SaveItem::Eq(id, old, ol) => {
                     let e = self.map.entry(id).or_insert(EqEntry { equiv: None, level: LEVEL_ONE });
-                    e.equiv = old;
-                    e.level = ol;
+                    if e.level > LEVEL_ONE {
+                        e.equiv = old;
+                        e.level = ol;
+                    }
                 }
                 SaveItem::IntParam(i, v, l) => {
-                    self.int_params[i as usize] = v;
-                    self.int_levels[i as usize] = l;
+                    if self.int_levels[i as usize] > LEVEL_ONE {
+                        self.int_params[i as usize] = v;
+                        self.int_levels[i as usize] = l;
+                    }
                 }
                 SaveItem::DimParam(i, v, l) => {
-                    self.dim_params[i as usize] = v;
-                    self.dim_levels[i as usize] = l;
+                    if self.dim_levels[i as usize] > LEVEL_ONE {
+                        self.dim_params[i as usize] = v;
+                        self.dim_levels[i as usize] = l;
+                    }
                 }
                 SaveItem::GlueParam(i, v, l) => {
-                    self.glue_params[i as usize] = v;
-                    self.glue_levels[i as usize] = l;
+                    if self.glue_levels[i as usize] > LEVEL_ONE {
+                        self.glue_params[i as usize] = v;
+                        self.glue_levels[i as usize] = l;
+                    }
                 }
                 SaveItem::ToksParam(i, v, l) => {
-                    self.tok_params[i as usize] = v;
-                    self.tok_levels[i as usize] = l;
+                    if self.tok_levels[i as usize] > LEVEL_ONE {
+                        self.tok_params[i as usize] = v;
+                        self.tok_levels[i as usize] = l;
+                    }
                 }
                 SaveItem::Count(i, v, l) => {
-                    self.count[i as usize] = v;
-                    self.count_levels[i as usize] = l;
+                    if self.count_levels[i as usize] > LEVEL_ONE {
+                        self.count[i as usize] = v;
+                        self.count_levels[i as usize] = l;
+                    }
                 }
                 SaveItem::Dimen(i, v, l) => {
-                    self.dimen[i as usize] = v;
-                    self.dimen_levels[i as usize] = l;
+                    if self.dimen_levels[i as usize] > LEVEL_ONE {
+                        self.dimen[i as usize] = v;
+                        self.dimen_levels[i as usize] = l;
+                    }
                 }
                 SaveItem::Skip(i, v, l) => {
-                    self.skip[i as usize] = v;
-                    self.skip_levels[i as usize] = l;
+                    if self.skip_levels[i as usize] > LEVEL_ONE {
+                        self.skip[i as usize] = v;
+                        self.skip_levels[i as usize] = l;
+                    }
                 }
                 SaveItem::MuSkip(i, v, l) => {
-                    self.muskip[i as usize] = v;
-                    self.muskip_levels[i as usize] = l;
+                    if self.muskip_levels[i as usize] > LEVEL_ONE {
+                        self.muskip[i as usize] = v;
+                        self.muskip_levels[i as usize] = l;
+                    }
                 }
                 SaveItem::Toks(i, v, l) => {
-                    self.toks[i as usize] = v;
-                    self.toks_levels[i as usize] = l;
+                    if self.toks_levels[i as usize] > LEVEL_ONE {
+                        self.toks[i as usize] = v;
+                        self.toks_levels[i as usize] = l;
+                    }
                 }
                 SaveItem::Box(i, v, l) => {
-                    self.boxed[i as usize] = v;
-                    self.box_levels[i as usize] = l;
+                    if self.box_levels[i as usize] > LEVEL_ONE {
+                        self.boxed[i as usize] = v;
+                        self.box_levels[i as usize] = l;
+                    }
                 }
                 SaveItem::Cat(c, v, l) => {
-                    self.cat[c as usize] = v;
-                    self.cat_levels[c as usize] = l;
+                    if self.cat_levels[c as usize] > LEVEL_ONE {
+                        self.cat[c as usize] = v;
+                        self.cat_levels[c as usize] = l;
+                    }
                 }
                 SaveItem::MathCode(c, v, l) => {
-                    self.math_code[c as usize] = v;
-                    self.math_levels[c as usize] = l;
+                    if self.math_levels[c as usize] > LEVEL_ONE {
+                        self.math_code[c as usize] = v;
+                        self.math_levels[c as usize] = l;
+                    }
                 }
                 SaveItem::DelCode(c, v, l) => {
-                    self.del_code[c as usize] = v;
-                    self.del_levels[c as usize] = l;
+                    if self.del_levels[c as usize] > LEVEL_ONE {
+                        self.del_code[c as usize] = v;
+                        self.del_levels[c as usize] = l;
+                    }
                 }
                 SaveItem::LcCode(c, v, l) => {
-                    self.lc_code[c as usize] = v;
-                    self.lc_levels[c as usize] = l;
+                    if self.lc_levels[c as usize] > LEVEL_ONE {
+                        self.lc_code[c as usize] = v;
+                        self.lc_levels[c as usize] = l;
+                    }
                 }
                 SaveItem::SfCode(c, v, l) => {
-                    self.sf_code[c as usize] = v;
-                    self.sf_levels[c as usize] = l;
+                    if self.sf_levels[c as usize] > LEVEL_ONE {
+                        self.sf_code[c as usize] = v;
+                        self.sf_levels[c as usize] = l;
+                    }
                 }
                 SaveItem::UcCode(c, v, l) => {
-                    self.uc_code[c as usize] = v;
-                    self.uc_levels[c as usize] = l;
+                    if self.uc_levels[c as usize] > LEVEL_ONE {
+                        self.uc_code[c as usize] = v;
+                        self.uc_levels[c as usize] = l;
+                    }
                 }
                 SaveItem::StyleFont(style, fam, v, l) => {
                     self.style_fonts[style as usize][fam as usize] = v;
@@ -549,7 +580,6 @@ impl Eqtb {
                 }
             }
         }
-        self.cur_level -= 1;
         ty
     }
 
@@ -562,5 +592,28 @@ impl Eqtb {
             Equiv::MathCharDef(v) => Some(*v as i32),
             _ => None,
         }
+    }
+
+    // ---------- format dump support (crate::format) ----------
+
+    /// All defined control sequences: `(cs, equivalent, save level)`.
+    pub(crate) fn eqs(&self) -> Vec<(CsId, Option<&Equiv>, u16)> {
+        let mut v: Vec<(CsId, Option<&Equiv>, u16)> = self
+            .map
+            .iter()
+            .map(|(&id, e)| (id, e.equiv.as_ref(), e.level))
+            .collect();
+        v.sort_unstable_by_key(|(id, _, _)| *id);
+        v
+    }
+
+    /// Restore one control-sequence entry from a format dump.
+    pub(crate) fn restore_eq(&mut self, id: CsId, equiv: Option<Equiv>, level: u16) {
+        self.map.insert(id, EqEntry { equiv, level });
+    }
+
+    /// Number of defined control sequences.
+    pub(crate) fn eq_count(&self) -> usize {
+        self.map.len()
     }
 }

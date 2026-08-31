@@ -4,6 +4,7 @@ members = [
     "crates/tex-core",
     "crates/tex-kpse",
     "crates/tex-cli",
+    "crates/tex-bibtex",
 ]
 
 [workspace.package]

@@ -63,9 +63,6 @@ pub struct Engine {
     pub ids: Ids,
 
     // current file line scanning
-    pub line_buf: Option<Vec<u8>>,
-    pub line_pos: usize,
-    pub line_reload: bool,
     pub pending_retokenize: bool,
 
     // current token being processed
@@ -124,15 +121,24 @@ pub struct Engine {
     /// >0 while scan_int/scan_dimen: e-TeX expands protected macros when
     /// looking for a number (`\romannumeral\protected...`).
     pub expand_protected: u32,
+    pub in_expanded_scan: bool,
     /// noexpand'd token pending (returned once, unexpanded)
     pub no_expand_tok: Option<Token>,
     pub cur_font: u16, // current font id (0 = none)
     pub align_state: i32, // & nesting balance for runaway detection
     pub format_done: bool,
+    pub trace_ltx: u32,
     pub pdf_horigin: i32,
     pub pdf_vorigin: i32,
     pub pdf_page_width: Option<i32>,
     pub pdf_page_height: Option<i32>,
+    /// \pdfpageattr / \pdfpagesattr dict bodies (global in pdfTeX)
+    pub pdf_page_attr: String,
+    pub pdf_pages_attr: String,
+    /// link/dest/thread margins (parsed, stored)
+    pub pdf_link_margin: i32,
+    pub pdf_dest_margin: i32,
+    pub pdf_thread_margin: i32,
     pub left_delim: Option<i32>,
     pub right_delim: Option<i32>,
     pub math_limits: Option<u8>,
@@ -157,11 +163,9 @@ pub struct Engine {
     pub align_col_widths: Vec<i32>,
     pub align_cur_row: Vec<crate::align::Cell>,
     pub align_cur_col: i32,
-    pub align_in_noalign: bool,
-    pub align_cell_toks: Vec<crate::token::Token>,
     pub align_scanning_cell: bool,
     pub align_done: bool,
-    pub align_noalign_toks: Vec<Vec<crate::token::Token>>,
+    pub align_to: Option<(i32, bool)>, // \halign to/spread <dimen>: (dimen, is_spread)
     pub in_output: bool,
     pub output_depth: usize,
     pub dead_cycles: i32,
@@ -190,6 +194,8 @@ pub struct Engine {
     pub pdf_last_y: i32,
     pub marks: [Vec<Vec<Token>>; 5], // top, first, bot, splitfirst, splitbot (class-indexed)
     pub last_named_cs: Option<CsId>,
+    pub align_in_noalign: bool,
+    pub align_cell_toks: Vec<Token>,
 
     pub log: String,
     pub term: String,
@@ -197,10 +203,15 @@ pub struct Engine {
 
 impl Engine {
     pub fn current_line_text(&self) -> String {
-        self.line_buf
-            .as_ref()
-            .map(|b| String::from_utf8_lossy(b).into_owned())
-            .unwrap_or_default()
+        for s in self.input.stack.iter().rev() {
+            if let crate::input::Source::File { line_buf, .. } = s {
+                return line_buf
+                    .as_ref()
+                    .map(|b| String::from_utf8_lossy(b).into_owned())
+                    .unwrap_or_default();
+            }
+        }
+        String::new()
     }
 
 
@@ -213,9 +224,6 @@ impl Engine {
             eqtb: Eqtb::new(ini_mode),
             input: InputStack::new(),
             par_saves: 0,
-            line_buf: None,
-            line_pos: 0,
-            line_reload: true,
             pending_retokenize: false,
             cur_tok: crate::token::EOF_TOKEN,
             cur_cs: None,
@@ -255,15 +263,22 @@ impl Engine {
             outer_flag: false,
             protected_flag: false,
             expand_protected: 0,
+            in_expanded_scan: false,
             no_expand_tok: None,
             cur_font: 0,
             align_state: 0,
             format_done: false,
+            trace_ltx: 0,
             // pdfTeX default origin: 1in from the page corner (tex.web: 4736286sp)
             pdf_horigin: 4_736_287,
             pdf_vorigin: 4_736_287,
             pdf_page_width: None,
             pdf_page_height: None,
+            pdf_page_attr: String::new(),
+            pdf_pages_attr: String::new(),
+            pdf_link_margin: 0,
+            pdf_dest_margin: 0,
+            pdf_thread_margin: 0,
             left_delim: None,
             right_delim: None,
             math_limits: None,
@@ -290,8 +305,8 @@ impl Engine {
             align_in_noalign: false,
             align_cell_toks: Vec::new(),
             align_scanning_cell: false,
+            align_to: None,
             align_done: false,
-            align_noalign_toks: Vec::new(),
             in_output: false,
             output_depth: 0,
             dead_cycles: 0,
@@ -551,6 +566,7 @@ impl Engine {
             (b"belowdisplayskip", GlueParam::BelowDisplaySkip),
             (b"belowdisplayshortskip", GlueParam::BelowDisplayShortSkip),
             (b"splittopskip", GlueParam::SplitTopSkip),
+            (b"tabskip", GlueParam::TabSkip),
         ];
         for (n, p) in gluenames {
             let id = eng.cs.intern(n);
@@ -672,11 +688,14 @@ impl Engine {
         d!(eng, b"pdfrestore", PdfRestore);
         d!(eng, b"pdfsetmatrix", PdfSetMatrix);
         d!(eng, b"pdfstartlink", PdfStartLink);
+        d!(eng, b"pdfendlink", PdfEndLink);
         d!(eng, b"pdfdest", PdfDest);
         d!(eng, b"pdfoutline", PdfOutline);
         d!(eng, b"pdfinfo", PdfInfo);
         d!(eng, b"pdfcatalog", PdfCatalog);
+        d!(eng, b"pdfnames", PdfNames);
         d!(eng, b"pdfannot", PdfAnnot);
+        d!(eng, b"pdfpageattr", PdfPageAttr);
         d!(eng, b"pdfcolorstackinit", PdfColorStackInit);
         d!(eng, b"pdfcolorstack", PdfColorStack);
         d!(eng, b"Ucharcat", UcharCat);
@@ -725,6 +744,37 @@ impl Engine {
         d!(eng, b"pdfunescapehex", PdfUnescapeHex);
         d!(eng, b"filesize", FileSize);
         d!(eng, b"end", End);
+        // TeX82 defaults (tex.web §25 / plain.tex)
+        eng.eqtb.glue_params[GlueParam::ParFillSkip.idx() as usize] =
+            crate::boxes::Glue::fil(crate::boxes::GLUE_FIL, 0);
+        eng.eqtb.glue_params[GlueParam::BaselineSkip.idx() as usize] =
+            crate::boxes::Glue::new(12 * 65536);
+        eng.eqtb.glue_params[GlueParam::LineSkip.idx() as usize] =
+            crate::boxes::Glue::new(65536);
+        eng.eqtb.int_params[IntParam::EndLineChar.idx() as usize] = 13;
+        eng.eqtb.int_params[IntParam::EscapeChar.idx() as usize] = 92;
+        eng.eqtb.int_params[IntParam::NewLineChar.idx() as usize] = -1;
+        eng.eqtb.int_params[IntParam::MaxDeadCycles.idx() as usize] = 25;
+        eng.eqtb.int_params[IntParam::Mag.idx() as usize] = 1000;
+        eng.eqtb.int_params[IntParam::Tolerance.idx() as usize] = 10000;
+        eng.eqtb.int_params[IntParam::Pretolerance.idx() as usize] = 100;
+        eng.eqtb.int_params[IntParam::HangAfter.idx() as usize] = 1;
+        eng.eqtb.int_params[IntParam::ErrorContextLines.idx() as usize] = 5;
+        eng.eqtb.int_params[IntParam::LeftHyphenMin.idx() as usize] = 2;
+        eng.eqtb.int_params[IntParam::RightHyphenMin.idx() as usize] = 3;
+        eng.eqtb.int_params[IntParam::Defaulthyphenchar.idx() as usize] = 45;
+        eng.eqtb.int_params[IntParam::Defaultskewchar.idx() as usize] = -1;
+        eng.eqtb.int_params[IntParam::DelimiterFactor.idx() as usize] = 901;
+        eng.eqtb.int_params[IntParam::ShowBoxBreadth.idx() as usize] = 5;
+        eng.eqtb.int_params[IntParam::ShowBoxDepth.idx() as usize] = 3;
+        eng.eqtb.int_params[IntParam::PdfOutput.idx() as usize] = 1;
+        eng.eqtb.int_params[IntParam::EtxVersion.idx() as usize] = 2;
+        eng.eqtb.int_params[IntParam::PdfMinorVersion.idx() as usize] = 7;
+        // plain.tex paper: keep the page builder from firing on every box
+        let sp_in: i32 = 4736287;
+        eng.eqtb.dim_params[DimParam::HSize.idx() as usize] = (sp_in as i64 * 13 / 2) as i32;
+        eng.eqtb.dim_params[DimParam::VSize.idx() as usize] = (sp_in as i64 * 89 / 10) as i32;
+        eng.eqtb.dim_params[DimParam::MaxDepth.idx() as usize] = 4 * 65536;
         let _ = def;
     }
 }

@@ -1,0 +1,14 @@
+[package]
+name = "tex-bibtex"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "tex_bibtex"
+path = "src/lib.rs"
+
+[[bin]]
+name = "bibtex"
+path = "src/bin/bibtex.rs"
+
+[dependencies]

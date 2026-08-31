@@ -12,7 +12,7 @@ impl Engine {
     pub fn main_dispatch(&mut self, p: Prim, id: CsId) {
         use Prim::*;
         match p {
-            Relax => {}
+            Relax | EndCsName => {}
             BeginGroup => self.begin_group(false),
             EndGroup => self.end_group(),
             BGroup => self.begin_group(false),
@@ -202,6 +202,14 @@ impl Engine {
                 self.end_occurred = true;
             }
             End => {
+                // tex.web its_all_over: \par if in hmode, then eject the last page
+                if self.mode.is_h() && !self.mode.is_inner() {
+                    self.par_primitive();
+                }
+                if self.mode.is_v() && !self.page_list.is_empty() {
+                    let n = self.page_list.len();
+                    self.eject_page(n);
+                }
                 self.end_occurred = true;
             }
             Immediate => {
@@ -377,11 +385,7 @@ impl Engine {
             PdfSetMatrix => {
                 let _ = self.scan_pdf_string();
             }
-            PdfStartLink => {
-                let attr = self.scan_link_attr();
-                let (uri, name) = self.scan_link_dest();
-                self.append_whatsit(Node::Whatsit(crate::boxes::WhatIt::PdfStartLink { attr, uri, name }));
-            }
+            PdfStartLink => self.do_pdfstartlink(),
             PdfEndLink => {
                 self.append_whatsit(Node::Whatsit(crate::boxes::WhatIt::PdfEndLink));
             }
@@ -391,13 +395,11 @@ impl Engine {
                 let data = self.scan_pdf_string();
                 self.pdf_doc.info.extend_from_slice(data.as_bytes());
             }
-            PdfCatalog => {
-                let data = self.scan_pdf_string();
-                self.pdf_doc.catalog_extra.extend_from_slice(data.as_bytes());
-            }
-            PdfAnnot => {
-                let _ = self.scan_general_text();
-            }
+            PdfCatalog => self.do_pdfcatalog(),
+            PdfNames => self.do_pdfnames(),
+            PdfAnnot => self.do_pdfannot(),
+            PdfPageAttr => self.do_pdfpageattr(),
+            PdfPagesAttr => self.do_pdfpagesattr(),
             PdfColorStackInit => {
                 let _ = self.scan_pdf_string();
             }
@@ -418,19 +420,28 @@ impl Engine {
             PdfLastXPos | PdfLastYPos => {
                 self.error("position primitive needs \\the");
             }
-            PdfMapFile => self.do_pdfmapfile(),
-            PdfMapLine => self.do_pdfmapline(),
-            PdfGlyphToUnicode | PdfFontAttr | PdfPagesAttr | PdfCompressorLevel | PdfObj
+            PdfLinkMargin => {
+                self.pdf_link_margin = self.scan_dimen(false, false);
+            }
+            PdfDestMargin => {
+                self.pdf_dest_margin = self.scan_dimen(false, false);
+            }
+            PdfThreadMargin => {
+                self.pdf_thread_margin = self.scan_dimen(false, false);
+            }
+            PdfGlyphToUnicode | PdfFontAttr | PdfCompressorLevel | PdfObj
             | PdfRefObj | PdfUncompress | PdfTolerance | PdfXForm | PdfXImage
             | PdfRefXForm | PdfRefXImage | PdfPageBox | PdfThread | PdfStartThread
-            | PdfEndThread | PdfLinkMargin | PdfDestMargin | PdfThreadMargin | PdfResetTimer => {
+            | PdfEndThread | PdfResetTimer => {
                 // consume the argument syntactically: most take balanced text
                 self.skip_spaces_relax();
                 let t = self.get_token();
                 if t.is_char() && t.cc() == 1 {
                     self.scan_balanced_raw();
                 } else if !t.is_cs() {
-                    // maybe a number
+                    // maybe a number: push it back, digit-dropping corrupts
+                    // output (e.g. \pdfobjcompresslevel=\z@ style use)
+                    self.pushed.push(t);
                 } else {
                     self.pushed.push(t);
                 }
@@ -448,13 +459,22 @@ impl Engine {
                 let v = self.scan_dimen(false, false);
                 self.pdf_page_height = Some(v);
             }
+            // e-TeX expression primitives are expandable; in a main (non-scan)
+            // position they produce their digit string into the stream
+            NumExpr | DimExpr | GlueExpr | MuExpr => {
+                let _ = self.expand_prim(p, id);
+            }
+            // tex.web: conditionals are executed from the main loop, not
+            // expanded by get_token (they must be storeable by \edef etc)
+            IfChar | IfCat | IfOdd | IfNum | IfDim | IfVoid | IfHBox | IfVBox
+            | IfHMode | IfVMode | IfInner | IfMMode | IfTrue | IfFalse
+            | IfEOF | IfDef | IfCSName | IfX | IfCase | Or | Else | ElIf
+            | ElIfX | Fi | Unless => {
+                let _ = self.expand_prim(p, id);
+            }
             _ => {
                 if self.is_expandable(p) {
                     let _ = self.expand_prim(p, id);
-                    return;
-                }
-                if p == EndCsName {
-                    self.error("Extra \\endcsname");
                     return;
                 }
                 let name = ::std::string::String::from_utf8_lossy(self.cs.name(id)).into_owned();

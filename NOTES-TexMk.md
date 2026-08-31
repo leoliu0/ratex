@@ -71,3 +71,38 @@ simulates a refs+cite doc. Test dirs under `/tmp/textest-mk/`:
   (engine warnings reach stdout via \write16→term). If a .log writer is added later,
   texmk already parses both surfaces.
 - `\openout` prefixes `out_dir` (io.rs:79) — aux/toc land in -output-directory. ✓
+
+## Session 2 (2026-08-30, later) — final-status report + real-texlive green
+
+### Delta on top of Session 1
+- Final report now covers the full assignment: on success texmk prints
+  `build OK: <pdf> (<N page(s), P pdflatex pass(es)[, B bibtex run(s)]>)`;
+  no-convergence and missing-PDF paths print `build FAILED: ...` and exit 1.
+- Page count: first parse "Output written on <file> (N pages[, M bytes])."
+  (real pdfTeX summary, singular "1 page" handled); fallback scans the PDF
+  itself (`/Type /Pages /Count N`, else literal `/Type /Page` objects) — needed
+  because the Rust engine prints only "(N bytes)". `-pdf`/`--pdf` are consumed
+  by texmk (PDF is the only mode), NOT forwarded (engine shims reject unknown flags).
+
+### Validation (all green, final binary)
+- Real texlive acceptance: isolated texmk + real pdflatex/bibtex on a
+  toc+ref+cite doc -> pass1 (undef refs/cites, no .bbl) -> bibtex -> pass2
+  (labels changed) -> pass3 -> `build OK: main.pdf (2 pages, 3 pdflatex
+  pass(es), 1 bibtex run(s))`, exit 0.
+- Shim suite mimicking the Rust engine (stdout-only signals, no .log, summary
+  without page count): A refs+cite -> 3 passes + 1 bibtex + PDF-scan page
+  count; B stable -> 1 pass; C diverging -> 5 passes exit 1; D bibtex exit 1
+  -> texmk exit 1; E `--silent` -> only final line, still 3 passes; F
+  `-output-directory` -> artifacts in out/; `-pdf` never forwarded (shim
+  traps it); no args -> 2; missing file -> 1.
+
+### Real-engine boot (still Main's blocker, new signature)
+- target/debug/pdflatex (21:31 build) now boots latex.ltx + expl3.ltx and
+  dies INSIDE expl3-code.tex: `\cs_generate_variant` machinery —
+  `! Argument of \__cs_generate_internal_end:w has an extra }` /
+  `CSNAME-ERR name="{nc}" hit=\group_end:` at expl3-code.tex:3151/3157/3164,
+  aborts at line 12523 (`\file_get:nnN` variant gen). This is csname/expandafter
+  expansion territory (expand.rs), different from the old 12831 `\f@encoding`
+  failure. texmk correctly reports "pdflatex failed on pass 1", exit 1 —
+  no driver change needed once boot passes; re-run
+  `cd /tmp/textest-mk-real && /home/leo/dd/tex/target/debug/texmk main.tex`.

@@ -100,16 +100,17 @@ impl Engine {
 
     /// TeX scan_int: signs, digits (dec/oct/hex), char consts, cs values.
     pub fn scan_int(&mut self) -> i32 {
-        self.expand_protected += 1;
+        let prev = self.in_expanded_scan;
+        self.in_expanded_scan = false;
         let r = self.scan_int_inner();
-        self.expand_protected -= 1;
+        self.in_expanded_scan = prev;
         r
     }
 
     fn scan_int_inner(&mut self) -> i32 {
         let mut negate = false;
         let mut v: i64;
-        loop {
+        'scan_loop: loop {
             self.skip_spaces_relax();
             let t = self.get_x_raw();
             if t.is_char() && t.chr() == b'+' as u32 {
@@ -169,75 +170,75 @@ impl Engine {
                     Some(Prim::Count) => {
                         let idx = self.scan_reg_num();
                         v = self.eqtb.count[idx as usize] as i64;
-                        break;
+                        break 'scan_loop;
                     }
                     Some(Prim::CatCode) => {
                         let c = self.scan_char_num();
                         v = self.eqtb.cat[c as usize] as i64;
-                        break;
+                        break 'scan_loop;
                     }
                     Some(Prim::MathCode) => {
                         let c = self.scan_char_num();
                         v = self.eqtb.math_code[c as usize] as i64;
-                        break;
+                        break 'scan_loop;
                     }
                     Some(Prim::DelCode) => {
                         let c = self.scan_char_num();
                         v = self.eqtb.del_code[c as usize] as i64;
-                        break;
+                        break 'scan_loop;
                     }
                     Some(Prim::LcCodeP) => {
                         let c = self.scan_char_num();
                         v = self.eqtb.lc_code[c as usize] as i64;
-                        break;
+                        break 'scan_loop;
                     }
                     Some(Prim::SfCodeP) => {
                         let c = self.scan_char_num();
                         v = self.eqtb.sf_code[c as usize] as i64;
-                        break;
+                        break 'scan_loop;
                     }
                     Some(Prim::UcCodeP) => {
                         let c = self.scan_char_num();
                         v = self.eqtb.uc_code[c as usize] as i64;
-                        break;
+                        break 'scan_loop;
                     }
                     Some(Prim::IntP(p)) => {
                         v = self.int_param_value(p) as i64;
-                        break;
+                        break 'scan_loop;
                     }
                     Some(Prim::Wd) => {
                         let n = self.scan_reg_num();
                         v = self.box_reg_dimen(n, 0) as i64;
-                        break;
+                        break 'scan_loop;
                     }
                     Some(Prim::Ht) => {
                         let n = self.scan_reg_num();
                         v = self.box_reg_dimen(n, 1) as i64;
-                        break;
+                        break 'scan_loop;
                     }
                     Some(Prim::Dp) => {
                         let n = self.scan_reg_num();
                         v = self.box_reg_dimen(n, 2) as i64;
-                        break;
+                        break 'scan_loop;
                     }
                     Some(Prim::NumExpr) => {
                         // shouldn't reach (expandable), but just in case
                         v = self.scan_expr_num() as i64;
-                        break;
+                        break 'scan_loop;
                     }
                     _ => {
                         match self.eqtb.resolve(t.cs_id()).cloned() {
                             Some(Equiv::CountReg(i)) => {
                                 v = self.eqtb.count[i as usize] as i64;
-                                break;
+                                break 'scan_loop;
                             }
                             Some(Equiv::CharDef(c)) => {
                                 v = c as i64;
-                                break;
+                                break 'scan_loop;
                             }
                             Some(Equiv::MathCharDef(c)) => {
                                 v = c as i64;
-                                break;
+                                break 'scan_loop;
                             }
                             _ => {}
                         }
@@ -308,7 +309,15 @@ impl Engine {
 
     /// TeX scan_dimen. mu: scan in math units. inf_ok: allow fil/fill/filll
     /// keywords (returns stretch in Glue form via scan_glue instead).
-    pub fn scan_dimen(&mut self, mu: bool, _trail: bool) -> i32 {
+    pub fn scan_dimen(&mut self, mu: bool, trail: bool) -> i32 {
+        let prev = self.in_expanded_scan;
+        self.in_expanded_scan = false;
+        let r = self.scan_dimen_inner(mu, trail);
+        self.in_expanded_scan = prev;
+        r
+    }
+
+    fn scan_dimen_inner(&mut self, mu: bool, _trail: bool) -> i32 {
         // signs
         let mut negate = false;
         loop {
@@ -408,6 +417,7 @@ impl Engine {
                     }
                     _ => {
                         { let __pt = t; if std::env::var("PUSHWATCH").map(|w|w=="1").unwrap_or(false) && __pt.is_cs() && self.cs.name(__pt.cs_id()) == b"ifx" && self.input.current_file_line() > 9000 { eprintln!("PUSHIFX crates/tex-core/src/scan.rs:{} line={}", {line!()}, self.input.current_file_line()); } self.pushed.push(__pt); }
+
                         self.error("Missing number, treated as zero");
                         factor = 0.0;
                         direct = None;
@@ -416,6 +426,7 @@ impl Engine {
             }
         } else {
             { let __pt = t; if std::env::var("PUSHWATCH").map(|w|w=="1").unwrap_or(false) && __pt.is_cs() && self.cs.name(__pt.cs_id()) == b"ifx" && self.input.current_file_line() > 9000 { eprintln!("PUSHIFX crates/tex-core/src/scan.rs:{} line={}", {line!()}, self.input.current_file_line()); } self.pushed.push(__pt); }
+
             self.error("Missing number, treated as zero");
             factor = 0.0;
             direct = None;
@@ -547,31 +558,25 @@ impl Engine {
 
     /// scan glue: width [plus stretch] [minus shrink]
     pub fn scan_glue(&mut self, mu: bool) -> Glue {
+        let prev = self.in_expanded_scan;
+        self.in_expanded_scan = false;
         let mut g = Glue::zero();
         self.cur_fill_order = 0;
         g.width = self.scan_dimen(mu, false);
-        for (kw, is_stretch) in [(b"plus".as_slice(), true), (b"minus".as_slice(), false)] {
-            // tex.web scan_keyword: only blank spaces precede the keyword letters;
-            // a \relax token must be restored untouched so the caller's sentinel
-            // (e.g. \crcr after \hskip1em\relax) is seen exactly once (HAlign).
+        for &(kw, is_stretch) in &[(&b"plus"[..], true), (&b"minus"[..], false)] {
             loop {
                 let t0 = self.get_token();
                 if t0.is_space() {
                     continue;
                 }
-                { let __pt = t0; if std::env::var("PUSHWATCH").map(|w|w=="1").unwrap_or(false) && __pt.is_cs() && self.cs.name(__pt.cs_id()) == b"ifx" && self.input.current_file_line() > 9000 { eprintln!("PUSHIFX crates/tex-core/src/scan.rs:{} line={}", {line!()}, self.input.current_file_line()); } self.pushed.push(__pt); }
+                self.pushed.push(t0);
                 break;
             }
             let t = self.get_token();
             let mut matched = false;
-            if std::env::var("DEFTRACE").map(|v|v=="1").unwrap_or(false) {
-                let ch = if t.is_char() { (t.chr() as u8 as char).to_string() } else { "cs".to_string() };
-                eprintln!("GLUEKW {:?} t={:#x} chr={}", kw, t.0, ch);
-            }
             if t.is_char() {
                 let c = t.chr() as u8;
                 if c == kw[0] {
-                    // consume every remaining keyword letter ("plus", "minus")
                     let mut kt: Vec<Token> = Vec::new();
                     let mut all = true;
                     for &k in &kw[1..] {
@@ -605,10 +610,11 @@ impl Engine {
                 }
             }
             if !matched {
-                { let __pt = t; if std::env::var("PUSHWATCH").map(|w|w=="1").unwrap_or(false) && __pt.is_cs() && self.cs.name(__pt.cs_id()) == b"ifx" && self.input.current_file_line() > 9000 { eprintln!("PUSHIFX crates/tex-core/src/scan.rs:{} line={}", {line!()}, self.input.current_file_line()); } self.pushed.push(__pt); }
+                self.pushed.push(t);
             }
             self.cur_fill_order = 0;
         }
+        self.in_expanded_scan = prev;
         g
     }
 
@@ -660,7 +666,7 @@ impl Engine {
     /// like scan_general_text but expanding (\edef semantics)
     pub fn scan_general_text_expanded(&mut self) -> Vec<Token> {
         self.skip_spaces_relax();
-        if std::env::var("IFTRACE").map(|v|v=="1").unwrap_or(false) {
+        if std::env::var("IFTRACE").map(|v| v == "1").unwrap_or(false) {
             let st: Vec<String> = self.input.stack.iter().rev().take(3).map(|src| match src {
                 crate::input::Source::TokList { name, pos, toks, .. } => format!("T:{} {}/{}", name, pos, toks.len()),
                 crate::input::Source::File { name, line_no, .. } => format!("F:{}#{}", name, line_no),
@@ -679,20 +685,31 @@ impl Engine {
             self.error(&format!("Missing {{ inserted (got {})", got));
             return Vec::new();
         }
+        let prev_expanded_scan = self.in_expanded_scan;
+        self.in_expanded_scan = true;
         let mut out = Vec::new();
         let mut depth = 1i32;
         loop {
             let t = self.get_token();
             if t == crate::input::EOF_MARKER {
-                if std::env::var("IFTRACE").map(|v|v=="1").unwrap_or(false) {
-                    let st: Vec<String> = self.input.stack.iter().rev().take(5).map(|src| match src {
-                        crate::input::Source::TokList { name, pos, toks, .. } => format!("T:{} {}/{}", name, pos, toks.len()),
-                        crate::input::Source::File { name, line_no, .. } => format!("F:{}#{}", name, line_no),
-                    }).collect();
-                    eprintln!("RUNAWAYSCAN {}", st.join(" << "));
-                }
                 self.error("Missing } in expanded text");
+                self.in_expanded_scan = prev_expanded_scan;
                 return out;
+            }
+            if self.cur_prim == Some(Prim::UnExpanded) {
+                self.skip_spaces_relax();
+                let nxt = self.raw_token();
+                if nxt.is_cs() {
+                    if let Some(Equiv::ToksReg(i)) = self.eqtb.resolve(nxt.cs_id()).cloned() {
+                        let toks = (*self.eqtb.toks[i as usize]).clone();
+                        out.extend(toks);
+                        continue;
+                    }
+                }
+                self.pushed.push(nxt);
+                let toks = self.scan_general_text();
+                out.extend(toks);
+                continue;
             }
             if t.is_char() {
                 if t.cc() == 1 {
@@ -700,6 +717,7 @@ impl Engine {
                 } else if t.cc() == 2 {
                     depth -= 1;
                     if depth == 0 {
+                        self.in_expanded_scan = prev_expanded_scan;
                         return out;
                     }
                 } else if t.cc() == 6 && t.chr() == 0x23 {
@@ -714,7 +732,17 @@ impl Engine {
             }
             out.push(t);
             if out.len() % 500 == 0 {
-                eprintln!("SGET-BIG n={} line={} stack_len={} srcs={:?}", out.len(), self.input.current_file_line(), self.input.stack.len(), self.input.stack.iter().rev().take(3).map(|src| match src { crate::input::Source::TokList{name,pos,toks,..} => format!("T:{} {}/{}",name,pos,toks.len()), crate::input::Source::File{name,line_no,..} => format!("F:{}#{}", name.split('/').last().unwrap_or(name), line_no)}).collect::<Vec<_>>());
+                eprintln!("SGET-BIG n={} line={} stack_len={} srcs={:?} macros={:?}", out.len(), self.input.current_file_line(), self.input.stack.len(), self.input.stack.iter().rev().take(3).map(|src| match src { crate::input::Source::TokList{name,pos,toks,..} => format!("T:{} {}/{}",name,pos,toks.len()), crate::input::Source::File{name,line_no,..} => format!("F:{}#{}", name.split('/').last().unwrap_or(name), line_no)}).collect::<Vec<_>>(), self.last_macros);
+                if out.len() > 2500 {
+                    eprintln!(
+                        "SGET-DUMP head=[{}] tail=[{}]",
+                        self.tokens_to_string(&out[..60.min(out.len())]),
+                        self.tokens_to_string(&out[out.len().saturating_sub(40)..])
+                    );
+                    self.error("SGET-BIG abort");
+                    self.in_expanded_scan = prev_expanded_scan;
+                    return out;
+                }
             }
         }
     }
@@ -845,6 +873,10 @@ impl Engine {
             Some(Prim::PdfLastYPos) => {
                 self.exp_string(self.pdf_last_y.to_string().as_bytes());
             }
+            Some(Prim::PdfPageAttr) => {
+                let s = self.pdf_page_attr.clone();
+                self.exp_string(s.as_bytes());
+            }
             _ => match self.eqtb.resolve(id).cloned() {
                 Some(Equiv::CountReg(i)) => {
                     self.exp_string(self.eqtb.count[i as usize].to_string().as_bytes());
@@ -920,26 +952,32 @@ impl Engine {
         }
         let name = String::from_utf8_lossy(self.cs.name(t.cs_id())).into_owned();
         match self.eqtb.resolve(t.cs_id()).cloned() {
-            None => format!("\\undefined {}", name),
+            None => "undefined".to_string(),
             Some(Equiv::CharTok(v)) => format!("the character {}", (Token(v).chr() as u8) as char),
             Some(Equiv::Macro(m)) => {
-                let mut s = format!("\\macro");
-                if m.long && m.outer {
-                    s = "\\long\\outer\\macro".into();
-                } else if m.long {
-                    s = "\\long\\macro".into();
-                } else if m.outer {
-                    s = "\\outer\\macro".into();
-                }
+                let mut s = String::new();
                 if m.protected {
-                    s = format!("\\protected{}", s);
+                    s.push_str("\\protected");
                 }
-                s.push(':');
-                for d in &m.params {
-                    if d.is_empty() {
-                        s.push('#');
-                    } else {
-                        s.push_str("#");
+                if m.long {
+                    if !s.is_empty() { s.push(' '); }
+                    s.push_str("\\long");
+                }
+                if m.outer {
+                    if !s.is_empty() { s.push(' '); }
+                    s.push_str("\\outer");
+                }
+                if !s.is_empty() {
+                    s.push_str(" macro:");
+                } else {
+                    s.push_str("macro:");
+                }
+                if !m.prefix.is_empty() {
+                    s.push_str(&self.tokens_to_string(&m.prefix));
+                }
+                for (i, d) in m.params.iter().enumerate() {
+                    s.push_str(&format!("#{}", i + 1));
+                    if !d.is_empty() {
                         s.push_str(&self.tokens_to_string(d));
                     }
                 }
@@ -948,9 +986,9 @@ impl Engine {
                 s
             }
             Some(Equiv::Prim(p)) => format!("\\{}", self.prim_name(p)),
-            Some(Equiv::CharDef(c)) => format!("\\char{}", c),
-            Some(Equiv::MathCharDef(c)) => format!("\\mathchar{}", c),
-            Some(Equiv::FontRef(f)) => format!("\\font\\{}", self.font_display_name(f)),
+            Some(Equiv::CharDef(c)) => format!("\\char\"{:X}", c),
+            Some(Equiv::MathCharDef(c)) => format!("\\mathchar\"{:X}", c),
+            Some(Equiv::FontRef(f)) => format!("select font {}", self.font_display_name(f)),
             Some(Equiv::CountReg(i)) => format!("\\count{}", i),
             Some(Equiv::DimenReg(i)) => format!("\\dimen{}", i),
             Some(Equiv::SkipReg(i)) => format!("\\skip{}", i),

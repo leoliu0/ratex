@@ -39,7 +39,7 @@ pub struct RenderCtx<'a> {
     pub cur_pdf_font: u16,
     links: Vec<LinkFrame>,
     pub annots: Vec<Annot>,
-    pub dests: Vec<(String, f64, f64, u8)>,
+    pub dests: Vec<crate::pdfout::Dest>,
     pub page_fonts: Vec<(u16, u16)>, // (engine font id, resource num)
     // containing-box context for leaders grids and null-rule sentinels (sp)
     pub left_edge_sp: i64,
@@ -76,7 +76,8 @@ impl Engine {
         let horigin_bp = sp_to_bp(ctx.eng.pdf_horigin as i64);
         let vorigin_bp = sp_to_bp(ctx.eng.pdf_vorigin as i64);
         let x0 = horigin_bp;
-        let y0 = h_bp - vorigin_bp;
+        // TeX y grows down from the page top; emit_char applies y_pdf.
+        let y0 = vorigin_bp;
         if let Node::Box { list, kind, glue_sign, glue_order, glue_set, w, h, d, .. } = page_box {
             ctx.left_edge_sp = bp_to_sp(x0) as i64;
             (ctx.box_w_sp, ctx.box_h_sp, ctx.box_d_sp) = (*w as i64, *h as i64, *d as i64);
@@ -94,6 +95,7 @@ impl Engine {
         }
         // engine-level results
         ctx.eng.pdf_doc.outlines = ctx.eng.pdf_outlines.clone();
+        ctx.eng.pdf_doc.pages_attr = ctx.eng.pdf_pages_attr.clone().into_bytes();
         PdfPage {
             content: std::mem::take(&mut ctx.content).into_bytes(),
             width: w_bp as i32,
@@ -104,6 +106,7 @@ impl Engine {
                 .map(|(id, num)| (id as usize, num))
                 .collect(),
             dests: std::mem::take(&mut ctx.dests),
+            attr_extra: ctx.eng.pdf_page_attr.as_bytes().to_vec(),
         }
     }
 }
@@ -165,6 +168,7 @@ impl<'a> RenderCtx<'a> {
             uri: fr.uri,
             dest: fr.dest,
             attr: fr.attr,
+            subtype: Some("/Link".to_string()),
         });
     }
 
@@ -464,11 +468,55 @@ impl<'a> RenderCtx<'a> {
             }
             PdfSave => self.content.push_str("q\n"),
             PdfRestore => self.content.push_str("Q\n"),
-            PdfDest { name, kind } => {
+            PdfDest { name, kind, params } => {
                 // first definition of a name wins
-                if !self.dests.iter().any(|(n, ..)| n == name) {
-                    self.dests.push((name.clone(), x, self.y_pdf(y), *kind));
+                if !self.dests.iter().any(|d| &d.name == name) {
+                    // explicit coordinates are page-absolute sp from the
+                    // bottom-left corner; the sentinel -32768 keeps the
+                    // anchor position
+                    let pv = |i: usize, anchor: f64| {
+                        if params[i] == crate::pdfout::PDF_POS_CURRENT {
+                            anchor
+                        } else {
+                            sp_to_bp(params[i] as i64)
+                        }
+                    };
+                    // anchor position: x from the pen, y from the baseline
+                    let ax = x;
+                    let ay = self.y_pdf(y);
+                    // XYZ: left top zoom; FitH/FitBH: top; FitV/FitBV: left;
+                    // FitR: left bottom right top
+                    let (px, py) = match kind {
+                        2 | 5 => (ax, pv(0, ay)),
+                        3 | 6 => (pv(0, ax), ay),
+                        7 => (pv(0, ax), pv(3, ay)),
+                        _ => (pv(0, ax), pv(1, ay)),
+                    };
+                    let zm = if *kind == 0 && params[2] > 0 {
+                        Some(params[2] as f64 / 1000.0)
+                    } else {
+                        None
+                    };
+                    self.dests.push(crate::pdfout::Dest {
+                        name: name.clone(),
+                        x: px,
+                        y: py,
+                        kind: *kind,
+                        zoom: zm,
+                    });
                 }
+            }
+            PdfAnnot { attr, wd, ht, dp } => {
+                let x1 = x + sp_to_bp(*wd as i64);
+                let y0 = self.y_pdf(y + sp_to_bp(*ht as i64));
+                let y1 = self.y_pdf(y - sp_to_bp(*dp as i64));
+                self.annots.push(Annot {
+                    rect: [x, y0, x1, y1],
+                    uri: None,
+                    dest: None,
+                    attr: attr.clone(),
+                    subtype: None,
+                });
             }
             PdfStartLink { attr, uri, name } => {
                 self.links.push(LinkFrame {

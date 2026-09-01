@@ -417,6 +417,8 @@ impl Engine {
         d!(eng, b"muexpr", MuExpr);
         d!(eng, b"endinput", EndInput);
         d!(eng, b"dump", Dump);
+        d!(eng, b"patterns", Patterns);
+        d!(eng, b"hyphenation", Hyphenation);
         d!(eng, b"if", IfChar);
         d!(eng, b"ifcat", IfCat);
         d!(eng, b"ifodd", IfOdd);

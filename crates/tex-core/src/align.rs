@@ -377,7 +377,7 @@ impl Engine {
         // template is empty (#\cr is a legal single bare column)
         entries.push(cur);
         self.align_preamble = entries;
-        if std::env::var("ALIGNTRACE").map(|v| v == "1").unwrap_or(false) {
+        if crate::debug_flag("ALIGNTRACE") {
             for (i, e) in self.align_preamble.iter().enumerate() {
                 eprintln!(
                     "PREAMBLE col{} span={} u=[{}] v=[{}]",
@@ -684,14 +684,27 @@ impl Engine {
             self.error("Misplaced \\noalign");
             return;
         }
-        let mut toks = self.scan_general_text();
+        // tex.web 1124-1131: \noalign consumes only the opening brace; the
+        // body EXECUTES inside the no-align group and the matching `}`
+        // closes it (see end_group). Eager balanced scanning broke
+        // `\noalign{\ifnum0=`}\fi}` — booktabs/\@BTendrule's standard
+        // idiom — because the conditional must eat its own `}` at
+        // execution time, not at scan time.
+        self.skip_spaces_relax();
+        let open = self.get_token();
+        if !(open.is_char() && open.cc() == 1) {
+            self.error("Missing { inserted for \\noalign");
+            return;
+        }
         self.align_in_noalign = true;
         self.align_push_cell_group(Mode::InternalVertical);
-        self.align_state |= PH_CLOSE;
-        toks.push(self.crcr_token());
-        self.align_pushed_base = self.pushed.len();
-        self.input.push_toks(toks, CELL_SRC);
-
+        // group-depth watermark: the noalign body ends when the save stack
+        // returns here (i.e. the body's `{`-group just closed). The cell
+        // group pushed above is LevelType::Box — without an explicit
+        // Simple level for the consumed `{`, the body's `}` would close
+        // the CELL box group via end_box instead.
+        self.align_pushed_base = self.eqtb.save_stack.len();
+        self.eqtb.push_level(LevelType::Simple);
     }
 
     /// pack the open cell into the current row and start the next cell /
@@ -725,7 +738,7 @@ impl Engine {
     }
 
     /// pack the open \noalign text into a vertical box and store it
-    fn align_finish_noalign_now(&mut self) {
+    pub(crate) fn align_finish_noalign_now(&mut self) {
         let Some(inner) = self.align_pop_cell_group() else {
             return;
         };

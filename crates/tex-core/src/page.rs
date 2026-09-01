@@ -481,7 +481,7 @@ impl Engine {
     /// cut the page at `cut`, place/split inserts into `\box N`, pack the
     /// rest into `\box255`, and run `\output` (tex.web fire_up)
     fn fire_up(&mut self, cut: usize, penalty: i32) {
-        if std::env::var("PAGETRACE").map(|v| v == "1").unwrap_or(false) {
+        if crate::debug_flag("PAGETRACE") {
             eprintln!(
                 "FIRE_UP cut={} pen={} in_output={} pages={} line={}",
                 cut,
@@ -692,7 +692,7 @@ impl Engine {
     pub fn ship_box(&mut self, b: Option<Node>) {
         self.dead_cycles = 0;
         let Some(boxn) = b else { return };
-        if std::env::var("PAGETRACE").map(|v| v == "1").unwrap_or(false) {
+        if crate::debug_flag("PAGETRACE") {
             eprintln!(
                 "SHIPOUT pages={} in_output={} line={}",
                 self.pdf_doc.pages.len() + 1,

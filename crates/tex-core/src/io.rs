@@ -86,6 +86,62 @@ impl Engine {
             }
         }
     }
+    /// tex.web §966/§967: `\patterns{...}` (INITEX only) and
+    /// `\hyphenation{...}`. Letters pass through \lccode (lccode 0 drops
+    /// the character); digits and '.' carry pattern values; '-' marks
+    /// exception break points. Entries are separated by spaces.
+    pub fn do_hyphenation_words(&mut self, is_patterns: bool) {
+        if is_patterns && !self.ini_mode {
+            self.error("\\patterns can be used only in INITEX mode");
+            return;
+        }
+        self.skip_spaces_relax();
+        let open = self.get_token();
+        if !(open.is_char() && open.cc() == 1) {
+            self.error("Missing { inserted (\\patterns or \\hyphenation)");
+            return;
+        }
+        let toks = self.scan_balanced_raw(true);
+        let mut words: Vec<String> = Vec::new();
+        let mut cur = String::new();
+        for t in &toks {
+            if !t.is_char() {
+                self.error(if is_patterns {
+                    "Letter expected in \\patterns"
+                } else {
+                    "Letter expected in \\hyphenation"
+                });
+                continue;
+            }
+            if t.cc() == 10 {
+                if !cur.is_empty() {
+                    words.push(std::mem::take(&mut cur));
+                }
+                continue;
+            }
+            let c = t.chr() as u8;
+            if is_patterns && (c.is_ascii_digit() || c == b'.') {
+                cur.push(c as char);
+            } else if c == b'-' && !is_patterns {
+                cur.push('-');
+            } else {
+                let lc = self.eqtb.lc_code[c as usize];
+                if lc != 0 {
+                    cur.push(lc as char);
+                }
+            }
+        }
+        if !cur.is_empty() {
+            words.push(cur);
+        }
+        for w in words {
+            if is_patterns {
+                self.hyphen_trie.add_pattern(&w);
+            } else {
+                self.hyphen_trie.add_exception(&w);
+            }
+        }
+    }
 
     pub fn do_openout(&mut self) {
         // \openout<n>=<file>
@@ -117,7 +173,7 @@ impl Engine {
     }
 
     pub fn do_write(&mut self) {
-        if std::env::var("DEFTRACE").map(|v|v=="1").unwrap_or(false) {
+        if crate::debug_flag("DEFTRACE") {
             eprintln!("DOWRITE top_pushed={}", self.pushed.len());
         }
         let n = self.scan_int();
@@ -127,7 +183,7 @@ impl Engine {
         // on the group's closing brace; never expanding leaves \\exp_not:n
         // literally in the .aux.
         let toks = self.scan_general_text();
-        if std::env::var("WRITETRACE").map(|v| v == "1").unwrap_or(false) {
+        if crate::debug_flag("WRITETRACE") {
             eprintln!("WRITE-LIST n={} [{}]", n, self.tokens_to_string(&toks));
         }
         let text = self.expand_write_list(&toks);
@@ -201,7 +257,7 @@ impl Engine {
         let line = format!("{}\n", text);
         match n {
             -1 => { self.log.push_str(&line);
-                    if std::env::var("DEFTRACE").map(|v|v=="1").unwrap_or(false) {
+                    if crate::debug_flag("DEFTRACE") {
                         eprintln!("LOG: {}", text); } }
             -2 => { self.term.push_str(&line); }
             16 | 17 | 18 => { self.term.push_str(&line); self.log.push_str(&line); }
@@ -245,7 +301,7 @@ impl Engine {
         }
         // kpathsea/web2c lookup: output directory first for relative
         // names, then the kpse search path (covers literal paths too)
-        if std::env::var("IFTRACE").map(|v|v=="1").unwrap_or(false) {
+        if crate::debug_flag("IFTRACE") {
             eprintln!("OPENIN {} -> {:?}", name, self.resolve_input_path(&name));
         }
         let path = match self.resolve_input_path(&name) {
@@ -353,7 +409,7 @@ impl Engine {
             }
             None => vec![Token::from_cs(self.cs.lookup(b"par").unwrap_or(0))],
         };
-        if line_mode || std::env::var("IORTRACE").map(|v| v == "1").unwrap_or(false) {
+        if line_mode || crate::debug_flag("IORTRACE") {
             static RN: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
             if RN.fetch_add(1, std::sync::atomic::Ordering::Relaxed) < 4 {
                 eprintln!(

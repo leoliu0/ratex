@@ -92,7 +92,7 @@ impl Engine {
             self.finish_output();
             return self.raw_token();
         }
-        if std::env::var("IFTRACE").map(|v|v=="1").unwrap_or(false) {
+        if crate::debug_flag("IFTRACE") {
             self.tok_ring.push_back((t.0, self.input.current_file_line()));
             while self.tok_ring.len() > 30 {
                 self.tok_ring.pop_front();
@@ -184,7 +184,7 @@ impl Engine {
     /// push tokens back so they are seen before any further input
     pub fn push_tokens(&mut self, toks: Vec<Token>) {
         for t in toks.into_iter().rev() {
-            { let __pt = t; if std::env::var("PUSHWATCH").map(|w|w=="1").unwrap_or(false) && __pt.is_cs() && self.cs.name(__pt.cs_id()) == b"ifx" && self.input.current_file_line() > 9000 { eprintln!("PUSHIFX crates/tex-core/src/expand.rs:{} line={}", {line!()}, self.input.current_file_line()); } self.pushed.push(__pt); }
+            { let __pt = t; if crate::debug_flag("PUSHWATCH") && __pt.is_cs() && self.cs.name(__pt.cs_id()) == b"ifx" && self.input.current_file_line() > 9000 { eprintln!("PUSHIFX crates/tex-core/src/expand.rs:{} line={}", {line!()}, self.input.current_file_line()); } self.pushed.push(__pt); }
         }
     }
     /// push_tokens variant matching tex.web \\unexpanded: each control
@@ -333,11 +333,11 @@ impl Engine {
                         return tok;
                     }
                     Some(Equiv::Prim(p)) => {
-                    if std::env::var("PAIRTRACE").map(|v| v == "1").unwrap_or(false) && self.cs.name(id) == b"__kernel_exp_not:w" {
+                    if crate::debug_flag("PAIRTRACE") && self.cs.name(id) == b"__kernel_exp_not:w" {
                         let rk = match self.eqtb.get(id) { Some(Equiv::Prim(pp)) => format!("Prim({:?})", pp), Some(Equiv::Alias(n)) => format!("Alias->{}", n), Some(Equiv::Macro(_)) => "Macro".to_string(), _ => "other".to_string() };
                         eprintln!("EXPNOT-DISPATCH id={} resolved={} in_scan={}", id, rk, self.in_expanded_scan);
                     }
-                        if p == Prim::UnExpanded && std::env::var("PAIRTRACE").map(|v| v == "1").unwrap_or(false) {
+                        if p == Prim::UnExpanded && crate::debug_flag("PAIRTRACE") {
                             eprintln!("UE-DISPATCH in_expanded_scan={} csname_depth={} L{}", self.in_expanded_scan, self.csname_depth, self.input.current_file_line());
                         }
                         // NOTE: no early-return for UnExpanded inside
@@ -590,12 +590,17 @@ impl Engine {
                 let t = self.raw_token();
                 if t.is_cs() {
                     let id = t.cs_id();
-                    let expandable = match self.eqtb.resolve(id) {
-                        Some(Equiv::Macro(m)) => !m.protected,
+                    // tex.web \noexpand: the one-shot no-expansion flag
+                    // applies to ANY macro — protected ones included.
+                    // Leaving protected macros unflagged let them expand
+                    // inside \edef/\if (hyperref pdfstringdef), leaking
+                    // \delimiter "42xxx hex into the stored text.
+                    let needs_freeze = match self.eqtb.resolve(id) {
+                        Some(Equiv::Macro(_)) => true,
                         Some(Equiv::Prim(p2)) => self.is_expandable(*p2),
                         _ => false,
                     };
-                    if expandable {
+                    if needs_freeze {
                         Some(Token(NOEXP_FLAG | id))
                     } else {
                         Some(t)
@@ -655,9 +660,10 @@ impl Engine {
                         }
                     }
 
-                    if t.chr() > 0 && t.chr() <= 255 {
-                        name.push(t.chr() as u8);
+                    if t.is_char() && t.cc() == 9 {
+                        continue;
                     }
+                    name.push(t.chr() as u8);
                 }
                 self.csname_depth = self.csname_depth.saturating_sub(1);
                 let id = self.cs.intern(&name);
@@ -677,12 +683,10 @@ impl Engine {
                     // default would poison the name (cs_if_free then reports
                     // it as defined and the synthesis never runs). Synthesize
                     // the real expander on creation instead.
-                    if !self.synth_exp_args_if_match(id) {
-                        let relax = self.cs.lookup(b"relax").unwrap();
-                        let r = self.eqtb.get(relax).cloned();
-                        if let Some(e) = r {
-                            self.eqtb.assign(id, e, true);
-                        }
+                    let relax = self.cs.lookup(b"relax").unwrap();
+                    let r = self.eqtb.get(relax).cloned();
+                    if let Some(e) = r {
+                        self.eqtb.assign(id, e, false);
                     }
                 }
                 Some(Token::from_cs(id))
@@ -741,10 +745,10 @@ impl Engine {
                 None
             }
             Expanded => {
-                if std::env::var("PAIRTRACE").map(|v| v == "1").unwrap_or(false) {
+                if crate::debug_flag("PAIRTRACE") {
                     eprintln!("EXPANDED-DISPATCH L{}", self.input.current_file_line());
                 }
-                if std::env::var("QUARKTRACE").is_ok() {
+                if crate::debug_flag("QUARKTRACE") {
                     eprintln!("EXPANDED-DISPATCH at {}:{} stack-tail=[{}] prev-mac={:?}",
                         self.input.current_file_name().split('/').last().unwrap_or("?"), self.input.current_file_line(),
                         self.input.stack.iter().rev().take(4).map(|src| match src {
@@ -754,12 +758,12 @@ impl Engine {
                         self.last_macros);
                 }
                 let r = self.scan_general_text_expanded();
-                if std::env::var("QUARKTRACE2").map(|v| v == "1").unwrap_or(false) {
+                if crate::debug_flag("QUARKTRACE2") {
                     let before = self.tokens_to_string(&self.pushed.iter().rev().take(24).cloned().collect::<Vec<_>>());
                     eprintln!("EXP-IN  {}:{} pushed=[{}]", self.input.current_file_name().split('/').last().unwrap_or("?"), self.input.current_file_line(), before);
                 }
 
-                if std::env::var("QUARKTRACE").is_ok() {
+                if crate::debug_flag("QUARKTRACE") {
                     if let Some(i) = r.iter().position(|t| {
                         t.is_cs() && t.0 < 0xC000_0000 && self.cs.name(t.cs_id()).starts_with(b"q__")
                     }) {
@@ -768,7 +772,7 @@ impl Engine {
                             nm, self.tokens_to_string(&r[..i.min(30)]));
                     }
                 }
-                if std::env::var("QUARKTRACE2").map(|v| v == "1").unwrap_or(false) {
+                if crate::debug_flag("QUARKTRACE2") {
                     eprintln!("EXP-OUT {}:{} result=[{}]", self.input.current_file_name().split('/').last().unwrap_or("?"), self.input.current_file_line(), self.tokens_to_string(&r.iter().take(24).cloned().collect::<Vec<_>>()));
                 }
  self.push_tokens(r);
@@ -777,7 +781,7 @@ impl Engine {
             UnExpanded => {
                 self.skip_spaces_relax();
                 let t = self.raw_token();
-                if std::env::var("PAIRTRACE").map(|v| v == "1").unwrap_or(false) {
+                if crate::debug_flag("PAIRTRACE") {
                     let nxt = self.raw_token();
                     self.pushed.push(nxt);
                     let desc = if nxt.is_cs() {
@@ -801,13 +805,16 @@ impl Engine {
                     // keyval/tl machinery leans on this exact idiom.
                     if let Some(Equiv::Prim(p)) = self.eqtb.resolve(t.cs_id()).cloned() {
                         if p == Prim::Expanded {
-                            let toks = self.scan_general_text_expanded();
+                            let mut toks = self.scan_general_text_expanded();
+                            Self::strip_outer_braces(&mut toks);
                             let n = toks.len();
                             if self.in_expanded_scan {
                                 self.unexp_protect = self.unexp_protect.saturating_add(n);
+                                self.push_tokens_exp_not(toks);
+                            } else {
+                                self.push_tokens(toks);
                             }
-                            self.push_tokens_exp_not(toks);
-                            if std::env::var("PAIRTRACE").map(|v| v == "1").unwrap_or(false) {
+                            if crate::debug_flag("PAIRTRACE") {
                                 eprintln!("UE-PAIR fired toks={}", n);
                             }
                             return None;
@@ -818,8 +825,10 @@ impl Engine {
                 let toks = self.scan_general_text();
                 if self.in_expanded_scan {
                     self.unexp_protect = self.unexp_protect.saturating_add(toks.len());
+                    self.push_tokens_exp_not(toks);
+                } else {
+                    self.push_tokens(toks);
                 }
-                self.push_tokens_exp_not(toks);
                 None
             }
             ScanTokens => {
@@ -942,7 +951,7 @@ self.do_if(eof)
                 let a = self.scan_int();
                 let rel = self.scan_relational();
                 let b = self.scan_int();
-                if std::env::var("IFNUMTRACE").map(|v| v == "1").unwrap_or(false) {
+                if crate::debug_flag("IFNUMTRACE") {
                     eprintln!(
                         "IFNUM {} {} {} -> {} line={} stack={}",
                         a,
@@ -998,16 +1007,10 @@ self.do_if(eof)
             IfDef => {
                 let t = self.raw_token();
                 let def = if t.is_cs() {
-                    match self.eqtb.resolve(t.cs_id()) {
-                        Some(Equiv::Prim(Prim::Relax)) | None => false,
-                        Some(_) => true,
-                    }
+                    self.eqtb.resolve(t.cs_id()).is_some()
                 } else if t.is_char() && t.cc() == 13 {
                     let id = self.cs.intern(&[t.chr() as u8]);
-                    match self.eqtb.resolve(id) {
-                        Some(Equiv::Prim(Prim::Relax)) | None => false,
-                        Some(_) => true,
-                    }
+                    self.eqtb.resolve(id).is_some()
                 } else {
                     false
                 };
@@ -1054,6 +1057,9 @@ self.do_if(eof)
                                 break;
                             }
                         }
+                    }
+                    if t.is_char() && t.cc() == 9 {
+                        continue;
                     }
                     name.push(t.chr() as u8);
                 }
@@ -1174,7 +1180,7 @@ self.do_if(eof)
                     eprintln!("FI_HIT L{} if_stack_len={} popped={:?}", ln, self.if_stack.len(), popped.as_ref().map(|s| (s.accepting, s.matched, s.loc_line)));
                 }
                 if popped.is_none() {
-                    if std::env::var("FIFTRACE").map(|v| v == "1").unwrap_or(false) {
+                    if crate::debug_flag("FIFTRACE") {
                         eprintln!(
                             "EXTRA-FI L{} file={} mac={} last={:?} pushed=[{}]",
                             ln,
@@ -1300,7 +1306,7 @@ self.do_if(eof)
             loc_line: self.input.current_file_line(),
             loc_cs: 0,
         });
-        if std::env::var("FIFTRACE").map(|v| v == "1").unwrap_or(false) {
+        if crate::debug_flag("FIFTRACE") {
             eprintln!(
                 "IFPUSH depth={} L{} file={} mac={} last={:?}",
                 self.if_stack.len(),
@@ -1498,7 +1504,7 @@ self.do_if(eof)
 
     /// skip tokens until matching \else / \or (for ifcase) / \fi at this level
     fn skip_branch(&mut self, if_case: bool) {
-        if std::env::var("SKIPTRACE").map(|v| v == "1").unwrap_or(false) {
+        if crate::debug_flag("SKIPTRACE") {
             eprintln!("SKIPSTART ifcase={}", if_case);
         }
         let mut depth = 0i32;
@@ -1508,10 +1514,10 @@ self.do_if(eof)
                 let ist: Vec<std::string::String> = self.if_stack.iter().map(|st| format!("{}:{}", st.loc_file.split('/').last().unwrap_or("?"), st.loc_line)).collect();
                 self.error(&format!("File ended while scanning conditional [{}]", ist.join(", ")));
                 self.end_occurred = true;
-                if std::env::var("IFTRACE").map(|v|v=="1").unwrap_or(false) { eprintln!("ENDOCC crates/tex-core/src/expand.rs:686 line={}", self.input.current_file_line()); }
+                if crate::debug_flag("IFTRACE") { eprintln!("ENDOCC crates/tex-core/src/expand.rs:686 line={}", self.input.current_file_line()); }
                 return;
             }
-            if std::env::var("SKIPTRACE").map(|v| v == "1").unwrap_or(false) {
+            if crate::debug_flag("SKIPTRACE") {
                 eprintln!("SKIP tok {:#x}", t.0);
             }
             if !t.is_cs() {
@@ -1591,10 +1597,10 @@ self.do_if(eof)
     fn skip_to_fi(&mut self) {
         let mut depth = 0i32;
         loop {
-            if std::env::var("SKIPTRACE").map(|v| v == "1").unwrap_or(false) {
+            if crate::debug_flag("SKIPTRACE") {
                 let t0 = self.raw_token();
                 eprintln!("SKIPFI tok {:#x} cs={:?} depth={}", t0.0, if t0.is_cs() { Some(String::from_utf8_lossy(self.cs.name(t0.cs_id())).into_owned()) } else { None }, depth);
-                { let __pt = t0; if std::env::var("PUSHWATCH").map(|w|w=="1").unwrap_or(false) && __pt.is_cs() && self.cs.name(__pt.cs_id()) == b"ifx" && self.input.current_file_line() > 9000 { eprintln!("PUSHIFX crates/tex-core/src/expand.rs:{} line={}", {line!()}, self.input.current_file_line()); } self.pushed.push(__pt); }
+                { let __pt = t0; if crate::debug_flag("PUSHWATCH") && __pt.is_cs() && self.cs.name(__pt.cs_id()) == b"ifx" && self.input.current_file_line() > 9000 { eprintln!("PUSHIFX crates/tex-core/src/expand.rs:{} line={}", {line!()}, self.input.current_file_line()); } self.pushed.push(__pt); }
             }
             let t = self.raw_token();
             if t == EOF_MARKER {
@@ -1629,7 +1635,7 @@ self.do_if(eof)
                 Some(Equiv::Prim(Prim::Fi)) => {
                     if depth == 0 {
                         let popped = self.if_stack.pop();
-                        if std::env::var("IFTRACE").map(|v|v=="1").unwrap_or(false) {
+                        if crate::debug_flag("IFTRACE") {
                             eprintln!("IFPOP_SKIPFI line={} popped={:?} depth_after={}", self.input.current_file_line(), popped.as_ref().map(|s| (&s.loc_file, s.loc_line)), self.if_stack.len());
                         }
                         return;
@@ -1665,7 +1671,7 @@ self.do_if(eof)
                     Prim::Fi => {
                         if depth == 0 {
                             let popped = self.if_stack.pop();
-                            if std::env::var("IFTRACE").map(|v|v=="1").unwrap_or(false) {
+                            if crate::debug_flag("IFTRACE") {
                                 eprintln!("IFPOP_CASE line={} popped={:?} depth_after={}", self.input.current_file_line(), popped.as_ref().map(|s| (&s.loc_file, s.loc_line)), self.if_stack.len());
                             }
                             return;
@@ -1760,7 +1766,38 @@ self.do_if(eof)
             }
         }
         self.last_macros.push_back(String::from_utf8_lossy(&name_bytes).into_owned());
-        if nm == b"d" && std::env::var("DTRACE").map(|v| v == "1").unwrap_or(false) {
+        if (nm.starts_with(b"prg_map_break") || nm.starts_with(b"__prg_break_point") || nm.starts_with(b"__file_name_expand")
+            || nm.starts_with(b"__tl_map") || nm.starts_with(b"__clist_map") || nm == b"tl_map_break:" || nm == b"clist_map_break:")
+            && crate::debug_flag("PRGTRACE")
+        {
+            static PT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+            let n = PT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if n < 12 || n % 2000 == 0 {
+                let delims: Vec<String> = m.params.iter().map(|d| format!("«{}»", self.tokens_to_string(d))).collect();
+                let pv: Vec<Token> = self.pushed.iter().rev().take(8).cloned().collect();
+                let pnames = self.tokens_to_string(&pv);
+                let stk: Vec<String> = self.input.stack.iter().rev().take(3).map(|src| match src {
+                    crate::input::Source::TokList { name, pos, toks, .. } => {
+                        let rest: Vec<String> = toks[(*pos).min(toks.len())..].iter().take(10).map(|t| format!("{:#010x}", t.0)).collect();
+                        format!("T:{} {}/{} rest=[{}]", name, pos, toks.len(), rest.join(" "))
+                    }
+                    crate::input::Source::File { name, line_no, .. } => format!("F:{}#{}", name.split('/').last().unwrap_or(name), line_no),
+                }).collect();
+                eprintln!(
+                    "PRG #{} \\{} np={} delims=[{}] pushed=[{}] stack=[{}]",
+                    n,
+                    String::from_utf8_lossy(nm),
+                    m.num_params,
+                    delims.join(" | "),
+                    pnames,
+                    stk.join(" << ")
+                );
+                if nm.starts_with(b"__tl_map") || nm.starts_with(b"__clist_map") {
+                    eprintln!("  body=[{}]", self.tokens_to_string(&m.body.iter().take(40).cloned().collect::<Vec<_>>()));
+                }
+            }
+        }
+        if nm == b"d" && crate::debug_flag("DTRACE") {
             static DN: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
             let n = DN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             if n < 4 {
@@ -1779,7 +1816,7 @@ self.do_if(eof)
                 );
             }
         }
-        if std::env::var("FONTSZ").map(|v| v == "1").unwrap_or(false)
+        if crate::debug_flag("FONTSZ")
             && matches!(nm, b"@currsize" | b"@setfontsize" | b"selectfont" | b"fontsize" | b"selectfont " | b"normalsize " | b"footnotesize ")
         {
             static FZ: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
@@ -1808,7 +1845,7 @@ self.do_if(eof)
             self.last_macros.pop_front();
         }
 
-        if nm == b"q__tl_recursion_tail" && std::env::var("QUARKTRACE").is_ok() {
+        if nm == b"q__tl_recursion_tail" && crate::debug_flag("QUARKTRACE") {
             eprintln!("QUARK-EXPAND expanded_scan={} depth={} mac_depth={} at {}:{} pushed=[{}] backtrace:\n{}",
                 self.in_expanded_scan, self.gt_steps, self.mac_depth,
                 self.input.current_file_name().split('/').last().unwrap_or("?"), self.input.current_file_line(),
@@ -2146,11 +2183,11 @@ self.do_if(eof)
                 if t == EOF_MARKER {
                     self.error("File ended while scanning argument");
                     self.end_occurred = true;
-                    if std::env::var("IFTRACE").map(|v|v=="1").unwrap_or(false) { eprintln!("ENDOCC crates/tex-core/src/expand.rs:897 line={}", self.input.current_file_line()); }
+                    if crate::debug_flag("IFTRACE") { eprintln!("ENDOCC crates/tex-core/src/expand.rs:897 line={}", self.input.current_file_line()); }
                     args.push(Vec::new());
                     continue;
                 }
-                if std::env::var("ARGTRACE").map(|v|v=="1").unwrap_or(false) {
+                if crate::debug_flag("ARGTRACE") {
                     let srcs: Vec<std::string::String> = self.input.stack.iter().rev().take(3).map(|src| match src {
                         crate::input::Source::TokList { name, pos, toks, .. } => format!("T:{} {}/{}", name, pos, toks.len()),
                         crate::input::Source::File { name, line_no, .. } => format!("F:{}#{}", name, line_no),
@@ -2222,11 +2259,11 @@ self.do_if(eof)
                 args.push(arg);
             }
         }
-        if std::env::var("MACTRACE").map(|v| v == "1").unwrap_or(false) {
+        if crate::debug_flag("MACTRACE") {
             let argstr: Vec<String> = args.iter().map(|a| self.tokens_to_string(a)).collect();
             eprintln!("MAC \\{} args={:?}", String::from_utf8_lossy(nm), argstr);
         }
-        if std::env::var("QUARKTRACE2").map(|v| v == "1").unwrap_or(false)
+        if crate::debug_flag("QUARKTRACE2")
             && (nm.starts_with(b"__quark") || nm.starts_with(b"__kernel_quark") || nm == b"cs_gset:Npn" || nm == b"exp_args:NNcc" || nm == b"exp_args:Ncc")
 
         {
@@ -2240,11 +2277,11 @@ self.do_if(eof)
                 self.input.current_file_line()
             );
         }
-        if nm == b"exp_args:NNcc" && std::env::var("QUARKTRACE2").map(|v| v == "1").unwrap_or(false) {
+        if nm == b"exp_args:NNcc" && crate::debug_flag("QUARKTRACE2") {
             eprintln!("NNCC-EXPAND ok");
         }
 
-        if nm == b"__quark_new_test:Nccn" && std::env::var("QUARKTRACE2").map(|v| v == "1").unwrap_or(false) {
+        if nm == b"__quark_new_test:Nccn" && crate::debug_flag("QUARKTRACE2") {
             let bd: Vec<String> = m.body.iter().map(|t| format!("{:#x}", t.0)).collect();
             eprintln!("NCCN-BODY hex=[{}] str=[{}]", bd.join(","), self.tokens_to_string(&m.body));
         }
@@ -2279,7 +2316,7 @@ self.do_if(eof)
                 eprintln!("ONLYP-SPLICED [{}]", self.tokens_to_string(&spliced));
             }
         }
-        if std::env::var("BODYDUMP").map(|v|v=="1").unwrap_or(false) && name_bytes == b"e@alloc" {
+        if crate::debug_flag("BODYDUMP") && name_bytes == b"e@alloc" {
             let dump: Vec<String> = spliced.iter().enumerate().map(|(i,t)| {
                 if t.is_cs() { format!("{}:{}", i, String::from_utf8_lossy(self.cs.name(t.cs_id()))) }
                 else { format!("{}:{}{}", i, t.cc(), t.chr() as u8 as char) }
@@ -2299,7 +2336,7 @@ self.do_if(eof)
             if t.is_char() && t.cc() == 10 {
                 continue;
             }
-            { let __pt = t; if std::env::var("PUSHWATCH").map(|w|w=="1").unwrap_or(false) && __pt.is_cs() && self.cs.name(__pt.cs_id()) == b"ifx" && self.input.current_file_line() > 9000 { eprintln!("PUSHIFX crates/tex-core/src/expand.rs:{} line={}", {line!()}, self.input.current_file_line()); } self.pushed.push(__pt); }
+            { let __pt = t; if crate::debug_flag("PUSHWATCH") && __pt.is_cs() && self.cs.name(__pt.cs_id()) == b"ifx" && self.input.current_file_line() > 9000 { eprintln!("PUSHIFX crates/tex-core/src/expand.rs:{} line={}", {line!()}, self.input.current_file_line()); } self.pushed.push(__pt); }
             return;
         }
     }
@@ -2401,7 +2438,7 @@ self.do_if(eof)
             if t == EOF_MARKER {
                 self.error(&format!("Runaway argument of \\{} (delim={})", self.current_macro, self.tokens_to_string(delim)));
                 self.end_occurred = true;
-                if std::env::var("IFTRACE").map(|v|v=="1").unwrap_or(false) { eprintln!("ENDOCC crates/tex-core/src/expand.rs:1003 line={}", self.input.current_file_line()); }
+                if crate::debug_flag("IFTRACE") { eprintln!("ENDOCC crates/tex-core/src/expand.rs:1003 line={}", self.input.current_file_line()); }
                 return arg;
             }
             if t == PAR_END && !long {
@@ -2415,7 +2452,7 @@ self.do_if(eof)
             }
             let d = delim[di];
             if t.is_char() && t.cc() == 1 {
-                if std::env::var("GRABTRACE").is_ok() {
+                if crate::debug_flag("GRABTRACE") {
                     eprintln!("GRAB brace: macro={} di={}/{} delim_ok={} pending={}",
                         self.current_macro, di, delim.len(),
                         delim.get(di).map(|d| d.0 == t.0).unwrap_or(false),
@@ -2453,7 +2490,7 @@ self.do_if(eof)
                 for rt in rest.into_iter().rev() {
                     self.pushed.push(rt);
                 }
-            } else if std::env::var("DELIM_EXPAND").map(|v| v == "1").unwrap_or(false)
+            } else if crate::debug_flag("DELIM_EXPAND")
                 && self.in_expanded_scan
                 && self.expand_if_expansive(t)
             {
@@ -2642,7 +2679,7 @@ self.do_if(eof)
         if self.error_count > 2000 && !self.ini_mode {
             self.end_occurred = true;
         }
-        if std::env::var("STOP_FIRST_ERR").map(|v| v == "1").unwrap_or(false) {
+        if crate::debug_flag("STOP_FIRST_ERR") {
             eprintln!(
                 "FIRST-ERR {} L{} file={} mac={:?} last={:?} pushed={}",
                 msg,

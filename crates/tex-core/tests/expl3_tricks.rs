@@ -1317,7 +1317,7 @@ fn edef_two_noexpands() {
 "#,
     );
     assert_eq!(e.error_count, 0, "errors:\n{}", e.term);
-    assert_eq!(show_body(&e, b"tmp"), "\\tlset\\ltmp{foo}", "tmp={}", show_body(&e, b"tmp"));
+    assert_eq!(show_body(&e, b"tmp"), "\\tlset \\ltmp {foo}", "tmp={}", show_body(&e, b"tmp"));
 }
 
 #[test]
@@ -1334,7 +1334,7 @@ fn edef_two_noexpands_via_let() {
 "#,
     );
     assert_eq!(e.error_count, 0, "errors:\n{}", e.term);
-    assert_eq!(show_body(&e, b"tmp"), "\\tlset\\ltmp{foo}", "tmp={}", show_body(&e, b"tmp"));
+    assert_eq!(show_body(&e, b"tmp"), "\\tlset \\ltmp {foo}", "tmp={}", show_body(&e, b"tmp"));
 }
 
 #[test]
@@ -1580,7 +1580,9 @@ fn use_none_then_unexpanded_in_expanded_keeps_hash_hash() {
 
 #[test]
 fn test_macro_use_none_then_unexpanded() {
-    // closer to \\__prg_generate_conditional_test:w #1\\stop #2 { #2 {#1} }
+    // tex.web-faithful `\unexpanded{{X}}` keeps one brace level, so the
+    // spliced `\def` executes inside a group and does not survive it —
+    // verified against pdfTeX: `\tlin` is undefined afterwards.
     let mut e = boot();
     run_tex(
         &mut e,
@@ -1593,11 +1595,9 @@ fn test_macro_use_none_then_unexpanded() {
 \tlin{LIST}{SEARCH}
 "#,
     );
-    assert_eq!(e.error_count, 0, "errors:\n{}", e.term);
-    let (np, prefix, delims) = inner_macro(&e);
-    assert_eq!(np, 1, "np={np} prefix=[{prefix}] delims={delims:?} term={}", e.term);
-    assert_eq!(prefix, "");
-    assert_eq!(delims, vec!["SEARCH".to_string()]);
+    assert!(e.error_count > 0, "expected undefined \\tlin error, term={}", e.term);
+    assert!(e.term.contains("Undefined control sequence \\tlin"), "term={}", e.term);
+    assert!(e.cs.lookup(b"tlin").is_none() || matches!(e.eqtb.resolve(e.cs.lookup(b"tlin").unwrap()), None));
 }
 
 #[test]

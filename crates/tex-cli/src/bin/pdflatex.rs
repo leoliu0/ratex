@@ -58,6 +58,22 @@ fn main() {
                 // load in place: the engine (and its kpse/ls-R setup) is reused
                 match tex_core::format::load_format_into(&cand, &mut eng) {
                     Ok(()) => {
+                        // Sanity: a dump taken from a broken boot (zeroed
+                        // catcodes etc.) silently poisons every later run.
+                        // Detect and fall through to a fresh boot.
+                        if eng.eqtb.cat[b'd' as usize] != 11 || eng.eqtb.cat[b'@' as usize] == 0 {
+                            eprintln!("PROG: format at {} is insane (bad catcodes); booting fresh", cand.display());
+                            eng = Engine::new(ini || !plain);
+                            eng.init_primitives();
+                            eng.out_dir = out_dir.clone();
+                            if let Some(dir) = std::path::Path::new(&file).parent() {
+                                if !dir.as_os_str().is_empty() {
+                                    eng.main_dir = Some(dir.to_path_buf());
+                                }
+                            }
+                            eng.job_name = job.clone();
+                            break;
+                        }
                         loaded = true;
                         eprintln!(
                             "PROG: format loaded from {} in {:.1} ms",
@@ -78,10 +94,16 @@ fn main() {
             eng.input_file("latex.ltx");
             eng.run();
             if eng.format_done {
-                let dump_target = exe_fmt.unwrap_or_else(|| std::path::PathBuf::from("pdflatex.fmt"));
-                match tex_core::format::save_format(&eng, &dump_target) {
-                    Ok(n) => eprintln!("PROG: format dumped to {} ({} bytes)", dump_target.display(), n),
-                    Err(e) => eprintln!("PROG: format dump skipped: {}", e),
+                // Only persist a clean boot: a dump from a degraded boot
+                // silently poisons every later run through the exe-dir fmt.
+                if eng.error_count == 0 {
+                    let dump_target = exe_fmt.unwrap_or_else(|| std::path::PathBuf::from("pdflatex.fmt"));
+                    match tex_core::format::save_format(&eng, &dump_target) {
+                        Ok(n) => eprintln!("PROG: format dumped to {} ({} bytes)", dump_target.display(), n),
+                        Err(e) => eprintln!("PROG: format dump skipped: {}", e),
+                    }
+                } else {
+                    eprintln!("PROG: boot had {} error(s); not dumping format", eng.error_count);
                 }
             } else {
                 eprintln!("LaTeX format boot failed; last file {} line {}", eng.input.current_file_name(), eng.input.current_file_line());

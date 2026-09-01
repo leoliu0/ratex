@@ -153,6 +153,13 @@ impl CatTable {
         t[b' ' as usize] = CAT_SPACE;
         t[b'%' as usize] = CAT_COMMENT;
         t[b'^' as usize] = CAT_SUPER;
+        // tex.web §1252 INITEX defaults for the remaining specials
+        t[b'{' as usize] = CAT_BGROUP;
+        t[b'}' as usize] = CAT_EGROUP;
+        t[b'$' as usize] = CAT_MATH;
+        t[b'&' as usize] = CAT_ALIGN;
+        t[b'#' as usize] = CAT_PARAM;
+        t[b'_' as usize] = CAT_SUB;
         t[0x7F] = CAT_INVALID;
         for c in b'a'..=b'z' {
             t[c as usize] = CAT_LETTER;

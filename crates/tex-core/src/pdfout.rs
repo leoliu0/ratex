@@ -76,6 +76,10 @@ pub struct PdfDoc {
     /// (title, dest name, count) from \pdfoutline
     pub outlines: Vec<(String, String, i32)>,
     /// loaded embedded fonts
+    /// open action: (1-based page number, view name) from \pdfcatalog's
+    /// keyword form `openaction goto page <n> {view}` (hyperref PDF@SetupDoc)
+    pub open_action: Option<(i32, String)>,
+    /// loaded embedded fonts
     pub fonts: Vec<EmbedFont>,
 }
 
@@ -117,6 +121,7 @@ impl PdfDoc {
             names_extra: Vec::new(),
             pages_attr: Vec::new(),
             outlines: Vec::new(),
+            open_action: None,
             fonts: Vec::new(),
         }
     }
@@ -481,6 +486,21 @@ impl Engine {
             self.take_keyword(b"use");
             let extra = self.scan_pdf_string();
             self.pdf_doc.catalog_extra.extend_from_slice(extra.as_bytes());
+        }
+        // pdfTeX keyword form: `openaction goto page <n> {<view>}` —
+        // hyperref's \PDF@SetupDoc emits it right after the dict body.
+        // Unparsed, it leaked into the typeset stream.
+        if self.peek_letters() == "openaction" {
+            self.take_keyword(b"openaction");
+            if self.peek_letters() == "goto" {
+                self.take_keyword(b"goto");
+                if self.peek_letters() == "page" {
+                    self.take_keyword(b"page");
+                    let page = self.scan_int();
+                    let view = self.scan_pdf_string();
+                    self.pdf_doc.open_action = Some((page, view));
+                }
+            }
         }
     }
 

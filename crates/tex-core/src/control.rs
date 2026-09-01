@@ -71,7 +71,27 @@ impl Engine {
                     false => {}
                 }
                 if self.global_flag || self.long_flag || self.outer_flag || self.protected_flag {
-                    self.clear_prefixes();
+                    // These assignments are executed by main_dispatch but
+                    // still honor \global/\long/... prefixes (tex.web §407:
+                    // prefixes persist until the assignment consumes them).
+                    // Clearing here dropped \global\font inside NFSS
+                    // \define@newfont groups, so \endgroup reverted font
+                    // CSes to \relax.
+                    if !matches!(
+                        p,
+                        Prim::Font
+                            | Prim::TextFont
+                            | Prim::ScriptFont
+                            | Prim::ScriptScriptFont
+                            | Prim::CatCode
+                            | Prim::MathCode
+                            | Prim::DelCode
+                            | Prim::LcCodeP
+                            | Prim::SfCodeP
+                            | Prim::UcCodeP
+                    ) {
+                        self.clear_prefixes();
+                    }
                 }
                 self.main_dispatch(p, id);
             } else {
@@ -182,10 +202,12 @@ impl Engine {
                         }
                         self.error(&format!("Undefined control sequence \\{}", name));
                     }
-                    Some(Equiv::Macro(m)) => {
-                        if self.cur_prim != Some(crate::prim::Prim::Relax) {
-                            self.expand_macro(id, &m);
-                        }
+                    Some(Equiv::Macro(_)) => {
+                        // get_token already declined to expand this (\\noexpand
+                        // freeze, \\protected in an edef scan, self-quark stop
+                        // marker). Knuth treats frozen dont_expand as \\relax.
+                        // Re-expanding here loops: self-quark terminators
+                        // (\\q__tl_recursion_tail) never stop expl3 maps.
                     }
                     Some(Equiv::CharDef(v)) => {
                         self.char_token(v as u8, false);
@@ -198,7 +220,7 @@ impl Engine {
                         self.dispatch(Token(v));
                     }
                     other => {
-                        if std::env::var("IFTRACE").map(|v|v=="1").unwrap_or(false) {
+                        if crate::debug_flag("IFTRACE") {
                             let name = String::from_utf8_lossy(self.cs.name(id)).into_owned();
                             eprintln!("SILENT-DISPATCH cs=\\{} equiv={:?}", name, other.map(|e| e.kind_name()));
                         }
@@ -373,11 +395,11 @@ impl Engine {
                 true
             }
             CountDef => {
-                if std::env::var("DEFTRACE").map(|v|v=="1").unwrap_or(false) { eprintln!("COUNTDEF call"); }
+                if crate::debug_flag("DEFTRACE") { eprintln!("COUNTDEF call"); }
                 self.do_def_register(|e, idx| Equiv::CountReg(idx)); true
             }
             DimenDef => {
-                if std::env::var("DEFTRACE").map(|v|v=="1").unwrap_or(false) { eprintln!("DIMENDEF call"); }
+                if crate::debug_flag("DEFTRACE") { eprintln!("DIMENDEF call"); }
                 self.do_def_register(|e, idx| Equiv::DimenReg(idx)); true
             }
             SkipDef => { self.do_def_register(|e, idx| Equiv::SkipReg(idx)); true }
@@ -386,7 +408,7 @@ impl Engine {
             CharDef => {
                 // tex.web: \chardef is global
                 let t = self.scan_definable_cs();
-                if std::env::var("DEFWATCH").map(|v|v=="1").unwrap_or(false)
+                if crate::debug_flag("DEFWATCH")
                     && self.cs.name(t) == b"def" {
                     eprintln!("DEFWATCH: \\chardef targeting \\def at line {}", self.input.current_file_line());
                 }
@@ -452,6 +474,10 @@ impl Engine {
                 true
             }
             IntP(ip) => {
+                if matches!(ip, crate::prim::IntParam::ErrorStopMode | crate::prim::IntParam::ScrollMode | crate::prim::IntParam::NonStopMode | crate::prim::IntParam::BatchMode) {
+                    self.clear_prefixes();
+                    return true;
+                }
                 self.scan_optional_equals();
                 match ip {
                     IntParam::CurFam => {
@@ -585,10 +611,10 @@ impl Engine {
         static NONCS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
         self.skip_raw_spaces();
         let t = self.raw_token();
-        if std::env::var("DEFTRACE").map(|v|v=="1").unwrap_or(false) {
+        if crate::debug_flag("DEFTRACE") {
             eprintln!("DEFINABLE target={:#x} cs={:?}", t.0, if t.is_cs() { String::from_utf8_lossy(self.cs.name(t.cs_id())).to_string() } else { String::new() });
         }
-        if std::env::var("DEFWATCH").map(|v|v=="1").unwrap_or(false) {
+        if crate::debug_flag("DEFWATCH") {
             eprintln!("DEFSCAN target={:#x} cs={:?} pushed_top={:?} line={}", t.0, if t.is_cs() { String::from_utf8_lossy(self.cs.name(t.cs_id())).to_string() } else { "-".to_string() }, self.pushed.last().map(|x| format!("{:#x}", x.0)), self.input.current_file_line());
         }
         if t.is_char() && t.cc() == 13 {
@@ -629,7 +655,7 @@ impl Engine {
         // tex.web: \countdef/\dimendef/\skipdef/\toksdef assignments are always \global
         let t = self.scan_definable_cs();
 
-        if std::env::var("DEFWATCH").map(|v|v=="1").unwrap_or(false)
+        if crate::debug_flag("DEFWATCH")
             && self.cs.name(t) == b"def" {
             let ring: Vec<std::string::String> = self.tok_ring.iter().rev().take(30).map(|(v, ln)| format!("{:#x}@{}", v, ln)).collect();
             eprintln!("DEFWATCH: register-def targeting \\def at line {} ring=[{}]", self.input.current_file_line(), ring.join(" "));
@@ -737,7 +763,7 @@ impl Engine {
         if self.cs.name(target) == b"GTS@Token" {
             eprintln!("AFTER-TOKEN-EDEF e-scan={} body=[{}]", self.in_expanded_scan, self.tokens_to_string(&body));
         }
-        if std::env::var("QUARKTRACE").is_ok()
+        if crate::debug_flag("QUARKTRACE")
             && (String::from_utf8_lossy(self.cs.name(target)).starts_with("q__")
                 || String::from_utf8_lossy(self.cs.name(target)).contains("recursion_tail"))
         {
@@ -745,7 +771,7 @@ impl Engine {
                 self.tokens_to_string(&body),
                 body.iter().any(|t| t.is_cs() && self.cs.name(t.cs_id()) == self.cs.name(target)));
         }
-        if std::env::var("DEFTOOL").is_ok() {
+        if crate::debug_flag("DEFTOOL") {
             eprintln!("FINISH {} np={} prefix=[{}] params=[{}] body=[{}]",
                 String::from_utf8_lossy(self.cs.name(target)), num_params,
                 self.tokens_to_string(&self.def_prefix),
@@ -1016,7 +1042,10 @@ impl Engine {
             self.skip_raw_spaces();
             let eq = self.raw_token();
             if eq.is_char() && eq.chr() == b'=' as u32 && eq.cc() == 12 {
-                self.skip_raw_spaces();
+                let sp = self.raw_token();
+                if !(sp.is_char() && sp.cc() == 10) {
+                    self.pushed.push(sp);
+                }
             } else {
                 self.pushed.push(eq);
             }
@@ -1148,6 +1177,15 @@ impl Engine {
                     return;
                 }
                 let _ = self.pop_group();
+                // tex.web 1136-1140: the `}` closing a \noalign body group
+                // ends the no-align. Depth returned to the watermark set by
+                // align_noalign means the body's brace group just closed.
+                if self.scanner_status == ScannerStatus::Aligning
+                    && self.align_in_noalign
+                    && self.eqtb.save_stack.len() == self.align_pushed_base
+                {
+                    self.align_finish_noalign_now();
+                }
             }
             Some(LevelType::Group) => {
                 // math/legacy groups: pack if a box context is open

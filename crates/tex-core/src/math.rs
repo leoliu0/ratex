@@ -186,7 +186,7 @@ impl Engine {
     // ---------- mode entry / exit ----------
 
     pub fn enter_math(&mut self, _display: bool) {
-        let trace = std::env::var("MATHTRACE").map(|v|v=="1").unwrap_or(false);
+        let trace = crate::debug_flag("MATHTRACE");
         let mut display = _display;
         if !display {
             // tex.web §1134: a second math_shift promotes to display math
@@ -248,7 +248,7 @@ impl Engine {
         // tex.web: the closing `$` of a `$$...$$` pair consumes its partner,
         // so a trailing `$` cannot open a new formula (§1134 mirror image).
         let t = self.get_token();
-        let trace = std::env::var("MATHTRACE").map(|v|v=="1").unwrap_or(false);
+        let trace = crate::debug_flag("MATHTRACE");
         if trace {
             eprintln!("EXIT-MATH mode={:?} mlists={} peek={:?} line={} raw={:?}",
                 self.mode, self.math_lists.len(),
@@ -296,7 +296,7 @@ impl Engine {
     }
 
     fn finish_display_math(&mut self, hbox: Node) {
-        if std::env::var("MATHTRACE").map(|v|v=="1").unwrap_or(false) {
+        if crate::debug_flag("MATHTRACE") {
             eprintln!("FINISH-DISPLAY hbox_whd=({},{},{}) par_pages={} page_list={}",
                 self.box_w(&hbox), { let (_, h, _) = box_dims(&hbox); h }, { let (_, _, d) = box_dims(&hbox); d },
                 self.par_page_lists.len(), self.page_list.len());

@@ -43,7 +43,7 @@ impl Engine {
                         if *param_pos < p.len() {
                             let t = p[*param_pos];
                             *param_pos += 1;
-                            if std::env::var("SPTRACE").map(|v|v=="1").unwrap_or(false) && t == crate::token::Token::space() {
+                            if crate::debug_flag("SPTRACE") && t == crate::token::Token::space() {
                                 eprintln!("SPPOP2 list={} idx={}", name, param_idx);
                             }
                             return Some(t);
@@ -55,7 +55,7 @@ impl Engine {
                     if *pos < toks.len() {
                         let t = toks[*pos];
                         *pos += 1;
-                        if std::env::var("SPTRACE").map(|v|v=="1").unwrap_or(false) && t == crate::token::Token::space() {
+                        if crate::debug_flag("SPTRACE") && t == crate::token::Token::space() {
                             eprintln!("SPPOP list={} pos={}", name, pos);
                         }
                         if t.0 >= 0x4000_0000 && t.0 < 0x8000_0000 {
@@ -64,15 +64,15 @@ impl Engine {
                                 *param_idx = n - 1;
                                 *param_pos = 0;
                                 *in_param = true;
-                                if std::env::var("SUBTRACE").map(|v|v=="1").unwrap_or(false) {
+                                if crate::debug_flag("SUBTRACE") {
                                     eprintln!("SUB-enter {} idx={} arglen={}", name, n, params[n-1].len());
                                 }
                                 continue;
-                            } else if std::env::var("SUBTRACE").map(|v|v=="1").unwrap_or(false) {
+                            } else if crate::debug_flag("SUBTRACE") {
                                 eprintln!("SUB-OOR {} n={} params={}", name, n, params.len());
                             }
                         }
-                        if std::env::var("SUBTRACE").map(|v|v=="1").unwrap_or(false) {
+                        if crate::debug_flag("SUBTRACE") {
                             let nm = if t.is_cs() { String::from_utf8_lossy(self.cs.name(t.cs_id())).into_owned() } else { format!("cc{}", t.cc()) };
                             eprintln!("TOK {} pos={} tok={}", name, pos, nm);
                         }
@@ -93,7 +93,7 @@ impl Engine {
     /// file_finished pops here).
     fn file_next_token(&mut self, si: usize) -> Option<Token> {
         let r = self.file_next_token_inner(si);
-        if std::env::var("FILETRACE").map(|v|v=="1").unwrap_or(false) {
+        if crate::debug_flag("FILETRACE") {
             let ln = match self.input.stack.get(si) { Some(Source::File { line_no, .. }) => *line_no, _ => 0 };
             let nm = match r { Some(t) if t.is_cs() => format!("\\{}", String::from_utf8_lossy(self.cs.name(t.cs_id()))), Some(t) => format!("cc{}:{}", t.cc(), t.chr()), None => "POP".into() };
             eprintln!("FTOK si={} line={} -> {}", si, ln, nm);
@@ -235,7 +235,7 @@ impl Engine {
                                 continue;
                             }
                             let cat = self.eqtb.cat[el as usize];
-                            if std::env::var("DEFTRACE").map(|v|v=="1").unwrap_or(false) {
+                            if crate::debug_flag("DEFTRACE") {
                                 eprintln!("EOL state->0");
                             }
                             if cat == CAT_EOL {
@@ -345,7 +345,7 @@ impl Engine {
     /// caller should re-loop.
     fn tokenize_char(&mut self, b: u8, si: usize) -> Option<Token> {
         let cat = self.eqtb.cat[b as usize];
-        if std::env::var("TOKTRACE").is_ok() {
+        if crate::debug_flag("TOKTRACE") {
             eprintln!("TOK b={:?} ({}) cat={}", b as char, b, cat);
         }
         match cat {

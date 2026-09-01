@@ -264,6 +264,8 @@ pub enum Prim {
     MuExpr,
     Input,
     EndInput,
+    Patterns,
+    Hyphenation,
     Dump,
     // ---- conditionals ----
     IfChar,
@@ -851,6 +853,8 @@ impl Prim {
             Prim::TextStyle => 282,
             Prim::ScriptStyle => 283,
             Prim::ScriptScriptStyle => 284,
+            Prim::Patterns => 287,
+            Prim::Hyphenation => 288,
             Prim::IntP(p) => 0x1000 | p.idx(),
             Prim::DimP(p) => 0x2000 | p.idx(),
             Prim::GlueP(p) => 0x3000 | p.idx(),
@@ -1147,6 +1151,8 @@ impl Prim {
             282 => Some(Prim::TextStyle),
             283 => Some(Prim::ScriptStyle),
             284 => Some(Prim::ScriptScriptStyle),
+            287 => Some(Prim::Patterns),
+            288 => Some(Prim::Hyphenation),
 
             0x1000..=0x1fff => {
                 let i = c & 0x0fff;

@@ -206,6 +206,7 @@ impl Engine {
             }
             Input => self.do_input(),
             EndInput => self.do_endinput(),
+            Patterns | Hyphenation => self.do_hyphenation_words(p == Patterns),
             ScanTokens => {
                 let _ = self.expand_prim(ScanTokens, id);
             }
@@ -516,13 +517,27 @@ impl Engine {
             }
             PdfObj => self.do_pdfobj(),
             PdfXForm => self.do_pdfxform(),
+            PdfGlyphToUnicode => {
+                // pdftex: \pdfglyphtounicode <glyph name> <unicode value> —
+                // TWO arguments. The generic one-arg consumer left the
+                // second in the stream, leaking hex like "221500B7".
+                for _ in 0..2 {
+                    self.skip_spaces_relax();
+                    let t = self.get_token();
+                    if t.is_char() && t.cc() == 1 {
+                        self.scan_balanced_raw(true);
+                    } else if !(t.is_char() && t.cc() == 10) {
+                        // unbraced single-token arg; spaces between args skip
+                    }
+                }
+            }
             PdfXImage => self.do_pdfximage(),
             // object references take an object number (typically
             // `\pdfrefximage\pdflastximage`), so scan it as an integer
             PdfRefObj | PdfRefXForm | PdfRefXImage => {
                 let _ = self.scan_int();
             }
-            PdfGlyphToUnicode | PdfFontAttr | PdfCompressorLevel
+            PdfFontAttr | PdfCompressorLevel
             | PdfUncompress | PdfTolerance | PdfPageBox | PdfThread | PdfStartThread
             | PdfEndThread | PdfResetTimer => {
                 // consume the argument syntactically: most take balanced text

@@ -31,3 +31,19 @@ pub mod tfm;
 pub mod token;
 
 pub use engine::Engine;
+/// Cached debug-flag lookup for the `eprintln!` probes scattered through the
+/// engine. `std::env::var` costs ~100-300ns per call and we were paying it on
+/// every token push (PUSHWATCH et al.) — that alone dominated boot time.
+/// A flag is true iff the variable is set to a non-empty value other than "0".
+pub fn debug_flag(name: &'static str) -> bool {
+    thread_local! {
+        static FLAGS: std::cell::RefCell<std::collections::HashMap<&'static str, bool>> =
+            std::cell::RefCell::new(std::collections::HashMap::new());
+    }
+    FLAGS.with(|f| {
+        let mut m = f.borrow_mut();
+        *m.entry(name).or_insert_with(|| {
+            std::env::var(name).is_ok_and(|v| !v.is_empty() && v != "0")
+        })
+    })
+}

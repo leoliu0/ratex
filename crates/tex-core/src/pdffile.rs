@@ -431,6 +431,20 @@ pub fn write_pdf(doc: &PdfDoc) -> Vec<u8> {
     if names_obj != 0 {
         cat.push_str(&format!(" /Names << /D {} 0 R >>", names_obj));
     }
+    if let Some((page, view)) = &doc.open_action {
+        if let Some(&(content, page_obj, _)) = page_objs.get((*page).checked_sub(1).unwrap_or(0) as usize) {
+            let _ = content;
+            let view_s = view.trim();
+            let view_pdf = if !view_s.is_empty()
+                && view_s.chars().all(|c| c.is_ascii_alphanumeric())
+            {
+                format!("/{}", view_s)
+            } else {
+                view_s.to_string()
+            };
+            cat.push_str(&format!(" /OpenAction [{} 0 R {}]", page_obj, view_pdf));
+        }
+    }
     if let Some((root, _)) = &outlines {
         cat.push_str(&format!(" /Outlines {} 0 R", root));
     }

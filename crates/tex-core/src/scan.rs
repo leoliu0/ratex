@@ -19,7 +19,7 @@ impl Engine {
             if t.is_cs() && self.cur_prim == Some(Prim::Relax) {
                 continue;
             }
-            { let __pt = t; if std::env::var("PUSHWATCH").map(|w|w=="1").unwrap_or(false) && __pt.is_cs() && self.cs.name(__pt.cs_id()) == b"ifx" && self.input.current_file_line() > 9000 { eprintln!("PUSHIFX crates/tex-core/src/scan.rs:{} line={}", {line!()}, self.input.current_file_line()); } self.pushed.push(__pt); }
+            { let __pt = t; if crate::debug_flag("PUSHWATCH") && __pt.is_cs() && self.cs.name(__pt.cs_id()) == b"ifx" && self.input.current_file_line() > 9000 { eprintln!("PUSHIFX crates/tex-core/src/scan.rs:{} line={}", {line!()}, self.input.current_file_line()); } self.pushed.push(__pt); }
             return;
         }
     }
@@ -130,7 +130,7 @@ impl Engine {
             self.skip_spaces_relax();
         } else {
             let __pt = t;
-            if std::env::var("PUSHWATCH").map(|w| w == "1").unwrap_or(false) && __pt.is_cs() && self.cs.name(__pt.cs_id()) == b"ifx" && self.input.current_file_line() > 9000 {
+            if crate::debug_flag("PUSHWATCH") && __pt.is_cs() && self.cs.name(__pt.cs_id()) == b"ifx" && self.input.current_file_line() > 9000 {
                 eprintln!("PUSHIFX crates/tex-core/src/scan.rs:{} line={}", line!(), self.input.current_file_line());
             }
             self.pushed.push(__pt);
@@ -147,7 +147,7 @@ impl Engine {
                 break; // absorb one space, number complete
             }
             if !t.is_char() {
-                { let __pt = t; if std::env::var("PUSHWATCH").map(|w|w=="1").unwrap_or(false) && __pt.is_cs() && self.cs.name(__pt.cs_id()) == b"ifx" && self.input.current_file_line() > 9000 { eprintln!("PUSHIFX crates/tex-core/src/scan.rs:{} line={}", {line!()}, self.input.current_file_line()); } self.pushed.push(__pt); }
+                { let __pt = t; if crate::debug_flag("PUSHWATCH") && __pt.is_cs() && self.cs.name(__pt.cs_id()) == b"ifx" && self.input.current_file_line() > 9000 { eprintln!("PUSHIFX crates/tex-core/src/scan.rs:{} line={}", {line!()}, self.input.current_file_line()); } self.pushed.push(__pt); }
                 break;
             }
             let c = t.chr();
@@ -156,12 +156,12 @@ impl Engine {
                 _ if allow_letters && (b'a' as u32..=b'f' as u32).contains(&c) => c - b'a' as u32 + 10,
                 _ if allow_letters && (b'A' as u32..=b'F' as u32).contains(&c) => c - b'A' as u32 + 10,
                 _ => {
-                    { let __pt = t; if std::env::var("PUSHWATCH").map(|w|w=="1").unwrap_or(false) && __pt.is_cs() && self.cs.name(__pt.cs_id()) == b"ifx" && self.input.current_file_line() > 9000 { eprintln!("PUSHIFX crates/tex-core/src/scan.rs:{} line={}", {line!()}, self.input.current_file_line()); } self.pushed.push(__pt); }
+                    { let __pt = t; if crate::debug_flag("PUSHWATCH") && __pt.is_cs() && self.cs.name(__pt.cs_id()) == b"ifx" && self.input.current_file_line() > 9000 { eprintln!("PUSHIFX crates/tex-core/src/scan.rs:{} line={}", {line!()}, self.input.current_file_line()); } self.pushed.push(__pt); }
                     break;
                 }
             };
             if d >= radix {
-                { let __pt = t; if std::env::var("PUSHWATCH").map(|w|w=="1").unwrap_or(false) && __pt.is_cs() && self.cs.name(__pt.cs_id()) == b"ifx" && self.input.current_file_line() > 9000 { eprintln!("PUSHIFX crates/tex-core/src/scan.rs:{} line={}", {line!()}, self.input.current_file_line()); } self.pushed.push(__pt); }
+                { let __pt = t; if crate::debug_flag("PUSHWATCH") && __pt.is_cs() && self.cs.name(__pt.cs_id()) == b"ifx" && self.input.current_file_line() > 9000 { eprintln!("PUSHIFX crates/tex-core/src/scan.rs:{} line={}", {line!()}, self.input.current_file_line()); } self.pushed.push(__pt); }
                 break;
             }
             v = v * radix as i64 + d as i64;
@@ -218,7 +218,7 @@ impl Engine {
                             v = 0x7FFF_FFFF;
                         }
                     } else {
-                        { let __pt = t2; if std::env::var("PUSHWATCH").map(|w|w=="1").unwrap_or(false) && __pt.is_cs() && self.cs.name(__pt.cs_id()) == b"ifx" && self.input.current_file_line() > 9000 { eprintln!("PUSHIFX crates/tex-core/src/scan.rs:{} line={}", {line!()}, self.input.current_file_line()); } self.pushed.push(__pt); }
+                        { let __pt = t2; if crate::debug_flag("PUSHWATCH") && __pt.is_cs() && self.cs.name(__pt.cs_id()) == b"ifx" && self.input.current_file_line() > 9000 { eprintln!("PUSHIFX crates/tex-core/src/scan.rs:{} line={}", {line!()}, self.input.current_file_line()); } self.pushed.push(__pt); }
                         break;
                     }
                 }
@@ -420,8 +420,8 @@ impl Engine {
                     }
                 }
             }
-            { let __pt = t; if std::env::var("PUSHWATCH").map(|w|w=="1").unwrap_or(false) && __pt.is_cs() && self.cs.name(__pt.cs_id()) == b"ifx" && self.input.current_file_line() > 9000 { eprintln!("PUSHIFX crates/tex-core/src/scan.rs:{} line={}", {line!()}, self.input.current_file_line()); } self.pushed.push(__pt); }
-            if std::env::var("IFTRACE").map(|v|v=="1").unwrap_or(false) {
+            { let __pt = t; if crate::debug_flag("PUSHWATCH") && __pt.is_cs() && self.cs.name(__pt.cs_id()) == b"ifx" && self.input.current_file_line() > 9000 { eprintln!("PUSHIFX crates/tex-core/src/scan.rs:{} line={}", {line!()}, self.input.current_file_line()); } self.pushed.push(__pt); }
+            if crate::debug_flag("IFTRACE") {
                 let nm = if t.is_cs() { String::from_utf8_lossy(self.cs.name(t.cs_id())).into_owned() } else { format!("cc{}", t.cc()) };
                 let ek = match self.eqtb.resolve(t.cs_id()) { Some(e) => e.kind_name(), None => "U" };
                 eprintln!("MISSNUM tok={} kind={} prim={:?} srcs={:?}", nm, ek, self.cur_prim, self.input.stack.iter().rev().take(2).map(|src| match src { crate::input::Source::TokList{name,pos,toks,..} => format!("T:{} {}/{}",name,pos,toks.len()), crate::input::Source::File{name,line_no,..} => format!("F:{}",line_no)}).collect::<Vec<_>>());
@@ -540,7 +540,7 @@ impl Engine {
                 negate = !negate;
                 continue;
             }
-            { let __pt = t; if std::env::var("PUSHWATCH").map(|w|w=="1").unwrap_or(false) && __pt.is_cs() && self.cs.name(__pt.cs_id()) == b"ifx" && self.input.current_file_line() > 9000 { eprintln!("PUSHIFX crates/tex-core/src/scan.rs:{} line={}", {line!()}, self.input.current_file_line()); } self.pushed.push(__pt); }
+            { let __pt = t; if crate::debug_flag("PUSHWATCH") && __pt.is_cs() && self.cs.name(__pt.cs_id()) == b"ifx" && self.input.current_file_line() > 9000 { eprintln!("PUSHIFX crates/tex-core/src/scan.rs:{} line={}", {line!()}, self.input.current_file_line()); } self.pushed.push(__pt); }
             break;
         }
         // factor: integer or decimal, or a direct dimen source
@@ -560,7 +560,7 @@ impl Engine {
                             int_part = 0x7FFF_FFFF;
                         }
                     } else {
-                        { let __pt = t2; if std::env::var("PUSHWATCH").map(|w|w=="1").unwrap_or(false) && __pt.is_cs() && self.cs.name(__pt.cs_id()) == b"ifx" && self.input.current_file_line() > 9000 { eprintln!("PUSHIFX crates/tex-core/src/scan.rs:{} line={}", {line!()}, self.input.current_file_line()); } self.pushed.push(__pt); }
+                        { let __pt = t2; if crate::debug_flag("PUSHWATCH") && __pt.is_cs() && self.cs.name(__pt.cs_id()) == b"ifx" && self.input.current_file_line() > 9000 { eprintln!("PUSHIFX crates/tex-core/src/scan.rs:{} line={}", {line!()}, self.input.current_file_line()); } self.pushed.push(__pt); }
                         break;
                     }
                 }
@@ -582,7 +582,7 @@ impl Engine {
                         scale *= 0.1;
                     }
                 } else {
-                    { let __pt = t2; if std::env::var("PUSHWATCH").map(|w|w=="1").unwrap_or(false) && __pt.is_cs() && self.cs.name(__pt.cs_id()) == b"ifx" && self.input.current_file_line() > 9000 { eprintln!("PUSHIFX crates/tex-core/src/scan.rs:{} line={}", {line!()}, self.input.current_file_line()); } self.pushed.push(__pt); }
+                    { let __pt = t2; if crate::debug_flag("PUSHWATCH") && __pt.is_cs() && self.cs.name(__pt.cs_id()) == b"ifx" && self.input.current_file_line() > 9000 { eprintln!("PUSHIFX crates/tex-core/src/scan.rs:{} line={}", {line!()}, self.input.current_file_line()); } self.pushed.push(__pt); }
                     break;
                 }
             }
@@ -710,7 +710,7 @@ impl Engine {
                     }
                     _ => {
                         self.pushed.push(t);
-                        if std::env::var("UNITTRACE").map(|v| v == "1").unwrap_or(false) {
+                        if crate::debug_flag("UNITTRACE") {
                             eprintln!("NUM-FAIL cs=\\{} prim={:?} eq={:?} L{} mac={}",
                                 String::from_utf8_lossy(self.cs.name(t.cs_id())),
                                 self.cur_prim,
@@ -726,7 +726,7 @@ impl Engine {
             }
         } else {
             self.pushed.push(t);
-            if std::env::var("UNITTRACE").map(|v| v == "1").unwrap_or(false) {
+            if crate::debug_flag("UNITTRACE") {
                 eprintln!("NUM-FAIL tok=cc{}:{:#x} L{} mac={}", t.cc(), t.chr(), self.input.current_file_line(), self.current_macro);
             }
             self.error("Missing number, treated as zero");
@@ -801,8 +801,8 @@ impl Engine {
                         return self.scan_unit_sp_d(mu, depth + 1);
                     }
                     _ => {
-                        { let __pt = t; if std::env::var("PUSHWATCH").map(|w|w=="1").unwrap_or(false) && __pt.is_cs() && self.cs.name(__pt.cs_id()) == b"ifx" && self.input.current_file_line() > 9000 { eprintln!("PUSHIFX crates/tex-core/src/scan.rs:{} line={}", {line!()}, self.input.current_file_line()); } self.pushed.push(__pt); }
-                        if std::env::var("UNITTRACE").map(|v| v == "1").unwrap_or(false) {
+                        { let __pt = t; if crate::debug_flag("PUSHWATCH") && __pt.is_cs() && self.cs.name(__pt.cs_id()) == b"ifx" && self.input.current_file_line() > 9000 { eprintln!("PUSHIFX crates/tex-core/src/scan.rs:{} line={}", {line!()}, self.input.current_file_line()); } self.pushed.push(__pt); }
+                        if crate::debug_flag("UNITTRACE") {
                             let tn = if t.is_cs() { format!("\\{}", String::from_utf8_lossy(self.cs.name(t.cs_id()))) } else { format!("cc{} chr={}", t.cc(), t.chr()) };
                             eprintln!("UNIT-FAIL mu={} tok={} L{} mac={}", mu, tn, self.input.current_file_line(), self.current_macro);
                         }
@@ -834,7 +834,7 @@ impl Engine {
                         kw.push(t2.chr() as u8);
                         cur.push((t2.chr() as u8).to_ascii_lowercase() as char);
                     } else {
-                        { let __pt = t2; if std::env::var("PUSHWATCH").map(|w|w=="1").unwrap_or(false) && __pt.is_cs() && self.cs.name(__pt.cs_id()) == b"ifx" && self.input.current_file_line() > 9000 { eprintln!("PUSHIFX crates/tex-core/src/scan.rs:{} line={}", {line!()}, self.input.current_file_line()); } self.pushed.push(__pt); }
+                        { let __pt = t2; if crate::debug_flag("PUSHWATCH") && __pt.is_cs() && self.cs.name(__pt.cs_id()) == b"ifx" && self.input.current_file_line() > 9000 { eprintln!("PUSHIFX crates/tex-core/src/scan.rs:{} line={}", {line!()}, self.input.current_file_line()); } self.pushed.push(__pt); }
                         break;
                     }
                 }
@@ -852,7 +852,7 @@ impl Engine {
                     s.pop();
                 }
                 for t in excess.into_iter().rev() {
-                    { let __pt = t; if std::env::var("PUSHWATCH").map(|w|w=="1").unwrap_or(false) && __pt.is_cs() && self.cs.name(__pt.cs_id()) == b"ifx" && self.input.current_file_line() > 9000 { eprintln!("PUSHIFX crates/tex-core/src/scan.rs:{} line={}", {line!()}, self.input.current_file_line()); } self.pushed.push(__pt); }
+                    { let __pt = t; if crate::debug_flag("PUSHWATCH") && __pt.is_cs() && self.cs.name(__pt.cs_id()) == b"ifx" && self.input.current_file_line() > 9000 { eprintln!("PUSHIFX crates/tex-core/src/scan.rs:{} line={}", {line!()}, self.input.current_file_line()); } self.pushed.push(__pt); }
                 }
                 let s2: String = kw.iter().map(|&b| b.to_ascii_lowercase() as char).collect();
                 s = s2;
@@ -881,7 +881,7 @@ impl Engine {
                 "px" => 65782,
                 "mu" if mu => (self.cur_quad() / 18) as i64,
                 _ => {
-                    if std::env::var("DEFTRACE").map(|v|v=="1").unwrap_or(false) {
+                    if crate::debug_flag("DEFTRACE") {
                         eprintln!("UNITFAIL s={:?} kw={:?}", s, kw);
                     }
                     self.error("Illegal unit of measure (pt inserted).");
@@ -899,7 +899,7 @@ impl Engine {
                 _ => unit_sp,
             };
         } else {
-            { let __pt = t; if std::env::var("PUSHWATCH").map(|w|w=="1").unwrap_or(false) && __pt.is_cs() && self.cs.name(__pt.cs_id()) == b"ifx" && self.input.current_file_line() > 9000 { eprintln!("PUSHIFX crates/tex-core/src/scan.rs:{} line={}", {line!()}, self.input.current_file_line()); } self.pushed.push(__pt); }
+            { let __pt = t; if crate::debug_flag("PUSHWATCH") && __pt.is_cs() && self.cs.name(__pt.cs_id()) == b"ifx" && self.input.current_file_line() > 9000 { eprintln!("PUSHIFX crates/tex-core/src/scan.rs:{} line={}", {line!()}, self.input.current_file_line()); } self.pushed.push(__pt); }
             self.error("Illegal unit of measure (pt inserted).");
             unit_sp = ONE as i64;
         }
@@ -988,7 +988,7 @@ impl Engine {
             if t.is_char() && (t.chr() as u8) == b'l' && order < 3 {
                 order += 1;
             } else {
-                { let __pt = t; if std::env::var("PUSHWATCH").map(|w|w=="1").unwrap_or(false) && __pt.is_cs() && self.cs.name(__pt.cs_id()) == b"ifx" && self.input.current_file_line() > 9000 { eprintln!("PUSHIFX crates/tex-core/src/scan.rs:{} line={}", {line!()}, self.input.current_file_line()); } self.pushed.push(__pt); }
+                { let __pt = t; if crate::debug_flag("PUSHWATCH") && __pt.is_cs() && self.cs.name(__pt.cs_id()) == b"ifx" && self.input.current_file_line() > 9000 { eprintln!("PUSHIFX crates/tex-core/src/scan.rs:{} line={}", {line!()}, self.input.current_file_line()); } self.pushed.push(__pt); }
                 return order;
             }
         }
@@ -1046,7 +1046,7 @@ impl Engine {
     /// like scan_general_text but expanding (\edef semantics)
     pub fn scan_general_text_expanded(&mut self) -> Vec<Token> {
         self.skip_spaces_relax();
-        if std::env::var("IFTRACE").map(|v| v == "1").unwrap_or(false) {
+        if crate::debug_flag("IFTRACE") {
             let st: Vec<String> = self.input.stack.iter().rev().take(3).map(|src| match src {
                 crate::input::Source::TokList { name, pos, toks, .. } => format!("T:{} {}/{}", name, pos, toks.len()),
                 crate::input::Source::File { name, line_no, .. } => format!("F:{}#{}", name, line_no),
@@ -1175,7 +1175,7 @@ impl Engine {
         self.skip_spaces_relax();
         let t = self.get_token();
         if !t.is_cs() {
-            { let __pt = t; if std::env::var("PUSHWATCH").map(|w|w=="1").unwrap_or(false) && __pt.is_cs() && self.cs.name(__pt.cs_id()) == b"ifx" && self.input.current_file_line() > 9000 { eprintln!("PUSHIFX crates/tex-core/src/scan.rs:{} line={}", {line!()}, self.input.current_file_line()); } self.pushed.push(__pt); }
+            { let __pt = t; if crate::debug_flag("PUSHWATCH") && __pt.is_cs() && self.cs.name(__pt.cs_id()) == b"ifx" && self.input.current_file_line() > 9000 { eprintln!("PUSHIFX crates/tex-core/src/scan.rs:{} line={}", {line!()}, self.input.current_file_line()); } self.pushed.push(__pt); }
             self.error("You can't use `\\the' after ");
             return;
         }
@@ -1632,7 +1632,7 @@ impl Engine {
         self.skip_spaces_relax();
         let t = self.get_token();
         if !t.is_cs() {
-            { let __pt = t; if std::env::var("PUSHWATCH").map(|w|w=="1").unwrap_or(false) && __pt.is_cs() && self.cs.name(__pt.cs_id()) == b"ifx" && self.input.current_file_line() > 9000 { eprintln!("PUSHIFX crates/tex-core/src/scan.rs:{} line={}", {line!()}, self.input.current_file_line()); } self.pushed.push(__pt); }
+            { let __pt = t; if crate::debug_flag("PUSHWATCH") && __pt.is_cs() && self.cs.name(__pt.cs_id()) == b"ifx" && self.input.current_file_line() > 9000 { eprintln!("PUSHIFX crates/tex-core/src/scan.rs:{} line={}", {line!()}, self.input.current_file_line()); } self.pushed.push(__pt); }
             self.error("Missing font identifier");
             return 0;
         }
@@ -1641,6 +1641,21 @@ impl Engine {
             Some(Equiv::Prim(Prim::Font)) => {
                 // \font refers to current font
                 self.cur_font
+            }
+            // tex.web §1023 scan_font_ident: \textfont/\scriptfont/
+            // \scriptscriptfont <fam> yield the family's font id.
+            Some(Equiv::Prim(p @ (Prim::TextFont | Prim::ScriptFont | Prim::ScriptScriptFont))) => {
+                let fam = self.scan_int();
+                if !(0..=15).contains(&fam) {
+                    self.error("Bad font family");
+                    return 0;
+                }
+                let slot = match p {
+                    Prim::TextFont => 0,
+                    Prim::ScriptFont => 1,
+                    _ => 2,
+                };
+                self.eqtb.style_fonts[slot][fam as usize]
             }
             _ => {
                 self.error("Not a font identifier");

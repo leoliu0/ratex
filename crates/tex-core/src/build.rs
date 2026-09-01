@@ -474,7 +474,7 @@ impl Engine {
             Some((d, _)) => d,
             None => 0,
         };
-        if std::env::var("IFTRACE").map(|v|v=="1").unwrap_or(false) { eprintln!("PUSH-BG437"); }
+        if crate::debug_flag("IFTRACE") { eprintln!("PUSH-BG437"); }
         // save the outer list context: mode, current list, prev_depth, space_factor
         self.saved_lists.push((self.mode, std::mem::take(&mut self.cur_list), self.prev_depth, self.space_factor));
         self.eqtb.push_level(LevelType::Box);
@@ -494,7 +494,7 @@ impl Engine {
 
     /// called on the matching `}` for a box group or plain group
     pub fn end_box(&mut self) {
-        if std::env::var("IFTRACE").map(|v|v=="1").unwrap_or(false) {
+        if crate::debug_flag("IFTRACE") {
             eprintln!("ENDBOX kinds={} saved={} targets={} pars={}", self.box_kinds.len(), self.saved_lists.len(), self.box_targets.len(), self.par_saves);
         }
         if self.box_kinds.is_empty() {
@@ -1319,7 +1319,7 @@ impl Engine {
     }
 
     pub fn start_paragraph(&mut self, indent: bool) {
-        if std::env::var("IFTRACE").map(|v|v=="1").unwrap_or(false) { eprintln!("START-PAR mode={:?} indent={} line={}", self.mode, indent, self.input.current_file_line()); }
+        if crate::debug_flag("IFTRACE") { eprintln!("START-PAR mode={:?} indent={} line={}", self.mode, indent, self.input.current_file_line()); }
         match self.mode {
             Mode::Horizontal => {
                 if indent {

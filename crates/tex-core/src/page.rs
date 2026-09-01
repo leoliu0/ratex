@@ -5,11 +5,9 @@
 //! and fires the `\output` routine at good breaks with the page in `\box255`
 //! and each active insert class split/placed into `\box N`.
 //!
-//! Deviations from tex.web noted inline: `\outputpenalty` and
-//! `\floatingpenalty` have no dedicated integer params in this engine yet
-//! (prim.rs is shared), so the break penalty is not exported to `\count0`
-//! (that register is the page number) and the insert node's `cost` field
-//! stands in for `\floatingpenalty`.
+//! `\outputpenalty` is a real int param (exported by the output-routine
+//! entry below). `\floatingpenalty` has no dedicated storage: the insert
+//! node's `cost` field stands in for it.
 
 use std::collections::BTreeMap;
 
@@ -18,8 +16,13 @@ use crate::engine::Engine;
 use crate::prim::{DimParam, GlueParam, IntParam, ToksParam};
 use crate::scaled::{badness, AWFUL_BAD, EJECT_PENALTY, INF_BAD, INF_PENALTY};
 
-/// sentinel token pushed after the `\output` token list; ends the routine
-pub const OUT_END_TOKEN: crate::token::Token = crate::token::Token(0xE000_0001);
+/// sentinel token pushed after the `\output` token list; ends the routine.
+/// Must live in `0xFFFF_xxxx` so `get_token` does not treat it as `\\noexpand`
+/// (`NOEXP_FLAG = 0xC000_0000` .. `0xFFFF_0000`).
+pub const OUT_END_TOKEN: crate::token::Token = crate::token::Token(0xFFFF_FFFD);
+/// Sentinel ending the `<write>` emission toklist; get_token returns it raw
+/// so do_write's emission loop stops instead of leaking into the outer stream.
+pub const WRITE_END_TOKEN: crate::token::Token = crate::token::Token(0xFFFF_FFFB);
 
 /// tex.web `deplorable`: cost of a break at awful badness
 const DEPLORABLE: i32 = 100_000;
@@ -145,13 +148,51 @@ impl PageState {
 }
 
 impl Engine {
-    /// `\vsize` read live, so mid-page changes are honored at the next break
+    /// `\vsize` read live, so mid-page changes are honored at the next break.
+    /// An explicit `\pagegoal` assignment (output routine / package) takes
+    /// precedence; in iniTeX or when the fallback `\vsize <= 0`, the goal is
+    /// `max_dimen`.
     fn page_goal(&self) -> i64 {
-        self.eqtb.dim_params[DimParam::VSize.idx() as usize] as i64
+        let pg = self.eqtb.dim_params[DimParam::PageGoal.idx() as usize] as i64;
+        if pg != 0 {
+            return pg;
+        }
+        self.vsize_goal()
     }
 
+    /// goal derived from `\vsize` alone (max_dimen when `\vsize <= 0`);
+    /// tex.web re-derives `page_goal := \vsize` at each page start
+    fn vsize_goal(&self) -> i64 {
+        let vs = self.eqtb.dim_params[DimParam::VSize.idx() as usize] as i64;
+        if vs <= 0 {
+            0x3FFF_FFFF // max_dimen: 16383.99998 pt
+        } else {
+            vs
+        }
+    }
     fn max_depth(&self) -> i64 {
         self.eqtb.dim_params[DimParam::MaxDepth.idx() as usize] as i64
+    }
+
+    /// mirror the running page accounting into the `\pagetotal` family of
+    /// dimension registers (tex.web keeps cur_page_* and these registers in
+    /// one storage; here the builder state is the authority)
+    fn sync_page_dims(&mut self, st: &PageState) {
+        let c32 = |v: i64| v.clamp(i32::MIN as i64, i32::MAX as i64) as i32;
+        self.eqtb.dim_params[DimParam::PageTotal.idx() as usize] = c32(st.total);
+        self.eqtb.dim_params[DimParam::PageDepth.idx() as usize] = c32(st.depth);
+        for (o, p) in [
+            (0, DimParam::PageStretch),
+            (1, DimParam::PageFilStretch),
+            (2, DimParam::PageFillStretch),
+            (3, DimParam::PageFilllStretch),
+        ] {
+            self.eqtb.dim_params[p.idx() as usize] = c32(st.stretch[o]);
+        }
+        self.eqtb.dim_params[DimParam::PageShrink.idx() as usize] = c32(st.shrink[0]);
+        // `\pagegoal` is read-only in tex.web: publish the goal the builder
+        // acts on so `\the\pagegoal` reports live state
+        self.eqtb.dim_params[DimParam::PageGoal.idx() as usize] = c32(self.page_goal());
     }
 
     /// scaled insert height: `h * count(n) / 1000` ("magnification");
@@ -220,9 +261,14 @@ impl Engine {
                     }
                 }
                 Node::Box { h, d, .. } | Node::Rule { height: h, depth: d, .. } => {
-                    if !st.goal_set {
+                    // Empty \\hbox{}/\\vbox{} from LaTeX \\clearpage must not
+                    // plant \\topskip or set box_seen; that ships a blank page.
+                    if h == 0 && d == 0 {
+                        // skip
+                    } else if !st.goal_set {
                         // first box on a fresh page: `\topskip` glue before it
                         st.goal_set = true;
+                        self.page_prev_depth = DEPTH_NONE;
                         let ts = self.eqtb.dim_params[DimParam::TopSkip.idx() as usize];
                         let pad = (ts as i64 - h as i64).max(0);
                         if pad > 0 {
@@ -237,12 +283,13 @@ impl Engine {
                         let lsl = self.eqtb.dim_params[DimParam::LineSkipLimit.idx() as usize];
                         let b = bs.width as i64 - self.page_prev_depth as i64 - h as i64;
                         let glue = if b < lsl as i64 { ls } else { Glue { width: b as i32, ..bs } };
+                        self.page_prev_depth = DEPTH_NONE;
                         if glue.width != 0 || glue.stretch != 0 || glue.shrink != 0 {
                             self.page_list.insert(idx, Node::Glue(glue));
                             advance = false; // reprocess at the inserted glue
                         }
                     }
-                    if advance {
+                    if advance && (h != 0 || d != 0) {
                         self.contribute_box(&mut st, h, d);
                         self.page_prev_depth = d;
                     }
@@ -292,7 +339,7 @@ impl Engine {
         self.page_goal_set = st.goal_set;
         self.eqtb.int_params[IntParam::InsertPenalties.idx() as usize] =
             st.insert_penalties.clamp(i32::MIN as i64, i32::MAX as i64) as i32;
-
+        self.sync_page_dims(&st);
         // fire only when a fire condition was met; otherwise the best break
         // stays remembered and the page keeps accumulating (tex.web)
         if st.fire {
@@ -416,14 +463,15 @@ impl Engine {
         c.clamp(i32::MIN as i64, i32::MAX as i64) as i32
     }
 
-    /// fire conditions (tex.web @1010): an eject penalty, a non-positive
-    /// best cost, or an overfull page (fires at the best break seen)
     fn ready_to_fire(&self, st: &PageState) -> bool {
+        if self.ini_mode {
+            return false;
+        }
         if let Some(spot) = st.best {
-            if spot.penalty <= EJECT_PENALTY || spot.cost <= 0 {
+            if spot.penalty <= EJECT_PENALTY {
                 return true;
             }
-            if st.total - self.page_goal() > st.shrink[0] {
+            if st.total >= self.page_goal() {
                 return true;
             }
         }
@@ -432,14 +480,40 @@ impl Engine {
 
     /// cut the page at `cut`, place/split inserts into `\box N`, pack the
     /// rest into `\box255`, and run `\output` (tex.web fire_up)
-    fn fire_up(&mut self, cut: usize, _penalty: i32) {
+    fn fire_up(&mut self, cut: usize, penalty: i32) {
+        if std::env::var("PAGETRACE").map(|v| v == "1").unwrap_or(false) {
+            eprintln!(
+                "FIRE_UP cut={} pen={} in_output={} pages={} line={}",
+                cut,
+                penalty,
+                self.in_output,
+                self.pdf_doc.pages.len(),
+                self.input.current_file_line()
+            );
+        }
         if self.in_output {
+            // Stale-lock recovery: error paths that strip the <output>/
+            // <endoutput> toklists (scan_definable_cs clears, end-of-file)
+            // bypass finish_output; without the routine on the stack the
+            // lock can never release and every later page is silently lost.
+            let alive = self.input.stack.iter().any(|s| {
+                matches!(
+                    s,
+                    crate::input::Source::TokList { name, .. }
+                        if name == "<output>" || name == "<endoutput>"
+                )
+            });
+            if alive {
+                return;
+            }
+            self.in_output = false;
+            self.output_depth = 0;
+        }
+        if self.ini_mode {
             return;
         }
-        // a stale carried breakpoint can outrun a swapped/restored list
-        let cut = cut.min(self.page_list.len());
+        self.eqtb.int_params[IntParam::OutputPenalty.idx() as usize] = penalty;
         self.dead_cycles += 1;
-
         // marks: `\topmark` becomes the old `\botmark`; per-page marks reset
         self.marks[0] = self.marks[2].clone();
         for m in self.marks.iter_mut().skip(1) {
@@ -472,7 +546,12 @@ impl Engine {
         self.page_depth = 0;
         self.page_prev_depth = DEPTH_NONE;
         self.page_goal_set = false;
-
+        // the `\pagetotal` family restarts with the page (tex.web @638)
+        self.sync_page_dims(&PageState::new());
+        // the new page's goal is a fresh `\vsize` snapshot (tex.web @638);
+        // a mid-page `\pagegoal` pin does not survive the page break
+        self.eqtb.dim_params[DimParam::PageGoal.idx() as usize] =
+            self.vsize_goal().clamp(i32::MIN as i64, i32::MAX as i64) as i32;
         let md = self.max_depth().min(i32::MAX as i64) as i32;
         let r = crate::boxes::vpack_add_md(page_mat, None, false, VBOX, &self.eqtb, md);
         self.eqtb.assign_box(255, Some(r.node), true);
@@ -485,27 +564,24 @@ impl Engine {
                 self.dead_cycles
             ));
             let b = self.eqtb.boxed[255].take();
-            if !self.ini_mode {
-                self.ship_box(b);
-            }
+            self.ship_box(b);
             self.dead_cycles = 0;
             return;
         }
 
         let toks = (*self.eqtb.tok_params[ToksParam::Output.idx() as usize]).clone();
         if toks.is_empty() {
-            // TeXbook default output: \shipout\box255
+            // TeXbook default output: \shipout\box255 (also in INITEX)
             let b = self.eqtb.boxed[255].take();
-            if !self.ini_mode {
-                self.ship_box(b);
-            }
+            self.ship_box(b);
             self.dead_cycles = 0;
             return;
         }
         self.in_output = true;
         self.output_depth += 1;
-        self.input.push_toks(toks, "<output>");
+        // LIFO input stack: continuation first, then the routine.
         self.input.push_toks(vec![OUT_END_TOKEN], "<endoutput>");
+        self.input.push_toks(toks, "<output>");
     }
 
     /// Eject the current page prefix (used by `\end`).
@@ -604,12 +680,10 @@ impl Engine {
         self.page_processed += 1;
     }
 
-    /// called when OUT_END_TOKEN is consumed
     pub fn finish_output(&mut self) {
         self.in_output = false;
-        self.output_depth -= 1;
+        self.output_depth = self.output_depth.saturating_sub(1);
         if self.output_depth == 0 {
-            // continue page building with whatever is left
             self.build_page();
         }
     }
@@ -618,6 +692,14 @@ impl Engine {
     pub fn ship_box(&mut self, b: Option<Node>) {
         self.dead_cycles = 0;
         let Some(boxn) = b else { return };
+        if std::env::var("PAGETRACE").map(|v| v == "1").unwrap_or(false) {
+            eprintln!(
+                "SHIPOUT pages={} in_output={} line={}",
+                self.pdf_doc.pages.len() + 1,
+                self.in_output,
+                self.input.current_file_line()
+            );
+        }
         if self.eqtb.int_params[IntParam::TracingPages.idx() as usize] > 0 {
             let page = self.eqtb.count[0] as i64 + 1;
             let msg = format!("[{}]", page);
@@ -625,8 +707,8 @@ impl Engine {
             self.log.push_str(&msg);
         }
         // page size
-        let width = self.pdf_page_width.unwrap_or(9958933);
-        let height = self.pdf_page_height.unwrap_or(14371453);
+        let width = self.eqtb.dim_params[DimParam::PdfPageWidth.idx() as usize];
+        let height = self.eqtb.dim_params[DimParam::PdfPageHeight.idx() as usize];
         let _ = (width, height);
         let page = self.render_page(&boxn);
         self.pdf_doc.pages.push(page);
@@ -690,4 +772,69 @@ fn split_vlist(list: &[Node], target: i64) -> (NodeList, NodeList) {
         }
     };
     (top, rest)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::prim::DimParam as DP;
+
+    fn run(src: &str) -> Engine {
+        let mut e = Engine::new(true);
+        e.init_primitives();
+        e.add_nullfont();
+        let full = format!(
+            "\\catcode`\\{{=1 \\catcode`\\}}=2 \\catcode`\\#=6 \\catcode`\\&=4 {}\n",
+            src
+        );
+        e.input.push_file("page.tex".to_string(), full.as_bytes().to_vec());
+        e.run();
+        e
+    }
+
+    fn vbox_parts(n: &Node) -> (usize, i32) {
+        match n {
+            Node::Box { list, h, .. } => (list.len(), *h),
+            other => panic!("expected vbox, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn vsplit_retains_remainder_in_source_box() {
+        let e = run(concat!(
+            "\\font\\cmr=cmr10 \\cmr\n",
+            "\\setbox0=\\vbox{\\hbox{a}\\hbox{b}\\hbox{c}\\hbox{d}\\hbox{e}}\n",
+            "\\setbox1=\\vsplit0 to 20pt\n",
+        ));
+        assert_eq!(e.error_count, 0, "errors:\n{}", e.term);
+        let (n1, h1) = vbox_parts(e.eqtb.boxed[1].as_ref().expect("split part in \\box1"));
+        let (n0, _) = vbox_parts(e.eqtb.boxed[0].as_ref().expect("remainder in \\box0"));
+        assert!(n1 > 0, "split part holds boxes");
+        assert!(n0 > 0, "remainder holds the rest, not empty");
+        assert!(h1 > 0 && h1 <= 20 * 65536, "split part within 20pt: {}", h1);
+        assert_eq!(n1 + n0, 5, "all five lines accounted for");
+    }
+
+    #[test]
+    fn page_dims_track_builder_state() {
+        let e = run(concat!(
+            "\\font\\cmr=cmr10 \\cmr\n",
+            "\\vsize 100pt \\hsize 200pt\n",
+            "line one\n\nline two\n",
+        ));
+        assert_eq!(e.error_count, 0, "errors:\n{}", e.term);
+        // \pagegoal mirrors \vsize while the page accumulates
+        assert_eq!(
+            e.eqtb.dim_params[DP::PageGoal.idx() as usize] as i64,
+            100 * 65536
+        );
+        let total = e.eqtb.dim_params[DP::PageTotal.idx() as usize] as i64;
+        assert!(total > 0, "\\pagetotal accumulates, got {}", total);
+        assert_eq!(total, e.page_total, "\\pagetotal == builder total");
+        assert_eq!(
+            e.eqtb.dim_params[DP::PageDepth.idx() as usize] as i64,
+            e.page_depth,
+            "\\pagedepth == builder depth"
+        );
+    }
 }

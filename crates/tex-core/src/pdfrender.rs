@@ -6,6 +6,7 @@ use crate::boxes::{leader_dims, LeaderBody, Node, NodeList, HBOX};
 use crate::build::RULE_FILL;
 use crate::engine::Engine;
 use crate::pdfout::{Annot, PdfPage};
+use crate::prim::DimParam;
 
 /// TeX sp to PDF bp
 #[inline]
@@ -53,8 +54,8 @@ impl Engine {
     /// list into the document and records \pdfsavepos results
     /// (\pdflastxpos/\pdflastypos) from the last SavePos node on the page.
     pub fn render_page(&mut self, page_box: &Node) -> PdfPage {
-        let width_sp = self.pdf_page_width.unwrap_or((8.5 * 72.27 * 65536.0) as i32);
-        let height_sp = self.pdf_page_height.unwrap_or((11.0 * 72.27 * 65536.0) as i32);
+        let width_sp = self.eqtb.dim_params[DimParam::PdfPageWidth.idx() as usize];
+        let height_sp = self.eqtb.dim_params[DimParam::PdfPageHeight.idx() as usize];
         let w_bp = sp_to_bp(width_sp as i64);
         let h_bp = sp_to_bp(height_sp as i64);
         let mut ctx = RenderCtx {
@@ -73,8 +74,8 @@ impl Engine {
             box_h_sp: height_sp as i64,
             box_d_sp: 0,
         };
-        let horigin_bp = sp_to_bp(ctx.eng.pdf_horigin as i64);
-        let vorigin_bp = sp_to_bp(ctx.eng.pdf_vorigin as i64);
+        let horigin_bp = sp_to_bp(ctx.eng.eqtb.dim_params[DimParam::PdfHOrigin.idx() as usize] as i64);
+        let vorigin_bp = sp_to_bp(ctx.eng.eqtb.dim_params[DimParam::PdfVOrigin.idx() as usize] as i64);
         let x0 = horigin_bp;
         // TeX y grows down from the page top; emit_char applies y_pdf.
         let y0 = vorigin_bp;
@@ -416,7 +417,6 @@ impl<'a> RenderCtx<'a> {
     }
 
     fn emit_char(&mut self, f: u16, c: u8, x: f64, y: f64) {
-        let num = self.ensure_font(f);
         let size_bp = self
             .eng
             .eqtb
@@ -430,6 +430,46 @@ impl<'a> RenderCtx<'a> {
         if size_bp <= 0.0 {
             return; // nullfont: nothing to draw
         }
+        // Virtual font: expand the glyph into its mapped steps in the base
+        // fonts (kerns included as offsets). The VF font itself is never
+        // registered as a page resource.
+        if let Some(bases) = self.eng.font_loader.vf_bases.get(&f).cloned() {
+            let key = self
+                .eng
+                .eqtb
+                .fonts
+                .get(f as usize)
+                .map(|ff| (ff.tfm_name.clone(), ff.at_size));
+            let steps = key
+                .and_then(|k| self.eng.font_loader.vf_fonts.get(&k).cloned())
+                .and_then(|vf| vf.chars.get(c as usize).cloned().flatten());
+            if let Some(steps) = steps {
+                for st in steps.iter() {
+                    let Some(&bfid) = bases.get(st.base as usize) else { continue };
+                    if bfid == u16::MAX {
+                        continue; // base TFM missing at load time
+                    }
+                    let bnum = self.ensure_font(bfid);
+                    let bsize_bp = self
+                        .eng
+                        .eqtb
+                        .fonts
+                        .get(bfid as usize)
+                        .map(|ff| sp_to_bp(ff.at_size as i64))
+                        .unwrap_or(0.0);
+                    self.content.push_str(&format!(
+                        "BT /F{} {:.4} Tf 1 0 0 1 {:.4} {:.4} Tm <{:02x}> Tj ET\n",
+                        bnum,
+                        bsize_bp,
+                        x + sp_to_bp(st.dx as i64),
+                        self.y_pdf(y - sp_to_bp(st.dy as i64)),
+                        st.ch
+                    ));
+                }
+            }
+            return; // VF font without a packet for this char: nothing to draw
+        }
+        let num = self.ensure_font(f);
         self.content.push_str(&format!(
             "BT /F{} {:.4} Tf 1 0 0 1 {:.4} {:.4} Tm <{:02x}> Tj ET\n",
             num,

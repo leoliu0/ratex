@@ -1,7 +1,7 @@
 //! List building: characters, glue, kerns, penalties, rules, box groups,
 //! paragraphs, page-builder hook.
 
-use crate::boxes::{self, Glue, Node};
+use crate::boxes::{self, Glue, Node, NodeList};
 use crate::eqtb::LevelType;
 use crate::engine::{Engine, Mode};
 use crate::fontiface::LigKernStep;
@@ -66,31 +66,39 @@ impl Engine {
         g
     }
 
-    pub fn char_token(&mut self, c: u8, _is_letter: bool) {
+    pub fn char_token(&mut self, c: u8, is_letter: bool) {
         match self.mode {
             Mode::Horizontal | Mode::RestrictedHorizontal => {
                 self.append_char(c);
                 self.space_factor = self.space_factor_of(c);
             }
             Mode::Vertical | Mode::InternalVertical => {
-                // TeX: horizontal material in vmode begins a paragraph
-                self.start_paragraph(false);
-                self.append_char(c);
-                self.space_factor = self.space_factor_of(c);
+                // tex.web §1091: back_input the letter, new_graf(true).
+                // LaTeX \\everypar (\\g__para_standard_everypar_tl) runs
+                // \\tex_par:D to cancel that dummy paragraph; the letter
+                // must not already be on the list or it becomes its own para.
+                let cc = if is_letter { 11 } else { 12 };
+                self.pushed.push(Token::char(cc, c as u32));
+                self.start_paragraph(true);
             }
             Mode::Math | Mode::DisplayMath => {
+                // `_`/`^` cat 13 still have to subscript/superscript. The
+                // active `\_` body is other-`_`, whose mathcode 0x8000 would
+                // re-expand forever.
+                if c == b'_' {
+                    self.sub_token(c);
+                    return;
+                }
+                if c == b'^' {
+                    self.super_token(c);
+                    return;
+                }
                 let mc = self.eqtb.math_code[c as usize];
                 if mc & 0x8000 != 0 {
-                    // active char in math: expand
-                    let _ = mc;
-                    // find active meaning: treat as \active char
                     self.active_char(c);
                 } else {
                     self.append_mathchar(mc);
                 }
-            }
-            _ => {
-                self.error(&format!("You can't use character `{}' in vertical mode", c as char));
             }
         }
     }
@@ -383,31 +391,17 @@ impl Engine {
             width = crate::scaled::ONE * 2 / 5;
         }
         loop {
-            self.skip_spaces_relax();
-            let t = self.get_token();
-            let which = if t.is_cs() {
-                match self.cs.name(t.cs_id()) {
-                    b"width" => Some(0u8),
-                    b"height" => Some(1),
-                    b"depth" => Some(2),
-                    _ => None,
-                }
+            if self.scan_keyword(b"width") {
+                self.scan_optional_equals();
+                width = self.scan_dimen(false, false);
+            } else if self.scan_keyword(b"height") {
+                self.scan_optional_equals();
+                height = self.scan_dimen(false, false);
+            } else if self.scan_keyword(b"depth") {
+                self.scan_optional_equals();
+                depth = self.scan_dimen(false, false);
             } else {
-                None
-            };
-            let which = match which {
-                Some(w) => w,
-                None => {
-                    self.pushed.push(t);
-                    break;
-                }
-            };
-            self.scan_optional_equals();
-            let d = self.scan_dimen(false, false);
-            match which {
-                0 => width = d,
-                1 => height = d,
-                _ => depth = d,
+                break;
             }
         }
         (width, height, depth)
@@ -435,6 +429,20 @@ impl Engine {
 
     // ---------- boxes ----------
 
+    fn token_is_left_brace(&self, t: Token) -> bool {
+        if t.is_char() && t.cc() == 1 {
+            return true;
+        }
+        if t.is_cs() {
+            match self.eqtb.resolve(t.cs_id()) {
+                Some(crate::eqtb::Equiv::Prim(Prim::BGroup)) => return true,
+                Some(crate::eqtb::Equiv::CharTok(v)) if Token(*v).cc() == 1 => return true,
+                _ => {}
+            }
+        }
+        false
+    }
+
     /// \hbox to 10pt{...} etc: scan spec, push group context
     pub fn begin_box(&mut self, kind: u8) {
         // scan "to"/"spread" target: tex.web scan_spec uses scan_keyword
@@ -451,9 +459,14 @@ impl Engine {
         // pushed below is the group; a dispatch-level plain group would
         // desynchronize box_kinds from braces.
         self.skip_spaces_relax();
-        let t = self.get_token();
-        if !(t.is_char() && t.cc() == 1) {
-            self.error("Missing { inserted");
+        let t = self.get_x_raw();
+        if !self.token_is_left_brace(t) {
+            let got = if t.is_cs() {
+                format!("\\{}", String::from_utf8_lossy(self.cs.name(t.cs_id())))
+            } else {
+                format!("cc{}:{:#x}", t.cc(), t.chr())
+            };
+            self.error(&format!("Missing {{ inserted (got {})", got));
             self.pushed.push(t);
             self.pushed.push(Token::char(1, b'{' as u32));
         }
@@ -464,7 +477,8 @@ impl Engine {
         if std::env::var("IFTRACE").map(|v|v=="1").unwrap_or(false) { eprintln!("PUSH-BG437"); }
         // save the outer list context: mode, current list, prev_depth, space_factor
         self.saved_lists.push((self.mode, std::mem::take(&mut self.cur_list), self.prev_depth, self.space_factor));
-        self.eqtb.push_level(LevelType::Group);
+        self.eqtb.push_level(LevelType::Box);
+
         self.box_targets.push(target);
         self.box_shifts.push(shift);
         self.box_kinds.push(kind);
@@ -507,7 +521,7 @@ impl Engine {
             self.prev_depth,
             self.space_factor,
         ));
-        self.eqtb.pop_level();
+        self.pop_group();
         self.prev_depth = pd;
         self.space_factor = sf;
         self.mode = outer_mode;
@@ -583,7 +597,8 @@ impl Engine {
         // a leader-object box completes a \leaders group
         if matches!(kind, 0..=3) {
             if let Some(lk) = self.pop_leader_kind() {
-                if self.setbox_target.take().is_some() {
+                if self.setbox_target.is_some() && self.setbox_depth == self.box_kinds.len() {
+                    self.unpark_setbox();
                     self.error("A <box> was supposed to be here");
                 }
                 let body = boxes::LeaderBody::Box(Box::new(node));
@@ -591,16 +606,20 @@ impl Engine {
                 return;
             }
         }
-        // store or append
-        if self.shipout_pending {
-            // \shipout<hbox|vbox|...>: the completed box IS the page; clear
-            // the box-255 target do_shipout parked so it cannot leak
-            self.setbox_target = None;
+        // only the \\shipout box itself ships (tex.web box_context);
+        // inner \\hbox/\\vbox inside the page must append
+        if self.shipout_pending && self.shipout_depth == self.box_kinds.len() {
+            self.unpark_setbox();
             self.shipout_pending = false;
+            self.shipout_depth = usize::MAX;
             self.ship_box(Some(node));
             return;
         }
-        if let Some(idx) = self.setbox_target.take() {
+        // only the group do_setbox (or do_shipout) opened consumes the
+        // target: an inner \\hbox inside the content must append instead
+        if self.setbox_target.is_some() && self.setbox_depth == self.box_kinds.len() {
+            let idx = self.setbox_target.take().unwrap();
+            self.unpark_setbox();
             self.eqtb.assign_box(idx, Some(node), self.global_flag);
             self.global_flag = false;
             return;
@@ -632,6 +651,47 @@ impl Engine {
             },
         }
     }
+
+    /// \\unhbox/\\unvbox/\\unhcopy/\\unvcopy: splice a box register's list
+    /// into the current list. Copy variants leave the register intact.
+    pub fn do_unbox(&mut self, want_v: bool, copy: bool) {
+        let n = self.scan_reg_num();
+        let node = if copy {
+            self.eqtb.boxed.get(n as usize).cloned().flatten()
+        } else {
+            // tex.web §1110: \\unhbox/\\unvbox voids the register globally
+            let old = self.eqtb.boxed.get(n as usize).cloned().flatten();
+            self.eqtb.assign_box(n, None, true);
+            self.global_flag = false;
+            old
+        };
+        let Some(node) = node else { return };
+        match node {
+            crate::boxes::Node::Box { kind, list, .. } => {
+                let is_v = kind != crate::boxes::HBOX;
+                if is_v != want_v {
+                    self.error("Incompatible list can't be unboxed");
+                    return;
+                }
+                if !want_v && self.mode.is_v() {
+                    self.start_paragraph(false);
+                }
+                if want_v && self.mode.is_h() {
+                    self.error("Incompatible list can't be unboxed");
+                    return;
+                }
+                for item in list {
+                    if self.mode.is_v() {
+                        self.vlist_append(item);
+                    } else {
+                        self.cur_list.push(item);
+                    }
+                }
+            }
+            _ => self.error("Incompatible list can't be unboxed"),
+        }
+    }
+
 
     fn pop_leader_kind(&self) -> Option<u8> {
         LEADER_KINDS.with(|s| s.borrow_mut().pop())
@@ -965,131 +1025,151 @@ impl Engine {
         }
     }
 
+    fn current_nodes(&self) -> &[Node] {
+        if self.mode == Mode::Vertical {
+            &self.page_list
+        } else {
+            &self.cur_list
+        }
+    }
+
+    fn current_nodes_mut(&mut self) -> &mut Vec<Node> {
+        if self.mode == Mode::Vertical {
+            &mut self.page_list
+        } else {
+            &mut self.cur_list
+        }
+    }
+
+    /// e-TeX `\\lastnodetype`: -1 if the current list is empty, else the
+    /// type of `tail` (etex.web; TeX Live e-TeX manual).
+    pub fn last_node_type_value(&self) -> i32 {
+        match self.current_nodes().last() {
+            None => -1,
+            Some(Node::Char { .. }) => 0,
+            Some(Node::Box { kind, .. }) if *kind == boxes::HBOX => 1,
+            Some(Node::Box { .. }) => 2,
+            Some(Node::Rule { .. }) => 3,
+            Some(Node::Ins { .. }) => 4,
+            Some(Node::Mark { .. }) => 5,
+            Some(Node::Adj(_)) | Some(Node::VAdjust(_)) => 6,
+            Some(Node::Ligature { .. }) => 7,
+            Some(Node::Disc(_)) => 8,
+            Some(Node::Whatsit(_)) => 9,
+            Some(Node::Style(_))
+            | Some(Node::Choice)
+            | Some(Node::ChoiceAlt { .. })
+            | Some(Node::MathChar { .. })
+            | Some(Node::Frac { .. })
+            | Some(Node::Radical { .. })
+            | Some(Node::Scripts { .. })
+            | Some(Node::DelimBox { .. })
+            | Some(Node::OpLimits { .. })
+            | Some(Node::Accent { .. })
+            | Some(Node::MathKern(..)) => 10,
+            Some(Node::Glue(_)) | Some(Node::Leaders { .. }) => 11,
+            Some(Node::Kern(_)) | Some(Node::ExplicitKern(_)) => 12,
+            Some(Node::Penalty(_)) => 13,
+            Some(Node::InsDisc) | Some(Node::Empty) => 14,
+        }
+    }
+
     pub fn take_last_box(&mut self) -> Option<Node> {
-        match self.mode {
-            Mode::Horizontal | Mode::RestrictedHorizontal => {
-                // remove trailing box node
-                if let Some(Node::Box { .. }) = self.cur_list.last() {
-                    self.cur_list.pop()
-                } else {
-                    None
-                }
-            }
-            Mode::Vertical | Mode::InternalVertical => {
-                if let Some(Node::Box { .. }) = self.page_list.last() {
-                    self.page_list.pop()
-                } else if let Some(Node::Box { .. }) = self.cur_list.last() {
-                    self.cur_list.pop()
-                } else {
-                    None
-                }
-            }
-            _ => None,
+        let list = self.current_nodes_mut();
+        if let Some(Node::Box { .. }) = list.last() {
+            list.pop()
+        } else {
+            None
         }
     }
 
     pub fn last_kern_value(&mut self) -> i32 {
-        match self.mode {
-            Mode::Horizontal | Mode::RestrictedHorizontal => {
-                if let Some(Node::Kern(k)) = self.cur_list.last() {
-                    *k
-                } else {
-                    0
-                }
-            }
+        match self.current_nodes().last() {
+            Some(Node::Kern(k) | Node::ExplicitKern(k)) => *k,
             _ => 0,
         }
     }
 
     pub fn last_penalty_value(&mut self) -> i32 {
-        match self.mode {
-            Mode::Horizontal | Mode::RestrictedHorizontal => {
-                if let Some(Node::Penalty(p)) = self.cur_list.last() {
-                    *p
-                } else {
-                    0
-                }
-            }
+        match self.current_nodes().last() {
+            Some(Node::Penalty(p)) => *p,
             _ => 0,
         }
     }
 
     pub fn last_skip_value(&mut self) -> Glue {
-        match self.mode {
-            Mode::Horizontal | Mode::RestrictedHorizontal => {
-                if let Some(Node::Glue(g)) = self.cur_list.last() {
-                    g.clone()
-                } else {
-                    Glue::zero()
-                }
-            }
+        match self.current_nodes().last() {
+            Some(Node::Glue(g)) => g.clone(),
+            Some(Node::Leaders { glue, .. }) => glue.clone(),
             _ => Glue::zero(),
         }
     }
 
+    /// tex.web §1105: pop a trailing glue (or leader) node; no-op otherwise.
     pub fn un_skip(&mut self) {
-        match self.mode {
-            Mode::Horizontal | Mode::RestrictedHorizontal => {
-                if let Some(Node::Glue(_) | Node::Leaders { .. }) = self.cur_list.last() {
-                    self.cur_list.pop();
-                } else {
-                    self.error("No glue to remove");
-                }
-            }
-            Mode::Vertical | Mode::InternalVertical => {
-                let list = if self.mode == Mode::Vertical { &mut self.page_list } else { &mut self.cur_list };
-                if let Some(Node::Glue(_) | Node::Leaders { .. }) = list.last() {
-                    list.pop();
-                } else {
-                    self.error("No glue to remove");
-                }
-            }
-            _ => {}
+        let list = self.current_nodes_mut();
+        if matches!(list.last(), Some(Node::Glue(_) | Node::Leaders { .. })) {
+            list.pop();
         }
     }
 
+    /// tex.web §1110: pop a trailing kern; no-op otherwise.
     pub fn un_kern(&mut self) {
-        match self.mode {
-            Mode::Horizontal | Mode::RestrictedHorizontal => {
-                if let Some(Node::Kern(_)) = self.cur_list.last() {
-                    self.cur_list.pop();
-                } else {
-                    self.error("No kern to remove");
-                }
-            }
-            _ => {}
+        let list = self.current_nodes_mut();
+        if matches!(list.last(), Some(Node::Kern(_) | Node::ExplicitKern(_))) {
+            list.pop();
         }
     }
 
+    /// tex.web §1110: pop a trailing penalty; no-op otherwise.
     pub fn un_penalty(&mut self) {
-        match self.mode {
-            Mode::Horizontal | Mode::RestrictedHorizontal => {
-                if let Some(Node::Penalty(_)) = self.cur_list.last() {
-                    self.cur_list.pop();
-                } else {
-                    self.error("No penalty to remove");
-                }
-            }
-            Mode::Vertical | Mode::InternalVertical => {
-                let list = if self.mode == Mode::Vertical { &mut self.page_list } else { &mut self.cur_list };
-                if let Some(Node::Penalty(_)) = list.last() {
-                    list.pop();
-                } else {
-                    self.error("No penalty to remove");
-                }
-            }
-            _ => {}
+        let list = self.current_nodes_mut();
+        if matches!(list.last(), Some(Node::Penalty(_))) {
+            list.pop();
         }
     }
 
     pub fn do_vsplit(&mut self) {
-        // \vsplit<n> to <dimen>
+        // \vsplit<n> to <dimen>: the top part becomes the box result, the
+        // remainder is written back to the source register (tex.web @958)
+        let (top, n, rest) = self.scan_vsplit();
+        if let Some(rest) = rest {
+            self.stash_vsplit_remainder(n, rest);
+        }
+        self.append_box_node(top);
+    }
+
+    /// scan `\vsplit<n> to <dimen>`: split box n at the target height and
+    /// return (top part, source register, remainder). The source register is
+    /// emptied by the scan; the remainder must be re-stored via
+    /// `stash_vsplit_remainder`.
+    pub fn scan_vsplit(&mut self) -> (Option<Node>, u16, Option<NodeList>) {
         let n = self.scan_reg_num();
         self.scan_keyword(b"to");
         let target = self.scan_dimen(false, false);
-        let boxn = self.eqtb.boxed[n as usize].take();
-        let result = boxn.map(|b| self.vsplit_box(b, target));
-        self.append_box_node(result.flatten());
+        match self.eqtb.boxed[n as usize].take() {
+            Some(b) => {
+                self.vsplat_remainder = None;
+                let top = self.vsplit_box(b, target);
+                (top, n, self.vsplat_remainder.take())
+            }
+            // splitting a void box: void result, empty remainder vbox
+            None => (None, n, Some(Vec::new())),
+        }
+    }
+
+    /// re-pack a `\vsplit` remainder into the source box register (tex.web
+    /// stores `vpackage(rest, 0, additional, \boxmaxdepth)` in \box n)
+    pub fn stash_vsplit_remainder(&mut self, n: u16, rest: NodeList) {
+        // tex.web @977: an empty remainder leaves the source box void,
+        // not an empty vbox (`\\ifvoid` must be true).
+        if rest.is_empty() {
+            self.eqtb.assign_box(n, None, true);
+            return;
+        }
+        let md = self.eqtb.dim_params[DimParam::BoxMaxDepth.idx() as usize];
+        let r = boxes::vpack_add_md(rest, None, false, boxes::VBOX, &self.eqtb, md);
+        self.eqtb.assign_box(n, Some(r.node), true);
     }
 
     pub fn scan_keyword(&mut self, kw: &[u8]) -> bool {
@@ -1099,7 +1179,8 @@ impl Engine {
             let t = self.get_token();
             collected.push(t);
             if !t.is_char() || t.chr() != expected as u32 {
-                collected.reverse();
+                // push_tokens reverses internally, so hand it the collected
+                // tokens in read order to restore them exactly
                 self.push_tokens(collected);
                 return false;
             }
@@ -1118,7 +1199,8 @@ impl Engine {
             target = Some((d, false));
         }
         self.saved_lists.push((self.mode, std::mem::take(&mut self.cur_list), self.prev_depth, self.space_factor));
-        self.eqtb.push_level(LevelType::Group);
+        self.eqtb.push_level(LevelType::Box);
+
         self.box_targets.push(target);
         self.box_shifts.push(0);
         self.box_kinds.push(8);
@@ -1127,8 +1209,8 @@ impl Engine {
         self.prev_depth = -1000 * 65536;
         // consume the group's opening `{` (tex.web scan_left_brace)
         self.skip_spaces_relax();
-        let t = self.get_token();
-        if !(t.is_char() && t.cc() == 1) {
+        let t = self.get_x_raw();
+        if !self.token_is_left_brace(t) {
             self.error("Missing { inserted");
             self.pushed.push(t);
             self.pushed.push(Token::char(1, b'{' as u32));
@@ -1156,9 +1238,45 @@ impl Engine {
             self.pushed.push(t);
             return;
         }
+        if t.is_cs() {
+            if let Some(crate::eqtb::Equiv::Prim(prim)) = self.eqtb.resolve(t.cs_id()).cloned() {
+                match prim {
+                    crate::prim::Prim::HBox
+                    | crate::prim::Prim::VBox
+                    | crate::prim::Prim::VTop
+                    | crate::prim::Prim::VCenter => {
+                        self.park_setbox(255);
+                        self.shipout_depth = self.box_kinds.len();
+                        let kind = match prim {
+                            crate::prim::Prim::HBox => 0,
+                            crate::prim::Prim::VBox => 1,
+                            crate::prim::Prim::VTop => 2,
+                            _ => 3,
+                        };
+                        self.begin_box(kind);
+                        self.shipout_pending = true;
+                        return;
+                    }
+                    crate::prim::Prim::Box => {
+                        let idx = self.scan_reg_num();
+                        let b = self.eqtb.boxed[idx as usize].take();
+                        self.ship_box(b);
+                        return;
+                    }
+                    crate::prim::Prim::Copy => {
+                        let idx = self.scan_reg_num();
+                        let b = self.eqtb.boxed.get(idx as usize).cloned().flatten();
+                        self.ship_box(b);
+                        return;
+                    }
+                    _ => {}
+                }
+            }
+        }
         match self.cs.name(t.cs_id()) {
             b"hbox" | b"vbox" | b"vtop" | b"vcenter" => {
-                self.setbox_target = Some(255);
+                self.park_setbox(255);
+                self.shipout_depth = self.box_kinds.len();
                 let kind = match self.cs.name(t.cs_id()) {
                     b"hbox" => 0,
                     b"vbox" => 1,
@@ -1171,6 +1289,11 @@ impl Engine {
             b"box" => {
                 let idx = self.scan_reg_num();
                 let b = self.eqtb.boxed[idx as usize].take();
+                self.ship_box(b);
+            }
+            b"copy" => {
+                let idx = self.scan_reg_num();
+                let b = self.eqtb.boxed.get(idx as usize).cloned().flatten();
                 self.ship_box(b);
             }
             _ => {
@@ -1219,7 +1342,7 @@ impl Engine {
                 self.prev_graf = 0;
                 if indent {
                     let pi = self.eqtb.dim_params[DimParam::ParIndent.idx() as usize];
-                                        let r = boxes::hpack(Vec::new(), Some(pi), boxes::HBOX, &self.eqtb);
+                    let r = boxes::hpack(Vec::new(), Some(pi), boxes::HBOX, &self.eqtb);
                     self.cur_list.push(r.node);
                 }
                 self.run_everypar();
@@ -1246,7 +1369,9 @@ impl Engine {
     fn run_everypar(&mut self) {
         let toks = (*self.eqtb.tok_params[crate::prim::ToksParam::EveryPar.idx() as usize]).clone();
         if !toks.is_empty() {
-            self.input.push_toks(toks, "<everypar>");
+            // Same class as \\lowercase: input.push_toks sits under `pushed`,
+            // so the rest of the current macro would run first.
+            self.push_tokens(toks);
         }
     }
 

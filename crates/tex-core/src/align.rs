@@ -31,9 +31,11 @@
 //!   `finish_halign` computes the column widths (max natural width per
 //!   column; spanning cells distribute any deficit over the covered
 //!   columns), re-packs every cell to its final width (the "unset box"
-//!   pass: \hfil etc. stretch), interleaves tabskip glue between grid
-//!   columns and baselineskip/lineskip glue between rows, packs the vbox
-//!   and appends it like a box result (or assigns it to \setbox target).
+//!   pass: \hfil etc. stretch), wraps each row in boundary tabskips
+//!   (T_0 before column 0, T_n after the last column) with tabskip glue
+//!   between grid columns and baselineskip/lineskip glue between rows,
+//!   packs the vbox and appends it like a box result (or assigns it to
+//!   \setbox target).
 //!
 //! Known simplifications versus tex.web:
 //! * unset-box glue is implemented by re-packing the cell list to the final
@@ -105,6 +107,8 @@ struct AlignSave {
     state: i32,
     done: bool,
     to: Option<(i32, bool)>,
+    pushed_base: usize,
+
 }
 
 thread_local! {
@@ -140,6 +144,8 @@ impl Engine {
     // ------------------------------------------------------------------
 
     pub fn begin_halign(&mut self) {
+
+
         if self.scanner_status == ScannerStatus::Aligning {
             // nested \halign (e.g. tabular inside a p-column cell): save the
             // outer alignment so the inner one can use the global fields
@@ -154,6 +160,8 @@ impl Engine {
                 state: self.align_state,
                 done: self.align_done,
                 to: self.align_to,
+                pushed_base: self.align_pushed_base,
+
             };
             let key = self.engine_key();
             ALIGN_STACK.with(|s| s.borrow_mut().push((key, save)));
@@ -202,7 +210,7 @@ impl Engine {
             self.prev_depth,
             self.space_factor,
         ));
-        self.eqtb.push_level(LevelType::Group);
+        self.eqtb.push_level(LevelType::Box);
         self.box_targets.push(None);
         self.box_shifts.push(0);
         self.box_kinds.push(7);
@@ -214,7 +222,6 @@ impl Engine {
         self.align_in_noalign = false;
         self.align_state = PH_IDLE;
         self.align_done = false;
-        // inspect what follows the preamble: first row, \noalign or }
         self.align_row_inspect();
     }
 
@@ -238,6 +245,8 @@ impl Engine {
             self.align_state = sv.state;
             self.align_done = sv.done;
             self.align_to = sv.to;
+            self.align_pushed_base = sv.pushed_base;
+
         }
     }
 
@@ -264,31 +273,64 @@ impl Engine {
         let mut in_u = true;
         let mut depth = 0i32;
         loop {
-            let t = self.get_token();
+            // tex.web scan_template uses get_token (NON-expanding): u/v part
+            // tokens are stored literally and expanded at cell time. Expanding
+            // here runs NFSS (\\footnotesize -> \\@setfontsize -> \\let
+            // \\@currsize) during the scan; the \\let never executes and the
+            // size machinery loops. Resolve CharTok/prims only to RECOGNIZE
+            // structural tokens (array's \\@sharp is \\let to #); store the
+            // original token.
+            let t = self.raw_token();
             if t == crate::input::EOF_MARKER {
                 self.error("File ended while scanning an alignment preamble");
                 self.end_occurred = true;
                 return false;
             }
-            if t.is_cs() {
-                match self.cur_prim {
-                    Some(Prim::Cr) | Some(Prim::CrCr) => break,
-                    Some(Prim::Span) => {
-                        // \span joins this entry with the next one: the entry
-                        // keeps accumulating and covers span+1 grid columns
-                        cur.span = cur.span.saturating_add(1);
-                        in_u = true;
-                        continue;
-                    }
-                    Some(Prim::Omit) => {
-                        self.error("\\omit is not allowed in an alignment preamble");
-                        continue;
-                    }
-                    _ => {}
+            let t = if t == crate::input::PAR_END {
+                Token::from_cs(self.ids.par)
+            } else {
+                t
+            };
+            let prim = if t.is_cs() {
+                match self.eqtb.resolve(t.cs_id()) {
+                    Some(crate::eqtb::Equiv::Prim(p)) => Some(*p),
+                    _ => None,
                 }
+            } else {
+                None
+            };
+            let eff = if t.is_cs() {
+                match self.eqtb.resolve(t.cs_id()) {
+                    Some(crate::eqtb::Equiv::CharTok(v)) => Token(*v),
+                    _ => t,
+                }
+            } else {
+                t
+            };
+            match prim {
+                Some(Prim::Cr) | Some(Prim::CrCr) => break,
+                Some(Prim::Span) => {
+                    // \span joins this entry with the next one: the entry
+                    // keeps accumulating and covers span+1 grid columns
+                    cur.span = cur.span.saturating_add(1);
+                    in_u = true;
+                    continue;
+                }
+                Some(Prim::Omit) => {
+                    self.error("\\omit is not allowed in an alignment preamble");
+                    continue;
+                }
+                Some(Prim::GlueP(crate::prim::GlueParam::TabSkip)) => {
+                    // tex.web §782: inter-column \\tabskip glue is scanned
+                    // during the preamble and never stored in the template;
+                    // pack time reads the \\tabskip param (align glue code).
+                    let _ = self.scan_glue(false);
+                    continue;
+                }
+                _ => {}
             }
-            if t.is_char() {
-                match t.cc() {
+            if eff.is_char() {
+                match eff.cc() {
                     1 => depth += 1,
                     2 => {
                         depth -= 1;
@@ -299,7 +341,10 @@ impl Engine {
                             break;
                         }
                     }
-                    6 if depth == 0 => {
+                    // LaTeX wraps # in {\\hfil ... # ...} so the marker is
+                    // at depth 1; still split u/v there (Knuth only does
+                    // depth 0, which leaves # in the u-part and hangs).
+                    6 => {
                         if in_u {
                             in_u = false;
                         } else {
@@ -307,6 +352,7 @@ impl Engine {
                         }
                         continue;
                     }
+
                     // LaTeX tabular emits & between column templates: it is
                     // the entry separator, so finalize this entry and start
                     // the next one with a fresh u part
@@ -331,6 +377,18 @@ impl Engine {
         // template is empty (#\cr is a legal single bare column)
         entries.push(cur);
         self.align_preamble = entries;
+        if std::env::var("ALIGNTRACE").map(|v| v == "1").unwrap_or(false) {
+            for (i, e) in self.align_preamble.iter().enumerate() {
+                eprintln!(
+                    "PREAMBLE col{} span={} u=[{}] v=[{}]",
+                    i,
+                    e.span,
+                    self.tokens_to_string(&e.u_part),
+                    self.tokens_to_string(&e.v_part)
+                );
+            }
+        }
+
         true
     }
 
@@ -348,7 +406,8 @@ impl Engine {
             self.prev_depth,
             self.space_factor,
         ));
-        self.eqtb.push_level(LevelType::Group);
+        self.eqtb.push_level(LevelType::Box);
+
         self.box_targets.push(None);
         self.box_shifts.push(0);
         self.box_kinds.push(CELL_GROUP_KIND);
@@ -359,7 +418,9 @@ impl Engine {
     }
 
     /// start the cell at `align_cur_col`
-    fn align_start_cell(&mut self) {
+    /// start the cell at `align_cur_col`. `first` is a token already
+    /// looked at by align_row_inspect (omit / content); `None` peeks.
+    fn align_start_cell(&mut self, first: Option<crate::token::Token>) {
         let col = self.align_cur_col as usize;
         if col >= self.align_preamble.len() {
             return; // empty preamble: rows have no cells
@@ -371,25 +432,35 @@ impl Engine {
         }
         self.align_cur_row[col].span = spec.span;
         self.align_state = PH_U;
-        // \omit may be the very first token of the cell: peek (expanding)
-        let t = self.align_peek_expanding();
-        if t == crate::input::EOF_MARKER {
-            self.error("File ended while starting an alignment cell");
-            self.end_occurred = true;
-            return;
-        }
+        let t = match first {
+            Some(t) => t,
+            None => {
+                let t = self.align_peek_expanding();
+                if t == crate::input::EOF_MARKER {
+                    self.error("File ended while starting an alignment cell");
+                    self.end_occurred = true;
+                    return;
+                }
+                t
+            }
+        };
         if t.is_cs() && self.cur_prim == Some(Prim::Omit) {
             self.align_state = PH_CONTENT | PH_OMIT;
             return;
         }
-        // re-queue the peeked token below the u part
+        // content below the u part
+        self.align_pushed_base = self.pushed.len();
         self.input.push_toks(vec![t], PEEK_SRC);
         if spec.u_part.is_empty() {
             self.align_set_phase(PH_CONTENT);
         } else {
+            self.align_pushed_base = self.pushed.len();
             self.input.push_toks(spec.u_part, U_PART_SRC);
         }
+
+
     }
+
 
     /// discard the not-yet-played remainder of the u part source (on \omit,
     /// & or \cr arriving while the u part is still playing)
@@ -437,7 +508,10 @@ impl Engine {
             }
         }
         close.push(self.crcr_token());
+        self.align_pushed_base = self.pushed.len();
         self.input.push_toks(close, CELL_SRC);
+
+
     }
 
     pub fn align_tab(&mut self) {
@@ -569,8 +643,10 @@ impl Engine {
         if u.is_empty() {
             self.align_state = (self.align_state & PH_OMIT) | PH_CONTENT;
         } else {
+            self.align_pushed_base = self.pushed.len();
             self.input.push_toks(u, U_PART_SRC);
         }
+
     }
 
     // cell completion (at dispatch level, from the \crcr sentinel)
@@ -583,7 +659,6 @@ impl Engine {
         self.align_finish_cell_now();
     }
 
-    /// pop this module's cell group context; returns the collected list
     fn align_pop_cell_group(&mut self) -> Option<NodeList> {
         if self.box_kinds.last() != Some(&CELL_GROUP_KIND) || self.saved_lists.is_empty() {
             return None;
@@ -592,7 +667,7 @@ impl Engine {
         let _ = self.box_targets.pop().flatten();
         let _ = self.box_shifts.pop().unwrap_or(0);
         let _ = self.box_kinds.pop();
-        self.eqtb.pop_level();
+        self.pop_group();
         let (om, ol, pd, sf) = self.saved_lists.pop().unwrap();
         self.cur_list = ol;
         self.mode = om; // tex.web unsave: the enclosing level's mode returns
@@ -614,7 +689,9 @@ impl Engine {
         self.align_push_cell_group(Mode::InternalVertical);
         self.align_state |= PH_CLOSE;
         toks.push(self.crcr_token());
+        self.align_pushed_base = self.pushed.len();
         self.input.push_toks(toks, CELL_SRC);
+
     }
 
     /// pack the open cell into the current row and start the next cell /
@@ -640,7 +717,7 @@ impl Engine {
                 self.align_finish_row();
             } else {
                 self.align_cur_col = next as i32;
-                self.align_start_cell();
+                self.align_start_cell(None);
             }
         } else {
             self.align_finish_row();
@@ -675,29 +752,16 @@ impl Engine {
     /// tex.web's align_peek uses get_x_token, so row boundaries see through
     /// macros like a \noalign wrapper defined as \def\br{\noalign{\hrule}}
     fn align_peek_expanding(&mut self) -> Token {
-        for _ in 0..200 {
-            let t = self.get_token();
+        loop {
+            let t = self.get_x_raw();
             if t == crate::input::EOF_MARKER {
                 return t;
             }
             if t.is_char() && t.cc() == 10 {
                 continue;
             }
-            if !t.is_cs() {
-                return t;
-            }
-            let macro_def = match self.eqtb.resolve(t.cs_id()) {
-                Some(Equiv::Macro(m)) => Some(m.clone()),
-                _ => None,
-            };
-            if let Some(m) = macro_def {
-                self.expand_macro(t.cs_id(), &m);
-                continue;
-            }
             return t;
         }
-        self.error("Expansion depth exceeded in alignment lookahead");
-        self.get_token()
     }
 
     /// after a \cr (or at alignment start): decide between \noalign, another
@@ -713,36 +777,45 @@ impl Engine {
             if t.is_cs() {
                 match self.cur_prim {
                     Some(Prim::NoAlign) => {
-                        self.align_noalign(); // re-inspects when its box closes
+                        self.align_noalign();
                         return;
                     }
-                    // e.g. \crcr (or \cr\cr) between rows
                     Some(Prim::Cr) | Some(Prim::CrCr) => continue,
                     _ => {}
                 }
             }
             if t.is_char() && t.cc() == 2 {
                 self.align_done = true;
+                self.align_pushed_base = self.pushed.len();
+                self.input.push_toks(vec![t], PEEK_SRC);
+                return;
             }
-            self.input.push_toks(vec![t], PEEK_SRC);
-            if !self.align_done {
-                self.align_start_row();
-            }
+            self.align_start_row(Some(t));
             return;
         }
     }
 
-    /// start the next row: \everycr, then the first cell
-    fn align_start_row(&mut self) {
+    fn align_start_row(&mut self, first: Option<crate::token::Token>) {
         self.align_cur_col = 0;
-        self.align_start_cell();
         let ec = (*self.eqtb.tok_params[ToksParam::EveryCr.idx() as usize]).clone();
-        if !ec.is_empty() {
-            // plays before the row's u part
+        if !ec.is_empty() && !self.align_everycr_done {
+            // tex.web endv: after \\cr the \\everycr tokens are inserted
+            // BEFORE the next row is peeked, so a leading \\noalign (longtable
+            // header machinery) is legal at PH_IDLE. Park the already-peeked
+            // first content token below everycr and re-enter inspection.
+            if let Some(t) = first {
+                self.align_pushed_base = self.pushed.len();
+                self.input.push_toks(vec![t], PEEK_SRC);
+            }
+            self.align_everycr_done = true;
+            self.align_pushed_base = self.pushed.len();
             self.input.push_toks(ec, "<everycr>");
+            self.align_row_inspect();
+            return;
         }
+        self.align_everycr_done = false;
+        self.align_start_cell(first);
     }
-
     // ------------------------------------------------------------------
     // final packaging (build.rs end_box, kind 7)
     // ------------------------------------------------------------------
@@ -752,9 +825,6 @@ impl Engine {
         let ncols = self.align_preamble.len();
         let tabskip = self.eqtb.glue_params[GlueParam::TabSkip.idx() as usize].clone();
         let mut widths = vec![0i32; ncols];
-
-        // pass 1: single-column cells set the column widths
-        let mut spans: Vec<(usize, usize, i32)> = Vec::new(); // (col, span, width)
         for row in &rows_in {
             for (c, cell) in row.iter().enumerate() {
                 if cell.span == NOALIGN_SPAN || cell.packed.is_none() {
@@ -768,20 +838,24 @@ impl Engine {
                     if c < ncols {
                         widths[c] = widths[c].max(w);
                     }
-                } else {
+                }
+            }
+        }
+        let mut spans: Vec<(usize, usize, i32)> = Vec::new();
+        for row in &rows_in {
+            for (c, cell) in row.iter().enumerate() {
+                if cell.span != NOALIGN_SPAN && cell.span > 0 && cell.packed.is_some() {
+                    let w = match &cell.packed {
+                        Some(Node::Box { w, .. }) => *w,
+                        _ => 0,
+                    };
                     spans.push((c, cell.span as usize, w));
                 }
             }
         }
-        // pass 2: tex.web's left-to-right relaxation (fin_align). A cell
-        // spanning columns i..j contributes `natural - sum_{k=i}^{j-1}
-        // (tabskip_k + w_k)` to the width of its LAST column j; widths are
-        // finalized left to right, so the prefix uses final values.
         for j in 0..ncols {
             let mut w = widths[j] as i64;
             for &(c, s, nat) in &spans {
-                // a span reaching past the last column is clamped into it
-                // (tex.web routes surplus & material into the final column)
                 let end = (c + s).min(ncols.saturating_sub(1));
                 if end != j {
                     continue;
@@ -793,15 +867,12 @@ impl Engine {
             widths[j] = w.max(0) as i32;
         }
         self.align_col_widths = widths.clone();
-
-        // assemble the rows
         let mut rows: NodeList = Vec::new();
         let bs = self.eqtb.glue_params[GlueParam::BaselineSkip.idx() as usize].clone();
         let ls = self.eqtb.glue_params[GlueParam::LineSkip.idx() as usize].clone();
         let lsl = self.eqtb.dim_params[DimParam::LineSkipLimit.idx() as usize];
-        let mut prev: Option<(i32, i32)> = None; // (height, depth) of last box
+        let mut prev: Option<(i32, i32)> = None;
         for row in rows_in {
-            // a \noalign entry: insert its box (or rule) as-is
             if row.len() == 1 && row[0].span == NOALIGN_SPAN {
                 if let Some(node) = row.into_iter().next().and_then(|c| c.packed) {
                     let (h, d) = match &node {
@@ -815,9 +886,9 @@ impl Engine {
                 continue;
             }
             let mut line: NodeList = Vec::new();
-            let mut g = 0usize; // grid column cursor
+            line.push(Node::Glue(tabskip.clone()));
+            let mut g = 0usize;
             for (c, cell) in row.into_iter().enumerate() {
-                // tabskip glue for grid columns skipped before this cell
                 while g < c {
                     if g > 0 {
                         line.push(Node::Glue(tabskip.clone()));
@@ -836,10 +907,6 @@ impl Engine {
                     (lo..=hi).map(|i| widths[i] as i64).sum::<i64>()
                         + s as i64 * tabskip.width as i64
                 };
-                // the "unset box" pass: re-pack to the final column width.
-                // tex.web freezes finite glue (stretch/shrink order 0)
-                // whenever the cell carries higher-order stretch/shrink, so
-                // \hfil stretches but \hskip3pt plus1pt does not
                 let mut inner = match cell.packed {
                     Some(Node::Box { list, .. }) => list,
                     Some(other) => vec![other],
@@ -874,17 +941,13 @@ impl Engine {
                 );
                 g = c + s + 1;
             }
-            // trailing tabs for grid columns with no cell in this row
             while g < ncols {
                 if g > 0 {
                     line.push(Node::Glue(tabskip.clone()));
                 }
                 g += 1;
             }
-            // \halign to/spread: every row is packed to the alignment width
-            // (tex.web packages the preamble prototype row to the target and
-            // gives every row its width); the difference lands in the
-            // tabskip glue between columns
+            line.push(Node::Glue(tabskip.clone()));
             let rowbox = match self.align_to {
                 None => crate::boxes::hpack(line, None, crate::boxes::HBOX, &self.eqtb).node,
                 Some((d, false)) => {
@@ -916,8 +979,6 @@ impl Engine {
             align_interline(&mut rows, &mut prev, h, d, &bs, &ls, lsl);
             rows.push(rowbox);
         }
-
-        let vbox = crate::boxes::vpack(rows, None, crate::boxes::VBOX, &self.eqtb).node;
         self.align_preamble.clear();
         self.align_rows.clear();
         self.align_cur_row.clear();
@@ -928,16 +989,25 @@ impl Engine {
         let nested = self.align_has_save();
         self.align_nested_restore();
         if !nested {
-            // a nested \halign (tabular in a p-cell) must leave
-            // scanner_status at Aligning so the outer alignment continues
             self.scanner_status = ScannerStatus::Normal;
             self.align_to = None;
         }
-        // append like a box result (setbox0=\halign{...} assigns instead)
-        if let Some(idx) = self.setbox_target.take() {
+        if self.setbox_target.is_some() && self.setbox_depth == self.box_kinds.len() {
+            let vbox = crate::boxes::vpack(rows, None, crate::boxes::VBOX, &self.eqtb).node;
+            let idx = self.setbox_target.take().unwrap();
+            self.unpark_setbox();
             self.eqtb.assign_box(idx, Some(vbox), self.global_flag);
             self.global_flag = false;
+        } else if self.mode == Mode::InternalVertical {
+            // Inside \vbox (e.g. longtable chunks) or \vcenter: append rows
+            // directly so \lastbox in \LT@echunk retrieves the last row's hbox
+            // and the enclosing vbox packs the rest.
+            if let Some((_, d)) = prev {
+                self.prev_depth = d;
+            }
+            self.cur_list.extend(rows);
         } else {
+            let vbox = crate::boxes::vpack(rows, None, crate::boxes::VBOX, &self.eqtb).node;
             self.append_box_node(Some(vbox));
         }
     }
@@ -1030,26 +1100,26 @@ mod tests {
         assert_eq!(box_w(&list[0]), w0 + w1);
         assert_eq!(box_w(&list[2]), w0 + w1);
         assert_eq!(w, w0 + w1);
-        // row 1 = [cell(a), tabskip, cell(bb)]
+        // row 1 = [T_0, cell(a), tabskip, cell(bb), T_n]
         let r1 = row_of(&list[0]);
-        assert_eq!(r1.len(), 3);
-        assert_eq!(box_w(&r1[0]), w0);
-        assert_eq!(box_w(&r1[2]), w1);
+        assert_eq!(r1.len(), 5);
+        assert_eq!(box_w(&r1[1]), w0);
+        assert_eq!(box_w(&r1[3]), w1);
         // cell(a) + \quad stretched to the width of 'ccc': fil glue set
-        match &r1[0] {
+        match &r1[1] {
             Node::Box { glue_sign, glue_set, .. } => {
                 assert_eq!(*glue_sign, 1);
                 assert!(*glue_set > 0.0);
             }
             _ => unreachable!(),
         }
-        // row 2 = [cell(ccc), tabskip, cell(d)]
+        // row 2 = [T_0, cell(ccc), tabskip, cell(d), T_n]
         let r2 = row_of(&list[2]);
-        assert_eq!(r2.len(), 3);
-        assert_eq!(box_w(&r2[0]), w0);
-        assert_eq!(box_w(&r2[2]), w1);
+        assert_eq!(r2.len(), 5);
+        assert_eq!(box_w(&r2[1]), w0);
+        assert_eq!(box_w(&r2[3]), w1);
         // 'ccc' at natural width: no glue set
-        match &r2[0] {
+        match &r2[1] {
             Node::Box { glue_sign, .. } => assert_eq!(*glue_sign, 0),
             _ => unreachable!(),
         }
@@ -1113,9 +1183,9 @@ mod tests {
         assert_eq!(w1, 0, "col 1 stays 0: {:?}", e.align_col_widths);
         assert_eq!(w2, wb * 2, "col 2 gets span: {:?}", e.align_col_widths);
         let r = row_of(&list[0]);
-        assert_eq!(r.len(), 3, "cell, tabskip, span cell: {:?}", r);
-        assert_eq!(box_w(&r[2]), w1 + w2);
-        assert_eq!(w, box_w(&r[0]) + w1 + w2);
+        assert_eq!(r.len(), 5, "T_0, cell, tabskip, span cell, T_n: {:?}", r);
+        assert_eq!(box_w(&r[3]), w1 + w2);
+        assert_eq!(w, box_w(&r[1]) + w1 + w2);
     }
 
     #[test]
@@ -1217,15 +1287,9 @@ mod tests {
         assert_eq!(e.error_count, 0, "errors:\n{}", e.term);
         let (_, list) = vbox_of(&e);
         assert_eq!(list.len(), 1, "one outer row: {:?}", list);
-        // the page list holds the outer \vbox, which holds the alignment
-        // vbox, which holds the single row
-        let align_box = match &list[0] {
-            Node::Box { list: al, .. } => al,
-            other => panic!("expected alignment vbox: {:?}", other),
-        };
-        let row = row_of(&align_box[0]);
-        // the cell holds the inner alignment's vbox
-        match &row[0] {
+        // in TeX (§800), \halign in vmode appends rows directly to the enclosing vbox
+        let row = row_of(&list[0]);
+        match &row[1] {
             Node::Box { list: inner_cell, .. } => {
                 assert!(matches!(inner_cell[0], Node::Box { .. }), "{:?}", inner_cell)
             }
@@ -1273,7 +1337,7 @@ mod tests {
         let f = &e.eqtb.fonts[e.cur_font as usize];
         let deficit = f.char_width(b'b') * 2 - f.char_width(b'a');
         let r = row_of(&list[0]);
-        match &r[0] {
+        match &r[1] {
             Node::Box { glue_sign, glue_set, .. } => {
                 assert_eq!(*glue_sign, 1, "stretching");
                 // only the 1fil glue stretches: glue_set = deficit / fil
@@ -1371,17 +1435,12 @@ mod tests {
             "\\vbox{\\halign{#\\hfil\\cr a\\cr bb\\cr}}\n",
         ));
         assert_eq!(e.error_count, 0, "errors:\n{}", e.term);
-        // the alignment vbox lands inside the \vbox, which lands on the page
+        // in TeX (§800), \halign in vmode appends rows directly to the enclosing vbox
         let (_, list) = vbox_of(&e);
-        assert_eq!(list.len(), 1, "outer vbox: {:?}", list);
-        let inner = match &list[0] {
-            Node::Box { kind: crate::boxes::VBOX, list, .. } => list,
-            other => panic!("expected inner vbox, got {:?}", other),
-        };
-        assert_eq!(inner.len(), 3, "2 rows + interrow glue: {:?}", inner);
+        assert_eq!(list.len(), 3, "2 rows + interrow glue: {:?}", list);
         let w = e.align_col_widths[0];
-        assert_eq!(box_w(&inner[0]), w);
-        assert_eq!(box_w(&inner[2]), w);
+        assert_eq!(box_w(&list[0]), w);
+        assert_eq!(box_w(&list[2]), w);
     }
 
 }

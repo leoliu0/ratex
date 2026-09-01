@@ -861,9 +861,12 @@ impl<'a> Interp<'a> {
                         }
                         let last = b[k];
                         let need = !(last == b'.' || last == b'?' || last == b'!');
+                        // Insert before the trailing `}` group so
+                        // `\emph{Title}` becomes `\emph{Title.}`.
+                        let insert_at = if b[k] == b'}' { 0 } else { k + 1 };
                         let mut s2 = s;
                         if need {
-                            s2.push('.');
+                            s2.insert_str(insert_at, ".");
                         }
                         self.push(Lit::Str(s2), st);
                     }

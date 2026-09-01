@@ -407,11 +407,14 @@ fn real_main() -> i32 {
             bbl_missing: sig.bbl_missing || (bibdata && !bbl_path.is_file()),
             ..sig
         };
+    // hyperref bookmark file: changes here must force another pass
+    let out_path = artifact_path(&opt.out_dir, &job, ".out");
         let snap = snapshot(&[
             aux_path.clone(),
             toc_path.clone(),
             lof_path.clone(),
             lot_path.clone(),
+            out_path.clone(),
         ]);
         let files_changed = prev_snap.as_ref().map_or(false, |p| *p != snap);
         let cites_changed = prev_cites.as_ref().map_or(false, |p| *p != cites);

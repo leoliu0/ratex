@@ -13,10 +13,11 @@ impl Engine {
         use Prim::*;
         match p {
             Relax | EndCsName => {}
-            BeginGroup => self.begin_group(false),
-            EndGroup => self.end_group(),
+            BeginGroup => self.begin_semi_simple(),
+            EndGroup => self.end_semi_simple(),
             BGroup => self.begin_group(false),
             EGroup => self.end_group(),
+
             Par => self.par_primitive(),
             Indent => self.start_paragraph(true),
             NoIndent => self.start_paragraph(false),
@@ -93,9 +94,15 @@ impl Engine {
                 let _ = toks;
             }
             UnSkip => self.un_skip(),
+            IgnoreSpaces => self.ignore_spaces(),
             UnKern => self.un_kern(),
             UnPenalty => self.un_penalty(),
+            UnHBox => self.do_unbox(false, false),
+            UnVBox => self.do_unbox(true, false),
+            UnHCopy => self.do_unbox(false, true),
+            UnVCopy => self.do_unbox(true, true),
             LastBox => {
+
                 let b = self.take_last_box();
                 self.append_take_node_opt(b);
             }
@@ -140,6 +147,7 @@ impl Engine {
                     self.eqtb.assign_cat(c as u8, v as u8, self.global_flag);
                     self.global_flag = false;
                 }
+
             }
             MathCode => {
                 let c = self.scan_char_num();
@@ -190,7 +198,11 @@ impl Engine {
                 let up = p == Uppercase;
                 let mut toks = self.scan_general_text();
                 self.shift_case(&mut toks, up);
-                self.input.push_toks(toks, "<case>");
+                // tex.web §1289 back_list: shifted tokens must be read
+                // *before* the rest of the current macro (on `pushed`).
+                // input.push_toks would sit under `pushed`, so the {true}
+                // {false} of utf8.def's \cdp@elt ran before \InputIfFileExists.
+                self.push_tokens(toks);
             }
             Input => self.do_input(),
             EndInput => self.do_endinput(),
@@ -198,8 +210,18 @@ impl Engine {
                 let _ = self.expand_prim(ScanTokens, id);
             }
             Dump => {
-                self.format_done = true;
-                self.end_occurred = true;
+                if !self.ini_mode {
+                    // tex.web:1308/1336: \dump exists only while format-building.
+                    self.error("cannot \\dump outside -ini mode");
+                } else {
+                    match crate::format::check_dumpable(self) {
+                        Ok(()) => {
+                            self.format_done = true;
+                            self.end_occurred = true;
+                        }
+                        Err(e) => self.error(&format!("cannot \\dump ({})", e)),
+                    }
+                }
             }
             End => {
                 // tex.web its_all_over: \par if in hmode, then eject the last page
@@ -209,6 +231,7 @@ impl Engine {
                 if self.mode.is_v() && !self.page_list.is_empty() {
                     let n = self.page_list.len();
                     self.eject_page(n);
+                    return;
                 }
                 self.end_occurred = true;
             }
@@ -233,6 +256,7 @@ impl Engine {
             Special => self.do_special(),
             Message => self.do_message(false),
             ErrMessage => self.do_message(true),
+            DirectLua => self.do_directlua(),
             OpenIn => self.do_openin(),
             CloseIn => self.do_closein(),
             Read => self.do_read(false),
@@ -259,6 +283,10 @@ impl Engine {
                 self.term.push_str(&format!("mode: {:?}\n", self.mode));
             }
             ShowGroups | ShowTokens | ShowIfs => {}
+            Char => {
+                let c = self.scan_int();
+                self.char_token(c as u8, false);
+            }
             // math
             MathChar => {
                 let v = self.scan_int();
@@ -284,6 +312,20 @@ impl Engine {
                     self.error("You can't use `\\radical' here");
                 }
             }
+            Overline => {
+                if self.mode.is_m() {
+                    self.do_overline(false);
+                } else {
+                    self.error("You can't use `\\overline' here");
+                }
+            }
+            Underline => {
+                if self.mode.is_m() {
+                    self.do_overline(true);
+                } else {
+                    self.error("You can't use `\\underline' here");
+                }
+            }
             Delimiter => {
                 let v = self.scan_int();
                 if self.mode.is_m() {
@@ -307,8 +349,8 @@ impl Engine {
                 let fam = self.scan_int();
                 self.scan_optional_equals();
                 let f = self.scan_font_id();
-                if (0..=16).contains(&fam) {
-                    self.eqtb.assign_style_font(style, fam as u8, f, self.global_flag);
+                if (0..=255).contains(&fam) {
+                    self.eqtb.assign_style_font(style, fam as u16, f, self.global_flag);
                     self.global_flag = false;
                 }
             }
@@ -355,6 +397,36 @@ impl Engine {
                     self.begin_mathchoice();
                 } else {
                     self.error("You can't use \\mathchoice here");
+                }
+            }
+            DisplayStyle | TextStyle | ScriptStyle | ScriptScriptStyle => {
+                if self.mode.is_m() {
+                    let style = match p {
+                        DisplayStyle => crate::boxes::MathStyle::Display,
+                        TextStyle => crate::boxes::MathStyle::Text,
+                        ScriptStyle => crate::boxes::MathStyle::Script,
+                        _ => crate::boxes::MathStyle::ScriptScript,
+                    };
+                    self.append_mlist_node(Node::Style(style));
+                } else {
+                    self.error("Missing $ inserted");
+                }
+            }
+            MathOrd | MathOp | MathBin | MathRel | MathOpen | MathClose | MathPunct | MathInner => {
+                if !self.mode.is_m() {
+                    self.error("Missing $ inserted");
+                } else {
+                    let class = match p {
+                        MathOrd => crate::math::CL_ORD,
+                        MathOp => crate::math::CL_OP,
+                        MathBin => crate::math::CL_BIN,
+                        MathRel => crate::math::CL_REL,
+                        MathOpen => crate::math::CL_OPEN,
+                        MathClose => crate::math::CL_CLOSE,
+                        MathPunct => crate::math::CL_PUNCT,
+                        _ => crate::math::CL_INNER,
+                    };
+                    self.do_math_class(class);
                 }
             }
             Span => {
@@ -405,12 +477,34 @@ impl Engine {
             }
             PdfColorStack => {
                 let _stack = self.scan_int();
-                let op = self.scan_pdf_string();
-                if op == "push" || op == "set" {
-                    let color = self.scan_pdf_string();
-                    self.append_whatsit(Node::Whatsit(crate::boxes::WhatIt::PdfColorPush(color)));
-                } else if op == "pop" {
-                    self.append_whatsit(Node::Whatsit(crate::boxes::WhatIt::PdfColorPop));
+                // action keyword, unbraced (pdfTeX: push|pop|set|current,
+                // plus `default`; hyperref writes e.g. `\pdfcolorstack0 pop\relax`)
+                let op = if self.scan_keyword(b"push") {
+                    "push"
+                } else if self.scan_keyword(b"pop") {
+                    "pop"
+                } else if self.scan_keyword(b"set") {
+                    "set"
+                } else if self.scan_keyword(b"current") {
+                    "current"
+                } else if self.scan_keyword(b"default") {
+                    "default"
+                } else {
+                    ""
+                };
+                match op {
+                    "push" | "set" => {
+                        let color = self.scan_pdf_string();
+                        self.append_whatsit(Node::Whatsit(crate::boxes::WhatIt::PdfColorPush(color)));
+                    }
+                    "pop" => {
+                        self.append_whatsit(Node::Whatsit(crate::boxes::WhatIt::PdfColorPop));
+                    }
+                    // `current`/`default` need no material here
+                    "current" | "default" => {}
+                    _ => {
+                        self.error("Missing colorstack operation (push/pop/set/current)");
+                    }
                 }
             }
             PdfColorStackPrim => {}
@@ -420,24 +514,22 @@ impl Engine {
             PdfLastXPos | PdfLastYPos => {
                 self.error("position primitive needs \\the");
             }
-            PdfLinkMargin => {
-                self.pdf_link_margin = self.scan_dimen(false, false);
+            PdfObj => self.do_pdfobj(),
+            PdfXForm => self.do_pdfxform(),
+            PdfXImage => self.do_pdfximage(),
+            // object references take an object number (typically
+            // `\pdfrefximage\pdflastximage`), so scan it as an integer
+            PdfRefObj | PdfRefXForm | PdfRefXImage => {
+                let _ = self.scan_int();
             }
-            PdfDestMargin => {
-                self.pdf_dest_margin = self.scan_dimen(false, false);
-            }
-            PdfThreadMargin => {
-                self.pdf_thread_margin = self.scan_dimen(false, false);
-            }
-            PdfGlyphToUnicode | PdfFontAttr | PdfCompressorLevel | PdfObj
-            | PdfRefObj | PdfUncompress | PdfTolerance | PdfXForm | PdfXImage
-            | PdfRefXForm | PdfRefXImage | PdfPageBox | PdfThread | PdfStartThread
+            PdfGlyphToUnicode | PdfFontAttr | PdfCompressorLevel
+            | PdfUncompress | PdfTolerance | PdfPageBox | PdfThread | PdfStartThread
             | PdfEndThread | PdfResetTimer => {
                 // consume the argument syntactically: most take balanced text
                 self.skip_spaces_relax();
                 let t = self.get_token();
                 if t.is_char() && t.cc() == 1 {
-                    self.scan_balanced_raw();
+                    self.scan_balanced_raw(true);
                 } else if !t.is_cs() {
                     // maybe a number: push it back, digit-dropping corrupts
                     // output (e.g. \pdfobjcompresslevel=\z@ style use)
@@ -445,19 +537,6 @@ impl Engine {
                 } else {
                     self.pushed.push(t);
                 }
-            }
-            PdfHOrigin | PdfVOrigin => {
-                let v = self.scan_dimen(false, false);
-                self.pdf_horigin = v;
-                let _ = v;
-            }
-            PdfPageWidth => {
-                let v = self.scan_dimen(false, false);
-                self.pdf_page_width = Some(v);
-            }
-            PdfPageHeight => {
-                let v = self.scan_dimen(false, false);
-                self.pdf_page_height = Some(v);
             }
             // e-TeX expression primitives are expandable; in a main (non-scan)
             // position they produce their digit string into the stream
@@ -468,7 +547,8 @@ impl Engine {
             // expanded by get_token (they must be storeable by \edef etc)
             IfChar | IfCat | IfOdd | IfNum | IfDim | IfVoid | IfHBox | IfVBox
             | IfHMode | IfVMode | IfInner | IfMMode | IfTrue | IfFalse
-            | IfEOF | IfDef | IfCSName | IfX | IfCase | Or | Else | ElIf
+            | IfEOF | IfDef | IfCSName | IfInCsName | IfX | IfCase | Or | Else | ElIf
+
             | ElIfX | Fi | Unless => {
                 let _ = self.expand_prim(p, id);
             }
@@ -484,8 +564,134 @@ impl Engine {
             }
         }
     }
+
+    /// tex.web ignore_spaces: get_x_token, discard cat-10, put back the rest.
+    fn ignore_spaces(&mut self) {
+        loop {
+            let t = self.get_token();
+            if t == crate::input::EOF_MARKER {
+                return;
+            }
+            if t.is_char() && t.cc() == 10 {
+                continue;
+            }
+            self.pushed.push(t);
+            return;
+        }
+    }
+
+    /// LuaTeX `\\directlua{...}`: consume the group and ignore it.
+    fn do_directlua(&mut self) {
+        self.skip_spaces_relax();
+        let t = self.get_token();
+        if t.is_char() && t.cc() == 1 {
+            let _ = self.scan_balanced_raw(true);
+        } else {
+            self.pushed.push(t);
+        }
+    }
+
+    // ---------- \pdfobj / \pdfxform / \pdfximage: object-number allocation
+
+    /// Reserve the next PDF object number and report it via \pdflastobj.
+    /// (Serialization renumbers objects at write time; these reservations
+    /// keep `\pdflastobj` self-consistent for `\pdfrefobj`.)
+    fn alloc_pdf_obj(&mut self) -> i32 {
+        let n = self.pdf_next_obj;
+        self.pdf_next_obj += 1;
+        n
+    }
+
+    /// \pdfobj [attr{..}] [reserveobjnum|useobjnum <n>] [stream [attr{..}]
+    /// {data}] {general text}: reserve an object number, consume the body.
+    pub fn do_pdfobj(&mut self) {
+        let mut reserved: Option<i32> = None;
+        let mut reserve_only = false;
+        loop {
+            if self.scan_keyword(b"attr") {
+                let _ = self.scan_pdf_string();
+            } else if self.scan_keyword(b"stream") {
+                if self.scan_keyword(b"attr") {
+                    let _ = self.scan_pdf_string();
+                }
+                let _ = self.scan_pdf_string();
+            } else if self.scan_keyword(b"file") {
+                let _ = self.scan_pdf_string();
+            } else if self.scan_keyword(b"useobjnum") {
+                reserved = Some(self.scan_int());
+                reserve_only = true;
+            } else if self.scan_keyword(b"reserveobjnum") {
+                reserve_only = true;
+            } else {
+                break;
+            }
+        }
+        if !reserve_only {
+            let _ = self.scan_pdf_string();
+        }
+        self.pdf_last_obj = reserved.unwrap_or_else(|| self.alloc_pdf_obj());
+    }
+
+    /// \pdfxform [attr{..}] [resources{..}] <box register number>: freeze a
+    /// box register into an XForm XObject; \pdflastxform reports the number.
+    pub fn do_pdfxform(&mut self) {
+        loop {
+            if self.scan_keyword(b"attr") {
+                let _ = self.scan_pdf_string();
+            } else if self.scan_keyword(b"resources") {
+                let _ = self.scan_pdf_string();
+            } else {
+                break;
+            }
+        }
+        let _ = self.scan_int();
+        self.pdf_last_xform = self.alloc_pdf_obj();
+    }
+
+    /// \pdfximage [attr{..}] [page <n>] [interpolate|nointerpolate]
+    /// [<box spec>] {<file>}: reserve an image XObject number;
+    /// \pdflastximage reports it.
+    pub fn do_pdfximage(&mut self) {
+        loop {
+            if self.scan_keyword(b"attr") {
+                let _ = self.scan_pdf_string();
+            } else if self.scan_keyword(b"page") {
+                let _ = self.scan_int();
+            } else if self.scan_keyword(b"interpolate") {
+            } else if self.scan_keyword(b"nointerpolate") {
+            } else {
+                break;
+            }
+        }
+        let _ = self.scan_pdf_string();
+        self.pdf_last_ximage = self.alloc_pdf_obj();
+    }
 }
 
 fn id_cs_is(e: &Engine, id: CsId, name: &[u8]) -> bool {
     e.cs.lookup(name) == Some(id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::engine::Engine;
+
+    #[test]
+    fn test_char_and_chardef() {
+        let mut e = Engine::new(false);
+        e.init_primitives();
+        e.add_nullfont();
+        let src = "\\font\\tenrm=cmr10 \\tenrm \\hbox{\\char65 \\char`A \\chardef\\x=66 \\x}\n";
+        e.input.push_file("test.tex".to_string(), src.as_bytes().to_vec());
+        e.run();
+        let b = e.page_list.iter().find(|n| matches!(n, Node::Box { .. })).expect("hbox on page");
+        if let Node::Box { list, .. } = b {
+            let chars: Vec<u8> = list.iter().filter_map(|n| match n {
+                Node::Char { c, .. } => Some(*c),
+                _ => None,
+            }).collect();
+            assert_eq!(chars, vec![65, 65, 66]);
+        }
+    }
 }

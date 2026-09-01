@@ -74,10 +74,15 @@ pub struct Macro {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum LevelType {
     Group,
+    Simple,
+    SemiSimple,
+    Box,
     MacroCall,
     NoLine,
     Balanced,
 }
+
+
 
 #[derive(Clone, Debug)]
 pub enum SaveItem {
@@ -99,10 +104,11 @@ pub enum SaveItem {
     LcCode(u8, u8, u16),
     SfCode(u8, u16, u16),
     UcCode(u8, u8, u16),
-    StyleFont(u8, u8, u16, u16), // (0=textfont,1=scriptfont,2=ssfont, fam, fontid, level)
+    StyleFont(u8, u16, u16, u16), // (0=textfont,1=scriptfont,2=ssfont, fam, fontid, level)
     FontParam(u16, usize, i32, u16), // font, param index (0-based), old, level
     HyphenChar(u16, i32, u16),
     SkewChar(u16, i32, u16),
+    AfterGroup(Token),
 }
 
 struct EqEntry {
@@ -151,8 +157,8 @@ pub struct Eqtb {
     pub uc_levels: Vec<u16>,
 
     /// style_fonts[style][fam] -> font id (0 = none); style: 0=text 1=script 2=ss
-    pub style_fonts: [[u16; 17]; 3],
-    pub style_font_levels: [[u16; 17]; 3],
+    pub style_fonts: [[u16; 256]; 3],
+    pub style_font_levels: [[u16; 256]; 3],
 
     pub fonts: Vec<Rc<Font>>,
     /// mutable copy of font params (\fontdimen), per font
@@ -245,8 +251,8 @@ impl Eqtb {
             sf_levels: vec![LEVEL_ONE; 256],
             uc_code: uc_code.to_vec(),
             uc_levels: vec![LEVEL_ONE; 256],
-            style_fonts: [[0; 17]; 3],
-            style_font_levels: [[LEVEL_ONE; 17]; 3],
+            style_fonts: [[0; 256]; 3],
+            style_font_levels: [[LEVEL_ONE; 256]; 3],
             fonts: Vec::new(),
             font_params: Vec::new(),
             font_param_levels: Vec::new(),
@@ -288,7 +294,7 @@ impl Eqtb {
 
     pub fn undefine(&mut self, id: CsId, global: bool) {
         let entry = self.map.entry(id).or_insert(EqEntry { equiv: None, level: LEVEL_ONE });
-        if !global && entry.level < self.cur_level && entry.equiv.is_some() {
+        if !global && entry.level < self.cur_level {
             let old = entry.equiv.clone();
             let ol = entry.level;
             self.save_stack.push(SaveItem::Eq(id, old, ol));
@@ -410,7 +416,7 @@ impl Eqtb {
             SaveItem::UcCode(c, old, ol)
         });
     }
-    pub fn assign_style_font(&mut self, style: u8, fam: u8, fid: u16, global: bool) {
+    pub fn assign_style_font(&mut self, style: u8, fam: u16, fid: u16, global: bool) {
         let old = self.style_fonts[style as usize][fam as usize];
         let ol = self.style_font_levels[style as usize][fam as usize];
         if !global && ol < self.cur_level {
@@ -450,10 +456,23 @@ impl Eqtb {
         self.save_stack.push(SaveItem::Level(self.cur_level, ty));
     }
 
-    pub fn pop_level(&mut self) -> LevelType {
+    pub fn cur_group_type(&self) -> Option<LevelType> {
+        for item in self.save_stack.iter().rev() {
+            if let SaveItem::Level(_, t) = item {
+                return Some(*t);
+            }
+        }
+        None
+    }
+
+
+    pub fn pop_level(&mut self, after_group: &mut Vec<Token>) -> LevelType {
         let mut ty = LevelType::Group;
         while let Some(item) = self.save_stack.pop() {
             match item {
+                SaveItem::AfterGroup(tok) => {
+                    after_group.push(tok);
+                }
                 SaveItem::Level(lvl, t) => {
                     self.cur_level = lvl - 1;
                     ty = t;
@@ -615,5 +634,120 @@ impl Eqtb {
     /// Number of defined control sequences.
     pub(crate) fn eq_count(&self) -> usize {
         self.map.len()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn prim_of(eq: &Eqtb, id: CsId) -> Option<Prim> {
+        match eq.get(id) {
+            Some(Equiv::Prim(p)) => Some(*p),
+            None => None,
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn style_font_high_family_local_assignment_restores() {
+        // modern LaTeX + newtxmath allocate math families beyond the
+        // classic 0..=16; \textfont 200 in a group must restore on \egroup
+        let mut eq = Eqtb::new(true);
+        eq.assign_style_font(0, 200, 7, true);
+        assert_eq!(eq.style_fonts[0][200], 7);
+        assert_eq!(eq.style_fonts[0][16], 0);
+
+        eq.push_level(LevelType::Simple);
+        eq.assign_style_font(1, 255, 9, false);
+        assert_eq!(eq.style_fonts[1][255], 9);
+        let mut after = Vec::new();
+        eq.pop_level(&mut after);
+        assert_eq!(eq.style_fonts[1][255], 0);
+        assert_eq!(eq.style_font_levels[1][255], LEVEL_ONE);
+        assert!(after.is_empty());
+    }
+
+    #[test]
+    fn local_assign_prim_pop_restores_previous_prim() {
+        let mut eq = Eqtb::new(true);
+        let a = 100u32;
+        eq.assign(a, Equiv::Prim(Prim::IfNum), true);
+        assert_eq!(prim_of(&eq, a), Some(Prim::IfNum));
+
+        eq.push_level(LevelType::Group);
+        eq.assign(a, Equiv::Prim(Prim::Relax), false);
+        assert_eq!(prim_of(&eq, a), Some(Prim::Relax));
+
+        let mut after = Vec::new();
+        eq.pop_level(&mut after);
+        assert_eq!(prim_of(&eq, a), Some(Prim::IfNum));
+    }
+
+    #[test]
+    fn local_undefine_pop_restores_prim() {
+        let mut eq = Eqtb::new(true);
+        let b = 101u32;
+        eq.assign(b, Equiv::Prim(Prim::Def), true);
+
+        eq.push_level(LevelType::Group);
+        eq.undefine(b, false);
+        assert_eq!(prim_of(&eq, b), None);
+
+        let mut after = Vec::new();
+        eq.pop_level(&mut after);
+        assert_eq!(prim_of(&eq, b), Some(Prim::Def));
+    }
+
+    #[test]
+    fn two_local_assigns_same_group_restore_original() {
+        let mut eq = Eqtb::new(true);
+        let c = 102u32;
+        eq.assign(c, Equiv::Prim(Prim::Let), true);
+
+        eq.push_level(LevelType::Group);
+        eq.assign(c, Equiv::Prim(Prim::Def), false);
+        eq.assign(c, Equiv::Prim(Prim::Relax), false);
+        assert_eq!(prim_of(&eq, c), Some(Prim::Relax));
+
+        let mut after = Vec::new();
+        eq.pop_level(&mut after);
+        assert_eq!(prim_of(&eq, c), Some(Prim::Let));
+    }
+
+    #[test]
+    fn local_undefine_of_already_undefined_no_panic_no_invention() {
+        let mut eq = Eqtb::new(true);
+        let d = 103u32;
+
+        eq.push_level(LevelType::Group);
+        eq.undefine(d, false);
+        assert_eq!(prim_of(&eq, d), None);
+        let mut after = Vec::new();
+        eq.pop_level(&mut after);
+        assert_eq!(prim_of(&eq, d), None);
+
+        eq.push_level(LevelType::Group);
+        eq.assign(d, Equiv::Prim(Prim::Relax), false);
+        assert_eq!(prim_of(&eq, d), Some(Prim::Relax));
+        let mut after2 = Vec::new();
+        eq.pop_level(&mut after2);
+        assert_eq!(prim_of(&eq, d), None);
+    }
+
+    #[test]
+    fn global_undefine_is_not_restored_by_pop() {
+        let mut eq = Eqtb::new(true);
+        let e = 104u32;
+        eq.assign(e, Equiv::Prim(Prim::Let), true);
+
+        eq.undefine(e, true);
+        assert_eq!(prim_of(&eq, e), None);
+
+        eq.push_level(LevelType::Group);
+        eq.assign(e, Equiv::Prim(Prim::Def), false);
+        let mut after = Vec::new();
+        eq.pop_level(&mut after);
+        assert_eq!(prim_of(&eq, e), None);
     }
 }

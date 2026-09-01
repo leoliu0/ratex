@@ -16,7 +16,9 @@ impl Token {
     }
     #[inline]
     pub fn cs_id(&self) -> u32 {
-        self.0 & 0x7FFF_FFFF
+        // 0x8000_0000 | id  (plain CS) and 0xC000_0000 | id (\\noexpand)
+        // must resolve to the same intern id. Keep only the low 30 bits.
+        self.0 & 0x3FFF_FFFF
     }
     #[inline]
     pub fn from_cs(cs: u32) -> Token {
@@ -64,6 +66,17 @@ impl Token {
     pub fn is_left_brace(&self) -> bool {
         self.is_char() && self.cc() == 1
     }
+    /// Drop a one-shot \\noexpand freeze. Knuth's dont_expand lives only in
+    /// the input stream; macro bodies must store ordinary CS tokens.
+    #[inline]
+    pub fn unfreeze(self) -> Token {
+        if self.0 >= 0xC000_0000 && self.0 < 0xFFFF_0000 {
+            Token::from_cs(self.cs_id())
+        } else {
+            self
+        }
+    }
+
 }
 
 pub type CsId = u32;
@@ -139,6 +152,7 @@ impl CatTable {
         t[b'\r' as usize] = CAT_EOL;
         t[b' ' as usize] = CAT_SPACE;
         t[b'%' as usize] = CAT_COMMENT;
+        t[b'^' as usize] = CAT_SUPER;
         t[0x7F] = CAT_INVALID;
         for c in b'a'..=b'z' {
             t[c as usize] = CAT_LETTER;

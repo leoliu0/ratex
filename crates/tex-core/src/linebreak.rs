@@ -572,6 +572,14 @@ impl Engine {
 
     pub fn vsplit_box(&mut self, b: Node, target: i32) -> Option<Node> {
         let Node::Box { list, .. } = b else { return Some(b) };
+        // tex.web: \\vsplit to 0pt is used by LaTeX \\@doclearpage to peel
+        // marks. A positive topskip glue at the start must not become the
+        // split result (that \\unvbox's 10pt onto the next page).
+        if target <= 0 {
+            self.vsplat_remainder = Some(list);
+            let r = crate::boxes::vpack(Vec::new(), None, crate::boxes::VBOX, &self.eqtb);
+            return Some(r.node);
+        }
         let (mut h, mut d) = (0i64, 0i64);
         let mut split_at = list.len();
         for (i, n) in list.iter().enumerate() {

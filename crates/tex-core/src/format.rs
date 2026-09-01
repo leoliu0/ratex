@@ -30,7 +30,14 @@ use crate::tfm::{CharInfo, ExtRecipe, Font, LigStep};
 use crate::token::{CsTable, Token};
 
 const MAGIC: &[u8; 8] = b"RUSTEXFM";
-const VERSION: u16 = 1;
+const VERSION: u16 = 2;
+/// Bumped whenever serialized state changes meaning without changing the
+/// wire layout (new engine invariants the loaded state must satisfy, e.g.
+/// guards added to `check_dumpable` after the file was written). A `.fmt`
+/// from a different engine generation must be rejected, not loaded.
+pub const SEMANTICS: u16 = 2;
+
+
 const NUM_CODES: usize = 256;
 
 // Equiv wire tags.
@@ -219,15 +226,68 @@ fn fixed<const N: usize>(r: &mut R) -> io::Result<[u8; N]> {
 /// Reasons a `\dump` would be refused (tex.web: \dump at top level only).
 pub fn check_dumpable(eng: &Engine) -> Result<(), String> {
     if !eng.eqtb.save_stack.is_empty() {
+        let mut n_level = 0u32;
+        let mut n_eq = 0u32;
+        let mut n_ag = 0u32;
+        let mut n_other = 0u32;
+        let mut types: Vec<String> = Vec::new();
+        for it in &eng.eqtb.save_stack {
+            match it {
+                crate::eqtb::SaveItem::Level(lvl, ty) => {
+                    n_level += 1;
+                    if types.len() < 24 {
+                        types.push(format!("{ty:?}@{lvl}"));
+                    }
+                }
+                crate::eqtb::SaveItem::Eq(..) => n_eq += 1,
+                crate::eqtb::SaveItem::AfterGroup(_) => n_ag += 1,
+                _ => n_other += 1,
+            }
+        }
+        eprintln!(
+            "DUMP-SAVE cur_level={} n={} level={} eq={} aftergroup={} other={} types=[{}]",
+            eng.eqtb.cur_level,
+            eng.eqtb.save_stack.len(),
+            n_level,
+            n_eq,
+            n_ag,
+            n_other,
+            types.join(",")
+        );
         return Err(format!(
-            "cannot dump: {} pending group-save entries (\\dump must be at top level)",
-            eng.eqtb.save_stack.len()
+            "cannot dump: {} pending (level={} eq={} aftergroup={} other={} cur_level={} ss_open=[{}] types=[{}])",
+            eng.eqtb.save_stack.len(),
+            n_level,
+            n_eq,
+            n_ag,
+            n_other,
+            eng.eqtb.cur_level,
+            eng.ss_trace.join(" | "),
+            types.join(",")
         ));
     }
-    for (i, b) in eng.eqtb.boxed.iter().enumerate() {
-        if b.is_some() {
-            return Err(format!("cannot dump: box register {} is non-void", i));
+
+    if eng.input.stack.len() > 3 {
+        return Err(format!(
+            "cannot dump: {} input sources above the base file (\\dump must be at the top level)",
+            eng.input.stack.len() - 1
+        ));
+    }
+    for (class, marks) in eng.marks.iter().enumerate() {
+        if !marks.is_empty() {
+            return Err(format!(
+                "cannot dump: mark class {} holds {} unresolved \\mark{}",
+                class,
+                marks.len(),
+                if marks.len() == 1 { "" } else { "s" }
+            ));
         }
+    }
+    if !eng.pdf_page_attr.is_empty() {
+        return Err("cannot dump: \\pdfpageattr is set (not serialized)".to_string());
+    }
+    if !eng.pdf_pages_attr.is_empty() {
+        return Err("cannot dump: \\pdfpagesattr is set (not serialized)".to_string());
     }
     Ok(())
 }
@@ -243,7 +303,8 @@ pub fn save_format(eng: &Engine, path: &Path) -> Result<usize, String> {
     let mut w = W::new();
     w.buf.extend_from_slice(MAGIC);
     w.u16(VERSION);
-
+    w.u16(SEMANTICS);
+    w.u16(eng.cur_font);
     // control-sequence names (id = position)
     w.u32(eng.cs.len() as u32);
     for id in eng.cs.all_ids() {
@@ -581,33 +642,86 @@ pub fn load_format(path: &Path) -> Result<Engine, String> {
     load_format_from(&data)
 }
 
-pub fn load_format_from(data: &[u8]) -> Result<Engine, String> {
-    if data.len() < MAGIC.len() + 2 || &data[..MAGIC.len()] != MAGIC {
+/// Validate the header (magic, VERSION, SEMANTICS) and return a reader
+/// positioned at the first payload byte. Shared by every load path so a
+/// stale-format check can never be bypassed.
+fn parse_header(data: &[u8]) -> Result<R<'_>, String> {
+    if data.len() < MAGIC.len() + 4 || &data[..MAGIC.len()] != MAGIC {
         return Err("not a rustex format file".to_string());
     }
     let mut r = R::new(&data[MAGIC.len()..]);
     if r.u16().map_err(io_err)? != VERSION {
         return Err("format version mismatch".to_string());
     }
+    if r.u16().map_err(io_err)? != SEMANTICS {
+        return Err(
+            "format semantics mismatch (engine updated; delete the .fmt file)".to_string(),
+        );
+    }
+    Ok(r)
+}
+
+pub fn load_format_from(data: &[u8]) -> Result<Engine, String> {
+    let mut r = parse_header(data)?;
     let mut eng = Engine::new(false);
     load_state(&mut r, &mut eng).map_err(io_err)?;
+    // Repair primitives a bad boot stored as \\relax. Do not clobber
+    // LaTeX redefinitions: \\end (Macro), \\bgroup (CharTok), \\everypar
+    // (ToksReg from \\newtoks). \\protected is restored even if dumped
+    // as a macro (that was the original boot bug).
+    let mut snap = Engine::new(true);
+    snap.init_primitives();
+
+    for sid in 0..snap.cs.len() as u32 {
+        let p = match snap.eqtb.get(sid) {
+            Some(Equiv::Prim(p)) => *p,
+            _ => continue,
+        };
+        let name = snap.cs.name(sid).to_vec();
+        let did = eng.cs.lookup(&name).unwrap_or_else(|| eng.cs.intern(&name));
+        let force = name.as_slice() == b"protected";
+        match eng.eqtb.get(did) {
+            Some(Equiv::Prim(p2)) if *p2 == p => {}
+            None | Some(Equiv::Prim(Prim::Relax)) => {
+                eng.eqtb.assign(did, Equiv::Prim(p), true);
+            }
+            _ if force => {
+                eng.eqtb.assign(did, Equiv::Prim(p), true);
+            }
+            _ => {}
+        }
+    }
+
+
     Ok(eng)
 }
+
+
 
 /// Deserialize `path` into `eng` in place. The CLI uses this with its
 /// already-constructed engine so process-wide one-time setup (kpse ls-R
 /// parsing, primitive interning) is not paid twice.
+///
+/// The file is decoded into a scratch engine first; the caller's state is
+/// only transplanted after the whole format parsed cleanly. A corrupt or
+/// truncated file therefore cannot poison the engine (a partially loaded
+/// font list would shift every FontRef id); the caller falls back to a
+/// full bootstrap on any error.
 pub fn load_format_into(path: &Path, eng: &mut Engine) -> Result<(), String> {
     let data = std::fs::read(path)
         .map_err(|e| format!("cannot read {}: {}", path.display(), e))?;
-    if data.len() < MAGIC.len() + 2 || &data[..MAGIC.len()] != MAGIC {
-        return Err("not a rustex format file".to_string());
-    }
-    let mut r = R::new(&data[MAGIC.len()..]);
-    if r.u16().map_err(io_err)? != VERSION {
-        return Err("format version mismatch".to_string());
-    }
-    load_state(&mut r, eng).map_err(io_err)
+    let mut scratch = load_format_from(&data)?;
+    // Full success only now: transplant the boot state while keeping the
+    // caller's process-wide setup (font_loader, ids, out_dir, pdf_doc).
+    eng.cs = scratch.cs;
+    eng.eqtb = scratch.eqtb;
+    eng.hyphen_trie = scratch.hyphen_trie;
+    eng.hyphen_exceptions = scratch.hyphen_exceptions;
+    eng.par_shape = scratch.par_shape;
+    eng.cur_font = scratch.cur_font;
+    eng.format_done = scratch.format_done;
+    eng.ini_mode = scratch.ini_mode;
+    Ok(())
 }
 
 fn io_err(e: io::Error) -> String {
@@ -615,8 +729,8 @@ fn io_err(e: io::Error) -> String {
 }
 
 fn load_state(r: &mut R, eng: &mut Engine) -> io::Result<()> {
+    eng.cur_font = r.u16()?;
 
-    // control-sequence names
     let n = r.count()?;
     let mut cs = CsTable::new();
     for _ in 0..n {
@@ -649,15 +763,19 @@ fn load_state(r: &mut R, eng: &mut Engine) -> io::Result<()> {
             TAG_MATHCHAR_DEF => Some(Equiv::MathCharDef(r.u16()?)),
             TAG_FONT_REF => Some(Equiv::FontRef(r.u16()?)),
             TAG_ALIAS => Some(Equiv::Alias(r.u32()?)),
-            TAG_PRIM => match Prim::from_code(r.u16()?) {
-                Some(p) => Some(Equiv::Prim(p)),
-                None => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "format has unknown primitive code",
-                    ))
+            TAG_PRIM => {
+                let code = r.u16()?;
+                match Prim::from_code(code) {
+                    Some(p) => Some(Equiv::Prim(p)),
+                    None => {
+                        eprintln!("TAG_PRIM FAILED code={:#x} ({}) id={} cs={:?}", code, code, id, String::from_utf8_lossy(eng.cs.name(id)));
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "format has unknown primitive code",
+                        ));
+                    }
                 }
-            },
+            }
             TAG_MACRO => Some(Equiv::Macro(Rc::new(read_macro(r)?))),
             _ => {
                 return Err(io::Error::new(
@@ -789,7 +907,8 @@ fn read_macro(r: &mut R) -> io::Result<Macro> {
     for _ in 0..n {
         params.push(r.toks()?);
     }
-    let body = r.toks()?;
+    let body = r.toks()?.into_iter().map(crate::token::Token::unfreeze).collect();
+
     Ok(Macro {
         num_params,
         prefix,
@@ -1154,26 +1273,24 @@ mod tests {
     }
 
     #[test]
-    fn dump_refuses_group_state_and_boxes() {
+    fn dump_refuses_group_state() {
         let mut eng = build_booted_engine();
         eng.eqtb.assign_cat(b'~', 10, false); // non-global at level 1: no save
         eng.eqtb.cur_level = 2;
         eng.eqtb.assign_cat(b'~', 10, false); // pushes a save item
         assert!(save_format(&eng, Path::new("/tmp/never.fmt")).is_err());
 
+        // Boxes (even non-void) are dumpable: LaTeX's boot assigns box
+        // registers, and tex.web's \dump only requires top-level state.
         let mut eng = build_booted_engine();
-        eng.eqtb.assign_box(1, None, true); // void is fine
+        eng.eqtb.assign_box(1, None, true);
         assert!(save_format(&eng, Path::new("/tmp/never.fmt")).is_ok());
-        // non-void boxes are rejected via check_dumpable; construct directly
-        // through a temporary save-stack-free path is impossible by design,
-        // so assert the checker:
-        eng.eqtb.cur_level = 2;
         eng.eqtb.assign_box(
             2,
             Some(crate::boxes::Node::Rule { width: 10, height: 2, depth: 1 }),
             true,
         );
-        assert!(check_dumpable(&eng).is_err());
+        assert!(check_dumpable(&eng).is_ok());
     }
 
     #[test]
@@ -1185,6 +1302,8 @@ mod tests {
             let mut w = W::new();
             w.buf.extend_from_slice(MAGIC);
             w.u16(VERSION);
+            w.u16(SEMANTICS);
+            w.u16(0); // cur_font: no font selected
             w.u32(eng.cs.len() as u32);
             for id in eng.cs.all_ids() {
                 w.bytes(eng.cs.name(id));
@@ -1279,10 +1398,10 @@ mod tests {
             for _ in 0..NUM_CODES {
                 w.u16(1);
             }
-            for _ in 0..(3 * 17) {
+            for _ in 0..(3 * 256) {
                 w.u16(0);
             }
-            for _ in 0..(3 * 17) {
+            for _ in 0..(3 * 256) {
                 w.u16(1);
             }
             w.u32(0); // no fonts
@@ -1307,5 +1426,105 @@ mod tests {
         let mut bad = data.clone();
         bad[MAGIC.len()] = 0xFF;
         assert!(load_format_from(&bad).is_err());
+    }
+
+    #[test]
+    fn semantics_version_mismatch_rejected() {
+        let eng = build_sample_engine();
+        let dir = std::env::temp_dir().join(format!("rustex-fmt-sem-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("pdflatex.fmt");
+        save_format(&eng, &path).expect("save");
+
+        // control: a current-semantics file loads through both paths
+        assert!(load_format(&path).is_ok());
+        let data = std::fs::read(&path).unwrap();
+        assert!(load_format_from(&data).is_ok());
+
+        // a fmt written with the previous semantics value must be refused
+        // by both load paths with the actionable message
+        let mut stale = data.clone();
+        stale[MAGIC.len() + 2] = ((SEMANTICS - 1) & 0xFF) as u8;
+        stale[MAGIC.len() + 3] = (((SEMANTICS - 1) >> 8) & 0xFF) as u8;
+        let err = load_format(&path.with_extension("stale")).err().unwrap();
+        assert!(err.contains("cannot read"), "sanity: {err}");
+        std::fs::write(dir.join("stale.fmt"), &stale).unwrap();
+        for err in [load_format(&dir.join("stale.fmt")).err().unwrap(), load_format_from(&stale).err().unwrap()] {
+            assert_eq!(
+                err,
+                "format semantics mismatch (engine updated; delete the .fmt file)"
+            );
+        }
+
+        // a flipped version byte is still reported as a version mismatch,
+        // not silently passed to the state decoder
+        let mut badver = data.clone();
+        badver[MAGIC.len()] = 0xFF;
+        assert_eq!(load_format_from(&badver).err().unwrap(), "format version mismatch");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn check_dumpable_guards() {
+        let mut eng = build_booted_engine();
+        assert!(check_dumpable(&eng).is_ok(), "fresh booted engine dumps");
+
+
+
+        eng.marks[2].push(vec![Token::letter(b'x')]);
+        let err = check_dumpable(&eng).unwrap_err();
+        assert!(err.contains("mark class 2 holds 1 unresolved"), "got: {err}");
+        eng.marks[2].clear();
+
+        eng.pdf_page_attr = "/Creator (rustex)".into();
+        let err = check_dumpable(&eng).unwrap_err();
+        assert!(err.contains("\\pdfpageattr is set"), "got: {err}");
+        eng.pdf_page_attr.clear();
+
+        eng.pdf_pages_attr = "/CropBox [0 0 612 792]".into();
+        let err = check_dumpable(&eng).unwrap_err();
+        assert!(err.contains("\\pdfpagesattr is set"), "got: {err}");
+        eng.pdf_pages_attr.clear();
+
+        // the base file alone is dumpable; more than 3 sources is not
+        eng.input.push_file("main.tex".to_string(), b"\\dump".to_vec());
+        assert!(check_dumpable(&eng).is_ok(), "base file alone dumps");
+        eng.input.push_file("child.tex".to_string(), b"x".to_vec());
+        eng.input.push_file("child2.tex".to_string(), b"x".to_vec());
+        eng.input.push_file("child3.tex".to_string(), b"x".to_vec());
+        let err = check_dumpable(&eng).unwrap_err();
+        assert!(err.contains("sources above the base file"), "got: {err}");
+    }
+
+    #[test]
+    fn load_into_is_atomic_on_corrupt_file() {
+        let eng = build_sample_engine();
+        let dir = std::env::temp_dir().join(format!("rustex-fmt-into-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("pdflatex.fmt");
+        save_format(&eng, &path).expect("save");
+
+        // happy path: full transplant into a caller engine
+        let mut target = build_booted_engine();
+        assert!(load_format_into(&path, &mut target).is_ok());
+        assert!(target.format_done);
+        assert_eq!(target.eqtb.fonts.len(), eng.eqtb.fonts.len());
+        assert_eq!(target.eqtb.count[7], -123456);
+
+        // corrupt payload (header intact): caller state must be untouched —
+        // in particular no partially pushed font list shifting FontRef ids
+        let mut data = std::fs::read(&path).unwrap();
+        data.truncate(data.len() - 8);
+        std::fs::write(&path, &data).unwrap();
+        let mut target = build_booted_engine();
+        let cs_before = target.cs.len();
+        let fonts_before = target.eqtb.fonts.len();
+        assert!(load_format_into(&path, &mut target).is_err(), "truncated fmt refused");
+        assert_eq!(target.eqtb.fonts.len(), fonts_before, "no partial font transplant");
+        assert_eq!(target.cs.len(), cs_before, "cs table not replaced on failure");
+        assert!(!target.format_done);
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

@@ -237,9 +237,53 @@ fn probe_auxw_call() {
     );
 }
 
+#[test]
+fn probe_tl_item_loop() {
+    // expl3-code.tex 4645-4670 verbatim shapes: f-recursion terminated by
+    // \prg_break:n raw-grabbing to \prg_break_point:
+    compare("tl-item-loop", r#"\def\prg_do_nothing:{}
+\cs_new_eq_placeholder
+\def\q__tl_recursion_tail{\q__tl_recursion_tail}
+\let\prg_break_point:\prg_do_nothing:
+\long\def\prg_break:n #1#2 \prg_break_point: {#1}
+\def\prg_break: #1 \prg_break_point: { }
+\def\int_eval:n ##1{\number\dimexpr0 ##1\relax}
+\long\def\__tl_if_recursion_tail_break:nN #1#2
+  {\exp_args:Nf \__tl_if_recursion_tail_break_test:nN
+     { \tl_to_str:n {#1} } #2}
+\def\__tl_if_recursion_tail_break_test:nN #1#2
+  {\exp_args:No \__tl_if_recursion_tail_break_test_aux:nN
+     { \str_length:w #1 \s__test } #2}
+% too deep: just the essential call chain
+\def\__tl_item:nn #1#2
+  {
+    \__tl_if_recursion_tail_break:nN {#2} \prg_break:
+    \if_num:w #1 = 1
+      { \prg_break:n { \unexpanded {#2} } }
+    \else:
+      { \exp_args:Nf \__tl_item:nn { \number\numexpr #1 - 1 \relax } }
+    \fi:
+    #2
+    \q__tl_recursion_tail
+    \prg_break_point:
+  }
+\immediate\write15{IT1:[\__tl_item:nn{1}{a,b,c}]}
+"#, false);
+}
+
 // real \prg_gset_conditional:Npnn from expl3 (stubs are NOT real). verbatim:
 // expl3-code.tex 1656-1657, 1666-1674, 1708-1731, 1751-1787 region defs
 // are too many; instead use the REAL file: \input latex.ltx then run the call?
 // latex.ltx boot is what we're debugging — so use the SYSTEM LaTeX format via
 // a doc-mode probe separately: see probe_auxw_call_latex (ignored without
 // latex; parent runs manually).
+
+#[test]
+fn probe_expanded_conditional_arms() {
+    same("expanded-cond-arms", r#"\immediate\write15{E1:[\expanded{\if_false:{X}\else:{Y}\fi}]}
+\immediate\write15{E2:[\expanded{\if_true:{P}\if_false:{{\else:{Q}}}\fi}]}
+\immediate\write15{E3:[\expanded{\if_false:{{\else:{R}}}\fi}]}
+\edef\E{\expanded{\if_false:{ \else: OK}\fi}}
+\immediate\write15{E4:[\meaning\E]}
+"#);
+}

@@ -1,0 +1,72 @@
+\begin{thebibliography}{12}
+\providecommand{\natexlab}[1]{#1}
+\expandafter\ifx\csname urlstyle\endcsname\relax
+  \providecommand{\doi}[1]{doi:\discretionary{}{}{}#1}\else
+  \providecommand{\doi}{doi:\discretionary{}{}{}\begingroup
+  \urlstyle{rm}\Url}\fi
+
+\bibitem[{Acemoglu and Jackson(2015)}]{acemoglu2020}
+Acemoglu, D., and M.~O. Jackson. 2015.
+\newblock History, expectations, and leadership in the evolution of social
+  norms.
+\newblock \emph{Review of Economic Studies} 82:423--56.
+
+\bibitem[{Algan and Cahuc(2010)}]{algan2010}
+Algan, Y., and P.~Cahuc. 2010.
+\newblock Inherited trust and growth.
+\newblock \emph{American Economic Review} 100:2060--92.
+
+\bibitem[{Berggren and Elinder(2019)}]{berggren2019}
+Berggren, N., and H.~Elinder. 2019.
+\newblock Is trust the root of growth? a survey.
+\newblock \emph{Journal of Institutional Economics} 15:585--601.
+
+\bibitem[{Bottazzi, Da~Rin, and Hellmann(2016)}]{bottazzi2016}
+Bottazzi, L., M.~Da~Rin, and T.~Hellmann. 2016.
+\newblock The importance of trust for investment: Evidence from venture
+  capital.
+\newblock \emph{Review of Financial Studies} 29:2283--319.
+
+\bibitem[{Butler, Fauver, and Mortal(2009)}]{butler2009}
+Butler, A.~W., L.~Fauver, and S.~Mortal. 2009.
+\newblock Corruption, political connections, and municipal finance.
+\newblock \emph{Review of Financial Studies} 22:2893--930.
+
+\bibitem[{Guiso, Sapienza, and Zingales(2006)}]{guiso2006}
+Guiso, L., P.~Sapienza, and L.~Zingales. 2006.
+\newblock Does culture affect economic outcomes?
+\newblock \emph{Journal of Economic Perspectives} 20:23--48.
+
+\bibitem[{La~Porta et~al.(1997)La~Porta, Lopez-de Silanes, Shleifer, and
+  Vishny}]{laporta1997}
+La~Porta, R., F.~Lopez-de Silanes, A.~Shleifer, and R.~W. Vishny. 1997.
+\newblock Trust in large organizations.
+\newblock \emph{American Economic Review} 87:333--8.
+
+\bibitem[{Nunn and Wantchekon(2011)}]{nunn2011}
+Nunn, N., and L.~Wantchekon. 2011.
+\newblock The {S}lave trade and the origins of mistrust in {A}frica.
+\newblock \emph{American Economic Review} 101:3221--52.
+
+\bibitem[{Putnam(1993)}]{putnam1993}
+Putnam, R.~D. 1993.
+\newblock \emph{Making democracy work: Civic traditions in modern {I}taly}.
+\newblock Princeton, NJ: Princeton University Press.
+
+\bibitem[{Sapienza, Toldra-Simats, and Zingales(2013)}]{sapienza2013}
+Sapienza, P., A.~Toldra-Simats, and L.~Zingales. 2013.
+\newblock Understanding trust.
+\newblock \emph{China Economic Review} 27:181--96.
+
+\bibitem[{Tabellini(2008)}]{tabellini2008}
+Tabellini, G. 2008.
+\newblock The scope of cooperation: Values and incentives.
+\newblock In E.~Helpman, ed., \emph{Institutions and Economic Performance},
+  324--57. Cambridge, MA: Harvard University Press.
+
+\bibitem[{{World Bank}(2021)}]{worldbank2021}
+{World Bank}. 2021.
+\newblock Worldwide bases of trust: Global survey evidence.
+\newblock Policy Research Working Paper 9876, World Bank, Washington, DC.
+
+\end{thebibliography}

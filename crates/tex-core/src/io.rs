@@ -14,7 +14,7 @@ impl Engine {
             self.error("\\input needs a file name");
             return;
         }
-        self.input_file(&name);
+        let res = self.input_file(&name);
     }
 
     pub fn input_file(&mut self, name: &str) -> bool {
@@ -23,6 +23,15 @@ impl Engine {
             Some(p) => match std::fs::read(&p) {
                 Ok(data) => {
                     self.term.push_str(&format!("({} ", p.display()));
+                    // tex.web start_input: the file sits above the current
+                    // token list. `pushed` is that token list, so leftovers
+                    // must park below the file even during \\output — else
+                    // hook-csname tokens sit on top of an unread .fd.
+                    if !self.pushed.is_empty() {
+                        let mut rest = std::mem::take(&mut self.pushed);
+                        rest.reverse();
+                        self.input.push_toks(rest, "<after-input>");
+                    }
                     self.input.push_file(p.display().to_string(), data);
                     true
                 }
@@ -47,9 +56,22 @@ impl Engine {
             return None;
         }
         if !name.starts_with('/') && !self.out_dir.is_empty() {
-            let cand = std::path::Path::new(&self.out_dir).join(name);
-            if cand.is_file() {
-                return Some(cand);
+            for cand in [
+                std::path::Path::new(&self.out_dir).join(name),
+                std::path::Path::new(&self.out_dir).join(format!("{name}.tex")),
+            ] {
+                if cand.is_file() {
+                    return Some(cand);
+                }
+            }
+        }
+        if !name.starts_with('/') {
+            if let Some(dir) = &self.main_dir {
+                for cand in [dir.join(name), dir.join(format!("{name}.tex"))] {
+                    if cand.is_file() {
+                        return Some(cand);
+                    }
+                }
             }
         }
         self.font_loader.kpse.find(name, tex_kpse::Format::Tex)
@@ -99,11 +121,66 @@ impl Engine {
             eprintln!("DOWRITE top_pushed={}", self.pushed.len());
         }
         let n = self.scan_int();
-        // \write<n>{tokens}: expand tokens now (TeX expands at shipout; LaTeX
-        // expects expansion at the point of \write for most usage)
-        let toks = self.scan_general_text_expanded();
-        let text = self.write_tokens_to_string(&toks);
+        // tex.web §1371: \\write<n>{toks} collects the list RAW (scan_toks,
+        // no expansion) and expands at emission like \\xdef (protected macros
+        // stay frozen). Collect-time expansion hung \\BOOKMARK's `[` prefix
+        // on the group's closing brace; never expanding leaves \\exp_not:n
+        // literally in the .aux.
+        let toks = self.scan_general_text();
+        if std::env::var("WRITETRACE").map(|v| v == "1").unwrap_or(false) {
+            eprintln!("WRITE-LIST n={} [{}]", n, self.tokens_to_string(&toks));
+        }
+        let text = self.expand_write_list(&toks);
         self.write_out(n, &text);
+    }
+
+    /// Expand a raw \\write token list to its emitted string: standalone
+    /// toklist source, edef expansion rules, outer `pushed` parked so it
+    /// cannot leak into the output.
+    fn expand_write_list(&mut self, toks: &[Token]) -> String {
+        // raw_token prefers `pushed`, so park outer tokens locally; a nested
+        // \\write's take/restore composes correctly (its exit restores our
+        // leftovers in order). Parking on the input stack corrupts filehook
+        // \\CurrentFile tracking during package loads.
+        let saved = std::mem::take(&mut self.pushed);
+        // LaTeX \\set@display@protect contract: at write/emit time \\protect
+        // is \\noexpand, so `\\protect\\BOOKMARK` emits `\\BOOKMARK` raw
+        // instead of running it (hyperref .out writes).
+        let protect_saved = self.cs.lookup(b"protect").map(|pid| {
+            let old = self.eqtb.get(pid).cloned();
+            if let Some(nid) = self.cs.lookup(b"noexpand") {
+                if let Some(eq) = self.eqtb.get(nid).cloned() {
+                    self.eqtb.assign(pid, eq, false);
+                }
+            }
+            old
+        });
+        // The sentinel bounds the expansion: without it, a list whose final
+        // token expands away would let get_token continue into the OUTER
+        // stream and leak its tokens into the write string.
+        let mut body = toks.to_vec();
+        body.push(crate::page::WRITE_END_TOKEN);
+        self.input.push_toks(body, "<write>");
+        let prev = self.in_expanded_scan;
+        self.in_expanded_scan = true;
+        let mut out: Vec<Token> = Vec::new();
+        loop {
+            let t = self.get_token();
+            if t == crate::page::WRITE_END_TOKEN || t == crate::input::EOF_MARKER {
+                break;
+            }
+            out.push(t);
+        }
+        self.in_expanded_scan = prev;
+        let leftover = std::mem::take(&mut self.pushed);
+        self.pushed = saved;
+        self.pushed.extend(leftover);
+        if let Some(pid) = self.cs.lookup(b"protect") {
+            if let Some(Some(old)) = &protect_saved {
+                self.eqtb.assign(pid, old.clone(), false);
+            }
+        }
+        self.write_tokens_to_string(&out)
     }
 
     pub fn write_tokens_to_string(&self, toks: &[Token]) -> String {
@@ -179,13 +256,13 @@ impl Engine {
                 return;
             }
         };
-match std::fs::File::open(&path) {
+        match std::fs::File::open(&path) {
             Ok(f) => {
-                self.read_files[n as usize] = Some(f);
+                self.read_files[n as usize] = Some(std::io::BufReader::new(f));
                 self.read_eof[n as usize] = false;
             }
             Err(_) => {
-self.read_files[n as usize] = None;
+                self.read_files[n as usize] = None;
                 self.read_eof[n as usize] = true;
             }
         }
@@ -205,23 +282,20 @@ self.read_files[n as usize] = None;
     pub fn do_read(&mut self, line_mode: bool) {
         let n = self.scan_int();
         self.scan_optional_equals();
-        // tex.web syntax: `\read<n> to <cs>` — skip the literal keyword `to`
-        // (tex.web scans it off before the target control sequence).
+        // tex.web: keyword `to`, then the target cs. Spaces are ignored.
         let mut t = self.raw_token();
         while !t.is_cs() && t.cc() == 10 {
             t = self.raw_token();
         }
         if !t.is_cs() && t.chr() == u32::from(b't') {
-            let mut t1 = self.raw_token();
-            while !t1.is_cs() && t1.cc() == 10 {
-                t1 = self.raw_token();
+            let mut o = self.raw_token();
+            while !o.is_cs() && o.cc() == 10 {
+                o = self.raw_token();
             }
-            if t1.is_cs() {
-                // `\read0 to\cs`: the cs directly follows; hand it back
-                self.pushed.push(t1);
+            if o.is_cs() || o.chr() != u32::from(b'o') {
+                self.pushed.push(o);
             }
         } else {
-            // no `to` keyword: give the token back to scan_definable_cs
             self.pushed.push(t);
         }
         let cs = self.scan_definable_cs();
@@ -231,38 +305,67 @@ self.read_files[n as usize] = None;
             self.read_eof.push(true);
         }
         use std::io::BufRead;
-use std::io::BufReader;
         let line: Option<String> = match &mut self.read_files[n] {
-            Some(f) => {
+            Some(reader) => {
                 let mut buf = String::new();
-                let mut reader = std::io::BufReader::new(&mut *f);
                 match reader.read_line(&mut buf) {
                     Ok(0) | Err(_) => {
                         self.read_eof[n] = true;
                         None
                     }
-                    Ok(_) => Some(if line_mode { buf } else { buf.trim_end().to_string() }),
+                    Ok(_) => {
+                        if buf.ends_with('\n') {
+                            buf.pop();
+                        }
+                        if buf.ends_with('\r') {
+                            buf.pop();
+                        }
+                        Some(buf)
+                    }
                 }
             }
             None => {
-                // read from terminal input: not supported; treat as EOF
                 self.read_eof[n] = true;
                 None
             }
         };
         let toks: Vec<Token> = match line {
             Some(l) => {
-                let mut toks = Vec::new();
-                for b in l.bytes() {
-                    let cat = self.eqtb.cat[b as usize];
-                    toks.push(Token::char(cat, b as u32));
+                if l.is_empty() && !line_mode {
+                    vec![Token::from_cs(self.cs.lookup(b"par").unwrap_or(0))]
+                } else {
+                    let mut toks = Vec::new();
+                    for b in l.bytes() {
+                        let cat = if line_mode {
+                            if b == b' ' { 10 } else { 12 }
+                        } else {
+                            self.eqtb.cat[b as usize]
+                        };
+                        toks.push(Token::char(cat, b as u32));
+                    }
+                    // tex.web \\read: endlinechar (usually ^^M cat 5) becomes a
+                    // space. expl3 \\ior_get + "#9 ~ \\q_stop" needs that space.
+                    if !line_mode {
+                        toks.push(Token::space());
+                    }
+                    toks
                 }
-                toks
             }
             None => vec![Token::from_cs(self.cs.lookup(b"par").unwrap_or(0))],
         };
-        // tex.web read_toks uses scan_toks(false,false): a plain (non-\long)
-        // macro, so that \ifx against an \edef'd macro of the same text is true
+        if line_mode || std::env::var("IORTRACE").map(|v| v == "1").unwrap_or(false) {
+            static RN: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+            if RN.fetch_add(1, std::sync::atomic::Ordering::Relaxed) < 4 {
+                eprintln!(
+                    "READLINE n={} mode={} cs=\\{} ntoks={} body=[{}]",
+                    n,
+                    line_mode,
+                    String::from_utf8_lossy(self.cs.name(cs)),
+                    toks.len(),
+                    self.tokens_to_string(&toks.iter().take(40).cloned().collect::<Vec<_>>())
+                );
+            }
+        }
         let m = crate::eqtb::Macro { num_params: 0, params: Vec::new(), body: toks, prefix: Vec::new(), long: false, outer: false, protected: false };
         self.eqtb.assign(cs, Equiv::Macro(std::rc::Rc::new(m)), self.global_flag);
         self.global_flag = false;
@@ -353,31 +456,19 @@ use std::io::BufReader;
 
     pub fn shift_case(&mut self, toks: &mut Vec<Token>, up: bool) {
         for t in toks.iter_mut() {
-            if !t.is_cs() {
-                let c = t.chr() as u8;
-                let mapped = if up {
-                    self.eqtb.uc_code[c as usize]
-                } else {
-                    self.eqtb.lc_code[c as usize]
-                };
-                // tex.web §1289: lccode/uccode 0 = leave unchanged
-                if mapped != 0 {
-                    *t = Token::char(t.cc(), mapped as u32);
-                }
+            // tex.web §1289: only character tokens; CS names are unchanged.
+            if t.is_cs() {
+                continue;
+            }
+            let c = t.chr() as u8;
+            let mapped = if up {
+                self.eqtb.uc_code[c as usize]
             } else {
-                let name = self.cs.name(t.cs_id());
-                if name.len() == 1 {
-                    let c = name[0];
-                    let mapped = if up {
-                        self.eqtb.uc_code[c as usize]
-                    } else {
-                        self.eqtb.lc_code[c as usize]
-                    };
-                    if mapped != 0 && mapped != c {
-                        let new_id = self.cs.intern(&[mapped]);
-                        *t = Token::from_cs(new_id);
-                    }
-                }
+                self.eqtb.lc_code[c as usize]
+            };
+            // lccode/uccode 0 = leave unchanged
+            if mapped != 0 {
+                *t = Token::char(t.cc(), mapped as u32);
             }
         }
     }
@@ -403,8 +494,13 @@ use std::io::BufReader;
                 self.eqtb.assign_count(i, cur.wrapping_add(v.as_int()), self.global_flag);
             }
             QuantityLoc::Dim(p) => {
-                let cur = self.eqtb.dim_params[p.idx() as usize];
-                self.eqtb.assign_dim_param(p, cur.wrapping_add(v.as_dim()), self.global_flag);
+                let cur = self.dim_param_value(p);
+                let nv = cur.wrapping_add(v.as_dim());
+                if p == crate::prim::DimParam::PrevDepth {
+                    self.prev_depth = nv;
+                } else {
+                    self.eqtb.assign_dim_param(p, nv, self.global_flag);
+                }
             }
             QuantityLoc::Dimen(i) => {
                 let cur = self.eqtb.dimen[i as usize];
@@ -450,8 +546,13 @@ use std::io::BufReader;
                 self.eqtb.assign_count(i, self.arith(cur, n, op), self.global_flag);
             }
             QuantityLoc::Dim(p) => {
-                let cur = self.eqtb.dim_params[p.idx() as usize];
-                self.eqtb.assign_dim_param(p, self.arith(cur, n, op), self.global_flag);
+                let cur = self.dim_param_value(p);
+                let nv = self.arith(cur, n, op);
+                if p == crate::prim::DimParam::PrevDepth {
+                    self.prev_depth = nv;
+                } else {
+                    self.eqtb.assign_dim_param(p, nv, self.global_flag);
+                }
             }
             QuantityLoc::Dimen(i) => {
                 let cur = self.eqtb.dimen[i as usize];
@@ -477,13 +578,18 @@ use std::io::BufReader;
     }
 
     fn arith(&self, a: i32, b: i32, op: u8) -> i32 {
+        // tex.web: \\multiply/\\divide are integer ops, not scaled\\_mult
+        // (\\@settopoint does \\divide#1\\p@\\multiply#1\\p@).
         match op {
-            1 => crate::scaled::mult(a, b),
+            1 => {
+                let v = a as i128 * b as i128;
+                v.clamp(i32::MIN as i128, i32::MAX as i128) as i32
+            }
             _ => {
                 if b == 0 {
                     0
                 } else {
-                    crate::scaled::x_over_y(a, b)
+                    a / b
                 }
             }
         }
@@ -500,6 +606,55 @@ use std::io::BufReader;
             self.error("Missing box for \\setbox");
             return;
         }
+        // l3 aliases (\tex_lastbox:D etc.) resolve to the same primitives;
+        // dispatch on meaning, fall back to raw name for \copy/\usebox.
+        if let Some(prim) = self.cur_prim {
+            match prim {
+                Prim::Box => {
+                    let n = self.scan_reg_num();
+                    let b = self.eqtb.boxed.get(n as usize).cloned().flatten();
+                    self.eqtb.assign_box(n, None, true);
+                    self.eqtb.assign_box(idx, b, self.global_flag);
+                    self.global_flag = false;
+                    return;
+                }
+                Prim::Copy => {
+                    let n = self.scan_reg_num();
+                    let b = self.eqtb.boxed.get(n as usize).cloned().flatten();
+                    self.eqtb.assign_box(idx, b, self.global_flag);
+                    self.global_flag = false;
+                    return;
+                }
+                Prim::LastBox => {
+                    let b = self.take_last_box();
+                    self.eqtb.assign_box(idx, b, self.global_flag);
+                    self.global_flag = false;
+                    return;
+                }
+                Prim::HBox | Prim::VBox | Prim::VTop | Prim::VCenter => {
+                    self.park_setbox(idx);
+                    let kind = match prim {
+                        Prim::HBox => 0,
+                        Prim::VBox => 1,
+                        Prim::VTop => 2,
+                        _ => 3,
+                    };
+                    self.begin_box(kind);
+                    return;
+                }
+                Prim::VSplit => {
+                    let (top, m, rest) = self.scan_vsplit();
+                    if let Some(rest) = rest {
+                        self.stash_vsplit_remainder(m, rest);
+                    }
+                    self.eqtb.assign_box(idx, top, self.global_flag);
+                    self.global_flag = false;
+                    return;
+                }
+                _ => {}
+            }
+        }
+
         match self.cs.name(t.cs_id()) {
             b"box" => {
                 let n = self.scan_reg_num();
@@ -519,7 +674,7 @@ use std::io::BufReader;
                 self.global_flag = false;
             }
             b"hbox" | b"vbox" | b"vtop" | b"vcenter" => {
-                self.setbox_target = Some(idx);
+                self.park_setbox(idx);
                 let kind = match self.cs.name(t.cs_id()) {
                     b"hbox" => 0,
                     b"vbox" => 1,
@@ -529,14 +684,23 @@ use std::io::BufReader;
                 self.begin_box(kind);
             }
             b"halign" => {
-                // \setbox<n>=\halign{...}: the alignment result lands in box n
-                self.setbox_target = Some(idx);
+                self.park_setbox(idx);
                 self.begin_halign();
             }
             b"usebox" => {
                 let n = self.scan_reg_num();
                 let b = self.eqtb.boxed[n as usize].take();
                 self.eqtb.assign_box(idx, b, self.global_flag);
+                self.global_flag = false;
+            }
+            b"vsplit" => {
+                // \setbox<n>=\vsplit<m> to <dimen>: split box m; the top
+                // part lands in box n, the remainder returns to box m
+                let (top, m, rest) = self.scan_vsplit();
+                if let Some(rest) = rest {
+                    self.stash_vsplit_remainder(m, rest);
+                }
+                self.eqtb.assign_box(idx, top, self.global_flag);
                 self.global_flag = false;
             }
             _ => {
@@ -648,6 +812,15 @@ use std::io::BufReader;
             Node::Whatsit(_) => out.push_str("whatsit\n"),
             _ => out.push_str("node\n"),
         }
+    }
+
+    pub fn get_macro_str(&self, name: &[u8]) -> String {
+        if let Some(id) = self.cs.lookup(name) {
+            if let Some(crate::eqtb::Equiv::Macro(m)) = self.eqtb.resolve(id) {
+                return self.tokens_to_string(&m.body);
+            }
+        }
+        String::new()
     }
 }
 

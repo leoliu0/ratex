@@ -125,3 +125,24 @@ fn missing_entries_and_min_crossrefs_option() {
     assert!(out.stdout.is_empty(), "terse mode silences stdout");
     let _ = std::fs::remove_dir_all(&tmp);
 }
+
+#[test]
+fn d5_rfs_reproduces_oracle_bbl() {
+    // Fixture generated with real bibtex 0.99e (TeX Live 2026):
+    // `cd /tmp/fanout/docs/d5-bib && bibtex d5`, aux produced by real
+    // pdflatex via latexmk. Isolates BST interpretation from our engine.
+    let dir = fixtures().join("d5");
+    let out = tex_bibtex::run("d5", &dir, false);
+    assert_eq!(out.status, 0, "run should be spotless; blg: {}", out.blg);
+    let oracle = std::fs::read_to_string(dir.join("d5.bbl.oracle")).unwrap();
+    let trim_r = |s: &str| s
+        .lines()
+        .map(|l| l.trim_end())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert_eq!(
+        trim_r(&out.bbl),
+        trim_r(&oracle),
+        ".bbl must match real bibtex (modulo per-line trailing whitespace)"
+    );
+}

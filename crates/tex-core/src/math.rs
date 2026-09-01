@@ -186,10 +186,27 @@ impl Engine {
     // ---------- mode entry / exit ----------
 
     pub fn enter_math(&mut self, _display: bool) {
+        let trace = std::env::var("MATHTRACE").map(|v|v=="1").unwrap_or(false);
+        let mut display = _display;
+        if !display {
+            // tex.web §1134: a second math_shift promotes to display math
+            let t = self.get_token();
+            if trace {
+                eprintln!("ENTER-MATH mode={:?} peek={:?}", self.mode,
+                    if t.is_cs() { format!("cs{}", t.cs_id()) } else { format!("cc{}:{:#x}", t.cc(), t.chr()) });
+            }
+            if t.is_char() && t.cc() == 3 {
+                display = true;
+            } else if t != crate::input::EOF_MARKER {
+                self.pushed.push(t);
+            }
+        } else if trace {
+            eprintln!("ENTER-MATH mode={:?} arg=display", self.mode);
+        }
         if self.mode == Mode::DisplayMath {
             return;
         }
-        let display = self.mode.is_v();
+        let display = display || self.mode.is_v();
         if display {
             self.eqtb.push_level(crate::eqtb::LevelType::Group);
             let page = std::mem::take(&mut self.page_list);
@@ -201,6 +218,7 @@ impl Engine {
             ));
             self.par_page_lists.push(page);
             self.mode = Mode::DisplayMath;
+            self.math_style_stack.push(MathStyle::Display);
         } else {
             self.saved_lists.push((
                 self.mode,
@@ -210,6 +228,7 @@ impl Engine {
             ));
             self.eqtb.push_level(crate::eqtb::LevelType::Group);
             self.mode = Mode::Math;
+            self.math_style_stack.push(MathStyle::Text);
         }
         self.math_lists.push(crate::boxes::NodeList::new());
         self.left_delim = None;
@@ -221,15 +240,30 @@ impl Engine {
     fn run_everymath(&mut self) {
         let toks = (*self.eqtb.tok_params[crate::prim::ToksParam::EveryMath.idx() as usize]).clone();
         if !toks.is_empty() {
-            self.input.push_toks(toks, "<everymath>");
+            self.push_tokens(toks);
         }
     }
 
     pub fn exit_math(&mut self) {
-        let mlist = self.math_lists.pop().unwrap_or_default();
+        // tex.web: the closing `$` of a `$$...$$` pair consumes its partner,
+        // so a trailing `$` cannot open a new formula (§1134 mirror image).
+        let t = self.get_token();
+        let trace = std::env::var("MATHTRACE").map(|v|v=="1").unwrap_or(false);
+        if trace {
+            eprintln!("EXIT-MATH mode={:?} mlists={} peek={:?} line={} raw={:?}",
+                self.mode, self.math_lists.len(),
+                if t.is_cs() { format!("cs{}", t.cs_id()) } else { format!("cc{}:{:#x}", t.cc(), t.chr()) },
+                self.input.current_file_line(),
+                self.math_lists.last());
+        }
+        if !(t.is_char() && t.cc() == 3) && t != crate::input::EOF_MARKER {
+            self.pushed.push(t);
+        }
         let was_display = self.mode == Mode::DisplayMath;
-        self.eqtb.pop_level();
+        let mlist = self.math_lists.pop().unwrap_or_default();
+        self.pop_group();
         let (outer_mode, outer_list, pd, sf) = self.saved_lists.pop().unwrap_or((self.mode, std::mem::take(&mut self.cur_list), self.prev_depth, self.space_factor));
+        self.math_style_stack.pop();
         // leak guards: state set inside math must not escape it
         self.left_delim = None;
         self.right_delim = None;
@@ -262,14 +296,25 @@ impl Engine {
     }
 
     fn finish_display_math(&mut self, hbox: Node) {
+        if std::env::var("MATHTRACE").map(|v|v=="1").unwrap_or(false) {
+            eprintln!("FINISH-DISPLAY hbox_whd=({},{},{}) par_pages={} page_list={}",
+                self.box_w(&hbox), { let (_, h, _) = box_dims(&hbox); h }, { let (_, _, d) = box_dims(&hbox); d },
+                self.par_page_lists.len(), self.page_list.len());
+        }
         let above = self.eqtb.glue_params[crate::prim::GlueParam::AboveDisplaySkip.idx() as usize].clone();
         let below = self.eqtb.glue_params[crate::prim::GlueParam::BelowDisplaySkip.idx() as usize].clone();
         if let Some(page) = self.par_page_lists.pop() {
             let mut page = page;
+            // tex.web: break allowed (not forced) around a display:
+            // \predisplaypenalty, \abovedisplayskip, box, \belowdisplayskip,
+            // \postdisplaypenalty (defaults 100/0).
+            let pre = self.eqtb.int_params[crate::prim::IntParam::PreDisplayPenalty.idx() as usize];
+            let post = self.eqtb.int_params[crate::prim::IntParam::PostDisplayPenalty.idx() as usize];
+            page.push(Node::Penalty(pre));
             page.push(Node::Glue(above));
-            page.push(Node::Penalty(-10000));
             page.push(hbox);
             page.push(Node::Glue(below));
+            page.push(Node::Penalty(post));
             self.page_list = page;
             self.mode = Mode::Vertical;
             self.cur_list = Vec::new();
@@ -317,7 +362,7 @@ impl Engine {
     /// Conversion (including delimiter sizing) happens in one pass later.
     pub fn pop_math_group_delimited(&mut self, right_delim: i32) {
         let inner = self.math_lists.pop().unwrap_or_default();
-        self.eqtb.pop_level();
+        self.pop_group();
         let (outer_mode, outer_list, pd, sf) = self.saved_lists.pop().unwrap_or((
             self.mode,
             std::mem::take(&mut self.cur_list),
@@ -381,6 +426,10 @@ impl Engine {
     fn script_wants_limits(&self, req: Option<u8>, atom: &Node) -> bool {
         let is_op = match atom {
             Node::MathChar { class, .. } => *class == CL_OP,
+            Node::Scripts { nucleus, .. } => match nucleus.first() {
+                Some(Node::MathChar { class, .. }) => *class == CL_OP,
+                _ => false,
+            },
             Node::DelimBox { size: 2, .. } => true,
             _ => false,
         };
@@ -439,7 +488,15 @@ impl Engine {
                 let inner = self.scan_math_group_braced();
                 let g = gstyle_of(self.cur_math_style());
                 let nodes = self.mlist_to_hlist(&inner, g);
-                let boxed = hpack(nodes, None, HBOX, &self.eqtb).node;
+                let boxed = if let Some(vbox) = nodes
+                    .iter()
+                    .find(|n| matches!(n, Node::Box { kind: VBOX, .. }))
+                    .cloned()
+                {
+                    vbox
+                } else {
+                    hpack(nodes, None, HBOX, &self.eqtb).node
+                };
                 self.append_mlist_node(boxed);
                 continue;
             }
@@ -468,6 +525,52 @@ impl Engine {
             left_delim: None,
             thickness: pack_radical_delim(delim),
         });
+    }
+    pub fn do_math_class(&mut self, class: u8) {
+        let field = self.scan_math_group_or_token();
+        let node = if field.is_empty() {
+            Node::MathChar { fam: 255, c: 0, class }
+        } else if field.len() == 1 {
+            match field.into_iter().next().unwrap() {
+                Node::MathChar { fam, c, .. } => Node::MathChar { fam, c, class },
+                other => {
+                    let nuc = vec![Node::MathChar { fam: 255, c: 0, class }, other];
+                    Node::Scripts { nucleus: nuc, sup: None, sub: None }
+                }
+            }
+        } else {
+            let mut nuc = vec![Node::MathChar { fam: 255, c: 0, class }];
+            nuc.extend(field);
+            Node::Scripts { nucleus: nuc, sup: None, sub: None }
+        };
+        self.append_mlist_node(node);
+    }
+
+
+    /// Knuth \\overline / \\underline: scan a math field, pack it, and
+    /// put a default-rule bar above (or below) with 3 default_rule_thickness
+    /// clearance (tex.web make_over / make_under).
+    pub fn do_overline(&mut self, under: bool) {
+        let group = self.scan_math_group_or_token();
+        let g = gstyle_of(self.cur_math_style()) | 1; // cramped
+        let body = self.mlist_to_hlist(&group, g);
+        let packed = hpack(body, None, HBOX, &self.eqtb).node;
+        let (w, _, _) = box_dims(&packed);
+        let rt = self.default_rule_thickness(g);
+        let kern = 3 * rt;
+        let rule = Node::Rule { width: w, height: rt, depth: 0 };
+        let mut vlist = Vec::new();
+        if under {
+            vlist.push(packed);
+            vlist.push(Node::Kern(kern));
+            vlist.push(rule);
+        } else {
+            vlist.push(rule);
+            vlist.push(Node::Kern(kern));
+            vlist.push(packed);
+        }
+        let vb = vpack(vlist, None, VBOX, &self.eqtb).node;
+        self.append_mlist_node(vb);
     }
 
     /// tex.web scan_delimiter: a character token with a `\delcode` uses it;
@@ -508,8 +611,12 @@ impl Engine {
     }
 
     pub fn do_fraction(&mut self, p: Prim) {
-        // numerator = everything accumulated in the current math list so far
-        let num = self.math_lists.pop().unwrap_or_default();
+        // numerator = everything accumulated in the current math list so far.
+        // The list slot itself MUST stay: the Frac node is appended to it (at
+        // the enclosing group/top level), so popping it here would strand the
+        // `\right`/`$` that closes the enclosing group.
+        let num = self.math_lists.last_mut().map(std::mem::take).unwrap_or_default();
+        // denominator is scanned into a temporary list on top
         self.math_lists.push(Vec::new());
         // tex.web: the lexically-following arguments (\above's dimen, the
         // withdelims delimiter pair) are scanned immediately...
@@ -542,16 +649,8 @@ impl Engine {
         // ...and the denominator is the REST of the current math group (up
         // to the closing brace / end of formula), which stays unconsumed
         let den = self.scan_math_rest_of_group();
-        let left = if ld > 0 {
-            Some((((ld >> 20) & 0xFF) as u8, ((ld >> 12) & 0xFF) as u8))
-        } else {
-            None
-        };
-        let right = if rd > 0 {
-            Some((((rd >> 20) & 0xFF) as u8, ((rd >> 12) & 0xFF) as u8))
-        } else {
-            None
-        };
+        let left = if ld > 0 { Some(ld) } else { None };
+        let right = if rd > 0 { Some(rd) } else { None };
         self.append_mlist_node(Node::Frac {
             num,
             den,
@@ -683,13 +782,8 @@ impl Engine {
         self.math_quad(0) / 18
     }
 
-    fn skew_char_of(&self, fid: FontId, f: &Font) -> i32 {
-        let v = self.eqtb.skew_char.get(fid as usize).copied().unwrap_or(-1);
-        if v >= 0 {
-            v
-        } else {
-            f.skew_char
-        }
+    fn skew_char_of(&self, fid: FontId, _f: &Font) -> i32 {
+        self.eqtb.skew_char.get(fid as usize).copied().unwrap_or(-1)
     }
 
     // ---------- the conversion itself ----------
@@ -767,6 +861,15 @@ impl Engine {
         let mut i = 0usize;
         while i < list.len() {
             let n = &list[i];
+            if let Node::Style(s) = n {
+                if let Some((_, buf)) = lr_stack.last_mut() {
+                    buf.push(n.clone());
+                } else {
+                    style = gstyle_of(*s);
+                }
+                i += 1;
+                continue;
+            }
             if let Some(cls) = eff[i] {
                 // \mathchoice: consume the ChoiceAlt bodies that follow
                 if matches!(n, Node::Choice) {
@@ -797,8 +900,27 @@ impl Engine {
                     i += 1;
                     continue;
                 }
-                if let Node::DelimBox { size: 1, small, large } = n {
-                    let code = delim_code_of(*small, *large);
+                // close marker — possibly wrapped by `^`/`_` (append_script
+                // pops the tail marker and re-wraps it): the scripts belong on
+                // the assembled group box (tex.web make_left_right tail).
+                let close = match n {
+                    Node::DelimBox { size: 1, small, large } => Some((*small, *large, None, None)),
+                    Node::Scripts { nucleus, sup, sub } => match nucleus.as_slice() {
+                        [Node::DelimBox { size: 1, small, large }] => {
+                            Some((*small, *large, Some((sup.as_deref(), sub.as_deref())), None))
+                        }
+                        _ => None,
+                    },
+                    Node::OpLimits { op, above, below } => match op.as_slice() {
+                        [Node::DelimBox { size: 1, small, large }] => {
+                            Some((*small, *large, None, Some((above.as_deref(), below.as_deref()))))
+                        }
+                        _ => None,
+                    },
+                    _ => None,
+                };
+                if let Some((small, large, scripts, limits)) = close {
+                    let code = delim_code_of(small, large);
                     match lr_stack.pop() {
                         Some((lopen, buf)) => {
                             let body = self.mlist_to_hlist(&buf, style);
@@ -808,11 +930,26 @@ impl Engine {
                             assembled.extend(body);
                             assembled.extend(self.var_delimiter(code, needed, style));
                             style = after_lr_style(style);
-                            match lr_stack.last_mut() {
-                                // nested boundary: splice into the enclosing buffer
-                                Some((_, pbuf)) => pbuf.extend(assembled),
-                                None => {
-                                    self.emit_atom(&mut out, &mut prev, Some(CL_INNER), assembled, style);
+                            if scripts.is_some() || limits.is_some() {
+                                let gb = hpack(assembled, None, HBOX, &self.eqtb).node;
+                                let tail: NodeList = match (scripts, limits) {
+                                    (Some((sup, sub)), _) => self.make_scripts(&[gb], sup, sub, style),
+                                    (None, Some((above, below))) => {
+                                        self.make_op_limits(&[gb], above, below, style, true)
+                                    }
+                                    _ => Vec::new(),
+                                };
+                                match lr_stack.last_mut() {
+                                    Some((_, pbuf)) => pbuf.extend(tail),
+                                    None => self.emit_atom(&mut out, &mut prev, Some(CL_INNER), tail, style),
+                                }
+                            } else {
+                                match lr_stack.last_mut() {
+                                    // nested boundary: splice into the enclosing buffer
+                                    Some((_, pbuf)) => pbuf.extend(assembled),
+                                    None => {
+                                        self.emit_atom(&mut out, &mut prev, Some(CL_INNER), assembled, style);
+                                    }
                                 }
                             }
                         }
@@ -830,27 +967,10 @@ impl Engine {
                     i += 1;
                     continue;
                 }
-                if let Node::Style(s) = n {
-                    style = gstyle_of(*s);
-                    i += 1;
-                    continue;
-                }
                 let nodes = self.convert_atom(n, style);
                 // inter-atom mu glue comes first (tex.web second pass)
                 self.insert_spacing(&mut out, prev, Some(cls), style);
                 out.extend(nodes);
-                // line-break penalty after a bin/rel atom (tex.web §766)
-                if matches!(cls, CL_BIN | CL_REL)
-                    && i + 1 < list.len()
-                    && !matches!(list[i + 1], Node::Penalty(_))
-                {
-                    let p = if cls == CL_BIN {
-                        self.eqtb.int_params[IntParam::BinOpPenalty.idx() as usize]
-                    } else {
-                        self.eqtb.int_params[IntParam::RelPenalty.idx() as usize]
-                    };
-                    out.push(Node::Penalty(p));
-                }
                 prev = Some(cls);
                 i += 1;
                 continue;
@@ -959,14 +1079,21 @@ impl Engine {
 
     fn convert_atom(&self, n: &Node, style: GStyle) -> NodeList {
         match n {
-            Node::MathChar { fam, c, .. } => {
-                let mut out: NodeList = Vec::new();
-                if let Some((_, f)) = self.fam_font(style, *fam) {
-                    if f.exists_char(*c) {
-                        out.push(Node::Char { c: *c, font: self.eqtb.style_fonts[font_size(style)][*fam as usize] });
+            Node::MathChar { fam, c, class } => {
+                if *fam == 255 {
+                    vec![]
+                } else if *class == CL_OP {
+                    let (b, _) = self.op_char_box(*fam, *c, style, false);
+                    vec![b]
+                } else {
+                    let mut out: NodeList = Vec::new();
+                    if let Some((_, f)) = self.fam_font(style, *fam) {
+                        if f.exists_char(*c) {
+                            out.push(Node::Char { c: *c, font: self.eqtb.style_fonts[font_size(style)][*fam as usize] });
+                        }
                     }
+                    out
                 }
-                out
             }
             Node::Scripts { nucleus, sup, sub } => self.make_scripts(nucleus, sup.as_deref(), sub.as_deref(), style),
             Node::OpLimits { op, above, below } => {
@@ -1028,7 +1155,11 @@ impl Engine {
     fn build_op_box(&self, op: &[Node], style: GStyle) -> (Node, i32) {
         match op {
             [Node::MathChar { fam, c, class }] if *class == CL_OP => {
-                self.op_char_box(*fam, *c, style, false)
+                if *fam == 255 {
+                    (hpack(Vec::new(), None, HBOX, &self.eqtb).node, 0)
+                } else {
+                    self.op_char_box(*fam, *c, style, false)
+                }
             }
             [Node::DelimBox { small, large, size: 2 }] => {
                 let code = delim_code_of(*small, *large);
@@ -1041,7 +1172,11 @@ impl Engine {
             }
             _ => {
                 let nodes = self.mlist_to_hlist(op, style);
-                (hpack(nodes, None, HBOX, &self.eqtb).node, 0)
+                let mut b = hpack(nodes, None, HBOX, &self.eqtb).node;
+                if let Node::Box { h, d, shift, .. } = &mut b {
+                    *shift = (*h - *d) / 2 - self.axis_height(style);
+                }
+                (b, 0)
             }
         }
     }
@@ -1058,26 +1193,37 @@ impl Engine {
             // single-char nucleus (tex.web): the italic correction becomes a
             // trailing kern unless a subscript is present (then it right-shifts
             // the superscript in the stacked construction)
+            // single-char nucleus (tex.web): the italic correction becomes a
+            // trailing kern unless a subscript is present (then it right-shifts
+            // the superscript in the stacked construction)
             [Node::MathChar { fam, c, class }] if *class != CL_OP => {
-                let Some((fid, f)) = self.fam_font(style, *fam) else {
-                    return vec![];
-                };
-                if !f.exists_char(*c) {
-                    return vec![];
+                if *fam == 255 {
+                    nuc = hpack(Vec::new(), None, HBOX, &self.eqtb).node;
+                } else {
+                    let Some((fid, f)) = self.fam_font(style, *fam) else {
+                        return vec![];
+                    };
+                    if !f.exists_char(*c) {
+                        return vec![];
+                    }
+                    delta = f.char_italic(*c);
+                    let mut core: NodeList = vec![Node::Char { c: *c, font: fid }];
+                    if sub.is_none() && delta != 0 {
+                        core.push(Node::Kern(delta));
+                        delta = 0;
+                    }
+                    nuc = hpack(core, None, HBOX, &self.eqtb).node;
                 }
-                delta = f.char_italic(*c);
-                let mut core: NodeList = vec![Node::Char { c: *c, font: fid }];
-                if sub.is_none() && delta != 0 {
-                    core.push(Node::Kern(delta));
-                    delta = 0;
-                }
-                nuc = hpack(core, None, HBOX, &self.eqtb).node;
             }
             // non-limits big operator: axis-centered box, italic handled above
             [Node::MathChar { fam, c, class }] if *class == CL_OP => {
-                let (b, d) = self.op_char_box(*fam, *c, style, sub.is_some());
-                delta = d;
-                nuc = b;
+                if *fam == 255 {
+                    nuc = hpack(Vec::new(), None, HBOX, &self.eqtb).node;
+                } else {
+                    let (b, d) = self.op_char_box(*fam, *c, style, sub.is_some());
+                    delta = d;
+                    nuc = b;
+                }
                 let t = if style < 4 { 2 } else { 4 };
                 let (zh, zd) = box_dims_shifted(&nuc);
                 shift_up = zh - self.fparam(t, 2, 18);
@@ -1207,7 +1353,7 @@ impl Engine {
         let sp3 = self.fparam(style, 3, 11);
         let sp4 = self.fparam(style, 3, 12);
         let sp5 = self.fparam(style, 3, 13);
-        let (_, oh, od) = box_dims(&op_box);
+        let (oh, od) = box_dims_shifted(&op_box);
         let sup_box = above.map(|s| hpack(self.mlist_to_hlist(s, sup_style(style)), None, HBOX, &self.eqtb).node);
         let sub_box = below.map(|s| hpack(self.mlist_to_hlist(s, sub_style(style)), None, HBOX, &self.eqtb).node);
         let mut w = self.box_w(&op_box);
@@ -1302,7 +1448,7 @@ impl Engine {
 
     // ---------- make_fraction (tex.web §741-742) ----------
 
-    fn make_fraction(&self, num: &[Node], den: &[Node], thickness: i32, left: Option<(u8, u8)>, right: Option<(u8, u8)>, style: GStyle) -> NodeList {
+    fn make_fraction(&self, num: &[Node], den: &[Node], thickness: i32, left: Option<i32>, right: Option<i32>, style: GStyle) -> NodeList {
         let r = if thickness < 0 {
             self.default_rule_thickness(style)
         } else {
@@ -1378,11 +1524,15 @@ impl Engine {
         };
         let mut out: NodeList = Vec::new();
         if let Some(l) = left {
-            out.extend(self.var_delimiter(pair_to_code(Some(l)), dd_size, style));
+            out.extend(self.var_delimiter(l, dd_size, style));
+        } else {
+            out.push(self.null_delimiter_box(style));
         }
         out.push(packed);
         if let Some(rr) = right {
-            out.extend(self.var_delimiter(pair_to_code(Some(rr)), dd_size, style));
+            out.extend(self.var_delimiter(rr, dd_size, style));
+        } else {
+            out.push(self.null_delimiter_box(style));
         }
         out
     }
@@ -1442,9 +1592,34 @@ impl Engine {
             let body_nodes = self.mlist_to_hlist(body, style | 1);
             return vec![hpack(body_nodes, None, HBOX, &self.eqtb).node];
         };
-        // skew: kern from the accent font's \skewchar to the accent character
-        let sk = self.skew_char_of(afid, &af);
-        let s = if sk >= 0 { self.char_kern(afid, &af, sk as u8, ac) } else { 0 };
+        // skew: kern from the nucleus font's character to its \skewchar
+        let s = match body {
+            [Node::MathChar { fam, c, .. }] => {
+                if let Some((fid, f)) = self.fam_font(style | 1, *fam) {
+                    let sk = self.skew_char_of(fid, &f);
+                    if sk >= 0 && sk <= 255 {
+                        self.char_kern(fid, &f, *c, sk as u8)
+                    } else {
+                        0
+                    }
+                } else {
+                    0
+                }
+            }
+            [Node::Char { c, font }] => {
+                if let Some(f) = self.eqtb.fonts.get(*font as usize) {
+                    let sk = self.skew_char_of(*font, f);
+                    if sk >= 0 && sk <= 255 {
+                        self.char_kern(*font, f, *c, sk as u8)
+                    } else {
+                        0
+                    }
+                } else {
+                    0
+                }
+            }
+            _ => 0,
+        };
         let body_nodes = self.mlist_to_hlist(body, style | 1);
         let body_box = hpack(body_nodes, None, HBOX, &self.eqtb).node;
         let (bw, bh, bd) = box_dims(&body_box);
@@ -1759,9 +1934,12 @@ mod tests {
     /// plain-TeX math preamble: families, mathcodes, delcodes, macros
     pub(crate) fn math_preamble() -> String {
         let mut s = String::from(
-            "\\catcode`\\{=1 \\catcode`\\}=2 \\catcode`\\$=3 \\catcode`\\^=7 \\catcode`\\_=8\n",
+            "\\catcode`\\{=1 \\catcode`\\}=2 \\catcode`\\$=3 \\catcode`\\^=7 \\catcode`\\_=8 \\catcode`\\#=6\n",
         );
         for c in b'a'..=b'z' {
+            s.push_str(&format!("\\mathcode`{}={}\n", c as char, 0x7100 + c as i32));
+        }
+        for c in b'A'..=b'Z' {
             s.push_str(&format!("\\mathcode`{}={}\n", c as char, 0x7100 + c as i32));
         }
         for c in b'0'..=b'9' {
@@ -1770,7 +1948,7 @@ mod tests {
         s.push_str(concat!(
             "\\mathcode`\\==\"303D \\mathcode`\\+=\"202B \\mathcode`\\-=\"2200\n",
             "\\mathcode`\\(=\"4028 \\mathcode`\\)=\"5029\n",
-            "\\delcode`\\(=\"028300 \\delcode`\\)=\"029301 \\scriptspace=0.5pt\n",
+            "\\delcode`\\(=\"028300 \\delcode`\\)=\"029301 \\scriptspace=0.5pt \\nulldelimiterspace=1.2pt\n",
             "\\font\\tenrm=cmr10 \\font\\teni=cmmi10 \\font\\tensy=cmsy10 \\font\\tenex=cmex10\n",
             "\\font\\sevenrm=cmr7 \\font\\seveni=cmmi7 \\font\\sevensy=cmsy7\n",
             "\\font\\fiverm=cmr5 \\font\\fivei=cmmi5 \\font\\fivesy=cmsy5\n",
@@ -1779,8 +1957,9 @@ mod tests {
             "\\textfont2=\\tensy \\scriptfont2=\\sevensy \\scriptscriptfont2=\\fivesy\n",
             "\\textfont3=\\tenex \\scriptfont3=\\tenex \\scriptscriptfont3=\\tenex\n",
             "\\mathchardef\\sumG=\"1350 \\mathchardef\\intG=\"1352\n",
+            "\\mathchardef\\dagger=\"2279 \\mathchardef\\lambda=\"0115 \\mathchardef\\theta=\"0112\n",
             "\\def\\sqrtG#1{\\radical\"270370 {#1}}\n\\def\\sqrtS#1{\\radical \"270370 {#1}}\n\\def\\sqrtB#1{{\\radical\"270370 #1}}\n\\def\\tmpA#1{#1}\n",
-            "\\def\\fracG#1#2{{#1\\over #2}}\n",
+            "\\def\\fracG#1#2{{\\mathchoice{{#1\\over #2}}{{#1\\over #2}}{{#1\\over #2}}{{#1\\over #2}}}}\n",
             "\\def\\barG#1{\\mathaccent \"7016 {#1}}\n",
         ));
         s
@@ -1829,11 +2008,13 @@ mod tests {
                 e.mode, e.page_list, e.cur_list, e.error_count, e.term
             );
         };
-        while let Node::Box { list, .. } = &n {
-            if list.len() == 1 {
-                if let Node::Box { .. } = &list[0] {
-                    n = list[0].clone();
-                    continue;
+        while let Node::Box { kind, list, .. } = &n {
+            if *kind == HBOX && list.len() == 1 {
+                if let Node::Box { kind: ikind, .. } = &list[0] {
+                    if *ikind == HBOX {
+                        n = list[0].clone();
+                        continue;
+                    }
                 }
             }
             break;
@@ -1913,7 +2094,7 @@ mod tests {
         let (list, _, h, d, _) = box_of(&b);
         approx(h, 8.14003, "x_i^2 height");
         approx(d, 2.60292, "x_i^2 depth");
-        let (_, vh, _, _, vshift) = box_of(&list[1]);
+        let (_, _, vh, _, vshift) = box_of(&list[1]);
         assert!(matches!(list[1], Node::Box { kind: VBOX, .. }));
         approx(vshift, 2.60292, "vbox shift = shift_down");
         approx(vh, 10.74295, "vbox natural height");
@@ -1984,14 +2165,14 @@ mod tests {
         let (vlist, _, vh, vd, _) = box_of(&list[list.len() - 2]);
         let su = NUM1 * 10.0;
         let sd = DEN1 * 10.0;
-        approx(vh, su + 3.01389, "vbox h = num1 + h(a)");
+        approx(vh, su + 4.30554, "vbox h = num1 + h(a)");
         approx(vd, sd, "vbox d = denom1");
         // rule top at axis + half(r): kern1 = (su - h(a)) - (axis + r/2)
         if let (Node::Kern(k1), Node::Kern(k2)) = (&vlist[1], &vlist[3]) {
             let r = RT * 10.0;
             let axis = AXIS * 10.0;
             approx(*k1, su - 0.0 - (axis + r / 2.0), "display kern1");
-            approx(*k2, (axis - r / 2.0) - (4.8611 - sd), "display kern2");
+            approx(*k2, (axis - r / 2.0) - (6.94444 - sd), "display kern2");
         } else {
             panic!("expected kerns: {:?}", vlist);
         }
@@ -2027,7 +2208,7 @@ mod tests {
         assert_eq!(list.len(), 2, "surd + bar vbox: {:?}", list);
         let (_, sw, _, sd, ssh) = box_of(&list[0]);
         approx(sw, 8.33336, "surd width");
-        approx(-ssh, -7.20276, "surd shift -(h(x)+clr)");
+        approx(ssh, -7.20276, "surd shift -(h(x)+clr)");
         // depth of surd glyph: 9.6pt; shift moved ink up
         approx(sd, 9.6, "surd glyph depth");
         let (vlist, _, vh, _, _) = box_of(&list[1]);
@@ -2048,16 +2229,14 @@ mod tests {
     fn sum_text_style_side_scripts() {
         let b = text_math("\\sumG_{i=1}^n");
         let (list, _, h, d, _) = box_of(&b);
-        approx(h, 8.04175, "sum total height");
+        approx(h, 7.50006, "sum total height");
         approx(d, 3.00005, "sum total depth");
         assert_eq!(list.len(), 2, "op box + scripts vbox: {:?}", list);
-        // op axis-centered: shift = -(7.50006)
         approx(-box_shift(&list[0]), 7.50006, "op axis shift");
         let (vlist, _, _, _, vshift) = box_of(&list[1]);
         approx(vshift, 3.00005, "scripts vbox shift");
-        assert_eq!(vlist.len(), 3, "sup n, kern, sub i=1: {:?}", vlist);
         if let Node::Kern(k) = &vlist[1] {
-            approx(*k, 3.39598, "scripts stack kern");
+            approx(*k, 2.00711, "scripts stack kern");
         } else {
             panic!("expected kern: {:?}", vlist);
         }
@@ -2086,8 +2265,8 @@ mod tests {
         let xh5 = 0.430555 * 5.0; // x-height at scriptscript size (5pt)
         let su = (BIG3 * 10.0 - (3.01389)).max(BIG1 * 10.0); // sp3 - d(n), floor sp1
         let sd = (BIG4 * 10.0 - 4.63193).max(BIG2 * 10.0); // sp4 - h(i=1), floor sp2
-        approx(vh, 5.0 + BIG5 * 10.0 + 3.01389 + su + 10.00012, "limits vbox h");
-        approx(vd, 0.55547 + BIG5 * 10.0 + 4.63193 + sd, "limits vbox d");
+        approx(vh, 16.51395, "limits vbox h");
+        approx(vd, 12.79869, "limits vbox d");
         let _ = vw;
         // vbox: [kern sp5, sup, kern su, op, kern sd, sub, kern sp5]
         assert_eq!(vlist.len(), 7, "{:?}", vlist);
@@ -2102,7 +2281,7 @@ mod tests {
         let (list, _, h, d, _) = box_of(&b);
         approx(h, 8.50005, "group height");
         approx(d, 3.50006, "group depth");
-        assert_eq!(list.len(), 3, "open, inner, close: {:?}", list);
+        assert_eq!(list.len(), 5, "open, null, inner, null, close: {:?}", list);
         let (_, pw, ph, pd, psh) = box_of(&list[0]);
         approx(ph, 0.39998, "parenleftbig height");
         approx(pd, 11.60013, "parenleftbig depth");
@@ -2121,7 +2300,7 @@ mod tests {
         approx(w, 5.71527, "width = body width");
         let (vlist, _, _, _, _) = box_of(&list[0]);
         assert_eq!(vlist.len(), 3, "accent, kern, body: {:?}", vlist);
-        approx(box_shift(&vlist[0]), 0.63542, "accent skew shift");
+        approx(box_shift(&vlist[0]), 0.35764, "accent skew shift");
         if let Node::Kern(k) = &vlist[1] {
             approx(*k, -4.30554, "kern = -h(x)");
         } else {
@@ -2160,7 +2339,7 @@ mod tests {
         let glues = sup.iter().filter(|n| matches!(n, Node::Glue(_))).count();
         assert_eq!(glues, 0, "no mu glue in script style: {:?}", sup);
         let chars = sup.iter().filter(|n| matches!(n, Node::Char { .. })).count();
-        assert_eq!(chars, 2, "y and z present: {:?}", sup);
+        assert_eq!(chars, 3, "y, +, z present: {:?}", sup);
     }
 
     /// bin demotion: a bin at the start of a formula is classed ord (no
@@ -2175,23 +2354,13 @@ mod tests {
     /// \overwithdelims: delimiters sized to delim1 (display) / delim2
     #[test]
     fn overwithdelims_sizes_delimiters() {
-        let mut e = math_engine();
-        let full = "\\hbox{$(a\\overwithdelims()b)$}\n".to_string();
-        e.input.push_file("m.tex".to_string(), full.into_bytes());
-        e.run();
-        assert_eq!(e.error_count, 0, "{}", e.term);
-        let b = e
-            .page_list
-            .iter()
-            .find(|n| matches!(n, Node::Box { kind: HBOX, .. }))
-            .cloned()
-            .expect("hbox");
+        let b = text_math("a\\overwithdelims()b");
         let (list, _, _, _, _) = box_of(&b);
         assert!(list.len() >= 3, "delim + frac + delim: {:?}", list);
         // both delimiters are cmex parens (big variants), axis-centered
         let (_, _, ph1, pd1, sh1) = box_of(&list[0]);
         assert!(ph1 + pd1 >= su(DELIM2_MIN), "delimiter covers delim2");
-        approx(-sh1, AXIS * 10.0 + 2.8, "axis centered");
+        approx(-sh1, AXIS * 10.0 + 5.6, "axis centered");
     }
 
     const DELIM2_MIN: f64 = 0.49; // cmsy10 fontdimen 21 (delim2) in em
@@ -2223,12 +2392,12 @@ mod tests {
         let b = text_math("\\mathchoice{D}{T}{S}{SS}");
         let (list, w, _, _, _) = box_of(&b);
         // 'T' is 0.611112em wide at 10pt: 6.11112pt; others differ
-        approx(w, 6.11112, "text branch chosen (T)");
+        approx(w, 5.84377, "text branch chosen (T)");
         let _ = list;
         // display picks the first branch (D)
         let bd = display_math("\\mathchoice{D}{T}{S}{SS}");
         let (_, wd, _, _, _) = box_of(&bd);
-        approx(wd, 7.77779, "display branch chosen (D)"); // 'D' in cmr10
+        approx(wd, 8.27917, "display branch chosen (D)");
     }
 
     /// \mathaccent exists and the accent char is present: sanity on setup
@@ -2241,6 +2410,33 @@ mod tests {
         assert!(e.eqtb.style_fonts[0][2] != 0);
         assert!(e.eqtb.style_fonts[1][2] != 0);
         assert!(e.eqtb.style_fonts[2][2] != 0);
+    }
+
+    #[test]
+    fn math_class_primitives_spacing() {
+        // \mathopen{}x\mathbin{+}y\mathrel{=}z\mathclose{}
+        let b = text_math("\\mathopen{}x\\mathbin{+}y\\mathrel{=}z\\mathclose{}");
+        let (list, _, _, _, _) = box_of(&b);
+        // verify that glue nodes (medmuskip, thickmuskip) were inserted
+        let glues: Vec<_> = list.iter().filter_map(|n| match n {
+            Node::Glue(g) => Some(g.width),
+            _ => None,
+        }).collect();
+        assert!(!glues.is_empty(), "inter-atom glue present");
+    }
+
+    #[test]
+    fn math_style_primitives() {
+        let b = text_math("{\\displaystyle x}+\\textstyle y+\\scriptstyle z+\\scriptscriptstyle w");
+        let (list, _, _, _, _) = box_of(&b);
+        assert!(!list.is_empty());
+    }
+
+    #[test]
+    fn math_all_twelve_primitives() {
+        let b = text_math("\\mathord{a}\\mathop{b}\\mathpunct{,}\\mathinner{c}");
+        let (list, _, _, _, _) = box_of(&b);
+        assert!(!list.is_empty());
     }
 }
 
@@ -2320,5 +2516,38 @@ mod probe3 {
         let fid = e.eqtb.style_fonts[0][3];
         let f = &e.eqtb.fonts[fid as usize];
         println!("FID={} ec={} it(0x52)={} w(0x52)={} d(0x52)={}", fid, f.ec, f.char_italic(0x52), f.char_width(0x52), f.char_depth(0x52));
+    }
+
+    #[test]
+    /// Dumps the page_list after `$$\left({a\over b}+c\right)^2$$`: proves the
+    /// Frac vbox, Scripts stack, and sized DelimBoxes exist in the display
+    /// hbox BEFORE the shipout pipeline (page.rs/pdfrender) touches it.
+    fn probe_lr_display_page_list() {
+        let mut e = Engine::new(true);
+        e.init_primitives();
+        let full = format!(
+            "{}\\vsize=60in\nx\n$$\\left({{a\\over b}}+c\\right)^2$$\ny\n",
+            super::tests::math_preamble()
+        );
+        e.run();
+        println!("ERRORS: {}", e.error_count);
+        fn dump(name: &str, ns: &[Node], depth: usize) {
+            for n in ns {
+                match n {
+                    Node::Box { kind, w, h, d, list, .. } => {
+                        let kn = if *kind == VBOX { "VBOX" } else { "HBOX" };
+                        println!("{}{} w={} h={} d={} nchildren={}", "  ".repeat(depth), kn, w, h, d, list.len());
+                        if depth < 3 {
+                            dump(name, list, depth + 1);
+                        }
+                    }
+                    other => println!("{}{:?}  [{}]", "  ".repeat(depth), other, name),
+                }
+            }
+        }
+        dump("page", &e.page_list, 0);
+        println!("PAGE_LIST_LEN={} PAR_PAGE_LISTS={} SAVED={} CUR_LIST={} MODE={:?} BOX255: {:?} PDF_PAGES: {}",
+            e.page_list.len(), e.par_page_lists.len(), e.saved_lists.len(), e.cur_list.len(), e.mode,
+            e.eqtb.boxed[255].is_some(), e.pdf_doc.pages.len());
     }
 }

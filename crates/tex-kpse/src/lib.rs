@@ -20,6 +20,7 @@ const WALK_BUDGET: usize = 100_000;
 pub enum Format {
     Tex,   // .tex .ltx .cls .sty .clo .fd .dfu .cfg .def .ldf
     Tfm,   // .tfm
+    Vf,    // .vf (virtual font: char packets mapping into base fonts)
     Ofm,
     Type1, // .pfb .pfa
     Truetype,
@@ -38,6 +39,7 @@ impl Format {
         match self {
             Format::Tex => &[".tex", ".ltx", ".sty", ".cls", ".clo", ".fd", ".dfu", ".cfg", ".def", ".ldf", ".texi"],
             Format::Tfm => &[".tfm"],
+            Format::Vf => &[".vf"],
             Format::Ofm => &[".ofm"],
             Format::Type1 => &[".pfb", ".pfa"],
             Format::Truetype => &[".ttf", ".ttc", ".otf"],
@@ -60,6 +62,7 @@ impl Format {
         match self {
             Format::Tex => &["tex/latex//", "tex/generic//", "tex/plain//", "tex//"],
             Format::Tfm => &["fonts/tfm//"],
+            Format::Vf => &["fonts/vf//"],
             Format::Ofm => &["fonts/ofm//"],
             Format::Type1 => &["fonts/type1//"],
             Format::Truetype => &["fonts/truetype//"],
@@ -190,6 +193,7 @@ impl Kpse {
         };
         add(&mut m, &[Format::Tex], "TEXINPUTS");
         add(&mut m, &[Format::Tfm], "TFMFONTS");
+        add(&mut m, &[Format::Vf], "VFFONTS");
         add(&mut m, &[Format::Type1, Format::Truetype, Format::Otf], "TTFONTS");
         add(&mut m, &[Format::Type1], "T1FONTS");
         add(&mut m, &[Format::Type1, Format::Truetype, Format::Otf], "OPENTYPEFONTS");
@@ -211,11 +215,17 @@ impl Kpse {
         if p.is_absolute() {
             return if p.exists() { Some(p.to_path_buf()) } else { None };
         }
-        // Candidate names: as given, plus with each format extension appended
-        // when the bare name carries none of the format's extensions.
-        let mut candidates: Vec<String> = vec![name.to_string()];
-        if !fmt.extensions().iter().any(|e| name.ends_with(e)) {
-            candidates.extend(fmt.extensions().iter().map(|e| format!("{name}{e}")));
+        // Candidate names: when the name carries none of the format's
+        // extensions, the extension-appended spellings are tried before the
+        // bare name so that unrelated files sharing the bare name (e.g.
+        // tex4ht alias scripts next to font names) cannot shadow the real
+        // format file.
+        let mut candidates: Vec<String>;
+        if fmt.extensions().iter().any(|e| name.ends_with(e)) {
+            candidates = vec![name.to_string()];
+        } else {
+            candidates = fmt.extensions().iter().map(|e| format!("{name}{e}")).collect();
+            candidates.push(name.to_string());
         }
         // 1. the local directory has the highest precedence
         for cand in &candidates {

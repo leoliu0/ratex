@@ -33,7 +33,8 @@ impl Engine {
         }
     }
 
-    fn toklist_next(&mut self, si: usize) -> Option<Token> {
+    pub(crate) fn toklist_next(&mut self, si: usize) -> Option<Token> {
+
         let s = match &mut self.input.stack[si] {
             Source::TokList { toks, pos, params, param_idx, param_pos, in_param, name, .. } => {
                 loop {
@@ -226,7 +227,14 @@ impl Engine {
                             if el < 0 {
                                 continue;
                             }
-                            let cat = self.eqtb.cat[el as u8 as usize];
+                            if el < 0 || el > 255 {
+                                // tex.web: endlinechar outside 0..255 injects
+                                // space_token (which \endlinechar=-1 makes
+                                // impossible: TeX uses the value directly as a
+                                // token; negative => no token at all)
+                                continue;
+                            }
+                            let cat = self.eqtb.cat[el as usize];
                             if std::env::var("DEFTRACE").map(|v|v=="1").unwrap_or(false) {
                                 eprintln!("EOL state->0");
                             }
@@ -235,6 +243,13 @@ impl Engine {
                             }
                             if cat == CAT_IGNORED || cat == CAT_INVALID {
                                 continue;
+                            }
+                            // tex.web §347: every spacer token has character code 32.
+                            // \\ProvidesFile sets \\catcode\\endlinechar=10; that
+                            // spacer must \\ifx-equal \\@sptoken (chr 32) so
+                            // \\@ifnextchar sees the optional '[' on the next line.
+                            if cat == CAT_SPACE {
+                                return Some(Token::space());
                             }
                             return Some(Token::char(cat, el as u32));
                         }
@@ -301,8 +316,8 @@ impl Engine {
                 let mut line = rest[..nl].to_vec();
                 *pos += nl;
                 *line_no += 1;
-                if name.ends_with("latex.ltx") && *line_no % 5000 == 0 {
-                    eprintln!("LATEX_LTX_PROGRESS L{}", *line_no);
+                if name.ends_with("latex.ltx") && *line_no % 1000 == 0 {
+                    eprintln!("PROGRESS: {} line {}", name.split('/').last().unwrap_or(name), *line_no);
                 }
                 if line.last() == Some(&b'\n') {
                     line.pop();
@@ -314,6 +329,10 @@ impl Engine {
             }
             _ => return false,
         };
+
+
+
+
         if let Some(Source::File { line_buf, line_pos, line_reload, .. }) = self.input.stack.get_mut(si) {
             *line_buf = Some(chunk);
             *line_pos = 0;
@@ -395,20 +414,15 @@ impl Engine {
                 let c = self.expand_sup(b, si);
                 let ccat = self.eqtb.cat[c as usize];
                 if ccat == CAT_ACTIVE {
-                    // an active char produced via ^^ notation is a control sequence
-                    let id = self.cs.intern(&[c]);
-                    Some(Token::from_cs(id))
+                    Some(Token::char(13, c as u32))
                 } else if ccat == CAT_SPACE {
                     Some(Token::space())
                 } else {
                     Some(Token::char(ccat, c as u32))
                 }
             }
-            CAT_ACTIVE => {
-                // active chars behave as control sequences (tex.web eqtb slots)
-                let id = self.cs.intern(&[b]);
-                Some(Token::from_cs(id))
-            }
+            CAT_ACTIVE => Some(Token::char(13, b as u32)),
+
             CAT_SPACE => {
                 // tex.web §347: every spacer token has character code 32
                 Some(Token::space())

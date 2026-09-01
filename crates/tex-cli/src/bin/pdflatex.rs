@@ -30,6 +30,11 @@ fn main() {
     let mut eng = Engine::new(ini || !plain);
     eng.init_primitives();
     eng.out_dir = out_dir.clone();
+    if let Some(dir) = std::path::Path::new(&file).parent() {
+        if !dir.as_os_str().is_empty() {
+            eng.main_dir = Some(dir.to_path_buf());
+        }
+    }
     let job = jobname.unwrap_or_else(|| {
         std::path::Path::new(&file)
             .file_stem()
@@ -84,16 +89,48 @@ fn main() {
                 std::process::exit(1);
             }
         }
+        // The format is settled (loaded or just dumped); the user file runs in
+        // production mode, so a stray \dump cannot end the job silently.
+        eng.ini_mode = false;
         eng.end_occurred = false;
         eng.input.stack.clear();
-        let ej = (*eng.eqtb.tok_params[tex_core::prim::ToksParam::EveryJob.idx() as usize]).clone();
-        if !ej.is_empty() {
-            eng.input.push_toks(ej, "<everyjob>");
+        // \\csname luatexversion\\endcsname poisons the name as \\relax
+        // (tex.web §372). color.cfg then takes the luatex branch.
+        // pdfTeX identity: those names must compare \\ifx-equal \\@undefined.
+        for name in [
+            b"luatexversion" as &[u8],
+            b"luatexrevision",
+            b"luatexbanner",
+            b"directlua",
+            b"outputmode",
+            b"tex_luatexversion:D",
+            b"tex_directlua:D",
+        ] {
+            if let Some(id) = eng.cs.lookup(name) {
+                if matches!(
+                    eng.eqtb.get(id),
+                    Some(tex_core::eqtb::Equiv::Prim(tex_core::prim::Prim::Relax)) | None
+                ) {
+                    eng.eqtb.undefine(id, true);
+                }
+            }
         }
+        let ov = eng.cs.intern(b"overline");
+        eng.eqtb.assign(ov, tex_core::eqtb::Equiv::Prim(tex_core::prim::Prim::Overline), true);
+        let un = eng.cs.intern(b"underline");
+        eng.eqtb.assign(un, tex_core::eqtb::Equiv::Prim(tex_core::prim::Prim::Underline), true);
+        // \\the\\spacefactor is a Knuth special integer; missing it
+        // THESCAN-fails inside newtx .fd files and explodes pushback.
+        let sf = eng.cs.intern(b"spacefactor");
+        eng.eqtb.assign(sf, tex_core::eqtb::Equiv::CountReg(250), true);
+        if eng.eqtb.count.len() > 250 {
+            eng.eqtb.count[250] = 1000;
+        }
+
     } else {
         let _ = eng.hyphen_trie.load_hyphen_file(std::path::Path::new("/usr/share/texmf-dist/tex/generic/hyphen/hyphen.tex"));
         eng.eqtb.dim_params[DimParam::HSize.idx() as usize] = (6.25 * 72.27 * 65536.0) as i32;
-        eng.eqtb.dim_params[DimParam::VSize.idx() as usize] = (8.75 * 72.27 * 65536.0) as i32;
+        eng.eqtb.dim_params[DimParam::VSize.idx() as usize] = 0;
         eng.eqtb.dim_params[DimParam::MaxDepth.idx() as usize] = (4.0 * 65536.0) as i32;
         eng.eqtb.dim_params[DimParam::ParIndent.idx() as usize] = (1.5 * 65536.0 * 10.0) as i32;
         eng.eqtb.int_params[IntParam::EndLineChar.idx() as usize] = 13;
@@ -119,7 +156,71 @@ fn main() {
         eng.add_nullfont();
     }
     eprintln!("PROG: running user file");
+    if std::env::var("CATTRACE").map(|v| v == "1").unwrap_or(false) {
+        eprintln!(
+            "CATS d={} o={} c={} a={} _={} @={} :={} ~={} space={}",
+            eng.eqtb.cat[b'd' as usize],
+            eng.eqtb.cat[b'o' as usize],
+            eng.eqtb.cat[b'c' as usize],
+            eng.eqtb.cat[b'a' as usize],
+            eng.eqtb.cat[b'_' as usize],
+            eng.eqtb.cat[b'@' as usize],
+            eng.eqtb.cat[b':' as usize],
+            eng.eqtb.cat[b'~' as usize],
+            eng.eqtb.cat[b' ' as usize]
+        );
+    }
     if eng.input_file(&file) {
+        // Knuth: everyjob is inserted on top of the * file so it runs first.
+        if !plain && !ini {
+            // Format \\everyjob contains \\directlua{...}. Install the
+            // swallow-group stub for that, then \\let it to \\@undefined
+            // so color.cfg / iftex see a pdfTeX engine.
+            let dl = eng.cs.intern(b"directlua");
+            eng.eqtb.assign(
+                dl,
+                tex_core::eqtb::Equiv::Prim(tex_core::prim::Prim::DirectLua),
+                true,
+            );
+            if let Some(let_id) = eng.cs.lookup(b"let") {
+                let undef = eng.cs.intern(b"@undefined");
+                eng.input.push_toks(
+                    vec![
+                        tex_core::token::Token::from_cs(let_id),
+                        tex_core::token::Token::from_cs(dl),
+                        tex_core::token::Token::from_cs(undef),
+                    ],
+                    "<pdftex-not-luatex>",
+                );
+            }
+            if let Some(def_id) = eng.cs.lookup(b"def") {
+                // xcolor `\\providecommand*\\rangeRGB{255}` is a no-op if
+                // the name was csname-poisoned to \\relax; force pdfTeX
+                // defaults so \\ifnum\\rangeRGB=255 takes the RGB driver.
+                for (name, body) in [
+                    (b"rangeRGB" as &[u8], b"255" as &[u8]),
+                    (b"rangeHSB", b"240"),
+                    (b"rangeHsb", b"360"),
+                    (b"rangeGray", b"15"),
+                ] {
+                    let id = eng.cs.intern(name);
+                    let mut toks = vec![
+                        tex_core::token::Token::from_cs(def_id),
+                        tex_core::token::Token::from_cs(id),
+                        tex_core::token::Token::char(1, b'{' as u32),
+                    ];
+                    for &b in body {
+                        toks.push(tex_core::token::Token::char(12, b as u32));
+                    }
+                    toks.push(tex_core::token::Token::char(2, b'}' as u32));
+                    eng.input.push_toks(toks, "<pdftex-range>");
+                }
+            }
+            let ej = (*eng.eqtb.tok_params[tex_core::prim::ToksParam::EveryJob.idx() as usize]).clone();
+            if !ej.is_empty() {
+                eng.input.push_toks(ej, "<everyjob>");
+            }
+        }
         eng.run();
     }
     // -ini mode: the file ended in \dump — write the format and exit,
@@ -127,7 +228,11 @@ fn main() {
     if ini && eng.format_done {
         match tex_core::format::save_format(&eng, std::path::Path::new("pdflatex.fmt")) {
             Ok(n) => eprintln!("PROG: format dumped to pdflatex.fmt ({} bytes)", n),
-            Err(e) => eprintln!("PROG: format dump failed: {}", e),
+            Err(e) => {
+                print!("{}", eng.term);
+                eprintln!("PROG: format dump failed: {}", e);
+                std::process::exit(1);
+            }
         }
         print!("{}", eng.term);
         std::process::exit(if eng.error_count > 0 { 1 } else { 0 });
@@ -179,6 +284,9 @@ fn main() {
         }
         let pdf = pdffile::write_pdf(&eng.pdf_doc);
         let out = format!("{}{}.pdf", eng.out_dir, job);
+        if !eng.out_dir.is_empty() {
+            let _ = std::fs::create_dir_all(eng.out_dir.trim_end_matches('/'));
+        }
         std::fs::write(&out, &pdf).expect("write pdf");
         println!("\nOutput written on {} ({} bytes).", out, pdf.len());
         std::process::exit(if eng.error_count > 0 { 1 } else { 0 });

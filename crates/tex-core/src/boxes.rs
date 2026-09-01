@@ -135,7 +135,7 @@ pub enum Node {
     Choice,
     ChoiceAlt { body: NodeList },
     MathChar { fam: u8, c: u8, class: u8 },
-    Frac { num: NodeList, den: NodeList, thickness: i32, left: Option<(u8, u8)>, right: Option<(u8, u8)> },
+    Frac { num: NodeList, den: NodeList, thickness: i32, left: Option<i32>, right: Option<i32> },
     Radical { body: NodeList, left_delim: Option<(u8, u8)>, thickness: i32 },
     Scripts { nucleus: NodeList, sup: Option<NodeList>, sub: Option<NodeList> },
     DelimBox { small: (u8, u8), large: (u8, u8), size: u8 },

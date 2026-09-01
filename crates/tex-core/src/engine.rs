@@ -122,23 +122,22 @@ pub struct Engine {
     /// looking for a number (`\romannumeral\protected...`).
     pub expand_protected: u32,
     pub in_expanded_scan: bool,
+    /// tokens from \\unexpanded still sitting on the input; e-scan must not
+    /// ##-collapse them (\\usenone{#1}\\unexpanded{#1} inside \\expanded).
+    pub unexp_protect: usize,
+    /// e-TeX \\ifincsname: \\csname nesting depth
+    pub csname_depth: u32,
+
     /// noexpand'd token pending (returned once, unexpanded)
     pub no_expand_tok: Option<Token>,
     pub cur_font: u16, // current font id (0 = none)
     pub align_state: i32, // & nesting balance for runaway detection
+    pub ss_trace: Vec<String>,
     pub format_done: bool,
     pub trace_ltx: u32,
-    pub pdf_horigin: i32,
-    pub pdf_vorigin: i32,
-    pub pdf_page_width: Option<i32>,
-    pub pdf_page_height: Option<i32>,
     /// \pdfpageattr / \pdfpagesattr dict bodies (global in pdfTeX)
     pub pdf_page_attr: String,
     pub pdf_pages_attr: String,
-    /// link/dest/thread margins (parsed, stored)
-    pub pdf_link_margin: i32,
-    pub pdf_dest_margin: i32,
-    pub pdf_thread_margin: i32,
     pub left_delim: Option<i32>,
     pub right_delim: Option<i32>,
     pub math_limits: Option<u8>,
@@ -147,16 +146,29 @@ pub struct Engine {
     /// the main vertical list fed to the page builder (outer VM)
     pub page_list: Vec<crate::boxes::Node>,
     pub setbox_target: Option<u16>,
+    /// box_kinds depth of the group that consumes `setbox_target` (tex.web
+    /// keeps the box-register location group-local; inner boxes must not
+    /// steal the pending \setbox target)
+    pub setbox_depth: usize,
+    /// outer \\setbox/\\shipout targets parked across nested \\setbox
+    pub setbox_stack: Vec<(Option<u16>, usize)>,
     pub pending_box_shift: Option<(i32, bool)>,
     pub box_targets: Vec<Option<(i32, bool)>>,
     pub box_shifts: Vec<i32>,
     pub box_kinds: Vec<u8>,
     pub insert_nums: Vec<u16>,
     pub shipout_pending: bool,
+    /// box_kinds depth of the \\shipout box (tex.web box_context);
+    /// inner boxes must not consume the pending shipout.
+    pub shipout_depth: usize,
     pub par_page_lists: Vec<Vec<crate::boxes::Node>>,
     pub read_eof: Vec<bool>, // (amount, is_hmove)
-    pub read_files: Vec<Option<std::fs::File>>,
+    pub read_files: Vec<Option<std::io::BufReader<std::fs::File>>>,
     pub out_dir: String,
+    /// directory of the primary input file; relative \\input/\\openin names
+    /// resolve here before falling back to the TDS (matches running TeX from
+    /// the document's own directory).
+    pub main_dir: Option<std::path::PathBuf>,
     pub job_ended_by_end: bool,
     pub align_preamble: Vec<crate::align::ColSpec>,
     pub align_rows: Vec<Vec<crate::align::Cell>>,
@@ -164,6 +176,11 @@ pub struct Engine {
     pub align_cur_row: Vec<crate::align::Cell>,
     pub align_cur_col: i32,
     pub align_scanning_cell: bool,
+    /// `pushed` length when the current align toklist was installed.
+    /// Expansions after that point outrank the toklist; older `pushed`
+    /// tokens (e.g. a \\futurelet peek) wait until the toklist finishes.
+    pub align_pushed_base: usize,
+
     pub align_done: bool,
     pub align_to: Option<(i32, bool)>, // \halign to/spread <dimen>: (dimen, is_spread)
     pub in_output: bool,
@@ -192,10 +209,25 @@ pub struct Engine {
     pub last_badness: i32,
     pub pdf_last_x: i32,
     pub pdf_last_y: i32,
+    /// \pdflastobj / \pdflastxform / \pdflastximage / \pdflastlink /
+    /// \pdflastannot: object numbers of the last allocated PDF objects.
+    pub pdf_last_obj: i32,
+    pub pdf_last_xform: i32,
+    pub pdf_last_ximage: i32,
+    pub pdf_last_link: i32,
+    pub pdf_last_annot: i32,
+    /// next free object number for \pdfobj-style reservations (pdfTeX
+    /// reserves 1..4 for Catalog/Pages/Info/Outlines).
+    pub pdf_next_obj: i32,
     pub marks: [Vec<Vec<Token>>; 5], // top, first, bot, splitfirst, splitbot (class-indexed)
     pub last_named_cs: Option<CsId>,
     pub align_in_noalign: bool,
+    /// \\everycr already inserted for the row currently starting; stops
+    /// align_start_row from re-pushing it when the post-everycr content
+    /// token arrives.
+    pub align_everycr_done: bool,
     pub align_cell_toks: Vec<Token>,
+    pub after_assignment: Option<Token>,
 
     pub log: String,
     pub term: String,
@@ -264,38 +296,44 @@ impl Engine {
             protected_flag: false,
             expand_protected: 0,
             in_expanded_scan: false,
+            unexp_protect: 0,
+            csname_depth: 0,
+
             no_expand_tok: None,
             cur_font: 0,
             align_state: 0,
+            ss_trace: Vec::new(),
             format_done: false,
             trace_ltx: 0,
-            // pdfTeX default origin: 1in from the page corner (tex.web: 4736286sp)
-            pdf_horigin: 4_736_287,
-            pdf_vorigin: 4_736_287,
-            pdf_page_width: None,
-            pdf_page_height: None,
             pdf_page_attr: String::new(),
             pdf_pages_attr: String::new(),
-            pdf_link_margin: 0,
-            pdf_dest_margin: 0,
-            pdf_thread_margin: 0,
+            pdf_last_obj: 0,
+            pdf_last_xform: 0,
+            pdf_last_ximage: 0,
+            pdf_last_link: 0,
+            pdf_last_annot: 0,
+            pdf_next_obj: 5,
             left_delim: None,
             right_delim: None,
+            setbox_target: None,
+            setbox_depth: usize::MAX,
+            setbox_stack: Vec::new(),
+            pending_box_shift: None,
+            pending_the_string: None,
             math_limits: None,
             last_delim: None,
-            pending_the_string: None,
             page_list: Vec::new(),
-            setbox_target: None,
-            pending_box_shift: None,
             box_targets: Vec::new(),
             box_shifts: Vec::new(),
             box_kinds: Vec::new(),
             insert_nums: Vec::new(),
             shipout_pending: false,
+            shipout_depth: usize::MAX,
             par_page_lists: Vec::new(),
             read_eof: Vec::new(),
             read_files: Vec::new(),
             out_dir: String::new(),
+            main_dir: None,
             job_ended_by_end: false,
             align_preamble: Vec::new(),
             align_rows: Vec::new(),
@@ -303,8 +341,11 @@ impl Engine {
             align_cur_row: Vec::new(),
             align_cur_col: 0,
             align_in_noalign: false,
+            align_everycr_done: false,
             align_cell_toks: Vec::new(),
             align_scanning_cell: false,
+            align_pushed_base: 0,
+
             align_to: None,
             align_done: false,
             in_output: false,
@@ -331,10 +372,11 @@ impl Engine {
             last_badness: 0,
             pdf_last_x: 0,
             pdf_last_y: 0,
-            last_named_cs: None,
             marks: [Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new()],
             log: String::new(),
             term: String::new(),
+            last_named_cs: None,
+            after_assignment: None,
         };
         e
     }
@@ -392,8 +434,11 @@ impl Engine {
         d!(eng, b"iffalse", IfFalse);
         d!(eng, b"ifdefined", IfDef);
         d!(eng, b"ifcsname", IfCSName);
+        d!(eng, b"ifincsname", IfInCsName);
+
         d!(eng, b"ifx", IfX);
         d!(eng, b"ifcase", IfCase);
+        d!(eng, b"iffontchar", IfFontChar);
         d!(eng, b"else", Else);
         d!(eng, b"or", Or);
         d!(eng, b"fi", Fi);
@@ -402,6 +447,8 @@ impl Engine {
         d!(eng, b"egroup", EGroup);
         d!(eng, b"begingroup", BeginGroup);
         d!(eng, b"endgroup", EndGroup);
+        d!(eng, b"afterassignment", AfterAssignment);
+        d!(eng, b"aftergroup", AfterGroup);
         d!(eng, b"def", Def);
         d!(eng, b"gdef", GDef);
         d!(eng, b"edef", EDef);
@@ -424,6 +471,10 @@ impl Engine {
         d!(eng, b"muskip", MuSkip);
         d!(eng, b"toks", Toks);
         d!(eng, b"box", Box);
+        d!(eng, b"copy", Copy);
+        d!(eng, b"wd", Wd);
+        d!(eng, b"ht", Ht);
+        d!(eng, b"dp", Dp);
         d!(eng, b"countdef", CountDef);
         d!(eng, b"dimendef", DimenDef);
         d!(eng, b"skipdef", SkipDef);
@@ -434,6 +485,7 @@ impl Engine {
         d!(eng, b"fontdimen", FontDimen);
         d!(eng, b"hyphenchar", HyphenChar);
         d!(eng, b"skewchar", SkewChar);
+        d!(eng, b"parshape", ParShape);
         d!(eng, b"setbox", SetBox);
         d!(eng, b"advance", Advance);
         d!(eng, b"multiply", Multiply);
@@ -510,6 +562,19 @@ impl Engine {
             (b"pdfprotrudechars", IntParam::PdfProtrudeChars),
             (b"pdfminorversion", IntParam::PdfMinorVersion),
             (b"pdftexversion", IntParam::PdfTexVersion),
+            (b"interactionmode", IntParam::InteractionMode),
+            (b"currentgrouplevel", IntParam::CurrentGroupLevel),
+            (b"currentgrouptype", IntParam::CurrentGroupType),
+            (b"currentiflevel", IntParam::CurrentIfLevel),
+            (b"currentiftype", IntParam::CurrentIfType),
+            (b"currentifbranch", IntParam::CurrentIfBranch),
+            (b"lastnodetype", IntParam::LastNodeType),
+            (b"savingvdiscards", IntParam::SavingVDiscards),
+            (b"tracingnesting", IntParam::TracingNesting),
+            (b"pdfobjcompresslevel", IntParam::PdfObjCompressLevel),
+            (b"pdfgentounicode", IntParam::PdfGenToUnicode),
+            (b"paperquality", IntParam::PaperQuality),
+            (b"globaldefs", IntParam::GlobalDefs),
         ];
         for (n, p) in intnames {
             let id = eng.cs.intern(n);
@@ -519,6 +584,7 @@ impl Engine {
         eng.eqtb.int_params[IntParam::PdfTexVersion.idx() as usize] = 140;
         eng.eqtb.int_params[IntParam::PdfMinorVersion.idx() as usize] = 7;
         eng.eqtb.int_params[IntParam::EtxVersion.idx() as usize] = 2;
+        eng.eqtb.int_params[IntParam::PaperQuality.idx() as usize] = 1;
         let dimnames: &[(&[u8], DimParam)] = &[
             (b"parindent", DimParam::ParIndent),
             (b"mathsurround", DimParam::MathSurround),
@@ -547,6 +613,18 @@ impl Engine {
             (b"nulldelimiterspace", DimParam::NullDelimiterSpace),
             (b"scriptspace", DimParam::ScriptSpace),
             (b"topskip", DimParam::TopSkip),
+            // pdfTeX page/origin driver dimensions (real pdfTeX dimensions,
+            // so \setlength/\ifdim/\the/\divide all work on them)
+            (b"pdfpagewidth", DimParam::PdfPageWidth),
+            (b"pdfpageheight", DimParam::PdfPageHeight),
+            (b"pdfhorigin", DimParam::PdfHOrigin),
+            (b"pdfvorigin", DimParam::PdfVOrigin),
+            (b"pdflinkmargin", DimParam::PdfLinkMargin),
+            (b"pdfdestmargin", DimParam::PdfDestMargin),
+            (b"pdfthreadmargin", DimParam::PdfThreadMargin),
+            (b"hoffset", DimParam::HOffset),
+            (b"voffset", DimParam::VOffset),
+            (b"prevdepth", DimParam::PrevDepth),
         ];
         for (n, p) in dimnames {
             let id = eng.cs.intern(n);
@@ -567,6 +645,9 @@ impl Engine {
             (b"belowdisplayshortskip", GlueParam::BelowDisplayShortSkip),
             (b"splittopskip", GlueParam::SplitTopSkip),
             (b"tabskip", GlueParam::TabSkip),
+            (b"thinmuskip", GlueParam::ThinMuSkip),
+            (b"medmuskip", GlueParam::MedMuSkip),
+            (b"thickmuskip", GlueParam::ThickMuSkip),
         ];
         for (n, p) in gluenames {
             let id = eng.cs.intern(n);
@@ -582,6 +663,7 @@ impl Engine {
             (b"everycr", ToksParam::EveryCr),
             (b"everyeof", ToksParam::EveryEOF),
             (b"output", ToksParam::Output),
+            (b"errhelp", ToksParam::ErrHelp),
         ];
         for (n, p) in toksnames {
             let id = eng.cs.intern(n);
@@ -619,9 +701,19 @@ impl Engine {
         d!(eng, b"indent", Indent);
         d!(eng, b"noindent", NoIndent);
         d!(eng, b"unskip", UnSkip);
+        d!(eng, b"ignorespaces", IgnoreSpaces);
         d!(eng, b"unkern", UnKern);
         d!(eng, b"unpenalty", UnPenalty);
+        d!(eng, b"unhbox", UnHBox);
+        d!(eng, b"unvbox", UnVBox);
+        d!(eng, b"unhcopy", UnHCopy);
+        d!(eng, b"unvcopy", UnVCopy);
         d!(eng, b"lastbox", LastBox);
+
+        d!(eng, b"gluestretch", GlueStretch);
+        d!(eng, b"glueshrink", GlueShrink);
+        d!(eng, b"gluestretchorder", GlueStretchOrder);
+        d!(eng, b"glueshrinkorder", GlueShrinkOrder);
         d!(eng, b"lastkern", LastKern);
         d!(eng, b"lastpenalty", LastPenalty);
         d!(eng, b"lastskip", LastSkip);
@@ -631,14 +723,23 @@ impl Engine {
         d!(eng, b"insert", Insert);
         d!(eng, b"vadjust", VAdjust);
         d!(eng, b"mark", MarkPrim);
+        d!(eng, b"marks", MarkPrim);
         d!(eng, b"topmark", TopMark);
+        d!(eng, b"topmarks", TopMark);
         d!(eng, b"firstmark", FirstMark);
+        d!(eng, b"firstmarks", FirstMark);
         d!(eng, b"botmark", BotMark);
+        d!(eng, b"botmarks", BotMark);
         d!(eng, b"splitfirstmark", SplitFirstMark);
+        d!(eng, b"splitfirstmarks", SplitFirstMark);
         d!(eng, b"splitbotmark", SplitBotMark);
+        d!(eng, b"splitbotmarks", SplitBotMark);
         d!(eng, b"shipout", ShipOut);
+        d!(eng, b"char", Char);
         d!(eng, b"mathchar", MathChar);
         d!(eng, b"mathaccent", MathAccent);
+        d!(eng, b"overline", Overline);
+        d!(eng, b"underline", Underline);
         d!(eng, b"radical", Radical);
         d!(eng, b"delimiter", Delimiter);
         d!(eng, b"above", Above);
@@ -657,6 +758,18 @@ impl Engine {
         d!(eng, b"limits", Limits);
         d!(eng, b"displaylimits", DisplayLimits);
         d!(eng, b"mathchoice", MathChoice);
+        d!(eng, b"mathord", MathOrd);
+        d!(eng, b"mathop", MathOp);
+        d!(eng, b"mathbin", MathBin);
+        d!(eng, b"mathrel", MathRel);
+        d!(eng, b"mathopen", MathOpen);
+        d!(eng, b"mathclose", MathClose);
+        d!(eng, b"mathpunct", MathPunct);
+        d!(eng, b"mathinner", MathInner);
+        d!(eng, b"displaystyle", DisplayStyle);
+        d!(eng, b"textstyle", TextStyle);
+        d!(eng, b"scriptstyle", ScriptStyle);
+        d!(eng, b"scriptscriptstyle", ScriptScriptStyle);
         d!(eng, b"span", Span);
         d!(eng, b"cr", Cr);
         d!(eng, b"crcr", CrCr);
@@ -717,17 +830,15 @@ impl Engine {
         d!(eng, b"pdfrefobj", PdfRefObj);
         d!(eng, b"pdfuncompress", PdfUncompress);
         d!(eng, b"pdftolerance", PdfTolerance);
-        d!(eng, b"pdfhorigin", PdfHOrigin);
-        d!(eng, b"pdfvorigin", PdfVOrigin);
-        d!(eng, b"pdfpagewidth", PdfPageWidth);
-        d!(eng, b"pdfpageheight", PdfPageHeight);
         d!(eng, b"pdfpagebox", PdfPageBox);
         d!(eng, b"pdfthread", PdfThread);
         d!(eng, b"pdfstartthread", PdfStartThread);
         d!(eng, b"pdfendthread", PdfEndThread);
-        d!(eng, b"pdflinkmargin", PdfLinkMargin);
-        d!(eng, b"pdfdestmargin", PdfDestMargin);
-        d!(eng, b"pdfthreadmargin", PdfThreadMargin);
+        d!(eng, b"pdflastobj", PdfLastObj);
+        d!(eng, b"pdflastxform", PdfLastXForm);
+        d!(eng, b"pdflastximage", PdfLastXImage);
+        d!(eng, b"pdflastlink", PdfLastLink);
+        d!(eng, b"pdflastannot", PdfLastAnnot);
         d!(eng, b"pdffilesize", PdfFileSize);
         d!(eng, b"pdfmdfivesum", PdfMdFiveSum);
         d!(eng, b"pdffilemoddate", PdfFileModDate);
@@ -774,7 +885,41 @@ impl Engine {
         let sp_in: i32 = 4736287;
         eng.eqtb.dim_params[DimParam::HSize.idx() as usize] = (sp_in as i64 * 13 / 2) as i32;
         eng.eqtb.dim_params[DimParam::VSize.idx() as usize] = (sp_in as i64 * 89 / 10) as i32;
-        eng.eqtb.dim_params[DimParam::MaxDepth.idx() as usize] = 4 * 65536;
-        let _ = def;
+        // pdfTeX driver defaults: origin 1in from the page corner, US-letter
+        // page geometry (geometry.sty overrides via \pdfpagewidth assignment)
+        eng.eqtb.dim_params[DimParam::PdfHOrigin.idx() as usize] = sp_in;
+        eng.eqtb.dim_params[DimParam::PdfVOrigin.idx() as usize] = sp_in;
+        eng.eqtb.dim_params[DimParam::PdfPageWidth.idx() as usize] = (sp_in as i64 * 17 / 2) as i32;
+        eng.eqtb.dim_params[DimParam::PdfPageHeight.idx() as usize] = (sp_in as i64 * 11) as i32;
+    }
+    pub fn pop_group(&mut self) -> crate::eqtb::LevelType {
+        let mut ag = Vec::new();
+        let ty = self.eqtb.pop_level(&mut ag);
+        self.pushed.extend(ag);
+        ty
+    }
+    /// tex.web box_context: nest \\setbox so an inner \\setbox inside
+    /// \\shipout\\vbox{\\setbox...} cannot clobber the outer target.
+    pub fn park_setbox(&mut self, idx: u16) {
+        self.setbox_stack.push((self.setbox_target.take(), self.setbox_depth));
+        self.setbox_target = Some(idx);
+        self.setbox_depth = self.box_kinds.len();
+    }
+    pub fn unpark_setbox(&mut self) {
+        match self.setbox_stack.pop() {
+            Some((t, d)) => {
+                self.setbox_target = t;
+                self.setbox_depth = d;
+            }
+            None => {
+                self.setbox_target = None;
+                self.setbox_depth = usize::MAX;
+            }
+        }
+    }
+    pub fn trigger_after_assignment(&mut self) {
+        if let Some(t) = self.after_assignment.take() {
+            self.pushed.push(t);
+        }
     }
 }

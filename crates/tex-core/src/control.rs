@@ -28,6 +28,17 @@ impl Engine {
         let ln = self.input.current_file_line();
         let fnm = self.input.current_file_name();
 
+        if t == crate::input::EOF_MARKER {
+            return;
+        }
+        if t == crate::page::OUT_END_TOKEN {
+            self.finish_output();
+            return;
+        }
+        if t.is_cs() && (t.cs_id() as usize) >= self.cs.len() {
+            return;
+        }
+
         if t.is_cs() {
             let id = t.cs_id();
             if let Some(Equiv::FontRef(f)) = self.eqtb.resolve(id).cloned() {
@@ -43,6 +54,7 @@ impl Engine {
                 | Some(Equiv::MuSkipReg(_))
                 | Some(Equiv::ToksReg(_)) => {
                     self.cs_assign(id);
+                    self.trigger_after_assignment();
                     return;
                 }
                 _ => {}
@@ -50,14 +62,88 @@ impl Engine {
             // assignment prefixes
             if let Some(Equiv::Prim(p)) = self.eqtb.resolve(id).cloned() {
                 match self.try_assignment(p, id) {
-                    true => return,
+                    true => {
+                        if !matches!(p, Prim::Global | Prim::Long | Prim::Outer | Prim::Protected | Prim::AfterAssignment) {
+                            self.trigger_after_assignment();
+                        }
+                        return;
+                    }
                     false => {}
+                }
+                if self.global_flag || self.long_flag || self.outer_flag || self.protected_flag {
+                    self.clear_prefixes();
                 }
                 self.main_dispatch(p, id);
             } else {
                 // non-primitive cs used as value: usually error
                 match self.eqtb.resolve(id).cloned() {
                     None => {
+                        let name_bytes = self.cs.name(id).to_vec();
+                        if name_bytes == b"@@italiccorr" || name_bytes == b"/" {
+                            self.eqtb.assign(id, Equiv::Prim(Prim::Relax), true);
+                            return;
+                        }
+                        if name_bytes.contains(&b'_') {
+                            eprintln!("UNDEF-DISPATCH \\{} line={} file={}", String::from_utf8_lossy(&name_bytes), self.input.current_file_line(), self.input.current_file_name());
+                        }
+                        // l3 variant wrappers reference \exp_args:N<spec>
+                        // expanders lazily (\exp_not:c{exp_args:NNcc}); a
+                        // boot that has not generated the spec yet would see
+                        // the expander as undefined and pass c-args through
+                        // as raw character groups (expl3 quark/variant
+                        // generation dies). Synthesize the standard expander
+                        // for N[nc]* specs on first use: \expanded{ \exp_not:N
+                        // #1 (\cs:w #j \cs_end: for c) ({#j} for n) ... }.
+                        let name: Vec<u8> = self.cs.name(id).to_vec();
+                        if name.starts_with(b"exp_args:N")
+                            && name.len() > 10
+                            && name[10..].iter().all(|c| matches!(c, b'N' | b'n' | b'c'))
+                        {
+                            let spec = &name[10..];
+                            let k = spec.len() as u8;
+                            let mut body: Vec<Token> = Vec::new();
+                            if let (Some(&ex), Some(&noex), Some(&csw), Some(&cse)) = (
+                                self.cs.prim_ids.get("expanded"),
+                                self.cs.prim_ids.get("noexpand"),
+                                self.cs.prim_ids.get("csname"),
+                                self.cs.prim_ids.get("endcsname"),
+                            ) {
+                                body.push(Token::from_cs(ex));
+                                body.push(Token::char(1, b'{' as u32));
+                                for (i, letter) in spec.iter().enumerate() {
+                                    let pref = PAR_REF_FLAG | (i as u32 + 1);
+                                    match letter {
+                                        b'N' => body.push(Token::from_cs(noex)),
+                                        b'n' => body.push(Token::char(1, b'{' as u32)),
+                                        _ => {}
+                                    }
+                                    body.push(Token(pref));
+                                    match letter {
+                                        b'N' => {}
+                                        b'n' => body.push(Token::char(2, b'}' as u32)),
+                                        _ => {
+                                            body.push(Token::from_cs(csw));
+                                            body.push(Token::from_cs(cse));
+                                        }
+                                    }
+                                }
+                                body.push(Token::char(2, b'}' as u32));
+                                let m = crate::eqtb::Macro {
+                                    num_params: k,
+                                    params: vec![Vec::new(); k as usize],
+                                    prefix: Vec::new(),
+                                    body,
+                                    long: false,
+                                    outer: false,
+                                    protected: false,
+                                };
+                                self.eqtb.assign(id, Equiv::Macro(std::rc::Rc::new(m)), true);
+                                if let Some(Equiv::Macro(m)) = self.eqtb.resolve(id).cloned() {
+                                    self.expand_macro(id, &m);
+                                }
+                                return;
+                            }
+                        }
                         let name = String::from_utf8_lossy(self.cs.name(id)).into_owned();
                         if name == "::x"
                             || name == "q__cs_nil"
@@ -97,12 +183,19 @@ impl Engine {
                         self.error(&format!("Undefined control sequence \\{}", name));
                     }
                     Some(Equiv::Macro(m)) => {
-                        // e-TeX: protected macros are not expanded by get_x_token
-                        // but the execute processor still calls them.
-                        self.expand_macro(id, &m);
+                        if self.cur_prim != Some(crate::prim::Prim::Relax) {
+                            self.expand_macro(id, &m);
+                        }
                     }
+                    Some(Equiv::CharDef(v)) => {
+                        self.char_token(v as u8, false);
+                    }
+
                     Some(Equiv::MathCharDef(v)) if self.mode.is_m() => {
                         self.append_mathchar(v as u16);
+                    }
+                    Some(Equiv::CharTok(v)) => {
+                        self.dispatch(Token(v));
                     }
                     other => {
                         if std::env::var("IFTRACE").map(|v|v=="1").unwrap_or(false) {
@@ -113,6 +206,9 @@ impl Engine {
                 }
             }
         } else {
+            if self.global_flag || self.long_flag || self.outer_flag || self.protected_flag {
+                self.clear_prefixes();
+            }
             let cc = t.cc();
             let c = t.chr() as u8;
             match cc {
@@ -159,38 +255,19 @@ impl Engine {
     pub fn try_assignment(&mut self, p: Prim, id: CsId) -> bool {
         use Prim::*;
         match p {
+            AfterAssignment => {
+                let tok = self.raw_token();
+                self.after_assignment = Some(tok);
+                true
+            }
+            AfterGroup => {
+                let tok = self.raw_token();
+                self.eqtb.save_stack.push(crate::eqtb::SaveItem::AfterGroup(tok));
+                true
+            }
             Global => {
                 self.global_flag = true;
-                let t = self.get_token();
-                if t.is_cs() {
-                    let id2 = t.cs_id();
-                    if self.cs_assign(id2) {
-                        true
-                    } else {
-                        match self.eqtb.resolve(id2).cloned() {
-                            Some(Equiv::Prim(p2)) => {
-                                if !self.try_assignment(p2, id2) {
-                                    self.main_dispatch(p2, id2);
-                                }
-                                self.global_flag = false;
-                                true
-                            }
-                            Some(Equiv::Macro(m)) => {
-                                self.expand_macro(id2, &m);
-                                true
-                            }
-                            _ => {
-                                self.global_flag = false;
-                                self.pushed.push(t);
-                                true
-                            }
-                        }
-                    }
-                } else {
-                    self.global_flag = false;
-                    self.pushed.push(t);
-                    true
-                }
+                true
             }
             Def | GDef | EDef | XDef => {
                 self.do_def(p, id);
@@ -206,17 +283,14 @@ impl Engine {
             }
             Long => {
                 self.long_flag = true;
-                self.after_prefix();
                 true
             }
             Outer => {
                 self.outer_flag = true;
-                self.after_prefix();
                 true
             }
             Protected => {
                 self.protected_flag = true;
-                self.after_prefix();
                 true
             }
             Advance => {
@@ -287,7 +361,14 @@ impl Engine {
                 // \box<n> in value position handled in scan paths; in main
                 // position it's an error unless followed by use
                 let idx = self.scan_reg_num();
-                let b = self.eqtb.boxed[idx as usize].take();
+                let b = self.eqtb.boxed.get(idx as usize).cloned().flatten();
+                self.eqtb.assign_box(idx, None, true);
+                self.append_box_node(b);
+                true
+            }
+            Copy => {
+                let idx = self.scan_reg_num();
+                let b = self.eqtb.boxed.get(idx as usize).cloned().flatten();
                 self.append_box_node(b);
                 true
             }
@@ -330,7 +411,8 @@ impl Engine {
                 self.scan_optional_equals();
                 let v = self.scan_dimen(false, false);
                 if idx > 0 {
-                    self.eqtb.assign_font_param(f, idx as usize - 1, v, self.global_flag);
+                    // tex.web: \fontdimen/\hyphenchar/\skewchar are always global
+                    self.eqtb.assign_font_param(f, idx as usize - 1, v, true);
                 }
                 self.clear_prefixes();
                 true
@@ -339,7 +421,7 @@ impl Engine {
                 let f = self.scan_font_id();
                 self.scan_optional_equals();
                 let v = self.scan_int();
-                self.eqtb.assign_hyphen_char(f, v, self.global_flag);
+                self.eqtb.assign_hyphen_char(f, v, true);
                 self.clear_prefixes();
                 true
             }
@@ -347,7 +429,25 @@ impl Engine {
                 let f = self.scan_font_id();
                 self.scan_optional_equals();
                 let v = self.scan_int();
-                self.eqtb.assign_skew_char(f, v, self.global_flag);
+                self.eqtb.assign_skew_char(f, v, true);
+                self.clear_prefixes();
+                true
+            }
+            ParShape => {
+                // tex.web §1070: \parshape n i1 w1 ... in wn; n<=0 clears.
+                self.scan_optional_equals();
+                let n = self.scan_int();
+                if n <= 0 {
+                    self.par_shape.clear();
+                } else {
+                    let mut shape = Vec::with_capacity(n as usize);
+                    for _ in 0..n {
+                        let indent = self.scan_dimen(false, false);
+                        let width = self.scan_dimen(false, false);
+                        shape.push((indent, width));
+                    }
+                    self.par_shape = shape;
+                }
                 self.clear_prefixes();
                 true
             }
@@ -369,13 +469,17 @@ impl Engine {
             DimP(dp) => {
                 self.scan_optional_equals();
                 let v = self.scan_dimen(false, false);
-                self.eqtb.assign_dim_param(dp, v, self.global_flag);
+                if dp == DimParam::PrevDepth {
+                    self.prev_depth = v;
+                } else {
+                    self.eqtb.assign_dim_param(dp, v, self.global_flag);
+                }
                 self.clear_prefixes();
                 true
             }
             GlueP(gp) => {
                 self.scan_optional_equals();
-                let v = self.scan_glue(false);
+                let v = self.scan_glue(gp.is_mu());
                 self.eqtb.assign_glue_param(gp, v, self.global_flag);
                 self.clear_prefixes();
                 true
@@ -405,13 +509,17 @@ impl Engine {
             Some(Equiv::Prim(Prim::DimP(dp))) => {
                 self.scan_optional_equals();
                 let v = self.scan_dimen(false, false);
-                self.eqtb.assign_dim_param(dp, v, self.global_flag);
+                if dp == DimParam::PrevDepth {
+                    self.prev_depth = v;
+                } else {
+                    self.eqtb.assign_dim_param(dp, v, self.global_flag);
+                }
                 self.clear_prefixes();
                 true
             }
             Some(Equiv::Prim(Prim::GlueP(gp))) => {
                 self.scan_optional_equals();
-                let v = self.scan_glue(false);
+                let v = self.scan_glue(gp.is_mu());
                 self.eqtb.assign_glue_param(gp, v, self.global_flag);
                 self.clear_prefixes();
                 true
@@ -474,6 +582,7 @@ impl Engine {
 
     /// scan a cs for definitions (non-expanding, like tex.web's get_token)
     pub fn scan_definable_cs(&mut self) -> CsId {
+        static NONCS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
         self.skip_raw_spaces();
         let t = self.raw_token();
         if std::env::var("DEFTRACE").map(|v|v=="1").unwrap_or(false) {
@@ -482,11 +591,38 @@ impl Engine {
         if std::env::var("DEFWATCH").map(|v|v=="1").unwrap_or(false) {
             eprintln!("DEFSCAN target={:#x} cs={:?} pushed_top={:?} line={}", t.0, if t.is_cs() { String::from_utf8_lossy(self.cs.name(t.cs_id())).to_string() } else { "-".to_string() }, self.pushed.last().map(|x| format!("{:#x}", x.0)), self.input.current_file_line());
         }
-        if !t.is_cs() {
-            self.error("Missing control sequence inserted");
-            return self.cs.intern(b"");
+        if t.is_char() && t.cc() == 13 {
+            NONCS.store(0, std::sync::atomic::Ordering::Relaxed);
+            return self.cs.intern(&[t.chr() as u8]);
         }
+        if !t.is_cs() {
+            let n = NONCS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if n < 3 {
+                let ln = self.input.current_file_line();
+                let fnm = self.input.current_file_name();
+                eprintln!(
+                    "DEF-NONCS tok={:#x} cc={} chr={} L{} file={} pushed=[{}]",
+                    t.0,
+                    if t.0 < 0x8000_0000 { t.cc() } else { 99 },
+                    t.chr(),
+                    ln,
+                    fnm.split('/').last().unwrap_or(""),
+                    self.tokens_to_string(&self.pushed.iter().rev().take(4).cloned().collect::<Vec<_>>())
+                );
+            }
+            self.error("Missing control sequence inserted");
+            if n >= 8 {
+                self.pushed.clear();
+                while matches!(self.input.stack.last(), Some(crate::input::Source::TokList { .. })) {
+                    self.input.stack.pop();
+                }
+                NONCS.store(0, std::sync::atomic::Ordering::Relaxed);
+            }
+            return self.cs.intern(b"inaccessible");
+        }
+        NONCS.store(0, std::sync::atomic::Ordering::Relaxed);
         t.cs_id()
+
     }
 
     fn do_def_register(&mut self, mk: impl Fn(&mut Self, u16) -> Equiv) {
@@ -507,6 +643,19 @@ impl Engine {
 
     /// \def/\gdef/\edef/\xdef
     fn do_def(&mut self, p: Prim, _id: CsId) {
+        if self.input.current_file_line() >= 6738 && self.input.current_file_line() <= 6742 {
+            eprintln!(
+                "DODEF-ENTER p={:?} L{} file={} e-scan={} cat#={} cat?={} pushed=[{}]",
+                p,
+                self.input.current_file_line(),
+                self.input.current_file_name().split('/').last().unwrap_or(""),
+                self.in_expanded_scan,
+                self.eqtb.cat[b'#' as usize],
+                self.eqtb.cat[b'?' as usize],
+                self.tokens_to_string(&self.pushed.iter().rev().take(8).cloned().collect::<Vec<_>>())
+            );
+        }
+
         let global = self.global_flag || p == Prim::GDef || p == Prim::XDef;
         let expanded = p == Prim::EDef || p == Prim::XDef;
         let target = self.scan_definable_cs();
@@ -549,6 +698,8 @@ impl Engine {
                 if t2.is_char() && t2.cc() == 6 {
                     if let Some(last) = params.last_mut() {
                         last.push(Token::char(6, b'#' as u32));
+                    } else {
+                        self.def_prefix.push(Token::char(6, b'#' as u32));
                     }
                     continue;
                 }
@@ -582,9 +733,17 @@ impl Engine {
                 None => self.def_prefix.push(t),
             }
         }
-        let mut body = self.collect_def_body(target, expanded, hash_brace.is_some());
-        if let Some(hb) = hash_brace {
-            body.push(hb);
+        let body = self.collect_def_body(target, expanded, hash_brace.is_some());
+        if self.cs.name(target) == b"GTS@Token" {
+            eprintln!("AFTER-TOKEN-EDEF e-scan={} body=[{}]", self.in_expanded_scan, self.tokens_to_string(&body));
+        }
+        if std::env::var("QUARKTRACE").is_ok()
+            && (String::from_utf8_lossy(self.cs.name(target)).starts_with("q__")
+                || String::from_utf8_lossy(self.cs.name(target)).contains("recursion_tail"))
+        {
+            eprintln!("QUIRKDEF \\{} body=[{}] self={}", String::from_utf8_lossy(self.cs.name(target)),
+                self.tokens_to_string(&body),
+                body.iter().any(|t| t.is_cs() && self.cs.name(t.cs_id()) == self.cs.name(target)));
         }
         if std::env::var("DEFTOOL").is_ok() {
             eprintln!("FINISH {} np={} prefix=[{}] params=[{}] body=[{}]",
@@ -593,6 +752,25 @@ impl Engine {
                 params.iter().map(|p| format!("{{{}}}", self.tokens_to_string(p))).collect::<Vec<_>>().join(","),
                 self.tokens_to_string(&body));
         }
+        {
+            let ln = self.input.current_file_line();
+            if (6730..=6750).contains(&ln) {
+                let swallowed = body.iter().any(|t| t.is_cs() && self.cs.name(t.cs_id()) == b"@onlypreamble");
+                eprintln!(
+                    "DEF-DONE p={:?} \\{} np={} body_len={} swallowed={} e-scan={} L{} file={} body=[{}]",
+                    p,
+                    String::from_utf8_lossy(self.cs.name(target)),
+                    num_params,
+                    body.len(),
+                    swallowed,
+                    self.in_expanded_scan,
+                    ln,
+                    self.input.current_file_name().split('/').last().unwrap_or(""),
+                    self.tokens_to_string(&body.iter().take(20).cloned().collect::<Vec<_>>())
+                );
+            }
+        }
+
         self.finish_def(target, num_params, params, body, global);
     }
 
@@ -613,13 +791,68 @@ impl Engine {
         self.clear_prefixes();
     }
 
+    /// e-TeX: `\unexpanded` tokens copied into `\edef`/`\xdef` keep literal
+    /// `#n` (Knuth doubles hashes from `\the`/`\unexpanded`). Leaving them as
+    /// PAR_REF binds `#1`/`#2` to the outer definition — that is what broke
+    /// `\__hook_tmp:w` (nameref `\AddToHookWithArguments`).
+    fn store_unexpanded_in_edef(out: &mut Vec<Token>, toks: impl IntoIterator<Item = Token>) {
+        for t in toks {
+            let t = Token::unfreeze(t);
+            if t.0 >= PAR_REF_FLAG && t.0 < 0x8000_0000 && !t.is_cs() {
+                let n = (t.0 & 0xF) as u8;
+                out.push(Token::char(6, b'#' as u32));
+                out.push(Token::char(12, b'0' as u32 + n as u32));
+            } else {
+                out.push(t);
+            }
+        }
+    }
+
     /// collect macro body until the closing brace at depth 0
     fn collect_def_body(&mut self, target: CsId, expanded: bool, brace_consumed: bool) -> Vec<Token> {
         let prev_expanded_scan = self.in_expanded_scan;
         if expanded {
+            let fnm = self.input.current_file_name();
+            if self.last_macros.iter().any(|m| m == "GTS@RemoveLeft" || m == "GTS@TestLeftEnd" || m == "GetTitleStringNonExpand") {
+                static ED: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+                if ED.fetch_add(1, std::sync::atomic::Ordering::Relaxed) < 16 {
+                    eprintln!(
+                        "EDEF \\{} L{} file={} macros={:?}",
+                        std::string::String::from_utf8_lossy(self.cs.name(target)),
+                        self.input.current_file_line(),
+                        fnm.split('/').last().unwrap_or(""),
+                        self.last_macros.iter().rev().take(8).collect::<Vec<_>>()
+                    );
+                }
+            }
+            if fnm.contains("latex.ltx")
+                && (6680..=6760).contains(&self.input.current_file_line())
+            {
+                eprintln!(
+                    "E-SCAN-ON edef \\{} L{} brace_consumed={} prev_e={}",
+                    std::string::String::from_utf8_lossy(self.cs.name(target)),
+                    self.input.current_file_line(),
+                    brace_consumed,
+                    prev_expanded_scan
+                );
+            }
             self.in_expanded_scan = true;
         }
         let mut out = Vec::new();
+        let dump_tlifin = self.cs.name(target).starts_with(b"tl_if_in:nn");
+        let mut dump_n = 0u32;
+        if dump_tlifin {
+            eprintln!("CDB-START \\{} expanded={} brace_consumed={}", String::from_utf8_lossy(self.cs.name(target)), expanded, brace_consumed);
+            for key in [b"exp_not:n" as &[u8], b"unexpanded", b"tex_unexpanded:D", b"exp_not:N", b"use:e", b"tex_expanded:D", b"expanded"] {
+                let desc = match self.cs.lookup(key).and_then(|id| self.eqtb.resolve(id).cloned()) {
+                    Some(Equiv::Prim(p)) => format!("Prim({p:?})"),
+                    Some(Equiv::Macro(m)) => format!("Macro(np={})", m.num_params),
+                    Some(other) => other.kind_name().to_string(),
+                    None => "undefined".into(),
+                };
+                eprintln!("CDB-MEAN \\{} = {}", String::from_utf8_lossy(key), desc);
+            }
+        }
         let mut depth = 1i32;
         if !brace_consumed {
             self.skip_spaces_relax();
@@ -652,24 +885,56 @@ impl Engine {
                         if nxt.is_cs() {
                             if let Some(Equiv::ToksReg(i)) = self.eqtb.resolve(nxt.cs_id()).cloned() {
                                 let toks = (*self.eqtb.toks[i as usize]).clone();
-                                out.extend(toks);
+                                Self::store_unexpanded_in_edef(&mut out, toks);
+
                                 continue;
                             }
                         }
                         self.pushed.push(nxt);
                         let toks = self.scan_general_text();
-                        out.extend(toks);
+                        Self::store_unexpanded_in_edef(&mut out, toks);
+
                         continue;
                     }
                 }
                 self.pushed.push(raw);
             }
             let t = if expanded { self.get_token() } else { self.raw_token() };
+            let from_unexp = expanded && self.unexp_protect > 0;
+            if from_unexp {
+                self.unexp_protect -= 1;
+            }
+            if dump_tlifin && dump_n < 25 {
+                dump_n += 1;
+                let desc = if t.is_cs() {
+                    format!("\\{}", String::from_utf8_lossy(self.cs.name(t.cs_id())))
+                } else if t.0 >= PAR_REF_FLAG && t.0 < 0x8000_0000 {
+                    format!("PARREF{}", t.0 & 0xF)
+                } else {
+                    format!("cc{}:{:#x}", t.cc(), t.chr())
+                };
+                eprintln!("CDB t={:#x} {} d={}", t.0, desc, depth);
+            }
             if t == crate::input::EOF_MARKER {
                 self.error(&format!("File ended while scanning macro body for \\{} depth={}", String::from_utf8_lossy(self.cs.name(target)), depth));
                 self.end_occurred = true;
                 self.in_expanded_scan = prev_expanded_scan;
                 return out;
+            }
+            if expanded && self.cur_prim == Some(Prim::UnExpanded) {
+                self.skip_spaces_relax();
+                let nxt = self.raw_token();
+                if nxt.is_cs() {
+                    if let Some(Equiv::ToksReg(i)) = self.eqtb.resolve(nxt.cs_id()).cloned() {
+                        Self::store_unexpanded_in_edef(&mut out, (*self.eqtb.toks[i as usize]).clone());
+
+                        continue;
+                    }
+                }
+                self.pushed.push(nxt);
+                Self::store_unexpanded_in_edef(&mut out, self.scan_general_text());
+
+                continue;
             }
             if t.is_char() {
                 let cc = t.cc();
@@ -683,7 +948,16 @@ impl Engine {
                     }
                 }
                 if cc == 6 {
+                    // `\unexpanded{#1}` inside `\edef\foo#1#2{...}` must store
+                    // a literal hash, not parameter 1 of `\foo`.
+                    if from_unexp {
+                        out.push(Token::char(6, b'#' as u32));
+                        continue;
+                    }
                     let t2 = self.raw_token();
+                    if dump_tlifin {
+                        eprintln!("CDB-HASH t2={:#x} cc={} chr={:#x}", t2.0, if t2.is_char() { t2.cc() } else { 99 }, t2.chr());
+                    }
                     if t2.is_char() && t2.cc() == 6 {
                         out.push(Token::char(6, b'#' as u32));
                         continue;
@@ -703,48 +977,59 @@ impl Engine {
                 }
             }
             out.push(t);
+
+
         }
     }
 
     /// \let (and \futurelet)
     fn do_let(&mut self, future: bool) {
         let target = self.scan_definable_cs();
+        let nm = std::string::String::from_utf8_lossy(self.cs.name(target)).to_string();
+        if nm.contains("bar_bool") || nm.contains("backend_header_bool") || nm.contains("cmd_log_bool") {
+            eprintln!("DO_LET_BOOL target={} future={} global={} level={} line={}", nm, future, self.global_flag, self.eqtb.cur_level, self.input.current_file_line());
+        }
         if future {
             let tb = self.raw_token();
             let tc = self.raw_token();
             if tc.is_cs() {
                 self.copy_meaning(target, tc.cs_id());
+            } else if tc.is_char() && tc.cc() == 13 {
+                let id = self.cs.intern(&[tc.chr() as u8]);
+                self.copy_meaning(target, id);
             } else {
-                // char tokens have eqtb slots; \futurelet may peek chars
-                if std::env::var("IFTRACE").map(|v|v=="1").unwrap_or(false) {
-                    eprintln!("FUTLET target={:?} peek={:#x}", String::from_utf8_lossy(self.cs.name(target)), tc.0);
-                }
                 self.eqtb.assign(target, Equiv::CharTok(tc.0), self.global_flag);
             }
-            // tex.web back_inputs tc THEN tb on a single input stack, so tb's
-            // expansion lands ABOVE tc and plays first. Our two-level model
-            // (pushed > input.stack) breaks that if both go to `pushed`:
-            // expanding tb pushes its body to input.stack, then tc would pop
-            // ahead of the body. Park tc on the input stack (below whatever
-            // tb expands to) and keep tb on the high-priority pushed stack.
-            self.input.push_toks(vec![tc], "<futurelet>");
-            self.pushed.push(tb);
+            if tc.is_cs() && self.cs.name(tc.cs_id()) == b"end" {
+                self.input.push_toks(vec![tc], "futurelet-end");
+                self.pushed.push(tb);
+            } else {
+                self.pushed.push(tc);
+                self.pushed.push(tb);
+            }
+
+
+
+
+
         } else {
             self.skip_raw_spaces();
-            // tex.web §1221: optional `=`, then at most ONE spacer, then the
-            // value token (which may itself be a space — expl3 `\let\x=~`).
             let eq = self.raw_token();
             if eq.is_char() && eq.chr() == b'=' as u32 && eq.cc() == 12 {
-                let sp = self.raw_token();
-                if !(sp.is_char() && sp.cc() == 10) {
-                    self.pushed.push(sp);
-                }
+                self.skip_raw_spaces();
             } else {
                 self.pushed.push(eq);
             }
             let t = self.raw_token();
+            if nm.contains("bar_bool") || nm.contains("backend_header_bool") || nm.contains("cmd_log_bool") {
+                let tn = if t.is_cs() { format!("\\{}", String::from_utf8_lossy(self.cs.name(t.cs_id()))) } else { format!("cc{}:{}", t.cc(), t.chr()) };
+                eprintln!("DO_LET_SRC target={} src={} global={}", nm, tn, self.global_flag);
+            }
             if t.is_cs() {
                 self.copy_meaning(target, t.cs_id());
+            } else if t.is_char() && t.cc() == 13 {
+                let id = self.cs.intern(&[t.chr() as u8]);
+                self.copy_meaning(target, id);
             } else if t.0 >= crate::expand::PAR_REF_FLAG && t.0 < 0xFFFF_0000 && t.0 != crate::input::PAR_END.0 {
                 self.error("Missing control sequence after \\let");
             } else {
@@ -754,10 +1039,18 @@ impl Engine {
         self.clear_prefixes();
     }
 
+
     /// copy meaning from src cs to dst cs (TeX \let semantics)
     fn copy_meaning(&mut self, dst: CsId, src: CsId) {
         match self.eqtb.resolve(src).cloned() {
-            None => self.eqtb.undefine(dst, self.global_flag),
+            None => {
+                let name = self.cs.name(src);
+                if name == b"/" || name == b"@@italiccorr" {
+                    self.eqtb.assign(dst, Equiv::Prim(Prim::Relax), self.global_flag);
+                } else {
+                    self.eqtb.undefine(dst, self.global_flag);
+                }
+            }
             Some(eq) => self.eqtb.assign(dst, eq, self.global_flag),
         }
     }
@@ -769,7 +1062,11 @@ impl Engine {
             let id = t.cs_id();
             match self.eqtb.resolve(id).cloned() {
                 Some(Equiv::Prim(p)) => {
-                    if !self.try_assignment(p, id) {
+                    if self.try_assignment(p, id) {
+                        if !matches!(p, Prim::Global | Prim::Long | Prim::Outer | Prim::Protected | Prim::AfterAssignment) {
+                            self.trigger_after_assignment();
+                        }
+                    } else {
                         self.main_dispatch(p, id);
                     }
                     return;
@@ -785,6 +1082,10 @@ impl Engine {
     }
 
     /// scan a token list (\toks assignments): balanced text or \csname...
+    /// tex.web scan_toks (xpand=false): expand until `{` / register, then
+    /// copy the group RAW. Expanding inside the group made `\toks@\expandafter
+    /// \expandafter\expandafter{\expandafter\GTS@Car\GTS@GlobalString...\GTS@Nil}`
+    /// run `\GTS@Car` at top level and hang looking for `\GTS@Nil`.
     pub fn scan_token_list(&mut self) -> Vec<Token> {
         self.skip_spaces_relax();
         let t = self.get_token();
@@ -793,47 +1094,18 @@ impl Engine {
                 Some(Equiv::ToksReg(i)) => return (*self.eqtb.toks[i as usize]).clone(),
                 Some(Equiv::Prim(Prim::ToksP(p))) => return (*self.eqtb.tok_params[p.idx() as usize]).clone(),
                 Some(Equiv::Prim(Prim::CsName)) => {
-                    // \toks0=\csname...\endcsname
                     let id = self.scan_csname_explicit();
                     return vec![Token::from_cs(id)];
                 }
                 _ => {}
             }
         }
-        if !(t.is_char() && t.cc() == 1) {
-            // tex.web scan_toks recovery: a non-brace, non-register leading token
-            // (e.g. \expandafter in `\toks-assign\expandafter{...}`) is stored and
-            // the following balanced group is collected into the list
-            let mut out = vec![t];
-            let mut depth = 0i32;
-        loop {
-            let t2 = self.get_token();
-            if t2 == crate::input::EOF_MARKER {
-                self.error("File ended while scanning token list (recovery loop, first-stored was the token above)");
-                self.end_occurred = true;
-                return out;
-            }
-            if t2.is_char() {
-                let cc = t2.cc();
-                if cc == 1 {
-                    depth += 1;
-                    if depth == 1 { continue; } // inserted brace not stored
-                } else if cc == 2 {
-                    depth -= 1;
-                    if depth == 0 { return out; }
-                }
-            }
-            out.push(t2);
+        if t.is_char() && t.cc() == 1 {
+            return self.scan_balanced_raw(true);
         }
-        }
-        // normal path: leading { already in t
-        { let __pt = t; if std::env::var("PUSHWATCH").map(|w|w=="1").unwrap_or(false) && __pt.is_cs() && self.cs.name(__pt.cs_id()) == b"ifx" && self.input.current_file_line() > 9000 { eprintln!("PUSHIFX crates/tex-core/src/control.rs:{} line={}", {line!()}, self.input.current_file_line()); } self.pushed.push(__pt); }
-        let t = self.get_token();
-        if !(t.is_char() && t.cc() == 1) {
-            self.error("Missing { for token list");
-            return Vec::new();
-        }
-        self.scan_balanced_raw()
+        self.error("Missing { inserted (token list)");
+        self.pushed.push(t);
+        Vec::new()
     }
 
     pub fn scan_csname_explicit(&mut self) -> CsId {
@@ -861,40 +1133,68 @@ impl Engine {
 
     // ---------- grouping ----------
 
-    /// `{`, \bgroup, \begingroup: start a list group packed into a box on close
+    /// `{` / `\bgroup`: tex.web simple_group — save-stack only.
+    /// Box constructors (`\hbox`/`\vbox`/...) consume their own `{` via begin_box.
     pub fn begin_group(&mut self, _brace: bool) {
-        if std::env::var("IFTRACE").map(|v|v=="1").unwrap_or(false) {
-            eprintln!("BEGINGROUP-ctl kinds->{} saved->{}", self.box_kinds.len()+1, self.saved_lists.len()+1);
+        self.eqtb.push_level(LevelType::Simple);
+    }
+
+    pub fn end_group(&mut self) {
+        match self.eqtb.cur_group_type() {
+            Some(LevelType::Box) => self.end_box(),
+            Some(LevelType::Simple) => {
+                if self.eqtb.save_stack.is_empty() {
+                    self.error("Too many }'s");
+                    return;
+                }
+                let _ = self.pop_group();
+            }
+            Some(LevelType::Group) => {
+                // math/legacy groups: pack if a box context is open
+                if !self.box_kinds.is_empty() {
+                    self.end_box();
+                } else if self.eqtb.save_stack.is_empty() {
+                    self.error("Too many }'s");
+                } else {
+                    let _ = self.pop_group();
+                }
+            }
+            Some(LevelType::SemiSimple) => {
+                self.error("Extra }, or forgotten \\endgroup");
+            }
+            _ => self.error("Too many }'s"),
         }
-        self.saved_lists.push((self.mode, std::mem::take(&mut self.cur_list), self.prev_depth, self.space_factor));
-        self.eqtb.push_level(LevelType::Group);
-        self.box_targets.push(None);
-        self.box_shifts.push(0);
-        // kind 4 = plain group: pack by outer mode
-        let kind = if self.mode.is_v() { 5 } else { 6 };
-        self.box_kinds.push(kind);
-        match self.mode {
-            Mode::Vertical => {
-                // the outer vlist continues after the group; swap in fresh list
-                let page = std::mem::take(&mut self.page_list);
-                self.par_page_lists.push(page);
-                self.mode = Mode::InternalVertical;
-                self.prev_depth = -1000 * 65536;
+    }
+
+    /// tex.web semi_simple_group: \\begingroup/\\endgroup save-stack only
+    pub fn begin_semi_simple(&mut self) {
+        self.ss_trace.push(format!(
+            "{}:{}",
+            self.input.current_file_name().split('/').last().unwrap_or("?"),
+            self.input.current_file_line()
+        ));
+        self.eqtb.push_level(crate::eqtb::LevelType::SemiSimple);
+    }
+    pub fn end_semi_simple(&mut self) {
+        match self.eqtb.cur_group_type() {
+            Some(crate::eqtb::LevelType::SemiSimple) => {
+                self.ss_trace.pop();
+                let _ = self.pop_group();
             }
-            Mode::InternalVertical => {
-                self.cur_list = Vec::new();
-                self.prev_depth = -1000 * 65536;
+            Some(crate::eqtb::LevelType::Simple) => {
+                self.error("Extra \\endgroup, or missing }");
             }
-            Mode::Horizontal | Mode::RestrictedHorizontal => {
-                self.cur_list = Vec::new();
-            }
-            Mode::Math | Mode::DisplayMath => {
-                self.cur_list = Vec::new();
+            _ => {
+                if self.eqtb.save_stack.is_empty() {
+                    self.error("Too many \\endgroups");
+                } else {
+                    // mismatch: still pop to keep the save stack moving
+                    let _ = self.pop_group();
+                }
             }
         }
     }
 
-    pub fn end_group(&mut self) {
-        self.end_box();
-    }
+
+
 }

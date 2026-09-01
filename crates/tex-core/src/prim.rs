@@ -82,14 +82,39 @@ pub enum IntParam {
     PdfPageCount,
     TeXXeTEnabled,
     PdfTexVersion,
+    InteractionMode,
+    CurrentGroupLevel,
+    CurrentGroupType,
+    CurrentIfLevel,
+    CurrentIfType,
+    CurrentIfBranch,
+    LastNodeType,
+    SavingHyphCodes,
+    SavingVDiscards,
+    PdfObjCompressLevel,
+    PdfGenToUnicode,
+    PaperQuality,
+    GlobalDefs,
+    /// e-TeX \tracingnesting (read/write int; we accept and store it,
+    /// group tracing itself is not implemented)
+    TracingNesting,
 }
 
-pub const NUM_INT_PARAMS: usize = 73;
+pub const NUM_INT_PARAMS: usize = 87;
+
+
 
 impl IntParam {
     #[inline]
     pub fn idx(self) -> u16 {
         self as u16
+    }
+    pub fn from_idx(i: u16) -> Option<Self> {
+        if (i as usize) < NUM_INT_PARAMS {
+            Some(unsafe { std::mem::transmute::<u16, IntParam>(i) })
+        } else {
+            None
+        }
     }
 }
 
@@ -123,14 +148,32 @@ pub enum DimParam {
     NullDelimiterSpace,
     ScriptSpace,
     TopSkip,
+    // pdfTeX page/origin driver dimensions (appended: stable indices 27+)
+    PdfPageWidth,
+    PdfPageHeight,
+    PdfHOrigin,
+    PdfVOrigin,
+    PdfLinkMargin,
+    PdfDestMargin,
+    PdfThreadMargin,
+    HOffset,
+    VOffset,
+    PrevDepth,
 }
 
-pub const NUM_DIM_PARAMS: usize = 27;
+pub const NUM_DIM_PARAMS: usize = 37;
 
 impl DimParam {
     #[inline]
     pub fn idx(self) -> u16 {
         self as u16
+    }
+    pub fn from_idx(i: u16) -> Option<Self> {
+        if (i as usize) < NUM_DIM_PARAMS {
+            Some(unsafe { std::mem::transmute::<u16, DimParam>(i) })
+        } else {
+            None
+        }
     }
 }
 
@@ -151,16 +194,25 @@ pub enum GlueParam {
     BelowDisplayShortSkip,
     SplitTopSkip,
     TabSkip,
+    ThinMuSkip,
+    MedMuSkip,
+    ThickMuSkip,
 }
 
-pub const NUM_GLUE_PARAMS: usize = 14;
+pub const NUM_GLUE_PARAMS: usize = 17;
 
 impl GlueParam {
     #[inline]
     pub fn idx(self) -> u16 {
         self as u16
     }
+    #[inline]
+    pub fn is_mu(self) -> bool {
+        matches!(self, GlueParam::ThinMuSkip | GlueParam::MedMuSkip | GlueParam::ThickMuSkip)
+    }
 }
+
+
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(u16)]
@@ -174,9 +226,10 @@ pub enum ToksParam {
     EveryCr,
     EveryEOF,
     Output,
+    ErrHelp,
 }
 
-pub const NUM_TOKS_PARAMS: usize = 9;
+pub const NUM_TOKS_PARAMS: usize = 10;
 
 impl ToksParam {
     #[inline]
@@ -232,6 +285,7 @@ pub enum Prim {
     IfCSName,
     IfX,
     IfCase,
+    IfFontChar,
     ElIf,
     ElIfX,
     Else,
@@ -277,6 +331,7 @@ pub enum Prim {
     FontDimen,
     HyphenChar,
     SkewChar,
+    ParShape,
     SetBox,
     Advance,
     Multiply,
@@ -458,7 +513,49 @@ pub enum Prim {
     PdfNames,
     PdfPageAttr,
     End,
-}
+    IfInCsName,
+    UnHBox,
+    UnVBox,
+    UnHCopy,
+    UnVCopy,
+    AfterAssignment,
+    AfterGroup,
+    // ---- appended: pdfTeX read-only object counters (stable codes 258+,
+    //      keep new unit variants at the tail so earlier codes hold)
+    PdfLastObj,
+    PdfLastXForm,
+    PdfLastXImage,
+    PdfLastLink,
+    PdfLastAnnot,
+    IgnoreSpaces,
+    /// LuaTeX no-op stub: swallow `{...}` so a false-positive Lua path in
+    /// `everyjob` does not typeset the Lua source.
+    DirectLua,
+    GlueStretch,
+    GlueShrink,
+    GlueStretchOrder,
+    GlueShrinkOrder,
+    /// Knuth \\copy: insert/set a box without voiding the register.
+    Copy,
+    Overline,
+    Underline,
+    Char,
+    MathOrd,
+    MathOp,
+    MathBin,
+    MathRel,
+    MathOpen,
+    MathClose,
+    MathPunct,
+    MathInner,
+    DisplayStyle,
+    TextStyle,
+    ScriptStyle,
+    ScriptScriptStyle,
+ }
+
+
+
 /// Stable wire codes for the format dump (`crate::format`). Unit variants
 /// take 0..0x0fff in declaration order — exhaustiveness is compiler-checked
 /// in `code`; new unit variants MUST be appended at the enum tail so earlier
@@ -510,6 +607,7 @@ impl Prim {
             Prim::IfCSName => 40,
             Prim::IfX => 41,
             Prim::IfCase => 42,
+            Prim::IfFontChar => 285,
             Prim::ElIf => 43,
             Prim::ElIfX => 44,
             Prim::Else => 45,
@@ -552,6 +650,7 @@ impl Prim {
             Prim::FontDimen => 82,
             Prim::HyphenChar => 83,
             Prim::SkewChar => 84,
+            Prim::ParShape => 286,
             Prim::SetBox => 85,
             Prim::Advance => 86,
             Prim::Multiply => 87,
@@ -718,6 +817,40 @@ impl Prim {
             Prim::PdfNames => 248,
             Prim::PdfPageAttr => 249,
             Prim::End => 250,
+            Prim::IfInCsName => 251,
+            Prim::UnHBox => 252,
+            Prim::UnVBox => 253,
+            Prim::UnHCopy => 254,
+            Prim::UnVCopy => 255,
+            Prim::AfterAssignment => 256,
+            Prim::AfterGroup => 257,
+            Prim::PdfLastObj => 258,
+            Prim::PdfLastXForm => 259,
+            Prim::PdfLastXImage => 260,
+            Prim::PdfLastLink => 261,
+            Prim::PdfLastAnnot => 262,
+            Prim::IgnoreSpaces => 263,
+            Prim::DirectLua => 264,
+            Prim::GlueStretch => 265,
+            Prim::GlueShrink => 266,
+            Prim::GlueStretchOrder => 267,
+            Prim::GlueShrinkOrder => 268,
+            Prim::Copy => 269,
+            Prim::Overline => 270,
+            Prim::Underline => 271,
+            Prim::Char => 272,
+            Prim::MathOrd => 273,
+            Prim::MathOp => 274,
+            Prim::MathBin => 275,
+            Prim::MathRel => 276,
+            Prim::MathOpen => 277,
+            Prim::MathClose => 278,
+            Prim::MathPunct => 279,
+            Prim::MathInner => 280,
+            Prim::DisplayStyle => 281,
+            Prim::TextStyle => 282,
+            Prim::ScriptStyle => 283,
+            Prim::ScriptScriptStyle => 284,
             Prim::IntP(p) => 0x1000 | p.idx(),
             Prim::DimP(p) => 0x2000 | p.idx(),
             Prim::GlueP(p) => 0x3000 | p.idx(),
@@ -812,6 +945,8 @@ impl Prim {
             82 => Some(Prim::FontDimen),
             83 => Some(Prim::HyphenChar),
             84 => Some(Prim::SkewChar),
+            285 => Some(Prim::IfFontChar),
+            286 => Some(Prim::ParShape),
             85 => Some(Prim::SetBox),
             86 => Some(Prim::Advance),
             87 => Some(Prim::Multiply),
@@ -978,25 +1113,58 @@ impl Prim {
             248 => Some(Prim::PdfNames),
             249 => Some(Prim::PdfPageAttr),
             250 => Some(Prim::End),
+            251 => Some(Prim::IfInCsName),
+            252 => Some(Prim::UnHBox),
+            253 => Some(Prim::UnVBox),
+            254 => Some(Prim::UnHCopy),
+            255 => Some(Prim::UnVCopy),
+            256 => Some(Prim::AfterAssignment),
+            257 => Some(Prim::AfterGroup),
+            258 => Some(Prim::PdfLastObj),
+            259 => Some(Prim::PdfLastXForm),
+            260 => Some(Prim::PdfLastXImage),
+            261 => Some(Prim::PdfLastLink),
+            262 => Some(Prim::PdfLastAnnot),
+            263 => Some(Prim::IgnoreSpaces),
+            264 => Some(Prim::DirectLua),
+            265 => Some(Prim::GlueStretch),
+            266 => Some(Prim::GlueShrink),
+            267 => Some(Prim::GlueStretchOrder),
+            268 => Some(Prim::GlueShrinkOrder),
+            269 => Some(Prim::Copy),
+            270 => Some(Prim::Overline),
+            271 => Some(Prim::Underline),
+            272 => Some(Prim::Char),
+            273 => Some(Prim::MathOrd),
+            274 => Some(Prim::MathOp),
+            275 => Some(Prim::MathBin),
+            276 => Some(Prim::MathRel),
+            277 => Some(Prim::MathOpen),
+            278 => Some(Prim::MathClose),
+            279 => Some(Prim::MathPunct),
+            280 => Some(Prim::MathInner),
+            281 => Some(Prim::DisplayStyle),
+            282 => Some(Prim::TextStyle),
+            283 => Some(Prim::ScriptStyle),
+            284 => Some(Prim::ScriptScriptStyle),
+
             0x1000..=0x1fff => {
                 let i = c & 0x0fff;
-                if (i as usize) >= NUM_INT_PARAMS { return None; }
-                Some(Prim::IntP(match i { 0 => IntParam::Pretolerance, 1 => IntParam::Tolerance, 2 => IntParam::LinePenalty, 3 => IntParam::HyphenPenalty, 4 => IntParam::ExHyphenPenalty, 5 => IntParam::ClubPenalty, 6 => IntParam::WidowPenalty, 7 => IntParam::DisplayWidowPenalty, 8 => IntParam::BrokenPenalty, 9 => IntParam::BinOpPenalty, 10 => IntParam::RelPenalty, 11 => IntParam::PreDisplayPenalty, 12 => IntParam::PostDisplayPenalty, 13 => IntParam::InterLinePenalty, 14 => IntParam::DoubleHyphenDemerits, 15 => IntParam::FinalHyphenDemerits, 16 => IntParam::AdjDemerits, 17 => IntParam::Mag, 18 => IntParam::DelimiterFactor, 19 => IntParam::Looseness, 20 => IntParam::Penalty, 21 => IntParam::HBadness, 22 => IntParam::VBadness, 23 => IntParam::Pausing, 24 => IntParam::TracingOnline, 25 => IntParam::TracingMacros, 26 => IntParam::TracingStats, 27 => IntParam::TracingParagraphs, 28 => IntParam::TracingPages, 29 => IntParam::TracingOutput, 30 => IntParam::TracingLostChars, 31 => IntParam::TracingCommands, 32 => IntParam::TracingRestores, 33 => IntParam::TracingIf, 34 => IntParam::TracingFonts, 35 => IntParam::ShowBoxBreadth, 36 => IntParam::ShowBoxDepth, 37 => IntParam::ErrorStopMode, 38 => IntParam::ScrollMode, 39 => IntParam::NonStopMode, 40 => IntParam::BatchMode, 41 => IntParam::Language, 42 => IntParam::UcHyph, 43 => IntParam::LeftHyphenMin, 44 => IntParam::RightHyphenMin, 45 => IntParam::EscapeChar, 46 => IntParam::EndLineChar, 47 => IntParam::NewLineChar, 48 => IntParam::Defaulthyphenchar, 49 => IntParam::Defaultskewchar, 50 => IntParam::ErrorContextLines, 51 => IntParam::MaxDeadCycles, 52 => IntParam::InsertPenalties, 53 => IntParam::OutputPenalty, 54 => IntParam::FloatingPenalty, 55 => IntParam::HangAfter, 56 => IntParam::PrevGraf, 57 => IntParam::CurFam, 58 => IntParam::Time, 59 => IntParam::Day, 60 => IntParam::Month, 61 => IntParam::Year, 62 => IntParam::InputLineNo, 63 => IntParam::Badness, 64 => IntParam::DeadCycles, 65 => IntParam::EtxVersion, 66 => IntParam::PdfOutput, 67 => IntParam::PdfAdjustSpacing, 68 => IntParam::PdfProtrudeChars, 69 => IntParam::PdfMinorVersion, 70 => IntParam::PdfPageCount, 71 => IntParam::TeXXeTEnabled, 72 => IntParam::PdfTexVersion, _ => return None }))
+                Some(Prim::IntP(IntParam::from_idx(i)?))
             }
             0x2000..=0x2fff => {
                 let i = c & 0x0fff;
-                if (i as usize) >= NUM_DIM_PARAMS { return None; }
-                Some(Prim::DimP(match i { 0 => DimParam::ParIndent, 1 => DimParam::MathSurround, 2 => DimParam::LineSkipLimit, 3 => DimParam::HSize, 4 => DimParam::VSize, 5 => DimParam::MaxDepth, 6 => DimParam::SplitMaxDepth, 7 => DimParam::BoxMaxDepth, 8 => DimParam::DisplayIndent, 9 => DimParam::DisplayWidth, 10 => DimParam::HangIndent, 11 => DimParam::EmergencyStretch, 12 => DimParam::PageGoal, 13 => DimParam::PageTotal, 14 => DimParam::PageDepth, 15 => DimParam::PageStretch, 16 => DimParam::PageFilStretch, 17 => DimParam::PageFillStretch, 18 => DimParam::PageFilllStretch, 19 => DimParam::PageShrink, 20 => DimParam::DelimiterShortfall, 21 => DimParam::Hfuzz, 22 => DimParam::Vfuzz, 23 => DimParam::OverfullRule, 24 => DimParam::NullDelimiterSpace, 25 => DimParam::ScriptSpace, 26 => DimParam::TopSkip, _ => return None }))
+                Some(Prim::DimP(DimParam::from_idx(i)?))
             }
             0x3000..=0x3fff => {
                 let i = c & 0x0fff;
                 if (i as usize) >= NUM_GLUE_PARAMS { return None; }
-                Some(Prim::GlueP(match i { 0 => GlueParam::LineSkip, 1 => GlueParam::BaselineSkip, 2 => GlueParam::ParSkip, 3 => GlueParam::LeftSkip, 4 => GlueParam::RightSkip, 5 => GlueParam::ParFillSkip, 6 => GlueParam::SpaceSkip, 7 => GlueParam::XSpaceSkip, 8 => GlueParam::AboveDisplaySkip, 9 => GlueParam::AboveDisplayShortSkip, 10 => GlueParam::BelowDisplaySkip, 11 => GlueParam::BelowDisplayShortSkip, 12 => GlueParam::SplitTopSkip, 13 => GlueParam::TabSkip, _ => return None }))
+                Some(Prim::GlueP(match i { 0 => GlueParam::LineSkip, 1 => GlueParam::BaselineSkip, 2 => GlueParam::ParSkip, 3 => GlueParam::LeftSkip, 4 => GlueParam::RightSkip, 5 => GlueParam::ParFillSkip, 6 => GlueParam::SpaceSkip, 7 => GlueParam::XSpaceSkip, 8 => GlueParam::AboveDisplaySkip, 9 => GlueParam::AboveDisplayShortSkip, 10 => GlueParam::BelowDisplaySkip, 11 => GlueParam::BelowDisplayShortSkip, 12 => GlueParam::SplitTopSkip, 13 => GlueParam::TabSkip, 14 => GlueParam::ThinMuSkip, 15 => GlueParam::MedMuSkip, 16 => GlueParam::ThickMuSkip, _ => return None }))
             }
             0x4000..=0x4fff => {
                 let i = c & 0x0fff;
                 if (i as usize) >= NUM_TOKS_PARAMS { return None; }
-                Some(Prim::ToksP(match i { 0 => ToksParam::EveryPar, 1 => ToksParam::EveryMath, 2 => ToksParam::EveryDisplay, 3 => ToksParam::EveryHBox, 4 => ToksParam::EveryVBox, 5 => ToksParam::EveryJob, 6 => ToksParam::EveryCr, 7 => ToksParam::EveryEOF, 8 => ToksParam::Output, _ => return None }))
+                Some(Prim::ToksP(match i { 0 => ToksParam::EveryPar, 1 => ToksParam::EveryMath, 2 => ToksParam::EveryDisplay, 3 => ToksParam::EveryHBox, 4 => ToksParam::EveryVBox, 5 => ToksParam::EveryJob, 6 => ToksParam::EveryCr, 7 => ToksParam::EveryEOF, 8 => ToksParam::Output, 9 => ToksParam::ErrHelp, _ => return None }))
             }
             _ => None,
         }

@@ -319,6 +319,14 @@ pub fn run(args: &[String], version: &str) -> i32 {
 
     // --- locate and parse the .bib files -------------------------------
     let mut db = Database::default();
+    // Pre-populate string macros from the .bst (month abbreviations, journal
+    // names, ...) so unquoted names like `jan` in .bib values resolve during
+    // tokenization, before READ re-inserts them into the interpreter.
+    for cmd in &program.cmds {
+        if let bst::BstCmd::Macro(name, val) = cmd {
+            db.macros.insert(name.to_ascii_lowercase(), val.clone());
+        }
+    }
     for (n, bf) in aux.bib_files.iter().enumerate() {
         let Some(bp) = resolve_with_kpse(bf, aux_dir.as_deref(), Format::Bib) else {
             let msg = format!("I couldn't open database file {bf}.bib");

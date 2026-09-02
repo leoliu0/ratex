@@ -149,9 +149,13 @@ impl Engine {
         self.scan_optional_equals();
         let name = self.scan_file_name();
         // web2c open_output: the -output-directory prefix applies to
-        // relative names only; absolute names bypass it
+        // relative names only; absolute names bypass it. Path::join so a
+        // missing trailing slash cannot fuse into "dirfile.ext".
         let full = if !self.out_dir.is_empty() && !name.starts_with('/') {
-            format!("{}{}", self.out_dir, name)
+            std::path::Path::new(&self.out_dir)
+                .join(&name)
+                .to_string_lossy()
+                .into_owned()
         } else {
             name.clone()
         };
@@ -194,13 +198,10 @@ impl Engine {
     /// toklist source, edef expansion rules, outer `pushed` parked so it
     /// cannot leak into the output.
     fn expand_write_list(&mut self, toks: &[Token]) -> String {
-        // raw_token prefers `pushed`, so park outer tokens locally; a nested
-        // \\write's take/restore composes correctly (its exit restores our
-        // leftovers in order). Parking on the input stack corrupts filehook
-        // \\CurrentFile tracking during package loads.
         let saved = std::mem::take(&mut self.pushed);
-        // LaTeX \\set@display@protect contract: at write/emit time \\protect
-        // is \\noexpand, so `\\protect\\BOOKMARK` emits `\\BOOKMARK` raw
+        let stack_depth = self.input.stack.len();
+        // LaTeX \set@display@protect contract: at write/emit time \protect
+        // is \noexpand, so `\protect\BOOKMARK` emits `\BOOKMARK` raw
         // instead of running it (hyperref .out writes).
         let protect_saved = self.cs.lookup(b"protect").map(|pid| {
             let old = self.eqtb.get(pid).cloned();
@@ -228,9 +229,8 @@ impl Engine {
             out.push(t);
         }
         self.in_expanded_scan = prev;
-        let leftover = std::mem::take(&mut self.pushed);
+        self.input.stack.truncate(stack_depth);
         self.pushed = saved;
-        self.pushed.extend(leftover);
         if let Some(pid) = self.cs.lookup(b"protect") {
             if let Some(Some(old)) = &protect_saved {
                 self.eqtb.assign(pid, old.clone(), false);

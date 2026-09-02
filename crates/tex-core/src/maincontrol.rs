@@ -229,8 +229,31 @@ impl Engine {
                 if self.mode.is_h() && !self.mode.is_inner() {
                     self.par_primitive();
                 }
-                if self.mode.is_v() && !self.page_list.is_empty() {
+                // tex.web §1000 its_all_over: only material build_page would
+                // contribute counts as page content; page-top discardables
+                // (glue, penalty, kern, mark, whatsit) and LaTeX \clearpage's
+                // empty `\vbox{}` never reach a shipped page.
+                let has_content = self.page_list.iter().any(|n| match n {
+                    Node::Box { h, d, list, .. } => *h != 0 || *d != 0 || !list.is_empty(),
+                    Node::Rule { width: w, height: h, depth: d } => *w != 0 || *h != 0 || *d != 0,
+                    Node::Glue(_)
+                    | Node::Kern(_)
+                    | Node::ExplicitKern(_)
+                    | Node::Penalty(_)
+                    | Node::Mark { .. }
+                    | Node::Whatsit(_)
+                    | Node::Adj(_)
+                    | Node::Empty => false,
+                    _ => true,
+                });
+                if self.mode.is_v() && has_content {
                     let n = self.page_list.len();
+                    // tex.web: back_input the \end token so it is re-evaluated
+                    // once the routine has drained the page; fire_up parks
+                    // `pushed` under the routine, so the replay happens after
+                    // shipout. The dead-cycle limit bounds a routine that
+                    // keeps folding material back without shipping.
+                    self.pushed.push(Token::from_cs(id));
                     self.eject_page(n);
                     return;
                 }
@@ -287,6 +310,20 @@ impl Engine {
             Char => {
                 let c = self.scan_int();
                 self.char_token(c as u8, false);
+            }
+            Accent => {
+                match self.mode {
+                    Mode::Vertical | Mode::InternalVertical => {
+                        // tex.web §21103: vmode+accent → back_input and start
+                        // a paragraph; the accent is re-processed in hmode.
+                        self.pushed.push(Token::from_cs(id));
+                        self.start_paragraph(true);
+                    }
+                    Mode::Horizontal | Mode::RestrictedHorizontal => self.do_accent(),
+                    // mmode+accent is unmatched in tex.web's main_control
+                    // switch: silently ignored.
+                    _ => {}
+                }
             }
             // math
             MathChar => {
@@ -578,6 +615,101 @@ impl Engine {
                 self.error(&format!("Primitive not implemented: \\{}", name));
             }
         }
+    }
+
+    /// tex.web §1267-1275 make_accent: `\accent <number 0-255> <filler>
+    /// <char>`. Typesets the next character with an accent character taken
+    /// from slot <number> of the current font, stacked above the base char
+    /// and centered with two kerns, raised so the accent sits at the font's
+    /// x-height. The emitted list is
+    ///   kern(delta) [accent char] kern(-a-delta) base_char
+    /// so the sequence is exactly as wide as the base character.
+    fn do_accent(&mut self) {
+        let n = self.scan_char_num();
+        if !(0..=255).contains(&n) {
+            self.error(&format!("Invalid code ({}), should be in the range 0..255", n));
+            return;
+        }
+        let acc = n as u8;
+        let f_acc = self.cur_font;
+        let Some(af) = self.eqtb.fonts.get(f_acc as usize) else {
+            return; // nullfont: nothing happens (tex.web new_character fails)
+        };
+        if !af.exists_char(acc) {
+            // char_warning: no accent glyph — drop the accent; the base
+            // character stays in the stream and typesets normally.
+            self.term.push_str(&format!(
+                "Missing character: There is no {} in font {}!\n",
+                n, f_acc
+            ));
+            return;
+        }
+        let a = af.char_width(acc);
+        let x = af.x_height();
+        let s = f64::from(af.param(1)) / 65536.0; // accent font slant
+                                                   // do_assignments: filler between the number and the base char
+        self.skip_spaces_relax();
+        // tex.web §1271: the base character may be letter/other_char (raw
+        // token) or `\char` (char_given/char_num); anything else is pushed
+        // back and the accent is typeset alone.
+        let t = self.get_token();
+        let base: Option<u8> = if t.is_char() && (t.cc() == 11 || t.cc() == 12) {
+            Some(t.chr() as u8)
+        } else if t.is_cs() && matches!(self.eqtb.resolve(t.cs_id()), Some(Equiv::Prim(Prim::Char))) {
+            let v = self.scan_char_num();
+            (0..=255).contains(&v).then_some(v as u8)
+        } else {
+            self.pushed.push(t);
+            None
+        };
+        let Some(bc) = base else {
+            // no usable base character: append the accent alone
+            self.cur_list.push(Node::Char { c: acc, font: f_acc });
+            self.space_factor = 1000;
+            return;
+        };
+        let f_base = self.cur_font;
+        let exists = self
+            .eqtb
+            .fonts
+            .get(f_base as usize)
+            .map(|f| f.exists_char(bc))
+            .unwrap_or(false);
+        if !exists {
+            self.term.push_str(&format!(
+                "Missing character: There is no {} in font {}!\n",
+                bc, f_base
+            ));
+            self.cur_list.push(Node::Char { c: acc, font: f_acc });
+            self.space_factor = 1000;
+            return;
+        }
+        let (w, h, _) = self.char_dims(f_base, bc);
+        let t_sl = self
+            .eqtb
+            .fonts
+            .get(f_base as usize)
+            .map(|f| f64::from(f.param(1)) / 65536.0)
+            .unwrap_or(0.0);
+        // If the base height differs from the x-height, the accent char is
+        // packed into a box shifted by x-h (tex.web §1274).
+        let accent_part: Node = if h != x {
+            let mut b =
+                crate::boxes::hpack(vec![Node::Char { c: acc, font: f_acc }], None, crate::boxes::HBOX, &self.eqtb)
+                    .node;
+            if let Node::Box { shift, .. } = &mut b {
+                *shift = x - h;
+            }
+            b
+        } else {
+            Node::Char { c: acc, font: f_acc }
+        };
+        let delta = ((w - a) as f64 / 2.0 + h as f64 * t_sl - x as f64 * s).round() as i32;
+        self.cur_list.push(Node::Kern(delta));
+        self.cur_list.push(accent_part);
+        self.cur_list.push(Node::Kern(-a - delta));
+        self.cur_list.push(Node::Char { c: bc, font: f_base });
+        self.space_factor = 1000;
     }
 
     /// tex.web ignore_spaces: get_x_token, discard cat-10, put back the rest.

@@ -186,8 +186,8 @@ impl Engine {
     // ---------- mode entry / exit ----------
 
     pub fn enter_math(&mut self, _display: bool) {
-        let trace = crate::debug_flag("MATHTRACE");
         let mut display = _display;
+        let trace = crate::debug_flag("MATHTRACE");
         if !display {
             // tex.web §1134: a second math_shift promotes to display math
             let t = self.get_token();
@@ -206,7 +206,6 @@ impl Engine {
         if self.mode == Mode::DisplayMath {
             return;
         }
-        let display = display || self.mode.is_v();
         if display {
             self.eqtb.push_level(crate::eqtb::LevelType::Group);
             let page = std::mem::take(&mut self.page_list);
@@ -245,21 +244,13 @@ impl Engine {
     }
 
     pub fn exit_math(&mut self) {
-        // tex.web: the closing `$` of a `$$...$$` pair consumes its partner,
-        // so a trailing `$` cannot open a new formula (§1134 mirror image).
-        let t = self.get_token();
-        let trace = crate::debug_flag("MATHTRACE");
-        if trace {
-            eprintln!("EXIT-MATH mode={:?} mlists={} peek={:?} line={} raw={:?}",
-                self.mode, self.math_lists.len(),
-                if t.is_cs() { format!("cs{}", t.cs_id()) } else { format!("cc{}:{:#x}", t.cc(), t.chr()) },
-                self.input.current_file_line(),
-                self.math_lists.last());
-        }
-        if !(t.is_char() && t.cc() == 3) && t != crate::input::EOF_MARKER {
-            self.pushed.push(t);
-        }
         let was_display = self.mode == Mode::DisplayMath;
+        if was_display {
+            let t = self.get_token();
+            if !(t.is_char() && t.cc() == 3) && t != crate::input::EOF_MARKER {
+                self.pushed.push(t);
+            }
+        }
         let mlist = self.math_lists.pop().unwrap_or_default();
         self.pop_group();
         let (outer_mode, outer_list, pd, sf) = self.saved_lists.pop().unwrap_or((self.mode, std::mem::take(&mut self.cur_list), self.prev_depth, self.space_factor));
@@ -393,10 +384,26 @@ impl Engine {
     pub fn append_script(&mut self, sup: bool, _c: u8) {
         let group = self.scan_math_group_or_token();
         let limits_req = self.math_limits.take();
-        let popped = self.math_lists.last_mut().and_then(|l| l.pop());
-        let Some(top) = popped else {
-            self.error("Missing { inserted for subscript");
-            return;
+        let popped = if let Some(l) = self.math_lists.last_mut() {
+            if l.iter().rev().take(4).all(|n| matches!(n, Node::ChoiceAlt { .. }))
+                && l.len() >= 5
+                && matches!(l[l.len() - 5], Node::Choice)
+            {
+                let mut choice_nodes = Vec::new();
+                for _ in 0..5 {
+                    choice_nodes.push(l.pop().unwrap());
+                }
+                choice_nodes.reverse();
+                Some(Node::Scripts { nucleus: choice_nodes, sup: None, sub: None })
+            } else {
+                l.pop()
+            }
+        } else {
+            None
+        };
+        let top = match popped {
+            Some(node) => node,
+            None => Node::Scripts { nucleus: Vec::new(), sup: None, sub: None },
         };
         match top {
             Node::Scripts { nucleus, sup: s, sub: x } => {
@@ -468,36 +475,85 @@ impl Engine {
     /// Execute tokens up to the matching `}` as a nested math list.
     fn scan_math_group_braced(&mut self) -> NodeList {
         self.math_lists.push(Vec::new());
-        let mut depth: usize = 1;
+        self.eqtb.push_level(crate::eqtb::LevelType::Group);
+        let my_level = self.eqtb.cur_level;
         loop {
             let t = self.get_token();
-            if t == crate::input::EOF_MARKER {
-                self.error("Missing } in math group");
-                break;
+            if crate::debug_flag("MGTRACE") {
+                let src: Vec<String> = self
+                    .input
+                    .stack
+                    .iter()
+                    .rev()
+                    .take(2)
+                    .map(|s| match s {
+                        crate::input::Source::TokList { name, pos, toks, .. } => {
+                            format!("T:{} {}/{}", name, pos, toks.len())
+                        }
+                        crate::input::Source::File { name, line_no, .. } => {
+                            format!("F:{}#{}", name.rsplit('/').next().unwrap_or("?"), line_no)
+                        }
+                    })
+                    .collect();
+                eprintln!(
+                    "MGB t={} ss={} kinds={} savedl={} ml={} mode={:?} gt={:?} src=[{}]",
+                    self.tokens_to_string(&[t]),
+                    self.eqtb.save_stack.len(),
+                    self.box_kinds.len(),
+                    self.saved_lists.len(),
+                    self.math_lists.len(),
+                    self.mode,
+                    self.eqtb.cur_group_type(),
+                    src.join(" << ")
+                );
             }
             if t.is_char() && t.cc() == 2 {
-                depth -= 1;
-                if depth == 0 {
+                if self.eqtb.cur_level == my_level {
+                    // no nested level is open: this `}` closes OUR group.
+                    // Raw save_stack.len() is NOT a nesting test — \aftergroup
+                    // items and \let/\def assignments pushed inside the group
+                    // inflate it, and dispatching our own closer here would
+                    // let end_group reroute to end_box (box_kinds is non-empty
+                    // inside a tabular cell), packing an outer box and
+                    // desyncing the whole alignment (Misplaced &, \cr cascade).
+                    self.pop_group();
                     break;
                 }
-                // nested close inside a nested group cannot happen here
+                let nested = self.eqtb.cur_group_type();
+                match nested {
+                    // braces in math are pure grouping (tex.web math_group):
+                    // pop directly, never through end_group's box reroute
+                    Some(crate::eqtb::LevelType::Group) => {
+                        self.pop_group();
+                    }
+                    _ => self.dispatch(t),
+                }
                 continue;
             }
+            if t == crate::input::EOF_MARKER {
+                self.error("Missing } in math group");
+                self.pop_group();
+                break;
+            }
             if t.is_char() && t.cc() == 1 {
-                // nested braced group: an Ord atom holding the packed contents
-                let inner = self.scan_math_group_braced();
-                let g = gstyle_of(self.cur_math_style());
-                let nodes = self.mlist_to_hlist(&inner, g);
-                let boxed = if let Some(vbox) = nodes
-                    .iter()
-                    .find(|n| matches!(n, Node::Box { kind: VBOX, .. }))
-                    .cloned()
-                {
-                    vbox
+                if self.mode.is_m() {
+                    // nested braced group in math mode: an Ord atom holding the packed contents
+                    let inner = self.scan_math_group_braced();
+                    let g = gstyle_of(self.cur_math_style());
+                    let nodes = self.mlist_to_hlist(&inner, g);
+                    let boxed = if let Some(vbox) = nodes
+                        .iter()
+                        .find(|n| matches!(n, Node::Box { kind: VBOX, .. }))
+                        .cloned()
+                    {
+                        vbox
+                    } else {
+                        hpack(nodes, None, HBOX, &self.eqtb).node
+                    };
+                    self.append_mlist_node(boxed);
                 } else {
-                    hpack(nodes, None, HBOX, &self.eqtb).node
-                };
-                self.append_mlist_node(boxed);
+                    self.begin_group(true);
+                }
                 continue;
             }
             self.run_math_token(t);

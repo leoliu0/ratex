@@ -579,6 +579,20 @@ impl Engine {
         }
         self.in_output = true;
         self.output_depth += 1;
+        // tex.web: the output routine preempts in-flight macro expansions.
+        // Here macro remainders live on `pushed`, which raw_token drains
+        // BEFORE the input stack; without parking, the rest of the current
+        // expansion (e.g. `\enddocument` after `\clearpage`) would run while
+        // the routine waits unconsumed on the stack — until `\end`'s dead
+        // trailing `\endgroup` fires "Too many \endgroups" on an empty save
+        // stack. Park the remainder below the routine (same pattern as
+        // input_file's <after-input>): the routine plays now, OUT_END runs
+        // finish_output, and the expansion resumes after it.
+        if !self.pushed.is_empty() {
+            let mut rest = std::mem::take(&mut self.pushed);
+            rest.reverse();
+            self.input.push_toks(rest, "<after-output>");
+        }
         // LIFO input stack: continuation first, then the routine.
         self.input.push_toks(vec![OUT_END_TOKEN], "<endoutput>");
         self.input.push_toks(toks, "<output>");

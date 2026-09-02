@@ -180,7 +180,7 @@ pub struct Engine {
     /// Expansions after that point outrank the toklist; older `pushed`
     /// tokens (e.g. a \\futurelet peek) wait until the toklist finishes.
     pub align_pushed_base: usize,
-
+    pub align_noalign_save_base: usize,
     pub align_done: bool,
     pub align_to: Option<(i32, bool)>, // \halign to/spread <dimen>: (dimen, is_spread)
     pub in_output: bool,
@@ -345,7 +345,7 @@ impl Engine {
             align_cell_toks: Vec::new(),
             align_scanning_cell: false,
             align_pushed_base: 0,
-
+            align_noalign_save_base: 0,
             align_to: None,
             align_done: false,
             in_output: false,
@@ -699,6 +699,9 @@ impl Engine {
         d!(eng, b"vcenter", VCenter);
         d!(eng, b"hrule", HRule);
         d!(eng, b"vrule", VRule);
+        d!(eng, b"leaders", Leaders);
+        d!(eng, b"cleaders", CLeaders);
+        d!(eng, b"xleaders", XLeaders);
         d!(eng, b"par", Par);
         d!(eng, b"indent", Indent);
         d!(eng, b"noindent", NoIndent);
@@ -738,6 +741,7 @@ impl Engine {
         d!(eng, b"splitbotmarks", SplitBotMark);
         d!(eng, b"shipout", ShipOut);
         d!(eng, b"char", Char);
+        d!(eng, b"accent", Accent);
         d!(eng, b"mathchar", MathChar);
         d!(eng, b"mathaccent", MathAccent);
         d!(eng, b"overline", Overline);

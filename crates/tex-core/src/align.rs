@@ -89,7 +89,7 @@ const PH_IDLE: i32 = 0; // no cell open
 const PH_U: i32 = 1; // u part of the template is playing
 const PH_CONTENT: i32 = 2; // cell content phase
 const PH_OMIT: i32 = 4; // template omitted for the current cell
-const PH_CLOSE: i32 = 8; // close stream pushed; sentinel not yet seen
+pub(crate) const PH_CLOSE: i32 = 8; // close stream pushed; sentinel not yet seen
 
 const U_PART_SRC: &str = "<align-u>";
 const CELL_SRC: &str = "<align-cell>";
@@ -108,7 +108,7 @@ struct AlignSave {
     done: bool,
     to: Option<(i32, bool)>,
     pushed_base: usize,
-
+    noalign_save_base: usize,
 }
 
 thread_local! {
@@ -161,7 +161,7 @@ impl Engine {
                 done: self.align_done,
                 to: self.align_to,
                 pushed_base: self.align_pushed_base,
-
+                noalign_save_base: self.align_noalign_save_base,
             };
             let key = self.engine_key();
             ALIGN_STACK.with(|s| s.borrow_mut().push((key, save)));
@@ -246,7 +246,7 @@ impl Engine {
             self.align_done = sv.done;
             self.align_to = sv.to;
             self.align_pushed_base = sv.pushed_base;
-
+            self.align_noalign_save_base = sv.noalign_save_base;
         }
     }
 
@@ -444,7 +444,8 @@ impl Engine {
                 t
             }
         };
-        if t.is_cs() && self.cur_prim == Some(Prim::Omit) {
+        let is_omit = t.is_cs() && matches!(self.eqtb.resolve(t.cs_id()), Some(Equiv::Prim(Prim::Omit)));
+        if is_omit {
             self.align_state = PH_CONTENT | PH_OMIT;
             return;
         }
@@ -509,12 +510,32 @@ impl Engine {
         }
         close.push(self.crcr_token());
         self.align_pushed_base = self.pushed.len();
+        if crate::debug_flag("ALIGN2") {
+            eprintln!(
+                "ACLOSE col={} row_cont={} toks=[{}]",
+                col,
+                row_continues,
+                self.tokens_to_string(&close)
+            );
+        }
         self.input.push_toks(close, CELL_SRC);
 
 
     }
 
+
     pub fn align_tab(&mut self) {
+        if crate::debug_flag("ALIGN2") {
+            eprintln!(
+                "ATAB col={} st={:?} phase={:#x} kinds_last={:?} ss_len={} mode={:?}",
+                self.align_cur_col,
+                self.scanner_status,
+                self.align_state,
+                self.box_kinds.last(),
+                self.eqtb.save_stack.len(),
+                self.mode
+            );
+        }
         if self.scanner_status != ScannerStatus::Aligning {
             self.error("Misplaced alignment tab character &");
             return;
@@ -524,8 +545,13 @@ impl Engine {
             // one at the end of every v part) is structural noise
             return;
         }
+        // A template u part may open box groups inside the cell (LaTeX
+        // p-columns: `\@startpbox` = `\vtop\bgroup ...`), so the CELL group
+        // is not necessarily the top of box_kinds. tex.web unwinds such
+        // template groups via the v part when the row machinery fires; a
+        // `&` is only genuinely misplaced between rows / outside a cell.
         if self.align_phase() == PH_IDLE
-            || self.box_kinds.last() != Some(&CELL_GROUP_KIND)
+            || !self.box_kinds.contains(&CELL_GROUP_KIND)
         {
             // tex.web: & reaching main_control inside a nested group of a
             // cell (braces hide it from the row) is "Misplaced alignment
@@ -550,6 +576,19 @@ impl Engine {
     }
 
     pub fn align_cr(&mut self) {
+        if crate::debug_flag("ALIGN2") {
+            eprintln!(
+                "ACR col={} st={:?} phase={:#x} kinds_last={:?} close_flag={} in_noalign={} ss_len={} mode={:?}",
+                self.align_cur_col,
+                self.scanner_status,
+                self.align_state,
+                self.box_kinds.last(),
+                self.align_state & PH_CLOSE != 0,
+                self.align_in_noalign,
+                self.eqtb.save_stack.len(),
+                self.mode
+            );
+        }
         if self.scanner_status != ScannerStatus::Aligning {
             self.error("Misplaced \\cr");
             return;
@@ -565,9 +604,22 @@ impl Engine {
             }
             return;
         }
-        if self.align_phase() == PH_IDLE || self.box_kinds.last() != Some(&CELL_GROUP_KIND) {
-            // \cr between rows is consumed by the row inspection; a \cr
-            // inside a nested group of a cell is misplaced (tex.web)
+        // tex.web: a `\crcr` between rows (no row in progress, not inside a
+        // \noalign body) is silently absorbed — e.g. longtable's
+        // \LT@end@hd@ft opens with \crcr after the caption row already ended
+        // with \\. Only a true \cr is "Misplaced" there.
+        if self.cur_prim == Some(Prim::CrCr)
+            && self.align_phase() == PH_IDLE
+            && !self.align_in_noalign
+        {
+            return;
+        }
+        // A template u part may open box groups inside the cell (LaTeX
+        // p-columns: `\@startpbox` = `\vtop\bgroup ...`), so the CELL group
+        // is not necessarily the top of box_kinds. Only a \cr between rows
+        // or fully outside a cell is misplaced; otherwise let the close
+        // stream's v part unwind the template groups and finish the cell.
+        if self.align_phase() == PH_IDLE || !self.box_kinds.contains(&CELL_GROUP_KIND) {
             self.error("Misplaced \\cr");
             return;
         }
@@ -628,7 +680,8 @@ impl Engine {
             self.end_occurred = true;
             return;
         }
-        if t.is_cs() && self.cur_prim == Some(Prim::Omit) {
+        let is_omit = t.is_cs() && matches!(self.eqtb.resolve(t.cs_id()), Some(Equiv::Prim(Prim::Omit)));
+        if is_omit {
             self.align_state = (self.align_state & PH_OMIT) | PH_CONTENT | PH_OMIT;
             return;
         }
@@ -702,8 +755,8 @@ impl Engine {
         // returns here (i.e. the body's `{`-group just closed). The cell
         // group pushed above is LevelType::Box — without an explicit
         // Simple level for the consumed `{`, the body's `}` would close
-        // the CELL box group via end_box instead.
-        self.align_pushed_base = self.eqtb.save_stack.len();
+        self.align_noalign_save_base = self.eqtb.save_stack.len();
+        self.align_pushed_base = self.pushed.len();
         self.eqtb.push_level(LevelType::Simple);
     }
 

@@ -554,6 +554,9 @@ pub enum Prim {
     TextStyle,
     ScriptStyle,
     ScriptScriptStyle,
+    /// Knuth \\accent: typeset the next character with an accent glyph from
+    /// slot <number> of the current font stacked above it (tex.web §1267-1275).
+    Accent,
  }
 
 
@@ -852,6 +855,10 @@ impl Prim {
             Prim::DisplayStyle => 281,
             Prim::TextStyle => 282,
             Prim::ScriptStyle => 283,
+            // 285/286 are taken by IfFontChar/ParShape (out-of-order legacy
+            // slots); 287/288 by Patterns/Hyphenation — 289 is the next free
+            // ordinal in both directions.
+            Prim::Accent => 289,
             Prim::ScriptScriptStyle => 284,
             Prim::Patterns => 287,
             Prim::Hyphenation => 288,
@@ -1150,6 +1157,7 @@ impl Prim {
             281 => Some(Prim::DisplayStyle),
             282 => Some(Prim::TextStyle),
             283 => Some(Prim::ScriptStyle),
+            289 => Some(Prim::Accent),
             284 => Some(Prim::ScriptScriptStyle),
             287 => Some(Prim::Patterns),
             288 => Some(Prim::Hyphenation),

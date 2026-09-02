@@ -14,7 +14,7 @@ impl Engine {
         self.main_loop();
     }
 
-    fn main_loop(&mut self) {
+    pub fn main_loop(&mut self) {
         while !self.end_occurred {
             let t = self.get_token();
             if t == crate::input::EOF_MARKER {
@@ -135,16 +135,15 @@ impl Engine {
                                     match letter {
                                         b'N' => body.push(Token::from_cs(noex)),
                                         b'n' => body.push(Token::char(1, b'{' as u32)),
+                                        b'c' => body.push(Token::from_cs(csw)),
                                         _ => {}
                                     }
                                     body.push(Token(pref));
                                     match letter {
                                         b'N' => {}
                                         b'n' => body.push(Token::char(2, b'}' as u32)),
-                                        _ => {
-                                            body.push(Token::from_cs(csw));
-                                            body.push(Token::from_cs(cse));
-                                        }
+                                        b'c' => body.push(Token::from_cs(cse)),
+                                        _ => {}
                                     }
                                 }
                                 body.push(Token::char(2, b'}' as u32));
@@ -240,6 +239,20 @@ impl Engine {
                     // math shift
                     if self.mode.is_m() {
                         self.exit_math();
+                    } else if self.mode.is_v() {
+                        let next = self.get_token();
+                        if next.is_char() && next.cc() == 3 {
+                            self.enter_math(true);
+                        } else {
+                            if next != crate::input::EOF_MARKER {
+                                self.pushed.push(next);
+                            }
+                            // tex.web §1090: single math_shift in vertical mode starts a
+                            // paragraph; the math_shift is put back on input so it
+                            // executes AFTER \everypar.
+                            self.pushed.push(t);
+                            self.start_paragraph(true);
+                        }
                     } else {
                         self.enter_math(false);
                     }
@@ -1182,7 +1195,7 @@ impl Engine {
                 // align_noalign means the body's brace group just closed.
                 if self.scanner_status == ScannerStatus::Aligning
                     && self.align_in_noalign
-                    && self.eqtb.save_stack.len() == self.align_pushed_base
+                    && self.eqtb.save_stack.len() == self.align_noalign_save_base
                 {
                     self.align_finish_noalign_now();
                 }
@@ -1224,6 +1237,13 @@ impl Engine {
             }
             _ => {
                 if self.eqtb.save_stack.is_empty() {
+                    if crate::debug_flag("EGTRACE") {
+                        let srcs: Vec<String> = self.input.stack.iter().rev().take(5).map(|src| match src {
+                            crate::input::Source::TokList { name, pos, toks, .. } => format!("T:{} {}/{}", name, pos, toks.len()),
+                            crate::input::Source::File { name, line_no, .. } => format!("F:{}#{}", name, line_no),
+                        }).collect();
+                        eprintln!("EG-TOOMANY srcs=[{}] macs={:?}", srcs.join(" << "), self.last_macros.iter().rev().take(8).collect::<Vec<_>>());
+                    }
                     self.error("Too many \\endgroups");
                 } else {
                     // mismatch: still pop to keep the save stack moving

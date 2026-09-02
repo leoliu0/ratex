@@ -23,6 +23,17 @@ impl Engine {
             return;
         }
     }
+    pub fn skip_spaces(&mut self) {
+        loop {
+            let t = self.get_token();
+            if t.is_char() && (t.cc() == 10 || t.cc() == 9) {
+                continue;
+            }
+            self.pushed.push(t);
+            return;
+        }
+    }
+
 
     fn token_is_fi_or_else(&self, t: Token) -> bool {
         if !t.is_cs() {
@@ -1172,7 +1183,7 @@ impl Engine {
     }
 
     pub fn the_scan(&mut self) {
-        self.skip_spaces_relax();
+        self.skip_spaces();
         let t = self.get_token();
         if !t.is_cs() {
             { let __pt = t; if crate::debug_flag("PUSHWATCH") && __pt.is_cs() && self.cs.name(__pt.cs_id()) == b"ifx" && self.input.current_file_line() > 9000 { eprintln!("PUSHIFX crates/tex-core/src/scan.rs:{} line={}", {line!()}, self.input.current_file_line()); } self.pushed.push(__pt); }
@@ -1183,6 +1194,14 @@ impl Engine {
         // register aliases (countdef'd/dimendef'd/skipdef'd/toksdef'd cs) and
         // toks registers are valid 	he operands (tex.web scan_toks part)
         match self.eqtb.resolve(id).cloned() {
+            Some(Equiv::CharDef(c)) => {
+                self.exp_string(c.to_string().as_bytes());
+                return;
+            }
+            Some(Equiv::MathCharDef(c)) => {
+                self.exp_string(c.to_string().as_bytes());
+                return;
+            }
             Some(Equiv::CountReg(i)) => {
                 self.exp_string(self.eqtb.count[i as usize].to_string().as_bytes());
                 return;
@@ -1336,7 +1355,7 @@ impl Engine {
             Some(Prim::Toks) => {
                 let idx = self.scan_reg_num();
                 let toks = (*self.eqtb.toks[idx as usize]).clone();
-                self.push_tokens(Self::freeze_unexpanded_toks(toks));
+                self.push_the_toks(toks);
             }
             Some(Prim::Wd) => {
                 let n = self.scan_reg_num();

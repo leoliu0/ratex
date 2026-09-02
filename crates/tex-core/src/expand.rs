@@ -496,6 +496,8 @@ impl Engine {
                 | Expanded
                 | UnExpanded
                 | JobName
+                | FontName
+                | FontIdPrim
                 | IfChar
                 | IfCat
                 | IfOdd
@@ -862,13 +864,8 @@ impl Engine {
                 None
             }
             Prim::FontName => {
-                let t = self.raw_token();
-                let mut text = std::string::String::new();
-                if t.is_cs() {
-                    if let Some(Equiv::FontRef(f)) = self.eqtb.resolve(t.cs_id()).cloned() {
-                        text = self.font_display_name(f);
-                    }
-                }
+                let f = self.scan_font_id();
+                let text = self.font_display_name(f);
                 self.exp_string(text.as_bytes());
                 None
             }
@@ -878,13 +875,8 @@ impl Engine {
                 None
             }
             Prim::FontIdPrim => {
-                let t = self.raw_token();
-                let mut text = std::string::String::new();
-                if t.is_cs() {
-                    if let Some(Equiv::FontRef(f)) = self.eqtb.resolve(t.cs_id()).cloned() {
-                        text = f.to_string();
-                    }
-                }
+                let f = self.scan_font_id();
+                let text = f.to_string();
                 self.exp_string(text.as_bytes());
                 None
             }

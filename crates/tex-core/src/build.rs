@@ -1304,8 +1304,10 @@ impl Engine {
     }
 
     // ---------- paragraphs ----------
-
     pub fn par_primitive(&mut self) {
+        if crate::debug_flag("IFTRACE") {
+            eprintln!("PAR-PRIM mode={:?} line={} file={}", self.mode, self.input.current_file_line(), self.input.current_file_name());
+        }
         match self.mode {
             Mode::Horizontal => self.end_paragraph(),
             Mode::Vertical | Mode::InternalVertical => {}

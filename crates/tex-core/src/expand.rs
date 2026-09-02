@@ -539,6 +539,7 @@ impl Engine {
                 | Number
                 | RomanNumeral
                 | Detokenize
+                | ScanTokens
                 | Expanded
                 | UnExpanded
                 | JobName
@@ -701,6 +702,10 @@ impl Engine {
                                 continue;
                             }
                             _ => {
+                                if std::env::var("UNDEFTRACE").is_ok() {
+                                    let cs = std::string::String::from_utf8_lossy(&name).into_owned();
+                                    eprintln!("CSN-STALL name={:?} offending={:#x} line={} collected_len={}", cs, t.0, self.input.current_file_line(), name.len());
+                                }
                                 self.pushed.push(t);
                                 self.error("Missing \\endcsname inserted");
                                 break;

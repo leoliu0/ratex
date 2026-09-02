@@ -304,7 +304,7 @@ pub fn save_format(eng: &Engine, path: &Path) -> Result<usize, String> {
     w.buf.extend_from_slice(MAGIC);
     w.u16(VERSION);
     w.u16(SEMANTICS);
-    w.u16(eng.cur_font);
+    w.u16(eng.eqtb.cur_font_val);
     // control-sequence names (id = position)
     w.u32(eng.cs.len() as u32);
     for id in eng.cs.all_ids() {
@@ -718,7 +718,6 @@ pub fn load_format_into(path: &Path, eng: &mut Engine) -> Result<(), String> {
     eng.hyphen_trie = scratch.hyphen_trie;
     eng.hyphen_exceptions = scratch.hyphen_exceptions;
     eng.par_shape = scratch.par_shape;
-    eng.cur_font = scratch.cur_font;
     eng.format_done = scratch.format_done;
     eng.ini_mode = scratch.ini_mode;
     Ok(())
@@ -729,7 +728,7 @@ fn io_err(e: io::Error) -> String {
 }
 
 fn load_state(r: &mut R, eng: &mut Engine) -> io::Result<()> {
-    eng.cur_font = r.u16()?;
+    eng.eqtb.cur_font_val = r.u16()?;
 
     let n = r.count()?;
     let mut cs = CsTable::new();

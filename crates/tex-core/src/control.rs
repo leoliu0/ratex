@@ -42,7 +42,36 @@ impl Engine {
         if t.is_cs() {
             let id = t.cs_id();
             if let Some(Equiv::FontRef(f)) = self.eqtb.resolve(id).cloned() {
-                self.cur_font = f;
+                if crate::debug_flag("FONTWATCH") {
+                    let nm = self
+                        .eqtb
+                        .fonts
+                        .get(f as usize)
+                        .map(|x| x.tfm_name.clone())
+                        .unwrap_or_default();
+                    if nm.starts_with("cmsy") || nm.starts_with("cmmi") || nm.starts_with("cmex") {
+                        let src = match self.input.stack.last() {
+                            Some(crate::input::Source::TokList { name, .. }) => name.clone(),
+                            Some(crate::input::Source::File { name, .. }) => format!("F:{}", name),
+                            None => String::new(),
+                        };
+                        eprintln!(
+                            "FONTWATCH \\{} -> {} id={} line={} file={} src={} mode={:?}",
+                            String::from_utf8_lossy(self.cs.name(id)),
+                            nm,
+                            f,
+                            ln,
+                            fnm,
+                            src,
+                            self.mode
+                        );
+                    }
+                }
+                // tex.web set_font: a group-scoped assignment that also
+                // consumes any \global prefix
+                let g = self.global_flag;
+                self.eqtb.define_cur_font(f, g);
+                self.clear_prefixes();
                 self.space_factor = 1000;
                 return;
             }

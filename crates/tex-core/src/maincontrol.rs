@@ -631,7 +631,7 @@ impl Engine {
             return;
         }
         let acc = n as u8;
-        let f_acc = self.cur_font;
+        let f_acc = self.eqtb.cur_font_val;
         let Some(af) = self.eqtb.fonts.get(f_acc as usize) else {
             return; // nullfont: nothing happens (tex.web new_character fails)
         };
@@ -668,7 +668,7 @@ impl Engine {
             self.space_factor = 1000;
             return;
         };
-        let f_base = self.cur_font;
+        let f_base = self.eqtb.cur_font_val;
         let exists = self
             .eqtb
             .fonts

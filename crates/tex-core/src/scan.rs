@@ -1405,7 +1405,7 @@ impl Engine {
                 self.exp_string(s.as_bytes());
             }
             Some(Prim::Font) => {
-                let csid = self.eqtb.font_cs.get(self.cur_font as usize).copied().unwrap_or(0);
+                let csid = self.eqtb.font_cs.get(self.eqtb.cur_font_val as usize).copied().unwrap_or(0);
                 self.push_tokens(vec![Token::from_cs(csid)]);
             }
             Some(Prim::TextFont) | Some(Prim::ScriptFont) | Some(Prim::ScriptScriptFont) => {
@@ -1552,10 +1552,10 @@ impl Engine {
     }
 
     pub fn cur_quad(&self) -> i32 {
-        self.eqtb.fonts.get(self.cur_font as usize).map(|f| f.quad()).unwrap_or(0)
+        self.eqtb.fonts.get(self.eqtb.cur_font_val as usize).map(|f| f.quad()).unwrap_or(0)
     }
     pub fn cur_x_height(&self) -> i32 {
-        self.eqtb.fonts.get(self.cur_font as usize).map(|f| f.x_height()).unwrap_or(0)
+        self.eqtb.fonts.get(self.eqtb.cur_font_val as usize).map(|f| f.x_height()).unwrap_or(0)
     }
 
     // ---------- formatting ----------
@@ -1659,7 +1659,7 @@ impl Engine {
             Some(Equiv::FontRef(f)) => f,
             Some(Equiv::Prim(Prim::Font)) => {
                 // \font refers to current font
-                self.cur_font
+                self.eqtb.cur_font_val
             }
             // tex.web §1023 scan_font_ident: \textfont/\scriptfont/
             // \scriptscriptfont <fam> yield the family's font id.

@@ -42,7 +42,7 @@ impl Engine {
     }
 
     pub fn interword_glue(&mut self) -> Glue {
-        let f = self.cur_font;
+        let f = self.eqtb.cur_font_val;
         let mut g = if let Some(font) = self.eqtb.fonts.get(f as usize) {
             Glue { width: font.space(), stretch: font.space_stretch(), shrink: font.space_shrink(), stretch_order: 0, shrink_order: 0 }
         } else {
@@ -285,7 +285,7 @@ impl Engine {
     // ---------- characters with ligatures & kerns ----------
 
     pub fn append_char(&mut self, c: u8) {
-        let f = self.cur_font;
+        let f = self.eqtb.cur_font_val;
         if f == 0 {
             // real TeX nullfont: chars are silently dropped (no error)
             return;

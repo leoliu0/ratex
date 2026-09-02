@@ -108,6 +108,9 @@ pub enum SaveItem {
     FontParam(u16, usize, i32, u16), // font, param index (0-based), old, level
     HyphenChar(u16, i32, u16),
     SkewChar(u16, i32, u16),
+    /// previous current font (tex.web cur_font_loc is an eqtb entry, so a
+    /// font selection inside a group is restored at \endgroup)
+    CurFont(u16),
     AfterGroup(Token),
 }
 
@@ -120,6 +123,9 @@ pub struct Eqtb {
     map: HashMap<CsId, EqEntry>,
     pub save_stack: Vec<SaveItem>,
     pub cur_level: u16,
+
+    /// tex.web cur_font_loc: current font, group-scoped via SaveItem::CurFont
+    pub cur_font_val: u16,
 
     pub int_params: Vec<i32>,
     pub int_levels: Vec<u16>,
@@ -219,6 +225,7 @@ impl Eqtb {
             map: HashMap::new(),
             save_stack: Vec::new(),
             cur_level: LEVEL_ONE,
+            cur_font_val: 0,
             int_params: vec![0; crate::prim::NUM_INT_PARAMS],
             int_levels: vec![LEVEL_ONE; crate::prim::NUM_INT_PARAMS],
             dim_params: vec![0; crate::prim::NUM_DIM_PARAMS],
@@ -416,6 +423,25 @@ impl Eqtb {
             SaveItem::UcCode(c, old, ol)
         });
     }
+    /// tex.web set_font: `define(cur_font_loc, data, cur_chr)` — a font
+    /// selection is a group-scoped assignment; \globaldefs>0 forces it
+    /// global, <0 forces it local ("Adjust for the setting of \globaldefs").
+    pub fn define_cur_font(&mut self, f: u16, global: bool) {
+        let gd = self.int_params[crate::prim::IntParam::GlobalDefs.idx() as usize];
+        let mut global = global;
+        if gd != 0 {
+            if gd < 0 {
+                global = false;
+            } else {
+                global = true;
+            }
+        }
+        if !global {
+            self.save_stack.push(SaveItem::CurFont(self.cur_font_val));
+        }
+        self.cur_font_val = f;
+    }
+
     pub fn assign_style_font(&mut self, style: u8, fam: u16, fid: u16, global: bool) {
         let old = self.style_fonts[style as usize][fam as usize];
         let ol = self.style_font_levels[style as usize][fam as usize];
@@ -464,14 +490,15 @@ impl Eqtb {
         }
         None
     }
-
-
     pub fn pop_level(&mut self, after_group: &mut Vec<Token>) -> LevelType {
         let mut ty = LevelType::Group;
         while let Some(item) = self.save_stack.pop() {
             match item {
                 SaveItem::AfterGroup(tok) => {
                     after_group.push(tok);
+                }
+                SaveItem::CurFont(old) => {
+                    self.cur_font_val = old;
                 }
                 SaveItem::Level(lvl, t) => {
                     self.cur_level = lvl - 1;

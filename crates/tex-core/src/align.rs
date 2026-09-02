@@ -510,14 +510,6 @@ impl Engine {
         }
         close.push(self.crcr_token());
         self.align_pushed_base = self.pushed.len();
-        if crate::debug_flag("ALIGN2") {
-            eprintln!(
-                "ACLOSE col={} row_cont={} toks=[{}]",
-                col,
-                row_continues,
-                self.tokens_to_string(&close)
-            );
-        }
         self.input.push_toks(close, CELL_SRC);
 
 
@@ -1190,7 +1182,7 @@ mod tests {
             _ => unreachable!(),
         }
         // column 1 is as wide as 'ccc', column 2 as wide as 'bb'
-        let f = &e.eqtb.fonts[e.cur_font as usize];
+        let f = &e.eqtb.fonts[e.eqtb.cur_font_val as usize];
         let wc = f.char_width(b'c');
         let wb = f.char_width(b'b');
         // column 1 = max('ccc', 'a' + \quad); \quad = 1em = cmr10 quad
@@ -1243,7 +1235,7 @@ mod tests {
         // tex.web fin_align: a span contributes only to its LAST column;
         // 'bb' is covered by columns 1-2, so column 1 stays 0 and column 2
         // carries the natural width w(bb)
-        let f = &e.eqtb.fonts[e.cur_font as usize];
+        let f = &e.eqtb.fonts[e.eqtb.cur_font_val as usize];
         let wb = f.char_width(b'b');
         let (w1, w2) = (e.align_col_widths[1], e.align_col_widths[2]);
         assert_eq!(w1, 0, "col 1 stays 0: {:?}", e.align_col_widths);
@@ -1264,7 +1256,7 @@ mod tests {
             "\\halign{#\\hfil& #\\hfil& #\\hfil\\cr a&b&c\\cr \\span\\omit XXXXX\\cr}\n",
         ));
         assert_eq!(e.error_count, 0, "errors:\n{}", e.term);
-        let f = &e.eqtb.fonts[e.cur_font as usize];
+        let f = &e.eqtb.fonts[e.eqtb.cur_font_val as usize];
         let w = |ch: u8| f.char_width(ch) as i64;
         let widths = e.align_col_widths.clone();
         assert_eq!(widths[0] as i64, w(b'a'));
@@ -1323,7 +1315,7 @@ mod tests {
             }
         }
         // column widths stay natural under `to`
-        let f = &e.eqtb.fonts[e.cur_font as usize];
+        let f = &e.eqtb.fonts[e.eqtb.cur_font_val as usize];
         let wc3 = f.char_width(b'c') * 3;
         assert_eq!(e.align_col_widths[0], wc3, "natural col 0");
 
@@ -1334,7 +1326,7 @@ mod tests {
         ));
         assert_eq!(e2.error_count, 0, "errors:\n{}", e2.term);
         let (_, list2) = vbox_of(&e2);
-        let f2 = &e2.eqtb.fonts[e2.cur_font as usize];
+        let f2 = &e2.eqtb.fonts[e2.eqtb.cur_font_val as usize];
         let nat = f2.char_width(b'a') + f2.char_width(b'b') * 2;
         match &list2[0] {
             Node::Box { w, .. } => assert_eq!(*w, nat + 20 * 65536, "spread row width"),
@@ -1373,7 +1365,7 @@ mod tests {
         let (_, list) = vbox_of(&e);
         assert_eq!(list.len(), 3, "2 rows + glue: {:?}", list);
         assert_eq!(e.align_col_widths[0], {
-            let f = &e.eqtb.fonts[e.cur_font as usize];
+            let f = &e.eqtb.fonts[e.eqtb.cur_font_val as usize];
             f.char_width(b'b') * 2
         });
     }
@@ -1400,7 +1392,7 @@ mod tests {
         ));
         assert_eq!(e.error_count, 0, "errors:\n{}", e.term);
         let (_, list) = vbox_of(&e);
-        let f = &e.eqtb.fonts[e.cur_font as usize];
+        let f = &e.eqtb.fonts[e.eqtb.cur_font_val as usize];
         let deficit = f.char_width(b'b') * 2 - f.char_width(b'a');
         let r = row_of(&list[0]);
         match &r[1] {
@@ -1469,7 +1461,7 @@ mod tests {
             .count();
         assert_eq!(rules, 3, "top/mid/bottom rules");
         // the \multicolumn header spans all three columns
-        let w = |ch: u8| e.eqtb.fonts[e.cur_font as usize].char_width(ch) as i64;
+        let w = |ch: u8| e.eqtb.fonts[e.eqtb.cur_font_val as usize].char_width(ch) as i64;
         let expect_w2 = (w(b'H') + w(b'e') + w(b'a') + w(b'd') + w(b'r'))
             - e.align_col_widths[0] as i64
             - e.align_col_widths[1] as i64;

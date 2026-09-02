@@ -130,7 +130,6 @@ pub struct Engine {
 
     /// noexpand'd token pending (returned once, unexpanded)
     pub no_expand_tok: Option<Token>,
-    pub cur_font: u16, // current font id (0 = none)
     pub align_state: i32, // & nesting balance for runaway detection
     pub ss_trace: Vec<String>,
     pub format_done: bool,
@@ -300,7 +299,6 @@ impl Engine {
             csname_depth: 0,
 
             no_expand_tok: None,
-            cur_font: 0,
             align_state: 0,
             ss_trace: Vec::new(),
             format_done: false,

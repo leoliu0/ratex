@@ -168,7 +168,7 @@ impl Engine {
         if self.hyphen_trie.is_empty() {
             return inserted;
         }
-        let f = self.cur_font;
+        let f = self.eqtb.cur_font_val;
         if self.eqtb.fonts.get(f as usize).is_none() {
             return inserted;
         }

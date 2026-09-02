@@ -641,6 +641,10 @@ impl Engine {
         }
         if t.is_char() {
             let c = t.chr() as u8;
+            // tex.web §240: period is the null delimiter (code 0)
+            if c == b'.' {
+                return 0;
+            }
             let d = self.eqtb.del_code[c as usize];
             if d >= 0 {
                 return d;

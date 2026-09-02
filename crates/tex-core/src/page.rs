@@ -209,6 +209,10 @@ impl Engine {
     }
 
     pub fn build_page(&mut self) {
+        // tex.web §1026: if (head=tail) or output_active then return;
+        if self.in_output {
+            return;
+        }
         // page_list may have been swapped/restored by group or paragraph
         // handling (par_page_lists), which does not carry page_processed:
         // clamp the restored index instead of trusting it
@@ -541,6 +545,11 @@ impl Engine {
                 }
                 other => page_mat.push(other),
             }
+        }
+        // tex.web §1002: the break penalty node itself is discarded from the
+        // page material (never packed into \box255).
+        if let Some(Node::Penalty(_)) = page_mat.last() {
+            page_mat.pop();
         }
         for (num, boxes) in inserts {
             self.place_insert(num, boxes);

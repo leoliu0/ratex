@@ -558,7 +558,14 @@ impl Engine {
             let mut r = crate::boxes::hpack(inner, Some(target), crate::boxes::HBOX, &self.eqtb);
             let overfull = nat_w + params.left_skip.width as i64 + params.right_skip.width as i64 + indent as i64 - target as i64;
             if final_pass && overfull > hfuzz {
-                self.error(&format!("Overfull \\hbox ({:.3}pt too wide) in paragraph", overfull as f64 / 65536.0));
+                let msg = format!(
+                    "Overfull \\hbox ({:.3}pt too wide) in paragraph at line {} [{}]\n",
+                    overfull as f64 / 65536.0,
+                    self.input.current_file_line(),
+                    self.input.current_file_name()
+                );
+                self.log.push_str(&msg);
+                self.term.push_str(&msg);
                 if overfull_rule > 0 {
                     if let Node::Box { list: rl, .. } = &mut r.node {
                         rl.push(Node::Rule { width: overfull_rule, height: 0x10000, depth: 0 });

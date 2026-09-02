@@ -206,6 +206,7 @@ impl Eqtb {
         ] {
             del_code[c as usize] = make_del_code(7, d as u32, 7, d as u32);
         }
+        del_code[b'.' as usize] = 0; // tex.web §240: period is null delimiter
         del_code[b'|' as usize] = make_del_code(7, 0x7C, 7, 0x7C);
         let mut lc_code = [0u8; 256];
         let mut sf_code = [1000u16; 256];

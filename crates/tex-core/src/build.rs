@@ -717,64 +717,86 @@ impl Engine {
     fn pop_leader_kind(&self) -> Option<u8> {
         LEADER_KINDS.with(|s| s.borrow_mut().pop())
     }
+    fn box_prim_or_name(&self, t: Token) -> Option<Prim> {
+        if !t.is_cs() {
+            return None;
+        }
+        if let Some(crate::eqtb::Equiv::Prim(p)) = self.eqtb.resolve(t.cs_id()) {
+            if matches!(
+                p,
+                Prim::HBox
+                    | Prim::VBox
+                    | Prim::VTop
+                    | Prim::VCenter
+                    | Prim::Box
+                    | Prim::Copy
+                    | Prim::LastBox
+                    | Prim::HRule
+                    | Prim::VRule
+            ) {
+                return Some(*p);
+            }
+        }
+        match self.cs.name(t.cs_id()) {
+            b"hbox" => Some(Prim::HBox),
+            b"vbox" => Some(Prim::VBox),
+            b"vtop" => Some(Prim::VTop),
+            b"vcenter" => Some(Prim::VCenter),
+            b"box" => Some(Prim::Box),
+            b"copy" => Some(Prim::Copy),
+            b"lastbox" => Some(Prim::LastBox),
+            b"hrule" => Some(Prim::HRule),
+            b"vrule" => Some(Prim::VRule),
+            _ => None,
+        }
+    }
 
-    // ---------- leaders ----------
-
-    /// \leaders/\cleaders/\xleaders: scan the leader object (a box through
-    /// the normal group machinery, or a rule), then the mandatory glue
-    /// (\hskip-family in horizontal modes, \vskip-family in vertical), and
     /// append a leader node. tex.web scan_box/box_end leader context.
     pub fn begin_leaders(&mut self, kind: u8) {
         use boxes::LeaderBody;
         self.skip_spaces_relax();
         let t = self.get_token();
-        if !t.is_cs() {
-            self.pushed.push(t);
-            self.error("A <box> was supposed to be here");
-            return;
-        }
-        let name = self.cs.name(t.cs_id()).to_vec();
-        match name.as_slice() {
-            b"hbox" => {
+        match self.box_prim_or_name(t) {
+            Some(Prim::HBox) => {
                 LEADER_KINDS.with(|s| s.borrow_mut().push(kind));
                 self.begin_box(0);
             }
-            b"vbox" => {
+            Some(Prim::VBox) => {
                 LEADER_KINDS.with(|s| s.borrow_mut().push(kind));
                 self.begin_box(1);
             }
-            b"vtop" => {
+            Some(Prim::VTop) => {
                 LEADER_KINDS.with(|s| s.borrow_mut().push(kind));
                 self.begin_box(2);
             }
-            b"vcenter" => {
+            Some(Prim::VCenter) => {
                 LEADER_KINDS.with(|s| s.borrow_mut().push(kind));
                 self.begin_box(3);
             }
-            b"box" => {
+            Some(Prim::Box) => {
                 let idx = self.scan_reg_num();
                 let b = self.eqtb.boxed[idx as usize].take();
                 if let Some(b) = b {
                     self.finish_leaders(kind, LeaderBody::Box(Box::new(b)));
                 }
             }
-            b"copy" => {
+            Some(Prim::Copy) => {
                 let idx = self.scan_reg_num();
                 let b = self.eqtb.boxed[idx as usize].clone();
                 if let Some(b) = b {
                     self.finish_leaders(kind, LeaderBody::Box(Box::new(b)));
                 }
             }
-            b"lastbox" => {
+            Some(Prim::LastBox) => {
                 if let Some(b) = self.take_last_box() {
                     self.finish_leaders(kind, LeaderBody::Box(Box::new(b)));
                 }
             }
-            b"hrule" => {
+            Some(Prim::HRule) => {
                 let (w, h, d) = self.scan_rule_dims(true);
                 self.finish_leaders(kind, LeaderBody::Rule { width: w, height: h, depth: d });
             }
-            b"vrule" => {
+            Some(Prim::VRule) => {
                 let (w, h, d) = self.scan_rule_dims(false);
                 self.finish_leaders(kind, LeaderBody::Rule { width: w, height: h, depth: d });
             }
@@ -955,12 +977,7 @@ impl Engine {
             self.pending_box_shift = Some((d, true));
             self.skip_spaces_relax();
             let t = self.get_token();
-            if t.is_cs()
-                && matches!(
-                    self.cs.name(t.cs_id()),
-                    b"hbox" | b"vbox" | b"vtop" | b"vcenter" | b"box" | b"copy" | b"lastbox"
-                )
-            {
+            if self.box_prim_or_name(t).is_some() || (t.is_cs() && self.cs.name(t.cs_id()) == b"usebox") {
                 self.pushed.push(t);
                 self.scan_box_after_move();
             } else {
@@ -969,16 +986,10 @@ impl Engine {
                 self.error("A <box> was supposed to be here");
             }
         } else {
-            // \raise/\lower: shift is the vertical offset of a box in hmode
             self.pending_box_shift = Some((d, false));
             self.skip_spaces_relax();
             let t = self.get_token();
-            if t.is_cs()
-                && matches!(
-                    self.cs.name(t.cs_id()),
-                    b"hbox" | b"vbox" | b"vtop" | b"vcenter" | b"box" | b"copy" | b"lastbox"
-                )
-            {
+            if self.box_prim_or_name(t).is_some() || (t.is_cs() && self.cs.name(t.cs_id()) == b"usebox") {
                 self.pushed.push(t);
                 self.scan_box_after_move();
             } else {
@@ -988,7 +999,6 @@ impl Engine {
             }
         }
     }
-
     pub fn scan_box_after_move(&mut self) {
         // like \box primitive handling: <box spec> = \box<n> | \hbox.. | \vtop.. | \vbox..
         self.skip_spaces_relax();
@@ -997,11 +1007,11 @@ impl Engine {
             self.pushed.push(t);
             return;
         }
-        match self.cs.name(t.cs_id()) {
-            b"hbox" => self.begin_box(0),
-            b"vbox" => self.begin_box(1),
-            b"vtop" => self.begin_box(2),
-            b"box" => {
+        match self.box_prim_or_name(t) {
+            Some(Prim::HBox) => self.begin_box(0),
+            Some(Prim::VBox) => self.begin_box(1),
+            Some(Prim::VTop) => self.begin_box(2),
+            Some(Prim::Box) => {
                 let idx = self.scan_reg_num();
                 let b = self.eqtb.boxed[idx as usize].take();
                 let b = b.map(|mut n| {
@@ -1015,7 +1025,7 @@ impl Engine {
                 self.pending_box_shift = None;
                 self.append_box_node(b);
             }
-            b"copy" => {
+            Some(Prim::Copy) => {
                 let idx = self.scan_reg_num();
                 let b = self.eqtb.boxed[idx as usize].clone();
                 let b = b.map(|mut n| {
@@ -1029,19 +1039,20 @@ impl Engine {
                 self.pending_box_shift = None;
                 self.append_box_node(b);
             }
-            b"vcenter" => self.begin_box(3),
-            b"lastbox" => {
+            Some(Prim::VCenter) => self.begin_box(3),
+            Some(Prim::LastBox) => {
                 let b = self.take_last_box();
                 self.append_box_node(b);
             }
-            b"usebox" => {
-                let idx = self.scan_reg_num();
-                let b = self.eqtb.boxed[idx as usize].take();
-                self.append_box_node(b);
-            }
             _ => {
-                self.pushed.push(t);
-                self.error("Missing box after move/raise");
+                if t.is_cs() && self.cs.name(t.cs_id()) == b"usebox" {
+                    let idx = self.scan_reg_num();
+                    let b = self.eqtb.boxed[idx as usize].take();
+                    self.append_box_node(b);
+                } else {
+                    self.pushed.push(t);
+                    self.error("Missing box after move/raise");
+                }
             }
         }
     }

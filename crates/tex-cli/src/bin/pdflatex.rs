@@ -119,6 +119,8 @@ fn main() {
                                 eng.eqtb.assign(act, eq, true);
                             }
                         }
+                        // tex.web §240: period is the null delimiter (code 0)
+                        eng.eqtb.del_code[b'.' as usize] = 0;
                         eprintln!(
                             "PROG: format loaded from {} in {:.1} ms",
                             cand.display(),

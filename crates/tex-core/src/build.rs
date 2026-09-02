@@ -1321,7 +1321,14 @@ impl Engine {
     }
 
     pub fn start_paragraph(&mut self, indent: bool) {
-        if crate::debug_flag("IFTRACE") { eprintln!("START-PAR mode={:?} indent={} line={}", self.mode, indent, self.input.current_file_line()); }
+        if crate::debug_flag("IFTRACE") {
+            let src = match self.input.stack.last() {
+                Some(crate::input::Source::TokList { name, .. }) => name.clone(),
+                Some(crate::input::Source::File { name, .. }) => format!("F:{}", name),
+                None => String::new(),
+            };
+            eprintln!("START-PAR mode={:?} indent={} line={} src={}", self.mode, indent, self.input.current_file_line(), src);
+        }
         match self.mode {
             Mode::Horizontal => {
                 if indent {

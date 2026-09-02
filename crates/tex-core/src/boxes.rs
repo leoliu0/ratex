@@ -493,8 +493,8 @@ pub fn vtop_md(
     let mut res = vpack_add_md(list, h, additional, VTOP, eqtb, max_depth);
     if let Node::Box { h: hh, d: dd, list, .. } = &mut res.node {
         let first_h = list.iter().find_map(|n| match n {
-            Node::Box { h: bh, .. } => Some(*bh),
-            Node::Rule { height, .. } => Some(*height),
+            Node::Box { h: bh, d: bd, .. } if *bh > 0 || *bd > 0 => Some(*bh),
+            Node::Rule { height, depth, .. } if *height > 0 || *depth > 0 => Some(*height),
             _ => None,
         })
         .unwrap_or(0);

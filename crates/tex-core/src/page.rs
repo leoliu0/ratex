@@ -73,7 +73,7 @@ fn vlist_extents(list: &[Node]) -> (i64, i64, i64) {
 }
 
 /// a remembered page-breakpoint candidate
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 struct BreakSpot {
     /// number of leading `page_list` nodes that belong to the page
     cut: usize,
@@ -154,8 +154,11 @@ impl Engine {
     /// `max_dimen`.
     fn page_goal(&self) -> i64 {
         let pg = self.eqtb.dim_params[DimParam::PageGoal.idx() as usize] as i64;
-        if pg != 0 {
+        if pg > 0 && pg != 0x3FFF_FFFF {
             return pg;
+        }
+        if !self.page_goal_set {
+            return 0x3FFF_FFFF;
         }
         self.vsize_goal()
     }
@@ -190,11 +193,13 @@ impl Engine {
             self.eqtb.dim_params[p.idx() as usize] = c32(st.stretch[o]);
         }
         self.eqtb.dim_params[DimParam::PageShrink.idx() as usize] = c32(st.shrink[0]);
-        // `\pagegoal` is read-only in tex.web: publish the goal the builder
-        // acts on so `\the\pagegoal` reports live state
-        self.eqtb.dim_params[DimParam::PageGoal.idx() as usize] = c32(self.page_goal());
+        let goal = if !st.goal_set {
+            0x3FFF_FFFF
+        } else {
+            self.page_goal()
+        };
+        self.eqtb.dim_params[DimParam::PageGoal.idx() as usize] = c32(goal);
     }
-
     /// scaled insert height: `h * count(n) / 1000` ("magnification");
     /// `count(n) <= 0` contributes nothing to the page
     fn ins_scaled_height(&self, num: u16, raw_h: i64) -> i64 {
@@ -242,6 +247,7 @@ impl Engine {
         while st.processed < self.page_list.len() {
             let idx = st.processed;
             let mut advance = true;
+
             match self.page_list[idx].clone() {
                 Node::Glue(g) => {
                     if st.goal_set {
@@ -333,6 +339,7 @@ impl Engine {
             }
             if advance {
                 st.processed += 1;
+
                 if self.ready_to_fire(&st) {
                     st.fire = true;
                     break;
@@ -375,8 +382,8 @@ impl Engine {
         }
         st.box_seen = true;
         st.goal_set = true;
+        self.page_goal_set = true;
     }
-
     /// fold glue: width folds the running depth away, stretch/shrink accrue
     /// by order (tex.web @1042)
     fn contribute_glue(&mut self, st: &mut PageState, g: &Glue) {
@@ -477,6 +484,7 @@ impl Engine {
         if self.ini_mode {
             return false;
         }
+
         if let Some(spot) = st.best {
             if spot.penalty <= EJECT_PENALTY {
                 return true;
@@ -563,10 +571,10 @@ impl Engine {
         self.page_goal_set = false;
         // the `\pagetotal` family restarts with the page (tex.web @638)
         self.sync_page_dims(&PageState::new());
-        // the new page's goal is a fresh `\vsize` snapshot (tex.web @638);
+        // the new page's goal starts at max_dimen (tex.web @1014);
         // a mid-page `\pagegoal` pin does not survive the page break
-        self.eqtb.dim_params[DimParam::PageGoal.idx() as usize] =
-            self.vsize_goal().clamp(i32::MIN as i64, i32::MAX as i64) as i32;
+        self.eqtb.dim_params[DimParam::PageGoal.idx() as usize] = 0x3FFF_FFFF;
+        self.page_goal_set = false;
         let md = self.max_depth().min(i32::MAX as i64) as i32;
         let r = crate::boxes::vpack_add_md(page_mat, None, false, VBOX, &self.eqtb, md);
         self.eqtb.assign_box(255, Some(r.node), true);

@@ -956,14 +956,14 @@ impl Engine {
             let t = self.get_token();
             let mut matched = false;
             if t.is_char() {
-                let c = t.chr() as u8;
+                let c = (t.chr() as u8).to_ascii_lowercase();
                 if c == kw[0] {
                     let mut kt: Vec<Token> = Vec::new();
                     let mut all = true;
                     for &k in &kw[1..] {
                         let tx = self.get_token();
                         kt.push(tx);
-                        if !(tx.is_char() && tx.chr() as u8 == k) {
+                        if !(tx.is_char() && (tx.chr() as u8).to_ascii_lowercase() == k) {
                             all = false;
                             break;
                         }
@@ -995,6 +995,7 @@ impl Engine {
             }
             self.cur_fill_order = 0;
         }
+        self.cur_fill_order = 0;
         self.in_expanded_scan = prev;
         g
     }
@@ -1624,29 +1625,45 @@ impl Engine {
         s.push_str("pt");
         s
     }
+    pub fn scaled_number_to_string(&self, v: i32) -> String {
+        let mut s = self.scaled_to_string(v);
+        if s.ends_with("pt") {
+            s.truncate(s.len() - 2);
+        }
+        s
+    }
 
     pub fn glue_to_string(&self, g: &Glue) -> String {
         let mut s = self.scaled_to_string(g.width);
         if g.stretch != 0 || g.stretch_order > 0 {
             s.push_str(" plus ");
-            s.push_str(&self.scaled_to_string(g.stretch));
-            match g.stretch_order {
-                1 => s.push_str("fil"),
-                2 => s.push_str("fill"),
-                3 => s.push_str("filll"),
-                _ => {}
+            if g.stretch_order == 0 {
+                s.push_str(&self.scaled_to_string(g.stretch));
+            } else {
+                s.push_str(&self.scaled_number_to_string(g.stretch));
+                match g.stretch_order {
+                    1 => s.push_str("fil"),
+                    2 => s.push_str("fill"),
+                    3 => s.push_str("filll"),
+                    _ => {}
+                }
             }
         }
         if g.shrink != 0 || g.shrink_order > 0 {
             s.push_str(" minus ");
-            s.push_str(&self.scaled_to_string(g.shrink));
-            match g.shrink_order {
-                1 => s.push_str("fil"),
-                2 => s.push_str("fill"),
-                3 => s.push_str("filll"),
-                _ => {}
+            if g.shrink_order == 0 {
+                s.push_str(&self.scaled_to_string(g.shrink));
+            } else {
+                s.push_str(&self.scaled_number_to_string(g.shrink));
+                match g.shrink_order {
+                    1 => s.push_str("fil"),
+                    2 => s.push_str("fill"),
+                    3 => s.push_str("filll"),
+                    _ => {}
+                }
             }
         }
+
         s
     }
 

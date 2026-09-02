@@ -332,12 +332,12 @@ impl Engine {
                 while idx < actives.len() {
                     let a = actives[idx].clone();
                     let is_only = actives.len() == 1;
-                    let width = endw - a.start_w - bg_w;
+                    let width = endw - a.start_w + bg_w;
                     let mut dst = [0i64; 4];
                     let mut dsh = [0i64; 4];
                     for k in 0..4 {
-                        dst[k] = cum_st[cand][k] - a.start_st[k] - bg_st[k];
-                        dsh[k] = cum_sh[cand][k] - a.start_sh[k] - bg_sh[k];
+                        dst[k] = cum_st[cand][k] - a.start_st[k] + bg_st[k];
+                        dsh[k] = cum_sh[cand][k] - a.start_sh[k] + bg_sh[k];
                     }
                     dst[0] += extra_stretch as i64; // emergency-pass background
                     let target = line_metrics(params, a.line + 1).1 as i64;
@@ -346,13 +346,14 @@ impl Engine {
                         (0, DECENT)
                     } else if shortfall > 0 {
                         // stretching
-                        if dst[1] != 0 || dst[2] != 0 || dst[3] != 0 {
+                        if dst[1] > 0 || dst[2] > 0 || dst[3] > 0 {
                             (0, DECENT) // infinite stretch
                         } else {
                             let bb = badness(shortfall as i32, dst[0] as i32);
                             let fit = if bb > 99 { VERY_LOOSE } else if bb > 12 { LOOSE } else { DECENT };
                             (bb, fit)
                         }
+
                     } else if -shortfall > dsh[0] {
                         // cannot shrink enough: hopeless
                         (INF_BAD + 1, TIGHT)
@@ -604,7 +605,7 @@ impl Engine {
             match n {
                 Node::Box { h: bh, d: bd, shift, .. } => {
                     let (bh, bd) = (*bh as i64, *bd as i64);
-                    if h + d + bh > target as i64 && split_at == list.len() {
+                    if h > 0 && h + d + bh > target as i64 && split_at == list.len() {
                         split_at = i;
                         break;
                     }

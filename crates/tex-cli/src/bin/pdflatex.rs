@@ -121,6 +121,9 @@ fn main() {
                         }
                         // tex.web §240: period is the null delimiter (code 0)
                         eng.eqtb.del_code[b'.' as usize] = 0;
+                        // tex.web §1014: page_goal starts at max_dimen
+                        eng.eqtb.dim_params[tex_core::prim::DimParam::PageGoal.idx() as usize] = 0x3FFF_FFFF;
+                        eng.page_goal_set = false;
                         eprintln!(
                             "PROG: format loaded from {} in {:.1} ms",
                             cand.display(),

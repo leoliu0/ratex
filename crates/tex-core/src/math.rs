@@ -207,6 +207,9 @@ impl Engine {
             return;
         }
         if display {
+            if self.mode == Mode::Horizontal {
+                self.par_primitive();
+            }
             self.eqtb.push_level(crate::eqtb::LevelType::Group);
             let page = std::mem::take(&mut self.page_list);
             self.saved_lists.push((
@@ -267,20 +270,20 @@ impl Engine {
         self.prev_depth = pd;
         self.space_factor = sf;
         self.cur_list = outer_list;
-        match self.mode {
-            Mode::Horizontal => {
-                self.cur_list.push(hbox);
-                self.space_factor = 1000;
-            }
-            Mode::Vertical | Mode::InternalVertical => {
-                if was_display {
-                    self.finish_display_math(hbox);
-                } else {
+        if was_display {
+            self.finish_display_math(hbox);
+        } else {
+            match self.mode {
+                Mode::Horizontal => {
+                    self.cur_list.push(hbox);
+                    self.space_factor = 1000;
+                }
+                Mode::Vertical | Mode::InternalVertical => {
                     self.vlist_append(hbox);
                 }
-            }
-            _ => {
-                self.cur_list.push(hbox);
+                _ => {
+                    self.cur_list.push(hbox);
+                }
             }
         }
 

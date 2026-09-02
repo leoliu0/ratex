@@ -168,14 +168,13 @@ impl Engine {
                 // e-TeX semantics: \everyeof fires EVERY time scanning
                 // crosses the pseudo-file end (the l3 single-rescan chain
                 // re-enters deliberately); no one-shot guard.
+                self.input.stack.remove(si);
                 if is_scantokens {
                     let eof_toks = (*self.eqtb.tok_params[crate::prim::ToksParam::EveryEOF.idx() as usize]).clone();
                     if !eof_toks.is_empty() {
                         self.push_tokens(eof_toks);
-                        return None;
                     }
                 }
-                self.input.stack.remove(si);
                 return None;
             }
             // honor \endinput: stop at end of the current line

@@ -67,6 +67,7 @@ impl Engine {
     }
 
     pub fn char_token(&mut self, c: u8, is_letter: bool) {
+
         match self.mode {
             Mode::Horizontal | Mode::RestrictedHorizontal => {
                 self.append_char(c);
@@ -171,7 +172,7 @@ impl Engine {
             Prim::HFill => Glue::fil(2, 0),
             Prim::HFilL => Glue::fil(3, 0),
             Prim::HFilNeg => Glue { width: 0, stretch: -ONE, shrink: 0, stretch_order: 1, shrink_order: 0 },
-            Prim::HSS => Glue { width: 0, stretch: ONE, shrink: ONE, stretch_order: 1, shrink_order: 0 },
+            Prim::HSS => Glue { width: 0, stretch: ONE, shrink: ONE, stretch_order: 1, shrink_order: 1 },
             _ => Glue::zero(),
         }
     }
@@ -187,7 +188,7 @@ impl Engine {
             Prim::VFill => Glue::fil(2, 0),
             Prim::VFilL => Glue::fil(3, 0),
             Prim::VFilNeg => Glue { width: 0, stretch: -ONE, shrink: 0, stretch_order: 1, shrink_order: 0 },
-            Prim::VSS => Glue { width: 0, stretch: ONE, shrink: ONE, stretch_order: 1, shrink_order: 0 },
+            Prim::VSS => Glue { width: 0, stretch: ONE, shrink: ONE, stretch_order: 1, shrink_order: 1 },
             _ => Glue::zero(),
         }
     }
@@ -656,7 +657,6 @@ impl Engine {
 
     pub fn append_box_node(&mut self, b: Option<Node>) {
         match b {
-
             None => {}
             Some(node) => match self.mode {
                 Mode::Horizontal | Mode::RestrictedHorizontal => {
@@ -701,6 +701,7 @@ impl Engine {
                     self.error("Incompatible list can't be unboxed");
                     return;
                 }
+
                 for item in list {
                     if self.mode.is_v() {
                         self.vlist_append(item);
@@ -1210,9 +1211,7 @@ impl Engine {
         for &expected in kw {
             let t = self.get_token();
             collected.push(t);
-            if !t.is_char() || t.chr() != expected as u32 {
-                // push_tokens reverses internally, so hand it the collected
-                // tokens in read order to restore them exactly
+            if !t.is_char() || (t.chr() as u8).to_ascii_lowercase() != expected.to_ascii_lowercase() {
                 self.push_tokens(collected);
                 return false;
             }
@@ -1473,12 +1472,43 @@ impl Engine {
     }
 
     pub fn end_paragraph(&mut self) {
-        // append parfillskip
+        let has_content = self.cur_list.iter().any(|n| match n {
+            Node::Char { .. } | Node::Disc(_) | Node::Ligature { .. } => true,
+            Node::Rule { width, height, .. } => *width > 0 || *height > 0,
+            Node::Box { w, h, d, list, .. } => *w > 0 || *h > 0 || *d > 0 || !list.is_empty(),
+            _ => false,
+        });
+        if !has_content {
+            self.cur_list.clear();
+            self.par_shape.clear();
+            self.eqtb.int_params[crate::prim::IntParam::Looseness.idx() as usize] = 0;
+            self.eqtb.int_params[crate::prim::IntParam::HangAfter.idx() as usize] = 1;
+            self.eqtb.dim_params[crate::prim::DimParam::HangIndent.idx() as usize] = 0;
+            let (saved_mode, saved_list, pd, sf) = self.saved_lists.pop().unwrap_or((Mode::Vertical, Vec::new(), self.prev_depth, self.space_factor));
+            self.prev_depth = pd;
+            self.space_factor = sf;
+            self.mode = saved_mode;
+            if let Some(outer) = self.par_page_lists.pop() {
+                if saved_mode == Mode::Vertical {
+                    self.page_list = outer;
+                } else {
+                    self.cur_list = outer;
+                }
+            } else {
+                self.cur_list = saved_list;
+            }
+            return;
+        }
         let pfs = self.eqtb.glue_params[GlueParam::ParFillSkip.idx() as usize].clone();
         self.cur_list.push(Node::Penalty(10000));
         self.cur_list.push(Node::Glue(pfs));
         let content = std::mem::take(&mut self.cur_list);
         let lines = self.break_paragraph(content);
+        // tex.web §1079 normal_paragraph: reset paragraph-local parameters
+        self.par_shape.clear();
+        self.eqtb.int_params[crate::prim::IntParam::Looseness.idx() as usize] = 0;
+        self.eqtb.int_params[crate::prim::IntParam::HangAfter.idx() as usize] = 1;
+        self.eqtb.dim_params[crate::prim::DimParam::HangIndent.idx() as usize] = 0;
         // restore vertical context
         let (saved_mode, _, pd, sf) = self.saved_lists.pop().unwrap_or((Mode::Vertical, Vec::new(), self.prev_depth, self.space_factor));
         self.prev_depth = pd;

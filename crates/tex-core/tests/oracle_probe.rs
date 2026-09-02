@@ -15,52 +15,54 @@ const PRE: &str = r#"\catcode`\{=1 \catcode`\}=2 \catcode`\#=6 \catcode`\$=3 \ca
 \long\def\use_none:n#1{}
 \let\if_true:\iftrue \let\if_false:\iffalse \let\else:\else \let\fi:\fi
 \def\scan_stop{}
-\let\if_cs_exist:w\ifcs \let\if_meaning:w\ifx \let\if_cs_exist:N\ifcs
-\let\cs_gset:Npn\gdef \protected\def\cs_gset_protected:Npn{\long\gdef}
+ \let\cs:w\csname \let\cs_end:\endcsname \let\exp_after:wN\expandafter
+ \let\if_cs_exist:w\ifcsname \let\if_meaning:w\ifx \let\if_cs_exist:N\ifcsname
+ \let\cs_gset:Npn\gdef \protected\def\cs_gset_protected:Npn{\long\gdef}
 \immediate\openout15=probe.out
 "#;
 
-fn run_mine(src: &str) -> Result<String, String> {
-    std::env::set_current_dir(DIR).ok();
-    let _ = std::fs::remove_file(OUT);
+fn run_mine(dir: &str, src: &str) -> Result<String, String> {
+    let out_file = format!("{dir}/{OUT}");
+    let _ = std::fs::remove_file(&out_file);
     let mut e = Engine::new(true);
+    e.out_dir = format!("{dir}/");
     e.init_primitives();
     e.add_nullfont();
     e.input
         .push_file("probe.tex".to_string(), src.as_bytes().to_vec());
     e.run();
-    match std::fs::read_to_string(OUT) {
+    match std::fs::read_to_string(&out_file) {
         Ok(s) => Ok(s),
         Err(_) => Err(format!("no {OUT} produced\nTERM:\n{}", e.term)),
     }
 }
 
-fn run_oracle(src: &str) -> Result<String, String> {
+fn run_oracle(dir: &str, src: &str) -> Result<String, String> {
     if !Path::new("/usr/bin/pdflatex").exists() {
         return Err("no oracle".to_string());
     }
-    std::fs::create_dir_all(DIR).unwrap();
-    std::fs::write(format!("{DIR}/probe.tex"), src).unwrap();
-    let _ = std::fs::remove_file(format!("{DIR}/{OUT}"));
+    std::fs::create_dir_all(dir).unwrap();
+    std::fs::write(format!("{dir}/probe.tex"), src).unwrap();
+    let _ = std::fs::remove_file(format!("{dir}/{OUT}"));
     let _ = Command::new("/usr/bin/pdflatex")
         .args([
             "-ini",
             "-etex",
             "-interaction=nonstopmode",
             "-output-directory",
-            DIR,
-            &format!("{DIR}/probe.tex"),
+            dir,
+            &format!("{dir}/probe.tex"),
         ])
-        .current_dir(DIR)
+        .current_dir(dir)
         .output();
-    match std::fs::read_to_string(format!("{DIR}/{OUT}")) {
+    match std::fs::read_to_string(format!("{dir}/{OUT}")) {
         Ok(s) => Ok(s),
-        Err(_) => Err(format!("no {OUT} (see {DIR}/probe.log)")),
+        Err(_) => Err(format!("no {OUT} (see {dir}/probe.log)")),
     }
 }
 
-fn oracle_errors() -> Vec<String> {
-    let log = std::fs::read_to_string(format!("{DIR}/probe.log")).unwrap_or_default();
+fn oracle_errors(dir: &str) -> Vec<String> {
+    let log = std::fs::read_to_string(format!("{dir}/probe.log")).unwrap_or_default();
     log.lines()
         .filter(|l| l.starts_with("! "))
         .take(6)
@@ -75,12 +77,14 @@ fn norm(s: &str) -> String {
 }
 
 fn compare(name: &str, src: &str, require_oracle_clean: bool) {
+    let dir = format!("{DIR}_{name}");
+    std::fs::create_dir_all(&dir).unwrap();
     let full = format!("{PRE}{src}\n\\closeout15\n\\end\n");
-    let m = match run_mine(&full) {
+    let m = match run_mine(&dir, &full) {
         Ok(m) => m,
         Err(e) => panic!("{name} mine-fail: {e}"),
     };
-    let o = match run_oracle(&full) {
+    let o = match run_oracle(&dir, &full) {
         Ok(o) => o,
         Err(e) => {
             eprintln!("SKIP {name}: {e}");
@@ -88,7 +92,7 @@ fn compare(name: &str, src: &str, require_oracle_clean: bool) {
         }
     };
     if require_oracle_clean {
-        let errs = oracle_errors();
+        let errs = oracle_errors(&dir);
         if !errs.is_empty() {
             panic!("{name} oracle had errors:\n{}", errs.join("\n"));
         }

@@ -111,6 +111,16 @@ impl Engine {
             IgnoreSpaces => self.ignore_spaces(),
             UnKern => self.un_kern(),
             UnPenalty => self.un_penalty(),
+            Box => {
+                let idx = self.scan_reg_num();
+                let b = self.eqtb.boxed[idx as usize].take();
+                self.append_box_node(b);
+            }
+            Copy => {
+                let idx = self.scan_reg_num();
+                let b = self.eqtb.boxed[idx as usize].clone();
+                self.append_box_node(b);
+            }
             UnHBox => self.do_unbox(false, false),
             UnVBox => self.do_unbox(true, false),
             UnHCopy => self.do_unbox(false, true),

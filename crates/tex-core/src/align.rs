@@ -1083,11 +1083,10 @@ fn align_interline(
     lsl: i32,
 ) {
     if let Some((_, pd)) = *prev {
-        let mut gap = bs.width - pd - h;
+        let gap = bs.width - pd - h;
         if gap < lsl {
-            gap = ls.width;
-        }
-        if gap != 0 {
+            rows.push(Node::Glue(ls.clone()));
+        } else {
             let mut g = bs.clone();
             g.width = gap;
             rows.push(Node::Glue(g));

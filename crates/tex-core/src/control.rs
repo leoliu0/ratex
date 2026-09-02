@@ -41,6 +41,7 @@ impl Engine {
 
         if t.is_cs() {
             let id = t.cs_id();
+
             if let Some(Equiv::FontRef(f)) = self.eqtb.resolve(id).cloned() {
                 if crate::debug_flag("FONTWATCH") {
                     let nm = self

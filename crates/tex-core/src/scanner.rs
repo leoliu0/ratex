@@ -179,11 +179,15 @@ impl Engine {
             };
             match st {
                 0 => {
-                    // new line state: skip leading spaces; empty line => \par
+                    // new line state (tex.web 343): skip leading spaces and
+                    // ignored chars; if nothing remains, the virtual endline
+                    // char decides — cat 5 yields \par, anything else (e.g.
+                    // \nfss@catcodes sets ^^M to 9 for .fd files) yields no
+                    // token. Spaces-only lines count as blank.
                     let mut any = false;
                     while let Some(b) = self.file_line_peek(si) {
                         let cat = self.eqtb.cat[b as usize];
-                        if cat == CAT_SPACE {
+                        if cat == CAT_SPACE || cat == CAT_IGNORED {
                             self.file_line_advance(si);
                             continue;
                         }
@@ -191,13 +195,14 @@ impl Engine {
                         break;
                     }
                     if !any && self.file_line_peek(si).is_none() {
-                        if !any && self.file_line_pos(si) == 0 {
-                            // truly empty line -> \par; consume and reload
-                            self.file_line_clear(si);
+                        let el = self.eqtb.int_params[crate::prim::IntParam::EndLineChar.idx() as usize];
+                        let eol = el < 0
+                            || el > 255
+                            || self.eqtb.cat[el as usize] == CAT_EOL;
+                        self.file_line_clear(si);
+                        if eol {
                             return Some(PAR_END);
                         }
-                        // line had only spaces: consume, no token
-                        self.file_line_clear(si);
                         continue;
                     }
                     let b = self.file_line_peek(si).unwrap();

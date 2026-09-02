@@ -231,11 +231,14 @@ impl Engine {
                         self.error(&format!("Undefined control sequence \\{}", name));
                     }
                     Some(Equiv::Macro(_)) => {
-                        // get_token already declined to expand this (\\noexpand
-                        // freeze, \\protected in an edef scan, self-quark stop
-                        // marker). Knuth treats frozen dont_expand as \\relax.
+                        if crate::debug_flag("DEFWATCH") {
+                            eprintln!("DEFWATCH-SILENT-DISPATCH \\{} L{}", String::from_utf8_lossy(self.cs.name(id)), self.input.current_file_line());
+                        }
+                        // get_token already declined to expand this (\noexpand
+                        // freeze, \protected in an edef scan, self-quark stop
+                        // marker). Knuth treats frozen dont_expand as \relax.
                         // Re-expanding here loops: self-quark terminators
-                        // (\\q__tl_recursion_tail) never stop expl3 maps.
+                        // (\q__tl_recursion_tail) never stop expl3 maps.
                     }
                     Some(Equiv::CharDef(v)) => {
                         self.char_token(v as u8, false);

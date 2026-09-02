@@ -1053,9 +1053,9 @@ impl Engine {
         if self.setbox_target.is_some() && self.setbox_depth == self.box_kinds.len() {
             let vbox = crate::boxes::vpack(rows, None, crate::boxes::VBOX, &self.eqtb).node;
             let idx = self.setbox_target.take().unwrap();
+            let g = self.setbox_global;
             self.unpark_setbox();
-            self.eqtb.assign_box(idx, Some(vbox), self.global_flag);
-            self.global_flag = false;
+            self.eqtb.assign_box(idx, Some(vbox), g);
         } else if self.mode == Mode::InternalVertical {
             // Inside \vbox (e.g. longtable chunks) or \vcenter: append rows
             // directly so \lastbox in \LT@echunk retrieves the last row's hbox

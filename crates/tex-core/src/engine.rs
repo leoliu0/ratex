@@ -149,8 +149,13 @@ pub struct Engine {
     /// keeps the box-register location group-local; inner boxes must not
     /// steal the pending \setbox target)
     pub setbox_depth: usize,
+    /// tex.web holds assignment prefixes in prefixed_command locals: a
+    /// `\global` before `\setbox<n>=\vbox{..}` must survive the box BODY
+    /// (whose own assignments would otherwise consume it) and land on the
+    /// register assignment when the body closes.
+    pub setbox_global: bool,
     /// outer \\setbox/\\shipout targets parked across nested \\setbox
-    pub setbox_stack: Vec<(Option<u16>, usize)>,
+    pub setbox_stack: Vec<(Option<u16>, usize, bool)>,
     pub pending_box_shift: Option<(i32, bool)>,
     pub box_targets: Vec<Option<(i32, bool)>>,
     pub box_shifts: Vec<i32>,
@@ -315,6 +320,7 @@ impl Engine {
             right_delim: None,
             setbox_target: None,
             setbox_depth: usize::MAX,
+            setbox_global: false,
             setbox_stack: Vec::new(),
             pending_box_shift: None,
             pending_the_string: None,
@@ -902,22 +908,27 @@ impl Engine {
         self.pushed.extend(ag);
         ty
     }
-    /// tex.web box_context: nest \\setbox so an inner \\setbox inside
-    /// \\shipout\\vbox{\\setbox...} cannot clobber the outer target.
+    /// tex.web box_context: nest \setbox so an inner \setbox inside
+    /// \shipout\vbox{\setbox...} cannot clobber the outer target. The
+    /// pending \global prefix travels with the target.
     pub fn park_setbox(&mut self, idx: u16) {
-        self.setbox_stack.push((self.setbox_target.take(), self.setbox_depth));
+        let g = std::mem::take(&mut self.global_flag);
+        self.setbox_stack.push((self.setbox_target.take(), self.setbox_depth, self.setbox_global));
         self.setbox_target = Some(idx);
         self.setbox_depth = self.box_kinds.len();
+        self.setbox_global = g;
     }
     pub fn unpark_setbox(&mut self) {
         match self.setbox_stack.pop() {
-            Some((t, d)) => {
+            Some((t, d, g)) => {
                 self.setbox_target = t;
                 self.setbox_depth = d;
+                self.setbox_global = g;
             }
             None => {
                 self.setbox_target = None;
                 self.setbox_depth = usize::MAX;
+                self.setbox_global = false;
             }
         }
     }

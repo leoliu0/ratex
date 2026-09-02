@@ -55,6 +55,17 @@ impl Engine {
         if name.is_empty() {
             return None;
         }
+        // LaTeX's \@missingfileerror give-up path (no terminal to answer the
+        // "Enter file name:" prompt) re-requests the degenerate name ".tex".
+        // Serve a placeholder file so batch/nonstop runs abort the
+        // missing-input attempt once and continue instead of looping on the
+        // unanswerable prompt (web2c TeX emergency-stops here; interactive
+        // sessions prompt for a replacement).
+        if name == ".tex" {
+            let guard = std::env::temp_dir().join("tex-missingfile-guard.tex");
+            let _ = std::fs::write(&guard, b"\\relax\n");
+            return Some(guard);
+        }
         if !name.starts_with('/') && !self.out_dir.is_empty() {
             for cand in [
                 std::path::Path::new(&self.out_dir).join(name),
@@ -284,7 +295,9 @@ impl Engine {
         let toks = self.scan_general_text_expanded();
         let text = self.write_tokens_to_string(&toks);
         if err {
-            self.term.push_str(&format!("! {}\n", text));
+            // tex.web print_err → print_nl("! "): the error starts on a
+            // fresh line, never glued to unterminated "(file" output.
+            self.term_print_nl(&format!("! {}\n", text));
         } else {
             self.term.push_str(&format!("{}\n", text));
             self.log.push_str(&format!("{}\n", text));
@@ -355,18 +368,30 @@ impl Engine {
             self.pushed.push(t);
         }
         let cs = self.scan_definable_cs();
+        // tex.web: a negative stream number reads the TERMINAL, never the
+        // numeric stream 0 (which LaTeX keeps for \@inputcheck). The engine
+        // has no interactive terminal, so a terminal read is always at EOF;
+        // web2c treats that as fatal ("! Emergency stop.") instead of
+        // returning lines — LaTeX's \@missingfileerror retry loop depends on
+        // this to abort a missing-\input instead of spinning forever.
+        let is_terminal = n < 0;
+        let mut stream_eof = false;
         let n = n.max(0) as usize;
         while self.read_files.len() <= n {
             self.read_files.push(None);
             self.read_eof.push(true);
         }
         use std::io::BufRead;
-        let line: Option<String> = match &mut self.read_files[n] {
+        let line: Option<String> = if is_terminal {
+            None
+        } else {
+            match &mut self.read_files[n] {
             Some(reader) => {
                 let mut buf = String::new();
                 match reader.read_line(&mut buf) {
                     Ok(0) | Err(_) => {
                         self.read_eof[n] = true;
+                        stream_eof = true;
                         None
                     }
                     Ok(_) => {
@@ -382,7 +407,9 @@ impl Engine {
             }
             None => {
                 self.read_eof[n] = true;
+                stream_eof = true;
                 None
+            }
             }
         };
         let toks: Vec<Token> = match line {
@@ -407,6 +434,24 @@ impl Engine {
                     toks
                 }
             }
+            None if is_terminal => {
+                // web2c: terminal read with exhausted input is fatal. Print
+                // like a real error (fresh line, current-line context) and
+                // abort the run; assigning the target an empty body keeps
+                // the \read assignment itself well-formed.
+                self.term_print_nl("! Emergency stop.\n");
+                if let Some(crate::input::Source::File { line_buf, line_no, .. }) = self.input.stack.last() {
+                    if let Some(buf) = line_buf {
+                        let text = String::from_utf8_lossy(buf);
+                        let text = text.trim_end_matches(['\n', '\r']);
+                        self.term.push_str(&format!("l.{} {}\n", line_no, text));
+                    }
+                }
+                self.error_count += 1;
+                self.end_occurred = true;
+                Vec::new()
+            }
+            None if stream_eof => Vec::new(),
             None => vec![Token::from_cs(self.cs.lookup(b"par").unwrap_or(0))],
         };
         if line_mode || crate::debug_flag("IORTRACE") {

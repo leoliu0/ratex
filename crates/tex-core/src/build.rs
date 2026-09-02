@@ -484,7 +484,7 @@ impl Engine {
         self.box_kinds.push(kind);
         match kind {
             0 => self.mode = Mode::RestrictedHorizontal,
-            1 | 2 => {
+            1 | 2 | 9 => {
                 self.mode = Mode::InternalVertical;
                 self.prev_depth = -1000 * 65536;
             }
@@ -508,7 +508,7 @@ impl Engine {
         // tex.web end_gracefully: closing a vertical box group while a
         // paragraph is running inside it forces the \par first, so the
         // packed lines join the vbox instead of being vpack-discarded
-        if matches!(kind, 1 | 2 | 3 | 8) && self.mode == Mode::Horizontal {
+        if matches!(kind, 1 | 2 | 3 | 8 | 9) && self.mode == Mode::Horizontal {
             self.par_primitive();
         }
         let target = self.box_targets.pop().flatten();
@@ -529,6 +529,18 @@ impl Engine {
         // math list keeps accumulating; no box is packaged or appended.
         if matches!(kind, 5 | 6) && outer_mode.is_m() {
             self.cur_list = outer_list;
+            return;
+        }
+        // \vadjust (kind 9): no packing — capture the material as an
+        // adjustment attached to the enclosing hlist; the line breaker
+        // migrates it into the vertical list after the line containing it.
+        if kind == 9 {
+            self.cur_list = outer_list;
+            if outer_mode.is_v() {
+                self.cur_list.extend(inner);
+            } else {
+                self.cur_list.push(Node::VAdjust(inner));
+            }
             return;
         }
         // tex.web package(): vboxes are packed against \boxmaxdepth
@@ -619,9 +631,9 @@ impl Engine {
         // target: an inner \\hbox inside the content must append instead
         if self.setbox_target.is_some() && self.setbox_depth == self.box_kinds.len() {
             let idx = self.setbox_target.take().unwrap();
+            let g = self.setbox_global;
             self.unpark_setbox();
-            self.eqtb.assign_box(idx, Some(node), self.global_flag);
-            self.global_flag = false;
+            self.eqtb.assign_box(idx, Some(node), g);
             return;
         }
         if let Some((d, is_hmove)) = self.pending_box_shift.take() {
@@ -1217,9 +1229,14 @@ impl Engine {
         }
     }
 
-    pub fn append_vadjust(&mut self, toks: Vec<Token>) {
-        let _ = toks;
-        // scan braced vlist content; simplify: treat as box content pushed later
+    /// tex.web \vadjust: the braced material is typeset in internal vertical
+    /// mode and NOT packed — the resulting vlist migrates into the enclosing
+    /// vertical list right after the line containing the adjustment (tex.web
+    /// post_line_break). Modeled as a box group (kind 9) that end_box
+    /// captures. [pre] is treated as post (latex.ltx never uses pre).
+    pub fn append_vadjust(&mut self) {
+        let _pre = self.scan_keyword(b"pre");
+        self.begin_box(9);
     }
 
     pub fn append_mark(&mut self, class: i32, toks: Vec<Token>) {
@@ -1288,11 +1305,6 @@ impl Engine {
             }
             b"box" => {
                 let idx = self.scan_reg_num();
-                let b = self.eqtb.boxed[idx as usize].take();
-                self.ship_box(b);
-            }
-            b"copy" => {
-                let idx = self.scan_reg_num();
                 let b = self.eqtb.boxed.get(idx as usize).cloned().flatten();
                 self.ship_box(b);
             }
@@ -1306,7 +1318,18 @@ impl Engine {
     // ---------- paragraphs ----------
     pub fn par_primitive(&mut self) {
         if crate::debug_flag("IFTRACE") {
-            eprintln!("PAR-PRIM mode={:?} line={} file={}", self.mode, self.input.current_file_line(), self.input.current_file_name());
+            eprintln!(
+                "PAR-PRIM mode={:?} line={} file={} macs={:?} stack=[{}] pushed={:?}",
+                self.mode,
+                self.input.current_file_line(),
+                self.input.current_file_name(),
+                self.last_macros.iter().rev().take(6).collect::<Vec<_>>(),
+                self.input.stack.iter().rev().take(4).map(|src| match src {
+                    crate::input::Source::TokList { name, pos, toks, .. } => format!("T:{} {}/{}", name, pos, toks.len()),
+                    crate::input::Source::File { name, line_no, .. } => format!("F:{}#{}", name.split('/').last().unwrap_or(name), line_no),
+                }).collect::<Vec<_>>().join(" << "),
+                self.pushed.iter().rev().take(4).map(|t| if t.is_cs() { format!("\\{}", String::from_utf8_lossy(self.cs.name(t.cs_id()))) } else { format!("{:#x}", t.0) }).collect::<Vec<_>>()
+            );
         }
         match self.mode {
             Mode::Horizontal => self.end_paragraph(),
@@ -1327,7 +1350,10 @@ impl Engine {
                 Some(crate::input::Source::File { name, .. }) => format!("F:{}", name),
                 None => String::new(),
             };
-            eprintln!("START-PAR mode={:?} indent={} line={} src={}", self.mode, indent, self.input.current_file_line(), src);
+            let trig = self.pushed.last().map(|t| {
+                if t.is_cs() { format!("cs=\\{}", String::from_utf8_lossy(self.cs.name(t.cs_id()))) } else { format!("pushed=0x{:x}", t.0) }
+            }).unwrap_or_default();
+            eprintln!("START-PAR mode={:?} indent={} line={} src={} {}", self.mode, indent, self.input.current_file_line(), src, trig);
         }
         match self.mode {
             Mode::Horizontal => {
@@ -1396,11 +1422,19 @@ impl Engine {
         self.prev_depth = pd;
         self.space_factor = sf;
         // interline glue construction happens in page builder; append lines vbox
-        let vbox = lines;
+        let mut lines_opt = Some(lines);
         match (saved_mode, self.par_page_lists.pop()) {
             (Mode::Vertical, Some(mut page)) => {
-                // paragraph was at outer level
-                page.push(vbox);
+                // paragraph was at outer level: tex.web contributes the line
+                // boxes (and migrated \vadjust material) directly to the page
+                // builder. Packing them into one opaque vbox would make the
+                // page unable to break inside the paragraph and would bury
+                // \vadjust float markers (\end@float's hmode path).
+                let lines = match lines_opt.take().unwrap() {
+                    Node::Box { list, .. } => list,
+                    other => vec![other],
+                };
+                page.extend(lines);
                 self.page_list = page;
                 self.mode = Mode::Vertical;
                 self.cur_list = Vec::new();
@@ -1408,16 +1442,16 @@ impl Engine {
             }
             (Mode::InternalVertical, Some(mut inner)) => {
                 // paragraph started inside a \vbox/\vtop: resume that list
-                inner.push(vbox);
+                inner.push(lines_opt.take().unwrap());
                 self.cur_list = inner;
                 self.mode = Mode::InternalVertical;
             }
             (_, outer) => {
                 if let Some(mut inner) = outer {
-                    inner.push(vbox);
+                    inner.push(lines_opt.take().unwrap());
                     self.cur_list = inner;
                 } else {
-                    self.cur_list.push(vbox);
+                    self.cur_list.push(lines_opt.take().unwrap());
                 }
                 self.mode = saved_mode;
             }

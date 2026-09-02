@@ -1204,10 +1204,17 @@ self.do_if(eof)
             PdfFileSize | FileSize => {
                 let name = { let t = self.scan_general_text_expanded(); self.tokens_to_string(&t) };
                 let name = name.trim();
-                let sz = self.font_loader.kpse.find_any(name)
-                    .or_else(|| self.font_loader.kpse.find(name, tex_kpse::Format::Tex))
-                    .and_then(|p| std::fs::metadata(p).ok())
-                    .map(|m| m.len());
+                // \@missingfileerror give-up sentinel: see resolve_input_path.
+                // Must report a size so \file_full_name accepts ".tex" and
+                // the retry \input{.tex} lands on the placeholder file.
+                let sz = if name == ".tex" {
+                    Some(1)
+                } else {
+                    self.font_loader.kpse.find_any(name)
+                        .or_else(|| self.font_loader.kpse.find(name, tex_kpse::Format::Tex))
+                        .and_then(|p| std::fs::metadata(p).ok())
+                        .map(|m| m.len())
+                };
                 if let Some(n) = sz {
                     self.exp_string(n.to_string().as_bytes());
                 }
@@ -2644,6 +2651,16 @@ self.do_if(eof)
         }
     }
 
+    /// tex.web print_nl: begin a fresh terminal line before `s` unless the
+    /// terminal is already at the start of a line. Without the reset, error
+    /// text glues to unterminated "(file" output and log comparison breaks.
+    pub fn term_print_nl(&mut self, s: &str) {
+        if !self.term.is_empty() && !self.term.ends_with('\n') {
+            self.term.push('\n');
+        }
+        self.term.push_str(s);
+    }
+
     pub fn error(&mut self, msg: &str) {
         let mut ctx = String::new();
         for s in self.input.stack.iter().rev().take(2) {
@@ -2666,7 +2683,7 @@ self.do_if(eof)
                 }
             }
         }
-        self.term.push_str(&format!(
+        self.term_print_nl(&format!(
             "! {} at line {}{}\n",
             msg,
             self.input.current_file_line(),

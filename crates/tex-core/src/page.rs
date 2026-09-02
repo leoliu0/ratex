@@ -261,10 +261,16 @@ impl Engine {
                     }
                 }
                 Node::Box { h, d, .. } | Node::Rule { height: h, depth: d, .. } => {
-                    // Empty \\hbox{}/\\vbox{} from LaTeX \\clearpage must not
-                    // plant \\topskip or set box_seen; that ships a blank page.
+                    // tex.web contributes every box, including 0x0 ones
+                    // (`\box_there`); LaTeX's float/clearpage machinery
+                    // plants empty `\vbox{}` markers purely so the following
+                    // forced `\penalty -1000x` is a legal break that re-fires
+                    // the output routine. Mark the page breakable without
+                    // contributing height (unlike tex.web we add no topskip
+                    // pad, keeping page accounting unchanged).
                     if h == 0 && d == 0 {
-                        // skip
+                        st.goal_set = true;
+                        st.box_seen = true;
                     } else if !st.goal_set {
                         // first box on a fresh page: `\topskip` glue before it
                         st.goal_set = true;

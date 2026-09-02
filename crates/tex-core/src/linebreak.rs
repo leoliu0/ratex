@@ -494,8 +494,16 @@ impl Engine {
                 }
             }
             // gather live nodes strictly before the breakpoint node
+            let mut post_adj: NodeList = Vec::new();
             while i < j {
                 if i < dead_until {
+                    i += 1;
+                    continue;
+                }
+                if let Node::VAdjust(items) = &list[i] {
+                    // tex.web post_line_break: adjustment material joins the
+                    // vertical list right after the line box containing it
+                    post_adj.extend(items.clone());
                     i += 1;
                     continue;
                 }
@@ -563,6 +571,9 @@ impl Engine {
                 lines.push(Node::Glue(Glue::zero()));
             }
             lines.push(r.node);
+            if !post_adj.is_empty() {
+                lines.extend(post_adj);
+            }
             if let Some(dc) = break_disc {
                 pending_post = Some(dc);
             }

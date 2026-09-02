@@ -26,8 +26,22 @@ impl Engine {
                 self.append_h_glue(g, false);
             }
             VSkip | VFil | VFill | VFilL | VFilNeg | VSS => {
-                let g = self.scan_vskip_kind(p);
-                self.append_v_glue(g);
+                match self.mode {
+                    // tex.web head_for_vmode: \vskip in hmode/mmode doesn't
+                    // error — TeX back-inputs the token and inserts \par, so
+                    // the paragraph ends first and the skip re-executes in
+                    // vmode. (In mmode the \par itself errors "Missing $".)
+                    // MUST check before scanning the glue spec: the re-executed
+                    // token re-scans its own operand.
+                    Mode::Horizontal | Mode::Math | Mode::DisplayMath => {
+                        self.pushed.push(Token::from_cs(id));
+                        self.pushed.push(Token::from_cs(self.ids.par));
+                    }
+                    _ => {
+                        let g = self.scan_vskip_kind(p);
+                        self.append_v_glue(g);
+                    }
+                }
             }
             MSkip => {
                 let g = self.scan_glue(true);
@@ -120,10 +134,7 @@ impl Engine {
             }
             VSplit => self.do_vsplit(),
             Insert => self.do_insert(),
-            VAdjust => {
-                let toks = self.scan_general_text();
-                self.append_vadjust(toks);
-            }
+            VAdjust => self.append_vadjust(),
             MarkPrim => {
                 let _n = 0i32; // class 0 (e-TeX classes later)
                 let toks = self.scan_general_text();

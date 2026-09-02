@@ -239,7 +239,7 @@ impl Engine {
         loop {
 
 
-            let t = self.raw_token();
+            let mut t = self.raw_token();
             if t.0 >= NOEXP_FLAG && t.0 < 0xFFFF_0000 {
                 let cs = t.0 & 0x3FFF_FFFF;
                 let tok = Token::from_cs(cs);
@@ -268,9 +268,14 @@ impl Engine {
                 return t;
             }
             if t == PAR_END {
-                let tok = Token::from_cs(self.ids.par);
-                self.set_cur_cs(tok);
-                return tok;
+                // tex.web: a blank line becomes \par. Route the token through
+                // the shared control-sequence path below instead of returning
+                // it bare: the bare return skipped macro expansion, so once
+                // LaTeX redefines \par as the macro \para_end:
+                // (\cs_set_eq:NN \par \para_end:) every blank line was a
+                // silent no-op — the open paragraph never ended, and the next
+                // \penalty/\vskip ran in the wrong mode.
+                t = Token::from_cs(self.ids.par);
             }
             if t.is_char() && t.chr() == b'_' as u32 {
                 static UC: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);

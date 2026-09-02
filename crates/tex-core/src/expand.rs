@@ -38,18 +38,21 @@ impl Engine {
         let t = loop {
 
             if self.scanner_status == ScannerStatus::Aligning {
-                // Expansions of the current u/v-part live on `pushed` above
-                // align_pushed_base and must play first (\\tabcolsep after
-                // \\hskip). Older pushed tokens wait under the toklist.
+                // Expansions of the current u/v-part are single-token
+                // pushbacks above align_pushed_base and must play first
+                // (\\tabcolsep after \\hskip). Older pushed tokens wait
+                // under the token-list sources.
                 if self.pushed.len() > self.align_pushed_base {
                     break self.pushed.pop().unwrap();
                 }
-                let prefer = matches!(
+                // Any token-list source above the file (u/v part, macro
+                // body, \everypar hook, output routine) is newer than the
+                // pre-align pushback parked below align_pushed_base and
+                // must drain before it (tex.web input-stack LIFO).
+                if matches!(
                     self.input.stack.last(),
-                    Some(crate::input::Source::TokList { name, .. })
-                        if name.starts_with("<align") || name == "<everycr>"
-                );
-                if prefer {
+                    Some(crate::input::Source::TokList { .. })
+                ) {
                     let si = self.input.stack.len() - 1;
                     if let Some(t) = self.toklist_next(si) {
                         break t;
@@ -181,25 +184,63 @@ impl Engine {
         }
     }
 
-    /// push tokens back so they are seen before any further input
+    /// tex.web begin_token_list semantics: the list becomes its own
+    /// Source::TokList on TOP of the input stack, so it nests properly
+    /// with macro bodies, the \everypar hook and the output routine
+    /// (fire_up's <after-output> parking below the OR can no longer
+    /// capture a replay that belongs inside a hook or macro).
+    ///
+    /// `pushed` now holds only genuine single-token back_input (scan
+    /// lookahead). Those tokens are OLDER than the list being begun, and
+    /// tex.web reads the newest list first, so a pending pushback is
+    /// flushed into its own source UNDER the new list. During alignment
+    /// scanning the tail below `align_pushed_base` predates the u/v-part
+    /// source and keeps waiting under raw_token's Aligning gate.
     pub fn push_tokens(&mut self, toks: Vec<Token>) {
-        for t in toks.into_iter().rev() {
-            { let __pt = t; if crate::debug_flag("PUSHWATCH") && __pt.is_cs() && self.cs.name(__pt.cs_id()) == b"ifx" && self.input.current_file_line() > 9000 { eprintln!("PUSHIFX crates/tex-core/src/expand.rs:{} line={}", {line!()}, self.input.current_file_line()); } self.pushed.push(__pt); }
-        }
+        self.begin_token_list(toks, false, "<replay>");
     }
     /// push_tokens variant matching tex.web \\unexpanded: each control
     /// sequence carries the one-shot \\noexpand flag so a later x/f-scan
     /// stores it without expanding; char tokens are unaffected.
     pub fn push_tokens_exp_not(&mut self, toks: Vec<Token>) {
-        for t in toks.into_iter().rev() {
-            if t.is_cs() && t.0 < NOEXP_FLAG {
-                self.pushed.push(Token(NOEXP_FLAG | t.cs_id()));
-            } else {
-                self.pushed.push(t);
-            }
-        }
+        self.begin_token_list(toks, true, "<replay>");
+    }
+    /// named replay source (macro bodies): trace readability only.
+    pub fn push_tokens_named(&mut self, toks: Vec<Token>, name: &str) {
+        self.begin_token_list(toks, false, name);
     }
 
+    fn begin_token_list(&mut self, toks: Vec<Token>, exp_not: bool, name: &str) {
+        if toks.is_empty() {
+            return;
+        }
+        if !self.pushed.is_empty() {
+            let cut = if self.scanner_status == ScannerStatus::Aligning {
+                self.align_pushed_base.min(self.pushed.len())
+            } else {
+                0
+            };
+            if self.pushed.len() > cut {
+                let mut rest = self.pushed.split_off(cut);
+                rest.reverse();
+                self.input.push_toks(rest, "<pushback>");
+            }
+        }
+        let toks = if exp_not {
+            toks.into_iter()
+                .map(|t| {
+                    if t.is_cs() && t.0 < NOEXP_FLAG {
+                        Token(NOEXP_FLAG | t.cs_id())
+                    } else {
+                        t
+                    }
+                })
+                .collect()
+        } else {
+            toks
+        };
+        self.input.push_toks(toks, name);
+    }
     fn set_cur_cs(&mut self, t: Token) {
         self.cur_tok = t;
         self.cur_cs = Some(t.cs_id());
@@ -1722,6 +1763,20 @@ self.do_if(eof)
         }
         let name_bytes = self.cs.name(id).to_vec();
         let nm = &name_bytes[..];
+        if crate::debug_flag("IFTRACE") && nm == b"~" {
+            eprintln!("TILDE-BODY [{}] prot={}", self.tokens_to_string(&m.body), m.protected);
+        }
+        if crate::debug_flag("IFTRACE") && (nm == b"add@accent" || nm == b"hmode@bgroup" || nm == b"leavevmode") {
+            let stk: Vec<String> = self.input.stack.iter().rev().take(6).map(|src| match src {
+                crate::input::Source::TokList { name, pos, toks, .. } => {
+                    let rest: Vec<String> = toks[(*pos).min(toks.len())..].iter().take(10).map(|t| { if t.is_cs() { String::from_utf8_lossy(self.cs.name(t.cs_id())).into_owned() } else { format!("{:#x}", t.0) } }).collect();
+                    format!("T:{} {}/{} rest=[{}]", name, pos, toks.len(), rest.join(" "))
+                }
+                crate::input::Source::File { name, line_no, .. } => format!("F:{}#{}", name.split('/').last().unwrap_or(name), line_no),
+            }).collect();
+            eprintln!("ACCENT-HIT \\{} L{} stack=[{}] pushed=[{}]", String::from_utf8_lossy(nm), self.input.current_file_line(), stk.join(" << "),
+                self.tokens_to_string(&self.pushed.iter().rev().take(6).cloned().collect::<Vec<_>>()));
+        }
         if (nm == b"f@encoding" || nm == b"cf@encoding") && m.body.is_empty() {
             let ot1_body = vec![
                 Token::char(12, b'O' as u32),
@@ -1864,7 +1919,9 @@ self.do_if(eof)
             }).collect();
             eprintln!("PUSHFILENAME_CALLED at line {} stack=[{}] last12={:?}", self.input.current_file_line(), st.join(" << "), self.last_macros);
         }
-        if nm == b"__int_compare_<=:NNw" || nm == b"__int_compare_<:NNw" {
+        if crate::debug_flag("INTCMP")
+            && (nm == b"__int_compare_<=:NNw" || nm == b"__int_compare_<:NNw")
+        {
             static IC: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
             if IC.fetch_add(1, std::sync::atomic::Ordering::Relaxed) < 4 {
                 eprintln!(
@@ -2327,7 +2384,8 @@ self.do_if(eof)
             }).collect();
             eprintln!("BODYDUMP {}", dump.join(" "));
         }
-        self.push_tokens(spliced);
+        let src_name = format!("<m:{}>", String::from_utf8_lossy(&name_bytes));
+        self.push_tokens_named(spliced, &src_name);
 
 
 

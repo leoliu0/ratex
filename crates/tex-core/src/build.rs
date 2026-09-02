@@ -445,8 +445,20 @@ impl Engine {
 
     /// \hbox to 10pt{...} etc: scan spec, push group context
     pub fn begin_box(&mut self, kind: u8) {
-        // scan "to"/"spread" target: tex.web scan_spec uses scan_keyword
-        // (character keywords), not control sequences
+        if crate::debug_flag("IFTRACE") {
+            let src = match self.input.stack.last() {
+                Some(crate::input::Source::TokList { name, .. }) => name.clone(),
+                Some(crate::input::Source::File { name, .. }) => format!("F:{}", name),
+                None => String::new(),
+            };
+            eprintln!("BEGIN-BOX kind={} mode={:?} line={} src={} prim={:?} cur={:?} kinds={:?} ring=[{}] pushed_top={:?}", kind, self.mode, self.input.current_file_line(), src, self.cur_prim,
+                { let t = self.cur_tok; if t.is_cs() { String::from_utf8_lossy(self.cs.name(t.cs_id())).into_owned() } else { format!("{:#x}", t.0) } },
+                self.box_kinds,
+                self.tok_ring.iter().rev().take(14).map(|(v, _ln)| { let t = Token(*v); if t.is_cs() { String::from_utf8_lossy(self.cs.name(t.cs_id())).into_owned() } else if t.is_char() { format!("cc{}:{:?}", t.cc(), t.chr() as u8 as char) } else { format!("{:#x}", t.0) } }).collect::<Vec<_>>().join(" "),
+                self.pushed.last().map(|t| if t.is_cs() { format!("\\{}", String::from_utf8_lossy(self.cs.name(t.cs_id()))) } else { format!("{:#x}", t.0) }).unwrap_or_default());
+        }
+        // scan "to"/"spread" target (tex.web scan_spec uses scan_keyword
+        // (character keywords), not control sequences)
         let mut target: Option<(i32, bool)> = None; // (dim, is_spread)
         if self.scan_keyword(b"to") {
             let d = self.scan_dimen(false, false);
@@ -1319,9 +1331,10 @@ impl Engine {
     pub fn par_primitive(&mut self) {
         if crate::debug_flag("IFTRACE") {
             eprintln!(
-                "PAR-PRIM mode={:?} line={} file={} macs={:?} stack=[{}] pushed={:?}",
+                "PAR-PRIM mode={:?} line={} file={} pdepth={} macs={:?} stack=[{}] pushed={:?}",
                 self.mode,
                 self.input.current_file_line(),
+                self.pushed.len(),
                 self.input.current_file_name(),
                 self.last_macros.iter().rev().take(6).collect::<Vec<_>>(),
                 self.input.stack.iter().rev().take(4).map(|src| match src {
@@ -1342,6 +1355,23 @@ impl Engine {
             }
         }
     }
+    /// tex.web: an assignment is global if \global prefixed it OR
+    /// \globaldefs>0 forces global; \globaldefs<0 forces local even after
+    /// \global. Consumes the pending \global flag (call exactly once per
+    /// assignment).
+    pub fn take_global(&mut self) -> bool {
+        let gd = self.eqtb.int_params[crate::prim::IntParam::GlobalDefs.idx() as usize];
+        let g = if gd > 0 {
+            true
+        } else if gd < 0 {
+            false
+        } else {
+            self.global_flag
+        };
+        self.global_flag = false;
+        g
+    }
+
 
     pub fn start_paragraph(&mut self, indent: bool) {
         if crate::debug_flag("IFTRACE") {
@@ -1404,9 +1434,12 @@ impl Engine {
     fn run_everypar(&mut self) {
         let toks = (*self.eqtb.tok_params[crate::prim::ToksParam::EveryPar.idx() as usize]).clone();
         if !toks.is_empty() {
-            // Same class as \\lowercase: input.push_toks sits under `pushed`,
-            // so the rest of the current macro would run first.
-            self.push_tokens(toks);
+        // tex.web just_paragraph: \everypar begins its own token list on
+        // top of the input stack (push_tokens = begin_token_list), so the
+        // hook preempts any in-flight macro remainder and nests cleanly
+        // around fire_up's <after-output> parking instead of being
+        // flattened into it.
+        self.push_tokens(toks);
         }
     }
 

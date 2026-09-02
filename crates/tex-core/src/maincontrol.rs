@@ -155,8 +155,8 @@ impl Engine {
                 self.scan_optional_equals();
                 let v = self.scan_int();
                 if (0..=255).contains(&c) && (0..=15).contains(&v) {
-                    self.eqtb.assign_cat(c as u8, v as u8, self.global_flag);
-                    self.global_flag = false;
+                    let g = self.take_global();
+                    self.eqtb.assign_cat(c as u8, v as u8, g);
                 }
 
             }
@@ -165,8 +165,8 @@ impl Engine {
                 self.scan_optional_equals();
                 let v = self.scan_int();
                 if (0..=255).contains(&c) {
-                    self.eqtb.assign_math_code(c as u8, v as u16, self.global_flag);
-                    self.global_flag = false;
+                    let g = self.take_global();
+                    self.eqtb.assign_math_code(c as u8, v as u16, g);
                 }
             }
             DelCode => {
@@ -174,8 +174,8 @@ impl Engine {
                 self.scan_optional_equals();
                 let v = self.scan_int();
                 if (0..=255).contains(&c) {
-                    self.eqtb.assign_del_code(c as u8, v, self.global_flag);
-                    self.global_flag = false;
+                    let g = self.take_global();
+                    self.eqtb.assign_del_code(c as u8, v, g);
                 }
             }
             LcCodeP => {
@@ -183,8 +183,8 @@ impl Engine {
                 self.scan_optional_equals();
                 let v = self.scan_int();
                 if (0..=255).contains(&c) && (0..=32767).contains(&v) {
-                    self.eqtb.assign_lc_code(c as u8, v as u8, self.global_flag);
-                    self.global_flag = false;
+                    let g = self.take_global();
+                    self.eqtb.assign_lc_code(c as u8, v as u8, g);
                 }
             }
             SfCodeP => {
@@ -192,8 +192,8 @@ impl Engine {
                 self.scan_optional_equals();
                 let v = self.scan_int();
                 if (0..=255).contains(&c) && (0..=32767).contains(&v) {
-                    self.eqtb.assign_sf_code(c as u8, v as u16, self.global_flag);
-                    self.global_flag = false;
+                    let g = self.take_global();
+                    self.eqtb.assign_sf_code(c as u8, v as u16, g);
                 }
             }
             UcCodeP => {
@@ -201,8 +201,8 @@ impl Engine {
                 self.scan_optional_equals();
                 let v = self.scan_int();
                 if (0..=255).contains(&c) && (0..=32767).contains(&v) {
-                    self.eqtb.assign_uc_code(c as u8, v as u8, self.global_flag);
-                    self.global_flag = false;
+                    let g = self.take_global();
+                    self.eqtb.assign_uc_code(c as u8, v as u8, g);
                 }
             }
             Lowercase | Uppercase => {
@@ -399,8 +399,8 @@ impl Engine {
                 self.scan_optional_equals();
                 let f = self.scan_font_id();
                 if (0..=255).contains(&fam) {
-                    self.eqtb.assign_style_font(style, fam as u16, f, self.global_flag);
-                    self.global_flag = false;
+                    let g = self.take_global();
+                    self.eqtb.assign_style_font(style, fam as u16, f, g);
                 }
             }
             Left => {

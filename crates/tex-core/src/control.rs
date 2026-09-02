@@ -576,6 +576,9 @@ impl Engine {
             ToksP(tp) => {
                 self.scan_optional_equals();
                 let toks = Rc::new(self.scan_token_list());
+                if tp == crate::prim::ToksParam::EveryEOF && std::env::var("UNDEFTRACE").is_ok() {
+                    eprintln!("EVERYEOF-SET len={} line={} file={}", toks.len(), self.input.current_file_line(), self.input.current_file_name());
+                }
                 self.eqtb.assign_toks_param(tp, toks, self.global_flag);
                 self.clear_prefixes();
                 true

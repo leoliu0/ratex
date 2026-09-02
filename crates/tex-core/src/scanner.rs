@@ -154,8 +154,11 @@ impl Engine {
                 _ => unreachable!(),
             };
             if done {
-                // e-TeX \scantokens: at the end of the pseudo-file the
-                // current \everyeof tokens are inserted (tex.web/@ etex).
+                if crate::debug_flag("SPTRACE") {
+                    let nm = match &self.input.stack.get(si) { Some(crate::input::Source::File { name, .. }) => name.clone(), _ => "?".into() };
+                    let ev = self.eqtb.tok_params[crate::prim::ToksParam::EveryEOF.idx() as usize].len();
+                    eprintln!("FILE-POP si={} name={} everyeof={}", si, nm, ev);
+                }
                 // l3's rescan protocol (\tl_set_rescan) relies on this to
                 // terminate its delimited scans with the marker.
                 let is_scantokens = match &self.input.stack.get(si) {

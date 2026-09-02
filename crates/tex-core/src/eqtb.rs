@@ -436,7 +436,10 @@ impl Eqtb {
                 global = true;
             }
         }
-        if !global {
+        if !global && self.cur_level > 1 {
+            // tex.web cur_font_loc: the save happens only when the entry is
+            // group-scoped — a top-level selection must not leave a pending
+            // save item (it would block \dump forever).
             self.save_stack.push(SaveItem::CurFont(self.cur_font_val));
         }
         self.cur_font_val = f;

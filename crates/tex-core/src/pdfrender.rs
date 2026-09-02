@@ -181,6 +181,11 @@ impl<'a> RenderCtx<'a> {
                 Node::Box { h, d, w, shift, glue_sign, glue_order, glue_set, list: inner, kind, .. } => {
                     let (bh, bd, sh) =
                         (sp_to_bp(*h as i64), sp_to_bp(*d as i64), sp_to_bp(*shift as i64));
+                    if *kind == HBOX && std::env::var_os("TEXBOXDUMP").is_some() {
+                        eprintln!("LINE w={:.3}pt h={:.3} d={:.3} n={} :: {:?}",
+                            *w as f64 / 65536.0, *h as f64 / 65536.0, *d as f64 / 65536.0,
+                            inner.len(), inner);
+                    }
                     // thread containing-box context for the inner list
                     let saved = (self.left_edge_sp, self.box_w_sp, self.box_h_sp, self.box_d_sp);
                     self.left_edge_sp = bp_to_sp(x + sh) as i64;
@@ -290,6 +295,11 @@ impl<'a> RenderCtx<'a> {
                 Node::Box { w, h, d, shift, glue_sign, glue_order, glue_set, list: inner, kind, .. } => {
                     let (bw, bh, sh) =
                         (sp_to_bp(*w as i64), sp_to_bp(*h as i64), sp_to_bp(*shift as i64));
+                    if *kind == HBOX && std::env::var_os("TEXBOXDUMP").is_some() {
+                        eprintln!("HBOX w={:.3}pt h={:.3} d={:.3} n={} :: {:?}",
+                            *w as f64 / 65536.0, *h as f64 / 65536.0, *d as f64 / 65536.0,
+                            inner.len(), inner);
+                    }
                     // thread containing-box context for the inner list
                     let saved = (self.left_edge_sp, self.box_w_sp, self.box_h_sp, self.box_d_sp);
                     self.left_edge_sp = bp_to_sp(if *kind == HBOX { cur_x } else { cur_x + sh }) as i64;

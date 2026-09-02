@@ -7,7 +7,7 @@ use crate::engine::{Engine, Mode};
 use crate::fontiface::LigKernStep;
 use crate::prim::{DimParam, GlueParam, IntParam, Prim};
 use crate::scaled::{mult, ONE};
-use crate::token::Token;
+use crate::token::{CsId, Token};
 
 pub const RULE_FILL: i32 = i32::MIN; // sentinel: rule dimension from context
 
@@ -113,14 +113,11 @@ impl Engine {
     }
 
     pub fn active_char(&mut self, c: u8) {
-        // look up cs named by the active char (TeX: active chars are cs-like)
-        let id = match self.cs.lookup(&[c]) {
-            Some(id) => id,
-            None => {
-                self.error(&format!("Undefined active character `{}'", c as char));
-                return;
-            }
-        };
+
+        // tex.web: an active character is a control sequence whose entry
+        // lives in the active region — look it up there, not in the hash
+        // (where the control symbol of the same character lives).
+        let id = self.active_cs_id(c);
         match self.eqtb.get(id).cloned() {
             Some(crate::eqtb::Equiv::Macro(m)) => self.expand_macro(id, &m),
             Some(crate::eqtb::Equiv::Prim(p)) => {
@@ -1370,6 +1367,27 @@ impl Engine {
         };
         self.global_flag = false;
         g
+    }
+    /// tex.web active_base: active characters resolve through a dedicated
+    /// eqtb region, NOT the hash — control symbol `\~` and active `~` are
+    /// distinct entries (fontenc's \DeclareTextAccent{\~} retargets the
+    /// former and must never clobber the kernel tie in the latter). We
+    /// model the separate region with collision-proof placeholder names
+    /// in the shared cs table.
+    pub fn active_cs_name(c: u8) -> [u8; 7] {
+        [0xFF, 0x00, b'A', b'C', b'T', 0x00, c]
+    }
+
+    pub fn active_cs_id(&mut self, c: u8) -> CsId {
+        let name = Self::active_cs_name(c);
+        match self.cs.lookup(&name) {
+            Some(id) => id,
+            None => self.cs.intern(&name),
+        }
+    }
+
+    pub fn active_cs_lookup(&self, c: u8) -> Option<CsId> {
+        self.cs.lookup(&Self::active_cs_name(c))
     }
 
 

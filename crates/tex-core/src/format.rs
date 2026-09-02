@@ -241,7 +241,12 @@ pub fn check_dumpable(eng: &Engine) -> Result<(), String> {
                 }
                 crate::eqtb::SaveItem::Eq(..) => n_eq += 1,
                 crate::eqtb::SaveItem::AfterGroup(_) => n_ag += 1,
-                _ => n_other += 1,
+                other => {
+                    n_other += 1;
+                    if types.len() < 24 {
+                        types.push(format!("{:?}", std::mem::discriminant(other)));
+                    }
+                }
             }
         }
         eprintln!(

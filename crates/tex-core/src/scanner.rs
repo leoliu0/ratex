@@ -55,6 +55,13 @@ impl Engine {
                     if *pos < toks.len() {
                         let t = toks[*pos];
                         *pos += 1;
+                        // tex.web end_token_list: when the last token of the
+                        // list is consumed the source is retired IMMEDIATELY
+                        // (before the read token expands). Lazy popping made
+                        // tail-recursive macro loops (l3 \ior_map) accumulate
+                        // exhausted replay sources below the live recursion
+                        // until the 50k input-stack guard fired.
+                        let last = *pos == toks.len();
                         if crate::debug_flag("SPTRACE") && t == crate::token::Token::space() {
                             eprintln!("SPPOP list={} pos={}", name, pos);
                         }
@@ -75,6 +82,9 @@ impl Engine {
                         if crate::debug_flag("SUBTRACE") {
                             let nm = if t.is_cs() { String::from_utf8_lossy(self.cs.name(t.cs_id())).into_owned() } else { format!("cc{}", t.cc()) };
                             eprintln!("TOK {} pos={} tok={}", name, pos, nm);
+                        }
+                        if last {
+                            self.input.stack.remove(si);
                         }
                         return Some(t);
                     }
@@ -136,6 +146,7 @@ impl Engine {
         }
     }
 
+
     fn file_next_token_inner(&mut self, si: usize) -> Option<Token> {
         loop {
             let (done, at_eof) = match &self.input.stack[si] {
@@ -143,7 +154,24 @@ impl Engine {
                 _ => unreachable!(),
             };
             if done {
-
+                // e-TeX \scantokens: at the end of the pseudo-file the
+                // current \everyeof tokens are inserted (tex.web/@ etex).
+                // l3's rescan protocol (\tl_set_rescan) relies on this to
+                // terminate its delimited scans with the marker.
+                let is_scantokens = match &self.input.stack.get(si) {
+                    Some(crate::input::Source::File { name, .. }) => name == "<scantokens>",
+                    _ => false,
+                };
+                // e-TeX semantics: \everyeof fires EVERY time scanning
+                // crosses the pseudo-file end (the l3 single-rescan chain
+                // re-enters deliberately); no one-shot guard.
+                if is_scantokens {
+                    let eof_toks = (*self.eqtb.tok_params[crate::prim::ToksParam::EveryEOF.idx() as usize]).clone();
+                    if !eof_toks.is_empty() {
+                        self.push_tokens(eof_toks);
+                        return None;
+                    }
+                }
                 self.input.stack.remove(si);
                 return None;
             }

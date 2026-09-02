@@ -75,6 +75,50 @@ fn main() {
                             break;
                         }
                         loaded = true;
+                        // Compat shim for formats dumped before the
+                        // active-char namespace split: their boot wrote the
+                        // kernel tie to the hash slot, where encoding
+                        // defaults (\DeclareTextAccentDefault) later
+                        // clobbered it, so no usable tie survives on either
+                        // slot. Synthesize latex.ltx:9414's protected tie
+                        // directly on the active slot; no-op when the format
+                        // already carries one (post-split dumps).
+                        let act = eng.cs.intern(&tex_core::engine::Engine::active_cs_name(b'~'));
+                        if eng.eqtb.get(act).is_none() {
+                            let id_of = |eng: &tex_core::engine::Engine, name: &[u8]| eng.cs.lookup(name);
+                            let tie: Option<tex_core::eqtb::Equiv> = {
+                                let ifincs = id_of(&eng, b"ifincsname");
+                                let expafter = id_of(&eng, b"expandafter");
+                                let nobreak = id_of(&eng, b"nobreakspace");
+                                let fi = id_of(&eng, b"fi");
+                                match (ifincs, expafter, nobreak, fi) {
+                                    (Some(a), Some(b), Some(c), Some(d)) => {
+                                        let body = vec![
+                                            tex_core::token::Token::from_cs(a),
+                                            tex_core::token::Token::from_cs(b),
+                                            tex_core::token::Token::char(13, b'~' as u32),
+                                            tex_core::token::Token::from_cs(d),
+                                            tex_core::token::Token::from_cs(b),
+                                            tex_core::token::Token::from_cs(c),
+                                            tex_core::token::Token::from_cs(d),
+                                        ];
+                                        Some(tex_core::eqtb::Equiv::Macro(std::rc::Rc::new(tex_core::eqtb::Macro {
+                                            num_params: 0,
+                                            params: Vec::new(),
+                                            prefix: Vec::new(),
+                                            body,
+                                            long: false,
+                                            outer: false,
+                                            protected: true,
+                                        })))
+                                    }
+                                    _ => None,
+                                }
+                            };
+                            if let Some(eq) = tie {
+                                eng.eqtb.assign(act, eq, true);
+                            }
+                        }
                         eprintln!(
                             "PROG: format loaded from {} in {:.1} ms",
                             cand.display(),

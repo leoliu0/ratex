@@ -191,7 +191,8 @@ impl Engine {
     pub fn scan_int(&mut self) -> i32 {
         // \\romannumeral (and friends) must expand \\protected macros
         // even inside \\expanded/\\edef; e-TeX only freezes them in the
-        // outer token-list scan, not in nested number scanning.
+        // outer token-list scan, not in nested number scanning. (The l3
+        // \\exp_end_continue_f:w protocol depends on this.)
         let prev = self.in_expanded_scan;
         self.in_expanded_scan = false;
         let r = self.scan_int_inner();
@@ -437,7 +438,13 @@ impl Engine {
                 let ek = match self.eqtb.resolve(t.cs_id()) { Some(e) => e.kind_name(), None => "U" };
                 eprintln!("MISSNUM tok={} kind={} prim={:?} srcs={:?}", nm, ek, self.cur_prim, self.input.stack.iter().rev().take(2).map(|src| match src { crate::input::Source::TokList{name,pos,toks,..} => format!("T:{} {}/{}",name,pos,toks.len()), crate::input::Source::File{name,line_no,..} => format!("F:{}",line_no)}).collect::<Vec<_>>());
             }
-            self.error("Missing number, treated as zero");
+            // tex.web \S470: a char token ends the number with an error; a
+            // control sequence (e.g. a frozen \protected macro stopping an
+            // f-expansion) ends it SILENTLY — the token was already pushed
+            // back above.
+            if !t.is_cs() {
+                self.error("Missing number, treated as zero");
+            }
             v = 0;
             break;
         }
@@ -537,6 +544,7 @@ impl Engine {
         self.in_expanded_scan = prev;
         r
     }
+
 
     fn scan_dimen_inner(&mut self, mu: bool, _trail: bool) -> i32 {
         // signs
@@ -1470,6 +1478,17 @@ impl Engine {
         if !t.is_cs() {
             let c = t.chr();
             let cat = t.cc();
+            // tex.web §213: an active character is a control sequence, so
+            // \meaning reports its eqtb binding (\meaning~ → macro:->…);
+            // only a truly unbound one falls back, as "undefined".
+            if cat == 13 {
+                return match self.active_cs_lookup(c as u8) {
+                    Some(id) if self.eqtb.resolve(id).is_some() => {
+                        self.meaning_of(Token::from_cs(id))
+                    }
+                    _ => "undefined".to_string(),
+                };
+            }
             let word = match cat {
                 0 => "escape character",
                 1 => "begin-group character",
@@ -1484,7 +1503,6 @@ impl Engine {
                 10 => "blank space ",
                 11 => "the letter ",
                 12 => "the character ",
-                13 => "the active character ",
                 14 => "comment character",
                 15 => "invalid character",
                 _ => "character",

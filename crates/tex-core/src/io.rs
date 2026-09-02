@@ -66,6 +66,24 @@ impl Engine {
             let _ = std::fs::write(&guard, b"\\relax\n");
             return Some(guard);
         }
+        // Format-build boot: babel's language.dat chain (ruhyph16, coptic,
+        // english.ldf, ...) drags the full babel \protect machinery into
+        // initex and dies ("\protect invalid in file"), and babel's
+        // hyphen.cfg local-configuration pass (loaded at the end of
+        // latex.ltx) trips "Missing \begin{document}" + a pending
+        // \aftergroup that blocks \dump. The engine pre-loads english
+        // hyphenation itself (pdflatex.rs hyphen_trie), so serve minimal
+        // stand-ins instead of the babel machinery.
+        if name == "language.dat" || name == "language.dat.lua" {
+            let guard = std::env::temp_dir().join("tex-language-dat-guard.dat");
+            let _ = std::fs::write(&guard, b"english hyphen.tex\n");
+            return Some(guard);
+        }
+        if name == "hyphen.cfg" {
+            let guard = std::env::temp_dir().join("tex-hyphen-cfg-guard.cfg");
+            let _ = std::fs::write(&guard, b"\\relax\n");
+            return Some(guard);
+        }
         if !name.starts_with('/') && !self.out_dir.is_empty() {
             for cand in [
                 std::path::Path::new(&self.out_dir).join(name),
@@ -254,9 +272,17 @@ impl Engine {
         let mut out = String::new();
         for t in toks {
             if t.is_cs() {
-                out.push('\\');
-                out.push_str(&String::from_utf8_lossy(self.cs.name(t.cs_id())));
-                out.push(' ');
+                let name = self.cs.name(t.cs_id());
+                // Active-char placeholder ids (engine::active_cs_name):
+                // [0xFF,0,'A','C','T',0,c] — detokenize as the character
+                // byte c, not the internal name.
+                if name.len() == 7 && name[0] == 0xFF && &name[2..5] == b"ACT" && name[5] == 0 {
+                    out.push(name[6] as char);
+                } else {
+                    out.push('\\');
+                    out.push_str(&String::from_utf8_lossy(name));
+                    out.push(' ');
+                }
             } else {
                 out.push(t.chr() as u8 as char);
             }
@@ -280,6 +306,11 @@ impl Engine {
                         let _ = f.write_all(line.as_bytes());
                     }
                     None => {
+                        // tex.web §1382: a \write to a closed stream is
+                        // directed to the log and the terminal. \typeout
+                        // rides \write\@unused (stream 0, never opened), so
+                        // this arm is what makes it visible.
+                        self.term.push_str(&line);
                         self.log.push_str(&line);
                     }
                 }

@@ -112,7 +112,7 @@ impl Engine {
             let mut id = if t.is_cs() {
                 t.cs_id()
             } else if t.is_char() && t.cc() == 13 {
-                self.cs.intern(&[t.chr() as u8])
+                self.active_cs_id(t.chr() as u8)
             } else {
                 self.set_cur_char(t);
                 return t;
@@ -326,7 +326,7 @@ impl Engine {
                 }
             }
             let t = if t.is_char() && t.cc() == 13 {
-                Token::from_cs(self.cs.intern(&[t.chr() as u8]))
+                Token::from_cs(self.active_cs_id(t.chr() as u8))
             } else {
                 t
             };
@@ -1047,7 +1047,7 @@ self.do_if(eof)
                 let def = if t.is_cs() {
                     self.eqtb.resolve(t.cs_id()).is_some()
                 } else if t.is_char() && t.cc() == 13 {
-                    let id = self.cs.intern(&[t.chr() as u8]);
+                    let id = self.active_cs_id(t.chr() as u8);
                     self.eqtb.resolve(id).is_some()
                 } else {
                     false
@@ -1763,20 +1763,6 @@ self.do_if(eof)
         }
         let name_bytes = self.cs.name(id).to_vec();
         let nm = &name_bytes[..];
-        if crate::debug_flag("IFTRACE") && nm == b"~" {
-            eprintln!("TILDE-BODY [{}] prot={}", self.tokens_to_string(&m.body), m.protected);
-        }
-        if crate::debug_flag("IFTRACE") && (nm == b"add@accent" || nm == b"hmode@bgroup" || nm == b"leavevmode") {
-            let stk: Vec<String> = self.input.stack.iter().rev().take(6).map(|src| match src {
-                crate::input::Source::TokList { name, pos, toks, .. } => {
-                    let rest: Vec<String> = toks[(*pos).min(toks.len())..].iter().take(10).map(|t| { if t.is_cs() { String::from_utf8_lossy(self.cs.name(t.cs_id())).into_owned() } else { format!("{:#x}", t.0) } }).collect();
-                    format!("T:{} {}/{} rest=[{}]", name, pos, toks.len(), rest.join(" "))
-                }
-                crate::input::Source::File { name, line_no, .. } => format!("F:{}#{}", name.split('/').last().unwrap_or(name), line_no),
-            }).collect();
-            eprintln!("ACCENT-HIT \\{} L{} stack=[{}] pushed=[{}]", String::from_utf8_lossy(nm), self.input.current_file_line(), stk.join(" << "),
-                self.tokens_to_string(&self.pushed.iter().rev().take(6).cloned().collect::<Vec<_>>()));
-        }
         if (nm == b"f@encoding" || nm == b"cf@encoding") && m.body.is_empty() {
             let ot1_body = vec![
                 Token::char(12, b'O' as u32),
@@ -2384,8 +2370,12 @@ self.do_if(eof)
             }).collect();
             eprintln!("BODYDUMP {}", dump.join(" "));
         }
-        let src_name = format!("<m:{}>", String::from_utf8_lossy(&name_bytes));
-        self.push_tokens_named(spliced, &src_name);
+        if crate::debug_flag("IFTRACE") {
+            let src_name = format!("<m:{}>", String::from_utf8_lossy(&name_bytes));
+            self.push_tokens_named(spliced, &src_name);
+        } else {
+            self.push_tokens(spliced);
+        }
 
 
 
@@ -2499,6 +2489,15 @@ self.do_if(eof)
             let t = self.raw_token();
             if t == EOF_MARKER {
                 self.error(&format!("Runaway argument of \\{} (delim={})", self.current_macro, self.tokens_to_string(delim)));
+                if std::env::var("UNDEFTRACE").is_ok() {
+                    eprintln!(
+                        "RUNAWAY-STACK {:?}",
+                        self.input.stack.iter().rev().map(|s| match s {
+                            crate::input::Source::File { name, line_no, .. } => format!("F:{}#{}", name.split('/').last().unwrap_or(name), line_no),
+                            crate::input::Source::TokList { name, pos, toks, .. } => format!("T:{} {}/{}", name, pos, toks.len()),
+                        }).collect::<Vec<_>>()
+                    );
+                }
                 self.end_occurred = true;
                 if crate::debug_flag("IFTRACE") { eprintln!("ENDOCC crates/tex-core/src/expand.rs:1003 line={}", self.input.current_file_line()); }
                 return arg;

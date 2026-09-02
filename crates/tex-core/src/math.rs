@@ -1142,13 +1142,11 @@ impl Engine {
                     let (b, _) = self.op_char_box(*fam, *c, style, false);
                     vec![b]
                 } else {
-                    let mut out: NodeList = Vec::new();
-                    if let Some((_, f)) = self.fam_font(style, *fam) {
-                        if f.exists_char(*c) {
-                            out.push(Node::Char { c: *c, font: self.eqtb.style_fonts[font_size(style)][*fam as usize] });
-                        }
-                    }
-                    out
+                    // tex.web fetch(A): the char node is created from the fam
+                    // font unconditionally — a nullfont/missing-char fam gives
+                    // a zero-width glyph, never a dropped atom (which would
+                    // silently lose the math and its spacing).
+                    vec![Node::Char { c: *c, font: self.eqtb.style_fonts[font_size(style)][*fam as usize] }]
                 }
             }
             Node::Scripts { nucleus, sup, sub } => self.make_scripts(nucleus, sup.as_deref(), sub.as_deref(), style),
@@ -2607,3 +2605,184 @@ mod probe3 {
             e.eqtb.boxed[255].is_some(), e.pdf_doc.pages.len());
     }
 }
+
+#[cfg(test)]
+mod probe4 {
+    use super::*;
+    /// Isolated math constructs through the REAL LaTeX format + newtx setup,
+    /// dumping each paragraph line-box width (== the math width, since
+    /// \noindent + \parfillskip natural width 0). Oracle: real pdflatex
+    /// \showthe\wd of the same \hbox{}es.
+    #[test]
+    #[ignore]
+    fn probe_ntx_math_widths() {
+        let mut e = Engine::new(false);
+        e.init_primitives();
+        match crate::format::load_format_into(std::path::Path::new("/tmp/pdflatex.fmt"), &mut e) {
+            Ok(()) => eprintln!("format ok"),
+            Err(err) => panic!("format load failed: {err}"),
+        }
+        e.ini_mode = false;
+        e.end_occurred = false;
+        let body = r#"
+\documentclass[12pt]{article}
+\usepackage[T1]{fontenc}
+\usepackage{newtx}
+\usepackage{amsmath}
+\begin{document}
+\noindent$\lambda(\tau)$\par
+\noindent$\tfrac12$\par
+\noindent$\Lambda_{M}$\par
+\noindent$x^{M}$\par
+\noindent$\ell^2/\mu$\par
+\noindent$\lambda'(\tau) < 0$\par
+\end{document}
+"#;
+        e.input.push_file("mw.tex".to_string(), body.as_bytes().to_vec());
+        e.run();
+        eprintln!("ERRORS={}", e.error_count);
+        let mut idx = 0usize;
+        fn walk(ns: &[Node], depth: usize, idx: &mut usize) {
+            for n in ns {
+                match n {
+                    Node::Box { kind, w, h, d, list, .. } => {
+                        eprintln!("{}[{}] {} w={}pt h={} d={}", "  ".repeat(depth), idx,
+                            if *kind == VBOX { "VBOX" } else { "HBOX" },
+                            *w as f64 / 65536.0, *h as f64 / 65536.0, *d as f64 / 65536.0);
+                        *idx += 1;
+                        if *w != 0 { walk(list, depth + 1, idx); }
+                    }
+                    other => eprintln!("{}{:?}  [{}]", "  ".repeat(depth), other, idx),
+                }
+            }
+        }
+        for (i, par) in e.par_page_lists.iter().enumerate() {
+            eprintln!("== PAR {} ({} nodes)", i, par.len());
+            walk(par, 1, &mut idx);
+        }
+        eprintln!("== PAGE_LIST ({} nodes) SAVED={} CUR={}", e.page_list.len(), e.saved_lists.len(), e.cur_list.len());
+        walk(&e.page_list, 1, &mut idx);
+    }
+    /// \showbox0 dumps through the REAL LaTeX format + newtx: compare widths
+    /// to real pdflatex's \showbox on the same file.
+    #[test]
+    #[ignore]
+    fn probe_ntx_showbox() {
+        let mut e = Engine::new(false);
+        e.init_primitives();
+        crate::format::load_format_into(std::path::Path::new("/tmp/pdflatex.fmt"), &mut e).unwrap();
+        e.ini_mode = false;
+        e.end_occurred = false;
+        let body = r#"
+\documentclass[12pt]{article}
+\usepackage[T1]{fontenc}
+\usepackage{newtx}
+\usepackage{amsmath}
+\showboxbreadth=100 \showboxdepth=4
+\begin{document}
+\setbox0=\hbox{$\lambda(\tau)$}\showbox0
+\setbox0=\hbox{$\Lambda_{M}$}\showbox0
+\setbox0=\hbox{$x^{M}$}\showbox0
+\setbox0=\hbox{$\ell^2/\mu$}\showbox0
+\setbox0=\hbox{$\tfrac12$}\showbox0
+\end{document}
+"#;
+        e.input.push_file("mw2.tex".to_string(), body.as_bytes().to_vec());
+        e.run();
+        for l in e.term.lines() {
+            if l.contains("width") || l.contains("character") || l.contains("rule") || l.contains("glue") || l.contains("kern") {
+                eprintln!("SB {}", l.trim_start());
+            }
+        }
+    }
+
+    #[test]
+    #[ignore]
+    fn probe_latex_math_fonts() {
+        let mut e = Engine::new(false);
+        e.init_primitives();
+        crate::format::load_format_into(std::path::Path::new("/tmp/pdflatex.fmt"), &mut e).unwrap();
+        e.ini_mode = false;
+        let body = "\\documentclass[12pt]{article}\n\\usepackage[margin=1in]{geometry}\n\\usepackage[T1]{fontenc}\n\\usepackage{newtx}\n\\usepackage{amsmath}\n\\usepackage{setspace}\n\\begin{document}\n\\setstretch{1.5}\n\\begin{abstract}\nSome abstract text here.\n\\end{abstract}\nBody paragraph after abstract.\n\\end{document}\n";
+        e.input.push_file("mw3.tex".to_string(), body.as_bytes().to_vec());
+        e.run();
+        eprintln!("ERRORS={} mathcode_x={:?} hsize={}pt parindent={}pt",
+            e.error_count, e.eqtb.math_code[b'x' as usize],
+            e.eqtb.dim_params[DimParam::HSize.idx() as usize] as f64 / 65536.0,
+            e.eqtb.dim_params[DimParam::ParIndent.idx() as usize] as f64 / 65536.0);
+        for size in 0..3 {
+            let row: Vec<String> = (0..4)
+                .map(|fam| {
+                    let fid = e.eqtb.style_fonts[size][fam];
+                    let name = e.eqtb.fonts.get(fid as usize).map(|f| f.name.clone()).unwrap_or_default();
+                    format!("fam{}={}({})", fam, fid, name)
+                })
+                .collect();
+            eprintln!("size{}: {}", size, row.join(" "));
+        }
+        let c = e.eqtb.math_code[b'x' as usize] as usize;
+        let fam = ((c >> 8) & 0xF) as u8;
+        let ch = (c & 0xFF) as u8;
+        let fid = e.eqtb.style_fonts[0][fam as usize];
+        if let Some(f) = e.eqtb.fonts.get(fid as usize) {
+            eprintln!("x -> fam{} char 0x{:02x} in font {}: exists={}", fam, ch, fid, f.exists_char(ch));
+        } else {
+            eprintln!("x -> font {} OUT OF RANGE", fid);
+        }
+    }
+    #[test]
+    #[ignore]
+    fn probe_latex_textfont_assign() {
+        let mut e = Engine::new(false);
+        e.init_primitives();
+        crate::format::load_format_into(std::path::Path::new("/tmp/pdflatex.fmt"), &mut e).unwrap();
+        e.ini_mode = false;
+        e.end_occurred = false;
+        let body = "\\documentclass[12pt]{article}\n\\begin{document}\n\\font\\myi=cmmi12 \\textfont1=\\myi\n$x$\n\\end{document}\n";
+        e.input.push_file("mw4.tex".to_string(), body.as_bytes().to_vec());
+        e.run();
+        eprintln!("ERRORS={} style_fonts[0][1]={} style_fonts[1][1]={}",
+            e.error_count, e.eqtb.style_fonts[0][1], e.eqtb.style_fonts[1][1]);
+        for l in e.term.lines() {
+            if l.contains("Font Info") || l.contains("Font Warning") || l.contains("cmmi") || l.contains("loaded") {
+                eprintln!("FI {}", l.trim_start());
+            }
+        }
+    }
+
+    #[test]
+    #[ignore]
+    fn probe_cm_manual_fam_widths() {
+        let mut e = Engine::new(false);
+        e.init_primitives();
+        crate::format::load_format_into(std::path::Path::new("/tmp/pdflatex.fmt"), &mut e).unwrap();
+        e.ini_mode = false;
+        e.end_occurred = false;
+        // Mirror real LaTeX 12pt math font setup (OML/cmm, OMS/cmsy, cmex, cmr
+        // at 12/8/6) — what \math@fonts would do at $-entry.
+        let body = r#"
+\documentclass[12pt]{article}
+\begin{document}
+\font\fa=cmr12 \textfont0=\fa
+\font\fb=cmmi12 \textfont1=\fb
+\font\fc=cmsy10 at 12pt \textfont2=\fc
+\font\fd=cmex10 at 12pt \textfont3=\fd
+\font\fe=cmr8 \scriptfont0=\fe
+\font\ff=cmmi8 \scriptfont1=\ff
+\font\fg=cmsy10 at 8pt \scriptfont2=\fg
+\font\fh=cmex10 at 8pt \scriptfont3=\fh
+\font\fj=cmmi6 \scriptscriptfont1=\fj
+\setbox0=\hbox{$\Lambda_{M}$}\showbox0
+\setbox0=\hbox{$x^{M}$}\showbox0
+"#;
+        e.input.push_file("cmw.tex".to_string(), body.as_bytes().to_vec());
+        e.run();
+        eprintln!("ERRORS={}", e.error_count);
+        for l in e.term.lines() {
+            if l.contains("width") || l.contains("character") || l.contains("kern") || l.contains("rule") || l.contains("vbox") || l.starts_with("! ") {
+                eprintln!("CMW {}", l.trim_start());
+            }
+        }
+    }
+}
+

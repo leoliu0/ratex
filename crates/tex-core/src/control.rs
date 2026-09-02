@@ -132,6 +132,15 @@ impl Engine {
                             self.eqtb.assign(id, Equiv::Prim(Prim::Relax), true);
                             return;
                         }
+                        // tex.web \S358 tokenizes escape+space as a plain
+                        // spacer token, never a cs. Formats dumped before
+                        // that fix carry `\ ` as an (undefined) cs [0x20];
+                        // dispatching it must yield the space it would have
+                        // been: push back a real space token and re-dispatch.
+                        if name_bytes == [0x20] {
+                            self.pushed.push(Token::char(10, 0x20));
+                            return;
+                        }
                         if name_bytes.contains(&b'_') {
                             eprintln!("UNDEF-DISPATCH \\{} line={} file={}", String::from_utf8_lossy(&name_bytes), self.input.current_file_line(), self.input.current_file_name());
                         }
@@ -226,6 +235,15 @@ impl Engine {
                                 self.if_stack.len(),
                                 self.eqtb.cur_level,
                                 st.join(" << ")
+                            );
+                        }
+                        if std::env::var("UNDEFTRACE").is_ok() {
+                            eprintln!(
+                                "UNDEFX name={:?} bytes={:02x?} line={} file={}",
+                                name,
+                                name_bytes,
+                                self.input.current_file_line(),
+                                self.input.current_file_name()
                             );
                         }
                         self.error(&format!("Undefined control sequence \\{}", name));
@@ -664,7 +682,11 @@ impl Engine {
         }
         if t.is_char() && t.cc() == 13 {
             NONCS.store(0, std::sync::atomic::Ordering::Relaxed);
-            return self.cs.intern(&[t.chr() as u8]);
+            let aid = self.active_cs_id(t.chr() as u8);
+            if crate::debug_flag("DEFWATCH") {
+                eprintln!("DEFSCAN-ACTIVE chr={} aid={} line={}", t.chr() as u8 as char, aid, self.input.current_file_line());
+            }
+            return aid;
         }
         if !t.is_cs() {
             let n = NONCS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -1066,7 +1088,7 @@ impl Engine {
             if tc.is_cs() {
                 self.copy_meaning(target, tc.cs_id());
             } else if tc.is_char() && tc.cc() == 13 {
-                let id = self.cs.intern(&[tc.chr() as u8]);
+                let id = self.active_cs_id(tc.chr() as u8);
                 self.copy_meaning(target, id);
             } else {
                 self.eqtb.assign(target, Equiv::CharTok(tc.0), self.global_flag);
@@ -1102,7 +1124,7 @@ impl Engine {
             if t.is_cs() {
                 self.copy_meaning(target, t.cs_id());
             } else if t.is_char() && t.cc() == 13 {
-                let id = self.cs.intern(&[t.chr() as u8]);
+                let id = self.active_cs_id(t.chr() as u8);
                 self.copy_meaning(target, id);
             } else if t.0 >= crate::expand::PAR_REF_FLAG && t.0 < 0xFFFF_0000 && t.0 != crate::input::PAR_END.0 {
                 self.error("Missing control sequence after \\let");

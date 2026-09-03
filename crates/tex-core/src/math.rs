@@ -295,10 +295,58 @@ impl Engine {
                 self.box_w(&hbox), { let (_, h, _) = box_dims(&hbox); h }, { let (_, _, d) = box_dims(&hbox); d },
                 self.par_page_lists.len(), self.page_list.len());
         }
-        let above = self.eqtb.glue_params[crate::prim::GlueParam::AboveDisplaySkip.idx() as usize].clone();
-        let below = self.eqtb.glue_params[crate::prim::GlueParam::BelowDisplaySkip.idx() as usize].clone();
         if let Some(page) = self.par_page_lists.pop() {
             let mut page = page;
+            let is_short = match page.iter().rev().find(|n| matches!(n, Node::Box { .. })) {
+                Some(last_box) => {
+                    let text_w = match last_box {
+                        Node::Box { list: inner, .. } => {
+                            let mut w = 0i64;
+                            let mut last_non_glue = 0i64;
+                            for node in inner {
+                                match node {
+                                    Node::Char { c, font } => {
+                                        if let Some(f) = self.eqtb.fonts.get(*font as usize) {
+                                            w += f.char_width(*c) as i64;
+                                        }
+                                        last_non_glue = w;
+                                    }
+                                    Node::Ligature { lig_width, .. } => {
+                                        w += *lig_width as i64;
+                                        last_non_glue = w;
+                                    }
+                                    Node::Kern(k) | Node::ExplicitKern(k) => {
+                                        w += *k as i64;
+                                        last_non_glue = w;
+                                    }
+                                    Node::Glue(g) if g.stretch_order == 0 => {
+                                        w += g.width as i64;
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            last_non_glue
+                        }
+                        _ => 0i64,
+                    };
+                    let (dw, _, _) = box_dims(&hbox);
+                    let hsize = self.eqtb.dim_params[crate::prim::DimParam::HSize.idx() as usize];
+                    let s = (hsize as i64 - dw as i64) / 2;
+                    text_w < s
+                }
+                None => true,
+            };
+            let (above, below) = if is_short {
+                (
+                    self.eqtb.glue_params[crate::prim::GlueParam::AboveDisplayShortSkip.idx() as usize].clone(),
+                    self.eqtb.glue_params[crate::prim::GlueParam::BelowDisplayShortSkip.idx() as usize].clone(),
+                )
+            } else {
+                (
+                    self.eqtb.glue_params[crate::prim::GlueParam::AboveDisplaySkip.idx() as usize].clone(),
+                    self.eqtb.glue_params[crate::prim::GlueParam::BelowDisplaySkip.idx() as usize].clone(),
+                )
+            };
             // tex.web: break allowed (not forced) around a display:
             // \predisplaypenalty, \abovedisplayskip, box, \belowdisplayskip,
             // \postdisplaypenalty (defaults 100/0).
@@ -325,9 +373,16 @@ impl Engine {
     }
 
     pub fn append_mathchar(&mut self, mc: u16) {
-        let class = (mc >> 12) as u8;
-        let fam = ((mc >> 8) & 0xF) as u8;
+        let mut class = (mc >> 12) as u8;
+        let mut fam = ((mc >> 8) & 0xF) as u8;
         let c = (mc & 0xFF) as u8;
+        if class == 7 {
+            let cur_fam = self.eqtb.int_params[crate::prim::IntParam::CurFam.idx() as usize];
+            if cur_fam >= 0 && cur_fam < 16 {
+                fam = cur_fam as u8;
+            }
+            class = 0;
+        }
         self.append_mlist_node(Node::MathChar { fam, c, class });
     }
 

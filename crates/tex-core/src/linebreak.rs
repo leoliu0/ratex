@@ -18,7 +18,7 @@ const DECENT: usize = 2;
 const TIGHT: usize = 3;
 
 /// break type of an active node: tex's `unhyphenated` / `hyphenated`
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum BreakType {
     Unhyphenated,
     Hyphenated,
@@ -106,12 +106,7 @@ impl Engine {
         bg_sh[params.left_skip.shrink_order as usize] += params.left_skip.shrink as i64;
         bg_sh[params.right_skip.shrink_order as usize] += params.right_skip.shrink as i64;
 
-        // hyphenation pass: insert discretionary nodes into words (TeX does
-        // this lazily during the second pass; we pre-insert and gate the
-        // resulting breakpoints by pass number)
         let hyphen_set = self.hyphenate_list(&mut list);
-
-        // pass sequence (tex.web @<Find optimal breakpoints@>):
         // 0: pretolerance, no pattern-hyphen breaks
         // 1: tolerance, hyphen breaks, final_pass iff no emergency stretch
         // 2: tolerance + emergency stretch, final_pass (cannot fail)
@@ -150,7 +145,6 @@ impl Engine {
             }
         }
         let Some(end) = best else {
-            // tex's ultimate fallback: single overfull line with all content
             let mut inner: NodeList = Vec::with_capacity(list.len() + 2);
             inner.push(Node::Glue(params.left_skip.clone()));
             inner.extend(list.into_iter().skip(1));
@@ -226,10 +220,11 @@ impl Engine {
                 word.clear();
             }
         }
-        edits.sort_by(|a, b| b.0.cmp(&a.0));
-        for (pos, node) in edits {
-            list.insert(pos, node);
-            inserted.insert(pos);
+        edits.sort_by(|a, b| a.0.cmp(&b.0));
+        for (offset, (pos, node)) in edits.into_iter().enumerate() {
+            let actual_pos = pos + offset;
+            list.insert(actual_pos, node);
+            inserted.insert(actual_pos);
         }
         inserted
     }
@@ -362,8 +357,10 @@ impl Engine {
                         let fit = if bb > 12 { TIGHT } else { DECENT };
                         (bb, fit)
                     };
-                    // record a feasible break (tex records, then decides
-                    // whether the active node stays)
+                    let is_near_share = cand >= 770 && cand <= 800;
+                    if is_near_share {
+                        eprintln!("  CONSIDER cand={} a.line={} shortfall={:.2}pt b={} fit={} d={} btype={:?}", cand, a.line, shortfall as f64 / 65536.0, b, fit, a.demerits + demerits(params, b, penalty) + fitness_demerits(params, &a, btype, fit, cand == n), btype);
+                    }
                     if b <= threshold {
                         let d = a.demerits
                             + demerits(params, b, penalty)
@@ -372,20 +369,20 @@ impl Engine {
                         match champions.get(&key) {
                             Some((best_d, _)) if *best_d <= d => {}
                             _ => {
+                                if is_near_share {
+                                    eprintln!("    CHAMPION cand={} key={:?} d={}", cand, key, d);
+                                }
                                 champions.insert(key, (d, a.clone()));
                             }
                         }
                     }
                     let hopeless = b > INF_BAD;
                     if hopeless || forced {
-                        // artificial-demerits rescue (tex.web @<Prepare to
-                        // deactivate...@>): on the final pass the last
-                        // active must survive, else the active list drains
                         if final_pass && champions.is_empty() && is_only {
                             champions.insert((a.line + 1, DECENT), (a.demerits, a.clone()));
                         }
                         actives.remove(idx);
-                        continue; // do not advance idx: list shifted
+                        continue;
                     }
                     idx += 1;
                 }
@@ -468,20 +465,24 @@ impl Engine {
     }
 
     /// materialize the line boxes along the chosen breakpoint chain
-    fn build_lines(&mut self, list: NodeList, params: &ParaParams, end: Rc<ActiveNode>, final_pass: bool) -> Node {
-        let mut chain: Vec<Rc<ActiveNode>> = Vec::new();
-        {
-            let mut cur = Some(end);
-            while let Some(b) = cur {
-                chain.push(b.clone());
-                cur = b.prev.clone();
-            }
+    fn build_lines(
+        &mut self,
+        mut list: NodeList,
+        params: &ParaParams,
+        end: Rc<ActiveNode>,
+        final_pass: bool,
+    ) -> Node {
+        let mut chain = Vec::new();
+        let mut cur = Some(end);
+        while let Some(b) = cur {
+            chain.push(b.clone());
+            cur = b.prev.clone();
         }
         chain.reverse();
         let hfuzz = self.eqtb.dim_params[DimParam::Hfuzz.idx() as usize] as i64;
         let overfull_rule = self.eqtb.dim_params[DimParam::OverfullRule.idx() as usize];
         let mut lines: NodeList = Vec::new();
-        let mut i = 1usize; // cursor into list (list[0] = structural \leftskip)
+        let mut i = 1usize;
         let mut pending_post: Option<crate::boxes::DiscNode> = None;
         let mut dead_until = 0usize; // nodes in [i, dead_until) are dead
         // chain[0] is the synthetic paragraph start (pos 0, line 0)

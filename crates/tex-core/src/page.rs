@@ -247,7 +247,12 @@ impl Engine {
         while st.processed < self.page_list.len() {
             let idx = st.processed;
             let mut advance = true;
-
+            if self.pdf_doc.pages.len() == 1 && st.processed < 5 && crate::debug_flag("P2TRACE") {
+                eprintln!("P2_HEAD: idx={} node={:?} goal_set={} box_seen={}", idx, self.page_list[idx], st.goal_set, st.box_seen);
+            }
+            if self.pdf_doc.pages.len() == 41 && st.processed < 5 && crate::debug_flag("P42TRACE") {
+                eprintln!("P42_HEAD: idx={} node={:?} goal_set={} box_seen={}", idx, self.page_list[idx], st.goal_set, st.box_seen);
+            }
             match self.page_list[idx].clone() {
                 Node::Glue(g) => {
                     if st.goal_set {
@@ -432,9 +437,12 @@ impl Engine {
 
     /// remember a breakpoint candidate if its cost beats the current best
     fn try_page_break(&mut self, st: &mut PageState, cut: usize, penalty: i32) {
+        if penalty >= 10000 {
+            return;
+        }
         let cost = self.break_cost(st, penalty);
         let better = match st.best {
-            None => true,
+            None => cost < AWFUL_BAD,
             Some(b) => cost <= b.cost,
         };
         if better {

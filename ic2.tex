@@ -1,0 +1,17 @@
+  }
+\prop_gput:Nnn \g_msg_module_name_prop { keys } { LaTeX }
+\prop_gput:Nnn \g_msg_module_type_prop { keys } { }
+\typeout{KV-SECTION-LOADED}
+\ExplSyntaxOn
+\int_compare:nNnTF {5} < {7} { \typeout{IC-OK} } { \typeout{IC-BAD} }
+\typeout{IC-EVAL=[\int_eval:n{3+4}]}
+\ior_new:N \myior
+\ior_open:Nn \myior { /tmp/qwork/lines.txt }
+\ior_str_map_inline:Nn \myior { \typeout{LINE:[#1]} }
+\typeout{IOR-DONE}
+\cs_gset:Npn \grab:w #1 ; #2 ; #3 ; #4 \q_stop { \typeout{SPLIT:[#1][#2][#3][#4]} }
+\cs_gset:Npn \linegrab:n #1 { \grab:w #1 ; ; ; \q_stop }
+\linegrab:n { 0041 ; First ; 005A ; L ; }
+\typeout{GRAB-DONE}
+\ExplSyntaxOff
+\endinput

@@ -77,11 +77,8 @@ impl Engine {
         let horigin_bp = sp_to_bp(ctx.eng.eqtb.dim_params[DimParam::PdfHOrigin.idx() as usize] as i64);
         let vorigin_bp = sp_to_bp(ctx.eng.eqtb.dim_params[DimParam::PdfVOrigin.idx() as usize] as i64);
         let x0 = horigin_bp;
-        // TeX y grows down from the page top; emit_char applies y_pdf.
         let y0 = vorigin_bp;
         if let Node::Box { list, kind, glue_sign, glue_order, glue_set, w, h, d, .. } = page_box {
-            ctx.left_edge_sp = bp_to_sp(x0) as i64;
-            (ctx.box_w_sp, ctx.box_h_sp, ctx.box_d_sp) = (*w as i64, *h as i64, *d as i64);
             if *kind == HBOX {
                 // shipped hbox: baseline sits at the top-left origin
                 ctx.ship_hlist(list, x0, y0, *glue_sign, *glue_order, *glue_set);

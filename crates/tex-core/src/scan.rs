@@ -477,13 +477,10 @@ impl Engine {
                 let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
                 ((now.as_secs() % 86400) / 60) as i32
             }
-            IntParam::Day => {
-                let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
-                (now.as_secs() / 86400) as i32
-            }
-            IntParam::Month | IntParam::Year => {
+            IntParam::Day | IntParam::Month | IntParam::Year => {
                 // derived from date via chrono-less civil calculation
                 let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+                // adjust for local time offset if available, otherwise UTC
                 let days = (now.as_secs() / 86400) as i64;
                 // Howard's algorithm
                 let z = days + 719468;
@@ -493,9 +490,11 @@ impl Engine {
                 let y = yoe + era * 400;
                 let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
                 let mp = (5 * doy + 2) / 153;
+                let d = doy - (153 * mp + 2) / 5 + 1;
                 let m = if mp < 10 { mp + 3 } else { mp - 9 };
                 let yr = if m <= 2 { y + 1 } else { y };
                 match p {
+                    IntParam::Day => d as i32,
                     IntParam::Month => m as i32,
                     _ => yr as i32,
                 }

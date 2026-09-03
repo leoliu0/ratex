@@ -57,12 +57,14 @@ impl Engine {
                 g = xs.clone();
             }
         }
-        let sf = self.space_factor;
+        let sf = self.space_factor.max(1) as i64;
         if sf >= 2000 {
-            g.stretch = mult(g.stretch, sf / 1000);
-        } else if sf < 1000 {
-            g.shrink = mult(g.shrink, 1000 / sf.max(1));
+            if let Some(font) = self.eqtb.fonts.get(f as usize) {
+                g.width += font.extra_space();
+            }
         }
+        g.stretch = ((g.stretch as i64) * sf / 1000) as i32;
+        g.shrink = ((g.shrink as i64) * 1000 / sf) as i32;
         g
     }
 
@@ -288,34 +290,35 @@ impl Engine {
             // real TeX nullfont: chars are silently dropped (no error)
             return;
         }
-        // ligature & kern with previous char
-        if let Some(Node::Char { c: pc, font: pf }) = self.cur_list.last() {
-            if *pf == f {
-                if let Some(step) = self.find_lig_kern(f, *pc, c) {
-                    if step.is_kern {
-                        self.cur_list.push(Node::Kern(step.kern_amount));
-                        self.cur_list.push(Node::Char { c, font: f });
-                        return;
-                    } else {
-                        // ligature: replace previous char
-                        let last = self.cur_list.pop();
-                        let _ = last;
-                        let lc = step.lig_char;
-                        let dims = self.char_dims(f, lc);
-                        self.cur_list.push(Node::Ligature { c: lc, font: f, lig_width: dims.0, lig_height: dims.1, lig_depth: dims.2 });
-                        if step.keep_right {
-                            // re-add the new char after lig (iterate)
-                            if step.iterate {
-                                self.append_char(c);
-                            } else {
-                                let dims = self.char_dims(f, c);
-                                self.cur_list.push(Node::Char { c, font: f });
-                            }
-                        } else if step.iterate {
+        // ligature & kern with previous char (either Char or an already-formed Ligature)
+        let prev_char = match self.cur_list.last() {
+            Some(Node::Char { c: pc, font: pf }) if *pf == f => Some(*pc),
+            Some(Node::Ligature { c: lc, font: pf, .. }) if *pf == f => Some(*lc),
+            _ => None,
+        };
+        if let Some(pc) = prev_char {
+            if let Some(step) = self.find_lig_kern(f, pc, c) {
+                if step.is_kern {
+                    self.cur_list.push(Node::Kern(step.kern_amount));
+                    self.cur_list.push(Node::Char { c, font: f });
+                    return;
+                } else {
+                    // ligature: replace previous char/ligature
+                    let _ = self.cur_list.pop();
+                    let lc = step.lig_char;
+                    let dims = self.char_dims(f, lc);
+                    self.cur_list.push(Node::Ligature { c: lc, font: f, lig_width: dims.0, lig_height: dims.1, lig_depth: dims.2 });
+                    if step.keep_right {
+                        // re-add the new char after lig (iterate)
+                        if step.iterate {
                             self.append_char(c);
+                        } else {
+                            self.cur_list.push(Node::Char { c, font: f });
                         }
-                        return;
+                    } else if step.iterate {
+                        self.append_char(c);
                     }
+                    return;
                 }
             }
         }
@@ -368,7 +371,7 @@ impl Engine {
             if step.stop {
                 return None;
             }
-            k += step.skip as usize;
+            k += 1 + (step.skip as usize);
             jumps += 1;
         }
     }
@@ -411,6 +414,7 @@ impl Engine {
             if width == RULE_FILL {
                 width = self.eqtb.dim_params[DimParam::HSize.idx() as usize];
             }
+            self.prev_depth = -1000 * 65536;
             self.vlist_append(Node::Rule { width, height, depth });
             return;
         }
@@ -663,8 +667,29 @@ impl Engine {
                     self.cur_list.push(node);
                     self.space_factor = 1000;
                 }
-                Mode::Vertical | Mode::InternalVertical => {
+                Mode::Vertical => {
                     self.vlist_append(node);
+                }
+                Mode::InternalVertical => {
+                    if let Node::Box { h, d, .. } = &node {
+                        const IGNORE_DEPTH: i32 = -1000 * 65536;
+                        if self.prev_depth > IGNORE_DEPTH {
+                            let bs = self.eqtb.glue_params[crate::prim::GlueParam::BaselineSkip.idx() as usize].clone();
+                            let ls = self.eqtb.glue_params[crate::prim::GlueParam::LineSkip.idx() as usize].clone();
+                            let lsl = self.eqtb.dim_params[crate::prim::DimParam::LineSkipLimit.idx() as usize];
+                            let diff = bs.width as i64 - self.prev_depth as i64 - *h as i64;
+                            let glue = if diff < lsl as i64 {
+                                 ls
+                             } else {
+                                 Glue { width: diff as i32, ..bs }
+                             };
+                            if glue.width != 0 || glue.stretch != 0 || glue.shrink != 0 {
+                                self.cur_list.push(Node::Glue(glue));
+                            }
+                        }
+                        self.prev_depth = *d;
+                    }
+                    self.cur_list.push(node);
                 }
                 Mode::Math | Mode::DisplayMath => {
                     self.append_mlist_node(node);

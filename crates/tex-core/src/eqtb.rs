@@ -111,6 +111,9 @@ pub enum SaveItem {
     /// previous current font (tex.web cur_font_loc is an eqtb entry, so a
     /// font selection inside a group is restored at \endgroup)
     CurFont(u16),
+    /// engine-side \parshape value before a local assignment/clear
+    /// (tex.web level-tracks par_shape_ptr through eq_define)
+    ParShape(Vec<(i32, i32)>, u16),
     AfterGroup(Token),
 }
 
@@ -508,6 +511,16 @@ impl Eqtb {
         None
     }
     pub fn pop_level(&mut self, after_group: &mut Vec<Token>) -> LevelType {
+        self.pop_level_full(after_group, &mut None)
+    }
+
+    /// pop_level plus a sink for engine-side parshape restorations
+    /// (par_shape lives on the Engine, not in eqtb)
+    pub fn pop_level_full(
+        &mut self,
+        after_group: &mut Vec<Token>,
+        par_shape_sink: &mut Option<(Vec<(i32, i32)>, u16)>,
+    ) -> LevelType {
         let mut ty = LevelType::Group;
         while let Some(item) = self.save_stack.pop() {
             match item {
@@ -516,6 +529,12 @@ impl Eqtb {
                 }
                 SaveItem::CurFont(old) => {
                     self.cur_font_val = old;
+                }
+                SaveItem::ParShape(old, lvl) => {
+                    // engine decides whether to restore (it tracks the
+                    // level field; a later global assign suppresses it,
+                    // same as the param arms' `> LEVEL_ONE` check)
+                    *par_shape_sink = Some((old, lvl));
                 }
                 SaveItem::Level(lvl, t) => {
                     self.cur_level = lvl - 1;

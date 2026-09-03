@@ -545,8 +545,9 @@ impl Engine {
                 // tex.web §1070: \parshape n i1 w1 ... in wn; n<=0 clears.
                 self.scan_optional_equals();
                 let n = self.scan_int();
+                let g = self.take_global();
                 if n <= 0 {
-                    self.par_shape.clear();
+                    self.assign_par_shape(Vec::new(), g);
                 } else {
                     let mut shape = Vec::with_capacity(n as usize);
                     for _ in 0..n {
@@ -554,7 +555,7 @@ impl Engine {
                         let width = self.scan_dimen(false, false);
                         shape.push((indent, width));
                     }
-                    self.par_shape = shape;
+                    self.assign_par_shape(shape, g);
                 }
                 self.clear_prefixes();
                 true

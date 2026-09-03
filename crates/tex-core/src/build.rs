@@ -1707,11 +1707,14 @@ impl Engine {
             self.eqtb.int_params[crate::prim::IntParam::WidowPenalty.idx() as usize]
         });
         let lines = self.break_paragraph(content, fw);
-        // tex.web §1079 normal_paragraph: reset paragraph-local parameters
-        self.par_shape.clear();
-        self.eqtb.int_params[crate::prim::IntParam::Looseness.idx() as usize] = 0;
-        self.eqtb.int_params[crate::prim::IntParam::HangAfter.idx() as usize] = 1;
-        self.eqtb.dim_params[crate::prim::DimParam::HangIndent.idx() as usize] = 0;
+        // tex.web §1079 normal_paragraph: reset paragraph-local parameters —
+        // all four resets are LOCAL eq_defines, so a group-wrapped \par (the
+        // `{\@@par}` LaTeX lists install via \@setpar) rolls them back at
+        // \egroup and the shape survives across \items
+        self.assign_par_shape(Vec::new(), false);
+        self.eqtb.assign_int_param(crate::prim::IntParam::Looseness, 0, false);
+        self.eqtb.assign_int_param(crate::prim::IntParam::HangAfter, 1, false);
+        self.eqtb.assign_dim_param(crate::prim::DimParam::HangIndent, 0, false);
         // restore vertical context
         let (saved_mode, _, pd, sf) = self.saved_lists.pop().unwrap_or((Mode::Vertical, Vec::new(), self.prev_depth, self.space_factor));
         self.prev_depth = pd;
@@ -1735,11 +1738,22 @@ impl Engine {
                 self.cur_list = Vec::new();
                 self.build_page();
             }
-            (Mode::InternalVertical, Some(mut inner)) => {
-                // paragraph started inside a \vbox/\vtop: resume that list
-                inner.push(lines_opt.take().unwrap());
+            (Mode::InternalVertical, Some(inner)) => {
+                // paragraph started inside a \vbox/\vtop: resume that list.
+                // The page builder never sees this list, so the zero-width
+                // interline placeholders build_lines left between line boxes
+                // must be filled HERE with real baselineskip glue (tex.web
+                // append_to_vlist semantics) — captions/parbox paragraphs
+                // otherwise pack at line height with no leading
+                let mut bx = lines_opt.take().unwrap();
+                if let Node::Box { list, .. } = &mut bx {
+                    let taken = std::mem::take(list);
+                    *list = self.fill_line_interline(taken);
+                }
                 self.cur_list = inner;
                 self.mode = Mode::InternalVertical;
+                // append with interline glue against the previous inner node
+                self.append_box_node(Some(bx));
             }
             (_, outer) => {
                 if let Some(mut inner) = outer {
@@ -1751,6 +1765,53 @@ impl Engine {
                 self.mode = saved_mode;
             }
         }
+    }
+
+    /// replace build_lines' zero interline placeholders with real
+    /// baselineskip/lineskip glue (tex.web append_to_vlist §17438-17440):
+    /// used when a paragraph's lines land in an internal vlist, which the
+    /// page builder never processes
+    fn fill_line_interline(&self, list: NodeList) -> NodeList {
+        const IGNORE: i32 = -1000 * 65536;
+        let bs = self.eqtb.glue_params[GlueParam::BaselineSkip.idx() as usize].clone();
+        let ls = self.eqtb.glue_params[GlueParam::LineSkip.idx() as usize].clone();
+        let lsl = self.eqtb.dim_params[DimParam::LineSkipLimit.idx() as usize];
+        let mut out: NodeList = Vec::with_capacity(list.len());
+        let mut prev_depth = IGNORE;
+        // hold a pending placeholder until we know whether a box follows
+        let mut held_placeholder = false;
+        for n in list.into_iter() {
+            match &n {
+                Node::Glue(g) if g.width == 0 && g.stretch == 0 && g.shrink == 0 => {
+                    held_placeholder = true;
+                    continue;
+                }
+                Node::Box { h, d, .. } | Node::Rule { height: h, depth: d, .. } => {
+                    let (h, d) = (*h, *d);
+                    if prev_depth > IGNORE {
+                        let b = bs.width as i64 - prev_depth as i64 - h as i64;
+                        let glue =
+                            if b < lsl as i64 { ls.clone() } else { Glue { width: b as i32, ..bs.clone() } };
+                        if glue.width != 0 || glue.stretch != 0 || glue.shrink != 0 {
+                            out.push(Node::Glue(glue));
+                        }
+                    }
+                    prev_depth = d;
+                    held_placeholder = false;
+                    out.push(n);
+                }
+                _ => {
+                    if held_placeholder {
+                        // a placeholder not followed by a box: keep it
+                        // (defensive; build_lines only emits them pre-box)
+                        out.push(Node::Glue(Glue::zero()));
+                        held_placeholder = false;
+                    }
+                    out.push(n);
+                }
+            }
+        }
+        out
     }
 }
 

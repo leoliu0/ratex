@@ -94,6 +94,9 @@ pub struct Engine {
     pub hyphen_trie: crate::hyphen::Trie,
     pub hyphen_exceptions: Vec<(String, Vec<u8>)>,
     pub par_shape: Vec<(i32, i32)>,
+    /// group level of the current par_shape assignment (tex.web tracks
+    /// par_shape_ptr's level through eq_define like any eqtb entry)
+    pub par_shape_level: u16,
 
     // output
     pub pdf_doc: crate::pdfout::PdfDoc,
@@ -307,6 +310,7 @@ impl Engine {
             hyphen_trie: crate::hyphen::Trie::new(),
             hyphen_exceptions: Vec::new(),
             par_shape: Vec::new(),
+            par_shape_level: crate::eqtb::LEVEL_ONE,
             pdf_doc: crate::pdfout::PdfDoc::new(),
             out_file: None,
             font_loader: crate::fontload::FontLoader::new(),
@@ -943,9 +947,42 @@ impl Engine {
     }
     pub fn pop_group(&mut self) -> crate::eqtb::LevelType {
         let mut ag = Vec::new();
-        let ty = self.eqtb.pop_level(&mut ag);
+        let mut ps = None;
+        let ty = self.eqtb.pop_level_full(&mut ag, &mut ps);
+        // tex.web: par_shape_ptr's level is tracked like any eqtb entry —
+        // restore iff its current assignment is local to the closing group
+        // (a later global assign leaves level == LEVEL_ONE and wins)
+        if let Some((old, old_lvl)) = ps {
+            if self.par_shape_level > crate::eqtb::LEVEL_ONE {
+                self.par_shape = old;
+                self.par_shape_level = old_lvl;
+            }
+        }
         self.pushed.extend(ag);
         ty
+    }
+
+    /// tex.web eq_define(par_shape_loc): level-tracked \parshape assignment —
+    /// a local assign at a deeper group pushes the old value; the normal_
+    /// paragraph clear is local too, so LaTeX's `{\@@par}` list wrapper rolls
+    /// it back and the shape persists across items
+    pub fn assign_par_shape(&mut self, new: Vec<(i32, i32)>, global: bool) {
+        if global {
+            self.par_shape = new;
+            self.par_shape_level = crate::eqtb::LEVEL_ONE;
+            return;
+        }
+        let lvl = self.eqtb.cur_level;
+        if self.par_shape_level < lvl {
+            let old = std::mem::replace(&mut self.par_shape, new);
+            let old_lvl = self.par_shape_level;
+            self.eqtb
+                .save_stack
+                .push(crate::eqtb::SaveItem::ParShape(old, old_lvl));
+            self.par_shape_level = lvl;
+        } else {
+            self.par_shape = new;
+        }
     }
     /// tex.web box_context: nest \setbox so an inner \setbox inside
     /// \shipout\vbox{\setbox...} cannot clobber the outer target. The

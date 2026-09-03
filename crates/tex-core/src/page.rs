@@ -533,7 +533,7 @@ impl Engine {
         if penalty >= 10000 {
             return;
         }
-        let (_, cost) = self.break_cost(st, penalty);
+        let (b, cost) = self.break_cost(st, penalty);
         if crate::debug_flag("PAGECAND") && {
             let want: usize = std::env::var("PAGECAND_AT").ok().and_then(|s| s.parse().ok()).unwrap_or(10);
             self.pdf_doc.pages.len() + 1 == want
@@ -548,6 +548,11 @@ impl Engine {
         };
         if better {
             st.best = Some(BreakSpot { cut, penalty, cost });
+        }
+        // FIRERULE=web: tex.web §1005 — fire only at a candidate whose own
+        // badness is awful (overfull beyond shrink) or a forcing penalty
+        if Self::web_fire_rule() && st.best.is_some() && (penalty <= EJECT_PENALTY || b >= AWFUL_BAD as i64) {
+            st.fire = true;
         }
     }
 
@@ -595,6 +600,9 @@ impl Engine {
         if self.ini_mode {
             return false;
         }
+        if Self::web_fire_rule() {
+            return st.fire;
+        }
 
         if let Some(spot) = st.best {
             if spot.penalty <= EJECT_PENALTY {
@@ -607,8 +615,14 @@ impl Engine {
         false
     }
 
-    /// cut the page at `cut`, place/split inserts into `\box N`, pack the
-    /// rest into `\box255`, and run `\output` (tex.web fire_up)
+    /// A/B switch: FIRERULE=web evaluates the fire condition only at
+    /// breakpoint candidates (tex.web §1005); default keeps the legacy
+    /// total>=goal rule
+    fn web_fire_rule() -> bool {
+        static ON: std::sync::LazyLock<bool> =
+            std::sync::LazyLock::new(|| std::env::var("FIRERULE").ok().as_deref() == Some("web"));
+        *ON
+    }
     fn fire_up(&mut self, cut: usize, penalty: i32) {
         if crate::debug_flag("PAGETRACE") {
             eprintln!(

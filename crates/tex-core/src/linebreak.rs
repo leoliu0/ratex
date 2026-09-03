@@ -122,6 +122,22 @@ impl Engine {
             eprintln!("PARADUMP: {}", s);
         }
         let params = self.para_params();
+        if crate::debug_flag("BSTRACE") {
+            let probe: String = hlist.iter().filter_map(|n| match n {
+                Node::Char { c, .. } => Some(*c as char),
+                Node::Ligature { c, .. } => Some(*c as char),
+                _ => None,
+            }).collect();
+            if probe.len() > 20 {
+                eprintln!(
+                    "BSTRACE baselineskip={:.2}pt font={} lineskip={:.2}",
+                    params.baseline_skip.width as f64 / 65536.0,
+                    self.eqtb.cur_font_val,
+                    params.line_skip.width as f64 / 65536.0
+                );
+            }
+        }
+        let params = self.para_params();
         let mut list: NodeList = Vec::with_capacity(hlist.len() + 1);
         list.push(Node::Glue(params.left_skip.clone()));
         list.extend(hlist);

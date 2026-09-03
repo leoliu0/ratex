@@ -43,29 +43,95 @@ impl Engine {
 
     pub fn interword_glue(&mut self) -> Glue {
         let f = self.eqtb.cur_font_val;
+        // tex.web: interword glue comes from fontdimen 2/3/4 of the CURRENT
+        // font as seen through \fontdimen assignments — eqtb.font_params is
+        // the overlay that \fontdimen writes (control.rs FontDimen); the raw
+        // TFM params on the font object must not shadow it (real tex's
+        // dominant stretch for newtx@12pt is the ADJUSTED 2.39996pt, not the
+        // raw 2.39758pt).
+        let fp = self.eqtb.font_params.get(f as usize);
+        let fd = |i: usize| -> Option<i32> { fp.and_then(|v| v.get(i).copied()) };
         let mut g = if let Some(font) = self.eqtb.fonts.get(f as usize) {
-            Glue { width: font.space(), stretch: font.space_stretch(), shrink: font.space_shrink(), stretch_order: 0, shrink_order: 0 }
+            Glue {
+                width: fd(1).unwrap_or_else(|| font.space()),
+                stretch: fd(2).unwrap_or_else(|| font.space_stretch()),
+                shrink: fd(3).unwrap_or_else(|| font.space_shrink()),
+                stretch_order: 0,
+                shrink_order: 0,
+            }
         } else {
             Glue::zero()
         };
+        // tex.web app_space (§1057): \spaceskip (sf<2000) and \xspaceskip
+        // (sf>=2000) are taken as-is; only the font-space fallback has its
+        // stretch and shrink multiplied by sf/1000, with \extraspace added
+        // to the width when sf>=2000
         let ss = self.eqtb.glue_params[GlueParam::SpaceSkip.idx() as usize].clone();
-        if ss.width != 0 || ss.stretch != 0 || ss.shrink != 0 {
-            g = ss.clone();
-        } else {
-            let xs = self.eqtb.glue_params[GlueParam::XSpaceSkip.idx() as usize].clone();
-            if self.space_factor >= 2000 && (xs.width != 0 || xs.stretch != 0 || xs.shrink != 0) {
-                g = xs.clone();
-            }
-        }
+        let ss_nz = ss.width != 0 || ss.stretch != 0 || ss.shrink != 0;
+        let xs = self.eqtb.glue_params[GlueParam::XSpaceSkip.idx() as usize].clone();
+        let xs_nz = xs.width != 0 || xs.stretch != 0 || xs.shrink != 0;
         let sf = self.space_factor.max(1) as i64;
+        if ss_nz && sf < 2000 {
+            return ss;
+        }
+        if xs_nz {
+            return xs;
+        }
         if sf >= 2000 {
             if let Some(font) = self.eqtb.fonts.get(f as usize) {
                 g.width += font.extra_space();
             }
         }
         g.stretch = ((g.stretch as i64) * sf / 1000) as i32;
+        // tex.web app_space: shrink is scaled by 1000/sf (inverse of stretch)
         g.shrink = ((g.shrink as i64) * 1000 / sf) as i32;
         g
+    }
+
+    /// tex.web ex_space (control space `\ `): append_normal_space — plain
+    /// interword glue of the current font (or \spaceskip as-is when set),
+    /// WITHOUT space-factor scaling of stretch/shrink and without
+    /// \fontdimen7 extra space. \spacefactor is left unchanged.
+    pub fn ex_space(&mut self) {
+        match self.mode {
+            Mode::Horizontal | Mode::RestrictedHorizontal => {
+                let ss = self.eqtb.glue_params[GlueParam::SpaceSkip.idx() as usize].clone();
+                let g = if ss.width != 0 || ss.stretch != 0 || ss.shrink != 0 {
+                    ss
+                } else {
+                    let f = self.eqtb.cur_font_val;
+                    let fp = self.eqtb.font_params.get(f as usize);
+                    let fd = |i: usize| -> Option<i32> { fp.and_then(|v| v.get(i).copied()) };
+                    match self.eqtb.fonts.get(f as usize) {
+                        Some(font) => Glue {
+                            width: fd(1).unwrap_or_else(|| font.space()),
+                            stretch: fd(2).unwrap_or_else(|| font.space_stretch()),
+                            shrink: fd(3).unwrap_or_else(|| font.space_shrink()),
+                            stretch_order: 0,
+                            shrink_order: 0,
+                        },
+                        None => Glue::zero(),
+                    }
+                };
+                self.cur_list.push(Node::Glue(g));
+            }
+            Mode::Math | Mode::DisplayMath => {
+                // tex.web mmode+ex_space: goto append_normal_space — a plain
+                // space glue lands on the math list.
+                let f = self.eqtb.cur_font_val;
+                if let Some(font) = self.eqtb.fonts.get(f as usize) {
+                    let g = Glue {
+                        width: font.space(),
+                        stretch: font.space_stretch(),
+                        shrink: font.space_shrink(),
+                        stretch_order: 0,
+                        shrink_order: 0,
+                    };
+                    self.cur_list.push(Node::Glue(g));
+                }
+            }
+            Mode::Vertical | Mode::InternalVertical => {}
+        }
     }
 
     pub fn char_token(&mut self, c: u8, is_letter: bool) {
@@ -106,12 +172,21 @@ impl Engine {
         }
     }
 
+    /// tex.web adjust_space_factor (§20124): sf_code=0 leaves the factor
+    /// unchanged; 1000 forces 1000; below 1000 (e.g. 999 uppercase) sets
+    /// directly; above 1000 (sentence punctuation) sets the code — but never
+    /// crosses 1000 upward: after an uppercase letter (sf=999) a period
+    /// yields sf=1000, i.e. NO sentence boost after capitals.
     pub fn space_factor_of(&self, c: u8) -> i32 {
-        let sf_code = self.eqtb.sf_code[c as usize] as i32;
-        if sf_code == 0 {
-            self.space_factor
+        let main_s = self.eqtb.sf_code[c as usize] as i32;
+        if main_s == 1000 {
+            1000
+        } else if main_s < 1000 {
+            if main_s > 0 { main_s } else { self.space_factor }
+        } else if self.space_factor < 1000 {
+            1000
         } else {
-            sf_code
+            main_s
         }
     }
 
@@ -265,11 +340,21 @@ impl Engine {
         }
     }
 
-    /// appends to the current vertical list and runs the page builder at outer level
+    /// appends to the current vertical list; at outer level the page builder
+    /// runs only for box-like appends — tex.web triggers build_page on box
+    /// appends / paragraph ends, NOT on \vskip/\penalty, so glue and penalty
+    /// nodes stay visible to \lastskip/\lastpenalty until the next box
+    /// (LaTeX's \addpenalty/\@xaddvskip compensation dances depend on this)
     pub fn vlist_append(&mut self, n: Node) {
         if self.mode == Mode::Vertical {
+            let trigger = matches!(
+                n,
+                Node::Box { .. } | Node::Rule { .. } | Node::Ins { .. } | Node::Penalty(_)
+            );
             self.page_list.push(n);
-            self.build_page();
+            if trigger {
+                self.build_page();
+            }
         } else {
             self.cur_list.push(n);
         }
@@ -290,6 +375,24 @@ impl Engine {
             // real TeX nullfont: chars are silently dropped (no error)
             return;
         }
+        // tex.web main_loop wrapup: an empty discretionary follows every
+        // input char equal to the font's \hyphenchar, giving a legal line
+        // break after the hyphen at \exhyphenpenalty (pre_break=null →
+        // try_break(ex_hyphen_penalty, hyphenated) in line_break)
+        let hc = self.eqtb.hyphen_char.get(f as usize).copied().unwrap_or(-1);
+        let explicit_hyphen = (0..=255).contains(&hc) && c as i32 == hc;
+        self.append_char_lig(c, f);
+        if explicit_hyphen {
+            self.cur_list.push(Node::Disc(crate::boxes::DiscNode {
+                pre_break: Vec::new(),
+                post_break: Vec::new(),
+                no_break: Vec::new(),
+                replace_count: 0,
+            }));
+        }
+    }
+
+    fn append_char_lig(&mut self, c: u8, f: u16) {
         // ligature & kern with previous char (either Char or an already-formed Ligature)
         let prev_char = match self.cur_list.last() {
             Some(Node::Char { c: pc, font: pf }) if *pf == f => Some(*pc),
@@ -311,12 +414,12 @@ impl Engine {
                     if step.keep_right {
                         // re-add the new char after lig (iterate)
                         if step.iterate {
-                            self.append_char(c);
+                            self.append_char_lig(c, f);
                         } else {
                             self.cur_list.push(Node::Char { c, font: f });
                         }
                     } else if step.iterate {
-                        self.append_char(c);
+                        self.append_char_lig(c, f);
                     }
                     return;
                 }
@@ -344,6 +447,14 @@ impl Engine {
         }
         let mut k = ci.remainder as usize;
         let mut jumps = 0;
+        // tex.web §10618: if the very first instruction of a character's
+        // lig/kern program has skip_byte > 128, the program actually begins
+        // at 256*op_byte + rem_byte (large-program indirection).
+        if let Some(first) = font.lig_kern.get(k) {
+            if first.skip > 128 {
+                k = 256 * first.op as usize + first.rem as usize;
+            }
+        }
         loop {
             if k >= font.lig_kern.len() || jumps > 128 {
                 return None;
@@ -1101,8 +1212,37 @@ impl Engine {
 
     /// e-TeX `\\lastnodetype`: -1 if the current list is empty, else the
     /// type of `tail` (etex.web; TeX Live e-TeX manual).
+    /// tex.web tail-of-current-list: in outer vmode the page builder has
+    /// consumed page_list[..page_processed], so \lastskip/\lastpenalty/
+    /// \lastkern/\lastbox/\unskip/\unkern/\unpenalty/\lastnodetype must see
+    /// only the UNCONSUMED contributions (real TeX moves consumed nodes off
+    /// the vlist; reading consumed ones made \lastskip report stale glue and
+    /// broke LaTeX's \addvspace `\ifdim\lastskip=\z@` branching).
+    fn current_tail(&self) -> Option<&Node> {
+        match self.mode {
+            Mode::Vertical => self
+                .page_list
+                .get(self.page_processed.max(0) as usize..)
+                .and_then(|s| s.last()),
+            _ => self.cur_list.last(),
+        }
+    }
+
+    fn take_current_tail(&mut self) -> Option<Node> {
+        match self.mode {
+            Mode::Vertical => {
+                if self.page_list.len() > self.page_processed.max(0) as usize {
+                    self.page_list.pop()
+                } else {
+                    None
+                }
+            }
+            _ => self.cur_list.pop(),
+        }
+    }
+
     pub fn last_node_type_value(&self) -> i32 {
-        match self.current_nodes().last() {
+        match self.current_tail() {
             None => -1,
             Some(Node::Char { .. }) => 0,
             Some(Node::Box { kind, .. }) if *kind == boxes::HBOX => 1,
@@ -1133,30 +1273,29 @@ impl Engine {
     }
 
     pub fn take_last_box(&mut self) -> Option<Node> {
-        let list = self.current_nodes_mut();
-        if let Some(Node::Box { .. }) = list.last() {
-            list.pop()
+        if let Some(Node::Box { .. }) = self.current_tail() {
+            self.take_current_tail()
         } else {
             None
         }
     }
 
     pub fn last_kern_value(&mut self) -> i32 {
-        match self.current_nodes().last() {
+        match self.current_tail() {
             Some(Node::Kern(k) | Node::ExplicitKern(k)) => *k,
             _ => 0,
         }
     }
 
     pub fn last_penalty_value(&mut self) -> i32 {
-        match self.current_nodes().last() {
+        match self.current_tail() {
             Some(Node::Penalty(p)) => *p,
             _ => 0,
         }
     }
 
     pub fn last_skip_value(&mut self) -> Glue {
-        match self.current_nodes().last() {
+        match self.current_tail() {
             Some(Node::Glue(g)) => g.clone(),
             Some(Node::Leaders { glue, .. }) => glue.clone(),
             _ => Glue::zero(),
@@ -1165,25 +1304,28 @@ impl Engine {
 
     /// tex.web §1105: pop a trailing glue (or leader) node; no-op otherwise.
     pub fn un_skip(&mut self) {
-        let list = self.current_nodes_mut();
-        if matches!(list.last(), Some(Node::Glue(_) | Node::Leaders { .. })) {
-            list.pop();
+        if matches!(
+            self.current_tail(),
+            Some(Node::Glue(_) | Node::Leaders { .. })
+        ) {
+            self.take_current_tail();
         }
     }
 
     /// tex.web §1110: pop a trailing kern; no-op otherwise.
     pub fn un_kern(&mut self) {
-        let list = self.current_nodes_mut();
-        if matches!(list.last(), Some(Node::Kern(_) | Node::ExplicitKern(_))) {
-            list.pop();
+        if matches!(
+            self.current_tail(),
+            Some(Node::Kern(_) | Node::ExplicitKern(_))
+        ) {
+            self.take_current_tail();
         }
     }
 
     /// tex.web §1110: pop a trailing penalty; no-op otherwise.
     pub fn un_penalty(&mut self) {
-        let list = self.current_nodes_mut();
-        if matches!(list.last(), Some(Node::Penalty(_))) {
-            list.pop();
+        if matches!(self.current_tail(), Some(Node::Penalty(_))) {
+            self.take_current_tail();
         }
     }
 
@@ -1363,10 +1505,9 @@ impl Engine {
     pub fn par_primitive(&mut self) {
         if crate::debug_flag("IFTRACE") {
             eprintln!(
-                "PAR-PRIM mode={:?} line={} file={} pdepth={} macs={:?} stack=[{}] pushed={:?}",
+                "PAR mode={:?} line={} file={} macros={:?} stack={} pushed={:?}",
                 self.mode,
                 self.input.current_file_line(),
-                self.pushed.len(),
                 self.input.current_file_name(),
                 self.last_macros.iter().rev().take(6).collect::<Vec<_>>(),
                 self.input.stack.iter().rev().take(4).map(|src| match src {
@@ -1378,7 +1519,11 @@ impl Engine {
         }
         match self.mode {
             Mode::Horizontal => self.end_paragraph(),
-            Mode::Vertical | Mode::InternalVertical => {}
+            Mode::Vertical | Mode::InternalVertical => {
+                // \par right after a display: tex.web resume_after_display
+                // already restored hmode, so pending resume state dies here
+                self.resume_after_display = false;
+            }
             Mode::Math | Mode::DisplayMath => {
                 self.error("Missing $ inserted (\\par in math)");
             }
@@ -1442,12 +1587,25 @@ impl Engine {
             Mode::Horizontal => {
                 if indent {
                     let pi = self.eqtb.dim_params[DimParam::ParIndent.idx() as usize];
-                                        let r = boxes::hpack(Vec::new(), Some(pi), boxes::HBOX, &self.eqtb);
+                    let r = boxes::hpack(Vec::new(), Some(pi), boxes::HBOX, &self.eqtb);
                     self.cur_list.push(r.node);
                 }
                 self.run_everypar();
             }
             Mode::Vertical => {
+                // tex.web resume_after_display (§1194): when text follows a
+                // display the new hlist is pushed directly — no \parskip,
+                // no \parindent box, no \everypar
+                let resume = std::mem::take(&mut self.resume_after_display);
+                if !resume {
+                    // tex.web new_graf: in outer vmode \parskip glue is appended
+                    // unconditionally (the page builder discards glue sitting at
+                    // the top of a fresh page); tex.web does NOT run build_page
+                    // at paragraph start, so the skip stays visible to
+                    // \lastskip until the paragraph ends
+                    let ps = self.eqtb.glue_params[GlueParam::ParSkip.idx() as usize].clone();
+                    self.page_list.push(Node::Glue(ps));
+                }
                 // begin paragraph: switch from page_list to hlist
                 // (tex.web: a paragraph is not a group; no eqtb level)
                 let page = std::mem::take(&mut self.page_list);
@@ -1458,6 +1616,9 @@ impl Engine {
                 self.cur_list = Vec::new();
                 self.space_factor = 1000;
                 self.prev_graf = 0;
+                if resume {
+                    return;
+                }
                 if indent {
                     let pi = self.eqtb.dim_params[DimParam::ParIndent.idx() as usize];
                     let r = boxes::hpack(Vec::new(), Some(pi), boxes::HBOX, &self.eqtb);
@@ -1466,16 +1627,26 @@ impl Engine {
                 self.run_everypar();
             }
             Mode::InternalVertical => {
-                // like vertical but inside a box
+                // like vertical but inside a box; tex.web new_graf adds
+                // \parskip here only when the vertical list is nonempty
+                // (no skip at the start of an empty \vbox list)
+                let resume = std::mem::take(&mut self.resume_after_display);
+                if !resume && !self.cur_list.is_empty() {
+                    let ps = self.eqtb.glue_params[GlueParam::ParSkip.idx() as usize].clone();
+                    self.cur_list.push(Node::Glue(ps));
+                }
                 let page = std::mem::take(&mut self.cur_list);
                 self.saved_lists.push((Mode::InternalVertical, Vec::new(), self.prev_depth, self.space_factor));
                 self.par_page_lists.push(page);
                 self.mode = Mode::Horizontal;
                 self.cur_list = Vec::new();
                 self.space_factor = 1000;
+                if resume {
+                    return;
+                }
                 if indent {
                     let pi = self.eqtb.dim_params[DimParam::ParIndent.idx() as usize];
-                                        let r = boxes::hpack(Vec::new(), Some(pi), boxes::HBOX, &self.eqtb);
+                    let r = boxes::hpack(Vec::new(), Some(pi), boxes::HBOX, &self.eqtb);
                     self.cur_list.push(r.node);
                 }
                 self.run_everypar();
@@ -1505,10 +1676,12 @@ impl Engine {
         });
         if !has_content {
             self.cur_list.clear();
-            self.par_shape.clear();
-            self.eqtb.int_params[crate::prim::IntParam::Looseness.idx() as usize] = 0;
-            self.eqtb.int_params[crate::prim::IntParam::HangAfter.idx() as usize] = 1;
-            self.eqtb.dim_params[crate::prim::DimParam::HangIndent.idx() as usize] = 0;
+            // tex.web: \parshape/\looseness/\hangafter/\hangindent are reset
+            // only in normal_paragraph (§1079) after a real line break — an
+            // ABANDONED (empty) paragraph leaves them intact. LaTeX's list
+            // machinery starts-and-abandons an empty paragraph on every
+            // \item; wiping here destroyed \list's \parshape before the
+            // first real list paragraph broke.
             let (saved_mode, saved_list, pd, sf) = self.saved_lists.pop().unwrap_or((Mode::Vertical, Vec::new(), self.prev_depth, self.space_factor));
             self.prev_depth = pd;
             self.space_factor = sf;
@@ -1528,7 +1701,12 @@ impl Engine {
         self.cur_list.push(Node::Penalty(10000));
         self.cur_list.push(Node::Glue(pfs));
         let content = std::mem::take(&mut self.cur_list);
-        let lines = self.break_paragraph(content);
+        // tex.web §21764/§21181: the widow penalty before the final line is
+        // \displaywidowpenalty when a display interrupted the paragraph
+        let fw = self.next_par_widow.take().unwrap_or_else(|| {
+            self.eqtb.int_params[crate::prim::IntParam::WidowPenalty.idx() as usize]
+        });
+        let lines = self.break_paragraph(content, fw);
         // tex.web §1079 normal_paragraph: reset paragraph-local parameters
         self.par_shape.clear();
         self.eqtb.int_params[crate::prim::IntParam::Looseness.idx() as usize] = 0;

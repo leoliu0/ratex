@@ -58,6 +58,9 @@ pub struct ParaParams {
     pub line_skip: Glue,
     pub baseline_skip: Glue,
     pub par_indent: i32,
+    pub inter_line_penalty: i32,
+    pub club_penalty: i32,
+    pub broken_penalty: i32,
 }
 
 impl Engine {
@@ -82,6 +85,9 @@ impl Engine {
             line_skip: e.glue_params[GlueParam::LineSkip.idx() as usize].clone(),
             baseline_skip: e.glue_params[GlueParam::BaselineSkip.idx() as usize].clone(),
             par_indent: e.dim_params[DimParam::ParIndent.idx() as usize],
+            inter_line_penalty: e.int_params[IntParam::InterLinePenalty.idx() as usize],
+            club_penalty: e.int_params[IntParam::ClubPenalty.idx() as usize],
+            broken_penalty: e.int_params[IntParam::BrokenPenalty.idx() as usize],
         }
     }
 
@@ -89,8 +95,32 @@ impl Engine {
     /// \penalty10000 + \parfillskip by end_paragraph) -> vbox of line boxes.
     /// Appends \leftskip at the front (tex-exact: no trailing rightskip node
     /// and no final penalty — the last break is virtual), hyphenates, then
-    /// runs the Knuth-Plass passes.
-    pub fn break_paragraph(&mut self, hlist: NodeList) -> Node {
+    /// runs the Knuth-Plass passes. `final_widow_penalty` is the penalty
+    /// before the paragraph's last line: \widowpenalty normally,
+    /// \displaywidowpenalty when a display follows (tex.web line_break's
+    /// only argument, §16054).
+    pub fn break_paragraph(&mut self, hlist: NodeList, final_widow_penalty: i32) -> Node {
+        if crate::debug_flag("PARADUMP") {
+            let mut s = String::new();
+            for node in &hlist {
+                match node {
+                    Node::Char { c, .. } => s.push(*c as char),
+                    Node::Ligature { c, .. } => s.push_str(&format!("L{:02x}", c)),
+                    Node::Glue(g) => {
+                        let base = (g.width as f64)/65536.0;
+                        if (base - 3.0).abs() < 0.01 { s.push(' '); } else { s.push_str(&format!("G{:.3},{:.3},{:.3}", base, g.stretch as f64/65536.0, g.shrink as f64/65536.0)); }
+                    }
+                    Node::Kern(k) | Node::ExplicitKern(k) => s.push_str(&format!("k{:.2}", *k as f64/65536.0)),
+                    Node::Penalty(p) => s.push_str(&format!("p{}", p)),
+                    Node::Box { w, .. } => s.push_str(&format!("B{:.2}", *w as f64/65536.0)),
+                    Node::Whatsit(_) => s.push('|'),
+                    Node::Disc(_) => s.push('-'),
+                    Node::Rule { .. } => s.push('R'),
+                    _ => s.push('?'),
+                }
+            }
+            eprintln!("PARADUMP: {}", s);
+        }
         let params = self.para_params();
         let mut list: NodeList = Vec::with_capacity(hlist.len() + 1);
         list.push(Node::Glue(params.left_skip.clone()));
@@ -152,7 +182,7 @@ impl Engine {
             let line = crate::boxes::hpack(inner, None, crate::boxes::HBOX, &self.eqtb).node;
             return crate::boxes::vpack(vec![line], None, crate::boxes::VBOX, &self.eqtb).node;
         };
-        self.build_lines(list, &params, end, final_pass)
+        self.build_lines(list, &params, end, final_pass, final_widow_penalty)
     }
 
     /// insert discretionary hyphens into words; returns the indices of the
@@ -179,6 +209,12 @@ impl Engine {
         let mut edits: Vec<(usize, Node)> = Vec::new();
         let n0 = list.len();
         for i in 0..n0 {
+            // tex.web hyphenate (§920ff): implicit font kerns inside a word
+            // are transparent — they neither join the letter list nor close
+            // the word; explicit kerns (and everything else non-letter) do
+            if let Node::Kern(_) = &list[i] {
+                continue;
+            }
             let is_letter = match &list[i] {
                 Node::Char { c, .. } => self.eqtb.lc_code.get(*c as usize).copied().unwrap_or(0) != 0,
                 Node::Ligature { c, .. } => self.eqtb.lc_code.get(*c as usize).copied().unwrap_or(0) != 0,
@@ -203,7 +239,15 @@ impl Engine {
                 word.push(self.eqtb.lc_code[c as usize]);
                 word_positions.push(i);
             } else if !word.is_empty() {
-                if prev_ok && word.len() >= lh + rh {
+                // tex.web compound-word rule: a word terminated by the
+                // font's hyphen char (an explicit `-` in the text) gets NO
+                // internal points — "market-to-book" breaks only at its
+                // explicit hyphens, never at "mar-ket"
+                let closed_by_hyphen = matches!(
+                    &list[i],
+                    Node::Char { c, .. } if *c == hyphen_c
+                ) || matches!(&list[i], Node::Disc(_));
+                if !closed_by_hyphen && prev_ok && word.len() >= lh + rh {
                     let points = self.hyphen_trie.hyphenate(&word, lh, rh);
                     for &k in &points {
                         // point k = break before letter k (0-based node index)
@@ -310,6 +354,24 @@ impl Engine {
             start_sh: [0; 4],
             prev: None,
         });
+        let kptrace = crate::debug_flag("KPTRACE");
+        let mut kptext: String = String::new();
+        let mut kpchars: Vec<usize> = Vec::with_capacity(n + 1); // chars before node i
+        if kptrace {
+            for node in list.iter() {
+                kpchars.push(kptext.len());
+                match node {
+                    Node::Char { c, .. } => kptext.push(*c as char),
+                    Node::Ligature { c, .. } => kptext.push(*c as char),
+                    Node::Glue(_) => kptext.push(' '),
+                    Node::Disc(_) => kptext.push('-'),
+                    Node::Kern(_) | Node::ExplicitKern(_) => {}
+                    _ => kptext.push('`'),
+                }
+            }
+            kpchars.push(kptext.len());
+            eprintln!("KPPAR: {}", &kptext[..kptext.len().min(70)]);
+        }
         let mut actives: Vec<Rc<ActiveNode>> = vec![start];
 
         // evaluate one candidate breakpoint; `cand` == n is the virtual
@@ -357,6 +419,9 @@ impl Engine {
                         let fit = if bb > 12 { TIGHT } else { DECENT };
                         (bb, fit)
                     };
+                    if kptrace {
+                        eprintln!("KP-EVAL cand={} from=({},@{}) sf={:.2}pt b={} fit={} pen={}", cand, a.line, a.pos, shortfall as f64 / 65536.0, b, fit, penalty);
+                    }
                     let is_near_share = cand >= 770 && cand <= 800;
                     if is_near_share {
                         eprintln!("  CONSIDER cand={} a.line={} shortfall={:.2}pt b={} fit={} d={} btype={:?}", cand, a.line, shortfall as f64 / 65536.0, b, fit, a.demerits + demerits(params, b, penalty) + fitness_demerits(params, &a, btype, fit, cand == n), btype);
@@ -405,6 +470,21 @@ impl Engine {
                         start_sh,
                         prev: Some(prev.clone()),
                     }));
+                }
+                if kptrace {
+                    for node in &new_nodes {
+                        let at = kpchars.get(node.pos).copied().unwrap_or(0).min(kptext.len());
+                        let ctx = &kptext[..at];
+                        eprintln!(
+                            "KP @@c{}: line {}.{} t={} -> @@c{} | ...{}",
+                            node.pos,
+                            node.line,
+                            node.fitness,
+                            node.demerits,
+                            node.prev.as_ref().map(|p| p.pos).unwrap_or(0),
+                            &ctx[ctx.len().saturating_sub(28)..]
+                        );
+                    }
                 }
                 if forced {
                     actives = new_nodes;
@@ -471,6 +551,7 @@ impl Engine {
         params: &ParaParams,
         end: Rc<ActiveNode>,
         final_pass: bool,
+        final_widow_penalty: i32,
     ) -> Node {
         let mut chain = Vec::new();
         let mut cur = Some(end);
@@ -486,7 +567,8 @@ impl Engine {
         let mut pending_post: Option<crate::boxes::DiscNode> = None;
         let mut dead_until = 0usize; // nodes in [i, dead_until) are dead
         // chain[0] is the synthetic paragraph start (pos 0, line 0)
-        for bp in chain.iter().skip(1) {
+        let total_lines = chain.len() - 1;
+        for (li, bp) in chain.iter().skip(1).enumerate() {
             let j = bp.pos.min(list.len());
             let mut seg: NodeList = Vec::new();
             let mut nat_w = 0i64;
@@ -514,9 +596,11 @@ impl Engine {
             }
             let last = bp.pos >= list.len();
             let mut break_disc: Option<crate::boxes::DiscNode> = None;
+            let mut broke_at_disc = false;
             if !last {
                 match &list[j] {
                     Node::Disc(dc) => {
+                        broke_at_disc = true;
                         // line ends with the pre-break text
                         for nn in &dc.pre_break {
                             push_dims(&self.eqtb, nn, &mut seg, &mut nat_w);
@@ -552,13 +636,18 @@ impl Engine {
             let (indent, target) = line_metrics(params, bp.line);
             let mut inner: NodeList = Vec::new();
             inner.push(Node::Glue(params.left_skip.clone()));
-            if indent != 0 {
-                inner.push(Node::Kern(indent));
-            }
             inner.extend(seg);
             inner.push(Node::Glue(params.right_skip.clone()));
             let mut r = crate::boxes::hpack(inner, Some(target), crate::boxes::HBOX, &self.eqtb);
-            let overfull = nat_w + params.left_skip.width as i64 + params.right_skip.width as i64 + indent as i64 - target as i64;
+            // tex.web §17436: the parshape indent is the line box's
+            // shift_amount, never an in-line kern (a kern would overshoot
+            // the packed width, which already excludes the indent).
+            if indent != 0 {
+                if let Node::Box { shift, .. } = &mut r.node {
+                    *shift = indent;
+                }
+            }
+            let overfull = nat_w + params.left_skip.width as i64 + params.right_skip.width as i64 - target as i64;
             if final_pass && overfull > hfuzz {
                 let msg = format!(
                     "Overfull \\hbox ({:.3}pt too wide) in paragraph at line {} [{}]\n",
@@ -583,9 +672,52 @@ impl Engine {
             if !post_adj.is_empty() {
                 lines.extend(post_adj);
             }
+            // tex.web §17438: interline penalty after every line but the
+            // last — interlinepenalty, plus clubpenalty after line 1, plus
+            // the (display)widow penalty before the last line, plus
+            // brokenpenalty when the line ended at a discretionary.
+            if li + 1 != total_lines {
+                let mut pen = params.inter_line_penalty;
+                if li == 0 {
+                    pen += params.club_penalty;
+                }
+                if li + 2 == total_lines {
+                    pen += final_widow_penalty;
+                }
+                if broke_at_disc {
+                    pen += params.broken_penalty;
+                }
+                if pen != 0 {
+                    lines.push(Node::Penalty(pen));
+                }
+            }
             if let Some(dc) = break_disc {
                 pending_post = Some(dc);
             }
+        }
+        if crate::debug_flag("LINEDUMP") {
+            let mut s = String::new();
+            for n in &lines {
+                match n {
+                    Node::Box { list, .. } => {
+                        s.push('[');
+                        for m in list.iter().take(8) {
+                            match m {
+                                Node::Char { c, .. } => s.push(*c as char),
+                                Node::Ligature { c, .. } => s.push(*c as char),
+                                Node::Glue(_) => s.push(' '),
+                                _ => s.push('?'),
+                            }
+                        }
+                        s.push(']');
+                    }
+                    Node::Glue(g) => s.push_str(&format!(" G{:.2}+{:.2}-{:.2}", g.width as f64/65536.0, g.stretch as f64/65536.0, g.shrink as f64/65536.0)),
+                    Node::Penalty(p) => s.push_str(&format!(" p{}", p)),
+                    Node::Kern(k) | Node::ExplicitKern(k) => s.push_str(&format!(" k{:.2}", *k as f64/65536.0)),
+                    _ => s.push_str(" ?"),
+                }
+            }
+            eprintln!("LINEDUMP: {}", s);
         }
         crate::boxes::vpack(lines, None, crate::boxes::VBOX, &self.eqtb).node
     }

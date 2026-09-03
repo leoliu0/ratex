@@ -176,6 +176,9 @@ impl Engine {
                 let v = self.scan_int();
                 if (0..=255).contains(&c) {
                     let g = self.take_global();
+                    if c == 37 && crate::debug_flag("MCPTRACE") {
+                        eprintln!("MCP37: v={:#06x} at {}:{}", v, self.input.current_file_name(), self.input.current_file_line());
+                    }
                     self.eqtb.assign_math_code(c as u8, v as u16, g);
                 }
             }
@@ -346,6 +349,16 @@ impl Engine {
                     _ => {}
                 }
             }
+            ExSpace => {
+                match self.mode {
+                    Mode::Vertical | Mode::InternalVertical => {
+                        // tex.web vmode+ex_space: back_input, new_graf(true)
+                        self.pushed.push(Token::from_cs(id));
+                        self.start_paragraph(true);
+                    }
+                    _ => self.ex_space(),
+                }
+            }
             // math
             MathChar => {
                 let v = self.scan_int();
@@ -371,6 +384,14 @@ impl Engine {
                     self.error("You can't use `\\radical' here");
                 }
             }
+            EqNo | LeqNo => {
+                // tex.web §21734: mmode+eq_no is legal only in display math
+                if self.mode == Mode::DisplayMath {
+                    self.start_eq_no(matches!(p, Prim::LeqNo));
+                } else {
+                    self.error("You can't use \\eqno here");
+                }
+            }
             Overline => {
                 if self.mode.is_m() {
                     self.do_overline(false);
@@ -388,7 +409,20 @@ impl Engine {
             Delimiter => {
                 let v = self.scan_int();
                 if self.mode.is_m() {
-                    self.last_delim = Some(v);
+                    // tex.web: a standalone \delimiter is a delimiter atom —
+                    // typeset via var_delimiter at mlist conversion
+                    // (\lbrace/\rbrace in newtx land here; parking the code
+                    // in last_delim silently dropped the glyph)
+                    if v < 0 || v >= 0x8000000 {
+                        self.error("Invalid delimiter code");
+                    } else {
+                        let (sf, sc, lf, lc) = crate::math::delim_code_parts_pub(v);
+                        self.append_mlist_node(Node::DelimBox {
+                            small: (sf, sc),
+                            large: (lf, lc),
+                            size: 2,
+                        });
+                    }
                 }
             }
             Above | Over | Atop | OverWithDelims | AtopWithDelims | AboveWithDelims => {

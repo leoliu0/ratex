@@ -159,9 +159,12 @@ pub enum DimParam {
     HOffset,
     VOffset,
     PrevDepth,
+    /// tex.web dimen param: width of the paragraph's last line before a
+    /// display (drives short-skip selection; amsmath also reads it)
+    PreDisplaySize,
 }
 
-pub const NUM_DIM_PARAMS: usize = 37;
+pub const NUM_DIM_PARAMS: usize = 38;
 
 impl DimParam {
     #[inline]
@@ -403,6 +406,9 @@ pub enum Prim {
     MathChar,
     MathAccent,
     Radical,
+    /// \eqno / \leqno: display equation number (tex.web eq_no)
+    EqNo,
+    LeqNo,
     Delimiter,
     Above,
     Over,
@@ -557,6 +563,9 @@ pub enum Prim {
     /// Knuth \\accent: typeset the next character with an accent glyph from
     /// slot <number> of the current font stacked above it (tex.web §1267-1275).
     Accent,
+    /// Knuth control space `\ ` (ex_space): plain interword glue, ignoring
+    /// \spacefactor (tex.web §1060/append_normal_space).
+    ExSpace,
  }
 
 
@@ -856,9 +865,12 @@ impl Prim {
             Prim::TextStyle => 282,
             Prim::ScriptStyle => 283,
             // 285/286 are taken by IfFontChar/ParShape (out-of-order legacy
-            // slots); 287/288 by Patterns/Hyphenation — 289 is the next free
-            // ordinal in both directions.
+            // slots); 287/288 by Patterns/Hyphenation, 289 by Accent; 290 is
+            // the next free ordinal in both directions.
             Prim::Accent => 289,
+            Prim::ExSpace => 290,
+            Prim::EqNo => 291,
+            Prim::LeqNo => 292,
             Prim::ScriptScriptStyle => 284,
             Prim::Patterns => 287,
             Prim::Hyphenation => 288,
@@ -1157,10 +1169,13 @@ impl Prim {
             281 => Some(Prim::DisplayStyle),
             282 => Some(Prim::TextStyle),
             283 => Some(Prim::ScriptStyle),
-            289 => Some(Prim::Accent),
             284 => Some(Prim::ScriptScriptStyle),
             287 => Some(Prim::Patterns),
             288 => Some(Prim::Hyphenation),
+            289 => Some(Prim::Accent),
+            290 => Some(Prim::ExSpace),
+            291 => Some(Prim::EqNo),
+            292 => Some(Prim::LeqNo),
 
             0x1000..=0x1fff => {
                 let i = c & 0x0fff;

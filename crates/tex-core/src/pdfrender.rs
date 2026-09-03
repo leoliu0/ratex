@@ -77,6 +77,11 @@ impl Engine {
         let horigin_bp = sp_to_bp(ctx.eng.eqtb.dim_params[DimParam::PdfHOrigin.idx() as usize] as i64);
         let vorigin_bp = sp_to_bp(ctx.eng.eqtb.dim_params[DimParam::PdfVOrigin.idx() as usize] as i64);
         let x0 = horigin_bp;
+        if std::env::var_os("TEXBOXDUMP").is_some() {
+            if let Node::Box { list, .. } = page_box {
+                eprintln!("PAGE n={} :: {:?}", list.len(), list);
+            }
+        }
         let y0 = vorigin_bp;
         if let Node::Box { list, kind, glue_sign, glue_order, glue_set, w, h, d, .. } = page_box {
             if *kind == HBOX {
@@ -179,8 +184,27 @@ impl<'a> RenderCtx<'a> {
                     let (bh, bd, sh) =
                         (sp_to_bp(*h as i64), sp_to_bp(*d as i64), sp_to_bp(*shift as i64));
                     if *kind == HBOX && std::env::var_os("TEXBOXDUMP").is_some() {
-                        eprintln!("LINE w={:.3}pt h={:.3} d={:.3} n={} :: {:?}",
-                            *w as f64 / 65536.0, *h as f64 / 65536.0, *d as f64 / 65536.0,
+                        let mut nat = 0i64;
+                        for nn in inner {
+                            nat += match nn {
+                                Node::Char { c, font } => self.font_char_width(*font, *c) as i64,
+                                Node::Ligature { lig_width, .. } => *lig_width as i64,
+                                Node::Kern(k) | Node::ExplicitKern(k) => *k as i64,
+                                Node::Glue(g) => g.width as i64,
+                                Node::Box { w, .. } => *w as i64,
+                                Node::Rule { width, .. } => *width as i64,
+                                Node::Disc(dc) => dc.no_break.iter().map(|m| match m {
+                                    Node::Char { c, font } => self.font_char_width(*font, *c) as i64,
+                                    Node::Kern(k) | Node::ExplicitKern(k) => *k as i64,
+                                    Node::Ligature { lig_width, .. } => *lig_width as i64,
+                                    _ => 0,
+                                }).sum::<i64>(),
+                                _ => 0,
+                            };
+                        }
+                        eprintln!("LINE w={:.3}pt nat={:.3}pt h={:.3} d={:.3} sign={} order={} set={:.5} n={} :: {:?}",
+                            *w as f64 / 65536.0, nat as f64 / 65536.0, *h as f64 / 65536.0, *d as f64 / 65536.0,
+                            glue_sign, glue_order, glue_set,
                             inner.len(), inner);
                     }
                     // thread containing-box context for the inner list
@@ -188,9 +212,11 @@ impl<'a> RenderCtx<'a> {
                     self.left_edge_sp = bp_to_sp(x + sh) as i64;
                     (self.box_w_sp, self.box_h_sp, self.box_d_sp) = (*w as i64, *h as i64, *d as i64);
                     if *kind == HBOX {
-                        // hbox: the vertical shift moves the baseline down
-                        let baseline = cur_y + bh + sh;
-                        self.ship_hlist(inner, x, baseline, *glue_sign, *glue_order, *glue_set);
+                        // tex.web: a box's shift_amount is horizontal when
+                        // the box sits in a VLIST (display boxes arrive here
+                        // centered via shift = s + d)
+                        let baseline = cur_y + bh;
+                        self.ship_hlist(inner, x + sh, baseline, *glue_sign, *glue_order, *glue_set);
                     } else {
                         // vbox/vtop: the shift is horizontal
                         self.ship_vlist(inner, x + sh, cur_y, *glue_sign, *glue_order, *glue_set);
@@ -306,8 +332,8 @@ impl<'a> RenderCtx<'a> {
                         let baseline = y + sh;
                         self.ship_hlist(inner, cur_x, baseline, *glue_sign, *glue_order, *glue_set);
                     } else {
-                        // vbox/vtop: the shift is horizontal; baseline bh below top
-                        self.ship_vlist(inner, cur_x + sh, y - bh, *glue_sign, *glue_order, *glue_set);
+                        // vbox/vtop in an hlist: the shift is vertical
+                        self.ship_vlist(inner, cur_x, y + sh - bh, *glue_sign, *glue_order, *glue_set);
                     }
                     self.left_edge_sp = saved.0;
                     self.box_w_sp = saved.1;

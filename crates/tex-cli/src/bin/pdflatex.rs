@@ -294,6 +294,18 @@ fn main() {
         }
         eng.run();
     }
+    if std::env::var("MATHFAMDUMP").is_ok_and(|v| !v.is_empty() && v != "0") {
+        for sz in 0..3 {
+            for fam in 0..8 {
+                let fid = eng.eqtb.style_fonts[sz][fam];
+                if fid != 0 {
+                    let (nm, tfm) = eng.eqtb.fonts.get(fid as usize).map(|f| (f.name.clone(), f.tfm_name.clone())).unwrap_or_default();
+                    eprintln!("FAM sz={} fam={} -> fid={} name={} tfm={}", sz, fam, fid, nm, tfm);
+                }
+            }
+        }
+        eprintln!("MATHCODE of %: {:#06x}", eng.eqtb.math_code[b'%' as usize]);
+    }
     // -ini mode: the file ended in \dump — write the format and exit,
     // like initex does.
     if ini && eng.format_done {

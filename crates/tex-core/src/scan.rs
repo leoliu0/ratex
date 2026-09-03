@@ -929,13 +929,36 @@ impl Engine {
         let prev = self.in_expanded_scan;
         self.in_expanded_scan = false;
         self.skip_spaces_relax();
-        let t = self.get_x_raw();
+        // tex.web scan_glue: optional signs are consumed here and negate the
+        // WHOLE glue spec (width, stretch, shrink) — not just the width.
+        // `\skip0=-\skip1` must yield -w plus -s minus -k; dropping the
+        // component signs cost LaTeX \@startsection its beforeskip
+        // stretch/shrink (`\@tempskipa -\@tempskipa`).
+        let mut negate = false;
+        let mut t = self.get_x_raw();
+        while t.is_char() && (t.chr() == 43 || t.chr() == 45) {
+            if t.chr() == 45 {
+                negate = !negate;
+            }
+            self.skip_spaces_relax();
+            t = self.get_x_raw();
+        }
         if t.is_cs() && matches!(self.cur_prim, Some(Prim::GlueExpr) | Some(Prim::MuExpr)) {
-            let g = self.scan_expr_glue(mu);
+            let mut g = self.scan_expr_glue(mu);
+            if negate {
+                g.width = -g.width;
+                g.stretch = -g.stretch;
+                g.shrink = -g.shrink;
+            }
             self.in_expanded_scan = prev;
             return g;
         }
-        if let Some(g) = self.glue_from_cur_cs(t) {
+        if let Some(mut g) = self.glue_from_cur_cs(t) {
+            if negate {
+                g.width = -g.width;
+                g.stretch = -g.stretch;
+                g.shrink = -g.shrink;
+            }
             self.in_expanded_scan = prev;
             return g;
         }
@@ -943,6 +966,9 @@ impl Engine {
         let mut g = Glue::zero();
         self.cur_fill_order = 0;
         g.width = self.scan_dimen(mu, false);
+        if negate {
+            g.width = -g.width;
+        }
         for &(kw, is_stretch) in &[(&b"plus"[..], true), (&b"minus"[..], false)] {
             loop {
                 let t0 = self.get_token();

@@ -79,7 +79,8 @@ pub fn scaled_round(x: i32) -> i32 {
     v as i32
 }
 
-/// badness(t, s) per tex.web: approximately 100(t/s)^3, capped at INF_BAD+1.
+/// badness(t, s) — tex.web §2337 verbatim: r approximates alpha*t/s with
+/// alpha^3 ~ 100*2^18, then rounds r^3/2^18 to nearest; capped at inf_bad.
 pub fn badness(t: i32, s: i32) -> i32 {
     if t == 0 {
         return 0;
@@ -87,13 +88,19 @@ pub fn badness(t: i32, s: i32) -> i32 {
     if s <= 0 {
         return INF_BAD;
     }
-    let tt = t as i128;
-    let ss = s as i128;
-    let q = (100 * tt * tt * tt) / (ss * ss * ss);
-    if q > INF_BAD as i128 {
+    let (t, s) = (t as i64, s as i64);
+    let r: i64 = if t <= 7230584 {
+        (t * 297) / s // 297^3 = 99.94 * 2^18
+    } else if s >= 1663497 {
+        t / (s / 297)
+    } else {
+        t
+    };
+    if r > 1290 {
+        // 1290^3 < 2^31 < 1291^3
         INF_BAD
     } else {
-        q as i32
+        ((r * r * r + 131072) / 262144) as i32
     }
 }
 

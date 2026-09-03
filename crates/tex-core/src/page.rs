@@ -31,6 +31,20 @@ const DEPTH_NONE: i32 = -1000 * 65536;
 /// mark classes are small; guard the per-class mark vectors anyway
 const MAX_MARK_CLASS: usize = 65536;
 
+/// tex.web precedes_break (§3109): node types a page glue may legally break
+/// after — type < math_node, i.e. box/rule/insert/mark/adjust/whatsit
+fn precedes_break(n: &Node) -> bool {
+    matches!(
+        n,
+        Node::Box { .. }
+            | Node::Rule { .. }
+            | Node::Ins { .. }
+            | Node::Mark { .. }
+            | Node::Adj(_)
+            | Node::Whatsit(_)
+    )
+}
+
 /// natural vertical extents (width, height, depth) of a vlist; boxes carry
 /// their own dimensions, so this stays local to the page builder
 fn vlist_extents(list: &[Node]) -> (i64, i64, i64) {
@@ -108,6 +122,10 @@ struct PageState {
     ins_used: Vec<(u16, i64)>,
     /// a box or rule has been contributed (breaks need one before them)
     box_seen: bool,
+    /// tex.web precedes_break(page_tail): the last contributed node is
+    /// non-discardable (box/rule/ins/mark/adjust/whatsit) — a glue break is
+    /// legal only right after such a node
+    prev_breakable: bool,
     best: Option<BreakSpot>,
     /// a fire condition was met this call
     fire: bool,
@@ -127,6 +145,7 @@ impl PageState {
             insert_penalties: 0,
             ins_used: Vec::new(),
             box_seen: false,
+            prev_breakable: false,
             best: None,
             fire: false,
             processed: 0,
@@ -229,6 +248,13 @@ impl Engine {
         };
         st.total = self.page_total;
         st.depth = self.page_depth;
+        // tex.web keeps page_stretch/page_shrink as running state across
+        // contribution batches; the processed prefix is NOT rescanned, so the
+        // accumulated values must persist on the engine between build_page
+        // calls (otherwise page badness sees only the current batch's glue
+        // and every candidate evaluates as underfull-deplorable)
+        st.stretch = self.page_stretch;
+        st.shrink = self.page_shrink;
         if let Some(cut) = self.page_best_break {
             st.best = Some(BreakSpot::carried(cut, self.page_break_penalty));
         }
@@ -247,32 +273,59 @@ impl Engine {
         while st.processed < self.page_list.len() {
             let idx = st.processed;
             let mut advance = true;
-            if self.pdf_doc.pages.len() == 1 && st.processed < 5 && crate::debug_flag("P2TRACE") {
-                eprintln!("P2_HEAD: idx={} node={:?} goal_set={} box_seen={}", idx, self.page_list[idx], st.goal_set, st.box_seen);
-            }
-            if self.pdf_doc.pages.len() == 41 && st.processed < 5 && crate::debug_flag("P42TRACE") {
-                eprintln!("P42_HEAD: idx={} node={:?} goal_set={} box_seen={}", idx, self.page_list[idx], st.goal_set, st.box_seen);
+            if self.pdf_doc.pages.len() == 6 && st.processed < 10 && crate::debug_flag("P7TRACE") {
+                eprintln!("P7_HEAD: idx={} node={:?} goal_set={} box_seen={} prevdepth={}", idx, self.page_list[idx], st.goal_set, st.box_seen, self.page_prev_depth);
             }
             match self.page_list[idx].clone() {
                 Node::Glue(g) => {
                     if st.goal_set {
                         self.contribute_glue(&mut st, &g);
-                        // legal break at glue when a box precedes
-                        if st.box_seen {
+                        // tex.web §19490: a page glue is a legal breakpoint
+                        // iff the preceding page node is non-discardable
+                        // (precedes_break). Zero-width interline-glue
+                        // placeholders from build_lines are transparent here
+                        // — the real gap is inserted at the next box.
+                        let mut pi = idx;
+                        while pi > 0 {
+                            match &self.page_list[pi - 1] {
+                                Node::Glue(pg)
+                                    if pg.width == 0 && pg.stretch == 0 && pg.shrink == 0 =>
+                                {
+                                    pi -= 1;
+                                }
+                                _ => break,
+                            }
+                        }
+                        let legal = pi > 0 && precedes_break(&self.page_list[pi - 1]);
+                        if legal {
                             self.try_page_break(&mut st, idx, 0);
                         }
+                    } else {
+                        // tex.web: while page_contents<box_there the node is
+                        // recycled (`goto done1`), not merely ignored — it
+                        // must leave page_list or it lands in \box255 and
+                        // renders as phantom space at the top of the page
+                        self.page_list.remove(idx);
+                        advance = false;
                     }
-                    // else: discarded at the top of a fresh page
                 }
                 Node::Kern(k) | Node::ExplicitKern(k) => {
                     if st.goal_set {
                         self.contribute_gap(&mut st, k as i64);
+                    } else {
+                        self.page_list.remove(idx);
+                        advance = false;
                     }
                 }
                 Node::Penalty(p) => {
-                    // legal break at penalties < inf_penalty when a box precedes
-                    if p < INF_PENALTY && st.goal_set && st.box_seen {
-                        self.try_page_break(&mut st, idx + 1, p);
+                    if st.goal_set {
+                        // legal break at penalties < inf_penalty when a box precedes
+                        if p < INF_PENALTY && st.box_seen {
+                            self.try_page_break(&mut st, idx + 1, p);
+                        }
+                    } else {
+                        self.page_list.remove(idx);
+                        advance = false;
                     }
                 }
                 Node::Box { h, d, .. } | Node::Rule { height: h, depth: d, .. } => {
@@ -280,22 +333,26 @@ impl Engine {
                     // (`\box_there`); LaTeX's float/clearpage machinery
                     // plants empty `\vbox{}` markers purely so the following
                     // forced `\penalty -1000x` is a legal break that re-fires
-                    // the output routine. Mark the page breakable without
-                    // contributing height (unlike tex.web we add no topskip
-                    // pad, keeping page accounting unchanged).
-                    if h == 0 && d == 0 {
-                        st.goal_set = true;
-                        st.box_seen = true;
-                    } else if !st.goal_set {
+                    // the output routine.
+                    if !st.goal_set {
                         // first box on a fresh page: `\topskip` glue before it
+                        // — tex.web inserts it whatever the box height, so a
+                        // leading 0x0 box pads a full `\topskip`
                         st.goal_set = true;
                         self.page_prev_depth = DEPTH_NONE;
+                        self.prev_depth = DEPTH_NONE;
                         let ts = self.eqtb.dim_params[DimParam::TopSkip.idx() as usize];
                         let pad = (ts as i64 - h as i64).max(0);
                         if pad > 0 {
                             self.page_list.insert(idx, Node::Glue(Glue::new(pad as i32)));
                             advance = false; // reprocess at the inserted glue
                         }
+                    } else if h == 0 && d == 0 {
+                        // 0x0 boxes contribute zero size but still establish
+                        // \prevdepth (=0) for the next box's interline glue
+                        self.contribute_box(&mut st, 0, 0);
+                        self.page_prev_depth = 0;
+                        self.prev_depth = 0;
                     } else if self.page_prev_depth > DEPTH_NONE {
                         // interline glue between boxes
                         let bs =
@@ -306,34 +363,63 @@ impl Engine {
                         let glue = if b < lsl as i64 { ls } else { Glue { width: b as i32, ..bs } };
                         self.page_prev_depth = DEPTH_NONE;
                         if glue.width != 0 || glue.stretch != 0 || glue.shrink != 0 {
-                            self.page_list.insert(idx, Node::Glue(glue));
-                            advance = false; // reprocess at the inserted glue
+                            // replay dedup: when a page break cut between the
+                            // inserted interline glue and this box, the glue
+                            // rides in the carried prefix while the box is
+                            // reprocessed — inserting again doubles the gap.
+                            // The identical glue immediately before the box
+                            // (past any zero placeholders) is that replay.
+                            let mut pi = idx;
+                            while pi > 0 {
+                                match &self.page_list[pi - 1] {
+                                    Node::Glue(pg)
+                                        if pg.width == 0 && pg.stretch == 0 && pg.shrink == 0 =>
+                                    {
+                                        pi -= 1;
+                                    }
+                                    _ => break,
+                                }
+                            }
+                            let dup = pi > 0
+                                && matches!(
+                                    &self.page_list[pi - 1],
+                                    Node::Glue(pg)
+                                        if pg.width == glue.width
+                                            && pg.stretch == glue.stretch
+                                            && pg.shrink == glue.shrink
+                                );
+                            if !dup {
+                                self.page_list.insert(idx, Node::Glue(glue));
+                                advance = false; // reprocess at the inserted glue
+                            }
                         }
                     }
                     if advance && (h != 0 || d != 0) {
                         self.contribute_box(&mut st, h, d);
                         self.page_prev_depth = d;
+                        self.prev_depth = d;
                     }
                 }
                 Node::Ins { num, height, depth, cost, .. } => {
                     self.contribute_ins(&mut st, num, height, depth, cost);
                 }
                 Node::Mark { class, tokens } => {
-                    if st.goal_set {
-                        let c = class.max(0) as usize;
-                        if c < MAX_MARK_CLASS {
-                            for m in self.marks.iter_mut() {
-                                if m.len() <= c {
-                                    m.resize(c + 1, Vec::new());
-                                }
+                    // tex.web §19490: mark_node -> goto contribute — marks
+                    // are recorded even at the top of a fresh page (the
+                    // mark survives into \topmark/\firstmark of the page it
+                    // lands on)
+                    let c = class.max(0) as usize;
+                    if c < MAX_MARK_CLASS {
+                        for m in self.marks.iter_mut() {
+                            if m.len() <= c {
+                                m.resize(c + 1, Vec::new());
                             }
-                            if self.marks[2][c].is_empty() {
-                                self.marks[1][c] = tokens.clone();
-                            }
-                            self.marks[2][c] = tokens;
                         }
+                        if self.marks[2][c].is_empty() {
+                            self.marks[1][c] = tokens.clone();
+                        }
+                        self.marks[2][c] = tokens;
                     }
-                    // else: discarded at the top of a fresh page
                 }
                 Node::Adj(a) => {
                     if st.goal_set {
@@ -355,6 +441,8 @@ impl Engine {
         // persist the running state
         self.page_total = st.total;
         self.page_depth = st.depth;
+        self.page_stretch = st.stretch;
+        self.page_shrink = st.shrink;
         self.page_processed = st.processed;
         self.page_best_break = st.best.map(|b| b.cut);
         self.page_break_penalty = st.best.map(|b| b.penalty).unwrap_or(0);
@@ -435,24 +523,37 @@ impl Engine {
         }
     }
 
-    /// remember a breakpoint candidate if its cost beats the current best
+    /// remember a breakpoint candidate if its cost beats the current best,
+    /// then fire if the page is done. tex.web evaluates firing ONLY at
+    /// candidates: a page whose total crosses the goal between candidates
+    /// keeps growing until the next one, which may carry a better cost
+    /// (LaTeX's `\addpenalty -51` after the last fitting line is the p44
+    /// case — firing mid-run there cut one line early vs real pdflatex)
     fn try_page_break(&mut self, st: &mut PageState, cut: usize, penalty: i32) {
         if penalty >= 10000 {
             return;
         }
-        let cost = self.break_cost(st, penalty);
+        let (_, cost) = self.break_cost(st, penalty);
+        if crate::debug_flag("PAGECAND") && {
+            let want: usize = std::env::var("PAGECAND_AT").ok().and_then(|s| s.parse().ok()).unwrap_or(10);
+            self.pdf_doc.pages.len() + 1 == want
+        } {
+            eprintln!("PGCAND t={:.2} str={:.2} shk={:.2} p={} c={} cut={}",
+                st.total as f64 / 65536.0, st.stretch[0] as f64 / 65536.0,
+                st.shrink[0] as f64 / 65536.0, penalty, cost, cut);
+        }
         let better = match st.best {
             None => cost < AWFUL_BAD,
-            Some(b) => cost <= b.cost,
+            Some(spot) => cost <= spot.cost,
         };
         if better {
             st.best = Some(BreakSpot { cut, penalty, cost });
         }
     }
 
-    /// tex.web @1003/@1004: badness of the break plus penalty plus
-    /// `\insertpenalties`
-    fn break_cost(&self, st: &PageState, penalty: i32) -> i32 {
+    /// tex.web @1003/@1004: returns (badness, cost = badness + penalty +
+    /// `\insertpenalties`) for breaking at the current candidate
+    fn break_cost(&self, st: &PageState, penalty: i32) -> (i64, i32) {
         let goal = self.page_goal();
         let b: i64 = if st.total < goal {
             let want = (goal - st.total).min(i32::MAX as i64 / 2) as i32;
@@ -485,9 +586,11 @@ impl Engine {
         } else {
             DEPLORABLE as i64
         };
-        c.clamp(i32::MIN as i64, i32::MAX as i64) as i32
+        (b, c.clamp(i32::MIN as i64, i32::MAX as i64) as i32)
     }
 
+    /// fires when the best break is a forcing penalty or the page total
+    /// has reached the goal (checked after each contributed node)
     fn ready_to_fire(&self, st: &PageState) -> bool {
         if self.ini_mode {
             return false;
@@ -547,7 +650,62 @@ impl Engine {
         }
 
         let items: NodeList = self.page_list.drain(..cut).collect();
+        if crate::debug_flag("PAGEVLIST") {
+            eprintln!("=== PAGE {} MATERIAL (cut={}) ===", self.pdf_doc.pages.len() + 1, cut);
+            for (i, n) in items.iter().enumerate() {
+                let s = match n {
+                    Node::Glue(g) => format!(
+                        "glue {} plus {}({}) minus {}({})",
+                        g.width, g.stretch, g.stretch_order, g.shrink, g.shrink_order
+                    ),
+                    Node::Kern(k) | Node::ExplicitKern(k) => format!("kern {}", k),
+                    Node::Penalty(p) => format!("penalty {}", p),
+                    Node::Box { w, h, d, list, .. } => {
+                        let mut peek = String::new();
+                        for n in list.iter().take(6) {
+                            match n {
+                                Node::Char { c, .. } => peek.push(*c as char),
+                                Node::Glue(g) => peek.push_str(&format!(" G({})", g.width)),
+                                Node::Kern(k) | Node::ExplicitKern(k) => {
+                                    peek.push_str(&format!(" K({})", k))
+                                }
+                                Node::Penalty(p) => peek.push_str(&format!(" P({})", p)),
+                                Node::Ligature { c, .. } => peek.push(*c as char),
+                                _ => peek.push_str(" ?"),
+                            }
+                        }
+                        format!(
+                            "box whd=({},{},{}) n={} peek=[{}]",
+                            w, h, d, list.len(), peek
+                        )
+                    }
+                    Node::Rule { width, height, depth } => {
+                        format!("rule whd=({},{},{})", width, height, depth)
+                    }
+                    Node::Mark { class, .. } => format!("mark class={}", class),
+                    Node::Adj(a) => format!("adj {}", a),
+                    Node::Whatsit(_) => "whatsit".to_string(),
+                    Node::Leaders { glue, .. } => format!("leaders glue={}", glue.width),
+                    _ => "other".to_string(),
+                };
+                eprintln!("  [{}] {}", i, s);
+            }
+        }
         self.page_processed = self.page_processed.saturating_sub(cut);
+        if crate::debug_flag("P7TRACE") && self.pdf_doc.pages.len() >= 5 && self.pdf_doc.pages.len() <= 6 {
+            eprintln!("CUT shipping p{}: cut={} page_processed={}", self.pdf_doc.pages.len(), cut, self.page_processed);
+            for (i, n) in self.page_list.iter().take(8).enumerate() {
+                let s = match n {
+                    Node::Glue(g) => format!("glue {}", g.width),
+                    Node::Kern(k) | Node::ExplicitKern(k) => format!("kern {}", k),
+                    Node::Penalty(p) => format!("pen {}", p),
+                    Node::Box { h, d, list, .. } => format!("box h={} d={} n={}", h, d, list.len()),
+                    Node::Whatsit(_) => "whatsit".to_string(),
+                    other => format!("{:?}", other),
+                };
+                eprintln!("  rem[{}] {}", i, s);
+            }
+        }
         self.page_best_break = None;
         self.page_break_penalty = 0;
 
@@ -567,22 +725,140 @@ impl Engine {
         if let Some(Node::Penalty(_)) = page_mat.last() {
             page_mat.pop();
         }
+        // tex.web page-top invariant: box255 opens with whatsits/marks, the
+        // \topskip pad, and the first box — nothing else may sit between the
+        // pad and that box. Discardable glue/kern/penalty nodes can re-enter
+        // ahead of the first box when the output routine reinserts held
+        // material (float fires) after the strip already ran; real TeX
+        // discards top-of-page discardables, so drop all but the last glue
+        // (the pad) here
+        if let Some(fb) = page_mat
+            .iter()
+            .position(|n| matches!(n, Node::Box { .. } | Node::Rule { .. }))
+        {
+            let mut head: NodeList = Vec::new();
+            let mut pad: Option<Node> = None;
+            for n in page_mat.drain(..fb) {
+                match n {
+                    Node::Glue(_) | Node::Kern(_) | Node::ExplicitKern(_) => pad = Some(n),
+                    Node::Penalty(_) => {}
+                    other => head.push(other),
+                }
+            }
+            head.extend(pad);
+            head.append(&mut page_mat);
+            page_mat = head;
+        }
         for (num, boxes) in inserts {
             self.place_insert(num, boxes);
         }
 
-        // a new page begins: reset running accounting
+        // a new page begins: reset the builder's running accounting, but do
+        // NOT touch the \pagetotal/\pagegoal family here — the output
+        // routine runs with the COMPLETED page's register values (real
+        // pdftex: PGOAL=\vsize, PTOTAL=the just-broken page's total); the
+        // next build_page re-syncs the registers to the new page, and
+        // page_goal_set=false means a mid-page \pagegoal pin does not
+        // survive the break (page_goal() re-derives from \vsize)
         self.eqtb.int_params[IntParam::InsertPenalties.idx() as usize] = 0;
         self.page_total = 0;
         self.page_depth = 0;
+        self.page_stretch = [0; 4];
+        self.page_shrink = [0; 4];
         self.page_prev_depth = DEPTH_NONE;
         self.page_goal_set = false;
-        // the `\pagetotal` family restarts with the page (tex.web @638)
-        self.sync_page_dims(&PageState::new());
-        // the new page's goal starts at max_dimen (tex.web @1014);
-        // a mid-page `\pagegoal` pin does not survive the page break
-        self.eqtb.dim_params[DimParam::PageGoal.idx() as usize] = 0x3FFF_FFFF;
-        self.page_goal_set = false;
+        // tex.web fresh-page parity for the carried-over processed prefix:
+        // the break can strand already-contributed nodes beyond the cut in
+        // the remainder's processed prefix. The first box of the new page
+        // must get its \topskip pad measured against THAT box (tex.web
+        // inserts it ahead of the first box contributed to an empty page),
+        // and the prefix's heights must count toward the new page's totals
+        // — otherwise the topskip lands one box late and the page runs
+        // ~one line short in \pagetotal, fitting an extra line per page.
+        {
+            // strip stale leading discardables (old interline glue, break
+            // glue, placeholders) ahead of the carried first box. tex.web
+            // contributes whatsits and marks even at a page top (they must
+            // ship), so they stay put while discardables around them are
+            // recycled (§19490: page_contents < box_there)
+            let mut i = 0;
+            let mut removed = 0usize;
+            // i indexes kept nodes; i + removed indexes the original prefix
+            while i < self.page_list.len() && i + removed < self.page_processed {
+                match &self.page_list[i] {
+                    Node::Glue(_) | Node::Kern(_) | Node::ExplicitKern(_) | Node::Penalty(_) => {
+                        self.page_list.remove(i);
+                        removed += 1;
+                    }
+                    Node::Whatsit(_) | Node::Mark { .. } => i += 1,
+                    _ => break,
+                }
+            }
+            self.page_processed -= removed;
+            if self.page_processed > 0 {
+                // the first box of the prefix gets the \topskip pad measured
+                // against IT (tex.web inserts the pad right before that box,
+                // after any page-top whatsits/marks)
+                let fb = self.page_list[..self.page_processed]
+                    .iter()
+                    .position(|n| matches!(n, Node::Box { .. } | Node::Rule { .. }));
+                if let Some(fb) = fb {
+                    let h = match &self.page_list[fb] {
+                        Node::Box { h, .. } => *h,
+                        Node::Rule { height: h, .. } => *h,
+                        _ => unreachable!(),
+                    };
+                    let ts = self.eqtb.dim_params[DimParam::TopSkip.idx() as usize];
+                    let pad = (ts as i64 - h as i64).max(0) as i32;
+                    if pad > 0 {
+                        self.page_list.insert(fb, Node::Glue(Glue::new(pad)));
+                        self.page_processed += 1;
+                    }
+                    // fold the carried prefix into the fresh page's
+                    // accounting (contribute_box/gap semantics)
+                    let mut total = 0i64;
+                    let mut depth = 0i64;
+                    let mut prev_d = DEPTH_NONE;
+                    let md64 = self.max_depth();
+                    let mut stretch = [0i64; 4];
+                    let mut shrink = [0i64; 4];
+                    for node in &self.page_list[..self.page_processed] {
+                        match node {
+                            Node::Glue(g) => {
+                                total += depth + g.width as i64;
+                                depth = 0;
+                                let so = (g.stretch_order as usize).min(3);
+                                let ho = (g.shrink_order as usize).min(3);
+                                stretch[so] += g.stretch as i64;
+                                if so > 0 && g.width != 0 {
+                                    stretch[so] += g.width as i64;
+                                }
+                                shrink[ho] += g.shrink as i64;
+                                if ho > 0 && g.width != 0 {
+                                    shrink[ho] += g.width as i64;
+                                }
+                            }
+                            Node::Kern(k) | Node::ExplicitKern(k) => {
+                                total += depth + *k as i64;
+                                depth = 0;
+                            }
+                            Node::Box { h, d, .. } | Node::Rule { height: h, depth: d, .. } => {
+                                total += depth + *h as i64;
+                                depth = (*d as i64).min(md64);
+                                prev_d = *d;
+                            }
+                            _ => {}
+                        }
+                    }
+                    self.page_stretch = stretch;
+                    self.page_shrink = shrink;
+                    self.page_total = total;
+                    self.page_depth = depth;
+                    self.page_prev_depth = prev_d;
+                    self.page_goal_set = true;
+                }
+            }
+        }
         let md = self.max_depth().min(i32::MAX as i64) as i32;
         let r = crate::boxes::vpack_add_md(page_mat, None, false, VBOX, &self.eqtb, md);
         self.eqtb.assign_box(255, Some(r.node), true);

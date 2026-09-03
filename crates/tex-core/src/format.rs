@@ -30,7 +30,7 @@ use crate::tfm::{CharInfo, ExtRecipe, Font, LigStep};
 use crate::token::{CsTable, Token};
 
 const MAGIC: &[u8; 8] = b"RUSTEXFM";
-const VERSION: u16 = 2;
+const VERSION: u16 = 3;
 /// Bumped whenever serialized state changes meaning without changing the
 /// wire layout (new engine invariants the loaded state must satisfy, e.g.
 /// guards added to `check_dumpable` after the file was written). A `.fmt`

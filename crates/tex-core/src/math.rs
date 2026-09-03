@@ -35,6 +35,16 @@ pub fn gstyle_of(m: MathStyle) -> GStyle {
         MathStyle::ScriptScript => 6,
     }
 }
+/// tex.web `half(x)`: round x/2, .5 up (odd positives toward +inf, odd
+/// negatives toward -inf exactly as `(x+1) div 2` in Pascal)
+#[inline]
+fn half_sp(x: i64) -> i64 {
+    if x % 2 == 0 {
+        x / 2
+    } else {
+        (x + 1) / 2
+    }
+}
 
 /// font table index (text/script/scriptscript) for a style: D,T -> 0; S -> 1; SS -> 2
 #[inline]
@@ -154,12 +164,21 @@ fn unpack_radical(t: i32) -> (i32, i32) {
 
 #[inline]
 fn delim_code_parts(code: i32) -> (u8, u8, u8, u8) {
+    // 27-bit tex.web delimiter: class(3) @24, small fam(4) @20, small
+    // char(8) @12, large fam(4) @8, large char(8) @0 — the small fam mask
+    // must be 4 bits; 0xFF leaks the class into the family (e.g. `\{` =
+    // "426630A decoded to fam 0x42=66 → glyph 'f' instead of fam 2's brace)
     (
-        ((code >> 20) & 0xFF) as u8,
+        ((code >> 20) & 0xF) as u8,
         ((code >> 12) & 0xFF) as u8,
         ((code >> 8) & 0xF) as u8,
         (code & 0xFF) as u8,
     )
+}
+
+/// public view for maincontrol's standalone \delimiter arm
+pub fn delim_code_parts_pub(code: i32) -> (u8, u8, u8, u8) {
+    delim_code_parts(code)
 }
 
 #[inline]
@@ -189,8 +208,12 @@ impl Engine {
         let mut display = _display;
         let trace = crate::debug_flag("MATHTRACE");
         if !display {
-            // tex.web §1134: a second math_shift promotes to display math
-            let t = self.get_token();
+            // tex.web §1134: a second math_shift promotes to display math.
+            // The peek must be RAW: get_token processes \if conditionals
+            // (tex.web get_next), so `$\ifmmode...` would evaluate \ifmmode
+            // BEFORE mode=Math is set (getting false) and the skipped
+            // branch's tokens would be consumed here
+            let t = self.raw_token();
             if trace {
                 eprintln!("ENTER-MATH mode={:?} peek={:?}", self.mode,
                     if t.is_cs() { format!("cs{}", t.cs_id()) } else { format!("cc{}:{:#x}", t.cc(), t.chr()) });
@@ -208,9 +231,90 @@ impl Engine {
         }
         if display {
             if self.mode == Mode::Horizontal {
+                // tex.web §1181 (init_math): `head=tail` (nothing typeset
+                // yet) gives \predisplaysize = -max_dimen; otherwise the
+                // interrupted paragraph is broken and its final line is
+                // measured — before the end-of-paragraph reset clears
+                // \parshape/\hangindent state.
+                let was_empty = self.cur_list.is_empty();
+                // tex.web §21764: the interrupted paragraph's final widow
+                // penalty is \displaywidowpenalty, not \widowpenalty
+                if !was_empty {
+                    self.next_par_widow = Some(
+                        self.eqtb.int_params[IntParam::DisplayWidowPenalty.idx() as usize],
+                    );
+                }
+                let shape = std::mem::take(&mut self.par_shape);
+                let hang = (
+                    self.eqtb.dim_params[DimParam::HangIndent.idx() as usize] as i64,
+                    self.eqtb.int_params[IntParam::HangAfter.idx() as usize] as i64,
+                );
                 self.par_primitive();
+                let prev_graf = self.prev_graf as i64;
+                let hsize =
+                    self.eqtb.dim_params[DimParam::HSize.idx() as usize] as i64;
+                // §1184: display width/indent from \parshape (1-based entry
+                // prev_graf+2, clamped to n) or \hangindent, else \hsize/0
+                let (l, s) = if !shape.is_empty() {
+                    let n = shape.len() as i64;
+                    let k = (prev_graf + 2).min(n);
+                    let e = shape[(k - 1) as usize];
+                    (e.1 as i64, e.0 as i64) // engine stores (indent, width)
+                } else if hang.0 != 0
+                    && ((hang.1 >= 0 && prev_graf + 2 > hang.1)
+                        || (prev_graf + 1 < -hang.1))
+                {
+                    (hsize - hang.0.abs(), if hang.0 > 0 { hang.0 } else { 0 })
+                } else {
+                    (hsize, 0)
+                };
+                self.pre_display_l = l;
+                self.pre_display_s = s;
+                self.pre_display_size = if was_empty {
+                    -0x3FFF_FFFF
+                } else {
+                    // the broken lines were just appended to the page list;
+                    // the final line is the last hbox there
+                    match self.page_list.iter().rev().find(|n| {
+                        matches!(n, Node::Box { kind, .. } if *kind == crate::boxes::HBOX)
+                    }) {
+                        Some(line) => self.pre_display_size_of(line),
+                        None => -0x3FFF_FFFF,
+                    }
+                };
+            } else {
+                // display entered from vertical mode: nothing precedes it
+                self.pre_display_size = -0x3FFF_FFFF;
+                self.pre_display_l =
+                    self.eqtb.dim_params[DimParam::HSize.idx() as usize] as i64;
+                self.pre_display_s = 0;
             }
+            // tex.web push_math: the display math group level (exit_math /
+            // \\endgroup pop it; dropping this push leaves one pop too many
+            // and desyncs the \\end{equation} replay)
             self.eqtb.push_level(crate::eqtb::LevelType::Group);
+            // tex.web §1181 init_math: the display parameters are defined
+            // inside the math group — amsmath's measuring/tag machinery
+            // reads \displaywidth, \displayindent and \predisplaysize.
+            self.eqtb.assign_dim_param(
+                crate::prim::DimParam::DisplayWidth,
+                self.pre_display_l as i32,
+                false,
+            );
+            self.eqtb.assign_dim_param(
+                crate::prim::DimParam::DisplayIndent,
+                self.pre_display_s as i32,
+                false,
+            );
+            self.eqtb.assign_dim_param(
+                crate::prim::DimParam::PreDisplaySize,
+                self.pre_display_size as i32,
+                false,
+            );
+            // tex.web push_math: eq_word_define(cur_fam_code,-1) — \\fam is
+            // -1 inside every math group, restored at group end
+            self.eqtb
+                .assign_int_param(crate::prim::IntParam::CurFam, -1, false);
             let page = std::mem::take(&mut self.page_list);
             self.saved_lists.push((
                 self.mode,
@@ -221,6 +325,12 @@ impl Engine {
             self.par_page_lists.push(page);
             self.mode = Mode::DisplayMath;
             self.math_style_stack.push(MathStyle::Display);
+            // tex.web init_math: \everydisplay (not \everymath) at display
+            // entry — setspace scales the display skips from there
+            let toks = (*self.eqtb.tok_params[crate::prim::ToksParam::EveryDisplay.idx() as usize]).clone();
+            if !toks.is_empty() {
+                self.push_tokens(toks);
+            }
         } else {
             self.saved_lists.push((
                 self.mode,
@@ -229,6 +339,9 @@ impl Engine {
                 self.space_factor,
             ));
             self.eqtb.push_level(crate::eqtb::LevelType::Group);
+            // tex.web push_math: eq_word_define(cur_fam_code,-1)
+            self.eqtb
+                .assign_int_param(crate::prim::IntParam::CurFam, -1, false);
             self.mode = Mode::Math;
             self.math_style_stack.push(MathStyle::Text);
         }
@@ -236,7 +349,21 @@ impl Engine {
         self.left_delim = None;
         self.right_delim = None;
         self.math_limits = None;
-        self.run_everymath();
+        // tex.web: \everymath only for inline math (displays ran
+        // \everydisplay above)
+        if self.mode != Mode::DisplayMath {
+            self.run_everymath();
+        }
+    }
+
+    /// tex.web start_eq_no (§21741): \eqno/\leqno in display math parks the
+    /// current mlist as the formula; the tag collects into a fresh list
+    /// until the closing display shift
+    pub fn start_eq_no(&mut self, leqno: bool) {
+        let formula = self.math_lists.pop().unwrap_or_default();
+        self.pending_display_formula = Some(formula);
+        self.math_lists.push(crate::boxes::NodeList::new());
+        self.eqno_leqno = Some(leqno);
     }
 
     fn run_everymath(&mut self) {
@@ -255,6 +382,25 @@ impl Engine {
             }
         }
         let mlist = self.math_lists.pop().unwrap_or_default();
+        // tex.web after_math reads the display registers BEFORE unsave:
+        // assignments made inside the display (setspace's \everydisplay
+        // scales the display skips group-locally) must still apply
+        let disp_regs = if was_display {
+            let g = |p: crate::prim::GlueParam| {
+                self.eqtb.glue_params[p.idx() as usize].clone()
+            };
+            let i = |p: crate::prim::IntParam| self.eqtb.int_params[p.idx() as usize];
+            Some((
+                g(crate::prim::GlueParam::AboveDisplaySkip),
+                g(crate::prim::GlueParam::BelowDisplaySkip),
+                g(crate::prim::GlueParam::AboveDisplayShortSkip),
+                g(crate::prim::GlueParam::BelowDisplayShortSkip),
+                i(crate::prim::IntParam::PreDisplayPenalty),
+                i(crate::prim::IntParam::PostDisplayPenalty),
+            ))
+        } else {
+            None
+        };
         self.pop_group();
         let (outer_mode, outer_list, pd, sf) = self.saved_lists.pop().unwrap_or((self.mode, std::mem::take(&mut self.cur_list), self.prev_depth, self.space_factor));
         self.math_style_stack.pop();
@@ -262,109 +408,254 @@ impl Engine {
         self.left_delim = None;
         self.right_delim = None;
         self.math_limits = None;
-        let g: GStyle = if was_display { 0 } else { 2 };
-        let hlist = self.mlist_to_hlist(&mlist, g);
-        let packed = hpack(hlist, None, HBOX, &self.eqtb);
-        let hbox = packed.node;
+        self.math_group_marks.clear();
         self.mode = outer_mode;
         self.prev_depth = pd;
         self.space_factor = sf;
         self.cur_list = outer_list;
         if was_display {
-            self.finish_display_math(hbox);
-        } else {
-            match self.mode {
-                Mode::Horizontal => {
-                    self.cur_list.push(hbox);
-                    self.space_factor = 1000;
-                }
-                Mode::Vertical | Mode::InternalVertical => {
-                    self.vlist_append(hbox);
-                }
-                _ => {
-                    self.cur_list.push(hbox);
-                }
-            }
-        }
-
-    }
-
-    fn finish_display_math(&mut self, hbox: Node) {
-        if crate::debug_flag("MATHTRACE") {
-            eprintln!("FINISH-DISPLAY hbox_whd=({},{},{}) par_pages={} page_list={}",
-                self.box_w(&hbox), { let (_, h, _) = box_dims(&hbox); h }, { let (_, _, d) = box_dims(&hbox); d },
-                self.par_page_lists.len(), self.page_list.len());
-        }
-        if let Some(page) = self.par_page_lists.pop() {
-            let mut page = page;
-            let is_short = match page.iter().rev().find(|n| matches!(n, Node::Box { .. })) {
-                Some(last_box) => {
-                    let text_w = match last_box {
-                        Node::Box { list: inner, .. } => {
-                            let mut w = 0i64;
-                            let mut last_non_glue = 0i64;
-                            for node in inner {
-                                match node {
-                                    Node::Char { c, font } => {
-                                        if let Some(f) = self.eqtb.fonts.get(*font as usize) {
-                                            w += f.char_width(*c) as i64;
-                                        }
-                                        last_non_glue = w;
-                                    }
-                                    Node::Ligature { lig_width, .. } => {
-                                        w += *lig_width as i64;
-                                        last_non_glue = w;
-                                    }
-                                    Node::Kern(k) | Node::ExplicitKern(k) => {
-                                        w += *k as i64;
-                                        last_non_glue = w;
-                                    }
-                                    Node::Glue(g) if g.stretch_order == 0 => {
-                                        w += g.width as i64;
-                                    }
-                                    _ => {}
-                                }
-                            }
-                            last_non_glue
-                        }
-                        _ => 0i64,
-                    };
-                    let (dw, _, _) = box_dims(&hbox);
-                    let hsize = self.eqtb.dim_params[crate::prim::DimParam::HSize.idx() as usize];
-                    let s = (hsize as i64 - dw as i64) / 2;
-                    text_w < s
-                }
-                None => true,
-            };
-            let (above, below) = if is_short {
+            // tex.web after_math: with \eqno/\leqno the popped list is the
+            // TAG; the formula was parked by start_eq_no
+            let (formula, tag) = if let Some(leqno) = self.eqno_leqno.take() {
                 (
-                    self.eqtb.glue_params[crate::prim::GlueParam::AboveDisplayShortSkip.idx() as usize].clone(),
-                    self.eqtb.glue_params[crate::prim::GlueParam::BelowDisplayShortSkip.idx() as usize].clone(),
+                    self.pending_display_formula.take().unwrap_or_default(),
+                    Some((mlist, leqno)),
                 )
             } else {
-                (
-                    self.eqtb.glue_params[crate::prim::GlueParam::AboveDisplaySkip.idx() as usize].clone(),
-                    self.eqtb.glue_params[crate::prim::GlueParam::BelowDisplaySkip.idx() as usize].clone(),
-                )
+                (mlist, None)
             };
-            // tex.web: break allowed (not forced) around a display:
-            // \predisplaypenalty, \abovedisplayskip, box, \belowdisplayskip,
-            // \postdisplaypenalty (defaults 100/0).
-            let pre = self.eqtb.int_params[crate::prim::IntParam::PreDisplayPenalty.idx() as usize];
-            let post = self.eqtb.int_params[crate::prim::IntParam::PostDisplayPenalty.idx() as usize];
+            self.finish_display_math(formula, tag, disp_regs.unwrap());
+            return;
+        }
+        let hlist = self.mlist_to_hlist(&mlist, 2);
+        let hbox = hpack(hlist, None, HBOX, &self.eqtb).node;
+        match self.mode {
+            Mode::Horizontal => {
+                self.cur_list.push(hbox);
+                self.space_factor = 1000;
+            }
+            Mode::Vertical | Mode::InternalVertical => {
+                self.vlist_append(hbox);
+            }
+            _ => {
+                self.cur_list.push(hbox);
+            }
+        }
+    }
+
+
+    fn finish_display_math(
+        &mut self,
+        formula: NodeList,
+        tag: Option<(NodeList, bool)>,
+        regs: (crate::boxes::Glue, crate::boxes::Glue, crate::boxes::Glue, crate::boxes::Glue, i32, i32),
+    ) {
+        if let Some(mut page) = self.par_page_lists.pop() {
+            // tex.web §22504 (finish displayed math): z = \displaywidth,
+            // s = \displayindent, b = the formula at natural width
+            let z = self.pre_display_l;
+            let s = self.pre_display_s;
+            let fh = self.mlist_to_hlist(&formula, 0);
+            let first_is_glue = matches!(fh.first(), Some(Node::Glue(_)));
+            let mut r0 = hpack(fh, None, HBOX, &self.eqtb);
+            let mut w = self.box_w(&r0.node) as i64;
+            // the tag (text style, natural width); e = its width, e=0 means
+            // "on a line by itself" (or absent)
+            let mut a: Option<Node> = None;
+            let mut leqno = false;
+            let mut e = 0i64;
+            let mut q = 0i64;
+            if let Some((tl, lq)) = tag {
+                leqno = lq;
+                let th = self.mlist_to_hlist(&tl, 2);
+                let ab = hpack(th, None, HBOX, &self.eqtb).node;
+                e = self.box_w(&ab) as i64;
+                // q = e + math_quad(text_size): quad of the fam-2 symbols font
+                let mq = self
+                    .fam_font(0, 2)
+                    .map(|(_, f)| f.quad() as i64)
+                    .unwrap_or(0);
+                q = e + mq;
+                a = Some(ab);
+            }
+            // §22537 squeeze: if the formula + tag overflow the line, re-pack
+            // the formula to z-q when shrink/stretch allows; otherwise the
+            // tag drops to its own line (e := 0)
+            if w + q > z {
+                let can_squeeze = e != 0
+                    && (w - r0.shrink[0] + q <= z
+                        || r0.stretch[1] != 0
+                        || r0.stretch[2] != 0
+                        || r0.stretch[3] != 0);
+                if can_squeeze {
+                    if let Node::Box { list, .. } = r0.node {
+                        r0 = hpack(list, Some((z - q) as i32), HBOX, &self.eqtb);
+                    }
+                } else {
+                    e = 0;
+                    q = 0;
+                    if w > z {
+                        if let Node::Box { list, .. } = r0.node {
+                            r0 = hpack(list, Some(z as i32), HBOX, &self.eqtb);
+                        }
+                    }
+                }
+                w = self.box_w(&r0.node) as i64;
+            }
+            // §22560: centering displacement; too close to the tag -> center
+            // in the remaining space (or honor leading user glue)
+            let mut d = half_sp(z - w);
+            if e > 0 && d < 2 * e {
+                d = half_sp(z - w - e);
+                if first_is_glue {
+                    d = 0;
+                }
+            }
+            // skip selection (§22578): normal skips unless there is clearance
+            // for the short pair (and never short with \leqno)
+            let is_short = d + s > self.pre_display_size && !leqno;
+            let (above, below) = if is_short {
+                (regs.2.clone(), regs.3.clone())
+            } else {
+                (regs.0.clone(), regs.1.clone())
+            };
+            let pre = regs.4;
+            let post = regs.5;
+            let mut g2 = below;
             page.push(Node::Penalty(pre));
-            page.push(Node::Glue(above));
-            page.push(hbox);
-            page.push(Node::Glue(below));
+            if leqno && e == 0 {
+                // \leqno with the tag on its own line ABOVE the formula
+                if let Some(mut ab) = a.take() {
+                    if let Node::Box { shift, .. } = &mut ab {
+                        *shift = s as i32;
+                    }
+                    page.push(ab);
+                    page.push(Node::Penalty(crate::scaled::INF_PENALTY));
+                }
+            } else {
+                page.push(Node::Glue(above));
+            }
+            // the display line itself (§22592): with a tag, b becomes
+            // [formula, kern z-w-e-d, tag] (or reversed for \leqno)
+            let mut line = r0.node;
+            if e != 0 {
+                let ab = a.take().unwrap();
+                let kern = Node::ExplicitKern((z - w - e - d) as i32);
+                let (seq, nd) = if leqno {
+                    (vec![ab, kern, line], 0i64)
+                } else {
+                    (vec![line, kern, ab], d)
+                };
+                d = nd;
+                line = hpack(seq, None, HBOX, &self.eqtb).node;
+            }
+            if let Node::Box { shift, .. } = &mut line {
+                *shift = (s + d) as i32;
+            }
+            page.push(line);
+            // §22598: a right tag on its own line follows the display, flush
+            // right, after an infinite penalty; the below-skip is suppressed
+            if e == 0 && !leqno {
+                if let Some(mut ab) = a.take() {
+                    let aw = self.box_w(&ab) as i64;
+                    page.push(Node::Penalty(crate::scaled::INF_PENALTY));
+                    if let Node::Box { shift, .. } = &mut ab {
+                        *shift = (s + z - aw) as i32;
+                    }
+                    page.push(ab);
+                    g2 = crate::boxes::Glue::zero();
+                }
+            }
             page.push(Node::Penalty(post));
+            if g2.width != 0 || g2.stretch != 0 || g2.shrink != 0 {
+                page.push(Node::Glue(g2));
+            }
             self.page_list = page;
             self.mode = Mode::Vertical;
             self.cur_list = Vec::new();
-            self.build_page();
+            // tex.web finish_display does NOT run build_page: the display
+            // nodes stay on the vlist (visible to \lastskip — LaTeX's
+            // theorem \addpenalty/\@xaddvskip dances read them) until the
+            // next box append or paragraph end
         }
+        // tex.web resume_after_display (§1194): any text following the
+        // display resumes hmode directly — start_paragraph must not treat
+        // it as a new paragraph (\parskip/\parindent/\everypar skipped)
+        self.resume_after_display = true;
+    }
+
+    /// tex.web §1181 ("Calculate the natural width, w"): \predisplaysize is
+    /// `shift + 2em(cur font)` plus the natural width of the final line up
+    /// to and including its last *visible* node (chars, ligs, boxes, rules,
+    /// leaders). A kern/math-kern accumulates width without being visible;
+    /// a glue whose stretch or shrink is *active* in the set line (same
+    /// order as the box's glue sign) voids the remainder → max_dimen, which
+    /// makes the display use the full skips.
+    fn pre_display_size_of(&self, line: &Node) -> i64 {
+        const MAX_DIM: i64 = 0x3FFF_FFFF;
+        let Node::Box { list, shift, glue_sign, glue_order, .. } = line else {
+            return -MAX_DIM;
+        };
+        let quad = self
+            .eqtb
+            .fonts
+            .get(self.eqtb.cur_font_val as usize)
+            .map(|f| f.quad() as i64)
+            .unwrap_or(0);
+        let mut v = *shift as i64 + 2 * quad;
+        let mut w: i64 = -MAX_DIM;
+        let voids = |g: &Glue| -> bool {
+            (*glue_sign == 1 && g.stretch != 0 && g.stretch_order as u8 == *glue_order)
+                || (*glue_sign == 2 && g.shrink != 0 && g.shrink_order as u8 == *glue_order)
+        };
+        for node in list {
+            let (d, visible): (i64, bool) = match node {
+                Node::Char { c, font } => (
+                    self.eqtb
+                        .fonts
+                        .get(*font as usize)
+                        .map(|f| f.char_width(*c) as i64)
+                        .unwrap_or(0),
+                    true,
+                ),
+                Node::Ligature { lig_width, .. } => (*lig_width as i64, true),
+                Node::Box { w, .. } | Node::Rule { width: w, .. } => (*w as i64, true),
+                Node::Kern(k) | Node::ExplicitKern(k) | Node::MathKern(k, _) => {
+                    (*k as i64, false)
+                }
+                Node::Glue(g) => {
+                    if voids(g) {
+                        v = MAX_DIM;
+                    }
+                    (g.width as i64, false)
+                }
+                Node::Leaders { glue, .. } => {
+                    if voids(glue) {
+                        v = MAX_DIM;
+                    }
+                    (glue.width as i64, true)
+                }
+                _ => (0, false),
+            };
+            if visible {
+                if v < MAX_DIM {
+                    v += d;
+                    w = v;
+                } else {
+                    w = MAX_DIM;
+                    break;
+                }
+            } else if v < MAX_DIM {
+                v += d;
+            }
+        }
+        w
     }
 
     pub fn append_mlist_node(&mut self, n: Node) {
+        if crate::debug_flag("MDUMP") && matches!(n, Node::DelimBox { .. } | Node::MathChar { .. }) {
+            eprintln!("MDUMP {:?}", n);
+        }
         if let Some(l) = self.math_lists.last_mut() {
             l.push(n);
         } else {
@@ -373,18 +664,21 @@ impl Engine {
     }
 
     pub fn append_mathchar(&mut self, mc: u16) {
-        let mut class = (mc >> 12) as u8;
+        let class = (mc >> 12) as u8;
         let mut fam = ((mc >> 8) & 0xF) as u8;
         let c = (mc & 0xFF) as u8;
+        // tex.web §17440: a class-7 (varfam) char takes the current \fam
+        // when it is in range — \mathrm/\operator@font work through this
+        // (\fam0 makes `ln` in \ln come out upright, not math italic)
         if class == 7 {
-            let cur_fam = self.eqtb.int_params[crate::prim::IntParam::CurFam.idx() as usize];
-            if cur_fam >= 0 && cur_fam < 16 {
-                fam = cur_fam as u8;
+            let cur = self.eqtb.int_params[crate::prim::IntParam::CurFam.idx() as usize];
+            if (0..16).contains(&cur) {
+                fam = cur as u8;
             }
-            class = 0;
         }
         self.append_mlist_node(Node::MathChar { fam, c, class });
     }
+
 
     pub fn style_font(&self, fam: u8) -> u16 {
         let g = gstyle_of(self.cur_math_style());
@@ -712,7 +1006,7 @@ impl Engine {
         }
         if let Some(Equiv::Prim(Prim::Delimiter)) = self.eqtb.resolve(t.cs_id()).cloned() {
             let v = self.scan_int();
-            if v < 0 || v >= 0x4000000 {
+            if v < 0 || v >= 0x8000000 {
                 self.error("Invalid delimiter code");
                 return 0;
             }
@@ -721,7 +1015,7 @@ impl Engine {
         // tex.web: back_input, then scan a 27-bit integer constant
         self.pushed.push(t);
         let v = self.scan_int();
-        if v < 0 || v >= 0x4000000 {
+        if v < 0 || v >= 0x8000000 {
             self.error("Invalid delimiter code");
             return 0;
         }
@@ -733,7 +1027,16 @@ impl Engine {
         // The list slot itself MUST stay: the Frac node is appended to it (at
         // the enclosing group/top level), so popping it here would strand the
         // `\right`/`$` that closes the enclosing group.
-        let num = self.math_lists.last_mut().map(std::mem::take).unwrap_or_default();
+        // tex.web math_fraction: the numerator is the current mlist's
+        // content SINCE THE INNERMOST `{` (subformula boundary), not the
+        // whole level — `b^W=\frac{A}{B}` keeps `b^W=` outside the fraction
+        let num = match self.math_lists.last_mut() {
+            Some(l) => match self.math_group_marks.last().copied() {
+                Some(m) if m <= l.len() => l.split_off(m),
+                _ => std::mem::take(l),
+            },
+            None => Vec::new(),
+        };
         // denominator is scanned into a temporary list on top
         self.math_lists.push(Vec::new());
         // tex.web: the lexically-following arguments (\above's dimen, the
@@ -787,6 +1090,18 @@ impl Engine {
                 break;
             }
             if t.is_char() && matches!(t.cc(), 2 | 3) {
+                self.pushed.push(t);
+                break;
+            }
+            // tex.web: a display's \eqno/\leqno also closes the fraction's
+            // denominator — the tag is a separate sublist, not formula tail
+            if t.is_cs()
+                && matches!(
+                    self.eqtb.resolve(t.cs_id()),
+                    Some(crate::eqtb::Equiv::Prim(crate::prim::Prim::EqNo))
+                        | Some(crate::eqtb::Equiv::Prim(crate::prim::Prim::LeqNo))
+                )
+            {
                 self.pushed.push(t);
                 break;
             }
@@ -1169,7 +1484,7 @@ impl Engine {
             match self.eqtb.resolve(t.cs_id()).cloned() {
                 Some(Equiv::Prim(Prim::Delimiter)) => {
                     let v = self.scan_int();
-                    if v < 0 || v >= 0x4000000 {
+                    if v < 0 || v >= 0x8000000 {
                         self.error("Invalid delimiter code");
                         return;
                     }
@@ -1779,6 +2094,13 @@ impl Engine {
             _ => return 0,
         };
         let mut k = ci.remainder as usize;
+        // tex.web §10618 restart: first instruction with skip_byte > 128
+        // redirects the program start to 256*op_byte + rem_byte.
+        if let Some(first) = f.lig_kern.get(k) {
+            if first.skip > 128 {
+                k = 256 * first.op as usize + first.rem as usize;
+            }
+        }
         for _ in 0..(f.lig_kern.len() + 1) {
             let Some(step) = f.lig_kern.get(k) else {
                 return 0;
@@ -1892,6 +2214,12 @@ impl Engine {
                     break;
                 }
             }
+        }
+        if crate::debug_flag("VDELIM") {
+            eprintln!(
+                "VDELIM code={:#x} parts=({},{},{},{}) found={:?} best={:?}",
+                code, sf, sc, lf, lc, found, best
+            );
         }
         match found.or(best) {
             Some((sz, fam, c)) => {
@@ -2084,7 +2412,7 @@ mod tests {
     /// run a complete document (preamble + body) in one engine pass: the
     /// job ends when the first pushed file is exhausted, so setup and body
     /// must share a file
-    fn run_doc(body: &str) -> Engine {
+    pub(crate) fn run_doc(body: &str) -> Engine {
         let mut e = Engine::new(true);
         e.init_primitives();
         e.add_nullfont();
@@ -2845,6 +3173,34 @@ mod probe4 {
                 eprintln!("CMW {}", l.trim_start());
             }
         }
+    }
+    #[test]
+    fn probe_eqno_frac_scratch_no_eqno() {
+        let mut e = Engine::new(false);
+        e.init_primitives();
+        crate::format::load_format_into(std::path::Path::new("/home/leo/dd/tex/target/debug/pdflatex.fmt"), &mut e).unwrap();
+        e.ini_mode = false;
+        e.end_occurred = false;
+        let body = "\\documentclass[12pt]{article}\\usepackage[T1]{fontenc}\\usepackage{amsmath}\\usepackage{newtx}\\begin{document}$$b^{W}=\\frac{\\lambda+\\zeta\\kappa}{\\lambda+\\theta+\\zeta},\\qquad \\frac{\\partial w^{*}}{\\partial\\lambda}<0$$";
+        e.input.push_file("probe.tex".to_string(), body.as_bytes().to_vec());
+        e.run();
+        eprintln!("errors={} term_tail={}", e.error_count, &e.term[e.term.len().saturating_sub(200)..]);
+        fn dump(n: &Node, ind: usize, depth: usize) {
+            if depth > 8 { return; }
+            let pad = "  ".repeat(ind);
+            match n {
+                Node::Box { kind, w, h, d, shift, list, .. } => {
+                    eprintln!("{}box kind={} w={} h={} d={} shift={}", pad, kind, w, h, d, shift);
+                    for c in list { dump(c, ind + 1, depth + 1); }
+                }
+                Node::Glue(g) => eprintln!("{}glue w={} st={} sh={}", pad, g.width, g.stretch, g.shrink),
+                Node::Kern(k) | Node::ExplicitKern(k) => eprintln!("{}kern {}", pad, k),
+                Node::Penalty(p) => eprintln!("{}pen {}", pad, p),
+                Node::Rule { width, height, depth } => eprintln!("{}rule w={} h={} d={}", pad, width, height, depth),
+                other => eprintln!("{}{:?}", pad, other),
+            }
+        }
+        for n in &e.page_list { dump(n, 0, 0); }
     }
 }
 

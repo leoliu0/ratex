@@ -207,10 +207,32 @@ pub struct Engine {
     pub current_macro: String,
     pub loop_traced: bool,
     pub math_style_stack: Vec<crate::boxes::MathStyle>,
+    /// tex.web §1181 (init_math): \\predisplaysize, \\displaywidth and
+    /// \\displayindent are computed at display entry from the final line of
+    /// the interrupted paragraph and consumed by finish_display.
+    pub pre_display_size: i64,
+    pub pre_display_l: i64,
+    pub pre_display_s: i64,
+    /// when a display interrupts a paragraph, the paragraph's widow penalty
+    /// becomes \displaywidowpenalty (tex.web §21764 line_break argument);
+    /// set by enter_math, consumed by end_paragraph
+    pub next_par_widow: Option<i32>,
+    /// \eqno/\leqno state: on the primitive the formula mlist is parked here
+    /// and the tag collects into a fresh list (tex.web start_eq_no); the
+    /// bool marks \leqno (tag on the left)
+    pub pending_display_formula: Option<Vec<crate::boxes::Node>>,
+    pub eqno_leqno: Option<bool>,
+    /// tex.web subformula boundaries in math mode: positions in the current
+    /// math list where `{` groups opened — \over's numerator stops there
+    pub math_group_marks: Vec<usize>,
     pub scanner_status: ScannerStatus,
     pub saved_lists: Vec<(Mode, Vec<crate::boxes::Node>, i32, i32)>,
     /// saved state pushed by paragraph start (pops with \par, not with groups)
     pub par_saves: usize,
+    /// set when a display just ended: text resumes hmode directly
+    /// (tex.web resume_after_display §1194 — no \parskip, no \parindent,
+    /// no \everypar); consumed by the next start_paragraph
+    pub resume_after_display: bool,
     pub unless_next: bool,
     pub last_badness: i32,
     pub pdf_last_x: i32,
@@ -262,6 +284,7 @@ impl Engine {
             eqtb: Eqtb::new(ini_mode),
             input: InputStack::new(),
             par_saves: 0,
+            resume_after_display: false,
             pending_retokenize: false,
             cur_tok: crate::token::EOF_TOKEN,
             cur_cs: None,
@@ -368,6 +391,13 @@ impl Engine {
             page_shrink: [0; 4],
             vsplat_remainder: None,
             math_lists: Vec::new(),
+            pre_display_size: -0x3FFF_FFFF,
+            pre_display_l: 0,
+            next_par_widow: None,
+            pending_display_formula: None,
+            eqno_leqno: None,
+            math_group_marks: Vec::new(),
+            pre_display_s: 0,
             gt_steps: 0,
             rt_steps: 0,
             mac_depth: 0,
@@ -606,6 +636,7 @@ impl Engine {
             (b"boxmaxdepth", DimParam::BoxMaxDepth),
             (b"displayindent", DimParam::DisplayIndent),
             (b"displaywidth", DimParam::DisplayWidth),
+            (b"predisplaysize", DimParam::PreDisplaySize),
             (b"hangindent", DimParam::HangIndent),
             (b"emergencystretch", DimParam::EmergencyStretch),
             (b"pagegoal", DimParam::PageGoal),
@@ -749,13 +780,17 @@ impl Engine {
         d!(eng, b"splitbotmarks", SplitBotMark);
         d!(eng, b"shipout", ShipOut);
         d!(eng, b"char", Char);
-        d!(eng, b"accent", Accent);
+        d!(eng, b"radical", Radical);
+        d!(eng, b"delimiter", Delimiter);
+        d!(eng, b"eqno", EqNo);
+        d!(eng, b"leqno", LeqNo);
         d!(eng, b"mathchar", MathChar);
         d!(eng, b"mathaccent", MathAccent);
         d!(eng, b"overline", Overline);
         d!(eng, b"underline", Underline);
         d!(eng, b"radical", Radical);
-        d!(eng, b"delimiter", Delimiter);
+        d!(eng, b"eqno", EqNo);
+        d!(eng, b"leqno", LeqNo);
         d!(eng, b"above", Above);
         d!(eng, b"over", Over);
         d!(eng, b"atop", Atop);

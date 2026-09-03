@@ -133,13 +133,19 @@ impl Engine {
                             self.eqtb.assign(id, Equiv::Prim(Prim::Relax), true);
                             return;
                         }
-                        // tex.web \S358 tokenizes escape+space as a plain
-                        // spacer token, never a cs. Formats dumped before
-                        // that fix carry `\ ` as an (undefined) cs [0x20];
-                        // dispatching it must yield the space it would have
-                        // been: push back a real space token and re-dispatch.
+                        // Control space `\ ` (ex_space in tex.web): plain
+                        // interword glue, no space-factor scaling. Formats
+                        // dumped before the primitive was registered carry
+                        // `\ ` as an (undefined) cs [0x20]; dispatch it to
+                        // the same handler.
                         if name_bytes == [0x20] {
-                            self.pushed.push(Token::char(10, 0x20));
+                            match self.mode {
+                                Mode::Vertical | Mode::InternalVertical => {
+                                    self.pushed.push(Token::from_cs(id));
+                                    self.start_paragraph(true);
+                                }
+                                _ => self.ex_space(),
+                            }
                             return;
                         }
                         if name_bytes.contains(&b'_') {
@@ -284,8 +290,24 @@ impl Engine {
             let cc = t.cc();
             let c = t.chr() as u8;
             match cc {
-                1 => self.begin_group(true),
-                2 => self.end_group(),
+                1 => {
+                    // tex.web: a `{` in math mode opens a subformula whose
+                    // mlist boundary limits \over's numerator; the engine
+                    // keeps one flat list per math level and records the
+                    // boundary as a position mark
+                    if self.mode.is_m() {
+                        self.math_group_marks.push(
+                            self.math_lists.last().map(|l| l.len()).unwrap_or(0),
+                        );
+                    }
+                    self.begin_group(true);
+                }
+                2 => {
+                    if self.mode.is_m() {
+                        self.math_group_marks.pop();
+                    }
+                    self.end_group();
+                }
                 3 => {
                     // math shift
                     if self.mode.is_m() {
@@ -543,16 +565,12 @@ impl Engine {
                     return true;
                 }
                 self.scan_optional_equals();
-                match ip {
-                    IntParam::CurFam => {
-                        let v = self.scan_int();
-                        self.eqtb.int_params[ip.idx() as usize] = v;
-                    }
-                    _ => {
-                        let v = self.scan_int();
-                        self.eqtb.assign_int_param(ip, v, self.global_flag);
-                    }
-                }
+                // tex.web §17440: \fam is an ordinary eq_word_define —
+                // level-tracked so \mathrm/\operator@font groups restore
+                // cur_fam at \egroup (a direct write leaks fam 0 into the
+                // following subscripts, turning math italic upright)
+                let v = self.scan_int();
+                self.eqtb.assign_int_param(ip, v, self.global_flag);
                 self.clear_prefixes();
                 true
             }

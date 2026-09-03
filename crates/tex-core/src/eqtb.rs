@@ -191,9 +191,21 @@ impl Eqtb {
             crate::token::CatTable::new().0
         };
         let mut math_code = [0u16; 256];
-        // tex.web iniTeX default: mathcode(c) = 7*256 + c for visible chars
-        for c in 32..256u16 {
-            math_code[c as usize] = (7 << 8) | c;
+        // tex.web §4838 INITEX defaults: mathcode(k)=k (class 0, fam 0) for
+        // every char; digits get k+var_code (class 7, fam 0); letters get
+        // k+var_code+0x100 (class 7, fam 1). The var_code class makes the
+        // family follow \fam; the fam field is the fallback.
+        for c in 0..256u16 {
+            math_code[c as usize] = c;
+        }
+        for c in b'0'..=b'9' {
+            math_code[c as usize] = 0x7000 | c as u16;
+        }
+        for c in b'A'..=b'Z' {
+            math_code[c as usize] = 0x7100 | c as u16;
+        }
+        for c in b'a'..=b'z' {
+            math_code[c as usize] = 0x7100 | c as u16;
         }
         let mut del_code = [-1i32; 256];
         for (c, d) in [
@@ -211,11 +223,12 @@ impl Eqtb {
         let mut lc_code = [0u8; 256];
         let mut sf_code = [1000u16; 256];
         let mut uc_code = [0u8; 256];
-        // tex.web §1252 INITEX defaults
+        // tex.web §1252 INITEX: sf_code = 999 for UPPERCASE letters only;
+        // lowercase keeps the default 1000. Setting a-z to 999 shrank every
+        // interword glue by 0.1% and flipped marginal line breaks.
         for c in b'a'..=b'z' {
             lc_code[c as usize] = c;
             uc_code[c as usize] = c - 32;
-            sf_code[c as usize] = 999;
         }
         for c in b'A'..=b'Z' {
             lc_code[c as usize] = c + 32;

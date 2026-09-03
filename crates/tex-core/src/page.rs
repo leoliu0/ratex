@@ -1128,7 +1128,12 @@ mod tests {
 
     fn vbox_parts(n: &Node) -> (usize, i32) {
         match n {
-            Node::Box { list, h, .. } => (list.len(), *h),
+            // count line boxes only: vlist_append inserts interline glue
+            // between them since d8b1214c
+            Node::Box { list, h, .. } => (
+                list.iter().filter(|n| matches!(n, Node::Box { .. })).count(),
+                *h,
+            ),
             other => panic!("expected vbox, got {:?}", other),
         }
     }

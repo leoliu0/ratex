@@ -199,6 +199,9 @@ pub struct Engine {
     pub page_processed: usize,
     pub page_best_break: Option<usize>,
     pub page_break_penalty: i32,
+    /// true cost of the carried best break (BreakSpot::carried used a
+    /// synthetic DEPLORABLE, losing real cost across build_page calls)
+    pub page_best_cost: i64,
     pub page_goal_set: bool,
     pub page_stretch: [i64; 4],
     pub page_shrink: [i64; 4],
@@ -390,6 +393,7 @@ impl Engine {
             page_processed: 0,
             page_best_break: None,
             page_break_penalty: 0,
+            page_best_cost: 0,
             page_goal_set: false,
             page_stretch: [0; 4],
             page_shrink: [0; 4],

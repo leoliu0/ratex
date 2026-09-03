@@ -181,6 +181,9 @@ impl<'a> RenderCtx<'a> {
         for n in list {
             match n {
                 Node::Box { h, d, w, shift, glue_sign, glue_order, glue_set, list: inner, kind, .. } => {
+                    if crate::debug_flag("YTRACE") {
+                        eprintln!("YTRACE box kind={} h={:.1} d={:.1} n={} cur_y={:.1}", kind, *h as f64 / 65536.0, *d as f64 / 65536.0, inner.len(), cur_y);
+                    }
                     let (bh, bd, sh) =
                         (sp_to_bp(*h as i64), sp_to_bp(*d as i64), sp_to_bp(*shift as i64));
                     if *kind == HBOX && std::env::var_os("TEXBOXDUMP").is_some() {

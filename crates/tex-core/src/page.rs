@@ -126,6 +126,9 @@ struct PageState {
     /// non-discardable (box/rule/ins/mark/adjust/whatsit) — a glue break is
     /// legal only right after such a node
     prev_breakable: bool,
+    /// the node just processed is a legal break candidate (tex.web fires
+    /// only at breakpoints: a box crossing the goal never fires)
+    cur_legal: bool,
     best: Option<BreakSpot>,
     /// a fire condition was met this call
     fire: bool,
@@ -146,6 +149,7 @@ impl PageState {
             ins_used: Vec::new(),
             box_seen: false,
             prev_breakable: false,
+            cur_legal: false,
             best: None,
             fire: false,
             processed: 0,
@@ -240,6 +244,13 @@ impl Engine {
         // page_list may have been swapped/restored by group or paragraph
         // handling (par_page_lists), which does not carry page_processed:
         // clamp the restored index instead of trusting it
+        // page_list may have been swapped out (display math / paragraph
+        // capture): the clamped index is NOT a real new position — never
+        // persist it, or the carried prefix would re-contribute later
+        let clamped = self.page_processed > self.page_list.len();
+        if crate::debug_flag("P7TRACE") && clamped {
+            eprintln!("CLAMP p{}: page_processed={} listlen={} line={} mode={:?}", self.pdf_doc.pages.len()+1, self.page_processed, self.page_list.len(), self.input.current_file_line(), self.mode);
+        }
         let mut st = PageState {
             processed: self.page_processed.min(self.page_list.len()),
             goal_set: self.page_goal_set,
@@ -256,7 +267,9 @@ impl Engine {
         st.stretch = self.page_stretch;
         st.shrink = self.page_shrink;
         if let Some(cut) = self.page_best_break {
-            st.best = Some(BreakSpot::carried(cut, self.page_break_penalty));
+            let mut spot = BreakSpot::carried(cut, self.page_break_penalty);
+            spot.cost = self.page_best_cost as i32;
+            st.best = Some(spot);
         }
         // a box before the pending region legalizes breaks; tex.web keeps
         // this in page_contents (box_there), we re-derive it from the prefix
@@ -273,33 +286,48 @@ impl Engine {
         while st.processed < self.page_list.len() {
             let idx = st.processed;
             let mut advance = true;
+            st.cur_legal = false;
+            if crate::debug_flag("PAGECONTRIB") && self.pdf_doc.pages.len() + 1 == std::env::var("PAGECONTRIB_AT").ok().and_then(|s| s.parse().ok()).unwrap_or(44) {
+                let desc = match &self.page_list[idx] {
+                    Node::Glue(g) => format!("G {:.2}+{}ord{}", g.width as f64 / 65536.0, g.stretch as f64 / 65536.0, g.stretch_order),
+                    Node::Box { h, d, .. } => format!("BOX h={:.2} d={:.2}", *h as f64 / 65536.0, *d as f64 / 65536.0),
+                    Node::Penalty(p) => format!("PEN {}", p),
+                    Node::Kern(k) | Node::ExplicitKern(k) => format!("K {:.2}", *k as f64 / 65536.0),
+                    _ => "?".to_string(),
+                };
+                eprintln!("PCON idx={} {} total={:.2} goal_set={} prevd={}", idx, desc, st.total as f64 / 65536.0, st.goal_set, self.page_prev_depth as f64 / 65536.0);
+            }
             if self.pdf_doc.pages.len() == 6 && st.processed < 10 && crate::debug_flag("P7TRACE") {
                 eprintln!("P7_HEAD: idx={} node={:?} goal_set={} box_seen={} prevdepth={}", idx, self.page_list[idx], st.goal_set, st.box_seen, self.page_prev_depth);
             }
             match self.page_list[idx].clone() {
                 Node::Glue(g) => {
                     if st.goal_set {
+                        // tex.web evaluates a glue breakpoint BEFORE the glue
+                        // contributes: its page total excludes the glue (the
+                        // glue is discarded at the break)
+                        let mut pi0 = idx;
+                        while pi0 > 0 {
+                            match &self.page_list[pi0 - 1] {
+                                Node::Glue(pg)
+                                    if pg.width == 0 && pg.stretch == 0 && pg.shrink == 0 =>
+                                {
+                                    pi0 -= 1;
+                                }
+                                _ => break,
+                            }
+                        }
+                        let legal0 = pi0 > 0 && precedes_break(&self.page_list[pi0 - 1]);
+                        if legal0 {
+                            self.try_page_break(&mut st, idx, 0);
+                        }
                         self.contribute_glue(&mut st, &g);
+                        st.cur_legal = legal0;
                         // tex.web §19490: a page glue is a legal breakpoint
                         // iff the preceding page node is non-discardable
                         // (precedes_break). Zero-width interline-glue
                         // placeholders from build_lines are transparent here
                         // — the real gap is inserted at the next box.
-                        let mut pi = idx;
-                        while pi > 0 {
-                            match &self.page_list[pi - 1] {
-                                Node::Glue(pg)
-                                    if pg.width == 0 && pg.stretch == 0 && pg.shrink == 0 =>
-                                {
-                                    pi -= 1;
-                                }
-                                _ => break,
-                            }
-                        }
-                        let legal = pi > 0 && precedes_break(&self.page_list[pi - 1]);
-                        if legal {
-                            self.try_page_break(&mut st, idx, 0);
-                        }
                     } else {
                         // tex.web: while page_contents<box_there the node is
                         // recycled (`goto done1`), not merely ignored — it
@@ -321,6 +349,7 @@ impl Engine {
                     if st.goal_set {
                         // legal break at penalties < inf_penalty when a box precedes
                         if p < INF_PENALTY && st.box_seen {
+                            st.cur_legal = true;
                             self.try_page_break(&mut st, idx + 1, p);
                         }
                     } else {
@@ -443,9 +472,12 @@ impl Engine {
         self.page_depth = st.depth;
         self.page_stretch = st.stretch;
         self.page_shrink = st.shrink;
-        self.page_processed = st.processed;
+        if !clamped {
+            self.page_processed = st.processed;
+        }
         self.page_best_break = st.best.map(|b| b.cut);
         self.page_break_penalty = st.best.map(|b| b.penalty).unwrap_or(0);
+        self.page_best_cost = st.best.map(|b| b.cost as i64).unwrap_or(0);
         self.page_goal_set = st.goal_set;
         self.eqtb.int_params[IntParam::InsertPenalties.idx() as usize] =
             st.insert_penalties.clamp(i32::MIN as i64, i32::MAX as i64) as i32;
@@ -549,9 +581,10 @@ impl Engine {
         if better {
             st.best = Some(BreakSpot { cut, penalty, cost });
         }
-        // FIRERULE=web: tex.web §1005 — fire only at a candidate whose own
-        // badness is awful (overfull beyond shrink) or a forcing penalty
-        if Self::web_fire_rule() && st.best.is_some() && (penalty <= EJECT_PENALTY || b >= AWFUL_BAD as i64) {
+        // tex.web §1004-1005: fire iff THIS candidate is awful (overfull
+        // beyond shrink) or a forcing penalty; the cut lands at the best
+        // (least-cost) champion so far. Total ≥ goal alone never fires.
+        if cost == AWFUL_BAD || penalty <= EJECT_PENALTY {
             st.fire = true;
         }
     }
@@ -586,11 +619,13 @@ impl Engine {
             } else {
                 DEPLORABLE as i64
             }
-        } else if penalty <= EJECT_PENALTY {
-            penalty as i64
         } else {
-            DEPLORABLE as i64
+            // tex.web §1004: overfull -> c := b = awful_bad (this also drives
+            // the fire: `if c = awful_bad or pi <= eject_penalty`)
+            b
         };
+        // tex.web: an insert-heavy page forces the issue
+        let c = if st.insert_penalties >= 10000 { AWFUL_BAD as i64 } else { c };
         (b, c.clamp(i32::MIN as i64, i32::MAX as i64) as i32)
     }
 
@@ -604,15 +639,7 @@ impl Engine {
             return st.fire;
         }
 
-        if let Some(spot) = st.best {
-            if spot.penalty <= EJECT_PENALTY {
-                return true;
-            }
-            if st.total >= self.page_goal() {
-                return true;
-            }
-        }
-        false
+        st.fire
     }
 
     /// A/B switch: FIRERULE=web evaluates the fire condition only at
@@ -706,22 +733,12 @@ impl Engine {
             }
         }
         self.page_processed = self.page_processed.saturating_sub(cut);
-        if crate::debug_flag("P7TRACE") && self.pdf_doc.pages.len() >= 5 && self.pdf_doc.pages.len() <= 6 {
-            eprintln!("CUT shipping p{}: cut={} page_processed={}", self.pdf_doc.pages.len(), cut, self.page_processed);
-            for (i, n) in self.page_list.iter().take(8).enumerate() {
-                let s = match n {
-                    Node::Glue(g) => format!("glue {}", g.width),
-                    Node::Kern(k) | Node::ExplicitKern(k) => format!("kern {}", k),
-                    Node::Penalty(p) => format!("pen {}", p),
-                    Node::Box { h, d, list, .. } => format!("box h={} d={} n={}", h, d, list.len()),
-                    Node::Whatsit(_) => "whatsit".to_string(),
-                    other => format!("{:?}", other),
-                };
-                eprintln!("  rem[{}] {}", i, s);
-            }
+        if crate::debug_flag("P7TRACE") {
+            eprintln!("CUT shipping p{}: cut={} page_processed={} listlen={}", self.pdf_doc.pages.len(), cut, self.page_processed, self.page_list.len());
         }
         self.page_best_break = None;
         self.page_break_penalty = 0;
+        self.page_best_cost = 0;
 
         // inserts leave the page material; each class goes into `\box N`
         let mut page_mat: NodeList = Vec::new();
@@ -796,19 +813,25 @@ impl Engine {
             // ship), so they stay put while discardables around them are
             // recycled (§19490: page_contents < box_there)
             let mut i = 0;
-            let mut removed = 0usize;
-            // i indexes kept nodes; i + removed indexes the original prefix
-            while i < self.page_list.len() && i + removed < self.page_processed {
+            let mut removed_prefix = 0usize;
+            // strip leading discardables of the whole remainder, prefix and
+            // fresh tail alike: tex.web discards glue/kern/penalty as they
+            // arrive at a fresh page top (§19490 page_contents < box_there),
+            // and the prefix fold below forces goal_set=true before the tail
+            // would otherwise recycle them
+            while i < self.page_list.len() {
                 match &self.page_list[i] {
                     Node::Glue(_) | Node::Kern(_) | Node::ExplicitKern(_) | Node::Penalty(_) => {
+                        if i < self.page_processed - removed_prefix {
+                            removed_prefix += 1;
+                        }
                         self.page_list.remove(i);
-                        removed += 1;
                     }
                     Node::Whatsit(_) | Node::Mark { .. } => i += 1,
                     _ => break,
                 }
             }
-            self.page_processed -= removed;
+            self.page_processed -= removed_prefix;
             if self.page_processed > 0 {
                 // the first box of the prefix gets the \topskip pad measured
                 // against IT (tex.web inserts the pad right before that box,

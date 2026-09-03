@@ -695,6 +695,25 @@ impl Engine {
                     if let Node::Box { h: h0, d: d0, shift, .. } = &mut r.node {
                         *shift = (*h0 - *d0) / 2;
                     }
+                    if crate::debug_flag("VCDBG") {
+                        if let Node::Box { h, d, shift, list, .. } = &r.node {
+                            eprintln!("VCENTER h={:.2} d={:.2} shift={:.2} n={}", *h as f64 / 65536.0, *d as f64 / 65536.0, *shift as f64 / 65536.0, list.len());
+                            for m in list.iter() {
+                                if let Node::Box { h: ih, d: id, list: il, .. } = m {
+                                    eprintln!("  VCI inner h={:.2} d={:.2} n={}", *ih as f64 / 65536.0, *id as f64 / 65536.0, il.len());
+                                    for (k, mm) in il.iter().enumerate() {
+                                        let dsc = match mm {
+                                            Node::Box { h, d, .. } => format!("box h={:.2} d={:.2}", *h as f64 / 65536.0, *d as f64 / 65536.0),
+                                            Node::Glue(g) => format!("glue {:.2}", g.width as f64 / 65536.0),
+                                            Node::Penalty(p) => format!("pen{}", p),
+                                            _ => "?".to_string(),
+                                        };
+                                        eprintln!("    [{}] {}", k, dsc);
+                                    }
+                                }
+                            }
+                        }
+                    }
                     r
                 }
                 _ => boxes::hpack_add(list, None, false, boxes::HBOX, &self.eqtb),
@@ -1717,6 +1736,12 @@ impl Engine {
             self.eqtb.int_params[crate::prim::IntParam::WidowPenalty.idx() as usize]
         });
         let lines = self.break_paragraph(content, fw);
+        if crate::debug_flag("PARADBG") {
+            if let Node::Box { list, .. } = &lines {
+                let nl = list.iter().filter(|m| matches!(m, Node::Box { kind, .. } if *kind == crate::boxes::HBOX)).count();
+                eprintln!("PARADBG {}:{} lines={}", self.input.current_file_name(), self.input.current_file_line(), nl);
+            }
+        }
         // tex.web §1079 normal_paragraph: reset paragraph-local parameters —
         // all four resets are LOCAL eq_defines, so a group-wrapped \par (the
         // `{\@@par}` LaTeX lists install via \@setpar) rolls them back at
@@ -1728,8 +1753,9 @@ impl Engine {
         // restore vertical context
         let (saved_mode, _, pd, sf) = self.saved_lists.pop().unwrap_or((Mode::Vertical, Vec::new(), self.prev_depth, self.space_factor));
         self.prev_depth = pd;
-        self.space_factor = sf;
-        // interline glue construction happens in page builder; append lines vbox
+        if crate::debug_flag("PARADBG") {
+            eprintln!("PARAEND {}:{} saved_mode={:?} parstack={}", self.input.current_file_name(), self.input.current_file_line(), saved_mode, self.par_page_lists.len());
+        }
         let mut lines_opt = Some(lines);
         match (saved_mode, self.par_page_lists.pop()) {
             (Mode::Vertical, Some(mut page)) => {
@@ -1756,9 +1782,14 @@ impl Engine {
                 // append_to_vlist semantics) — captions/parbox paragraphs
                 // otherwise pack at line height with no leading
                 let mut bx = lines_opt.take().unwrap();
-                if let Node::Box { list, .. } = &mut bx {
+                if let Node::Box { list, h, d, .. } = &mut bx {
                     let taken = std::mem::take(list);
                     *list = self.fill_line_interline(taken);
+                    // the fill swapped zero placeholders for real glue —
+                    // the packed height/depth are stale; recompute
+                    let (_, nh, nd) = crate::boxes::vlist_dims(list, &self.eqtb);
+                    *h = nh;
+                    *d = nd;
                 }
                 self.cur_list = inner;
                 self.mode = Mode::InternalVertical;

@@ -899,6 +899,14 @@ impl Engine {
                 }
             }
         }
+        if crate::debug_flag("ALIGNW") {
+            for (ri, row) in rows_in.iter().enumerate() {
+                for (c, cell) in row.iter().enumerate() {
+                    let w = match &cell.packed { Some(Node::Box { w, .. }) => *w, _ => 0 };
+                    eprintln!("ALIGNW row{} cell{} span={} natw={:.1}", ri, c, cell.span, w as f64 / 65536.0);
+                }
+            }
+        }
         let mut spans: Vec<(usize, usize, i32)> = Vec::new();
         for row in &rows_in {
             for (c, cell) in row.iter().enumerate() {
@@ -923,6 +931,9 @@ impl Engine {
                 w = w.max(nat as i64 - pre);
             }
             widths[j] = w.max(0) as i32;
+        }
+        if crate::debug_flag("ALIGNW") {
+            eprintln!("ALIGNW widths={:?}", widths.iter().map(|w| *w as f64 / 65536.0).collect::<Vec<_>>());
         }
         self.align_col_widths = widths.clone();
         let mut rows: NodeList = Vec::new();

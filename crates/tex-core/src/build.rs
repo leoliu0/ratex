@@ -26,6 +26,10 @@ impl Engine {
     // ---------- characters & spaces ----------
 
     pub fn hspace_token(&mut self) {
+        let f = self.eqtb.cur_font_val;
+        if f != 0 && self.mode == crate::build::Mode::Horizontal {
+            self.flush_hyphen_disc(f);
+        }
         match self.mode {
             Mode::Horizontal | Mode::RestrictedHorizontal => {
                 let g = self.interword_glue();
@@ -375,19 +379,44 @@ impl Engine {
             // real TeX nullfont: chars are silently dropped (no error)
             return;
         }
-        // tex.web main_loop wrapup: an empty discretionary follows every
-        // input char equal to the font's \hyphenchar, giving a legal line
-        // break after the hyphen at \exhyphenpenalty (pre_break=null →
-        // try_break(ex_hyphen_penalty, hyphenated) in line_break)
-        let hc = self.eqtb.hyphen_char.get(f as usize).copied().unwrap_or(-1);
-        let explicit_hyphen = (0..=255).contains(&hc) && c as i32 == hc;
+        // tex.web main_loop wrapup: a null discretionary rides AFTER an
+        // output hyphen char — but only once the next token is known not to
+        // ligature with it ("--" forms the en-dash first). flush points:
+        // here (next char), glue/space appends, and end_paragraph.
+        let tail_charish = matches!(
+            self.cur_list.last(),
+            Some(Node::Char { font: pf, .. } | Node::Ligature { font: pf, .. }) if *pf == f
+        );
+        if !tail_charish {
+            self.flush_hyphen_disc(f);
+        }
         self.append_char_lig(c, f);
-        if explicit_hyphen {
+    }
+
+    /// tex.web wrapup: when the last output char is the font's hyphen char
+    /// (possibly inside a just-formed ligature like the en-dash), a null
+    /// discretionary follows it — the legal break after an explicit hyphen.
+    /// The disc is appended only when the hyphen settles (next token does
+    /// not extend the ligature chain).
+    fn tail_ends_hyphen(&self, f: u16) -> bool {
+        let hc = self.eqtb.hyphen_char.get(f as usize).copied().unwrap_or(-1);
+        if !(0..=255).contains(&hc) {
+            return false;
+        }
+        match self.cur_list.last() {
+            Some(Node::Char { c: pc, font: pf }) => *pf == f && *pc as i32 == hc,
+            Some(Node::Ligature { font: pf, letters, n_letters, .. }) => {
+                *pf == f && *n_letters > 0 && letters[*n_letters as usize - 1] as i32 == hc
+            }
+            _ => false,
+        }
+    }
+
+    fn flush_hyphen_disc(&mut self, f: u16) {
+        if self.tail_ends_hyphen(f) {
             self.cur_list.push(Node::Disc(crate::boxes::DiscNode {
-                pre_break: Vec::new(),
-                post_break: Vec::new(),
-                no_break: Vec::new(),
-                replace_count: 0,
+                pre_break: Vec::new(), post_break: Vec::new(),
+                no_break: Vec::new(), replace_count: 0,
             }));
         }
     }
@@ -404,12 +433,16 @@ impl Engine {
         if let Some((pc, pletters, pn)) = prev {
             if let Some(step) = self.find_lig_kern(f, pc, c) {
                 if step.is_kern {
+                    if self.tail_ends_hyphen(f) {
+                        self.flush_hyphen_disc(f);
+                    }
                     self.cur_list.push(Node::Kern(step.kern_amount));
                     self.cur_list.push(Node::Char { c, font: f });
                     return;
                 } else {
                     // ligature: replace previous char/ligature, recording the
                     // component letters (fi + l -> ffi keeps [f, i, l])
+                    let ends_hyphen = self.tail_ends_hyphen(f);
                     let _ = self.cur_list.pop();
                     let lc = step.lig_char;
                     let dims = self.char_dims(f, lc);
@@ -421,6 +454,9 @@ impl Engine {
                         letters[base.len()] = c;
                     }
                     self.cur_list.push(Node::Ligature { c: lc, font: f, lig_width: dims.0, lig_height: dims.1, lig_depth: dims.2, letters, n_letters: n as u8 });
+                    let _ = ends_hyphen; // the disc rides at settle time
+                    // (flush_hyphen_disc at the first non-ligating append) —
+                    // pushing it here would break the "---" -> em-dash chain
                     if step.keep_right {
                         // re-add the new char after lig (iterate)
                         if step.iterate {
@@ -435,6 +471,7 @@ impl Engine {
                 }
             }
         }
+        self.flush_hyphen_disc(f);
         self.cur_list.push(Node::Char { c, font: f });
     }
 
@@ -1725,6 +1762,10 @@ impl Engine {
                 self.cur_list = saved_list;
             }
             return;
+        }
+        let fnt = self.eqtb.cur_font_val;
+        if fnt != 0 {
+            self.flush_hyphen_disc(fnt);
         }
         let pfs = self.eqtb.glue_params[GlueParam::ParFillSkip.idx() as usize].clone();
         self.cur_list.push(Node::Penalty(10000));

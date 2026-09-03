@@ -106,7 +106,9 @@ pub struct DiscNode {
 #[derive(Clone, Debug)]
 pub enum Node {
     Char { c: u8, font: FontId },
-    Ligature { c: u8, font: FontId, lig_width: i32, lig_height: i32, lig_depth: i32 },
+    /// `letters` = the component letters that formed the glyph (hyphenation
+    /// needs them: a break point may fall inside the ligature)
+    Ligature { c: u8, font: FontId, lig_width: i32, lig_height: i32, lig_depth: i32, letters: [u8; 3], n_letters: u8 },
     Glue(Glue),
     Kern(i32),
     ExplicitKern(i32),

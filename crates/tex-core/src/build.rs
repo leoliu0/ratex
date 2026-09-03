@@ -394,23 +394,33 @@ impl Engine {
 
     fn append_char_lig(&mut self, c: u8, f: u16) {
         // ligature & kern with previous char (either Char or an already-formed Ligature)
-        let prev_char = match self.cur_list.last() {
-            Some(Node::Char { c: pc, font: pf }) if *pf == f => Some(*pc),
-            Some(Node::Ligature { c: lc, font: pf, .. }) if *pf == f => Some(*lc),
+        let prev: Option<(u8, [u8; 3], u8)> = match self.cur_list.last() {
+            Some(Node::Char { c: pc, font: pf }) if *pf == f => Some((*pc, [0; 3], 0)),
+            Some(Node::Ligature { c: lc, font: pf, letters, n_letters, .. }) if *pf == f => {
+                Some((*lc, *letters, *n_letters))
+            }
             _ => None,
         };
-        if let Some(pc) = prev_char {
+        if let Some((pc, pletters, pn)) = prev {
             if let Some(step) = self.find_lig_kern(f, pc, c) {
                 if step.is_kern {
                     self.cur_list.push(Node::Kern(step.kern_amount));
                     self.cur_list.push(Node::Char { c, font: f });
                     return;
                 } else {
-                    // ligature: replace previous char/ligature
+                    // ligature: replace previous char/ligature, recording the
+                    // component letters (fi + l -> ffi keeps [f, i, l])
                     let _ = self.cur_list.pop();
                     let lc = step.lig_char;
                     let dims = self.char_dims(f, lc);
-                    self.cur_list.push(Node::Ligature { c: lc, font: f, lig_width: dims.0, lig_height: dims.1, lig_depth: dims.2 });
+                    let mut letters = [0u8; 3];
+                    let base: &[u8] = if pn > 0 { &pletters[..pn as usize] } else { &[pc] };
+                    let n = (base.len() + 1).min(3);
+                    letters[..base.len().min(3)].copy_from_slice(&base[..base.len().min(3)]);
+                    if base.len() < 3 {
+                        letters[base.len()] = c;
+                    }
+                    self.cur_list.push(Node::Ligature { c: lc, font: f, lig_width: dims.0, lig_height: dims.1, lig_depth: dims.2, letters, n_letters: n as u8 });
                     if step.keep_right {
                         // re-add the new char after lig (iterate)
                         if step.iterate {

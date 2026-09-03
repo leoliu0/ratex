@@ -220,8 +220,12 @@ impl Engine {
         let lh = (self.eqtb.int_params[IntParam::LeftHyphenMin.idx() as usize] as usize).max(1);
         let rh = (self.eqtb.int_params[IntParam::RightHyphenMin.idx() as usize] as usize).max(1);
         let mut word: Vec<u8> = Vec::new();
-        let mut word_positions: Vec<usize> = Vec::new();
+        // per letter: (node index, component slot) — slot 0 for Char, slot j
+        // for the j-th letter inside a ligature node
+        let mut word_positions: Vec<(usize, u8)> = Vec::new();
         let mut prev_ok = false; // word preceded by glue/box/rule/penalty/...?
+        // (insert position, disc); a disc whose no_break/replace_count cover
+        // a ligature splits that ligature at the break point
         let mut edits: Vec<(usize, Node)> = Vec::new();
         let n0 = list.len();
         for i in 0..n0 {
@@ -231,17 +235,34 @@ impl Engine {
             if let Node::Kern(_) = &list[i] {
                 continue;
             }
-            let is_letter = match &list[i] {
-                Node::Char { c, .. } => self.eqtb.lc_code.get(*c as usize).copied().unwrap_or(0) != 0,
-                Node::Ligature { c, .. } => self.eqtb.lc_code.get(*c as usize).copied().unwrap_or(0) != 0,
-                _ => false,
-            };
-            if is_letter {
-                let c = match &list[i] {
-                    Node::Char { c, .. } => *c,
-                    Node::Ligature { c, .. } => *c,
-                    _ => unreachable!(),
-                };
+            // letters contributed by this node: a Char is one letter; a
+            // ligature expands into its component letters (tex.web §937)
+            let mut node_letters: Vec<u8> = Vec::new();
+            match &list[i] {
+                Node::Char { c, .. } => {
+                    let lc = self.eqtb.lc_code.get(*c as usize).copied().unwrap_or(0);
+                    if lc != 0 {
+                        node_letters.push(lc);
+                    }
+                }
+                Node::Ligature { letters, n_letters, .. } => {
+                    let mut ok = *n_letters > 0;
+                    let mut lcs = Vec::with_capacity(*n_letters as usize);
+                    for j in 0..*n_letters as usize {
+                        let lc = self.eqtb.lc_code.get(letters[j] as usize).copied().unwrap_or(0);
+                        if lc == 0 {
+                            ok = false;
+                            break;
+                        }
+                        lcs.push(lc);
+                    }
+                    if ok {
+                        node_letters = lcs;
+                    }
+                }
+                _ => {}
+            }
+            if !node_letters.is_empty() {
                 if word.is_empty() {
                     word_positions.clear();
                     // tex.web: hyphenation abandoned unless the word is
@@ -252,8 +273,10 @@ impl Engine {
                             Node::Glue(_) | Node::Box { .. } | Node::Rule { .. } | Node::Penalty(_) | Node::Ins { .. } | Node::Mark { .. } | Node::Whatsit(_)
                         );
                 }
-                word.push(self.eqtb.lc_code[c as usize]);
-                word_positions.push(i);
+                for (j, lc) in node_letters.iter().enumerate() {
+                    word.push(*lc);
+                    word_positions.push((i, j as u8));
+                }
             } else if !word.is_empty() {
                 // tex.web compound-word rule: a word terminated by the
                 // font's hyphen char (an explicit `-` in the text) gets NO
@@ -265,15 +288,48 @@ impl Engine {
                 ) || matches!(&list[i], Node::Disc(_));
                 if !closed_by_hyphen && prev_ok && word.len() >= lh + rh {
                     let points = self.hyphen_trie.hyphenate(&word, lh, rh);
+                    let mut disc_at_node: Option<usize> = None;
                     for &k in &points {
-                        // point k = break before letter k (0-based node index)
-                        let pos = word_positions[k];
-                        let disc = Node::Disc(crate::boxes::DiscNode {
-                            pre_break: vec![Node::Char { c: hyphen_c, font: f }],
-                            post_break: Vec::new(),
-                            no_break: Vec::new(),
-                            replace_count: 0,
-                        });
+                        // point k = break before letter k
+                        let (pos, slot) = word_positions[k];
+                        if disc_at_node == Some(pos) {
+                            continue; // one disc per node
+                        }
+                        let disc = match &list[pos] {
+                            Node::Ligature { letters, n_letters, font, .. } if slot > 0 => {
+                                // break inside a ligature: the disc replaces
+                                // the ligature node; pre = leading letters +
+                                // hyphen, post = trailing letters, no_break =
+                                // the intact ligature
+                                let font = *font;
+                                let j = slot as usize;
+                                let mut pre_break: NodeList = letters[..j]
+                                    .iter()
+                                    .map(|&c| Node::Char { c, font })
+                                    .collect();
+                                pre_break.push(Node::Char { c: hyphen_c, font });
+                                let post_break: NodeList = letters[j..*n_letters as usize]
+                                    .iter()
+                                    .map(|&c| Node::Char { c, font })
+                                    .collect();
+                                disc_at_node = Some(pos);
+                                Node::Disc(crate::boxes::DiscNode {
+                                    pre_break,
+                                    post_break,
+                                    no_break: vec![list[pos].clone()],
+                                    replace_count: 1,
+                                })
+                            }
+                            _ => {
+                                disc_at_node = Some(pos);
+                                Node::Disc(crate::boxes::DiscNode {
+                                    pre_break: vec![Node::Char { c: hyphen_c, font: f }],
+                                    post_break: Vec::new(),
+                                    no_break: Vec::new(),
+                                    replace_count: 0,
+                                })
+                            }
+                        };
                         edits.push((pos, disc));
                     }
                 }
@@ -326,15 +382,8 @@ impl Engine {
                     }
                     Node::Kern(k) | Node::ExplicitKern(k) => (*k as i64, [0; 4], [0; 4]),
                     Node::Disc(dc) => {
-                        let mut w = 0i64;
-                        for nn in &dc.no_break {
-                            if let Node::Char { c, font } = nn {
-                                w += fonts.char_width(*font, *c) as i64;
-                            }
-                        }
                         // replacements contain no glue (tex.web assumption)
-                        i += dc.replace_count;
-                        (w, [0; 4], [0; 4])
+                        (disc_list_width(&self.eqtb, &dc.no_break), [0; 4], [0; 4])
                     }
                     Node::Box { w, .. } => (*w as i64, [0; 4], [0; 4]),
                     Node::Rule { width: w, .. } => (*w as i64, [0; 4], [0; 4]),
@@ -344,6 +393,18 @@ impl Engine {
                 for k in 0..4 {
                     cum_st[i + 1][k] = cum_st[i][k] + st[k];
                     cum_sh[i + 1][k] = cum_sh[i][k] + sh[k];
+                }
+                // nodes a disc replaces are dead: zero contribution, carry
+                // the cumulative sums forward unchanged
+                if let Node::Disc(dc) = &list[i] {
+                    for _ in 0..dc.replace_count {
+                        i += 1;
+                        cum_w[i + 1] = cum_w[i];
+                        for k in 0..4 {
+                            cum_st[i + 1][k] = cum_st[i][k];
+                            cum_sh[i + 1][k] = cum_sh[i][k];
+                        }
+                    }
                 }
                 i += 1;
             }
@@ -607,8 +668,14 @@ impl Engine {
                     i += 1;
                     continue;
                 }
+                let skip = match &list[i] {
+                    // an unbroken disc renders its no_break text and swallows
+                    // the replaced nodes (ligature splits)
+                    Node::Disc(dc) => dc.replace_count,
+                    _ => 0,
+                };
                 push_dims(&self.eqtb, &list[i], &mut seg, &mut nat_w);
-                i += 1;
+                i += 1 + skip;
             }
             let last = bp.pos >= list.len();
             let mut break_disc: Option<crate::boxes::DiscNode> = None;
@@ -799,6 +866,11 @@ fn is_prunable(n: &Node) -> bool {
 }
 
 fn push_dims(eqtb: &crate::eqtb::Eqtb, n: &Node, seg: &mut NodeList, w: &mut i64) {
+    if let Node::Disc(dc) = n {
+        *w += disc_list_width(eqtb, &dc.no_break);
+        seg.push(n.clone());
+        return;
+    }
     let fonts = crate::boxes::eqtb_fonts(eqtb);
     let wd = match n {
         Node::Char { c, font } => fonts.char_width(*font, *c),
@@ -889,12 +961,7 @@ fn start_state(
                 (cum_w[f], cum_st[f], cum_sh[f])
             } else {
                 // startsum = C[a] + no_break - post_break (dead nodes are 0)
-                let mut sw = cum_w[cand] - post_w;
-                for nn in &dc.no_break {
-                    if let Node::Char { c, font } = nn {
-                        sw += crate::boxes::eqtb_fonts(eqtb).char_width(*font, *c) as i64;
-                    }
-                }
+                let sw = cum_w[cand] - post_w + disc_list_width(eqtb, &dc.no_break);
                 (sw, cum_st[cand], cum_sh[cand])
             }
         } else {

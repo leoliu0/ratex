@@ -352,7 +352,9 @@ impl<'a> RenderCtx<'a> {
                             }
                             other => {
                                 let single: NodeList = vec![other.clone()];
+                                let (w, _, _) = crate::boxes::hlist_dims(&single, &self.eng.eqtb);
                                 self.ship_hlist(&single, cur_x, y, sign, order, set);
+                                cur_x += sp_to_bp(w as i64);
                             }
                         }
                     }

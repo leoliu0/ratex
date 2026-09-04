@@ -686,9 +686,17 @@ impl Engine {
     }
 
     pub fn append_mlist_node(&mut self, n: Node) {
-        if crate::debug_flag("MDUMP") && matches!(n, Node::DelimBox { .. } | Node::MathChar { .. }) {
-            eprintln!("MDUMP {:?}", n);
+        if crate::debug_flag("MDUMP") {
+            match &n {
+                Node::Scripts { nucleus, sup, sub } => eprintln!("MDUMP SCR nuc={:?} sup={} sub={}", nucleus.iter().map(|x| format!("{:?}", x)).collect::<Vec<_>>().join(","), sup.is_some(), sub.is_some()),
+                Node::MathChar { .. } | Node::DelimBox { .. } => eprintln!("MDUMP {:?}", n),
+                _ => {}
+            }
         }
+        // tex.web math_limit_switch: a \limits request lives on the op noad
+        // that preceded it, never on a later atom — any new noad appended
+        // invalidates the pending request (append_script takes it first).
+        self.math_limits = None;
         if let Some(l) = self.math_lists.last_mut() {
             l.push(n);
         } else {
@@ -767,6 +775,7 @@ impl Engine {
     /// `^` / `_`: scan the following group-or-token and attach it to the last
     /// atom of the current math list (tex.web "scripts on the tail noad").
     pub fn append_script(&mut self, sup: bool, _c: u8) {
+        if crate::debug_flag("MDUMP") { eprintln!("MDUMP append_script sup={}", sup); }
         let limits_req = self.math_limits.take();
         let group = self.scan_math_group_or_token();
         let popped = if let Some(l) = self.math_lists.last_mut() {
@@ -786,6 +795,7 @@ impl Engine {
         } else {
             None
         };
+        if crate::debug_flag("MDUMP") { eprintln!("MDUMP popped={} limits_req={:?}", popped.as_ref().map(|p| format!("{:?}", std::mem::discriminant(p))).unwrap_or_else(|| "EMPTY".into()), limits_req); }
         let top = match popped {
             Some(node) => node,
             None => Node::Scripts { nucleus: Vec::new(), sup: None, sub: None },
@@ -1012,13 +1022,17 @@ impl Engine {
                 }
             }
         } else {
-            let mut nuc = vec![Node::MathChar { fam: 255, c: 0, class }];
-            nuc.extend(field);
+            // multi-node group atom: the fam255 CL_OP prefix itself marks a
+            // genuine op group (append_script's head_is_op checks the class);
+            // c stays 0 = subtype normal, so tex.web make_op's promotion rule
+            // `(subtype=normal) and (cur_style<text_style)` applies — a
+            // nonzero c would pin subtype=limits and force above/below
+            // placement even in text style.
+            let nuc: NodeList = std::iter::once(Node::MathChar { fam: 255, c: 0, class }).chain(field).collect();
             Node::Scripts { nucleus: nuc, sup: None, sub: None }
         };
         self.append_mlist_node(node);
     }
-
 
     /// Knuth \\overline / \\underline: scan a math field, pack it, and
     /// put a default-rule bar above (or below) with 3 default_rule_thickness
@@ -1750,6 +1764,10 @@ impl Engine {
             // the superscript in the stacked construction)
             [Node::MathChar { fam, c, class }] if *class != CL_OP => {
                 if *fam == 255 {
+                    // fam255 prefix marker: the nucleus is the REST of the
+                    // list (a group). tex.web treats a brace-group nucleus as
+                    // an Ord atom with delta = 0 — never take the first
+                    // character's italic correction.
                     nuc = hpack(Vec::new(), None, HBOX, &self.eqtb).node;
                 } else {
                     let Some((fid, f)) = self.fam_font(style, *fam) else {
@@ -1758,11 +1776,18 @@ impl Engine {
                     if !f.exists_char(*c) {
                         return vec![];
                     }
-                    delta = f.char_italic(*c);
+                    // tex.web §14865 (@<Determine the char list...@>): a
+                    // no-subscript nucleus keeps its italic correction as a
+                    // TRAILING kern in the character list (width grows, delta
+                    // resets to 0); with a subscript the ic stays as `delta`
+                    // and shifts the superscript right instead.
+                    let ic = f.char_italic(*c);
                     let mut core: NodeList = vec![Node::Char { c: *c, font: fid }];
-                    if sub.is_none() && delta != 0 {
-                        core.push(Node::Kern(delta));
+                    if sub.is_none() && ic != 0 {
+                        core.push(Node::Kern(ic));
                         delta = 0;
+                    } else {
+                        delta = ic;
                     }
                     nuc = hpack(core, None, HBOX, &self.eqtb).node;
                 }
@@ -1857,6 +1882,9 @@ impl Engine {
                     shift_down -= clr;
                 }
             }
+        }
+        if crate::debug_flag("SCR") {
+            eprintln!("SCR style={} nuc0={:?} shift_up={} shift_down={}", style, nucleus.first(), shift_up, shift_down);
         }
         match (sup_box, sub_box) {
             (Some(bs), Some(bb)) => {
@@ -1969,19 +1997,24 @@ impl Engine {
         vec![packed]
     }
 
+    /// tex.web rebox: pad the narrower num/den box to the common width with
+    /// ss_glue (`0pt plus 1fil minus 1fil`) on each side, exactly like
+    /// rebox's `new_glue(ss_glue)` wrapping and exact-width hpack.
     fn center_to_w(&self, b: Node, w: i32) -> Node {
         if self.box_w(&b) == w {
             return b;
         }
-        hpack(
-            vec![Node::Glue(Glue::fil(0, ONE)), b, Node::Glue(Glue::fil(0, ONE))],
-            Some(w),
-            HBOX,
-            &self.eqtb,
-        )
-        .node
+        let ss = || {
+            Node::Glue(Glue {
+                width: 0,
+                stretch: ONE,
+                shrink: ONE,
+                stretch_order: crate::boxes::GLUE_FIL,
+                shrink_order: crate::boxes::GLUE_FIL,
+            })
+        };
+        hpack(vec![ss(), b, ss()], Some(w), HBOX, &self.eqtb).node
     }
-
     fn box_w(&self, n: &Node) -> i32 {
         match n {
             Node::Box { w, .. } => *w,

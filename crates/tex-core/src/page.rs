@@ -683,6 +683,7 @@ impl Engine {
             return;
         }
         self.eqtb.int_params[IntParam::OutputPenalty.idx() as usize] = penalty;
+        if crate::debug_flag("OUTW") { eprintln!("FIRE penalty={} pages={}", penalty, self.pdf_doc.pages.len()); }
         self.dead_cycles += 1;
         // marks: `\topmark` becomes the old `\botmark`; per-page marks reset
         self.marks[0] = self.marks[2].clone();
@@ -958,6 +959,12 @@ impl Engine {
             self.input.push_toks(rest, "<after-output>");
         }
         // LIFO input stack: continuation first, then the routine.
+        if crate::debug_flag("OUTW") {
+            let d: Vec<String> = toks.iter().take(30).map(|t| {
+                if t.is_cs() { format!("\\{}", String::from_utf8_lossy(self.cs.name(t.cs_id()))) } else { format!("{:x}", t.0) }
+            }).collect();
+            eprintln!("OUTW-ROUTINE pages={} n={} toks=[{}]", self.pdf_doc.pages.len(), toks.len(), d.join(" "));
+        }
         self.input.push_toks(vec![OUT_END_TOKEN], "<endoutput>");
         self.input.push_toks(toks, "<output>");
     }
@@ -1057,6 +1064,14 @@ impl Engine {
     }
 
     pub fn finish_output(&mut self) {
+        if crate::debug_flag("OUTW") {
+            let st: Vec<String> = self.input.stack.iter().rev().take(4).map(|s| match s {
+                crate::input::Source::TokList { name, pos, toks, .. } => format!("T:{} {}/{}", name, pos, toks.len()),
+                crate::input::Source::File { name, line_no, .. } => format!("F:{}#{}", name.split('/').last().unwrap_or(name), line_no),
+            }).collect();
+            let ring: Vec<String> = self.tok_ring.iter().rev().take(16).map(|(v,_)| { let t = crate::token::Token(*v); if t.is_cs() { format!("\\{}", String::from_utf8_lossy(self.cs.name(t.cs_id()))) } else { format!("{:#x}", t.0) } }).collect();
+            eprintln!("OUTW-FIN pages={} stack=[{}] ring=[{}]", self.pdf_doc.pages.len(), st.join(" | "), ring.join(" "));
+        }
         // close the save level opened at fire_up (tex.web output_group)
         self.pop_group();
         self.in_output = false;
@@ -1065,9 +1080,9 @@ impl Engine {
             self.build_page();
         }
     }
-
     /// \shipout received a box: emit a PDF page
     pub fn ship_box(&mut self, b: Option<Node>) {
+        if crate::debug_flag("SHIPW") { eprintln!("SHIP-BOX pages={} stack={} present={}", self.pdf_doc.pages.len(), self.input.stack.len(), b.is_some()); }
         self.dead_cycles = 0;
         let Some(boxn) = b else { return };
         if crate::debug_flag("PAGETREE") {

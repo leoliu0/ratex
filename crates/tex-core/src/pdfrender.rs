@@ -61,6 +61,8 @@ impl Engine {
             }
             Node::Glue(g) => eprintln!("{}GLUE w={:.1} st={:.1} sh={:.1}", pad, sp_to_bp(g.width as i64), sp_to_bp(g.stretch as i64), sp_to_bp(g.shrink as i64)),
             Node::Char { c, .. } => eprintln!("{}CH '{}'", pad, (*c as char)),
+            Node::Rule { width, height, depth } => eprintln!("{}RULE w={:.1} h={:.1} d={:.1}", pad, sp_to_bp(*width as i64), sp_to_bp(*height as i64), sp_to_bp(*depth as i64)),
+            Node::Kern(k) | Node::ExplicitKern(k) => eprintln!("{}KERN {:.1}", pad, sp_to_bp(*k as i64)),
             _ => eprintln!("{}OTH", pad),
         }
     }

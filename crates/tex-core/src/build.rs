@@ -896,6 +896,7 @@ impl Engine {
     /// \\unhbox/\\unvbox/\\unhcopy/\\unvcopy: splice a box register's list
     /// into the current list. Copy variants leave the register intact.
     pub fn do_unbox(&mut self, want_v: bool, copy: bool) {
+        if crate::debug_flag("COPYW") { eprintln!("UNBOX want_v={} copy={} mode={:?} in_output={} pages={}", want_v, copy, self.mode, self.in_output, self.pdf_doc.pages.len()); }
         let n = self.scan_reg_num();
         let node = if copy {
             self.eqtb.boxed.get(n as usize).cloned().flatten()
@@ -1516,6 +1517,8 @@ impl Engine {
     }
 
     pub fn do_shipout(&mut self) {
+        let __sd = self.input.stack.len();
+        if crate::debug_flag("SHIPW") { eprintln!("SHIPOUT-IN pages={} stack={}", self.pdf_doc.pages.len(), __sd); }
         // \shipout<box spec>
         self.skip_spaces_relax();
         let t = self.get_token();

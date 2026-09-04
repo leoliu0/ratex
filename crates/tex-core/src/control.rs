@@ -27,11 +27,21 @@ impl Engine {
     pub fn dispatch(&mut self, t: Token) {
         let ln = self.input.current_file_line();
         let fnm = self.input.current_file_name();
+        if crate::debug_flag("DSPW") && self.pdf_doc.pages.len() <= 2 {
+            let src = match self.input.stack.last() {
+                Some(crate::input::Source::TokList { name, pos, toks, .. }) => format!("{}:{}/{}", name, pos, toks.len()),
+                Some(crate::input::Source::File { name, line_no, .. }) => format!("F:{}#{}", name.split('/').last().unwrap_or(name), line_no),
+                None => "-".into(),
+            };
+            let ts = if t.is_cs() { format!("\\{}", String::from_utf8_lossy(self.cs.name(t.cs_id()))) } else { format!("{:#x}", t.0) };
+            eprintln!("DSP[{}] {}", src, ts);
+        }
 
         if t == crate::input::EOF_MARKER {
             return;
         }
         if t == crate::page::OUT_END_TOKEN {
+            if crate::debug_flag("OUTW") { eprintln!("OUTW-END-DISPATCH pages={}", self.pdf_doc.pages.len()); }
             self.finish_output();
             return;
         }
@@ -477,6 +487,7 @@ impl Engine {
             Copy => {
                 let idx = self.scan_reg_num();
                 let b = self.eqtb.boxed.get(idx as usize).cloned().flatten();
+                if crate::debug_flag("COPYW") { eprintln!("COPY idx={} present={} mode={:?} in_output={} pages={}", idx, b.is_some(), self.mode, self.in_output, self.pdf_doc.pages.len()); }
                 self.append_box_node(b);
                 true
             }

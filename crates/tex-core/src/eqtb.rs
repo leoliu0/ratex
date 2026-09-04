@@ -413,6 +413,23 @@ impl Eqtb {
             SaveItem::Box(idx, old, ol)
         });
     }
+    /// tex.web begin_box/box_code: `cur_box := box(n); box(n) := null;` —
+    /// the void is a normal `eq_define(box_ref)`: it pushes the old value on
+    /// the save stack and records the void *at the register's current level*
+    /// (`levels[idx] = cur_level`, no bump). Rust's plain `.take()` skipped
+    /// both: group rollback then resurrected boxes the output routine had
+    /// already consumed, which made longtable's `\copy\LT@head` material
+    /// vanish when the output group closed (missing "(continued)" heads,
+    /// p48/p49).
+    pub fn take_box(&mut self, idx: u16) -> Option<Node> {
+        let i = idx as usize;
+        if self.box_levels[i] < self.cur_level {
+            let old = self.boxed[i].clone();
+            let ol = self.box_levels[i];
+            self.save_stack.push(SaveItem::Box(idx, old, ol));
+        }
+        std::mem::replace(&mut self.boxed[i], None)
+    }
     pub fn assign_cat(&mut self, c: u8, v: u8, global: bool) {
 
         Self::slot(&mut self.cat, &mut self.cat_levels, c as usize, v, global, self.cur_level, &mut self.save_stack, |old, ol| {

@@ -479,13 +479,14 @@ impl Engine {
                 // \box<n> in value position handled in scan paths; in main
                 // position it's an error unless followed by use
                 let idx = self.scan_reg_num();
-                let b = self.eqtb.boxed.get(idx as usize).cloned().flatten();
-                self.eqtb.assign_box(idx, None, true);
+                if crate::debug_flag("LTW") { eprintln!("LTW-BOX idx={} mode={:?} in_output={} pages={}", idx, self.mode, self.in_output, self.pdf_doc.pages.len()); }
+                let b = self.eqtb.take_box(idx);
                 self.append_box_node(b);
                 true
             }
             Copy => {
                 let idx = self.scan_reg_num();
+                if crate::debug_flag("LTW") { eprintln!("LTW-COPY idx={} mode={:?} in_output={} pages={}", idx, self.mode, self.in_output, self.pdf_doc.pages.len()); }
                 let b = self.eqtb.boxed.get(idx as usize).cloned().flatten();
                 if crate::debug_flag("COPYW") { eprintln!("COPY idx={} present={} mode={:?} in_output={} pages={}", idx, b.is_some(), self.mode, self.in_output, self.pdf_doc.pages.len()); }
                 self.append_box_node(b);

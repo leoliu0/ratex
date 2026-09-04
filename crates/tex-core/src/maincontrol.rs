@@ -113,11 +113,13 @@ impl Engine {
             UnPenalty => self.un_penalty(),
             Box => {
                 let idx = self.scan_reg_num();
-                let b = self.eqtb.boxed[idx as usize].take();
+                if crate::debug_flag("LTW") { eprintln!("LTW-BOX idx={} mode={:?} in_output={} pages={}", idx, self.mode, self.in_output, self.pdf_doc.pages.len()); }
+                let b = self.eqtb.take_box(idx);
                 self.append_box_node(b);
             }
             Copy => {
                 let idx = self.scan_reg_num();
+                if crate::debug_flag("LTW") { eprintln!("LTW-COPY idx={} mode={:?} in_output={} pages={}", idx, self.mode, self.in_output, self.pdf_doc.pages.len()); }
                 let b = self.eqtb.boxed[idx as usize].clone();
                 self.append_box_node(b);
             }

@@ -1039,6 +1039,21 @@ impl Engine {
             let ring: Vec<String> = self.tok_ring.iter().rev().take(16).map(|(v,_)| { let t = crate::token::Token(*v); if t.is_cs() { format!("\\{}", String::from_utf8_lossy(self.cs.name(t.cs_id()))) } else { format!("{:#x}", t.0) } }).collect();
             eprintln!("OUTW-FIN pages={} stack=[{}] ring=[{}]", self.pdf_doc.pages.len(), st.join(" | "), ring.join(" "));
         }
+        // tex.web <Ensure that box 255 is empty after output>: leftover
+        // `\box255` material is discarded with an error. longtable's
+        // `\LT@output` ends with `\copy\LT@head\nobreak`, which TeX appends
+        // to the current page list (the outer vlist); rust models the
+        // output routine's box255 as a register, so splice the remainder
+        // back onto `page_list` for the next page — otherwise the continued
+        // "(...)" head vanishes and p48/p49 ship without it.
+        if let Some(Node::Box { list, .. }) = self.eqtb.boxed[255].take() {
+            if !list.is_empty() {
+                if crate::debug_flag("OUTW") {
+                    eprintln!("OUTW-BOX255-FLUSH pages={} n={}", self.pdf_doc.pages.len(), list.len());
+                }
+                self.page_list.extend(list);
+            }
+        }
         // close the save level opened at fire_up (tex.web output_group)
         self.pop_group();
         self.in_output = false;

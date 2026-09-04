@@ -897,6 +897,14 @@ impl Engine {
     }
 
     pub fn append_box_node(&mut self, b: Option<Node>) {
+        if crate::debug_flag("LTW") {
+            if let Some(Node::Box { h, d, list, .. }) = &b {
+                let chars: Vec<u8> = list.iter().filter_map(|n| match n { Node::Char { c, .. } => Some(*c), _ => None }).take(20).collect();
+                eprintln!("LTW-APPEND mode={:?} in_output={} pages={} h={:.1} d={:.1} n={} head='{}'", self.mode, self.in_output, self.pdf_doc.pages.len(), *h as f64/65536.0, *d as f64/65536.0, list.len(), String::from_utf8_lossy(&chars));
+            } else if b.is_some() {
+                eprintln!("LTW-APPEND other mode={:?} in_output={} pages={}", self.mode, self.in_output, self.pdf_doc.pages.len());
+            }
+        }
         if crate::debug_flag("FOOTWATCH") {
             if let Some(Node::Box { list, .. }) = &b {
                 let chars: Vec<u8> = list.iter().filter_map(|n| match n { Node::Char { c, .. } => Some(*c), _ => None }).collect();
@@ -949,6 +957,7 @@ impl Engine {
     pub fn do_unbox(&mut self, want_v: bool, copy: bool) {
         if crate::debug_flag("COPYW") { eprintln!("UNBOX want_v={} copy={} mode={:?} in_output={} pages={}", want_v, copy, self.mode, self.in_output, self.pdf_doc.pages.len()); }
         let n = self.scan_reg_num();
+        if crate::debug_flag("LTW") { eprintln!("LTW-UNBOX n={} want_v={} copy={} mode={:?} box_present={} page_processed={} listlen={}", n, want_v, copy, self.mode, self.eqtb.boxed.get(n as usize).map(|x| x.is_some()).unwrap_or(false), self.page_processed, self.page_list.len()); }
         let node = if copy {
             self.eqtb.boxed.get(n as usize).cloned().flatten()
         } else {

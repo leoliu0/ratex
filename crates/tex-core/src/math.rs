@@ -534,17 +534,42 @@ impl Engine {
             } else {
                 (regs.0.clone(), regs.1.clone())
             };
+            let bs = self.eqtb.glue_params[crate::prim::GlueParam::BaselineSkip.idx() as usize].clone();
+            let lsk = self.eqtb.glue_params[crate::prim::GlueParam::LineSkip.idx() as usize].clone();
+            let lsl = self.eqtb.dim_params[crate::prim::DimParam::LineSkipLimit.idx() as usize] as i64;
+            // tex.web interline glue for a vlist box append (used for the
+            // display line and for own-line tag boxes below)
+            let ilg = |prev_depth: i32, h: i64| -> Option<crate::boxes::Glue> {
+                if prev_depth <= -0x3FFF_FFFF {
+                    return None;
+                }
+                let mut g = bs.width as i64 - prev_depth as i64 - h;
+                if g < lsl {
+                    g = lsk.width as i64;
+                }
+                Some(crate::boxes::Glue::new(g as i32))
+            };
             let pre = regs.4;
             let post = regs.5;
             let mut g2 = below;
             page.push(Node::Penalty(pre));
             if leqno && e == 0 {
-                // \leqno with the tag on its own line ABOVE the formula
+                // \leqno with the tag on its own line ABOVE the formula:
+                // tex.web append_to_vlist gives the tag box ordinary interline
+                // glue from prev_depth, then prev_depth := tag depth.
                 if let Some(mut ab) = a.take() {
-                    if let Node::Box { shift, .. } = &mut ab {
-                        *shift = s as i32;
+                    let (th, td) = match &mut ab {
+                        Node::Box { shift, h, d, .. } => {
+                            *shift = s as i32;
+                            (*h as i64, *d as i64)
+                        }
+                        _ => (0, 0),
+                    };
+                    if let Some(g) = ilg(self.prev_depth, th) {
+                        page.push(Node::Glue(g));
                     }
                     page.push(ab);
+                    self.prev_depth = td as i32;
                     page.push(Node::Penalty(crate::scaled::INF_PENALTY));
                 }
             } else {
@@ -576,15 +601,8 @@ impl Engine {
                 Node::Box { h, d, .. } => (*h as i64, *d as i64),
                 _ => (0, 0),
             };
-            let bs = self.eqtb.glue_params[crate::prim::GlueParam::BaselineSkip.idx() as usize].clone();
-            let lsk = self.eqtb.glue_params[crate::prim::GlueParam::LineSkip.idx() as usize].clone();
-            let lsl = self.eqtb.dim_params[crate::prim::DimParam::LineSkipLimit.idx() as usize] as i64;
-            if self.prev_depth > -0x3FFF_FFFF {
-                let mut g = bs.width as i64 - self.prev_depth as i64 - lh;
-                if g < lsl {
-                    g = lsk.width as i64;
-                }
-                page.push(Node::Glue(crate::boxes::Glue::new(g as i32)));
+            if let Some(g) = ilg(self.prev_depth, lh) {
+                page.push(Node::Glue(g));
             }
             page.push(line);
             self.prev_depth = ld as i32;
@@ -594,10 +612,21 @@ impl Engine {
                 if let Some(mut ab) = a.take() {
                     let aw = self.box_w(&ab) as i64;
                     page.push(Node::Penalty(crate::scaled::INF_PENALTY));
-                    if let Node::Box { shift, .. } = &mut ab {
-                        *shift = (s + z - aw) as i32;
+                    let (th, td) = match &mut ab {
+                        Node::Box { shift, h, d, .. } => {
+                            *shift = (s + z - aw) as i32;
+                            (*h as i64, *d as i64)
+                        }
+                        _ => (0, 0),
+                    };
+                    // tex.web §22598 appends the tag box via append_to_vlist:
+                    // ordinary interline glue from the display's depth first,
+                    // then prev_depth := tag box's depth.
+                    if let Some(g) = ilg(self.prev_depth, th) {
+                        page.push(Node::Glue(g));
                     }
                     page.push(ab);
+                    self.prev_depth = td as i32;
                     g2 = crate::boxes::Glue::zero();
                 }
             }

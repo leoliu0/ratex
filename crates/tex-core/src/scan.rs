@@ -928,7 +928,12 @@ impl Engine {
                 "em" => self.cur_quad() as i64,
                 "ex" => self.cur_x_height() as i64,
                 "px" => 65782,
-                "mu" if mu => (self.cur_quad() / 18) as i64,
+                // tex.web §431 (scan_mu_glue): in mu glue, `mu` is the only
+                // legal unit and its factor is UNITY — the register stores a
+                // mu-denominated value (`\medmuskip=4mu` keeps width 4.0mu).
+                // Conversion mu→sp happens at use (math_glue, §716) with the
+                // current style's symbol-font em, never at scan time.
+                "mu" if mu => ONE as i64,
                 _ => {
                     if crate::debug_flag("DEFTRACE") {
                         eprintln!("UNITFAIL s={:?} kw={:?}", s, kw);

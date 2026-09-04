@@ -924,6 +924,15 @@ impl Engine {
             crate::boxes::Glue::new(12 * 65536);
         eng.eqtb.glue_params[GlueParam::LineSkip.idx() as usize] =
             crate::boxes::Glue::new(65536);
+        // plain.tex / fontmath.ltx: \thinmuskip=3mu, \medmuskip=4mu plus 2mu
+        // minus 4mu, \thickmuskip=5mu plus 5mu — stored mu-denominated
+        // (tex.web §431); math_glue converts with the current em at use.
+        eng.eqtb.glue_params[GlueParam::ThinMuSkip.idx() as usize] =
+            crate::boxes::Glue::new(3 * 65536);
+        eng.eqtb.glue_params[GlueParam::MedMuSkip.idx() as usize] =
+            crate::boxes::Glue { width: 4 * 65536, stretch: 2 * 65536, shrink: 4 * 65536, stretch_order: 0, shrink_order: 0 };
+        eng.eqtb.glue_params[GlueParam::ThickMuSkip.idx() as usize] =
+            crate::boxes::Glue { width: 5 * 65536, stretch: 5 * 65536, shrink: 0, stretch_order: 0, shrink_order: 0 };
         eng.eqtb.int_params[IntParam::EndLineChar.idx() as usize] = 13;
         eng.eqtb.int_params[IntParam::EscapeChar.idx() as usize] = 92;
         eng.eqtb.int_params[IntParam::NewLineChar.idx() as usize] = -1;

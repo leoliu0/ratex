@@ -17,7 +17,7 @@
 use crate::boxes::{hlist_dims, hpack, vpack, Glue, MathStyle, Node, NodeList, HBOX, VBOX};
 use crate::engine::{Engine, Mode};
 use crate::eqtb::Equiv;
-use crate::prim::{DimParam, IntParam, Prim};
+use crate::prim::{DimParam, GlueParam, IntParam, Prim};
 use crate::scaled::ONE;
 use crate::tfm::{Font, FontId, TAG_EXT, TAG_LIST};
 use crate::token::Token;
@@ -1509,14 +1509,18 @@ impl Engine {
         if matches!(kind, 1 | 3 | 4) && style >= 4 {
             return;
         }
+        // tex.web §716 (math_glue): the muskip parameters hold mu-denominated
+        // glue; convert with the current style's mu so `\medmuskip=...`
+        // assignments by packages actually take effect.
         let mu = self.mu_unit();
-        // plain TeX: \thinmuskip=3mu, \medmuskip=4mu plus 2mu minus 4mu,
-        // \thickmuskip=5mu plus 5mu
-        let g = match kind {
-            1 | 2 => Glue { width: mu * 3, stretch: 0, shrink: 0, stretch_order: 0, shrink_order: 0 },
-            3 => Glue { width: mu * 4, stretch: mu * 2, shrink: mu * 4, stretch_order: 0, shrink_order: 0 },
-            _ => Glue { width: mu * 5, stretch: mu * 5, shrink: 0, stretch_order: 0, shrink_order: 0 },
+        let conv = |sp_mu: i32| ((sp_mu as i64) * (mu as i64) / 65536) as i32;
+        let src = match kind {
+            1 | 2 => GlueParam::ThinMuSkip,
+            3 => GlueParam::MedMuSkip,
+            _ => GlueParam::ThickMuSkip,
         };
+        let p = &self.eqtb.glue_params[src.idx() as usize];
+        let g = Glue { width: conv(p.width), stretch: conv(p.stretch), shrink: conv(p.shrink), stretch_order: p.stretch_order, shrink_order: p.shrink_order };
         out.push(Node::Glue(g));
     }
 

@@ -949,6 +949,10 @@ impl Engine {
         }
         if crate::debug_flag("ALIGNW") {
             eprintln!("ALIGNW widths={:?}", widths.iter().map(|w| *w as f64 / 65536.0).collect::<Vec<_>>());
+            for &(c, s, nat) in &spans {
+                let pre: i64 = (c..(c + s).min(ncols)).map(|k| widths[k] as i64 + tabskip.width as i64).sum();
+                eprintln!("ALIGNW span c={} s={} nat={:.2} deficit={:.2}", c, s, nat as f64 / 65536.0, (nat as i64 - pre) as f64 / 65536.0);
+            }
         }
         self.align_col_widths = widths.clone();
         let mut rows: NodeList = Vec::new();

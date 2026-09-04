@@ -171,15 +171,15 @@ impl PageState {
 }
 
 impl Engine {
-    /// `\vsize` read live, so mid-page changes are honored at the next break.
-    /// An explicit `\pagegoal` assignment (output routine / package) takes
-    /// precedence; in iniTeX or when the fallback `\vsize <= 0`, the goal is
-    /// `max_dimen`.
+    /// tex.web: `\pagegoal` is an INTERNAL quantity — assignments to it are
+    /// silently ignored (verified against pdftex: `\pagegoal=100pt` leaves
+    /// the register unchanged), so the builder must never read the register.
+    /// The effective goal is `\vsize` latched when the page starts
+    /// contributing (longtable's `\global\advance\vsize` in `\LT@start`
+    /// lands before the first row and is therefore honored); an empty page
+    /// reports `max_dimen` (the oracle's `\pagegoal` reads 16383.99998pt
+    /// until the builder first syncs), and `\vsize <= 0` (INITEX) likewise.
     fn page_goal(&self) -> i64 {
-        let pg = self.eqtb.dim_params[DimParam::PageGoal.idx() as usize] as i64;
-        if pg > 0 && pg != 0x3FFF_FFFF {
-            return pg;
-        }
         if !self.page_goal_set {
             return 0x3FFF_FFFF;
         }
@@ -216,11 +216,9 @@ impl Engine {
             self.eqtb.dim_params[p.idx() as usize] = c32(st.stretch[o]);
         }
         self.eqtb.dim_params[DimParam::PageShrink.idx() as usize] = c32(st.shrink[0]);
-        let goal = if !st.goal_set {
-            0x3FFF_FFFF
-        } else {
-            self.page_goal()
-        };
+        // tex.web `post_break`: page_goal := v_size at the start of every
+        // page — the register reads `\vsize` even before the first box
+        let goal = self.page_goal();
         self.eqtb.dim_params[DimParam::PageGoal.idx() as usize] = c32(goal);
     }
     /// scaled insert height: `h * count(n) / 1000` ("magnification");
@@ -538,9 +536,10 @@ impl Engine {
             let want: usize = std::env::var("PAGECAND_AT").ok().and_then(|s| s.parse().ok()).unwrap_or(10);
             self.pdf_doc.pages.len() + 1 == want
         } {
-            eprintln!("PGCAND t={:.2} str={:.2} shk={:.2} p={} c={} cut={}",
-                st.total as f64 / 65536.0, st.stretch[0] as f64 / 65536.0,
-                st.shrink[0] as f64 / 65536.0, penalty, cost, cut);
+            eprintln!("PGCAND t={:.2} g={:.2} str={:.2} shk={:.2} p={} c={} cut={}",
+                st.total as f64 / 65536.0, self.page_goal() as f64 / 65536.0,
+                st.stretch[0] as f64 / 65536.0, st.shrink[0] as f64 / 65536.0,
+                penalty, cost, cut);
         }
         let better = match st.best {
             None => cost < AWFUL_BAD,

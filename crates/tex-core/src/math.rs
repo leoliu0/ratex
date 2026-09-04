@@ -1025,13 +1025,22 @@ impl Engine {
                 }
             }
         } else {
-            // multi-node group atom: the fam255 CL_OP prefix itself marks a
-            // genuine op group (append_script's head_is_op checks the class);
-            // c stays 0 = subtype normal, so tex.web make_op's promotion rule
-            // `(subtype=normal) and (cur_style<text_style)` applies — a
-            // nonzero c would pin subtype=limits and force above/below
-            // placement even in text style.
-            let nuc: NodeList = std::iter::once(Node::MathChar { fam: 255, c: 0, class }).chain(field).collect();
+            // multi-node group atom. tex.web: `\mathop{...}` (and the other
+            // math_comp prims) tail_append a FRESH noad whose type is the
+            // class and whose subtype is `normal` — scripts then take the
+            // make_op promotion rule `(subtype=normal) and (cur_style<
+            // text_style)`. Raw brace groups reach here through
+            // scan_math_group_braced's fam255 CL_ORD marker instead and are
+            // never re-classed. c=1 on the fam255 CL_OP prefix marks the
+            // subtype-normal state for append_script's limits logic (c=2
+            // would pin \nolimits, c=1... see sub_type encoding there); a
+            // genuine `\limits`/`\nolimits` afterwards overwrites it via
+            // the math_limits request.
+            let mut nuc: NodeList = vec![Node::MathChar { fam: 255, c: 0, class }];
+            if class == CL_OP {
+                nuc[0] = Node::MathChar { fam: 255, c: 0, class };
+            }
+            nuc.extend(field);
             Node::Scripts { nucleus: nuc, sup: None, sub: None }
         };
         self.append_mlist_node(node);
@@ -1312,8 +1321,12 @@ impl Engine {
     fn atom_class(&self, n: &Node) -> Option<u8> {
         match n {
             // mathcode class 7 = variable: spaced as ord (tex.web §759)
+            Node::MathChar { fam: 255, .. } => None,
             Node::MathChar { class, .. } => Some(if *class == 7 { CL_ORD } else { *class }),
             Node::Scripts { nucleus, .. } => Some(match nucleus.first() {
+                // fam255 prefix carries the atom's class (op groups etc.);
+                // a plain char nucleus with class 7 is varfam -> Ord.
+                Some(Node::MathChar { fam: 255, class, .. }) => *class,
                 Some(Node::MathChar { class, .. }) => if *class == 7 { CL_ORD } else { *class },
                 _ => CL_ORD,
             }),
@@ -1804,19 +1817,24 @@ impl Engine {
                     delta = d;
                     nuc = b;
                 }
-                let t = if style < 4 { 2 } else { 4 };
+                // tex.web §746: `t := script_size` (size index 1) when
+                // cur_style < script_style, else script_script_size (2).
+                let t = if style < 4 { 1 } else { 2 };
                 let (zh, zd) = box_dims_shifted(&nuc);
-                shift_up = zh - self.fparam(t, 2, 18);
-                shift_down = zd + self.fparam(t, 2, 19);
+                shift_up = zh - self.fparam_idx(t, 2, 18);
+                shift_down = zd + self.fparam_idx(t, 2, 19);
             }
             // boxed nucleus: initial shifts from its (shift-adjusted) dims
             _ => {
                 let nodes = self.mlist_to_hlist_pen(nucleus, style, self.math_penalties.get());
+                // tex.web clean_box packs the converted list; fam255 marker
+                // chars convert to nothing already, but drop any residual
+                // zero-width kern artifacts so widths match the oracle.
                 nuc = hpack(nodes, None, HBOX, &self.eqtb).node;
-                let t = if style < 4 { 2 } else { 4 };
+                let t = if style < 4 { 1 } else { 2 };
                 let (zh, zd) = box_dims_shifted(&nuc);
-                shift_up = zh - self.fparam(t, 2, 18);
-                shift_down = zd + self.fparam(t, 2, 19);
+                shift_up = zh - self.fparam_idx(t, 2, 18);
+                shift_down = zd + self.fparam_idx(t, 2, 19);
             }
         }
         let mut out: NodeList = vec![nuc];

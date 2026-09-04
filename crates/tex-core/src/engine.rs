@@ -249,6 +249,11 @@ pub struct Engine {
     /// (tex.web resume_after_display §1194 — no \parskip, no \parindent,
     /// no \everypar); consumed by the next start_paragraph
     pub resume_after_display: bool,
+    /// set when build_page ships a page that consumed the lines of the
+    /// paragraph currently being broken (tex.web soft page break inside a
+    /// paragraph): the resumed partial content has NO complete line yet, so
+    /// just_box/\predisplaysize must not use the stale last_par_line clone
+    pub par_interrupted: bool,
     pub unless_next: bool,
     pub last_badness: i32,
     pub pdf_last_x: i32,
@@ -301,6 +306,7 @@ impl Engine {
             input: InputStack::new(),
             par_saves: 0,
             resume_after_display: false,
+            par_interrupted: false,
             pending_retokenize: false,
             cur_tok: crate::token::EOF_TOKEN,
             cur_cs: None,

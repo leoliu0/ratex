@@ -1746,6 +1746,10 @@ impl Engine {
                 self.run_everypar();
             }
             Mode::Vertical => {
+                // a genuine new paragraph clears the interrupt flag (it was
+                // set by a shipout that consumed the previous paragraph's
+                // lines mid-break — see end_paragraph)
+                self.par_interrupted = false;
                 // tex.web resume_after_display (§1194): when text follows a
                 // display the new hlist is pushed directly — no \parskip,
                 // no \parindent box, no \everypar
@@ -1780,6 +1784,7 @@ impl Engine {
                 self.run_everypar();
             }
             Mode::InternalVertical => {
+                self.par_interrupted = false;
                 // like vertical but inside a box; tex.web new_graf adds
                 // \parskip here only when the vertical list is nonempty
                 // (no skip at the start of an empty \vbox list)
@@ -1908,15 +1913,20 @@ impl Engine {
         let lines = self.break_paragraph(content, fw);
         // tex.web keeps the final broken line in just_box; display entry
         // measures \predisplaysize from it even after build_page consumes
-        // the contributions (clone before the splices below move them)
-        self.last_par_line = match &lines {
-            Node::Box { list, .. } => list
-                .iter()
-                .rev()
-                .find(|n| matches!(n, Node::Box { kind, .. } if *kind == crate::boxes::HBOX))
-                .cloned(),
-            _ => None,
-        };
+        // the contributions (clone before the splices below move them).
+        // A soft page break that SHIPPED this paragraph's lines interrupts
+        // it: the resumed content has no complete line yet, so just_box
+        // must stay empty until the next real break refreshes it.
+        if !self.par_interrupted {
+            self.last_par_line = match &lines {
+                Node::Box { list, .. } => list
+                    .iter()
+                    .rev()
+                    .find(|n| matches!(n, Node::Box { kind, .. } if *kind == crate::boxes::HBOX))
+                    .cloned(),
+                _ => None,
+            };
+        }
         if crate::debug_flag("PARADBG") {
             if let Node::Box { list, .. } = &lines {
                 let nl = list.iter().filter(|m| matches!(m, Node::Box { kind, .. } if *kind == crate::boxes::HBOX)).count();
@@ -2005,7 +2015,14 @@ impl Engine {
                     }).collect();
                     eprintln!("DT-SPLICE line={} pagelen={} processed={} in_output={} tail=[{}]", self.input.current_file_line(), self.page_list.len(), self.page_processed, self.in_output, tail.join(" "));
                 }
+                let pages_before = self.pdf_doc.pages.len();
                 self.build_page();
+                // tex.web: a page shipped inside this paragraph interrupts
+                // it — the resumed content has no complete line yet, so
+                // just_box must not carry a stale clone into init_math.
+                if self.pdf_doc.pages.len() > pages_before {
+                    self.par_interrupted = true;
+                }
             }
             (Mode::InternalVertical, Some(inner)) => {
                 // paragraph started inside a \vbox/\vtop: tex.web appends the

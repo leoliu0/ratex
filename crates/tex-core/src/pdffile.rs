@@ -488,13 +488,18 @@ pub fn write_pdf(doc: &PdfDoc) -> Vec<u8> {
 
 fn emit_annot(b: &mut PdfBuilder, obj: usize, a: &Annot) {
     let [x0, y0, x1, y1] = a.rect;
+    // /Border comes from the annotation attributes when present (hyperref
+    // passes pdfborder explicitly); duplicating the key makes qpdf flag
+    // every link object
+    let border = if a.attr.contains("/Border") { "" } else { " /Border [0 0 0]" };
     let mut body = format!(
-        "<< /Type /Annot /Subtype {} /Rect [{} {} {} {}] /Border [0 0 0]",
+        "<< /Type /Annot /Subtype {} /Rect [{} {} {} {}]{}",
         a.subtype.as_deref().unwrap_or("/Link"),
         num(x0),
         num(y0),
         num(x1),
-        num(y1)
+        num(y1),
+        border
     );
     if let Some(uri) = &a.uri {
         body.push_str(&format!(

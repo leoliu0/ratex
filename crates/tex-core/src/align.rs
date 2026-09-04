@@ -782,16 +782,31 @@ impl Engine {
         }
     }
 
-    /// pack the open \noalign text into a vertical box and store it
+    /// capture the open \noalign text as a RAW (unpacked) vbox node; tex.web
+    /// splices noalign material into the alignment's vlist as-is, and the
+    /// enclosing pack resolves any running-width rules (\toprule's \hrule)
+    /// to the alignment width. Packing here would freeze them at \hsize.
     pub(crate) fn align_finish_noalign_now(&mut self) {
         let Some(inner) = self.align_pop_cell_group() else {
             return;
         };
         self.align_in_noalign = false;
         self.align_state = PH_IDLE;
-        let packed = crate::boxes::vpack(inner, None, crate::boxes::VBOX, &self.eqtb).node;
+        let (w, h, d) = crate::boxes::vlist_dims(&inner, &self.eqtb);
+        let node = Node::Box {
+            kind: crate::boxes::VBOX,
+            w,
+            h,
+            d,
+            shift: 0,
+            list: inner,
+            glue_sign: 0,
+            glue_order: 0,
+            glue_set: 0.0,
+            font: None,
+        };
         self.align_rows
-            .push(vec![Cell { packed: Some(packed), span: NOALIGN_SPAN }]);
+            .push(vec![Cell { packed: Some(node), span: NOALIGN_SPAN }]);
         // \noalign may be followed by another \noalign, \cr or }
         self.align_row_inspect();
     }
@@ -944,13 +959,19 @@ impl Engine {
         for row in rows_in {
             if row.len() == 1 && row[0].span == NOALIGN_SPAN {
                 if let Some(node) = row.into_iter().next().and_then(|c| c.packed) {
-                    let (h, d) = match &node {
-                        Node::Box { h, d, .. } => (*h, *d),
-                        Node::Rule { height, depth, .. } => (*height, *depth),
-                        _ => (0, 0),
+                    let (h, d, items) = match node {
+                        Node::Box { h, d, list, .. } => (h, d, list),
+                        other => {
+                            let (h, d) = match &other {
+                                Node::Rule { height, depth, .. } => (*height, *depth),
+                                _ => (0, 0),
+                            };
+                            (h, d, vec![other])
+                        }
                     };
                     align_interline(&mut rows, &mut prev, h, d, &bs, &ls, lsl);
-                    rows.push(node);
+                    // tex.web: noalign material joins the alignment vlist raw
+                    rows.extend(items);
                 }
                 continue;
             }
@@ -1218,26 +1239,32 @@ mod tests {
             "\\halign{#\\cr \\hbox{a}\\cr \\noalign{\\hrule} \\hbox{bb}\\cr}\n",
         ));
         assert_eq!(e.error_count, 0, "errors:\n{}", e.term);
-        let (_, list) = vbox_of(&e);
+        let (w, list) = vbox_of(&e);
         let boxes = list.iter().filter(|n| matches!(n, Node::Box { .. })).count();
-        // the \noalign text is packed into its own vbox holding the rule;
-        // find it among the interrow glue / row boxes
-        let noalign = list
+        // tex.web: \noalign material splices into the alignment vlist raw —
+        // the \hrule sits directly between the row boxes, and the final pack
+        // resolved its running width to the alignment width (the widest row)
+        let rule = list
             .iter()
-            .find(|n| matches!(n, Node::Box { kind: crate::boxes::VBOX, .. }))
-            .expect("noalign vbox inside the alignment vbox");
-        match noalign {
-            Node::Box { list: inner, .. } => assert_eq!(
-                inner.iter().filter(|n| matches!(n, Node::Rule { .. })).count(),
-                1,
-                "rule inside noalign vbox: {:?}",
-                inner
-            ),
-            _ => unreachable!(),
-        }
+            .find_map(|n| match n {
+                Node::Rule { width, .. } => Some(*width),
+                _ => None,
+            })
+            .expect("noalign \\hrule spliced into the alignment vlist");
+        let row_w = list
+            .iter()
+            .filter_map(|n| match n {
+                Node::Box { w, .. } => Some(*w),
+                _ => None,
+            })
+            .max()
+            .unwrap();
+        assert_eq!(rule, row_w, "rule takes alignment width");
+        assert_eq!(w, row_w, "alignment vbox width = widest row");
         // row / rule / row order
         assert!(matches!(list[0], Node::Box { .. }));
         assert!(matches!(list[list.len() - 1], Node::Box { .. }));
+        assert_eq!(boxes, 2, "two row boxes, no noalign wrapper: {:?}", list);
     }
 
     #[test]
@@ -1461,23 +1488,34 @@ mod tests {
             },
             _ => unreachable!(),
         };
-        // 3 rules + 3 rows, interleaved with glue; every noalign rule is a
-        // vbox wrapping one hrule
-        let boxes: Vec<&Node> = align_box
+        // 3 rules + 3 rows, interleaved with glue; tex.web splices noalign
+        // material raw, so the rules sit directly in the alignment vlist
+        // with their running width resolved to the alignment width
+        let rows: Vec<&Node> = align_box
             .iter()
             .filter(|n| matches!(n, Node::Box { .. }))
             .collect();
-        assert_eq!(boxes.len(), 6, "rules + rows: {:?}", align_box);
-        let rules = align_box
+        assert_eq!(rows.len(), 3, "rows: {:?}", align_box);
+        let rules: Vec<i32> = align_box
             .iter()
             .filter_map(|n| match n {
-                Node::Box { kind: crate::boxes::VBOX, list, .. } => Some(list),
+                Node::Rule { width, .. } => Some(*width),
                 _ => None,
             })
-            .flat_map(|l| l.iter())
-            .filter(|n| matches!(n, Node::Rule { .. }))
-            .count();
-        assert_eq!(rules, 3, "top/mid/bottom rules");
+            .collect();
+        assert_eq!(rules.len(), 3, "top/mid/bottom rules: {:?}", align_box);
+        let align_w = rows
+            .iter()
+            .filter_map(|n| match n {
+                Node::Box { w, .. } => Some(*w),
+                _ => None,
+            })
+            .max()
+            .unwrap();
+        assert!(
+            rules.iter().all(|rw| *rw == align_w),
+            "rules span the alignment width {align_w}: {rules:?}"
+        );
         // the \multicolumn header spans all three columns
         let w = |ch: u8| e.eqtb.fonts[e.eqtb.cur_font_val as usize].char_width(ch) as i64;
         let expect_w2 = (w(b'H') + w(b'e') + w(b'a') + w(b'd') + w(b'r'))

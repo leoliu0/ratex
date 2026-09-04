@@ -443,6 +443,17 @@ pub fn vpack_add_md(
     max_depth: i32,
 ) -> PackResult {
     let (w, nat_h, nat_d) = vlist_dims(&list, eqtb);
+    // tex.web vpackage §13468: rules with running (null) width take the
+    // packed box's width — e.g. \hrule inside a tabular \noalign block must
+    // span the alignment's natural width, not \hsize.
+    let mut list = list;
+    for n in list.iter_mut() {
+        if let Node::Rule { width, .. } = n {
+            if *width == crate::build::RULE_FILL {
+                *width = w;
+            }
+        }
+    }
     let (mut x, mut d) = (nat_h as i64, nat_d as i64);
     let (stretch, shrink) = glue_sums(&list);
     if d > max_depth as i64 {

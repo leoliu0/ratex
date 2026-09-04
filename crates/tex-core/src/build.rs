@@ -577,9 +577,10 @@ impl Engine {
     pub fn make_rule(&mut self, horizontal: bool) {
         let (mut width, height, depth) = self.scan_rule_dims(horizontal);
         if horizontal {
-            if width == RULE_FILL {
-                width = self.eqtb.dim_params[DimParam::HSize.idx() as usize];
-            }
+            // tex.web: an \hrule with null width keeps a RUNNING width in the
+            // node; vpackage resolves it to the enclosing box's width
+            // (§13468). Baking \hsize in here made \noalign{\hrule} blocks
+            // (booktabs) blow the alignment up to full text width.
             self.prev_depth = -1000 * 65536;
             self.vlist_append(Node::Rule { width, height, depth });
             return;
@@ -871,6 +872,7 @@ impl Engine {
                             let ls = self.eqtb.glue_params[crate::prim::GlueParam::LineSkip.idx() as usize].clone();
                             let lsl = self.eqtb.dim_params[crate::prim::DimParam::LineSkipLimit.idx() as usize];
                             let diff = bs.width as i64 - self.prev_depth as i64 - *h as i64;
+                        if crate::debug_flag("ILW") { eprintln!("ILW pd={:.1} bs={:.1} h={:.1} diff={:.1}", self.prev_depth as f64/65536.0, bs.width as f64/65536.0, *h as f64/65536.0, diff as f64/65536.0); }
                             let glue = if diff < lsl as i64 {
                                  ls
                              } else {
@@ -1787,7 +1789,15 @@ impl Engine {
             self.flush_hyphen_disc(fnt);
         }
         let pfs = self.eqtb.glue_params[GlueParam::ParFillSkip.idx() as usize].clone();
-        self.cur_list.push(Node::Penalty(10000));
+        // tex.web §16074: a trailing glue node is REPLACED by the infinite
+        // penalty ("removing a space if it was there, since spaces usually
+        // precede blank lines"); otherwise the penalty is appended. Without
+        // this, a space after \end{tabular} survives into the final line and
+        // forces a phantom second line in float/tabular paragraphs.
+        match self.cur_list.last_mut() {
+            Some(slot @ Node::Glue(_)) => *slot = Node::Penalty(10000),
+            _ => self.cur_list.push(Node::Penalty(10000)),
+        }
         self.cur_list.push(Node::Glue(pfs));
         let content = std::mem::take(&mut self.cur_list);
         // tex.web §21764/§21181: the widow penalty before the final line is
@@ -1795,11 +1805,40 @@ impl Engine {
         let fw = self.next_par_widow.take().unwrap_or_else(|| {
             self.eqtb.int_params[crate::prim::IntParam::WidowPenalty.idx() as usize]
         });
+        if crate::debug_flag("PARADBG") {
+            let desc: Vec<String> = content.iter().take(12).map(|n| match n {
+                Node::Char { c, .. } => format!("ch'{}'", *c as u8 as char),
+                Node::Glue(g) => format!("G{:.1}/{:.1}/{:.1}", g.width as f64/65536.0, g.stretch as f64/65536.0, g.shrink as f64/65536.0),
+                Node::Box { w, h, list, .. } => format!("B(w{:.0} h{:.0} n{})", *w as f64/65536.0, *h as f64/65536.0, list.len()),
+                Node::Whatsit(_) => "W".into(),
+                Node::Penalty(p) => format!("P{}", p),
+                Node::Kern(k) | Node::ExplicitKern(k) => format!("K{:.1}", *k as f64/65536.0),
+                Node::VAdjust(v) => format!("VA(n{})", v.len()),
+                _ => "?".into(),
+            }).collect();
+            eprintln!("PARA-IN {}:{} n={} [{}]", self.input.current_file_name(), self.input.current_file_line(), content.len(), desc.join(" "));
+        }
         let lines = self.break_paragraph(content, fw);
         if crate::debug_flag("PARADBG") {
             if let Node::Box { list, .. } = &lines {
                 let nl = list.iter().filter(|m| matches!(m, Node::Box { kind, .. } if *kind == crate::boxes::HBOX)).count();
                 eprintln!("PARADBG {}:{} lines={}", self.input.current_file_name(), self.input.current_file_line(), nl);
+                for m in list.iter().take(8) {
+                    match m {
+                        Node::Box { w, h, d, list: il, .. } => {
+                            let id: Vec<String> = il.iter().take(6).map(|q| match q {
+                                Node::Char { c, .. } => format!("'{}'", *c as u8 as char),
+                                Node::Box { w, h, list, .. } => format!("[B w{:.0} h{:.0} n{}]", *w as f64/65536.0, *h as f64/65536.0, list.len()),
+                                Node::Glue(g) => format!("(G{:.1})", g.width as f64/65536.0),
+                                _ => "(?)".into(),
+                            }).collect();
+                            eprintln!("  LINE w={:.1} h={:.1} d={:.1} n={} {}", *w as f64/65536.0, *h as f64/65536.0, *d as f64/65536.0, il.len(), id.join(" "));
+                        }
+                        Node::Glue(g) => eprintln!("  IG w={:.2}", g.width as f64/65536.0),
+                        Node::Penalty(p) => eprintln!("  IP {}", p),
+                        _ => eprintln!("  I?"),
+                    }
+                }
             }
         }
         // tex.web §1079 normal_paragraph: reset paragraph-local parameters —
@@ -1835,26 +1874,34 @@ impl Engine {
                 self.build_page();
             }
             (Mode::InternalVertical, Some(inner)) => {
-                // paragraph started inside a \vbox/\vtop: resume that list.
-                // The page builder never sees this list, so the zero-width
-                // interline placeholders build_lines left between line boxes
-                // must be filled HERE with real baselineskip glue (tex.web
-                // append_to_vlist semantics) — captions/parbox paragraphs
-                // otherwise pack at line height with no leading
-                let mut bx = lines_opt.take().unwrap();
-                if let Node::Box { list, h, d, .. } = &mut bx {
-                    let taken = std::mem::take(list);
-                    *list = self.fill_line_interline(taken);
-                    // the fill swapped zero placeholders for real glue —
-                    // the packed height/depth are stale; recompute
-                    let (_, nh, nd) = crate::boxes::vlist_dims(list, &self.eqtb);
-                    *h = nh;
-                    *d = nd;
+                // paragraph started inside a \vbox/\vtop: tex.web appends the
+                // line boxes to that vlist FLAT (append_to_vlist), threading
+                // interline glue from the surrounding prev_depth — packing
+                // them into one wrapper vbox buries the leading and feeds the
+                // wrapper's full height into the next interline computation
+                // (a \vspace-separated heading then collapses to \lineskip).
+                let bx = lines_opt.take().unwrap();
+                let taken = match bx {
+                    Node::Box { list, .. } => list,
+                    other => vec![other],
+                };
+                let filled = self.fill_line_interline(self.prev_depth, taken);
+                // prev_depth after the splice = depth of the last line box
+                let mut last_d = self.prev_depth;
+                for n in filled.iter().rev() {
+                    match n {
+                        Node::Box { d, .. } | Node::Rule { depth: d, .. } => {
+                            last_d = *d;
+                            break;
+                        }
+                        Node::Glue(_) | Node::Kern(_) | Node::ExplicitKern(_) => continue,
+                        _ => break,
+                    }
                 }
                 self.cur_list = inner;
                 self.mode = Mode::InternalVertical;
-                // append with interline glue against the previous inner node
-                self.append_box_node(Some(bx));
+                self.cur_list.extend(filled);
+                self.prev_depth = last_d;
             }
             (_, outer) => {
                 if let Some(mut inner) = outer {
@@ -1872,13 +1919,13 @@ impl Engine {
     /// baselineskip/lineskip glue (tex.web append_to_vlist §17438-17440):
     /// used when a paragraph's lines land in an internal vlist, which the
     /// page builder never processes
-    fn fill_line_interline(&self, list: NodeList) -> NodeList {
+    fn fill_line_interline(&self, outer_prev_depth: i32, list: NodeList) -> NodeList {
         const IGNORE: i32 = -1000 * 65536;
         let bs = self.eqtb.glue_params[GlueParam::BaselineSkip.idx() as usize].clone();
         let ls = self.eqtb.glue_params[GlueParam::LineSkip.idx() as usize].clone();
         let lsl = self.eqtb.dim_params[DimParam::LineSkipLimit.idx() as usize];
         let mut out: NodeList = Vec::with_capacity(list.len());
-        let mut prev_depth = IGNORE;
+        let mut prev_depth = outer_prev_depth;
         // hold a pending placeholder until we know whether a box follows
         let mut held_placeholder = false;
         for n in list.into_iter() {

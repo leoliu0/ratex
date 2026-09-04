@@ -1817,12 +1817,13 @@ impl Engine {
                     delta = d;
                     nuc = b;
                 }
-                // tex.web §746: `t := script_size` (size index 1) when
-                // cur_style < script_style, else script_script_size (2).
-                let t = if style < 4 { 1 } else { 2 };
+                // tex.web §746: `t := sup/drop-style fontdimen` — the
+                // sup/drop parameters come from the CURRENT math family's
+                // TEXT-size font (fparam maps style->size slot), not from
+                // the script font.
                 let (zh, zd) = box_dims_shifted(&nuc);
-                shift_up = zh - self.fparam_idx(t, 2, 18);
-                shift_down = zd + self.fparam_idx(t, 2, 19);
+                shift_up = zh - self.fparam(style, 2, 18);
+                shift_down = zd + self.fparam(style, 2, 19);
             }
             // boxed nucleus: initial shifts from its (shift-adjusted) dims
             _ => {
@@ -1831,10 +1832,9 @@ impl Engine {
                 // chars convert to nothing already, but drop any residual
                 // zero-width kern artifacts so widths match the oracle.
                 nuc = hpack(nodes, None, HBOX, &self.eqtb).node;
-                let t = if style < 4 { 1 } else { 2 };
                 let (zh, zd) = box_dims_shifted(&nuc);
-                shift_up = zh - self.fparam_idx(t, 2, 18);
-                shift_down = zd + self.fparam_idx(t, 2, 19);
+                shift_up = zh - self.fparam(style, 2, 18);
+                shift_down = zd + self.fparam(style, 2, 19);
             }
         }
         let mut out: NodeList = vec![nuc];

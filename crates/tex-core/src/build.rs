@@ -1866,6 +1866,17 @@ impl Engine {
             eprintln!("PARA-IN {}:{} n={} [{}]", self.input.current_file_name(), self.input.current_file_line(), content.len(), desc.join(" "));
         }
         let lines = self.break_paragraph(content, fw);
+        // tex.web keeps the final broken line in just_box; display entry
+        // measures \predisplaysize from it even after build_page consumes
+        // the contributions (clone before the splices below move them)
+        self.last_par_line = match &lines {
+            Node::Box { list, .. } => list
+                .iter()
+                .rev()
+                .find(|n| matches!(n, Node::Box { kind, .. } if *kind == crate::boxes::HBOX))
+                .cloned(),
+            _ => None,
+        };
         if crate::debug_flag("PARADBG") {
             if let Node::Box { list, .. } = &lines {
                 let nl = list.iter().filter(|m| matches!(m, Node::Box { kind, .. } if *kind == crate::boxes::HBOX)).count();

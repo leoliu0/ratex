@@ -273,12 +273,13 @@ impl Engine {
                 self.pre_display_size = if was_empty {
                     -0x3FFF_FFFF
                 } else {
-                    // the broken lines were just appended to the page list;
-                    // the final line is the last hbox there
-                    match self.page_list.iter().rev().find(|n| {
-                        matches!(n, Node::Box { kind, .. } if *kind == crate::boxes::HBOX)
-                    }) {
-                        Some(line) => self.pre_display_size_of(line),
+                    // tex.web §1181/§1148: \predisplaysize is measured on
+                    // just_box — the interrupted paragraph's final line,
+                    // captured at break time. Searching the contribution
+                    // list is unreliable: build_page may have consumed the
+                    // lines already (yielding the always-short-skip bug).
+                    match self.last_par_line.take() {
+                        Some(line) => self.pre_display_size_of(&line),
                         None => -0x3FFF_FFFF,
                     }
                 };
@@ -523,6 +524,9 @@ impl Engine {
             // skip selection (§22578): normal skips unless there is clearance
             // for the short pair (and never short with \leqno)
             let is_short = d + s > self.pre_display_size && !leqno;
+            if crate::debug_flag("DSKIP") {
+                eprintln!("DSKIP pg={} d={} s={} pds={} z={} w={} e={} is_short={}", self.pdf_doc.pages.len(), d as f64/65536.0, s as f64/65536.0, self.pre_display_size as f64/65536.0, z as f64/65536.0, w as f64/65536.0, e as f64/65536.0, is_short);
+            }
             let (above, below) = if is_short {
                 (regs.2.clone(), regs.3.clone())
             } else {
@@ -561,7 +565,27 @@ impl Engine {
             if let Node::Box { shift, .. } = &mut line {
                 *shift = (s + d) as i32;
             }
+            // tex.web append_to_vlist: the display box joins the vlist with
+            // ordinary interline glue (from the previous box's depth,
+            // ignoring the display skips). Oracle shows
+            // \glue(\baselineskip) between \abovedisplayskip and the
+            // display box; omitting it tightens every display by ~4pt.
+            let (lh, ld) = match &line {
+                Node::Box { h, d, .. } => (*h as i64, *d as i64),
+                _ => (0, 0),
+            };
+            let bs = self.eqtb.glue_params[crate::prim::GlueParam::BaselineSkip.idx() as usize].clone();
+            let lsk = self.eqtb.glue_params[crate::prim::GlueParam::LineSkip.idx() as usize].clone();
+            let lsl = self.eqtb.dim_params[crate::prim::DimParam::LineSkipLimit.idx() as usize] as i64;
+            if self.prev_depth > -0x3FFF_FFFF {
+                let mut g = bs.width as i64 - self.prev_depth as i64 - lh;
+                if g < lsl {
+                    g = lsk.width as i64;
+                }
+                page.push(Node::Glue(crate::boxes::Glue::new(g as i32)));
+            }
             page.push(line);
+            self.prev_depth = ld as i32;
             // §22598: a right tag on its own line follows the display, flush
             // right, after an infinite penalty; the below-skip is suppressed
             if e == 0 && !leqno {

@@ -223,6 +223,12 @@ pub struct Engine {
     pub pre_display_size: i64,
     pub pre_display_l: i64,
     pub pre_display_s: i64,
+    /// tex.web keeps the interrupted paragraph's final line in just_box so
+    /// finish_display can measure \predisplaysize AFTER the page builder has
+    /// consumed the contributions. We clone the last broken line here at
+    /// paragraph end; display entry takes it (a stale line never survives —
+    /// every paragraph break rewrites or clears it).
+    pub last_par_line: Option<crate::boxes::Node>,
     /// when a display interrupts a paragraph, the paragraph's widow penalty
     /// becomes \displaywidowpenalty (tex.web §21764 line_break argument);
     /// set by enter_math, consumed by end_paragraph
@@ -406,6 +412,7 @@ impl Engine {
             math_penalties: std::cell::Cell::new(false),
             pre_display_size: -0x3FFF_FFFF,
             pre_display_l: 0,
+            last_par_line: None,
             next_par_widow: None,
             pending_display_formula: None,
             eqno_leqno: None,

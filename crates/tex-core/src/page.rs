@@ -383,45 +383,13 @@ impl Engine {
                         self.page_prev_depth = 0;
                         self.prev_depth = 0;
                     } else if self.page_prev_depth > DEPTH_NONE {
-                        // interline glue between boxes
-                        let bs =
-                            self.eqtb.glue_params[GlueParam::BaselineSkip.idx() as usize].clone();
-                        let ls = self.eqtb.glue_params[GlueParam::LineSkip.idx() as usize].clone();
-                        let lsl = self.eqtb.dim_params[DimParam::LineSkipLimit.idx() as usize];
-                        let b = bs.width as i64 - self.page_prev_depth as i64 - h as i64;
-                        let glue = if b < lsl as i64 { ls } else { Glue { width: b as i32, ..bs } };
+                        // tex.web: interline glue is materialized when the
+                        // box is APPENDED to the vertical list
+                        // (append_to_vlist), never here — vlist_append and
+                        // end_paragraph insert it with the \baselineskip in
+                        // force at append time; a lazy insert here reads
+                        // post-group font state and duplicates the glue
                         self.page_prev_depth = DEPTH_NONE;
-                        if glue.width != 0 || glue.stretch != 0 || glue.shrink != 0 {
-                            // replay dedup: when a page break cut between the
-                            // inserted interline glue and this box, the glue
-                            // rides in the carried prefix while the box is
-                            // reprocessed — inserting again doubles the gap.
-                            // The identical glue immediately before the box
-                            // (past any zero placeholders) is that replay.
-                            let mut pi = idx;
-                            while pi > 0 {
-                                match &self.page_list[pi - 1] {
-                                    Node::Glue(pg)
-                                        if pg.width == 0 && pg.stretch == 0 && pg.shrink == 0 =>
-                                    {
-                                        pi -= 1;
-                                    }
-                                    _ => break,
-                                }
-                            }
-                            let dup = pi > 0
-                                && matches!(
-                                    &self.page_list[pi - 1],
-                                    Node::Glue(pg)
-                                        if pg.width == glue.width
-                                            && pg.stretch == glue.stretch
-                                            && pg.shrink == glue.shrink
-                                );
-                            if !dup {
-                                self.page_list.insert(idx, Node::Glue(glue));
-                                advance = false; // reprocess at the inserted glue
-                            }
-                        }
                     }
                     if advance && (h != 0 || d != 0) {
                         self.contribute_box(&mut st, h, d);

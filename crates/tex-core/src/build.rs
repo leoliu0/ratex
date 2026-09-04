@@ -350,6 +350,9 @@ impl Engine {
     /// nodes stay visible to \lastskip/\lastpenalty until the next box
     /// (LaTeX's \addpenalty/\@xaddvskip compensation dances depend on this)
     pub fn vlist_append(&mut self, n: Node) {
+        self.vlist_append_il(n, true);
+    }
+    pub fn vlist_append_il(&mut self, n: Node, interline: bool) {
         if crate::debug_flag("FOOTWATCH") {
             if let Node::Box { list, .. } = &n {
                 let chars: Vec<u8> = list.iter().filter_map(|m| match m { Node::Char { c, .. } => Some(*c), _ => None }).collect();
@@ -359,10 +362,45 @@ impl Engine {
             }
         }
         if self.mode == Mode::Vertical {
+            if crate::debug_flag("G11W") {
+                if let Node::Glue(g) = &n {
+                    let wpt = g.width as f64 / 65536.0;
+                    if wpt > 10.5 && wpt < 14.5 && g.stretch == 0 && g.shrink == 0 {
+                        let ring: Vec<String> = self.tok_ring.iter().rev().take(10).map(|(v,_)| { let t = Token(*v); if t.is_cs() { format!("\\{}", String::from_utf8_lossy(self.cs.name(t.cs_id()))) } else { format!("{:#x}", t.0) } }).collect();
+                        eprintln!("G11 w={:.1} macro={} ring=[{}]", wpt, self.current_macro, ring.join(" "));
+                    }
+                }
+            }
+            // tex.web append_to_vlist (§21374): interline glue is
+            // materialized AT APPEND TIME against prev_depth with the
+            // CURRENT \baselineskip — deferring it to the page builder
+            // reads whatever font-size state is active when the page
+            // fires (e.g. post-\endgroup 1.5-spacing into a singlespaced
+            // bibliography)
             let trigger = matches!(
                 n,
                 Node::Box { .. } | Node::Rule { .. } | Node::Ins { .. } | Node::Penalty(_)
             );
+            match &n {
+                Node::Box { h, d, .. } | Node::Rule { height: h, depth: d, .. } => {
+                    if interline {
+                        const IGNORE: i32 = -1000 * 65536;
+                        if self.prev_depth > IGNORE {
+                            let bs = self.eqtb.glue_params[GlueParam::BaselineSkip.idx() as usize].clone();
+                            let ls = self.eqtb.glue_params[GlueParam::LineSkip.idx() as usize].clone();
+                            let lsl = self.eqtb.dim_params[DimParam::LineSkipLimit.idx() as usize];
+                            let b = bs.width as i64 - self.prev_depth as i64 - *h as i64;
+                            let glue = if b < lsl as i64 { ls } else { Glue { width: b as i32, ..bs } };
+                            if crate::debug_flag("ILW") { eprintln!("ILA pd={:.1} bs={:.1} h={:.1} w={:.1} macro={}", self.prev_depth as f64/65536.0, bs.width as f64/65536.0, *h as f64/65536.0, glue.width as f64/65536.0, self.current_macro); }
+                            if glue.width != 0 || glue.stretch != 0 || glue.shrink != 0 {
+                                self.page_list.push(Node::Glue(glue));
+                            }
+                        }
+                    }
+                    self.prev_depth = *d;
+                }
+                _ => {}
+            }
             self.page_list.push(n);
             if trigger {
                 self.build_page();
@@ -924,7 +962,9 @@ impl Engine {
 
                 for item in list {
                     if self.mode.is_v() {
-                        self.vlist_append(item);
+                        // tex.web unpackage: the spliced list keeps its own
+                        // interline glue — no fresh glue is inserted
+                        self.vlist_append_il(item, false);
                     } else {
                         self.cur_list.push(item);
                     }
@@ -1787,6 +1827,10 @@ impl Engine {
             }
             return;
         }
+        if crate::debug_flag("PARAW") && self.pdf_doc.pages.len() >= 20 && self.pdf_doc.pages.len() <= 30 {
+            let ring: Vec<String> = self.tok_ring.iter().rev().take(8).map(|(v,_)| { let t = Token(*v); if t.is_cs() { format!("\\{}", String::from_utf8_lossy(self.cs.name(t.cs_id()))) } else { format!("{:#x}", t.0) } }).collect();
+            eprintln!("PARAW pages={} macro={} ring=[{}]", self.pdf_doc.pages.len(), self.current_macro, ring.join(" "));
+        }
         let fnt = self.eqtb.cur_font_val;
         if fnt != 0 {
             self.flush_hyphen_disc(fnt);
@@ -1809,7 +1853,7 @@ impl Engine {
             self.eqtb.int_params[crate::prim::IntParam::WidowPenalty.idx() as usize]
         });
         if crate::debug_flag("PARADBG") {
-            let desc: Vec<String> = content.iter().take(12).map(|n| match n {
+            let desc: Vec<String> = content.iter().take(400).map(|n| match n {
                 Node::Char { c, .. } => format!("ch'{}'", *c as u8 as char),
                 Node::Glue(g) => format!("G{:.1}/{:.1}/{:.1}", g.width as f64/65536.0, g.stretch as f64/65536.0, g.shrink as f64/65536.0),
                 Node::Box { w, h, list, .. } => format!("B(w{:.0} h{:.0} n{})", *w as f64/65536.0, *h as f64/65536.0, list.len()),
@@ -1870,10 +1914,26 @@ impl Engine {
                     Node::Box { list, .. } => list,
                     other => vec![other],
                 };
-                page.extend(lines);
+                // tex.web append_to_vlist: materialize interline glue NOW
+                // with the \baselineskip in force at paragraph end — the
+                // page builder's lazy interline would read post-group state
+                let filled = self.fill_line_interline(self.prev_depth, lines);
+                let mut last_d = self.prev_depth;
+                for n in filled.iter().rev() {
+                    match n {
+                        Node::Box { d, .. } | Node::Rule { depth: d, .. } => {
+                            last_d = *d;
+                            break;
+                        }
+                        Node::Glue(_) | Node::Kern(_) | Node::ExplicitKern(_) => continue,
+                        _ => break,
+                    }
+                }
+                page.extend(filled);
                 self.page_list = page;
                 self.mode = Mode::Vertical;
                 self.cur_list = Vec::new();
+                self.prev_depth = last_d;
                 self.build_page();
             }
             (Mode::InternalVertical, Some(inner)) => {

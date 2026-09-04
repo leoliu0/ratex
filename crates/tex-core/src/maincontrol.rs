@@ -121,9 +121,28 @@ impl Engine {
                 let b = self.eqtb.boxed[idx as usize].clone();
                 self.append_box_node(b);
             }
-            UnHBox => self.do_unbox(false, false),
+            UnHBox => {
+                if self.mode.is_v() {
+                    // tex.web §21105: vmode+un_hbox back-inputs the token and
+                    // starts an indented paragraph FIRST (new_graf(true)); the
+                    // re-dispatched hmode unpackage then silently returns on a
+                    // void box. \leavevmode = \unhbox\voidb@x depends on both.
+                    self.pushed.push(Token::from_cs(id));
+                    self.start_paragraph(true);
+                } else {
+                    self.do_unbox(false, false);
+                }
+            }
             UnVBox => self.do_unbox(true, false),
-            UnHCopy => self.do_unbox(false, true),
+            UnHCopy => {
+                if self.mode.is_v() {
+                    // same tex.web §21105 case as UnHBox (same cmd code)
+                    self.pushed.push(Token::from_cs(id));
+                    self.start_paragraph(true);
+                } else {
+                    self.do_unbox(false, true);
+                }
+            }
             UnVCopy => self.do_unbox(true, true),
             LastBox => {
 

@@ -427,18 +427,27 @@ impl Engine {
             self.finish_display_math(formula, tag, disp_regs.unwrap());
             return;
         }
-        let hlist = self.mlist_to_hlist(&mlist, 2);
-        let hbox = hpack(hlist, None, HBOX, &self.eqtb).node;
+        let hlist = self.mlist_to_hlist_pen(&mlist, 2, self.mode == Mode::Horizontal);
+        let ms = self.eqtb.dim_params[DimParam::MathSurround.idx() as usize];
         match self.mode {
+            // tex.web §22461 (finish math in text): the converted nodes are
+            // SPLICED into the current hlist between math-on/math-off nodes
+            // carrying \mathsurround — justification stretches into the
+            // formula and lines may break inside it (never inside a box)
             Mode::Horizontal => {
-                self.cur_list.push(hbox);
+                self.cur_list.push(Node::MathKern(ms, 1));
+                self.cur_list.extend(hlist);
+                self.cur_list.push(Node::MathKern(ms, 2));
                 self.space_factor = 1000;
             }
             Mode::Vertical | Mode::InternalVertical => {
+                let hbox = hpack(hlist, None, HBOX, &self.eqtb).node;
                 self.vlist_append(hbox);
             }
             _ => {
-                self.cur_list.push(hbox);
+                self.cur_list.push(Node::MathKern(ms, 1));
+                self.cur_list.extend(hlist);
+                self.cur_list.push(Node::MathKern(ms, 2));
             }
         }
     }
@@ -455,7 +464,7 @@ impl Engine {
             // s = \displayindent, b = the formula at natural width
             let z = self.pre_display_l;
             let s = self.pre_display_s;
-            let fh = self.mlist_to_hlist(&formula, 0);
+            let fh = self.mlist_to_hlist_pen(&formula, 0, false);
             let first_is_glue = matches!(fh.first(), Some(Node::Glue(_)));
             let mut r0 = hpack(fh, None, HBOX, &self.eqtb);
             let mut w = self.box_w(&r0.node) as i64;
@@ -467,7 +476,7 @@ impl Engine {
             let mut q = 0i64;
             if let Some((tl, lq)) = tag {
                 leqno = lq;
-                let th = self.mlist_to_hlist(&tl, 2);
+                let th = self.mlist_to_hlist_pen(&tl, 2, false);
                 let ab = hpack(th, None, HBOX, &self.eqtb).node;
                 e = self.box_w(&ab) as i64;
                 // q = e + math_quad(text_size): quad of the fam-2 symbols font
@@ -734,8 +743,8 @@ impl Engine {
     /// `^` / `_`: scan the following group-or-token and attach it to the last
     /// atom of the current math list (tex.web "scripts on the tail noad").
     pub fn append_script(&mut self, sup: bool, _c: u8) {
-        let group = self.scan_math_group_or_token();
         let limits_req = self.math_limits.take();
+        let group = self.scan_math_group_or_token();
         let popped = if let Some(l) = self.math_lists.last_mut() {
             if l.iter().rev().take(4).all(|n| matches!(n, Node::ChoiceAlt { .. }))
                 && l.len() >= 5
@@ -892,7 +901,7 @@ impl Engine {
                     // nested braced group in math mode: an Ord atom holding the packed contents
                     let inner = self.scan_math_group_braced();
                     let g = gstyle_of(self.cur_math_style());
-                    let nodes = self.mlist_to_hlist(&inner, g);
+                    let nodes = self.mlist_to_hlist_pen(&inner, g, self.mode == Mode::Horizontal);
                     let boxed = if let Some(vbox) = nodes
                         .iter()
                         .find(|n| matches!(n, Node::Box { kind: VBOX, .. }))
@@ -961,7 +970,7 @@ impl Engine {
     pub fn do_overline(&mut self, under: bool) {
         let group = self.scan_math_group_or_token();
         let g = gstyle_of(self.cur_math_style()) | 1; // cramped
-        let body = self.mlist_to_hlist(&group, g);
+        let body = self.mlist_to_hlist_pen(&group, g, self.mode == Mode::Horizontal);
         let packed = hpack(body, None, HBOX, &self.eqtb).node;
         let (w, _, _) = box_dims(&packed);
         let rt = self.default_rule_thickness(g);
@@ -1223,7 +1232,7 @@ impl Engine {
 
     /// public entry: convert a raw math list produced at `style`
     pub fn math_to_hlist(&self, list: &[Node], style: MathStyle) -> NodeList {
-        self.mlist_to_hlist(list, gstyle_of(style))
+        self.mlist_to_hlist_pen(list, gstyle_of(style), false)
     }
 
     /// classify a raw node as a spacing atom; None = not an atom
@@ -1236,7 +1245,10 @@ impl Engine {
                 _ => CL_ORD,
             }),
             Node::OpLimits { .. } => Some(CL_OP),
-            Node::Frac { .. } => Some(CL_INNER),
+            // tex.web pass 2 (§14983 case): fraction_noad keeps the default
+            // t=ord_noad — fractions take Ord spacing, NOT Inner (Inner is
+            // for \mathinner atoms only)
+            Node::Frac { .. } => Some(CL_ORD),
             Node::Radical { .. } => Some(CL_ORD),
             Node::Accent { .. } => Some(CL_ORD),
             Node::DelimBox { size, .. } => Some(match size {
@@ -1250,7 +1262,17 @@ impl Engine {
         }
     }
 
-    fn mlist_to_hlist(&self, list: &[Node], start: GStyle) -> NodeList {
+    /// `pen`: insert \binoppenalty/\relpenalty breakpoints after Bin/Rel
+    /// atoms (tex.web pass 2, mlist_penalties = mode>0 i.e. inline text math
+    /// only — never in displays or \hbox)
+    fn mlist_to_hlist_pen(&self, list: &[Node], start: GStyle, pen: bool) -> NodeList {
+        let saved_pen = self.math_penalties.replace(pen);
+        let out = self.mlist_to_hlist_inner(list, start);
+        self.math_penalties.set(saved_pen);
+        out
+    }
+
+    fn mlist_to_hlist_inner(&self, list: &[Node], start: GStyle) -> NodeList {
         // pass 1: classify atoms and demote binary operators that cannot be
         // binary in context (tex.web §760)
         let classes: Vec<Option<u8>> = list.iter().map(|n| self.atom_class(n)).collect();
@@ -1321,7 +1343,7 @@ impl Engine {
                     }
                     let idx = ((style >> 1) as usize).min(bodies.len() - 1);
                     let chosen = bodies[idx];
-                    let nodes = self.mlist_to_hlist(chosen, style);
+                    let nodes = self.mlist_to_hlist_pen(chosen, style, self.math_penalties.get());
                     self.emit_atom(&mut out, &mut prev, Some(CL_ORD), nodes, style);
                     i += 1;
                     continue;
@@ -1356,7 +1378,7 @@ impl Engine {
                     let code = delim_code_of(small, large);
                     match lr_stack.pop() {
                         Some((lopen, buf)) => {
-                            let body = self.mlist_to_hlist(&buf, style);
+                            let body = self.mlist_to_hlist_pen(&buf, style, self.math_penalties.get());
                             let (_, bh, bd) = hlist_dims(&body, &self.eqtb);
                             let needed = self.lr_delimiter_size(bh, bd, style);
                             let mut assembled: NodeList = self.var_delimiter(lopen, needed, style);
@@ -1404,6 +1426,26 @@ impl Engine {
                 // inter-atom mu glue comes first (tex.web second pass)
                 self.insert_spacing(&mut out, prev, Some(cls), style);
                 out.extend(nodes);
+                // tex.web pass 2: after a Bin/Rel noad in inline text math,
+                // a \binoppenalty/\relpenalty breakpoint follows (skipped when
+                // the next noad is a penalty, a relation, or absent)
+                if self.math_penalties.get() {
+                    let pval = match cls {
+                        CL_BIN => Some(self.eqtb.int_params[IntParam::BinOpPenalty.idx() as usize]),
+                        CL_REL => Some(self.eqtb.int_params[IntParam::RelPenalty.idx() as usize]),
+                        _ => None,
+                    };
+                    if let Some(pv) = pval {
+                        let suppress = match list.get(i + 1) {
+                            None => true,
+                            Some(Node::Penalty(_)) => true,
+                            Some(nn) => self.atom_class(nn) == Some(CL_REL),
+                        };
+                        if !suppress {
+                            out.push(Node::Penalty(pv));
+                        }
+                    }
+                }
                 prev = Some(cls);
                 i += 1;
                 continue;
@@ -1417,7 +1459,7 @@ impl Engine {
             i += 1;
         }
         while let Some((lopen, buf)) = lr_stack.pop() {
-            let body = self.mlist_to_hlist(&buf, style);
+            let body = self.mlist_to_hlist_pen(&buf, style, self.math_penalties.get());
             let (_, bh, bd) = hlist_dims(&body, &self.eqtb);
             let needed = self.lr_delimiter_size(bh, bd, style);
             out.extend(self.var_delimiter(lopen, needed, style));
@@ -1513,6 +1555,12 @@ impl Engine {
     fn convert_atom(&self, n: &Node, style: GStyle) -> NodeList {
         match n {
             Node::MathChar { fam, c, class } => {
+                if crate::debug_flag("MFONT") {
+                    let fid = self.eqtb.style_fonts[font_size(style)][*fam as usize];
+                    if let Some(f) = self.eqtb.fonts.get(fid as usize) {
+                        eprintln!("MFONT fam={} c={} font={} at={:.2}pt w={:.3}pt", fam, c, f.name, f.at_size as f64/65536.0, f.char_width(*c) as f64/65536.0);
+                    }
+                }
                 if *fam == 255 {
                     vec![]
                 } else if *class == CL_OP {
@@ -1523,7 +1571,20 @@ impl Engine {
                     // font unconditionally — a nullfont/missing-char fam gives
                     // a zero-width glyph, never a dropped atom (which would
                     // silently lose the math and its spacing).
-                    vec![Node::Char { c: *c, font: self.eqtb.style_fonts[font_size(style)][*fam as usize] }]
+                    let fid = self.eqtb.style_fonts[font_size(style)][*fam as usize];
+                    let mut out = vec![Node::Char { c: *c, font: fid }];
+                    // tex.web §14865 (@<Create a character node for nucleus@>):
+                    // a char nucleus with no subscript takes its italic
+                    // correction as a trailing kern; text fonts (nonzero
+                    // interword space) skip it (mid-word reading)
+                    if let Some(f) = self.eqtb.fonts.get(fid as usize) {
+                        let ic = f.char_italic(*c);
+                        let is_text_font = f.space() != 0;
+                        if ic != 0 && !is_text_font {
+                            out.push(Node::Kern(ic));
+                        }
+                    }
+                    out
                 }
             }
             Node::Scripts { nucleus, sup, sub } => self.make_scripts(nucleus, sup.as_deref(), sub.as_deref(), style),
@@ -1602,7 +1663,7 @@ impl Engine {
                 }
             }
             _ => {
-                let nodes = self.mlist_to_hlist(op, style);
+                let nodes = self.mlist_to_hlist_pen(op, style, self.math_penalties.get());
                 let mut b = hpack(nodes, None, HBOX, &self.eqtb).node;
                 if let Node::Box { h, d, shift, .. } = &mut b {
                     *shift = (*h - *d) / 2 - self.axis_height(style);
@@ -1662,7 +1723,7 @@ impl Engine {
             }
             // boxed nucleus: initial shifts from its (shift-adjusted) dims
             _ => {
-                let nodes = self.mlist_to_hlist(nucleus, style);
+                let nodes = self.mlist_to_hlist_pen(nucleus, style, self.math_penalties.get());
                 nuc = hpack(nodes, None, HBOX, &self.eqtb).node;
                 let t = if style < 4 { 2 } else { 4 };
                 let (zh, zd) = box_dims_shifted(&nuc);
@@ -1679,7 +1740,7 @@ impl Engine {
         let mut sup_box: Option<Node> = None;
         let mut sub_box: Option<Node> = None;
         if let Some(s) = sup {
-            let mut nodes = self.mlist_to_hlist(s, sup_style(style));
+            let mut nodes = self.mlist_to_hlist_pen(s, sup_style(style), self.math_penalties.get());
             if ss != 0 {
                 nodes.push(Node::Kern(ss)); // \scriptspace widens the box
             }
@@ -1702,7 +1763,7 @@ impl Engine {
             sup_box = Some(b);
         }
         if let Some(s) = sub {
-            let mut nodes = self.mlist_to_hlist(s, sub_style(style));
+            let mut nodes = self.mlist_to_hlist_pen(s, sub_style(style), self.math_penalties.get());
             if ss != 0 {
                 nodes.push(Node::Kern(ss));
             }
@@ -1785,8 +1846,8 @@ impl Engine {
         let sp4 = self.fparam(style, 3, 12);
         let sp5 = self.fparam(style, 3, 13);
         let (oh, od) = box_dims_shifted(&op_box);
-        let sup_box = above.map(|s| hpack(self.mlist_to_hlist(s, sup_style(style)), None, HBOX, &self.eqtb).node);
-        let sub_box = below.map(|s| hpack(self.mlist_to_hlist(s, sub_style(style)), None, HBOX, &self.eqtb).node);
+        let sup_box = above.map(|s| hpack(self.mlist_to_hlist_pen(s, sup_style(style), self.math_penalties.get()), None, HBOX, &self.eqtb).node);
+        let sub_box = below.map(|s| hpack(self.mlist_to_hlist_pen(s, sub_style(style), self.math_penalties.get()), None, HBOX, &self.eqtb).node);
         let mut w = self.box_w(&op_box);
         if let Some(b) = &sup_box {
             w = w.max(self.box_w(b));
@@ -1885,8 +1946,8 @@ impl Engine {
         } else {
             thickness
         };
-        let num_box = hpack(self.mlist_to_hlist(num, num_style(style)), None, HBOX, &self.eqtb).node;
-        let den_box = hpack(self.mlist_to_hlist(den, den_style(style)), None, HBOX, &self.eqtb).node;
+        let num_box = hpack(self.mlist_to_hlist_pen(num, num_style(style), self.math_penalties.get()), None, HBOX, &self.eqtb).node;
+        let den_box = hpack(self.mlist_to_hlist_pen(den, den_style(style), self.math_penalties.get()), None, HBOX, &self.eqtb).node;
         let w = self.box_w(&num_box).max(self.box_w(&den_box));
         let num_c = self.center_to_w(num_box, w);
         let den_c = self.center_to_w(den_box, w);
@@ -1974,7 +2035,7 @@ impl Engine {
     /// overbar box = [kern(surd_h), rule(surd_h), kern(clr), body].
     fn make_radical(&self, body: &[Node], thickness: i32, style: GStyle) -> NodeList {
         let (delim_code, r_explicit) = unpack_radical(thickness);
-        let body_nodes = self.mlist_to_hlist(body, style | 1);
+        let body_nodes = self.mlist_to_hlist_pen(body, style | 1, self.math_penalties.get());
         let x = hpack(body_nodes, None, HBOX, &self.eqtb).node;
         let (xw, xh, xd) = box_dims(&x);
         let rt = if r_explicit >= 0 {
@@ -2020,7 +2081,7 @@ impl Engine {
     fn make_accent(&self, accent: (u8, FontId), body: &[Node], style: GStyle) -> NodeList {
         let (ac, afid) = accent;
         let Some(af) = self.eqtb.fonts.get(afid as usize).cloned() else {
-            let body_nodes = self.mlist_to_hlist(body, style | 1);
+            let body_nodes = self.mlist_to_hlist_pen(body, style | 1, self.math_penalties.get());
             return vec![hpack(body_nodes, None, HBOX, &self.eqtb).node];
         };
         // skew: kern from the nucleus font's character to its \skewchar
@@ -2051,7 +2112,7 @@ impl Engine {
             }
             _ => 0,
         };
-        let body_nodes = self.mlist_to_hlist(body, style | 1);
+        let body_nodes = self.mlist_to_hlist_pen(body, style | 1, self.math_penalties.get());
         let body_box = hpack(body_nodes, None, HBOX, &self.eqtb).node;
         let (bw, bh, bd) = box_dims(&body_box);
         let aw = af.char_width(ac);
@@ -2461,6 +2522,17 @@ mod tests {
                     }
                 }
             }
+            // inline math now splices into the enclosing hlist (tex.web
+            // §22461): the \hbox{$..$} wrapper contains [MathKern, atoms..,
+            // MathKern]; repack minus the on/off markers so tests see the
+            // formula box
+            if *kind == HBOX
+                && matches!(list.first(), Some(Node::MathKern(_, 1)))
+                && matches!(list.last(), Some(Node::MathKern(_, 2)))
+            {
+                let inner: NodeList = list[1..list.len() - 1].to_vec();
+                return hpack(inner, None, HBOX, &e.eqtb).node;
+            }
             break;
         }
         n
@@ -2835,13 +2907,14 @@ mod tests {
         // text style picks the second branch (T)
         let b = text_math("\\mathchoice{D}{T}{S}{SS}");
         let (list, w, _, _, _) = box_of(&b);
-        // 'T' is 0.611112em wide at 10pt: 6.11112pt; others differ
-        approx(w, 5.84377, "text branch chosen (T)");
+        // cmmi10 'T': wd 0.584376 + ic 0.13889 = 7.232666pt (tex.web §14865:
+        // char nucleus without subscript takes its italic correction)
+        approx(w, 7.232666, "text branch chosen (T)");
         let _ = list;
-        // display picks the first branch (D)
+        // display picks the first branch (D); cmmi10 'D': 0.827917+0.027779
         let bd = display_math("\\mathchoice{D}{T}{S}{SS}");
         let (_, wd, _, _, _) = box_of(&bd);
-        approx(wd, 8.27917, "display branch chosen (D)");
+        approx(wd, 8.55696, "display branch chosen (D)");
     }
 
     /// \mathaccent exists and the accent char is present: sanity on setup
@@ -2902,6 +2975,7 @@ mod probe {
     }
 }
 
+#[cfg(test)]
 #[cfg(test)]
 mod probe2 {
     use super::tests_support::*;

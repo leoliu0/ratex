@@ -404,6 +404,10 @@ impl Eqtb {
         });
     }
     pub fn assign_box(&mut self, idx: u16, v: Option<Node>, global: bool) {
+        if std::env::var_os("OBWATCH").is_some() && idx == 50 {
+            let desc = match &v { Some(Node::Box { h, list, .. }) => format!("box h={:.1} n={}", *h as f64 / 65536.0, list.len()), Some(_) => "other".into(), None => "void".into() };
+            eprintln!("OBWATCH assign reg50={} global={}", desc, global);
+        }
         let i = idx as usize;
         Self::slot(&mut self.boxed, &mut self.box_levels, i, v, global, self.cur_level, &mut self.save_stack, |old, ol| {
             SaveItem::Box(idx, old, ol)

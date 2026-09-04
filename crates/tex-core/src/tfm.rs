@@ -179,8 +179,19 @@ pub fn parse_tfm(data: &[u8], tfm_name: &str, at_size: i32) -> Result<Font, Stri
     let dsize = fix_to_sp_design(rd_i32(data, 28)); // header: [24]=checksum, [28]=design size
     let at = if at_size <= 0 { dsize } else { at_size };
     // scale factor from design units to sp at `at`
+    // tex.web store_scaled (§11128): byte-wise TRUNCATING multiplication
+    // sw = (((d*z)/256 + c*z)/256 + b*z)/16, z = at-size in sp; a=255
+    // negates. tex guarantees bit-exact portability with this; a rounded
+    // fix*at/2^20 product differs by a few sp and flips badness boundaries.
     let scale = |fix: i32| -> i32 {
-        ((fix as i64 * at as i64 + if fix >= 0 { 0x80000 } else { -0x80000 }) / 0x100000) as i32
+        let [a, b, c, d] = fix.to_be_bytes();
+        let z = at as i64;
+        let sw = (((d as i64 * z) / 256 + c as i64 * z) / 256 + b as i64 * z) / 16;
+        if a == 0 {
+            sw as i32
+        } else {
+            (sw - 16 * z) as i32
+        }
     };
 
     let hdr_end = (6 + lh) * 4;

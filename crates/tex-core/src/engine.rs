@@ -207,6 +207,10 @@ pub struct Engine {
     pub page_shrink: [i64; 4],
     pub vsplat_remainder: Option<Vec<crate::boxes::Node>>,
     pub math_lists: Vec<Vec<crate::boxes::Node>>,
+    /// tex.web mlist_penalties as a conversion-scope global: insert
+    /// \binoppenalty/\relpenalty breakpoints after Bin/Rel atoms when
+    /// converting inline TEXT math (mode>0); restored on exit
+    pub math_penalties: std::cell::Cell<bool>,
     pub gt_steps: u64,
     pub rt_steps: u64,
     pub mac_depth: u32,
@@ -399,6 +403,7 @@ impl Engine {
             page_shrink: [0; 4],
             vsplat_remainder: None,
             math_lists: Vec::new(),
+            math_penalties: std::cell::Cell::new(false),
             pre_display_size: -0x3FFF_FFFF,
             pre_display_l: 0,
             next_par_widow: None,
@@ -971,6 +976,9 @@ impl Engine {
     /// paragraph clear is local too, so LaTeX's `{\@@par}` list wrapper rolls
     /// it back and the shape persists across items
     pub fn assign_par_shape(&mut self, new: Vec<(i32, i32)>, global: bool) {
+        if crate::debug_flag("SHAPE") {
+            eprintln!("ASSIGN-SHAPE n={} lvl={} cur_shape_lvl={} stack={} line={}", new.len(), self.eqtb.cur_level, self.par_shape_level, self.eqtb.save_stack.len(), self.input.current_file_line());
+        }
         if global {
             self.par_shape = new;
             self.par_shape_level = crate::eqtb::LEVEL_ONE;

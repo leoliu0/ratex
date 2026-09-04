@@ -100,6 +100,9 @@ impl Engine {
     /// \displaywidowpenalty when a display follows (tex.web line_break's
     /// only argument, §16054).
     pub fn break_paragraph(&mut self, hlist: NodeList, final_widow_penalty: i32) -> Node {
+        if crate::debug_flag("SHAPE") {
+            eprintln!("SHAPE par_shape={:?} leftskip={:.2}", self.par_shape, self.eqtb.glue_params[GlueParam::LeftSkip.idx() as usize].width as f64/65536.0);
+        }
         if crate::debug_flag("PARADUMP") {
             let mut s = String::new();
             for node in &hlist {
@@ -447,7 +450,8 @@ impl Engine {
                 }
             }
             kpchars.push(kptext.len());
-            eprintln!("KPPAR: {}", &kptext[..kptext.len().min(70)]);
+            let kb = (0..=kptext.len().min(70)).rev().find(|&b| kptext.is_char_boundary(b)).unwrap_or(0);
+            eprintln!("KPPAR: {}", &kptext[..kb]);
         }
         let mut actives: Vec<Rc<ActiveNode>> = vec![start];
 
@@ -550,7 +554,8 @@ impl Engine {
                 }
                 if kptrace {
                     for node in &new_nodes {
-                        let at = kpchars.get(node.pos).copied().unwrap_or(0).min(kptext.len());
+                        let at = kpchars.get(node.pos).copied().unwrap_or(0);
+                        let at = (0..=at.min(kptext.len())).rev().find(|&b| kptext.is_char_boundary(b)).unwrap_or(0);
                         let ctx = &kptext[..at];
                         eprintln!(
                             "KP @@c{}: line {}.{} t={} -> @@c{} | ...{}",
@@ -559,7 +564,7 @@ impl Engine {
                             node.fitness,
                             node.demerits,
                             node.prev.as_ref().map(|p| p.pos).unwrap_or(0),
-                            &ctx[ctx.len().saturating_sub(28)..]
+                            &ctx[(0..=ctx.len()).rev().find(|&b| b <= ctx.len().saturating_sub(28) && ctx.is_char_boundary(b)).unwrap_or(0)..]
                         );
                     }
                 }
@@ -577,9 +582,22 @@ impl Engine {
             }};
         }
 
+        // tex.web §16964: auto_breaking is false between math-on/math-off
+        // (glue inside a formula is never a breakpoint); outside math, glue
+        // breaks only when not preceded by glue/penalty/explicit-kern/math
         let mut i = 0usize;
+        let mut auto_breaking = true;
         while i < n {
             match &list[i] {
+                Node::MathKern(_, kind) => {
+                    auto_breaking = *kind != 1;
+                    // tex.web §17079: math_node does kern_break — a math
+                    // node followed by glue is a legal breakpoint (the glue
+                    // is discarded at the break)
+                    if i + 1 < n && matches!(list[i + 1], Node::Glue(_)) {
+                        consider!(i, false, 0, BreakType::Unhyphenated, false, cum_w[i]);
+                    }
+                }
                 Node::Penalty(p) => {
                     if *p < INF_PENALTY {
                         let forced = *p <= EJECT_PENALTY;
@@ -587,12 +605,11 @@ impl Engine {
                     }
                 }
                 Node::Glue(_) => {
-                    // legal iff preceded by a non-(glue|penalty|explicit
-                    // kern|math) node
-                    let legal = i > 0
+                    let legal = auto_breaking
+                        && i > 0
                         && !matches!(
                             list[i - 1],
-                            Node::Glue(_) | Node::Penalty(_) | Node::ExplicitKern(_)
+                            Node::Glue(_) | Node::Penalty(_) | Node::ExplicitKern(_) | Node::MathKern(..)
                         );
                     if legal {
                         consider!(i, false, 0, BreakType::Unhyphenated, false, cum_w[i]);
@@ -601,7 +618,7 @@ impl Engine {
                 Node::ExplicitKern(k) => {
                     // tex's kern_break: explicit kern followed by glue; the
                     // kern itself is zeroed at the line end
-                    if i + 1 < n && matches!(list[i + 1], Node::Glue(_)) {
+                    if auto_breaking && i + 1 < n && matches!(list[i + 1], Node::Glue(_)) {
                         consider!(i, false, 0, BreakType::Unhyphenated, false, cum_w[i]);
                         let _ = k;
                     }
@@ -862,7 +879,7 @@ impl Engine {
 
 /// nodes tex removes at the start of the next line after a non-disc break
 fn is_prunable(n: &Node) -> bool {
-    matches!(n, Node::Glue(_) | Node::Penalty(_) | Node::ExplicitKern(_))
+    matches!(n, Node::Glue(_) | Node::Penalty(_) | Node::ExplicitKern(_) | Node::MathKern(..))
 }
 
 fn push_dims(eqtb: &crate::eqtb::Eqtb, n: &Node, seg: &mut NodeList, w: &mut i64) {

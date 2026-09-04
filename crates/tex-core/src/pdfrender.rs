@@ -50,10 +50,30 @@ pub struct RenderCtx<'a> {
 }
 
 impl Engine {
+    /// YTRACE dump of a shipped page box tree (env-gated by
+    /// `YTRACE`/`YTRACE_PAGE=<n>`); used for page-layout forensics.
+    pub fn ytrace_dump(n: &Node, ind: usize) {
+        let pad = "  ".repeat(ind);
+        match n {
+            Node::Box { list, kind, glue_sign, glue_order, glue_set, w, h, d, .. } => {
+                eprintln!("{}BOX k{} w={:.1} h={:.1} d={:.1} set={:.3}s{}o{} n={}", pad, kind, sp_to_bp(*w as i64), sp_to_bp(*h as i64), sp_to_bp(*d as i64), glue_set, glue_sign, glue_order, list.len());
+                for c in list { Self::ytrace_dump(c, ind + 1); }
+            }
+            Node::Glue(g) => eprintln!("{}GLUE w={:.1} st={:.1} sh={:.1}", pad, sp_to_bp(g.width as i64), sp_to_bp(g.stretch as i64), sp_to_bp(g.shrink as i64)),
+            Node::Char { c, .. } => eprintln!("{}CH '{}'", pad, (*c as char)),
+            _ => eprintln!("{}OTH", pad),
+        }
+    }
+
     /// Render a shipped page box into a PdfPage. Also copies the outline
     /// list into the document and records \pdfsavepos results
     /// (\pdflastxpos/\pdflastypos) from the last SavePos node on the page.
     pub fn render_page(&mut self, page_box: &Node) -> PdfPage {
+        if crate::debug_flag("YTRACE") {
+            if !std::env::var_os("YTRACE_PAGE").is_some() || std::env::var("YTRACE_PAGE").ok().and_then(|v| v.parse::<usize>().ok()) == Some(self.pdf_doc.pages.len() + 1) {
+                Self::ytrace_dump(page_box, 0);
+            }
+        }
         let width_sp = self.eqtb.dim_params[DimParam::PdfPageWidth.idx() as usize];
         let height_sp = self.eqtb.dim_params[DimParam::PdfPageHeight.idx() as usize];
         let w_bp = sp_to_bp(width_sp as i64);
@@ -114,28 +134,16 @@ impl Engine {
     }
 }
 
-/// Glue advance in bp under the box's glue setting.
+// Glue advance during shipout, tex.web §12438: the glue ratio applies to
+// the matching-order component only; every other glue contributes its
+// natural width. No clamping: negative glue widths must survive so that
+// cancellation pairs (LaTeX \@xaddvskip, setspace) stay balanced.
 fn glue_advance(width: i32, stretch: i32, shrink: i32, stretch_order: u8, shrink_order: u8, sign: u8, order: u8, set: f64) -> f64 {
+    let w = sp_to_bp(width as i64);
     match sign {
-        1 => {
-            let w = sp_to_bp(width as i64);
-            if stretch_order == order {
-                w + set * sp_to_bp(stretch as i64)
-            } else {
-                w // lower-order stretch does not participate
-            }
-        }
-        2 => {
-            let w = sp_to_bp(width as i64);
-            if shrink_order == order {
-                (w - set * sp_to_bp(shrink as i64)).max(0.0)
-            } else if shrink_order < order {
-                w
-            } else {
-                0.0
-            }
-        }
-        _ => sp_to_bp(width as i64),
+        1 if stretch_order == order => w + set * sp_to_bp(stretch as i64),
+        2 if shrink_order == order => w - set * sp_to_bp(shrink as i64),
+        _ => w,
     }
 }
 

@@ -958,6 +958,14 @@ impl Engine {
             line.push(Node::Glue(tabskip.clone()));
             let mut g = 0usize;
             for (c, cell) in row.into_iter().enumerate() {
+                // grid slots covered by an earlier spanning cell exist only
+                // as unpacked placeholders; they contribute no box and no
+                // tabskip of their own (the span's target already includes
+                // the covered columns and their tabskips)
+                if cell.packed.is_none() {
+                    g = g.max(c + 1);
+                    continue;
+                }
                 while g < c {
                     if g > 0 {
                         line.push(Node::Glue(tabskip.clone()));
@@ -1196,8 +1204,8 @@ mod tests {
         let wc = f.char_width(b'c');
         let wb = f.char_width(b'b');
         // column 1 = max('ccc', 'a' + \quad); \quad = 1em = cmr10 quad
-        // (655362su), which the v part of every column-0 cell contributes
-        assert_eq!(w0, wc * 3 + 655362);
+        // (655361su under tex.web's truncating store_scaled)
+        assert_eq!(w0, wc * 3 + 655361);
         assert_eq!(w1, wb * 2);
     }
 

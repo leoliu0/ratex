@@ -690,6 +690,22 @@ impl Engine {
             *m = Vec::new();
         }
 
+        if crate::debug_flag("CUTWATCH") && self.pdf_doc.pages.len() + 1 == 44 {
+            let peek = |n: &Node| -> String {
+                match n {
+                    Node::Glue(g) => format!("G({})", g.width as f64 / 65536.0),
+                    Node::Penalty(p) => format!("P({})", p),
+                    Node::Box { h, list, .. } => {
+                        let ch: String = list.iter().filter_map(|m| match m { Node::Char { c, .. } => Some(*c as char), _ => None }).take(8).collect();
+                        format!("B(h={:.1}:'{}')", *h as f64 / 65536.0, ch)
+                    }
+                    Node::Kern(k) | Node::ExplicitKern(k) => format!("K({})", *k as f64 / 65536.0),
+                    _ => "?".into(),
+                }
+            };
+            let items_str: Vec<String> = self.page_list.iter().map(|n| peek(n)).collect();
+            eprintln!("CUTWATCH p44 cut={} list={:?}", cut, items_str);
+        }
         let items: NodeList = self.page_list.drain(..cut).collect();
         if crate::debug_flag("PAGEVLIST") {
             eprintln!("=== PAGE {} MATERIAL (cut={}) ===", self.pdf_doc.pages.len() + 1, cut);
@@ -923,6 +939,11 @@ impl Engine {
         }
         self.in_output = true;
         self.output_depth += 1;
+        // tex.web fire_up: the output routine runs inside a save level
+        // (output_group) — its local assignments (\@restorepar's \def\par,
+        // \@specials, mark state) roll back at <endoutput> instead of
+        // clobbering the enclosing list's eqtb state
+        self.eqtb.push_level(crate::eqtb::LevelType::Simple);
         // tex.web: the output routine preempts in-flight input. With
         // begin_token_list semantics, macro/hook replays live as nested
         // TokList sources BELOW the routine pushed here, so they resume
@@ -1033,11 +1054,11 @@ impl Engine {
             cost: 0,
             box_node: Box::new(r.node),
         };
-        self.page_list.insert(0, node);
-        self.page_processed += 1;
     }
 
     pub fn finish_output(&mut self) {
+        // close the save level opened at fire_up (tex.web output_group)
+        self.pop_group();
         self.in_output = false;
         self.output_depth = self.output_depth.saturating_sub(1);
         if self.output_depth == 0 {
@@ -1049,6 +1070,27 @@ impl Engine {
     pub fn ship_box(&mut self, b: Option<Node>) {
         self.dead_cycles = 0;
         let Some(boxn) = b else { return };
+        if crate::debug_flag("PAGETREE") {
+            fn dump(n: &Node, depth: usize, out: &mut String) {
+                let pad = "  ".repeat(depth);
+                match n {
+                    Node::Box { kind, w, h, d, shift, list, .. } => {
+                        out.push_str(&format!("{}B{} w={:.1} h={:.1} d={:.1} sh={:.1} n={}\n", pad, kind, *w as f64 / 65536.0, *h as f64 / 65536.0, *d as f64 / 65536.0, *shift as f64 / 65536.0, list.len()));
+                        if depth < 10 {
+                            for m in list.iter() { dump(m, depth + 1, out); }
+                        }
+                    }
+                    Node::Glue(g) => out.push_str(&format!("{}G {:.1}\n", pad, g.width as f64 / 65536.0)),
+                    Node::Penalty(p) => out.push_str(&format!("{}pen{}\n", pad, p)),
+                    Node::Kern(k) | Node::ExplicitKern(k) => out.push_str(&format!("{}k{:.1}\n", pad, *k as f64 / 65536.0)),
+                    Node::Char { c, .. } => out.push_str(&format!("{}c'{}'\n", pad, *c as char)),
+                    _ => out.push_str(&format!("{}?\n", pad)),
+                }
+            }
+            let mut s = String::new();
+            dump(&boxn, 0, &mut s);
+            eprintln!("PAGETREE:\n{}", s);
+        }
         if crate::debug_flag("PAGETRACE") {
             eprintln!(
                 "SHIPOUT pages={} in_output={} line={}",

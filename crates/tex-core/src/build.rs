@@ -86,9 +86,9 @@ impl Engine {
                 g.width += font.extra_space();
             }
         }
-        g.stretch = ((g.stretch as i64) * sf / 1000) as i32;
-        // tex.web app_space: shrink is scaled by 1000/sf (inverse of stretch)
-        g.shrink = ((g.shrink as i64) * 1000 / sf) as i32;
+        // tex.web app_space: xn_over_d rounds (not truncates)
+        g.stretch = crate::scaled::xn_over_d(g.stretch, sf as i32, 1000);
+        g.shrink = crate::scaled::xn_over_d(g.shrink, 1000, sf as i32);
         g
     }
 
@@ -350,6 +350,14 @@ impl Engine {
     /// nodes stay visible to \lastskip/\lastpenalty until the next box
     /// (LaTeX's \addpenalty/\@xaddvskip compensation dances depend on this)
     pub fn vlist_append(&mut self, n: Node) {
+        if crate::debug_flag("FOOTWATCH") {
+            if let Node::Box { list, .. } = &n {
+                let chars: Vec<u8> = list.iter().filter_map(|m| match m { Node::Char { c, .. } => Some(*c), _ => None }).collect();
+                if chars.len() == 2 && chars[0].is_ascii_digit() && chars[1].is_ascii_digit() {
+                    eprintln!("FOOTV '{}' kinds={:?} macro={} in_output={} pages={} ss={}", String::from_utf8_lossy(&chars), self.box_kinds, self.current_macro, self.in_output, self.pdf_doc.pages.len(), self.eqtb.save_stack.len());
+                }
+            }
+        }
         if self.mode == Mode::Vertical {
             let trigger = matches!(
                 n,
@@ -837,6 +845,14 @@ impl Engine {
     }
 
     pub fn append_box_node(&mut self, b: Option<Node>) {
+        if crate::debug_flag("FOOTWATCH") {
+            if let Some(Node::Box { list, .. }) = &b {
+                let chars: Vec<u8> = list.iter().filter_map(|n| match n { Node::Char { c, .. } => Some(*c), _ => None }).collect();
+                if chars.len() == 2 && chars[0].is_ascii_digit() && chars[1].is_ascii_digit() {
+                    eprintln!("FOOTWATCH '{}' mode={:?} kinds={:?} in_output={} pages={} macro={}", String::from_utf8_lossy(&chars), self.mode, self.box_kinds, self.in_output, self.pdf_doc.pages.len(), self.current_macro);
+                }
+            }
+        }
         match b {
             None => {}
             Some(node) => match self.mode {
@@ -896,9 +912,8 @@ impl Engine {
                     self.error("Incompatible list can't be unboxed");
                     return;
                 }
-                if !want_v && self.mode.is_v() {
-                    self.start_paragraph(false);
-                }
+                // vertical-mode \unhbox/\unhcopy already started a paragraph
+                // at dispatch (tex.web §21105); unpackage only runs in hmode
                 if want_v && self.mode.is_h() {
                     self.error("Incompatible list can't be unboxed");
                     return;
@@ -1734,6 +1749,10 @@ impl Engine {
     }
 
     pub fn end_paragraph(&mut self) {
+        if crate::debug_flag("SHAPE") {
+            let trig = self.pushed.last().map(|t| if t.is_cs() { format!("\\{}", String::from_utf8_lossy(self.cs.name(t.cs_id()))) } else { format!("0x{:x}", t.0) }).unwrap_or_default();
+            eprintln!("END-PAR lvl={} shape_lvl={} shape_n={} line={} trig={}", self.eqtb.cur_level, self.par_shape_level, self.par_shape.len(), self.input.current_file_line(), trig);
+        }
         let has_content = self.cur_list.iter().any(|n| match n {
             Node::Char { .. } | Node::Disc(_) | Node::Ligature { .. } => true,
             Node::Rule { width, height, .. } => *width > 0 || *height > 0,

@@ -562,20 +562,25 @@ impl Engine {
             break;
         }
         // factor: integer or decimal, or a direct dimen source
-        let factor: f64;
+        // tex.web §445-448: the factor is kept as (int_part, f) with f in
+        // 2^-16 units via round_decimals' truncating digit loop — f64
+        // products round differently by a few sp and flip glue/badness
+        // boundaries (observed: newtx `.2em` = 157283sp in real pdftex)
+        let int_part: i64;
+        let frac_f: i64;
         let direct: Option<i32>;
         self.skip_spaces_relax();
         let t = self.get_x_raw();
         if Self::is_digit_token(t) || (t.is_char() && (t.chr() == b'.' as u32 || t.chr() == b',' as u32)) {
-            let mut int_part: i64 = 0;
+            let mut ip: i64 = 0;
             if Self::is_digit_token(t) {
-                int_part = (t.chr() - b'0' as u32) as i64;
+                ip = (t.chr() - b'0' as u32) as i64;
                 loop {
                     let t2 = self.get_x_raw();
                     if Self::is_digit_token(t2) {
-                        int_part = int_part * 10 + (t2.chr() - b'0' as u32) as i64;
-                        if int_part > 0x7FFF_FFFF {
-                            int_part = 0x7FFF_FFFF;
+                        ip = ip * 10 + (t2.chr() - b'0' as u32) as i64;
+                        if ip > 0x7FFF_FFFF {
+                            ip = 0x7FFF_FFFF;
                         }
                     } else {
                         { let __pt = t2; if crate::debug_flag("PUSHWATCH") && __pt.is_cs() && self.cs.name(__pt.cs_id()) == b"ifx" && self.input.current_file_line() > 9000 { eprintln!("PUSHIFX crates/tex-core/src/scan.rs:{} line={}", {line!()}, self.input.current_file_line()); } self.pushed.push(__pt); }
@@ -583,40 +588,45 @@ impl Engine {
                     }
                 }
             }
-            // fraction
-            let mut frac: f64 = 0.0;
-            let mut scale = 0.1;
+            // fraction digits (all consumed even past precision, tex.web §102)
+            let mut digits: Vec<u8> = Vec::new();
+            let mut seen_point = false;
             loop {
                 let t2 = self.get_x_raw();
-                if t2.is_char() && (t2.chr() == b'.' as u32 || t2.chr() == b',' as u32) && frac == 0.0 {
+                if t2.is_char() && (t2.chr() == b'.' as u32 || t2.chr() == b',' as u32) && !seen_point {
+                    seen_point = true;
                     continue;
                 }
                 if Self::is_digit_token(t2) {
-                    // tex.web §102: trailing digits beyond precision are still
-                    // CONSUMED; pushing them back corrupts the unit scan
-                    // (hyperref \dimen@=0.99626401\dimen@).
-                    if scale > 1e-7 {
-                        frac += (t2.chr() - b'0' as u32) as f64 * scale;
-                        scale *= 0.1;
+                    if digits.len() < 17 {
+                        digits.push((t2.chr() - b'0' as u32) as u8);
                     }
                 } else {
                     { let __pt = t2; if crate::debug_flag("PUSHWATCH") && __pt.is_cs() && self.cs.name(__pt.cs_id()) == b"ifx" && self.input.current_file_line() > 9000 { eprintln!("PUSHIFX crates/tex-core/src/scan.rs:{} line={}", {line!()}, self.input.current_file_line()); } self.pushed.push(__pt); }
                     break;
                 }
             }
-            factor = int_part as f64 + frac;
+            // round_decimals (tex.web §2189): truncating per-digit loop,
+            // result in 2^-16 units
+            let mut a: i64 = 0;
+            for &d in digits.iter().rev() {
+                a = (a + d as i64 * 131072) / 10;
+            }
+            int_part = ip;
+            frac_f = (a + 1) / 2;
             direct = None;
         } else if t.is_char() && t.chr() == b'`' as u32 {
             let t2 = self.get_token();
             if t2.is_char() {
-                factor = t2.chr() as f64;
+                int_part = t2.chr() as i64;
             } else if t2.is_cs() {
                 let name = self.cs.name(t2.cs_id());
-                factor = name.first().copied().unwrap_or(0) as f64;
+                int_part = name.first().copied().unwrap_or(0) as i64;
             } else {
                 self.error("Missing character after `");
-                factor = 0.0;
+                int_part = 0;
             }
+            frac_f = 0;
             direct = None;
         } else if t.is_cs() {
             match self.cur_prim {
@@ -625,7 +635,8 @@ impl Engine {
                     return if negate { -v } else { v };
                 }
                 Some(Prim::NumExpr) => {
-                    factor = self.scan_expr_num() as f64;
+                    int_part = self.scan_expr_num() as i64;
+                    frac_f = 0;
                     direct = None;
                 }
                 Some(Prim::GlueExpr) | Some(Prim::MuExpr) => {
@@ -633,97 +644,117 @@ impl Engine {
                     return if negate { -g.width } else { g.width };
                 }
                 Some(Prim::DimP(p)) => {
-                    factor = 1.0;
+                    int_part = 1;
+                    frac_f = 0;
                     direct = Some(self.dim_param_value(p));
                 }
                 Some(Prim::GlueP(p)) => {
-                    factor = 1.0;
+                    int_part = 1;
+                    frac_f = 0;
                     direct = Some(self.eqtb.glue_params[p.idx() as usize].width);
                 }
                 Some(Prim::Skip) => {
                     let i = self.scan_reg_num();
-                    factor = 1.0;
+                    int_part = 1;
+                    frac_f = 0;
                     direct = Some(self.eqtb.skip[i as usize].width);
                 }
                 Some(Prim::MuSkip) => {
                     let i = self.scan_reg_num();
-                    factor = 1.0;
+                    int_part = 1;
+                    frac_f = 0;
                     direct = Some(self.eqtb.muskip[i as usize].width);
                 }
                 Some(Prim::Wd) => {
                     let n = self.scan_reg_num();
-                    factor = 1.0;
+                    int_part = 1;
+                    frac_f = 0;
                     direct = Some(self.box_reg_dimen(n, 0));
                 }
                 Some(Prim::Ht) => {
                     let n = self.scan_reg_num();
-                    factor = 1.0;
+                    int_part = 1;
+                    frac_f = 0;
                     direct = Some(self.box_reg_dimen(n, 1));
                 }
                 Some(Prim::Dp) => {
                     let n = self.scan_reg_num();
-                    factor = 1.0;
+                    int_part = 1;
+                    frac_f = 0;
                     direct = Some(self.box_reg_dimen(n, 2));
                 }
                 Some(Prim::LastSkip) => {
-                    factor = 1.0;
+                    int_part = 1;
+                    frac_f = 0;
                     direct = Some(self.last_skip_value().width);
                 }
                 Some(Prim::GlueStretch) => {
-                    factor = 1.0;
+                    int_part = 1;
+                    frac_f = 0;
                     direct = Some(self.scan_etex_glue_field(0));
                 }
                 Some(Prim::GlueShrink) => {
-                    factor = 1.0;
+                    int_part = 1;
+                    frac_f = 0;
                     direct = Some(self.scan_etex_glue_field(1));
                 }
                 Some(Prim::FontDimen) => {
                     let idx = self.scan_int();
                     let f = self.scan_font_id();
                     let i = if idx > 0 { idx as usize - 1 } else { 0 };
-                    factor = 1.0;
+                    int_part = 1;
+                    frac_f = 0;
                     direct = Some(self.eqtb.font_params[f as usize].get(i).copied().unwrap_or(0));
                 }
                 Some(Prim::Count) => {
                     // internal integer coerced to dimen (sp), tex.web scan_something_internal
                     let i = self.scan_reg_num();
-                    factor = self.eqtb.count[i as usize] as f64;
+                    int_part = self.eqtb.count[i as usize] as i64;
+                    frac_f = 0;
                     direct = None;
                 }
                 Some(Prim::Dimen) => {
                     let i = self.scan_reg_num();
-                    factor = 1.0;
+                    int_part = 1;
+                    frac_f = 0;
                     direct = Some(self.eqtb.dimen[i as usize]);
                 }
                 _ => match self.eqtb.resolve(t.cs_id()).cloned() {
                     Some(Equiv::DimenReg(i)) => {
-                        factor = 1.0;
+                        int_part = 1;
+                    frac_f = 0;
                         direct = Some(self.eqtb.dimen[i as usize]);
                     }
                     Some(Equiv::SkipReg(i)) => {
-                        factor = 1.0;
+                        int_part = 1;
+                    frac_f = 0;
                         direct = Some(self.eqtb.skip[i as usize].width);
                     }
                     Some(Equiv::MuSkipReg(i)) => {
-                        factor = 1.0;
+                        int_part = 1;
+                    frac_f = 0;
                         direct = Some(self.eqtb.muskip[i as usize].width);
                     }
                     Some(Equiv::CountReg(i)) => {
-                        factor = self.eqtb.count[i as usize] as f64;
+                        int_part = self.eqtb.count[i as usize] as i64;
+                    frac_f = 0;
                         direct = None;
                     }
                     Some(Equiv::CharDef(c)) => {
-                        factor = c as f64;
+                        int_part = c as i64;
+                    frac_f = 0;
                         direct = None;
                     }
                     Some(Equiv::MathCharDef(c)) => {
                         // \@m/\@M constants (\mathchardef'd); \offinterlineskip
                         // computes \baselineskip-\@m\p@ through this path.
-                        factor = c as f64;
+                        int_part = c as i64;
+                    frac_f = 0;
                         direct = None;
                     }
                     Some(Equiv::Prim(Prim::IntP(p))) => {
-                        factor = self.int_param_value(p) as f64;
+                        int_part = self.int_param_value(p) as i64;
+                    frac_f = 0;
                         direct = None;
                     }
                     _ => {
@@ -737,7 +768,8 @@ impl Engine {
                                 self.current_macro);
                         }
                         self.error("Missing number, treated as zero");
-                        factor = 0.0;
+                        int_part = 0;
+                        frac_f = 0;
                         direct = None;
                     }
                 },
@@ -748,20 +780,19 @@ impl Engine {
                 eprintln!("NUM-FAIL tok=cc{}:{:#x} L{} mac={}", t.cc(), t.chr(), self.input.current_file_line(), self.current_macro);
             }
             self.error("Missing number, treated as zero");
-            factor = 0.0;
+            int_part = 0;
+                        frac_f = 0;
             direct = None;
         }
         if let Some(d) = direct {
             return if negate { -d } else { d };
         }
-        // unit
+        // unit (tex.web §8926/§9040): pt is exact (int*unity+f); other units
+        // multiply the (int + f/2^16) factor with truncating fixed-point
         let unit_sp = self.scan_unit_sp(mu);
-        // sp = round(factor * unit_sp); use exact integer math when factor is
-        // a multiple of 1/65536-ish; f64 with i64 rounding is precise enough
-        // for TeX's 5-decimal factors in practice.
-        let v = (factor * unit_sp as f64 + 0.5 * unit_sp as f64 / 1.0) as i64;
-        let v = (factor * unit_sp as f64).round() as i64;
-        let v = v.clamp(i32::MIN as i64, i32::MAX as i64) as i32;
+        let v: i128 = int_part as i128 * 65536 + frac_f as i128;
+        let v = (v * unit_sp as i128) / 65536;
+        let v = v.clamp(i32::MIN as i128, i32::MAX as i128) as i32;
         if negate {
             -v
         } else {

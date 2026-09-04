@@ -283,6 +283,7 @@ impl Engine {
                         None => -0x3FFF_FFFF,
                     }
                 };
+                if crate::debug_flag("DSKIP") { eprintln!("DSKIP-ENTER pds={} l={} s={} was_empty={}", self.pre_display_size as f64/65536.0, self.pre_display_l as f64/65536.0, self.pre_display_s as f64/65536.0, was_empty); }
             } else {
                 // display entered from vertical mode: nothing precedes it
                 self.pre_display_size = -0x3FFF_FFFF;
@@ -312,6 +313,7 @@ impl Engine {
                 self.pre_display_size as i32,
                 false,
             );
+            if crate::debug_flag("DSKIP") { eprintln!("DSKIP-WRITE field={} reg={}", self.pre_display_size as f64/65536.0, self.eqtb.dim_params[crate::prim::DimParam::PreDisplaySize.idx() as usize] as f64/65536.0); }
             // tex.web push_math: eq_word_define(cur_fam_code,-1) — \\fam is
             // -1 inside every math group, restored at group end
             self.eqtb
@@ -636,6 +638,7 @@ impl Engine {
             .map(|f| f.quad() as i64)
             .unwrap_or(0);
         let mut v = *shift as i64 + 2 * quad;
+        if crate::debug_flag("DSKIP") { eprintln!("DSKIP-PDS shift={} quad={} v0={}", *shift as f64/65536.0, quad as f64/65536.0, v as f64/65536.0); }
         let mut w: i64 = -MAX_DIM;
         let voids = |g: &Glue| -> bool {
             (*glue_sign == 1 && g.stretch != 0 && g.stretch_order as u8 == *glue_order)

@@ -791,9 +791,44 @@ impl Engine {
             None => Node::Scripts { nucleus: Vec::new(), sup: None, sub: None },
         };
         match top {
-            Node::Scripts { nucleus, sup: s, sub: x } => {
-                let (ns, nx) = if sup { (Some(group), x) } else { (s, Some(group)) };
-                self.append_mlist_node(Node::Scripts { nucleus, sup: ns, sub: nx });
+            Node::Scripts { mut nucleus, sup: s, sub: x } => {
+                // a `\mathop{...}` group atom is stored as a null-MathChar-
+                // prefixed Scripts node. tex.web keeps the limits subtype ON
+                // THE NOAD, so a later second script must see the first
+                // script's \limits/\nolimits request: encode the subtype in
+                // the (invisible) fam255 prefix char's c field — 0=normal,
+                // 1=limits, 2=no_limits (tex.web subtypes).
+                let head_is_op = matches!(nucleus.first(), Some(Node::MathChar { class: CL_OP, .. }));
+                let mut sub_type = match nucleus.first() {
+                    Some(Node::MathChar { fam: 255, c, class: CL_OP }) => *c,
+                    _ => 0,
+                };
+                if sub_type == 0 {
+                    match limits_req {
+                        Some(0) => sub_type = 2,
+                        Some(1) => sub_type = 1,
+                        _ => {}
+                    }
+                }
+                if head_is_op {
+                    if let Some(Node::MathChar { fam: 255, c, .. }) = nucleus.get_mut(0) {
+                        if *c == 0 {
+                            *c = sub_type;
+                        }
+                    }
+                }
+                let use_limits = match sub_type {
+                    1 => head_is_op,
+                    2 => false,
+                    _ => head_is_op && gstyle_of(self.cur_math_style()) < 2,
+                };
+                if use_limits {
+                    let (na, nb) = if sup { (Some(group), x) } else { (s, Some(group)) };
+                    self.append_mlist_node(Node::OpLimits { op: nucleus, above: na, below: nb });
+                } else {
+                    let (ns, nx) = if sup { (Some(group), x) } else { (s, Some(group)) };
+                    self.append_mlist_node(Node::Scripts { nucleus, sup: ns, sub: nx });
+                }
             }
             Node::OpLimits { op, above, below } => {
                 let (na, nb) = if sup { (Some(group), below) } else { (above, Some(group)) };
@@ -922,20 +957,17 @@ impl Engine {
             }
             if t.is_char() && t.cc() == 1 {
                 if self.mode.is_m() {
-                    // nested braced group in math mode: an Ord atom holding the packed contents
+                    // tex.web math_group: braces in math are pure grouping —
+                    // the sublist stays RAW and is boxed at CONVERSION time
+                    // with the style in force then (an eagerly packed group
+                    // in `^{\mathrm{V}}' would print at the enclosing size).
+                    // Represent it as an Ord atom: null fam255 prefix + the
+                    // raw nodes, which make_scripts' boxed-nucleus arm packs
+                    // exactly like tex.web clean_box.
                     let inner = self.scan_math_group_braced();
-                    let g = gstyle_of(self.cur_math_style());
-                    let nodes = self.mlist_to_hlist_pen(&inner, g, self.mode == Mode::Horizontal);
-                    let boxed = if let Some(vbox) = nodes
-                        .iter()
-                        .find(|n| matches!(n, Node::Box { kind: VBOX, .. }))
-                        .cloned()
-                    {
-                        vbox
-                    } else {
-                        hpack(nodes, None, HBOX, &self.eqtb).node
-                    };
-                    self.append_mlist_node(boxed);
+                    let mut nuc: NodeList = vec![Node::MathChar { fam: 255, c: 0, class: CL_ORD }];
+                    nuc.extend(inner);
+                    self.append_mlist_node(Node::Scripts { nucleus: nuc, sup: None, sub: None });
                 } else {
                     self.begin_group(true);
                 }
@@ -1586,7 +1618,7 @@ impl Engine {
                 if crate::debug_flag("MFONT") {
                     let fid = self.eqtb.style_fonts[font_size(style)][*fam as usize];
                     if let Some(f) = self.eqtb.fonts.get(fid as usize) {
-                        eprintln!("MFONT fam={} c={} font={} at={:.2}pt w={:.3}pt", fam, c, f.name, f.at_size as f64/65536.0, f.char_width(*c) as f64/65536.0);
+                        eprintln!("MFONT style={} fam={} c={} font={} at={:.2}pt w={:.3}pt", style, fam, c, f.name, f.at_size as f64/65536.0, f.char_width(*c) as f64/65536.0);
                     }
                 }
                 if *fam == 255 {
@@ -1691,11 +1723,11 @@ impl Engine {
                 }
             }
             _ => {
+                // box nucleus (`\mathop{...} group`): tex.web make_op only
+                // fetches a CHARACTER nucleus and axis-centers that one; a
+                // sub_mlist/sub_box nucleus is boxed with shift 0
                 let nodes = self.mlist_to_hlist_pen(op, style, self.math_penalties.get());
-                let mut b = hpack(nodes, None, HBOX, &self.eqtb).node;
-                if let Node::Box { h, d, shift, .. } = &mut b {
-                    *shift = (*h - *d) / 2 - self.axis_height(style);
-                }
+                let b = hpack(nodes, None, HBOX, &self.eqtb).node;
                 (b, 0)
             }
         }

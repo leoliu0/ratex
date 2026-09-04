@@ -1053,25 +1053,33 @@ impl Engine {
         if crate::debug_flag("SHIPW") { eprintln!("SHIP-BOX pages={} stack={} present={}", self.pdf_doc.pages.len(), self.input.stack.len(), b.is_some()); }
         self.dead_cycles = 0;
         let Some(boxn) = b else { return };
-        if crate::debug_flag("PAGETREE") {
-            fn dump(n: &Node, depth: usize, out: &mut String) {
+        if crate::debug_flag("PAGETREE") || crate::debug_flag("LTREE") {
+            let precise = crate::debug_flag("LTREE");
+            fn dump(n: &Node, depth: usize, out: &mut String, precise: bool) {
                 let pad = "  ".repeat(depth);
                 match n {
                     Node::Box { kind, w, h, d, shift, list, .. } => {
-                        out.push_str(&format!("{}B{} w={:.1} h={:.1} d={:.1} sh={:.1} n={}\n", pad, kind, *w as f64 / 65536.0, *h as f64 / 65536.0, *d as f64 / 65536.0, *shift as f64 / 65536.0, list.len()));
+                        if precise {
+                            out.push_str(&format!("{}B{} w={:.4} h={:.4} d={:.4} sh={:.4} n={}\n", pad, kind, *w as f64 / 65536.0, *h as f64 / 65536.0, *d as f64 / 65536.0, *shift as f64 / 65536.0, list.len()));
+                        } else {
+                            out.push_str(&format!("{}B{} w={:.1} h={:.1} d={:.1} sh={:.1} n={}\n", pad, kind, *w as f64 / 65536.0, *h as f64 / 65536.0, *d as f64 / 65536.0, *shift as f64 / 65536.0, list.len()));
+                        }
                         if depth < 10 {
-                            for m in list.iter() { dump(m, depth + 1, out); }
+                            for m in list.iter() { dump(m, depth + 1, out, precise); }
                         }
                     }
+                    Node::Glue(g) if precise => out.push_str(&format!("{}G {:.4}+{:.4}/{}-{:?}\n", pad, g.width as f64 / 65536.0, g.stretch as f64 / 65536.0, g.stretch_order, g.shrink)),
                     Node::Glue(g) => out.push_str(&format!("{}G {:.1}\n", pad, g.width as f64 / 65536.0)),
                     Node::Penalty(p) => out.push_str(&format!("{}pen{}\n", pad, p)),
-                    Node::Kern(k) | Node::ExplicitKern(k) => out.push_str(&format!("{}k{:.1}\n", pad, *k as f64 / 65536.0)),
+                    Node::Kern(k) | Node::ExplicitKern(k) => out.push_str(&format!("{}k{:.4}\n", pad, *k as f64 / 65536.0)),
+                    Node::Rule { width, height, depth } if precise => out.push_str(&format!("{}R {:.4}x{:.4}+{:?}\n", pad, *width as f64 / 65536.0, *height as f64 / 65536.0, *depth)),
+                    Node::Char { c, .. } if precise => {}
                     Node::Char { c, .. } => out.push_str(&format!("{}c'{}'\n", pad, *c as char)),
                     _ => out.push_str(&format!("{}?\n", pad)),
                 }
             }
             let mut s = String::new();
-            dump(&boxn, 0, &mut s);
+            dump(&boxn, 0, &mut s, precise);
             eprintln!("PAGETREE:\n{}", s);
         }
         if crate::debug_flag("PAGETRACE") {

@@ -727,6 +727,9 @@ impl Engine {
         // tex.web end_gracefully: closing a vertical box group while a
         // paragraph is running inside it forces the \par first, so the
         // packed lines join the vbox instead of being vpack-discarded
+        if crate::debug_flag("DROPTRACE") {
+            eprintln!("DT-EB kind={} mode={:?} line={} cur_n={}", kind, self.mode, self.input.current_file_line(), self.cur_list.len());
+        }
         if matches!(kind, 1 | 2 | 3 | 8 | 9) && self.mode == Mode::Horizontal {
             self.par_primitive();
         }
@@ -803,6 +806,16 @@ impl Engine {
                 _ => boxes::hpack_add(list, None, false, boxes::HBOX, &self.eqtb),
             }
         };
+        if crate::debug_flag("DROPTRACE") {
+            let desc: Vec<String> = inner.iter().take(12).map(|n| match n {
+                Node::Glue(g) => format!("G{:.1}/{:.1}", g.width as f64 / 65536.0, g.stretch as f64 / 65536.0),
+                Node::Box { w, h, d, list, .. } => format!("B(w{:.1} h{:.1} d{:.1} n{})", *w as f64 / 65536.0, *h as f64 / 65536.0, *d as f64 / 65536.0, list.len()),
+                Node::Penalty(p) => format!("P{}", p),
+                Node::Char { c, .. } => format!("ch'{}'", *c as u8 as char),
+                _ => "?".into(),
+            }).collect();
+            eprintln!("DT-ENDBOX kind={} target={:?} line={} n={} [{}] outer_mode={:?}", kind, target, self.input.current_file_line(), /*inner consumed below*/ 0, desc.join(" "), self.mode);
+        }
         let res = pack(inner, target, kind);
         self.last_badness = res.badness;
         match kind {
@@ -960,6 +973,11 @@ impl Engine {
                     return;
                 }
 
+                // tex.web unpackage appends each node with append_to_vlist,
+                // which sets \prevdepth from every box/rule it contributes.
+                // Without that threading, an \unvbox (float placement) leaves
+                // \prevdepth at its pre-splice value and the next box's
+                // interline glue is computed against the wrong depth.
                 for item in list {
                     if self.mode.is_v() {
                         // tex.web unpackage: the spliced list keeps its own
@@ -1336,8 +1354,8 @@ impl Engine {
 
     /// e-TeX `\\lastnodetype`: -1 if the current list is empty, else the
     /// type of `tail` (etex.web; TeX Live e-TeX manual).
-    /// tex.web tail-of-current-list: in outer vmode the page builder has
-    /// consumed page_list[..page_processed], so \lastskip/\lastpenalty/
+    /// tex.web `tail` of the current list. In outer vmode the page builder
+    /// has consumed page_list[..page_processed], so \lastskip/\lastpenalty/
     /// \lastkern/\lastbox/\unskip/\unkern/\unpenalty/\lastnodetype must see
     /// only the UNCONSUMED contributions (real TeX moves consumed nodes off
     /// the vlist; reading consumed ones made \lastskip report stale glue and
@@ -1798,12 +1816,25 @@ impl Engine {
             let trig = self.pushed.last().map(|t| if t.is_cs() { format!("\\{}", String::from_utf8_lossy(self.cs.name(t.cs_id()))) } else { format!("0x{:x}", t.0) }).unwrap_or_default();
             eprintln!("END-PAR lvl={} shape_lvl={} shape_n={} line={} trig={}", self.eqtb.cur_level, self.par_shape_level, self.par_shape.len(), self.input.current_file_line(), trig);
         }
+        if crate::debug_flag("DROPTRACE") {
+            let desc: Vec<String> = self.cur_list.iter().take(12).map(|n| match n {
+                Node::Char { c, .. } => format!("ch'{}'", *c as u8 as char),
+                Node::Glue(g) => format!("G{:.1}/{:.1}", g.width as f64 / 65536.0, g.stretch as f64 / 65536.0),
+                Node::Box { w, h, d, list, .. } => format!("B(w{:.1} h{:.1} d{:.1} n{})", *w as f64 / 65536.0, *h as f64 / 65536.0, *d as f64 / 65536.0, list.len()),
+                Node::Penalty(p) => format!("P{}", p),
+                _ => "?".into(),
+            }).collect();
+            eprintln!("DT-HEAD mode={:?} line={} n={} [{}]", self.mode, self.input.current_file_line(), self.cur_list.len(), desc.join(" "));
+        }
         let has_content = self.cur_list.iter().any(|n| match n {
             Node::Char { .. } | Node::Disc(_) | Node::Ligature { .. } => true,
             Node::Rule { width, height, .. } => *width > 0 || *height > 0,
             Node::Box { w, h, d, list, .. } => *w > 0 || *h > 0 || *d > 0 || !list.is_empty(),
             _ => false,
         });
+        if crate::debug_flag("DROPTRACE") && !has_content {
+            eprintln!("DT-ABANDON line={} saved_mode={:?}", self.input.current_file_line(), self.saved_lists.last().map(|s| s.0));
+        }
         if !has_content {
             self.cur_list.clear();
             // tex.web: \parshape/\looseness/\hangafter/\hangindent are reset
@@ -1913,6 +1944,17 @@ impl Engine {
         if crate::debug_flag("PARADBG") {
             eprintln!("PARAEND {}:{} saved_mode={:?} parstack={}", self.input.current_file_name(), self.input.current_file_line(), saved_mode, self.par_page_lists.len());
         }
+        if crate::debug_flag("DROPTRACE") {
+            let (nl, desc) = match &lines {
+                Node::Box { list, .. } => (list.len(), list.iter().take(6).map(|m| match m {
+                    Node::Box { w, h, d, list, .. } => format!("L(w{:.1} h{:.1} d{:.1} n{})", *w as f64 / 65536.0, *h as f64 / 65536.0, *d as f64 / 65536.0, list.len()),
+                    Node::Glue(g) => format!("G{:.1}/{:.1}", g.width as f64 / 65536.0, g.stretch as f64 / 65536.0),
+                    other => format!("{:?}", std::mem::discriminant(other)),
+                }).collect::<Vec<_>>().join(" ")),
+                other => (0, format!("{:?}", std::mem::discriminant(other))),
+            };
+            eprintln!("DT-PAROUT line={} saved_mode={:?} parstack={} lines={} [{}]", self.input.current_file_line(), saved_mode, self.par_page_lists.len(), nl, desc);
+        }
         let mut lines_opt = Some(lines);
         match (saved_mode, self.par_page_lists.pop()) {
             (Mode::Vertical, Some(mut page)) => {
@@ -1945,6 +1987,15 @@ impl Engine {
                 self.mode = Mode::Vertical;
                 self.cur_list = Vec::new();
                 self.prev_depth = last_d;
+                if crate::debug_flag("DROPTRACE") {
+                    let tail: Vec<String> = self.page_list.iter().rev().take(4).map(|n| match n {
+                        Node::Glue(g) => format!("G{:.1}/{:.1}", g.width as f64 / 65536.0, g.stretch as f64 / 65536.0),
+                        Node::Box { w, h, d, list, .. } => format!("B(w{:.1} h{:.1} d{:.1} n{})", *w as f64 / 65536.0, *h as f64 / 65536.0, *d as f64 / 65536.0, list.len()),
+                        Node::Penalty(p) => format!("P{}", p),
+                        _ => "?".into(),
+                    }).collect();
+                    eprintln!("DT-SPLICE line={} pagelen={} processed={} in_output={} tail=[{}]", self.input.current_file_line(), self.page_list.len(), self.page_processed, self.in_output, tail.join(" "));
+                }
                 self.build_page();
             }
             (Mode::InternalVertical, Some(inner)) => {

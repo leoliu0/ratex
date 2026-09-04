@@ -423,6 +423,22 @@ impl Engine {
             f.min(n)
         };
 
+        if crate::debug_flag("KPW") {
+            let fonts = crate::boxes::eqtb_fonts(&self.eqtb);
+            for (i, node) in list.iter().enumerate() {
+                let d = match node {
+                    Node::Char { c, font } => format!("{}:ch'{}' w={:.1}", i, *c as u8 as char, fonts.char_width(*font, *c) as f64/65536.0),
+                    Node::Glue(g) => format!("{}:G {:.1}+{:.1}-{:.1}", i, g.width as f64/65536.0, g.stretch as f64/65536.0, g.shrink as f64/65536.0),
+                    Node::Box { w, list, .. } => format!("{}:B w={:.1} n={}", i, *w as f64/65536.0, list.len()),
+                    Node::Kern(k) | Node::ExplicitKern(k) => format!("{}:K{:.1}", i, *k as f64/65536.0),
+                    Node::Penalty(p) => format!("{}:P{}", i, p),
+                    Node::Disc(_) => format!("{}:DISC", i),
+                    Node::Ligature { c, lig_width, .. } => format!("{}:lig'{}' w={:.1}", i, *c as char, *lig_width as f64/65536.0),
+                    other => format!("{}:?{:?}", i, std::mem::discriminant(other)),
+                };
+                eprintln!("KPW {}", d);
+            }
+        }
         let start = Rc::new(ActiveNode {
             pos: 0,
             btype: BreakType::Unhyphenated,

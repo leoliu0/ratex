@@ -344,6 +344,24 @@ impl Engine {
         }
     }
 
+    /// Append a node to the outer vertical list. Outside an output routine
+    /// this is a plain push. While a user `\output` runs, tex.web executes
+    /// the routine on a FRESH list (`push_nest; mode:=-vmode`) and
+    /// <Resume the page builder> (@19937) splices that list *ahead of* the
+    /// contribution-list remainder. Rust keeps the remainder in `page_list`
+    /// and models the fresh list with the `output_tail` cursor: every
+    /// routine-level append inserts at the cursor, so longtable's trailing
+    /// `\copy\LT@head\nobreak` (plus the following chunk rows) opens the
+    /// next page instead of landing after the held-over rows.
+    pub fn page_append(&mut self, n: Node) {
+        match self.output_tail {
+            Some((c, saved)) => {
+                self.page_list.insert(c, n);
+                self.output_tail = Some((c + 1, saved));
+            }
+            None => self.page_list.push(n),
+        }
+    }
     /// appends to the current vertical list; at outer level the page builder
     /// runs only for box-like appends — tex.web triggers build_page on box
     /// appends / paragraph ends, NOT on \vskip/\penalty, so glue and penalty
@@ -393,7 +411,7 @@ impl Engine {
                             let glue = if b < lsl as i64 { ls } else { Glue { width: b as i32, ..bs } };
                             if crate::debug_flag("ILW") { eprintln!("ILA pd={:.1} bs={:.1} h={:.1} w={:.1} macro={}", self.prev_depth as f64/65536.0, bs.width as f64/65536.0, *h as f64/65536.0, glue.width as f64/65536.0, self.current_macro); }
                             if glue.width != 0 || glue.stretch != 0 || glue.shrink != 0 {
-                                self.page_list.push(Node::Glue(glue));
+                                self.page_append(Node::Glue(glue));
                             }
                         }
                     }
@@ -401,7 +419,7 @@ impl Engine {
                 }
                 _ => {}
             }
-            self.page_list.push(n);
+            self.page_append(n);
             if trigger {
                 self.build_page();
             }

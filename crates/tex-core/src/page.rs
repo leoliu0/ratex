@@ -782,15 +782,16 @@ impl Engine {
         self.page_shrink = [0; 4];
         self.page_prev_depth = DEPTH_NONE;
         self.page_goal_set = false;
-        // tex.web fresh-page parity for the carried-over processed prefix:
-        // the break can strand already-contributed nodes beyond the cut in
-        // the remainder's processed prefix. The first box of the new page
-        // must get its \topskip pad measured against THAT box (tex.web
-        // inserts it ahead of the first box contributed to an empty page),
-        // and the prefix's heights must count toward the new page's totals
-        // — otherwise the topskip lands one box late and the page runs
-        // ~one line short in \pagetotal, fitting an extra line per page.
-        {
+        // Routine decision needs to precede the fresh-page fold: with a user
+        // \output, TeX rebuilds the next page from scratch at <Resume the page
+        // builder> (routine list + remainder), so the fold (strip/pad/prefix
+        // accounting) must not run — finish_output zeroes page_processed and
+        // build_page contributes the spliced head + remainder nodes afresh.
+        let maxdc = self.eqtb.int_params[IntParam::MaxDeadCycles.idx() as usize].max(0);
+        let toks = (*self.eqtb.tok_params[ToksParam::Output.idx() as usize]).clone();
+        let will_routine = !toks.is_empty() && self.dead_cycles <= maxdc;
+        if !will_routine {
+            // tex.web fresh-page parity for the carried-over processed prefix:
             // strip stale leading discardables (old interline glue, break
             // glue, placeholders) ahead of the carried first box. tex.web
             // contributes whatsits and marks even at a page top (they must
@@ -885,7 +886,6 @@ impl Engine {
         self.eqtb.assign_box(255, Some(r.node), true);
 
         // dead-cycle limit: force shipout instead of looping the routine
-        let maxdc = self.eqtb.int_params[IntParam::MaxDeadCycles.idx() as usize].max(0);
         if self.dead_cycles > maxdc {
             self.error(&format!(
                 "Output loop---{} consecutive dead cycles",
@@ -897,7 +897,6 @@ impl Engine {
             return;
         }
 
-        let toks = (*self.eqtb.tok_params[ToksParam::Output.idx() as usize]).clone();
         if toks.is_empty() {
             // TeXbook default output: \shipout\box255 (also in INITEX)
             let b = self.eqtb.boxed[255].take();
@@ -907,6 +906,11 @@ impl Engine {
         }
         self.in_output = true;
         self.output_depth += 1;
+        // tex.web push_nest: the routine runs on a fresh list; Rust defers the
+        // cursor until the routine's first dispatch so that post-fire appends
+        // inside the firing primitive (remaining chunk rows) stay contribution
+        // material at the list tail.
+        self.output_pending = true;
         // tex.web fire_up: the output routine runs inside a save level
         // (output_group) — its local assignments (\@restorepar's \def\par,
         // \@specials, mark state) roll back at <endoutput> instead of
@@ -1039,6 +1043,15 @@ impl Engine {
             let ring: Vec<String> = self.tok_ring.iter().rev().take(16).map(|(v,_)| { let t = crate::token::Token(*v); if t.is_cs() { format!("\\{}", String::from_utf8_lossy(self.cs.name(t.cs_id()))) } else { format!("{:#x}", t.0) } }).collect();
             eprintln!("OUTW-FIN pages={} stack=[{}] ring=[{}]", self.pdf_doc.pages.len(), st.join(" | "), ring.join(" "));
         }
+        // tex.web pop_nest: the routine's list ends; outer \prevdepth returns.
+        if let Some((_, saved_pd)) = self.output_tail.take() {
+            self.prev_depth = saved_pd;
+        }
+        self.output_pending = false;
+        // <Resume the page builder>: the routine's list was spliced ahead of the
+        // remainder; the whole page rebuilds from scratch (head copy included),
+        // so the carried-over processed prefix is void.
+        self.page_processed = 0;
         // tex.web <Ensure that box 255 is empty after output>: leftover
         // `\box255` material is discarded with an error. longtable's
         // `\LT@output` ends with `\copy\LT@head\nobreak`, which TeX appends

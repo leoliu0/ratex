@@ -192,6 +192,23 @@ pub struct Engine {
     pub align_to: Option<(i32, bool)>, // \halign to/spread <dimen>: (dimen, is_spread)
     pub in_output: bool,
     pub output_depth: usize,
+    /// tex.web <Fire up the user's output routine> (@19925): while an
+    /// output routine runs, top-level vertical appends land at a splice
+    /// cursor that stays BEFORE the held-over remainder sitting in
+    /// `page_list`. TeX runs the routine on a fresh `push_nest` list and
+    /// <Resume the page builder> (@19937) splices that list ahead of the
+    /// contribution-list remainder, so longtable's trailing
+    /// `\copy\LT@head\nobreak` opens the NEXT page (the "(continued)"
+    /// head), never following the chunk rows. The tuple carries
+    /// (cursor, saved \prevdepth): `mode:=-vmode; prev_depth:=ignore_depth`
+    /// suppresses the head's interline glue (the page-top \topskip pad is
+    /// build_page's job), and `pop_nest` restores the saved value.
+    /// `None` outside the output routine.
+    pub output_tail: Option<(usize, i32)>,
+    /// Set at fire_up launch; the first `dispatch` after the firing primitive
+    /// ends converts it into the active `output_tail` cursor. Post-fire appends
+    /// inside the firing primitive itself stay contribution material at the tail.
+    pub output_pending: bool,
     pub dead_cycles: i32,
     pub page_prev_depth: i32,
     pub page_total: i64,
@@ -402,6 +419,8 @@ impl Engine {
             align_done: false,
             in_output: false,
             output_depth: 0,
+            output_tail: None,
+            output_pending: false,
             dead_cycles: 0,
             page_prev_depth: -1000 * 65536,
             page_total: 0,

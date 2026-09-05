@@ -25,6 +25,15 @@ impl Engine {
     }
 
     pub fn dispatch(&mut self, t: Token) {
+        if self.output_pending {
+            // tex.web push_nest: the output routine executes with a fresh
+            // list (mode:=-vmode; prev_depth:=ignore_depth). Material
+            // appended during the routine inserts at cursor 0, ahead of
+            // the carried-over contribution remainder.
+            self.output_pending = false;
+            let saved = std::mem::replace(&mut self.prev_depth, -1000 * 65536);
+            self.output_tail = Some((0, saved));
+        }
         let ln = self.input.current_file_line();
         let fnm = self.input.current_file_name();
         if crate::debug_flag("DSPW") && self.pdf_doc.pages.len() <= 2 {

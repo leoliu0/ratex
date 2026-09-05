@@ -249,10 +249,11 @@ impl Engine {
                     self.eqtb.dim_params[DimParam::HangIndent.idx() as usize] as i64,
                     self.eqtb.int_params[IntParam::HangAfter.idx() as usize] as i64,
                 );
+                self.in_display_init = true;
                 self.par_primitive();
+                self.in_display_init = false;
                 let prev_graf = self.prev_graf as i64;
-                let hsize =
-                    self.eqtb.dim_params[DimParam::HSize.idx() as usize] as i64;
+                let hsize = self.eqtb.dim_params[DimParam::HSize.idx() as usize] as i64;
                 // §1184: display width/indent from \parshape (1-based entry
                 // prev_graf+2, clamped to n) or \hangindent, else \hsize/0
                 let (l, s) = if !shape.is_empty() {
@@ -293,11 +294,10 @@ impl Engine {
             }
             // tex.web push_math: the display math group level (exit_math /
             // \\endgroup pop it; dropping this push leaves one pop too many
-            // and desyncs the \\end{equation} replay)
+            if crate::debug_flag("DSKIP") {
+                eprintln!("ENTER-MATH-LEVEL before_push={} fn={} ln={}", self.eqtb.cur_level, self.input.current_file_name(), self.input.current_file_line());
+            }
             self.eqtb.push_level(crate::eqtb::LevelType::Group);
-            // tex.web §1181 init_math: the display parameters are defined
-            // inside the math group — amsmath's measuring/tag machinery
-            // reads \displaywidth, \displayindent and \predisplaysize.
             self.eqtb.assign_dim_param(
                 crate::prim::DimParam::DisplayWidth,
                 self.pre_display_l as i32,
@@ -334,6 +334,8 @@ impl Engine {
             if !toks.is_empty() {
                 self.push_tokens(toks);
             }
+            // tex.web §1145: if nest_ptr=1 then build_page
+            self.build_page();
         } else {
             self.saved_lists.push((
                 self.mode,
@@ -393,8 +395,12 @@ impl Engine {
                 self.eqtb.glue_params[p.idx() as usize].clone()
             };
             let i = |p: crate::prim::IntParam| self.eqtb.int_params[p.idx() as usize];
+            let ads = g(crate::prim::GlueParam::AboveDisplaySkip);
+            if crate::debug_flag("DSKIP") {
+                eprintln!("DSKIP-REGS pg={} lvl={} above={:.4}", self.pdf_doc.pages.len(), self.eqtb.cur_level, ads.width as f64/65536.0);
+            }
             Some((
-                g(crate::prim::GlueParam::AboveDisplaySkip),
+                ads,
                 g(crate::prim::GlueParam::BelowDisplaySkip),
                 g(crate::prim::GlueParam::AboveDisplayShortSkip),
                 g(crate::prim::GlueParam::BelowDisplayShortSkip),
@@ -3034,9 +3040,13 @@ mod tests {
         // b + supbox + thick + rel(=) + thick + [frac: \lambda over \lambda+\theta]
         assert!(list.len() >= 5, "{:?}", list);
         assert!(w > 0);
-        // fraction is the last atom: inner class vbox with a rule
+        // fraction is the last atom: enclosed in inner class box with nulldelimiters
         let last = &list[list.len() - 1];
-        match last {
+        let frac_box = match last {
+            Node::Box { list: fl, .. } if fl.len() == 4 => &fl[2],
+            other => other,
+        };
+        match frac_box {
             Node::Box { kind: VBOX, list: vl, .. } => {
                 assert_eq!(vl.len(), 5, "num, kern, rule, kern, den: {:?}", vl);
             }

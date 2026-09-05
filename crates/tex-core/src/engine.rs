@@ -271,6 +271,11 @@ pub struct Engine {
     /// paragraph): the resumed partial content has NO complete line yet, so
     /// just_box/\predisplaysize must not use the stale last_par_line clone
     pub par_interrupted: bool,
+    /// tex.web §1145: during init_math, the interrupted paragraph is
+    /// broken into lines but build_page is deferred until AFTER push_math
+    /// enters the display group (preventing output routine / math group
+    /// save-level inversion).
+    pub in_display_init: bool,
     pub unless_next: bool,
     pub last_badness: i32,
     pub pdf_last_x: i32,
@@ -423,6 +428,7 @@ impl Engine {
             output_pending: false,
             dead_cycles: 0,
             page_prev_depth: -1000 * 65536,
+            in_display_init: false,
             page_total: 0,
             page_depth: 0,
             page_processed: 0,

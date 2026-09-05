@@ -505,12 +505,14 @@ pub fn vtop_md(
 ) -> PackResult {
     let mut res = vpack_add_md(list, h, additional, VTOP, eqtb, max_depth);
     if let Node::Box { h: hh, d: dd, list, .. } = &mut res.node {
-        let first_h = list.iter().find_map(|n| match n {
-            Node::Box { h: bh, d: bd, .. } if *bh > 0 || *bd > 0 => Some(*bh),
-            Node::Rule { height, depth, .. } if *height > 0 || *depth > 0 => Some(*height),
-            _ => None,
-        })
-        .unwrap_or(0);
+        // tex.web §1087: The height of a \vtop box is inherited from the
+        // FIRST item on its list, if that item is an hlist, vlist, or rule;
+        // otherwise the \vtop height is zero.
+        let first_h = match list.first() {
+            Some(Node::Box { h: bh, .. }) => *bh,
+            Some(Node::Rule { height, .. }) => *height,
+            _ => 0,
+        };
         *dd = *dd - first_h + *hh;
         *hh = first_h;
     }

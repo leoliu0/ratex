@@ -2033,13 +2033,15 @@ impl Engine {
                     }).collect();
                     eprintln!("DT-SPLICE line={} pagelen={} processed={} in_output={} tail=[{}]", self.input.current_file_line(), self.page_list.len(), self.page_processed, self.in_output, tail.join(" "));
                 }
-                let pages_before = self.pdf_doc.pages.len();
-                self.build_page();
-                // tex.web: a page shipped inside this paragraph interrupts
-                // it — the resumed content has no complete line yet, so
-                // just_box must not carry a stale clone into init_math.
-                if self.pdf_doc.pages.len() > pages_before {
-                    self.par_interrupted = true;
+                if !self.in_display_init {
+                    let pages_before = self.pdf_doc.pages.len();
+                    self.build_page();
+                    // tex.web: a page shipped inside this paragraph interrupts
+                    // it — the resumed content has no complete line yet, so
+                    // just_box must not carry a stale clone into init_math.
+                    if self.pdf_doc.pages.len() > pages_before {
+                        self.par_interrupted = true;
+                    }
                 }
             }
             (Mode::InternalVertical, Some(inner)) => {

@@ -520,9 +520,11 @@ impl Eqtb {
 
     pub fn push_level(&mut self, ty: LevelType) {
         self.cur_level += 1;
+        if crate::debug_flag("LVLTRACE") {
+            eprintln!("PUSH-LVL {} ty={:?}", self.cur_level, ty);
+        }
         self.save_stack.push(SaveItem::Level(self.cur_level, ty));
     }
-
     pub fn cur_group_type(&self) -> Option<LevelType> {
         for item in self.save_stack.iter().rev() {
             if let SaveItem::Level(_, t) = item {
@@ -543,6 +545,9 @@ impl Eqtb {
         par_shape_sink: &mut Option<(Vec<(i32, i32)>, u16)>,
     ) -> LevelType {
         let mut ty = LevelType::Group;
+        if crate::debug_flag("LVLTRACE") {
+            eprintln!("POP-LVL-BEFORE {}", self.cur_level);
+        }
         while let Some(item) = self.save_stack.pop() {
             match item {
                 SaveItem::AfterGroup(tok) => {

@@ -25,6 +25,11 @@ impl Engine {
     }
 
     pub fn dispatch(&mut self, t: Token) {
+        if crate::debug_flag("LVLTRACE") && (t.is_char() && (t.cc() == 1 || t.cc() == 2) || (t.is_cs() && (self.cs.name(t.cs_id()) == b"begingroup" || self.cs.name(t.cs_id()) == b"endgroup"))) {
+            eprintln!("DISP-GRP tok={} fn={} ln={} mac={}",
+                if t.is_cs() { String::from_utf8_lossy(self.cs.name(t.cs_id())) } else { format!("cc:{}", t.cc()).into() },
+                self.input.current_file_name(), self.input.current_file_line(), self.current_macro);
+        }
         if self.output_pending {
             // tex.web push_nest: the output routine executes with a fresh
             // list (mode:=-vmode; prev_depth:=ignore_depth). Material
@@ -610,8 +615,10 @@ impl Engine {
             GlueP(gp) => {
                 self.scan_optional_equals();
                 let v = self.scan_glue(gp.is_mu());
+                if gp == crate::prim::GlueParam::AboveDisplaySkip && crate::debug_flag("DSKIP") {
+                    eprintln!("ADS-ASSIGN v={:.4} glob={} lvl={} fn={} ln={}", v.width as f64/65536.0, self.global_flag, self.eqtb.cur_level, self.input.current_file_name(), self.input.current_file_line());
+                }
                 self.eqtb.assign_glue_param(gp, v, self.global_flag);
-                self.clear_prefixes();
                 true
             }
             ToksP(tp) => {

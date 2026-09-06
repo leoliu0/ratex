@@ -691,3 +691,16 @@ Boot 29→20 errors; 1882 now Missing `{` got letter `p` (variants list), not
   * ai_patent pagination: ours slightly denser by p5, bibliography ~2p earlier; all tables/citations present.
   * ai_patent 108 vs 110: not closed. trust_own 70 == ref.
 - Cold runs (real 3-pass): ~3s each; cache hits <100ms. 500ms gate untouched.
+
+## Session 2026-09-06 (end III): TJ sp-native rewrite — trust p1 3.85%->1.09%, t47 repro 0 px
+- TJ kern SIGN convention fixed (TJ positive = pen LEFT; gaps need NEGATIVE kerns); runs work in integer
+  scaled points with render_sp tracking (viewer /Widths advance + integer-rounded kerns; the next kern
+  absorbs rounding so positions never drift); positions/sizes formatted pdfnum(%.5f trailing-zero-trim).
+- t47 isolated title repro: 0 px difference (bit-identical page 1 vs system pdftex).
+- trust p1: 3.85% -> 1.09%. Remaining measured bands:
+  * title fnmark (432px): ours = text-font * with ~4bp gap; ref = compact math \ast tight to text
+    (\fnsymbol\ast must come from the math/symbol font at \sf@size, placed with zero space).
+  * footnote block (~4400px): emails colored in both; ours start ~4-5px left of ref (\href x placement).
+  * scattered sub-pixel body text (tie-break rounding).
+- ai_patent re-run after all fixes: 108p vs ref 110 (2-page gap: tables denser; word content complete).
+- cargo incremental-build hazard REMINDER: verify changes with cargo clean builds when behavior seems stale.

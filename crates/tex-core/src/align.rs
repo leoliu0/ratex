@@ -98,6 +98,7 @@ const PEEK_SRC: &str = "<align-peek>";
 /// saved outer alignment state for nested \halign (tabular in a p-cell)
 struct AlignSave {
     preamble: Vec<ColSpec>,
+    loop_start: Option<usize>,
     rows: Vec<Vec<Cell>>,
     cur_row: Vec<Cell>,
     cur_col: i32,
@@ -151,6 +152,7 @@ impl Engine {
             // outer alignment so the inner one can use the global fields
             let save = AlignSave {
                 preamble: std::mem::take(&mut self.align_preamble),
+                loop_start: self.align_loop_start.take(),
                 rows: std::mem::take(&mut self.align_rows),
                 cur_row: std::mem::take(&mut self.align_cur_row),
                 cur_col: self.align_cur_col,
@@ -166,13 +168,9 @@ impl Engine {
             let key = self.engine_key();
             ALIGN_STACK.with(|s| s.borrow_mut().push((key, save)));
         }
-        // tex.web: \halign inside a display formula is legal only as the
-        // whole formula (\eqalign-style); other modes enter the alignment
-        if matches!(self.mode, Mode::DisplayMath) {
-            self.error("Improper \\halign inside $$'s");
-            self.align_nested_restore();
-            return;
-        }
+        // tex.web §1130 & §774: \halign is valid in vertical modes AND in
+        // DisplayMath (e.g. \eqalign, amsmath \align, etc.). Inside DisplayMath,
+        // the alignment box is centered on the display line.
         if self.mode == Mode::Horizontal {
             // tex.web negates unrestricted horizontal mode (giving the
             // alignment valign-like semantics); LaTeX never uses this form,
@@ -236,6 +234,7 @@ impl Engine {
         });
         if let Some(sv) = outer {
             self.align_preamble = sv.preamble;
+            self.align_loop_start = sv.loop_start;
             self.align_rows = sv.rows;
             self.align_cur_row = sv.cur_row;
             self.align_cur_col = sv.cur_col;
@@ -261,7 +260,7 @@ impl Engine {
             self.end_occurred = true;
             return false;
         }
-        if !t.is_char() || t.cc() != 1 {
+        if !self.token_is_left_brace(t) {
             self.error("Missing { inserted for alignment preamble");
             if !(t.is_char() && t.cc() == 2) {
                 // a stray } must not close the (not yet started) group
@@ -310,10 +309,11 @@ impl Engine {
             match prim {
                 Some(Prim::Cr) | Some(Prim::CrCr) => break,
                 Some(Prim::Span) => {
-                    // \span joins this entry with the next one: the entry
-                    // keeps accumulating and covers span+1 grid columns
-                    cur.span = cur.span.saturating_add(1);
-                    in_u = true;
+                    // tex.web §783: in the preamble, `\span` causes the
+                    // following macro to be expanded! It does NOT mean
+                    // multicolumn (that is only valid in row cells).
+                    let next = self.get_token();
+                    self.pushed.push(next);
                     continue;
                 }
                 Some(Prim::Omit) => {
@@ -352,13 +352,15 @@ impl Engine {
                         }
                         continue;
                     }
-
-                    // LaTeX tabular emits & between column templates: it is
-                    // the entry separator, so finalize this entry and start
-                    // the next one with a fresh u part
                     4 if depth == 0 => {
-                        entries.push(std::mem::take(&mut cur));
-                        in_u = true;
+                        let all_spaces = cur.u_part.iter().all(|tok| tok.is_char() && tok.cc() == 10);
+                        if (cur.u_part.is_empty() || all_spaces) && cur.v_part.is_empty() && entries.is_empty() {
+                            self.align_loop_start = Some(0);
+                            cur.u_part.clear();
+                        } else {
+                            entries.push(std::mem::take(&mut cur));
+                            in_u = true;
+                        }
                         continue;
                     }
                     _ => {}
@@ -377,7 +379,7 @@ impl Engine {
         // template is empty (#\cr is a legal single bare column)
         entries.push(cur);
         self.align_preamble = entries;
-        if crate::debug_flag("ALIGNTRACE") {
+        if std::env::var("ALIGNTRACE").is_ok() {
             for (i, e) in self.align_preamble.iter().enumerate() {
                 eprintln!(
                     "PREAMBLE col{} span={} u=[{}] v=[{}]",
@@ -417,15 +419,31 @@ impl Engine {
         }
     }
 
+    /// retrieve ColSpec for column index, wrapping around via align_loop_start per tex.web §785
+    fn get_col_spec(&self, col: usize) -> Option<ColSpec> {
+        if self.align_preamble.is_empty() {
+            return None;
+        }
+        if col < self.align_preamble.len() {
+            return Some(self.align_preamble[col].clone());
+        }
+        if let Some(loop_start) = self.align_loop_start {
+            let loop_len = self.align_preamble.len().saturating_sub(loop_start);
+            if loop_len > 0 {
+                let offset = (col - loop_start) % loop_len;
+                return Some(self.align_preamble[loop_start + offset].clone());
+            }
+        }
+        None
+    }
+
     /// start the cell at `align_cur_col`
-    /// start the cell at `align_cur_col`. `first` is a token already
-    /// looked at by align_row_inspect (omit / content); `None` peeks.
     fn align_start_cell(&mut self, first: Option<crate::token::Token>) {
         let col = self.align_cur_col as usize;
-        if col >= self.align_preamble.len() {
-            return; // empty preamble: rows have no cells
-        }
-        let spec = self.align_preamble[col].clone();
+        let spec = match self.get_col_spec(col) {
+            Some(s) => s,
+            None => return, // empty or exhausted preamble
+        };
         self.align_push_cell_group(Mode::RestrictedHorizontal);
         while self.align_cur_row.len() <= col {
             self.align_cur_row.push(Cell::default());
@@ -504,7 +522,7 @@ impl Engine {
             // that of the LAST entry the cell covers (cur_align advances
             // through spanned columns)
             let last = col + self.align_cur_row.get(col).map(|c| c.span as usize).unwrap_or(0);
-            if let Some(spec) = self.align_preamble.get(last) {
+            if let Some(spec) = self.get_col_spec(last) {
                 close.extend(spec.v_part.iter().cloned());
             }
         }
@@ -553,7 +571,8 @@ impl Engine {
         }
         let col = self.align_cur_col as usize;
         let cur_span = self.align_cur_row.get(col).map(|c| c.span as usize).unwrap_or(0);
-        if col + 1 + cur_span >= self.align_preamble.len() {
+        let next_col = col + 1 + cur_span;
+        if self.get_col_spec(next_col).is_none() {
             self.error("Extra alignment tab has been changed to \\cr");
             if self.align_phase() == PH_U {
                 self.align_discard_u_part();
@@ -769,7 +788,7 @@ impl Engine {
         if self.align_scanning_cell {
             // & closed this cell: start the next one
             let next = col + 1 + span as usize;
-            if next >= self.align_preamble.len() {
+            if self.get_col_spec(next).is_none() {
                 // align_tab normally reroutes this to \cr
                 self.error("Extra alignment tab has been changed to \\cr");
                 self.align_finish_row();
@@ -831,6 +850,11 @@ impl Engine {
                 return t;
             }
             if t.is_char() && t.cc() == 10 {
+                continue;
+            }
+            // tex.web §783: \par between rows (or blank lines) in an alignment
+            // must be ignored, not treated as cell content
+            if t == crate::input::PAR_END || (t.is_cs() && t.cs_id() == self.ids.par) {
                 continue;
             }
             return t;
@@ -963,18 +987,19 @@ impl Engine {
         for row in rows_in {
             if row.len() == 1 && row[0].span == NOALIGN_SPAN {
                 if let Some(node) = row.into_iter().next().and_then(|c| c.packed) {
-                    let (h, d, items) = match node {
-                        Node::Box { h, d, list, .. } => (h, d, list),
-                        other => {
-                            let (h, d) = match &other {
-                                Node::Rule { height, depth, .. } => (*height, *depth),
-                                _ => (0, 0),
-                            };
-                            (h, d, vec![other])
-                        }
+                    let items = match node {
+                        Node::Box { list, .. } => list,
+                        other => vec![other],
                     };
-                    align_interline(&mut rows, &mut prev, h, d, &bs, &ls, lsl);
-                    // tex.web: noalign material joins the alignment vlist raw
+                    // tex.web: noalign material joins the alignment vlist raw without
+                    // interline glue. If a rule was present, prev_depth becomes ignore_depth.
+                    for item in &items {
+                        match item {
+                            Node::Rule { .. } => prev = None,
+                            Node::Box { h, d, .. } => prev = Some((*h, *d)),
+                            _ => {}
+                        }
+                    }
                     rows.extend(items);
                 }
                 continue;

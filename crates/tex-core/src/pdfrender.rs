@@ -123,8 +123,8 @@ impl Engine {
         ctx.eng.pdf_doc.pages_attr = ctx.eng.pdf_pages_attr.clone().into_bytes();
         PdfPage {
             content: std::mem::take(&mut ctx.content).into_bytes(),
-            width: w_bp as i32,
-            height: h_bp as i32,
+            width: w_bp.round() as i32,
+            height: h_bp.round() as i32,
             annots: std::mem::take(&mut ctx.annots),
             fonts: std::mem::take(&mut ctx.page_fonts)
                 .into_iter()

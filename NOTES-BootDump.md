@@ -1,3 +1,49 @@
+# Parity Session (2026-09-06) — goal: pixel parity trust_own/main.tex + ai_patent/main.tex
+
+## Fixes landed (release build, verified)
+1. pdfrender.rs render_page: MediaBox dims were TRUNCATED (`as i32`); now `.round()` —
+   engine wrote 611x791 vs pdfTeX 612x792 (letter). This 1pt MediaBox error shifted every page's rasterization.
+2. maincontrol.rs VSkip hmode arm: head_for_vmode inserted the \par CS, but ai_patent's longtable/
+   xltabular state leaves \par bound to an EMPTY macro (`\let\par\@empty`, array.sty:180/longtable.sty:175
+   — group-scoped in real TeX, leaking here) → inserted \par expands to nothing → \vskip re-executes in
+   hmode → infinite \par/\vskip cycle (250M+ expansions, appendix.tex:29, 300s+ hang). Fix: call
+   par_primitive() directly, then push \vskip back. ai_patent: 300s+ hang → 3.4s, 70pp (system: 110pp).
+
+## State after fixes
+- tex-core lib tests: 77/77 PASS (session started 53 pass/14 fail — the a8b6552 expand.rs/control.rs
+  baseline is strictly better than the stale working-tree state that was there; earlier uncommitted
+  expand/control edits were reverted to a8b6552 and all lib tests + most probes went green).
+- oracle_probe: 10/13. Remaining fails: probe_tl_item_loop, probe_hash_eol_brace (missing #{ in
+  \meaning output — hash_brace token not stored/printed), probe_expanded_conditional_arms (ORACLE side
+  errors — test harness issue).
+- trust_own/main.tex: engine 69pp vs system 70pp, ~800ms/pass cold. Pixel diff page 1: 1.25% of pixels
+  (was 8.4% pre-MediaBox-fix). Content visually identical at 6x zoom; diffs are antialiasing-level
+  (engine emits per-glyph BT/Tm/Tj, pdfTeX emits TJ kerning arrays — coordinate rounding differs in low bits).
+- ai_patent/main.tex: engine 70pp vs system 110pp, ~1.7s/pass. 1159 errors, all
+  "\vrule outside horizontal mode" — alignment preamble templates executing outside cell hmode.
+  NEXT BLOCKER for this doc.
+
+## Investigation notes (for next session)
+- The engine emits ONE BT/ET per glyph with absolute Tm (4 decimals); pdfTeX uses BT/Td/TJ per text
+  node with kern deltas. For byte-level parity of content streams, mirror pdfTeX's emission:
+  font select once per run of same font, TJ with kern amounts in 1/1000 font units.
+- trust_own missing 1 page: line-break or page-break divergence — diff starts page 1 footnote block
+  area (footnote marker spacing: system "Control∗" vs engine "Control *" — extra interword space
+  before footnote mark in title).
+- debug_flag() in lib.rs is HARDCODED false (perf) — all debug_flag-gated eprintln! traces are dead
+  code in release. Don't gate time-sensitive probes with it during debugging; use unconditional +
+  atomic counters.
+- Aux pollution: engine run rewrites main.aux; a system oracle compile AFTER an engine run inherits
+  engine-written aux. Always clean aux/out/toc before each oracle run.
+
+## Next steps (in order)
+1. Alignment: `\vrule outside horizontal mode` — cell templates must start hmode before executing
+   preamble tokens (the 1159-error blocker gating ai_patent page count).
+2. trust_own 69-vs-70 page divergence — bisect by page: compare per-page content vs system, find
+   first page where a break differs.
+3. pdfTeX-style TJ emission for content streams (parity + smaller PDFs).
+4. Footnote-mark spacing in titles (\@footnotemark interword glue).
+
 # Boot Debugging State (post-session-12)
 
 ## Applied fixes this session (all built, boot still fails at ~line 1773+)

@@ -1,0 +1,4 @@
+modelRoles:
+  default: alibaba-token-plan/qwen3.8-flash
+  task: alibaba-token-plan/qwen3.8-flash
+  plan: alibaba-token-plan/qwen3.8-flash

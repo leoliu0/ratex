@@ -140,6 +140,7 @@ pub struct Engine {
     /// \pdfpageattr / \pdfpagesattr dict bodies (global in pdfTeX)
     pub pdf_page_attr: String,
     pub pdf_pages_attr: String,
+    pub pdf_page_resources: Vec<u8>,
     pub left_delim: Option<i32>,
     pub right_delim: Option<i32>,
     pub math_limits: Option<u8>,
@@ -171,6 +172,7 @@ pub struct Engine {
     pub par_page_lists: Vec<Vec<crate::boxes::Node>>,
     pub read_eof: Vec<bool>, // (amount, is_hmove)
     pub read_files: Vec<Option<std::io::BufReader<std::fs::File>>>,
+    pub loaded_files: Vec<std::path::PathBuf>,
     pub out_dir: String,
     /// directory of the primary input file; relative \\input/\\openin names
     /// resolve here before falling back to the TDS (matches running TeX from
@@ -178,6 +180,7 @@ pub struct Engine {
     pub main_dir: Option<std::path::PathBuf>,
     pub job_ended_by_end: bool,
     pub align_preamble: Vec<crate::align::ColSpec>,
+    pub align_loop_start: Option<usize>,
     pub align_rows: Vec<Vec<crate::align::Cell>>,
     pub align_col_widths: Vec<i32>,
     pub align_cur_row: Vec<crate::align::Cell>,
@@ -380,6 +383,7 @@ impl Engine {
             trace_ltx: 0,
             pdf_page_attr: String::new(),
             pdf_pages_attr: String::new(),
+            pdf_page_resources: Vec::new(),
             pdf_last_obj: 0,
             pdf_last_xform: 0,
             pdf_last_ximage: 0,
@@ -406,10 +410,12 @@ impl Engine {
             par_page_lists: Vec::new(),
             read_eof: Vec::new(),
             read_files: Vec::new(),
+            loaded_files: Vec::new(),
             out_dir: String::new(),
             main_dir: None,
             job_ended_by_end: false,
             align_preamble: Vec::new(),
+            align_loop_start: None,
             align_rows: Vec::new(),
             align_col_widths: Vec::new(),
             align_cur_row: Vec::new(),
@@ -990,6 +996,12 @@ impl Engine {
         eng.eqtb.int_params[IntParam::PdfOutput.idx() as usize] = 1;
         eng.eqtb.int_params[IntParam::EtxVersion.idx() as usize] = 2;
         eng.eqtb.int_params[IntParam::PdfMinorVersion.idx() as usize] = 7;
+        // eTeX extended-mode identity (pgf/pgfkeys probe \eTeXrevision).
+        // NOTE: XeTeX primitives are deliberately NOT registered: packages
+        // (iftex, hyperref, pgf) select the pdfTeX driver only when the
+        // \XeTeX* names are undefined, and this engine is pdfTeX-compatible.
+        d!(eng, b"eTeXrevision", EtxRevision);
+        d!(eng, b"pdfpageresources", PdfPageResources);
         // plain.tex paper: keep the page builder from firing on every box
         let sp_in: i32 = 4736287;
         eng.eqtb.dim_params[DimParam::HSize.idx() as usize] = (sp_in as i64 * 13 / 2) as i32;

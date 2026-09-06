@@ -470,6 +470,13 @@ impl Engine {
             eprintln!("KPPAR: {}", &kptext[..kb]);
         }
         let mut actives: Vec<Rc<ActiveNode>> = vec![start];
+        let easy_line = if params.looseness != 0 {
+            i32::MAX
+        } else if !params.par_shape.is_empty() {
+            (params.par_shape.len() - 1) as i32
+        } else {
+            0
+        };
 
         // evaluate one candidate breakpoint; `cand` == n is the virtual
         // end-of-paragraph break (tex: try_break at cur_p = null)
@@ -519,21 +526,15 @@ impl Engine {
                     if kptrace {
                         eprintln!("KP-EVAL cand={} from=({},@{}) sf={:.2}pt b={} fit={} pen={}", cand, a.line, a.pos, shortfall as f64 / 65536.0, b, fit, penalty);
                     }
-                    let is_near_share = cand >= 770 && cand <= 800;
-                    if is_near_share {
-                        eprintln!("  CONSIDER cand={} a.line={} shortfall={:.2}pt b={} fit={} d={} btype={:?}", cand, a.line, shortfall as f64 / 65536.0, b, fit, a.demerits + demerits(params, b, penalty) + fitness_demerits(params, &a, btype, fit, cand == n), btype);
-                    }
                     if b <= threshold {
                         let d = a.demerits
                             + demerits(params, b, penalty)
                             + fitness_demerits(params, &a, btype, fit, cand == n);
-                        let key = (a.line + 1, fit);
+                        let line_class = if a.line > easy_line { easy_line + 1 } else { a.line };
+                        let key = (line_class, fit);
                         match champions.get(&key) {
-                            Some((best_d, _)) if *best_d <= d => {}
+                            Some((best_d, _)) if *best_d < d => {}
                             _ => {
-                                if is_near_share {
-                                    eprintln!("    CHAMPION cand={} key={:?} d={}", cand, key, d);
-                                }
                                 champions.insert(key, (d, a.clone()));
                             }
                         }
@@ -559,7 +560,7 @@ impl Engine {
                     new_nodes.push(Rc::new(ActiveNode {
                         pos: cand,
                         btype,
-                        line: key.0,
+                        line: prev.line + 1,
                         fitness: key.1,
                         demerits: *d,
                         start_w,

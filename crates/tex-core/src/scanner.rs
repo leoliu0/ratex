@@ -84,7 +84,7 @@ impl Engine {
                             eprintln!("TOK {} pos={} tok={}", name, pos, nm);
                         }
                         if last {
-                            self.input.stack.remove(si);
+                            if si + 1 == self.input.stack.len() { self.input.stack.pop(); } else { self.input.stack.remove(si); }
                         }
                         return Some(t);
                     }
@@ -94,7 +94,7 @@ impl Engine {
             _ => unreachable!(),
         };
         let _ = s;
-        self.input.stack.remove(si);
+        if si + 1 == self.input.stack.len() { self.input.stack.pop(); } else { self.input.stack.remove(si); }
         None
     }
 
@@ -168,7 +168,7 @@ impl Engine {
                 // e-TeX semantics: \everyeof fires EVERY time scanning
                 // crosses the pseudo-file end (the l3 single-rescan chain
                 // re-enters deliberately); no one-shot guard.
-                self.input.stack.remove(si);
+                if si + 1 == self.input.stack.len() { self.input.stack.pop(); } else { self.input.stack.remove(si); }
                 if is_scantokens {
                     let eof_toks = (*self.eqtb.tok_params[crate::prim::ToksParam::EveryEOF.idx() as usize]).clone();
                     if !eof_toks.is_empty() {

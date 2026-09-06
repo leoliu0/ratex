@@ -9,7 +9,7 @@ use flate2::Compression;
 use std::io::Write;
 
 fn flate(data: &[u8]) -> Vec<u8> {
-    let mut e = ZlibEncoder::new(Vec::new(), Compression::default());
+    let mut e = ZlibEncoder::new(Vec::new(), Compression::fast());
     let _ = e.write_all(data);
     e.finish().unwrap_or_default()
 }

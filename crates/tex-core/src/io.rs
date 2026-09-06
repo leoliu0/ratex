@@ -22,6 +22,7 @@ impl Engine {
         match path {
             Some(p) => match std::fs::read(&p) {
                 Ok(data) => {
+                    self.loaded_files.push(p.clone());
                     self.term.push_str(&format!("({} ", p.display()));
                     // tex.web start_input: the file sits above the current
                     // token list. `pushed` is that token list, so leftovers
@@ -41,6 +42,26 @@ impl Engine {
                 }
             },
             None => {
+                // Fall back to embedded Virtual TDS package repository
+                let clean_name = std::path::Path::new(name).file_name().and_then(|s| s.to_str()).unwrap_or(name);
+                let cand_names = [clean_name.to_string(), format!("{}.sty", clean_name), format!("{}.cls", clean_name)];
+                let mut found_data = None;
+                for cand in &cand_names {
+                    if let Some(pkg_data) = tex_kpse::get_embedded_package(cand) {
+                        found_data = Some((cand.clone(), pkg_data.to_vec()));
+                        break;
+                    }
+                }
+                if let Some((cand_name, data)) = found_data {
+                    self.term.push_str(&format!("(<embedded:{}> ", cand_name));
+                    if !self.pushed.is_empty() {
+                        let mut rest = std::mem::take(&mut self.pushed);
+                        rest.reverse();
+                        self.input.push_toks(rest, "<after-input>");
+                    }
+                    self.input.push_file(format!("<embedded:{}>", cand_name), data);
+                    return true;
+                }
                 self.error(&format!("File `{}` not found", name));
                 false
             }
@@ -95,6 +116,11 @@ impl Engine {
             }
         }
         if !name.starts_with('/') {
+            for cand in [std::path::Path::new(name).to_path_buf(), std::path::Path::new(&format!("{name}.tex")).to_path_buf()] {
+                if cand.is_file() {
+                    return Some(cand);
+                }
+            }
             if let Some(dir) = &self.main_dir {
                 for cand in [dir.join(name), dir.join(format!("{name}.tex"))] {
                     if cand.is_file() {

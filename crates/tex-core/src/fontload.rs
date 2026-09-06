@@ -622,6 +622,32 @@ impl Engine {
     /// back. Uses the non-space-skipping fetch so "cmr10 at 10pt" splits.
     fn scan_font_name(&mut self) -> String {
         let mut name = Vec::new();
+        self.skip_spaces_relax();
+        let first = self.get_x_raw();
+        if first == crate::input::EOF_MARKER {
+            return String::new();
+        }
+        if first.is_char() && first.chr() == b'"' as u32 {
+            // Quoted font name: \font\f="[FontFile.otf]:features" or "Font Name"
+            while let t = self.get_x_raw() {
+                if t == crate::input::EOF_MARKER || (t.is_char() && t.chr() == b'"' as u32) {
+                    break;
+                }
+                if t.is_char() {
+                    let c = t.chr();
+                    if c < 128 {
+                        name.push(c as u8);
+                    } else {
+                        let mut buf = [0u8; 4];
+                        if let Some(ch) = char::from_u32(c) {
+                            name.extend_from_slice(ch.encode_utf8(&mut buf).as_bytes());
+                        }
+                    }
+                }
+            }
+            return String::from_utf8_lossy(&name).to_string();
+        }
+        self.pushed.push(first);
         loop {
             let t = self.get_x_raw();
             if t == crate::input::EOF_MARKER {
@@ -645,8 +671,57 @@ impl Engine {
         }
         String::from_utf8_lossy(&name).to_string()
     }
-
     pub fn load_font_and_bind(&mut self, name: &str, at: i32, cs: crate::token::CsId) {
+        // If name refers to an OpenType / TrueType font (e.g. "[path/to/font.otf]" or ends with .otf/.ttf/.ttc):
+        let clean_name = name.trim_start_matches('[').trim_end_matches(']');
+        let is_otf = clean_name.ends_with(".otf") || clean_name.ends_with(".ttf") || clean_name.ends_with(".ttc") || clean_name.starts_with('/');
+        if is_otf {
+            if let Ok(data) = std::fs::read(clean_name) {
+                if let Ok(face) = ttf_parser::Face::parse(&data, 0) {
+                    let upem = face.units_per_em() as i32;
+                    let at_size = if at > 0 { at } else { 10 * 65536 };
+                    let mut font = crate::tfm::Font {
+                        name: String::from_utf8_lossy(self.cs.name(cs)).to_string(),
+                        tfm_name: clean_name.to_string(),
+                        at_size,
+                        dsize: at_size,
+                        chars: Vec::new(),
+                        bc: 0,
+                        ec: 255,
+                        lig_kern: Vec::new(),
+                        kerns: Vec::new(),
+                        ext: Vec::new(),
+                        params: vec![0; 8],
+                        hyphen_char: 45,
+                        skew_char: -1,
+                        type1_path: None,
+                        enc_name: None,
+                        map_fontname: Some(clean_name.to_string()),
+                        encoding: None,
+                    };
+                    // Populate default ASCII characters from OpenType metrics
+                    for c in 0..=255u8 {
+                        let w = face.glyph_index(c as char)
+                            .and_then(|gid| face.glyph_hor_advance(gid))
+                            .map(|adv| ((adv as i64 * at_size as i64) / upem as i64) as i32)
+                            .unwrap_or(0);
+                        font.chars.push(crate::tfm::CharInfo {
+                            width: w,
+                            height: (at_size as f64 * 0.7) as i32,
+                            depth: (at_size as f64 * 0.2) as i32,
+                            italic: 0,
+                            tag: 0,
+                            remainder: 0,
+                        });
+                    }
+                    let id = self.push_engine_font(std::rc::Rc::new(font), cs);
+                    self.eqtb.assign(cs, Equiv::FontRef(id), self.global_flag);
+                    self.global_flag = false;
+                    self.term.push_str(&format!("{} (OpenType) at {}\n", clean_name, self.scaled_to_string(at_size)));
+                    return;
+                }
+            }
+        }
         let Some(font) = self.font_loader.load_tfm(name, at) else {
             self.error(&format!("Font \\{}={} not found", String::from_utf8_lossy(self.cs.name(cs)), name));
             return;

@@ -240,7 +240,11 @@ pub fn check_dumpable(eng: &Engine) -> Result<(), String> {
                     }
                 }
                 crate::eqtb::SaveItem::Eq(..) => n_eq += 1,
-                crate::eqtb::SaveItem::AfterGroup(_) => n_ag += 1,
+                crate::eqtb::SaveItem::AfterGroup(tok) => {
+                    n_ag += 1;
+                    let name = if tok.is_cs() { String::from_utf8_lossy(eng.cs.name(tok.cs_id())).into_owned() } else { format!("c{}:{}", tok.cc(), tok.chr()) };
+                    eprintln!("AFTERGROUP-TOKEN: {}", name);
+                }
                 other => {
                     n_other += 1;
                     if types.len() < 24 {
@@ -259,17 +263,21 @@ pub fn check_dumpable(eng: &Engine) -> Result<(), String> {
             n_other,
             types.join(",")
         );
-        return Err(format!(
-            "cannot dump: {} pending (level={} eq={} aftergroup={} other={} cur_level={} ss_open=[{}] types=[{}])",
-            eng.eqtb.save_stack.len(),
-            n_level,
-            n_eq,
-            n_ag,
-            n_other,
-            eng.eqtb.cur_level,
-            eng.ss_trace.join(" | "),
-            types.join(",")
-        ));
+        // If there are only top-level aftergroup tokens (e.g. from \set@color in preamble)
+        // and no open groups or modified registers, allow the format dump to proceed.
+        if n_level != 0 || n_eq != 0 || n_other != 0 || eng.eqtb.cur_level != crate::eqtb::LEVEL_ONE {
+            return Err(format!(
+                "cannot dump: {} pending (level={} eq={} aftergroup={} other={} cur_level={} ss_open=[{}] types=[{}])",
+                eng.eqtb.save_stack.len(),
+                n_level,
+                n_eq,
+                n_ag,
+                n_other,
+                eng.eqtb.cur_level,
+                eng.ss_trace.join(" | "),
+                types.join(",")
+            ));
+        }
     }
 
     if eng.input.stack.len() > 3 {
@@ -715,7 +723,11 @@ pub fn load_format_from(data: &[u8]) -> Result<Engine, String> {
 pub fn load_format_into(path: &Path, eng: &mut Engine) -> Result<(), String> {
     let data = std::fs::read(path)
         .map_err(|e| format!("cannot read {}: {}", path.display(), e))?;
-    let mut scratch = load_format_from(&data)?;
+    load_format_bytes_into(&data, eng)
+}
+
+pub fn load_format_bytes_into(data: &[u8], eng: &mut Engine) -> Result<(), String> {
+    let scratch = load_format_from(data)?;
     // Full success only now: transplant the boot state while keeping the
     // caller's process-wide setup (font_loader, ids, out_dir, pdf_doc).
     eng.cs = scratch.cs;

@@ -95,11 +95,13 @@ impl Engine {
             self.finish_output();
             return self.raw_token();
         }
-        if crate::debug_flag("IFTRACE") {
-            self.tok_ring.push_back((t.0, self.input.current_file_line()));
-            while self.tok_ring.len() > 30 {
-                self.tok_ring.pop_front();
-            }
+        if crate::debug_flag("PARTRACE") && t.is_cs() && self.cs.name(t.cs_id()) == b"par" {
+            let top = match self.input.stack.last() {
+                Some(crate::input::Source::TokList { name, pos, toks, .. }) => format!("T:{}:{}/{}", name, pos, toks.len()),
+                Some(crate::input::Source::File { name, line_no, .. }) => format!("F:{}:{}", name, line_no),
+                None => "none".into(),
+            };
+            eprintln!("PARPOP pushed_len_after={}", self.pushed.len());
         }
         t
     }
@@ -360,7 +362,7 @@ impl Engine {
                             self.set_cur_cs(t);
                             return t;
                         }
-                        self.expand_macro(id, &m);
+self.expand_macro(id, &m);
                         continue;
                     }
                     Some(Equiv::CharTok(v)) => {
@@ -1946,11 +1948,9 @@ self.do_if(eof)
             static HITN: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
             if HITN.fetch_add(1, std::sync::atomic::Ordering::Relaxed) < 4 {
                 eprintln!(
-                    "ONLYP-HIT np={} prefix=[{}] body=[{}] L{}",
-                    m.num_params,
-                    self.tokens_to_string(&m.prefix),
-                    self.tokens_to_string(&m.body),
-                    self.input.current_file_line()
+                    "ONLYPREAMBLE-HIT L{} macros={:?}",
+                    self.input.current_file_line(),
+                    self.last_macros.iter().rev().take(6).collect::<Vec<_>>()
                 );
             }
         }

@@ -109,12 +109,11 @@ impl IntParam {
     pub fn idx(self) -> u16 {
         self as u16
     }
+    /// Declaration-order table used for the safe u16 -> enum mapping.
+    const ALL: [IntParam; NUM_INT_PARAMS] = [IntParam::Pretolerance, IntParam::Tolerance, IntParam::LinePenalty, IntParam::HyphenPenalty, IntParam::ExHyphenPenalty, IntParam::ClubPenalty, IntParam::WidowPenalty, IntParam::DisplayWidowPenalty, IntParam::BrokenPenalty, IntParam::BinOpPenalty, IntParam::RelPenalty, IntParam::PreDisplayPenalty, IntParam::PostDisplayPenalty, IntParam::InterLinePenalty, IntParam::DoubleHyphenDemerits, IntParam::FinalHyphenDemerits, IntParam::AdjDemerits, IntParam::Mag, IntParam::DelimiterFactor, IntParam::Looseness, IntParam::Penalty, IntParam::HBadness, IntParam::VBadness, IntParam::Pausing, IntParam::TracingOnline, IntParam::TracingMacros, IntParam::TracingStats, IntParam::TracingParagraphs, IntParam::TracingPages, IntParam::TracingOutput, IntParam::TracingLostChars, IntParam::TracingCommands, IntParam::TracingRestores, IntParam::TracingIf, IntParam::TracingFonts, IntParam::ShowBoxBreadth, IntParam::ShowBoxDepth, IntParam::ErrorStopMode, IntParam::ScrollMode, IntParam::NonStopMode, IntParam::BatchMode, IntParam::Language, IntParam::UcHyph, IntParam::LeftHyphenMin, IntParam::RightHyphenMin, IntParam::EscapeChar, IntParam::EndLineChar, IntParam::NewLineChar, IntParam::Defaulthyphenchar, IntParam::Defaultskewchar, IntParam::ErrorContextLines, IntParam::MaxDeadCycles, IntParam::InsertPenalties, IntParam::OutputPenalty, IntParam::FloatingPenalty, IntParam::HangAfter, IntParam::PrevGraf, IntParam::CurFam, IntParam::Time, IntParam::Day, IntParam::Month, IntParam::Year, IntParam::InputLineNo, IntParam::Badness, IntParam::DeadCycles, IntParam::EtxVersion, IntParam::PdfOutput, IntParam::PdfAdjustSpacing, IntParam::PdfProtrudeChars, IntParam::PdfMinorVersion, IntParam::PdfPageCount, IntParam::TeXXeTEnabled, IntParam::PdfTexVersion, IntParam::InteractionMode, IntParam::CurrentGroupLevel, IntParam::CurrentGroupType, IntParam::CurrentIfLevel, IntParam::CurrentIfType, IntParam::CurrentIfBranch, IntParam::LastNodeType, IntParam::SavingHyphCodes, IntParam::SavingVDiscards, IntParam::PdfObjCompressLevel, IntParam::PdfGenToUnicode, IntParam::PaperQuality, IntParam::GlobalDefs, IntParam::TracingNesting];
+
     pub fn from_idx(i: u16) -> Option<Self> {
-        if (i as usize) < NUM_INT_PARAMS {
-            Some(unsafe { std::mem::transmute::<u16, IntParam>(i) })
-        } else {
-            None
-        }
+        Self::ALL.get(i as usize).copied()
     }
 }
 
@@ -171,12 +170,11 @@ impl DimParam {
     pub fn idx(self) -> u16 {
         self as u16
     }
+    /// Declaration-order table used for the safe u16 -> enum mapping.
+    const ALL: [DimParam; NUM_DIM_PARAMS] = [DimParam::ParIndent, DimParam::MathSurround, DimParam::LineSkipLimit, DimParam::HSize, DimParam::VSize, DimParam::MaxDepth, DimParam::SplitMaxDepth, DimParam::BoxMaxDepth, DimParam::DisplayIndent, DimParam::DisplayWidth, DimParam::HangIndent, DimParam::EmergencyStretch, DimParam::PageGoal, DimParam::PageTotal, DimParam::PageDepth, DimParam::PageStretch, DimParam::PageFilStretch, DimParam::PageFillStretch, DimParam::PageFilllStretch, DimParam::PageShrink, DimParam::DelimiterShortfall, DimParam::Hfuzz, DimParam::Vfuzz, DimParam::OverfullRule, DimParam::NullDelimiterSpace, DimParam::ScriptSpace, DimParam::TopSkip, DimParam::PdfPageWidth, DimParam::PdfPageHeight, DimParam::PdfHOrigin, DimParam::PdfVOrigin, DimParam::PdfLinkMargin, DimParam::PdfDestMargin, DimParam::PdfThreadMargin, DimParam::HOffset, DimParam::VOffset, DimParam::PrevDepth, DimParam::PreDisplaySize];
+
     pub fn from_idx(i: u16) -> Option<Self> {
-        if (i as usize) < NUM_DIM_PARAMS {
-            Some(unsafe { std::mem::transmute::<u16, DimParam>(i) })
-        } else {
-            None
-        }
+        Self::ALL.get(i as usize).copied()
     }
 }
 
@@ -564,9 +562,21 @@ pub enum Prim {
     /// slot <number> of the current font stacked above it (tex.web §1267-1275).
     Accent,
     /// Knuth control space `\ ` (ex_space): plain interword glue, ignoring
-    /// \spacefactor (tex.web §1060/append_normal_space).
     ExSpace,
- }
+    // ---- XeTeX primitives ----
+    XeTeXVersion,
+    XeTeXRevision,
+    XeTeXFontType,
+    XeTeXGlyph,
+    XeTeXGlyphIndex,
+    XeTeXGlyphBounds,
+    XeTeXUseGlyphMetrics,
+    XeTeXInterCharTokenState,
+    XeTeXCharClass,
+    XeTeXInterCharToks,
+    EtxRevision,
+    PdfPageResources,
+}
 
 
 
@@ -871,6 +881,18 @@ impl Prim {
             Prim::ExSpace => 290,
             Prim::EqNo => 291,
             Prim::LeqNo => 292,
+            Prim::XeTeXVersion => 293,
+            Prim::XeTeXRevision => 294,
+            Prim::XeTeXFontType => 295,
+            Prim::XeTeXGlyph => 296,
+            Prim::XeTeXGlyphIndex => 297,
+            Prim::XeTeXGlyphBounds => 298,
+            Prim::XeTeXUseGlyphMetrics => 299,
+            Prim::XeTeXInterCharTokenState => 300,
+            Prim::XeTeXCharClass => 301,
+            Prim::XeTeXInterCharToks => 302,
+            Prim::EtxRevision => 303,
+            Prim::PdfPageResources => 304,
             Prim::ScriptScriptStyle => 284,
             Prim::Patterns => 287,
             Prim::Hyphenation => 288,
@@ -1176,7 +1198,18 @@ impl Prim {
             290 => Some(Prim::ExSpace),
             291 => Some(Prim::EqNo),
             292 => Some(Prim::LeqNo),
-
+            293 => Some(Prim::XeTeXVersion),
+            294 => Some(Prim::XeTeXRevision),
+            295 => Some(Prim::XeTeXFontType),
+            296 => Some(Prim::XeTeXGlyph),
+            297 => Some(Prim::XeTeXGlyphIndex),
+            298 => Some(Prim::XeTeXGlyphBounds),
+            299 => Some(Prim::XeTeXUseGlyphMetrics),
+            300 => Some(Prim::XeTeXInterCharTokenState),
+            301 => Some(Prim::XeTeXCharClass),
+            302 => Some(Prim::XeTeXInterCharToks),
+            303 => Some(Prim::EtxRevision),
+            304 => Some(Prim::PdfPageResources),
             0x1000..=0x1fff => {
                 let i = c & 0x0fff;
                 Some(Prim::IntP(IntParam::from_idx(i)?))

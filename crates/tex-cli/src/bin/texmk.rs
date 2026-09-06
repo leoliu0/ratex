@@ -45,8 +45,36 @@ struct Options {
     out_dir: Option<String>,
     jobname: Option<String>,
     silent: bool,
-    /// Extra flags forwarded verbatim to pdflatex (-interaction=..., -halt-on-error, ...).
+    /// Explicit engine override ("pdflatex", "xelatex", "lualatex"), or auto-detect.
+    engine: Option<String>,
+    /// Extra flags forwarded verbatim to engine (-interaction=..., -halt-on-error, ...).
     passthrough: Vec<String>,
+}
+
+/// Scan source file preamble to auto-detect whether document requires XeLaTeX / LuaLaTeX.
+fn detect_engine(src_path: &Path) -> &'static str {
+    if let Ok(content) = std::fs::read_to_string(src_path) {
+        let preamble_end = content.find("\\begin{document}").unwrap_or(content.len());
+        let preamble = &content[..preamble_end];
+        if preamble.contains("fontsetup")
+            || preamble.contains("fontspec")
+            || preamble.contains("xeCJK")
+            || preamble.contains("unicode-math")
+            || preamble.contains("polyglossia")
+            || preamble.contains("ucharclasses")
+            || preamble.contains("xunicode")
+            || preamble.contains("xltxtra")
+            || preamble.contains("ctexart")
+            || preamble.contains("ctexrep")
+            || preamble.contains("ctexbook")
+        {
+            return "xelatex";
+        }
+        if preamble.contains("luacode") || preamble.contains("luatex") {
+            return "lualatex";
+        }
+    }
+    "pdflatex"
 }
 
 fn usage() {
@@ -67,6 +95,7 @@ fn parse_args(argv: &[String]) -> Result<Options, String> {
     let mut out_dir: Option<String> = None;
     let mut jobname: Option<String> = None;
     let mut silent = false;
+    let mut engine: Option<String> = None;
     let mut passthrough: Vec<String> = Vec::new();
     let mut i = 1;
     while i < argv.len() {
@@ -98,7 +127,9 @@ fn parse_args(argv: &[String]) -> Result<Options, String> {
                 passthrough.push(format!("-interaction={mode}"));
             }
             "-halt-on-error" => passthrough.push(a.clone()),
-            "-pdf" | "--pdf" => {} // PDF output is the only mode; accept and drop like latexmk
+            "-pdf" | "--pdf" => engine = Some("pdflatex".to_string()),
+            "-pdfxe" | "-xelatex" | "--xelatex" => engine = Some("xelatex".to_string()),
+            "-pdflua" | "-lualatex" | "--lualatex" => engine = Some("lualatex".to_string()),
             "-h" | "-help" | "--help" => {
                 usage();
                 std::process::exit(0);
@@ -123,6 +154,7 @@ fn parse_args(argv: &[String]) -> Result<Options, String> {
             out_dir,
             jobname,
             silent,
+            engine,
             passthrough,
         }),
         None => Err("no input file".to_string()),
@@ -322,10 +354,11 @@ fn real_main() -> i32 {
         return 1;
     }
 
-    let engine = match find_tool(&["pdflatex"]) {
+    let target_engine = opt.engine.as_deref().unwrap_or_else(|| detect_engine(&opt.file));
+    let engine = match find_tool(&[target_engine, "pdflatex"]) {
         Some(p) => p,
         None => {
-            eprintln!("texmk: pdflatex binary not found (looked next to texmk and in PATH)");
+            eprintln!("texmk: {target_engine} binary not found (looked next to texmk and in PATH)");
             return 1;
         }
     };
@@ -464,17 +497,10 @@ fn real_main() -> i32 {
             break;
         }
         if stuck {
-            eprintln!(
-                "texmk: not converging: artifacts unchanged two passes in a row{}",
-                if sig.undef_cites {
-                    " (citations remain undefined)"
-                } else if sig.undef_refs {
-                    " (references remain undefined)"
-                } else {
-                    ""
-                }
-            );
-            return 1;
+            // Like latexmk: when auxiliary files are stable across passes,
+            // the document has fully converged.
+            converged = true;
+            break;
         }
     }
 

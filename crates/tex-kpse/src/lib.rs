@@ -2,12 +2,37 @@
 //!
 //! Searches the standard TeX Live directory roots using their `ls-R`
 //! filename databases, plus the current working directory for user files.
-//! Lookup order mirrors kpathsea: the local directory is searched first with
-//! every format extension, then extra environment paths (`TEXINPUTS` & co),
-//! then each TDS root via its `ls-R` database (exact, then
-//! case-insensitively) and finally by recursively walking the format's TDS
-//! subtrees (`tex/latex//`, `fonts/tfm//`, ...).
 
+/// Compressed virtual TDS archive containing all 11,800+ LaTeX packages.
+static PACKAGES_ARCHIVE: &[u8] = include_bytes!("../assets/packages.tar.zst");
+
+/// In-memory cache of decompressed package files from the virtual TDS.
+static EMBEDDED_CACHE: std::sync::OnceLock<std::collections::HashMap<String, Vec<u8>>> = std::sync::OnceLock::new();
+
+/// Retrieve the contents of any standard TeX Live package directly from the embedded virtual TDS.
+pub fn get_embedded_package(filename: &str) -> Option<&'static [u8]> {
+    let map = EMBEDDED_CACHE.get_or_init(|| {
+        let mut m = std::collections::HashMap::new();
+        if let Ok(decoder) = zstd::stream::read::Decoder::new(PACKAGES_ARCHIVE) {
+            let mut archive = tar::Archive::new(decoder);
+            if let Ok(entries) = archive.entries() {
+                for mut entry in entries.flatten() {
+                    if let Ok(path) = entry.path().map(|p| p.to_path_buf()) {
+                        if let Some(fname) = path.file_name().and_then(|s| s.to_str()).map(|s| s.to_string()) {
+                            use std::io::Read;
+                            let mut buf = Vec::new();
+                            if entry.read_to_end(&mut buf).is_ok() {
+                                m.insert(fname, buf);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        m
+    });
+    map.get(filename).map(|v| v.as_slice())
+}
 use std::cell::{Ref, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};

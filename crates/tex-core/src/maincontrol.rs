@@ -34,8 +34,19 @@ impl Engine {
                     // MUST check before scanning the glue spec: the re-executed
                     // token re-scans its own operand.
                     Mode::Horizontal | Mode::Math | Mode::DisplayMath => {
+                        // tex.web head_for_vmode back-inputs \vskip and inserts
+                        // the \par token. Inserting the \par CS here deadlocks
+                        // when LaTeX leaves \par bound to an empty macro
+                        // (longtable \let\par\@empty leaks): the inserted \par
+                        // expands to nothing, \vskip re-executes in hmode, and
+                        // the cycle never terminates. End the paragraph directly
+                        // — the observable effect tex.web's inserted \par has in
+                        // every well-formed state — then re-run the skip in
+                        // vertical mode.
+                        if self.mode == Mode::Horizontal {
+                            self.par_primitive();
+                        }
                         self.pushed.push(Token::from_cs(id));
-                        self.pushed.push(Token::from_cs(self.ids.par));
                     }
                     _ => {
                         let g = self.scan_vskip_kind(p);
@@ -586,6 +597,12 @@ impl Engine {
             PdfAnnot => self.do_pdfannot(),
             PdfPageAttr => self.do_pdfpageattr(),
             PdfPagesAttr => self.do_pdfpagesattr(),
+            PdfPageResources => {
+                // \pdfpageresources{...}: pgf appends to the page resource
+                // dict; store the body so expandable uses see it.
+                let body = self.scan_pdf_string();
+                self.pdf_page_resources = body.into_bytes();
+            }
             PdfColorStackInit => {
                 let _ = self.scan_pdf_string();
             }
@@ -670,6 +687,15 @@ impl Engine {
             // position they produce their digit string into the stream
             NumExpr | DimExpr | GlueExpr | MuExpr => {
                 let _ = self.expand_prim(p, id);
+            }
+            // XeTeX identity probes: \XeTeXversion is an \the-like integer
+            // quantity; \XeTeXrevision expands to its decimal revision
+            // string. hyperref/iftex probe these to select driver code.
+            XeTeXVersion => {
+                for b in b"2" { self.pushed.push(crate::token::Token::char(12, *b as u32)); }
+            }
+            XeTeXRevision => {
+                for b in b".9995" { self.pushed.push(crate::token::Token::char(12, *b as u32)); }
             }
             // tex.web: conditionals are executed from the main loop, not
             // expanded by get_token (they must be storeable by \edef etc)

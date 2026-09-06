@@ -117,13 +117,14 @@ pub enum SaveItem {
     AfterGroup(Token),
 }
 
+#[derive(Clone)]
 struct EqEntry {
     equiv: Option<Equiv>,
     level: u16,
 }
 
 pub struct Eqtb {
-    map: HashMap<CsId, EqEntry>,
+    entries: Vec<EqEntry>,
     pub save_stack: Vec<SaveItem>,
     pub cur_level: u16,
 
@@ -239,7 +240,7 @@ impl Eqtb {
             sf_code[c as usize] = 999;
         }
         Eqtb {
-            map: HashMap::new(),
+            entries: Vec::new(),
             save_stack: Vec::new(),
             cur_level: LEVEL_ONE,
             cur_font_val: 0,
@@ -290,11 +291,22 @@ impl Eqtb {
 
     // ---------- cs equivalents ----------
 
+    #[inline(always)]
+    fn ensure_entry(&mut self, id: CsId) -> &mut EqEntry {
+        let idx = id as usize;
+        if idx >= self.entries.len() {
+            self.entries.resize(idx + 1, EqEntry { equiv: None, level: LEVEL_ONE });
+        }
+        &mut self.entries[idx]
+    }
+
+    #[inline(always)]
     pub fn get(&self, id: CsId) -> Option<&Equiv> {
-        self.map.get(&id).and_then(|e| e.equiv.as_ref())
+        self.entries.get(id as usize).and_then(|e| e.equiv.as_ref())
     }
 
     /// follow \let aliases to the effective meaning
+    #[inline(always)]
     pub fn resolve(&self, mut id: CsId) -> Option<&Equiv> {
         for _ in 0..1024 {
             match self.get(id) {
@@ -306,25 +318,33 @@ impl Eqtb {
     }
 
     pub fn assign(&mut self, id: CsId, equiv: Equiv, global: bool) {
-        let entry = self.map.entry(id).or_insert(EqEntry { equiv: None, level: LEVEL_ONE });
-        if !global && entry.level < self.cur_level {
-            let old = entry.equiv.clone();
-            let ol = entry.level;
+        let cur_level = self.cur_level;
+        let idx = id as usize;
+        if idx >= self.entries.len() {
+            self.entries.resize(idx + 1, EqEntry { equiv: None, level: LEVEL_ONE });
+        }
+        if !global && self.entries[idx].level < cur_level {
+            let old = self.entries[idx].equiv.clone();
+            let ol = self.entries[idx].level;
             self.save_stack.push(SaveItem::Eq(id, old, ol));
         }
-        entry.equiv = Some(equiv);
-        entry.level = if global { LEVEL_ONE } else { self.cur_level };
+        self.entries[idx].equiv = Some(equiv);
+        self.entries[idx].level = if global { LEVEL_ONE } else { cur_level };
     }
 
     pub fn undefine(&mut self, id: CsId, global: bool) {
-        let entry = self.map.entry(id).or_insert(EqEntry { equiv: None, level: LEVEL_ONE });
-        if !global && entry.level < self.cur_level {
-            let old = entry.equiv.clone();
-            let ol = entry.level;
+        let cur_level = self.cur_level;
+        let idx = id as usize;
+        if idx >= self.entries.len() {
+            self.entries.resize(idx + 1, EqEntry { equiv: None, level: LEVEL_ONE });
+        }
+        if !global && self.entries[idx].level < cur_level {
+            let old = self.entries[idx].equiv.clone();
+            let ol = self.entries[idx].level;
             self.save_stack.push(SaveItem::Eq(id, old, ol));
         }
-        entry.equiv = None;
-        entry.level = if global { LEVEL_ONE } else { self.cur_level };
+        self.entries[idx].equiv = None;
+        self.entries[idx].level = if global { LEVEL_ONE } else { cur_level };
     }
 
     // ---------- generic level-aware slots ----------
@@ -568,7 +588,7 @@ impl Eqtb {
                     break;
                 }
                 SaveItem::Eq(id, old, ol) => {
-                    let e = self.map.entry(id).or_insert(EqEntry { equiv: None, level: LEVEL_ONE });
+                    let e = self.ensure_entry(id);
                     if e.level > LEVEL_ONE {
                         e.equiv = old;
                         e.level = ol;
@@ -706,23 +726,24 @@ impl Eqtb {
 
     /// All defined control sequences: `(cs, equivalent, save level)`.
     pub(crate) fn eqs(&self) -> Vec<(CsId, Option<&Equiv>, u16)> {
-        let mut v: Vec<(CsId, Option<&Equiv>, u16)> = self
-            .map
+        self.entries
             .iter()
-            .map(|(&id, e)| (id, e.equiv.as_ref(), e.level))
-            .collect();
-        v.sort_unstable_by_key(|(id, _, _)| *id);
-        v
+            .enumerate()
+            .filter(|(_, e)| e.equiv.is_some() || e.level != LEVEL_ONE)
+            .map(|(id, e)| (id as CsId, e.equiv.as_ref(), e.level))
+            .collect()
     }
 
     /// Restore one control-sequence entry from a format dump.
     pub(crate) fn restore_eq(&mut self, id: CsId, equiv: Option<Equiv>, level: u16) {
-        self.map.insert(id, EqEntry { equiv, level });
+        let e = self.ensure_entry(id);
+        e.equiv = equiv;
+        e.level = level;
     }
 
     /// Number of defined control sequences.
     pub(crate) fn eq_count(&self) -> usize {
-        self.map.len()
+        self.entries.iter().filter(|e| e.equiv.is_some()).count()
     }
 }
 

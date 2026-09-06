@@ -53,7 +53,7 @@ fn pdf_driver_primitives_smoke() {
         "DIV-OK",
         "IFDIM-OK",
         "CS-OK",
-        "ORIGIN=72.27pt",
+        "ORIGIN=72.26999pt",
         "LM=5.0pt",
         "LASTXFORM=7",
         "OCL=9",

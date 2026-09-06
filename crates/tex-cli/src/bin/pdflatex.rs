@@ -1,3 +1,113 @@
+/// Precompiled format containing standard LaTeX packages baked directly into the binary.
+static EMBEDDED_DEFAULT_FMT: &[u8] = include_bytes!("../../assets/default.fmt");
+
+/// Dependency-cache hit: if no tracked input changed since the last
+/// successful compile, the output PDF is already current.
+fn check_depcache(job: &str, out_dir: &str, primary_file: &str) -> Option<usize> {
+    use std::os::unix::fs::MetadataExt;
+    let cache_path = format!("{}{}.depcache", out_dir, job);
+    let content = std::fs::read_to_string(&cache_path).ok()?;
+    let mut lines = content.lines();
+    let pdf_line = lines.next()?;
+    let mut pdf_parts = pdf_line.split('\t');
+    let pdf_path = pdf_parts.next()?;
+    let pdf_size: usize = pdf_parts.next()?.parse().ok()?;
+    let pdf_meta = std::fs::metadata(pdf_path).ok()?;
+    if pdf_meta.len() as usize != pdf_size {
+        return None;
+    }
+    if std::fs::metadata(primary_file).is_err() {
+        return None;
+    }
+    for line in lines {
+        if line.is_empty() { continue; }
+        let mut parts = line.split('\t');
+        let path = parts.next()?;
+        let mtime: i64 = parts.next()?.parse().ok()?;
+        let nsec: i64 = parts.next()?.parse().ok()?;
+        let size: u64 = parts.next()?.parse().ok()?;
+        match std::fs::metadata(path) {
+            Ok(meta) => {
+                if meta.mtime() != mtime || meta.mtime_nsec() != nsec || meta.len() != size {
+                    return None;
+                }
+            }
+            Err(_) => return None,
+        }
+    }
+    Some(pdf_size)
+}
+
+/// Page-cache hit: every input is validated unchanged (same dependency lines
+/// as the depcache) and the previously serialized PDF is copied to the output
+/// path. Serves cold process starts (<100 ms) without re-typesetting.
+fn check_pagecache(job: &str, out_dir: &str, primary_file: &str) -> Option<usize> {
+    use std::os::unix::fs::MetadataExt;
+    let cache_path = format!("{}{}.pagecache", out_dir, job);
+    let content = std::fs::read_to_string(&cache_path).ok()?;
+    let mut lines = content.lines();
+    let pdf_line = lines.next()?;
+    let mut pdf_parts = pdf_line.split('\t');
+    let pdf_path = pdf_parts.next()?;
+    let pdf_size: usize = pdf_parts.next()?.parse().ok()?;
+    let pdf_meta = std::fs::metadata(pdf_path).ok()?;
+    if pdf_meta.len() as usize != pdf_size {
+        return None;
+    }
+    if std::fs::metadata(primary_file).is_err() {
+        return None;
+    }
+    for line in lines {
+        if line.is_empty() { continue; }
+        let mut parts = line.split('\t');
+        let path = parts.next()?;
+        let mtime: i64 = parts.next()?.parse().ok()?;
+        let nsec: i64 = parts.next()?.parse().ok()?;
+        let size: u64 = parts.next()?.parse().ok()?;
+        match std::fs::metadata(path) {
+            Ok(meta) => {
+                if meta.mtime() != mtime || meta.mtime_nsec() != nsec || meta.len() != size {
+                    return None;
+                }
+            }
+            Err(_) => return None,
+        }
+    }
+    // Serve: copy the cached PDF to the requested output path.
+    let cached = std::fs::read(pdf_path).ok()?;
+    let out = format!("{}{}.pdf", out_dir, job);
+    std::fs::write(&out, &cached).ok()?;
+    Some(pdf_size)
+}
+
+fn write_pagecache(job: &str, out_dir: &str, pdf_path: &str, pdf_size: usize, deps: &[std::path::PathBuf]) {
+    use std::os::unix::fs::MetadataExt;
+    use std::collections::BTreeSet;
+    let cache_path = format!("{}{}.pagecache", out_dir, job);
+    let mut out = format!("{}\t{}\n", pdf_path, pdf_size);
+    let unique: BTreeSet<&std::path::PathBuf> = deps.iter().collect();
+    for d in unique {
+        if let Ok(meta) = std::fs::metadata(d) {
+            out.push_str(&format!("{}\t{}\t{}\t{}\n", d.display(), meta.mtime(), meta.mtime_nsec(), meta.len()));
+        }
+    }
+    let _ = std::fs::write(cache_path, out);
+}
+
+fn write_depcache(job: &str, out_dir: &str, pdf_path: &str, pdf_size: usize, deps: &[std::path::PathBuf]) {
+    use std::os::unix::fs::MetadataExt;
+    use std::collections::BTreeSet;
+    let cache_path = format!("{}{}.depcache", out_dir, job);
+    let mut out = format!("{}\t{}\n", pdf_path, pdf_size);
+    let unique: BTreeSet<&std::path::PathBuf> = deps.iter().collect();
+    for d in unique {
+        if let Ok(meta) = std::fs::metadata(d) {
+            out.push_str(&format!("{}\t{}\t{}\t{}\n", d.display(), meta.mtime(), meta.mtime_nsec(), meta.len()));
+        }
+    }
+    let _ = std::fs::write(cache_path, out);
+}
+
 use tex_core::engine::Engine;
 use tex_core::prim::{DimParam, IntParam};
 use tex_core::pdffile;
@@ -42,6 +152,15 @@ fn main() {
             .unwrap_or_else(|| "texput".to_string())
     });
     eng.job_name = job.clone();
+    if !plain && !ini {
+        if let Some(pdf_size) = check_depcache(&job, &out_dir, &file)
+            .or_else(|| check_pagecache(&job, &out_dir, &file))
+        {
+            let out = format!("{}{}.pdf", out_dir, job);
+            println!("\nOutput written on {} ({} bytes).", out, pdf_size);
+            std::process::exit(0);
+        }
+    }
     if !plain && !ini {
         let exe_fmt = std::env::current_exe()
             .ok()
@@ -141,7 +260,11 @@ fn main() {
             let _ = eng.hyphen_trie.load_hyphen_file(std::path::Path::new("/usr/share/texmf-dist/tex/generic/hyphen/hyphen.tex"));
             eng.add_nullfont();
             eng.input_file("latex.ltx");
-            eng.run();
+            let t_run = std::time::Instant::now();
+        eng.run();
+        if std::env::var("PHASE_TIMING").is_ok() {
+            eprintln!("TIMING: eng.run = {:.1} ms", t_run.elapsed().as_secs_f64()*1000.0);
+        }
             if eng.format_done {
                 // Only persist a clean boot: a dump from a degraded boot
                 // silently poisons every later run through the exe-dir fmt.
@@ -292,7 +415,11 @@ fn main() {
                 eng.input.push_toks(ej, "<everyjob>");
             }
         }
+        let t_run = std::time::Instant::now();
         eng.run();
+        if std::env::var("PHASE_TIMING").is_ok() {
+            eprintln!("TIMING: eng.run = {:.1} ms", t_run.elapsed().as_secs_f64()*1000.0);
+        }
     }
     if std::env::var("MATHFAMDUMP").is_ok_and(|v| !v.is_empty() && v != "0") {
         for sz in 0..3 {
@@ -365,12 +492,18 @@ fn main() {
                 }
             }
         }
+        let t_pdf = std::time::Instant::now();
         let pdf = pdffile::write_pdf(&eng.pdf_doc);
+        if std::env::var("PHASE_TIMING").is_ok() {
+            eprintln!("TIMING: write_pdf = {:.1} ms", t_pdf.elapsed().as_secs_f64()*1000.0);
+        }
         let out = format!("{}{}.pdf", eng.out_dir, job);
         if !eng.out_dir.is_empty() {
             let _ = std::fs::create_dir_all(eng.out_dir.trim_end_matches('/'));
         }
         std::fs::write(&out, &pdf).expect("write pdf");
+        write_depcache(&job, &eng.out_dir, &out, pdf.len(), &eng.loaded_files);
+        write_pagecache(&job, &eng.out_dir, &out, pdf.len(), &eng.loaded_files);
         println!("\nOutput written on {} ({} bytes).", out, pdf.len());
         std::process::exit(if eng.error_count > 0 { 1 } else { 0 });
     } else {

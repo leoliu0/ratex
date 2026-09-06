@@ -5,6 +5,13 @@ use crate::boxes::Glue;
 use crate::eqtb::Equiv;
 use crate::engine::Engine;
 use crate::prim::{DimParam, GlueParam, IntParam, Prim};
+
+#[derive(Clone, Copy, Debug)]
+enum UnitKind {
+    Ratio(i64, i64),
+    InternalSp(i64),
+    Sp,
+}
 use crate::scaled::{mult, ONE};
 use crate::token::Token;
 
@@ -787,12 +794,27 @@ impl Engine {
         if let Some(d) = direct {
             return if negate { -d } else { d };
         }
-        // unit (tex.web §8926/§9040): pt is exact (int*unity+f); other units
-        // multiply the (int + f/2^16) factor with truncating fixed-point
-        let unit_sp = self.scan_unit_sp(mu);
-        let v: i128 = int_part as i128 * 65536 + frac_f as i128;
-        let v = (v * unit_sp as i128) / 65536;
-        let v = v.clamp(i32::MIN as i128, i32::MAX as i128) as i32;
+        // unit (tex.web §453): standard units scale with (num, denom)
+        // while internal dimensions multiply directly
+        let unit = self.scan_unit(mu);
+        let v: i64 = match unit {
+            UnitKind::Ratio(num, denom) => {
+                let quotient = (int_part * num) / denom;
+                let remainder = (int_part * num) % denom;
+                let f_new = (num * frac_f as i64 + 65536 * remainder) / denom;
+                let cur_val = quotient + (f_new / 65536);
+                let f_final = f_new % 65536;
+                cur_val * 65536 + f_final
+            }
+            UnitKind::InternalSp(unit_sp) => {
+                let v = int_part as i128 * 65536 + frac_f as i128;
+                ((v * unit_sp as i128) / 65536) as i64
+            }
+            UnitKind::Sp => {
+                int_part
+            }
+        };
+        let v = v.clamp(i32::MIN as i64, i32::MAX as i64) as i32;
         if negate {
             -v
         } else {
@@ -805,49 +827,53 @@ impl Engine {
     /// unit may be a letter pair, a dimen parameter/register, or a macro
     /// that EXPANDS to one of those (`\p@` -> pt).
     fn scan_unit_sp(&mut self, mu: bool) -> i64 {
-        self.scan_unit_sp_d(mu, 0)
+        match self.scan_unit(mu) {
+            UnitKind::Ratio(n, d) => (n * 65536) / d,
+            UnitKind::InternalSp(sp) => sp,
+            UnitKind::Sp => 1,
+        }
     }
 
-    fn scan_unit_sp_d(&mut self, mu: bool, depth: u32) -> i64 {
+    fn scan_unit(&mut self, mu: bool) -> UnitKind {
+        self.scan_unit_d(mu, 0)
+    }
+
+    fn scan_unit_d(&mut self, mu: bool, depth: u32) -> UnitKind {
         if depth > 32 {
             self.error("Illegal unit of measure (pt inserted).");
-            return ONE as i64;
+            return UnitKind::Ratio(1, 1);
         }
         self.skip_spaces_relax();
         let t = self.get_token();
-        let mut unit_sp: i64;
         if t.is_cs() {
             if let Some(g) = self.glue_from_cur_cs(t) {
-                return g.width as i64;
+                return UnitKind::InternalSp(g.width as i64);
             }
             match self.cur_prim {
                 Some(Prim::DimP(p)) => {
-                    unit_sp = self.dim_param_value(p) as i64;
+                    return UnitKind::InternalSp(self.dim_param_value(p) as i64);
                 }
                 Some(Prim::Wd) => {
                     let n = self.scan_reg_num();
-                    unit_sp = self.box_reg_dimen(n, 0) as i64;
+                    return UnitKind::InternalSp(self.box_reg_dimen(n, 0) as i64);
                 }
                 Some(Prim::Ht) => {
                     let n = self.scan_reg_num();
-                    unit_sp = self.box_reg_dimen(n, 1) as i64;
+                    return UnitKind::InternalSp(self.box_reg_dimen(n, 1) as i64);
                 }
                 Some(Prim::Dp) => {
                     let n = self.scan_reg_num();
-                    unit_sp = self.box_reg_dimen(n, 2) as i64;
+                    return UnitKind::InternalSp(self.box_reg_dimen(n, 2) as i64);
                 }
                 _ => match self.eqtb.resolve(t.cs_id()).cloned() {
-                    Some(Equiv::DimenReg(i)) => unit_sp = self.eqtb.dimen[i as usize] as i64,
+                    Some(Equiv::DimenReg(i)) => return UnitKind::InternalSp(self.eqtb.dimen[i as usize] as i64),
                     // tex.web: a macro in unit position expands (LaTeX's
                     // `\p@` = "pt"). Push back, re-fetch with expansion,
                     // and re-run this whole unit fetch (char reader below
                     // runs on the next loop pass).
                     Some(Equiv::Macro(m)) if !m.protected => {
-                        // tex.web: macro in unit position expands (LaTeX's
-                        // `\p@` = "pt"). Expand in place, then re-run the
-                        // whole unit fetch.
                         self.expand_macro(t.cs_id(), &m);
-                        return self.scan_unit_sp_d(mu, depth + 1);
+                        return self.scan_unit_d(mu, depth + 1);
                     }
                     _ => {
                         { let __pt = t; if crate::debug_flag("PUSHWATCH") && __pt.is_cs() && self.cs.name(__pt.cs_id()) == b"ifx" && self.input.current_file_line() > 9000 { eprintln!("PUSHIFX crates/tex-core/src/scan.rs:{} line={}", {line!()}, self.input.current_file_line()); } self.pushed.push(__pt); }
@@ -857,7 +883,7 @@ impl Engine {
                         }
 
                         self.error("Illegal unit of measure (pt inserted).");
-                        unit_sp = ONE as i64;
+                        return UnitKind::Ratio(1, 1);
                     }
                 },
             }
@@ -907,58 +933,41 @@ impl Engine {
                 s = s2;
             }
             self.cur_fill_order = 0;
-            unit_sp = match s.as_str() {
+            match s.as_str() {
                 "fil" | "fill" | "filll" => {
                     self.cur_fill_order = match s.as_str() {
                         "fil" => 1,
                         "fill" => 2,
                         _ => 3,
                     };
-                    ONE as i64
+                    UnitKind::Ratio(1, 1)
                 }
-                "pt" | "p" => ONE as i64,
-                "in" => 4736287, // 72.27 * 65536 rounded
-                "pc" => 12 * ONE as i64,
-                "cm" => 47362867, // 7227/254 * 65536 * ... exact below
-                "mm" => 4736287,
-                "bp" => 65782,  // 72.27/72 pt
-                "dd" => 70124,  // 1238/1157 pt
-                "cc" => 841489, // 12 dd
-                "sp" => 1,
-                "em" => self.cur_quad() as i64,
-                "ex" => self.cur_x_height() as i64,
-                "px" => 65782,
-                // tex.web §431 (scan_mu_glue): in mu glue, `mu` is the only
-                // legal unit and its factor is UNITY — the register stores a
-                // mu-denominated value (`\medmuskip=4mu` keeps width 4.0mu).
-                // Conversion mu→sp happens at use (math_glue, §716) with the
-                // current style's symbol-font em, never at scan time.
-                "mu" if mu => ONE as i64,
+                "pt" | "p" => UnitKind::Ratio(1, 1),
+                "in" => UnitKind::Ratio(7227, 100),
+                "pc" => UnitKind::Ratio(12, 1),
+                "cm" => UnitKind::Ratio(7227, 254),
+                "mm" => UnitKind::Ratio(7227, 2540),
+                "bp" => UnitKind::Ratio(7227, 7200),
+                "dd" => UnitKind::Ratio(1238, 1157),
+                "cc" => UnitKind::Ratio(14856, 1157),
+                "sp" => UnitKind::Sp,
+                "em" => UnitKind::InternalSp(self.cur_quad() as i64),
+                "ex" => UnitKind::InternalSp(self.cur_x_height() as i64),
+                "px" => UnitKind::Ratio(7227, 7200),
+                "mu" if mu => UnitKind::Ratio(1, 1),
                 _ => {
                     if crate::debug_flag("DEFTRACE") {
                         eprintln!("UNITFAIL s={:?} kw={:?}", s, kw);
                     }
                     self.error("Illegal unit of measure (pt inserted).");
-                    ONE as i64
+                    UnitKind::Ratio(1, 1)
                 }
-            };
-            // exact rational values where TeX scales by fractions:
-            unit_sp = match s.as_str() {
-                "in" => 4736287,
-                "cm" => (7227i64 * ONE as i64 + 127) / 254 / 100 * 100, // approx; refined below
-                "mm" => (7227i64 * ONE as i64) / 2540,
-                "bp" => (7227i64 * ONE as i64) / 7200,
-                "dd" => (1238i64 * ONE as i64) / 1157,
-                "cc" => (12 * 1238 * ONE as i64) / 1157,
-                _ => unit_sp,
-            };
+            }
         } else {
             { let __pt = t; if crate::debug_flag("PUSHWATCH") && __pt.is_cs() && self.cs.name(__pt.cs_id()) == b"ifx" && self.input.current_file_line() > 9000 { eprintln!("PUSHIFX crates/tex-core/src/scan.rs:{} line={}", {line!()}, self.input.current_file_line()); } self.pushed.push(__pt); }
             self.error("Illegal unit of measure (pt inserted).");
-            unit_sp = ONE as i64;
+            UnitKind::Ratio(1, 1)
         }
-
-        unit_sp
     }
 
     pub fn scan_glue(&mut self, mu: bool) -> Glue {

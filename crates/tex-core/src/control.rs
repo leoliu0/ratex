@@ -1130,17 +1130,11 @@ impl Engine {
     fn do_let(&mut self, future: bool) {
         let target = self.scan_definable_cs();
         let nm = std::string::String::from_utf8_lossy(self.cs.name(target)).to_string();
-        if nm.contains("bar_bool") || nm.contains("backend_header_bool") || nm.contains("cmd_log_bool") {
-            eprintln!("DO_LET_BOOL target={} future={} global={} level={} line={}", nm, future, self.global_flag, self.eqtb.cur_level, self.input.current_file_line());
-        }
         if future {
             let tb = self.raw_token();
             let tc = self.raw_token();
             if tc.is_cs() {
                 self.copy_meaning(target, tc.cs_id());
-            } else if tc.is_char() && tc.cc() == 13 {
-                let id = self.active_cs_id(tc.chr() as u8);
-                self.copy_meaning(target, id);
             } else {
                 self.eqtb.assign(target, Equiv::CharTok(tc.0), self.global_flag);
             }

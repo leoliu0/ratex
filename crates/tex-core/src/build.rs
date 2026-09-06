@@ -151,6 +151,7 @@ impl Engine {
                 // \\tex_par:D to cancel that dummy paragraph; the letter
                 // must not already be on the list or it becomes its own para.
                 let cc = if is_letter { 11 } else { 12 };
+
                 self.pushed.push(Token::char(cc, c as u32));
                 self.start_paragraph(true);
             }
@@ -654,7 +655,7 @@ impl Engine {
 
     // ---------- boxes ----------
 
-    fn token_is_left_brace(&self, t: Token) -> bool {
+    pub(crate) fn token_is_left_brace(&self, t: Token) -> bool {
         if t.is_char() && t.cc() == 1 {
             return true;
         }

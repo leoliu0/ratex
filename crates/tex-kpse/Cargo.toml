@@ -4,3 +4,5 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+zstd = { workspace = true }
+tar = { workspace = true }

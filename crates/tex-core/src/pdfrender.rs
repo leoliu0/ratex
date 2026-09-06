@@ -47,6 +47,18 @@ pub struct RenderCtx<'a> {
     pub box_w_sp: i64,
     pub box_h_sp: i64,
     pub box_d_sp: i64,
+    // buffered same-font same-baseline glyph run emitted as one TJ array
+    // (per-glyph BT..Tj ET blocks make pdftotext split words at rounding gaps)
+    tj: Option<TjRun>,
+}
+
+struct TjRun {
+    num: u16,
+    size_bp: f64,
+    x0: f64,
+    y: f64,
+    expect_x: f64,
+    parts: String,
 }
 
 impl Engine {
@@ -95,6 +107,7 @@ impl Engine {
             box_w_sp: width_sp as i64,
             box_h_sp: height_sp as i64,
             box_d_sp: 0,
+            tj: None,
         };
         let horigin_bp = sp_to_bp(ctx.eng.eqtb.dim_params[DimParam::PdfHOrigin.idx() as usize] as i64);
         let vorigin_bp = sp_to_bp(ctx.eng.eqtb.dim_params[DimParam::PdfVOrigin.idx() as usize] as i64);
@@ -122,7 +135,10 @@ impl Engine {
         ctx.eng.pdf_doc.outlines = ctx.eng.pdf_outlines.clone();
         ctx.eng.pdf_doc.pages_attr = ctx.eng.pdf_pages_attr.clone().into_bytes();
         PdfPage {
-            content: std::mem::take(&mut ctx.content).into_bytes(),
+            content: {
+                ctx.tj_flush();
+                std::mem::take(&mut ctx.content).into_bytes()
+            },
             width: w_bp.round() as i32,
             height: h_bp.round() as i32,
             annots: std::mem::take(&mut ctx.annots),
@@ -492,6 +508,7 @@ impl<'a> RenderCtx<'a> {
                 .and_then(|k| self.eng.font_loader.vf_fonts.get(&k).cloned())
                 .and_then(|vf| vf.chars.get(c as usize).cloned().flatten());
             if let Some(steps) = steps {
+                self.tj_flush();
                 for st in steps.iter() {
                     let Some(&bfid) = bases.get(st.base as usize) else { continue };
                     if bfid == u16::MAX {
@@ -518,14 +535,48 @@ impl<'a> RenderCtx<'a> {
             return; // VF font without a packet for this char: nothing to draw
         }
         let num = self.ensure_font(f);
-        self.content.push_str(&format!(
-            "BT /F{} {:.4} Tf 1 0 0 1 {:.4} {:.4} Tm <{:02x}> Tj ET\n",
+        let y_pdf = self.y_pdf(y);
+        let w_bp = sp_to_bp(self.font_char_width(f, c) as i64);
+        let continue_run = match &mut self.tj {
+            Some(run) => {
+                run.num == num
+                    && (run.size_bp - size_bp).abs() < 1e-4
+                    && (run.y - y_pdf).abs() < 0.02
+                    && x >= run.expect_x - 0.3 * size_bp
+                    && x <= run.expect_x + 3.0 * size_bp
+            }
+            None => false,
+        };
+        if continue_run {
+            let run = self.tj.as_mut().unwrap();
+            let delta = x - run.expect_x;
+            if delta.abs() > 0.02 {
+                let kern = -delta / size_bp * 1000.0;
+                run.parts.push_str(&format!(" {:.1}", kern));
+            }
+            run.parts.push_str(&format!(" <{c:02x}>"));
+            run.expect_x = x + w_bp;
+            return;
+        }
+        self.tj_flush();
+        self.tj = Some(TjRun {
             num,
             size_bp,
-            x,
-            self.y_pdf(y),
-            c
-        ));
+            x0: x,
+            y: y_pdf,
+            expect_x: x + w_bp,
+            parts: format!("<{c:02x}>"),
+        });
+    }
+
+    /// Flush the buffered TJ glyph run (call before any non-text operator).
+    fn tj_flush(&mut self) {
+        if let Some(run) = self.tj.take() {
+            self.content.push_str(&format!(
+                "BT /F{} {:.4} Tf 1 0 0 1 {:.4} {:.4} Tm [{}] TJ ET\n",
+                run.num, run.size_bp, run.x0, run.y, run.parts
+            ));
+        }
     }
 
     fn emit_rect(&mut self, x: f64, y: f64, w: f64, h: f64) {
@@ -533,6 +584,7 @@ impl<'a> RenderCtx<'a> {
         if w == 0.0 || h == 0.0 {
             return;
         }
+        self.tj_flush();
         self.note_point(x, y);
         self.note_point(x + w, y + h);
         self.content
@@ -543,19 +595,28 @@ impl<'a> RenderCtx<'a> {
         use crate::boxes::WhatIt::*;
         match w {
             PdfLiteral { data, .. } => {
+                self.tj_flush();
                 self.content.push_str(data);
                 self.content.push('\n');
             }
             PdfColorPush(color) => {
+                self.tj_flush();
                 self.content.push_str("q\n");
                 self.content.push_str(color);
                 self.content.push('\n');
             }
             PdfColorPop => {
+                self.tj_flush();
                 self.content.push_str("Q\n");
             }
-            PdfSave => self.content.push_str("q\n"),
-            PdfRestore => self.content.push_str("Q\n"),
+            PdfSave => {
+                self.tj_flush();
+                self.content.push_str("q\n");
+            }
+            PdfRestore => {
+                self.tj_flush();
+                self.content.push_str("Q\n");
+            }
             PdfDest { name, kind, params } => {
                 // first definition of a name wins
                 if !self.dests.iter().any(|d| &d.name == name) {

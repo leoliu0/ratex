@@ -21,6 +21,17 @@ fn check_depcache(job: &str, out_dir: &str, primary_file: &str) -> Option<usize>
     }
     for line in lines {
         if line.is_empty() { continue; }
+        if let Some(rest) = line.strip_prefix("AUX") {
+            let mut parts = rest.split('\t');
+            let path = parts.next()?;
+            let size: u64 = parts.next()?.parse().ok()?;
+            let hash: u64 = parts.next()?.parse().ok()?;
+            let cur = content_digest(std::path::Path::new(path)).unwrap_or((u64::MAX, 0));
+            if cur.0 == size && cur.1 == hash {
+                continue;
+            }
+            return None;
+        }
         let mut parts = line.split('\t');
         let path = parts.next()?;
         let mtime: i64 = parts.next()?.parse().ok()?;
@@ -59,6 +70,17 @@ fn check_pagecache(job: &str, out_dir: &str, primary_file: &str) -> Option<usize
     }
     for line in lines {
         if line.is_empty() { continue; }
+        if let Some(rest) = line.strip_prefix("AUX") {
+            let mut parts = rest.split('\t');
+            let path = parts.next()?;
+            let size: u64 = parts.next()?.parse().ok()?;
+            let hash: u64 = parts.next()?.parse().ok()?;
+            let cur = content_digest(std::path::Path::new(path)).unwrap_or((u64::MAX, 0));
+            if cur.0 == size && cur.1 == hash {
+                continue;
+            }
+            return None;
+        }
         let mut parts = line.split('\t');
         let path = parts.next()?;
         let mtime: i64 = parts.next()?.parse().ok()?;
@@ -80,7 +102,7 @@ fn check_pagecache(job: &str, out_dir: &str, primary_file: &str) -> Option<usize
     Some(pdf_size)
 }
 
-fn write_pagecache(job: &str, out_dir: &str, pdf_path: &str, pdf_size: usize, deps: &[std::path::PathBuf]) {
+fn write_pagecache(job: &str, out_dir: &str, pdf_path: &str, pdf_size: usize, deps: &[std::path::PathBuf], aux_start: &[(std::path::PathBuf, u64, u64)]) {
     use std::os::unix::fs::MetadataExt;
     use std::collections::BTreeSet;
     let cache_path = format!("{}{}.pagecache", out_dir, job);
@@ -91,10 +113,49 @@ fn write_pagecache(job: &str, out_dir: &str, pdf_path: &str, pdf_size: usize, de
             out.push_str(&format!("{}\t{}\t{}\t{}\n", d.display(), meta.mtime(), meta.mtime_nsec(), meta.len()));
         }
     }
+    for (p, len, h) in aux_start {
+        out.push_str(&format!("AUX{}\t{}\t{}\n", p.display(), len, h));
+    }
+    for (p, len, h) in aux_start {
+        out.push_str(&format!("AUX{}\t{}\t{}\n", p.display(), len, h));
+    }
     let _ = std::fs::write(cache_path, out);
 }
 
-fn write_depcache(job: &str, out_dir: &str, pdf_path: &str, pdf_size: usize, deps: &[std::path::PathBuf]) {
+/// Derived-state files (aux/toc/out): the engine both READS (previous pass)
+/// and WRITES (this pass) them, so their mtimes always change between runs.
+/// Track them by CONTENT HASH of the state the compile started from: a cache
+/// hit is valid iff the current aux content equals what this compile saw.
+fn aux_state_paths(job: &str, out_dir: &str) -> Vec<std::path::PathBuf> {
+    ["aux", "toc", "out"]
+        .iter()
+        .map(|ext| std::path::PathBuf::from(format!("{}{}.{}", out_dir, job, ext)))
+        .collect()
+}
+
+fn content_digest(path: &std::path::Path) -> Option<(u64, u64)> {
+    let data = std::fs::read(path).ok()?;
+    let mut h1: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut h2: u64 = 0x9e37_79b9_7f4a_7c15;
+    for (i, b) in data.iter().enumerate() {
+        h1 ^= *b as u64;
+        h1 = h1.wrapping_mul(0x1000_0000_01b3);
+        h2 = (h2 + *b as u64 + (i as u64)) .wrapping_mul(0x1000_0000_01b3);
+    }
+    Some((data.len() as u64, h1 ^ h2))
+}
+
+fn snapshot_aux_state(job: &str, out_dir: &str) -> Vec<(std::path::PathBuf, u64, u64)> {
+    aux_state_paths(job, out_dir)
+        .into_iter()
+        .map(|p| {
+            let entry = content_digest(&p).unwrap_or((u64::MAX, 0)); // absent = MAX/0
+            (p, entry.0, entry.1)
+        })
+        .collect()
+}
+
+fn write_depcache(job: &str, out_dir: &str, pdf_path: &str, pdf_size: usize, deps: &[std::path::PathBuf], aux_start: &[(std::path::PathBuf, u64, u64)]) {
     use std::os::unix::fs::MetadataExt;
     use std::collections::BTreeSet;
     let cache_path = format!("{}{}.depcache", out_dir, job);
@@ -104,6 +165,9 @@ fn write_depcache(job: &str, out_dir: &str, pdf_path: &str, pdf_size: usize, dep
         if let Ok(meta) = std::fs::metadata(d) {
             out.push_str(&format!("{}\t{}\t{}\t{}\n", d.display(), meta.mtime(), meta.mtime_nsec(), meta.len()));
         }
+    }
+    for (p, len, h) in aux_start {
+        out.push_str(&format!("AUX{}\t{}\t{}\n", p.display(), len, h));
     }
     let _ = std::fs::write(cache_path, out);
 }
@@ -152,6 +216,7 @@ fn main() {
             .unwrap_or_else(|| "texput".to_string())
     });
     eng.job_name = job.clone();
+    let aux_start = snapshot_aux_state(&job, &out_dir);
     if !plain && !ini {
         if let Some(pdf_size) = check_depcache(&job, &out_dir, &file)
             .or_else(|| check_pagecache(&job, &out_dir, &file))
@@ -502,8 +567,8 @@ fn main() {
             let _ = std::fs::create_dir_all(eng.out_dir.trim_end_matches('/'));
         }
         std::fs::write(&out, &pdf).expect("write pdf");
-        write_depcache(&job, &eng.out_dir, &out, pdf.len(), &eng.loaded_files);
-        write_pagecache(&job, &eng.out_dir, &out, pdf.len(), &eng.loaded_files);
+        write_depcache(&job, &eng.out_dir, &out, pdf.len(), &eng.loaded_files, &aux_start);
+        write_pagecache(&job, &eng.out_dir, &out, pdf.len(), &eng.loaded_files, &aux_start);
         println!("\nOutput written on {} ({} bytes).", out, pdf.len());
         std::process::exit(if eng.error_count > 0 { 1 } else { 0 });
     } else {

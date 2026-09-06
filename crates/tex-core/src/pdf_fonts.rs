@@ -190,7 +190,7 @@ mod tests {
     }
     #[test]
     fn glyph_names_to_unicode() {
-        assert_eq!(glyph_to_unicode("fi").as_deref(), Some("\u{fb01}"));
+        assert_eq!(glyph_to_unicode("fi").as_deref(), Some("fi"));
         assert_eq!(glyph_to_unicode("quotedblleft").as_deref(), Some("\u{201c}"));
         assert_eq!(glyph_to_unicode("hyphen").as_deref(), Some("-"));
         assert_eq!(glyph_to_unicode("C").as_deref(), Some("C"));
@@ -277,6 +277,17 @@ pub fn glyph_to_unicode(glyph: &str) -> Option<String> {
     let base = glyph.split('.').next().unwrap_or(glyph);
     if base.is_empty() {
         return None;
+    }
+    // TeX ligature glyphs extract as their LETTER SEQUENCE (T1/pdftex
+    // convention): pdftotext of a real pdfTeX PDF gives "specific", not
+    // "speci\u{fb01}c". Without this our word-streams diverge from the oracle.
+    match base {
+        "fi" => return Some("fi".into()),
+        "fl" => return Some("fl".into()),
+        "ff" => return Some("ff".into()),
+        "ffi" => return Some("ffi".into()),
+        "ffl" => return Some("ffl".into()),
+        _ => {}
     }
     if let Ok(i) = GLYPH_LIST.binary_search_by(|(n, _)| (*n).cmp(base)) {
         return Some(GLYPH_LIST[i].1.to_string());

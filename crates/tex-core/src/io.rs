@@ -18,6 +18,10 @@ impl Engine {
     }
 
     pub fn input_file(&mut self, name: &str) -> bool {
+        if std::env::var("IOTRACE").is_ok() && name.ends_with(".aux") {
+            let sz = std::fs::metadata(name).map(|m| m.len()).unwrap_or(99999);
+            eprintln!("IO-AUX-READ {} size={}", name, sz);
+        }
         let path = self.resolve_input_path(name);
         match path {
             Some(p) => match std::fs::read(&p) {
@@ -199,6 +203,9 @@ impl Engine {
     }
 
     pub fn do_openout(&mut self) {
+        if std::env::var("IOTRACE").is_ok() {
+            eprintln!("IO-OPENOUT at line {}", self.input.current_file_line());
+        }
         // \openout<n>=<file>
         let n = self.scan_int();
         self.scan_optional_equals();

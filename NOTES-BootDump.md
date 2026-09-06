@@ -1116,3 +1116,32 @@ Boot 29→20 errors; 1882 now Missing `{` got letter `p` (variants list), not
   NEXT: audit the \write/aux path (control.rs write handling): defer
   page-number expansion to shipout (tex.web §1395 shipping-out \write
   rule), then re-audit trust p10+ and ai_patent.
+- WRITE DEFERRAL LANDED (tex.web 1395): plain \write to file streams
+  (0..=15) queues WhatIt::Write whatsits; ship_box fires them (recursive
+  tree walk) so \thepage resolves with the shipped page's counter. Aux
+  page numbers now MATCH real exactly (2.6 -> {10} both). \immediate\write
+  and terminal/log streams stay immediate. 77/77 green.
+- Trust visual audit after fix: unchanged (avg 1.5033; p10 2.791%, p11
+  5.0%, p12-19 ~7% band persists; 22 pages <0.1%). The trust body uses no
+  \pageref text, so the aux fix is correctness-invisible there. The p12-19
+  band still tracks back to the p10-11 float/Table 5 placement flip whose
+  trigger = accumulated full-doc state (NOT local preamble, NOT the
+  breaker: both verified identical in isolation).
+- NEXT (mechanical, certain): binary-search trust main.tex preamble+body
+  lines 1-126 into the f-probe family until the squeeze reproduces. f2
+  (subsection+2 paras+subset preamble) and f3 (full preamble+paras) and
+  f4 (lines 1-128) all match — extend f4 to include 129-... wait f4
+  ALREADY = lines 1-128 and MATCHES. So the squeeze needs content BEYOND
+  line 128 present in the SAME run?? No — later content cannot affect
+  earlier breaking. Re-verify: rebuild ours+real fresh, extract p10 line
+  texts again to confirm the squeeze still exists post-write-fix.
+- KPTRACE full-doc run captured at /tmp/tr_kp.out (may be cleaned; the
+  para's node range = around cand=447, active line 3, from=(3,@313) gives
+  b=0 squeeze-adjacent candidate). The brute trace = too noisy to eyeball;
+  the para's candidates need node-range filtering. IMPORTANT observation
+  from the trace region: candidates from=(3,@313) sf=+0.87 b=0 exist —
+  a perfect-fit line adjacent to the squeeze; the DP still preferred the
+  squeeze path => the squeeze = chosen UPSTREAM (line 3's active node
+  positions), i.e. the difference enters at the paragraph's EARLIER
+  lines, not at the last-line decision. Cross-check real's line 2 content
+  (idx 13/14 boundary) vs ours before diving deeper.

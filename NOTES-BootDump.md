@@ -123,6 +123,24 @@
   family (89) plus Duplicate \omit (47) and likely Illegal-unit/Missing-number classes collapse,
   unlocking ~30 pages of appendix tables in ai_patent.
 
+## Continuation (7th block) — "\??" was an ARTIFACT; real defect: garbage cs id in deferred \write16 banner list
+- cs.name() (token.rs:112) falls back to b"??" for ids beyond the names table — ALL the "\??"-quark
+  evidence was this fallback masking a GARBAGE CS TOKEN. The failing write list is the deferred
+  \write16 banner from latex.ltx:733: captured body = [\fmtname, \space, <, \fmtversion, >,
+  cs#435-INVALID] — six tokens, the last a cs id with NO name (garbage), captured at FORMAT-BOOT
+  time (latex.ltx runs during pdflatex.fmt build) and replayed from the fmt at every run's first
+  page shipout.
+- Fresh-aux sensitivity: the banner write ships with page 1; with a stale aux the shipout timing
+  differs and the poison misses the align interrow peek — explaining all geometry/vsize/aux
+  "dependencies" (they were timing coincidences, not causes).
+- TWO fixes needed (next session):
+  1. token capture: why does the \write16 body scan store a cs id that isn't interned?
+     (scanner created a cs token for an unnameable id — check no_new_control_sequence handling in
+     get_token/get_next_raw when scanning deferred-write args at format boot).
+  2. robustness: deferred <write> replays must not dispatch through alignment/phase machinery
+     (their tokens should go through the write processor only).
+- NOTE for repro: h16/h21 need FRESH aux (rm h16.aux) to show the error; stale aux masks it.
+
 # Boot Debugging State (post-session-12)
 
 ## Applied fixes this session (all built, boot still fails at ~line 1773+)

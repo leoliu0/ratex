@@ -32,6 +32,8 @@ struct ActiveNode {
     line: i32,
     fitness: usize,
     demerits: i64,
+    /// badness of the line ENDING at this break (debug/diagnostics)
+    badness_dbg: i32,
     /// width state for lines STARTING at this break (tex's break_width)
     start_w: i64,
     start_st: [i64; 4],
@@ -160,7 +162,7 @@ impl Engine {
         // 1: tolerance, hyphen breaks, final_pass iff no emergency stretch
         // 2: tolerance + emergency stretch, final_pass (cannot fail)
         let mut threshold = if params.pretolerance >= 0 { params.pretolerance } else { params.tolerance };
-        let mut second_pass = params.pretolerance < 0;
+        let mut second_pass = params.pretolerance < 0 || std::env::var("LB2").is_ok();
         let mut final_pass = params.pretolerance < 0 && params.emergency_stretch <= 0;
         let mut extra_stretch = 0i32;
         let mut best: Option<Rc<ActiveNode>> = None;
@@ -201,6 +203,22 @@ impl Engine {
             let line = crate::boxes::hpack(inner, None, crate::boxes::HBOX, &self.eqtb).node;
             return crate::boxes::vpack(vec![line], None, crate::boxes::VBOX, &self.eqtb).node;
         };
+        if std::env::var("LBTRACE").is_ok() {
+            let npen = list.iter().filter(|n| matches!(n, Node::Penalty(_))).count();
+            let mut chain = Vec::new();
+            let mut cur = Some(end.clone());
+            while let Some(b) = cur {
+                chain.push(b.badness_dbg);
+                cur = b.prev.clone();
+            }
+            chain.reverse();
+            eprintln!(
+                "LB-DONE pretol={} tol={} emg={} second={} final={} xstretch={} nodes={} pens={} wp={} bs={:?}",
+                params.pretolerance, params.tolerance, params.emergency_stretch,
+                second_pass, final_pass, extra_stretch, list.len(), npen,
+                params.line_penalty, &chain[1..]
+            );
+        }
         self.build_lines(list, &params, end, final_pass, final_widow_penalty)
     }
 
@@ -440,6 +458,7 @@ impl Engine {
             }
         }
         let start = Rc::new(ActiveNode {
+            badness_dbg: 0,
             pos: 0,
             btype: BreakType::Unhyphenated,
             line: 0,
@@ -563,6 +582,7 @@ impl Engine {
                         line: prev.line + 1,
                         fitness: key.1,
                         demerits: *d,
+                        badness_dbg: 0,
                         start_w,
                         start_st,
                         start_sh,
@@ -941,16 +961,19 @@ fn line_metrics(params: &ParaParams, line: i32) -> (i32, i32) {
 
 /// d = (line_penalty + b)^2 + penalty term (tex.web @<Compute the demerits@>)
 fn demerits(params: &ParaParams, b: i32, pi: i32) -> i64 {
-    let d = params.line_penalty as i64 + b as i64;
-    let mut d = if d.abs() >= 10000 { 100_000_000i64 } else { d * d };
-    if pi != 0 {
-        if pi > 0 {
-            d += pi as i64 * pi as i64;
-        } else if pi > EJECT_PENALTY {
-            d -= pi as i64 * pi as i64;
-        }
+    // tex.web §1141: b>inf_bad or pi=eject_penalty => inf_demerits;
+    // otherwise d = (line_penalty + b)^2 + pi^2 — pi^2 is ADDED for
+    // negative penalties too (a discretionary's -50 costs +2500 demerits).
+    // (The earlier version subtracted pi^2 for pi<0 and never produced
+    // inf_demerits, biasing the optimum toward penalty/hyphen breaks and
+    // changing raggedness in \sloppy paragraphs — the ai_patent
+    // 108-vs-110 page divergence.)
+    const INF_DEMERITS: i64 = (INF_BAD as i64) * (INF_BAD as i64);
+    if b > INF_BAD || pi == EJECT_PENALTY {
+        return INF_DEMERITS;
     }
-    d
+    let d = params.line_penalty as i64 + b as i64;
+    d * d + pi as i64 * pi as i64
 }
 
 /// extra demerits: double-hyphen / final-hyphen, and adjacent fitness

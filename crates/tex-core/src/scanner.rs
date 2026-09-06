@@ -319,7 +319,16 @@ impl Engine {
                     let b = match self.file_line_peek(si) {
                         Some(b) => b,
                         None => {
-                            // line end in skip-spaces: no space token
+                            // tex.web skip_blanks at line end: state <- new_line,
+                            // so the NEXT line is re-examined by the new-line logic
+                            // (an empty next line must still yield PAR_END — it
+                            // never did from here, swallowing blank-line \par
+                            // after every scan that ended in optional-space state)
+                            let s = match &mut self.input.stack[si] {
+                                Source::File { state, .. } => state,
+                                _ => unreachable!(),
+                            };
+                            *s = 0;
                             self.file_line_clear(si);
                             continue;
                         }

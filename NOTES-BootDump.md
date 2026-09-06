@@ -931,3 +931,15 @@ Boot 29→20 errors; 1882 now Missing `{` got letter `p` (variants list), not
   blank line is read as a continuation (no state-0 empty-line check).
   Fix candidate: PAR_END must be producible from state 1 when the line
   ends AND the next line is blank — check tex.web get_next line-end path.
+- FIXED: scanner state-2 (skip_blanks) line-end never transitioned to
+  new_line -> the following blank line was never re-examined -> PAR_END
+  never produced (t11: 0; now 1 after fix). tex.web skip_blanks does
+  state:=new_line at loc=null. Committed.
+- t2 (amsmath equation) STILL mid-paragraph: HENTRY n=130 pd=0 after the
+  state-2 fix. PAR_ENDs appear inside amsmath.sty (1321/1328) = the env's
+  own macro machinery; the doc-level blank line before \begin{equation}
+  is consumed elsewhere (amsmath \mathdisplay \@mathmeasure path?).
+  Plain $$ docs now paragraph-break correctly. NEXT: trace amsmath's
+  equation env token path at the doc blank line (why no PAR_END between
+  "...BASE=17.99446pt" and \begin{equation} in t2; verify with plain
+  $$ + newtx without amsmath to isolate amsmath vs newtx).

@@ -845,3 +845,14 @@ Boot 29→20 errors; 1882 now Missing `{` got letter `p` (variants list), not
   abstract L1 = the p1 y655 band). Overfull hunt = the highest-value next
   target: find why our breaker produces overfull lines in full-doc context.
 - Probes: /tmp/abs/b.tex (exact preamble 1-49 + abstract), /tmp/abs/a.tex (11pt).
+
+## 2026-09-06 (session 9, overfull target pinned)
+- The 24-vs-1 overfull delta: our extra overfulls cluster in the \citep-heavy
+  intro paragraphs (e.g. main.tex line 75 "The results hold when we aggregate..."
+  has 5: 4.857/3.849/7.365/10.173/1.713pt). Real = 0 on them.
+- Probes WITHOUT full doc: preamble+abstract (b.tex), preamble+abstract+cites+
+  \onehalfspacing+intro para (d.tex) = 0 overfull both engines. Repro requires
+  the full document (aux/cite-settled state or accumulated font/hook state).
+- Next attack: SPACETRACE/inspect the natural width of the overfull lines in the
+  full doc vs real (are our cite boxes wider? natbib rendering of "(Author year)"
+  vs real's?) — compare TJ glyph runs of one overfull line's cite text.

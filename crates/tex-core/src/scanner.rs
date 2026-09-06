@@ -251,6 +251,11 @@ impl Engine {
                     let b = match self.file_line_peek(si) {
                         Some(b) => b,
                         None => {
+                            if crate::debug_flag("PARTRACE") {
+                                let nm = match &self.input.stack[si] { Source::File { name, .. } => name.split('/').last().unwrap_or("?").to_string(), _ => String::new() };
+                                let ln = match &self.input.stack[si] { Source::File { line_no, .. } => *line_no, _ => 0 };
+                                eprintln!("EOL-HIT file={} line={} -> state0", nm, ln);
+                            }
                             // end of line: endline char token (usually space)
                             let el = self.eqtb.int_params[crate::prim::IntParam::EndLineChar.idx() as usize];
                             let s = match &mut self.input.stack[si] {
@@ -319,6 +324,11 @@ impl Engine {
                     let b = match self.file_line_peek(si) {
                         Some(b) => b,
                         None => {
+                            if crate::debug_flag("PARTRACE") {
+                                let nm = match &self.input.stack[si] { Source::File { name, .. } => name.split('/').last().unwrap_or("?").to_string(), _ => String::new() };
+                                let ln = match &self.input.stack[si] { Source::File { line_no, .. } => *line_no, _ => 0 };
+                                eprintln!("SKIPBLANKS-EOL file={} line={} -> state0", nm, ln);
+                            }
                             // tex.web skip_blanks at line end: state <- new_line,
                             // so the NEXT line is re-examined by the new-line logic
                             // (an empty next line must still yield PAR_END — it

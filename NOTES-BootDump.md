@@ -953,3 +953,18 @@ Boot 29→20 errors; 1882 now Missing `{` got letter `p` (variants list), not
   file EOL differently than \number's scan_int path). NEXT: single-step
   the_scan for "\the\baselineskip\n\n" with PARTRACE+get_next_raw probe
   at the file boundary (scanner.rs 250-290 state-1 EOL arm).
+- PARTRACE refined: SKIPBLANKS-EOL probe added. t16 (\the\day) trace:
+  EOL-HIT line=2 -> SKIPBLANKS-EOL line=4 -> HENTRY. The blank line 4 was
+  consumed ENTIRELY in skip_blanks state WITHOUT state-0 re-examination
+  (my state-0 transition fired only at line 4's own end, one line too
+  late). Meaning: after reading a control word the engine sits in state 2
+  ACROSS the line-3 EOL and INTO line 4 (the line-4 buffer was loaded
+  while still in state 2) — the tex.web new_line transition must happen
+  at the FIRST exhaustion (line 3), not at line 4's. Actual defect
+  location: the CS-read path leaves state=2 and file_line_clear(3)
+  without the state<-new_line bump tex.web does (get_next: mid_line ->
+  skip_blanks only after a SPACE; after a control word tex.web sets
+  state:=skip_blanks BUT the line-end check happens per-token; our
+  reader appears to pre-consume the next line inside the CS scan).
+  NEXT: instrument tokenize_char/CS branch (scanner.rs ~294) to see the
+  state left after "\day" and who loads line 4 while state=2.

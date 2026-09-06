@@ -1154,3 +1154,13 @@ Boot 29→20 errors; 1882 now Missing `{` got letter `p` (variants list), not
   The space before "low." = an interword glue after "is" — check whether
   the preceding "\%"/digit tokens or the accumulated \language state mark
   that glue non-breakable in full-doc runs only.
+- KPTRACE full capture (/tmp/kp2.out): 511 moderate-shrink candidates
+  (b 60-130, sf negative) doc-wide; the target squeeze (b~71, sf~-18.18)
+  is among them. Trace too noisy without node-range->paragraph mapping.
+  NEXT SESSION PLAN (concrete): map the 469 LB-DONE boundaries to KP-EVAL
+  blocks by line order (the target para = main.tex line 128, typeset
+  between the p9-p10 shipouts; identify by the preceding LB-DONE with
+  nodes~"start more concentrated" para), then diff the candidate set for
+  that single paragraph against k2/k3's candidate set for the same text.
+  The difference = the missing-or-mis-scored break at the space before
+  "low." in full-doc state.

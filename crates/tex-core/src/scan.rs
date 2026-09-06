@@ -1255,7 +1255,23 @@ impl Engine {
         // so the contents are not re-expanded while collecting. At execute time
         // (geometry \\the\\Gm@dimlist) macros like \\Gm@len must still expand.
         if self.in_expanded_scan {
-            self.push_tokens(Self::freeze_unexpanded_toks(toks));
+            // tex.web hash doubling (TeXbook App D): \\the\\toks inside \\edef
+            // doubles every literal # so that the edef body collapse (## -> #)
+            // preserves the original count. Verified: real TeX gives
+            // \toks0{\def\zz{VAL[##1]}} \edef\zzz{\the\toks0} -> meaning
+            // prints VAL[####1]; collapsing instead (VAL[#1] as a param ref)
+            // breaks pgfkeys .store in (self-assigning \def\ww{\ww}).
+            let doubled: Vec<Token> = toks
+                .iter()
+                .flat_map(|t| {
+                    if t.is_char() && t.cc() == 6 && t.chr() == 0x23 {
+                        vec![*t, *t]
+                    } else {
+                        vec![*t]
+                    }
+                })
+                .collect();
+            self.push_tokens(Self::freeze_unexpanded_toks(doubled));
         } else {
             self.push_tokens(toks);
         }

@@ -439,6 +439,11 @@ impl Engine {
     // ---------- characters with ligatures & kerns ----------
 
     pub fn append_char(&mut self, c: u8) {
+        eprintln!("CHARTRACE-ALIVE {:?} at {}:{} stack=[{:?}]", c as char, self.input.current_file_name(), self.input.current_file_line(),
+            self.input.stack.iter().rev().take(3).map(|s| match s {
+                crate::input::Source::TokList { name, pos, .. } => format!("T:{}#{}", name, pos),
+                crate::input::Source::File { name, line_no, .. } => format!("F:{}#{}", name.split('/').last().unwrap_or(name), line_no),
+            }).collect::<Vec<_>>());
         let f = self.eqtb.cur_font_val;
         if f == 0 {
             // real TeX nullfont: chars are silently dropped (no error)

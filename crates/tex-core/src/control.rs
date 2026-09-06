@@ -1103,10 +1103,16 @@ impl Engine {
                         eprintln!("CDB-HASH t2={:#x} cc={} chr={:#x}", t2.0, if t2.is_char() { t2.cc() } else { 99 }, t2.chr());
                     }
                     if t2.is_char() && t2.cc() == 6 {
+                        if std::env::var("HASHTRACE").is_ok() {
+                            eprintln!("HASH-COLLAPSE def={} line={}", String::from_utf8_lossy(self.cs.name(target)), self.input.current_file_line());
+                        }
                         out.push(Token::char(6, b'#' as u32));
                         continue;
                     }
                     if t2.is_char() && (b'1'..=b'9').contains(&(t2.chr() as u8)) {
+                        if std::env::var("HASHTRACE").is_ok() {
+                            eprintln!("HASH-REF{} def={} line={}", t2.chr() & 0xF, String::from_utf8_lossy(self.cs.name(target)), self.input.current_file_line());
+                        }
                         out.push(Token(PAR_REF_FLAG | (t2.chr() & 0xF)));
                         continue;
                     }

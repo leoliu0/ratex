@@ -578,8 +578,11 @@ impl Engine {
             }
             return String::from_utf8_lossy(&name).trim().to_string();
         }
-        // standard TeX \input filename.tex (unquoted). tex.web scan_file_name:
-        // cs tokens TERMINATE the name (and are reread); only chars accumulate.
+        // standard TeX \input filename.tex (unquoted). Real TeX expands
+        // macros while scanning a filename (TeXbook ch.8: \openin0=pre\foo.tex
+        // finds preprobe.tex); an UNEXPANDABLE cs terminates the scan and is
+        // re-read. Without expansion, \input pgflibrary\pgf@temp.code.tex
+        // opens "pgflibrary" and leaks "\pgf@temp.code.tex" into the text.
         let mut cur = t;
         loop {
             if cur == crate::input::EOF_MARKER {
@@ -599,7 +602,7 @@ impl Engine {
                 }
                 name.push(c);
             }
-            cur = self.raw_token();
+            cur = self.get_x_raw();
         }
         String::from_utf8_lossy(&name).trim().to_string()
     }

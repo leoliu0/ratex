@@ -2634,6 +2634,12 @@ self.do_if(eof)
                 out.push(b'0' + (t.0 & 0xF) as u8);
                 continue;
             }
+            if t.is_char() && t.cc() == 6 && t.chr() == 0x23 {
+                // tex.web show_token_list: a mac_param token prints as ##.
+                out.push(b'#');
+                out.push(b'#');
+                continue;
+            }
             if t.is_cs() {
                 if esc >= 0 && esc <= 255 {
                     out.push(esc as u8);
@@ -2753,7 +2759,15 @@ self.do_if(eof)
                         toks[(*pos).min(toks.len())..]
                             .iter()
                             .take(6)
-                            .map(|t| format!("{:#x}", t.0))
+                            .map(|t| {
+                                if t.0 >= 0x8000_0000 && t.0 < 0xFFFF_0000 {
+                                    format!("cs:{}", String::from_utf8_lossy(self.cs.name((t.0 & 0x3FFF_FFFF) as u32)))
+                                } else if t.is_char() {
+                                    format!("ch:{:x}:'{}'", t.chr(), (t.chr() as u8) as char)
+                                } else {
+                                    format!("{:#x}", t.0)
+                                }
+                            })
                             .collect::<Vec<_>>()
                     ))
                 }

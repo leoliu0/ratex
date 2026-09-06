@@ -1090,3 +1090,14 @@ Boot 29→20 errors; 1882 now Missing `{` got letter `p` (variants list), not
   normally. NEXT: verify \fontdimen 2/3/4 (space, stretch, shrink) of
   ntx regular 12pt in our engine vs real (\the\fontdimen3\font), then
   check whether line 14's glue set is within -shrink bounds.
+- Corrected read of p10 line 14: ours gaps 2.02 = EXACTLY max legal shrink
+  (3.333-1.311 = 2.022; ntx shrink = 0.1092em), badness ~94-100, demerits
+  ~12100. Real's 2-line alternative ~300 demerits. Our DP picked the 12100
+  line => the 2-line candidate was either not generated or mis-scored.
+  k2 KP-EVAL evidence: candidates only from=(1,@100/108/111) appear — the
+  space-break before "low." (from=(1,@~87)) is MISSING from the trace.
+  Root to find: why no active node/breakpoint at the space before "low."
+  (word boundary after "is") in the full-doc run. Check: the glued
+  "low." word = preceded by a discretionary? trailing-space handling at
+  the hbadness/fitness pass? Trace with KPTRACE on a doc that reproduces
+  (extend f2 with the missing full-doc state once found).

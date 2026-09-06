@@ -992,3 +992,11 @@ Boot 29→20 errors; 1882 now Missing `{` got letter `p` (variants list), not
   operand get_token (1301) and the pushed-char consumption crosses the
   boundary. Candidate: raw_token cc-14 branch (expand.rs:68-84) clears
   line_buf + sets state=2 — audit who delivers cc-14 here.
+- CS-read fix verified: t16 PAR_END fires, display = vmode entry, ILG pd=0.
+  Trust doc UNCHANGED (24 overfull, p1 0.3735%, pages 12-19 identical 7%):
+  trust's displays enter via the same pre-fix path?? — trust equations sit
+  mid-paragraph (text$$text), not after blank lines, so the CS-line-end
+  fix doesn't touch them. The trust p10-11 cascade must have a different
+  trigger: revisit the equation-adjacent paragraphs' exact source
+  (a \the/\number-like expandable scan near the display? aux \ref writes?).
+  77/77 green. p1 = 0.3735% stable, 22/70 pages <0.1%, avg 1.4777%.

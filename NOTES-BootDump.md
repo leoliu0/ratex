@@ -856,3 +856,13 @@ Boot 29→20 errors; 1882 now Missing `{` got letter `p` (variants list), not
 - Next attack: SPACETRACE/inspect the natural width of the overfull lines in the
   full doc vs real (are our cite boxes wider? natbib rendering of "(Author year)"
   vs real's?) — compare TJ glyph runs of one overfull line's cite text.
+
+## 2026-09-06 (session 10, tolerance fix + float divergence)
+- FIXED: boot \tolerance=10000 -> 200 (tex.web par 25). p1 0.3735% (was 1.0794%).
+- Full-doc: 22/70 pages <0.1%. Remaining big band = pages 12-19 (~7%):
+  content shift. Cause = FLOAT PLACEMENT: our Table 5 lands p11, real p12
+  (Tables 1-4 identical through p10; real section 3 opens p12, ours p11).
+- p10 vertical analysis: tabular row pitch ours ~16.8pt vs real ~15.5pt in the
+  post-table region -> our table/text mix consumes space differently -> our
+  p10 packs more text -> cascade. Next: compare T4 tabular row glue
+  (arraystretch / extrarowheight / booktabs rule spacing) on p10.

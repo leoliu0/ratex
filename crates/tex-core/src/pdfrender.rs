@@ -52,12 +52,27 @@ pub struct RenderCtx<'a> {
     tj: Option<TjRun>,
 }
 
+/// pdfTeX coordinate format: %.5f with trailing zeros trimmed
+/// ("177.355", "646.775", "20.6625", "7.5").
+fn pdfnum(v: f64) -> String {
+    let mut s = format!("{:.5}", v);
+    if s.contains('.') {
+        while s.ends_with('0') {
+            s.pop();
+        }
+        if s.ends_with('.') {
+            s.pop();
+        }
+    }
+    s
+}
+
 struct TjRun {
     num: u16,
-    size_bp: f64,
-    x0: f64,
-    y: f64,
-    expect_x: f64,
+    size_sp: i64,
+    x0_sp: i64,
+    y_sp: i64,
+    render_sp: i64,
     parts: String,
 }
 
@@ -536,35 +551,48 @@ impl<'a> RenderCtx<'a> {
         }
         let num = self.ensure_font(f);
         let y_pdf = self.y_pdf(y);
-        let w_bp = sp_to_bp(self.font_char_width(f, c) as i64);
+        // Recover the layout's exact scaled points (x arrives as bp =
+        // sp * 72/(72.27*65536)); then emit pdfTeX-style: TJ numbers are
+        // integer thousandths, each glyph's kern absorbs the previous
+        // rounding so positions never drift.
+        let sp_per_bp = 72.27 * 65536.0 / 72.0;
+        let x_sp = (x * sp_per_bp).round() as i64;
+        let y_sp = (y_pdf * sp_per_bp).round() as i64;
+        let size_sp = (size_bp * sp_per_bp).round() as i64;
         let continue_run = match &mut self.tj {
             Some(run) => {
                 run.num == num
-                    && (run.size_bp - size_bp).abs() < 1e-4
-                    && (run.y - y_pdf).abs() < 0.02
-                    && x >= run.expect_x - 0.3 * size_bp
-                    && x <= run.expect_x + 3.0 * size_bp
+                    && run.size_sp == size_sp
+                    && run.y_sp == y_sp
+                    && (x_sp - run.render_sp).abs() < run.size_sp / 2
             }
             None => false,
         };
         if continue_run {
+            let w_sp = self.font_char_width(f, c) as i64;
             let run = self.tj.as_mut().unwrap();
-            let delta = x - run.expect_x;
-            if delta.abs() > 0.02 {
-                let kern = -delta / size_bp * 1000.0;
-                run.parts.push_str(&format!(" {:.1}", kern));
+            // the viewer advances by /Widths[slot] then the kern: emit the
+            // kern that lands the glyph at its exact layout point
+            let w1000 = (w_sp * 1000 / run.size_sp.max(1)) as i64;
+            let delta = x_sp - run.render_sp;
+            // TJ numbers shift the pen LEFT when positive: a positive gap
+            // needs a negative kern. pdfTeX rounds to integer units.
+            let kern = (-(delta as f64) * 1000.0 / run.size_sp as f64).round() as i64;
+            if kern != 0 {
+                run.parts.push_str(&format!(" {}", kern));
             }
+            run.render_sp += -kern * run.size_sp / 1000 + w1000 * run.size_sp / 1000;
             run.parts.push_str(&format!(" <{c:02x}>"));
-            run.expect_x = x + w_bp;
             return;
         }
         self.tj_flush();
+        let w1000 = ((self.font_char_width(f, c) as i64) * 1000 / size_sp.max(1)) as i64;
         self.tj = Some(TjRun {
             num,
-            size_bp,
-            x0: x,
-            y: y_pdf,
-            expect_x: x + w_bp,
+            size_sp,
+            x0_sp: x_sp,
+            y_sp,
+            render_sp: x_sp + w1000 * size_sp / 1000,
             parts: format!("<{c:02x}>"),
         });
     }
@@ -573,8 +601,12 @@ impl<'a> RenderCtx<'a> {
     fn tj_flush(&mut self) {
         if let Some(run) = self.tj.take() {
             self.content.push_str(&format!(
-                "BT /F{} {:.4} Tf 1 0 0 1 {:.4} {:.4} Tm [{}] TJ ET\n",
-                run.num, run.size_bp, run.x0, run.y, run.parts
+                "BT /F{} {} Tf 1 0 0 1 {} {} Tm [{}] TJ ET\n",
+                run.num,
+                pdfnum(sp_to_bp(run.size_sp as i64)),
+                pdfnum(sp_to_bp(run.x0_sp as i64)),
+                pdfnum(sp_to_bp(run.y_sp as i64)),
+                run.parts
             ));
         }
     }

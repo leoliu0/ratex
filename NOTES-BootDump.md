@@ -643,3 +643,20 @@ Boot 29→20 errors; 1882 now Missing `{` got letter `p` (variants list), not
   tests now pass -- PAR_END mangling was breaking math paths too); boot_debug latex.ltx
   boot completes; oracle_probe 13 -> 3 remaining (hash_eol_brace, expanded_cond_arms,
   tl_item_loop: genuine expansion-semantics gaps, unchanged); patent.tex 69p parity.
+
+## Session 2026-09-06 (cont.): hash doubling fix — ai_patent 69->108p, trust_own 70p == ref
+- Chased the pgf/tikz loader-filename leak ("shapes.code.tex plot.code.tex ...") on ai_patent page 1.
+- Red herrings cleared: \?? was cs.name() fallback; endcsname errors were a cascade, not the root;
+  \usetikzlibrary catcode theory wrong. Decisive probes: t11 (pgfkeys .store in), t12/t13 (hash chains).
+- ROOT: \the\toks inside \edef must DOUBLE every literal # (TeXbook App D hash doubling);
+  we collapsed ## -> # instead, so \pgfkeyssetvalue's edef turned \def#1{##1} into a param ref and
+  .store in self-assigned (\def\ww{\ww}) -> \pgf@decl@arrow@means became self-macro -> \csname
+  stalls ("Missing \endcsname") -> pgfcorearrows .tip machinery leaked key text -> 3588 errors / lost pages.
+- Fix: push_the_toks doubles char6-# when in_expanded_scan; \meaning now prints literal hashes as ##.
+- Also fixed en route: scan_file_name unquoted branch now EXPANDS macros (real TeX does; \openin0=pre\foo.tex
+  finds preprobe.tex) — killed the tikzlibrary/pgfmodule/pgflibrary filename-text leaks.
+- State: h16/h21 clean; lib 77/77; boot_debug ok; probes 10/13 (hash_eol_brace trailing-{, expanded_cond_arms,
+  tl_item_loop remain); ai_patent 108p 0 errors (ref 110 — our tables pack tighter, ~2 tables offset by p100);
+  trust_own 70p == ref. Cold runs 1.2s / 2.9s (ref pdflatex ~4.3s) — 500ms gate still open.
+- Follow-ups: inner-def re-collapse of substituted ## (t12: ours macro:->#1, real macro:->##1 — literal-vs-ref
+  distinction for substituted tokens), stray "=3sp," token on patent title page, pixel parity, cold-run profiling.

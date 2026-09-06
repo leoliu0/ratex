@@ -1000,3 +1000,15 @@ Boot 29→20 errors; 1882 now Missing `{` got letter `p` (variants list), not
   trigger: revisit the equation-adjacent paragraphs' exact source
   (a \the/\number-like expandable scan near the display? aux \ref writes?).
   77/77 green. p1 = 0.3735% stable, 22/70 pages <0.1%, avg 1.4777%.
+- CS line-end fix VERIFIED at trace level: t2 ILG pd=0.0000 glue_w=7.0985
+  = exactly real's 7.09848; below-display gap now IDENTICAL (17.28pt both).
+- Remaining above-display delta: ours 7.2pt, real 23.04pt; missing 15.84pt
+  = the scaled \abovedisplayskip. Ours selects the SHORT pair (pds=-max ->
+  is_short=true -> short-above=0). Real renders 23.04 = LONG skip 15.84 +
+  ilg 7.1 -> real chose LONG for the amsmath equation (t3's bare $$ chose
+  SHORT = consistent with short iff d+s<=pds when pds != -max... tex.web
+  treats pds=-max as NOT-short? verify §1192: if pds=max_dimen then use
+  the FULL skips). LIKELY ONE-LINE FIX: in finish_display_math, is_short
+  must be false when pre_display_size = -0x3FFF_FFFF (the "voided/max"
+  sentinel), i.e. `is_short = pds != sentinel && d+s > pds` inverted.
+  Then ours = long-above 14.89 + ilg -> matches real 23.04.

@@ -815,3 +815,22 @@ Boot 29→20 errors; 1882 now Missing `{` got letter `p` (variants list), not
   conditional evaluation; our engine dispatches it as glue in restricted-h mode.
   Fix = find the token-flow divergence in that expansion (likely our \in@@ or
   edef scanning back-inputs the space where real TeX swallows it).
+
+## 2026-09-06 (session 7, fnmark CLOSED + quote-space root fix)
+- ROOT CAUSE of the fnmark gap (fix 1b8b6bdb): quoted \input filename scan did not
+  consume the one space terminating the scan (tex.web start_input). Kernel
+  latex.ltx:19672 even documents it: "\@@input #1% <- trailing space comes from
+  \@filef@und". \@filef@und = "name"+space; the leaked space became interword
+  glue in the mark's box.
+- EMPIRICAL CHECK: real pdfTeX KEEPS that space in plain \@@input "f" B context
+  (q.tex: both engines "AX B" — the visible space comes from sub.tex's own
+  trailing newline). Trust page count 70 stays 70; p1 2554->2523px @50dpi
+  (1.0926->1.0794%); title fnmark band @150dpi (216px) ELIMINATED.
+- CAUTION: an intermediate 69pp scare was a bbl confound — git checkout main.bbl
+  had restored a stale 48-entry bbl; the working 69-entry bbl (17639B) preserved
+  at /tmp/brk/main.bbl must be used. Both engines settle at 70pp on it.
+- Remaining trust p1 bands @150dpi: y655 (6693px), y1263 (5204), y1410 (7220) =
+  justification stretch quantization: e.g. abstract line word-gaps OURS 3.57
+  vs REAL 3.21 (+0.35/space, x14 spaces) — same words, same x-start, our line
+  stretched ~4.9pt more. Next: trace why our justifier stretches this line
+  (hsize/parshape or \justify verification for rosu abstract block).

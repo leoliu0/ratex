@@ -85,7 +85,7 @@ const CELL_GROUP_KIND: u8 = 8;
 /// align_state phase encoding (align_state is free for use inside rows:
 /// the dispatcher only tests `align_state > 0` for \span placement, which
 /// matches "a cell is open").
-const PH_IDLE: i32 = 0; // no cell open
+pub const PH_IDLE: i32 = 0; // no cell open
 const PH_U: i32 = 1; // u part of the template is playing
 const PH_CONTENT: i32 = 2; // cell content phase
 const PH_OMIT: i32 = 4; // template omitted for the current cell
@@ -117,7 +117,7 @@ thread_local! {
 }
 
 impl Engine {
-    fn align_phase(&self) -> i32 {
+    pub fn align_phase(&self) -> i32 {
         self.align_state & (PH_U | PH_CONTENT)
     }
 

@@ -99,7 +99,13 @@ impl Engine {
                 };
                 self.begin_box(kind);
             }
-            HRule | VRule => self.make_rule(p == HRule),
+            HRule | VRule => {
+                if !matches!(self.mode, Mode::Horizontal | Mode::RestrictedHorizontal | Mode::Math | Mode::DisplayMath) && p == VRule {
+                    let nm = std::string::String::from_utf8_lossy(self.cs.name(id)).into_owned();
+                    eprintln!("VRULE-DISPATCH cs={} id={} in_noalign={}", nm, id, self.align_in_noalign);
+                }
+                self.make_rule(p == HRule);
+            }
             Leaders | CLeaders | XLeaders => {
                 self.begin_leaders(match p { Leaders => 0, CLeaders => 1, _ => 2 });
             }

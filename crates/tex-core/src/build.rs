@@ -648,8 +648,19 @@ impl Engine {
         let node = Node::Rule { width, height, depth };
         match self.mode {
             Mode::Horizontal | Mode::RestrictedHorizontal => self.cur_list.push(node),
+            // tex.web alignment: halign cells are assembled in internal
+            // vertical mode and hpacked later; tabular preambles put \vrule
+            // tokens (the `|` columns) at u-part start. Real TeX accepts the
+            // rule there and it lands in the cell's packed hbox.
+            Mode::InternalVertical if !horizontal => self.cur_list.push(node),
             Mode::Math | Mode::DisplayMath => self.append_mlist_node(node),
-            _ => self.error("\\vrule outside horizontal mode"),
+            _ => {
+                let who = self.cur_cs.map(|c| String::from_utf8_lossy(self.cs.name(c)).into_owned()).unwrap_or_default();
+                self.error(&format!("\\vrule outside horizontal mode (cur_cs={} mode={:?} file={}:{} {})", who, self.mode, self.input.current_file_name(), self.input.current_file_line(), self.input.stack.iter().rev().take(4).map(|s| match s {
+                    crate::input::Source::TokList { name, pos, toks, .. } => format!("{}:{}/{}", name, pos, toks.len()),
+                    crate::input::Source::File { name, line_no, .. } => format!("{}:{}", name, line_no),
+                }).collect::<Vec<_>>().join(" << ")));
+            }
         }
     }
 
@@ -1688,6 +1699,12 @@ impl Engine {
                 }).collect::<Vec<_>>().join(" << "),
                 self.pushed.iter().rev().take(4).map(|t| if t.is_cs() { format!("\\{}", String::from_utf8_lossy(self.cs.name(t.cs_id()))) } else { format!("{:#x}", t.0) }).collect::<Vec<_>>()
             );
+        }
+        // tex.web: between alignment rows (\cr .. next u part) a \par token
+        // (e.g. from a blank line before \hline) must not disturb the align
+        // state — the interrow phase is idle and the par is a no-op.
+        if self.scanner_status == crate::engine::ScannerStatus::Aligning && self.align_phase() == crate::align::PH_IDLE {
+            return;
         }
         match self.mode {
             Mode::Horizontal => self.end_paragraph(),

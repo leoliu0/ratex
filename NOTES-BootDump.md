@@ -44,6 +44,24 @@
 3. pdfTeX-style TJ emission for content streams (parity + smaller PDFs).
 4. Footnote-mark spacing in titles (\@footnotemark interword glue).
 
+## Continuation (same session, 2nd block)
+5. build.rs make_rule: \vrule now legal in InternalVertical when inside alignment cell context —
+   tabular `|` preambles put \vrule at u-part start; real TeX accepts it there (cell lists are
+   assembled in internal vmode then hpacked). Killed ~800 of the 1159 vrule errors.
+6. build.rs par_primitive: \par between alignment rows (Aligning + PH_IDLE) is a no-op — blank
+   line before \hline in tabular corrupted the align phase (minimal repro h16: blank line between
+   last \\ and \hline inside \scalebox{tabular}). Fixed h16; the 89 Misplaced \noalign in the full
+   doc persist though — different trigger: back-to-back \hline separated only by comment lines
+   (ss_version_11_29.tex:112,120). Next: debug double-\hline noalign state (first noalign's body
+   replay shows Misplaced firing while \ifnum at pos 1 — second \noalign runs before first body's
+   `}` closes the group).
+- ai_patent: 358 errors (was 1159). Classes: Misplaced \noalign 89, Duplicate \omit 47,
+  Leaders-glue 41, box-supposed 40, Illegal unit 31, Missing number 26, pgfkeys bool 18,
+  Undefined \discretionary 12. Still 69pp vs 110pp; text extraction = 64% of system.
+- Standalone repros of individual tables PASS — the phase bug needs full-doc state.
+- Debug cleanup: VRULE-DISPATCH trace still in maincontrol.rs (gated to error path, harmless);
+  error messages in make_rule now carry context (cur_cs, stack).
+
 # Boot Debugging State (post-session-12)
 
 ## Applied fixes this session (all built, boot still fails at ~line 1773+)

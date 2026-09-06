@@ -873,3 +873,16 @@ Boot 29→20 errors; 1882 now Missing `{` got letter `p` (variants list), not
   math-mode glyph metrics (parens/sub-sup extents), which also shifts the
   apparent text block height feeding the float placement cascade on p11.
   Next: compare math glyph bounding boxes for Equation (1) on p10.
+- Session 10 addendum: display-math vertical metrics pinpointed.
+  Probe t2.tex (onehalfspacing + equation + after-line), 100dpi ink bands:
+  text lines 1-2 IDENTICAL (180-194, 205-219). Display E=mc^2: ours 246-262,
+  real 251-267 (ours 3.6pt higher). After-line: ours 296-306, real 291-301
+  (ours 3.6pt lower). Net: our display block consumes ~7.2pt more vertical.
+  All display params identical (abovedisplayskip 12+3-7, topskip 12, base
+  17.99446). => defect inside our display-box assembly: axis placement /
+  height-depth distribution of the formula box (tex.web §746 area), NOT the
+  skip registers. Also: x-positions in equations match to 0.1pt; y-boxes in
+  our PDF report font-bbox (uniform 15.54h) vs real's tight per-glyph ink
+  boxes -> our font embedding lacks per-glyph metrics pdftotext can use
+  (cosmetic for extraction, but check ink parity separately).
+  This vertical delta is what feeds the p10->p11 float cascade.

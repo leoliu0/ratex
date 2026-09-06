@@ -764,3 +764,16 @@ Boot 29→20 errors; 1882 now Missing `{` got letter `p` (variants list), not
   currently prints 0s). Next: diff our line-2 shortfall after the real's line-1
   break; suspect start_w/post-break subtraction.
 - Probes live in /tmp/brk (b8 = minimal repro, b10 = +para1, b13/b14 = +tracing).
+
+## 2026-09-06 (session 4, fnmark investigation)
+- Trust title fnmark: the ∗ mark renders correct shape/size/raise; gap = +3.84pt
+  x-offset ONLY in the \textasteriskcentered path. Isolated: arabic "1" mark clean,
+  \textdagger clean — ONLY the TS1-substitute symbol (asteriskcentered is not in
+  OT1-ntx → \UseTextSymbol{TS1} substitution) shows the gap. Real def:
+  \@textsuperscript = {\m@th\ensuremath{^{\mbox{\fontsize\sf@size\sf@size#1}}}};
+  both engines error on \sf@size identically (harmless — the ^ scriptstyle sizes it).
+- Next: diff \UseTextSymbol/TS1 substitute path — suspect CheckEncodingSubset or
+  the encoding-switch emitting a glue in our engine. Probes: /tmp/brk/f3.tex.
+- GLUEALL env flag added to GLUETRACE block (build.rs interword_glue) — confirms
+  NO interword space node is inserted; gap must come from the substitute glyph
+  advance/box itself.

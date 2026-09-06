@@ -982,3 +982,13 @@ Boot 29→20 errors; 1882 now Missing `{` got letter `p` (variants list), not
   Fix candidates once located: PAR_END must be deliverable from that
   path (tex.web: blank line -> \par regardless of the intervening
   expansion boundary).
+- LOAD-LINE probe added. t16 key trace: SKIPBLANKS-EOL line=4 -> LOAD-LINE
+  next=6 -> HENTRY. So the state-2 fix fires at the END of the blank line
+  (line 4) — one line TOO LATE. Line 3's EOL was crossed without either
+  EOL probe firing, i.e. the buffer advanced from line 3 to line 4 while
+  state=2, in a path that clears+advances silently (NOT via the state-2
+  None arm). Suspect list narrowed: the CS-read in tokenize_char leaves
+  state=2 with the buffer at line 3's EOL, but SOMETHING between the
+  operand get_token (1301) and the pushed-char consumption crosses the
+  boundary. Candidate: raw_token cc-14 branch (expand.rs:68-84) clears
+  line_buf + sets state=2 — audit who delivers cc-14 here.

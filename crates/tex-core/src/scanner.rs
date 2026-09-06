@@ -370,6 +370,9 @@ impl Engine {
                 let mut line = rest[..nl].to_vec();
                 *pos += nl;
                 *line_no += 1;
+                if crate::debug_flag("PARTRACE") {
+                    eprintln!("LOAD-LINE next={}", *line_no + 1);
+                }
                 if name.ends_with("latex.ltx") && *line_no % 1000 == 0 {
                     eprintln!("PROGRESS: {} line {}", name.split('/').last().unwrap_or(name), *line_no);
                 }

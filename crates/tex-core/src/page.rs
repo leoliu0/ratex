@@ -652,6 +652,7 @@ impl Engine {
         self.eqtb.int_params[IntParam::OutputPenalty.idx() as usize] = penalty;
         if crate::debug_flag("OUTW") { eprintln!("FIRE penalty={} pages={}", penalty, self.pdf_doc.pages.len()); }
         self.dead_cycles += 1;
+        if crate::debug_flag("NA2") { eprintln!("PAGE-SHIP pages->{} line={}", self.pdf_doc.pages.len() + 1, self.input.current_file_line()); }
         // marks: `\topmark` becomes the old `\botmark`; per-page marks reset
         self.marks[0] = self.marks[2].clone();
         for m in self.marks.iter_mut().skip(1) {

@@ -110,6 +110,19 @@
   u-parts append the \@arstrut box (cur_list len 3 at failure).
 - ai_patent state: 358 errors / 69pp vs 110pp; missing pages = appendix tables C.5-C.23+ (79-110).
 
+## Continuation (6th block) — \?? injected at box-arg capture
+- QPUSH trace: the \?? tokens are part of the 181-token CAPTURED scalebox argument
+  (begin_token_list <- expand_macro(\scalebox) -> push of the collected arg). The quarks were
+  leaked INTO the document stream during/before argument collection — i.e. upstream at
+  \begin{document} time (array.sty tagging \UseTaggingSocket / l3 socket-hook emulation is the
+  prime suspect: sockets use \?? sentinels internally). Once captured, every replay of the arg
+  re-injects them at the interrow peek -> phantom row -> Misplaced \noalign.
+- NEXT (single-threaded path): find the socket/l3-hook construct our engine mishandles that
+  leaves \?? in the input: instrument push of \?? at RAW_TOKEN fetch (get_next_raw level, name ==
+  b"??"), walk backwards with aux-fresh h16. When \?? is contained/handled, the whole noalign
+  family (89) plus Duplicate \omit (47) and likely Illegal-unit/Missing-number classes collapse,
+  unlocking ~30 pages of appendix tables in ai_patent.
+
 # Boot Debugging State (post-session-12)
 
 ## Applied fixes this session (all built, boot still fails at ~line 1773+)

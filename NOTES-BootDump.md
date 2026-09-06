@@ -77,6 +77,21 @@
   box-arg replay ordering: the noalign body must be the TOP source while its group is open.
 - The par-no-op fix (PH_IDLE) fixed h16 but h21 still fails — the stall is upstream of par.
 
+## Continuation (4th block) — Misplaced \noalign mechanism NAILED
+- Trace: 4x NA-OPEN/CLOSE clean, then the 5th \noalign enters with phase=PH_U (row already
+  speculatively started). Mechanism: align_row_inspect's peek expands \hline -> \noalign{...}
+  replay pushed; the peek hands a token to align_start_row (PH_U starts) and the expansion's
+  \noalign token dispatches AFTER the row start -> guard (phase!=IDLE) errors.
+- FIX ATTEMPT (phantom-cell close: allow noalign at PH_U col 0, pop cell group) REVERTED:
+  h21 clean but ai_patent 69pp -> 56pp, 358 -> 390 errors — the phantom close discards/misaligns
+  real rows elsewhere. Guard change is wrong layer.
+- PROPER FIX (next session): the ordering in align_peek_expanding/align_start_row — when the peek
+  expands a macro, the expansion must be FULLY dispatched (its \noalign honored) BEFORE
+  align_start_row opens the row; or peek must not start rows from tokens that still have
+  expansion-replay state below them (start_row must consume from the same source the peek used).
+- Current state: ai_patent 358 errors / 69pp (same-class: Misplaced \noalign 89, Duplicate \omit 47,
+  Leaders 41, box 40, Illegal unit 31, Missing number 26 — all alignment-phase family).
+
 # Boot Debugging State (post-session-12)
 
 ## Applied fixes this session (all built, boot still fails at ~line 1773+)

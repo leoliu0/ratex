@@ -834,3 +834,14 @@ Boot 29→20 errors; 1882 now Missing `{` got letter `p` (variants list), not
   vs REAL 3.21 (+0.35/space, x14 spaces) — same words, same x-start, our line
   stretched ~4.9pt more. Next: trace why our justifier stretches this line
   (hsize/parshape or \justify verification for rosu abstract block).
+
+## 2026-09-06 (session 8, abstract L1 narrowing)
+- Minimal probes (11pt rosu-only, AND exact trust preamble lines 1-49): abstract
+  L1 matches EXACTLY (124.3-491.5 both, zero overfull). Divergence (ours L1
+  overfull 4.857pt, stretched 3.57 vs real 3.21/space) only appears in the FULL
+  document — interplay with \maketitle/footnotes/\onehalfspacing (lines 50+)
+  or with the aux/cite state.
+- Trust doc has 24 overfull hboxes in ours vs 1 in real (the 4.857pt one = the
+  abstract L1 = the p1 y655 band). Overfull hunt = the highest-value next
+  target: find why our breaker produces overfull lines in full-doc context.
+- Probes: /tmp/abs/b.tex (exact preamble 1-49 + abstract), /tmp/abs/a.tex (11pt).

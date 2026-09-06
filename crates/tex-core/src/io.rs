@@ -238,22 +238,36 @@ impl Engine {
         }
     }
 
-    pub fn do_write(&mut self) {
+    pub fn do_write(&mut self, immediate: bool) {
         if crate::debug_flag("DEFTRACE") {
             eprintln!("DOWRITE top_pushed={}", self.pushed.len());
         }
         let n = self.scan_int();
-        // tex.web §1371: \\write<n>{toks} collects the list RAW (scan_toks,
-        // no expansion) and expands at emission like \\xdef (protected macros
-        // stay frozen). Collect-time expansion hung \\BOOKMARK's `[` prefix
-        // on the group's closing brace; never expanding leaves \\exp_not:n
-        // literally in the .aux.
+        // tex.web §1371: \write<n>{toks} collects the list RAW (scan_toks,
+        // no expansion) and expands at emission like \xdef (protected macros
+        // stay frozen).
         let toks = self.scan_general_text();
-        if crate::debug_flag("WRITETRACE") {
-            eprintln!("WRITE-LIST n={} [{}]", n, self.tokens_to_string(&toks));
+        // tex.web §1395: plain \write to a FILE stream queues a whatsit and
+        // expands at SHIPOUT, so \thepage resolves to the page that actually
+        // ships the node. Terminal/log streams (and \immediate\write) emit
+        // now: their visible ordering is cosmetic and pdfTeX users expect it.
+        if !immediate && n >= 0 && n <= 15 {
+            let toks = toks;
+            self.append_whatsit(Node::Whatsit(crate::boxes::WhatIt::Write {
+                stream: n as u16,
+                tokens: toks,
+            }));
+            return;
         }
         let text = self.expand_write_list(&toks);
         self.write_out(n, &text);
+    }
+
+    /// tex.web §1395 out_what: a Write whatsit fires at ship time, expanding
+    /// its token list with the page counter of the page being shipped.
+    pub fn fire_write(&mut self, stream: u16, tokens: &[Token]) {
+        let text = self.expand_write_list(tokens);
+        self.write_out(stream as i32, &text);
     }
 
     /// Expand a raw \\write token list to its emitted string: standalone

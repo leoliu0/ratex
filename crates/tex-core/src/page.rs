@@ -1076,11 +1076,36 @@ impl Engine {
             self.build_page();
         }
     }
+    /// fire deferred \write whatsits found anywhere in a shipped tree
+    fn fire_page_writes(&mut self, n: &Node) {
+        match n {
+            Node::Whatsit(crate::boxes::WhatIt::Write { stream, tokens }) => {
+                let toks = tokens.clone();
+                self.fire_write(*stream, &toks);
+            }
+            Node::Box { list, .. } => {
+                for m in list {
+                    self.fire_page_writes(m);
+                }
+            }
+            Node::Ins { box_node, .. } => self.fire_page_writes(box_node),
+            Node::VAdjust(v) => {
+                for m in v {
+                    self.fire_page_writes(m);
+                }
+            }
+            _ => {}
+        }
+    }
+
     /// \shipout received a box: emit a PDF page
     pub fn ship_box(&mut self, b: Option<Node>) {
         if crate::debug_flag("SHIPW") { eprintln!("SHIP-BOX pages={} stack={} present={}", self.pdf_doc.pages.len(), self.input.stack.len(), b.is_some()); }
         self.dead_cycles = 0;
         let Some(boxn) = b else { return };
+        // tex.web §1395: fire deferred \write whatsits as the page ships, so
+        // \thepage expands with the page counter of the shipped page
+        self.fire_page_writes(&boxn);
         if crate::debug_flag("PAGETREE") || crate::debug_flag("LTREE") {
             let precise = crate::debug_flag("LTREE");
             fn dump(n: &Node, depth: usize, out: &mut String, precise: bool) {

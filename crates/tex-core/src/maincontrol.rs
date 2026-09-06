@@ -327,7 +327,7 @@ impl Engine {
                     let id2 = t.cs_id();
                     if let Some(Equiv::Prim(p2)) = self.eqtb.resolve(id2).cloned() {
                         match p2 {
-                            Prim::Write => self.do_write(),
+                            Prim::Write => self.do_write(true),
                             Prim::Special => self.do_special(),
                             Prim::OpenOut => self.do_openout(),
                             Prim::CloseOut => self.do_closeout(),
@@ -338,7 +338,7 @@ impl Engine {
             }
             OpenOut => self.do_openout(),
             CloseOut => self.do_closeout(),
-            Write => self.do_write(),
+            Write => self.do_write(false),
             Special => self.do_special(),
             Message => self.do_message(false),
             ErrMessage => self.do_message(true),

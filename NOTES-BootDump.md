@@ -660,3 +660,15 @@ Boot 29→20 errors; 1882 now Missing `{` got letter `p` (variants list), not
   trust_own 70p == ref. Cold runs 1.2s / 2.9s (ref pdflatex ~4.3s) — 500ms gate still open.
 - Follow-ups: inner-def re-collapse of substituted ## (t12: ours macro:->#1, real macro:->##1 — literal-vs-ref
   distinction for substituted tokens), stray "=3sp," token on patent title page, pixel parity, cold-run profiling.
+
+## Session 2026-09-06 (end): \lastkern arm + pixel baseline
+- scan_dimen: added \lastkern/\lastpenalty arms (tex.web scan_something_internal). footmisc[stable,multiple]
+  \ifdim\lastkern=\multiplefootnotemarker(3sp) leaked "=3sp" onto the patent title — fixed; title now clean.
+- NOTE: incremental cargo builds are UNRELIABLE in this repo (fingerprints stale, binary lags source;
+  CHARTRACE/lastkern both needed `cargo clean` to land). Always verify behavioral changes against a
+  clean build; also target/debug/pdflatex.fmt must be regenerated after cargo clean for math::probe4.
+- Pixel baseline trust_own p1 @50dpi: 1.1% differing px. Two deltas vs ref: (1) spurious space before
+  title footnote mark (ours "Control *", ref "Control*"); (2) footnote emails: ours partially black,
+  ref darkred hyperlinks (ref 86 red px vs ours 53).
+- Final: ai_patent 108p/0 err (ref 110; tables pack tighter, ~2-table offset by p100), trust_own 70p==ref;
+  lib 77/77; probes 10/13; boot_debug ok; cold 1.2s/2.9s.

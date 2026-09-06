@@ -777,3 +777,23 @@ Boot 29→20 errors; 1882 now Missing `{` got letter `p` (variants list), not
 - GLUEALL env flag added to GLUETRACE block (build.rs interword_glue) — confirms
   NO interword space node is inserted; gap must come from the substitute glyph
   advance/box itself.
+
+## 2026-09-06 (session 5, fnmark — precise isolation)
+- Minimal repro: /tmp/brk/f3.tex, f4.tex. Line "Trust and Corporate\thefootnote=
+  \fnsymbol\footnotemark X": OURS has +4.21pt (= one interword space at the script
+  font size 16.84pt) before the asterisk; REAL has zero.
+- VERIFIED IDENTICAL: glyph code (0x2A), advance (9.188pt), script font size
+  (16.84pt = 0.7764 x 21.6957), \mathsurround=0, \iffontchar\font42=YES,
+  \meaning of \@thefnmark (TextOrMath kept unexpanded), mathsurround, error
+  streams (ZERO errors in f4 both engines — earlier s.tex errors were probe-
+  specific). Dagger mark and arabic mark have NO gap in either engine.
+- KEY DIVERGENCE: OUR run loads ts1ntxtlf.fd (TS1 font switch via
+  \DeclareTextSymbolDefault{\textasteriskcentered}{TS1} → \UseTextSymbol);
+  REAL does NOT load any TS1 fd — REAL resolves \textasteriskcentered to
+  char 42 of the CURRENT font (ts1enc.def's \DeclareTextCommand body:
+  \iffontchar\font 42 \char42 \else ... \fi) without switching fonts.
+- The +4.21pt is NOT an interword glue node (GLUEALL trace shows only the two
+  word spaces). It appears only on the TS1-substitute path. Next step: trace
+  node-by-node what our engine appends between the last body glyph and the
+  mark's box when the TS1 substitution is active (suspect a kern/skip inserted
+  during the encoding-switch \selectfont, not a glue).

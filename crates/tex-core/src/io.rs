@@ -575,6 +575,14 @@ impl Engine {
                     break;
                 }
                 if t2.is_char() && t2.chr() == b'"' as u32 {
+                    // tex.web start_input: the one space following the closing
+                    // quote terminates the filename scan and is consumed.
+                    // (@filef@und = \"name\" + space; leaking it typesets a
+                    // stray interword space in the using box.)
+                    let t3 = self.get_x_raw();
+                    if !(t3.is_char() && t3.cc() == 10) && t3 != crate::input::EOF_MARKER {
+                        self.pushed.push(t3);
+                    }
                     break;
                 }
                 if t2.is_char() {

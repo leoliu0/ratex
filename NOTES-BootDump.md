@@ -1052,3 +1052,15 @@ Boot 29→20 errors; 1882 now Missing `{` got letter `p` (variants list), not
   the paragraph's non-core tokens. NEXT: binary-search the trust preamble
   (the b.tex-style probe already matched through line 49; extend through
   line 128 adding sections 2.1-2.6 until the line 14 squeeze reproduces).
+- f2.tex probe (subsection + both IPO paragraphs + full preamble): BOTH
+  engines break IDENTICALLY ("...The decline is 15.7" line + same following
+  lines; even the ?? autorefs match). So the one-line squeeze of "The
+  decline ... low." in the full trust doc is caused by state accumulated
+  BEFORE section 2.6 in the full run (hyphenation exceptions? language
+  interplay? aux/hyperref state?), not by local preamble or paragraph
+  content. Our shrink-line badness path verified tex.web-conformant
+  (badness 2337 + demerits 1141 formulas verbatim).
+- NEXT: dump \hyphenation exception list + \language state at p10 in both
+  engines (real: \showhyphens{low} etc; ours: probe the hyphen trie),
+  OR binary-search trust main.tex lines 1-126 added to f2 until the
+  squeeze appears. The latter is mechanical and certain.

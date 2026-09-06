@@ -109,8 +109,20 @@ impl Engine {
     /// tex.web get_x_token: expands macros/conditionals but does NOT skip
     /// spaces (scan_int relies on spaces terminating constants).
     pub fn get_x_raw(&mut self) -> Token {
+        let t = self.raw_token();
+        self.get_x_raw_from(t)
+    }
+
+    /// Expansion step for an already-fetched raw token (the alignment
+    /// interrow peek pre-filters PAR_END/\\par before expansion).
+    pub fn get_x_raw_from(&mut self, first: Token) -> Token {
+        let mut first = first;
         loop {
-            let t = self.raw_token();
+            // The PAR_END sentinel (0xFFFF_FFFE) sits in the cs-token encoding
+            // space; without conversion get_x_raw treats it as an unnameable cs
+            // (blank-line \par between alignment rows -> garbage "cs" starts a
+            // phantom row). Convert exactly like get_token_inner does.
+            let t = if first == PAR_END { Token::from_cs(self.ids.par) } else { first };
             let mut id = if t.is_cs() {
                 t.cs_id()
             } else if t.is_char() && t.cc() == 13 {
@@ -145,6 +157,7 @@ impl Engine {
                         return Token::from_cs(id);
                     }
                     self.expand_macro(id, &m);
+                    first = self.raw_token();
                     continue;
                 }
 
@@ -168,9 +181,13 @@ impl Engine {
                                     return tok;
                                 }
                                 self.pushed.push(tok);
+                                first = self.raw_token();
                                 continue;
                             }
-                            None => continue,
+                            None => {
+                                first = self.raw_token();
+                                continue;
+                            }
                         }
 
                     } else {

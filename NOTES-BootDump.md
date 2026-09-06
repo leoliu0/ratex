@@ -624,3 +624,22 @@ Fix: resolve + continue if expandable prim or unprotected macro.
 Isolated `\cs_split_function:N\cs_if_exist:N` → `{cs_if_exist}{N}\c_true_bool`.
 Boot 29→20 errors; 1882 now Missing `{` got letter `p` (variants list), not
 `\c_false_bool` — colon split is working in the format boot too.
+
+## Session 2026-09-06: noalign phantom-row ROOT CAUSE fixed (PAR_END vs cs encoding)
+- The "\??" quark was a red herring twice over: latex.ltx never defines \??, and the
+  Misplaced dump's hex tokens were ordinary cs shown by the error printer's {:#x}.
+- REAL chain: blank line between tabular rows -> PAR_END sentinel Token(0xFFFF_FFFE)
+  reaches align_peek_expanding. get_x_raw saw is_cs()==true (0xFFFFFFFE >= 0x80000000),
+  mangled it to from_cs(0x3FFFFFFE) (unnameable, name-fallback "??" -- hence the ghost),
+  and the peek's PAR_END skip never fired. Worse: get_x_raw fully EXPANDS macros, so a
+  literal \par expanded to \para_end: whose leading \scan_stop: started a PH_U phantom
+  row; the cell collected junk nodes; the real \hline then fired "Misplaced \noalign".
+- Fixes: (1) get_x_raw split into get_x_raw + get_x_raw_from(first); PAR_END converted
+  to Token::from_cs(ids.par) exactly like get_token_inner, at every raw fetch.
+  (2) align_peek_expanding pre-filters raw_token for PAR_END/\par cs BEFORE expansion
+  (tex.web v783: vmode+par between rows is a no-op, never expanded), then expands the
+  survivor via get_x_raw_from.
+- Result: h16/h21 Misplaced repros 1 -> 0; tex-core lib 77/77 (14 math/format guard
+  tests now pass -- PAR_END mangling was breaking math paths too); boot_debug latex.ltx
+  boot completes; oracle_probe 13 -> 3 remaining (hash_eol_brace, expanded_cond_arms,
+  tl_item_loop: genuine expansion-semantics gaps, unchanged); patent.tex 69p parity.

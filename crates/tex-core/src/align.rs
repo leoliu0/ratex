@@ -865,7 +865,21 @@ impl Engine {
     /// macros like a \noalign wrapper defined as \def\br{\noalign{\hrule}}
     fn align_peek_expanding(&mut self) -> Token {
         loop {
-            let t = self.get_x_raw();
+            // Pre-expansion guard: the blank line's PAR_END sentinel and a
+            // literal \par cs must be skipped BEFORE get_x_raw, because
+            // get_x_raw fully expands macros — \par expands to \para_end:
+            // whose leading \scan_stop: would start a phantom row (tex.web
+            // §783: vmode+par between rows is a no-op, never expanded).
+            let raw = self.raw_token();
+            if raw == crate::input::EOF_MARKER {
+                return raw;
+            }
+            if raw == crate::input::PAR_END
+                || (raw.is_cs() && raw.cs_id() == self.ids.par)
+            {
+                continue;
+            }
+            let t = self.get_x_raw_from(raw);
             if t == crate::input::EOF_MARKER {
                 return t;
             }
@@ -913,12 +927,8 @@ impl Engine {
     }
 
     fn align_start_row(&mut self, first: Option<crate::token::Token>) {
-        if let Some(t) = &first {
-            eprintln!("ROW-START first=\\{}", String::from_utf8_lossy(self.cs.name(t.cs_id())));
-        }
         self.align_cur_col = 0;
         let ec = (*self.eqtb.tok_params[ToksParam::EveryCr.idx() as usize]).clone();
-        if !ec.is_empty() { eprintln!("EVERYCR non-empty len={} first={:?} done={}", ec.len(), ec.first().map(|t| t.0), self.align_everycr_done); }
         if !ec.is_empty() && !self.align_everycr_done {
             // tex.web endv: after \\cr the \\everycr tokens are inserted
             // BEFORE the next row is peeked, so a leading \\noalign (longtable

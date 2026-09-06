@@ -1034,3 +1034,11 @@ Boot 29→20 errors; 1882 now Missing `{` got letter `p` (variants list), not
   NEXT: compare \subsection skip values (article.cls \subsection: -3.5ex
   plus -1ex -.2sp above) and the top-of-page suppression rule (tex.web
   drops space at page top) between engines.
+- Subsection-at-page-top probe (s1.tex): EXACT match both engines
+  (bands 177-194/211-225/231-245/964-974). Heading spacing itself is
+  correct. The trust p10 -3.2/-4.1pt offset therefore originates in the
+  context BEFORE the 2.6 heading = the page/float break after Table 3's
+  float page (p9) — i.e. float-page assembly or \clearpage handling
+  differs by ~3.2pt. NEXT: diff p9 (the float page) pixel bands and the
+  \afterpage/\clearpage vlist; check float-page top/bottom skip rules
+  (tex.web \@makecol / \@floatplacement \@fptop \@fpbot).

@@ -636,6 +636,9 @@ impl Engine {
             frac_f = 0;
             direct = None;
         } else if t.is_cs() {
+            if std::env::var("DIMTRACE").is_ok() {
+                eprintln!("DIM-CS \\{} prim={:?} L{} file={}", String::from_utf8_lossy(self.cs.name(t.cs_id())), self.cur_prim, self.input.current_file_line(), self.input.current_file_name().split('/').last().unwrap_or(""));
+            }
             match self.cur_prim {
                 Some(Prim::DimExpr) => {
                     let v = self.scan_expr_dim();
@@ -694,6 +697,22 @@ impl Engine {
                     int_part = 1;
                     frac_f = 0;
                     direct = Some(self.last_skip_value().width);
+                }
+                Some(Prim::LastKern) => {
+                    // tex.web scan_something_internal: \lastkern is a direct
+                    // dimen. Without this arm scan_dimen falls to "Missing
+                    // number", pushing \lastkern back so \ifdim\lastkern=3sp
+                    // leaks "=3sp" into the page (footmisc multiple-marker
+                    // \ifdim\lastkern=\multiplefootnotemarker).
+                    int_part = 1;
+                    frac_f = 0;
+                    direct = Some(self.last_kern_value());
+                }
+                Some(Prim::LastPenalty) => {
+                    // internal integer coerced to sp, like Count above
+                    int_part = self.last_penalty_value() as i64;
+                    frac_f = 0;
+                    direct = None;
                 }
                 Some(Prim::GlueStretch) => {
                     int_part = 1;

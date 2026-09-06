@@ -672,3 +672,22 @@ Boot 29→20 errors; 1882 now Missing `{` got letter `p` (variants list), not
   ref darkred hyperlinks (ref 86 red px vs ours 53).
 - Final: ai_patent 108p/0 err (ref 110; tables pack tighter, ~2-table offset by p100), trust_own 70p==ref;
   lib 77/77; probes 10/13; boot_debug ok; cold 1.2s/2.9s.
+
+## Session 2026-09-06 (end II): controlled parity harness + TJ emission + depcache aux tracking
+- PARITY HARNESS (the way to measure): /tmp/par_aip/{ref,ours} — identical pristine sources + fixed main.bbl,
+  3 passes each engine from scratch. ref=110p, ours=108p, 0 errors both. Earlier 106/108 numbers were
+  DEPCACHE POISONED: passes 2-3 were cache hits (aux not tracked as input) — pass-1 PDF served thrice.
+- Depcache fix (committed ae8d2782): aux/toc/out tracked by START-OF-RUN CONTENT HASH (absent = MAX/0 marker);
+  a pass whose aux differs from the recorded start-state is a guaranteed miss. Multi-pass now real.
+- TJ emission (committed ae8d2782): per-glyph BT..Tj ET replaced by buffered same-font/same-baseline TJ runs
+  with kern adjustments; flushes at rules/whatsits/VF/page-end. ToUnicode: fi/fl/ff/ffi/ffl map to letter
+  sequences (pdftex T1 convention) — word-set diff vs oracle: ref-only 271->137, ours-only 112->18.
+- Remaining diff classes, measured:
+  * p2 (0.81%): same text, sub-pixel x shifts (~0.25px @50dpi), NO vertical shift. Glyph advance
+    accumulation differs slightly from pdftex integer-sp arithmetic.
+  * trust p1 title: OURS 1.1% WIDER (ratio 1.0109, same start x) — systematic bold advance excess at
+    title size (14.4pt TeXGyreTermesX-Bold), NOT rounding. Suspect font instantiation (at_size/tfm
+    width rounding) — next target.
+  * ai_patent pagination: ours slightly denser by p5, bibliography ~2p earlier; all tables/citations present.
+  * ai_patent 108 vs 110: not closed. trust_own 70 == ref.
+- Cold runs (real 3-pass): ~3s each; cache hits <100ms. 500ms gate untouched.

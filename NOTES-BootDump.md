@@ -916,3 +916,18 @@ Boot 29→20 errors; 1882 now Missing `{` got letter `p` (variants list), not
   path; ensure the source after a pushed \the result restores file-line
   end-of-line semantics (tex.web: \the inserts a token list, the outer
   file's line-end state is untouched).
+- PARTRACE instrumented (PAR-END-SEEN in get_token). Results:
+  t12 (plain words + blank line): 2 PAR_ENDs — correct.
+  t11 (\number\day + blank line): ZERO PAR_ENDs from t11.tex — the blank
+  line after an expandable-primitive scan NEVER yields PAR_END. Same for
+  \the (t7/t10). Macro expansion (t8 \xx) is FINE. So: \the/\number (and
+  presumably all scan_int-consuming expandables) lose the blank-line state.
+- Observable: whole doc = one paragraph; "LINE=6" + "After text line here."
+  render as ONE line; display = mid-paragraph; pd stale; skips wrong.
+- NEXT (smallest next step): probe get_next_raw state machine (scanner.rs
+  state 0 vs 1) at t11 lines 3-5 — verify file_line state after scan_int
+  consumes "\day": likely state stuck at 1 with the EOL char consumed as
+  a plain space by scan_int's optional-space logic, so the following
+  blank line is read as a continuation (no state-0 empty-line check).
+  Fix candidate: PAR_END must be producible from state 1 when the line
+  ends AND the next line is blank — check tex.web get_next line-end path.

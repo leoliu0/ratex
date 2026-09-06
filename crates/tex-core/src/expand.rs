@@ -328,6 +328,9 @@ impl Engine {
                 return t;
             }
             if t == PAR_END {
+                if crate::debug_flag("PARTRACE") {
+                    eprintln!("PAR-END-SEEN file={} line={} pushed={}", self.input.current_file_name().split('/').last().unwrap_or("?"), self.input.current_file_line(), self.pushed.len());
+                }
                 // tex.web: a blank line becomes \par. Route the token through
                 // the shared control-sequence path below instead of returning
                 // it bare: the bare return skipped macro expansion, so once

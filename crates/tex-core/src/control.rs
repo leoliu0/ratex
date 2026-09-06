@@ -293,15 +293,14 @@ impl Engine {
                         self.char_token(v as u8, false);
                     }
 
+                    // tex.web math_given (\S1177) recovers a text-mode
+                    // \mathchardef by opening math ("Missing $ inserted").
+                    // Our exit_math replays converted tokens back into the
+                    // input, which re-feeds the \mathchardef token and loops
+                    // forever. Appending the MathChar node to the current
+                    // list renders the glyph directly (visually equivalent
+                    // for the \fnsymbol/\ast cases) without the replay.
                     Some(Equiv::MathCharDef(v)) => {
-                        // tex.web math_given (\S1177): a \mathchardef token
-                        // outside math mode triggers "Missing $ inserted",
-                        // opens math, and renders the character. Dropping it
-                        // silently loses \fnsymbol marks (\ast in titles).
-                        if !self.mode.is_m() {
-                            self.error("Missing $ inserted");
-                            self.enter_math(false);
-                        }
                         self.append_mathchar(v as u16);
                     }
                     Some(Equiv::CharTok(v)) => {

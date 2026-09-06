@@ -47,6 +47,15 @@ impl Engine {
 
     pub fn interword_glue(&mut self) -> Glue {
         let f = self.eqtb.cur_font_val;
+        if std::env::var("GLUETRACE").is_ok() {
+            static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+            let nm = self.eqtb.fonts.get(f as usize).map(|x| (x.tfm_name.clone(), x.at_size)).unwrap_or_default();
+            if nm.1 == 714945 {
+                let fp = self.eqtb.font_params.get(f as usize).cloned().unwrap_or_default();
+                let ss = self.eqtb.glue_params[GlueParam::SpaceSkip.idx() as usize].clone();
+                eprintln!("GLUE font={} {:?} fd2={:?} sf={} SSw={} line={} file={}", f, nm, fp.get(1), self.space_factor, ss.width, self.input.current_file_line(), self.input.current_file_name().split('/').last().unwrap_or(""));
+            }
+        }
         // tex.web: interword glue comes from fontdimen 2/3/4 of the CURRENT
         // font as seen through \fontdimen assignments — eqtb.font_params is
         // the overlay that \fontdimen writes (control.rs FontDimen); the raw

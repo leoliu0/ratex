@@ -747,3 +747,20 @@ Boot 29→20 errors; 1882 now Missing `{` got letter `p` (variants list), not
 - Final state: trust 70pp, p1 2554px = 1.09% (all bands < 0.8% each), p4 0.05%,
   t48 \ast OK, tex-core lib 77/77, expl3_tricks 65/66 (the_numexpr_digits pre-existing).
 - Commits: 8135b752 (TJ sp-native + mathchar + font params), 87292b55 (final arm + probes).
+
+## 2026-09-06 (session 3, ai_patent page gap — INVESTIGATED, NOT CLOSED)
+- ai_patent main.tex: OURS 108pp vs REAL 110pp; divergence starts on intro.tex para 1
+  line 1 ("...significant debate regarding" ours vs "...significant debate" real);
+  cascades through the whole doc. Both engines = PASS 2 (para 1 fails pretolerance 100).
+- VERIFIED IDENTICAL (minimal probes, both engines): font dims fd2/3/4/7 at newtx
+  scale=1.05 (3.15001/2.51996/1.26007/1.39859), glyph widths ('x' = 6.30002),
+  kern pairs (Vo/AV/To/exploratory-(March,), showhyphens points (Re-cent
+  ad-vance-ments...), pass structure, tolerance/sloppy/onehalfspacing handling.
+- FIXED en route: demerits formula (was subtracting pi² for negative penalties;
+  tex.web §1141 adds pi² unconditionally + eject→inf_demerits). Committed.
+- NOT YET FOUND: the remaining pass-2 optimum difference = in the DP mechanics
+  (active-node start-width state / champion tie-breaks / pruning). Debug infra in
+  place: LBTRACE=1 dumps pass + per-chain line badness (needs the bb fix — chain
+  currently prints 0s). Next: diff our line-2 shortfall after the real's line-1
+  break; suspect start_w/post-break subtraction.
+- Probes live in /tmp/brk (b8 = minimal repro, b10 = +para1, b13/b14 = +tracing).

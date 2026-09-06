@@ -230,6 +230,14 @@ impl Engine {
             return;
         }
         if display {
+            // tex.web §1185: $$ in vertical mode starts a new paragraph —
+            // the \parindent box becomes the interrupted paragraph, whose
+            // break supplies \predisplaysize and prev_depth = 0. Without
+            // this the display inherited the sentinel pds (always-short
+            // skip selection) and a stale prev_depth.
+            if self.mode == Mode::Vertical {
+                self.start_paragraph(true);
+            }
             if self.mode == Mode::Horizontal {
                 if crate::debug_flag("DSKIP") {
                     let desc: Vec<String> = self.cur_list.iter().take(4).map(|n| match n {

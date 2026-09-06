@@ -943,3 +943,13 @@ Boot 29→20 errors; 1882 now Missing `{` got letter `p` (variants list), not
   equation env token path at the doc blank line (why no PAR_END between
   "...BASE=17.99446pt" and \begin{equation} in t2; verify with plain
   $$ + newtx without amsmath to isolate amsmath vs newtx).
+- Post-state-2-fix verification: t11 (\number\day) = PAR_END fires, 77/77
+  green. BUT t13 (\the\baselineskip + newtx, NO amsmath) = STILL broken
+  (HENTRY mid-paragraph, ZERO PAR_END from t13.tex). So TWO distinct
+  paths: \number class = fixed by state-2; \the class = separate leak.
+  \the-specific: the_scan's skip_spaces/get_token sequence must be
+  consuming the line-end + blank line as operand-scan side effect
+  (suspect: exp_string push vs the subsequent get_token reading the
+  file EOL differently than \number's scan_int path). NEXT: single-step
+  the_scan for "\the\baselineskip\n\n" with PARTRACE+get_next_raw probe
+  at the file boundary (scanner.rs 250-290 state-1 EOL arm).

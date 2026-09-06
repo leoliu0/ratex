@@ -704,3 +704,15 @@ Boot 29→20 errors; 1882 now Missing `{` got letter `p` (variants list), not
   * scattered sub-pixel body text (tie-break rounding).
 - ai_patent re-run after all fixes: 108p vs ref 110 (2-page gap: tables denser; word content complete).
 - cargo incremental-build hazard REMINDER: verify changes with cargo clean builds when behavior seems stale.
+
+## Session 2026-09-06 (end IV): \ast text-symbol defect isolated
+- Probe: `A\ast B\textasteriskcentered C*` -> REAL "A*B*C*", OURS "AB*C*": \ast in text mode
+  produces NOTHING in ours (the OMS default \DeclareTextSymbolDefault{\ast}{OMS} not applied).
+- BUT \char3 with \fontencoding{OMS}\selectfont WORKS: NFSS substitution OMS/cmr -> OMS/cmsy fires,
+  cmsy10 loads, char 3 IS emitted in the PDF (verified in the content stream + CMSY10 embedded).
+- The trust title mark: REAL uses the compact OMS/txsys asterisk (slot 3) tight to the text; OURS
+  renders the Termes text asterisk (LY1 slot 42) with a ~4bp gap -> the trust title band diff.
+- NEXT: fix the \ast text-command path (\@changed@cmd/\UseTextSymbol chain) so the OMS default
+  applies; then the cmsy ToUnicode entry (slot 3 -> U+2217) so extraction matches.
+- tj_flush TO-DO residue: /Widths floor(666 vs pdftex 667) is compensated by kerns (no pixel effect)
+  but should round for byte-parity of the font objects.

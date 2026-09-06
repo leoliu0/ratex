@@ -293,7 +293,15 @@ impl Engine {
                         self.char_token(v as u8, false);
                     }
 
-                    Some(Equiv::MathCharDef(v)) if self.mode.is_m() => {
+                    Some(Equiv::MathCharDef(v)) => {
+                        // tex.web math_given (\S1177): a \mathchardef token
+                        // outside math mode triggers "Missing $ inserted",
+                        // opens math, and renders the character. Dropping it
+                        // silently loses \fnsymbol marks (\ast in titles).
+                        if !self.mode.is_m() {
+                            self.error("Missing $ inserted");
+                            self.enter_math(false);
+                        }
                         self.append_mathchar(v as u16);
                     }
                     Some(Equiv::CharTok(v)) => {

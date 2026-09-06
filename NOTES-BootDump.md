@@ -716,3 +716,16 @@ Boot 29→20 errors; 1882 now Missing `{` got letter `p` (variants list), not
   applies; then the cmsy ToUnicode entry (slot 3 -> U+2217) so extraction matches.
 - tj_flush TO-DO residue: /Widths floor(666 vs pdftex 667) is compensated by kerns (no pixel effect)
   but should round for byte-parity of the font objects.
+
+## Session 2026-09-06 (end V): mathchar recovery + justification drift class
+- MathCharDef outside math mode now does tex.web math_given recovery ("Missing $ inserted" + enter_math +
+  render) instead of silent drop. t48 (`A\ast B\textasteriskcentered C*`): 0 px difference vs system
+  pdftex — the \ast/OMS glyph path is FIXED (bit-identical).
+- trust p1: 9006 -> 2554 px (1.09%). Remaining measured bands:
+  * abstract paragraph (945px): same words, same breaks, but our justification stretches the line ~3px
+    MORE (ref right edge 353px, ours 356px @50dpi). Glue-set arithmetic class: compare stretch/order
+    computation + interword glue values in the line breaker. NOT a rounding issue (monotonic 3px).
+  * footnote emails (x-offset ~4px, ~1500px total): \href link placement.
+  * title fnmark now only 30px residual (was 432).
+- pdfTeX TJ model confirmed against oracle streams: pdftex Td values chain from its OWN pen bookkeeping;
+  TJ kerns integer thousandths; position format %.5f trailing-zero-trimmed. Our emitter now matches this.

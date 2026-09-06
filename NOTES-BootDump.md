@@ -729,3 +729,21 @@ Boot 29→20 errors; 1882 now Missing `{` got letter `p` (variants list), not
   * title fnmark now only 30px residual (was 432).
 - pdfTeX TJ model confirmed against oracle streams: pdftex Td values chain from its OWN pen bookkeeping;
   TJ kerns integer thousandths; position format %.5f trailing-zero-trimmed. Our emitter now matches this.
+
+## 2026-09-06 (session 2, PDF parity)
+- Root cause of the abstract 3px line-length band: our interword glue was the fontload
+  default (1/3 em) instead of the TFM \fontdimen2 for the abstract font at 10.90909pt
+  (120/11pt = the 11pt-class normalsize). REAL fd2 = 3.0pt (0.275em); our layout used
+  3.27pt. Fix landed earlier (font_params fill); space now within 1 unit of oracle.
+- Widths rounding experiment (pdftex.rs /Widths + pdfrender w1000 round vs floor):
+  REGRESSED trust p1 1.09% -> 3.86%. Reverted. Floor + kern compensation is the right model.
+- MathCharDef-in-text: tex.web math_given recovery (enter_math) LOOPS in our engine —
+  exit_math replays converted tokens into the input, re-feeding the \mathchardef token.
+  Both enter_math and back-input variants hang (CHARTRACE 'A' stop signature).
+  Final: render the MathChar glyph in place (no math entry); t48 \ast renders "AB∗C*",
+  no hang; trust 70pp + p1 1.09% unchanged. Open: proper ins_error-style $ insertion.
+- trust main.tex had the PROBE-SPACE debug line left patched in; restored from
+  /tmp/main_backup.tex (this caused a phantom 71pp/8.3% regression during testing).
+- Final state: trust 70pp, p1 2554px = 1.09% (all bands < 0.8% each), p4 0.05%,
+  t48 \ast OK, tex-core lib 77/77, expl3_tricks 65/66 (the_numexpr_digits pre-existing).
+- Commits: 8135b752 (TJ sp-native + mathchar + font params), 87292b55 (final arm + probes).

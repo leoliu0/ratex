@@ -1024,3 +1024,13 @@ Boot 29→20 errors; 1882 now Missing `{` got letter `p` (variants list), not
   entry — already correct). Pages 12-19 (7%) cascade: Table 5 placement
   p11-vs-p12 — root still open, next: diff p10-11 ink directly at 150dpi
   between engines to find the first divergent vlist item.
+- p10 vertical offset LOCALIZED: the page-top subsection heading sits 4.1pt
+  higher in ours (70.3 vs 74.4), all body lines uniformly -3.2pt after.
+  Words/gaps/glyphs IDENTICAL (e.g. 'fraction' line: widths + 4.14pt gaps
+  match to 0.01pt). So the trust cascade = heading-block spacing at page
+  top: our \subsection block is 3.2pt shorter than real's (space above the
+  heading or its strut height). This 3.2pt/page compounds into the Table 5
+  float flip (ours p11, real p12) and the pages 12-19 7% band.
+  NEXT: compare \subsection skip values (article.cls \subsection: -3.5ex
+  plus -1ex -.2sp above) and the top-of-page suppression rule (tex.web
+  drops space at page top) between engines.

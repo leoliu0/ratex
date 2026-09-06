@@ -866,3 +866,10 @@ Boot 29→20 errors; 1882 now Missing `{` got letter `p` (variants list), not
   post-table region -> our table/text mix consumes space differently -> our
   p10 packs more text -> cascade. Next: compare T4 tabular row glue
   (arraystretch / extrarowheight / booktabs rule spacing) on p10.
+- Refinement (same session): \baselineskip identical in parbox/footnotesize
+  probes (14.89197 both engines). The p10 16.8-vs-15.5 pitch = APPARENT pitch
+  from pdftotext yMin clustering = math-glyph vertical extents differ (our
+  tallest glyphs in the equation block ~1.3pt taller). Real defect class =
+  math-mode glyph metrics (parens/sub-sup extents), which also shifts the
+  apparent text block height feeding the float placement cascade on p11.
+  Next: compare math glyph bounding boxes for Equation (1) on p10.

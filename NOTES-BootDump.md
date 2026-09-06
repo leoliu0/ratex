@@ -1145,3 +1145,12 @@ Boot 29→20 errors; 1882 now Missing `{` got letter `p` (variants list), not
   positions), i.e. the difference enters at the paragraph's EARLIER
   lines, not at the last-line decision. Cross-check real's line 2 content
   (idx 13/14 boundary) vs ours before diving deeper.
+- FINAL p10 fact set (fresh builds, bbox-verified): OURS line 14 = 18 words
+  ("The decline ... low."), gaps 2.02-2.04 (legal: floor = 3.0-1.2 = 1.8);
+  REAL = 17 words ("...trust is") + "low." ragged line, gaps 3.37-3.38.
+  Demerits: squeeze ~= (10+71)^2 = 6561; 2-line ~= 208. Our DP chose the
+  6561 line => the "break at the space before low." candidate is missing
+  or mis-scored in full-doc runs. Isolated runs (k2/k3) = correct.
+  The space before "low." = an interword glue after "is" — check whether
+  the preceding "\%"/digit tokens or the accumulated \language state mark
+  that glue non-breakable in full-doc runs only.

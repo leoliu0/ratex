@@ -886,3 +886,33 @@ Boot 29→20 errors; 1882 now Missing `{` got letter `p` (variants list), not
   boxes -> our font embedding lacks per-glyph metrics pdftotext can use
   (cosmetic for extraction, but check ink parity separately).
   This vertical delta is what feeds the p10->p11 float cascade.
+
+## 2026-09-06 (session 11, display-math placement — root one level deeper)
+- Instrumented (TEXDEBUG=DSKIP, now env-driven via debug_flag): t2.tex chain:
+  HENTRY n=130 pd=0.0000 [B(indent) ...] -> PAR pd_after_par=2.604 -> ILG
+  pd=2.604 glue_w=4.4945 (real: pd=0, glue 7.09848).
+- KEY FACT: at display entry the 130-node PARAMS paragraph ("ABOVEds=...")
+  is STILL UNBROKEN in cur_list — the blank line before \begin{equation}
+  did NOT produce a paragraph break in our engine. Whole doc = one paragraph;
+  display = mid-paragraph; prev_depth at ILG = pre-paragraph 2.604 instead of
+  the display paragraph's own 0. Real pdflatex: blank line -> \par -> display
+  paragraph [indent-only] -> pd=0, glue = baselineskip-h = 7.09848, pds ~21
+  -> SHORT skips. Ours: pds=338.98 (params line + 2em) -> LONG skips. Both
+  wrong-skips and wrong-glue follow from the missing break.
+- ALSO fixed en route: end_paragraph fallback branch now threads prev_depth
+  = lines-box depth (tex.web post-line_break state) instead of restoring the
+  pre-paragraph value.
+- NEXT: why the blank-line \par before \begin{equation} is lost (amsmath
+  \mathdisplay? scanner? begin-env reading?) — reproduce with plain $$ doc:
+  if plain $$ works, the culprit is amsmath's \mathdisplay token path.
+- ISOLATED (t5 vs t4): plain text before $$ -> \par fires, display from
+  vmode, pd=0, is_short=true, ILG pd=0 — CORRECT (vmode fix works).
+  With \the in the paragraph ("LINE=\the\baselineskip") the paragraph is
+  NOT broken: blank-line \par swallowed -> display mid-paragraph ->
+  pd=2.604 (stale), is_short=false. Mechanism hypothesis: \the expansion
+  re-scans pushed chars and our scanner loses the end-of-line/blank-line
+  state across the pushed-token boundary (the original EOL after
+  \baselineskip consumed during expansion). NEXT: read expand.rs \the
+  path; ensure the source after a pushed \the result restores file-line
+  end-of-line semantics (tex.web: \the inserts a token list, the outer
+  file's line-end state is untouched).

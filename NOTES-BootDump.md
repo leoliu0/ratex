@@ -1101,3 +1101,18 @@ Boot 29→20 errors; 1882 now Missing `{` got letter `p` (variants list), not
   "low." word = preceded by a discretionary? trailing-space handling at
   the hbadness/fitness pass? Trace with KPTRACE on a doc that reproduces
   (extend f2 with the missing full-doc state once found).
+- **NEW HIGH-IMPACT BUG (aux page numbers off by one):** ours.aux vs
+  real.aux for the SAME clean 3-pass runs: ours records 2.5->{8}, 2.6->{9};
+  real records 2.5->{9}, 2.6->{10}. The shipped PDFs AGREE (both start p9
+  with 2.5, p10 with 2.6) — so our \label/\write page numbers are one page
+  low for headings that sit at a page break: we resolve the \write with
+  the page counter BEFORE the page that actually receives the heading
+  (tex.web: \write tokens are rerun at shipout with the page number of
+  the page being shipped; our engine appears to expand \thepage at
+  contribution time). Impact: every \pageref in both docs renders wrong;
+  also explains "one page early" class oddities. Both aux files otherwise
+  agree (same labels, same table numbers — the earlier diff = ordering +
+  these page fields only).
+  NEXT: audit the \write/aux path (control.rs write handling): defer
+  page-number expansion to shipout (tex.web §1395 shipping-out \write
+  rule), then re-audit trust p10+ and ai_patent.

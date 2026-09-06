@@ -1080,3 +1080,13 @@ Boot 29→20 errors; 1882 now Missing `{` got letter `p` (variants list), not
   3) a stale main.aux feeding OUR run different \ref widths (we rm aux
      before both runs — but hyperref writes differ on pass 1; ensure
      BOTH runs get identical aux inputs at pass 3: copy real's aux in).
+- KEY p10 observation: our 'decline' line gaps = 2.02-2.04pt, BELOW the
+  ntx interword shrink floor (3.333 - 1.111 = 2.222pt). Glue cannot
+  legally render below width-minus-shrink -> our line-14 either applies
+  shrink from a DIFFERENT glue source (e.g. extra interword glue nodes
+  with larger shrink — \sloppy-emulation? font \fontdimen mismatch for
+  this context?) or the shrink floor itself is violated in our hpack.
+  The same page's other lines render natural (3.19) and stretched (4.14)
+  normally. NEXT: verify \fontdimen 2/3/4 (space, stretch, shrink) of
+  ntx regular 12pt in our engine vs real (\the\fontdimen3\font), then
+  check whether line 14's glue set is within -shrink bounds.

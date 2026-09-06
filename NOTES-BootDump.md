@@ -797,3 +797,21 @@ Boot 29→20 errors; 1882 now Missing `{` got letter `p` (variants list), not
   node-by-node what our engine appends between the last body glyph and the
   mark's box when the TS1 substitution is active (suspect a kern/skip inserted
   during the encoding-switch \selectfont, not a glue).
+
+## 2026-09-06 (session 6, fnmark root mechanism CONFIRMED)
+- The +4.21pt gap = a REAL interword glue node emitted from macro replay during
+  \DeclareFontShape processing (SPACETRACE: mac="reserved@b", chain in@@ →
+  series@maybe@drop@one@m@x, src=T:<replay>). Emitted with the post-\normalfont
+  font (ntx-Regular-tlf-ot1 @16.908pt, fd2=276972sp=4.226pt).
+- Reproduced standalone: A\mbox{\fontsize{16.84}{16.84}\fontencoding{TS1}-
+  \selectfont\char42}B emits the stray space; the same without \selectfont does
+  not. Both engines load ts1ntxtlf.fd (earlier "REAL doesn't" was a wrong-log
+  artifact).
+- Stack-scan guard (suppress space glue while an .fd File frame is on the input
+  stack) is INEFFECTIVE: by emission time the fd frame is gone — the macros
+  replay standalone. Reverted.
+- Next: the space token sits in the edef'd body of reserved@b (series-drop
+  machinery, LaTeX 2020 \series@maybe@drop@one@m@x). Real TeX consumes it during
+  conditional evaluation; our engine dispatches it as glue in restricted-h mode.
+  Fix = find the token-flow divergence in that expansion (likely our \in@@ or
+  edef scanning back-inputs the space where real TeX swallows it).

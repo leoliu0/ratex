@@ -33,6 +33,19 @@ impl Engine {
         match self.mode {
             Mode::Horizontal | Mode::RestrictedHorizontal => {
                 let g = self.interword_glue();
+                if std::env::var("SPACETRACE").is_ok() {
+                    let nm = self.eqtb.fonts.get(self.eqtb.cur_font_val as usize)
+                        .map(|x| (x.tfm_name.clone(), x.at_size)).unwrap_or_default();
+                    eprintln!("SPACE-GLUE f={} {:?} w={} line={} mac={:?} last={:?} src={:?}",
+                        self.eqtb.cur_font_val, nm, g.width,
+                        self.input.current_file_line(),
+                        self.current_macro,
+                        self.last_macros.iter().rev().take(8).collect::<Vec<_>>(),
+                        self.input.stack.iter().rev().take(3).map(|s| match s {
+                            crate::input::Source::TokList{name,pos,..} => format!("T:{} {}/{}", name, pos, pos),
+                            crate::input::Source::File{name,line_no,..} => format!("F:{}#{}", name, line_no),
+                        }).collect::<Vec<_>>());
+                }
                 self.cur_list.push(Node::Glue(g));
                 self.space_factor = 1000;
             }

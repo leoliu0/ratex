@@ -92,6 +92,24 @@
 - Current state: ai_patent 358 errors / 69pp (same-class: Misplaced \noalign 89, Duplicate \omit 47,
   Leaders 41, box 40, Illegal unit 31, Missing number 26 — all alignment-phase family).
 
+## Continuation (5th block) — \?? quark leak identified
+- h16 (plain article+array+graphicx, blank line before \hline) FAILS ON FRESH AUX (1 Misplaced),
+  passes with stale aux — earlier 'h16 passes' observations were aux-state artifacts. The noalign
+  family is NOT geometry/vsize dependent; those only shifted aux/timing.
+- Precise mechanism (traced): array.sty sets \everycr{\noalign{\tbl_...}} — each \cr fires an
+  everycr-noalign (works). Between rows, the blank-line \par is skipped by the peek, then \hline
+  expands — BUT stray `\??` expl3-quark tokens appear in `pushed` (top-of-stack) at peek time
+  (QMARK-PEEK trace: peek returns \?? while scalebox-arg replay shows \hline at pos 72).
+  align_row_inspect treats \?? as row content -> phantom PH_U row -> the REAL \hline's \noalign
+  then hits 'Misplaced \noalign'. Each failing table loses rows -> 40pp of appendix tables missing.
+- NEXT: trace who PUSHES the \?? cs (instrument push_tokens/begin_token_list for cs name "??" with
+  backtrace at push time). Suspect: \UseTaggingSocket{tbl/...} or \tbl_ helpers storing/replaying
+  lists containing \?? via our socket/hook emulation; or an l3 x-expansion storing quarks.
+- Guard-hack rejected: allowing noalign at PH_U col 0 (even with empty cur_list variants) — first
+  attempt dropped content; refined cur_list.is_empty() variant still mismatches because array
+  u-parts append the \@arstrut box (cur_list len 3 at failure).
+- ai_patent state: 358 errors / 69pp vs 110pp; missing pages = appendix tables C.5-C.23+ (79-110).
+
 # Boot Debugging State (post-session-12)
 
 ## Applied fixes this session (all built, boot still fails at ~line 1773+)

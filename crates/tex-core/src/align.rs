@@ -741,9 +741,20 @@ impl Engine {
     }
 
     pub fn align_noalign(&mut self) {
+        // tex.web: a \noalign is legal between rows. Our speculative row
+        // start (PH_U, col 0, cell list still empty) can precede the
+        // \noalign when the peek expanded a macro (\hline -> \noalign{...})
+        // or stray tokens (l3 quarks) surfaced first; such a cell is a
+        // phantom — close it and treat the \noalign as interrow. A \noalign
+        // after real cell content (or inside a noalign) stays an error.
+        let phantom = self.scanner_status == ScannerStatus::Aligning
+            && !self.align_in_noalign
+            && self.align_phase() == PH_U
+            && self.align_cur_col == 0
+            && self.cur_list.is_empty();
         if self.scanner_status != ScannerStatus::Aligning
-            || self.align_phase() != PH_IDLE
             || self.align_in_noalign
+            || (self.align_phase() != PH_IDLE && !phantom)
         {
             let dump = self.input.stack.iter().rev().take(3).map(|s| match s {
                 crate::input::Source::TokList { name, pos, toks, .. } => format!("{}:{}/{} [{}]", name, pos, toks.len(), self.tokens_to_string(&toks[*pos..(*pos + 12).min(toks.len())])),
@@ -751,6 +762,10 @@ impl Engine {
             }).collect::<Vec<_>>().join(" << ");
             self.error(&format!("Misplaced \\noalign (dump: {})", dump));
             return;
+        }
+        if phantom {
+            let _ = self.align_pop_cell_group();
+            self.align_state = PH_IDLE;
         }
         // tex.web 1124-1131: \noalign consumes only the opening brace; the
         // body EXECUTES inside the no-align group and the matching `}`
@@ -810,6 +825,7 @@ impl Engine {
     /// enclosing pack resolves any running-width rules (\toprule's \hrule)
     /// to the alignment width. Packing here would freeze them at \hsize.
     pub(crate) fn align_finish_noalign_now(&mut self) {
+        eprintln!("NA-CLOSE pages={}", self.pdf_doc.pages.len());
         let Some(inner) = self.align_pop_cell_group() else {
             return;
         };
@@ -897,8 +913,12 @@ impl Engine {
     }
 
     fn align_start_row(&mut self, first: Option<crate::token::Token>) {
+        if let Some(t) = &first {
+            eprintln!("ROW-START first=\\{}", String::from_utf8_lossy(self.cs.name(t.cs_id())));
+        }
         self.align_cur_col = 0;
         let ec = (*self.eqtb.tok_params[ToksParam::EveryCr.idx() as usize]).clone();
+        if !ec.is_empty() { eprintln!("EVERYCR non-empty len={} first={:?} done={}", ec.len(), ec.first().map(|t| t.0), self.align_everycr_done); }
         if !ec.is_empty() && !self.align_everycr_done {
             // tex.web endv: after \\cr the \\everycr tokens are inserted
             // BEFORE the next row is peeked, so a leading \\noalign (longtable

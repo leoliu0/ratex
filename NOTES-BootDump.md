@@ -1012,3 +1012,15 @@ Boot 29→20 errors; 1882 now Missing `{` got letter `p` (variants list), not
   must be false when pre_display_size = -0x3FFF_FFFF (the "voided/max"
   sentinel), i.e. `is_short = pds != sentinel && d+s > pds` inverted.
   Then ours = long-above 14.89 + ilg -> matches real 23.04.
+- DISPLAY-MATH PLACEMENT: FIXED. t2 probe bands now MATCH real exactly
+  (180-194/205-219/251-267/291-301/964-974). Two commits:
+  1) CS-read keeps the exhausted buffer when a control word ends the line
+     (was clearing it -> next line loaded in skip_blanks -> blank-line \par
+     swallowed after any \the-style operand line);
+  2) enter_math: $$ in vmode starts the indent-only paragraph (tex.web
+     1185) instead of the pds=-max sentinel -> LONG skips + interline glue
+     7.0985 exactly as real. 77/77 green.
+- Trust doc unchanged by these (its displays are mid-paragraph, Horizontal
+  entry — already correct). Pages 12-19 (7%) cascade: Table 5 placement
+  p11-vs-p12 — root still open, next: diff p10-11 ink directly at 150dpi
+  between engines to find the first divergent vlist item.

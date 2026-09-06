@@ -35,7 +35,19 @@ pub use engine::Engine;
 /// engine. `std::env::var` costs ~100-300ns per call and we were paying it on
 /// every token push (PUSHWATCH et al.) — that alone dominated boot time.
 /// A flag is true iff the variable is set to a non-empty value other than "0".
-#[inline(always)]
-pub fn debug_flag(_name: &'static str) -> bool {
-    false
+#[inline]
+pub fn debug_flag(name: &str) -> bool {
+    use std::sync::OnceLock;
+    static FLAGS: OnceLock<Vec<String>> = OnceLock::new();
+    let flags = FLAGS.get_or_init(|| {
+        std::env::var("TEXDEBUG")
+            .map(|v| {
+                v.split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect()
+            })
+            .unwrap_or_default()
+    });
+    flags.iter().any(|f| f == name)
 }

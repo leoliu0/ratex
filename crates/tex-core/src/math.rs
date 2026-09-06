@@ -231,7 +231,16 @@ impl Engine {
         }
         if display {
             if self.mode == Mode::Horizontal {
-                // tex.web §1181 (init_math): `head=tail` (nothing typeset
+                if crate::debug_flag("DSKIP") {
+                    let desc: Vec<String> = self.cur_list.iter().take(4).map(|n| match n {
+                        Node::Box { w, h, d, .. } => format!("B(w{:.2} h{:.2} d{:.2})", *w as f64/65536.0, *h as f64/65536.0, *d as f64/65536.0),
+                        Node::Glue(g) => format!("G{:.2}", g.width as f64/65536.0),
+                        Node::Kern(k) | Node::ExplicitKern(k) => format!("K{:.2}", *k as f64/65536.0),
+                        Node::Penalty(p) => format!("P{}", p),
+                        _ => "?".into(),
+                    }).collect();
+                    eprintln!("DSKIP-HENTRY n={} pd={:.4} [{}]", self.cur_list.len(), self.prev_depth as f64/65536.0, desc.join(" "));
+                }
                 // yet) gives \predisplaysize = -max_dimen; otherwise the
                 // interrupted paragraph is broken and its final line is
                 // measured — before the end-of-paragraph reset clears
@@ -251,6 +260,7 @@ impl Engine {
                 );
                 self.in_display_init = true;
                 self.par_primitive();
+                if crate::debug_flag("DSKIP") { eprintln!("DSKIP-PAR pd_after_par={:.4} last_par_line={}", self.prev_depth as f64 / 65536.0, self.last_par_line.is_some()); }
                 self.in_display_init = false;
                 let prev_graf = self.prev_graf as i64;
                 let hsize = self.eqtb.dim_params[DimParam::HSize.idx() as usize] as i64;
@@ -284,9 +294,13 @@ impl Engine {
                         None => -0x3FFF_FFFF,
                     }
                 };
-                if crate::debug_flag("DSKIP") { eprintln!("DSKIP-ENTER pds={} l={} s={} was_empty={}", self.pre_display_size as f64/65536.0, self.pre_display_l as f64/65536.0, self.pre_display_s as f64/65536.0, was_empty); }
+                if crate::debug_flag("DSKIP") { eprintln!("DSKIP-ENTER pds={} l={} s={} was_empty={} pd_before={:.4}", self.pre_display_size as f64/65536.0, self.pre_display_l as f64/65536.0, self.pre_display_s as f64/65536.0, was_empty, self.prev_depth as f64/65536.0); }
             } else {
-                // display entered from vertical mode: nothing precedes it
+                // display entered from vertical mode: tex.web §1185 starts a
+                // new paragraph whose zero-depth \parindent box is appended
+                // first (append_to_vlist: prev_depth := box depth = 0), so
+                // the interline glue above the display = baselineskip − h.
+                self.prev_depth = 0;
                 self.pre_display_size = -0x3FFF_FFFF;
                 self.pre_display_l =
                     self.eqtb.dim_params[DimParam::HSize.idx() as usize] as i64;
@@ -608,6 +622,9 @@ impl Engine {
                 _ => (0, 0),
             };
             if let Some(g) = ilg(self.prev_depth, lh) {
+                if crate::debug_flag("DSKIP") {
+                    eprintln!("DSKIP-ILG pd={:.4} lh={:.4} glue_w={:.4}", self.prev_depth as f64 / 65536.0, lh as f64 / 65536.0, g.width as f64 / 65536.0);
+                }
                 page.push(Node::Glue(g));
             }
             page.push(line);

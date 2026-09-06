@@ -42,7 +42,14 @@ impl Engine {
                         self.current_macro,
                         self.last_macros.iter().rev().take(8).collect::<Vec<_>>(),
                         self.input.stack.iter().rev().take(3).map(|s| match s {
-                            crate::input::Source::TokList{name,pos,..} => format!("T:{} {}/{}", name, pos, pos),
+                            crate::input::Source::TokList{name,pos,toks,..} => {
+                                let lo = pos.saturating_sub(6);
+                                let ctx: Vec<String> = toks.iter().skip(lo).take(10)
+                                    .map(|t| if t.is_cs() { format!("\\{}", String::from_utf8_lossy(self.cs.name(t.cs_id()))) }
+                                             else { format!("c{}:{:#x}", t.cc(), t.chr()) })
+                                    .collect();
+                                format!("T:{} {}/{} ctx=[{}]", name, pos, toks.len(), ctx.join(" "))
+                            }
                             crate::input::Source::File{name,line_no,..} => format!("F:{}#{}", name, line_no),
                         }).collect::<Vec<_>>());
                 }
@@ -2120,11 +2127,20 @@ impl Engine {
                 self.prev_depth = last_d;
             }
             (_, outer) => {
+                let node = lines_opt.take().unwrap();
+                // tex.web: after line_break, prev_depth = the final line's
+                // depth — the lines wrapper box carries exactly that depth,
+                // so thread it instead of restoring the pre-paragraph value
+                // (which left the display interline glue computed against a
+                // stale prev_depth, misplacing every amsmath display).
+                if let Node::Box { d, .. } = &node {
+                    self.prev_depth = *d;
+                }
                 if let Some(mut inner) = outer {
-                    inner.push(lines_opt.take().unwrap());
+                    inner.push(node);
                     self.cur_list = inner;
                 } else {
-                    self.cur_list.push(lines_opt.take().unwrap());
+                    self.cur_list.push(node);
                 }
                 self.mode = saved_mode;
             }

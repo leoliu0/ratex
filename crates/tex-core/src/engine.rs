@@ -982,7 +982,7 @@ impl Engine {
         eng.eqtb.int_params[IntParam::NewLineChar.idx() as usize] = -1;
         eng.eqtb.int_params[IntParam::MaxDeadCycles.idx() as usize] = 25;
         eng.eqtb.int_params[IntParam::Mag.idx() as usize] = 1000;
-        eng.eqtb.int_params[IntParam::Tolerance.idx() as usize] = 10000;
+        eng.eqtb.int_params[IntParam::Tolerance.idx() as usize] = 200;
         eng.eqtb.int_params[IntParam::Pretolerance.idx() as usize] = 100;
         eng.eqtb.int_params[IntParam::HangAfter.idx() as usize] = 1;
         eng.eqtb.int_params[IntParam::ErrorContextLines.idx() as usize] = 5;

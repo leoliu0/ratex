@@ -1064,3 +1064,19 @@ Boot 29→20 errors; 1882 now Missing `{` got letter `p` (variants list), not
   engines (real: \showhyphens{low} etc; ours: probe the hyphen trie),
   OR binary-search trust main.tex lines 1-126 added to f2 until the
   squeeze appears. The latter is mechanical and certain.
+- REFERENCE HYGIENE: rebuilt both sides fresh (ours 3-pass, real 3-pass,
+  clean aux) — p10 squeeze still reproduces (p10 2.791%, p11 5.0%,
+  p12-19 ~7%). Not a stale-reference artifact.
+- p10 pixel-diff regions: rows 105-183 = isolated specks (4-6px);
+  everything from row 268 (the "The decline..." paragraph) down = large
+  per-line diffs. The para's one-line squeeze (ours, gaps 2.02 = full
+  shrink; real: "low." wrapped, gaps 3.38 = slight stretch) = the single
+  first-content divergence; all p10 metrics (glyph widths, natural width
+  486.18004pt, glue) verified identical in isolation.
+- Full-doc-only line-break state candidates to test next (mechanical):
+  1) \hyphenation exception list mismatch (dump ours: probe trie; real:
+     \showhyphens in the trust preamble context)
+  2) \language/pattern interaction with the ntx fonts mid-doc
+  3) a stale main.aux feeding OUR run different \ref widths (we rm aux
+     before both runs — but hyperref writes differ on pass 1; ensure
+     BOTH runs get identical aux inputs at pass 3: copy real's aux in).

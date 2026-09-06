@@ -968,3 +968,17 @@ Boot 29→20 errors; 1882 now Missing `{` got letter `p` (variants list), not
   reader appears to pre-consume the next line inside the CS scan).
   NEXT: instrument tokenize_char/CS branch (scanner.rs ~294) to see the
   state left after "\day" and who loads line 4 while state=2.
+- SKIPBLANKS-EOL probe result (t16 \the\day): fires at line=4 (the BLANK
+  line), NOT line=3. So between reading "\day" (state 2, buffer=line 3
+  at EOL) and skip_spaces' get_token, the buffer transitioned to line 4
+  WITHOUT passing either EOL probe (state-1 EOL-HIT line=3 absent,
+  state-2 SKIPBLANKS-EOL line=3 absent). Prime suspect: get_token's
+  expand loop (expand.rs The arm / get_x_raw path) performs an extra
+  raw fetch after \the's expansion that consumes line 3's EOL via a
+  non-probed path (raw_token cc-14/9/15 handling at expand.rs:68-84
+  clears line_buf + bumps state — CHECK THIS FIRST: cc 14 = = the
+  ^^-notation sentinel handling that sets *state=2 and line_buf=None,
+  possibly re-loading the next line).
+  Fix candidates once located: PAR_END must be deliverable from that
+  path (tex.web: blank line -> \par regardless of the intervening
+  expansion boundary).

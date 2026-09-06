@@ -745,7 +745,11 @@ impl Engine {
             || self.align_phase() != PH_IDLE
             || self.align_in_noalign
         {
-            self.error("Misplaced \\noalign");
+            let dump = self.input.stack.iter().rev().take(3).map(|s| match s {
+                crate::input::Source::TokList { name, pos, toks, .. } => format!("{}:{}/{} [{}]", name, pos, toks.len(), self.tokens_to_string(&toks[*pos..(*pos + 12).min(toks.len())])),
+                crate::input::Source::File { name, line_no, .. } => format!("{}:{}", name, line_no),
+            }).collect::<Vec<_>>().join(" << ");
+            self.error(&format!("Misplaced \\noalign (dump: {})", dump));
             return;
         }
         // tex.web 1124-1131: \noalign consumes only the opening brace; the

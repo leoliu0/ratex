@@ -62,6 +62,21 @@
 - Debug cleanup: VRULE-DISPATCH trace still in maincontrol.rs (gated to error path, harmless);
   error messages in make_rule now carry context (cur_cs, stack).
 
+## Continuation (3rd block) — Misplaced \noalign root-cause hunt
+- MINIMAL STABLE REPRO: /tmp/lttest/h21.tex = h16 body + geometry package.
+  scalebox{0.9}{tabular with blank line between last \\ row and \hline} + \usepackage{...,geometry}
+  → 1 Misplaced \noalign. Without geometry: 0 errors. Package list bisect: ONLY geometry flips it.
+- Evidence at error: the FIRST \hline's noalign body replay (14 tokens: {\ifnum 0=`}\fi\hrule
+  \@height\arrayrulewidth\futurelet\reserved@a\@xhline}) sits FROZEN at pos=1 (\ifnum unconsumed)
+  on the input stack BELOW the scalebox-arg replay (181 tokens, \end{tabular} at pos 73). The outer
+  replay ADVANCED past the tabular (\end{tabular} at pos 73) while the inner noalign body never
+  executed — so \hline(line 120-equivalent) fires Misplaced with in_noalign still true.
+- Theory: scan_general_text-style box-arg capture (scalebox) replays the tabular; something in the
+  replay/ordering lets the outer replay advance while the noalign body is orphaned. geometry only
+  shifts page-goal timing (repro sensitive to \textwidth value?). Investigate begin_token_list vs
+  box-arg replay ordering: the noalign body must be the TOP source while its group is open.
+- The par-no-op fix (PH_IDLE) fixed h16 but h21 still fails — the stall is upstream of par.
+
 # Boot Debugging State (post-session-12)
 
 ## Applied fixes this session (all built, boot still fails at ~line 1773+)

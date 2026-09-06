@@ -425,8 +425,15 @@ impl Engine {
                     let nb = match self.file_line_peek(si) {
                         Some(b) => b,
                         None => {
-                            // escape at line end: empty cs; endline consumed
-                            self.file_line_clear(si);
+                            if name.is_empty() {
+                                // escape at line end: empty cs; endline consumed
+                                self.file_line_clear(si);
+                            }
+                            // control word complete at line end: KEEP the
+                            // exhausted buffer so the next line is re-examined
+                            // by the new-line logic — clearing here pre-loaded
+                            // the following line in skip_blanks state and
+                            // swallowed its blank-line \par
                             break;
                         }
                     };

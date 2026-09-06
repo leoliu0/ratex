@@ -1042,3 +1042,13 @@ Boot 29→20 errors; 1882 now Missing `{` got letter `p` (variants list), not
   differs by ~3.2pt. NEXT: diff p9 (the float page) pixel bands and the
   \afterpage/\clearpage vlist; check float-page top/bottom skip rules
   (tex.web \@makecol / \@floatplacement \@fptop \@fpbot).
+- Isolated the exact p10 paragraph (main.tex:128, autoref + onehalfspacing +
+  geometry): BOTH engines break identically ("...The decline is 15.7 /
+  percentage points where trust is low."). Word widths, gaps, natural width
+  (486.18004pt) all verified equal. So the trust p10 "The decline ... low."
+  one-line squeeze is a FULL-DOC-ONLY state difference, not a metrics or
+  breaker bug. Candidate state: hyphenation exceptions accumulated? font
+  \language interplay? or the preceding \autoref/\label writes altering
+  the paragraph's non-core tokens. NEXT: binary-search the trust preamble
+  (the b.tex-style probe already matched through line 49; extend through
+  line 128 adding sections 2.1-2.6 until the line 14 squeeze reproduces).

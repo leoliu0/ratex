@@ -1,63 +1,39 @@
 use tex_core::engine::Engine;
-use tex_core::eqtb::Equiv;
+use tex_core::prim::DimParam;
 
 #[test]
-fn onlypreamble_defined_after_expl3() {
+fn test_load_default_fmt_blob() {
+    let fmt_bytes = include_bytes!("../../tex-cli/assets/default.fmt");
+    let mut eng = Engine::new(false);
+    tex_core::format::load_format_bytes_into(fmt_bytes, &mut eng)
+        .expect("load_format_bytes_into default.fmt");
+    assert_eq!(eng.eqtb.cat[b'd' as usize], 11);
+    assert_ne!(eng.eqtb.cat[b'@' as usize], 0);
+    let doc_id = eng.cs.lookup(b"document").expect("\\document defined");
+    assert!(matches!(
+        eng.eqtb.resolve(doc_id),
+        Some(tex_core::eqtb::Equiv::Macro(_))
+    ));
+    assert_eq!(
+        eng.eqtb.dim_params[DimParam::PdfPageWidth.idx() as usize],
+        39_158_276
+    );
+    assert_eq!(
+        eng.eqtb.dim_params[DimParam::PdfPageHeight.idx() as usize],
+        55_380_990
+    );
+}
+
+#[test]
+fn initex_pdf_page_dimensions_start_unset() {
     let mut eng = Engine::new(true);
     eng.init_primitives();
-    let _ = eng.hyphen_trie.load_hyphen_file(std::path::Path::new(
-        "/usr/share/texmf-dist/tex/generic/hyphen/hyphen.tex",
-    ));
-    eng.add_nullfont();
-    eng.input_file("latex.ltx");
-
-    let mut step = 0u64;
-    while !eng.end_occurred {
-        let t = eng.get_token();
-        if t == tex_core::input::EOF_MARKER {
-            break;
-        }
-        step += 1;
-        let fnm = eng.input.current_file_name();
-        let ln = eng.input.current_file_line();
-        if step % 50_000 == 0 {
-            eprintln!("step {} at {}:{} stack_depth={}", step, fnm, ln, eng.input.stack.len());
-        }
-        if fnm.ends_with("latex.ltx") && ln == 1227 && t.is_cs() {
-            let nm = eng.cs.name(t.cs_id());
-            if nm == b"@onlypreamble" {
-                let eq = eng
-                    .eqtb
-                    .resolve(t.cs_id())
-                    .map(|e| e.kind_name())
-                    .unwrap_or("none");
-                eprintln!(
-                    "HIT \\@onlypreamble at L{} eq={} level={} step={}",
-                    ln, eq, eng.eqtb.cur_level, step
-                );
-            }
-        }
-        eng.dispatch(t);
-        if fnm.ends_with("latex.ltx") && ln >= 1230 {
-            eprintln!("BREAK at {}:{}", fnm, ln);
-            break;
-        }
-        if step > 20_000_000 {
-            panic!("too many steps, still at {}:{}", fnm, ln);
-        }
-    }
-    let id = eng.cs.lookup(b"@onlypreamble").expect("cs interned");
-    match eng.eqtb.resolve(id) {
-        Some(Equiv::Macro(_)) => {}
-        other => panic!(
-            "\\@onlypreamble not a macro after L1230: {:?} errors={} term={}",
-            other.map(|e| e.kind_name()),
-            eng.error_count,
-            eng.term
-        ),
-    }
-    eprintln!(
-        "ok: \\@onlypreamble defined, level={} errors={} step={}",
-        eng.eqtb.cur_level, eng.error_count, step
+    assert_eq!(
+        eng.eqtb.dim_params[DimParam::PdfPageWidth.idx() as usize],
+        0
+    );
+    assert_eq!(
+        eng.eqtb.dim_params[DimParam::PdfPageHeight.idx() as usize],
+        0
     );
 }

@@ -78,7 +78,7 @@ link" cleanly.
 ## Deferred (not in scope)
 - Font subsetting (full fonts embedded per assignment).
 - Map slant/extend -> synthetic font matrices; Type3/Type42/TTF;
-  \pdfxform/\pdfximage; colorstack implementation beyond push/pop;
+  colorstack implementation beyond push/pop;
   outline nesting from negative counts (flat tree now).
 
 ## Late additions (post-first-green)
@@ -146,3 +146,102 @@ link" cleanly.
   /Length), /ToUnicode x2, URI + named-dest link annots with glyph-tight
   rects, /Names tree with /XYZ and /FitBH; pdfinfo 0 errors, mutool
   clean, pdftotext extracts cleanly. Unit tests: fontload 8, pdf_fonts 3.
+
+## Exact document parity gate
+
+- `crates/tex-core/tests/doc_parity.rs` compares every page at 150 DPI in RGB.
+  A pixel differs when any channel differs; there is no tolerance, cropping,
+  page sampling, or image registration. Each document must reach 99% aggregate
+  parity and match its reference page count (trust 72, Beamer 29, AI 110).
+- Prepare isolated `trust-rust`, `trust-reference`, `beamer-rust`,
+  `beamer-reference`, `ai-rust`, and `ai-reference` directories. Reference
+  builds use `latexmk -pdf` with resolved bibliography and cross-references.
+  Rust builds use the same inputs and basename, with PDF/dependency caches
+  disabled by removing only that isolated job's cache files between passes.
+- Run `TEX_PARITY_ROOT=/path/to/artifacts cargo test -p tex-core --test
+  doc_parity -- --ignored --nocapture`. The gate only reads prepared PDFs;
+  it does not build into or modify manuscript source directories.
+- PNG image references carry dimensions through packing and shipout;
+  `pdfsetmatrix` applies transformations about the current TeX position.
+  Image XObjects appear only in resources of pages that reference them:
+  unrelated soft masks can otherwise alter text antialiasing.
+- Math conversion preserves nested fraction/delimiter boundaries. Overlines,
+  vcenters, and default operator limits use the conversion-time math style.
+  Materialized discretionary text no longer reapplies replacement counts.
+
+## Corpus graphics and comparison
+
+- `\pdfximage` imports selected PDF pages as vector Form XObjects using the
+  Rust `lopdf` parser. Crop/media/bleed/trim/art boxes, inherited resources,
+  page rotation, and nonzero box origins are preserved. Reachable resource
+  references are remapped into the destination object-number space.
+- JPEG images use native DCT streams, JFIF density, and grayscale/RGB/CMYK
+  color spaces. PNG palette, grayscale-alpha, transparency, interlacing, and
+  non-eight-bit input use the Rust `png` decoder; existing fast paths remain
+  for ordinary eight-bit images. A palette/alpha smoke matched the system
+  renderer pixel-for-pixel at 72 DPI.
+- A CLI smoke including a rotated, cropped second PDF page and a JPEG
+  compiled without errors in both engines. Extracted text matched; the
+  72-DPI mean absolute channel difference was 0.0014 or less on a 0–255 scale.
+- `python3 scripts/test_corpus.py --mode single-pass --jobs 4 --timeout 60
+  --output output/corpus` compiles the 100 manifest projects with one
+  invocation per engine (72-DPI similarity). This remains a **single-pass**
+  diagnostic and never claims campaign success.
+- The default `--mode campaign` runs the 104-document parity campaign: the
+  100 corpus projects plus trust, beamer, ai and cluster_ceo inventoried
+  from the prepared/source manifests (`/tmp/tex-speed-verified-*/benchmarks/
+  inputs.json`, falling back to `/tmp/tex-parity-live`). Both engines get
+  byte-identical frozen workspace copies (verified before any mutation, no
+  cross-engine aux/.bbl seeding), converge independently to stable aux
+  hashes (max `--max-passes`), and honor bibliography state: a genuinely
+  shipped source `.bbl` is preserved untouched on both sides; aux-driven
+  bibliographies run system BibTeX for the reference and native
+  `tex-bibtex` for Rust output — never a system binary for Rust. All pass
+  logs are retained; Rust `.depcache`/`.pagecache` are deleted before every
+  pass. The dependency overlay is exported identically to both engines via
+  absolute `TEXMFHOME` (TDS packages) plus `TEXMFVAR` (updmap-user font
+  maps). fontspec/xeCJK documents build their reference with system
+  XeTeX and luacode documents with LuaTeX; the Rust side stays the native
+  Rust binary and unsupported-engine failures are retained gate blockers.
+  Comparison is exact RGB parity at 150 DPI with identical geometry and
+  page counts (no cropping/tolerance), per-page scores, worst-page
+  expected/actual/diff PNGs under `worst/`, and a hard gate
+  (`gate.json`) that fails incomplete coverage, compilation or convergence
+  errors, invalid PDFs, non-`tex-rs` producers, raster warnings, any page
+  below `--page-min` or document below `--doc-min` percent (both 99).
+  Full baseline: `python3 scripts/test_corpus.py --mode campaign --jobs 4
+  --timeout 120 --max-passes 5 --output output/corpus-campaign`; focused
+  subset: append `--only id1,id2` (private ids are
+  `trust,beamer,ai,cluster_ceo`).
+- Corpus package fixes cover nested numeric conditionals, scanner line
+  boundaries, real `\read` tokenization, terminal-read emergency stops,
+  `\globaldefs` assignment scope, bounded `\write` expansion, POSIX
+  `\pdfmatch` captures, expandable split marks, and `\holdinginserts`.
+- Math lists retain `\nonscript` until conversion knows the style, then
+  suppress only an immediately adjacent glue/kern in script styles.
+  Explicit math glue and kern widths use the conversion-time math font.
+- Format version 4 / semantics generation 6 rejects stale bootstrap state.
+  Rebuild the format before freezing a binary for a corpus run.
+- Expanded text preserves consecutive parameter tokens and nested
+  `\unexpanded` protection; rebuilding the format is necessary to repair
+  previously corrupted expl3 conditional definitions.
+- `\pdfobj stream ... file{...}` consumes one body and embeds binary bytes
+  with their exact stream length. Reserved object IDs are retained.
+- `\pdfmdfivesum` computes MD5 over TeX string bytes or actual file contents;
+  `\pdffiledump` honors offset and length and emits uppercase hexadecimal.
+  Missing file-size queries no longer synthesize a `.tex` placeholder.
+- `\fontcharwd`, `\fontcharht`, `\fontchardp`, and `\fontcharic` read the
+  loaded font's scaled metrics, including in `\the` and dimension units.
+- Latest complete diagnostic: `output/corpus-pass3/report.json`, using the
+  frozen binary and matching format in `output/corpus-pass3/bin`, six jobs,
+  a 30-second limit, and one invocation per engine/project (no BibTeX).
+  Rust emitted 55 valid PDFs: 25 clean runs and 30 runs with errors.
+  Another 11 runs failed and 34 timed out. System pdfTeX emitted 96 valid PDFs.
+  Of 55 paired PDFs, 32 matched page counts and none matched pixels exactly.
+  All 46 PDFs from pass 2 were retained, with nine additional PDFs.
+- Remaining blockers include missing font-expansion/letterspacing primitives,
+  output-routine scanner errors, package-specific macro failures, and hangs.
+  Valid PDF output is not evidence of clean compilation or layout parity.
+- Verification for this iteration: 78 `expl3_tricks` regressions, two PDF
+  driver regressions, and seven format tests passed. CLI oracle probes matched
+  binary stream contents, MD5/file-dump bytes, and font-character dimensions.

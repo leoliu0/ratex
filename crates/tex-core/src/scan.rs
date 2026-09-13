@@ -2,9 +2,10 @@
 //! \meaning, general text.
 
 use crate::boxes::Glue;
+use crate::engine::{Engine, PhysicalTokenSource};
 use crate::eqtb::Equiv;
-use crate::engine::Engine;
-use crate::prim::{DimParam, GlueParam, IntParam, Prim};
+use crate::input::{SourceContext, SourceMark};
+use crate::prim::{DimParam, IntParam, Prim};
 
 #[derive(Clone, Copy, Debug)]
 enum UnitKind {
@@ -12,10 +13,61 @@ enum UnitKind {
     InternalSp(i64),
     Sp,
 }
+
+/// A scanner location that is cheap to retain while valid input is parsed.
+/// Physical tokens keep only coordinates; macro-generated tokens need the
+/// already-captured call-site bookmark so a later unit scan cannot erase it.
+enum NumericOrigin {
+    Physical(PhysicalTokenSource),
+    Mark(SourceMark),
+}
 use crate::scaled::{mult, ONE};
 use crate::token::Token;
 
 impl Engine {
+    #[inline]
+    fn numeric_origin(&self) -> Option<NumericOrigin> {
+        self.diagnostic_physical_source
+            .map(NumericOrigin::Physical)
+            .or_else(|| self.current_token_source_mark().map(NumericOrigin::Mark))
+    }
+
+    fn numeric_origin_context(&self, origin: NumericOrigin) -> Option<SourceContext> {
+        match origin {
+            NumericOrigin::Physical(source) => self
+                .input
+                .source_mark_at(source.source_index, source.line, source.byte_column)
+                .map(|mark| mark.to_context()),
+            NumericOrigin::Mark(mark) => Some(mark.to_context()),
+        }
+    }
+
+    /// Check a prospective append to a scanner-owned token list without
+    /// overflowing `usize`. Formatting and source materialization happen only
+    /// on the exceptional path, leaving the usual scan loop as one branch.
+    #[inline(always)]
+    pub(crate) fn scanned_token_list_has_room(
+        &mut self,
+        current: usize,
+        additional: usize,
+        description: &str,
+        origin: Option<&crate::input::SourceMark>,
+    ) -> bool {
+        if current <= crate::input::MAX_TOKEN_LIST_TOKENS
+            && additional <= crate::input::MAX_TOKEN_LIST_TOKENS - current
+        {
+            return true;
+        }
+        self.fatal_error_at(
+            &format!(
+                "TeX capacity exceeded, sorry [{description}={}]",
+                crate::input::MAX_TOKEN_LIST_TOKENS
+            ),
+            origin.map(crate::input::SourceMark::to_context),
+        );
+        false
+    }
+
     /// skip spaces and \relax tokens (TeX's "scan something" preamble)
     pub fn skip_spaces_relax(&mut self) {
         loop {
@@ -26,7 +78,7 @@ impl Engine {
             if t.is_cs() && self.cur_prim == Some(Prim::Relax) {
                 continue;
             }
-            { let __pt = t; if crate::debug_flag("PUSHWATCH") && __pt.is_cs() && self.cs.name(__pt.cs_id()) == b"ifx" && self.input.current_file_line() > 9000 { eprintln!("PUSHIFX crates/tex-core/src/scan.rs:{} line={}", {line!()}, self.input.current_file_line()); } self.pushed.push(__pt); }
+            self.pushed.push(t);
             return;
         }
     }
@@ -41,32 +93,32 @@ impl Engine {
         }
     }
 
-
     fn token_is_fi_or_else(&self, t: Token) -> bool {
         if !t.is_cs() {
             return false;
         }
         matches!(
             self.eqtb.resolve(t.cs_id()),
-            Some(Equiv::Prim(Prim::Else | Prim::Or | Prim::Fi | Prim::ElIf | Prim::ElIfX))
+            Some(Equiv::Prim(
+                Prim::Else | Prim::Or | Prim::Fi | Prim::ElIf | Prim::ElIfX
+            ))
         )
     }
 
-    /// Like get_x_raw, but \\else/\\or/\\fi of the *outer* pending
-    /// \\ifnum/\\ifcase stay unexpanded so they can terminate the number
-    /// (\\ifcase2\\else). Nested \\if...\\fi inside \\@parse@version@dash
-    /// must still run: only freeze when if_stack is not deeper than
-    /// when scan_int started.
-    fn get_x_raw_keep_cond(&mut self, outer_if_depth: usize) -> Token {
+    /// A delimiter terminates an unfinished conditional's numeric operand;
+    /// delimiters of already selected branches still expand normally.
+    fn get_x_raw_keep_cond(&mut self) -> Token {
         let t = self.raw_token();
-        if self.token_is_fi_or_else(t) && self.if_stack.len() <= outer_if_depth {
+        if self.token_is_fi_or_else(t)
+            && self
+                .pending_if_depth
+                .is_some_and(|depth| self.if_stack.len() <= depth)
+        {
             return t;
         }
         self.pushed.push(t);
         self.get_x_raw()
     }
-
-
 
     /// Glue parameter, `\\skip n`, or skipdef'd CS. Knuth copies these as a
     /// whole glue value (and their width is a legal dimen/unit).
@@ -74,26 +126,21 @@ impl Engine {
         if !t.is_cs() {
             return None;
         }
-        match self.cur_prim {
-            Some(Prim::GlueP(p)) => {
-                return Some(self.eqtb.glue_params[p.idx() as usize].clone());
+        match self.eqtb.resolve(t.cs_id()).cloned() {
+            Some(Equiv::Prim(Prim::GlueP(p))) => {
+                Some(self.eqtb.glue_params[p.idx() as usize].clone())
             }
-            Some(Prim::Skip) => {
+            Some(Equiv::Prim(Prim::Skip)) => {
                 let i = self.scan_reg_num();
-                return Some(self.eqtb.skip[i as usize].clone());
+                Some(self.eqtb.skip[i as usize].clone())
             }
-            Some(Prim::MuSkip) => {
+            Some(Equiv::Prim(Prim::MuSkip)) => {
                 let i = self.scan_reg_num();
-                return Some(self.eqtb.muskip[i as usize].clone());
+                Some(self.eqtb.muskip[i as usize].clone())
             }
-            Some(Prim::LastSkip) => {
-                return Some(self.last_skip_value());
-            }
-            _ => {}
-        }
-        match self.eqtb.resolve(t.cs_id()) {
-            Some(Equiv::SkipReg(i)) => Some(self.eqtb.skip[*i as usize].clone()),
-            Some(Equiv::MuSkipReg(i)) => Some(self.eqtb.muskip[*i as usize].clone()),
+            Some(Equiv::Prim(Prim::LastSkip)) => Some(self.last_skip_value()),
+            Some(Equiv::SkipReg(i)) => Some(self.eqtb.skip[i as usize].clone()),
+            Some(Equiv::MuSkipReg(i)) => Some(self.eqtb.muskip[i as usize].clone()),
             _ => None,
         }
     }
@@ -114,7 +161,7 @@ impl Engine {
     /// space, otherwise back it up. After an alphabetic constant this is
     /// what drives expl3 f-expansion (`\romannumeral`^^@\foo` expands `\foo`).
     fn scan_optional_space(&mut self) {
-        let t = self.get_x_raw();
+        let t = self.raw_token();
         if !t.is_space() {
             self.pushed.push(t);
         }
@@ -133,31 +180,27 @@ impl Engine {
     }
 
     fn token_is_relax(&self, t: Token) -> bool {
-        t.is_cs()
-            && matches!(
-                self.eqtb.resolve(t.cs_id()),
-                Some(Equiv::Prim(Prim::Relax))
-            )
+        t.is_cs() && matches!(self.eqtb.resolve(t.cs_id()), Some(Equiv::Prim(Prim::Relax)))
     }
 
     /// scan optional `=` with spaces/relax skipped
     pub fn scan_optional_equals(&mut self) {
         self.skip_spaces_relax();
         let t = self.get_token();
-        if t.is_char() && t.chr() == b'=' as u32 {
-            self.skip_spaces_relax();
-        } else {
-            let __pt = t;
-            if crate::debug_flag("PUSHWATCH") && __pt.is_cs() && self.cs.name(__pt.cs_id()) == b"ifx" && self.input.current_file_line() > 9000 {
-                eprintln!("PUSHIFX crates/tex-core/src/scan.rs:{} line={}", line!(), self.input.current_file_line());
-            }
-            self.pushed.push(__pt);
+        if !(t.is_char() && t.chr() == b'=' as u32) {
+            self.pushed.push(t);
         }
     }
 
     /// read a sequence of digit char tokens in the given radix
-    fn scan_digits(&mut self, radix: u32, allow_letters: bool) -> i64 {
+    fn scan_digits(
+        &mut self,
+        radix: u32,
+        allow_letters: bool,
+    ) -> (i64, bool, Option<SourceContext>) {
         let mut v: i64 = 0;
+        let mut overflowed = false;
+        let mut overflow_source = None;
         loop {
             // expanding fetch, no space skip: a space terminates the constant
             let t = self.get_x_raw();
@@ -165,29 +208,39 @@ impl Engine {
                 break; // absorb one space, number complete
             }
             if !t.is_char() {
-                { let __pt = t; if crate::debug_flag("PUSHWATCH") && __pt.is_cs() && self.cs.name(__pt.cs_id()) == b"ifx" && self.input.current_file_line() > 9000 { eprintln!("PUSHIFX crates/tex-core/src/scan.rs:{} line={}", {line!()}, self.input.current_file_line()); } self.pushed.push(__pt); }
+                self.pushed.push(t);
                 break;
             }
             let c = t.chr();
             let d = match () {
                 _ if (b'0' as u32..=b'9' as u32).contains(&c) => c - b'0' as u32,
-                _ if allow_letters && (b'a' as u32..=b'f' as u32).contains(&c) => c - b'a' as u32 + 10,
-                _ if allow_letters && (b'A' as u32..=b'F' as u32).contains(&c) => c - b'A' as u32 + 10,
+                _ if allow_letters && (b'a' as u32..=b'f' as u32).contains(&c) => {
+                    c - b'a' as u32 + 10
+                }
+                _ if allow_letters && (b'A' as u32..=b'F' as u32).contains(&c) => {
+                    c - b'A' as u32 + 10
+                }
                 _ => {
-                    { let __pt = t; if crate::debug_flag("PUSHWATCH") && __pt.is_cs() && self.cs.name(__pt.cs_id()) == b"ifx" && self.input.current_file_line() > 9000 { eprintln!("PUSHIFX crates/tex-core/src/scan.rs:{} line={}", {line!()}, self.input.current_file_line()); } self.pushed.push(__pt); }
+                    self.pushed.push(t);
                     break;
                 }
             };
             if d >= radix {
-                { let __pt = t; if crate::debug_flag("PUSHWATCH") && __pt.is_cs() && self.cs.name(__pt.cs_id()) == b"ifx" && self.input.current_file_line() > 9000 { eprintln!("PUSHIFX crates/tex-core/src/scan.rs:{} line={}", {line!()}, self.input.current_file_line()); } self.pushed.push(__pt); }
+                self.pushed.push(t);
                 break;
             }
             v = v * radix as i64 + d as i64;
             if v > 0x7FFF_FFFF {
                 v = 0x7FFF_FFFF;
+                if !overflowed {
+                    overflowed = true;
+                    overflow_source = self
+                        .numeric_origin()
+                        .and_then(|origin| self.numeric_origin_context(origin));
+                }
             }
         }
-        v
+        (v, overflowed, overflow_source)
     }
 
     fn is_digit_token(t: Token) -> bool {
@@ -208,7 +261,6 @@ impl Engine {
     }
 
     fn scan_int_inner(&mut self) -> i32 {
-        let outer_if_depth = self.if_stack.len();
         let mut negate = false;
         let mut v: i64;
         'scan_loop: loop {
@@ -223,10 +275,12 @@ impl Engine {
             }
             if Self::is_digit_token(t) {
                 v = (t.chr() - b'0' as u32) as i64;
+                let mut overflowed = false;
+                let mut overflow_source = None;
                 loop {
                     // expanding fetch without space skip (tex.web get_x_token):
                     // expandables continue the number, a space terminates it
-                    let t2 = self.get_x_raw_keep_cond(outer_if_depth);
+                    let t2 = self.get_x_raw_keep_cond();
 
                     if t2.is_space() {
                         break;
@@ -235,20 +289,37 @@ impl Engine {
                         v = v * 10 + (t2.chr() - b'0' as u32) as i64;
                         if v > 0x7FFF_FFFF {
                             v = 0x7FFF_FFFF;
+                            if !overflowed {
+                                overflowed = true;
+                                overflow_source = self
+                                    .numeric_origin()
+                                    .and_then(|origin| self.numeric_origin_context(origin));
+                            }
                         }
                     } else {
-                        { let __pt = t2; if crate::debug_flag("PUSHWATCH") && __pt.is_cs() && self.cs.name(__pt.cs_id()) == b"ifx" && self.input.current_file_line() > 9000 { eprintln!("PUSHIFX crates/tex-core/src/scan.rs:{} line={}", {line!()}, self.input.current_file_line()); } self.pushed.push(__pt); }
+                        self.pushed.push(t2);
                         break;
                     }
+                }
+                if overflowed {
+                    self.error_at("Number too big", overflow_source);
                 }
                 break;
             }
             if t.is_char() && t.chr() == b'\'' as u32 {
-                v = self.scan_digits(8, false);
+                let (value, overflowed, source) = self.scan_digits(8, false);
+                v = value;
+                if overflowed {
+                    self.error_at("Number too big", source);
+                }
                 break;
             }
             if t.is_char() && t.chr() == b'"' as u32 {
-                v = self.scan_digits(16, true);
+                let (value, overflowed, source) = self.scan_digits(16, true);
+                v = value;
+                if overflowed {
+                    self.error_at("Number too big", source);
+                }
                 break;
             }
             if t.is_char() && t.chr() == b'`' as u32 {
@@ -270,7 +341,7 @@ impl Engine {
                 // \\fi/\\else of the enclosing \\ifnum must stay raw: expanding
                 // it would pop the not-yet-pushed conditional state
                 // (longtable's \\ifnum0=`}\\fi brace-hiding idiom).
-                let t3 = self.get_x_raw_keep_cond(outer_if_depth);
+                let t3 = self.get_x_raw_keep_cond();
                 if !t3.is_space() {
                     self.pushed.push(t3);
                 }
@@ -281,6 +352,12 @@ impl Engine {
                     Some(Prim::Count) => {
                         let idx = self.scan_reg_num();
                         v = self.eqtb.count[idx as usize] as i64;
+                        break 'scan_loop;
+                    }
+                    // tex.web §413: `\parshape` used as an integer is the
+                    // number of active shape specifications.
+                    Some(Prim::ParShape) => {
+                        v = self.par_shape.len() as i64;
                         break 'scan_loop;
                     }
                     Some(Prim::CatCode) => {
@@ -315,6 +392,19 @@ impl Engine {
                     }
                     Some(Prim::IntP(p)) => {
                         v = self.int_param_value(p) as i64;
+                        break 'scan_loop;
+                    }
+                    Some(Prim::PdfShellEscape) => {
+                        // This engine never executes shell commands.
+                        v = 0;
+                        break 'scan_loop;
+                    }
+                    Some(Prim::PdfLastXPos) => {
+                        v = self.pdf_last_x as i64;
+                        break 'scan_loop;
+                    }
+                    Some(Prim::PdfLastYPos) => {
+                        v = self.pdf_last_y as i64;
                         break 'scan_loop;
                     }
                     Some(Prim::Wd) => {
@@ -366,6 +456,44 @@ impl Engine {
                         v = self.eqtb.skew_char.get(f).copied().unwrap_or(0) as i64;
                         break 'scan_loop;
                     }
+                    Some(Prim::PdfNoLigatures) => {
+                        let f = self.scan_font_id() as usize;
+                        v = self.test_no_ligatures(f as u16) as i64;
+                        break 'scan_loop;
+                    }
+                    Some(
+                        p @ (Prim::EfCode
+                        | Prim::LpCode
+                        | Prim::RpCode
+                        | Prim::TagCode
+                        | Prim::KnBsCode
+                        | Prim::StBsCode
+                        | Prim::ShBsCode
+                        | Prim::KnBcCode
+                        | Prim::KnAcCode),
+                    ) => {
+                        let f = self.scan_font_id() as usize;
+                        let c = self.scan_char_num().clamp(0, 255) as u8;
+                        let ex = match self.eqtb.expand.get(f) {
+                            Some(x) => x,
+                            None => {
+                                v = -1;
+                                break 'scan_loop;
+                            }
+                        };
+                        v = match p {
+                            Prim::EfCode => ex.ef_code(c),
+                            Prim::LpCode => ex.lp_code(c),
+                            Prim::RpCode => ex.rp_code(c),
+                            Prim::TagCode => self.get_tag_code(f as u16, c),
+                            Prim::KnBsCode => ex.kn_bs_code(c),
+                            Prim::StBsCode => ex.st_bs_code(c),
+                            Prim::ShBsCode => ex.sh_bs_code(c),
+                            Prim::KnBcCode => ex.kn_bc_code(c),
+                            _ => ex.kn_ac_code(c),
+                        } as i64;
+                        break 'scan_loop;
+                    }
                     Some(Prim::Dimen) => {
                         let i = self.scan_reg_num();
                         v = self.eqtb.dimen[i as usize] as i64;
@@ -387,16 +515,33 @@ impl Engine {
                         v = self.last_skip_value().width as i64;
                         break 'scan_loop;
                     }
-                    Some(p @ (Prim::PdfLastObj | Prim::PdfLastXForm | Prim::PdfLastXImage
-                    | Prim::PdfLastLink | Prim::PdfLastAnnot)) => {
+                    Some(
+                        p @ (Prim::PdfLastObj
+                        | Prim::PdfLastXForm
+                        | Prim::PdfLastXImage
+                        | Prim::PdfLastLink
+                        | Prim::PdfLastAnnot),
+                    ) => {
                         v = self.pdf_last_value(p) as i64;
+                        break 'scan_loop;
+                    }
+                    Some(
+                        p @ (Prim::FontCharWd
+                        | Prim::FontCharHt
+                        | Prim::FontCharDp
+                        | Prim::FontCharIc),
+                    ) => {
+                        v = self.scan_font_char_dimen(p) as i64;
                         break 'scan_loop;
                     }
                     Some(Prim::FontDimen) => {
                         let idx = self.scan_int();
                         let f = self.scan_font_id();
                         let i = if idx > 0 { idx as usize - 1 } else { 0 };
-                        v = self.eqtb.font_params[f as usize].get(i).copied().unwrap_or(0) as i64;
+                        v = self.eqtb.font_params[f as usize]
+                            .get(i)
+                            .copied()
+                            .unwrap_or(0) as i64;
                         break 'scan_loop;
                     }
                     Some(Prim::Skip) => {
@@ -408,43 +553,49 @@ impl Engine {
                         v = self.eqtb.glue_params[p.idx() as usize].width as i64;
                         break 'scan_loop;
                     }
-                    _ => {
-                        match self.eqtb.resolve(t.cs_id()).cloned() {
-                            Some(Equiv::CountReg(i)) => {
-                                v = self.eqtb.count[i as usize] as i64;
-                                break 'scan_loop;
-                            }
-                            Some(Equiv::CharDef(c)) => {
-                                v = c as i64;
-                                break 'scan_loop;
-                            }
-                            Some(Equiv::MathCharDef(c)) => {
-                                v = c as i64;
-                                break 'scan_loop;
-                            }
-                            Some(Equiv::DimenReg(i)) => {
-                                v = self.eqtb.dimen[i as usize] as i64;
-                                break 'scan_loop;
-                            }
-                            Some(Equiv::SkipReg(i)) => {
-                                v = self.eqtb.skip[i as usize].width as i64;
-                                break 'scan_loop;
-                            }
-                            Some(Equiv::MuSkipReg(i)) => {
-                                v = self.eqtb.muskip[i as usize].width as i64;
-                                break 'scan_loop;
-                            }
-                            _ => {}
+                    _ => match self.eqtb.resolve(t.cs_id()).cloned() {
+                        Some(Equiv::CountReg(i)) => {
+                            v = self.eqtb.count[i as usize] as i64;
+                            break 'scan_loop;
                         }
-                    }
+                        Some(Equiv::CharDef(c)) => {
+                            v = c as i64;
+                            break 'scan_loop;
+                        }
+                        Some(Equiv::MathCharDef(c)) => {
+                            v = c as i64;
+                            break 'scan_loop;
+                        }
+                        Some(Equiv::DimenReg(i)) => {
+                            v = self.eqtb.dimen[i as usize] as i64;
+                            break 'scan_loop;
+                        }
+                        Some(Equiv::SkipReg(i)) => {
+                            v = self.eqtb.skip[i as usize].width as i64;
+                            break 'scan_loop;
+                        }
+                        Some(Equiv::MuSkipReg(i)) => {
+                            v = self.eqtb.muskip[i as usize].width as i64;
+                            break 'scan_loop;
+                        }
+                        Some(Equiv::Prim(Prim::GlueP(p))) => {
+                            v = self.eqtb.glue_params[p.idx() as usize].width as i64;
+                            break 'scan_loop;
+                        }
+                        Some(Equiv::Prim(Prim::DimP(p))) => {
+                            v = self.dim_param_value(p) as i64;
+                            break 'scan_loop;
+                        }
+                        Some(Equiv::Prim(Prim::IntP(p))) => {
+                            v = self.int_param_value(p) as i64;
+                            break 'scan_loop;
+                        }
+                        _ => {}
+                    },
                 }
             }
-            { let __pt = t; if crate::debug_flag("PUSHWATCH") && __pt.is_cs() && self.cs.name(__pt.cs_id()) == b"ifx" && self.input.current_file_line() > 9000 { eprintln!("PUSHIFX crates/tex-core/src/scan.rs:{} line={}", {line!()}, self.input.current_file_line()); } self.pushed.push(__pt); }
-            if crate::debug_flag("IFTRACE") {
-                let nm = if t.is_cs() { String::from_utf8_lossy(self.cs.name(t.cs_id())).into_owned() } else { format!("cc{}", t.cc()) };
-                let ek = match self.eqtb.resolve(t.cs_id()) { Some(e) => e.kind_name(), None => "U" };
-                eprintln!("MISSNUM tok={} kind={} prim={:?} srcs={:?}", nm, ek, self.cur_prim, self.input.stack.iter().rev().take(2).map(|src| match src { crate::input::Source::TokList{name,pos,toks,..} => format!("T:{} {}/{}",name,pos,toks.len()), crate::input::Source::File{name,line_no,..} => format!("F:{}",line_no)}).collect::<Vec<_>>());
-            }
+            self.pushed.push(t);
+
             // tex.web \S470: a char token ends the number with an error; a
             // control sequence (e.g. a frozen \protected macro stopping an
             // f-expansion) ends it SILENTLY — the token was already pushed
@@ -462,48 +613,93 @@ impl Engine {
             r
         }
     }
+    fn local_clock() -> (i32, i32, i32, i32) {
+        let mut t: libc::time_t = 0;
+        let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+        unsafe {
+            libc::time(&mut t);
+            #[cfg(unix)]
+            libc::localtime_r(&t, &mut tm);
+            #[cfg(windows)]
+            libc::localtime_s(&mut tm, &t);
+        }
+        (
+            tm.tm_year + 1900,
+            tm.tm_mon + 1,
+            tm.tm_mday,
+            tm.tm_hour * 60 + tm.tm_min,
+        )
+    }
 
     pub fn int_param_value(&self, p: IntParam) -> i32 {
         match p {
             IntParam::CurrentGroupLevel => (self.eqtb.cur_level.saturating_sub(1)) as i32,
-            IntParam::CurrentGroupType => match self.eqtb.cur_group_type() {
-                None => 0,
-                Some(crate::eqtb::LevelType::Simple) => 1,
-                Some(crate::eqtb::LevelType::SemiSimple) => 2,
-                Some(crate::eqtb::LevelType::Group) => 1,
-                Some(crate::eqtb::LevelType::Box) => 9,
-                _ => 1,
-            },
+            IntParam::CurrentGroupType => {
+                if self.scanner_status == crate::engine::ScannerStatus::Aligning {
+                    if self.align_in_noalign {
+                        return 7; // no_align_group
+                    }
+                    if self.align_phase() == crate::align::PH_IDLE {
+                        return 6; // align_group
+                    }
+                }
+                let ty = self.eqtb.cur_group_type();
+                let v = match ty {
+                    None => 0,
+                    Some(crate::eqtb::LevelType::Simple) => 1,
+                    Some(crate::eqtb::LevelType::SemiSimple) => 14,
+                    Some(crate::eqtb::LevelType::Group) => 1,
+                    Some(crate::eqtb::LevelType::Box) => match self.box_kinds.last().copied() {
+                        Some(0) => 2,
+                        Some(1) => 4,
+                        Some(2) => 5,
+                        Some(3) => 12,
+                        Some(7) => 6,
+                        _ => 2,
+                    },
+                    _ => 1,
+                };
+                v
+            }
             IntParam::CurrentIfLevel => self.if_stack.len() as i32,
             IntParam::CurrentIfType => 0,
             IntParam::CurrentIfBranch => 0,
             IntParam::LastNodeType => self.last_node_type_value(),
             IntParam::Badness => self.last_badness,
-            IntParam::InputLineNo => self.input.current_file_line() as i32,
-            IntParam::Time => {
-                let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
-                ((now.as_secs() % 86400) / 60) as i32
-            }
-            IntParam::Day | IntParam::Month | IntParam::Year => {
-                // derived from date via chrono-less civil calculation
-                let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
-                // adjust for local time offset if available, otherwise UTC
-                let days = (now.as_secs() / 86400) as i64;
-                // Howard's algorithm
-                let z = days + 719468;
-                let era = z.div_euclid(146097);
-                let doe = z.rem_euclid(146097);
-                let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
-                let y = yoe + era * 400;
-                let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-                let mp = (5 * doy + 2) / 153;
-                let d = doy - (153 * mp + 2) / 5 + 1;
-                let m = if mp < 10 { mp + 3 } else { mp - 9 };
-                let yr = if m <= 2 { y + 1 } else { y };
+            IntParam::InputLineNo => self.current_diagnostic_line() as i32,
+            IntParam::SpaceFactor => self.space_factor,
+            IntParam::PrevGraf => self.prev_graf(),
+            IntParam::Time | IntParam::Day | IntParam::Month | IntParam::Year => {
+                // TeX Live / Web2C §241: \time, \day, \month, \year are initialized
+                // from system local time (or SOURCE_DATE_EPOCH in UTC when set).
+                let (year, month, day, time_mins) =
+                    if let Ok(s) = std::env::var("SOURCE_DATE_EPOCH") {
+                        if let Ok(epoch) = s.trim().parse::<i64>() {
+                            let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+                            let t = epoch as libc::time_t;
+                            unsafe {
+                                #[cfg(unix)]
+                                libc::gmtime_r(&t, &mut tm);
+                                #[cfg(windows)]
+                                libc::gmtime_s(&mut tm, &t);
+                            }
+                            (
+                                tm.tm_year + 1900,
+                                tm.tm_mon + 1,
+                                tm.tm_mday,
+                                tm.tm_hour * 60 + tm.tm_min,
+                            )
+                        } else {
+                            Self::local_clock()
+                        }
+                    } else {
+                        Self::local_clock()
+                    };
                 match p {
-                    IntParam::Day => d as i32,
-                    IntParam::Month => m as i32,
-                    _ => yr as i32,
+                    IntParam::Time => time_mins,
+                    IntParam::Day => day,
+                    IntParam::Month => month,
+                    _ => year,
                 }
             }
             _ => self.eqtb.int_params[p.idx() as usize],
@@ -513,6 +709,45 @@ impl Engine {
     pub fn dim_param_value(&self, p: DimParam) -> i32 {
         match p {
             DimParam::PrevDepth => self.prev_depth,
+            // fire_up has reset the next page's counters, but an active
+            // output routine reads the completed page's register snapshot.
+            DimParam::PageGoal
+            | DimParam::PageTotal
+            | DimParam::PageDepth
+            | DimParam::PageStretch
+            | DimParam::PageFilStretch
+            | DimParam::PageFillStretch
+            | DimParam::PageFilllStretch
+            | DimParam::PageShrink
+                if self.in_output =>
+            {
+                self.eqtb.dim_params[p.idx() as usize]
+            }
+            DimParam::PageGoal => {
+                let pg = if !self.page_goal_set {
+                    0x3FFF_FFFF
+                } else {
+                    self.page_goal
+                };
+                pg.clamp(i32::MIN as i64, i32::MAX as i64) as i32
+            }
+            DimParam::PageTotal => self.page_total.clamp(i32::MIN as i64, i32::MAX as i64) as i32,
+            DimParam::PageDepth => self.page_depth.clamp(i32::MIN as i64, i32::MAX as i64) as i32,
+            DimParam::PageStretch => {
+                self.page_stretch[0].clamp(i32::MIN as i64, i32::MAX as i64) as i32
+            }
+            DimParam::PageFilStretch => {
+                self.page_stretch[1].clamp(i32::MIN as i64, i32::MAX as i64) as i32
+            }
+            DimParam::PageFillStretch => {
+                self.page_stretch[2].clamp(i32::MIN as i64, i32::MAX as i64) as i32
+            }
+            DimParam::PageFilllStretch => {
+                self.page_stretch[3].clamp(i32::MIN as i64, i32::MAX as i64) as i32
+            }
+            DimParam::PageShrink => {
+                self.page_shrink[0].clamp(i32::MIN as i64, i32::MAX as i64) as i32
+            }
             _ => self.eqtb.dim_params[p.idx() as usize],
         }
     }
@@ -551,7 +786,6 @@ impl Engine {
         r
     }
 
-
     fn scan_dimen_inner(&mut self, mu: bool, _trail: bool) -> i32 {
         // signs
         let mut negate = false;
@@ -565,7 +799,7 @@ impl Engine {
                 negate = !negate;
                 continue;
             }
-            { let __pt = t; if crate::debug_flag("PUSHWATCH") && __pt.is_cs() && self.cs.name(__pt.cs_id()) == b"ifx" && self.input.current_file_line() > 9000 { eprintln!("PUSHIFX crates/tex-core/src/scan.rs:{} line={}", {line!()}, self.input.current_file_line()); } self.pushed.push(__pt); }
+            self.pushed.push(t);
             break;
         }
         // factor: integer or decimal, or a direct dimen source
@@ -578,21 +812,35 @@ impl Engine {
         let direct: Option<i32>;
         self.skip_spaces_relax();
         let t = self.get_x_raw();
-        if Self::is_digit_token(t) || (t.is_char() && (t.chr() == b'.' as u32 || t.chr() == b',' as u32)) {
+        let factor_origin = self.numeric_origin();
+        if Self::is_digit_token(t)
+            || (t.is_char() && (t.chr() == b'.' as u32 || t.chr() == b',' as u32))
+        {
             let mut ip: i64 = 0;
             if Self::is_digit_token(t) {
                 ip = (t.chr() - b'0' as u32) as i64;
+                let mut overflowed = false;
+                let mut overflow_source = None;
                 loop {
                     let t2 = self.get_x_raw();
                     if Self::is_digit_token(t2) {
                         ip = ip * 10 + (t2.chr() - b'0' as u32) as i64;
                         if ip > 0x7FFF_FFFF {
                             ip = 0x7FFF_FFFF;
+                            if !overflowed {
+                                overflowed = true;
+                                overflow_source = self
+                                    .numeric_origin()
+                                    .and_then(|origin| self.numeric_origin_context(origin));
+                            }
                         }
                     } else {
-                        { let __pt = t2; if crate::debug_flag("PUSHWATCH") && __pt.is_cs() && self.cs.name(__pt.cs_id()) == b"ifx" && self.input.current_file_line() > 9000 { eprintln!("PUSHIFX crates/tex-core/src/scan.rs:{} line={}", {line!()}, self.input.current_file_line()); } self.pushed.push(__pt); }
+                        self.pushed.push(t2);
                         break;
                     }
+                }
+                if overflowed {
+                    self.error_at("Number too big", overflow_source);
                 }
             }
             // fraction digits (all consumed even past precision, tex.web §102)
@@ -600,7 +848,10 @@ impl Engine {
             let mut seen_point = false;
             loop {
                 let t2 = self.get_x_raw();
-                if t2.is_char() && (t2.chr() == b'.' as u32 || t2.chr() == b',' as u32) && !seen_point {
+                if t2.is_char()
+                    && (t2.chr() == b'.' as u32 || t2.chr() == b',' as u32)
+                    && !seen_point
+                {
                     seen_point = true;
                     continue;
                 }
@@ -609,7 +860,7 @@ impl Engine {
                         digits.push((t2.chr() - b'0' as u32) as u8);
                     }
                 } else {
-                    { let __pt = t2; if crate::debug_flag("PUSHWATCH") && __pt.is_cs() && self.cs.name(__pt.cs_id()) == b"ifx" && self.input.current_file_line() > 9000 { eprintln!("PUSHIFX crates/tex-core/src/scan.rs:{} line={}", {line!()}, self.input.current_file_line()); } self.pushed.push(__pt); }
+                    self.pushed.push(t2);
                     break;
                 }
             }
@@ -623,7 +874,7 @@ impl Engine {
             frac_f = (a + 1) / 2;
             direct = None;
         } else if t.is_char() && t.chr() == b'`' as u32 {
-            let t2 = self.get_token();
+            let t2 = self.raw_token();
             if t2.is_char() {
                 int_part = t2.chr() as i64;
             } else if t2.is_cs() {
@@ -636,9 +887,6 @@ impl Engine {
             frac_f = 0;
             direct = None;
         } else if t.is_cs() {
-            if std::env::var("DIMTRACE").is_ok() {
-                eprintln!("DIM-CS \\{} prim={:?} L{} file={}", String::from_utf8_lossy(self.cs.name(t.cs_id())), self.cur_prim, self.input.current_file_line(), self.input.current_file_name().split('/').last().unwrap_or(""));
-            }
             match self.cur_prim {
                 Some(Prim::DimExpr) => {
                     let v = self.scan_expr_dim();
@@ -714,6 +962,16 @@ impl Engine {
                     frac_f = 0;
                     direct = None;
                 }
+                Some(Prim::PdfLastXPos) => {
+                    int_part = self.pdf_last_x as i64;
+                    frac_f = 0;
+                    direct = None;
+                }
+                Some(Prim::PdfLastYPos) => {
+                    int_part = self.pdf_last_y as i64;
+                    frac_f = 0;
+                    direct = None;
+                }
                 Some(Prim::GlueStretch) => {
                     int_part = 1;
                     frac_f = 0;
@@ -724,13 +982,25 @@ impl Engine {
                     frac_f = 0;
                     direct = Some(self.scan_etex_glue_field(1));
                 }
+                Some(
+                    p @ (Prim::FontCharWd | Prim::FontCharHt | Prim::FontCharDp | Prim::FontCharIc),
+                ) => {
+                    int_part = 1;
+                    frac_f = 0;
+                    direct = Some(self.scan_font_char_dimen(p));
+                }
                 Some(Prim::FontDimen) => {
                     let idx = self.scan_int();
                     let f = self.scan_font_id();
                     let i = if idx > 0 { idx as usize - 1 } else { 0 };
                     int_part = 1;
                     frac_f = 0;
-                    direct = Some(self.eqtb.font_params[f as usize].get(i).copied().unwrap_or(0));
+                    direct = Some(
+                        self.eqtb.font_params[f as usize]
+                            .get(i)
+                            .copied()
+                            .unwrap_or(0),
+                    );
                 }
                 Some(Prim::Count) => {
                     // internal integer coerced to dimen (sp), tex.web scan_something_internal
@@ -748,51 +1018,44 @@ impl Engine {
                 _ => match self.eqtb.resolve(t.cs_id()).cloned() {
                     Some(Equiv::DimenReg(i)) => {
                         int_part = 1;
-                    frac_f = 0;
+                        frac_f = 0;
                         direct = Some(self.eqtb.dimen[i as usize]);
                     }
                     Some(Equiv::SkipReg(i)) => {
                         int_part = 1;
-                    frac_f = 0;
+                        frac_f = 0;
                         direct = Some(self.eqtb.skip[i as usize].width);
                     }
                     Some(Equiv::MuSkipReg(i)) => {
                         int_part = 1;
-                    frac_f = 0;
+                        frac_f = 0;
                         direct = Some(self.eqtb.muskip[i as usize].width);
                     }
                     Some(Equiv::CountReg(i)) => {
                         int_part = self.eqtb.count[i as usize] as i64;
-                    frac_f = 0;
+                        frac_f = 0;
                         direct = None;
                     }
                     Some(Equiv::CharDef(c)) => {
                         int_part = c as i64;
-                    frac_f = 0;
+                        frac_f = 0;
                         direct = None;
                     }
                     Some(Equiv::MathCharDef(c)) => {
                         // \@m/\@M constants (\mathchardef'd); \offinterlineskip
                         // computes \baselineskip-\@m\p@ through this path.
                         int_part = c as i64;
-                    frac_f = 0;
+                        frac_f = 0;
                         direct = None;
                     }
                     Some(Equiv::Prim(Prim::IntP(p))) => {
                         int_part = self.int_param_value(p) as i64;
-                    frac_f = 0;
+                        frac_f = 0;
                         direct = None;
                     }
                     _ => {
                         self.pushed.push(t);
-                        if crate::debug_flag("UNITTRACE") {
-                            eprintln!("NUM-FAIL cs=\\{} prim={:?} eq={:?} L{} mac={}",
-                                String::from_utf8_lossy(self.cs.name(t.cs_id())),
-                                self.cur_prim,
-                                self.eqtb.resolve(t.cs_id()).map(|e| e.kind_name()),
-                                self.input.current_file_line(),
-                                self.current_macro);
-                        }
+
                         self.error("Missing number, treated as zero");
                         int_part = 0;
                         frac_f = 0;
@@ -802,12 +1065,10 @@ impl Engine {
             }
         } else {
             self.pushed.push(t);
-            if crate::debug_flag("UNITTRACE") {
-                eprintln!("NUM-FAIL tok=cc{}:{:#x} L{} mac={}", t.cc(), t.chr(), self.input.current_file_line(), self.current_macro);
-            }
+
             self.error("Missing number, treated as zero");
             int_part = 0;
-                        frac_f = 0;
+            frac_f = 0;
             direct = None;
         }
         if let Some(d) = direct {
@@ -816,6 +1077,7 @@ impl Engine {
         // unit (tex.web §453): standard units scale with (num, denom)
         // while internal dimensions multiply directly
         let unit = self.scan_unit(mu);
+        self.scan_optional_space();
         let v: i64 = match unit {
             UnitKind::Ratio(num, denom) => {
                 let quotient = (int_part * num) / denom;
@@ -829,11 +1091,16 @@ impl Engine {
                 let v = int_part as i128 * 65536 + frac_f as i128;
                 ((v * unit_sp as i128) / 65536) as i64
             }
-            UnitKind::Sp => {
-                int_part
-            }
+            UnitKind::Sp => int_part,
         };
-        let v = v.clamp(i32::MIN as i64, i32::MAX as i64) as i32;
+        const MAX_DIMEN: i64 = 0x3FFF_FFFF;
+        let v = if (-MAX_DIMEN..=MAX_DIMEN).contains(&v) {
+            v
+        } else {
+            let source = factor_origin.and_then(|origin| self.numeric_origin_context(origin));
+            self.error_at("Dimension too large", source);
+            v.clamp(-MAX_DIMEN, MAX_DIMEN)
+        } as i32;
         if negate {
             -v
         } else {
@@ -865,48 +1132,105 @@ impl Engine {
         self.skip_spaces_relax();
         let t = self.get_token();
         if t.is_cs() {
-            if let Some(g) = self.glue_from_cur_cs(t) {
-                return UnitKind::InternalSp(g.width as i64);
-            }
-            match self.cur_prim {
-                Some(Prim::DimP(p)) => {
+            match self.eqtb.resolve(t.cs_id()).cloned() {
+                Some(Equiv::Prim(Prim::GlueP(p))) => {
+                    return UnitKind::InternalSp(
+                        self.eqtb.glue_params[p.idx() as usize].width as i64,
+                    );
+                }
+                Some(Equiv::Prim(Prim::Skip)) => {
+                    let i = self.scan_reg_num();
+                    return UnitKind::InternalSp(self.eqtb.skip[i as usize].width as i64);
+                }
+                Some(Equiv::Prim(Prim::MuSkip)) => {
+                    let i = self.scan_reg_num();
+                    return UnitKind::InternalSp(self.eqtb.muskip[i as usize].width as i64);
+                }
+                Some(Equiv::Prim(Prim::LastSkip)) => {
+                    return UnitKind::InternalSp(self.last_skip_value().width as i64);
+                }
+                Some(Equiv::SkipReg(i)) => {
+                    return UnitKind::InternalSp(self.eqtb.skip[i as usize].width as i64);
+                }
+                Some(Equiv::MuSkipReg(i)) => {
+                    return UnitKind::InternalSp(self.eqtb.muskip[i as usize].width as i64);
+                }
+                Some(Equiv::Prim(Prim::DimExpr)) => {
+                    return UnitKind::InternalSp(self.scan_expr_dim() as i64);
+                }
+                Some(Equiv::Prim(Prim::DimP(p))) => {
                     return UnitKind::InternalSp(self.dim_param_value(p) as i64);
                 }
-                Some(Prim::Wd) => {
+                Some(Equiv::Prim(Prim::Wd)) => {
                     let n = self.scan_reg_num();
                     return UnitKind::InternalSp(self.box_reg_dimen(n, 0) as i64);
                 }
-                Some(Prim::Ht) => {
+                Some(Equiv::Prim(Prim::Ht)) => {
                     let n = self.scan_reg_num();
                     return UnitKind::InternalSp(self.box_reg_dimen(n, 1) as i64);
                 }
-                Some(Prim::Dp) => {
+                Some(Equiv::Prim(Prim::Dp)) => {
                     let n = self.scan_reg_num();
                     return UnitKind::InternalSp(self.box_reg_dimen(n, 2) as i64);
                 }
-                _ => match self.eqtb.resolve(t.cs_id()).cloned() {
-                    Some(Equiv::DimenReg(i)) => return UnitKind::InternalSp(self.eqtb.dimen[i as usize] as i64),
-                    // tex.web: a macro in unit position expands (LaTeX's
-                    // `\p@` = "pt"). Push back, re-fetch with expansion,
-                    // and re-run this whole unit fetch (char reader below
-                    // runs on the next loop pass).
-                    Some(Equiv::Macro(m)) if !m.protected => {
-                        self.expand_macro(t.cs_id(), &m);
-                        return self.scan_unit_d(mu, depth + 1);
-                    }
-                    _ => {
-                        { let __pt = t; if crate::debug_flag("PUSHWATCH") && __pt.is_cs() && self.cs.name(__pt.cs_id()) == b"ifx" && self.input.current_file_line() > 9000 { eprintln!("PUSHIFX crates/tex-core/src/scan.rs:{} line={}", {line!()}, self.input.current_file_line()); } self.pushed.push(__pt); }
-                        if crate::debug_flag("UNITTRACE") {
-                            let tn = if t.is_cs() { format!("\\{}", String::from_utf8_lossy(self.cs.name(t.cs_id()))) } else { format!("cc{} chr={}", t.cc(), t.chr()) };
-                            eprintln!("UNIT-FAIL mu={} tok={} L{} mac={}", mu, tn, self.input.current_file_line(), self.current_macro);
-                        }
-
-                        self.error("Illegal unit of measure (pt inserted).");
-                        return UnitKind::Ratio(1, 1);
-                    }
-                },
+                Some(Equiv::Prim(
+                    p @ (Prim::FontCharWd | Prim::FontCharHt | Prim::FontCharDp | Prim::FontCharIc),
+                )) => {
+                    return UnitKind::InternalSp(self.scan_font_char_dimen(p) as i64);
+                }
+                Some(Equiv::Prim(Prim::FontDimen)) => {
+                    let idx = self.scan_int();
+                    let f = self.scan_font_id();
+                    let i = if idx > 0 { idx as usize - 1 } else { 0 };
+                    let sp = self
+                        .eqtb
+                        .font_params
+                        .get(f as usize)
+                        .and_then(|fp| fp.get(i))
+                        .copied()
+                        .unwrap_or(0);
+                    return UnitKind::InternalSp(sp as i64);
+                }
+                Some(Equiv::Prim(Prim::Dimen)) => {
+                    let i = self.scan_reg_num();
+                    return UnitKind::InternalSp(self.eqtb.dimen[i as usize] as i64);
+                }
+                Some(Equiv::DimenReg(i)) => {
+                    return UnitKind::InternalSp(self.eqtb.dimen[i as usize] as i64);
+                }
+                Some(Equiv::Macro(m)) if !m.protected => {
+                    self.expand_macro(t.cs_id(), &m, t.cs_id());
+                    return self.scan_unit_d(mu, depth + 1);
+                }
+                _ => {
+                    self.pushed.push(t);
+                    self.error("Illegal unit of measure (pt inserted).");
+                    return UnitKind::Ratio(1, 1);
+                }
             }
         } else if t.is_char() {
+            if (t.chr() as u8).to_ascii_lowercase() == b't' {
+                let t2 = self.get_token();
+                if t2.is_char() && (t2.chr() as u8).to_ascii_lowercase() == b'r' {
+                    let t3 = self.get_token();
+                    if t3.is_char() && (t3.chr() as u8).to_ascii_lowercase() == b'u' {
+                        let t4 = self.get_token();
+                        if t4.is_char() && (t4.chr() as u8).to_ascii_lowercase() == b'e' {
+                            self.skip_spaces();
+                            return self.scan_unit_d(mu, depth + 1);
+                        } else {
+                            self.pushed.push(t4);
+                            self.pushed.push(t3);
+                            self.pushed.push(t2);
+                        }
+                    } else {
+                        self.pushed.push(t3);
+                        self.pushed.push(t2);
+                    }
+                } else {
+                    self.pushed.push(t2);
+                }
+            }
             // read unit keyword letters, only while they can extend a valid unit
             const UNITS: [&str; 16] = [
                 "pt", "in", "pc", "cm", "mm", "bp", "dd", "cc", "sp", "em", "ex", "px", "mu",
@@ -928,7 +1252,7 @@ impl Engine {
                         kw.push(t2.chr() as u8);
                         cur.push((t2.chr() as u8).to_ascii_lowercase() as char);
                     } else {
-                        { let __pt = t2; if crate::debug_flag("PUSHWATCH") && __pt.is_cs() && self.cs.name(__pt.cs_id()) == b"ifx" && self.input.current_file_line() > 9000 { eprintln!("PUSHIFX crates/tex-core/src/scan.rs:{} line={}", {line!()}, self.input.current_file_line()); } self.pushed.push(__pt); }
+                        self.pushed.push(t2);
                         break;
                     }
                 }
@@ -939,14 +1263,11 @@ impl Engine {
                 let mut excess: Vec<Token> = Vec::new();
                 while kw.len() > 1 && !UNITS.contains(&s.as_str()) {
                     let last = kw.pop().unwrap();
-                    excess.push(Token::char(
-                        self.eqtb.cat[last as usize],
-                        last as u32,
-                    ));
+                    excess.push(Token::char(self.eqtb.cat[last as usize], last as u32));
                     s.pop();
                 }
                 for t in excess.into_iter().rev() {
-                    { let __pt = t; if crate::debug_flag("PUSHWATCH") && __pt.is_cs() && self.cs.name(__pt.cs_id()) == b"ifx" && self.input.current_file_line() > 9000 { eprintln!("PUSHIFX crates/tex-core/src/scan.rs:{} line={}", {line!()}, self.input.current_file_line()); } self.pushed.push(__pt); }
+                    self.pushed.push(t)
                 }
                 let s2: String = kw.iter().map(|&b| b.to_ascii_lowercase() as char).collect();
                 s = s2;
@@ -975,15 +1296,12 @@ impl Engine {
                 "px" => UnitKind::Ratio(7227, 7200),
                 "mu" if mu => UnitKind::Ratio(1, 1),
                 _ => {
-                    if crate::debug_flag("DEFTRACE") {
-                        eprintln!("UNITFAIL s={:?} kw={:?}", s, kw);
-                    }
                     self.error("Illegal unit of measure (pt inserted).");
                     UnitKind::Ratio(1, 1)
                 }
             }
         } else {
-            { let __pt = t; if crate::debug_flag("PUSHWATCH") && __pt.is_cs() && self.cs.name(__pt.cs_id()) == b"ifx" && self.input.current_file_line() > 9000 { eprintln!("PUSHIFX crates/tex-core/src/scan.rs:{} line={}", {line!()}, self.input.current_file_line()); } self.pushed.push(__pt); }
+            self.pushed.push(t);
             self.error("Illegal unit of measure (pt inserted).");
             UnitKind::Ratio(1, 1)
         }
@@ -1084,11 +1402,8 @@ impl Engine {
             }
             self.cur_fill_order = 0;
         }
-        self.cur_fill_order = 0;
-        self.in_expanded_scan = prev;
         g
     }
-
     /// after "fil" keyword letters: count extra 'l's for fil/fill/filll
     fn scan_fil_order(&mut self) -> u8 {
         let mut order = 1u8;
@@ -1097,7 +1412,7 @@ impl Engine {
             if t.is_char() && (t.chr() as u8) == b'l' && order < 3 {
                 order += 1;
             } else {
-                { let __pt = t; if crate::debug_flag("PUSHWATCH") && __pt.is_cs() && self.cs.name(__pt.cs_id()) == b"ifx" && self.input.current_file_line() > 9000 { eprintln!("PUSHIFX crates/tex-core/src/scan.rs:{} line={}", {line!()}, self.input.current_file_line()); } self.pushed.push(__pt); }
+                self.pushed.push(t);
                 return order;
             }
         }
@@ -1112,23 +1427,6 @@ impl Engine {
                 return c;
             }
         }
-        {
-            static RN: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-            if RN.fetch_add(1, std::sync::atomic::Ordering::Relaxed) < 6 {
-                let got = if t.is_cs() {
-                    format!("\\{}", String::from_utf8_lossy(self.cs.name(t.cs_id())))
-                } else {
-                    format!("c{}:{:?}", t.cc(), t.chr() as u8 as char)
-                };
-                eprintln!(
-                    "RELFAIL got={} L{} file={} mac={} after_int_ctx",
-                    got,
-                    self.input.current_file_line(),
-                    self.input.current_file_name().split('/').last().unwrap_or(""),
-                    self.current_macro
-                );
-            }
-        }
         self.pushed.push(t);
         self.error("Missing relational operator");
         b'='
@@ -1136,93 +1434,115 @@ impl Engine {
 
     /// scan a braced general text (raw, balanced); opening brace consumed by
     /// caller? Here: expects next token to be `{`; returns contents.
-    pub fn scan_general_text(&mut self) -> Vec<Token> {
-        self.skip_spaces_relax();
-        let t = self.get_token();
-        if !(t.is_char() && t.cc() == 1) {
+    pub fn scan_left_brace(&mut self) -> bool {
+        loop {
+            let t = self.get_x_raw();
+            if t.is_space() {
+                continue;
+            }
+            if t.is_char() && t.cc() == 1 {
+                return true;
+            }
+            if t == crate::input::EOF_MARKER {
+                self.error("Missing { inserted");
+                return false;
+            }
             let got = if t.is_cs() {
-                format!("\\{}", String::from_utf8_lossy(self.cs.name(t.cs_id())))
+                self.display_cs(t.cs_id())
             } else {
                 format!("cc{}:{}", t.cc(), t.chr())
             };
-            self.error(&format!("Missing {{ inserted (scan text, got {})", got));
+            self.error(&format!("Missing {{ inserted (got {})", got));
             self.pushed.push(t);
+            return false;
+        }
+    }
+
+    /// scan a braced general text (raw, balanced); opening brace consumed by
+    /// caller? Here: expects next token to be `{`; returns contents.
+    pub fn scan_general_text(&mut self) -> Vec<Token> {
+        if !self.scan_left_brace() {
             return Vec::new();
         }
-        self.scan_balanced_raw(true)
+        self.scan_balanced_raw(true).into_vec()
     }
 
     /// like scan_general_text but expanding (\edef semantics)
     pub fn scan_general_text_expanded(&mut self) -> Vec<Token> {
-        self.skip_spaces_relax();
-        if crate::debug_flag("IFTRACE") {
-            let st: Vec<String> = self.input.stack.iter().rev().take(3).map(|src| match src {
-                crate::input::Source::TokList { name, pos, toks, .. } => format!("T:{} {}/{}", name, pos, toks.len()),
-                crate::input::Source::File { name, line_no, .. } => format!("F:{}#{}", name, line_no),
-            }).collect();
-            let cp = match self.cur_prim { Some(p) => format!("{:?}", p), None => "none".into() };
-            let ccs = match self.cur_cs { Some(c) => String::from_utf8_lossy(self.cs.name(c)).into_owned(), None => "-".into() };
-            eprintln!("SGET-START {} prim={} cs={} macros={:?}", st.join(" << "), cp, ccs, self.last_macros);
-        }
-        let t = self.get_token();
-        if !(t.is_char() && t.cc() == 1) {
-            let got = if t.is_cs() {
-                format!("\\{}", String::from_utf8_lossy(self.cs.name(t.cs_id())))
-            } else {
-                format!("cc{} chr={}", t.cc(), t.chr())
-            };
-            self.error(&format!("Missing {{ inserted (got {})", got));
+        if !self.scan_left_brace() {
             return Vec::new();
         }
+        let origin = self.current_token_source_mark();
         let prev_expanded_scan = self.in_expanded_scan;
         let prev_csname_depth = self.csname_depth;
         // \\expanded is an e-TeX edef context even when invoked from \\csname.
         // Leaving csname_depth>0 would expand \\protected macros and let them
         // steal \\endcsname / closing braces (utf8.def filehook sanitize).
         self.in_expanded_scan = true;
-        if self.last_macros.iter().any(|m| m.starts_with("GTS@") || m.contains("GetTitle")) {
-            eprintln!(
-                "EXPANDED-TEXT e-scan-on macros={:?}",
-                self.last_macros.iter().rev().take(8).collect::<Vec<_>>()
-            );
-        }
         self.csname_depth = 0;
         let mut out = Vec::new();
         let mut depth = 1i32;
         loop {
             let raw = self.raw_token();
             if raw == crate::input::EOF_MARKER {
-                self.error("Missing } in expanded text");
+                self.fatal_error_at(
+                    "Missing } in expanded text",
+                    origin.as_ref().map(crate::input::SourceMark::to_context),
+                );
                 self.in_expanded_scan = prev_expanded_scan;
                 self.csname_depth = prev_csname_depth;
                 return out;
             }
-            // \unexpanded must copy its argument verbatim. get_token would
-            // expand it first, then ## collapse would turn ##1 into #1.
-            if raw.is_cs() {
+            // Copy the argument verbatim, but do not execute an \unexpanded
+            // token already frozen by an enclosing expansion context.
+            if raw.is_cs() && raw.0 < crate::expand::NOEXP_FLAG {
                 if let Some(Equiv::Prim(Prim::UnExpanded)) = self.eqtb.resolve(raw.cs_id()) {
                     self.skip_spaces_relax();
                     let nxt = self.raw_token();
                     if nxt.is_cs() {
                         if let Some(Equiv::ToksReg(i)) = self.eqtb.resolve(nxt.cs_id()).cloned() {
-                            out.extend((*self.eqtb.toks[i as usize]).clone());
+                            let additional = self.eqtb.toks[i as usize].len();
+                            if !self.scanned_token_list_has_room(
+                                out.len(),
+                                additional,
+                                "expanded text size",
+                                origin.as_ref(),
+                            ) {
+                                self.in_expanded_scan = prev_expanded_scan;
+                                self.csname_depth = prev_csname_depth;
+                                return out;
+                            }
+                            out.extend_from_slice(&self.eqtb.toks[i as usize]);
                             continue;
                         }
                     }
                     self.pushed.push(nxt);
                     let u = self.scan_general_text();
+                    if self.stopped_on_error {
+                        self.in_expanded_scan = prev_expanded_scan;
+                        self.csname_depth = prev_csname_depth;
+                        return out;
+                    }
+                    if !self.scanned_token_list_has_room(
+                        out.len(),
+                        u.len(),
+                        "expanded text size",
+                        origin.as_ref(),
+                    ) {
+                        self.in_expanded_scan = prev_expanded_scan;
+                        self.csname_depth = prev_csname_depth;
+                        return out;
+                    }
                     out.extend(u);
                     continue;
                 }
             }
-            self.pushed.push(raw);
-            let t = self.get_token();
-            let protect = self.unexp_protect > 0;
-            if protect {
-                self.unexp_protect -= 1;
-            }
+            let t = self.get_token_from(raw);
             if t == crate::input::EOF_MARKER {
-                self.error("Missing } in expanded text");
+                self.fatal_error_at(
+                    "Missing } in expanded text",
+                    origin.as_ref().map(crate::input::SourceMark::to_context),
+                );
                 self.in_expanded_scan = prev_expanded_scan;
                 self.csname_depth = prev_csname_depth;
                 return out;
@@ -1232,12 +1552,39 @@ impl Engine {
                 let nxt = self.raw_token();
                 if nxt.is_cs() {
                     if let Some(Equiv::ToksReg(i)) = self.eqtb.resolve(nxt.cs_id()).cloned() {
-                        out.extend((*self.eqtb.toks[i as usize]).clone());
+                        let additional = self.eqtb.toks[i as usize].len();
+                        if !self.scanned_token_list_has_room(
+                            out.len(),
+                            additional,
+                            "expanded text size",
+                            origin.as_ref(),
+                        ) {
+                            self.in_expanded_scan = prev_expanded_scan;
+                            self.csname_depth = prev_csname_depth;
+                            return out;
+                        }
+                        out.extend_from_slice(&self.eqtb.toks[i as usize]);
                         continue;
                     }
                 }
                 self.pushed.push(nxt);
-                out.extend(self.scan_general_text());
+                let u = self.scan_general_text();
+                if self.stopped_on_error {
+                    self.in_expanded_scan = prev_expanded_scan;
+                    self.csname_depth = prev_csname_depth;
+                    return out;
+                }
+                if !self.scanned_token_list_has_room(
+                    out.len(),
+                    u.len(),
+                    "expanded text size",
+                    origin.as_ref(),
+                ) {
+                    self.in_expanded_scan = prev_expanded_scan;
+                    self.csname_depth = prev_csname_depth;
+                    return out;
+                }
+                out.extend(u);
                 continue;
             }
             if t.is_char() {
@@ -1250,21 +1597,21 @@ impl Engine {
                         self.csname_depth = prev_csname_depth;
                         return out;
                     }
-                } else if !protect && t.cc() == 6 && t.chr() == 0x23 {
-                    // tex.web scan_toks: ## collapses to a single # in the
-                    // collected text. Tokens copied by \\unexpanded must
-                    // keep both hashes (\\use_none:n {#1}\\unexpanded{#1}).
-                    if let Some(last) = out.last() {
-                        if last.is_char() && last.cc() == 6 && last.chr() == 0x23 {
-                            continue;
-                        }
-                    }
                 }
+            }
+            if !self.scanned_token_list_has_room(
+                out.len(),
+                1,
+                "expanded text size",
+                origin.as_ref(),
+            ) {
+                self.in_expanded_scan = prev_expanded_scan;
+                self.csname_depth = prev_csname_depth;
+                return out;
             }
             out.push(t);
         }
     }
-
 
     // ---------- \the ----------
 
@@ -1273,24 +1620,33 @@ impl Engine {
         // Knuth: \\the\\toks inserts raw tokens. Freeze only inside edef/expanded
         // so the contents are not re-expanded while collecting. At execute time
         // (geometry \\the\\Gm@dimlist) macros like \\Gm@len must still expand.
-        if self.in_expanded_scan {
+        if self.in_expanded_scan && self.csname_depth == 0 {
             // tex.web hash doubling (TeXbook App D): \\the\\toks inside \\edef
             // doubles every literal # so that the edef body collapse (## -> #)
             // preserves the original count. Verified: real TeX gives
             // \toks0{\def\zz{VAL[##1]}} \edef\zzz{\the\toks0} -> meaning
             // prints VAL[####1]; collapsing instead (VAL[#1] as a param ref)
             // breaks pgfkeys .store in (self-assigning \def\ww{\ww}).
-            let doubled: Vec<Token> = toks
+            let hash_count = toks
                 .iter()
-                .flat_map(|t| {
-                    if t.is_char() && t.cc() == 6 && t.chr() == 0x23 {
-                        vec![*t, *t]
-                    } else {
-                        vec![*t]
-                    }
-                })
-                .collect();
-            self.push_tokens(Self::freeze_unexpanded_toks(doubled));
+                .filter(|t| t.is_char() && t.cc() == 6 && t.chr() == 0x23)
+                .count();
+            let mut doubled = Vec::with_capacity(toks.len() + hash_count);
+            for t in toks {
+                doubled.push(t);
+                if t.is_char() && t.cc() == 6 && t.chr() == 0x23 {
+                    doubled.push(t);
+                }
+            }
+            let mut doubled = self.freeze_unexpanded_toks(doubled);
+            // The doubled hashes are definition syntax, not \unexpanded
+            // tokens: collect_def_body must collapse each ## back to one #.
+            for t in &mut doubled {
+                if t.0 >= 0x1000_0000 && t.0 < 0x2000_0000 {
+                    *t = t.unfreeze();
+                }
+            }
+            self.push_tokens(doubled);
         } else {
             self.push_tokens(toks);
         }
@@ -1300,7 +1656,7 @@ impl Engine {
         self.skip_spaces();
         let t = self.get_token();
         if !t.is_cs() {
-            { let __pt = t; if crate::debug_flag("PUSHWATCH") && __pt.is_cs() && self.cs.name(__pt.cs_id()) == b"ifx" && self.input.current_file_line() > 9000 { eprintln!("PUSHIFX crates/tex-core/src/scan.rs:{} line={}", {line!()}, self.input.current_file_line()); } self.pushed.push(__pt); }
+            self.pushed.push(t);
             self.error("You can't use `\\the' after ");
             return;
         }
@@ -1349,6 +1705,9 @@ impl Engine {
                 let s = self.int_param_value(p).to_string();
                 self.exp_string(s.as_bytes());
             }
+            Some(Prim::PdfShellEscape) => {
+                self.exp_string(b"0");
+            }
             Some(Prim::Count) => {
                 let idx = self.scan_reg_num();
                 self.exp_string(self.eqtb.count[idx as usize].to_string().as_bytes());
@@ -1390,11 +1749,23 @@ impl Engine {
                 let c = self.scan_char_num();
                 self.exp_string(self.eqtb.uc_code[c as usize].to_string().as_bytes());
             }
+            Some(
+                p @ (Prim::FontCharWd | Prim::FontCharHt | Prim::FontCharDp | Prim::FontCharIc),
+            ) => {
+                let value = self.scan_font_char_dimen(p);
+                self.exp_string(self.scaled_to_string(value).as_bytes());
+            }
             Some(Prim::FontDimen) => {
                 let idx = self.scan_int();
                 let f = self.scan_font_id();
                 let i = if idx > 0 { idx as usize - 1 } else { 0 };
-                let v = self.eqtb.font_params.get(f as usize).and_then(|fp| fp.get(i)).copied().unwrap_or(0);
+                let v = self
+                    .eqtb
+                    .font_params
+                    .get(f as usize)
+                    .and_then(|fp| fp.get(i))
+                    .copied()
+                    .unwrap_or(0);
                 let s = self.scaled_to_string(v);
                 self.exp_string(s.as_bytes());
             }
@@ -1408,11 +1779,65 @@ impl Engine {
                 let v = self.eqtb.skew_char.get(f).copied().unwrap_or(0);
                 self.exp_string(v.to_string().as_bytes());
             }
+            Some(Prim::PdfNoLigatures) => {
+                let f = self.scan_font_id() as usize;
+                let v = self.test_no_ligatures(f as u16);
+                self.exp_string(v.to_string().as_bytes());
+            }
+            Some(
+                p @ (Prim::EfCode
+                | Prim::LpCode
+                | Prim::RpCode
+                | Prim::TagCode
+                | Prim::KnBsCode
+                | Prim::StBsCode
+                | Prim::ShBsCode
+                | Prim::KnBcCode
+                | Prim::KnAcCode),
+            ) => {
+                let f = self.scan_font_id() as usize;
+                let c = self.scan_char_num().clamp(0, 255) as u8;
+                let v = match self.eqtb.expand.get(f) {
+                    Some(ex) => match p {
+                        Prim::EfCode => ex.ef_code(c),
+                        Prim::LpCode => ex.lp_code(c),
+                        Prim::RpCode => ex.rp_code(c),
+                        Prim::TagCode => self.get_tag_code(f as u16, c),
+                        Prim::KnBsCode => ex.kn_bs_code(c),
+                        Prim::StBsCode => ex.st_bs_code(c),
+                        Prim::ShBsCode => ex.sh_bs_code(c),
+                        Prim::KnBcCode => ex.kn_bc_code(c),
+                        _ => ex.kn_ac_code(c),
+                    },
+                    None => -1,
+                };
+                self.exp_string(v.to_string().as_bytes());
+            }
             Some(Prim::TopMark) => self.push_mark_tokens(0),
             Some(Prim::FirstMark) => self.push_mark_tokens(1),
             Some(Prim::BotMark) => self.push_mark_tokens(2),
             Some(Prim::SplitFirstMark) => self.push_mark_tokens(3),
             Some(Prim::SplitBotMark) => self.push_mark_tokens(4),
+            Some(Prim::TopMarksClass) => {
+                let class = self.scan_int();
+                self.push_mark_tokens_class(0, class);
+            }
+            Some(Prim::FirstMarksClass) => {
+                let class = self.scan_int();
+                self.push_mark_tokens_class(1, class);
+            }
+            Some(Prim::BotMarksClass) => {
+                let class = self.scan_int();
+                self.push_mark_tokens_class(2, class);
+            }
+            Some(Prim::SplitFirstMarksClass) => {
+                let class = self.scan_int();
+                self.push_mark_tokens_class(3, class);
+            }
+            Some(Prim::SplitBotMarksClass) => {
+                let class = self.scan_int();
+                self.push_mark_tokens_class(4, class);
+            }
             Some(Prim::JobName) => {
                 let s = self.job_name.clone();
                 self.exp_string(s.as_bytes());
@@ -1442,14 +1867,24 @@ impl Engine {
             Some(Prim::PdfLastYPos) => {
                 self.exp_string(self.pdf_last_y.to_string().as_bytes());
             }
-            Some(p @ (Prim::PdfLastObj | Prim::PdfLastXForm | Prim::PdfLastXImage
-            | Prim::PdfLastLink | Prim::PdfLastAnnot)) => {
+            Some(
+                p @ (Prim::PdfLastObj
+                | Prim::PdfLastXForm
+                | Prim::PdfLastXImage
+                | Prim::PdfLastLink
+                | Prim::PdfLastAnnot),
+            ) => {
                 let s = self.pdf_last_value(p).to_string();
                 self.exp_string(s.as_bytes());
             }
             Some(Prim::PdfPageAttr) => {
-                let s = self.pdf_page_attr.clone();
-                self.exp_string(s.as_bytes());
+                self.push_the_toks(self.pdf_page_attr_toks.clone());
+            }
+            Some(Prim::PdfPageResources) => {
+                self.push_the_toks(self.pdf_page_resources_toks.clone());
+            }
+            Some(Prim::PdfPagesAttr) => {
+                self.push_the_toks(self.pdf_pages_attr_toks.clone());
             }
             Some(Prim::Dimen) => {
                 let idx = self.scan_reg_num();
@@ -1504,6 +1939,10 @@ impl Engine {
                 let s = self.scaled_to_string(self.box_reg_dimen(n, 2));
                 self.exp_string(s.as_bytes());
             }
+            Some(Prim::ParShape) => {
+                let s = self.par_shape.len().to_string();
+                self.exp_string(s.as_bytes());
+            }
             Some(Prim::LastPenalty) => {
                 let v = self.last_penalty_value();
                 self.exp_string(v.to_string().as_bytes());
@@ -1519,7 +1958,12 @@ impl Engine {
                 self.exp_string(s.as_bytes());
             }
             Some(Prim::Font) => {
-                let csid = self.eqtb.font_cs.get(self.eqtb.cur_font_val as usize).copied().unwrap_or(0);
+                let csid = self
+                    .eqtb
+                    .font_cs
+                    .get(self.eqtb.cur_font_val as usize)
+                    .copied()
+                    .unwrap_or(0);
                 self.push_tokens(vec![Token::from_cs(csid)]);
             }
             Some(Prim::TextFont) | Some(Prim::ScriptFont) | Some(Prim::ScriptScriptFont) => {
@@ -1567,7 +2011,6 @@ impl Engine {
                     self.push_tokens(vec![Token::from_cs(csid)]);
                 }
                 _ => {
-                    eprintln!("THESCAN fail tok={:#x} cs={} prim={:?}", t.0, if t.is_cs() { String::from_utf8_lossy(self.cs.name(t.cs_id())).into_owned() } else { String::new() }, self.cur_prim);
                     self.error("You can't use `\\the' after that");
                 }
             },
@@ -1576,6 +2019,18 @@ impl Engine {
 
     fn push_mark_tokens(&mut self, which: usize) {
         let toks = self.marks[which].first().cloned().unwrap_or_default();
+        self.push_tokens(toks);
+    }
+
+    pub(crate) fn push_mark_tokens_class(&mut self, which: usize, class: i32) {
+        let toks = if class >= 0 {
+            self.marks[which]
+                .get(class as usize)
+                .cloned()
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
         self.push_tokens(toks);
     }
 
@@ -1596,41 +2051,45 @@ impl Engine {
                 };
             }
             let word = match cat {
-                0 => "escape character",
-                1 => "begin-group character",
-                2 => "end-group character",
-                3 => "math shift character",
-                4 => "alignment tab character",
-                5 => "end-of-line character",
-                6 => "macro parameter character",
-                7 => "superscript character",
-                8 => "subscript character",
-                9 => "ignored character",
+                0 => "escape character ",
+                1 => "begin-group character ",
+                2 => "end-group character ",
+                3 => "math shift character ",
+                4 => "alignment tab character ",
+                5 => "end-of-line character ",
+                6 => "macro parameter character ",
+                7 => "superscript character ",
+                8 => "subscript character ",
+                9 => "ignored character ",
                 10 => "blank space ",
                 11 => "the letter ",
                 12 => "the character ",
-                14 => "comment character",
-                15 => "invalid character",
-                _ => "character",
+                14 => "comment character ",
+                15 => "invalid character ",
+                _ => "character ",
             };
-            let ch: String = if cat == 10 { String::new() } else { ((c as u8) as char).to_string() };
+            let ch = ((c as u8) as char).to_string();
             return format!("{}{}", word, ch);
         }
         let name = String::from_utf8_lossy(self.cs.name(t.cs_id())).into_owned();
         match self.eqtb.resolve(t.cs_id()).cloned() {
             None => "undefined".to_string(),
-            Some(Equiv::CharTok(v)) => format!("the character {}", (Token(v).chr() as u8) as char),
+            Some(Equiv::CharTok(v)) => self.meaning_of(Token(v)),
             Some(Equiv::Macro(m)) => {
                 let mut s = String::new();
                 if m.protected {
                     s.push_str("\\protected");
                 }
                 if m.long {
-                    if !s.is_empty() { s.push(' '); }
+                    if !s.is_empty() {
+                        s.push(' ');
+                    }
                     s.push_str("\\long");
                 }
                 if m.outer {
-                    if !s.is_empty() { s.push(' '); }
+                    if !s.is_empty() {
+                        s.push(' ');
+                    }
                     s.push_str("\\outer");
                 }
                 if !s.is_empty() {
@@ -1666,7 +2125,10 @@ impl Engine {
     }
 
     pub fn prim_name(&self, p: Prim) -> String {
-        // reverse lookup: find first cs whose meaning is this prim
+        if let Some(name) = self.primitive_names.get(&p.code()) {
+            return String::from_utf8_lossy(name).into_owned();
+        }
+        // Tests may construct a partial engine without init_primitives.
         for id in self.cs.all_ids() {
             if matches!(self.eqtb.get(id), Some(Equiv::Prim(q)) if *q == p) {
                 return String::from_utf8_lossy(self.cs.name(id)).into_owned();
@@ -1676,10 +2138,18 @@ impl Engine {
     }
 
     pub fn cur_quad(&self) -> i32 {
-        self.eqtb.fonts.get(self.eqtb.cur_font_val as usize).map(|f| f.quad()).unwrap_or(0)
+        self.eqtb
+            .fonts
+            .get(self.eqtb.cur_font_val as usize)
+            .map(|f| f.quad())
+            .unwrap_or(0)
     }
     pub fn cur_x_height(&self) -> i32 {
-        self.eqtb.fonts.get(self.eqtb.cur_font_val as usize).map(|f| f.x_height()).unwrap_or(0)
+        self.eqtb
+            .fonts
+            .get(self.eqtb.cur_font_val as usize)
+            .map(|f| f.x_height())
+            .unwrap_or(0)
     }
 
     // ---------- formatting ----------
@@ -1687,48 +2157,29 @@ impl Engine {
     /// TeX's print_scaled: value in sp as decimal pt string
     pub fn scaled_to_string(&self, v: i32) -> String {
         let neg = v < 0;
-        let mut n = (v as i64).abs();
-        let mut int = n / ONE as i64;
-        let mut n = n % ONE as i64;
-        let mut digits = [0u8; 5];
-        for i in 0..5 {
-            n *= 10;
-            digits[i] = (n / ONE as i64) as u8;
-            n %= ONE as i64;
+        let mut s = (v as i64).abs();
+        let int_part = s / ONE as i64;
+        let mut res = String::new();
+        if neg {
+            res.push('-');
         }
-        if n * 2 >= ONE as i64 {
-            // round half up on the last digit, propagate the carry
-            let mut i = 4;
-            loop {
-                if digits[i] == 9 {
-                    digits[i] = 0;
-                    if i == 0 {
-                        int += 1;
-                        break;
-                    }
-                    i -= 1;
-                } else {
-                    digits[i] += 1;
-                    break;
-                }
+        res.push_str(&int_part.to_string());
+        res.push('.');
+        s = 10 * (s % ONE as i64) + 5;
+        let mut delta = 10i64;
+        loop {
+            if delta > ONE as i64 {
+                s += 32768 - 50000; // tex.web §103: round the last digit (@'100000 - 50000)
+            }
+            res.push((b'0' + (s / ONE as i64) as u8) as char);
+            s = 10 * (s % ONE as i64);
+            delta *= 10;
+            if s <= delta {
+                break;
             }
         }
-        let mut s = String::new();
-        if neg {
-            s.push('-');
-        }
-        s.push_str(&int.to_string());
-        // strip trailing zeros but keep at least one fractional digit
-        let mut len = 5;
-        while len > 1 && digits[len - 1] == 0 {
-            len -= 1;
-        }
-        s.push('.');
-        for i in 0..len {
-            s.push((b'0' + digits[i]) as char);
-        }
-        s.push_str("pt");
-        s
+        res.push_str("pt");
+        res
     }
     pub fn scaled_number_to_string(&self, v: i32) -> String {
         let mut s = self.scaled_to_string(v);
@@ -1785,13 +2236,28 @@ impl Engine {
         }
     }
 
+    fn scan_font_char_dimen(&mut self, p: Prim) -> i32 {
+        let font = self.scan_font_id();
+        let c = self.scan_char_num() as u8;
+        let Some(font) = self.eqtb.fonts.get(font as usize) else {
+            return 0;
+        };
+        match p {
+            Prim::FontCharWd => font.char_width(c),
+            Prim::FontCharHt => font.char_height(c),
+            Prim::FontCharDp => font.char_depth(c),
+            Prim::FontCharIc => font.char_italic(c),
+            _ => unreachable!(),
+        }
+    }
+
     // ---------- font id scan ----------
 
     pub fn scan_font_id(&mut self) -> u16 {
         self.skip_spaces_relax();
-        let t = self.get_token();
+        let t = self.get_x_raw();
         if !t.is_cs() {
-            { let __pt = t; if crate::debug_flag("PUSHWATCH") && __pt.is_cs() && self.cs.name(__pt.cs_id()) == b"ifx" && self.input.current_file_line() > 9000 { eprintln!("PUSHIFX crates/tex-core/src/scan.rs:{} line={}", {line!()}, self.input.current_file_line()); } self.pushed.push(__pt); }
+            self.pushed.push(t);
             self.error("Missing font identifier");
             return 0;
         }
@@ -1869,24 +2335,46 @@ impl Engine {
             };
             let right = self.expr_term(kind, mu);
             left = match (left, right) {
-                (ExprVal::Int(a), ExprVal::Int(b)) => ExprVal::Int(if op == 1 { a.wrapping_add(b) } else { a.wrapping_sub(b) }),
-                (ExprVal::Dim(a), ExprVal::Dim(b)) => ExprVal::Dim(if op == 1 { a.wrapping_add(b) } else { a.wrapping_sub(b) }),
-                (ExprVal::Dim(a), ExprVal::Int(b)) => {
-                    ExprVal::Dim(if op == 1 { a + mult(b, ONE) } else { a - mult(b, ONE) })
-                }
-                (ExprVal::Int(a), ExprVal::Dim(b)) => {
-                    ExprVal::Dim(if op == 1 { mult(a, ONE) + b } else { mult(a, ONE) - b })
-                }
-                (ExprVal::Glue(a), ExprVal::Glue(b)) => {
-                    ExprVal::Glue(if op == 1 { glue_add(&a, &b) } else { glue_sub(&a, &b) })
-                }
+                (ExprVal::Int(a), ExprVal::Int(b)) => ExprVal::Int(if op == 1 {
+                    a.wrapping_add(b)
+                } else {
+                    a.wrapping_sub(b)
+                }),
+                (ExprVal::Dim(a), ExprVal::Dim(b)) => ExprVal::Dim(if op == 1 {
+                    a.wrapping_add(b)
+                } else {
+                    a.wrapping_sub(b)
+                }),
+                (ExprVal::Dim(a), ExprVal::Int(b)) => ExprVal::Dim(if op == 1 {
+                    a + mult(b, ONE)
+                } else {
+                    a - mult(b, ONE)
+                }),
+                (ExprVal::Int(a), ExprVal::Dim(b)) => ExprVal::Dim(if op == 1 {
+                    mult(a, ONE) + b
+                } else {
+                    mult(a, ONE) - b
+                }),
+                (ExprVal::Glue(a), ExprVal::Glue(b)) => ExprVal::Glue(if op == 1 {
+                    glue_add(&a, &b)
+                } else {
+                    glue_sub(&a, &b)
+                }),
                 (ExprVal::Glue(a), ExprVal::Dim(b)) => {
                     let g = Glue::new(b);
-                    ExprVal::Glue(if op == 1 { glue_add(&a, &g) } else { glue_sub(&a, &g) })
+                    ExprVal::Glue(if op == 1 {
+                        glue_add(&a, &g)
+                    } else {
+                        glue_sub(&a, &g)
+                    })
                 }
                 (ExprVal::Glue(a), ExprVal::Int(b)) => {
                     let g = Glue::new(mult(b, ONE));
-                    ExprVal::Glue(if op == 1 { glue_add(&a, &g) } else { glue_sub(&a, &g) })
+                    ExprVal::Glue(if op == 1 {
+                        glue_add(&a, &g)
+                    } else {
+                        glue_sub(&a, &g)
+                    })
                 }
                 (l, r) => {
                     let _ = r;
@@ -1925,7 +2413,7 @@ impl Engine {
                     }
                 }),
                 ExprVal::Dim(a) => ExprVal::Dim(match op {
-                    1 => mult(a, b),
+                    1 => (a as i64 * b as i64).clamp(i32::MIN as i64, i32::MAX as i64) as i32,
                     _ => {
                         if b == 0 {
                             0
@@ -1935,11 +2423,32 @@ impl Engine {
                     }
                 }),
                 ExprVal::Glue(a) => ExprVal::Glue(match op {
-                    1 => Glue { width: mult(a.width, b), stretch: mult(a.stretch, b), shrink: mult(a.shrink, b), ..a },
+                    1 => Glue {
+                        width: (a.width as i64 * b as i64).clamp(i32::MIN as i64, i32::MAX as i64)
+                            as i32,
+                        stretch: (a.stretch as i64 * b as i64)
+                            .clamp(i32::MIN as i64, i32::MAX as i64)
+                            as i32,
+                        shrink: (a.shrink as i64 * b as i64).clamp(i32::MIN as i64, i32::MAX as i64)
+                            as i32,
+                        ..a
+                    },
                     _ => Glue {
-                        width: if b == 0 { 0 } else { crate::scaled::x_over_y(a.width, b) },
-                        stretch: if b == 0 { 0 } else { crate::scaled::x_over_y(a.stretch, b) },
-                        shrink: if b == 0 { 0 } else { crate::scaled::x_over_y(a.shrink, b) },
+                        width: if b == 0 {
+                            0
+                        } else {
+                            crate::scaled::x_over_y(a.width, b)
+                        },
+                        stretch: if b == 0 {
+                            0
+                        } else {
+                            crate::scaled::x_over_y(a.stretch, b)
+                        },
+                        shrink: if b == 0 {
+                            0
+                        } else {
+                            crate::scaled::x_over_y(a.shrink, b)
+                        },
                         ..a
                     },
                 }),
@@ -1958,12 +2467,12 @@ impl Engine {
             }
             return v;
         }
-        if t.is_char() && t.chr() == b'-' as u32 {
+        if kind != ExprKind::Glue && t.is_char() && t.chr() == b'-' as u32 {
             let v = self.expr_factor(kind, mu);
             return match v {
                 ExprVal::Int(x) => ExprVal::Int(-x),
                 ExprVal::Dim(x) => ExprVal::Dim(-x),
-                ExprVal::Glue(g) => ExprVal::Glue(Glue { width: -g.width, stretch: -g.stretch, shrink: -g.shrink, ..g }),
+                ExprVal::Glue(_) => unreachable!(),
             };
         }
         self.pushed.push(t);
@@ -2023,4 +2532,183 @@ fn glue_sub(a: &Glue, b: &Glue) -> Glue {
     }
     g.width -= b.width;
     g
+}
+
+#[cfg(test)]
+mod token_list_capacity_tests {
+    use super::*;
+    use crate::eqtb::Equiv;
+    use crate::input::MAX_TOKEN_LIST_TOKENS;
+    use std::rc::Rc;
+
+    #[test]
+    fn capacity_check_allows_exact_limit_and_rejects_one_more() {
+        let mut engine = Engine::new(true);
+        assert!(engine.scanned_token_list_has_room(
+            MAX_TOKEN_LIST_TOKENS - 1,
+            1,
+            "test token list size",
+            None,
+        ));
+        assert!(!engine.scanned_token_list_has_room(
+            MAX_TOKEN_LIST_TOKENS,
+            1,
+            "test token list size",
+            None,
+        ));
+        assert!(engine.stopped_on_error);
+    }
+
+    #[test]
+    fn expanded_text_rejects_oversized_bulk_insert_before_copying_it() {
+        let mut engine = Engine::new(true);
+        engine.init_primitives();
+        engine.eqtb.assign_cat(b'{', 1, true);
+        engine.eqtb.assign_cat(b'}', 2, true);
+        let huge = engine.cs.intern(b"huge");
+        engine.eqtb.assign(huge, Equiv::ToksReg(0), true);
+        engine.eqtb.toks[0] = Rc::new(vec![Token::letter(b'x'); MAX_TOKEN_LIST_TOKENS]);
+        engine.input.push_file(
+            "capacity.tex".to_string(),
+            b"{A\\unexpanded\\huge}".to_vec(),
+        );
+
+        let tokens = engine.scan_general_text_expanded();
+
+        assert_eq!(tokens.len(), 1, "{}", engine.term);
+        assert!(engine.stopped_on_error);
+        assert!(!engine.in_expanded_scan);
+    }
+
+    #[test]
+    fn expanded_definition_rejects_oversized_bulk_insert_before_copying_it() {
+        let mut engine = Engine::new(true);
+        engine.init_primitives();
+        engine.eqtb.assign_cat(b'{', 1, true);
+        engine.eqtb.assign_cat(b'}', 2, true);
+        let huge = engine.cs.intern(b"huge");
+        engine.eqtb.assign(huge, Equiv::ToksReg(0), true);
+        engine.eqtb.toks[0] = Rc::new(vec![Token::letter(b'x'); MAX_TOKEN_LIST_TOKENS]);
+        engine.input.push_file(
+            "capacity.tex".to_string(),
+            b"\\edef\\result{A\\unexpanded\\huge}\\end".to_vec(),
+        );
+
+        engine.run();
+
+        assert!(engine.stopped_on_error);
+    }
+
+    #[test]
+    fn file_name_scan_is_bounded_at_its_opening_source() {
+        let mut engine = Engine::new(true);
+        engine.init_primitives();
+        engine.eqtb.assign_cat(b'{', 1, true);
+        engine.eqtb.assign_cat(b'}', 2, true);
+        let source = format!("{{{}}}", "a".repeat(4097));
+        engine
+            .input
+            .push_file("capacity.tex".to_string(), source.into_bytes());
+
+        assert!(engine.scan_file_name().is_empty());
+        assert!(engine.stopped_on_error);
+        assert_eq!(engine.diagnostics[0].primary.as_ref().unwrap().line, 1);
+    }
+
+    #[test]
+    fn explicit_control_sequence_name_scan_is_bounded() {
+        let mut engine = Engine::new(true);
+        engine.init_primitives();
+        let mut source = "a".repeat(2001);
+        source.push_str("\\relax");
+        engine
+            .input
+            .push_file("capacity.tex".to_string(), source.into_bytes());
+        let relax = engine.cs.lookup(b"relax").unwrap();
+
+        assert_eq!(engine.scan_csname_explicit(), relax);
+        assert!(engine.stopped_on_error);
+        assert_eq!(engine.diagnostics[0].primary.as_ref().unwrap().line, 1);
+    }
+}
+
+#[cfg(test)]
+mod numeric_diagnostic_tests {
+    use super::*;
+
+    fn scanner(source: &str) -> Engine {
+        let mut engine = Engine::new(true);
+        engine.init_primitives();
+        engine
+            .input
+            .push_file("numbers.tex".to_string(), source.as_bytes().to_vec());
+        engine
+    }
+
+    #[test]
+    fn oversized_decimal_integer_is_clamped_and_located_at_the_first_bad_digit() {
+        let mut engine = scanner("2147483648 ");
+
+        assert_eq!(engine.scan_int(), i32::MAX);
+        assert_eq!(engine.diagnostics.len(), 1, "{}", engine.term);
+        let diagnostic = &engine.diagnostics[0];
+        assert_eq!(diagnostic.message, "Number too big");
+        let primary = diagnostic.primary.as_ref().unwrap();
+        assert_eq!(
+            (primary.name.as_str(), primary.line, primary.column),
+            ("numbers.tex", 1, 10)
+        );
+    }
+
+    #[test]
+    fn integer_overflow_is_reported_for_every_literal_radix() {
+        for literal in ["2147483648 ", "'20000000000 ", "\"80000000 "] {
+            let mut engine = scanner(literal);
+
+            assert_eq!(engine.scan_int(), i32::MAX, "literal {literal}");
+            assert_eq!(
+                engine.diagnostics.len(),
+                1,
+                "literal {literal}: {}",
+                engine.term
+            );
+            assert_eq!(engine.diagnostics[0].message, "Number too big");
+            assert!(engine.diagnostics[0].primary.is_some());
+        }
+    }
+
+    #[test]
+    fn largest_integer_and_legal_dimension_do_not_report_errors() {
+        let mut integer = scanner("2147483647 ");
+        assert_eq!(integer.scan_int(), i32::MAX);
+        assert!(integer.diagnostics.is_empty(), "{}", integer.term);
+
+        let mut dimension = scanner("16383pt ");
+        assert_eq!(dimension.scan_dimen(false, false), 16383 * 65536);
+        assert!(dimension.diagnostics.is_empty(), "{}", dimension.term);
+    }
+
+    #[test]
+    fn oversized_dimension_is_clamped_and_located_at_its_factor() {
+        let mut engine = scanner("16384pt ");
+
+        assert_eq!(engine.scan_dimen(false, false), 0x3FFF_FFFF);
+        assert_eq!(engine.diagnostics.len(), 1, "{}", engine.term);
+        let diagnostic = &engine.diagnostics[0];
+        assert_eq!(diagnostic.message, "Dimension too large");
+        let primary = diagnostic.primary.as_ref().unwrap();
+        assert_eq!(
+            (primary.name.as_str(), primary.line, primary.column),
+            ("numbers.tex", 1, 1)
+        );
+    }
+
+    #[test]
+    fn negative_oversized_dimension_clamps_symmetrically() {
+        let mut engine = scanner("-16384pt ");
+
+        assert_eq!(engine.scan_dimen(false, false), -0x3FFF_FFFF);
+        assert_eq!(engine.diagnostics.len(), 1, "{}", engine.term);
+        assert_eq!(engine.diagnostics[0].message, "Dimension too large");
+    }
 }

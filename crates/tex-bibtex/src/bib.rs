@@ -34,7 +34,7 @@ pub struct BibParser<'a> {
 }
 
 impl<'a> BibParser<'a> {
-    pub fn new(text: &'a str, mut macros: HashMap<String, Vec<u8>>) -> Self {
+    pub fn new(text: &'a str, macros: HashMap<String, Vec<u8>>) -> Self {
         BibParser {
             b: text.as_bytes(),
             i: 0,
@@ -302,7 +302,10 @@ impl<'a> BibParser<'a> {
     fn scan_braced_value(&mut self, out: &mut Vec<u8>) {
         let mut depth = 0usize;
         // leading whitespace right after `{` -> one space (bibtex behavior)
-        if matches!(self.cur(), Some(b' ') | Some(b'\t') | Some(b'\n') | Some(b'\r')) {
+        if matches!(
+            self.cur(),
+            Some(b' ') | Some(b'\t') | Some(b'\n') | Some(b'\r')
+        ) {
             out.push(b' ');
             self.skip_ws_bytes();
         }
@@ -337,7 +340,10 @@ impl<'a> BibParser<'a> {
     /// Scan a quoted value; braces protect the closing quote.
     fn scan_quoted_value(&mut self, out: &mut Vec<u8>) {
         let mut depth = 0usize;
-        if matches!(self.cur(), Some(b' ') | Some(b'\t') | Some(b'\n') | Some(b'\r')) {
+        if matches!(
+            self.cur(),
+            Some(b' ') | Some(b'\t') | Some(b'\n') | Some(b'\r')
+        ) {
             out.push(b' ');
             self.skip_ws_bytes();
         }

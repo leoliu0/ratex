@@ -13,8 +13,8 @@ pub enum LexClass {
 
 pub fn lex_class(c: u8) -> LexClass {
     match c {
-        0..=31 => LexClass::Illegal,
         b'\t' | b' ' => LexClass::WhiteSpace,
+        0..=31 => LexClass::Illegal,
         b'~' | b'-' => LexClass::SepChar,
         b'0'..=b'9' => LexClass::Numeric,
         b'A'..=b'Z' | b'a'..=b'z' => LexClass::Alpha,

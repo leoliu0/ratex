@@ -82,8 +82,14 @@ impl Engine {
     pub fn embed_used_fonts(&mut self) {
         use std::collections::BTreeSet;
         let mut used: BTreeSet<u16> = BTreeSet::new();
-        for p in &self.pdf_doc.pages {
-            for (fid, _) in &p.fonts {
+        for fonts in self
+            .pdf_doc
+            .pages
+            .iter()
+            .map(|p| &p.fonts)
+            .chain(self.pdf_doc.form_fonts.iter().map(|(_, fonts)| fonts))
+        {
+            for (fid, _) in fonts {
                 used.insert(*fid as u16);
             }
         }
@@ -95,25 +101,34 @@ impl Engine {
             let pfb_bytes = font
                 .type1_path
                 .as_ref()
-                .and_then(|name| self.font_loader.kpse.find(name, tex_kpse::Format::Type1))
-                .and_then(|p| std::fs::read(p).ok());
+                .and_then(|name| self.font_loader.kpse.read(name, tex_kpse::Format::Type1));
             let widths = (0..=255u8)
                 .map(|c| {
                     let w = font.char_width(c);
                     if font.at_size != 0 {
-                        (w as i64 * 1000 / font.at_size as i64) as i32
+                        ((w as i64 * 10_000 + font.at_size as i64 / 2) / font.at_size as i64) as i32
                     } else {
                         0
                     }
                 })
                 .collect();
             let mut ef = crate::pdffile::make_embed_font(
-                font.map_fontname.clone().unwrap_or_else(|| font.tfm_name.clone()),
+                font.map_fontname
+                    .clone()
+                    .unwrap_or_else(|| font.tfm_name.clone()),
                 pfb_bytes.as_deref(),
                 font.encoding.as_deref(),
                 0,
                 255,
                 widths,
+            );
+            crate::pdffile::set_font_usage(
+                &mut ef,
+                self.pdf_doc
+                    .font_chars
+                    .get(&(*fid as usize))
+                    .copied()
+                    .unwrap_or([0; 4]),
             );
             // PFBs of the CM family lack Ascent/Descent/CapHeight/StemV;
             // fall back to TFM-derived values where the cleartext had none.
@@ -133,8 +148,14 @@ impl Engine {
             self.pdf_doc.fonts.push(ef);
             remap.push((*fid, n));
         }
-        for p in self.pdf_doc.pages.iter_mut() {
-            for pf in p.fonts.iter_mut() {
+        for fonts in self
+            .pdf_doc
+            .pages
+            .iter_mut()
+            .map(|p| &mut p.fonts)
+            .chain(self.pdf_doc.form_fonts.iter_mut().map(|(_, fonts)| fonts))
+        {
+            for pf in fonts.iter_mut() {
                 if let Some(pos) = remap.iter().find(|(fid, _)| *fid == pf.0 as u16) {
                     pf.0 = pos.1;
                 }

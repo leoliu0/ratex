@@ -1,27 +1,177 @@
 //! Token expansion: get_token, macro expansion, conditionals, \csname and
 //! the string-producing primitives.
 
-use crate::eqtb::{Equiv, Macro};
 use crate::engine::{Engine, ScannerStatus};
+use crate::eqtb::{Equiv, Macro};
 
-use crate::input::{PAR_END, EOF_MARKER};
+use crate::input::{EOF_MARKER, PAR_END};
 use crate::prim::Prim;
 use crate::token::*;
 
 pub const PAR_REF_FLAG: u32 = 0x4000_0000;
 pub const NOEXP_FLAG: u32 = 0xC000_0000;
+const UNEXPANDED_PARAMETER_FLAG: u32 = 0x1000_0000;
+const UNEXPANDED_CS_FLAG: u32 = 0xE000_0000;
+
+fn balanced_end_scalar(
+    tokens: &[Token],
+    long: bool,
+    partoken: CsId,
+    mut depth: i32,
+) -> Option<usize> {
+    for (index, &t) in tokens.iter().enumerate() {
+        if (NOEXP_FLAG..0xFFFF_0000).contains(&t.0)
+            || (UNEXPANDED_PARAMETER_FLAG..0x2000_0000).contains(&t.0)
+        {
+            return None;
+        }
+        match t.0 >> 24 {
+            1 => depth += 1,
+            2 => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(index + 1);
+                }
+            }
+            _ if !long && (t == PAR_END || (t.is_cs() && t.cs_id() == partoken)) => return None,
+            _ => {}
+        }
+    }
+    None
+}
+
+fn balanced_end(tokens: &[Token], long: bool, partoken: CsId) -> Option<usize> {
+    #[cfg(target_arch = "x86_64")]
+    if tokens.len() >= 16 && std::is_x86_feature_detected!("avx2") {
+        // SAFETY: the processor supports AVX2; the callee bounds every load.
+        return unsafe { balanced_end_avx2(tokens, long, partoken) };
+    }
+    balanced_end_scalar(tokens, long, partoken, 1)
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn balanced_end_avx2(tokens: &[Token], long: bool, partoken: CsId) -> Option<usize> {
+    use std::arch::x86_64::*;
+    let mut position = 0;
+    let mut depth = 1;
+    while tokens.len() - position >= 8 {
+        // Token is repr(transparent) over u32 and eight initialized elements
+        // remain. Unaligned loads support every token-slice starting offset.
+        let values = _mm256_loadu_si256(tokens.as_ptr().add(position).cast());
+        let top = _mm256_srli_epi32::<24>(values);
+        let opens = _mm256_cmpeq_epi32(top, _mm256_set1_epi32(1));
+        let closes = _mm256_cmpeq_epi32(top, _mm256_set1_epi32(2));
+        let mut prefix = _mm256_sub_epi32(closes, opens);
+        // Inclusive prefix sums within each 128-bit half, then carry the
+        // low half's total into the high half.
+        prefix = _mm256_add_epi32(prefix, _mm256_slli_si256::<4>(prefix));
+        prefix = _mm256_add_epi32(prefix, _mm256_slli_si256::<8>(prefix));
+        let carry = _mm256_extract_epi32::<3>(prefix);
+        prefix = _mm256_add_epi32(
+            prefix,
+            _mm256_setr_epi32(0, 0, 0, 0, carry, carry, carry, carry),
+        );
+        let depths = _mm256_add_epi32(prefix, _mm256_set1_epi32(depth));
+        let ends = _mm256_movemask_ps(_mm256_castsi256_ps(_mm256_cmpeq_epi32(
+            depths,
+            _mm256_setzero_si256(),
+        ))) as u32;
+        let frozen = _mm256_and_si256(
+            _mm256_cmpgt_epi32(values, _mm256_set1_epi32(0xbfff_ffffu32 as i32)),
+            _mm256_cmpgt_epi32(_mm256_set1_epi32(0xffff_0000u32 as i32), values),
+        );
+        let parameter = _mm256_cmpeq_epi32(_mm256_srli_epi32::<28>(values), _mm256_set1_epi32(1));
+        let mut guards = _mm256_or_si256(frozen, parameter);
+        if !long {
+            let paragraph = _mm256_or_si256(
+                _mm256_cmpeq_epi32(values, _mm256_set1_epi32(Token::from_cs(partoken).0 as i32)),
+                _mm256_cmpeq_epi32(values, _mm256_set1_epi32(PAR_END.0 as i32)),
+            );
+            guards = _mm256_or_si256(guards, paragraph);
+        }
+        let guards = _mm256_movemask_ps(_mm256_castsi256_ps(guards)) as u32;
+        if ends | guards != 0 {
+            let first = (ends | guards).trailing_zeros();
+            return (guards & (1 << first) == 0).then_some(position + first as usize + 1);
+        }
+        depth += _mm256_extract_epi32::<7>(prefix);
+        position += 8;
+    }
+    balanced_end_scalar(&tokens[position..], long, partoken, depth).map(|end| position + end)
+}
+
+#[cfg(test)]
+mod balanced_scan_tests {
+    use super::*;
+
+    #[test]
+    fn vector_scan_matches_scalar_at_guards_braces_and_slice_boundaries() {
+        let alphabet = [
+            Token::letter(b'x'),
+            Token::char(10, 32),
+            Token::from_cs(42),
+            Token::char(1, 123),
+            Token::char(2, 125),
+            Token::from_cs(7),
+            Token(NOEXP_FLAG | 42),
+            Token(UNEXPANDED_CS_FLAG | 42),
+            Token(UNEXPANDED_PARAMETER_FLAG | Token::char(6, 35).0),
+            PAR_END,
+            EOF_MARKER,
+        ];
+        let mut seed = 1u64;
+        for length in 0..192 {
+            for offset in 0..8 {
+                let mut tokens = vec![Token::letter(b'x'); length + offset];
+                for t in &mut tokens[offset..] {
+                    seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+                    if seed >> 60 < 5 {
+                        *t = alphabet[(seed >> 32) as usize % alphabet.len()];
+                    }
+                }
+                for long in [false, true] {
+                    let slice = &tokens[offset..];
+                    let expected = balanced_end_scalar(slice, long, 7, 1);
+                    assert_eq!(
+                        balanced_end(slice, long, 7),
+                        expected,
+                        "length={length} offset={offset} long={long}"
+                    );
+                    #[cfg(target_arch = "x86_64")]
+                    if std::is_x86_feature_detected!("avx2") {
+                        assert_eq!(unsafe { balanced_end_avx2(slice, long, 7) }, expected);
+                    }
+                }
+            }
+        }
+        // Prefix sums must carry nesting across the 128-bit lane boundary.
+        let mut deep = vec![Token::char(1, 123); 64];
+        deep.extend(vec![Token::char(2, 125); 65]);
+        deep.push(Token(NOEXP_FLAG | 42));
+        assert_eq!(balanced_end(&deep, true, 7), Some(129));
+        deep[127] = Token(NOEXP_FLAG | 42);
+        assert_eq!(balanced_end(&deep, true, 7), None);
+    }
+}
 
 impl Engine {
-    pub(crate) fn freeze_unexpanded_toks(toks: Vec<Token>) -> Vec<Token> {
-        toks.into_iter()
-            .map(|t| {
-                if t.is_cs() && t.0 < NOEXP_FLAG {
-                    Token(NOEXP_FLAG | t.cs_id())
-                } else {
-                    t
-                }
-            })
-            .collect()
+    pub(crate) fn freeze_unexpanded_toks(&mut self, mut toks: Vec<Token>) -> Vec<Token> {
+        for t in &mut toks {
+            let id = if t.is_cs() && t.0 < NOEXP_FLAG {
+                Some(t.cs_id())
+            } else if t.is_char() && t.cc() == 13 {
+                Some(self.active_cs_id(t.chr() as u8))
+            } else {
+                None
+            };
+            if let Some(id) = id {
+                *t = Token(UNEXPANDED_CS_FLAG | id);
+            } else if t.is_char() && t.cc() == 6 {
+                t.0 |= UNEXPANDED_PARAMETER_FLAG;
+            }
+        }
+        toks
     }
     fn delim_eq(a: Token, b: Token) -> bool {
         if a.is_cs() && b.is_cs() {
@@ -34,81 +184,150 @@ impl Engine {
     }
 
     /// fetch next raw token honoring pushback
+    #[inline(always)]
     pub fn raw_token(&mut self) -> Token {
-        let t = loop {
-
-            if self.scanner_status == ScannerStatus::Aligning {
-                // Expansions of the current u/v-part are single-token
-                // pushbacks above align_pushed_base and must play first
-                // (\\tabcolsep after \\hskip). Older pushed tokens wait
-                // under the token-list sources.
-                if self.pushed.len() > self.align_pushed_base {
-                    break self.pushed.pop().unwrap();
-                }
-                // Any token-list source above the file (u/v part, macro
-                // body, \everypar hook, output routine) is newer than the
-                // pre-align pushback parked below align_pushed_base and
-                // must drain before it (tex.web input-stack LIFO).
-                if matches!(
-                    self.input.stack.last(),
-                    Some(crate::input::Source::TokList { .. })
-                ) {
-                    let si = self.input.stack.len() - 1;
-                    if let Some(t) = self.toklist_next(si) {
-                        break t;
+        let t = 'fetch: {
+            if self.scanner_status != ScannerStatus::Aligning {
+                if let Some(t) = self.pushed.pop() {
+                    if !t.is_cs()
+                        || self
+                            .diagnostic_synthetic_source
+                            .as_ref()
+                            .is_some_and(|(token, _, _)| *token != t.cs_id())
+                    {
+                        self.diagnostic_synthetic_source = None;
                     }
-                    continue;
+                    if !self
+                        .diagnostic_physical_source
+                        .as_ref()
+                        .is_some_and(|source| {
+                            source.token == t
+                                || (t.is_cs() && source.semantic_cs == Some(t.cs_id()))
+                        })
+                    {
+                        self.diagnostic_physical_source = None;
+                    }
+                    break 'fetch t;
+                }
+            } else if self.pushed.len() > self.align_pushed_base {
+                let t = self.pushed.pop().unwrap();
+                if !t.is_cs()
+                    || self
+                        .diagnostic_synthetic_source
+                        .as_ref()
+                        .is_some_and(|(token, _, _)| *token != t.cs_id())
+                {
+                    self.diagnostic_synthetic_source = None;
+                }
+                if !self
+                    .diagnostic_physical_source
+                    .as_ref()
+                    .is_some_and(|source| {
+                        source.token == t || (t.is_cs() && source.semantic_cs == Some(t.cs_id()))
+                    })
+                {
+                    self.diagnostic_physical_source = None;
+                }
+                break 'fetch t;
+            }
+            loop {
+                let trace_depth = match self.input.stack.last() {
+                    Some(crate::input::Source::TokList { trace_depth, .. }) => {
+                        *trace_depth as usize
+                    }
+                    _ => break,
+                };
+                if !self.align_macro_arg && self.diagnostic_trace_hold == 0 {
+                    self.diagnostic_macro_trace.truncate(trace_depth);
+                }
+                let Some(crate::input::Source::TokList { toks, pos, .. }) =
+                    self.input.stack.last_mut()
+                else {
+                    unreachable!()
+                };
+                let s = &toks[..];
+                if *pos < s.len() {
+                    let t = s[*pos];
+                    *pos += 1;
+                    self.diagnostic_token_from_file = false;
+                    self.diagnostic_synthetic_source = None;
+                    self.diagnostic_physical_source = None;
+                    // Pop on the next fetch so this token retains its macro
+                    // owner while it is expanded or diagnosed.
+                    break 'fetch t;
+                } else {
+                    if let Some(crate::input::Source::TokList {
+                        toks: crate::input::TokTokens::Vec(mut v),
+                        ..
+                    }) = self.input.stack.pop()
+                    {
+                        v.clear();
+                        if self.token_vec_pool.len() < 512 {
+                            self.token_vec_pool.push(v);
+                        }
+                    }
                 }
             }
-            if let Some(t) = self.pushed.pop() {
-                break t;
-            }
-            break self.get_next_raw();
+            self.get_next_raw()
         };
-        if t.is_char() {
-            if t.cc() == 14 {
-                if let Some(si) = self.input.stack.len().checked_sub(1) {
-                    if let Some(crate::input::Source::File { line_buf, line_pos, state, .. }) = self.input.stack.get_mut(si) {
-                        *line_buf = None;
-                        *line_pos = 0;
-                        if *state == 1 {
-                            *state = 2;
+        if t.0 < 0x8000_0000 {
+            let cc = (t.0 >> 24) as u8;
+            if cc == 14 || cc == 9 || cc == 15 {
+                if cc == 14 {
+                    if let Some(si) = self.input.stack.len().checked_sub(1) {
+                        if let Some(crate::input::Source::File {
+                            line_buf,
+                            line_pos,
+                            state,
+                            ..
+                        }) = self.input.stack.get_mut(si)
+                        {
+                            *line_buf = None;
+                            *line_pos = 0;
+                            if *state == 1 {
+                                *state = 2;
+                            }
                         }
                     }
                 }
                 return self.raw_token();
             }
-            if t.cc() == 9 || t.cc() == 15 {
-                return self.raw_token();
-            }
         }
+
+        if self.align_macro_arg
+            && self.scanner_status == ScannerStatus::Aligning
+            && !self.in_expanded_scan
+            && self.align_intercept_raw_token(t)
+        {
+            return self.raw_token();
+        }
+        let t = if t == PAR_END {
+            Token::from_cs(self.partoken_id())
+        } else {
+            t
+        };
 
         if t.0 >= PAR_REF_FLAG && t.0 < 0x8000_0000 && !t.is_cs() {
             let n = (t.0 & 0xF) as u8;
             self.pushed.push(Token::char(12, b'0' as u32 + n as u32));
             return Token::char(6, b'#' as u32);
         }
-        if t == crate::page::OUT_END_TOKEN {
-            // Scanners that hit the output-routine sentinel mid-scan (error
-            // recovery) must still finish the routine; swallowing it locks
-            // in_output=true and silently suppresses every later fire_up.
-            self.finish_output();
-            return self.raw_token();
-        }
-        if crate::debug_flag("PARTRACE") && t.is_cs() && self.cs.name(t.cs_id()) == b"par" {
-            let top = match self.input.stack.last() {
-                Some(crate::input::Source::TokList { name, pos, toks, .. }) => format!("T:{}:{}/{}", name, pos, toks.len()),
-                Some(crate::input::Source::File { name, line_no, .. }) => format!("F:{}:{}", name, line_no),
-                None => "none".into(),
-            };
-            eprintln!("PARPOP pushed_len_after={}", self.pushed.len());
-        }
+
+        t
+    }
+    #[inline]
+    fn macro_arg_token(&mut self) -> Token {
+        let saved = self.align_macro_arg;
+        self.align_macro_arg = true;
+        let t = self.raw_token();
+        self.align_macro_arg = saved;
         t
     }
 
     /// tex.web get_x_token: expands macros/conditionals but does NOT skip
     /// spaces (scan_int relies on spaces terminating constants).
     pub fn get_x_raw(&mut self) -> Token {
+        self.unexpanded_parameter = false;
         let t = self.raw_token();
         self.get_x_raw_from(t)
     }
@@ -118,30 +337,56 @@ impl Engine {
     pub fn get_x_raw_from(&mut self, first: Token) -> Token {
         let mut first = first;
         loop {
+            if first.0 >= UNEXPANDED_CS_FLAG && first.0 < 0xFFFF_0000 {
+                let tok = self.unfreeze_unexpanded_token(first);
+                if tok.is_cs() {
+                    self.set_cur_cs(tok);
+                } else {
+                    self.set_cur_char(tok);
+                }
+                return tok;
+            }
+            if first.0 >= UNEXPANDED_PARAMETER_FLAG && first.0 < 0x2000_0000 {
+                self.unexpanded_parameter = true;
+                return first.unfreeze();
+            }
+            if first.0 >= crate::page::WRITE_END_TOKEN.0 && first != PAR_END {
+                self.cur_prim = None;
+                return first;
+            }
             // The PAR_END sentinel (0xFFFF_FFFE) sits in the cs-token encoding
             // space; without conversion get_x_raw treats it as an unnameable cs
             // (blank-line \par between alignment rows -> garbage "cs" starts a
             // phantom row). Convert exactly like get_token_inner does.
-            let t = if first == PAR_END { Token::from_cs(self.ids.par) } else { first };
+            let t = if first == PAR_END {
+                Token::from_cs(self.partoken_id())
+            } else {
+                first
+            };
             let mut id = if t.is_cs() {
+                self.diagnostic_source_cs = Some(t.cs_id());
                 t.cs_id()
             } else if t.is_char() && t.cc() == 13 {
-                self.active_cs_id(t.chr() as u8)
+                let id = self.active_cs_id(t.chr() as u8);
+                self.diagnostic_source_cs = Some(id);
+                id
             } else {
+                self.diagnostic_source_cs = None;
                 self.set_cur_char(t);
                 return t;
             };
             let t = Token::from_cs(id);
 
-            for _ in 0..1024 {
-                match self.eqtb.get(id) {
-                    Some(Equiv::Alias(next)) => id = *next,
-                    _ => break,
+            let mut equiv = self.eqtb.get(id);
+            if let Some(Equiv::Alias(mut next)) = equiv {
+                while let Some(Equiv::Alias(n)) = self.eqtb.get(next) {
+                    next = *n;
                 }
+                id = next;
+                equiv = self.eqtb.get(id);
             }
-            match self.eqtb.get(id).cloned() {
+            match equiv.cloned() {
                 Some(Equiv::Macro(m)) => {
-                    // e-TeX: \\protected is frozen only while absorbing an
                     // edef/write/expanded list. Nested \\romannumeral (f-expansion)
                     // clears in_expanded_scan and must expand \\exp_end_continue_f:w.
                     if m.protected && self.in_expanded_scan && self.csname_depth == 0 {
@@ -156,23 +401,51 @@ impl Engine {
                         self.set_cur_cs(Token::from_cs(id));
                         return Token::from_cs(id);
                     }
-                    self.expand_macro(id, &m);
+                    self.expand_macro(id, &m, t.cs_id());
                     first = self.raw_token();
                     continue;
                 }
 
                 Some(Equiv::CharTok(v)) => {
                     let tok = Token(v);
-                    self.cur_tok = tok;
-                    self.cur_cs = None;
-                    self.cur_prim = None;
-                    return tok;
+                    if tok.is_space() {
+                        self.cur_tok = tok;
+                        self.cur_cs = None;
+                        self.cur_prim = None;
+                        return tok;
+                    } else {
+                        self.set_cur_cs(t);
+                        return t;
+                    }
                 }
                 Some(Equiv::Prim(p)) => {
+                    // While scanning a conditional's numeric operand, expansion
+                    // may run nested conditionals. The delimiter belonging to
+                    // the pending outer test must terminate the number instead
+                    // of executing against its not-yet-initialized frame.
+                    if matches!(
+                        p,
+                        Prim::Else | Prim::Or | Prim::Fi | Prim::ElIf | Prim::ElIfX
+                    ) && self
+                        .pending_if_depth
+                        .is_some_and(|depth| self.if_stack.len() <= depth)
+                    {
+                        self.set_cur_cs(t);
+                        return t;
+                    }
                     if self.is_expandable(p) {
                         match self.expand_prim(p, id) {
                             Some(tok) => {
-                                if tok.0 >= NOEXP_FLAG && tok.0 < 0xFFFF_0000 {
+                                if tok.0 >= UNEXPANDED_CS_FLAG && tok.0 < 0xFFFF_0000 {
+                                    let tok = self.unfreeze_unexpanded_token(tok);
+                                    if tok.is_cs() {
+                                        self.set_cur_cs(tok);
+                                    } else {
+                                        self.set_cur_char(tok);
+                                    }
+                                    return tok;
+                                }
+                                if tok.0 >= NOEXP_FLAG && tok.0 < UNEXPANDED_CS_FLAG {
                                     let tok = Token::from_cs(tok.0 & 0x3FFF_FFFF);
                                     self.set_cur_cs(tok);
                                     return tok;
@@ -189,7 +462,6 @@ impl Engine {
                                 continue;
                             }
                         }
-
                     } else {
                         self.set_cur_cs(t);
                         return t;
@@ -216,51 +488,140 @@ impl Engine {
     /// scanning the tail below `align_pushed_base` predates the u/v-part
     /// source and keeps waiting under raw_token's Aligning gate.
     pub fn push_tokens(&mut self, toks: Vec<Token>) {
-        self.begin_token_list(toks, false, "<replay>");
+        self.begin_token_list(toks, false, "<replay>", None);
     }
     /// push_tokens variant matching tex.web \\unexpanded: each control
     /// sequence carries the one-shot \\noexpand flag so a later x/f-scan
     /// stores it without expanding; char tokens are unaffected.
     pub fn push_tokens_exp_not(&mut self, toks: Vec<Token>) {
-        self.begin_token_list(toks, true, "<replay>");
+        self.begin_token_list(toks, true, "<replay>", None);
     }
-    /// named replay source (macro bodies): trace readability only.
-    pub fn push_tokens_named(&mut self, toks: Vec<Token>, name: &str) {
-        self.begin_token_list(toks, false, name);
+    /// named replay source: trace readability only.
+    pub fn push_tokens_named(&mut self, toks: Vec<Token>, name: &'static str) {
+        self.try_push_tokens_named(toks, name);
+    }
+    pub(crate) fn try_push_tokens_named(&mut self, toks: Vec<Token>, name: &'static str) -> bool {
+        self.begin_token_list(toks, false, name, None)
+    }
+    fn push_macro_tokens(&mut self, toks: Vec<Token>, owner: CsId) {
+        self.begin_token_list(toks, false, "<macro>", Some(owner));
+    }
+    #[inline]
+    fn ensure_input_stack_room(&mut self, needed: usize) -> bool {
+        if self.input.stack.len().saturating_add(needed) <= crate::input::MAX_INPUT_STACK {
+            return true;
+        }
+        self.fatal_error(&format!(
+            "TeX capacity exceeded, sorry [input stack size={}]",
+            crate::input::MAX_INPUT_STACK
+        ));
+        false
     }
 
-    fn begin_token_list(&mut self, toks: Vec<Token>, exp_not: bool, name: &str) {
-        if toks.is_empty() {
-            return;
+    #[inline]
+    fn ensure_token_list_room(&mut self, len: usize) -> bool {
+        if len <= crate::input::MAX_TOKEN_LIST_TOKENS {
+            return true;
         }
-        if !self.pushed.is_empty() {
-            let cut = if self.scanner_status == ScannerStatus::Aligning {
-                self.align_pushed_base.min(self.pushed.len())
+        self.fatal_error(&format!(
+            "TeX capacity exceeded, sorry [token list size={}]",
+            crate::input::MAX_TOKEN_LIST_TOKENS
+        ));
+        false
+    }
+
+    fn pop_exhausted_token_lists(&mut self) {
+        while let Some(crate::input::Source::TokList { toks, pos, .. }) = self.input.stack.last() {
+            if *pos >= toks.len() {
+                self.input.stack.pop();
             } else {
-                0
-            };
-            if self.pushed.len() > cut {
-                let mut rest = self.pushed.split_off(cut);
-                rest.reverse();
-                self.input.push_toks(rest, "<pushback>");
+                break;
             }
         }
+    }
+
+    pub fn push_tokens_rc(&mut self, toks: std::rc::Rc<[Token]>, owner: CsId) {
+        self.try_push_tokens_rc(toks, owner);
+    }
+
+    fn try_push_tokens_rc(&mut self, toks: std::rc::Rc<[Token]>, owner: CsId) -> bool {
+        if toks.is_empty() {
+            return true;
+        }
+        if !self.ensure_token_list_room(toks.len()) {
+            return false;
+        }
+        self.pop_exhausted_token_lists();
+        let cut = if self.scanner_status == ScannerStatus::Aligning {
+            self.align_pushed_base.min(self.pushed.len())
+        } else {
+            0
+        };
+        if !self.ensure_token_list_room(self.pushed.len().saturating_sub(cut)) {
+            return false;
+        }
+        if !self.ensure_input_stack_room(1 + usize::from(self.pushed.len() > cut)) {
+            return false;
+        }
+        if self.pushed.len() > cut {
+            let mut rest = self.pushed.split_off(cut);
+            rest.reverse();
+            self.input.push_toks(rest, "<pushback>");
+        }
+        self.input.push_toks_owned(
+            toks,
+            "<macro>",
+            Some(owner),
+            self.diagnostic_macro_trace.len().min(u8::MAX as usize) as u8,
+        );
+        true
+    }
+
+    fn begin_token_list(
+        &mut self,
+        toks: Vec<Token>,
+        exp_not: bool,
+        name: &'static str,
+        owner: Option<CsId>,
+    ) -> bool {
+        if toks.is_empty() {
+            return true;
+        }
+        if !self.ensure_token_list_room(toks.len()) {
+            return false;
+        }
+        self.pop_exhausted_token_lists();
+        let cut = if self.scanner_status == ScannerStatus::Aligning {
+            self.align_pushed_base.min(self.pushed.len())
+        } else {
+            0
+        };
+        if !self.ensure_token_list_room(self.pushed.len().saturating_sub(cut)) {
+            return false;
+        }
+        if !self.ensure_input_stack_room(1 + usize::from(self.pushed.len() > cut)) {
+            return false;
+        }
+        if self.pushed.len() > cut {
+            let mut rest = self.pushed.split_off(cut);
+            rest.reverse();
+            self.input.push_toks(rest, "<pushback>");
+        }
         let toks = if exp_not {
-            toks.into_iter()
-                .map(|t| {
-                    if t.is_cs() && t.0 < NOEXP_FLAG {
-                        Token(NOEXP_FLAG | t.cs_id())
-                    } else {
-                        t
-                    }
-                })
-                .collect()
+            self.freeze_unexpanded_toks(toks)
         } else {
             toks
         };
-        self.input.push_toks(toks, name);
+        self.input.push_toks_owned(
+            toks,
+            name,
+            owner,
+            self.diagnostic_macro_trace.len().min(u8::MAX as usize) as u8,
+        );
+        true
     }
     fn set_cur_cs(&mut self, t: Token) {
+        self.diagnostic_source_cs = Some(t.cs_id());
         self.cur_tok = t;
         self.cur_cs = Some(t.cs_id());
         let prim = match self.eqtb.resolve(t.cs_id()) {
@@ -271,6 +632,7 @@ impl Engine {
     }
 
     fn set_cur_char(&mut self, t: Token) {
+        self.diagnostic_source_cs = None;
         self.cur_tok = t;
         self.cur_cs = None;
         self.cur_prim = None;
@@ -279,198 +641,257 @@ impl Engine {
     /// Get the next token, expanding macros and expandable primitives.
     /// Sets cur_tok/cur_cs/cur_prim.
     pub fn get_token(&mut self) -> Token {
-        self.get_token_inner()
+        self.no_expand_tok = None;
+        self.unexpanded_parameter = false;
+        let first = self.raw_token();
+        self.get_token_inner(first)
     }
 
-    fn get_token_inner(&mut self) -> Token {
-        self.gt_steps += 1;
-        if self.pushed.len() > 100_000 && !self.loop_traced {
-            eprintln!(
-                "PUSHEDGROW n={} mac={} file={}:{} last={:?}",
-                self.pushed.len(),
-                self.current_macro,
-                self.input.current_file_name().split('/').last().unwrap_or("?"),
-                self.input.current_file_line(),
-                self.last_macros.iter().rev().take(12).collect::<Vec<_>>()
-            );
-            std::process::exit(9);
-        }
+    /// Expand a token already fetched by a scanner without parking and
+    /// fetching it again through the input stack.
+    pub(crate) fn get_token_from(&mut self, first: Token) -> Token {
+        self.no_expand_tok = None;
+        self.unexpanded_parameter = false;
+        self.get_token_inner(first)
+    }
 
-        loop {
-
-
-            let mut t = self.raw_token();
-            if t.0 >= NOEXP_FLAG && t.0 < 0xFFFF_0000 {
-                let cs = t.0 & 0x3FFF_FFFF;
-                let tok = Token::from_cs(cs);
-                if self.eqtb.get(cs).is_none() {
-                    // Lazily synthesize l3 exp_args:N<spec> expanders.
-                    self.synth_exp_args_if_match(cs);
+    fn get_token_inner(&mut self, mut t: Token) -> Token {
+        'resolve: loop {
+            'expand: {
+                if t.0 >= UNEXPANDED_CS_FLAG && t.0 < 0xFFFF_0000 {
+                    t = self.unfreeze_unexpanded_token(t);
+                    if t.is_cs() {
+                        self.no_expand_tok = Some(t);
+                        self.cur_cs = Some(t.cs_id());
+                        self.cur_prim = Some(Prim::Relax);
+                    } else {
+                        self.set_cur_char(t);
+                    }
+                    return t;
                 }
-                self.cur_tok = tok;
-                self.cur_cs = Some(cs);
-                self.cur_prim = Some(Prim::Relax);
-                return tok;
-            }
-
-
-
-
-            if t == EOF_MARKER {
-                self.end_occurred = true;
-                return EOF_MARKER;
-            }
-            if t == crate::page::OUT_END_TOKEN {
-                self.finish_output();
-                continue;
-            }
-            if t == crate::page::WRITE_END_TOKEN {
-                return t;
-            }
-            if t == PAR_END {
-                if crate::debug_flag("PARTRACE") {
-                    eprintln!("PAR-END-SEEN file={} line={} pushed={}", self.input.current_file_name().split('/').last().unwrap_or("?"), self.input.current_file_line(), self.pushed.len());
+                if t.0 >= UNEXPANDED_PARAMETER_FLAG && t.0 < 0x2000_0000 {
+                    t = t.unfreeze();
+                    self.unexpanded_parameter = true;
+                    self.set_cur_char(t);
+                    return t;
                 }
-                // tex.web: a blank line becomes \par. Route the token through
-                // the shared control-sequence path below instead of returning
-                // it bare: the bare return skipped macro expansion, so once
-                // LaTeX redefines \par as the macro \para_end:
-                // (\cs_set_eq:NN \par \para_end:) every blank line was a
-                // silent no-op — the open paragraph never ended, and the next
-                // \penalty/\vskip ran in the wrong mode.
-                t = Token::from_cs(self.ids.par);
-            }
-            if t.is_char() && t.chr() == b'_' as u32 {
-                static UC: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-                let n = UC.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                if n < 6 {
-                    eprintln!("USCORE-TOK cc={} raw={:08x} L{} pushed={}", t.cc(), t.0, self.input.current_file_line(), self.pushed.len());
+                if t.0 < 0x8000_0000 && t.cc() != 13 {
+                    self.set_cur_char(t);
+                    return t;
                 }
-            }
-            let t = if t.is_char() && t.cc() == 13 {
-                Token::from_cs(self.active_cs_id(t.chr() as u8))
-            } else {
-                t
-            };
-
-            if t.is_cs() {
-
-                let mut id = t.cs_id();
-                for _ in 0..1024 {
-                    match self.eqtb.get(id) {
-                        Some(Equiv::Alias(next)) => id = *next,
-                        _ => break,
+                if t.0 >= NOEXP_FLAG && t.0 < 0xFFFF_0000 {
+                    let cs = t.0 & 0x3FFF_FFFF;
+                    let tok = Token::from_cs(cs);
+                    if self.eqtb.get(cs).is_none() {
+                        // Lazily synthesize l3 exp_args:N<spec> expanders.
+                        self.synth_exp_args_if_match(cs);
                     }
+                    self.no_expand_tok = Some(tok);
+                    self.cur_tok = tok;
+                    self.cur_cs = Some(cs);
+                    self.cur_prim = Some(Prim::Relax);
+                    return tok;
                 }
-                if self.eqtb.get(id).is_none() {
-                    let name = self.cs.name(id);
-                    if name == b"@@italiccorr" || name == b"/" {
-                        self.eqtb.assign(id, Equiv::Prim(Prim::Relax), true);
-                    }
-                }
-                match self.eqtb.get(id).cloned() {
-                    Some(Equiv::Macro(m)) => {
-                        if m.protected && self.in_expanded_scan && self.csname_depth == 0 {
-                            self.set_cur_cs(t);
-                            return t;
-                        }
-                        if self.freeze_gts_in_edef(id) {
-                            self.set_cur_cs(t);
-                            return t;
-                        }
-                        if self.is_self_quark(id, &m) {
-                            self.set_cur_cs(t);
-                            return t;
-                        }
-self.expand_macro(id, &m);
-                        continue;
-                    }
-                    Some(Equiv::CharTok(v)) => {
-                        // tex.web scan_toks: a CS \let-equal to `}` is not
-                        // expandable and is stored as the CS. Substituting
-                        // the char would close \expanded/\edef early
-                        // (\c_group_end_token inside \cs_new_protected:Npe).
-                        if self.in_expanded_scan {
-                            self.set_cur_cs(t);
-                            return t;
-                        }
-                        let tok = Token(v);
-                        self.cur_tok = tok;
-                        self.cur_cs = None;
-                        self.cur_prim = None;
-                        return tok;
-                    }
-                    Some(Equiv::Prim(p)) => {
-                    if crate::debug_flag("PAIRTRACE") && self.cs.name(id) == b"__kernel_exp_not:w" {
-                        let rk = match self.eqtb.get(id) { Some(Equiv::Prim(pp)) => format!("Prim({:?})", pp), Some(Equiv::Alias(n)) => format!("Alias->{}", n), Some(Equiv::Macro(_)) => "Macro".to_string(), _ => "other".to_string() };
-                        eprintln!("EXPNOT-DISPATCH id={} resolved={} in_scan={}", id, rk, self.in_expanded_scan);
-                    }
-                        if p == Prim::UnExpanded && crate::debug_flag("PAIRTRACE") {
-                            eprintln!("UE-DISPATCH in_expanded_scan={} csname_depth={} L{}", self.in_expanded_scan, self.csname_depth, self.input.current_file_line());
-                        }
-                        // NOTE: no early-return for UnExpanded inside
-                        // e-scans. Returning the bare token leaked an
-                        // unexpanded-marker into \expanded results, which
-                        // then re-froze the NEXT token singly and broke the
-                        // \unexpanded\expanded{{...}} callback idiom
-                        // (keyval_parse / l3keys). The normal arm below
-                        // (scan group + push exp_not) is correct in every
-                        // context, csname included.
-                        if self.is_expandable(p) {
-                        // A \csname-created exp_args:N<spec> may carry the
-                        // relax default from an earlier pass; repair it.
-                        if p == Prim::Relax && self.name_is_synth_exp_args(id) {
-                            self.synth_exp_args_if_match(id);
-                            continue;
-                        }
 
-                            match self.expand_prim(p, id) {
-                                Some(tok) => {
-                                    if tok.0 >= NOEXP_FLAG && tok.0 < 0xFFFF_0000 {
-                                        let cs = tok.0 & 0x3FFF_FFFF;
-                                        let tok = Token::from_cs(cs);
-                                        self.cur_tok = tok;
-                                        self.cur_cs = Some(cs);
-                                        self.cur_prim = Some(Prim::Relax);
-                                        return tok;
-                                    }
-                                    if !tok.is_cs() {
-                                        self.set_cur_char(tok);
-                                        return tok;
-                                    }
-                                    self.pushed.push(tok);
-                                    continue;
-                                }
-                                None => continue,
-                            }
-                        } else {
-                            self.set_cur_cs(t);
-                            return t;
-                        }
+                if t.0 >= crate::page::WRITE_END_TOKEN.0 {
+                    if t == EOF_MARKER {
+                        self.end_occurred = true;
+                        return EOF_MARKER;
                     }
-                    _ => {
-                        if self.synth_exp_args_if_match(id) {
-                            continue;
-                        }
-                        self.set_cur_cs(t);
+                    if t == crate::page::OUT_END_TOKEN {
+                        self.finish_output();
+                        break 'expand;
+                    }
+                    if t == crate::page::WRITE_END_TOKEN {
                         return t;
                     }
-
+                    if t == PAR_END {
+                        t = Token::from_cs(self.partoken_id());
+                    }
                 }
-            } else {
-                self.set_cur_char(t);
-                return t;
+
+                t = if t.is_char() && t.cc() == 13 {
+                    let id = self.active_cs_id(t.chr() as u8);
+                    self.diagnostic_source_cs = Some(id);
+                    Token::from_cs(id)
+                } else {
+                    self.diagnostic_source_cs = t.is_cs().then(|| t.cs_id());
+                    t
+                };
+
+                if t.is_cs() {
+                    let mut id = t.cs_id();
+                    if let Some(Equiv::Alias(mut next)) = self.eqtb.get(id) {
+                        while let Some(Equiv::Alias(n)) = self.eqtb.get(next) {
+                            next = *n;
+                        }
+                        id = next;
+                    }
+                    let is_expansion = match self.eqtb.get(id) {
+                        Some(Equiv::Macro(_)) => true,
+                        Some(Equiv::Prim(p)) => self.is_expandable(*p),
+                        _ => false,
+                    };
+                    if is_expansion {
+                        self.expansion_steps = self.expansion_steps.saturating_add(1);
+                        if self.expansion_limit > 0 && self.expansion_steps > self.expansion_limit {
+                            self.set_cur_cs(t);
+                            self.fatal_error(&format!(
+                            "TeX capacity exceeded [expansion steps={}]; runaway expansion near {}",
+                            self.expansion_limit,
+                            self.display_cs(id)
+                        ));
+                            return EOF_MARKER;
+                        }
+                    }
+                    let equiv = self.eqtb.get(id);
+                    match equiv {
+                        Some(Equiv::Macro(m)) => {
+                            if m.protected && self.in_expanded_scan && self.csname_depth == 0 {
+                                self.set_cur_cs(t);
+                                return t;
+                            }
+                            if self.freeze_gts_in_edef(id) {
+                                self.set_cur_cs(t);
+                                return t;
+                            }
+                            if m.num_params == 0 && m.prefix.is_empty() {
+                                let body = std::rc::Rc::clone(&m.body);
+                                self.enter_macro_diagnostic(id, t.cs_id());
+                                if body.is_empty() {
+                                    break 'expand;
+                                }
+                                if body.len() == 1 {
+                                    let t_only = body[0];
+                                    if t_only == Token::from_cs(id) {
+                                        self.set_cur_cs(t);
+                                        return t;
+                                    }
+                                    if (0x8000_0000..NOEXP_FLAG).contains(&t_only.0)
+                                        && !self.align_macro_arg
+                                    {
+                                        t = t_only;
+                                        continue 'resolve;
+                                    }
+                                    if t_only.0 < 0x8000_0000 && t_only.cc() != 13 {
+                                        self.cur_tok = t_only;
+                                        self.cur_cs = None;
+                                        self.cur_prim = None;
+                                        return t_only;
+                                    }
+                                }
+                                if !self.try_push_tokens_rc(body, id) {
+                                    return EOF_MARKER;
+                                }
+                                break 'expand;
+                            }
+                            let m = m.clone();
+                            self.expand_macro(id, &m, t.cs_id());
+                            break 'expand;
+                        }
+                        Some(Equiv::CharTok(v)) => {
+                            // tex.web scan_toks: a CS \let-equal to `}` is not
+                            // expandable and is stored as the CS. Substituting
+                            // the char would close \expanded/\edef early
+                            // (\c_group_end_token inside \cs_new_protected:Npe).
+                            if self.in_expanded_scan {
+                                self.set_cur_cs(t);
+                                return t;
+                            }
+                            let tok = Token(*v);
+                            self.cur_tok = tok;
+                            self.cur_cs = None;
+                            self.cur_prim = None;
+                            return tok;
+                        }
+                        Some(Equiv::Prim(p_ref)) => {
+                            let p = *p_ref;
+
+                            // NOTE: no early-return for UnExpanded inside
+                            // e-scans. Returning the bare token leaked an
+                            // unexpanded-marker into \expanded results, which
+                            // then re-froze the NEXT token singly and broke the
+                            // \unexpanded\expanded{{...}} callback idiom
+                            // (keyval_parse / l3keys). The normal arm below
+                            // (scan group + push exp_not) is correct in every
+                            // context, csname included.
+                            if self.is_expandable(p) {
+                                // A \csname-created exp_args:N<spec> may carry the
+                                // relax default from an earlier pass; repair it.
+                                if p == Prim::Relax
+                                    && self.cs.name(id) != b"relax"
+                                    && self.name_is_synth_exp_args(id)
+                                {
+                                    self.synth_exp_args_if_match(id);
+                                    break 'expand;
+                                }
+
+                                match self.expand_prim(p, id) {
+                                    Some(tok) => {
+                                        if tok.0 >= UNEXPANDED_CS_FLAG && tok.0 < 0xFFFF_0000 {
+                                            let tok = self.unfreeze_unexpanded_token(tok);
+                                            self.no_expand_tok = tok.is_cs().then_some(tok);
+                                            if tok.is_cs() {
+                                                self.set_cur_cs(tok);
+                                                self.cur_prim = Some(Prim::Relax);
+                                            } else {
+                                                self.set_cur_char(tok);
+                                            }
+                                            return tok;
+                                        }
+                                        if tok.0 >= NOEXP_FLAG && tok.0 < UNEXPANDED_CS_FLAG {
+                                            let cs = tok.0 & 0x3FFF_FFFF;
+                                            let tok = Token::from_cs(cs);
+                                            self.no_expand_tok = Some(tok);
+                                            self.cur_tok = tok;
+                                            self.cur_cs = Some(cs);
+                                            self.cur_prim = Some(Prim::Relax);
+                                            return tok;
+                                        }
+                                        if !tok.is_cs() {
+                                            self.set_cur_char(tok);
+                                            return tok;
+                                        }
+                                        self.pushed.push(tok);
+                                        break 'expand;
+                                    }
+                                    None => break 'expand,
+                                }
+                            } else {
+                                self.set_cur_cs(t);
+                                return t;
+                            }
+                        }
+                        _ => {
+                            if self.synth_exp_args_if_match(id) {
+                                break 'expand;
+                            }
+                            self.set_cur_cs(t);
+                            return t;
+                        }
+                    }
+                } else {
+                    self.set_cur_char(t);
+                    return t;
+                }
             }
+            t = self.raw_token();
         }
     }
-
 
     /// true when the cs name is exp_args:N followed only by l3 arg letters.
     pub fn name_is_synth_exp_args(&self, id: CsId) -> bool {
-        let name: Vec<u8> = self.cs.name(id).to_vec();
+        let name = self.cs.name(id);
+        if name.len() < 11 || name[0] != b'e' {
+            return false;
+        }
         name.starts_with(b"exp_args:N")
-            && name.len() > 10
-            && name[10..].iter().all(|c| matches!(c, b'N' | b'n' | b'c' | b'o' | b'f' | b'e' | b'V' | b'v' | b'x'))
+            && name[10..].iter().all(|c| {
+                matches!(
+                    c,
+                    b'N' | b'n' | b'c' | b'o' | b'f' | b'e' | b'V' | b'v' | b'x'
+                )
+            })
     }
 
     /// l3 variant wrappers reference \exp_args:N<spec> expanders lazily
@@ -485,12 +906,11 @@ self.expand_macro(id, &m);
         if !self.name_is_synth_exp_args(id) {
             return false;
         }
-        let name: Vec<u8> = self.cs.name(id).to_vec();
-        let spec: Vec<u8> = name[10..].to_vec();
+        let name = self.cs.name(id);
+        let spec = &name[10..];
         let mut body: Vec<Token> = Vec::new();
-        for letter in &spec {
-            let mut helper: Vec<u8> = b"::".to_vec();
-            helper.push(*letter);
+        for &letter in spec {
+            let helper = [b':', b':', letter];
             match self.cs.lookup(&helper) {
                 Some(h) => body.push(Token::from_cs(h)),
                 None => return false,
@@ -501,15 +921,18 @@ self.expand_macro(id, &m);
             None => return false,
         }
         let m = crate::eqtb::Macro {
+            replacement: Default::default(),
             num_params: 0,
+            has_param_refs: false,
             params: Vec::new(),
             prefix: Vec::new(),
-            body,
+            body: body.into(),
             long: true,
             outer: false,
             protected: false,
         };
-        self.eqtb.assign(id, Equiv::Macro(std::rc::Rc::new(m)), true);
+        self.eqtb
+            .assign(id, Equiv::Macro(std::rc::Rc::new(m)), true);
         true
     }
 
@@ -543,10 +966,7 @@ self.expand_macro(id, &m);
         }
     }
 
-
-
-
-
+    #[inline(always)]
     pub fn is_expandable(&self, p: Prim) -> bool {
         use Prim::*;
         matches!(
@@ -587,7 +1007,6 @@ self.expand_macro(id, &m);
                 | IfInCsName
                 | IfX
                 | IfFontChar
-
                 | IfCase
                 | Or
                 | Else
@@ -600,7 +1019,6 @@ self.expand_macro(id, &m);
                 | PdfFileModDate
                 | PdfFileDump
                 | PdfStrCmp
-                | PdfShellEscape
                 | PdfElapsedTime
                 | PdfUniformDeviate
                 | PdfNormalDeviate
@@ -609,14 +1027,121 @@ self.expand_macro(id, &m);
                 | PdfEscapeHex
                 | PdfUnescapeHex
                 | PdfTexRevision
+                | PdfColorStackInit
+                | PdfFontSize
+                | PdfBanner
+                | LeftMarginKern
+                | RightMarginKern
                 | UcharCat
                 | FileSize
+                | PdfMatch
+                | PdfLastMatch
+                | TopMark
+                | FirstMark
+                | BotMark
+                | SplitFirstMark
+                | SplitBotMark
+                | TopMarksClass
+                | FirstMarksClass
+                | BotMarksClass
+                | SplitFirstMarksClass
+                | SplitBotMarksClass
         )
     }
 
     /// Execute an expandable primitive; None = keep expanding,
     /// Some(t) = t is the resulting current token.
-    pub fn expand_prim(&mut self, p: Prim, _id: CsId) -> Option<Token> {
+    pub fn expand_prim(&mut self, p: Prim, id: CsId) -> Option<Token> {
+        if p == Prim::IfCase {
+            // The case frame must exist while its numeric operand expands:
+            // nested conditionals can remain open until after the first digit.
+            let save = self.push_if(id);
+            let previous = self.pending_if_depth.replace(self.if_stack.len());
+            let n = self.scan_int();
+            self.pending_if_depth = previous;
+            if let Some(st) = self.if_stack.get_mut(save) {
+                st.accepting = n == 0;
+                st.matched = n == 0;
+                st.if_case = n;
+            }
+            if n != 0 {
+                self.skip_branch(true, save);
+            }
+            return None;
+        }
+        if matches!(
+            p,
+            Prim::IfOdd
+                | Prim::IfNum
+                | Prim::IfDim
+                | Prim::IfVoid
+                | Prim::IfFontChar
+                | Prim::IfHBox
+                | Prim::IfVBox
+                | Prim::IfEOF
+        ) {
+            // The outer conditional must exist before operand expansion:
+            // an operand can leave a nested conditional open.
+            let unless = std::mem::take(&mut self.unless_next);
+            let save = self.push_if(id);
+            let previous = self.pending_if_depth.replace(self.if_stack.len());
+            let value = match p {
+                Prim::IfOdd => self.scan_int() % 2 != 0,
+                Prim::IfNum | Prim::IfDim => {
+                    let a = if p == Prim::IfNum {
+                        self.scan_int()
+                    } else {
+                        self.scan_dimen(false, false)
+                    };
+                    let rel = self.scan_relational();
+                    let b = if p == Prim::IfNum {
+                        self.scan_int()
+                    } else {
+                        self.scan_dimen(false, false)
+                    };
+                    compare(a, rel, b)
+                }
+                Prim::IfVoid | Prim::IfHBox | Prim::IfVBox => {
+                    let n = self.scan_reg_num() as usize;
+                    match p {
+                        Prim::IfVoid => self.eqtb.boxed[n].is_none(),
+                        Prim::IfHBox => matches!(
+                            &self.eqtb.boxed[n],
+                            Some(crate::boxes::Node::Box { kind: 0, .. })
+                        ),
+                        _ => matches!(
+                            &self.eqtb.boxed[n],
+                            Some(crate::boxes::Node::Box { kind: 1 | 2, .. })
+                        ),
+                    }
+                }
+                Prim::IfFontChar => {
+                    let f = self.scan_font_id();
+                    let c = self.scan_int().clamp(0, 255) as u8;
+                    self.eqtb
+                        .fonts
+                        .get(f as usize)
+                        .map(|font| font.char_width(c))
+                        .unwrap_or(0)
+                        != 0
+                }
+                Prim::IfEOF => {
+                    let n = self.scan_int();
+                    self.read_eof
+                        .get(n.max(0) as usize)
+                        .copied()
+                        .unwrap_or(true)
+                }
+                _ => unreachable!(),
+            };
+            self.pending_if_depth = previous;
+            self.finish_if(save, value ^ unless)
+        } else {
+            self.expand_prim_inner(p, id)
+        }
+    }
+
+    fn expand_prim_inner(&mut self, p: Prim, id: CsId) -> Option<Token> {
         use Prim::*;
         match p {
             ExpandAfter => {
@@ -624,31 +1149,52 @@ self.expand_macro(id, &m);
                 let t2 = self.raw_token();
                 if t2.0 >= NOEXP_FLAG && t2.0 < 0xFFFF_0000 {
                     self.pushed.push(t2);
-                } else if t2.is_cs() {
-                    let mut id2 = t2.cs_id();
+                } else if t2.is_cs() || (t2.is_char() && t2.cc() == 13) {
+                    let mut id2 = if t2.is_cs() {
+                        t2.cs_id()
+                    } else {
+                        self.active_cs_id(t2.chr() as u8)
+                    };
+                    let invocation = id2;
                     for _ in 0..1024 {
                         match self.eqtb.get(id2) {
                             Some(Equiv::Alias(next)) => id2 = *next,
                             _ => break,
                         }
                     }
-                    match self.eqtb.get(id2).cloned() {
-                        // tex.web: \expandafter expands even \protected macros
-                        Some(Equiv::Macro(m)) => {
-                            if self.freeze_gts_in_edef(id2) {
+                    if let Some(eq) = self.eqtb.get(id2) {
+                        match eq {
+                            // tex.web: \expandafter expands even \protected macros
+                            Equiv::Macro(m) => {
+                                if self.freeze_gts_in_edef(id2) {
+                                    self.pushed.push(t2);
+                                } else if m.num_params == 0 && m.prefix.is_empty() {
+                                    let body = std::rc::Rc::clone(&m.body);
+                                    self.enter_macro_diagnostic(id2, invocation);
+                                    self.push_tokens_rc(body, id2);
+                                } else {
+                                    let m = m.clone();
+                                    self.expand_macro(id2, &m, invocation);
+                                }
+                            }
+                            Equiv::Prim(The) => {
+                                let expanded = self.in_expanded_scan;
+                                self.in_expanded_scan = false;
+                                self.the_scan();
+                                self.in_expanded_scan = expanded;
+                            }
+                            Equiv::Prim(p2) if self.is_expandable(*p2) => {
+                                let p2 = *p2;
+                                if let Some(tt) = self.expand_prim(p2, id2) {
+                                    self.pushed.push(tt);
+                                }
+                            }
+                            _ => {
                                 self.pushed.push(t2);
-                            } else {
-                                self.expand_macro(id2, &m);
                             }
                         }
-                        Some(Equiv::Prim(p2)) if self.is_expandable(p2) => {
-                            if let Some(tt) = self.expand_prim(p2, id2) {
-                                self.pushed.push(tt);
-                            }
-                        }
-                        _ => {
-                            self.pushed.push(t2);
-                        }
+                    } else {
+                        self.pushed.push(t2);
                     }
                 } else {
                     self.pushed.push(t2);
@@ -659,13 +1205,17 @@ self.expand_macro(id, &m);
 
             NoExpand => {
                 let t = self.raw_token();
-                if t.is_cs() {
-                    let id = t.cs_id();
+                let id = if t.is_cs() {
+                    Some(t.cs_id())
+                } else if t.is_char() && t.cc() == 13 {
+                    Some(self.active_cs_id(t.chr() as u8))
+                } else {
+                    None
+                };
+                if let Some(id) = id {
                     // tex.web \noexpand: the one-shot no-expansion flag
-                    // applies to ANY macro — protected ones included.
-                    // Leaving protected macros unflagged let them expand
-                    // inside \edef/\if (hyperref pdfstringdef), leaking
-                    // \delimiter "42xxx hex into the stored text.
+                    // applies to any expandable control sequence, including
+                    // active-character control sequences.
                     let needs_freeze = match self.eqtb.resolve(id) {
                         Some(Equiv::Macro(_)) => true,
                         Some(Equiv::Prim(p2)) => self.is_expandable(*p2),
@@ -685,19 +1235,37 @@ self.expand_macro(id, &m);
                 None
             }
             CsName => {
+                let csname_origin = self.current_token_source_mark();
+                let csname_span = if self.diagnostic_macro_trace.is_empty() {
+                    self.diagnostic_cs_source_width(self.diagnostic_source_cs.unwrap_or(id))
+                } else {
+                    self.diagnostic_macro_call_span
+                };
                 self.csname_depth += 1;
-                let mut name: Vec<u8> = Vec::new();
+                let mut name: Vec<u8> = Vec::with_capacity(32);
                 // A leftover e-TeX \unless flag must not flip \ifx inside \csname
                 self.unless_next = false;
                 loop {
-                    // tex.web §372: get_x_token until cur_cs≠0; that first CS
-                    // ends the name. Re-expanding leftovers (and peeking 12
-                    // extra tokens) lets nested \\expanded steal the next
-                    // undelimited arg (utf8.def IfFileExists@ #2 = with@hooks).
+                    if name.len() > 2000 {
+                        self.csname_depth = self.csname_depth.saturating_sub(1);
+                        self.fatal_error_at(
+                            "TeX capacity exceeded [control sequence name exceeds 2000 bytes]",
+                            csname_origin
+                                .as_ref()
+                                .map(crate::input::SourceMark::to_context),
+                        );
+                        return None;
+                    }
                     let t = self.get_x_raw();
                     if t == EOF_MARKER {
-                        self.error("Missing \\endcsname inserted");
-                        break;
+                        self.csname_depth = self.csname_depth.saturating_sub(1);
+                        self.fatal_error_at(
+                            "File ended while scanning \\csname; missing \\endcsname",
+                            csname_origin
+                                .as_ref()
+                                .map(crate::input::SourceMark::to_context),
+                        );
+                        return None;
                     }
                     if t.is_cs() {
                         let id = t.cs_id();
@@ -724,12 +1292,13 @@ self.expand_macro(id, &m);
                                 continue;
                             }
                             _ => {
-                                if std::env::var("UNDEFTRACE").is_ok() {
-                                    let cs = std::string::String::from_utf8_lossy(&name).into_owned();
-                                    eprintln!("CSN-STALL name={:?} offending={:#x} line={} collected_len={}", cs, t.0, self.input.current_file_line(), name.len());
-                                }
                                 self.pushed.push(t);
-                                self.error("Missing \\endcsname inserted");
+                                self.error_at(
+                                    "Missing \\endcsname inserted",
+                                    csname_origin
+                                        .as_ref()
+                                        .map(crate::input::SourceMark::to_context),
+                                );
                                 break;
                             }
                         }
@@ -750,6 +1319,9 @@ self.expand_macro(id, &m);
                     // relaxing the empty name makes it equal every
                     // relax-defaulted name and the filename becomes ".tex".
                     if name.is_empty() {
+                        if let Some(mark) = csname_origin {
+                            self.diagnostic_synthetic_source = Some((id, mark, csname_span.max(1)));
+                        }
                         return Some(Token::from_cs(id));
                     }
                     // l3 variant wrappers reference \exp_args:N<spec>
@@ -764,12 +1336,16 @@ self.expand_macro(id, &m);
                         self.eqtb.assign(id, e, false);
                     }
                 }
+                if let Some(mark) = csname_origin {
+                    self.diagnostic_synthetic_source = Some((id, mark, csname_span.max(1)));
+                }
                 Some(Token::from_cs(id))
             }
 
-
             LastNamedCs => {
-                let id = self.last_named_cs.unwrap_or_else(|| self.cs.lookup(b"relax").unwrap());
+                let id = self
+                    .last_named_cs
+                    .unwrap_or_else(|| self.cs.lookup(b"relax").unwrap());
                 Some(Token::from_cs(id))
             }
             The => {
@@ -781,10 +1357,15 @@ self.expand_macro(id, &m);
                 let mut bytes: Vec<u8> = Vec::new();
                 let esc = self.eqtb.int_params[crate::prim::IntParam::EscapeChar.idx() as usize];
                 if t.is_cs() {
-                    if esc >= 0 && esc <= 255 {
-                        bytes.push(esc as u8);
+                    let name = self.cs.name(t.cs_id());
+                    if let [0xff, 0, b'A', b'C', b'T', 0, c] = name {
+                        bytes.push(*c);
+                    } else {
+                        if esc >= 0 && esc <= 255 {
+                            bytes.push(esc as u8);
+                        }
+                        bytes.extend_from_slice(name);
                     }
-                    bytes.extend_from_slice(self.cs.name(t.cs_id()));
                 } else {
                     bytes.push(t.chr() as u8);
                 }
@@ -820,57 +1401,18 @@ self.expand_macro(id, &m);
                 None
             }
             Expanded => {
-                if crate::debug_flag("PAIRTRACE") {
-                    eprintln!("EXPANDED-DISPATCH L{}", self.input.current_file_line());
-                }
-                if crate::debug_flag("QUARKTRACE") {
-                    eprintln!("EXPANDED-DISPATCH at {}:{} stack-tail=[{}] prev-mac={:?}",
-                        self.input.current_file_name().split('/').last().unwrap_or("?"), self.input.current_file_line(),
-                        self.input.stack.iter().rev().take(4).map(|src| match src {
-                            crate::input::Source::TokList { name, pos, toks, .. } => format!("T:{} {}/{}", name, pos, toks.len()),
-                            crate::input::Source::File { name, line_no, .. } => format!("F:{}#{}", name.split('/').last().unwrap_or(name), line_no),
-                        }).collect::<Vec<_>>().join(" << "),
-                        self.last_macros);
-                }
                 let r = self.scan_general_text_expanded();
-                if crate::debug_flag("QUARKTRACE2") {
-                    let before = self.tokens_to_string(&self.pushed.iter().rev().take(24).cloned().collect::<Vec<_>>());
-                    eprintln!("EXP-IN  {}:{} pushed=[{}]", self.input.current_file_name().split('/').last().unwrap_or("?"), self.input.current_file_line(), before);
-                }
 
-                if crate::debug_flag("QUARKTRACE") {
-                    if let Some(i) = r.iter().position(|t| {
-                        t.is_cs() && t.0 < 0xC000_0000 && self.cs.name(t.cs_id()).starts_with(b"q__")
-                    }) {
-                        let nm: std::string::String = self.cur_cs.map(|c| std::string::String::from_utf8_lossy(self.cs.name(c)).into_owned()).unwrap_or_default();
-                        eprintln!("EXPANDED-QUARK-UNPROT caller={} pre=[{}]",
-                            nm, self.tokens_to_string(&r[..i.min(30)]));
-                    }
-                }
-                if crate::debug_flag("QUARKTRACE2") {
-                    eprintln!("EXP-OUT {}:{} result=[{}]", self.input.current_file_name().split('/').last().unwrap_or("?"), self.input.current_file_line(), self.tokens_to_string(&r.iter().take(24).cloned().collect::<Vec<_>>()));
-                }
- self.push_tokens(r);
- None
+                self.push_tokens(r);
+                None
             }
             UnExpanded => {
                 self.skip_spaces_relax();
-                let t = self.raw_token();
-                if crate::debug_flag("PAIRTRACE") {
-                    let nxt = self.raw_token();
-                    self.pushed.push(nxt);
-                    let desc = if nxt.is_cs() {
-                        let rk = match self.eqtb.resolve(nxt.cs_id()) { Some(Equiv::Prim(p)) => format!("Prim({:?})", p), Some(Equiv::Alias(_)) => "Alias".into(), Some(Equiv::Macro(_)) => "Macro".into(), _ => "other".into() };
-                        format!("cs:{} {}", ::std::string::String::from_utf8_lossy(self.cs.name(nxt.cs_id())), rk)
-                    } else { format!("cc{} c{}", nxt.cc(), nxt.chr()) };
-                    eprintln!("UE-ENTRY in={} next={}", self.current_macro, desc);
-                }
+                let t = self.get_x_raw();
+
                 if t.is_cs() {
                     if let Some(Equiv::ToksReg(i)) = self.eqtb.resolve(t.cs_id()).cloned() {
                         let toks = (*self.eqtb.toks[i as usize]).clone();
-                        if self.in_expanded_scan {
-                            self.unexp_protect = self.unexp_protect.saturating_add(toks.len());
-                        }
                         self.push_tokens_exp_not(toks);
                         return None;
                     }
@@ -882,16 +1424,12 @@ self.expand_macro(id, &m);
                         if p == Prim::Expanded {
                             let mut toks = self.scan_general_text_expanded();
                             Self::strip_outer_braces(&mut toks);
-                            let n = toks.len();
                             if self.in_expanded_scan {
-                                self.unexp_protect = self.unexp_protect.saturating_add(n);
                                 self.push_tokens_exp_not(toks);
                             } else {
                                 self.push_tokens(toks);
                             }
-                            if crate::debug_flag("PAIRTRACE") {
-                                eprintln!("UE-PAIR fired toks={}", n);
-                            }
+
                             return None;
                         }
                     }
@@ -899,7 +1437,6 @@ self.expand_macro(id, &m);
                 self.pushed.push(t);
                 let toks = self.scan_general_text();
                 if self.in_expanded_scan {
-                    self.unexp_protect = self.unexp_protect.saturating_add(toks.len());
                     self.push_tokens_exp_not(toks);
                 } else {
                     self.push_tokens(toks);
@@ -910,7 +1447,10 @@ self.expand_macro(id, &m);
                 // \scantokens{...}: stringify and rescan
                 let toks = self.scan_general_text();
                 let text = self.tokens_to_string(&toks);
-                self.input.push_file("<scantokens>".to_string(), text.into_bytes());
+                if self.ensure_input_stack_room(1) {
+                    self.input
+                        .push_file("<scantokens>".to_string(), text.into_bytes());
+                }
                 None
             }
             NumExpr => {
@@ -953,6 +1493,33 @@ self.expand_macro(id, &m);
                 self.exp_string(text.as_bytes());
                 None
             }
+            Prim::PdfFontSize => {
+                let f = self.scan_font_id();
+                let size = self
+                    .eqtb
+                    .fonts
+                    .get(f as usize)
+                    .map(|font| font.at_size)
+                    .unwrap_or(0);
+                let text = self.scaled_to_string(size);
+                self.exp_string(text.as_bytes());
+                None
+            }
+            Prim::PdfBanner => {
+                self.exp_string(b"This is pdfTeX, Version 3.141592653-2.6-1.40.29");
+                None
+            }
+            Prim::LeftMarginKern | Prim::RightMarginKern => {
+                // pdftex §11371: skip discardables and the structural
+                // \leftskip/\rightskip glue, then report the margin kern's
+                // width (0 if the line box has none).
+                let left = p == LeftMarginKern;
+                let n = self.scan_reg_num();
+                let width = self.margin_kern_width(n, left);
+                let s = self.scaled_to_string(width);
+                self.exp_string(s.as_bytes());
+                None
+            }
             Unless => {
                 // e-TeX \\unless prefixes the next conditional; the flag is
                 // consumed by do_if. Do not restore: a save/restore around
@@ -961,21 +1528,16 @@ self.expand_macro(id, &m);
                 self.unless_next = true;
                 self.expand_prim_of_next()
             }
-            IfEOF => {
-                let n = self.scan_int();
-                let eof = self.read_eof.get(n.max(0) as usize).copied().unwrap_or(true);
-self.do_if(eof)
-            }
-            IfTrue => self.do_if(true),
-            IfFalse => self.do_if(false),
+            IfTrue => self.do_if(true, id),
+            IfFalse => self.do_if(false, id),
             IfChar => {
                 // tex.web 498: push this \\if *before* get_x_token so a nested
                 // true conditional from the test sits on top (babel
                 // `\\if T\\ifeof1F\\fi T`).
                 let unless = std::mem::take(&mut self.unless_next);
-                let save = self.push_if();
-                let a = self.get_token();
-                let b = self.get_token();
+                let save = self.push_if(id);
+                let a = self.character_test_operand();
+                let b = self.character_test_operand();
                 // tex.web: CS tokens have character code 256, so two
                 // control sequences always compare equal for \\if.
                 let mut eq = if a.is_cs() && b.is_cs() {
@@ -992,9 +1554,9 @@ self.do_if(eof)
             }
             IfCat => {
                 let unless = std::mem::take(&mut self.unless_next);
-                let save = self.push_if();
-                let a = self.get_token();
-                let b = self.get_token();
+                let save = self.push_if(id);
+                let a = self.character_test_operand();
+                let b = self.character_test_operand();
                 // tex.web: CS tokens have category 16.
                 let mut eq = if a.is_cs() && b.is_cs() {
                     true
@@ -1008,66 +1570,17 @@ self.do_if(eof)
                 }
                 self.finish_if(save, eq)
             }
-            IfOdd => {
-                let n = self.scan_int();
-                self.do_if(n % 2 != 0)
-            }
-            IfNum => {
-                let a = self.scan_int();
-                let rel = self.scan_relational();
-                let b = self.scan_int();
-                if crate::debug_flag("IFNUMTRACE") {
-                    eprintln!(
-                        "IFNUM {} {} {} -> {} line={} stack={}",
-                        a,
-                        rel as char,
-                        b,
-                        compare(a, rel, b),
-                        self.input.current_file_line(),
-                        self.if_stack.len()
-                    );
-                }
-                self.do_if(compare(a, rel, b))
-            }
-            IfDim => {
-                let a = self.scan_dimen(false, false);
-                let rel = self.scan_relational();
-                let b = self.scan_dimen(false, false);
-                self.do_if(compare(a, rel, b))
-            }
-            IfVoid => {
-                let n = self.scan_reg_num();
-                self.do_if(self.eqtb.boxed[n as usize].is_none())
-            }
-            IfFontChar => {
-                // e-TeX: true when the char has a non-zero width in the font
-                let f = self.scan_font_id();
-                let c = self.scan_int().clamp(0, 255) as u8;
-                let w = self
-                    .eqtb
-                    .fonts
-                    .get(f as usize)
-                    .map(|x| x.char_width(c))
-                    .unwrap_or(0);
-                self.do_if(w != 0)
-            }
-            IfHBox => {
-                let n = self.scan_reg_num();
-                self.do_if(matches!(&self.eqtb.boxed[n as usize], Some(crate::boxes::Node::Box { kind: 0, .. })))
-            }
-            IfVBox => {
-                let n = self.scan_reg_num();
-                self.do_if(matches!(
-                    &self.eqtb.boxed[n as usize],
-                    Some(crate::boxes::Node::Box { kind: 1 | 2, .. })
-                ))
-            }
-            IfVMode => self.do_if(self.mode.is_v()),
-            IfHMode => self.do_if(self.mode.is_h()),
-            IfMMode => self.do_if(self.mode.is_m()),
+            IfVMode => self.do_if(self.mode.is_v(), id),
+            IfHMode => self.do_if(self.mode.is_h(), id),
+            IfMMode => self.do_if(self.mode.is_m(), id),
             IfInner => {
-                let ok = matches!(self.mode, crate::engine::Mode::InternalVertical | crate::engine::Mode::RestrictedHorizontal | crate::engine::Mode::Math);
-                self.do_if(ok)
+                let ok = matches!(
+                    self.mode,
+                    crate::engine::Mode::InternalVertical
+                        | crate::engine::Mode::RestrictedHorizontal
+                        | crate::engine::Mode::Math
+                );
+                self.do_if(ok, id)
             }
             IfDef => {
                 let t = self.raw_token();
@@ -1079,9 +1592,9 @@ self.do_if(eof)
                 } else {
                     false
                 };
-                self.do_if(def)
+                self.do_if(def, id)
             }
-            IfInCsName => self.do_if(self.csname_depth > 0),
+            IfInCsName => self.do_if(self.csname_depth > 0, id),
 
             IfCSName => {
                 // e-TeX \\ifcsname: get_x_token until \\endcsname; true iff
@@ -1131,15 +1644,12 @@ self.do_if(eof)
                 self.csname_depth = self.csname_depth.saturating_sub(1);
                 let def = if let Some(id) = self.cs.lookup(&name) {
                     self.last_named_cs = Some(id);
-                    !matches!(
-                        self.eqtb.resolve(id),
-                        Some(Equiv::Prim(Prim::Relax)) | None
-                    )
+                    self.eqtb.resolve(id).is_some()
                 } else {
                     false
                 };
                 self.unless_next = unless;
-                self.do_if(def);
+                self.do_if(def, id);
                 None
             }
             IfX => {
@@ -1147,47 +1657,21 @@ self.do_if(eof)
                 // but never macros (\\ifx\\foo x is false for \\def\\foo{x}).
                 let a = self.raw_token();
                 let b = self.raw_token();
-                let an = if a.is_cs() { self.cs.name(a.cs_id()).to_vec() } else { vec![] };
-                let bn = if b.is_cs() { self.cs.name(b.cs_id()).to_vec() } else { vec![] };
-                if an == b"GTS@temp" || an == b"GTS@Token" || bn == b"GTS@temp" || bn == b"GTS@Token" {
-                    static GX: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-                    if GX.fetch_add(1, std::sync::atomic::Ordering::Relaxed) < 16 {
-                        let eq = self.ifx_equal(a, b);
-                        let tok = self.cs.lookup(b"GTS@Token").map(|id| match self.eqtb.resolve(id) {
-                            Some(Equiv::Macro(m)) => format!("mac[{}]", self.tokens_to_string(&m.body)),
-                            Some(other) => other.kind_name().to_string(),
-                            None => "undef".into(),
-                        }).unwrap_or_else(|| "missing".into());
-                        let tmp = self.cs.lookup(b"GTS@temp").map(|id| match self.eqtb.resolve(id) {
-                            Some(Equiv::Macro(m)) => format!("mac[{}]", self.tokens_to_string(&m.body)),
-                            Some(other) => other.kind_name().to_string(),
-                            None => "undef".into(),
-                        }).unwrap_or_else(|| "missing".into());
-                        eprintln!(
-                            "GTSIFX a=\\{} b=\\{} eq={} tok={tok} tmp={tmp} e={}",
-                            std::string::String::from_utf8_lossy(&an),
-                            std::string::String::from_utf8_lossy(&bn),
-                            eq,
-                            self.in_expanded_scan
-                        );
-                    }
-                }
+
                 let eq = self.ifx_equal(a, b);
-                self.do_if(eq)
+                self.do_if(eq, id)
             }
             IfCase => {
+                let save = self.push_if(id);
                 let n = self.scan_int();
                 let accepting = n == 0;
-                self.if_stack.push(crate::engine::IfState {
-                    accepting,
-                    matched: accepting,
-                    if_case: n,
-                    loc_file: self.input.current_file_name(),
-                    loc_line: self.input.current_file_line(),
-                    loc_cs: 0,
-                });
+                if let Some(st) = self.if_stack.get_mut(save) {
+                    st.accepting = accepting;
+                    st.matched = accepting;
+                    st.if_case = n;
+                }
                 if !accepting {
-                    self.skip_branch(true);
+                    self.skip_branch(true, save);
                 }
                 None
             }
@@ -1204,11 +1688,7 @@ self.do_if(eof)
                 None
             }
             Else => {
-                let ln = self.input.current_file_line();
                 let st = self.if_stack.last().cloned();
-                if ((ln >= 1880 && ln <= 1930) || (ln >= 290 && ln <= 310)) && self.input.current_file_name().contains("latex.ltx") {
-                    eprintln!("ELSE_HIT L{} if_stack_len={} top={:?}", ln, self.if_stack.len(), st.as_ref().map(|s| (s.accepting, s.matched, s.loc_line)));
-                }
                 match st {
                     Some(s) => {
                         if s.matched {
@@ -1239,22 +1719,7 @@ self.do_if(eof)
                 None
             }
             Fi => {
-                let ln = self.input.current_file_line();
-                let popped = self.if_stack.pop();
-                if ((ln >= 1880 && ln <= 1930) || (ln >= 290 && ln <= 310)) && self.input.current_file_name().contains("latex.ltx") {
-                    eprintln!("FI_HIT L{} if_stack_len={} popped={:?}", ln, self.if_stack.len(), popped.as_ref().map(|s| (s.accepting, s.matched, s.loc_line)));
-                }
-                if popped.is_none() {
-                    if crate::debug_flag("FIFTRACE") {
-                        eprintln!(
-                            "EXTRA-FI L{} file={} mac={} last={:?} pushed=[{}]",
-                            ln,
-                            self.input.current_file_name().split('/').last().unwrap_or(""),
-                            self.current_macro,
-                            self.last_macros.iter().rev().take(10).collect::<Vec<_>>(),
-                            self.tokens_to_string(&self.pushed.iter().rev().take(14).cloned().collect::<Vec<_>>())
-                        );
-                    }
+                if self.if_stack.pop().is_none() {
                     self.error("Extra \\fi");
                 }
                 None
@@ -1270,27 +1735,120 @@ self.do_if(eof)
                 None
             }
             PdfFileSize | FileSize => {
-                let name = { let t = self.scan_general_text_expanded(); self.tokens_to_string(&t) };
-                let name = name.trim();
-                // \@missingfileerror give-up sentinel: see resolve_input_path.
-                // Must report a size so \file_full_name accepts ".tex" and
-                // the retry \input{.tex} lands on the placeholder file.
-                let sz = if name == ".tex" {
-                    Some(1)
-                } else {
-                    self.font_loader.kpse.find_any(name)
-                        .or_else(|| self.font_loader.kpse.find(name, tex_kpse::Format::Tex))
-                        .and_then(|p| std::fs::metadata(p).ok())
-                        .map(|m| m.len())
+                let name = {
+                    let t = self.scan_general_text_expanded();
+                    self.tokens_to_string(&t)
                 };
+                let name = name.trim();
+                let sz = self
+                    .resolve_input_path(name)
+                    .or_else(|| self.font_loader.kpse.find_any(name))
+                    .and_then(|p| std::fs::metadata(p).ok())
+                    .filter(|m| m.is_file())
+                    .map(|m| m.len())
+                    .or_else(|| {
+                        let clean = std::path::Path::new(name)
+                            .file_name()
+                            .and_then(|s| s.to_str())
+                            .unwrap_or(name);
+                        tex_kpse::get_embedded_package(clean).map(|d| d.len() as u64)
+                    });
                 if let Some(n) = sz {
                     self.exp_string(n.to_string().as_bytes());
                 }
                 None
             }
+            TopMark | FirstMark | BotMark | SplitFirstMark | SplitBotMark | TopMarksClass
+            | FirstMarksClass | BotMarksClass | SplitFirstMarksClass | SplitBotMarksClass => {
+                let which = match p {
+                    TopMark | TopMarksClass => 0,
+                    FirstMark | FirstMarksClass => 1,
+                    BotMark | BotMarksClass => 2,
+                    SplitFirstMark | SplitFirstMarksClass => 3,
+                    _ => 4,
+                };
+                let class = if matches!(
+                    p,
+                    TopMarksClass
+                        | FirstMarksClass
+                        | BotMarksClass
+                        | SplitFirstMarksClass
+                        | SplitBotMarksClass
+                ) {
+                    self.scan_int()
+                } else {
+                    0
+                };
+                self.push_mark_tokens_class(which, class);
+                None
+            }
+            PdfMatch => {
+                let icase = self.scan_keyword(b"icase");
+                let count = if self.scan_keyword(b"subcount") {
+                    self.scan_int()
+                } else {
+                    10
+                };
+                let count = if count < 0 { 10 } else { count as usize };
+                let pattern = {
+                    let t = self.scan_general_text_expanded();
+                    self.tokens_to_string(&t)
+                };
+                let subject = {
+                    let t = self.scan_general_text_expanded();
+                    self.tokens_to_string(&t).into_bytes()
+                };
+                match posix_regex::PosixRegexBuilder::new(pattern.as_bytes())
+                    .with_default_classes()
+                    .extended(true)
+                    .compile()
+                {
+                    Ok(regex) => {
+                        let mut matches = regex.case_insensitive(icase).matches(&subject, Some(1));
+                        let found = !matches.is_empty();
+                        self.pdf_match_ranges.clear();
+                        if let Some(captures) = matches.pop() {
+                            self.pdf_match_ranges
+                                .extend(captures.iter().take(count).copied());
+                        }
+                        self.pdf_match_subject = subject;
+                        self.exp_string(if found { b"1" } else { b"0" });
+                    }
+                    Err(_) => {
+                        // pdfTeX preserves previous captures when compilation fails.
+                        self.term_print_nl(
+                            "pdfTeX warning: \\pdfmatch: Invalid regular expression\n",
+                        );
+                        self.exp_string(b"-1");
+                    }
+                }
+                None
+            }
+            PdfLastMatch => {
+                let index = self.scan_int();
+                let capture = usize::try_from(index)
+                    .ok()
+                    .and_then(|i| self.pdf_match_ranges.get(i).copied().flatten());
+                let mut text = Vec::new();
+                if let Some((start, end)) = capture {
+                    text.extend_from_slice(start.to_string().as_bytes());
+                    text.extend_from_slice(b"->");
+                    text.extend_from_slice(&self.pdf_match_subject[start..end]);
+                } else {
+                    text.extend_from_slice(b"-1->");
+                }
+                self.exp_string(&text);
+                None
+            }
             PdfStrCmp => {
-                let a = { let t = self.scan_general_text_expanded(); self.tokens_to_string(&t) };
-                let b = { let t = self.scan_general_text_expanded(); self.tokens_to_string(&t) };
+                let a = {
+                    let t = self.scan_general_text_expanded();
+                    self.tokens_to_string(&t)
+                };
+                let b = {
+                    let t = self.scan_general_text_expanded();
+                    self.tokens_to_string(&t)
+                };
                 let n = match a.cmp(&b) {
                     std::cmp::Ordering::Less => "-1",
                     std::cmp::Ordering::Equal => "0",
@@ -1300,15 +1858,39 @@ self.do_if(eof)
                 None
             }
             PdfMdFiveSum => {
-                let _ = self.scan_keyword(b"file");
-                let s = { let t = self.scan_general_text_expanded(); self.tokens_to_string(&t) };
-                // cheap non-crypto hex; expl3 only needs a stable token during boot
-                let mut h: u64 = 0xcbf29ce484222325;
-                for b in s.as_bytes() {
-                    h ^= *b as u64;
-                    h = h.wrapping_mul(0x100000001b3);
-                }
-                self.exp_string(format!("{h:032x}").as_bytes());
+                use std::io::Read;
+                let file = self.scan_keyword(b"file");
+                let toks = self.scan_general_text_expanded();
+                let bytes = self.tokens_to_bytes(&toks);
+                let digest = if file {
+                    let name = std::string::String::from_utf8_lossy(&bytes);
+                    let data = if let Some(path) = self
+                        .resolve_input_path(name.trim())
+                        .or_else(|| self.font_loader.kpse.find_any(name.trim()))
+                    {
+                        let Ok(mut input) = std::fs::File::open(path) else {
+                            return None;
+                        };
+                        let mut bytes = Vec::new();
+                        if input.read_to_end(&mut bytes).is_err() {
+                            return None;
+                        }
+                        bytes
+                    } else {
+                        let clean = std::path::Path::new(name.trim())
+                            .file_name()
+                            .and_then(|s| s.to_str())
+                            .unwrap_or(name.trim());
+                        let Some(pkg_data) = tex_kpse::get_embedded_package(clean) else {
+                            return None;
+                        };
+                        pkg_data
+                    };
+                    md5::compute(&data)
+                } else {
+                    md5::compute(&bytes)
+                };
+                self.exp_string(format!("{digest:X}").as_bytes());
                 None
             }
             PdfFileModDate => {
@@ -1317,16 +1899,66 @@ self.do_if(eof)
                 None
             }
             PdfFileDump => {
-                let _ = self.scan_keyword(b"offset");
-                let _ = self.scan_keyword(b"length");
-                let _ = self.scan_general_text_expanded();
-                None
-            }
-            PdfShellEscape => {
-                self.exp_string(b"1");
+                use std::io::{Read, Seek, SeekFrom};
+                let offset = if self.scan_keyword(b"offset") {
+                    self.scan_int()
+                } else {
+                    0
+                };
+                let length = if self.scan_keyword(b"length") {
+                    self.scan_int()
+                } else {
+                    0
+                };
+                let name = self.scan_pdf_string();
+                if offset < 0 || length < 0 {
+                    self.error("Negative offset or length in \\pdffiledump");
+                    return None;
+                }
+                let bytes = if let Some(path) = self
+                    .resolve_input_path(name.trim())
+                    .or_else(|| self.font_loader.kpse.find_any(name.trim()))
+                {
+                    let Ok(mut input) = std::fs::File::open(path) else {
+                        return None;
+                    };
+                    if input.seek(SeekFrom::Start(offset as u64)).is_err() {
+                        return None;
+                    }
+                    let mut bytes = Vec::new();
+                    if input.take(length as u64).read_to_end(&mut bytes).is_err() {
+                        return None;
+                    }
+                    bytes
+                } else {
+                    let clean = std::path::Path::new(name.trim())
+                        .file_name()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or(name.trim());
+                    let Some(pkg_data) = tex_kpse::get_embedded_package(clean) else {
+                        return None;
+                    };
+                    let start = (offset as usize).min(pkg_data.len());
+                    let end = (start + length as usize).min(pkg_data.len());
+                    pkg_data[start..end].to_vec()
+                };
+                const HEX: &[u8; 16] = b"0123456789ABCDEF";
+                let mut hex = Vec::with_capacity(bytes.len() * 2);
+                for byte in bytes {
+                    hex.push(HEX[(byte >> 4) as usize]);
+                    hex.push(HEX[(byte & 15) as usize]);
+                }
+                self.exp_string(&hex);
                 None
             }
             PdfElapsedTime => {
+                self.exp_string(b"0");
+                None
+            }
+            PdfColorStackInit => {
+                let _ = self.scan_keyword(b"page");
+                let _ = self.scan_keyword(b"direct");
+                let _ = self.scan_general_text_expanded();
                 self.exp_string(b"0");
                 None
             }
@@ -1335,21 +1967,98 @@ self.do_if(eof)
                 self.exp_string(b"0");
                 None
             }
-            PdfEscapeString | PdfEscapeName | PdfEscapeHex => {
-                let s = { let t = self.scan_general_text_expanded(); self.tokens_to_string(&t) };
+            PdfEscapeString | PdfEscapeName => {
+                let s = {
+                    let t = self.scan_general_text_expanded();
+                    self.tokens_to_string(&t)
+                };
                 self.exp_string(s.as_bytes());
+                None
+            }
+            PdfEscapeHex => {
+                let toks = self.scan_general_text_expanded();
+                let s = self.tokens_to_string(&toks);
+                const HEX: &[u8; 16] = b"0123456789ABCDEF";
+                let mut encoded = Vec::with_capacity(s.len() * 2);
+                for b in s.bytes() {
+                    encoded.push(HEX[(b >> 4) as usize]);
+                    encoded.push(HEX[(b & 0x0f) as usize]);
+                }
+                self.exp_string(&encoded);
                 None
             }
             PdfUnescapeHex => {
-                let s = { let t = self.scan_general_text_expanded(); self.tokens_to_string(&t) };
-                self.exp_string(s.as_bytes());
+                let toks = self.scan_general_text_expanded();
+                let s = self.tokens_to_string(&toks);
+                let mut decoded = Vec::with_capacity(s.len() / 2);
+                let mut high = None;
+                for b in s.bytes().filter(|b| !b.is_ascii_whitespace()) {
+                    let Some(nibble) = (b as char).to_digit(16).map(|n| n as u8) else {
+                        continue;
+                    };
+                    if let Some(h) = high.take() {
+                        decoded.push((h << 4) | nibble);
+                    } else {
+                        high = Some(nibble);
+                    }
+                }
+                if let Some(h) = high {
+                    decoded.push(h << 4);
+                }
+                self.exp_string(&decoded);
                 None
             }
-            _ => {
-                self.error("not expandable primitive in expansion");
-                None
+            _ => None,
+        }
+    }
+    /// Remove an already-consumed `\noexpand` marker before TeX compares or
+    /// stores the token as macro input. `\unexpanded` has a distinct marker
+    /// because it must survive any intervening macro-argument scanners.
+    fn unfreeze_input_token(&self, t: Token) -> Token {
+        if t.0 < NOEXP_FLAG || t.0 >= UNEXPANDED_CS_FLAG {
+            return t;
+        }
+        let id = t.0 & 0x3FFF_FFFF;
+        let name = self.cs.name(id);
+        if name.len() == 7 && name[..6] == [0xFF, 0x00, b'A', b'C', b'T', 0x00] {
+            Token::char(13, name[6] as u32)
+        } else {
+            Token::from_cs(id)
+        }
+    }
+
+    fn unfreeze_unexpanded_token(&self, t: Token) -> Token {
+        if t.0 >= UNEXPANDED_CS_FLAG && t.0 < 0xFFFF_0000 {
+            let id = t.0 & 0x1FFF_FFFF;
+            let name = self.cs.name(id);
+            if name.len() == 7 && name[..6] == [0xFF, 0x00, b'A', b'C', b'T', 0x00] {
+                Token::char(13, name[6] as u32)
+            } else {
+                Token::from_cs(id)
+            }
+        } else {
+            t.unfreeze()
+        }
+    }
+
+    /// Return the character/category identity used by `\if` and `\ifcat`.
+    ///
+    /// `\noexpand` marks an expandable control sequence with `NOEXP_FLAG`.
+    /// For an active character TeX still exposes the original character
+    /// token to these tests, not a category-16 control sequence.
+    fn character_test_operand(&mut self) -> Token {
+        let t = self.get_token();
+        let mut t = if self.no_expand_tok == Some(t) {
+            self.unfreeze_input_token(Token(NOEXP_FLAG | t.cs_id()))
+        } else {
+            self.unfreeze_input_token(t)
+        };
+        if t.is_cs() {
+            if let Some(Equiv::CharTok(value)) = self.eqtb.resolve(t.cs_id()) {
+                t = Token(*value);
             }
         }
+        t
     }
 
     /// dispatch the token after \unless (must be a conditional)
@@ -1369,25 +2078,17 @@ self.do_if(eof)
         }
     }
 
-    fn push_if(&mut self) -> usize {
+    fn push_if(&mut self, id: CsId) -> usize {
+        let loc = self.current_token_source_mark();
         self.if_stack.push(crate::engine::IfState {
             accepting: false,
             matched: false,
             if_case: -1,
             loc_file: self.input.current_file_name(),
             loc_line: self.input.current_file_line(),
-            loc_cs: 0,
+            loc_cs: id,
+            loc,
         });
-        if crate::debug_flag("FIFTRACE") {
-            eprintln!(
-                "IFPUSH depth={} L{} file={} mac={} last={:?}",
-                self.if_stack.len(),
-                self.input.current_file_line(),
-                self.input.current_file_name().split('/').last().unwrap_or(""),
-                self.current_macro,
-                self.last_macros.iter().rev().take(6).collect::<Vec<_>>()
-            );
-        }
         self.if_stack.len() - 1
     }
 
@@ -1403,12 +2104,12 @@ self.do_if(eof)
         None
     }
 
-    fn do_if(&mut self, mut b: bool) -> Option<Token> {
+    fn do_if(&mut self, mut b: bool, id: CsId) -> Option<Token> {
         if self.unless_next {
             b = !b;
             self.unless_next = false;
         }
-        let save = self.push_if();
+        let save = self.push_if(id);
         self.finish_if(save, b)
     }
 
@@ -1465,24 +2166,32 @@ self.do_if(eof)
     fn pass_text(&mut self) -> Option<Prim> {
         let mut l = 0i32;
         loop {
+            if self.pushed.is_empty() {
+                if let Some(crate::input::Source::TokList { toks, pos, .. }) =
+                    self.input.stack.last_mut()
+                {
+                    let s = &toks[..];
+                    while *pos < s.len() && s[*pos].0 < 0x8000_0000 {
+                        *pos += 1;
+                    }
+                    if *pos == s.len() {
+                        if let Some(crate::input::Source::TokList {
+                            toks: crate::input::TokTokens::Vec(mut v),
+                            ..
+                        }) = self.input.stack.pop()
+                        {
+                            v.clear();
+                            if self.token_vec_pool.len() < 512 {
+                                self.token_vec_pool.push(v);
+                            }
+                        }
+                        continue;
+                    }
+                }
+            }
             let t = self.raw_token();
             if t == EOF_MARKER {
-                let ist: Vec<std::string::String> = self
-                    .if_stack
-                    .iter()
-                    .map(|st| {
-                        format!(
-                            "{}:{}",
-                            st.loc_file.split('/').last().unwrap_or("?"),
-                            st.loc_line
-                        )
-                    })
-                    .collect();
-                self.error(&format!(
-                    "File ended while scanning conditional [{}]",
-                    ist.join(", ")
-                ));
-                self.end_occurred = true;
+                self.fatal_conditional_eof();
                 return None;
             }
             if !t.is_cs() {
@@ -1543,7 +2252,6 @@ self.do_if(eof)
         }
     }
 
-
     /// e-TeX `\\unless` during skip: the following *conditional* is one opener
     /// together with `\\unless`. If the next token is not a conditional (the
     /// expl3 `\\expandafter\\unless\\fi\\ifx` pattern while skipping), leave it.
@@ -1561,10 +2269,27 @@ self.do_if(eof)
                 }
                 if matches!(
                     p,
-                    IfChar | IfCat | IfOdd | IfNum | IfDim | IfVoid | IfHBox | IfVBox
-                        | IfHMode | IfVMode | IfInner | IfMMode | IfTrue | IfFalse
-                        | IfEOF | IfDef | IfCSName | IfInCsName | IfX | IfCase | IfFontChar
-
+                    IfChar
+                        | IfCat
+                        | IfOdd
+                        | IfNum
+                        | IfDim
+                        | IfVoid
+                        | IfHBox
+                        | IfVBox
+                        | IfHMode
+                        | IfVMode
+                        | IfInner
+                        | IfMMode
+                        | IfTrue
+                        | IfFalse
+                        | IfEOF
+                        | IfDef
+                        | IfCSName
+                        | IfInCsName
+                        | IfX
+                        | IfCase
+                        | IfFontChar
                 ) {
                     *depth += 1;
                     return;
@@ -1574,24 +2299,17 @@ self.do_if(eof)
         self.pushed.push(t2);
     }
 
-    /// skip tokens until matching \else / \or (for ifcase) / \fi at this level
-    fn skip_branch(&mut self, if_case: bool) {
-        if crate::debug_flag("SKIPTRACE") {
-            eprintln!("SKIPSTART ifcase={}", if_case);
-        }
+    /// Skip to the branch delimiter belonging to `target`. Numeric operands
+    /// can leave expanded nested conditionals open above an \ifcase frame.
+    fn skip_branch(&mut self, if_case: bool, target: usize) {
         let mut depth = 0i32;
         loop {
             let t = self.raw_token();
             if t == EOF_MARKER {
-                let ist: Vec<std::string::String> = self.if_stack.iter().map(|st| format!("{}:{}", st.loc_file.split('/').last().unwrap_or("?"), st.loc_line)).collect();
-                self.error(&format!("File ended while scanning conditional [{}]", ist.join(", ")));
-                self.end_occurred = true;
-                if crate::debug_flag("IFTRACE") { eprintln!("ENDOCC crates/tex-core/src/expand.rs:686 line={}", self.input.current_file_line()); }
+                self.fatal_conditional_eof();
                 return;
             }
-            if crate::debug_flag("SKIPTRACE") {
-                eprintln!("SKIP tok {:#x}", t.0);
-            }
+
             if !t.is_cs() {
                 continue;
             }
@@ -1600,27 +2318,43 @@ self.do_if(eof)
                 _ => continue,
             };
             match is {
-                Prim::IfChar | Prim::IfCat | Prim::IfOdd | Prim::IfNum | Prim::IfDim
-                | Prim::IfVoid | Prim::IfHBox | Prim::IfVBox | Prim::IfHMode | Prim::IfVMode
-                | Prim::IfInner | Prim::IfMMode | Prim::IfTrue | Prim::IfFalse | Prim::IfDef
-                | Prim::IfEOF | Prim::IfCSName | Prim::IfInCsName | Prim::IfX | Prim::IfCase | Prim::IfFontChar => depth += 1,
+                Prim::IfChar
+                | Prim::IfCat
+                | Prim::IfOdd
+                | Prim::IfNum
+                | Prim::IfDim
+                | Prim::IfVoid
+                | Prim::IfHBox
+                | Prim::IfVBox
+                | Prim::IfHMode
+                | Prim::IfVMode
+                | Prim::IfInner
+                | Prim::IfMMode
+                | Prim::IfTrue
+                | Prim::IfFalse
+                | Prim::IfDef
+                | Prim::IfEOF
+                | Prim::IfCSName
+                | Prim::IfInCsName
+                | Prim::IfX
+                | Prim::IfCase
+                | Prim::IfFontChar => depth += 1,
 
                 Prim::Unless => self.skip_count_unless_target(&mut depth),
                 Prim::Fi => {
-                    if depth == 0 {
-                        if let Some(st) = self.if_stack.last() {
-                            if st.accepting {
-                                self.if_stack.pop();
-                                continue;
-                            }
-                            self.if_stack.pop();
-                        }
+                    if depth > 0 {
+                        depth -= 1;
+                    } else if self.if_stack.len() > target + 1 {
+                        // This closes a conditional opened while scanning the
+                        // target's numeric operand, not the target itself.
+                        self.if_stack.pop();
+                    } else {
+                        self.if_stack.pop();
                         return;
                     }
-                    depth -= 1;
                 }
                 Prim::Or => {
-                    if depth == 0 {
+                    if depth == 0 && self.if_stack.len() == target + 1 {
                         if if_case {
                             let st = self.if_stack.last_mut().unwrap();
                             if st.matched {
@@ -1637,13 +2371,13 @@ self.do_if(eof)
                     }
                 }
                 Prim::ElIf | Prim::ElIfX => {
-                    if depth == 0 {
-                        self.skip_branch(false);
+                    if depth == 0 && self.if_stack.len() == target + 1 {
+                        self.skip_branch(false, target);
                         return;
                     }
                 }
                 Prim::Else => {
-                    if depth == 0 {
+                    if depth == 0 && self.if_stack.len() == target + 1 {
                         let st = self.if_stack.last().cloned();
                         match st {
                             Some(s) => {
@@ -1665,15 +2399,39 @@ self.do_if(eof)
         }
     }
 
+    fn fatal_conditional_eof(&mut self) {
+        let count = self.if_stack.len();
+        let openings = self
+            .if_stack
+            .iter()
+            .rev()
+            .take(3)
+            .map(|state| {
+                let file = state.loc_file.rsplit('/').next().unwrap_or("?");
+                let mut end = file.len().min(256);
+                while end > 0 && !file.is_char_boundary(end) {
+                    end -= 1;
+                }
+                format!("{}:{}", &file[..end], state.loc_line)
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        let source = self
+            .if_stack
+            .last()
+            .and_then(|state| state.loc.as_ref().map(crate::input::SourceMark::to_context));
+        self.fatal_error_at(
+            &format!(
+                "File ended while scanning conditional ({count} open; innermost at {openings})"
+            ),
+            source,
+        );
+    }
+
     /// skip until \fi (used after \else when branch matched)
     fn skip_to_fi(&mut self) {
         let mut depth = 0i32;
         loop {
-            if crate::debug_flag("SKIPTRACE") {
-                let t0 = self.raw_token();
-                eprintln!("SKIPFI tok {:#x} cs={:?} depth={}", t0.0, if t0.is_cs() { Some(String::from_utf8_lossy(self.cs.name(t0.cs_id())).into_owned()) } else { None }, depth);
-                { let __pt = t0; if crate::debug_flag("PUSHWATCH") && __pt.is_cs() && self.cs.name(__pt.cs_id()) == b"ifx" && self.input.current_file_line() > 9000 { eprintln!("PUSHIFX crates/tex-core/src/expand.rs:{} line={}", {line!()}, self.input.current_file_line()); } self.pushed.push(__pt); }
-            }
             let t = self.raw_token();
             if t == EOF_MARKER {
                 return;
@@ -1701,15 +2459,14 @@ self.do_if(eof)
                 | Some(Equiv::Prim(Prim::IfCSName))
                 | Some(Equiv::Prim(Prim::IfInCsName))
                 | Some(Equiv::Prim(Prim::IfX))
-                | Some(Equiv::Prim(Prim::IfCase)) => depth += 1,
+                | Some(Equiv::Prim(Prim::IfCase))
+                | Some(Equiv::Prim(Prim::IfFontChar)) => depth += 1,
 
                 Some(Equiv::Prim(Prim::Unless)) => self.skip_count_unless_target(&mut depth),
                 Some(Equiv::Prim(Prim::Fi)) => {
                     if depth == 0 {
-                        let popped = self.if_stack.pop();
-                        if crate::debug_flag("IFTRACE") {
-                            eprintln!("IFPOP_SKIPFI line={} popped={:?} depth_after={}", self.input.current_file_line(), popped.as_ref().map(|s| (&s.loc_file, s.loc_line)), self.if_stack.len());
-                        }
+                        self.if_stack.pop();
+
                         return;
                     }
                     depth -= 1;
@@ -1733,19 +2490,32 @@ self.do_if(eof)
             }
             match self.eqtb.resolve(t.cs_id()) {
                 Some(Equiv::Prim(p)) => match p {
-                    Prim::IfChar | Prim::IfCat | Prim::IfOdd | Prim::IfNum | Prim::IfDim
-                    | Prim::IfVoid | Prim::IfHBox | Prim::IfVBox | Prim::IfHMode
-                    | Prim::IfVMode | Prim::IfInner | Prim::IfMMode | Prim::IfTrue
-                    | Prim::IfFalse | Prim::IfDef | Prim::IfCSName | Prim::IfInCsName | Prim::IfX
-                    | Prim::IfCase | Prim::IfFontChar => depth += 1,
+                    Prim::IfChar
+                    | Prim::IfCat
+                    | Prim::IfOdd
+                    | Prim::IfNum
+                    | Prim::IfDim
+                    | Prim::IfVoid
+                    | Prim::IfHBox
+                    | Prim::IfVBox
+                    | Prim::IfHMode
+                    | Prim::IfVMode
+                    | Prim::IfInner
+                    | Prim::IfMMode
+                    | Prim::IfTrue
+                    | Prim::IfFalse
+                    | Prim::IfDef
+                    | Prim::IfCSName
+                    | Prim::IfInCsName
+                    | Prim::IfX
+                    | Prim::IfCase
+                    | Prim::IfFontChar => depth += 1,
 
                     Prim::Unless => self.skip_count_unless_target(&mut depth),
                     Prim::Fi => {
                         if depth == 0 {
-                            let popped = self.if_stack.pop();
-                            if crate::debug_flag("IFTRACE") {
-                                eprintln!("IFPOP_CASE line={} popped={:?} depth_after={}", self.input.current_file_line(), popped.as_ref().map(|s| (&s.loc_file, s.loc_line)), self.if_stack.len());
-                            }
+                            self.if_stack.pop();
+
                             return;
                         }
                         depth -= 1;
@@ -1781,16 +2551,15 @@ self.do_if(eof)
         // Active `_` with \\def_{_} (body is cc13 not a CS) loops otherwise.
         b.is_char() && b.cc() == 13 && self.cs.name(id) == [b.chr() as u8]
     }
-
-    pub fn expand_macro(&mut self, id: CsId, m: &Macro) {
+    pub fn expand_macro(&mut self, id: CsId, m: &Macro, invocation: CsId) {
         // expl3 quarks: \def\q_stop{\q_stop}. Expanding them loops.
         // Treat as \relax so a leaked delimiter does not hang main_loop.
         if self.is_self_quark(id, m) {
             return;
         }
-        let name_bytes = self.cs.name(id).to_vec();
-        let nm = &name_bytes[..];
-        if (nm == b"f@encoding" || nm == b"cf@encoding") && m.body.is_empty() {
+        if m.body.is_empty()
+            && (self.cs.name(id) == b"f@encoding" || self.cs.name(id) == b"cf@encoding")
+        {
             let ot1_body = vec![
                 Token::char(12, b'O' as u32),
                 Token::char(12, b'T' as u32),
@@ -1799,641 +2568,276 @@ self.do_if(eof)
             self.push_tokens(ot1_body);
             return;
         }
-        if (nm == b"textperthousand" || nm == b"?-cmd" || nm == b"TextSymbolUnavailable")
-            && self.input.current_file_line() >= 14408
-        {
-            static TPD: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-            if TPD.fetch_add(1, std::sync::atomic::Ordering::Relaxed) < 24 {
-                let cf = self.cs.lookup(b"cf@encoding").and_then(|id| match self.eqtb.resolve(id) {
-                    Some(Equiv::Macro(mm)) => Some(self.tokens_to_string(&mm.body)),
-                    Some(e) => Some(e.kind_name().to_string()),
-                    None => None,
-                });
-                eprintln!(
-                    "TP-EXP \\{} e-scan={} ifs={} mac_depth={} np={} body=[{}] cf@enc={:?} protect={} L{} last={:?}",
-                    String::from_utf8_lossy(nm),
-                    self.in_expanded_scan,
-                    self.if_stack.len(),
-                    self.mac_depth,
-                    m.num_params,
-                    self.tokens_to_string(&m.body.iter().take(12).cloned().collect::<Vec<_>>()),
-                    cf,
-                    self.cs.lookup(b"protect").and_then(|id| self.eqtb.resolve(id).cloned()).map(|e| match e {
-                        Equiv::Macro(mm) => format!("Macro[{}]", self.tokens_to_string(&mm.body.iter().take(6).cloned().collect::<Vec<_>>())),
-                        Equiv::Prim(pp) => format!("Prim({:?})", pp),
-                        other => other.kind_name().to_string(),
-                    }).unwrap_or_default(),
-                    self.input.current_file_line(),
-                    self.last_macros.iter().rev().take(8).collect::<Vec<_>>()
-                );
-                if nm == b"textperthousand" {
-                    let ring: Vec<std::string::String> = self.tok_ring.iter().rev().take(30).map(|(v, ln)| {
-                        let tk = Token(*v);
-                        if tk.is_cs() { format!("\\{:?}@{}", std::string::String::from_utf8_lossy(self.cs.name(tk.cs_id())), ln) }
-                        else { format!("{}{:?}@{}", tk.cc(), tk.chr() as u8 as char, ln) }
-                    }).collect();
-                    eprintln!("TPRING newest-first=[{}]", ring.join(" "));
-                    eprintln!("TPCUR cs={:?} prim={:?}", self.cur_cs.map(|c| std::string::String::from_utf8_lossy(self.cs.name(c)).into_owned()), self.cur_prim);
-                }
-            }
-        }
-        self.last_macros.push_back(String::from_utf8_lossy(&name_bytes).into_owned());
-        if (nm.starts_with(b"prg_map_break") || nm.starts_with(b"__prg_break_point") || nm.starts_with(b"__file_name_expand")
-            || nm.starts_with(b"__tl_map") || nm.starts_with(b"__clist_map") || nm == b"tl_map_break:" || nm == b"clist_map_break:")
-            && crate::debug_flag("PRGTRACE")
-        {
-            static PT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-            let n = PT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            if n < 12 || n % 2000 == 0 {
-                let delims: Vec<String> = m.params.iter().map(|d| format!("«{}»", self.tokens_to_string(d))).collect();
-                let pv: Vec<Token> = self.pushed.iter().rev().take(8).cloned().collect();
-                let pnames = self.tokens_to_string(&pv);
-                let stk: Vec<String> = self.input.stack.iter().rev().take(3).map(|src| match src {
-                    crate::input::Source::TokList { name, pos, toks, .. } => {
-                        let rest: Vec<String> = toks[(*pos).min(toks.len())..].iter().take(10).map(|t| format!("{:#010x}", t.0)).collect();
-                        format!("T:{} {}/{} rest=[{}]", name, pos, toks.len(), rest.join(" "))
-                    }
-                    crate::input::Source::File { name, line_no, .. } => format!("F:{}#{}", name.split('/').last().unwrap_or(name), line_no),
-                }).collect();
-                eprintln!(
-                    "PRG #{} \\{} np={} delims=[{}] pushed=[{}] stack=[{}]",
-                    n,
-                    String::from_utf8_lossy(nm),
-                    m.num_params,
-                    delims.join(" | "),
-                    pnames,
-                    stk.join(" << ")
-                );
-                if nm.starts_with(b"__tl_map") || nm.starts_with(b"__clist_map") {
-                    eprintln!("  body=[{}]", self.tokens_to_string(&m.body.iter().take(40).cloned().collect::<Vec<_>>()));
-                }
-            }
-        }
-        if nm == b"d" && crate::debug_flag("DTRACE") {
-            static DN: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-            let n = DN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            if n < 4 {
-                let st: Vec<String> = self.input.stack.iter().rev().take(5).map(|src| match src {
-                    crate::input::Source::TokList { name, pos, toks, .. } => format!("T:{} {}/{}", name, pos, toks.len()),
-                    crate::input::Source::File { name, line_no, .. } => format!("F:{}#{}", name.split('/').last().unwrap_or(name), line_no),
-                }).collect();
-                eprintln!(
-                    "D-EXPAND #{} np={} body=[{}] stack=[{}] pushed=[{}] last={:?}",
-                    n,
-                    m.num_params,
-                    self.tokens_to_string(&m.body.iter().take(16).cloned().collect::<Vec<_>>()),
-                    st.join(" << "),
-                    self.tokens_to_string(&self.pushed.iter().rev().take(10).cloned().collect::<Vec<_>>()),
-                    self.last_macros.iter().rev().take(10).collect::<Vec<_>>()
-                );
-            }
-        }
-        if crate::debug_flag("FONTSZ")
-            && matches!(nm, b"@currsize" | b"@setfontsize" | b"selectfont" | b"fontsize" | b"selectfont " | b"normalsize " | b"footnotesize ")
-        {
-            static FZ: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-            let n = FZ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            if n < 40 {
-                let peek: Vec<Token> = self.pushed.iter().rev().take(10).cloned().collect();
-                let src = match self.input.stack.last() {
-                    Some(crate::input::Source::TokList { name, pos, toks, .. }) => format!("T:{} {}/{}", name, pos, toks.len()),
-                    Some(crate::input::Source::File { name, line_no, .. }) => format!("F:{}:{}", name.split('/').last().unwrap_or(name), line_no),
-                    None => "none".into(),
-                };
-                eprintln!(
-                    "FONTSZ #{} \\{} pushed={} src={} next=[{}]",
-                    n,
-                    String::from_utf8_lossy(nm),
-                    self.pushed.len(),
-                    src,
-                    self.tokens_to_string(&peek)
-                );
-                if nm == b"@currsize" && n >= 15 && n < 18 {
-                    eprintln!("FONTSZ-BT\n{}", std::backtrace::Backtrace::force_capture());
-                }
-            }
-        }
-        while self.last_macros.len() > 48 {
-            self.last_macros.pop_front();
-        }
 
-        if nm == b"q__tl_recursion_tail" && crate::debug_flag("QUARKTRACE") {
-            eprintln!("QUARK-EXPAND expanded_scan={} depth={} mac_depth={} at {}:{} pushed=[{}] backtrace:\n{}",
-                self.in_expanded_scan, self.gt_steps, self.mac_depth,
-                self.input.current_file_name().split('/').last().unwrap_or("?"), self.input.current_file_line(),
-                self.tokens_to_string(&self.pushed.iter().rev().take(8).cloned().collect::<Vec<_>>()),
-                std::backtrace::Backtrace::force_capture());
-            if self.gt_steps > 100_000_000 { std::process::exit(7); }
+        self.current_macro = id;
+        self.enter_macro_diagnostic(id, invocation);
+        let call_site = self.diagnostic_macro_call_site.clone();
+        // Numeric scanners and expandafter also enter here. Parameterless
+        // macros need no argument buffers or substituted replacement list.
+        if m.num_params == 0 && m.prefix.is_empty() {
+            self.push_tokens_rc(std::rc::Rc::clone(&m.body), id);
+            return;
         }
-        if nm == b"@pushfilename" {
-            let st: Vec<String> = self.input.stack.iter().rev().take(6).map(|src| match src {
-                crate::input::Source::TokList { name, .. } => format!("T:{}", name),
-                crate::input::Source::File { name, line_no, .. } => format!("F:{}#{}", name.split('/').last().unwrap_or(name), line_no),
-            }).collect();
-            eprintln!("PUSHFILENAME_CALLED at line {} stack=[{}] last12={:?}", self.input.current_file_line(), st.join(" << "), self.last_macros);
-        }
-        if crate::debug_flag("INTCMP")
-            && (nm == b"__int_compare_<=:NNw" || nm == b"__int_compare_<:NNw")
-        {
-            static IC: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-            if IC.fetch_add(1, std::sync::atomic::Ordering::Relaxed) < 4 {
-                eprintln!(
-                    "INTCMP \\{} np={} prefix=[{}] params=[{}] L{} file={}",
-                    String::from_utf8_lossy(nm),
-                    m.num_params,
-                    self.tokens_to_string(&m.prefix),
-                    m.params.iter().map(|p| format!("«{}»", p.iter().map(|t| format!("{:#x}", t.0)).collect::<Vec<_>>().join(" "))).collect::<Vec<_>>().join(" | "),
-                    self.input.current_file_line(),
-                    self.input.current_file_name().split('/').last().unwrap_or("")
-                );
-            }
-            if IC.fetch_add(0, std::sync::atomic::Ordering::Relaxed) <= 4 {
-            for key in [b"__int_compare:w" as &[u8], b"__int_compare:Nw", b"__int_compare:NNw", b"__int_to_roman:w"] {
-                if let Some(cid) = self.cs.lookup(key) {
-                    match self.eqtb.resolve(cid) {
-                        Some(Equiv::Macro(mm)) => eprintln!(
-                            "  meaning \\{} np={} body=[{}]",
-                            String::from_utf8_lossy(key),
-                            mm.num_params,
-                            self.tokens_to_string(&mm.body.iter().take(30).cloned().collect::<Vec<_>>())
-                        ),
-                        Some(Equiv::Prim(p)) => eprintln!("  meaning \\{} Prim({p:?})", String::from_utf8_lossy(key)),
-                        other => eprintln!("  meaning \\{} {:?}", String::from_utf8_lossy(key), other.map(|e| e.kind_name())),
-                    }
-                }
-            }
-            }
-        }
-        if nm == b"@onlypreamble" {
-            static HITN: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-            if HITN.fetch_add(1, std::sync::atomic::Ordering::Relaxed) < 4 {
-                eprintln!(
-                    "ONLYPREAMBLE-HIT L{} macros={:?}",
-                    self.input.current_file_line(),
-                    self.last_macros.iter().rev().take(6).collect::<Vec<_>>()
-                );
-            }
-        }
+        self.expand_macro_with_args(id, m, call_site.as_ref());
+    }
 
-        if nm == b"@preamblecmds" && self.input.current_file_line() >= 6738 {
-            static PCN: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-            if PCN.fetch_add(1, std::sync::atomic::Ordering::Relaxed) < 6 {
-                eprintln!(
-                    "EXPAND-PREAMBLECMDS np={} prefix=[{}] body=[{}] L{}",
-                    m.num_params,
-                    self.tokens_to_string(&m.prefix),
-                    self.tokens_to_string(&m.body.iter().take(24).cloned().collect::<Vec<_>>()),
-                    self.input.current_file_line()
-                );
-            }
-        }
-
-        self.current_macro = String::from_utf8_lossy(nm).into_owned();
-        if nm == b"GTS@RemoveLeft" {
-            static RL: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-            if RL.fetch_add(1, std::sync::atomic::Ordering::Relaxed) < 3 {
-                let body_of = |nm: &[u8]| -> std::string::String {
-                    self.cs.lookup(nm).and_then(|id| match self.eqtb.resolve(id) {
-                        Some(Equiv::Macro(m)) => Some(self.tokens_to_string(&m.body)),
-                        _ => None,
-                    }).unwrap_or_else(|| "?".into())
-                };
-                let tok = self.cs.lookup(b"GTS@Token").map(|id| match self.eqtb.resolve(id) {
-                    Some(Equiv::Macro(m)) => format!("mac[{}]", self.tokens_to_string(&m.body)),
-                    Some(other) => other.kind_name().to_string(),
-                    None => "undef".into(),
-                }).unwrap_or_else(|| "not-interned".into());
-                eprintln!(
-                    "RL token={tok} expanded={} tl=[{}] macros={:?} pushed=[{}]",
-                    self.in_expanded_scan,
-                    body_of(b"GTS@TestLeft"),
-                    self.last_macros.iter().rev().take(8).collect::<Vec<_>>(),
-                    self.tokens_to_string(&self.pushed.iter().rev().take(16).cloned().collect::<Vec<_>>())
-                );
-            }
-        }
-
-
-        if nm == b"GTS@TestLeftEnd" {
-            static TLE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-            if TLE.fetch_add(1, std::sync::atomic::Ordering::Relaxed) < 4 {
-                let toks_at = self.cs.lookup(b"toks@").map(|id| match self.eqtb.resolve(id) {
-                    Some(Equiv::ToksReg(i)) => {
-                        let s = self.tokens_to_string(&self.eqtb.toks[*i as usize]);
-                        format!("ToksReg({i}) [{s}]")
-                    }
-                    Some(other) => other.kind_name().to_string(),
-                    None => "undef".into(),
-                }).unwrap_or_else(|| "not-interned".into());
-                let tok = self.cs.lookup(b"GTS@Token").map(|id| match self.eqtb.resolve(id) {
-                    Some(Equiv::Macro(m)) => format!("mac[{}]", self.tokens_to_string(&m.body)),
-                    Some(other) => other.kind_name().to_string(),
-                    None => "undef".into(),
-                }).unwrap_or_else(|| "not-interned".into());
-                let gts = self.cs.lookup(b"GTS@GlobalString").and_then(|id| match self.eqtb.resolve(id) {
-                    Some(Equiv::Macro(m)) => Some(self.tokens_to_string(&m.body)),
-                    _ => None,
-                });
-                let spt = self.cs.lookup(b"@sptoken").map(|id| match self.eqtb.resolve(id) {
-                    Some(Equiv::CharTok(v)) => format!("CharTok({v:#x})"),
-                    Some(other) => other.kind_name().to_string(),
-                    None => "undef".into(),
-                }).unwrap_or_else(|| "not-interned".into());
-                eprintln!(
-                    "TLE toks@={toks_at} token={tok} gts={gts:?} sptoken={spt} macros={:?}",
-                    self.last_macros.iter().rev().take(8).collect::<Vec<_>>()
-                );
-            }
-        }
-
-        if nm.starts_with(b"__codepoint_data_aux") {
-            static AUXN: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-            if AUXN.fetch_add(1, std::sync::atomic::Ordering::Relaxed) < 6 {
-                eprintln!(
-                    "AUXW \\{} np={} prefix=[{}] params=[{}] L{} file={}",
-                    String::from_utf8_lossy(nm),
-                    m.num_params,
-                    self.tokens_to_string(&m.prefix),
-                    m.params.iter().enumerate().map(|(i,p)| format!("#{}«{}»", i+1, self.tokens_to_string(p))).collect::<Vec<_>>().join(" | "),
-                    self.input.current_file_line(),
-                    self.input.current_file_name().split('/').last().unwrap_or("")
-                );
-            }
-        }
-        if nm == b"__quark_if_recursion_tail:w" || nm == b"quark_if_recursion_tail_stop:n" {
-            static QN: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-            if QN.fetch_add(1, std::sync::atomic::Ordering::Relaxed) < 4 {
-                eprintln!(
-                    "QUARKW \\{} np={} prefix=[{}] params=[{}] L{} file={}",
-                    String::from_utf8_lossy(nm),
-                    m.num_params,
-                    self.tokens_to_string(&m.prefix),
-                    m.params.iter().enumerate().map(|(i,p)| format!("#{}«{}»", i+1, self.tokens_to_string(p))).collect::<Vec<_>>().join(" | "),
-                    self.input.current_file_line(),
-                    self.input.current_file_name().split('/').last().unwrap_or("")
-                );
-            }
-        }
-        if nm == b"UseHook" || nm == b"hook_use:n" {
-            static HN: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-            if HN.fetch_add(1, std::sync::atomic::Ordering::Relaxed) < 80 {
-                let nxt: Vec<String> = self.pushed.iter().rev().take(24).map(|t| {
-                    if t.is_cs() { format!("\\{}", String::from_utf8_lossy(self.cs.name(t.cs_id()))) }
-                    else { format!("{}{}", t.cc(), t.chr() as u8 as char) }
-                }).collect();
-                eprintln!(
-                    "USEHOOK \\{} L{} csname={} file={} next=[{}]",
-                    String::from_utf8_lossy(nm),
-                    self.input.current_file_line(),
-                    self.csname_depth,
-                    self.input.current_file_name().split('/').last().unwrap_or(""),
-                    nxt.join(" ")
-                );
-            }
-        }
-        if nm == b"ProvidesFile" {
-            let nxt: Vec<String> = self.pushed.iter().rev().take(16).map(|t| {
-                if t.is_cs() { format!("\\{}", String::from_utf8_lossy(self.cs.name(t.cs_id()))) }
-                else { format!("{}{}", t.cc(), t.chr() as u8 as char) }
-            }).collect();
-            let f = self.input.current_file_name();
-            if self.pushed.len() > 1000 || f.contains(".fd") || self.csname_depth > 0 {
-                let st: Vec<String> = self.input.stack.iter().rev().take(6).map(|src| match src {
-                    crate::input::Source::TokList { name, .. } => format!("T:{}", name),
-                    crate::input::Source::File { name, line_no, .. } => format!("F:{}#{}", name.split('/').last().unwrap_or(name), line_no),
-                }).collect();
-                eprintln!(
-                    "PROVIDES np={} prefix=[{}] body=[{}] L{} file={} pushed={} csname={} stack=[{}] next=[{}] last={:?}",
-                    m.num_params,
-                    self.tokens_to_string(&m.prefix),
-                    self.tokens_to_string(&m.body.iter().take(12).cloned().collect::<Vec<_>>()),
-                    self.input.current_file_line(),
-                    f.split('/').last().unwrap_or(""),
-                    self.pushed.len(),
-                    self.csname_depth,
-                    st.join(" << "),
-                    nxt.join(" "),
-                    self.last_macros.iter().rev().take(8).collect::<Vec<_>>()
-                );
-            }
-            if self.pushed.len() > 50_000 {
-                eprintln!("PROVIDES-LOOP abort pushed={}", self.pushed.len());
-                std::process::exit(9);
-            }
-        }
-
-
-        self.mac_depth += 1;
-        if self.mac_depth > 200 {
-            eprintln!("RECURSION depth {} at {}", self.mac_depth, String::from_utf8_lossy(self.cs.name(id)));
-            if self.mac_depth > 205 { std::process::exit(8); }
-        }
-        if self.input.stack.len() > 50_000 && !self.loop_traced {
-            self.loop_traced = true;
-            eprintln!("LOOPGROW at stack={}; dumping top 30 sources:", self.input.stack.len());
-            for s in self.input.stack.iter().rev().take(30) {
-                match s {
-                    crate::input::Source::TokList { name, pos, toks, .. } => {
-                        let rest: Vec<String> = toks[(*pos).min(toks.len())..].iter().take(8).map(|t| {
-                            if t.is_cs() { format!("\\{}", String::from_utf8_lossy(self.cs.name(t.cs_id()))) }
-                            else if t.0 >= 0x4000_0000 && t.0 < 0x8000_0000 { format!("#{}", t.0 & 0x3FFF_FFFF) }
-                            else { format!("{}{}", t.cc(), t.chr() as u8 as char) }
-                        }).collect();
-                        eprintln!("  toklist {} pos {}/{} rest=[{}]", name, pos, toks.len(), rest.join(" "));
-                    }
-                    crate::input::Source::File { name, line_no, .. } => {
-                        eprintln!("  file {} line {}", name, line_no);
-                    }
-                }
-            }
-            eprintln!("LAST MACROS: {:?}", self.last_macros);
-            eprintln!("BOTTOM 12 sources:");
-            for s in self.input.stack.iter().take(12) {
-                match s {
-                    crate::input::Source::TokList { name, pos, toks, .. } => {
-                        let rest: Vec<String> = toks[(*pos).min(toks.len())..].iter().take(6).map(|t| {
-                            if t.is_cs() { format!("\\{}", String::from_utf8_lossy(self.cs.name(t.cs_id()))) }
-                            else if t.0 >= 0x4000_0000 && t.0 < 0x8000_0000 { format!("#{}", t.0 & 0x3FFF_FFFF) }
-                            else { format!("{}{}", t.cc(), t.chr() as u8 as char) }
-                        }).collect();
-                        eprintln!("  toklist {} pos {}/{} rest=[{}]", name, pos, toks.len(), rest.join(" "));
-                    }
-                    crate::input::Source::File { name, line_no, .. } => {
-                        eprintln!("  file {} line {}", name, line_no);
-                    }
-                }
-            }
-            eprintln!("AT FILE {} LINE {}", self.input.current_file_name(), self.input.current_file_line());
-            if let Some(did) = self.cs.lookup(b"do") {
-                match self.eqtb.resolve(did).cloned() {
-                    Some(crate::eqtb::Equiv::Macro(dm)) => eprintln!("MEANING \\do: nparams={} prefix={:?} body={}", dm.num_params, dm.params.iter().map(|d| self.tokens_to_string(d)).collect::<Vec<_>>(), self.tokens_to_string(&dm.body)),
-                    other => eprintln!("MEANING \\do: {:?}", other.map(|e| e.kind_name())),
-                }
-            } else {
-                eprintln!("MEANING \\do: <no such cs>");
-            }
-            eprintln!("CUR TOKEN cs={} prim={:?}", self.cur_cs.map(|c| String::from_utf8_lossy(self.cs.name(c)).into_owned()).unwrap_or_default(), self.cur_prim);
-            if let Some(crate::eqtb::Equiv::Macro(mm)) = self.cs.lookup(b"global").and_then(|g| self.eqtb.resolve(g).cloned()) {
-                eprintln!("meaning of \\global: {}", self.tokens_to_string(&mm.body));
-                eprintln!("params: {:?}", mm.params.iter().map(|d| self.tokens_to_string(d)).collect::<Vec<_>>());
-            }
-            std::process::exit(7);
-        }
+    fn expand_macro_with_args(
+        &mut self,
+        id: CsId,
+        m: &Macro,
+        origin: Option<&crate::input::SourceMark>,
+    ) {
         if !m.prefix.is_empty() {
             // tex.web: tokens before the first # must match the next
             // input tokens exactly. scan_delimited would skip ahead and
-            // steal a later \\fi: (expl3 \\__tl_if_head_is_group_fi_false:w).
+            // steal a later \fi: (expl3 \__tl_if_head_is_group_fi_false:w).
             for p in &m.prefix {
-                let t = self.raw_token();
+                let raw = self.macro_arg_token();
+                let stored = self.unfreeze_input_token(raw);
+                let t = self.unfreeze_unexpanded_token(stored);
                 if t == EOF_MARKER {
-                    self.error("File ended while matching macro prefix");
-                    self.end_occurred = true;
-                    self.mac_depth = self.mac_depth.saturating_sub(1);
+                    self.fatal_error_at(
+                        "File ended while matching macro prefix",
+                        origin.map(crate::input::SourceMark::to_context),
+                    );
                     return;
                 }
                 if !Self::delim_eq(t, *p) {
-                    static PN: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-                    if PN.fetch_add(1, std::sync::atomic::Ordering::Relaxed) < 8 {
-                        let got = if t.is_cs() {
-                            format!("\\{}", String::from_utf8_lossy(self.cs.name(t.cs_id())))
-                        } else {
-                            format!("c{}:{:?}", t.cc(), t.chr() as u8 as char)
-                        };
-                        eprintln!(
-                            "PREFIX-FAIL \\{} want=[{}] got={} L{} file={} np={} body=[{}]",
-                            String::from_utf8_lossy(self.cs.name(id)),
-                            self.tokens_to_string(&m.prefix),
-                            got,
-                            self.input.current_file_line(),
-                            self.input.current_file_name().split('/').last().unwrap_or(""),
-                            m.num_params,
-                            self.tokens_to_string(&m.body.iter().take(20).cloned().collect::<Vec<_>>())
-                        );
-                        let mut peek = vec![t];
-                        for _ in 0..40 {
-                            let x = self.raw_token();
-                            if x == crate::input::EOF_MARKER {
-                                break;
-                            }
-                            peek.push(x);
-                        }
-                        eprintln!("  MSGTOKENS [{}]", self.tokens_to_string(&peek));
-                        for x in peek.into_iter().rev() {
-                            self.pushed.push(x);
-                        }
-                    } else {
-                        self.pushed.push(t);
-                    }
-                    self.error(&format!(
-                        "Use of \\{} doesn't match its definition",
-                        String::from_utf8_lossy(self.cs.name(id))
-                    ));
-                    self.mac_depth = self.mac_depth.saturating_sub(1);
+                    self.pushed.push(stored);
+                    self.error_at(
+                        &format!(
+                            "Use of {} doesn't match its definition",
+                            self.display_cs(id)
+                        ),
+                        origin.map(crate::input::SourceMark::to_context),
+                    );
                     return;
                 }
             }
         }
-        let mut args: Vec<Vec<Token>> = Vec::with_capacity(m.num_params as usize);
+        // Selectors and discarders only retain one (or no) argument. The
+        // other arguments still undergo ordinary TeX scanning and validation.
+        let selector = if m.body.is_empty() {
+            Some(0)
+        } else if m.has_param_refs
+            && m.body.len() == 1
+            && (PAR_REF_FLAG + 1..=PAR_REF_FLAG + u32::from(m.num_params)).contains(&m.body[0].0)
+            && (m.body[0].0 & 0x3FFF_FFFF) as usize <= m.params.len()
+        {
+            Some((m.body[0].0 & 0x3FFF_FFFF) as usize)
+        } else {
+            None
+        };
+        let mut selected = smallvec::SmallVec::<[Token; 16]>::new();
+        let mut args: smallvec::SmallVec<[smallvec::SmallVec<[Token; 16]>; 9]> =
+            smallvec::SmallVec::new();
         for (i, delim) in m.params.iter().enumerate() {
             if i as u32 + 1 > m.num_params as u32 {
                 break;
             }
+            let keep = selector.map_or(true, |selected| selected == i + 1);
+            let mut arg = smallvec::SmallVec::new();
             if delim.is_empty() {
-                // undelimited
+                let saved_align_macro_arg = self.align_macro_arg;
+                self.align_macro_arg = true;
                 self.skip_raw_spaces();
-                let t = self.raw_token();
-                if t == PAR_END && !m.long {
-                    self.error(&format!(
-                        "Paragraph ended before \\{} was complete; delim-args={:?} body={}",
-                        String::from_utf8_lossy(self.cs.name(id)),
-                        m.params.iter().map(|d| self.tokens_to_string(d)).collect::<Vec<_>>(),
-                        self.tokens_to_string(&m.body)
-                    ));
-                    args.push(Vec::new());
+                self.align_macro_arg = saved_align_macro_arg;
+                let raw = self.macro_arg_token();
+                let stored = self.unfreeze_input_token(raw);
+                let t = self.unfreeze_unexpanded_token(stored);
+                if self.is_partoken(t) && !m.long {
+                    self.error_at(
+                        &format!(
+                            "Paragraph ended before {} was complete",
+                            self.display_cs(id)
+                        ),
+                        origin.map(crate::input::SourceMark::to_context),
+                    );
+                    if selector.is_none() {
+                        args.push(arg);
+                    }
                     continue;
                 }
                 if t == EOF_MARKER {
-                    self.error("File ended while scanning argument");
-                    self.end_occurred = true;
-                    if crate::debug_flag("IFTRACE") { eprintln!("ENDOCC crates/tex-core/src/expand.rs:897 line={}", self.input.current_file_line()); }
-                    args.push(Vec::new());
-                    continue;
-                }
-                if crate::debug_flag("ARGTRACE") {
-                    let srcs: Vec<std::string::String> = self.input.stack.iter().rev().take(3).map(|src| match src {
-                        crate::input::Source::TokList { name, pos, toks, .. } => format!("T:{} {}/{}", name, pos, toks.len()),
-                        crate::input::Source::File { name, line_no, .. } => format!("F:{}#{}", name, line_no),
-                    }).collect();
-                    let tname = if t.is_cs() { format!("\\{}", String::from_utf8_lossy(self.cs.name(t.cs_id()))) } else { format!("cc{}", t.cc()) };
-                    let ring: Vec<std::string::String> = self.tok_ring.iter().rev().take(14).map(|(v, ln)| format!("{:#x}@{}", v, ln)).collect();
-                    eprintln!("ARG \\{} #{}/{} t={} pushed={:?} srcs=[{}] ring=[{}]", String::from_utf8_lossy(self.cs.name(id)), i + 1, m.num_params, tname, self.pushed.iter().rev().take(3).map(|x| format!("{:#x}", x.0)).collect::<Vec<_>>(), srcs.join(" << "), ring.join(" "));
+                    self.fatal_error_at(
+                        "File ended while scanning argument",
+                        origin.map(crate::input::SourceMark::to_context),
+                    );
+                    return;
                 }
                 if t.is_char() && t.cc() == 2 {
-                    // tex.web ~§397: a lone right brace = unbalanced group
-                    self.pushed.push(t);
-                    if nm == b"@input@file@exists@with@hooks"
-                        || (self.input.current_file_line() >= 4540 && self.input.current_file_line() <= 4570)
-                    {
-                        let fund = self.cs.lookup(b"@filef@und").and_then(|id| match self.eqtb.resolve(id) {
-                            Some(crate::eqtb::Equiv::Macro(mm)) => Some(self.tokens_to_string(&mm.body)),
-                            _ => None,
-                        }).unwrap_or_else(|| "?".into());
-                        let prot = self.cs.lookup(b"protect").map(|pid| match self.eqtb.resolve(pid) {
-                            Some(crate::eqtb::Equiv::Prim(p)) => format!("prim:{:?}", p),
-                            Some(crate::eqtb::Equiv::Macro(mm)) => format!("macro:{}", self.tokens_to_string(&mm.body)),
-                            Some(other) => other.kind_name().to_string(),
-                            None => "undef".into(),
-                        }).unwrap_or_else(|| "missing".into());
-                        eprintln!(
-                            "XBRACE \\{} L{} e-scan={} csname={} fund=[{}] protect=[{}] afterasg={} macros={:?} src={}",
-                            String::from_utf8_lossy(self.cs.name(id)),
-                            self.input.current_file_line(),
-                            self.in_expanded_scan,
-                            self.csname_depth,
-                            fund,
-                            prot,
-                            self.after_assignment.is_some(),
-                            self.last_macros.iter().rev().take(8).collect::<Vec<_>>(),
-                            self.input.current_file_name().split('/').last().unwrap_or(""),
-                        );
-                        for s in self.input.stack.iter().rev().take(6) {
-                            match s {
-                                crate::input::Source::TokList { name, pos, toks, .. } => {
-                                    let rest: Vec<String> = toks[(*pos).min(toks.len())..].iter().take(10).map(|tt| {
-                                        if tt.is_cs() { format!("\\{}", String::from_utf8_lossy(self.cs.name(tt.cs_id()))) }
-                                        else { format!("{}:'{}'", tt.cc(), tt.chr() as u8 as char) }
-                                    }).collect();
-                                    eprintln!("  toklist {} pos {}/{} rest=[{}]", name, pos, toks.len(), rest.join(" "));
-                                }
-                                crate::input::Source::File { name, line_no, .. } => {
-                                    eprintln!("  file {} line {}", name.split('/').last().unwrap_or(""), line_no);
-                                }
-                            }
-                        }
-                        eprintln!("  pushed=[{}]", self.tokens_to_string(&self.pushed.iter().rev().take(8).cloned().collect::<Vec<_>>()));
-                    }
-
-                    self.error(&format!(
-                        "Argument of \\{} has an extra }}",
-                        String::from_utf8_lossy(self.cs.name(id))
-                    ));
-                    args.push(Vec::new());
+                    self.pushed.push(stored);
+                    self.error_at(
+                        &format!("Argument of {} has an extra }}", self.display_cs(id)),
+                        origin.map(crate::input::SourceMark::to_context),
+                    );
                 } else if t.is_char() && t.cc() == 1 {
-                    // braced group
-                    let arg = self.scan_balanced_raw(m.long);
-                    args.push(arg);
+                    arg = self.scan_macro_balanced_arg(m.long, keep, origin);
                 } else {
-                    args.push(vec![t]);
+                    if keep {
+                        arg.push(stored);
+                    }
                 }
             } else {
-                // delimited
-                let arg = self.scan_delimited(delim, m.long);
+                arg = smallvec::SmallVec::from_vec(self.scan_delimited(delim, m.long, origin));
+            }
+            if selector.is_none() {
                 args.push(arg);
+            } else if keep {
+                selected = arg;
             }
         }
-        if crate::debug_flag("MACTRACE") {
-            let argstr: Vec<String> = args.iter().map(|a| self.tokens_to_string(a)).collect();
-            eprintln!("MAC \\{} args={:?}", String::from_utf8_lossy(nm), argstr);
-        }
-        if crate::debug_flag("QUARKTRACE2")
-            && (nm.starts_with(b"__quark") || nm.starts_with(b"__kernel_quark") || nm == b"cs_gset:Npn" || nm == b"exp_args:NNcc" || nm == b"exp_args:Ncc")
-
-        {
-            let argstr: Vec<String> = args.iter().map(|a| self.tokens_to_string(a)).collect();
-            eprintln!(
-                "Q2 \\{} np={} declared={:?} args=[{}] L{}",
-                String::from_utf8_lossy(nm),
-                m.num_params,
-                m.params.len(),
-                argstr.join(" | "),
-                self.input.current_file_line()
-            );
-        }
-        if nm == b"exp_args:NNcc" && crate::debug_flag("QUARKTRACE2") {
-            eprintln!("NNCC-EXPAND ok");
-        }
-
-        if nm == b"__quark_new_test:Nccn" && crate::debug_flag("QUARKTRACE2") {
-            let bd: Vec<String> = m.body.iter().map(|t| format!("{:#x}", t.0)).collect();
-            eprintln!("NCCN-BODY hex=[{}] str=[{}]", bd.join(","), self.tokens_to_string(&m.body));
-        }
-
-
-
-
-        // TeX splices macro arguments into the replacement text eagerly at
-        // expansion time (tex.web macro_expand). Reproduce that here: build the
-        // substituted body up front instead of relying on lazy in-param replay,
-        // whose arg-exhaustion boundary interacted with conditional skipping.
-        let has_pr = m.body.iter().any(|t| t.0 >= 0x4000_0000 && t.0 < 0x8000_0000);
-        let spliced = if has_pr {
-            let mut v: Vec<crate::token::Token> = Vec::with_capacity(m.body.len() + 16);
-            for &t in &m.body {
-                if t.0 >= 0x4000_0000 && t.0 < 0x8000_0000 {
-                    let n = (t.0 & 0x3FFF_FFFF) as usize;
-                    if n >= 1 && n <= args.len() {
-                        v.extend_from_slice(&args[n - 1]);
-                        continue;
+        if let Some(index) = selector {
+            // Invalid hand-built parameter references follow the generic
+            // replacement path; valid TeX definitions have 1..=num_params.
+            if index <= m.num_params as usize {
+                match selected.len() {
+                    0 => {}
+                    1 => self.pushed.push(selected[0]),
+                    _ if selected.spilled() => self.push_macro_tokens(selected.into_vec(), id),
+                    _ => {
+                        let mut body = self.token_vec_pool.pop().unwrap_or_default();
+                        body.clear();
+                        body.extend_from_slice(&selected);
+                        self.push_macro_tokens(body, id);
                     }
                 }
-                v.push(t);
-            }
-            v
-        } else {
-            m.body.clone()
-        };
-        if nm == b"@onlypreamble" {
-            static OPB: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-            if OPB.fetch_add(1, std::sync::atomic::Ordering::Relaxed) < 8 {
-                eprintln!("ONLYP-SPLICED [{}]", self.tokens_to_string(&spliced));
+                return;
             }
         }
-        if crate::debug_flag("BODYDUMP") && name_bytes == b"e@alloc" {
-            let dump: Vec<String> = spliced.iter().enumerate().map(|(i,t)| {
-                if t.is_cs() { format!("{}:{}", i, String::from_utf8_lossy(self.cs.name(t.cs_id()))) }
-                else { format!("{}:{}{}", i, t.cc(), t.chr() as u8 as char) }
-            }).collect();
-            eprintln!("BODYDUMP {}", dump.join(" "));
-        }
-        if crate::debug_flag("IFTRACE") {
-            let src_name = format!("<m:{}>", String::from_utf8_lossy(&name_bytes));
-            self.push_tokens_named(spliced, &src_name);
+        if m.has_param_refs {
+            // A selector/identity macro can hand an already allocated
+            // argument to the input stack instead of copying it again.
+            if let [token] = &m.body[..] {
+                if (PAR_REF_FLAG..0x8000_0000).contains(&token.0) {
+                    let index = (token.0 & 0x3FFF_FFFF).wrapping_sub(1) as usize;
+                    if let Some(arg) = args.get_mut(index) {
+                        if arg.spilled() {
+                            let body = std::mem::take(arg).into_vec();
+                            self.push_macro_tokens(body, id);
+                            return;
+                        }
+                    }
+                }
+            }
+            let mut body = self
+                .token_vec_pool
+                .pop()
+                .unwrap_or_else(|| Vec::with_capacity(m.body.len() + 16));
+            body.clear();
+            if !m.append_replacement(&args, &mut body, crate::input::MAX_TOKEN_LIST_TOKENS) {
+                self.fatal_error_at(
+                    &format!(
+                        "TeX capacity exceeded, sorry [macro expansion size={}]",
+                        crate::input::MAX_TOKEN_LIST_TOKENS
+                    ),
+                    origin.map(crate::input::SourceMark::to_context),
+                );
+                return;
+            }
+            self.push_macro_tokens(body, id);
         } else {
-            self.push_tokens(spliced);
+            self.push_tokens_rc(std::rc::Rc::clone(&m.body), id);
         }
-
-
-
-
-        self.mac_depth -= 1;
     }
     pub fn skip_raw_spaces(&mut self) {
+        if self.pushed.is_empty() {
+            if let Some(crate::input::Source::TokList { toks, pos, .. }) =
+                self.input.stack.last_mut()
+            {
+                let s = &toks[..];
+                while *pos < s.len() && (s[*pos].0 >> 24) == 10 {
+                    *pos += 1;
+                }
+                if *pos == s.len() {
+                    if let Some(crate::input::Source::TokList {
+                        toks: crate::input::TokTokens::Vec(mut v),
+                        ..
+                    }) = self.input.stack.pop()
+                    {
+                        v.clear();
+                        self.token_vec_pool.push(v);
+                    }
+                } else {
+                    return;
+                }
+            }
+        }
         loop {
             let t = self.raw_token();
-            if t.is_char() && t.cc() == 10 {
+            if (t.0 >> 24) == 10 {
                 continue;
             }
-            { let __pt = t; if crate::debug_flag("PUSHWATCH") && __pt.is_cs() && self.cs.name(__pt.cs_id()) == b"ifx" && self.input.current_file_line() > 9000 { eprintln!("PUSHIFX crates/tex-core/src/expand.rs:{} line={}", {line!()}, self.input.current_file_line()); } self.pushed.push(__pt); }
+            self.pushed.push(t);
             return;
         }
     }
 
-    /// scan a balanced group (the opening brace already consumed);
-    /// returns tokens without the outer braces.
-    /// `long`: Knuth `\long` — `\par` (blank line) is legal inside the group.
-    /// `\@firstoftwo` is long; nameref.sty's unused branch starts with a blank line.
-    pub fn scan_balanced_raw(&mut self, long: bool) -> Vec<Token> {
+    /// Scan a balanced group (the opening brace was already consumed).
+    /// Returns tokens without the outer braces.
+    pub fn scan_balanced_raw(&mut self, long: bool) -> smallvec::SmallVec<[Token; 16]> {
+        let origin = self.current_token_source_mark();
+        self.scan_balanced_raw_collect(long, true, origin.as_ref())
+    }
+
+    fn scan_macro_balanced_arg(
+        &mut self,
+        long: bool,
+        collect: bool,
+        origin: Option<&crate::input::SourceMark>,
+    ) -> smallvec::SmallVec<[Token; 16]> {
+        self.diagnostic_trace_hold = self.diagnostic_trace_hold.saturating_add(1);
+        let result = self.scan_balanced_raw_collect(long, collect, origin);
+        self.diagnostic_trace_hold -= 1;
+        result
+    }
+
+    fn scan_balanced_raw_collect(
+        &mut self,
+        long: bool,
+        collect: bool,
+        origin: Option<&crate::input::SourceMark>,
+    ) -> smallvec::SmallVec<[Token; 16]> {
+        let partoken_id = self.partoken_id();
+        if self.pushed.is_empty() {
+            if let Some(crate::input::Source::TokList { toks, pos, .. }) =
+                self.input.stack.last_mut()
+            {
+                let s = &toks[..];
+                {
+                    let start = *pos;
+                    if let Some(end) = balanced_end(&s[start..], long, partoken_id) {
+                        let p = start + end;
+                        *pos = p;
+                        if !collect {
+                            return smallvec::SmallVec::new();
+                        }
+                        let slice = &s[start..p - 1];
+                        return smallvec::SmallVec::from_slice(slice);
+                    }
+                }
+            }
+        }
+
         let mut depth = 1i32;
-        let mut out = Vec::new();
+        let mut out = smallvec::SmallVec::<[Token; 16]>::new();
+        let mut scanned = 0;
         loop {
-            let t = self.raw_token();
+            let raw = self.raw_token();
+            let stored = self.unfreeze_input_token(raw);
+            let t = self.unfreeze_unexpanded_token(stored);
             if t == EOF_MARKER {
-                self.error("Runaway argument / missing }");
-                self.end_occurred = true;
+                self.fatal_error_at(
+                    "Runaway argument / missing }",
+                    origin.map(crate::input::SourceMark::to_context),
+                );
                 return out;
             }
-            if t == PAR_END && !long {
-                self.error("Runaway argument / missing }");
+            if self.is_partoken(t) && !long {
+                self.error_at(
+                    "Runaway argument / missing }",
+                    origin.map(crate::input::SourceMark::to_context),
+                );
                 return out;
             }
             if t.is_char() {
@@ -2447,10 +2851,25 @@ self.do_if(eof)
                     }
                 }
             }
-            out.push(t);
+            // Check after recognizing the outer closing brace: a list of
+            // exactly MAX_TOKEN_LIST_TOKENS tokens remains legal, while a
+            // further content token never enters the accumulator.
+            if scanned == crate::input::MAX_TOKEN_LIST_TOKENS {
+                self.fatal_error_at(
+                    &format!(
+                        "TeX capacity exceeded, sorry [balanced text size={}]",
+                        crate::input::MAX_TOKEN_LIST_TOKENS
+                    ),
+                    origin.map(crate::input::SourceMark::to_context),
+                );
+                return out;
+            }
+            scanned += 1;
+            if collect {
+                out.push(stored);
+            }
         }
     }
-
 
     /// tex.web scan_toks delimited search: expand one non-matching
     /// unprotected macro / expandable primitive in place. Returns true
@@ -2473,7 +2892,7 @@ self.do_if(eof)
                     self.set_cur_cs(t);
                     return false;
                 }
-                self.expand_macro(id, &m);
+                self.expand_macro(id, &m, t.cs_id());
                 true
             }
             Some(Equiv::Prim(p)) => {
@@ -2483,9 +2902,8 @@ self.do_if(eof)
                 }
                 match self.expand_prim(p, id) {
                     Some(tok) => {
-                        if tok.0 >= NOEXP_FLAG && tok.0 < 0xFFFF_0000 {
-                            let plain = Token::from_cs(tok.0 & 0x3FFF_FFFF);
-                            self.pushed.push(plain);
+                        if tok.0 >= NOEXP_FLAG && tok.0 < UNEXPANDED_CS_FLAG {
+                            self.pushed.push(Token::from_cs(tok.0 & 0x3FFF_FFFF));
                         } else {
                             self.pushed.push(tok);
                         }
@@ -2501,98 +2919,91 @@ self.do_if(eof)
         }
     }
 
-    fn scan_delimited(&mut self, delim: &[Token], long: bool) -> Vec<Token> {
-        let mut arg: Vec<Token> = Vec::new();
-        let mut di = 0usize;
+    fn scan_delimited(
+        &mut self,
+        delim: &[Token],
+        long: bool,
+        origin: Option<&crate::input::SourceMark>,
+    ) -> Vec<Token> {
+        let mut arg: Vec<Token> = Vec::with_capacity(8);
+        let mut matched = smallvec::SmallVec::<[Token; 8]>::new();
         loop {
-            // tex.web scan_toks: fetch is RAW; the delimiter matches by
-            // TOKEN before any expansion (a macro delimiter like `\stop`
-            // must be seen as a token). Only non-matching tokens are
-            // expanded, in the final else arm below. Expanding eagerly
-            // here (get_x_raw) made the delimiter's own expansion leak
-            // into the argument (`\z a\mark` -> `[aSTOP]`).
-            let t = self.raw_token();
-            if t == EOF_MARKER {
-                self.error(&format!("Runaway argument of \\{} (delim={})", self.current_macro, self.tokens_to_string(delim)));
-                if std::env::var("UNDEFTRACE").is_ok() {
-                    eprintln!(
-                        "RUNAWAY-STACK {:?}",
-                        self.input.stack.iter().rev().map(|s| match s {
-                            crate::input::Source::File { name, line_no, .. } => format!("F:{}#{}", name.split('/').last().unwrap_or(name), line_no),
-                            crate::input::Source::TokList { name, pos, toks, .. } => format!("T:{} {}/{}", name, pos, toks.len()),
-                        }).collect::<Vec<_>>()
-                    );
-                }
-                self.end_occurred = true;
-                if crate::debug_flag("IFTRACE") { eprintln!("ENDOCC crates/tex-core/src/expand.rs:1003 line={}", self.input.current_file_line()); }
+            let raw = self.macro_arg_token();
+            let stored = self.unfreeze_input_token(raw);
+            let raw = self.unfreeze_unexpanded_token(stored);
+            if raw == EOF_MARKER {
+                self.fatal_error_at(
+                    &format!(
+                        "Runaway argument of {} (delim={})",
+                        self.display_cs(self.current_macro),
+                        self.diagnostic_tokens_to_string(delim, 512)
+                    ),
+                    origin.map(crate::input::SourceMark::to_context),
+                );
                 return arg;
             }
-            if t == PAR_END && !long {
-                self.error(&format!(
-                    "Paragraph ended before \\{} was complete (delim={}) collected={}",
-                    self.current_macro,
-                    self.tokens_to_string(delim),
-                    self.tokens_to_string(&arg)
-                ));
-                return arg;
-            }
-            let d = delim[di];
-            if t.is_char() && t.cc() == 1 {
-                if crate::debug_flag("GRABTRACE") {
-                    eprintln!("GRAB brace: macro={} di={}/{} delim_ok={} pending={}",
-                        self.current_macro, di, delim.len(),
-                        delim.get(di).map(|d| d.0 == t.0).unwrap_or(false),
-                        arg.iter().map(|d| format!("{:#x}", d.0)).collect::<Vec<_>>().join(","));
-                }
-                if delim.get(di).copied().map(|d| Self::delim_eq(t, d)).unwrap_or(false) {
-                    di += 1;
-                    if di >= delim.len() {
-                        // tex.web §392: hash_brace (`#{`) leaves the `{` in the
-                        // input stream (back_input) for the following construct!
-                        self.pushed.push(t);
-                        return arg;
-                    }
-                    continue;
-                }
-                if di > 0 {
-                    arg.extend_from_slice(&delim[0..di]);
-                    di = 0;
-                }
-                let inner = self.scan_balanced_raw(long);
-                arg.push(Token::char(1, b'{' as u32));
-                arg.extend(inner);
-                arg.push(Token::char(2, b'}' as u32));
-            } else if Self::delim_eq(t, d) {
-                di += 1;
-                if di >= delim.len() {
-                    Self::strip_outer_braces(&mut arg);
+            // The file scanner uses an internal sentinel for a blank line.
+            // Macro parameter matching sees the real \par token.
+            let t = if raw == PAR_END {
+                Token::from_cs(self.partoken_id())
+            } else {
+                raw
+            };
+            let stored = if raw == PAR_END { t } else { stored };
+            matched.push(stored);
+            while !matched
+                .iter()
+                .enumerate()
+                .all(|(i, token)| Self::delim_eq(token.unfreeze(), delim[i]))
+            {
+                let rm = matched.remove(0);
+                if !self.scanned_token_list_has_room(arg.len(), 1, "macro parameter size", origin) {
                     return arg;
                 }
-            } else if di > 0 {
-                arg.push(delim[0]);
-                let mut rest: Vec<Token> = delim[1..di].to_vec();
-                rest.push(t);
-                di = 0;
-                for rt in rest.into_iter().rev() {
-                    self.pushed.push(rt);
+                arg.push(rm);
+            }
+            if matched.len() == delim.len() {
+                Self::strip_outer_braces(&mut arg);
+                return arg;
+            }
+
+            // tex.web §392 matches the delimiter before §396 rejects an
+            // illegal paragraph. A non-long #1\par parameter may therefore
+            // use the paragraph token as its terminator.
+            if self.is_partoken(t) && !long {
+                self.error_at(
+                    &format!(
+                        "Paragraph ended before {} was complete (delim={}) collected={}",
+                        self.display_cs(self.current_macro),
+                        self.diagnostic_tokens_to_string(delim, 512),
+                        self.diagnostic_tokens_to_string(&arg, 1024)
+                    ),
+                    origin.map(crate::input::SourceMark::to_context),
+                );
+                return arg;
+            }
+
+            if t.is_char() && t.cc() == 1 {
+                // Delimiters cannot contain an unmatched opening brace other
+                // than the single-token #{ case, which returned above.
+                let inner = self.scan_macro_balanced_arg(long, true, origin);
+                if self.stopped_on_error {
+                    return arg;
                 }
-            } else if crate::debug_flag("DELIM_EXPAND")
-                && self.in_expanded_scan
-                && self.expand_if_expansive(t)
-            {
-                // Real-pdftex probes: expansion during delimited scans only
-                // inside \edef collection (`\xdef\ee{\z \foo d\mark}` ->
-                // RAWBODY [Fd]); top-level `\Z\foo` -> runaway (raw).
-                // Default OFF: the nested-grab re-sync (__prg_generate_
-                // conditional at expl3-code:1893) still diverges; flip
-                // DELIM_EXPAND=1 to A/B in the kvdbg battery.
-                continue;
-            } else {
-                arg.push(t);
+                if !self.scanned_token_list_has_room(
+                    arg.len() + matched.len(),
+                    inner.len().saturating_add(1),
+                    "macro parameter size",
+                    origin,
+                ) {
+                    return arg;
+                }
+                arg.extend(matched.drain(..));
+                arg.extend(inner);
+                arg.push(Token::char(2, b'}' as u32));
             }
         }
     }
-
     fn strip_outer_braces(arg: &mut Vec<Token>) {
         if arg.len() >= 2 && arg[0].is_char() && arg[0].cc() == 1 {
             let mut depth = 0i32;
@@ -2623,12 +3034,22 @@ self.do_if(eof)
     pub fn exp_string(&mut self, bytes: &[u8]) {
         let toks: Vec<Token> = bytes
             .iter()
-            .map(|&b| if b == b' ' { Token::space() } else { Token::other(b) })
+            .map(|&b| {
+                if b == b' ' {
+                    Token::space()
+                } else {
+                    Token::other(b)
+                }
+            })
             .collect();
         self.push_tokens(toks);
     }
 
     pub fn tokens_to_string(&self, toks: &[Token]) -> String {
+        String::from_utf8_lossy(&self.tokens_to_bytes(toks)).into_owned()
+    }
+
+    pub(crate) fn tokens_to_bytes(&self, toks: &[Token]) -> Vec<u8> {
         let mut out: Vec<u8> = Vec::new();
         let esc = self.eqtb.int_params[crate::prim::IntParam::EscapeChar.idx() as usize];
         for t in toks {
@@ -2644,10 +3065,14 @@ self.do_if(eof)
                 continue;
             }
             if t.is_cs() {
+                let name = self.cs.name(t.cs_id());
+                if let [0xff, 0, b'A', b'C', b'T', 0, c] = name {
+                    out.push(*c);
+                    continue;
+                }
                 if esc >= 0 && esc <= 255 {
                     out.push(esc as u8);
                 }
-                let name = self.cs.name(t.cs_id());
                 out.extend_from_slice(name);
                 // tex.web print_cs / show_token_list: control word (name
                 // length > 1) is followed by a space. amsmath \@tempb
@@ -2659,10 +3084,10 @@ self.do_if(eof)
                 out.push(t.chr() as u8);
             }
         }
-        String::from_utf8_lossy(&out).into_owned()
+        out
     }
 
-    pub fn ifx_equal(&self, mut a: Token, mut b: Token) -> bool {
+    pub fn ifx_equal(&self, a: Token, b: Token) -> bool {
         self.ifx_equal_inner(a, b)
     }
     fn ifx_equal_inner(&self, mut a: Token, mut b: Token) -> bool {
@@ -2744,63 +3169,56 @@ self.do_if(eof)
     /// text glues to unterminated "(file" output and log comparison breaks.
     pub fn term_print_nl(&mut self, s: &str) {
         if !self.term.is_empty() && !self.term.ends_with('\n') {
-            self.term.push('\n');
+            self.append_term("\n");
         }
-        self.term.push_str(s);
+        self.append_term(s);
+        if !self.log.is_empty() && !self.log.ends_with('\n') {
+            self.append_log("\n");
+        }
+        self.append_log(s);
+    }
+
+    pub(crate) fn diagnostic_print_nl(&mut self, s: &str) {
+        if !self.diagnostic_output.is_empty() && !self.diagnostic_output.ends_with('\n') {
+            self.diagnostic_output.push('\n');
+        }
+        crate::engine::Engine::append_transcript_bounded(&mut self.diagnostic_output, s);
+        if !self.log.is_empty() && !self.log.ends_with('\n') {
+            self.append_log("\n");
+        }
+        self.append_log(s);
     }
 
     pub fn error(&mut self, msg: &str) {
-        let mut ctx = String::new();
-        for s in self.input.stack.iter().rev().take(2) {
-            match s {
-                crate::input::Source::TokList { name, pos, toks, .. } => {
-                    ctx.push_str(&format!(
-                        " [{} {}/{} rest={:?}]",
-                        name,
-                        pos,
-                        toks.len(),
-                        toks[(*pos).min(toks.len())..]
-                            .iter()
-                            .take(6)
-                            .map(|t| {
-                                if t.0 >= 0x8000_0000 && t.0 < 0xFFFF_0000 {
-                                    format!("cs:{}", String::from_utf8_lossy(self.cs.name((t.0 & 0x3FFF_FFFF) as u32)))
-                                } else if t.is_char() {
-                                    format!("ch:{:x}:'{}'", t.chr(), (t.chr() as u8) as char)
-                                } else {
-                                    format!("{:#x}", t.0)
-                                }
-                            })
-                            .collect::<Vec<_>>()
-                    ))
-                }
-                crate::input::Source::File { name, line_no, .. } => {
-                    ctx.push_str(&format!(" [{} line {}]", name, line_no))
-                }
-            }
+        if self.stopped_on_error {
+            return;
         }
-        self.term_print_nl(&format!(
-            "! {} at line {}{}\n",
-            msg,
-            self.input.current_file_line(),
-            ctx
-        ));
+        let diagnostic = self.make_error_diagnostic(msg);
+        let rendered = diagnostic.render();
+        self.diagnostic_print_nl(&rendered);
+        self.diagnostics.push(diagnostic);
         self.error_count += 1;
-        if self.error_count > 2000 && !self.ini_mode {
+        if self.halt_on_error || self.interaction_mode == crate::engine::InteractionMode::ErrorStop
+        {
+            self.stopped_on_error = true;
             self.end_occurred = true;
-        }
-        if crate::debug_flag("STOP_FIRST_ERR") {
-            eprintln!(
-                "FIRST-ERR {} L{} file={} mac={:?} last={:?} pushed={}",
-                msg,
-                self.input.current_file_line(),
-                self.input.current_file_name(),
-                self.current_macro,
-                self.last_macros.iter().rev().take(12).collect::<Vec<_>>(),
-                self.tokens_to_string(&self.pushed.iter().rev().take(12).cloned().collect::<Vec<_>>())
+        } else if self.error_count as usize >= self.max_errors.max(1) && !self.ini_mode {
+            let stopped = format!(
+                "! Too many errors; stopping after {} errors.\n  = help: fix the first reported error and compile again\n",
+                self.error_count
             );
+            self.diagnostic_print_nl(&stopped);
+            self.stopped_on_error = true;
             self.end_occurred = true;
         }
+    }
+
+    /// Report an error from which the current scan cannot recover, even in
+    /// nonstop or batch mode.
+    pub fn fatal_error(&mut self, msg: &str) {
+        self.error(msg);
+        self.stopped_on_error = true;
+        self.end_occurred = true;
     }
 }
 

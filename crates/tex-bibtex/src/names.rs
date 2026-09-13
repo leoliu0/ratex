@@ -1,7 +1,9 @@
 //! format.name$ / num.names$ — a faithful port of bibtex.web's
 //! name-string processing modules.
 
-use crate::classes::{is_alpha, is_sep_char, is_white, lex_class, lookup_ctrl_seq, CtrlSeq, LexClass};
+use crate::classes::{
+    is_alpha, is_sep_char, is_white, lex_class, lookup_ctrl_seq, CtrlSeq, LexClass,
+};
 
 const TIE: u8 = b'~';
 const LONG_TOKEN: usize = 3; // a token this long or longer is "long"

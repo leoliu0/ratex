@@ -1,10 +1,10 @@
 //! The bibtex virtual machine: literal stack, variables, and every
 //! built-in function, following bibtex.web.
 
+use crate::bst::Tok;
 use crate::classes::*;
 use crate::names;
 use crate::outbuf::OutBuf;
-use crate::bst::Tok;
 use std::collections::{HashMap, HashSet};
 
 pub const ENT_STR_SIZE: i64 = 100;
@@ -99,11 +99,8 @@ impl Interp {
 
     fn wrong_stk_lit(&mut self, lit: &Lit, want: &str) {
         self.warnings += 1;
-        self.blg.push(format!(
-            "Warning--{} isn't a {}",
-            lit_desc(lit),
-            want
-        ));
+        self.blg
+            .push(format!("Warning--{} isn't a {}", lit_desc(lit), want));
     }
 
     fn push(&mut self, l: Lit) {
@@ -152,7 +149,12 @@ impl Interp {
     fn push_ident(&mut self, name: &str) -> R {
         if self.entry_int_vars.contains(name) {
             let v = match &self.cur {
-                Some(k) => self.entries.get(k).and_then(|e| e.eints.get(name)).copied().unwrap_or(0),
+                Some(k) => self
+                    .entries
+                    .get(k)
+                    .and_then(|e| e.eints.get(name))
+                    .copied()
+                    .unwrap_or(0),
                 None => 0,
             };
             self.push(Lit::Int(v));
@@ -197,17 +199,18 @@ impl Interp {
             return Ok(());
         }
         self.warnings += 1;
-        self.blg
-            .push(format!("Warning--I didn't find a database entry for `{}`", name));
+        self.blg.push(format!(
+            "Warning--I didn't find a database entry for `{}`",
+            name
+        ));
         self.push(Lit::Str(String::new()));
         Ok(())
     }
 
     fn cant_mess(&mut self) {
         self.warnings += 1;
-        self.blg.push(
-            "Warning--you can't mess with entries in between \\read commands".into(),
-        );
+        self.blg
+            .push("Warning--you can't mess with entries in between \\read commands".into());
     }
 
     pub fn exec_body(&mut self, body: &[Tok]) -> R {
@@ -240,14 +243,6 @@ impl Interp {
     }
 
     pub fn sort_cites(&mut self) {
-        if std::env::var("TEXBIBTEX_DEBUG_SORT").is_ok() {
-            for c in &self.cites {
-                if let Some(e) = self.entries.get(c) {
-                    let k = e.evars.get("sort.key$").cloned().unwrap_or_default();
-                    eprintln!("SORTKEY {} len={} {:?}", c, k.len(), k);
-                }
-            }
-        }
         let entries = &self.entries;
         let orig = &self.orig_idx;
         let key = |c: &String| -> Vec<u8> {
@@ -584,7 +579,10 @@ impl Interp {
             Some(b'l') | Some(b'L') if conv_s.len() == 1 => Conv::Lower,
             Some(b'u') | Some(b'U') if conv_s.len() == 1 => Conv::Upper,
             _ => {
-                self.warn(&format!("`{}` is an illegal case-conversion string", conv_s));
+                self.warn(&format!(
+                    "`{}` is an illegal case-conversion string",
+                    conv_s
+                ));
                 Conv::Bad
             }
         };
@@ -713,8 +711,7 @@ impl Interp {
         let n = self.pop_int()?;
         if n < 0 {
             self.warnings += 1;
-            self.blg
-                .push(format!("Warning--integer {} is negative", n));
+            self.blg.push(format!("Warning--integer {} is negative", n));
             self.push(Lit::Str(String::new()));
         } else {
             self.push(Lit::Str(n.to_string()));
@@ -914,9 +911,7 @@ fn change_case(s: &str, conv: Conv) -> String {
     while i < buf.len() {
         if buf[i] == b'{' {
             level += 1;
-            let mut do_special = level == 1
-                && i + 4 <= buf.len()
-                && buf[i + 1] == b'\\';
+            let mut do_special = level == 1 && i + 4 <= buf.len() && buf[i + 1] == b'\\';
             if do_special && conv == Conv::Title {
                 if i == 0 || (prev_colon && is_white(buf[i - 1])) {
                     do_special = false;

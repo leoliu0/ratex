@@ -98,11 +98,24 @@ pub enum IntParam {
     /// e-TeX \tracingnesting (read/write int; we accept and store it,
     /// group tracing itself is not implemented)
     TracingNesting,
+    SpaceFactor,
+    /// pdfTeX `\holdinginserts` (pdftex.web §10798-ish int parameter): when
+    /// positive, `\output` does not flush the insert classes (contributions
+    /// stay on the page list for the rerun).
+    HoldingInserts,
+    PdfInfoOmitDate,
+    PdfSuppressPtexInfo,
+    /// pdfTeX automatic paragraph-token insertion policy.
+    PartokenContext,
+    /// Internal globally assigned control-sequence id selected by
+    /// `\partokenname`; stored with the other format-persistent integers.
+    PartokenNameCs,
+    PdfCompressLevel,
+    /// pdfTeX bit mask for explicitly ignored primitive diagnostics.
+    IgnorePrimitiveError,
 }
 
-pub const NUM_INT_PARAMS: usize = 87;
-
-
+pub const NUM_INT_PARAMS: usize = 95;
 
 impl IntParam {
     #[inline]
@@ -110,7 +123,103 @@ impl IntParam {
         self as u16
     }
     /// Declaration-order table used for the safe u16 -> enum mapping.
-    const ALL: [IntParam; NUM_INT_PARAMS] = [IntParam::Pretolerance, IntParam::Tolerance, IntParam::LinePenalty, IntParam::HyphenPenalty, IntParam::ExHyphenPenalty, IntParam::ClubPenalty, IntParam::WidowPenalty, IntParam::DisplayWidowPenalty, IntParam::BrokenPenalty, IntParam::BinOpPenalty, IntParam::RelPenalty, IntParam::PreDisplayPenalty, IntParam::PostDisplayPenalty, IntParam::InterLinePenalty, IntParam::DoubleHyphenDemerits, IntParam::FinalHyphenDemerits, IntParam::AdjDemerits, IntParam::Mag, IntParam::DelimiterFactor, IntParam::Looseness, IntParam::Penalty, IntParam::HBadness, IntParam::VBadness, IntParam::Pausing, IntParam::TracingOnline, IntParam::TracingMacros, IntParam::TracingStats, IntParam::TracingParagraphs, IntParam::TracingPages, IntParam::TracingOutput, IntParam::TracingLostChars, IntParam::TracingCommands, IntParam::TracingRestores, IntParam::TracingIf, IntParam::TracingFonts, IntParam::ShowBoxBreadth, IntParam::ShowBoxDepth, IntParam::ErrorStopMode, IntParam::ScrollMode, IntParam::NonStopMode, IntParam::BatchMode, IntParam::Language, IntParam::UcHyph, IntParam::LeftHyphenMin, IntParam::RightHyphenMin, IntParam::EscapeChar, IntParam::EndLineChar, IntParam::NewLineChar, IntParam::Defaulthyphenchar, IntParam::Defaultskewchar, IntParam::ErrorContextLines, IntParam::MaxDeadCycles, IntParam::InsertPenalties, IntParam::OutputPenalty, IntParam::FloatingPenalty, IntParam::HangAfter, IntParam::PrevGraf, IntParam::CurFam, IntParam::Time, IntParam::Day, IntParam::Month, IntParam::Year, IntParam::InputLineNo, IntParam::Badness, IntParam::DeadCycles, IntParam::EtxVersion, IntParam::PdfOutput, IntParam::PdfAdjustSpacing, IntParam::PdfProtrudeChars, IntParam::PdfMinorVersion, IntParam::PdfPageCount, IntParam::TeXXeTEnabled, IntParam::PdfTexVersion, IntParam::InteractionMode, IntParam::CurrentGroupLevel, IntParam::CurrentGroupType, IntParam::CurrentIfLevel, IntParam::CurrentIfType, IntParam::CurrentIfBranch, IntParam::LastNodeType, IntParam::SavingHyphCodes, IntParam::SavingVDiscards, IntParam::PdfObjCompressLevel, IntParam::PdfGenToUnicode, IntParam::PaperQuality, IntParam::GlobalDefs, IntParam::TracingNesting];
+    const ALL: [IntParam; NUM_INT_PARAMS] = [
+        IntParam::Pretolerance,
+        IntParam::Tolerance,
+        IntParam::LinePenalty,
+        IntParam::HyphenPenalty,
+        IntParam::ExHyphenPenalty,
+        IntParam::ClubPenalty,
+        IntParam::WidowPenalty,
+        IntParam::DisplayWidowPenalty,
+        IntParam::BrokenPenalty,
+        IntParam::BinOpPenalty,
+        IntParam::RelPenalty,
+        IntParam::PreDisplayPenalty,
+        IntParam::PostDisplayPenalty,
+        IntParam::InterLinePenalty,
+        IntParam::DoubleHyphenDemerits,
+        IntParam::FinalHyphenDemerits,
+        IntParam::AdjDemerits,
+        IntParam::Mag,
+        IntParam::DelimiterFactor,
+        IntParam::Looseness,
+        IntParam::Penalty,
+        IntParam::HBadness,
+        IntParam::VBadness,
+        IntParam::Pausing,
+        IntParam::TracingOnline,
+        IntParam::TracingMacros,
+        IntParam::TracingStats,
+        IntParam::TracingParagraphs,
+        IntParam::TracingPages,
+        IntParam::TracingOutput,
+        IntParam::TracingLostChars,
+        IntParam::TracingCommands,
+        IntParam::TracingRestores,
+        IntParam::TracingIf,
+        IntParam::TracingFonts,
+        IntParam::ShowBoxBreadth,
+        IntParam::ShowBoxDepth,
+        IntParam::ErrorStopMode,
+        IntParam::ScrollMode,
+        IntParam::NonStopMode,
+        IntParam::BatchMode,
+        IntParam::Language,
+        IntParam::UcHyph,
+        IntParam::LeftHyphenMin,
+        IntParam::RightHyphenMin,
+        IntParam::EscapeChar,
+        IntParam::EndLineChar,
+        IntParam::NewLineChar,
+        IntParam::Defaulthyphenchar,
+        IntParam::Defaultskewchar,
+        IntParam::ErrorContextLines,
+        IntParam::MaxDeadCycles,
+        IntParam::InsertPenalties,
+        IntParam::OutputPenalty,
+        IntParam::FloatingPenalty,
+        IntParam::HangAfter,
+        IntParam::PrevGraf,
+        IntParam::CurFam,
+        IntParam::Time,
+        IntParam::Day,
+        IntParam::Month,
+        IntParam::Year,
+        IntParam::InputLineNo,
+        IntParam::Badness,
+        IntParam::DeadCycles,
+        IntParam::EtxVersion,
+        IntParam::PdfOutput,
+        IntParam::PdfAdjustSpacing,
+        IntParam::PdfProtrudeChars,
+        IntParam::PdfMinorVersion,
+        IntParam::PdfPageCount,
+        IntParam::TeXXeTEnabled,
+        IntParam::PdfTexVersion,
+        IntParam::InteractionMode,
+        IntParam::CurrentGroupLevel,
+        IntParam::CurrentGroupType,
+        IntParam::CurrentIfLevel,
+        IntParam::CurrentIfType,
+        IntParam::CurrentIfBranch,
+        IntParam::LastNodeType,
+        IntParam::SavingHyphCodes,
+        IntParam::SavingVDiscards,
+        IntParam::PdfObjCompressLevel,
+        IntParam::PdfGenToUnicode,
+        IntParam::PaperQuality,
+        IntParam::GlobalDefs,
+        IntParam::TracingNesting,
+        IntParam::SpaceFactor,
+        IntParam::HoldingInserts,
+        IntParam::PdfInfoOmitDate,
+        IntParam::PdfSuppressPtexInfo,
+        IntParam::PartokenContext,
+        IntParam::PartokenNameCs,
+        IntParam::PdfCompressLevel,
+        IntParam::IgnorePrimitiveError,
+    ];
 
     pub fn from_idx(i: u16) -> Option<Self> {
         Self::ALL.get(i as usize).copied()
@@ -171,7 +280,46 @@ impl DimParam {
         self as u16
     }
     /// Declaration-order table used for the safe u16 -> enum mapping.
-    const ALL: [DimParam; NUM_DIM_PARAMS] = [DimParam::ParIndent, DimParam::MathSurround, DimParam::LineSkipLimit, DimParam::HSize, DimParam::VSize, DimParam::MaxDepth, DimParam::SplitMaxDepth, DimParam::BoxMaxDepth, DimParam::DisplayIndent, DimParam::DisplayWidth, DimParam::HangIndent, DimParam::EmergencyStretch, DimParam::PageGoal, DimParam::PageTotal, DimParam::PageDepth, DimParam::PageStretch, DimParam::PageFilStretch, DimParam::PageFillStretch, DimParam::PageFilllStretch, DimParam::PageShrink, DimParam::DelimiterShortfall, DimParam::Hfuzz, DimParam::Vfuzz, DimParam::OverfullRule, DimParam::NullDelimiterSpace, DimParam::ScriptSpace, DimParam::TopSkip, DimParam::PdfPageWidth, DimParam::PdfPageHeight, DimParam::PdfHOrigin, DimParam::PdfVOrigin, DimParam::PdfLinkMargin, DimParam::PdfDestMargin, DimParam::PdfThreadMargin, DimParam::HOffset, DimParam::VOffset, DimParam::PrevDepth, DimParam::PreDisplaySize];
+    const ALL: [DimParam; NUM_DIM_PARAMS] = [
+        DimParam::ParIndent,
+        DimParam::MathSurround,
+        DimParam::LineSkipLimit,
+        DimParam::HSize,
+        DimParam::VSize,
+        DimParam::MaxDepth,
+        DimParam::SplitMaxDepth,
+        DimParam::BoxMaxDepth,
+        DimParam::DisplayIndent,
+        DimParam::DisplayWidth,
+        DimParam::HangIndent,
+        DimParam::EmergencyStretch,
+        DimParam::PageGoal,
+        DimParam::PageTotal,
+        DimParam::PageDepth,
+        DimParam::PageStretch,
+        DimParam::PageFilStretch,
+        DimParam::PageFillStretch,
+        DimParam::PageFilllStretch,
+        DimParam::PageShrink,
+        DimParam::DelimiterShortfall,
+        DimParam::Hfuzz,
+        DimParam::Vfuzz,
+        DimParam::OverfullRule,
+        DimParam::NullDelimiterSpace,
+        DimParam::ScriptSpace,
+        DimParam::TopSkip,
+        DimParam::PdfPageWidth,
+        DimParam::PdfPageHeight,
+        DimParam::PdfHOrigin,
+        DimParam::PdfVOrigin,
+        DimParam::PdfLinkMargin,
+        DimParam::PdfDestMargin,
+        DimParam::PdfThreadMargin,
+        DimParam::HOffset,
+        DimParam::VOffset,
+        DimParam::PrevDepth,
+        DimParam::PreDisplaySize,
+    ];
 
     pub fn from_idx(i: u16) -> Option<Self> {
         Self::ALL.get(i as usize).copied()
@@ -209,11 +357,12 @@ impl GlueParam {
     }
     #[inline]
     pub fn is_mu(self) -> bool {
-        matches!(self, GlueParam::ThinMuSkip | GlueParam::MedMuSkip | GlueParam::ThickMuSkip)
+        matches!(
+            self,
+            GlueParam::ThinMuSkip | GlueParam::MedMuSkip | GlueParam::ThickMuSkip
+        )
     }
 }
-
-
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(u16)]
@@ -228,9 +377,10 @@ pub enum ToksParam {
     EveryEOF,
     Output,
     ErrHelp,
+    PdfTrailerId,
 }
 
-pub const NUM_TOKS_PARAMS: usize = 10;
+pub const NUM_TOKS_PARAMS: usize = 11;
 
 impl ToksParam {
     #[inline]
@@ -576,9 +726,51 @@ pub enum Prim {
     XeTeXInterCharToks,
     EtxRevision,
     PdfPageResources,
+    Discretionary,
+    MarksClass,
+    TopMarksClass,
+    FirstMarksClass,
+    BotMarksClass,
+    SplitFirstMarksClass,
+    SplitBotMarksClass,
+    // ---- appended: pdfTeX \pdfmatch/\pdflastmatch + e-TeX \nonscript
+    //      (stable codes 312+; keep new unit variants at the enum tail)
+    PdfMatch,
+    PdfLastMatch,
+    /// e-TeX `\nonscript': suppresses the following math list fragment in
+    /// script styles (tex.web non_script_code; main-control side).
+    NonScript,
+    FontCharWd,
+    FontCharHt,
+    FontCharDp,
+    FontCharIc,
+    // ---- appended: pdfTeX font expansion / letterspacing / spacing /
+    //      kerning primitives (stable codes 319+: 319 pdffontexpand,
+    //      320 pdfnoligatures, 321 letterspacefont .. 330 knaccode,
+    //      331 pdffontsize, 332 pdftexbanner; new unit variants stay at
+    //      the enum tail so earlier codes hold).
+    PdfFontExpand,
+    PdfNoLigatures,
+    LetterspaceFont,
+    EfCode,
+    LpCode,
+    RpCode,
+    TagCode,
+    KnBsCode,
+    StBsCode,
+    ShBsCode,
+    KnBcCode,
+    KnAcCode,
+    PdfFontSize,
+    PdfBanner,
+    /// pdfTeX `\partokenname <control sequence>` global assignment.
+    PartokenName,
+    /// pdfTeX expandable margin-kern dimensions for an hbox register.
+    LeftMarginKern,
+    RightMarginKern,
+    /// Knuth `\/`: append the preceding character's TFM italic correction.
+    ItalicCorrection,
 }
-
-
 
 /// Stable wire codes for the format dump (`crate::format`). Unit variants
 /// take 0..0x0fff in declaration order — exhaustiveness is compiler-checked
@@ -893,6 +1085,38 @@ impl Prim {
             Prim::XeTeXInterCharToks => 302,
             Prim::EtxRevision => 303,
             Prim::PdfPageResources => 304,
+            Prim::Discretionary => 305,
+            Prim::MarksClass => 306,
+            Prim::TopMarksClass => 307,
+            Prim::FirstMarksClass => 308,
+            Prim::BotMarksClass => 309,
+            Prim::SplitFirstMarksClass => 310,
+            Prim::SplitBotMarksClass => 311,
+            Prim::PdfMatch => 312,
+            Prim::PdfLastMatch => 313,
+            Prim::NonScript => 314,
+            Prim::FontCharWd => 315,
+            Prim::FontCharHt => 316,
+            Prim::FontCharDp => 317,
+            Prim::FontCharIc => 318,
+            Prim::PdfFontExpand => 319,
+            Prim::PdfNoLigatures => 320,
+            Prim::LetterspaceFont => 321,
+            Prim::EfCode => 322,
+            Prim::LpCode => 323,
+            Prim::RpCode => 324,
+            Prim::TagCode => 325,
+            Prim::KnBsCode => 326,
+            Prim::StBsCode => 327,
+            Prim::ShBsCode => 328,
+            Prim::KnBcCode => 329,
+            Prim::KnAcCode => 330,
+            Prim::PdfFontSize => 331,
+            Prim::PdfBanner => 332,
+            Prim::PartokenName => 333,
+            Prim::LeftMarginKern => 334,
+            Prim::RightMarginKern => 335,
+            Prim::ItalicCorrection => 336,
             Prim::ScriptScriptStyle => 284,
             Prim::Patterns => 287,
             Prim::Hyphenation => 288,
@@ -1210,6 +1434,38 @@ impl Prim {
             302 => Some(Prim::XeTeXInterCharToks),
             303 => Some(Prim::EtxRevision),
             304 => Some(Prim::PdfPageResources),
+            305 => Some(Prim::Discretionary),
+            306 => Some(Prim::MarksClass),
+            307 => Some(Prim::TopMarksClass),
+            308 => Some(Prim::FirstMarksClass),
+            309 => Some(Prim::BotMarksClass),
+            310 => Some(Prim::SplitFirstMarksClass),
+            311 => Some(Prim::SplitBotMarksClass),
+            312 => Some(Prim::PdfMatch),
+            313 => Some(Prim::PdfLastMatch),
+            314 => Some(Prim::NonScript),
+            315 => Some(Prim::FontCharWd),
+            316 => Some(Prim::FontCharHt),
+            317 => Some(Prim::FontCharDp),
+            318 => Some(Prim::FontCharIc),
+            319 => Some(Prim::PdfFontExpand),
+            320 => Some(Prim::PdfNoLigatures),
+            321 => Some(Prim::LetterspaceFont),
+            322 => Some(Prim::EfCode),
+            323 => Some(Prim::LpCode),
+            324 => Some(Prim::RpCode),
+            325 => Some(Prim::TagCode),
+            326 => Some(Prim::KnBsCode),
+            327 => Some(Prim::StBsCode),
+            328 => Some(Prim::ShBsCode),
+            329 => Some(Prim::KnBcCode),
+            330 => Some(Prim::KnAcCode),
+            331 => Some(Prim::PdfFontSize),
+            332 => Some(Prim::PdfBanner),
+            333 => Some(Prim::PartokenName),
+            334 => Some(Prim::LeftMarginKern),
+            335 => Some(Prim::RightMarginKern),
+            336 => Some(Prim::ItalicCorrection),
             0x1000..=0x1fff => {
                 let i = c & 0x0fff;
                 Some(Prim::IntP(IntParam::from_idx(i)?))
@@ -1220,13 +1476,49 @@ impl Prim {
             }
             0x3000..=0x3fff => {
                 let i = c & 0x0fff;
-                if (i as usize) >= NUM_GLUE_PARAMS { return None; }
-                Some(Prim::GlueP(match i { 0 => GlueParam::LineSkip, 1 => GlueParam::BaselineSkip, 2 => GlueParam::ParSkip, 3 => GlueParam::LeftSkip, 4 => GlueParam::RightSkip, 5 => GlueParam::ParFillSkip, 6 => GlueParam::SpaceSkip, 7 => GlueParam::XSpaceSkip, 8 => GlueParam::AboveDisplaySkip, 9 => GlueParam::AboveDisplayShortSkip, 10 => GlueParam::BelowDisplaySkip, 11 => GlueParam::BelowDisplayShortSkip, 12 => GlueParam::SplitTopSkip, 13 => GlueParam::TabSkip, 14 => GlueParam::ThinMuSkip, 15 => GlueParam::MedMuSkip, 16 => GlueParam::ThickMuSkip, _ => return None }))
+                if (i as usize) >= NUM_GLUE_PARAMS {
+                    return None;
+                }
+                Some(Prim::GlueP(match i {
+                    0 => GlueParam::LineSkip,
+                    1 => GlueParam::BaselineSkip,
+                    2 => GlueParam::ParSkip,
+                    3 => GlueParam::LeftSkip,
+                    4 => GlueParam::RightSkip,
+                    5 => GlueParam::ParFillSkip,
+                    6 => GlueParam::SpaceSkip,
+                    7 => GlueParam::XSpaceSkip,
+                    8 => GlueParam::AboveDisplaySkip,
+                    9 => GlueParam::AboveDisplayShortSkip,
+                    10 => GlueParam::BelowDisplaySkip,
+                    11 => GlueParam::BelowDisplayShortSkip,
+                    12 => GlueParam::SplitTopSkip,
+                    13 => GlueParam::TabSkip,
+                    14 => GlueParam::ThinMuSkip,
+                    15 => GlueParam::MedMuSkip,
+                    16 => GlueParam::ThickMuSkip,
+                    _ => return None,
+                }))
             }
             0x4000..=0x4fff => {
                 let i = c & 0x0fff;
-                if (i as usize) >= NUM_TOKS_PARAMS { return None; }
-                Some(Prim::ToksP(match i { 0 => ToksParam::EveryPar, 1 => ToksParam::EveryMath, 2 => ToksParam::EveryDisplay, 3 => ToksParam::EveryHBox, 4 => ToksParam::EveryVBox, 5 => ToksParam::EveryJob, 6 => ToksParam::EveryCr, 7 => ToksParam::EveryEOF, 8 => ToksParam::Output, 9 => ToksParam::ErrHelp, _ => return None }))
+                if (i as usize) >= NUM_TOKS_PARAMS {
+                    return None;
+                }
+                Some(Prim::ToksP(match i {
+                    0 => ToksParam::EveryPar,
+                    1 => ToksParam::EveryMath,
+                    2 => ToksParam::EveryDisplay,
+                    3 => ToksParam::EveryHBox,
+                    4 => ToksParam::EveryVBox,
+                    5 => ToksParam::EveryJob,
+                    6 => ToksParam::EveryCr,
+                    7 => ToksParam::EveryEOF,
+                    8 => ToksParam::Output,
+                    9 => ToksParam::ErrHelp,
+                    10 => ToksParam::PdfTrailerId,
+                    _ => return None,
+                }))
             }
             _ => None,
         }

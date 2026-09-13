@@ -4,23 +4,27 @@
 //! Patterns are loaded from TeX's `hyphen.tex` (`\patterns{...}` /
 //! `\hyphenation{...}` blocks); see [`Trie::load_hyphen_file`].
 
-use std::collections::HashMap;
+use crate::FxHashMap;
 
 #[derive(Debug)]
 pub struct Trie {
     /// node transitions: node_id -> (byte -> node_id)
-    pub trans: Vec<HashMap<u8, usize>>,
+    pub trans: Vec<FxHashMap<u8, usize>>,
     /// pattern values per node: (position, value); the value applies to the
     /// gap `position` chars after the position where the walk started
     pub values: Vec<Vec<(usize, u8)>>,
     /// exception words: lowercased letters -> sorted break points, where a
     /// point `k` means "between letter k-1 and letter k" (k letters precede)
-    pub exceptions: HashMap<Vec<u8>, Vec<usize>>,
+    pub exceptions: FxHashMap<Vec<u8>, Vec<usize>>,
 }
 
 impl Trie {
     pub fn new() -> Self {
-        Trie { trans: vec![HashMap::new()], values: vec![Vec::new()], exceptions: HashMap::new() }
+        Trie {
+            trans: vec![FxHashMap::default()],
+            values: vec![Vec::new()],
+            exceptions: FxHashMap::default(),
+        }
     }
 
     pub fn is_empty(&self) -> bool {
@@ -37,7 +41,7 @@ impl Trie {
             } else {
                 let next = self.trans.len();
                 self.trans[node].insert(b, next);
-                self.trans.push(HashMap::new());
+                self.trans.push(FxHashMap::default());
                 self.values.push(Vec::new());
                 node = next;
             }
@@ -108,7 +112,11 @@ impl Trie {
             return Vec::new();
         }
         if let Some(pts) = self.exceptions.get(word) {
-            return pts.iter().copied().filter(|&k| k >= left && k + right <= n).collect();
+            return pts
+                .iter()
+                .copied()
+                .filter(|&k| k >= left && k + right <= n)
+                .collect();
         }
         // text = '.' + word + '.'; vals[i] applies before text[i]
         let mut text = Vec::with_capacity(n + 2);
@@ -165,7 +173,11 @@ impl Trie {
         while i < bytes.len() {
             if bytes[i..].starts_with(b"\\patterns") || bytes[i..].starts_with(b"\\hyphenation") {
                 let is_pat = bytes[i + 1] == b'p';
-                i += if is_pat { b"\\patterns".len() } else { b"\\hyphenation".len() };
+                i += if is_pat {
+                    b"\\patterns".len()
+                } else {
+                    b"\\hyphenation".len()
+                };
                 // skip junk up to opening brace
                 while i < bytes.len() && bytes[i] != b'{' {
                     i += 1;
@@ -227,7 +239,8 @@ impl Engine {
     /// Returns Err(io) if the file cannot be read. Meant to be called at
     /// format-build / startup time where TeX executes `\patterns`.
     pub fn load_hyphenation_file(&mut self, path: &str) -> std::io::Result<(usize, usize)> {
-        self.hyphen_trie.load_hyphen_file(std::path::Path::new(path))
+        self.hyphen_trie
+            .load_hyphen_file(std::path::Path::new(path))
     }
 }
 
@@ -238,9 +251,7 @@ mod tests {
     fn trie() -> Trie {
         let mut t = Trie::new();
         let path = "/usr/share/texmf-dist/tex/generic/hyphen/hyphen.tex";
-        if let Ok(r) = t.load_hyphen_file(std::path::Path::new(path)) {
-            eprintln!("loaded {} patterns, {} exceptions", r.0, r.1);
-        }
+        let _ = t.load_hyphen_file(std::path::Path::new(path));
         t
     }
 

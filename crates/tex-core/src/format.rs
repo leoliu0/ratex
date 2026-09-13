@@ -25,18 +25,17 @@ use crate::boxes::Glue;
 use crate::engine::Engine;
 use crate::eqtb::{Equiv, Macro, NUM_REGISTERS};
 use crate::hyphen::Trie;
-use crate::prim::{DimParam, GlueParam, IntParam, Prim, ToksParam, NUM_DIM_PARAMS, NUM_GLUE_PARAMS, NUM_INT_PARAMS, NUM_TOKS_PARAMS};
+use crate::prim::{Prim, NUM_DIM_PARAMS, NUM_GLUE_PARAMS, NUM_INT_PARAMS, NUM_TOKS_PARAMS};
 use crate::tfm::{CharInfo, ExtRecipe, Font, LigStep};
 use crate::token::{CsTable, Token};
 
 const MAGIC: &[u8; 8] = b"RUSTEXFM";
-const VERSION: u16 = 3;
+const VERSION: u16 = 8;
 /// Bumped whenever serialized state changes meaning without changing the
 /// wire layout (new engine invariants the loaded state must satisfy, e.g.
 /// guards added to `check_dumpable` after the file was written). A `.fmt`
 /// from a different engine generation must be rejected, not loaded.
-pub const SEMANTICS: u16 = 2;
-
+pub const SEMANTICS: u16 = 7;
 
 const NUM_CODES: usize = 256;
 
@@ -66,7 +65,9 @@ struct W {
 
 impl W {
     fn new() -> W {
-        W { buf: Vec::with_capacity(1 << 20) }
+        W {
+            buf: Vec::with_capacity(1 << 20),
+        }
     }
     fn u8(&mut self, v: u8) {
         self.buf.push(v);
@@ -125,7 +126,10 @@ impl<'a> R<'a> {
     }
     fn take(&mut self, n: usize) -> io::Result<&'a [u8]> {
         if self.b.len() - self.p < n {
-            return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "format truncated"));
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "format truncated",
+            ));
         }
         let s = &self.b[self.p..self.p + n];
         self.p += n;
@@ -150,7 +154,10 @@ impl<'a> R<'a> {
     fn count(&mut self) -> io::Result<usize> {
         let n = self.u32()? as usize;
         if n > self.b.len() - self.p {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "format corrupt length"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "format corrupt length",
+            ));
         }
         Ok(n)
     }
@@ -240,10 +247,8 @@ pub fn check_dumpable(eng: &Engine) -> Result<(), String> {
                     }
                 }
                 crate::eqtb::SaveItem::Eq(..) => n_eq += 1,
-                crate::eqtb::SaveItem::AfterGroup(tok) => {
+                crate::eqtb::SaveItem::AfterGroup(_) => {
                     n_ag += 1;
-                    let name = if tok.is_cs() { String::from_utf8_lossy(eng.cs.name(tok.cs_id())).into_owned() } else { format!("c{}:{}", tok.cc(), tok.chr()) };
-                    eprintln!("AFTERGROUP-TOKEN: {}", name);
                 }
                 other => {
                     n_other += 1;
@@ -253,19 +258,10 @@ pub fn check_dumpable(eng: &Engine) -> Result<(), String> {
                 }
             }
         }
-        eprintln!(
-            "DUMP-SAVE cur_level={} n={} level={} eq={} aftergroup={} other={} types=[{}]",
-            eng.eqtb.cur_level,
-            eng.eqtb.save_stack.len(),
-            n_level,
-            n_eq,
-            n_ag,
-            n_other,
-            types.join(",")
-        );
         // If there are only top-level aftergroup tokens (e.g. from \set@color in preamble)
         // and no open groups or modified registers, allow the format dump to proceed.
-        if n_level != 0 || n_eq != 0 || n_other != 0 || eng.eqtb.cur_level != crate::eqtb::LEVEL_ONE {
+        if n_level != 0 || n_eq != 0 || n_other != 0 || eng.eqtb.cur_level != crate::eqtb::LEVEL_ONE
+        {
             return Err(format!(
                 "cannot dump: {} pending (level={} eq={} aftergroup={} other={} cur_level={} ss_open=[{}] types=[{}])",
                 eng.eqtb.save_stack.len(),
@@ -331,7 +327,9 @@ pub fn save_format(eng: &Engine, path: &Path) -> Result<usize, String> {
         w.u32(id);
         w.u16(level);
         match equiv {
-            None => w.u8(TAG_NONE),
+            None => {
+                w.u8(TAG_NONE);
+            }
             Some(Equiv::CountReg(v)) => {
                 w.u8(TAG_COUNT_REG);
                 w.u16(*v);
@@ -496,14 +494,28 @@ pub fn save_format(eng: &Engine, path: &Path) -> Result<usize, String> {
 
     // fonts
     w.u32(eng.eqtb.fonts.len() as u32);
+    // per-font expansion state; code tables are shared Rc pointers in the
+    // engine (base font and its expanded variants alias the same table), so
+    // the pool dedups them by address and the loader rebuilds the sharing.
+    let mut expand_pool: crate::FxHashMap<usize, u32> = crate::FxHashMap::default();
     for (i, f) in eng.eqtb.fonts.iter().enumerate() {
         write_font(&mut w, f);
-        let fp = eng.eqtb.font_params.get(i).map(|v| v.as_slice()).unwrap_or(&[]);
+        let fp = eng
+            .eqtb
+            .font_params
+            .get(i)
+            .map(|v| v.as_slice())
+            .unwrap_or(&[]);
         w.u32(fp.len() as u32);
         for p in fp {
             w.i32(*p);
         }
-        let fpl = eng.eqtb.font_param_levels.get(i).map(|v| v.as_slice()).unwrap_or(&[]);
+        let fpl = eng
+            .eqtb
+            .font_param_levels
+            .get(i)
+            .map(|v| v.as_slice())
+            .unwrap_or(&[]);
         w.u32(fpl.len() as u32);
         for l in fpl {
             w.u16(*l);
@@ -513,6 +525,7 @@ pub fn save_format(eng: &Engine, path: &Path) -> Result<usize, String> {
         w.i32(eng.eqtb.skew_char.get(i).copied().unwrap_or(-1));
         w.u16(eng.eqtb.skew_char_levels.get(i).copied().unwrap_or(0));
         w.u32(eng.eqtb.font_cs.get(i).copied().unwrap_or(0));
+        write_font_expand(&mut w, eng.eqtb.expand.get(i), &mut expand_pool);
     }
     // hyphenation
     write_trie(&mut w, &eng.hyphen_trie);
@@ -529,9 +542,14 @@ pub fn save_format(eng: &Engine, path: &Path) -> Result<usize, String> {
         w.i32(*b);
     }
 
-    std::fs::write(path, &w.buf)
+    let payload = if path.extension().and_then(|s| s.to_str()) == Some("zst") {
+        zstd::encode_all(&w.buf[..], 3).map_err(|e| format!("zstd compression failed: {e}"))?
+    } else {
+        w.buf
+    };
+    std::fs::write(path, &payload)
         .map_err(|e| format!("cannot write {}: {}", path.display(), e))?;
-    Ok(w.buf.len())
+    Ok(payload.len())
 }
 
 fn write_macro(w: &mut W, m: &Macro) {
@@ -545,6 +563,9 @@ fn write_macro(w: &mut W, m: &Macro) {
     if m.protected {
         flags |= 4;
     }
+    if m.has_param_refs {
+        flags |= 8;
+    }
     w.u8(flags);
     w.u8(m.num_params);
     w.toks(&m.prefix);
@@ -553,6 +574,122 @@ fn write_macro(w: &mut W, m: &Macro) {
         w.toks(p);
     }
     w.toks(&m.body);
+}
+
+/// One lazily-allocated pdfTeX per-font code table (`init_font_base`).
+type CodeTable = Rc<std::cell::RefCell<[i32; 256]>>;
+
+/// Serialize one font's expansion state. Code tables are shared `Rc`s in
+/// the engine (a base font and its auto-expanded variants alias the same
+/// table, mirroring pdfTeX's `copy_expand_params`), so each distinct table
+/// is written once into `pool` and referenced by index.
+fn write_font_expand(
+    w: &mut W,
+    x: Option<&crate::eqtb::FontExpand>,
+    pool: &mut crate::FxHashMap<usize, u32>,
+) {
+    match x {
+        None => {
+            w.u8(0);
+            return;
+        }
+        Some(_) => w.u8(1),
+    }
+    let x = x.unwrap();
+    w.i32(x.step);
+    w.u8(x.auto_expand as u8);
+    w.u16(x.stretch);
+    w.u16(x.shrink);
+    w.u16(x.elink);
+    w.u16(x.blink);
+    w.i32(x.ratio);
+    for t in [
+        x.ef.as_ref(),
+        x.lp.as_ref(),
+        x.rp.as_ref(),
+        x.kn_bs.as_ref(),
+        x.st_bs.as_ref(),
+        x.sh_bs.as_ref(),
+        x.kn_bc.as_ref(),
+        x.kn_ac.as_ref(),
+    ] {
+        write_code_table(w, t, pool);
+    }
+}
+
+fn write_code_table(w: &mut W, t: Option<&CodeTable>, pool: &mut crate::FxHashMap<usize, u32>) {
+    match t {
+        None => w.u32(u32::MAX),
+        Some(t) => {
+            let addr = Rc::as_ptr(t) as usize;
+            if let Some(idx) = pool.get(&addr) {
+                w.u32(*idx);
+                return;
+            }
+            let idx = pool.len() as u32;
+            pool.insert(addr, idx);
+            w.u32(idx);
+            for v in t.borrow().iter() {
+                w.i32(*v);
+            }
+        }
+    }
+}
+
+/// Inverse of `write_font_expand`; `pool` holds the tables already read.
+fn read_font_expand(
+    r: &mut R,
+    pool: &mut Vec<Option<CodeTable>>,
+) -> io::Result<crate::eqtb::FontExpand> {
+    let mut x = crate::eqtb::FontExpand::default();
+    if r.u8()? == 0 {
+        return Ok(x);
+    }
+    x.step = r.i32()?;
+    x.auto_expand = r.u8()? != 0;
+    x.stretch = r.u16()?;
+    x.shrink = r.u16()?;
+    x.elink = r.u16()?;
+    x.blink = r.u16()?;
+    x.ratio = r.i32()?;
+    let slots = [
+        &mut x.ef,
+        &mut x.lp,
+        &mut x.rp,
+        &mut x.kn_bs,
+        &mut x.st_bs,
+        &mut x.sh_bs,
+        &mut x.kn_bc,
+        &mut x.kn_ac,
+    ];
+    for slot in slots {
+        *slot = read_code_table(r, pool)?;
+    }
+    Ok(x)
+}
+
+fn read_code_table(r: &mut R, pool: &mut Vec<Option<CodeTable>>) -> io::Result<Option<CodeTable>> {
+    let idx = r.u32()?;
+    if idx == u32::MAX {
+        return Ok(None);
+    }
+    if let Some(t) = pool.get(idx as usize) {
+        return Ok(t.clone());
+    }
+    // tables are written in first-use order, so idx is always the next slot
+    if idx as usize != pool.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "format expand pool out of order",
+        ));
+    }
+    let mut v = [0i32; 256];
+    for e in v.iter_mut() {
+        *e = r.i32()?;
+    }
+    let t = Rc::new(std::cell::RefCell::new(v));
+    pool.push(Some(t.clone()));
+    Ok(Some(t))
 }
 
 fn write_font(w: &mut W, f: &Font) {
@@ -650,8 +787,7 @@ fn write_trie(w: &mut W, t: &Trie) {
 /// `\dump`-completed state). Any I/O, magic, version, or truncation error
 /// is reported so the caller can fall back to a full bootstrap.
 pub fn load_format(path: &Path) -> Result<Engine, String> {
-    let data = std::fs::read(path)
-        .map_err(|e| format!("cannot read {}: {}", path.display(), e))?;
+    let data = std::fs::read(path).map_err(|e| format!("cannot read {}: {}", path.display(), e))?;
     load_format_from(&data)
 }
 
@@ -667,30 +803,38 @@ fn parse_header(data: &[u8]) -> Result<R<'_>, String> {
         return Err("format version mismatch".to_string());
     }
     if r.u16().map_err(io_err)? != SEMANTICS {
-        return Err(
-            "format semantics mismatch (engine updated; delete the .fmt file)".to_string(),
-        );
+        return Err("format semantics mismatch (engine updated; delete the .fmt file)".to_string());
     }
     Ok(r)
 }
 
+const ZSTD_MAGIC: [u8; 4] = [0x28, 0xb5, 0x2f, 0xfd];
+
 pub fn load_format_from(data: &[u8]) -> Result<Engine, String> {
+    if data.len() >= 4 && data[..4] == ZSTD_MAGIC {
+        let decompressed =
+            zstd::decode_all(data).map_err(|e| format!("zstd decompression failed: {e}"))?;
+        return load_format_uncompressed(&decompressed);
+    }
+    load_format_uncompressed(data)
+}
+
+fn load_format_uncompressed(data: &[u8]) -> Result<Engine, String> {
     let mut r = parse_header(data)?;
     let mut eng = Engine::new(false);
+    eng.init_primitives();
+    // Capture immutable primitive identities before replacing the format
+    // state. A second full Engine would allocate another 32768-entry set
+    // of every register table just to obtain these names.
+    let primitives: Vec<_> = (0..eng.cs.len() as u32)
+        .filter_map(|id| match eng.eqtb.get(id) {
+            Some(Equiv::Prim(p)) => Some((eng.cs.name(id).to_vec(), *p)),
+            _ => None,
+        })
+        .collect();
     load_state(&mut r, &mut eng).map_err(io_err)?;
-    // Repair primitives a bad boot stored as \\relax. Do not clobber
-    // LaTeX redefinitions: \\end (Macro), \\bgroup (CharTok), \\everypar
-    // (ToksReg from \\newtoks). \\protected is restored even if dumped
-    // as a macro (that was the original boot bug).
-    let mut snap = Engine::new(true);
-    snap.init_primitives();
-
-    for sid in 0..snap.cs.len() as u32 {
-        let p = match snap.eqtb.get(sid) {
-            Some(Equiv::Prim(p)) => *p,
-            _ => continue,
-        };
-        let name = snap.cs.name(sid).to_vec();
+    // Repair primitive aliases while preserving LaTeX macro redefinitions.
+    for (name, p) in primitives {
         let did = eng.cs.lookup(&name).unwrap_or_else(|| eng.cs.intern(&name));
         let force = name.as_slice() == b"protected";
         match eng.eqtb.get(did) {
@@ -705,11 +849,13 @@ pub fn load_format_from(data: &[u8]) -> Result<Engine, String> {
         }
     }
 
+    // Engine identity is not format state. Older dumps serialized the
+    // assignable backing slot before e-TeX mode was enabled, which made
+    // packages select their non-e-TeX compatibility paths after loading.
+    eng.eqtb.int_params[crate::prim::IntParam::EtxVersion.idx() as usize] = 2;
 
     Ok(eng)
 }
-
-
 
 /// Deserialize `path` into `eng` in place. The CLI uses this with its
 /// already-constructed engine so process-wide one-time setup (kpse ls-R
@@ -721,8 +867,7 @@ pub fn load_format_from(data: &[u8]) -> Result<Engine, String> {
 /// font list would shift every FontRef id); the caller falls back to a
 /// full bootstrap on any error.
 pub fn load_format_into(path: &Path, eng: &mut Engine) -> Result<(), String> {
-    let data = std::fs::read(path)
-        .map_err(|e| format!("cannot read {}: {}", path.display(), e))?;
+    let data = std::fs::read(path).map_err(|e| format!("cannot read {}: {}", path.display(), e))?;
     load_format_bytes_into(&data, eng)
 }
 
@@ -731,6 +876,7 @@ pub fn load_format_bytes_into(data: &[u8], eng: &mut Engine) -> Result<(), Strin
     // Full success only now: transplant the boot state while keeping the
     // caller's process-wide setup (font_loader, ids, out_dir, pdf_doc).
     eng.cs = scratch.cs;
+    eng.primitive_names = scratch.primitive_names;
     eng.eqtb = scratch.eqtb;
     eng.hyphen_trie = scratch.hyphen_trie;
     eng.hyphen_exceptions = scratch.hyphen_exceptions;
@@ -784,7 +930,6 @@ fn load_state(r: &mut R, eng: &mut Engine) -> io::Result<()> {
                 match Prim::from_code(code) {
                     Some(p) => Some(Equiv::Prim(p)),
                     None => {
-                        eprintln!("TAG_PRIM FAILED code={:#x} ({}) id={} cs={:?}", code, code, id, String::from_utf8_lossy(eng.cs.name(id)));
                         return Err(io::Error::new(
                             io::ErrorKind::InvalidData,
                             "format has unknown primitive code",
@@ -876,6 +1021,7 @@ fn load_state(r: &mut R, eng: &mut Engine) -> io::Result<()> {
 
     // fonts
     let n = r.count()?;
+    let mut expand_pool: Vec<Option<CodeTable>> = Vec::new();
     for _ in 0..n {
         eng.eqtb.fonts.push(Rc::new(read_font(r)?));
         eng.eqtb.font_params.push(r.vec_i32()?);
@@ -885,6 +1031,7 @@ fn load_state(r: &mut R, eng: &mut Engine) -> io::Result<()> {
         eng.eqtb.skew_char.push(r.i32()?);
         eng.eqtb.skew_char_levels.push(r.u16()?);
         eng.eqtb.font_cs.push(r.u32()?);
+        eng.eqtb.expand.push(read_font_expand(r, &mut expand_pool)?);
     }
 
     // hyphenation
@@ -923,13 +1070,21 @@ fn read_macro(r: &mut R) -> io::Result<Macro> {
     for _ in 0..n {
         params.push(r.toks()?);
     }
-    let body = r.toks()?.into_iter().map(crate::token::Token::unfreeze).collect();
+    let body: Vec<_> = r
+        .toks()?
+        .into_iter()
+        .map(crate::token::Token::unfreeze)
+        .collect();
 
+    let has_param_refs = (flags & 8 != 0)
+        || (num_params > 0 && body.iter().any(|t| t.0 >= 0x4000_0000 && t.0 < 0x8000_0000));
     Ok(Macro {
+        replacement: Default::default(),
         num_params,
+        has_param_refs,
         prefix,
         params,
-        body,
+        body: body.into(),
         long: flags & 1 != 0,
         outer: flags & 2 != 0,
         protected: flags & 4 != 0,
@@ -1020,7 +1175,7 @@ fn read_trie(r: &mut R) -> io::Result<Trie> {
     let mut values = Vec::with_capacity(n);
     for _ in 0..n {
         let ne = r.count()?;
-        let mut m = std::collections::HashMap::with_capacity(ne);
+        let mut m = crate::FxHashMap::with_capacity_and_hasher(ne, Default::default());
         for _ in 0..ne {
             let b = r.u8()?;
             m.insert(b, r.u32()? as usize);
@@ -1033,7 +1188,7 @@ fn read_trie(r: &mut R) -> io::Result<Trie> {
         }
         values.push(vals);
     }
-    let mut exceptions = std::collections::HashMap::new();
+    let mut exceptions = crate::FxHashMap::default();
     let n = r.count()?;
     for _ in 0..n {
         let k = r.bytes()?;
@@ -1044,7 +1199,11 @@ fn read_trie(r: &mut R) -> io::Result<Trie> {
         }
         exceptions.insert(k, pts);
     }
-    Ok(Trie { trans, values, exceptions })
+    Ok(Trie {
+        trans,
+        values,
+        exceptions,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -1055,10 +1214,9 @@ fn read_trie(r: &mut R) -> io::Result<Trie> {
 mod tests {
     use super::*;
     use crate::prim::{
-        DimParam, GlueParam, IntParam, ToksParam, NUM_DIM_PARAMS, NUM_GLUE_PARAMS,
-        NUM_INT_PARAMS, NUM_TOKS_PARAMS,
+        DimParam, GlueParam, IntParam, ToksParam, NUM_DIM_PARAMS, NUM_GLUE_PARAMS, NUM_INT_PARAMS,
+        NUM_TOKS_PARAMS,
     };
-
 
     fn build_booted_engine() -> Engine {
         let mut eng = Engine::new(true);
@@ -1082,7 +1240,9 @@ mod tests {
         eng.eqtb.assign(
             foo,
             Equiv::Macro(Rc::new(Macro {
+                replacement: Default::default(),
                 num_params: 2,
+                has_param_refs: true,
                 params: vec![vec![], vec![Token::other(b'-')]],
                 prefix: vec![Token::letter(b'x'), Token::space()],
                 body: vec![
@@ -1090,7 +1250,8 @@ mod tests {
                     Token::char(6, 1), // #1 param ref
                     Token::letter(b'q'),
                     Token(0xFFFF_FFFE), // PAR_END-style raw bits must roundtrip
-                ],
+                ]
+                .into(),
                 long: true,
                 outer: false,
                 protected: true,
@@ -1108,18 +1269,28 @@ mod tests {
 
         // registers & params
         eng.eqtb.assign_count(7, -123456, true);
+        eng.eqtb.assign_count(32_767, 7654321, true);
         eng.eqtb.assign_dimen(3, 65536 * 12, true);
         eng.eqtb.assign_skip(
             5,
-            Glue { width: 10, stretch: -3, shrink: 7, stretch_order: 2, shrink_order: 1 },
+            Glue {
+                width: 10,
+                stretch: -3,
+                shrink: 7,
+                stretch_order: 2,
+                shrink_order: 1,
+            },
             true,
         );
         eng.eqtb.assign_muskip(1, Glue::fil(3, 5), true);
-        eng.eqtb.assign_toks_reg(9, Rc::new(vec![Token::letter(b'z')]), true);
+        eng.eqtb
+            .assign_toks_reg(9, Rc::new(vec![Token::letter(b'z')]), true);
         eng.eqtb.assign_int_param(IntParam::Tolerance, 2500, true);
         eng.eqtb.assign_dim_param(DimParam::HSize, 123456789, true);
-        eng.eqtb.assign_glue_param(GlueParam::ParSkip, Glue::new(42), true);
-        eng.eqtb.assign_toks_param(ToksParam::EveryJob, Rc::new(vec![Token::other(b'X')]), true);
+        eng.eqtb
+            .assign_glue_param(GlueParam::ParSkip, Glue::new(42), true);
+        eng.eqtb
+            .assign_toks_param(ToksParam::EveryJob, Rc::new(vec![Token::other(b'X')]), true);
 
         // codes
         eng.eqtb.assign_cat(b'@', 11, true);
@@ -1137,14 +1308,39 @@ mod tests {
             at_size: 655360,
             dsize: 655360,
             chars: vec![
-                CharInfo { width: 100, height: 10, depth: 2, italic: 3, tag: 1, remainder: 7 },
-                CharInfo { width: -5, height: 0, depth: 0, italic: 0, tag: 0, remainder: 0 },
+                CharInfo {
+                    width: 100,
+                    height: 10,
+                    depth: 2,
+                    italic: 3,
+                    tag: 1,
+                    remainder: 7,
+                },
+                CharInfo {
+                    width: -5,
+                    height: 0,
+                    depth: 0,
+                    italic: 0,
+                    tag: 0,
+                    remainder: 0,
+                },
             ],
             bc: 0,
             ec: 255,
-            lig_kern: vec![LigStep { skip: 0, next_char: 1, op: 130, rem: 9, stop: true }],
+            lig_kern: vec![LigStep {
+                skip: 0,
+                next_char: 1,
+                op: 130,
+                rem: 9,
+                stop: true,
+            }],
             kerns: vec![-5, 17, i32::MIN],
-            ext: vec![ExtRecipe { top: 1, mid: 2, bot: 3, rep: 4 }],
+            ext: vec![ExtRecipe {
+                top: 1,
+                mid: 2,
+                bot: 3,
+                rep: 4,
+            }],
             params: vec![0, 33, 44],
             hyphen_char: b'-' as i32,
             skew_char: -1,
@@ -1161,6 +1357,7 @@ mod tests {
         eng.eqtb.skew_char.push(0);
         eng.eqtb.skew_char_levels.push(1);
         eng.eqtb.font_cs.push(myfont);
+        eng.eqtb.expand.push(Default::default());
         eng.eqtb.assign(myfont, Equiv::FontRef(0), true);
         eng.eqtb.assign_font_param(0, 3, -77, true);
 
@@ -1169,7 +1366,8 @@ mod tests {
         eng.hyphen_trie.add_pattern("a1bc3cd");
         eng.hyphen_trie.add_pattern("4tion");
         eng.hyphen_trie.add_exception("ta-ble");
-        eng.hyphen_exceptions.push(("lang-german".to_string(), b"ab-cd".to_vec()));
+        eng.hyphen_exceptions
+            .push(("lang-german".to_string(), b"ab-cd".to_vec()));
         eng.par_shape.push((3, 4));
         eng.par_shape.push((-1, i32::MAX));
 
@@ -1178,7 +1376,11 @@ mod tests {
 
     fn fingerprint(eng: &Engine) -> String {
         let mut s = String::new();
-        s.push_str(&format!("cs={} par={:?}\n", eng.cs.len(), eng.cs.name(eng.ids.par)));
+        s.push_str(&format!(
+            "cs={} par={:?}\n",
+            eng.cs.len(),
+            eng.cs.name(eng.ids.par)
+        ));
         for id in eng.cs.all_ids() {
             let entry = eng
                 .eqtb
@@ -1186,11 +1388,7 @@ mod tests {
                 .iter()
                 .find(|(i, _, _)| *i == id)
                 .map(|(_, e, l)| (format!("{:?}", e), *l));
-            s.push_str(&format!(
-                "  cs {:?} = {:?}\n",
-                eng.cs.name(id),
-                entry
-            ));
+            s.push_str(&format!("  cs {:?} = {:?}\n", eng.cs.name(id), entry));
         }
         let q = &eng.eqtb;
         s.push_str(&format!(
@@ -1209,17 +1407,14 @@ mod tests {
         ));
         s.push_str(&format!(
             "cat={:?}\nmath={:?}\ndel={:?}\nlc={:?}\nsf={:?}\nuc={:?}\nstyle={:?}\n",
-            q.cat,
-            q.math_code,
-            q.del_code,
-            q.lc_code,
-            q.sf_code,
-            q.uc_code,
-            q.style_fonts
+            q.cat, q.math_code, q.del_code, q.lc_code, q.sf_code, q.uc_code, q.style_fonts
         ));
         for f in &q.fonts {
             // tfm::Font has no Debug; dump the identity fields
-            s.push_str(&format!("font {} ({}) at {}\n", f.name, f.tfm_name, f.at_size));
+            s.push_str(&format!(
+                "font {} ({}) at {}\n",
+                f.name, f.tfm_name, f.at_size
+            ));
         }
         s.push_str(&format!(
             "fparams={:?}\nflv={:?}\nhyc={:?}\nskwc={:?}\nfcs={:?}\n",
@@ -1231,8 +1426,14 @@ mod tests {
             edges.sort_unstable();
             trans_sorted.push(edges);
         }
-        s.push_str(&format!("trie_trans={:?}\ntrie_vals={:?}\n", trans_sorted, eng.hyphen_trie.values));
-        s.push_str(&format!("hyexc={:?}\nparshape={:?}\n", eng.hyphen_exceptions, eng.par_shape));
+        s.push_str(&format!(
+            "trie_trans={:?}\ntrie_vals={:?}\n",
+            trans_sorted, eng.hyphen_trie.values
+        ));
+        s.push_str(&format!(
+            "hyexc={:?}\nparshape={:?}\n",
+            eng.hyphen_exceptions, eng.par_shape
+        ));
         s
     }
 
@@ -1254,15 +1455,26 @@ mod tests {
         if a != b {
             for (i, (x, y)) in a.lines().zip(b.lines()).enumerate() {
                 if x != y {
-                    panic!("state diverges at line {}:\n  orig: {}\n  load: {}", i, x, y);
+                    panic!(
+                        "state diverges at line {}:\n  orig: {}\n  load: {}",
+                        i, x, y
+                    );
                 }
             }
-            panic!("fingerprint length differs: {} vs {}", a.lines().count(), b.lines().count());
+            panic!(
+                "fingerprint length differs: {} vs {}",
+                a.lines().count(),
+                b.lines().count()
+            );
         }
 
         // spot checks on live values
-        assert_eq!(back.eqtb.int_params[IntParam::Tolerance.idx() as usize], 2500);
+        assert_eq!(
+            back.eqtb.int_params[IntParam::Tolerance.idx() as usize],
+            2500
+        );
         assert_eq!(back.eqtb.count[7], -123456);
+        assert_eq!(back.eqtb.count[32_767], 7654321);
         assert_eq!(back.eqtb.skip[5].stretch_order, 2);
         assert!(back.eqtb.get(back.cs.lookup(b"foo").unwrap()).is_some());
         // format-ready engine state
@@ -1303,7 +1515,11 @@ mod tests {
         assert!(save_format(&eng, Path::new("/tmp/never.fmt")).is_ok());
         eng.eqtb.assign_box(
             2,
-            Some(crate::boxes::Node::Rule { width: 10, height: 2, depth: 1 }),
+            Some(crate::boxes::Node::Rule {
+                width: 10,
+                height: 2,
+                depth: 1,
+            }),
             true,
         );
         assert!(check_dumpable(&eng).is_ok());
@@ -1389,7 +1605,7 @@ mod tests {
                 w.u16(1);
             }
             for _ in 0..NUM_CODES {
-                w.u16((7u16 << 8));
+                w.u16(7u16 << 8);
             }
             for _ in 0..NUM_CODES {
                 w.u16(1);
@@ -1433,7 +1649,11 @@ mod tests {
         };
         // truncated blob must not panic
         for cut in [0, 5, 40, 120, data.len() / 2] {
-            assert!(load_format_from(&data[..cut.min(data.len())]).is_err(), "cut={}", cut);
+            assert!(
+                load_format_from(&data[..cut.min(data.len())]).is_err(),
+                "cut={}",
+                cut
+            );
         }
         // complete minimal blob loads
         let eng2 = load_format_from(&data).expect("minimal format loads");
@@ -1465,7 +1685,10 @@ mod tests {
         let err = load_format(&path.with_extension("stale")).err().unwrap();
         assert!(err.contains("cannot read"), "sanity: {err}");
         std::fs::write(dir.join("stale.fmt"), &stale).unwrap();
-        for err in [load_format(&dir.join("stale.fmt")).err().unwrap(), load_format_from(&stale).err().unwrap()] {
+        for err in [
+            load_format(&dir.join("stale.fmt")).err().unwrap(),
+            load_format_from(&stale).err().unwrap(),
+        ] {
             assert_eq!(
                 err,
                 "format semantics mismatch (engine updated; delete the .fmt file)"
@@ -1476,7 +1699,10 @@ mod tests {
         // not silently passed to the state decoder
         let mut badver = data.clone();
         badver[MAGIC.len()] = 0xFF;
-        assert_eq!(load_format_from(&badver).err().unwrap(), "format version mismatch");
+        assert_eq!(
+            load_format_from(&badver).err().unwrap(),
+            "format version mismatch"
+        );
 
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -1486,11 +1712,12 @@ mod tests {
         let mut eng = build_booted_engine();
         assert!(check_dumpable(&eng).is_ok(), "fresh booted engine dumps");
 
-
-
         eng.marks[2].push(vec![Token::letter(b'x')]);
         let err = check_dumpable(&eng).unwrap_err();
-        assert!(err.contains("mark class 2 holds 1 unresolved"), "got: {err}");
+        assert!(
+            err.contains("mark class 2 holds 1 unresolved"),
+            "got: {err}"
+        );
         eng.marks[2].clear();
 
         eng.pdf_page_attr = "/Creator (rustex)".into();
@@ -1504,7 +1731,8 @@ mod tests {
         eng.pdf_pages_attr.clear();
 
         // the base file alone is dumpable; more than 3 sources is not
-        eng.input.push_file("main.tex".to_string(), b"\\dump".to_vec());
+        eng.input
+            .push_file("main.tex".to_string(), b"\\dump".to_vec());
         assert!(check_dumpable(&eng).is_ok(), "base file alone dumps");
         eng.input.push_file("child.tex".to_string(), b"x".to_vec());
         eng.input.push_file("child2.tex".to_string(), b"x".to_vec());
@@ -1527,6 +1755,7 @@ mod tests {
         assert!(target.format_done);
         assert_eq!(target.eqtb.fonts.len(), eng.eqtb.fonts.len());
         assert_eq!(target.eqtb.count[7], -123456);
+        assert_eq!(target.eqtb.count[32_767], 7654321);
 
         // corrupt payload (header intact): caller state must be untouched —
         // in particular no partially pushed font list shifting FontRef ids
@@ -1536,11 +1765,35 @@ mod tests {
         let mut target = build_booted_engine();
         let cs_before = target.cs.len();
         let fonts_before = target.eqtb.fonts.len();
-        assert!(load_format_into(&path, &mut target).is_err(), "truncated fmt refused");
-        assert_eq!(target.eqtb.fonts.len(), fonts_before, "no partial font transplant");
-        assert_eq!(target.cs.len(), cs_before, "cs table not replaced on failure");
+        assert!(
+            load_format_into(&path, &mut target).is_err(),
+            "truncated fmt refused"
+        );
+        assert_eq!(
+            target.eqtb.fonts.len(),
+            fonts_before,
+            "no partial font transplant"
+        );
+        assert_eq!(
+            target.cs.len(),
+            cs_before,
+            "cs table not replaced on failure"
+        );
         assert!(!target.format_done);
 
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn format_zstd_roundtrip() {
+        let eng = build_sample_engine();
+        let dir = std::env::temp_dir().join(format!("rustex-fmt-zstd-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("test.fmt.zst");
+        let n = save_format(&eng, &path).expect("save format with zstd");
+        assert!(n > 0);
+        let loaded = load_format(&path).expect("load format from zstd");
+        assert_eq!(loaded.cs.len(), eng.cs.len());
         std::fs::remove_dir_all(&dir).ok();
     }
 }

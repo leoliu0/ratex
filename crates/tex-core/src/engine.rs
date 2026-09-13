@@ -1,11 +1,10 @@
 //! Engine state: control-sequence table, equivalents, input stack, modes,
 //! lists, fonts, output files; plus primitive registration.
 
-use crate::eqtb::{Equiv, Eqtb, LevelType};
+use crate::eqtb::{Eqtb, Equiv};
 use crate::input::InputStack;
 use crate::prim::*;
 use crate::token::{CsId, CsTable, Token};
-
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ScannerStatus {
@@ -18,12 +17,13 @@ pub enum ScannerStatus {
 
 #[derive(Clone, Debug)]
 pub struct IfState {
-    pub accepting: bool,   // currently taking the true branch
-    pub matched: bool,     // some branch was taken already
-    pub if_case: i32,      // >=0: \ifcase with this many cases left
+    pub accepting: bool, // currently taking the true branch
+    pub matched: bool,   // some branch was taken already
+    pub if_case: i32,    // >=0: \ifcase with this many cases left
     pub loc_file: String,
     pub loc_line: u32,
     pub loc_cs: u32,
+    pub(crate) loc: Option<crate::input::SourceMark>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -46,8 +46,63 @@ impl Mode {
         matches!(self, Mode::Math | Mode::DisplayMath)
     }
     pub fn is_inner(self) -> bool {
-        matches!(self, Mode::InternalVertical | Mode::RestrictedHorizontal | Mode::Math)
+        matches!(
+            self,
+            Mode::InternalVertical | Mode::RestrictedHorizontal | Mode::Math
+        )
     }
+}
+/// Hard stop for a runaway main loop (latex.ltx boot is well below this).
+pub const MAX_MAIN_STEPS: u64 = 100_000_000;
+/// Default resident-set cap. Override with TEX_MEM_LIMIT_MIB (0 disables).
+pub const DEFAULT_RSS_LIMIT: u64 = 512 << 20;
+pub const MAX_TERM_BYTES: usize = 8 << 20;
+pub const MAX_PAGE_LIST: usize = 250_000;
+pub const DEFAULT_MAX_ERRORS: usize = 100;
+pub const DEFAULT_EXPANSION_LIMIT: u64 = 25_000_000;
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum InteractionMode {
+    Batch,
+    Nonstop,
+    Scroll,
+    ErrorStop,
+}
+
+impl InteractionMode {
+    pub const fn number(self) -> i32 {
+        match self {
+            Self::Batch => 0,
+            Self::Nonstop => 1,
+            Self::Scroll => 2,
+            Self::ErrorStop => 3,
+        }
+    }
+
+    pub const fn from_number(value: i32) -> Option<Self> {
+        match value {
+            0 => Some(Self::Batch),
+            1 => Some(Self::Nonstop),
+            2 => Some(Self::Scroll),
+            3 => Some(Self::ErrorStop),
+            _ => None,
+        }
+    }
+}
+
+/// Exact physical spelling of the most recently tokenized file token.
+///
+/// This deliberately stores only coordinates on the scanner hot path. The
+/// source's reference-counted name, bytes, and include chain are cloned only
+/// if a diagnostic or macro expansion actually needs the location.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct PhysicalTokenSource {
+    pub(crate) token: Token,
+    pub(crate) semantic_cs: Option<CsId>,
+    pub(crate) source_index: usize,
+    pub(crate) line: u32,
+    pub(crate) byte_column: usize,
+    pub(crate) span: usize,
 }
 
 /// Interned ids for control sequences the engine itself references.
@@ -59,6 +114,9 @@ pub struct Ids {
 pub struct Engine {
     pub cs: CsTable,
     pub eqtb: Eqtb,
+    /// Original control-sequence name of each primitive. Unlike an eqtb
+    /// reverse lookup, this survives formats redefining (for example) \input.
+    pub(crate) primitive_names: crate::FxHashMap<u16, &'static [u8]>,
     pub input: InputStack,
     pub ids: Ids,
 
@@ -75,16 +133,57 @@ pub struct Engine {
     pub mode: Mode,
     pub mode_level: u16, // nesting of box modes
     pub cur_list: Vec<crate::boxes::Node>,
-    pub prev_depth: i32,  // special marker: -1000pt means unset
+    pub prev_depth: i32, // special marker: -1000pt means unset
     pub space_factor: i32,
     pub prev_graf: i32,
     pub after_token: bool,
+    /// Consecutive non-control-sequence tokens seen where a definition target
+    /// was required. This recovery state belongs to one TeX engine/job.
+    pub(crate) definable_cs_recovery_count: u8,
 
     pub ini_mode: bool, // -ini: format-building mode
     pub format_name: String,
     pub job_name: String,
     pub halt_on_error: bool,
+    pub interaction_mode: InteractionMode,
+    pub max_errors: usize,
     pub error_count: i32,
+    /// True when an error made continuing unsafe or the selected interaction
+    /// mode requested an immediate stop. This differs from `end_occurred`,
+    /// which is also set by a normal `\\end`.
+    pub stopped_on_error: bool,
+    pub diagnostics: Vec<crate::diagnostics::Diagnostic>,
+    /// Rendered diagnostics kept separate from routine TeX progress so the
+    /// CLI can route them to stderr without moving successful progress there.
+    pub diagnostic_output: String,
+    /// Source captured for deferred expansion such as a shipout-time write.
+    pub(crate) diagnostic_source_override: Option<crate::input::SourceContext>,
+    /// Explicit expansion ancestry for a deferred or synthesized diagnostic.
+    /// `Some(Vec::new())` deliberately suppresses irrelevant internal frames.
+    pub(crate) diagnostic_trace_override: Option<Vec<CsId>>,
+    /// Source of a LaTeX error printed before a terminal-input request. LaTeX
+    /// reports missing packages through `\typeout` followed by `\read-1`, so
+    /// the source has to survive until the read primitive reports the error.
+    pub(crate) pending_terminal_error_source: Option<crate::input::SourceContext>,
+    /// Macro ancestry for the token currently being processed. It survives
+    /// tail expansion after the corresponding token lists have been popped.
+    pub(crate) diagnostic_macro_trace: Vec<CsId>,
+    pub(crate) diagnostic_token_from_file: bool,
+    /// Suppress normal trace unwinding while a construct emitted by a macro
+    /// scans physical input (for example a macro-generated definition).
+    pub(crate) diagnostic_trace_hold: u16,
+    pub(crate) diagnostic_source_cs: Option<CsId>,
+    pub(crate) diagnostic_physical_source: Option<PhysicalTokenSource>,
+    pub(crate) diagnostic_macro_call_site: Option<crate::input::SourceMark>,
+    pub(crate) diagnostic_macro_call_span: usize,
+    /// Source for a control sequence synthesized by an expandable primitive,
+    /// keyed by the returned token so it cannot leak to a later command.
+    pub(crate) diagnostic_synthetic_source: Option<(CsId, crate::input::SourceMark, usize)>,
+    /// Opening locations for user-visible brace and `\\begingroup` levels.
+    pub(crate) diagnostic_group_openings: Vec<(u16, crate::input::SourceMark)>,
+    /// TeX applies `\\errhelp` to an explicit `\\errmessage`, rather than to
+    /// unrelated engine errors that happen to follow the assignment.
+    pub(crate) diagnostic_use_err_help: bool,
 
     // write streams
     pub write_streams: Vec<Option<std::fs::File>>,
@@ -106,15 +205,20 @@ pub struct Engine {
 
     pub job_running: bool,
     pub end_occurred: bool,
+    /// Set only when an executable `\\end` actually completed the job.
+    pub explicit_end_seen: bool,
+    /// tokens dispatched by main_loop; capacity guard
+    pub main_steps: u64,
+    /// Expandable commands processed during this job. Unlike main_steps this
+    /// also advances while get_token is searching for one unexpandable token.
+    pub expansion_steps: u64,
+    pub expansion_limit: u64,
     // scanning state
     pub if_stack: Vec<IfState>,
+    pub(crate) pending_if_depth: Option<usize>,
     pub pushed: Vec<Token>, // lookahead pushback
     /// fill order of the last scan_dimen unit (0=normal, 1=fil, 2=fill, 3=filll)
     pub cur_fill_order: u8,
-    /// debug: last expanded macro names
-    pub last_macros: std::collections::VecDeque<String>,
-    /// debug: recent raw tokens
-    pub tok_ring: std::collections::VecDeque<(u32, u32)>,
     /// delimiter text collected before the first # of a \def param text
     pub def_prefix: Vec<Token>,
     pub global_flag: bool,
@@ -125,23 +229,30 @@ pub struct Engine {
     /// looking for a number (`\romannumeral\protected...`).
     pub expand_protected: u32,
     pub in_expanded_scan: bool,
-    /// tokens from \\unexpanded still sitting on the input; e-scan must not
-    /// ##-collapse them (\\usenone{#1}\\unexpanded{#1} inside \\expanded).
-    pub unexp_protect: usize,
+    /// True when the last expanded token was a parameter character protected
+    /// by \unexpanded; the definition scanner must store it literally.
+    pub unexpanded_parameter: bool,
     /// e-TeX \\ifincsname: \\csname nesting depth
     pub csname_depth: u32,
 
+    pub last_macros: std::collections::VecDeque<String>,
+    pub unexp_protect: usize,
+    pub tok_ring: std::collections::VecDeque<(u32, u32)>,
     /// noexpand'd token pending (returned once, unexpanded)
     pub no_expand_tok: Option<Token>,
     pub align_state: i32, // & nesting balance for runaway detection
+    /// A macro parameter scanner is reading at alignment brace depth zero.
+    pub align_macro_arg: bool,
     pub ss_trace: Vec<String>,
     pub format_done: bool,
     pub trace_ltx: u32,
     /// \pdfpageattr / \pdfpagesattr dict bodies (global in pdfTeX)
     pub pdf_page_attr: String,
+    pub pdf_page_attr_toks: Vec<Token>,
     pub pdf_pages_attr: String,
+    pub pdf_pages_attr_toks: Vec<Token>,
     pub pdf_page_resources: Vec<u8>,
-    pub left_delim: Option<i32>,
+    pub pdf_page_resources_toks: Vec<Token>,
     pub right_delim: Option<i32>,
     pub math_limits: Option<u8>,
     pub last_delim: Option<i32>,
@@ -164,14 +275,18 @@ pub struct Engine {
     pub box_targets: Vec<Option<(i32, bool)>>,
     pub box_shifts: Vec<i32>,
     pub box_kinds: Vec<u8>,
+    pub leader_stack: Vec<(u8, usize)>,
     pub insert_nums: Vec<u16>,
+    pub pdf_images: crate::FxHashMap<i32, PdfImageInfo>,
+    pub pdf_xforms: crate::FxHashMap<i32, (i32, i32, i32)>,
+    pub color_stacks: crate::FxHashMap<i32, Vec<String>>,
     pub shipout_pending: bool,
     /// box_kinds depth of the \\shipout box (tex.web box_context);
     /// inner boxes must not consume the pending shipout.
     pub shipout_depth: usize,
     pub par_page_lists: Vec<Vec<crate::boxes::Node>>,
     pub read_eof: Vec<bool>, // (amount, is_hmove)
-    pub read_files: Vec<Option<std::io::BufReader<std::fs::File>>>,
+    pub read_files: Vec<Option<Box<dyn std::io::BufRead>>>,
     pub loaded_files: Vec<std::path::PathBuf>,
     pub out_dir: String,
     /// directory of the primary input file; relative \\input/\\openin names
@@ -180,6 +295,7 @@ pub struct Engine {
     pub main_dir: Option<std::path::PathBuf>,
     pub job_ended_by_end: bool,
     pub align_preamble: Vec<crate::align::ColSpec>,
+    pub align_tabskip_0: crate::boxes::Glue,
     pub align_loop_start: Option<usize>,
     pub align_rows: Vec<Vec<crate::align::Cell>>,
     pub align_col_widths: Vec<i32>,
@@ -190,9 +306,19 @@ pub struct Engine {
     /// Expansions after that point outrank the toklist; older `pushed`
     /// tokens (e.g. a \\futurelet peek) wait until the toklist finishes.
     pub align_pushed_base: usize,
+    /// Brace-balance baseline of active token-list sources at cell entry.
+    /// Alignment delimiters fetched while the relative balance is nonzero
+    /// belong to a nested macro argument, not the current row.
+    pub(crate) align_delimiter_balance_base: i32,
+    /// eqtb group level of the synthetic alignment-cell group.
+    pub(crate) align_cell_level: u16,
     pub align_noalign_save_base: usize,
     pub align_done: bool,
     pub align_to: Option<(i32, bool)>, // \halign to/spread <dimen>: (dimen, is_spread)
+    pub align_t0: crate::boxes::Glue,
+    /// Physical source location of the active `\halign`, retained so an EOF
+    /// after an included file has been popped still points to the construct.
+    pub(crate) align_origin: Option<crate::input::SourceMark>,
     pub in_output: bool,
     pub output_depth: usize,
     /// tex.web <Fire up the user's output routine> (@19925): while an
@@ -203,11 +329,18 @@ pub struct Engine {
     /// contribution-list remainder, so longtable's trailing
     /// `\copy\LT@head\nobreak` opens the NEXT page (the "(continued)"
     /// head), never following the chunk rows. The tuple carries
-    /// (cursor, saved \prevdepth): `mode:=-vmode; prev_depth:=ignore_depth`
+    /// (cursor, saved \prevdepth, saved \prevgraf): `mode:=-vmode; prev_depth:=ignore_depth`
     /// suppresses the head's interline glue (the page-top \topskip pad is
     /// build_page's job), and `pop_nest` restores the saved value.
-    /// `None` outside the output routine.
-    pub output_tail: Option<(usize, i32)>,
+    /// `None` outside the output routine. The 4th slot saves the interrupted
+    /// list's `mode` (tex.web §19921 fire_up `push_nest(save_v_mode)`): the
+    /// routine itself always runs in outer vertical mode, whatever mode the
+    /// page fired in (mid-paragraph, mid-display, ...); `pop_nest` restores it.
+    pub output_tail: Option<(usize, i32, i32, Mode)>,
+    /// tex.web push_nest record for the output routine: the interrupted
+    /// list's `cur_list` and `space_factor` (mode travels in `output_tail`).
+    /// Saved once at the first routine dispatch, restored at `finish_output`.
+    pub output_nest: Option<(Vec<crate::boxes::Node>, i32)>,
     /// Set at fire_up launch; the first `dispatch` after the firing primitive
     /// ends converts it into the active `output_tail` cursor. Post-fire appends
     /// inside the firing primitive itself stay contribution material at the tail.
@@ -220,22 +353,37 @@ pub struct Engine {
     pub page_best_break: Option<usize>,
     pub page_break_penalty: i32,
     /// true cost of the carried best break (BreakSpot::carried used a
-    /// synthetic DEPLORABLE, losing real cost across build_page calls)
     pub page_best_cost: i64,
+    pub page_best_goal: i64,
+    pub page_goal: i64,
     pub page_goal_set: bool,
+    /// tex.web `page_contents >= box_there`: a box or rule has already been
+    /// contributed to the page under construction. Canonical page_contents
+    /// is persistent engine state, never re-derived from the contribution
+    /// list prefix (the list is swapped/parked by display math and paragraph
+    /// capture, and its structure changes under output operations).
+    pub page_box_seen: bool,
     pub page_stretch: [i64; 4],
     pub page_shrink: [i64; 4],
+    /// tex.web `page_ins_head` chain: per-class insertion accounting state
+    /// for the page under construction (height already placed, split status,
+    /// breakpoint pointer, last/best ins-node records). Snapshotted with the
+    /// best page break by `build_page` and restored by `fire_up` exactly like
+    /// the carried `page_best_break`/`page_best_goal`, so incremental
+    /// contribution batches keep one canonical class state.
+    pub page_insertions: Vec<crate::page::PageInsState>,
+    pub last_page_node_type: i32,
+    pub last_page_penalty: i32,
+    pub last_page_kern: i32,
+    pub last_page_glue: Option<crate::boxes::Glue>,
     pub vsplat_remainder: Option<Vec<crate::boxes::Node>>,
     pub math_lists: Vec<Vec<crate::boxes::Node>>,
     /// tex.web mlist_penalties as a conversion-scope global: insert
     /// \binoppenalty/\relpenalty breakpoints after Bin/Rel atoms when
     /// converting inline TEXT math (mode>0); restored on exit
     pub math_penalties: std::cell::Cell<bool>,
-    pub gt_steps: u64,
-    pub rt_steps: u64,
-    pub mac_depth: u32,
-    pub current_macro: String,
-    pub loop_traced: bool,
+    pub(crate) token_vec_pool: Vec<Vec<crate::token::Token>>,
+    pub current_macro: crate::token::CsId,
     pub math_style_stack: Vec<crate::boxes::MathStyle>,
     /// tex.web §1181 (init_math): \\predisplaysize, \\displaywidth and
     /// \\displayindent are computed at display entry from the final line of
@@ -258,17 +406,19 @@ pub struct Engine {
     /// bool marks \leqno (tag on the left)
     pub pending_display_formula: Option<Vec<crate::boxes::Node>>,
     pub eqno_leqno: Option<bool>,
-    /// tex.web subformula boundaries in math mode: positions in the current
-    /// math list where `{` groups opened — \over's numerator stops there
-    pub math_group_marks: Vec<usize>,
+    /// Subformula boundaries: (math-list stack depth, opening position).
+    /// Nested scanners must not use or discard a surrounding list's marks.
+    pub math_group_marks: Vec<(usize, usize)>,
     pub scanner_status: ScannerStatus,
-    pub saved_lists: Vec<(Mode, Vec<crate::boxes::Node>, i32, i32)>,
+    /// Semantic nest frames: mode, list, previous depth, space factor, paragraph lines.
+    pub saved_lists: Vec<(Mode, Vec<crate::boxes::Node>, i32, i32, i32)>,
     /// saved state pushed by paragraph start (pops with \par, not with groups)
     pub par_saves: usize,
     /// set when a display just ended: text resumes hmode directly
     /// (tex.web resume_after_display §1194 — no \parskip, no \parindent,
     /// no \everypar); consumed by the next start_paragraph
     pub resume_after_display: bool,
+    pub par_has_display: bool,
     /// set when build_page ships a page that consumed the lines of the
     /// paragraph currently being broken (tex.web soft page break inside a
     /// paragraph): the resumed partial content has NO complete line yet, so
@@ -279,6 +429,9 @@ pub struct Engine {
     /// enters the display group (preventing output routine / math group
     /// save-level inversion).
     pub in_display_init: bool,
+    /// `$$\halign$$` (amsmath align): rows+noalign stashed here instead of
+    /// a packed vbox so finish_display_math can unbox them onto the page.
+    pub display_halign: Option<Vec<crate::boxes::Node>>,
     pub unless_next: bool,
     pub last_badness: i32,
     pub pdf_last_x: i32,
@@ -293,6 +446,8 @@ pub struct Engine {
     /// next free object number for \pdfobj-style reservations (pdfTeX
     /// reserves 1..4 for Catalog/Pages/Info/Outlines).
     pub pdf_next_obj: i32,
+    pub pdf_match_subject: Vec<u8>,
+    pub pdf_match_ranges: Vec<Option<(usize, usize)>>,
     pub marks: [Vec<Vec<Token>>; 5], // top, first, bot, splitfirst, splitbot (class-indexed)
     pub last_named_cs: Option<CsId>,
     pub align_in_noalign: bool,
@@ -301,6 +456,17 @@ pub struct Engine {
     /// token arrives.
     pub align_everycr_done: bool,
     pub align_cell_toks: Vec<Token>,
+    /// tex.web `cur_head`/`cur_tail` (§15273): the alignment level's
+    /// adjustment list. `\vadjust` material removed from each cell's
+    /// hlist by the natural-width hpack (tex.web fin_col §15666-8)
+    /// accumulates here in cell/source order and is spliced into the
+    /// alignment vlist after the completed row (tex.web fin_row §15724).
+    pub align_adjust: Vec<crate::boxes::Node>,
+    /// Per-row drain of `align_adjust` (tex.web init_row §15537
+    /// `cur_tail:=cur_head`): pushed by `align_finish_row`, parallel to
+    /// `align_rows`; spliced raw into the alignment vlist after the row
+    /// box it belongs to (tex.web fin_row §15724).
+    pub align_row_adjust: Vec<Vec<crate::boxes::Node>>,
     pub after_assignment: Option<Token>,
 
     pub log: String,
@@ -308,6 +474,33 @@ pub struct Engine {
 }
 
 impl Engine {
+    pub(crate) fn append_transcript_bounded(buffer: &mut String, text: &str) {
+        const MARKER: &str = "\n! Transcript truncated at the 8 MiB safety limit.\n";
+        if buffer.len() >= MAX_TERM_BYTES {
+            return;
+        }
+        let remaining = MAX_TERM_BYTES - buffer.len();
+        if text.len() <= remaining {
+            buffer.push_str(text);
+            return;
+        }
+        let mut keep = remaining.saturating_sub(MARKER.len()).min(text.len());
+        while keep > 0 && !text.is_char_boundary(keep) {
+            keep -= 1;
+        }
+        buffer.push_str(&text[..keep]);
+        let marker_room = MAX_TERM_BYTES - buffer.len();
+        buffer.push_str(&MARKER[..MARKER.len().min(marker_room)]);
+    }
+
+    pub(crate) fn append_term(&mut self, text: &str) {
+        Self::append_transcript_bounded(&mut self.term, text);
+    }
+
+    pub(crate) fn append_log(&mut self, text: &str) {
+        Self::append_transcript_bounded(&mut self.log, text);
+    }
+
     pub fn current_line_text(&self) -> String {
         for s in self.input.stack.iter().rev() {
             if let crate::input::Source::File { line_buf, .. } = s {
@@ -319,18 +512,162 @@ impl Engine {
         }
         String::new()
     }
+    fn rss_limit_bytes() -> u64 {
+        if cfg!(test) {
+            return match std::env::var("TEX_MEM_LIMIT_MIB") {
+                Ok(s) => s
+                    .trim()
+                    .parse::<u64>()
+                    .ok()
+                    .map(|m| m.saturating_mul(1 << 20))
+                    .unwrap_or(0),
+                Err(_) => 0,
+            };
+        }
+        match std::env::var("TEX_MEM_LIMIT_MIB") {
+            Ok(s) if s.trim() == "0" => 0,
+            Ok(s) => s
+                .trim()
+                .parse::<u64>()
+                .ok()
+                .map(|m| m.saturating_mul(1 << 20))
+                .unwrap_or(DEFAULT_RSS_LIMIT),
+            Err(_) => DEFAULT_RSS_LIMIT,
+        }
+    }
 
+    fn resident_bytes() -> u64 {
+        let Ok(buf) = std::fs::read_to_string("/proc/self/statm") else {
+            return 0;
+        };
+        let pages = buf
+            .split_whitespace()
+            .nth(1)
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(0);
+        pages.saturating_mul(4096)
+    }
+
+    /// Abort a runaway job before it can OOM the host.
+    pub fn capacity_exceeded(&mut self) -> bool {
+        if self.structural_capacity_exceeded() {
+            return true;
+        }
+        if self.main_steps > MAX_MAIN_STEPS {
+            self.capacity_error(&format!(
+                "TeX capacity exceeded, sorry [main memory steps={}]",
+                MAX_MAIN_STEPS
+            ));
+            return true;
+        }
+        if self.page_list.len() > MAX_PAGE_LIST || self.cur_list.len() > MAX_PAGE_LIST {
+            self.capacity_error("TeX capacity exceeded, sorry [page/list size]");
+            return true;
+        }
+        if self.term.len() > MAX_TERM_BYTES
+            || self.log.len() > MAX_TERM_BYTES
+            || self.diagnostic_output.len() > MAX_TERM_BYTES
+        {
+            self.term.truncate(MAX_TERM_BYTES);
+            self.log.truncate(MAX_TERM_BYTES);
+            self.diagnostic_output.truncate(MAX_TERM_BYTES);
+            self.capacity_error("TeX capacity exceeded, sorry [transcript size]");
+            return true;
+        }
+        let lim = Self::rss_limit_bytes();
+        if lim > 0 && Self::resident_bytes() > lim {
+            self.capacity_error(&format!(
+                "TeX capacity exceeded, sorry [memory {}MiB]",
+                lim >> 20
+            ));
+            return true;
+        }
+        false
+    }
+
+    /// Check limits that can be crossed while fetching or dispatching one
+    /// token. Unlike RSS accounting, these checks are cheap enough to run at
+    /// every main-control boundary.
+    pub(crate) fn structural_capacity_exceeded(&mut self) -> bool {
+        if self.cs.capacity_exceeded() {
+            self.capacity_error(&format!(
+                "TeX capacity exceeded, sorry [hash size={}]",
+                crate::token::MAX_HASH_NAMES
+            ));
+            return true;
+        }
+        if self.eqtb.save_stack_capacity_exceeded() {
+            self.capacity_error(&format!(
+                "TeX capacity exceeded, sorry [save size={}]",
+                crate::eqtb::MAX_SAVE_STACK
+            ));
+            return true;
+        }
+        if self.eqtb.group_level_capacity_exceeded() {
+            self.capacity_error(&format!(
+                "TeX capacity exceeded, sorry [grouping levels={}]",
+                crate::eqtb::MAX_GROUP_LEVEL
+            ));
+            return true;
+        }
+        false
+    }
+
+    /// Set both representations of TeX's interaction mode. The eqtb value is
+    /// exposed as the readable e-TeX \interactionmode parameter.
+    pub fn set_interaction_mode(&mut self, mode: InteractionMode) {
+        self.interaction_mode = mode;
+        self.eqtb.set_runtime_interaction_mode(mode.number());
+    }
+
+    /// Apply a completed \interactionmode assignment at the main-control
+    /// boundary, while its source token is still available for diagnostics.
+    pub(crate) fn apply_pending_interaction_mode(&mut self) {
+        let Some(value) = self.eqtb.take_pending_interaction_mode() else {
+            return;
+        };
+        if let Some(mode) = InteractionMode::from_number(value) {
+            self.interaction_mode = mode;
+        } else {
+            self.error(&format!(
+                "Bad interaction mode ({value}); expected 0 (batch), 1 (nonstop), 2 (scroll), or 3 (error stop)"
+            ));
+        }
+    }
+
+    fn capacity_error(&mut self, msg: &str) {
+        self.fatal_error(msg);
+    }
+    #[inline]
+    pub fn partoken_id(&self) -> CsId {
+        let raw = self.eqtb.int_params[crate::prim::IntParam::PartokenNameCs.idx() as usize];
+        if raw >= 0 && (raw as usize) < self.cs.len() {
+            raw as CsId
+        } else {
+            self.ids.par
+        }
+    }
+
+    #[inline]
+    pub fn is_partoken(&self, t: Token) -> bool {
+        t == crate::input::PAR_END || (t.is_cs() && t.cs_id() == self.partoken_id())
+    }
 
     pub fn new(ini_mode: bool) -> Engine {
         let mut cs = CsTable::new();
         let par = cs.intern(b"par");
         let e = Engine {
-            ids: Ids { par, cs_escape: b'\\' },
+            ids: Ids {
+                par,
+                cs_escape: b'\\',
+            },
             cs,
             eqtb: Eqtb::new(ini_mode),
+            primitive_names: crate::FxHashMap::default(),
             input: InputStack::new(),
             par_saves: 0,
             resume_after_display: false,
+            par_has_display: false,
             par_interrupted: false,
             pending_retokenize: false,
             cur_tok: crate::token::EOF_TOKEN,
@@ -342,13 +679,35 @@ impl Engine {
             cur_list: Vec::new(),
             prev_depth: -1000 * 65536,
             space_factor: 1000,
+            pdf_images: crate::FxHashMap::default(),
+            pdf_xforms: crate::FxHashMap::default(),
+            color_stacks: crate::FxHashMap::default(),
             prev_graf: 0,
             after_token: false,
+            definable_cs_recovery_count: 0,
             ini_mode,
             format_name: String::new(),
             job_name: String::new(),
             halt_on_error: false,
+            interaction_mode: InteractionMode::ErrorStop,
+            max_errors: DEFAULT_MAX_ERRORS,
             error_count: 0,
+            stopped_on_error: false,
+            diagnostics: Vec::new(),
+            diagnostic_output: String::new(),
+            diagnostic_source_override: None,
+            diagnostic_trace_override: None,
+            pending_terminal_error_source: None,
+            diagnostic_macro_trace: Vec::with_capacity(20),
+            diagnostic_token_from_file: false,
+            diagnostic_trace_hold: 0,
+            diagnostic_source_cs: None,
+            diagnostic_physical_source: None,
+            diagnostic_macro_call_site: None,
+            diagnostic_macro_call_span: 1,
+            diagnostic_synthetic_source: None,
+            diagnostic_group_openings: Vec::new(),
+            diagnostic_use_err_help: false,
             write_streams: (0..16).map(|_| None).collect(),
             writebuf: Vec::new(),
             hyphen_trie: crate::hyphen::Trie::new(),
@@ -361,11 +720,18 @@ impl Engine {
             pdf_outlines: Vec::new(),
             job_running: true,
             end_occurred: false,
+            explicit_end_seen: false,
+            main_steps: 0,
+            expansion_steps: 0,
+            expansion_limit: std::env::var("TEX_EXPANSION_LIMIT")
+                .ok()
+                .and_then(|value| value.trim().parse().ok())
+                .unwrap_or(DEFAULT_EXPANSION_LIMIT),
             if_stack: Vec::new(),
+            pending_if_depth: None,
             pushed: Vec::new(),
+            token_vec_pool: Vec::with_capacity(512),
             cur_fill_order: 0,
-            last_macros: std::collections::VecDeque::new(),
-            tok_ring: std::collections::VecDeque::new(),
             def_prefix: Vec::new(),
             global_flag: false,
             long_flag: false,
@@ -373,24 +739,30 @@ impl Engine {
             protected_flag: false,
             expand_protected: 0,
             in_expanded_scan: false,
-            unexp_protect: 0,
+            unexpanded_parameter: false,
             csname_depth: 0,
+            last_macros: std::collections::VecDeque::new(),
+            unexp_protect: 0,
+            tok_ring: std::collections::VecDeque::new(),
 
             no_expand_tok: None,
             align_state: 0,
+            align_macro_arg: false,
             ss_trace: Vec::new(),
             format_done: false,
             trace_ltx: 0,
             pdf_page_attr: String::new(),
+            pdf_page_attr_toks: Vec::new(),
             pdf_pages_attr: String::new(),
+            pdf_pages_attr_toks: Vec::new(),
             pdf_page_resources: Vec::new(),
+            pdf_page_resources_toks: Vec::new(),
             pdf_last_obj: 0,
             pdf_last_xform: 0,
             pdf_last_ximage: 0,
+            pdf_next_obj: 5,
             pdf_last_link: 0,
             pdf_last_annot: 0,
-            pdf_next_obj: 5,
-            left_delim: None,
             right_delim: None,
             setbox_target: None,
             setbox_depth: usize::MAX,
@@ -404,7 +776,9 @@ impl Engine {
             box_targets: Vec::new(),
             box_shifts: Vec::new(),
             box_kinds: Vec::new(),
+            leader_stack: Vec::new(),
             insert_nums: Vec::new(),
+
             shipout_pending: false,
             shipout_depth: usize::MAX,
             par_page_lists: Vec::new(),
@@ -415,36 +789,55 @@ impl Engine {
             main_dir: None,
             job_ended_by_end: false,
             align_preamble: Vec::new(),
+            align_tabskip_0: crate::boxes::Glue::zero(),
             align_loop_start: None,
             align_rows: Vec::new(),
+            align_adjust: Vec::new(),
+            align_row_adjust: Vec::new(),
+            align_cell_toks: Vec::new(),
             align_col_widths: Vec::new(),
             align_cur_row: Vec::new(),
             align_cur_col: 0,
             align_in_noalign: false,
             align_everycr_done: false,
-            align_cell_toks: Vec::new(),
             align_scanning_cell: false,
             align_pushed_base: 0,
+            align_delimiter_balance_base: 0,
+            align_cell_level: 0,
             align_noalign_save_base: 0,
             align_to: None,
+            align_t0: crate::boxes::Glue::zero(),
             align_done: false,
+            align_origin: None,
             in_output: false,
             output_depth: 0,
             output_tail: None,
+            output_nest: None,
             output_pending: false,
             dead_cycles: 0,
             page_prev_depth: -1000 * 65536,
             in_display_init: false,
+            display_halign: None,
             page_total: 0,
             page_depth: 0,
             page_processed: 0,
             page_best_break: None,
+            page_insertions: Vec::new(),
             page_break_penalty: 0,
             page_best_cost: 0,
+            page_best_goal: 0x3FFF_FFFF,
+            page_goal: 0x3FFF_FFFF,
             page_goal_set: false,
+            page_box_seen: false,
             page_stretch: [0; 4],
             page_shrink: [0; 4],
+            last_page_node_type: -1,
+            last_page_penalty: 0,
+            last_page_kern: 0,
+            last_page_glue: None,
             vsplat_remainder: None,
+            pdf_match_subject: Vec::new(),
+            pdf_match_ranges: Vec::new(),
             math_lists: Vec::new(),
             math_penalties: std::cell::Cell::new(false),
             pre_display_size: -0x3FFF_FFFF,
@@ -455,11 +848,7 @@ impl Engine {
             eqno_leqno: None,
             math_group_marks: Vec::new(),
             pre_display_s: 0,
-            gt_steps: 0,
-            rt_steps: 0,
-            mac_depth: 0,
-            current_macro: String::new(),
-            loop_traced: false,
+            current_macro: 0,
             math_style_stack: Vec::new(),
             scanner_status: ScannerStatus::Normal,
             saved_lists: Vec::new(),
@@ -478,8 +867,9 @@ impl Engine {
 
     pub fn init_primitives(&mut self) {
         use Prim::*;
-        let mut def = |name: &[u8], p: Prim, e: &mut Engine| {
+        let def = |name: &'static [u8], p: Prim, e: &mut Engine| {
             let id = e.cs.intern(name);
+            e.primitive_names.entry(p.code()).or_insert(name);
             e.eqtb.assign(id, Equiv::Prim(p), true);
         };
         macro_rules! d {
@@ -489,6 +879,7 @@ impl Engine {
         }
         let eng = self;
         d!(eng, b"relax", Relax);
+        d!(eng, b" ", ExSpace);
         d!(eng, b"expandafter", ExpandAfter);
         d!(eng, b"noexpand", NoExpand);
         d!(eng, b"csname", CsName);
@@ -658,6 +1049,7 @@ impl Engine {
             (b"pdfadjustspacing", IntParam::PdfAdjustSpacing),
             (b"pdfprotrudechars", IntParam::PdfProtrudeChars),
             (b"pdfminorversion", IntParam::PdfMinorVersion),
+            (b"pdfoptionpdfminorversion", IntParam::PdfMinorVersion),
             (b"pdftexversion", IntParam::PdfTexVersion),
             (b"interactionmode", IntParam::InteractionMode),
             (b"currentgrouplevel", IntParam::CurrentGroupLevel),
@@ -669,9 +1061,16 @@ impl Engine {
             (b"savingvdiscards", IntParam::SavingVDiscards),
             (b"tracingnesting", IntParam::TracingNesting),
             (b"pdfobjcompresslevel", IntParam::PdfObjCompressLevel),
+            (b"pdfcompresslevel", IntParam::PdfCompressLevel),
             (b"pdfgentounicode", IntParam::PdfGenToUnicode),
             (b"paperquality", IntParam::PaperQuality),
             (b"globaldefs", IntParam::GlobalDefs),
+            (b"spacefactor", IntParam::SpaceFactor),
+            (b"holdinginserts", IntParam::HoldingInserts),
+            (b"pdfinfoomitdate", IntParam::PdfInfoOmitDate),
+            (b"pdfsuppressptexinfo", IntParam::PdfSuppressPtexInfo),
+            (b"partokencontext", IntParam::PartokenContext),
+            (b"ignoreprimitiveerror", IntParam::IgnorePrimitiveError),
         ];
         for (n, p) in intnames {
             let id = eng.cs.intern(n);
@@ -762,6 +1161,7 @@ impl Engine {
             (b"everyeof", ToksParam::EveryEOF),
             (b"output", ToksParam::Output),
             (b"errhelp", ToksParam::ErrHelp),
+            (b"pdftrailerid", ToksParam::PdfTrailerId),
         ];
         for (n, p) in toksnames {
             let id = eng.cs.intern(n);
@@ -770,6 +1170,10 @@ impl Engine {
         d!(eng, b"font", Font);
         d!(eng, b"fontname", FontName);
         d!(eng, b"fontid", FontIdPrim);
+        d!(eng, b"fontcharwd", FontCharWd);
+        d!(eng, b"fontcharht", FontCharHt);
+        d!(eng, b"fontchardp", FontCharDp);
+        d!(eng, b"fontcharic", FontCharIc);
         d!(eng, b"hskip", HSkip);
         d!(eng, b"vskip", VSkip);
         d!(eng, b"mskip", MSkip);
@@ -784,6 +1188,7 @@ impl Engine {
         d!(eng, b"vfilneg", VFilNeg);
         d!(eng, b"vss", VSS);
         d!(eng, b"kern", Kern);
+        d!(eng, b"/", ItalicCorrection);
         d!(eng, b"mkern", MKern);
         d!(eng, b"moveleft", HMove);
         d!(eng, b"moveright", HMove);
@@ -821,22 +1226,24 @@ impl Engine {
         d!(eng, b"vsplit", VSplit);
         d!(eng, b"penalty", Penalty);
         d!(eng, b"penalties", Penalties);
+        d!(eng, b"discretionary", Discretionary);
         d!(eng, b"insert", Insert);
         d!(eng, b"vadjust", VAdjust);
         d!(eng, b"mark", MarkPrim);
-        d!(eng, b"marks", MarkPrim);
+        d!(eng, b"marks", MarksClass);
         d!(eng, b"topmark", TopMark);
-        d!(eng, b"topmarks", TopMark);
+        d!(eng, b"topmarks", TopMarksClass);
         d!(eng, b"firstmark", FirstMark);
-        d!(eng, b"firstmarks", FirstMark);
+        d!(eng, b"firstmarks", FirstMarksClass);
         d!(eng, b"botmark", BotMark);
-        d!(eng, b"botmarks", BotMark);
+        d!(eng, b"botmarks", BotMarksClass);
         d!(eng, b"splitfirstmark", SplitFirstMark);
-        d!(eng, b"splitfirstmarks", SplitFirstMark);
+        d!(eng, b"splitfirstmarks", SplitFirstMarksClass);
         d!(eng, b"splitbotmark", SplitBotMark);
-        d!(eng, b"splitbotmarks", SplitBotMark);
+        d!(eng, b"splitbotmarks", SplitBotMarksClass);
         d!(eng, b"shipout", ShipOut);
         d!(eng, b"char", Char);
+        d!(eng, b"accent", Accent);
         d!(eng, b"radical", Radical);
         d!(eng, b"delimiter", Delimiter);
         d!(eng, b"eqno", EqNo);
@@ -922,16 +1329,35 @@ impl Engine {
         d!(eng, b"pdflastxpos", PdfLastXPos);
         d!(eng, b"pdflastypos", PdfLastYPos);
         d!(eng, b"pdftexrevision", PdfTexRevision);
+        d!(eng, b"pdfmatch", PdfMatch);
+        d!(eng, b"pdflastmatch", PdfLastMatch);
+        d!(eng, b"nonscript", NonScript);
         d!(eng, b"pdfmapfile", PdfMapFile);
         d!(eng, b"pdfmapline", PdfMapLine);
         d!(eng, b"pdfglyphtounicode", PdfGlyphToUnicode);
         d!(eng, b"pdffontattr", PdfFontAttr);
+        d!(eng, b"pdffontexpand", PdfFontExpand);
+        d!(eng, b"pdfnoligatures", PdfNoLigatures);
+        d!(eng, b"letterspacefont", LetterspaceFont);
+        d!(eng, b"efcode", EfCode);
+        d!(eng, b"lpcode", LpCode);
+        d!(eng, b"rpcode", RpCode);
+        d!(eng, b"leftmarginkern", LeftMarginKern);
+        d!(eng, b"rightmarginkern", RightMarginKern);
+        d!(eng, b"tagcode", TagCode);
+        d!(eng, b"knbscode", KnBsCode);
+        d!(eng, b"stbscode", StBsCode);
+        d!(eng, b"shbscode", ShBsCode);
+        d!(eng, b"knbccode", KnBcCode);
+        d!(eng, b"knaccode", KnAcCode);
+        d!(eng, b"pdffontsize", PdfFontSize);
+        d!(eng, b"pdftexbanner", PdfBanner);
+        d!(eng, b"partokenname", PartokenName);
         d!(eng, b"pdfxform", PdfXForm);
         d!(eng, b"pdfximage", PdfXImage);
         d!(eng, b"pdfrefxform", PdfRefXForm);
         d!(eng, b"pdfrefximage", PdfRefXImage);
         d!(eng, b"pdfpagesattr", PdfPagesAttr);
-        d!(eng, b"pdfcompresslevel", PdfCompressorLevel);
         d!(eng, b"pdfobj", PdfObj);
         d!(eng, b"pdfrefobj", PdfRefObj);
         d!(eng, b"pdfuncompress", PdfUncompress);
@@ -966,17 +1392,26 @@ impl Engine {
             crate::boxes::Glue::fil(crate::boxes::GLUE_FIL, 0);
         eng.eqtb.glue_params[GlueParam::BaselineSkip.idx() as usize] =
             crate::boxes::Glue::new(12 * 65536);
-        eng.eqtb.glue_params[GlueParam::LineSkip.idx() as usize] =
-            crate::boxes::Glue::new(65536);
+        eng.eqtb.glue_params[GlueParam::LineSkip.idx() as usize] = crate::boxes::Glue::new(65536);
         // plain.tex / fontmath.ltx: \thinmuskip=3mu, \medmuskip=4mu plus 2mu
         // minus 4mu, \thickmuskip=5mu plus 5mu — stored mu-denominated
         // (tex.web §431); math_glue converts with the current em at use.
         eng.eqtb.glue_params[GlueParam::ThinMuSkip.idx() as usize] =
             crate::boxes::Glue::new(3 * 65536);
-        eng.eqtb.glue_params[GlueParam::MedMuSkip.idx() as usize] =
-            crate::boxes::Glue { width: 4 * 65536, stretch: 2 * 65536, shrink: 4 * 65536, stretch_order: 0, shrink_order: 0 };
-        eng.eqtb.glue_params[GlueParam::ThickMuSkip.idx() as usize] =
-            crate::boxes::Glue { width: 5 * 65536, stretch: 5 * 65536, shrink: 0, stretch_order: 0, shrink_order: 0 };
+        eng.eqtb.glue_params[GlueParam::MedMuSkip.idx() as usize] = crate::boxes::Glue {
+            width: 4 * 65536,
+            stretch: 2 * 65536,
+            shrink: 4 * 65536,
+            stretch_order: 0,
+            shrink_order: 0,
+        };
+        eng.eqtb.glue_params[GlueParam::ThickMuSkip.idx() as usize] = crate::boxes::Glue {
+            width: 5 * 65536,
+            stretch: 5 * 65536,
+            shrink: 0,
+            stretch_order: 0,
+            shrink_order: 0,
+        };
         eng.eqtb.int_params[IntParam::EndLineChar.idx() as usize] = 13;
         eng.eqtb.int_params[IntParam::EscapeChar.idx() as usize] = 92;
         eng.eqtb.int_params[IntParam::NewLineChar.idx() as usize] = -1;
@@ -996,6 +1431,7 @@ impl Engine {
         eng.eqtb.int_params[IntParam::PdfOutput.idx() as usize] = 1;
         eng.eqtb.int_params[IntParam::EtxVersion.idx() as usize] = 2;
         eng.eqtb.int_params[IntParam::PdfMinorVersion.idx() as usize] = 7;
+        eng.eqtb.int_params[IntParam::PartokenNameCs.idx() as usize] = eng.ids.par as i32;
         // eTeX extended-mode identity (pgf/pgfkeys probe \eTeXrevision).
         // NOTE: XeTeX primitives are deliberately NOT registered: packages
         // (iftex, hyperref, pgf) select the pdfTeX driver only when the
@@ -1006,14 +1442,15 @@ impl Engine {
         let sp_in: i32 = 4736287;
         eng.eqtb.dim_params[DimParam::HSize.idx() as usize] = (sp_in as i64 * 13 / 2) as i32;
         eng.eqtb.dim_params[DimParam::VSize.idx() as usize] = (sp_in as i64 * 89 / 10) as i32;
-        // pdfTeX driver defaults: origin 1in from the page corner, US-letter
-        // page geometry (geometry.sty overrides via \pdfpagewidth assignment)
+        // pdfTeX INITEX defaults: the origin is one inch, while the page
+        // dimensions remain unset until the format's pdftexconfig.tex runs.
         eng.eqtb.dim_params[DimParam::PdfHOrigin.idx() as usize] = sp_in;
         eng.eqtb.dim_params[DimParam::PdfVOrigin.idx() as usize] = sp_in;
-        eng.eqtb.dim_params[DimParam::PdfPageWidth.idx() as usize] = (sp_in as i64 * 17 / 2) as i32;
-        eng.eqtb.dim_params[DimParam::PdfPageHeight.idx() as usize] = (sp_in as i64 * 11) as i32;
+        eng.eqtb.dim_params[DimParam::PdfPageWidth.idx() as usize] = 0;
+        eng.eqtb.dim_params[DimParam::PdfPageHeight.idx() as usize] = 0;
     }
     pub fn pop_group(&mut self) -> crate::eqtb::LevelType {
+        let closing_level = self.eqtb.cur_level;
         let mut ag = Vec::new();
         let mut ps = None;
         let ty = self.eqtb.pop_level_full(&mut ag, &mut ps);
@@ -1027,6 +1464,7 @@ impl Engine {
             }
         }
         self.pushed.extend(ag);
+        self.forget_group_opening(closing_level);
         ty
     }
 
@@ -1035,9 +1473,6 @@ impl Engine {
     /// paragraph clear is local too, so LaTeX's `{\@@par}` list wrapper rolls
     /// it back and the shape persists across items
     pub fn assign_par_shape(&mut self, new: Vec<(i32, i32)>, global: bool) {
-        if crate::debug_flag("SHAPE") {
-            eprintln!("ASSIGN-SHAPE n={} lvl={} cur_shape_lvl={} stack={} line={}", new.len(), self.eqtb.cur_level, self.par_shape_level, self.eqtb.save_stack.len(), self.input.current_file_line());
-        }
         if global {
             self.par_shape = new;
             self.par_shape_level = crate::eqtb::LEVEL_ONE;
@@ -1059,8 +1494,12 @@ impl Engine {
     /// \shipout\vbox{\setbox...} cannot clobber the outer target. The
     /// pending \global prefix travels with the target.
     pub fn park_setbox(&mut self, idx: u16) {
-        let g = std::mem::take(&mut self.global_flag);
-        self.setbox_stack.push((self.setbox_target.take(), self.setbox_depth, self.setbox_global));
+        let g = self.take_global();
+        self.setbox_stack.push((
+            self.setbox_target.take(),
+            self.setbox_depth,
+            self.setbox_global,
+        ));
         self.setbox_target = Some(idx);
         self.setbox_depth = self.box_kinds.len();
         self.setbox_global = g;
@@ -1083,5 +1522,204 @@ impl Engine {
         if let Some(t) = self.after_assignment.take() {
             self.pushed.push(t);
         }
+    }
+    #[inline]
+    pub fn is_right_brace(&self, t: Token) -> bool {
+        if t.is_char() {
+            t.cc() == 2
+        } else if t.is_cs() {
+            matches!(
+                self.eqtb.resolve(t.cs_id()),
+                Some(crate::eqtb::Equiv::Prim(crate::prim::Prim::EGroup))
+            ) || matches!(
+                self.eqtb.resolve(t.cs_id()),
+                Some(crate::eqtb::Equiv::CharTok(v)) if Token(*v).cc() == 2
+            )
+        } else {
+            false
+        }
+    }
+    #[inline]
+    pub fn is_left_brace(&self, t: Token) -> bool {
+        if t.is_char() {
+            t.cc() == 1
+        } else if t.is_cs() {
+            matches!(
+                self.eqtb.resolve(t.cs_id()),
+                Some(crate::eqtb::Equiv::Prim(crate::prim::Prim::BGroup))
+            ) || matches!(
+                self.eqtb.resolve(t.cs_id()),
+                Some(crate::eqtb::Equiv::CharTok(v)) if Token(*v).cc() == 1
+            )
+        } else {
+            false
+        }
+    }
+    /// tex.web page_contents == empty: true when no box or rule has been contributed to the current page.
+    #[inline]
+    pub fn page_contents_empty(&self) -> bool {
+        !self.page_list.iter().any(|n| {
+            matches!(
+                n,
+                crate::boxes::Node::Box { .. } | crate::boxes::Node::Rule { .. }
+            )
+        })
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct PdfImageInfo {
+    pub path: String,
+    pub used: bool,
+    pub width: i32,
+    pub height: i32,
+    pub depth: i32,
+    /// true when the file was imported as a PDF Form XObject during scan:
+    /// the image bytes are already embedded, so shipping must not re-read it.
+    pub embedded: bool,
+}
+#[cfg(test)]
+mod capacity_tests {
+    use super::*;
+
+    #[test]
+    fn interaction_mode_parameter_updates_the_runtime_mode_for_all_valid_values() {
+        for (value, expected) in [
+            (0, InteractionMode::Batch),
+            (1, InteractionMode::Nonstop),
+            (2, InteractionMode::Scroll),
+            (3, InteractionMode::ErrorStop),
+        ] {
+            let mut eng = Engine::new(false);
+            eng.init_primitives();
+            eng.set_interaction_mode(InteractionMode::Nonstop);
+            eng.input.push_file(
+                "mode.tex".to_string(),
+                format!("\\interactionmode={value}\\end\n").into_bytes(),
+            );
+
+            eng.run();
+
+            assert_eq!(eng.interaction_mode, expected, "value={value}");
+            assert_eq!(
+                eng.eqtb.int_params[IntParam::InteractionMode.idx() as usize],
+                value,
+                "value={value}"
+            );
+            assert_eq!(eng.error_count, 0, "value={value}: {}", eng.term);
+        }
+    }
+
+    #[test]
+    fn invalid_interaction_mode_is_a_located_error_and_keeps_the_current_mode() {
+        let mut eng = Engine::new(false);
+        eng.init_primitives();
+        eng.set_interaction_mode(InteractionMode::Nonstop);
+        eng.input.push_file(
+            "bad-mode.tex".to_string(),
+            b"\\interactionmode=9\\relax\\end\n".to_vec(),
+        );
+
+        eng.run();
+
+        assert_eq!(eng.interaction_mode, InteractionMode::Nonstop);
+        assert_eq!(
+            eng.eqtb.int_params[IntParam::InteractionMode.idx() as usize],
+            1
+        );
+        assert_eq!(eng.error_count, 1, "{}", eng.term);
+        let diagnostic = eng.diagnostics.last().expect("interaction diagnostic");
+        assert_eq!(
+            diagnostic.message,
+            "Bad interaction mode (9); expected 0 (batch), 1 (nonstop), 2 (scroll), or 3 (error stop)"
+        );
+        let primary = diagnostic.primary.as_ref().expect("source location");
+        assert_eq!(primary.name, "bad-mode.tex");
+        assert_eq!(primary.line, 1);
+    }
+
+    #[test]
+    fn maximum_group_nesting_becomes_a_located_capacity_diagnostic() {
+        let mut eng = Engine::new(false);
+        eng.init_primitives();
+        eng.set_interaction_mode(InteractionMode::Nonstop);
+        eng.input.push_file(
+            "groups.tex".to_string(),
+            vec![b'{'; crate::eqtb::MAX_GROUP_LEVEL as usize],
+        );
+
+        eng.run();
+
+        assert_eq!(eng.eqtb.cur_level, crate::eqtb::MAX_GROUP_LEVEL);
+        assert!(eng.stopped_on_error);
+        assert_eq!(eng.error_count, 1, "{}", eng.term);
+        let diagnostic = eng.diagnostics.last().expect("capacity diagnostic");
+        assert_eq!(
+            diagnostic.message,
+            "TeX capacity exceeded, sorry [grouping levels=65535]"
+        );
+        let primary = diagnostic.primary.as_ref().expect("source location");
+        assert_eq!(primary.name, "groups.tex");
+        assert_eq!(primary.line, 1);
+        assert_eq!(primary.column, crate::eqtb::MAX_GROUP_LEVEL as usize);
+    }
+
+    #[test]
+    fn hash_limit_becomes_a_fatal_engine_diagnostic() {
+        let mut eng = Engine::new(true);
+        eng.init_primitives();
+        eng.cs.force_capacity_exceeded_for_test();
+
+        assert!(eng.structural_capacity_exceeded());
+        assert!(eng.stopped_on_error);
+        assert!(eng.end_occurred);
+        assert_eq!(
+            eng.diagnostics
+                .last()
+                .map(|diagnostic| diagnostic.message.as_str()),
+            Some("TeX capacity exceeded, sorry [hash size=2097152]")
+        );
+    }
+
+    #[test]
+    fn save_stack_limit_becomes_a_fatal_engine_diagnostic() {
+        let mut eng = Engine::new(true);
+        eng.init_primitives();
+        eng.eqtb.save_stack.resize(
+            crate::eqtb::MAX_SAVE_STACK,
+            crate::eqtb::SaveItem::AfterGroup(Token::space()),
+        );
+        eng.eqtb
+            .push_save(crate::eqtb::SaveItem::AfterGroup(Token::letter(b'x')));
+
+        assert!(eng.structural_capacity_exceeded());
+        assert!(eng.stopped_on_error);
+        assert!(eng.end_occurred);
+        assert_eq!(
+            eng.diagnostics
+                .last()
+                .map(|diagnostic| diagnostic.message.as_str()),
+            Some("TeX capacity exceeded, sorry [save size=100000]")
+        );
+    }
+
+    #[test]
+    fn step_limit_aborts() {
+        let mut eng = Engine::new(true);
+        eng.init_primitives();
+        eng.main_steps = MAX_MAIN_STEPS + 1;
+        assert!(eng.capacity_exceeded());
+        assert!(eng.end_occurred);
+        assert!(eng.error_count > 0);
+    }
+
+    #[test]
+    fn page_list_limit_aborts() {
+        let mut eng = Engine::new(true);
+        eng.init_primitives();
+        eng.page_list
+            .resize(MAX_PAGE_LIST + 1, crate::boxes::Node::Penalty(0));
+        assert!(eng.capacity_exceeded());
+        assert!(eng.end_occurred);
     }
 }

@@ -1,10 +1,9 @@
 //! Tokens, control-sequence interning, and catcode tables.
 
-use std::collections::HashMap;
-
 /// Packed token. Char tokens: (cc<<24)|char  (cc<16, char<0x110000 for xetex; bytex char<256).
 /// CS tokens: 0x8000_0000 | cs_id.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, PartialOrd, Ord)]
+#[repr(transparent)]
 pub struct Token(pub u32);
 
 pub const EOF_TOKEN: Token = Token(0xFFFF_FFFF);
@@ -12,13 +11,14 @@ pub const EOF_TOKEN: Token = Token(0xFFFF_FFFF);
 impl Token {
     #[inline]
     pub fn is_cs(&self) -> bool {
-        self.0 >= 0x8000_0000
+        self.0 >= 0x8000_0000 && self.0 < 0xFFFF_0000
     }
     #[inline]
     pub fn cs_id(&self) -> u32 {
-        // 0x8000_0000 | id  (plain CS) and 0xC000_0000 | id (\\noexpand)
-        // must resolve to the same intern id. Keep only the low 30 bits.
-        self.0 & 0x3FFF_FFFF
+        // 0x8000_0000 | id (plain CS), 0xC000_0000 | id (\noexpand),
+        // and 0xE000_0000 | id (\unexpanded) must all resolve to the same
+        // intern id. Mask off bits 31, 30, and 29.
+        self.0 & 0x1FFF_FFFF
     }
     #[inline]
     pub fn from_cs(cs: u32) -> Token {
@@ -66,37 +66,64 @@ impl Token {
     pub fn is_left_brace(&self) -> bool {
         self.is_char() && self.cc() == 1
     }
-    /// Drop a one-shot \\noexpand freeze. Knuth's dont_expand lives only in
-    /// the input stream; macro bodies must store ordinary CS tokens.
+    /// Drop one-shot expansion guards. Control sequences use the high-bit
+    /// noexpand encoding; parameter characters use bit 28 so their literal
+    /// identity survives macro argument scanning without a global counter.
     #[inline]
     pub fn unfreeze(self) -> Token {
-        if self.0 >= 0xC000_0000 && self.0 < 0xFFFF_0000 {
-            Token::from_cs(self.cs_id())
+        if self.0 >= 0xE000_0000 && self.0 < 0xFFFF_0000 {
+            // \unexpanded control-sequence marker: bit 29 is part of the
+            // marker, not the interned control-sequence id.
+            Token::from_cs(self.0 & 0x1FFF_FFFF)
+        } else if self.0 >= 0xC000_0000 && self.0 < 0xE000_0000 {
+            Token::from_cs(self.0 & 0x3FFF_FFFF)
+        } else if self.0 >= 0x1000_0000 && self.0 < 0x2000_0000 {
+            Token(self.0 & !0x1000_0000)
         } else {
             self
         }
     }
-
 }
 
 pub type CsId = u32;
 
+pub const MAX_HASH_NAMES: usize = 2_097_152;
+
 /// Interning table for control sequence names (byte strings).
 pub struct CsTable {
     names: Vec<Vec<u8>>,
-    map: HashMap<Vec<u8>, CsId>,
+    map: crate::FxHashMap<Vec<u8>, CsId>,
+    capacity_exceeded: bool,
     /// pre-created ids for names needed internally
-    pub prim_ids: HashMap<&'static str, CsId>,
+    pub prim_ids: crate::FxHashMap<&'static str, CsId>,
 }
 
 impl CsTable {
     pub fn new() -> Self {
-        CsTable { names: Vec::new(), map: HashMap::new(), prim_ids: HashMap::new() }
+        CsTable {
+            names: Vec::new(),
+            map: crate::FxHashMap::default(),
+            capacity_exceeded: false,
+            prim_ids: crate::FxHashMap::default(),
+        }
     }
 
     pub fn intern(&mut self, name: &[u8]) -> CsId {
+        self.intern_with_limit(name, MAX_HASH_NAMES)
+    }
+
+    fn intern_with_limit(&mut self, name: &[u8], limit: usize) -> CsId {
         if let Some(&id) = self.map.get(name) {
             return id;
+        }
+        // Main control reports the latched error at its next safe boundary.
+        // Until then, reuse the one valid overflow id so an expandable scan
+        // cannot allocate an unbounded number of additional names.
+        if self.capacity_exceeded {
+            return self.names.len().saturating_sub(1) as CsId;
+        }
+        if self.names.len() >= limit {
+            self.capacity_exceeded = true;
         }
         let id = self.names.len() as CsId;
         self.names.push(name.to_vec());
@@ -104,20 +131,55 @@ impl CsTable {
         id
     }
 
+    /// The table deliberately accepts the first entry beyond TeX's logical
+    /// limit. This keeps the returned id valid until the engine reaches its
+    /// next safe diagnostic boundary instead of panicking inside tokenization.
+    #[inline]
+    pub(crate) fn capacity_exceeded(&self) -> bool {
+        self.capacity_exceeded
+    }
+
+    #[cfg(test)]
+    pub(crate) fn force_capacity_exceeded_for_test(&mut self) {
+        self.capacity_exceeded = true;
+    }
+
     pub fn lookup(&self, name: &[u8]) -> Option<CsId> {
         self.map.get(name).copied()
     }
 
     pub fn name(&self, id: CsId) -> &[u8] {
-        self.names.get(id as usize).map(|v| v.as_slice()).unwrap_or(b"??")
+        self.names
+            .get(id as usize)
+            .map(|v| v.as_slice())
+            .unwrap_or(b"??")
     }
-
     pub fn len(&self) -> usize {
         self.names.len()
     }
 
     pub fn all_ids(&self) -> impl Iterator<Item = CsId> {
         0..self.names.len() as CsId
+    }
+}
+
+#[cfg(test)]
+mod capacity_tests {
+    use super::CsTable;
+
+    #[test]
+    fn interning_past_a_logical_limit_keeps_the_new_id_valid() {
+        let mut table = CsTable::new();
+        assert_eq!(table.intern_with_limit(b"first", 1), 0);
+        let overflow = table.intern_with_limit(b"second", 1);
+        let repeated_overflow = table.intern_with_limit(b"third", 1);
+
+        assert!(table.capacity_exceeded());
+        assert_eq!(table.lookup(b"second"), Some(overflow));
+        assert_eq!(table.name(overflow), b"second");
+        assert_eq!(repeated_overflow, overflow);
+        assert_eq!(table.len(), 2);
+        assert_eq!(table.lookup(b"third"), None);
     }
 }
 
@@ -152,14 +214,7 @@ impl CatTable {
         t[b'\r' as usize] = CAT_EOL;
         t[b' ' as usize] = CAT_SPACE;
         t[b'%' as usize] = CAT_COMMENT;
-        t[b'^' as usize] = CAT_SUPER;
-        // tex.web §1252 INITEX defaults for the remaining specials
-        t[b'{' as usize] = CAT_BGROUP;
-        t[b'}' as usize] = CAT_EGROUP;
-        t[b'$' as usize] = CAT_MATH;
-        t[b'&' as usize] = CAT_ALIGN;
-        t[b'#' as usize] = CAT_PARAM;
-        t[b'_' as usize] = CAT_SUB;
+        // Knuth tex.web §232: specials ({}, $, &, #, ^, _) are other_char in INITEX
         t[0x7F] = CAT_INVALID;
         for c in b'a'..=b'z' {
             t[c as usize] = CAT_LETTER;

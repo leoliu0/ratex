@@ -230,3 +230,24 @@ Follow-up batch file touches: scan.rs (scaled_to_string only), fontload.rs
 (do_font name/keyword scan), maincontrol.rs (MathChoice + TextFont arms),
 math.rs (begin_mathchoice + MathCharDef intercept in run_math_token).
 tfm.rs untouched (no bug). cargo check -p tex-core: 0 errors.
+
+## Style and display-spacing corrections (2026-09-12)
+
+- Operator limit placement is resolved in the conversion style, including
+  fraction denominators, trailing directives, and directives between scripts.
+- Delimiter lookup uses direct text/script/scriptscript font-table indices.
+- Display interline glue retains baseline/lineskip stretch and shrink.
+  A stretched 80pt vbox now places its equation at the same vertical coordinate
+  as pdfTeX; previously the equation was 24.44bp too high.
+- Verification: 42 math-layout tests pass; a numbered REVTeX equation retains
+  both formula and tag in the rendered PDF.
+
+## Scripts on accented characters (2026-09-12)
+
+- Scripts on a single-character accent attach to the character before the
+  accent is positioned. They no longer clear the taller accent glyph.
+- `\hat\beta_p^{\rm PR}` now measures 9.58334pt / 3.83327pt / 17.86461pt
+  (height / depth / width), matching pdfTeX; height was 11.89449pt.
+- CLI comparisons match pdfTeX for bare and braced characters, grouped accents,
+  compound nuclei, already-scripted nuclei, and `\tilde g_r^t`.
+- `accent_scripts_swap` protects the character/script placement regression.

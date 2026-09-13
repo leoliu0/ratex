@@ -8,6 +8,13 @@ name = "pdflatex"
 path = "src/bin/pdflatex.rs"
 
 [[bin]]
+name = "xelatex"
+path = "src/bin/xelatex.rs"
+
+[[bin]]
+name = "lualatex"
+path = "src/bin/lualatex.rs"
+[[bin]]
 name = "tex-bibtex"
 path = "src/bin/bibtex.rs"
 
@@ -16,5 +23,8 @@ name = "texmk"
 path = "src/bin/texmk.rs"
 
 [dependencies]
+mimalloc = "0.1.52"
+libmimalloc-sys = "0.1.49"
+libc = { workspace = true }
 tex-core = { path = "../tex-core" }
 tex-kpse = { path = "../tex-kpse" }

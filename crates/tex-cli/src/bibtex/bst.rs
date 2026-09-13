@@ -40,6 +40,10 @@ pub struct BstProgram {
     pub cmds: Vec<BstCmd>,
 }
 
+fn is_bst_id_char(c: u8) -> bool {
+    c.is_ascii_alphanumeric() || matches!(c, b'.' | b'_' | b'$' | b'-' | b'+' | b'*')
+}
+
 struct Lexer<'a> {
     src: &'a [u8],
     pos: usize,
@@ -47,7 +51,10 @@ struct Lexer<'a> {
 
 impl<'a> Lexer<'a> {
     fn new(src: &'a str) -> Self {
-        Lexer { src: src.as_bytes(), pos: 0 }
+        Lexer {
+            src: src.as_bytes(),
+            pos: 0,
+        }
     }
 
     fn skip_ws(&mut self) {
@@ -88,6 +95,12 @@ impl<'a> Lexer<'a> {
                         return Err("unterminated string literal in .bst group".into());
                     }
                 }
+                b'%' => {
+                    while self.pos < self.src.len() && self.src[self.pos] != b'\n' {
+                        self.pos += 1;
+                    }
+                    continue;
+                }
                 b'{' => depth += 1,
                 b'}' => {
                     depth -= 1;
@@ -105,12 +118,12 @@ impl<'a> Lexer<'a> {
     }
 
     /// Read a bare identifier (command name, function name).
+    /// bibtex.web id_class: letters, digits, and `. $ _ + - * : / ^`.
     fn ident(&mut self) -> Option<String> {
         self.skip_ws();
         let start = self.pos;
         while self.pos < self.src.len() {
-            let c = self.src[self.pos];
-            if c.is_ascii_alphanumeric() || c == b'.' || c == b'_' || c == b'$' {
+            if is_bst_id_char(self.src[self.pos]) {
                 self.pos += 1;
             } else {
                 break;
@@ -172,14 +185,15 @@ impl<'a> Lexer<'a> {
                 if j == start {
                     return Err("'#' not followed by a number".into());
                 }
-                toks.push(Tok::Int(src[start..j].parse::<i64>().map_err(|e| e.to_string())?));
+                toks.push(Tok::Int(
+                    src[start..j].parse::<i64>().map_err(|e| e.to_string())?,
+                ));
                 *i = j;
             } else if c == b'\'' {
                 let start = *i + 1;
                 let mut j = start;
                 while j < b.len() {
-                    let ch = b[j];
-                    if ch.is_ascii_alphanumeric() || ch == b'.' || ch == b'_' || ch == b'$' {
+                    if is_bst_id_char(b[j]) {
                         j += 1;
                     } else {
                         break;

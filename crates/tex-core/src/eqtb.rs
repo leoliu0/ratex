@@ -6,7 +6,6 @@
 //! below the current level pushes an undo record `(old value, old level)`;
 //! group close (`pop_level`) applies undo records back to the boundary.
 
-use std::collections::HashMap;
 use std::rc::Rc;
 
 use crate::boxes::{Glue, Node};
@@ -15,7 +14,9 @@ use crate::tfm::Font;
 use crate::token::{CsId, Token};
 
 pub const LEVEL_ONE: u16 = 1;
-pub const NUM_REGISTERS: usize = 512;
+pub const MAX_GROUP_LEVEL: u16 = u16::MAX;
+pub const NUM_REGISTERS: usize = 32768;
+pub const MAX_SAVE_STACK: usize = 100_000;
 
 /// What a control sequence can mean.
 #[derive(Clone, Debug)]
@@ -61,14 +62,83 @@ impl Equiv {
 #[derive(Clone, Debug)]
 pub struct Macro {
     pub num_params: u8,
+    pub has_param_refs: bool,
     /// delimiter token lists per parameter (empty vec = undelimited)
     pub params: Vec<Vec<Token>>,
     /// parameter text before the first # (matched literally, discarded)
     pub prefix: Vec<Token>,
-    pub body: Vec<Token>,
+    pub body: Rc<[Token]>,
     pub long: bool,
     pub outer: bool,
     pub protected: bool,
+    /// Derived replacement plan; excluded from format serialization and \ifx.
+    pub replacement: std::cell::RefCell<Option<MacroReplacement>>,
+}
+
+#[derive(Clone, Debug)]
+pub struct MacroReplacement {
+    body: Rc<[Token]>,
+    references: Vec<(usize, usize)>,
+}
+
+impl Macro {
+    pub(crate) fn append_replacement(
+        &self,
+        args: &[smallvec::SmallVec<[Token; 16]>],
+        output: &mut Vec<Token>,
+        limit: usize,
+    ) -> bool {
+        let mut cached = self.replacement.borrow_mut();
+        if cached
+            .as_ref()
+            .is_none_or(|plan| !Rc::ptr_eq(&plan.body, &self.body))
+        {
+            let references = self
+                .body
+                .iter()
+                .enumerate()
+                .filter_map(|(position, token)| {
+                    (0x4000_0001..0x8000_0000)
+                        .contains(&token.0)
+                        .then_some((position, (token.0 & 0x3FFF_FFFF).wrapping_sub(1) as usize))
+                })
+                .collect();
+            *cached = Some(MacroReplacement {
+                body: self.body.clone(),
+                references,
+            });
+        }
+        let plan = cached.as_ref().unwrap();
+        let mut length = self.body.len();
+        for &(_, parameter) in &plan.references {
+            if let Some(arg) = args.get(parameter) {
+                let Some(next) = length
+                    .checked_sub(1)
+                    .and_then(|length| length.checked_add(arg.len()))
+                else {
+                    return false;
+                };
+                if next > limit {
+                    return false;
+                }
+                length = next;
+            }
+        }
+        if length > limit {
+            return false;
+        }
+        output.reserve(length);
+        let mut start = 0;
+        for &(position, parameter) in &plan.references {
+            if let Some(arg) = args.get(parameter) {
+                output.extend_from_slice(&self.body[start..position]);
+                output.extend_from_slice(arg);
+                start = position + 1;
+            }
+        }
+        output.extend_from_slice(&self.body[start..]);
+        true
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -81,8 +151,6 @@ pub enum LevelType {
     NoLine,
     Balanced,
 }
-
-
 
 #[derive(Clone, Debug)]
 pub enum SaveItem {
@@ -114,6 +182,12 @@ pub enum SaveItem {
     /// engine-side \parshape value before a local assignment/clear
     /// (tex.web level-tracks par_shape_ptr through eq_define)
     ParShape(Vec<(i32, i32)>, u16),
+    /// pdfTeX stores \pdfpageattr / \pdfpagesattr / \pdfpageresources as
+    /// eqtb token-list variables: a local assignment pushes the previous
+    /// tokens + level here and \endgroup rolls it back (otherwise a
+    /// landscape \pdfpageattr{/Rotate 90} leaks to every later page).
+    /// kind: 0 = pageattr, 1 = pagesattr, 2 = pageresources.
+    PdfPageVar(u8, Rc<Vec<Token>>, u16),
     AfterGroup(Token),
 }
 
@@ -127,6 +201,8 @@ pub struct Eqtb {
     entries: Vec<EqEntry>,
     pub save_stack: Vec<SaveItem>,
     pub cur_level: u16,
+    group_level_capacity_exceeded: bool,
+    pending_interaction_mode: Option<i32>,
 
     /// tex.web cur_font_loc: current font, group-scoped via SaveItem::CurFont
     pub cur_font_val: u16,
@@ -180,8 +256,170 @@ pub struct Eqtb {
     pub skew_char_levels: Vec<u16>,
     /// control sequence each font was loaded as (\the\font)
     pub font_cs: Vec<CsId>,
+    /// pdfTeX per-font expansion/letterspacing state (pdffontexpand,
+    /// efcode/lpcode/rpcode/tagcode/kn*code, stretch/shrink font links).
+    pub expand: Vec<FontExpand>,
 }
 
+/// The eight shared per-font code tables (`pdf_font_*_base` pointers),
+/// cloned as a unit when an expanded variant aliases its base font.
+pub type CodeTables = (
+    Option<Rc<std::cell::RefCell<[i32; 256]>>>,
+    Option<Rc<std::cell::RefCell<[i32; 256]>>>,
+    Option<Rc<std::cell::RefCell<[i32; 256]>>>,
+    Option<Rc<std::cell::RefCell<[i32; 256]>>>,
+    Option<Rc<std::cell::RefCell<[i32; 256]>>>,
+    Option<Rc<std::cell::RefCell<[i32; 256]>>>,
+    Option<Rc<std::cell::RefCell<[i32; 256]>>>,
+    Option<Rc<std::cell::RefCell<[i32; 256]>>>,
+);
+
+#[derive(Clone)]
+pub struct FontExpand {
+    pub step: i32,
+    pub auto_expand: bool,
+    pub stretch: u16,
+    pub shrink: u16,
+    pub elink: u16,
+    pub blink: u16,
+    pub ratio: i32,
+    pub ef: Option<Rc<std::cell::RefCell<[i32; 256]>>>,
+    pub lp: Option<Rc<std::cell::RefCell<[i32; 256]>>>,
+    pub rp: Option<Rc<std::cell::RefCell<[i32; 256]>>>,
+    pub kn_bs: Option<Rc<std::cell::RefCell<[i32; 256]>>>,
+    pub st_bs: Option<Rc<std::cell::RefCell<[i32; 256]>>>,
+    pub sh_bs: Option<Rc<std::cell::RefCell<[i32; 256]>>>,
+    pub kn_bc: Option<Rc<std::cell::RefCell<[i32; 256]>>>,
+    pub kn_ac: Option<Rc<std::cell::RefCell<[i32; 256]>>>,
+}
+
+impl Default for FontExpand {
+    fn default() -> Self {
+        FontExpand {
+            step: 0,
+            auto_expand: false,
+            stretch: 0,
+            shrink: 0,
+            elink: 0,
+            blink: 0,
+            ratio: 0,
+            ef: None,
+            lp: None,
+            rp: None,
+            kn_bs: None,
+            st_bs: None,
+            sh_bs: None,
+            kn_bc: None,
+            kn_ac: None,
+        }
+    }
+}
+
+impl FontExpand {
+    #[inline]
+    pub fn ef_code(&self, c: u8) -> i32 {
+        self.ef.as_ref().map_or(1000, |t| t.borrow()[c as usize])
+    }
+    #[inline]
+    pub fn lp_code(&self, c: u8) -> i32 {
+        self.lp.as_ref().map_or(0, |t| t.borrow()[c as usize])
+    }
+    #[inline]
+    pub fn rp_code(&self, c: u8) -> i32 {
+        self.rp.as_ref().map_or(0, |t| t.borrow()[c as usize])
+    }
+    #[inline]
+    pub fn kn_bs_code(&self, c: u8) -> i32 {
+        self.kn_bs.as_ref().map_or(0, |t| t.borrow()[c as usize])
+    }
+    #[inline]
+    pub fn st_bs_code(&self, c: u8) -> i32 {
+        self.st_bs.as_ref().map_or(0, |t| t.borrow()[c as usize])
+    }
+    #[inline]
+    pub fn sh_bs_code(&self, c: u8) -> i32 {
+        self.sh_bs.as_ref().map_or(0, |t| t.borrow()[c as usize])
+    }
+    #[inline]
+    pub fn kn_bc_code(&self, c: u8) -> i32 {
+        self.kn_bc.as_ref().map_or(0, |t| t.borrow()[c as usize])
+    }
+    #[inline]
+    pub fn kn_ac_code(&self, c: u8) -> i32 {
+        self.kn_ac.as_ref().map_or(0, |t| t.borrow()[c as usize])
+    }
+    pub fn set_ef_code(&mut self, c: u8, v: i32) {
+        let t = self
+            .ef
+            .get_or_insert_with(|| Rc::new(std::cell::RefCell::new([1000i32; 256])));
+        t.borrow_mut()[c as usize] = v.clamp(0, 1000);
+    }
+    pub fn set_lp_code(&mut self, c: u8, v: i32) {
+        let t = self
+            .lp
+            .get_or_insert_with(|| Rc::new(std::cell::RefCell::new([0i32; 256])));
+        t.borrow_mut()[c as usize] = v.clamp(-1000, 1000);
+    }
+    pub fn set_rp_code(&mut self, c: u8, v: i32) {
+        let t = self
+            .rp
+            .get_or_insert_with(|| Rc::new(std::cell::RefCell::new([0i32; 256])));
+        t.borrow_mut()[c as usize] = v.clamp(-1000, 1000);
+    }
+    pub fn set_kn_bs_code(&mut self, c: u8, v: i32) {
+        let t = self
+            .kn_bs
+            .get_or_insert_with(|| Rc::new(std::cell::RefCell::new([0i32; 256])));
+        t.borrow_mut()[c as usize] = v.clamp(-1000, 1000);
+    }
+    pub fn set_st_bs_code(&mut self, c: u8, v: i32) {
+        let t = self
+            .st_bs
+            .get_or_insert_with(|| Rc::new(std::cell::RefCell::new([0i32; 256])));
+        t.borrow_mut()[c as usize] = v.clamp(-1000, 1000);
+    }
+    pub fn set_sh_bs_code(&mut self, c: u8, v: i32) {
+        let t = self
+            .sh_bs
+            .get_or_insert_with(|| Rc::new(std::cell::RefCell::new([0i32; 256])));
+        t.borrow_mut()[c as usize] = v.clamp(-1000, 1000);
+    }
+    pub fn set_kn_bc_code(&mut self, c: u8, v: i32) {
+        let t = self
+            .kn_bc
+            .get_or_insert_with(|| Rc::new(std::cell::RefCell::new([0i32; 256])));
+        t.borrow_mut()[c as usize] = v.clamp(-1000, 1000);
+    }
+    pub fn set_kn_ac_code(&mut self, c: u8, v: i32) {
+        let t = self
+            .kn_ac
+            .get_or_insert_with(|| Rc::new(std::cell::RefCell::new([0i32; 256])));
+        t.borrow_mut()[c as usize] = v.clamp(-1000, 1000);
+    }
+    pub fn clone_tables(x: &FontExpand) -> CodeTables {
+        (
+            x.ef.clone(),
+            x.lp.clone(),
+            x.rp.clone(),
+            x.kn_bs.clone(),
+            x.st_bs.clone(),
+            x.sh_bs.clone(),
+            x.kn_bc.clone(),
+            x.kn_ac.clone(),
+        )
+    }
+    pub fn set_shared_tables(&mut self, t: CodeTables) {
+        let (ef, lp, rp, kn_bs, st_bs, sh_bs, kn_bc, kn_ac) = t;
+        self.ef = ef;
+        self.lp = lp;
+        self.rp = rp;
+        self.kn_bs = kn_bs;
+        self.st_bs = st_bs;
+        self.sh_bs = sh_bs;
+        self.kn_bc = kn_bc;
+        self.kn_ac = kn_ac;
+    }
+}
 /// 27-bit delcode layout: small_fam<<20 | small_char<<12 | big_fam<<8 | big_char
 pub fn make_del_code(small_fam: u32, small_char: u32, big_fam: u32, big_char: u32) -> i32 {
     ((small_fam << 20) | (small_char << 12) | (big_fam << 8) | big_char) as i32
@@ -239,12 +477,18 @@ impl Eqtb {
             uc_code[c as usize] = c;
             sf_code[c as usize] = 999;
         }
+        let mut int_params = vec![0; crate::prim::NUM_INT_PARAMS];
+        // e-TeX's \interactionmode mirrors TeX's runtime interaction state.
+        // A fresh engine starts in error-stop mode (numeric value 3).
+        int_params[IntParam::InteractionMode.idx() as usize] = 3;
         Eqtb {
             entries: Vec::new(),
             save_stack: Vec::new(),
             cur_level: LEVEL_ONE,
+            group_level_capacity_exceeded: false,
+            pending_interaction_mode: None,
             cur_font_val: 0,
-            int_params: vec![0; crate::prim::NUM_INT_PARAMS],
+            int_params,
             int_levels: vec![LEVEL_ONE; crate::prim::NUM_INT_PARAMS],
             dim_params: vec![0; crate::prim::NUM_DIM_PARAMS],
             dim_levels: vec![LEVEL_ONE; crate::prim::NUM_DIM_PARAMS],
@@ -286,6 +530,7 @@ impl Eqtb {
             skew_char: Vec::new(),
             skew_char_levels: Vec::new(),
             font_cs: Vec::new(),
+            expand: Vec::new(),
         }
     }
 
@@ -295,7 +540,13 @@ impl Eqtb {
     fn ensure_entry(&mut self, id: CsId) -> &mut EqEntry {
         let idx = id as usize;
         if idx >= self.entries.len() {
-            self.entries.resize(idx + 1, EqEntry { equiv: None, level: LEVEL_ONE });
+            self.entries.resize(
+                idx + 1,
+                EqEntry {
+                    equiv: None,
+                    level: LEVEL_ONE,
+                },
+            );
         }
         &mut self.entries[idx]
     }
@@ -316,32 +567,87 @@ impl Eqtb {
         }
         None
     }
+    #[inline]
+    pub fn push_save(&mut self, item: SaveItem) {
+        self.save_stack.push(item);
+    }
+
+    /// Allow one entry beyond the logical TeX limit so callers can finish the
+    /// current operation with a structurally valid save stack. Main control
+    /// turns this monotonic condition into a fatal diagnostic immediately
+    /// after the operation completes.
+    #[inline]
+    pub(crate) fn save_stack_capacity_exceeded(&self) -> bool {
+        self.save_stack.len() > MAX_SAVE_STACK
+    }
+
+    #[inline]
+    pub(crate) fn group_level_capacity_exceeded(&self) -> bool {
+        self.group_level_capacity_exceeded
+    }
+
+    /// Keep the readable e-TeX parameter aligned with a mode selected by the
+    /// command line or by \batchmode/\nonstopmode/\scrollmode/\errorstopmode.
+    pub(crate) fn set_runtime_interaction_mode(&mut self, value: i32) {
+        let i = IntParam::InteractionMode.idx() as usize;
+        self.int_params[i] = value;
+        self.int_levels[i] = LEVEL_ONE;
+        self.pending_interaction_mode = None;
+    }
+
+    pub(crate) fn take_pending_interaction_mode(&mut self) -> Option<i32> {
+        self.pending_interaction_mode.take()
+    }
 
     pub fn assign(&mut self, id: CsId, equiv: Equiv, global: bool) {
-        let cur_level = self.cur_level;
         let idx = id as usize;
+        let cur_level = self.cur_level;
         if idx >= self.entries.len() {
-            self.entries.resize(idx + 1, EqEntry { equiv: None, level: LEVEL_ONE });
+            self.entries.resize(
+                idx + 1,
+                EqEntry {
+                    equiv: None,
+                    level: LEVEL_ONE,
+                },
+            );
         }
         if !global && self.entries[idx].level < cur_level {
             let old = self.entries[idx].equiv.clone();
             let ol = self.entries[idx].level;
-            self.save_stack.push(SaveItem::Eq(id, old, ol));
+            self.push_save(SaveItem::Eq(id, old, ol));
         }
         self.entries[idx].equiv = Some(equiv);
         self.entries[idx].level = if global { LEVEL_ONE } else { cur_level };
+    }
+
+    /// Replace only the current meaning without recording a TeX assignment.
+    /// This is for tightly scoped engine internals such as write expansion;
+    /// the caller must restore the returned meaning before normal execution
+    /// resumes. The definition level and save stack remain untouched.
+    pub(crate) fn replace_equiv_temporarily(
+        &mut self,
+        id: CsId,
+        equiv: Option<Equiv>,
+    ) -> Option<Equiv> {
+        std::mem::replace(&mut self.ensure_entry(id).equiv, equiv)
     }
 
     pub fn undefine(&mut self, id: CsId, global: bool) {
         let cur_level = self.cur_level;
         let idx = id as usize;
         if idx >= self.entries.len() {
-            self.entries.resize(idx + 1, EqEntry { equiv: None, level: LEVEL_ONE });
+            self.entries.resize(
+                idx + 1,
+                EqEntry {
+                    equiv: None,
+                    level: LEVEL_ONE,
+                },
+            );
         }
         if !global && self.entries[idx].level < cur_level {
             let old = self.entries[idx].equiv.clone();
             let ol = self.entries[idx].level;
-            self.save_stack.push(SaveItem::Eq(id, old, ol));
+            self.push_save(SaveItem::Eq(id, old, ol));
         }
         self.entries[idx].equiv = None;
         self.entries[idx].level = if global { LEVEL_ONE } else { cur_level };
@@ -370,116 +676,229 @@ impl Eqtb {
     }
 
     pub fn assign_int_param(&mut self, p: IntParam, v: i32, global: bool) {
+        if p == IntParam::InteractionMode {
+            self.pending_interaction_mode = Some(v);
+            if !(0..=3).contains(&v) {
+                // e-TeX rejects the assignment and keeps the previous mode.
+                // The Engine consumes the attempted value at the dispatch
+                // boundary and reports it with the current source location.
+                return;
+            }
+        }
         let i = p.idx() as usize;
-        Self::slot(&mut self.int_params, &mut self.int_levels, i, v, global, self.cur_level, &mut self.save_stack, |old, ol| {
-            SaveItem::IntParam(p.idx(), old, ol)
-        });
+        // e-TeX changes interaction mode immediately and globally, even in a
+        // group and even when \globaldefs is negative.
+        let global = global || p == IntParam::InteractionMode;
+        Self::slot(
+            &mut self.int_params,
+            &mut self.int_levels,
+            i,
+            v,
+            global,
+            self.cur_level,
+            &mut self.save_stack,
+            |old, ol| SaveItem::IntParam(p.idx(), old, ol),
+        );
     }
     pub fn assign_dim_param(&mut self, p: DimParam, v: i32, global: bool) {
         let i = p.idx() as usize;
-        Self::slot(&mut self.dim_params, &mut self.dim_levels, i, v, global, self.cur_level, &mut self.save_stack, |old, ol| {
-            SaveItem::DimParam(p.idx(), old, ol)
-        });
+        Self::slot(
+            &mut self.dim_params,
+            &mut self.dim_levels,
+            i,
+            v,
+            global,
+            self.cur_level,
+            &mut self.save_stack,
+            |old, ol| SaveItem::DimParam(p.idx(), old, ol),
+        );
     }
     pub fn assign_glue_param(&mut self, p: GlueParam, v: Glue, global: bool) {
         let i = p.idx() as usize;
-        Self::slot(&mut self.glue_params, &mut self.glue_levels, i, v, global, self.cur_level, &mut self.save_stack, |old, ol| {
-            SaveItem::GlueParam(p.idx(), old, ol)
-        });
+        Self::slot(
+            &mut self.glue_params,
+            &mut self.glue_levels,
+            i,
+            v,
+            global,
+            self.cur_level,
+            &mut self.save_stack,
+            |old, ol| SaveItem::GlueParam(p.idx(), old, ol),
+        );
     }
     pub fn assign_toks_param(&mut self, p: ToksParam, v: Rc<Vec<Token>>, global: bool) {
         let i = p.idx() as usize;
-        Self::slot(&mut self.tok_params, &mut self.tok_levels, i, v, global, self.cur_level, &mut self.save_stack, |old, ol| {
-            SaveItem::ToksParam(p.idx(), old, ol)
-        });
+        Self::slot(
+            &mut self.tok_params,
+            &mut self.tok_levels,
+            i,
+            v,
+            global,
+            self.cur_level,
+            &mut self.save_stack,
+            |old, ol| SaveItem::ToksParam(p.idx(), old, ol),
+        );
     }
     pub fn assign_count(&mut self, idx: u16, v: i32, global: bool) {
         let i = idx as usize;
-        Self::slot(&mut self.count, &mut self.count_levels, i, v, global, self.cur_level, &mut self.save_stack, |old, ol| {
-            SaveItem::Count(idx, old, ol)
-        });
+        Self::slot(
+            &mut self.count,
+            &mut self.count_levels,
+            i,
+            v,
+            global,
+            self.cur_level,
+            &mut self.save_stack,
+            |old, ol| SaveItem::Count(idx, old, ol),
+        );
     }
     pub fn assign_dimen(&mut self, idx: u16, v: i32, global: bool) {
         let i = idx as usize;
-        Self::slot(&mut self.dimen, &mut self.dimen_levels, i, v, global, self.cur_level, &mut self.save_stack, |old, ol| {
-            SaveItem::Dimen(idx, old, ol)
-        });
+        Self::slot(
+            &mut self.dimen,
+            &mut self.dimen_levels,
+            i,
+            v,
+            global,
+            self.cur_level,
+            &mut self.save_stack,
+            |old, ol| SaveItem::Dimen(idx, old, ol),
+        );
     }
     pub fn assign_skip(&mut self, idx: u16, v: Glue, global: bool) {
         let i = idx as usize;
-        Self::slot(&mut self.skip, &mut self.skip_levels, i, v, global, self.cur_level, &mut self.save_stack, |old, ol| {
-            SaveItem::Skip(idx, old, ol)
-        });
+        Self::slot(
+            &mut self.skip,
+            &mut self.skip_levels,
+            i,
+            v,
+            global,
+            self.cur_level,
+            &mut self.save_stack,
+            |old, ol| SaveItem::Skip(idx, old, ol),
+        );
     }
     pub fn assign_muskip(&mut self, idx: u16, v: Glue, global: bool) {
         let i = idx as usize;
-        Self::slot(&mut self.muskip, &mut self.muskip_levels, i, v, global, self.cur_level, &mut self.save_stack, |old, ol| {
-            SaveItem::MuSkip(idx, old, ol)
-        });
+        Self::slot(
+            &mut self.muskip,
+            &mut self.muskip_levels,
+            i,
+            v,
+            global,
+            self.cur_level,
+            &mut self.save_stack,
+            |old, ol| SaveItem::MuSkip(idx, old, ol),
+        );
     }
     pub fn assign_toks_reg(&mut self, idx: u16, v: Rc<Vec<Token>>, global: bool) {
         let i = idx as usize;
-        Self::slot(&mut self.toks, &mut self.toks_levels, i, v, global, self.cur_level, &mut self.save_stack, |old, ol| {
-            SaveItem::Toks(idx, old, ol)
-        });
+        Self::slot(
+            &mut self.toks,
+            &mut self.toks_levels,
+            i,
+            v,
+            global,
+            self.cur_level,
+            &mut self.save_stack,
+            |old, ol| SaveItem::Toks(idx, old, ol),
+        );
     }
     pub fn assign_box(&mut self, idx: u16, v: Option<Node>, global: bool) {
-        if std::env::var_os("OBWATCH").is_some() && idx == 50 {
-            let desc = match &v { Some(Node::Box { h, list, .. }) => format!("box h={:.1} n={}", *h as f64 / 65536.0, list.len()), Some(_) => "other".into(), None => "void".into() };
-            eprintln!("OBWATCH assign reg50={} global={}", desc, global);
-        }
         let i = idx as usize;
-        Self::slot(&mut self.boxed, &mut self.box_levels, i, v, global, self.cur_level, &mut self.save_stack, |old, ol| {
-            SaveItem::Box(idx, old, ol)
-        });
+        Self::slot(
+            &mut self.boxed,
+            &mut self.box_levels,
+            i,
+            v,
+            global,
+            self.cur_level,
+            &mut self.save_stack,
+            |old, ol| SaveItem::Box(idx, old, ol),
+        );
     }
-    /// tex.web begin_box/box_code: `cur_box := box(n); box(n) := null;` —
-    /// the void is a normal `eq_define(box_ref)`: it pushes the old value on
-    /// the save stack and records the void *at the register's current level*
-    /// (`levels[idx] = cur_level`, no bump). Rust's plain `.take()` skipped
-    /// both: group rollback then resurrected boxes the output routine had
-    /// already consumed, which made longtable's `\copy\LT@head` material
-    /// vanish when the output group closed (missing "(continued)" heads,
-    /// p48/p49).
+    /// Replace a box register's value without changing its assignment level.
+    /// TeX uses this for consuming boxes and for storing a \vsplit remainder.
+    pub(crate) fn replace_box_value(&mut self, idx: u16, value: Option<Node>) -> Option<Node> {
+        std::mem::replace(&mut self.boxed[idx as usize], value)
+    }
     pub fn take_box(&mut self, idx: u16) -> Option<Node> {
-        let i = idx as usize;
-        if self.box_levels[i] < self.cur_level {
-            let old = self.boxed[i].clone();
-            let ol = self.box_levels[i];
-            self.save_stack.push(SaveItem::Box(idx, old, ol));
-        }
-        std::mem::replace(&mut self.boxed[i], None)
+        // tex.web's box(n):=null changes only the value. Retaining the
+        // assignment level lets group unwinding restore an outer box after a
+        // locally assigned inner box is consumed.
+        self.replace_box_value(idx, None)
     }
     pub fn assign_cat(&mut self, c: u8, v: u8, global: bool) {
-
-        Self::slot(&mut self.cat, &mut self.cat_levels, c as usize, v, global, self.cur_level, &mut self.save_stack, |old, ol| {
-            SaveItem::Cat(c, old, ol)
-        });
+        Self::slot(
+            &mut self.cat,
+            &mut self.cat_levels,
+            c as usize,
+            v,
+            global,
+            self.cur_level,
+            &mut self.save_stack,
+            |old, ol| SaveItem::Cat(c, old, ol),
+        );
     }
     pub fn assign_math_code(&mut self, c: u8, v: u16, global: bool) {
-        Self::slot(&mut self.math_code, &mut self.math_levels, c as usize, v, global, self.cur_level, &mut self.save_stack, |old, ol| {
-            SaveItem::MathCode(c, old, ol)
-        });
+        Self::slot(
+            &mut self.math_code,
+            &mut self.math_levels,
+            c as usize,
+            v,
+            global,
+            self.cur_level,
+            &mut self.save_stack,
+            |old, ol| SaveItem::MathCode(c, old, ol),
+        );
     }
     pub fn assign_del_code(&mut self, c: u8, v: i32, global: bool) {
-        Self::slot(&mut self.del_code, &mut self.del_levels, c as usize, v, global, self.cur_level, &mut self.save_stack, |old, ol| {
-            SaveItem::DelCode(c, old, ol)
-        });
+        Self::slot(
+            &mut self.del_code,
+            &mut self.del_levels,
+            c as usize,
+            v,
+            global,
+            self.cur_level,
+            &mut self.save_stack,
+            |old, ol| SaveItem::DelCode(c, old, ol),
+        );
     }
     pub fn assign_lc_code(&mut self, c: u8, v: u8, global: bool) {
-        Self::slot(&mut self.lc_code, &mut self.lc_levels, c as usize, v, global, self.cur_level, &mut self.save_stack, |old, ol| {
-            SaveItem::LcCode(c, old, ol)
-        });
+        Self::slot(
+            &mut self.lc_code,
+            &mut self.lc_levels,
+            c as usize,
+            v,
+            global,
+            self.cur_level,
+            &mut self.save_stack,
+            |old, ol| SaveItem::LcCode(c, old, ol),
+        );
     }
     pub fn assign_sf_code(&mut self, c: u8, v: u16, global: bool) {
-        Self::slot(&mut self.sf_code, &mut self.sf_levels, c as usize, v, global, self.cur_level, &mut self.save_stack, |old, ol| {
-            SaveItem::SfCode(c, old, ol)
-        });
+        Self::slot(
+            &mut self.sf_code,
+            &mut self.sf_levels,
+            c as usize,
+            v,
+            global,
+            self.cur_level,
+            &mut self.save_stack,
+            |old, ol| SaveItem::SfCode(c, old, ol),
+        );
     }
     pub fn assign_uc_code(&mut self, c: u8, v: u8, global: bool) {
-        Self::slot(&mut self.uc_code, &mut self.uc_levels, c as usize, v, global, self.cur_level, &mut self.save_stack, |old, ol| {
-            SaveItem::UcCode(c, old, ol)
-        });
+        Self::slot(
+            &mut self.uc_code,
+            &mut self.uc_levels,
+            c as usize,
+            v,
+            global,
+            self.cur_level,
+            &mut self.save_stack,
+            |old, ol| SaveItem::UcCode(c, old, ol),
+        );
     }
     /// tex.web set_font: `define(cur_font_loc, data, cur_chr)` — a font
     /// selection is a group-scoped assignment; \globaldefs>0 forces it
@@ -498,7 +917,7 @@ impl Eqtb {
             // tex.web cur_font_loc: the save happens only when the entry is
             // group-scoped — a top-level selection must not leave a pending
             // save item (it would block \dump forever).
-            self.save_stack.push(SaveItem::CurFont(self.cur_font_val));
+            self.push_save(SaveItem::CurFont(self.cur_font_val));
         }
         self.cur_font_val = f;
     }
@@ -507,10 +926,11 @@ impl Eqtb {
         let old = self.style_fonts[style as usize][fam as usize];
         let ol = self.style_font_levels[style as usize][fam as usize];
         if !global && ol < self.cur_level {
-            self.save_stack.push(SaveItem::StyleFont(style, fam, old, ol));
+            self.push_save(SaveItem::StyleFont(style, fam, old, ol));
         }
         self.style_fonts[style as usize][fam as usize] = fid;
-        self.style_font_levels[style as usize][fam as usize] = if global { LEVEL_ONE } else { self.cur_level };
+        self.style_font_levels[style as usize][fam as usize] =
+            if global { LEVEL_ONE } else { self.cur_level };
     }
     pub fn assign_font_param(&mut self, font: u16, idx: usize, v: i32, global: bool) {
         while self.font_params[font as usize].len() <= idx {
@@ -520,30 +940,47 @@ impl Eqtb {
         if !global && self.font_param_levels[font as usize][idx] < self.cur_level {
             let old = self.font_params[font as usize][idx];
             let ol = self.font_param_levels[font as usize][idx];
-            self.save_stack.push(SaveItem::FontParam(font, idx, old, ol));
+            self.push_save(SaveItem::FontParam(font, idx, old, ol));
         }
         self.font_params[font as usize][idx] = v;
-        self.font_param_levels[font as usize][idx] = if global { LEVEL_ONE } else { self.cur_level };
+        self.font_param_levels[font as usize][idx] =
+            if global { LEVEL_ONE } else { self.cur_level };
     }
     pub fn assign_hyphen_char(&mut self, font: u16, v: i32, global: bool) {
-        Self::slot(&mut self.hyphen_char, &mut self.hyphen_char_levels, font as usize, v, global, self.cur_level, &mut self.save_stack, |old, ol| {
-            SaveItem::HyphenChar(font, old, ol)
-        });
+        Self::slot(
+            &mut self.hyphen_char,
+            &mut self.hyphen_char_levels,
+            font as usize,
+            v,
+            global,
+            self.cur_level,
+            &mut self.save_stack,
+            |old, ol| SaveItem::HyphenChar(font, old, ol),
+        );
     }
     pub fn assign_skew_char(&mut self, font: u16, v: i32, global: bool) {
-        Self::slot(&mut self.skew_char, &mut self.skew_char_levels, font as usize, v, global, self.cur_level, &mut self.save_stack, |old, ol| {
-            SaveItem::SkewChar(font, old, ol)
-        });
+        Self::slot(
+            &mut self.skew_char,
+            &mut self.skew_char_levels,
+            font as usize,
+            v,
+            global,
+            self.cur_level,
+            &mut self.save_stack,
+            |old, ol| SaveItem::SkewChar(font, old, ol),
+        );
     }
 
     // ---------- groups ----------
 
     pub fn push_level(&mut self, ty: LevelType) {
-        self.cur_level += 1;
-        if crate::debug_flag("LVLTRACE") {
-            eprintln!("PUSH-LVL {} ty={:?}", self.cur_level, ty);
-        }
-        self.save_stack.push(SaveItem::Level(self.cur_level, ty));
+        let Some(next_level) = self.cur_level.checked_add(1) else {
+            self.group_level_capacity_exceeded = true;
+            return;
+        };
+        self.cur_level = next_level;
+
+        self.push_save(SaveItem::Level(self.cur_level, ty));
     }
     pub fn cur_group_type(&self) -> Option<LevelType> {
         for item in self.save_stack.iter().rev() {
@@ -565,9 +1002,7 @@ impl Eqtb {
         par_shape_sink: &mut Option<(Vec<(i32, i32)>, u16)>,
     ) -> LevelType {
         let mut ty = LevelType::Group;
-        if crate::debug_flag("LVLTRACE") {
-            eprintln!("POP-LVL-BEFORE {}", self.cur_level);
-        }
+
         while let Some(item) = self.save_stack.pop() {
             match item {
                 SaveItem::AfterGroup(tok) => {
@@ -581,6 +1016,9 @@ impl Eqtb {
                     // level field; a later global assign suppresses it,
                     // same as the param arms' `> LEVEL_ONE` check)
                     *par_shape_sink = Some((old, lvl));
+                }
+                SaveItem::PdfPageVar(_kind, _old, _lvl) => {
+                    // pdfpageattr / pdfpagesattr / pdfpageresources restoration
                 }
                 SaveItem::Level(lvl, t) => {
                     self.cur_level = lvl - 1;
@@ -598,6 +1036,9 @@ impl Eqtb {
                     if self.int_levels[i as usize] > LEVEL_ONE {
                         self.int_params[i as usize] = v;
                         self.int_levels[i as usize] = l;
+                        if i == IntParam::InteractionMode.idx() {
+                            self.pending_interaction_mode = Some(v);
+                        }
                     }
                 }
                 SaveItem::DimParam(i, v, l) => {
@@ -649,6 +1090,11 @@ impl Eqtb {
                     }
                 }
                 SaveItem::Box(i, v, l) => {
+                    // tex.web §6076-6092 ("unless eqtb[p] holds a global
+                    // value"): a box register left at level_one by
+                    // \global\setbox survives the group; restoring
+                    // unconditionally clobbered it with the pre-group
+                    // value, voiding microtype's \MT@tempbox lastbox.
                     if self.box_levels[i as usize] > LEVEL_ONE {
                         self.boxed[i as usize] = v;
                         self.box_levels[i as usize] = l;
@@ -750,6 +1196,113 @@ impl Eqtb {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn group_level_overflow_is_latched_without_wrapping_or_mutating_the_save_stack() {
+        let mut eq = Eqtb::new(false);
+        eq.cur_level = MAX_GROUP_LEVEL;
+        let save_len = eq.save_stack.len();
+
+        eq.push_level(LevelType::Simple);
+
+        assert_eq!(eq.cur_level, MAX_GROUP_LEVEL);
+        assert_eq!(eq.save_stack.len(), save_len);
+        assert!(eq.group_level_capacity_exceeded());
+    }
+
+    #[test]
+    fn invalid_interaction_mode_assignment_preserves_the_previous_value() {
+        let mut eq = Eqtb::new(false);
+        let index = IntParam::InteractionMode.idx() as usize;
+        assert_eq!(eq.int_params[index], 3);
+
+        eq.assign_int_param(IntParam::InteractionMode, 7, true);
+
+        assert_eq!(eq.int_params[index], 3);
+        assert_eq!(eq.take_pending_interaction_mode(), Some(7));
+    }
+
+    #[test]
+    fn interaction_mode_assignment_is_global_even_inside_a_group() {
+        let mut eq = Eqtb::new(false);
+        let index = IntParam::InteractionMode.idx() as usize;
+        eq.push_level(LevelType::Simple);
+
+        eq.assign_int_param(IntParam::InteractionMode, 0, false);
+        eq.pop_level(&mut Vec::new());
+
+        assert_eq!(eq.int_params[index], 0);
+        assert_eq!(eq.int_levels[index], LEVEL_ONE);
+        assert_eq!(eq.take_pending_interaction_mode(), Some(0));
+    }
+
+    #[test]
+    fn save_stack_can_cross_its_logical_limit_without_panicking() {
+        let mut eq = Eqtb::new(true);
+        eq.save_stack
+            .resize(MAX_SAVE_STACK, SaveItem::AfterGroup(Token::space()));
+
+        eq.push_save(SaveItem::AfterGroup(Token::letter(b'x')));
+
+        assert_eq!(eq.save_stack.len(), MAX_SAVE_STACK + 1);
+        assert!(eq.save_stack_capacity_exceeded());
+    }
+
+    #[test]
+    fn replacement_plan_preserves_repeated_parameters_and_rebuilds_after_body_change() {
+        let mut m = Macro {
+            num_params: 2,
+            has_param_refs: true,
+            params: vec![vec![], vec![]],
+            prefix: vec![],
+            body: vec![
+                Token::letter(b'A'),
+                Token(0x4000_0002),
+                Token(0x4000_0001),
+                Token(0x4000_0002),
+                Token(0x4000_0009),
+            ]
+            .into(),
+            long: true,
+            outer: false,
+            protected: false,
+            replacement: Default::default(),
+        };
+        let args = [
+            smallvec::smallvec![Token::letter(b'X')],
+            smallvec::smallvec![Token::letter(b'Y'), Token::letter(b'Z')],
+        ];
+        let mut output = Vec::new();
+        assert!(m.append_replacement(&args, &mut output, usize::MAX));
+        assert_eq!(
+            output,
+            vec![
+                Token::letter(b'A'),
+                Token::letter(b'Y'),
+                Token::letter(b'Z'),
+                Token::letter(b'X'),
+                Token::letter(b'Y'),
+                Token::letter(b'Z'),
+                Token(0x4000_0009)
+            ]
+        );
+        Rc::make_mut(&mut m.body)[0] = Token::letter(b'B');
+        output.clear();
+        assert!(m.append_replacement(&args, &mut output, usize::MAX));
+        assert_eq!(output[0], Token::letter(b'B'));
+        m.body = vec![Token(0x4000_0001)].into();
+        output.clear();
+        assert!(m.append_replacement(&args, &mut output, usize::MAX));
+        assert_eq!(output, vec![Token::letter(b'X')]);
+
+        m.body = vec![Token(0x4000_0002), Token(0x4000_0002)].into();
+        output.clear();
+        assert!(!m.append_replacement(&args, &mut output, 3));
+        assert!(
+            output.is_empty(),
+            "an oversized replacement is not allocated"
+        );
+    }
 
     fn prim_of(eq: &Eqtb, id: CsId) -> Option<Prim> {
         match eq.get(id) {
@@ -859,5 +1412,27 @@ mod tests {
         let mut after = Vec::new();
         eq.pop_level(&mut after);
         assert_eq!(prim_of(&eq, e), None);
+    }
+
+    #[test]
+    fn taking_a_box_preserves_its_assignment_scope() {
+        let mut eq = Eqtb::new(true);
+        eq.assign_box(255, Some(Node::Penalty(1)), true);
+        eq.push_level(LevelType::Simple);
+        eq.assign_box(255, Some(Node::Penalty(2)), false);
+
+        assert!(matches!(eq.take_box(255), Some(Node::Penalty(2))));
+        let mut after = Vec::new();
+        eq.pop_level(&mut after);
+
+        assert!(matches!(eq.boxed[255].as_ref(), Some(Node::Penalty(1))));
+        assert_eq!(eq.box_levels[255], LEVEL_ONE);
+
+        eq.push_level(LevelType::Simple);
+        assert!(matches!(eq.take_box(255), Some(Node::Penalty(1))));
+        eq.pop_level(&mut after);
+
+        assert!(eq.boxed[255].is_none());
+        assert_eq!(eq.box_levels[255], LEVEL_ONE);
     }
 }

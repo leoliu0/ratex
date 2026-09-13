@@ -1,6 +1,5 @@
-use crate::engine::Engine;
 use crate::boxes::{Node, WhatIt};
-use crate::prim::Prim;
+use crate::engine::Engine;
 use crate::token::Token;
 
 // PDF document model: pages, annotations, destinations, embedded fonts.
@@ -40,6 +39,8 @@ pub struct PdfPage {
     pub content: Vec<u8>,
     pub width: i32,
     pub height: i32,
+    pub width_bp: f64,
+    pub height_bp: f64,
     pub annots: Vec<Annot>,
     /// (doc font index, resource number) — resolved by `embed_used_fonts`
     pub fonts: Vec<(usize, u16)>,
@@ -47,6 +48,8 @@ pub struct PdfPage {
     pub dests: Vec<Dest>,
     /// raw dict body contributed by \pdfpageattr (copied at shipout)
     pub attr_extra: Vec<u8>,
+    /// raw dict entries contributed by \pdfpageresources (copied at shipout)
+    pub resources_extra: Vec<u8>,
 }
 
 impl PdfPage {
@@ -55,17 +58,26 @@ impl PdfPage {
             content: Vec::new(),
             width,
             height,
+            width_bp: width as f64,
+            height_bp: height as f64,
             annots: Vec::new(),
             fonts: Vec::new(),
             dests: Vec::new(),
             attr_extra: Vec::new(),
+            resources_extra: Vec::new(),
         }
     }
 }
 
 pub struct PdfDoc {
+    compression_worker: Option<crate::pdfcompress::Worker>,
+    page_compression: Vec<Option<crate::pdfcompress::Pending>>,
     pub pages: Vec<PdfPage>,
-    /// raw /Info dict body contributed by \pdfinfo
+    /// raw user objects from \pdfobj
+    pub objects: Vec<(i32, Vec<u8>)>,
+    /// Reserved font dictionaries for forms, with the same font-index
+    /// remapping as pages. Each form has its own resource namespace.
+    pub form_fonts: Vec<(i32, Vec<(usize, u16)>)>,
     pub info: Vec<u8>,
     /// raw dict body contributed by \pdfcatalog
     pub catalog_extra: Vec<u8>,
@@ -81,6 +93,10 @@ pub struct PdfDoc {
     pub open_action: Option<(i32, String)>,
     /// loaded embedded fonts
     pub fonts: Vec<EmbedFont>,
+    /// Character codes used by each engine font before page/form font ids
+    /// are remapped to entries in `fonts`. This lets the serializer retain
+    /// only the required Type 1 glyph programs.
+    pub font_chars: std::collections::BTreeMap<usize, [u64; 4]>,
 }
 
 /// A Type 1 font prepared for embedding.
@@ -96,7 +112,7 @@ pub struct EmbedFont {
     pub encoding_diff: Option<Vec<String>>,
     pub first_char: u8,
     pub last_char: u8,
-    /// widths in 1/1000 font units, for first_char..=last_char
+    /// widths in 1/10000 font units, for first_char..=last_char
     pub widths: Vec<i32>,
     pub font_matrix_scale: f64,
     /// FontDescriptor metrics (1/1000 font units, degrees for the angle)
@@ -110,12 +126,20 @@ pub struct EmbedFont {
     /// /ToUnicode mappings: (code, Unicode string). Non-identity mappings
     /// only; empty when no glyph names are known.
     pub to_unicode: Vec<(u8, String)>,
+    /// Character codes actually painted with this font. An empty set keeps
+    /// the complete program, which is the conservative behavior for callers
+    /// that construct `EmbedFont` values directly.
+    pub used_chars: [u64; 4],
 }
 
 impl PdfDoc {
     pub fn new() -> Self {
         PdfDoc {
+            compression_worker: None,
+            page_compression: Vec::new(),
             pages: Vec::new(),
+            objects: Vec::new(),
+            form_fonts: Vec::new(),
             info: Vec::new(),
             catalog_extra: Vec::new(),
             names_extra: Vec::new(),
@@ -123,7 +147,34 @@ impl PdfDoc {
             outlines: Vec::new(),
             open_action: None,
             fonts: Vec::new(),
+            font_chars: std::collections::BTreeMap::new(),
         }
+    }
+
+    pub fn push_page(&mut self, page: PdfPage) {
+        if self.pages.len() == 1 && !crate::debug_flag("TEX_PDF_SERIAL") {
+            self.compression_worker = crate::pdfcompress::Worker::new();
+        }
+        self.page_compression.resize_with(self.pages.len(), || None);
+        self.page_compression.push(
+            self.compression_worker
+                .as_ref()
+                .and_then(|worker| worker.submit(&page.content)),
+        );
+        self.pages.push(page);
+    }
+
+    pub(crate) fn compressed_page(&self, index: usize) -> Option<&[u8]> {
+        self.page_compression
+            .get(index)?
+            .as_ref()?
+            .get(&self.pages.get(index)?.content)
+    }
+
+    #[inline]
+    pub fn record_font_char(&mut self, font: usize, character: u8) {
+        let words = self.font_chars.entry(font).or_insert([0; 4]);
+        words[character as usize / 64] |= 1_u64 << (character as usize % 64);
     }
 }
 
@@ -138,7 +189,6 @@ impl Default for PdfDoc {
 /// Sentinel \pdfdest coordinate: "use the current position" (pdfTeX uses
 /// the value -32768 for this).
 pub const PDF_POS_CURRENT: i32 = -32768;
-
 
 /// Result of scanning an optional \pdfdest positional parameter.
 enum DestParam {
@@ -369,7 +419,11 @@ impl Engine {
                 _ => break,
             }
         }
-        self.append_whatsit(Node::Whatsit(WhatIt::PdfStartLink { attr, uri, name: dest }));
+        self.append_whatsit(Node::Whatsit(WhatIt::PdfStartLink {
+            attr,
+            uri,
+            name: dest,
+        }));
     }
 
     /// \pdfdest name{<name>} <type> [<params>] — <type> is one of
@@ -395,7 +449,11 @@ impl Engine {
                         DestParam::End => break,
                     }
                 }
-                let node = Node::Whatsit(WhatIt::PdfDest { name, kind, params: vals });
+                let node = Node::Whatsit(WhatIt::PdfDest {
+                    name,
+                    kind,
+                    params: vals,
+                });
                 match self.mode {
                     crate::engine::Mode::Vertical | crate::engine::Mode::InternalVertical => {
                         self.vlist_append(node)
@@ -481,11 +539,15 @@ impl Engine {
     /// \pdfcatalog {<dict body>} [use {<dict body>}]
     pub fn do_pdfcatalog(&mut self) {
         let body = self.scan_pdf_string();
-        self.pdf_doc.catalog_extra.extend_from_slice(body.as_bytes());
+        self.pdf_doc
+            .catalog_extra
+            .extend_from_slice(body.as_bytes());
         if self.peek_letters() == "use" {
             self.take_keyword(b"use");
             let extra = self.scan_pdf_string();
-            self.pdf_doc.catalog_extra.extend_from_slice(extra.as_bytes());
+            self.pdf_doc
+                .catalog_extra
+                .extend_from_slice(extra.as_bytes());
         }
         // pdfTeX keyword form: `openaction goto page <n> {<view>}` —
         // hyperref's \PDF@SetupDoc emits it right after the dict body.
@@ -512,15 +574,19 @@ impl Engine {
 
     /// \pdfpageattr {<dict body>}: replaces the per-page attribute body.
     pub fn do_pdfpageattr(&mut self) {
-        let body = self.scan_pdf_string();
-        self.pdf_page_attr = body;
+        self.scan_optional_equals();
+        let toks = self.scan_token_list();
+        self.pdf_page_attr = self.write_tokens_to_string(&toks);
+        self.pdf_page_attr_toks = toks;
     }
 
     /// \pdfpagesattr {<dict body>}: replaces the page-tree attribute body.
     pub fn do_pdfpagesattr(&mut self) {
-        let body = self.scan_pdf_string();
-        self.pdf_pages_attr = body.clone();
-        self.pdf_doc.pages_attr = body.into_bytes();
+        self.scan_optional_equals();
+        let toks = self.scan_token_list();
+        self.pdf_pages_attr = self.write_tokens_to_string(&toks);
+        self.pdf_pages_attr_toks = toks;
+        self.pdf_doc.pages_attr = self.pdf_pages_attr.clone().into_bytes();
     }
 }
 
@@ -567,7 +633,13 @@ mod tests {
         let page = PdfPage::new(612, 792);
         assert!(page.dests.is_empty());
         assert!(page.attr_extra.is_empty());
-        let d = Dest { name: "a".into(), x: 1.0, y: 2.0, kind: 0, zoom: None };
+        let d = Dest {
+            name: "a".into(),
+            x: 1.0,
+            y: 2.0,
+            kind: 0,
+            zoom: None,
+        };
         assert_eq!((d.name.as_str(), d.kind), ("a", 0));
     }
 }

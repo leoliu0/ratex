@@ -2,11 +2,11 @@
 //! paragraphs, page-builder hook.
 
 use crate::boxes::{self, Glue, Node, NodeList};
-use crate::eqtb::LevelType;
 use crate::engine::{Engine, Mode};
+use crate::eqtb::LevelType;
 use crate::fontiface::LigKernStep;
 use crate::prim::{DimParam, GlueParam, IntParam, Prim};
-use crate::scaled::{mult, ONE};
+use crate::scaled::ONE;
 use crate::token::{CsId, Token};
 
 pub const RULE_FILL: i32 = i32::MIN; // sentinel: rule dimension from context
@@ -15,9 +15,8 @@ pub const RULE_FILL: i32 = i32::MIN; // sentinel: rule dimension from context
 // group; completed in end_box. Engine is single-threaded (Rc state), so a
 // thread_local avoids touching the Engine struct.
 thread_local! {
-    static LEADER_KINDS: std::cell::RefCell<Vec<u8>> = const { std::cell::RefCell::new(Vec::new()) };
+    static LEADER_KINDS: std::cell::RefCell<Vec<(usize, u8)>> = const { std::cell::RefCell::new(Vec::new()) };
 }
-
 impl Engine {
     pub fn font_resolver(&self) -> &dyn crate::fonts::FontResolver {
         self
@@ -33,26 +32,7 @@ impl Engine {
         match self.mode {
             Mode::Horizontal | Mode::RestrictedHorizontal => {
                 let g = self.interword_glue();
-                if std::env::var("SPACETRACE").is_ok() {
-                    let nm = self.eqtb.fonts.get(self.eqtb.cur_font_val as usize)
-                        .map(|x| (x.tfm_name.clone(), x.at_size)).unwrap_or_default();
-                    eprintln!("SPACE-GLUE f={} {:?} w={} line={} mac={:?} last={:?} src={:?}",
-                        self.eqtb.cur_font_val, nm, g.width,
-                        self.input.current_file_line(),
-                        self.current_macro,
-                        self.last_macros.iter().rev().take(8).collect::<Vec<_>>(),
-                        self.input.stack.iter().rev().take(3).map(|s| match s {
-                            crate::input::Source::TokList{name,pos,toks,..} => {
-                                let lo = pos.saturating_sub(6);
-                                let ctx: Vec<String> = toks.iter().skip(lo).take(10)
-                                    .map(|t| if t.is_cs() { format!("\\{}", String::from_utf8_lossy(self.cs.name(t.cs_id()))) }
-                                             else { format!("c{}:{:#x}", t.cc(), t.chr()) })
-                                    .collect();
-                                format!("T:{} {}/{} ctx=[{}]", name, pos, toks.len(), ctx.join(" "))
-                            }
-                            crate::input::Source::File{name,line_no,..} => format!("F:{}#{}", name, line_no),
-                        }).collect::<Vec<_>>());
-                }
+
                 self.cur_list.push(Node::Glue(g));
                 self.space_factor = 1000;
             }
@@ -67,24 +47,23 @@ impl Engine {
 
     pub fn interword_glue(&mut self) -> Glue {
         let f = self.eqtb.cur_font_val;
-        if std::env::var("GLUETRACE").is_ok() {
-            static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-            let nm = self.eqtb.fonts.get(f as usize).map(|x| (x.tfm_name.clone(), x.at_size)).unwrap_or_default();
-            if std::env::var("GLUEALL").is_ok() || nm.1 == 714945 {
-                let fp = self.eqtb.font_params.get(f as usize).cloned().unwrap_or_default();
-                let ss = self.eqtb.glue_params[GlueParam::SpaceSkip.idx() as usize].clone();
-                eprintln!("GLUE font={} {:?} fd2={:?} sf={} SSw={} line={} file={}", f, nm, fp.get(1), self.space_factor, ss.width, self.input.current_file_line(), self.input.current_file_name().split('/').last().unwrap_or(""));
-            }
+
+        // tex.web app_space (§1057): a nonzero \xspaceskip is used unchanged
+        // only for sentence spaces. Otherwise copy \spaceskip when set, or
+        // the current font's space glue, then apply the space factor to that
+        // copy. Font dimensions come through the mutable \fontdimen overlay.
+        let sf = self.space_factor.max(1) as i64;
+        let xs = &self.eqtb.glue_params[GlueParam::XSpaceSkip.idx() as usize];
+        if sf >= 2000 && (xs.width != 0 || xs.stretch != 0 || xs.shrink != 0) {
+            return xs.clone();
         }
-        // tex.web: interword glue comes from fontdimen 2/3/4 of the CURRENT
-        // font as seen through \fontdimen assignments — eqtb.font_params is
-        // the overlay that \fontdimen writes (control.rs FontDimen); the raw
-        // TFM params on the font object must not shadow it (real tex's
-        // dominant stretch for newtx@12pt is the ADJUSTED 2.39996pt, not the
-        // raw 2.39758pt).
+
         let fp = self.eqtb.font_params.get(f as usize);
         let fd = |i: usize| -> Option<i32> { fp.and_then(|v| v.get(i).copied()) };
-        let mut g = if let Some(font) = self.eqtb.fonts.get(f as usize) {
+        let ss = &self.eqtb.glue_params[GlueParam::SpaceSkip.idx() as usize];
+        let mut g = if ss.width != 0 || ss.stretch != 0 || ss.shrink != 0 {
+            ss.clone()
+        } else if let Some(font) = self.eqtb.fonts.get(f as usize) {
             Glue {
                 width: fd(1).unwrap_or_else(|| font.space()),
                 stretch: fd(2).unwrap_or_else(|| font.space_stretch()),
@@ -95,27 +74,11 @@ impl Engine {
         } else {
             Glue::zero()
         };
-        // tex.web app_space (§1057): \spaceskip (sf<2000) and \xspaceskip
-        // (sf>=2000) are taken as-is; only the font-space fallback has its
-        // stretch and shrink multiplied by sf/1000, with \extraspace added
-        // to the width when sf>=2000
-        let ss = self.eqtb.glue_params[GlueParam::SpaceSkip.idx() as usize].clone();
-        let ss_nz = ss.width != 0 || ss.stretch != 0 || ss.shrink != 0;
-        let xs = self.eqtb.glue_params[GlueParam::XSpaceSkip.idx() as usize].clone();
-        let xs_nz = xs.width != 0 || xs.stretch != 0 || xs.shrink != 0;
-        let sf = self.space_factor.max(1) as i64;
-        if ss_nz && sf < 2000 {
-            return ss;
-        }
-        if xs_nz {
-            return xs;
-        }
         if sf >= 2000 {
             if let Some(font) = self.eqtb.fonts.get(f as usize) {
-                g.width += font.extra_space();
+                g.width += fd(6).unwrap_or_else(|| font.extra_space());
             }
         }
-        // tex.web app_space: xn_over_d rounds (not truncates)
         g.stretch = crate::scaled::xn_over_d(g.stretch, sf as i32, 1000);
         g.shrink = crate::scaled::xn_over_d(g.shrink, 1000, sf as i32);
         g
@@ -160,7 +123,7 @@ impl Engine {
                         stretch_order: 0,
                         shrink_order: 0,
                     };
-                    self.cur_list.push(Node::Glue(g));
+                    self.append_mlist_node(Node::Glue(g));
                 }
             }
             Mode::Vertical | Mode::InternalVertical => {}
@@ -168,7 +131,6 @@ impl Engine {
     }
 
     pub fn char_token(&mut self, c: u8, is_letter: bool) {
-
         match self.mode {
             Mode::Horizontal | Mode::RestrictedHorizontal => {
                 self.append_char(c);
@@ -216,7 +178,11 @@ impl Engine {
         if main_s == 1000 {
             1000
         } else if main_s < 1000 {
-            if main_s > 0 { main_s } else { self.space_factor }
+            if main_s > 0 {
+                main_s
+            } else {
+                self.space_factor
+            }
         } else if self.space_factor < 1000 {
             1000
         } else {
@@ -225,13 +191,12 @@ impl Engine {
     }
 
     pub fn active_char(&mut self, c: u8) {
-
         // tex.web: an active character is a control sequence whose entry
         // lives in the active region — look it up there, not in the hash
         // (where the control symbol of the same character lives).
         let id = self.active_cs_id(c);
         match self.eqtb.get(id).cloned() {
-            Some(crate::eqtb::Equiv::Macro(m)) => self.expand_macro(id, &m),
+            Some(crate::eqtb::Equiv::Macro(m)) => self.expand_macro(id, &m, id),
             Some(crate::eqtb::Equiv::Prim(p)) => {
                 if self.is_expandable(p) {
                     let _ = self.expand_prim_dispatch(p, id);
@@ -282,8 +247,20 @@ impl Engine {
             Prim::HFil => Glue::fil(1, 0),
             Prim::HFill => Glue::fil(2, 0),
             Prim::HFilL => Glue::fil(3, 0),
-            Prim::HFilNeg => Glue { width: 0, stretch: -ONE, shrink: 0, stretch_order: 1, shrink_order: 0 },
-            Prim::HSS => Glue { width: 0, stretch: ONE, shrink: ONE, stretch_order: 1, shrink_order: 1 },
+            Prim::HFilNeg => Glue {
+                width: 0,
+                stretch: -ONE,
+                shrink: 0,
+                stretch_order: 1,
+                shrink_order: 0,
+            },
+            Prim::HSS => Glue {
+                width: 0,
+                stretch: ONE,
+                shrink: ONE,
+                stretch_order: 1,
+                shrink_order: 1,
+            },
             _ => Glue::zero(),
         }
     }
@@ -298,8 +275,20 @@ impl Engine {
             Prim::VFil => Glue::fil(1, 0),
             Prim::VFill => Glue::fil(2, 0),
             Prim::VFilL => Glue::fil(3, 0),
-            Prim::VFilNeg => Glue { width: 0, stretch: -ONE, shrink: 0, stretch_order: 1, shrink_order: 0 },
-            Prim::VSS => Glue { width: 0, stretch: ONE, shrink: ONE, stretch_order: 1, shrink_order: 1 },
+            Prim::VFilNeg => Glue {
+                width: 0,
+                stretch: -ONE,
+                shrink: 0,
+                stretch_order: 1,
+                shrink_order: 0,
+            },
+            Prim::VSS => Glue {
+                width: 0,
+                stretch: ONE,
+                shrink: ONE,
+                stretch_order: 1,
+                shrink_order: 1,
+            },
             _ => Glue::zero(),
         }
     }
@@ -374,22 +363,18 @@ impl Engine {
         }
     }
 
-    /// Append a node to the outer vertical list. Outside an output routine
-    /// this is a plain push. While a user `\output` runs, tex.web executes
-    /// the routine on a FRESH list (`push_nest; mode:=-vmode`) and
-    /// <Resume the page builder> (@19937) splices that list *ahead of* the
-    /// contribution-list remainder. Rust keeps the remainder in `page_list`
-    /// and models the fresh list with the `output_tail` cursor: every
-    /// routine-level append inserts at the cursor, so longtable's trailing
-    /// `\copy\LT@head\nobreak` (plus the following chunk rows) opens the
-    /// next page instead of landing after the held-over rows.
+    /// Append a node to the current vertical list. In outer vertical mode
+    /// this is the contribution list (`page_list`). During an output routine
+    /// tex.web runs the routine in INTERNAL vertical mode on a fresh list
+    /// (`push_nest; mode:=-vmode`, §28635), which Rust keeps in `cur_list`;
+    /// <Resume the page builder> (§28652-28661) splices that list into the
+    /// contribution list at finish_output, so appends must not touch
+    /// `page_list` while `output_tail` is active.
     pub fn page_append(&mut self, n: Node) {
-        match self.output_tail {
-            Some((c, saved)) => {
-                self.page_list.insert(c, n);
-                self.output_tail = Some((c + 1, saved));
-            }
-            None => self.page_list.push(n),
+        if self.mode == Mode::Vertical {
+            self.page_list.push(n);
+        } else {
+            self.cur_list.push(n);
         }
     }
     /// appends to the current vertical list; at outer level the page builder
@@ -401,24 +386,7 @@ impl Engine {
         self.vlist_append_il(n, true);
     }
     pub fn vlist_append_il(&mut self, n: Node, interline: bool) {
-        if crate::debug_flag("FOOTWATCH") {
-            if let Node::Box { list, .. } = &n {
-                let chars: Vec<u8> = list.iter().filter_map(|m| match m { Node::Char { c, .. } => Some(*c), _ => None }).collect();
-                if chars.len() == 2 && chars[0].is_ascii_digit() && chars[1].is_ascii_digit() {
-                    eprintln!("FOOTV '{}' kinds={:?} macro={} in_output={} pages={} ss={}", String::from_utf8_lossy(&chars), self.box_kinds, self.current_macro, self.in_output, self.pdf_doc.pages.len(), self.eqtb.save_stack.len());
-                }
-            }
-        }
         if self.mode == Mode::Vertical {
-            if crate::debug_flag("G11W") {
-                if let Node::Glue(g) = &n {
-                    let wpt = g.width as f64 / 65536.0;
-                    if wpt > 10.5 && wpt < 14.5 && g.stretch == 0 && g.shrink == 0 {
-                        let ring: Vec<String> = self.tok_ring.iter().rev().take(10).map(|(v,_)| { let t = Token(*v); if t.is_cs() { format!("\\{}", String::from_utf8_lossy(self.cs.name(t.cs_id()))) } else { format!("{:#x}", t.0) } }).collect();
-                        eprintln!("G11 w={:.1} macro={} ring=[{}]", wpt, self.current_macro, ring.join(" "));
-                    }
-                }
-            }
             // tex.web append_to_vlist (§21374): interline glue is
             // materialized AT APPEND TIME against prev_depth with the
             // CURRENT \baselineskip — deferring it to the page builder
@@ -427,25 +395,49 @@ impl Engine {
             // bibliography)
             let trigger = matches!(
                 n,
-                Node::Box { .. } | Node::Rule { .. } | Node::Ins { .. } | Node::Penalty(_)
+                Node::Box { .. }
+                    | Node::Rule { .. }
+                    | Node::Ins { .. }
+                    | Node::Penalty(_)
+                    | Node::Glue(_)
+                    | Node::Kern(_)
             );
             match &n {
-                Node::Box { h, d, .. } | Node::Rule { height: h, depth: d, .. } => {
+                Node::Box { h, d, .. } => {
                     if interline {
                         const IGNORE: i32 = -1000 * 65536;
                         if self.prev_depth > IGNORE {
-                            let bs = self.eqtb.glue_params[GlueParam::BaselineSkip.idx() as usize].clone();
-                            let ls = self.eqtb.glue_params[GlueParam::LineSkip.idx() as usize].clone();
+                            let bs = self.eqtb.glue_params[GlueParam::BaselineSkip.idx() as usize]
+                                .clone();
+                            let ls =
+                                self.eqtb.glue_params[GlueParam::LineSkip.idx() as usize].clone();
                             let lsl = self.eqtb.dim_params[DimParam::LineSkipLimit.idx() as usize];
                             let b = bs.width as i64 - self.prev_depth as i64 - *h as i64;
-                            let glue = if b < lsl as i64 { ls } else { Glue { width: b as i32, ..bs } };
-                            if crate::debug_flag("ILW") { eprintln!("ILA pd={:.1} bs={:.1} h={:.1} w={:.1} macro={}", self.prev_depth as f64/65536.0, bs.width as f64/65536.0, *h as f64/65536.0, glue.width as f64/65536.0, self.current_macro); }
-                            if glue.width != 0 || glue.stretch != 0 || glue.shrink != 0 {
-                                self.page_append(Node::Glue(glue));
-                            }
+                            let glue = if b < lsl as i64 {
+                                ls
+                            } else {
+                                Glue {
+                                    width: b as i32,
+                                    ..bs
+                                }
+                            };
+
+                            // tex.web §21376: append_to_vlist materializes the
+                            // interline glue UNCONDITIONALLY — a 0pt glue is
+                            // still a node on the page list, and build_page
+                            // treats a glue after a non-discardable node as a
+                            // legal breakpoint (suppressing zero glue here
+                            // loses the canonical cut before the next box)
+                            self.page_append(Node::Glue(glue));
                         }
                     }
                     self.prev_depth = *d;
+                }
+                Node::Rule { .. } => {
+                    // tex.web §1067/§1068: hrule in vmode does NOT get interline
+                    // glue, and sets prev_depth := ignore_depth
+                    const IGNORE: i32 = -1000 * 65536;
+                    self.prev_depth = IGNORE;
                 }
                 _ => {}
             }
@@ -461,6 +453,7 @@ impl Engine {
     pub fn append_whatsit(&mut self, n: Node) {
         match self.mode {
             Mode::Vertical | Mode::InternalVertical => self.vlist_append(n),
+            Mode::Math | Mode::DisplayMath => self.append_mlist_node(n),
             _ => self.cur_list.push(n),
         }
     }
@@ -468,11 +461,6 @@ impl Engine {
     // ---------- characters with ligatures & kerns ----------
 
     pub fn append_char(&mut self, c: u8) {
-        eprintln!("CHARTRACE-ALIVE {:?} at {}:{} stack=[{:?}]", c as char, self.input.current_file_name(), self.input.current_file_line(),
-            self.input.stack.iter().rev().take(3).map(|s| match s {
-                crate::input::Source::TokList { name, pos, .. } => format!("T:{}#{}", name, pos),
-                crate::input::Source::File { name, line_no, .. } => format!("F:{}#{}", name.split('/').last().unwrap_or(name), line_no),
-            }).collect::<Vec<_>>());
         let f = self.eqtb.cur_font_val;
         if f == 0 {
             // real TeX nullfont: chars are silently dropped (no error)
@@ -504,18 +492,23 @@ impl Engine {
         }
         match self.cur_list.last() {
             Some(Node::Char { c: pc, font: pf }) => *pf == f && *pc as i32 == hc,
-            Some(Node::Ligature { font: pf, letters, n_letters, .. }) => {
-                *pf == f && *n_letters > 0 && letters[*n_letters as usize - 1] as i32 == hc
-            }
+            Some(Node::Ligature {
+                font: pf,
+                letters,
+                n_letters,
+                ..
+            }) => *pf == f && *n_letters > 0 && letters[*n_letters as usize - 1] as i32 == hc,
             _ => false,
         }
     }
 
-    fn flush_hyphen_disc(&mut self, f: u16) {
+    pub(crate) fn flush_hyphen_disc(&mut self, f: u16) {
         if self.tail_ends_hyphen(f) {
             self.cur_list.push(Node::Disc(crate::boxes::DiscNode {
-                pre_break: Vec::new(), post_break: Vec::new(),
-                no_break: Vec::new(), replace_count: 0,
+                pre_break: Vec::new(),
+                post_break: Vec::new(),
+                no_break: Vec::new(),
+                replace_count: 0,
             }));
         }
     }
@@ -524,9 +517,13 @@ impl Engine {
         // ligature & kern with previous char (either Char or an already-formed Ligature)
         let prev: Option<(u8, [u8; 3], u8)> = match self.cur_list.last() {
             Some(Node::Char { c: pc, font: pf }) if *pf == f => Some((*pc, [0; 3], 0)),
-            Some(Node::Ligature { c: lc, font: pf, letters, n_letters, .. }) if *pf == f => {
-                Some((*lc, *letters, *n_letters))
-            }
+            Some(Node::Ligature {
+                c: lc,
+                font: pf,
+                letters,
+                n_letters,
+                ..
+            }) if *pf == f => Some((*lc, *letters, *n_letters)),
             _ => None,
         };
         if let Some((pc, pletters, pn)) = prev {
@@ -546,16 +543,28 @@ impl Engine {
                     let lc = step.lig_char;
                     let dims = self.char_dims(f, lc);
                     let mut letters = [0u8; 3];
-                    let base: &[u8] = if pn > 0 { &pletters[..pn as usize] } else { &[pc] };
+                    let base: &[u8] = if pn > 0 {
+                        &pletters[..pn as usize]
+                    } else {
+                        &[pc]
+                    };
                     let n = (base.len() + 1).min(3);
                     letters[..base.len().min(3)].copy_from_slice(&base[..base.len().min(3)]);
                     if base.len() < 3 {
                         letters[base.len()] = c;
                     }
-                    self.cur_list.push(Node::Ligature { c: lc, font: f, lig_width: dims.0, lig_height: dims.1, lig_depth: dims.2, letters, n_letters: n as u8 });
+                    self.cur_list.push(Node::Ligature {
+                        c: lc,
+                        font: f,
+                        lig_width: dims.0,
+                        lig_height: dims.1,
+                        lig_depth: dims.2,
+                        letters,
+                        n_letters: n as u8,
+                    });
                     let _ = ends_hyphen; // the disc rides at settle time
-                    // (flush_hyphen_disc at the first non-ligating append) —
-                    // pushing it here would break the "---" -> em-dash chain
+                                         // (flush_hyphen_disc at the first non-ligating append) —
+                                         // pushing it here would break the "---" -> em-dash chain
                     if step.keep_right {
                         // re-add the new char after lig (iterate)
                         if step.iterate {
@@ -613,7 +622,14 @@ impl Engine {
                 if step.op >= 128 {
                     let idx = ((step.op as usize) - 128) * 256 + step.rem as usize;
                     let amt = font.kerns.get(idx).copied().unwrap_or(0);
-                    return Some(LigKernStep { is_kern: true, kern_amount: amt, lig_char: 0, keep_left: false, keep_right: false, iterate: false });
+                    return Some(LigKernStep {
+                        is_kern: true,
+                        kern_amount: amt,
+                        lig_char: 0,
+                        keep_left: false,
+                        keep_right: false,
+                        iterate: false,
+                    });
                 } else {
                     return Some(LigKernStep {
                         is_kern: false,
@@ -673,28 +689,46 @@ impl Engine {
             // (§13468). Baking \hsize in here made \noalign{\hrule} blocks
             // (booktabs) blow the alignment up to full text width.
             self.prev_depth = -1000 * 65536;
-            self.vlist_append(Node::Rule { width, height, depth });
+            self.vlist_append(Node::Rule {
+                width,
+                height,
+                depth,
+            });
             return;
         }
         if width == RULE_FILL {
             width = crate::scaled::ONE * 2 / 5;
         }
-        let node = Node::Rule { width, height, depth };
+        let node = Node::Rule {
+            width,
+            height,
+            depth,
+        };
         match self.mode {
-            Mode::Horizontal | Mode::RestrictedHorizontal => self.cur_list.push(node),
-            // tex.web alignment: halign cells are assembled in internal
-            // vertical mode and hpacked later; tabular preambles put \vrule
-            // tokens (the `|` columns) at u-part start. Real TeX accepts the
-            // rule there and it lands in the cell's packed hbox.
-            Mode::InternalVertical if !horizontal => self.cur_list.push(node),
-            Mode::Math | Mode::DisplayMath => self.append_mlist_node(node),
-            _ => {
-                let who = self.cur_cs.map(|c| String::from_utf8_lossy(self.cs.name(c)).into_owned()).unwrap_or_default();
-                self.error(&format!("\\vrule outside horizontal mode (cur_cs={} mode={:?} file={}:{} {})", who, self.mode, self.input.current_file_name(), self.input.current_file_line(), self.input.stack.iter().rev().take(4).map(|s| match s {
-                    crate::input::Source::TokList { name, pos, toks, .. } => format!("{}:{}/{}", name, pos, toks.len()),
-                    crate::input::Source::File { name, line_no, .. } => format!("{}:{}", name, line_no),
-                }).collect::<Vec<_>>().join(" << ")));
+            Mode::Horizontal | Mode::RestrictedHorizontal => {
+                if horizontal && self.mode == Mode::Horizontal {
+                    self.end_paragraph();
+                    self.vlist_append(node);
+                } else {
+                    self.cur_list.push(node);
+                }
             }
+            Mode::Vertical => {
+                if horizontal {
+                    self.vlist_append(node);
+                } else {
+                    self.start_paragraph(true);
+                    self.cur_list.push(node);
+                }
+            }
+            Mode::InternalVertical => {
+                if horizontal {
+                    self.vlist_append(node);
+                } else {
+                    self.cur_list.push(node);
+                }
+            }
+            Mode::Math | Mode::DisplayMath => self.append_mlist_node(node),
         }
     }
 
@@ -716,18 +750,6 @@ impl Engine {
 
     /// \hbox to 10pt{...} etc: scan spec, push group context
     pub fn begin_box(&mut self, kind: u8) {
-        if crate::debug_flag("IFTRACE") {
-            let src = match self.input.stack.last() {
-                Some(crate::input::Source::TokList { name, .. }) => name.clone(),
-                Some(crate::input::Source::File { name, .. }) => format!("F:{}", name),
-                None => String::new(),
-            };
-            eprintln!("BEGIN-BOX kind={} mode={:?} line={} src={} prim={:?} cur={:?} kinds={:?} ring=[{}] pushed_top={:?}", kind, self.mode, self.input.current_file_line(), src, self.cur_prim,
-                { let t = self.cur_tok; if t.is_cs() { String::from_utf8_lossy(self.cs.name(t.cs_id())).into_owned() } else { format!("{:#x}", t.0) } },
-                self.box_kinds,
-                self.tok_ring.iter().rev().take(14).map(|(v, _ln)| { let t = Token(*v); if t.is_cs() { String::from_utf8_lossy(self.cs.name(t.cs_id())).into_owned() } else if t.is_char() { format!("cc{}:{:?}", t.cc(), t.chr() as u8 as char) } else { format!("{:#x}", t.0) } }).collect::<Vec<_>>().join(" "),
-                self.pushed.last().map(|t| if t.is_cs() { format!("\\{}", String::from_utf8_lossy(self.cs.name(t.cs_id()))) } else { format!("{:#x}", t.0) }).unwrap_or_default());
-        }
         // scan "to"/"spread" target (tex.web scan_spec uses scan_keyword
         // (character keywords), not control sequences)
         let mut target: Option<(i32, bool)> = None; // (dim, is_spread)
@@ -745,7 +767,7 @@ impl Engine {
         let t = self.get_x_raw();
         if !self.token_is_left_brace(t) {
             let got = if t.is_cs() {
-                format!("\\{}", String::from_utf8_lossy(self.cs.name(t.cs_id())))
+                self.display_cs(t.cs_id())
             } else {
                 format!("cc{}:{:#x}", t.cc(), t.chr())
             };
@@ -757,17 +779,43 @@ impl Engine {
             Some((d, _)) => d,
             None => 0,
         };
-        if crate::debug_flag("IFTRACE") { eprintln!("PUSH-BG437"); }
+
         // save the outer list context: mode, current list, prev_depth, space_factor
-        self.saved_lists.push((self.mode, std::mem::take(&mut self.cur_list), self.prev_depth, self.space_factor));
-        self.eqtb.push_level(LevelType::Box);
+        self.saved_lists.push((
+            self.mode,
+            std::mem::take(&mut self.cur_list),
+            self.prev_depth,
+            self.space_factor,
+            self.prev_graf,
+        ));
+        self.prev_graf = 0;
+        self.push_group_level(LevelType::Box);
 
         self.box_targets.push(target);
         self.box_shifts.push(shift);
         self.box_kinds.push(kind);
         match kind {
-            0 => self.mode = Mode::RestrictedHorizontal,
-            1 | 2 | 9 => {
+            0 => {
+                self.mode = Mode::RestrictedHorizontal;
+                let toks = (*self.eqtb.tok_params
+                    [crate::prim::ToksParam::EveryHBox.idx() as usize])
+                    .clone();
+                if !toks.is_empty() {
+                    self.push_tokens_named(toks, "<everyhbox>");
+                }
+            }
+            1 | 2 | 3 => {
+                self.normal_paragraph();
+                self.mode = Mode::InternalVertical;
+                self.prev_depth = -1000 * 65536;
+                let toks = (*self.eqtb.tok_params
+                    [crate::prim::ToksParam::EveryVBox.idx() as usize])
+                    .clone();
+                if !toks.is_empty() {
+                    self.push_tokens_named(toks, "<everyvbox>");
+                }
+            }
+            9 => {
                 self.mode = Mode::InternalVertical;
                 self.prev_depth = -1000 * 65536;
             }
@@ -777,13 +825,7 @@ impl Engine {
 
     /// called on the matching `}` for a box group or plain group
     pub fn end_box(&mut self) {
-        if crate::debug_flag("IFTRACE") {
-            eprintln!("ENDBOX kinds={} saved={} targets={} pars={}", self.box_kinds.len(), self.saved_lists.len(), self.box_targets.len(), self.par_saves);
-        }
         if self.box_kinds.is_empty() {
-            eprintln!("TMBOX ring=[{}] pushed={:?}",
-                self.tok_ring.iter().rev().take(24).map(|(v, ln)| format!("{v:#x}@{ln}")).collect::<Vec<_>>().join(" "),
-                self.pushed.iter().rev().take(8).map(|x| format!("{:#x}", x.0)).collect::<Vec<_>>());
             self.error("Too many }'s");
             return;
         }
@@ -791,22 +833,42 @@ impl Engine {
         // tex.web end_gracefully: closing a vertical box group while a
         // paragraph is running inside it forces the \par first, so the
         // packed lines join the vbox instead of being vpack-discarded
-        if crate::debug_flag("DROPTRACE") {
-            eprintln!("DT-EB kind={} mode={:?} line={} cur_n={}", kind, self.mode, self.input.current_file_line(), self.cur_list.len());
-        }
+
         if matches!(kind, 1 | 2 | 3 | 8 | 9) && self.mode == Mode::Horizontal {
             self.par_primitive();
         }
         let target = self.box_targets.pop().flatten();
         let shift = self.box_shifts.pop().unwrap_or(0);
         let inner = std::mem::replace(&mut self.cur_list, Vec::new());
-        let (outer_mode, outer_list, pd, sf) = self.saved_lists.pop().unwrap_or((
+        let (outer_mode, outer_list, pd, sf, pg) = self.saved_lists.pop().unwrap_or((
             // group desync (e.g. runaway end): stay in the current context
             self.mode,
             std::mem::take(&mut self.cur_list),
             self.prev_depth,
             self.space_factor,
+            self.prev_graf,
         ));
+        self.prev_graf = pg;
+        // tex.web @21193-21194 (insert_group): `q:=split_top_skip;
+        // d:=split_max_depth; f:=floating_penalty; unsave` — the insert's
+        // float cost AND its split metadata are the LOCAL values captured
+        // before unsave restores the outer ones. Reading them after
+        // pop_group would miss settings made inside the group (LaTeX's
+        // `\@footnotetext` sets `\floatingpenalty` to `\@MM` there; a
+        // class's `\insert\n` can locally re-set `\splittopskip`/
+        // `\splitmaxdepth` before closing).
+        let (ins_float_cost, ins_split_top_skip, ins_split_max_depth) = if kind == 8 {
+            (
+                self.eqtb.int_params[IntParam::FloatingPenalty.idx() as usize],
+                self.eqtb.glue_params[GlueParam::SplitTopSkip.idx() as usize],
+                self.eqtb.dim_params[DimParam::SplitMaxDepth.idx() as usize],
+            )
+        } else {
+            (0, Glue::zero(), 0)
+        };
+        // `\boxmaxdepth` is scoped to the vbox group and package() uses the
+        // value that is still current before unsave (tex.web §1102).
+        let box_max_depth = self.eqtb.dim_params[DimParam::BoxMaxDepth.idx() as usize];
         self.pop_group();
         self.prev_depth = pd;
         self.space_factor = sf;
@@ -829,8 +891,8 @@ impl Engine {
             }
             return;
         }
-        // tex.web package(): vboxes are packed against \boxmaxdepth
-        let max_depth = self.eqtb.dim_params[DimParam::BoxMaxDepth.idx() as usize];
+        // tex.web package(): vboxes are packed against the value of
+        // \boxmaxdepth captured before the box group was unsaved.
         let pack = |list: Vec<Node>, target: Option<(i32, bool)>, k: u8| -> boxes::PackResult {
             let (dim, spread) = match target {
                 Some((d, sp)) => (Some(d), sp),
@@ -838,48 +900,18 @@ impl Engine {
             };
             match k {
                 0 | 6 => boxes::hpack_add(list, dim, spread, boxes::HBOX, &self.eqtb),
-                1 | 5 | 8 => boxes::vpack_add_md(list, dim, spread, boxes::VBOX, &self.eqtb, max_depth),
-                2 => boxes::vtop_md(list, dim, spread, &self.eqtb, max_depth),
-                3 => {
-                    // \vcenter: natural packing, recentered via shift
-                    let mut r = boxes::vpack_add_md(list, dim, spread, boxes::VBOX, &self.eqtb, i32::MAX);
-                    if let Node::Box { h: h0, d: d0, shift, .. } = &mut r.node {
-                        *shift = (*h0 - *d0) / 2;
-                    }
-                    if crate::debug_flag("VCDBG") {
-                        if let Node::Box { h, d, shift, list, .. } = &r.node {
-                            eprintln!("VCENTER h={:.2} d={:.2} shift={:.2} n={}", *h as f64 / 65536.0, *d as f64 / 65536.0, *shift as f64 / 65536.0, list.len());
-                            for m in list.iter() {
-                                if let Node::Box { h: ih, d: id, list: il, .. } = m {
-                                    eprintln!("  VCI inner h={:.2} d={:.2} n={}", *ih as f64 / 65536.0, *id as f64 / 65536.0, il.len());
-                                    for (k, mm) in il.iter().enumerate() {
-                                        let dsc = match mm {
-                                            Node::Box { h, d, .. } => format!("box h={:.2} d={:.2}", *h as f64 / 65536.0, *d as f64 / 65536.0),
-                                            Node::Glue(g) => format!("glue {:.2}", g.width as f64 / 65536.0),
-                                            Node::Penalty(p) => format!("pen{}", p),
-                                            _ => "?".to_string(),
-                                        };
-                                        eprintln!("    [{}] {}", k, dsc);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    r
+                1 | 5 => {
+                    boxes::vpack_add_md(list, dim, spread, boxes::VBOX, &self.eqtb, box_max_depth)
                 }
+                2 => boxes::vtop_md(list, dim, spread, &self.eqtb, box_max_depth),
+                // \vcenter and \insert pack with vpack == vpackage(l:=max_dimen):
+                // tex.web @21196 `p:=vpack(link(head),natural)` — \boxmaxdepth
+                // never applies to an insertion vbox
+                3 | 8 => boxes::vpack_add_md(list, dim, spread, boxes::VBOX, &self.eqtb, i32::MAX),
                 _ => boxes::hpack_add(list, None, false, boxes::HBOX, &self.eqtb),
             }
         };
-        if crate::debug_flag("DROPTRACE") {
-            let desc: Vec<String> = inner.iter().take(12).map(|n| match n {
-                Node::Glue(g) => format!("G{:.1}/{:.1}", g.width as f64 / 65536.0, g.stretch as f64 / 65536.0),
-                Node::Box { w, h, d, list, .. } => format!("B(w{:.1} h{:.1} d{:.1} n{})", *w as f64 / 65536.0, *h as f64 / 65536.0, *d as f64 / 65536.0, list.len()),
-                Node::Penalty(p) => format!("P{}", p),
-                Node::Char { c, .. } => format!("ch'{}'", *c as u8 as char),
-                _ => "?".into(),
-            }).collect();
-            eprintln!("DT-ENDBOX kind={} target={:?} line={} n={} [{}] outer_mode={:?}", kind, target, self.input.current_file_line(), /*inner consumed below*/ 0, desc.join(" "), self.mode);
-        }
+
         let res = pack(inner, target, kind);
         self.last_badness = res.badness;
         match kind {
@@ -889,6 +921,11 @@ impl Engine {
         let mut node = res.node;
         if let Node::Box { shift: s, .. } = &mut node {
             *s += shift;
+        }
+        if kind == 3 {
+            node = Node::VCenter {
+                box_node: Box::new(node),
+            };
         }
         if kind == 7 {
             self.cur_list = outer_list;
@@ -907,27 +944,37 @@ impl Engine {
             }
         }
         self.cur_list = outer_list;
-        // \insert group: wrap the packed vbox into an insert node
+        // \insert group: wrap the packed vbox into an insert node.
+        // tex.web @21196-21201: `float_cost(tail):=f` where f was the
+        // floating_penalty read before unsave — never \insertpenalties
+        // (that register is the page builder's running total; clobbering
+        // it to 0 here loses penalties accumulated earlier on the page).
         if kind == 8 {
             if let Some(num) = self.insert_nums.pop() {
                 let (h, d) = match &node {
                     Node::Box { h, d, .. } => (*h, *d),
                     _ => (0, 0),
                 };
-                let cost = std::mem::replace(
-                    &mut self.eqtb.int_params[IntParam::InsertPenalties.idx() as usize],
-                    0,
-                );
-                node = Node::Ins { num, height: h, depth: d, cost, box_node: Box::new(node) };
+                node = Node::Ins {
+                    num,
+                    height: h,
+                    depth: d,
+                    cost: ins_float_cost,
+                    split_top_skip: ins_split_top_skip,
+                    split_max_depth: ins_split_max_depth,
+                    box_node: Box::new(node),
+                };
             }
         }
         // a leader-object box completes a \leaders group
         if matches!(kind, 0..=3) {
-            if let Some(lk) = self.pop_leader_kind() {
-                if self.setbox_target.is_some() && self.setbox_depth == self.box_kinds.len() {
-                    self.unpark_setbox();
-                    self.error("A <box> was supposed to be here");
-                }
+            let is_leader_match = LEADER_KINDS.with(|s| {
+                s.borrow()
+                    .last()
+                    .map_or(false, |&(d, _)| d == self.box_kinds.len())
+            });
+            if is_leader_match {
+                let (_, lk) = LEADER_KINDS.with(|s| s.borrow_mut().pop().unwrap());
                 let body = boxes::LeaderBody::Box(Box::new(node));
                 self.finish_leaders(lk, body);
                 return;
@@ -957,26 +1004,16 @@ impl Engine {
             }
             let _ = is_hmove;
         }
-        self.append_box_node(Some(node));
+        // Unlike a completed \hbox/\vbox, an insertion node does not reset
+        // space_factor (tex.web insert_group appends it directly).
+        if kind == 8 && matches!(self.mode, Mode::Horizontal | Mode::RestrictedHorizontal) {
+            self.cur_list.push(node);
+        } else {
+            self.append_box_node(Some(node));
+        }
     }
 
     pub fn append_box_node(&mut self, b: Option<Node>) {
-        if crate::debug_flag("LTW") {
-            if let Some(Node::Box { h, d, list, .. }) = &b {
-                let chars: Vec<u8> = list.iter().filter_map(|n| match n { Node::Char { c, .. } => Some(*c), _ => None }).take(20).collect();
-                eprintln!("LTW-APPEND mode={:?} in_output={} pages={} h={:.1} d={:.1} n={} head='{}'", self.mode, self.in_output, self.pdf_doc.pages.len(), *h as f64/65536.0, *d as f64/65536.0, list.len(), String::from_utf8_lossy(&chars));
-            } else if b.is_some() {
-                eprintln!("LTW-APPEND other mode={:?} in_output={} pages={}", self.mode, self.in_output, self.pdf_doc.pages.len());
-            }
-        }
-        if crate::debug_flag("FOOTWATCH") {
-            if let Some(Node::Box { list, .. }) = &b {
-                let chars: Vec<u8> = list.iter().filter_map(|n| match n { Node::Char { c, .. } => Some(*c), _ => None }).collect();
-                if chars.len() == 2 && chars[0].is_ascii_digit() && chars[1].is_ascii_digit() {
-                    eprintln!("FOOTWATCH '{}' mode={:?} kinds={:?} in_output={} pages={} macro={}", String::from_utf8_lossy(&chars), self.mode, self.box_kinds, self.in_output, self.pdf_doc.pages.len(), self.current_macro);
-                }
-            }
-        }
         match b {
             None => {}
             Some(node) => match self.mode {
@@ -991,16 +1028,24 @@ impl Engine {
                     if let Node::Box { h, d, .. } = &node {
                         const IGNORE_DEPTH: i32 = -1000 * 65536;
                         if self.prev_depth > IGNORE_DEPTH {
-                            let bs = self.eqtb.glue_params[crate::prim::GlueParam::BaselineSkip.idx() as usize].clone();
-                            let ls = self.eqtb.glue_params[crate::prim::GlueParam::LineSkip.idx() as usize].clone();
-                            let lsl = self.eqtb.dim_params[crate::prim::DimParam::LineSkipLimit.idx() as usize];
+                            let bs = self.eqtb.glue_params
+                                [crate::prim::GlueParam::BaselineSkip.idx() as usize]
+                                .clone();
+                            let ls = self.eqtb.glue_params
+                                [crate::prim::GlueParam::LineSkip.idx() as usize]
+                                .clone();
+                            let lsl = self.eqtb.dim_params
+                                [crate::prim::DimParam::LineSkipLimit.idx() as usize];
                             let diff = bs.width as i64 - self.prev_depth as i64 - *h as i64;
-                        if crate::debug_flag("ILW") { eprintln!("ILW pd={:.1} bs={:.1} h={:.1} diff={:.1}", self.prev_depth as f64/65536.0, bs.width as f64/65536.0, *h as f64/65536.0, diff as f64/65536.0); }
+
                             let glue = if diff < lsl as i64 {
-                                 ls
-                             } else {
-                                 Glue { width: diff as i32, ..bs }
-                             };
+                                ls
+                            } else {
+                                Glue {
+                                    width: diff as i32,
+                                    ..bs
+                                }
+                            };
                             if glue.width != 0 || glue.stretch != 0 || glue.shrink != 0 {
                                 self.cur_list.push(Node::Glue(glue));
                             }
@@ -1019,15 +1064,14 @@ impl Engine {
     /// \\unhbox/\\unvbox/\\unhcopy/\\unvcopy: splice a box register's list
     /// into the current list. Copy variants leave the register intact.
     pub fn do_unbox(&mut self, want_v: bool, copy: bool) {
-        if crate::debug_flag("COPYW") { eprintln!("UNBOX want_v={} copy={} mode={:?} in_output={} pages={}", want_v, copy, self.mode, self.in_output, self.pdf_doc.pages.len()); }
         let n = self.scan_reg_num();
-        if crate::debug_flag("LTW") { eprintln!("LTW-UNBOX n={} want_v={} copy={} mode={:?} box_present={} page_processed={} listlen={}", n, want_v, copy, self.mode, self.eqtb.boxed.get(n as usize).map(|x| x.is_some()).unwrap_or(false), self.page_processed, self.page_list.len()); }
         let node = if copy {
             self.eqtb.boxed.get(n as usize).cloned().flatten()
         } else {
-            // tex.web §1110: \\unhbox/\\unvbox voids the register globally
-            let old = self.eqtb.boxed.get(n as usize).cloned().flatten();
-            self.eqtb.assign_box(n, None, true);
+            // tex.web's box(n):=null consumes the value without changing its
+            // eqtb level. A locally assigned box can therefore restore the
+            // saved outer value when the current group closes.
+            let old = self.eqtb.take_box(n);
             self.global_flag = false;
             old
         };
@@ -1046,16 +1090,21 @@ impl Engine {
                     return;
                 }
 
-                // tex.web unpackage appends each node with append_to_vlist,
-                // which sets \prevdepth from every box/rule it contributes.
-                // Without that threading, an \unvbox (float placement) leaves
-                // \prevdepth at its pre-splice value and the next box's
-                // interline glue is computed against the wrong depth.
+                // tex.web unpackage (§21327-21331): the splice is pure link
+                // surgery (`link(tail):=list_ptr(p)` then advance `tail`) —
+                // append_to_vlist never runs, so NO interline glue is
+                // recomputed AND \prevdepth keeps its pre-splice value.
+                // (Verified against real pdftex: a box spliced by \unvbox
+                // does not feed its depth into the next line's
+                // \baselineskip glue.) Rust models the splice with
+                // vlist_append_il(item, false): glue is skipped, but the
+                // shared box arm also writes prev_depth — thread the outer
+                // value across the splice and restore it after.
+                let pd_before = self.prev_depth;
                 for item in list {
                     if self.mode.is_v() {
-                        // tex.web unpackage: the spliced list keeps its own
-                        // interline glue — no fresh glue is inserted
                         self.vlist_append_il(item, false);
+                        self.prev_depth = pd_before;
                     } else {
                         self.cur_list.push(item);
                     }
@@ -1065,8 +1114,7 @@ impl Engine {
         }
     }
 
-
-    fn pop_leader_kind(&self) -> Option<u8> {
+    fn pop_leader_kind(&self) -> Option<(usize, u8)> {
         LEADER_KINDS.with(|s| s.borrow_mut().pop())
     }
     fn box_prim_or_name(&self, t: Token) -> Option<Prim> {
@@ -1103,26 +1151,46 @@ impl Engine {
         }
     }
 
+    fn get_x_token_skip_spaces_relax(&mut self) -> Token {
+        loop {
+            let t = self.get_x_raw();
+            if t == crate::input::EOF_MARKER {
+                return t;
+            }
+            if t.is_char() && (t.cc() == 10 || t.cc() == 9) {
+                continue;
+            }
+            if t.is_cs() {
+                if let Some(crate::eqtb::Equiv::Prim(crate::prim::Prim::Relax)) =
+                    self.eqtb.resolve(t.cs_id())
+                {
+                    continue;
+                }
+            }
+            return t;
+        }
+    }
+
     /// append a leader node. tex.web scan_box/box_end leader context.
     pub fn begin_leaders(&mut self, kind: u8) {
         use boxes::LeaderBody;
-        self.skip_spaces_relax();
-        let t = self.get_token();
+        let depth = self.box_kinds.len();
+        let t = self.get_x_token_skip_spaces_relax();
         match self.box_prim_or_name(t) {
             Some(Prim::HBox) => {
-                LEADER_KINDS.with(|s| s.borrow_mut().push(kind));
+                LEADER_KINDS.with(|s| s.borrow_mut().push((depth, kind)));
                 self.begin_box(0);
             }
             Some(Prim::VBox) => {
-                LEADER_KINDS.with(|s| s.borrow_mut().push(kind));
+                LEADER_KINDS.with(|s| s.borrow_mut().push((depth, kind)));
                 self.begin_box(1);
             }
             Some(Prim::VTop) => {
-                LEADER_KINDS.with(|s| s.borrow_mut().push(kind));
+                LEADER_KINDS.with(|s| s.borrow_mut().push((depth, kind)));
                 self.begin_box(2);
             }
             Some(Prim::VCenter) => {
-                LEADER_KINDS.with(|s| s.borrow_mut().push(kind));
+                LEADER_KINDS.with(|s| s.borrow_mut().push((depth, kind)));
                 self.begin_box(3);
             }
             Some(Prim::Box) => {
@@ -1146,11 +1214,25 @@ impl Engine {
             }
             Some(Prim::HRule) => {
                 let (w, h, d) = self.scan_rule_dims(true);
-                self.finish_leaders(kind, LeaderBody::Rule { width: w, height: h, depth: d });
+                self.finish_leaders(
+                    kind,
+                    LeaderBody::Rule {
+                        width: w,
+                        height: h,
+                        depth: d,
+                    },
+                );
             }
             Some(Prim::VRule) => {
                 let (w, h, d) = self.scan_rule_dims(false);
-                self.finish_leaders(kind, LeaderBody::Rule { width: w, height: h, depth: d });
+                self.finish_leaders(
+                    kind,
+                    LeaderBody::Rule {
+                        width: w,
+                        height: h,
+                        depth: d,
+                    },
+                );
             }
             _ => {
                 self.pushed.push(t);
@@ -1163,8 +1245,7 @@ impl Engine {
     /// leader node ("Leaders not followed by proper glue" otherwise).
     fn finish_leaders(&mut self, kind: u8, body: boxes::LeaderBody) {
         use crate::prim::Prim;
-        self.skip_spaces_relax();
-        let t = self.get_token();
+        let t = self.get_x_token_skip_spaces_relax();
         let p = if t.is_cs() {
             match self.eqtb.resolve(t.cs_id()).cloned() {
                 Some(crate::eqtb::Equiv::Prim(p)) => Some(p),
@@ -1175,19 +1256,29 @@ impl Engine {
         };
         let is_h_glue = matches!(
             p,
-            Some(Prim::HSkip) | Some(Prim::HFil) | Some(Prim::HFill) | Some(Prim::HFilL)
-                | Some(Prim::HFilNeg) | Some(Prim::HSS)
+            Some(Prim::HSkip)
+                | Some(Prim::HFil)
+                | Some(Prim::HFill)
+                | Some(Prim::HFilL)
+                | Some(Prim::HFilNeg)
+                | Some(Prim::HSS)
         );
         let is_v_glue = matches!(
             p,
-            Some(Prim::VSkip) | Some(Prim::VFil) | Some(Prim::VFill) | Some(Prim::VFilL)
-                | Some(Prim::VFilNeg) | Some(Prim::VSS)
+            Some(Prim::VSkip)
+                | Some(Prim::VFil)
+                | Some(Prim::VFill)
+                | Some(Prim::VFilL)
+                | Some(Prim::VFilNeg)
+                | Some(Prim::VSS)
         );
-        let want_h = !self.mode.is_v();
-        let glue = if want_h && is_h_glue {
+        let is_m_glue = matches!(p, Some(Prim::MSkip));
+        let glue = if (self.mode.is_h() || self.mode.is_m()) && is_h_glue {
             self.scan_hskip_kind(p.unwrap())
-        } else if !want_h && is_v_glue {
+        } else if self.mode.is_v() && is_v_glue {
             self.scan_vskip_kind(p.unwrap())
+        } else if self.mode.is_m() && is_m_glue {
+            self.scan_glue(true)
         } else {
             self.pushed.push(t);
             self.error("Leaders not followed by proper glue");
@@ -1240,11 +1331,15 @@ impl Engine {
         if x > 0 && res.order == 0 {
             // underfull / loose (includes badness 10000 when nothing stretches)
             if res.badness > bad_param {
-                let kw = if res.badness > 100 { "Underfull" } else { "Loose" };
+                let kw = if res.badness > 100 {
+                    "Underfull"
+                } else {
+                    "Loose"
+                };
                 msg = Some(format!("{} {} (badness {}) {}", kw, obj, res.badness, at));
             }
         } else if x < 0 && res.order == 0 {
-            if res.badness == 1_000_000 {
+            if -x > res.shrink[0] {
                 let excess = -x - res.shrink[0];
                 if excess > fuzz as i64 || bad_param < 100 {
                     msg = Some(format!(
@@ -1295,8 +1390,11 @@ impl Engine {
         let idx = self.scan_reg_num();
         self.scan_optional_equals();
         let v = self.scan_dimen(false, false);
-        if let Some(Node::Box { w, h, d, .. }) =
-            self.eqtb.boxed.get_mut(idx as usize).and_then(|o| o.as_mut())
+        if let Some(Node::Box { w, h, d, .. }) = self
+            .eqtb
+            .boxed
+            .get_mut(idx as usize)
+            .and_then(|o| o.as_mut())
         {
             match which {
                 0 => *w = v,
@@ -1329,7 +1427,9 @@ impl Engine {
             self.pending_box_shift = Some((d, true));
             self.skip_spaces_relax();
             let t = self.get_token();
-            if self.box_prim_or_name(t).is_some() || (t.is_cs() && self.cs.name(t.cs_id()) == b"usebox") {
+            if self.box_prim_or_name(t).is_some()
+                || (t.is_cs() && self.cs.name(t.cs_id()) == b"usebox")
+            {
                 self.pushed.push(t);
                 self.scan_box_after_move();
             } else {
@@ -1341,7 +1441,9 @@ impl Engine {
             self.pending_box_shift = Some((d, false));
             self.skip_spaces_relax();
             let t = self.get_token();
-            if self.box_prim_or_name(t).is_some() || (t.is_cs() && self.cs.name(t.cs_id()) == b"usebox") {
+            if self.box_prim_or_name(t).is_some()
+                || (t.is_cs() && self.cs.name(t.cs_id()) == b"usebox")
+            {
                 self.pushed.push(t);
                 self.scan_box_after_move();
             } else {
@@ -1435,10 +1537,20 @@ impl Engine {
     /// broke LaTeX's \addvspace `\ifdim\lastskip=\z@` branching).
     fn current_tail(&self) -> Option<&Node> {
         match self.mode {
-            Mode::Vertical => self
-                .page_list
-                .get(self.page_processed.max(0) as usize..)
-                .and_then(|s| s.last()),
+            Mode::Vertical => {
+                if let Some((c, ..)) = self.output_tail {
+                    if c > 0 && c <= self.page_list.len() {
+                        return self.page_list.get(c - 1);
+                    }
+                    return None;
+                }
+                // outer vmode: the page builder has already moved
+                // `page_list[..page_processed]` onto the current page, so
+                // the contribution-list tail is the last UNCONSUMED node;
+                // an empty suffix means an empty list (tail == head)
+                let start = self.page_processed.min(self.page_list.len());
+                self.page_list[start..].last()
+            }
             _ => self.cur_list.last(),
         }
     }
@@ -1446,11 +1558,22 @@ impl Engine {
     fn take_current_tail(&mut self) -> Option<Node> {
         match self.mode {
             Mode::Vertical => {
-                if self.page_list.len() > self.page_processed.max(0) as usize {
-                    self.page_list.pop()
-                } else {
-                    None
+                if let Some((c, saved, pg, m)) = self.output_tail {
+                    if c > 0 && c <= self.page_list.len() {
+                        let node = self.page_list.remove(c - 1);
+                        self.output_tail = Some((c - 1, saved, pg, m));
+                        return Some(node);
+                    }
+                    return None;
                 }
+                // only the unconsumed suffix is removable; popping a
+                // consumed page node steals shipped material and shifts
+                // every stored breakpoint index behind it
+                let start = self.page_processed.min(self.page_list.len());
+                if start >= self.page_list.len() {
+                    return None;
+                }
+                self.page_list.pop()
             }
             _ => self.cur_list.pop(),
         }
@@ -1458,8 +1581,8 @@ impl Engine {
 
     pub fn last_node_type_value(&self) -> i32 {
         match self.current_tail() {
+            None if self.mode == Mode::Vertical => self.last_page_node_type,
             None => -1,
-            Some(Node::Char { .. }) => 0,
             Some(Node::Box { kind, .. }) if *kind == boxes::HBOX => 1,
             Some(Node::Box { .. }) => 2,
             Some(Node::Rule { .. }) => 3,
@@ -1481,10 +1604,62 @@ impl Engine {
             | Some(Node::Accent { .. })
             | Some(Node::MathKern(..)) => 10,
             Some(Node::Glue(_)) | Some(Node::Leaders { .. }) => 11,
-            Some(Node::Kern(_)) | Some(Node::ExplicitKern(_)) => 12,
+            Some(Node::Kern(_)) | Some(Node::ExplicitKern(_)) | Some(Node::MarginKern { .. }) => 12,
             Some(Node::Penalty(_)) => 13,
             Some(Node::InsDisc) | Some(Node::Empty) => 14,
+            Some(Node::NonScript) | Some(Node::MuGlue(_)) => 11,
+            Some(Node::VCenter { .. }) => 10,
+            _ => -1,
         }
+    }
+    pub fn margin_kern_width(&self, n: u16, left: bool) -> i32 {
+        let Some(Some(Node::Box { list, .. })) = self.eqtb.boxed.get(n as usize) else {
+            return 0;
+        };
+        let nodes: Vec<&Node> = if left {
+            list.iter().collect()
+        } else {
+            list.iter().rev().collect()
+        };
+        for node in nodes {
+            match node {
+                Node::MarginKern { width, .. } => return *width,
+                Node::Glue(_) | Node::Kern(_) | Node::ExplicitKern(_) | Node::Penalty(_) => {
+                    continue
+                }
+                _ => break,
+            }
+        }
+        0
+    }
+
+    pub fn do_discretionary(&mut self) {
+        let f = self.eqtb.cur_font_val;
+        let toks_to_nodes = |toks: Vec<Token>| -> Vec<Node> {
+            toks.into_iter()
+                .filter_map(|t| {
+                    if t.is_char() {
+                        Some(Node::Char {
+                            c: t.chr() as u8,
+                            font: f,
+                        })
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        };
+        let pre = toks_to_nodes(self.scan_general_text());
+        let post = toks_to_nodes(self.scan_general_text());
+        let rep = toks_to_nodes(self.scan_general_text());
+        let d = Node::Disc(crate::boxes::DiscNode {
+            pre_break: pre,
+            post_break: post,
+            no_break: rep,
+            // Explicit replacements live here, not in following source nodes.
+            replace_count: 0,
+        });
+        self.cur_list.push(d);
     }
 
     pub fn take_last_box(&mut self) -> Option<Node> {
@@ -1498,6 +1673,7 @@ impl Engine {
     pub fn last_kern_value(&mut self) -> i32 {
         match self.current_tail() {
             Some(Node::Kern(k) | Node::ExplicitKern(k)) => *k,
+            None if self.mode == Mode::Vertical => self.last_page_kern,
             _ => 0,
         }
     }
@@ -1505,6 +1681,7 @@ impl Engine {
     pub fn last_penalty_value(&mut self) -> i32 {
         match self.current_tail() {
             Some(Node::Penalty(p)) => *p,
+            None if self.mode == Mode::Vertical => self.last_page_penalty,
             _ => 0,
         }
     }
@@ -1513,6 +1690,9 @@ impl Engine {
         match self.current_tail() {
             Some(Node::Glue(g)) => g.clone(),
             Some(Node::Leaders { glue, .. }) => glue.clone(),
+            None if self.mode == Mode::Vertical => {
+                self.last_page_glue.clone().unwrap_or_else(Glue::zero)
+            }
             _ => Glue::zero(),
         }
     }
@@ -1545,8 +1725,7 @@ impl Engine {
     }
 
     pub fn do_vsplit(&mut self) {
-        // \vsplit<n> to <dimen>: the top part becomes the box result, the
-        // remainder is written back to the source register (tex.web @958)
+        let _ = self.take_global();
         let (top, n, rest) = self.scan_vsplit();
         if let Some(rest) = rest {
             self.stash_vsplit_remainder(n, rest);
@@ -1554,37 +1733,39 @@ impl Engine {
         self.append_box_node(top);
     }
 
-    /// scan `\vsplit<n> to <dimen>`: split box n at the target height and
-    /// return (top part, source register, remainder). The source register is
-    /// emptied by the scan; the remainder must be re-stored via
-    /// `stash_vsplit_remainder`.
+    /// Scan `\vsplit<n> to <dimen>` and return the top part, source register,
+    /// and unpacked remainder. The caller replaces the source register with
+    /// the re-packed remainder via `stash_vsplit_remainder`.
     pub fn scan_vsplit(&mut self) -> (Option<Node>, u16, Option<NodeList>) {
+        self.marks[3].clear();
+        self.marks[4].clear();
         let n = self.scan_reg_num();
         self.scan_keyword(b"to");
         let target = self.scan_dimen(false, false);
-        match self.eqtb.boxed[n as usize].take() {
+        let bx = self.eqtb.boxed.get(n as usize).cloned().flatten();
+        match bx {
             Some(b) => {
                 self.vsplat_remainder = None;
                 let top = self.vsplit_box(b, target);
                 (top, n, self.vsplat_remainder.take())
             }
-            // splitting a void box: void result, empty remainder vbox
             None => (None, n, Some(Vec::new())),
         }
     }
 
-    /// re-pack a `\vsplit` remainder into the source box register (tex.web
-    /// stores `vpackage(rest, 0, additional, \boxmaxdepth)` in \box n)
+    /// Re-pack a `\vsplit` remainder into its source register. Like
+    /// `box(n):=...` in TeX, this mutates the value at the register's existing
+    /// assignment level: an outer register stays consumed across a group,
+    /// while a locally assigned register still restores its saved outer box.
     pub fn stash_vsplit_remainder(&mut self, n: u16, rest: NodeList) {
-        // tex.web @977: an empty remainder leaves the source box void,
-        // not an empty vbox (`\\ifvoid` must be true).
-        if rest.is_empty() {
-            self.eqtb.assign_box(n, None, true);
-            return;
-        }
-        let md = self.eqtb.dim_params[DimParam::BoxMaxDepth.idx() as usize];
-        let r = boxes::vpack_add_md(rest, None, false, boxes::VBOX, &self.eqtb, md);
-        self.eqtb.assign_box(n, Some(r.node), true);
+        let value = if rest.is_empty() {
+            None
+        } else {
+            let md = self.eqtb.dim_params[DimParam::BoxMaxDepth.idx() as usize];
+            let r = boxes::vpack_add_md(rest, None, false, boxes::VBOX, &self.eqtb, md);
+            Some(r.node)
+        };
+        self.eqtb.replace_box_value(n, value);
     }
 
     pub fn scan_keyword(&mut self, kw: &[u8]) -> bool {
@@ -1593,7 +1774,8 @@ impl Engine {
         for &expected in kw {
             let t = self.get_token();
             collected.push(t);
-            if !t.is_char() || (t.chr() as u8).to_ascii_lowercase() != expected.to_ascii_lowercase() {
+            if !t.is_char() || (t.chr() as u8).to_ascii_lowercase() != expected.to_ascii_lowercase()
+            {
                 self.push_tokens(collected);
                 return false;
             }
@@ -1611,8 +1793,15 @@ impl Engine {
             let d = self.scan_dimen(false, false);
             target = Some((d, false));
         }
-        self.saved_lists.push((self.mode, std::mem::take(&mut self.cur_list), self.prev_depth, self.space_factor));
-        self.eqtb.push_level(LevelType::Box);
+        self.saved_lists.push((
+            self.mode,
+            std::mem::take(&mut self.cur_list),
+            self.prev_depth,
+            self.space_factor,
+            self.prev_graf,
+        ));
+        self.prev_graf = 0;
+        self.push_group_level(LevelType::Box);
 
         self.box_targets.push(target);
         self.box_shifts.push(0);
@@ -1628,6 +1817,7 @@ impl Engine {
             self.pushed.push(t);
             self.pushed.push(Token::char(1, b'{' as u32));
         }
+        self.normal_paragraph();
     }
 
     /// tex.web \vadjust: the braced material is typeset in internal vertical
@@ -1642,14 +1832,18 @@ impl Engine {
 
     pub fn append_mark(&mut self, class: i32, toks: Vec<Token>) {
         match self.mode {
-            Mode::Vertical | Mode::InternalVertical => self.vlist_append(Node::Mark { class, tokens: toks }),
-            _ => self.cur_list.push(Node::Mark { class, tokens: toks }),
+            Mode::Vertical | Mode::InternalVertical => self.vlist_append(Node::Mark {
+                class,
+                tokens: toks,
+            }),
+            _ => self.cur_list.push(Node::Mark {
+                class,
+                tokens: toks,
+            }),
         }
     }
 
     pub fn do_shipout(&mut self) {
-        let __sd = self.input.stack.len();
-        if crate::debug_flag("SHIPW") { eprintln!("SHIPOUT-IN pages={} stack={}", self.pdf_doc.pages.len(), __sd); }
         // \shipout<box spec>
         self.skip_spaces_relax();
         let t = self.get_token();
@@ -1720,24 +1914,13 @@ impl Engine {
 
     // ---------- paragraphs ----------
     pub fn par_primitive(&mut self) {
-        if crate::debug_flag("IFTRACE") {
-            eprintln!(
-                "PAR mode={:?} line={} file={} macros={:?} stack={} pushed={:?}",
-                self.mode,
-                self.input.current_file_line(),
-                self.input.current_file_name(),
-                self.last_macros.iter().rev().take(6).collect::<Vec<_>>(),
-                self.input.stack.iter().rev().take(4).map(|src| match src {
-                    crate::input::Source::TokList { name, pos, toks, .. } => format!("T:{} {}/{}", name, pos, toks.len()),
-                    crate::input::Source::File { name, line_no, .. } => format!("F:{}#{}", name.split('/').last().unwrap_or(name), line_no),
-                }).collect::<Vec<_>>().join(" << "),
-                self.pushed.iter().rev().take(4).map(|t| if t.is_cs() { format!("\\{}", String::from_utf8_lossy(self.cs.name(t.cs_id()))) } else { format!("{:#x}", t.0) }).collect::<Vec<_>>()
-            );
-        }
         // tex.web: between alignment rows (\cr .. next u part) a \par token
         // (e.g. from a blank line before \hline) must not disturb the align
         // state — the interrow phase is idle and the par is a no-op.
-        if self.scanner_status == crate::engine::ScannerStatus::Aligning && self.align_phase() == crate::align::PH_IDLE {
+        if self.mode != Mode::Horizontal
+            && self.scanner_status == crate::engine::ScannerStatus::Aligning
+            && self.align_phase() == crate::align::PH_IDLE
+        {
             return;
         }
         match self.mode {
@@ -1793,19 +1976,19 @@ impl Engine {
         self.cs.lookup(&Self::active_cs_name(c))
     }
 
+    /// tex.web §1079: paragraph-shape controls are reset locally when a
+    /// paragraph ends or an internal vertical-list context begins.
+    fn normal_paragraph(&mut self) {
+        self.assign_par_shape(Vec::new(), false);
+        self.eqtb
+            .assign_int_param(crate::prim::IntParam::Looseness, 0, false);
+        self.eqtb
+            .assign_int_param(crate::prim::IntParam::HangAfter, 1, false);
+        self.eqtb
+            .assign_dim_param(crate::prim::DimParam::HangIndent, 0, false);
+    }
 
     pub fn start_paragraph(&mut self, indent: bool) {
-        if crate::debug_flag("IFTRACE") {
-            let src = match self.input.stack.last() {
-                Some(crate::input::Source::TokList { name, .. }) => name.clone(),
-                Some(crate::input::Source::File { name, .. }) => format!("F:{}", name),
-                None => String::new(),
-            };
-            let trig = self.pushed.last().map(|t| {
-                if t.is_cs() { format!("cs=\\{}", String::from_utf8_lossy(self.cs.name(t.cs_id()))) } else { format!("pushed=0x{:x}", t.0) }
-            }).unwrap_or_default();
-            eprintln!("START-PAR mode={:?} indent={} line={} src={} {}", self.mode, indent, self.input.current_file_line(), src, trig);
-        }
         match self.mode {
             Mode::Horizontal => {
                 if indent {
@@ -1813,7 +1996,6 @@ impl Engine {
                     let r = boxes::hpack(Vec::new(), Some(pi), boxes::HBOX, &self.eqtb);
                     self.cur_list.push(r.node);
                 }
-                self.run_everypar();
             }
             Mode::Vertical => {
                 // a genuine new paragraph clears the interrupt flag (it was
@@ -1836,13 +2018,25 @@ impl Engine {
                 // begin paragraph: switch from page_list to hlist
                 // (tex.web: a paragraph is not a group; no eqtb level)
                 let page = std::mem::take(&mut self.page_list);
-                self.saved_lists.push((Mode::Vertical, Vec::new(), self.prev_depth, self.space_factor));
+                self.saved_lists.push((
+                    Mode::Vertical,
+                    Vec::new(),
+                    self.prev_depth,
+                    self.space_factor,
+                    self.prev_graf,
+                ));
                 self.par_saves += 1;
                 self.par_page_lists.push(page);
                 self.mode = Mode::Horizontal;
                 self.cur_list = Vec::new();
                 self.space_factor = 1000;
-                self.prev_graf = 0;
+                // tex.web new_graf zeroes the level's prev_graf; a display
+                // RESUMPTION (resume_after_display) does not — the count
+                // already sitting in the field (fragment lines + 3 per
+                // display) is what §17015/§17253 continue numbering from
+                if !resume {
+                    *self.prev_graf_mut() = 0;
+                }
                 if resume {
                     return;
                 }
@@ -1864,11 +2058,20 @@ impl Engine {
                     self.cur_list.push(Node::Glue(ps));
                 }
                 let page = std::mem::take(&mut self.cur_list);
-                self.saved_lists.push((Mode::InternalVertical, Vec::new(), self.prev_depth, self.space_factor));
+                self.saved_lists.push((
+                    Mode::InternalVertical,
+                    Vec::new(),
+                    self.prev_depth,
+                    self.space_factor,
+                    self.prev_graf,
+                ));
                 self.par_page_lists.push(page);
                 self.mode = Mode::Horizontal;
                 self.cur_list = Vec::new();
                 self.space_factor = 1000;
+                if !resume {
+                    *self.prev_graf_mut() = 0;
+                }
                 if resume {
                     return;
                 }
@@ -1883,42 +2086,71 @@ impl Engine {
         }
     }
 
+    /// \prevgraf belongs to the enclosing vertical nest, even in an hbox or math.
+    pub(crate) fn prev_graf(&self) -> i32 {
+        if self.mode.is_v() {
+            self.prev_graf
+        } else {
+            self.saved_lists
+                .iter()
+                .rev()
+                .find(|(mode, ..)| mode.is_v())
+                .map(|(_, _, _, _, pg)| *pg)
+                .unwrap_or(self.prev_graf)
+        }
+    }
+
+    pub(crate) fn prev_graf_mut(&mut self) -> &mut i32 {
+        if self.mode.is_v() {
+            &mut self.prev_graf
+        } else {
+            self.saved_lists
+                .iter_mut()
+                .rev()
+                .find(|(mode, ..)| mode.is_v())
+                .map(|(_, _, _, _, pg)| pg)
+                .unwrap_or(&mut self.prev_graf)
+        }
+    }
+
+    /// Charge the display's three lines before resuming paragraph line numbering.
+    pub(crate) fn resume_after_display(&mut self) {
+        *self.prev_graf_mut() += 3;
+        self.resume_after_display = true;
+    }
+
     fn run_everypar(&mut self) {
         let toks = (*self.eqtb.tok_params[crate::prim::ToksParam::EveryPar.idx() as usize]).clone();
         if !toks.is_empty() {
-        // tex.web just_paragraph: \everypar begins its own token list on
-        // top of the input stack (push_tokens = begin_token_list), so the
-        // hook preempts any in-flight macro remainder and nests cleanly
-        // around fire_up's <after-output> parking instead of being
-        // flattened into it.
-        self.push_tokens(toks);
+            self.push_tokens(toks);
         }
     }
 
     pub fn end_paragraph(&mut self) {
-        if crate::debug_flag("SHAPE") {
-            let trig = self.pushed.last().map(|t| if t.is_cs() { format!("\\{}", String::from_utf8_lossy(self.cs.name(t.cs_id()))) } else { format!("0x{:x}", t.0) }).unwrap_or_default();
-            eprintln!("END-PAR lvl={} shape_lvl={} shape_n={} line={} trig={}", self.eqtb.cur_level, self.par_shape_level, self.par_shape.len(), self.input.current_file_line(), trig);
-        }
-        if crate::debug_flag("DROPTRACE") {
-            let desc: Vec<String> = self.cur_list.iter().take(12).map(|n| match n {
-                Node::Char { c, .. } => format!("ch'{}'", *c as u8 as char),
-                Node::Glue(g) => format!("G{:.1}/{:.1}", g.width as f64 / 65536.0, g.stretch as f64 / 65536.0),
-                Node::Box { w, h, d, list, .. } => format!("B(w{:.1} h{:.1} d{:.1} n{})", *w as f64 / 65536.0, *h as f64 / 65536.0, *d as f64 / 65536.0, list.len()),
-                Node::Penalty(p) => format!("P{}", p),
-                _ => "?".into(),
-            }).collect();
-            eprintln!("DT-HEAD mode={:?} line={} n={} [{}]", self.mode, self.input.current_file_line(), self.cur_list.len(), desc.join(" "));
-        }
-        let has_content = self.cur_list.iter().any(|n| match n {
-            Node::Char { .. } | Node::Disc(_) | Node::Ligature { .. } => true,
-            Node::Rule { width, height, .. } => *width > 0 || *height > 0,
-            Node::Box { w, h, d, list, .. } => *w > 0 || *h > 0 || *d > 0 || !list.is_empty(),
-            _ => false,
-        });
-        if crate::debug_flag("DROPTRACE") && !has_content {
-            eprintln!("DT-ABANDON line={} saved_mode={:?}", self.input.current_file_line(), self.saved_lists.last().map(|s| s.0));
-        }
+        // tex.web §22509 resume_after_display: `prev_graf:=prev_graf+3` —
+        // a displayed equation counts as three lines of the interrupted
+        // paragraph, and §17015/§17253 make the resumed fragment's line
+        // numbering (and so \parshape/\hangindent lookup and \prevgraf)
+        // continue from the enclosing level's accumulated count. The old
+        // reset destroyed that: a wrapfigure-interrupted paragraph set the
+        // fragment's prev_graf back to 1, re-running the shape's narrow
+        // lines after every display and never retiring the counter.
+        // the +3-per-display accounting itself lives at the
+        // resume_after_display sites (math.rs, tex.web §22509); here the
+        // flag is only consumed/cleared
+        self.resume_after_display = false;
+
+        // tex.web end_graf ignores a paragraph only when the hlist is
+        // STRUCTURALLY empty (`if head=tail then pop_nest`). A list holding
+        // only a `\vadjust` — LaTeX's `\end@float` in-text path plants
+        // `\vadjust{\penalty-\@Miv \vbox{}\penalty\@floatpenalty}` with no
+        // further text — is NOT empty: real TeX breaks the (zero-width)
+        // line and post_line_break migrates the adjustment into the
+        // vertical list. Treating it as an abandoned paragraph destroyed
+        // the float markers, stranding the box in `\@currlist` and ending
+        // in `Float(s) lost` at the next clearpage.
+        let has_content = !self.cur_list.is_empty();
+
         if !has_content {
             self.cur_list.clear();
             // tex.web: \parshape/\looseness/\hangafter/\hangindent are reset
@@ -1927,7 +2159,14 @@ impl Engine {
             // machinery starts-and-abandons an empty paragraph on every
             // \item; wiping here destroyed \list's \parshape before the
             // first real list paragraph broke.
-            let (saved_mode, saved_list, pd, sf) = self.saved_lists.pop().unwrap_or((Mode::Vertical, Vec::new(), self.prev_depth, self.space_factor));
+            let (saved_mode, saved_list, pd, sf, pg) = self.saved_lists.pop().unwrap_or((
+                Mode::Vertical,
+                Vec::new(),
+                self.prev_depth,
+                self.space_factor,
+                self.prev_graf,
+            ));
+            self.prev_graf = pg;
             self.prev_depth = pd;
             self.space_factor = sf;
             self.mode = saved_mode;
@@ -1942,10 +2181,7 @@ impl Engine {
             }
             return;
         }
-        if crate::debug_flag("PARAW") && self.pdf_doc.pages.len() >= 20 && self.pdf_doc.pages.len() <= 30 {
-            let ring: Vec<String> = self.tok_ring.iter().rev().take(8).map(|(v,_)| { let t = Token(*v); if t.is_cs() { format!("\\{}", String::from_utf8_lossy(self.cs.name(t.cs_id()))) } else { format!("{:#x}", t.0) } }).collect();
-            eprintln!("PARAW pages={} macro={} ring=[{}]", self.pdf_doc.pages.len(), self.current_macro, ring.join(" "));
-        }
+
         let fnt = self.eqtb.cur_font_val;
         if fnt != 0 {
             self.flush_hyphen_disc(fnt);
@@ -1967,23 +2203,19 @@ impl Engine {
         let fw = self.next_par_widow.take().unwrap_or_else(|| {
             self.eqtb.int_params[crate::prim::IntParam::WidowPenalty.idx() as usize]
         });
-        if crate::debug_flag("PARADBG") {
-            let desc: Vec<String> = content.iter().take(400).map(|n| match n {
-                Node::Char { c, .. } => format!("ch'{}'", *c as u8 as char),
-                Node::Glue(g) => format!("G{:.1}/{:.1}/{:.1}", g.width as f64/65536.0, g.stretch as f64/65536.0, g.shrink as f64/65536.0),
-                Node::Box { w, h, list, .. } => format!("B(w{:.0} h{:.0} n{})", *w as f64/65536.0, *h as f64/65536.0, list.len()),
-                Node::Whatsit(_) => "W".into(),
-                Node::Penalty(p) => format!("P{}", p),
-                Node::Kern(k) | Node::ExplicitKern(k) => format!("K{:.1}", *k as f64/65536.0),
-                Node::VAdjust(v) => format!("VA(n{})", v.len()),
-                _ => "?".into(),
-            }).collect();
-            eprintln!("PARA-IN {}:{} n={} [{}]", self.input.current_file_name(), self.input.current_file_line(), content.len(), desc.join(" "));
-        }
+
         let lines = self.break_paragraph(content, fw);
-        // tex.web keeps the final broken line in just_box; display entry
-        // measures \predisplaysize from it even after build_page consumes
-        // the contributions (clone before the splices below move them).
+        let line_count = match &lines {
+            Node::Box { list, .. } => list
+                .iter()
+                .filter(|m| matches!(m, Node::Box { kind, .. } if *kind == crate::boxes::HBOX))
+                .count(),
+            _ => 1,
+        };
+        // tex.web §17264: prev_graf := best_line - 1 — the ABSOLUTE count
+        // of paragraph lines now in the vlist (this break added
+        // line_count to whatever resume_after_display had accumulated)
+        *self.prev_graf_mut() += line_count as i32;
         // A soft page break that SHIPPED this paragraph's lines interrupts
         // it: the resumed content has no complete line yet, so just_box
         // must stay empty until the next real break refreshes it.
@@ -1997,53 +2229,25 @@ impl Engine {
                 _ => None,
             };
         }
-        if crate::debug_flag("PARADBG") {
-            if let Node::Box { list, .. } = &lines {
-                let nl = list.iter().filter(|m| matches!(m, Node::Box { kind, .. } if *kind == crate::boxes::HBOX)).count();
-                eprintln!("PARADBG {}:{} lines={}", self.input.current_file_name(), self.input.current_file_line(), nl);
-                for m in list.iter().take(8) {
-                    match m {
-                        Node::Box { w, h, d, list: il, .. } => {
-                            let id: Vec<String> = il.iter().take(6).map(|q| match q {
-                                Node::Char { c, .. } => format!("'{}'", *c as u8 as char),
-                                Node::Box { w, h, list, .. } => format!("[B w{:.0} h{:.0} n{}]", *w as f64/65536.0, *h as f64/65536.0, list.len()),
-                                Node::Glue(g) => format!("(G{:.1})", g.width as f64/65536.0),
-                                _ => "(?)".into(),
-                            }).collect();
-                            eprintln!("  LINE w={:.1} h={:.1} d={:.1} n={} {}", *w as f64/65536.0, *h as f64/65536.0, *d as f64/65536.0, il.len(), id.join(" "));
-                        }
-                        Node::Glue(g) => eprintln!("  IG w={:.2}", g.width as f64/65536.0),
-                        Node::Penalty(p) => eprintln!("  IP {}", p),
-                        _ => eprintln!("  I?"),
-                    }
-                }
-            }
-        }
+
         // tex.web §1079 normal_paragraph: reset paragraph-local parameters —
         // all four resets are LOCAL eq_defines, so a group-wrapped \par (the
         // `{\@@par}` LaTeX lists install via \@setpar) rolls them back at
         // \egroup and the shape survives across \items
-        self.assign_par_shape(Vec::new(), false);
-        self.eqtb.assign_int_param(crate::prim::IntParam::Looseness, 0, false);
-        self.eqtb.assign_int_param(crate::prim::IntParam::HangAfter, 1, false);
-        self.eqtb.assign_dim_param(crate::prim::DimParam::HangIndent, 0, false);
+        if !self.in_display_init {
+            self.normal_paragraph();
+        }
         // restore vertical context
-        let (saved_mode, _, pd, sf) = self.saved_lists.pop().unwrap_or((Mode::Vertical, Vec::new(), self.prev_depth, self.space_factor));
+        let (saved_mode, _, pd, _sf, pg) = self.saved_lists.pop().unwrap_or((
+            Mode::Vertical,
+            Vec::new(),
+            self.prev_depth,
+            self.space_factor,
+            self.prev_graf,
+        ));
+        self.prev_graf = pg;
         self.prev_depth = pd;
-        if crate::debug_flag("PARADBG") {
-            eprintln!("PARAEND {}:{} saved_mode={:?} parstack={}", self.input.current_file_name(), self.input.current_file_line(), saved_mode, self.par_page_lists.len());
-        }
-        if crate::debug_flag("DROPTRACE") {
-            let (nl, desc) = match &lines {
-                Node::Box { list, .. } => (list.len(), list.iter().take(6).map(|m| match m {
-                    Node::Box { w, h, d, list, .. } => format!("L(w{:.1} h{:.1} d{:.1} n{})", *w as f64 / 65536.0, *h as f64 / 65536.0, *d as f64 / 65536.0, list.len()),
-                    Node::Glue(g) => format!("G{:.1}/{:.1}", g.width as f64 / 65536.0, g.stretch as f64 / 65536.0),
-                    other => format!("{:?}", std::mem::discriminant(other)),
-                }).collect::<Vec<_>>().join(" ")),
-                other => (0, format!("{:?}", std::mem::discriminant(other))),
-            };
-            eprintln!("DT-PAROUT line={} saved_mode={:?} parstack={} lines={} [{}]", self.input.current_file_line(), saved_mode, self.par_page_lists.len(), nl, desc);
-        }
+
         let mut lines_opt = Some(lines);
         match (saved_mode, self.par_page_lists.pop()) {
             (Mode::Vertical, Some(mut page)) => {
@@ -2067,8 +2271,9 @@ impl Engine {
                             last_d = *d;
                             break;
                         }
-                        Node::Glue(_) | Node::Kern(_) | Node::ExplicitKern(_) => continue,
-                        _ => break,
+                        // Migrated insertions, marks, and writes do not replace
+                        // the preceding line's depth.
+                        _ => {}
                     }
                 }
                 page.extend(filled);
@@ -2076,15 +2281,7 @@ impl Engine {
                 self.mode = Mode::Vertical;
                 self.cur_list = Vec::new();
                 self.prev_depth = last_d;
-                if crate::debug_flag("DROPTRACE") {
-                    let tail: Vec<String> = self.page_list.iter().rev().take(4).map(|n| match n {
-                        Node::Glue(g) => format!("G{:.1}/{:.1}", g.width as f64 / 65536.0, g.stretch as f64 / 65536.0),
-                        Node::Box { w, h, d, list, .. } => format!("B(w{:.1} h{:.1} d{:.1} n{})", *w as f64 / 65536.0, *h as f64 / 65536.0, *d as f64 / 65536.0, list.len()),
-                        Node::Penalty(p) => format!("P{}", p),
-                        _ => "?".into(),
-                    }).collect();
-                    eprintln!("DT-SPLICE line={} pagelen={} processed={} in_output={} tail=[{}]", self.input.current_file_line(), self.page_list.len(), self.page_processed, self.in_output, tail.join(" "));
-                }
+
                 if !self.in_display_init {
                     let pages_before = self.pdf_doc.pages.len();
                     self.build_page();
@@ -2117,8 +2314,7 @@ impl Engine {
                             last_d = *d;
                             break;
                         }
-                        Node::Glue(_) | Node::Kern(_) | Node::ExplicitKern(_) => continue,
-                        _ => break,
+                        _ => {}
                     }
                 }
                 self.cur_list = inner;
@@ -2166,12 +2362,23 @@ impl Engine {
                     held_placeholder = true;
                     continue;
                 }
-                Node::Box { h, d, .. } | Node::Rule { height: h, depth: d, .. } => {
+                Node::Box { h, d, .. }
+                | Node::Rule {
+                    height: h,
+                    depth: d,
+                    ..
+                } => {
                     let (h, d) = (*h, *d);
                     if prev_depth > IGNORE {
                         let b = bs.width as i64 - prev_depth as i64 - h as i64;
-                        let glue =
-                            if b < lsl as i64 { ls.clone() } else { Glue { width: b as i32, ..bs.clone() } };
+                        let glue = if b < lsl as i64 {
+                            ls.clone()
+                        } else {
+                            Glue {
+                                width: b as i32,
+                                ..bs.clone()
+                            }
+                        };
                         if glue.width != 0 || glue.stretch != 0 || glue.shrink != 0 {
                             out.push(Node::Glue(glue));
                         }
@@ -2190,6 +2397,9 @@ impl Engine {
                     out.push(n);
                 }
             }
+        }
+        if held_placeholder {
+            out.push(Node::Glue(Glue::zero()));
         }
         out
     }
@@ -2214,4 +2424,3 @@ pub fn print_scaled(v: i64) -> String {
         String::from_utf8_lossy(&digits)
     )
 }
-

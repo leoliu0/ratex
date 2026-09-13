@@ -11,7 +11,7 @@ pub type FontId = u16;
 
 #[derive(Clone, Debug)]
 pub struct CharInfo {
-    pub width: i32,   // sp
+    pub width: i32, // sp
     pub height: i32,
     pub depth: i32,
     pub italic: i32,
@@ -91,6 +91,20 @@ impl Font {
     pub fn exists_char(&self, c: u8) -> bool {
         c >= self.bc && c <= self.ec
     }
+    /// pdfTeX `is_valid_char`: in range AND present in the TFM (tex.web
+    /// §15148: `char_exists` tests the width byte > 0; our parser leaves
+    /// absent slots as all-zero `CharInfo`).
+    pub fn char_present(&self, c: u8) -> bool {
+        self.exists_char(c)
+            && self.chars.get(c as usize).map_or(false, |ci| {
+                ci.width != 0
+                    || ci.height != 0
+                    || ci.depth != 0
+                    || ci.italic != 0
+                    || ci.tag != 0
+                    || ci.remainder != 0
+            })
+    }
     /// param(i) with 1-based i (param(1)=slant ...)
     pub fn param(&self, i: usize) -> i32 {
         if i == 0 || i > self.params.len() {
@@ -142,12 +156,41 @@ impl Font {
     }
 }
 
+/// pdfTeX `round_xn_over_d` (pdftex.web §15856): round `x * n / d` exactly in
+/// integer arithmetic. `x` is a scaled quantity (sp); the magnitude is split
+/// into a high part (x div 2^15) and a low part so intermediates stay bounded;
+/// the remainder is carried through a second 2^15 split before the final
+/// half-up rounding. Sign of `x` is folded out and back (pdftex requires
+/// `n >= 0`; a negative `n` is folded the same way). `d > 0`.
+pub fn round_xn_over_d(x: i32, n: i32, d: i32) -> i32 {
+    let neg = (x < 0) ^ (n < 0);
+    let x = (x as i64).abs();
+    let n = (n as i64).abs();
+    let d = d as i64;
+    let t = (x & 0x7fff) * n;
+    let mut u = (x >> 15) * n + (t >> 15);
+    let v = (u % d) * 0x8000 + (t & 0x7fff);
+    u = (u / d) * 0x8000 + v / d;
+    let v = v % d;
+    if 2 * v >= d {
+        u += 1;
+    }
+    if neg {
+        -(u as i32)
+    } else {
+        u as i32
+    }
+}
+
 fn rd_u16(b: &[u8], off: usize) -> usize {
     ((b[off] as usize) << 8) | b[off + 1] as usize
 }
 
 fn rd_i32(b: &[u8], off: usize) -> i32 {
-    let v = ((b[off] as u32) << 24) | ((b[off + 1] as u32) << 16) | ((b[off + 2] as u32) << 8) | b[off + 3] as u32;
+    let v = ((b[off] as u32) << 24)
+        | ((b[off + 1] as u32) << 16)
+        | ((b[off + 2] as u32) << 8)
+        | b[off + 3] as u32;
     v as i32
 }
 
@@ -213,7 +256,17 @@ pub fn parse_tfm(data: &[u8], tfm_name: &str, at_size: i32) -> Result<Font, Stri
     let depths: Vec<i32> = (0..nd).map(|k| rd_fix(depth_off + k * 4)).collect();
     let italics: Vec<i32> = (0..ni).map(|k| rd_fix(ital_off + k * 4)).collect();
 
-    let mut chars = Vec::with_capacity(nchars);
+    let mut chars = Vec::with_capacity(bc as usize + nchars);
+    for _ in 0..bc {
+        chars.push(CharInfo {
+            width: 0,
+            height: 0,
+            depth: 0,
+            italic: 0,
+            tag: 0,
+            remainder: 0,
+        });
+    }
     for i in 0..nchars {
         let o = char_info_off + i * 4;
         let b0 = data[o];
@@ -244,7 +297,14 @@ pub fn parse_tfm(data: &[u8], tfm_name: &str, at_size: i32) -> Result<Font, Stri
             0 => 0,
             _ => scale(italics.get(ii).copied().unwrap_or(0)),
         };
-        chars.push(CharInfo { width: w, height: h, depth: d, italic: it, tag, remainder: rem });
+        chars.push(CharInfo {
+            width: w,
+            height: h,
+            depth: d,
+            italic: it,
+            tag,
+            remainder: rem,
+        });
     }
 
     let lig_kern: Vec<LigStep> = (0..nl)
@@ -254,7 +314,13 @@ pub fn parse_tfm(data: &[u8], tfm_name: &str, at_size: i32) -> Result<Font, Stri
             let next = data[o + 1];
             let op = data[o + 2];
             let rem = data[o + 3];
-            LigStep { skip, next_char: next, op, rem, stop: skip & 0x80 != 0 }
+            LigStep {
+                skip,
+                next_char: next,
+                op,
+                rem,
+                stop: skip & 0x80 != 0,
+            }
         })
         .collect();
 
@@ -263,7 +329,12 @@ pub fn parse_tfm(data: &[u8], tfm_name: &str, at_size: i32) -> Result<Font, Stri
     let ext: Vec<ExtRecipe> = (0..ne)
         .map(|k| {
             let o = ext_off + k * 4;
-            ExtRecipe { top: data[o], mid: data[o + 1], bot: data[o + 2], rep: data[o + 3] }
+            ExtRecipe {
+                top: data[o],
+                mid: data[o + 1],
+                bot: data[o + 2],
+                rep: data[o + 3],
+            }
         })
         .collect();
 

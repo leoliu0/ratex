@@ -6,5 +6,12 @@ edition.workspace = true
 [dependencies]
 tex-kpse = { path = "../tex-kpse" }
 flate2 = { workspace = true }
+zstd = { workspace = true }
 rustybuzz = { workspace = true }
 ttf-parser = { workspace = true }
+smallvec = "1.16"
+lopdf = { version = "0.44.0", default-features = false }
+png = "0.18.1"
+posix-regex = "0.1.4"
+md5 = "0.8"
+libc = { workspace = true }

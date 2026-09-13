@@ -1,16 +1,40 @@
 //! Node lists, glue, boxes, and packing algorithms (hpack/vpack).
 
-use crate::scaled::{self, ONE};
 use crate::fonts::FontResolver;
+use crate::scaled::{self, ONE};
 use crate::tfm::FontId;
 
 pub struct EqtbFonts<'a>(pub &'a crate::eqtb::Eqtb);
 
 impl<'a> crate::fonts::FontResolver for EqtbFonts<'a> {
-    fn char_width(&self, f: FontId, c: u8) -> i32 { self.0.fonts.get(f as usize).map(|x| x.char_width(c)).unwrap_or(0) }
-    fn char_height(&self, f: FontId, c: u8) -> i32 { self.0.fonts.get(f as usize).map(|x| x.char_height(c)).unwrap_or(0) }
-    fn char_depth(&self, f: FontId, c: u8) -> i32 { self.0.fonts.get(f as usize).map(|x| x.char_depth(c)).unwrap_or(0) }
-    fn char_italic(&self, f: FontId, c: u8) -> i32 { self.0.fonts.get(f as usize).map(|x| x.char_italic(c)).unwrap_or(0) }
+    fn char_width(&self, f: FontId, c: u8) -> i32 {
+        self.0
+            .fonts
+            .get(f as usize)
+            .map(|x| x.char_width(c))
+            .unwrap_or(0)
+    }
+    fn char_height(&self, f: FontId, c: u8) -> i32 {
+        self.0
+            .fonts
+            .get(f as usize)
+            .map(|x| x.char_height(c))
+            .unwrap_or(0)
+    }
+    fn char_depth(&self, f: FontId, c: u8) -> i32 {
+        self.0
+            .fonts
+            .get(f as usize)
+            .map(|x| x.char_depth(c))
+            .unwrap_or(0)
+    }
+    fn char_italic(&self, f: FontId, c: u8) -> i32 {
+        self.0
+            .fonts
+            .get(f as usize)
+            .map(|x| x.char_italic(c))
+            .unwrap_or(0)
+    }
 }
 
 pub fn eqtb_fonts<'a>(eqtb: &'a crate::eqtb::Eqtb) -> EqtbFonts<'a> {
@@ -33,7 +57,7 @@ pub enum MathStyle {
     ScriptScript,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct Glue {
     pub width: i32,
     pub stretch: i32,
@@ -44,30 +68,97 @@ pub struct Glue {
 
 impl Glue {
     pub fn zero() -> Glue {
-        Glue { width: 0, stretch: 0, shrink: 0, stretch_order: 0, shrink_order: 0 }
+        Glue {
+            width: 0,
+            stretch: 0,
+            shrink: 0,
+            stretch_order: 0,
+            shrink_order: 0,
+        }
     }
     pub fn new(w: i32) -> Glue {
-        Glue { width: w, stretch: 0, shrink: 0, stretch_order: 0, shrink_order: 0 }
+        Glue {
+            width: w,
+            stretch: 0,
+            shrink: 0,
+            stretch_order: 0,
+            shrink_order: 0,
+        }
     }
     pub fn fil(order: u8, w: i32) -> Glue {
-        Glue { width: w, stretch: ONE, shrink: 0, stretch_order: order, shrink_order: 0 }
+        Glue {
+            width: w,
+            stretch: ONE,
+            shrink: 0,
+            stretch_order: order,
+            shrink_order: 0,
+        }
     }
 }
 
 #[derive(Clone, Debug)]
 pub enum WhatIt {
-    PdfLiteral { origin: u8, data: String },
+    PdfLiteral {
+        origin: u8,
+        data: String,
+    },
     PdfColorPush(String),
     PdfColorPop,
+    PdfColorSet(String),
+    PdfRefXImage {
+        obj: i32,
+        w: i32,
+        h: i32,
+        d: i32,
+    },
+    PdfRefXForm {
+        obj: i32,
+        w: i32,
+        h: i32,
+        d: i32,
+    },
     PdfSave,
     PdfRestore,
-    Write { stream: u16, tokens: Vec<crate::token::Token> },
-    PdfDest { name: String, kind: u8, params: [i32; 4] },
-    PdfAnnot { attr: String, wd: i32, ht: i32, dp: i32 },
-    PdfStartLink { attr: String, uri: Option<String>, name: Option<String> },
+    PdfSetMatrix(String),
+    Write {
+        stream: u16,
+        tokens: Vec<crate::token::Token>,
+        source: Option<crate::input::SourceContext>,
+    },
+    /// tex.web §1393 `open_node`: a non-immediate `\openout` is queued as a
+    /// whatsit and takes effect in list order at shipout (`out_what` @1414)
+    OpenOut {
+        stream: u16,
+        path: String,
+    },
+    /// tex.web §1393 `close_node`: a non-immediate `\closeout` is queued as
+    /// a whatsit on the current list and only takes effect when the list is
+    /// shipped (`out_what` @1414) — writes issued before that shipout still
+    /// land in the file
+    CloseOut {
+        stream: u16,
+    },
+    PdfDest {
+        name: String,
+        kind: u8,
+        params: [i32; 4],
+    },
+    PdfAnnot {
+        attr: String,
+        wd: i32,
+        ht: i32,
+        dp: i32,
+    },
+    PdfStartLink {
+        attr: String,
+        uri: Option<String>,
+        name: Option<String>,
+    },
     PdfEndLink,
     Special(String),
-    SavePos { obj: i32 },
+    SavePos {
+        obj: i32,
+    },
     User(i32),
 }
 
@@ -86,10 +177,18 @@ pub enum LeaderBody {
 /// (width, height, depth) of a leader body
 pub fn leader_dims(body: &LeaderBody) -> (i32, i32, i32) {
     match body {
-        LeaderBody::Rule { width, height, depth } => (*width, *height, *depth),
+        LeaderBody::Rule {
+            width,
+            height,
+            depth,
+        } => (*width, *height, *depth),
         LeaderBody::Box(b) => match &**b {
             Node::Box { w, h, d, .. } => (*w, *h, *d),
-            Node::Rule { width, height, depth } => (*width, *height, *depth),
+            Node::Rule {
+                width,
+                height,
+                depth,
+            } => (*width, *height, *depth),
             _ => (0, 0, 0),
         },
     }
@@ -105,16 +204,45 @@ pub struct DiscNode {
 
 #[derive(Clone, Debug)]
 pub enum Node {
-    Char { c: u8, font: FontId },
+    Char {
+        c: u8,
+        font: FontId,
+    },
     /// `letters` = the component letters that formed the glyph (hyphenation
     /// needs them: a break point may fall inside the ligature)
-    Ligature { c: u8, font: FontId, lig_width: i32, lig_height: i32, lig_depth: i32, letters: [u8; 3], n_letters: u8 },
+    Ligature {
+        c: u8,
+        font: FontId,
+        lig_width: i32,
+        lig_height: i32,
+        lig_depth: i32,
+        letters: [u8; 3],
+        n_letters: u8,
+    },
     Glue(Glue),
     Kern(i32),
     ExplicitKern(i32),
+    /// pdfTeX `margin_kern_node`: a kern of width `-w` placed at the very
+    /// start (or just before the trailing `\rightskip`) of a line box to let
+    /// the marginal character `c` protrude `w` into the margin when
+    /// `\pdfprotrudechars > 0`. `side` is 0 for left, 1 for right.
+    MarginKern {
+        side: u8,
+        width: i32,
+        c: u8,
+        font: FontId,
+    },
     Penalty(i32),
-    Rule { width: i32, height: i32, depth: i32 },
-    Leaders { glue: Glue, kind: u8, body: LeaderBody },
+    Rule {
+        width: i32,
+        height: i32,
+        depth: i32,
+    },
+    Leaders {
+        glue: Glue,
+        kind: u8,
+        body: LeaderBody,
+    },
     Disc(DiscNode),
     Box {
         kind: u8,
@@ -128,22 +256,80 @@ pub enum Node {
         glue_set: f64,
         font: Option<FontId>,
     },
-    Mark { class: i32, tokens: Vec<crate::token::Token> },
-    Ins { num: u16, height: i32, depth: i32, cost: i32, box_node: Box<Node> },
+    Mark {
+        class: i32,
+        tokens: Vec<crate::token::Token>,
+    },
+    Ins {
+        num: u16,
+        height: i32,
+        depth: i32,
+        cost: i32,
+        /// the LOCAL `\splittopskip` captured before unsave (tex.web
+        /// @21193 `q:=split_top_skip; add_glue_ref(q)` / @21201
+        /// `split_top_ptr(tail):=q`); Glue is Copy, matching the by-value
+        /// ownership every other glue site in the tree uses
+        split_top_skip: Glue,
+        /// the LOCAL `\splitmaxdepth` captured before unsave (tex.web
+        /// @21194 `d:=split_max_depth` / @21201 `depth(tail):=d`)
+        split_max_depth: i32,
+        box_node: Box<Node>,
+    },
     Adj(i32),
     Whatsit(WhatIt),
     // math nodes (converted to boxes before shipping):
     Style(MathStyle),
+    NonScript,
+    MuGlue(Glue),
     Choice,
-    ChoiceAlt { body: NodeList },
-    MathChar { fam: u8, c: u8, class: u8 },
-    Frac { num: NodeList, den: NodeList, thickness: i32, left: Option<i32>, right: Option<i32> },
-    Radical { body: NodeList, left_delim: Option<(u8, u8)>, thickness: i32 },
-    Scripts { nucleus: NodeList, sup: Option<NodeList>, sub: Option<NodeList> },
-    DelimBox { small: (u8, u8), large: (u8, u8), size: u8 },
-    OpLimits { op: NodeList, above: Option<NodeList>, below: Option<NodeList> },
+    ChoiceAlt {
+        body: NodeList,
+    },
+    MathChar {
+        fam: u8,
+        c: u8,
+        class: u8,
+    },
+    Frac {
+        num: NodeList,
+        den: NodeList,
+        thickness: i32,
+        left: Option<i32>,
+        right: Option<i32>,
+    },
+    Radical {
+        body: NodeList,
+        left_delim: Option<(u8, u8)>,
+        thickness: i32,
+    },
+    Scripts {
+        nucleus: NodeList,
+        sup: Option<NodeList>,
+        sub: Option<NodeList>,
+    },
+    DelimBox {
+        small: (u8, u8),
+        large: (u8, u8),
+        size: u8,
+    },
+    OpLimits {
+        op: NodeList,
+        above: Option<NodeList>,
+        below: Option<NodeList>,
+    },
     MathKern(i32, u8),
-    Accent { accent: (u8, FontId), body: NodeList, skew: i32 },
+    Accent {
+        fam: u8,
+        c: u8,
+        body: NodeList,
+    },
+    Overline {
+        body: NodeList,
+        under: bool,
+    },
+    VCenter {
+        box_node: Box<Node>,
+    },
     InsDisc,
     Empty,
     VAdjust(NodeList),
@@ -159,26 +345,50 @@ fn single_dims(n: &Node, eqtb: &crate::eqtb::Eqtb) -> (i32, i32, i32) {
             eqtb_fonts(eqtb).char_height(*font, *c),
             eqtb_fonts(eqtb).char_depth(*font, *c),
         ),
-        Node::Ligature { lig_width, lig_height, lig_depth, .. } => {
-            (*lig_width, *lig_height, *lig_depth)
-        }
+        Node::Ligature {
+            lig_width,
+            lig_height,
+            lig_depth,
+            ..
+        } => (*lig_width, *lig_height, *lig_depth),
         Node::Glue(g) => (g.width, 0, 0),
         Node::Kern(k) | Node::ExplicitKern(k) => (*k, 0, 0),
+        Node::MarginKern { width, .. } => (*width, 0, 0),
         Node::Penalty(_) => (0, 0, 0),
-        Node::Rule { width, height, depth } => (*width, *height, *depth),
+        Node::Rule {
+            width,
+            height,
+            depth,
+        } => (*width, *height, *depth),
         Node::Box { w, h, d, shift, .. } => (*w, (*h - *shift).max(0), (*d + *shift).max(0)),
-        Node::Mark { .. } | Node::Style(_) | Node::Adj(_) | Node::Choice | Node::ChoiceAlt { .. } => (0, 0, 0),
+        Node::Mark { .. }
+        | Node::Style(_)
+        | Node::Adj(_)
+        | Node::Choice
+        | Node::ChoiceAlt { .. } => (0, 0, 0),
         Node::Scripts { nucleus, .. } => hlist_dims(nucleus, eqtb),
         Node::Frac { num, den, .. } => {
             let (wn, hn, _) = hlist_dims(num, eqtb);
             let (wd, hd, _) = hlist_dims(den, eqtb);
             (wn.max(wd), hn + hd, 0)
         }
-        Node::Radical { body, .. } => hlist_dims(body, eqtb),
+        Node::Radical { body, .. } | Node::Overline { body, .. } => hlist_dims(body, eqtb),
         Node::OpLimits { op, .. } => hlist_dims(op, eqtb),
-        Node::DelimBox { .. } | Node::Accent { .. } | Node::Whatsit(_) | Node::Ins { .. }
-        | Node::Disc(_) | Node::MathChar { .. } => (0, 0, 0),
-        Node::VAdjust(_) | Node::InsDisc | Node::Empty | Node::MathKern(_, _) => (0, 0, 0),
+        Node::VCenter { box_node } => single_dims(box_node, eqtb),
+        Node::Whatsit(WhatIt::PdfRefXImage { w, h, d, .. })
+        | Node::Whatsit(WhatIt::PdfRefXForm { w, h, d, .. }) => (*w, *h, *d),
+        Node::DelimBox { .. }
+        | Node::Accent { .. }
+        | Node::Whatsit(_)
+        | Node::Ins { .. }
+        | Node::Disc(_)
+        | Node::MathChar { .. } => (0, 0, 0),
+        Node::VAdjust(_)
+        | Node::InsDisc
+        | Node::Empty
+        | Node::MathKern(_, _)
+        | Node::NonScript
+        | Node::MuGlue(_) => (0, 0, 0),
         Node::Leaders { glue, body, .. } => {
             let (_, bh, bd) = leader_dims(body);
             (glue.width, bh, bd)
@@ -225,18 +435,32 @@ pub fn vlist_dims(list: &[Node], eqtb: &crate::eqtb::Eqtb) -> (i32, i32, i32) {
     let (mut x, mut d, mut w) = (0i64, 0i64, 0i64);
     for n in list {
         match n {
-            Node::Box { w: bw, h: bh, d: bd, shift, .. } => {
+            Node::Box {
+                w: bw,
+                h: bh,
+                d: bd,
+                shift,
+                ..
+            } => {
                 x += d + *bh as i64;
                 d = *bd as i64;
                 w = w.max(*bw as i64 + *shift as i64);
             }
-            Node::Rule { height, depth, width } => {
+            Node::Rule {
+                height,
+                depth,
+                width,
+            } => {
                 x += d + *height as i64;
                 d = *depth as i64;
                 w = w.max(*width as i64);
             }
             Node::Glue(g) => {
                 x += d + g.width as i64;
+                d = 0;
+            }
+            Node::MarginKern { width, .. } => {
+                x += d + *width as i64;
                 d = 0;
             }
             Node::Kern(k) | Node::ExplicitKern(k) => {
@@ -249,13 +473,28 @@ pub fn vlist_dims(list: &[Node], eqtb: &crate::eqtb::Eqtb) -> (i32, i32, i32) {
                 let (lw, _, _) = leader_dims(body);
                 w = w.max(lw as i64);
             }
+            Node::Whatsit(WhatIt::PdfRefXImage {
+                w: iw,
+                h: ih,
+                d: id,
+                ..
+            })
+            | Node::Whatsit(WhatIt::PdfRefXForm {
+                w: iw,
+                h: ih,
+                d: id,
+                ..
+            }) => {
+                x += d + *ih as i64;
+                d = *id as i64;
+                w = w.max(*iw as i64);
+            }
             // penalty, mark, ins, whatsit, math-only nodes: do_nothing
             _ => {}
         }
     }
     (w as i32, x as i32, d as i32)
 }
-
 
 /// badness(t, s) exactly as tex.web §2337: r ≈ 297·t/s, badness = r³/2¹⁸
 /// rounded, capped at INF_BAD. (scaled::badness uses the exact cube; real
@@ -297,7 +536,15 @@ pub fn compute_glue_set(
         return (0, 0, 0.0);
     }
     let pick = |v: &[i64; 4]| -> usize {
-        if v[3] != 0 { 3 } else if v[2] != 0 { 2 } else if v[1] != 0 { 1 } else { 0 }
+        if v[3] != 0 {
+            3
+        } else if v[2] != 0 {
+            2
+        } else if v[1] != 0 {
+            1
+        } else {
+            0
+        }
     };
     if x > 0 {
         let o = pick(&stretch);
@@ -328,7 +575,7 @@ pub struct PackResult {
     pub order: u8,
 }
 
-fn glue_sums(list: &[Node]) -> ([i64; 4], [i64; 4]) {
+pub(crate) fn glue_sums(list: &[Node]) -> ([i64; 4], [i64; 4]) {
     let mut stretch = [0i64; 4];
     let mut shrink = [0i64; 4];
     for n in list {
@@ -375,7 +622,11 @@ fn finish_glue(
                     let fuzz = eqtb.dim_params[DimParam::Hfuzz.idx() as usize] as i64;
                     let rule_w = eqtb.dim_params[DimParam::OverfullRule.idx() as usize] as i64;
                     if horizontal && rule_w > 0 && excess > fuzz {
-                        list.push(Node::Rule { width: rule_w as i32, height: 0, depth: 0 });
+                        list.push(Node::Rule {
+                            width: rule_w as i32,
+                            height: 0,
+                            depth: 0,
+                        });
                     }
                 }
             } else if nonempty {
@@ -425,9 +676,37 @@ pub fn hpack_add(
     }
 }
 
-/// \hbox packing with an exact (or natural) target
+/// \hpack packing with exact (or natural) target
 pub fn hpack(list: NodeList, w: Option<i32>, kind: u8, eqtb: &crate::eqtb::Eqtb) -> PackResult {
     hpack_add(list, w, false, kind, eqtb)
+}
+
+/// \hpack that also performs tex.web's adjustment migration (§12900-12903,
+/// §12956-12957, §13006-13016): this is the `adjust_tail<>null` hpack case —
+/// the display-math finish (§22507) and adjusted-hbox group (§21057). Every
+/// top-level `Ins`/`Mark` node is REMOVED from the hlist and appended to the
+/// returned migration list, and every `VAdjust` node is replaced in place by
+/// the contents of its vlist (canonical `adjust_ptr` splice, §13008-13012).
+/// Callers splice the migrated nodes into the enclosing vertical list right
+/// after the box (tex.web §22611, §20897-20902).
+pub fn hpack_migrate(
+    list: NodeList,
+    w: Option<i32>,
+    kind: u8,
+    eqtb: &crate::eqtb::Eqtb,
+) -> (PackResult, NodeList) {
+    let mut migrated: NodeList = Vec::new();
+    let mut kept: NodeList = Vec::with_capacity(list.len());
+    for n in list {
+        match n {
+            Node::Ins { .. } | Node::Mark { .. } => migrated.push(n),
+            // §13008-13012: an adjust_node's own vlist joins the adjustment
+            // list and the node is freed — it never stays in the hlist
+            Node::VAdjust(inner) => migrated.extend(inner),
+            other => kept.push(other),
+        }
+    }
+    (hpack(kept, w, kind, eqtb), migrated)
 }
 
 /// \vbox/\vtop packing with explicit max depth (tex.web vpackage's `l`):
@@ -504,7 +783,10 @@ pub fn vtop_md(
     max_depth: i32,
 ) -> PackResult {
     let mut res = vpack_add_md(list, h, additional, VTOP, eqtb, max_depth);
-    if let Node::Box { h: hh, d: dd, list, .. } = &mut res.node {
+    if let Node::Box {
+        h: hh, d: dd, list, ..
+    } = &mut res.node
+    {
         // tex.web §1087: The height of a \vtop box is inherited from the
         // FIRST item on its list, if that item is an hlist, vlist, or rule;
         // otherwise the \vtop height is zero.
@@ -567,3 +849,464 @@ pub fn leader_layout(
     (out, lx, edge - 10)
 }
 
+// ---------- pdfTeX font expansion packing (pdftex.web hpack m=2/3) ----------
+
+/// `divide_scaled(s, m, dd)` + the `scaled_out` side effect (pdftex.web
+/// §15825): integer division with `dd` extra decimal digits, half-up on the
+/// remainder; `scaled_out` = the quotient*divisor rounded onto the 10^-dd
+/// raster. Used only for the expansion-ratio computation, where the result
+/// is the ratio (a per-mille integer), not a scaled quantity.
+fn divide_scaled(s: i64, m: i64, dd: u32) -> (i64, i64) {
+    let (mut s, mut m) = (s, m);
+    let mut sign = 1i64;
+    if s < 0 {
+        sign = -sign;
+        s = -s;
+    }
+    if m < 0 {
+        sign = -sign;
+        m = -m;
+    }
+    let mut q = s / m;
+    let mut r = s % m;
+    for _ in 0..dd {
+        q = 10 * q + (10 * r) / m;
+        r = (10 * r) % m;
+    }
+    if 2 * r >= m {
+        q += 1;
+        r -= m;
+    }
+    let ten_pow = 10i64.pow(dd);
+    let scaled_out = sign * (s - r / ten_pow);
+    (sign * q, scaled_out)
+}
+
+/// `get_ef_code(f, c)`
+#[inline]
+pub fn char_ef_code(eqtb: &crate::eqtb::Eqtb, f: FontId, c: u8) -> i32 {
+    eqtb.expand.get(f as usize).map_or(1000, |x| x.ef_code(c))
+}
+
+/// `char_stretch(f, c)`: extra room this character gains at the font's
+/// maximum stretch (scaled by its efcode).
+pub fn char_stretch(eqtb: &crate::eqtb::Eqtb, f: FontId, c: u8) -> i32 {
+    let x = match eqtb.expand.get(f as usize) {
+        Some(x) => x,
+        None => return 0,
+    };
+    if x.stretch == 0 {
+        return 0;
+    }
+    let ef = x.ef_code(c);
+    if ef <= 0 {
+        return 0;
+    }
+    let kf = match eqtb.fonts.get(x.stretch as usize) {
+        Some(k) => k,
+        None => return 0,
+    };
+    let dw = kf.char_width(c) - eqtb.fonts[f as usize].char_width(c);
+    if dw > 0 {
+        crate::tfm::round_xn_over_d(dw, ef, 1000)
+    } else {
+        0
+    }
+}
+
+/// `char_shrink(f, c)`
+pub fn char_shrink(eqtb: &crate::eqtb::Eqtb, f: FontId, c: u8) -> i32 {
+    let x = match eqtb.expand.get(f as usize) {
+        Some(x) => x,
+        None => {
+            return 0;
+        }
+    };
+    if x.shrink == 0 {
+        return 0;
+    }
+    let ef = x.ef_code(c);
+    if ef <= 0 {
+        return 0;
+    }
+    let kf = match eqtb.fonts.get(x.shrink as usize) {
+        Some(k) => k,
+        None => return 0,
+    };
+    let dw = eqtb.fonts[f as usize].char_width(c) - kf.char_width(c);
+    if dw > 0 {
+        crate::tfm::round_xn_over_d(dw, ef, 1000)
+    } else {
+        0
+    }
+}
+
+/// `get_kern(f, lc, rc)`: the first kern amount in `lc`'s lig/kern program
+/// that fires before `rc` (walks the TFM program like build.rs's finder,
+/// but without the stop-on-first-match shortcut: pdftex scans for kerns).
+pub fn get_kern(eqtb: &crate::eqtb::Eqtb, f: FontId, lc: u8, rc: u8) -> i32 {
+    let font = match eqtb.fonts.get(f as usize) {
+        Some(ft) => ft,
+        None => return 0,
+    };
+    let ci = match font.chars.get(lc as usize) {
+        Some(ci) => ci,
+        None => return 0,
+    };
+    if ci.tag != crate::tfm::TAG_LIG {
+        return 0;
+    }
+    let mut k = ci.remainder as usize;
+    if let Some(first) = font.lig_kern.get(k) {
+        if first.skip > 128 {
+            k = 256 * first.op as usize + first.rem as usize;
+        }
+    }
+    let mut jumps = 0;
+    loop {
+        let step = match font.lig_kern.get(k) {
+            Some(s) => s,
+            None => return 0,
+        };
+        if step.next_char == rc && step.skip <= 128 && step.op >= 128 {
+            let idx = ((step.op as usize) - 128) * 256 + step.rem as usize;
+            return font.kerns.get(idx).copied().unwrap_or(0);
+        }
+        if step.skip == 0 {
+            k += 1;
+        } else if step.stop {
+            return 0;
+        } else {
+            k += step.skip as usize + 1;
+        }
+        jumps += 1;
+        if jumps > 512 || k >= font.lig_kern.len() {
+            return 0;
+        }
+    }
+}
+
+/// `kern_stretch(p)`: stretch of the implicit kern node `p` sitting between
+/// characters `lc` (prev) and `rc` (next) of font `f`.
+pub fn kern_stretch(eqtb: &crate::eqtb::Eqtb, f: FontId, lc: u8, rc: u8, cur_kern: i32) -> i32 {
+    let x = match eqtb.expand.get(f as usize) {
+        Some(x) => x,
+        None => return 0,
+    };
+    if x.stretch == 0 {
+        return 0;
+    }
+    let ef = x.ef_code(lc);
+    let d = get_kern(eqtb, x.stretch, lc, rc);
+    crate::tfm::round_xn_over_d(d - cur_kern, ef, 1000)
+}
+
+/// `kern_shrink(p)`: how much the implicit kern `p` (currently `cur_kern`)
+/// can *reduce* the line when the font is swapped to its max-shrink variant.
+/// pdftex.web §20779-20806: `round_xn_over_d(width(p) - d, ef, 1000)` —
+/// opposite orientation to `kern_stretch`, and signed: kerns that *grow*
+/// in the shrunk font contribute negative shrink to `total_font_shrink`.
+pub fn kern_shrink(eqtb: &crate::eqtb::Eqtb, f: FontId, lc: u8, rc: u8, cur_kern: i32) -> i32 {
+    let x = match eqtb.expand.get(f as usize) {
+        Some(x) => x,
+        None => return 0,
+    };
+    if x.shrink == 0 {
+        return 0;
+    }
+    let ef = x.ef_code(lc);
+    let d = get_kern(eqtb, x.shrink, lc, rc);
+    crate::tfm::round_xn_over_d(cur_kern - d, ef, 1000)
+}
+
+/// Is font `f` expandable at all (a configured step and a stretch or shrink
+/// limit)? `check_expand_pars`' first test.
+pub fn font_expand_enabled(eqtb: &crate::eqtb::Eqtb, f: FontId) -> bool {
+    match eqtb.expand.get(f as usize) {
+        Some(x) => x.step != 0 && (x.stretch != 0 || x.shrink != 0),
+        None => false,
+    }
+}
+
+/// `do_subst_font` for one char/ligature position: swap the font id to the
+/// variant expanded by `ratio * ef / 1000` (clamped inside `expand_font`).
+fn do_subst_font(eng: &mut crate::engine::Engine, f: &mut FontId, c: u8, ex_ratio: i32) {
+    let ef = char_ef_code(&eng.eqtb, *f, c);
+    if ef == 0 {
+        return;
+    }
+    let k = {
+        let x = match eng.eqtb.expand.get(*f as usize) {
+            Some(x) => x,
+            None => return,
+        };
+        let (st, sh) = (x.stretch, x.shrink);
+        if st != 0 && ex_ratio > 0 {
+            let maxr = eng.eqtb.expand.get(st as usize).map_or(0, |x| x.ratio);
+            let e = ext_xn_over_d(ex_ratio as i64 * ef as i64, maxr as i64, 1_000_000);
+            eng.expand_font(*f, e)
+        } else if sh != 0 && ex_ratio < 0 {
+            let maxr = eng.eqtb.expand.get(sh as usize).map_or(0, |x| x.ratio);
+            let e = ext_xn_over_d(ex_ratio as i64 * ef as i64, -maxr as i64, 1_000_000);
+            eng.expand_font(*f, e)
+        } else {
+            return;
+        }
+    };
+    if k != *f {
+        *f = k;
+    }
+}
+fn subst_node_font(eng: &mut crate::engine::Engine, node: &mut Node, ratio: i32) {
+    match node {
+        Node::Char { c, font } => do_subst_font(eng, font, *c, ratio),
+        Node::Ligature {
+            c,
+            font,
+            lig_width,
+            lig_height,
+            lig_depth,
+            ..
+        } => {
+            let before = *font;
+            do_subst_font(eng, font, *c, ratio);
+            if *font != before {
+                let nf = &eng.eqtb.fonts[*font as usize];
+                *lig_width = nf.char_width(*c);
+                *lig_height = nf.char_height(*c);
+                *lig_depth = nf.char_depth(*c);
+            }
+        }
+        Node::Disc(dc) => {
+            for node in &mut dc.no_break {
+                subst_node_font(eng, node, ratio);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// `ext_xn_over_d(x, n, d)`: 64-bit-safe round(x*n/d) (pdftex change file).
+fn ext_xn_over_d(x: i64, n: i64, d: i64) -> i32 {
+    let neg = (x < 0) ^ (n < 0);
+    let (x, n) = (x.abs(), n.abs());
+    let q = (x * n) / d;
+    let r = (x * n) % d;
+    let u = if 2 * r >= d { q + 1 } else { q };
+    (if neg { -u } else { u }).clamp(i32::MIN as i64, i32::MAX as i64) as i32
+}
+
+/// pdfTeX `hpack(p, w, cal_expand_ratio)` + `subst_ex_font` fused: measure
+/// the line's expandable stretch/shrink, compute the expansion ratio from
+/// the leftover after normal glue, then repack with substituted fonts.
+/// Falls back to plain `hpack` when expansion cannot apply (parameter
+/// `pdfadjustspacing` <= 0, no expandable font, or the glue absorbs the
+/// difference on its own).
+pub fn hpack_expand(
+    eng: &mut crate::engine::Engine,
+    list: NodeList,
+    w: i32,
+    kind: u8,
+) -> PackResult {
+    if eng.eqtb.int_params[crate::prim::IntParam::PdfAdjustSpacing.idx() as usize] <= 0 {
+        return hpack(list, Some(w), kind, &eng.eqtb);
+    }
+    // ---- pass 1: cal_expand_ratio ----
+    let (nat_w, _, _) = hlist_dims(&list, &eng.eqtb);
+    let (stretch, shrink) = glue_sums(&list);
+    let x = w as i64 - nat_w as i64;
+    let mut ratio: i32 = 0;
+    let mut font_stretch: i64 = 0;
+    let mut font_shrink: i64 = 0;
+    if x > 0 {
+        let no_inf = stretch[1] == 0 && stretch[2] == 0 && stretch[3] == 0;
+        if no_inf {
+            collect_char_stretch(eng, &list, &mut font_stretch, true);
+            if font_stretch > 0 {
+                let (q, _) = divide_scaled(x, font_stretch, 3);
+                ratio = q.clamp(-1000, 1000) as i32;
+            }
+        }
+    } else if x < 0 {
+        let no_inf = shrink[1] == 0 && shrink[2] == 0 && shrink[3] == 0;
+        if no_inf {
+            collect_char_stretch(eng, &list, &mut font_shrink, false);
+            if font_shrink > 0 {
+                let (q, _) = divide_scaled(x, font_shrink, 3);
+                ratio = q.clamp(-1000, 1000) as i32;
+            }
+        }
+    }
+    if ratio == 0 {
+        return hpack(list, Some(w), kind, &eng.eqtb);
+    }
+    // ---- pass 2: subst_ex_font ----
+    // pdftex rewrites the font ids of char/ligature nodes (and the
+    // ligature's own dimensions, which our packing reads from the node) and
+    // then, for an implicit kern whose neighbours are char/ligature nodes of
+    // one expandable font, recomputes the kern from the expanded font's
+    // lig/kern program (`width(p) := get_kern(font(prev_char_p), l, r)`).
+    // The kern only moves when `kern_stretch`/`kern_shrink` is nonzero —
+    // the same test that fed `font_stretch` in pass 1.
+    let mut list = list;
+    for node in &mut list {
+        subst_node_font(eng, node, ratio);
+    }
+    for i in 1..list.len().saturating_sub(1) {
+        if !matches!(list[i], Node::Kern(_)) {
+            continue;
+        }
+        let Some((f, lc)) = char_or_lig(&list[i - 1]) else {
+            continue;
+        };
+        let Some((rf, rc)) = char_or_lig(&list[i + 1]) else {
+            continue;
+        };
+        if f != rf {
+            continue;
+        }
+        let expanded = match eng.eqtb.expand.get(f as usize) {
+            Some(x) if ratio > 0 => x.stretch,
+            Some(x) if ratio < 0 => x.shrink,
+            _ => 0,
+        };
+        if expanded == 0 {
+            continue;
+        }
+        let cur = match &list[i] {
+            Node::Kern(k) => *k,
+            _ => 0,
+        };
+        let nonzero = if ratio > 0 {
+            kern_stretch(&eng.eqtb, f, lc, rc, cur) != 0
+        } else {
+            kern_shrink(&eng.eqtb, f, lc, rc, cur) != 0
+        };
+        if nonzero {
+            list[i] = Node::Kern(get_kern(&eng.eqtb, expanded, lc, rc));
+        }
+    }
+    hpack(list, Some(w), kind, &eng.eqtb)
+}
+
+/// The character code of a char/ligature node along with its font id — the
+/// pair pdftex reads for `kern_stretch`'s neighbours.
+fn char_or_lig(n: &Node) -> Option<(FontId, u8)> {
+    match n {
+        Node::Char { c, font } => Some((*font, *c)),
+        Node::Ligature { c, font, .. } => Some((*font, *c)),
+        _ => None,
+    }
+}
+
+/// Sum `char_stretch`/`char_shrink` over characters and `kern_stretch`/
+/// `kern_shrink` over implicit kerns (pdftex hpack cal_expand_ratio pass).
+fn collect_char_stretch(
+    eng: &crate::engine::Engine,
+    list: &NodeList,
+    total: &mut i64,
+    stretch: bool,
+) {
+    let eqtb = &eng.eqtb;
+    for i in 0..list.len() {
+        match &list[i] {
+            Node::Char { c, font } | Node::Ligature { c, font, .. } => {
+                *total += if stretch {
+                    char_stretch(eqtb, *font, *c) as i64
+                } else {
+                    char_shrink(eqtb, *font, *c) as i64
+                };
+            }
+            Node::Kern(d) => {
+                // `kern_stretch(p)`: only when the kern sits directly
+                // between two char/ligature nodes of the same expandable
+                // font (pdftex's prev_char_p/link(p) guard)
+                let prev = match i.checked_sub(1).map(|j| &list[j]) {
+                    Some(Node::Char { c, font } | Node::Ligature { c, font, .. }) => (*font, *c),
+                    _ => continue,
+                };
+                let next = match list.get(i + 1) {
+                    Some(Node::Char { c, font } | Node::Ligature { c, font, .. }) => (*font, *c),
+                    _ => continue,
+                };
+                if prev.0 != next.0 {
+                    continue;
+                }
+                *total += if stretch {
+                    kern_stretch(eqtb, prev.0, prev.1, next.1, *d) as i64
+                } else {
+                    kern_shrink(eqtb, prev.0, prev.1, next.1, *d) as i64
+                };
+            }
+            Node::Disc(dc) => collect_char_stretch(eng, &dc.no_break, total, stretch),
+            _ => {}
+        }
+    }
+}
+
+/// Split a vertical list at `target` natural height (tex.web vsplit).
+/// Glue at the break is discarded. Height accounts for inter-box depth.
+pub fn split_vlist(list: &[Node], target: i64) -> (NodeList, NodeList) {
+    let mut height = 0i64;
+    let mut depth = 0i64;
+    let mut seen_box = false;
+    let mut split_at: Option<usize> = None;
+    for (i, node) in list.iter().enumerate() {
+        match node {
+            Node::Box { h, d, .. }
+            | Node::Rule {
+                height: h,
+                depth: d,
+                ..
+            }
+            | Node::Ins {
+                height: h,
+                depth: d,
+                ..
+            } => {
+                let h = *h as i64;
+                if seen_box && height + depth + h > target {
+                    split_at = Some(i);
+                    break;
+                }
+                height += depth + h;
+                depth = *d as i64;
+                seen_box = true;
+            }
+            Node::Glue(g) => {
+                let w = g.width as i64;
+                if seen_box && height + depth + w > target {
+                    split_at = Some(i);
+                    break;
+                }
+                height += depth + w;
+                depth = 0;
+            }
+            Node::Kern(k) | Node::ExplicitKern(k) => {
+                let w = *k as i64;
+                if seen_box && height + depth + w > target {
+                    split_at = Some(i);
+                    break;
+                }
+                height += depth + w;
+                depth = 0;
+            }
+            Node::Penalty(p) if *p <= crate::scaled::EJECT_PENALTY && seen_box => {
+                split_at = Some(i);
+                break;
+            }
+            _ => {}
+        }
+    }
+    match split_at {
+        None => (list.to_vec(), Vec::new()),
+        Some(i) => {
+            let at_glue = matches!(list[i], Node::Glue(_));
+            let mut rest = list[i..].to_vec();
+            if at_glue && !rest.is_empty() {
+                rest.remove(0);
+            }
+            (list[..i].to_vec(), rest)
+        }
+    }
+}

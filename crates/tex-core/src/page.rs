@@ -12,8 +12,8 @@
 use std::collections::BTreeMap;
 
 use crate::boxes::{vpack, Glue, Node, NodeList, VBOX};
-use crate::engine::Engine;
-use crate::prim::{DimParam, GlueParam, IntParam, ToksParam};
+use crate::engine::{Engine, Mode};
+use crate::prim::{DimParam, IntParam, ToksParam};
 use crate::scaled::{badness, AWFUL_BAD, EJECT_PENALTY, INF_BAD, INF_PENALTY};
 
 /// sentinel token pushed after the `\output` token list; ends the routine.
@@ -45,45 +45,202 @@ fn precedes_break(n: &Node) -> bool {
     )
 }
 
-/// natural vertical extents (width, height, depth) of a vlist; boxes carry
-/// their own dimensions, so this stays local to the page builder
-fn vlist_extents(list: &[Node]) -> (i64, i64, i64) {
-    let (mut w, mut h, mut d) = (0i64, 0i64, 0i64);
-    for n in list {
-        match n {
-            Node::Box { w: bw, h: bh, d: bd, .. }
-            | Node::Rule { width: bw, height: bh, depth: bd } => {
-                h += d + *bh as i64;
-                d = *bd as i64;
-                if *bw as i64 > w {
-                    w = *bw as i64;
-                }
-            }
-            Node::Ins { height: ih, depth: id, box_node, .. } => {
-                h += d + *ih as i64;
-                d = *id as i64;
-                if let Node::Box { w: bw, .. } = &**box_node {
-                    if *bw as i64 > w {
-                        w = *bw as i64;
+/// tex.web `x_over_n` (§2274): Pascal `div` on the magnitude, sign
+/// restored — truncation toward zero; division by zero yields 0
+fn x_over_n(x: i64, n: i64) -> i64 {
+    if n == 0 {
+        0
+    } else {
+        x / n
+    }
+}
+
+/// tex.web `prune_page_top` (§18869): after a split, leading discardables
+/// (glue/kern/penalty) are dropped, whatsits/marks/insertions stay, and a
+/// `split_top_skip` glue shrunk by the first box's height opens the list.
+/// Scanning stops at the first box/rule; everything after it is untouched.
+fn prune_page_top_list(list: NodeList, topskip: &Glue) -> NodeList {
+    let mut out: NodeList = Vec::new();
+    let mut it = list.into_iter();
+    loop {
+        match it.next() {
+            None => return out,
+            Some(n @ Node::Mark { .. })
+            | Some(n @ Node::Ins { .. })
+            | Some(n @ Node::Whatsit(_)) => out.push(n),
+            Some(n) => {
+                let h = match &n {
+                    Node::Box { h, .. } | Node::Rule { height: h, .. } => *h as i64,
+                    Node::Glue(_) | Node::Kern(_) | Node::ExplicitKern(_) | Node::Penalty(_) => {
+                        continue
                     }
-                }
+                    _ => continue,
+                };
+                let pad = (topskip.width as i64 - h).max(0) as i32;
+                out.push(Node::Glue(Glue::new(pad)));
+                out.push(n);
+                out.extend(it);
+                return out;
             }
-            Node::Glue(g) => {
-                h += d + g.width as i64;
-                d = g.width as i64;
-            }
-            Node::Kern(k) | Node::ExplicitKern(k) => {
-                h += d + *k as i64;
-                d = *k as i64;
-            }
-            Node::Adj(a) => {
-                h += d + *a as i64;
-                d = *a as i64;
-            }
-            _ => {}
         }
     }
-    (w, h, d)
+}
+
+/// tex.web `vert_break` (§18914) on a `Node::Ins` inner vlist: the optimum
+/// place to cut so the top part packs to natural height `w` with maximum
+/// depth `d`. Returns `(best_cut, best_height_plus_depth)`; `best_cut=None`
+/// stands for `q=null` (the artificial end-of-list forced break, i.e. the
+/// whole list is the top part). `best_cut=Some(i)` cuts before `list[i]`.
+fn page_vert_break(list: &[Node], w: i64, d: i64) -> (Option<usize>, i64) {
+    // active_height[1..6]: cur, finite stretch, fil, fill, filll, shrink
+    let mut cur: i64 = 0;
+    let mut act = [0i64; 5];
+    let mut prev_dp: i64 = 0;
+    let mut least_cost: i64 = AWFUL_BAD as i64;
+    let mut best: Option<usize> = None;
+    let mut best_bhpd: i64 = 0;
+    // prev_p := p initially: an opening glue is not a legal breakpoint
+    let mut prev_breakable = false;
+    let n = list.len();
+    let mut i = 0usize;
+    loop {
+        let c32 = |v: i64| v.clamp(0, i32::MAX as i64) as i32;
+        let pi: i64 = if i >= n {
+            EJECT_PENALTY as i64
+        } else {
+            match &list[i] {
+                Node::Box { h, d: bd, .. }
+                | Node::Rule {
+                    height: h,
+                    depth: bd,
+                    ..
+                } => {
+                    cur += prev_dp + *h as i64;
+                    prev_dp = *bd as i64;
+                    if prev_dp > d {
+                        cur += prev_dp - d;
+                        prev_dp = d;
+                    }
+                    prev_breakable = true;
+                    i += 1;
+                    continue;
+                }
+                Node::Glue(g) => {
+                    if !prev_breakable {
+                        cur += prev_dp + g.width as i64;
+                        prev_dp = 0;
+                        let so = (g.stretch_order as usize).min(3);
+                        act[so] += g.stretch as i64;
+                        act[4] += g.shrink as i64;
+                        if prev_dp > d {
+                            cur += prev_dp - d;
+                            prev_dp = d;
+                        }
+                        prev_breakable = false;
+                        i += 1;
+                        continue;
+                    }
+                    0
+                }
+                Node::Kern(k) | Node::ExplicitKern(k) => {
+                    // tex.web @18973: a kern is a breakpoint only when the
+                    // FOLLOWING node is glue; at the list end it counts as a
+                    // penalty node type, which is not glue
+                    let followed = matches!(list.get(i + 1), Some(Node::Glue(_)));
+                    if !followed {
+                        cur += prev_dp + *k as i64;
+                        prev_dp = 0;
+                        if prev_dp > d {
+                            cur += prev_dp - d;
+                            prev_dp = d;
+                        }
+                        prev_breakable = false;
+                        i += 1;
+                        continue;
+                    }
+                    0
+                }
+                Node::Penalty(p) => *p as i64,
+                Node::Mark { .. } | Node::Ins { .. } => {
+                    if prev_dp > d {
+                        cur += prev_dp - d;
+                        prev_dp = d;
+                    }
+                    prev_breakable = true;
+                    i += 1;
+                    continue;
+                }
+                _ => {
+                    if prev_dp > d {
+                        cur += prev_dp - d;
+                        prev_dp = d;
+                    }
+                    prev_breakable = precedes_break(&list[i]);
+                    i += 1;
+                    continue;
+                }
+            }
+        };
+        // champion check (tex.web @18985): only penalties < inf_penalty
+        if pi < INF_PENALTY as i64 {
+            let mut b: i64 = if cur < w {
+                if act[1] != 0 || act[2] != 0 || act[3] != 0 {
+                    0
+                } else {
+                    badness(c32(w - cur), c32(act[0])) as i64
+                }
+            } else if cur - w > act[4] {
+                AWFUL_BAD as i64
+            } else {
+                badness(c32(cur - w), c32(act[4])) as i64
+            };
+            if b < AWFUL_BAD as i64 {
+                b = if pi <= EJECT_PENALTY as i64 {
+                    pi
+                } else if b < INF_BAD as i64 {
+                    b + pi
+                } else {
+                    DEPLORABLE as i64
+                };
+            }
+            if b <= least_cost {
+                best = if i >= n { None } else { Some(i) };
+                least_cost = b;
+                best_bhpd = cur + prev_dp;
+            }
+            if b == AWFUL_BAD as i64 || pi <= EJECT_PENALTY as i64 {
+                return (best, best_bhpd);
+            }
+        }
+        // glue/kern candidates fold their own size in after the check
+        // (the break discards the glue); penalty candidates fall through
+        // to the depth clamp only
+        if i < n {
+            match &list[i] {
+                Node::Glue(g) => {
+                    cur += prev_dp + g.width as i64;
+                    prev_dp = 0;
+                    let so = (g.stretch_order as usize).min(3);
+                    act[so] += g.stretch as i64;
+                    act[4] += g.shrink as i64;
+                }
+                Node::Kern(k) | Node::ExplicitKern(k) => {
+                    cur += prev_dp + *k as i64;
+                    prev_dp = 0;
+                }
+                _ => {}
+            }
+            if prev_dp > d {
+                cur += prev_dp - d;
+                prev_dp = d;
+            }
+            prev_breakable = precedes_break(&list[i]);
+        }
+        i += 1;
+        if i > n {
+            return (best, best_bhpd);
+        }
+    }
 }
 
 /// a remembered page-breakpoint candidate
@@ -102,7 +259,52 @@ impl BreakSpot {
     /// cost was strictly positive (non-positive fires immediately), so using
     /// `deplorable` only weakens it against fresh candidates
     fn carried(cut: usize, penalty: i32) -> BreakSpot {
-        BreakSpot { cut, penalty, cost: DEPLORABLE }
+        BreakSpot {
+            cut,
+            penalty,
+            cost: DEPLORABLE,
+        }
+    }
+}
+
+/// tex.web page insertion node (`page_ins_node_size` @19193): one per class
+/// appearing on the current page. `height_raw` mirrors |height(r)| — the RAW
+/// (unscaled) height-plus-depth of `\box n` at class creation plus every
+/// part placed since; `split_up` is |type(r)| = split_up; the `_ord` fields
+/// identify `Node::Ins` contributions by their ordinal position in this
+/// page's contribution order (tex.web node pointers |last_ins_ptr|,
+/// |broken_ins|, |best_ins_ptr|; |broken_ptr| becomes `split_at`, the
+/// vert_break best-place index inside that node's own vlist).
+#[derive(Clone, Copy, Debug)]
+pub struct PageInsState {
+    /// insertion class (`subtype(r)`)
+    pub num: u16,
+    /// raw h+d already accounted for the class (tex.web `height(r)`)
+    pub height_raw: i64,
+    /// tex.web `type(r) = split_up`
+    pub split_up: bool,
+    /// ordinal of the node whose material overflowed (`broken_ins`)
+    pub broken_ord: Option<usize>,
+    /// vert_break best place inside `broken_ord`'s vlist (None = `null`)
+    pub split_at: Option<usize>,
+    /// tex.web `last_ins_ptr(r)`
+    pub last_ord: Option<usize>,
+    /// tex.web `best_ins_ptr(r)`: snapshotted from `last_ord` at the
+    /// champion page break (§19565-19570), restored with the page state
+    pub best_ord: Option<usize>,
+}
+
+impl PageInsState {
+    fn new(num: u16, height_raw: i64) -> PageInsState {
+        PageInsState {
+            num,
+            height_raw,
+            split_up: false,
+            broken_ord: None,
+            split_at: None,
+            last_ord: None,
+            best_ord: None,
+        }
     }
 }
 
@@ -118,8 +320,12 @@ struct PageState {
     shrink: [i64; 4],
     /// running `\insertpenalties`
     insert_penalties: i64,
-    /// scaled insert height used per class on this page
-    ins_used: Vec<(u16, i64)>,
+    /// page insertion chain for this page, ascending by class (tex.web
+    /// `page_ins_head`; ordered by class number per the §19602 insert loop)
+    ins: Vec<PageInsState>,
+    /// number of `Node::Ins` contributions scanned so far on this page:
+    /// the ordinal source for the `_ord` fields above
+    ins_ord: usize,
     /// a box or rule has been contributed (breaks need one before them)
     box_seen: bool,
     /// tex.web precedes_break(page_tail): the last contributed node is
@@ -134,7 +340,7 @@ struct PageState {
     fire: bool,
     /// `page_list` prefix already folded into the accounting
     processed: usize,
-    /// page started (a box or insert landed): stops top-of-page discards
+    /// page dimensions frozen after the first box or insertion
     goal_set: bool,
 }
 
@@ -146,7 +352,8 @@ impl PageState {
             stretch: [0; 4],
             shrink: [0; 4],
             insert_penalties: 0,
-            ins_used: Vec::new(),
+            ins: Vec::new(),
+            ins_ord: 0,
             box_seen: false,
             prev_breakable: false,
             cur_legal: false,
@@ -156,34 +363,18 @@ impl PageState {
             goal_set: false,
         }
     }
-
-    /// accumulate `amount` for insert class `num`, returning the new total
-    fn ins_bump(&mut self, num: u16, amount: i64) -> i64 {
-        for e in self.ins_used.iter_mut() {
-            if e.0 == num {
-                e.1 += amount;
-                return e.1;
-            }
-        }
-        self.ins_used.push((num, amount));
-        amount
-    }
 }
 
 impl Engine {
-    /// tex.web: `\pagegoal` is an INTERNAL quantity — assignments to it are
-    /// silently ignored (verified against pdftex: `\pagegoal=100pt` leaves
-    /// the register unchanged), so the builder must never read the register.
-    /// The effective goal is `\vsize` latched when the page starts
-    /// contributing (longtable's `\global\advance\vsize` in `\LT@start`
-    /// lands before the first row and is therefore honored); an empty page
-    /// reports `max_dimen` (the oracle's `\pagegoal` reads 16383.99998pt
-    /// until the builder first syncs), and `\vsize <= 0` (INITEX) likewise.
+    /// The builder goal is latched from \vsize when a page starts; an
+    /// unstarted page reports max_dimen. During \output, dim_param_value
+    /// reads the completed page's register snapshot instead of this new
+    /// page's counters.
     fn page_goal(&self) -> i64 {
         if !self.page_goal_set {
             return 0x3FFF_FFFF;
         }
-        self.vsize_goal()
+        self.page_goal
     }
 
     /// goal derived from `\vsize` alone (max_dimen when `\vsize <= 0`);
@@ -216,26 +407,26 @@ impl Engine {
             self.eqtb.dim_params[p.idx() as usize] = c32(st.stretch[o]);
         }
         self.eqtb.dim_params[DimParam::PageShrink.idx() as usize] = c32(st.shrink[0]);
-        // tex.web `post_break`: page_goal := v_size at the start of every
-        // page — the register reads `\vsize` even before the first box
+        // Publish the builder goal; preserve this snapshot during \output.
         let goal = self.page_goal();
         self.eqtb.dim_params[DimParam::PageGoal.idx() as usize] = c32(goal);
     }
-    /// scaled insert height: `h * count(n) / 1000` ("magnification");
-    /// `count(n) <= 0` contributes nothing to the page
+    /// tex.web §19610: the page-room weight of a raw insertion height —
+    /// `x_over_n(raw,1000)*count(n)` (truncating), raw itself when count=1000
     fn ins_scaled_height(&self, num: u16, raw_h: i64) -> i64 {
         let cnt = self.eqtb.count[num as usize] as i64;
         if cnt == 1000 {
             raw_h
-        } else if cnt <= 0 {
-            0
         } else {
-            (raw_h * cnt + 500) / 1000
+            x_over_n(raw_h, 1000) * cnt
         }
     }
 
     pub fn build_page(&mut self) {
-        // tex.web §1026: if (head=tail) or output_active then return;
+        // tex.web §1026 / build_page entry: `if output_active then return`,
+        // unconditional. finish_output is the only place that clears the
+        // flag (immediately before its final build_page); inferring liveness
+        // from the input stack is not canonical.
         if self.in_output {
             return;
         }
@@ -246,9 +437,7 @@ impl Engine {
         // capture): the clamped index is NOT a real new position — never
         // persist it, or the carried prefix would re-contribute later
         let clamped = self.page_processed > self.page_list.len();
-        if crate::debug_flag("P7TRACE") && clamped {
-            eprintln!("CLAMP p{}: page_processed={} listlen={} line={} mode={:?}", self.pdf_doc.pages.len()+1, self.page_processed, self.page_list.len(), self.input.current_file_line(), self.mode);
-        }
+
         let mut st = PageState {
             processed: self.page_processed.min(self.page_list.len()),
             goal_set: self.page_goal_set,
@@ -269,38 +458,86 @@ impl Engine {
             spot.cost = self.page_best_cost as i32;
             st.best = Some(spot);
         }
-        // a box before the pending region legalizes breaks; tex.web keeps
-        // this in page_contents (box_there), we re-derive it from the prefix
-        st.box_seen = self.page_list[..st.processed]
+        // tex.web `page_contents` is persistent engine state, not a scan of
+        // the contribution-list prefix: display math and paragraph capture
+        // swap the list, and output operations mutate it, so re-deriving
+        // `box_seen` here re-inserts \topskip pads for pages that already
+        // have a box and shifts stored breakpoint indices.
+        st.box_seen = self.page_box_seen;
+        // canonical page-insertion chain: restored with the rest of the page
+        // state instead of re-derived from the prefix (the prefix's class
+        // accounting — height(r), split flags, best_ins_ptr snapshots — is
+        // per-node state that replaying cannot reconstruct)
+        st.ins = std::mem::take(&mut self.page_insertions);
+        // ordinals count Ins nodes already scanned on this page; held carries
+        // are re-inserted ahead of the processed prefix, so count Ins nodes
+        // before the resume point
+        st.ins_ord = self.page_list[..st.processed]
             .iter()
-            .any(|n| matches!(n, Node::Box { .. } | Node::Rule { .. }));
-        // seed per-class insert usage from the already-processed prefix
-        for node in &self.page_list[..st.processed] {
-            if let Node::Ins { num, height, .. } = node {
-                st.ins_bump(*num, self.ins_scaled_height(*num, *height as i64));
-            }
-        }
+            .filter(|n| matches!(n, Node::Ins { .. }))
+            .count();
 
         while st.processed < self.page_list.len() {
             let idx = st.processed;
             let mut advance = true;
             st.cur_legal = false;
-            if crate::debug_flag("PAGECONTRIB") && self.pdf_doc.pages.len() + 1 == std::env::var("PAGECONTRIB_AT").ok().and_then(|s| s.parse().ok()).unwrap_or(44) {
-                let desc = match &self.page_list[idx] {
-                    Node::Glue(g) => format!("G {:.2}+{}ord{}", g.width as f64 / 65536.0, g.stretch as f64 / 65536.0, g.stretch_order),
-                    Node::Box { h, d, .. } => format!("BOX h={:.2} d={:.2}", *h as f64 / 65536.0, *d as f64 / 65536.0),
-                    Node::Penalty(p) => format!("PEN {}", p),
-                    Node::Kern(k) | Node::ExplicitKern(k) => format!("K {:.2}", *k as f64 / 65536.0),
-                    _ => "?".to_string(),
-                };
-                eprintln!("PCON idx={} {} total={:.2} goal_set={} prevd={}", idx, desc, st.total as f64 / 65536.0, st.goal_set, self.page_prev_depth as f64 / 65536.0);
-            }
-            if self.pdf_doc.pages.len() == 6 && st.processed < 10 && crate::debug_flag("P7TRACE") {
-                eprintln!("P7_HEAD: idx={} node={:?} goal_set={} box_seen={} prevdepth={}", idx, self.page_list[idx], st.goal_set, st.box_seen, self.page_prev_depth);
-            }
-            match self.page_list[idx].clone() {
+            match &self.page_list[idx] {
                 Node::Glue(g) => {
-                    if st.goal_set {
+                    self.last_page_glue = Some(g.clone());
+                    self.last_page_penalty = 0;
+                    self.last_page_kern = 0;
+                    self.last_page_node_type = 11;
+                }
+                Node::Penalty(p) => {
+                    self.last_page_glue = None;
+                    self.last_page_penalty = *p;
+                    self.last_page_kern = 0;
+                    self.last_page_node_type = 13;
+                }
+                Node::Kern(k) | Node::ExplicitKern(k) => {
+                    self.last_page_glue = None;
+                    self.last_page_penalty = 0;
+                    self.last_page_kern = *k;
+                    self.last_page_node_type = 12;
+                }
+                Node::Box { kind, .. } => {
+                    self.last_page_glue = None;
+                    self.last_page_penalty = 0;
+                    self.last_page_kern = 0;
+                    self.last_page_node_type = if *kind == crate::boxes::HBOX { 1 } else { 2 };
+                }
+                Node::Rule { .. } => {
+                    self.last_page_glue = None;
+                    self.last_page_penalty = 0;
+                    self.last_page_kern = 0;
+                    self.last_page_node_type = 3;
+                }
+                Node::Ins { .. } => {
+                    self.last_page_glue = None;
+                    self.last_page_penalty = 0;
+                    self.last_page_kern = 0;
+                    self.last_page_node_type = 4;
+                }
+                Node::Mark { .. } => {
+                    self.last_page_glue = None;
+                    self.last_page_penalty = 0;
+                    self.last_page_kern = 0;
+                    self.last_page_node_type = 5;
+                }
+                _ => {
+                    self.last_page_glue = None;
+                    self.last_page_penalty = 0;
+                    self.last_page_kern = 0;
+                    self.last_page_node_type = -1;
+                }
+            }
+
+            // Page accounting needs dimensions and glue, never a recursive
+            // copy of the box or insertion contents.
+            match &self.page_list[idx] {
+                Node::Glue(g) => {
+                    let g = g.clone();
+                    if st.box_seen {
                         // tex.web evaluates a glue breakpoint BEFORE the glue
                         // contributes: its page total excludes the glue (the
                         // glue is discarded at the break)
@@ -315,7 +552,8 @@ impl Engine {
                                 _ => break,
                             }
                         }
-                        let legal0 = pi0 > 0 && precedes_break(&self.page_list[pi0 - 1]);
+                        let legal0 =
+                            st.box_seen && pi0 > 0 && precedes_break(&self.page_list[pi0 - 1]);
                         if legal0 {
                             self.try_page_break(&mut st, idx, 0);
                         }
@@ -332,19 +570,31 @@ impl Engine {
                         // must leave page_list or it lands in \box255 and
                         // renders as phantom space at the top of the page
                         self.page_list.remove(idx);
+                        if let Some(spot) = st.best.as_mut() {
+                            if idx < spot.cut {
+                                spot.cut -= 1;
+                            }
+                        }
                         advance = false;
                     }
                 }
                 Node::Kern(k) | Node::ExplicitKern(k) => {
-                    if st.goal_set {
+                    let k = *k;
+                    if st.box_seen {
                         self.contribute_gap(&mut st, k as i64);
                     } else {
                         self.page_list.remove(idx);
+                        if let Some(spot) = st.best.as_mut() {
+                            if idx < spot.cut {
+                                spot.cut -= 1;
+                            }
+                        }
                         advance = false;
                     }
                 }
                 Node::Penalty(p) => {
-                    if st.goal_set {
+                    let p = *p;
+                    if st.box_seen {
                         // legal break at penalties < inf_penalty when a box precedes
                         if p < INF_PENALTY && st.box_seen {
                             st.cur_legal = true;
@@ -352,71 +602,76 @@ impl Engine {
                         }
                     } else {
                         self.page_list.remove(idx);
+                        if let Some(spot) = st.best.as_mut() {
+                            if idx < spot.cut {
+                                spot.cut -= 1;
+                            }
+                        }
                         advance = false;
                     }
                 }
-                Node::Box { h, d, .. } | Node::Rule { height: h, depth: d, .. } => {
+                Node::Box { h, d, .. }
+                | Node::Rule {
+                    height: h,
+                    depth: d,
+                    ..
+                } => {
+                    let (h, d) = (*h, *d);
                     // tex.web contributes every box, including 0x0 ones
                     // (`\box_there`); LaTeX's float/clearpage machinery
                     // plants empty `\vbox{}` markers purely so the following
                     // forced `\penalty -1000x` is a legal break that re-fires
                     // the output routine.
-                    if !st.goal_set {
+                    if !st.box_seen {
                         // first box on a fresh page: `\topskip` glue before it
                         // — tex.web inserts it whatever the box height, so a
                         // leading 0x0 box pads a full `\topskip`
-                        st.goal_set = true;
-                        self.page_prev_depth = DEPTH_NONE;
-                        self.prev_depth = DEPTH_NONE;
-                        let ts = self.eqtb.dim_params[DimParam::TopSkip.idx() as usize];
-                        let pad = (ts as i64 - h as i64).max(0);
-                        if pad > 0 {
-                            self.page_list.insert(idx, Node::Glue(Glue::new(pad as i32)));
-                            advance = false; // reprocess at the inserted glue
+                        st.box_seen = true;
+                        if !st.goal_set {
+                            st.goal_set = true;
+                            self.page_goal = self.vsize_goal();
+                            self.page_goal_set = true;
+                            self.page_prev_depth = DEPTH_NONE;
                         }
-                    } else if h == 0 && d == 0 {
-                        // 0x0 boxes contribute zero size but still establish
-                        // \prevdepth (=0) for the next box's interline glue
-                        self.contribute_box(&mut st, 0, 0);
-                        self.page_prev_depth = 0;
-                        self.prev_depth = 0;
-                    } else if self.page_prev_depth > DEPTH_NONE {
-                        // tex.web: interline glue is materialized when the
-                        // box is APPENDED to the vertical list
-                        // (append_to_vlist), never here — vlist_append and
-                        // end_paragraph insert it with the \baselineskip in
-                        // force at append time; a lazy insert here reads
-                        // post-group font state and duplicates the glue
-                        self.page_prev_depth = DEPTH_NONE;
-                    }
-                    if advance && (h != 0 || d != 0) {
-                        self.contribute_box(&mut st, h, d);
-                        self.page_prev_depth = d;
-                        self.prev_depth = d;
-                    }
-                }
-                Node::Ins { num, height, depth, cost, .. } => {
-                    self.contribute_ins(&mut st, num, height, depth, cost);
-                }
-                Node::Mark { class, tokens } => {
-                    // tex.web §19490: mark_node -> goto contribute — marks
-                    // are recorded even at the top of a fresh page (the
-                    // mark survives into \topmark/\firstmark of the page it
-                    // lands on)
-                    let c = class.max(0) as usize;
-                    if c < MAX_MARK_CLASS {
-                        for m in self.marks.iter_mut() {
-                            if m.len() <= c {
-                                m.resize(c + 1, Vec::new());
+                        let ts =
+                            self.eqtb.dim_params[crate::prim::DimParam::TopSkip.idx() as usize];
+                        let pad = (ts as i64 - h as i64).max(0) as i32;
+                        self.page_list.insert(idx, Node::Glue(Glue::new(pad)));
+                        // canonical BreakSpot holds a node pointer; the Vec
+                        // index must follow every list mutation ahead of it
+                        if let Some(spot) = st.best.as_mut() {
+                            if idx < spot.cut {
+                                spot.cut += 1;
                             }
                         }
-                        if self.marks[2][c].is_empty() {
-                            self.marks[1][c] = tokens.clone();
-                        }
-                        self.marks[2][c] = tokens;
+                        advance = false; // reprocess at the inserted glue
+                    } else if self.page_prev_depth > DEPTH_NONE {
+                        self.page_prev_depth = DEPTH_NONE;
+                    }
+                    if advance {
+                        st.box_seen = true;
+                        self.contribute_box(&mut st, h, d);
+                        self.page_prev_depth = d;
+                        // Page depth is not the enclosing nest's \prevdepth:
+                        // unboxing and \vadjust splice without changing it.
                     }
                 }
+                Node::Ins { .. } => {
+                    // canonical vert_break reads the insertion's own inner
+                    // vlist; lift the node out of the list so the &mut self
+                    // call can borrow it without a deep copy
+                    let node = self.page_list.remove(idx);
+                    let ord = st.ins_ord;
+                    st.ins_ord += 1;
+                    self.contribute_ins(&mut st, ord, &node);
+                    self.page_list.insert(idx, node);
+                }
+                Node::Mark { .. } => {
+                    // tex.web: mark nodes contribute without affecting page dimensions;
+                    // first_mark and bot_mark are updated only at fire_up for the chosen break
+                }
                 Node::Adj(a) => {
+                    let a = *a;
                     if st.goal_set {
                         self.contribute_gap(&mut st, a as i64);
                     }
@@ -445,19 +700,21 @@ impl Engine {
         self.page_break_penalty = st.best.map(|b| b.penalty).unwrap_or(0);
         self.page_best_cost = st.best.map(|b| b.cost as i64).unwrap_or(0);
         self.page_goal_set = st.goal_set;
+        self.page_box_seen = st.box_seen;
         self.eqtb.int_params[IntParam::InsertPenalties.idx() as usize] =
             st.insert_penalties.clamp(i32::MIN as i64, i32::MAX as i64) as i32;
+        // canonical page-ins chain persists with the rest of the page state
+        // (tex.web keeps page_ins_head live across contribution batches)
+        self.page_insertions = st.ins.clone();
         self.sync_page_dims(&st);
-        // fire only when a fire condition was met; otherwise the best break
-        // stays remembered and the page keeps accumulating (tex.web)
         if st.fire {
-            if let Some(spot) = st.best {
-                let penalty = spot.penalty;
-                self.fire_up(spot.cut, penalty);
-            }
+            let (cut, penalty, pack_goal) = match st.best {
+                Some(spot) => (spot.cut, spot.penalty, self.page_best_goal),
+                None => (st.processed, 0, self.page_goal()),
+            };
+            self.fire_up(cut, penalty, pack_goal);
         }
     }
-
 
     /// fold a box contribution into the page accounting (tex.web @1047):
     /// depth beyond `\maxdepth` is charged to height
@@ -473,7 +730,10 @@ impl Engine {
         }
         st.box_seen = true;
         st.goal_set = true;
-        self.page_goal_set = true;
+        if !self.page_goal_set {
+            self.page_goal = self.vsize_goal();
+            self.page_goal_set = true;
+        }
     }
     /// fold glue: width folds the running depth away, stretch/shrink accrue
     /// by order (tex.web @1042)
@@ -482,13 +742,7 @@ impl Engine {
         let so = (g.stretch_order as usize).min(3);
         let ho = (g.shrink_order as usize).min(3);
         st.stretch[so] += g.stretch as i64;
-        if so > 0 && g.width != 0 {
-            st.stretch[so] += g.width as i64;
-        }
         st.shrink[ho] += g.shrink as i64;
-        if ho > 0 && g.width != 0 {
-            st.shrink[ho] += g.width as i64;
-        }
     }
 
     /// fold a kern-like gap (kern, \vadjust amount)
@@ -497,27 +751,137 @@ impl Engine {
         st.depth = 0;
     }
 
-    /// fold an insert contribution (tex.web @1052): the count-scaled height
-    /// counts toward the page; exceeding `\dimen n` charges the insert's
-    /// cost (standing in for `\floatingpenalty`) to `\insertpenalties`
-    fn contribute_ins(&mut self, st: &mut PageState, num: u16, height: i32, depth: i32, cost: i32) {
-        let scaled = self.ins_scaled_height(num, height as i64);
-        st.total += st.depth + scaled;
-        let md = self.max_depth();
-        let d64 = depth as i64;
-        if d64 > md {
-            st.total += d64 - md;
-            st.depth = md;
-        } else {
-            st.depth = d64;
-        }
-        st.goal_set = true;
-        if height != 0 {
-            let used = st.ins_bump(num, scaled);
-            let budget = self.eqtb.dimen[num as usize] as i64;
-            if self.eqtb.count[num as usize] > 0 && budget < used && cost > 0 {
-                st.insert_penalties += cost as i64;
+    /// fold an insert contribution — canonical `contrib_list` insertion
+    /// case (tex.web §§19596-19626 + §§19663-19679). `ord` is the node's
+    /// ordinal among this page's `Node::Ins` contributions (stands in for
+    /// the node pointer `p`). The class state fits the insertion only when
+    /// BOTH the remaining page room (`page_goal - page_total - page_depth
+    /// + page_shrink`, count-scaled) and `\dimen n` allow; otherwise the
+    /// insertion's own vlist is broken with `vert_break(ins_ptr(p), w,
+    /// depth(p))` using its LOCAL `\splitmaxdepth`/`\splittopskip`, only
+    /// the selected part is subtracted from `page_goal`, and the class
+    /// flips to `split_up` (later same-class nodes charge float_cost).
+    /// tex.web §19607: once split_up, every further node of the class
+    /// charges `\floatingpenalty` and is held for the next page.
+    fn contribute_ins(&mut self, st: &mut PageState, ord: usize, node: &Node) {
+        let (num, raw_h, cost, split_max_depth, inner): (u16, i64, i32, i32, NodeList) = match node
+        {
+            Node::Ins {
+                num,
+                height,
+                depth,
+                cost,
+                split_max_depth,
+                box_node,
+                ..
+            } => {
+                let inner: NodeList = match &**box_node {
+                    Node::Box { list, .. } => list.clone(),
+                    other => vec![other.clone()],
+                };
+                (
+                    *num,
+                    *height as i64 + *depth as i64,
+                    *cost,
+                    *split_max_depth,
+                    inner,
+                )
             }
+            _ => return,
+        };
+        // tex.web §19597: freeze page specs (inserts_only) when the page
+        // has no box yet — the goal latch is vsize
+        st.goal_set = true;
+        if !self.page_goal_set {
+            self.page_goal = self.vsize_goal();
+            self.page_goal_set = true;
+        }
+        // §19598-19604: locate the class in the ascending page-ins chain —
+        // pos is the first entry >= num (canonical walks past entries <= n,
+        // then tests subtype(r)=n at the stop node)
+        let pos = st.ins.iter().take_while(|s| s.num < num).count();
+        if st.ins.get(pos).map_or(true, |s| s.num != num) {
+            // §19631-19658 <Create a page insertion node ... include the
+            // glue correction for box n in the current page state>: only
+            // the FIRST insert n of a page reads \box n and \skip n
+            let mut existing: Option<&Node> = None;
+            match self.eqtb.boxed.get(num as usize) {
+                Some(Some(b @ Node::Box { kind, .. })) if *kind != crate::boxes::HBOX => {
+                    existing = Some(b)
+                }
+                Some(Some(other)) => existing = Some(other),
+                _ => {}
+            }
+            let height_raw = match existing {
+                Some(Node::Box { h, d, .. }) => *h as i64 + *d as i64,
+                Some(_) => 0,
+                None => 0,
+            };
+            self.page_goal -= self.ins_scaled_height(num, height_raw);
+            if let Some(sk) = self.eqtb.skip.get(num as usize) {
+                let sk = *sk;
+                self.page_goal -= sk.width as i64;
+                let so = (sk.stretch_order as usize).min(3);
+                let ho = (sk.shrink_order as usize).min(3);
+                st.stretch[so] += sk.stretch as i64;
+                st.shrink[ho] += sk.shrink as i64;
+            }
+            st.ins.insert(pos, PageInsState::new(num, height_raw));
+        }
+        let s = &mut st.ins[pos];
+        // §19610: class already split on this page — charge float_cost, hold
+        if s.split_up {
+            st.insert_penalties += cost as i64;
+            return;
+        }
+        s.last_ord = Some(ord);
+        // §19612-19619: the fit test — page room AND \dimen n
+        let cnt = self.eqtb.count[num as usize] as i64;
+        let budget = self.eqtb.dimen[num as usize] as i64;
+        let delta = self.page_goal - st.total - st.depth + st.shrink[0];
+        let h = if cnt == 1000 {
+            raw_h
+        } else {
+            x_over_n(raw_h, 1000) * cnt
+        };
+        if (h <= 0 || h <= delta) && raw_h + s.height_raw <= budget {
+            self.page_goal -= h;
+            s.height_raw += raw_h;
+            return;
+        }
+        // §19663-19679 <Find the best way to split the insertion>:
+        // w = raw room left on the page, capped by the class budget
+        let mut w = if cnt <= 0 {
+            0x3FFF_FFFF
+        } else {
+            let room = self.page_goal - st.total - st.depth;
+            if cnt != 1000 {
+                x_over_n(room, cnt) * 1000
+            } else {
+                room
+            }
+        };
+        if w > budget - s.height_raw {
+            w = budget - s.height_raw;
+        }
+        let (q, bhpd_raw) = page_vert_break(&inner, w, split_max_depth as i64);
+        s.height_raw += bhpd_raw;
+        let charge = if cnt != 1000 {
+            x_over_n(bhpd_raw, 1000) * cnt
+        } else {
+            bhpd_raw
+        };
+        self.page_goal -= charge;
+        s.split_up = true;
+        s.broken_ord = Some(ord);
+        s.split_at = q;
+        // §19677-19678: the break penalty rides into \insertpenalties
+        if let Some(i) = q {
+            if let Some(Node::Penalty(p)) = inner.get(i) {
+                st.insert_penalties += *p as i64;
+            }
+        } else {
+            st.insert_penalties += EJECT_PENALTY as i64;
         }
     }
 
@@ -525,52 +889,53 @@ impl Engine {
     /// then fire if the page is done. tex.web evaluates firing ONLY at
     /// candidates: a page whose total crosses the goal between candidates
     /// keeps growing until the next one, which may carry a better cost
-    /// (LaTeX's `\addpenalty -51` after the last fitting line is the p44
     /// case — firing mid-run there cut one line early vs real pdflatex)
     fn try_page_break(&mut self, st: &mut PageState, cut: usize, penalty: i32) {
         if penalty >= 10000 {
             return;
         }
         let (b, cost) = self.break_cost(st, penalty);
-        if crate::debug_flag("PAGECAND") && {
-            let want: usize = std::env::var("PAGECAND_AT").ok().and_then(|s| s.parse().ok()).unwrap_or(10);
-            self.pdf_doc.pages.len() + 1 == want
-        } {
-            eprintln!("PGCAND t={:.2} g={:.2} str={:.2} shk={:.2} p={} c={} cut={}",
-                st.total as f64 / 65536.0, self.page_goal() as f64 / 65536.0,
-                st.stretch[0] as f64 / 65536.0, st.shrink[0] as f64 / 65536.0,
-                penalty, cost, cut);
-        }
+        // tex.web §19563: `if c<=least_page_cost` — least starts at
+        // awful_bad, so an awful candidate becomes champion while none
+        // exists and snapshots the insertion classes. Once a finite
+        // champion exists, awful never displaces it.
         let better = match st.best {
-            None => cost < AWFUL_BAD,
+            None => true,
             Some(spot) => cost <= spot.cost,
         };
-        if better {
+        if (b < AWFUL_BAD as i64 || st.best.is_none()) && better {
             st.best = Some(BreakSpot { cut, penalty, cost });
+            // tex.web best_size snapshots page_goal at the selected break.
+            // Later insertions may reduce the running page_goal further.
+            self.page_best_goal = self.page_goal();
+            // tex.web §19566-19570: best_ins_ptr(r) := last_ins_ptr(r) for
+            // every class — fire_up packages exactly the material that had
+            // been accounted when THIS break was the champion.
+            for s in st.ins.iter_mut() {
+                s.best_ord = s.last_ord;
+            }
         }
-        // tex.web §1004-1005: fire iff THIS candidate is awful (overfull
-        // beyond shrink) or a forcing penalty; the cut lands at the best
-        // (least-cost) champion so far. Total ≥ goal alone never fires.
+        // tex.web §1004-1005: fire iff this candidate is awful (overfull
+        // beyond shrink) or a forcing penalty; ship the best champion.
         if cost == AWFUL_BAD || penalty <= EJECT_PENALTY {
             st.fire = true;
         }
     }
-
     /// tex.web @1003/@1004: returns (badness, cost = badness + penalty +
     /// `\insertpenalties`) for breaking at the current candidate
     fn break_cost(&self, st: &PageState, penalty: i32) -> (i64, i32) {
         let goal = self.page_goal();
         let b: i64 = if st.total < goal {
-            let want = (goal - st.total).min(i32::MAX as i64 / 2) as i32;
-            let mut order = 0usize;
-            for o in (1..4).rev() {
-                if st.stretch[o] != 0 {
-                    order = o;
-                    break;
-                }
+            // tex.web §1003: if any infinite stretch exists (fil/fill/filll),
+            // the badness is zero; calling badness on the magnitude of the
+            // infinite stretch treats it as finite and assigns deplorable cost.
+            if st.stretch[1] != 0 || st.stretch[2] != 0 || st.stretch[3] != 0 {
+                0
+            } else {
+                let want = (goal - st.total).min(i32::MAX as i64 / 2) as i32;
+                let s = st.stretch[0].min(i32::MAX as i64 / 2) as i32;
+                badness(want, s) as i64
             }
-            let s = st.stretch[order].min(i32::MAX as i64 / 2) as i32;
-            badness(want, s) as i64
         } else if st.total - goal > st.shrink[0] {
             AWFUL_BAD as i64
         } else {
@@ -592,154 +957,250 @@ impl Engine {
             b
         };
         // tex.web: an insert-heavy page forces the issue
-        let c = if st.insert_penalties >= 10000 { AWFUL_BAD as i64 } else { c };
+        let c = if st.insert_penalties >= 10000 {
+            AWFUL_BAD as i64
+        } else {
+            c
+        };
         (b, c.clamp(i32::MIN as i64, i32::MAX as i64) as i32)
     }
 
-    /// fires when the best break is a forcing penalty or the page total
-    /// has reached the goal (checked after each contributed node)
+    /// Fires once the page builder has selected a breakpoint.
     fn ready_to_fire(&self, st: &PageState) -> bool {
-        if self.ini_mode {
-            return false;
-        }
-        if Self::web_fire_rule() {
-            return st.fire;
-        }
-
         st.fire
     }
-
-    /// A/B switch: FIRERULE=web evaluates the fire condition only at
-    /// breakpoint candidates (tex.web §1005); default keeps the legacy
-    /// total>=goal rule
-    fn web_fire_rule() -> bool {
-        static ON: std::sync::LazyLock<bool> =
-            std::sync::LazyLock::new(|| std::env::var("FIRERULE").ok().as_deref() == Some("web"));
-        *ON
-    }
-    fn fire_up(&mut self, cut: usize, penalty: i32) {
-        if crate::debug_flag("PAGETRACE") {
-            eprintln!(
-                "FIRE_UP cut={} pen={} in_output={} pages={} line={}",
-                cut,
-                penalty,
-                self.in_output,
-                self.pdf_doc.pages.len(),
-                self.input.current_file_line()
-            );
-        }
-        if self.in_output {
-            // Stale-lock recovery: error paths that strip the <output>/
-            // <endoutput> toklists (scan_definable_cs clears, end-of-file)
-            // bypass finish_output; without the routine on the stack the
-            // lock can never release and every later page is silently lost.
-            let alive = self.input.stack.iter().any(|s| {
-                matches!(
-                    s,
-                    crate::input::Source::TokList { name, .. }
-                        if name == "<output>" || name == "<endoutput>"
-                )
-            });
-            if alive {
-                return;
+    fn fire_up(&mut self, cut: usize, _penalty: i32, pack_goal: i64) {
+        // TeX retains the selected breakpoint on the contribution list. A
+        // penalty becomes infinite so it cannot fire again; output material
+        // is inserted before it, preserving \lastskip/\lastpenalty semantics.
+        let (cut, penalty) = match cut.checked_sub(1).and_then(|i| self.page_list.get_mut(i)) {
+            Some(Node::Penalty(p)) => {
+                let penalty = *p;
+                *p = INF_PENALTY;
+                (cut - 1, penalty)
             }
-            self.in_output = false;
-            self.output_depth = 0;
-        }
-        if self.ini_mode {
-            return;
-        }
+            _ => (cut, INF_PENALTY),
+        };
         self.eqtb.int_params[IntParam::OutputPenalty.idx() as usize] = penalty;
-        if crate::debug_flag("OUTW") { eprintln!("FIRE penalty={} pages={}", penalty, self.pdf_doc.pages.len()); }
-        self.dead_cycles += 1;
-        if crate::debug_flag("NA2") { eprintln!("PAGE-SHIP pages->{} line={}", self.pdf_doc.pages.len() + 1, self.input.current_file_line()); }
+
         // marks: `\topmark` becomes the old `\botmark`; per-page marks reset
         self.marks[0] = self.marks[2].clone();
         for m in self.marks.iter_mut().skip(1) {
             *m = Vec::new();
         }
 
-        if crate::debug_flag("CUTWATCH") && self.pdf_doc.pages.len() + 1 == 44 {
-            let peek = |n: &Node| -> String {
-                match n {
-                    Node::Glue(g) => format!("G({})", g.width as f64 / 65536.0),
-                    Node::Penalty(p) => format!("P({})", p),
-                    Node::Box { h, list, .. } => {
-                        let ch: String = list.iter().filter_map(|m| match m { Node::Char { c, .. } => Some(*c as char), _ => None }).take(8).collect();
-                        format!("B(h={:.1}:'{}')", *h as f64 / 65536.0, ch)
-                    }
-                    Node::Kern(k) | Node::ExplicitKern(k) => format!("K({})", *k as f64 / 65536.0),
-                    _ => "?".into(),
-                }
-            };
-            let items_str: Vec<String> = self.page_list.iter().map(|n| peek(n)).collect();
-            eprintln!("CUTWATCH p44 cut={} list={:?}", cut, items_str);
-        }
         let items: NodeList = self.page_list.drain(..cut).collect();
-        if crate::debug_flag("PAGEVLIST") {
-            eprintln!("=== PAGE {} MATERIAL (cut={}) ===", self.pdf_doc.pages.len() + 1, cut);
-            for (i, n) in items.iter().enumerate() {
-                let s = match n {
-                    Node::Glue(g) => format!(
-                        "glue {} plus {}({}) minus {}({})",
-                        g.width, g.stretch, g.stretch_order, g.shrink, g.shrink_order
-                    ),
-                    Node::Kern(k) | Node::ExplicitKern(k) => format!("kern {}", k),
-                    Node::Penalty(p) => format!("penalty {}", p),
-                    Node::Box { w, h, d, list, .. } => {
-                        let mut peek = String::new();
-                        for n in list.iter().take(6) {
-                            match n {
-                                Node::Char { c, .. } => peek.push(*c as char),
-                                Node::Glue(g) => peek.push_str(&format!(" G({})", g.width)),
-                                Node::Kern(k) | Node::ExplicitKern(k) => {
-                                    peek.push_str(&format!(" K({})", k))
-                                }
-                                Node::Penalty(p) => peek.push_str(&format!(" P({})", p)),
-                                Node::Ligature { c, .. } => peek.push(*c as char),
-                                _ => peek.push_str(" ?"),
-                            }
+        // tex.web §1012-§1016: update first_mark and bot_mark from the page material
+        let mut seen_first = std::collections::BTreeSet::new();
+        let mut seen_bot = std::collections::BTreeSet::new();
+        for node in &items {
+            if let Node::Mark { class, tokens } = node {
+                let c = (*class).max(0) as usize;
+                if c < MAX_MARK_CLASS {
+                    for m in self.marks.iter_mut() {
+                        if m.len() <= c {
+                            m.resize(c + 1, Vec::new());
                         }
-                        format!(
-                            "box whd=({},{},{}) n={} peek=[{}]",
-                            w, h, d, list.len(), peek
-                        )
                     }
-                    Node::Rule { width, height, depth } => {
-                        format!("rule whd=({},{},{})", width, height, depth)
+                    if !seen_first.contains(&c) {
+                        seen_first.insert(c);
+                        self.marks[1][c] = tokens.clone();
                     }
-                    Node::Mark { class, .. } => format!("mark class={}", class),
-                    Node::Adj(a) => format!("adj {}", a),
-                    Node::Whatsit(_) => "whatsit".to_string(),
-                    Node::Leaders { glue, .. } => format!("leaders glue={}", glue.width),
-                    _ => "other".to_string(),
-                };
-                eprintln!("  [{}] {}", i, s);
+                    seen_bot.insert(c);
+                    self.marks[2][c] = tokens.clone();
+                }
             }
         }
-        self.page_processed = self.page_processed.saturating_sub(cut);
-        if crate::debug_flag("P7TRACE") {
-            eprintln!("CUT shipping p{}: cut={} page_processed={} listlen={}", self.pdf_doc.pages.len(), cut, self.page_processed, self.page_list.len());
+        // tex.web §1012: if first_mark is null (no mark on page), first_mark := top_mark
+        for c in 0..self.marks[0].len() {
+            if !seen_first.contains(&c) {
+                if !self.marks[0][c].is_empty() {
+                    if self.marks[1].len() <= c {
+                        self.marks[1].resize(c + 1, Vec::new());
+                    }
+                    self.marks[1][c] = self.marks[0][c].clone();
+                }
+            }
+            if !seen_bot.contains(&c) {
+                if !self.marks[0][c].is_empty() {
+                    if self.marks[2].len() <= c {
+                        self.marks[2].resize(c + 1, Vec::new());
+                    }
+                    self.marks[2][c] = self.marks[0][c].clone();
+                }
+            }
         }
+
+        self.page_processed = self.page_processed.saturating_sub(cut);
+
         self.page_best_break = None;
         self.page_break_penalty = 0;
         self.page_best_cost = 0;
+        self.page_best_goal = 0x3FFF_FFFF;
+        self.last_page_glue = None;
+        self.last_page_penalty = 0;
+        self.last_page_kern = 0;
+        self.last_page_node_type = -1;
 
-        // inserts leave the page material; each class goes into `\box N`
+        // canonical fire_up packaging (tex.web §§19827-19876): walk the page
+        // material in contribution order; each class receives the material
+        // of its insert nodes up to `best_ord` (the node snapshotted as
+        // best_ins_ptr at the champion break). The class box is packed when
+        // that node is reached; if the class flipped to `split_up` at the
+        // same node, the node's own vlist is broken at `split_at`, pruned
+        // with the node's LOCAL `\splittopskip`, and the remainder is held
+        // over as an insert node. Nodes past the champion (or of classes
+        // with no champion) are held whole. `\insertpenalties` counts held
+        // nodes (§19752). tex.web §1014: if \holdinginserts > 0, inserts
+        // stay on the page list (inside \box255) instead.
+        let holding = self.eqtb.int_params[IntParam::HoldingInserts.idx() as usize] > 0;
+        let mut states: BTreeMap<u16, PageInsState> =
+            self.page_insertions.iter().map(|s| (s.num, *s)).collect();
         let mut page_mat: NodeList = Vec::new();
-        let mut inserts: BTreeMap<u16, Vec<Node>> = BTreeMap::new();
+        // per-class queue: existing \box n content + appended insert material
+        let mut queues: BTreeMap<u16, NodeList> = BTreeMap::new();
+        let mut carried: NodeList = Vec::new();
+        let mut ord = 0usize;
         for node in items {
             match node {
-                Node::Ins { num, box_node, .. } => {
-                    inserts.entry(num).or_default().push(*box_node);
+                ins @ Node::Ins { .. } if !holding => {
+                    let (num, cost, topskip, splitmax, inner) = match &ins {
+                        Node::Ins {
+                            num,
+                            cost,
+                            split_top_skip,
+                            split_max_depth,
+                            box_node,
+                            ..
+                        } => {
+                            let inner: NodeList = match &**box_node {
+                                Node::Box { list, .. } => list.clone(),
+                                other => vec![other.clone()],
+                            };
+                            (*num, *cost, *split_top_skip, *split_max_depth, inner)
+                        }
+                        _ => unreachable!(),
+                    };
+                    let cur_ord = ord;
+                    ord += 1;
+                    // §19871: best_ins_ptr(r)=null -> hold this node whole
+                    let wrap = match states.get(&num) {
+                        Some(s) => s.best_ord,
+                        None => None,
+                    };
+                    if wrap != Some(cur_ord) {
+                        // §19871-19877: best_ins_ptr(r)=null holds the node
+                        // whole; ordinals before the champion append to the
+                        // queue (equality wraps up below); ordinals after a
+                        // consumed wrap-up hold whole
+                        let held = match wrap {
+                            None => true,
+                            Some(o) => cur_ord > o,
+                        };
+                        if held {
+                            carried.push(ins);
+                        } else {
+                            let queue = queues.entry(num).or_insert_with(|| {
+                                // §19835-19843 <Prepare all the boxes... to
+                                // act as queues>: existing \box n content
+                                // opens the queue
+                                match self.eqtb.boxed[num as usize].take() {
+                                    Some(Node::Box { list, .. }) => list,
+                                    Some(other) => vec![other],
+                                    None => Vec::new(),
+                                }
+                            });
+                            queue.extend(inner);
+                        }
+                        continue;
+                    }
+                    // §19874: best_ins_ptr(r)=p — append, then wrap up
+                    let queue = queues.entry(num).or_insert_with(|| {
+                        match self.eqtb.boxed[num as usize].take() {
+                            Some(Node::Box { list, .. }) => list,
+                            Some(other) => vec![other],
+                            None => Vec::new(),
+                        }
+                    });
+                    let base = queue.len();
+                    queue.extend(inner);
+                    // §19853 <Wrap up the box specified by node r, splitting
+                    // node p if called for>
+                    let s = states[&num];
+                    let mut remainder: Option<NodeList> = None;
+                    if s.split_up && s.broken_ord == Some(cur_ord) {
+                        if let Some(i) = s.split_at {
+                            // §19855-19856: cut at broken_ptr, prune the
+                            // tail with this node's LOCAL \splittopskip
+                            let pos = (base + i).min(queue.len());
+                            let rest: NodeList = queue.drain(pos..).collect();
+                            let pruned = prune_page_top_list(rest, &topskip);
+                            if !pruned.is_empty() {
+                                remainder = Some(pruned);
+                            }
+                        }
+                    }
+                    // §19862-19865: box n := vpack(temp_ptr, natural)
+                    let q = std::mem::take(queue);
+                    queues.remove(&num);
+                    let r = vpack(q, None, VBOX, &self.eqtb);
+                    self.eqtb.assign_box(num, Some(r.node), true);
+                    if let Some(rest) = remainder {
+                        // §19857-19860: height(p) := extents of the packed
+                        // pruned remainder; node p itself carries it
+                        let rr = vpack(rest, None, VBOX, &self.eqtb);
+                        let (rh, rd) = match &rr.node {
+                            Node::Box { h, d, .. } => (*h, *d),
+                            _ => (0, 0),
+                        };
+                        carried.push(Node::Ins {
+                            num,
+                            height: rh,
+                            depth: rd,
+                            cost,
+                            split_top_skip: topskip,
+                            split_max_depth: splitmax,
+                            box_node: Box::new(rr.node),
+                        });
+                    }
+                    if let Some(s) = states.get_mut(&num) {
+                        s.best_ord = None;
+                    }
                 }
                 other => page_mat.push(other),
             }
         }
-        // tex.web §1002: the break penalty node itself is discarded from the
-        // page material (never packed into \box255).
-        if let Some(Node::Penalty(_)) = page_mat.last() {
-            page_mat.pop();
+        // classes whose champion node never appeared in [0..cut) (defensive:
+        // canonical packaging would have hit it): pack what was queued
+        for (num, q) in queues {
+            if !q.is_empty() {
+                let r = vpack(q, None, VBOX, &self.eqtb);
+                self.eqtb.assign_box(num, Some(r.node), true);
+            }
+        }
+        // §19860 <Delete the page-insertion nodes>
+        self.page_insertions.clear();
+        // §19752/§19893: insert_penalties counts the held-over nodes
+        self.eqtb.int_params[IntParam::InsertPenalties.idx() as usize] = carried.len() as i32;
+        // §19817-19819 + §19904-19911/§19948-19953: held insertions go to
+        // the HEAD of the contribution list, ahead of the remainder; the
+        // next page contributes everything (holds + remainder) from a fresh
+        // canonical state, so no processed prefix may survive
+        let n_carry = carried.len();
+        if n_carry > 0 {
+            for (k, c) in carried.into_iter().enumerate() {
+                self.page_list.insert(k, c);
+            }
+            self.page_processed = 0;
+        } else if self.page_processed > 0
+            && self.page_list[..self.page_processed]
+                .iter()
+                .any(|n| matches!(n, Node::Ins { .. }))
+        {
+            // insertions scanned past the champion break: canonical puts
+            // every post-break node back on the contribution list
+            // unprocessed
+            self.page_processed = 0;
         }
         // tex.web page-top invariant: box255 opens with whatsits/marks, the
         // \topskip pad, and the first box — nothing else may sit between the
@@ -765,32 +1226,37 @@ impl Engine {
             head.append(&mut page_mat);
             page_mat = head;
         }
-        for (num, boxes) in inserts {
-            self.place_insert(num, boxes);
-        }
 
-        // a new page begins: reset the builder's running accounting, but do
-        // NOT touch the \pagetotal/\pagegoal family here — the output
-        // routine runs with the COMPLETED page's register values (real
-        // pdftex: PGOAL=\vsize, PTOTAL=the just-broken page's total); the
-        // next build_page re-syncs the registers to the new page, and
-        // page_goal_set=false means a mid-page \pagegoal pin does not
-        // survive the break (page_goal() re-derives from \vsize)
-        self.eqtb.int_params[IntParam::InsertPenalties.idx() as usize] = 0;
+        // Reset next-page accounting without erasing the completed page's
+        // goal, total, or glue registers seen by \output. Page depth is the
+        // exception: TeX clears it in "Start a new current page".
+        // \insertpenalties is NOT cleared here: tex.web §19752 leaves the
+        // held-over count live for the output routine and the next page's
+        // accumulation; it is zeroed at <Resume the page builder> (§19942)
+        // in finish_output.
         self.page_total = 0;
         self.page_depth = 0;
+        // tex.web "Start a new current page" clears depth before \output.
+        self.eqtb.dim_params[DimParam::PageDepth.idx() as usize] = 0;
         self.page_stretch = [0; 4];
         self.page_shrink = [0; 4];
         self.page_prev_depth = DEPTH_NONE;
+        self.page_goal = 0x3FFF_FFFF;
         self.page_goal_set = false;
-        // Routine decision needs to precede the fresh-page fold: with a user
+        // <Start a new current page> (tex.web §19955): page_contents := empty
+        self.page_box_seen = false;
         // \output, TeX rebuilds the next page from scratch at <Resume the page
         // builder> (routine list + remainder), so the fold (strip/pad/prefix
         // accounting) must not run — finish_output zeroes page_processed and
         // build_page contributes the spliced head + remainder nodes afresh.
+        // tex.web §28435-28438: the gate tests dead_cycles BEFORE this
+        // fire's increment (incr happens inside <Fire up>): the routine runs
+        // while dead_cycles < maxdeadcycles; at the limit TeX explains the
+        // loop and falls through to the default output (which ships box255,
+        // and ship_out resets the counter).
         let maxdc = self.eqtb.int_params[IntParam::MaxDeadCycles.idx() as usize].max(0);
         let toks = (*self.eqtb.tok_params[ToksParam::Output.idx() as usize]).clone();
-        let will_routine = !toks.is_empty() && self.dead_cycles <= maxdc;
+        let will_routine = !toks.is_empty() && self.dead_cycles < maxdc;
         if !will_routine {
             // tex.web fresh-page parity for the carried-over processed prefix:
             // strip stale leading discardables (old interline glue, break
@@ -826,6 +1292,10 @@ impl Engine {
                     .iter()
                     .position(|n| matches!(n, Node::Box { .. } | Node::Rule { .. }));
                 if let Some(fb) = fb {
+                    // the carried prefix contributes a box: page_contents
+                    // reaches box_there through the fold (tex.web §19955
+                    // reset + re-contribution)
+                    self.page_box_seen = true;
                     let h = match &self.page_list[fb] {
                         Node::Box { h, .. } => *h,
                         Node::Rule { height: h, .. } => *h,
@@ -865,7 +1335,12 @@ impl Engine {
                                 total += depth + *k as i64;
                                 depth = 0;
                             }
-                            Node::Box { h, d, .. } | Node::Rule { height: h, depth: d, .. } => {
+                            Node::Box { h, d, .. }
+                            | Node::Rule {
+                                height: h,
+                                depth: d,
+                                ..
+                            } => {
                                 total += depth + *h as i64;
                                 depth = (*d as i64).min(md64);
                                 prev_d = *d;
@@ -882,29 +1357,37 @@ impl Engine {
                 }
             }
         }
+
         let md = self.max_depth().min(i32::MAX as i64) as i32;
-        let r = crate::boxes::vpack_add_md(page_mat, None, false, VBOX, &self.eqtb, md);
+        // NOTE: tex.web §19905 says `vpack(q, natural)`, but real pdfTeX
+        // packs \box255 to \pagegoal when the page has finite shrink/
+        // stretch to absorb (oracle: BOX: 30.0pt = goal, not 25 = natural).
+        // The exact-goal pack below matches the empirical contract that
+        // LaTeX/ltxgrid rely on (\ht\box255 == \pagegoal at \output).
+        let exact = (pack_goal < 0x3FFF_FFFF)
+            .then_some(pack_goal.clamp(i32::MIN as i64, i32::MAX as i64) as i32);
+        let r = crate::boxes::vpack_add_md(page_mat, exact, false, VBOX, &self.eqtb, md);
         self.eqtb.assign_box(255, Some(r.node), true);
 
-        // dead-cycle limit: force shipout instead of looping the routine
-        if self.dead_cycles > maxdc {
-            self.error(&format!(
-                "Output loop---{} consecutive dead cycles",
-                self.dead_cycles
-            ));
+        // tex.web §28435-28439: with no routine (or once the dead-cycle
+        // limit is reached, after explaining the loop) fall through to
+        // <Perform the default output routine>: ship box255. ship_out
+        // resets dead_cycles (§19147), so the counter never needs a
+        // second reset here.
+        if toks.is_empty() || self.dead_cycles >= maxdc {
+            if !toks.is_empty() {
+                self.error(&format!(
+                    "Output loop---{} consecutive dead cycles",
+                    self.dead_cycles
+                ));
+            }
             let b = self.eqtb.boxed[255].take();
             self.ship_box(b);
-            self.dead_cycles = 0;
             return;
         }
-
-        if toks.is_empty() {
-            // TeXbook default output: \shipout\box255 (also in INITEX)
-            let b = self.eqtb.boxed[255].take();
-            self.ship_box(b);
-            self.dead_cycles = 0;
-            return;
-        }
+        // <Fire up the user's output routine> §28633-28634:
+        // output_active:=true; incr(dead_cycles)
+        self.dead_cycles += 1;
         self.in_output = true;
         self.output_depth += 1;
         // tex.web push_nest: the routine runs on a fresh list; Rust defers the
@@ -916,7 +1399,7 @@ impl Engine {
         // (output_group) — its local assignments (\@restorepar's \def\par,
         // \@specials, mark state) roll back at <endoutput> instead of
         // clobbering the enclosing list's eqtb state
-        self.eqtb.push_level(crate::eqtb::LevelType::Simple);
+        self.push_group_level(crate::eqtb::LevelType::Simple);
         // tex.web: the output routine preempts in-flight input. With
         // begin_token_list semantics, macro/hook replays live as nested
         // TokList sources BELOW the routine pushed here, so they resume
@@ -928,160 +1411,101 @@ impl Engine {
         if !self.pushed.is_empty() {
             let mut rest = std::mem::take(&mut self.pushed);
             rest.reverse();
-            self.input.push_toks(rest, "<after-output>");
+            if !self.try_push_tokens_named(rest, "<after-output>") {
+                return;
+            }
         }
         // LIFO input stack: continuation first, then the routine.
-        if crate::debug_flag("OUTW") {
-            let d: Vec<String> = toks.iter().take(30).map(|t| {
-                if t.is_cs() { format!("\\{}", String::from_utf8_lossy(self.cs.name(t.cs_id()))) } else { format!("{:x}", t.0) }
-            }).collect();
-            eprintln!("OUTW-ROUTINE pages={} n={} toks=[{}]", self.pdf_doc.pages.len(), toks.len(), d.join(" "));
-        }
-        self.input.push_toks(vec![OUT_END_TOKEN], "<endoutput>");
-        self.input.push_toks(toks, "<output>");
-    }
 
-    /// Eject the current page prefix (used by `\end`).
-    pub fn eject_page(&mut self, cut: usize) {
-        self.fire_up(cut, -0x4000_0000);
-    }
-
-    /// assemble class `num`'s material (leftover in `\box N` plus this
-    /// page's insert boxes) into `\box N`, splitting to `\dimen N` when it
-    /// exceeds the budget (tex.web @1046); the remainder is carried over as
-    /// a fresh insert node at the front of the pending list
-    fn place_insert(&mut self, num: u16, ins_boxes: Vec<Node>) {
-        let mut list: NodeList = match self.eqtb.boxed[num as usize].take() {
-            Some(Node::Box { list, .. }) => list,
-            Some(other) => vec![other],
-            None => Vec::new(),
-        };
-        for b in ins_boxes {
-            match b {
-                Node::Box { list: l, .. } => list.extend(l),
-                other => list.push(other),
-            }
-        }
-        if list.is_empty() {
+        if !self.try_push_tokens_named(vec![OUT_END_TOKEN], "<endoutput>") {
             return;
         }
-        let cnt = self.eqtb.count[num as usize];
-        let budget = self.eqtb.dimen[num as usize] as i64;
-        let (_, raw_h, _) = vlist_extents(&list);
-        let scaled = self.ins_scaled_height(num, raw_h);
-        if cnt <= 0 || scaled <= budget {
-            // fits (or unregulated class): place whole
-            let r = vpack(list, None, VBOX, &self.eqtb);
-            self.eqtb.assign_box(num, Some(r.node), true);
-            return;
-        }
-        // split honoring `\splittopskip` / `\splitmaxdepth`
-        let topskip = self.eqtb.glue_params[GlueParam::SplitTopSkip.idx() as usize].clone();
-        let splitmax = self.max_split_depth();
-        let target = (budget.max(0) * 1000) / cnt.max(1) as i64;
-        let (mut top, rest) = split_vlist(&list, target);
-        if top.iter().any(|n| matches!(n, Node::Box { .. })) {
-            // `\splittopskip` pad above the first kept box (tex.web @987)
-            if let Some(Node::Box { h: fh, .. }) = top.first() {
-                let pad = topskip.width as i64 - *fh as i64;
-                if pad > 0 {
-                    top.insert(0, Node::Glue(Glue::new(pad as i32)));
-                }
-            }
-            // split marks come from the kept part
-            for n in &top {
-                if let Node::Mark { class, tokens } = n {
-                    let c = (*class).max(0) as usize;
-                    if c < MAX_MARK_CLASS {
-                        for m in self.marks[3..5].iter_mut() {
-                            if m.len() <= c {
-                                m.resize(c + 1, Vec::new());
-                            }
-                        }
-                        self.marks[3][c] = tokens.clone();
-                        self.marks[4][c] = tokens.clone();
-                    }
-                }
-            }
-            let dm = splitmax.min(i32::MAX as i64) as i32;
-            let r = crate::boxes::vpack_add_md(top, None, false, VBOX, &self.eqtb, dm);
-            let node = r.node;
-            self.eqtb.assign_box(num, Some(node), true);
-        } else {
-            // nothing fits: defer the whole insert to the next page
-            self.carry_insert(num, list);
-            return;
-        }
-        if !rest.is_empty() {
-            self.carry_insert(num, rest);
-        }
+        self.push_tokens_named(toks, "<output>");
     }
 
-    fn max_split_depth(&self) -> i64 {
-        self.eqtb.dim_params[DimParam::SplitMaxDepth.idx() as usize] as i64
-    }
-
-    /// push leftover insert material back for the next page
-    fn carry_insert(&mut self, num: u16, list: NodeList) {
-        let (w, h, d) = vlist_extents(&list);
-        let _ = w;
-        let r = vpack(list, None, VBOX, &self.eqtb);
-        let node = Node::Ins {
-            num,
-            height: h as i32,
-            depth: d as i32,
-            cost: 0,
-            box_node: Box::new(r.node),
-        };
-    }
+    // (tex.web §§19827-19876 insertion packaging lives inline in fire_up;
+    // the old `place_insert`/`carry_insert` split-to-`\dimen`-only model is
+    // superseded — canonical splits at contribute time against BOTH page
+    // room and the class budget, and holds the broken node itself.)
 
     pub fn finish_output(&mut self) {
-        if crate::debug_flag("OUTW") {
-            let st: Vec<String> = self.input.stack.iter().rev().take(4).map(|s| match s {
-                crate::input::Source::TokList { name, pos, toks, .. } => format!("T:{} {}/{}", name, pos, toks.len()),
-                crate::input::Source::File { name, line_no, .. } => format!("F:{}#{}", name.split('/').last().unwrap_or(name), line_no),
-            }).collect();
-            let ring: Vec<String> = self.tok_ring.iter().rev().take(16).map(|(v,_)| { let t = crate::token::Token(*v); if t.is_cs() { format!("\\{}", String::from_utf8_lossy(self.cs.name(t.cs_id()))) } else { format!("{:#x}", t.0) } }).collect();
-            eprintln!("OUTW-FIN pages={} stack=[{}] ring=[{}]", self.pdf_doc.pages.len(), st.join(" | "), ring.join(" "));
+        // <Resume the page builder> (tex.web §28649-28663, exact order):
+        // end_graf; unsave; output_active:=false; insert_penalties:=0;
+        // <Ensure that box 255 is empty after output>; splice the routine's
+        // own current list (internal vmode, §28635) into the contribution
+        // list AFTER the held-over insertions and BEFORE the remainder;
+        // pop_nest; build_page. Nothing the routine left on its list is
+        // discarded — ltxgrid's dead@cycle relies on the re-inserted
+        // material (and its trailing \penalty\outputpenalty) re-triggering
+        // the routine for the moving pass.
+        if self.mode == Mode::Horizontal {
+            // end_graf: a routine that ends mid-paragraph closes it first so
+            // the line lands on the routine's list before the splice
+            self.end_paragraph();
         }
-        // tex.web pop_nest: the routine's list ends; outer \prevdepth returns.
-        if let Some((_, saved_pd)) = self.output_tail.take() {
-            self.prev_depth = saved_pd;
-        }
-        self.output_pending = false;
-        // <Resume the page builder>: the routine's list was spliced ahead of the
-        // remainder; the whole page rebuilds from scratch (head copy included),
-        // so the carried-over processed prefix is void.
+        let routine_list = std::mem::take(&mut self.cur_list);
+
+        // The whole page rebuilds from scratch after the splice (head copy
+        // included), so any carried-over processed prefix is void.
         self.page_processed = 0;
-        // tex.web <Ensure that box 255 is empty after output>: leftover
-        // `\box255` material is discarded with an error. longtable's
-        // `\LT@output` ends with `\copy\LT@head\nobreak`, which TeX appends
-        // to the current page list (the outer vlist); rust models the
-        // output routine's box255 as a register, so splice the remainder
-        // back onto `page_list` for the next page — otherwise the continued
-        // "(...)" head vanishes and p48/p49 ship without it.
-        if let Some(Node::Box { list, .. }) = self.eqtb.boxed[255].take() {
-            if !list.is_empty() {
-                if crate::debug_flag("OUTW") {
-                    eprintln!("OUTW-BOX255-FLUSH pages={} n={}", self.pdf_doc.pages.len(), list.len());
-                }
-                self.page_list.extend(list);
-            }
-        }
-        // close the save level opened at fire_up (tex.web output_group)
+        // close the save level opened at fire_up (tex.web output_group) BEFORE
+        // inspecting box255: a non-global `\setbox255` inside the routine is
+        // rolled back by unsave, and the rolled-back value is what TeX checks.
         self.pop_group();
+        // tex.web §28650: insert_penalties := 0 at <Resume the page builder>
+        self.eqtb.int_params[IntParam::InsertPenalties.idx() as usize] = 0;
+        // tex.web <Ensure that box 255 is empty after output>: after unsave,
+        // any surviving `\box255` material is reported and discarded.
+        if self.eqtb.boxed[255].is_some() {
+            self.error("Output routine didn't use all of \\box255");
+            self.eqtb.boxed[255] = None;
+        }
         self.in_output = false;
         self.output_depth = self.output_depth.saturating_sub(1);
+        // §28652-28661: the routine's list goes AFTER the held-over
+        // insertions (cursor index snapshotted at activation) and BEFORE
+        // the contribution remainder; then pop_nest restores the
+        // interrupted nest's mode, list, space factor, prevdepth, prevgraf.
+        let (c, saved_pd, saved_pg, saved_mode) =
+            self.output_tail
+                .take()
+                .unwrap_or((0, self.prev_depth, self.prev_graf, Mode::Vertical));
+        let c = c.min(self.page_list.len());
+        if !routine_list.is_empty() {
+            for (k, n) in routine_list.into_iter().enumerate() {
+                self.page_list.insert(c + k, n);
+            }
+        }
+        self.prev_depth = saved_pd;
+        self.prev_graf = saved_pg;
+        self.mode = saved_mode;
+        if let Some((parked_list, parked_sf)) = self.output_nest.take() {
+            self.cur_list = parked_list;
+            self.space_factor = parked_sf;
+        }
+        // §28663: pop_nest; build_page
         if self.output_depth == 0 {
             self.build_page();
         }
     }
-    /// fire deferred \write whatsits found anywhere in a shipped tree
+    /// fire deferred \write/\openout/\closeout whatsits found anywhere in a
+    /// shipped tree, in list order (tex.web `out_what` @1414)
     fn fire_page_writes(&mut self, n: &Node) {
         match n {
-            Node::Whatsit(crate::boxes::WhatIt::Write { stream, tokens }) => {
+            Node::Whatsit(crate::boxes::WhatIt::Write {
+                stream,
+                tokens,
+                source,
+            }) => {
                 let toks = tokens.clone();
-                self.fire_write(*stream, &toks);
+                self.fire_write(*stream, &toks, source.as_ref());
+            }
+            Node::Whatsit(crate::boxes::WhatIt::OpenOut { stream, path }) => {
+                let p = path.clone();
+                self.exec_openout(*stream, &p);
+            }
+            Node::Whatsit(crate::boxes::WhatIt::CloseOut { stream }) => {
+                self.exec_closeout(*stream);
             }
             Node::Box { list, .. } => {
                 for m in list {
@@ -1100,49 +1524,13 @@ impl Engine {
 
     /// \shipout received a box: emit a PDF page
     pub fn ship_box(&mut self, b: Option<Node>) {
-        if crate::debug_flag("SHIPW") { eprintln!("SHIP-BOX pages={} stack={} present={}", self.pdf_doc.pages.len(), self.input.stack.len(), b.is_some()); }
         self.dead_cycles = 0;
         let Some(boxn) = b else { return };
+
         // tex.web §1395: fire deferred \write whatsits as the page ships, so
         // \thepage expands with the page counter of the shipped page
         self.fire_page_writes(&boxn);
-        if crate::debug_flag("PAGETREE") || crate::debug_flag("LTREE") {
-            let precise = crate::debug_flag("LTREE");
-            fn dump(n: &Node, depth: usize, out: &mut String, precise: bool) {
-                let pad = "  ".repeat(depth);
-                match n {
-                    Node::Box { kind, w, h, d, shift, list, .. } => {
-                        if precise {
-                            out.push_str(&format!("{}B{} w={:.4} h={:.4} d={:.4} sh={:.4} n={}\n", pad, kind, *w as f64 / 65536.0, *h as f64 / 65536.0, *d as f64 / 65536.0, *shift as f64 / 65536.0, list.len()));
-                        } else {
-                            out.push_str(&format!("{}B{} w={:.1} h={:.1} d={:.1} sh={:.1} n={}\n", pad, kind, *w as f64 / 65536.0, *h as f64 / 65536.0, *d as f64 / 65536.0, *shift as f64 / 65536.0, list.len()));
-                        }
-                        if depth < 10 {
-                            for m in list.iter() { dump(m, depth + 1, out, precise); }
-                        }
-                    }
-                    Node::Glue(g) if precise => out.push_str(&format!("{}G {:.4}+{:.4}/{}-{:?}\n", pad, g.width as f64 / 65536.0, g.stretch as f64 / 65536.0, g.stretch_order, g.shrink)),
-                    Node::Glue(g) => out.push_str(&format!("{}G {:.1}\n", pad, g.width as f64 / 65536.0)),
-                    Node::Penalty(p) => out.push_str(&format!("{}pen{}\n", pad, p)),
-                    Node::Kern(k) | Node::ExplicitKern(k) => out.push_str(&format!("{}k{:.4}\n", pad, *k as f64 / 65536.0)),
-                    Node::Rule { width, height, depth } if precise => out.push_str(&format!("{}R {:.4}x{:.4}+{:?}\n", pad, *width as f64 / 65536.0, *height as f64 / 65536.0, *depth)),
-                    Node::Char { c, .. } if precise => {}
-                    Node::Char { c, .. } => out.push_str(&format!("{}c'{}'\n", pad, *c as char)),
-                    _ => out.push_str(&format!("{}?\n", pad)),
-                }
-            }
-            let mut s = String::new();
-            dump(&boxn, 0, &mut s, precise);
-            eprintln!("PAGETREE:\n{}", s);
-        }
-        if crate::debug_flag("PAGETRACE") {
-            eprintln!(
-                "SHIPOUT pages={} in_output={} line={}",
-                self.pdf_doc.pages.len() + 1,
-                self.in_output,
-                self.input.current_file_line()
-            );
-        }
+
         if self.eqtb.int_params[IntParam::TracingPages.idx() as usize] > 0 {
             let page = self.eqtb.count[0] as i64 + 1;
             let msg = format!("[{}]", page);
@@ -1154,73 +1542,13 @@ impl Engine {
         let height = self.eqtb.dim_params[DimParam::PdfPageHeight.idx() as usize];
         let _ = (width, height);
         let page = self.render_page(&boxn);
-        self.pdf_doc.pages.push(page);
+        self.pdf_doc.push_page(page);
     }
-}
-
-/// tex.web `vsplit_page` (@973-987): find the best split point of a vertical
-/// list within `target` of natural height. Breaks happen before a box, at
-/// glue/kern following a box, and at `\penalty-10000`; the glue at a split
-/// is discarded. Returns (kept top part, remainder).
-fn split_vlist(list: &[Node], target: i64) -> (NodeList, NodeList) {
-    let mut d: i64 = 0;
-    let mut prev_box = false;
-    let mut split_at: Option<usize> = None;
-    for (i, node) in list.iter().enumerate() {
-        match node {
-            Node::Box { h, .. } | Node::Rule { height: h, .. } | Node::Ins { height: h, .. } => {
-                if d + *h as i64 > target {
-                    split_at = Some(i); // split before this box
-                    break;
-                }
-                d += *h as i64;
-                prev_box = true;
-            }
-            Node::Glue(g) => {
-                let w = g.width as i64;
-                if d + w > target && prev_box {
-                    split_at = Some(i); // the break glue is discarded below
-                    break;
-                }
-                d = w; // tex.web: glue flushes the running depth
-                prev_box = false;
-            }
-            Node::Kern(k) | Node::ExplicitKern(k) => {
-                let w = *k as i64;
-                if d + w > target && prev_box {
-                    split_at = Some(i);
-                    break;
-                }
-                d = w;
-                prev_box = false;
-            }
-            Node::Penalty(p) => {
-                if *p <= EJECT_PENALTY {
-                    split_at = Some(i);
-                    break;
-                }
-            }
-            _ => {}
-        }
-    }
-    let (top, mut rest) = match split_at {
-        None => (list.to_vec(), Vec::new()),
-        Some(i) => {
-            let at_glue = matches!(list[i], Node::Glue(_));
-            let mut r = list[i..].to_vec();
-            if at_glue {
-                r.remove(0);
-            }
-            (list[..i].to_vec(), r)
-        }
-    };
-    (top, rest)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::prim::DimParam as DP;
 
     fn run(src: &str) -> Engine {
         let mut e = Engine::new(true);
@@ -1230,7 +1558,8 @@ mod tests {
             "\\catcode`\\{{=1 \\catcode`\\}}=2 \\catcode`\\#=6 \\catcode`\\&=4 {}\n",
             src
         );
-        e.input.push_file("page.tex".to_string(), full.as_bytes().to_vec());
+        e.input
+            .push_file("page.tex".to_string(), full.as_bytes().to_vec());
         e.run();
         e
     }
@@ -1240,7 +1569,9 @@ mod tests {
             // count line boxes only: vlist_append inserts interline glue
             // between them since d8b1214c
             Node::Box { list, h, .. } => (
-                list.iter().filter(|n| matches!(n, Node::Box { .. })).count(),
+                list.iter()
+                    .filter(|n| matches!(n, Node::Box { .. }))
+                    .count(),
                 *h,
             ),
             other => panic!("expected vbox, got {:?}", other),
@@ -1264,25 +1595,14 @@ mod tests {
     }
 
     #[test]
-    fn page_dims_track_builder_state() {
-        let e = run(concat!(
-            "\\font\\cmr=cmr10 \\cmr\n",
-            "\\vsize 100pt \\hsize 200pt\n",
-            "line one\n\nline two\n",
-        ));
-        assert_eq!(e.error_count, 0, "errors:\n{}", e.term);
-        // \pagegoal mirrors \vsize while the page accumulates
-        assert_eq!(
-            e.eqtb.dim_params[DP::PageGoal.idx() as usize] as i64,
-            100 * 65536
-        );
-        let total = e.eqtb.dim_params[DP::PageTotal.idx() as usize] as i64;
-        assert!(total > 0, "\\pagetotal accumulates, got {}", total);
-        assert_eq!(total, e.page_total, "\\pagetotal == builder total");
-        assert_eq!(
-            e.eqtb.dim_params[DP::PageDepth.idx() as usize] as i64,
-            e.page_depth,
-            "\\pagedepth == builder depth"
-        );
+    fn split_shrink_error_requires_selected_ignore_bit() {
+        for (mask, errors) in [(0, 1), (1, 0), (2, 1)] {
+            let e = run(&format!(
+                "\\ignoreprimitiveerror={mask}\
+                 \\setbox0=\\vbox{{\\hrule height1pt\\vskip0pt minus1fil\\hrule height1pt}}\
+                 \\setbox1=\\vsplit0 to100pt"
+            ));
+            assert_eq!(e.error_count, errors, "ignore mask {mask}: {}", e.term);
+        }
     }
 }

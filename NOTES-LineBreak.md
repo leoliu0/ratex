@@ -90,3 +90,41 @@
   "index out of bounds: len n+1, index n+1". Clamped to n (degenerate-para
   repro: rule + \penalty10000 + \parfillskip → vbox, no panic; driver still
   ACCEPTANCE OK). `after_prune` was already clamped via f.min(n).
+
+## Discretionary replacement correction (2026-09-12)
+
+- Explicit `\discretionary` replacement text is owned by `DiscNode::no_break`;
+  its `replace_count` is zero because no following source nodes duplicate it.
+  A nonzero count incorrectly discarded following text during line construction.
+- Expansion measurement includes characters inside unbroken discretionary text.
+- `probe_explicit_discretionary_preserves_following_text` compares natural and
+  expanded line widths with system pdfTeX.
+
+## Vertical split correction (2026-09-12)
+
+- `vsplit_box` now follows TeX's candidate loop: includes rule dimensions,
+  evaluates height without trailing depth, and stops at a forced/overfull
+  candidate without subsequently choosing an artificial end-of-list break.
+- Kern-before-glue and non-discardable predecessors are legal breakpoints.
+  Zero-height targets use the same algorithm, including negative kerns.
+- Remainder pruning preserves marks and inserts adjusted `\splittopskip`.
+  Owned node vectors are split instead of cloning both halves.
+- Differential probes cover forced breaks, rules, trailing depth, zero
+  targets, and remainder marks/topskip; verified against system pdfTeX.
+
+## Display continuation and semantic nest counters (2026-09-12)
+
+- Paragraph line numbering continues from the enclosing vertical nest's
+  `\prevgraf`; each completed display adds three before text resumes.
+  `\parshape` and hanging-indent lookup use these absolute line numbers.
+  Club and widow penalties remain relative to the current fragment.
+- Existing Engine-owned nest frames now save the paragraph counter.
+  Reads and assignments locate the enclosing vertical record, including
+  through horizontal boxes and math. Boxes, insertions, alignments, and
+  output routines preserve the enclosing counter without a thread-local stack.
+- Differential regressions cover successive displays with a changing shape,
+  nested boxes/alignments, horizontal assignments, and output-routine isolation.
+  The CLI counter scenario matches pdfTeX on all ten observations.
+- Remaining diagnostic-context discrepancy: direct `\write` expansion exposes
+  the enclosing counter instead of pdfTeX's mode-zero value. Counter probes
+  capture the value with `\edef` before writing, or inspect it with `\message`.

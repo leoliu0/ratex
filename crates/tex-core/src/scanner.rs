@@ -6,13 +6,15 @@
 //! `line_peek() == None`. State: 0 = new line (N), 1 = mid line (M),
 //! 2 = skip spaces (S).
 
-use crate::engine::Engine;
-use crate::input::{PAR_END, Source, EOF_MARKER};
+use crate::engine::{Engine, PhysicalTokenSource};
+use crate::input::{Source, EOF_MARKER, PAR_END};
 use crate::token::*;
 
 impl Engine {
     /// Fetch the next raw token from the input stack (no expansion).
     pub fn get_next_raw(&mut self) -> Token {
+        self.diagnostic_synthetic_source = None;
+        self.diagnostic_physical_source = None;
         loop {
             if self.input.stack.is_empty() {
                 return EOF_MARKER;
@@ -21,80 +23,56 @@ impl Engine {
             match self.input.stack[si] {
                 Source::TokList { .. } => {
                     if let Some(t) = self.toklist_next(si) {
+                        self.diagnostic_token_from_file = false;
                         return t;
                     }
                     continue; // list popped; retry
                 }
-                Source::File { .. } => match self.file_next_token(si) {
-                    Some(t) => return t,
-                    None => continue, // file popped; retry
-                },
+                Source::File { .. } => {
+                    // Set the origin before tokenization because an invalid
+                    // character reports from inside `file_next_token`.
+                    self.diagnostic_token_from_file = true;
+                    if !self.align_macro_arg && self.diagnostic_trace_hold == 0 {
+                        self.diagnostic_macro_trace.clear();
+                        self.diagnostic_macro_call_site = None;
+                        self.diagnostic_macro_call_span = 1;
+                    }
+                    match self.file_next_token(si) {
+                        Some(t) => return t,
+                        None => continue, // file popped; retry
+                    }
+                }
             }
         }
     }
 
     pub(crate) fn toklist_next(&mut self, si: usize) -> Option<Token> {
-
-        let s = match &mut self.input.stack[si] {
-            Source::TokList { toks, pos, params, param_idx, param_pos, in_param, name, .. } => {
-                loop {
-                    if *in_param {
-                        let p = &params[*param_idx];
-                        if *param_pos < p.len() {
-                            let t = p[*param_pos];
-                            *param_pos += 1;
-                            if crate::debug_flag("SPTRACE") && t == crate::token::Token::space() {
-                                eprintln!("SPPOP2 list={} idx={}", name, param_idx);
-                            }
-                            return Some(t);
-                        }
-                        *in_param = false;
-                        *param_idx += 1;
-                        continue;
-                    }
-                    if *pos < toks.len() {
-                        let t = toks[*pos];
-                        *pos += 1;
-                        // tex.web end_token_list: when the last token of the
-                        // list is consumed the source is retired IMMEDIATELY
-                        // (before the read token expands). Lazy popping made
-                        // tail-recursive macro loops (l3 \ior_map) accumulate
-                        // exhausted replay sources below the live recursion
-                        // until the 50k input-stack guard fired.
-                        let last = *pos == toks.len();
-                        if crate::debug_flag("SPTRACE") && t == crate::token::Token::space() {
-                            eprintln!("SPPOP list={} pos={}", name, pos);
-                        }
-                        if t.0 >= 0x4000_0000 && t.0 < 0x8000_0000 {
-                            let n = (t.0 & 0x3FFF_FFFF) as usize;
-                            if n >= 1 && n <= params.len() {
-                                *param_idx = n - 1;
-                                *param_pos = 0;
-                                *in_param = true;
-                                if crate::debug_flag("SUBTRACE") {
-                                    eprintln!("SUB-enter {} idx={} arglen={}", name, n, params[n-1].len());
-                                }
-                                continue;
-                            } else if crate::debug_flag("SUBTRACE") {
-                                eprintln!("SUB-OOR {} n={} params={}", name, n, params.len());
-                            }
-                        }
-                        if crate::debug_flag("SUBTRACE") {
-                            let nm = if t.is_cs() { String::from_utf8_lossy(self.cs.name(t.cs_id())).into_owned() } else { format!("cc{}", t.cc()) };
-                            eprintln!("TOK {} pos={} tok={}", name, pos, nm);
-                        }
-                        if last {
-                            if si + 1 == self.input.stack.len() { self.input.stack.pop(); } else { self.input.stack.remove(si); }
-                        }
-                        return Some(t);
-                    }
-                    break;
+        let trace_depth = match &self.input.stack[si] {
+            Source::TokList { trace_depth, .. } => *trace_depth as usize,
+            _ => unreachable!(),
+        };
+        if !self.align_macro_arg && self.diagnostic_trace_hold == 0 {
+            self.diagnostic_macro_trace.truncate(trace_depth);
+        }
+        match &mut self.input.stack[si] {
+            Source::TokList { toks, pos, .. } => {
+                if *pos < toks.len() {
+                    let t = toks[*pos];
+                    *pos += 1;
+                    // Keep the exhausted list until the next fetch. The token
+                    // currently being processed still belongs to this source;
+                    // retaining it preserves the macro call chain for errors
+                    // in a tail-position replacement token.
+                    return Some(t);
                 }
             }
             _ => unreachable!(),
-        };
-        let _ = s;
-        if si + 1 == self.input.stack.len() { self.input.stack.pop(); } else { self.input.stack.remove(si); }
+        }
+        if si + 1 == self.input.stack.len() {
+            self.input.stack.pop();
+        } else {
+            self.input.stack.remove(si);
+        }
         None
     }
 
@@ -103,17 +81,17 @@ impl Engine {
     /// file_finished pops here).
     fn file_next_token(&mut self, si: usize) -> Option<Token> {
         let r = self.file_next_token_inner(si);
-        if crate::debug_flag("FILETRACE") {
-            let ln = match self.input.stack.get(si) { Some(Source::File { line_no, .. }) => *line_no, _ => 0 };
-            let nm = match r { Some(t) if t.is_cs() => format!("\\{}", String::from_utf8_lossy(self.cs.name(t.cs_id()))), Some(t) => format!("cc{}:{}", t.cc(), t.chr()), None => "POP".into() };
-            eprintln!("FTOK si={} line={} -> {}", si, ln, nm);
-        }
+
         r
     }
 
     fn file_line_peek(&self, si: usize) -> Option<u8> {
         match self.input.stack.get(si) {
-            Some(Source::File { line_buf: Some(buf), line_pos, .. }) => buf.get(*line_pos).copied(),
+            Some(Source::File {
+                line_buf: Some(buf),
+                line_pos,
+                ..
+            }) => buf.get(*line_pos).copied(),
             _ => None,
         }
     }
@@ -125,7 +103,13 @@ impl Engine {
     }
 
     fn file_line_clear(&mut self, si: usize) {
-        if let Some(Source::File { line_buf, line_pos, line_reload, .. }) = self.input.stack.get_mut(si) {
+        if let Some(Source::File {
+            line_buf,
+            line_pos,
+            line_reload,
+            ..
+        }) = self.input.stack.get_mut(si)
+        {
             *line_buf = None;
             *line_pos = 0;
             *line_reload = true;
@@ -146,19 +130,13 @@ impl Engine {
         }
     }
 
-
     fn file_next_token_inner(&mut self, si: usize) -> Option<Token> {
         loop {
-            let (done, at_eof) = match &self.input.stack[si] {
+            let (done, _at_eof) = match &self.input.stack[si] {
                 Source::File { done, at_eof, .. } => (*done, *at_eof),
                 _ => unreachable!(),
             };
             if done {
-                if crate::debug_flag("SPTRACE") {
-                    let nm = match &self.input.stack.get(si) { Some(crate::input::Source::File { name, .. }) => name.clone(), _ => "?".into() };
-                    let ev = self.eqtb.tok_params[crate::prim::ToksParam::EveryEOF.idx() as usize].len();
-                    eprintln!("FILE-POP si={} name={} everyeof={}", si, nm, ev);
-                }
                 // l3's rescan protocol (\tl_set_rescan) relies on this to
                 // terminate its delimited scans with the marker.
                 let is_scantokens = match &self.input.stack.get(si) {
@@ -168,9 +146,11 @@ impl Engine {
                 // e-TeX semantics: \everyeof fires EVERY time scanning
                 // crosses the pseudo-file end (the l3 single-rescan chain
                 // re-enters deliberately); no one-shot guard.
-                if si + 1 == self.input.stack.len() { self.input.stack.pop(); } else { self.input.stack.remove(si); }
+                self.input.finish_file(si);
                 if is_scantokens {
-                    let eof_toks = (*self.eqtb.tok_params[crate::prim::ToksParam::EveryEOF.idx() as usize]).clone();
+                    let eof_toks = (*self.eqtb.tok_params
+                        [crate::prim::ToksParam::EveryEOF.idx() as usize])
+                        .clone();
                     if !eof_toks.is_empty() {
                         self.push_tokens(eof_toks);
                     }
@@ -225,39 +205,57 @@ impl Engine {
                         break;
                     }
                     if !any && self.file_line_peek(si).is_none() {
-                        let el = self.eqtb.int_params[crate::prim::IntParam::EndLineChar.idx() as usize];
-                        let eol = el < 0
-                            || el > 255
-                            || self.eqtb.cat[el as usize] == CAT_EOL;
+                        let el =
+                            self.eqtb.int_params[crate::prim::IntParam::EndLineChar.idx() as usize];
                         self.file_line_clear(si);
-                        if eol {
-                            return Some(PAR_END);
+                        if !(0..=255).contains(&el) {
+                            continue;
                         }
-                        continue;
+                        let cat = self.eqtb.cat[el as usize];
+                        match cat {
+                            CAT_EOL => return Some(PAR_END),
+                            CAT_SPACE | CAT_COMMENT | CAT_IGNORED => continue,
+                            CAT_INVALID => {
+                                self.invalid_character_error(si, el as u8, usize::MAX);
+                                if self.stopped_on_error {
+                                    return Some(EOF_MARKER);
+                                }
+                                continue;
+                            }
+                            CAT_ACTIVE => return Some(Token::char(CAT_ACTIVE, el as u32)),
+                            _ => return Some(Token::char(cat, el as u32)),
+                        }
                     }
                     let b = self.file_line_peek(si).unwrap();
+                    let token_start = self.file_line_pos(si);
                     self.file_line_advance(si);
-                    let s = match &mut self.input.stack[si] {
-                        Source::File { state, .. } => state,
-                        _ => unreachable!(),
-                    };
-                    *s = 1;
                     if let Some(t) = self.tokenize_char(b, si) {
+                        // ^^ notation is translated before TeX applies the
+                        // N/M/S state machine. A translated space at the start
+                        // of a line is therefore ignored, just like a literal
+                        // leading space.
+                        if t.is_char() && t.cc() == CAT_SPACE {
+                            continue;
+                        }
+                        if let Some(Source::File { state, .. }) = self.input.stack.get_mut(si) {
+                            if *state == 0 {
+                                *state = 1;
+                            }
+                        }
+                        self.record_physical_token(si, token_start, t);
                         return Some(t);
                     }
+                    // Comments reset the state themselves. Ignored characters,
+                    // including ^^ translations, leave new-line state intact.
                     // comment or otherwise consumed rest of line: loop
                 }
                 1 => {
                     let b = match self.file_line_peek(si) {
                         Some(b) => b,
                         None => {
-                            if crate::debug_flag("PARTRACE") {
-                                let nm = match &self.input.stack[si] { Source::File { name, .. } => name.split('/').last().unwrap_or("?").to_string(), _ => String::new() };
-                                let ln = match &self.input.stack[si] { Source::File { line_no, .. } => *line_no, _ => 0 };
-                                eprintln!("EOL-HIT file={} line={} -> state0", nm, ln);
-                            }
                             // end of line: endline char token (usually space)
-                            let el = self.eqtb.int_params[crate::prim::IntParam::EndLineChar.idx() as usize];
+                            let el = self.eqtb.int_params
+                                [crate::prim::IntParam::EndLineChar.idx() as usize];
                             let s = match &mut self.input.stack[si] {
                                 Source::File { state, .. } => state,
                                 _ => unreachable!(),
@@ -275,13 +273,18 @@ impl Engine {
                                 continue;
                             }
                             let cat = self.eqtb.cat[el as usize];
-                            if crate::debug_flag("DEFTRACE") {
-                                eprintln!("EOL state->0");
-                            }
+
                             if cat == CAT_EOL {
                                 return Some(Token::space());
                             }
-                            if cat == CAT_IGNORED || cat == CAT_INVALID {
+                            if cat == CAT_IGNORED {
+                                continue;
+                            }
+                            if cat == CAT_INVALID {
+                                self.invalid_character_error(si, el as u8, usize::MAX);
+                                if self.stopped_on_error {
+                                    return Some(EOF_MARKER);
+                                }
                                 continue;
                             }
                             // tex.web §347: every spacer token has character code 32.
@@ -294,10 +297,10 @@ impl Engine {
                             return Some(Token::char(cat, el as u32));
                         }
                     };
+                    let token_start = self.file_line_pos(si);
                     self.file_line_advance(si);
-                    let cat_b = self.eqtb.cat[b as usize];
                     if let Some(t) = self.tokenize_char(b, si) {
-                        if cat_b == CAT_SPACE {
+                        if t.is_char() && t.cc() == CAT_SPACE {
                             // mid_line + spacer: state <- skip_blanks
                             let s2 = match &mut self.input.stack[si] {
                                 Source::File { state, .. } => state,
@@ -305,6 +308,7 @@ impl Engine {
                             };
                             *s2 = 2;
                         }
+                        self.record_physical_token(si, token_start, t);
                         return Some(t);
                     }
                 }
@@ -324,11 +328,6 @@ impl Engine {
                     let b = match self.file_line_peek(si) {
                         Some(b) => b,
                         None => {
-                            if crate::debug_flag("PARTRACE") {
-                                let nm = match &self.input.stack[si] { Source::File { name, .. } => name.split('/').last().unwrap_or("?").to_string(), _ => String::new() };
-                                let ln = match &self.input.stack[si] { Source::File { line_no, .. } => *line_no, _ => 0 };
-                                eprintln!("SKIPBLANKS-EOL file={} line={} -> state0", nm, ln);
-                            }
                             // tex.web skip_blanks at line end: state <- new_line,
                             // so the NEXT line is re-examined by the new-line logic
                             // (an empty next line must still yield PAR_END — it
@@ -343,13 +342,26 @@ impl Engine {
                             continue;
                         }
                     };
+                    let token_start = self.file_line_pos(si);
                     self.file_line_advance(si);
-                    let s = match &mut self.input.stack[si] {
-                        Source::File { state, .. } => state,
-                        _ => unreachable!(),
-                    };
-                    *s = 1;
                     if let Some(t) = self.tokenize_char(b, si) {
+                        // A ^^-translated space is still skipped in state S.
+                        if t.is_char() && t.cc() == CAT_SPACE {
+                            continue;
+                        }
+                        // A control word (including one produced by ^^
+                        // translation) leaves TeX in skip-blanks state.
+                        // Ordinary characters leave it in mid-line state;
+                        // control symbols already selected that state in
+                        // tokenize_char.
+                        if !t.is_cs() {
+                            if let Some(Source::File { state, .. }) = self.input.stack.get_mut(si) {
+                                if *state == 2 {
+                                    *state = 1;
+                                }
+                            }
+                        }
+                        self.record_physical_token(si, token_start, t);
                         return Some(t);
                     }
                 }
@@ -361,21 +373,26 @@ impl Engine {
     /// Load next line into the buffer; false at EOF.
     fn file_load_line(&mut self, si: usize) -> bool {
         let chunk = match &mut self.input.stack[si] {
-            Source::File { name, data, pos, line_no, .. } => {
+            Source::File {
+                name: _,
+                data,
+                pos,
+                line_no,
+                ..
+            } => {
                 if *pos >= data.len() {
                     return false;
                 }
                 let rest = &data[*pos..];
-                let nl = rest.iter().position(|&b| b == b'\n').map(|i| i + 1).unwrap_or(rest.len());
+                let nl = rest
+                    .iter()
+                    .position(|&b| b == b'\n')
+                    .map(|i| i + 1)
+                    .unwrap_or(rest.len());
                 let mut line = rest[..nl].to_vec();
                 *pos += nl;
                 *line_no += 1;
-                if crate::debug_flag("PARTRACE") {
-                    eprintln!("LOAD-LINE next={}", *line_no + 1);
-                }
-                if name.ends_with("latex.ltx") && *line_no % 1000 == 0 {
-                    eprintln!("PROGRESS: {} line {}", name.split('/').last().unwrap_or(name), *line_no);
-                }
+
                 if line.last() == Some(&b'\n') {
                     line.pop();
                     if line.last() == Some(&b'\r') {
@@ -387,10 +404,13 @@ impl Engine {
             _ => return false,
         };
 
-
-
-
-        if let Some(Source::File { line_buf, line_pos, line_reload, .. }) = self.input.stack.get_mut(si) {
+        if let Some(Source::File {
+            line_buf,
+            line_pos,
+            line_reload,
+            ..
+        }) = self.input.stack.get_mut(si)
+        {
             *line_buf = Some(chunk);
             *line_pos = 0;
             *line_reload = false;
@@ -402,9 +422,7 @@ impl Engine {
     /// caller should re-loop.
     fn tokenize_char(&mut self, b: u8, si: usize) -> Option<Token> {
         let cat = self.eqtb.cat[b as usize];
-        if crate::debug_flag("TOKTRACE") {
-            eprintln!("TOK b={:?} ({}) cat={}", b as char, b, cat);
-        }
+
         match cat {
             CAT_COMMENT => {
                 self.file_line_clear(si);
@@ -412,9 +430,9 @@ impl Engine {
                     Source::File { state, .. } => state,
                     _ => unreachable!(),
                 };
-                if *s == 1 {
-                    *s = 2;
-                }
+                // A comment discards this line, not the next line's
+                // paragraph boundary.
+                *s = 0;
                 None
             }
             CAT_ESCAPE => {
@@ -426,8 +444,16 @@ impl Engine {
                         Some(b) => b,
                         None => {
                             if name.is_empty() {
-                                // escape at line end: empty cs; endline consumed
+                                // TeX appends endlinechar before scanning an
+                                // escape: a trailing backslash names that
+                                // character, not the null control sequence.
+                                let el = self.eqtb.int_params
+                                    [crate::prim::IntParam::EndLineChar.idx() as usize];
+                                if (0..=255).contains(&el) {
+                                    name.push(el as u8);
+                                }
                                 self.file_line_clear(si);
+                                end_state = 0;
                             }
                             // control word complete at line end: KEEP the
                             // exhausted buffer so the next line is re-examined
@@ -475,14 +501,21 @@ impl Engine {
                 Some(Token::from_cs(id))
             }
             CAT_SUPER => {
+                let before = self.file_line_pos(si);
                 let c = self.expand_sup(b, si);
-                let ccat = self.eqtb.cat[c as usize];
-                if ccat == CAT_ACTIVE {
-                    Some(Token::char(13, c as u32))
-                } else if ccat == CAT_SPACE {
-                    Some(Token::space())
+                if self.file_line_pos(si) == before {
+                    // A lone superscript character is an ordinary catcode-7
+                    // token. Re-dispatch only when ^^ notation consumed input.
+                    Some(Token::char(CAT_SUPER, b as u32))
+                } else if self.eqtb.cat[c as usize] == CAT_INVALID {
+                    self.invalid_character_error(si, c, before.saturating_sub(1));
+                    if self.stopped_on_error {
+                        Some(EOF_MARKER)
+                    } else {
+                        None
+                    }
                 } else {
-                    Some(Token::char(ccat, c as u32))
+                    self.tokenize_char(c, si)
                 }
             }
             CAT_ACTIVE => Some(Token::char(13, b as u32)),
@@ -491,9 +524,56 @@ impl Engine {
                 // tex.web §347: every spacer token has character code 32
                 Some(Token::space())
             }
-            CAT_IGNORED | CAT_INVALID => None,
+            CAT_IGNORED => None,
+            CAT_INVALID => {
+                let column = self.file_line_pos(si).saturating_sub(1);
+                self.invalid_character_error(si, b, column);
+                if self.stopped_on_error {
+                    Some(EOF_MARKER)
+                } else {
+                    None
+                }
+            }
             _ => Some(Token::char(cat, b as u32)),
         }
+    }
+
+    fn invalid_character_error(&mut self, si: usize, byte: u8, byte_column: usize) {
+        let source = self.input.source_context_at(si, byte_column);
+        let showing = if byte.is_ascii_graphic() || byte == b' ' {
+            format!(
+                " (byte 0x{byte:02X}, '{}')",
+                char::from(byte).escape_default()
+            )
+        } else {
+            format!(" (byte 0x{byte:02X})")
+        };
+        self.error_at(
+            &format!("Text line contains an invalid character{showing}"),
+            source,
+        );
+    }
+
+    fn record_physical_token(&mut self, si: usize, byte_column: usize, token: Token) {
+        let Some(line) = self.input.source_line_at(si) else {
+            return;
+        };
+        let span = self.file_line_pos(si).saturating_sub(byte_column).max(1);
+        let semantic_cs = if token.is_cs() {
+            Some(token.cs_id())
+        } else if token.is_char() && token.cc() == CAT_ACTIVE {
+            Some(self.active_cs_id(token.chr() as u8))
+        } else {
+            None
+        };
+        self.diagnostic_physical_source = Some(PhysicalTokenSource {
+            token,
+            semantic_cs,
+            source_index: si,
+            line,
+            byte_column,
+            span,
+        });
     }
 
     /// ^^-notation expansion with repetition (tex.web §377): the result
@@ -530,7 +610,11 @@ impl Engine {
                 if is_hex(b4) {
                     self.file_line_advance(si);
                     let hv = |x: u8| -> u8 {
-                        if x <= b'9' { x - b'0' } else { x - b'a' + 10 }
+                        if x <= b'9' {
+                            x - b'0'
+                        } else {
+                            x - b'a' + 10
+                        }
                     };
                     c = hv(b3) * 16 + hv(b4);
                     continue;

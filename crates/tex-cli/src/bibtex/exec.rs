@@ -37,10 +37,18 @@ fn as_int(l: &Lit) -> Option<i64> {
     }
 }
 fn to_lower(c: u8) -> u8 {
-    if c.is_ascii_uppercase() { c + 32 } else { c }
+    if c.is_ascii_uppercase() {
+        c + 32
+    } else {
+        c
+    }
 }
 fn to_upper(c: u8) -> u8 {
-    if c.is_ascii_lowercase() { c - 32 } else { c }
+    if c.is_ascii_lowercase() {
+        c - 32
+    } else {
+        c
+    }
 }
 
 /// The 13 special control sequences (accented / foreign characters).
@@ -365,7 +373,8 @@ impl<'a> Interp<'a> {
     pub fn declare_fields(&mut self, names: &[String]) {
         for n in names {
             if self.syms.contains_key(n) {
-                self.log.warn(format!("duplicate field declaration \"{n}\""));
+                self.log
+                    .warn(format!("duplicate field declaration \"{n}\""));
                 continue;
             }
             let idx = self.field_count();
@@ -553,7 +562,9 @@ impl<'a> Interp<'a> {
         match self.pop(st) {
             l @ (Lit::Str(_) | Lit::Missing | Lit::Empty) => l,
             other => {
-                self.log.warn(format!("wrong stack literal type: {other:?}, expected string"));
+                self.log.warn(format!(
+                    "wrong stack literal type: {other:?}, expected string"
+                ));
                 Lit::Empty
             }
         }
@@ -563,7 +574,9 @@ impl<'a> Interp<'a> {
         match self.pop(st) {
             l @ (Lit::Int(_) | Lit::Empty) => l,
             other => {
-                self.log.warn(format!("wrong stack literal type: {other:?}, expected integer"));
+                self.log.warn(format!(
+                    "wrong stack literal type: {other:?}, expected integer"
+                ));
                 Lit::Empty
             }
         }
@@ -573,7 +586,9 @@ impl<'a> Interp<'a> {
         match self.pop(st) {
             l @ (Lit::Fn(_) | Lit::Empty) => l,
             other => {
-                self.log.warn(format!("wrong stack literal type: {other:?}, expected function"));
+                self.log.warn(format!(
+                    "wrong stack literal type: {other:?}, expected function"
+                ));
                 Lit::Empty
             }
         }
@@ -614,7 +629,8 @@ impl<'a> Interp<'a> {
             Sym::Wiz(body) => self.exec(&body, st)?,
             Sym::Field(idx) => {
                 if !self.mess_with_entries {
-                    self.log.warn("you can't access a field outside of an entry context");
+                    self.log
+                        .warn("you can't access a field outside of an entry context");
                     self.push(Lit::Empty, st);
                 } else {
                     let e = self.cur.unwrap();
@@ -626,7 +642,8 @@ impl<'a> Interp<'a> {
             }
             Sym::EntInt(idx) => {
                 if !self.mess_with_entries {
-                    self.log.warn("you can't access an entry variable outside of an entry context");
+                    self.log
+                        .warn("you can't access an entry variable outside of an entry context");
                     self.push(Lit::Empty, st);
                 } else {
                     let e = self.cur.unwrap();
@@ -635,7 +652,8 @@ impl<'a> Interp<'a> {
             }
             Sym::EntStr(idx) => {
                 if !self.mess_with_entries {
-                    self.log.warn("you can't access an entry variable outside of an entry context");
+                    self.log
+                        .warn("you can't access an entry variable outside of an entry context");
                     self.push(Lit::Empty, st);
                 } else {
                     let e = self.cur.unwrap();
@@ -744,11 +762,6 @@ impl<'a> Interp<'a> {
 
     /// SORT command: stable sort by sort.key$ (ASCII byte order, ties by position)
     pub fn cmd_sort(&mut self) {
-        if std::env::var("TEXBIB_DEBUG_KEYS").is_ok() {
-            for &e in &self.order {
-                eprintln!("KEY {}\t{}", self.entries[e].cite, self.entries[e].ent_strs[0]);
-            }
-        }
         // stable by (sort.key$, current position): WEB's less_than breaks ties
         // by index in sorted_cites
         let mut keyed: Vec<(String, usize)> = self
@@ -762,8 +775,9 @@ impl<'a> Interp<'a> {
 
     fn check_stack(&mut self, st: &mut Vec<Lit>, name: &str) {
         if !st.is_empty() {
-            self.log
-                .warn(format!("after executing \"{name}\" the stack isn't empty; clearing"));
+            self.log.warn(format!(
+                "after executing \"{name}\" the stack isn't empty; clearing"
+            ));
             st.clear();
         }
     }
@@ -780,8 +794,7 @@ impl<'a> Interp<'a> {
             }
             Builtin::Top => {
                 let l = self.pop(st);
-                self.log
-                    .info(format!("Top of stack: {}", fmt_lit(&l)));
+                self.log.info(format!("Top of stack: {}", fmt_lit(&l)));
             }
             Builtin::Gt | Builtin::Lt | Builtin::Eq => {
                 let top = self.pop(st);
@@ -820,7 +833,11 @@ impl<'a> Interp<'a> {
                 let c = self.pop_int(st);
                 match (as_int(&a), as_int(&c)) {
                     (Some(a), Some(c)) => {
-                        let v = if b == Builtin::Plus { c.wrapping_add(a) } else { c.wrapping_sub(a) };
+                        let v = if b == Builtin::Plus {
+                            c.wrapping_add(a)
+                        } else {
+                            c.wrapping_sub(a)
+                        };
                         self.push(Lit::Int(v), st);
                     }
                     _ => self.push(Lit::Int(0), st),
@@ -844,7 +861,9 @@ impl<'a> Interp<'a> {
                 let value = self.pop(st);
                 match target {
                     Lit::Fn(FnRef::Named(tname)) => self.assign(&tname, value, st)?,
-                    _ => self.log.warn(":= needs a quoted variable on top of the stack"),
+                    _ => self
+                        .log
+                        .warn(":= needs a quoted variable on top of the stack"),
                 }
             }
             Builtin::AddPeriod => {
@@ -859,23 +878,26 @@ impl<'a> Interp<'a> {
                                 break;
                             }
                         }
+                        // bibtex.web 0.99e: the decision inspects the last
+                        // non-`}` byte (b[0] if the string is all braces),
+                        // but the period is appended at the very end, after
+                        // any trailing `}`s: `title}` becomes `title}.`.
                         let last = b[k];
-                        let need = !(last == b'.' || last == b'?' || last == b'!');
-                        // Insert before the trailing `}` group so
-                        // `\emph{Title}` becomes `\emph{Title.}`.
-                        let insert_at = if b[k] == b'}' { 0 } else { k + 1 };
-                        let mut s2 = s;
-                        if need {
-                            s2.insert_str(insert_at, ".");
+                        if !(last == b'.' || last == b'?' || last == b'!') {
+                            let mut s2 = s;
+                            s2.push('.');
+                            self.push(Lit::Str(s2), st);
+                        } else {
+                            self.push(Lit::Str(s), st);
                         }
-                        self.push(Lit::Str(s2), st);
                     }
                     _ => self.push(Lit::Str(String::new()), st),
                 }
             }
             Builtin::CallType => {
                 if !self.mess_with_entries {
-                    self.log.warn("you can't call.type$ outside of an entry context");
+                    self.log
+                        .warn("you can't call.type$ outside of an entry context");
                 } else {
                     let e = self.cur.unwrap();
                     let tname = self.entries[e].type_name.clone();
@@ -930,7 +952,8 @@ impl<'a> Interp<'a> {
                     Lit::Str(s) => s.bytes().all(is_white),
                     Lit::Empty => false,
                     _ => {
-                        self.log.warn("empty$ needs a string or missing field; pushing 0");
+                        self.log
+                            .warn("empty$ needs a string or missing field; pushing 0");
                         false
                     }
                 };
@@ -958,10 +981,12 @@ impl<'a> Interp<'a> {
                 let body = self.pop_fn(st);
                 let test = self.pop_fn(st);
                 match (body, test) {
+                    // bibtex.web runs the test on the same literal stack as
+                    // the body: tests like `{ duplicate$ empty$ }` must see
+                    // the entries the body is consuming.
                     (Lit::Fn(body), Lit::Fn(test)) => loop {
-                        let mut inner = Vec::new();
-                        self.exec_fn_ref(&test, &mut inner)?;
-                        let cond = self.pop_int(&mut inner);
+                        self.exec_fn_ref(&test, st)?;
+                        let cond = self.pop_int(st);
                         match as_int(&cond) {
                             Some(c) if c > 0 => self.exec_fn_ref(&body, st)?,
                             Some(_) => break,
@@ -1123,7 +1148,8 @@ impl<'a> Interp<'a> {
 
     fn assign(&mut self, target: &str, value: Lit, st: &mut Vec<Lit>) -> R {
         let Some(sym) = self.lookup(target) else {
-            self.log.warn(format!(":= to unknown variable \"{target}\""));
+            self.log
+                .warn(format!(":= to unknown variable \"{target}\""));
             return Ok(());
         };
         match sym {
@@ -1144,7 +1170,8 @@ impl<'a> Interp<'a> {
                     let e = self.cur.unwrap();
                     self.entries[e].ent_ints[idx] = v;
                 } else {
-                    self.log.warn(format!(":= to \"{target}\" needs an integer"));
+                    self.log
+                        .warn(format!(":= to \"{target}\" needs an integer"));
                 }
             }
             Sym::EntStr(idx) => {
@@ -1161,7 +1188,8 @@ impl<'a> Interp<'a> {
                 if let Lit::Int(v) = value {
                     self.glb_ints[idx] = v;
                 } else {
-                    self.log.warn(format!(":= to \"{target}\" needs an integer"));
+                    self.log
+                        .warn(format!(":= to \"{target}\" needs an integer"));
                 }
             }
             Sym::GlbStr(idx) => {
@@ -1210,24 +1238,45 @@ fn fmt_lit(l: &Lit) -> String {
 // ---------------------------------------------------------------------------
 
 fn substring(s: &str, len: i64, start: i64) -> String {
-    let sp = s.len() as i64;
+    if s.is_ascii() {
+        let sp = s.len() as i64;
+        if len >= sp && (start == 1 || start == -1) {
+            return s.to_string();
+        }
+        if len <= 0 || start == 0 || start > sp || start < -sp {
+            return String::new();
+        }
+        if start > 0 {
+            let from = (start - 1) as usize;
+            let take = (len as usize).min(sp as usize - from);
+            return s[from..from + take].to_string();
+        }
+        let from_end = (-start) as usize;
+        let end = sp as usize - (from_end - 1);
+        let from = end.saturating_sub(len as usize);
+        return s[from..end].to_string();
+    }
+
+    // BibTeX strings traditionally contain single-byte characters. Inputs
+    // are UTF-8 here, so byte indexing can split a scalar and panic. Preserve
+    // the same 1-based/negative indexing contract in Unicode scalar values.
+    let sp = s.chars().count() as i64;
     if len >= sp && (start == 1 || start == -1) {
         return s.to_string();
     }
     if len <= 0 || start == 0 || start > sp || start < -sp {
         return String::new();
     }
-    if start > 0 {
+    let (from, take) = if start > 0 {
         let from = (start - 1) as usize;
-        let avail = sp as usize - from;
-        let take = (len as usize).min(avail);
-        s[from..from + take].to_string()
+        (from, (len as usize).min(sp as usize - from))
     } else {
-        let from_end = (-start) as usize; // 1 = last char
+        let from_end = (-start) as usize;
         let end = sp as usize - (from_end - 1);
         let from = end.saturating_sub(len as usize);
-        s[from..end].to_string()
-    }
+        (from, end - from)
+    };
+    s.chars().skip(from).take(take).collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -1710,7 +1759,11 @@ impl NameTokens {
 /// Tokenize a single name (already isolated from the list).
 /// Returns the tokens plus the token indexes at which top-level commas sat.
 fn tokenize_name(b: &[u8]) -> (NameTokens, Vec<usize>) {
-    let mut t = NameTokens { buf: Vec::new(), starts: Vec::new(), seps: Vec::new() };
+    let mut t = NameTokens {
+        buf: Vec::new(),
+        starts: Vec::new(),
+        seps: Vec::new(),
+    };
     let mut commas: Vec<usize> = Vec::new();
     let mut lvl = 0i32;
     let mut token_starting = true;
@@ -1909,7 +1962,7 @@ fn split_name(b: &[u8]) -> NameParts {
         }
         1 => {
             let le = comma_positions[0];
-            let mut vs = 0usize;
+            let vs = 0usize;
             let ve = le.saturating_sub(1).max(vs);
             let mut ve = ve;
             while ve > vs {
@@ -1942,7 +1995,13 @@ fn split_name(b: &[u8]) -> NameParts {
             jr = (le, c2);
         }
     }
-    NameParts { t, first, von: (von_start, von_end), last: (von_end, last_end), jr }
+    NameParts {
+        t,
+        first,
+        von: (von_start, von_end),
+        last: (von_end, last_end),
+        jr,
+    }
 }
 
 fn enough_text_chars(out: &[u8], from: usize, enough: usize) -> bool {
@@ -2148,11 +2207,7 @@ pub fn format_name(fmt: &[u8], which: i64, list: &[u8]) -> String {
                                         if is_sep_char(sep) {
                                             out.push(sep);
                                         } else if cur + 1 == last
-                                            || !enough_text_chars(
-                                                &out,
-                                                part_out_start,
-                                                3,
-                                            )
+                                            || !enough_text_chars(&out, part_out_start, 3)
                                         {
                                             out.push(b'~');
                                         } else {
@@ -2214,4 +2269,16 @@ pub fn format_name(fmt: &[u8], which: i64, list: &[u8]) -> String {
         }
     }
     String::from_utf8_lossy(&out).into_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::substring;
+
+    #[test]
+    fn substring_preserves_utf8_boundaries() {
+        assert_eq!(substring("éclair", 1, 1), "é");
+        assert_eq!(substring("éclair", 2, 2), "cl");
+        assert_eq!(substring("éclair", 2, -1), "ir");
+    }
 }

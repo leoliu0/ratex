@@ -1,24 +1,18 @@
 //! texmk — latexmk-style driver for the Rust TeX engine.
 //!
-//! Runs pdflatex (the engine binary built alongside this tool) repeatedly
-//! until the document's cross-reference / bibliography state is stable,
-//! inserting bibtex runs when the document uses \bibliography:
-//!
-//!   - parses engine output (and <job>.log when present) for rerun hints,
-//!     undefined references, undefined citations, and a missing <job>.bbl
-//!   - compares hashes of <job>.aux/.toc/.lof/.lot between passes
-//!   - runs bibtex when the .aux has \bibdata and citations are undefined,
-//!     the .bbl is missing, or the .aux citation set changed since bibtex
-//!   - at most MAX_PASSES pdflatex passes
-//!   - on success reports the output PDF path, its page count, and pass counts
+//! The only user-facing command. It runs the bundled engine (pdflatex /
+//! xelatex / lualatex — same binary, chosen by `-xelatex`/`-lualatex` or
+//! preamble auto-detect) repeatedly until cross-refs / bibliography stabilize.
+//! Engines are found next to this binary or in `$HOME/.local/lib/tex-rs`
+//! (never PATH, so TeX Live is not used).
 //!
 //! Exit codes: 0 = converged, 1 = engine/bibtex failure or no convergence,
 //! 2 = usage error.
 //!
 //! Deliberately std-only (no tex-core dependency): this is a process driver.
 
-use std::collections::BTreeSet;
 use std::collections::hash_map::DefaultHasher;
+use std::collections::BTreeSet;
 use std::hash::Hasher;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -32,12 +26,6 @@ struct Signals {
     undef_refs: bool,
     undef_cites: bool,
     bbl_missing: bool,
-}
-
-impl Signals {
-    fn clean(self) -> bool {
-        !self.rerun && !self.undef_refs && !self.undef_cites && !self.bbl_missing
-    }
 }
 
 struct Options {
@@ -80,13 +68,15 @@ fn detect_engine(src_path: &Path) -> &'static str {
 fn usage() {
     eprintln!(
         "usage: texmk [options] file.tex
-  -output-directory DIR   write artifacts in DIR (passed to pdflatex)
-  -jobname NAME           job name (default: file stem)
-  -interaction=MODE       passed to pdflatex (default nonstopmode)
-  -halt-on-error          passed to pdflatex
-  --silent, -q            suppress engine output
-  -h, --help              this text
-  -v, --version           version"
+  -pdf / -xelatex / -lualatex   engine (default: auto from preamble)
+  -output-directory DIR         write artifacts in DIR
+  -jobname NAME                 job name (default: file stem)
+  -interaction=MODE             passed to the engine (default nonstopmode)
+  -halt-on-error                passed to the engine
+  --silent, -q                  suppress engine output (default)
+  --verbose, -V                 print detailed engine and tool output
+  -h, --help                    this text
+  -v, --version                 version"
     );
 }
 
@@ -94,7 +84,7 @@ fn parse_args(argv: &[String]) -> Result<Options, String> {
     let mut file: Option<PathBuf> = None;
     let mut out_dir: Option<String> = None;
     let mut jobname: Option<String> = None;
-    let mut silent = false;
+    let mut silent = true;
     let mut engine: Option<String> = None;
     let mut passthrough: Vec<String> = Vec::new();
     let mut i = 1;
@@ -121,6 +111,7 @@ fn parse_args(argv: &[String]) -> Result<Options, String> {
                 jobname = take_value(&mut i, &inline_val);
             }
             "--silent" | "-silent" | "-quiet" | "-q" => silent = true,
+            "--verbose" | "-verbose" | "--noisy" | "-noisy" | "-V" => silent = false,
             "-interaction" => {
                 let mode = take_value(&mut i, &inline_val)
                     .ok_or_else(|| "-interaction needs a value".to_string())?;
@@ -161,32 +152,33 @@ fn parse_args(argv: &[String]) -> Result<Options, String> {
     }
 }
 
-/// Locate a tool binary: next to this executable first (both bins come from
-/// the same crate build), then on PATH. `names` is tried in order.
+/// Locate a bundled tool. Never PATH — system pdflatex/bibtex must not win.
+/// Search order: $TEXMK_LIB, directory of this texmk, <prefix>/lib/tex-rs,
+/// $HOME/.local/lib/tex-rs.
 fn find_tool(names: &[&str]) -> Option<PathBuf> {
-    let exe_dir = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(Path::to_path_buf));
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    if let Ok(lib) = std::env::var("TEXMK_LIB") {
+        if !lib.is_empty() {
+            dirs.push(PathBuf::from(lib));
+        }
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(parent) = exe.parent() {
+            dirs.push(parent.to_path_buf());
+            if let Some(prefix) = parent.parent() {
+                dirs.push(prefix.join("lib/tex-rs"));
+            }
+        }
+    }
+    if let Ok(home) = std::env::var("HOME") {
+        dirs.push(PathBuf::from(home).join(".local/lib/tex-rs"));
+    }
     for name in names {
-        if let Some(dir) = &exe_dir {
-            let cand = dir.join(name);
+        for dir in &dirs {
+            let cand = dir.join(format!("{name}{}", std::env::consts::EXE_SUFFIX));
             if cand.is_file() {
                 return Some(cand);
             }
-        }
-        if let Some(p) = which(name) {
-            return Some(p);
-        }
-    }
-    None
-}
-
-fn which(name: &str) -> Option<PathBuf> {
-    let path = std::env::var_os("PATH")?;
-    for dir in std::env::split_paths(&path) {
-        let cand = dir.join(name);
-        if cand.is_file() {
-            return Some(cand);
         }
     }
     None
@@ -200,7 +192,9 @@ fn artifact_path(out_dir: &Option<String>, job: &str, ext: &str) -> PathBuf {
 }
 
 fn read_text(p: &Path) -> Option<String> {
-    std::fs::read(p).ok().map(|b| String::from_utf8_lossy(&b).into_owned())
+    std::fs::read(p)
+        .ok()
+        .map(|b| String::from_utf8_lossy(&b).into_owned())
 }
 
 /// (exists, hash of contents); missing files hash to a distinct stable value
@@ -273,7 +267,11 @@ fn pdf_pages(p: &Path) -> Option<u32> {
         }
         from = at + "/Type /Page".len();
     }
-    if n > 0 { Some(n) } else { None }
+    if n > 0 {
+        Some(n)
+    } else {
+        None
+    }
 }
 
 fn scan_signals(text: &str, job: &str) -> Signals {
@@ -322,21 +320,71 @@ fn aux_has_bibdata(aux: &str) -> bool {
     aux.lines().any(|l| l.starts_with("\\bibdata{"))
 }
 
-/// Run a tool, capturing stdout+stderr. Echoes the output unless `silent`.
-fn run_tool(bin: &Path, args: &[String], silent: bool) -> std::io::Result<(bool, String)> {
-    let out = Command::new(bin).args(args).stdin(Stdio::null()).output()?;
-    let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
-    let err = String::from_utf8_lossy(&out.stderr);
-    if !err.is_empty() {
-        if !text.is_empty() && !text.ends_with('\n') {
-            text.push('\n');
+struct ToolOutput {
+    success: bool,
+    stdout: String,
+    stderr: String,
+}
+
+impl ToolOutput {
+    /// Replay captured output without moving diagnostics onto stdout.
+    fn replay(&self) {
+        print!("{}", self.stdout);
+        eprint!("{}", self.stderr);
+    }
+
+    /// Text used for latexmk-style signal scanning. Stream identity does not
+    /// matter here, but keep a line boundary when both streams have content.
+    fn combined(&self) -> String {
+        let mut text = self.stdout.clone();
+        if !self.stderr.is_empty() {
+            if !text.is_empty() && !text.ends_with('\n') {
+                text.push('\n');
+            }
+            text.push_str(&self.stderr);
         }
-        text.push_str(&err);
+        text
     }
+}
+
+/// Run a tool and retain stdout and stderr as distinct streams.
+fn run_tool(bin: &Path, args: &[String], silent: bool) -> std::io::Result<ToolOutput> {
+    let out = Command::new(bin).args(args).stdin(Stdio::null()).output()?;
+    let captured = ToolOutput {
+        success: out.status.success(),
+        stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+    };
     if !silent {
-        print!("{text}");
+        captured.replay();
     }
-    Ok((out.status.success(), text))
+    Ok(captured)
+}
+
+/// bibtex reads `.aux`, not the PDF — it can run as soon as `\bibdata` exists.
+fn run_bibtex(aux_stem: &Path, silent: bool) -> i32 {
+    let Some(bibtex) = find_tool(&["tex-bibtex", "bibtex"]) else {
+        eprintln!("texmk: bibtex binary not found (looked next to texmk and in $HOME/.local/lib/tex-rs); cannot resolve citations");
+        return 1;
+    };
+    let arg = aux_stem.to_string_lossy().into_owned();
+    if !silent {
+        eprintln!("texmk: bibtex {arg}");
+    }
+    match run_tool(&bibtex, &[arg], silent) {
+        Ok(out) if out.success => 0,
+        Ok(out) => {
+            if silent {
+                out.replay();
+            }
+            eprintln!("texmk: bibtex failed");
+            1
+        }
+        Err(e) => {
+            eprintln!("texmk: cannot run {}: {e}", bibtex.display());
+            1
+        }
+    }
 }
 
 fn real_main() -> i32 {
@@ -354,11 +402,16 @@ fn real_main() -> i32 {
         return 1;
     }
 
-    let target_engine = opt.engine.as_deref().unwrap_or_else(|| detect_engine(&opt.file));
+    let target_engine = opt
+        .engine
+        .as_deref()
+        .unwrap_or_else(|| detect_engine(&opt.file));
     let engine = match find_tool(&[target_engine, "pdflatex"]) {
         Some(p) => p,
         None => {
-            eprintln!("texmk: {target_engine} binary not found (looked next to texmk and in PATH)");
+            eprintln!(
+                "texmk: {target_engine} binary not found (looked next to texmk and in $HOME/.local/lib/tex-rs)"
+            );
             return 1;
         }
     };
@@ -375,15 +428,23 @@ fn real_main() -> i32 {
     let lot_path = artifact_path(&opt.out_dir, &job, ".lot");
     let log_path = artifact_path(&opt.out_dir, &job, ".log");
     let bbl_path = artifact_path(&opt.out_dir, &job, ".bbl");
+    let out_path = artifact_path(&opt.out_dir, &job, ".out");
+    let snap_paths = [
+        aux_path.clone(),
+        toc_path.clone(),
+        lof_path.clone(),
+        lot_path.clone(),
+        out_path.clone(),
+    ];
+    let aux_stem = aux_path.with_extension("");
 
-    let mut prev_snap: Option<Vec<(bool, u64)>> = None;
     let mut prev_cites: Option<BTreeSet<String>> = None;
-    let mut prev_sig: Option<Signals> = None;
     let mut bibtex_done = false;
     let mut bibtex_runs = 0u32;
     let mut passes = 0u32;
     let mut converged = false;
     let mut last_output = String::new();
+    let mut last_signals: Option<Signals> = None;
     if let Some(d) = &opt.out_dir {
         if let Err(e) = std::fs::create_dir_all(d) {
             eprintln!("texmk: cannot create output directory {d}: {e}");
@@ -391,8 +452,23 @@ fn real_main() -> i32 {
         }
     }
 
+    // bibtex depends on .aux, not on a PDF. Refresh .bbl from a previous
+    // aux so the first typeset can consume it.
+    if let Some(aux_text) = read_text(&aux_path) {
+        if aux_has_bibdata(&aux_text) {
+            let rc = run_bibtex(&aux_stem, opt.silent);
+            if rc != 0 {
+                return rc;
+            }
+            bibtex_done = true;
+            bibtex_runs += 1;
+            prev_cites = Some(aux_citations(&aux_text));
+        }
+    }
+
     while passes < MAX_PASSES {
         passes += 1;
+        let snap_before = snapshot(&snap_paths);
 
         let mut args: Vec<String> = vec!["-interaction=nonstopmode".to_string()];
         if let Some(d) = &opt.out_dir {
@@ -405,26 +481,25 @@ fn real_main() -> i32 {
         }
         args.extend(opt.passthrough.iter().cloned());
         args.push(opt.file.to_string_lossy().into_owned());
-
         if !opt.silent {
-            eprintln!("texmk: pdflatex pass {passes}/{MAX_PASSES}");
+            eprintln!("texmk: {target_engine} pass {passes}/{MAX_PASSES}");
         }
-        let (ok, output) = match run_tool(&engine, &args, opt.silent) {
+        let output = match run_tool(&engine, &args, opt.silent) {
             Ok(r) => r,
             Err(e) => {
                 eprintln!("texmk: cannot run {}: {e}", engine.display());
                 return 1;
             }
         };
-        if !ok {
+        if !output.success {
             if opt.silent {
-                print!("{output}");
+                output.replay();
             }
-            eprintln!("texmk: pdflatex failed on pass {passes}");
+            eprintln!("texmk: {target_engine} failed on pass {passes}");
             return 1;
         }
 
-        // Parse engine output plus the on-disk log (when the engine writes one).
+        let output = output.combined();
         let combined = match read_text(&log_path) {
             Some(log) => format!("{output}\n{log}"),
             None => output,
@@ -433,79 +508,42 @@ fn real_main() -> i32 {
         let aux_text = read_text(&aux_path).unwrap_or_default();
         let cites = aux_citations(&aux_text);
         let bibdata = aux_has_bibdata(&aux_text);
-        // Log text plus a direct .bbl existence check (an engine may not
-        // emit a recognizable "No file" line for it).
         let sig = scan_signals(&combined, &job);
         let sig = Signals {
             bbl_missing: sig.bbl_missing || (bibdata && !bbl_path.is_file()),
             ..sig
         };
-    // hyperref bookmark file: changes here must force another pass
-    let out_path = artifact_path(&opt.out_dir, &job, ".out");
-        let snap = snapshot(&[
-            aux_path.clone(),
-            toc_path.clone(),
-            lof_path.clone(),
-            lot_path.clone(),
-            out_path.clone(),
-        ]);
-        let files_changed = prev_snap.as_ref().map_or(false, |p| *p != snap);
+        last_signals = Some(sig);
+        let snap_after = snapshot(&snap_paths);
+        let files_changed = snap_before != snap_after;
         let cites_changed = prev_cites.as_ref().map_or(false, |p| *p != cites);
-        // Identical artifacts + identical warnings twice in a row: the engine
-        // is deterministic, another pass cannot change anything.
-        let stuck = !files_changed && !cites_changed && prev_sig == Some(sig);
-        prev_snap = Some(snap);
         prev_cites = Some(cites);
-        prev_sig = Some(sig);
 
-        // Bibliography pass: first trigger is undefined citations / missing
-        // .bbl; later triggers only a changed citation set (otherwise bibtex
-        // cannot help and we would loop forever).
         let need_bibtex =
             bibdata && ((!bibtex_done && (sig.bbl_missing || sig.undef_cites)) || cites_changed);
         if need_bibtex {
-            let Some(bibtex) = find_tool(&["tex-bibtex", "bibtex"]) else {
-                eprintln!("texmk: bibtex binary not found (looked next to texmk and in PATH); cannot resolve citations");
-                return 1;
-            };
-            // real bibtex convention: aux path without the .aux extension
-            let bib_args = vec![aux_path.with_extension("").to_string_lossy().into_owned()];
-            if !opt.silent {
-                eprintln!("texmk: bibtex {}", bib_args[0]);
+            let rc = run_bibtex(&aux_stem, opt.silent);
+            if rc != 0 {
+                return rc;
             }
-            let (ok, out) = match run_tool(&bibtex, &bib_args, opt.silent) {
-                Ok(r) => r,
-                Err(e) => {
-                    eprintln!("texmk: cannot run {}: {e}", bibtex.display());
-                    return 1;
-                }
-            };
             bibtex_done = true;
             bibtex_runs += 1;
-            if !ok {
-                if opt.silent {
-                    print!("{out}");
-                }
-                eprintln!("texmk: bibtex failed");
-                return 1;
-            }
             continue;
         }
 
-        if sig.clean() && !files_changed {
-            converged = true;
-            break;
-        }
-        if stuck {
-            // Like latexmk: when auxiliary files are stable across passes,
-            // the document has fully converged.
+        // This typeset did not change aux/toc/out: another pass cannot
+        // resolve more labels. Sticky "Rerun to get" is not a reason to
+        // typeset again.
+        if !files_changed {
             converged = true;
             break;
         }
     }
 
     if !converged {
-        eprintln!("texmk: build FAILED: no convergence after {MAX_PASSES} pdflatex pass(es)");
+        eprintln!(
+            "texmk: build FAILED: no convergence after {MAX_PASSES} {target_engine} pass(es)"
+        );
         return 1;
     }
     let pdf_path = artifact_path(&opt.out_dir, &job, ".pdf");
@@ -517,18 +555,39 @@ fn real_main() -> i32 {
     };
     match pages {
         Some(n) => eprintln!(
-            "texmk: build OK: {} ({} page{}, {passes} pdflatex pass(es){bib_note})",
+            "texmk: build OK: {} ({} page{}, {passes} {target_engine} pass(es){bib_note})",
             pdf_path.display(),
             n,
             if n == 1 { "" } else { "s" }
         ),
         None if pdf_path.is_file() => eprintln!(
-            "texmk: build OK: {} (page count unknown, {passes} pdflatex pass(es){bib_note})",
+            "texmk: build OK: {} (page count unknown, {passes} {target_engine} pass(es){bib_note})",
             pdf_path.display()
         ),
         None => {
-            eprintln!("texmk: build FAILED: no output written to {}", pdf_path.display());
+            eprintln!(
+                "texmk: build FAILED: no output written to {}",
+                pdf_path.display()
+            );
             return 1;
+        }
+    }
+    if let Some(sig) = last_signals {
+        let unresolved = match (sig.undef_refs, sig.undef_cites) {
+            (true, true) => Some("references and citations"),
+            (true, false) => Some("references"),
+            (false, true) => Some("citations"),
+            (false, false) => None,
+        };
+        if let Some(kind) = unresolved {
+            if log_path.is_file() {
+                eprintln!(
+                    "texmk: warning: unresolved {kind} remain; see {}",
+                    log_path.display()
+                );
+            } else {
+                eprintln!("texmk: warning: unresolved {kind} remain");
+            }
         }
     }
     0

@@ -39,17 +39,9 @@ fn parse_rfs_bst() {
 
 #[test]
 fn format_sort_names() {
-    let out = tex_bibtex::names::format_name(
-        "{vv{ } }{ll{ }}{  f{ }}{  jj{ }}",
-        1,
-        "Appel, I. R.",
-    );
+    let out = tex_bibtex::names::format_name("{vv{ } }{ll{ }}{  f{ }}{  jj{ }}", 1, "Appel, I. R.");
     println!("got: {:?}", out);
-    let out2 = tex_bibtex::names::format_name(
-        "{vv~}{ll}{, jj}{, f.}",
-        1,
-        "Appel, I. R.",
-    );
+    let out2 = tex_bibtex::names::format_name("{vv~}{ll}{, jj}{, f.}", 1, "Appel, I. R.");
     println!("bibitem fmt: {:?}", out2);
     assert_eq!(out, "Appel  I R");
     assert_eq!(out2, "Appel, I.~R.");

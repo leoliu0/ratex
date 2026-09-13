@@ -1,9 +1,9 @@
-use std::rc::Rc;
 use crate::engine::Engine;
-use crate::tfm::{Font, parse_tfm};
 use crate::eqtb::Equiv;
+use crate::tfm::{parse_tfm, Font};
+use std::rc::Rc;
 
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct MapEntry {
     pub tfm: String,
     pub fontname: String,
@@ -47,14 +47,14 @@ pub struct VfFont {
 
 pub struct FontLoader {
     pub kpse: tex_kpse::Kpse,
-    pub map: std::collections::HashMap<String, MapEntry>,
-    pub tfm_cache: std::collections::HashMap<(String, i32), Rc<Font>>,
-    pub enc_cache: std::collections::HashMap<String, Rc<Vec<String>>>,
+    pub map: crate::fontmap::FontMap,
+    pub tfm_cache: crate::FxHashMap<(String, i32), Rc<Font>>,
+    pub enc_cache: crate::FxHashMap<String, Rc<Vec<String>>>,
     /// virtual fonts by (tfm name, resolved at size)
-    pub vf_fonts: std::collections::HashMap<(String, i32), Rc<VfFont>>,
+    pub vf_fonts: crate::FxHashMap<(String, i32), Rc<VfFont>>,
     /// engine font id of a VF-backed font -> base engine font ids
     /// (u16::MAX = the base TFM was missing at load time)
-    pub vf_bases: std::collections::HashMap<u16, Vec<u16>>,
+    pub vf_bases: crate::FxHashMap<u16, Vec<u16>>,
     /// pdftex.map is loaded on first font lookup, not at construction:
     /// the find forces kpse database setup, which is pure startup waste
     /// for format-booted runs that never select a mapped font.
@@ -65,11 +65,11 @@ impl FontLoader {
     pub fn new() -> Self {
         FontLoader {
             kpse: tex_kpse::Kpse::new(),
-            map: std::collections::HashMap::new(),
-            tfm_cache: std::collections::HashMap::new(),
-            enc_cache: std::collections::HashMap::new(),
-            vf_fonts: std::collections::HashMap::new(),
-            vf_bases: std::collections::HashMap::new(),
+            map: crate::fontmap::FontMap::default(),
+            tfm_cache: crate::FxHashMap::default(),
+            enc_cache: crate::FxHashMap::default(),
+            vf_fonts: crate::FxHashMap::default(),
+            vf_bases: crate::FxHashMap::default(),
             map_loaded: false,
         }
     }
@@ -88,17 +88,11 @@ impl FontLoader {
 
     pub fn load_map(&mut self, name: &str) {
         self.map_loaded = true;
-        let Some(path) = self.kpse.find(name, tex_kpse::Format::Map) else { return };
-        let Ok(text) = std::fs::read_to_string(path) else { return };
-        for line in text.lines() {
-            let line = line.trim();
-            if line.is_empty() || line.starts_with('%') || line.starts_with('*') {
-                continue;
-            }
-            if let Some(e) = parse_map_line(line) {
-                self.map.insert(e.tfm.clone(), e);
-            }
-        }
+        let Some(data) = self.kpse.read(name, tex_kpse::Format::Map) else {
+            return;
+        };
+        self.map
+            .extend_file(String::from_utf8_lossy(&data).into_owned());
     }
 
     pub fn load_tfm(&mut self, name: &str, at: i32) -> Option<Rc<Font>> {
@@ -133,7 +127,11 @@ impl FontLoader {
         // reaches the PDF.
         let pfb = self.map.get(name).and_then(|m| m.pfb.clone());
         let has_pfb = match &pfb {
-            Some(p) => !p.ends_with(".vf") && self.kpse.find(p, tex_kpse::Format::Type1).is_some(),
+            Some(p) => {
+                !p.ends_with(".vf")
+                    && (self.kpse.find(p, tex_kpse::Format::Type1).is_some()
+                        || tex_kpse::has_embedded_package(p))
+            }
             None => false,
         };
         if !has_pfb {
@@ -232,7 +230,41 @@ fn parse_enc_names(text: &str) -> Option<Vec<String>> {
 /// Split a map line into bare tokens and quoted option sections. Quotes
 /// toggle sections and may be attached to the first/last word of a section
 /// (`".167 SlantFont"`), as emitted by updmap and dvips maps alike.
-fn split_map_tokens(line: &str) -> (Vec<String>, Vec<String>) {
+fn split_map_tokens(
+    line: &str,
+) -> (
+    smallvec::SmallVec<[std::borrow::Cow<'_, str>; 8]>,
+    smallvec::SmallVec<[std::borrow::Cow<'_, str>; 2]>,
+) {
+    use std::borrow::Cow;
+    let mut bare = smallvec::SmallVec::new();
+    let mut quoted = smallvec::SmallVec::new();
+    let mut sections = line.split('"').enumerate().peekable();
+    while let Some((index, section)) = sections.next() {
+        if index % 2 == 0 {
+            // A quote joined to an existing bare word uses the historical
+            // concatenation rules below. Normal map entries borrow slices.
+            if sections.peek().is_some()
+                && section
+                    .chars()
+                    .next_back()
+                    .is_some_and(|c| !c.is_whitespace())
+            {
+                let (bare, quoted) = split_map_tokens_joined(line);
+                return (
+                    bare.into_iter().map(Cow::Owned).collect(),
+                    quoted.into_iter().map(Cow::Owned).collect(),
+                );
+            }
+            bare.extend(section.split_whitespace().map(Cow::Borrowed));
+        } else if !section.is_empty() || sections.peek().is_some() {
+            quoted.push(Cow::Borrowed(section));
+        }
+    }
+    (bare, quoted)
+}
+
+fn split_map_tokens_joined(line: &str) -> (Vec<String>, Vec<String>) {
     let mut bare = Vec::new();
     let mut quoted = Vec::new();
     let mut cur = String::new();
@@ -274,8 +306,8 @@ fn basename(p: &str) -> &str {
 pub fn parse_map_line(line: &str) -> Option<MapEntry> {
     let (bare, quoted) = split_map_tokens(line);
     let mut it = bare.into_iter();
-    let tfm = it.next()?.to_string();
-    let fontname = it.next()?.to_string();
+    let tfm = it.next()?.into_owned();
+    let fontname = it.next()?.into_owned();
     let mut enc_file: Option<String> = None;
     let mut enc_name: Option<String> = None;
     let mut pfb: Option<String> = None;
@@ -299,7 +331,7 @@ pub fn parse_map_line(line: &str) -> Option<MapEntry> {
         }
     }
     for section in quoted {
-        let mut prev: Option<String> = None;
+        let mut prev: Option<&str> = None;
         for w in section.split_whitespace() {
             let (word, fused) = match (w.strip_suffix("SlantFont"), w.strip_suffix("ExtendFont")) {
                 (Some(v), _) => (v, 1),
@@ -309,7 +341,9 @@ pub fn parse_map_line(line: &str) -> Option<MapEntry> {
             match fused {
                 1 => {
                     slant = if word.is_empty() {
-                        prev.as_deref().and_then(|p| p.parse().ok()).unwrap_or(slant)
+                        prev.as_deref()
+                            .and_then(|p| p.parse().ok())
+                            .unwrap_or(slant)
                     } else {
                         word.parse().unwrap_or(slant)
                     };
@@ -317,7 +351,9 @@ pub fn parse_map_line(line: &str) -> Option<MapEntry> {
                 }
                 2 => {
                     extend = if word.is_empty() {
-                        prev.as_deref().and_then(|p| p.parse().ok()).unwrap_or(extend)
+                        prev.as_deref()
+                            .and_then(|p| p.parse().ok())
+                            .unwrap_or(extend)
                     } else {
                         word.parse().unwrap_or(extend)
                     };
@@ -326,16 +362,24 @@ pub fn parse_map_line(line: &str) -> Option<MapEntry> {
                 _ => {
                     if w == "ReEncodeFont" {
                         if let Some(p) = prev.take().filter(|p| p.parse::<f64>().is_err()) {
-                            enc_name = Some(p);
+                            enc_name = Some(p.to_string());
                         }
                     } else {
-                        prev = Some(w.to_string());
+                        prev = Some(w);
                     }
                 }
             }
         }
     }
-    Some(MapEntry { tfm, fontname, enc_file, enc_name, pfb, slant, extend })
+    Some(MapEntry {
+        tfm,
+        fontname,
+        enc_file,
+        enc_name,
+        pfb,
+        slant,
+        extend,
+    })
 }
 
 // ---------- Virtual font (VF) binary parsing ----------
@@ -403,14 +447,21 @@ impl FontLoader {
                     let name = String::from_utf8_lossy(&data[pos..pos + l]).to_string();
                     pos += l;
                     // 1 DVI unit of this VF = at / 2^20 sp
-                    let at_base =
-                        ((s as i64 * at as i64 + if s >= 0 { 0x80000 } else { -0x80000 }) >> 20) as i32;
-                    let loaded = if at_base > 0 { self.load_tfm(&name, at_base) } else { None };
+                    let at_base = ((s as i64 * at as i64 + if s >= 0 { 0x80000 } else { -0x80000 })
+                        >> 20) as i32;
+                    let loaded = if at_base > 0 {
+                        self.load_tfm(&name, at_base)
+                    } else {
+                        None
+                    };
                     if id <= u8::MAX as u32 {
                         base_idx.insert(id, bases.len() as u8);
                     }
                     bases.push(loaded);
-                    base_specs.push(VfBase { tfm_name: name, at_size: at_base });
+                    base_specs.push(VfBase {
+                        tfm_name: name,
+                        at_size: at_base,
+                    });
                 }
                 242 => {
                     // long_char: 242 pl[4] cc[4] tfm[4] dvi[pl]
@@ -438,7 +489,7 @@ impl FontLoader {
                     chars[cc] = Self::vf_packet(data, &mut sub, &base_idx, &bases, at);
                     pos = sub.0.min(pos);
                 }
-                248 => break, // post: end of packets
+                248 => break,     // post: end of packets
                 _ => return None, // 249..=255 invalid
             }
         }
@@ -545,7 +596,12 @@ impl FontLoader {
     ) {
         if let Some(&bi) = base_idx.get(&(font as u32)) {
             if bases.get(bi as usize).map_or(false, |b| b.is_some()) {
-                steps.push(VfStep { base: bi, ch, dx: x as i32, dy: y as i32 });
+                steps.push(VfStep {
+                    base: bi,
+                    ch,
+                    dx: x as i32,
+                    dy: y as i32,
+                });
             }
         }
     }
@@ -593,6 +649,7 @@ impl Engine {
         self.eqtb.skew_char_levels.push(1);
         let cs = self.cs.intern(b"nullfont");
         self.eqtb.font_cs.push(cs);
+        self.eqtb.expand.push(Default::default());
         self.eqtb.assign(cs, crate::eqtb::Equiv::FontRef(0), true);
     }
 
@@ -612,7 +669,7 @@ impl Engine {
                 .load_tfm(&name, 0)
                 .map(|f| f.dsize)
                 .unwrap_or(655360);
-            at = crate::scaled::mult(dsize, s);
+            at = crate::scaled::xn_over_d(dsize, s, 1000);
         }
         self.load_font_and_bind(&name, at, cs);
     }
@@ -629,7 +686,8 @@ impl Engine {
         }
         if first.is_char() && first.chr() == b'"' as u32 {
             // Quoted font name: \font\f="[FontFile.otf]:features" or "Font Name"
-            while let t = self.get_x_raw() {
+            loop {
+                let t = self.get_x_raw();
                 if t == crate::input::EOF_MARKER || (t.is_char() && t.chr() == b'"' as u32) {
                     break;
                 }
@@ -674,7 +732,10 @@ impl Engine {
     pub fn load_font_and_bind(&mut self, name: &str, at: i32, cs: crate::token::CsId) {
         // If name refers to an OpenType / TrueType font (e.g. "[path/to/font.otf]" or ends with .otf/.ttf/.ttc):
         let clean_name = name.trim_start_matches('[').trim_end_matches(']');
-        let is_otf = clean_name.ends_with(".otf") || clean_name.ends_with(".ttf") || clean_name.ends_with(".ttc") || clean_name.starts_with('/');
+        let is_otf = clean_name.ends_with(".otf")
+            || clean_name.ends_with(".ttf")
+            || clean_name.ends_with(".ttc")
+            || clean_name.starts_with('/');
         if is_otf {
             if let Ok(data) = std::fs::read(clean_name) {
                 if let Ok(face) = ttf_parser::Face::parse(&data, 0) {
@@ -701,7 +762,8 @@ impl Engine {
                     };
                     // Populate default ASCII characters from OpenType metrics
                     for c in 0..=255u8 {
-                        let w = face.glyph_index(c as char)
+                        let w = face
+                            .glyph_index(c as char)
                             .and_then(|gid| face.glyph_hor_advance(gid))
                             .map(|adv| ((adv as i64 * at_size as i64) / upem as i64) as i32)
                             .unwrap_or(0);
@@ -715,26 +777,43 @@ impl Engine {
                         });
                     }
                     let id = self.push_engine_font(std::rc::Rc::new(font), cs);
-                    self.eqtb.assign(cs, Equiv::FontRef(id), self.global_flag);
-                    self.global_flag = false;
-                    self.term.push_str(&format!("{} (OpenType) at {}\n", clean_name, self.scaled_to_string(at_size)));
+                    let g = self.take_global();
+                    self.eqtb.assign(cs, Equiv::FontRef(id), g);
+                    self.term.push_str(&format!(
+                        "{} (OpenType) at {}\n",
+                        clean_name,
+                        self.scaled_to_string(at_size)
+                    ));
                     return;
                 }
             }
         }
         let Some(font) = self.font_loader.load_tfm(name, at) else {
-            self.error(&format!("Font \\{}={} not found", String::from_utf8_lossy(self.cs.name(cs)), name));
+            self.error(&format!(
+                "Font \\{}={} not found",
+                String::from_utf8_lossy(self.cs.name(cs)),
+                name
+            ));
             return;
         };
         let at_size = font.at_size;
         let id = self.push_engine_font(font, cs);
-        self.eqtb.assign(cs, Equiv::FontRef(id), self.global_flag);
-        self.global_flag = false;
-        self.term.push_str(&format!("{} at {}\n", name, self.scaled_to_string(self.eqtb.fonts[id as usize].at_size)));
+        let g = self.take_global();
+        self.eqtb.assign(cs, Equiv::FontRef(id), g);
+        self.term.push_str(&format!(
+            "{} at {}\n",
+            name,
+            self.scaled_to_string(self.eqtb.fonts[id as usize].at_size)
+        ));
         // A VF-backed font gets its base fonts registered as engine fonts
         // (without control-sequence bindings) so glyph emission can address
         // them directly.
-        if let Some(vf) = self.font_loader.vf_fonts.get(&(name.to_string(), at_size)).cloned() {
+        if let Some(vf) = self
+            .font_loader
+            .vf_fonts
+            .get(&(name.to_string(), at_size))
+            .cloned()
+        {
             let mut fids = Vec::with_capacity(vf.bases.len());
             for b in &vf.bases {
                 let fid = match self.font_loader.load_tfm(&b.tfm_name, b.at_size) {
@@ -747,28 +826,37 @@ impl Engine {
         }
     }
 
-    /// append a font to the engine font tables; returns its font id
-    fn push_engine_font(&mut self, font: Rc<Font>, cs: crate::token::CsId) -> u16 {
+    /// append a font to the engine font tables; returns its font id.
+    /// pdfTeX's `read_font_info` allocates a fresh internal font record per
+    /// `\font` load (char tables are NOT shared between two ids of the same
+    /// tfm), so `tagcode`/`pdfnoligatures` on one identifier must not leak
+    /// into the other; deep-clone the cached `Rc<Font>` to mirror that.
+    pub fn push_engine_font(&mut self, font: Rc<Font>, cs: crate::token::CsId) -> u16 {
+        let font = Rc::new((*font).clone());
         let id = self.eqtb.fonts.len() as u16;
         let params = font.params.clone();
         self.eqtb.fonts.push(font);
         self.eqtb.font_params.push(params);
-        self.eqtb.font_param_levels.push(vec![1; self.eqtb.font_params[id as usize].len()]);
+        self.eqtb
+            .font_param_levels
+            .push(vec![1; self.eqtb.font_params[id as usize].len()]);
         self.eqtb.hyphen_char.push(b'-' as i32);
         self.eqtb.hyphen_char_levels.push(1);
         self.eqtb.skew_char.push(-1);
         self.eqtb.skew_char_levels.push(1);
         self.eqtb.font_cs.push(cs);
+        self.eqtb.expand.push(Default::default());
         id
     }
 
     pub fn scan_pdf_origin(&mut self) -> u8 {
-        self.skip_spaces_relax();
-        let t = self.get_token();
-        if t.is_cs() && self.cs.name(t.cs_id()) == b"direct" {
+        if self.scan_keyword(b"direct") {
             1
+        } else if self.scan_keyword(b"page") {
+            2
+        } else if self.scan_keyword(b"origin") {
+            0
         } else {
-            self.pushed.push(t);
             0
         }
     }
@@ -777,11 +865,575 @@ impl Engine {
         let toks = self.scan_general_text_expanded();
         self.write_tokens_to_string(&toks)
     }
+
+    // ---------- pdfTeX font expansion (pdftex.web §17399+) ----------
+
+    /// `expand_font_name`: font_name[f] + ("+" if e>0) + print_int(e)
+    pub fn expand_font_name(&self, f: u16, e: i32) -> String {
+        let name = &self.eqtb.fonts[f as usize].tfm_name;
+        if e > 0 {
+            format!("{}+{}", name, e)
+        } else {
+            format!("{}{}", name, e)
+        }
+    }
+
+    /// `tfm_lookup`: an already-loaded font with this tfm name at this size
+    /// (skips nullfont).
+    fn tfm_lookup(&self, s: &str, fs: i32) -> u16 {
+        for (k, fnt) in self.eqtb.fonts.iter().enumerate().skip(1) {
+            if fnt.tfm_name == s && (fs == 0 || fnt.at_size == fs) {
+                return k as u16;
+            }
+        }
+        0
+    }
+
+    /// `auto_expand_font` + `auto_expand_vf` (pdftex.web §18311): synthesize
+    /// an in-memory expanded clone — widths, italic corrections and kerns
+    /// scaled by (1000+e)/1000 with pdfTeX's exact rounding; heights/depths/
+    /// ligature programs unchanged. A virtual font clone reuses the base's
+    /// character packets unchanged (`vf_packet_base[f] := vf_packet_base[bf]`)
+    /// but maps every local base font to its own expanded clone, so the
+    /// renderer sees clone ids whose ratio/blink are set canonically.
+    fn auto_expand_font(&mut self, f: u16, e: i32) -> u16 {
+        let mut nf = (*self.eqtb.fonts[f as usize].clone()).clone();
+        nf.tfm_name = self.expand_font_name(f, e);
+        let n = 1000 + e;
+        for ci in nf.chars.iter_mut() {
+            ci.width = crate::tfm::round_xn_over_d(ci.width, n, 1000);
+            ci.italic = crate::tfm::round_xn_over_d(ci.italic, n, 1000);
+        }
+        for kk in nf.kerns.iter_mut() {
+            *kk = crate::tfm::round_xn_over_d(*kk, n, 1000);
+        }
+        let k = self.push_engine_font(Rc::new(nf), 0);
+        self.copy_expand_params(k, f, e);
+        if let Some(bases) = self.font_loader.vf_bases.get(&f).cloned() {
+            let mut expanded = Vec::with_capacity(bases.len());
+            for &lf in &bases {
+                if lf == 0 || lf == u16::MAX || lf as usize >= self.eqtb.fonts.len() {
+                    expanded.push(lf);
+                } else {
+                    expanded.push(self.auto_expand_font(lf, e));
+                }
+            }
+            self.font_loader.vf_bases.insert(k, expanded);
+        }
+        k
+    }
+
+    /// `copy_expand_params`: variant inherits step/auto/blink and aliases
+    /// the base font's code tables.
+    fn copy_expand_params(&mut self, k: u16, f: u16, e: i32) {
+        let fx = &self.eqtb.expand[f as usize];
+        let (step, auto) = (fx.step, fx.auto_expand);
+        let tables = (
+            fx.ef.clone(),
+            fx.lp.clone(),
+            fx.rp.clone(),
+            fx.kn_bs.clone(),
+            fx.st_bs.clone(),
+            fx.sh_bs.clone(),
+            fx.kn_bc.clone(),
+            fx.kn_ac.clone(),
+        );
+        let ex = &mut self.eqtb.expand[k as usize];
+        ex.ratio = e;
+        ex.step = step;
+        ex.auto_expand = auto;
+        ex.blink = f;
+        ex.set_shared_tables(tables);
+    }
+    fn copy_letterspace_params(&mut self, k: u16, f: u16) {
+        let fx = &self.eqtb.expand[f as usize];
+        let (step, auto, stretch, shrink) = (fx.step, fx.auto_expand, fx.stretch, fx.shrink);
+        let tables = (
+            fx.ef.clone(),
+            fx.lp.clone(),
+            fx.rp.clone(),
+            fx.kn_bs.clone(),
+            fx.st_bs.clone(),
+            fx.sh_bs.clone(),
+            fx.kn_bc.clone(),
+            fx.kn_ac.clone(),
+        );
+        let ex = &mut self.eqtb.expand[k as usize];
+        ex.step = step;
+        ex.auto_expand = auto;
+        ex.stretch = stretch;
+        ex.shrink = shrink;
+        ex.set_shared_tables(tables);
+    }
+
+    /// `load_expand_font`: find or create the variant of `f` expanded by
+    /// `e` thousandths (e nonzero, a multiple of step).
+    fn load_expand_font(&mut self, f: u16, e: i32) -> u16 {
+        let s = self.expand_font_name(f, e);
+        let at = self.eqtb.fonts[f as usize].at_size;
+        let mut k = self.tfm_lookup(&s, at);
+        if k == 0 {
+            let auto = self.eqtb.expand[f as usize].auto_expand;
+            if auto {
+                k = self.auto_expand_font(f, e);
+            } else {
+                // non-auto: pdfTeX reads the expanded TFM file (cmr10+20.tfm
+                // from the distribution); a missing file is a real font error
+                match self.font_loader.load_tfm(&s, at) {
+                    Some(rc) => {
+                        k = self.push_engine_font(rc, 0);
+                        self.copy_expand_params(k, f, e);
+                    }
+                    None => {
+                        self.error(&format!("Font {} not found", s));
+                        return f;
+                    }
+                }
+            }
+        } else {
+            self.copy_expand_params(k, f, e);
+        }
+        k
+    }
+
+    /// `get_expand_font`: walk the elink chain, else load; splice in.
+    fn get_expand_font(&mut self, f: u16, e: i32) -> u16 {
+        let mut k = self.eqtb.expand[f as usize].elink;
+        while k != 0 {
+            if self.eqtb.expand[k as usize].ratio == e {
+                return k;
+            }
+            k = self.eqtb.expand[k as usize].elink;
+        }
+        k = self.load_expand_font(f, e);
+        if k != f && k != 0 {
+            let old = self.eqtb.expand[f as usize].elink;
+            self.eqtb.expand[k as usize].elink = old;
+            self.eqtb.expand[f as usize].elink = k;
+        }
+        k
+    }
+
+    /// `fix_expand_value`: clamp to the configured limits and snap to the
+    /// nearest multiple of the step.
+    fn fix_expand_value(&self, f: u16, e: i32) -> i32 {
+        if e == 0 {
+            return 0;
+        }
+        let ex = &self.eqtb.expand[f as usize];
+        let (mut e, neg) = if e < 0 { (-e, true) } else { (e, false) };
+        let max_expand = if neg {
+            if ex.shrink != 0 {
+                -self
+                    .eqtb
+                    .expand
+                    .get(ex.shrink as usize)
+                    .map_or(0, |x| x.ratio)
+            } else {
+                0
+            }
+        } else if ex.stretch != 0 {
+            self.eqtb
+                .expand
+                .get(ex.stretch as usize)
+                .map_or(0, |x| x.ratio)
+        } else {
+            0
+        };
+        if e > max_expand {
+            e = max_expand;
+        } else if ex.step > 0 && e % ex.step > 0 {
+            e = ex.step * crate::tfm::round_xn_over_d(e, 1, ex.step);
+        }
+        if neg {
+            -e
+        } else {
+            e
+        }
+    }
+
+    /// `expand_font`: nearest configured variant for arbitrary ratio `e`.
+    pub fn expand_font(&mut self, f: u16, e: i32) -> u16 {
+        if e == 0 {
+            return f;
+        }
+        let e = self.fix_expand_value(f, e);
+        if e == 0 {
+            return f;
+        }
+        if self.eqtb.expand[f as usize].elink == 0 {
+            return f;
+        }
+        self.get_expand_font(f, e)
+    }
+
+    /// `set_expand_params`
+    fn set_expand_params(
+        &mut self,
+        f: u16,
+        auto_expand: bool,
+        stretch_limit: i32,
+        shrink_limit: i32,
+        font_step: i32,
+        expand_ratio: i32,
+    ) {
+        self.eqtb.expand[f as usize].step = font_step;
+        self.eqtb.expand[f as usize].auto_expand = auto_expand;
+        if stretch_limit > 0 {
+            let k = self.get_expand_font(f, stretch_limit);
+            self.eqtb.expand[f as usize].stretch = k;
+        }
+        if shrink_limit > 0 {
+            let k = self.get_expand_font(f, -shrink_limit);
+            self.eqtb.expand[f as usize].shrink = k;
+        }
+        if expand_ratio != 0 {
+            self.eqtb.expand[f as usize].ratio = expand_ratio;
+        }
+    }
+
+    /// `vf_expand_local_fonts`: propagate expansion to a VF's base fonts
+    pub fn vf_expand_local_fonts(&mut self, f: u16) {
+        let bases: Vec<u16> = match self.font_loader.vf_bases.get(&f) {
+            Some(b) => b.clone(),
+            None => return,
+        };
+        let fx = &self.eqtb.expand[f as usize];
+        let (auto, step, ratio) = (fx.auto_expand, fx.step, fx.ratio);
+        let (st, sh) = (fx.stretch, fx.shrink);
+        let sl = if st != 0 {
+            self.eqtb.expand.get(st as usize).map_or(0, |x| x.ratio)
+        } else {
+            0
+        };
+        let shl = if sh != 0 {
+            -self.eqtb.expand.get(sh as usize).map_or(0, |x| x.ratio)
+        } else {
+            0
+        };
+        for lf in bases {
+            if lf == 0 || lf == u16::MAX || lf as usize >= self.eqtb.expand.len() {
+                continue;
+            }
+            self.set_expand_params(lf, auto, sl, shl, step, ratio);
+            if self.font_loader.vf_bases.contains_key(&lf) {
+                self.vf_expand_local_fonts(lf);
+            }
+        }
+    }
+
+    /// `\pdffontexpand <font> = <stretch> <shrink> <step> [autoexpand]`
+    /// (pdftex.web `read_expand_font`).
+    pub fn do_pdffontexpand(&mut self) {
+        self.skip_spaces_relax();
+        let f = self.scan_font_id();
+        if f == 0 {
+            self.error("font expansion: invalid font identifier");
+            return;
+        }
+        if self.eqtb.expand[f as usize].blink != 0 {
+            self.error("font expansion: \\pdffontexpand cannot be used this way (the base font has been expanded)");
+            return;
+        }
+        self.scan_optional_equals();
+        let mut stretch_limit = self.scan_int().clamp(0, 1000);
+        let mut shrink_limit = self.scan_int().clamp(0, 500);
+        let font_step = self.scan_int().clamp(0, 100);
+        if font_step == 0 {
+            self.error("font expansion: invalid step");
+            return;
+        }
+        stretch_limit -= stretch_limit % font_step;
+        shrink_limit -= shrink_limit % font_step;
+        if stretch_limit == 0 && shrink_limit == 0 {
+            self.error("font expansion: invalid limit(s)");
+            return;
+        }
+        let auto_expand = self.scan_keyword(b"autoexpand");
+        if self.eqtb.expand[f as usize].ratio != 0 {
+            self.error("font expansion: this font has been expanded by another font so it cannot be used now");
+            return;
+        }
+        let ex = &self.eqtb.expand[f as usize];
+        if ex.step != 0 {
+            // re-configuration must be consistent with the first one
+            let (st, sh) = (ex.stretch, ex.shrink);
+            let (step, auto, ratio) = (ex.step, ex.auto_expand, ex.ratio);
+            let stl = if st != 0 {
+                self.eqtb.expand[st as usize].ratio
+            } else {
+                0
+            };
+            let shl = if sh != 0 {
+                -self.eqtb.expand[sh as usize].ratio
+            } else {
+                0
+            };
+            if step != font_step {
+                self.error("font expansion: font has been expanded with different expansion step");
+                return;
+            }
+            if (st == 0) != (stretch_limit == 0) || (st != 0 && stl != stretch_limit) {
+                self.error("font expansion: font has been expanded with different stretch limit");
+                return;
+            }
+            if (sh == 0) != (shrink_limit == 0) || (sh != 0 && shl != shrink_limit) {
+                self.error("font expansion: font has been expanded with different shrink limit");
+                return;
+            }
+            if auto != auto_expand {
+                self.error(
+                    "font expansion: font has been expanded with different auto expansion value",
+                );
+                return;
+            }
+            let _ = ratio;
+        } else {
+            self.set_expand_params(f, auto_expand, stretch_limit, shrink_limit, font_step, 0);
+            if self.font_loader.vf_bases.contains_key(&f) {
+                self.vf_expand_local_fonts(f);
+            }
+        }
+    }
+
+    /// `set_no_ligatures` (\pdfnoligatures\f): strip ligature tags from
+    /// every existing character of the font.
+    pub fn set_no_ligatures(&mut self, f: u16) {
+        let font = Rc::clone(&self.eqtb.fonts[f as usize]);
+        // our parser shares Rc<Font> only through push_engine_font's clone,
+        // but a font record can back one engine id; mutate through a clone
+        // and replace the Rc so no other holder is affected unexpectedly.
+        let mut nf = (*font).clone();
+        let (bc, ec) = (nf.bc, nf.ec);
+        for c in bc..=ec {
+            if nf.char_present(c) && nf.chars[c as usize].tag == crate::tfm::TAG_LIG {
+                nf.chars[c as usize].tag = crate::tfm::TAG_NO_TAG;
+            }
+        }
+        self.eqtb.fonts[f as usize] = Rc::new(nf);
+    }
+
+    /// `test_no_ligatures` (\the\pdfnoligatures\f readback): 1 when no
+    /// existing char in bc..ec carries a ligature or extensible tag.
+    pub fn test_no_ligatures(&self, f: u16) -> i32 {
+        let font = &self.eqtb.fonts[f as usize];
+        for c in font.bc..=font.ec {
+            if font.char_present(c) {
+                let t = font.chars[c as usize].tag;
+                if t == crate::tfm::TAG_LIG || t == crate::tfm::TAG_EXT {
+                    return 0;
+                }
+            }
+        }
+        1
+    }
+
+    /// `set_tag_code`: i in -7..0; |i| bits remove ext(4)/list(2)/lig(1)
+    /// tags from the character's lig/kern program.
+    pub fn set_tag_code(&mut self, f: u16, c: u8, i: i32) {
+        let mut fixedi = i.clamp(-7, 0).abs();
+        let font = Rc::clone(&self.eqtb.fonts[f as usize]);
+        if !(c >= font.bc && c <= font.ec && font.char_present(c)) {
+            return;
+        }
+        let mut nf = (*font).clone();
+        let ci = &mut nf.chars[c as usize];
+        if fixedi >= 4 {
+            if ci.tag == crate::tfm::TAG_EXT {
+                ci.tag = crate::tfm::TAG_NO_TAG;
+            }
+            fixedi -= 4;
+        }
+        if fixedi >= 2 {
+            if ci.tag == crate::tfm::TAG_LIST {
+                ci.tag = crate::tfm::TAG_NO_TAG;
+            }
+            fixedi -= 2;
+        }
+        if fixedi >= 1 && ci.tag == crate::tfm::TAG_LIG {
+            ci.tag = crate::tfm::TAG_NO_TAG;
+        }
+        self.eqtb.fonts[f as usize] = Rc::new(nf);
+    }
+
+    /// `get_tag_code` readback: lig 1, list 2, ext 4, no tag 0, invalid -1.
+    pub fn get_tag_code(&self, f: u16, c: u8) -> i32 {
+        let font = match self.eqtb.fonts.get(f as usize) {
+            Some(ft) => ft,
+            None => return -1,
+        };
+        if !(c >= font.bc && c <= font.ec && font.char_present(c)) {
+            return -1;
+        }
+        match font.chars[c as usize].tag {
+            crate::tfm::TAG_LIG => 1,
+            crate::tfm::TAG_LIST => 2,
+            crate::tfm::TAG_EXT => 4,
+            _ => 0,
+        }
+    }
+
+    // ---------- letterspacing (pdftex.web letter_space_font §17474) ----------
+
+    /// `\letterspacefont<cs><font id><number>[ nolig]`: a fresh copy of the
+    /// font with every character width widened by e/1000 of the quad,
+    /// wrapped in a synthesized virtual font that shifts each glyph by
+    /// half the added space (kern before and after the glyph).
+    pub fn do_letterspacefont(&mut self) {
+        let u = self.scan_definable_cs();
+        self.scan_optional_equals();
+        let f = self.scan_font_id();
+        if f == 0 {
+            self.error("letterspacing: invalid font identifier");
+            return;
+        }
+        let e = self.scan_int().clamp(-1000, 1000);
+        let k = self.letter_space_font(u, f, e);
+        let g = self.take_global();
+        if k != 0 {
+            self.eqtb.assign(u, crate::eqtb::Equiv::FontRef(k), g);
+        }
+    }
+
+    fn letter_space_font(&mut self, u: crate::token::CsId, f: u16, e: i32) -> u16 {
+        let mut nf = match self.eqtb.fonts.get(f as usize) {
+            Some(font) => (**font).clone(),
+            None => {
+                self.error("letterspacing: base font not found");
+                return 0;
+            }
+        };
+        let tfm_name = nf.tfm_name.clone();
+        let at = self.eqtb.fonts[f as usize].at_size;
+        if self.scan_keyword(b"nolig") {
+            let (bc, ec) = (nf.bc, nf.ec);
+            for c in bc..=ec {
+                if nf.char_present(c) && nf.chars[c as usize].tag == crate::tfm::TAG_LIG {
+                    nf.chars[c as usize].tag = crate::tfm::TAG_NO_TAG;
+                }
+            }
+        }
+        // quad fix: pdftex copies the base font's fontdimen6 when the fresh
+        // load has none
+        let quad_f = self.eqtb.font_params[f as usize]
+            .get(5)
+            .copied()
+            .unwrap_or(0);
+        let quad_k0 = nf.param(6);
+        let quad = if quad_k0 == 0 && quad_f > 0 {
+            quad_f
+        } else {
+            quad_k0
+        };
+        if quad == 0 {
+            self.error("letterspacing: font has zero em size (\\fontdimen6)");
+        }
+        let dw = crate::tfm::round_xn_over_d(quad, e, 1000);
+        for ci in nf.chars.iter_mut() {
+            ci.width += dw;
+        }
+        // append e.g. "+100ls" to the font name
+        nf.tfm_name = format!(
+            "{}{}ls",
+            tfm_name,
+            if e > 0 {
+                format!("+{}", e)
+            } else {
+                e.to_string()
+            }
+        );
+        let k = self.push_engine_font(Rc::new(nf), u);
+        self.copy_letterspace_params(k, f);
+        if quad != 0 {
+            if let Some(p) = self.eqtb.font_params[k as usize].get_mut(5) {
+                if *p == 0 {
+                    *p = quad_f;
+                }
+            }
+        }
+        // virtual wrapper: half the added space before and after each glyph
+        let w = crate::tfm::round_xn_over_d(quad, e, 2000);
+        let mut chars: Vec<Option<Rc<[VfStep]>>> = vec![None; 256];
+        for c in 0..=255u8 {
+            chars[c as usize] = Some(Rc::from(vec![VfStep {
+                base: 0,
+                ch: c,
+                dx: w,
+                dy: 0,
+            }]));
+        }
+        let key = (self.eqtb.fonts[k as usize].tfm_name.clone(), at);
+        self.font_loader.vf_fonts.insert(
+            key,
+            Rc::new(VfFont {
+                bases: vec![crate::fontload::VfBase {
+                    tfm_name,
+                    at_size: at,
+                }],
+                chars,
+            }),
+        );
+        self.font_loader.vf_bases.insert(k, vec![f]);
+        k
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn font_scaled_uses_thousandths_of_design_size() {
+        let mut e = Engine::new(true);
+        e.init_primitives();
+        e.add_nullfont();
+        e.input.push_file(
+            "scaled-font.tex".to_string(),
+            b"\\font\\scaledfont=cmr10 scaled 1100\n".to_vec(),
+        );
+        e.run();
+        let cs = e.cs.lookup(b"scaledfont").expect("font control sequence");
+        let Some(Equiv::FontRef(fid)) = e.eqtb.resolve(cs) else {
+            panic!("scaledfont was not bound to a font");
+        };
+        assert_eq!(e.eqtb.fonts[*fid as usize].at_size, 11 * 65536);
+    }
+
+    #[test]
+    fn borrowed_map_tokens_preserve_quote_and_whitespace_rules() {
+        // Exercise attached, unmatched and empty quotes as well as Unicode
+        // whitespace against the established concatenating tokenizer.
+        let fragments = [
+            "",
+            " ",
+            "a",
+            "é",
+            "\t",
+            "\u{2003}",
+            "\"",
+            "\"x\"",
+            " <font.pfb ",
+        ];
+        for a in fragments {
+            for b in fragments {
+                for c in fragments {
+                    let line = format!("{a}{b}{c}");
+                    let expected = split_map_tokens_joined(&line);
+                    let (bare, quoted) = split_map_tokens(&line);
+                    assert_eq!(
+                        bare.iter().map(|s| s.as_ref()).collect::<Vec<_>>(),
+                        expected.0,
+                        "{line:?}"
+                    );
+                    assert_eq!(
+                        quoted.iter().map(|s| s.as_ref()).collect::<Vec<_>>(),
+                        expected.1,
+                        "{line:?}"
+                    );
+                }
+            }
+        }
+    }
 
     #[test]
     fn plain_pfb_entry() {
@@ -917,17 +1569,19 @@ mod tests {
             14, 7, 0x04, 0x28, 0xf6, 149, 0x28, 0xf6, 0x01, 132, 0, 0, 0, 0x10, 0, 0, 0, 0x10, 0x01,
         ]);
         // char 200: long_char 242 pl[4] cc[4] tfm[4] dvi[pl]; put1 char 1
-        vf.extend_from_slice(&[242, 0, 0, 0, 2, 0, 0, 0, 200, 0x04, 0x28, 0xf6, 0x00, 133, 0x01]);
+        vf.extend_from_slice(&[
+            242, 0, 0, 0, 2, 0, 0, 0, 200, 0x04, 0x28, 0xf6, 0x00, 133, 0x01,
+        ]);
         vf.push(248); // post
         std::fs::write(dir.join("toyvf.vf"), &vf).unwrap();
 
         let mut fl = FontLoader {
             kpse: tex_kpse::Kpse::explicit(&dir, vec![]),
-            map: std::collections::HashMap::new(),
-            tfm_cache: std::collections::HashMap::new(),
-            enc_cache: std::collections::HashMap::new(),
-            vf_fonts: std::collections::HashMap::new(),
-            vf_bases: std::collections::HashMap::new(),
+            map: crate::fontmap::FontMap::default(),
+            tfm_cache: crate::FxHashMap::default(),
+            enc_cache: crate::FxHashMap::default(),
+            vf_fonts: crate::FxHashMap::default(),
+            vf_bases: crate::FxHashMap::default(),
             map_loaded: true,
         };
         let font = fl.load_tfm("toyvf", 655360).expect("toyvf loads");
@@ -940,10 +1594,12 @@ mod tests {
         assert_eq!(vfv.bases.len(), 1);
         assert_eq!(vfv.bases[0].tfm_name, "toybase");
         assert_eq!(vfv.bases[0].at_size, 655360);
-        let at = 655360i64;
         let steps5 = vfv.chars[5].as_ref().unwrap();
         assert_eq!(steps5.len(), 2);
-        assert_eq!((steps5[0].base, steps5[0].ch, steps5[0].dx, steps5[0].dy), (0, 1, 0, 0));
+        assert_eq!(
+            (steps5[0].base, steps5[0].ch, steps5[0].dx, steps5[0].dy),
+            (0, 1, 0, 0)
+        );
         // advance 0.25em = 163840 + right 20480
         assert_eq!(steps5[1].dx as i64, 163840 + 20480);
         let steps6 = vfv.chars[6].as_ref().unwrap();
@@ -967,7 +1623,11 @@ mod tests {
             return;
         }
         let mut fl = FontLoader::new();
-        for (name, base) in [("ntxsy", "txsys"), ("ntxexx", "txexs"), ("ntxmi", "NewTXMI")] {
+        for (name, base) in [
+            ("ntxsy", "txsys"),
+            ("ntxexx", "txexs"),
+            ("ntxmi", "NewTXMI"),
+        ] {
             let Some(font) = fl.load_tfm(name, 655360) else {
                 panic!("{name} tfm missing");
             };
@@ -979,7 +1639,10 @@ mod tests {
             assert!(
                 vfv.bases.iter().any(|b| b.tfm_name == base),
                 "{name}: base {base} missing, got {:?}",
-                vfv.bases.iter().map(|b| b.tfm_name.as_str()).collect::<Vec<_>>()
+                vfv.bases
+                    .iter()
+                    .map(|b| b.tfm_name.as_str())
+                    .collect::<Vec<_>>()
             );
             let n_steps: usize = vfv.chars.iter().flatten().map(|s| s.len()).sum();
             assert!(n_steps > 100, "{name}: too few steps ({n_steps})");

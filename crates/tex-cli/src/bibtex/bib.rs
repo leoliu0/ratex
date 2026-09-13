@@ -11,7 +11,7 @@ use super::Logger;
 #[derive(Debug, Clone)]
 pub struct BibEntry {
     pub cite: String,
-    pub type_name: String, // lowercased, "" if absent
+    pub type_name: String,             // lowercased, "" if absent
     pub fields: Vec<(String, String)>, // lowercased name -> value
 }
 
@@ -25,7 +25,9 @@ pub struct Database {
 impl Database {
     pub fn find_lc(&self, key: &str) -> Option<usize> {
         let lc = key.to_ascii_lowercase();
-        self.entries.iter().position(|e| e.cite.to_ascii_lowercase() == lc)
+        self.entries
+            .iter()
+            .position(|e| e.cite.to_ascii_lowercase() == lc)
     }
 }
 
@@ -36,7 +38,8 @@ struct Scanner<'a> {
 
 impl<'a> Scanner<'a> {
     fn ws(&mut self) {
-        while self.i < self.b.len() && (self.b[self.i].is_ascii_whitespace() || self.b[self.i] == b'%')
+        while self.i < self.b.len()
+            && (self.b[self.i].is_ascii_whitespace() || self.b[self.i] == b'%')
         {
             if self.b[self.i] == b'%' {
                 while self.i < self.b.len() && self.b[self.i] != b'\n' {
@@ -54,7 +57,13 @@ impl<'a> Scanner<'a> {
             return;
         }
         let open = self.b[self.i];
-        let close = if open == b'{' { b'}' } else if open == b'(' { b')' } else { return };
+        let close = if open == b'{' {
+            b'}'
+        } else if open == b'(' {
+            b')'
+        } else {
+            return;
+        };
         let mut depth = 1usize;
         self.i += 1;
         while self.i < self.b.len() && depth > 0 {
@@ -73,7 +82,13 @@ impl<'a> Scanner<'a> {
         let start = self.i;
         while self.i < self.b.len() {
             let c = self.b[self.i];
-            if c.is_ascii_alphanumeric() || c == b'-' || c == b'_' || c == b'.' || c == b':' || c == b'+' {
+            if c.is_ascii_alphanumeric()
+                || c == b'-'
+                || c == b'_'
+                || c == b'.'
+                || c == b':'
+                || c == b'+'
+            {
                 self.i += 1;
             } else {
                 break;
@@ -174,7 +189,10 @@ fn read_value(
 
 /// Parse one .bib file into the database.
 pub fn parse_bib(src: &str, path: &str, db: &mut Database, log: &mut Logger) {
-    let mut sc = Scanner { b: src.as_bytes(), i: 0 };
+    let mut sc = Scanner {
+        b: src.as_bytes(),
+        i: 0,
+    };
     let mut line = 1usize;
     let mut seen_keys: std::collections::HashSet<String> = std::collections::HashSet::new();
     while sc.i < sc.b.len() {
@@ -235,7 +253,9 @@ pub fn parse_bib(src: &str, path: &str, db: &mut Database, log: &mut Logger) {
                     }
                     sc.i += 1;
                 }
-                let cite = String::from_utf8_lossy(&sc.b[kstart..sc.i]).trim().to_string();
+                let cite = String::from_utf8_lossy(&sc.b[kstart..sc.i])
+                    .trim()
+                    .to_string();
                 let mut fields: Vec<(String, String)> = Vec::new();
                 loop {
                     sc.ws();

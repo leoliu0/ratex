@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 //! tex-bibtex: a pure-Rust BibTeX replacement.
 //!
 //! Reproduces bibtex 0.99e .bbl output byte-for-byte for standard styles.
@@ -68,7 +70,16 @@ fn search_file(name: &str, env_vars: &[&str], cwd: &Path) -> Option<PathBuf> {
             }
         }
     }
-    None
+    let fmt = if name.ends_with(".bst") {
+        tex_kpse::Format::Bst
+    } else if name.ends_with(".bib") {
+        tex_kpse::Format::Bib
+    } else {
+        return None;
+    };
+    tex_kpse::Kpse::new()
+        .find(name, fmt)
+        .filter(|p| p.is_file())
 }
 
 /// Bounded recursive walk used for kpathsea `//` path components.
@@ -219,12 +230,7 @@ pub fn run_opts(jobname: &str, cwd: &Path, write_files: bool, opts: &RunOpts) ->
 /// exactly as bibtex.web does — aux citations first (original spelling,
 /// case-insensitive matching), with `*` pulling in every database entry
 /// and crossref'd targets appended when cited `min_crossrefs` times.
-fn read_database(
-    it: &mut Interp,
-    a: &aux::Aux,
-    cwd: &Path,
-    opts: &RunOpts,
-) -> Result<(), String> {
+fn read_database(it: &mut Interp, a: &aux::Aux, cwd: &Path, opts: &RunOpts) -> Result<(), String> {
     // Parsed database files in order, with the macros visible to each.
     let mut files: Vec<(String, Vec<bib::RawEntry>)> = Vec::new();
     let mut preambles: Vec<String> = Vec::new();
@@ -237,7 +243,8 @@ fn read_database(
             format!("{}.bib", name)
         };
         let Some(path) = search_file(&fname, &["TEXBIBINPUTS", "BIBINPUTS"], cwd) else {
-            it.blg.push(format!("I couldn't open database file {}", fname));
+            it.blg
+                .push(format!("I couldn't open database file {}", fname));
             continue;
         };
         let text = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
@@ -357,10 +364,7 @@ fn read_database(
                 }
                 for fname in &ent.dup_fields {
                     if it.fields.contains(fname) {
-                        it.warn(&format!(
-                            "I'm ignoring {}'s extra \"{}\" field",
-                            c, fname
-                        ));
+                        it.warn(&format!("I'm ignoring {}'s extra \"{}\" field", c, fname));
                     }
                 }
                 e
@@ -402,7 +406,9 @@ fn read_database(
                 if fname == "crossref" {
                     continue;
                 }
-                ent.fields.entry(fname.clone()).or_insert_with(|| fval.clone());
+                ent.fields
+                    .entry(fname.clone())
+                    .or_insert_with(|| fval.clone());
             }
         }
     }
@@ -411,8 +417,12 @@ fn read_database(
     // entries that did not make it; warn about nested pointers.
     let mut broken: HashSet<usize> = HashSet::new();
     for i in 0..cites.len() {
-        let Some(ent) = data[i].as_ref() else { continue };
-        let Some(target) = crossref_target(ent) else { continue };
+        let Some(ent) = data[i].as_ref() else {
+            continue;
+        };
+        let Some(target) = crossref_target(ent) else {
+            continue;
+        };
         let tl = target.to_ascii_lowercase();
         match pos_of.get(&tl).copied() {
             None => {
@@ -461,7 +471,7 @@ fn read_database(
     // Remove missing entries or those cross-referenced too few times.
     let mut kept: Vec<String> = Vec::new();
     for (pos, c) in cites.iter().enumerate() {
-        let lc = c.to_ascii_lowercase();
+        let _lc = c.to_ascii_lowercase();
         let aux_cited = a.cite_all || pos < num_aux_cites;
         let exists = data[pos].is_some();
         if !exists {
@@ -537,4 +547,3 @@ fn finish(
         stdout,
     }
 }
-

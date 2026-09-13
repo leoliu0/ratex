@@ -2,71 +2,247 @@
 //! \message, \special, \show, \lowercase/\uppercase, \advance arithmetic.
 
 use crate::boxes::Node;
-use crate::engine::{Engine, Mode};
+use crate::engine::Engine;
 use crate::eqtb::Equiv;
 use crate::prim::Prim;
 use crate::token::Token;
 
+const MAX_TEX_INPUT_STREAM: i32 = 15;
+
+#[derive(Clone)]
+struct ScannerDiagnosticState {
+    macro_trace: Vec<crate::token::CsId>,
+    token_from_file: bool,
+    trace_hold: u16,
+    source_cs: Option<crate::token::CsId>,
+    physical_source: Option<crate::engine::PhysicalTokenSource>,
+    macro_call_site: Option<crate::input::SourceMark>,
+    macro_call_span: usize,
+    synthetic_source: Option<(crate::token::CsId, crate::input::SourceMark, usize)>,
+}
+
+/// LaTeX's `\GenericError` still embeds instructions for TeX's interactive
+/// question-and-answer loop in the `\errmessage` text. The CLI has explicit
+/// interaction flags and never asks those questions, so retain the actual
+/// error headline and move useful recovery advice to the diagnostic hint.
+fn normalize_errmessage(text: &str) -> String {
+    let trimmed = text.trim();
+    let is_latex_style = is_latex_style_error(trimmed);
+    if is_latex_style {
+        trimmed
+            .split("\n\n")
+            .next()
+            .unwrap_or(trimmed)
+            .trim()
+            .to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn is_latex_style_error(text: &str) -> bool {
+    text.starts_with("LaTeX Error:")
+        || (text.starts_with("Package ") && text.contains(" Error:"))
+        || (text.starts_with("Class ") && text.contains(" Error:"))
+}
+
+/// `\@missingfileerror` is the one major LaTeX error path that prints an
+/// error with `\typeout` and then requests `\read-1`, rather than issuing an
+/// `\errmessage`. Recover its headline before reporting that terminal input
+/// is unavailable, so the missing file remains the primary, located error.
+fn pending_latex_missing_file(buffer: &str) -> Option<(usize, String)> {
+    const MARKER: &str = "! LaTeX Error: ";
+    let start = buffer.rfind(MARKER)?;
+    let tail = &buffer[start..];
+    if !tail.contains(" not found.") || !tail.contains("Enter file name:") {
+        return None;
+    }
+    let headline = tail.strip_prefix("! ")?.split("\n\n").next()?.trim();
+    Some((start, headline.to_string()))
+}
+
+fn latex_missing_file_name(message: &str) -> Option<&str> {
+    message
+        .split_once("File `")?
+        .1
+        .split_once('\'')
+        .map(|(name, _)| name)
+}
+
+/// Read through one physical line while retaining at most `limit` bytes.
+/// The remainder is drained so a capacity error cannot leave the stream in
+/// the middle of the offending line.
+fn read_line_bounded(
+    reader: &mut dyn std::io::BufRead,
+    line: &mut Vec<u8>,
+    limit: usize,
+) -> std::io::Result<(bool, bool)> {
+    let mut read_any = false;
+    let mut overflow = false;
+    loop {
+        let (take, done) = {
+            let available = reader.fill_buf()?;
+            if available.is_empty() {
+                break;
+            }
+            read_any = true;
+            let take = available
+                .iter()
+                .position(|&byte| byte == b'\n')
+                .map_or(available.len(), |position| position + 1);
+            let keep = take.min(limit.saturating_sub(line.len()));
+            line.extend_from_slice(&available[..keep]);
+            overflow |= keep < take;
+            (take, available[take - 1] == b'\n')
+        };
+        reader.consume(take);
+        if done {
+            break;
+        }
+    }
+    Ok((read_any, overflow))
+}
+
 impl Engine {
+    fn scanner_diagnostic_state(&self) -> ScannerDiagnosticState {
+        ScannerDiagnosticState {
+            macro_trace: self.diagnostic_macro_trace.clone(),
+            token_from_file: self.diagnostic_token_from_file,
+            trace_hold: self.diagnostic_trace_hold,
+            source_cs: self.diagnostic_source_cs,
+            physical_source: self.diagnostic_physical_source,
+            macro_call_site: self.diagnostic_macro_call_site.clone(),
+            macro_call_span: self.diagnostic_macro_call_span,
+            synthetic_source: self.diagnostic_synthetic_source.clone(),
+        }
+    }
+
+    fn restore_scanner_diagnostic_state(&mut self, state: ScannerDiagnosticState) {
+        self.diagnostic_macro_trace = state.macro_trace;
+        self.diagnostic_token_from_file = state.token_from_file;
+        self.diagnostic_trace_hold = state.trace_hold;
+        self.diagnostic_source_cs = state.source_cs;
+        self.diagnostic_physical_source = state.physical_source;
+        self.diagnostic_macro_call_site = state.macro_call_site;
+        self.diagnostic_macro_call_span = state.macro_call_span;
+        self.diagnostic_synthetic_source = state.synthetic_source;
+    }
+
     pub fn do_input(&mut self) {
+        let included_from = self.current_token_source_mark();
         let name = self.scan_file_name();
         if name.is_empty() {
-            self.error("\\input needs a file name");
+            self.error_at(
+                "\\input needs a file name",
+                included_from
+                    .as_ref()
+                    .map(crate::input::SourceMark::to_context),
+            );
             return;
         }
-        let res = self.input_file(&name);
+        let _res = self.input_file_from(&name, included_from);
     }
 
     pub fn input_file(&mut self, name: &str) -> bool {
-        if std::env::var("IOTRACE").is_ok() && name.ends_with(".aux") {
-            let sz = std::fs::metadata(name).map(|m| m.len()).unwrap_or(99999);
-            eprintln!("IO-AUX-READ {} size={}", name, sz);
+        let included_from = self.input.current_source_mark();
+        self.input_file_from(name, included_from)
+    }
+
+    fn input_file_from(
+        &mut self,
+        name: &str,
+        included_from: Option<crate::input::SourceMark>,
+    ) -> bool {
+        // Starting a file may also park pending lookahead below it. Reserve
+        // both slots as one operation so recursive \input cannot trip the
+        // low-level stack invariant after partially rearranging input.
+        let needed = 1 + usize::from(!self.pushed.is_empty());
+        if !self.input.has_stack_room(needed) {
+            self.fatal_error_at(
+                &format!(
+                    "TeX capacity exceeded, sorry [input stack size={}]",
+                    crate::input::MAX_INPUT_STACK
+                ),
+                included_from
+                    .as_ref()
+                    .map(crate::input::SourceMark::to_context),
+            );
+            return false;
         }
         let path = self.resolve_input_path(name);
         match path {
-            Some(p) => match std::fs::read(&p) {
-                Ok(data) => {
-                    self.loaded_files.push(p.clone());
-                    self.term.push_str(&format!("({} ", p.display()));
-                    // tex.web start_input: the file sits above the current
-                    // token list. `pushed` is that token list, so leftovers
-                    // must park below the file even during \\output — else
-                    // hook-csname tokens sit on top of an unread .fd.
-                    if !self.pushed.is_empty() {
-                        let mut rest = std::mem::take(&mut self.pushed);
-                        rest.reverse();
-                        self.input.push_toks(rest, "<after-input>");
+            Some(p) => {
+                let key = p.to_string_lossy().into_owned();
+                let data = match self.input.read_file(&p) {
+                    Ok(bytes) => bytes,
+                    Err(e) => {
+                        self.error_at(
+                            &format!("Cannot read {}: {}", name, e),
+                            included_from
+                                .as_ref()
+                                .map(crate::input::SourceMark::to_context),
+                        );
+                        return false;
                     }
-                    self.input.push_file(p.display().to_string(), data);
-                    true
+                };
+                self.loaded_files.push(p.clone());
+                self.term.push_str(&format!("({} ", p.display()));
+                // tex.web start_input: the file sits above the current
+                // token list. `pushed` is that token list, so leftovers
+                // must park below the file even during \\output — else
+                // hook-csname tokens sit on top of an unread .fd.
+                if !self.pushed.is_empty() {
+                    let mut rest = std::mem::take(&mut self.pushed);
+                    rest.reverse();
+                    if !self.try_push_tokens_named(rest, "<after-input>") {
+                        return false;
+                    }
                 }
-                Err(e) => {
-                    self.error(&format!("Cannot read {}: {}", name, e));
-                    false
-                }
-            },
+                self.input.push_file_from(key, data, included_from);
+                true
+            }
             None => {
                 // Fall back to embedded Virtual TDS package repository
-                let clean_name = std::path::Path::new(name).file_name().and_then(|s| s.to_str()).unwrap_or(name);
-                let cand_names = [clean_name.to_string(), format!("{}.sty", clean_name), format!("{}.cls", clean_name)];
+                let clean_name = std::path::Path::new(name)
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or(name);
+                let cand_names = [
+                    clean_name.to_string(),
+                    format!("{}.sty", clean_name),
+                    format!("{}.cls", clean_name),
+                ];
                 let mut found_data = None;
                 for cand in &cand_names {
+                    let key = format!("<embedded:{cand}>");
+                    if let Some(rc) = self.input.cached_file(&key) {
+                        found_data = Some((key, rc));
+                        break;
+                    }
                     if let Some(pkg_data) = tex_kpse::get_embedded_package(cand) {
-                        found_data = Some((cand.clone(), pkg_data.to_vec()));
+                        let rc = self.input.intern_file(key.clone(), pkg_data);
+                        found_data = Some((key, rc));
                         break;
                     }
                 }
-                if let Some((cand_name, data)) = found_data {
-                    self.term.push_str(&format!("(<embedded:{}> ", cand_name));
+                if let Some((key, data)) = found_data {
+                    self.term.push_str(&format!("({key} "));
                     if !self.pushed.is_empty() {
                         let mut rest = std::mem::take(&mut self.pushed);
                         rest.reverse();
-                        self.input.push_toks(rest, "<after-input>");
+                        if !self.try_push_tokens_named(rest, "<after-input>") {
+                            return false;
+                        }
                     }
-                    self.input.push_file(format!("<embedded:{}>", cand_name), data);
+                    self.input.push_file_from(key, data, included_from);
                     return true;
                 }
-                self.error(&format!("File `{}` not found", name));
+                self.error_at(
+                    &format!("File `{}` not found", name),
+                    included_from
+                        .as_ref()
+                        .map(crate::input::SourceMark::to_context),
+                );
                 false
             }
         }
@@ -76,20 +252,9 @@ impl Engine {
     /// when -output-directory is set, relative names are looked up there
     /// first (kpathsea's TEXMF_OUTPUT_DIRECTORY behavior), then kpathsea's
     /// format search path (TDS, env paths, cwd, explicit paths).
-    fn resolve_input_path(&self, name: &str) -> Option<std::path::PathBuf> {
+    pub fn resolve_input_path(&self, name: &str) -> Option<std::path::PathBuf> {
         if name.is_empty() {
             return None;
-        }
-        // LaTeX's \@missingfileerror give-up path (no terminal to answer the
-        // "Enter file name:" prompt) re-requests the degenerate name ".tex".
-        // Serve a placeholder file so batch/nonstop runs abort the
-        // missing-input attempt once and continue instead of looping on the
-        // unanswerable prompt (web2c TeX emergency-stops here; interactive
-        // sessions prompt for a replacement).
-        if name == ".tex" {
-            let guard = std::env::temp_dir().join("tex-missingfile-guard.tex");
-            let _ = std::fs::write(&guard, b"\\relax\n");
-            return Some(guard);
         }
         // Format-build boot: babel's language.dat chain (ruhyph16, coptic,
         // english.ldf, ...) drags the full babel \protect machinery into
@@ -106,7 +271,96 @@ impl Engine {
         }
         if name == "hyphen.cfg" {
             let guard = std::env::temp_dir().join("tex-hyphen-cfg-guard.cfg");
-            let _ = std::fs::write(&guard, b"\\relax\n");
+            let _ = std::fs::write(
+                &guard,
+                b"\\chardef\\l@nohyphenation=255\n\\chardef\\l@english=0\n\\chardef\\l@USenglish=0\n\\def\\languagename{english}\n\\relax\n",
+            );
+            return Some(guard);
+        }
+        if name == "fontspec.sty" {
+            let guard = std::env::temp_dir().join("tex-fontspec-stub.sty");
+            let _ = std::fs::write(
+                &guard,
+                b"\\ProvidesPackage{fontspec}[2026/01/01 v2.9 Rust compatibility stub]\n\
+                  \\def\\@fontspec@gobbleopt[#1]{}\n\
+                  \\def\\@fontspec@cmd{\\@ifnextchar[{\\@fontspec@opt}{\\@fontspec@noopt}}\n\
+                  \\def\\@fontspec@opt[#1]#2{\\@ifnextchar[{\\@fontspec@gobbleopt}{}}\n\
+                  \\def\\@fontspec@noopt#1{\\@ifnextchar[{\\@fontspec@gobbleopt}{}}\n\
+                  \\let\\setmainfont\\@fontspec@cmd\n\
+                  \\let\\setsansfont\\@fontspec@cmd\n\
+                  \\let\\setmonofont\\@fontspec@cmd\n\
+                  \\def\\newfontfamily#1{\\@fontspec@cmd}\n\
+                  \\def\\setfontfamily#1{\\@fontspec@cmd}\n\
+                  \\def\\newfontface#1{\\@fontspec@cmd}\n\
+                  \\providecommand\\addfontfeatures[2][]{}\n\
+                  \\providecommand\\fontspec[2][]{}\n\
+                  \\providecommand\\defaultfontfeatures[2][]{}\n\
+                  \\providecommand\\emfontdeclare[1]{}\n\
+                  \\providecommand\\strongfontdeclare[1]{}\n\
+                  \\@ifundefined{DeclareUnicodeCharacter}{}{%\n\
+                    \\DeclareUnicodeCharacter{2212}{\\ensuremath{-}}%\n\
+                    \\DeclareUnicodeCharacter{2013}{--}%\n\
+                    \\DeclareUnicodeCharacter{2014}{---}%\n\
+                    \\DeclareUnicodeCharacter{2018}{`}%\n\
+                    \\DeclareUnicodeCharacter{2019}{'}%\n\
+                    \\DeclareUnicodeCharacter{201C}{``}%\n\
+                    \\DeclareUnicodeCharacter{201D}{''}%\n\
+                    \\DeclareUnicodeCharacter{2026}{\\dots}%\n\
+                    \\DeclareUnicodeCharacter{00D7}{\\ensuremath{\\times}}%\n\
+                    \\DeclareUnicodeCharacter{2264}{\\ensuremath{\\le}}%\n\
+                    \\DeclareUnicodeCharacter{2265}{\\ensuremath{\\ge}}%\n\
+                    \\DeclareUnicodeCharacter{2260}{\\ensuremath{\\ne}}%\n\
+                    \\DeclareUnicodeCharacter{2208}{\\ensuremath{\\in}}%\n\
+                    \\DeclareUnicodeCharacter{2192}{\\ensuremath{\\to}}%\n\
+                    \\DeclareUnicodeCharacter{221E}{\\ensuremath{\\infty}}%\n\
+                    \\DeclareUnicodeCharacter{2202}{\\ensuremath{\\partial}}%\n\
+                    \\DeclareUnicodeCharacter{00B7}{\\ensuremath{\\cdot}}%\n\
+                  }\n\
+                  \\endinput\n",
+            );
+            return Some(guard);
+        }
+        if name == "unicode-math.sty" {
+            let guard = std::env::temp_dir().join("tex-unicode-math-stub.sty");
+            let _ = std::fs::write(
+                &guard,
+                b"\\ProvidesPackage{unicode-math}[2026/01/01 v0.9 Rust compatibility stub]\n\
+                  \\RequirePackage{amsmath,amssymb}\n\
+                  \\providecommand\\setmathfont[2][]{}\n\
+                  \\providecommand\\unimathsetup[1]{}\n\
+                  \\endinput\n",
+            );
+            return Some(guard);
+        }
+        if name == "luacode.sty" {
+            let guard = std::env::temp_dir().join("tex-luacode-stub.sty");
+            let _ = std::fs::write(
+                &guard,
+                b"\\ProvidesPackage{luacode}[2026/01/01 v1.0 Rust compatibility stub]\n\
+                  \\long\\def\\luaexec#1{}\n\
+                  \\def\\luacode{\\begingroup\\catcode`\\^^M=12 \\luacode@scan}\n\
+                  \\def\\luacode@scan#1\\endluacode{\\endgroup}\n\
+                  \\endinput\n",
+            );
+            return Some(guard);
+        }
+        if name == "luatextra.sty" {
+            let guard = std::env::temp_dir().join("tex-luatextra-stub.sty");
+            let _ = std::fs::write(
+                &guard,
+                b"\\ProvidesPackage{luatextra}[2026/01/01 v1.0 Rust compatibility stub]\n\
+                  \\RequirePackage{fontspec}\n\
+                  \\endinput\n",
+            );
+            return Some(guard);
+        }
+        if name == "luaotfload.sty" {
+            let guard = std::env::temp_dir().join("tex-luaotfload-stub.sty");
+            let _ = std::fs::write(
+                &guard,
+                b"\\ProvidesPackage{luaotfload}[2026/01/01 v1.0 Rust compatibility stub]\n\
+                  \\endinput\n",
+            );
             return Some(guard);
         }
         if !name.starts_with('/') && !self.out_dir.is_empty() {
@@ -120,7 +374,10 @@ impl Engine {
             }
         }
         if !name.starts_with('/') {
-            for cand in [std::path::Path::new(name).to_path_buf(), std::path::Path::new(&format!("{name}.tex")).to_path_buf()] {
+            for cand in [
+                std::path::Path::new(name).to_path_buf(),
+                std::path::Path::new(&format!("{name}.tex")).to_path_buf(),
+            ] {
                 if cand.is_file() {
                     return Some(cand);
                 }
@@ -133,7 +390,13 @@ impl Engine {
                 }
             }
         }
-        self.font_loader.kpse.find(name, tex_kpse::Format::Tex)
+        self.font_loader
+            .kpse
+            .find(name, tex_kpse::Format::Tex)
+            .or_else(|| {
+                let basename = std::path::Path::new(name).file_name()?.to_str()?;
+                self.font_loader.kpse.find_any(basename)
+            })
     }
 
     pub fn do_endinput(&mut self) {
@@ -202,10 +465,13 @@ impl Engine {
         }
     }
 
-    pub fn do_openout(&mut self) {
-        if std::env::var("IOTRACE").is_ok() {
-            eprintln!("IO-OPENOUT at line {}", self.input.current_file_line());
-        }
+    /// tex.web §1393: `\openout`/`\closeout` create whatsit nodes
+    /// (`open_node`/`close_node`); only `\immediate` executes them on the
+    /// spot. Deferred ones ride the current list into the shipped box and
+    /// take effect in `out_what` (§1414) at shipout time, in list order —
+    /// so a `\write` after a deferred `\closeout` on the same page still
+    /// reaches the still-open file.
+    pub fn do_openout(&mut self, immediate: bool) {
         // \openout<n>=<file>
         let n = self.scan_int();
         self.scan_optional_equals();
@@ -221,79 +487,124 @@ impl Engine {
         } else {
             name.clone()
         };
-        match std::fs::File::create(&full) {
+        // §1394: stream numbers <0 map to 17, >15 to 16
+        let stream = if n < 0 { 17u16 } else { n.min(16) as u16 };
+        if !immediate {
+            self.append_whatsit(Node::Whatsit(crate::boxes::WhatIt::OpenOut {
+                stream,
+                path: full,
+            }));
+            return;
+        }
+        self.exec_openout(stream, &full);
+    }
+
+    /// the actual file open, shared by `\immediate\openout` and the
+    /// shipout-time whatsit executor (`out_what` closes a previously open
+    /// stream first, §1417)
+    pub fn exec_openout(&mut self, stream: u16, full: &str) {
+        // §1414: streams 16/17 (the >15 and negative aliases) are never
+        // actually opened
+        if stream >= 16 {
+            return;
+        }
+        let idx = (stream as usize).min(self.write_streams.len() - 1);
+        if self.write_streams[idx].take().is_some() {
+            // canonical: an open on a busy stream closes the old file first
+        }
+        match std::fs::File::create(full) {
             Ok(f) => {
-                let idx = (n as usize).min(self.write_streams.len() - 1);
+                self.input.invalidate_disk_files();
                 self.write_streams[idx] = Some(f);
             }
             Err(e) => self.error(&format!("Cannot open {} for writing: {}", full, e)),
         }
     }
 
-    pub fn do_closeout(&mut self) {
+    pub fn do_closeout(&mut self, immediate: bool) {
         let n = self.scan_int();
-        let idx = (n as usize).min(self.write_streams.len() - 1);
+        let stream = if n < 0 { 17u16 } else { n.min(16) as u16 };
+        if !immediate {
+            self.append_whatsit(Node::Whatsit(crate::boxes::WhatIt::CloseOut { stream }));
+            return;
+        }
+        self.exec_closeout(stream);
+    }
+
+    pub fn exec_closeout(&mut self, stream: u16) {
+        if stream >= 16 {
+            return;
+        }
+        let idx = (stream as usize).min(self.write_streams.len() - 1);
         if let Some(f) = self.write_streams[idx].take() {
             drop(f);
         }
     }
 
     pub fn do_write(&mut self, immediate: bool) {
-        if crate::debug_flag("DEFTRACE") {
-            eprintln!("DOWRITE top_pushed={}", self.pushed.len());
-        }
         let n = self.scan_int();
         // tex.web §1371: \write<n>{toks} collects the list RAW (scan_toks,
         // no expansion) and expands at emission like \xdef (protected macros
         // stay frozen).
         let toks = self.scan_general_text();
-        // tex.web §1395: plain \write to a FILE stream queues a whatsit and
-        // expands at SHIPOUT, so \thepage resolves to the page that actually
-        // ships the node. Terminal/log streams (and \immediate\write) emit
-        // now: their visible ordering is cosmetic and pdfTeX users expect it.
-        if !immediate && n >= 0 && n <= 15 {
-            let toks = toks;
+        // Capture after the list is scanned so a failing token within the
+        // deferred expansion can be located by searching back from here.
+        let source = self.input.current_source_context();
+        // All non-immediate writes are structural whatsits, including the
+        // log-only \write-1{} sentinel used by LaTeX's \clearpage.
+        // TeX maps negative streams to 17 and streams above 15 to 16.
+        if !immediate {
             self.append_whatsit(Node::Whatsit(crate::boxes::WhatIt::Write {
-                stream: n as u16,
+                stream: if n < 0 { 17 } else { n.min(16) as u16 },
                 tokens: toks,
+                source,
             }));
             return;
         }
-        let text = self.expand_write_list(&toks);
-        self.write_out(n, &text);
+        let text = self.expand_write_list(&toks, source.as_ref());
+        self.write_out(if n < 0 { -1 } else { n.min(16) }, &text);
     }
-
     /// tex.web §1395 out_what: a Write whatsit fires at ship time, expanding
-    /// its token list with the page counter of the page being shipped.
-    pub fn fire_write(&mut self, stream: u16, tokens: &[Token]) {
-        let text = self.expand_write_list(tokens);
-        self.write_out(stream as i32, &text);
+    pub fn fire_write(
+        &mut self,
+        stream: u16,
+        tokens: &[Token],
+        source: Option<&crate::input::SourceContext>,
+    ) {
+        let text = self.expand_write_list(tokens, source);
+        self.write_out(if stream == 17 { -1 } else { stream as i32 }, &text);
     }
-
-    /// Expand a raw \\write token list to its emitted string: standalone
-    /// toklist source, edef expansion rules, outer `pushed` parked so it
-    /// cannot leak into the output.
-    fn expand_write_list(&mut self, toks: &[Token]) -> String {
+    /// Expand a raw `\write` token list to its emitted string. The write gets
+    /// a private input stack: a delimited macro may consume the sentinel, but
+    /// it must never continue into the active output routine or document.
+    fn expand_write_list(
+        &mut self,
+        toks: &[Token],
+        source: Option<&crate::input::SourceContext>,
+    ) -> String {
         let saved = std::mem::take(&mut self.pushed);
-        let stack_depth = self.input.stack.len();
+        let saved_input = std::mem::take(&mut self.input.stack);
+        let saved_diagnostic_state = self.scanner_diagnostic_state();
+        let saved_end_occurred = self.end_occurred;
+        let errors_before = self.error_count;
+        let saved_source = std::mem::replace(&mut self.diagnostic_source_override, source.cloned());
         // LaTeX \set@display@protect contract: at write/emit time \protect
         // is \noexpand, so `\protect\BOOKMARK` emits `\BOOKMARK` raw
         // instead of running it (hyperref .out writes).
-        let protect_saved = self.cs.lookup(b"protect").map(|pid| {
-            let old = self.eqtb.get(pid).cloned();
-            if let Some(nid) = self.cs.lookup(b"noexpand") {
-                if let Some(eq) = self.eqtb.get(nid).cloned() {
-                    self.eqtb.assign(pid, eq, false);
-                }
-            }
-            old
+        let protect_saved = self.cs.lookup(b"protect").and_then(|pid| {
+            let noexpand = self
+                .cs
+                .lookup(b"noexpand")
+                .and_then(|nid| self.eqtb.get(nid).cloned())?;
+            let old = self.eqtb.replace_equiv_temporarily(pid, Some(noexpand));
+            Some((pid, old))
         });
         // The sentinel bounds the expansion: without it, a list whose final
         // token expands away would let get_token continue into the OUTER
         // stream and leak its tokens into the write string.
         let mut body = toks.to_vec();
         body.push(crate::page::WRITE_END_TOKEN);
-        self.input.push_toks(body, "<write>");
+        self.push_tokens_named(body, "<write>");
         let prev = self.in_expanded_scan;
         self.in_expanded_scan = true;
         let mut out: Vec<Token> = Vec::new();
@@ -302,49 +613,66 @@ impl Engine {
             if t == crate::page::WRITE_END_TOKEN || t == crate::input::EOF_MARKER {
                 break;
             }
+            if out.len() >= crate::input::MAX_TOKEN_LIST_TOKENS {
+                self.fatal_error_at(
+                    &format!(
+                        "TeX capacity exceeded, sorry [write expansion size={}]",
+                        crate::input::MAX_TOKEN_LIST_TOKENS
+                    ),
+                    source.cloned(),
+                );
+                break;
+            }
             out.push(t);
         }
         self.in_expanded_scan = prev;
-        self.input.stack.truncate(stack_depth);
+        self.input.stack = saved_input;
+        self.restore_scanner_diagnostic_state(saved_diagnostic_state);
+        self.end_occurred =
+            saved_end_occurred || (self.end_occurred && self.error_count > errors_before);
+        self.diagnostic_source_override = saved_source;
         self.pushed = saved;
-        if let Some(pid) = self.cs.lookup(b"protect") {
-            if let Some(Some(old)) = &protect_saved {
-                self.eqtb.assign(pid, old.clone(), false);
-            }
+        if let Some((pid, old)) = protect_saved {
+            self.eqtb.replace_equiv_temporarily(pid, old);
         }
         self.write_tokens_to_string(&out)
     }
 
     pub fn write_tokens_to_string(&self, toks: &[Token]) -> String {
-        let mut out = String::new();
+        let mut out = Vec::new();
         for t in toks {
             if t.is_cs() {
                 let name = self.cs.name(t.cs_id());
                 // Active-char placeholder ids (engine::active_cs_name):
                 // [0xFF,0,'A','C','T',0,c] — detokenize as the character
                 // byte c, not the internal name.
-                if name.len() == 7 && name[0] == 0xFF && &name[2..5] == b"ACT" && name[5] == 0 {
-                    out.push(name[6] as char);
+                if let [0xff, 0, b'A', b'C', b'T', 0, c] = name {
+                    out.push(*c);
                 } else {
-                    out.push('\\');
-                    out.push_str(&String::from_utf8_lossy(name));
-                    out.push(' ');
+                    out.push(b'\\');
+                    out.extend_from_slice(name);
+                    out.push(b' ');
                 }
             } else {
-                out.push(t.chr() as u8 as char);
+                out.push(t.chr() as u8);
             }
         }
-        out
+        String::from_utf8_lossy(&out).into_owned()
     }
 
     pub fn write_out(&mut self, n: i32, text: &str) {
         let line = format!("{}\n", text);
         match n {
-            -1 => { self.log.push_str(&line);
-                    if crate::debug_flag("DEFTRACE") {
-                        eprintln!("LOG: {}", text); } }
-            -2 => { self.term.push_str(&line); }
-            16 | 17 | 18 => { self.term.push_str(&line); self.log.push_str(&line); }
+            -1 => {
+                self.append_log(&line);
+            }
+            -2 => {
+                self.append_term(&line);
+            }
+            16 | 17 | 18 => {
+                self.append_term(&line);
+                self.append_log(&line);
+            }
             _ => {
                 let idx = (n as usize).min(self.write_streams.len() - 1);
                 match &mut self.write_streams[idx] {
@@ -357,8 +685,8 @@ impl Engine {
                         // directed to the log and the terminal. \typeout
                         // rides \write\@unused (stream 0, never opened), so
                         // this arm is what makes it visible.
-                        self.term.push_str(&line);
-                        self.log.push_str(&line);
+                        self.append_term(&line);
+                        self.append_log(&line);
                     }
                 }
             }
@@ -370,15 +698,46 @@ impl Engine {
     }
 
     pub fn do_message(&mut self, err: bool) {
+        let origin = self.current_token_source_mark();
         let toks = self.scan_general_text_expanded();
+        if self.stopped_on_error {
+            return;
+        }
         let text = self.write_tokens_to_string(&toks);
         if err {
-            // tex.web print_err → print_nl("! "): the error starts on a
-            // fresh line, never glued to unterminated "(file" output.
-            self.term_print_nl(&format!("! {}\n", text));
+            let text = normalize_errmessage(&text);
+            let previous = std::mem::replace(&mut self.diagnostic_use_err_help, true);
+            let previous_trace = if is_latex_style_error(&text) {
+                Some(std::mem::replace(
+                    &mut self.diagnostic_trace_override,
+                    Some(Vec::new()),
+                ))
+            } else {
+                None
+            };
+            self.error(&text);
+            if let Some(previous_trace) = previous_trace {
+                self.diagnostic_trace_override = previous_trace;
+            }
+            self.diagnostic_use_err_help = previous;
         } else {
-            self.term.push_str(&format!("{}\n", text));
-            self.log.push_str(&format!("{}\n", text));
+            let trimmed = text.trim_start();
+            if trimmed.starts_with("! LaTeX Error:") && trimmed.contains(" not found.") {
+                let named_source = latex_missing_file_name(trimmed).and_then(|name| {
+                    self.input.find_recent_text(name.as_bytes()).or_else(|| {
+                        std::path::Path::new(name)
+                            .file_stem()
+                            .and_then(|stem| stem.to_str())
+                            .and_then(|stem| self.input.find_recent_text(stem.as_bytes()))
+                    })
+                });
+                self.pending_terminal_error_source = named_source
+                    .as_ref()
+                    .or(origin.as_ref())
+                    .map(crate::input::SourceMark::to_context);
+            }
+            self.append_term(&text);
+            self.append_log(&text);
         }
     }
 
@@ -386,38 +745,57 @@ impl Engine {
         let n = self.scan_int();
         self.scan_optional_equals();
         let name = self.scan_file_name();
+        if !(0..=MAX_TEX_INPUT_STREAM).contains(&n) {
+            self.error(&format!(
+                "Bad input stream number {n} for \\openin (expected 0..={MAX_TEX_INPUT_STREAM})"
+            ));
+            return;
+        }
         while self.read_files.len() <= n as usize {
             self.read_files.push(None);
             self.read_eof.push(true);
         }
         // kpathsea/web2c lookup: output directory first for relative
         // names, then the kpse search path (covers literal paths too)
-        if crate::debug_flag("IFTRACE") {
-            eprintln!("OPENIN {} -> {:?}", name, self.resolve_input_path(&name));
-        }
-        let path = match self.resolve_input_path(&name) {
-            Some(p) => p,
-            None => {
-                self.read_files[n as usize] = None;
-                self.read_eof[n as usize] = true;
+
+        let path = self.resolve_input_path(&name);
+        if let Some(p) = path {
+            if let Ok(f) = std::fs::File::open(&p) {
+                self.read_files[n as usize] = Some(Box::new(std::io::BufReader::new(f)));
+                self.read_eof[n as usize] = false;
                 return;
             }
-        };
-        match std::fs::File::open(&path) {
-            Ok(f) => {
-                self.read_files[n as usize] = Some(std::io::BufReader::new(f));
+        }
+        // Fall back to embedded package archive
+        let clean_name = std::path::Path::new(&name)
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or(&name);
+        for cand in [
+            clean_name.to_string(),
+            format!("{clean_name}.tex"),
+            format!("{clean_name}.sty"),
+            format!("{clean_name}.cls"),
+        ] {
+            if let Some(data) = tex_kpse::get_embedded_package(&cand) {
+                self.read_files[n as usize] = Some(Box::new(std::io::Cursor::new(data)));
                 self.read_eof[n as usize] = false;
-            }
-            Err(_) => {
-                self.read_files[n as usize] = None;
-                self.read_eof[n as usize] = true;
+                return;
             }
         }
+        self.read_files[n as usize] = None;
+        self.read_eof[n as usize] = true;
     }
 
     pub fn do_closein(&mut self) {
         let n = self.scan_int();
-        let n = n.max(0) as usize;
+        if !(0..=MAX_TEX_INPUT_STREAM).contains(&n) {
+            self.error(&format!(
+                "Bad input stream number {n} for \\closein (expected 0..={MAX_TEX_INPUT_STREAM})"
+            ));
+            return;
+        }
+        let n = n as usize;
         while self.read_files.len() <= n {
             self.read_files.push(None);
             self.read_eof.push(true);
@@ -427,133 +805,223 @@ impl Engine {
     }
 
     pub fn do_read(&mut self, line_mode: bool) {
-        let n = self.scan_int();
-        self.scan_optional_equals();
-        // tex.web: keyword `to`, then the target cs. Spaces are ignored.
-        let mut t = self.raw_token();
-        while !t.is_cs() && t.cc() == 10 {
-            t = self.raw_token();
-        }
-        if !t.is_cs() && t.chr() == u32::from(b't') {
-            let mut o = self.raw_token();
-            while !o.is_cs() && o.cc() == 10 {
-                o = self.raw_token();
-            }
-            if o.is_cs() || o.chr() != u32::from(b'o') {
-                self.pushed.push(o);
-            }
-        } else {
-            self.pushed.push(t);
+        let origin = self.current_token_source_mark();
+        let global = self.take_global();
+        let stream = self.scan_int();
+        if !self.scan_keyword(b"to") {
+            self.error("Missing `to' inserted for \\read");
         }
         let cs = self.scan_definable_cs();
-        // tex.web: a negative stream number reads the TERMINAL, never the
-        // numeric stream 0 (which LaTeX keeps for \@inputcheck). The engine
-        // has no interactive terminal, so a terminal read is always at EOF;
-        // web2c treats that as fatal ("! Emergency stop.") instead of
-        // returning lines — LaTeX's \@missingfileerror retry loop depends on
-        // this to abort a missing-\input instead of spinning forever.
-        let is_terminal = n < 0;
-        let mut stream_eof = false;
-        let n = n.max(0) as usize;
-        while self.read_files.len() <= n {
-            self.read_files.push(None);
-            self.read_eof.push(true);
-        }
-        use std::io::BufRead;
-        let line: Option<String> = if is_terminal {
-            None
-        } else {
-            match &mut self.read_files[n] {
-            Some(reader) => {
-                let mut buf = String::new();
-                match reader.read_line(&mut buf) {
-                    Ok(0) | Err(_) => {
-                        self.read_eof[n] = true;
-                        stream_eof = true;
-                        None
-                    }
-                    Ok(_) => {
-                        if buf.ends_with('\n') {
-                            buf.pop();
-                        }
-                        if buf.ends_with('\r') {
-                            buf.pop();
-                        }
-                        Some(buf)
-                    }
+        if !(0..=MAX_TEX_INPUT_STREAM).contains(&stream) {
+            let pending = pending_latex_missing_file(&self.term)
+                .or_else(|| pending_latex_missing_file(&self.log));
+            if let Some((_, message)) = pending {
+                if let Some((start, _)) = pending_latex_missing_file(&self.term) {
+                    self.term.truncate(start);
                 }
-            }
-            None => {
-                self.read_eof[n] = true;
-                stream_eof = true;
-                None
-            }
-            }
-        };
-        let toks: Vec<Token> = match line {
-            Some(l) => {
-                if l.is_empty() && !line_mode {
-                    vec![Token::from_cs(self.cs.lookup(b"par").unwrap_or(0))]
-                } else {
-                    let mut toks = Vec::new();
-                    for b in l.bytes() {
-                        let cat = if line_mode {
-                            if b == b' ' { 10 } else { 12 }
-                        } else {
-                            self.eqtb.cat[b as usize]
-                        };
-                        toks.push(Token::char(cat, b as u32));
-                    }
-                    // tex.web \\read: endlinechar (usually ^^M cat 5) becomes a
-                    // space. expl3 \\ior_get + "#9 ~ \\q_stop" needs that space.
-                    if !line_mode {
-                        toks.push(Token::space());
-                    }
-                    toks
+                if let Some((start, _)) = pending_latex_missing_file(&self.log) {
+                    self.log.truncate(start);
                 }
-            }
-            None if is_terminal => {
-                // web2c: terminal read with exhausted input is fatal. Print
-                // like a real error (fresh line, current-line context) and
-                // abort the run; assigning the target an empty body keeps
-                // the \read assignment itself well-formed.
-                self.term_print_nl("! Emergency stop.\n");
-                if let Some(crate::input::Source::File { line_buf, line_no, .. }) = self.input.stack.last() {
-                    if let Some(buf) = line_buf {
-                        let text = String::from_utf8_lossy(buf);
-                        let text = text.trim_end_matches(['\n', '\r']);
-                        self.term.push_str(&format!("l.{} {}\n", line_no, text));
-                    }
-                }
-                self.error_count += 1;
-                self.end_occurred = true;
-                Vec::new()
-            }
-            None if stream_eof => Vec::new(),
-            None => vec![Token::from_cs(self.cs.lookup(b"par").unwrap_or(0))],
-        };
-        if line_mode || crate::debug_flag("IORTRACE") {
-            static RN: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-            if RN.fetch_add(1, std::sync::atomic::Ordering::Relaxed) < 4 {
-                eprintln!(
-                    "READLINE n={} mode={} cs=\\{} ntoks={} body=[{}]",
-                    n,
-                    line_mode,
-                    String::from_utf8_lossy(self.cs.name(cs)),
-                    toks.len(),
-                    self.tokens_to_string(&toks.iter().take(40).cloned().collect::<Vec<_>>())
+                let message_source = latex_missing_file_name(&message).and_then(|name| {
+                    self.input.find_recent_text(name.as_bytes()).or_else(|| {
+                        std::path::Path::new(name)
+                            .file_stem()
+                            .and_then(|stem| stem.to_str())
+                            .and_then(|stem| self.input.find_recent_text(stem.as_bytes()))
+                    })
+                });
+                let source = message_source
+                    .as_ref()
+                    .map(crate::input::SourceMark::to_context)
+                    .or_else(|| self.pending_terminal_error_source.take())
+                    .or_else(|| origin.as_ref().map(crate::input::SourceMark::to_context));
+                let saved_trace =
+                    std::mem::replace(&mut self.diagnostic_trace_override, Some(Vec::new()));
+                self.fatal_error_at(&message, source);
+                self.diagnostic_trace_override = saved_trace;
+            } else {
+                self.fatal_error_at(
+                    &format!("Terminal input is unavailable for \\read{stream}"),
+                    origin.as_ref().map(crate::input::SourceMark::to_context),
                 );
             }
+            return;
         }
-        let m = crate::eqtb::Macro { num_params: 0, params: Vec::new(), body: toks, prefix: Vec::new(), long: false, outer: false, protected: false };
-        self.eqtb.assign(cs, Equiv::Macro(std::rc::Rc::new(m)), self.global_flag);
-        self.global_flag = false;
+        let mut toks = Vec::new();
+        let mut balance = 0i32;
+        loop {
+            let mut line = Vec::new();
+            let read = if (0..16).contains(&stream) {
+                self.read_files
+                    .get_mut(stream as usize)
+                    .and_then(Option::as_mut)
+                    .map(|reader| {
+                        read_line_bounded(
+                            reader.as_mut(),
+                            &mut line,
+                            crate::input::MAX_TOKEN_LIST_TOKENS,
+                        )
+                    })
+            } else {
+                None
+            };
+            let Some(read) = read else {
+                self.fatal_error_at(
+                    &format!("Input stream {stream} is not open for \\read"),
+                    origin.as_ref().map(crate::input::SourceMark::to_context),
+                );
+                break;
+            };
+            let eof = match read {
+                Ok((false, _)) => true,
+                Ok((true, false)) => false,
+                Ok((_, true)) => {
+                    self.fatal_error_at(
+                        &format!(
+                            "TeX capacity exceeded, sorry [read line size={}]",
+                            crate::input::MAX_TOKEN_LIST_TOKENS
+                        ),
+                        origin.as_ref().map(crate::input::SourceMark::to_context),
+                    );
+                    self.clear_prefixes();
+                    return;
+                }
+                Err(error) => {
+                    self.error(&format!("Cannot read input stream: {error}"));
+                    true
+                }
+            };
+            if eof {
+                self.read_files[stream as usize] = None;
+                self.read_eof[stream as usize] = true;
+                if balance != 0 {
+                    self.error("File ended within \\read");
+                    break;
+                }
+            }
+            while matches!(line.last(), Some(b'\n' | b'\r' | b' ')) {
+                line.pop();
+            }
+            let endline = self.eqtb.int_params[crate::prim::IntParam::EndLineChar.idx() as usize];
+            if line_mode {
+                if (0..256).contains(&endline) {
+                    if line.len() >= crate::input::MAX_TOKEN_LIST_TOKENS {
+                        self.fatal_error_at(
+                            &format!(
+                                "TeX capacity exceeded, sorry [read token list size={}]",
+                                crate::input::MAX_TOKEN_LIST_TOKENS
+                            ),
+                            origin.as_ref().map(crate::input::SourceMark::to_context),
+                        );
+                        self.clear_prefixes();
+                        return;
+                    }
+                    line.push(endline as u8);
+                }
+                if toks.len().saturating_add(line.len()) > crate::input::MAX_TOKEN_LIST_TOKENS {
+                    self.fatal_error_at(
+                        &format!(
+                            "TeX capacity exceeded, sorry [read token list size={}]",
+                            crate::input::MAX_TOKEN_LIST_TOKENS
+                        ),
+                        origin.as_ref().map(crate::input::SourceMark::to_context),
+                    );
+                    self.clear_prefixes();
+                    return;
+                }
+                toks.extend(
+                    line.into_iter()
+                        .map(|b| Token::char(if b == b' ' { 10 } else { 12 }, u32::from(b))),
+                );
+            } else {
+                // Reuse the file tokenizer without exposing the surrounding
+                // input stack or its pending expansion tokens to this read.
+                if line.len() >= crate::input::MAX_TOKEN_LIST_TOKENS {
+                    self.fatal_error_at(
+                        &format!(
+                            "TeX capacity exceeded, sorry [read token list size={}]",
+                            crate::input::MAX_TOKEN_LIST_TOKENS
+                        ),
+                        origin.as_ref().map(crate::input::SourceMark::to_context),
+                    );
+                    self.clear_prefixes();
+                    return;
+                }
+                line.push(b'\n');
+                let diagnostic_state = self.scanner_diagnostic_state();
+                let outer = std::mem::replace(&mut self.input, crate::input::InputStack::new());
+                self.input.push_file("<read>".into(), line);
+                loop {
+                    let mut token = self.get_next_raw();
+                    if token == crate::input::EOF_MARKER {
+                        break;
+                    }
+                    if token == crate::input::PAR_END {
+                        token = Token::from_cs(self.partoken_id());
+                    }
+                    if token.is_char() {
+                        if token.cc() == 1 {
+                            balance += 1;
+                        }
+                        if token.cc() == 2 {
+                            balance -= 1;
+                        }
+                    }
+                    if balance < 0 {
+                        balance = 0;
+                        break;
+                    }
+                    if toks.len() >= crate::input::MAX_TOKEN_LIST_TOKENS {
+                        self.input = outer;
+                        self.restore_scanner_diagnostic_state(diagnostic_state);
+                        self.fatal_error_at(
+                            &format!(
+                                "TeX capacity exceeded, sorry [read token list size={}]",
+                                crate::input::MAX_TOKEN_LIST_TOKENS
+                            ),
+                            origin.as_ref().map(crate::input::SourceMark::to_context),
+                        );
+                        self.clear_prefixes();
+                        return;
+                    }
+                    toks.push(token);
+                }
+                self.input = outer;
+                self.restore_scanner_diagnostic_state(diagnostic_state);
+            }
+            if line_mode || balance == 0 || eof {
+                break;
+            }
+        }
+        let m = crate::eqtb::Macro {
+            replacement: Default::default(),
+            num_params: 0,
+            has_param_refs: false,
+            params: Vec::new(),
+            body: toks.into(),
+            prefix: Vec::new(),
+            long: false,
+            outer: false,
+            protected: false,
+        };
+        self.eqtb
+            .assign(cs, Equiv::Macro(std::rc::Rc::new(m)), global);
+        self.clear_prefixes();
     }
 
     pub fn scan_file_name(&mut self) -> String {
+        const MAX_FILE_NAME_BYTES: usize = 4096;
+        let mut origin = (self.input.current_file_line() != 0)
+            .then(|| self.current_token_source_mark())
+            .flatten();
         self.skip_spaces_relax();
         let mut name = Vec::new();
         let t = self.get_x_raw();
+        if origin.is_none() {
+            origin = self
+                .current_token_source_mark()
+                .or_else(|| self.input.current_source_mark());
+        }
         if t == crate::input::EOF_MARKER {
             return String::new();
         }
@@ -563,7 +1031,11 @@ impl Engine {
             loop {
                 let t2 = self.get_x_raw();
                 if t2 == crate::input::EOF_MARKER {
-                    break;
+                    self.fatal_error_at(
+                        "File ended while scanning a braced file name; add the missing }",
+                        origin.as_ref().map(crate::input::SourceMark::to_context),
+                    );
+                    return String::new();
                 }
                 if t2.is_char() {
                     if t2.cc() == 1 || t2.chr() == b'{' as u32 {
@@ -574,8 +1046,23 @@ impl Engine {
                             break;
                         }
                     }
+                    if name.len() == MAX_FILE_NAME_BYTES {
+                        self.fatal_error_at(
+                            "TeX capacity exceeded, sorry [file name exceeds 4096 bytes]",
+                            origin.as_ref().map(crate::input::SourceMark::to_context),
+                        );
+                        return String::new();
+                    }
                     name.push(t2.chr() as u8);
                 } else if t2.is_cs() {
+                    let additional = self.cs.name(t2.cs_id()).len();
+                    if additional > MAX_FILE_NAME_BYTES.saturating_sub(name.len()) {
+                        self.fatal_error_at(
+                            "TeX capacity exceeded, sorry [file name exceeds 4096 bytes]",
+                            origin.as_ref().map(crate::input::SourceMark::to_context),
+                        );
+                        return String::new();
+                    }
                     name.extend_from_slice(self.cs.name(t2.cs_id()));
                 }
             }
@@ -586,7 +1073,11 @@ impl Engine {
             loop {
                 let t2 = self.get_x_raw();
                 if t2 == crate::input::EOF_MARKER {
-                    break;
+                    self.fatal_error_at(
+                        "File ended while scanning a quoted file name; add the closing quote",
+                        origin.as_ref().map(crate::input::SourceMark::to_context),
+                    );
+                    return String::new();
                 }
                 if t2.is_char() && t2.chr() == b'"' as u32 {
                     // tex.web start_input: the one space following the closing
@@ -600,8 +1091,23 @@ impl Engine {
                     break;
                 }
                 if t2.is_char() {
+                    if name.len() == MAX_FILE_NAME_BYTES {
+                        self.fatal_error_at(
+                            "TeX capacity exceeded, sorry [file name exceeds 4096 bytes]",
+                            origin.as_ref().map(crate::input::SourceMark::to_context),
+                        );
+                        return String::new();
+                    }
                     name.push(t2.chr() as u8);
                 } else if t2.is_cs() {
+                    let additional = self.cs.name(t2.cs_id()).len();
+                    if additional > MAX_FILE_NAME_BYTES.saturating_sub(name.len()) {
+                        self.fatal_error_at(
+                            "TeX capacity exceeded, sorry [file name exceeds 4096 bytes]",
+                            origin.as_ref().map(crate::input::SourceMark::to_context),
+                        );
+                        return String::new();
+                    }
                     name.extend_from_slice(self.cs.name(t2.cs_id()));
                 }
             }
@@ -628,6 +1134,13 @@ impl Engine {
                 let c = cur.chr() as u8;
                 if c == b' ' || c == b'\t' || c == b'\r' || c == b'\n' {
                     break;
+                }
+                if name.len() == MAX_FILE_NAME_BYTES {
+                    self.fatal_error_at(
+                        "TeX capacity exceeded, sorry [file name exceeds 4096 bytes]",
+                        origin.as_ref().map(crate::input::SourceMark::to_context),
+                    );
+                    return String::new();
                 }
                 name.push(c);
             }
@@ -665,11 +1178,13 @@ impl Engine {
 
     pub fn do_advance(&mut self) {
         // \advance<quantity> by <int/dimen/glue>
+        let origin = self.current_token_source_mark();
+        let global = self.take_global();
         let loc = self.scan_quantity();
         self.scan_keyword(b"by");
         let v = match loc {
             QuantityLoc::Int(_) | QuantityLoc::Count(_) => Value::Int(self.scan_int()),
-            QuantityLoc::Dim(_) | QuantityLoc::Dimen(_) => Value::Dim(self.scan_dimen(false, false)),
+            QuantityLoc::Dim(_) | QuantityLoc::Dimen(_) => Value::Dim(self.scan_dimen(false, true)),
             QuantityLoc::Glue(_) | QuantityLoc::Skip(_) => Value::Glue(self.scan_glue(false)),
             QuantityLoc::MuSkip(_) => Value::Glue(self.scan_glue(true)),
             QuantityLoc::None => return,
@@ -677,47 +1192,64 @@ impl Engine {
         match loc {
             QuantityLoc::Int(p) => {
                 let cur = self.int_param_value(p);
-                self.eqtb.assign_int_param(p, cur.wrapping_add(v.as_int()), self.global_flag);
+                let Some(nv) = self.checked_advance(cur, v.as_int(), false, origin.as_ref()) else {
+                    return;
+                };
+                if p == crate::prim::IntParam::SpaceFactor {
+                    self.space_factor = nv;
+                } else {
+                    self.eqtb.assign_int_param(p, nv, global);
+                }
             }
             QuantityLoc::Count(i) => {
                 let cur = self.eqtb.count[i as usize];
-                self.eqtb.assign_count(i, cur.wrapping_add(v.as_int()), self.global_flag);
+                if let Some(value) = self.checked_advance(cur, v.as_int(), false, origin.as_ref()) {
+                    self.eqtb.assign_count(i, value, global);
+                }
             }
             QuantityLoc::Dim(p) => {
                 let cur = self.dim_param_value(p);
-                let nv = cur.wrapping_add(v.as_dim());
+                let Some(nv) = self.checked_advance(cur, v.as_dim(), true, origin.as_ref()) else {
+                    return;
+                };
                 if p == crate::prim::DimParam::PrevDepth {
                     self.prev_depth = nv;
                 } else {
-                    self.eqtb.assign_dim_param(p, nv, self.global_flag);
+                    self.eqtb.assign_dim_param(p, nv, global);
                 }
             }
             QuantityLoc::Dimen(i) => {
                 let cur = self.eqtb.dimen[i as usize];
-                self.eqtb.assign_dimen(i, cur.wrapping_add(v.as_dim()), self.global_flag);
+                if let Some(value) = self.checked_advance(cur, v.as_dim(), true, origin.as_ref()) {
+                    self.eqtb.assign_dimen(i, value, global);
+                }
             }
             QuantityLoc::Glue(p) => {
-                let mut cur = self.eqtb.glue_params[p.idx() as usize].clone();
-                cur = glue_plus(&cur, &v.as_glue());
-                self.eqtb.assign_glue_param(p, cur, self.global_flag);
+                let cur = self.eqtb.glue_params[p.idx() as usize].clone();
+                if let Some(value) = self.checked_glue_advance(&cur, &v.as_glue(), origin.as_ref()) {
+                    self.eqtb.assign_glue_param(p, value, global);
+                }
             }
             QuantityLoc::Skip(i) => {
-                let mut cur = self.eqtb.skip[i as usize].clone();
-                cur = glue_plus(&cur, &v.as_glue());
-                self.eqtb.assign_skip(i, cur, self.global_flag);
+                let cur = self.eqtb.skip[i as usize].clone();
+                if let Some(value) = self.checked_glue_advance(&cur, &v.as_glue(), origin.as_ref()) {
+                    self.eqtb.assign_skip(i, value, global);
+                }
             }
             QuantityLoc::MuSkip(i) => {
-                let mut cur = self.eqtb.muskip[i as usize].clone();
-                cur = glue_plus(&cur, &v.as_glue());
-                self.eqtb.assign_muskip(i, cur, self.global_flag);
+                let cur = self.eqtb.muskip[i as usize].clone();
+                if let Some(value) = self.checked_glue_advance(&cur, &v.as_glue(), origin.as_ref()) {
+                    self.eqtb.assign_muskip(i, value, global);
+                }
             }
             QuantityLoc::None => {}
         }
-        self.global_flag = false;
     }
 
     pub fn do_arith(&mut self, op: u8) {
         // \multiply / \divide
+        let origin = self.current_token_source_mark();
+        let global = self.take_global();
         let loc = self.scan_quantity();
         self.scan_keyword(b"by");
         let v = match loc {
@@ -729,96 +1261,213 @@ impl Engine {
         match loc {
             QuantityLoc::Int(p) => {
                 let cur = self.int_param_value(p);
-                self.eqtb.assign_int_param(p, self.arith(cur, n, op), self.global_flag);
+                if let Some(nv) = self.checked_arith(cur, n, op, origin.as_ref()) {
+                    if p == crate::prim::IntParam::SpaceFactor {
+                        self.space_factor = nv;
+                    } else {
+                        self.eqtb.assign_int_param(p, nv, global);
+                    }
+                }
             }
             QuantityLoc::Count(i) => {
                 let cur = self.eqtb.count[i as usize];
-                self.eqtb.assign_count(i, self.arith(cur, n, op), self.global_flag);
+                if let Some(value) = self.checked_arith(cur, n, op, origin.as_ref()) {
+                    self.eqtb.assign_count(i, value, global);
+                }
             }
             QuantityLoc::Dim(p) => {
                 let cur = self.dim_param_value(p);
-                let nv = self.arith(cur, n, op);
-                if p == crate::prim::DimParam::PrevDepth {
-                    self.prev_depth = nv;
-                } else {
-                    self.eqtb.assign_dim_param(p, nv, self.global_flag);
+                if let Some(nv) = self.checked_arith(cur, n, op, origin.as_ref()) {
+                    if p == crate::prim::DimParam::PrevDepth {
+                        self.prev_depth = nv;
+                    } else {
+                        self.eqtb.assign_dim_param(p, nv, global);
+                    }
                 }
             }
             QuantityLoc::Dimen(i) => {
                 let cur = self.eqtb.dimen[i as usize];
-                self.eqtb.assign_dimen(i, self.arith(cur, n, op), self.global_flag);
+                if let Some(value) = self.checked_arith(cur, n, op, origin.as_ref()) {
+                    self.eqtb.assign_dimen(i, value, global);
+                }
             }
             QuantityLoc::Glue(p) => {
                 let mut cur = self.eqtb.glue_params[p.idx() as usize].clone();
-                for x in [&mut cur.width, &mut cur.stretch, &mut cur.shrink] {
-                    *x = self.arith(*x, n, op);
-                }
-                self.eqtb.assign_glue_param(p, cur, self.global_flag);
+                let Some((width, stretch, shrink)) = self.checked_glue_arith(
+                    cur.width,
+                    cur.stretch,
+                    cur.shrink,
+                    n,
+                    op,
+                    origin.as_ref(),
+                ) else {
+                    return;
+                };
+                cur.width = width;
+                cur.stretch = stretch;
+                cur.shrink = shrink;
+                self.eqtb.assign_glue_param(p, cur, global);
             }
             QuantityLoc::Skip(i) => {
                 let mut cur = self.eqtb.skip[i as usize].clone();
-                for x in [&mut cur.width, &mut cur.stretch, &mut cur.shrink] {
-                    *x = self.arith(*x, n, op);
-                }
-                self.eqtb.assign_skip(i, cur, self.global_flag);
+                let Some((width, stretch, shrink)) = self.checked_glue_arith(
+                    cur.width,
+                    cur.stretch,
+                    cur.shrink,
+                    n,
+                    op,
+                    origin.as_ref(),
+                ) else {
+                    return;
+                };
+                cur.width = width;
+                cur.stretch = stretch;
+                cur.shrink = shrink;
+                self.eqtb.assign_skip(i, cur, global);
             }
             _ => {}
         }
-        self.global_flag = false;
     }
 
-    fn arith(&self, a: i32, b: i32, op: u8) -> i32 {
-        // tex.web: \\multiply/\\divide are integer ops, not scaled\\_mult
-        // (\\@settopoint does \\divide#1\\p@\\multiply#1\\p@).
-        match op {
-            1 => {
-                let v = a as i128 * b as i128;
-                v.clamp(i32::MIN as i128, i32::MAX as i128) as i32
-            }
-            _ => {
-                if b == 0 {
-                    0
-                } else {
-                    a / b
-                }
-            }
+    fn checked_advance(
+        &mut self,
+        current: i32,
+        increment: i32,
+        dimension: bool,
+        origin: Option<&crate::input::SourceMark>,
+    ) -> Option<i32> {
+        const MAX_DIMEN: i64 = 0x3FFF_FFFF;
+        let value = i64::from(current) + i64::from(increment);
+        if !(i64::from(i32::MIN)..=i64::from(i32::MAX)).contains(&value)
+            || (dimension && !(-MAX_DIMEN..=MAX_DIMEN).contains(&value))
+        {
+            self.error_at(
+                "Arithmetic overflow in \\advance; value left unchanged",
+                origin.map(crate::input::SourceMark::to_context),
+            );
+            None
+        } else {
+            Some(value as i32)
         }
+    }
+
+    fn checked_glue_advance(
+        &mut self,
+        current: &crate::boxes::Glue,
+        increment: &crate::boxes::Glue,
+        origin: Option<&crate::input::SourceMark>,
+    ) -> Option<crate::boxes::Glue> {
+        const MAX_DIMEN: i64 = 0x3FFF_FFFF;
+        let checked_sum = |left: i32, right: i32| {
+            let value = i64::from(left) + i64::from(right);
+            (-MAX_DIMEN..=MAX_DIMEN)
+                .contains(&value)
+                .then_some(value as i32)
+        };
+        let result = (|| {
+            let mut value = current.clone();
+            value.width = checked_sum(value.width, increment.width)?;
+            if value.stretch_order == increment.stretch_order {
+                value.stretch = checked_sum(value.stretch, increment.stretch)?;
+            } else if value.stretch_order < increment.stretch_order {
+                value.stretch = increment.stretch;
+                value.stretch_order = increment.stretch_order;
+            }
+            if value.shrink_order == increment.shrink_order {
+                value.shrink = checked_sum(value.shrink, increment.shrink)?;
+            } else if value.shrink_order < increment.shrink_order {
+                value.shrink = increment.shrink;
+                value.shrink_order = increment.shrink_order;
+            }
+            Some(value)
+        })();
+        if result.is_none() {
+            self.error_at(
+                "Arithmetic overflow in \\advance; value left unchanged",
+                origin.map(crate::input::SourceMark::to_context),
+            );
+        }
+        result
+    }
+
+    fn checked_glue_arith(
+        &mut self,
+        width: i32,
+        stretch: i32,
+        shrink: i32,
+        operand: i32,
+        op: u8,
+        origin: Option<&crate::input::SourceMark>,
+    ) -> Option<(i32, i32, i32)> {
+        Some((
+            self.checked_arith(width, operand, op, origin)?,
+            self.checked_arith(stretch, operand, op, origin)?,
+            self.checked_arith(shrink, operand, op, origin)?,
+        ))
+    }
+
+    fn checked_arith(
+        &mut self,
+        a: i32,
+        b: i32,
+        op: u8,
+        origin: Option<&crate::input::SourceMark>,
+    ) -> Option<i32> {
+        // TeX reports arithmetic faults and leaves the quantity unchanged.
+        // Silent saturation or division to zero can produce plausible but
+        // incorrect output, which is much harder to debug.
+        let result = if op == 1 {
+            a.checked_mul(b)
+        } else {
+            a.checked_div(b)
+        };
+        if result.is_none() {
+            let message = if op != 1 && b == 0 {
+                "Cannot divide by zero in \\divide; value left unchanged"
+            } else if op == 1 {
+                "Arithmetic overflow in \\multiply; value left unchanged"
+            } else {
+                "Arithmetic overflow in \\divide; value left unchanged"
+            };
+            self.error_at(message, origin.map(crate::input::SourceMark::to_context));
+        }
+        result
     }
 
     pub fn do_setbox(&mut self) {
         let idx = self.scan_reg_num();
         self.scan_optional_equals();
-        // <box spec>: \box<n> | \hbox.. | \vbox.. | \vtop.. | \copy<n> | \lastbox
         self.skip_spaces_relax();
-        let t = self.get_token();
+        let t = self.get_x_raw();
         if !t.is_cs() {
             self.pushed.push(t);
             self.error("Missing box for \\setbox");
             return;
         }
-        // l3 aliases (\tex_lastbox:D etc.) resolve to the same primitives;
-        // dispatch on meaning, fall back to raw name for \copy/\usebox.
-        if let Some(prim) = self.cur_prim {
+        let prim = match self.eqtb.resolve(t.cs_id()) {
+            Some(Equiv::Prim(p)) => Some(*p),
+            _ => None,
+        };
+        if let Some(prim) = prim {
             match prim {
                 Prim::Box => {
                     let n = self.scan_reg_num();
-                    let b = self.eqtb.boxed.get(n as usize).cloned().flatten();
-                    self.eqtb.assign_box(n, None, true);
-                    self.eqtb.assign_box(idx, b, self.global_flag);
-                    self.global_flag = false;
+                    let b = self.eqtb.take_box(n);
+                    let g = self.take_global();
+                    self.eqtb.assign_box(idx, b, g);
                     return;
                 }
                 Prim::Copy => {
                     let n = self.scan_reg_num();
                     let b = self.eqtb.boxed.get(n as usize).cloned().flatten();
-                    self.eqtb.assign_box(idx, b, self.global_flag);
-                    self.global_flag = false;
+                    let g = self.take_global();
+                    self.eqtb.assign_box(idx, b, g);
                     return;
                 }
                 Prim::LastBox => {
                     let b = self.take_last_box();
-                    self.eqtb.assign_box(idx, b, self.global_flag);
-                    self.global_flag = false;
+                    let g = self.take_global();
+                    self.eqtb.assign_box(idx, b, g);
                     return;
                 }
                 Prim::HBox | Prim::VBox | Prim::VTop | Prim::VCenter => {
@@ -833,12 +1482,12 @@ impl Engine {
                     return;
                 }
                 Prim::VSplit => {
+                    let g = self.take_global();
                     let (top, m, rest) = self.scan_vsplit();
                     if let Some(rest) = rest {
                         self.stash_vsplit_remainder(m, rest);
                     }
-                    self.eqtb.assign_box(idx, top, self.global_flag);
-                    self.global_flag = false;
+                    self.eqtb.assign_box(idx, top, g);
                     return;
                 }
                 _ => {}
@@ -848,9 +1497,9 @@ impl Engine {
         match self.cs.name(t.cs_id()) {
             b"box" => {
                 let n = self.scan_reg_num();
-                let b = self.eqtb.boxed[n as usize].take();
-                self.eqtb.assign_box(idx, b, self.global_flag);
-                self.global_flag = false;
+                let b = self.eqtb.take_box(n);
+                let g = self.take_global();
+                self.eqtb.assign_box(idx, b, g);
             }
             b"copy" => {
                 let n = self.scan_reg_num();
@@ -884,14 +1533,12 @@ impl Engine {
                 self.global_flag = false;
             }
             b"vsplit" => {
-                // \setbox<n>=\vsplit<m> to <dimen>: split box m; the top
-                // part lands in box n, the remainder returns to box m
+                let g = self.take_global();
                 let (top, m, rest) = self.scan_vsplit();
                 if let Some(rest) = rest {
                     self.stash_vsplit_remainder(m, rest);
                 }
-                self.eqtb.assign_box(idx, top, self.global_flag);
-                self.global_flag = false;
+                self.eqtb.assign_box(idx, top, g);
             }
             _ => {
                 self.pushed.push(t);
@@ -957,7 +1604,16 @@ impl Engine {
         if depth > 4 {
             return;
         }
-        if let Node::Box { kind, w, h, d, shift, list, .. } = b {
+        if let Node::Box {
+            kind,
+            w,
+            h,
+            d,
+            shift,
+            list,
+            ..
+        } = b
+        {
             let k = match kind {
                 0 => "\\hbox",
                 1 => "\\vbox",
@@ -988,11 +1644,26 @@ impl Engine {
             out.push_str("  ");
         }
         match n {
-            Node::Char { c, font } => out.push_str(&format!("the character {} (font {})\n", *c as char, font)),
+            Node::Char { c, font } => {
+                out.push_str(&format!("the character {} (font {})\n", *c as char, font))
+            }
             Node::Glue(g) => out.push_str(&format!("glue {}\n", self.glue_to_string(g))),
             Node::Kern(k) => out.push_str(&format!("kern {}\n", self.scaled_to_string(*k))),
+            // tex.web §4416: an explicit kern is shown with a space after
+            // the escape (`\kern 1.0`), an implicit one without (`\kern1.0`)
+            Node::ExplicitKern(k) => out.push_str(&format!("kern {}\n", self.scaled_to_string(*k))),
+            // pdftex §4302 prints margin kerns with their side annotated
+            Node::MarginKern { side, width, .. } => out.push_str(&format!(
+                "kern{} ({} margin)\n",
+                self.scaled_to_string(*width),
+                if *side == 0 { "left" } else { "right" }
+            )),
             Node::Penalty(p) => out.push_str(&format!("penalty {}\n", p)),
-            Node::Rule { width, height, depth } => out.push_str(&format!(
+            Node::Rule {
+                width,
+                height,
+                depth,
+            } => out.push_str(&format!(
                 "rule({}+{}x{})\n",
                 self.scaled_to_string(*width),
                 self.scaled_to_string(*height),
@@ -1070,4 +1741,25 @@ fn glue_plus(a: &crate::boxes::Glue, b: &crate::boxes::Glue) -> crate::boxes::Gl
     g
 }
 
-use crate::prim::{DimParam, GlueParam, IntParam};
+#[cfg(test)]
+mod tests {
+    use super::read_line_bounded;
+
+    #[test]
+    fn bounded_line_reader_drains_the_overflowing_line() {
+        let mut reader = std::io::Cursor::new(b"abcdef\nz\n");
+        let mut line = Vec::new();
+        assert_eq!(
+            read_line_bounded(&mut reader, &mut line, 3).unwrap(),
+            (true, true)
+        );
+        assert_eq!(line, b"abc");
+
+        line.clear();
+        assert_eq!(
+            read_line_bounded(&mut reader, &mut line, 3).unwrap(),
+            (true, false)
+        );
+        assert_eq!(line, b"z\n");
+    }
+}

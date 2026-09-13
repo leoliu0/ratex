@@ -19,7 +19,7 @@ use crate::engine::{Engine, Mode};
 use crate::eqtb::Equiv;
 use crate::prim::{DimParam, GlueParam, IntParam, Prim};
 use crate::scaled::ONE;
-use crate::tfm::{Font, FontId, TAG_EXT, TAG_LIST};
+use crate::tfm::{Font, FontId, TAG_EXT, TAG_LIG, TAG_LIST};
 use crate::token::Token;
 
 // ---------- style ladder (tex.web §689) ----------
@@ -112,6 +112,38 @@ pub const CL_CLOSE: u8 = 5;
 pub const CL_PUNCT: u8 = 6;
 pub const CL_INNER: u8 = 7;
 
+/// Finish a brace-delimited math field as tex.web §1198 does.
+///
+/// Braces around one scriptless Ord noad disappear; every other field stays
+/// an Ord whose nucleus is a sub-mlist. Keeping the singleton as a character
+/// is essential because `make_scripts` then uses its italic correction and
+/// skips the box-nucleus drop calculations.
+pub(crate) fn finish_math_group(mut inner: NodeList) -> Node {
+    if inner.len() == 1
+        && matches!(
+            inner.first(),
+            Some(Node::MathChar {
+                class: CL_ORD | 7,
+                ..
+            })
+        )
+    {
+        return inner.pop().unwrap();
+    }
+    let mut nucleus = Vec::with_capacity(inner.len() + 1);
+    nucleus.push(Node::MathChar {
+        fam: 255,
+        c: 0,
+        class: CL_ORD,
+    });
+    nucleus.extend(inner);
+    Node::Scripts {
+        nucleus,
+        sup: None,
+        sub: None,
+    }
+}
+
 /// tex.web §760 "magic" spacing string, rows = left class, cols = right class
 /// (ord op bin rel open close punct inner). Digits: 0 = none, 1 = thin in
 /// D/T only, 2 = thin, 3 = medium in D/T only, 4 = thick in D/T only,
@@ -181,10 +213,57 @@ pub fn delim_code_parts_pub(code: i32) -> (u8, u8, u8, u8) {
     delim_code_parts(code)
 }
 
+/// Record a limit_switch subtype on an operator noad's nucleus. The fam-255
+/// CL_OP marker char carries tex.web's noad subtype (0=normal, 1=limits,
+/// 2=no_limits). This helper runs only for an EXPLICIT directive, whose
+/// st must survive on an `OpLimits` node, where a missing marker otherwise
+/// reads as `normal` (`no_limits` is only the implicit state of a plain
+/// `Scripts` node — see `append_script`). A bare-char op nucleus therefore
+/// gains a marker for any recorded subtype; `normal` on a grouped nucleus
+/// keeps its existing marker. (A marker is never stripped down to nothing:
+/// a grouped mathop keeps its marker + content so build_op_box boxes it as
+/// a group, not a char nucleus.)
+fn set_limits_subtype(op: &mut NodeList, st: u8) {
+    if matches!(
+        op.first(),
+        Some(Node::MathChar {
+            fam: 255,
+            class: CL_OP,
+            ..
+        })
+    ) {
+        if let Some(Node::MathChar { c, .. }) = op.first_mut() {
+            *c = st;
+        }
+    } else if matches!(op.first(), Some(Node::MathChar { class: CL_OP, .. })) {
+        op.insert(
+            0,
+            Node::MathChar {
+                fam: 255,
+                c: st,
+                class: CL_OP,
+            },
+        );
+    }
+}
+
+/// math_limits request code (maincontrol: 0=\nolimits 1=\limits
+/// 2=\displaylimits) to tex.web op_noad subtype.
+#[inline]
+fn limits_req_to_subtype(v: u8) -> u8 {
+    match v {
+        0 => 2,
+        1 => 1,
+        _ => 0,
+    }
+}
+
 #[inline]
 fn pair_to_code(p: Option<(u8, u8)>) -> i32 {
     match p {
-        Some((f, c)) if c != 0 => ((f as i32) << 20) | ((c as i32) << 12) | ((f as i32) << 8) | (c as i32),
+        Some((f, c)) if c != 0 => {
+            ((f as i32) << 20) | ((c as i32) << 12) | ((f as i32) << 8) | (c as i32)
+        }
         _ => 0,
     }
 }
@@ -206,25 +285,18 @@ impl Engine {
 
     pub fn enter_math(&mut self, _display: bool) {
         let mut display = _display;
-        let trace = crate::debug_flag("MATHTRACE");
-        if !display {
+        if !display && self.mode == Mode::Horizontal {
             // tex.web §1134: a second math_shift promotes to display math.
             // The peek must be RAW: get_token processes \if conditionals
             // (tex.web get_next), so `$\ifmmode...` would evaluate \ifmmode
             // BEFORE mode=Math is set (getting false) and the skipped
             // branch's tokens would be consumed here
             let t = self.raw_token();
-            if trace {
-                eprintln!("ENTER-MATH mode={:?} peek={:?}", self.mode,
-                    if t.is_cs() { format!("cs{}", t.cs_id()) } else { format!("cc{}:{:#x}", t.cc(), t.chr()) });
-            }
             if t.is_char() && t.cc() == 3 {
                 display = true;
             } else if t != crate::input::EOF_MARKER {
                 self.pushed.push(t);
             }
-        } else if trace {
-            eprintln!("ENTER-MATH mode={:?} arg=display", self.mode);
         }
         if self.mode == Mode::DisplayMath {
             return;
@@ -239,16 +311,6 @@ impl Engine {
                 self.start_paragraph(true);
             }
             if self.mode == Mode::Horizontal {
-                if crate::debug_flag("DSKIP") {
-                    let desc: Vec<String> = self.cur_list.iter().take(4).map(|n| match n {
-                        Node::Box { w, h, d, .. } => format!("B(w{:.2} h{:.2} d{:.2})", *w as f64/65536.0, *h as f64/65536.0, *d as f64/65536.0),
-                        Node::Glue(g) => format!("G{:.2}", g.width as f64/65536.0),
-                        Node::Kern(k) | Node::ExplicitKern(k) => format!("K{:.2}", *k as f64/65536.0),
-                        Node::Penalty(p) => format!("P{}", p),
-                        _ => "?".into(),
-                    }).collect();
-                    eprintln!("DSKIP-HENTRY n={} pd={:.4} [{}]", self.cur_list.len(), self.prev_depth as f64/65536.0, desc.join(" "));
-                }
                 // yet) gives \predisplaysize = -max_dimen; otherwise the
                 // interrupted paragraph is broken and its final line is
                 // measured — before the end-of-paragraph reset clears
@@ -257,20 +319,19 @@ impl Engine {
                 // tex.web §21764: the interrupted paragraph's final widow
                 // penalty is \displaywidowpenalty, not \widowpenalty
                 if !was_empty {
-                    self.next_par_widow = Some(
-                        self.eqtb.int_params[IntParam::DisplayWidowPenalty.idx() as usize],
-                    );
+                    self.next_par_widow =
+                        Some(self.eqtb.int_params[IntParam::DisplayWidowPenalty.idx() as usize]);
                 }
-                let shape = std::mem::take(&mut self.par_shape);
+                let shape = self.par_shape.clone();
                 let hang = (
                     self.eqtb.dim_params[DimParam::HangIndent.idx() as usize] as i64,
                     self.eqtb.int_params[IntParam::HangAfter.idx() as usize] as i64,
                 );
                 self.in_display_init = true;
                 self.par_primitive();
-                if crate::debug_flag("DSKIP") { eprintln!("DSKIP-PAR pd_after_par={:.4} last_par_line={}", self.prev_depth as f64 / 65536.0, self.last_par_line.is_some()); }
+
                 self.in_display_init = false;
-                let prev_graf = self.prev_graf as i64;
+                let prev_graf = self.prev_graf() as i64;
                 let hsize = self.eqtb.dim_params[DimParam::HSize.idx() as usize] as i64;
                 // §1184: display width/indent from \parshape (1-based entry
                 // prev_graf+2, clamped to n) or \hangindent, else \hsize/0
@@ -280,8 +341,7 @@ impl Engine {
                     let e = shape[(k - 1) as usize];
                     (e.1 as i64, e.0 as i64) // engine stores (indent, width)
                 } else if hang.0 != 0
-                    && ((hang.1 >= 0 && prev_graf + 2 > hang.1)
-                        || (prev_graf + 1 < -hang.1))
+                    && ((hang.1 >= 0 && prev_graf + 2 > hang.1) || (prev_graf + 1 < -hang.1))
                 {
                     (hsize - hang.0.abs(), if hang.0 > 0 { hang.0 } else { 0 })
                 } else {
@@ -302,7 +362,6 @@ impl Engine {
                         None => -0x3FFF_FFFF,
                     }
                 };
-                if crate::debug_flag("DSKIP") { eprintln!("DSKIP-ENTER pds={} l={} s={} was_empty={} pd_before={:.4}", self.pre_display_size as f64/65536.0, self.pre_display_l as f64/65536.0, self.pre_display_s as f64/65536.0, was_empty, self.prev_depth as f64/65536.0); }
             } else {
                 // display entered from vertical mode: tex.web §1185 starts a
                 // new paragraph whose zero-depth \parindent box is appended
@@ -310,16 +369,13 @@ impl Engine {
                 // the interline glue above the display = baselineskip − h.
                 self.prev_depth = 0;
                 self.pre_display_size = -0x3FFF_FFFF;
-                self.pre_display_l =
-                    self.eqtb.dim_params[DimParam::HSize.idx() as usize] as i64;
+                self.pre_display_l = self.eqtb.dim_params[DimParam::HSize.idx() as usize] as i64;
                 self.pre_display_s = 0;
             }
             // tex.web push_math: the display math group level (exit_math /
             // \\endgroup pop it; dropping this push leaves one pop too many
-            if crate::debug_flag("DSKIP") {
-                eprintln!("ENTER-MATH-LEVEL before_push={} fn={} ln={}", self.eqtb.cur_level, self.input.current_file_name(), self.input.current_file_line());
-            }
-            self.eqtb.push_level(crate::eqtb::LevelType::Group);
+
+            self.push_group_level(crate::eqtb::LevelType::Group);
             self.eqtb.assign_dim_param(
                 crate::prim::DimParam::DisplayWidth,
                 self.pre_display_l as i32,
@@ -335,37 +391,49 @@ impl Engine {
                 self.pre_display_size as i32,
                 false,
             );
-            if crate::debug_flag("DSKIP") { eprintln!("DSKIP-WRITE field={} reg={}", self.pre_display_size as f64/65536.0, self.eqtb.dim_params[crate::prim::DimParam::PreDisplaySize.idx() as usize] as f64/65536.0); }
+
             // tex.web push_math: eq_word_define(cur_fam_code,-1) — \\fam is
             // -1 inside every math group, restored at group end
             self.eqtb
                 .assign_int_param(crate::prim::IntParam::CurFam, -1, false);
-            let page = std::mem::take(&mut self.page_list);
+            let outer_mode = self.mode;
             self.saved_lists.push((
-                self.mode,
+                outer_mode,
                 std::mem::take(&mut self.cur_list),
                 self.prev_depth,
                 self.space_factor,
+                self.prev_graf,
             ));
-            self.par_page_lists.push(page);
             self.mode = Mode::DisplayMath;
             self.math_style_stack.push(MathStyle::Display);
-            // tex.web init_math: \everydisplay (not \everymath) at display
-            // entry — setspace scales the display skips from there
-            let toks = (*self.eqtb.tok_params[crate::prim::ToksParam::EveryDisplay.idx() as usize]).clone();
+            // tex.web init_math: \everydisplay enters the input stack before
+            // build_page; an output routine fired below must preempt it.
+            let toks = (*self.eqtb.tok_params[crate::prim::ToksParam::EveryDisplay.idx() as usize])
+                .clone();
             if !toks.is_empty() {
                 self.push_tokens(toks);
             }
-            // tex.web §1145: if nest_ptr=1 then build_page
-            self.build_page();
+            // tex.web §1145: the interrupted paragraph reaches the outer page
+            // builder before the display material exists. This online ordering
+            // can fire a page that would otherwise absorb the later display.
+            if outer_mode == Mode::Vertical {
+                self.build_page();
+            }
+            // TeX's page/contribution list is global, not part of the semantic
+            // nest pushed for display math. Keep `page_list` live while the
+            // display runs so an output routine fired above can consume and
+            // rebuild its remainder. `par_page_lists` carries only the marker
+            // needed by the shared resume-after-display path.
+            self.par_page_lists.push(Vec::new());
         } else {
             self.saved_lists.push((
                 self.mode,
                 std::mem::take(&mut self.cur_list),
                 self.prev_depth,
                 self.space_factor,
+                self.prev_graf,
             ));
-            self.eqtb.push_level(crate::eqtb::LevelType::Group);
+            self.push_group_level(crate::eqtb::LevelType::Group);
             // tex.web push_math: eq_word_define(cur_fam_code,-1)
             self.eqtb
                 .assign_int_param(crate::prim::IntParam::CurFam, -1, false);
@@ -373,7 +441,6 @@ impl Engine {
             self.math_style_stack.push(MathStyle::Text);
         }
         self.math_lists.push(crate::boxes::NodeList::new());
-        self.left_delim = None;
         self.right_delim = None;
         self.math_limits = None;
         // tex.web: \everymath only for inline math (displays ran
@@ -387,6 +454,7 @@ impl Engine {
     /// current mlist as the formula; the tag collects into a fresh list
     /// until the closing display shift
     pub fn start_eq_no(&mut self, leqno: bool) {
+        self.flush_math_limits();
         let formula = self.math_lists.pop().unwrap_or_default();
         self.pending_display_formula = Some(formula);
         self.math_lists.push(crate::boxes::NodeList::new());
@@ -394,7 +462,8 @@ impl Engine {
     }
 
     fn run_everymath(&mut self) {
-        let toks = (*self.eqtb.tok_params[crate::prim::ToksParam::EveryMath.idx() as usize]).clone();
+        let toks =
+            (*self.eqtb.tok_params[crate::prim::ToksParam::EveryMath.idx() as usize]).clone();
         if !toks.is_empty() {
             self.push_tokens(toks);
         }
@@ -408,19 +477,18 @@ impl Engine {
                 self.pushed.push(t);
             }
         }
+        // a directive at the very end of the formula (`$\sum_0^1\limits$`)
+        // still switches the tail op noad before conversion
+        self.flush_math_limits();
         let mlist = self.math_lists.pop().unwrap_or_default();
         // tex.web after_math reads the display registers BEFORE unsave:
         // assignments made inside the display (setspace's \everydisplay
         // scales the display skips group-locally) must still apply
         let disp_regs = if was_display {
-            let g = |p: crate::prim::GlueParam| {
-                self.eqtb.glue_params[p.idx() as usize].clone()
-            };
+            let g = |p: crate::prim::GlueParam| self.eqtb.glue_params[p.idx() as usize].clone();
             let i = |p: crate::prim::IntParam| self.eqtb.int_params[p.idx() as usize];
             let ads = g(crate::prim::GlueParam::AboveDisplaySkip);
-            if crate::debug_flag("DSKIP") {
-                eprintln!("DSKIP-REGS pg={} lvl={} above={:.4}", self.pdf_doc.pages.len(), self.eqtb.cur_level, ads.width as f64/65536.0);
-            }
+
             Some((
                 ads,
                 g(crate::prim::GlueParam::BelowDisplaySkip),
@@ -432,14 +500,35 @@ impl Engine {
         } else {
             None
         };
+        let is_outer_horiz = self
+            .saved_lists
+            .last()
+            .map(|(m, ..)| *m == Mode::Horizontal)
+            .unwrap_or(false);
+        let inline_hlist = if !was_display {
+            Some(self.mlist_to_hlist_pen(&mlist, 2, is_outer_horiz))
+        } else {
+            None
+        };
         self.pop_group();
-        let (outer_mode, outer_list, pd, sf) = self.saved_lists.pop().unwrap_or((self.mode, std::mem::take(&mut self.cur_list), self.prev_depth, self.space_factor));
+        let (outer_mode, outer_list, pd, sf, pg) = self.saved_lists.pop().unwrap_or((
+            self.mode,
+            std::mem::take(&mut self.cur_list),
+            self.prev_depth,
+            self.space_factor,
+            self.prev_graf,
+        ));
+        self.prev_graf = pg;
         self.math_style_stack.pop();
         // leak guards: state set inside math must not escape it
-        self.left_delim = None;
         self.right_delim = None;
-        self.math_limits = None;
-        self.math_group_marks.clear();
+        while self
+            .math_group_marks
+            .last()
+            .is_some_and(|(depth, _)| *depth > self.math_lists.len())
+        {
+            self.math_group_marks.pop();
+        }
         self.mode = outer_mode;
         self.prev_depth = pd;
         self.space_factor = sf;
@@ -455,10 +544,10 @@ impl Engine {
             } else {
                 (mlist, None)
             };
-            self.finish_display_math(formula, tag, disp_regs.unwrap());
+            self.finish_display_math(formula, tag, disp_regs.unwrap(), outer_mode);
             return;
         }
-        let hlist = self.mlist_to_hlist_pen(&mlist, 2, self.mode == Mode::Horizontal);
+        let hlist = inline_hlist.unwrap();
         let ms = self.eqtb.dim_params[DimParam::MathSurround.idx() as usize];
         match self.mode {
             // tex.web §22461 (finish math in text): the converted nodes are
@@ -483,21 +572,108 @@ impl Engine {
         }
     }
 
-
     fn finish_display_math(
         &mut self,
         formula: NodeList,
         tag: Option<(NodeList, bool)>,
-        regs: (crate::boxes::Glue, crate::boxes::Glue, crate::boxes::Glue, crate::boxes::Glue, i32, i32),
+        regs: (
+            crate::boxes::Glue,
+            crate::boxes::Glue,
+            crate::boxes::Glue,
+            crate::boxes::Glue,
+            i32,
+            i32,
+        ),
+        outer_mode: Mode,
     ) {
         if let Some(mut page) = self.par_page_lists.pop() {
+            if outer_mode == Mode::Vertical {
+                // Recover the live global contribution list after any output
+                // routine that ran while the display was being scanned.
+                page = std::mem::take(&mut self.page_list);
+            }
+            if let Some(mut rows) = self.display_halign.take() {
+                // tex.web §16078 (finish_display_math with an alignment in
+                // |temp_head|): the alignment rows — already carrying their
+                // interline glue, including the glue before the first row
+                // computed from the outer vlist's prev_depth (seeded in
+                // finish_halign) — are spliced raw into the display vlist
+                // between \predisplaypenalty/\abovedisplayskip and
+                // \postdisplaypenalty/\belowdisplayskip. §16078 always uses
+                // the NORMAL display skips; the short pair is a
+                // formula-display optimization (§22578) and never applies
+                // to alignment displays. No centering/tag dance: amsmath
+                // typesets tags inside the rows themselves.
+                let (ads, bds, _, _, pre, post) = regs;
+                page.push(Node::Penalty(pre));
+                page.push(Node::Glue(ads));
+                // prev_depth after the display = the align's last row depth
+                // (tex.web append_to_vlist at the align level; exit_math's
+                // save-pop clobbers the value finish_halign computed)
+                if let Some(Node::Box { d, .. }) =
+                    rows.iter().rev().find(|n| matches!(n, Node::Box { .. }))
+                {
+                    self.prev_depth = *d;
+                }
+                if self.pre_display_s != 0 {
+                    for r in &mut rows {
+                        if let Node::Box { shift, .. } = r {
+                            *shift += self.pre_display_s as i32;
+                        }
+                    }
+                }
+                page.extend(rows);
+                page.push(Node::Penalty(post));
+                page.push(Node::Glue(bds));
+                if outer_mode == Mode::Vertical {
+                    self.page_list = page;
+                    let outer = std::mem::take(&mut self.page_list);
+                    self.saved_lists.push((
+                        Mode::Vertical,
+                        Vec::new(),
+                        self.prev_depth,
+                        self.space_factor,
+                        self.prev_graf,
+                    ));
+                    self.par_page_lists.push(outer);
+                    self.mode = Mode::Horizontal;
+                    self.cur_list = Vec::new();
+                    self.space_factor = 1000;
+                } else {
+                    self.cur_list.extend(page);
+                    let outer = std::mem::take(&mut self.cur_list);
+                    self.saved_lists.push((
+                        outer_mode,
+                        Vec::new(),
+                        self.prev_depth,
+                        self.space_factor,
+                        self.prev_graf,
+                    ));
+                    self.par_page_lists.push(outer);
+                    self.mode = Mode::Horizontal;
+                    self.cur_list = Vec::new();
+                    self.space_factor = 1000;
+                }
+                self.resume_after_display();
+                return;
+            }
             // tex.web §22504 (finish displayed math): z = \displaywidth,
             // s = \displayindent, b = the formula at natural width
             let z = self.pre_display_l;
             let s = self.pre_display_s;
             let fh = self.mlist_to_hlist_pen(&formula, 0, false);
-            let first_is_glue = matches!(fh.first(), Some(Node::Glue(_)));
-            let mut r0 = hpack(fh, None, HBOX, &self.eqtb);
+            // tex.web §22507: the display's hpack runs with adjust_tail
+            // non-null (§22507 `adjust_tail:=adjust_head`), so §12956-12957
+            // strips every ins/mark/adjust node out of the formula hlist;
+            // §22611 splices the migrated material into the vlist right
+            // after the display box. Without this, a \footnote inside
+            // \begin{equation} never reaches the page builder and LaTeX's
+            // \@makecol silently drops it (document2609.05162 p42).
+            let (mut r0, migrated) = crate::boxes::hpack_migrate(fh, None, HBOX, &self.eqtb);
+            let first_is_glue = matches!(
+                &r0.node,
+                Node::Box { list, .. } if matches!(list.first(), Some(Node::Glue(_)))
+            );
             let mut w = self.box_w(&r0.node) as i64;
             // the tag (text style, natural width); e = its width, e=0 means
             // "on a line by itself" (or absent)
@@ -519,14 +695,16 @@ impl Engine {
                 a = Some(ab);
             }
             // §22537 squeeze: if the formula + tag overflow the line, re-pack
-            // the formula to z-q when shrink/stretch allows; otherwise the
-            // tag drops to its own line (e := 0)
+            // the formula to z-q when shrink allows; tex.web tests
+            // `w-total_shrink[normal]+q<=z or total_shrink[fil/fill/filll]<>0`
+            // — shrink totals, NOT stretch (a stretched \hfill does not let
+            // an over-wide formula fit)
             if w + q > z {
                 let can_squeeze = e != 0
                     && (w - r0.shrink[0] + q <= z
-                        || r0.stretch[1] != 0
-                        || r0.stretch[2] != 0
-                        || r0.stretch[3] != 0);
+                        || r0.shrink[1] != 0
+                        || r0.shrink[2] != 0
+                        || r0.shrink[3] != 0);
                 if can_squeeze {
                     if let Node::Box { list, .. } = r0.node {
                         r0 = hpack(list, Some((z - q) as i32), HBOX, &self.eqtb);
@@ -551,35 +729,49 @@ impl Engine {
                     d = 0;
                 }
             }
-            // skip selection (§22578): normal skips unless there is clearance
-            // for the short pair (and never short with \leqno)
-            let is_short = d + s > self.pre_display_size && !leqno;
-            if crate::debug_flag("DSKIP") {
-                eprintln!("DSKIP pg={} d={} s={} pds={} z={} w={} e={} is_short={}", self.pdf_doc.pages.len(), d as f64/65536.0, s as f64/65536.0, self.pre_display_size as f64/65536.0, z as f64/65536.0, w as f64/65536.0, e as f64/65536.0, is_short);
-            }
+            // tex.web §22563: normal skips iff `(d+s<=pre_display_size) or l`
+            // (l = \leqno). The sentinel -max_dimen (head=tail: `\noindent$$`
+            // or a display following a display, §1148) therefore selects the
+            // SHORT skips — raw comparison reproduces this, exactly as the
+            // oracle shows (t6: consecutive $$ get \abovedisplayshortskip).
+            let is_short = !leqno && (s + d > self.pre_display_size);
+
             let (above, below) = if is_short {
                 (regs.2.clone(), regs.3.clone())
             } else {
                 (regs.0.clone(), regs.1.clone())
             };
-            let bs = self.eqtb.glue_params[crate::prim::GlueParam::BaselineSkip.idx() as usize].clone();
-            let lsk = self.eqtb.glue_params[crate::prim::GlueParam::LineSkip.idx() as usize].clone();
-            let lsl = self.eqtb.dim_params[crate::prim::DimParam::LineSkipLimit.idx() as usize] as i64;
+            let bs =
+                self.eqtb.glue_params[crate::prim::GlueParam::BaselineSkip.idx() as usize].clone();
+            let lsk =
+                self.eqtb.glue_params[crate::prim::GlueParam::LineSkip.idx() as usize].clone();
+            let lsl =
+                self.eqtb.dim_params[crate::prim::DimParam::LineSkipLimit.idx() as usize] as i64;
             // tex.web interline glue for a vlist box append (used for the
             // display line and for own-line tag boxes below)
+            // tex.web append_to_vlist: new_skip_param(baseline_skip_code)
+            // COPIES the parameter glue spec (stretch/shrink/orders and all)
+            // and only adjusts the width; below the limit it appends
+            // new_param_glue(line_skip_code) untouched. Glue is Copy, so
+            // clone the spec and overwrite `width`.
             let ilg = |prev_depth: i32, h: i64| -> Option<crate::boxes::Glue> {
-                if prev_depth <= -0x3FFF_FFFF {
+                if prev_depth <= -1000 * 65536 {
                     return None;
                 }
-                let mut g = bs.width as i64 - prev_depth as i64 - h;
-                if g < lsl {
-                    g = lsk.width as i64;
+                let d = bs.width as i64 - prev_depth as i64 - h;
+                if d < lsl {
+                    return Some(lsk);
                 }
-                Some(crate::boxes::Glue::new(g as i32))
+                let mut g = bs;
+                g.width = d as i32;
+                Some(g)
             };
             let pre = regs.4;
             let post = regs.5;
-            let mut g2 = below;
+            // §22601 `if g2>0`: TeX tests the glue-parameter CODE, so a
+            // user-set \belowdisplayskip=0pt still appends a (zero) glue
+            // node — only the "tag on its own line" case clears g2.
+            let mut g2 = Some(below);
             page.push(Node::Penalty(pre));
             if leqno && e == 0 {
                 // \leqno with the tag on its own line ABOVE the formula:
@@ -630,9 +822,6 @@ impl Engine {
                 _ => (0, 0),
             };
             if let Some(g) = ilg(self.prev_depth, lh) {
-                if crate::debug_flag("DSKIP") {
-                    eprintln!("DSKIP-ILG pd={:.4} lh={:.4} glue_w={:.4}", self.prev_depth as f64 / 65536.0, lh as f64 / 65536.0, g.width as f64 / 65536.0);
-                }
                 page.push(Node::Glue(g));
             }
             page.push(line);
@@ -658,16 +847,50 @@ impl Engine {
                     }
                     page.push(ab);
                     self.prev_depth = td as i32;
-                    g2 = crate::boxes::Glue::zero();
+                    g2 = None;
                 }
             }
+            // tex.web §22611-22613: `if t<>adjust_head then
+            // {migrating material comes after equation number}
+            // link(tail):=link(adjust_head); tail:=t' — the ins/mark/adjust
+            // material migrated out of the formula hlist joins the vlist
+            // after the display box (and after an own-line tag), ahead of
+            // \postdisplaypenalty. No interline glue, no prev_depth change:
+            // these nodes are appended raw to the tail.
+            page.extend(migrated);
             page.push(Node::Penalty(post));
-            if g2.width != 0 || g2.stretch != 0 || g2.shrink != 0 {
-                page.push(Node::Glue(g2));
+            if let Some(g) = g2 {
+                page.push(Node::Glue(g));
             }
-            self.page_list = page;
-            self.mode = Mode::Vertical;
-            self.cur_list = Vec::new();
+            if outer_mode == Mode::Vertical {
+                self.page_list = page;
+                let outer = std::mem::take(&mut self.page_list);
+                self.saved_lists.push((
+                    Mode::Vertical,
+                    Vec::new(),
+                    self.prev_depth,
+                    self.space_factor,
+                    self.prev_graf,
+                ));
+                self.par_page_lists.push(outer);
+                self.mode = Mode::Horizontal;
+                self.cur_list = Vec::new();
+                self.space_factor = 1000;
+            } else {
+                self.cur_list.extend(page);
+                let outer = std::mem::take(&mut self.cur_list);
+                self.saved_lists.push((
+                    outer_mode,
+                    Vec::new(),
+                    self.prev_depth,
+                    self.space_factor,
+                    self.prev_graf,
+                ));
+                self.par_page_lists.push(outer);
+                self.mode = Mode::Horizontal;
+                self.cur_list = Vec::new();
+                self.space_factor = 1000;
+            }
             // tex.web finish_display does NOT run build_page: the display
             // nodes stay on the vlist (visible to \lastskip — LaTeX's
             // theorem \addpenalty/\@xaddvskip dances read them) until the
@@ -676,19 +899,32 @@ impl Engine {
         // tex.web resume_after_display (§1194): any text following the
         // display resumes hmode directly — start_paragraph must not treat
         // it as a new paragraph (\parskip/\parindent/\everypar skipped)
-        self.resume_after_display = true;
+        self.resume_after_display();
     }
 
     /// tex.web §1181 ("Calculate the natural width, w"): \predisplaysize is
     /// `shift + 2em(cur font)` plus the natural width of the final line up
-    /// to and including its last *visible* node (chars, ligs, boxes, rules,
-    /// leaders). A kern/math-kern accumulates width without being visible;
-    /// a glue whose stretch or shrink is *active* in the set line (same
-    /// order as the box's glue sign) voids the remainder → max_dimen, which
-    /// makes the display use the full skips.
+    /// to and including its last *visible* node (chars, ligs, hlists/vlists,
+    /// rules, leaders). Kerns, math-nodes (mathsurround markers), margin
+    /// kerns and pdf-ref whatsits accumulate width without being visible
+    /// (§1184: `kern_node,math_node: d:=width(p)`; pdftex:
+    /// `margin_kern_node`, `pdf_refximage/refxform` widths). A glue whose
+    /// stretch or shrink order matches the line's *active* order (and is
+    /// nonzero) voids the remainder → max_dimen: TeX reads only *natural*
+    /// widths here — §1186 warns that glue_set rounding is
+    /// system-dependent and "must not infiltrate parameters like
+    /// |pre_display_size|" — which is exactly why the active-order glue
+    /// voids instead of being scaled.
     fn pre_display_size_of(&self, line: &Node) -> i64 {
         const MAX_DIM: i64 = 0x3FFF_FFFF;
-        let Node::Box { list, shift, glue_sign, glue_order, .. } = line else {
+        let Node::Box {
+            list,
+            shift,
+            glue_sign,
+            glue_order,
+            ..
+        } = line
+        else {
             return -MAX_DIM;
         };
         let quad = self
@@ -697,13 +933,8 @@ impl Engine {
             .get(self.eqtb.cur_font_val as usize)
             .map(|f| f.quad() as i64)
             .unwrap_or(0);
-        let mut v = *shift as i64 + 2 * quad;
-        if crate::debug_flag("DSKIP") { eprintln!("DSKIP-PDS shift={} quad={} v0={}", *shift as f64/65536.0, quad as f64/65536.0, v as f64/65536.0); }
+        let mut v = *shift as i64;
         let mut w: i64 = -MAX_DIM;
-        let voids = |g: &Glue| -> bool {
-            (*glue_sign == 1 && g.stretch != 0 && g.stretch_order as u8 == *glue_order)
-                || (*glue_sign == 2 && g.shrink != 0 && g.shrink_order as u8 == *glue_order)
-        };
         for node in list {
             let (d, visible): (i64, bool) = match node {
                 Node::Char { c, font } => (
@@ -715,18 +946,35 @@ impl Engine {
                     true,
                 ),
                 Node::Ligature { lig_width, .. } => (*lig_width as i64, true),
-                Node::Box { w, .. } | Node::Rule { width: w, .. } => (*w as i64, true),
-                Node::Kern(k) | Node::ExplicitKern(k) | Node::MathKern(k, _) => {
-                    (*k as i64, false)
-                }
+                // §1184: hlist_node,vlist_node,rule_node: d:=width(p); goto found
+                Node::Box { w, .. } => (*w as i64, true),
+                Node::Rule { width, .. } => (*width as i64, true),
+                // §1184: kern_node,math_node: d:=width(p) — invisible width
+                Node::Kern(k) | Node::ExplicitKern(k) => (*k as i64, false),
+                Node::MathKern(k, _) => (*k as i64, false),
+                // pdftex §30662: margin_kern_node: d:=width(p)
+                Node::MarginKern { width, .. } => (*width as i64, false),
+                // pdftex §36000: whatsit width only for pdf_ref{image,form}
+                Node::Whatsit(crate::boxes::WhatIt::PdfRefXImage { w, .. })
+                | Node::Whatsit(crate::boxes::WhatIt::PdfRefXForm { w, .. }) => (*w as i64, false),
                 Node::Glue(g) => {
-                    if voids(g) {
+                    if (*glue_sign == 1 && g.stretch_order as u8 == *glue_order && g.stretch != 0)
+                        || (*glue_sign == 2 && g.shrink_order as u8 == *glue_order && g.shrink != 0)
+                    {
                         v = MAX_DIM;
                     }
                     (g.width as i64, false)
                 }
                 Node::Leaders { glue, .. } => {
-                    if voids(glue) {
+                    // §1192: leaders take the same active-glue test, then
+                    // `goto found` (visible)
+                    if (*glue_sign == 1
+                        && glue.stretch_order as u8 == *glue_order
+                        && glue.stretch != 0)
+                        || (*glue_sign == 2
+                            && glue.shrink_order as u8 == *glue_order
+                            && glue.shrink != 0)
+                    {
                         v = MAX_DIM;
                     }
                     (glue.width as i64, true)
@@ -734,12 +982,11 @@ impl Engine {
                 _ => (0, false),
             };
             if visible {
-                if v < MAX_DIM {
-                    v += d;
-                    w = v;
-                } else {
+                if v >= MAX_DIM {
                     w = MAX_DIM;
-                    break;
+                } else {
+                    v += d;
+                    w = v + 2 * quad;
                 }
             } else if v < MAX_DIM {
                 v += d;
@@ -749,17 +996,11 @@ impl Engine {
     }
 
     pub fn append_mlist_node(&mut self, n: Node) {
-        if crate::debug_flag("MDUMP") {
-            match &n {
-                Node::Scripts { nucleus, sup, sub } => eprintln!("MDUMP SCR nuc={:?} sup={} sub={}", nucleus.iter().map(|x| format!("{:?}", x)).collect::<Vec<_>>().join(","), sup.is_some(), sub.is_some()),
-                Node::MathChar { .. } | Node::DelimBox { .. } => eprintln!("MDUMP {:?}", n),
-                _ => {}
-            }
-        }
-        // tex.web math_limit_switch: a \limits request lives on the op noad
-        // that preceded it, never on a later atom — any new noad appended
-        // invalidates the pending request (append_script takes it first).
-        self.math_limits = None;
+        // tex.web math_limit_switch applies IMMEDIATELY to the op noad at
+        // the mlist tail (`\sum_0^1\limits`); append_script consumed its own
+        // request earlier. A pending switch with a non-operator tail is
+        // dropped like TeX's misplaced switch.
+        self.flush_math_limits();
         if let Some(l) = self.math_lists.last_mut() {
             l.push(n);
         } else {
@@ -783,47 +1024,54 @@ impl Engine {
         self.append_mlist_node(Node::MathChar { fam, c, class });
     }
 
-
     pub fn style_font(&self, fam: u8) -> u16 {
         let g = gstyle_of(self.cur_math_style());
         self.eqtb.style_fonts[font_size(g)][fam as usize]
     }
 
     pub fn cur_math_style(&self) -> MathStyle {
-        self.math_style_stack.last().copied().unwrap_or(MathStyle::Text)
+        self.math_style_stack
+            .last()
+            .copied()
+            .unwrap_or(MathStyle::Text)
     }
 
-    pub fn push_math_group(&mut self) {
-        self.math_lists.push(crate::boxes::NodeList::new());
+    pub fn push_math_group(&mut self, left: i32) {
+        // tex.web math_limit_switch fires at scan time: a directive before
+        // `\left` belongs to the noad OUTSIDE the new group list
+        self.flush_math_limits();
         self.saved_lists.push((
             self.mode,
             std::mem::take(&mut self.cur_list),
             self.prev_depth,
             self.space_factor,
+            self.prev_graf,
         ));
-        self.eqtb.push_level(crate::eqtb::LevelType::Group);
+        self.push_group_level(crate::eqtb::LevelType::Group);
+        self.math_lists.push(vec![delim_marker(left, 0)]);
     }
 
     /// `\right` end of a `\left...\right` group: the inner *raw* math list is
     /// spliced into the enclosing math list, bracketed by boundary markers.
     /// Conversion (including delimiter sizing) happens in one pass later.
     pub fn pop_math_group_delimited(&mut self, right_delim: i32) {
+        self.flush_math_limits();
         let inner = self.math_lists.pop().unwrap_or_default();
         self.pop_group();
-        let (outer_mode, outer_list, pd, sf) = self.saved_lists.pop().unwrap_or((
+        let (outer_mode, outer_list, pd, sf, pg) = self.saved_lists.pop().unwrap_or((
             self.mode,
             std::mem::take(&mut self.cur_list),
             self.prev_depth,
             self.space_factor,
+            self.prev_graf,
         ));
-        let ld = self.left_delim.take().unwrap_or(0);
+        self.prev_graf = pg;
         self.mode = outer_mode;
         self.prev_depth = pd;
         self.space_factor = sf;
         self.cur_list = outer_list;
         match self.math_lists.last_mut() {
             Some(l) => {
-                l.push(delim_marker(ld, 0));
                 l.extend(inner);
                 l.push(delim_marker(right_delim, 1));
             }
@@ -838,11 +1086,13 @@ impl Engine {
     /// `^` / `_`: scan the following group-or-token and attach it to the last
     /// atom of the current math list (tex.web "scripts on the tail noad").
     pub fn append_script(&mut self, sup: bool, _c: u8) {
-        if crate::debug_flag("MDUMP") { eprintln!("MDUMP append_script sup={}", sup); }
         let limits_req = self.math_limits.take();
         let group = self.scan_math_group_or_token();
         let popped = if let Some(l) = self.math_lists.last_mut() {
-            if l.iter().rev().take(4).all(|n| matches!(n, Node::ChoiceAlt { .. }))
+            if l.iter()
+                .rev()
+                .take(4)
+                .all(|n| matches!(n, Node::ChoiceAlt { .. }))
                 && l.len() >= 5
                 && matches!(l[l.len() - 5], Node::Choice)
             {
@@ -851,105 +1101,281 @@ impl Engine {
                     choice_nodes.push(l.pop().unwrap());
                 }
                 choice_nodes.reverse();
-                Some(Node::Scripts { nucleus: choice_nodes, sup: None, sub: None })
+                Some(Node::Scripts {
+                    nucleus: choice_nodes,
+                    sup: None,
+                    sub: None,
+                })
             } else {
                 l.pop()
             }
         } else {
             None
         };
-        if crate::debug_flag("MDUMP") { eprintln!("MDUMP popped={} limits_req={:?}", popped.as_ref().map(|p| format!("{:?}", std::mem::discriminant(p))).unwrap_or_else(|| "EMPTY".into()), limits_req); }
+
         let top = match popped {
             Some(node) => node,
-            None => Node::Scripts { nucleus: Vec::new(), sup: None, sub: None },
+            None => Node::Scripts {
+                nucleus: Vec::new(),
+                sup: None,
+                sub: None,
+            },
         };
         match top {
-            Node::Scripts { mut nucleus, sup: s, sub: x } => {
+            Node::Scripts {
+                mut nucleus,
+                sup: s,
+                sub: x,
+            } => {
                 // a `\mathop{...}` group atom is stored as a null-MathChar-
                 // prefixed Scripts node. tex.web keeps the limits subtype ON
                 // THE NOAD, so a later second script must see the first
                 // script's \limits/\nolimits request: encode the subtype in
                 // the (invisible) fam255 prefix char's c field — 0=normal,
                 // 1=limits, 2=no_limits (tex.web subtypes).
-                let head_is_op = matches!(nucleus.first(), Some(Node::MathChar { class: CL_OP, .. }));
+                let head_is_op =
+                    matches!(nucleus.first(), Some(Node::MathChar { class: CL_OP, .. }));
+                // A standard operator that is already a Scripts node was
+                // deliberately given side scripts when its first script was
+                // attached (in display style this is how \nolimits survives).
+                // Keep that decision for the second script. Grouped \mathop
+                // atoms carry TeX's noad subtype in their fam-255 marker.
                 let mut sub_type = match nucleus.first() {
-                    Some(Node::MathChar { fam: 255, c, class: CL_OP }) => *c,
+                    // c encodes tex.web subtype: 0=normal, 1=limits, 2=no_limits
+                    Some(Node::MathChar {
+                        fam: 255,
+                        c,
+                        class: CL_OP,
+                    }) => *c,
+                    Some(Node::MathChar { class: CL_OP, .. }) => 2,
                     _ => 0,
                 };
-                if sub_type == 0 {
-                    match limits_req {
-                        Some(0) => sub_type = 2,
-                        Some(1) => sub_type = 1,
-                        _ => {}
-                    }
+                // A limits directive between the two scripts changes the
+                // subtype of the same noad; it overrides the stored choice.
+                match limits_req {
+                    Some(0) => sub_type = 2,
+                    Some(1) => sub_type = 1,
+                    Some(2) => sub_type = 0,
+                    _ => {}
                 }
-                if head_is_op {
-                    if let Some(Node::MathChar { fam: 255, c, .. }) = nucleus.get_mut(0) {
-                        if *c == 0 {
-                            *c = sub_type;
-                        }
-                    }
+                if let Some(Node::MathChar {
+                    fam: 255,
+                    c,
+                    class: CL_OP,
+                }) = nucleus.get_mut(0)
+                {
+                    *c = sub_type;
                 }
-                let use_limits = match sub_type {
-                    1 => head_is_op,
-                    2 => false,
-                    _ => head_is_op && gstyle_of(self.cur_math_style()) < 2,
-                };
-                if use_limits {
-                    let (na, nb) = if sup { (Some(group), x) } else { (s, Some(group)) };
-                    self.append_mlist_node(Node::OpLimits { op: nucleus, above: na, below: nb });
+                // tex.web make_op: a forced `limits` subtype is honored in
+                // EVERY style; `normal` defers to conversion time where the
+                // actual (possibly nested) style is known; `no_limits` pins
+                // side scripts. A bare-char op nucleus has no marker yet —
+                // a forced \limits attaches one so convert_atom can see it
+                // (stripping it would turn the grouped mathop payload into
+                // an ambiguous char nucleus).
+                let use_limits_node = head_is_op && sub_type != 2;
+                if use_limits_node {
+                    if sub_type == 1
+                        && !matches!(nucleus.first(), Some(Node::MathChar { fam: 255, .. }))
+                    {
+                        nucleus.insert(
+                            0,
+                            Node::MathChar {
+                                fam: 255,
+                                c: 1,
+                                class: CL_OP,
+                            },
+                        );
+                    }
+                    let (na, nb) = if sup {
+                        (Some(group), x)
+                    } else {
+                        (s, Some(group))
+                    };
+                    self.append_mlist_node(Node::OpLimits {
+                        op: nucleus,
+                        above: na,
+                        below: nb,
+                    });
                 } else {
-                    let (ns, nx) = if sup { (Some(group), x) } else { (s, Some(group)) };
-                    self.append_mlist_node(Node::Scripts { nucleus, sup: ns, sub: nx });
+                    let (ns, nx) = if sup {
+                        (Some(group), x)
+                    } else {
+                        (s, Some(group))
+                    };
+                    self.append_mlist_node(Node::Scripts {
+                        nucleus,
+                        sup: ns,
+                        sub: nx,
+                    });
                 }
             }
-            Node::OpLimits { op, above, below } => {
-                let (na, nb) = if sup { (Some(group), below) } else { (above, Some(group)) };
-                self.append_mlist_node(Node::OpLimits { op, above: na, below: nb });
+            Node::OpLimits {
+                mut op,
+                above,
+                below,
+            } => {
+                // tex.web math_limit_switch writes subtype(tail) whenever the
+                // tail noad is an op_noad — including between the noad's two
+                // scripts. Re-record the request on the noad's marker.
+                if let Some(v) = limits_req {
+                    set_limits_subtype(&mut op, limits_req_to_subtype(v));
+                }
+                let (na, nb) = if sup {
+                    (Some(group), below)
+                } else {
+                    (above, Some(group))
+                };
+                self.append_mlist_node(Node::OpLimits {
+                    op,
+                    above: na,
+                    below: nb,
+                });
             }
             atom => {
-                let use_limits = self.script_wants_limits(limits_req, &atom);
-                let (sup_g, sub_g) = if sup { (Some(group), None) } else { (None, Some(group)) };
-                if use_limits {
-                    self.append_mlist_node(Node::OpLimits { op: vec![atom], above: sup_g, below: sub_g });
+                let is_op = matches!(atom, Node::MathChar { class: CL_OP, .. });
+                // tex.web math_limit_switch: only an op_noad tail takes the
+                // switch; a misplaced \limits on an ord atom is ignored.
+                let req = limits_req.filter(|_| is_op);
+                // A default op (or explicit \displaylimits) stays `normal`:
+                // OpLimits defers the choice to convert_atom's actual-style
+                // test, so nested styles select correctly.
+                let use_limits_node = match req {
+                    Some(0) => false,
+                    Some(1) | Some(2) | None => is_op,
+                    _ => false,
+                };
+                let (sup_g, sub_g) = if sup {
+                    (Some(group), None)
                 } else {
-                    self.append_mlist_node(Node::Scripts { nucleus: vec![atom], sup: sup_g, sub: sub_g });
+                    (None, Some(group))
+                };
+                if use_limits_node {
+                    let mut op = vec![atom];
+                    if req == Some(1) {
+                        op.insert(
+                            0,
+                            Node::MathChar {
+                                fam: 255,
+                                c: 1,
+                                class: CL_OP,
+                            },
+                        );
+                    }
+                    self.append_mlist_node(Node::OpLimits {
+                        op,
+                        above: sup_g,
+                        below: sub_g,
+                    });
+                } else {
+                    self.append_mlist_node(Node::Scripts {
+                        nucleus: vec![atom],
+                        sup: sup_g,
+                        sub: sub_g,
+                    });
                 }
             }
         }
     }
 
-    /// Decide whether a scripts pair on `atom` becomes a limits construction.
-    /// `req`: Some(0)=\nolimits, Some(1)=\limits, Some(2)=\displaylimits,
-    /// None=default (large operator in display styles gets limits; tex.web
-    /// make_op: `(subtype(q)=normal) and (cur_style<text_style)`).
-    fn script_wants_limits(&self, req: Option<u8>, atom: &Node) -> bool {
-        let is_op = match atom {
-            Node::MathChar { class, .. } => *class == CL_OP,
-            Node::Scripts { nucleus, .. } => match nucleus.first() {
-                Some(Node::MathChar { class, .. }) => *class == CL_OP,
-                _ => false,
-            },
-            Node::DelimBox { size: 2, .. } => true,
-            _ => false,
+    /// tex.web `math_limit_switch` at scan time: `subtype(tail) := request`
+    /// whenever the mlist tail is an op noad. A directive that is NOT
+    /// followed by a script (`\sum_0^1\limits`, `\sum\limits x`, or a
+    /// trailing `$\sum_0^1\limits$`) still rewrites the noad that precedes
+    /// it; a switch on a non-operator tail is dropped like TeX's misplaced
+    /// `\limits` (which errors — error parity is the engine's concern).
+    ///
+    /// The op noad's subtype lives on its fam-255 CL_OP nucleus marker
+    /// (see `set_limits_subtype`), so a Scripts node whose scripts must
+    /// now be forced is rewritten into an `OpLimits` node: that is exactly
+    /// the shape `append_script` builds for a first forced script.
+    fn flush_math_limits(&mut self) {
+        let Some(req) = self.math_limits.take() else {
+            return;
         };
-        match req {
-            Some(0) => false,
-            Some(1) => true,
-            Some(2) => {
-                let g = gstyle_of(self.cur_math_style());
-                g < 2
+        let st = limits_req_to_subtype(req);
+        let Some(l) = self.math_lists.last_mut() else {
+            return;
+        };
+        let Some(tail) = l.last_mut() else { return };
+        match std::mem::replace(tail, Node::Empty) {
+            Node::Scripts {
+                mut nucleus,
+                sup,
+                sub,
+            } => {
+                let head_op = matches!(nucleus.first(), Some(Node::MathChar { class: CL_OP, .. }));
+                if !head_op {
+                    *tail = Node::Scripts { nucleus, sup, sub };
+                    return;
+                }
+                if st == 2 {
+                    // `no_limits` is the natural state of a Scripts node;
+                    // a grouped op keeps its marker in sync, but inserting
+                    // one on a bare char would route make_scripts through
+                    // the boxed-group arm and lose the char nucleus.
+                    if let Some(Node::MathChar {
+                        fam: 255,
+                        c,
+                        class: CL_OP,
+                    }) = nucleus.first_mut()
+                    {
+                        *c = 2;
+                    }
+                    *tail = Node::Scripts { nucleus, sup, sub };
+                    return;
+                }
+                set_limits_subtype(&mut nucleus, st);
+                if sup.is_some() || sub.is_some() {
+                    *tail = Node::OpLimits {
+                        op: nucleus,
+                        above: sup,
+                        below: sub,
+                    };
+                } else {
+                    *tail = Node::Scripts { nucleus, sup, sub };
+                }
             }
-            _ => {
-                let g = gstyle_of(self.cur_math_style());
-                is_op && g < 2
+            Node::OpLimits {
+                mut op,
+                above,
+                below,
+            } => {
+                set_limits_subtype(&mut op, st);
+                *tail = Node::OpLimits { op, above, below };
             }
+            // (removed stale duplicate comment)
+            // a bare op char with no scripts: wrap it in the op-noad shape
+            // so the recorded subtype survives until conversion (TeX sets
+            // subtype(tail) at scan time; a following script then finds the
+            // noad already pinned/forced instead of re-deriving defaults).
+            Node::MathChar {
+                fam,
+                c,
+                class: CL_OP,
+            } => {
+                let mut op = vec![Node::MathChar {
+                    fam,
+                    c,
+                    class: CL_OP,
+                }];
+                set_limits_subtype(&mut op, st);
+                *tail = Node::OpLimits {
+                    op,
+                    above: None,
+                    below: None,
+                };
+            }
+            other => *tail = other,
         }
     }
 
     /// scan a `{...}` group, a single control sequence, or a single character
     /// into a RAW math list (tex.web's "scan a math-list group").
     pub fn scan_math_group_or_token(&mut self) -> NodeList {
+        // a directive pending here (`\sum\limits\mathop{xy}`) belongs to the
+        // tail of the CURRENT list, before any temp/group list is pushed
+        self.flush_math_limits();
         self.skip_spaces_relax();
         let t = self.get_token();
         if t == crate::input::EOF_MARKER {
@@ -962,44 +1388,18 @@ impl Engine {
         // single token: run it into a temporary math list
         self.math_lists.push(Vec::new());
         self.run_math_token(t);
+        self.flush_math_limits();
         self.math_lists.pop().unwrap_or_default()
     }
 
     /// Execute tokens up to the matching `}` as a nested math list.
     fn scan_math_group_braced(&mut self) -> NodeList {
         self.math_lists.push(Vec::new());
-        self.eqtb.push_level(crate::eqtb::LevelType::Group);
+        self.push_group_level(crate::eqtb::LevelType::Group);
         let my_level = self.eqtb.cur_level;
         loop {
             let t = self.get_token();
-            if crate::debug_flag("MGTRACE") {
-                let src: Vec<String> = self
-                    .input
-                    .stack
-                    .iter()
-                    .rev()
-                    .take(2)
-                    .map(|s| match s {
-                        crate::input::Source::TokList { name, pos, toks, .. } => {
-                            format!("T:{} {}/{}", name, pos, toks.len())
-                        }
-                        crate::input::Source::File { name, line_no, .. } => {
-                            format!("F:{}#{}", name.rsplit('/').next().unwrap_or("?"), line_no)
-                        }
-                    })
-                    .collect();
-                eprintln!(
-                    "MGB t={} ss={} kinds={} savedl={} ml={} mode={:?} gt={:?} src=[{}]",
-                    self.tokens_to_string(&[t]),
-                    self.eqtb.save_stack.len(),
-                    self.box_kinds.len(),
-                    self.saved_lists.len(),
-                    self.math_lists.len(),
-                    self.mode,
-                    self.eqtb.cur_group_type(),
-                    src.join(" << ")
-                );
-            }
+
             if t.is_char() && t.cc() == 2 {
                 if self.eqtb.cur_level == my_level {
                     // no nested level is open: this `}` closes OUR group.
@@ -1034,13 +1434,11 @@ impl Engine {
                     // the sublist stays RAW and is boxed at CONVERSION time
                     // with the style in force then (an eagerly packed group
                     // in `^{\mathrm{V}}' would print at the enclosing size).
-                    // Represent it as an Ord atom: null fam255 prefix + the
-                    // raw nodes, which make_scripts' boxed-nucleus arm packs
-                    // exactly like tex.web clean_box.
+                    // tex.web §1198 removes braces around one scriptless Ord
+                    // noad; other groups remain raw until conversion so they
+                    // acquire the style in force at their use site.
                     let inner = self.scan_math_group_braced();
-                    let mut nuc: NodeList = vec![Node::MathChar { fam: 255, c: 0, class: CL_ORD }];
-                    nuc.extend(inner);
-                    self.append_mlist_node(Node::Scripts { nucleus: nuc, sup: None, sub: None });
+                    self.append_mlist_node(finish_math_group(inner));
                 } else {
                     self.begin_group(true);
                 }
@@ -1048,19 +1446,18 @@ impl Engine {
             }
             self.run_math_token(t);
         }
+        self.flush_math_limits();
         self.math_lists.pop().unwrap_or_default()
     }
-
 
     pub fn do_math_accent(&mut self, mc: u16) {
         let group = self.scan_math_group_or_token();
         let fam = ((mc >> 8) & 0xF) as u8;
         let c = (mc & 0xFF) as u8;
-        let fid = self.style_font(fam);
         self.append_mlist_node(Node::Accent {
-            accent: (c, fid),
+            fam,
+            c,
             body: group,
-            skew: 0,
         });
     }
 
@@ -1075,13 +1472,28 @@ impl Engine {
     pub fn do_math_class(&mut self, class: u8) {
         let field = self.scan_math_group_or_token();
         let node = if field.is_empty() {
-            Node::MathChar { fam: 255, c: 0, class }
+            Node::MathChar {
+                fam: 255,
+                c: 0,
+                class,
+            }
         } else if field.len() == 1 {
             match field.into_iter().next().unwrap() {
                 Node::MathChar { fam, c, .. } => Node::MathChar { fam, c, class },
                 other => {
-                    let nuc = vec![Node::MathChar { fam: 255, c: 0, class }, other];
-                    Node::Scripts { nucleus: nuc, sup: None, sub: None }
+                    let nuc = vec![
+                        Node::MathChar {
+                            fam: 255,
+                            c: 0,
+                            class,
+                        },
+                        other,
+                    ];
+                    Node::Scripts {
+                        nucleus: nuc,
+                        sup: None,
+                        sub: None,
+                    }
                 }
             }
         } else {
@@ -1091,17 +1503,20 @@ impl Engine {
             // make_op promotion rule `(subtype=normal) and (cur_style<
             // text_style)`. Raw brace groups reach here through
             // scan_math_group_braced's fam255 CL_ORD marker instead and are
-            // never re-classed. c=1 on the fam255 CL_OP prefix marks the
-            // subtype-normal state for append_script's limits logic (c=2
-            // would pin \nolimits, c=1... see sub_type encoding there); a
-            // genuine `\limits`/`\nolimits` afterwards overwrites it via
-            // the math_limits request.
-            let mut nuc: NodeList = vec![Node::MathChar { fam: 255, c: 0, class }];
-            if class == CL_OP {
-                nuc[0] = Node::MathChar { fam: 255, c: 0, class };
-            }
+            // never re-classed. The fam255 CL_OP prefix carries the subtype
+            // (c=0 normal; append_script/flush_math_limits overwrite it on
+            // a genuine `\limits`/`\nolimits`/`\displaylimits`).
+            let mut nuc: NodeList = vec![Node::MathChar {
+                fam: 255,
+                c: 0,
+                class,
+            }];
             nuc.extend(field);
-            Node::Scripts { nucleus: nuc, sup: None, sub: None }
+            Node::Scripts {
+                nucleus: nuc,
+                sup: None,
+                sub: None,
+            }
         };
         self.append_mlist_node(node);
     }
@@ -1111,24 +1526,40 @@ impl Engine {
     /// clearance (tex.web make_over / make_under).
     pub fn do_overline(&mut self, under: bool) {
         let group = self.scan_math_group_or_token();
-        let g = gstyle_of(self.cur_math_style()) | 1; // cramped
+        // tex.web make_over uses cramped_style; make_under keeps cur_style.
+        let g = gstyle_of(self.cur_math_style()) | u8::from(!under);
         let body = self.mlist_to_hlist_pen(&group, g, self.mode == Mode::Horizontal);
         let packed = hpack(body, None, HBOX, &self.eqtb).node;
-        let (w, _, _) = box_dims(&packed);
+        let (w, body_h, _) = box_dims(&packed);
         let rt = self.default_rule_thickness(g);
         let kern = 3 * rt;
-        let rule = Node::Rule { width: w, height: rt, depth: 0 };
+        let rule = Node::Rule {
+            width: w,
+            height: rt,
+            depth: 0,
+        };
         let mut vlist = Vec::new();
         if under {
             vlist.push(packed);
             vlist.push(Node::Kern(kern));
             vlist.push(rule);
         } else {
+            // tex.web overbar: an extra rule-thickness kern above the rule.
+            vlist.push(Node::Kern(rt));
             vlist.push(rule);
             vlist.push(Node::Kern(kern));
             vlist.push(packed);
         }
-        let vb = vpack(vlist, None, VBOX, &self.eqtb).node;
+        let mut vb = vpack(vlist, None, VBOX, &self.eqtb).node;
+        if under {
+            // tex.web make_under keeps the nucleus baseline and puts the
+            // complete rule stack below it, including one bottom clearance.
+            if let Node::Box { h, d, .. } = &mut vb {
+                let extent = *h as i64 + *d as i64 + rt as i64;
+                *h = body_h;
+                *d = (extent - body_h as i64) as i32;
+            }
+        }
         self.append_mlist_node(vb);
     }
 
@@ -1181,11 +1612,21 @@ impl Engine {
         // tex.web math_fraction: the numerator is the current mlist's
         // content SINCE THE INNERMOST `{` (subformula boundary), not the
         // whole level — `b^W=\frac{A}{B}` keeps `b^W=` outside the fraction
+        self.flush_math_limits();
+        let cur_depth = self.math_lists.len();
         let num = match self.math_lists.last_mut() {
-            Some(l) => match self.math_group_marks.last().copied() {
-                Some(m) if m <= l.len() => l.split_off(m),
-                _ => std::mem::take(l),
-            },
+            Some(l) => {
+                let m = self
+                    .math_group_marks
+                    .iter()
+                    .rev()
+                    .find(|(d, _)| *d == cur_depth)
+                    .map(|(_, mark)| *mark);
+                match m {
+                    Some(m) if m <= l.len() => l.split_off(m),
+                    _ => std::mem::take(l),
+                }
+            }
             None => Vec::new(),
         };
         // denominator is scanned into a temporary list on top
@@ -1235,18 +1676,26 @@ impl Engine {
     /// run tokens into the current math list until the enclosing group ends
     /// (a `}`, a `$`, or EOF, which is pushed back for the outer machinery)
     fn scan_math_rest_of_group(&mut self) -> NodeList {
+        let start_level = self.eqtb.cur_level;
         loop {
             let t = self.get_token();
             if t == crate::input::EOF_MARKER {
                 break;
             }
-            if t.is_char() && matches!(t.cc(), 2 | 3) {
-                self.pushed.push(t);
-                break;
+            if t.is_char() {
+                if t.cc() == 2 && self.eqtb.cur_level <= start_level {
+                    self.pushed.push(t);
+                    break;
+                }
+                if t.cc() == 3 && self.eqtb.cur_level <= start_level {
+                    self.pushed.push(t);
+                    break;
+                }
             }
             // tex.web: a display's \eqno/\leqno also closes the fraction's
             // denominator — the tag is a separate sublist, not formula tail
             if t.is_cs()
+                && self.eqtb.cur_level <= start_level
                 && matches!(
                     self.eqtb.resolve(t.cs_id()),
                     Some(crate::eqtb::Equiv::Prim(crate::prim::Prim::EqNo))
@@ -1258,6 +1707,7 @@ impl Engine {
             }
             self.run_math_token(t);
         }
+        self.flush_math_limits();
         self.math_lists.pop().unwrap_or_default()
     }
 
@@ -1361,9 +1811,9 @@ impl Engine {
         }
     }
 
-    /// 1mu = quad of family 2 at text size / 18 (tex.web §767)
-    fn mu_unit(&self) -> i32 {
-        self.math_quad(0) / 18
+    /// 1mu = quad of family 2 at the current math size / 18 (tex.web §767).
+    fn mu_unit(&self, style: GStyle) -> i32 {
+        self.math_quad(style) / 18
     }
 
     fn skew_char_of(&self, fid: FontId, _f: &Font) -> i32 {
@@ -1386,8 +1836,16 @@ impl Engine {
             Node::Scripts { nucleus, .. } => Some(match nucleus.first() {
                 // fam255 prefix carries the atom's class (op groups etc.);
                 // a plain char nucleus with class 7 is varfam -> Ord.
-                Some(Node::MathChar { fam: 255, class, .. }) => *class,
-                Some(Node::MathChar { class, .. }) => if *class == 7 { CL_ORD } else { *class },
+                Some(Node::MathChar {
+                    fam: 255, class, ..
+                }) => *class,
+                Some(Node::MathChar { class, .. }) => {
+                    if *class == 7 {
+                        CL_ORD
+                    } else {
+                        *class
+                    }
+                }
                 _ => CL_ORD,
             }),
             Node::OpLimits { .. } => Some(CL_OP),
@@ -1402,10 +1860,185 @@ impl Engine {
                 1 => CL_CLOSE,
                 _ => CL_ORD,
             }),
-            Node::Box { .. } => Some(CL_ORD),
+            Node::Box { .. } | Node::VCenter { .. } => Some(CL_ORD),
             Node::Choice => Some(CL_ORD),
             _ => None,
         }
+    }
+
+    fn math_noad_char(n: &Node) -> Option<(u8, u8)> {
+        match n {
+            Node::MathChar { fam, c, .. } if *fam != 255 => Some((*fam, *c)),
+            Node::Scripts { nucleus, .. } if nucleus.len() == 1 => match &nucleus[0] {
+                Node::MathChar { fam, c, .. } if *fam != 255 => Some((*fam, *c)),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    fn set_math_noad_char(n: &mut Node, c: u8) {
+        match n {
+            Node::MathChar { c: current, .. } => *current = c,
+            Node::Scripts { nucleus, .. } => {
+                if let Some(Node::MathChar { c: current, .. }) = nucleus.first_mut() {
+                    *current = c;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// TeX's `make_ord`: combine adjacent ordinary math characters through
+    /// the current math font's lig/kern program before atom conversion.
+    ///
+    /// The boolean side table represents TeX's `math_text_char` state. It
+    /// suppresses italic correction only when the resulting character comes
+    /// from a text font (`fontdimen2 != 0`).
+    fn prepare_math_ligatures(&self, list: &[Node], start: GStyle) -> (NodeList, Vec<bool>) {
+        let mut nodes = list.to_vec();
+        let mut math_text = vec![false; nodes.len()];
+        let mut style = start;
+        let mut left_right_depth = 0usize;
+        let mut i = 0usize;
+
+        while i < nodes.len() {
+            if let Node::DelimBox { size, .. } = &nodes[i] {
+                match *size {
+                    0 => left_right_depth += 1,
+                    1 if left_right_depth > 0 => left_right_depth -= 1,
+                    _ => {}
+                }
+                i += 1;
+                continue;
+            }
+            // A \left...\right body is converted recursively. Leaving it raw
+            // here prevents its ligature program from running twice.
+            if left_right_depth > 0 {
+                i += 1;
+                continue;
+            }
+            if let Node::Style(s) = &nodes[i] {
+                style = gstyle_of(*s);
+                i += 1;
+                continue;
+            }
+            let q_has_scripts = matches!(
+                &nodes[i],
+                Node::Scripts { sup: Some(_), .. } | Node::Scripts { sub: Some(_), .. }
+            );
+            if math_text[i] || q_has_scripts || self.atom_class(&nodes[i]) != Some(CL_ORD) {
+                i += 1;
+                continue;
+            }
+
+            let mut restarts = 0usize;
+            loop {
+                restarts += 1;
+                if restarts > 256 || i + 1 >= nodes.len() {
+                    break;
+                }
+                let Some(p_class) = self.atom_class(&nodes[i + 1]) else {
+                    break;
+                };
+                if p_class > CL_PUNCT {
+                    break;
+                }
+                let Some((q_fam, q_char)) = Self::math_noad_char(&nodes[i]) else {
+                    break;
+                };
+                let Some((p_fam, p_char)) = Self::math_noad_char(&nodes[i + 1]) else {
+                    break;
+                };
+                if q_fam != p_fam || q_fam as usize >= 16 {
+                    break;
+                }
+
+                // tex.web §14865: this happens before testing whether the
+                // font actually supplies a ligature or kern instruction.
+                math_text[i] = true;
+                let Some((_, font)) = self.fam_font_idx(font_size(style), q_fam) else {
+                    break;
+                };
+                let Some(ci) = font.chars.get(q_char as usize) else {
+                    break;
+                };
+                if ci.tag != TAG_LIG {
+                    break;
+                }
+
+                let mut k = ci.remainder as usize;
+                let Some(first) = font.lig_kern.get(k) else {
+                    break;
+                };
+                if first.skip > 128 {
+                    k = ((first.op as usize) << 8) | first.rem as usize;
+                }
+                let mut action: Option<(Option<i32>, u8, u8)> = None;
+                for _ in 0..512 {
+                    let Some(step) = font.lig_kern.get(k) else {
+                        break;
+                    };
+                    if step.next_char == p_char && step.skip <= 128 {
+                        if step.op >= 128 {
+                            let ki = ((step.op as usize - 128) << 8) | step.rem as usize;
+                            if let Some(kern) = font.kerns.get(ki) {
+                                action = Some((Some(*kern), 0, 0));
+                            }
+                        } else {
+                            action = Some((None, step.op, step.rem));
+                        }
+                        break;
+                    }
+                    if step.skip >= 128 {
+                        break;
+                    }
+                    k += step.skip as usize + 1;
+                }
+                let Some((kern, op, replacement)) = action else {
+                    break;
+                };
+                if let Some(kern) = kern {
+                    nodes.insert(i + 1, Node::Kern(kern));
+                    math_text.insert(i + 1, false);
+                    break;
+                }
+
+                match op {
+                    1 | 5 => Self::set_math_noad_char(&mut nodes[i], replacement),
+                    2 | 6 => Self::set_math_noad_char(&mut nodes[i + 1], replacement),
+                    3 | 7 | 11 => {
+                        nodes.insert(
+                            i + 1,
+                            Node::MathChar {
+                                fam: q_fam,
+                                c: replacement,
+                                class: CL_ORD,
+                            },
+                        );
+                        math_text.insert(i + 1, op == 11);
+                    }
+                    _ => {
+                        let p = nodes.remove(i + 1);
+                        math_text.remove(i + 1);
+                        Self::set_math_noad_char(&mut nodes[i], replacement);
+                        if let Node::Scripts { sup, sub, .. } = p {
+                            let nucleus = match nodes[i].clone() {
+                                Node::Scripts { nucleus, .. } => nucleus,
+                                q => vec![q],
+                            };
+                            nodes[i] = Node::Scripts { nucleus, sup, sub };
+                        }
+                    }
+                }
+                if op > 3 {
+                    break;
+                }
+                math_text[i] = false;
+            }
+            i += 1;
+        }
+        (nodes, math_text)
     }
 
     /// `pen`: insert \binoppenalty/\relpenalty breakpoints after Bin/Rel
@@ -1419,6 +2052,7 @@ impl Engine {
     }
 
     fn mlist_to_hlist_inner(&self, list: &[Node], start: GStyle) -> NodeList {
+        let (list, math_text_chars) = self.prepare_math_ligatures(list, start);
         // pass 1: classify atoms and demote binary operators that cannot be
         // binary in context (tex.web §760)
         let classes: Vec<Option<u8>> = list.iter().map(|n| self.atom_class(n)).collect();
@@ -1495,7 +2129,12 @@ impl Engine {
                     continue;
                 }
                 // boundary markers
-                if let Node::DelimBox { size: 0, small, large } = n {
+                if let Node::DelimBox {
+                    size: 0,
+                    small,
+                    large,
+                } = n
+                {
                     let code = delim_code_of(*small, *large);
                     lr_stack.push((code, Vec::new()));
                     i += 1;
@@ -1505,17 +2144,30 @@ impl Engine {
                 // pops the tail marker and re-wraps it): the scripts belong on
                 // the assembled group box (tex.web make_left_right tail).
                 let close = match n {
-                    Node::DelimBox { size: 1, small, large } => Some((*small, *large, None, None)),
+                    Node::DelimBox {
+                        size: 1,
+                        small,
+                        large,
+                    } => Some((*small, *large, None, None)),
                     Node::Scripts { nucleus, sup, sub } => match nucleus.as_slice() {
-                        [Node::DelimBox { size: 1, small, large }] => {
-                            Some((*small, *large, Some((sup.as_deref(), sub.as_deref())), None))
-                        }
+                        [Node::DelimBox {
+                            size: 1,
+                            small,
+                            large,
+                        }] => Some((*small, *large, Some((sup.as_deref(), sub.as_deref())), None)),
                         _ => None,
                     },
                     Node::OpLimits { op, above, below } => match op.as_slice() {
-                        [Node::DelimBox { size: 1, small, large }] => {
-                            Some((*small, *large, None, Some((above.as_deref(), below.as_deref()))))
-                        }
+                        [Node::DelimBox {
+                            size: 1,
+                            small,
+                            large,
+                        }] => Some((
+                            *small,
+                            *large,
+                            None,
+                            Some((above.as_deref(), below.as_deref())),
+                        )),
                         _ => None,
                     },
                     _ => None,
@@ -1524,39 +2176,37 @@ impl Engine {
                     let code = delim_code_of(small, large);
                     match lr_stack.pop() {
                         Some((lopen, buf)) => {
-                            let body = self.mlist_to_hlist_pen(&buf, style, self.math_penalties.get());
+                            let body =
+                                self.mlist_to_hlist_pen(&buf, style, self.math_penalties.get());
                             let (_, bh, bd) = hlist_dims(&body, &self.eqtb);
                             let needed = self.lr_delimiter_size(bh, bd, style);
                             let mut assembled: NodeList = self.var_delimiter(lopen, needed, style);
                             assembled.extend(body);
                             assembled.extend(self.var_delimiter(code, needed, style));
-                            style = after_lr_style(style);
-                            if scripts.is_some() || limits.is_some() {
-                                let gb = hpack(assembled, None, HBOX, &self.eqtb).node;
-                                let tail: NodeList = match (scripts, limits) {
-                                    (Some((sup, sub)), _) => self.make_scripts(&[gb], sup, sub, style),
-                                    (None, Some((above, below))) => {
-                                        self.make_op_limits(&[gb], above, below, style, true)
-                                    }
-                                    _ => Vec::new(),
-                                };
-                                match lr_stack.last_mut() {
-                                    Some((_, pbuf)) => pbuf.extend(tail),
-                                    None => self.emit_atom(&mut out, &mut prev, Some(CL_INNER), tail, style),
+                            let gb = hpack(assembled, None, HBOX, &self.eqtb).node;
+                            let tail: NodeList = match (scripts, limits) {
+                                (Some((sup, sub)), _) => self.make_scripts(&[gb], sup, sub, style),
+                                (None, Some((above, below))) => {
+                                    self.make_op_limits(&[gb], above, below, style, true)
                                 }
-                            } else {
-                                match lr_stack.last_mut() {
-                                    // nested boundary: splice into the enclosing buffer
-                                    Some((_, pbuf)) => pbuf.extend(assembled),
-                                    None => {
-                                        self.emit_atom(&mut out, &mut prev, Some(CL_INNER), assembled, style);
-                                    }
+                                _ => vec![gb],
+                            };
+                            match lr_stack.last_mut() {
+                                Some((_, pbuf)) => pbuf.extend(tail),
+                                None => {
+                                    self.emit_atom(&mut out, &mut prev, Some(CL_INNER), tail, style)
                                 }
                             }
                         }
                         None => {
                             // stray close: a normal close delimiter
-                            self.emit_atom(&mut out, &mut prev, Some(CL_CLOSE), self.var_delimiter(code, 0, style), style);
+                            self.emit_atom(
+                                &mut out,
+                                &mut prev,
+                                Some(CL_CLOSE),
+                                self.var_delimiter(code, 0, style),
+                                style,
+                            );
                         }
                     }
                     i += 1;
@@ -1568,7 +2218,7 @@ impl Engine {
                     i += 1;
                     continue;
                 }
-                let nodes = self.convert_atom(n, style);
+                let nodes = self.convert_atom(n, style, math_text_chars[i]);
                 // inter-atom mu glue comes first (tex.web second pass)
                 self.insert_spacing(&mut out, prev, Some(cls), style);
                 out.extend(nodes);
@@ -1596,11 +2246,54 @@ impl Engine {
                 i += 1;
                 continue;
             }
-            // non-atom: pass through, preserving the previous class
+            // Internal group/class markers carry no material into the hlist.
+            if matches!(n, Node::MathChar { fam: 255, .. }) {
+                i += 1;
+                continue;
+            }
+            // non-atoms: convert mu-denominated material at the current
+            // style. \nonscript removes the following glue/kern outside
+            // text styles (tex.web mlist_to_hlist pass 1).
+            if matches!(n, Node::NonScript) {
+                if style >= 4
+                    && matches!(
+                        list.get(i + 1),
+                        Some(
+                            Node::Glue(_)
+                                | Node::MuGlue(_)
+                                | Node::Kern(_)
+                                | Node::ExplicitKern(_)
+                                | Node::MathKern(_, _)
+                        )
+                    )
+                {
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+                continue;
+            }
+            let converted = match n {
+                Node::MuGlue(g) => {
+                    let mu = self.mu_unit(style) as i64;
+                    let conv = |v: i32| (v as i64 * mu / 65536) as i32;
+                    Node::Glue(Glue {
+                        width: conv(g.width),
+                        stretch: conv(g.stretch),
+                        shrink: conv(g.shrink),
+                        stretch_order: g.stretch_order,
+                        shrink_order: g.shrink_order,
+                    })
+                }
+                Node::MathKern(k, 0) => {
+                    Node::Kern((*k as i64 * self.mu_unit(style) as i64 / 65536) as i32)
+                }
+                _ => n.clone(),
+            };
             if let Some((_, buf)) = lr_stack.last_mut() {
-                buf.push(n.clone());
+                buf.push(converted);
             } else if !matches!(n, Node::ChoiceAlt { .. }) {
-                out.push(n.clone());
+                out.push(converted);
             }
             i += 1;
         }
@@ -1614,7 +2307,14 @@ impl Engine {
         out
     }
 
-    fn emit_atom(&self, out: &mut NodeList, prev: &mut Option<u8>, cls: Option<u8>, nodes: NodeList, style: GStyle) {
+    fn emit_atom(
+        &self,
+        out: &mut NodeList,
+        prev: &mut Option<u8>,
+        cls: Option<u8>,
+        nodes: NodeList,
+        style: GStyle,
+    ) {
         self.insert_spacing(out, *prev, cls, style);
         out.extend(nodes);
         *prev = cls;
@@ -1658,7 +2358,7 @@ impl Engine {
         // tex.web §716 (math_glue): the muskip parameters hold mu-denominated
         // glue; convert with the current style's mu so `\medmuskip=...`
         // assignments by packages actually take effect.
-        let mu = self.mu_unit();
+        let mu = self.mu_unit(style);
         let conv = |sp_mu: i32| ((sp_mu as i64) * (mu as i64) / 65536) as i32;
         let src = match kind {
             1 | 2 => GlueParam::ThinMuSkip,
@@ -1666,10 +2366,15 @@ impl Engine {
             _ => GlueParam::ThickMuSkip,
         };
         let p = &self.eqtb.glue_params[src.idx() as usize];
-        let g = Glue { width: conv(p.width), stretch: conv(p.stretch), shrink: conv(p.shrink), stretch_order: p.stretch_order, shrink_order: p.shrink_order };
+        let g = Glue {
+            width: conv(p.width),
+            stretch: conv(p.stretch),
+            shrink: conv(p.shrink),
+            stretch_order: p.stretch_order,
+            shrink_order: p.shrink_order,
+        };
         out.push(Node::Glue(g));
     }
-
 
     fn run_math_token(&mut self, t: Token) {
         if t.is_cs() {
@@ -1681,13 +2386,21 @@ impl Engine {
                         return;
                     }
                     let (sf, sc, lf, lc) = delim_code_parts(v);
-                    self.append_mlist_node(Node::DelimBox { small: (sf, sc), large: (lf, lc), size: 2 });
+                    self.append_mlist_node(Node::DelimBox {
+                        small: (sf, sc),
+                        large: (lf, lc),
+                        size: 2,
+                    });
                     return;
                 }
                 Some(Equiv::Prim(Prim::Middle)) => {
                     let v = self.scan_delim_int();
                     let (sf, sc, lf, lc) = delim_code_parts(v);
-                    self.append_mlist_node(Node::DelimBox { small: (sf, sc), large: (lf, lc), size: 2 });
+                    self.append_mlist_node(Node::DelimBox {
+                        small: (sf, sc),
+                        large: (lf, lc),
+                        size: 2,
+                    });
                     return;
                 }
                 // \mathchardef'd control sequences never reach main_dispatch
@@ -1702,15 +2415,9 @@ impl Engine {
         self.dispatch(t);
     }
 
-    fn convert_atom(&self, n: &Node, style: GStyle) -> NodeList {
+    fn convert_atom(&self, n: &Node, style: GStyle, math_text_char: bool) -> NodeList {
         match n {
             Node::MathChar { fam, c, class } => {
-                if crate::debug_flag("MFONT") {
-                    let fid = self.eqtb.style_fonts[font_size(style)][*fam as usize];
-                    if let Some(f) = self.eqtb.fonts.get(fid as usize) {
-                        eprintln!("MFONT style={} fam={} c={} font={} at={:.2}pt w={:.3}pt", style, fam, c, f.name, f.at_size as f64/65536.0, f.char_width(*c) as f64/65536.0);
-                    }
-                }
                 if *fam == 255 {
                     vec![]
                 } else if *class == CL_OP {
@@ -1723,28 +2430,81 @@ impl Engine {
                     // silently lose the math and its spacing).
                     let fid = self.eqtb.style_fonts[font_size(style)][*fam as usize];
                     let mut out = vec![Node::Char { c: *c, font: fid }];
-                    // tex.web §14865 (@<Create a character node for nucleus@>):
-                    // a char nucleus with no subscript takes its italic
-                    // correction as a trailing kern; text fonts (nonzero
-                    // interword space) skip it (mid-word reading)
+                    // tex.web §14865: `math_text_char` suppresses italic
+                    // correction only in a text font. A final/standalone
+                    // math char retains its correction even in that font.
                     if let Some(f) = self.eqtb.fonts.get(fid as usize) {
                         let ic = f.char_italic(*c);
-                        let is_text_font = f.space() != 0;
-                        if ic != 0 && !is_text_font {
+                        if ic != 0 && !(math_text_char && f.space() != 0) {
                             out.push(Node::Kern(ic));
                         }
                     }
                     out
                 }
             }
-            Node::Scripts { nucleus, sup, sub } => self.make_scripts(nucleus, sup.as_deref(), sub.as_deref(), style),
-            Node::OpLimits { op, above, below } => {
-                self.make_op_limits(op, above.as_deref(), below.as_deref(), style, true)
+            Node::Scripts { nucleus, sup, sub } => {
+                // TeX make_math_accent: scripts on a single-character accent
+                // attach to the character, not the taller accent box. Ordinary
+                // groups containing a lone accent preserve that noad identity.
+                if sup.is_some() || sub.is_some() {
+                    if let Some((accent, body)) = accent_noad_of(nucleus) {
+                        if matches!(body, [Node::MathChar { fam, .. }] if *fam != 255) {
+                            return self.make_accent(
+                                accent,
+                                body,
+                                style,
+                                sup.as_deref(),
+                                sub.as_deref(),
+                            );
+                        }
+                    }
+                }
+                self.make_scripts(nucleus, sup.as_deref(), sub.as_deref(), style)
             }
-            Node::Frac { num, den, thickness, left, right } => self.make_fraction(num, den, *thickness, *left, *right, style),
-            Node::Radical { body, thickness, .. } => self.make_radical(body, *thickness, style),
-            Node::Accent { accent, body, .. } => self.make_accent(*accent, body, style),
-            Node::DelimBox { small, large, size } => {
+            Node::OpLimits { op, above, below } => {
+                // fam-255 CL_OP marker = tex.web noad subtype (append_script):
+                // 1=limits forces the above/below construction in every
+                // style, 2=no_limits pins side scripts even in display,
+                // 0=normal defers to make_op's promotion test on the ACTUAL
+                // conversion style (`(subtype=normal) and (cur_style<
+                // text_style)`), so a display-parsed sum in a text-style
+                // denominator gets side scripts.
+                let sub_type = match op.first() {
+                    Some(Node::MathChar {
+                        fam: 255,
+                        c,
+                        class: CL_OP,
+                    }) => Some(*c),
+                    _ => None,
+                };
+                let payload = if sub_type.is_some() {
+                    &op[1..]
+                } else {
+                    op.as_slice()
+                };
+                let want_limits = match sub_type {
+                    Some(1) => true,
+                    Some(2) => false,
+                    _ => style < 2,
+                };
+                if want_limits {
+                    self.make_op_limits(payload, above.as_deref(), below.as_deref(), style, true)
+                } else {
+                    self.make_scripts(payload, above.as_deref(), below.as_deref(), style)
+                }
+            }
+            Node::Frac {
+                num,
+                den,
+                thickness,
+                left,
+                right,
+            } => self.make_fraction(num, den, *thickness, *left, *right, style),
+            Node::Radical {
+                body, thickness, ..
+            } => self.make_radical(body, *thickness, style),
+            Node::Accent { fam, c, body } => self.make_accent((*fam, *c), body, style, None, None),
+            Node::DelimBox { small, large, .. } => {
                 // plain delimiter atom (size 2); 0/1 only reach here as strays
                 let code = delim_code_of(*small, *large);
                 let mut out = self.var_delimiter(code, 0, style);
@@ -1752,6 +2512,22 @@ impl Engine {
                     out.push(Node::Kern(0));
                 }
                 out
+            }
+            Node::VCenter { box_node } => {
+                let mut b = (**box_node).clone();
+                let (h, d) = match &b {
+                    Node::Box { h, d, .. } => (*h as i64, *d as i64),
+                    _ => (0, 0),
+                };
+                let delta = h + d;
+                let axis = self.axis_height(style) as i64;
+                let new_h = axis + half_i(delta as i32) as i64;
+                let new_d = delta - new_h;
+                if let Node::Box { h, d, .. } = &mut b {
+                    *h = new_h as i32;
+                    *d = new_d as i32;
+                }
+                vec![b]
             }
             Node::Box { .. } => vec![n.clone()],
             other => vec![other.clone()],
@@ -1779,7 +2555,11 @@ impl Engine {
                 }
             }
         }
-        let delta = if f.exists_char(c) { f.char_italic(c) } else { 0 };
+        let delta = if f.exists_char(c) {
+            f.char_italic(c)
+        } else {
+            0
+        };
         let mut b = hpack(vec![Node::Char { c, font: fid }], None, HBOX, &self.eqtb).node;
         if let Node::Box { w, h, d, shift, .. } = &mut b {
             *w += delta;
@@ -1803,7 +2583,11 @@ impl Engine {
                     self.op_char_box(*fam, *c, style, false)
                 }
             }
-            [Node::DelimBox { small, large, size: 2 }] => {
+            [Node::DelimBox {
+                small,
+                large,
+                size: 2,
+            }] => {
                 let code = delim_code_of(*small, *large);
                 let mut out = self.var_delimiter(code, 0, style);
                 if out.len() == 1 {
@@ -1823,21 +2607,36 @@ impl Engine {
         }
     }
 
-    fn make_scripts(&self, nucleus: &[Node], sup: Option<&[Node]>, sub: Option<&[Node]>, style: GStyle) -> NodeList {
+    /// tex.web `clean_box`, including its singleton-character optimization:
+    /// discard the sole trailing kern (the character's italic correction).
+    fn clean_math_box(&self, list: &[Node], style: GStyle) -> Node {
+        let mut nodes = self.mlist_to_hlist_pen(list, style, self.math_penalties.get());
+        if matches!(nodes.as_slice(), [Node::Char { .. }, Node::Kern(_)]) {
+            nodes.pop();
+        }
+        if matches!(nodes.as_slice(), [Node::Box { shift: 0, .. }]) {
+            return nodes.pop().expect("single clean math box");
+        }
+        hpack(nodes, None, HBOX, &self.eqtb).node
+    }
+
+    fn make_scripts(
+        &self,
+        nucleus: &[Node],
+        sup: Option<&[Node]>,
+        sub: Option<&[Node]>,
+        style: GStyle,
+    ) -> NodeList {
         let ss = self.eqtb.dim_params[DimParam::ScriptSpace.idx() as usize];
         let x = self.math_x_height(style);
         let rt = self.default_rule_thickness(style);
         let mut delta = 0i32;
-        let mut nuc: Node;
+        let nuc: Node;
         let mut shift_up = 0i32;
         let mut shift_down = 0i32;
         match nucleus {
-            // single-char nucleus (tex.web): the italic correction becomes a
-            // trailing kern unless a subscript is present (then it right-shifts
-            // the superscript in the stacked construction)
-            // single-char nucleus (tex.web): the italic correction becomes a
-            // trailing kern unless a subscript is present (then it right-shifts
-            // the superscript in the stacked construction)
+            // A character nucleus keeps its italic correction as a trailing
+            // kern unless a subscript is present; then it offsets the sup.
             [Node::MathChar { fam, c, class }] if *class != CL_OP => {
                 if *fam == 255 {
                     // fam255 prefix marker: the nucleus is the REST of the
@@ -1868,6 +2667,28 @@ impl Engine {
                     nuc = hpack(core, None, HBOX, &self.eqtb).node;
                 }
             }
+            // A standalone \delimiter is an ordinary math-character noad:
+            // scripts use the character shifts, not sub-box drop parameters.
+            [Node::DelimBox {
+                small: (fam, c),
+                size: 2,
+                ..
+            }] => {
+                let Some((fid, f)) = self.fam_font(style, *fam) else {
+                    return vec![];
+                };
+                if !f.exists_char(*c) {
+                    return vec![];
+                }
+                let ic = f.char_italic(*c);
+                let mut core = vec![Node::Char { c: *c, font: fid }];
+                if sub.is_none() && ic != 0 {
+                    core.push(Node::Kern(ic));
+                } else {
+                    delta = ic;
+                }
+                nuc = hpack(core, None, HBOX, &self.eqtb).node;
+            }
             // non-limits big operator: axis-centered box, italic handled above
             [Node::MathChar { fam, c, class }] if *class == CL_OP => {
                 if *fam == 255 {
@@ -1877,24 +2698,20 @@ impl Engine {
                     delta = d;
                     nuc = b;
                 }
-                // tex.web §746: `t := sup/drop-style fontdimen` — the
-                // sup/drop parameters come from the CURRENT math family's
-                // TEXT-size font (fparam maps style->size slot), not from
-                // the script font.
+                // tex.web §746: an operator nucleus is already boxed, so
+                // sup_drop/sub_drop come from subsidiary size `t`.
+                let drop_size = font_size(sup_style(style));
                 let (zh, zd) = box_dims_shifted(&nuc);
-                shift_up = zh - self.fparam(style, 2, 18);
-                shift_down = zd + self.fparam(style, 2, 19);
+                shift_up = zh - self.fparam_idx(drop_size, 2, 18);
+                shift_down = zd + self.fparam_idx(drop_size, 2, 19);
             }
             // boxed nucleus: initial shifts from its (shift-adjusted) dims
             _ => {
-                let nodes = self.mlist_to_hlist_pen(nucleus, style, self.math_penalties.get());
-                // tex.web clean_box packs the converted list; fam255 marker
-                // chars convert to nothing already, but drop any residual
-                // zero-width kern artifacts so widths match the oracle.
-                nuc = hpack(nodes, None, HBOX, &self.eqtb).node;
+                nuc = self.clean_math_box(nucleus, style);
+                let drop_size = font_size(sup_style(style));
                 let (zh, zd) = box_dims_shifted(&nuc);
-                shift_up = zh - self.fparam(style, 2, 18);
-                shift_down = zd + self.fparam(style, 2, 19);
+                shift_up = zh - self.fparam_idx(drop_size, 2, 18);
+                shift_down = zd + self.fparam_idx(drop_size, 2, 19);
             }
         }
         let mut out: NodeList = vec![nuc];
@@ -1948,7 +2765,7 @@ impl Engine {
         }
         if let (Some(bx), Some(by)) = (&sup_box, &sub_box) {
             // both scripts: sub2 floor, then the 4*rule-thickness clearance
-            let (_, sup_h, sup_d) = box_dims(bx);
+            let (_, _, sup_d) = box_dims(bx);
             let (sub_w_, sub_h, _) = box_dims(by);
             let _ = sub_w_;
             if shift_down < sub2 {
@@ -1964,12 +2781,10 @@ impl Engine {
                 }
             }
         }
-        if crate::debug_flag("SCR") {
-            eprintln!("SCR style={} nuc0={:?} shift_up={} shift_down={}", style, nucleus.first(), shift_up, shift_down);
-        }
+
         match (sup_box, sub_box) {
             (Some(bs), Some(bb)) => {
-                let (_, sup_h, sup_d) = box_dims(&bs);
+                let (_, _, sup_d) = box_dims(&bs);
                 let (_, sub_h, _) = box_dims(&bb);
                 let k = (shift_up - sup_d) - (sub_h - shift_down);
                 let mut sbs = bs;
@@ -2004,7 +2819,14 @@ impl Engine {
 
     // ---------- make_op with limits (tex.web §744) ----------
 
-    fn make_op_limits(&self, op: &[Node], above: Option<&[Node]>, below: Option<&[Node]>, style: GStyle, _force: bool) -> NodeList {
+    fn make_op_limits(
+        &self,
+        op: &[Node],
+        above: Option<&[Node]>,
+        below: Option<&[Node]>,
+        style: GStyle,
+        _force: bool,
+    ) -> NodeList {
         let (op_box, delta) = self.build_op_box(op, style);
         if above.is_none() && below.is_none() {
             return vec![op_box];
@@ -2015,8 +2837,24 @@ impl Engine {
         let sp4 = self.fparam(style, 3, 12);
         let sp5 = self.fparam(style, 3, 13);
         let (oh, od) = box_dims_shifted(&op_box);
-        let sup_box = above.map(|s| hpack(self.mlist_to_hlist_pen(s, sup_style(style), self.math_penalties.get()), None, HBOX, &self.eqtb).node);
-        let sub_box = below.map(|s| hpack(self.mlist_to_hlist_pen(s, sub_style(style), self.math_penalties.get()), None, HBOX, &self.eqtb).node);
+        let sup_box = above.map(|s| {
+            hpack(
+                self.mlist_to_hlist_pen(s, sup_style(style), self.math_penalties.get()),
+                None,
+                HBOX,
+                &self.eqtb,
+            )
+            .node
+        });
+        let sub_box = below.map(|s| {
+            hpack(
+                self.mlist_to_hlist_pen(s, sub_style(style), self.math_penalties.get()),
+                None,
+                HBOX,
+                &self.eqtb,
+            )
+            .node
+        });
         let mut w = self.box_w(&op_box);
         if let Some(b) = &sup_box {
             w = w.max(self.box_w(b));
@@ -2069,7 +2907,14 @@ impl Engine {
             let (_, bh, bd) = box_dims(b);
             d += sp5 + bh + bd + sd;
         }
-        if let Node::Box { w: bw, h: hh, d: dd, shift, .. } = &mut packed {
+        if let Node::Box {
+            w: bw,
+            h: hh,
+            d: dd,
+            shift,
+            ..
+        } = &mut packed
+        {
             *bw = w;
             *hh = h;
             *dd = d;
@@ -2114,14 +2959,34 @@ impl Engine {
 
     // ---------- make_fraction (tex.web §741-742) ----------
 
-    fn make_fraction(&self, num: &[Node], den: &[Node], thickness: i32, left: Option<i32>, right: Option<i32>, style: GStyle) -> NodeList {
+    fn make_fraction(
+        &self,
+        num: &[Node],
+        den: &[Node],
+        thickness: i32,
+        left: Option<i32>,
+        right: Option<i32>,
+        style: GStyle,
+    ) -> NodeList {
         let r = if thickness < 0 {
             self.default_rule_thickness(style)
         } else {
             thickness
         };
-        let num_box = hpack(self.mlist_to_hlist_pen(num, num_style(style), self.math_penalties.get()), None, HBOX, &self.eqtb).node;
-        let den_box = hpack(self.mlist_to_hlist_pen(den, den_style(style), self.math_penalties.get()), None, HBOX, &self.eqtb).node;
+        let num_box = hpack(
+            self.mlist_to_hlist_pen(num, num_style(style), self.math_penalties.get()),
+            None,
+            HBOX,
+            &self.eqtb,
+        )
+        .node;
+        let den_box = hpack(
+            self.mlist_to_hlist_pen(den, den_style(style), self.math_penalties.get()),
+            None,
+            HBOX,
+            &self.eqtb,
+        )
+        .node;
         let w = self.box_w(&num_box).max(self.box_w(&den_box));
         let num_c = self.center_to_w(num_box, w);
         let den_c = self.center_to_w(den_box, w);
@@ -2168,7 +3033,11 @@ impl Engine {
             vlist = vec![
                 num_c,
                 Node::Kern((su - nd) - (axis + dr)),
-                Node::Rule { width: w, height: r, depth: 0 },
+                Node::Rule {
+                    width: w,
+                    height: r,
+                    depth: 0,
+                },
                 Node::Kern((axis - dr) - (dh - sd)),
                 den_c,
             ];
@@ -2176,7 +3045,10 @@ impl Engine {
         let mut packed = vpack(vlist, None, VBOX, &self.eqtb).node;
         // tex.web §742: height = shift_up + height(numerator), depth =
         // depth(denominator) + shift_down; the baseline is the numerator's
-        if let Node::Box { w: bw, h, d, shift, .. } = &mut packed {
+        if let Node::Box {
+            w: bw, h, d, shift, ..
+        } = &mut packed
+        {
             *bw = w;
             *h = su + nh;
             *d = dd + sd;
@@ -2238,7 +3110,11 @@ impl Engine {
         // overbar(b, k=clr, t=surd height): [kern(t), rule(t), kern(clr), body]
         let vlist = vec![
             Node::Kern(dh),
-            Node::Rule { width: xw, height: dh, depth: 0 },
+            Node::Rule {
+                width: xw,
+                height: dh,
+                depth: 0,
+            },
             Node::Kern(clr),
             x,
         ];
@@ -2252,9 +3128,22 @@ impl Engine {
         out
     }
 
-    fn make_accent(&self, accent: (u8, FontId), body: &[Node], style: GStyle) -> NodeList {
-        let (ac, afid) = accent;
-        let Some(af) = self.eqtb.fonts.get(afid as usize).cloned() else {
+    fn make_accent(
+        &self,
+        accent: (u8, u8),
+        body: &[Node],
+        style: GStyle,
+        sup: Option<&[Node]>,
+        sub: Option<&[Node]>,
+    ) -> NodeList {
+        let (afam, mut ac) = accent;
+        let has_scripts = sup.is_some() || sub.is_some();
+        let Some((afid, af)) = self.fam_font(style, afam) else {
+            // TeX keeps the nucleus (and any scripts) when the accent font is
+            // unavailable.
+            if has_scripts {
+                return self.make_scripts(body, sup, sub, style);
+            }
             let body_nodes = self.mlist_to_hlist_pen(body, style | 1, self.math_penalties.get());
             return vec![hpack(body_nodes, None, HBOX, &self.eqtb).node];
         };
@@ -2288,8 +3177,28 @@ impl Engine {
         };
         let body_nodes = self.mlist_to_hlist_pen(body, style | 1, self.math_penalties.get());
         let body_box = hpack(body_nodes, None, HBOX, &self.eqtb).node;
-        let (bw, bh, bd) = box_dims(&body_box);
-        let aw = af.char_width(ac);
+        let (bw, mut bh, _bd) = box_dims(&body_box);
+        let mut aw = af.char_width(ac);
+        // TeX chooses the largest next-larger accent that fits the nucleus,
+        // before scripts widen it. Bound traversal like var_delimiter.
+        for _ in 0..256 {
+            let Some(ci) = af.chars.get(ac as usize) else {
+                break;
+            };
+            if ci.tag != TAG_LIST {
+                break;
+            }
+            let next = ci.remainder;
+            if next == ac || !af.exists_char(next) {
+                break;
+            }
+            let next_width = af.char_width(next);
+            if next_width > bw {
+                break;
+            }
+            ac = next;
+            aw = next_width;
+        }
         let axh = {
             let v = af.param(5);
             if v != 0 {
@@ -2298,15 +3207,41 @@ impl Engine {
                 af.x_height()
             }
         };
-        let delta = if bh < axh { bh } else { axh };
-        let mut acc_box = hpack(vec![Node::Char { c: ac, font: afid }], None, HBOX, &self.eqtb).node;
+        let mut delta = if bh < axh { bh } else { axh };
+        // TeX's script swap increases the overlap by the scripted box's added
+        // height. Horizontal accent placement keeps the original nucleus width.
+        let mut xw = bw;
+        let x_box = if has_scripts && matches!(body, [Node::MathChar { fam, .. }] if *fam != 255) {
+            let inner = self.make_scripts(body, sup, sub, style);
+            let x = hpack(inner, None, HBOX, &self.eqtb).node;
+            let (w2, h2, _) = box_dims(&x);
+            delta += h2 - bh;
+            bh = h2;
+            xw = w2;
+            x
+        } else {
+            body_box
+        };
+        let mut acc_box = hpack(
+            vec![Node::Char { c: ac, font: afid }],
+            None,
+            HBOX,
+            &self.eqtb,
+        )
+        .node;
         if let Node::Box { w, shift, .. } = &mut acc_box {
             *w = 0; // accent width does not affect the box width
             *shift = s + half_i(bw - aw); // horizontal shift inside the vlist
         }
-        let mut v = vpack(vec![acc_box, Node::Kern(-delta), body_box], None, VBOX, &self.eqtb).node;
+        let mut v = vpack(
+            vec![acc_box, Node::Kern(-delta), x_box],
+            None,
+            VBOX,
+            &self.eqtb,
+        )
+        .node;
         if let Node::Box { w, .. } = &mut v {
-            *w = bw;
+            *w = xw; // tex.web: width(y):=width(x) after the vpack
         }
         let (_, vh, _) = box_dims(&v);
         if vh < bh {
@@ -2315,7 +3250,6 @@ impl Engine {
                 *h = bh;
             }
         }
-        let _ = bd;
         vec![v]
     }
 
@@ -2409,7 +3343,11 @@ impl Engine {
                 continue;
             }
             for sz in (0..=cur_size).rev() {
-                let Some((_, f)) = self.fam_font((sz * 2) as u8, fam) else {
+                // sz IS the style_fonts size index (tex.web walks `fam +
+                // cur_size` down to `fam`): fam_font() would push it
+                // through font_size() and map script sizes back onto the
+                // text/script fonts (style 2/4), not the size sz font.
+                let Some((_, f)) = self.fam_font_idx(sz, fam) else {
                     continue;
                 };
                 let mut c = first;
@@ -2450,15 +3388,13 @@ impl Engine {
                 }
             }
         }
-        if crate::debug_flag("VDELIM") {
-            eprintln!(
-                "VDELIM code={:#x} parts=({},{},{},{}) found={:?} best={:?}",
-                code, sf, sc, lf, lc, found, best
-            );
-        }
         match found.or(best) {
             Some((sz, fam, c)) => {
-                let f = self.eqtb.fonts.get(self.eqtb.style_fonts[sz][fam as usize] as usize).cloned();
+                let f = self
+                    .eqtb
+                    .fonts
+                    .get(self.eqtb.style_fonts[sz][fam as usize] as usize)
+                    .cloned();
                 let ext_rec = f.as_ref().and_then(|ff| {
                     ff.chars
                         .get(c as usize)
@@ -2477,8 +3413,18 @@ impl Engine {
     /// tex.web make_extensible: stack top / n x rep / mid / n x rep / bottom
     /// with n grown until the total extent reaches `v` (in pairs when a mid
     /// part exists). Height = top part's height, depth = w - height.
-    fn make_extensible(&self, size_idx: usize, fam: u8, rec: crate::tfm::ExtRecipe, v: i32, style: GStyle) -> Node {
-        let (fid, f) = match self.fam_font((size_idx * 2) as u8, fam) {
+    fn make_extensible(
+        &self,
+        size_idx: usize,
+        fam: u8,
+        rec: crate::tfm::ExtRecipe,
+        v: i32,
+        style: GStyle,
+    ) -> Node {
+        // `size_idx` is the style_fonts size index chosen by var_delimiter
+        // (fam + size, tex.web); fam_font() would re-derive it from a style
+        // code and collapse script sizes onto the text font.
+        let (fid, f) = match self.fam_font_idx(size_idx, fam) {
             Some(v2) => v2,
             None => return self.null_delimiter_box(style),
         };
@@ -2486,7 +3432,13 @@ impl Engine {
             if ch == 0 || !f.exists_char(ch) {
                 return None;
             }
-            let n = hpack(vec![Node::Char { c: ch, font: fid }], None, HBOX, &self.eqtb).node;
+            let n = hpack(
+                vec![Node::Char { c: ch, font: fid }],
+                None,
+                HBOX,
+                &self.eqtb,
+            )
+            .node;
             let (w, h, d) = box_dims(&n);
             Some((n, w, h + d))
         };
@@ -2527,20 +3479,17 @@ impl Engine {
         }
         if let Some((node, _, _)) = mid {
             vlist.push(node);
-        }
-        if let Some((node, _, _)) = &rep {
-            for _ in 0..n {
-                vlist.push(node.clone());
+            if let Some((node, _, _)) = &rep {
+                for _ in 0..n {
+                    vlist.push(node.clone());
+                }
             }
         }
         if let Some((node, _, _)) = bot {
             vlist.push(node);
         }
         // height = top-most present part's height; depth fills to w
-        let h_top = vlist
-            .first()
-            .map(|b| box_dims(b).1)
-            .unwrap_or(0);
+        let h_top = vlist.first().map(|b| box_dims(b).1).unwrap_or(0);
         let total = wacc as i32;
         let mut b = vpack(vlist, None, VBOX, &self.eqtb).node;
         if let Node::Box { w, h, d, shift, .. } = &mut b {
@@ -2584,22 +3533,28 @@ fn box_dims_shifted(n: &Node) -> (i32, i32) {
     }
 }
 
-/// append `box` to `out` with the given shift applied
-fn set_shift(out: &mut NodeList, mut b: Node, shift: i32) {
-    if let Node::Box { shift: s, .. } = &mut b {
-        *s = shift;
+/// Preserve TeX's ordinary-group unwrap for a lone accent noad.
+/// Explicit non-ordinary class markers must not be unwrapped.
+fn accent_noad_of(nucleus: &[Node]) -> Option<((u8, u8), &[Node])> {
+    let accent = match nucleus {
+        [a @ Node::Accent { .. }] => a,
+        [Node::MathChar {
+            fam: 255,
+            class: CL_ORD,
+            ..
+        }, a @ Node::Accent { .. }] => a,
+        _ => return None,
+    };
+    match accent {
+        Node::Accent { fam, c, body } => Some(((*fam, *c), body)),
+        _ => None,
     }
-    out.push(b);
 }
 
 // =====================================================================
 // Tests: layout is checked against dims captured from real TeX
 // (`tex \showbox` oracles on the same CM fonts at 10/7/5 pt), with the
 // plain TeX family setup fam0=cmr, fam1=cmmi, fam2=cmsy, fam3=cmex.
-#[cfg(test)]
-pub(crate) mod tests_support {
-    pub use super::*;
-}
 
 #[cfg(test)]
 mod tests {
@@ -2652,7 +3607,8 @@ mod tests {
         e.init_primitives();
         e.add_nullfont();
         let full = format!("{}{}\n", math_preamble(), body);
-        e.input.push_file("mathtest.tex".to_string(), full.into_bytes());
+        e.input
+            .push_file("mathtest.tex".to_string(), full.into_bytes());
         e.run();
         assert_eq!(e.error_count, 0, "errors:\n{}", e.term);
         e
@@ -2672,12 +3628,14 @@ mod tests {
     /// page-list hbox, falling back to \box255 registration. An inline
     /// `\hbox{$..$}` wraps the math box one level down — unwrap it.
     fn page_or_box255(e: &Engine) -> Node {
-        let mut n = if let Some(n) = e
+        let all_boxes: Vec<Node> = e
             .page_list
             .iter()
-            .find(|n| matches!(n, Node::Box { kind, .. } if *kind == HBOX))
+            .chain(e.par_page_lists.iter().flatten())
+            .filter(|n| matches!(n, Node::Box { kind, .. } if *kind == HBOX))
             .cloned()
-        {
+            .collect();
+        let mut n = if let Some(n) = all_boxes.into_iter().last() {
             n
         } else if let Some(Some(b)) = e.eqtb.boxed.get(255).cloned() {
             b
@@ -2720,7 +3678,14 @@ mod tests {
 
     fn box_of(n: &Node) -> (&NodeList, i32, i32, i32, i32) {
         match n {
-            Node::Box { list, w, h, d, shift, .. } => (list, *w, *h, *d, *shift),
+            Node::Box {
+                list,
+                w,
+                h,
+                d,
+                shift,
+                ..
+            } => (list, *w, *h, *d, *shift),
             other => panic!("expected box, got {:?}", other),
         }
     }
@@ -2835,7 +3800,9 @@ mod tests {
         approx(vd, DEN2 * 10.0, "vbox d = shift_down + d(den)");
         assert_eq!(vlist.len(), 5, "num, kern, rule, kern, den: {:?}", vlist);
         approx(vw, 4.33765, "common width");
-        if let (Node::Kern(k1), Node::Rule { height, width, .. }, Node::Kern(k2)) = (&vlist[1], &vlist[2], &vlist[3]) {
+        if let (Node::Kern(k1), Node::Rule { height, width, .. }, Node::Kern(k2)) =
+            (&vlist[1], &vlist[2], &vlist[3])
+        {
             approx(*k1, 1.23732, "num->rule kern");
             approx(*k2, 0.88731, "rule->den kern");
             approx(*height, RT * 10.0, "rule thickness");
@@ -2904,7 +3871,9 @@ mod tests {
         let (vlist, _, vh, _, _) = box_of(&list[1]);
         approx(vh, 8.00272, "bar vbox height = t + t + clr + h(x)");
         assert_eq!(vlist.len(), 4, "kern, rule, kern, body: {:?}", vlist);
-        if let (Node::Kern(t), Node::Rule { height, .. }, Node::Kern(clr)) = (&vlist[0], &vlist[1], &vlist[2]) {
+        if let (Node::Kern(t), Node::Rule { height, .. }, Node::Kern(clr)) =
+            (&vlist[0], &vlist[1], &vlist[2])
+        {
             approx(*t, 0.39998, "top kern = surd height");
             approx(*height, 0.39998, "rule = surd height");
             approx(*clr, 2.89722, "clearance with half-excess");
@@ -2913,23 +3882,69 @@ mod tests {
         }
     }
 
+    #[test]
+    fn math_units_scale_with_style_and_nonscript() {
+        let (_, mw, _, _, _) = box_of(&text_math("a\\mkern5mu b"));
+        let (_, sw, _, _, _) = box_of(&text_math("a\\mskip5mu b"));
+        approx(mw, 12.35526, "text-style mkern uses 10pt/18 mu");
+        approx(sw, 12.35526, "text-style mskip uses 10pt/18 mu");
+
+        let (_, script_w, _, _, _) = box_of(&text_math("a_{a\\mkern5mu b}"));
+        approx(script_w, 15.91643, "script-style mkern uses 7pt/18 mu");
+
+        let (_, nonscript_w, _, _, _) = box_of(&text_math("a_{a\\nonscript\\mskip5mu b}"));
+        approx(nonscript_w, 13.6402, "nonscript suppresses following mskip");
+    }
+
+    #[test]
+    fn overline_and_underline_keep_nucleus_baseline() {
+        let over = display_math("\\overline{x_i}");
+        let (_, ow, oh, od, _) = box_of(&over);
+        approx(ow, 9.04456, "overline width");
+        approx(oh, 6.30544, "overline includes top rule clearance");
+        approx(od, 1.49998, "overline keeps nucleus depth");
+
+        let under = display_math("\\underline{x_i}");
+        let (_, uw, uh, ud, _) = box_of(&under);
+        approx(uw, 9.04456, "underline width");
+        approx(uh, 4.30554, "underline keeps nucleus height");
+        approx(ud, 3.49988, "underline rule stack is below baseline");
+
+        let under_sup = display_math("\\underline{x^i}");
+        let (_, _, ush, usd, _) = box_of(&under_sup);
+        approx(ush, 8.76085, "underline uses uncramped nucleus style");
+        approx(usd, 1.9999, "underline superscript rule stack depth");
+    }
+
     /// oracle: `\hbox{$\sum_{i=1}^n$}` — side scripts in text style (no
     /// limits), op axis-centered, scripts in a shifted vbox
     #[test]
     fn sum_text_style_side_scripts() {
         let b = text_math("\\sumG_{i=1}^n");
         let (list, _, h, d, _) = box_of(&b);
-        approx(h, 7.50006, "sum total height");
+        approx(h, 8.04175, "sum total height");
         approx(d, 3.00005, "sum total depth");
         assert_eq!(list.len(), 2, "op box + scripts vbox: {:?}", list);
         approx(-box_shift(&list[0]), 7.50006, "op axis shift");
         let (vlist, _, _, _, vshift) = box_of(&list[1]);
         approx(vshift, 3.00005, "scripts vbox shift");
         if let Node::Kern(k) = &vlist[1] {
-            approx(*k, 2.00711, "scripts stack kern");
+            approx(*k, 3.39598, "scripts stack kern");
         } else {
             panic!("expected kern: {:?}", vlist);
         }
+    }
+
+    #[test]
+    fn nolimits_survives_attaching_the_second_script() {
+        let lower_first = text_math("\\displaystyle\\sumG\\nolimits_a^b");
+        let upper_first = text_math("\\displaystyle\\sumG\\nolimits^b_a");
+        let (_, w1, h1, d1, _) = box_of(&lower_first);
+        let (_, w2, h2, d2, _) = box_of(&upper_first);
+        assert_eq!((w1, h1, d1), (w2, h2, d2));
+        let limits = text_math("\\displaystyle\\sumG\\limits_a^b");
+        let (_, _, height, depth, _) = box_of(&limits);
+        assert!(height + depth > h1 + d1);
     }
 
     /// \int with both scripts: the superscript is offset right by the italic
@@ -2943,6 +3958,30 @@ mod tests {
         approx(box_shift(&vlist[0]), 1.94444, "sup shifted by italic");
     }
 
+    /// A second script must not erase the \nolimits subtype stored on the
+    /// operator noad. Oracle: `\hbox{$\displaystyle\int\nolimits_0^1$}`.
+    #[test]
+    fn int_display_nolimits_keeps_side_scripts() {
+        let b = display_math("\\intG\\nolimits_0^1");
+        let (list, w, h, d, _) = box_of(&b);
+        assert_eq!(list.len(), 2, "operator plus side-script box: {:?}", list);
+        approx(w, 14.48615, "integral with side scripts width");
+        approx(h, 15.65013, "integral with side scripts height");
+        approx(d, 9.11122, "integral with side scripts depth");
+    }
+
+    /// A plain delimiter atom is Ord, not an operator; its subscript stays
+    /// beside it instead of becoming a displayed lower limit.
+    #[test]
+    fn delimiter_subscript_is_not_operator_limits() {
+        let b = display_math("\\delimiter\"026B30D _H");
+        let (list, w, h, d, _) = box_of(&b);
+        assert_eq!(list.len(), 2, "delimiter plus side-script box: {:?}", list);
+        approx(w, 12.58475, "delimiter subscript width");
+        approx(h, 7.5, "delimiter subscript height");
+        approx(d, 2.5, "delimiter subscript depth");
+    }
+
     /// display-style \sum gets limits above/below (big op spacings from
     /// cmex fontdimens 9..13), sup/sub skewed by half the italic (delta=0
     /// for \sum), all centered on the common width
@@ -2951,10 +3990,12 @@ mod tests {
         let b = display_math("\\sumG_{i=1}^{n}");
         let (list, _, _, _, _) = box_of(&b);
         let (vlist, vw, vh, vd, _) = box_of(&list[0]);
-        assert!(matches!(list[0], Node::Box { kind: VBOX, .. }), "{:?}", list);
+        assert!(
+            matches!(list[0], Node::Box { kind: VBOX, .. }),
+            "{:?}",
+            list
+        );
         let xh5 = 0.430555 * 5.0; // x-height at scriptscript size (5pt)
-        let su = (BIG3 * 10.0 - (3.01389)).max(BIG1 * 10.0); // sp3 - d(n), floor sp1
-        let sd = (BIG4 * 10.0 - 4.63193).max(BIG2 * 10.0); // sp4 - h(i=1), floor sp2
         approx(vh, 16.51395, "limits vbox h");
         approx(vd, 12.79869, "limits vbox d");
         let _ = vw;
@@ -2963,15 +4004,167 @@ mod tests {
         let _ = xh5;
     }
 
+    /// Operator limits are selected when the surrounding style is converted,
+    /// not when the math list is parsed. A denominator is text style even
+    /// when its enclosing fraction was parsed in display style.
+    #[test]
+    fn sum_in_display_denominator_uses_side_scripts() {
+        let b = display_math("{1\\over\\sumG_{i=1}^{n}}");
+        let (_, w, h, d, _) = box_of(&b);
+        approx(w, 26.40991, "fraction width");
+        approx(h, 13.20952, "fraction height");
+        approx(d, 9.94173, "fraction depth");
+    }
+
+    /// A directive after BOTH scripts still switches the noad: tex.web
+    /// `math_limit_switch` writes `subtype(tail)` at scan time, so a sum
+    /// parsed in text style gains displayed limits from a trailing
+    /// `\limits`. oracle: `\hbox{$\textstyle\sumG_0^1\limits$}`
+    #[test]
+    fn trailing_limits_forces_above_below_in_text_style() {
+        let b = text_math("\\sumG_0^1\\limits");
+        let (list, w, h, d, _) = box_of(&b);
+        assert!(
+            matches!(list[0], Node::Box { kind: VBOX, .. }),
+            "limits vbox: {:?}",
+            list
+        );
+        approx(w, 10.55559, "forced limits width");
+        approx(h, 15.01115, "forced limits height");
+        approx(d, 9.67783, "forced limits depth");
+    }
+
+    /// `\nolimits` pins the noad for the FIRST script, but the trailing
+    /// `\limits` rewrites the same noad's subtype — the pin is gone.
+    /// oracle: `\hbox{$\displaystyle\intG\nolimits_x\limits$}`
+    #[test]
+    fn trailing_limits_after_first_script_rewrites_the_noad() {
+        let b = display_math("\\intG\\nolimits_x\\limits");
+        let (list, w, h, d, _) = box_of(&b);
+        assert!(
+            matches!(list[0], Node::Box { kind: VBOX, .. }),
+            "limits vbox: {:?}",
+            list
+        );
+        approx(w, 10.00002, "integral limits width");
+        approx(h, 13.61122, "integral limits height");
+        approx(d, 15.61124, "integral limits depth");
+    }
+
+    /// Same shape with `\displaylimits`: releases the nolimits pin back to
+    /// `normal`, which display style promotes to limits.
+    /// oracle: `\hbox{$\displaystyle\intG\nolimits_x\displaylimits$}`
+    #[test]
+    fn trailing_displaylimits_after_first_script_promotes() {
+        let b = display_math("\\intG\\nolimits_x\\displaylimits");
+        let (list, w, h, d, _) = box_of(&b);
+        assert!(
+            matches!(list[0], Node::Box { kind: VBOX, .. }),
+            "limits vbox: {:?}",
+            list
+        );
+        approx(w, 10.00002, "integral limits width");
+        approx(h, 13.61122, "integral limits height");
+        approx(d, 15.61124, "integral limits depth");
+    }
+
+    /// A `\nolimits` BETWEEN the two scripts pins the noad for the second
+    /// script too (the subtype persists on the operator noad).
+    /// oracle: `\hbox{$\displaystyle\sumG_a\nolimits^b$}`
+    #[test]
+    fn mid_directive_nolimits_survives_second_script() {
+        let b = display_math("\\sumG_a\\nolimits^b");
+        let (list, w, h, d, _) = box_of(&b);
+        assert_eq!(list.len(), 2, "op box plus side-script vbox: {:?}", list);
+        approx(w, 19.28212, "sum side-scripts width");
+        approx(h, 12.88896, "sum side-scripts height");
+        approx(d, 6.00005, "sum side-scripts depth");
+    }
+
+    /// Explicit `\displaylimits` records subtype=normal (marker 0), which
+    /// the actual conversion style promotes in display.
+    /// oracle: `\hbox{$\displaystyle\sumG\displaylimits_a$}`
+    #[test]
+    fn explicit_displaylimits_promotes_in_display_style() {
+        let b = display_math("\\sumG\\displaylimits_a");
+        let (list, w, h, d, _) = box_of(&b);
+        assert!(
+            matches!(list[0], Node::Box { kind: VBOX, .. }),
+            "limits vbox: {:?}",
+            list
+        );
+        approx(w, 14.44447, "displaylimits width");
+        approx(h, 10.50006, "displaylimits height");
+        approx(d, 12.50006, "displaylimits depth");
+    }
+
+    /// `\mathop{...}\nolimits` keeps the GROUP nucleus (boxed mlist with
+    /// its italic kern), not a collapsed char nucleus.
+    /// oracle: `\hbox{$\displaystyle\mathop{xy}\nolimits_a$}`
+    #[test]
+    fn grouped_mathop_nolimits_keeps_group_nucleus() {
+        let b = display_math("\\mathop{xy}\\nolimits_a");
+        let (list, w, h, d, _) = box_of(&b);
+        assert_eq!(list.len(), 2, "group box plus side-script box: {:?}", list);
+        approx(w, 15.81451, "mathop nolimits width");
+        approx(h, 4.30554, "mathop nolimits height");
+        approx(d, 2.44443, "mathop nolimits depth");
+    }
+
+    /// Forced `\limits` on a grouped mathop builds the above/below box
+    /// even in text style, centered at the group width.
+    /// oracle: `\hbox{$\textstyle\mathop{xy}\limits_a$}`
+    #[test]
+    fn grouped_mathop_limits_forces_above_below_in_text_style() {
+        let b = text_math("\\mathop{xy}\\limits_a");
+        let (list, w, h, d, _) = box_of(&b);
+        assert!(
+            matches!(list[0], Node::Box { kind: VBOX, .. }),
+            "limits vbox: {:?}",
+            list
+        );
+        approx(w, 10.97687, "forced mathop limits width");
+        approx(h, 4.30554, "forced mathop limits height");
+        approx(d, 8.94444, "forced mathop limits depth");
+    }
+
+    /// Delimiter lookup indexes `style_fonts[sz]` directly (tex.web
+    /// `fam_fnt(fam+cur_size)`): a script-size delimiter takes the SCRIPT
+    /// font, not the text font. Total width includes scriptspace.
+    /// oracle: `\hbox{$x^{\delimiter"0028300}$}`
+    #[test]
+    fn script_delimiter_uses_script_font() {
+        let b = text_math("x^{\\delimiter\"0028300}");
+        let (_, w, h, d, _) = box_of(&b);
+        approx(w, 9.34029, "script paren total width");
+        approx(h, 8.87892, "script paren total height");
+        approx(d, 0.0, "script paren total depth");
+    }
+
+    /// Same at scriptscript size, including the scriptspace in total width.
+    /// oracle: `\hbox{$x^{\scriptscriptstyle\delimiter"0028300}$}`
+    #[test]
+    fn scriptscript_delimiter_uses_scriptscript_font() {
+        let b = text_math("x^{\\scriptscriptstyle\\delimiter\"0028300}");
+        let (_, w, h, d, _) = box_of(&b);
+        approx(w, 8.92363, "scriptscript paren total width");
+        approx(h, 7.37892, "scriptscript paren total height");
+        approx(d, 0.0, "scriptscript paren total depth");
+    }
+
     /// oracle: `\hbox{$\left({a\over b}\right)$}` — delimiters from cmex
     /// sized by delimiterfactor/shortfall, ink centered on the axis
     #[test]
     fn left_right_group_paren_big() {
         let b = text_math("\\left({a\\over b}\\right)");
-        let (list, _, h, d, _) = box_of(&b);
+        let (outer, _, h, d, _) = box_of(&b);
         approx(h, 8.50005, "group height");
         approx(d, 3.50006, "group depth");
-        assert_eq!(list.len(), 5, "open, null, inner, null, close: {:?}", list);
+        let list = match outer.first() {
+            Some(Node::Box { list: inner, .. }) => inner,
+            _ => outer,
+        };
+        assert_eq!(list.len(), 3, "open, inner, close: {:?}", list);
         let (_, pw, ph, pd, psh) = box_of(&list[0]);
         approx(ph, 0.39998, "parenleftbig height");
         approx(pd, 11.60013, "parenleftbig depth");
@@ -2998,6 +4191,75 @@ mod tests {
         }
         let (_, aw, _, _, _) = box_of(&vlist[0]);
         assert_eq!(aw, 0, "accent width forced to 0");
+    }
+
+    /// tex.web make_math_accent @<Swap the subscript and superscript into
+    /// box x@>: scripts on an accented single-char nucleus attach to the
+    /// character, not the accent glyph. Oracle: real pdftex
+    /// `\hbox{$\hat\beta_p^{\rm PR}$}` (\hat = \mathaccent"705E, \beta =
+    /// \mathchar"010C) — 9.58334+3.83327x17.86461; without the swap the
+    /// superscript clears the taller accent box instead of the nucleus and
+    /// the total inflates to 11.89449+3.83327x17.86461.
+    #[test]
+    fn accent_scripts_swap() {
+        let b = text_math("\\mathaccent\"705E\\mathchar\"010C_p^{\\fam0 PR}");
+        let (_, w, h, d, _) = box_of(&b);
+        approx(h, 9.58334, "accent+scripts box height");
+        approx(d, 3.83327, "accent+scripts box depth");
+        approx(w, 17.86461, "accent+scripts box width");
+    }
+
+    #[test]
+    fn wide_accent_selects_fitting_variant() {
+        let b = text_math("\\mathaccent\"0365{xyz}");
+        let (_, w, h, d, _) = box_of(&b);
+        approx(h, 7.5, "wide tilde height");
+        approx(d, 1.94444, "wide tilde depth");
+        approx(w, 16.06717, "wide tilde width");
+    }
+
+    #[test]
+    fn roman_math_run_kerns_and_keeps_final_italic_correction() {
+        let b = text_math("{\\fam0 cov}");
+        let (_, w, _, _, _) = box_of(&b);
+        approx(w, 14.58334, "roman math run width");
+    }
+
+    #[test]
+    fn roman_math_run_forms_font_ligatures() {
+        let b = text_math("{\\fam0 ffi}");
+        let (_, w, _, _, _) = box_of(&b);
+        approx(w, 8.33336, "roman ffi ligature width");
+    }
+
+    /// tex.web §1198 removes braces around a lone scriptless Ord noad.
+    /// The resulting character keeps its italic correction when bare and
+    /// uses that correction to offset a superscript when a subscript exists.
+    #[test]
+    fn singleton_ord_math_group_keeps_character_script_semantics() {
+        let bare = text_math("{\\fam2 T}");
+        let (_, w, h, d, _) = box_of(&bare);
+        approx(w, 7.98811, "bare grouped calligraphic T width");
+        approx(h, 6.83331, "bare grouped calligraphic T height");
+        approx(d, 0.0, "bare grouped calligraphic T depth");
+
+        let scripted = text_math("{\\fam2 T}^2_C");
+        let (_, w, h, d, _) = box_of(&scripted);
+        approx(w, 12.47424, "grouped T with both scripts width");
+        approx(h, 8.14003, "grouped T with both scripts height");
+        approx(d, 2.75433, "grouped T with both scripts depth");
+    }
+
+    /// A math accent stores a family and character, not the font selected
+    /// while its field is scanned. Conversion inside `_...` must therefore
+    /// use the cramped script font. Oracle: pdfTeX with the test preamble.
+    #[test]
+    fn accent_font_is_selected_at_conversion_style() {
+        let b = text_math("{\\fam2 T}_{\\barG C}");
+        let (_, w, h, d, _) = box_of(&b);
+        approx(w, 12.17242, "grouped T accented subscript width");
+        approx(h, 6.83331, "grouped T accented subscript height");
+        approx(d, 2.34445, "grouped T accented subscript depth");
     }
 
     /// oracle: `\hbox{$x+a$}` — medmuskip glue (4mu plus 2mu minus 4mu) on
@@ -3028,7 +4290,10 @@ mod tests {
         // sup content: y + kern(?? no: [char y, glue? none, char z])
         let glues = sup.iter().filter(|n| matches!(n, Node::Glue(_))).count();
         assert_eq!(glues, 0, "no mu glue in script style: {:?}", sup);
-        let chars = sup.iter().filter(|n| matches!(n, Node::Char { .. })).count();
+        let chars = sup
+            .iter()
+            .filter(|n| matches!(n, Node::Char { .. }))
+            .count();
         assert_eq!(chars, 3, "y, +, z present: {:?}", sup);
     }
 
@@ -3067,15 +4332,23 @@ mod tests {
         assert!(w > 0);
         // fraction is the last atom: enclosed in inner class box with nulldelimiters
         let last = &list[list.len() - 1];
-        let frac_box = match last {
-            Node::Box { list: fl, .. } if fl.len() == 4 => &fl[2],
-            other => other,
-        };
-        match frac_box {
-            Node::Box { kind: VBOX, list: vl, .. } => {
-                assert_eq!(vl.len(), 5, "num, kern, rule, kern, den: {:?}", vl);
+        fn find_frac_vbox(n: &Node) -> Option<&Node> {
+            match n {
+                Node::Box {
+                    kind: VBOX, list, ..
+                } if list.len() == 5 => Some(n),
+                Node::Box { list, .. } => list.iter().find_map(find_frac_vbox),
+                _ => None,
             }
-            other => panic!("expected fraction vbox, got {:?}", other),
+        }
+        let frac_box = find_frac_vbox(last).expect("expected fraction vbox");
+        if let Node::Box {
+            kind: VBOX,
+            list: vl,
+            ..
+        } = frac_box
+        {
+            assert_eq!(vl.len(), 5, "num, kern, rule, kern, den: {:?}", vl);
         }
     }
 
@@ -3113,10 +4386,13 @@ mod tests {
         let b = text_math("\\mathopen{}x\\mathbin{+}y\\mathrel{=}z\\mathclose{}");
         let (list, _, _, _, _) = box_of(&b);
         // verify that glue nodes (medmuskip, thickmuskip) were inserted
-        let glues: Vec<_> = list.iter().filter_map(|n| match n {
-            Node::Glue(g) => Some(g.width),
-            _ => None,
-        }).collect();
+        let glues: Vec<_> = list
+            .iter()
+            .filter_map(|n| match n {
+                Node::Glue(g) => Some(g.width),
+                _ => None,
+            })
+            .collect();
         assert!(!glues.is_empty(), "inter-atom glue present");
     }
 
@@ -3133,326 +4409,281 @@ mod tests {
         let (list, _, _, _, _) = box_of(&b);
         assert!(!list.is_empty());
     }
-}
 
-#[cfg(test)]
-mod probe {
-    use super::*;
-    #[test]
-    fn probe_page_list() {
-        let mut e = Engine::new(true);
-        e.init_primitives();
-        e.add_nullfont();
-        let s = "\\catcode`\\{=1 \\catcode`\\}=2 \\catcode`\\$=3 \\catcode`\\^=7 \\catcode`\\_=8\n\\font\\tenrm=cmr10\n\\textfont0=\\tenrm\n\\hbox{$x$}\n";
-        e.input.push_file("p.tex".to_string(), s.as_bytes().to_vec());
-        e.run();
-        println!("TERM: {}", e.term);
-        println!("ERRORS: {}", e.error_count);
-        println!("PAGE: {:?}", e.page_list);
-        println!("CUR_LIST: {:?}", e.cur_list);
+    // ---- pre_display_size_of / display skip selection (tex.web §1181) ----
+
+    /// Hand-build the final line (just_box) of an interrupted paragraph and
+    /// measure \predisplaysize directly. cmr10 must be the current font so
+    /// the `+2 quad` term is well-defined.
+    fn pds_engine() -> (Engine, FontId) {
+        let mut e = run_doc("");
+        let cmr = e
+            .eqtb
+            .fonts
+            .iter()
+            .position(|f| f.tfm_name == "cmr10")
+            .expect("cmr10 loaded") as FontId;
+        e.eqtb.cur_font_val = cmr;
+        (e, cmr)
     }
-}
 
-#[cfg(test)]
-#[cfg(test)]
-mod probe2 {
-    use super::tests_support::*;
-    use super::*;
-    #[test]
-    fn probe_constructs() {
-        for (name, body) in [
-            ("bare_def", "!!!"),
-            ("owd_sp", "\\hbox{$a\\overwithdelims ( ( b$}"),
-            ("delcode_val", "\\hbox{$\\the\\delcode`( $}"),
-            ("id_hbox_notex", "\\hbox{\\tmpA{y}}"),
-            ("id_math_par", "$\\tmpA{y}$ x\\par"),
-            ("id_math_hbox", "\\hbox{$\\tmpA{y}$}"),
-            ("sqrt_spaced", "\\hbox{$\\sqrtS {x}$}"),
-            ("sqrt_braced_body", "\\hbox{$\\sqrtB{x}$}"),
-            ("radical_direct", "\\hbox{$\\radical \"270370 {x}$}"),
-            ("accent_direct", "\\hbox{$\\mathaccent \"7016 {x}$}"),
-            ("owd2", "\\hbox{$a\\overwithdelims()b$}"),
-        ] {
-            let mut e = Engine::new(true);
-            e.init_primitives();
-            e.add_nullfont();
-            let full = if body == "!!!" {
-                "\\catcode`\\{=1 \\catcode`\\}=2 \\def\\tmpA#1{#1}\\tmpA{y}\\par".to_string()
-            } else {
-                format!("{}{}\n", super::tests::math_preamble(), body)
-            };
-            e.input.push_file("p.tex".to_string(), full.into_bytes());
-            e.run();
-            if name == "mathchoice" {
-                if let Some(n) = e.page_list.iter().find(|n| matches!(n, Node::Box { kind: HBOX, .. })) {
-                    println!("MATHCHOICE BOX: {:?}", n);
-                }
-            }
-            if name == "delcode_val" {
-                println!("DEL40={:?}", e.eqtb.del_code[40]);
-            }
-            println!("== {} errors={} hbox={} term_tail={:?}", name, e.error_count,
-                e.page_list.iter().any(|n| matches!(n, Node::Box { kind: HBOX, .. })),
-                e.term.lines().filter(|l| l.starts_with("! ")).collect::<Vec<_>>());
+    fn line_box(list: Vec<Node>, sign: u8, order: u8, set: f64) -> Node {
+        Node::Box {
+            kind: HBOX,
+            w: su(240.0),
+            h: su(6.94444),
+            d: 0,
+            shift: 0,
+            list,
+            glue_sign: sign,
+            glue_order: order,
+            glue_set: set,
+            font: None,
         }
     }
-}
-
-#[cfg(test)]
-mod probe3 {
-    use super::*;
-    #[test]
-    fn probe_int_metrics() {
-        let mut e = Engine::new(true);
-        e.init_primitives();
-        e.add_nullfont();
-        let s = "\\font\\tenex=cmex10\n\\textfont3=\\tenex\n";
-        e.input.push_file("p.tex".to_string(), s.as_bytes().to_vec());
-        e.run();
-        let fid = e.eqtb.style_fonts[0][3];
-        let f = &e.eqtb.fonts[fid as usize];
-        println!("FID={} ec={} it(0x52)={} w(0x52)={} d(0x52)={}", fid, f.ec, f.char_italic(0x52), f.char_width(0x52), f.char_depth(0x52));
-    }
 
     #[test]
-    /// Dumps the page_list after `$$\left({a\over b}+c\right)^2$$`: proves the
-    /// Frac vbox, Scripts stack, and sized DelimBoxes exist in the display
-    /// hbox BEFORE the shipout pipeline (page.rs/pdfrender) touches it.
-    fn probe_lr_display_page_list() {
-        let mut e = Engine::new(true);
-        e.init_primitives();
-        let full = format!(
-            "{}\\vsize=60in\nx\n$$\\left({{a\\over b}}+c\\right)^2$$\ny\n",
-            super::tests::math_preamble()
+    fn pds_counts_boxes_rules_kerns() {
+        // §1184: hlist/rule are *visible* (w resets at each); kerns and
+        // inactive glue accumulate without being visible.
+        let (e, cmr) = pds_engine();
+        let quad = e.eqtb.fonts[cmr as usize].quad() as i64;
+        let wa = e.eqtb.fonts[cmr as usize].char_width(b'A') as i64;
+        let line = line_box(
+            vec![
+                Node::Box {
+                    kind: HBOX,
+                    w: su(10.0),
+                    h: 0,
+                    d: 0,
+                    shift: 0,
+                    list: vec![],
+                    glue_sign: 0,
+                    glue_order: 0,
+                    glue_set: 0.0,
+                    font: None,
+                },
+                Node::Glue(Glue {
+                    width: su(3.33333),
+                    stretch: su(1.66666),
+                    shrink: su(1.11111),
+                    stretch_order: 0,
+                    shrink_order: 0,
+                }),
+                Node::Rule {
+                    width: su(1.0),
+                    height: su(0.4),
+                    depth: 0,
+                },
+                Node::Kern(su(0.5)),
+                Node::Char { c: b'A', font: cmr },
+            ],
+            0,
+            0,
+            0.0,
         );
-        e.run();
-        println!("ERRORS: {}", e.error_count);
-        fn dump(name: &str, ns: &[Node], depth: usize) {
-            for n in ns {
-                match n {
-                    Node::Box { kind, w, h, d, list, .. } => {
-                        let kn = if *kind == VBOX { "VBOX" } else { "HBOX" };
-                        println!("{}{} w={} h={} d={} nchildren={}", "  ".repeat(depth), kn, w, h, d, list.len());
-                        if depth < 3 {
-                            dump(name, list, depth + 1);
-                        }
-                    }
-                    other => println!("{}{:?}  [{}]", "  ".repeat(depth), other, name),
-                }
-            }
+        // last visible node is the 'A': 10 + 3.33333 + 1 + 0.5 + w(A) + 2quad
+        let want =
+            su(10.0) as i64 + su(3.33333) as i64 + su(1.0) as i64 + su(0.5) as i64 + wa + 2 * quad;
+        assert_eq!(e.pre_display_size_of(&line), want);
+    }
+
+    #[test]
+    fn pds_voided_by_normal_order_active_glue() {
+        // §21802: glue_order(just_box)=stretch_order(q) with stretch<>0 sets
+        // v:=max_dimen *even at order 0* (normal); the next visible node then
+        // yields w = max_dimen. The old code required order > 0 and instead
+        // scaled the glue by glue_set — system-dependent rounding TeX's
+        // §1186 comment explicitly forbids.
+        let (e, cmr) = pds_engine();
+        let mk = |sign: u8, g: Glue| {
+            line_box(
+                vec![
+                    Node::Char { c: b'A', font: cmr },
+                    Node::Glue(g),
+                    Node::Char { c: b'B', font: cmr },
+                ],
+                sign,
+                0,
+                0.5,
+            )
+        };
+        let stretched = mk(
+            1,
+            Glue {
+                width: su(3.33333),
+                stretch: su(1.66666),
+                shrink: 0,
+                stretch_order: 0,
+                shrink_order: 0,
+            },
+        );
+        assert_eq!(e.pre_display_size_of(&stretched), 0x3FFF_FFFF);
+        let shrunk = mk(
+            2,
+            Glue {
+                width: su(3.33333),
+                stretch: 0,
+                shrink: su(1.11111),
+                stretch_order: 0,
+                shrink_order: 0,
+            },
+        );
+        assert_eq!(e.pre_display_size_of(&shrunk), 0x3FFF_FFFF);
+        // a *fil* line (order 2) leaves normal-order glue untouched: natural
+        // widths accumulate and the trailing 'B' is visible
+        let quad = e.eqtb.fonts[cmr as usize].quad() as i64;
+        let wa = e.eqtb.fonts[cmr as usize].char_width(b'A') as i64;
+        let wb = e.eqtb.fonts[cmr as usize].char_width(b'B') as i64;
+        let fil_line = line_box(
+            vec![
+                Node::Char { c: b'A', font: cmr },
+                Node::Glue(Glue {
+                    width: su(3.33333),
+                    stretch: su(1.66666),
+                    shrink: 0,
+                    stretch_order: 0,
+                    shrink_order: 0,
+                }),
+                Node::Char { c: b'B', font: cmr },
+            ],
+            1,
+            2,
+            0.5,
+        );
+        assert_eq!(
+            e.pre_display_size_of(&fil_line),
+            wa + su(3.33333) as i64 + wb + 2 * quad
+        );
+    }
+
+    #[test]
+    fn pds_leaders_are_visible() {
+        // §1192: leaders take the active-glue test, then goto found with the
+        // glue spec's *natural* width (never inflated by glue_set).
+        let (e, cmr) = pds_engine();
+        let quad = e.eqtb.fonts[cmr as usize].quad() as i64;
+        let line = line_box(
+            vec![
+                Node::Rule {
+                    width: su(1.0),
+                    height: 0,
+                    depth: 0,
+                },
+                Node::Leaders {
+                    glue: Glue {
+                        width: su(2.0),
+                        stretch: su(1.0),
+                        shrink: 0,
+                        stretch_order: 2,
+                        shrink_order: 0,
+                    },
+                    kind: 0,
+                    body: crate::boxes::LeaderBody::Rule {
+                        width: su(2.0),
+                        height: 0,
+                        depth: 0,
+                    },
+                },
+            ],
+            1,
+            2,
+            0.5,
+        );
+        // line stretches at order 2 (fil) and the leader's stretch_order is
+        // 2 → active: v := max_dimen, then `goto found` → w = max_dimen
+        assert_eq!(e.pre_display_size_of(&line), 0x3FFF_FFFF);
+        // with the line inactive (sign 0) the leader is visible at natural width
+        let calm = line_box(
+            vec![
+                Node::Rule {
+                    width: su(1.0),
+                    height: 0,
+                    depth: 0,
+                },
+                Node::Leaders {
+                    glue: Glue {
+                        width: su(2.0),
+                        stretch: su(1.0),
+                        shrink: 0,
+                        stretch_order: 2,
+                        shrink_order: 0,
+                    },
+                    kind: 0,
+                    body: crate::boxes::LeaderBody::Rule {
+                        width: su(2.0),
+                        height: 0,
+                        depth: 0,
+                    },
+                },
+            ],
+            0,
+            0,
+            0.0,
+        );
+        assert_eq!(
+            e.pre_display_size_of(&calm),
+            su(1.0) as i64 + su(2.0) as i64 + 2 * quad
+        );
+    }
+
+    /// Recursively search every node list the engine may still hold after
+    /// a run (page list, parked paragraph lists, current list) for a glue
+    /// node of exactly width `w` sp.
+    fn has_glue_width(e: &Engine, w: i32) -> bool {
+        fn walk(ns: &[Node], w: i32) -> bool {
+            ns.iter().any(|n| match n {
+                Node::Glue(g) => g.width == w,
+                Node::Box { list, .. } => walk(list, w),
+                _ => false,
+            })
         }
-        dump("page", &e.page_list, 0);
-        println!("PAGE_LIST_LEN={} PAR_PAGE_LISTS={} SAVED={} CUR_LIST={} MODE={:?} BOX255: {:?} PDF_PAGES: {}",
-            e.page_list.len(), e.par_page_lists.len(), e.saved_lists.len(), e.cur_list.len(), e.mode,
-            e.eqtb.boxed[255].is_some(), e.pdf_doc.pages.len());
+        walk(&e.page_list, w) || e.par_page_lists.iter().any(|p| walk(p, w)) || walk(&e.cur_list, w)
+    }
+
+    /// Oracle t13/t20 (pdftex -ini \input plain): `\parindent=20pt $$a=1$$`
+    /// measures \predisplaysize = 20pt(box) + 2·quad(10pt) = 40pt; the old
+    /// code treated the parindent hlist as invisible and returned the
+    /// -max_dimen sentinel. d+s = 108.19pt > 40pt → short skips.
+    #[test]
+    fn pds_vmode_entry_measures_parindent_box() {
+        let e = run_doc(
+            "\\hsize=240pt \\vsize=60in \\parindent=20pt \
+             \\abovedisplayskip=30pt \\abovedisplayshortskip=1pt \
+             \\belowdisplayskip=30pt \\belowdisplayshortskip=2pt \
+             \\tenrm $$a=1$$\n",
+        );
+        // quad = 10.00003pt (tfm design rounding) → pds = 40.00006pt, not exact
+        approx(e.pre_display_size as i32, 40.0, "pds = parindent + 2 quad");
+        assert!(
+            has_glue_width(&e, su(1.0)),
+            "\\abovedisplayshortskip glue missing (pds={})",
+            e.pre_display_size
+        );
+        assert!(
+            !has_glue_width(&e, su(30.0)),
+            "normal display skip chosen despite d+s > pds"
+        );
+    }
+
+    /// Oracle t24: `\noindent\hbox to 235pt{}$$a=1$$` in a 240pt hsize. The
+    /// final line's last visible node is the 235pt box, so
+    /// \predisplaysize = 235pt + 2·quad = 255pt ≥ d+s = 108.19pt → TeX picks
+    /// the NORMAL skips. The old code dropped the box entirely (w stayed at
+    /// the sentinel) and wrongly picked the short pair.
+    #[test]
+    fn pds_box_final_line_selects_normal_skips() {
+        let e = run_doc(
+            "\\hsize=240pt \\vsize=60in \\parindent=0pt \
+             \\abovedisplayskip=30pt \\abovedisplayshortskip=1pt \
+             \\belowdisplayskip=30pt \\belowdisplayshortskip=2pt \
+             \\noindent\\hbox to 235pt{}\\tenrm$$a=1$$\n",
+        );
+        approx(e.pre_display_size as i32, 255.0, "pds = 235pt box + 2 quad");
+        assert!(has_glue_width(&e, su(30.0)), "normal display skip missing");
+        assert!(
+            !has_glue_width(&e, su(1.0)),
+            "short skip chosen although pds = 255pt (old invisible-box bug)"
+        );
     }
 }
-
-#[cfg(test)]
-mod probe4 {
-    use super::*;
-    /// Isolated math constructs through the REAL LaTeX format + newtx setup,
-    /// dumping each paragraph line-box width (== the math width, since
-    /// \noindent + \parfillskip natural width 0). Oracle: real pdflatex
-    /// \showthe\wd of the same \hbox{}es.
-    #[test]
-    #[ignore]
-    fn probe_ntx_math_widths() {
-        let mut e = Engine::new(false);
-        e.init_primitives();
-        match crate::format::load_format_into(std::path::Path::new("/tmp/pdflatex.fmt"), &mut e) {
-            Ok(()) => eprintln!("format ok"),
-            Err(err) => panic!("format load failed: {err}"),
-        }
-        e.ini_mode = false;
-        e.end_occurred = false;
-        let body = r#"
-\documentclass[12pt]{article}
-\usepackage[T1]{fontenc}
-\usepackage{newtx}
-\usepackage{amsmath}
-\begin{document}
-\noindent$\lambda(\tau)$\par
-\noindent$\tfrac12$\par
-\noindent$\Lambda_{M}$\par
-\noindent$x^{M}$\par
-\noindent$\ell^2/\mu$\par
-\noindent$\lambda'(\tau) < 0$\par
-\end{document}
-"#;
-        e.input.push_file("mw.tex".to_string(), body.as_bytes().to_vec());
-        e.run();
-        eprintln!("ERRORS={}", e.error_count);
-        let mut idx = 0usize;
-        fn walk(ns: &[Node], depth: usize, idx: &mut usize) {
-            for n in ns {
-                match n {
-                    Node::Box { kind, w, h, d, list, .. } => {
-                        eprintln!("{}[{}] {} w={}pt h={} d={}", "  ".repeat(depth), idx,
-                            if *kind == VBOX { "VBOX" } else { "HBOX" },
-                            *w as f64 / 65536.0, *h as f64 / 65536.0, *d as f64 / 65536.0);
-                        *idx += 1;
-                        if *w != 0 { walk(list, depth + 1, idx); }
-                    }
-                    other => eprintln!("{}{:?}  [{}]", "  ".repeat(depth), other, idx),
-                }
-            }
-        }
-        for (i, par) in e.par_page_lists.iter().enumerate() {
-            eprintln!("== PAR {} ({} nodes)", i, par.len());
-            walk(par, 1, &mut idx);
-        }
-        eprintln!("== PAGE_LIST ({} nodes) SAVED={} CUR={}", e.page_list.len(), e.saved_lists.len(), e.cur_list.len());
-        walk(&e.page_list, 1, &mut idx);
-    }
-    /// \showbox0 dumps through the REAL LaTeX format + newtx: compare widths
-    /// to real pdflatex's \showbox on the same file.
-    #[test]
-    #[ignore]
-    fn probe_ntx_showbox() {
-        let mut e = Engine::new(false);
-        e.init_primitives();
-        crate::format::load_format_into(std::path::Path::new("/tmp/pdflatex.fmt"), &mut e).unwrap();
-        e.ini_mode = false;
-        e.end_occurred = false;
-        let body = r#"
-\documentclass[12pt]{article}
-\usepackage[T1]{fontenc}
-\usepackage{newtx}
-\usepackage{amsmath}
-\showboxbreadth=100 \showboxdepth=4
-\begin{document}
-\setbox0=\hbox{$\lambda(\tau)$}\showbox0
-\setbox0=\hbox{$\Lambda_{M}$}\showbox0
-\setbox0=\hbox{$x^{M}$}\showbox0
-\setbox0=\hbox{$\ell^2/\mu$}\showbox0
-\setbox0=\hbox{$\tfrac12$}\showbox0
-\end{document}
-"#;
-        e.input.push_file("mw2.tex".to_string(), body.as_bytes().to_vec());
-        e.run();
-        for l in e.term.lines() {
-            if l.contains("width") || l.contains("character") || l.contains("rule") || l.contains("glue") || l.contains("kern") {
-                eprintln!("SB {}", l.trim_start());
-            }
-        }
-    }
-
-    #[test]
-    #[ignore]
-    fn probe_latex_math_fonts() {
-        let mut e = Engine::new(false);
-        e.init_primitives();
-        crate::format::load_format_into(std::path::Path::new("/tmp/pdflatex.fmt"), &mut e).unwrap();
-        e.ini_mode = false;
-        let body = "\\documentclass[12pt]{article}\n\\usepackage[margin=1in]{geometry}\n\\usepackage[T1]{fontenc}\n\\usepackage{newtx}\n\\usepackage{amsmath}\n\\usepackage{setspace}\n\\begin{document}\n\\setstretch{1.5}\n\\begin{abstract}\nSome abstract text here.\n\\end{abstract}\nBody paragraph after abstract.\n\\end{document}\n";
-        e.input.push_file("mw3.tex".to_string(), body.as_bytes().to_vec());
-        e.run();
-        eprintln!("ERRORS={} mathcode_x={:?} hsize={}pt parindent={}pt",
-            e.error_count, e.eqtb.math_code[b'x' as usize],
-            e.eqtb.dim_params[DimParam::HSize.idx() as usize] as f64 / 65536.0,
-            e.eqtb.dim_params[DimParam::ParIndent.idx() as usize] as f64 / 65536.0);
-        for size in 0..3 {
-            let row: Vec<String> = (0..4)
-                .map(|fam| {
-                    let fid = e.eqtb.style_fonts[size][fam];
-                    let name = e.eqtb.fonts.get(fid as usize).map(|f| f.name.clone()).unwrap_or_default();
-                    format!("fam{}={}({})", fam, fid, name)
-                })
-                .collect();
-            eprintln!("size{}: {}", size, row.join(" "));
-        }
-        let c = e.eqtb.math_code[b'x' as usize] as usize;
-        let fam = ((c >> 8) & 0xF) as u8;
-        let ch = (c & 0xFF) as u8;
-        let fid = e.eqtb.style_fonts[0][fam as usize];
-        if let Some(f) = e.eqtb.fonts.get(fid as usize) {
-            eprintln!("x -> fam{} char 0x{:02x} in font {}: exists={}", fam, ch, fid, f.exists_char(ch));
-        } else {
-            eprintln!("x -> font {} OUT OF RANGE", fid);
-        }
-    }
-    #[test]
-    #[ignore]
-    fn probe_latex_textfont_assign() {
-        let mut e = Engine::new(false);
-        e.init_primitives();
-        crate::format::load_format_into(std::path::Path::new("/tmp/pdflatex.fmt"), &mut e).unwrap();
-        e.ini_mode = false;
-        e.end_occurred = false;
-        let body = "\\documentclass[12pt]{article}\n\\begin{document}\n\\font\\myi=cmmi12 \\textfont1=\\myi\n$x$\n\\end{document}\n";
-        e.input.push_file("mw4.tex".to_string(), body.as_bytes().to_vec());
-        e.run();
-        eprintln!("ERRORS={} style_fonts[0][1]={} style_fonts[1][1]={}",
-            e.error_count, e.eqtb.style_fonts[0][1], e.eqtb.style_fonts[1][1]);
-        for l in e.term.lines() {
-            if l.contains("Font Info") || l.contains("Font Warning") || l.contains("cmmi") || l.contains("loaded") {
-                eprintln!("FI {}", l.trim_start());
-            }
-        }
-    }
-
-    #[test]
-    #[ignore]
-    fn probe_cm_manual_fam_widths() {
-        let mut e = Engine::new(false);
-        e.init_primitives();
-        crate::format::load_format_into(std::path::Path::new("/tmp/pdflatex.fmt"), &mut e).unwrap();
-        e.ini_mode = false;
-        e.end_occurred = false;
-        // Mirror real LaTeX 12pt math font setup (OML/cmm, OMS/cmsy, cmex, cmr
-        // at 12/8/6) — what \math@fonts would do at $-entry.
-        let body = r#"
-\documentclass[12pt]{article}
-\begin{document}
-\font\fa=cmr12 \textfont0=\fa
-\font\fb=cmmi12 \textfont1=\fb
-\font\fc=cmsy10 at 12pt \textfont2=\fc
-\font\fd=cmex10 at 12pt \textfont3=\fd
-\font\fe=cmr8 \scriptfont0=\fe
-\font\ff=cmmi8 \scriptfont1=\ff
-\font\fg=cmsy10 at 8pt \scriptfont2=\fg
-\font\fh=cmex10 at 8pt \scriptfont3=\fh
-\font\fj=cmmi6 \scriptscriptfont1=\fj
-\setbox0=\hbox{$\Lambda_{M}$}\showbox0
-\setbox0=\hbox{$x^{M}$}\showbox0
-"#;
-        e.input.push_file("cmw.tex".to_string(), body.as_bytes().to_vec());
-        e.run();
-        eprintln!("ERRORS={}", e.error_count);
-        for l in e.term.lines() {
-            if l.contains("width") || l.contains("character") || l.contains("kern") || l.contains("rule") || l.contains("vbox") || l.starts_with("! ") {
-                eprintln!("CMW {}", l.trim_start());
-            }
-        }
-    }
-    #[test]
-    fn probe_eqno_frac_scratch_no_eqno() {
-        let mut e = Engine::new(false);
-        e.init_primitives();
-        crate::format::load_format_into(std::path::Path::new("/home/leo/dd/tex/target/debug/pdflatex.fmt"), &mut e).unwrap();
-        e.ini_mode = false;
-        e.end_occurred = false;
-        let body = "\\documentclass[12pt]{article}\\usepackage[T1]{fontenc}\\usepackage{amsmath}\\usepackage{newtx}\\begin{document}$$b^{W}=\\frac{\\lambda+\\zeta\\kappa}{\\lambda+\\theta+\\zeta},\\qquad \\frac{\\partial w^{*}}{\\partial\\lambda}<0$$";
-        e.input.push_file("probe.tex".to_string(), body.as_bytes().to_vec());
-        e.run();
-        eprintln!("errors={} term_tail={}", e.error_count, &e.term[e.term.len().saturating_sub(200)..]);
-        fn dump(n: &Node, ind: usize, depth: usize) {
-            if depth > 8 { return; }
-            let pad = "  ".repeat(ind);
-            match n {
-                Node::Box { kind, w, h, d, shift, list, .. } => {
-                    eprintln!("{}box kind={} w={} h={} d={} shift={}", pad, kind, w, h, d, shift);
-                    for c in list { dump(c, ind + 1, depth + 1); }
-                }
-                Node::Glue(g) => eprintln!("{}glue w={} st={} sh={}", pad, g.width, g.stretch, g.shrink),
-                Node::Kern(k) | Node::ExplicitKern(k) => eprintln!("{}kern {}", pad, k),
-                Node::Penalty(p) => eprintln!("{}pen {}", pad, p),
-                Node::Rule { width, height, depth } => eprintln!("{}rule w={} h={} d={}", pad, width, height, depth),
-                other => eprintln!("{}{:?}", pad, other),
-            }
-        }
-        for n in &e.page_list { dump(n, 0, 0); }
-    }
-}
-

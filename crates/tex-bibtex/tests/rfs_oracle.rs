@@ -110,7 +110,9 @@ fn missing_entries_and_min_crossrefs_option() {
 
     let out = tex_bibtex::run("m", &tmp, false);
     assert_eq!(out.status, 0, "warnings alone do not fail: {}", out.blg);
-    assert!(out.blg.contains("I didn't find a database entry for \"ghost\""));
+    assert!(out
+        .blg
+        .contains("I didn't find a database entry for \"ghost\""));
 
     let out = tex_bibtex::run_opts(
         "m",
@@ -135,11 +137,12 @@ fn d5_rfs_reproduces_oracle_bbl() {
     let out = tex_bibtex::run("d5", &dir, false);
     assert_eq!(out.status, 0, "run should be spotless; blg: {}", out.blg);
     let oracle = std::fs::read_to_string(dir.join("d5.bbl.oracle")).unwrap();
-    let trim_r = |s: &str| s
-        .lines()
-        .map(|l| l.trim_end())
-        .collect::<Vec<_>>()
-        .join("\n");
+    let trim_r = |s: &str| {
+        s.lines()
+            .map(|l| l.trim_end())
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
     assert_eq!(
         trim_r(&out.bbl),
         trim_r(&oracle),

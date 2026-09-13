@@ -12,3 +12,4 @@ name = "bibtex"
 path = "src/bin/bibtex.rs"
 
 [dependencies]
+tex-kpse = { path = "../tex-kpse" }

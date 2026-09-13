@@ -65,8 +65,7 @@ impl<'a> BstParser<'a> {
         let start = self.i;
         while self.i < self.b.len() {
             let c = self.b[self.i];
-            if c == b'{' || c == b'}' || c == b'%' || c == b'"'
-                || (c as char).is_ascii_whitespace()
+            if c == b'{' || c == b'}' || c == b'%' || c == b'"' || (c as char).is_ascii_whitespace()
             {
                 break;
             }
@@ -96,6 +95,12 @@ impl<'a> BstParser<'a> {
                     self.i += 1;
                 }
                 self.i += 1;
+                continue;
+            }
+            if c == b'%' {
+                while self.i < self.b.len() && self.b[self.i] != b'\n' {
+                    self.i += 1;
+                }
                 continue;
             }
             if c == b'{' {
@@ -172,21 +177,15 @@ impl<'a> BstParser<'a> {
                     "read" => cmds.push(BstCommand::Read),
                     "execute" => {
                         let name_g = self.scan_group().unwrap_or_default();
-                        cmds.push(BstCommand::Execute(
-                            name_g.trim().to_ascii_lowercase(),
-                        ));
+                        cmds.push(BstCommand::Execute(name_g.trim().to_ascii_lowercase()));
                     }
                     "iterate" => {
                         let name_g = self.scan_group().unwrap_or_default();
-                        cmds.push(BstCommand::Iterate(
-                            name_g.trim().to_ascii_lowercase(),
-                        ));
+                        cmds.push(BstCommand::Iterate(name_g.trim().to_ascii_lowercase()));
                     }
                     "reverse" => {
                         let name_g = self.scan_group().unwrap_or_default();
-                        cmds.push(BstCommand::Reverse(
-                            name_g.trim().to_ascii_lowercase(),
-                        ));
+                        cmds.push(BstCommand::Reverse(name_g.trim().to_ascii_lowercase()));
                     }
                     "sort" => cmds.push(BstCommand::Sort),
                     "comment" => {
@@ -246,7 +245,9 @@ fn tokenize_range(b: &[u8], i: &mut usize, end: usize) -> Vec<Tok> {
             while *i < end && b[*i] != b'"' {
                 *i += 1;
             }
-            toks.push(Tok::Str(String::from_utf8_lossy(&b[start..*i]).into_owned()));
+            toks.push(Tok::Str(
+                String::from_utf8_lossy(&b[start..*i]).into_owned(),
+            ));
             *i += 1; // past closing quote
             continue;
         }
@@ -255,7 +256,10 @@ fn tokenize_range(b: &[u8], i: &mut usize, end: usize) -> Vec<Tok> {
             let start = *i;
             while *i < end {
                 let d = b[*i];
-                if d == b'{' || d == b'}' || d == b'"' || d == b'%'
+                if d == b'{'
+                    || d == b'}'
+                    || d == b'"'
+                    || d == b'%'
                     || (d as char).is_ascii_whitespace()
                 {
                     break;
@@ -278,9 +282,7 @@ fn tokenize_range(b: &[u8], i: &mut usize, end: usize) -> Vec<Tok> {
             while *i < end && b[*i].is_ascii_digit() {
                 *i += 1;
             }
-            let n: i32 = String::from_utf8_lossy(&b[start..*i])
-                .parse()
-                .unwrap_or(0);
+            let n: i32 = String::from_utf8_lossy(&b[start..*i]).parse().unwrap_or(0);
             toks.push(Tok::Int(if neg { -n } else { n }));
             continue;
         }
@@ -288,7 +290,11 @@ fn tokenize_range(b: &[u8], i: &mut usize, end: usize) -> Vec<Tok> {
         let start = *i;
         while *i < end {
             let d = b[*i];
-            if d == b'{' || d == b'}' || d == b'"' || d == b'\'' || d == b'%'
+            if d == b'{'
+                || d == b'}'
+                || d == b'"'
+                || d == b'\''
+                || d == b'%'
                 || (d as char).is_ascii_whitespace()
             {
                 break;

@@ -10,7 +10,8 @@ fn boot() -> Engine {
 }
 
 fn run_tex(e: &mut Engine, src: &str) {
-    e.input.push_file("t.tex".to_string(), src.as_bytes().to_vec());
+    e.input
+        .push_file("t.tex".to_string(), src.as_bytes().to_vec());
     e.run();
 }
 
@@ -168,5 +169,156 @@ fn iffileexists_edef_leaves_true_branch() {
     assert_eq!(body(&e, b"reserved@a"), "YES");
 }
 
+#[test]
+fn split_group_toklist_falls_back_to_file() {
+    use tex_core::token::Token;
+    let mut e = boot();
+    e.eqtb.cat[b'}' as usize] = 2;
+    e.input.push_file("remaining.tex".into(), b"Z}}Q".to_vec());
+    e.input.push_toks(
+        vec![Token::char(1, b'{' as u32), Token::char(11, b'X' as u32)],
+        "<argument>",
+    );
+    // The caller has already consumed the outer opening brace. The nested
+    // group's closing brace and the outer closing brace are in the file.
+    let argument = e.scan_balanced_raw(true);
+    assert_eq!(e.tokens_to_string(&argument), "{XZ}");
+    assert_eq!(e.raw_token(), Token::char(11, b'Q' as u32));
+    assert_eq!(e.error_count, 0, "{}", e.term);
+}
 
+#[test]
+fn expandafter_expands_active_characters_once() {
+    let mut e = boot();
+    run_tex(
+        &mut e,
+        &(PRE.to_string()
+            + r#"
+\catcode`\~=13
+\def~{OK}
+\expandafter\def\expandafter~\expandafter{~}
+\edef\result{~}
+\def\after{DONE}
+"#),
+    );
+    assert_eq!(body(&e, b"result"), "OK");
+    assert_eq!(body(&e, b"after"), "DONE");
+    assert_eq!(e.error_count, 0, "{}", e.term);
+}
 
+#[test]
+fn dimension_character_constant_does_not_expand_active_token() {
+    let mut e = boot();
+    run_tex(
+        &mut e,
+        &(PRE.to_string()
+            + r#"
+\catcode`\~=13 \def~{WRONG}
+\edef\result{\number\dimexpr`~sp\relax}
+\def\after{DONE}
+"#),
+    );
+    assert_eq!(body(&e, b"result"), "126");
+    assert_eq!(body(&e, b"after"), "DONE");
+    assert_eq!(e.error_count, 0, "{}", e.term);
+}
+
+#[test]
+fn dimension_expression_can_supply_an_internal_unit() {
+    let mut e = boot();
+    run_tex(
+        &mut e,
+        &(PRE.to_string()
+            + r#"
+\catcode`\~=13 \def~{WRONG}
+\edef\result{\number\dimexpr.25\dimexpr`~sp\relax\relax}
+\def\after{DONE}
+"#),
+    );
+    assert_eq!(body(&e, b"result"), "31");
+    assert_eq!(body(&e, b"after"), "DONE");
+    assert_eq!(e.error_count, 0, "{}", e.term);
+}
+
+#[test]
+fn vertical_split_preserves_dimension_register_zero() {
+    let mut e = boot();
+    run_tex(
+        &mut e,
+        &(PRE.to_string()
+            + r#"
+\dimen0=73pt
+\setbox0=\vbox{\hbox{\vrule height10pt}\vskip2pt\hbox{\vrule height10pt}}
+\setbox2=\vsplit0 to12pt
+\edef\result{\number\dimen0}
+"#),
+    );
+    assert_eq!(body(&e, b"result"), "4784128");
+    assert_eq!(e.error_count, 0, "{}", e.term);
+}
+
+#[test]
+fn expandafter_the_reenters_expansion_but_direct_the_does_not() {
+    let mut e = boot();
+    run_tex(
+        &mut e,
+        &(PRE.to_string()
+            + r#"
+\def\foo{OK}\def\empty{}\toks0={\foo}
+\edef\direct{\the\toks0}
+\edef\indirect{\expandafter\empty\the\toks0}
+"#),
+    );
+    assert_eq!(body(&e, b"direct"), "foo ");
+    assert_eq!(body(&e, b"indirect"), "OK");
+    assert_eq!(e.error_count, 0, "{}", e.term);
+}
+
+#[test]
+fn protected_active_token_prints_as_its_character() {
+    let mut e = boot();
+    run_tex(
+        &mut e,
+        &(PRE.to_string()
+            + r#"
+\catcode`\~=13 \protected\def~{OK}
+\edef\saved{~}
+\edef\printed{\expandafter\string\saved}
+"#),
+    );
+    assert_eq!(body(&e, b"saved"), "~");
+    assert_eq!(body(&e, b"printed"), "~");
+    assert_eq!(e.error_count, 0, "{}", e.term);
+}
+
+#[test]
+fn write_serialization_preserves_utf8_token_bytes() {
+    use tex_core::token::Token;
+    let mut e = boot();
+    let text = "Sant’Anna";
+    let chars: Vec<_> = text.bytes().map(Token::other).collect();
+    assert_eq!(e.write_tokens_to_string(&chars), text);
+    let active: Vec<_> = text
+        .bytes()
+        .map(|b| Token::from_cs(e.active_cs_id(b)))
+        .collect();
+    assert_eq!(e.write_tokens_to_string(&active), text);
+}
+
+#[test]
+fn assignment_does_not_prefetch_a_conditional_number() {
+    let mut e = boot();
+    run_tex(
+        &mut e,
+        &(PRE.to_string()
+            + r#"
+\def\odd#1#2\stop{\count0=\if-#1-0\else0\expandafter#1\fi#2\relax}
+\odd-1\stop
+\edef\result{\the\count0}
+\def\after{DONE}
+"#),
+    );
+    assert_eq!(body(&e, b"result"), "-1");
+    assert_eq!(body(&e, b"after"), "DONE");
+    assert_eq!(e.error_count, 0, "{}", e.term);
+}

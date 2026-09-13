@@ -122,3 +122,88 @@ if you swap page_list behind the builder's back, either reset
 page_processed/page_total/page_goal_set/page_best_break too, or rely on
 these clamps (they make it safe, but accounting restarts at the clamp).
 Re-verified after clamp: pagedrive.tex still 3-page PDF exit 0.
+
+## Nest depth separation (2026-09-12)
+
+- `build_page` updates page depth without overwriting the enclosing nest's
+  `prev_depth`. Unboxing preserves nest depth, as TeX's link splice does.
+- This prevents reprocessed float markers from erasing a restored `\prevdepth`
+  and changing the following paragraph's interline glue.
+- Document `2609.04356`: exact 150dpi parity improved from 82.746203% to
+  99.695966%; all eight pages exceed 98.675%.
+- Full campaign: `output/campaign-depth-separated-104/report.json`.
+  All 104 Rust runs converged cleanly; mean parity 95.956799%, 73 documents
+  at least 95%. The 97% mean / 95% document-floor goal remains unmet.
+
+## Output-register lifetime and deferred write sentinels (2026-09-12)
+
+- Output routines read the completed page's goal, total, and glue registers;
+  the reset next-page counters are not their visible values. Page depth is
+  cleared before output, matching TeX's "Start a new current page".
+- REVTeX previously read pagegoal=16383.99998pt instead of 672pt inside
+  its float-fit calculation. Its negative computed page height admitted
+  floats that could not fit. All four traced float decisions now match pdfTeX.
+- All non-immediate writes retain structural whatsits, including log-only
+  `\write-1{}`. LaTeX uses that node to permit a split before clearpage's
+  top glue; emitting it eagerly caused blank pages with correct splitting.
+- Added `\ignoreprimitiveerror`: bit 1 retains pdfTeX's log-only diagnostic
+  for infinite shrink during splitting. Other masks still report an error.
+  LaTeX's split-mark extraction uses this facility. Format version is now 8
+  because the serialized integer parameter table has an additional entry.
+- Integrated campaign: `output/campaign-pagination-integrated-104/report.json`.
+  All 104 runs clean/converged; 97 page-count matches, mean 96.220185%,
+  75 documents at least 95%, minimum 89.343704%. Goal remains unmet.
+- Differential regressions cover output-register reads and the deferred
+  log-write breakpoint. Rendered REVTeX equation/paragraph placement checked.
+
+## Output paragraph-counter isolation (2026-09-12)
+
+- The output nest starts with `\prevgraf=0` and restores the outer counter
+  when it closes, alongside `\prevdepth`. Output paragraphs cannot consume
+  line numbers belonging to a display-interrupted outer paragraph.
+- `probe_prevgraf_follows_enclosing_vertical_nest` verifies this against pdfTeX.
+
+## Integrated accent and paragraph campaign (2026-09-12)
+
+- Report: `output/campaign-accent-nest-integrated-104/report.json`.
+- All 104 Rust runs compile and converge cleanly. Mean exact parity is
+  96.525073% (previously 96.220185%); 80 documents reach 95%, and 99 page
+  counts match. Minimum document parity is 89.863962%; the goal remains unmet.
+- ACL `2609.03218` improves from 89.343704% to 95.009611%; its accented
+  caption and following line positions now match the rendered reference.
+- Wrapped-paragraph document `2609.05041` improves from 89.573137% to
+  95.228646%; it still has 70 pages versus the reference's 69.
+- NeurIPS `2609.05403` improves to 92.040568%; residual vertical offsets and
+  its 46-versus-47 page count remain. Rendered page 4 inspected.
+- Final verification: 123 core tests pass (5 ignored), 27 differential
+  probes pass, and the production CLI rebuild succeeds.
+
+## Breakpoint penalty lifetime (2026-09-12)
+
+- `fire_up` leaves the selected penalty on the contribution list, rewritten
+  to 10000, rather than deleting it. Output-routine material precedes this
+  sentinel; `\lastskip` and `\lastpenalty` therefore observe the same tail
+  as pdfTeX. Glue breakpoints expose `\outputpenalty=10000`.
+- Deleting the sentinel made LaTeX's `\addpenalty` compensate the wrong
+  trailing skip. A NeurIPS in-text figure gained an extra 5.5pt before the
+  next heading; the reduced figure/heading example now matches exactly.
+- `probe_output_reinsertion_preserves_break_penalty` fails before the fix
+  (last penalty 0, last skip 5pt) and passes afterward (10000, 0pt).
+- Full report: `output/campaign-breakpoint-lifetime-104/report.json`.
+  All 104 runs clean; mean 96.700987%, 82 documents at least 95%,
+  100 page-count matches, minimum 90.368670%.
+- Predator-prey document `2609.04834` improves from 89.863962% to
+  96.748053% with matching 51-page output. Its isolated alignment display
+  already matches pdfTeX; no speculative alignment-spacing change was applied.
+
+## Paragraph depth after migrated insertions (2026-09-12)
+
+- Final-line depth scans in `end_paragraph` skip migrated insertions, marks,
+  writes, and penalties instead of stopping at them and retaining the
+  pre-paragraph depth. This applies in outer and internal vertical mode.
+- `probe_trailing_insert_preserves_paragraph_depth` reproduces the error:
+  a line with depth 3pt followed by an insertion incorrectly left the old
+  7pt depth in both modes. Both now report 3pt.
+- In the reduced trust-document theorem, `\prevdepth` after the footnoted
+  paragraph now matches pdfTeX's 2.5pt rather than zero. Subsequent prose,
+  the displayed equation, and resumed prose match reference baselines.

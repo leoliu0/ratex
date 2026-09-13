@@ -1,3 +1,5 @@
+#![allow(dead_code, unused_assignments)]
+
 //! tex-bibtex: a BibTeX engine in Rust.
 //!
 //! Pipeline: parse .aux (\\citation, \\bibstyle, \\bibdata, \\bibcite) →
@@ -28,7 +30,11 @@ pub struct Logger {
 
 impl Logger {
     fn new() -> Self {
-        Logger { lines: Vec::new(), errors: 0, warnings: 0 }
+        Logger {
+            lines: Vec::new(),
+            errors: 0,
+            warnings: 0,
+        }
     }
     fn info(&mut self, msg: impl AsRef<str>) {
         self.lines.push(msg.as_ref().to_string());
@@ -172,8 +178,11 @@ fn resolve_input(aux_path: &Path, name: &str) -> PathBuf {
     if p.exists() {
         p.to_path_buf()
     } else {
-        let with_ext =
-            if name.ends_with(".aux") { name.to_string() } else { format!("{name}.aux") };
+        let with_ext = if name.ends_with(".aux") {
+            name.to_string()
+        } else {
+            format!("{name}.aux")
+        };
         if let Some(dir) = aux_path.parent() {
             let cand = dir.join(&with_ext);
             if cand.exists() {
@@ -254,7 +263,10 @@ pub fn run(args: &[String], version: &str) -> i32 {
 
     let mut log = Logger::new();
     log.info(format!("This is BibTeX, Version {version}"));
-    log.info(format!("The top-level auxiliary file: {}", aux_path.display()));
+    log.info(format!(
+        "The top-level auxiliary file: {}",
+        aux_path.display()
+    ));
 
     if !aux_path.exists() {
         let msg = format!("I couldn't open auxiliary file {}", aux_path.display());
@@ -264,7 +276,12 @@ pub fn run(args: &[String], version: &str) -> i32 {
         return 2;
     }
 
-    let mut aux = Aux { cites: Vec::new(), style: None, bib_files: Vec::new(), all_entries: false };
+    let mut aux = Aux {
+        cites: Vec::new(),
+        style: None,
+        bib_files: Vec::new(),
+        all_entries: false,
+    };
     if let Err(e) = parse_aux_file(&aux_path, &mut aux, &mut log, 0) {
         eprintln!("tex-bibtex: {e}");
         log.error(&e);
@@ -355,7 +372,14 @@ pub fn run(args: &[String], version: &str) -> i32 {
     }
     let mut read_done = false; // ENTRY/READ bookkeeping
     for cmd in &program.cmds {
-        if let Err(e) = run_cmd(cmd, &aux, &mut db, &mut interp, &mut read_done, min_crossrefs) {
+        if let Err(e) = run_cmd(
+            cmd,
+            &aux,
+            &mut db,
+            &mut interp,
+            &mut read_done,
+            min_crossrefs,
+        ) {
             let msg = format!("{e}");
             eprintln!("tex-bibtex: {msg}");
             interp.log.error(&msg);
@@ -455,10 +479,10 @@ fn do_read(
     let mut cite_list: Vec<Cite> = Vec::new();
     let mut pos_of: HashMap<String, usize> = HashMap::new(); // lc -> cite_list idx
 
-    let mut add_cite = |cite_list: &mut Vec<Cite>,
-                        pos_of: &mut HashMap<String, usize>,
-                        key: &str,
-                        aux_cited: bool|
+    let add_cite = |cite_list: &mut Vec<Cite>,
+                    pos_of: &mut HashMap<String, usize>,
+                    key: &str,
+                    aux_cited: bool|
      -> Option<usize> {
         let lc = key.to_ascii_lowercase();
         if let Some(&i) = pos_of.get(&lc) {
@@ -513,7 +537,9 @@ fn do_read(
 
     // crossref resolution: inheritance + canonicalization; bad refs error out
     for i in 0..cite_list.len() {
-        let Some(db_idx) = cite_list[i].read else { continue };
+        let Some(db_idx) = cite_list[i].read else {
+            continue;
+        };
         let child = &db.entries[db_idx];
         let Some((_, parent_val)) = child.fields.iter().find(|(n, _)| n == "crossref") else {
             continue;

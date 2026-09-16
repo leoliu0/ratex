@@ -27,3 +27,4 @@ output/
 /diag_*.py
 /.pi/
 /.omp/
+/trust_own/

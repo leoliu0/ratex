@@ -77,6 +77,11 @@ jobs:
             --arch "${{ matrix.arch }}"
         shell: bash
 
+      - name: Build Linux packages (.deb, Arch .pkg.tar.zst)
+        if: matrix.platform == 'linux'
+        shell: bash
+        run: python3 scripts/build_linux_packages.py --output-dir dist
+
       - name: Package distribution (windows)
         if: matrix.platform == 'windows'
         run: python scripts/package_dist.py --platform windows --arch x86_64
@@ -106,7 +111,7 @@ jobs:
         shell: bash
         run: |
           cd dist
-          sha256sum tex-suite-* > SHA256SUMS-${{ matrix.label }}.txt
+          sha256sum * > SHA256SUMS-${{ matrix.label }}.txt 2>/dev/null || true
           cat SHA256SUMS-${{ matrix.label }}.txt
 
       - name: Upload artifacts
@@ -114,8 +119,7 @@ jobs:
         with:
           name: tex-suite-${{ matrix.label }}
           path: |
-            dist/tex-suite-*
-            dist/SHA256SUMS-${{ matrix.label }}.txt
+            dist/*
           if-no-files-found: error
 
   release:

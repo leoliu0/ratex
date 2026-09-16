@@ -49,6 +49,43 @@ ratex/
 └── scripts/          # Corpus testing, benchmark suites, and packaging tools
 ```
 
+
+## Platform Support & Installation
+
+| Platform / Distribution | Package Format | Release Status | Quick Install |
+|---|---|---|---|
+| **Arch Linux / Manjaro** | AUR (`ratex-bin`) | ✅ Active | `paru -S ratex-bin` |
+| **Ubuntu / Debian / Mint / Pop!_OS** | `.deb` (x86_64) | ✅ Active | `sudo apt install ./ratex_0.1.0_amd64.deb` |
+| **Fedora / RHEL / CentOS / Rocky** | `.rpm` (x86_64) | ✅ Active | `sudo dnf install ./ratex-0.1.0-1.x86_64.rpm` |
+| **Universal Linux** | Standalone `.tar.gz` | ✅ Active | `./install.sh` |
+| **macOS (Apple Silicon & Intel)** | Standalone `.tar.gz` | ✅ Active | `./install.sh` |
+| **Windows (x86_64)** | `.zip` + PowerShell installer | ✅ Active | `install.bat` |
+
+### Arch Linux (AUR)
+```bash
+paru -S ratex-bin    # or: yay -S ratex-bin
+```
+
+### Debian / Ubuntu (`.deb`)
+Download `ratex_<version>_amd64.deb` from [Releases](https://github.com/leoliu0/ratex/releases):
+```bash
+sudo apt install ./ratex_0.1.0_amd64.deb
+```
+
+### Fedora / RHEL / openSUSE (`.rpm`)
+Download `ratex-<version>-1.x86_64.rpm` from [Releases](https://github.com/leoliu0/ratex/releases):
+```bash
+sudo dnf install ./ratex-0.1.0-1.x86_64.rpm
+```
+
+### Universal Linux & macOS Installer
+```bash
+tar -xzf tex-suite-v0.1.0-linux-x86_64.tar.gz
+cd tex-suite-linux-x86_64
+./install.sh
+```
+*The installer automatically prompts to configure `latexmk` as an alias to `texmk`, so TeXstudio, VS Code, and other editors work immediately.*
+
 ---
 
 ## Quick Start

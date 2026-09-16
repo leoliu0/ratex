@@ -41,13 +41,21 @@ pub struct SourceMark {
     name: Rc<str>,
     data: Rc<[u8]>,
     line: u32,
+    /// Byte offset of `line` in `data`. Keeping this in the bookmark avoids
+    /// rescanning the file from byte zero whenever a diagnostic is rendered.
+    line_start: usize,
     byte_column: usize,
     included_from: Option<Rc<SourceMark>>,
 }
 
 impl SourceMark {
     pub(crate) fn to_context(&self) -> SourceContext {
-        let bytes = InputStack::raw_line(&self.data, self.line);
+        let bytes = if self.line == 0 {
+            &[][..]
+        } else {
+            let (end, _) = physical_line_bounds(&self.data, self.line_start);
+            &self.data[self.line_start.min(end)..end]
+        };
         let mut context = InputStack::context_from_line(
             self.name.to_string(),
             self.line,
@@ -73,6 +81,8 @@ pub enum Source {
         included_from: Option<Rc<SourceMark>>,
         pos: usize,
         line_no: u32,
+        /// Byte offset of the current physical line in `data`.
+        line_start: usize,
         /// tokenizer state: 0 = new line, 1 = mid line, 2 = skip spaces
         state: u8,
         /// set by \endinput: stop at end of current line
@@ -144,6 +154,24 @@ pub struct InputStack {
     last_finished_file: Option<SourceContext>,
 }
 
+/// Return the content end and next-line offset for a physical line.
+/// TeX accepts LF, CRLF, and legacy CR-only files.
+pub(crate) fn physical_line_bounds(data: &[u8], start: usize) -> (usize, usize) {
+    let start = start.min(data.len());
+    let Some(offset) = data[start..]
+        .iter()
+        .position(|&byte| byte == b'\n' || byte == b'\r')
+    else {
+        return (data.len(), data.len());
+    };
+    let end = start + offset;
+    let next = if data[end] == b'\r' && data.get(end + 1) == Some(&b'\n') {
+        end + 2
+    } else {
+        end + 1
+    };
+    (end, next)
+}
 impl InputStack {
     pub fn new() -> Self {
         InputStack {
@@ -160,28 +188,26 @@ impl InputStack {
         self.last_finished_file = None;
     }
 
-    fn raw_line(data: &[u8], line_no: u32) -> &[u8] {
+    fn raw_line_at(data: &[u8], line_no: u32) -> (usize, &[u8]) {
         if line_no == 0 {
-            return &[];
+            return (0, &[]);
         }
         let mut start = 0usize;
         let mut current = 1u32;
         while current < line_no && start < data.len() {
-            let Some(next) = data[start..].iter().position(|&b| b == b'\n') else {
-                return &[];
-            };
-            start += next + 1;
+            let (end, next) = physical_line_bounds(data, start);
+            if end == next {
+                return (data.len(), &[]);
+            }
+            start = next;
             current += 1;
         }
-        let end = data[start..]
-            .iter()
-            .position(|&b| b == b'\n')
-            .map_or(data.len(), |offset| start + offset);
-        let mut line = &data[start..end];
-        if line.last() == Some(&b'\r') {
-            line = &line[..line.len() - 1];
-        }
-        line
+        let (end, _) = physical_line_bounds(data, start);
+        (start, &data[start..end])
+    }
+
+    fn raw_line(data: &[u8], line_no: u32) -> &[u8] {
+        Self::raw_line_at(data, line_no).1
     }
 
     fn context_for_at(source: &Source, byte_column: Option<usize>) -> Option<SourceContext> {
@@ -191,6 +217,7 @@ impl InputStack {
             data,
             included_from,
             line_no,
+            line_start,
             line_buf,
             line_pos,
             ..
@@ -198,9 +225,14 @@ impl InputStack {
         else {
             return None;
         };
-        let bytes = line_buf
-            .as_deref()
-            .unwrap_or_else(|| Self::raw_line(data, *line_no));
+        let bytes = line_buf.as_deref().unwrap_or_else(|| {
+            if *line_no == 0 {
+                &[][..]
+            } else {
+                let (end, _) = physical_line_bounds(data, *line_start);
+                &data[(*line_start).min(end)..end]
+            }
+        });
         let byte_column = byte_column
             .unwrap_or_else(|| {
                 if line_buf.is_some() {
@@ -263,15 +295,23 @@ impl InputStack {
             diagnostic_name,
             data,
             included_from,
+            line_no,
+            line_start,
             ..
         } = self.stack.get(index)?
         else {
             return None;
         };
+        let line_start = if line == *line_no {
+            *line_start
+        } else {
+            Self::raw_line_at(data, line).0
+        };
         Some(SourceMark {
             name: diagnostic_name.clone(),
             data: data.clone(),
             line,
+            line_start,
             byte_column,
             included_from: included_from.clone(),
         })
@@ -290,6 +330,7 @@ impl InputStack {
                 diagnostic_name,
                 data,
                 line_no,
+                line_start,
                 line_buf,
                 line_pos,
                 included_from,
@@ -298,10 +339,14 @@ impl InputStack {
                 name: diagnostic_name.clone(),
                 data: data.clone(),
                 line: *line_no,
+                line_start: *line_start,
                 byte_column: if line_buf.is_some() {
                     *line_pos
+                } else if *line_no == 0 {
+                    0
                 } else {
-                    Self::raw_line(data, *line_no).len()
+                    let (end, _) = physical_line_bounds(data, *line_start);
+                    end.saturating_sub(*line_start)
                 },
                 included_from: included_from.clone(),
             }),
@@ -324,24 +369,46 @@ impl InputStack {
                 data,
                 included_from,
                 pos,
+                line_no,
+                line_buf,
+                line_pos,
                 ..
             } = source
             else {
                 return None;
             };
-            let consumed = &data[..(*pos).min(data.len())];
+            let consumed_end = if line_buf.is_some() && *line_no > 0 {
+                let mut line_start = 0usize;
+                for _ in 1..*line_no {
+                    let (end, next) = physical_line_bounds(data, line_start);
+                    if end == next {
+                        break;
+                    }
+                    line_start = next;
+                }
+                line_start.saturating_add(*line_pos).min(data.len())
+            } else {
+                (*pos).min(data.len())
+            };
+            let consumed = &data[..consumed_end];
             let index = consumed
                 .windows(needle.len())
                 .rposition(|bytes| bytes == needle)?;
-            let line_start = data[..index]
-                .iter()
-                .rposition(|&byte| byte == b'\n')
-                .map_or(0, |newline| newline + 1);
-            let line = data[..index].iter().filter(|&&byte| byte == b'\n').count() as u32 + 1;
+            let mut line_start = 0usize;
+            let mut line = 1u32;
+            while line_start < index {
+                let (end, next) = physical_line_bounds(data, line_start);
+                if index <= end || end == next {
+                    break;
+                }
+                line_start = next;
+                line = line.saturating_add(1);
+            }
             Some(SourceMark {
                 name: diagnostic_name.clone(),
                 data: data.clone(),
                 line,
+                line_start,
                 byte_column: index - line_start,
                 included_from: included_from.clone(),
             })
@@ -471,6 +538,7 @@ impl InputStack {
             included_from: included_from.map(Rc::new),
             pos: 0,
             line_no: 0,
+            line_start: 0,
             state: 0,
             ending: false,
             done: false,
@@ -564,5 +632,49 @@ mod tests {
         assert_eq!(&*input.read_file(&path).unwrap(), b"same length!");
         assert_eq!(&*old, b"old", "active input retains its original bytes");
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn recent_text_uses_tex_line_endings_for_the_reported_location() {
+        let bytes: Rc<[u8]> = Rc::from(&b"first\rneedle rest\rlast"[..]);
+        let mut input = InputStack::new();
+        input.stack.push(Source::File {
+            name: "legacy-cr.tex".into(),
+            diagnostic_name: Rc::from("legacy-cr.tex"),
+            data: bytes,
+            included_from: None,
+            pos: 0,
+            line_no: 2,
+            line_start: b"first\r".len(),
+            state: 1,
+            ending: false,
+            done: false,
+            pending_par: false,
+            at_eof: false,
+            line_buf: Some(b"needle rest".to_vec()),
+            line_pos: b"needle".len(),
+            line_reload: false,
+        });
+
+        let context = input
+            .find_recent_text(b"needle")
+            .expect("consumed text")
+            .to_context();
+        assert_eq!(context.name, "legacy-cr.tex");
+        assert_eq!(context.line, 2);
+        assert_eq!(context.column, 1);
+        assert_eq!(context.text, "needle rest");
+    }
+
+    #[test]
+    fn unopened_file_mark_does_not_claim_the_first_line() {
+        let mut input = InputStack::new();
+        input.push_file("pending.tex".to_string(), b"first line\nsecond".to_vec());
+
+        let context = input.current_source_mark().expect("file mark").to_context();
+
+        assert_eq!(context.line, 0);
+        assert_eq!(context.column, 1);
+        assert!(context.text.is_empty());
     }
 }

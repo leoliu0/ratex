@@ -7,9 +7,7 @@ Uses polite concurrency within arXiv's guidelines.
 import argparse
 import concurrent.futures
 import gzip
-import io
 import json
-import os
 import re
 import shutil
 import subprocess
@@ -17,46 +15,84 @@ import sys
 import tarfile
 import tempfile
 import time
+import urllib.parse
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 ARCHIVES = ["cs", "math", "physics", "stat", "econ", "q-fin", "q-bio"]
 USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (TeX-Benchmark/1.0; mailto:leo@dd)"
+OAI_URL = "https://oaipmh.arxiv.org/oai"
+OAI_NS = "http://www.openarchives.org/OAI/2.0/"
+ARXIV_RAW_NS = "http://arxiv.org/OAI/arXivRaw/"
+MODERN_ID_RE = re.compile(r"\d{4}\.\d{4,5}")
 
 
-def harvest_candidates():
+def harvest_candidates(target: int, from_date: str):
+    """Harvest a balanced, deduplicated candidate pool from arXiv OAI-PMH."""
     candidates_by_arch = {arch: [] for arch in ARCHIVES}
+    # A buffer absorbs cross-list duplicates and archives with fewer records.
+    per_archive = max(1, (target + len(ARCHIVES) - 1) // len(ARCHIVES) + 300)
     for arch in ARCHIVES:
-        cmd = [
-            "curl", "-sL", "--max-time", "15",
-            "-A", USER_AGENT,
-            f"https://arxiv.org/list/{arch}/recent"
-        ]
-        res = subprocess.run(cmd, capture_output=True, text=True)
-        if res.returncode == 0:
-            ids = re.findall(r"arXiv:([0-9]{4}\.[0-9]{4,5})", res.stdout)
-            seen = set()
-            for aid in ids:
-                if aid not in seen:
+        token = None
+        while len(candidates_by_arch[arch]) < per_archive:
+            if token:
+                url = f"{OAI_URL}?verb=ListRecords&resumptionToken={token}"
+            else:
+                params = {
+                    "verb": "ListRecords",
+                    "metadataPrefix": "arXivRaw",
+                    "set": arch,
+                    "from": from_date,
+                }
+                url = f"{OAI_URL}?{urllib.parse.urlencode(params)}"
+            cmd = [
+                "curl", "-sL", "--fail", "--max-time", "90",
+                "--retry", "4", "--retry-all-errors", "--retry-delay", "3",
+                "-A", USER_AGENT, url,
+            ]
+            res = subprocess.run(cmd, capture_output=True, text=True)
+            if res.returncode != 0:
+                print(f"  Warning: failed to harvest {arch}", file=sys.stderr)
+                break
+            try:
+                root = ET.fromstring(res.stdout)
+            except ET.ParseError:
+                print(f"  Warning: invalid OAI response for {arch}", file=sys.stderr)
+                break
+            seen = set(candidates_by_arch[arch])
+            added = 0
+            for node in root.findall(f".//{{{ARXIV_RAW_NS}}}id"):
+                aid = (node.text or "").strip()
+                if MODERN_ID_RE.fullmatch(aid) and aid not in seen:
                     seen.add(aid)
                     candidates_by_arch[arch].append(aid)
-            print(f"  Harvested {len(candidates_by_arch[arch])} IDs from {arch}")
-        else:
-            print(f"  Warning: failed to harvest {arch}", file=sys.stderr)
-
+                    added += 1
+            token_node = root.find(f".//{{{OAI_NS}}}resumptionToken")
+            token = (
+                (token_node.text or "").strip()
+                if token_node is not None
+                else ""
+            )
+            print(
+                f"  Harvested {len(candidates_by_arch[arch])} IDs from {arch}"
+            )
+            if not token or added == 0:
+                break
+            time.sleep(3.0)
     interleaved = []
     max_len = max(len(v) for v in candidates_by_arch.values()) if candidates_by_arch else 0
     for i in range(max_len):
         for arch in ARCHIVES:
             if i < len(candidates_by_arch[arch]):
                 interleaved.append((candidates_by_arch[arch][i], arch))
-
     final_list = []
     seen_ids = set()
     for aid, arch in interleaved:
         if aid not in seen_ids:
             seen_ids.add(aid)
             final_list.append((aid, arch))
-
+            if len(final_list) == target:
+                break
     return final_list
 
 
@@ -197,18 +233,23 @@ def download_project(aid: str, arch: str, out_dir: Path, max_bytes: int):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Download 100 TeX benchmark projects from arXiv")
+    parser = argparse.ArgumentParser(description="Download TeX benchmark projects from arXiv")
     parser.add_argument("--target", type=int, default=100, help="Number of projects to download")
     parser.add_argument("--out-dir", type=Path, default=Path("corpus"), help="Output directory")
     parser.add_argument("--max-mb", type=float, default=20.0, help="Max download size per project in MB")
     parser.add_argument("--workers", type=int, default=3, help="Concurrent workers")
+    parser.add_argument("--from-date", default="2025-01-01",
+                        help="Earliest OAI datestamp to harvest (YYYY-MM-DD)")
+    parser.add_argument("--candidate-factor", type=float, default=2.0,
+                        help="Candidate-pool size as a multiple of --target")
     args = parser.parse_args()
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
     max_bytes = int(args.max_mb * 1024 * 1024)
 
     print("Harvesting candidate papers across arXiv archives...")
-    candidates = harvest_candidates()
+    candidate_target = max(args.target, int(args.target * args.candidate_factor))
+    candidates = harvest_candidates(candidate_target, args.from_date)
     print(f"Total unique candidate IDs harvested: {len(candidates)}")
 
     successful = []

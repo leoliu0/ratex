@@ -80,12 +80,7 @@ fn aux_arg(src: &str, i: &mut usize) -> Option<String> {
     Some(s)
 }
 
-fn parse_aux_file(
-    path: &Path,
-    aux: &mut Aux,
-    log: &mut Logger,
-    depth: usize,
-) -> Result<(), String> {
+fn parse_aux_file(path: &Path, aux: &mut Aux, depth: usize) -> Result<(), String> {
     if depth > 16 {
         return Err(format!("\\@input nesting too deep at {}", path.display()));
     }
@@ -147,7 +142,7 @@ fn parse_aux_file(
             "@input" => {
                 if let Some(arg) = aux_arg(&src, &mut rest) {
                     let nested = resolve_input(path, &arg);
-                    parse_aux_file(&nested, aux, log, depth + 1)?;
+                    parse_aux_file(&nested, aux, depth + 1)?;
                 }
                 i = rest;
             }
@@ -197,26 +192,59 @@ fn resolve_input(aux_path: &Path, name: &str) -> PathBuf {
 // file resolution
 // ---------------------------------------------------------------------------
 
-fn resolve_with_kpse(name: &str, aux_dir: Option<&Path>, fmt: Format) -> Option<PathBuf> {
+struct ResolvedText {
+    label: String,
+    source: String,
+}
+
+fn read_text_file(path: PathBuf) -> Result<ResolvedText, String> {
+    let label = path.display().to_string();
+    std::fs::read_to_string(&path)
+        .map(|source| ResolvedText { label, source })
+        .map_err(|error| format!("couldn't read {}: {error}", path.display()))
+}
+
+fn resolve_text_with_kpse(
+    name: &str,
+    aux_dir: Option<&Path>,
+    fmt: Format,
+) -> Result<Option<ResolvedText>, String> {
     let ext = fmt.extensions()[0];
     let bare = name.strip_suffix(ext).unwrap_or(name);
+    let filename = format!("{bare}{ext}");
     if let Some(dir) = aux_dir {
-        let cand = dir.join(format!("{bare}{ext}"));
+        let cand = dir.join(&filename);
         if cand.is_file() {
-            return Some(cand);
+            return read_text_file(cand).map(Some);
         }
     }
     // ls-R hit must be a regular file: a bare name can match a directory
     // (e.g. `plain` under the makeindex tree)
     let kpse = Kpse::new();
-    if let Some(hit) = kpse.find(&format!("{bare}{ext}"), fmt) {
+    if let Some(hit) = kpse.find(&filename, fmt) {
         if hit.is_file() {
-            return Some(hit);
+            return read_text_file(hit).map(Some);
         }
     }
     match kpse.find(name, fmt) {
-        Some(hit) if hit.is_file() => Some(hit),
-        _ => None,
+        Some(hit) if hit.is_file() => return read_text_file(hit).map(Some),
+        _ => {}
+    }
+    let Some(bytes) = tex_kpse::get_embedded_package(&filename) else {
+        return Ok(None);
+    };
+    let label = format!("<embedded:{filename}>");
+    match String::from_utf8(bytes) {
+        Ok(source) => Ok(Some(ResolvedText { label, source })),
+        Err(_) => Err(format!("couldn't read {label}: input is not valid UTF-8")),
+    }
+}
+
+fn missing_input_message(name: &str, fmt: Format) -> String {
+    match fmt {
+        Format::Bst => format!("I couldn't open style file {name}.bst"),
+        Format::Bib => format!("I couldn't open database file {name}.bib"),
+        _ => format!("I couldn't open input file {name}"),
     }
 }
 
@@ -282,7 +310,7 @@ pub fn run(args: &[String], version: &str) -> i32 {
         bib_files: Vec::new(),
         all_entries: false,
     };
-    if let Err(e) = parse_aux_file(&aux_path, &mut aux, &mut log, 0) {
+    if let Err(e) = parse_aux_file(&aux_path, &mut aux, 0) {
         eprintln!("tex-bibtex: {e}");
         log.error(&e);
         write_blg(&aux_path, &log);
@@ -305,28 +333,27 @@ pub fn run(args: &[String], version: &str) -> i32 {
     }
 
     // --- locate and parse the .bst file --------------------------------
-    let Some(bst_path) = resolve_with_kpse(&style_name, aux_dir.as_deref(), Format::Bst) else {
-        let msg = format!("I couldn't open style file {style_name}.bst");
-        eprintln!("tex-bibtex: {msg}");
-        log.error(&msg);
-        write_blg(&aux_path, &log);
-        return 2;
-    };
-    log.info(format!("The style file: {}", bst_path.display()));
-    let bst_src = match std::fs::read_to_string(&bst_path) {
-        Ok(s) => s,
-        Err(e) => {
-            let msg = format!("couldn't read {}: {e}", bst_path.display());
+    let bst_input = match resolve_text_with_kpse(&style_name, aux_dir.as_deref(), Format::Bst) {
+        Ok(Some(input)) => input,
+        Ok(None) => {
+            let msg = missing_input_message(&style_name, Format::Bst);
             eprintln!("tex-bibtex: {msg}");
             log.error(&msg);
             write_blg(&aux_path, &log);
             return 2;
         }
+        Err(e) => {
+            eprintln!("tex-bibtex: {e}");
+            log.error(&e);
+            write_blg(&aux_path, &log);
+            return 2;
+        }
     };
-    let program = match bst::parse_bst(&bst_src) {
+    log.info(format!("The style file: {}", bst_input.label));
+    let program = match bst::parse_bst(&bst_input.source) {
         Ok(p) => p,
         Err(e) => {
-            let msg = format!("{}: {e}", bst_path.display());
+            let msg = format!("{}: {e}", bst_input.label);
             eprintln!("tex-bibtex: {msg}");
             log.error(&msg);
             write_blg(&aux_path, &log);
@@ -345,20 +372,21 @@ pub fn run(args: &[String], version: &str) -> i32 {
         }
     }
     for (n, bf) in aux.bib_files.iter().enumerate() {
-        let Some(bp) = resolve_with_kpse(bf, aux_dir.as_deref(), Format::Bib) else {
-            let msg = format!("I couldn't open database file {bf}.bib");
-            eprintln!("tex-bibtex: {msg}");
-            log.error(&msg);
-            write_blg(&aux_path, &log);
-            return 2;
-        };
-        log.info(format!("Database file #{}: {}", n + 1, bp.display()));
-        match std::fs::read_to_string(&bp) {
-            Ok(src) => bib::parse_bib(&src, bf, &mut db, &mut log),
-            Err(e) => {
-                let msg = format!("couldn't read {}: {e}", bp.display());
+        match resolve_text_with_kpse(bf, aux_dir.as_deref(), Format::Bib) {
+            Ok(Some(input)) => {
+                log.info(format!("Database file #{}: {}", n + 1, input.label));
+                bib::parse_bib(&input.source, bf, &mut db, &mut log);
+            }
+            Ok(None) => {
+                let msg = missing_input_message(bf, Format::Bib);
                 eprintln!("tex-bibtex: {msg}");
                 log.error(&msg);
+                write_blg(&aux_path, &log);
+                return 2;
+            }
+            Err(error) => {
+                eprintln!("tex-bibtex: {error}");
+                log.error(&error);
                 write_blg(&aux_path, &log);
                 return 2;
             }
@@ -380,7 +408,7 @@ pub fn run(args: &[String], version: &str) -> i32 {
             &mut read_done,
             min_crossrefs,
         ) {
-            let msg = format!("{e}");
+            let msg = e.to_string();
             eprintln!("tex-bibtex: {msg}");
             interp.log.error(&msg);
             break;
@@ -394,10 +422,13 @@ pub fn run(args: &[String], version: &str) -> i32 {
         eprintln!("tex-bibtex: couldn't write {}: {e}", bbl_path.display());
         return 2;
     }
-    write_blg(&aux_path, &interp.log);
+    write_blg(&aux_path, interp.log);
 
-    let code = if interp.log.errors > 0 { 1 } else { 0 };
-    code
+    if interp.log.errors > 0 {
+        1
+    } else {
+        0
+    }
 }
 
 fn write_blg(aux_path: &Path, log: &Logger) {
@@ -617,7 +648,7 @@ fn do_read(
         // apply inheritance recorded for this entry
         interp.apply_inherited(db_idx, &mut fields);
         rt_entries.push(RtEntry {
-            cite: e.cite.clone(),
+            cite: cite_list[i].key.clone(),
             type_name: e.type_name.clone(),
             fields,
             ent_ints: vec![0; ni],

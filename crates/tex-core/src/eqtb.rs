@@ -150,6 +150,9 @@ pub enum LevelType {
     MacroCall,
     NoLine,
     Balanced,
+    MathShift,
+    MathLeft,
+    MathGroup,
 }
 
 #[derive(Clone, Debug)]
@@ -182,6 +185,8 @@ pub enum SaveItem {
     /// engine-side \parshape value before a local assignment/clear
     /// (tex.web level-tracks par_shape_ptr through eq_define)
     ParShape(Vec<(i32, i32)>, u16),
+    /// Previous e-TeX penalty-array value before a local assignment.
+    PenaltyShape(u8, Rc<[i32]>, u16),
     /// pdfTeX stores \pdfpageattr / \pdfpagesattr / \pdfpageresources as
     /// eqtb token-list variables: a local assignment pushes the previous
     /// tokens + level here and \endgroup rolls it back (otherwise a
@@ -991,15 +996,15 @@ impl Eqtb {
         None
     }
     pub fn pop_level(&mut self, after_group: &mut Vec<Token>) -> LevelType {
-        self.pop_level_full(after_group, &mut None)
+        self.pop_level_full(after_group, &mut None, &mut Vec::new())
     }
 
-    /// pop_level plus a sink for engine-side parshape restorations
-    /// (par_shape lives on the Engine, not in eqtb)
+    /// Pop one group and return restorations for state stored on `Engine`.
     pub fn pop_level_full(
         &mut self,
         after_group: &mut Vec<Token>,
         par_shape_sink: &mut Option<(Vec<(i32, i32)>, u16)>,
+        penalty_shape_sink: &mut Vec<(u8, Rc<[i32]>, u16)>,
     ) -> LevelType {
         let mut ty = LevelType::Group;
 
@@ -1016,6 +1021,9 @@ impl Eqtb {
                     // level field; a later global assign suppresses it,
                     // same as the param arms' `> LEVEL_ONE` check)
                     *par_shape_sink = Some((old, lvl));
+                }
+                SaveItem::PenaltyShape(kind, old, level) => {
+                    penalty_shape_sink.push((kind, old, level));
                 }
                 SaveItem::PdfPageVar(_kind, _old, _lvl) => {
                     // pdfpageattr / pdfpagesattr / pdfpageresources restoration
@@ -1185,6 +1193,11 @@ impl Eqtb {
         let e = self.ensure_entry(id);
         e.equiv = equiv;
         e.level = level;
+    }
+
+    /// Clear all control-sequence entries before restoring from a format dump.
+    pub(crate) fn clear_entries(&mut self) {
+        self.entries.clear();
     }
 
     /// Number of defined control sequences.

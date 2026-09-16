@@ -286,7 +286,6 @@ fn read_database(it: &mut Interp, a: &aux::Aux, cwd: &Path, opts: &RunOpts) -> R
         seen_lc.insert(lc, cites.len());
         cites.push(c.clone());
     }
-
     // Storage walk: an entry is stored only if its key is already on the
     // citation list when read (so crossref'd parents must come after the
     // entries citing them — bibtex.web's actual discipline).

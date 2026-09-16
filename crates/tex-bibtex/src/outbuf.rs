@@ -5,6 +5,7 @@ use crate::classes::is_white;
 pub const MAX_PRINT_LINE: usize = 79;
 pub const MIN_PRINT_LINE: usize = 3;
 
+#[derive(Default)]
 pub struct OutBuf {
     buf: Vec<u8>,
     pub lines: Vec<String>,

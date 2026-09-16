@@ -1,25 +1,23 @@
 #!/usr/bin/env python3
 """Build a self-contained tex-suite distribution package for one target OS.
 
-Assembles release binaries, the pdflatex.fmt format file, a minimal TeX
-assets tree (hyphenation patterns etc.), the platform installer scripts,
-a README and a manifest with SHA256 checksums, then produces:
+Assembles release binaries, a minimal TeX assets tree (hyphenation patterns
+etc.), the platform installer scripts, a README and a manifest with SHA256
+checksums, then produces:
 
   Linux/macOS: dist/tex-suite-v0.1.0-linux-x86_64.tar.gz
   Windows:     dist/tex-suite-v0.1.0-windows-x86_64.zip
 
 Bundle layout (inside the archive root tex-suite-<platform>-<arch>/):
-  bin/            pdflatex, xelatex, lualatex, tex-bibtex (+bibtex alias),
-                  texmk (+latexmk alias)
-  share/tex-suite/pdflatex.fmt
+  bin/            texmk plus public command aliases
   share/tex-suite/texmf/   TDS tree (tex/generic/hyphen/hyphen.tex, ...)
   <installers>    install-*.sh / install*.ps1 / install*.bat at archive root
   README.txt
   manifest.json
 
-Engines discover the data tree through TEXMFLOCAL/TEXMFDIST (kpathsea
-style); the installers are responsible for pointing TEXMFLOCAL at
-share/tex-suite/texmf after installation.
+The format, packages, fonts, maps, TeX engine, and BibTeX engine are embedded
+in texmk. The small texmf tree remains as a compatibility overlay for older
+installations; normal compilation does not depend on it.
 """
 
 import argparse
@@ -30,7 +28,6 @@ import platform
 import re
 import shutil
 import stat
-import struct
 import subprocess
 import sys
 import tarfile
@@ -41,8 +38,24 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 
-BINARIES = ["pdflatex", "xelatex", "lualatex", "tex-bibtex", "texmk", "tex-index"]
-ALIASES = {"tex-bibtex": "bibtex", "texmk": "latexmk"}
+BINARIES = ["texmk"]
+ALIASES = {
+    "pdflatex": "texmk",
+    "xelatex": "texmk",
+    "lualatex": "texmk",
+    "tex-bibtex": "texmk",
+    "bibtex": "texmk",
+    "latexmk": "texmk",
+}
+# xelatex/lualatex are themselves tiny instances of the generic launcher.
+# Reuse one of them to create every alias in a Windows zip.
+WINDOWS_LAUNCHER = "xelatex"
+WINDOWS_LAUNCHER_MARKER = b"tex-suite launcher: unsupported executable name"
+
+ZSTD_MAGIC = b"\x28\xb5\x2f\xfd"
+# A normal format expands to roughly 8 MiB. Keep explicit distribution
+# overrides bounded so a mislabeled archive cannot exhaust the packaging host.
+MAX_DECOMPRESSED_FORMAT_BYTES = 128 << 20
 
 # Minimal TeX Live files bundled under texmf/, keyed by TDS-relative path.
 # Each entry is a list of candidate sources tried in order. Placeholders
@@ -158,62 +171,102 @@ def collect_binaries(release_dir: Path, stage_bin: Path, is_windows: bool) -> li
         if not is_windows:
             dst.chmod(dst.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
         copied.append(dst)
-        alias = ALIASES.get(b)
-        if alias:
-            adst = stage_bin / exe(alias, is_windows)
-            shutil.copy2(dst, adst)  # real copy: works in zips and on Windows
+    if is_windows:
+        # Zip archives do not portably preserve symlinks. Ship one tiny relay
+        # for every public alias instead of duplicating the PDF engine.
+        launcher = release_dir / exe(WINDOWS_LAUNCHER, True)
+        if not launcher.is_file():
+            die(f"launcher {launcher} not found; build the tex-cli workspace first")
+        if WINDOWS_LAUNCHER_MARKER not in launcher.read_bytes():
+            die(
+                f"{launcher} is not the generic tex-suite launcher; "
+                "rebuild the tex-cli workspace before packaging Windows"
+            )
+        for alias in ALIASES:
+            adst = stage_bin / exe(alias, True)
+            shutil.copy2(launcher, adst)
+            copied.append(adst)
+    else:
+        for alias, target in ALIASES.items():
+            adst = stage_bin / alias
+            adst.symlink_to(target)
             copied.append(adst)
     return copied
 
 
-def find_format_file(explicit: str) -> Path:
+def decode_zstd_file(path: Path) -> bytes:
+    decoder = shutil.which("zstd")
+    if decoder is None:
+        die(
+            f"cannot validate compressed format {path}: the zstd command is not installed; "
+            "install zstd or pass an uncompressed .fmt"
+        )
+
+    process = subprocess.Popen(
+        [decoder, "-q", "-d", "-c", "--", str(path)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    assert process.stdout is not None
+    data = bytearray()
+    while True:
+        chunk = process.stdout.read(1 << 20)
+        if not chunk:
+            break
+        data.extend(chunk)
+        if len(data) > MAX_DECOMPRESSED_FORMAT_BYTES:
+            process.kill()
+            process.communicate()
+            die(
+                f"compressed format {path} expands beyond "
+                f"{MAX_DECOMPRESSED_FORMAT_BYTES // (1 << 20)} MiB"
+            )
+    stderr = process.stderr.read() if process.stderr is not None else b""
+    returncode = process.wait()
+    if returncode != 0:
+        detail = stderr.decode(errors="replace").strip()
+        suffix = f": {detail}" if detail else ""
+        die(f"cannot decompress format {path} with zstd{suffix}")
+    return bytes(data)
+
+
+def validate_format_file(explicit: str) -> Path:
+    """Validate an explicitly requested external format.
+
+    Production bundles use the compressed format embedded in the engine. An
+    external format remains available as an override for developers and
+    downstream distributors.
+    """
     format_source = (REPO / "crates/tex-core/src/format.rs").read_text()
-    expected = tuple(int(re.search(rf"(?:pub )?const {key}: u16 = (\d+);", format_source).group(1))
-                     for key in ("VERSION", "SEMANTICS"))
+    expected = tuple(
+        int(re.search(rf"(?:pub )?const {key}: u16 = (\d+);", format_source).group(1))
+        for key in ("VERSION", "SEMANTICS")
+    )
+    # Keep this in step with tex_core::format::parse_header, which accepts the
+    # preceding v8 wire layout and fills its newly added fields with defaults.
+    accepted_versions = {expected[0], 8}
 
     def compatible(path: Path) -> bool:
         if not path.is_file():
             return False
         with path.open("rb") as source:
-            header = source.read(12)
-        return (len(header) == 12 and header[:8] == b"RUSTEXFM"
-                and struct.unpack("<HH", header[8:]) == expected)
+            data = source.read(12)
+        if data[:4] == ZSTD_MAGIC:
+            data = decode_zstd_file(path)
+        if len(data) < 12 or data[:8] != b"RUSTEXFM":
+            return False
+        version = int.from_bytes(data[8:10], "little")
+        semantics = int.from_bytes(data[10:12], "little")
+        return version in accepted_versions and semantics == expected[1]
 
-    candidates = []
-    if explicit:
-        path = Path(explicit)
-        if not compatible(path):
-            die(f"format {path} is missing or incompatible; expected version/semantics {expected}")
-        return path
-    # Repo-root working fmt, then the tracked precompiled asset (CI runners
-    # have no system TeX, so building via -ini would fail there).
-    candidates += [
-        REPO / "pdflatex.fmt",
-        REPO / "crates" / "tex-cli" / "assets" / "default.fmt",
-        REPO / "tmp" / "pdflatex.fmt",
-    ]
-    for c in candidates:
-        if compatible(c):
-            return c
-    # Last resort: build it with the freshly packaged engine.
-    pdflatex = REPO / "target" / "release" / "pdflatex"
-    if pdflatex.is_file():
-        print("==> pdflatex.fmt missing; building with `pdflatex -ini`")
-        with tempfile.TemporaryDirectory() as td:
-            out = Path(td) / "pdflatex.fmt"
-            r = subprocess.run(
-                [str(pdflatex), "-ini", "-interaction=nonstopmode", "pdflatex"],
-                cwd=td,
-                capture_output=True,
-            )
-            if r.returncode == 0 and compatible(out):
-                target = REPO / "pdflatex.fmt"
-                shutil.move(str(out), target)
-                return target
-            warn(f"format build failed (exit {r.returncode}); see engine output below")
-            sys.stdout.write((r.stdout or b"").decode(errors="replace")[-2000:])
-            sys.stdout.write((r.stderr or b"").decode(errors="replace")[-2000:])
-    die("pdflatex.fmt not found and could not be built; pass --fmt <path>")
+    path = Path(explicit)
+    if not compatible(path):
+        versions = "/".join(str(version) for version in sorted(accepted_versions))
+        die(
+            f"format {path} is missing or incompatible; expected wire version "
+            f"{versions} and semantics {expected[1]}"
+        )
+    return path
 
 
 def source_texmf_roots() -> list:
@@ -241,6 +294,23 @@ def find_asset(rel: str, candidates: list, roots: list):
     return None
 
 
+def asset_source_label(src: Path, roots: list) -> str:
+    """Return stable, non-host-specific provenance for a bundled asset."""
+    resolved = src.resolve()
+    try:
+        relative = resolved.relative_to(REPO.resolve())
+        return f"repo:{relative.as_posix()}"
+    except ValueError:
+        pass
+    for root in roots:
+        try:
+            relative = resolved.relative_to(root.resolve())
+            return f"texmf:{relative.as_posix()}"
+        except ValueError:
+            continue
+    return "external"
+
+
 def stage_assets(texmf_stage: Path) -> dict:
     """Copy essential (+ optional, when present) assets into the staged
     TDS tree. Returns path->source map for manifest.json."""
@@ -262,7 +332,7 @@ def stage_assets(texmf_stage: Path) -> dict:
         else:
             dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(src, dst)
-            placed[rel] = str(src)
+            placed[rel] = asset_source_label(src, roots)
     for rel, candidates in OPTIONAL_ASSETS.items():
         src = find_asset(rel, candidates, roots)
         if src is None:
@@ -270,7 +340,7 @@ def stage_assets(texmf_stage: Path) -> dict:
         dst = texmf_stage / rel
         dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(src, dst)
-        placed[rel] = str(src)
+        placed[rel] = asset_source_label(src, roots)
     return placed
 
 
@@ -311,14 +381,14 @@ def collect_installers(platform_name: str) -> list:
 def readme_text(version: str, platform_name: str, arch: str) -> str:
     suffix = ".exe" if platform_name == "windows" else ""
     installer = "install-windows.ps1 (or install.bat)" if platform_name == "windows" else "./install.sh (or the install-<os>.sh scripts)"
-    return f"""tex-suite v{version} — self-contained TeX engines ({platform_name}-{arch})
+    return f"""tex-suite v{version} — self-contained TeX engine ({platform_name}-{arch})
 =======================================================================
 
 Contents
-  bin/                pdflatex{suffix}, xelatex{suffix}, lualatex{suffix},
-                      tex-bibtex{suffix} (alias bibtex{suffix}),
-                      texmk{suffix} (alias latexmk{suffix})
-  share/tex-suite/    pdflatex.fmt format file + texmf/ minimal asset tree
+  bin/                texmk{suffix}, with pdflatex{suffix}, xelatex{suffix},
+                      lualatex{suffix}, tex-bibtex{suffix}, bibtex{suffix},
+                      and latexmk{suffix} command aliases
+  share/tex-suite/    optional compatibility assets
   manifest.json       file list with SHA256 checksums
   installer script    {installer}
 
@@ -329,26 +399,24 @@ Quickstart
   3. Verify:  pdflatex --version   (or run `pdflatex file.tex`)
 
 Without the installer
-  Add bin/ to PATH and point kpathsea at the bundled tree:
-    Linux/macOS:  export TEXMFLOCAL="$PWD/share/tex-suite/texmf"
-    Windows:      set TEXMFLOCAL=%CD%\\share\\tex-suite\\texmf
-  pdflatex{suffix} also finds pdflatex.fmt next to the executable: copy
-  share/tex-suite/pdflatex.fmt into bin/ if you skip the installer.
+  Run bin/texmk directly or add bin/ to PATH. No TeX installation or data
+  environment variables are required.
 
 Notes
-  * bibtex{suffix} and latexmk{suffix} are copies of tex-bibtex{suffix}
-    and texmk{suffix}; behaviour is selected by program name.
-  * This bundle ships a minimal asset tree (hyphenation, language data).
-    Full LaTeX support comes from a system TeX distribution if present;
-    the bundled engines still search TEXMFHOME/TEXMFLOCAL/TEXMFDIST and
-    standard system texmf directories.
+  * The production format, package archive, fonts, maps, TeX engine, and
+    BibTeX engine are embedded in texmk.
+  * Linux/macOS aliases are symlinks. Windows aliases are small launchers;
+    the full executable is stored only once.
+  * Resolution is self-contained by default. Pass --allow-system-texmf to
+    texmk, or set TEX_RS_ALLOW_SYSTEM_TEXMF=1 for a command alias, to opt into
+    TEXMFHOME/TEXMFLOCAL/TEXMFDIST and standard system texmf directories.
 """
 
 
 def make_tar_gz(root_name: str, stage_dir: Path, out: Path) -> None:
     with tarfile.open(out, "w:gz") as tf:
         for p in sorted(stage_dir.rglob("*")):
-            if p.is_file():
+            if p.is_file() or p.is_symlink():
                 tf.add(p, arcname=f"{root_name}/{p.relative_to(stage_dir)}")
 
 
@@ -360,10 +428,11 @@ def make_zip(root_name: str, stage_dir: Path, out: Path, is_windows: bool) -> No
                 zi = zipfile.ZipInfo.from_file(p, arcname=rel)
                 if not is_windows:
                     zi.external_attr = (0o755 << 16)
+                zi.compress_type = zipfile.ZIP_DEFLATED
                 zf.writestr(zi, p.read_bytes())
 
 
-def verify_archive(out: Path, root_name: str, is_windows: bool) -> int:
+def verify_archive(out: Path, root_name: str, is_windows: bool, has_format: bool) -> int:
     """List archive, ensure expected members exist and it opens cleanly."""
     if out.suffix == ".zip":
         with zipfile.ZipFile(out) as zf:
@@ -382,14 +451,28 @@ def verify_archive(out: Path, root_name: str, is_windows: bool) -> int:
         f"{root_name}/bin/bibtex{s}",
         f"{root_name}/bin/texmk{s}",
         f"{root_name}/bin/latexmk{s}",
-        f"{root_name}/share/tex-suite/pdflatex.fmt",
         f"{root_name}/README.txt",
         f"{root_name}/manifest.json",
     ]
+    if has_format:
+        expect.append(f"{root_name}/share/tex-suite/pdflatex.fmt")
     for e in expect:
         if e not in names:
             die(f"archive {out.name} missing {e}")
     return len(names)
+
+
+def inventory_stage(stage_root: Path) -> tuple[dict, dict]:
+    """Return disjoint regular-file checksums and symlink targets."""
+    files = {}
+    links = {}
+    for path in sorted(stage_root.rglob("*")):
+        relative = str(path.relative_to(stage_root))
+        if path.is_symlink():
+            links[relative] = os.readlink(path)
+        elif path.is_file():
+            files[relative] = sha256_file(path)
+    return files, links
 
 
 def main() -> None:
@@ -406,7 +489,7 @@ def main() -> None:
     ap.add_argument("--output-dir", default="dist",
                     help="directory to place distribution archives")
     ap.add_argument("--fmt", default=None,
-                    help="explicit path to pdflatex.fmt (default: repo root, else build it)")
+                    help="optional external pdflatex.fmt override (the default is embedded)")
     ap.add_argument("--target-dir", default=None,
                     help="cargo target directory override (default: target/release)")
     args = ap.parse_args()
@@ -439,10 +522,15 @@ def main() -> None:
         print(f"==> staging {root_name} (v{version})")
         binaries = collect_binaries(release_dir, stage_bin, is_windows)
 
-        fmt = find_format_file(args.fmt)
         stage_share.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(fmt, stage_share / "pdflatex.fmt")
-        print(f"    fmt: {fmt}")
+        format_file = None
+        if args.fmt:
+            fmt = validate_format_file(args.fmt)
+            shutil.copy2(fmt, stage_share / "pdflatex.fmt")
+            format_file = "share/tex-suite/pdflatex.fmt"
+            print(f"    external fmt: {fmt}")
+        else:
+            print("    fmt: compressed format embedded in texmk")
 
         assets = stage_assets(stage_texmf)
 
@@ -454,10 +542,7 @@ def main() -> None:
         (stage_root / "README.txt").write_text(readme_text(version, platform_name, arch))
 
         # manifest.json: checksums of everything except the manifest itself
-        files = {}
-        for p in sorted(stage_root.rglob("*")):
-            if p.is_file():
-                files[str(p.relative_to(stage_root))] = sha256_file(p)
+        files, links = inventory_stage(stage_root)
         manifest = {
             "name": "tex-suite",
             "version": version,
@@ -466,10 +551,11 @@ def main() -> None:
             "build_date": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "bundle_root": root_name,
             "binaries": [exe(b, is_windows) for b in BINARIES]
-            + [exe(a, is_windows) for a in ALIASES.values()],
-            "format_file": "share/tex-suite/pdflatex.fmt",
+            + [exe(a, is_windows) for a in ALIASES],
+            "format_file": format_file,
             "assets": assets,
             "files": files,
+            "links": links,
         }
         (stage_root / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
 
@@ -480,7 +566,7 @@ def main() -> None:
             archive = out_dir / f"tex-suite-v{version}-{platform_name}-{arch}.tar.gz"
             make_tar_gz(root_name, stage_root, archive)
 
-        n = verify_archive(archive, root_name, is_windows)
+        n = verify_archive(archive, root_name, is_windows, format_file is not None)
         size = archive.stat().st_size
         print(f"==> {archive} ({size / 1e6:.1f} MB, {n} members, "
               f"{len(binaries)} binaries, sha256={sha256_file(archive)[:16]}…)")

@@ -7,7 +7,7 @@
 //! 2 = skip spaces (S).
 
 use crate::engine::{Engine, PhysicalTokenSource};
-use crate::input::{Source, EOF_MARKER, PAR_END};
+use crate::input::{physical_line_bounds, Source, EOF_MARKER, PAR_END};
 use crate::token::*;
 
 impl Engine {
@@ -34,6 +34,7 @@ impl Engine {
                     self.diagnostic_token_from_file = true;
                     if !self.align_macro_arg && self.diagnostic_trace_hold == 0 {
                         self.diagnostic_macro_trace.clear();
+                        self.diagnostic_macro_trace_truncated = false;
                         self.diagnostic_macro_call_site = None;
                         self.diagnostic_macro_call_span = 1;
                     }
@@ -81,7 +82,6 @@ impl Engine {
     /// file_finished pops here).
     fn file_next_token(&mut self, si: usize) -> Option<Token> {
         let r = self.file_next_token_inner(si);
-
         r
     }
 
@@ -137,23 +137,15 @@ impl Engine {
                 _ => unreachable!(),
             };
             if done {
-                // l3's rescan protocol (\tl_set_rescan) relies on this to
-                // terminate its delimited scans with the marker.
-                let is_scantokens = match &self.input.stack.get(si) {
-                    Some(crate::input::Source::File { name, .. }) => name == "<scantokens>",
-                    _ => false,
-                };
-                // e-TeX semantics: \everyeof fires EVERY time scanning
-                // crosses the pseudo-file end (the l3 single-rescan chain
-                // re-enters deliberately); no one-shot guard.
+                // e-TeX semantics: \everyeof fires every time scanning
+                // reaches EOF of an input file or pseudo-file (expl3 \file_get
+                // and \tl_set_rescan rely on this to supply closing delimiters).
                 self.input.finish_file(si);
-                if is_scantokens {
-                    let eof_toks = (*self.eqtb.tok_params
-                        [crate::prim::ToksParam::EveryEOF.idx() as usize])
-                        .clone();
-                    if !eof_toks.is_empty() {
-                        self.push_tokens(eof_toks);
-                    }
+                let eof_toks = (*self.eqtb.tok_params
+                    [crate::prim::ToksParam::EveryEOF.idx() as usize])
+                    .clone();
+                if !eof_toks.is_empty() {
+                    self.push_tokens(eof_toks);
                 }
                 return None;
             }
@@ -372,7 +364,7 @@ impl Engine {
 
     /// Load next line into the buffer; false at EOF.
     fn file_load_line(&mut self, si: usize) -> bool {
-        let chunk = match &mut self.input.stack[si] {
+        let (chunk, start) = match &mut self.input.stack[si] {
             Source::File {
                 name: _,
                 data,
@@ -383,23 +375,18 @@ impl Engine {
                 if *pos >= data.len() {
                     return false;
                 }
-                let rest = &data[*pos..];
-                let nl = rest
-                    .iter()
-                    .position(|&b| b == b'\n')
-                    .map(|i| i + 1)
-                    .unwrap_or(rest.len());
-                let mut line = rest[..nl].to_vec();
-                *pos += nl;
-                *line_no += 1;
-
-                if line.last() == Some(&b'\n') {
-                    line.pop();
-                    if line.last() == Some(&b'\r') {
-                        line.pop();
-                    }
+                let start = *pos;
+                let (end, next) = physical_line_bounds(data, start);
+                let mut content_end = end;
+                // tex.web §31 input_ln: Trailing blanks are removed from the line;
+                // thus, either last=first or buffer[last-1]<>" ".
+                while content_end > start && data[content_end - 1] == b' ' {
+                    content_end -= 1;
                 }
-                line
+                let line = data[start..content_end].to_vec();
+                *pos = next;
+                *line_no += 1;
+                (line, start)
             }
             _ => return false,
         };
@@ -408,12 +395,14 @@ impl Engine {
             line_buf,
             line_pos,
             line_reload,
+            line_start,
             ..
         }) = self.input.stack.get_mut(si)
         {
             *line_buf = Some(chunk);
             *line_pos = 0;
             *line_reload = false;
+            *line_start = start;
         }
         true
     }
@@ -539,7 +528,13 @@ impl Engine {
     }
 
     fn invalid_character_error(&mut self, si: usize, byte: u8, byte_column: usize) {
-        let source = self.input.source_context_at(si, byte_column);
+        // Synthetic tokenizers (notably `\\read`) can retain the physical
+        // command that supplied their bytes.  Prefer that call site over a
+        // misleading `<read>:1:1` location.
+        let source = self
+            .diagnostic_source_override
+            .clone()
+            .or_else(|| self.input.source_context_at(si, byte_column));
         let showing = if byte.is_ascii_graphic() || byte == b' ' {
             format!(
                 " (byte 0x{byte:02X}, '{}')",
@@ -622,5 +617,55 @@ impl Engine {
             }
             c = b3 ^ 64;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn carriage_return_terminates_physical_lines() {
+        let mut engine = Engine::new(true);
+        engine.init_primitives();
+        engine
+            .input
+            .push_file("legacy-cr.tex".into(), b"% comment\rA\r".to_vec());
+
+        assert_eq!(engine.get_next_raw(), Token::letter(b'A'));
+        let context = engine.input.current_source_mark().unwrap().to_context();
+        assert_eq!(context.line, 2);
+        assert_eq!(context.text, "A");
+    }
+
+    #[test]
+    fn trailing_spaces_stripped_from_physical_line_before_endlinechar() {
+        let mut engine = Engine::new(true);
+        engine.init_primitives();
+        engine.eqtb.cat[13] = 12;
+        engine.eqtb.int_params[crate::prim::IntParam::EndLineChar.idx() as usize] = 13;
+        engine
+            .input
+            .push_file("trailing.tex".into(), b"X   \n".to_vec());
+
+        assert_eq!(engine.get_next_raw(), Token::letter(b'X'));
+        assert_eq!(engine.get_next_raw(), Token::char(12, 13));
+        assert_eq!(engine.get_next_raw(), crate::input::EOF_MARKER);
+    }
+
+    #[test]
+    fn everyeof_tokens_inserted_at_file_eof() {
+        let mut engine = Engine::new(true);
+        engine.init_primitives();
+        engine.eqtb.tok_params[crate::prim::ToksParam::EveryEOF.idx() as usize] =
+            std::rc::Rc::new(vec![Token::letter(b'Z')]);
+        engine
+            .input
+            .push_file("sub.tex".into(), b"A".to_vec());
+
+        assert_eq!(engine.get_next_raw(), Token::letter(b'A'));
+        assert_eq!(engine.get_next_raw(), Token::space());
+        assert_eq!(engine.get_next_raw(), Token::letter(b'Z'));
+        assert_eq!(engine.get_next_raw(), crate::input::EOF_MARKER);
     }
 }

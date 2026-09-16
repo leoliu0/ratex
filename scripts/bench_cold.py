@@ -13,7 +13,7 @@ timed interval. This harness never modifies manuscript sources and never
 falls back to system pdflatex where a supplied Rust binary is required.
 
 Layout produced by prepare (root must be empty; P = root.parent):
-  P/bin/baseline/pdflatex[.fmt]  archived pre-optimization binary (write-once)
+  P/bin/baseline/pdflatex[.fmt]  archived binary and optional external format
   P/bin/candidate/               filled by the caller after rebuilds
   P/baseline-pdfs/*.pdf          pre-optimization Rust PDFs, zero-diff refs
   P/bib.bib                      shared cluster bibliography (../../bib)
@@ -22,7 +22,7 @@ Layout produced by prepare (root must be empty; P = root.parent):
   root/inputs.json               four-document manifest (pages null if oracle failed)
   P/cluster-preflight.json       cluster oracle/preflight record (kept on failure)
   P/prepare-status.json          retained per-document failure list
-  P/results/LABEL/               per-trial logs, timings.json (labels are one-shot)
+  P/results/LABEL/               timings.json plus bounded failure logs by default
 """
 
 import argparse
@@ -34,10 +34,18 @@ import shutil
 import statistics
 import subprocess
 import sys
-import time
 from pathlib import Path
 
 import pymupdf
+
+try:
+    from bounded_capture import DEFAULT_MAX_CAPTURE_BYTES, capture_file, run_bounded
+except ModuleNotFoundError:  # support `python -m scripts.bench_cold`
+    from scripts.bounded_capture import (
+        DEFAULT_MAX_CAPTURE_BYTES,
+        capture_file,
+        run_bounded,
+    )
 
 DOCS = {
     "trust": {"job": "main"},
@@ -58,6 +66,8 @@ RECORDED_SOURCES = {
 }
 AUX_EXTS = ["aux", "out", "toc", "nav", "snm", "bbl"]
 CACHE_EXTS = ["pdf", "depcache", "pagecache"]
+TRANSIENT_EXTS = ["log", "blg", "fls", "fdb_latexmk", "synctex.gz",
+                  "depcache", "pagecache"]
 # Diagnostic variables read by the engine. Remove them, rather than assigning
 # empty strings, so both binaries run without timing output or serial-PDF overrides.
 DIAGNOSTIC_VARS = ["TEXDEBUG", "PHASE_TIMING"]
@@ -98,6 +108,11 @@ def pdf_producer(path: Path) -> str:
 
 def clear_job_outputs(work: Path, job: str) -> None:
     for ext in CACHE_EXTS:
+        (work / f"{job}.{ext}").unlink(missing_ok=True)
+
+
+def clear_job_transients(work: Path, job: str) -> None:
+    for ext in TRANSIENT_EXTS:
         (work / f"{job}.{ext}").unlink(missing_ok=True)
 
 
@@ -154,6 +169,29 @@ def require_fmt(binary: Path) -> Path | None:
     return fmt if fmt.is_file() else None
 
 
+def format_provenance(binary: Path) -> dict:
+    fmt = require_fmt(binary)
+    if fmt is None:
+        return {"kind": "embedded", "path": None, "sha256": None}
+    return {"kind": "external", "path": str(fmt), "sha256": sha256(fmt)}
+
+
+def _capture_text(path: Path) -> str:
+    try:
+        return path.read_bytes().decode("utf-8", "replace")
+    except OSError:
+        return ""
+
+
+def run_logged(cmd: list[str], cwd: Path, env: dict | None, timeout: float,
+               log_path: Path,
+               max_capture_bytes: int = DEFAULT_MAX_CAPTURE_BYTES) -> dict:
+    return run_bounded(
+        cmd, cwd=cwd, env=env, output_path=log_path, timeout=timeout,
+        max_bytes=max_capture_bytes,
+    )
+
+
 # ---------------------------------------------------------------- prepare
 
 def copy_tree(src: Path, dst: Path, ignore=None) -> None:
@@ -163,41 +201,55 @@ def copy_tree(src: Path, dst: Path, ignore=None) -> None:
 
 def compile_until_stable(exe: Path, work: Path, job: str, env: dict,
                          log_dir: Path, tag: str,
-                         max_passes: int = 5) -> dict:
+                         max_passes: int = 5,
+                         max_capture_bytes: int = DEFAULT_MAX_CAPTURE_BYTES) -> dict:
     """Run the Rust binary uncached until aux content hashes stop changing.
 
-    Convergence never claims success on rc != 0 or timeout. All pass logs
-    are retained even when the loop fails.
+    Convergence never claims success on rc != 0 or timeout. Output is streamed
+    into bounded captures; successful pass logs are discarded and a failure
+    retains only its final pass log.
     """
     log_dir.mkdir(parents=True, exist_ok=True)
     cur = aux_hashes(work, job)
     prev: dict | None = None
     passes, last_rc, timed_out = 0, None, False
+    pass_records: list[dict] = []
+    log_paths: list[Path] = []
     for i in range(1, max_passes + 1):
         clear_job_outputs(work, job)
         passes = i
-        try:
-            r = subprocess.run([str(exe), "-interaction=nonstopmode", f"{job}.tex"],
-                               cwd=work, env=env, capture_output=True,
-                               text=True, timeout=RUST_TIMEOUT_S)
-            last_rc = r.returncode
-            (log_dir / f"{tag}-pass{i}.log").write_text(
-                (r.stdout or "") + (r.stderr or ""))
-        except subprocess.TimeoutExpired as exc:
-            last_rc, timed_out = None, True
-            parts = (exc.stdout, exc.stderr)
-            partial = "".join(p.decode(errors="replace") if isinstance(p, bytes)
-                              else (p or "") for p in parts)
-            (log_dir / f"{tag}-pass{i}.log").write_text(
-                f"BENCH: timeout after {RUST_TIMEOUT_S}s\n{partial}")
+        log_path = log_dir / f"{tag}-pass{i}.log"
+        child = run_bounded(
+            [str(exe), "-interaction=nonstopmode", f"{job}.tex"],
+            cwd=work, env=env, output_path=log_path,
+            timeout=RUST_TIMEOUT_S, max_bytes=max_capture_bytes,
+        )
+        log_paths.append(log_path)
+        last_rc = None if child["timed_out"] else child["returncode"]
+        timed_out = child["timed_out"]
+        pass_records.append({
+            "pass": i, "rc": last_rc, "timed_out": timed_out,
+            "spawn_error": child["spawn_error"],
+            "capture": child["capture"], "log": str(log_path),
+        })
         prev = cur
         cur = aux_hashes(work, job)
         if cur == prev and last_rc == 0:
             break
+        if timed_out:
+            break
+        if child["spawn_error"]:
+            break
     converged = cur == prev and last_rc == 0
+    for old in (log_paths if converged else log_paths[:-1]):
+        old.unlink(missing_ok=True)
+    for record in pass_records:
+        if not Path(record["log"]).is_file():
+            record["log"] = None
     record: dict = {"passes": passes, "converged": converged,
                     "last_rc": last_rc, "timed_out": timed_out,
-                    "aux_hashes": cur, "logs": str(log_dir)}
+                    "aux_hashes": cur, "logs": str(log_dir),
+                    "pass_records": pass_records}
     pdf = work / f"{job}.pdf"
     if pdf.is_file():
         try:
@@ -227,16 +279,17 @@ def rebuild_from_source(name: str, root: Path, base_bin: Path, env: dict,
             shutil.rmtree(d)
     copy_tree(src, rust)
     copy_tree(src, ref)
-    r = subprocess.run(["/usr/bin/latexmk", "-pdf", "-interaction=nonstopmode",
-                        "-halt-on-error", f"{job}.tex"],
-                       cwd=ref, capture_output=True, text=True,
-                       timeout=LATEX_TIMEOUT_S)
-    (log_dir / f"{name}-reference-latexmk.log").write_text(
-        f"rc={r.returncode}\n" + (r.stdout or "") + (r.stderr or ""))
-    if r.returncode != 0 or not (ref / f"{job}.pdf").is_file():
+    ref_log = log_dir / f"{name}-reference-latexmk.log"
+    r = run_logged(
+        ["/usr/bin/latexmk", "-pdf", "-interaction=nonstopmode",
+         "-halt-on-error", f"{job}.tex"],
+        ref, None, LATEX_TIMEOUT_S, ref_log,
+    )
+    if r["returncode"] != 0 or r["timed_out"] or not (ref / f"{job}.pdf").is_file():
         raise RuntimeError(
-            f"reference rebuild failed (rc={r.returncode}); see "
-            f"{log_dir / f'{name}-reference-latexmk.log'}")
+            f"reference rebuild failed (rc={r['returncode']} "
+            f"timeout={r['timed_out']}); see {ref_log}")
+    ref_log.unlink(missing_ok=True)
     stable = compile_until_stable(base_bin, rust, job, env, log_dir,
                                   f"{name}-rebuild")
     if not stable["converged"]:
@@ -283,8 +336,6 @@ def prepare(root: Path, binary: Path) -> None:
     root = root.resolve()
     binary = resolve_binary(binary, "rust binary")
     fmt = require_fmt(binary)
-    if fmt is None:
-        die(f"format missing beside binary: {binary.parent / 'pdflatex.fmt'}")
     if root.exists():
         if not root.is_dir():
             die(f"root path is a file, not a directory: {root}")
@@ -300,14 +351,19 @@ def prepare(root: Path, binary: Path) -> None:
 
     # write-once baseline slot, made read-only for immutability
     shutil.copy2(binary, base / "pdflatex")
-    shutil.copy2(fmt, base / "pdflatex.fmt")
-    (base / "manifest.json").write_text(json.dumps({
-        "origin": str(binary), "origin_fmt": str(fmt),
+    baseline_manifest = {
+        "origin": str(binary), "origin_fmt": str(fmt) if fmt else None,
         "pdflatex": sha256(base / "pdflatex"),
-        "pdflatex.fmt": sha256(base / "pdflatex.fmt"),
-    }, indent=2))
+        "format": format_provenance(binary),
+        "pdflatex.fmt": None,
+    }
+    if fmt is not None:
+        shutil.copy2(fmt, base / "pdflatex.fmt")
+        baseline_manifest["pdflatex.fmt"] = sha256(base / "pdflatex.fmt")
+    (base / "manifest.json").write_text(json.dumps(baseline_manifest, indent=2))
     os.chmod(base / "pdflatex", 0o555)
-    os.chmod(base / "pdflatex.fmt", 0o444)
+    if fmt is not None:
+        os.chmod(base / "pdflatex.fmt", 0o444)
 
     root.mkdir(parents=True, exist_ok=True)
     logs = parent / "prepare-logs"
@@ -412,63 +468,64 @@ def prepare(root: Path, binary: Path) -> None:
         }
         preflight: dict = {}
 
-        # complete system oracle; every log retained even when it fails
+        # Complete system oracle. Child streams are always bounded; successful
+        # logs are discarded after the oracle metrics have been recorded.
         ref = root / "cluster_ceo-reference"
         oracle_err = None
-        try:
-            r = subprocess.run(
+        oracle_logs: list[Path] = []
+        first_log = logs / "cluster-ref-pass1.log"
+        oracle_logs.append(first_log)
+        r = run_logged(
+            ["/usr/bin/latexmk", "-pdf", "-interaction=nonstopmode",
+             "-halt-on-error", "main.tex"],
+            ref, None, LATEX_TIMEOUT_S, first_log,
+        )
+        blg = _capture_text(ref / "main.blg")
+        if r["returncode"] != 0 and "couldn't open database file" in blg.lower():
+            # BibTeX refused the parent-relative database: retry confined to
+            # these subprocesses only, never globally relaxing TeX.
+            envb = dict(os.environ, BIBINPUTS=f"{parent}:", openin_any="a")
+            retry_tex = logs / "cluster-ref-retry-pdflatex.log"
+            retry_bib = logs / "cluster-ref-retry-bibtex.log"
+            second_log = logs / "cluster-ref-pass2.log"
+            oracle_logs.extend((retry_tex, retry_bib, second_log))
+            run_logged(
+                ["/usr/bin/pdflatex", "-interaction=nonstopmode", "main.tex"],
+                ref, envb, LATEX_TIMEOUT_S, retry_tex,
+            )
+            run_logged(
+                ["/usr/bin/bibtex", "main"], ref, envb, LATEX_TIMEOUT_S,
+                retry_bib,
+            )
+            r = run_logged(
                 ["/usr/bin/latexmk", "-pdf", "-interaction=nonstopmode",
                  "-halt-on-error", "main.tex"],
-                cwd=ref, capture_output=True, text=True,
-                timeout=LATEX_TIMEOUT_S)
-            (logs / "cluster-ref-pass1.log").write_text(
-                f"rc={r.returncode}\n" + (r.stdout or "") + (r.stderr or ""))
-            blg = (ref / "main.blg").read_text(errors="replace") \
-                if (ref / "main.blg").exists() else ""
-            if r.returncode != 0 and "couldn't open database file" in blg.lower():
-                # BibTeX refused the parent-relative database: retry confined
-                # to these subprocesses only, never globally relaxing TeX
-                envb = dict(os.environ, BIBINPUTS=f"{parent}:", openin_any="a")
-                r2 = subprocess.run(["/usr/bin/pdflatex",
-                                     "-interaction=nonstopmode", "main.tex"],
-                                    cwd=ref, env=envb, capture_output=True,
-                                    text=True, timeout=LATEX_TIMEOUT_S)
-                r3 = subprocess.run(["/usr/bin/bibtex", "main"], cwd=ref,
-                                    env=envb, capture_output=True, text=True,
-                                    timeout=LATEX_TIMEOUT_S)
-                (logs / "cluster-ref-bibtex-retry.log").write_text(
-                    f"pdflatex rc={r2.returncode}\n" + (r2.stdout or "")
-                    + (r2.stderr or "") + f"\nbibtex rc={r3.returncode}\n"
-                    + (r3.stdout or "") + (r3.stderr or ""))
-                r = subprocess.run(
-                    ["/usr/bin/latexmk", "-pdf", "-interaction=nonstopmode",
-                     "-halt-on-error", "main.tex"],
-                    cwd=ref, env=envb, capture_output=True, text=True,
-                    timeout=LATEX_TIMEOUT_S)
-                (logs / "cluster-ref-pass2.log").write_text(
-                    f"rc={r.returncode}\n" + (r.stdout or "") + (r.stderr or ""))
-            log = (ref / "main.log").read_text(errors="replace") \
-                if (ref / "main.log").is_file() else ""
-            if r.returncode != 0:
-                oracle_err = f"reference latexmk exited {r.returncode}"
-            elif not (ref / "main.bbl").is_file():
-                oracle_err = "reference produced no main.bbl"
-            elif not (ref / "main.pdf").is_file():
-                oracle_err = "no oracle main.pdf"
-            else:
-                undef = re.findall(r"(Citation|Reference) \S+ undefined", log)
-                if undef:
-                    oracle_err = (
-                        f"{len(undef)} undefined citations/references in the "
-                        "oracle despite the matched bibliography — genuine "
-                        "input blocker, no fabricated entries")
-                else:
-                    cluster_section["pages"] = pdf_pages(ref / "main.pdf")
-                    os.chmod(ref / "main.pdf", 0o444)  # oracle immutable
-        except subprocess.TimeoutExpired as exc:
-            (logs / "cluster-ref-timeout.log").write_text(
-                f"timeout after {LATEX_TIMEOUT_S}s\n{exc.stdout or ''}")
+                ref, envb, LATEX_TIMEOUT_S, second_log,
+            )
+        tex_log_capture = logs / "cluster-ref-tex.log"
+        if (ref / "main.log").is_file():
+            capture_file(ref / "main.log", tex_log_capture,
+                         max_bytes=DEFAULT_MAX_CAPTURE_BYTES)
+            oracle_logs.append(tex_log_capture)
+        log = _capture_text(tex_log_capture)
+        if r["timed_out"]:
             oracle_err = f"reference latexmk timed out after {LATEX_TIMEOUT_S}s"
+        elif r["returncode"] != 0:
+            oracle_err = f"reference latexmk exited {r['returncode']}"
+        elif not (ref / "main.bbl").is_file():
+            oracle_err = "reference produced no main.bbl"
+        elif not (ref / "main.pdf").is_file():
+            oracle_err = "no oracle main.pdf"
+        else:
+            undef = re.findall(r"(Citation|Reference) \S+ undefined", log)
+            if undef:
+                oracle_err = (
+                    f"{len(undef)} undefined citations/references in the "
+                    "oracle despite the matched bibliography — genuine "
+                    "input blocker, no fabricated entries")
+            else:
+                cluster_section["pages"] = pdf_pages(ref / "main.pdf")
+                os.chmod(ref / "main.pdf", 0o444)  # oracle immutable
         if oracle_err:
             cluster_section["oracle_error"] = oracle_err
             preflight["oracle"] = oracle_err
@@ -477,6 +534,8 @@ def prepare(root: Path, binary: Path) -> None:
                 "manifest and retained fixtures stay for independent benchmarks)")
         else:
             preflight["oracle"] = "ok"
+            for log_path in oracle_logs:
+                log_path.unlink(missing_ok=True)
             # seed the rust copy from the reference with the generated
             # bibliography and stable aux bytes identically, then run until
             # aux hashes converge
@@ -533,12 +592,21 @@ def prepare(root: Path, binary: Path) -> None:
             shutil.rmtree(seed_dir)
         if (root / f"{name}-rust").is_dir():
             save_seeds(root / f"{name}-rust", spec["job"], seed_dir)
+        for side in ("rust", "reference"):
+            fixture = root / f"{name}-{side}"
+            if fixture.is_dir():
+                clear_job_transients(fixture, spec["job"])
 
     (parent / "prepare-status.json").write_text(json.dumps(
         {"ok": not failures, "failures": failures,
          "removed_diagnostics": diag_removed}, indent=2))
     print(f"BENCH: prepared {root}; cluster oracle pages="
           f"{manifest_out.get('cluster_ceo', {}).get('pages')}")
+    if not failures:
+        try:
+            logs.rmdir()
+        except OSError:
+            pass
     if failures:
         for f in failures:
             print(f"BENCH: RETAINED FAILURE: {f}", file=sys.stderr)
@@ -560,24 +628,27 @@ def make_work(root: Path, name: str, tag: str) -> Path:
 
 
 def timed_compile(binary: Path, work: Path, job: str, env: dict,
-                  log_path: Path) -> tuple[float, int | None]:
+                  log_path: Path,
+                  max_capture_bytes: int = DEFAULT_MAX_CAPTURE_BYTES
+                  ) -> tuple[float, int | None, dict]:
     clear_job_outputs(work, job)
     pdf = work / f"{job}.pdf"
     if pdf.exists():
         raise RuntimeError(f"stale output survived clearing: {pdf}")
-    t0 = time.perf_counter_ns()
-    try:
-        r = subprocess.run([str(binary), "-interaction=nonstopmode", f"{job}.tex"],
-                           cwd=work, env=env, capture_output=True,
-                           timeout=TIMER_TIMEOUT_S)
-    except subprocess.TimeoutExpired as exc:
-        elapsed = (time.perf_counter_ns() - t0) / 1e9
-        log_path.write_bytes((exc.stdout or b"") + (exc.stderr or b"")
-                             + f"\nBENCH: timeout after {TIMER_TIMEOUT_S}s\n".encode())
-        return elapsed, None
-    elapsed = (time.perf_counter_ns() - t0) / 1e9
-    log_path.write_bytes(r.stdout + r.stderr)  # written after the interval
-    return elapsed, r.returncode
+    child = run_bounded(
+        [str(binary), "-interaction=nonstopmode", f"{job}.tex"],
+        cwd=work,
+        env=env,
+        output_path=log_path,
+        timeout=TIMER_TIMEOUT_S,
+        max_bytes=max_capture_bytes,
+    )
+    capture = dict(child["capture"])
+    capture.update(timed_out=child["timed_out"],
+                   spawn_error=child["spawn_error"])
+    return (child["elapsed_seconds"],
+            None if child["timed_out"] else child["returncode"],
+            capture)
 
 
 def _stats(samples: list, valid: bool) -> dict:
@@ -590,10 +661,14 @@ def _stats(samples: list, valid: bool) -> dict:
 
 
 def run(root: Path, binary: Path, label: str, n: int,
-        compare: Path | None) -> None:
+        compare: Path | None, retain: str = "failures",
+        keep_work: bool = False,
+        max_capture_bytes: int = DEFAULT_MAX_CAPTURE_BYTES) -> None:
     check_label(label)
     if n < 1:
         die(f"--runs must be >= 1, got {n}")
+    if max_capture_bytes < 0:
+        die(f"--max-capture-bytes must be non-negative, got {max_capture_bytes}")
     root = root.resolve()
     if not (root / "inputs.json").is_file():
         die(f"prepared manifest missing: run prepare first ({root / 'inputs.json'})")
@@ -602,14 +677,10 @@ def run(root: Path, binary: Path, label: str, n: int,
     if compare is not None:
         binaries.append(resolve_binary(compare, "compare binary"))
         tags.append("b")
-    fmt_hashes = {}
-    for b in binaries:
-        fmt = require_fmt(b)
-        if fmt is None:
-            die(f"pdflatex.fmt missing beside {b}: a missing format is an "
-                "explicit failure, never an implicit system-pdflatex switch")
-        fmt_hashes[str(b)] = sha256(fmt)
-    if len(set(fmt_hashes.values())) != 1:
+    formats = {str(b): format_provenance(b) for b in binaries}
+    external_hashes = [record["sha256"] for record in formats.values()
+                       if record["kind"] == "external"]
+    if len(set(external_hashes)) > 1:
         die("paired binaries must use identical generic formats")
     results = root.parent / "results" / label
     if results.exists():
@@ -621,9 +692,16 @@ def run(root: Path, binary: Path, label: str, n: int,
         "removed_diagnostics": removed,
         "binaries": [str(b) for b in binaries],
         "binary_hashes": [sha256(b) for b in binaries],
-        "adjacent_format_hashes": fmt_hashes,
+        "formats": formats,
+        "adjacent_format_hashes": {
+            binary: record["sha256"] for binary, record in formats.items()
+            if record["kind"] == "external"
+        },
         "inputs_manifest_sha": sha256(root / "inputs.json"),
         "runs": n, "timeout_seconds": TIMER_TIMEOUT_S,
+        "retain": retain, "keep_work": keep_work,
+        "max_capture_bytes": max_capture_bytes,
+        "artifact_policy": "bounded-retention-v1",
     }, indent=2))
     report: dict = {}
     any_failure = False
@@ -652,6 +730,9 @@ def run(root: Path, binary: Path, label: str, n: int,
                     "median_seconds": None, "min_seconds": None,
                     "max_seconds": None}
                 any_failure = True
+            if not keep_work:
+                for workdir in workdirs:
+                    shutil.rmtree(workdir, ignore_errors=True)
             continue
         slots = workdirs
         expected = manifest.get(name, {}).get("pages")
@@ -666,13 +747,16 @@ def run(root: Path, binary: Path, label: str, n: int,
             for si in (range(len(tags)) if trial % 2 == 0 else reversed(range(len(tags)))):
                 tag = tags[si]
                 sample = {"trial": trial, "seconds": None, "rc": None,
-                          "pages": None, "producer": None, "ok": False}
+                          "pages": None, "producer": None, "ok": False,
+                          "capture": None, "log": None}
                 try:
                     restore_seeds(root / ".seeds" / name, slots[si], job)
-                    elapsed, rc = timed_compile(
+                    log_path = results / f"{name}-{tag}-{trial}.log"
+                    elapsed, rc, capture = timed_compile(
                         binaries[si], slots[si], job, env,
-                        results / f"{name}-{tag}-{trial}.log")
+                        log_path, max_capture_bytes)
                     sample["seconds"], sample["rc"] = elapsed, rc
+                    sample["capture"] = capture
                     pdf = slots[si] / f"{job}.pdf"
                     ok = rc == 0 and pdf.is_file()
                     if ok:
@@ -682,13 +766,11 @@ def run(root: Path, binary: Path, label: str, n: int,
                               and (oracle == "unavailable"
                                    or sample["pages"] == expected))
                     sample["ok"] = ok
+                    sample["log"] = str(log_path)
                     if not ok:
                         errors.append(f"{tag}#{trial}: rc={rc} "
                                       f"pages={sample['pages']} "
                                       f"producer={sample['producer']}")
-                except subprocess.TimeoutExpired:
-                    errors.append(f"{tag}#{trial}: timeout "
-                                  f">{TIMER_TIMEOUT_S}s")
                 except Exception as exc:
                     errors.append(f"{tag}#{trial}: {exc}")
                 samples[tag].append(sample)
@@ -704,8 +786,21 @@ def run(root: Path, binary: Path, label: str, n: int,
             if valid and name in GATED and entry["median_seconds"] is not None:
                 entry["under_500ms"] = entry["median_seconds"] < 0.5
             report.setdefault(name, {})[tag] = entry
+            logged = [sample for sample in samples[tag] if sample.get("log")]
+            keep_sample = None
+            if retain == "failures" and not valid and logged:
+                failed_samples = [sample for sample in logged if not sample["ok"]]
+                keep_sample = (failed_samples or logged)[-1]
+            for sample in logged:
+                if retain == "all" or sample is keep_sample:
+                    continue
+                Path(sample["log"]).unlink(missing_ok=True)
+                sample["log"] = None
             if not valid:
                 any_failure = True
+        if not keep_work:
+            for workdir in workdirs:
+                shutil.rmtree(workdir, ignore_errors=True)
     report["_verdict"] = {
         "valid": not any_failure,
         "note": ("valid means complete successful compilation timings; raster "
@@ -729,12 +824,12 @@ def run(root: Path, binary: Path, label: str, n: int,
 
 # ---------------------------------------------------------------- profile
 
-def profile(root: Path, binary: Path, label: str) -> None:
+def profile(root: Path, binary: Path, label: str,
+            keep_work: bool = False,
+            max_capture_bytes: int = DEFAULT_MAX_CAPTURE_BYTES) -> None:
     check_label(label)
     root = root.resolve()
     binary = resolve_binary(binary, "binary")
-    if require_fmt(binary) is None:
-        die(f"pdflatex.fmt missing beside {binary}")
     if not (root / "inputs.json").is_file():
         die(f"prepared manifest missing: run prepare first ({root})")
     pdir = root.parent / "profile" / label
@@ -745,7 +840,7 @@ def profile(root: Path, binary: Path, label: str) -> None:
     env, removed = timing_env({"PHASE_TIMING": "1"})
     (pdir / "provenance.json").write_text(json.dumps({
         "binary": str(binary), "binary_sha": sha256(binary),
-        "format_sha": sha256(binary.parent / "pdflatex.fmt"),
+        "format": format_provenance(binary),
         "inputs_manifest_sha": sha256(root / "inputs.json"),
         "removed_diagnostics": removed, "runs_per_document": 3,
         "note": "profile durations never feed the speed verdict",
@@ -754,6 +849,7 @@ def profile(root: Path, binary: Path, label: str) -> None:
     failures: list[str] = []
     for name, spec in DOCS.items():
       job = spec["job"]
+      work: Path | None = None
       try:
         work = make_work(root, name, f"profile-{label}")
         runs = []
@@ -761,16 +857,22 @@ def profile(root: Path, binary: Path, label: str) -> None:
             restore_seeds(root / ".seeds" / name, work, job)
             clear_job_outputs(work, job)
             entry: dict = {"trial": i, "rc": None, "timeout": False}
-            try:
-                r = subprocess.run(
-                    [str(binary), "-interaction=nonstopmode", f"{job}.tex"],
-                    cwd=work, env=env, capture_output=True, text=True,
-                    timeout=RUST_TIMEOUT_S)
-                entry["rc"] = r.returncode
-                entry["timing_lines"] = [l for l in (r.stdout + r.stderr).splitlines()
-                                         if l.startswith(("TIMING:", "PHASE_TIMING "))]
-            except subprocess.TimeoutExpired:
-                entry["timeout"] = True
+            phase_log = pdir / f"{name}-phase-{i}.log"
+            child = run_logged(
+                [str(binary), "-interaction=nonstopmode", f"{job}.tex"],
+                work, env, RUST_TIMEOUT_S, phase_log, max_capture_bytes,
+            )
+            entry["rc"] = child["returncode"]
+            entry["timeout"] = child["timed_out"]
+            entry["capture"] = child["capture"]
+            entry["timing_lines"] = [
+                line for line in _capture_text(phase_log).splitlines()
+                if line.startswith(("TIMING:", "PHASE_TIMING "))
+            ]
+            if child["returncode"] == 0 and not child["timed_out"]:
+                phase_log.unlink(missing_ok=True)
+            else:
+                entry["log"] = str(phase_log)
             runs.append(entry)
         (pdir / f"{name}-phases.json").write_text(json.dumps(
             {"pages_expected": manifest.get(name, {}).get("pages"),
@@ -791,24 +893,28 @@ def profile(root: Path, binary: Path, label: str) -> None:
                 out.unlink()
             cmd = [perf, *mode, "-o", str(out), "--", str(binary),
                    "-interaction=nonstopmode", f"{job}.tex"]
-            note = ""
-            try:
-                r = subprocess.run(cmd, cwd=work, env=env, capture_output=True,
-                                   text=True, timeout=RUST_TIMEOUT_S)
-                note = f"rc={r.returncode}\n{r.stderr}"
-                if r.returncode == 0 and out.is_file():
-                    break
-            except subprocess.TimeoutExpired:
-                note = f"perf timed out after {RUST_TIMEOUT_S}s"
+            perf_log = pdir / f"{name}-perf-attempt{mi + 1}.log"
+            child = run_logged(
+                cmd, work, env, RUST_TIMEOUT_S, perf_log, max_capture_bytes,
+            )
+            note = (f"rc={child['returncode']} timeout={child['timed_out']}\n"
+                    + _capture_text(perf_log))
+            if child["returncode"] == 0 and not child["timed_out"] and out.is_file():
+                perf_log.unlink(missing_ok=True)
+                break
             if out.exists():
                 out.unlink()
             if mi == len(modes) - 1:
                 (pdir / f"{name}.perf-note").write_text(
                     "hardware and cpu-clock perf both unavailable:\n" + note)
+            perf_log.unlink(missing_ok=True)
       except Exception as exc:
         failures.append(f"{name}: profile failed: {exc}")
         (pdir / f"{name}-phases.json").write_text(json.dumps(
             {"error": str(exc)}, indent=2))
+      finally:
+        if work is not None and not keep_work:
+            shutil.rmtree(work, ignore_errors=True)
     print(f"BENCH: profile written under {pdir}")
     if failures:
         for f in failures:
@@ -863,8 +969,6 @@ def pgo(root: Path) -> None:
     prof.mkdir(parents=True)
     repo = Path(__file__).resolve().parent.parent
     base_fmt = parent / "bin" / "baseline" / "pdflatex.fmt"
-    if not base_fmt.is_file():
-        die(f"fixed baseline format missing: {base_fmt}")
     rc_v, pd_v = llvm_versions()
     if rc_v != pd_v:
         die(f"LLVM mismatch: rustc llvm-version {rc_v} vs llvm-profdata "
@@ -872,11 +976,14 @@ def pgo(root: Path) -> None:
 
     def cargo(target_dir: Path, flags: str) -> Path:
         env = dict(os.environ, CARGO_TARGET_DIR=str(target_dir), RUSTFLAGS=flags)
-        r = subprocess.run(["cargo", "build", "--release", "-p", "tex-cli"],
-                           cwd=repo, env=env, capture_output=True,
-                           text=True, timeout=3600)
-        if r.returncode != 0:
-            die(f"cargo build failed:\n{r.stderr[-4000:]}")
+        cargo_log = prof / f"cargo-{target_dir.name}.log"
+        child = run_logged(
+            ["cargo", "build", "--release", "-p", "tex-cli"],
+            repo, env, 3600, cargo_log,
+        )
+        if child["returncode"] != 0 or child["timed_out"]:
+            die(f"cargo build failed:\n{_capture_text(cargo_log)[-4000:]}")
+        cargo_log.unlink(missing_ok=True)
         exe = target_dir / "release" / "pdflatex"
         if not exe.is_file():
             die(f"cargo produced no {exe}")
@@ -884,7 +991,8 @@ def pgo(root: Path) -> None:
         if dst_fmt.exists():
             os.chmod(dst_fmt, 0o644)  # a previous PGO pass may have left it
             dst_fmt.unlink()
-        shutil.copy2(base_fmt, dst_fmt)
+        if base_fmt.is_file():
+            shutil.copy2(base_fmt, dst_fmt)
         return exe
 
     gen = cargo(parent / "target-pgo-generate",
@@ -901,31 +1009,34 @@ def pgo(root: Path) -> None:
             clear_job_outputs(work, job)
         except (OSError, RuntimeError, ValueError) as exc:
             die(f"PGO training setup failed for {name}: {exc}")
-        try:
-            r = subprocess.run([str(gen), "-interaction=nonstopmode",
-                                f"{job}.tex"], cwd=work, env=env,
-                               capture_output=True, text=True,
-                               timeout=RUST_TIMEOUT_S)
-            rc, out = r.returncode, (r.stdout or "") + (r.stderr or "")
-        except subprocess.TimeoutExpired:
-            rc, out = None, f"timeout after {RUST_TIMEOUT_S}s"
-        (prof / f"train-{name}.log").write_text(f"rc={rc}\n{out}")
+        train_log = prof / f"train-{name}.log"
+        child = run_logged(
+            [str(gen), "-interaction=nonstopmode", f"{job}.tex"],
+            work, env, RUST_TIMEOUT_S, train_log,
+        )
+        rc = None if child["timed_out"] else child["returncode"]
         fresh = (work / f"{job}.pdf").is_file()
         if rc != 0 or not fresh:
             # an incomplete training set invalidates the merged profile: fatal
             die(f"PGO training failed for {name} (rc={rc} fresh_pdf={fresh}); "
                 f"see {prof / f'train-{name}.log'}")
         training[name] = {"rc": rc, "pages_expected": manifest.get(name, {}).get("pages")}
+        train_log.unlink(missing_ok=True)
+        shutil.rmtree(work, ignore_errors=True)
     tdir = parent / "pgo-train-plain"
     tdir.mkdir(parents=True)
     (tdir / "train.tex").write_text(PLAIN_TRAIN)
-    r = subprocess.run([str(gen), "-plain", "train.tex"], cwd=tdir, env=env,
-                       capture_output=True, text=True, timeout=TIMER_TIMEOUT_S)
-    (prof / "train-plain.log").write_text(
-        f"rc={r.returncode}\n" + (r.stdout or "") + (r.stderr or ""))
-    if r.returncode != 0 or not (tdir / "train.pdf").is_file():
-        die(f"plain training compile failed (rc={r.returncode}); "
+    plain_log = prof / "train-plain.log"
+    plain = run_logged(
+        [str(gen), "-plain", "train.tex"], tdir, env, TIMER_TIMEOUT_S,
+        plain_log,
+    )
+    if (plain["returncode"] != 0 or plain["timed_out"]
+            or not (tdir / "train.pdf").is_file()):
+        die(f"plain training compile failed (rc={plain['returncode']} "
+            f"timeout={plain['timed_out']}); "
             f"see {prof / 'train-plain.log'}")
+    plain_log.unlink(missing_ok=True)
     raws = sorted(prof.glob("*.profraw"))
     if not raws:
         die("no .profraw captured")
@@ -938,11 +1049,17 @@ def pgo(root: Path) -> None:
         die(f"LLVM version changed during PGO: {rc_v}/{pd_v} -> {rc_v2}/{pd_v2}; "
             "refusing to merge a possibly foreign profile set")
     merged = prof / "merged.profdata"
-    r = subprocess.run(["/usr/bin/llvm-profdata", "merge", "-o", str(merged),
-                        *[str(x) for x in raws]], capture_output=True,
-                       text=True, timeout=300)
-    if r.returncode != 0 or not merged.is_file() or merged.stat().st_size == 0:
-        die(f"llvm-profdata merge failed:\n{r.stderr[-2000:]}")
+    merge_log = prof / "llvm-profdata.log"
+    merge = run_logged(
+        ["/usr/bin/llvm-profdata", "merge", "-o", str(merged),
+         *[str(x) for x in raws]],
+        repo, None, 300, merge_log,
+    )
+    if (merge["returncode"] != 0 or merge["timed_out"]
+            or not merged.is_file() or merged.stat().st_size == 0):
+        die(f"llvm-profdata merge failed:\n{_capture_text(merge_log)[-2000:]}")
+    merge_log.unlink(missing_ok=True)
+    shutil.rmtree(tdir, ignore_errors=True)
     use = cargo(parent / "target-pgo-use",
                 f"-C target-cpu=native -C profile-use={merged}")
     (parent / "pgo-provenance.json").write_text(json.dumps({
@@ -950,9 +1067,9 @@ def pgo(root: Path) -> None:
         "rustc_llvm": rc_v2, "profdata_llvm": pd_v2,
         "removed_diagnostics": removed,
         "generate_exe_sha": sha256(gen),
-        "generate_fmt_sha": sha256(gen.parent / "pdflatex.fmt"),
+        "generate_format": format_provenance(gen),
         "pgo_exe_sha": sha256(use),
-        "pgo_fmt_sha": sha256(use.parent / "pdflatex.fmt"),
+        "pgo_format": format_provenance(use),
         "profraw_files": [p.name for p in raws],
         "flags": {"generate": f"-C target-cpu=native -C profile-generate={prof}",
                   "use": f"-C target-cpu=native -C profile-use={merged}"},
@@ -975,19 +1092,32 @@ def main() -> None:
     r.add_argument("--label", required=True)
     r.add_argument("--runs", required=True, type=int)
     r.add_argument("--compare-binary", type=Path)
+    r.add_argument("--retain", choices=("failures", "all", "none"),
+                   default="failures",
+                   help="Keep bounded failure logs by default, all logs, or none")
+    r.add_argument("--keep-work", action="store_true",
+                   help="Keep copied benchmark workspaces")
+    r.add_argument("--max-capture-bytes", type=int,
+                   default=DEFAULT_MAX_CAPTURE_BYTES,
+                   help="Retained bytes per child output; 0 keeps all")
     f = sub.add_parser("profile")
     f.add_argument("--root", required=True, type=Path)
     f.add_argument("--binary", required=True, type=Path)
     f.add_argument("--label", required=True)
+    f.add_argument("--keep-work", action="store_true")
+    f.add_argument("--max-capture-bytes", type=int,
+                   default=DEFAULT_MAX_CAPTURE_BYTES)
     g = sub.add_parser("pgo")
     g.add_argument("--root", required=True, type=Path)
     args = ap.parse_args()
     if args.cmd == "prepare":
         prepare(args.root, args.binary)
     elif args.cmd == "run":
-        run(args.root, args.binary, args.label, args.runs, args.compare_binary)
+        run(args.root, args.binary, args.label, args.runs, args.compare_binary,
+            args.retain, args.keep_work, args.max_capture_bytes)
     elif args.cmd == "profile":
-        profile(args.root, args.binary, args.label)
+        profile(args.root, args.binary, args.label, args.keep_work,
+                args.max_capture_bytes)
     else:
         pgo(args.root)
 

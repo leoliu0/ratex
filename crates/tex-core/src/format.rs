@@ -13,11 +13,13 @@
 //! registers and a non-empty save stack make the dump refuse, matching
 //! tex.web's requirement that `\dump` happen at top level.
 //!
-//! Wire format (all integers little-endian):
+//! The native wire format (all integers little-endian) is
 //! `MAGIC(8) VER(u16)`, then sections in the order written by
-//! [`save_format`]. List = `u32 len` + elements. Strings = byte list.
+//! [`save_format`]. List = `u32 len` + elements. Strings = byte list. A
+//! production `.fmt` may wrap that whole byte stream in a zstd frame; loading
+//! detects the frame from its magic bytes rather than its filename.
 
-use std::io;
+use std::io::{self, Read};
 use std::path::Path;
 use std::rc::Rc;
 
@@ -30,7 +32,11 @@ use crate::tfm::{CharInfo, ExtRecipe, Font, LigStep};
 use crate::token::{CsTable, Token};
 
 const MAGIC: &[u8; 8] = b"RUSTEXFM";
-const VERSION: u16 = 8;
+const VERSION: u16 = 10;
+/// A production format is currently about 8 MiB decoded. Keep corrupt or
+/// unrelated external files from turning format probing into an unbounded
+/// allocation while leaving ample room for future format growth.
+const MAX_FORMAT_BYTES: usize = 128 * 1024 * 1024;
 /// Bumped whenever serialized state changes meaning without changing the
 /// wire layout (new engine invariants the loaded state must satisfy, e.g.
 /// guards added to `check_dumpable` after the file was written). A `.fmt`
@@ -305,9 +311,47 @@ pub fn check_dumpable(eng: &Engine) -> Result<(), String> {
 // save
 // ---------------------------------------------------------------------------
 
+/// On-disk encoding for a serialized format.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FormatEncoding {
+    /// The native `RUSTEXFM` byte stream. This is retained for tools that
+    /// inspect or exchange the wire format directly.
+    Raw,
+    /// A zstd frame containing the native byte stream.
+    Zstd(i32),
+}
+
+/// Compression used for embedded and newly generated production formats.
+/// Level 3 shrinks the normal LaTeX format by more than an order of magnitude
+/// while adding only a small, bounded startup cost.
+pub const DEFAULT_FORMAT_ZSTD_LEVEL: i32 = 3;
+
 /// Serialize the engine's boot state to `path` (usually `pdflatex.fmt`).
+///
+/// For compatibility, a `.zst` suffix selects zstd and every other suffix
+/// writes the raw wire format. New callers that need a specific encoding
+/// should use [`save_format_with_encoding`].
 /// Returns the number of bytes written.
 pub fn save_format(eng: &Engine, path: &Path) -> Result<usize, String> {
+    let encoding = if path.extension().and_then(|s| s.to_str()) == Some("zst") {
+        FormatEncoding::Zstd(DEFAULT_FORMAT_ZSTD_LEVEL)
+    } else {
+        FormatEncoding::Raw
+    };
+    save_format_with_encoding(eng, path, encoding)
+}
+
+/// Serialize a zstd-compressed format regardless of the file suffix.
+pub fn save_format_compressed(eng: &Engine, path: &Path) -> Result<usize, String> {
+    save_format_with_encoding(eng, path, FormatEncoding::Zstd(DEFAULT_FORMAT_ZSTD_LEVEL))
+}
+
+/// Serialize a format with an explicit on-disk encoding.
+pub fn save_format_with_encoding(
+    eng: &Engine,
+    path: &Path,
+    encoding: FormatEncoding,
+) -> Result<usize, String> {
     check_dumpable(eng)?;
     let mut w = W::new();
     w.buf.extend_from_slice(MAGIC);
@@ -541,11 +585,17 @@ pub fn save_format(eng: &Engine, path: &Path) -> Result<usize, String> {
         w.i32(*a);
         w.i32(*b);
     }
+    for shape in &eng.penalty_shapes {
+        w.u32(shape.len() as u32);
+        for value in shape.iter() {
+            w.i32(*value);
+        }
+    }
 
-    let payload = if path.extension().and_then(|s| s.to_str()) == Some("zst") {
-        zstd::encode_all(&w.buf[..], 3).map_err(|e| format!("zstd compression failed: {e}"))?
-    } else {
-        w.buf
+    let payload = match encoding {
+        FormatEncoding::Raw => w.buf,
+        FormatEncoding::Zstd(level) => zstd::encode_all(&w.buf[..], level)
+            .map_err(|e| format!("zstd compression failed: {e}"))?,
     };
     std::fs::write(path, &payload)
         .map_err(|e| format!("cannot write {}: {}", path.display(), e))?;
@@ -787,40 +837,79 @@ fn write_trie(w: &mut W, t: &Trie) {
 /// `\dump`-completed state). Any I/O, magic, version, or truncation error
 /// is reported so the caller can fall back to a full bootstrap.
 pub fn load_format(path: &Path) -> Result<Engine, String> {
-    let data = std::fs::read(path).map_err(|e| format!("cannot read {}: {}", path.display(), e))?;
+    let data = read_format_file(path)?;
     load_format_from(&data)
 }
 
-/// Validate the header (magic, VERSION, SEMANTICS) and return a reader
-/// positioned at the first payload byte. Shared by every load path so a
-/// stale-format check can never be bypassed.
-fn parse_header(data: &[u8]) -> Result<R<'_>, String> {
+fn read_format_file(path: &Path) -> Result<Vec<u8>, String> {
+    let metadata =
+        std::fs::metadata(path).map_err(|e| format!("cannot inspect {}: {e}", path.display()))?;
+    if metadata.len() > MAX_FORMAT_BYTES as u64 {
+        return Err(format!(
+            "format file {} is too large ({} bytes; limit is {} bytes)",
+            path.display(),
+            metadata.len(),
+            MAX_FORMAT_BYTES
+        ));
+    }
+    std::fs::read(path).map_err(|e| format!("cannot read {}: {e}", path.display()))
+}
+
+/// Validate the header and return the wire version plus a reader positioned
+/// at the first payload byte. Version 8 is accepted so the embedded format
+/// from the preceding release can acquire newly registered primitives during
+/// the loader's alias-repair pass; its missing penalty arrays default empty.
+fn parse_header(data: &[u8]) -> Result<(R<'_>, u16), String> {
     if data.len() < MAGIC.len() + 4 || &data[..MAGIC.len()] != MAGIC {
         return Err("not a rustex format file".to_string());
     }
     let mut r = R::new(&data[MAGIC.len()..]);
-    if r.u16().map_err(io_err)? != VERSION {
+    let version = r.u16().map_err(io_err)?;
+    if version != VERSION && version != 9 && version != 8 {
         return Err("format version mismatch".to_string());
     }
     if r.u16().map_err(io_err)? != SEMANTICS {
         return Err("format semantics mismatch (engine updated; delete the .fmt file)".to_string());
     }
-    Ok(r)
+    Ok((r, version))
 }
 
 const ZSTD_MAGIC: [u8; 4] = [0x28, 0xb5, 0x2f, 0xfd];
 
 pub fn load_format_from(data: &[u8]) -> Result<Engine, String> {
+    if data.len() > MAX_FORMAT_BYTES {
+        return Err(format!(
+            "format input is too large ({} bytes; limit is {} bytes)",
+            data.len(),
+            MAX_FORMAT_BYTES
+        ));
+    }
     if data.len() >= 4 && data[..4] == ZSTD_MAGIC {
-        let decompressed =
-            zstd::decode_all(data).map_err(|e| format!("zstd decompression failed: {e}"))?;
+        let decoder = zstd::stream::read::Decoder::new(data)
+            .map_err(|e| format!("zstd decompression failed: {e}"))?;
+        let mut decompressed = Vec::with_capacity(
+            data.len()
+                .saturating_mul(16)
+                .min(MAX_FORMAT_BYTES)
+                .min(16 * 1024 * 1024),
+        );
+        decoder
+            .take(MAX_FORMAT_BYTES as u64 + 1)
+            .read_to_end(&mut decompressed)
+            .map_err(|e| format!("zstd decompression failed: {e}"))?;
+        if decompressed.len() > MAX_FORMAT_BYTES {
+            return Err(format!(
+                "decompressed format exceeds the {} byte limit",
+                MAX_FORMAT_BYTES
+            ));
+        }
         return load_format_uncompressed(&decompressed);
     }
     load_format_uncompressed(data)
 }
 
 fn load_format_uncompressed(data: &[u8]) -> Result<Engine, String> {
-    let mut r = parse_header(data)?;
+    let (mut r, version) = parse_header(data)?;
     let mut eng = Engine::new(false);
     eng.init_primitives();
     // Capture immutable primitive identities before replacing the format
@@ -832,7 +921,7 @@ fn load_format_uncompressed(data: &[u8]) -> Result<Engine, String> {
             _ => None,
         })
         .collect();
-    load_state(&mut r, &mut eng).map_err(io_err)?;
+    load_state(&mut r, &mut eng, version).map_err(io_err)?;
     // Repair primitive aliases while preserving LaTeX macro redefinitions.
     for (name, p) in primitives {
         let did = eng.cs.lookup(&name).unwrap_or_else(|| eng.cs.intern(&name));
@@ -867,7 +956,7 @@ fn load_format_uncompressed(data: &[u8]) -> Result<Engine, String> {
 /// font list would shift every FontRef id); the caller falls back to a
 /// full bootstrap on any error.
 pub fn load_format_into(path: &Path, eng: &mut Engine) -> Result<(), String> {
-    let data = std::fs::read(path).map_err(|e| format!("cannot read {}: {}", path.display(), e))?;
+    let data = read_format_file(path)?;
     load_format_bytes_into(&data, eng)
 }
 
@@ -881,6 +970,8 @@ pub fn load_format_bytes_into(data: &[u8], eng: &mut Engine) -> Result<(), Strin
     eng.hyphen_trie = scratch.hyphen_trie;
     eng.hyphen_exceptions = scratch.hyphen_exceptions;
     eng.par_shape = scratch.par_shape;
+    eng.penalty_shapes = scratch.penalty_shapes;
+    eng.penalty_shape_levels = scratch.penalty_shape_levels;
     eng.format_done = scratch.format_done;
     eng.ini_mode = scratch.ini_mode;
     Ok(())
@@ -890,7 +981,7 @@ fn io_err(e: io::Error) -> String {
     format!("format load: {}", e)
 }
 
-fn load_state(r: &mut R, eng: &mut Engine) -> io::Result<()> {
+fn load_state(r: &mut R, eng: &mut Engine, version: u16) -> io::Result<()> {
     eng.eqtb.cur_font_val = r.u16()?;
 
     let n = r.count()?;
@@ -906,6 +997,7 @@ fn load_state(r: &mut R, eng: &mut Engine) -> io::Result<()> {
         ));
     }
     eng.cs = cs;
+    eng.eqtb.clear_entries();
     // equivalents
     let n = r.count()?;
     for _ in 0..n {
@@ -957,8 +1049,24 @@ fn load_state(r: &mut R, eng: &mut Engine) -> io::Result<()> {
         }
         Ok(v)
     }
-    eng.eqtb.int_params = r.raw_i32(NUM_INT_PARAMS)?;
-    eng.eqtb.int_levels = r.raw_u16(NUM_INT_PARAMS)?;
+    if version == 8 {
+        // Version 8 predates \pdfsuppresswarningpagegroup.
+        const V8_INT_PARAMS: usize = 95;
+        let values = r.raw_i32(V8_INT_PARAMS)?;
+        let levels = r.raw_u16(V8_INT_PARAMS)?;
+        eng.eqtb.int_params[..V8_INT_PARAMS].copy_from_slice(&values);
+        eng.eqtb.int_levels[..V8_INT_PARAMS].copy_from_slice(&levels);
+    } else if version == 9 {
+        // Version 9 predates \pdfadjustinterwordglue, \pdfprependkern, \pdfappendkern.
+        const V9_INT_PARAMS: usize = 96;
+        let values = r.raw_i32(V9_INT_PARAMS)?;
+        let levels = r.raw_u16(V9_INT_PARAMS)?;
+        eng.eqtb.int_params[..V9_INT_PARAMS].copy_from_slice(&values);
+        eng.eqtb.int_levels[..V9_INT_PARAMS].copy_from_slice(&levels);
+    } else {
+        eng.eqtb.int_params = r.raw_i32(NUM_INT_PARAMS)?;
+        eng.eqtb.int_levels = r.raw_u16(NUM_INT_PARAMS)?;
+    }
     eng.eqtb.dim_params = r.raw_i32(NUM_DIM_PARAMS)?;
     eng.eqtb.dim_levels = r.raw_u16(NUM_DIM_PARAMS)?;
     eng.eqtb.glue_params.clear();
@@ -1049,6 +1157,16 @@ fn load_state(r: &mut R, eng: &mut Engine) -> io::Result<()> {
         let a = r.i32()?;
         let b = r.i32()?;
         eng.par_shape.push((a, b));
+    }
+    if version >= 9 {
+        for shape in &mut eng.penalty_shapes {
+            let n = r.count()?;
+            let mut values = Vec::with_capacity(n);
+            for _ in 0..n {
+                values.push(r.i32()?);
+            }
+            *shape = Rc::from(values);
+        }
     }
 
     // boot-completed production state
@@ -1162,6 +1280,7 @@ fn read_font(r: &mut R) -> io::Result<Font> {
         params,
         hyphen_char,
         skew_char,
+        bchar: None,
         type1_path,
         enc_name,
         map_fontname,
@@ -1295,7 +1414,7 @@ mod tests {
         // codes
         eng.eqtb.assign_cat(b'@', 11, true);
         eng.eqtb.assign_math_code(b'+', 0x0123, true);
-        eng.eqtb.assign_del_code(b'.', 0x0abc_de1, true);
+        eng.eqtb.assign_del_code(b'.', 0x00ab_cde1, true);
         eng.eqtb.assign_lc_code(b'E', 101, true);
         eng.eqtb.assign_sf_code(b'e', 999, true);
         eng.eqtb.assign_uc_code(b'e', 69, true);
@@ -1344,6 +1463,7 @@ mod tests {
             params: vec![0, 33, 44],
             hyphen_char: b'-' as i32,
             skew_char: -1,
+            bchar: None,
             type1_path: Some("pfb/cmr10.pfb".to_string()),
             enc_name: Some("ec".to_string()),
             map_fontname: None,
@@ -1370,6 +1490,10 @@ mod tests {
             .push(("lang-german".to_string(), b"ab-cd".to_vec()));
         eng.par_shape.push((3, 4));
         eng.par_shape.push((-1, i32::MAX));
+        eng.penalty_shapes[0] = Rc::from(vec![10, 20]);
+        eng.penalty_shapes[1] = Rc::from(vec![30]);
+        eng.penalty_shapes[2] = Rc::from(vec![40, 50, 60]);
+        eng.penalty_shapes[3] = Rc::from(vec![70]);
 
         eng
     }
@@ -1431,8 +1555,8 @@ mod tests {
             trans_sorted, eng.hyphen_trie.values
         ));
         s.push_str(&format!(
-            "hyexc={:?}\nparshape={:?}\n",
-            eng.hyphen_exceptions, eng.par_shape
+            "hyexc={:?}\nparshape={:?}\npenaltyshapes={:?}\n",
+            eng.hyphen_exceptions, eng.par_shape, eng.penalty_shapes
         ));
         s
     }
@@ -1644,7 +1768,10 @@ mod tests {
             w.u32(0);
             w.u32(0); // trie: 0 nodes; then 0 exceptions
             w.u32(0);
-            w.u32(0);
+            w.u32(0); // no paragraph-shape entries
+            for _ in 0..4 {
+                w.u32(0); // no e-TeX penalty-array entries
+            }
             w.buf
         };
         // truncated blob must not panic
@@ -1658,6 +1785,41 @@ mod tests {
         // complete minimal blob loads
         let eng2 = load_format_from(&data).expect("minimal format loads");
         assert!(eng2.format_done);
+        // Version 8 ended immediately after the paragraph-shape payload.
+        // Keep accepting that exact layout so the bundled format from the
+        // preceding release remains usable while version 9 adds the four
+        // e-TeX penalty arrays.
+        let mut prefix = R::new(&data[MAGIC.len() + 4..]);
+        prefix.u16().unwrap(); // current font
+        let cs_count = prefix.count().unwrap();
+        for _ in 0..cs_count {
+            prefix.bytes().unwrap();
+        }
+        assert_eq!(prefix.count().unwrap(), 0); // equivalents
+        prefix.u16().unwrap(); // current group level
+        let int_params_offset = MAGIC.len() + 4 + prefix.p;
+
+        let mut legacy = data.clone();
+        const V8_INT_PARAMS: usize = 95;
+        let delta = NUM_INT_PARAMS - V8_INT_PARAMS;
+        let new_value_offset = int_params_offset + V8_INT_PARAMS * std::mem::size_of::<i32>();
+        legacy.drain(new_value_offset..new_value_offset + delta * std::mem::size_of::<i32>());
+        let new_level_offset = int_params_offset
+            + V8_INT_PARAMS * std::mem::size_of::<i32>()
+            + V8_INT_PARAMS * std::mem::size_of::<u16>();
+        legacy.drain(new_level_offset..new_level_offset + delta * std::mem::size_of::<u16>());
+        legacy.truncate(legacy.len() - 4 * std::mem::size_of::<u32>());
+        legacy[MAGIC.len()..MAGIC.len() + 2].copy_from_slice(&8u16.to_le_bytes());
+        let legacy_eng = load_format_from(&legacy).expect("version 8 format loads");
+        assert!(legacy_eng.format_done);
+        assert_eq!(
+            legacy_eng.eqtb.int_params[IntParam::PdfSuppressWarningPageGroup.idx() as usize],
+            0
+        );
+        assert!(legacy_eng
+            .penalty_shapes
+            .iter()
+            .all(|shape| shape.is_empty()));
         // flipped version byte is invalid
         let mut bad = data.clone();
         bad[MAGIC.len()] = 0xFF;
@@ -1683,7 +1845,7 @@ mod tests {
         stale[MAGIC.len() + 2] = ((SEMANTICS - 1) & 0xFF) as u8;
         stale[MAGIC.len() + 3] = (((SEMANTICS - 1) >> 8) & 0xFF) as u8;
         let err = load_format(&path.with_extension("stale")).err().unwrap();
-        assert!(err.contains("cannot read"), "sanity: {err}");
+        assert!(err.contains("cannot inspect"), "sanity: {err}");
         std::fs::write(dir.join("stale.fmt"), &stale).unwrap();
         for err in [
             load_format(&dir.join("stale.fmt")).err().unwrap(),
@@ -1794,6 +1956,43 @@ mod tests {
         assert!(n > 0);
         let loaded = load_format(&path).expect("load format from zstd");
         assert_eq!(loaded.cs.len(), eng.cs.len());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn explicit_compressed_format_does_not_depend_on_suffix() {
+        let eng = build_sample_engine();
+        let dir =
+            std::env::temp_dir().join(format!("rustex-fmt-explicit-zstd-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("pdflatex.fmt");
+        save_format_compressed(&eng, &path).expect("save compressed .fmt");
+        let bytes = std::fs::read(&path).unwrap();
+        assert_eq!(&bytes[..4], &ZSTD_MAGIC);
+        let loaded = load_format(&path).expect("load compressed .fmt");
+        assert_eq!(loaded.cs.len(), eng.cs.len());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn external_format_size_is_bounded_before_reading() {
+        let dir =
+            std::env::temp_dir().join(format!("rustex-fmt-size-limit-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("oversized.fmt");
+        let file = std::fs::File::create(&path).unwrap();
+        file.set_len(MAX_FORMAT_BYTES as u64 + 1).unwrap();
+
+        let error = match load_format(&path) {
+            Err(error) => error,
+            Ok(_) => panic!("oversized format must be refused"),
+        };
+        assert!(error.contains("too large"), "got: {error}");
+        assert!(
+            error.contains(&MAX_FORMAT_BYTES.to_string()),
+            "got: {error}"
+        );
+
         std::fs::remove_dir_all(&dir).ok();
     }
 }

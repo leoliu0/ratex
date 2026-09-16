@@ -164,6 +164,27 @@ fn pdffilesize_missing_is_empty() {
         body(b"present")
     );
 }
+#[test]
+fn pdffontsize_expands_to_font_size() {
+    let mut e = boot();
+    run_tex(
+        &mut e,
+        r#"
+\catcode`\{=1 \catcode`\}=2
+\font\myfont=cmr10 at 12pt
+\edef\sz{\pdffontsize\myfont}
+"#,
+    );
+    assert_eq!(e.error_count, 0, "errors:\n{}", e.term);
+    let id = e.cs.lookup(b"sz").unwrap();
+    match e.eqtb.resolve(id) {
+        Some(Equiv::Macro(m)) => {
+            let body = e.tokens_to_string(&m.body);
+            assert_eq!(body, "12.0pt", "expected 12.0pt, got {:?}", body);
+        }
+        other => panic!("expected macro, got {:?}", other),
+    }
+}
 
 #[test]
 fn edef_stops_at_closing_brace() {
@@ -824,6 +845,24 @@ fn csname_expanded_letters() {
             assert_eq!(e.tokens_to_string(&m.body), "OK", "body {:?}", m.body);
         }
         other => panic!("zzw not a macro: {:?}", other.map(|x| x.kind_name())),
+    }
+}
+
+#[test]
+fn csname_empty_defaults_to_relax() {
+    let mut e = boot();
+    run_tex(
+        &mut e,
+        r#"
+\catcode`\{=1 \catcode`\}=2
+\csname\endcsname
+"#,
+    );
+    assert_eq!(e.error_count, 0, "errors:\n{}", e.term);
+    let id = e.cs.lookup(b"").expect("empty name interned");
+    match e.eqtb.resolve(id) {
+        Some(Equiv::Prim(tex_core::prim::Prim::Relax)) => {}
+        other => panic!("empty cs not relax: {:?}", other.map(|x| x.kind_name())),
     }
 }
 
@@ -2236,6 +2275,65 @@ fn expanded_preserves_nested_unexpanded_after_a_frozen_prefix() {
 }
 
 #[test]
+fn pdfcreationdate_expands_to_a_pdf_timestamp() {
+    let mut e = boot();
+    run_tex(
+        &mut e,
+        r#"
+\catcode`\{=1 \catcode`\}=2
+\edef\got{\pdfcreationdate}
+\edef\expected{\detokenize{D:20260101000000Z}}
+\ifx\got\expected \count0=1\fi
+"#,
+    );
+    assert_eq!(e.error_count, 0, "{}", e.term);
+    assert_eq!(e.eqtb.count[0], 1);
+}
+
+#[test]
+fn pdf_page_group_warning_switch_is_read_write() {
+    let mut e = boot();
+    run_tex(
+        &mut e,
+        r#"
+\pdfsuppresswarningpagegroup=1
+\ifnum\pdfsuppresswarningpagegroup=1 \count0=1\fi
+"#,
+    );
+    assert_eq!(e.error_count, 0, "{}", e.term);
+    assert_eq!(e.eqtb.count[0], 1);
+}
+
+#[test]
+fn etex_penalty_arrays_are_indexed_repeating_and_grouped() {
+    let mut e = boot();
+    run_tex(
+        &mut e,
+        r#"
+\catcode`\{=1 \catcode`\}=2
+\clubpenalties 2 11 22
+\ifnum\clubpenalties0=2 \global\advance\count0 by1 \fi
+\ifnum\clubpenalties1=11 \global\advance\count0 by2 \fi
+\ifnum\clubpenalties9=22 \global\advance\count0 by4 \fi
+{\clubpenalties 1 33
+ \ifnum\clubpenalties1=33 \global\advance\count0 by8 \fi}
+\ifnum\clubpenalties1=11 \global\advance\count0 by16 \fi
+\interlinepenalties 1 44
+\widowpenalties 1 55
+\displaywidowpenalties 1 66
+\ifnum\interlinepenalties1=44 \global\advance\count0 by32 \fi
+\ifnum\widowpenalties1=55 \global\advance\count0 by64 \fi
+\ifnum\displaywidowpenalties1=66 \global\advance\count0 by128 \fi
+"#,
+    );
+    assert_eq!(e.error_count, 0, "{}", e.term);
+    assert_eq!(
+        e.eqtb.count[0], 255,
+        "shapes={:?}, levels={:?}",
+        e.penalty_shapes, e.penalty_shape_levels
+    );
+}
+#[test]
 fn expanded_text_does_not_collapse_consecutive_parameter_characters() {
     let mut e = boot();
     run_tex(
@@ -2898,4 +2996,40 @@ fn insert_cost_uses_local_floating_penalty() {
         1000,
         "\\floatingpenalty must restore its outer value after the group"
     );
+}
+
+#[test]
+fn ifcase_expandafter_or_during_numeric_scan_inserts_relax() {
+    // tex.web §510 / §491: expanding \or while \ifcase condition is still
+    // being evaluated (e.g. via \expandafter) must insert \relax, terminating
+    // the integer scan without an "Extra \or" error.
+    let mut e = boot();
+    run_tex(
+        &mut e,
+        r#"
+\catcode`\{=1 \catcode`\}=2 \catcode`\#=6
+\def\branchZero{zero}
+\def\branchOne{one}
+\def\branchElse{else}
+\def\test#1{%
+  \ifcase#1\expandafter\branchZero
+  \or\expandafter\branchOne
+  \else\branchElse\fi
+}
+\edef\resA{\test{0}}
+\edef\resB{\test{1}}
+\edef\resC{\test{4}}
+"#,
+    );
+    assert_eq!(e.error_count, 0, "errors: {}", e.term);
+    let get_def = |name: &[u8]| -> String {
+        let id = e.cs.lookup(name).expect("cs");
+        match e.eqtb.resolve(id) {
+            Some(Equiv::Macro(m)) => e.tokens_to_string(&m.body),
+            other => panic!("expected macro, got {other:?}"),
+        }
+    };
+    assert_eq!(get_def(b"resA"), "zero\\relax ");
+    assert_eq!(get_def(b"resB"), "one");
+    assert_eq!(get_def(b"resC"), "else");
 }

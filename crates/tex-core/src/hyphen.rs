@@ -107,8 +107,10 @@ impl Trie {
     /// \lefthyphenmin/\righthyphenmin: no point with `k < left` or
     /// `k > word.len() - right` (tex.web: k ranges l_hyf..hn-r_hyf).
     pub fn hyphenate(&self, word: &[u8], left: usize, right: usize) -> Vec<usize> {
+        let left = left.max(1);
+        let right = right.max(1);
         let n = word.len();
-        if n < left + right {
+        if n < left.saturating_add(right) {
             return Vec::new();
         }
         if let Some(pts) = self.exceptions.get(word) {

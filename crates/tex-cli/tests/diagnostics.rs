@@ -58,6 +58,7 @@ impl Job {
             .arg("main.tex")
             .current_dir(&self.dir)
             .env("TEXMK_LIB", &self.dir)
+            .env("TEX_RS_CACHE_DIR", self.dir.join("cache"))
             .output()
             .unwrap()
     }
@@ -84,6 +85,65 @@ fn failure_output(output: &Output) -> String {
         text(&output.stdout),
         text(&output.stderr)
     )
+}
+
+fn png_crc(kind: &[u8; 4], data: &[u8]) -> u32 {
+    let mut crc = u32::MAX;
+    for &byte in kind.iter().chain(data) {
+        crc ^= u32::from(byte);
+        for _ in 0..8 {
+            crc = (crc >> 1) ^ (0xedb8_8320 & 0u32.wrapping_sub(crc & 1));
+        }
+    }
+    !crc
+}
+
+fn push_png_chunk(out: &mut Vec<u8>, kind: &[u8; 4], data: &[u8]) {
+    out.extend_from_slice(&(data.len() as u32).to_be_bytes());
+    out.extend_from_slice(kind);
+    out.extend_from_slice(data);
+    out.extend_from_slice(&png_crc(kind, data).to_be_bytes());
+}
+
+fn stored_zlib(data: &[u8]) -> Vec<u8> {
+    assert!(data.len() <= u16::MAX as usize);
+    let length = data.len() as u16;
+    let mut stream = vec![0x78, 0x01, 0x01];
+    stream.extend_from_slice(&length.to_le_bytes());
+    stream.extend_from_slice(&(!length).to_le_bytes());
+    stream.extend_from_slice(data);
+    let (mut first, mut second) = (1u32, 0u32);
+    for &byte in data {
+        first = (first + u32::from(byte)) % 65_521;
+        second = (second + first) % 65_521;
+    }
+    stream.extend_from_slice(&((second << 16) | first).to_be_bytes());
+    stream
+}
+
+fn corrupt_passthrough_png(indexed: bool) -> Vec<u8> {
+    let (width, bit_depth, color_type, scanline) = if indexed {
+        (4u32, 2u8, 3u8, vec![0, 0b00_01_10_01])
+    } else {
+        (2, 8, 2, vec![0, 10, 20, 30, 40, 50, 60])
+    };
+    let mut ihdr = Vec::new();
+    ihdr.extend_from_slice(&width.to_be_bytes());
+    ihdr.extend_from_slice(&1u32.to_be_bytes());
+    ihdr.extend_from_slice(&[bit_depth, color_type, 0, 0, 0]);
+
+    let mut out = b"\x89PNG\r\n\x1a\n".to_vec();
+    push_png_chunk(&mut out, b"IHDR", &ihdr);
+    if indexed {
+        push_png_chunk(&mut out, b"PLTE", &[255, 0, 0, 0, 255, 0, 0, 0, 255]);
+    }
+    let mut idat = stored_zlib(&scanline);
+    *idat.last_mut().unwrap() ^= 0x80;
+    // The PNG chunk CRC covers the corrupted payload correctly. Only zlib's
+    // Adler-32 is invalid, exercising the streaming IDAT validator.
+    push_png_chunk(&mut out, b"IDAT", &idat);
+    push_png_chunk(&mut out, b"IEND", &[]);
+    out
 }
 
 fn line_after<'a>(haystack: &'a str, needle: &str) -> Option<&'a str> {
@@ -160,6 +220,103 @@ fn batch_mode_is_silent_but_keeps_the_error_in_the_log() {
     let marker = "Undefined control sequence \\undefinedBatchDiagnostic";
     assert_eq!(occurrences(&log, marker), 1, "{log}");
     assert!(log.contains("main.tex:3:1"), "{log}");
+}
+
+#[test]
+fn interaction_mode_changes_filter_each_event_when_it_occurs() {
+    let entering_batch = Job::new("mode-transition-into-batch");
+    entering_batch.write(
+        "main.tex",
+        "\\message{VISIBLE BEFORE BATCH MODE=\\the\\interactionmode}\n\\interactionmode=0\n\\undefinedHiddenInBatch\n\\end\n",
+    );
+    let entering_output = entering_batch.compile(&["-plain", "-interaction=nonstopmode"]);
+    assert_eq!(
+        entering_output.status.code(),
+        Some(1),
+        "{}",
+        failure_output(&entering_output)
+    );
+    let entering_stdout = text(&entering_output.stdout);
+    let entering_stderr = text(&entering_output.stderr);
+    assert!(
+        entering_stdout.contains("VISIBLE BEFORE BATCH MODE=1"),
+        "{entering_stdout}"
+    );
+    assert!(
+        !entering_stdout.contains("undefinedHiddenInBatch"),
+        "{entering_stdout}"
+    );
+    assert!(entering_stderr.is_empty(), "{entering_stderr}");
+    let entering_log = entering_batch.log();
+    assert!(
+        entering_log.contains("VISIBLE BEFORE BATCH MODE=1"),
+        "{entering_log}"
+    );
+    assert!(
+        entering_log.contains("Undefined control sequence \\undefinedHiddenInBatch"),
+        "{entering_log}"
+    );
+
+    let leaving_batch = Job::new("mode-transition-out-of-batch");
+    leaving_batch.write(
+        "main.tex",
+        "\\message{HIDDEN BEFORE NONSTOP MODE=\\the\\interactionmode}\n\\interactionmode=1\n\\undefinedVisibleAfterBatch\n\\end\n",
+    );
+    let leaving_output = leaving_batch.compile(&["-plain", "-interaction=batchmode"]);
+    assert_eq!(
+        leaving_output.status.code(),
+        Some(1),
+        "{}",
+        failure_output(&leaving_output)
+    );
+    let leaving_stdout = text(&leaving_output.stdout);
+    let leaving_stderr = text(&leaving_output.stderr);
+    assert!(
+        !leaving_stdout.contains("HIDDEN BEFORE NONSTOP"),
+        "{leaving_stdout}"
+    );
+    assert!(
+        leaving_stderr.contains("Undefined control sequence \\undefinedVisibleAfterBatch"),
+        "{leaving_stderr}"
+    );
+    let leaving_log = leaving_batch.log();
+    assert!(
+        leaving_log.contains("HIDDEN BEFORE NONSTOP MODE=0"),
+        "{leaving_log}"
+    );
+    assert!(
+        leaving_log.contains("Undefined control sequence \\undefinedVisibleAfterBatch"),
+        "{leaving_log}"
+    );
+}
+
+#[test]
+fn ini_completion_uses_the_mode_active_when_each_message_is_emitted() {
+    let entering_batch = Job::new("ini-enters-batch");
+    entering_batch.write(
+        "main.tex",
+        "\\catcode123=1\n\\catcode125=2\n\\interactionmode=0\n\\errmessage{HIDDEN IN BATCH}\n\\dump\n",
+    );
+    let output = entering_batch.compile(&["-ini", "-interaction=nonstopmode"]);
+    assert_eq!(output.status.code(), Some(1), "{}", failure_output(&output));
+    assert!(output.stderr.is_empty(), "{}", failure_output(&output));
+    assert!(
+        !text(&output.stdout).contains("format build reported"),
+        "{}",
+        failure_output(&output)
+    );
+    assert!(entering_batch.log().contains("HIDDEN IN BATCH"));
+
+    let leaving_batch = Job::new("ini-leaves-batch");
+    leaving_batch.write(
+        "main.tex",
+        "\\catcode123=1\n\\catcode125=2\n\\interactionmode=1\n\\errmessage{VISIBLE IN NONSTOP}\n\\dump\n",
+    );
+    let output = leaving_batch.compile(&["-ini", "-interaction=batchmode"]);
+    assert_eq!(output.status.code(), Some(1), "{}", failure_output(&output));
+    let stderr = text(&output.stderr);
+    assert!(stderr.contains("VISIBLE IN NONSTOP"), "{stderr}");
+    assert!(stderr.contains("format build reported 1 error"), "{stderr}");
 }
 
 #[test]
@@ -302,6 +459,37 @@ fn ini_mode_does_not_write_a_format_after_a_recoverable_error() {
         "{}",
         batch.log()
     );
+}
+
+#[test]
+fn ini_format_write_failure_is_structured_logged_and_batch_aware() {
+    for mode in ["nonstopmode", "batchmode"] {
+        let job = Job::new(&format!("format-write-{mode}"));
+        job.write("main.tex", "\\catcode123=1\n\\catcode125=2\n\\dump\n");
+        std::fs::create_dir(job.dir.join("pdflatex.fmt")).unwrap();
+
+        let output = job.compile(&["-ini", &format!("-interaction={mode}")]);
+        assert_eq!(output.status.code(), Some(1), "{}", failure_output(&output));
+        let log = job.log();
+        assert!(
+            log.contains("! Cannot write format `pdflatex.fmt`"),
+            "{log}"
+        );
+        assert!(
+            log.contains("check that the working directory is writable"),
+            "{log}"
+        );
+        if mode == "batchmode" {
+            assert!(output.stdout.is_empty(), "{}", failure_output(&output));
+            assert!(output.stderr.is_empty(), "{}", failure_output(&output));
+        } else {
+            assert!(
+                text(&output.stderr).contains("! Cannot write format `pdflatex.fmt`"),
+                "{}",
+                failure_output(&output)
+            );
+        }
+    }
 }
 
 #[test]
@@ -528,6 +716,29 @@ fn runaway_definition_in_an_include_points_to_the_child_and_names_the_parent() {
 }
 
 #[test]
+fn direct_error_in_an_include_hides_latex_file_hook_scratch_macros() {
+    let job = Job::new("included-direct-error");
+    job.write(
+        "main.tex",
+        "\\documentclass{article}\n\\def\\loadchapter{\\input{chapter}}\n\\begin{document}\n\\loadchapter\n\\end{document}\n",
+    );
+    job.write("chapter.tex", "Result: \\undefinedResult\n");
+
+    let output = job.compile(&["-interaction=nonstopmode", "-halt-on-error"]);
+    assert!(!output.status.success(), "{}", failure_output(&output));
+    let stderr = text(&output.stderr);
+    assert!(
+        stderr.contains("Undefined control sequence \\undefinedResult"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("chapter.tex:1:9"), "{stderr}");
+    assert!(stderr.contains("included from main.tex:4:1"), "{stderr}");
+    assert!(!stderr.contains("\\reserved@"), "{stderr}");
+    assert!(!stderr.contains("\\@swaptwoargs"), "{stderr}");
+    assert!(!stderr.contains("while expanding:"), "{stderr}");
+}
+
+#[test]
 fn alignment_preamble_eof_in_an_include_points_to_the_halign() {
     let job = Job::new("included-alignment-preamble-eof");
     job.write("main.tex", "\\input child.tex\n");
@@ -658,6 +869,19 @@ fn deep_macro_trace_keeps_the_outer_call_consistent_with_the_caret() {
         "{stderr}"
     );
     assert!(!stderr.contains("\\ma -> \\mg"), "{stderr}");
+
+    let capped = Job::new("stored-trace-cap-is-visible");
+    let capped_source = source.replacen("\\errorcontextlines=5", "\\errorcontextlines=20", 1);
+    capped.write("main.tex", &capped_source);
+    let output = capped.compile(&["-plain", "-interaction=nonstopmode", "-halt-on-error"]);
+    assert!(!output.status.success(), "{}", failure_output(&output));
+    let stderr = text(&output.stderr);
+    let expansion = stderr
+        .lines()
+        .find(|line| line.contains("= while expanding:"))
+        .expect("macro expansion line");
+    assert!(expansion.contains("\\ma -> … -> \\mg"), "{expansion}");
+    assert_eq!(occurrences(expansion, "…"), 1, "{expansion}");
 }
 
 #[test]
@@ -832,26 +1056,30 @@ fn include_ancestry_does_not_compete_with_the_macro_trace_budget() {
 
 #[test]
 fn arithmetic_faults_name_the_operation_and_preserve_the_value() {
-    for (label, operation, expected, value) in [
+    for (label, initial, operation, expected, value) in [
         (
             "divide-by-zero",
+            "42",
             "\\divide\\count0 by 0",
             "Cannot divide by zero in \\divide; value left unchanged",
             "VALUE=42",
         ),
         (
             "multiply-overflow",
+            "2147483647",
             "\\multiply\\count0 by 2",
             "Arithmetic overflow in \\multiply; value left unchanged",
             "VALUE=2147483647",
         ),
+        (
+            "negative-multiply-overflow",
+            "-1073741824",
+            "\\multiply\\count0 by 2",
+            "Arithmetic overflow in \\multiply; value left unchanged",
+            "VALUE=-1073741824",
+        ),
     ] {
         let job = Job::new(label);
-        let initial = if label == "divide-by-zero" {
-            "42"
-        } else {
-            "2147483647"
-        };
         job.write(
             "main.tex",
             &format!("\\count0={initial}\n{operation}\n\\message{{VALUE=\\the\\count0}}\n\\end\n"),
@@ -867,6 +1095,114 @@ fn arithmetic_faults_name_the_operation_and_preserve_the_value() {
             failure_output(&output)
         );
     }
+}
+
+#[test]
+fn oversized_numbers_and_dimensions_report_the_limit_and_clamped_value() {
+    for (label, assignment, expected, help, value) in [
+        (
+            "integer-literal-overflow",
+            "\\count0=999999999999999999999",
+            "Number too big",
+            "integer no larger than 2147483647",
+            "VALUE=2147483647",
+        ),
+        (
+            "dimension-literal-overflow",
+            "\\dimen0=20000pt",
+            "Dimension too large",
+            "dimension no larger than 16383.99998pt",
+            "VALUE=16383.99998pt",
+        ),
+    ] {
+        let job = Job::new(label);
+        let register = if label == "integer-literal-overflow" {
+            "\\count0"
+        } else {
+            "\\dimen0"
+        };
+        job.write(
+            "main.tex",
+            &format!("{assignment}\n\\message{{VALUE=\\the{register}}}\n\\end\n"),
+        );
+        let output = job.compile(&["-plain", "-interaction=nonstopmode"]);
+        assert_eq!(output.status.code(), Some(1), "{}", failure_output(&output));
+        let stderr = text(&output.stderr);
+        assert_eq!(occurrences(&stderr, expected), 1, "{stderr}");
+        assert!(stderr.contains("main.tex:1:"), "{stderr}");
+        assert!(stderr.contains(help), "{stderr}");
+        assert!(
+            text(&output.stdout).contains(value),
+            "{}",
+            failure_output(&output)
+        );
+    }
+}
+
+
+#[test]
+fn math_glue_arithmetic_reports_faults_and_preserves_the_value() {
+    let job = Job::new("math-glue-arithmetic");
+    job.write(
+        "main.tex",
+        "\\muskip0=6mu plus 2fil\n\\divide\\muskip0 by 2\n\\message{HALVED=\\the\\muskip0}\n\\divide\\muskip0 by 0\n\\message{PRESERVED=\\the\\muskip0}\n\\end\n",
+    );
+    let output = job.compile(&["-plain", "-interaction=nonstopmode"]);
+    assert_eq!(output.status.code(), Some(1), "{}", failure_output(&output));
+    let stdout = text(&output.stdout);
+    assert!(stdout.contains("HALVED=3.0mu plus 1.0fil"), "{stdout}");
+    assert!(stdout.contains("PRESERVED=3.0mu plus 1.0fil"), "{stdout}");
+    let stderr = text(&output.stderr);
+    assert_eq!(
+        occurrences(
+            &stderr,
+            "Cannot divide by zero in \\divide; value left unchanged"
+        ),
+        1,
+        "{stderr}"
+    );
+    assert!(stderr.contains("main.tex:4:1"), "{stderr}");
+}
+
+#[test]
+fn advance_and_divide_accept_texs_minimum_integer() {
+    let job = Job::new("minimum-integer-arithmetic");
+    job.write(
+        "main.tex",
+        "\\count0=-2147483647\n\\advance\\count0 by -1\n\\divide\\count0 by 1\n\\message{VALUE=\\the\\count0}\n\\end\n",
+    );
+    let output = job.compile(&["-plain", "-interaction=nonstopmode"]);
+    assert!(output.status.success(), "{}", failure_output(&output));
+    assert!(
+        text(&output.stdout).contains("VALUE=-2147483648"),
+        "{}",
+        failure_output(&output)
+    );
+    assert!(
+        !text(&output.stderr).contains("! "),
+        "{}",
+        failure_output(&output)
+    );
+}
+
+#[test]
+fn read_tokenization_preserves_the_enclosing_macro_location() {
+    let job = Job::new("read-provenance");
+    job.write("data.txt", "abc\n");
+    job.write(
+        "main.tex",
+        "\\openin0=data.txt\n\\def\\outer{\\read0 to \\answer \\undefinedAfterRead}\n\\outer\n\\end\n",
+    );
+    let output = job.compile(&["-plain", "-interaction=nonstopmode", "-halt-on-error"]);
+    assert!(!output.status.success(), "{}", failure_output(&output));
+    let stderr = text(&output.stderr);
+    assert!(
+        stderr.contains("Undefined control sequence \\undefinedAfterRead"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("main.tex:3:1"), "{stderr}");
+    assert!(stderr.contains("3 | \\outer"), "{stderr}");
+    assert!(stderr.contains("= while expanding: \\outer"), "{stderr}");
 }
 
 #[test]
@@ -893,6 +1229,509 @@ fn malformed_macro_parameters_explain_the_expected_number() {
         "{stderr}"
     );
     assert!(stderr.contains("main.tex:1:13"), "{stderr}");
+
+    let no_parameters = Job::new("bad-parameter-reference-without-parameters");
+    no_parameters.write("main.tex", "\\def\\bad{#1}\n\\end\n");
+    let output = no_parameters.compile(&["-plain", "-interaction=nonstopmode", "-halt-on-error"]);
+    assert!(!output.status.success(), "{}", failure_output(&output));
+    let stderr = text(&output.stderr);
+    assert!(
+        stderr.contains(
+            "Illegal parameter reference #1 in the definition of \\bad; this macro declares no parameters"
+        ),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn invalid_character_table_assignments_report_values_and_valid_ranges() {
+    for (label, assignment, expected) in [
+        (
+            "invalid-category-code",
+            "\\catcode65=16",
+            "Category code 16 is out of range; expected 0 through 15",
+        ),
+        (
+            "invalid-character-target",
+            "\\catcode256=11",
+            "Character code 256 is out of range for \\catcode; expected 0 through 255",
+        ),
+        (
+            "invalid-math-code",
+            "\\mathcode65=40000",
+            "Math code 40000 is out of range; expected 0 through 32768",
+        ),
+        (
+            "invalid-delimiter-code",
+            "\\delcode65=20000000",
+            "Delimiter code 20000000 is out of range; expected -1 through 16777215",
+        ),
+        (
+            "invalid-lowercase-code",
+            "\\lccode65=300",
+            "Lowercase code 300 is out of range; expected 0 through 255",
+        ),
+        (
+            "invalid-space-factor-code",
+            "\\sfcode65=40000",
+            "Space-factor code 40000 is out of range; expected 0 through 32767",
+        ),
+        (
+            "invalid-chardef-code",
+            "\\chardef\\bad=256",
+            "Character code 256 is out of range for \\chardef; expected 0 through 255",
+        ),
+        (
+            "invalid-mathchardef-code",
+            "\\mathchardef\\bad=32768",
+            "Math code 32768 is out of range for \\mathchardef; expected 0 through 32767",
+        ),
+    ] {
+        let job = Job::new(label);
+        job.write("main.tex", &format!("{assignment}\n\\end\n"));
+        let output = job.compile(&["-plain", "-interaction=nonstopmode", "-halt-on-error"]);
+        assert!(!output.status.success(), "{}", failure_output(&output));
+        let stderr = text(&output.stderr);
+        assert_eq!(occurrences(&stderr, expected), 1, "{stderr}");
+        assert!(stderr.contains("main.tex:1:"), "{stderr}");
+    }
+}
+
+#[test]
+fn invalid_character_definitions_report_and_use_texs_recovery_value() {
+    for (label, definition, expected) in [
+        (
+            "chardef-recovery",
+            "\\chardef\\bad=256",
+            "Character code 256 is out of range for \\chardef; expected 0 through 255 and used 0",
+        ),
+        (
+            "mathchardef-recovery",
+            "\\mathchardef\\bad=32768",
+            "Math code 32768 is out of range for \\mathchardef; expected 0 through 32767 and used 0",
+        ),
+    ] {
+        let job = Job::new(label);
+        job.write(
+            "main.tex",
+            &format!("{definition}\n\\message{{RECOVERED=\\the\\bad}}\n\\end\n"),
+        );
+        let output = job.compile(&["-plain", "-interaction=nonstopmode"]);
+        assert_eq!(output.status.code(), Some(1), "{}", failure_output(&output));
+        let stderr = text(&output.stderr);
+        assert_eq!(occurrences(&stderr, expected), 1, "{stderr}");
+        assert!(text(&output.stdout).contains("RECOVERED=0"));
+    }
+}
+
+#[test]
+fn invalid_character_table_queries_are_located_and_never_panic() {
+    for (label, command) in [
+        ("query-catcode", "\\catcode"),
+        ("query-mathcode", "\\mathcode"),
+        ("query-delcode", "\\delcode"),
+        ("query-lccode", "\\lccode"),
+        ("query-sfcode", "\\sfcode"),
+        ("query-uccode", "\\uccode"),
+    ] {
+        let job = Job::new(label);
+        let source = format!("\\message{{VALUE=\\the{command}256}}\n\\end\n");
+        let operand_column = source.find("256").unwrap() + 1;
+        job.write("main.tex", &source);
+        let output = job.compile(&["-plain", "-interaction=nonstopmode"]);
+        assert_eq!(output.status.code(), Some(1), "{}", failure_output(&output));
+        let stderr = text(&output.stderr);
+        assert!(
+            stderr.contains(&format!(
+                "Character code 256 is out of range for {command}; expected 0 through 255 and used character 0"
+            )),
+            "{stderr}"
+        );
+        assert!(
+            stderr.contains(&format!("main.tex:1:{operand_column}")),
+            "{stderr}"
+        );
+        assert!(!stderr.contains("panicked at"), "{stderr}");
+        assert!(text(&output.stdout).contains("VALUE="));
+    }
+}
+
+#[test]
+fn invalid_font_metric_character_uses_zero_with_a_located_error() {
+    for value in ["256", "-1"] {
+        let job = Job::new(&format!("font-metric-character-{value}"));
+        let query = format!("\\message{{VALUE=\\the\\fontcharwd\\ten{value}}}");
+        let operand_column = query.rfind(value).unwrap() + 1;
+        job.write("main.tex", &format!("\\font\\ten=cmr10\n{query}\n\\end\n"));
+        let output = job.compile(&["-plain", "-interaction=nonstopmode"]);
+        assert_eq!(output.status.code(), Some(1), "{}", failure_output(&output));
+        let stderr = text(&output.stderr);
+        assert!(
+            stderr.contains(&format!(
+                "Character code {value} is out of range for \\fontcharwd; expected 0 through 255 and used character 0"
+            )),
+            "{stderr}"
+        );
+        assert!(
+            stderr.contains(&format!("main.tex:2:{operand_column}")),
+            "{stderr}"
+        );
+        assert!(text(&output.stdout).contains("VALUE=6.25002pt"));
+    }
+}
+
+#[test]
+fn invalid_math_family_reports_the_operand_and_recovers_with_family_zero() {
+    let job = Job::new("math-family-range");
+    job.write(
+        "main.tex",
+        "\\font\\ten=cmr10\n\\textfont0=\\nullfont\n\\textfont16=\\ten\n\\message{RECOVERED=\\the\\textfont0}\n\\end\n",
+    );
+    let output = job.compile(&["-plain", "-interaction=nonstopmode"]);
+    assert_eq!(output.status.code(), Some(1), "{}", failure_output(&output));
+    let stderr = text(&output.stderr);
+    assert!(
+        stderr.contains(
+            "Font family 16 is out of range for \\textfont; expected 0 through 15 and used family 0"
+        ),
+        "{stderr}"
+    );
+    assert!(stderr.contains("main.tex:3:10"), "{stderr}");
+    assert!(text(&output.stdout).contains("RECOVERED=\\ten"));
+}
+
+#[test]
+fn invalid_radical_and_font_character_codes_are_located_and_recoverable() {
+    let job = Job::new("math-and-font-character-ranges");
+    job.write(
+        "main.tex",
+        "\\font\\ten=cmr10\\relax\n\\iffontchar\\ten256 \\message{TRUE}\\else\\message{FALSE}\\fi\\message{AFTER CONDITIONAL}\n$\\radical134217728 x$\n\\end\n",
+    );
+    let output = job.compile(&["-plain", "-interaction=nonstopmode"]);
+    assert_eq!(output.status.code(), Some(1), "{}", failure_output(&output));
+    let stderr = text(&output.stderr);
+    assert!(
+        stderr.contains(
+            "Character code 256 is out of range for \\iffontchar; expected 0 through 255 and used character 0"
+        ),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains(
+            "Delimiter code 134217728 is out of range for \\radical; expected 0 through 134217727 and used 0"
+        ),
+        "{stderr}"
+    );
+    assert!(stderr.contains("main.tex:2:16"), "{stderr}");
+    assert!(stderr.contains("main.tex:3:10"), "{stderr}");
+    assert!(text(&output.stdout).contains("AFTER CONDITIONAL"));
+}
+
+#[test]
+fn character_and_math_commands_report_their_own_numeric_contracts() {
+    for (label, source, expected) in [
+        (
+            "char-code-range",
+            "\\char256\n\\end\n",
+            "Character code 256 is out of range for \\char; expected 0 through 255 and used 0",
+        ),
+        (
+            "mathchar-code-range",
+            "$\\mathchar32768$\n\\end\n",
+            "Math character code 32768 is out of range for \\mathchar; expected 0 through 32767 and used 0",
+        ),
+        (
+            "mathaccent-code-range",
+            "$\\mathaccent32768 x$\n\\end\n",
+            "Math character code 32768 is out of range for \\mathaccent; expected 0 through 32767 and used 0",
+        ),
+        (
+            "text-accent-code-range",
+            "\\font\\ten=cmr10\\relax\n\\setbox0=\\hbox{\\ten\\accent256 A}\n\\end\n",
+            "Character code 256 is out of range for \\accent; expected 0 through 255 and used character 0",
+        ),
+    ] {
+        let job = Job::new(label);
+        job.write("main.tex", source);
+        let output = job.compile(&["-plain", "-interaction=nonstopmode"]);
+        assert_eq!(output.status.code(), Some(1), "{}", failure_output(&output));
+        let stderr = text(&output.stderr);
+        assert_eq!(occurrences(&stderr, expected), 1, "{stderr}");
+        assert!(stderr.contains("main.tex:"), "{stderr}");
+        assert!(!stderr.contains("panicked at"), "{stderr}");
+    }
+}
+
+#[test]
+fn packing_warnings_are_structured_located_actionable_and_mode_aware() {
+    let visible = Job::new("structured-pack-warnings");
+    visible.write(
+        "main.tex",
+        "\\tracingonline=1\n\\hbox to 1pt{\\vrule width 10pt height 1pt}\n\\vbox to 1pt{\\hrule height 10pt}\n\\end\n",
+    );
+    let output = visible.compile(&["-plain", "-interaction=nonstopmode"]);
+    assert!(output.status.success(), "{}", failure_output(&output));
+    let stdout = text(&output.stdout);
+    let stderr = text(&output.stderr);
+    assert!(stderr.contains("warning: Overfull \\hbox ("), "{stderr}");
+    assert!(stderr.contains("warning: Overfull \\vbox ("), "{stderr}");
+    assert!(stderr.contains("  --> main.tex:2:"), "{stderr}");
+    assert!(stderr.contains("  --> main.tex:3:"), "{stderr}");
+    assert!(
+        stderr.contains("shorten or reflow the affected text"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("reduce the box contents or increase the available height"),
+        "{stderr}"
+    );
+    assert!(!stdout.contains("Overfull \\hbox"), "{stdout}");
+    assert!(!stdout.contains("Overfull \\vbox"), "{stdout}");
+    let log = visible.log();
+    assert_eq!(occurrences(&log, "warning: Overfull \\hbox"), 1, "{log}");
+    assert_eq!(occurrences(&log, "warning: Overfull \\vbox"), 1, "{log}");
+
+    let hidden = Job::new("pack-warning-tracingonline-zero");
+    hidden.write(
+        "main.tex",
+        "\\tracingonline=0\n\\hbox to 1pt{\\vrule width 10pt height 1pt}\n\\end\n",
+    );
+    let output = hidden.compile(&["-plain", "-interaction=nonstopmode"]);
+    assert!(output.status.success(), "{}", failure_output(&output));
+    assert!(
+        !text(&output.stdout).contains("Overfull \\hbox"),
+        "{}",
+        failure_output(&output)
+    );
+    assert!(
+        !text(&output.stderr).contains("Overfull \\hbox"),
+        "{}",
+        failure_output(&output)
+    );
+    assert!(
+        hidden.log().contains("warning: Overfull \\hbox"),
+        "{}",
+        hidden.log()
+    );
+
+    let batch = Job::new("pack-warning-batch");
+    batch.write(
+        "main.tex",
+        "\\tracingonline=1\n\\hbox to 1pt{\\vrule width 10pt height 1pt}\n\\end\n",
+    );
+    let output = batch.compile(&["-plain", "-interaction=batchmode"]);
+    assert!(output.status.success(), "{}", failure_output(&output));
+    assert!(output.stdout.is_empty(), "{}", failure_output(&output));
+    assert!(output.stderr.is_empty(), "{}", failure_output(&output));
+    assert!(
+        batch.log().contains("warning: Overfull \\hbox"),
+        "{}",
+        batch.log()
+    );
+}
+
+#[test]
+fn paragraph_overfull_warning_points_to_the_paragraph_end() {
+    let job = Job::new("structured-paragraph-overfull");
+    job.write(
+        "main.tex",
+        "\\tracingonline=1\n\\hsize=1pt\nabcdefghijklmnop\\par\n\\end\n",
+    );
+    let output = job.compile(&["-plain", "-interaction=nonstopmode"]);
+    assert!(output.status.success(), "{}", failure_output(&output));
+    let stdout = text(&output.stdout);
+    let stderr = text(&output.stderr);
+    assert!(
+        stderr.contains("warning: Overfull \\hbox (")
+            && stderr.contains("in paragraph ending here"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("  --> main.tex:3:"), "{stderr}");
+    assert!(stderr.contains("3 | abcdefghijklmnop\\par"), "{stderr}");
+    assert!(
+        stderr.contains("shorten or reflow the affected text"),
+        "{stderr}"
+    );
+    assert!(!stdout.contains("Overfull \\hbox"), "{stdout}");
+    assert!(
+        job.log().contains("in paragraph ending here"),
+        "{}",
+        job.log()
+    );
+}
+
+#[test]
+fn missing_font_character_is_a_located_actionable_warning() {
+    let job = Job::new("missing-font-character");
+    job.write(
+        "main.tex",
+        "\\tracinglostchars=1\\font\\ten=cmr10\n\\setbox0=\\hbox{\\ten \\char128}\n\\message{AFTER WARNING}\n\\end\n",
+    );
+    let output = job.compile(&["-plain", "-interaction=nonstopmode"]);
+    assert!(output.status.success(), "{}", failure_output(&output));
+    let stderr = text(&output.stderr);
+    assert!(
+        stderr.contains(
+            "warning: Character code 128 (0x80) is not available in font `cmr10`; character omitted"
+        ),
+        "{stderr}"
+    );
+    assert!(stderr.contains("main.tex:2:29"), "{stderr}");
+    assert!(
+        stderr.contains("choose a font containing this character"),
+        "{stderr}"
+    );
+    assert!(text(&output.stdout).contains("AFTER WARNING"));
+    assert!(job.log().contains("Character code 128 (0x80)"));
+
+    let batch = Job::new("missing-font-character-batch");
+    batch.write(
+        "main.tex",
+        "\\tracinglostchars=1\\font\\ten=cmr10\n\\setbox0=\\hbox{\\ten \\char128}\n\\end\n",
+    );
+    let output = batch.compile(&["-plain", "-interaction=batchmode"]);
+    assert!(output.status.success(), "{}", failure_output(&output));
+    assert!(output.stdout.is_empty(), "{}", failure_output(&output));
+    assert!(output.stderr.is_empty(), "{}", failure_output(&output));
+    assert!(batch.log().contains("Character code 128 (0x80)"));
+}
+
+#[test]
+fn missing_math_characters_name_the_selected_font_and_keep_their_origin() {
+    for (label, source, selected_font) in [
+        (
+            "missing-math-character",
+            "$\\mathchar\"0180$\n\\end\n",
+            "cmmi10",
+        ),
+        (
+            "missing-script-math-character",
+            "$x^{\\mathchar\"0180}$\n\\end\n",
+            "cmmi7",
+        ),
+        (
+            "missing-math-accent",
+            "$\\mathaccent\"0180 x$\n\\end\n",
+            "cmmi10",
+        ),
+        (
+            "missing-math-delimiter",
+            "$\\delimiter\"180000$\n\\end\n",
+            "cmmi10",
+        ),
+        (
+            "missing-radical-delimiter",
+            "$\\radical\"180000 x$\n\\end\n",
+            "cmmi10",
+        ),
+    ] {
+        let job = Job::new(label);
+        let source = format!(
+            "\\tracinglostchars=1\\font\\mathtext=cmmi10\n\\font\\mathscript=cmmi7\n\\textfont1=\\mathtext\n\\scriptfont1=\\mathscript\n\\scriptscriptfont1=\\mathscript\n{source}"
+        );
+        job.write("main.tex", &source);
+        let output = job.compile(&["-plain", "-interaction=nonstopmode"]);
+        assert!(output.status.success(), "{}", failure_output(&output));
+        let stderr = text(&output.stderr);
+        let marker = "warning: Character code 128 (0x80) is not available in font";
+        assert_eq!(occurrences(&stderr, marker), 1, "{stderr}");
+        assert!(stderr.contains(selected_font), "{stderr}");
+        assert!(stderr.contains("selected for this math style"), "{stderr}");
+        assert!(stderr.contains("main.tex:6:"), "{stderr}");
+        assert!(stderr.contains("character omitted"), "{stderr}");
+        assert!(
+            stderr.contains("choose a font containing this character"),
+            "{stderr}"
+        );
+        assert_eq!(
+            occurrences(&job.log(), marker.trim_start_matches("warning: ")),
+            1
+        );
+    }
+}
+
+#[test]
+fn missing_scripted_accent_nucleus_warns_once_and_tracing_can_disable_it() {
+    let warned = Job::new("missing-scripted-accent-nucleus");
+    warned.write(
+        "main.tex",
+        "\\tracinglostchars=1\\font\\mathtext=cmmi10\n\\font\\mathscript=cmmi7\n\\textfont1=\\mathtext\n\\scriptfont1=\\mathscript\n\\scriptscriptfont1=\\mathscript\n$\\mathaccent\"015E \\mathchar\"0180^2$\n\\end\n",
+    );
+    let output = warned.compile(&["-plain", "-interaction=nonstopmode"]);
+    assert!(output.status.success(), "{}", failure_output(&output));
+    let stderr = text(&output.stderr);
+    let marker = "Character code 128 (0x80) is not available in font `cmmi10`";
+    assert_eq!(occurrences(&stderr, marker), 1, "{stderr}");
+
+    let quiet = Job::new("missing-math-character-disabled");
+    quiet.write(
+        "main.tex",
+        "\\font\\mathtext=cmmi10\n\\textfont1=\\mathtext\n\\tracinglostchars=0\n$\\mathchar\"0180$\n\\end\n",
+    );
+    let output = quiet.compile(&["-plain", "-interaction=nonstopmode"]);
+    assert!(output.status.success(), "{}", failure_output(&output));
+    assert!(!text(&output.stderr).contains("Character code 128"));
+    assert!(!quiet.log().contains("Character code 128"));
+}
+
+#[test]
+fn invalid_bytes_read_from_a_stream_blame_the_read_call_site() {
+    let job = Job::new("read-invalid-character-location");
+    job.write_bytes("data.txt", &[b'A', 0xff, b'B', b'\n']);
+    job.write(
+        "main.tex",
+        "\\catcode255=15\n\\openin0=data.txt\n\\read0 to \\answer\n\\end\n",
+    );
+    let output = job.compile(&["-plain", "-interaction=nonstopmode", "-halt-on-error"]);
+    assert!(!output.status.success(), "{}", failure_output(&output));
+    let stderr = text(&output.stderr);
+    assert!(
+        stderr.contains("Text line contains an invalid character (byte 0xFF)"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("main.tex:3:1"), "{stderr}");
+    assert!(!stderr.contains("<read>:1"), "{stderr}");
+}
+
+#[test]
+fn inspection_commands_produce_structured_bounded_diagnostics() {
+    let job = Job::new("structured-inspection");
+    job.write(
+        "main.tex",
+        "\\def\\foo#1{Hello #1}\n\\show\\foo\n\\count0=42\\showthe\\count0\n\\showtokens{abc\\foo}\n\\message{AFTER}\n\\end\n",
+    );
+    let output = job.compile(&["-plain", "-interaction=nonstopmode"]);
+    assert_eq!(output.status.code(), Some(1), "{}", failure_output(&output));
+    let stderr = text(&output.stderr);
+    assert!(
+        stderr.contains("! Inspection requested by \\show\n"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("| \\foo = macro:#1 -> Hello #1"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("! Inspection requested by \\showthe\n"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("| value: 42"), "{stderr}");
+    assert!(
+        stderr.contains("! Inspection requested by \\showtokens\n"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("| tokens: abc\\foo"), "{stderr}");
+    assert!(stderr.contains("main.tex:2:1"), "{stderr}");
+    assert!(
+        stderr.len() < 16 * 1024,
+        "inspection output was not bounded"
+    );
+    let stdout = text(&output.stdout);
+    assert!(stdout.contains("AFTER"), "{stdout}");
+    assert!(
+        !stdout.contains("Hello abc"),
+        "shown tokens leaked into input: {stdout}"
+    );
 }
 
 #[test]
@@ -902,19 +1741,31 @@ fn eof_syntax_and_terminal_read_errors_state_the_required_fix() {
             "braced-file-name-eof",
             "\\input{unfinished\n",
             "File ended while scanning a braced file name; add the missing }",
-            "unmatched `{`",
+            "close the file name with `}`",
         ),
         (
             "quoted-file-name-eof",
             "\\input \"unfinished\n",
             "File ended while scanning a quoted file name; add the closing quote",
-            "unmatched `{`",
+            "close the file name with a matching double quote",
+        ),
+        (
+            "show-target-eof",
+            "\\show\n",
+            "File ended after \\show; add the token or control sequence to inspect",
+            "place the token or control sequence to inspect immediately after `\\show`",
         ),
         (
             "terminal-read-unavailable",
             "\\read-1 to \\answer\n\\end\n",
             "Terminal input is unavailable for \\read-1",
             "file-backed stream",
+        ),
+        (
+            "unopened-read-stream",
+            "\\read0 to \\answer\n\\end\n",
+            "Input stream 0 is not open for \\read",
+            "open this stream with `\\openin`",
         ),
     ] {
         let job = Job::new(label);
@@ -1308,6 +2159,34 @@ fn max_errors_stops_once_at_the_requested_count() {
 }
 
 #[test]
+fn max_errors_also_bounds_ini_mode_recovery() {
+    let job = Job::new("ini-max-errors");
+    job.write(
+        "main.tex",
+        "\\catcode123=1\n\\catcode125=2\n\\undefinedFirst\n\\undefinedMustNotRun\n\\dump\n",
+    );
+    let output = job.compile(&[
+        "-ini",
+        "-plain",
+        "-interaction=nonstopmode",
+        "--max-errors=1",
+    ]);
+    assert_eq!(output.status.code(), Some(1), "{}", failure_output(&output));
+    let stderr = text(&output.stderr);
+    assert_eq!(
+        occurrences(&stderr, "Undefined control sequence"),
+        1,
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("Too many errors; stopping after 1 error"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("undefinedMustNotRun"), "{stderr}");
+    assert!(!job.dir.join("pdflatex.fmt").exists());
+}
+
+#[test]
 fn nonstop_mode_writes_a_pdf_after_a_recoverable_error_but_exits_one() {
     let job = Job::new("nonstop-pdf");
     job.write(
@@ -1333,6 +2212,220 @@ Text before \undefinedRecoverableCommand text after.
     let pdf = std::fs::read(job.dir.join("main.pdf")).unwrap();
     assert!(pdf.starts_with(b"%PDF-"));
     assert!(!job.dir.join("main.depcache").exists());
+}
+
+#[test]
+fn late_pdf_write_failure_is_structured_logged_and_batch_aware() {
+    for (label, mode, silent) in [
+        ("late-pdf-write", "nonstopmode", false),
+        ("late-pdf-write-batch", "batchmode", true),
+    ] {
+        let job = Job::new(label);
+        job.write("main.tex", "\\font\\ten=cmr10 \\ten A page\\end\n");
+        std::fs::create_dir(job.dir.join("main.pdf")).unwrap();
+
+        let output = job.compile(&["-plain", &format!("-interaction={mode}")]);
+        assert_eq!(output.status.code(), Some(1), "{}", failure_output(&output));
+        let stderr = text(&output.stderr);
+        if silent {
+            assert!(output.stdout.is_empty(), "{}", failure_output(&output));
+            assert!(stderr.is_empty(), "{}", failure_output(&output));
+        } else {
+            assert!(
+                stderr.contains("! Cannot write PDF `main.pdf`:"),
+                "{stderr}"
+            );
+            assert!(stderr.contains("output directory"), "{stderr}");
+            assert!(!stderr.contains("  --> "), "{stderr}");
+        }
+        let log = job.log();
+        assert!(log.contains("! Cannot write PDF `main.pdf`:"), "{log}");
+        assert!(log.contains("output directory"), "{log}");
+    }
+}
+
+#[test]
+fn pdf_resource_errors_name_the_file_format_and_source_command() {
+    let missing_image = Job::new("missing-pdf-image");
+    missing_image.write("main.tex", "\\pdfximage{missing.png}\n\\end\n");
+    let output = missing_image.compile(&["-plain", "-interaction=nonstopmode"]);
+    assert_eq!(output.status.code(), Some(1), "{}", failure_output(&output));
+    let stderr = text(&output.stderr);
+    assert!(
+        stderr.contains("Image file `missing.png` was not found"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("main.tex:1:1"), "{stderr}");
+    assert!(stderr.contains("check the file name and path"), "{stderr}");
+
+    let invalid_image = Job::new("invalid-pdf-image");
+    invalid_image.write("broken.img", "this is not an image");
+    invalid_image.write("main.tex", "\\pdfximage{broken.img}\n\\end\n");
+    let output = invalid_image.compile(&["-plain", "-interaction=nonstopmode"]);
+    assert_eq!(output.status.code(), Some(1), "{}", failure_output(&output));
+    let stderr = text(&output.stderr);
+    assert!(
+        stderr.contains("Unsupported or invalid image `broken.img` (expected PDF, JPEG, or PNG)"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("main.tex:1:1"), "{stderr}");
+    assert!(
+        stderr.contains("file is not truncated or corrupt"),
+        "{stderr}"
+    );
+
+    let missing_object = Job::new("missing-pdf-object-file");
+    missing_object.write("main.tex", "\\pdfobj file{missing.dat}\n\\end\n");
+    let output = missing_object.compile(&["-plain", "-interaction=nonstopmode"]);
+    assert!(!output.status.success(), "{}", failure_output(&output));
+    let stderr = text(&output.stderr);
+    assert!(
+        stderr.contains("PDF object file `missing.dat` was not found"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("main.tex:1:1"), "{stderr}");
+}
+
+#[test]
+fn corrupt_passthrough_pngs_fail_without_publishing_a_pdf() {
+    for (label, indexed) in [("corrupt-rgb-png", false), ("corrupt-indexed-png", true)] {
+        let job = Job::new(label);
+        job.write_bytes("broken.png", &corrupt_passthrough_png(indexed));
+        job.write(
+            "main.tex",
+            "\\pdfximage{broken.png}\n\\shipout\\hbox{\\pdfrefximage\\pdflastximage}\n\\end\n",
+        );
+
+        let output = job.compile(&["-plain", "-interaction=nonstopmode"]);
+        assert_eq!(output.status.code(), Some(1), "{}", failure_output(&output));
+        let stderr = text(&output.stderr);
+        assert!(stderr.contains("Unsupported or invalid image:"), "{stderr}");
+        assert!(stderr.contains("broken.png"), "{stderr}");
+        assert!(stderr.contains("supported, valid JPEG or PNG"), "{stderr}");
+        assert!(
+            !job.dir.join("main.pdf").exists(),
+            "a corrupt image must not publish a PDF"
+        );
+    }
+}
+
+#[test]
+fn deferred_pdf_state_errors_keep_their_command_source_and_actionable_help() {
+    let malformed_matrix = Job::new("invalid-pdf-matrix");
+    malformed_matrix.write(
+        "main.tex",
+        "\\setbox0=\\hbox{\n\\pdfsetmatrix{1 0 invalid 1}\n}\n\\shipout\\box0\n\\end\n",
+    );
+    let output = malformed_matrix.compile(&["-plain", "-interaction=nonstopmode"]);
+    assert_eq!(output.status.code(), Some(1), "{}", failure_output(&output));
+    let stderr = text(&output.stderr);
+    assert!(
+        stderr.contains("Invalid \\pdfsetmatrix value; expected exactly four finite numbers"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("got `1 0 invalid 1`"), "{stderr}");
+    assert!(stderr.contains("main.tex:2:1"), "{stderr}");
+    assert!(stderr.contains("\\pdfsetmatrix{1 0 invalid 1}"), "{stderr}");
+    assert!(
+        stderr.contains("use `\\pdfsetmatrix{a b c d}` with four finite decimal numbers"),
+        "{stderr}"
+    );
+
+    let unmatched_save = Job::new("unmatched-pdf-save");
+    unmatched_save.write(
+        "main.tex",
+        "\\setbox0=\\hbox{\n\\pdfsave\n}\n\\shipout\\box0\n\\end\n",
+    );
+    let output = unmatched_save.compile(&["-plain", "-interaction=nonstopmode"]);
+    assert_eq!(output.status.code(), Some(1), "{}", failure_output(&output));
+    let stderr = text(&output.stderr);
+    assert!(
+        stderr
+            .contains("Unmatched \\pdfsave: the shipped page ended before a matching \\pdfrestore"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("main.tex:2:1"), "{stderr}");
+    assert!(stderr.contains("add a matching `\\pdfrestore`"), "{stderr}");
+
+    let unmatched_restore = Job::new("unmatched-pdf-restore");
+    unmatched_restore.write(
+        "main.tex",
+        "\\setbox0=\\hbox{\n\\pdfrestore\n}\n\\shipout\\box0\n\\end\n",
+    );
+    let output = unmatched_restore.compile(&["-plain", "-interaction=nonstopmode"]);
+    assert!(output.status.success(), "{}", failure_output(&output));
+    let stderr = text(&output.stderr);
+    assert!(
+        stderr.contains(
+            "warning: Unmatched \\pdfrestore: no preceding \\pdfsave exists in this shipped box"
+        ),
+        "{stderr}"
+    );
+    assert!(stderr.contains("main.tex:2:1"), "{stderr}");
+    assert!(
+        stderr.contains("add `\\pdfsave` before this command"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("pdfTeX warning:"), "{stderr}");
+
+    let misplaced_restore = Job::new("misplaced-pdf-restore");
+    misplaced_restore.write(
+        "main.tex",
+        "\\setbox0=\\hbox{\n\\pdfsave\\kern1pt\n\\pdfrestore\n}\n\\shipout\\box0\n\\end\n",
+    );
+    let output = misplaced_restore.compile(&["-plain", "-interaction=nonstopmode"]);
+    assert!(output.status.success(), "{}", failure_output(&output));
+    let stderr = text(&output.stderr);
+    assert!(
+        stderr.contains("warning: Misplaced \\pdfrestore: position changed by"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("main.tex:3:1"), "{stderr}");
+    assert!(
+        stderr.contains("at the same typesetting position"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("pdfTeX warning:"), "{stderr}");
+}
+
+#[test]
+fn pdfxform_uses_the_standard_located_register_range_error() {
+    let job = Job::new("pdfxform-register-range");
+    job.write("main.tex", "\\pdfxform-1\n\\end\n");
+    let output = job.compile(&["-plain", "-interaction=nonstopmode"]);
+    assert_eq!(output.status.code(), Some(1), "{}", failure_output(&output));
+    let stderr = text(&output.stderr);
+    assert!(
+        stderr.contains("Register number -1 is out of range; expected a number from 0 through"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("main.tex:1:10"), "{stderr}");
+    assert!(!stderr.contains("panicked at"), "{stderr}");
+}
+
+#[test]
+fn invalid_pdfmatch_pattern_is_a_located_warning_with_parser_detail() {
+    let job = Job::new("invalid-pdfmatch-pattern");
+    job.write(
+        "main.tex",
+        "\\count0=\\pdfmatch{[}{a}\n\\message{RESULT=\\the\\count0}\n\\end\n",
+    );
+    let output = job.compile(&["-plain", "-interaction=nonstopmode"]);
+    assert!(output.status.success(), "{}", failure_output(&output));
+    let stderr = text(&output.stderr);
+    assert!(
+        stderr.contains("warning: Invalid regular expression in \\pdfmatch:"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("main.tex:1:9"), "{stderr}");
+    assert!(
+        stderr.contains("POSIX extended regular-expression syntax"),
+        "{stderr}"
+    );
+    assert!(text(&output.stdout).contains("RESULT=-1"));
+    assert!(job
+        .log()
+        .contains("Invalid regular expression in \\pdfmatch"));
 }
 
 #[test]
@@ -1374,6 +2467,11 @@ fn errhelp_applies_to_errmessage_without_masking_later_specific_help() {
     assert_eq!(
         occurrences(&stderr, "CUSTOM ERRMESSAGE HELP"),
         1,
+        "{stderr}"
+    );
+    assert!(stderr.contains("main.tex:2:1"), "{stderr}");
+    assert!(
+        stderr.contains("2 | \\errmessage{deliberate error}"),
         "{stderr}"
     );
     assert!(
@@ -1453,7 +2551,18 @@ fn texmk_reports_one_summary_for_stable_unresolved_references_and_citations() {
     job.write("main.tex", "test\n");
     job.tool(
         "pdflatex",
-        "printf '%s\\n' 'There were undefined references.' 'There were undefined citations.' > main.log\nprintf '%%PDF-1.4 /Type /Pages /Count 1 /Type /Page ' > main.pdf",
+        r#"out=.
+aux=.
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -output-directory) out=$2; shift 2 ;;
+    -aux-directory|-auxdir) aux=$2; shift 2 ;;
+    *) shift ;;
+  esac
+done
+mkdir -p "$out" "$aux"
+printf '%s\n' 'There were undefined references.' 'There were undefined citations.' > "$aux/main.log"
+printf '%%PDF-1.4 /Type /Pages /Count 1 /Type /Page ' > "$out/main.pdf""#,
     );
 
     let output = job.texmk();

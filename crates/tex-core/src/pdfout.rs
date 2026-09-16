@@ -289,7 +289,7 @@ impl Engine {
             }
         }
         for t in toks.iter().rev() {
-            self.pushed.push(t.clone());
+            self.push_token(t.clone());
         }
         String::from_utf8_lossy(&letters).to_ascii_lowercase()
     }
@@ -313,12 +313,12 @@ impl Engine {
         if letters.to_ascii_lowercase().as_slice() == name {
             // keyword consumed: only the terminator token goes back
             if let Some(t) = toks.last() {
-                self.pushed.push(t.clone());
+                self.push_token(t.clone());
             }
             true
         } else {
             for t in toks.iter().rev() {
-                self.pushed.push(t.clone());
+                self.push_token(t.clone());
             }
             false
         }
@@ -330,7 +330,7 @@ impl Engine {
         self.skip_spaces_relax();
         let t = self.get_token();
         if t.is_char() && matches!(t.chr() as u8, b'0'..=b'9' | b'+' | b'-') {
-            self.pushed.push(t);
+            self.push_token(t);
             return DestParam::Number;
         }
         if t.is_char() && t.cc() == 11 {
@@ -348,16 +348,16 @@ impl Engine {
             }
             if letters.to_ascii_lowercase().as_slice() == b"null" {
                 if let Some(tt) = toks.last() {
-                    self.pushed.push(tt.clone());
+                    self.push_token(tt.clone());
                 }
                 return DestParam::Null;
             }
             for tt in toks.iter().rev() {
-                self.pushed.push(tt.clone());
+                self.push_token(tt.clone());
             }
             return DestParam::End;
         }
-        self.pushed.push(t);
+        self.push_token(t);
         DestParam::End
     }
 

@@ -17,9 +17,10 @@ pub enum ScannerStatus {
 
 #[derive(Clone, Debug)]
 pub struct IfState {
-    pub accepting: bool, // currently taking the true branch
-    pub matched: bool,   // some branch was taken already
-    pub if_case: i32,    // >=0: \ifcase with this many cases left
+    pub accepting: bool,  // currently taking the true branch
+    pub matched: bool,    // some branch was taken already
+    pub if_case: i32,     // >=0: \ifcase with this many cases left
+    pub evaluating: bool, // tex.web if_limit == if_code: condition still being evaluated
     pub loc_file: String,
     pub loc_line: u32,
     pub loc_cs: u32,
@@ -56,10 +57,12 @@ impl Mode {
 pub const MAX_MAIN_STEPS: u64 = 100_000_000;
 /// Default resident-set cap. Override with TEX_MEM_LIMIT_MIB (0 disables).
 pub const DEFAULT_RSS_LIMIT: u64 = 512 << 20;
-pub const MAX_TERM_BYTES: usize = 8 << 20;
+pub const MAX_TERM_BYTES: usize = 32 << 20;
 pub const MAX_PAGE_LIST: usize = 250_000;
 pub const DEFAULT_MAX_ERRORS: usize = 100;
-pub const DEFAULT_EXPANSION_LIMIT: u64 = 25_000_000;
+/// Cumulative expansion count is not a TeX capacity: valid large documents
+/// have no fixed upper bound. Set TEX_EXPANSION_LIMIT to opt into a watchdog.
+pub const DEFAULT_EXPANSION_LIMIT: u64 = 0;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum InteractionMode {
@@ -152,7 +155,7 @@ pub struct Engine {
     /// mode requested an immediate stop. This differs from `end_occurred`,
     /// which is also set by a normal `\\end`.
     pub stopped_on_error: bool,
-    pub diagnostics: Vec<crate::diagnostics::Diagnostic>,
+    pub diagnostics: crate::diagnostics::DiagnosticStore,
     /// Rendered diagnostics kept separate from routine TeX progress so the
     /// CLI can route them to stderr without moving successful progress there.
     pub diagnostic_output: String,
@@ -168,12 +171,19 @@ pub struct Engine {
     /// Macro ancestry for the token currently being processed. It survives
     /// tail expansion after the corresponding token lists have been popped.
     pub(crate) diagnostic_macro_trace: Vec<CsId>,
+    /// True when the active macro chain exceeded its storage cap. Rendering
+    /// inserts an ellipsis so retained frames never appear falsely adjacent.
+    pub(crate) diagnostic_macro_trace_truncated: bool,
     pub(crate) diagnostic_token_from_file: bool,
     /// Suppress normal trace unwinding while a construct emitted by a macro
     /// scans physical input (for example a macro-generated definition).
     pub(crate) diagnostic_trace_hold: u16,
     pub(crate) diagnostic_source_cs: Option<CsId>,
     pub(crate) diagnostic_physical_source: Option<PhysicalTokenSource>,
+    /// The physical call site is read by every parameterized macro expansion.
+    /// Share the immutable bookmark so the success path performs one cheap
+    /// reference-count increment rather than cloning all of its backing
+    /// source handles.
     pub(crate) diagnostic_macro_call_site: Option<crate::input::SourceMark>,
     pub(crate) diagnostic_macro_call_span: usize,
     /// Source for a control sequence synthesized by an expandable primitive,
@@ -187,6 +197,10 @@ pub struct Engine {
 
     // write streams
     pub write_streams: Vec<Option<std::fs::File>>,
+    /// Resolved path for each open TeX output stream. `std::fs::File` does
+    /// not retain a displayable path, but write failures need to name the
+    /// destination that the user can fix.
+    pub(crate) write_stream_paths: Vec<Option<String>>,
     pub writebuf: Vec<(u16, String)>, // pending closed-stream writes go to terminal if 16/17/18
 
     // hyphenation
@@ -196,6 +210,10 @@ pub struct Engine {
     /// group level of the current par_shape assignment (tex.web tracks
     /// par_shape_ptr's level through eq_define like any eqtb entry)
     pub par_shape_level: u16,
+    /// e-TeX interline, club, widow, and display-widow penalty arrays.
+    /// Shared slices make per-paragraph parameter snapshots allocation-free.
+    pub penalty_shapes: [std::rc::Rc<[i32]>; 4],
+    pub penalty_shape_levels: [u16; 4],
 
     // output
     pub pdf_doc: crate::pdfout::PdfDoc,
@@ -207,6 +225,9 @@ pub struct Engine {
     pub end_occurred: bool,
     /// Set only when an executable `\\end` actually completed the job.
     pub explicit_end_seen: bool,
+    /// Prevent duplicate end-of-job warnings when multiple callers finalize
+    /// the same engine job.
+    pub(crate) diagnostics_finished: bool,
     /// tokens dispatched by main_loop; capacity guard
     pub main_steps: u64,
     /// Expandable commands processed during this job. Unlike main_steps this
@@ -275,6 +296,7 @@ pub struct Engine {
     pub box_targets: Vec<Option<(i32, bool)>>,
     pub box_shifts: Vec<i32>,
     pub box_kinds: Vec<u8>,
+    /// Pending leader object boxes as (leader kind, surrounding box depth).
     pub leader_stack: Vec<(u8, usize)>,
     pub insert_nums: Vec<u16>,
     pub pdf_images: crate::FxHashMap<i32, PdfImageInfo>,
@@ -288,7 +310,26 @@ pub struct Engine {
     pub read_eof: Vec<bool>, // (amount, is_hmove)
     pub read_files: Vec<Option<Box<dyn std::io::BufRead>>>,
     pub loaded_files: Vec<std::path::PathBuf>,
+    /// Content identities captured when TeX actually read a disk input.
+    /// Unlike end-of-job metadata, these remain correct if TeX rewrites the
+    /// same auxiliary or included file later in the pass.
+    pub loaded_file_digests: Vec<(std::path::PathBuf, u64, u64)>,
+    /// File sizes observed by `\\pdffilesize`/`\\filesize`. These preserve
+    /// the value used during expansion without paying to read file contents.
+    pub loaded_file_sizes: Vec<(std::path::PathBuf, u64)>,
+    /// Disk paths whose absence affected a file lookup. Dependency caches
+    /// must invalidate when one of these paths later appears.
+    pub missing_files: Vec<std::path::PathBuf>,
     pub out_dir: String,
+    /// Optional directory for TeX-generated state (for example `.aux`,
+    /// `.toc`, and files opened through `\\openout`).  When unset, output
+    /// streams continue to use `out_dir`, preserving traditional pdfTeX
+    /// behavior.  The PDF itself always uses `out_dir`.
+    pub aux_dir: Option<std::path::PathBuf>,
+    /// Permit LaTeX's first read of the managed main-job `.aux` to see an
+    /// empty virtual file. Kept explicit so plain/INITEX and arbitrary aux
+    /// inputs continue to report missing files.
+    pub allow_missing_main_aux: bool,
     /// directory of the primary input file; relative \\input/\\openin names
     /// resolve here before falling back to the TDS (matches running TeX from
     /// the document's own directory).
@@ -302,20 +343,38 @@ pub struct Engine {
     pub align_cur_row: Vec<crate::align::Cell>,
     pub align_cur_col: i32,
     pub align_scanning_cell: bool,
+    pub(crate) align_close_reason: crate::align::AlignCloseReason,
     /// `pushed` length when the current align toklist was installed.
     /// Expansions after that point outrank the toklist; older `pushed`
     /// tokens (e.g. a \\futurelet peek) wait until the toklist finishes.
     pub align_pushed_base: usize,
-    /// Brace-balance baseline of active token-list sources at cell entry.
-    /// Alignment delimiters fetched while the relative balance is nonzero
-    /// belong to a nested macro argument, not the current row.
+    /// Brace-balance baseline of active token-list sources after the current
+    /// alignment u-template completes.
     pub(crate) align_delimiter_balance_base: i32,
-    /// eqtb group level of the synthetic alignment-cell group.
+    /// eqtb group level after the current alignment u-template completes.
     pub(crate) align_cell_level: u16,
-    pub align_noalign_save_base: usize,
+    /// Save-stack depth immediately before the simple group that executes a
+    /// `\noalign` body. The body's closing brace ends the no-align row only
+    /// when the stack returns to this exact depth.
+    pub(crate) align_noalign_save_base: usize,
+    /// tex.web align_state (tex.web @6745): net brace depth relative to the
+    /// current alignment entry. A row delimiter ends the entry only at 0.
+    /// Maintained cumulatively at token fetch (tex.web @7335/@7492); reset
+    /// when a u-template finishes (tex.web @7007-7008) or an \omit cell
+    /// starts (tex.web @15562); parked at 1000000 while a template plays
+    /// (tex.web @15564).
+    pub(crate) align_brace_depth: i32,
+    /// Height/depth size target for e-TeX \middle delimiters inside the active
+    /// \left...\right group.
+    pub(crate) middle_delimiter_size: i32,
+    pub(crate) align_is_valign: bool,
     pub align_done: bool,
     pub align_to: Option<(i32, bool)>, // \halign to/spread <dimen>: (dimen, is_spread)
     pub align_t0: crate::boxes::Glue,
+    /// Outer alignment states parked while a nested \halign is active.
+    /// Keeping this on the engine prevents a fatal job from leaking state to
+    /// a later engine allocated at the same address.
+    pub(crate) align_stack: Vec<crate::align::AlignSave>,
     /// Physical source location of the active `\halign`, retained so an EOF
     /// after an included file has been popped still points to the construct.
     pub(crate) align_origin: Option<crate::input::SourceMark>,
@@ -382,6 +441,15 @@ pub struct Engine {
     /// \binoppenalty/\relpenalty breakpoints after Bin/Rel atoms when
     /// converting inline TEXT math (mode>0); restored on exit
     pub math_penalties: std::cell::Cell<bool>,
+    /// Monotonic identity for source-bearing math atoms. Math conversion can
+    /// measure an atom more than once (notably accented scripted nuclei), so
+    /// a stable id keeps `\tracinglostchars` to one warning per atom.
+    /// Cheap source-mark arena for math atom ids. Keeping marks out of `Node`
+    /// avoids increasing every node's size while still retaining included
+    /// input after its source stack frame has closed.
+    pub(crate) math_diagnostic_sources: Vec<Option<crate::input::SourceMark>>,
+    pub(crate) math_diagnostic_depth: usize,
+    pub(crate) reported_missing_math_atoms: crate::FxHashSet<(u64, u16, u8)>,
     pub(crate) token_vec_pool: Vec<Vec<crate::token::Token>>,
     pub current_macro: crate::token::CsId,
     pub math_style_stack: Vec<crate::boxes::MathStyle>,
@@ -406,9 +474,9 @@ pub struct Engine {
     /// bool marks \leqno (tag on the left)
     pub pending_display_formula: Option<Vec<crate::boxes::Node>>,
     pub eqno_leqno: Option<bool>,
-    /// Subformula boundaries: (math-list stack depth, opening position).
+    /// Subformula boundaries: (math-list stack depth, opening position, saved mode).
     /// Nested scanners must not use or discard a surrounding list's marks.
-    pub math_group_marks: Vec<(usize, usize)>,
+    pub math_group_marks: Vec<(usize, usize, Mode)>,
     pub scanner_status: ScannerStatus,
     /// Semantic nest frames: mode, list, previous depth, space factor, paragraph lines.
     pub saved_lists: Vec<(Mode, Vec<crate::boxes::Node>, i32, i32, i32)>,
@@ -431,8 +499,9 @@ pub struct Engine {
     pub in_display_init: bool,
     /// `$$\halign$$` (amsmath align): rows+noalign stashed here instead of
     /// a packed vbox so finish_display_math can unbox them onto the page.
-    pub display_halign: Option<Vec<crate::boxes::Node>>,
+    pub display_halign: Option<(Vec<crate::boxes::Node>, i32)>,
     pub unless_next: bool,
+    pub random_seed: i32,
     pub last_badness: i32,
     pub pdf_last_x: i32,
     pub pdf_last_y: i32,
@@ -441,11 +510,15 @@ pub struct Engine {
     pub pdf_last_obj: i32,
     pub pdf_last_xform: i32,
     pub pdf_last_ximage: i32,
+    pub pdf_last_ximage_pages: i32,
     pub pdf_last_link: i32,
     pub pdf_last_annot: i32,
     /// next free object number for \pdfobj-style reservations (pdfTeX
     /// reserves 1..4 for Catalog/Pages/Info/Outlines).
     pub pdf_next_obj: i32,
+    /// Object numbers allocated specifically by `\pdfobj reserveobjnum` and
+    /// still available for one `\pdfobj useobjnum` definition.
+    pub(crate) pdf_reserved_objnums: crate::FxHashSet<i32>,
     pub pdf_match_subject: Vec<u8>,
     pub pdf_match_ranges: Vec<Option<(usize, usize)>>,
     pub marks: [Vec<Vec<Token>>; 5], // top, first, bot, splitfirst, splitbot (class-indexed)
@@ -475,26 +548,52 @@ pub struct Engine {
 
 impl Engine {
     pub(crate) fn append_transcript_bounded(buffer: &mut String, text: &str) {
-        const MARKER: &str = "\n! Transcript truncated at the 8 MiB safety limit.\n";
-        if buffer.len() >= MAX_TERM_BYTES {
+        const MARKER: &str = "\n! Transcript truncated at the 32 MiB safety limit.\n";
+        if text.is_empty() || (buffer.len() >= MAX_TERM_BYTES && buffer.ends_with(MARKER)) {
             return;
         }
-        let remaining = MAX_TERM_BYTES - buffer.len();
+        let remaining = MAX_TERM_BYTES.saturating_sub(buffer.len());
         if text.len() <= remaining {
             buffer.push_str(text);
             return;
         }
-        let mut keep = remaining.saturating_sub(MARKER.len()).min(text.len());
+        let content_limit = MAX_TERM_BYTES.saturating_sub(MARKER.len());
+        let mut old_keep = buffer.len().min(content_limit);
+        while old_keep > 0 && !buffer.is_char_boundary(old_keep) {
+            old_keep -= 1;
+        }
+        buffer.truncate(old_keep);
+        let mut keep = content_limit.saturating_sub(buffer.len()).min(text.len());
         while keep > 0 && !text.is_char_boundary(keep) {
             keep -= 1;
         }
         buffer.push_str(&text[..keep]);
-        let marker_room = MAX_TERM_BYTES - buffer.len();
-        buffer.push_str(&MARKER[..MARKER.len().min(marker_room)]);
+        buffer.push_str(MARKER);
+    }
+
+    fn truncate_transcript_bounded(buffer: &mut String) {
+        const MARKER: &str = "\n! Transcript truncated at the 32 MiB safety limit.\n";
+        if buffer.len() <= MAX_TERM_BYTES {
+            return;
+        }
+        let mut keep = MAX_TERM_BYTES.saturating_sub(MARKER.len());
+        while keep > 0 && !buffer.is_char_boundary(keep) {
+            keep -= 1;
+        }
+        buffer.truncate(keep);
+        Self::append_transcript_bounded(buffer, MARKER);
     }
 
     pub(crate) fn append_term(&mut self, text: &str) {
-        Self::append_transcript_bounded(&mut self.term, text);
+        if self.interaction_mode != InteractionMode::Batch {
+            Self::append_transcript_bounded(&mut self.term, text);
+        }
+    }
+
+    pub(crate) fn append_diagnostic(&mut self, text: &str) {
+        if self.interaction_mode != InteractionMode::Batch {
+            Self::append_transcript_bounded(&mut self.diagnostic_output, text);
+        }
     }
 
     pub(crate) fn append_log(&mut self, text: &str) {
@@ -568,9 +667,9 @@ impl Engine {
             || self.log.len() > MAX_TERM_BYTES
             || self.diagnostic_output.len() > MAX_TERM_BYTES
         {
-            self.term.truncate(MAX_TERM_BYTES);
-            self.log.truncate(MAX_TERM_BYTES);
-            self.diagnostic_output.truncate(MAX_TERM_BYTES);
+            Self::truncate_transcript_bounded(&mut self.term);
+            Self::truncate_transcript_bounded(&mut self.log);
+            Self::truncate_transcript_bounded(&mut self.diagnostic_output);
             self.capacity_error("TeX capacity exceeded, sorry [transcript size]");
             return true;
         }
@@ -630,7 +729,7 @@ impl Engine {
             self.interaction_mode = mode;
         } else {
             self.error(&format!(
-                "Bad interaction mode ({value}); expected 0 (batch), 1 (nonstop), 2 (scroll), or 3 (error stop)"
+                "Bad interaction mode ({value}); expected 0 (batch), 1 (nonstop), 2 (scroll), or 3 (error stop); mode left unchanged"
             ));
         }
     }
@@ -693,12 +792,13 @@ impl Engine {
             max_errors: DEFAULT_MAX_ERRORS,
             error_count: 0,
             stopped_on_error: false,
-            diagnostics: Vec::new(),
+            diagnostics: crate::diagnostics::DiagnosticStore::default(),
             diagnostic_output: String::new(),
             diagnostic_source_override: None,
             diagnostic_trace_override: None,
             pending_terminal_error_source: None,
             diagnostic_macro_trace: Vec::with_capacity(20),
+            diagnostic_macro_trace_truncated: false,
             diagnostic_token_from_file: false,
             diagnostic_trace_hold: 0,
             diagnostic_source_cs: None,
@@ -709,11 +809,14 @@ impl Engine {
             diagnostic_group_openings: Vec::new(),
             diagnostic_use_err_help: false,
             write_streams: (0..16).map(|_| None).collect(),
+            write_stream_paths: (0..16).map(|_| None).collect(),
             writebuf: Vec::new(),
             hyphen_trie: crate::hyphen::Trie::new(),
             hyphen_exceptions: Vec::new(),
             par_shape: Vec::new(),
             par_shape_level: crate::eqtb::LEVEL_ONE,
+            penalty_shapes: std::array::from_fn(|_| std::rc::Rc::from([])),
+            penalty_shape_levels: [crate::eqtb::LEVEL_ONE; 4],
             pdf_doc: crate::pdfout::PdfDoc::new(),
             out_file: None,
             font_loader: crate::fontload::FontLoader::new(),
@@ -721,6 +824,7 @@ impl Engine {
             job_running: true,
             end_occurred: false,
             explicit_end_seen: false,
+            diagnostics_finished: false,
             main_steps: 0,
             expansion_steps: 0,
             expansion_limit: std::env::var("TEX_EXPANSION_LIMIT")
@@ -760,7 +864,9 @@ impl Engine {
             pdf_last_obj: 0,
             pdf_last_xform: 0,
             pdf_last_ximage: 0,
+            pdf_last_ximage_pages: 0,
             pdf_next_obj: 5,
+            pdf_reserved_objnums: crate::FxHashSet::default(),
             pdf_last_link: 0,
             pdf_last_annot: 0,
             right_delim: None,
@@ -785,7 +891,12 @@ impl Engine {
             read_eof: Vec::new(),
             read_files: Vec::new(),
             loaded_files: Vec::new(),
+            loaded_file_digests: Vec::new(),
+            loaded_file_sizes: Vec::new(),
+            missing_files: Vec::new(),
             out_dir: String::new(),
+            aux_dir: None,
+            allow_missing_main_aux: false,
             main_dir: None,
             job_ended_by_end: false,
             align_preamble: Vec::new(),
@@ -801,13 +912,18 @@ impl Engine {
             align_in_noalign: false,
             align_everycr_done: false,
             align_scanning_cell: false,
+            align_close_reason: crate::align::AlignCloseReason::default(),
             align_pushed_base: 0,
             align_delimiter_balance_base: 0,
             align_cell_level: 0,
             align_noalign_save_base: 0,
+            align_brace_depth: 0,
+            middle_delimiter_size: 0,
+            align_is_valign: false,
             align_to: None,
             align_t0: crate::boxes::Glue::zero(),
             align_done: false,
+            align_stack: Vec::new(),
             align_origin: None,
             in_output: false,
             output_depth: 0,
@@ -840,6 +956,9 @@ impl Engine {
             pdf_match_ranges: Vec::new(),
             math_lists: Vec::new(),
             math_penalties: std::cell::Cell::new(false),
+            math_diagnostic_sources: Vec::new(),
+            math_diagnostic_depth: 0,
+            reported_missing_math_atoms: crate::FxHashSet::default(),
             pre_display_size: -0x3FFF_FFFF,
             pre_display_l: 0,
             last_par_line: None,
@@ -861,6 +980,7 @@ impl Engine {
             term: String::new(),
             last_named_cs: None,
             after_assignment: None,
+            random_seed: 123456789,
         };
         e
     }
@@ -1071,6 +1191,13 @@ impl Engine {
             (b"pdfsuppressptexinfo", IntParam::PdfSuppressPtexInfo),
             (b"partokencontext", IntParam::PartokenContext),
             (b"ignoreprimitiveerror", IntParam::IgnorePrimitiveError),
+            (
+                b"pdfsuppresswarningpagegroup",
+                IntParam::PdfSuppressWarningPageGroup,
+            ),
+            (b"pdfadjustinterwordglue", IntParam::PdfAdjustInterwordGlue),
+            (b"pdfprependkern", IntParam::PdfPrependKern),
+            (b"pdfappendkern", IntParam::PdfAppendKern),
         ];
         for (n, p) in intnames {
             let id = eng.cs.intern(n);
@@ -1215,6 +1342,8 @@ impl Engine {
         d!(eng, b"unhcopy", UnHCopy);
         d!(eng, b"unvcopy", UnVCopy);
         d!(eng, b"lastbox", LastBox);
+        d!(eng, b"pagediscards", PageDiscards);
+        d!(eng, b"splitdiscards", SplitDiscards);
 
         d!(eng, b"gluestretch", GlueStretch);
         d!(eng, b"glueshrink", GlueShrink);
@@ -1369,11 +1498,14 @@ impl Engine {
         d!(eng, b"pdflastobj", PdfLastObj);
         d!(eng, b"pdflastxform", PdfLastXForm);
         d!(eng, b"pdflastximage", PdfLastXImage);
+        d!(eng, b"pdflastximagepages", PdfLastXImagePages);
+        d!(eng, b"pdfximagebbox", PdfXImageBBox);
         d!(eng, b"pdflastlink", PdfLastLink);
         d!(eng, b"pdflastannot", PdfLastAnnot);
         d!(eng, b"pdffilesize", PdfFileSize);
         d!(eng, b"pdfmdfivesum", PdfMdFiveSum);
         d!(eng, b"pdffilemoddate", PdfFileModDate);
+        d!(eng, b"pdfcreationdate", PdfCreationDate);
         d!(eng, b"pdffiledump", PdfFileDump);
         d!(eng, b"pdfstrcmp", PdfStrCmp);
         d!(eng, b"pdfshellescape", PdfShellEscape);
@@ -1381,6 +1513,10 @@ impl Engine {
         d!(eng, b"pdfresettimer", PdfResetTimer);
         d!(eng, b"pdfuniformdeviate", PdfUniformDeviate);
         d!(eng, b"pdfnormaldeviate", PdfNormalDeviate);
+        d!(eng, b"pdfrandomseed", PdfRandomSeed);
+        d!(eng, b"pdfsetrandomseed", PdfSetRandomSeed);
+        d!(eng, b"randomseed", PdfRandomSeed);
+        d!(eng, b"setrandomseed", PdfSetRandomSeed);
         d!(eng, b"pdfescapestring", PdfEscapeString);
         d!(eng, b"pdfescapename", PdfEscapeName);
         d!(eng, b"pdfescapehex", PdfEscapeHex);
@@ -1421,6 +1557,9 @@ impl Engine {
         eng.eqtb.int_params[IntParam::Pretolerance.idx() as usize] = 100;
         eng.eqtb.int_params[IntParam::HangAfter.idx() as usize] = 1;
         eng.eqtb.int_params[IntParam::ErrorContextLines.idx() as usize] = 5;
+        // INITEX starts with \tracinglostchars=0. Loaded formats normally set
+        // it to 1; raw/plain callers can opt in after selecting a real font.
+        eng.eqtb.int_params[IntParam::TracingLostChars.idx() as usize] = 0;
         eng.eqtb.int_params[IntParam::LeftHyphenMin.idx() as usize] = 2;
         eng.eqtb.int_params[IntParam::RightHyphenMin.idx() as usize] = 3;
         eng.eqtb.int_params[IntParam::Defaulthyphenchar.idx() as usize] = 45;
@@ -1437,6 +1576,10 @@ impl Engine {
         // (iftex, hyperref, pgf) select the pdfTeX driver only when the
         // \XeTeX* names are undefined, and this engine is pdfTeX-compatible.
         d!(eng, b"eTeXrevision", EtxRevision);
+        d!(eng, b"interlinepenalties", InterLinePenalties);
+        d!(eng, b"clubpenalties", ClubPenalties);
+        d!(eng, b"widowpenalties", WidowPenalties);
+        d!(eng, b"displaywidowpenalties", DisplayWidowPenalties);
         d!(eng, b"pdfpageresources", PdfPageResources);
         // plain.tex paper: keep the page builder from firing on every box
         let sp_in: i32 = 4736287;
@@ -1453,17 +1596,28 @@ impl Engine {
         let closing_level = self.eqtb.cur_level;
         let mut ag = Vec::new();
         let mut ps = None;
-        let ty = self.eqtb.pop_level_full(&mut ag, &mut ps);
-        // tex.web: par_shape_ptr's level is tracked like any eqtb entry —
-        // restore iff its current assignment is local to the closing group
-        // (a later global assign leaves level == LEVEL_ONE and wins)
+        let mut penalty_shapes = Vec::new();
+        let ty = self
+            .eqtb
+            .pop_level_full(&mut ag, &mut ps, &mut penalty_shapes);
+        // Shape pointers are level-tracked like eqtb entries. A later global
+        // assignment suppresses restoration from an older local save item.
         if let Some((old, old_lvl)) = ps {
             if self.par_shape_level > crate::eqtb::LEVEL_ONE {
                 self.par_shape = old;
                 self.par_shape_level = old_lvl;
             }
         }
-        self.pushed.extend(ag);
+        for (kind, old, old_lvl) in penalty_shapes {
+            let kind = kind as usize;
+            if self.penalty_shape_levels[kind] > crate::eqtb::LEVEL_ONE {
+                self.penalty_shapes[kind] = old;
+                self.penalty_shape_levels[kind] = old_lvl;
+            }
+        }
+        for t in ag {
+            self.push_token(t);
+        }
         self.forget_group_opening(closing_level);
         ty
     }
@@ -1490,11 +1644,55 @@ impl Engine {
             self.par_shape = new;
         }
     }
+
+    pub(crate) fn assign_penalty_shape(&mut self, primitive: Prim, values: Vec<i32>, global: bool) {
+        let kind = primitive
+            .penalty_shape_index()
+            .expect("penalty shape primitive");
+        let values = std::rc::Rc::<[i32]>::from(values);
+        if global {
+            self.penalty_shapes[kind] = values;
+            self.penalty_shape_levels[kind] = crate::eqtb::LEVEL_ONE;
+            return;
+        }
+        let level = self.eqtb.cur_level;
+        if self.penalty_shape_levels[kind] < level {
+            let old = std::mem::replace(&mut self.penalty_shapes[kind], values);
+            let old_level = self.penalty_shape_levels[kind];
+            self.eqtb
+                .save_stack
+                .push(crate::eqtb::SaveItem::PenaltyShape(
+                    kind as u8, old, old_level,
+                ));
+            self.penalty_shape_levels[kind] = level;
+        } else {
+            self.penalty_shapes[kind] = values;
+        }
+    }
+
+    pub(crate) fn penalty_shape_value(&self, primitive: Prim, index: i32) -> i32 {
+        let kind = primitive
+            .penalty_shape_index()
+            .expect("penalty shape primitive");
+        let values = &self.penalty_shapes[kind];
+        if index == 0 {
+            return values.len() as i32;
+        }
+        if index < 0 || values.is_empty() {
+            return 0;
+        }
+        values[(index as usize - 1).min(values.len() - 1)]
+    }
     /// tex.web box_context: nest \setbox so an inner \setbox inside
     /// \shipout\vbox{\setbox...} cannot clobber the outer target. The
     /// pending \global prefix travels with the target.
     pub fn park_setbox(&mut self, idx: u16) {
         let g = self.take_global();
+        self.park_setbox_with_global(idx, g);
+    }
+    /// Park a \setbox target after its prefix state has already been
+    /// consumed. This avoids evaluating \globaldefs twice around scanners.
+    pub fn park_setbox_with_global(&mut self, idx: u16, global: bool) {
         self.setbox_stack.push((
             self.setbox_target.take(),
             self.setbox_depth,
@@ -1502,7 +1700,7 @@ impl Engine {
         ));
         self.setbox_target = Some(idx);
         self.setbox_depth = self.box_kinds.len();
-        self.setbox_global = g;
+        self.setbox_global = global;
     }
     pub fn unpark_setbox(&mut self) {
         match self.setbox_stack.pop() {
@@ -1520,8 +1718,25 @@ impl Engine {
     }
     pub fn trigger_after_assignment(&mut self) {
         if let Some(t) = self.after_assignment.take() {
-            self.pushed.push(t);
+            self.push_token(t);
         }
+    }
+    /// tex.web @7028 (back_input): putting a token back on the input reverses
+    /// its align_state contribution (decr for left brace, incr for right brace).
+    /// When the token is later fetched again by raw_token(), the contribution
+    /// is re-applied, guaranteeing exact balance.
+    #[inline(always)]
+    pub fn push_token(&mut self, t: Token) {
+        if t.0 < 0x8000_0000 && !t.is_cs() {
+            let cc = (t.0 >> 24) as u8;
+            if cc == 1 {
+                self.align_brace_depth = self.align_brace_depth.saturating_sub(1);
+                // push_token adjusts align_brace_depth
+            } else if cc == 2 {
+                self.align_brace_depth = self.align_brace_depth.saturating_add(1);
+            }
+        }
+        self.pushed.push(t);
     }
     #[inline]
     pub fn is_right_brace(&self, t: Token) -> bool {
@@ -1555,6 +1770,19 @@ impl Engine {
             false
         }
     }
+    #[inline]
+    pub fn is_macro_param(&self, t: Token) -> bool {
+        if t.is_char() {
+            t.cc() == 6
+        } else if t.is_cs() {
+            matches!(
+                self.eqtb.resolve(t.cs_id()),
+                Some(crate::eqtb::Equiv::CharTok(v)) if Token(*v).cc() == 6
+            )
+        } else {
+            false
+        }
+    }
     /// tex.web page_contents == empty: true when no box or rule has been contributed to the current page.
     #[inline]
     pub fn page_contents_empty(&self) -> bool {
@@ -1577,6 +1805,7 @@ pub struct PdfImageInfo {
     /// true when the file was imported as a PDF Form XObject during scan:
     /// the image bytes are already embedded, so shipping must not re-read it.
     pub embedded: bool,
+    pub bbox: [i32; 4],
 }
 #[cfg(test)]
 mod capacity_tests {
@@ -1631,11 +1860,51 @@ mod capacity_tests {
         let diagnostic = eng.diagnostics.last().expect("interaction diagnostic");
         assert_eq!(
             diagnostic.message,
-            "Bad interaction mode (9); expected 0 (batch), 1 (nonstop), 2 (scroll), or 3 (error stop)"
+            "Bad interaction mode (9); expected 0 (batch), 1 (nonstop), 2 (scroll), or 3 (error stop); mode left unchanged"
         );
         let primary = diagnostic.primary.as_ref().expect("source location");
         assert_eq!(primary.name, "bad-mode.tex");
         assert_eq!(primary.line, 1);
+        assert_eq!(primary.column, 18);
+    }
+
+    #[test]
+    fn transcript_capacity_truncation_is_safe_inside_a_utf8_character() {
+        let mut eng = Engine::new(false);
+        eng.set_interaction_mode(InteractionMode::Nonstop);
+        eng.log = "x".repeat(MAX_TERM_BYTES - 1);
+        eng.log.push('界');
+
+        assert!(eng.capacity_exceeded());
+        assert!(eng.log.is_char_boundary(eng.log.len()));
+        assert!(eng.log.len() <= MAX_TERM_BYTES);
+        assert!(eng
+            .log
+            .contains("Transcript truncated at the 32 MiB safety limit"));
+    }
+
+    #[test]
+    fn append_at_exact_transcript_limit_replaces_the_tail_with_a_marker() {
+        let mut eng = Engine::new(false);
+        eng.log = "x".repeat(MAX_TERM_BYTES);
+
+        eng.append_log("a later diagnostic");
+
+        assert_eq!(eng.log.len(), MAX_TERM_BYTES);
+        assert!(eng
+            .log
+            .ends_with("\n! Transcript truncated at the 32 MiB safety limit.\n"));
+    }
+
+    #[test]
+    fn transcript_text_cannot_forge_the_truncation_latch() {
+        let mut eng = Engine::new(false);
+        eng.log = "user text\n! Transcript truncated at the 32 MiB safety limit.\n".to_string();
+
+        eng.append_log("a later diagnostic");
+
+        assert!(eng.log.ends_with("a later diagnostic"));
+        assert!(eng.log.len() < MAX_TERM_BYTES);
     }
 
     #[test]

@@ -1020,7 +1020,7 @@ impl<'a> Interp<'a> {
             Builtin::Warning => {
                 let l = self.pop_str(st);
                 if let Some(s) = as_str(&l) {
-                    self.log.warn(s.to_string());
+                    self.log.warn(s);
                 }
             }
             Builtin::ChrToInt => {
@@ -1365,6 +1365,7 @@ fn text_prefix(s: &str, n: i64) -> String {
                 i = skip_special_from_backslash(b, i);
                 out.extend_from_slice(&b[start..i]);
                 count += 1;
+                lvl -= 1;
                 continue;
             }
             out.push(c);
@@ -1432,10 +1433,8 @@ fn purify(b: &[u8]) -> String {
                 }
                 i = i.saturating_sub(1); // unskip the final '}'
             }
-        } else if c == b'}' {
-            if lvl > 0 {
-                lvl -= 1;
-            }
+        } else if c == b'}' && lvl > 0 {
+            lvl -= 1;
         }
         i += 1;
     }
@@ -1470,12 +1469,8 @@ fn change_case(mode: &[u8], src: &[u8]) -> String {
             lvl += 1;
             // special char? needs `{\` and 4 bytes minimum (WEB: ptr+4 <= len)
             let mut special = lvl == 1 && i + 4 <= buf.len() && buf[i + 1] == b'\\';
-            if special && m == M::Title {
-                if i == 0 {
-                    special = false;
-                } else if prev_colon && is_white(buf[i - 1]) {
-                    special = false;
-                }
+            if special && m == M::Title && (i == 0 || (prev_colon && is_white(buf[i - 1]))) {
+                special = false;
             }
             if special {
                 i += 1; // skip '{'
@@ -1497,8 +1492,8 @@ fn change_case(mode: &[u8], src: &[u8]) -> String {
                                         | SpecKind::AeUpper
                                         | SpecKind::AaUpper
                                 ) {
-                                    for k in xs..i {
-                                        buf[k] = to_lower(buf[k]);
+                                    for byte in &mut buf[xs..i] {
+                                        *byte = to_lower(*byte);
                                     }
                                 }
                             }
@@ -1508,14 +1503,14 @@ fn change_case(mode: &[u8], src: &[u8]) -> String {
                                 | SpecKind::Oe
                                 | SpecKind::Ae
                                 | SpecKind::Aa => {
-                                    for k in xs..i {
-                                        buf[k] = to_upper(buf[k]);
+                                    for byte in &mut buf[xs..i] {
+                                        *byte = to_upper(*byte);
                                     }
                                 }
                                 SpecKind::I | SpecKind::J | SpecKind::Ss => {
                                     // uppercase, remove backslash, drop following ws
-                                    for k in xs..i {
-                                        buf[k] = to_upper(buf[k]);
+                                    for byte in &mut buf[xs..i] {
+                                        *byte = to_upper(*byte);
                                     }
                                     // remove backslash: shift [xs..] left by 1
                                     for k in xs..buf.len() {
@@ -1550,13 +1545,13 @@ fn change_case(mode: &[u8], src: &[u8]) -> String {
                     // convert the non-control-sequence segment
                     match m {
                         M::Title | M::Lower => {
-                            for k in x2..i {
-                                buf[k] = to_lower(buf[k]);
+                            for byte in &mut buf[x2..i] {
+                                *byte = to_lower(*byte);
                             }
                         }
                         M::Upper => {
-                            for k in x2..i {
-                                buf[k] = to_upper(buf[k]);
+                            for byte in &mut buf[x2..i] {
+                                *byte = to_upper(*byte);
                             }
                         }
                         M::Bad => {}
@@ -2019,10 +2014,8 @@ fn enough_text_chars(out: &[u8], from: usize, enough: usize) -> bool {
                 num += 1;
                 continue;
             }
-        } else if c == b'}' {
-            if lvl > 0 {
-                lvl -= 1;
-            }
+        } else if c == b'}' && lvl > 0 {
+            lvl -= 1;
         }
         num += 1;
     }
@@ -2273,12 +2266,18 @@ pub fn format_name(fmt: &[u8], which: i64, list: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::substring;
+    use super::{substring, text_prefix};
 
     #[test]
     fn substring_preserves_utf8_boundaries() {
         assert_eq!(substring("éclair", 1, 1), "é");
         assert_eq!(substring("éclair", 2, 2), "cl");
         assert_eq!(substring("éclair", 2, -1), "ir");
+    }
+
+    #[test]
+    fn text_prefix_closes_only_unconsumed_groups() {
+        assert_eq!(text_prefix(r#"H{\"a}ggstr\"om"#, 3), r#"H{\"a}g"#);
+        assert_eq!(text_prefix("{Alpha}", 3), "{Alp}");
     }
 }

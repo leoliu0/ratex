@@ -59,6 +59,33 @@ pub struct FontLoader {
     /// the find forces kpse database setup, which is pure startup waste
     /// for format-booted runs that never select a mapped font.
     map_loaded: bool,
+    /// External font resources consulted by this job. The CLI folds these
+    /// into its dependency cache alongside TeX inputs.
+    pub dependency_files: Vec<std::path::PathBuf>,
+    /// Unindexed search directories whose entries governed a lookup result.
+    pub dependency_directories: Vec<(std::path::PathBuf, u64)>,
+    /// Content identities captured when font resources were read, before TeX
+    /// can rewrite those paths later in the same pass.
+    pub dependency_file_digests: Vec<(std::path::PathBuf, u64, u64)>,
+    /// Concrete negative probes that could shadow an embedded font resource
+    /// if a same-named external file appears later.
+    pub dependency_missing_files: Vec<std::path::PathBuf>,
+    /// Search roots or subtrees which were not directories during lookup.
+    /// Their later creation can expose files at otherwise unenumerable paths.
+    pub dependency_missing_directories: Vec<std::path::PathBuf>,
+    /// False when an I/O error prevented a complete dependency snapshot.
+    pub dependency_tracking_complete: bool,
+}
+
+fn dependency_content_hash(bytes: &[u8]) -> u64 {
+    let mut h1: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut h2: u64 = 0x9e37_79b9_7f4a_7c15;
+    for (index, byte) in bytes.iter().enumerate() {
+        h1 ^= u64::from(*byte);
+        h1 = h1.wrapping_mul(0x1000_0000_01b3);
+        h2 = (h2 + u64::from(*byte) + index as u64).wrapping_mul(0x1000_0000_01b3);
+    }
+    h1 ^ h2
 }
 
 impl FontLoader {
@@ -71,7 +98,79 @@ impl FontLoader {
             vf_fonts: crate::FxHashMap::default(),
             vf_bases: crate::FxHashMap::default(),
             map_loaded: false,
+            dependency_files: Vec::new(),
+            dependency_directories: Vec::new(),
+            dependency_file_digests: Vec::new(),
+            dependency_missing_files: Vec::new(),
+            dependency_missing_directories: Vec::new(),
+            dependency_tracking_complete: true,
         }
+    }
+
+    pub fn record_negative_dependency(&mut self, name: &str, format: tex_kpse::Format) {
+        let (present, directories, content, missing, missing_directories, complete) =
+            self.kpse.negative_lookup_dependencies(name, format);
+        self.dependency_files.extend(present);
+        self.dependency_directories.extend(directories);
+        self.dependency_file_digests.extend(content);
+        self.dependency_missing_files.extend(missing);
+        self.dependency_missing_directories
+            .extend(missing_directories);
+        self.dependency_tracking_complete &= complete;
+    }
+
+    pub fn record_lookup_dependency(
+        &mut self,
+        name: &str,
+        format: tex_kpse::Format,
+        selected: Option<&std::path::Path>,
+    ) {
+        let (present, directories, content, missing, missing_directories, complete) =
+            self.kpse.lookup_dependencies(name, format, selected);
+        self.dependency_files.extend(present);
+        self.dependency_directories.extend(directories);
+        self.dependency_file_digests.extend(content);
+        self.dependency_missing_files.extend(missing);
+        self.dependency_missing_directories
+            .extend(missing_directories);
+        self.dependency_tracking_complete &= complete;
+    }
+
+    /// Remove the positive file dependency added by a metadata-only lookup,
+    /// while retaining its earlier search-path, index, and directory state.
+    pub fn discard_file_dependency_since(&mut self, start: usize, selected: &std::path::Path) {
+        let same_path = |path: &std::path::Path| {
+            path == selected
+                || std::fs::canonicalize(path)
+                    .ok()
+                    .zip(std::fs::canonicalize(selected).ok())
+                    .is_some_and(|(left, right)| left == right)
+        };
+        if let Some(offset) = self.dependency_files[start..]
+            .iter()
+            .position(|path| same_path(path))
+        {
+            self.dependency_files.remove(start + offset);
+        }
+    }
+
+    fn read_dependency(&mut self, name: &str, format: tex_kpse::Format) -> Option<Vec<u8>> {
+        let resolved = self.kpse.find(name, format);
+        self.record_lookup_dependency(name, format, resolved.as_deref());
+        if let Some(path) = resolved {
+            if let Ok(data) = std::fs::read(&path) {
+                self.dependency_file_digests.push((
+                    path.clone(),
+                    data.len() as u64,
+                    dependency_content_hash(&data),
+                ));
+                self.dependency_files.push(path);
+                return Some(data);
+            }
+        }
+        // Embedded resources are part of the executable identity and need
+        // no separate disk dependency.
+        self.kpse.read(name, format)
     }
     /// Load pdftex.map on first use (idempotent).
     pub fn ensure_map(&mut self) {
@@ -88,7 +187,7 @@ impl FontLoader {
 
     pub fn load_map(&mut self, name: &str) {
         self.map_loaded = true;
-        let Some(data) = self.kpse.read(name, tex_kpse::Format::Map) else {
+        let Some(data) = self.read_dependency(name, tex_kpse::Format::Map) else {
             return;
         };
         self.map
@@ -101,9 +200,26 @@ impl FontLoader {
         if let Some(f) = self.tfm_cache.get(&key) {
             return Some(f.clone());
         }
-        let data = self.kpse.read(name, tex_kpse::Format::Tfm)?;
-        let mut font = parse_tfm(&data, name, at).ok()?;
-        if let Some(me) = self.map.get(name).cloned() {
+        let (resolved_name, data) = if let Some(d) = self.read_dependency(name, tex_kpse::Format::Tfm) {
+            let n = name.strip_suffix(".tfm").unwrap_or(name);
+            (n, d)
+        } else if let Some((stem, _)) = name.split_once('.') {
+            // tex.web §1257 / §526: scan_file_name splits extensions at the first dot,
+            // but read_font_info only receives cur_name. When LaTeX NFSS specifies
+            // `cmr6.5` or `cmr10.0` or `cmr10.tfm`, tex.web strips the extension and
+            // loads `cmr6.tfm` / `cmr10.tfm`.
+            if !stem.is_empty() {
+                let d = self.read_dependency(stem, tex_kpse::Format::Tfm)?;
+                (stem, d)
+            } else {
+                return None;
+            }
+        } else {
+            return None;
+        };
+        let mut font = parse_tfm(&data, resolved_name, at).ok()?;
+        let map_entry = self.map.get(resolved_name);
+        if let Some(me) = &map_entry {
             font.map_fontname = Some(me.fontname.clone());
             if let Some(enc) = &me.enc_file {
                 font.enc_name = Some(enc.clone());
@@ -125,30 +241,45 @@ impl FontLoader {
         // at a .vf) but a same-stem .vf exists, glyph rendering is
         // delegated to the VF's base fonts; the VF name itself never
         // reaches the PDF.
-        let pfb = self.map.get(name).and_then(|m| m.pfb.clone());
+        let pfb = map_entry.as_ref().and_then(|m| m.pfb.clone());
         let has_pfb = match &pfb {
-            Some(p) => {
-                !p.ends_with(".vf")
-                    && (self.kpse.find(p, tex_kpse::Format::Type1).is_some()
-                        || tex_kpse::has_embedded_package(p))
+            Some(p) if !p.ends_with(".vf") => {
+                let resolved = self.kpse.find(p, tex_kpse::Format::Type1);
+                self.record_lookup_dependency(p, tex_kpse::Format::Type1, resolved.as_deref());
+                if let Some(path) = resolved {
+                    self.dependency_files.push(path);
+                    true
+                } else if tex_kpse::has_embedded_package(p) {
+                    true
+                } else {
+                    // A newly installed PFB would switch this font away from
+                    // its virtual-font fallback, but kpse cannot expose every
+                    // directory it negatively probed. Avoid a stale fast hit.
+                    self.dependency_tracking_complete = false;
+                    false
+                }
             }
             None => false,
+            Some(_) => false,
         };
         if !has_pfb {
             if let Some(vf) = self
-                .kpse
-                .read(name, tex_kpse::Format::Vf)
+                .read_dependency(resolved_name, tex_kpse::Format::Vf)
                 .and_then(|d| self.parse_vf(&d, font.at_size))
             {
                 font.map_fontname = None;
                 font.type1_path = None;
                 font.enc_name = None;
                 font.encoding = None;
-                self.vf_fonts.insert((name.to_string(), font.at_size), vf);
+                self.vf_fonts.insert((name.to_string(), font.at_size), vf.clone());
+                self.vf_fonts.insert((resolved_name.to_string(), font.at_size), vf);
             }
         }
         let rc = Rc::new(font);
         self.tfm_cache.insert(key, rc.clone());
+        if resolved_name != name {
+            self.tfm_cache.insert((resolved_name.to_string(), at), rc.clone());
+        }
         Some(rc)
     }
 
@@ -156,7 +287,7 @@ impl FontLoader {
         if let Some(e) = self.enc_cache.get(name) {
             return Some(e.clone());
         }
-        let data = self.kpse.read(name, tex_kpse::Format::Enc)?;
+        let data = self.read_dependency(name, tex_kpse::Format::Enc)?;
         let text = String::from_utf8_lossy(&data);
         let rc = Rc::new(parse_enc_names(&text)?);
         self.enc_cache.insert(name.to_string(), rc.clone());
@@ -635,6 +766,7 @@ impl Engine {
             params: Vec::new(),
             hyphen_char: b'-' as i32,
             skew_char: -1,
+            bchar: None,
             type1_path: None,
             enc_name: None,
             map_fontname: None,
@@ -655,9 +787,20 @@ impl Engine {
 
     pub fn do_font(&mut self) {
         // \font<cs>=<tfm> [at <dimen>|scaled <int>]
+        let declaration_source = self
+            .current_token_source_mark()
+            .as_ref()
+            .map(crate::input::SourceMark::to_context);
+        // Prefix state belongs to this assignment even when scanning or
+        // loading the font fails. Retaining it would make the next unrelated
+        // assignment global (or long/outer/protected).
+        let global = self.take_global();
+        self.clear_prefixes();
         let cs = self.scan_definable_cs();
         self.scan_optional_equals();
-        let name = self.scan_font_name();
+        let Some(name) = self.scan_font_name(declaration_source.as_ref()) else {
+            return;
+        };
         let mut at = 0i32;
         self.skip_spaces_relax();
         if self.scan_keyword(b"at") {
@@ -671,24 +814,34 @@ impl Engine {
                 .unwrap_or(655360);
             at = crate::scaled::xn_over_d(dsize, s, 1000);
         }
-        self.load_font_and_bind(&name, at, cs);
+        self.load_font_and_bind(&name, at, cs, declaration_source, global);
     }
 
     /// tex.web-style file-name scan for \font: letter/other chars accumulate,
     /// a space terminates the name (and is absorbed), anything else is pushed
     /// back. Uses the non-space-skipping fetch so "cmr10 at 10pt" splits.
-    fn scan_font_name(&mut self) -> String {
+    fn scan_font_name(
+        &mut self,
+        declaration_source: Option<&crate::input::SourceContext>,
+    ) -> Option<String> {
         let mut name = Vec::new();
         self.skip_spaces_relax();
         let first = self.get_x_raw();
         if first == crate::input::EOF_MARKER {
-            return String::new();
+            return Some(String::new());
         }
         if first.is_char() && first.chr() == b'"' as u32 {
             // Quoted font name: \font\f="[FontFile.otf]:features" or "Font Name"
             loop {
                 let t = self.get_x_raw();
-                if t == crate::input::EOF_MARKER || (t.is_char() && t.chr() == b'"' as u32) {
+                if t == crate::input::EOF_MARKER {
+                    self.fatal_error_at(
+                        "File ended while scanning a quoted file name for \\font; add the closing quote",
+                        declaration_source.cloned(),
+                    );
+                    return None;
+                }
+                if t.is_char() && t.chr() == b'"' as u32 {
                     break;
                 }
                 if t.is_char() {
@@ -703,23 +856,23 @@ impl Engine {
                     }
                 }
             }
-            return String::from_utf8_lossy(&name).to_string();
+            return Some(String::from_utf8_lossy(&name).to_string());
         }
-        self.pushed.push(first);
+        self.push_token(first);
         loop {
             let t = self.get_x_raw();
             if t == crate::input::EOF_MARKER {
                 break;
             }
             if t.is_cs() {
-                self.pushed.push(t);
+                self.push_token(t);
                 break;
             }
             match t.cc() {
                 11 | 12 => name.push(t.chr() as u8),
                 10 => break, // space: name complete
                 _ => {
-                    self.pushed.push(t);
+                    self.push_token(t);
                     break;
                 }
             }
@@ -727,9 +880,16 @@ impl Engine {
                 break;
             }
         }
-        String::from_utf8_lossy(&name).to_string()
+        Some(String::from_utf8_lossy(&name).to_string())
     }
-    pub fn load_font_and_bind(&mut self, name: &str, at: i32, cs: crate::token::CsId) {
+    pub fn load_font_and_bind(
+        &mut self,
+        name: &str,
+        at: i32,
+        cs: crate::token::CsId,
+        declaration_source: Option<crate::input::SourceContext>,
+        global: bool,
+    ) {
         // If name refers to an OpenType / TrueType font (e.g. "[path/to/font.otf]" or ends with .otf/.ttf/.ttc):
         let clean_name = name.trim_start_matches('[').trim_end_matches(']');
         let is_otf = clean_name.ends_with(".otf")
@@ -737,74 +897,113 @@ impl Engine {
             || clean_name.ends_with(".ttc")
             || clean_name.starts_with('/');
         if is_otf {
-            if let Ok(data) = std::fs::read(clean_name) {
-                if let Ok(face) = ttf_parser::Face::parse(&data, 0) {
-                    let upem = face.units_per_em() as i32;
-                    let at_size = if at > 0 { at } else { 10 * 65536 };
-                    let mut font = crate::tfm::Font {
-                        name: String::from_utf8_lossy(self.cs.name(cs)).to_string(),
-                        tfm_name: clean_name.to_string(),
-                        at_size,
-                        dsize: at_size,
-                        chars: Vec::new(),
-                        bc: 0,
-                        ec: 255,
-                        lig_kern: Vec::new(),
-                        kerns: Vec::new(),
-                        ext: Vec::new(),
-                        params: vec![0; 8],
-                        hyphen_char: 45,
-                        skew_char: -1,
-                        type1_path: None,
-                        enc_name: None,
-                        map_fontname: Some(clean_name.to_string()),
-                        encoding: None,
-                    };
-                    // Populate default ASCII characters from OpenType metrics
-                    for c in 0..=255u8 {
-                        let w = face
-                            .glyph_index(c as char)
-                            .and_then(|gid| face.glyph_hor_advance(gid))
-                            .map(|adv| ((adv as i64 * at_size as i64) / upem as i64) as i32)
-                            .unwrap_or(0);
-                        font.chars.push(crate::tfm::CharInfo {
-                            width: w,
-                            height: (at_size as f64 * 0.7) as i32,
-                            depth: (at_size as f64 * 0.2) as i32,
-                            italic: 0,
-                            tag: 0,
-                            remainder: 0,
-                        });
+            match std::fs::read(clean_name) {
+                Ok(data) => match ttf_parser::Face::parse(&data, 0) {
+                    Ok(face) => {
+                        self.record_loaded_bytes(std::path::Path::new(clean_name), &data);
+                        self.loaded_files.push(std::path::PathBuf::from(clean_name));
+                        let upem = face.units_per_em() as i32;
+                        let at_size = if at > 0 { at } else { 10 * 65536 };
+                        let mut font = crate::tfm::Font {
+                            name: String::from_utf8_lossy(self.cs.name(cs)).to_string(),
+                            tfm_name: clean_name.to_string(),
+                            at_size,
+                            dsize: at_size,
+                            chars: Vec::new(),
+                            bc: 0,
+                            ec: 255,
+                            lig_kern: Vec::new(),
+                            kerns: Vec::new(),
+                            ext: Vec::new(),
+                            params: vec![0; 8],
+                            hyphen_char: 45,
+                            skew_char: -1,
+                            bchar: None,
+                            type1_path: None,
+                            enc_name: None,
+                            map_fontname: Some(clean_name.to_string()),
+                            encoding: None,
+                        };
+                        // Populate default ASCII characters from OpenType metrics
+                        for c in 0..=255u8 {
+                            let w = face
+                                .glyph_index(c as char)
+                                .and_then(|gid| face.glyph_hor_advance(gid))
+                                .map(|adv| ((adv as i64 * at_size as i64) / upem as i64) as i32)
+                                .unwrap_or(0);
+                            font.chars.push(crate::tfm::CharInfo {
+                                width: w,
+                                height: (at_size as f64 * 0.7) as i32,
+                                depth: (at_size as f64 * 0.2) as i32,
+                                italic: 0,
+                                tag: 0,
+                                remainder: 0,
+                            });
+                        }
+                        let id = self.push_engine_font(std::rc::Rc::new(font), cs);
+                        self.eqtb.assign(cs, Equiv::FontRef(id), global);
+                        let message = format!(
+                            "{} (OpenType) at {}\n",
+                            clean_name,
+                            self.scaled_to_string(at_size)
+                        );
+                        self.append_term(&message);
+                        self.append_log(&message);
+                        return;
                     }
-                    let id = self.push_engine_font(std::rc::Rc::new(font), cs);
-                    let g = self.take_global();
-                    self.eqtb.assign(cs, Equiv::FontRef(id), g);
-                    self.term.push_str(&format!(
-                        "{} (OpenType) at {}\n",
-                        clean_name,
-                        self.scaled_to_string(at_size)
-                    ));
+                    Err(error) => {
+                        self.error_at(
+                            &format!(
+                                "Cannot load OpenType font file `{clean_name}` for \\{}: {error}",
+                                String::from_utf8_lossy(self.cs.name(cs))
+                            ),
+                            declaration_source,
+                        );
+                        return;
+                    }
+                },
+                Err(error) => {
+                    self.error_at(
+                        &format!(
+                            "Cannot read font file `{clean_name}` for \\{}: {error}",
+                            String::from_utf8_lossy(self.cs.name(cs))
+                        ),
+                        declaration_source,
+                    );
                     return;
                 }
             }
         }
         let Some(font) = self.font_loader.load_tfm(name, at) else {
-            self.error(&format!(
-                "Font \\{}={} not found",
-                String::from_utf8_lossy(self.cs.name(cs)),
-                name
-            ));
+            self.error_at(
+                &format!(
+                    "Font \\{}={} not found",
+                    String::from_utf8_lossy(self.cs.name(cs)),
+                    name
+                ),
+                declaration_source,
+            );
             return;
         };
         let at_size = font.at_size;
+        // tex.web §1258 / pdftex.web §1444: if this font has already been
+        // loaded with the same TFM name and size, reuse its internal font number.
+        for (k, existing) in self.eqtb.fonts.iter().enumerate().skip(1) {
+            if existing.tfm_name == font.tfm_name && existing.at_size == at_size {
+                self.eqtb.font_cs[k] = cs;
+                self.eqtb.assign(cs, Equiv::FontRef(k as u16), global);
+                return;
+            }
+        }
         let id = self.push_engine_font(font, cs);
-        let g = self.take_global();
-        self.eqtb.assign(cs, Equiv::FontRef(id), g);
-        self.term.push_str(&format!(
+        self.eqtb.assign(cs, Equiv::FontRef(id), global);
+        let message = format!(
             "{} at {}\n",
             name,
             self.scaled_to_string(self.eqtb.fonts[id as usize].at_size)
-        ));
+        );
+        self.append_term(&message);
+        self.append_log(&message);
         // A VF-backed font gets its base fonts registered as engine fonts
         // (without control-sequence bindings) so glyph emission can address
         // them directly.
@@ -1125,6 +1324,10 @@ impl Engine {
     /// `\pdffontexpand <font> = <stretch> <shrink> <step> [autoexpand]`
     /// (pdftex.web `read_expand_font`).
     pub fn do_pdffontexpand(&mut self) {
+        // This primitive mutates font state directly, but still consumes any
+        // assignment prefixes attached to it.
+        self.take_global();
+        self.clear_prefixes();
         self.skip_spaces_relax();
         let f = self.scan_font_id();
         if f == 0 {
@@ -1280,6 +1483,8 @@ impl Engine {
     /// wrapped in a synthesized virtual font that shifts each glyph by
     /// half the added space (kern before and after the glyph).
     pub fn do_letterspacefont(&mut self) {
+        let global = self.take_global();
+        self.clear_prefixes();
         let u = self.scan_definable_cs();
         self.scan_optional_equals();
         let f = self.scan_font_id();
@@ -1289,9 +1494,8 @@ impl Engine {
         }
         let e = self.scan_int().clamp(-1000, 1000);
         let k = self.letter_space_font(u, f, e);
-        let g = self.take_global();
         if k != 0 {
-            self.eqtb.assign(u, crate::eqtb::Equiv::FontRef(k), g);
+            self.eqtb.assign(u, crate::eqtb::Equiv::FontRef(k), global);
         }
     }
 
@@ -1381,6 +1585,140 @@ impl Engine {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn run_font_error(source: String) -> Engine {
+        let mut engine = Engine::new(true);
+        engine.init_primitives();
+        engine.add_nullfont();
+        engine.set_interaction_mode(crate::engine::InteractionMode::Nonstop);
+        engine
+            .input
+            .push_file("font-error.tex".to_string(), source.into_bytes());
+        engine.run();
+        engine
+    }
+
+    #[test]
+    fn missing_font_is_reported_at_its_declaration() {
+        let name = format!("definitely-missing-diagnostic-font-{}", std::process::id());
+        let engine = run_font_error(format!("\\relax\n\\font\\broken={name}\n\\end\n"));
+        let diagnostic = engine
+            .diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.message.contains(&name))
+            .expect("missing-font diagnostic");
+        assert_eq!(
+            diagnostic.message,
+            format!("Font \\broken={name} not found")
+        );
+        let source = diagnostic.primary.as_ref().expect("declaration source");
+        assert_eq!(
+            (source.name.as_str(), source.line, source.column),
+            ("font-error.tex", 2, 1)
+        );
+        assert_eq!(source.text, format!("\\font\\broken={name}"));
+    }
+
+    #[test]
+    fn failed_font_assignment_cannot_leak_prefixes_to_the_next_assignment() {
+        let name = format!("definitely-missing-prefixed-font-{}", std::process::id());
+        let mut engine = Engine::new(false);
+        engine.init_primitives();
+        engine.add_nullfont();
+        engine.set_interaction_mode(crate::engine::InteractionMode::Nonstop);
+        let source = format!(
+            "\\count0=0\n{{\\global\\long\\outer\\protected\\font\\broken={name}\n\\count0=7}}\n\\end\n"
+        );
+        engine
+            .input
+            .push_file("font-error.tex".to_string(), source.into_bytes());
+        engine.run();
+
+        assert!(engine
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains(&name)));
+        assert_eq!(engine.eqtb.count[0], 0, "a failed font leaked \\global");
+        assert!(!engine.global_flag);
+        assert!(!engine.long_flag);
+        assert!(!engine.outer_flag);
+        assert!(!engine.protected_flag);
+    }
+
+    #[test]
+    fn unterminated_quoted_font_name_is_a_located_fatal_error() {
+        let engine =
+            run_font_error("\\relax\n\\font\\broken=\"unterminated font name\n".to_string());
+        assert!(engine.stopped_on_error);
+        assert_eq!(engine.diagnostics.len(), 1, "{}", engine.diagnostic_output);
+        let diagnostic = &engine.diagnostics[0];
+        assert_eq!(
+            diagnostic.message,
+            "File ended while scanning a quoted file name for \\font; add the closing quote"
+        );
+        assert!(!diagnostic.message.contains("not found"));
+        let source = diagnostic.primary.as_ref().expect("declaration source");
+        assert_eq!(
+            (source.name.as_str(), source.line, source.column),
+            ("font-error.tex", 2, 1)
+        );
+        assert_eq!(
+            diagnostic.help.as_deref(),
+            Some("close the file name with a matching double quote before the end of the file")
+        );
+    }
+
+    #[test]
+    fn unterminated_quoted_font_name_consumes_assignment_prefixes() {
+        let engine = run_font_error(
+            "\\global\\long\\outer\\protected\\font\\broken=\"unterminated font name\n".to_string(),
+        );
+
+        assert!(engine.stopped_on_error);
+        assert!(!engine.global_flag);
+        assert!(!engine.long_flag);
+        assert!(!engine.outer_flag);
+        assert!(!engine.protected_flag);
+    }
+
+    #[test]
+    fn malformed_opentype_font_reports_the_parse_failure_at_the_declaration() {
+        let path = std::env::temp_dir().join(format!(
+            "tex-core-malformed-font-diagnostic-{}.otf",
+            std::process::id()
+        ));
+        std::fs::write(&path, b"not an OpenType font").unwrap();
+        let source = format!(
+            "\\relax\n\\font\\broken={}\n\\end\n",
+            path.to_string_lossy()
+        );
+        let engine = run_font_error(source);
+        let _ = std::fs::remove_file(&path);
+
+        let diagnostic = engine
+            .diagnostics
+            .iter()
+            .find(|diagnostic| {
+                diagnostic
+                    .message
+                    .starts_with("Cannot load OpenType font file")
+            })
+            .expect("OpenType parse diagnostic");
+        assert!(
+            diagnostic.message.contains("unknown magic"),
+            "{}",
+            diagnostic.message
+        );
+        let source = diagnostic.primary.as_ref().expect("declaration source");
+        assert_eq!(
+            (source.name.as_str(), source.line, source.column),
+            ("font-error.tex", 2, 1)
+        );
+        assert_eq!(
+            diagnostic.help.as_deref(),
+            Some("check that the named file is a valid, supported OpenType or TrueType font")
+        );
+    }
 
     #[test]
     fn font_scaled_uses_thousandths_of_design_size() {
@@ -1583,6 +1921,12 @@ mod tests {
             vf_fonts: crate::FxHashMap::default(),
             vf_bases: crate::FxHashMap::default(),
             map_loaded: true,
+            dependency_files: Vec::new(),
+            dependency_directories: Vec::new(),
+            dependency_file_digests: Vec::new(),
+            dependency_missing_files: Vec::new(),
+            dependency_missing_directories: Vec::new(),
+            dependency_tracking_complete: true,
         };
         let font = fl.load_tfm("toyvf", 655360).expect("toyvf loads");
         assert_eq!(font.at_size, 655360);
@@ -1647,5 +1991,25 @@ mod tests {
             let n_steps: usize = vfv.chars.iter().flatten().map(|s| s.len()).sum();
             assert!(n_steps > 100, "{name}: too few steps ({n_steps})");
         }
+    }
+
+    #[test]
+    fn tfm_load_strips_extension_like_tex_web() {
+        // tex.web §1257 / §526: scan_file_name splits extensions at the first dot,
+        // but read_font_info only receives cur_name. When LaTeX NFSS specifies
+        // `cmr6.5` or `cmr10.0` or `cmr10.tfm`, tex.web strips the extension and
+        // loads `cmr6.tfm` / `cmr10.tfm`.
+        if !std::path::Path::new("/usr/share/texmf-dist/fonts/tfm/public/cm/cmr6.tfm").exists() {
+            return;
+        }
+        let mut fl = FontLoader::new();
+        let f65 = fl.load_tfm("cmr6.5", 655360).expect("cmr6.5 should resolve to cmr6");
+        assert_eq!(f65.tfm_name, "cmr6");
+
+        let f100 = fl.load_tfm("cmr10.0", 655360).expect("cmr10.0 should resolve to cmr10");
+        assert_eq!(f100.tfm_name, "cmr10");
+
+        let f10tfm = fl.load_tfm("cmr10.tfm", 655360).expect("cmr10.tfm should resolve to cmr10");
+        assert_eq!(f10tfm.tfm_name, "cmr10");
     }
 }

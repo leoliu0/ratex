@@ -64,6 +64,12 @@ pub struct Interp {
 
 type R = Result<(), String>;
 
+impl Default for Interp {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Interp {
     pub fn new() -> Self {
         let mut globals_i: HashMap<String, i64> = HashMap::new();
@@ -354,7 +360,7 @@ impl Interp {
             "while$" => self.b_while(),
             "width$" => {
                 let s = self.pop_str()?;
-                self.push(Lit::Int(s.as_bytes().len() as i64));
+                self.push(Lit::Int(s.len() as i64));
                 Ok(())
             }
             "write$" => {
@@ -450,7 +456,7 @@ impl Interp {
             };
             let mut s = s;
             let ent_max = *self.globals_i.get("entry.max$").unwrap_or(&ENT_STR_SIZE);
-            if s.as_bytes().len() as i64 > ent_max {
+            if s.len() as i64 > ent_max {
                 self.warn(&format!(
                     "string size exceeded for entry string variable `{}`",
                     lname
@@ -490,7 +496,7 @@ impl Interp {
             };
             let mut s = s;
             let glob_max = *self.globals_i.get("global.max$").unwrap_or(&GLOB_STR_SIZE);
-            if s.as_bytes().len() as i64 > glob_max {
+            if s.len() as i64 > glob_max {
                 self.warn("string size exceeded for global string variable");
                 let mut cut = glob_max.max(0) as usize;
                 while cut > 0 && !s.is_char_boundary(cut) {
@@ -519,11 +525,8 @@ impl Interp {
     }
 
     fn assign_entry_str(&mut self, name: &str, val: String) {
-        if let Some(k) = &self.cur {
-            if let Some(e) = self.entries.get_mut(k) {
-                e.evars.insert(name.to_string(), val);
-                return;
-            }
+        if let Some(e) = self.cur.as_ref().and_then(|key| self.entries.get_mut(key)) {
+            e.evars.insert(name.to_string(), val);
         }
         // no current entry: value dropped (bibtex would have complained)
     }
@@ -592,7 +595,7 @@ impl Interp {
 
     fn b_chr_to_int(&mut self) -> R {
         let s = self.pop_str()?;
-        if s.as_bytes().len() == 1 {
+        if s.len() == 1 {
             self.push(Lit::Int(s.as_bytes()[0] as i64));
         } else {
             self.warnings += 1;
@@ -737,7 +740,7 @@ impl Interp {
         let len = self.pop_int()?;
         let start = self.pop_int()?;
         let s = self.pop_str()?;
-        let slen = s.as_bytes().len() as i64;
+        let slen = s.len() as i64;
         let sub: &[u8] = if len >= slen && (start == 1 || start == -1) {
             s.as_bytes()
         } else if len <= 0 || start == 0 || start > slen || start < -slen {
@@ -767,43 +770,7 @@ impl Interp {
     fn b_text_prefix(&mut self) -> R {
         let n = self.pop_int()?;
         let s = self.pop_str()?;
-        if n <= 0 {
-            self.push(Lit::Str(String::new()));
-            return Ok(());
-        }
-        let b = s.as_bytes();
-        let mut i = 0usize;
-        let mut num = 0i64;
-        let mut level = 0i32;
-        while i < b.len() && num < n {
-            i += 1;
-            let c = b[i - 1];
-            if c == b'{' {
-                level += 1;
-                if level == 1 && i < b.len() && b[i] == b'\\' {
-                    i += 1;
-                    while i < b.len() && level > 0 {
-                        if b[i] == b'}' {
-                            level -= 1;
-                        } else if b[i] == b'{' {
-                            level += 1;
-                        }
-                        i += 1;
-                    }
-                }
-            } else if c == b'}' {
-                if level > 0 {
-                    level -= 1;
-                }
-            }
-            num += 1;
-        }
-        let mut out = b[..i].to_vec();
-        while level > 0 {
-            out.push(b'}');
-            level -= 1;
-        }
-        self.push(Lit::Str(String::from_utf8_lossy(&out).into_owned()));
+        self.push(Lit::Str(text_prefix(&s, n)));
         Ok(())
     }
 
@@ -912,10 +879,9 @@ fn change_case(s: &str, conv: Conv) -> String {
         if buf[i] == b'{' {
             level += 1;
             let mut do_special = level == 1 && i + 4 <= buf.len() && buf[i + 1] == b'\\';
-            if do_special && conv == Conv::Title {
-                if i == 0 || (prev_colon && is_white(buf[i - 1])) {
-                    do_special = false;
-                }
+            if do_special && conv == Conv::Title && (i == 0 || (prev_colon && is_white(buf[i - 1])))
+            {
+                do_special = false;
             }
             if do_special {
                 convert_special(&mut buf, &mut i, &mut level, conv);
@@ -1108,6 +1074,48 @@ pub fn purify(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
+/// text.prefix$: braces do not count as text characters, while a
+/// brace-level-one special-character group counts as one character.
+fn text_prefix(s: &str, n: i64) -> String {
+    if n <= 0 {
+        return String::new();
+    }
+    let b = s.as_bytes();
+    let mut i = 0usize;
+    let mut num = 0i64;
+    let mut level = 0i32;
+    while i < b.len() && num < n {
+        match b[i] {
+            b'{' => {
+                level += 1;
+                i += 1;
+                if level == 1 && i < b.len() && b[i] == b'\\' {
+                    while i < b.len() && level > 0 {
+                        match b[i] {
+                            b'{' => level += 1,
+                            b'}' => level -= 1,
+                            _ => {}
+                        }
+                        i += 1;
+                    }
+                    num += 1;
+                }
+            }
+            b'}' => {
+                level = (level - 1).max(0);
+                i += 1;
+            }
+            _ => {
+                i += 1;
+                num += 1;
+            }
+        }
+    }
+    let mut out = b[..i].to_vec();
+    out.extend(std::iter::repeat_n(b'}', level.max(0) as usize));
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 /// text.length$
 pub fn text_length(s: &str) -> i64 {
     let b = s.as_bytes();
@@ -1140,4 +1148,15 @@ pub fn text_length(s: &str) -> i64 {
         }
     }
     num
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn text_prefix_counts_special_character_groups_once() {
+        let surname = crate::names::format_name("{ll}", 1, r#"H{\"a}ggstr\"om, O."#);
+        assert_eq!(text_prefix(&surname, 3), r#"H{\"a}g"#);
+    }
 }

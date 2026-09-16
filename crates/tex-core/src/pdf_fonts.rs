@@ -232,19 +232,20 @@ pub fn tfm_descriptor(font: &crate::tfm::Font) -> (f64, f64, f64, f64) {
         return (0.0, 0.0, 0.0, 90.0);
     }
     let scale = |v: i32| -> f64 { v as f64 * 1000.0 / font.at_size as f64 };
-    let mut max_h = 0i32;
-    let mut max_d = 0i32;
-    for c in 0..=255u8 {
-        max_h = max_h.max(font.char_height(c));
-        max_d = max_d.max(font.char_depth(c));
-    }
+    let asc = font.char_height(b'h');
     let cap = font.char_height(b'H');
-    let stem = (scale(font.char_width(b'I')) / 4.0).max(30.0);
+    let desc = font.char_depth(b'y');
+    let dot_w = font.char_width(b'.');
+    let stem = if dot_w > 0 {
+        scale(dot_w) / 3.0
+    } else {
+        (scale(font.char_width(b'I')) / 4.0).max(30.0)
+    };
     (
-        scale(max_h),
-        -scale(max_d),
+        if asc > 0 { scale(asc) } else { 0.0 },
+        if desc > 0 { -scale(desc) } else { 0.0 },
         if cap > 0 { scale(cap) } else { 0.0 },
-        stem,
+        stem.max(30.0),
     )
 }
 

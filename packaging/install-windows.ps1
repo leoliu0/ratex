@@ -4,8 +4,8 @@
 
 .DESCRIPTION
     Self-contained installer for pdflatex, xelatex, lualatex, bibtex and
-    texmk/latexmk. Copies the release binaries into <root>\bin, the runtime
-    data (pdflatex.fmt and the texmf TDS tree) into <root>\share\tex-suite,
+    texmk/latexmk. Copies the release binaries into <root>\bin and the texmf
+    TDS tree into <root>\share\tex-suite,
     then persistently registers <root>\bin in PATH and sets TEXMFLOCAL.
 
     Default install root (per-user):  %LOCALAPPDATA%\tex-suite
@@ -23,9 +23,9 @@
 
 .PARAMETER SourceDir
     Directory holding the staged bundle: SourceDir\bin\*.exe and
-    SourceDir\share\tex-suite\{pdflatex.fmt,texmf}. By default the script
+    SourceDir\share\tex-suite\texmf. By default the script
     looks next to itself (bundle layout), then for a Cargo checkout
-    (target\release + pdflatex.fmt at the repo root).
+    (target\release; the default format is embedded).
 
 .PARAMETER InstallDir
     Override the install root entirely.
@@ -62,16 +62,22 @@ if (-not $PSScriptRoot) {
 
 # --------------------------------------------------------------- constants
 
-$Script:CoreExes = @('pdflatex.exe', 'xelatex.exe', 'lualatex.exe')
-$Script:ExtraExes = @('tex-bibtex.exe', 'texmk.exe', 'tex-index.exe')
-# Shim name -> parent engine (shim is a byte-identical copy; the engines
-# inspect their own argv[0] to pick personality, so a copy is required).
+$Script:CoreExes = @('texmk.exe')
+$Script:ExtraExes = @()
+# Public alias -> canonical program. Release bundles contain the aliases as
+# tiny launchers, avoiding duplicate copies of the PDF engine.
 $Script:Shims = @(
-    @{ Name = 'bibtex.exe';  Parent = 'tex-bibtex.exe' },
+    @{ Name = 'pdflatex.exe';   Parent = 'texmk.exe' },
+    @{ Name = 'xelatex.exe';    Parent = 'texmk.exe' },
+    @{ Name = 'lualatex.exe';   Parent = 'texmk.exe' },
+    @{ Name = 'tex-bibtex.exe'; Parent = 'texmk.exe' },
+    @{ Name = 'bibtex.exe';     Parent = 'texmk.exe' },
     @{ Name = 'latexmk.exe'; Parent = 'texmk.exe' }
 )
 $Script:AllInstalledExes = $Script:CoreExes + $Script:ExtraExes + ($Script:Shims | ForEach-Object { $_.Name })
 $Script:EnvVars = @('TEXMFLOCAL', 'TEX_SUITE_DATA')
+$Script:InstallManifestName = '.tex-suite-install.json'
+$Script:InstallManifestSchema = 'tex-suite-install-v2'
 
 # ---------------------------------------------------------------- helpers
 
@@ -90,6 +96,153 @@ function Test-IsAdmin {
 function Get-FullPath {
     param([string]$Path)
     return $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Path)
+}
+
+function Get-ManagedChildPath {
+    param([string]$Root, [string]$Relative)
+    if ([string]::IsNullOrWhiteSpace($Relative) -or [IO.Path]::IsPathRooted($Relative)) {
+        return $null
+    }
+    $parts = @($Relative -split '[\\/]')
+    if ($parts.Count -eq 0 -or $parts -contains '..' -or $parts -contains '.') {
+        return $null
+    }
+    $rootFull = [IO.Path]::GetFullPath($Root).TrimEnd('\')
+    $candidate = [IO.Path]::GetFullPath((Join-Path $rootFull $Relative))
+    $prefix = $rootFull + '\'
+    if (-not $candidate.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) {
+        return $null
+    }
+    return $candidate
+}
+
+function Test-ManagedParentChain {
+    param([string]$Root, [string]$Path)
+    $rootFull = [IO.Path]::GetFullPath($Root).TrimEnd('\')
+    $current = Split-Path -Parent $Path
+    while ($current -and -not $current.Equals($rootFull, [StringComparison]::OrdinalIgnoreCase)) {
+        $item = Get-Item -LiteralPath $current -Force -ErrorAction SilentlyContinue
+        if ($item -and (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
+            return $false
+        }
+        $next = Split-Path -Parent $current
+        if (-not $next -or $next -eq $current) { return $false }
+        $current = $next
+    }
+    return $current -and $current.Equals($rootFull, [StringComparison]::OrdinalIgnoreCase)
+}
+
+function Read-InstallManifest {
+    param([string]$Root)
+    $marker = Join-Path $Root $Script:InstallManifestName
+    $item = Get-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue
+    if (-not $item) { return $null }
+    if ($item.PSIsContainer -or (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
+        throw "Refusing an unrecognized install manifest: $marker"
+    }
+    try {
+        $manifest = [IO.File]::ReadAllText($marker) | ConvertFrom-Json
+    } catch {
+        throw "Refusing an invalid install manifest: $marker"
+    }
+    $rootFull = [IO.Path]::GetFullPath($Root).TrimEnd('\')
+    if ($manifest.schema -ne $Script:InstallManifestSchema -or
+        $manifest.name -ne 'tex-suite' -or
+        -not $manifest.root -or
+        -not ([IO.Path]::GetFullPath([string]$manifest.root).TrimEnd('\')).Equals(
+            $rootFull, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Refusing an install manifest that does not own this root: $marker"
+    }
+    foreach ($relative in @($manifest.files)) {
+        if (-not ($relative -is [string]) -or -not (Get-ManagedChildPath -Root $Root -Relative $relative)) {
+            throw "Install manifest contains an unsafe managed path: $relative"
+        }
+    }
+    return $manifest
+}
+
+function Assert-OwnedDestinations {
+    param([string]$Root, [string[]]$DesiredFiles, $ExistingManifest)
+    $owned = [System.Collections.Generic.HashSet[string]]::new(
+        [System.StringComparer]::OrdinalIgnoreCase)
+    if ($ExistingManifest) {
+        foreach ($relative in @($ExistingManifest.files)) { [void]$owned.Add([string]$relative) }
+    }
+    foreach ($relative in $DesiredFiles) {
+        $path = Get-ManagedChildPath -Root $Root -Relative $relative
+        if (-not $path) { throw "Refusing unsafe install destination: $relative" }
+        if (-not (Test-ManagedParentChain -Root $Root -Path $path)) {
+            throw "Refusing install destination through a reparse-point or unsafe parent: $path"
+        }
+        $item = Get-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
+        if ($item -and -not $owned.Contains($relative)) {
+            throw "Refusing to overwrite unowned path: $path"
+        }
+        if ($item -and $item.PSIsContainer -and
+            (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0)) {
+            throw "Managed file destination is a directory: $path"
+        }
+    }
+}
+
+function Remove-ManagedInstallFiles {
+    param([string]$Root, $Manifest, [switch]$KeepManifest)
+    $directories = [System.Collections.Generic.HashSet[string]]::new(
+        [System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($relative in @($Manifest.files)) {
+        $path = Get-ManagedChildPath -Root $Root -Relative ([string]$relative)
+        if (-not $path) { throw "Install manifest contains an unsafe managed path: $relative" }
+        if (-not (Test-ManagedParentChain -Root $Root -Path $path)) {
+            Write-Warning "Preserving managed path through a reparse-point or unsafe parent: $path"
+            continue
+        }
+        $item = Get-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
+        if ($item) {
+            if ($item.PSIsContainer -and
+                (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0)) {
+                Write-Warning "Preserving directory at managed file path: $path"
+            } else {
+                Remove-Item -LiteralPath $path -Force
+                Write-Info "Removed $path"
+            }
+        }
+        $parentRelative = Split-Path -Parent ([string]$relative)
+        while ($parentRelative -and $parentRelative -ne '.') {
+            [void]$directories.Add($parentRelative)
+            $next = Split-Path -Parent $parentRelative
+            if (-not $next -or $next -eq $parentRelative) { break }
+            $parentRelative = $next
+        }
+    }
+    foreach ($relative in @($directories | Sort-Object Length -Descending)) {
+        $path = Get-ManagedChildPath -Root $Root -Relative $relative
+        if (-not $path -or -not (Test-ManagedParentChain -Root $Root -Path $path)) { continue }
+        $item = Get-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
+        if ($item -and $item.PSIsContainer -and
+            (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0) -and
+            -not (Get-ChildItem -LiteralPath $path -Force -ErrorAction SilentlyContinue)) {
+            Remove-Item -LiteralPath $path -Force
+        }
+    }
+    if (-not $KeepManifest) {
+        $marker = Join-Path $Root $Script:InstallManifestName
+        Remove-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue
+        foreach ($relative in @('bin', 'share\tex-suite', 'share')) {
+            $path = Get-ManagedChildPath -Root $Root -Relative $relative
+            $item = Get-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
+            if ($item -and $item.PSIsContainer -and
+                (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0) -and
+                -not (Get-ChildItem -LiteralPath $path -Force -ErrorAction SilentlyContinue)) {
+                Remove-Item -LiteralPath $path -Force
+            }
+        }
+        $rootItem = Get-Item -LiteralPath $Root -Force -ErrorAction SilentlyContinue
+        if ($rootItem -and $rootItem.PSIsContainer -and
+            (($rootItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0) -and
+            -not (Get-ChildItem -LiteralPath $Root -Force -ErrorAction SilentlyContinue)) {
+            Remove-Item -LiteralPath $Root -Force
+        }
+    }
 }
 
 function Get-UserRoot {
@@ -228,11 +381,11 @@ function Find-Source {
     }
     $candidates += (Get-Location).Path
 
-    # Prefer a staged bundle: <root>\bin\pdflatex.exe + <root>\share\tex-suite.
+    # Prefer a staged bundle: <root>\bin\texmk.exe + <root>\share\tex-suite.
     foreach ($c in $candidates) {
         if (-not $c) { continue }
         $bin = Join-Path $c 'bin'
-        if (Test-Path -LiteralPath (Join-Path $bin 'pdflatex.exe')) {
+        if (Test-Path -LiteralPath (Join-Path $bin 'texmk.exe')) {
             $data = Join-Path $c (Join-Path 'share' 'tex-suite')
             return [pscustomobject]@{
                 Mode   = 'bundle'
@@ -248,12 +401,7 @@ function Find-Source {
     foreach ($c in $candidates) {
         if (-not $c) { continue }
         $rel = Join-Path $c 'target\release'
-        if (Test-Path -LiteralPath (Join-Path $rel 'pdflatex.exe')) {
-            $fmt = Join-Path $c 'pdflatex.fmt'
-            if (-not (Test-Path -LiteralPath $fmt)) {
-                $alt = Join-Path $rel 'pdflatex.fmt'
-                if (Test-Path -LiteralPath $alt) { $fmt = $alt }
-            }
+        if (Test-Path -LiteralPath (Join-Path $rel 'texmk.exe')) {
             $texmf = $null
             foreach ($t in @((Join-Path $c (Join-Path 'share\tex-suite' 'texmf')), (Join-Path $c 'texmf'))) {
                 if (Test-Path -LiteralPath $t) { $texmf = $t; break }
@@ -262,7 +410,7 @@ function Find-Source {
                 Mode   = 'repo'
                 Root   = $c
                 BinDir = $rel
-                Fmt    = $fmt
+                Fmt    = $null
                 Texmf  = $texmf
             }
         }
@@ -363,7 +511,7 @@ OPTIONS
   -Uninstall      Remove installed files, the PATH entry, and TEXMFLOCAL /
                   TEX_SUITE_DATA. Combine with -System for a machine install.
   -SourceDir <p>  Staged bundle to install from (expects <p>\bin\*.exe and
-                  <p>\share\tex-suite\pdflatex.fmt + texmf\). Default: the
+                  <p>\share\tex-suite\texmf\). Default: the
                   directory containing this script, else a Cargo checkout
                   (target\release) in the current/parent directories.
   -InstallDir <p> Install root override (files go to <p>\bin and
@@ -371,9 +519,9 @@ OPTIONS
   -Help           Show this message.
 
 WHAT IT DOES
-  1. Copies engine binaries to <root>\bin (tex-bibtex.exe is also copied as
-     bibtex.exe; texmk.exe also as latexmk.exe).
-  2. Copies pdflatex.fmt and the texmf tree to <root>\share\tex-suite.
+  1. Copies canonical engines and small alias launchers to <root>\bin.
+  2. Copies the texmf tree to <root>\share\tex-suite. The compressed LaTeX
+     format is embedded in pdflatex.exe; an external format is optional.
      TEXMFLOCAL points at <root>\share\tex-suite\texmf.
   3. Adds <root>\bin to the persistent User (or Machine) PATH idempotently.
   4. Verifies the install by running: pdflatex.exe -version
@@ -410,8 +558,84 @@ function Install-Suite {
     Write-Info ("Installing from " + $src.Mode + " source: " + $src.BinDir)
     Write-Info "Install root: $root"
 
+    New-Item -ItemType Directory -Force -Path $root | Out-Null
+    $rootItem = Get-Item -LiteralPath $root -Force
+    if (-not $rootItem.PSIsContainer -or
+        (($rootItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
+        throw "Refusing an install root that is not a plain directory: $root"
+    }
+    foreach ($directory in @($bin, $data)) {
+        $probe = Join-Path $directory '.tex-suite-parent-check'
+        if (-not (Test-ManagedParentChain -Root $root -Path $probe)) {
+            throw "Refusing an install path through a reparse-point or unsafe parent: $directory"
+        }
+    }
     New-Item -ItemType Directory -Force -Path $bin | Out-Null
     New-Item -ItemType Directory -Force -Path $data | Out-Null
+
+    $existingManifest = Read-InstallManifest -Root $root
+    $desiredFiles = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($name in ($Script:CoreExes + $Script:ExtraExes)) {
+        if (Test-Path -LiteralPath (Join-Path $src.BinDir $name)) {
+            [void]$desiredFiles.Add((Join-Path 'bin' $name))
+        }
+    }
+    foreach ($shim in $Script:Shims) {
+        $stagedAlias = Join-Path $src.BinDir $shim.Name
+        $stagedParent = Join-Path $src.BinDir $shim.Parent
+        if ((Test-Path -LiteralPath $stagedAlias) -or (Test-Path -LiteralPath $stagedParent)) {
+            [void]$desiredFiles.Add((Join-Path 'bin' $shim.Name))
+        } else {
+            $wrapper = [IO.Path]::GetFileNameWithoutExtension($shim.Name) + '.cmd'
+            [void]$desiredFiles.Add((Join-Path 'bin' $wrapper))
+        }
+    }
+    if ($src.Fmt -and (Test-Path -LiteralPath $src.Fmt)) {
+        [void]$desiredFiles.Add((Join-Path 'share\tex-suite' 'pdflatex.fmt'))
+        [void]$desiredFiles.Add((Join-Path 'bin' 'pdflatex.fmt'))
+    }
+    $sourceTexmfFiles = @()
+    $sourceTexmfDirs = @()
+    if ($src.Texmf -and (Test-Path -LiteralPath $src.Texmf)) {
+        $sourceRoot = [IO.Path]::GetFullPath($src.Texmf).TrimEnd('\')
+        $sourceTexmfFiles = @(Get-ChildItem -LiteralPath $src.Texmf -File -Recurse -Force)
+        $sourceTexmfDirs = @(Get-ChildItem -LiteralPath $src.Texmf -Directory -Recurse -Force)
+        foreach ($fileItem in $sourceTexmfFiles) {
+            $relative = $fileItem.FullName.Substring($sourceRoot.Length).TrimStart('\')
+            [void]$desiredFiles.Add((Join-Path 'share\tex-suite\texmf' $relative))
+        }
+    }
+    Assert-OwnedDestinations -Root $root -DesiredFiles @($desiredFiles) -ExistingManifest $existingManifest
+    $owned = [System.Collections.Generic.HashSet[string]]::new(
+        [System.StringComparer]::OrdinalIgnoreCase)
+    if ($existingManifest) {
+        foreach ($relative in @($existingManifest.files)) { [void]$owned.Add([string]$relative) }
+    }
+    if (-not ($src.Fmt -and (Test-Path -LiteralPath $src.Fmt))) {
+        foreach ($relative in @('bin\pdflatex.fmt', 'share\tex-suite\pdflatex.fmt')) {
+            $path = Get-ManagedChildPath -Root $root -Relative $relative
+            if ((Get-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue) -and
+                -not $owned.Contains($relative)) {
+                throw "Unowned format override blocks the embedded format: $path"
+            }
+        }
+    }
+    foreach ($sourceDirectory in $sourceTexmfDirs) {
+        $relative = $sourceDirectory.FullName.Substring($sourceRoot.Length).TrimStart('\')
+        $destination = Get-ManagedChildPath -Root $root -Relative (Join-Path 'share\tex-suite\texmf' $relative)
+        if (-not (Test-ManagedParentChain -Root $root -Path (Join-Path $destination '.tex-suite-parent-check'))) {
+            throw "Refusing texmf destination through a reparse-point or unsafe parent: $destination"
+        }
+        $item = Get-Item -LiteralPath $destination -Force -ErrorAction SilentlyContinue
+        if ($item -and (-not $item.PSIsContainer -or
+            (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0))) {
+            throw "Refusing non-directory or reparse-point texmf destination: $destination"
+        }
+    }
+    if ($existingManifest) {
+        Remove-ManagedInstallFiles -Root $root -Manifest $existingManifest -KeepManifest
+    }
+    $managedFiles = New-Object 'System.Collections.Generic.List[string]'
 
     # 1. Engine binaries
     foreach ($name in ($Script:CoreExes + $Script:ExtraExes)) {
@@ -424,44 +648,92 @@ function Install-Suite {
             continue
         }
         Copy-ExeTo -Src $s -Dst (Join-Path $bin $name)
+        [void]$managedFiles.Add((Join-Path 'bin' $name))
         Write-Info "Installed $name"
     }
 
-    # 2. Shims: byte-identical copies so argv[0] personality detection works.
+    # 2. Aliases. A current bundle/source build contains the correctly named
+    # launcher. Older payloads contain full, personality-aware executables;
+    # copying each alias by its own name preserves those payloads too.
     foreach ($shim in $Script:Shims) {
         $parent = Join-Path $bin $shim.Parent
-        if (Test-Path -LiteralPath $parent) {
+        $stagedAlias = Join-Path $src.BinDir $shim.Name
+        if (Test-Path -LiteralPath $stagedAlias) {
+            Copy-ExeTo -Src $stagedAlias -Dst (Join-Path $bin $shim.Name)
+            [void]$managedFiles.Add((Join-Path 'bin' $shim.Name))
+            Write-Info ("Installed " + $shim.Name + ' (alias executable)')
+        } elseif (Test-Path -LiteralPath $parent) {
             Copy-ExeTo -Src $parent -Dst (Join-Path $bin $shim.Name)
-            Write-Info ("Installed " + $shim.Name + " (copy of " + $shim.Parent + ')')
+            [void]$managedFiles.Add((Join-Path 'bin' $shim.Name))
+            Write-Warning ("Installed " + $shim.Name + " as a full copy of " + $shim.Parent)
         } else {
             # Parent missing (e.g. not built): fall back to a .cmd wrapper
             # pointing at the parent if it ever shows up next to the bin dir.
             Write-CmdWrapper -BinDir $bin `
                 -WrapperBaseName ([IO.Path]::GetFileNameWithoutExtension($shim.Name)) `
                 -TargetExe $shim.Parent
+            [void]$managedFiles.Add((Join-Path 'bin' ([IO.Path]::GetFileNameWithoutExtension($shim.Name) + '.cmd')))
         }
     }
 
-    # 3. Runtime data: format file + texmf TDS tree
+    # 3. Runtime data: optional external format + texmf TDS tree
     if ($src.Fmt -and (Test-Path -LiteralPath $src.Fmt)) {
         Copy-ExeTo -Src $src.Fmt -Dst (Join-Path $data 'pdflatex.fmt')
+        Copy-ExeTo -Src $src.Fmt -Dst (Join-Path $bin 'pdflatex.fmt')
+        [void]$managedFiles.Add((Join-Path 'share\tex-suite' 'pdflatex.fmt'))
+        [void]$managedFiles.Add((Join-Path 'bin' 'pdflatex.fmt'))
         Write-Info 'Installed pdflatex.fmt'
     } else {
-        Write-Warning ('pdflatex.fmt not found (' + $src.Fmt +
-                       '). Generate it with: pdflatex -ini latex.ltx')
+        # Remove the two exact locations written by pre-embedded-format
+        # installers. A directory or any other unexpected object is retained.
+        foreach ($legacyFmt in @((Join-Path $bin 'pdflatex.fmt'),
+                                 (Join-Path $data 'pdflatex.fmt'))) {
+            $legacyItem = Get-Item -LiteralPath $legacyFmt -Force -ErrorAction SilentlyContinue
+            if ($legacyItem -and -not $legacyItem.PSIsContainer) {
+                Remove-Item -LiteralPath $legacyFmt -Force
+                Write-Info "Removed legacy $legacyFmt"
+            } elseif ($legacyItem) {
+                Write-Warning "Legacy format path is not a file; leaving it unchanged: $legacyFmt"
+            }
+        }
+        Write-Info 'Using the compressed LaTeX format embedded in pdflatex.exe'
     }
     if ($src.Texmf -and (Test-Path -LiteralPath $src.Texmf)) {
-        Copy-Tree -Src $src.Texmf -Dst (Join-Path $data 'texmf')
+        $texmfDst = Join-Path $data 'texmf'
+        $texmfItem = Get-Item -LiteralPath $texmfDst -Force -ErrorAction SilentlyContinue
+        if ($texmfItem -and (($texmfItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
+            throw "Refusing to install through a reparse-point texmf directory: $texmfDst"
+        }
+        if ($texmfItem) {
+            $nestedReparse = Get-ChildItem -LiteralPath $texmfDst -Directory -Recurse -Force -ErrorAction SilentlyContinue |
+                Where-Object { ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 } |
+                Select-Object -First 1
+            if ($nestedReparse) {
+                throw "Refusing to update a texmf tree containing a reparse point: $($nestedReparse.FullName)"
+            }
+        }
+        Copy-Tree -Src $src.Texmf -Dst $texmfDst
+        $sourceRoot = [IO.Path]::GetFullPath($src.Texmf).TrimEnd('\')
+        foreach ($fileItem in $sourceTexmfFiles) {
+            $relative = $fileItem.FullName.Substring($sourceRoot.Length).TrimStart('\')
+            [void]$managedFiles.Add((Join-Path 'share\tex-suite\texmf' $relative))
+        }
         Write-Info "Installed texmf tree from $($src.Texmf)"
     } else {
         Write-Warning 'No texmf directory found in the source; skipping TDS data.'
     }
 
-    # 4. Marker so uninstall can recognise (and fully remove) our tree.
-    $meta = '{"name":"tex-suite","scope":"' + $scope +
-            '","root":"' + $root.Replace('\', '\\') +
-            '","installed":"' + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss') + '"}'
-    [IO.File]::WriteAllText((Join-Path $root '.tex-suite-install.json'), $meta)
+    # 4. Exact ownership manifest. Uninstall consumes only these relative file
+    # paths and then removes directories non-recursively if they are empty.
+    $meta = [ordered]@{
+        schema = $Script:InstallManifestSchema
+        name = 'tex-suite'
+        scope = $scope
+        root = $root
+        installed = (Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
+        files = @($managedFiles | Sort-Object -Unique)
+    } | ConvertTo-Json -Depth 4
+    [IO.File]::WriteAllText((Join-Path $root $Script:InstallManifestName), $meta)
 
     # 5. Persistent environment.
     #    TEXMFLOCAL is the variable the engines (tex-kpse) actually read:
@@ -486,8 +758,8 @@ function Install-Suite {
             Write-Info 'Installation verified.'
         } else {
             Write-Warning ('pdflatex.exe -version did not return a version ' +
-                           'banner. Files were installed; check that a format ' +
-                           'file is reachable via TEXMFLOCAL.')
+                           'banner. Files were installed; run the executable ' +
+                           'from a terminal to inspect its diagnostic.')
         }
     }
 
@@ -499,49 +771,17 @@ function Install-Suite {
 function Remove-InstallTree {
     param([string]$Root)
     if (-not (Test-Path -LiteralPath $Root)) { return }
-    $marker = Join-Path $Root '.tex-suite-install.json'
-    if (Test-Path -LiteralPath $marker) {
-        Remove-Item -LiteralPath $Root -Recurse -Force
-        Write-Info "Removed $Root"
+    $rootItem = Get-Item -LiteralPath $Root -Force
+    if (-not $rootItem.PSIsContainer -or
+        (($rootItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
+        throw "Refusing to uninstall through a non-directory or reparse-point root: $Root"
+    }
+    $manifest = Read-InstallManifest -Root $Root
+    if (-not $manifest) {
+        Write-Warning "No valid ownership manifest at $Root; preserving install and data files."
         return
     }
-    # No marker: only remove entries we know we placed there.
-    $bin = Join-Path $Root 'bin'
-    if (Test-Path -LiteralPath $bin) {
-        $shimNames = @($Script:Shims | ForEach-Object { $_.Name })
-        $shimWrappers = @($shimNames | ForEach-Object { [IO.Path]::GetFileNameWithoutExtension($_) + '.cmd' })
-        foreach ($f in (Get-ChildItem -LiteralPath $bin -File)) {
-            if (($Script:AllInstalledExes -contains $f.Name) -or
-                ($f.Extension -eq '.cmd' -and $shimWrappers -contains $f.Name)) {
-                Remove-Item -LiteralPath $f.FullName -Force
-                Write-Info "Removed $($f.FullName)"
-            }
-        }
-        if (-not (Get-ChildItem -LiteralPath $bin -Recurse -Force -ErrorAction SilentlyContinue)) {
-            Remove-Item -LiteralPath $bin -Recurse -Force
-        }
-    }
-    $data = Join-Path $Root (Join-Path 'share' 'tex-suite')
-    if (Test-Path -LiteralPath $data) {
-        $known = @('pdflatex.fmt', 'texmf')
-        $ours = $true
-        foreach ($item in (Get-ChildItem -LiteralPath $data -Force)) {
-            if ($known -notcontains $item.Name) { $ours = $false; break }
-        }
-        if ($ours) {
-            Remove-Item -LiteralPath $data -Recurse -Force
-            Write-Info "Removed $data"
-        } else {
-            Write-Warning "Not removing ${data}: contains files we did not install."
-        }
-    }
-    # Remove the install root itself if it is now empty.
-    if (Test-Path -LiteralPath $Root) {
-        if (-not (Get-ChildItem -LiteralPath $Root -Recurse -Force -ErrorAction SilentlyContinue)) {
-            Remove-Item -LiteralPath $Root -Recurse -Force
-            Write-Info "Removed $Root"
-        }
-    }
+    Remove-ManagedInstallFiles -Root $Root -Manifest $manifest
 }
 
 function Uninstall-Suite {

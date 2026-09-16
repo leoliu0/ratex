@@ -153,12 +153,5 @@ pub(crate) fn serialize_compatible(
         )
         .as_bytes(),
     );
-    if let Ok(mut doc) = lopdf::Document::load_mem(&buf) {
-        doc.compress();
-        let mut modern = Vec::new();
-        if doc.save_modern(&mut modern).is_ok() && !modern.is_empty() && modern.len() < buf.len() {
-            return modern;
-        }
-    }
     buf
 }

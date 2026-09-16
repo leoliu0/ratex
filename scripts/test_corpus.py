@@ -15,11 +15,11 @@ For every entry in corpus/manifest.json (100 by default):
      bibtex is NOT run — reported prominently in the summary).
      Subprocesses run argv-list only (never shell=True), stdin=DEVNULL (EOF on
      any error prompt instead of hanging), in their own process group so a
-     timeout SIGKILLs the whole group, with stdout+stderr captured as raw
-     binary straight to a per-run log file on disk.
-  4. Persist: both output PDFs (output/corpus/pdf/<id>.{rust,ref}.pdf), captured
-     stdout and the engine-written .log (output/corpus/results/<id>/), and an
-     atomic per-project checkpoint JSON (output/corpus/checkpoints/<id>.json).
+     timeout SIGKILLs the whole group. Combined output is drained while it is
+     produced, hashed in full, and retained as a bounded head/tail excerpt.
+  4. Persist an atomic per-project checkpoint JSON with complete metrics.
+     By default, successful PDFs/logs/workspaces are removed and failures keep
+     only bounded final logs, valid PDFs, render evidence and reproduction data.
      The aggregate report (output/corpus/report.json) is rewritten atomically
      after every completion, so partial results always survive a crash.
   5. Compare: pagewise raster diff at 72 dpi via PyMuPDF (image dimensions,
@@ -58,8 +58,10 @@ Usage:
       [--jobs 4] [--timeout 60] [--mem-limit-mib 4096] [--output output/corpus]
       [--rust target/release/pdflatex] [--sys /usr/bin/pdflatex]
       [--rust-bibtex target/release/tex-bibtex] [--sys-bibtex /usr/bin/bibtex]
-      [--limit 100] [--only id1,id2] [--corpus-only] [--private-only]
-      [--no-resume] [--no-keep-work]
+      [--offset 0] [--limit 100] [--only id1,id2] [--corpus-only]
+      [--private-only] [--qualification-min 95] [--no-resume]
+      [--retain failures|all|none] [--keep-work]
+      [--max-capture-bytes 1048576]
 """
 
 from __future__ import annotations
@@ -73,13 +75,14 @@ import os
 import re
 import shutil
 import signal
+import stat
 import statistics
 import subprocess
 import sys
 import threading
 import time
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 try:
     import resource  # RLIMIT_AS child guard (POSIX)
@@ -92,6 +95,53 @@ except ImportError:  # graceful degrade: equality-only raster comparison
     np = None
 
 import pymupdf  # installed PyMuPDF (fitz replacement)
+
+try:
+    from bounded_capture import (
+        DEFAULT_MAX_CAPTURE_BYTES,
+        capture_file,
+        run_bounded,
+    )
+except ModuleNotFoundError:  # support `python -m scripts.test_corpus`
+    from scripts.bounded_capture import (
+        DEFAULT_MAX_CAPTURE_BYTES,
+        capture_file,
+        run_bounded,
+    )
+
+
+def validate_artifact_id(aid: object) -> str:
+    """Return a path-safe project identifier or raise ``ValueError``."""
+    if (
+        not isinstance(aid, str)
+        or not aid
+        or aid in (".", "..")
+        or "/" in aid
+        or "\\" in aid
+        or "\0" in aid
+    ):
+        raise ValueError(f"unsafe manifest id: {aid!r}")
+    return aid
+
+
+def validate_manifest_entry(entry: object) -> None:
+    """Reject path-shaped identifiers before retention code constructs paths.
+
+    Corpus manifests are local inputs, but their identifiers feed default
+    workspace deletion. Treat them as untrusted so a malformed downloaded
+    manifest cannot make cleanup escape the requested output tree.
+    """
+    if not isinstance(entry, dict):
+        raise ValueError("manifest entry is not an object")
+    aid = validate_artifact_id(entry.get("id"))
+    main = entry.get("main_tex")
+    if main is None and entry.get("blocker"):
+        return
+    if not isinstance(main, str) or not main or "\0" in main:
+        raise ValueError(f"unsafe main_tex for {aid!r}: {main!r}")
+    normalized = PurePosixPath(main.replace("\\", "/"))
+    if normalized.is_absolute() or ".." in normalized.parts:
+        raise ValueError(f"unsafe main_tex for {aid!r}: {main!r}")
 
 # Extensions of known generated main-job artifacts. Deliberately excludes .bbl
 # (source bibliography, preserved per contract). .pdf is stripped ONLY when the
@@ -157,10 +207,13 @@ def gen_artifact_names(stem: str) -> set[str]:
     return names
 
 
-def prepare_workspace(src: Path, dst: Path, tex_rel: Path) -> list[str]:
+def prepare_workspace(
+    src: Path, dst: Path, tex_rel: Path, *, out_root: Path
+) -> list[str]:
     """Fresh isolated copy of src into dst, stripping generated main-job
     artifacts by file name. Returns the stripped file names (audit trail)."""
-    shutil.rmtree(dst, ignore_errors=True)
+    _safe_rmtree(dst, out_root, "work")
+    _validate_cleanup_target(dst, out_root, "work")
     strip = gen_artifact_names(tex_rel.stem)
     stripped = sorted(
         str(p.relative_to(src)) for p in src.rglob("*")
@@ -191,48 +244,34 @@ def _mem_limit_preexec(limit_bytes: int):
 def run_compile(bin_path: str, work_dir: Path, tex_name: str, cap_path: Path,
                 timeout: float, env: dict | None = None,
                 flags: tuple[str, ...] | None = None,
-                mem_limit_mib: int = DEFAULT_MEM_LIMIT_MIB) -> dict:
+                mem_limit_mib: int = DEFAULT_MEM_LIMIT_MIB,
+                max_capture_bytes: int = DEFAULT_MAX_CAPTURE_BYTES) -> dict:
     """One engine pass. argv list (no shell), stdin DEVNULL, new process
-    group, merged binary stdout/stderr straight to disk. Timeout kills and
-    reaps the whole group. Every child gets RLIMIT_AS = mem_limit_mib in the
+    group, with merged output drained through a bounded head/tail capture.
+    Timeout kills and reaps the whole group. Every child gets RLIMIT_AS =
+    mem_limit_mib in the
     preexec path (0 or non-POSIX disables); signal death with the cap armed
     reports mem_killed/kill_signal distinctly from timeout. `flags` overrides
     the pdfLaTeX flag set (XeTeX/LuaTeX have no -no-shell-escape)."""
-    cap_path.parent.mkdir(parents=True, exist_ok=True)
     if flags is None:
         flags = ("-interaction=nonstopmode", "-no-shell-escape")
     limit_bytes = max(0, int(mem_limit_mib)) * (1 << 20)
     preexec = _mem_limit_preexec(limit_bytes) if limit_bytes and resource else None
     cmd = [bin_path, *flags, tex_name]
-    t0 = time.perf_counter()
-    timed_out = False
-    spawn_error = None
-    rc = None
-    with open(cap_path, "wb") as cap:
-        try:
-            p = subprocess.Popen(
-                cmd, cwd=work_dir, stdin=subprocess.DEVNULL,
-                stdout=cap, stderr=subprocess.STDOUT,
-                start_new_session=True, env=env, preexec_fn=preexec,
-            )
-        except OSError as e:
-            spawn_error = str(e)
-            p = None
-        if p is not None:
-            try:
-                rc = p.wait(timeout=timeout)
-            except subprocess.TimeoutExpired:
-                timed_out = True
-                try:
-                    os.killpg(os.getpgid(p.pid), signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-                try:
-                    p.wait(timeout=10)
-                except subprocess.TimeoutExpired:  # last resort
-                    p.kill()
-                    p.wait()
-    dt_ms = (time.perf_counter() - t0) * 1000.0
+    child = run_bounded(
+        cmd,
+        cwd=work_dir,
+        output_path=cap_path,
+        timeout=timeout,
+        env=env,
+        max_bytes=max_capture_bytes,
+        error_pattern=ERROR_LINE_RE,
+        preexec_fn=preexec,
+    )
+    timed_out = child["timed_out"]
+    spawn_error = child["spawn_error"]
+    rc = child["returncode"]
+    dt_ms = child["elapsed_seconds"] * 1000.0
     kill_signal = None
     mem_killed = False
     if not timed_out and rc is not None and rc < 0:
@@ -245,48 +284,70 @@ def run_compile(bin_path: str, work_dir: Path, tex_name: str, cap_path: Path,
         mem_killed = limit_bytes > 0
     return {"exit": rc, "timed_out": timed_out, "time_ms": dt_ms,
             "spawn_error": spawn_error, "cmd": cmd,
-            "mem_killed": mem_killed, "kill_signal": kill_signal}
-
-
-def extract_errors(log_text: str, cap: int = 8) -> list[str]:
-    seen, out = set(), []
-    for line in log_text.splitlines():
-        s = line.strip()
-        if ERROR_LINE_RE.match(s):
-            s = s[:160]
-            if s not in seen:
-                seen.add(s)
-                out.append(s)
-            if len(out) >= cap:
-                break
-    return out
+            "mem_killed": mem_killed, "kill_signal": kill_signal,
+            "capture": child["capture"]}
 
 
 def pdf_info(pdf: Path) -> dict:
     """Validate a PDF and report pages/bytes/sha. Never trust existence alone."""
     info = {"pdf": str(pdf), "pdf_exists": False, "pdf_valid": False,
-            "pages": None, "pdf_bytes": 0, "pdf_sha1": None}
-    if not pdf.is_file() or pdf.stat().st_size == 0:
+            "pages": None, "pdf_bytes": 0, "pdf_sha1": None,
+            "pdf_error": None}
+    if not pdf.is_file():
         return info
     info["pdf_exists"] = True
-    info["pdf_bytes"] = pdf.stat().st_size
     try:
-        doc = pymupdf.open(str(pdf))
-        try:
-            info["pages"] = doc.page_count
-            info["pdf_valid"] = doc.page_count >= 1
-        finally:
-            doc.close()
-    except Exception:  # corrupt / truncated output still counts as invalid
-        info["pdf_valid"] = False
+        info["pdf_bytes"] = pdf.stat().st_size
+    except OSError as exc:
+        info["pdf_error"] = f"stat failed: {type(exc).__name__}: {exc}"
+        return info
+
+    # Hash every produced file, including empty or malformed remnants.  This
+    # keeps failure reports useful without retaining the potentially huge file.
     try:
         h = hashlib.sha1()
         with open(pdf, "rb") as f:
             for chunk in iter(lambda: f.read(1 << 16), b""):
                 h.update(chunk)
         info["pdf_sha1"] = h.hexdigest()
-    except OSError:
-        pass
+    except OSError as exc:
+        info["pdf_error"] = f"hash failed: {type(exc).__name__}: {exc}"
+        return info
+
+    if info["pdf_bytes"] == 0:
+        info["pdf_error"] = "empty PDF"
+        return info
+    try:
+        doc = pymupdf.open(str(pdf))
+        try:
+            info["pages"] = doc.page_count
+            info["pdf_valid"] = doc.page_count >= 1
+            if not info["pdf_valid"]:
+                info["pdf_error"] = "PDF contains no pages"
+        finally:
+            doc.close()
+    except Exception as exc:  # corrupt / truncated output still counts as invalid
+        info["pdf_valid"] = False
+        detail = str(exc).strip().replace("\n", " ")
+        if len(detail) > 500:
+            detail = detail[:497] + "..."
+        info["pdf_error"] = (
+            f"{type(exc).__name__}: {detail}" if detail else type(exc).__name__
+        )
+    return info
+
+
+def persist_valid_pdf(source: Path, destination: Path) -> dict:
+    """Inspect an engine PDF and persist it only when it can be opened.
+
+    A previous run may have left a destination behind, so remove that path
+    before deciding whether this run produced evidence worth keeping.
+    """
+    info = pdf_info(source)
+    destination.unlink(missing_ok=True)
+    if info["pdf_valid"]:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, destination)
     return info
 
 
@@ -304,37 +365,34 @@ def classify(run: dict, pdf_valid: bool, errors: list[str]) -> str:
 
 def compile_engine(engine: str, bin_path: str, ws: Path, tex_rel: Path,
                    idir: Path, timeout: float,
-                   mem_limit_mib: int = DEFAULT_MEM_LIMIT_MIB) -> dict:
+                   mem_limit_mib: int = DEFAULT_MEM_LIMIT_MIB,
+                   max_capture_bytes: int = DEFAULT_MAX_CAPTURE_BYTES) -> dict:
     """Single pass + classification + artifact persistence for one engine."""
     work_dir = ws / tex_rel.parent
     cap_path = idir / f"{engine}.stdout.log"
     run = run_compile(bin_path, work_dir, tex_rel.name, cap_path, timeout,
-                      mem_limit_mib=mem_limit_mib)
+                      mem_limit_mib=mem_limit_mib,
+                      max_capture_bytes=max_capture_bytes)
 
     stem_pdf = work_dir / f"{tex_rel.stem}.pdf"
     stem_log = work_dir / f"{tex_rel.stem}.log"
 
     # Persist engine-written .log and the output PDF outside the workspace.
     kept_log = None
+    tex_capture = None
     if stem_log.is_file():
         kept_log = idir / f"{engine}.tex.log"
-        shutil.copyfile(stem_log, kept_log)
+        tex_capture = capture_file(
+            stem_log, kept_log, max_bytes=max_capture_bytes,
+            error_pattern=ERROR_LINE_RE,
+        )
     kept_pdf = out_root_of(idir) / "pdf" / f"{pdf_basename(idir.name, engine)}"
-    pdf_stat = pdf_info(stem_pdf)
-    if pdf_stat["pdf_exists"]:
-        kept_pdf.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(stem_pdf, kept_pdf)
+    pdf_stat = persist_valid_pdf(stem_pdf, kept_pdf)
 
     # Error source: engine-written transcript preferred, captured output second.
-    log_text = ""
-    for cand in (stem_log, cap_path):
-        if cand.is_file():
-            with open(cand, "rb") as f:
-                log_text = f.read().decode("utf-8", "replace")
-            if log_text.strip():
-                break
-    errors = extract_errors(log_text)
-    if not errors and log_text == "" and run["spawn_error"]:
+    errors = ((tex_capture or {}).get("errors")
+              or run["capture"].get("errors") or [])
+    if not errors and run["spawn_error"]:
         errors = [f"spawn-error: {run['spawn_error']}"]
 
     status = classify(run, pdf_stat["pdf_valid"], errors)
@@ -344,8 +402,10 @@ def compile_engine(engine: str, bin_path: str, ws: Path, tex_rel: Path,
         "mem_killed": run["mem_killed"], "kill_signal": run["kill_signal"],
         "time_ms": round(run["time_ms"], 1),
         "errors": errors,
+        "capture": run["capture"], "tex_log_capture": tex_capture,
         **pdf_stat,
         "pdf": str(kept_pdf) if kept_pdf.is_file() else None,
+        "pdf_produced": pdf_stat["pdf_exists"],
         "pdf_exists": kept_pdf.is_file(),
         "captured_log": str(cap_path), "tex_log": str(kept_log) if kept_log else None,
     }
@@ -358,6 +418,337 @@ def pdf_basename(aid: str, engine: str) -> str:
 def out_root_of(idir: Path) -> Path:
     """results/<id>/ -> output root (pdfs live at <output>/pdf/)."""
     return idir.parent.parent
+
+
+def _project_failure_reasons(res: dict, cfg: dict) -> list[str]:
+    reasons: list[str] = []
+    if res.get("harness_error"):
+        reasons.append("harness-error")
+    campaign = res.get("mode") == "campaign"
+    for engine in ("rust", "ref"):
+        state = res.get(engine) or {}
+        if state.get("status") != "clean":
+            reasons.append(f"{engine}-status:{state.get('status')}")
+        if not state.get("pdf_valid"):
+            reasons.append(f"{engine}-invalid-pdf")
+        if campaign and not state.get("converged"):
+            reasons.append(f"{engine}-not-converged")
+    compare = res.get("compare") or {}
+    if not compare.get("compared"):
+        reasons.append("not-compared")
+    elif campaign:
+        if not compare.get("page_count_match"):
+            reasons.append("page-count-mismatch")
+        if not compare.get("geometry_match"):
+            reasons.append("geometry-mismatch")
+        if compare.get("raster_warnings"):
+            reasons.append("raster-warning")
+        prod_rust = compare.get("producer_rust")
+        prod_ref = compare.get("producer_ref")
+        if prod_rust != "tex-rs" and (not prod_ref or prod_rust != prod_ref):
+            reasons.append("wrong-rust-producer")
+        if compare.get("page_failures"):
+            reasons.append("page-parity")
+        parity = compare.get("document_exact_parity")
+        if parity is None or parity < cfg["doc_min"]:
+            reasons.append("document-parity")
+    else:
+        if not compare.get("page_count_match"):
+            reasons.append("page-count-mismatch")
+        if (compare.get("pages_identical") != compare.get("pages_compared")
+                or compare.get("unmatched_pages")):
+            reasons.append("pixel-mismatch")
+    return reasons
+
+
+def _path_within(path: Path, root: Path) -> bool:
+    try:
+        path.resolve().relative_to(root.resolve())
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+_MANAGED_ARTIFACT_ROOTS = ("results", "pdf", "worst", "work")
+
+
+def _lexical_absolute(path: Path) -> Path:
+    """Make a path absolute without following any filesystem links."""
+    return Path(os.path.abspath(os.fspath(path)))
+
+
+def _entry_identity(info: os.stat_result) -> tuple[int, int, int]:
+    return (info.st_dev, info.st_ino, stat.S_IFMT(info.st_mode))
+
+
+def _validated_managed_root(
+    out_root: Path, name: str
+) -> tuple[Path, Path, Path, os.stat_result | None]:
+    """Return lexical/resolved output roots and a checked managed child root."""
+    if name not in _MANAGED_ARTIFACT_ROOTS:
+        raise ValueError(f"unknown managed artifact root: {name!r}")
+    output = _lexical_absolute(out_root)
+    try:
+        output_info = output.lstat()
+    except FileNotFoundError as exc:
+        raise ValueError(f"artifact output root does not exist: {output}") from exc
+    if stat.S_ISLNK(output_info.st_mode) or not stat.S_ISDIR(output_info.st_mode):
+        raise ValueError(f"artifact output root is not a plain directory: {output}")
+    resolved_output = output.resolve(strict=True)
+
+    managed = output / name
+    try:
+        managed_info = managed.lstat()
+    except FileNotFoundError:
+        return output, resolved_output, managed, None
+    if stat.S_ISLNK(managed_info.st_mode) or not stat.S_ISDIR(managed_info.st_mode):
+        raise ValueError(f"managed artifact root is not a plain directory: {managed}")
+    resolved_managed = managed.resolve(strict=True)
+    try:
+        relative = resolved_managed.relative_to(resolved_output)
+    except ValueError as exc:
+        raise ValueError(f"managed artifact root escapes output root: {managed}") from exc
+    if not relative.parts:
+        raise ValueError(f"managed artifact root aliases output root: {managed}")
+    return output, resolved_output, managed, managed_info
+
+
+def _validate_managed_roots(out_root: Path) -> None:
+    """Reject unsafe managed roots before retention changes any artifact."""
+    for name in _MANAGED_ARTIFACT_ROOTS:
+        _validated_managed_root(out_root, name)
+
+
+def _validate_cleanup_target(
+    target: Path, out_root: Path, managed_name: str
+) -> tuple[Path, tuple[int, int, int], tuple[int, int, int]] | None:
+    """Validate one recursive-cleanup target and every existing parent."""
+    _output, resolved_output, managed, managed_info = _validated_managed_root(
+        out_root, managed_name
+    )
+    target = _lexical_absolute(target)
+    try:
+        relative = target.relative_to(managed)
+    except ValueError as exc:
+        raise ValueError(f"cleanup target is outside managed root: {target}") from exc
+    if not relative.parts:
+        raise ValueError(f"refusing to recursively remove managed root: {managed}")
+    if managed_info is None:
+        try:
+            target.lstat()
+        except FileNotFoundError:
+            return None
+        raise ValueError(f"cleanup target exists without its managed root: {target}")
+
+    current = managed
+    for part in relative.parts[:-1]:
+        current /= part
+        try:
+            info = current.lstat()
+        except FileNotFoundError:
+            return None
+        if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+            raise ValueError(f"cleanup parent is not a plain directory: {current}")
+        try:
+            current.resolve(strict=True).relative_to(resolved_output)
+        except ValueError as exc:
+            raise ValueError(f"cleanup parent escapes output root: {current}") from exc
+
+    try:
+        target_info = target.lstat()
+    except FileNotFoundError:
+        return None
+    if stat.S_ISLNK(target_info.st_mode) or not stat.S_ISDIR(target_info.st_mode):
+        raise ValueError(f"cleanup target is not a plain directory: {target}")
+    try:
+        target.resolve(strict=True).relative_to(managed.resolve(strict=True))
+    except ValueError as exc:
+        raise ValueError(f"cleanup target escapes managed root: {target}") from exc
+    parent_info = target.parent.lstat()
+    if stat.S_ISLNK(parent_info.st_mode) or not stat.S_ISDIR(parent_info.st_mode):
+        raise ValueError(f"cleanup parent is not a plain directory: {target.parent}")
+    return target, _entry_identity(parent_info), _entry_identity(target_info)
+
+
+def _safe_rmtree(target: Path, out_root: Path, managed_name: str) -> None:
+    """Recursively remove only a stable, contained, plain directory target."""
+    checked = _validate_cleanup_target(target, out_root, managed_name)
+    if checked is None:
+        return
+    target, parent_identity, target_identity = checked
+    # Re-check both entries immediately before handing the path to rmtree.
+    # shutil.rmtree uses descriptor-based traversal where the platform supports
+    # it, while these identity checks protect its parent lookup boundary.
+    checked_again = _validate_cleanup_target(target, out_root, managed_name)
+    if checked_again is None or checked_again[1:] != (parent_identity, target_identity):
+        raise ValueError(f"cleanup target changed during validation: {target}")
+    shutil.rmtree(target, ignore_errors=True)
+
+
+def _resolve_evidence_path(value: str | None, out_root: Path) -> Path | None:
+    if not value:
+        return None
+    raw = Path(value)
+    candidates = [raw]
+    for index, part in enumerate(raw.parts):
+        if part in ("results", "pdf", "worst", "work"):
+            candidates.append(out_root / Path(*raw.parts[index:]))
+            break
+    for path in candidates:
+        if _path_within(path, out_root) and (path.exists() or path.is_symlink()):
+            return path
+    return None
+
+
+def _unlink_evidence(path_value: str | None, out_root: Path) -> None:
+    path = _resolve_evidence_path(path_value, out_root)
+    if path is not None and (path.is_file() or path.is_symlink()):
+        path.unlink(missing_ok=True)
+
+
+def _compact_failure_logs(res: dict, out_root: Path) -> None:
+    """Keep stable final logs and remove per-pass duplicates."""
+    idir = out_root / "results" / res["id"]
+    idir.mkdir(parents=True, exist_ok=True)
+    for engine in ("rust", "ref"):
+        state = res.get(engine) or {}
+        bib_runs = state.get("bibtex_runs") or []
+        if bib_runs:
+            source_value = bib_runs[-1].get("log")
+            source = _resolve_evidence_path(source_value, out_root)
+            dest = idir / f"{engine}.bibtex.log"
+            if (source and source.is_file()
+                    and source.resolve() != dest.resolve()):
+                shutil.copyfile(source, dest)
+            for bib in bib_runs:
+                bib["log"] = None
+            bib_runs[-1]["log"] = str(dest) if dest.is_file() else None
+        for record in state.get("pass_records") or []:
+            record["stdout_log"] = None
+            record["tex_log"] = None
+        state["pass_log_dir"] = None
+    _safe_rmtree(idir / "passlogs", out_root, "results")
+
+
+def _failure_bundle(res: dict, reasons: list[str]) -> dict:
+    engines = {}
+    for engine in ("rust", "ref"):
+        state = res.get(engine) or {}
+        engines[engine] = {
+            key: state.get(key) for key in (
+                "bin", "ref_engine", "status", "exit", "timed_out",
+                "mem_killed", "kill_signal", "time_ms", "passes",
+                "converged", "errors", "aux_hashes", "capture",
+                "tex_log_capture", "captured_log", "tex_log", "pdf",
+                "pdf_produced", "pdf_exists", "pdf_valid", "pdf_bytes",
+                "pdf_sha1", "pdf_error", "pages",
+            ) if key in state
+        }
+        records = state.get("pass_records") or []
+        if records:
+            engines[engine]["last_command"] = records[-1].get("cmd")
+    compare = res.get("compare") or {}
+    return {
+        "schema": "tex-corpus-failure-v1",
+        "id": res.get("id"),
+        "mode": res.get("mode", "single-pass"),
+        "main_tex": res.get("main_tex"),
+        "manifest_index": res.get("manifest_index"),
+        "finished_utc": res.get("finished_utc"),
+        "reasons": reasons,
+        "harness_error": res.get("harness_error"),
+        "engines": engines,
+        "comparison": {
+            key: compare.get(key) for key in (
+                "compared", "note", "page_count_match", "geometry_match",
+                "document_exact_parity", "worst_page", "worst_page_parity",
+                "page_failures", "raster_warnings", "worst_artifacts",
+            ) if key in compare
+        },
+    }
+
+
+def apply_artifact_retention(res: dict, out_root: Path, cfg: dict) -> None:
+    """Apply the post-metrics policy without deleting checkpoint data."""
+    # This function also reconciles persisted checkpoints.  Validate their ID
+    # again at the mutation boundary so a hand-edited or legacy checkpoint can
+    # never turn its results/work cleanup paths into path traversal.
+    validate_artifact_id(res.get("id"))
+    _validate_managed_roots(out_root)
+    retain = cfg["retain"]
+    reasons = _project_failure_reasons(res, cfg)
+    keep_evidence = retain == "all" or (retain == "failures" and bool(reasons))
+    idir = out_root / "results" / res["id"]
+    # Validate all possible recursive targets together, before an evidence
+    # unlink, compaction, or metadata rewrite can partially apply the policy.
+    _validate_cleanup_target(idir, out_root, "results")
+    _validate_cleanup_target(idir / "passlogs", out_root, "results")
+    _validate_cleanup_target(out_root / "work" / res["id"], out_root, "work")
+
+    # Old checkpoints could reference corrupt engine remnants because earlier
+    # harness versions copied every nonempty .pdf.  Metadata remains in the
+    # report, but invalid files are never evidence under any retention policy.
+    for engine in ("rust", "ref"):
+        state = res.get(engine) or {}
+        if not state.get("pdf_valid"):
+            _unlink_evidence(state.get("pdf"), out_root)
+            state["pdf"] = None
+            state["pdf_retained"] = False
+            state["pdf_exists"] = False
+
+    if keep_evidence and reasons and retain == "failures":
+        _compact_failure_logs(res, out_root)
+        for engine in ("rust", "ref"):
+            state = res.get(engine) or {}
+            state["pdf_retained"] = bool(
+                _resolve_evidence_path(state.get("pdf"), out_root)
+            )
+        atomic_write_json(idir / "failure.json", _failure_bundle(res, reasons))
+    elif not keep_evidence:
+        for engine in ("rust", "ref"):
+            state = res.get(engine) or {}
+            _unlink_evidence(state.get("pdf"), out_root)
+            state["pdf"] = None
+            state["pdf_retained"] = False
+            state["pdf_exists"] = False
+            state["captured_log"] = None
+            state["tex_log"] = None
+            state["pass_log_dir"] = None
+            for record in state.get("pass_records") or []:
+                record["stdout_log"] = None
+                record["tex_log"] = None
+            for bib in state.get("bibtex_runs") or []:
+                bib["log"] = None
+        artifacts = (res.get("compare") or {}).get("worst_artifacts")
+        if isinstance(artifacts, dict):
+            for value in artifacts.values():
+                _unlink_evidence(value, out_root)
+        if "compare" in res:
+            res["compare"]["worst_artifacts"] = None
+            res["compare"]["artifacts_retained"] = False
+        _safe_rmtree(idir, out_root, "results")
+    else:
+        for engine in ("rust", "ref"):
+            state = res.get(engine) or {}
+            state["pdf_retained"] = bool(
+                _resolve_evidence_path(state.get("pdf"), out_root)
+            )
+
+    if not cfg["keep_work"]:
+        _safe_rmtree(out_root / "work" / res["id"], out_root, "work")
+    for directory in (out_root / "results", out_root / "pdf",
+                      out_root / "worst", out_root / "work"):
+        try:
+            directory.rmdir()
+        except OSError:
+            pass
+    res["retention"] = {
+        "policy": retain,
+        "failure": bool(reasons),
+        "failure_reasons": reasons,
+        "evidence_retained": keep_evidence,
+        "workspace_retained": bool(cfg["keep_work"]),
+    }
 
 
 # --------------------------------------------------------------------------
@@ -538,11 +929,18 @@ def check_prepared_drift(src: Path, recorded: dict) -> list[str]:
     return drift
 
 
-def freeze_workspace(src: Path, dst: Path, tex_rel: Path,
-                     extra_ignore: tuple[str, ...] = ()) -> list[str]:
+def freeze_workspace(
+    src: Path,
+    dst: Path,
+    tex_rel: Path,
+    extra_ignore: tuple[str, ...] = (),
+    *,
+    out_root: Path,
+) -> list[str]:
     """Fresh isolated copy of the ACTIVE source with generated main-job
     artifacts stripped (source .bbl preserved). Returns stripped names."""
-    shutil.rmtree(dst, ignore_errors=True)
+    _safe_rmtree(dst, out_root, "work")
+    _validate_cleanup_target(dst, out_root, "work")
     strip = gen_artifact_names(tex_rel.stem)
     pat = shutil.ignore_patterns(*extra_ignore)
 
@@ -609,18 +1007,22 @@ def aux_wants_bibliography(work: Path, job: str) -> bool:
 
 def run_bibtex(bibtex: str, work: Path, job: str, env: dict,
                log_path: Path, timeout: float,
-               mem_limit_mib: int = DEFAULT_MEM_LIMIT_MIB) -> dict:
+               mem_limit_mib: int = DEFAULT_MEM_LIMIT_MIB,
+               max_capture_bytes: int = DEFAULT_MAX_CAPTURE_BYTES) -> dict:
     run = run_compile(bibtex, work, job, log_path, timeout, env=env, flags=(),
-                      mem_limit_mib=mem_limit_mib)
+                      mem_limit_mib=mem_limit_mib,
+                      max_capture_bytes=max_capture_bytes)
     return {"exit": run["exit"], "timed_out": run["timed_out"],
             "mem_killed": run["mem_killed"], "kill_signal": run["kill_signal"],
-            "cmd": run["cmd"], "log": str(log_path)}
+            "cmd": run["cmd"], "log": str(log_path),
+            "capture": run["capture"]}
 
 
 def converge_engine(engine: str, bin_path: str, ws: Path, tex_rel: Path,
                     idir: Path, env: dict, timeout: float, max_passes: int,
                     bibtex: str | None, ref_engine: str,
-                    mem_limit_mib: int = DEFAULT_MEM_LIMIT_MIB) -> dict:
+                    mem_limit_mib: int = DEFAULT_MEM_LIMIT_MIB,
+                    max_capture_bytes: int = DEFAULT_MAX_CAPTURE_BYTES) -> dict:
     """Converged bibliography/cross-ref build in one isolated workspace.
 
     NO cross-engine state ever transfers: both sides start from the identical
@@ -631,7 +1033,8 @@ def converge_engine(engine: str, bin_path: str, ws: Path, tex_rel: Path,
     overwritten (freeze preserves it; bibtex stays off); when the aux cites
     with no shipped .bbl, the reference side runs system BibTeX and the Rust
     side runs native tex-bibtex — never a system binary for Rust output.
-    Every pass's captured stdout and engine transcript is retained.
+    Every pass is measured and hashed. Bounded pass captures are temporary;
+    the retention step keeps only final failure evidence unless requested.
     """
     work = ws / tex_rel.parent
     job = tex_rel.stem
@@ -651,20 +1054,31 @@ def converge_engine(engine: str, bin_path: str, ws: Path, tex_rel: Path,
         for ext in RUST_CACHE_EXTS:
             (work / f"{job}.{ext}").unlink(missing_ok=True)
         (work / f"{job}.pdf").unlink(missing_ok=True)
+        cache_dir = work / ".tex_rs_cache"
+        shutil.rmtree(cache_dir, ignore_errors=True)
+        pass_env = {**env, "TEX_RS_CACHE_DIR": str(cache_dir)}
         cap = plog / f"{engine}-pass{i}.stdout.log"
         run = run_compile(bin_path, work, f"{job}.tex", cap, timeout,
-                          env=env, flags=flags, mem_limit_mib=mem_limit_mib)
+                          env=pass_env, flags=flags, mem_limit_mib=mem_limit_mib,
+                          max_capture_bytes=max_capture_bytes)
         total_ms += run["time_ms"]
         tl = plog / f"{engine}-pass{i}.tex.log"
+        tex_capture = None
         if (work / f"{job}.log").is_file():
-            shutil.copyfile(work / f"{job}.log", tl)
+            tex_capture = capture_file(
+                work / f"{job}.log", tl, max_bytes=max_capture_bytes,
+                error_pattern=ERROR_LINE_RE,
+            )
         passes.append({"pass": i, "exit": run["exit"],
                        "timed_out": run["timed_out"],
                        "mem_killed": run["mem_killed"],
                        "kill_signal": run["kill_signal"],
                        "spawn_error": run["spawn_error"],
                        "time_ms": round(run["time_ms"], 1),
-                       "stdout_log": str(cap), "tex_log": str(tl)})
+                       "cmd": run["cmd"], "capture": run["capture"],
+                       "tex_capture": tex_capture,
+                       "stdout_log": str(cap),
+                       "tex_log": str(tl) if tex_capture else None})
         if run["timed_out"]:
             timed_out = True
             break
@@ -677,7 +1091,8 @@ def converge_engine(engine: str, bin_path: str, ws: Path, tex_rel: Path,
             bl = plog / f"{engine}-bibtex-pass{i}.log"
             bib_runs.append({"pass": i, **run_bibtex(
                 bibtex, work, job, env, bl, timeout,
-                mem_limit_mib=mem_limit_mib)})
+                mem_limit_mib=mem_limit_mib,
+                max_capture_bytes=max_capture_bytes)})
         cur = aux_state(work, job)
         stable = cur == prev
         prev = cur
@@ -685,16 +1100,21 @@ def converge_engine(engine: str, bin_path: str, ws: Path, tex_rel: Path,
             break
     last = passes[-1] if passes else {}
     kept_log = None
+    kept_log_capture = None
     if (work / f"{job}.log").is_file():
         kept_log = idir / f"{engine}.tex.log"
-        shutil.copyfile(work / f"{job}.log", kept_log)
+        kept_log_capture = capture_file(
+            work / f"{job}.log", kept_log, max_bytes=max_capture_bytes,
+            error_pattern=ERROR_LINE_RE,
+        )
+    kept_stdout = idir / f"{engine}.stdout.log"
+    last_stdout = Path(last["stdout_log"]) if last.get("stdout_log") else None
+    if last_stdout and last_stdout.is_file():
+        shutil.copyfile(last_stdout, kept_stdout)
     kept_pdf = out_root_of(idir) / "pdf" / f"{pdf_basename(idir.name, engine)}"
-    pdf_stat = pdf_info(work / f"{job}.pdf")
-    if pdf_stat["pdf_exists"]:
-        kept_pdf.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(work / f"{job}.pdf", kept_pdf)
-    log_text = _read_text(work / f"{job}.log") or _read_text(Path(last.get("stdout_log", "")))
-    errors = extract_errors(log_text)
+    pdf_stat = persist_valid_pdf(work / f"{job}.pdf", kept_pdf)
+    errors = ((kept_log_capture or {}).get("errors")
+              or (last.get("capture") or {}).get("errors") or [])
     if not errors and last.get("spawn_error"):
         errors = [f"spawn-error: {last['spawn_error']}"]
     mem_killed = mem_killed or bool(last.get("mem_killed"))
@@ -705,10 +1125,10 @@ def converge_engine(engine: str, bin_path: str, ws: Path, tex_rel: Path,
         status = "memlimit"
     elif last.get("spawn_error") or not pdf_stat["pdf_valid"]:
         status = "failure"
-    elif not converged:
-        status = "unconverged"
     elif last.get("exit") != 0 or errors:
         status = "errors"
+    elif not converged:
+        status = "unconverged"
     else:
         status = "clean"
     rec = {
@@ -719,12 +1139,17 @@ def converge_engine(engine: str, bin_path: str, ws: Path, tex_rel: Path,
         "converged": converged, "pass_records": passes,
         "bibtex_runs": bib_runs, "shipped_bbl": bbl_is_source,
         "errors": errors, "aux_hashes": cur,
-        "captured_log": last.get("stdout_log"), "tex_log": str(kept_log)
+        "capture": last.get("capture"),
+        "tex_log_capture": kept_log_capture,
+        "captured_log": str(kept_stdout) if kept_stdout.is_file() else None,
+        "tex_log": str(kept_log)
         if kept_log else None, "pass_log_dir": str(plog),
     }
     rec.update(pdf_stat)
     # persisted copy wins: the workspace path may be deleted by --no-keep-work
     rec["pdf"] = str(kept_pdf) if kept_pdf.is_file() else None
+    rec["pdf_produced"] = pdf_stat["pdf_exists"]
+    rec["pdf_exists"] = kept_pdf.is_file()
     return rec
 
 
@@ -764,6 +1189,7 @@ def exact_parity_compare(aid: str, a_path: Path | None, b_path: Path | None,
         return out
     try:
         out["producer_rust"] = da.metadata.get("producer") or ""
+        out["producer_ref"] = db.metadata.get("producer") or ""
         out["repaired"] = {"rust": bool(da.is_repaired),
                            "ref": bool(db.is_repaired)}
         out["page_count_match"] = a_pages == b_pages
@@ -777,11 +1203,12 @@ def exact_parity_compare(aid: str, a_path: Path | None, b_path: Path | None,
             pymupdf.TOOLS.mupdf_warnings(reset=True)
             a = pa.get_pixmap(matrix=pymupdf.Matrix(dpi / 72.0, dpi / 72.0),
                               colorspace=pymupdf.csRGB, alpha=False)
-            b = pb.get_pixmap(matrix=pymupdf.Matrix(dpi / 72.0, dpi / 72.0),
-                              colorspace=pymupdf.csRGB, alpha=False)
             warn = pymupdf.TOOLS.mupdf_warnings(reset=True)
             if warn:
                 out["raster_warnings"].append({"page": i + 1, "text": warn[:500]})
+            b = pb.get_pixmap(matrix=pymupdf.Matrix(dpi / 72.0, dpi / 72.0),
+                              colorspace=pymupdf.csRGB, alpha=False)
+            pymupdf.TOOLS.mupdf_warnings(reset=True)
             pixels = a.width * a.height
             entry = {"page": i + 1, "pixels": pixels,
                      "rust_dims_px": [a.width, a.height],
@@ -871,6 +1298,7 @@ def process_campaign_project(entry: dict, out_root: Path, cfg: dict) -> dict:
     res: dict = {"id": aid, "mode": "campaign", "kind": entry["kind"],
                  "archive": entry.get("archive"), "finished_utc": now_iso(),
                  "main_tex": entry.get("main_tex"),
+                 "manifest_index": entry.get("manifest_index"),
                  "prepared": entry.get("prepared", {})}
     try:
         if entry.get("blocker"):
@@ -881,8 +1309,12 @@ def process_campaign_project(entry: dict, out_root: Path, cfg: dict) -> dict:
         ws_rust = ws_root / "rust"
         ws_ref = ws_root / "ref"
         extra_ignore = PRIVATE_IGNORE if entry["kind"] == "private" else ()
-        stripped_r = freeze_workspace(src, ws_rust, tex_rel, extra_ignore)
-        stripped_f = freeze_workspace(src, ws_ref, tex_rel, extra_ignore)
+        stripped_r = freeze_workspace(
+            src, ws_rust, tex_rel, extra_ignore, out_root=out_root
+        )
+        stripped_f = freeze_workspace(
+            src, ws_ref, tex_rel, extra_ignore, out_root=out_root
+        )
         verify_frozen_identical(ws_rust, ws_ref)
         res["stripped_generated"] = {"rust": stripped_r, "ref": stripped_f}
         # external inputs at the depth ../../ resolves to (shared .bib etc.)
@@ -909,11 +1341,12 @@ def process_campaign_project(entry: dict, out_root: Path, cfg: dict) -> dict:
         ref = converge_engine("ref", cfg["ref_bins"][ref_engine], ws_ref,
                               tex_rel, idir, cfg["env"], cfg["timeout"],
                               cfg["max_passes"], cfg["sys_bibtex"], ref_engine,
-                              cfg["mem_limit_mib"])
+                              cfg["mem_limit_mib"], cfg["max_capture_bytes"])
         rust = converge_engine("rust", cfg["rust_bin"], ws_rust, tex_rel,
                                idir, cfg["env"], cfg["timeout"],
                                cfg["max_passes"], cfg["rust_bibtex"],
-                               "pdflatex", cfg["mem_limit_mib"])
+                               "pdflatex", cfg["mem_limit_mib"],
+                               cfg["max_capture_bytes"])
         res["ref"] = ref
         res["rust"] = rust
         cmp = exact_parity_compare(
@@ -949,8 +1382,7 @@ def process_campaign_project(entry: dict, out_root: Path, cfg: dict) -> dict:
                                    "page_failures": [], "per_page": [],
                                    "raster_warnings": []})
     res["finished_utc"] = now_iso()
-    if not cfg["keep_work"]:
-        shutil.rmtree(out_root / "work" / aid, ignore_errors=True)
+    apply_artifact_retention(res, out_root, cfg)
     return res
 
 
@@ -1011,6 +1443,79 @@ def campaign_gate(selected: list[dict], results: dict[str, dict],
             "expected": len(ids), "completed": len(results),
             "dpi": cfg["dpi"], "page_min_pct": cfg["page_min"],
             "doc_min_pct": cfg["doc_min"], "failures": failures}
+
+
+def qualification_ledger(selected: list[dict], results: dict[str, dict],
+                         doc_min: float) -> dict:
+    """Deterministic per-project ledger for the scalable parity objective.
+
+    A project qualifies only when both engines compile cleanly to valid PDFs,
+    the complete documents have matching page geometry/counts, rasterization
+    is trustworthy, and document exact-pixel parity is strictly above
+    ``doc_min``. Per-page parity is diagnostic and is deliberately not a
+    qualification criterion.
+    """
+    projects = []
+    for entry in selected:
+        aid = entry["id"]
+        result = results.get(aid)
+        reasons: list[str] = []
+        parity = None
+        if result is None:
+            reasons.append("missing-result")
+        else:
+            if result.get("harness_error"):
+                reasons.append("harness-error")
+            for engine in ("rust", "ref"):
+                state = result.get(engine) or {}
+                if state.get("status") != "clean":
+                    reasons.append(f"{engine}-status:{state.get('status')}")
+                if not state.get("converged"):
+                    reasons.append(f"{engine}-not-converged")
+                if not state.get("pdf_valid"):
+                    reasons.append(f"{engine}-invalid-pdf")
+            compare = result.get("compare") or {}
+            if not compare.get("compared"):
+                reasons.append("not-compared")
+            else:
+                parity = compare.get("document_exact_parity")
+                if not compare.get("page_count_match"):
+                    reasons.append("page-count-mismatch")
+                if not compare.get("geometry_match"):
+                    reasons.append("geometry-mismatch")
+                if compare.get("raster_warnings"):
+                    reasons.append("raster-warning")
+                prod_rust = compare.get("producer_rust")
+                prod_ref = compare.get("producer_ref")
+                if prod_rust != "tex-rs" and (not prod_ref or prod_rust != prod_ref):
+                    reasons.append("wrong-rust-producer")
+                if parity is None or parity <= doc_min:
+                    reasons.append("document-parity-not-above-threshold")
+        projects.append({
+            "id": aid,
+            "kind": entry.get("kind"),
+            "archive": entry.get("archive"),
+            "manifest_index": entry.get("manifest_index"),
+            "qualified": not reasons,
+            "document_exact_parity": parity,
+            "reasons": reasons,
+        })
+    qualified = [project["id"] for project in projects if project["qualified"]]
+    return {
+        "criteria": {
+            "document_exact_parity_strictly_above_pct": doc_min,
+            "both_engines_clean_and_converged": True,
+            "both_pdfs_valid": True,
+            "page_count_and_geometry_match": True,
+            "no_raster_warnings": True,
+            "rust_pdf_producer": "tex-rs",
+        },
+        "selected": len(selected),
+        "completed": len(results),
+        "qualified_count": len(qualified),
+        "qualified_ids": qualified,
+        "projects": projects,
+    }
 
 
 def summarize_campaign(results: dict[str, dict], page_min: float,
@@ -1143,7 +1648,8 @@ def compare_pdfs(a_path: Path | None, b_path: Path | None,
                     if entry["mean_abs"] > worst[0]:
                         worst = (entry["mean_abs"], i + 1)
                 else:  # crop overlap so a size mismatch is still measured
-                    h = min(sa[1], sb[1]); w = min(sa[0], sb[0])
+                    h = min(sa[1], sb[1])
+                    w = min(sa[0], sb[0])
                     ca = aa[:h, :w, :].astype(np.int16)
                     cb = ab[:h, :w, :].astype(np.int16)
                     if ca.shape == cb.shape:
@@ -1162,7 +1668,8 @@ def compare_pdfs(a_path: Path | None, b_path: Path | None,
                 entry["samples_equal"] = aa == ab
             ta, tb = _norm_text(pa), _norm_text(pb)
             entry["text_ratio"] = round(difflib.SequenceMatcher(None, ta, tb).ratio(), 4)
-            text_a.append(ta); text_b.append(tb)
+            text_a.append(ta)
+            text_b.append(tb)
             out["per_page"].append(entry)
         out["compared"] = True
         out["pages_compared"] = n
@@ -1178,7 +1685,8 @@ def compare_pdfs(a_path: Path | None, b_path: Path | None,
         if a_pages != b_pages:
             out["note"] = f"page-count mismatch: rust {a_pages} vs ref {b_pages}; compared first {n}"
     finally:
-        da.close(); db.close()
+        da.close()
+        db.close()
     return out
 
 
@@ -1187,7 +1695,7 @@ def compare_pdfs(a_path: Path | None, b_path: Path | None,
 
 def process_project(entry: dict, corpus_dir: Path, out_root: Path,
                     rust_bin: str, sys_bin: str, timeout: float,
-                    mem_limit_mib: int, keep_work: bool) -> dict:
+                    mem_limit_mib: int, cfg: dict) -> dict:
     aid = entry["id"]
     src = corpus_dir / aid
     tex_rel = Path(entry["main_tex"])
@@ -1196,13 +1704,15 @@ def process_project(entry: dict, corpus_dir: Path, out_root: Path,
     ws_rust = out_root / "work" / aid / "rust"
     ws_ref = out_root / "work" / aid / "ref"
 
-    stripped_r = prepare_workspace(src, ws_rust, tex_rel)
-    stripped_f = prepare_workspace(src, ws_ref, tex_rel)
+    stripped_r = prepare_workspace(src, ws_rust, tex_rel, out_root=out_root)
+    stripped_f = prepare_workspace(src, ws_ref, tex_rel, out_root=out_root)
 
     res_rust = compile_engine("rust", rust_bin, ws_rust, tex_rel, idir,
-                              timeout, mem_limit_mib)
+                              timeout, mem_limit_mib,
+                              cfg["max_capture_bytes"])
     res_ref = compile_engine("ref", sys_bin, ws_ref, tex_rel, idir,
-                             timeout, mem_limit_mib)
+                             timeout, mem_limit_mib,
+                             cfg["max_capture_bytes"])
 
     cmp = compare_pdfs(
         Path(res_rust["pdf"]) if res_rust["pdf"] else None,
@@ -1210,15 +1720,15 @@ def process_project(entry: dict, corpus_dir: Path, out_root: Path,
         res_rust["pages"], res_ref["pages"],
     )
 
-    if not keep_work:
-        shutil.rmtree(out_root / "work" / aid, ignore_errors=True)
-
-    return {
+    result = {
         "id": aid, "archive": entry.get("archive"), "main_tex": entry["main_tex"],
+        "mode": "single-pass", "manifest_index": entry.get("manifest_index"),
         "finished_utc": now_iso(),
         "stripped_generated": {"rust": stripped_r, "ref": stripped_f},
         "rust": res_rust, "ref": res_ref, "compare": cmp,
     }
+    apply_artifact_retention(result, out_root, cfg)
+    return result
 
 
 # --------------------------------------------------------------------------
@@ -1325,22 +1835,51 @@ def run_campaign(args) -> int:
               f"TEXMFVAR={overlay_vars['TEXMFVAR']} "
               "(identical for both engines)")
 
-    # ---- inventory all 104: corpus manifest + prepared/source privates ----
+    # ---- inventory: a deterministic manifest range plus optional privates ----
     manifest_file = args.corpus_dir / "manifest.json"
     if not manifest_file.is_file():
         print(f"Error: manifest not found at {manifest_file}", file=sys.stderr)
         return 1
     manifest = json.loads(manifest_file.read_text())
+    if not isinstance(manifest, list):
+        print("Error: corpus manifest must be a JSON list", file=sys.stderr)
+        return 1
+    try:
+        for item in manifest:
+            validate_manifest_entry(item)
+    except ValueError as error:
+        print(f"Error: {error}", file=sys.stderr)
+        return 1
+    if args.offset < 0 or args.limit < 0:
+        print("Error: --offset and --limit must be non-negative", file=sys.stderr)
+        return 1
+    indexed_manifest = list(enumerate(manifest))
+    selected_manifest = (
+        indexed_manifest
+        if args.only
+        else indexed_manifest[args.offset:args.offset + args.limit]
+    )
     entries: list[dict] = []
     if not args.private_only:
-        entries += [{"id": e["id"], "kind": "corpus", "archive": e.get("archive"),
-                     "main_tex": e["main_tex"],
-                     "src_dir": args.corpus_dir / e["id"], "prepared": {}}
-                    for e in manifest[: args.limit]]
+        entries += [{
+            "id": item["id"],
+            "kind": "corpus",
+            "archive": item.get("archive"),
+            "main_tex": item["main_tex"],
+            "src_dir": args.corpus_dir / item["id"],
+            "prepared": {},
+            "manifest_index": index,
+        } for index, item in selected_manifest]
     if not args.corpus_only:
         priv, priv_prov = build_private_entries()
         entries += priv
         args.priv_prov = priv_prov
+    try:
+        for entry in entries:
+            validate_manifest_entry(entry)
+    except ValueError as error:
+        print(f"Error: {error}", file=sys.stderr)
+        return 1
     if args.only:
         wanted = [s.strip() for s in args.only.split(",") if s.strip()]
         by_id = {e["id"]: e for e in entries}
@@ -1379,8 +1918,14 @@ def run_campaign(args) -> int:
            "rust_bibtex": rust_bibtex, "sys_bibtex": sys_bibtex,
            "env": env, "timeout": args.timeout, "max_passes": args.max_passes,
            "mem_limit_mib": args.mem_limit_mib,
+           "max_capture_bytes": args.max_capture_bytes,
            "dpi": args.dpi, "page_min": args.page_min, "doc_min": args.doc_min,
-           "keep_work": not args.no_keep_work}
+           "retain": args.retain, "keep_work": args.keep_work}
+    # Reconcile resumed checkpoints with the requested policy.  All gate and
+    # summary inputs live in JSON, so no retained artifact is needed to resume.
+    for resumed in results.values():
+        apply_artifact_retention(resumed, args.output, cfg)
+        atomic_write_json(ckpt_dir / f"{resumed['id']}.json", resumed)
     meta = {
         "mode": "campaign",
         "notice": f"CONVERGED CAMPAIGN: aux+bibtex until stable (max "
@@ -1389,11 +1934,16 @@ def run_campaign(args) -> int:
                   f">= {args.doc_min}%, identical geometry/page counts.",
         "started_utc": now_iso(),
         "corpus_dir": str(args.corpus_dir), "manifest": str(manifest_file),
+        "manifest_sha256": sha256_file(manifest_file),
+        "manifest_offset": args.offset,
+        "manifest_limit": args.limit,
         "output": str(args.output), "jobs": args.jobs,
         "timeout_s": args.timeout, "max_passes": args.max_passes,
         "mem_limit_mib": args.mem_limit_mib,
+        "max_capture_bytes": args.max_capture_bytes,
         "dpi": args.dpi, "page_min_pct": args.page_min,
         "doc_min_pct": args.doc_min,
+        "qualification_min_pct": args.qualification_min,
         "rust_bin": rust_bin, "rust_version": capture_version(args.rust, 10),
         "ref_bins": ref_bins,
         "sys_bibtex": sys_bibtex, "rust_bibtex": rust_bibtex,
@@ -1403,20 +1953,31 @@ def run_campaign(args) -> int:
         "private_provenance": getattr(args, "priv_prov", {}),
         "pymupdf_version": pymupdf.__version__, "numpy": np is not None,
         "selected": len(entries), "resumed": len(results), "planned": len(todo),
-        "expected_total": 104 if not (args.only or args.corpus_only
-                                      or args.private_only) else None,
-        "keep_work": cfg["keep_work"],
+        "expected_total": (
+            104
+            if not (args.only or args.corpus_only or args.private_only)
+            and args.offset == 0 and args.limit == 100
+            else None
+        ),
+        "retain": args.retain, "keep_work": cfg["keep_work"],
+        "artifact_policy": "bounded-retention-v1",
     }
     if meta["expected_total"] and len(entries) != meta["expected_total"]:
         print(f"Error: campaign expects {meta['expected_total']} documents, "
               f"inventory has {len(entries)}", file=sys.stderr)
         return 1
     lock = threading.Lock()
+    last_aggregate_write = 0.0
 
     def publish(r: dict) -> None:
+        nonlocal last_aggregate_write
         with lock:
             results[r["id"]] = r
             atomic_write_json(ckpt_dir / f"{r['id']}.json", r)
+            now = time.monotonic()
+            if len(results) % 100 != 0 and now - last_aggregate_write < 60.0:
+                return
+            last_aggregate_write = now
             atomic_write_json(args.output / "report.json",
                               {"meta": meta,
                                "summary": summarize_campaign(
@@ -1424,6 +1985,10 @@ def run_campaign(args) -> int:
                                "results": {k: results[k] for k in sorted(results)}})
             atomic_write_json(args.output / "gate.json",
                               campaign_gate(entries, results, cfg))
+            atomic_write_json(
+                args.output / "qualification.json",
+                qualification_ledger(entries, results, args.qualification_min),
+            )
 
     print("=" * 78)
     print(f"*** {meta['notice']} ***")
@@ -1456,6 +2021,8 @@ def run_campaign(args) -> int:
                          "compare": {"compared": False, "note": "harness error",
                                      "page_failures": [], "per_page": [],
                                      "raster_warnings": []}}
+                if "retention" not in r:
+                    apply_artifact_retention(r, args.output, cfg)
                 done += 1
                 publish(r)
                 print_campaign_line(done, total, r)
@@ -1463,13 +2030,30 @@ def run_campaign(args) -> int:
         print("Interrupted — checkpointed results are preserved; rerun to resume.",
               file=sys.stderr)
 
+    if not cfg["keep_work"]:
+        # Private-document support files are copied under work/ at a shared
+        # relative depth.  They are metrics inputs, not durable artifacts.
+        for entry in entries:
+            for rel in (entry.get("external_files") or {}).values():
+                path = args.output / "work" / rel
+                if _path_within(path, args.output / "work"):
+                    path.unlink(missing_ok=True)
+        try:
+            (args.output / "work").rmdir()
+        except OSError:
+            pass
+
     gate = campaign_gate(entries, results, cfg)
+    qualification = qualification_ledger(
+        entries, results, args.qualification_min
+    )
     atomic_write_json(args.output / "report.json",
                       {"meta": meta,
                        "summary": summarize_campaign(
                            results, args.page_min, args.doc_min),
                        "results": {k: results[k] for k in sorted(results)}})
     atomic_write_json(args.output / "gate.json", gate)
+    atomic_write_json(args.output / "qualification.json", qualification)
     s = summarize_campaign(results, args.page_min, args.doc_min)
     dt = time.perf_counter() - t0
     print("=" * 78)
@@ -1484,6 +2068,9 @@ def run_campaign(args) -> int:
           f"| docs >= {args.doc_min}%: {s['docs_ge_doc_min']}")
     print(f"  mean doc parity {s['mean_doc_exact_parity']}% | min doc "
           f"{s['min_doc_exact_parity']}% | min page {s['min_page_exact_parity']}%")
+    print(f"  qualified > {args.qualification_min}%: "
+          f"{qualification['qualified_count']}/{qualification['selected']} "
+          f"-> {args.output / 'qualification.json'}")
     print(f"  GATE: {'PASS' if gate['ok'] else 'FAIL'} "
           f"({len(gate['failures'])} failure rows) -> {args.output / 'gate.json'}")
     print(f"  report: {args.output / 'report.json'}")
@@ -1538,20 +2125,40 @@ def main() -> int:
                          "engine/bibtex child in the preexec path; a runaway "
                          "compile dies on a signal and classifies as "
                          "'memlimit'. 0 disables (default: 4 GiB)")
+    ap.add_argument("--offset", type=int, default=0,
+                    help="Zero-based first corpus manifest entry")
     ap.add_argument("--limit", type=int, default=100,
-                    help="Number of corpus manifest entries (default: full 100)")
+                    help="Number of corpus manifest entries after --offset")
     ap.add_argument("--only", type=str, default=None,
-                    help="Comma-separated subset of project ids (overrides --limit)")
+                    help="Comma-separated project ids (overrides range)")
+    ap.add_argument("--qualification-min", type=float, default=95.0,
+                    help="Strict document-parity threshold for qualification")
     ap.add_argument("--corpus-only", action="store_true",
                     help="campaign: exclude the four private documents")
     ap.add_argument("--private-only", action="store_true",
                     help="campaign: only the four private documents")
     ap.add_argument("--no-resume", action="store_true",
                     help="Ignore existing checkpoints and recompile everything")
-    ap.add_argument("--no-keep-work", action="store_true",
-                    help="Delete per-engine workspace copies after comparison "
-                         "(PDFs and logs are still persisted)")
+    ap.add_argument("--retain", choices=("failures", "all", "none"),
+                    default="failures",
+                    help="Evidence retention: compact failures (default), all, "
+                         "or none; reports/checkpoints are always kept")
+    ap.add_argument("--max-capture-bytes", type=int,
+                    default=DEFAULT_MAX_CAPTURE_BYTES,
+                    help="Maximum retained bytes per child stream (default: "
+                         "1 MiB as 128 KiB head + 896 KiB tail; 0 keeps all)")
+    work_group = ap.add_mutually_exclusive_group()
+    work_group.add_argument("--keep-work", dest="keep_work",
+                            action="store_true",
+                            help="Keep copied per-engine workspaces")
+    work_group.add_argument("--no-keep-work", dest="keep_work",
+                            action="store_false",
+                            help="Deprecated compatibility alias; deleting "
+                                 "copied workspaces is now the default")
+    ap.set_defaults(keep_work=False)
     args = ap.parse_args()
+    if args.max_capture_bytes < 0:
+        ap.error("--max-capture-bytes must be non-negative")
     if args.mode == "campaign":
         return run_campaign(args)
 
@@ -1560,6 +2167,15 @@ def main() -> int:
         print(f"Error: manifest not found at {manifest_file}", file=sys.stderr)
         return 1
     manifest = json.loads(manifest_file.read_text())
+    if not isinstance(manifest, list):
+        print("Error: corpus manifest must be a JSON list", file=sys.stderr)
+        return 1
+    try:
+        for item in manifest:
+            validate_manifest_entry(item)
+    except ValueError as error:
+        print(f"Error: {error}", file=sys.stderr)
+        return 1
     if not args.rust.is_file():
         print(f"Error: rust binary not found: {args.rust}", file=sys.stderr)
         return 1
@@ -1567,16 +2183,23 @@ def main() -> int:
         print(f"Error: reference binary not found: {args.sys}", file=sys.stderr)
         return 1
 
+    if args.offset < 0 or args.limit < 0:
+        print("Error: --offset and --limit must be non-negative", file=sys.stderr)
+        return 1
+    indexed_manifest = list(enumerate(manifest))
     if args.only:
         wanted = [s.strip() for s in args.only.split(",") if s.strip()]
-        by_id = {e["id"]: e for e in manifest}
-        selected = [by_id[w] for w in wanted if w in by_id]
+        by_id = {e["id"]: (i, e) for i, e in indexed_manifest}
+        selected = [dict(by_id[w][1], manifest_index=by_id[w][0])
+                    for w in wanted if w in by_id]
         missing = [w for w in wanted if w not in by_id]
         if missing:
             print(f"Error: ids not in manifest: {missing}", file=sys.stderr)
             return 1
     else:
-        selected = manifest[: args.limit]
+        selected = [dict(entry, manifest_index=index)
+                    for index, entry in indexed_manifest[
+                        args.offset:args.offset + args.limit]]
 
     ckpt_dir = args.output / "checkpoints"
     results: dict[str, dict] = {}
@@ -1599,6 +2222,16 @@ def main() -> int:
                 results[r["id"]] = r
     todo = [e for e in selected if e["id"] not in results]
 
+    single_cfg = {
+        "retain": args.retain,
+        "keep_work": args.keep_work,
+        "max_capture_bytes": args.max_capture_bytes,
+        "doc_min": args.doc_min,
+    }
+    for resumed in results.values():
+        apply_artifact_retention(resumed, args.output, single_cfg)
+        atomic_write_json(ckpt_dir / f"{resumed['id']}.json", resumed)
+
     meta = {
         "passes_per_engine": 1,
         "single_pass_notice": "SINGLE PASS: exactly one pdflatex invocation per engine "
@@ -1607,6 +2240,7 @@ def main() -> int:
         "corpus_dir": str(args.corpus_dir), "manifest": str(manifest_file),
         "output": str(args.output), "jobs": args.jobs, "timeout_s": args.timeout,
         "mem_limit_mib": args.mem_limit_mib,
+        "max_capture_bytes": args.max_capture_bytes,
         # abspath, NOT resolve(): argv0 must stay "<...>/pdflatex" — symlink
         # resolution would rename it to pdftex and select the wrong format.
         "rust_bin": os.path.abspath(args.rust),
@@ -1615,7 +2249,8 @@ def main() -> int:
         "sys_version": capture_version(args.sys, 10),
         "pymupdf_version": pymupdf.__version__, "numpy": np is not None,
         "selected": len(selected), "resumed": len(results), "planned": len(todo),
-        "keep_work": not args.no_keep_work,
+        "retain": args.retain, "keep_work": args.keep_work,
+        "artifact_policy": "bounded-retention-v1",
     }
     lock = threading.Lock()
 
@@ -1640,8 +2275,8 @@ def main() -> int:
             sys_abspath = os.path.abspath(args.sys)
             futs = {ex.submit(process_project, e, args.corpus_dir, args.output,
                               rust_abspath, sys_abspath, args.timeout,
-                              args.mem_limit_mib,
-                              not args.no_keep_work): e["id"] for e in todo}
+                              args.mem_limit_mib, single_cfg): e["id"]
+                    for e in todo}
             done = len(results)
             total = len(selected)
             for fut in cf.as_completed(futs):
@@ -1664,6 +2299,8 @@ def main() -> int:
                                  "time_ms": None, "pages": None, "pdf_valid": False,
                                  "pdf_exists": False, "pdf": None, "errors": []},
                          "compare": {"compared": False, "note": "harness error"}}
+                if "retention" not in r:
+                    apply_artifact_retention(r, args.output, single_cfg)
                 done += 1
                 publish(r)
                 print_report_line(done, total, r)

@@ -139,6 +139,7 @@ struct SavePoint {
     pos_h: i64,
     pos_v: i64,
     matrix_depth: usize,
+    source: Option<crate::input::SourceMark>,
 }
 
 /// pdfTeX `DO_ROUND` (utils.c §1485): round half away from zero onto the sp raster.
@@ -399,25 +400,16 @@ impl Engine {
         let mut ctx = self.new_ctx(height_sp as i64);
         ctx.box_w_sp = width_sp as i64;
         ctx.box_h_sp = height_sp as i64;
-        let horigin_bp = sp_to_bp(
-            ctx.eng.eqtb.dim_params[DimParam::PdfHOrigin.idx() as usize] as i64
-                + ctx.eng.eqtb.dim_params[DimParam::HOffset.idx() as usize] as i64,
-        );
-        let vorigin_bp = sp_to_bp(
-            ctx.eng.eqtb.dim_params[DimParam::PdfVOrigin.idx() as usize] as i64
-                + ctx.eng.eqtb.dim_params[DimParam::VOffset.idx() as usize] as i64,
-        );
-        let x0 = horigin_bp;
-        let y0 = vorigin_bp;
+        let x0 = ctx.eng.eqtb.dim_params[DimParam::PdfHOrigin.idx() as usize] as i64
+            + ctx.eng.eqtb.dim_params[DimParam::HOffset.idx() as usize] as i64;
+        let y0 = ctx.eng.eqtb.dim_params[DimParam::PdfVOrigin.idx() as usize] as i64
+            + ctx.eng.eqtb.dim_params[DimParam::VOffset.idx() as usize] as i64;
         if let Node::Box {
             list,
             kind,
             glue_sign,
             glue_order,
             glue_set,
-            w: _,
-            h: _,
-            d: _,
             ..
         } = page_box
         {
@@ -435,11 +427,20 @@ impl Engine {
         }
         // pdfTeX `pdfshipoutend` (utils.c §1367): a save left unmatched at
         // the end of the shipout is fatal (no output file).
-        if !ctx.pos_stack.is_empty() {
-            ctx.eng.fatal_error(&format!(
-                "{} unmatched \\pdfsave after page shipout",
-                ctx.pos_stack.len()
-            ));
+        if let Some(save) = ctx.pos_stack.last() {
+            let count = ctx.pos_stack.len();
+            let message = if count == 1 {
+                "Unmatched \\pdfsave: the shipped page ended before a matching \\pdfrestore"
+                    .to_string()
+            } else {
+                format!("Unmatched \\pdfsave: the shipped page ended with {count} saves still open")
+            };
+            ctx.eng.fatal_error_at(
+                &message,
+                save.source
+                    .as_ref()
+                    .map(crate::input::SourceMark::to_context),
+            );
         }
         // engine-level results
         ctx.eng.pdf_doc.outlines = ctx.eng.pdf_outlines.clone();
@@ -478,13 +479,22 @@ impl Engine {
         ctx.box_w_sp = w as i64;
         ctx.box_h_sp = h as i64;
         ctx.box_d_sp = d as i64;
-        ctx.ship_vlist(&vec![node.clone()], 0.0, 0.0, 0, 0, 0.0);
+        ctx.ship_vlist(&vec![node.clone()], 0, 0, 0, 0, 0.0);
         ctx.end_text();
-        if !ctx.pos_stack.is_empty() {
-            ctx.eng.fatal_error(&format!(
-                "{} unmatched \\pdfsave after form shipout",
-                ctx.pos_stack.len()
-            ));
+        if let Some(save) = ctx.pos_stack.last() {
+            let count = ctx.pos_stack.len();
+            let message = if count == 1 {
+                "Unmatched \\pdfsave: the shipped form ended before a matching \\pdfrestore"
+                    .to_string()
+            } else {
+                format!("Unmatched \\pdfsave: the shipped form ended with {count} saves still open")
+            };
+            ctx.eng.fatal_error_at(
+                &message,
+                save.source
+                    .as_ref()
+                    .map(crate::input::SourceMark::to_context),
+            );
         }
         (
             ctx.content.into_bytes(),
@@ -514,6 +524,24 @@ fn glue_advance(
     match sign {
         1 if stretch_order == order => w + set * sp_to_bp(stretch as i64),
         2 if shrink_order == order => w - set * sp_to_bp(shrink as i64),
+        _ => w,
+    }
+}
+
+fn glue_advance_sp(
+    width: i32,
+    stretch: i32,
+    shrink: i32,
+    stretch_order: u8,
+    shrink_order: u8,
+    sign: u8,
+    order: u8,
+    set: f64,
+) -> i64 {
+    let w = width as i64;
+    match sign {
+        1 if stretch_order == order => w + (set * stretch as f64).round() as i64,
+        2 if shrink_order == order => w - (set * shrink as f64).round() as i64,
         _ => w,
     }
 }
@@ -619,7 +647,7 @@ impl<'a> RenderCtx<'a> {
     }
 
     /// ship a vertical list with its top edge at y
-    pub fn ship_vlist(&mut self, list: &NodeList, x: f64, y: f64, sign: u8, order: u8, set: f64) {
+    pub fn ship_vlist(&mut self, list: &NodeList, x: i64, y: i64, sign: u8, order: u8, set: f64) {
         let mut cur_y = y;
         for n in list {
             match n {
@@ -635,11 +663,7 @@ impl<'a> RenderCtx<'a> {
                     kind,
                     ..
                 } => {
-                    let (bh, bd, sh) = (
-                        sp_to_bp(*h as i64),
-                        sp_to_bp(*d as i64),
-                        sp_to_bp(*shift as i64),
-                    );
+                    let (bh, bd, sh) = (*h as i64, *d as i64, *shift as i64);
 
                     // thread containing-box context for the inner list
                     let saved = (
@@ -648,7 +672,7 @@ impl<'a> RenderCtx<'a> {
                         self.box_h_sp,
                         self.box_d_sp,
                     );
-                    self.left_edge_sp = bp_to_sp(x + sh) as i64;
+                    self.left_edge_sp = x + sh;
                     (self.box_w_sp, self.box_h_sp, self.box_d_sp) =
                         (*w as i64, *h as i64, *d as i64);
                     if *kind == HBOX {
@@ -685,17 +709,13 @@ impl<'a> RenderCtx<'a> {
                     } else {
                         *width as i64
                     };
-                    let (rw, rh, rd) = (
-                        sp_to_bp(w_sp),
-                        sp_to_bp(*height as i64),
-                        sp_to_bp(*depth as i64),
-                    );
+                    let (rh, rd) = (*height as i64, *depth as i64);
                     let y1 = cur_y + rh; // top of rule
-                    self.emit_rect(x, self.y_pdf(y1 + rd), rw, rh + rd);
+                    self.emit_rect_sp(x, y1 + rd, w_sp, rh + rd);
                     cur_y += rh + rd;
                 }
                 Node::Glue(g) => {
-                    cur_y += glue_advance(
+                    cur_y += glue_advance_sp(
                         g.width,
                         g.stretch,
                         g.shrink,
@@ -707,7 +727,7 @@ impl<'a> RenderCtx<'a> {
                     );
                 }
                 Node::Leaders { glue, kind, body } => {
-                    let adv = glue_advance(
+                    let adv = glue_advance_sp(
                         glue.width,
                         glue.stretch,
                         glue.shrink,
@@ -727,9 +747,8 @@ impl<'a> RenderCtx<'a> {
                             } else {
                                 *width as i64
                             };
-                            let rw = sp_to_bp(w_sp);
-                            if rw > 0.0 && adv > 0.0 {
-                                self.emit_rect(x, self.y_pdf(cur_y + adv), rw, adv);
+                            if w_sp > 0 && adv > 0 {
+                                self.emit_rect_sp(x, cur_y + adv, w_sp, adv);
                             }
                         }
                         LeaderBody::Box(b) => {
@@ -737,12 +756,12 @@ impl<'a> RenderCtx<'a> {
                             let (positions, _, _) = crate::boxes::leader_layout(
                                 *kind,
                                 (lh + ld) as i64,
-                                bp_to_sp(adv) as i64,
+                                adv,
                                 self.left_edge_sp,
-                                bp_to_sp(cur_y) as i64,
+                                cur_y,
                             );
                             for pos in positions {
-                                self.ship_leader_copy(b, x, sp_to_bp(pos), true);
+                                self.ship_leader_copy(b, x, pos, true);
                             }
                         }
                     }
@@ -750,20 +769,20 @@ impl<'a> RenderCtx<'a> {
                     cur_y += adv;
                 }
                 Node::Kern(k) | Node::ExplicitKern(k) | Node::MarginKern { width: k, .. } => {
-                    cur_y += sp_to_bp(*k as i64)
+                    cur_y += *k as i64;
                 }
                 Node::Penalty(_) | Node::Mark { .. } => {}
                 Node::Whatsit(
                     w @ (crate::boxes::WhatIt::PdfRefXImage { h, d, .. }
                     | crate::boxes::WhatIt::PdfRefXForm { h, d, .. }),
                 ) => {
-                    cur_y += sp_to_bp(*h as i64);
-                    self.emit_whatsit(w, x, cur_y);
-                    cur_y += sp_to_bp(*d as i64);
+                    cur_y += *h as i64;
+                    self.emit_whatsit_sp(w, x, cur_y);
+                    cur_y += *d as i64;
                 }
                 Node::Whatsit(w) => {
-                    self.note_point(x, cur_y);
-                    self.emit_whatsit(w, x, cur_y);
+                    self.note_point(sp_to_bp(x), self.y_pdf(sp_to_bp(cur_y)));
+                    self.emit_whatsit_sp(w, x, cur_y);
                 }
                 Node::Ins { box_node, .. } => {
                     if let Node::Box { list: inner, .. } = &**box_node {
@@ -779,24 +798,24 @@ impl<'a> RenderCtx<'a> {
     }
 
     /// ship a horizontal list with baseline at y
-    pub fn ship_hlist(&mut self, list: &NodeList, x: f64, y: f64, sign: u8, order: u8, set: f64) {
+    pub fn ship_hlist(&mut self, list: &NodeList, x: i64, y: i64, sign: u8, order: u8, set: f64) {
         let mut cur_x = x;
         for n in list {
             match n {
                 Node::Char { c, font } => {
-                    let adv = self.font_char_advance_bp(*font, *c);
-                    self.emit_char(*font, *c, cur_x, y);
+                    let adv = self.font_char_advance_sp(*font, *c);
+                    self.emit_char_sp(*font, *c, cur_x, y, 0);
                     cur_x += adv;
                 }
                 Node::Ligature {
                     c, font, lig_width, ..
                 } => {
-                    let adv = self.font_lig_advance_bp(*font, *lig_width);
-                    self.emit_char(*font, *c, cur_x, y);
+                    let adv = self.font_lig_advance_sp(*font, *lig_width);
+                    self.emit_char_sp(*font, *c, cur_x, y, 0);
                     cur_x += adv;
                 }
                 Node::Glue(g) => {
-                    let adv = glue_advance(
+                    let adv = glue_advance_sp(
                         g.width,
                         g.stretch,
                         g.shrink,
@@ -809,7 +828,7 @@ impl<'a> RenderCtx<'a> {
                     cur_x += adv;
                 }
                 Node::Kern(k) | Node::ExplicitKern(k) | Node::MarginKern { width: k, .. } => {
-                    cur_x += sp_to_bp(*k as i64)
+                    cur_x += *k as i64;
                 }
                 Node::Penalty(_) => {}
                 Node::Rule {
@@ -828,8 +847,8 @@ impl<'a> RenderCtx<'a> {
                     } else {
                         *depth as i64
                     };
-                    let (rw, rh, rd) = (sp_to_bp(*width as i64), sp_to_bp(h_sp), sp_to_bp(d_sp));
-                    self.emit_rect(cur_x, self.y_pdf(y + rd), rw, rh + rd);
+                    let (rw, rh, rd) = (*width as i64, h_sp, d_sp);
+                    self.emit_rect_sp(cur_x, y + rd, rw, rh + rd);
                     cur_x += rw;
                 }
                 Node::Box {
@@ -844,11 +863,7 @@ impl<'a> RenderCtx<'a> {
                     kind,
                     ..
                 } => {
-                    let (bw, bh, sh) = (
-                        sp_to_bp(*w as i64),
-                        sp_to_bp(*h as i64),
-                        sp_to_bp(*shift as i64),
-                    );
+                    let (bw, bh, sh) = (*w as i64, *h as i64, *shift as i64);
 
                     // thread containing-box context for the inner list
                     let saved = (
@@ -857,8 +872,7 @@ impl<'a> RenderCtx<'a> {
                         self.box_h_sp,
                         self.box_d_sp,
                     );
-                    self.left_edge_sp =
-                        bp_to_sp(if *kind == HBOX { cur_x } else { cur_x + sh }) as i64;
+                    self.left_edge_sp = if *kind == HBOX { cur_x } else { cur_x + sh };
                     (self.box_w_sp, self.box_h_sp, self.box_d_sp) =
                         (*w as i64, *h as i64, *d as i64);
                     if *kind == HBOX {
@@ -887,21 +901,21 @@ impl<'a> RenderCtx<'a> {
                     for nn in &dc.no_break {
                         match nn {
                             Node::Char { c, font } => {
-                                let adv = self.font_char_advance_bp(*font, *c);
-                                self.emit_char(*font, *c, cur_x, y);
+                                let adv = self.font_char_advance_sp(*font, *c);
+                                self.emit_char_sp(*font, *c, cur_x, y, 0);
                                 cur_x += adv;
                             }
                             other => {
                                 let single: NodeList = vec![other.clone()];
                                 let (w, _, _) = crate::boxes::hlist_dims(&single, &self.eng.eqtb);
                                 self.ship_hlist(&single, cur_x, y, sign, order, set);
-                                cur_x += sp_to_bp(w as i64);
+                                cur_x += w as i64;
                             }
                         }
                     }
                 }
                 Node::Leaders { glue, kind, body } => {
-                    let adv = glue_advance(
+                    let adv = glue_advance_sp(
                         glue.width,
                         glue.stretch,
                         glue.shrink,
@@ -926,21 +940,21 @@ impl<'a> RenderCtx<'a> {
                             } else {
                                 *depth as i64
                             };
-                            let (rh, rd) = (sp_to_bp(h_sp), sp_to_bp(d_sp));
-                            if adv > 0.0 && rh + rd > 0.0 {
-                                self.emit_rect(cur_x, self.y_pdf(y + rd), adv, rh + rd);
+                            let (rh, rd) = (h_sp, d_sp);
+                            if adv > 0 && rh + rd > 0 {
+                                self.emit_rect_sp(cur_x, y + rd, adv, rh + rd);
                             }
                         }
                         LeaderBody::Box(b) => {
                             let (positions, _, _) = crate::boxes::leader_layout(
                                 *kind,
                                 lw as i64,
-                                bp_to_sp(adv) as i64,
+                                adv,
                                 self.left_edge_sp,
-                                bp_to_sp(cur_x) as i64,
+                                cur_x,
                             );
                             for pos in positions {
-                                self.ship_leader_copy(b, sp_to_bp(pos), y, false);
+                                self.ship_leader_copy(b, pos, y, false);
                             }
                         }
                     }
@@ -948,12 +962,12 @@ impl<'a> RenderCtx<'a> {
                     cur_x += adv;
                 }
                 Node::Whatsit(w) => {
-                    self.note_point(cur_x, y);
-                    self.emit_whatsit(w, cur_x, y);
+                    self.note_point(sp_to_bp(cur_x), self.y_pdf(sp_to_bp(y)));
+                    self.emit_whatsit_sp(w, cur_x, y);
                     if let crate::boxes::WhatIt::PdfRefXImage { w, .. }
                     | crate::boxes::WhatIt::PdfRefXForm { w, .. } = w
                     {
-                        cur_x += sp_to_bp(*w as i64);
+                        cur_x += *w as i64;
                     }
                 }
                 Node::Mark { .. } | Node::Ins { .. } => {}
@@ -965,7 +979,7 @@ impl<'a> RenderCtx<'a> {
     /// ship one leader body copy. Horizontal (`vertical == false`): the
     /// copy's baseline sits at `at`. Vertical: the copy's top edge sits
     /// at `at` (a vlist item position).
-    fn ship_leader_copy(&mut self, b: &Node, x: f64, at: f64, vertical: bool) {
+    fn ship_leader_copy(&mut self, b: &Node, x: i64, at: i64, vertical: bool) {
         let Node::Box {
             w,
             h,
@@ -981,15 +995,14 @@ impl<'a> RenderCtx<'a> {
         else {
             return;
         };
-        let bh = sp_to_bp(*h as i64);
-        let sh = sp_to_bp(*shift as i64);
+        let (bh, sh) = (*h as i64, *shift as i64);
         let saved = (
             self.left_edge_sp,
             self.box_w_sp,
             self.box_h_sp,
             self.box_d_sp,
         );
-        self.left_edge_sp = bp_to_sp(x) as i64;
+        self.left_edge_sp = x;
         (self.box_w_sp, self.box_h_sp, self.box_d_sp) = (*w as i64, *h as i64, *d as i64);
         if vertical {
             if *kind == HBOX {
@@ -1049,6 +1062,38 @@ impl<'a> RenderCtx<'a> {
         } else {
             let h_scale = (1000 + ratio) as f64 / 1000.0;
             sp_to_bp(((w as f64) * h_scale).round() as i64)
+        }
+    }
+
+    fn font_char_advance_sp(&self, f: u16, c: u8) -> i64 {
+        let w = self.font_char_width(f, c) as i64;
+        let ratio = self.eng.eqtb.expand.get(f as usize).map_or(0, |x| x.ratio);
+        let is_already_scaled = self
+            .eng
+            .eqtb
+            .expand
+            .get(f as usize)
+            .map_or(false, |x| x.blink != 0);
+        if is_already_scaled || ratio == 0 {
+            w
+        } else {
+            round_xn_over_d(w, 1000 + ratio as i64, 1000)
+        }
+    }
+
+    fn font_lig_advance_sp(&self, f: u16, lig_width: i32) -> i64 {
+        let w = lig_width as i64;
+        let ratio = self.eng.eqtb.expand.get(f as usize).map_or(0, |x| x.ratio);
+        let is_already_scaled = self
+            .eng
+            .eqtb
+            .expand
+            .get(f as usize)
+            .map_or(false, |x| x.blink != 0);
+        if is_already_scaled || ratio == 0 {
+            w
+        } else {
+            round_xn_over_d(w, 1000 + ratio as i64, 1000)
         }
     }
 
@@ -1423,36 +1468,35 @@ impl<'a> RenderCtx<'a> {
 
     /// pdfTeX `pdf_set_rule`: close the text object, then draw inside a
     /// `q..Q` scope with a temporary origin shift (hairlines stroke).
-    fn emit_rect(&mut self, x: f64, y: f64, w: f64, h: f64) {
-        if w == 0.0 || h == 0.0 {
+    fn emit_rect_sp(&mut self, x_sp: i64, v_down_sp: i64, w_sp: i64, h_sp: i64) {
+        if w_sp == 0 || h_sp == 0 {
             return;
         }
-        let x_sp = (x * SP_PER_BP).round() as i64;
-        let w_sp = (w * SP_PER_BP).round() as i64;
-        let h_sp = (h * SP_PER_BP).round() as i64;
-        // y arrives as a PDF-space (upward) coordinate; convert to TeX-space
-        let v_sp = ((self.page_height_bp - y) * SP_PER_BP).round() as i64;
+        let x = sp_to_bp(x_sp);
+        let y = self.y_pdf(sp_to_bp(v_down_sp));
+        let w = sp_to_bp(w_sp);
+        let h = sp_to_bp(h_sp);
         self.note_point(x, y);
         self.note_point(x + w, y + h);
         self.end_text();
         self.content.push_str("q\n");
         const ONE_BP: i64 = 65782;
         if h_sp <= ONE_BP {
-            self.set_origin_temp(x_sp, v_sp - (h_sp + 1) / 2);
+            self.set_origin_temp(x_sp, v_down_sp - (h_sp + 1) / 2);
             self.content.push_str("[]0 d 0 J ");
             self.push_bp(h_sp);
             self.content.push_str(" w 0 0 m ");
             self.push_bp(w_sp);
             self.content.push_str(" 0 l S\n");
         } else if w_sp <= ONE_BP {
-            self.set_origin_temp(x_sp + (w_sp + 1) / 2, v_sp);
+            self.set_origin_temp(x_sp + (w_sp + 1) / 2, v_down_sp);
             self.content.push_str("[]0 d 0 J ");
             self.push_bp(w_sp);
             self.content.push_str(" w 0 0 m 0 ");
             self.push_bp(h_sp);
             self.content.push_str(" l S\n");
         } else {
-            self.set_origin_temp(x_sp, v_sp);
+            self.set_origin_temp(x_sp, v_down_sp);
             self.content.push_str("0 0 ");
             self.push_bp(w_sp);
             self.content.push(' ');
@@ -1461,16 +1505,13 @@ impl<'a> RenderCtx<'a> {
         }
         self.content.push_str("Q\n");
     }
-
-    fn emit_whatsit(&mut self, w: &crate::boxes::WhatIt, x: f64, y: f64) {
+    fn emit_whatsit_sp(&mut self, w: &crate::boxes::WhatIt, cur_h: i64, cur_v: i64) {
         use crate::boxes::WhatIt::*;
         match w {
             PdfLiteral { data, origin } => {
                 // scan_pdf_origin: 0 = set_origin, 1 = direct (always),
                 // 2 = page — pdfTeX `literal()` closes the string/text per
                 // mode, then prints the data on its own line.
-                let cur_h = (x * SP_PER_BP).round() as i64;
-                let cur_v = (y * SP_PER_BP).round() as i64;
                 match *origin {
                     0 => {
                         self.end_text();
@@ -1516,8 +1557,7 @@ impl<'a> RenderCtx<'a> {
                     image.used = true;
                 }
                 self.end_text();
-                let cur_h = (x * SP_PER_BP).round() as i64;
-                let v_sp = (y * SP_PER_BP).round() as i64;
+                let v_sp = cur_v;
                 let w_sp = *w as i64;
                 let hd_sp = (*h + *d) as i64;
                 self.content.push_str("q\n");
@@ -1531,15 +1571,14 @@ impl<'a> RenderCtx<'a> {
             }
             PdfRefXForm { obj, w: _, h: _, d } => {
                 self.end_text();
-                let cur_h = (x * SP_PER_BP).round() as i64;
-                let v_sp = (y * SP_PER_BP).round() as i64;
+                let v_sp = cur_v;
                 self.content.push_str("q\n1 0 0 1 ");
                 self.push_bp(cur_h - self.origin_h);
                 self.content.push(' ');
                 self.push_bp(self.origin_v - (v_sp + *d as i64));
                 self.content.push_str(&format!(" cm /Fm{obj} Do\nQ\n"));
             }
-            PdfSetMatrix(matrix) => {
+            PdfSetMatrix { matrix, source } => {
                 // pdfTeX `pdf_out_setmatrix` + `pdfsetmatrix` (utils.c §1406):
                 // a valid matrix is exactly four numbers; the emitted
                 // literal is `set_origin` mode, so the CTM first moves to
@@ -1551,12 +1590,15 @@ impl<'a> RenderCtx<'a> {
                 // stream can never slip through a token-level parse.
                 let Some([a, b, c, d]) = parse_matrix(matrix) else {
                     self.end_text();
-                    self.eng
-                        .fatal_error("pdfTeX error (\\pdfsetmatrix): Unrecognized format.");
+                    let message = format!(
+                        "Invalid \\pdfsetmatrix value; expected exactly four finite numbers; got `{matrix}`"
+                    );
+                    self.eng.fatal_error_at(
+                        &message,
+                        source.as_ref().map(crate::input::SourceMark::to_context),
+                    );
                     return;
                 };
-                let cur_h = (x * SP_PER_BP).round() as i64;
-                let cur_v = (y * SP_PER_BP).round() as i64;
                 // utils.c §1414: the stack accumulates in page mode only
                 // (forms have no annotation geometry to correct). §1420:
                 // e/f anchor the transform at the pen in bottom-origin sp
@@ -1591,41 +1633,45 @@ impl<'a> RenderCtx<'a> {
                 self.content.push_str(&buf);
                 self.content.push_str(" 0 0 cm\n");
             }
-            PdfSave => {
+            PdfSave { source } => {
                 // pdfTeX `pdf_out_save`: `checkpdfsave(cur_h, cur_v)` then
                 // `literal("q", set_origin)` (utils.c §1319). The save point
                 // is pushed unconditionally (page or form); the matrix depth
                 // only carries page-mode meaning.
-                let cur_h = (x * SP_PER_BP).round() as i64;
-                let cur_v = (y * SP_PER_BP).round() as i64;
                 self.pos_stack.push(SavePoint {
                     pos_h: cur_h,
                     pos_v: cur_v,
                     matrix_depth: self.matrix_stack.len(),
+                    source: source.clone(),
                 });
                 self.end_text();
                 self.set_origin(cur_h, cur_v);
                 self.content.push_str("q\n");
             }
-            PdfRestore => {
+            PdfRestore { source } => {
                 // pdfTeX `checkpdfrestore` (utils.c §1339): an unmatched
                 // restore only warns; skip the `Q` entirely so the stream
                 // never carries a state-pop below the stack (an unbalanced
                 // Q is a malformed PDF). A matched restore unwinds the
                 // accumulated matrix to the depth saved by `\pdfsave`.
-                let cur_h = (x * SP_PER_BP).round() as i64;
-                let cur_v = (y * SP_PER_BP).round() as i64;
                 if self.pos_stack.last().is_none() {
-                    self.eng
-                        .term_print_nl("pdfTeX warning: \\pdfrestore: missing \\pdfsave\n");
+                    self.eng.warning_at(
+                        "Unmatched \\pdfrestore: no preceding \\pdfsave exists in this shipped box",
+                        source.as_ref().map(crate::input::SourceMark::to_context),
+                    );
                     return;
                 }
                 let sp = self.pos_stack.pop().expect("non-empty above");
                 let (diff_h, diff_v) = (cur_h - sp.pos_h, cur_v - sp.pos_v);
                 if diff_h != 0 || diff_v != 0 {
-                    self.eng.term_print_nl(&format!(
-                        "pdfTeX warning: Misplaced \\pdfrestore by ({diff_h}sp, {diff_v}sp)\n"
-                    ));
+                    self.eng.warning_at(
+                        &format!(
+                            "Misplaced \\pdfrestore: position changed by ({diff_h}sp, {diff_v}sp) since the matching \\pdfsave"
+                        ),
+                        source
+                            .as_ref()
+                            .map(crate::input::SourceMark::to_context),
+                    );
                 }
                 if self.page_mode {
                     self.matrix_stack.truncate(sp.matrix_depth);
@@ -1640,8 +1686,8 @@ impl<'a> RenderCtx<'a> {
                     // explicit coordinates are page-absolute sp from the
                     // bottom-left corner; the sentinel -32768 keeps the
                     // anchor position
-                    let ax_sp = (x * SP_PER_BP).round() as i64;
-                    let ay_sp = self.page_height_sp - (y * SP_PER_BP).round() as i64;
+                    let ax_sp = cur_h;
+                    let ay_sp = self.page_height_sp - cur_v;
                     let pv = |i: usize, anchor: i64| {
                         if params[i] == crate::pdfout::PDF_POS_CURRENT {
                             (anchor, true)
@@ -1695,8 +1741,8 @@ impl<'a> RenderCtx<'a> {
                 // bottom = cur_v + depth (DVI y grows downward), then the
                 // rect goes through `matrixtransformrect` when a matrix is
                 // active and is emitted bottom-up.
-                let left = (x * SP_PER_BP).round() as i64;
-                let base = (y * SP_PER_BP).round() as i64;
+                let left = cur_h;
+                let base = cur_v;
                 let rect = self.page_rect(
                     left,
                     base - *ht as i64,
@@ -1712,6 +1758,8 @@ impl<'a> RenderCtx<'a> {
                 });
             }
             PdfStartLink { attr, uri, name } => {
+                let x = sp_to_bp(cur_h);
+                let y = self.y_pdf(sp_to_bp(cur_v));
                 self.links.push(LinkFrame {
                     uri: uri.clone(),
                     dest: name.clone(),
@@ -1726,11 +1774,19 @@ impl<'a> RenderCtx<'a> {
                 if let Some(fr) = self.links.pop() {
                     // include the pen position at closing time
                     let mut fr = fr;
+                    let x = sp_to_bp(cur_h);
+                    let y = self.y_pdf(sp_to_bp(cur_v));
                     if x < fr.min_x {
                         fr.min_x = x;
                     }
                     if x > fr.max_x {
                         fr.max_x = x;
+                    }
+                    if y < fr.min_y {
+                        fr.min_y = y;
+                    }
+                    if y > fr.max_y {
+                        fr.max_y = y;
                     }
                     self.close_link(fr);
                 }
@@ -1740,8 +1796,31 @@ impl<'a> RenderCtx<'a> {
             }
             SavePos { .. } => {
                 // position is relative to the page edges, in sp
-                self.eng.pdf_last_x = bp_to_sp(x);
-                self.eng.pdf_last_y = bp_to_sp(self.y_pdf(y));
+                self.eng.pdf_last_x = cur_h as i32;
+                self.eng.pdf_last_y = (self.page_height_sp - cur_v) as i32;
+            }
+            Write {
+                stream,
+                tokens,
+                source,
+            } => {
+                let toks = tokens.clone();
+                let src = source.clone();
+                self.eng.fire_write(*stream, &toks, src.as_ref());
+            }
+            OpenOut {
+                stream,
+                path,
+                create_parent,
+                source,
+            } => {
+                let p = path.clone();
+                let src = source.clone();
+                self.eng.exec_openout(*stream, &p, *create_parent, src.as_ref());
+            }
+            CloseOut { stream, source } => {
+                let src = source.clone();
+                self.eng.exec_closeout(*stream, src.as_ref());
             }
             _ => {}
         }

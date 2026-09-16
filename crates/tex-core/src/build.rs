@@ -11,12 +11,6 @@ use crate::token::{CsId, Token};
 
 pub const RULE_FILL: i32 = i32::MIN; // sentinel: rule dimension from context
 
-// pending \leaders object kinds (a/c/x), one entry per open leader box
-// group; completed in end_box. Engine is single-threaded (Rc state), so a
-// thread_local avoids touching the Engine struct.
-thread_local! {
-    static LEADER_KINDS: std::cell::RefCell<Vec<(usize, u8)>> = const { std::cell::RefCell::new(Vec::new()) };
-}
 impl Engine {
     pub fn font_resolver(&self) -> &dyn crate::fonts::FontResolver {
         self
@@ -26,15 +20,17 @@ impl Engine {
 
     pub fn hspace_token(&mut self) {
         let f = self.eqtb.cur_font_val;
-        if f != 0 && self.mode == crate::build::Mode::Horizontal {
-            self.flush_hyphen_disc(f);
+        if f != 0 && matches!(self.mode, Mode::Horizontal | Mode::RestrictedHorizontal) {
+            if self.mode == Mode::Horizontal {
+                self.flush_hyphen_disc(f);
+            }
+            self.flush_right_boundary_kern(f);
         }
         match self.mode {
             Mode::Horizontal | Mode::RestrictedHorizontal => {
                 let g = self.interword_glue();
 
                 self.cur_list.push(Node::Glue(g));
-                self.space_factor = 1000;
             }
             Mode::Vertical | Mode::InternalVertical => {
                 // spaces are ignored in vertical mode
@@ -143,21 +139,11 @@ impl Engine {
                 // must not already be on the list or it becomes its own para.
                 let cc = if is_letter { 11 } else { 12 };
 
-                self.pushed.push(Token::char(cc, c as u32));
+                self.push_token(Token::char(cc, c as u32));
                 self.start_paragraph(true);
             }
             Mode::Math | Mode::DisplayMath => {
-                // `_`/`^` cat 13 still have to subscript/superscript. The
-                // active `\_` body is other-`_`, whose mathcode 0x8000 would
-                // re-expand forever.
-                if c == b'_' {
-                    self.sub_token(c);
-                    return;
-                }
-                if c == b'^' {
-                    self.super_token(c);
-                    return;
-                }
+
                 let mc = self.eqtb.math_code[c as usize];
                 if mc & 0x8000 != 0 {
                     self.active_char(c);
@@ -393,14 +379,19 @@ impl Engine {
             // reads whatever font-size state is active when the page
             // fires (e.g. post-\endgroup 1.5-spacing into a singlespaced
             // bibliography)
+            // tex.web §19460: in vmode, build_page is triggered by boxes,
+            // rules, insertions, and penalties (append_penalty §21251).
+            // Glue and kern (append_glue §20596, append_kern §20615) simply
+            // tail_append to the contribution list WITHOUT triggering build_page,
+            // allowing subsequent macros (\addvspace, \@xaddvskip, \delete_last)
+            // to inspect \lastskip or adjust the contribution list before the
+            // next box contributes.
             let trigger = matches!(
                 n,
                 Node::Box { .. }
                     | Node::Rule { .. }
                     | Node::Ins { .. }
                     | Node::Penalty(_)
-                    | Node::Glue(_)
-                    | Node::Kern(_)
             );
             match &n {
                 Node::Box { h, d, .. } => {
@@ -427,7 +418,6 @@ impl Engine {
                             // still a node on the page list, and build_page
                             // treats a glue after a non-discardable node as a
                             // legal breakpoint (suppressing zero glue here
-                            // loses the canonical cut before the next box)
                             self.page_append(Node::Glue(glue));
                         }
                     }
@@ -460,10 +450,56 @@ impl Engine {
 
     // ---------- characters with ligatures & kerns ----------
 
+    /// Return whether a font contains a character and, when requested by
+    /// `\\tracinglostchars`, emit the same event as a located warning.  A
+    /// missing glyph is recoverable: TeX omits it rather than failing the job.
+    pub(crate) fn font_has_character_or_warn(
+        &mut self,
+        font_id: u16,
+        character: u8,
+        source: Option<crate::input::SourceContext>,
+    ) -> bool {
+        let Some(font) = self.eqtb.fonts.get(font_id as usize) else {
+            return false;
+        };
+        if font.char_present(character) {
+            return true;
+        }
+        if self.eqtb.int_params[crate::prim::IntParam::TracingLostChars.idx() as usize] > 0 {
+            let font_name = if font.tfm_name.is_empty() {
+                format!("font {font_id}")
+            } else {
+                font.tfm_name.clone()
+            };
+            self.warning_at(
+                &format!(
+                    "Character code {character} (0x{character:02X}) is not available in font `{font_name}`; character omitted"
+                ),
+                source,
+            );
+        }
+        false
+    }
+
     pub fn append_char(&mut self, c: u8) {
         let f = self.eqtb.cur_font_val;
-        if f == 0 {
-            // real TeX nullfont: chars are silently dropped (no error)
+        let present = self
+            .eqtb
+            .fonts
+            .get(f as usize)
+            .is_some_and(|font| font.char_present(c));
+        if !present {
+            // Materializing a source excerpt scans and decodes the physical
+            // line. Keep that work on the exceptional missing-glyph path;
+            // ordinary text can contain millions of characters.
+            let source =
+                (self.eqtb.int_params[crate::prim::IntParam::TracingLostChars.idx() as usize] > 0)
+                    .then(|| {
+                        self.current_token_source_mark()
+                            .map(|mark| mark.to_context())
+                    })
+                    .flatten();
+            let _ = self.font_has_character_or_warn(f, c, source);
             return;
         }
         // tex.web main_loop wrapup: a null discretionary rides AFTER an
@@ -513,6 +549,25 @@ impl Engine {
         }
     }
 
+    /// tex.web §20237–§20238: when leaving the character loop, TeX checks
+    /// if the last character/ligature has a lig/kern step with the font's
+    /// right boundary character (font_bchar), and if so appends the kern.
+    pub(crate) fn flush_right_boundary_kern(&mut self, f: u16) {
+        let Some(font) = self.eqtb.fonts.get(f as usize) else { return; };
+        let Some(bchar) = font.bchar else { return; };
+        let last_char = match self.cur_list.last() {
+            Some(Node::Char { c, font: pf }) if *pf == f => Some(*c),
+            Some(Node::Ligature { c, font: pf, .. }) if *pf == f => Some(*c),
+            _ => None,
+        };
+        if let Some(c) = last_char {
+            if let Some(step) = self.find_lig_kern(f, c, bchar) {
+                if step.is_kern && step.kern_amount != 0 {
+                    self.cur_list.push(Node::Kern(step.kern_amount));
+                }
+            }
+        }
+    }
     fn append_char_lig(&mut self, c: u8, f: u16) {
         // ligature & kern with previous char (either Char or an already-formed Ligature)
         let prev: Option<(u8, [u8; 3], u8)> = match self.cur_list.last() {
@@ -772,8 +827,8 @@ impl Engine {
                 format!("cc{}:{:#x}", t.cc(), t.chr())
             };
             self.error(&format!("Missing {{ inserted (got {})", got));
-            self.pushed.push(t);
-            self.pushed.push(Token::char(1, b'{' as u32));
+            self.push_token(t);
+            self.push_token(Token::char(1, b'{' as u32));
         }
         let shift = match self.pending_box_shift.take() {
             Some((d, _)) => d,
@@ -804,6 +859,9 @@ impl Engine {
                     self.push_tokens_named(toks, "<everyhbox>");
                 }
             }
+            // tex.web §1083 (@21025) & §1105 (@22114): \vbox (1), \vtop (2), and \vcenter (3)
+            // all push an internal vertical mode level, set prev_depth to ignore_depth,
+            // and expand \everyvbox.
             1 | 2 | 3 => {
                 self.normal_paragraph();
                 self.mode = Mode::InternalVertical;
@@ -829,9 +887,14 @@ impl Engine {
             self.error("Too many }'s");
             return;
         }
+        let box_level = self.eqtb.cur_level;
+        let pack_warning_source = self
+            .diagnostic_group_openings
+            .iter()
+            .rev()
+            .find(|(level, _)| *level == box_level)
+            .map(|(_, source)| source.clone());
         let kind = self.box_kinds.pop().unwrap_or(0);
-        // tex.web end_gracefully: closing a vertical box group while a
-        // paragraph is running inside it forces the \par first, so the
         // packed lines join the vbox instead of being vpack-discarded
 
         if matches!(kind, 1 | 2 | 3 | 8 | 9) && self.mode == Mode::Horizontal {
@@ -886,13 +949,14 @@ impl Engine {
             self.cur_list = outer_list;
             if outer_mode.is_v() {
                 self.cur_list.extend(inner);
+            } else if outer_mode.is_m() {
+                self.append_mlist_node(Node::VAdjust(inner));
             } else {
                 self.cur_list.push(Node::VAdjust(inner));
             }
             return;
         }
         // tex.web package(): vboxes are packed against the value of
-        // \boxmaxdepth captured before the box group was unsaved.
         let pack = |list: Vec<Node>, target: Option<(i32, bool)>, k: u8| -> boxes::PackResult {
             let (dim, spread) = match target {
                 Some((d, sp)) => (Some(d), sp),
@@ -915,7 +979,7 @@ impl Engine {
         let res = pack(inner, target, kind);
         self.last_badness = res.badness;
         match kind {
-            0 | 1 | 2 | 8 => self.report_pack_warnings(&res),
+            0 | 1 | 2 | 8 => self.report_pack_warnings_at(&res, pack_warning_source),
             _ => {}
         }
         let mut node = res.node;
@@ -968,13 +1032,12 @@ impl Engine {
         }
         // a leader-object box completes a \leaders group
         if matches!(kind, 0..=3) {
-            let is_leader_match = LEADER_KINDS.with(|s| {
-                s.borrow()
-                    .last()
-                    .map_or(false, |&(d, _)| d == self.box_kinds.len())
-            });
+            let is_leader_match = self
+                .leader_stack
+                .last()
+                .is_some_and(|&(_, depth)| depth == self.box_kinds.len());
             if is_leader_match {
-                let (_, lk) = LEADER_KINDS.with(|s| s.borrow_mut().pop().unwrap());
+                let (lk, _) = self.leader_stack.pop().unwrap();
                 let body = boxes::LeaderBody::Box(Box::new(node));
                 self.finish_leaders(lk, body);
                 return;
@@ -990,7 +1053,7 @@ impl Engine {
             return;
         }
         // only the group do_setbox (or do_shipout) opened consumes the
-        // target: an inner \\hbox inside the content must append instead
+        // target: an inner \hbox inside the content must append instead
         if self.setbox_target.is_some() && self.setbox_depth == self.box_kinds.len() {
             let idx = self.setbox_target.take().unwrap();
             let g = self.setbox_global;
@@ -1094,17 +1157,10 @@ impl Engine {
                 // surgery (`link(tail):=list_ptr(p)` then advance `tail`) —
                 // append_to_vlist never runs, so NO interline glue is
                 // recomputed AND \prevdepth keeps its pre-splice value.
-                // (Verified against real pdftex: a box spliced by \unvbox
-                // does not feed its depth into the next line's
-                // \baselineskip glue.) Rust models the splice with
-                // vlist_append_il(item, false): glue is skipped, but the
-                // shared box arm also writes prev_depth — thread the outer
-                // value across the splice and restore it after.
-                let pd_before = self.prev_depth;
+                let is_vmode = self.mode == Mode::Vertical;
                 for item in list {
-                    if self.mode.is_v() {
-                        self.vlist_append_il(item, false);
-                        self.prev_depth = pd_before;
+                    if is_vmode {
+                        self.page_append(item);
                     } else {
                         self.cur_list.push(item);
                     }
@@ -1114,9 +1170,6 @@ impl Engine {
         }
     }
 
-    fn pop_leader_kind(&self) -> Option<(usize, u8)> {
-        LEADER_KINDS.with(|s| s.borrow_mut().pop())
-    }
     fn box_prim_or_name(&self, t: Token) -> Option<Prim> {
         if !t.is_cs() {
             return None;
@@ -1178,19 +1231,19 @@ impl Engine {
         let t = self.get_x_token_skip_spaces_relax();
         match self.box_prim_or_name(t) {
             Some(Prim::HBox) => {
-                LEADER_KINDS.with(|s| s.borrow_mut().push((depth, kind)));
+                self.leader_stack.push((kind, depth));
                 self.begin_box(0);
             }
             Some(Prim::VBox) => {
-                LEADER_KINDS.with(|s| s.borrow_mut().push((depth, kind)));
+                self.leader_stack.push((kind, depth));
                 self.begin_box(1);
             }
             Some(Prim::VTop) => {
-                LEADER_KINDS.with(|s| s.borrow_mut().push((depth, kind)));
+                self.leader_stack.push((kind, depth));
                 self.begin_box(2);
             }
             Some(Prim::VCenter) => {
-                LEADER_KINDS.with(|s| s.borrow_mut().push((depth, kind)));
+                self.leader_stack.push((kind, depth));
                 self.begin_box(3);
             }
             Some(Prim::Box) => {
@@ -1235,7 +1288,7 @@ impl Engine {
                 );
             }
             _ => {
-                self.pushed.push(t);
+                self.push_token(t);
                 self.error("A <box> was supposed to be here");
             }
         }
@@ -1280,7 +1333,7 @@ impl Engine {
         } else if self.mode.is_m() && is_m_glue {
             self.scan_glue(true)
         } else {
-            self.pushed.push(t);
+            self.push_token(t);
             self.error("Leaders not followed by proper glue");
             return;
         };
@@ -1300,7 +1353,18 @@ impl Engine {
     /// tex.web hpack/vpackage common_ending: Overfull / Underfull / Loose /
     /// Tight reports for \hbox & friends, gated by \hfuzz|\vfuzz and
     /// \hbadness|\vbadness exactly as in tex.web §653-§663.
+    /// Report packing quality at the scanner's current position. Kept as the
+    /// public one-argument entry point for library callers.
     pub fn report_pack_warnings(&mut self, res: &boxes::PackResult) {
+        let source = self.current_token_source_mark();
+        self.report_pack_warnings_at(res, source);
+    }
+
+    fn report_pack_warnings_at(
+        &mut self,
+        res: &boxes::PackResult,
+        source: Option<crate::input::SourceMark>,
+    ) {
         let (hbox, nonempty) = match &res.node {
             Node::Box { kind, list, .. } => (*kind == boxes::HBOX, !list.is_empty()),
             _ => return,
@@ -1322,10 +1386,10 @@ impl Engine {
         };
         let obj = if hbox { "\\hbox" } else { "\\vbox" };
         let too = if hbox { "too wide" } else { "too high" };
-        let at = if self.in_output {
-            "has occurred while \\output is active".to_string()
+        let context = if self.in_output {
+            " while \\output is active"
         } else {
-            format!("detected at line {}", self.input.current_file_line())
+            ""
         };
         let mut msg: Option<String> = None;
         if x > 0 && res.order == 0 {
@@ -1336,36 +1400,23 @@ impl Engine {
                 } else {
                     "Loose"
                 };
-                msg = Some(format!("{} {} (badness {}) {}", kw, obj, res.badness, at));
+                msg = Some(format!("{kw} {obj} (badness {}){context}", res.badness));
             }
         } else if x < 0 && res.order == 0 {
             if -x > res.shrink[0] {
                 let excess = -x - res.shrink[0];
                 if excess > fuzz as i64 || bad_param < 100 {
                     msg = Some(format!(
-                        "Overfull {} ({}pt {}) {}",
-                        obj,
+                        "Overfull {obj} ({}pt {too}){context}",
                         print_scaled(excess),
-                        too,
-                        at
                     ));
                 }
             } else if res.badness > bad_param {
-                msg = Some(format!("Tight {} (badness {}) {}", obj, res.badness, at));
+                msg = Some(format!("Tight {obj} (badness {}){context}", res.badness));
             }
         }
         if let Some(m) = msg {
-            self.diagnostic(&m);
-        }
-    }
-
-    /// diagnostics go to the log; terminal only when \tracingonline>0
-    fn diagnostic(&mut self, msg: &str) {
-        self.log.push_str(msg);
-        self.log.push('\n');
-        if self.eqtb.int_params[IntParam::TracingOnline.idx() as usize] > 0 {
-            self.term.push_str(msg);
-            self.term.push('\n');
+            self.pack_warning_at(&m, source.map(|mark| mark.to_context()));
         }
     }
 
@@ -1387,6 +1438,14 @@ impl Engine {
     /// \wd<n>=<dimen> assignment; vanishes silently on void registers
     /// (matches tex.web set_box_dimen behavior for void boxes).
     pub fn do_box_dimen_assign(&mut self, which: u8) {
+        // Box dimensions are direct node mutations, but they still consume
+        // every assignment prefix even when the target register is void.
+        let command = match which {
+            0 => "\\wd",
+            1 => "\\ht",
+            _ => "\\dp",
+        };
+        let _ = self.take_assignment_prefixes(command);
         let idx = self.scan_reg_num();
         self.scan_optional_equals();
         let v = self.scan_dimen(false, false);
@@ -1430,10 +1489,10 @@ impl Engine {
             if self.box_prim_or_name(t).is_some()
                 || (t.is_cs() && self.cs.name(t.cs_id()) == b"usebox")
             {
-                self.pushed.push(t);
+                self.push_token(t);
                 self.scan_box_after_move();
             } else {
-                self.pushed.push(t);
+                self.push_token(t);
                 self.pending_box_shift = None;
                 self.error("A <box> was supposed to be here");
             }
@@ -1444,10 +1503,10 @@ impl Engine {
             if self.box_prim_or_name(t).is_some()
                 || (t.is_cs() && self.cs.name(t.cs_id()) == b"usebox")
             {
-                self.pushed.push(t);
+                self.push_token(t);
                 self.scan_box_after_move();
             } else {
-                self.pushed.push(t);
+                self.push_token(t);
                 self.pending_box_shift = None;
                 self.error("A <box> was supposed to be here");
             }
@@ -1458,7 +1517,7 @@ impl Engine {
         self.skip_spaces_relax();
         let t = self.get_token();
         if !t.is_cs() {
-            self.pushed.push(t);
+            self.push_token(t);
             return;
         }
         match self.box_prim_or_name(t) {
@@ -1504,7 +1563,7 @@ impl Engine {
                     let b = self.eqtb.boxed[idx as usize].take();
                     self.append_box_node(b);
                 } else {
-                    self.pushed.push(t);
+                    self.push_token(t);
                     self.error("Missing box after move/raise");
                 }
             }
@@ -1583,6 +1642,7 @@ impl Engine {
         match self.current_tail() {
             None if self.mode == Mode::Vertical => self.last_page_node_type,
             None => -1,
+            Some(Node::Char { .. }) => 0,
             Some(Node::Box { kind, .. }) if *kind == boxes::HBOX => 1,
             Some(Node::Box { .. }) => 2,
             Some(Node::Rule { .. }) => 3,
@@ -1600,8 +1660,8 @@ impl Engine {
             | Some(Node::Radical { .. })
             | Some(Node::Scripts { .. })
             | Some(Node::DelimBox { .. })
-            | Some(Node::OpLimits { .. })
             | Some(Node::Accent { .. })
+            | Some(Node::Overline { .. })
             | Some(Node::MathKern(..)) => 10,
             Some(Node::Glue(_)) | Some(Node::Leaders { .. }) => 11,
             Some(Node::Kern(_)) | Some(Node::ExplicitKern(_)) | Some(Node::MarginKern { .. }) => 12,
@@ -1776,7 +1836,9 @@ impl Engine {
             collected.push(t);
             if !t.is_char() || (t.chr() as u8).to_ascii_lowercase() != expected.to_ascii_lowercase()
             {
-                self.push_tokens(collected);
+                for t in collected.into_iter().rev() {
+                    self.push_token(t);
+                }
                 return false;
             }
         }
@@ -1814,8 +1876,8 @@ impl Engine {
         let t = self.get_x_raw();
         if !self.token_is_left_brace(t) {
             self.error("Missing { inserted");
-            self.pushed.push(t);
-            self.pushed.push(Token::char(1, b'{' as u32));
+            self.push_token(t);
+            self.push_token(Token::char(1, b'{' as u32));
         }
         self.normal_paragraph();
     }
@@ -1836,6 +1898,10 @@ impl Engine {
                 class,
                 tokens: toks,
             }),
+            Mode::Math | Mode::DisplayMath => self.append_mlist_node(Node::Mark {
+                class,
+                tokens: toks,
+            }),
             _ => self.cur_list.push(Node::Mark {
                 class,
                 tokens: toks,
@@ -1849,7 +1915,7 @@ impl Engine {
         let t = self.get_token();
         if !t.is_cs() {
             self.error("\\shipout expects a box");
-            self.pushed.push(t);
+            self.push_token(t);
             return;
         }
         if t.is_cs() {
@@ -1906,7 +1972,7 @@ impl Engine {
                 self.ship_box(b);
             }
             _ => {
-                self.pushed.push(t);
+                self.push_token(t);
                 self.error("\\shipout expects a box");
             }
         }
@@ -1925,17 +1991,19 @@ impl Engine {
         }
         match self.mode {
             Mode::Horizontal => self.end_paragraph(),
-            Mode::Vertical | Mode::InternalVertical => {
-                // \par right after a display: tex.web resume_after_display
-                // already restored hmode, so pending resume state dies here
+            Mode::Vertical => {
+                self.resume_after_display = false;
+                self.build_page();
+            }
+            Mode::InternalVertical => {
                 self.resume_after_display = false;
             }
             Mode::Math | Mode::DisplayMath => {
                 self.error("Missing $ inserted (\\par in math)");
             }
-            Mode::RestrictedHorizontal => {
-                self.error("Missing } inserted (\\par in restricted hmode)");
-            }
+            // tex.web §21179 end_graf: `if mode = hmode` — in restricted hmode (-hmode),
+            // \par does not end a paragraph; it is a no-op.
+            Mode::RestrictedHorizontal => {}
         }
     }
     /// tex.web: an assignment is global if \global prefixed it OR
@@ -1998,26 +2066,23 @@ impl Engine {
                 }
             }
             Mode::Vertical => {
-                // a genuine new paragraph clears the interrupt flag (it was
-                // set by a shipout that consumed the previous paragraph's
-                // lines mid-break — see end_paragraph)
                 self.par_interrupted = false;
                 // tex.web resume_after_display (§1194): when text follows a
                 // display the new hlist is pushed directly — no \parskip,
                 // no \parindent box, no \everypar
                 let resume = std::mem::take(&mut self.resume_after_display);
                 if !resume {
-                    // tex.web new_graf: in outer vmode \parskip glue is appended
-                    // unconditionally (the page builder discards glue sitting at
-                    // the top of a fresh page); tex.web does NOT run build_page
-                    // at paragraph start, so the skip stays visible to
-                    // \lastskip until the paragraph ends
+                    // tex.web new_graf (§21128): in outer vmode \parskip glue is
+                    // appended unconditionally; if nest_ptr=1, build_page puts
+                    // \parskip glue on the current page and evaluates legal breaks.
                     let ps = self.eqtb.glue_params[GlueParam::ParSkip.idx() as usize].clone();
                     self.page_list.push(Node::Glue(ps));
+                    self.build_page();
                 }
-                // begin paragraph: switch from page_list to hlist
                 // (tex.web: a paragraph is not a group; no eqtb level)
-                let page = std::mem::take(&mut self.page_list);
+                // In outer vmode, the global contribution list (page_list)
+                // remains live across the paragraph so that any output
+                // routine fired during the paragraph sees and contributes to it.
                 self.saved_lists.push((
                     Mode::Vertical,
                     Vec::new(),
@@ -2026,7 +2091,7 @@ impl Engine {
                     self.prev_graf,
                 ));
                 self.par_saves += 1;
-                self.par_page_lists.push(page);
+                self.par_page_lists.push(Vec::new());
                 self.mode = Mode::Horizontal;
                 self.cur_list = Vec::new();
                 self.space_factor = 1000;
@@ -2116,7 +2181,6 @@ impl Engine {
     /// Charge the display's three lines before resuming paragraph line numbering.
     pub(crate) fn resume_after_display(&mut self) {
         *self.prev_graf_mut() += 3;
-        self.resume_after_display = true;
     }
 
     fn run_everypar(&mut self) {
@@ -2171,9 +2235,7 @@ impl Engine {
             self.space_factor = sf;
             self.mode = saved_mode;
             if let Some(outer) = self.par_page_lists.pop() {
-                if saved_mode == Mode::Vertical {
-                    self.page_list = outer;
-                } else {
+                if saved_mode != Mode::Vertical {
                     self.cur_list = outer;
                 }
             } else {
@@ -2185,6 +2247,7 @@ impl Engine {
         let fnt = self.eqtb.cur_font_val;
         if fnt != 0 {
             self.flush_hyphen_disc(fnt);
+            self.flush_right_boundary_kern(fnt);
         }
         let pfs = self.eqtb.glue_params[GlueParam::ParFillSkip.idx() as usize].clone();
         // tex.web §16074: a trailing glue node is REPLACED by the infinite
@@ -2200,11 +2263,12 @@ impl Engine {
         let content = std::mem::take(&mut self.cur_list);
         // tex.web §21764/§21181: the widow penalty before the final line is
         // \displaywidowpenalty when a display interrupted the paragraph
+        let display_widow = self.next_par_widow.is_some();
         let fw = self.next_par_widow.take().unwrap_or_else(|| {
             self.eqtb.int_params[crate::prim::IntParam::WidowPenalty.idx() as usize]
         });
 
-        let lines = self.break_paragraph(content, fw);
+        let lines = self.break_paragraph(content, fw, display_widow);
         let line_count = match &lines {
             Node::Box { list, .. } => list
                 .iter()
@@ -2219,16 +2283,14 @@ impl Engine {
         // A soft page break that SHIPPED this paragraph's lines interrupts
         // it: the resumed content has no complete line yet, so just_box
         // must stay empty until the next real break refreshes it.
-        if !self.par_interrupted {
-            self.last_par_line = match &lines {
-                Node::Box { list, .. } => list
-                    .iter()
-                    .rev()
-                    .find(|n| matches!(n, Node::Box { kind, .. } if *kind == crate::boxes::HBOX))
-                    .cloned(),
-                _ => None,
-            };
-        }
+        self.last_par_line = match &lines {
+            Node::Box { list, .. } => list
+                .iter()
+                .rev()
+                .find(|n| matches!(n, Node::Box { kind, .. } if *kind == crate::boxes::HBOX))
+                .cloned(),
+            _ => None,
+        };
 
         // tex.web §1079 normal_paragraph: reset paragraph-local parameters —
         // all four resets are LOCAL eq_defines, so a group-wrapped \par (the
@@ -2250,7 +2312,7 @@ impl Engine {
 
         let mut lines_opt = Some(lines);
         match (saved_mode, self.par_page_lists.pop()) {
-            (Mode::Vertical, Some(mut page)) => {
+            (Mode::Vertical, _) => {
                 // paragraph was at outer level: tex.web contributes the line
                 // boxes (and migrated \vadjust material) directly to the page
                 // builder. Packing them into one opaque vbox would make the
@@ -2263,21 +2325,8 @@ impl Engine {
                 // tex.web append_to_vlist: materialize interline glue NOW
                 // with the \baselineskip in force at paragraph end — the
                 // page builder's lazy interline would read post-group state
-                let filled = self.fill_line_interline(self.prev_depth, lines);
-                let mut last_d = self.prev_depth;
-                for n in filled.iter().rev() {
-                    match n {
-                        Node::Box { d, .. } | Node::Rule { depth: d, .. } => {
-                            last_d = *d;
-                            break;
-                        }
-                        // Migrated insertions, marks, and writes do not replace
-                        // the preceding line's depth.
-                        _ => {}
-                    }
-                }
-                page.extend(filled);
-                self.page_list = page;
+                let (filled, last_d) = self.fill_line_interline(self.prev_depth, lines);
+                self.page_list.extend(filled);
                 self.mode = Mode::Vertical;
                 self.cur_list = Vec::new();
                 self.prev_depth = last_d;
@@ -2305,18 +2354,7 @@ impl Engine {
                     Node::Box { list, .. } => list,
                     other => vec![other],
                 };
-                let filled = self.fill_line_interline(self.prev_depth, taken);
-                // prev_depth after the splice = depth of the last line box
-                let mut last_d = self.prev_depth;
-                for n in filled.iter().rev() {
-                    match n {
-                        Node::Box { d, .. } | Node::Rule { depth: d, .. } => {
-                            last_d = *d;
-                            break;
-                        }
-                        _ => {}
-                    }
-                }
+                let (filled, last_d) = self.fill_line_interline(self.prev_depth, taken);
                 self.cur_list = inner;
                 self.mode = Mode::InternalVertical;
                 self.cur_list.extend(filled);
@@ -2347,7 +2385,7 @@ impl Engine {
     /// baselineskip/lineskip glue (tex.web append_to_vlist §17438-17440):
     /// used when a paragraph's lines land in an internal vlist, which the
     /// page builder never processes
-    fn fill_line_interline(&self, outer_prev_depth: i32, list: NodeList) -> NodeList {
+    fn fill_line_interline(&self, outer_prev_depth: i32, list: NodeList) -> (NodeList, i32) {
         const IGNORE: i32 = -1000 * 65536;
         let bs = self.eqtb.glue_params[GlueParam::BaselineSkip.idx() as usize].clone();
         let ls = self.eqtb.glue_params[GlueParam::LineSkip.idx() as usize].clone();
@@ -2357,18 +2395,24 @@ impl Engine {
         // hold a pending placeholder until we know whether a box follows
         let mut held_placeholder = false;
         for n in list.into_iter() {
-            match &n {
-                Node::Glue(g) if g.width == 0 && g.stretch == 0 && g.shrink == 0 => {
+            match n {
+                Node::Glue(ref g) if g.width == 0 && g.stretch == 0 && g.shrink == 0 => {
                     held_placeholder = true;
                     continue;
                 }
-                Node::Box { h, d, .. }
-                | Node::Rule {
-                    height: h,
-                    depth: d,
-                    ..
-                } => {
-                    let (h, d) = (*h, *d);
+                Node::VAdjust(items) => {
+                    // tex.web §17415-17416: adjustment material joins the
+                    // vertical list raw without interline glue and without
+                    // altering prev_depth
+                    out.extend(items);
+                }
+                Node::Rule { .. } => {
+                    held_placeholder = false;
+                    prev_depth = IGNORE;
+                    out.push(n);
+                }
+                Node::Box { h, d, .. } => {
+                    let (h, d) = (h, d);
                     if prev_depth > IGNORE {
                         let b = bs.width as i64 - prev_depth as i64 - h as i64;
                         let glue = if b < lsl as i64 {
@@ -2401,7 +2445,7 @@ impl Engine {
         if held_placeholder {
             out.push(Node::Glue(Glue::zero()));
         }
-        out
+        (out, prev_depth)
     }
 }
 
@@ -2423,4 +2467,90 @@ pub fn print_scaled(v: i64) -> String {
         int_part,
         String::from_utf8_lossy(&digits)
     )
+}
+
+#[cfg(test)]
+mod structural_state_tests {
+    use crate::engine::Engine;
+    use crate::prim::IntParam;
+    use crate::tfm::CharInfo;
+
+    fn run_in(engine: &mut Engine, src: &str) {
+        engine.init_primitives();
+        engine.add_nullfont();
+        let tick = char::from(96);
+        let input =
+            format!("\\catcode{tick}\\{{=1 \\catcode{tick}\\}}=2 \\catcode{tick}\\#=6 {src}\n");
+        engine
+            .input
+            .push_file("structural-state.tex".into(), input.into_bytes());
+        engine.run();
+    }
+
+    #[test]
+    fn unfinished_leader_box_cannot_affect_a_later_engine() {
+        let mut engine = Box::new(Engine::new(true));
+        let address = (&*engine) as *const Engine;
+        run_in(&mut engine, r"\hbox{\leaders\hbox{");
+        engine.finish_job_diagnostics();
+        assert!(engine.stopped_on_error);
+        assert_eq!(engine.leader_stack.len(), 1);
+
+        // Replace the engine without changing its allocation. This makes the
+        // address-reuse regression deterministic rather than allocator-dependent.
+        *engine = Engine::new(true);
+        assert_eq!((&*engine) as *const Engine, address);
+
+        // The inner ordinary box closes at the same box-stack depth as the
+        // abandoned leader object above. A process-global stack would treat
+        // it as that earlier engine's leader body and consume the following
+        // closing brace while looking for glue.
+        run_in(&mut engine, r"\hbox{\hbox{ok}}\end");
+        assert_eq!(
+            engine.error_count, 0,
+            "later engine inherited leader state:\n{}",
+            engine.diagnostic_output
+        );
+        assert!(engine.leader_stack.is_empty());
+    }
+
+    #[test]
+    fn missing_text_glyphs_warn_for_nullfont_and_empty_tfm_slots() {
+        let mut engine = Engine::new(false);
+        engine.add_nullfont();
+        assert_eq!(
+            engine.eqtb.int_params[IntParam::TracingLostChars.idx() as usize],
+            0
+        );
+        engine.eqtb.int_params[IntParam::TracingLostChars.idx() as usize] = 1;
+
+        engine.append_char(b'A');
+        assert_eq!(engine.diagnostics.len(), 1);
+        assert!(engine.diagnostics[0].message.contains("font `nullfont`"));
+        assert!(engine.cur_list.is_empty());
+
+        let mut font_with_hole = (*engine.eqtb.fonts[0]).clone();
+        font_with_hole.name = "holes".into();
+        font_with_hole.tfm_name = "holes".into();
+        font_with_hole.bc = 0;
+        font_with_hole.ec = 2;
+        font_with_hole.chars = vec![
+            CharInfo {
+                width: 0,
+                height: 0,
+                depth: 0,
+                italic: 0,
+                tag: 0,
+                remainder: 0,
+            };
+            3
+        ];
+        engine.eqtb.fonts.push(std::rc::Rc::new(font_with_hole));
+        engine.eqtb.cur_font_val = 1;
+
+        engine.append_char(1);
+        assert_eq!(engine.diagnostics.len(), 2);
+        assert!(engine.diagnostics[1].message.contains("font `holes`"));
+        assert!(engine.cur_list.is_empty());
+    }
 }

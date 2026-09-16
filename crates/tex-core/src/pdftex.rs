@@ -98,10 +98,31 @@ impl Engine {
             let Some(font) = self.eqtb.fonts.get(*fid as usize).cloned() else {
                 continue;
             };
-            let pfb_bytes = font
+            let pfb_path = font
                 .type1_path
                 .as_ref()
-                .and_then(|name| self.font_loader.kpse.read(name, tex_kpse::Format::Type1));
+                .and_then(|name| self.font_loader.kpse.find(name, tex_kpse::Format::Type1));
+            if let Some(name) = font.type1_path.as_deref() {
+                self.font_loader.record_lookup_dependency(
+                    name,
+                    tex_kpse::Format::Type1,
+                    pfb_path.as_deref(),
+                );
+            }
+            let pfb_bytes = match pfb_path {
+                Some(path) => match std::fs::read(&path) {
+                    Ok(bytes) => {
+                        self.record_loaded_bytes(&path, &bytes);
+                        self.loaded_files.push(path);
+                        Some(bytes)
+                    }
+                    Err(_) => None,
+                },
+                None => font
+                    .type1_path
+                    .as_ref()
+                    .and_then(|name| self.font_loader.kpse.read(name, tex_kpse::Format::Type1)),
+            };
             let widths = (0..=255u8)
                 .map(|c| {
                     let w = font.char_width(c);
@@ -137,7 +158,12 @@ impl Engine {
                 ef.ascent = ta;
             }
             if ef.descent == 0.0 {
-                ef.descent = td;
+                ef.descent = if ef.ascent == 0.0 { 0.0 } else { td };
+            } else if ef.ascent == 0.0 {
+                ef.descent = 0.0;
+            }
+            if ef.ascent - ef.descent > 3000.0 {
+                ef.descent = ef.ascent - 3000.0;
             }
             if ef.cap_height == 0.0 {
                 ef.cap_height = tc;

@@ -6,6 +6,7 @@ edition.workspace = true
 [dependencies]
 tex-kpse = { path = "../tex-kpse" }
 flate2 = { workspace = true }
+crc32fast = "1.5"
 zstd = { workspace = true }
 rustybuzz = { workspace = true }
 ttf-parser = { workspace = true }

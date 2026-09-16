@@ -141,6 +141,74 @@ fn forms_embed_fonts_used_only_inside_forms() {
 }
 
 #[test]
+fn undefined_pdf_xobject_references_are_located_and_omitted() {
+    use tex_core::engine::InteractionMode;
+
+    let reference_line = r"\shipout\hbox{\ten A\pdfrefximage 91\pdfrefxform 92}";
+    let source = format!("\\font\\ten=cmr10\n{reference_line}\n\\end");
+    let mut e = Engine::new(false);
+    e.init_primitives();
+    e.add_nullfont();
+    e.set_interaction_mode(InteractionMode::Nonstop);
+    e.input
+        .push_file("undefined-pdf-ref.tex".to_string(), source.into_bytes());
+
+    e.run();
+
+    assert_eq!(e.error_count, 2, "{}", e.diagnostic_output);
+    assert_eq!(e.diagnostics.len(), 2, "{}", e.diagnostic_output);
+    assert_eq!(
+        e.diagnostics[0].message,
+        "Undefined PDF image object 91 in \\pdfrefximage; reference omitted"
+    );
+    assert_eq!(
+        e.diagnostics[1].message,
+        "Undefined PDF form object 92 in \\pdfrefxform; reference omitted"
+    );
+    let image_source = e.diagnostics[0].primary.as_ref().unwrap();
+    assert_eq!(
+        (
+            image_source.name.as_str(),
+            image_source.line,
+            image_source.column
+        ),
+        (
+            "undefined-pdf-ref.tex",
+            2,
+            reference_line.find("91").unwrap() + 1
+        )
+    );
+    let form_source = e.diagnostics[1].primary.as_ref().unwrap();
+    assert_eq!(
+        (
+            form_source.name.as_str(),
+            form_source.line,
+            form_source.column
+        ),
+        (
+            "undefined-pdf-ref.tex",
+            2,
+            reference_line.find("92").unwrap() + 1
+        )
+    );
+    assert!(e.diagnostics[0]
+        .help
+        .as_deref()
+        .is_some_and(|help| help.contains("\\pdfximage")));
+    assert!(e.diagnostics[1]
+        .help
+        .as_deref()
+        .is_some_and(|help| help.contains("\\pdfxform")));
+
+    assert_eq!(e.pdf_doc.pages.len(), 1);
+    let page = String::from_utf8_lossy(&e.pdf_doc.pages[0].content);
+    assert!(!page.contains("/Im91 Do"), "{page}");
+    assert!(!page.contains("/Fm92 Do"), "{page}");
+    let pdf = tex_core::pdffile::write_pdf(&e.pdf_doc);
+    lopdf::Document::load_mem(&pdf).expect("invalid references must not break the PDF");
+}
+
+#[test]
 fn input_rereads_a_file_rewritten_by_tex() {
     let path = std::env::temp_dir().join(format!("tex-reread-{}.tex", std::process::id()));
     std::fs::write(&path, b"\\def\\value{old}\n").unwrap();

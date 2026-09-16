@@ -1,9 +1,8 @@
-// The compatibility executable intentionally shares the PDF engine driver;
-// it selects its public identity from argv[0]. Keep a distinct Cargo source
-// path so Cargo does not diagnose one file as three separate targets.
-#[path = "pdflatex.rs"]
+// Keep this executable tiny: it relays to the one installed PDF engine and
+// tells that engine which public personality was invoked.
+#[path = "launcher.rs"]
 mod driver;
 
-fn main() {
-    driver::main();
+fn main() -> std::process::ExitCode {
+    driver::main()
 }

@@ -2,6 +2,15 @@ use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::path::PathBuf;
 
+// Independently compressing every small .sty/.fd file throws away almost all
+// cross-file redundancy. Four MiB chunks preserve random access while getting
+// close to the compression ratio of the original solid archive.
+const CHUNK_TARGET: usize = 4 * 1024 * 1024;
+// Compression happens only at build time. Level 19 reduces the embedded
+// package payload by about another 2 MiB versus level 12 while preserving the
+// same four-MiB runtime chunks and therefore the same decompression footprint.
+const COMPRESSION_LEVEL: i32 = 19;
+
 fn main() {
     println!("cargo:rerun-if-changed=assets/packages.tar.zst");
     let out = PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
@@ -9,8 +18,10 @@ fn main() {
     let mut archive = tar::Archive::new(zstd::Decoder::new(archive).unwrap());
     let mut blob =
         std::io::BufWriter::new(std::fs::File::create(out.join("packages.bin")).unwrap());
-    let mut index = BTreeMap::new();
-    let mut offset = 0usize;
+    let mut index: BTreeMap<String, (usize, usize, usize)> = BTreeMap::new();
+    let mut chunks: Vec<(usize, usize)> = Vec::new();
+    let mut chunk = Vec::with_capacity(CHUNK_TARGET);
+    let mut blob_offset = 0usize;
     for entry in archive.entries().unwrap() {
         let mut entry = entry.unwrap();
         if !entry.header().entry_type().is_file() {
@@ -26,28 +37,93 @@ fn main() {
         }
         let mut data = Vec::new();
         entry.read_to_end(&mut data).unwrap();
-        let compressed = zstd::encode_all(data.as_slice(), 3).unwrap();
-        blob.write_all(&compressed).unwrap();
-        index.insert(name.to_owned(), (offset, compressed.len()));
-        offset += compressed.len();
+        if !chunk.is_empty() && chunk.len().saturating_add(data.len()) > CHUNK_TARGET {
+            write_chunk(&mut blob, &mut chunks, &mut blob_offset, &mut chunk);
+        }
+        let chunk_index = chunks.len();
+        let member_offset = chunk.len();
+        let member_len = data.len();
+        chunk.extend_from_slice(&data);
+        index.insert(name.to_owned(), (chunk_index, member_offset, member_len));
+        if chunk.len() >= CHUNK_TARGET {
+            write_chunk(&mut blob, &mut chunks, &mut blob_offset, &mut chunk);
+        }
     }
+    write_chunk(&mut blob, &mut chunks, &mut blob_offset, &mut chunk);
     blob.flush().unwrap();
     let mut generated =
         std::io::BufWriter::new(std::fs::File::create(out.join("packages_index.rs")).unwrap());
+    let chunks: Vec<(u32, u32)> = chunks
+        .into_iter()
+        .map(|(offset, length)| (packed(offset), packed(length)))
+        .collect();
     writeln!(
         generated,
-        "static PACKAGE_INDEX: &[(&str, usize, usize)] = &["
+        "static PACKAGE_CHUNKS: &[(u32, u32)] = &{chunks:?};"
     )
     .unwrap();
+
+    // A Rust `&str` in every generated record costs both a pointer-sized
+    // field and a dynamic relocation in position-independent executables.
+    // Keep exact names in one byte blob and refer to them with u32
+    // offset/length pairs; the folded index reuses those same names. Besides
+    // shrinking the installed binary, this substantially reduces the dynamic
+    // loader's relocation work before `main`.
+    let entries: Vec<_> = index.into_iter().collect();
+    let mut names = Vec::new();
     let mut folded = BTreeMap::new();
-    for (position, (name, (offset, length))) in index.into_iter().enumerate() {
-        writeln!(generated, "({name:?}, {offset}, {length}),").unwrap();
+    let mut packed_entries = Vec::with_capacity(entries.len());
+    for (position, (name, (chunk, offset, length))) in entries.iter().enumerate() {
+        let name_offset = packed(names.len());
+        let name_length = packed(name.len());
+        names.extend_from_slice(name.as_bytes());
+        packed_entries.push((
+            name_offset,
+            name_length,
+            packed(*chunk),
+            packed(*offset),
+            packed(*length),
+        ));
         folded.entry(name.to_ascii_lowercase()).or_insert(position);
     }
-    writeln!(generated, "];").unwrap();
-    writeln!(generated, "static PACKAGE_FOLDED: &[(&str, usize)] = &[").unwrap();
-    for (name, position) in folded {
-        writeln!(generated, "({name:?}, {position}),").unwrap();
+    // Folded order needs only package positions. Runtime folds the exact name
+    // while comparing, avoiding a second name table and a query allocation.
+    let packed_folded: Vec<u32> = folded.into_values().map(packed).collect();
+    std::fs::write(out.join("package_names.bin"), &names).unwrap();
+    writeln!(
+        generated,
+        "static PACKAGE_NAMES: &[u8; {}] = include_bytes!(concat!(env!(\"OUT_DIR\"), \"/package_names.bin\"));",
+        names.len()
+    )
+    .unwrap();
+    writeln!(
+        generated,
+        "static PACKAGE_INDEX: &[(u32, u32, u32, u32, u32)] = &{packed_entries:?};"
+    )
+    .unwrap();
+    writeln!(
+        generated,
+        "static PACKAGE_FOLDED: &[u32] = &{packed_folded:?};"
+    )
+    .unwrap();
+}
+
+fn packed(value: usize) -> u32 {
+    u32::try_from(value).expect("embedded package index exceeds 4 GiB")
+}
+
+fn write_chunk(
+    blob: &mut impl Write,
+    chunks: &mut Vec<(usize, usize)>,
+    blob_offset: &mut usize,
+    chunk: &mut Vec<u8>,
+) {
+    if chunk.is_empty() {
+        return;
     }
-    writeln!(generated, "];").unwrap();
+    let compressed = zstd::encode_all(chunk.as_slice(), COMPRESSION_LEVEL).unwrap();
+    blob.write_all(&compressed).unwrap();
+    chunks.push((*blob_offset, compressed.len()));
+    *blob_offset += compressed.len();
+    chunk.clear();
 }

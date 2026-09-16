@@ -11,6 +11,7 @@ use crate::prim::{DimParam, IntParam, Prim};
 enum UnitKind {
     Ratio(i64, i64),
     InternalSp(i64),
+    FontRelativeSp(i64),
     Sp,
 }
 
@@ -23,6 +24,21 @@ enum NumericOrigin {
 }
 use crate::scaled::{mult, ONE};
 use crate::token::Token;
+
+fn font_character_code_primitive(primitive: Prim) -> &'static str {
+    match primitive {
+        Prim::EfCode => "\\efcode",
+        Prim::LpCode => "\\lpcode",
+        Prim::RpCode => "\\rpcode",
+        Prim::TagCode => "\\tagcode",
+        Prim::KnBsCode => "\\knbscode",
+        Prim::StBsCode => "\\stbscode",
+        Prim::ShBsCode => "\\shbscode",
+        Prim::KnBcCode => "\\knbccode",
+        Prim::KnAcCode => "\\knaccode",
+        _ => "font character table",
+    }
+}
 
 impl Engine {
     #[inline]
@@ -78,7 +94,7 @@ impl Engine {
             if t.is_cs() && self.cur_prim == Some(Prim::Relax) {
                 continue;
             }
-            self.pushed.push(t);
+            self.push_token(t);
             return;
         }
     }
@@ -88,7 +104,7 @@ impl Engine {
             if t.is_char() && (t.cc() == 10 || t.cc() == 9) {
                 continue;
             }
-            self.pushed.push(t);
+            self.push_token(t);
             return;
         }
     }
@@ -116,7 +132,7 @@ impl Engine {
         {
             return t;
         }
-        self.pushed.push(t);
+        self.push_token(t);
         self.get_x_raw()
     }
 
@@ -161,9 +177,9 @@ impl Engine {
     /// space, otherwise back it up. After an alphabetic constant this is
     /// what drives expl3 f-expansion (`\romannumeral`^^@\foo` expands `\foo`).
     fn scan_optional_space(&mut self) {
-        let t = self.raw_token();
+        let t = self.get_x_raw_keep_cond();
         if !t.is_space() {
-            self.pushed.push(t);
+            self.push_token(t);
         }
     }
 
@@ -188,7 +204,7 @@ impl Engine {
         self.skip_spaces_relax();
         let t = self.get_token();
         if !(t.is_char() && t.chr() == b'=' as u32) {
-            self.pushed.push(t);
+            self.push_token(t);
         }
     }
 
@@ -197,18 +213,25 @@ impl Engine {
         &mut self,
         radix: u32,
         allow_letters: bool,
-    ) -> (i64, bool, Option<SourceContext>) {
+    ) -> (i64, bool, Option<SourceContext>, bool, bool) {
         let mut v: i64 = 0;
         let mut overflowed = false;
         let mut overflow_source = None;
+        let mut saw_digit = false;
+        let mut ended_at_eof = false;
         loop {
             // expanding fetch, no space skip: a space terminates the constant
             let t = self.get_x_raw();
+            if t == crate::input::EOF_MARKER {
+                ended_at_eof = true;
+                self.push_token(t);
+                break;
+            }
             if t.is_space() {
                 break; // absorb one space, number complete
             }
             if !t.is_char() {
-                self.pushed.push(t);
+                self.push_token(t);
                 break;
             }
             let c = t.chr();
@@ -221,14 +244,15 @@ impl Engine {
                     c - b'A' as u32 + 10
                 }
                 _ => {
-                    self.pushed.push(t);
+                    self.push_token(t);
                     break;
                 }
             };
             if d >= radix {
-                self.pushed.push(t);
+                self.push_token(t);
                 break;
             }
+            saw_digit = true;
             v = v * radix as i64 + d as i64;
             if v > 0x7FFF_FFFF {
                 v = 0x7FFF_FFFF;
@@ -240,7 +264,7 @@ impl Engine {
                 }
             }
         }
-        (v, overflowed, overflow_source)
+        (v, overflowed, overflow_source, saw_digit, ended_at_eof)
     }
 
     fn is_digit_token(t: Token) -> bool {
@@ -297,7 +321,7 @@ impl Engine {
                             }
                         }
                     } else {
-                        self.pushed.push(t2);
+                        self.push_token(t2);
                         break;
                     }
                 }
@@ -307,16 +331,38 @@ impl Engine {
                 break;
             }
             if t.is_char() && t.chr() == b'\'' as u32 {
-                let (value, overflowed, source) = self.scan_digits(8, false);
+                let prefix_origin = self.numeric_origin();
+                let (value, overflowed, source, saw_digit, ended_at_eof) =
+                    self.scan_digits(8, false);
                 v = value;
+                if !saw_digit {
+                    let source = if ended_at_eof {
+                        prefix_origin.and_then(|origin| self.numeric_origin_context(origin))
+                    } else {
+                        self.numeric_origin()
+                            .and_then(|origin| self.numeric_origin_context(origin))
+                    };
+                    self.error_at("Missing number, treated as zero", source);
+                }
                 if overflowed {
                     self.error_at("Number too big", source);
                 }
                 break;
             }
             if t.is_char() && t.chr() == b'"' as u32 {
-                let (value, overflowed, source) = self.scan_digits(16, true);
+                let prefix_origin = self.numeric_origin();
+                let (value, overflowed, source, saw_digit, ended_at_eof) =
+                    self.scan_digits(16, true);
                 v = value;
+                if !saw_digit {
+                    let source = if ended_at_eof {
+                        prefix_origin.and_then(|origin| self.numeric_origin_context(origin))
+                    } else {
+                        self.numeric_origin()
+                            .and_then(|origin| self.numeric_origin_context(origin))
+                    };
+                    self.error_at("Missing number, treated as zero", source);
+                }
                 if overflowed {
                     self.error_at("Number too big", source);
                 }
@@ -328,6 +374,13 @@ impl Engine {
                 let t2 = self.raw_token();
                 if t2.is_char() {
                     v = t2.chr() as i64;
+                    // tex.web §442: undo raw_token's brace-depth adjustment for
+                    // an alphabetic char constant (`\ifnum 0=`}\fi` idiom).
+                    if t2.cc() == 2 {
+                        self.align_brace_depth = self.align_brace_depth.saturating_add(1);
+                    } else if t2.cc() == 1 {
+                        self.align_brace_depth = self.align_brace_depth.saturating_sub(1);
+                    }
                 } else if t2.is_cs() {
                     let name = self.cs.name(t2.cs_id());
                     v = name.first().copied().unwrap_or(0) as i64;
@@ -343,7 +396,7 @@ impl Engine {
                 // (longtable's \\ifnum0=`}\\fi brace-hiding idiom).
                 let t3 = self.get_x_raw_keep_cond();
                 if !t3.is_space() {
-                    self.pushed.push(t3);
+                    self.push_token(t3);
                 }
                 break;
             }
@@ -360,34 +413,44 @@ impl Engine {
                         v = self.par_shape.len() as i64;
                         break 'scan_loop;
                     }
+                    Some(
+                        p @ (Prim::InterLinePenalties
+                        | Prim::ClubPenalties
+                        | Prim::WidowPenalties
+                        | Prim::DisplayWidowPenalties),
+                    ) => {
+                        let index = self.scan_int();
+                        v = self.penalty_shape_value(p, index) as i64;
+                        break 'scan_loop;
+                    }
                     Some(Prim::CatCode) => {
-                        let c = self.scan_char_num();
-                        v = self.eqtb.cat[c as usize] as i64;
+                        let c = self.scan_character_table_index("\\catcode");
+                        v = self.eqtb.cat[c] as i64;
                         break 'scan_loop;
                     }
                     Some(Prim::MathCode) => {
-                        let c = self.scan_char_num();
-                        v = self.eqtb.math_code[c as usize] as i64;
+                        let c = self.scan_character_table_index("\\mathcode");
+                        v = self.eqtb.math_code[c] as i64;
                         break 'scan_loop;
                     }
                     Some(Prim::DelCode) => {
-                        let c = self.scan_char_num();
-                        v = self.eqtb.del_code[c as usize] as i64;
+                        let c = self.scan_character_table_index("\\delcode");
+                        v = self.eqtb.del_code[c] as i64;
                         break 'scan_loop;
                     }
                     Some(Prim::LcCodeP) => {
-                        let c = self.scan_char_num();
-                        v = self.eqtb.lc_code[c as usize] as i64;
+                        let c = self.scan_character_table_index("\\lccode");
+                        v = self.eqtb.lc_code[c] as i64;
                         break 'scan_loop;
                     }
                     Some(Prim::SfCodeP) => {
-                        let c = self.scan_char_num();
-                        v = self.eqtb.sf_code[c as usize] as i64;
+                        let c = self.scan_character_table_index("\\sfcode");
+                        v = self.eqtb.sf_code[c] as i64;
                         break 'scan_loop;
                     }
                     Some(Prim::UcCodeP) => {
-                        let c = self.scan_char_num();
-                        v = self.eqtb.uc_code[c as usize] as i64;
+                        let c = self.scan_character_table_index("\\uccode");
+                        v = self.eqtb.uc_code[c] as i64;
                         break 'scan_loop;
                     }
                     Some(Prim::IntP(p)) => {
@@ -396,6 +459,14 @@ impl Engine {
                     }
                     Some(Prim::PdfShellEscape) => {
                         // This engine never executes shell commands.
+                        v = 0;
+                        break 'scan_loop;
+                    }
+                    Some(Prim::PdfRandomSeed) => {
+                        v = self.random_seed as i64;
+                        break 'scan_loop;
+                    }
+                    Some(Prim::PdfElapsedTime) => {
                         v = 0;
                         break 'scan_loop;
                     }
@@ -473,7 +544,7 @@ impl Engine {
                         | Prim::KnAcCode),
                     ) => {
                         let f = self.scan_font_id() as usize;
-                        let c = self.scan_char_num().clamp(0, 255) as u8;
+                        let c = self.scan_character_code(font_character_code_primitive(p));
                         let ex = match self.eqtb.expand.get(f) {
                             Some(x) => x,
                             None => {
@@ -519,6 +590,7 @@ impl Engine {
                         p @ (Prim::PdfLastObj
                         | Prim::PdfLastXForm
                         | Prim::PdfLastXImage
+                        | Prim::PdfLastXImagePages
                         | Prim::PdfLastLink
                         | Prim::PdfLastAnnot),
                     ) => {
@@ -542,6 +614,10 @@ impl Engine {
                             .get(i)
                             .copied()
                             .unwrap_or(0) as i64;
+                        break 'scan_loop;
+                    }
+                    Some(Prim::PdfXImageBBox) => {
+                        v = self.scan_pdf_ximage_bbox() as i64;
                         break 'scan_loop;
                     }
                     Some(Prim::Skip) => {
@@ -594,7 +670,7 @@ impl Engine {
                     },
                 }
             }
-            self.pushed.push(t);
+            self.push_token(t);
 
             // tex.web \S470: a char token ends the number with an error; a
             // control sequence (e.g. a frozen \protected macro stopping an
@@ -648,7 +724,10 @@ impl Engine {
                     None => 0,
                     Some(crate::eqtb::LevelType::Simple) => 1,
                     Some(crate::eqtb::LevelType::SemiSimple) => 14,
-                    Some(crate::eqtb::LevelType::Group) => 1,
+                    Some(crate::eqtb::LevelType::MathShift) => 15,
+                    Some(crate::eqtb::LevelType::MathLeft) => 16,
+                    Some(crate::eqtb::LevelType::MathGroup) => 9,
+                    Some(crate::eqtb::LevelType::Group) => 9,
                     Some(crate::eqtb::LevelType::Box) => match self.box_kinds.last().copied() {
                         Some(0) => 2,
                         Some(1) => 4,
@@ -760,6 +839,7 @@ impl Engine {
             Prim::PdfLastObj => self.pdf_last_obj,
             Prim::PdfLastXForm => self.pdf_last_xform,
             Prim::PdfLastXImage => self.pdf_last_ximage,
+            Prim::PdfLastXImagePages => self.pdf_last_ximage_pages,
             Prim::PdfLastLink => self.pdf_last_link,
             Prim::PdfLastAnnot => self.pdf_last_annot,
             _ => 0,
@@ -767,13 +847,65 @@ impl Engine {
     }
 
     pub fn scan_reg_num(&mut self) -> u16 {
-        let n = self.scan_int();
+        let (n, source) = self.scan_int_with_source();
         let max = self.eqtb.count.len() as i32 - 1;
         if n < 0 || n > max {
-            self.error("Register number out of range");
+            self.error_at(
+                &format!(
+                    "Register number {n} is out of range; expected a number from 0 through {max}"
+                ),
+                source,
+            );
             return 0;
         }
         n as u16
+    }
+
+    /// Scan a character/integer operand and retain the first source token,
+    /// before numeric lookahead advances to the following delimiter.
+    pub(crate) fn scan_int_with_source(&mut self) -> (i32, Option<SourceContext>) {
+        self.skip_spaces_relax();
+        let origin = self.numeric_origin();
+        let value = self.scan_int();
+        let source = origin.and_then(|origin| self.numeric_origin_context(origin));
+        (value, source)
+    }
+
+    /// Scan an operand used to index one of TeX's 256-entry character tables.
+    /// Invalid input recovers with character zero instead of reaching an
+    /// unchecked slice index.
+    pub(crate) fn scan_character_code(&mut self, command: &str) -> u8 {
+        let (character, source) = self.scan_int_with_source();
+        if (0..=255).contains(&character) {
+            character as u8
+        } else {
+            self.error_at(
+                &format!(
+                    "Character code {character} is out of range for {command}; expected 0 through 255 and used character 0"
+                ),
+                source,
+            );
+            0
+        }
+    }
+
+    fn scan_character_table_index(&mut self, command: &str) -> usize {
+        self.scan_character_code(command) as usize
+    }
+
+    pub(crate) fn scan_math_family(&mut self, command: &str) -> usize {
+        let (family, source) = self.scan_int_with_source();
+        if (0..=15).contains(&family) {
+            family as usize
+        } else {
+            self.error_at(
+                &format!(
+                    "Font family {family} is out of range for {command}; expected 0 through 15 and used family 0"
+                ),
+                source,
+            );
+            0
+        }
     }
 
     /// TeX scan_dimen. mu: scan in math units. inf_ok: allow fil/fill/filll
@@ -799,7 +931,7 @@ impl Engine {
                 negate = !negate;
                 continue;
             }
-            self.pushed.push(t);
+            self.push_token(t);
             break;
         }
         // factor: integer or decimal, or a direct dimen source
@@ -835,7 +967,7 @@ impl Engine {
                             }
                         }
                     } else {
-                        self.pushed.push(t2);
+                        self.push_token(t2);
                         break;
                     }
                 }
@@ -860,7 +992,7 @@ impl Engine {
                         digits.push((t2.chr() - b'0' as u32) as u8);
                     }
                 } else {
-                    self.pushed.push(t2);
+                    self.push_token(t2);
                     break;
                 }
             }
@@ -877,6 +1009,12 @@ impl Engine {
             let t2 = self.raw_token();
             if t2.is_char() {
                 int_part = t2.chr() as i64;
+                // tex.web §442: undo raw_token's brace-depth adjustment
+                if t2.cc() == 2 {
+                    self.align_brace_depth = self.align_brace_depth.saturating_add(1);
+                } else if t2.cc() == 1 {
+                    self.align_brace_depth = self.align_brace_depth.saturating_sub(1);
+                }
             } else if t2.is_cs() {
                 let name = self.cs.name(t2.cs_id());
                 int_part = name.first().copied().unwrap_or(0) as i64;
@@ -1002,6 +1140,11 @@ impl Engine {
                             .unwrap_or(0),
                     );
                 }
+                Some(Prim::PdfXImageBBox) => {
+                    int_part = 1;
+                    frac_f = 0;
+                    direct = Some(self.scan_pdf_ximage_bbox());
+                }
                 Some(Prim::Count) => {
                     // internal integer coerced to dimen (sp), tex.web scan_something_internal
                     let i = self.scan_reg_num();
@@ -1054,8 +1197,7 @@ impl Engine {
                         direct = None;
                     }
                     _ => {
-                        self.pushed.push(t);
-
+                        self.push_token(t);
                         self.error("Missing number, treated as zero");
                         int_part = 0;
                         frac_f = 0;
@@ -1064,7 +1206,7 @@ impl Engine {
                 },
             }
         } else {
-            self.pushed.push(t);
+            self.push_token(t);
 
             self.error("Missing number, treated as zero");
             int_part = 0;
@@ -1077,7 +1219,10 @@ impl Engine {
         // unit (tex.web §453): standard units scale with (num, denom)
         // while internal dimensions multiply directly
         let unit = self.scan_unit(mu);
-        self.scan_optional_space();
+        // tex.web §8868: goto attach_sign if the units are internal (no optional space)
+        if !matches!(unit, UnitKind::InternalSp(_)) {
+            self.scan_optional_space();
+        }
         let v: i64 = match unit {
             UnitKind::Ratio(num, denom) => {
                 let quotient = (int_part * num) / denom;
@@ -1087,7 +1232,7 @@ impl Engine {
                 let f_final = f_new % 65536;
                 cur_val * 65536 + f_final
             }
-            UnitKind::InternalSp(unit_sp) => {
+            UnitKind::InternalSp(unit_sp) | UnitKind::FontRelativeSp(unit_sp) => {
                 let v = int_part as i128 * 65536 + frac_f as i128;
                 ((v * unit_sp as i128) / 65536) as i64
             }
@@ -1115,7 +1260,7 @@ impl Engine {
     fn scan_unit_sp(&mut self, mu: bool) -> i64 {
         match self.scan_unit(mu) {
             UnitKind::Ratio(n, d) => (n * 65536) / d,
-            UnitKind::InternalSp(sp) => sp,
+            UnitKind::InternalSp(sp) | UnitKind::FontRelativeSp(sp) => sp,
             UnitKind::Sp => 1,
         }
     }
@@ -1191,6 +1336,9 @@ impl Engine {
                         .unwrap_or(0);
                     return UnitKind::InternalSp(sp as i64);
                 }
+                Some(Equiv::Prim(Prim::PdfXImageBBox)) => {
+                    return UnitKind::InternalSp(self.scan_pdf_ximage_bbox() as i64);
+                }
                 Some(Equiv::Prim(Prim::Dimen)) => {
                     let i = self.scan_reg_num();
                     return UnitKind::InternalSp(self.eqtb.dimen[i as usize] as i64);
@@ -1198,12 +1346,22 @@ impl Engine {
                 Some(Equiv::DimenReg(i)) => {
                     return UnitKind::InternalSp(self.eqtb.dimen[i as usize] as i64);
                 }
+                Some(Equiv::Prim(Prim::Count)) => {
+                    let i = self.scan_reg_num();
+                    UnitKind::InternalSp(self.eqtb.count[i as usize] as i64)
+                }
+                Some(Equiv::CountReg(i)) => {
+                    // tex.web scan_dimen: an internal integer in unit
+                    // position denotes that many scaled points. Xy-pic
+                    // relies on `\dimen@=-3\K@` with \K@ a count register.
+                    UnitKind::InternalSp(self.eqtb.count[i as usize] as i64)
+                }
                 Some(Equiv::Macro(m)) if !m.protected => {
                     self.expand_macro(t.cs_id(), &m, t.cs_id());
                     return self.scan_unit_d(mu, depth + 1);
                 }
                 _ => {
-                    self.pushed.push(t);
+                    self.push_token(t);
                     self.error("Illegal unit of measure (pt inserted).");
                     return UnitKind::Ratio(1, 1);
                 }
@@ -1219,16 +1377,16 @@ impl Engine {
                             self.skip_spaces();
                             return self.scan_unit_d(mu, depth + 1);
                         } else {
-                            self.pushed.push(t4);
-                            self.pushed.push(t3);
-                            self.pushed.push(t2);
+                            self.push_token(t4);
+                            self.push_token(t3);
+                            self.push_token(t2);
                         }
                     } else {
-                        self.pushed.push(t3);
-                        self.pushed.push(t2);
+                        self.push_token(t3);
+                        self.push_token(t2);
                     }
                 } else {
-                    self.pushed.push(t2);
+                    self.push_token(t2);
                 }
             }
             // read unit keyword letters, only while they can extend a valid unit
@@ -1252,7 +1410,7 @@ impl Engine {
                         kw.push(t2.chr() as u8);
                         cur.push((t2.chr() as u8).to_ascii_lowercase() as char);
                     } else {
-                        self.pushed.push(t2);
+                        self.push_token(t2);
                         break;
                     }
                 }
@@ -1267,7 +1425,7 @@ impl Engine {
                     s.pop();
                 }
                 for t in excess.into_iter().rev() {
-                    self.pushed.push(t)
+                    self.push_token(t)
                 }
                 let s2: String = kw.iter().map(|&b| b.to_ascii_lowercase() as char).collect();
                 s = s2;
@@ -1291,8 +1449,8 @@ impl Engine {
                 "dd" => UnitKind::Ratio(1238, 1157),
                 "cc" => UnitKind::Ratio(14856, 1157),
                 "sp" => UnitKind::Sp,
-                "em" => UnitKind::InternalSp(self.cur_quad() as i64),
-                "ex" => UnitKind::InternalSp(self.cur_x_height() as i64),
+                "em" => UnitKind::FontRelativeSp(self.cur_quad() as i64),
+                "ex" => UnitKind::FontRelativeSp(self.cur_x_height() as i64),
                 "px" => UnitKind::Ratio(7227, 7200),
                 "mu" if mu => UnitKind::Ratio(1, 1),
                 _ => {
@@ -1301,7 +1459,7 @@ impl Engine {
                 }
             }
         } else {
-            self.pushed.push(t);
+            self.push_token(t);
             self.error("Illegal unit of measure (pt inserted).");
             UnitKind::Ratio(1, 1)
         }
@@ -1344,7 +1502,7 @@ impl Engine {
             self.in_expanded_scan = prev;
             return g;
         }
-        self.pushed.push(t);
+        self.push_token(t);
         let mut g = Glue::zero();
         self.cur_fill_order = 0;
         g.width = self.scan_dimen(mu, false);
@@ -1357,7 +1515,7 @@ impl Engine {
                 if t0.is_space() {
                     continue;
                 }
-                self.pushed.push(t0);
+                self.push_token(t0);
                 break;
             }
             let t = self.get_token();
@@ -1392,13 +1550,13 @@ impl Engine {
                         }
                     } else {
                         for tx in kt.into_iter().rev() {
-                            self.pushed.push(tx);
+                            self.push_token(tx);
                         }
                     }
                 }
             }
             if !matched {
-                self.pushed.push(t);
+                self.push_token(t);
             }
             self.cur_fill_order = 0;
         }
@@ -1412,7 +1570,7 @@ impl Engine {
             if t.is_char() && (t.chr() as u8) == b'l' && order < 3 {
                 order += 1;
             } else {
-                self.pushed.push(t);
+                self.push_token(t);
                 return order;
             }
         }
@@ -1420,15 +1578,15 @@ impl Engine {
 
     pub fn scan_relational(&mut self) -> u8 {
         self.skip_spaces_relax();
-        let t = self.get_token();
+        let t = self.get_x_raw_keep_cond();
         if t.is_char() {
             let c = t.chr() as u8;
             if c == b'<' || c == b'=' || c == b'>' {
                 return c;
             }
         }
-        self.pushed.push(t);
-        self.error("Missing relational operator");
+        self.push_token(t);
+        self.error("Expected a relational operator (`<`, `=`, or `>`); inserted `=`");
         b'='
     }
 
@@ -1453,7 +1611,7 @@ impl Engine {
                 format!("cc{}:{}", t.cc(), t.chr())
             };
             self.error(&format!("Missing {{ inserted (got {})", got));
-            self.pushed.push(t);
+            self.push_token(t);
             return false;
         }
     }
@@ -1516,7 +1674,7 @@ impl Engine {
                             continue;
                         }
                     }
-                    self.pushed.push(nxt);
+                    self.push_token(nxt);
                     let u = self.scan_general_text();
                     if self.stopped_on_error {
                         self.in_expanded_scan = prev_expanded_scan;
@@ -1567,7 +1725,7 @@ impl Engine {
                         continue;
                     }
                 }
-                self.pushed.push(nxt);
+                self.push_token(nxt);
                 let u = self.scan_general_text();
                 if self.stopped_on_error {
                     self.in_expanded_scan = prev_expanded_scan;
@@ -1652,11 +1810,49 @@ impl Engine {
         }
     }
 
+    fn capture_the_bytes(&mut self, bytes: &[u8]) {
+        const LIMIT: usize = 8 * 1024;
+        let end = bytes.len().min(LIMIT);
+        let mut shown = String::from_utf8_lossy(&bytes[..end]).into_owned();
+        if end < bytes.len() {
+            shown.push('…');
+        }
+        self.pending_the_string = Some(shown);
+    }
+
+    fn emit_the_tokens(&mut self, tokens: Vec<Token>, capture_for_show: bool) {
+        if capture_for_show {
+            self.pending_the_string = Some(self.diagnostic_tokens_to_string(&tokens, 8 * 1024));
+        } else {
+            self.push_the_toks(tokens);
+        }
+    }
+
     pub fn the_scan(&mut self) {
+        // \showthe needs the exact unexpanded representation that \the would
+        // insert, but it must not leak those tokens back into the document.
+        // Taking the marker before operand scanning also leaves nested
+        // expandable \number/\the operations unaffected.
+        let capture_for_show = self.pending_the_string.take().is_some();
+        macro_rules! emit_the {
+            ($bytes:expr) => {
+                if capture_for_show {
+                    self.capture_the_bytes($bytes);
+                } else {
+                    self.exp_string($bytes);
+                }
+            };
+        }
+        macro_rules! emit_the_toks {
+            ($tokens:expr) => {{
+                let tokens = $tokens;
+                self.emit_the_tokens(tokens, capture_for_show);
+            }};
+        }
         self.skip_spaces();
         let t = self.get_token();
         if !t.is_cs() {
-            self.pushed.push(t);
+            self.push_token(t);
             self.error("You can't use `\\the' after ");
             return;
         }
@@ -1665,37 +1861,37 @@ impl Engine {
         // toks registers are valid 	he operands (tex.web scan_toks part)
         match self.eqtb.resolve(id).cloned() {
             Some(Equiv::CharDef(c)) => {
-                self.exp_string(c.to_string().as_bytes());
+                emit_the!(c.to_string().as_bytes());
                 return;
             }
             Some(Equiv::MathCharDef(c)) => {
-                self.exp_string(c.to_string().as_bytes());
+                emit_the!(c.to_string().as_bytes());
                 return;
             }
             Some(Equiv::CountReg(i)) => {
-                self.exp_string(self.eqtb.count[i as usize].to_string().as_bytes());
+                emit_the!(self.eqtb.count[i as usize].to_string().as_bytes());
                 return;
             }
             Some(Equiv::DimenReg(i)) => {
                 let s = self.scaled_to_string(self.eqtb.dimen[i as usize]);
-                self.exp_string(s.as_bytes());
+                emit_the!(s.as_bytes());
                 return;
             }
             Some(Equiv::SkipReg(i)) => {
                 let g = self.eqtb.skip[i as usize].clone();
                 let s = self.glue_to_string(&g);
-                self.exp_string(s.as_bytes());
+                emit_the!(s.as_bytes());
                 return;
             }
             Some(Equiv::MuSkipReg(i)) => {
                 let g = self.eqtb.muskip[i as usize].clone();
-                let s = self.glue_to_string(&g);
-                self.exp_string(s.as_bytes());
+                let s = self.mu_glue_to_string(&g);
+                emit_the!(s.as_bytes());
                 return;
             }
             Some(Equiv::ToksReg(i)) => {
                 let toks = (*self.eqtb.toks[i as usize]).clone();
-                self.push_the_toks(toks);
+                emit_the_toks!(toks);
                 return;
             }
             _ => {}
@@ -1703,57 +1899,68 @@ impl Engine {
         match self.cur_prim {
             Some(Prim::IntP(p)) => {
                 let s = self.int_param_value(p).to_string();
-                self.exp_string(s.as_bytes());
+                emit_the!(s.as_bytes());
             }
             Some(Prim::PdfShellEscape) => {
-                self.exp_string(b"0");
+                emit_the!(b"0");
+            }
+            Some(Prim::PdfRandomSeed) => {
+                let s = self.random_seed.to_string();
+                emit_the!(s.as_bytes());
+            }
+            Some(Prim::PdfElapsedTime) => {
+                emit_the!(b"0");
             }
             Some(Prim::Count) => {
                 let idx = self.scan_reg_num();
-                self.exp_string(self.eqtb.count[idx as usize].to_string().as_bytes());
+                emit_the!(self.eqtb.count[idx as usize].to_string().as_bytes());
             }
             Some(Prim::DimP(p)) => {
                 let s = self.scaled_to_string(self.dim_param_value(p));
-                self.exp_string(s.as_bytes());
+                emit_the!(s.as_bytes());
             }
             Some(Prim::GlueP(p)) => {
                 let g = self.eqtb.glue_params[p.idx() as usize].clone();
-                let s = self.glue_to_string(&g);
-                self.exp_string(s.as_bytes());
+                let s = if p.is_mu() {
+                    self.mu_glue_to_string(&g)
+                } else {
+                    self.glue_to_string(&g)
+                };
+                emit_the!(s.as_bytes());
             }
             Some(Prim::ToksP(p)) => {
                 let toks = (*self.eqtb.tok_params[p.idx() as usize]).clone();
-                self.push_the_toks(toks);
+                emit_the_toks!(toks);
             }
             Some(Prim::CatCode) => {
-                let c = self.scan_char_num();
-                self.exp_string(self.eqtb.cat[c as usize].to_string().as_bytes());
+                let c = self.scan_character_table_index("\\catcode");
+                emit_the!(self.eqtb.cat[c].to_string().as_bytes());
             }
             Some(Prim::MathCode) => {
-                let c = self.scan_char_num();
-                self.exp_string(self.eqtb.math_code[c as usize].to_string().as_bytes());
+                let c = self.scan_character_table_index("\\mathcode");
+                emit_the!(self.eqtb.math_code[c].to_string().as_bytes());
             }
             Some(Prim::DelCode) => {
-                let c = self.scan_char_num();
-                self.exp_string(self.eqtb.del_code[c as usize].to_string().as_bytes());
+                let c = self.scan_character_table_index("\\delcode");
+                emit_the!(self.eqtb.del_code[c].to_string().as_bytes());
             }
             Some(Prim::LcCodeP) => {
-                let c = self.scan_char_num();
-                self.exp_string(self.eqtb.lc_code[c as usize].to_string().as_bytes());
+                let c = self.scan_character_table_index("\\lccode");
+                emit_the!(self.eqtb.lc_code[c].to_string().as_bytes());
             }
             Some(Prim::SfCodeP) => {
-                let c = self.scan_char_num();
-                self.exp_string(self.eqtb.sf_code[c as usize].to_string().as_bytes());
+                let c = self.scan_character_table_index("\\sfcode");
+                emit_the!(self.eqtb.sf_code[c].to_string().as_bytes());
             }
             Some(Prim::UcCodeP) => {
-                let c = self.scan_char_num();
-                self.exp_string(self.eqtb.uc_code[c as usize].to_string().as_bytes());
+                let c = self.scan_character_table_index("\\uccode");
+                emit_the!(self.eqtb.uc_code[c].to_string().as_bytes());
             }
             Some(
                 p @ (Prim::FontCharWd | Prim::FontCharHt | Prim::FontCharDp | Prim::FontCharIc),
             ) => {
                 let value = self.scan_font_char_dimen(p);
-                self.exp_string(self.scaled_to_string(value).as_bytes());
+                emit_the!(self.scaled_to_string(value).as_bytes());
             }
             Some(Prim::FontDimen) => {
                 let idx = self.scan_int();
@@ -1767,22 +1974,26 @@ impl Engine {
                     .copied()
                     .unwrap_or(0);
                 let s = self.scaled_to_string(v);
-                self.exp_string(s.as_bytes());
+                emit_the!(s.as_bytes());
+            }
+            Some(Prim::PdfXImageBBox) => {
+                let value = self.scan_pdf_ximage_bbox();
+                emit_the!(self.scaled_to_string(value).as_bytes());
             }
             Some(Prim::HyphenChar) => {
                 let f = self.scan_font_id() as usize;
                 let v = self.eqtb.hyphen_char.get(f).copied().unwrap_or(0);
-                self.exp_string(v.to_string().as_bytes());
+                emit_the!(v.to_string().as_bytes());
             }
             Some(Prim::SkewChar) => {
                 let f = self.scan_font_id() as usize;
                 let v = self.eqtb.skew_char.get(f).copied().unwrap_or(0);
-                self.exp_string(v.to_string().as_bytes());
+                emit_the!(v.to_string().as_bytes());
             }
             Some(Prim::PdfNoLigatures) => {
                 let f = self.scan_font_id() as usize;
                 let v = self.test_no_ligatures(f as u16);
-                self.exp_string(v.to_string().as_bytes());
+                emit_the!(v.to_string().as_bytes());
             }
             Some(
                 p @ (Prim::EfCode
@@ -1796,7 +2007,7 @@ impl Engine {
                 | Prim::KnAcCode),
             ) => {
                 let f = self.scan_font_id() as usize;
-                let c = self.scan_char_num().clamp(0, 255) as u8;
+                let c = self.scan_character_code(font_character_code_primitive(p));
                 let v = match self.eqtb.expand.get(f) {
                     Some(ex) => match p {
                         Prim::EfCode => ex.ef_code(c),
@@ -1811,151 +2022,162 @@ impl Engine {
                     },
                     None => -1,
                 };
-                self.exp_string(v.to_string().as_bytes());
+                emit_the!(v.to_string().as_bytes());
             }
-            Some(Prim::TopMark) => self.push_mark_tokens(0),
-            Some(Prim::FirstMark) => self.push_mark_tokens(1),
-            Some(Prim::BotMark) => self.push_mark_tokens(2),
-            Some(Prim::SplitFirstMark) => self.push_mark_tokens(3),
-            Some(Prim::SplitBotMark) => self.push_mark_tokens(4),
+            Some(Prim::TopMark) => emit_the_toks!(self.mark_tokens_class(0, 0)),
+            Some(Prim::FirstMark) => emit_the_toks!(self.mark_tokens_class(1, 0)),
+            Some(Prim::BotMark) => emit_the_toks!(self.mark_tokens_class(2, 0)),
+            Some(Prim::SplitFirstMark) => emit_the_toks!(self.mark_tokens_class(3, 0)),
+            Some(Prim::SplitBotMark) => emit_the_toks!(self.mark_tokens_class(4, 0)),
             Some(Prim::TopMarksClass) => {
                 let class = self.scan_int();
-                self.push_mark_tokens_class(0, class);
+                emit_the_toks!(self.mark_tokens_class(0, class));
             }
             Some(Prim::FirstMarksClass) => {
                 let class = self.scan_int();
-                self.push_mark_tokens_class(1, class);
+                emit_the_toks!(self.mark_tokens_class(1, class));
             }
             Some(Prim::BotMarksClass) => {
                 let class = self.scan_int();
-                self.push_mark_tokens_class(2, class);
+                emit_the_toks!(self.mark_tokens_class(2, class));
             }
             Some(Prim::SplitFirstMarksClass) => {
                 let class = self.scan_int();
-                self.push_mark_tokens_class(3, class);
+                emit_the_toks!(self.mark_tokens_class(3, class));
             }
             Some(Prim::SplitBotMarksClass) => {
                 let class = self.scan_int();
-                self.push_mark_tokens_class(4, class);
+                emit_the_toks!(self.mark_tokens_class(4, class));
             }
             Some(Prim::JobName) => {
                 let s = self.job_name.clone();
-                self.exp_string(s.as_bytes());
+                emit_the!(s.as_bytes());
             }
             Some(Prim::NumExpr) => {
                 let v = self.scan_expr_num();
-                self.exp_string(v.to_string().as_bytes());
+                emit_the!(v.to_string().as_bytes());
             }
             Some(Prim::DimExpr) => {
                 let v = self.scan_expr_dim();
                 let s = self.scaled_to_string(v);
-                self.exp_string(s.as_bytes());
+                emit_the!(s.as_bytes());
             }
             Some(Prim::GlueExpr) => {
                 let g = self.scan_expr_glue(false);
                 let s = self.glue_to_string(&g);
-                self.exp_string(s.as_bytes());
+                emit_the!(s.as_bytes());
             }
             Some(Prim::MuExpr) => {
                 let g = self.scan_expr_glue(true);
-                let s2 = self.glue_to_string(&g);
-                self.exp_string(s2.as_bytes());
+                let s2 = self.mu_glue_to_string(&g);
+                emit_the!(s2.as_bytes());
             }
             Some(Prim::PdfLastXPos) => {
-                self.exp_string(self.pdf_last_x.to_string().as_bytes());
+                emit_the!(self.pdf_last_x.to_string().as_bytes());
             }
             Some(Prim::PdfLastYPos) => {
-                self.exp_string(self.pdf_last_y.to_string().as_bytes());
+                emit_the!(self.pdf_last_y.to_string().as_bytes());
             }
             Some(
                 p @ (Prim::PdfLastObj
                 | Prim::PdfLastXForm
                 | Prim::PdfLastXImage
+                | Prim::PdfLastXImagePages
                 | Prim::PdfLastLink
                 | Prim::PdfLastAnnot),
             ) => {
                 let s = self.pdf_last_value(p).to_string();
-                self.exp_string(s.as_bytes());
+                emit_the!(s.as_bytes());
             }
             Some(Prim::PdfPageAttr) => {
-                self.push_the_toks(self.pdf_page_attr_toks.clone());
+                emit_the_toks!(self.pdf_page_attr_toks.clone());
             }
             Some(Prim::PdfPageResources) => {
-                self.push_the_toks(self.pdf_page_resources_toks.clone());
+                emit_the_toks!(self.pdf_page_resources_toks.clone());
             }
             Some(Prim::PdfPagesAttr) => {
-                self.push_the_toks(self.pdf_pages_attr_toks.clone());
+                emit_the_toks!(self.pdf_pages_attr_toks.clone());
             }
             Some(Prim::Dimen) => {
                 let idx = self.scan_reg_num();
                 let s = self.scaled_to_string(self.eqtb.dimen[idx as usize]);
-                self.exp_string(s.as_bytes());
+                emit_the!(s.as_bytes());
             }
             Some(Prim::Skip) => {
                 let idx = self.scan_reg_num();
                 let s = self.glue_to_string(&self.eqtb.skip[idx as usize].clone());
-                self.exp_string(s.as_bytes());
+                emit_the!(s.as_bytes());
             }
             Some(Prim::MuSkip) => {
                 let idx = self.scan_reg_num();
-                let s = self.glue_to_string(&self.eqtb.muskip[idx as usize].clone());
-                self.exp_string(s.as_bytes());
+                let s = self.mu_glue_to_string(&self.eqtb.muskip[idx as usize].clone());
+                emit_the!(s.as_bytes());
             }
             Some(Prim::Toks) => {
                 let idx = self.scan_reg_num();
                 let toks = (*self.eqtb.toks[idx as usize]).clone();
-                self.push_the_toks(toks);
+                emit_the_toks!(toks);
             }
             Some(Prim::Wd) => {
                 let n = self.scan_reg_num();
                 let s = self.scaled_to_string(self.box_reg_dimen(n, 0));
-                self.exp_string(s.as_bytes());
+                emit_the!(s.as_bytes());
             }
             Some(Prim::GlueStretch) => {
                 let v = self.scan_etex_glue_field(0);
                 let s = self.scaled_to_string(v);
-                self.exp_string(s.as_bytes());
+                emit_the!(s.as_bytes());
             }
             Some(Prim::GlueShrink) => {
                 let v = self.scan_etex_glue_field(1);
                 let s = self.scaled_to_string(v);
-                self.exp_string(s.as_bytes());
+                emit_the!(s.as_bytes());
             }
             Some(Prim::GlueStretchOrder) => {
                 let v = self.scan_etex_glue_field(2);
-                self.exp_string(v.to_string().as_bytes());
+                emit_the!(v.to_string().as_bytes());
             }
             Some(Prim::GlueShrinkOrder) => {
                 let v = self.scan_etex_glue_field(3);
-                self.exp_string(v.to_string().as_bytes());
+                emit_the!(v.to_string().as_bytes());
             }
             Some(Prim::Ht) => {
                 let n = self.scan_reg_num();
                 let s = self.scaled_to_string(self.box_reg_dimen(n, 1));
-                self.exp_string(s.as_bytes());
+                emit_the!(s.as_bytes());
             }
             Some(Prim::Dp) => {
                 let n = self.scan_reg_num();
                 let s = self.scaled_to_string(self.box_reg_dimen(n, 2));
-                self.exp_string(s.as_bytes());
+                emit_the!(s.as_bytes());
             }
             Some(Prim::ParShape) => {
                 let s = self.par_shape.len().to_string();
-                self.exp_string(s.as_bytes());
+                emit_the!(s.as_bytes());
+            }
+            Some(
+                p @ (Prim::InterLinePenalties
+                | Prim::ClubPenalties
+                | Prim::WidowPenalties
+                | Prim::DisplayWidowPenalties),
+            ) => {
+                let index = self.scan_int();
+                let value = self.penalty_shape_value(p, index);
+                emit_the!(value.to_string().as_bytes());
             }
             Some(Prim::LastPenalty) => {
                 let v = self.last_penalty_value();
-                self.exp_string(v.to_string().as_bytes());
+                emit_the!(v.to_string().as_bytes());
             }
             Some(Prim::LastKern) => {
                 let v = self.last_kern_value();
                 let s = self.scaled_to_string(v);
-                self.exp_string(s.as_bytes());
+                emit_the!(s.as_bytes());
             }
             Some(Prim::LastSkip) => {
                 let g = self.last_skip_value();
                 let s = self.glue_to_string(&g);
-                self.exp_string(s.as_bytes());
+                emit_the!(s.as_bytes());
             }
             Some(Prim::Font) => {
                 let csid = self
@@ -1964,7 +2186,7 @@ impl Engine {
                     .get(self.eqtb.cur_font_val as usize)
                     .copied()
                     .unwrap_or(0);
-                self.push_tokens(vec![Token::from_cs(csid)]);
+                emit_the_toks!(vec![Token::from_cs(csid)]);
             }
             Some(Prim::TextFont) | Some(Prim::ScriptFont) | Some(Prim::ScriptScriptFont) => {
                 let style = match self.cur_prim {
@@ -1972,43 +2194,48 @@ impl Engine {
                     Some(Prim::ScriptFont) => 1,
                     _ => 2,
                 };
-                let fam = self.scan_int().clamp(0, 255) as usize;
+                let command = match self.cur_prim {
+                    Some(Prim::TextFont) => "\\textfont",
+                    Some(Prim::ScriptFont) => "\\scriptfont",
+                    _ => "\\scriptscriptfont",
+                };
+                let fam = self.scan_math_family(command);
                 let fid = self.eqtb.style_fonts[style][fam];
                 let csid = self.eqtb.font_cs.get(fid as usize).copied().unwrap_or(0);
-                self.push_tokens(vec![Token::from_cs(csid)]);
+                emit_the_toks!(vec![Token::from_cs(csid)]);
             }
             _ => match self.eqtb.resolve(id).cloned() {
                 Some(Equiv::CountReg(i)) => {
-                    self.exp_string(self.eqtb.count[i as usize].to_string().as_bytes());
+                    emit_the!(self.eqtb.count[i as usize].to_string().as_bytes());
                 }
                 Some(Equiv::CharDef(c)) => {
-                    self.exp_string((c as i32).to_string().as_bytes());
+                    emit_the!((c as i32).to_string().as_bytes());
                 }
                 Some(Equiv::MathCharDef(c)) => {
-                    self.exp_string((c as i32).to_string().as_bytes());
+                    emit_the!((c as i32).to_string().as_bytes());
                 }
                 Some(Equiv::DimenReg(i)) => {
                     let s = self.scaled_to_string(self.eqtb.dimen[i as usize]);
-                    self.exp_string(s.as_bytes());
+                    emit_the!(s.as_bytes());
                 }
                 Some(Equiv::SkipReg(i)) => {
                     let g = self.eqtb.skip[i as usize].clone();
                     let s = self.glue_to_string(&g);
-                    self.exp_string(s.as_bytes());
+                    emit_the!(s.as_bytes());
                 }
                 Some(Equiv::MuSkipReg(i)) => {
                     let g = self.eqtb.muskip[i as usize].clone();
-                    let s = self.glue_to_string(&g);
-                    self.exp_string(s.as_bytes());
+                    let s = self.mu_glue_to_string(&g);
+                    emit_the!(s.as_bytes());
                 }
                 Some(Equiv::ToksReg(i)) => {
                     let toks = (*self.eqtb.toks[i as usize]).clone();
-                    self.push_the_toks(toks);
+                    emit_the_toks!(toks);
                 }
                 Some(Equiv::FontRef(f)) => {
                     // \the\font -> the cs name of the font
                     let csid = self.eqtb.font_cs.get(f as usize).copied().unwrap_or(0);
-                    self.push_tokens(vec![Token::from_cs(csid)]);
+                    emit_the_toks!(vec![Token::from_cs(csid)]);
                 }
                 _ => {
                     self.error("You can't use `\\the' after that");
@@ -2018,11 +2245,14 @@ impl Engine {
     }
 
     fn push_mark_tokens(&mut self, which: usize) {
-        let toks = self.marks[which].first().cloned().unwrap_or_default();
-        self.push_tokens(toks);
+        self.push_tokens(self.mark_tokens_class(which, 0));
     }
 
     pub(crate) fn push_mark_tokens_class(&mut self, which: usize, class: i32) {
+        self.push_tokens(self.mark_tokens_class(which, class));
+    }
+
+    fn mark_tokens_class(&self, which: usize, class: i32) -> Vec<Token> {
         let toks = if class >= 0 {
             self.marks[which]
                 .get(class as usize)
@@ -2031,7 +2261,7 @@ impl Engine {
         } else {
             Vec::new()
         };
-        self.push_tokens(toks);
+        toks
     }
 
     /// TeX \meaning of a token
@@ -2071,6 +2301,13 @@ impl Engine {
             let ch = ((c as u8) as char).to_string();
             return format!("{}{}", word, ch);
         }
+        let esc = self.eqtb.int_params[crate::prim::IntParam::EscapeChar.idx() as usize];
+        let esc_byte = [esc as u8];
+        let esc_str = if (0..=255).contains(&esc) {
+            std::str::from_utf8(&esc_byte).unwrap_or("\\")
+        } else {
+            ""
+        };
         let name = String::from_utf8_lossy(self.cs.name(t.cs_id())).into_owned();
         match self.eqtb.resolve(t.cs_id()).cloned() {
             None => "undefined".to_string(),
@@ -2078,19 +2315,16 @@ impl Engine {
             Some(Equiv::Macro(m)) => {
                 let mut s = String::new();
                 if m.protected {
-                    s.push_str("\\protected");
+                    s.push_str(esc_str);
+                    s.push_str("protected");
                 }
                 if m.long {
-                    if !s.is_empty() {
-                        s.push(' ');
-                    }
-                    s.push_str("\\long");
+                    s.push_str(esc_str);
+                    s.push_str("long");
                 }
                 if m.outer {
-                    if !s.is_empty() {
-                        s.push(' ');
-                    }
-                    s.push_str("\\outer");
+                    s.push_str(esc_str);
+                    s.push_str("outer");
                 }
                 if !s.is_empty() {
                     s.push_str(" macro:");
@@ -2110,17 +2344,17 @@ impl Engine {
                 s.push_str(&self.tokens_to_string(&m.body));
                 s
             }
-            Some(Equiv::Prim(p)) => format!("\\{}", self.prim_name(p)),
-            Some(Equiv::CharDef(c)) => format!("\\char\"{:X}", c),
-            Some(Equiv::MathCharDef(c)) => format!("\\mathchar\"{:X}", c),
+            Some(Equiv::Prim(p)) => format!("{}{}", esc_str, self.prim_name(p)),
+            Some(Equiv::CharDef(c)) => format!("{}char\"{:X}", esc_str, c),
+            Some(Equiv::MathCharDef(c)) => format!("{}mathchar\"{:X}", esc_str, c),
             Some(Equiv::FontRef(f)) => format!("select font {}", self.font_display_name(f)),
-            Some(Equiv::CountReg(i)) => format!("\\count{}", i),
-            Some(Equiv::DimenReg(i)) => format!("\\dimen{}", i),
-            Some(Equiv::SkipReg(i)) => format!("\\skip{}", i),
-            Some(Equiv::MuSkipReg(i)) => format!("\\muskip{}", i),
-            Some(Equiv::ToksReg(i)) => format!("\\toks{}", i),
-            Some(Equiv::BoxReg(i)) => format!("\\box{}", i),
-            Some(Equiv::Alias(_)) => format!("\\{}", name),
+            Some(Equiv::CountReg(i)) => format!("{}count{}", esc_str, i),
+            Some(Equiv::DimenReg(i)) => format!("{}dimen{}", esc_str, i),
+            Some(Equiv::SkipReg(i)) => format!("{}skip{}", esc_str, i),
+            Some(Equiv::MuSkipReg(i)) => format!("{}muskip{}", esc_str, i),
+            Some(Equiv::ToksReg(i)) => format!("{}toks{}", esc_str, i),
+            Some(Equiv::BoxReg(i)) => format!("{}box{}", esc_str, i),
+            Some(Equiv::Alias(_)) => format!("{}{}", esc_str, name),
         }
     }
 
@@ -2189,12 +2423,18 @@ impl Engine {
         s
     }
 
-    pub fn glue_to_string(&self, g: &Glue) -> String {
-        let mut s = self.scaled_to_string(g.width);
+    fn glue_to_string_with_unit(&self, g: &Glue, unit: &str) -> String {
+        let scaled = |value| {
+            let mut text = self.scaled_to_string(value);
+            text.truncate(text.len().saturating_sub(2));
+            text.push_str(unit);
+            text
+        };
+        let mut s = scaled(g.width);
         if g.stretch != 0 || g.stretch_order > 0 {
             s.push_str(" plus ");
             if g.stretch_order == 0 {
-                s.push_str(&self.scaled_to_string(g.stretch));
+                s.push_str(&scaled(g.stretch));
             } else {
                 s.push_str(&self.scaled_number_to_string(g.stretch));
                 match g.stretch_order {
@@ -2208,7 +2448,7 @@ impl Engine {
         if g.shrink != 0 || g.shrink_order > 0 {
             s.push_str(" minus ");
             if g.shrink_order == 0 {
-                s.push_str(&self.scaled_to_string(g.shrink));
+                s.push_str(&scaled(g.shrink));
             } else {
                 s.push_str(&self.scaled_number_to_string(g.shrink));
                 match g.shrink_order {
@@ -2221,6 +2461,14 @@ impl Engine {
         }
 
         s
+    }
+
+    pub fn glue_to_string(&self, g: &Glue) -> String {
+        self.glue_to_string_with_unit(g, "pt")
+    }
+
+    pub fn mu_glue_to_string(&self, g: &Glue) -> String {
+        self.glue_to_string_with_unit(g, "mu")
     }
 
     pub fn font_display_name(&self, f: u16) -> String {
@@ -2238,7 +2486,25 @@ impl Engine {
 
     fn scan_font_char_dimen(&mut self, p: Prim) -> i32 {
         let font = self.scan_font_id();
-        let c = self.scan_char_num() as u8;
+        let (character, source) = self.scan_int_with_source();
+        let c = if (0..=255).contains(&character) {
+            character as u8
+        } else {
+            let command = match p {
+                Prim::FontCharWd => "\\fontcharwd",
+                Prim::FontCharHt => "\\fontcharht",
+                Prim::FontCharDp => "\\fontchardp",
+                Prim::FontCharIc => "\\fontcharic",
+                _ => "font character metric",
+            };
+            self.error_at(
+                &format!(
+                    "Character code {character} is out of range for {command}; expected 0 through 255 and used character 0"
+                ),
+                source,
+            );
+            0
+        };
         let Some(font) = self.eqtb.fonts.get(font as usize) else {
             return 0;
         };
@@ -2251,13 +2517,33 @@ impl Engine {
         }
     }
 
+    pub fn scan_pdf_ximage_bbox(&mut self) -> i32 {
+        let obj = self.scan_int();
+        let coord = self.scan_int();
+        if let Some(info) = self.pdf_images.get(&obj) {
+            match coord {
+                1 => info.bbox[0],
+                2 => info.bbox[1],
+                3 => info.bbox[2],
+                4 => info.bbox[3],
+                _ => {
+                    self.error("pdfTeX error (pdfximagebbox): invalid parameter");
+                    0
+                }
+            }
+        } else {
+            self.error("pdfTeX error (ext1): cannot find referenced object");
+            0
+        }
+    }
+
     // ---------- font id scan ----------
 
     pub fn scan_font_id(&mut self) -> u16 {
         self.skip_spaces_relax();
         let t = self.get_x_raw();
         if !t.is_cs() {
-            self.pushed.push(t);
+            self.push_token(t);
             self.error("Missing font identifier");
             return 0;
         }
@@ -2270,20 +2556,24 @@ impl Engine {
             // tex.web §1023 scan_font_ident: \textfont/\scriptfont/
             // \scriptscriptfont <fam> yield the family's font id.
             Some(Equiv::Prim(p @ (Prim::TextFont | Prim::ScriptFont | Prim::ScriptScriptFont))) => {
-                let fam = self.scan_int();
-                if !(0..=15).contains(&fam) {
-                    self.error("Bad font family");
-                    return 0;
-                }
+                let command = match p {
+                    Prim::TextFont => "\\textfont",
+                    Prim::ScriptFont => "\\scriptfont",
+                    _ => "\\scriptscriptfont",
+                };
+                let fam = self.scan_math_family(command);
                 let slot = match p {
                     Prim::TextFont => 0,
                     Prim::ScriptFont => 1,
                     _ => 2,
                 };
-                self.eqtb.style_fonts[slot][fam as usize]
+                self.eqtb.style_fonts[slot][fam]
             }
             _ => {
-                self.error("Not a font identifier");
+                self.error(&format!(
+                    "{} is not a font identifier; use a font defined with \\font",
+                    self.display_cs(t.cs_id())
+                ));
                 0
             }
         }
@@ -2292,34 +2582,67 @@ impl Engine {
     // ---------- expressions (e-TeX) ----------
 
     pub fn scan_expr_num(&mut self) -> i32 {
-        let v = self.expr_eval(ExprKind::Int, false);
-        match v {
+        let origin = self.current_token_source_mark();
+        let mut arithmetic = ExprArithmetic::default();
+        let v = self.expr_eval(ExprKind::Int, false, &mut arithmetic);
+        let result = match v {
             ExprVal::Int(x) => x,
             ExprVal::Dim(x) => x / ONE,
             ExprVal::Glue(g) => g.width / ONE,
+        };
+        if arithmetic.overflowed {
+            self.error_at(
+                "Arithmetic overflow",
+                origin.as_ref().map(SourceMark::to_context),
+            );
+            0
+        } else {
+            result
         }
     }
 
     pub fn scan_expr_dim(&mut self) -> i32 {
-        let v = self.expr_eval(ExprKind::Dim, false);
-        match v {
+        let origin = self.current_token_source_mark();
+        let mut arithmetic = ExprArithmetic::default();
+        let v = self.expr_eval(ExprKind::Dim, false, &mut arithmetic);
+        let result = match v {
             ExprVal::Int(x) => mult(x, ONE),
             ExprVal::Dim(x) => x,
             ExprVal::Glue(g) => g.width,
+        };
+        if arithmetic.overflowed {
+            self.error_at(
+                "Arithmetic overflow",
+                origin.as_ref().map(SourceMark::to_context),
+            );
+            0
+        } else {
+            result
         }
     }
 
     pub fn scan_expr_glue(&mut self, mu: bool) -> Glue {
-        let v = self.expr_eval(ExprKind::Glue, mu);
-        match v {
+        let origin = self.current_token_source_mark();
+        let mut arithmetic = ExprArithmetic::default();
+        let v = self.expr_eval(ExprKind::Glue, mu, &mut arithmetic);
+        let result = match v {
             ExprVal::Int(x) => Glue::new(mult(x, ONE)),
             ExprVal::Dim(x) => Glue::new(x),
             ExprVal::Glue(g) => g,
+        };
+        if arithmetic.overflowed {
+            self.error_at(
+                "Arithmetic overflow",
+                origin.as_ref().map(SourceMark::to_context),
+            );
+            Glue::zero()
+        } else {
+            result
         }
     }
 
-    fn expr_eval(&mut self, kind: ExprKind, mu: bool) -> ExprVal {
-        let mut left = self.expr_term(kind, mu);
+    fn expr_eval(&mut self, kind: ExprKind, mu: bool, arithmetic: &mut ExprArithmetic) -> ExprVal {
+        let mut left = self.expr_term(kind, mu, arithmetic);
         loop {
             let t = self.expr_next_token();
             if self.token_is_relax(t) {
@@ -2330,51 +2653,33 @@ impl Engine {
             } else if t.is_char() && t.chr() == b'-' as u32 {
                 2
             } else {
-                self.pushed.push(t);
+                self.push_token(t);
                 return left;
             };
-            let right = self.expr_term(kind, mu);
+            let right = self.expr_term(kind, mu, arithmetic);
             left = match (left, right) {
-                (ExprVal::Int(a), ExprVal::Int(b)) => ExprVal::Int(if op == 1 {
-                    a.wrapping_add(b)
-                } else {
-                    a.wrapping_sub(b)
-                }),
-                (ExprVal::Dim(a), ExprVal::Dim(b)) => ExprVal::Dim(if op == 1 {
-                    a.wrapping_add(b)
-                } else {
-                    a.wrapping_sub(b)
-                }),
-                (ExprVal::Dim(a), ExprVal::Int(b)) => ExprVal::Dim(if op == 1 {
-                    a + mult(b, ONE)
-                } else {
-                    a - mult(b, ONE)
-                }),
-                (ExprVal::Int(a), ExprVal::Dim(b)) => ExprVal::Dim(if op == 1 {
-                    mult(a, ONE) + b
-                } else {
-                    mult(a, ONE) - b
-                }),
-                (ExprVal::Glue(a), ExprVal::Glue(b)) => ExprVal::Glue(if op == 1 {
-                    glue_add(&a, &b)
-                } else {
-                    glue_sub(&a, &b)
-                }),
+                (ExprVal::Int(a), ExprVal::Int(b)) => {
+                    ExprVal::Int(arithmetic.add(a, b, op == 2, MAX_EXPR_INT))
+                }
+                (ExprVal::Dim(a), ExprVal::Dim(b)) => {
+                    ExprVal::Dim(arithmetic.add(a, b, op == 2, MAX_EXPR_DIMEN))
+                }
+                (ExprVal::Dim(a), ExprVal::Int(b)) => {
+                    ExprVal::Dim(arithmetic.add(a, mult(b, ONE), op == 2, MAX_EXPR_DIMEN))
+                }
+                (ExprVal::Int(a), ExprVal::Dim(b)) => {
+                    ExprVal::Dim(arithmetic.add(mult(a, ONE), b, op == 2, MAX_EXPR_DIMEN))
+                }
+                (ExprVal::Glue(a), ExprVal::Glue(b)) => {
+                    ExprVal::Glue(arithmetic.glue_add(a, b, op == 2))
+                }
                 (ExprVal::Glue(a), ExprVal::Dim(b)) => {
                     let g = Glue::new(b);
-                    ExprVal::Glue(if op == 1 {
-                        glue_add(&a, &g)
-                    } else {
-                        glue_sub(&a, &g)
-                    })
+                    ExprVal::Glue(arithmetic.glue_add(a, g, op == 2))
                 }
                 (ExprVal::Glue(a), ExprVal::Int(b)) => {
                     let g = Glue::new(mult(b, ONE));
-                    ExprVal::Glue(if op == 1 {
-                        glue_add(&a, &g)
-                    } else {
-                        glue_sub(&a, &g)
-                    })
+                    ExprVal::Glue(arithmetic.glue_add(a, g, op == 2))
                 }
                 (l, r) => {
                     let _ = r;
@@ -2384,102 +2689,315 @@ impl Engine {
         }
     }
 
-    fn expr_term(&mut self, kind: ExprKind, mu: bool) -> ExprVal {
-        let mut left = self.expr_factor(kind, mu);
+    fn expr_term(&mut self, kind: ExprKind, mu: bool, arithmetic: &mut ExprArithmetic) -> ExprVal {
+        let mut left = self.expr_factor(kind, mu, arithmetic);
         loop {
             let t = self.expr_next_token();
-            let op = if t.is_char() && t.chr() == b'*' as u32 {
-                1
-            } else if t.is_char() && t.chr() == b'/' as u32 {
-                2
-            } else {
-                self.pushed.push(t);
+            let multiply = t.is_char() && t.chr() == b'*' as u32;
+            let divide = t.is_char() && t.chr() == b'/' as u32;
+            if !multiply && !divide {
+                self.push_token(t);
                 return left;
-            };
-            let right = self.expr_factor(ExprKind::Int, false);
+            }
+            let right = self.expr_factor(ExprKind::Int, false, arithmetic);
             let b = match right {
                 ExprVal::Int(x) => x,
                 _ => 0,
             };
+
+            // e-TeX treats an immediately adjacent `* n / d` as one scaled
+            // operation.  Besides matching TeX's rounding, this lets a valid
+            // final value survive when the intermediate product is outside
+            // the expression's range (a common font-package idiom).  A second
+            // multiplication still commits the first product and therefore
+            // reports overflow at the same point as e-TeX.
+            let divisor = if multiply {
+                let next = self.expr_next_token();
+                if next.is_char() && next.chr() == b'/' as u32 {
+                    match self.expr_factor(ExprKind::Int, false, arithmetic) {
+                        ExprVal::Int(x) => Some(x),
+                        _ => Some(0),
+                    }
+                } else {
+                    self.push_token(next);
+                    None
+                }
+            } else {
+                None
+            };
             left = match left {
-                ExprVal::Int(a) => ExprVal::Int(match op {
-                    1 => a.saturating_mul(b),
-                    _ => {
-                        if b == 0 {
-                            0
-                        } else {
-                            crate::scaled::x_over_y(a, b)
-                        }
-                    }
+                ExprVal::Int(a) => ExprVal::Int(if let Some(d) = divisor {
+                    arithmetic.multiply_divide(a, b, d, MAX_EXPR_INT)
+                } else if multiply {
+                    arithmetic.multiply(a, b, MAX_EXPR_INT)
+                } else {
+                    arithmetic.divide(a, b, MAX_EXPR_INT)
                 }),
-                ExprVal::Dim(a) => ExprVal::Dim(match op {
-                    1 => (a as i64 * b as i64).clamp(i32::MIN as i64, i32::MAX as i64) as i32,
-                    _ => {
-                        if b == 0 {
-                            0
-                        } else {
-                            crate::scaled::x_over_y(a, b)
-                        }
-                    }
+                ExprVal::Dim(a) => ExprVal::Dim(if let Some(d) = divisor {
+                    arithmetic.multiply_divide(a, b, d, MAX_EXPR_DIMEN)
+                } else if multiply {
+                    arithmetic.multiply(a, b, MAX_EXPR_DIMEN)
+                } else {
+                    arithmetic.divide(a, b, MAX_EXPR_DIMEN)
                 }),
-                ExprVal::Glue(a) => ExprVal::Glue(match op {
-                    1 => Glue {
-                        width: (a.width as i64 * b as i64).clamp(i32::MIN as i64, i32::MAX as i64)
-                            as i32,
-                        stretch: (a.stretch as i64 * b as i64)
-                            .clamp(i32::MIN as i64, i32::MAX as i64)
-                            as i32,
-                        shrink: (a.shrink as i64 * b as i64).clamp(i32::MIN as i64, i32::MAX as i64)
-                            as i32,
-                        ..a
-                    },
-                    _ => Glue {
-                        width: if b == 0 {
-                            0
-                        } else {
-                            crate::scaled::x_over_y(a.width, b)
-                        },
-                        stretch: if b == 0 {
-                            0
-                        } else {
-                            crate::scaled::x_over_y(a.stretch, b)
-                        },
-                        shrink: if b == 0 {
-                            0
-                        } else {
-                            crate::scaled::x_over_y(a.shrink, b)
-                        },
-                        ..a
-                    },
+                ExprVal::Glue(a) => ExprVal::Glue(if let Some(d) = divisor {
+                    arithmetic.scale_glue_ratio(a, b, d)
+                } else {
+                    arithmetic.scale_glue(a, b, divide)
                 }),
             };
         }
     }
 
-    fn expr_factor(&mut self, kind: ExprKind, mu: bool) -> ExprVal {
+    fn expr_factor(
+        &mut self,
+        kind: ExprKind,
+        mu: bool,
+        arithmetic: &mut ExprArithmetic,
+    ) -> ExprVal {
         let t = self.expr_next_token();
         if t.is_char() && t.chr() == b'(' as u32 {
-            let v = self.expr_eval(kind, mu);
+            let v = self.expr_eval(kind, mu, arithmetic);
             let t = self.expr_next_token();
             if !(t.is_char() && t.chr() == b')' as u32) {
-                self.pushed.push(t);
+                self.push_token(t);
                 self.error("Missing ) in expression");
             }
             return v;
         }
         if kind != ExprKind::Glue && t.is_char() && t.chr() == b'-' as u32 {
-            let v = self.expr_factor(kind, mu);
+            let v = self.expr_factor(kind, mu, arithmetic);
             return match v {
-                ExprVal::Int(x) => ExprVal::Int(-x),
-                ExprVal::Dim(x) => ExprVal::Dim(-x),
+                ExprVal::Int(x) => ExprVal::Int(arithmetic.negate(x, MAX_EXPR_INT)),
+                ExprVal::Dim(x) => ExprVal::Dim(arithmetic.negate(x, MAX_EXPR_DIMEN)),
                 ExprVal::Glue(_) => unreachable!(),
             };
         }
-        self.pushed.push(t);
+        self.push_token(t);
         match kind {
-            ExprKind::Int => ExprVal::Int(self.scan_int()),
-            ExprKind::Dim => ExprVal::Dim(self.scan_dimen(false, false)),
-            ExprKind::Glue => ExprVal::Glue(self.scan_glue(mu)),
+            ExprKind::Int => {
+                let value = self.scan_int();
+                ExprVal::Int(arithmetic.checked_or_zero(value as i64, MAX_EXPR_INT))
+            }
+            ExprKind::Dim => {
+                let value = self.scan_dimen(false, false);
+                ExprVal::Dim(arithmetic.checked_or_zero(value as i64, MAX_EXPR_DIMEN))
+            }
+            ExprKind::Glue => {
+                let value = self.scan_glue(mu);
+                ExprVal::Glue(arithmetic.checked_glue(value))
+            }
+        }
+    }
+}
+
+const MAX_EXPR_INT: i64 = 0x7FFF_FFFF;
+const MAX_EXPR_DIMEN: i64 = 0x3FFF_FFFF;
+
+/// e-TeX delays expression arithmetic errors until the complete expression
+/// has been consumed, then replaces the complete result with zero. Keeping a
+/// single latch also prevents one bad glue component from leaking the others.
+#[derive(Default)]
+struct ExprArithmetic {
+    overflowed: bool,
+}
+
+impl ExprArithmetic {
+    fn checked(&mut self, value: i64, limit: i64) -> Option<i32> {
+        if (-limit..=limit).contains(&value) {
+            Some(value as i32)
+        } else {
+            self.overflowed = true;
+            None
+        }
+    }
+
+    fn checked_or_zero(&mut self, value: i64, limit: i64) -> i32 {
+        self.checked(value, limit).unwrap_or(0)
+    }
+
+    fn add(&mut self, left: i32, right: i32, subtract: bool, limit: i64) -> i32 {
+        let right = if subtract {
+            -(right as i64)
+        } else {
+            right as i64
+        };
+        self.checked_or_zero(left as i64 + right, limit)
+    }
+
+    fn multiply(&mut self, left: i32, right: i32, limit: i64) -> i32 {
+        self.checked_or_zero(left as i64 * right as i64, limit)
+    }
+
+    fn multiply_divide(&mut self, value: i32, numerator: i32, denominator: i32, limit: i64) -> i32 {
+        if denominator == 0 {
+            self.overflowed = true;
+            return 0;
+        }
+
+        let product = value as i64 * numerator as i64;
+        self.rounded_divide(product, denominator as i64, limit)
+    }
+
+    fn divide(&mut self, numerator: i32, denominator: i32, limit: i64) -> i32 {
+        if denominator == 0 {
+            self.overflowed = true;
+            return 0;
+        }
+
+        self.rounded_divide(numerator as i64, denominator as i64, limit)
+    }
+
+    fn rounded_divide(&mut self, numerator: i64, denominator: i64, limit: i64) -> i32 {
+        let negative = (numerator < 0) != (denominator < 0);
+        let numerator = numerator.abs();
+        let denominator = denominator.abs();
+        let mut quotient = numerator / denominator;
+        let remainder = numerator - quotient * denominator;
+        if remainder * 2 >= denominator {
+            quotient += 1;
+        }
+        if negative {
+            quotient = -quotient;
+        }
+        self.checked_or_zero(quotient, limit)
+    }
+
+    fn negate(&mut self, value: i32, limit: i64) -> i32 {
+        self.checked_or_zero(-(value as i64), limit)
+    }
+
+    fn checked_glue(&mut self, glue: Glue) -> Glue {
+        let width = self.checked(glue.width as i64, MAX_EXPR_DIMEN);
+        let stretch = self.checked(glue.stretch as i64, MAX_EXPR_DIMEN);
+        let shrink = self.checked(glue.shrink as i64, MAX_EXPR_DIMEN);
+        match (width, stretch, shrink) {
+            (Some(width), Some(stretch), Some(shrink)) => Glue {
+                width,
+                stretch,
+                shrink,
+                ..glue
+            },
+            _ => Glue::zero(),
+        }
+    }
+
+    fn glue_component(
+        left: i32,
+        left_order: u8,
+        right: i32,
+        right_order: u8,
+        subtract: bool,
+    ) -> (i64, u8) {
+        if left_order == right_order {
+            let right = if subtract {
+                -(right as i64)
+            } else {
+                right as i64
+            };
+            (left as i64 + right, left_order)
+        } else if left_order < right_order {
+            let value = if subtract {
+                -(right as i64)
+            } else {
+                right as i64
+            };
+            (value, right_order)
+        } else {
+            (left as i64, left_order)
+        }
+    }
+
+    fn glue_add(&mut self, left: Glue, right: Glue, subtract: bool) -> Glue {
+        let width = left.width as i64
+            + if subtract {
+                -(right.width as i64)
+            } else {
+                right.width as i64
+            };
+        let (stretch, stretch_order) = Self::glue_component(
+            left.stretch,
+            left.stretch_order,
+            right.stretch,
+            right.stretch_order,
+            subtract,
+        );
+        let (shrink, shrink_order) = Self::glue_component(
+            left.shrink,
+            left.shrink_order,
+            right.shrink,
+            right.shrink_order,
+            subtract,
+        );
+
+        let width = self.checked(width, MAX_EXPR_DIMEN);
+        let stretch = self.checked(stretch, MAX_EXPR_DIMEN);
+        let shrink = self.checked(shrink, MAX_EXPR_DIMEN);
+        match (width, stretch, shrink) {
+            (Some(width), Some(stretch), Some(shrink)) => Glue {
+                width,
+                stretch,
+                shrink,
+                stretch_order,
+                shrink_order,
+            },
+            _ => Glue::zero(),
+        }
+    }
+
+    fn scale_glue(&mut self, glue: Glue, scalar: i32, divide: bool) -> Glue {
+        if divide && scalar == 0 {
+            self.overflowed = true;
+            return Glue::zero();
+        }
+
+        let width = if divide {
+            self.divide(glue.width, scalar, MAX_EXPR_DIMEN)
+        } else {
+            self.multiply(glue.width, scalar, MAX_EXPR_DIMEN)
+        };
+        let stretch = if divide {
+            self.divide(glue.stretch, scalar, MAX_EXPR_DIMEN)
+        } else {
+            self.multiply(glue.stretch, scalar, MAX_EXPR_DIMEN)
+        };
+        let shrink = if divide {
+            self.divide(glue.shrink, scalar, MAX_EXPR_DIMEN)
+        } else {
+            self.multiply(glue.shrink, scalar, MAX_EXPR_DIMEN)
+        };
+
+        if self.overflowed {
+            Glue::zero()
+        } else {
+            Glue {
+                width,
+                stretch,
+                shrink,
+                ..glue
+            }
+        }
+    }
+
+    fn scale_glue_ratio(&mut self, glue: Glue, numerator: i32, denominator: i32) -> Glue {
+        if denominator == 0 {
+            self.overflowed = true;
+            return Glue::zero();
+        }
+
+        let width = self.multiply_divide(glue.width, numerator, denominator, MAX_EXPR_DIMEN);
+        let stretch = self.multiply_divide(glue.stretch, numerator, denominator, MAX_EXPR_DIMEN);
+        let shrink = self.multiply_divide(glue.shrink, numerator, denominator, MAX_EXPR_DIMEN);
+
+        if self.overflowed {
+            Glue::zero()
+        } else {
+            Glue {
+                width,
+                stretch,
+                shrink,
+                ..glue
+            }
         }
     }
 }
@@ -2498,40 +3016,163 @@ enum ExprVal {
     Glue(Glue),
 }
 
-fn glue_add(a: &Glue, b: &Glue) -> Glue {
-    let mut g = a.clone();
-    if g.stretch_order == b.stretch_order {
-        g.stretch += b.stretch;
-    } else if g.stretch_order < b.stretch_order {
-        g.stretch = b.stretch;
-        g.stretch_order = b.stretch_order;
-    }
-    if g.shrink_order == b.shrink_order {
-        g.shrink += b.shrink;
-    } else if g.shrink_order < b.shrink_order {
-        g.shrink = b.shrink;
-        g.shrink_order = b.shrink_order;
-    }
-    g.width += b.width;
-    g
-}
+#[cfg(test)]
+mod expression_arithmetic_tests {
+    use super::*;
+    use crate::engine::InteractionMode;
 
-fn glue_sub(a: &Glue, b: &Glue) -> Glue {
-    let mut g = a.clone();
-    if g.stretch_order == b.stretch_order {
-        g.stretch -= b.stretch;
-    } else if g.stretch_order < b.stretch_order {
-        g.stretch = -b.stretch;
-        g.stretch_order = b.stretch_order;
+    fn scanner(source: &str) -> Engine {
+        let mut engine = Engine::new(true);
+        engine.init_primitives();
+        engine.interaction_mode = InteractionMode::Nonstop;
+        engine
+            .input
+            .push_file("expr.tex".to_string(), source.as_bytes().to_vec());
+        engine
     }
-    if g.shrink_order == b.shrink_order {
-        g.shrink -= b.shrink;
-    } else if g.shrink_order < b.shrink_order {
-        g.shrink = -b.shrink;
-        g.shrink_order = b.shrink_order;
+
+    fn assert_one_arithmetic_overflow(engine: &Engine) {
+        assert_eq!(engine.diagnostics.len(), 1, "{}", engine.term);
+        let diagnostic = &engine.diagnostics[0];
+        assert_eq!(diagnostic.message, "Arithmetic overflow");
+        let primary = diagnostic.primary.as_ref().expect("located diagnostic");
+        assert_eq!(
+            (primary.name.as_str(), primary.line, primary.column),
+            ("expr.tex", 1, 1)
+        );
     }
-    g.width -= b.width;
-    g
+
+    fn assert_zero_glue(glue: &Glue) {
+        assert_eq!(
+            (
+                glue.width,
+                glue.stretch,
+                glue.shrink,
+                glue.stretch_order,
+                glue.shrink_order,
+            ),
+            (0, 0, 0, 0, 0)
+        );
+    }
+
+    #[test]
+    fn numexpr_overflow_and_zero_division_match_etex_recovery() {
+        // Each case was checked against e-TeX: the complete expression result
+        // becomes zero and only one delayed arithmetic diagnostic is emitted.
+        for source in [
+            "2147483647+1\\relax",
+            "2147483647+1+7\\relax",
+            "-2147483647-1\\relax",
+            "2147483647--1\\relax",
+            "1073741824*2\\relax",
+            "-1073741824*2\\relax",
+            "1/0\\relax",
+        ] {
+            let mut engine = scanner(&format!("\\numexpr{source}"));
+            assert_eq!(engine.scan_int(), 0, "source: {source}");
+            assert_one_arithmetic_overflow(&engine);
+        }
+    }
+
+    #[test]
+    fn numexpr_uses_symmetric_integer_bounds_and_tex_rounding() {
+        for (source, expected) in [
+            ("2147483647\\relax", 2_147_483_647),
+            ("-2147483647\\relax", -2_147_483_647),
+            ("--2147483647\\relax", 2_147_483_647),
+            ("5/2\\relax", 3),
+            ("-5/2\\relax", -3),
+            ("5/-2\\relax", -3),
+            ("-5/-2\\relax", 3),
+        ] {
+            let mut engine = scanner(&format!("\\numexpr{source}"));
+            assert_eq!(engine.scan_int(), expected, "source: {source}");
+            assert!(engine.diagnostics.is_empty(), "{}", engine.term);
+        }
+
+        // A count can reach i32::MIN through register arithmetic. e-TeX still
+        // rejects it as an expression factor, and unary minus must not panic.
+        let mut engine = scanner("\\numexpr-\\count0\\relax");
+        engine.eqtb.count[0] = i32::MIN;
+        assert_eq!(engine.scan_int(), 0);
+        assert_one_arithmetic_overflow(&engine);
+    }
+
+    #[test]
+    fn expressions_fuse_adjacent_multiply_divide_like_etex() {
+        for (source, expected) in [
+            ("2147483647*2/2\\relax", 2_147_483_647),
+            ("1*2147483647*2/2/2147483647\\relax", 1),
+            ("1*2/3\\relax", 1),
+            ("-1*2/3\\relax", -1),
+        ] {
+            let mut engine = scanner(&format!("\\numexpr{source}"));
+            assert_eq!(engine.scan_int(), expected, "source: {source}");
+            assert!(engine.diagnostics.is_empty(), "{}", engine.term);
+        }
+
+        let mut engine = scanner("\\dimexpr10000pt*2/2\\relax");
+        assert_eq!(engine.scan_dimen(false, false), 10_000 * ONE);
+        assert!(engine.diagnostics.is_empty(), "{}", engine.term);
+
+        let mut engine = scanner("\\glueexpr10000pt plus 10000pt*2/2\\relax");
+        let result = engine.scan_glue(false);
+        assert_eq!((result.width, result.stretch), (10_000 * ONE, 10_000 * ONE));
+        assert!(engine.diagnostics.is_empty(), "{}", engine.term);
+    }
+
+    #[test]
+    fn multiply_divide_only_defers_the_adjacent_product_check() {
+        for source in [
+            "2147483647*2/1\\relax",
+            "2147483647/2*2\\relax",
+            "1073741824*2*1/2\\relax",
+        ] {
+            let mut engine = scanner(&format!("\\numexpr{source}"));
+            assert_eq!(engine.scan_int(), 0, "source: {source}");
+            assert_one_arithmetic_overflow(&engine);
+        }
+    }
+
+    #[test]
+    fn dimexpr_checks_max_dimen_for_every_operator() {
+        for source in [
+            "16383pt+1pt\\relax",
+            "-16383pt-1pt\\relax",
+            "6000pt*3\\relax",
+            "1pt/0\\relax",
+        ] {
+            let mut engine = scanner(&format!("\\dimexpr{source}"));
+            assert_eq!(engine.scan_dimen(false, false), 0, "source: {source}");
+            assert_one_arithmetic_overflow(&engine);
+        }
+    }
+
+    #[test]
+    fn glueexpr_overflow_discards_width_stretch_and_shrink_atomically() {
+        for source in [
+            "10000pt+10000pt\\relax",
+            "1pt plus 10000pt+2pt plus 10000pt\\relax",
+            "1pt minus 10000pt+2pt minus 10000pt\\relax",
+            "1pt plus 10000fil+2pt plus 10000fil\\relax",
+            "10000pt plus 10000pt minus 10000pt+10000pt plus 10000pt minus 10000pt\\relax",
+            "1pt plus 6000pt*3\\relax",
+            "1pt plus 2pt/0\\relax",
+        ] {
+            let mut engine = scanner(&format!("\\glueexpr{source}"));
+            let result = engine.scan_glue(false);
+            assert_zero_glue(&result);
+            assert_one_arithmetic_overflow(&engine);
+        }
+    }
+
+    #[test]
+    fn muexpr_uses_the_same_max_dimen_limit() {
+        let mut engine = scanner("\\muexpr10000mu+10000mu\\relax");
+        let result = engine.scan_glue(true);
+        assert_zero_glue(&result);
+        assert_one_arithmetic_overflow(&engine);
+    }
 }
 
 #[cfg(test)]
@@ -2678,6 +3319,74 @@ mod numeric_diagnostic_tests {
     }
 
     #[test]
+    fn radix_prefix_without_a_digit_reports_and_preserves_the_invalid_token() {
+        for literal in ["'Z", "'8", "\"G"] {
+            let mut engine = scanner(literal);
+
+            assert_eq!(engine.scan_int(), 0, "literal {literal}");
+            assert_eq!(
+                engine.diagnostics.len(),
+                1,
+                "literal {literal}: {}",
+                engine.term
+            );
+            let diagnostic = &engine.diagnostics[0];
+            assert_eq!(diagnostic.message, "Missing number, treated as zero");
+            let primary = diagnostic.primary.as_ref().expect("located diagnostic");
+            assert_eq!(
+                (primary.name.as_str(), primary.line, primary.column),
+                ("numbers.tex", 1, 2),
+                "literal {literal}"
+            );
+
+            let invalid = engine.get_token();
+            assert!(invalid.is_char(), "literal {literal}");
+            assert_eq!(
+                invalid.chr(),
+                literal.as_bytes()[1] as u32,
+                "literal {literal}"
+            );
+        }
+
+        for literal in ["'", "\""] {
+            let mut engine = scanner(literal);
+
+            assert_eq!(engine.scan_int(), 0, "literal {literal}");
+            assert_eq!(engine.diagnostics.len(), 1, "literal {literal}");
+            let diagnostic = &engine.diagnostics[0];
+            assert_eq!(diagnostic.message, "Missing number, treated as zero");
+            let primary = diagnostic.primary.as_ref().expect("located diagnostic");
+            assert_eq!(
+                (primary.name.as_str(), primary.line, primary.column),
+                ("numbers.tex", 1, 1),
+                "literal {literal}"
+            );
+        }
+    }
+
+    #[test]
+    fn invalid_register_number_is_located_at_its_operand() {
+        let mut engine = scanner("  32768=");
+
+        assert_eq!(engine.scan_reg_num(), 0);
+        assert_eq!(engine.diagnostics.len(), 1, "{}", engine.term);
+        let diagnostic = &engine.diagnostics[0];
+        assert_eq!(
+            diagnostic.message,
+            "Register number 32768 is out of range; expected a number from 0 through 32767"
+        );
+        let primary = diagnostic.primary.as_ref().expect("located diagnostic");
+        assert_eq!(
+            (primary.name.as_str(), primary.line, primary.column),
+            ("numbers.tex", 1, 3)
+        );
+
+        let delimiter = engine.get_token();
+        assert!(delimiter.is_char());
+        assert_eq!(delimiter.chr(), b'=' as u32);
+    }
+
+    #[test]
     fn largest_integer_and_legal_dimension_do_not_report_errors() {
         let mut integer = scanner("2147483647 ");
         assert_eq!(integer.scan_int(), i32::MAX);
@@ -2697,10 +3406,25 @@ mod numeric_diagnostic_tests {
         let diagnostic = &engine.diagnostics[0];
         assert_eq!(diagnostic.message, "Dimension too large");
         let primary = diagnostic.primary.as_ref().unwrap();
+
         assert_eq!(
             (primary.name.as_str(), primary.line, primary.column),
             ("numbers.tex", 1, 1)
         );
+    }
+    #[test]
+    fn count_register_in_unit_position_denotes_scaled_points() {
+        let mut engine = Engine::new(true);
+        engine.init_primitives();
+        engine.eqtb.count[0] = 1_024;
+        let unit = engine.cs.intern(b"K");
+        engine.eqtb.assign(unit, Equiv::CountReg(0), true);
+        engine
+            .input
+            .push_file("numbers.tex".to_string(), b"-3\\K ".to_vec());
+
+        assert_eq!(engine.scan_dimen(false, false), -3_072);
+        assert!(engine.diagnostics.is_empty(), "{}", engine.term);
     }
 
     #[test]
@@ -2710,5 +3434,184 @@ mod numeric_diagnostic_tests {
         assert_eq!(engine.scan_dimen(false, false), -0x3FFF_FFFF);
         assert_eq!(engine.diagnostics.len(), 1, "{}", engine.term);
         assert_eq!(engine.diagnostics[0].message, "Dimension too large");
+    }
+}
+
+#[cfg(test)]
+mod showthe_mark_tests {
+    use super::*;
+
+    #[test]
+    fn mark_token_capture_does_not_push_the_shown_value() {
+        let mut engine = Engine::new(false);
+        for which in 0..engine.marks.len() {
+            engine.marks[which].resize(8, Vec::new());
+            engine.marks[which][7] = vec![Token::letter(b'M')];
+
+            let tokens = engine.mark_tokens_class(which, 7);
+            engine.emit_the_tokens(tokens, true);
+
+            assert_eq!(engine.pending_the_string.as_deref(), Some("M"));
+            assert!(engine.pushed.is_empty());
+        }
+    }
+
+    #[test]
+    fn meaning_macro_prefixes_have_no_spaces_between_prefixes() {
+        // tex.web §296: print_esc does not add spaces after control words;
+        // e-TeX prints `\protected\long macro:` and `\protected\long\outer macro:`,
+        // not `\protected \long macro:`. expl3's \token_if_protected_long_macro:N
+        // checks `\meaning` against `\protected\long macro:`.
+        let mut engine = Engine::new(true);
+        engine.init_primitives();
+
+        let id = engine.cs.intern(b"testfoo");
+        let m = crate::eqtb::Macro {
+            replacement: Default::default(),
+            prefix: Vec::new(),
+            params: Vec::new(),
+            body: Vec::new().into(),
+            num_params: 0,
+            has_param_refs: false,
+            long: true,
+            outer: false,
+            protected: true,
+        };
+        engine.eqtb.assign(id, Equiv::Macro(std::rc::Rc::new(m)), true);
+        assert_eq!(engine.meaning_of(Token::from_cs(id)), "\\protected\\long macro:->");
+
+        let m_plo = crate::eqtb::Macro {
+            replacement: Default::default(),
+            prefix: Vec::new(),
+            params: Vec::new(),
+            body: Vec::new().into(),
+            num_params: 0,
+            has_param_refs: false,
+            long: true,
+            outer: true,
+            protected: true,
+        };
+        engine.eqtb.assign(id, Equiv::Macro(std::rc::Rc::new(m_plo)), true);
+        assert_eq!(engine.meaning_of(Token::from_cs(id)), "\\protected\\long\\outer macro:->");
+    }
+
+    #[test]
+    fn meaning_macro_prefixes_honor_escapechar() {
+        let mut engine = Engine::new(true);
+        engine.init_primitives();
+        engine.eqtb.int_params[crate::prim::IntParam::EscapeChar.idx() as usize] = b'/' as i32;
+
+        let id = engine.cs.intern(b"testslash");
+        let m = crate::eqtb::Macro {
+            replacement: Default::default(),
+            prefix: Vec::new(),
+            params: Vec::new(),
+            body: Vec::new().into(),
+            num_params: 0,
+            has_param_refs: false,
+            long: true,
+            outer: false,
+            protected: true,
+        };
+        engine.eqtb.assign(id, Equiv::Macro(std::rc::Rc::new(m)), true);
+        assert_eq!(engine.meaning_of(Token::from_cs(id)), "/protected/long macro:->");
+    }
+
+    #[test]
+    fn currentgrouptype_reports_correct_tex_web_codes() {
+        // tex.web §5870-5887:
+        // simple_group = 1, semi_simple_group = 14, math_shift_group = 15,
+        // math_left_group = 16, math_group = 9.
+        let mut engine = Engine::new(true);
+        engine.init_primitives();
+
+        let ty_outside = engine.int_param_value(crate::prim::IntParam::CurrentGroupType);
+        assert_eq!(ty_outside, 0);
+
+        engine.push_group_level(crate::eqtb::LevelType::Simple);
+        let ty_simple = engine.int_param_value(crate::prim::IntParam::CurrentGroupType);
+        assert_eq!(ty_simple, 1);
+        engine.pop_group();
+
+        engine.push_group_level(crate::eqtb::LevelType::SemiSimple);
+        let ty_semi = engine.int_param_value(crate::prim::IntParam::CurrentGroupType);
+        assert_eq!(ty_semi, 14);
+        engine.pop_group();
+
+        engine.push_group_level(crate::eqtb::LevelType::MathShift);
+        let ty_shift = engine.int_param_value(crate::prim::IntParam::CurrentGroupType);
+        assert_eq!(ty_shift, 15);
+
+        engine.push_group_level(crate::eqtb::LevelType::MathLeft);
+        let ty_left = engine.int_param_value(crate::prim::IntParam::CurrentGroupType);
+        assert_eq!(ty_left, 16);
+        engine.pop_group();
+
+        engine.push_group_level(crate::eqtb::LevelType::MathGroup);
+        let ty_mathgrp = engine.int_param_value(crate::prim::IntParam::CurrentGroupType);
+        assert_eq!(ty_mathgrp, 9);
+        engine.pop_group();
+
+        engine.pop_group();
+    }
+
+    #[test]
+    fn pagediscards_and_splitdiscards_are_registered_primitives() {
+        let mut engine = Engine::new(true);
+        engine.init_primitives();
+        let pd = engine.cs.lookup(b"pagediscards").expect("pagediscards primitive");
+        assert!(matches!(engine.eqtb.get(pd), Some(Equiv::Prim(crate::prim::Prim::PageDiscards))));
+        let sd = engine.cs.lookup(b"splitdiscards").expect("splitdiscards primitive");
+        assert!(matches!(engine.eqtb.get(sd), Some(Equiv::Prim(crate::prim::Prim::SplitDiscards))));
+    }
+
+    #[test]
+    fn skip_case_skip_handles_nested_ifeof() {
+        let mut engine = Engine::new(true);
+        engine.init_primitives();
+        // Run \ifcase0 matched\or\ifeof16 inner\fi\or second\fi tail
+        // When case 0 matches, the subsequent \or calls skip_case_skip.
+        // It must not terminate early at the inner \fi matching \ifeof.
+        engine.input.push_file(
+            "test.tex".to_string(),
+            b"\\ifcase0 matched\\or\\ifeof16 inner\\fi\\or second\\fi tail\\par".to_vec(),
+        );
+        engine.run();
+        assert_eq!(engine.error_count, 0);
+    }
+
+    #[test]
+    fn dimension_comparison_with_space_macro_after_unit() {
+        let mut engine = Engine::new(true);
+        engine.init_primitives();
+        engine.eqtb.cat[b'{' as usize] = 1;
+        engine.eqtb.cat[b'}' as usize] = 2;
+        engine.input.push_file(
+            "test_dim_space.tex".to_string(),
+            br"\def\space{ }\ifnum0\ifdim10pt=10pt\space1\fi=1 YES\else NO\fi\par".to_vec(),
+        );
+        engine.run();
+        assert_eq!(engine.error_count, 0, "{}", engine.diagnostic_output);
+    }
+
+    #[test]
+    fn par_in_restricted_horizontal_mode_is_noop() {
+        let mut engine = Engine::new(true);
+        engine.init_primitives();
+        engine.eqtb.cat[b'{' as usize] = 1;
+        engine.eqtb.cat[b'}' as usize] = 2;
+        engine.input.push_file(
+            "test_par_hbox.tex".to_string(),
+            br"\hbox{A\par B}\par".to_vec(),
+        );
+        engine.run();
+        assert_eq!(engine.error_count, 0, "{}", engine.diagnostic_output);
+    }
+    #[test]
+    fn lastnodetype_character_node_is_zero() {
+        let mut engine = Engine::new(true);
+        engine.mode = crate::engine::Mode::RestrictedHorizontal;
+        engine.cur_list.push(crate::boxes::Node::Char { c: b'A', font: 0 });
+        assert_eq!(engine.last_node_type_value(), 0, "lastnodetype for character node should be 0");
     }
 }

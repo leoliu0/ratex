@@ -5,20 +5,56 @@
 set -u
 LABEL="${1:-unnamed}"
 cd "$(dirname "$0")/.."
-cargo build -p tex-cli --bin pdflatex --offline 2>&1 | grep -E '^error' -A4 && { echo "BOOTCHECK[$LABEL]: BUILD FAILED"; exit 1; }
+if ! cargo build -p tex-cli --bin pdflatex --offline; then
+  echo "BOOTCHECK[$LABEL]: BUILD FAILED" >&2
+  exit 1
+fi
+WORK=$(mktemp -d /tmp/tex-bootcheck.XXXXXX) || {
+  echo "BOOTCHECK[$LABEL]: cannot create temporary workspace" >&2
+  exit 1
+}
+LOG="$WORK/process.log"
+cat > "$WORK/hello.tex" <<'EOF'
+\documentclass{article}
+\begin{document}
+Boot-state smoke test: $a^2+b^2=c^2$.
+\end{document}
+EOF
 FMT=target/debug/pdflatex.fmt
-[ -f "$FMT" ] && mv "$FMT" /tmp/bootcheck.fmt.bak
-timeout 120 ./target/debug/pdflatex -output-directory /tmp/textest /tmp/textest/hello.tex > /tmp/bootcheck.log 2>&1
+BACKUP=""
+restore_format() {
+  if [ -n "$BACKUP" ] && [ -f "$BACKUP" ]; then
+    mv -- "$BACKUP" "$FMT"
+  fi
+}
+cleanup() {
+  restore_format
+  rm -rf -- "$WORK"
+}
+if [ -f "$FMT" ]; then
+  BACKUP=$(mktemp /tmp/bootcheck-fmt.XXXXXX)
+  mv -- "$FMT" "$BACKUP"
+fi
+trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+timeout 120 ./target/debug/pdflatex -interaction=nonstopmode -halt-on-error \
+  -output-directory "$WORK" "$WORK/hello.tex" > "$LOG" 2>&1
 EC=$?
-[ -f /tmp/bootcheck.fmt.bak ] && mv /tmp/bootcheck.fmt.bak "$FMT"
-ERRS=$(grep -cE '^! ' /tmp/bootcheck.log)
-FURTHEST=$(grep -oE '\(/usr/share/texmf-dist/tex/[^ ]+' /tmp/bootcheck.log | tail -1)
-LASTERR=$(grep -E '^! ' /tmp/bootcheck.log | tail -1)
+restore_format
+trap - EXIT HUP INT TERM
+ERRS=$(grep -cE '^! ' "$LOG" || true)
+LASTERR=$(grep -E '^! ' "$LOG" | tail -1 || true)
 echo "BOOTCHECK[$LABEL]: errors=$ERRS"
 echo "BOOTCHECK[$LABEL]: last: $LASTERR"
 # Full pass = exit 0 and no error lines and a PDF written.
-if [ "$EC" -eq 0 ] && [ "$ERRS" -eq 0 ] && [ -f /tmp/textest/hello.pdf ]; then
+if [ "$EC" -eq 0 ] && [ "$ERRS" -eq 0 ] && [ -f "$WORK/hello.pdf" ]; then
   echo "BOOTCHECK[$LABEL]: PASS"
+  cleanup
 else
   echo "BOOTCHECK[$LABEL]: NOT PASSING (hang if exit=124)"
+  tail -40 "$LOG"
+  cleanup
+  exit 1
 fi

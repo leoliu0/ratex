@@ -29,14 +29,14 @@ fn name_scan_for_and(buf: &[u8], mut p: usize) -> usize {
         match buf[p] {
             b'a' | b'A' => {
                 p += 1;
-                if prev_white && p + 2 < n {
-                    if (buf[p] == b'n' || buf[p] == b'N')
-                        && (buf[p + 1] == b'd' || buf[p + 1] == b'D')
-                        && is_white(buf[p + 2])
-                    {
-                        p += 2;
-                        found = true;
-                    }
+                if prev_white
+                    && p + 2 < n
+                    && (buf[p] == b'n' || buf[p] == b'N')
+                    && (buf[p + 1] == b'd' || buf[p + 1] == b'D')
+                    && is_white(buf[p + 2])
+                {
+                    p += 2;
+                    found = true;
                 }
                 prev_white = false;
             }
@@ -298,9 +298,8 @@ fn find_parts(nd: &NameData) -> Parts {
             }
             von_start += 1;
         }
-        let von_end;
-        if found {
-            von_end = von_name_ends(nd, von_start, last_end);
+        let von_end = if found {
+            von_name_ends(nd, von_start, last_end)
         } else {
             // no von name; backtrack over tokens connected by non-tie seps
             while von_start > 0 {
@@ -310,8 +309,8 @@ fn find_parts(nd: &NameData) -> Parts {
                 }
                 von_start -= 1;
             }
-            von_end = von_start;
-        }
+            von_start
+        };
         Parts {
             first_start,
             first_end: von_start,
@@ -375,10 +374,8 @@ fn enough_text_chars(out: &[u8], start: usize, enough: usize) -> bool {
                     i += 1;
                 }
             }
-        } else if c == b'}' {
-            if level > 0 {
-                level -= 1;
-            }
+        } else if c == b'}' && level > 0 {
+            level -= 1;
         }
         num += 1;
     }
@@ -493,7 +490,7 @@ fn format_part(sp: &[u8], mut i: usize, nd: &NameData, parts: &Parts, out: &mut 
                     if cur == last {
                         to_be_written = false;
                     }
-                    if i < sp.len() && sp[i].to_ascii_lowercase() == l.to_ascii_lowercase() {
+                    if i < sp.len() && sp[i].eq_ignore_ascii_case(&l) {
                         double_letter = true;
                     }
                     alpha_found = true;

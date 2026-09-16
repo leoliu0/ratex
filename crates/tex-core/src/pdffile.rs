@@ -10,7 +10,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::io::Write;
 
 pub(crate) fn flate(data: &[u8]) -> Vec<u8> {
-    let mut e = ZlibEncoder::new(Vec::new(), Compression::best());
+    let mut e = ZlibEncoder::new(Vec::new(), Compression::fast());
     let _ = e.write_all(data);
     e.finish().unwrap_or_default()
 }
@@ -1157,12 +1157,17 @@ pub fn write_pdf(doc: &PdfDoc) -> Vec<u8> {
                 escape_pdf_name(pdf_name), first, last, widths, fo.desc, enc, tounicode_ref
             ),
         );
+        let (ascent, descent) = if f.ascent - f.descent > 3000.0 {
+            (f.ascent, f.ascent - 3000.0)
+        } else {
+            (f.ascent, f.descent)
+        };
         let mut desc = format!(
             "<< /Type /FontDescriptor /FontName /{} /Flags {} /FontBBox [{} {} {} {}] /ItalicAngle {} /Ascent {} /Descent {} /CapHeight {} /StemV {}",
             escape_pdf_name(pdf_name),
             f.flags,
             num(f.font_bbox[0]), num(f.font_bbox[1]), num(f.font_bbox[2]), num(f.font_bbox[3]),
-            num(f.italic_angle), num(f.ascent), num(f.descent), num(f.cap_height), num(f.stem_v),
+            num(f.italic_angle), num(ascent), num(descent), num(f.cap_height), num(f.stem_v),
         );
         if let Some(file) = fo.file {
             desc.push_str(&format!(" /FontFile {} 0 R", file));
@@ -1233,17 +1238,20 @@ pub fn write_pdf(doc: &PdfDoc) -> Vec<u8> {
         };
         let mut xobj_entries = Vec::new();
         for (obj_num, bytes) in &doc.objects {
-            if bytes.starts_with(b"<< /Type /XObject /Subtype /Form") {
-                xobj_entries.push(format!("/Fm{} {} 0 R", obj_num, obj_num));
-            }
-            if bytes.starts_with(b"<< /Type /XObject /Subtype /Form")
-                || bytes.starts_with(b"<< /Type /XObject /Subtype /Image")
-            {
-                let name = format!("/Im{} Do", obj_num);
+            if bytes.starts_with(b"<< /Type /XObject") {
+                let fm_name = format!("/Fm{} Do", obj_num);
                 if page
                     .content
-                    .windows(name.len())
-                    .any(|part| part == name.as_bytes())
+                    .windows(fm_name.len())
+                    .any(|part| part == fm_name.as_bytes())
+                {
+                    xobj_entries.push(format!("/Fm{} {} 0 R", obj_num, obj_num));
+                }
+                let im_name = format!("/Im{} Do", obj_num);
+                if page
+                    .content
+                    .windows(im_name.len())
+                    .any(|part| part == im_name.as_bytes())
                 {
                     xobj_entries.push(format!("/Im{} {} 0 R", obj_num, obj_num));
                 }

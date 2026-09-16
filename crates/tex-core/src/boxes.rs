@@ -117,9 +117,19 @@ pub enum WhatIt {
         h: i32,
         d: i32,
     },
-    PdfSave,
-    PdfRestore,
-    PdfSetMatrix(String),
+    /// PDF graphics-state operations execute later at shipout. Keep a cheap
+    /// source bookmark so any delayed diagnostic still names the command
+    /// that created the node.
+    PdfSave {
+        source: Option<crate::input::SourceMark>,
+    },
+    PdfRestore {
+        source: Option<crate::input::SourceMark>,
+    },
+    PdfSetMatrix {
+        matrix: String,
+        source: Option<crate::input::SourceMark>,
+    },
     Write {
         stream: u16,
         tokens: Vec<crate::token::Token>,
@@ -130,6 +140,10 @@ pub enum WhatIt {
     OpenOut {
         stream: u16,
         path: String,
+        /// Managed auxiliary directories mirror nested `\\include` paths.
+        /// Traditional and absolute `\\openout` paths do not create parents.
+        create_parent: bool,
+        source: Option<crate::input::SourceContext>,
     },
     /// tex.web §1393 `close_node`: a non-immediate `\closeout` is queued as
     /// a whatsit on the current list and only takes effect when the list is
@@ -137,6 +151,7 @@ pub enum WhatIt {
     /// land in the file
     CloseOut {
         stream: u16,
+        source: Option<crate::input::SourceContext>,
     },
     PdfDest {
         name: String,
@@ -200,6 +215,15 @@ pub struct DiscNode {
     pub post_break: NodeList,
     pub no_break: NodeList,
     pub replace_count: usize,
+}
+
+/// Stable identity for a math atom that may need to report a missing glyph
+/// after TeX has selected the conversion style and font. Source marks live in
+/// an engine-side arena keyed by this id, keeping the hot `Node` enum compact.
+/// The id also prevents a measuring pass from reporting an atom twice.
+#[derive(Clone, Debug, Default)]
+pub struct MathDiagnosticOrigin {
+    pub(crate) id: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -289,6 +313,7 @@ pub enum Node {
         fam: u8,
         c: u8,
         class: u8,
+        origin: MathDiagnosticOrigin,
     },
     Frac {
         num: NodeList,
@@ -296,11 +321,13 @@ pub enum Node {
         thickness: i32,
         left: Option<i32>,
         right: Option<i32>,
+        origin: MathDiagnosticOrigin,
     },
     Radical {
         body: NodeList,
         left_delim: Option<(u8, u8)>,
         thickness: i32,
+        origin: MathDiagnosticOrigin,
     },
     Scripts {
         nucleus: NodeList,
@@ -311,6 +338,7 @@ pub enum Node {
         small: (u8, u8),
         large: (u8, u8),
         size: u8,
+        origin: MathDiagnosticOrigin,
     },
     OpLimits {
         op: NodeList,
@@ -322,6 +350,7 @@ pub enum Node {
         fam: u8,
         c: u8,
         body: NodeList,
+        origin: MathDiagnosticOrigin,
     },
     Overline {
         body: NodeList,

@@ -10,6 +10,13 @@ const MAX_SOURCE_COLUMNS: usize = 120;
 const MAX_MESSAGE_BYTES: usize = 16 * 1024;
 const MAX_HELP_BYTES: usize = 4 * 1024;
 const MAX_CONTROL_SEQUENCE_BYTES: usize = 256;
+/// Keep library-facing diagnostics useful without allowing a warning-heavy
+/// document to retain an unbounded number of source excerpts and include
+/// chains. The final two slots become one omission marker and the newest
+/// diagnostic once this limit is crossed.
+pub const MAX_RETAINED_DIAGNOSTICS: usize = 128;
+const OMITTED_DIAGNOSTICS_MESSAGE: &str =
+    "Earlier diagnostics omitted from the retained diagnostic list; consult the transcript";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DiagnosticSeverity {
@@ -29,6 +36,113 @@ pub struct Diagnostic {
     /// Parent files ordered from the direct includer outwards.
     pub included_from: Vec<SourceContext>,
     pub help: Option<String>,
+}
+
+/// A bounded, slice-like collection of diagnostics retained for library
+/// callers. The transcript has its own byte bound; this collection also needs
+/// a count bound because each entry can own a source excerpt and include
+/// ancestry.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DiagnosticStore {
+    entries: Vec<Diagnostic>,
+    overflowed: bool,
+}
+
+impl Default for DiagnosticStore {
+    fn default() -> Self {
+        Self {
+            entries: Vec::with_capacity(MAX_RETAINED_DIAGNOSTICS),
+            overflowed: false,
+        }
+    }
+}
+
+impl DiagnosticStore {
+    pub fn clear(&mut self) {
+        self.entries.clear();
+        self.overflowed = false;
+    }
+
+    /// Retain a diagnostic without allowing the collection to exceed its hard
+    /// bound. This remains public for callers that previously appended to the
+    /// public `Engine::diagnostics` vector.
+    pub fn push(&mut self, diagnostic: Diagnostic) {
+        if !self.overflowed && self.entries.len() < MAX_RETAINED_DIAGNOSTICS {
+            self.entries.push(diagnostic);
+            return;
+        }
+
+        if !self.overflowed {
+            // Retain the beginning of the failure sequence, explicitly mark
+            // the gap, and keep the newest entry available to callers such as
+            // late output-error reporting.
+            self.entries
+                .truncate(MAX_RETAINED_DIAGNOSTICS.saturating_sub(2));
+            self.entries.push(Diagnostic {
+                severity: DiagnosticSeverity::Warning,
+                message: OMITTED_DIAGNOSTICS_MESSAGE.to_string(),
+                primary: None,
+                highlight_len: 1,
+                expansion: Vec::new(),
+                included_from: Vec::new(),
+                help: None,
+            });
+            self.entries.push(diagnostic);
+            self.overflowed = true;
+            return;
+        }
+
+        // The last slot always represents the newest event. This preserves
+        // `diagnostics.last()` for late fatal errors without growing storage.
+        if let Some(last) = self.entries.last_mut() {
+            *last = diagnostic;
+        }
+    }
+
+    pub fn as_slice(&self) -> &[Diagnostic] {
+        &self.entries
+    }
+}
+
+impl std::ops::Deref for DiagnosticStore {
+    type Target = [Diagnostic];
+
+    fn deref(&self) -> &Self::Target {
+        &self.entries
+    }
+}
+
+impl AsRef<[Diagnostic]> for DiagnosticStore {
+    fn as_ref(&self) -> &[Diagnostic] {
+        self.as_slice()
+    }
+}
+
+impl<'a> IntoIterator for &'a DiagnosticStore {
+    type Item = &'a Diagnostic;
+    type IntoIter = std::slice::Iter<'a, Diagnostic>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.entries.iter()
+    }
+}
+
+impl<'a> IntoIterator for &'a mut DiagnosticStore {
+    type Item = &'a mut Diagnostic;
+    type IntoIter = std::slice::IterMut<'a, Diagnostic>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.entries.iter_mut()
+    }
+}
+
+impl IntoIterator for DiagnosticStore {
+    type Item = Diagnostic;
+    type IntoIter = std::vec::IntoIter<Diagnostic>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.entries.into_iter()
+    }
 }
 
 impl Diagnostic {
@@ -104,12 +218,14 @@ impl Engine {
         self.error_count = 0;
         self.stopped_on_error = false;
         self.explicit_end_seen = false;
+        self.diagnostics_finished = false;
         self.diagnostics.clear();
         self.diagnostic_output.clear();
         self.diagnostic_source_override = None;
         self.diagnostic_trace_override = None;
         self.pending_terminal_error_source = None;
         self.diagnostic_macro_trace.clear();
+        self.diagnostic_macro_trace_truncated = false;
         self.diagnostic_token_from_file = false;
         self.diagnostic_trace_hold = 0;
         self.diagnostic_source_cs = None;
@@ -120,6 +236,9 @@ impl Engine {
         self.diagnostic_group_openings.clear();
         self.diagnostic_use_err_help = false;
         self.definable_cs_recovery_count = 0;
+        self.math_diagnostic_sources.clear();
+        self.math_diagnostic_depth = 0;
+        self.reported_missing_math_atoms.clear();
     }
 
     pub(crate) fn enter_macro_diagnostic(
@@ -140,6 +259,7 @@ impl Engine {
         // into `\hspace{...}` and discarded the useful `\hspace` frame.
         if synthetic.is_some() || physical.is_some() {
             self.diagnostic_macro_trace.clear();
+            self.diagnostic_macro_trace_truncated = false;
             if let Some((_, mark, span)) = synthetic {
                 self.diagnostic_macro_call_site = Some(mark);
                 self.diagnostic_macro_call_span = span.max(1);
@@ -163,6 +283,7 @@ impl Engine {
                     // source excerpt. Keep it and discard the oldest inner
                     // frame so a deep trace cannot disagree with its caret.
                     self.diagnostic_macro_trace.remove(1);
+                    self.diagnostic_macro_trace_truncated = true;
                 }
                 self.diagnostic_macro_trace.push(id);
             }
@@ -294,7 +415,7 @@ impl Engine {
         {
             self.diagnostic_macro_call_site
                 .as_ref()
-                .map(SourceMark::to_context)
+                .map(crate::input::SourceMark::to_context)
         } else {
             None
         };
@@ -347,6 +468,8 @@ impl Engine {
                 },
             );
 
+        let trace_was_capped =
+            self.diagnostic_trace_override.is_none() && self.diagnostic_macro_trace_truncated;
         let trace = if let Some(trace) = &self.diagnostic_trace_override {
             trace.clone()
         } else if self.diagnostic_macro_trace.is_empty() {
@@ -364,14 +487,19 @@ impl Engine {
             self.diagnostic_macro_trace.clone()
         };
         let mut full_expansion = Vec::new();
-        let trace_len = trace.len();
-        for (index, id) in trace.into_iter().enumerate() {
+        for id in trace {
             let name = self.display_cs(id).trim_end().to_string();
-            let visible_endpoint =
-                (index == 0 || index + 1 == trace_len) && name != "␠" && name != "⇥";
-            if (visible_endpoint || !trace_noise(&name)) && full_expansion.last() != Some(&name) {
+            // LaTeX scratch wrappers do not explain a user error. This also
+            // applies when one happens to be the first or last retained frame:
+            // showing only `\reserved@a -> \@swaptwoargs` is worse than
+            // omitting the expansion note and keeping the exact source/include
+            // locations.
+            if !trace_noise(&name) && full_expansion.last() != Some(&name) {
                 full_expansion.push(name);
             }
+        }
+        if trace_was_capped && !full_expansion.is_empty() {
+            full_expansion.insert(1, "…".to_string());
         }
 
         let mut primary = contexts.first().cloned();
@@ -382,6 +510,23 @@ impl Engine {
                 .as_ref()
                 .map_or_else(|| physical_span.unwrap_or(1), |(_, _, span)| *span)
         };
+        if let Some(source) = &primary {
+            let column = source.display_column.saturating_sub(1);
+            let rest = source.text.get(column..).unwrap_or_default();
+            if let Some(name) = between(message, "File `", "'") {
+                let source_name = name.rsplit_once('.').map_or(name, |(stem, _)| stem);
+                if rest.starts_with(source_name) {
+                    highlight_len = source_name.len();
+                }
+            } else if message.contains("ended by \\end{") {
+                if let Some(closed) = between(message, "ended by \\end{", "}") {
+                    let command = format!("\\end{{{closed}}}");
+                    if rest.starts_with(&command) {
+                        highlight_len = command.len();
+                    }
+                }
+            }
+        }
         if !has_exact_source {
             if let Some(source) = &mut primary {
                 // Macro traces point to the outer user call. For direct undefined
@@ -427,10 +572,11 @@ impl Engine {
         } else {
             String::new()
         };
-        let help = if custom_help.is_empty() || legacy_interactive_help(&custom_help) {
+        let custom_help = clean_help_without_interactive_boilerplate(&custom_help);
+        let help = if custom_help.is_empty() {
             default_help(message)
         } else {
-            Some(clean_help(&custom_help))
+            Some(custom_help)
         };
 
         Diagnostic {
@@ -444,19 +590,70 @@ impl Engine {
         }
     }
 
-    fn warning_at(&mut self, message: &str, source: Option<SourceContext>) {
+    pub(crate) fn warning_at(&mut self, message: &str, source: Option<SourceContext>) {
+        self.warning_at_with_terminal_visibility(message, source, true);
+    }
+
+    /// Box-quality diagnostics follow TeX's `\tracingonline` policy: they are
+    /// always recorded in the transcript, but only appear on the terminal
+    /// when tracing is enabled. When visible, the CLI's diagnostic stream is
+    /// stderr, like every other structured warning.
+    pub(crate) fn pack_warning_at(&mut self, message: &str, source: Option<SourceContext>) {
+        let terminal_visible = self.eqtb.int_params[IntParam::TracingOnline.idx() as usize] > 0;
+        self.warning_at_with_terminal_visibility(message, source, terminal_visible);
+    }
+
+    fn warning_at_with_terminal_visibility(
+        &mut self,
+        message: &str,
+        source: Option<SourceContext>,
+        terminal_visible: bool,
+    ) {
         let saved = std::mem::replace(&mut self.diagnostic_source_override, source);
         let diagnostic = self.make_diagnostic(message, DiagnosticSeverity::Warning);
         self.diagnostic_source_override = saved;
         let rendered = diagnostic.render();
-        self.diagnostic_print_nl(&rendered);
+        if terminal_visible {
+            self.diagnostic_print_nl(&rendered);
+        } else {
+            if !self.log.is_empty() && !self.log.ends_with('\n') {
+                self.append_log("\n");
+            }
+            self.append_log(&rendered);
+        }
         self.diagnostics.push(diagnostic);
+    }
+
+    /// Record a failure that occurs after TeX input processing, such as PDF
+    /// serialization or an output-file write. Such failures must not inherit
+    /// the scanner's last source location, which would blame unrelated TeX.
+    pub fn external_fatal_error(&mut self, message: &str, help: Option<&str>) {
+        let diagnostic = Diagnostic {
+            severity: DiagnosticSeverity::Error,
+            message: bounded_text(message, MAX_MESSAGE_BYTES),
+            primary: None,
+            highlight_len: 1,
+            expansion: Vec::new(),
+            included_from: Vec::new(),
+            help: help
+                .map(|text| bounded_text(text.trim(), MAX_HELP_BYTES))
+                .or_else(|| default_help(message)),
+        };
+        self.diagnostic_print_nl(&diagnostic.render());
+        self.diagnostics.push(diagnostic);
+        self.error_count += 1;
+        self.stopped_on_error = true;
+        self.end_occurred = true;
     }
 
     /// Diagnose structural input that reaches raw EOF. Canonical TeX treats
     /// the same state after an explicit `\end` as a non-fatal transcript
     /// warning and still writes the completed output.
     pub fn finish_job_diagnostics(&mut self) {
+        if self.diagnostics_finished {
+            return;
+        }
+        self.diagnostics_finished = true;
         if self.stopped_on_error || (self.ini_mode && self.format_done) {
             return;
         }
@@ -642,25 +839,52 @@ impl Engine {
         toks: &[crate::token::Token],
         limit: usize,
     ) -> String {
+        fn append_bounded(bytes: &mut Vec<u8>, part: &[u8], limit: usize) -> bool {
+            let room = limit.saturating_sub(bytes.len());
+            let take = part.len().min(room);
+            bytes.extend_from_slice(&part[..take]);
+            take == part.len()
+        }
+
         let mut bytes = Vec::with_capacity(limit.min(256));
-        for token in toks {
-            if bytes.len() >= limit {
-                break;
-            }
-            if token.is_cs() {
-                bytes.push(b'\\');
+        let mut truncated = false;
+        for (index, token) in toks.iter().enumerate() {
+            let complete = if token.0 >= crate::expand::PAR_REF_FLAG
+                && token.0 < 0xFFFF_0000
+                && !token.is_cs()
+            {
+                append_bounded(&mut bytes, &[b'#', b'0' + (token.0 & 0xF) as u8], limit)
+            } else if token.is_char()
+                && token.cc() == crate::token::CAT_PARAM
+                && token.chr() == u32::from(b'#')
+            {
+                // tex.web show_token_list prints a literal parameter token as
+                // `##`, distinguishing it from the encoded `#1` form above.
+                append_bounded(&mut bytes, b"##", limit)
+            } else if token.is_cs() {
                 let name = self.cs.name(token.cs_id());
-                let room = limit.saturating_sub(bytes.len());
-                bytes.extend_from_slice(&name[..name.len().min(room)]);
-                if name.len() > 1 && bytes.len() < limit {
-                    bytes.push(b' ');
+                if let Some(active) = active_character(name) {
+                    append_bounded(&mut bytes, &[active], limit)
+                } else {
+                    append_bounded(&mut bytes, b"\\", limit)
+                        && append_bounded(&mut bytes, name, limit)
+                        && (name.len() <= 1 || append_bounded(&mut bytes, b" ", limit))
                 }
             } else {
-                bytes.push(token.chr() as u8);
+                append_bounded(&mut bytes, &[token.chr() as u8], limit)
+            };
+
+            if !complete {
+                truncated = true;
+                break;
+            }
+            if bytes.len() == limit && index + 1 < toks.len() {
+                truncated = true;
+                break;
             }
         }
         let mut result = String::from_utf8_lossy(&bytes).into_owned();
-        if bytes.len() == limit && !toks.is_empty() {
+        if truncated {
             result.push('…');
         }
         result
@@ -767,6 +991,16 @@ fn clean_help(help: &str) -> String {
         .join(" ")
 }
 
+fn clean_help_without_interactive_boilerplate(help: &str) -> String {
+    clean_help(
+        &help
+            .lines()
+            .filter(|line| !legacy_interactive_help(line))
+            .collect::<Vec<_>>()
+            .join("\n"),
+    )
+}
+
 fn between<'a>(text: &'a str, start: &str, end: &str) -> Option<&'a str> {
     let rest = text.split_once(start)?.1;
     Some(rest.split_once(end)?.0)
@@ -775,12 +1009,88 @@ fn between<'a>(text: &'a str, start: &str, end: &str) -> Option<&'a str> {
 fn default_help(message: &str) -> Option<String> {
     let static_help = if message.starts_with("Undefined control sequence") {
         Some("check the command spelling; if a package defines it, load that package before use")
+    } else if message.starts_with("Inspection requested by \\show") {
+        Some("this inspection command intentionally reports through TeX's error channel; remove it when debugging is complete")
+    } else if message.starts_with("Undefined active character") {
+        Some("define this active character before use, or restore its ordinary category code")
     } else if message.contains("not found") || message.starts_with("Cannot read") {
         Some("check the file name and path, and make sure the file is visible in the TeX search paths")
     } else if message.starts_with("Cannot open") {
         Some("check the path and permissions for the file named in this error")
+    } else if message.starts_with("Cannot write output stream")
+        || message.starts_with("Cannot flush output stream")
+    {
+        Some(
+            "check the destination path, permissions, and available disk space, then compile again",
+        )
+    } else if message.starts_with("Cannot load OpenType font file") {
+        Some("check that the named file is a valid, supported OpenType or TrueType font")
+    } else if message.starts_with("Character code ")
+        && message.contains(" is not available in font")
+    {
+        Some("choose a font containing this character, correct the input encoding, or use a replacement character")
+    } else if message.starts_with("Overfull \\hbox") {
+        Some("shorten or reflow the affected text, allow a suitable line break, or increase the available width")
+    } else if message.starts_with("Overfull \\vbox") {
+        Some("reduce the box contents or increase the available height")
+    } else if message.starts_with("Underfull \\hbox")
+        || message.starts_with("Loose \\hbox")
+        || message.starts_with("Tight \\hbox")
+    {
+        Some("adjust the text, break opportunities, or horizontal glue near the reported box")
+    } else if message.starts_with("Underfull \\vbox")
+        || message.starts_with("Loose \\vbox")
+        || message.starts_with("Tight \\vbox")
+    {
+        Some("adjust the vertical material or glue near the reported box")
+    } else if message.starts_with("Unsupported or invalid image") {
+        Some("use a valid PDF, JPEG, or PNG image and check that the file is not truncated or corrupt")
+    } else if message.starts_with("Cannot include PDF") {
+        Some("check that the PDF is valid and that the requested page and page box exist")
+    } else if message.starts_with("Undefined PDF image object") {
+        Some("create the image with `\\pdfximage` before referencing it, and use `\\pdflastximage` or its saved object number")
+    } else if message.starts_with("Undefined PDF form object") {
+        Some("create the form with `\\pdfxform` before referencing it, and use `\\pdflastxform` or its saved object number")
+    } else if message.starts_with("PDF object number ") {
+        Some("reserve the object with `\\pdfobj reserveobjnum`, save `\\pdflastobj`, and define that number exactly once")
+    } else if message.starts_with("Invalid \\pdfsetmatrix value") {
+        Some("use `\\pdfsetmatrix{a b c d}` with four finite decimal numbers")
+    } else if message.starts_with("Unmatched \\pdfsave") {
+        Some("add a matching `\\pdfrestore` after this `\\pdfsave` within the same shipped box")
+    } else if message.starts_with("Unmatched \\pdfrestore") {
+        Some("add `\\pdfsave` before this command in the same shipped box, or remove the extra restore")
+    } else if message.starts_with("Misplaced \\pdfrestore") {
+        Some("place the matching `\\pdfsave` and `\\pdfrestore` at the same typesetting position")
+    } else if message.starts_with("Invalid regular expression in \\pdfmatch") {
+        Some("correct the pattern using POSIX extended regular-expression syntax")
+    } else if message.contains(" is recognized but not implemented by this engine")
+        || message == "\\valign is not implemented by this engine"
+    {
+        Some("use a supported equivalent, or report the missing command with a minimal input file")
+    } else if message.starts_with("Extra \\or")
+        || message.starts_with("Extra \\else")
+        || message.starts_with("Extra \\elseif")
+        || message.starts_with("Extra \\fi")
+    {
+        Some("remove this command, or restore the missing opening conditional before it")
+    } else if message == "\\elseif not supported" {
+        Some("rewrite this branch using nested `\\if...\\else...\\fi` conditionals")
     } else if message.starts_with("Unclosed conditional") {
         Some("add the missing `\\fi` for the conditional opened at the reported location")
+    } else if message.starts_with("File ended while scanning a braced file name") {
+        Some("close the file name with `}` before the end of the file")
+    } else if message.starts_with("File ended while scanning a quoted file name") {
+        Some("close the file name with a matching double quote before the end of the file")
+    } else if message.starts_with("File ended after \\showbox") {
+        Some("place the box register number to inspect immediately after `\\showbox`")
+    } else if message.starts_with("File ended after \\showthe") {
+        Some("place the quantity or control sequence to inspect immediately after `\\showthe`")
+    } else if message.starts_with("File ended after \\showtokens") {
+        Some("place the token list to inspect in braces immediately after `\\showtokens`")
+    } else if message.starts_with("File ended after \\show") {
+        Some("place the token or control sequence to inspect immediately after `\\show`")
+    } else if message.starts_with("File ended within \\read") {
+        Some("balance braces in the input record read from this stream")
     } else if message.contains("Runaway")
         || message.starts_with("File ended")
         || message.starts_with("Unclosed")
@@ -802,9 +1112,46 @@ fn default_help(message: &str) -> Option<String> {
     } else if message.starts_with("Cannot divide by zero") {
         Some("use a nonzero divisor; the target register or dimension was left unchanged")
     } else if message.starts_with("Arithmetic overflow") {
-        Some("reduce the operands; the result is outside TeX's signed 32-bit numeric range")
+        Some(
+            "reduce the operands; the result is outside TeX's permitted integer or dimension range",
+        )
+    } else if message.starts_with("\\lefthyphenmin value ")
+        || message.starts_with("\\righthyphenmin value ")
+    {
+        Some("use zero or a positive minimum; values whose sum exceeds 63 disable automatic hyphenation")
+    } else if message.starts_with("\\hangafter value ") {
+        Some("choose a value from -2147483647 through 2147483647")
     } else if message.contains("Illegal unit of measure") {
         Some("add a TeX dimension unit such as `pt`, `mm`, `cm`, or `em`")
+    } else if message.starts_with("Register number ") && message.contains(" is out of range") {
+        Some("choose a register within the range stated in the error, or allocate one with the format's register-allocation command")
+    } else if message.starts_with("Expected a relational operator") {
+        Some("place `<`, `=`, or `>` between the two values being compared")
+    } else if message.starts_with("Font family ") && message.contains(" is out of range") {
+        Some("use a math font family number from 0 through 15")
+    } else if message.contains(" is not a font identifier")
+        || message.starts_with("Missing font identifier")
+    {
+        Some("use a font control sequence previously defined with `\\font`, such as `\\tenrm`")
+    } else if message.contains(" needs a count, dimension, or glue quantity")
+        || (message.contains(" cannot modify ")
+            && message.contains("expected a count, dimension, or glue quantity"))
+    {
+        Some("place a writable register or parameter immediately after the arithmetic command")
+    } else if message.starts_with("Missing box for \\setbox")
+        || message.starts_with("A <box> was supposed to be here")
+        || message.starts_with("Missing box after move/raise")
+        || message.starts_with("\\shipout expects a box")
+    {
+        Some("supply a box command such as `\\hbox{...}`, `\\vbox{...}`, `\\box<number>`, or `\\copy<number>`")
+    } else if message.starts_with("Incompatible list can't be unboxed") {
+        Some("use `\\unhbox` for a horizontal box and `\\unvbox` for a vertical box, in a compatible mode")
+    } else if message.starts_with("Leaders not followed by proper glue") {
+        Some("follow the leader box or rule with horizontal glue in horizontal mode, or vertical glue in vertical mode")
+    } else if message.starts_with("Missing delimiter")
+        || message.starts_with("Invalid delimiter code")
+    {
+        Some("provide a valid delimiter such as `.`, `(`, `)`, `[`, or `]` after this command")
     } else if message.contains("Too many }")
         || message.contains("Extra }")
         || message.contains("Extra \\endgroup")
@@ -816,12 +1163,16 @@ fn default_help(message: &str) -> Option<String> {
         Some("this command is not supported by this engine yet; rewrite that construct or use another TeX engine")
     } else if message.starts_with("TeX capacity exceeded") {
         Some("check for recursive macros or runaway input before increasing an engine limit")
+    } else if message.starts_with("Too many errors; stopping after") {
+        Some("fix the first reported error and compile again")
     } else if message.starts_with("Bad input stream number") {
         Some("TeX input streams are numbered from 0 through 15")
     } else if message.starts_with("Terminal input is unavailable") {
         Some("read from a file-backed stream instead of requesting interactive terminal input")
     } else if message.starts_with("Input stream ") && message.contains(" is not open for \\read") {
         Some("open this stream with `\\openin` before reading it, and check `\\ifeof` before each read")
+    } else if message.starts_with("Missing `to' inserted for \\read") {
+        Some("write `\\read<number> to \\controlsequence`")
     } else if message.starts_with("Parameters must be numbered consecutively")
         || message.starts_with("Illegal parameter number")
         || message.starts_with("Illegal parameter reference")
@@ -842,6 +1193,10 @@ fn default_help(message: &str) -> Option<String> {
         Some("make the output routine ship or explicitly empty `\\box255` before it returns")
     } else if message.starts_with("Output loop") {
         Some("check that the output routine consumes `\\box255` and makes progress")
+    } else if message.starts_with("You can't use a prefix")
+        || (message.starts_with("You can't use `\\long'") && message.contains(" with `"))
+    {
+        Some("remove the prefix; `\\long`, `\\outer`, and `\\protected` apply only to macro definitions, while `\\global` applies only to assignments")
     } else if message.starts_with("You can't use") || message.contains(" outside alignment") {
         Some("move this command into the TeX mode or environment where it is valid")
     } else if message.starts_with("Text line contains an invalid character") {
@@ -1005,7 +1360,40 @@ fn source_window(text: &str, byte_column: usize, highlight_len: usize) -> (Strin
 
 #[cfg(test)]
 mod tests {
-    use super::{select_expansion_context, source_window};
+    use super::{
+        clean_help_without_interactive_boilerplate, select_expansion_context, source_window,
+        MAX_RETAINED_DIAGNOSTICS, OMITTED_DIAGNOSTICS_MESSAGE,
+    };
+    use crate::engine::{Engine, InteractionMode};
+    use crate::expand::PAR_REF_FLAG;
+    use crate::token::{Token, CAT_PARAM};
+
+    #[test]
+    fn diagnostic_token_text_distinguishes_parameters_and_active_characters() {
+        let mut engine = Engine::new(false);
+        let active = engine.active_cs_id(b'~');
+        let word = engine.cs.intern(b"hello");
+        let tokens = [
+            Token(PAR_REF_FLAG | 1),
+            Token::char(CAT_PARAM, u32::from(b'#')),
+            Token::from_cs(active),
+            Token::from_cs(word),
+        ];
+
+        assert_eq!(
+            engine.diagnostic_tokens_to_string(&tokens, 64),
+            "#1##~\\hello "
+        );
+    }
+
+    #[test]
+    fn diagnostic_token_text_only_marks_actual_truncation() {
+        let engine = Engine::new(false);
+        let tokens = [Token::letter(b'a'), Token::letter(b'b')];
+
+        assert_eq!(engine.diagnostic_tokens_to_string(&tokens, 2), "ab");
+        assert_eq!(engine.diagnostic_tokens_to_string(&tokens, 1), "a…");
+    }
 
     #[test]
     fn expansion_context_limits_keep_the_outer_call_and_newest_frames() {
@@ -1029,5 +1417,129 @@ mod tests {
             shown.chars().skip(caret).take(width).collect::<String>(),
             "\\broken"
         );
+    }
+
+    #[test]
+    fn custom_help_keeps_advice_around_interactive_boilerplate() {
+        let help = "Check that the names match.\nType H <return> for immediate help.\nSee the package manual.";
+        assert_eq!(
+            clean_help_without_interactive_boilerplate(help),
+            "Check that the names match. See the package manual."
+        );
+    }
+
+    #[test]
+    fn stray_conditionals_receive_actionable_help() {
+        for message in ["Extra \\or", "Extra \\else", "Extra \\elseif", "Extra \\fi"] {
+            assert_eq!(
+                super::default_help(message).as_deref(),
+                Some("remove this command, or restore the missing opening conditional before it")
+            );
+        }
+        assert_eq!(
+            super::default_help("\\elseif not supported").as_deref(),
+            Some("rewrite this branch using nested `\\if...\\else...\\fi` conditionals")
+        );
+    }
+
+    #[test]
+    fn max_error_stop_is_present_in_the_structured_diagnostic_list() {
+        let mut engine = Engine::new(false);
+        engine.set_interaction_mode(InteractionMode::Nonstop);
+        engine.max_errors = 1;
+        engine
+            .input
+            .push_file("errors.tex".into(), b"\\undefined\n\\end\n".to_vec());
+        engine.main_loop();
+
+        assert_eq!(engine.error_count, 1);
+        assert!(engine.stopped_on_error);
+        assert_eq!(engine.diagnostics.len(), 2);
+        assert!(engine.diagnostics[1]
+            .message
+            .starts_with("Too many errors; stopping after 1 error"));
+    }
+
+    #[test]
+    fn retained_diagnostics_have_one_bounded_omission_marker_and_keep_the_newest_event() {
+        let mut engine = Engine::new(false);
+        engine.set_interaction_mode(InteractionMode::Batch);
+        let last_index = MAX_RETAINED_DIAGNOSTICS + 10;
+
+        for index in 0..=last_index {
+            engine.warning_at(&format!("warning {index}"), None);
+        }
+
+        assert_eq!(engine.diagnostics.len(), MAX_RETAINED_DIAGNOSTICS);
+        assert_eq!(engine.diagnostics.as_ref().len(), MAX_RETAINED_DIAGNOSTICS);
+        assert_eq!(
+            (&engine.diagnostics).into_iter().count(),
+            MAX_RETAINED_DIAGNOSTICS
+        );
+        assert_eq!(
+            engine.diagnostics.clone().into_iter().count(),
+            MAX_RETAINED_DIAGNOSTICS
+        );
+        assert_eq!(
+            engine
+                .diagnostics
+                .iter()
+                .filter(|diagnostic| diagnostic.message == OMITTED_DIAGNOSTICS_MESSAGE)
+                .count(),
+            1
+        );
+        assert_eq!(engine.diagnostics[0].message, "warning 0");
+        assert_eq!(
+            engine.diagnostics.last().unwrap().message,
+            format!("warning {last_index}")
+        );
+    }
+
+    #[test]
+    fn diagnostic_retention_cap_does_not_change_error_or_max_error_accounting() {
+        let mut engine = Engine::new(false);
+        engine.set_interaction_mode(InteractionMode::Batch);
+        engine.max_errors = 2;
+
+        for index in 0..=MAX_RETAINED_DIAGNOSTICS {
+            engine.warning_at(&format!("warning {index}"), None);
+        }
+        engine.error("first error after warning overflow");
+        engine.error("second error after warning overflow");
+
+        assert_eq!(engine.error_count, 2);
+        assert!(engine.stopped_on_error);
+        assert_eq!(engine.diagnostics.len(), MAX_RETAINED_DIAGNOSTICS);
+        assert_eq!(
+            engine
+                .diagnostics
+                .iter()
+                .filter(|diagnostic| diagnostic.message == OMITTED_DIAGNOSTICS_MESSAGE)
+                .count(),
+            1
+        );
+        assert!(engine
+            .diagnostics
+            .last()
+            .unwrap()
+            .message
+            .starts_with("Too many errors; stopping after 2 errors"));
+    }
+
+    #[test]
+    fn finishing_a_job_twice_does_not_duplicate_structural_warnings() {
+        let mut engine = Engine::new(false);
+        engine.set_interaction_mode(InteractionMode::Nonstop);
+        engine
+            .input
+            .push_file("unfinished.tex".into(), b"\\iftrue\\end\n".to_vec());
+        engine.main_loop();
+        engine.finish_job_diagnostics();
+        let diagnostics = engine.diagnostics.clone();
+        let output = engine.diagnostic_output.clone();
+
+        engine.finish_job_diagnostics();
+        assert_eq!(engine.diagnostics, diagnostics);
+        assert_eq!(engine.diagnostic_output, output);
     }
 }

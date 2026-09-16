@@ -177,6 +177,9 @@ pub struct ParaParams {
     pub inter_line_penalty: i32,
     pub club_penalty: i32,
     pub broken_penalty: i32,
+    /// Snapshots of \interlinepenalties, \clubpenalties, \widowpenalties,
+    /// and \displaywidowpenalties, in that order.
+    pub penalty_shapes: [Rc<[i32]>; 4],
     /// tex.web §16014: lines already put into the vertical list for this
     /// paragraph at the enclosing semantic level (zero unless the
     /// paragraph is being continued after a displayed formula, where
@@ -184,6 +187,14 @@ pub struct ParaParams {
     /// numbering — and with it \parshape/\hangindent lookup and the
     /// easy-line class merge — starts at prev_graf+1 (§17015, §17253).
     pub prev_graf: i32,
+}
+#[inline]
+fn penalty_shape_at(shape: &[i32], index: usize, fallback: i32) -> i32 {
+    if shape.is_empty() {
+        fallback
+    } else {
+        shape[index.saturating_sub(1).min(shape.len() - 1)]
+    }
 }
 
 impl Engine {
@@ -213,6 +224,7 @@ impl Engine {
             inter_line_penalty: e.int_params[IntParam::InterLinePenalty.idx() as usize],
             club_penalty: e.int_params[IntParam::ClubPenalty.idx() as usize],
             broken_penalty: e.int_params[IntParam::BrokenPenalty.idx() as usize],
+            penalty_shapes: self.penalty_shapes.clone(),
             prev_graf: self.prev_graf().max(0),
         }
     }
@@ -221,11 +233,15 @@ impl Engine {
     /// \penalty10000 + \parfillskip by end_paragraph) -> vbox of line boxes.
     /// Appends \leftskip at the front (tex-exact: no trailing rightskip node
     /// and no final penalty — the last break is virtual), hyphenates, then
-    /// runs the Knuth-Plass passes. `final_widow_penalty` is the penalty
-    /// before the paragraph's last line: \widowpenalty normally,
-    /// \displaywidowpenalty when a display follows (tex.web line_break's
-    /// only argument, §16054).
-    pub fn break_paragraph(&mut self, hlist: NodeList, final_widow_penalty: i32) -> Node {
+    /// runs the Knuth-Plass passes. `final_widow_penalty` is the scalar
+    /// fallback before the paragraph's last line; `display_widow` selects
+    /// the matching plural penalty array.
+    pub fn break_paragraph(
+        &mut self,
+        hlist: NodeList,
+        final_widow_penalty: i32,
+        display_widow: bool,
+    ) -> Node {
         let params = self.para_params();
         let mut list = hlist;
 
@@ -281,8 +297,8 @@ impl Engine {
                         break;
                     }
                     if !second_pass {
-                        threshold = params.tolerance;
                         second_pass = true;
+                        threshold = params.tolerance;
                         final_pass = params.emergency_stretch <= 0;
                     } else {
                         extra_stretch = params.emergency_stretch;
@@ -309,7 +325,14 @@ impl Engine {
             vlines.extend(post_adj);
             return crate::boxes::vpack(vlines, None, crate::boxes::VBOX, &self.eqtb).node;
         };
-        self.build_lines(list, &params, end, final_pass, final_widow_penalty)
+        self.build_lines(
+            list,
+            &params,
+            end,
+            final_pass,
+            final_widow_penalty,
+            display_widow,
+        )
     }
 
     /// insert discretionary hyphens into words; returns the indices of the
@@ -319,8 +342,24 @@ impl Engine {
         if self.hyphen_trie.is_empty() {
             return inserted;
         }
-        let lh = (self.eqtb.int_params[IntParam::LeftHyphenMin.idx() as usize] as usize).max(1);
-        let rh = (self.eqtb.int_params[IntParam::RightHyphenMin.idx() as usize] as usize).max(1);
+        // tex.web §18261/§18149: cur_lang := language (<=0 or >255 maps to 0).
+        // If cur_lang has no patterns (such as language 2, \l@nohyphenation),
+        // TeX returns immediately without hyphenating.
+        let lang = self.eqtb.int_params[IntParam::Language.idx() as usize];
+        let cur_lang = if lang <= 0 || lang > 255 { 0 } else { lang };
+        if cur_lang != 0 {
+            return inserted;
+        }
+        // Formats and embedders can construct an Eqtb without going through
+        // tex.web §21112 norm_min: \lefthyphenmin and \righthyphenmin are clamped to 1..=63.
+        let lh = self.eqtb.int_params[IntParam::LeftHyphenMin.idx() as usize].clamp(1, 63) as usize;
+        let rh = self.eqtb.int_params[IntParam::RightHyphenMin.idx() as usize].clamp(1, 63) as usize;
+        let minimum_letters = lh.saturating_add(rh);
+        // TeX considers at most 63 letters while hyphenating. A larger
+        // minimum sum therefore disables automatic hyphenation.
+        if minimum_letters > 63 {
+            return inserted;
+        }
         let mut word: Vec<u8> = Vec::new();
         // per letter: (node index, component slot) — slot 0 for Char, slot j
         // for the j-th letter inside a ligature node
@@ -478,12 +517,15 @@ impl Engine {
             &list[end],
             Node::Char { c, .. } if *c == hyphen_c
         ) || matches!(&list[end], Node::Disc(_));
-        if closed_by_hyphen || !prev_ok || word.len() < lh + rh {
+        if closed_by_hyphen || !prev_ok || word.len() < lh.saturating_add(rh) {
             return;
         }
         let points = self.hyphen_trie.hyphenate(word, lh, rh);
         let mut disc_at_node: Option<usize> = None;
         for &k in &points {
+            if k == 0 || k >= word_positions.len() {
+                continue;
+            }
             // point k = break before letter k
             let (mut pos, slot) = word_positions[k];
             if disc_at_node == Some(pos) {
@@ -566,6 +608,7 @@ impl Engine {
         bg_st: [i64; 4],
         bg_sh: [i64; 4],
     ) -> Option<Rc<ActiveNode>> {
+
         let n = list.len();
         // cumulative measurements; discs contribute their no_break text and
         let mut cum_w = vec![0i64; n + 1];
@@ -767,6 +810,7 @@ impl Engine {
             last_special_line
         };
 
+
         // evaluate one candidate breakpoint; `cand` == n is the virtual
         // end-of-paragraph break (tex: try_break at cur_p = null)
         macro_rules! consider {
@@ -776,7 +820,6 @@ impl Engine {
                 let btype: BreakType = $btype;
                 let penalty: i32 = $penalty;
                 let endw: i64 = $endw;
-                // per-(line,fitness) champions for this candidate
                 let mut champions: HashMap<(i32, usize), (i64, Rc<ActiveNode>)> = HashMap::new();
                 let mut idx = 0usize;
                 while idx < actives.len() {
@@ -795,7 +838,7 @@ impl Engine {
                     let font_sh = (cum_fsh[cand] - a.start_fsh + pre_fsh).max(0);
                     dst[0] += extra_stretch as i64; // emergency-pass background
                     let target = line_metrics(params, a.line + 1).1 as i64;
-                    let right_prot = if protrude_chars > 0 {
+                    let right_prot = if protrude_chars > 0 && cand < n {
                         if $is_disc {
                             if let Some(Node::Disc(dc)) = list.get(cand) {
                                 dc.pre_break
@@ -886,12 +929,11 @@ impl Engine {
                             (bb, fit)
                         }
                     };
+
                     if b <= threshold {
                         let d = a.demerits
                             + demerits(params, b, penalty)
                             + fitness_demerits(params, &a, btype, fit, cand == n);
-                        // tex.web §24807/§25157 + §24810: a node merges into
-                        // the single "easy" line class when
                         // line_number(r) >= easy_line (the l == easy_line
                         // class is never flushed separately, so it joins the
                         // merged class). Rust's `line` is 0-based
@@ -920,6 +962,7 @@ impl Engine {
                     }
                     let hopeless = b > INF_BAD;
                     if hopeless || forced {
+
                         if final_pass && champions.is_empty() && is_only {
                             champions.insert((a.line + 1, DECENT), (a.demerits, a.clone()));
                         }
@@ -1030,9 +1073,11 @@ impl Engine {
                     }
                 }
                 if actives.is_empty() {
+
                     return None; // pass failed: active list drained
                 }
                 if cand == n {
+
                     let mut opt: Option<&Rc<ActiveNode>> = None;
                     for a in &actives {
                         match opt {
@@ -1108,6 +1153,7 @@ impl Engine {
                 Node::Penalty(p) => {
                     if *p < INF_PENALTY {
                         let forced = *p <= EJECT_PENALTY;
+
                         consider!(i, false, *p, BreakType::Unhyphenated, forced, cum_w[i]);
                     }
                 }
@@ -1168,6 +1214,7 @@ impl Engine {
         end: Rc<ActiveNode>,
         final_pass: bool,
         final_widow_penalty: i32,
+        display_widow: bool,
     ) -> Node {
         let mut chain = Vec::new();
         let mut cur = Some(end);
@@ -1176,8 +1223,8 @@ impl Engine {
             cur = b.prev.clone();
         }
         chain.reverse();
+
         let hfuzz = self.eqtb.dim_params[DimParam::Hfuzz.idx() as usize] as i64;
-        let overfull_rule = self.eqtb.dim_params[DimParam::OverfullRule.idx() as usize];
         let mut lines: NodeList = Vec::new();
         let mut i = 0usize;
         let mut pending_post: Option<crate::boxes::DiscNode> = None;
@@ -1343,26 +1390,16 @@ impl Engine {
                     *shift = indent;
                 }
             }
-            let overfull = nat_w + params.left_skip.width as i64 + params.right_skip.width as i64
-                - target as i64;
-            if final_pass && overfull > hfuzz {
+            let excess = -r.delta - r.shrink[0];
+            if final_pass && -r.delta > r.shrink[0] && excess > hfuzz {
                 let msg = format!(
-                    "Overfull \\hbox ({:.3}pt too wide) in paragraph at line {} [{}]\n",
-                    overfull as f64 / 65536.0,
-                    self.input.current_file_line(),
-                    self.input.current_file_name()
+                    "Overfull \\hbox ({:.3}pt too wide) in paragraph ending here",
+                    excess as f64 / 65536.0
                 );
-                self.log.push_str(&msg);
-                self.term.push_str(&msg);
-                if overfull_rule > 0 {
-                    if let Node::Box { list: rl, .. } = &mut r.node {
-                        rl.push(Node::Rule {
-                            width: overfull_rule,
-                            height: 0x10000,
-                            depth: 0,
-                        });
-                    }
-                }
+                let source = self
+                    .current_token_source_mark()
+                    .map(|mark| mark.to_context());
+                self.pack_warning_at(&msg, source);
             }
             // interline glue placeholder (page builder owns real baseline
             // spacing between line boxes)
@@ -1371,18 +1408,29 @@ impl Engine {
             }
             lines.push(r.node);
             if !post_adj.is_empty() {
-                lines.extend(post_adj);
+                lines.push(Node::VAdjust(post_adj));
             }
             // tex.web §17438: interline penalty after every line but the
             // last — interlinepenalty, plus clubpenalty after line 1, plus
             // the (display)widow penalty before the last line, plus
             // brokenpenalty when the line ended at a discretionary.
             if li + 1 != total_lines {
-                let mut pen = params.inter_line_penalty;
-                if li == 0 {
+                let line_no = params.prev_graf.max(0) as usize + li + 1;
+                let mut pen = penalty_shape_at(
+                    &params.penalty_shapes[0],
+                    line_no,
+                    params.inter_line_penalty,
+                );
+                if !params.penalty_shapes[1].is_empty() {
+                    pen += penalty_shape_at(&params.penalty_shapes[1], li + 1, 0);
+                } else if li == 0 {
                     pen += params.club_penalty;
                 }
-                if li + 2 == total_lines {
+                let remaining = total_lines - li - 1;
+                let widow_shape = if display_widow { 3 } else { 2 };
+                if !params.penalty_shapes[widow_shape].is_empty() {
+                    pen += penalty_shape_at(&params.penalty_shapes[widow_shape], remaining, 0);
+                } else if remaining == 1 {
                     pen += final_widow_penalty;
                 }
                 if broke_at_disc {
@@ -1478,7 +1526,7 @@ impl Engine {
                         if self.eqtb.int_params[IntParam::IgnorePrimitiveError.idx() as usize] & 1
                             != 0
                         {
-                            self.log.push_str(
+                            self.append_log(
                                 "\nignored: Infinite glue shrinkage found in box being split\n",
                             );
                         } else {
@@ -1635,7 +1683,7 @@ fn line_shape(params: &ParaParams) -> (i32, i32, i32, i32, i32) {
         return (0, 0, params.hsize, 0, params.hsize);
     }
     // §25136–25147
-    let last = params.hang_after.abs();
+    let last = params.hang_after.saturating_abs();
     let hi = params.hang_indent.abs();
     let ind = if params.hang_indent >= 0 {
         params.hang_indent
@@ -1746,5 +1794,50 @@ fn start_state(
     } else {
         let f = after_prune(cand);
         (cum_w[f], cum_st[f], cum_sh[f], cum_fst[f], cum_fsh[f])
+    }
+}
+
+#[cfg(test)]
+mod plural_penalty_tests {
+    use super::*;
+    use crate::boxes::GLUE_FIL;
+
+    #[test]
+    fn plural_penalties_are_applied_by_line_and_remaining_line() {
+        let mut engine = Engine::new(true);
+        engine.eqtb.dim_params[DimParam::HSize.idx() as usize] = 65_536;
+        engine.eqtb.int_params[IntParam::Pretolerance.idx() as usize] = 10_000;
+        engine.eqtb.int_params[IntParam::Tolerance.idx() as usize] = 10_000;
+        engine.eqtb.int_params[IntParam::LinePenalty.idx() as usize] = 0;
+        engine.penalty_shapes[0] = Rc::from(vec![10, 20, 30]);
+        engine.penalty_shapes[1] = Rc::from(vec![100, 200, 300]);
+        engine.penalty_shapes[2] = Rc::from(vec![1_000, 2_000, 3_000]);
+
+        let rule = || Node::Rule {
+            width: 65_536,
+            height: 0,
+            depth: 0,
+        };
+        let list = vec![
+            rule(),
+            Node::Glue(Glue::zero()),
+            rule(),
+            Node::Glue(Glue::zero()),
+            rule(),
+            Node::Penalty(10_000),
+            Node::Glue(Glue::fil(GLUE_FIL, 0)),
+        ];
+        let Node::Box { list, .. } = engine.break_paragraph(list, 0, false) else {
+            panic!("paragraph breaker did not return a vbox");
+        };
+        let penalties: Vec<i32> = list
+            .iter()
+            .filter_map(|node| match node {
+                Node::Penalty(value) => Some(*value),
+                _ => None,
+            })
+            .collect();
+
+        assert_eq!(penalties, vec![2_110, 1_220]);
     }
 }

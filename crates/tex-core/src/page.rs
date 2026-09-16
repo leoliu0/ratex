@@ -532,8 +532,6 @@ impl Engine {
                 }
             }
 
-            // Page accounting needs dimensions and glue, never a recursive
-            // copy of the box or insertion contents.
             match &self.page_list[idx] {
                 Node::Glue(g) => {
                     let g = g.clone();
@@ -541,19 +539,11 @@ impl Engine {
                         // tex.web evaluates a glue breakpoint BEFORE the glue
                         // contributes: its page total excludes the glue (the
                         // glue is discarded at the break)
-                        let mut pi0 = idx;
-                        while pi0 > 0 {
-                            match &self.page_list[pi0 - 1] {
-                                Node::Glue(pg)
-                                    if pg.width == 0 && pg.stretch == 0 && pg.shrink == 0 =>
-                                {
-                                    pi0 -= 1;
-                                }
-                                _ => break,
-                            }
-                        }
-                        let legal0 =
-                            st.box_seen && pi0 > 0 && precedes_break(&self.page_list[pi0 - 1]);
+                        // tex.web §19495-§19497: a page glue is a legal breakpoint
+                        // iff the IMMEDIATELY preceding page node (page_tail) is
+                        // non-discardable (precedes_break). Subsequent glues never
+                        // break.
+                        let legal0 = st.box_seen && idx > 0 && precedes_break(&self.page_list[idx - 1]);
                         if legal0 {
                             self.try_page_break(&mut st, idx, 0);
                         }
@@ -626,7 +616,6 @@ impl Engine {
                         // first box on a fresh page: `\topskip` glue before it
                         // — tex.web inserts it whatever the box height, so a
                         // leading 0x0 box pads a full `\topskip`
-                        st.box_seen = true;
                         if !st.goal_set {
                             st.goal_set = true;
                             self.page_goal = self.vsize_goal();
@@ -637,24 +626,26 @@ impl Engine {
                             self.eqtb.dim_params[crate::prim::DimParam::TopSkip.idx() as usize];
                         let pad = (ts as i64 - h as i64).max(0) as i32;
                         self.page_list.insert(idx, Node::Glue(Glue::new(pad)));
-                        // canonical BreakSpot holds a node pointer; the Vec
-                        // index must follow every list mutation ahead of it
+                        // tex.web §19509-§19516: \topskip is linked ahead of the box,
+                        // and build_page jumps to `continue` to process \topskip through
+                        // the normal glue_node path. If precedes_break(page_tail) is true
+                        // (e.g. whatsits/marks from output routine sit at the page top),
+                        if idx > 0 && self.page_list[..idx].iter().any(precedes_break) {
+                            self.try_page_break(&mut st, idx, 0);
+                        }
+                        self.contribute_gap(&mut st, pad as i64);
+                        st.processed += 1;
                         if let Some(spot) = st.best.as_mut() {
                             if idx < spot.cut {
                                 spot.cut += 1;
                             }
                         }
-                        advance = false; // reprocess at the inserted glue
                     } else if self.page_prev_depth > DEPTH_NONE {
                         self.page_prev_depth = DEPTH_NONE;
                     }
-                    if advance {
-                        st.box_seen = true;
-                        self.contribute_box(&mut st, h, d);
-                        self.page_prev_depth = d;
-                        // Page depth is not the enclosing nest's \prevdepth:
-                        // unboxing and \vadjust splice without changing it.
-                    }
+                    st.box_seen = true;
+                    self.contribute_box(&mut st, h, d);
+                    self.page_prev_depth = d;
                 }
                 Node::Ins { .. } => {
                     // canonical vert_break reads the insertion's own inner
@@ -719,8 +710,8 @@ impl Engine {
     /// fold a box contribution into the page accounting (tex.web @1047):
     /// depth beyond `\maxdepth` is charged to height
     fn contribute_box(&mut self, st: &mut PageState, h: i32, d: i32) {
-        st.total += st.depth + h as i64;
         let md = self.max_depth();
+        st.total += st.depth + h as i64;
         let d64 = d as i64;
         if d64 > md {
             st.total += d64 - md;
@@ -896,13 +887,24 @@ impl Engine {
         }
         let (b, cost) = self.break_cost(st, penalty);
         // tex.web §19563: `if c<=least_page_cost` — least starts at
-        // awful_bad, so an awful candidate becomes champion while none
-        // exists and snapshots the insertion classes. Once a finite
-        // champion exists, awful never displaces it.
         let better = match st.best {
             None => true,
             Some(spot) => cost <= spot.cost,
         };
+        if self.eqtb.int_params[IntParam::TracingPages.idx() as usize] > 0 {
+            let msg = format!(
+                "% t={:.5} plus {:.1} minus {:.1} g={:.5} b={} p={} c={}{}\n",
+                st.total as f64 / 65536.0,
+                st.stretch[0] as f64 / 65536.0,
+                st.shrink[0] as f64 / 65536.0,
+                self.page_goal() as f64 / 65536.0,
+                if b == AWFUL_BAD as i64 { "*".to_string() } else { b.to_string() },
+                penalty,
+                if cost == AWFUL_BAD { "*".to_string() } else { cost.to_string() },
+                if better { "#" } else { "" }
+            );
+            self.append_log(&msg);
+        }
         if (b < AWFUL_BAD as i64 || st.best.is_none()) && better {
             st.best = Some(BreakSpot { cut, penalty, cost });
             // tex.web best_size snapshots page_goal at the selected break.
@@ -970,8 +972,6 @@ impl Engine {
         st.fire
     }
     fn fire_up(&mut self, cut: usize, _penalty: i32, pack_goal: i64) {
-        // TeX retains the selected breakpoint on the contribution list. A
-        // penalty becomes infinite so it cannot fire again; output material
         // is inserted before it, preserving \lastskip/\lastpenalty semantics.
         let (cut, penalty) = match cut.checked_sub(1).and_then(|i| self.page_list.get_mut(i)) {
             Some(Node::Penalty(p)) => {
@@ -1395,7 +1395,6 @@ impl Engine {
         // inside the firing primitive (remaining chunk rows) stay contribution
         // material at the list tail.
         self.output_pending = true;
-        // tex.web fire_up: the output routine runs inside a save level
         // (output_group) — its local assignments (\@restorepar's \def\par,
         // \@specials, mark state) roll back at <endoutput> instead of
         // clobbering the enclosing list's eqtb state
@@ -1444,10 +1443,19 @@ impl Engine {
             self.end_paragraph();
         }
         let routine_list = std::mem::take(&mut self.cur_list);
-
         // The whole page rebuilds from scratch after the splice (head copy
         // included), so any carried-over processed prefix is void.
         self.page_processed = 0;
+        self.page_box_seen = false;
+        self.page_goal_set = false;
+        self.page_total = 0;
+        self.page_depth = 0;
+        self.page_stretch = [0; 4];
+        self.page_shrink = [0; 4];
+        self.page_best_break = None;
+        self.page_best_cost = 0;
+        self.page_break_penalty = 0;
+        self.sync_page_dims(&PageState::new());
         // close the save level opened at fire_up (tex.web output_group) BEFORE
         // inspecting box255: a non-global `\setbox255` inside the routine is
         // rolled back by unsave, and the rolled-back value is what TeX checks.
@@ -1500,12 +1508,17 @@ impl Engine {
                 let toks = tokens.clone();
                 self.fire_write(*stream, &toks, source.as_ref());
             }
-            Node::Whatsit(crate::boxes::WhatIt::OpenOut { stream, path }) => {
+            Node::Whatsit(crate::boxes::WhatIt::OpenOut {
+                stream,
+                path,
+                create_parent,
+                source,
+            }) => {
                 let p = path.clone();
-                self.exec_openout(*stream, &p);
+                self.exec_openout(*stream, &p, *create_parent, source.as_ref());
             }
-            Node::Whatsit(crate::boxes::WhatIt::CloseOut { stream }) => {
-                self.exec_closeout(*stream);
+            Node::Whatsit(crate::boxes::WhatIt::CloseOut { stream, source }) => {
+                self.exec_closeout(*stream, source.as_ref());
             }
             Node::Box { list, .. } => {
                 for m in list {
@@ -1527,15 +1540,25 @@ impl Engine {
         self.dead_cycles = 0;
         let Some(boxn) = b else { return };
 
-        // tex.web §1395: fire deferred \write whatsits as the page ships, so
-        // \thepage expands with the page counter of the shipped page
-        self.fire_page_writes(&boxn);
+        // tex.web §1395 / out_what: deferred \write/\openout/\closeout whatsits
+        // fire during render_page in list order so \pdflastxpos/\pdflastypos
+        // from earlier \pdfsavepos nodes are visible.
 
         if self.eqtb.int_params[IntParam::TracingPages.idx() as usize] > 0 {
             let page = self.eqtb.count[0] as i64 + 1;
             let msg = format!("[{}]", page);
-            self.term.push_str(&msg);
-            self.log.push_str(&msg);
+            self.append_term(&msg);
+            self.append_log(&msg);
+        }
+        if self.eqtb.int_params[IntParam::TracingOutput.idx() as usize] > 0 {
+            let depth = self.eqtb.int_params[IntParam::ShowBoxDepth.idx() as usize].max(0) as usize;
+            let breadth = self.eqtb.int_params[IntParam::ShowBoxBreadth.idx() as usize].max(0) as usize;
+            let mut out = crate::maincontrol::InspectionText::new();
+            out.push(format_args!("\nCompleted box being shipped out\n"));
+            self.show_node_into(&boxn, 0, depth, breadth, &mut out);
+            let desc = out.finish();
+            self.append_log(&desc);
+            self.append_term(&desc);
         }
         // page size
         let width = self.eqtb.dim_params[DimParam::PdfPageWidth.idx() as usize];

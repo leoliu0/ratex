@@ -14,6 +14,25 @@ const MAX_FONT_DIMENS: i32 = 65_536;
 const MAX_PAR_SHAPE_ENTRIES: i32 = 65_535;
 
 impl Engine {
+    /// Reject line-breaking parameter values whose signed meaning cannot be
+    /// represented safely. This is centralized so direct assignments and
+    /// TeX's arithmetic commands recover in the same way.
+    pub(crate) fn recover_linebreak_int_parameter(
+        &mut self,
+        parameter: IntParam,
+        value: i32,
+        source: Option<crate::input::SourceContext>,
+    ) -> i32 {
+        if parameter == IntParam::HangAfter && value == i32::MIN {
+            self.error_at(
+                "\\hangafter value -2147483648 has an unrepresentable magnitude; used -2147483647",
+                source,
+            );
+            return -i32::MAX;
+        }
+        value
+    }
+
     pub fn run(&mut self) {
         self.main_loop();
     }
@@ -31,7 +50,6 @@ impl Engine {
                 return;
             }
             let t = self.get_token();
-            // Tokenization may intern a new control sequence, and dispatch may
             // have filled the save stack on the preceding iteration. Report
             // either logical limit here, while the relevant source token is
             // still current and before an overflow id can be dispatched.
@@ -89,7 +107,7 @@ impl Engine {
         // unrestricted horizontal mode settles a trailing explicit hyphen
         // into a null discretionary. Character commands defer that decision
         // to append_char_lig, after ligature/kern lookup.
-        if self.mode == Mode::Horizontal {
+        if matches!(self.mode, Mode::Horizontal | Mode::RestrictedHorizontal) {
             let continues_character = if t.is_cs() {
                 match self.eqtb.resolve(t.cs_id()) {
                     Some(Equiv::CharDef(_) | Equiv::Prim(Prim::Char)) => true,
@@ -102,7 +120,10 @@ impl Engine {
             if !continues_character {
                 let font = self.eqtb.cur_font_val;
                 if font != 0 {
-                    self.flush_hyphen_disc(font);
+                    if self.mode == Mode::Horizontal {
+                        self.flush_hyphen_disc(font);
+                    }
+                    self.flush_right_boundary_kern(font);
                 }
             }
         }
@@ -197,7 +218,7 @@ impl Engine {
                         if name_bytes == [0x20] {
                             match self.mode {
                                 Mode::Vertical | Mode::InternalVertical => {
-                                    self.pushed.push(Token::from_cs(id));
+                                    self.push_token(Token::from_cs(id));
                                     self.start_paragraph(true);
                                 }
                                 _ => self.ex_space(),
@@ -283,6 +304,7 @@ impl Engine {
                         // (\q__tl_recursion_tail) never stop expl3 maps.
                     }
                     Some(Equiv::CharDef(v)) => {
+                        self.reject_assignment_prefixes(&format!("\\char\"{v:X}"));
                         self.char_token(v as u8, false);
                     }
 
@@ -294,6 +316,7 @@ impl Engine {
                     // list renders the glyph directly (visually equivalent
                     // for the \fnsymbol/\ast cases) without the replay.
                     Some(Equiv::MathCharDef(v)) => {
+                        self.reject_assignment_prefixes(&format!("\\mathchar\"{v:X}"));
                         self.append_mathchar(v as u16);
                     }
                     Some(Equiv::CharTok(v)) => {
@@ -315,16 +338,22 @@ impl Engine {
                     // keeps one flat list per math level and records the
                     // boundary as a position mark
                     if self.mode.is_m() {
+                        let saved_mode = self.mode;
                         self.math_group_marks.push((
                             self.math_lists.len(),
                             self.math_lists.last().map(|l| l.len()).unwrap_or(0),
+                            saved_mode,
                         ));
+                        // tex.web §1197 / §21691 push_math: a subformula group in
+                        // math mode enters -mmode (inner math mode, so \ifinner is true).
+                        self.mode = Mode::Math;
                     }
                     self.begin_group(true);
                 }
                 2 => {
                     if self.mode.is_m() {
-                        if let Some((depth, start_mark)) = self.math_group_marks.pop() {
+                        if let Some((depth, start_mark, saved_mode)) = self.math_group_marks.pop() {
+                            self.mode = saved_mode;
                             if depth == self.math_lists.len() {
                                 if let Some(l) = self.math_lists.last_mut() {
                                     if start_mark <= l.len() {
@@ -344,13 +373,13 @@ impl Engine {
                     } else if self.mode.is_v() {
                         // tex.web §1090: math_shift in vertical mode starts a paragraph;
                         // the math_shift is put back on input so it executes AFTER \everypar.
-                        self.pushed.push(t);
+                        self.push_token(t);
                         self.start_paragraph(true);
                     } else {
                         self.enter_math(false);
                     }
                 }
-                4 => self.align_tab(),
+                4 => self.error("Misplaced alignment tab character &"),
                 10 => self.hspace_token(),
                 13 => self.active_char(c),
                 11 | 12 => self.char_token(c, cc == 11),
@@ -379,15 +408,48 @@ impl Engine {
         self.protected_flag = false;
     }
 
+    /// Consume prefixes for an assignment that permits `\global`. Definition
+    /// modifiers are diagnosed but do not prevent the assignment, matching
+    /// TeX's recovery after an illegal prefix.
+    pub(crate) fn take_assignment_prefixes(&mut self, command: &str) -> bool {
+        let invalid_definition_prefix = self.long_flag || self.outer_flag || self.protected_flag;
+        let source = invalid_definition_prefix
+            .then(|| self.current_token_source_mark())
+            .flatten();
+        let global = self.take_global();
+        self.clear_prefixes();
+        if invalid_definition_prefix {
+            self.error_at(
+                &format!("You can't use `\\long' or `\\outer' or `\\protected' with `{command}'."),
+                source.map(|mark| mark.to_context()),
+            );
+        }
+        global
+    }
+
+    /// Reject every pending prefix before a command that is not an
+    /// assignment. The command still executes after the diagnostic.
+    fn reject_assignment_prefixes(&mut self, command: &str) {
+        if !(self.global_flag || self.long_flag || self.outer_flag || self.protected_flag) {
+            return;
+        }
+        let source = self.current_token_source_mark();
+        self.clear_prefixes();
+        self.error_at(
+            &format!("You can't use a prefix with `{command}'."),
+            source.map(|mark| mark.to_context()),
+        );
+    }
+
     /// Handle assignment-prefix primitives; returns true if consumed.
     pub fn try_assignment(&mut self, p: Prim, id: CsId) -> bool {
         use Prim::*;
         match p {
             PartokenName => {
+                let global = self.take_assignment_prefixes("\\partokenname");
                 self.skip_spaces_relax();
                 let token = self.raw_token();
                 if token.is_cs() {
-                    let global = self.take_global();
                     self.eqtb.assign_int_param(
                         IntParam::PartokenNameCs,
                         token.cs_id() as i32,
@@ -399,11 +461,13 @@ impl Engine {
                 true
             }
             AfterAssignment => {
+                self.reject_assignment_prefixes("\\afterassignment");
                 let tok = self.raw_token();
                 self.after_assignment = Some(tok);
                 true
             }
             AfterGroup => {
+                self.reject_assignment_prefixes("\\aftergroup");
                 let tok = self.raw_token();
                 self.eqtb.push_save(crate::eqtb::SaveItem::AfterGroup(tok));
                 true
@@ -508,6 +572,7 @@ impl Engine {
             Box => {
                 // \box<n> in value position handled in scan paths; in main
                 // position it's an error unless followed by use
+                self.reject_assignment_prefixes("\\box");
                 let idx = self.scan_reg_num();
 
                 let b = self.eqtb.take_box(idx);
@@ -515,6 +580,7 @@ impl Engine {
                 true
             }
             Copy => {
+                self.reject_assignment_prefixes("\\copy");
                 let idx = self.scan_reg_num();
 
                 let b = self.eqtb.boxed.get(idx as usize).cloned().flatten();
@@ -545,22 +611,45 @@ impl Engine {
             CharDef => {
                 let t = self.scan_definable_cs();
                 self.scan_optional_equals();
-                let v = self.scan_int();
+                let (v, value_source) = self.scan_int_with_source();
                 let g = self.take_global();
-                self.eqtb.assign(t, Equiv::CharDef(v.max(0) as u32), g);
+                if !(0..=255).contains(&v) {
+                    self.error_at(
+                        &format!(
+                            "Character code {v} is out of range for \\chardef; expected 0 through 255 and used 0"
+                        ),
+                        value_source,
+                    );
+                    self.eqtb.assign(t, Equiv::CharDef(0), g);
+                } else {
+                    self.eqtb.assign(t, Equiv::CharDef(v as u32), g);
+                }
                 self.clear_prefixes();
                 true
             }
             MathCharDef => {
                 let t = self.scan_definable_cs();
                 self.scan_optional_equals();
-                let v = self.scan_int();
+                let (v, value_source) = self.scan_int_with_source();
                 let g = self.take_global();
-                self.eqtb.assign(t, Equiv::MathCharDef(v as u16), g);
+                if !(0..=32767).contains(&v) {
+                    self.error_at(
+                        &format!(
+                            "Math code {v} is out of range for \\mathchardef; expected 0 through 32767 and used 0"
+                        ),
+                        value_source,
+                    );
+                    self.eqtb.assign(t, Equiv::MathCharDef(0), g);
+                } else {
+                    self.eqtb.assign(t, Equiv::MathCharDef(v as u16), g);
+                }
                 self.clear_prefixes();
                 true
             }
             FontDimen => {
+                // Font parameters are always global, but the command must
+                // still consume all pending assignment prefixes on errors.
+                let _ = self.take_assignment_prefixes("\\fontdimen");
                 let idx = self.scan_int();
                 let f = self.scan_font_id();
                 self.scan_optional_equals();
@@ -590,6 +679,32 @@ impl Engine {
                 self.scan_optional_equals();
                 let v = self.scan_int();
                 self.eqtb.assign_skew_char(f, v, true);
+                self.clear_prefixes();
+                true
+            }
+            InterLinePenalties | ClubPenalties | WidowPenalties | DisplayWidowPenalties => {
+                let command = match p {
+                    InterLinePenalties => "\\interlinepenalties",
+                    ClubPenalties => "\\clubpenalties",
+                    WidowPenalties => "\\widowpenalties",
+                    _ => "\\displaywidowpenalties",
+                };
+                let global = self.take_assignment_prefixes(command);
+                self.scan_optional_equals();
+                let n = self.scan_int();
+                if n <= 0 {
+                    self.assign_penalty_shape(p, Vec::new(), global);
+                } else if n > MAX_PAR_SHAPE_ENTRIES {
+                    self.fatal_error(&format!(
+                        "TeX capacity exceeded, sorry [penalty array entries={n}; maximum={MAX_PAR_SHAPE_ENTRIES}]"
+                    ));
+                } else {
+                    let mut values = Vec::with_capacity(n as usize);
+                    for _ in 0..n {
+                        values.push(self.scan_int());
+                    }
+                    self.assign_penalty_shape(p, values, global);
+                }
                 self.clear_prefixes();
                 true
             }
@@ -641,8 +756,27 @@ impl Engine {
                 // level-tracked so \mathrm/\operator@font groups restore
                 // cur_fam at \egroup (a direct write leaks fam 0 into the
                 // following subscripts, turning math italic upright)
-                let v = self.scan_int();
+                let capture_value_source = matches!(
+                    ip,
+                    IntParam::InteractionMode | IntParam::HangAfter
+                );
+                let (v, value_source) = if capture_value_source {
+                    self.scan_int_with_source()
+                } else {
+                    (self.scan_int(), None)
+                };
                 let g = self.take_global();
+                if ip == crate::prim::IntParam::InteractionMode && !(0..=3).contains(&v) {
+                    self.error_at(
+                        &format!(
+                            "Bad interaction mode ({v}); expected 0 (batch), 1 (nonstop), 2 (scroll), or 3 (error stop); mode left unchanged"
+                        ),
+                        value_source.clone(),
+                    );
+                    self.clear_prefixes();
+                    return true;
+                }
+                let v = self.recover_linebreak_int_parameter(ip, v, value_source);
                 if ip == crate::prim::IntParam::PrevGraf {
                     *self.prev_graf_mut() = v;
                 }
@@ -666,9 +800,7 @@ impl Engine {
                     if dp == DimParam::PageGoal {
                         self.page_goal = v as i64;
                         self.page_goal_set = true;
-                    } else if dp == DimParam::VSize
-                        && (!self.page_goal_set || self.page_contents_empty())
-                    {
+                    } else if dp == DimParam::VSize && !self.page_box_seen {
                         self.page_goal = if v <= 0 { 0x3FFF_FFFF } else { v as i64 };
                     }
                     self.eqtb.assign_dim_param(dp, v, g);
@@ -696,7 +828,19 @@ impl Engine {
             p @ (EfCode | LpCode | RpCode | TagCode | KnBsCode | StBsCode | ShBsCode | KnBcCode
             | KnAcCode) => {
                 let f = self.scan_font_id();
-                let c = self.scan_char_num().clamp(0, 255) as u8;
+                let command = match p {
+                    EfCode => "\\efcode",
+                    LpCode => "\\lpcode",
+                    RpCode => "\\rpcode",
+                    TagCode => "\\tagcode",
+                    KnBsCode => "\\knbscode",
+                    StBsCode => "\\stbscode",
+                    ShBsCode => "\\shbscode",
+                    KnBcCode => "\\knbccode",
+                    KnAcCode => "\\knaccode",
+                    _ => unreachable!(),
+                };
+                let c = self.scan_character_code(command);
                 self.scan_optional_equals();
                 let v = self.scan_int();
                 if p == TagCode {
@@ -731,7 +875,16 @@ impl Engine {
         match self.eqtb.resolve(id).cloned() {
             Some(Equiv::Prim(Prim::IntP(ip))) => {
                 self.scan_optional_equals();
-                let v = self.scan_int();
+                let capture_value_source = matches!(
+                    ip,
+                    IntParam::HangAfter
+                );
+                let (v, value_source) = if capture_value_source {
+                    self.scan_int_with_source()
+                } else {
+                    (self.scan_int(), None)
+                };
+                let v = self.recover_linebreak_int_parameter(ip, v, value_source);
                 let g = self.take_global();
                 if ip == crate::prim::IntParam::PrevGraf {
                     *self.prev_graf_mut() = v;
@@ -755,9 +908,7 @@ impl Engine {
                     if dp == DimParam::PageGoal {
                         self.page_goal = v as i64;
                         self.page_goal_set = true;
-                    } else if dp == DimParam::VSize
-                        && (!self.page_goal_set || self.page_contents_empty())
-                    {
+                    } else if dp == DimParam::VSize && !self.page_box_seen {
                         self.page_goal = if v <= 0 { 0x3FFF_FFFF } else { v as i64 };
                     }
                     self.eqtb.assign_dim_param(dp, v, g);
@@ -876,7 +1027,6 @@ impl Engine {
         self.eqtb.assign(t, e, g);
         self.clear_prefixes();
     }
-
     /// \def/\gdef/\edef/\xdef
     fn do_def(&mut self, p: Prim, _id: CsId) {
         let definition_start = self.current_token_source_mark();
@@ -907,7 +1057,7 @@ impl Engine {
                 return;
             }
             if t.is_char() && t.cc() == 1 {
-                self.pushed.push(t);
+                self.push_token(t);
                 break;
             }
             // A parameter reference spliced from an outer macro body arrives
@@ -932,13 +1082,13 @@ impl Engine {
                 }
                 continue;
             }
-            if t.is_char() && t.cc() == 6 {
+            if self.is_macro_param(t) {
                 // #n or #{
                 let mut t2 = self.raw_token();
                 while t2.is_char() && (t2.cc() == 10 || t2.cc() == 0) {
                     t2 = self.raw_token();
                 }
-                if t2.is_char() && t2.cc() == 6 {
+                if self.is_macro_param(t2) {
                     if !self.scanned_token_list_has_room(
                         parameter_tokens,
                         1,
@@ -1178,7 +1328,7 @@ impl Engine {
                                 continue;
                             }
                         }
-                        self.pushed.push(nxt);
+                        self.push_token(nxt);
                         let toks = self.scan_general_text();
                         if self.stopped_on_error
                             || !self.store_unexpanded_in_edef(
@@ -1229,7 +1379,7 @@ impl Engine {
                         continue;
                     }
                 }
-                self.pushed.push(nxt);
+                self.push_token(nxt);
                 let toks = self.scan_general_text();
                 if self.stopped_on_error
                     || !self.store_unexpanded_in_edef(&mut out, &toks, definition_start.as_ref())
@@ -1237,6 +1387,81 @@ impl Engine {
                     self.in_expanded_scan = prev_expanded_scan;
                     return out;
                 }
+                continue;
+            }
+            if self.is_macro_param(t) {
+                if !self.scanned_token_list_has_room(
+                    out.len(),
+                    1,
+                    "macro definition size",
+                    definition_start.as_ref(),
+                ) {
+                    self.in_expanded_scan = prev_expanded_scan;
+                    return out;
+                }
+                // `\unexpanded{#1}` inside `\edef\foo#1#2{...}` must store
+                // a literal hash, not parameter 1 of `\foo`.
+                // Unexpanded control-sequence parameters (e.g. `\@sharp` from
+                // `\the\toks` in `revtex4-2` tabular preambles) must also store
+                // the literal token rather than demanding a parameter digit.
+                if from_unexp || self.unexpanded_parameter || self.no_expand_tok == Some(t) {
+                    out.push(if t.is_cs() { t } else { Token::char(6, b'#' as u32) });
+                    continue;
+                }
+                let t2 = self.raw_token();
+                let parameter_source = self.current_token_source_mark();
+                if t2 == crate::input::EOF_MARKER {
+                    self.fatal_error_at(
+                        &format!(
+                            "File ended after # in the definition of {}; add a parameter number, another #, and the missing }}",
+                            self.display_cs(target)
+                        ),
+                        definition_start.as_ref().map(|mark| mark.to_context()),
+                    );
+                    self.in_expanded_scan = prev_expanded_scan;
+                    return out;
+                }
+                if self.is_macro_param(t2) {
+                    out.push(Token::char(6, b'#' as u32));
+                    continue;
+                }
+                if t2.is_char() && (b'1'..=b'9').contains(&(t2.chr() as u8)) {
+                    let parameter = (t2.chr() & 0xF) as u8;
+                    if parameter <= num_params {
+                        out.push(Token(PAR_REF_FLAG | u32::from(parameter)));
+                    } else {
+                        let declared = if num_params == 0 {
+                            "this macro declares no parameters".to_string()
+                        } else {
+                            format!("only #1 through #{num_params} are declared")
+                        };
+                        self.error_at(
+                            &format!(
+                                "Illegal parameter reference #{} in the definition of {}; {}",
+                                parameter,
+                                self.display_cs(target),
+                                declared
+                            ),
+                            parameter_source.as_ref().map(|mark| mark.to_context()),
+                        );
+                        out.push(Token::other(b'?'));
+                    }
+                    continue;
+                }
+                let found = if t2.is_char() {
+                    char::from_u32(t2.chr()).unwrap_or('?').to_string()
+                } else {
+                    self.display_cs(t2.cs_id())
+                };
+                self.error_at(
+                    &format!(
+                        "Illegal parameter reference #{} in the definition of {}; use ## for a literal #",
+                        found,
+                        self.display_cs(target)
+                    ),
+                    parameter_source.as_ref().map(|mark| mark.to_context()),
+                );
+                out.push(Token::other(b'?'));
                 continue;
             }
             if t.is_char() {
@@ -1250,73 +1475,6 @@ impl Engine {
                         return out;
                     }
                 }
-                if cc == 6 {
-                    if !self.scanned_token_list_has_room(
-                        out.len(),
-                        1,
-                        "macro definition size",
-                        definition_start.as_ref(),
-                    ) {
-                        self.in_expanded_scan = prev_expanded_scan;
-                        return out;
-                    }
-                    // `\unexpanded{#1}` inside `\edef\foo#1#2{...}` must store
-                    // a literal hash, not parameter 1 of `\foo`.
-                    if from_unexp || self.unexpanded_parameter {
-                        out.push(Token::char(6, b'#' as u32));
-                        continue;
-                    }
-                    let t2 = self.raw_token();
-                    let parameter_source = self.current_token_source_mark();
-                    if t2 == crate::input::EOF_MARKER {
-                        self.fatal_error_at(
-                            &format!(
-                                "File ended after # in the definition of {}; add a parameter number, another #, and the missing }}",
-                                self.display_cs(target)
-                            ),
-                            definition_start.as_ref().map(|mark| mark.to_context()),
-                        );
-                        self.in_expanded_scan = prev_expanded_scan;
-                        return out;
-                    }
-                    if t2.is_char() && t2.cc() == 6 {
-                        out.push(Token::char(6, b'#' as u32));
-                        continue;
-                    }
-                    if t2.is_char() && (b'1'..=b'9').contains(&(t2.chr() as u8)) {
-                        let parameter = (t2.chr() & 0xF) as u8;
-                        if parameter <= num_params {
-                            out.push(Token(PAR_REF_FLAG | u32::from(parameter)));
-                        } else {
-                            self.error_at(
-                                &format!(
-                                    "Illegal parameter reference #{} in the definition of {}; only #1 through #{} are declared",
-                                    parameter,
-                                    self.display_cs(target),
-                                    num_params
-                                ),
-                                parameter_source.as_ref().map(|mark| mark.to_context()),
-                            );
-                            out.push(Token::other(b'?'));
-                        }
-                        continue;
-                    }
-                    let found = if t2.is_char() {
-                        char::from_u32(t2.chr()).unwrap_or('�').to_string()
-                    } else {
-                        self.display_cs(t2.cs_id())
-                    };
-                    self.error_at(
-                        &format!(
-                            "Illegal parameter reference #{} in the definition of {}; use ## for a literal #",
-                            found,
-                            self.display_cs(target)
-                        ),
-                        parameter_source.as_ref().map(|mark| mark.to_context()),
-                    );
-                    out.push(Token::other(b'?'));
-                    continue;
-                }
             }
             if !self.scanned_token_list_has_room(
                 out.len(),
@@ -1327,6 +1485,7 @@ impl Engine {
                 self.in_expanded_scan = prev_expanded_scan;
                 return out;
             }
+            let t = self.unfreeze_input_token(t);
             out.push(t);
         }
     }
@@ -1340,15 +1499,18 @@ impl Engine {
             let tc = self.raw_token();
             if tc.is_cs() {
                 self.copy_meaning(target, tc.cs_id(), global);
+            } else if tc.is_char() && tc.cc() == 13 {
+                let id = self.active_cs_id(tc.chr() as u8);
+                self.copy_meaning(target, id, global);
             } else {
                 self.eqtb.assign(target, Equiv::CharTok(tc.0), global);
             }
             if tc.is_cs() && self.cs.name(tc.cs_id()) == b"end" {
                 self.push_tokens_named(vec![tc], "futurelet-end");
-                self.pushed.push(tb);
+                self.push_token(tb);
             } else {
-                self.pushed.push(tc);
-                self.pushed.push(tb);
+                self.push_token(tc);
+                self.push_token(tb);
             }
         } else {
             self.skip_raw_spaces();
@@ -1356,10 +1518,10 @@ impl Engine {
             if eq.is_char() && eq.chr() == b'=' as u32 && eq.cc() == 12 {
                 let sp = self.raw_token();
                 if !(sp.is_char() && sp.cc() == 10) {
-                    self.pushed.push(sp);
+                    self.push_token(sp);
                 }
             } else {
-                self.pushed.push(eq);
+                self.push_token(eq);
             }
             let t = self.raw_token();
             if t.is_cs() {
@@ -1441,6 +1603,10 @@ impl Engine {
                 Some(Equiv::Prim(Prim::ToksP(p))) => {
                     return (*self.eqtb.tok_params[p.idx() as usize]).clone()
                 }
+                Some(Equiv::Prim(Prim::Toks)) => {
+                    let i = self.scan_reg_num();
+                    return (*self.eqtb.toks[i as usize]).clone();
+                }
                 Some(Equiv::Prim(Prim::CsName)) => {
                     let id = self.scan_csname_explicit();
                     return vec![Token::from_cs(id)];
@@ -1452,7 +1618,7 @@ impl Engine {
             return self.scan_balanced_raw(true).to_vec();
         }
         self.error("Missing { inserted (token list)");
-        self.pushed.push(t);
+        self.push_token(t);
         Vec::new()
     }
 
@@ -1522,7 +1688,7 @@ impl Engine {
                     self.align_finish_noalign_now();
                 }
             }
-            Some(LevelType::Group) => {
+            Some(LevelType::Group | LevelType::MathGroup) => {
                 // math/legacy groups: pack if a box context is open
                 if !self.box_kinds.is_empty() {
                     self.end_box();
@@ -1534,6 +1700,12 @@ impl Engine {
             }
             Some(LevelType::SemiSimple) => {
                 self.error("Extra }, or forgotten \\endgroup");
+            }
+            Some(LevelType::MathLeft) => {
+                self.error("Extra }, or forgotten \\right");
+            }
+            Some(LevelType::MathShift) => {
+                self.error("Extra }, or forgotten $");
             }
             _ => self.error("Too many }'s"),
         }
@@ -1654,5 +1826,55 @@ mod definable_cs_recovery_tests {
         assert_eq!(engine.definable_cs_recovery_count, 1);
         engine.reset_job_diagnostics();
         assert_eq!(engine.definable_cs_recovery_count, 0);
+    }
+
+    #[test]
+    fn let_macro_parameter_recognized_in_definition_parameters_and_body() {
+        // tex.web §470 / §477: a control sequence \let to a catcode-6 character
+        // token (like pb-diagram's `\let\@tempa=##`) acts as a macro parameter
+        // token in both parameter text and replacement text.
+        let mut eng = engine();
+        let hash_tok = Token::char(6, b'#' as u32);
+        let myhash = eng.cs.intern(b"myhash");
+        eng.eqtb.assign(myhash, crate::eqtb::Equiv::CharTok(hash_tok.0), false);
+        let mymacro = eng.cs.intern(b"mymacro");
+        eng.input.push_toks(
+            vec![
+                Token::from_cs(mymacro),
+                Token::other(b'['),
+                Token::from_cs(myhash),
+                Token::other(b'1'),
+                Token::other(b']'),
+                Token::char(1, b'{' as u32),
+                Token::from_cs(myhash),
+                Token::other(b'1'),
+                Token::char(2, b'}' as u32),
+            ],
+            "def-stream",
+        );
+        eng.do_def(crate::prim::Prim::Def, 0);
+        assert_eq!(eng.error_count, 0);
+        if let Some(crate::eqtb::Equiv::Macro(m)) = eng.eqtb.get(mymacro) {
+            assert_eq!(m.num_params, 1);
+            assert!(m.has_param_refs);
+        } else {
+            panic!("mymacro was not defined as a Macro");
+        }
+    }
+
+    #[test]
+    fn toks_register_copy_from_another_toks_register() {
+        let mut eng = Engine::new(false);
+        eng.init_primitives();
+        eng.add_nullfont();
+        eng.set_interaction_mode(crate::engine::InteractionMode::Nonstop);
+        eng.input.push_file(
+            "test-toks.tex".to_string(),
+            b"\\toks1={hello world}\\toks0=\\toks1\\end".to_vec(),
+        );
+        eng.run();
+        assert_eq!(eng.error_count, 0, "{}", eng.diagnostic_output);
+        assert_eq!(eng.eqtb.toks[0], eng.eqtb.toks[1]);
+        assert_eq!(eng.eqtb.toks[0].len(), 11);
     }
 }

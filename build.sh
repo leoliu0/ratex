@@ -1,4 +1,6 @@
 #!/bin/sh
-touch crates/tex-core/src/lib.rs crates/tex-core/src/*.rs
-cargo build -p tex-cli 2>&1 | grep -E "^error" -A5
-exit 0
+set -eu
+
+# Let Cargo's dependency tracking decide what needs rebuilding and preserve
+# its real exit status so automation cannot report a failed build as success.
+exec cargo build -p tex-cli "$@"

@@ -17,8 +17,8 @@ Usage: ./install.sh [options]
 
 Cross-platform installer for the Rust TeX suite: pdflatex, xelatex,
 lualatex, bibtex, texmk, latexmk, plus the runtime data directory
-(pdflatex.fmt + texmf overlay). Auto-dispatches to the native installer
-for Linux, macOS, and (via guidance) Windows.
+(texmf overlay; the compressed LaTeX format is embedded). Auto-dispatches
+to the native installer for Linux, macOS, and (via guidance) Windows.
 
 Modes (auto-detected unless overridden):
   bundle       run this script from an extracted release archive: the

@@ -113,9 +113,17 @@ pub enum IntParam {
     PdfCompressLevel,
     /// pdfTeX bit mask for explicitly ignored primitive diagnostics.
     IgnorePrimitiveError,
+    /// pdfTeX switch suppressing mixed-PDF-page-group warnings.
+    PdfSuppressWarningPageGroup,
+    /// pdfTeX switch for adjusting interword glue (microtype spacing feature).
+    PdfAdjustInterwordGlue,
+    /// pdfTeX switch for prepending kerns (microtype kerning feature).
+    PdfPrependKern,
+    /// pdfTeX switch for appending kerns (microtype kerning feature).
+    PdfAppendKern,
 }
 
-pub const NUM_INT_PARAMS: usize = 95;
+pub const NUM_INT_PARAMS: usize = 99;
 
 impl IntParam {
     #[inline]
@@ -219,6 +227,10 @@ impl IntParam {
         IntParam::PartokenNameCs,
         IntParam::PdfCompressLevel,
         IntParam::IgnorePrimitiveError,
+        IntParam::PdfSuppressWarningPageGroup,
+        IntParam::PdfAdjustInterwordGlue,
+        IntParam::PdfPrependKern,
+        IntParam::PdfAppendKern,
     ];
 
     pub fn from_idx(i: u16) -> Option<Self> {
@@ -535,6 +547,8 @@ pub enum Prim {
     UnKern,
     UnPenalty,
     LastBox,
+    PageDiscards,
+    SplitDiscards,
     LastKern,
     LastPenalty,
     LastSkip,
@@ -770,6 +784,17 @@ pub enum Prim {
     RightMarginKern,
     /// Knuth `\/`: append the preceding character's TFM italic correction.
     ItalicCorrection,
+    /// pdfTeX expandable creation timestamp in PDF date syntax.
+    PdfCreationDate,
+    /// e-TeX line-breaking penalty arrays.
+    InterLinePenalties,
+    ClubPenalties,
+    WidowPenalties,
+    DisplayWidowPenalties,
+    PdfLastXImagePages,
+    PdfXImageBBox,
+    PdfRandomSeed,
+    PdfSetRandomSeed,
 }
 
 /// Stable wire codes for the format dump (`crate::format`). Unit variants
@@ -778,6 +803,17 @@ pub enum Prim {
 /// codes keep their values. The four parameter families occupy dedicated
 /// high ranges that carry the parameter index directly.
 impl Prim {
+    #[inline]
+    pub(crate) fn penalty_shape_index(self) -> Option<usize> {
+        match self {
+            Prim::InterLinePenalties => Some(0),
+            Prim::ClubPenalties => Some(1),
+            Prim::WidowPenalties => Some(2),
+            Prim::DisplayWidowPenalties => Some(3),
+            _ => None,
+        }
+    }
+
     pub fn code(self) -> u16 {
         match self {
             Prim::Relax => 0,
@@ -1117,6 +1153,17 @@ impl Prim {
             Prim::LeftMarginKern => 334,
             Prim::RightMarginKern => 335,
             Prim::ItalicCorrection => 336,
+            Prim::PdfCreationDate => 337,
+            Prim::InterLinePenalties => 338,
+            Prim::ClubPenalties => 339,
+            Prim::WidowPenalties => 340,
+            Prim::DisplayWidowPenalties => 341,
+            Prim::PdfLastXImagePages => 342,
+            Prim::PageDiscards => 343,
+            Prim::SplitDiscards => 344,
+            Prim::PdfXImageBBox => 345,
+            Prim::PdfRandomSeed => 346,
+            Prim::PdfSetRandomSeed => 347,
             Prim::ScriptScriptStyle => 284,
             Prim::Patterns => 287,
             Prim::Hyphenation => 288,
@@ -1466,6 +1513,17 @@ impl Prim {
             334 => Some(Prim::LeftMarginKern),
             335 => Some(Prim::RightMarginKern),
             336 => Some(Prim::ItalicCorrection),
+            337 => Some(Prim::PdfCreationDate),
+            338 => Some(Prim::InterLinePenalties),
+            339 => Some(Prim::ClubPenalties),
+            340 => Some(Prim::WidowPenalties),
+            341 => Some(Prim::DisplayWidowPenalties),
+            342 => Some(Prim::PdfLastXImagePages),
+            343 => Some(Prim::PageDiscards),
+            344 => Some(Prim::SplitDiscards),
+            345 => Some(Prim::PdfXImageBBox),
+            346 => Some(Prim::PdfRandomSeed),
+            347 => Some(Prim::PdfSetRandomSeed),
             0x1000..=0x1fff => {
                 let i = c & 0x0fff;
                 Some(Prim::IntP(IntParam::from_idx(i)?))

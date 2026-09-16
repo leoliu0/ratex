@@ -142,9 +142,7 @@ fn read_value(
                     if ch == b'{' {
                         depth += 1;
                     } else if ch == b'}' {
-                        if depth > 0 {
-                            depth -= 1;
-                        }
+                        depth = depth.saturating_sub(1);
                     } else if ch == b'"' && depth == 0 {
                         break;
                     } else if ch == b'\n' {

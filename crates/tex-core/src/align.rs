@@ -42,21 +42,21 @@
 //!   width, so finite glue stretches along with fil glue (TeX freezes
 //!   finite glue in unset boxes);
 //! * \everycr plays at row start, before the next row's u part;
-//! * nested \halign is supported through a thread-local state stack keyed
-//!   by the engine address (the outer preamble/rows survive an inner
-//!   \halign used e.g. inside a p-column cell).
-
-use std::cell::RefCell;
+//! * nested \halign is supported through an engine-owned state stack (the
+//!   outer preamble/rows survive an inner \halign used e.g. inside a
+//!   p-column cell).
 
 use crate::boxes::{Glue, Node, NodeList};
 use crate::engine::{Engine, Mode, ScannerStatus};
-use crate::eqtb::{Equiv, LevelType, SaveItem};
+use crate::eqtb::{Equiv, LevelType};
 use crate::prim::{DimParam, GlueParam, Prim, ToksParam};
 use crate::token::Token;
 
 /// sentinel appended to a cell's close stream; intercepted by the expansion
 /// loop (expand.rs get_token_inner) and routed to `finish_cell_typeset`.
 pub const CELL_END_TOKEN: Token = Token(0xE000_0002);
+/// tex.web's frozen end-template marker. It is consumed only after every
+pub(crate) const U_END_TOKEN: Token = Token(0xFFFF_FFFA);
 
 #[derive(Clone, Default)]
 pub struct ColSpec {
@@ -88,16 +88,24 @@ const CELL_GROUP_KIND: u8 = 8;
 /// matches "a cell is open").
 pub const PH_IDLE: i32 = 0; // no cell open
 const PH_U: i32 = 1; // u part of the template is playing
-const PH_CONTENT: i32 = 2; // cell content phase
+pub(crate) const PH_CONTENT: i32 = 2; // cell content phase
 const PH_OMIT: i32 = 4; // template omitted for the current cell
 pub(crate) const PH_CLOSE: i32 = 8; // close stream pushed; sentinel not yet seen
 
-const U_PART_SRC: &str = "<align-u>";
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub(crate) enum AlignCloseReason {
+    #[default]
+    NextCell,
+    EndRow,
+    Span,
+}
+
+pub(crate) const U_PART_SRC: &str = "<align-u>";
 const CELL_SRC: &str = "<align-cell>";
-const PEEK_SRC: &str = "<align-peek>";
+pub(crate) const PEEK_SRC: &str = "<align-peek>";
 
 /// saved outer alignment state for nested \halign (tabular in a p-cell)
-struct AlignSave {
+pub(crate) struct AlignSave {
     preamble: Vec<ColSpec>,
     loop_start: Option<usize>,
     rows: Vec<Vec<Cell>>,
@@ -105,6 +113,7 @@ struct AlignSave {
     cur_col: i32,
     widths: Vec<i32>,
     scanning_cell: bool,
+    close_reason: AlignCloseReason,
     in_noalign: bool,
     state: i32,
     done: bool,
@@ -112,6 +121,7 @@ struct AlignSave {
     pushed_base: usize,
     delimiter_balance_base: i32,
     cell_level: u16,
+    brace_depth: i32,
     noalign_save_base: usize,
     t0: Glue,
     everycr_done: bool,
@@ -120,10 +130,7 @@ struct AlignSave {
     /// adjustment list) and the per-row drains already completed
     adjust: Vec<Node>,
     row_adjust: Vec<Vec<Node>>,
-}
-
-thread_local! {
-    static ALIGN_STACK: RefCell<Vec<(usize, AlignSave)>> = const { RefCell::new(Vec::new()) };
+    is_valign: bool,
 }
 
 impl Engine {
@@ -159,34 +166,48 @@ impl Engine {
             })
     }
 
-    fn align_delimiter_hidden(&self) -> bool {
-        // Only brace/box groups affect TeX's alignment-state counter.
-        // A \begingroup (SemiSimple) deliberately does not hide & or \cr;
-        // expl3/siunitx opens such a group while peeking for the cell
-        // delimiter. The synthetic cell Box is exactly at cell_level.
-        let braced_group_open = self.eqtb.save_stack.iter().any(|item| {
-            matches!(
-                item,
-                SaveItem::Level(level, LevelType::Simple | LevelType::Box)
-                    if *level > self.align_cell_level
-            )
-        });
-        braced_group_open
-            || self.align_token_list_brace_balance() != self.align_delimiter_balance_base
+    pub(crate) fn align_delimiter_hidden(&self) -> bool {
+        // tex.web @7257-7264: a row delimiter ends the entry only at
+        // align_state = 0, where align_state is the cumulative net brace
+        // depth since the u-template finished (@7007-7008 reset). The old
+        // save-stack + active-token-list heuristic missed braces whose
+        // source had already been popped (expl3 \exp_args:No re-serves an
+        // expanded token list whose { } no longer appear in any active
+        // source), closing the outer alignment mid-content (array.sty
+        // table setup inside an amsmath align cell).
+        self.align_brace_depth != 0
     }
 
-    /// tex.web get_next: a row delimiter ends the current alignment entry
-    /// before an outer macro parameter scanner can consume it.
+    /// TeX's frozen end-template token resets alignment state only after all
+    /// expansions and commands emitted by the u-template have completed.
+    pub(crate) fn align_u_template_finished(&mut self) {
+        if self.align_phase() == PH_U {
+            self.align_cell_level = self.eqtb.cur_level;
+            self.align_delimiter_balance_base = self.align_token_list_brace_balance();
+            self.align_brace_depth = 0;
+            self.align_set_phase(PH_CONTENT);
+        }
+    }
+
+    /// tex.web get_next: a row delimiter at alignment brace-depth zero
+    /// cannot be consumed by a macro parameter scanner. Queue the current
+    /// template's close stream so scanning proceeds through the same input
+    /// TeX would insert at the end of the cell.
     pub(crate) fn align_intercept_raw_token(&mut self, t: Token) -> bool {
-        if !self.align_macro_arg
-            || self.in_expanded_scan
-            || self.scanner_status != ScannerStatus::Aligning
-            || self.align_phase() == PH_IDLE
+        if self.scanner_status != ScannerStatus::Aligning
+            || self.align_phase() != PH_CONTENT
             || self.align_state & PH_CLOSE != 0
         {
             return false;
         }
-        if t.is_char() && t.cc() == 4 {
+        let is_tab = if t.is_char() && t.cc() == 4 {
+            true
+        } else if let Some(id) = t.is_cs().then(|| t.cs_id()) {
+            matches!(self.eqtb.resolve(id), Some(crate::eqtb::Equiv::CharTok(raw)) if Token(*raw).cc() == 4)
+        } else {
+            false
+        };
+        if is_tab {
             if self.align_delimiter_hidden() {
                 return false;
             }
@@ -196,28 +217,23 @@ impl Engine {
         let Some(id) = t.is_cs().then(|| t.cs_id()) else {
             return false;
         };
-        let Some(Equiv::Prim(p @ (Prim::Cr | Prim::CrCr))) = self.eqtb.resolve(id).cloned() else {
-            return false;
+        let prim = match self.eqtb.resolve(id) {
+            Some(Equiv::Prim(p @ (Prim::Cr | Prim::CrCr))) => *p,
+            _ => return false,
         };
         if self.align_delimiter_hidden() {
             return false;
         }
         self.cur_tok = t;
         self.cur_cs = Some(id);
-        self.cur_prim = Some(p);
+        self.cur_prim = Some(prim);
         self.align_cr();
         true
     }
-
-    fn engine_key(&self) -> usize {
-        self as *const Engine as usize
-    }
-
     /// true when an outer alignment state is saved for this engine (we are
     /// the inner \halign of a nesting)
     fn align_has_save(&self) -> bool {
-        let key = self.engine_key();
-        ALIGN_STACK.with(|s| s.borrow().iter().any(|(k, _)| *k == key))
+        !self.align_stack.is_empty()
     }
 
     // ------------------------------------------------------------------
@@ -226,9 +242,10 @@ impl Engine {
 
     pub fn begin_halign(&mut self) {
         let origin = self.current_token_source_mark();
-        if self.scanner_status == ScannerStatus::Aligning {
-            // nested \halign (e.g. tabular inside a p-column cell): save the
-            // outer alignment so the inner one can use the global fields
+        if self.scanner_status == ScannerStatus::Aligning
+            || self.box_kinds.iter().any(|&k| k == 7)
+            || self.align_origin.is_some()
+        {
             let save = AlignSave {
                 preamble: std::mem::take(&mut self.align_preamble),
                 loop_start: self.align_loop_start.take(),
@@ -243,18 +260,24 @@ impl Engine {
                 to: self.align_to,
                 pushed_base: self.align_pushed_base,
                 delimiter_balance_base: self.align_delimiter_balance_base,
+                cell_level: self.align_cell_level,
+                brace_depth: self.align_brace_depth,
+                close_reason: self.align_close_reason,
                 everycr_done: self.align_everycr_done,
                 adjust: std::mem::take(&mut self.align_adjust),
                 row_adjust: std::mem::take(&mut self.align_row_adjust),
-                cell_level: self.align_cell_level,
                 noalign_save_base: self.align_noalign_save_base,
                 t0: self.align_t0.clone(),
                 origin: self.align_origin.take(),
+                is_valign: self.align_is_valign,
             };
-            let key = self.engine_key();
-            ALIGN_STACK.with(|s| s.borrow_mut().push((key, save)));
+            self.align_stack.push(save);
         }
         self.align_origin = origin;
+        self.align_is_valign = false;
+        self.align_state = PH_IDLE;
+        // tex.web §15332 / §15369: align_state := -1000000 while preamble scans.
+        self.align_brace_depth = -1_000_000;
         // tex.web §1130 & §774: \halign is valid in vertical modes AND in
         // DisplayMath (e.g. \eqalign, amsmath \align, etc.). Inside DisplayMath,
         // the alignment box is centered on the display line.
@@ -303,6 +326,96 @@ impl Engine {
         self.box_kinds.push(7);
         self.mode = Mode::InternalVertical;
         self.prev_graf = 0;
+        // tex.web §15350 / init_align: the alignment's internal vertical list inherits prev_depth
+        // from the enclosing context (preserved from outer vertical mode / display math).
+        self.align_rows.clear();
+        self.align_row_adjust.clear();
+        self.align_adjust.clear();
+        self.align_cur_row.clear();
+        self.align_cur_col = 0;
+        self.align_in_noalign = false;
+        self.align_state = PH_IDLE;
+        self.align_done = false;
+        self.align_everycr_done = false;
+        // tex.web §15512: align_state := 1000000 between rows.
+        self.align_brace_depth = 1_000_000;
+        self.align_row_inspect();
+    }
+    pub fn begin_valign(&mut self) {
+        if self.mode.is_v() {
+            self.start_paragraph(true);
+        }
+        let origin = self.current_token_source_mark();
+        if self.scanner_status == ScannerStatus::Aligning
+            || self.box_kinds.iter().any(|&k| k == 7)
+            || self.align_origin.is_some()
+        {
+            let save = AlignSave {
+                preamble: std::mem::take(&mut self.align_preamble),
+                loop_start: self.align_loop_start.take(),
+                rows: std::mem::take(&mut self.align_rows),
+                cur_row: std::mem::take(&mut self.align_cur_row),
+                cur_col: self.align_cur_col,
+                widths: std::mem::take(&mut self.align_col_widths),
+                scanning_cell: self.align_scanning_cell,
+                close_reason: self.align_close_reason,
+                in_noalign: self.align_in_noalign,
+                state: self.align_state,
+                done: self.align_done,
+                to: self.align_to,
+                pushed_base: self.align_pushed_base,
+                delimiter_balance_base: self.align_delimiter_balance_base,
+                cell_level: self.align_cell_level,
+                brace_depth: self.align_brace_depth,
+                everycr_done: self.align_everycr_done,
+                adjust: std::mem::take(&mut self.align_adjust),
+                row_adjust: std::mem::take(&mut self.align_row_adjust),
+                noalign_save_base: self.align_noalign_save_base,
+                t0: self.align_t0.clone(),
+                origin: self.align_origin.take(),
+                is_valign: self.align_is_valign,
+            };
+            self.align_stack.push(save);
+        }
+        self.align_origin = origin;
+        self.align_is_valign = true;
+        self.align_state = PH_IDLE;
+        self.align_brace_depth = -1_000_000;
+        self.scanner_status = ScannerStatus::Aligning;
+        self.align_to = None;
+        self.align_t0 = self.eqtb.glue_params[GlueParam::TabSkip.idx() as usize].clone();
+        if self.scan_keyword(b"to") {
+            let d = self.scan_dimen(false, false);
+            self.align_to = Some((d, false));
+        } else if self.scan_keyword(b"spread") {
+            let d = self.scan_dimen(false, false);
+            self.align_to = Some((d, true));
+        }
+        if !self.scan_align_preamble() {
+            let nested = self.align_has_save();
+            self.align_nested_restore();
+            if !nested {
+                self.scanner_status = ScannerStatus::Normal;
+                self.align_state = PH_IDLE;
+                self.align_to = None;
+                self.align_is_valign = false;
+            }
+            return;
+        }
+        self.saved_lists.push((
+            self.mode,
+            std::mem::take(&mut self.cur_list),
+            self.prev_depth,
+            self.space_factor,
+            self.prev_graf,
+        ));
+        self.push_group_level(LevelType::Box);
+        self.box_targets.push(None);
+        self.box_shifts.push(0);
+        self.box_kinds.push(7);
+        self.mode = Mode::RestrictedHorizontal;
+        self.space_factor = 1000;
+        self.prev_graf = 0;
         self.prev_depth = -1000 * 65536;
         self.align_rows.clear();
         self.align_row_adjust.clear();
@@ -313,18 +426,12 @@ impl Engine {
         self.align_state = PH_IDLE;
         self.align_done = false;
         self.align_everycr_done = false;
+        self.align_brace_depth = 1_000_000;
         self.align_row_inspect();
     }
 
     fn align_nested_restore(&mut self) {
-        let key = self.engine_key();
-        let outer = ALIGN_STACK.with(|s| {
-            let mut s = s.borrow_mut();
-            // the innermost saved state for this engine
-            s.iter()
-                .rposition(|(k, _)| *k == key)
-                .map(|i| s.remove(i).1)
-        });
+        let outer = self.align_stack.pop();
         if let Some(sv) = outer {
             self.align_preamble = sv.preamble;
             self.align_loop_start = sv.loop_start;
@@ -339,15 +446,23 @@ impl Engine {
             self.align_to = sv.to;
             self.align_pushed_base = sv.pushed_base;
             self.align_delimiter_balance_base = sv.delimiter_balance_base;
-            self.align_adjust = sv.adjust;
-            self.align_row_adjust = sv.row_adjust;
             self.align_cell_level = sv.cell_level;
+            self.align_brace_depth = sv.brace_depth;
+            self.align_scanning_cell = sv.scanning_cell;
+            self.align_close_reason = sv.close_reason;
+            self.align_in_noalign = sv.in_noalign;
             self.align_noalign_save_base = sv.noalign_save_base;
             self.align_t0 = sv.t0;
+            self.align_adjust = sv.adjust;
+            self.align_row_adjust = sv.row_adjust;
             self.align_everycr_done = sv.everycr_done;
             self.align_origin = sv.origin;
+            self.align_is_valign = sv.is_valign;
         } else {
             self.align_origin = None;
+            self.align_close_reason = AlignCloseReason::default();
+            self.align_brace_depth = 0;
+            self.align_is_valign = false;
         }
     }
 
@@ -523,6 +638,10 @@ impl Engine {
         if mode.is_v() {
             self.prev_depth = -1000 * 65536;
         }
+        // NOTE: tex.web parks align_state at 1000000 only while a u-template
+        // plays (init_col @15564), not for cell groups generally; a
+        // noalign cell has no u-part that would ever reset it. Parking is
+        // done at the u-part push sites (align_start_cell/align_span).
     }
 
     /// retrieve ColSpec for column index, wrapping around via align_loop_start per tex.web §785
@@ -550,7 +669,15 @@ impl Engine {
             Some(s) => s,
             None => return, // empty or exhausted preamble
         };
-        self.align_push_cell_group(Mode::RestrictedHorizontal);
+        let cell_mode = if self.align_is_valign {
+            Mode::InternalVertical
+        } else {
+            Mode::RestrictedHorizontal
+        };
+        self.align_push_cell_group(cell_mode);
+        if self.align_is_valign {
+            self.prev_depth = -1000 * 65536;
+        }
         self.align_cell_level = self.eqtb.cur_level;
         self.align_delimiter_balance_base = self.align_token_list_brace_balance();
         while self.align_cur_row.len() <= col {
@@ -569,25 +696,28 @@ impl Engine {
                 t
             }
         };
+        // tex.web init_col @15564: while the u-template plays, align_state is
+        // parked at 1000000; u-part finish (or omit) resets to 0.
+        self.align_brace_depth = 1_000_000;
         let is_omit =
             t.is_cs() && matches!(self.eqtb.resolve(t.cs_id()), Some(Equiv::Prim(Prim::Omit)));
         if is_omit {
             self.align_state = PH_CONTENT | PH_OMIT;
+            // tex.web init_col @15562: \omit resets align_state to 0.
+            self.align_brace_depth = 0;
             return;
         }
-        // content below the u part
+        // Queue cell content below the u-template and its end marker.
         self.align_pushed_base = self.pushed.len();
         self.push_tokens_named(vec![t], PEEK_SRC);
         if spec.u_part.is_empty() {
+            self.align_u_template_finished();
             self.align_set_phase(PH_CONTENT);
         } else {
             self.align_pushed_base = self.pushed.len();
             self.push_tokens_named(spec.u_part, U_PART_SRC);
         }
     }
-
-    /// discard the not-yet-played remainder of the u part source (on \omit,
-    /// & or \cr arriving while the u part is still playing)
     fn align_discard_u_part(&mut self) {
         let is_u = matches!(
             self.input.stack.last(),
@@ -596,6 +726,7 @@ impl Engine {
         if is_u {
             self.input.stack.pop();
         }
+        self.align_u_template_finished();
     }
     /// token terminating a close stream. The \crcr primitive token is used
     /// (not CELL_END_TOKEN): scanners may look ahead across the close
@@ -603,7 +734,7 @@ impl Engine {
     /// CELL_END_TOKEN would pack the cell mid-scan. A \crcr cs token is
     /// pushed back by scanners and only acted on at dispatch level, like
     /// tex.web's frozen \cr.
-    fn crcr_token(&self) -> Token {
+    pub(crate) fn crcr_token(&self) -> Token {
         match self.cs.lookup(b"crcr") {
             Some(id) => Token::from_cs(id),
             None => CELL_END_TOKEN,
@@ -615,12 +746,15 @@ impl Engine {
     /// marked with PH_CLOSE; when the sentinel dispatches, the cell is
     /// finished synchronously. `row_continues` selects whether the cell is
     /// followed by another cell (&) or ends the row (\cr).
-    fn align_push_close(&mut self, row_continues: bool) {
+    fn align_push_close(&mut self, reason: AlignCloseReason) {
         let col = self.align_cur_col as usize;
-        self.align_scanning_cell = row_continues;
+        self.align_close_reason = reason;
+        self.align_scanning_cell = reason == AlignCloseReason::NextCell;
         let omit = self.align_omitted();
         self.align_set_phase(PH_CONTENT);
         self.align_state |= PH_CLOSE;
+        // tex.web @15583: while v_template plays, align_state := 1000000.
+        self.align_brace_depth = 1_000_000;
         let mut close: Vec<Token> = Vec::new();
         if !omit {
             // tex.web fin_col: the v part played at the end of a cell is
@@ -657,9 +791,6 @@ impl Engine {
         // template groups via the v part when the row machinery fires; a
         // `&` is only genuinely misplaced between rows / outside a cell.
         if self.align_phase() == PH_IDLE || !self.box_kinds.contains(&CELL_GROUP_KIND) {
-            // tex.web: & reaching main_control inside a nested group of a
-            // cell (braces hide it from the row) is "Misplaced alignment
-            // tab"; PH_IDLE covers & between rows and at the row boundary
             self.error("Misplaced alignment tab character &");
             return;
         }
@@ -675,15 +806,14 @@ impl Engine {
             if self.align_phase() == PH_U {
                 self.align_discard_u_part();
             }
-            self.align_push_close(false);
+            self.align_push_close(AlignCloseReason::EndRow);
             return;
         }
         if self.align_phase() == PH_U {
             self.align_discard_u_part();
         }
-        self.align_push_close(true);
+        self.align_push_close(AlignCloseReason::NextCell);
     }
-
     pub fn align_cr(&mut self) {
         if self.scanner_status != ScannerStatus::Aligning {
             self.error("Misplaced \\cr");
@@ -695,6 +825,8 @@ impl Engine {
             self.align_state &= !PH_CLOSE;
             if self.align_in_noalign {
                 self.align_finish_noalign_now();
+            } else if self.align_close_reason == AlignCloseReason::Span {
+                self.align_absorb_span_now();
             } else {
                 self.align_finish_cell_now();
             }
@@ -710,9 +842,6 @@ impl Engine {
         {
             return;
         }
-        // A template u part may open box groups inside the cell (LaTeX
-        // p-columns: `\@startpbox` = `\vtop\bgroup ...`), so the CELL group
-        // is not necessarily the top of box_kinds. Only a \cr between rows
         // or fully outside a cell is misplaced; otherwise let the close
         // stream's v part unwind the template groups and finish the cell.
         if self.align_phase() == PH_IDLE || !self.box_kinds.contains(&CELL_GROUP_KIND) {
@@ -722,7 +851,7 @@ impl Engine {
         if self.align_phase() == PH_U {
             self.align_discard_u_part();
         }
-        self.align_push_close(false);
+        self.align_push_close(AlignCloseReason::EndRow);
     }
 
     /// \omit: skip the u part now and the v part when the cell closes.
@@ -749,27 +878,47 @@ impl Engine {
                 self.align_state |= PH_OMIT;
             }
         }
+        // align_state := 0.
+        self.align_brace_depth = 0;
     }
 
     /// \span in a row: the current cell absorbs the next grid column; the
     /// absorbed column's u part plays next (skipped when \omit follows).
+    /// \span in a row: ends the current column's content by playing its v-template
+    /// via the close stream, then absorbs the next grid column.
     pub fn align_span(&mut self) {
         if self.scanner_status != ScannerStatus::Aligning || self.align_phase() == PH_IDLE {
             self.error("\\span outside alignment");
             return;
         }
-        let col = self.align_cur_col as usize;
-        let span = {
-            while self.align_cur_row.len() <= col {
-                self.align_cur_row.push(Cell::default());
-            }
-            let cell = &mut self.align_cur_row[col];
-            cell.span = cell.span.saturating_add(1);
-            cell.span as usize
-        };
+        if self.align_state & PH_CLOSE != 0 {
+            return;
+        }
+        if self.align_phase() == PH_IDLE || !self.box_kinds.contains(&CELL_GROUP_KIND) {
+            self.error("\\span outside alignment");
+            return;
+        }
         if self.align_phase() == PH_U {
             self.align_discard_u_part();
         }
+        self.align_push_close(AlignCloseReason::Span);
+    }
+
+    /// called when the close stream from a `\span` delimiter dispatches its
+    /// sentinel \crcr: keeps the open cell box group intact, advances the
+    /// cell's span counter to absorb the next grid column, and plays the
+    /// absorbed column's u-part (unless \omit follows).
+    fn align_absorb_span_now(&mut self) {
+        let col = self.align_cur_col as usize;
+        while self.align_cur_row.len() <= col {
+            self.align_cur_row.push(Cell::default());
+        }
+        let cell = &mut self.align_cur_row[col];
+        cell.span = cell.span.saturating_add(1);
+        let span = cell.span as usize;
+
+        // tex.web @15623: align_state := 1000000; get_next; cur_align := p; init_col;
+        self.align_brace_depth = 1_000_000;
         let t = self.align_peek_expanding();
         if t == crate::input::EOF_MARKER {
             self.fatal_alignment_eof("File ended after \\span");
@@ -779,17 +928,18 @@ impl Engine {
             t.is_cs() && matches!(self.eqtb.resolve(t.cs_id()), Some(Equiv::Prim(Prim::Omit)));
         if is_omit {
             self.align_state = (self.align_state & PH_OMIT) | PH_CONTENT | PH_OMIT;
+            self.align_brace_depth = 0;
             return;
         }
         self.align_state = (self.align_state & PH_OMIT) | PH_U;
-        // re-queue the peeked token below the absorbed column's u part
+        // Re-queue the peeked token below the absorbed column's u-template.
         self.push_tokens_named(vec![t], PEEK_SRC);
         let u = self
-            .align_preamble
-            .get(col + span)
+            .get_col_spec(col + span)
             .map(|s| s.u_part.clone())
             .unwrap_or_default();
         if u.is_empty() {
+            self.align_u_template_finished();
             self.align_state = (self.align_state & PH_OMIT) | PH_CONTENT;
         } else {
             self.align_pushed_base = self.pushed.len();
@@ -827,11 +977,6 @@ impl Engine {
     }
 
     pub fn align_noalign(&mut self) {
-        // tex.web: a \noalign is legal between rows. Our speculative row
-        // start (PH_U, col 0, cell list still empty) can precede the
-        // \noalign when the peek expanded a macro (\hline -> \noalign{...})
-        // or stray tokens (l3 quarks) surfaced first; such a cell is a
-        // phantom — close it and treat the \noalign as interrow. A \noalign
         // after real cell content (or inside a noalign) stays an error.
         let phantom = self.scanner_status == ScannerStatus::Aligning
             && !self.align_in_noalign
@@ -862,9 +1007,29 @@ impl Engine {
             return;
         }
         self.align_in_noalign = true;
+        let outer_pd = self.prev_depth;
         self.align_push_cell_group(Mode::InternalVertical);
-        self.prev_depth = 0;
-        // returns here (i.e. the body's `{`-group just closed). The cell
+        // tex.web §15514: \noalign runs in internal vertical mode inheriting the
+        // preceding row's depth (or ignore_depth if at the alignment start).
+        self.prev_depth = self
+            .align_rows
+            .last()
+            .and_then(|r| {
+                if r.len() == 1 && r[0].span == NOALIGN_SPAN {
+                    match &r[0].packed {
+                        Some(Node::Box { shift, .. }) => Some(*shift),
+                        _ => None,
+                    }
+                } else {
+                    r.iter()
+                        .filter_map(|c| match &c.packed {
+                            Some(Node::Box { d, .. }) => Some(*d),
+                            _ => None,
+                        })
+                        .max()
+                }
+            })
+            .unwrap_or(outer_pd);
         // group pushed above is LevelType::Box — without an explicit
         // Simple level for the consumed `{`, the body's `}` would close
         self.align_noalign_save_base = self.eqtb.save_stack.len();
@@ -890,9 +1055,6 @@ impl Engine {
             }
         }
     }
-
-    /// pack the open cell into the current row and start the next cell /
-    /// finish the row
     fn align_finish_cell_now(&mut self) {
         let Some((mut inner, _)) = self.align_pop_cell_group() else {
             return;
@@ -903,7 +1065,11 @@ impl Engine {
         self.align_collect_adjustments(&mut inner);
         let col = self.align_cur_col as usize;
         let span = self.align_cur_row.get(col).map(|c| c.span).unwrap_or(0);
-        let packed = crate::boxes::hpack(inner, None, crate::boxes::HBOX, &self.eqtb).node;
+        let packed = if self.align_is_valign {
+            crate::boxes::vpack(inner, None, crate::boxes::VBOX, &self.eqtb).node
+        } else {
+            crate::boxes::hpack(inner, None, crate::boxes::HBOX, &self.eqtb).node
+        };
         while self.align_cur_row.len() <= col {
             self.align_cur_row.push(Cell::default());
         }
@@ -912,6 +1078,7 @@ impl Engine {
             span,
         };
         self.align_state = PH_IDLE;
+        self.align_brace_depth = 1_000_000;
         if self.align_scanning_cell {
             // & closed this cell: start the next one
             let next = col + 1 + span as usize;
@@ -933,34 +1100,44 @@ impl Engine {
     /// enclosing pack resolves any running-width rules (\toprule's \hrule)
     /// to the alignment width. Packing here would freeze them at \hsize.
     pub(crate) fn align_finish_noalign_now(&mut self) {
+        // tex.web §21663 (no_align_group handle_right_brace): `end_graf; unsave; align_peek;`
+        // Closing \noalign while a paragraph is running forces \par first,
+        // breaking the paragraph into lines and restoring mode to InternalVertical.
+        if self.mode == Mode::Horizontal {
+            self.par_primitive();
+        }
         let Some((inner, end_pd)) = self.align_pop_cell_group() else {
             return;
         };
         self.align_in_noalign = false;
         self.align_state = PH_IDLE;
-        let (w, h, d) = crate::boxes::vlist_dims(&inner, &self.eqtb);
-        let node = Node::Box {
-            kind: crate::boxes::VBOX,
-            w,
-            h,
-            d,
-            shift: end_pd,
-            list: inner,
-            glue_sign: 0,
-            glue_order: 0,
-            glue_set: 0.0,
-            font: None,
-        };
-        self.align_rows.push(vec![Cell {
-            packed: Some(node),
-            span: NOALIGN_SPAN,
-        }]);
-        self.align_row_adjust
-            .push(std::mem::take(&mut self.align_adjust));
+        if !inner.is_empty() {
+            let (w, h, d) = crate::boxes::vlist_dims(&inner, &self.eqtb);
+            let node = Node::Box {
+                kind: crate::boxes::VBOX,
+                w,
+                h,
+                d,
+                shift: end_pd,
+                list: inner,
+                glue_sign: 0,
+                glue_order: 0,
+                glue_set: 0.0,
+                font: None,
+            };
+            self.align_rows.push(vec![Cell {
+                packed: Some(node),
+                span: NOALIGN_SPAN,
+            }]);
+            self.align_row_adjust
+                .push(std::mem::take(&mut self.align_adjust));
+        }
         // no \\vadjust material can originate between rows (it is forbidden
         // in vertical mode, tex.web @21195), so this row's drain is empty;
         // the push keeps align_row_adjust parallel to align_rows.
         // \noalign may be followed by another \noalign, \cr or }
+        // tex.web @21663 (align_peek): align_state := 1000000 between rows.
+        self.align_brace_depth = 1_000_000;
         self.align_row_inspect();
     }
 
@@ -978,6 +1155,8 @@ impl Engine {
         }
         self.align_cur_col = 0;
         self.align_everycr_done = false;
+        // tex.web @15512 (align_peek): align_state := 1000000 between rows.
+        self.align_brace_depth = 1_000_000;
         self.align_row_inspect();
     }
 
@@ -1020,10 +1199,6 @@ impl Engine {
                 continue;
             }
             // tex.web §783: \par between rows (or blank lines) in an alignment
-            // must be ignored, not treated as cell content
-            if self.is_partoken(t) {
-                continue;
-            }
             return t;
         }
     }
@@ -1037,7 +1212,6 @@ impl Engine {
         }
         loop {
             let t = self.align_peek_expanding();
-
             if t == crate::input::EOF_MARKER {
                 self.fatal_alignment_eof("File ended during an alignment");
                 return;
@@ -1048,7 +1222,9 @@ impl Engine {
                         self.align_noalign();
                         return;
                     }
-                    Some(Prim::Cr) | Some(Prim::CrCr) => continue,
+                    // tex.web §15518-15522: between rows, only \crcr is ignored.
+                    // A true \cr starts a new row (whose first cell closes immediately).
+                    Some(Prim::CrCr) => continue,
                     _ => {}
                 }
             }
@@ -1096,6 +1272,53 @@ impl Engine {
             }
             t0.clone()
         };
+        if self.align_is_valign {
+            let mut cols: NodeList = Vec::new();
+            cols.push(Node::Glue(self.align_t0.clone()));
+            for (c, col) in rows_in.into_iter().enumerate() {
+                let mut col_items: NodeList = Vec::new();
+                for cell in col {
+                    if let Some(box_node) = cell.packed {
+                        col_items.push(box_node);
+                    }
+                }
+                let col_vbox = crate::boxes::vpack(col_items, None, crate::boxes::VBOX, &self.eqtb).node;
+                cols.push(col_vbox);
+                let t = col_tabskip(
+                    &self.align_preamble,
+                    self.align_loop_start,
+                    &self.align_t0,
+                    c,
+                );
+                cols.push(Node::Glue(t));
+            }
+            let hbox = crate::boxes::hpack(cols, self.align_to.map(|(d, _)| d), crate::boxes::HBOX, &self.eqtb).node;
+            self.align_preamble.clear();
+            self.align_rows.clear();
+            self.align_cur_row.clear();
+            self.align_adjust.clear();
+            self.align_row_adjust.clear();
+            self.align_done = false;
+            self.align_in_noalign = false;
+            self.align_everycr_done = false;
+            let nested = self.align_has_save();
+            self.align_nested_restore();
+            if !nested {
+                self.scanner_status = ScannerStatus::Normal;
+                self.align_to = None;
+                self.align_brace_depth = 0;
+                self.align_is_valign = false;
+            }
+            if self.setbox_target.is_some() && self.setbox_depth == self.box_kinds.len() {
+                let idx = self.setbox_target.take().unwrap();
+                let g = self.setbox_global;
+                self.unpark_setbox();
+                self.eqtb.assign_box(idx, Some(hbox), g);
+            } else {
+                self.append_box_node(Some(hbox));
+            }
+            return;
+        }
         for row in &rows_in {
             for (c, cell) in row.iter().enumerate() {
                 if cell.span == NOALIGN_SPAN || cell.packed.is_none() {
@@ -1180,13 +1403,13 @@ impl Engine {
                     if end_pd <= -1000 * 65536 {
                         prev = None;
                     } else {
+                        let mut last_h = 0;
                         for item in &items {
-                            match item {
-                                Node::Rule { .. } => prev = None,
-                                Node::Box { h, d, .. } => prev = Some((*h, *d)),
-                                _ => {}
+                            if let Node::Box { h, .. } = item {
+                                last_h = *h;
                             }
                         }
+                        prev = Some((last_h, end_pd));
                     }
                     rows.extend(items);
                 }
@@ -1300,7 +1523,7 @@ impl Engine {
                 self.align_t0.clone()
             };
             line.push(Node::Glue(last_t));
-            let rowbox = match self.align_to {
+            let mut rowbox = match self.align_to {
                 None => crate::boxes::hpack(line, None, crate::boxes::HBOX, &self.eqtb).node,
                 Some((d, false)) => {
                     crate::boxes::hpack(line, Some(d), crate::boxes::HBOX, &self.eqtb).node
@@ -1324,8 +1547,18 @@ impl Engine {
                     .node
                 }
             };
-            let (h, d) = match &rowbox {
-                Node::Box { h, d, .. } => (*h, *d),
+            let (h, d) = match &mut rowbox {
+                Node::Box { h, d, list, .. } => {
+                    // tex.web §15938: height(r) := height(q); depth(r) := depth(q)
+                    // every cell box r in row q inherits the row's height and depth
+                    for node in list {
+                        if let Node::Box { h: ch, d: cd, .. } = node {
+                            *ch = *h;
+                            *cd = *d;
+                        }
+                    }
+                    (*h, *d)
+                }
                 _ => (0, 0),
             };
             align_interline(&mut rows, &mut prev, h, d, &bs, &ls, lsl);
@@ -1342,16 +1575,15 @@ impl Engine {
         self.align_cur_row.clear();
         self.align_adjust.clear();
         self.align_row_adjust.clear();
-        self.align_cur_col = 0;
         self.align_done = false;
         self.align_in_noalign = false;
         self.align_everycr_done = false;
-        self.align_state = PH_IDLE;
         let nested = self.align_has_save();
         self.align_nested_restore();
         if !nested {
             self.scanner_status = ScannerStatus::Normal;
             self.align_to = None;
+            self.align_brace_depth = 0;
         }
         if self.setbox_target.is_some() && self.setbox_depth == self.box_kinds.len() {
             let vbox = crate::boxes::vpack(rows, None, crate::boxes::VBOX, &self.eqtb).node;
@@ -1373,10 +1605,9 @@ impl Engine {
             // outer vlist's prev_depth) plus \noalign material join the
             // display vlist raw. prev_depth := the align level's final
             // prev_depth (last row's depth), tracked by `prev`.
-            if let Some((_, d)) = prev {
-                self.prev_depth = d;
-            }
-            self.display_halign = Some(rows);
+            let final_pd = prev.map(|(_, d)| d).unwrap_or(self.prev_depth);
+            self.prev_depth = final_pd;
+            self.display_halign = Some((rows, final_pd));
         } else {
             let vbox = crate::boxes::vpack(rows, None, crate::boxes::VBOX, &self.eqtb).node;
             self.append_box_node(Some(vbox));
@@ -1413,8 +1644,7 @@ mod tests {
     use super::*;
     use crate::engine::Engine;
 
-    fn run(src: &str) -> Engine {
-        let mut e = Engine::new(true);
+    fn run_in(e: &mut Engine, src: &str) {
         e.init_primitives();
         e.add_nullfont();
         // unbooted engine: catcodes default to plain-like INITEX values only
@@ -1426,6 +1656,11 @@ mod tests {
         e.input
             .push_file("driver.tex".to_string(), full.as_bytes().to_vec());
         e.run();
+    }
+
+    fn run(src: &str) -> Engine {
+        let mut e = Engine::new(true);
+        run_in(&mut e, src);
         e
     }
 
@@ -1453,6 +1688,28 @@ mod tests {
             Node::Box { w, .. } => *w,
             other => panic!("expected box, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn abandoned_nested_alignment_cannot_affect_a_later_engine() {
+        let mut engine = Box::new(Engine::new(true));
+        let address = (&*engine) as *const Engine;
+        run_in(&mut engine, r"\vbox{\halign{#\cr \vbox{\halign{#\cr inner");
+        engine.finish_job_diagnostics();
+        assert!(engine.stopped_on_error);
+        assert_eq!(engine.align_stack.len(), 1);
+
+        // Replace the engine without changing its allocation. The old
+        // address-keyed thread-local stack would now match this new engine.
+        *engine = Engine::new(true);
+        assert_eq!((&*engine) as *const Engine, address);
+        run_in(&mut engine, r"\halign{#\cr ok\cr}\end");
+        assert_eq!(
+            engine.error_count, 0,
+            "later engine inherited alignment state:\n{}",
+            engine.diagnostic_output
+        );
+        assert!(engine.align_stack.is_empty());
     }
 
     #[test]
@@ -1903,20 +2160,43 @@ mod tests {
     }
 
     #[test]
-    fn macro_argument_hides_alignment_tab_at_nonzero_brace_balance() {
-        // expl3 uses skipped unmatched braces while inspecting token lists.
-        // A tab scanned as a macro argument at that nonzero balance belongs
-        // to the argument; only the later top-level tab splits the row.
+    fn template_box_group_does_not_hide_row_end_from_macro_scanner() {
+        let e = run(concat!(
+            "\\font\\cmr=cmr10 \\cmr\n",
+            "\\def\\eat#1{}\n",
+            "\\setbox0=\\vbox{\\halign{\\hbox\\bgroup#\\egroup\\cr A\\eat\\cr}}\n",
+            "\\count0=37\n",
+        ));
+        assert_eq!(e.error_count, 0, "errors:\n{}", e.term);
+        assert_eq!(e.eqtb.count[0], 37, "input after alignment was not reached");
+    }
+
+
+    #[test]
+    fn control_sequence_begin_group_does_not_hide_alignment_tab() {
+        // TeX's alignment brace counter follows explicit brace tokens. A
+        // control sequence \let to `{` starts a group but does not protect
+        // a top-level alignment delimiter while a macro argument is scanned.
         let e = run(concat!(
             "\\font\\cmr=cmr10 \\cmr\n",
             "\\def\\scan#1X{Q}\n",
+            "\\let\\bgroup={\\let\\egroup=}\n",
             "\\halign{#\\hfil&#\\hfil\\cr\n",
-            "\\iffalse{\\fi \\scan A&BX \\iffalse}\\fi L&R\\cr}\n",
+            "\\bgroup\\scan A&BX\\egroup L&R\\cr}\n",
+        ));
+        assert!(
+            e.error_count > 0,
+            "a control-sequence group incorrectly hid the alignment tab"
+        );
+    }
+    #[test]
+    fn nested_alignment_inside_alignment_cell() {
+        let e = run(concat!(
+            "\\font\\cmr=cmr10 \\cmr\n",
+            "\\def\\mat#1{\\vbox{\\halign{##\\hfil&##\\hfil\\cr #1\\crcr}}}\n",
+            "\\halign{#\\hfil\\cr \\mat{a&b\\cr c&d\\cr}\\cr}\n",
         ));
         assert_eq!(e.error_count, 0, "errors:\n{}", e.term);
-        let (_, list) = vbox_of(&e);
-        let row = row_of(&list[0]);
-        assert_eq!(row.len(), 5, "exactly two cells: {:?}", row);
     }
 
     // ------------------------------------------------------------------
@@ -1995,7 +2275,7 @@ mod tests {
             "\\setbox0=\\vbox{\\halign{#\\hfil&#\\hfil\\cr ",
             "a\\vadjust{\\vskip1pt}&b\\vadjust{\\vskip2pt}\\cr}}\n",
         ));
-        assert_eq!(e.error_count, 0, "errors:\n{}", e.term);
+        assert_eq!(e.error_count, 0, "errors: {:?}", e.diagnostics.iter().map(|d| d.render()).collect::<Vec<_>>());
         let l = box0_list(&e);
         assert_eq!(l.len(), 3, "row + two adjustments: {l:?}");
         assert!(matches!(l[0], Node::Box { .. }));
@@ -2059,5 +2339,276 @@ mod tests {
         assert_eq!(glue_w(&l[1]), 2 * 65536);
         assert!(matches!(l[2], Node::Glue(_)));
         assert!(matches!(l[3], Node::Box { .. }));
+    }
+
+    #[test]
+    fn everycr_noalign_paragraph_unpacks_cleanly() {
+        let e = run(concat!(
+            "\\font\\cmr=cmr10 \\cmr\n",
+            "\\everycr{\\noalign{X}}\n",
+            "\\setbox0=\\vbox{\\halign{#\\crcr 1\\crcr}}\n",
+        ));
+        assert_eq!(e.error_count, 0, "errors:\n{}", e.term);
+        let h = box_h(e.eqtb.boxed[0].as_ref().expect("box 0"));
+        // 30.83331pt = 2020692sp
+        assert_eq!(h, 2020692, "expected 30.83331pt, got {h}");
+    }
+
+    #[test]
+    fn token_list_expansion_with_ampersand_does_not_close_cell() {
+        // Expanding macros whose replacement texts define inner macros with &
+        // must not fire alignment tab interception while scanning the definition.
+        let e = run(concat!(
+            "\\font\\cmr=cmr10 \\cmr\n",
+            "\\def\\definer{\\def\\rowcontent{1 & 2}}\n",
+            "\\halign{#\\hfil&#\\hfil\\cr \\definer \\rowcontent\\cr}\n",
+        ));
+        assert_eq!(
+            e.error_count,
+            0,
+            "errors: {:?}",
+            e.diagnostics.iter().map(|d| d.render()).collect::<Vec<_>>()
+        );
+    }
+    #[test]
+    fn nested_halign_preserves_outer_align_brace_depth() {
+        let e = run(concat!(
+            "\\font\\cmr=cmr10 \\cmr\n",
+            "\\halign{#\\hfil&#\\hfil\\cr\n",
+            "1&\\vbox{\\halign{#\\cr a\\cr b\\crcr}}\\vbox{\\halign{#&#\\cr c&d\\cr}}\\cr\n",
+            "2&3\\cr}\n"
+        ));
+        assert_eq!(
+            e.error_count,
+            0,
+            "errors: {:?}",
+            e.diagnostics.iter().map(|d| d.render()).collect::<Vec<_>>()
+        );
+    }
+    #[test]
+    fn alphabetic_char_constant_brace_does_not_corrupt_align_brace_depth() {
+        // tex.web §442: alphabetic char constant `\ifnum 0=`}\fi` must not
+        // leave align_state negative. A subsequent macro definition containing
+        // \cr or & must not have its body cut off by premature delimiter interception.
+        let e = run(concat!(
+            "\\font\\cmr=cmr10 \\cmr\n",
+            "\\halign{#\\hfil&#\\hfil\\cr\n",
+            "  \\ifnum 0=`}\\fi\n",
+            "  \\gdef\\temp{\\cr}\n",
+            "  1 & 2\\temp}\n"
+        ));
+        assert_eq!(
+            e.error_count,
+            0,
+            "errors: {:?}",
+            e.diagnostics.iter().map(|d| d.render()).collect::<Vec<_>>()
+        );
+    }
+    #[test]
+    fn fraction_in_align_environment_does_not_corrupt_align_brace_depth() {
+        // \frac ends with \over #2} which is scanned by scan_math_rest_of_group.
+        // The closing brace must be put back with push_token (not pushed.push)
+        // so align_brace_depth is not double-decremented.
+        let e = run(concat!(
+            "\\catcode`\\$=3\n",
+            "\\font\\cmr=cmr10 \\cmr\n",
+            "\\halign{#\\hfil&#\\hfil\\cr\n",
+            "  ${1\\over 2}$ & 2\\cr\n",
+            "  3 & 4\\cr}\n"
+        ));
+        assert_eq!(
+            e.error_count,
+            0,
+            "errors: {:?}",
+            e.diagnostics.iter().map(|d| d.render()).collect::<Vec<_>>()
+        );
+    }
+    #[test]
+    fn ifcase_skipping_tabs_in_alignment_does_not_prematurely_advance_columns() {
+        // tex.web §494 / line 9663: scanner_status is set to `skipping` during
+        // conditional pass_text / skip_branch / skip_case_skip. Delimiters `&`
+        // in skipped branches (e.g. LaTeX's \@@eqncr \ifcase\@eqcnt & & &\or & &\or &\fi)
+        // must not be intercepted by align_intercept_raw_token.
+        let e = run(concat!(
+            "\\font\\cmr=cmr10 \\cmr\n",
+            "\\def\\testeqncr{\\ifcase 0 & & &\\or & &\\or &\\else\\fi\\cr}\n",
+            "\\halign{#&#&#&#\\cr\n",
+            "  a \\testeqncr\n",
+            "  b \\testeqncr}\n",
+        ));
+        assert_eq!(
+            e.error_count,
+            0,
+            "errors: {:?}",
+            e.diagnostics.iter().map(|d| d.render()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn macro_definition_and_arguments_with_ampersand_respect_align_brace_depth() {
+        // tex.web @7257-7264 / @7335 / @7492: align_state tracks cumulative
+        // brace balance; raw tokens for `&` inside braces (such as macro
+        // bodies or expl3 token list comparisons) are not intercepted by the
+        // outer alignment delimiter scanner.
+        let e = run(concat!(
+            "\\font\\cmr=cmr10 \\cmr\n",
+            "\\halign{#&#\\cr\n",
+            "  \\def\\foo#1{\\def\\tmp{#1}}%\n",
+            "  \\foo{x & y}%\n",
+            "  1 & 2\\cr}\n",
+        ));
+        assert_eq!(
+            e.error_count,
+            0,
+            "errors: {:?}",
+            e.diagnostics.iter().map(|d| d.render()).collect::<Vec<_>>()
+        );
+    }
+    #[test]
+    fn hash_brace_parameter_delimiter_does_not_leak_align_brace_depth() {
+        // tex.web §392 / @8063: When a macro parameter delimiter ends with `#{`,
+        // both the delimiter match and the subsequent macro body scan encounter
+        // a left brace. TeX decrements align_state to prevent double-counting.
+        let e = run(concat!(
+            "\\font\\cmr=cmr10 \\cmr\n",
+            "\\halign{#&#\\cr\n",
+            "  \\def\\macrodelim#1#{\\def\\macrobody{#1}}%\n",
+            "  \\macrodelim text {body content}%\n",
+            "  col1 & col2\\cr}\n",
+        ));
+        assert_eq!(
+            e.error_count,
+            0,
+            "errors: {:?}",
+            e.diagnostics.iter().map(|d| d.render()).collect::<Vec<_>>()
+        );
+    }
+    #[test]
+    fn control_sequence_let_to_ampersand_is_intercepted_as_alignment_tab() {
+        // tex.web @7264: A control sequence \let to `&` (such as amscd's
+        // \ampersand@) has cur_cmd == tab_mark and must be intercepted
+        // as an alignment tab when align_state == 0.
+        let e = run(concat!(
+            "\\font\\cmr=cmr10 \\cmr\n",
+            "\\let\\myamp=&\n",
+            "\\halign{#&#\\cr\n",
+            "  col1 \\myamp col2\\cr}\n",
+        ));
+        assert_eq!(
+            e.error_count,
+            0,
+            "errors: {:?}",
+            e.diagnostics.iter().map(|d| d.render()).collect::<Vec<_>>()
+        );
+    }
+    #[test]
+    fn afterassignment_closing_brace_does_not_corrupt_align_brace_depth() {
+        // \afterassignment saving `}` followed by an assignment inside an alignment
+        // cell must not double-decrement align_brace_depth.
+        let e = run(concat!(
+            "\\font\\cmr=cmr10 \\cmr\n",
+            "\\toksdef\\mytoks=0\n",
+            "\\def\\nowrite#1#{{\\afterassignment}\\mytoks}\n",
+            "\\halign{#&#\\cr\n",
+            "  \\nowrite\\unused{\\string\\foo{bar}}%\n",
+            "  col1 & col2\\cr}\n",
+        ));
+        assert_eq!(
+            e.error_count,
+            0,
+            "errors: {:?}",
+            e.diagnostics.iter().map(|d| d.render()).collect::<Vec<_>>()
+        );
+    }
+    #[test]
+    fn u_template_exhaustion_switches_phase_before_cell_content_peek() {
+        // When a u-template macro peeks past the u-part, u-template exhaustion
+        // must pop U_PART_SRC and transition to PH_CONTENT so that \futurelet
+        // does not delay u-template completion past subsequent brace-depth updates.
+        let e = run(concat!(
+            "\\font\\cmr=cmr10 \\cmr\n",
+            "\\def\\cellbegin#1\\relax{\\futurelet\\next\\afterpeek}\n",
+            "\\def\\afterpeek#1{#1}\n",
+            "\\halign{\\cellbegin\\relax #\\cr\n",
+            "  123\\cr}\n",
+        ));
+        assert_eq!(
+            e.error_count,
+            0,
+            "errors: {:?}",
+            e.diagnostics.iter().map(|d| d.render()).collect::<Vec<_>>()
+        );
+    }
+    #[test]
+    fn expl3_style_macro_scan_with_embedded_ampersand_in_alignment_cell() {
+        // Reproduces array.sty \tl_if_in:nnTF where an expanded token list
+        // containing `&` is scanned as a delimited macro argument inside
+        // an alignment cell. tex.web @7257-7264: align_state protects the `&`
+        // while enclosed in braces across macro expansions.
+        let e = run(concat!(
+            "\\font\\cmr=cmr10 \\cmr\n",
+            "\\def\\search#1&{\\def\\found{#1}}\n",
+            "\\def\\wrapper#1{\\search#1}\n",
+            "\\halign{#&#\\cr\n",
+            "  \\wrapper{{nested & tokens}&}%\n",
+            "  cell1 & cell2\\cr}\n",
+        ));
+        assert_eq!(
+            e.error_count,
+            0,
+            "errors: {:?}",
+            e.diagnostics.iter().map(|d| d.render()).collect::<Vec<_>>()
+        );
+    }
+    #[test]
+    fn consecutive_cr_creates_empty_row() {
+        // tex.web §15518-15522: between rows, only \crcr is ignored.
+        // A true \cr starts a new row whose first cell closes immediately.
+        let e = run(concat!(
+            "\\font\\cmr=cmr10 \\cmr\n",
+            "\\setbox0=\\vbox{\\halign{#\\cr\n",
+            "  row1\\cr\n",
+            "  \\cr\n",
+            "  row3\\cr}}\n",
+        ));
+        assert_eq!(e.error_count, 0);
+        let b = e.eqtb.boxed[0].as_ref().unwrap();
+        let Node::Box { list, .. } = b else { panic!("expected vbox"); };
+        let hboxes: Vec<_> = list.iter().filter(|n| matches!(n, Node::Box { .. })).collect();
+        assert_eq!(hboxes.len(), 3, "expected 3 row boxes for 2 non-empty + 1 empty row");
+    }
+
+    #[test]
+    fn valign_packages_columns_into_hbox() {
+        let e = run(concat!(
+            "\\font\\cmr=cmr10 \\cmr\n",
+            "\\setbox0=\\hbox{\\valign{#\\cr\n",
+            "  \\vfil\\hbox{A}\\vfil\\cr\n",
+            "  \\hbox{B}\\crcr}}\n",
+        ));
+        assert_eq!(e.error_count, 0);
+        let b = e.eqtb.boxed[0].as_ref().unwrap();
+        let Node::Box { list, .. } = b else { panic!("expected hbox"); };
+        let valign_box = list.iter().find(|n| matches!(n, Node::Box { .. })).unwrap();
+        let Node::Box { list: vcols, .. } = valign_box else { panic!("expected valign hbox"); };
+        let vboxes: Vec<_> = vcols.iter().filter(|n| matches!(n, Node::Box { .. })).collect();
+        assert_eq!(vboxes.len(), 2, "expected 2 column vboxes");
+    }
+
+    #[test]
+    fn span_in_alignment_cell_unwinds_v_part_and_absorbs_column() {
+        // Preamble with math templates in both columns: $#$ & $##$.
+        // A \span in column 1 must unwind column 1's v-part (closing math)
+        // and play column 2's u-part (opening math), without error.
+        let e = run(concat!(
+            "\\font\\cmr=cmr10 \\cmr\n",
+            "\\setbox0=\\vbox{\\halign{$#$&$#$\\cr\n",
+            "  x\\span y\\cr}}\n",
+        ));
+        assert_eq!(e.error_count, 0);
+        let b = e.eqtb.boxed[0].as_ref().unwrap();
+        let Node::Box { list, .. } = b else { panic!("expected vbox"); };
+        let hboxes: Vec<_> = list.iter().filter(|n| matches!(n, Node::Box { .. })).collect();
+        assert_eq!(hboxes.len(), 1, "expected 1 row box");
     }
 }

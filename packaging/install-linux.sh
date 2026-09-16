@@ -2,7 +2,7 @@
 # install-linux.sh — installer for the Rust TeX engine suite on Linux.
 #
 # Installs pdflatex/xelatex/lualatex/bibtex/texmk/latexmk plus the runtime
-# data directory (pdflatex.fmt + texmf overlay). Works from:
+# texmf overlay. The compressed production format is embedded in pdflatex.
 #   1. an extracted release bundle (bin/ + share/tex-suite/ next to this
 #      script, or a tex-suite-linux-<arch>/ subdir), or
 #   2. a source checkout (--from-source builds with cargo, or reuses a
@@ -14,8 +14,10 @@ set -eu
 
 MARK_BEGIN='# >>> tex-suite >>>'
 MARK_END='# <<< tex-suite <<<'
+DATA_MANIFEST_NAME='.tex-suite-managed-files-v1'
+DATA_MANIFEST_HEADER='TEX-SUITE-MANAGED-FILES-1'
 
-BIN_NAMES="pdflatex xelatex lualatex bibtex texmk latexmk tex-index pdflatex.fmt"
+BIN_NAMES="texmk pdflatex xelatex lualatex tex-bibtex bibtex latexmk pdflatex.fmt"
 
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 log() { printf '%s\n' "$*"; }
@@ -26,7 +28,7 @@ usage() {
 Usage: install-linux.sh [options]
 
 Install the Rust TeX suite (pdflatex, xelatex, lualatex, bibtex, texmk,
-latexmk) and its runtime data (pdflatex.fmt, texmf overlay) on Linux.
+latexmk) and its texmf overlay on Linux. The LaTeX format is embedded.
 
 Modes (auto-detected unless overridden):
   bundle       binaries + share/tex-suite found next to this script or in a
@@ -98,8 +100,15 @@ case "$PREFIX" in
     /*) ;;
     *)  die "--prefix must be an absolute path (got: $PREFIX)" ;;
 esac
+case "$DATA_DIR" in
+    /*) ;;
+    *)  die "--data-dir/TEX_SUITE_DATA must be an absolute path (got: $DATA_DIR)" ;;
+esac
+[ ! -L "$DATA_DIR" ] || die "refusing a data directory that is a symlink: $DATA_DIR"
 
 BIN_DIR="$PREFIX/bin"
+DATA_MANIFEST="$DATA_DIR/$DATA_MANIFEST_NAME"
+OLD_MANIFEST_VALID=0
 
 if [ "$(id -u)" != 0 ] && [ "$PREFIX" = "/usr/local" ]; then
     die "system install to /usr/local needs root: re-run with sudo"
@@ -121,10 +130,13 @@ SRC_BIN=""; SRC_FMT=""; SRC_TEXMF=""
 
 try_bundle() {
     _b="$1"
-    [ -d "$_b/bin" ] || return 1
-    [ -f "$_b/share/tex-suite/pdflatex.fmt" ] || return 1
+    [ -x "$_b/bin/pdflatex" ] || return 1
     SRC_BIN="$_b/bin"
-    SRC_FMT="$_b/share/tex-suite/pdflatex.fmt"
+    if [ -f "$_b/share/tex-suite/pdflatex.fmt" ]; then
+        SRC_FMT="$_b/share/tex-suite/pdflatex.fmt"
+    else
+        SRC_FMT=""
+    fi
     if [ -d "$_b/share/tex-suite/texmf" ]; then
         SRC_TEXMF="$_b/share/tex-suite/texmf"
     else
@@ -148,7 +160,7 @@ resolve_payload() {
     if [ -n "$BUNDLE_ARG" ]; then
         [ -d "$BUNDLE_ARG" ] || die "--bundle: not a directory: $BUNDLE_ARG"
         try_bundle "$BUNDLE_ARG" \
-            || die "--bundle $BUNDLE_ARG has no bin/ + share/tex-suite/pdflatex.fmt"
+            || die "--bundle $BUNDLE_ARG has no executable bin/pdflatex"
         log "Using release bundle at $BUNDLE_ARG"
         return 0
     fi
@@ -175,10 +187,7 @@ resolve_payload() {
     fi
     [ -x "$_target/pdflatex" ] || die "build did not produce $_target/pdflatex"
     SRC_BIN="$_target"
-    for _f in "$_repo/pdflatex.fmt" "$_target/pdflatex.fmt" "$_repo/crates/tex-cli/assets/default.fmt"; do
-        if [ -f "$_f" ]; then SRC_FMT="$_f"; break; fi
-    done
-    [ -n "$SRC_FMT" ] || warn "no pdflatex.fmt in the payload; engine falls back to its embedded default format"
+    SRC_FMT=""
     for _t in "$_repo/texmf" "$_repo/packaging/texmf"; do
         if [ -d "$_t" ]; then SRC_TEXMF="$_t"; break; fi
     done
@@ -252,36 +261,298 @@ install_one() {
     log "  installed $_dst"
 }
 
+install_alias() {
+    _alias="$1"
+    _target="$2"
+    [ -e "$BIN_DIR/$_target" ] || { warn "cannot create $_alias: $_target is missing"; return 0; }
+    rm -f -- "$BIN_DIR/$_alias" 2>/dev/null || true
+    if ln -s -- "$_target" "$BIN_DIR/$_alias" 2>/dev/null; then
+        log "  installed $BIN_DIR/$_alias -> $_target"
+    elif ln -- "$BIN_DIR/$_target" "$BIN_DIR/$_alias" 2>/dev/null; then
+        log "  installed $BIN_DIR/$_alias (hard link to $_target)"
+    else
+        cp -f -- "$BIN_DIR/$_target" "$BIN_DIR/$_alias" \
+            || die "failed to install alias $_alias"
+        chmod 755 -- "$BIN_DIR/$_alias" 2>/dev/null || true
+        warn "symlinks unavailable; installed $_alias as a copy"
+    fi
+}
+
+safe_manifest_relative() {
+    case "$1" in
+        ''|/*|..|../*|*/..|*/../*|*"$(printf '\t')"*) return 1 ;;
+        *) return 0 ;;
+    esac
+}
+
+manifest_has() {
+    _mh_kind="$1"
+    _mh_path="$2"
+    [ -f "$DATA_MANIFEST" ] && [ ! -L "$DATA_MANIFEST" ] || return 1
+    IFS= read -r _mh_header < "$DATA_MANIFEST" || return 1
+    [ "$_mh_header" = "$DATA_MANIFEST_HEADER" ] || return 1
+    _mh_record=$(printf '%s\t%s' "$_mh_kind" "$_mh_path")
+    grep -Fqx -- "$_mh_record" "$DATA_MANIFEST"
+}
+
+validate_existing_manifest() {
+    OLD_MANIFEST_VALID=0
+    if [ ! -e "$DATA_MANIFEST" ] && [ ! -L "$DATA_MANIFEST" ]; then
+        return 0
+    fi
+    if [ -L "$DATA_MANIFEST" ] || [ ! -f "$DATA_MANIFEST" ]; then
+        die "refusing an unrecognized ownership manifest: $DATA_MANIFEST"
+    fi
+    IFS= read -r _vm_header < "$DATA_MANIFEST" || _vm_header=''
+    [ "$_vm_header" = "$DATA_MANIFEST_HEADER" ] \
+        || die "refusing an unrecognized ownership manifest: $DATA_MANIFEST"
+    grep -Fqx -- "$(printf 'PREFIX\t%s' "$PREFIX")" "$DATA_MANIFEST" \
+        || die "ownership manifest belongs to a different install prefix: $DATA_MANIFEST"
+    grep -Fqx -- "$(printf 'DATA\t%s' "$DATA_DIR")" "$DATA_MANIFEST" \
+        || die "ownership manifest belongs to a different data directory: $DATA_MANIFEST"
+    while IFS="$(printf '\t')" read -r _vm_kind _vm_rel; do
+        case "$_vm_kind" in
+            "$DATA_MANIFEST_HEADER") [ -z "$_vm_rel" ] || die "invalid ownership manifest header: $DATA_MANIFEST" ;;
+            PREFIX) [ "$_vm_rel" = "$PREFIX" ] || die "ownership manifest prefix mismatch: $DATA_MANIFEST" ;;
+            DATA) [ "$_vm_rel" = "$DATA_DIR" ] || die "ownership manifest data mismatch: $DATA_MANIFEST" ;;
+            B)
+                safe_manifest_relative "$_vm_rel" && case "$_vm_rel" in */*) false ;; *) true ;; esac \
+                    || die "unsafe binary ownership record in $DATA_MANIFEST"
+                ;;
+            F|D) safe_manifest_relative "$_vm_rel" || die "unsafe data ownership record in $DATA_MANIFEST" ;;
+            *) die "unrecognized ownership record in $DATA_MANIFEST: $_vm_kind" ;;
+        esac
+    done < "$DATA_MANIFEST"
+    OLD_MANIFEST_VALID=1
+}
+
+preflight_destination() {
+    _pf_kind="$1"
+    _pf_rel="$2"
+    _pf_path="$3"
+    if [ -e "$_pf_path" ] || [ -L "$_pf_path" ]; then
+        if [ "$OLD_MANIFEST_VALID" != 1 ] || ! manifest_has "$_pf_kind" "$_pf_rel"; then
+            die "refusing to overwrite unowned path: $_pf_path"
+        fi
+        if [ -d "$_pf_path" ] && [ ! -L "$_pf_path" ]; then
+            die "managed file destination is a directory: $_pf_path"
+        fi
+    fi
+}
+
+preflight_install() {
+    [ ! -L "$BIN_DIR" ] || die "refusing a binary directory that is a symlink: $BIN_DIR"
+    [ ! -L "$DATA_DIR/texmf" ] \
+        || die "refusing a texmf directory that is a symlink: $DATA_DIR/texmf"
+    preflight_destination B pdflatex "$BIN_DIR/pdflatex"
+    preflight_destination B xelatex "$BIN_DIR/xelatex"
+    preflight_destination B lualatex "$BIN_DIR/lualatex"
+    if [ -f "$SRC_BIN/tex-bibtex" ] || [ -f "$SRC_BIN/bibtex" ]; then
+        preflight_destination B tex-bibtex "$BIN_DIR/tex-bibtex"
+        preflight_destination B bibtex "$BIN_DIR/bibtex"
+    fi
+    if [ -f "$SRC_BIN/texmk" ]; then
+        preflight_destination B texmk "$BIN_DIR/texmk"
+        preflight_destination B latexmk "$BIN_DIR/latexmk"
+    fi
+    if [ -n "$SRC_FMT" ]; then
+        preflight_destination B pdflatex.fmt "$BIN_DIR/pdflatex.fmt"
+        preflight_destination F pdflatex.fmt "$DATA_DIR/pdflatex.fmt"
+    else
+        for _pf_format in "$BIN_DIR/pdflatex.fmt" "$DATA_DIR/pdflatex.fmt"; do
+            if [ -e "$_pf_format" ] || [ -L "$_pf_format" ]; then
+                legacy_format_is_owned \
+                    || die "unowned format override blocks the embedded format: $_pf_format"
+            fi
+        done
+    fi
+    if [ -n "$SRC_TEXMF" ]; then
+        if [ -e "$DATA_DIR/texmf" ] && [ ! -d "$DATA_DIR/texmf" ]; then
+            die "refusing to install through non-directory $DATA_DIR/texmf"
+        fi
+        if [ -d "$DATA_DIR/texmf" ] && find "$DATA_DIR/texmf" -type l -print -quit | grep -q .; then
+            die "refusing to update a texmf tree containing symlinks: $DATA_DIR/texmf"
+        fi
+        (CDPATH= cd -- "$SRC_TEXMF" && find . \( -type f -o -type l \) -print) |
+            while IFS= read -r _pf_rel; do
+                _pf_rel=${_pf_rel#./}
+                safe_manifest_relative "$_pf_rel" \
+                    || die "unsafe texmf payload path: $_pf_rel"
+                preflight_destination F "texmf/$_pf_rel" "$DATA_DIR/texmf/$_pf_rel"
+            done
+    fi
+}
+
+legacy_format_is_owned() {
+    [ "$OLD_MANIFEST_VALID" = 1 ] \
+        && manifest_has B pdflatex.fmt \
+        && manifest_has F pdflatex.fmt
+}
+
+write_data_manifest() {
+    _wm_tmp="$DATA_MANIFEST.tmp.$$"
+    {
+        printf '%s\n' "$DATA_MANIFEST_HEADER"
+        printf 'PREFIX\t%s\n' "$PREFIX"
+        printf 'DATA\t%s\n' "$DATA_DIR"
+        for _wm_bin in pdflatex xelatex lualatex; do
+            printf 'B\t%s\n' "$_wm_bin"
+        done
+        if [ -f "$SRC_BIN/tex-bibtex" ] || [ -f "$SRC_BIN/bibtex" ]; then
+            printf 'B\ttex-bibtex\nB\tbibtex\n'
+        fi
+        if [ -f "$SRC_BIN/texmk" ]; then
+            printf 'B\ttexmk\nB\tlatexmk\n'
+        fi
+        if [ -n "$SRC_FMT" ]; then
+            printf 'B\tpdflatex.fmt\n'
+            printf 'F\tpdflatex.fmt\n'
+        fi
+        if [ -n "$SRC_TEXMF" ]; then
+            (CDPATH= cd -- "$SRC_TEXMF" && find . \( -type f -o -type l \) -print) |
+                LC_ALL=C sort |
+                while IFS= read -r _wm_rel; do
+                    _wm_rel=${_wm_rel#./}
+                    safe_manifest_relative "$_wm_rel" \
+                        || die "unsafe texmf payload path: $_wm_rel"
+                    printf 'F\ttexmf/%s\n' "$_wm_rel"
+                done
+            (CDPATH= cd -- "$SRC_TEXMF" && find . -depth -type d -print) |
+                while IFS= read -r _wm_rel; do
+                    [ "$_wm_rel" = . ] && continue
+                    _wm_rel=${_wm_rel#./}
+                    safe_manifest_relative "$_wm_rel" \
+                        || die "unsafe texmf payload directory: $_wm_rel"
+                    printf 'D\ttexmf/%s\n' "$_wm_rel"
+                done
+        fi
+        printf 'D\ttexmf\n'
+    } > "$_wm_tmp" || { rm -f -- "$_wm_tmp"; die "cannot write data ownership manifest"; }
+    mv -- "$_wm_tmp" "$DATA_MANIFEST" || {
+        rm -f -- "$_wm_tmp"
+        die "cannot install data ownership manifest at $DATA_MANIFEST"
+    }
+}
+
+data_parent_is_contained() {
+    _dp_path="$1"
+    _dp_parent=${_dp_path%/*}
+    _dp_root=$(CDPATH= cd -- "$DATA_DIR" 2>/dev/null && pwd -P) || return 1
+    _dp_parent=$(CDPATH= cd -- "$_dp_parent" 2>/dev/null && pwd -P) || return 1
+    case "$_dp_parent" in
+        "$_dp_root"|"$_dp_root"/*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+remove_manifest_entries() {
+    _rm_keep_manifest="${1:-no}"
+    [ -e "$DATA_MANIFEST" ] || return 0
+    if [ -L "$DATA_MANIFEST" ] || [ ! -f "$DATA_MANIFEST" ]; then
+        warn "data ownership manifest is not a regular file; preserving data: $DATA_MANIFEST"
+        return 0
+    fi
+    IFS= read -r _rm_header < "$DATA_MANIFEST" || _rm_header=''
+    if [ "$_rm_header" != "$DATA_MANIFEST_HEADER" ]; then
+        warn "data ownership manifest is invalid; preserving data: $DATA_MANIFEST"
+        return 0
+    fi
+    while IFS="$(printf '\t')" read -r _rm_kind _rm_rel; do
+        case "$_rm_kind" in
+            "$DATA_MANIFEST_HEADER"|PREFIX|DATA) continue ;;
+        esac
+        safe_manifest_relative "$_rm_rel" || {
+            warn "ignoring unsafe managed-data path: $_rm_rel"
+            continue
+        }
+        case "$_rm_kind" in
+            B)
+                case "$_rm_rel" in */*) warn "ignoring unsafe managed binary path: $_rm_rel"; continue ;; esac
+                _rm_path="$BIN_DIR/$_rm_rel"
+                if [ -f "$_rm_path" ] || [ -L "$_rm_path" ]; then
+                    rm -f -- "$_rm_path" || warn "could not remove $_rm_path"
+                fi
+                ;;
+            F)
+                _rm_path="$DATA_DIR/$_rm_rel"
+                if ! data_parent_is_contained "$_rm_path"; then
+                    warn "preserving managed-data path through an unsafe parent: $_rm_path"
+                elif [ -f "$_rm_path" ] || [ -L "$_rm_path" ]; then
+                    rm -f -- "$_rm_path" || warn "could not remove $_rm_path"
+                fi
+                ;;
+            D)
+                _rm_path="$DATA_DIR/$_rm_rel"
+                if data_parent_is_contained "$_rm_path" && [ -d "$_rm_path" ] && [ ! -L "$_rm_path" ]; then
+                    rmdir -- "$_rm_path" 2>/dev/null || true
+                fi
+                ;;
+            *) warn "ignoring unknown data ownership record: $_rm_kind" ;;
+        esac
+    done < "$DATA_MANIFEST"
+    if [ "$_rm_keep_manifest" != keep ]; then
+        rm -f -- "$DATA_MANIFEST" || warn "could not remove $DATA_MANIFEST"
+        rmdir -- "$DATA_DIR" 2>/dev/null || true
+    fi
+}
+
 do_install() {
     resolve_payload
 
     mkdir -p -- "$BIN_DIR" "$DATA_DIR" || die "cannot create $BIN_DIR / $DATA_DIR (use sudo for --system)"
+    validate_existing_manifest
+    preflight_install
+    if [ "$OLD_MANIFEST_VALID" = 1 ]; then
+        remove_manifest_entries keep
+    fi
 
     log "Installing binaries to $BIN_DIR"
-    install_one pdflatex pdflatex
-    install_one xelatex xelatex
-    install_one lualatex lualatex
-    install_one bibtex  bibtex tex-bibtex
-    install_one texmk   texmk
-    install_one tex-index tex-index
-    install_one latexmk latexmk texmk
+    install_one texmk texmk
+    install_alias pdflatex texmk
+    install_alias xelatex texmk
+    install_alias lualatex texmk
+    install_alias tex-bibtex texmk
+    install_alias bibtex texmk
+    install_alias latexmk texmk
 
     log "Installing runtime data to $DATA_DIR"
     if [ -n "$SRC_FMT" ]; then
+        rm -f -- "$DATA_DIR/pdflatex.fmt" "$BIN_DIR/pdflatex.fmt" 2>/dev/null || true
         cp -f -- "$SRC_FMT" "$DATA_DIR/pdflatex.fmt" || die "failed to copy format file"
         log "  installed $DATA_DIR/pdflatex.fmt"
-        # the engine also checks next to the executable; keep it in sync
         ln -sf -- "$DATA_DIR/pdflatex.fmt" "$BIN_DIR/pdflatex.fmt" 2>/dev/null \
             || cp -f -- "$SRC_FMT" "$BIN_DIR/pdflatex.fmt" 2>/dev/null || true
+    else
+        # Releases before the embedded-format layout installed these two
+        # exact paths. Leaving either behind makes it override the format in
+        # the new engine, so remove regular files and symlinks during upgrade.
+        if legacy_format_is_owned; then
+            for _legacy_fmt in "$BIN_DIR/pdflatex.fmt" "$DATA_DIR/pdflatex.fmt"; do
+                if [ -f "$_legacy_fmt" ] || [ -L "$_legacy_fmt" ]; then
+                    rm -f -- "$_legacy_fmt" \
+                        || die "failed to remove legacy format $_legacy_fmt"
+                    log "  removed legacy $_legacy_fmt"
+                elif [ -e "$_legacy_fmt" ]; then
+                    warn "legacy format path is not a file; leaving it unchanged: $_legacy_fmt"
+                fi
+            done
+        else
+            for _legacy_fmt in "$BIN_DIR/pdflatex.fmt" "$DATA_DIR/pdflatex.fmt"; do
+                if [ -e "$_legacy_fmt" ] || [ -L "$_legacy_fmt" ]; then
+                    warn "preserving unowned format override: $_legacy_fmt"
+                fi
+            done
+        fi
     fi
     if [ -n "$SRC_TEXMF" ]; then
-        rm -rf -- "$DATA_DIR/texmf"
-        cp -R -- "$SRC_TEXMF" "$DATA_DIR/texmf" || die "failed to copy texmf tree"
+        mkdir -p -- "$DATA_DIR/texmf" || die "cannot create $DATA_DIR/texmf"
+        cp -R -- "$SRC_TEXMF"/. "$DATA_DIR/texmf" || die "failed to copy texmf tree"
         log "  installed $DATA_DIR/texmf (exported as TEXMFLOCAL)"
     else
         mkdir -p -- "$DATA_DIR/texmf"
         warn "no texmf overlay in the payload; created empty $DATA_DIR/texmf"
     fi
+    write_data_manifest
 
     update_profiles
 
@@ -320,15 +591,11 @@ EOF
 do_uninstall() {
     log "Uninstalling tex-suite from prefix $PREFIX (data: $DATA_DIR)"
     _rc=0
-    for _t in $BIN_NAMES; do
-        if [ -e "$BIN_DIR/$_t" ] || [ -L "$BIN_DIR/$_t" ]; then
-            rm -f -- "$BIN_DIR/$_t" && log "  removed $BIN_DIR/$_t" \
-                || { warn "could not remove $BIN_DIR/$_t"; _rc=1; }
-        fi
-    done
-    if [ -d "$DATA_DIR" ]; then
-        rm -rf -- "$DATA_DIR" && log "  removed $DATA_DIR" \
-            || { warn "could not remove $DATA_DIR"; _rc=1; }
+    validate_existing_manifest
+    if [ "$OLD_MANIFEST_VALID" = 1 ]; then
+        remove_manifest_entries
+    else
+        warn "no ownership manifest found; preserving install and data files"
     fi
     if [ -f /etc/profile.d/tex-suite.sh ]; then
         rm -f -- /etc/profile.d/tex-suite.sh 2>/dev/null \

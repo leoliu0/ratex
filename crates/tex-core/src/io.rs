@@ -5,13 +5,14 @@ use crate::boxes::Node;
 use crate::engine::Engine;
 use crate::eqtb::Equiv;
 use crate::prim::Prim;
-use crate::token::Token;
+use crate::token::{Token, CAT_LETTER};
 
 const MAX_TEX_INPUT_STREAM: i32 = 15;
 
 #[derive(Clone)]
 struct ScannerDiagnosticState {
     macro_trace: Vec<crate::token::CsId>,
+    macro_trace_truncated: bool,
     token_from_file: bool,
     trace_hold: u16,
     source_cs: Option<crate::token::CsId>,
@@ -103,10 +104,90 @@ fn read_line_bounded(
     Ok((read_any, overflow))
 }
 
+/// Small compatibility inputs used by the partial XeTeX/LuaTeX surface.
+/// They are immutable virtual files: keeping them in `InputStack`'s byte
+/// cache avoids fixed names and repeated writes in the process temp folder.
+fn compatibility_input(name: &str) -> Option<&'static [u8]> {
+    Some(match name {
+        "language.dat" | "language.dat.lua" => b"english hyphen.tex\n",
+        "hyphen.cfg" => b"\\chardef\\l@nohyphenation=255\n\\chardef\\l@english=0\n\\chardef\\l@USenglish=0\n\\def\\languagename{english}\n\\relax\n",
+        "fontspec.sty" => br"\ProvidesPackage{fontspec}[2026/01/01 v2.9 Rust compatibility stub]
+\def\@fontspec@gobbleopt[#1]{}
+\def\@fontspec@cmd{\@ifnextchar[{\@fontspec@opt}{\@fontspec@noopt}}
+\def\@fontspec@opt[#1]#2{\@ifnextchar[{\@fontspec@gobbleopt}{}}
+\def\@fontspec@noopt#1{\@ifnextchar[{\@fontspec@gobbleopt}{}}
+\let\setmainfont\@fontspec@cmd
+\let\setsansfont\@fontspec@cmd
+\let\setmonofont\@fontspec@cmd
+\def\newfontfamily#1{\@fontspec@cmd}
+\def\setfontfamily#1{\@fontspec@cmd}
+\def\newfontface#1{\@fontspec@cmd}
+\providecommand\addfontfeatures[2][]{}
+\providecommand\fontspec[2][]{}
+\providecommand\defaultfontfeatures[2][]{}
+\providecommand\emfontdeclare[1]{}
+\providecommand\strongfontdeclare[1]{}
+\@ifundefined{DeclareUnicodeCharacter}{}{%
+  \DeclareUnicodeCharacter{2212}{\ensuremath{-}}%
+  \DeclareUnicodeCharacter{2013}{--}%
+  \DeclareUnicodeCharacter{2014}{---}%
+  \DeclareUnicodeCharacter{2018}{`}%
+  \DeclareUnicodeCharacter{2019}{'}%
+  \DeclareUnicodeCharacter{201C}{``}%
+  \DeclareUnicodeCharacter{201D}{''}%
+  \DeclareUnicodeCharacter{2026}{\dots}%
+  \DeclareUnicodeCharacter{00D7}{\ensuremath{\times}}%
+  \DeclareUnicodeCharacter{2264}{\ensuremath{\le}}%
+  \DeclareUnicodeCharacter{2265}{\ensuremath{\ge}}%
+  \DeclareUnicodeCharacter{2260}{\ensuremath{\ne}}%
+  \DeclareUnicodeCharacter{2208}{\ensuremath{\in}}%
+  \DeclareUnicodeCharacter{2192}{\ensuremath{\to}}%
+  \DeclareUnicodeCharacter{221E}{\ensuremath{\infty}}%
+  \DeclareUnicodeCharacter{2202}{\ensuremath{\partial}}%
+  \DeclareUnicodeCharacter{00B7}{\ensuremath{\cdot}}%
+}
+\endinput
+",
+        "unicode-math.sty" => br"\ProvidesPackage{unicode-math}[2026/01/01 v0.9 Rust compatibility stub]
+\RequirePackage{amsmath,amssymb}
+\providecommand\setmathfont[2][]{}
+\providecommand\unimathsetup[1]{}
+\endinput
+",
+        "luacode.sty" => br"\ProvidesPackage{luacode}[2026/01/01 v1.0 Rust compatibility stub]
+\long\def\luaexec#1{}
+\def\luacode{\begingroup\catcode`\^^M=12 \luacode@scan}
+\def\luacode@scan#1\endluacode{\endgroup}
+\endinput
+",
+        "luatextra.sty" => br"\ProvidesPackage{luatextra}[2026/01/01 v1.0 Rust compatibility stub]
+\RequirePackage{fontspec}
+\endinput
+",
+        "luaotfload.sty" => br"\ProvidesPackage{luaotfload}[2026/01/01 v1.0 Rust compatibility stub]
+\endinput
+",
+        _ => return None,
+    })
+}
+
 impl Engine {
+    pub fn record_loaded_bytes(&mut self, path: &std::path::Path, bytes: &[u8]) {
+        let mut h1: u64 = 0xcbf2_9ce4_8422_2325;
+        let mut h2: u64 = 0x9e37_79b9_7f4a_7c15;
+        for (index, byte) in bytes.iter().enumerate() {
+            h1 ^= u64::from(*byte);
+            h1 = h1.wrapping_mul(0x1000_0000_01b3);
+            h2 = (h2 + u64::from(*byte) + index as u64).wrapping_mul(0x1000_0000_01b3);
+        }
+        self.loaded_file_digests
+            .push((path.to_path_buf(), bytes.len() as u64, h1 ^ h2));
+    }
+
     fn scanner_diagnostic_state(&self) -> ScannerDiagnosticState {
         ScannerDiagnosticState {
             macro_trace: self.diagnostic_macro_trace.clone(),
+            macro_trace_truncated: self.diagnostic_macro_trace_truncated,
             token_from_file: self.diagnostic_token_from_file,
             trace_hold: self.diagnostic_trace_hold,
             source_cs: self.diagnostic_source_cs,
@@ -119,6 +200,7 @@ impl Engine {
 
     fn restore_scanner_diagnostic_state(&mut self, state: ScannerDiagnosticState) {
         self.diagnostic_macro_trace = state.macro_trace;
+        self.diagnostic_macro_trace_truncated = state.macro_trace_truncated;
         self.diagnostic_token_from_file = state.token_from_file;
         self.diagnostic_trace_hold = state.trace_hold;
         self.diagnostic_source_cs = state.source_cs;
@@ -169,6 +251,25 @@ impl Engine {
             );
             return false;
         }
+        if let Some(bytes) = compatibility_input(name) {
+            let key = format!("<compat:{name}>");
+            let data = self
+                .input
+                .cached_file(&key)
+                .unwrap_or_else(|| self.input.intern_file(key.clone(), bytes.to_vec()));
+            let opening = format!("({key} ");
+            self.append_term(&opening);
+            self.append_log(&opening);
+            if !self.pushed.is_empty() {
+                let mut rest = std::mem::take(&mut self.pushed);
+                rest.reverse();
+                if !self.try_push_tokens_named(rest, "<after-input>") {
+                    return false;
+                }
+            }
+            self.input.push_file_from(key, data, included_from);
+            return true;
+        }
         let path = self.resolve_input_path(name);
         match path {
             Some(p) => {
@@ -186,7 +287,10 @@ impl Engine {
                     }
                 };
                 self.loaded_files.push(p.clone());
-                self.term.push_str(&format!("({} ", p.display()));
+                self.record_loaded_bytes(&p, &data);
+                let opening = format!("({} ", p.display());
+                self.append_term(&opening);
+                self.append_log(&opening);
                 // tex.web start_input: the file sits above the current
                 // token list. `pushed` is that token list, so leftovers
                 // must park below the file even during \\output — else
@@ -202,31 +306,39 @@ impl Engine {
                 true
             }
             None => {
-                // Fall back to embedded Virtual TDS package repository
-                let clean_name = std::path::Path::new(name)
-                    .file_name()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or(name);
-                let cand_names = [
-                    clean_name.to_string(),
-                    format!("{}.sty", clean_name),
-                    format!("{}.cls", clean_name),
-                ];
-                let mut found_data = None;
-                for cand in &cand_names {
-                    let key = format!("<embedded:{cand}>");
-                    if let Some(rc) = self.input.cached_file(&key) {
-                        found_data = Some((key, rc));
-                        break;
+                // LaTeX reads a job/include `.aux` before opening the stream
+                // that will replace it. A first build therefore needs an
+                // empty input, while an unrelated same-named aux in the
+                // invocation directory must not be used.
+                if self.allow_missing_main_aux && name == format!("{}.aux", self.job_name) {
+                    let key = format!("<empty-aux:{name}>");
+                    let data = self
+                        .input
+                        .cached_file(&key)
+                        .unwrap_or_else(|| self.input.intern_file(key.clone(), Vec::new()));
+                    if !self.pushed.is_empty() {
+                        let mut rest = std::mem::take(&mut self.pushed);
+                        rest.reverse();
+                        if !self.try_push_tokens_named(rest, "<after-input>") {
+                            return false;
+                        }
                     }
-                    if let Some(pkg_data) = tex_kpse::get_embedded_package(cand) {
-                        let rc = self.input.intern_file(key.clone(), pkg_data);
-                        found_data = Some((key, rc));
-                        break;
-                    }
+                    self.input.push_file_from(key, data, included_from);
+                    return true;
                 }
+                // Fall back to embedded Virtual TDS package repository
+                let found_data = tex_kpse::get_embedded_tex_input(name).map(|(name, bytes)| {
+                    let key = format!("<embedded:{name}>");
+                    let data = self
+                        .input
+                        .cached_file(&key)
+                        .unwrap_or_else(|| self.input.intern_file(key.clone(), bytes));
+                    (key, data)
+                });
                 if let Some((key, data)) = found_data {
-                    self.term.push_str(&format!("({key} "));
+                    let opening = format!("({key} ");
+                    self.append_term(&opening);
+                    self.append_log(&opening);
                     if !self.pushed.is_empty() {
                         let mut rest = std::mem::take(&mut self.pushed);
                         rest.reverse();
@@ -252,151 +364,106 @@ impl Engine {
     /// when -output-directory is set, relative names are looked up there
     /// first (kpathsea's TEXMF_OUTPUT_DIRECTORY behavior), then kpathsea's
     /// format search path (TDS, env paths, cwd, explicit paths).
-    pub fn resolve_input_path(&self, name: &str) -> Option<std::path::PathBuf> {
+    pub fn resolve_input_path(&mut self, name: &str) -> Option<std::path::PathBuf> {
         if name.is_empty() {
             return None;
         }
-        // Format-build boot: babel's language.dat chain (ruhyph16, coptic,
-        // english.ldf, ...) drags the full babel \protect machinery into
-        // initex and dies ("\protect invalid in file"), and babel's
-        // hyphen.cfg local-configuration pass (loaded at the end of
-        // latex.ltx) trips "Missing \begin{document}" + a pending
-        // \aftergroup that blocks \dump. The engine pre-loads english
-        // hyphenation itself (pdflatex.rs hyphen_trie), so serve minimal
-        // stand-ins instead of the babel machinery.
-        if name == "language.dat" || name == "language.dat.lua" {
-            let guard = std::env::temp_dir().join("tex-language-dat-guard.dat");
-            let _ = std::fs::write(&guard, b"english hyphen.tex\n");
-            return Some(guard);
-        }
-        if name == "hyphen.cfg" {
-            let guard = std::env::temp_dir().join("tex-hyphen-cfg-guard.cfg");
-            let _ = std::fs::write(
-                &guard,
-                b"\\chardef\\l@nohyphenation=255\n\\chardef\\l@english=0\n\\chardef\\l@USenglish=0\n\\def\\languagename{english}\n\\relax\n",
-            );
-            return Some(guard);
-        }
-        if name == "fontspec.sty" {
-            let guard = std::env::temp_dir().join("tex-fontspec-stub.sty");
-            let _ = std::fs::write(
-                &guard,
-                b"\\ProvidesPackage{fontspec}[2026/01/01 v2.9 Rust compatibility stub]\n\
-                  \\def\\@fontspec@gobbleopt[#1]{}\n\
-                  \\def\\@fontspec@cmd{\\@ifnextchar[{\\@fontspec@opt}{\\@fontspec@noopt}}\n\
-                  \\def\\@fontspec@opt[#1]#2{\\@ifnextchar[{\\@fontspec@gobbleopt}{}}\n\
-                  \\def\\@fontspec@noopt#1{\\@ifnextchar[{\\@fontspec@gobbleopt}{}}\n\
-                  \\let\\setmainfont\\@fontspec@cmd\n\
-                  \\let\\setsansfont\\@fontspec@cmd\n\
-                  \\let\\setmonofont\\@fontspec@cmd\n\
-                  \\def\\newfontfamily#1{\\@fontspec@cmd}\n\
-                  \\def\\setfontfamily#1{\\@fontspec@cmd}\n\
-                  \\def\\newfontface#1{\\@fontspec@cmd}\n\
-                  \\providecommand\\addfontfeatures[2][]{}\n\
-                  \\providecommand\\fontspec[2][]{}\n\
-                  \\providecommand\\defaultfontfeatures[2][]{}\n\
-                  \\providecommand\\emfontdeclare[1]{}\n\
-                  \\providecommand\\strongfontdeclare[1]{}\n\
-                  \\@ifundefined{DeclareUnicodeCharacter}{}{%\n\
-                    \\DeclareUnicodeCharacter{2212}{\\ensuremath{-}}%\n\
-                    \\DeclareUnicodeCharacter{2013}{--}%\n\
-                    \\DeclareUnicodeCharacter{2014}{---}%\n\
-                    \\DeclareUnicodeCharacter{2018}{`}%\n\
-                    \\DeclareUnicodeCharacter{2019}{'}%\n\
-                    \\DeclareUnicodeCharacter{201C}{``}%\n\
-                    \\DeclareUnicodeCharacter{201D}{''}%\n\
-                    \\DeclareUnicodeCharacter{2026}{\\dots}%\n\
-                    \\DeclareUnicodeCharacter{00D7}{\\ensuremath{\\times}}%\n\
-                    \\DeclareUnicodeCharacter{2264}{\\ensuremath{\\le}}%\n\
-                    \\DeclareUnicodeCharacter{2265}{\\ensuremath{\\ge}}%\n\
-                    \\DeclareUnicodeCharacter{2260}{\\ensuremath{\\ne}}%\n\
-                    \\DeclareUnicodeCharacter{2208}{\\ensuremath{\\in}}%\n\
-                    \\DeclareUnicodeCharacter{2192}{\\ensuremath{\\to}}%\n\
-                    \\DeclareUnicodeCharacter{221E}{\\ensuremath{\\infty}}%\n\
-                    \\DeclareUnicodeCharacter{2202}{\\ensuremath{\\partial}}%\n\
-                    \\DeclareUnicodeCharacter{00B7}{\\ensuremath{\\cdot}}%\n\
-                  }\n\
-                  \\endinput\n",
-            );
-            return Some(guard);
-        }
-        if name == "unicode-math.sty" {
-            let guard = std::env::temp_dir().join("tex-unicode-math-stub.sty");
-            let _ = std::fs::write(
-                &guard,
-                b"\\ProvidesPackage{unicode-math}[2026/01/01 v0.9 Rust compatibility stub]\n\
-                  \\RequirePackage{amsmath,amssymb}\n\
-                  \\providecommand\\setmathfont[2][]{}\n\
-                  \\providecommand\\unimathsetup[1]{}\n\
-                  \\endinput\n",
-            );
-            return Some(guard);
-        }
-        if name == "luacode.sty" {
-            let guard = std::env::temp_dir().join("tex-luacode-stub.sty");
-            let _ = std::fs::write(
-                &guard,
-                b"\\ProvidesPackage{luacode}[2026/01/01 v1.0 Rust compatibility stub]\n\
-                  \\long\\def\\luaexec#1{}\n\
-                  \\def\\luacode{\\begingroup\\catcode`\\^^M=12 \\luacode@scan}\n\
-                  \\def\\luacode@scan#1\\endluacode{\\endgroup}\n\
-                  \\endinput\n",
-            );
-            return Some(guard);
-        }
-        if name == "luatextra.sty" {
-            let guard = std::env::temp_dir().join("tex-luatextra-stub.sty");
-            let _ = std::fs::write(
-                &guard,
-                b"\\ProvidesPackage{luatextra}[2026/01/01 v1.0 Rust compatibility stub]\n\
-                  \\RequirePackage{fontspec}\n\
-                  \\endinput\n",
-            );
-            return Some(guard);
-        }
-        if name == "luaotfload.sty" {
-            let guard = std::env::temp_dir().join("tex-luaotfload-stub.sty");
-            let _ = std::fs::write(
-                &guard,
-                b"\\ProvidesPackage{luaotfload}[2026/01/01 v1.0 Rust compatibility stub]\n\
-                  \\endinput\n",
-            );
-            return Some(guard);
-        }
-        if !name.starts_with('/') && !self.out_dir.is_empty() {
-            for cand in [
-                std::path::Path::new(&self.out_dir).join(name),
-                std::path::Path::new(&self.out_dir).join(format!("{name}.tex")),
-            ] {
-                if cand.is_file() {
-                    return Some(cand);
+        let requested = std::path::Path::new(name);
+        let absolute = |path: std::path::PathBuf| {
+            std::fs::canonicalize(&path).unwrap_or_else(|_| {
+                if path.is_absolute() {
+                    path
+                } else {
+                    std::env::current_dir()
+                        .unwrap_or_else(|_| std::path::PathBuf::from("."))
+                        .join(path)
                 }
+            })
+        };
+        if requested.is_absolute() {
+            if requested.is_file() {
+                self.loaded_files.push(absolute(requested.to_path_buf()));
+                return Some(requested.to_path_buf());
             }
+            self.missing_files.push(requested.to_path_buf());
+            return None;
         }
-        if !name.starts_with('/') {
-            for cand in [
-                std::path::Path::new(name).to_path_buf(),
-                std::path::Path::new(&format!("{name}.tex")).to_path_buf(),
-            ] {
-                if cand.is_file() {
-                    return Some(cand);
-                }
-            }
-            if let Some(dir) = &self.main_dir {
+        if !requested.is_absolute() {
+            if let Some(dir) = self.aux_dir.clone() {
                 for cand in [dir.join(name), dir.join(format!("{name}.tex"))] {
                     if cand.is_file() {
+                        self.loaded_files.push(absolute(cand.clone()));
                         return Some(cand);
                     }
+                    self.missing_files.push(absolute(cand));
+                }
+            }
+            if !self.out_dir.is_empty() {
+                for cand in [
+                    std::path::Path::new(&self.out_dir).join(name),
+                    std::path::Path::new(&self.out_dir).join(format!("{name}.tex")),
+                ] {
+                    if cand.is_file() {
+                        self.loaded_files.push(absolute(cand.clone()));
+                        return Some(cand);
+                    }
+                    self.missing_files.push(absolute(cand));
                 }
             }
         }
-        self.font_loader
+        if self.aux_dir.is_some()
+            && self.allow_missing_main_aux
+            && name == format!("{}.aux", self.job_name)
+        {
+            return None;
+        }
+        if !requested.is_absolute() {
+            if let Some(dir) = self.main_dir.clone() {
+                for cand in [dir.join(name), dir.join(format!("{name}.tex"))] {
+                    if cand.is_file() {
+                        self.loaded_files.push(absolute(cand.clone()));
+                        return Some(cand);
+                    }
+                    self.missing_files.push(absolute(cand));
+                }
+            } else {
+                for cand in [
+                    std::path::Path::new(name).to_path_buf(),
+                    std::path::Path::new(&format!("{name}.tex")).to_path_buf(),
+                ] {
+                    if cand.is_file() {
+                        self.loaded_files.push(absolute(cand.clone()));
+                        return Some(cand);
+                    }
+                    self.missing_files.push(absolute(cand));
+                }
+            }
+        }
+        // A missing main LaTeX aux is valid first-pass state. Avoid allowing
+        // kpathsea to substitute an unrelated same-named aux from the
+        // invocation directory after the managed aux/output and source-local
+        // probes above. Other explicit inputs retain ordinary TeX semantics.
+        if self.allow_missing_main_aux && name == format!("{}.aux", self.job_name) {
+            return None;
+        }
+        let resolved = self
+            .font_loader
             .kpse
             .find(name, tex_kpse::Format::Tex)
             .or_else(|| {
                 let basename = std::path::Path::new(name).file_name()?.to_str()?;
                 self.font_loader.kpse.find_any(basename)
-            })
+            });
+        // A lower-priority system or embedded TeX input remains valid only
+        // while every earlier search-path candidate stays absent. Stop the
+        // dependency trace at the selected path so irrelevant lower roots do
+        // not disable caching.
+        self.font_loader
+            .record_lookup_dependency(name, tex_kpse::Format::Tex, resolved.as_deref());
+        if let Some(path) = &resolved {
+            self.loaded_files.push(absolute(path.clone()));
+        }
+        resolved
     }
 
     pub fn do_endinput(&mut self) {
@@ -473,36 +540,63 @@ impl Engine {
     /// reaches the still-open file.
     pub fn do_openout(&mut self, immediate: bool) {
         // \openout<n>=<file>
+        let source = self
+            .current_token_source_mark()
+            .as_ref()
+            .map(crate::input::SourceMark::to_context);
         let n = self.scan_int();
         self.scan_optional_equals();
         let name = self.scan_file_name();
+        if self.stopped_on_error {
+            return;
+        }
+        if name.is_empty() {
+            self.error_at("\\openout needs an output file name", source);
+            return;
+        }
         // web2c open_output: the -output-directory prefix applies to
         // relative names only; absolute names bypass it. Path::join so a
         // missing trailing slash cannot fuse into "dirfile.ext".
-        let full = if !self.out_dir.is_empty() && !name.starts_with('/') {
-            std::path::Path::new(&self.out_dir)
-                .join(&name)
-                .to_string_lossy()
-                .into_owned()
+        let requested = std::path::Path::new(&name);
+        let create_parent = self.aux_dir.is_some()
+            && !requested.is_absolute()
+            && !requested
+                .components()
+                .any(|component| component == std::path::Component::ParentDir);
+        let full_path = if requested.is_absolute() {
+            requested.to_path_buf()
+        } else if let Some(dir) = &self.aux_dir {
+            dir.join(requested)
+        } else if !self.out_dir.is_empty() {
+            std::path::Path::new(&self.out_dir).join(requested)
         } else {
-            name.clone()
+            requested.to_path_buf()
         };
+        let full = full_path.to_string_lossy().into_owned();
         // §1394: stream numbers <0 map to 17, >15 to 16
         let stream = if n < 0 { 17u16 } else { n.min(16) as u16 };
         if !immediate {
             self.append_whatsit(Node::Whatsit(crate::boxes::WhatIt::OpenOut {
                 stream,
                 path: full,
+                create_parent,
+                source,
             }));
             return;
         }
-        self.exec_openout(stream, &full);
+        self.exec_openout(stream, &full, create_parent, source.as_ref());
     }
 
     /// the actual file open, shared by `\immediate\openout` and the
     /// shipout-time whatsit executor (`out_what` closes a previously open
     /// stream first, §1417)
-    pub fn exec_openout(&mut self, stream: u16, full: &str) {
+    pub fn exec_openout(
+        &mut self,
+        stream: u16,
+        full: &str,
+        create_parent: bool,
+        source: Option<&crate::input::SourceContext>,
+    ) {
         // §1414: streams 16/17 (the >15 and negative aliases) are never
         // actually opened
         if stream >= 16 {
@@ -512,44 +606,86 @@ impl Engine {
         if self.write_streams[idx].take().is_some() {
             // canonical: an open on a busy stream closes the old file first
         }
+        self.write_stream_paths[idx] = None;
+        if create_parent {
+            let parent = std::path::Path::new(full)
+                .parent()
+                .unwrap_or_else(|| std::path::Path::new(""));
+            if !parent.as_os_str().is_empty() {
+                if let Err(error) = std::fs::create_dir_all(parent) {
+                    self.error_at(
+                        &format!(
+                            "Cannot create output directory `{}` for \\openout{stream}: {error}",
+                            parent.display()
+                        ),
+                        source.cloned(),
+                    );
+                    return;
+                }
+            }
+        }
         match std::fs::File::create(full) {
             Ok(f) => {
                 self.input.invalidate_disk_files();
                 self.write_streams[idx] = Some(f);
+                self.write_stream_paths[idx] = Some(full.to_string());
             }
-            Err(e) => self.error(&format!("Cannot open {} for writing: {}", full, e)),
+            Err(error) => self.error_at(
+                &format!("Cannot open output file `{full}` for \\openout{stream}: {error}"),
+                source.cloned(),
+            ),
         }
     }
 
     pub fn do_closeout(&mut self, immediate: bool) {
+        let source = self
+            .current_token_source_mark()
+            .as_ref()
+            .map(crate::input::SourceMark::to_context);
         let n = self.scan_int();
         let stream = if n < 0 { 17u16 } else { n.min(16) as u16 };
         if !immediate {
-            self.append_whatsit(Node::Whatsit(crate::boxes::WhatIt::CloseOut { stream }));
+            self.append_whatsit(Node::Whatsit(crate::boxes::WhatIt::CloseOut {
+                stream,
+                source,
+            }));
             return;
         }
-        self.exec_closeout(stream);
+        self.exec_closeout(stream, source.as_ref());
     }
 
-    pub fn exec_closeout(&mut self, stream: u16) {
+    pub fn exec_closeout(&mut self, stream: u16, source: Option<&crate::input::SourceContext>) {
         if stream >= 16 {
             return;
         }
         let idx = (stream as usize).min(self.write_streams.len() - 1);
-        if let Some(f) = self.write_streams[idx].take() {
-            drop(f);
+        let path = self.write_stream_paths[idx].take();
+        if let Some(mut file) = self.write_streams[idx].take() {
+            use std::io::Write;
+            if let Err(error) = file.flush() {
+                let destination = path.as_deref().unwrap_or("<unknown>");
+                self.error_at(
+                    &format!(
+                        "Cannot flush output stream {stream} (`{destination}`) while closing it: {error}"
+                    ),
+                    source.cloned(),
+                );
+            }
         }
     }
 
     pub fn do_write(&mut self, immediate: bool) {
+        let source = self
+            .current_token_source_mark()
+            .as_ref()
+            .map(crate::input::SourceMark::to_context);
         let n = self.scan_int();
         // tex.web §1371: \write<n>{toks} collects the list RAW (scan_toks,
         // no expansion) and expands at emission like \xdef (protected macros
         // stay frozen).
         let toks = self.scan_general_text();
-        // Capture after the list is scanned so a failing token within the
-        // deferred expansion can be located by searching back from here.
-        let source = self.input.current_source_context();
+        // Retain the command site because deferred expansion and file I/O can
+        // happen after this input file and its macro stack have disappeared.
         // All non-immediate writes are structural whatsits, including the
         // log-only \write-1{} sentinel used by LaTeX's \clearpage.
         // TeX maps negative streams to 17 and streams above 15 to 16.
@@ -562,7 +698,7 @@ impl Engine {
             return;
         }
         let text = self.expand_write_list(&toks, source.as_ref());
-        self.write_out(if n < 0 { -1 } else { n.min(16) }, &text);
+        self.write_out(if n < 0 { -1 } else { n.min(16) }, &text, source.as_ref());
     }
     /// tex.web §1395 out_what: a Write whatsit fires at ship time, expanding
     pub fn fire_write(
@@ -572,7 +708,7 @@ impl Engine {
         source: Option<&crate::input::SourceContext>,
     ) {
         let text = self.expand_write_list(tokens, source);
-        self.write_out(if stream == 17 { -1 } else { stream as i32 }, &text);
+        self.write_out(if stream == 17 { -1 } else { stream as i32 }, &text, source);
     }
     /// Expand a raw `\write` token list to its emitted string. The write gets
     /// a private input stack: a delimited macro may consume the sentinel, but
@@ -588,17 +724,7 @@ impl Engine {
         let saved_end_occurred = self.end_occurred;
         let errors_before = self.error_count;
         let saved_source = std::mem::replace(&mut self.diagnostic_source_override, source.cloned());
-        // LaTeX \set@display@protect contract: at write/emit time \protect
-        // is \noexpand, so `\protect\BOOKMARK` emits `\BOOKMARK` raw
-        // instead of running it (hyperref .out writes).
-        let protect_saved = self.cs.lookup(b"protect").and_then(|pid| {
-            let noexpand = self
-                .cs
-                .lookup(b"noexpand")
-                .and_then(|nid| self.eqtb.get(nid).cloned())?;
-            let old = self.eqtb.replace_equiv_temporarily(pid, Some(noexpand));
-            Some((pid, old))
-        });
+
         // The sentinel bounds the expansion: without it, a list whose final
         // token expands away would let get_token continue into the OUTER
         // stream and leak its tokens into the write string.
@@ -632,9 +758,6 @@ impl Engine {
             saved_end_occurred || (self.end_occurred && self.error_count > errors_before);
         self.diagnostic_source_override = saved_source;
         self.pushed = saved;
-        if let Some((pid, old)) = protect_saved {
-            self.eqtb.replace_equiv_temporarily(pid, old);
-        }
         self.write_tokens_to_string(&out)
     }
 
@@ -651,7 +774,13 @@ impl Engine {
                 } else {
                     out.push(b'\\');
                     out.extend_from_slice(name);
-                    out.push(b' ');
+                    if name.len() > 1
+                        || name
+                            .first()
+                            .is_some_and(|&c| self.eqtb.cat[c as usize] == CAT_LETTER)
+                    {
+                        out.push(b' ');
+                    }
                 }
             } else {
                 out.push(t.chr() as u8);
@@ -660,7 +789,7 @@ impl Engine {
         String::from_utf8_lossy(&out).into_owned()
     }
 
-    pub fn write_out(&mut self, n: i32, text: &str) {
+    pub fn write_out(&mut self, n: i32, text: &str, source: Option<&crate::input::SourceContext>) {
         let line = format!("{}\n", text);
         match n {
             -1 => {
@@ -675,10 +804,21 @@ impl Engine {
             }
             _ => {
                 let idx = (n as usize).min(self.write_streams.len() - 1);
-                match &mut self.write_streams[idx] {
-                    Some(f) => {
+                match self.write_streams[idx].as_mut() {
+                    Some(file) => {
                         use std::io::Write;
-                        let _ = f.write_all(line.as_bytes());
+                        let result = file.write_all(line.as_bytes());
+                        if let Err(error) = result {
+                            let destination = self.write_stream_paths[idx]
+                                .as_deref()
+                                .unwrap_or("<unknown>");
+                            self.error_at(
+                                &format!(
+                                    "Cannot write output stream {n} (`{destination}`): {error}"
+                                ),
+                                source.cloned(),
+                            );
+                        }
                     }
                     None => {
                         // tex.web §1382: a \write to a closed stream is
@@ -715,7 +855,10 @@ impl Engine {
             } else {
                 None
             };
-            self.error(&text);
+            self.error_at(
+                &text,
+                origin.as_ref().map(crate::input::SourceMark::to_context),
+            );
             if let Some(previous_trace) = previous_trace {
                 self.diagnostic_trace_override = previous_trace;
             }
@@ -758,30 +901,28 @@ impl Engine {
         // kpathsea/web2c lookup: output directory first for relative
         // names, then the kpse search path (covers literal paths too)
 
+        if let Some(data) = compatibility_input(&name) {
+            let is_empty = data.is_empty();
+            self.read_files[n as usize] = Some(Box::new(std::io::Cursor::new(data)));
+            self.read_eof[n as usize] = is_empty;
+            return;
+        }
         let path = self.resolve_input_path(&name);
         if let Some(p) = path {
-            if let Ok(f) = std::fs::File::open(&p) {
-                self.read_files[n as usize] = Some(Box::new(std::io::BufReader::new(f)));
-                self.read_eof[n as usize] = false;
+            if let Ok(bytes) = std::fs::read(&p) {
+                self.record_loaded_bytes(&p, &bytes);
+                let is_empty = bytes.is_empty();
+                self.read_files[n as usize] = Some(Box::new(std::io::Cursor::new(bytes)));
+                self.read_eof[n as usize] = is_empty;
                 return;
             }
         }
         // Fall back to embedded package archive
-        let clean_name = std::path::Path::new(&name)
-            .file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or(&name);
-        for cand in [
-            clean_name.to_string(),
-            format!("{clean_name}.tex"),
-            format!("{clean_name}.sty"),
-            format!("{clean_name}.cls"),
-        ] {
-            if let Some(data) = tex_kpse::get_embedded_package(&cand) {
-                self.read_files[n as usize] = Some(Box::new(std::io::Cursor::new(data)));
-                self.read_eof[n as usize] = false;
-                return;
-            }
+        if let Some((_name, data)) = tex_kpse::get_embedded_tex_input(&name) {
+            let is_empty = data.is_empty();
+            self.read_files[n as usize] = Some(Box::new(std::io::Cursor::new(data)));
+            self.read_eof[n as usize] = is_empty;
+            return;
         }
         self.read_files[n as usize] = None;
         self.read_eof[n as usize] = true;
@@ -806,12 +947,16 @@ impl Engine {
 
     pub fn do_read(&mut self, line_mode: bool) {
         let origin = self.current_token_source_mark();
-        let global = self.take_global();
+        let global = self.take_assignment_prefixes("\\read");
         let stream = self.scan_int();
         if !self.scan_keyword(b"to") {
             self.error("Missing `to' inserted for \\read");
         }
         let cs = self.scan_definable_cs();
+        if self.stopped_on_error {
+            self.clear_prefixes();
+            return;
+        }
         if !(0..=MAX_TEX_INPUT_STREAM).contains(&stream) {
             let pending = pending_latex_missing_file(&self.term)
                 .or_else(|| pending_latex_missing_file(&self.log));
@@ -870,7 +1015,11 @@ impl Engine {
                     &format!("Input stream {stream} is not open for \\read"),
                     origin.as_ref().map(crate::input::SourceMark::to_context),
                 );
-                break;
+                // A failed read must not replace the requested control
+                // sequence with an empty macro, especially in error-stop
+                // mode where execution has already halted.
+                self.clear_prefixes();
+                return;
             };
             let eof = match read {
                 Ok((false, _)) => true,
@@ -887,7 +1036,10 @@ impl Engine {
                     return;
                 }
                 Err(error) => {
-                    self.error(&format!("Cannot read input stream: {error}"));
+                    self.error_at(
+                        &format!("Cannot read input stream {stream}: {error}"),
+                        origin.as_ref().map(crate::input::SourceMark::to_context),
+                    );
                     true
                 }
             };
@@ -895,7 +1047,10 @@ impl Engine {
                 self.read_files[stream as usize] = None;
                 self.read_eof[stream as usize] = true;
                 if balance != 0 {
-                    self.error("File ended within \\read");
+                    self.error_at(
+                        "File ended within \\read",
+                        origin.as_ref().map(crate::input::SourceMark::to_context),
+                    );
                     break;
                 }
             }
@@ -949,6 +1104,10 @@ impl Engine {
                 }
                 line.push(b'\n');
                 let diagnostic_state = self.scanner_diagnostic_state();
+                let saved_source_override = std::mem::replace(
+                    &mut self.diagnostic_source_override,
+                    origin.as_ref().map(crate::input::SourceMark::to_context),
+                );
                 let outer = std::mem::replace(&mut self.input, crate::input::InputStack::new());
                 self.input.push_file("<read>".into(), line);
                 loop {
@@ -974,6 +1133,7 @@ impl Engine {
                     if toks.len() >= crate::input::MAX_TOKEN_LIST_TOKENS {
                         self.input = outer;
                         self.restore_scanner_diagnostic_state(diagnostic_state);
+                        self.diagnostic_source_override = saved_source_override;
                         self.fatal_error_at(
                             &format!(
                                 "TeX capacity exceeded, sorry [read token list size={}]",
@@ -988,10 +1148,19 @@ impl Engine {
                 }
                 self.input = outer;
                 self.restore_scanner_diagnostic_state(diagnostic_state);
+                self.diagnostic_source_override = saved_source_override;
+                if self.stopped_on_error {
+                    self.clear_prefixes();
+                    return;
+                }
             }
             if line_mode || balance == 0 || eof {
                 break;
             }
+        }
+        if self.stopped_on_error {
+            self.clear_prefixes();
+            return;
         }
         let m = crate::eqtb::Macro {
             replacement: Default::default(),
@@ -1086,7 +1255,7 @@ impl Engine {
                     // stray interword space in the using box.)
                     let t3 = self.get_x_raw();
                     if !(t3.is_char() && t3.cc() == 10) && t3 != crate::input::EOF_MARKER {
-                        self.pushed.push(t3);
+                        self.push_token(t3);
                     }
                     break;
                 }
@@ -1127,7 +1296,7 @@ impl Engine {
                 break;
             }
             if cur.is_cs() {
-                self.pushed.push(cur);
+                self.push_token(cur);
                 break;
             }
             if cur.is_char() {
@@ -1151,10 +1320,55 @@ impl Engine {
 
     pub fn do_show(&mut self) {
         // tex.web \show grabs the target with get_name (NON-expanding)
+        let source = self.current_token_source_mark();
         let t = self.raw_token();
-        let text = self.meaning_of(t);
-        self.term.push_str(&format!("> {}\n", text));
-        self.log.push_str(&format!("> {}\n", text));
+        if t == crate::input::EOF_MARKER {
+            self.fatal_error_at(
+                "File ended after \\show; add the token or control sequence to inspect",
+                source.as_ref().map(crate::input::SourceMark::to_context),
+            );
+            return;
+        }
+        let target = if t.is_cs() {
+            self.display_cs(t.cs_id())
+        } else {
+            self.diagnostic_tokens_to_string(&[t], 64)
+        };
+        let meaning = self.bounded_show_meaning(t);
+        self.report_inspection("\\show", format!("{target} = {meaning}"), source);
+    }
+
+    fn bounded_show_meaning(&self, token: Token) -> String {
+        const PART_LIMIT: usize = 256;
+        const BODY_LIMIT: usize = 5 * 1024;
+        let Some(Equiv::Macro(definition)) = token
+            .is_cs()
+            .then(|| self.eqtb.resolve(token.cs_id()))
+            .flatten()
+        else {
+            return self.meaning_of(token);
+        };
+
+        let mut text = String::with_capacity(256);
+        if definition.protected {
+            text.push_str("\\protected ");
+        }
+        if definition.long {
+            text.push_str("\\long ");
+        }
+        if definition.outer {
+            text.push_str("\\outer ");
+        }
+        text.push_str("macro:");
+        text.push_str(&self.diagnostic_tokens_to_string(&definition.prefix, PART_LIMIT));
+        for (index, delimiter) in definition.params.iter().enumerate() {
+            text.push('#');
+            text.push_str(&(index + 1).to_string());
+            text.push_str(&self.diagnostic_tokens_to_string(delimiter, PART_LIMIT));
+        }
+        text.push_str(" -> ");
+        text.push_str(&self.diagnostic_tokens_to_string(&definition.body, BODY_LIMIT));
+        text
     }
 
     pub fn shift_case(&mut self, toks: &mut Vec<Token>, up: bool) {
@@ -1179,12 +1393,13 @@ impl Engine {
     pub fn do_advance(&mut self) {
         // \advance<quantity> by <int/dimen/glue>
         let origin = self.current_token_source_mark();
-        let global = self.take_global();
-        let loc = self.scan_quantity();
+        let global = self.take_assignment_prefixes("\\advance");
+        let loc = self.scan_quantity("\\advance");
         self.scan_keyword(b"by");
         let v = match loc {
             QuantityLoc::Int(_) | QuantityLoc::Count(_) => Value::Int(self.scan_int()),
             QuantityLoc::Dim(_) | QuantityLoc::Dimen(_) => Value::Dim(self.scan_dimen(false, true)),
+            QuantityLoc::Glue(p) if p.is_mu() => Value::Glue(self.scan_glue(true)),
             QuantityLoc::Glue(_) | QuantityLoc::Skip(_) => Value::Glue(self.scan_glue(false)),
             QuantityLoc::MuSkip(_) => Value::Glue(self.scan_glue(true)),
             QuantityLoc::None => return,
@@ -1195,6 +1410,11 @@ impl Engine {
                 let Some(nv) = self.checked_advance(cur, v.as_int(), false, origin.as_ref()) else {
                     return;
                 };
+                let nv = self.recover_linebreak_int_parameter(
+                    p,
+                    nv,
+                    origin.as_ref().map(crate::input::SourceMark::to_context),
+                );
                 if p == crate::prim::IntParam::SpaceFactor {
                     self.space_factor = nv;
                 } else {
@@ -1226,19 +1446,22 @@ impl Engine {
             }
             QuantityLoc::Glue(p) => {
                 let cur = self.eqtb.glue_params[p.idx() as usize].clone();
-                if let Some(value) = self.checked_glue_advance(&cur, &v.as_glue(), origin.as_ref()) {
+                if let Some(value) = self.checked_glue_advance(&cur, &v.as_glue(), origin.as_ref())
+                {
                     self.eqtb.assign_glue_param(p, value, global);
                 }
             }
             QuantityLoc::Skip(i) => {
                 let cur = self.eqtb.skip[i as usize].clone();
-                if let Some(value) = self.checked_glue_advance(&cur, &v.as_glue(), origin.as_ref()) {
+                if let Some(value) = self.checked_glue_advance(&cur, &v.as_glue(), origin.as_ref())
+                {
                     self.eqtb.assign_skip(i, value, global);
                 }
             }
             QuantityLoc::MuSkip(i) => {
                 let cur = self.eqtb.muskip[i as usize].clone();
-                if let Some(value) = self.checked_glue_advance(&cur, &v.as_glue(), origin.as_ref()) {
+                if let Some(value) = self.checked_glue_advance(&cur, &v.as_glue(), origin.as_ref())
+                {
                     self.eqtb.assign_muskip(i, value, global);
                 }
             }
@@ -1249,8 +1472,9 @@ impl Engine {
     pub fn do_arith(&mut self, op: u8) {
         // \multiply / \divide
         let origin = self.current_token_source_mark();
-        let global = self.take_global();
-        let loc = self.scan_quantity();
+        let operation = if op == 1 { "\\multiply" } else { "\\divide" };
+        let global = self.take_assignment_prefixes(operation);
+        let loc = self.scan_quantity(operation);
         self.scan_keyword(b"by");
         let v = match loc {
             QuantityLoc::Int(_) | QuantityLoc::Count(_) => Value::Int(self.scan_int()),
@@ -1261,7 +1485,12 @@ impl Engine {
         match loc {
             QuantityLoc::Int(p) => {
                 let cur = self.int_param_value(p);
-                if let Some(nv) = self.checked_arith(cur, n, op, origin.as_ref()) {
+                if let Some(nv) = self.checked_arith(cur, n, op, false, origin.as_ref()) {
+                    let nv = self.recover_linebreak_int_parameter(
+                        p,
+                        nv,
+                        origin.as_ref().map(crate::input::SourceMark::to_context),
+                    );
                     if p == crate::prim::IntParam::SpaceFactor {
                         self.space_factor = nv;
                     } else {
@@ -1271,13 +1500,13 @@ impl Engine {
             }
             QuantityLoc::Count(i) => {
                 let cur = self.eqtb.count[i as usize];
-                if let Some(value) = self.checked_arith(cur, n, op, origin.as_ref()) {
+                if let Some(value) = self.checked_arith(cur, n, op, false, origin.as_ref()) {
                     self.eqtb.assign_count(i, value, global);
                 }
             }
             QuantityLoc::Dim(p) => {
                 let cur = self.dim_param_value(p);
-                if let Some(nv) = self.checked_arith(cur, n, op, origin.as_ref()) {
+                if let Some(nv) = self.checked_arith(cur, n, op, true, origin.as_ref()) {
                     if p == crate::prim::DimParam::PrevDepth {
                         self.prev_depth = nv;
                     } else {
@@ -1287,7 +1516,7 @@ impl Engine {
             }
             QuantityLoc::Dimen(i) => {
                 let cur = self.eqtb.dimen[i as usize];
-                if let Some(value) = self.checked_arith(cur, n, op, origin.as_ref()) {
+                if let Some(value) = self.checked_arith(cur, n, op, true, origin.as_ref()) {
                     self.eqtb.assign_dimen(i, value, global);
                 }
             }
@@ -1325,6 +1554,23 @@ impl Engine {
                 cur.shrink = shrink;
                 self.eqtb.assign_skip(i, cur, global);
             }
+            QuantityLoc::MuSkip(i) => {
+                let mut cur = self.eqtb.muskip[i as usize];
+                let Some((width, stretch, shrink)) = self.checked_glue_arith(
+                    cur.width,
+                    cur.stretch,
+                    cur.shrink,
+                    n,
+                    op,
+                    origin.as_ref(),
+                ) else {
+                    return;
+                };
+                cur.width = width;
+                cur.stretch = stretch;
+                cur.shrink = shrink;
+                self.eqtb.assign_muskip(i, cur, global);
+            }
             _ => {}
         }
     }
@@ -1333,61 +1579,39 @@ impl Engine {
         &mut self,
         current: i32,
         increment: i32,
-        dimension: bool,
-        origin: Option<&crate::input::SourceMark>,
+        _dimension: bool,
+        _origin: Option<&crate::input::SourceMark>,
     ) -> Option<i32> {
-        const MAX_DIMEN: i64 = 0x3FFF_FFFF;
-        let value = i64::from(current) + i64::from(increment);
-        if !(i64::from(i32::MIN)..=i64::from(i32::MAX)).contains(&value)
-            || (dimension && !(-MAX_DIMEN..=MAX_DIMEN).contains(&value))
-        {
-            self.error_at(
-                "Arithmetic overflow in \\advance; value left unchanged",
-                origin.map(crate::input::SourceMark::to_context),
-            );
-            None
-        } else {
-            Some(value as i32)
-        }
+        // tex.web §23137: \advance uses wrapping 32-bit addition without overflow checks.
+        Some(current.wrapping_add(increment))
     }
 
     fn checked_glue_advance(
         &mut self,
         current: &crate::boxes::Glue,
         increment: &crate::boxes::Glue,
-        origin: Option<&crate::input::SourceMark>,
+        _origin: Option<&crate::input::SourceMark>,
     ) -> Option<crate::boxes::Glue> {
-        const MAX_DIMEN: i64 = 0x3FFF_FFFF;
-        let checked_sum = |left: i32, right: i32| {
-            let value = i64::from(left) + i64::from(right);
-            (-MAX_DIMEN..=MAX_DIMEN)
-                .contains(&value)
-                .then_some(value as i32)
-        };
-        let result = (|| {
-            let mut value = current.clone();
-            value.width = checked_sum(value.width, increment.width)?;
+        // tex.web §23143-23156: \advance on glue specs uses wrapping addition without overflow checks.
+        let mut value = current.clone();
+        value.width = value.width.wrapping_add(increment.width);
+        if increment.stretch != 0 {
             if value.stretch_order == increment.stretch_order {
-                value.stretch = checked_sum(value.stretch, increment.stretch)?;
+                value.stretch = value.stretch.wrapping_add(increment.stretch);
             } else if value.stretch_order < increment.stretch_order {
                 value.stretch = increment.stretch;
                 value.stretch_order = increment.stretch_order;
             }
+        }
+        if increment.shrink != 0 {
             if value.shrink_order == increment.shrink_order {
-                value.shrink = checked_sum(value.shrink, increment.shrink)?;
+                value.shrink = value.shrink.wrapping_add(increment.shrink);
             } else if value.shrink_order < increment.shrink_order {
                 value.shrink = increment.shrink;
                 value.shrink_order = increment.shrink_order;
             }
-            Some(value)
-        })();
-        if result.is_none() {
-            self.error_at(
-                "Arithmetic overflow in \\advance; value left unchanged",
-                origin.map(crate::input::SourceMark::to_context),
-            );
         }
-        result
+        Some(value)
     }
 
     fn checked_glue_arith(
@@ -1400,9 +1624,9 @@ impl Engine {
         origin: Option<&crate::input::SourceMark>,
     ) -> Option<(i32, i32, i32)> {
         Some((
-            self.checked_arith(width, operand, op, origin)?,
-            self.checked_arith(stretch, operand, op, origin)?,
-            self.checked_arith(shrink, operand, op, origin)?,
+            self.checked_arith(width, operand, op, true, origin)?,
+            self.checked_arith(stretch, operand, op, true, origin)?,
+            self.checked_arith(shrink, operand, op, true, origin)?,
         ))
     }
 
@@ -1411,6 +1635,7 @@ impl Engine {
         a: i32,
         b: i32,
         op: u8,
+        dimension: bool,
         origin: Option<&crate::input::SourceMark>,
     ) -> Option<i32> {
         // TeX reports arithmetic faults and leaves the quantity unchanged.
@@ -1420,7 +1645,11 @@ impl Engine {
             a.checked_mul(b)
         } else {
             a.checked_div(b)
-        };
+        }
+        .filter(|value| {
+            (op != 1 || *value >= -i32::MAX)
+                && (!dimension || i64::from(*value).abs() <= 0x3FFF_FFFF)
+        });
         if result.is_none() {
             let message = if op != 1 && b == 0 {
                 "Cannot divide by zero in \\divide; value left unchanged"
@@ -1435,12 +1664,16 @@ impl Engine {
     }
 
     pub fn do_setbox(&mut self) {
+        // Consume assignment prefixes before any scanner can recover early.
+        // A constructed box completes asynchronously, so hand the captured
+        // globality to park_setbox immediately before opening its body.
+        let global = self.take_assignment_prefixes("\\setbox");
         let idx = self.scan_reg_num();
         self.scan_optional_equals();
         self.skip_spaces_relax();
         let t = self.get_x_raw();
         if !t.is_cs() {
-            self.pushed.push(t);
+            self.push_token(t);
             self.error("Missing box for \\setbox");
             return;
         }
@@ -1453,25 +1686,22 @@ impl Engine {
                 Prim::Box => {
                     let n = self.scan_reg_num();
                     let b = self.eqtb.take_box(n);
-                    let g = self.take_global();
-                    self.eqtb.assign_box(idx, b, g);
+                    self.eqtb.assign_box(idx, b, global);
                     return;
                 }
                 Prim::Copy => {
                     let n = self.scan_reg_num();
                     let b = self.eqtb.boxed.get(n as usize).cloned().flatten();
-                    let g = self.take_global();
-                    self.eqtb.assign_box(idx, b, g);
+                    self.eqtb.assign_box(idx, b, global);
                     return;
                 }
                 Prim::LastBox => {
                     let b = self.take_last_box();
-                    let g = self.take_global();
-                    self.eqtb.assign_box(idx, b, g);
+                    self.eqtb.assign_box(idx, b, global);
                     return;
                 }
                 Prim::HBox | Prim::VBox | Prim::VTop | Prim::VCenter => {
-                    self.park_setbox(idx);
+                    self.park_setbox_with_global(idx, global);
                     let kind = match prim {
                         Prim::HBox => 0,
                         Prim::VBox => 1,
@@ -1482,12 +1712,11 @@ impl Engine {
                     return;
                 }
                 Prim::VSplit => {
-                    let g = self.take_global();
                     let (top, m, rest) = self.scan_vsplit();
                     if let Some(rest) = rest {
                         self.stash_vsplit_remainder(m, rest);
                     }
-                    self.eqtb.assign_box(idx, top, g);
+                    self.eqtb.assign_box(idx, top, global);
                     return;
                 }
                 _ => {}
@@ -1498,22 +1727,19 @@ impl Engine {
             b"box" => {
                 let n = self.scan_reg_num();
                 let b = self.eqtb.take_box(n);
-                let g = self.take_global();
-                self.eqtb.assign_box(idx, b, g);
+                self.eqtb.assign_box(idx, b, global);
             }
             b"copy" => {
                 let n = self.scan_reg_num();
                 let b = self.eqtb.boxed[n as usize].clone();
-                self.eqtb.assign_box(idx, b, self.global_flag);
-                self.global_flag = false;
+                self.eqtb.assign_box(idx, b, global);
             }
             b"lastbox" => {
                 let b = self.take_last_box();
-                self.eqtb.assign_box(idx, b, self.global_flag);
-                self.global_flag = false;
+                self.eqtb.assign_box(idx, b, global);
             }
             b"hbox" | b"vbox" | b"vtop" | b"vcenter" => {
-                self.park_setbox(idx);
+                self.park_setbox_with_global(idx, global);
                 let kind = match self.cs.name(t.cs_id()) {
                     b"hbox" => 0,
                     b"vbox" => 1,
@@ -1523,37 +1749,37 @@ impl Engine {
                 self.begin_box(kind);
             }
             b"halign" => {
-                self.park_setbox(idx);
+                self.park_setbox_with_global(idx, global);
                 self.begin_halign();
             }
             b"usebox" => {
                 let n = self.scan_reg_num();
                 let b = self.eqtb.boxed[n as usize].take();
-                self.eqtb.assign_box(idx, b, self.global_flag);
-                self.global_flag = false;
+                self.eqtb.assign_box(idx, b, global);
             }
             b"vsplit" => {
-                let g = self.take_global();
                 let (top, m, rest) = self.scan_vsplit();
                 if let Some(rest) = rest {
                     self.stash_vsplit_remainder(m, rest);
                 }
-                self.eqtb.assign_box(idx, top, g);
+                self.eqtb.assign_box(idx, top, global);
             }
             _ => {
-                self.pushed.push(t);
+                self.push_token(t);
                 self.error("Missing box for \\setbox");
             }
         }
     }
 
     /// scan the target of \advance/\multiply: an int/dim/glue quantity
-    fn scan_quantity(&mut self) -> QuantityLoc {
+    fn scan_quantity(&mut self, operation: &str) -> QuantityLoc {
         self.skip_spaces_relax();
         let t = self.get_token();
         if !t.is_cs() {
-            self.pushed.push(t);
-            self.error("Missing quantity for \\advance");
+            self.push_token(t);
+            self.error(&format!(
+                "{operation} needs a count, dimension, or glue quantity to modify"
+            ));
             return QuantityLoc::None;
         }
         let id = t.cs_id();
@@ -1588,7 +1814,10 @@ impl Engine {
             Some(Equiv::Prim(Prim::DimP(p))) => QuantityLoc::Dim(p),
             Some(Equiv::Prim(Prim::GlueP(p))) => QuantityLoc::Glue(p),
             _ => {
-                self.error("Unknown quantity for \\advance");
+                self.error(&format!(
+                    "{operation} cannot modify {}; expected a count, dimension, or glue quantity",
+                    self.display_cs(id)
+                ));
                 QuantityLoc::None
             }
         }
@@ -1648,6 +1877,7 @@ impl Engine {
                 out.push_str(&format!("the character {} (font {})\n", *c as char, font))
             }
             Node::Glue(g) => out.push_str(&format!("glue {}\n", self.glue_to_string(g))),
+            Node::MuGlue(g) => out.push_str(&format!("math glue {}\n", self.mu_glue_to_string(g))),
             Node::Kern(k) => out.push_str(&format!("kern {}\n", self.scaled_to_string(*k))),
             // tex.web §4416: an explicit kern is shown with a space after
             // the escape (`\kern 1.0`), an implicit one without (`\kern1.0`)
@@ -1723,27 +1953,24 @@ impl Value {
     }
 }
 
-fn glue_plus(a: &crate::boxes::Glue, b: &crate::boxes::Glue) -> crate::boxes::Glue {
-    let mut g = a.clone();
-    g.width += b.width;
-    if g.stretch_order == b.stretch_order {
-        g.stretch += b.stretch;
-    } else if g.stretch_order < b.stretch_order {
-        g.stretch = b.stretch;
-        g.stretch_order = b.stretch_order;
-    }
-    if g.shrink_order == b.shrink_order {
-        g.shrink += b.shrink;
-    } else if g.shrink_order < b.shrink_order {
-        g.shrink = b.shrink;
-        g.shrink_order = b.shrink_order;
-    }
-    g
-}
-
 #[cfg(test)]
 mod tests {
     use super::read_line_bounded;
+    use crate::engine::{Engine, InteractionMode};
+
+    fn run(source: String) -> Engine {
+        let mut engine = Engine::new(true);
+        engine.init_primitives();
+        engine.add_nullfont();
+        engine.eqtb.cat[b'{' as usize] = 1;
+        engine.eqtb.cat[b'}' as usize] = 2;
+        engine.set_interaction_mode(InteractionMode::Nonstop);
+        engine
+            .input
+            .push_file("output-error.tex".to_string(), source.into_bytes());
+        engine.run();
+        engine
+    }
 
     #[test]
     fn bounded_line_reader_drains_the_overflowing_line() {
@@ -1761,5 +1988,202 @@ mod tests {
             (true, false)
         );
         assert_eq!(line, b"z\n");
+    }
+
+    #[test]
+    fn immediate_and_deferred_openout_failures_keep_the_command_source() {
+        let missing_parent = std::env::temp_dir().join(format!(
+            "tex-core-missing-openout-parent-{}",
+            std::process::id()
+        ));
+        let output = missing_parent.join("result.out");
+        assert!(!missing_parent.exists());
+        let output = output.to_string_lossy();
+        let cases = [
+            (
+                format!("\\message{{before}}\n\\immediate\\openout4={output}\n\\end\n"),
+                2,
+                11,
+            ),
+            (
+                format!("\\setbox0=\\vbox{{\n\\openout4={output}\n}}\n\\shipout\\box0\n\\end\n"),
+                2,
+                1,
+            ),
+        ];
+
+        for (input, expected_line, expected_column) in cases {
+            let engine = run(input);
+            let diagnostic = engine
+                .diagnostics
+                .iter()
+                .find(|diagnostic| diagnostic.message.starts_with("Cannot open output file"))
+                .expect("openout diagnostic");
+            assert!(
+                diagnostic.message.contains(output.as_ref()),
+                "{}",
+                diagnostic.message
+            );
+            assert!(diagnostic.message.contains("for \\openout4"));
+            let source = diagnostic.primary.as_ref().expect("openout source");
+            assert_eq!(
+                (source.name.as_str(), source.line, source.column),
+                ("output-error.tex", expected_line, expected_column)
+            );
+            assert_eq!(
+                diagnostic.help.as_deref(),
+                Some("check the path and permissions for the file named in this error")
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn immediate_and_deferred_write_failures_name_the_stream_and_write_source() {
+        if !std::path::Path::new("/dev/full").exists() {
+            return;
+        }
+        let cases = [
+            (
+                "\\immediate\\openout3=/dev/full\n\\immediate\\write3{payload}\n\\end\n"
+                    .to_string(),
+                2,
+                11,
+            ),
+            (
+                "\\immediate\\openout3=/dev/full\n\\setbox0=\\vbox{\n\\write3{payload}\n}\n\\shipout\\box0\n\\end\n"
+                    .to_string(),
+                3,
+                1,
+            ),
+        ];
+
+        for (input, expected_line, expected_column) in cases {
+            let engine = run(input);
+            let diagnostic = engine
+                .diagnostics
+                .iter()
+                .find(|diagnostic| diagnostic.message.starts_with("Cannot write output stream"))
+                .expect("write diagnostic");
+            assert!(
+                diagnostic
+                    .message
+                    .starts_with("Cannot write output stream 3 (`/dev/full`):"),
+                "{}",
+                diagnostic.message
+            );
+            let source = diagnostic.primary.as_ref().expect("write source");
+            assert_eq!(
+                (source.name.as_str(), source.line, source.column),
+                ("output-error.tex", expected_line, expected_column)
+            );
+            assert_eq!(
+                diagnostic.help.as_deref(),
+                Some(
+                    "check the destination path, permissions, and available disk space, then compile again"
+                )
+            );
+        }
+    }
+
+    #[test]
+    fn assignment_commands_consume_definition_prefixes_without_leaking_them() {
+        let engine = run("\\count0=6\n\
+             \\long\\advance\\count0 by 1\n\
+             \\outer\\multiply\\count0 by 2\n\
+             \\protected\\divide\\count0 by 7\n\
+             \\long\\setbox0=\\hbox{}\n\
+             \\outer\\wd0=1pt\n\
+             \\protected\\fontdimen1\\nullfont=2pt\n\
+             \\long\\partokenname\\par\n\
+             \\def\\probe{}\n\
+             \\end\n"
+            .to_string());
+
+        assert_eq!(engine.eqtb.count[0], 2);
+        assert_eq!(engine.box_reg_dimen(0, 0), 65_536);
+        let probe = engine.cs.lookup(b"probe").expect("probe definition");
+        let crate::eqtb::Equiv::Macro(definition) =
+            engine.eqtb.resolve(probe).expect("probe meaning")
+        else {
+            panic!("probe is not a macro");
+        };
+        assert!(!definition.long);
+        assert!(!definition.outer);
+        assert!(!definition.protected);
+        assert!(!engine.global_flag);
+        assert!(!engine.long_flag);
+        assert!(!engine.outer_flag);
+        assert!(!engine.protected_flag);
+
+        for command in [
+            "\\advance",
+            "\\multiply",
+            "\\divide",
+            "\\setbox",
+            "\\wd",
+            "\\fontdimen",
+            "\\partokenname",
+        ] {
+            let diagnostic = engine
+                .diagnostics
+                .iter()
+                .find(|diagnostic| {
+                    diagnostic.message.contains("You can't use")
+                        && diagnostic.message.contains(command)
+                })
+                .unwrap_or_else(|| panic!("missing illegal-prefix diagnostic for {command}"));
+            assert!(diagnostic.primary.is_some(), "{command} lacks a source");
+        }
+    }
+
+    #[test]
+    fn setbox_keeps_captured_globality_through_a_valid_box_body() {
+        let engine = run("{\\global\\setbox0=\\hbox{global}}\n\
+             {\\globaldefs=-1 \\global\\setbox1=\\hbox{local}}\n\
+             \\end\n"
+            .to_string());
+
+        assert!(engine.eqtb.boxed[0].is_some());
+        assert!(engine.eqtb.boxed[1].is_none());
+        assert_eq!(engine.error_count, 0, "{}", engine.term);
+    }
+
+    #[test]
+    fn rejected_and_malformed_prefixed_commands_clear_global_state() {
+        let engine = run("{\\global\\afterassignment A\\count10=1}\n\
+             {\\global\\aftergroup B\\count11=1}\n\
+             {\\global\\copy2\\count12=1}\n\
+             {\\global\\box2\\count13=1}\n\
+             \\chardef\\letter=65 {\\global\\letter\\count14=1}\n\
+             \\mathchardef\\symbol=42 {\\global\\symbol\\count15=1}\n\
+             {\\global\\partokenname A\\count16=1}\n\
+             {\\global\\setbox3=Q\\count17=1}\n\
+             \\end\n"
+            .to_string());
+
+        for register in 10..=17 {
+            assert_eq!(
+                engine.eqtb.count[register], 0,
+                "prefix leaked into count{register}"
+            );
+        }
+        for command in [
+            "\\afterassignment",
+            "\\aftergroup",
+            "\\copy",
+            "\\box",
+            "\\char\"41",
+            "\\mathchar\"2A",
+        ] {
+            assert!(
+                engine
+                    .diagnostics
+                    .iter()
+                    .any(|diagnostic| diagnostic.message.contains(command)),
+                "missing diagnostic for {command}: {}",
+                engine.term
+            );
+        }
     }
 }

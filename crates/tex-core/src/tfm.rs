@@ -51,6 +51,8 @@ pub struct Font {
     pub params: Vec<i32>, // fontdimen 1..=n in sp (param[0] unused slot for slant as scaled fraction*65536? store slant*65536 too)
     pub hyphen_char: i32,
     pub skew_char: i32,
+    /// TFM right boundary character (tex.web §11163, if first lig_kern instruction has skip=255)
+    pub bchar: Option<u8>,
     pub type1_path: Option<String>,
     pub enc_name: Option<String>,
     /// pdf font name in map (e.g. NtxRomanUpright)
@@ -324,6 +326,13 @@ pub fn parse_tfm(data: &[u8], tfm_name: &str, at_size: i32) -> Result<Font, Stri
         })
         .collect();
 
+    let bchar = if nl > 0 && data[lig_off] == 255 {
+        Some(data[lig_off + 1])
+    } else {
+        None
+    };
+
+
     let kerns: Vec<i32> = (0..nk).map(|k| scale(rd_fix(kern_off + k * 4))).collect();
 
     let ext: Vec<ExtRecipe> = (0..ne)
@@ -365,6 +374,7 @@ pub fn parse_tfm(data: &[u8], tfm_name: &str, at_size: i32) -> Result<Font, Stri
         params,
         hyphen_char: b'-' as i32,
         skew_char: -1,
+        bchar,
         type1_path: None,
         enc_name: None,
         map_fontname: None,

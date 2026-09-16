@@ -49,6 +49,10 @@ pub(super) struct Packed {
 }
 
 impl Packed {
+    pub(super) fn source_bytes(&self) -> &[u8] {
+        self.text.as_bytes()
+    }
+
     fn u32(&self, entry: usize, offset: usize) -> usize {
         let at = HEADER + entry * ENTRY + offset;
         u32::from_le_bytes(self.bytes[at..at + 4].try_into().unwrap()) as usize
@@ -136,13 +140,7 @@ impl Packed {
             }
             previous = key;
             for (a, b) in [(8, 12), (16, 20)] {
-                if packed
-                    .text
-                    .get(packed.u32(i, a)..packed.u32(i, b))
-                    .is_none()
-                {
-                    return None;
-                }
+                packed.text.get(packed.u32(i, a)..packed.u32(i, b))?;
             }
         }
         Some(packed)

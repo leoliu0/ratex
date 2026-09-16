@@ -303,6 +303,17 @@ fn write_serialization_preserves_utf8_token_bytes() {
         .map(|b| Token::from_cs(e.active_cs_id(b)))
         .collect();
     assert_eq!(e.write_tokens_to_string(&active), text);
+
+    let accent = Token::from_cs(e.cs.intern(b"\""));
+    assert_eq!(
+        e.write_tokens_to_string(&[accent, Token::letter(b'a')]),
+        "\\\"a"
+    );
+    let control_word = Token::from_cs(e.cs.intern(b"a"));
+    assert_eq!(
+        e.write_tokens_to_string(&[control_word, Token::letter(b'x')]),
+        "\\a x"
+    );
 }
 
 #[test]

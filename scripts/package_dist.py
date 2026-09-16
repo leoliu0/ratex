@@ -311,12 +311,49 @@ def asset_source_label(src: Path, roots: list) -> str:
     return "external"
 
 
-def stage_assets(texmf_stage: Path) -> dict:
-    """Copy essential (+ optional, when present) assets into the staged
-    TDS tree. Returns path->source map for manifest.json."""
+def stage_assets(texmf_stage: Path, full: bool = False) -> dict:
+    """Copy essential (+ optional, or full tree when requested) assets into
+    the staged TDS tree. Returns path->source map for manifest.json."""
     texmf_stage.mkdir(parents=True, exist_ok=True)
     roots = source_texmf_roots()
     placed = {}
+
+    if full:
+        dist = None
+        for r in roots:
+            if r.is_dir() and (r / "tex").is_dir():
+                dist = r
+                break
+        if dist:
+            print(f"    staging complete TeX tree from {dist}...")
+            dirs = [
+                dist / "tex/latex",
+                dist / "tex/generic",
+                dist / "tex/xelatex",
+                dist / "tex/lualatex",
+                dist / "bibtex/bst",
+                dist / "fonts/enc",
+                dist / "fonts/map",
+                dist / "fonts/tfm/public",
+                dist / "fonts/tfm/jknappen",
+                dist / "fonts/type1/public",
+            ]
+            exts = {".sty", ".cls", ".def", ".fd", ".cfg", ".ldf", ".tex", ".bst", ".tfm", ".pfb", ".enc", ".map"}
+            for d in dirs:
+                if not d.is_dir():
+                    continue
+                for root, _, filenames in os.walk(d):
+                    for f in filenames:
+                        p = Path(root) / f
+                        if p.suffix in exts:
+                            rel = p.relative_to(dist)
+                            dst = texmf_stage / rel
+                            dst.parent.mkdir(parents=True, exist_ok=True)
+                            shutil.copy2(p, dst)
+                            placed[str(rel)] = "system-full"
+            print(f"    staged {len(placed)} complete assets into {texmf_stage.name}!")
+            return placed
+
     for rel, candidates in ESSENTIAL_ASSETS.items():
         dst = texmf_stage / rel
         src = find_asset(rel, candidates, roots)
@@ -492,6 +529,10 @@ def main() -> None:
                     help="optional external pdflatex.fmt override (the default is embedded)")
     ap.add_argument("--target-dir", default=None,
                     help="cargo target directory override (default: target/release)")
+    ap.add_argument("--full", action="store_true", default=True,
+                    help="stage full texmf asset tree (all packages, styles, and fonts)")
+    ap.add_argument("--minimal", dest="full", action="store_false",
+                    help="stage only minimal essential assets")
     args = ap.parse_args()
 
     platform_name = args.platform or detect_platform()
@@ -532,7 +573,7 @@ def main() -> None:
         else:
             print("    fmt: compressed format embedded in texmk")
 
-        assets = stage_assets(stage_texmf)
+        assets = stage_assets(stage_texmf, full=args.full)
 
         for inst in collect_installers(platform_name):
             dst = stage_root / inst.name

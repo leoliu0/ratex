@@ -8,7 +8,6 @@ pkgbase = ratex-bin
 	license = Apache-2.0
 	provides = ratex
 	provides = texmk
-	provides = latexmk
 	provides = pdflatex
 	provides = xelatex
 	provides = lualatex

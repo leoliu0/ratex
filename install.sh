@@ -38,6 +38,8 @@ Options (forwarded to the platform installer):
   --link           Symlink binaries into PREFIX/bin instead of copying
   --no-path        Do not edit shell profiles
   --skip-verify    Skip the post-install pdflatex version check
+  --alias-latexmk  Create 'latexmk' alias pointing to texmk (default)
+  --no-alias-latexmk Do not create 'latexmk' alias
   --uninstall      Remove installed binaries, data dir, and profile block
   -h, --help       Show this help and exit
 

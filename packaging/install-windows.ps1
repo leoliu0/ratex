@@ -49,6 +49,10 @@ param(
     [switch]$Uninstall,
     [switch]$System,
     [switch]$Help,
+    [switch]$AliasLatexmk,
+    [switch]$NoAliasLatexmk,
+    [switch]$ReplaceLatexmk,
+    [switch]$NoReplaceLatexmk,
     [string]$SourceDir = '',
     [string]$InstallDir = ''
 )
@@ -74,6 +78,27 @@ $Script:Shims = @(
     @{ Name = 'bibtex.exe';     Parent = 'texmk.exe' },
     @{ Name = 'latexmk.exe'; Parent = 'texmk.exe' }
 )
+if ($ReplaceLatexmk) { $AliasLatexmk = $true }
+if ($NoReplaceLatexmk) { $NoAliasLatexmk = $true }
+
+if (-not $Uninstall) {
+    if (-not $AliasLatexmk -and -not $NoAliasLatexmk) {
+        if ([Environment]::UserInteractive) {
+            $ans = Read-Host 'Install "latexmk" alias pointing to texmk? (recommended for TeXstudio/VS Code) [Y/n]'
+            if ($ans -match '^[nN]') {
+                $NoAliasLatexmk = $true
+            } else {
+                $AliasLatexmk = $true
+            }
+        } else {
+            $AliasLatexmk = $true
+        }
+    }
+}
+
+if ($NoAliasLatexmk) {
+    $Script:Shims = @($Script:Shims | Where-Object { $_.Name -ne 'latexmk.exe' })
+}
 $Script:AllInstalledExes = $Script:CoreExes + $Script:ExtraExes + ($Script:Shims | ForEach-Object { $_.Name })
 $Script:EnvVars = @('TEXMFLOCAL', 'TEX_SUITE_DATA')
 $Script:InstallManifestName = '.tex-suite-install.json'
@@ -516,6 +541,8 @@ OPTIONS
                   (target\release) in the current/parent directories.
   -InstallDir <p> Install root override (files go to <p>\bin and
                   <p>\share\tex-suite).
+  -AliasLatexmk   Install 'latexmk.exe' alias pointing to texmk (default).
+  -NoAliasLatexmk Do not install 'latexmk.exe' alias.
   -Help           Show this message.
 
 WHAT IT DOES

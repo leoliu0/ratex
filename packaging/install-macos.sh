@@ -53,6 +53,8 @@ Options:
   --link           Symlink binaries into PREFIX/bin instead of copying
   --no-path        Do not edit shell profiles
   --skip-verify    Skip the post-install pdflatex version check
+  --alias-latexmk  Create 'latexmk' alias pointing to texmk (default)
+  --no-alias-latexmk Do not create 'latexmk' alias
   --uninstall      Remove installed binaries, data dir, and profile block
   -h, --help       Show this help and exit
 
@@ -77,6 +79,7 @@ DO_LINK=0
 NO_PATH=0
 SKIP_VERIFY=0
 UNINSTALL=0
+ALIAS_LATEXMK=""
 APP_SUPPORT=0
 
 while [ $# -gt 0 ]; do
@@ -93,6 +96,8 @@ while [ $# -gt 0 ]; do
         --no-build)    NO_BUILD=1; shift ;;
         --link)        DO_LINK=1; shift ;;
         --no-path)     NO_PATH=1; shift ;;
+        --alias-latexmk|--replace-latexmk)       ALIAS_LATEXMK=1; shift ;;
+        --no-alias-latexmk|--no-replace-latexmk) ALIAS_LATEXMK=0; shift ;;
         --skip-verify) SKIP_VERIFY=1; shift ;;
         --uninstall)   UNINSTALL=1; shift ;;
         -h|--help)     usage; exit 0 ;;
@@ -433,7 +438,9 @@ preflight_install() {
     fi
     if [ -f "$SRC_BIN/texmk" ]; then
         preflight_destination B texmk "$BIN_DIR/texmk"
-        preflight_destination B latexmk "$BIN_DIR/latexmk"
+        if [ "$ALIAS_LATEXMK" = 1 ]; then
+            preflight_destination B latexmk "$BIN_DIR/latexmk"
+        fi
     fi
     if [ -n "$SRC_FMT" ]; then
         preflight_destination B pdflatex.fmt "$BIN_DIR/pdflatex.fmt"
@@ -482,7 +489,10 @@ write_data_manifest() {
             printf 'B\ttex-bibtex\nB\tbibtex\n'
         fi
         if [ -f "$SRC_BIN/texmk" ]; then
-            printf 'B\ttexmk\nB\tlatexmk\n'
+            printf 'B\ttexmk\n'
+            if [ "$ALIAS_LATEXMK" = 1 ]; then
+                printf 'B\tlatexmk\n'
+            fi
         fi
         if [ -n "$SRC_FMT" ]; then
             printf 'B\tpdflatex.fmt\n'
@@ -578,6 +588,19 @@ remove_manifest_entries() {
 
 do_install() {
     resolve_payload
+    if [ -z "$ALIAS_LATEXMK" ]; then
+        if [ -t 0 ]; then
+            printf 'Install "latexmk" alias pointing to texmk? (recommended for TeXstudio/VS Code) [Y/n]: '
+            read -r _answer || _answer="y"
+            case "$_answer" in
+                [nN]*) ALIAS_LATEXMK=0 ;;
+                *)     ALIAS_LATEXMK=1 ;;
+            esac
+        else
+            ALIAS_LATEXMK=1
+        fi
+    fi
+
 
     mkdir -p -- "$BIN_DIR" "$DATA_DIR" || die "cannot create $BIN_DIR / $DATA_DIR (use sudo for --system)"
     validate_existing_manifest
@@ -593,7 +616,9 @@ do_install() {
     install_alias lualatex texmk
     install_alias tex-bibtex texmk
     install_alias bibtex texmk
-    install_alias latexmk texmk
+    if [ "$ALIAS_LATEXMK" = 1 ]; then
+        install_alias latexmk texmk
+    fi
 
     log "Installing runtime data to $DATA_DIR"
     if [ -n "$SRC_FMT" ]; then

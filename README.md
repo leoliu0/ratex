@@ -1,5 +1,9 @@
 # ratex
 
+[![CI](https://github.com/leoliu0/ratex/actions/workflows/ci.yml/badge.svg)](https://github.com/leoliu0/ratex/actions/workflows/ci.yml)
+[![Release](https://github.com/leoliu0/ratex/actions/workflows/release.yml/badge.svg)](https://github.com/leoliu0/ratex/actions/workflows/release.yml)
+[![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue.svg)](LICENSE)
+
 **ratex** is an ultra-fast, self-contained, pure-Rust TeX engine and build toolchain designed as a modern, high-performance replacement for `pdflatex` and `latexmk`.
 
 Built from scratch with zero unsafe memory compromises, **ratex** bundles a complete TeX typesetting engine, in-memory package resolver, native BibTeX interpreter, and dependency-validated compilation driver into a single fast binary.

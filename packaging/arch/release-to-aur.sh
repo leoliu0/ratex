@@ -37,14 +37,12 @@ publish_one() {
     printf '%s\n' "$srcinfo" > "$temp_dir/repo/.SRCINFO"
 
     git add PKGBUILD .SRCINFO
-
+    version="$(printf '%s\n' "$srcinfo" | awk '/pkgver = / {print $3; exit}')"
     if git diff --staged --quiet; then
         echo "==> No changes to commit for $pkg on AUR."
         return 0
     fi
 
-    local version
-    version="$(printf '%s\n' "$srcinfo" | grep '^pkgver = ' | head -1 | cut -d' ' -f3)"
     git commit -m "Update to v${version}"
     echo "==> Pushing to AUR: ssh://aur@aur.archlinux.org/${pkg}.git..."
     git push origin master

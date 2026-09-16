@@ -1638,10 +1638,6 @@ mod tests {
         p.is_dir().then_some(p)
     }
 
-    fn project_dir() -> PathBuf {
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../trust_own")
-    }
-
     #[test]
     fn local_directory_has_highest_precedence() {
         let tmp = TempDir::new("local");
@@ -1765,18 +1761,17 @@ mod tests {
             assert!(plain.is_file());
             assert!(plain.ends_with("bibtex/bst/base/plain.bst"), "{plain:?}");
         }
-        // Project-local bibliography style and database win via cwd.
-        let proj = project_dir();
-        if !proj.join("rfs.bst").is_file() {
-            return;
-        }
-        let kpse = Kpse::with_roots(&proj, &[]);
+        // Local bibliography style and database win via cwd.
+        let tmp = TempDir::new("bibproj");
+        tmp.write("rfs.bst", "% local rfs");
+        tmp.write("references.bib", "% local bib");
+        let kpse = Kpse::with_roots(tmp.path(), &[]);
         let rfs = kpse.find("rfs.bst", Format::Bst).expect("local rfs.bst");
-        assert_eq!(rfs, proj.join("rfs.bst"));
+        assert_eq!(rfs, tmp.path().join("rfs.bst"));
         let bib = kpse
             .find("references", Format::Bib)
             .expect("references.bib");
-        assert_eq!(bib, proj.join("references.bib"));
+        assert_eq!(bib, tmp.path().join("references.bib"));
     }
 
     #[test]
@@ -1790,19 +1785,17 @@ mod tests {
     #[test]
     fn resolves_main_tex_requirements() {
         let Some(root) = dist_root() else { return };
-        let proj = project_dir();
-        if !proj.join("rfs.bst").is_file() {
-            return;
-        }
-        let kpse = Kpse::with_roots(&proj, &[]);
+        let tmp = TempDir::new("mainproj");
+        tmp.write("rfs.bst", "% local rfs");
+        tmp.write("references.bib", "% local bib");
+        let kpse = Kpse::with_roots(tmp.path(), &[]);
         // Local files: bibliography style + database.
         let rfs = kpse.find("rfs.bst", Format::Bst).expect("rfs.bst");
-        assert!(rfs.starts_with(&proj));
+        assert!(rfs.starts_with(tmp.path()));
         let bib = kpse
             .find("references.bib", Format::Bib)
             .expect("references.bib");
-        assert!(bib.starts_with(&proj));
-        // Distribution files: every \\usepackage target plus the font
+        assert!(bib.starts_with(tmp.path()));
         // definition and metric files selected by the T1/newtx setup.
         let dist: &[(&str, Format)] = &[
             ("article.cls", Format::Tex),
@@ -1833,7 +1826,7 @@ mod tests {
                 .unwrap_or_else(|| panic!("{name} did not resolve"));
             assert!(p.is_file(), "{name} -> {p:?} is not a file");
             assert!(
-                p.starts_with(root) || p.starts_with(&proj),
+                p.starts_with(root) || p.starts_with(tmp.path()),
                 "{p:?} outside search roots"
             );
         }

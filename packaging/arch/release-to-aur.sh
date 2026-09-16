@@ -48,6 +48,7 @@ publish_one() {
     git push origin master
 
     echo "==> Successfully released $pkg v${version} to Arch Linux AUR!"
+    cd "$SCRIPT_DIR"
 }
 
 cd "$SCRIPT_DIR"

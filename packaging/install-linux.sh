@@ -184,8 +184,12 @@ resolve_payload() {
     # source checkout
     _repo=$(find_repo_root) || die "no release bundle found and this is not a cargo checkout; pass --bundle DIR or run from the repo"
     _target="${CARGO_TARGET_DIR:-$_repo/target}/release"
-    if [ "$FROM_SOURCE" = 1 ] || [ ! -x "$_target/pdflatex" ]; then
+    if [ ! -x "$_target/pdflatex" ]; then
         [ "$NO_BUILD" = 1 ] && die "--no-build given but a build is required (target/release incomplete)"
+        command -v cargo >/dev/null 2>&1 || die "cargo not found; install Rust or pass --bundle DIR"
+        log "Building release binaries: cargo build --release --workspace"
+        ( CDPATH= cd -- "$_repo" && cargo build --release --workspace ) || die "cargo build failed"
+    elif [ "$FROM_SOURCE" = 1 ] && [ "$NO_BUILD" = 0 ]; then
         command -v cargo >/dev/null 2>&1 || die "cargo not found; install Rust or pass --bundle DIR"
         log "Building release binaries: cargo build --release --workspace"
         ( CDPATH= cd -- "$_repo" && cargo build --release --workspace ) || die "cargo build failed"

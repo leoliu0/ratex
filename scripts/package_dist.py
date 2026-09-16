@@ -540,6 +540,10 @@ def main() -> None:
             print(f"    installer: {inst.relative_to(REPO)}")
 
         (stage_root / "README.txt").write_text(readme_text(version, platform_name, arch))
+        for lic in ["LICENSE-MIT", "LICENSE-APACHE", "LICENSE"]:
+            lic_path = REPO / lic
+            if lic_path.is_file():
+                shutil.copy2(lic_path, stage_root / lic)
 
         # manifest.json: checksums of everything except the manifest itself
         files, links = inventory_stage(stage_root)

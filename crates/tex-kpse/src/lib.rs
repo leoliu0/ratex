@@ -1767,7 +1767,7 @@ mod tests {
         }
         // Project-local bibliography style and database win via cwd.
         let proj = project_dir();
-        if !proj.is_dir() {
+        if !proj.join("rfs.bst").is_file() {
             return;
         }
         let kpse = Kpse::with_roots(&proj, &[]);
@@ -1791,7 +1791,7 @@ mod tests {
     fn resolves_main_tex_requirements() {
         let Some(root) = dist_root() else { return };
         let proj = project_dir();
-        if !proj.is_dir() {
+        if !proj.join("rfs.bst").is_file() {
             return;
         }
         let kpse = Kpse::with_roots(&proj, &[]);

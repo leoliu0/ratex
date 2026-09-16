@@ -104,6 +104,46 @@ provides = bibtex
         subprocess.run(cmd, cwd=pkgdir, check=True)
 
     return pkg_path
+def build_rpm(stage_root: Path, output_dir: Path, version: str) -> Path:
+    """Build RPM package from stage using rpmbuild."""
+    rpm_dir = tempfile.mkdtemp(prefix="rpm-build-")
+    try:
+        top = Path(rpm_dir)
+        for sub in ["BUILD", "RPMS", "SOURCES", "SPECS", "SRPMS"]:
+            (top / sub).mkdir()
+        spec_content = f"""Name:           ratex
+Version:        {version}
+Release:        1
+Summary:        Ultra-fast, pure-Rust TeX engine and typesetting toolchain
+License:        MIT or Apache-2.0
+URL:            https://github.com/leoliu0/ratex
+BuildArch:      x86_64
+Provides:       texmk, pdflatex, xelatex, lualatex
+
+%description
+Ultra-fast pure-Rust TeX engine and toolchain.
+
+%files
+/usr/bin/*
+/usr/share/tex-suite
+"""
+        (top / "SPECS/ratex.spec").write_text(spec_content)
+        cmd = [
+            "rpmbuild", "-bb", "SPECS/ratex.spec",
+            "--define", f"_topdir {top}",
+            "--define", f"_rpmdir {output_dir.resolve()}",
+            "--buildroot", str(stage_root.resolve()),
+        ]
+        subprocess.run(cmd, cwd=top, check=True)
+        rpm_file = output_dir.resolve() / "x86_64" / f"ratex-{version}-1.x86_64.rpm"
+        dest_file = output_dir.resolve() / f"ratex-{version}-1.x86_64.rpm"
+        if rpm_file.is_file():
+            shutil.move(str(rpm_file), str(dest_file))
+            shutil.rmtree(output_dir.resolve() / "x86_64", ignore_errors=True)
+        return dest_file
+    finally:
+        shutil.rmtree(rpm_dir, ignore_errors=True)
+
 
 
 def main():
@@ -148,6 +188,12 @@ def main():
         print("==> Building Arch package (.pkg.tar.zst)...")
         arch_file = build_arch_pkg(stage, out_dir, version)
         print(f"Created: {arch_file} ({arch_file.stat().st_size / 1024 / 1024:.1f} MB)")
+        # Build RPM package (.rpm)
+        if shutil.which("rpmbuild"):
+            print("==> Building RPM package (.rpm)...")
+            rpm_file = build_rpm(stage, out_dir, version)
+            print(f"Created: {rpm_file} ({rpm_file.stat().st_size / 1024 / 1024:.1f} MB)")
+
 
 
 if __name__ == "__main__":

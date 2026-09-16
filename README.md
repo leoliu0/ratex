@@ -6,9 +6,6 @@
 [![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue.svg)](LICENSE)
 
 **ratex** is an ultra-fast, self-contained, pure-Rust TeX engine and typesetting toolchain. Built from scratch with zero unsafe memory compromises, it serves as a high-performance modern replacement for `pdflatex`, `xelatex`, `lualatex`, and `texmk`.
-
-🌐 **Official Website & Downloads:** [leoliu0.github.io/ratex.html](https://leoliu0.github.io/ratex.html)
-
 ---
 
 ## Performance Highlights
@@ -44,6 +41,7 @@ Tested and verified against **3,000 real-world arXiv papers** across mathematics
 | **Windows (x64)** | Setup Wizard `.exe` | [Download ratex-setup-v0.1.0-windows-x64.exe](https://github.com/leoliu0/ratex/releases/download/v0.1.0/ratex-setup-v0.1.0-windows-x64.exe) |
 | **Arch Linux / Manjaro** | AUR (`ratex-bin`) | `yay -S ratex-bin` (or `paru -S ratex-bin`) |
 | **Ubuntu / Debian** | `.deb` (x86_64) | [Download ratex_0.1.0_amd64.deb](https://github.com/leoliu0/ratex/releases/download/v0.1.0/ratex_0.1.0_amd64.deb) |
+| **Fedora / RHEL / openSUSE** | `.rpm` (x86_64) | [Download ratex-0.1.0-1.x86_64.rpm](https://github.com/leoliu0/ratex/releases/download/v0.1.0/ratex-0.1.0-1.x86_64.rpm) |
 | **Universal Linux** | Standalone `.tar.gz` | [Download tex-suite-v0.1.0-linux-x86_64.tar.gz](https://github.com/leoliu0/ratex/releases/download/v0.1.0/tex-suite-v0.1.0-linux-x86_64.tar.gz) |
 
 ### macOS Installation

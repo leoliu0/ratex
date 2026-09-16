@@ -25,3 +25,5 @@ output/
 /tmp*.tex
 /test_*.tex
 /diag_*.py
+/.pi/
+/.omp/

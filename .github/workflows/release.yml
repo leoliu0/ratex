@@ -81,11 +81,26 @@ jobs:
         if: matrix.platform == 'linux'
         shell: bash
         run: python3 scripts/build_linux_packages.py --output-dir dist
+      - name: Build macOS native installer (.pkg)
+        if: matrix.platform == 'macos'
+        shell: bash
+        run: |
+          mkdir -p /tmp/pkg-stage
+          tar -xzf dist/tex-suite-*.tar.gz -C /tmp/pkg-stage
+          ./packaging/macos/build-pkg.sh /tmp/pkg-stage/tex-suite-* "${{ matrix.arch }}" "0.1.0" dist
+
 
       - name: Package distribution (windows)
         if: matrix.platform == 'windows'
         run: python scripts/package_dist.py --platform windows --arch x86_64
         shell: pwsh
+      - name: Build Windows native installer (.exe)
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          Expand-Archive -Path (Get-Item dist/tex-suite-*.zip).FullName -DestinationPath dist
+          iscc packaging/windows/ratex.iss
+
 
       - name: Test installer end-to-end (unix)
         if: matrix.platform != 'windows'

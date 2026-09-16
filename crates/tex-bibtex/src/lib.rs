@@ -4,7 +4,8 @@
 //!
 //! Reproduces bibtex 0.99e .bbl output byte-for-byte for standard styles.
 
-pub mod aux;
+pub mod auxfile;
+pub use auxfile as aux;
 pub mod bib;
 pub mod bst;
 pub mod classes;

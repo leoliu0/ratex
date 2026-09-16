@@ -26,7 +26,7 @@ def get_version() -> str:
 def build_deb(stage_root: Path, output_dir: Path, version: str, arch: str = "amd64") -> Path:
     """Pack stage_root into a standard Debian .deb package."""
     deb_name = f"ratex_{version}_{arch}.deb"
-    deb_path = output_dir / deb_name
+    deb_path = output_dir.resolve() / deb_name
 
     with tempfile.TemporaryDirectory(prefix="deb-build-") as tmpdir:
         tmp = Path(tmpdir)
@@ -71,7 +71,7 @@ Provides: pdflatex, latexmk, texmk, xelatex, lualatex, bibtex
 def build_arch_pkg(stage_root: Path, output_dir: Path, version: str) -> Path:
     """Build Arch Linux package (.pkg.tar.zst) from stage."""
     pkg_name = f"ratex-{version}-1-x86_64.pkg.tar.zst"
-    pkg_path = output_dir / pkg_name
+    pkg_path = output_dir.resolve() / pkg_name
 
     with tempfile.TemporaryDirectory(prefix="arch-build-") as tmpdir:
         tmp = Path(tmpdir)

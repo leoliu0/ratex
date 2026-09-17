@@ -58,7 +58,7 @@ param(
     [string]$InstallDir = '',
     [switch]$NoPath,
     [switch]$SkipVerify
-
+)
 $ErrorActionPreference = 'Stop'
 
 # Allow "run by pasting into a console" where $PSScriptRoot is not defined.

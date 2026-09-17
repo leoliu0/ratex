@@ -43,8 +43,8 @@ sudo apt install ./ratex_0.1.0_amd64.deb
 # Fedora / RHEL / openSUSE (.rpm)
 sudo dnf install ./ratex-0.1.0-1.x86_64.rpm
 
-# Arch Linux (.pkg.tar.zst)
-sudo pacman -U ./ratex-0.1.0-1-x86_64.pkg.tar.zst
+# Arch Linux (AUR)
+yay -S ratex-bin   # or: paru -S ratex-bin
 
 # Any Linux (Universal Tarball Installer)
 tar -xzf tex-suite-v0.1.0-linux-x86_64.tar.gz && sudo ./tex-suite-linux-x86_64/install.sh

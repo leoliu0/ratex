@@ -7,7 +7,6 @@ use std::process::Command;
 use std::sync::Mutex;
 use tex_core::engine::Engine;
 
-const DIR: &str = "/tmp/oracle_probe";
 const OUT: &str = "probe.out";
 
 // Each Engine applies the production process-memory ceiling. Running dozens
@@ -90,8 +89,9 @@ fn compare(name: &str, src: &str, require_oracle_clean: bool) {
     let _serial = ORACLE_SERIAL
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let dir = format!("{DIR}_{name}");
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir_buf = std::env::temp_dir().join(format!("oracle_probe_{name}"));
+    std::fs::create_dir_all(&dir_buf).unwrap();
+    let dir = dir_buf.to_string_lossy().replace('\\', "/");
     let full = format!("{PRE}{src}\n\\closeout15\n\\end\n");
     let m = match run_mine(&dir, &full) {
         Ok(m) => m,

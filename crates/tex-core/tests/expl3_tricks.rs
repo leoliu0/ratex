@@ -566,23 +566,15 @@ fn if_nested_false_in_operand_takes_then() {
 
 #[test]
 fn openin_read_ifeof_terminates() {
-    let path = "/tmp/rust-tex-ifeof.dat";
-    std::fs::write(path, "one\ntwo\n").unwrap();
+    let tmp = std::env::temp_dir().join(format!("rust-tex-ifeof-{}.dat", std::process::id()));
+    std::fs::write(&tmp, "one\ntwo\n").unwrap();
+    let path_str = tmp.to_string_lossy().replace('\\', "/");
     let mut e = boot();
-    run_tex(
-        &mut e,
-        r#"
-\catcode`\{=1 \catcode`\}=2 \catcode`\#=6
-\count0=0
-\def\loop#1\repeat{\def\iterate{#1\relax\expandafter\iterate\fi}\iterate}
-\openin1=/tmp/rust-tex-ifeof.dat
-\loop
-  \read1 to \ln
-  \advance\count0 by 1
-  \if T\ifeof1F\fi T\relax
-\repeat
-"#,
+    let src = format!(
+        "\\catcode`\\{{=1 \\catcode`\\}}=2 \\catcode`\\#=6\n\\count0=0\n\\def\\loop#1\\repeat{{\\def\\iterate{{#1\\relax\\expandafter\\iterate\\fi}}\\iterate}}\n\\openin1={path_str}\n\\loop\n  \\read1 to \\ln\n  \\advance\\count0 by 1\n  \\if T\\ifeof1F\\fi T\\relax\n\\repeat\n"
     );
+    run_tex(&mut e, &src);
+    let _ = std::fs::remove_file(&tmp);
     assert!(
         e.eqtb.count[0] >= 2 && e.eqtb.count[0] <= 5,
         "read loop count={} term={}",

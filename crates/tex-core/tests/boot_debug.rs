@@ -47,7 +47,8 @@ fn test_preamble_format_fast_boot() {
     eng1.run();
     assert_eq!(tex_core::format::check_dumpable(&eng1), Ok(()));
     
-    let fmt_path = std::path::Path::new("/tmp/preamble_fast_boot.fmt");
+    let tmp = std::env::temp_dir().join(format!("preamble_fast_boot_{}.fmt", std::process::id()));
+    let fmt_path = tmp.as_path();
     tex_core::format::save_format(&eng1, fmt_path).expect("save preamble");
 
     let mut eng2 = Engine::new(false);

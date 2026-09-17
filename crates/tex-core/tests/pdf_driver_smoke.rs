@@ -57,13 +57,15 @@ fn write_one_pixel_png(path: &std::path::Path) {
 
 #[test]
 fn pdf_driver_primitives_smoke() {
-    let dir = "/tmp/pdf_smoke";
-    std::fs::create_dir_all(dir).unwrap();
-    let output = std::path::Path::new(dir).join("smoke.out");
+    let dir_buf = std::env::temp_dir().join(format!("pdf_smoke_{}", std::process::id()));
+    std::fs::create_dir_all(&dir_buf).unwrap();
+    let dir = dir_buf.to_string_lossy().replace('\\', "/");
+    let output = dir_buf.join("smoke.out");
     let _ = std::fs::remove_file(&output);
-    let image = std::path::Path::new(dir).join("fig.png");
+    let image = dir_buf.join("fig.png");
     write_one_pixel_png(&image);
-    let source = SRC.replace("fig.png", image.to_str().unwrap());
+    let image_str = image.to_string_lossy().replace('\\', "/");
+    let source = SRC.replace("fig.png", &image_str);
     let mut e = Engine::new(true);
     e.init_primitives();
     e.add_nullfont();

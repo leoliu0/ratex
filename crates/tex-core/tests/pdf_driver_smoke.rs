@@ -127,7 +127,7 @@ fn file_stream_preserves_binary_bytes_and_following_input() {
 \count1=73
 \shipout\hbox{\vrule width1pt height1pt}
 \end"#
-        .replace("PAYLOAD", path.to_str().unwrap());
+        .replace("PAYLOAD", &path.to_string_lossy().replace('\\', "/"));
     let mut e = Engine::new(true);
     e.init_primitives();
     e.add_nullfont();
@@ -167,7 +167,7 @@ fn pdfrestore_keeps_following_image_in_the_restored_coordinate_system() {
 \setbox0=\hbox{\pdfsave\pdfsetmatrix{2 0 0 2}\pdfrefximage\pdflastximage\pdfrestore\kern10pt\pdfrefximage\pdflastximage}
 \shipout\box0
 \end"#
-        .replace("IMAGE", image.to_str().unwrap());
+        .replace("IMAGE", &image.to_string_lossy().replace('\\', "/"));
     let mut e = Engine::new(true);
     e.init_primitives();
     e.add_nullfont();

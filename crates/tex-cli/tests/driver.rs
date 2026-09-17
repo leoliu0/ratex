@@ -378,6 +378,18 @@ fn copied_texmk_symlink_personalities_need_no_sibling_executables() {
         .filter(|entry| entry.file_type().unwrap().is_file())
         .count();
     assert_eq!(physical_files, 1);
+    let run_with_retry = |mut cmd: Command| -> std::process::Output {
+        for _ in 0..20 {
+            match cmd.output() {
+                Err(e) if e.raw_os_error() == Some(26) => {
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+                Ok(out) => return out,
+                Err(e) => panic!("command failed: {e}"),
+            }
+        }
+        cmd.output().expect("command failed after retries")
+    };
 
     for (alias, banner) in [
         ("pdflatex", "pdfTeX-"),
@@ -385,12 +397,11 @@ fn copied_texmk_symlink_personalities_need_no_sibling_executables() {
         ("lualatex", "LuaHBTeX"),
         ("latexmk", "texmk (Rust TeX engine)"),
     ] {
-        let output = Command::new(bin.join(alias))
-            .arg("--version")
+        let mut cmd = Command::new(bin.join(alias));
+        cmd.arg("--version")
             .env_clear()
-            .env("HOME", fixture.0.join("home"))
-            .output()
-            .unwrap();
+            .env("HOME", fixture.0.join("home"));
+        let output = run_with_retry(cmd);
         assert!(output.status.success(), "{alias} --version failed");
         assert!(
             String::from_utf8_lossy(&output.stdout).contains(banner),
@@ -404,13 +415,12 @@ fn copied_texmk_symlink_personalities_need_no_sibling_executables() {
         "\\documentclass{article}\\begin{document}alias\\end{document}\n",
     )
     .unwrap();
-    let engine = Command::new(bin.join("pdflatex"))
-        .args(["-interaction=batchmode", "-halt-on-error", "engine.tex"])
+    let mut engine_cmd = Command::new(bin.join("pdflatex"));
+    engine_cmd.args(["-interaction=batchmode", "-halt-on-error", "engine.tex"])
         .current_dir(&project)
         .env_clear()
-        .env("HOME", fixture.0.join("home"))
-        .output()
-        .unwrap();
+        .env("HOME", fixture.0.join("home"));
+    let engine = run_with_retry(engine_cmd);
     assert!(
         engine.status.success(),
         "{}\n{}",
@@ -429,13 +439,12 @@ fn copied_texmk_symlink_personalities_need_no_sibling_executables() {
         "\\citation{entry}\n\\bibstyle{plain}\n\\bibdata{refs}\n",
     )
     .unwrap();
-    let bibtex = Command::new(bin.join("bibtex"))
-        .arg("main")
+    let mut bibtex_cmd = Command::new(bin.join("bibtex"));
+    bibtex_cmd.arg("main")
         .current_dir(&project)
         .env_clear()
-        .env("HOME", fixture.0.join("home"))
-        .output()
-        .unwrap();
+        .env("HOME", fixture.0.join("home"));
+    let bibtex = run_with_retry(bibtex_cmd);
     assert!(
         bibtex.status.success(),
         "{}\n{}",

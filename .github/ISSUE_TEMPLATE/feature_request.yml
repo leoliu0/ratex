@@ -1,0 +1,24 @@
+name: Feature Request or Package Suggestion
+description: Suggest an enhancement, new command flag, or package integration.
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Have an idea or need support for a specific TeX package or editor workflow? Let us know below!
+  - type: textarea
+    id: feature
+    attributes:
+      label: Description of Suggestion
+      description: What would you like ratex to do?
+      placeholder: Describe the desired feature or package support.
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Use Case / Context
+      description: How would this improve your daily typesetting or writing workflow?
+    validations:
+      required: false

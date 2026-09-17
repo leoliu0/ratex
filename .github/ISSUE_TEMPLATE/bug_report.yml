@@ -1,0 +1,45 @@
+name: Paper Compilation or Bug Report
+description: A document failed to compile, had visual differences, or hit an engine error.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for testing **ratex**! If a paper or package didn't compile or produced unexpected output, we'd love to fix it. Minimal reproducible examples are especially appreciated.
+  - type: textarea
+    id: sample
+    attributes:
+      label: Minimal TeX Example
+      description: A small self-contained snippet reproducing the behavior.
+      placeholder: |
+        \documentclass{article}
+        \usepackage{...}
+        \begin{document}
+        ...
+        \end{document}
+      render: latex
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: What Happened?
+      description: The error output or behavior observed with `ratex`.
+      placeholder: Paste terminal output or error message here.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected Behavior
+      description: What `pdflatex` or `latexmk` produced.
+    validations:
+      required: false
+  - type: input
+    id: os
+    attributes:
+      label: Operating System & Architecture
+      placeholder: e.g. Arch Linux x86_64, macOS M2, Windows 11
+    validations:
+      required: false

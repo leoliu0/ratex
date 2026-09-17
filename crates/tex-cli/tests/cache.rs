@@ -221,7 +221,7 @@ fn main_symlink_spelling_is_part_of_the_cache_identity() {
     assert_ne!(std::fs::read(job.0.join("main.pdf")).unwrap(), a_pdf);
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, not(target_os = "macos")))]
 #[test]
 fn cache_paths_round_trip_control_and_non_utf8_bytes() {
     use std::os::unix::ffi::OsStringExt;

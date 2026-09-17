@@ -670,11 +670,12 @@ fn published_name_in_directory<'a>(
     // Full recursive TEXMF directory snapshots do not enumerate a concrete
     // MISS for every possible child. Restrict this exception to cwd, where
     // every local candidate is probed and recorded before casefold fallback.
-    if directory != absolute_path(std::path::Path::new(".")) {
+    if absolute_path(directory) != absolute_path(std::path::Path::new(".")) {
         return None;
     }
     let output = published_output?;
-    (output.parent() == Some(directory))
+    let output_parent = output.parent()?;
+    (absolute_path(output_parent) == absolute_path(directory))
         .then(|| output.file_name())
         .flatten()
 }

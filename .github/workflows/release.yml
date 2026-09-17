@@ -102,7 +102,7 @@ jobs:
           iscc packaging/windows/ratex.iss
 
 
-      - name: Test installer end-to-end (unix)
+      - name: Test shell installer end-to-end (unix)
         if: matrix.platform != 'windows'
         shell: bash
         run: |
@@ -112,16 +112,60 @@ jobs:
           ./install.sh --prefix /tmp/ci-install-test --uninstall
           rm -rf /tmp/ci-install-test
 
-      - name: Test installer end-to-end (windows)
+      - name: Test macOS native installer (.pkg)
+        if: matrix.platform == 'macos'
+        shell: bash
+        run: |
+          PKG_FILE=$(ls dist/ratex-*-macos-*.pkg | head -n1)
+          echo "==> Installing $PKG_FILE..."
+          sudo installer -pkg "$PKG_FILE" -target /
+          echo "==> Verifying installed ratex binary..."
+          /usr/local/bin/ratex --version
+          echo "==> Cleaning up installed files..."
+          sudo rm -f /usr/local/bin/ratex /usr/local/bin/texmk /usr/local/bin/pdflatex /usr/local/bin/xelatex /usr/local/bin/lualatex /usr/local/bin/bibtex
+          sudo rm -rf /usr/local/share/tex-suite
+          sudo pkgutil --forget io.github.leoliu0.ratex || true
+
+      - name: Test Linux native package (.deb)
+        if: matrix.platform == 'linux'
+        shell: bash
+        run: |
+          DEB_FILE=$(ls dist/ratex_*.deb | head -n1)
+          echo "==> Installing $DEB_FILE..."
+          sudo dpkg -i "$DEB_FILE"
+          echo "==> Verifying installed ratex binary..."
+          /usr/bin/ratex --version
+          echo "==> Purging deb package..."
+          sudo dpkg --purge ratex
+
+      - name: Test PowerShell installer script (windows)
         if: matrix.platform == 'windows'
         shell: pwsh
         run: |
-          $testPrefix = "$PWD\dist\ci-install-test"
+          $testPrefix = "$PWD\dist\ci-script-test"
           powershell -ExecutionPolicy Bypass -File packaging/install-windows.ps1 -Prefix "$testPrefix" -NoPath -SkipVerify
           & "$testPrefix\bin\ratex.exe" --version
           powershell -ExecutionPolicy Bypass -File packaging/install-windows.ps1 -Prefix "$testPrefix" -Uninstall
           Remove-Item -Recurse -Force "$testPrefix" -ErrorAction SilentlyContinue
 
+      - name: Test Windows native installer (.exe)
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          $installer = (Get-Item dist/ratex-setup-*-windows-x64.exe).FullName
+          $testPrefix = "$PWD\dist\ci-exe-test"
+          Write-Host "==> Installing via native Inno Setup installer..."
+          Start-Process -FilePath $installer -ArgumentList "/VERYSILENT", "/NORESTART", "/SUPPRESSMSGBOXES", "/DIR=$testPrefix" -Wait -NoNewWindow
+          if (-not (Test-Path "$testPrefix\bin\ratex.exe")) {
+            throw "Failed: ratex.exe not found in $testPrefix\bin"
+          }
+          Write-Host "==> Verifying installed ratex.exe..."
+          & "$testPrefix\bin\ratex.exe" --version
+          Write-Host "==> Testing uninstaller..."
+          $uninstaller = (Get-Item "$testPrefix\unins000.exe").FullName
+          Start-Process -FilePath $uninstaller -ArgumentList "/VERYSILENT", "/NORESTART", "/SUPPRESSMSGBOXES" -Wait -NoNewWindow
+          Start-Sleep -Seconds 2
+          Remove-Item -Recurse -Force "$testPrefix" -ErrorAction SilentlyContinue
       - name: Record checksums
         id: sums
         shell: bash

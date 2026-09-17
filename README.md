@@ -2,7 +2,6 @@
 
 [![CI](https://github.com/leoliu0/ratex/actions/workflows/ci.yml/badge.svg)](https://github.com/leoliu0/ratex/actions/workflows/ci.yml)
 [![Release](https://github.com/leoliu0/ratex/actions/workflows/release.yml/badge.svg)](https://github.com/leoliu0/ratex/actions/workflows/release.yml)
-[![AUR](https://img.shields.io/aur/version/ratex-bin?color=blue)](https://aur.archlinux.org/packages/ratex-bin)
 [![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue.svg)](LICENSE)
 
 **ratex** is an ultra-fast, self-contained, pure-Rust TeX engine and typesetting toolchain. Built from scratch with zero unsafe memory compromises, it serves as a high-performance modern replacement for `pdflatex`, `xelatex`, `lualatex`, and `texmk`.
@@ -39,7 +38,7 @@ Tested and verified against **3,000 real-world arXiv papers** across mathematics
 | **macOS (Apple Silicon)** | Native `.pkg` | [Download ratex-v0.1.0-macos-arm64.pkg](https://github.com/leoliu0/ratex/releases/download/v0.1.0/ratex-v0.1.0-macos-arm64.pkg) |
 | **macOS (Intel)** | Native `.pkg` | [Download ratex-v0.1.0-macos-x86_64.pkg](https://github.com/leoliu0/ratex/releases/download/v0.1.0/ratex-v0.1.0-macos-x86_64.pkg) |
 | **Windows (x64)** | Setup Wizard `.exe` | [Download ratex-setup-v0.1.0-windows-x64.exe](https://github.com/leoliu0/ratex/releases/download/v0.1.0/ratex-setup-v0.1.0-windows-x64.exe) |
-| **Arch Linux / Manjaro** | AUR (`ratex-bin`) | `yay -S ratex-bin` (or `paru -S ratex-bin`) |
+| **Arch Linux / Manjaro** | `.pkg.tar.zst` | [Download ratex-0.1.0-1-x86_64.pkg.tar.zst](https://github.com/leoliu0/ratex/releases/download/v0.1.0/ratex-0.1.0-1-x86_64.pkg.tar.zst) |
 | **Ubuntu / Debian** | `.deb` (x86_64) | [Download ratex_0.1.0_amd64.deb](https://github.com/leoliu0/ratex/releases/download/v0.1.0/ratex_0.1.0_amd64.deb) |
 | **Fedora / RHEL / openSUSE** | `.rpm` (x86_64) | [Download ratex-0.1.0-1.x86_64.rpm](https://github.com/leoliu0/ratex/releases/download/v0.1.0/ratex-0.1.0-1.x86_64.rpm) |
 | **Universal Linux** | Standalone `.tar.gz` | [Download tex-suite-v0.1.0-linux-x86_64.tar.gz](https://github.com/leoliu0/ratex/releases/download/v0.1.0/tex-suite-v0.1.0-linux-x86_64.tar.gz) |
@@ -50,17 +49,32 @@ Download the `.pkg` installer above and double-click to install into `/usr/local
 ### Windows Installation
 Download `ratex-setup-v0.1.0-windows-x64.exe` and follow the setup wizard. It automatically adds ratex to your `PATH` and prompts to configure editor compatibility.
 
-### Arch Linux (AUR)
+### Arch Linux (`.pkg.tar.zst`)
 ```bash
-yay -S ratex-bin    # pre-compiled binary
-# or: yay -S ratex  # build from source
+sudo pacman -U ./ratex-0.1.0-1-x86_64.pkg.tar.zst
 ```
+*(PKGBUILD is also available in `packaging/arch/`)*
 
 ### Ubuntu / Debian (`.deb`)
 ```bash
 sudo apt install ./ratex_0.1.0_amd64.deb
 ```
 
+### Fedora / RHEL / openSUSE (`.rpm`)
+```bash
+# Fedora / RHEL
+sudo dnf install ./ratex-0.1.0-1.x86_64.rpm
+
+# openSUSE
+sudo zypper install ./ratex-0.1.0-1.x86_64.rpm
+```
+
+### Universal Linux (`.tar.gz`)
+```bash
+tar -xzf tex-suite-v0.1.0-linux-x86_64.tar.gz
+cd tex-suite-linux-x86_64
+sudo ./install.sh
+```
 ---
 
 ## How to Use
@@ -68,17 +82,20 @@ sudo apt install ./ratex_0.1.0_amd64.deb
 ### 1. Command Line (CLI)
 
 ```bash
-# Multi-pass auto-converging build (replaces latexmk; converges bibtex and citations automatically)
+# Multi-pass auto-converging build (replaces latexmk; converges aux and bibtex automatically)
 texmk paper.tex
 
 # Output PDF to a specific directory
 texmk -output-directory=build paper.tex
 
-# Clean auxiliary build cache
+# Clean auxiliary build artifacts and cache
 texmk -c
 
-# Direct single-pass compile (drop-in pdflatex replacement)
-pdflatex paper.tex
+# Direct single-pass compile with different engines
+pdflatex paper.tex   # pdfTeX engine
+xelatex paper.tex    # XeTeX engine
+lualatex paper.tex   # LuaTeX engine
+bibtex paper         # fast native BibTeX processor
 ```
 
 ### 2. TeXstudio Setup
@@ -112,16 +129,17 @@ Add this recipe to your VS Code `settings.json`:
 ## Build from Source
 
 Requirements: Rust 1.80+ (`cargo`).
-
 ```bash
 git clone https://github.com/leoliu0/ratex.git
 cd ratex
-cargo build --release --bin texmk
+cargo build --release
 
-# Binary is generated at target/release/texmk
-./target/release/texmk paper.tex
+# Install locally into ~/.local/bin:
+./install.sh --prefix ~/.local
+
+# Or install system-wide into /usr/local/bin:
+sudo ./install.sh
 ```
-
 ---
 
 ## Architecture

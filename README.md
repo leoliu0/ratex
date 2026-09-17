@@ -4,8 +4,8 @@
 [![Release](https://github.com/leoliu0/ratex/actions/workflows/release.yml/badge.svg)](https://github.com/leoliu0/ratex/actions/workflows/release.yml)
 [![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue.svg)](LICENSE)
 
-**ratex** is an ultra-fast, self-contained, pure-Rust TeX engine and typesetting toolchain. Built from scratch with zero unsafe memory compromises, it serves as a high-performance modern replacement for `pdflatex`, `xelatex`, `lualatex`, and `texmk`.
----
+**ratex** is an ultra-fast, self-contained, pure-Rust TeX engine and typesetting toolchain. Built from scratch with zero unsafe memory compromises, it provides a high-performance, all-in-one replacement for traditional TeX engines and build tools.
+
 
 ## Performance Highlights
 
@@ -33,89 +33,72 @@ Tested and verified against **3,000 real-world arXiv papers** across mathematics
 
 ## Installation
 
-| Platform | Package Format | Download / Command |
-|---|---|---|
-| **macOS (Apple Silicon)** | Native `.pkg` | [Download ratex-v0.1.0-macos-arm64.pkg](https://github.com/leoliu0/ratex/releases/download/v0.1.0/ratex-v0.1.0-macos-arm64.pkg) |
-| **macOS (Intel)** | Native `.pkg` | [Download ratex-v0.1.0-macos-x86_64.pkg](https://github.com/leoliu0/ratex/releases/download/v0.1.0/ratex-v0.1.0-macos-x86_64.pkg) |
-| **Windows (x64)** | Setup Wizard `.exe` | [Download ratex-setup-v0.1.0-windows-x64.exe](https://github.com/leoliu0/ratex/releases/download/v0.1.0/ratex-setup-v0.1.0-windows-x64.exe) |
-| **Arch Linux / Manjaro** | `.pkg.tar.zst` | [Download ratex-0.1.0-1-x86_64.pkg.tar.zst](https://github.com/leoliu0/ratex/releases/download/v0.1.0/ratex-0.1.0-1-x86_64.pkg.tar.zst) |
-| **Ubuntu / Debian** | `.deb` (x86_64) | [Download ratex_0.1.0_amd64.deb](https://github.com/leoliu0/ratex/releases/download/v0.1.0/ratex_0.1.0_amd64.deb) |
-| **Fedora / RHEL / openSUSE** | `.rpm` (x86_64) | [Download ratex-0.1.0-1.x86_64.rpm](https://github.com/leoliu0/ratex/releases/download/v0.1.0/ratex-0.1.0-1.x86_64.rpm) |
-| **Universal Linux** | Standalone `.tar.gz` | [Download tex-suite-v0.1.0-linux-x86_64.tar.gz](https://github.com/leoliu0/ratex/releases/download/v0.1.0/tex-suite-v0.1.0-linux-x86_64.tar.gz) |
+### Linux
+Download the native package for your distribution from [GitHub Releases](https://github.com/leoliu0/ratex/releases/tag/v0.1.0):
 
-### macOS Installation
-Download the `.pkg` installer above and double-click to install into `/usr/local/bin` (sets up `PATH` automatically).
-
-### Windows Installation
-Download `ratex-setup-v0.1.0-windows-x64.exe` and follow the setup wizard. It automatically adds ratex to your `PATH` and prompts to configure editor compatibility.
-
-### Arch Linux (`.pkg.tar.zst`)
 ```bash
-sudo pacman -U ./ratex-0.1.0-1-x86_64.pkg.tar.zst
-```
-*(PKGBUILD is also available in `packaging/arch/`)*
-
-### Ubuntu / Debian (`.deb`)
-```bash
+# Ubuntu / Debian (.deb)
 sudo apt install ./ratex_0.1.0_amd64.deb
-```
 
-### Fedora / RHEL / openSUSE (`.rpm`)
-```bash
-# Fedora / RHEL
+# Fedora / RHEL / openSUSE (.rpm)
 sudo dnf install ./ratex-0.1.0-1.x86_64.rpm
 
-# openSUSE
-sudo zypper install ./ratex-0.1.0-1.x86_64.rpm
+# Arch Linux (.pkg.tar.zst)
+sudo pacman -U ./ratex-0.1.0-1-x86_64.pkg.tar.zst
+
+# Any Linux (Universal Tarball Installer)
+tar -xzf tex-suite-v0.1.0-linux-x86_64.tar.gz && sudo ./tex-suite-linux-x86_64/install.sh
 ```
 
-### Universal Linux (`.tar.gz`)
-```bash
-tar -xzf tex-suite-v0.1.0-linux-x86_64.tar.gz
-cd tex-suite-linux-x86_64
-sudo ./install.sh
-```
+### macOS
+Download and run the native installer package:
+- [macOS Apple Silicon (.pkg)](https://github.com/leoliu0/ratex/releases/download/v0.1.0/ratex-v0.1.0-macos-arm64.pkg)
+- [macOS Intel (.pkg)](https://github.com/leoliu0/ratex/releases/download/v0.1.0/ratex-v0.1.0-macos-x86_64.pkg)
+
+### Windows
+- [Download Windows Setup (.exe)](https://github.com/leoliu0/ratex/releases/download/v0.1.0/ratex-setup-v0.1.0-windows-x64.exe)
+
 ---
 
-## How to Use
+## Usage
 
-### 1. Command Line (CLI)
+### Single-Command Build
+`ratex` is an all-in-one compiler. It automatically tracks dependencies, resolves packages in memory, runs embedded BibTeX passes, and converges auxiliary state in milliseconds:
 
 ```bash
-# Multi-pass auto-converging build (replaces latexmk; converges aux and bibtex automatically)
-texmk paper.tex
+# Compile document (automatically converges bibtex and cross-references)
+ratex paper.tex
 
 # Output PDF to a specific directory
-texmk -output-directory=build paper.tex
+ratex -output-directory=build paper.tex
 
 # Clean auxiliary build artifacts and cache
-texmk -c
-
-# Direct single-pass compile with different engines
-pdflatex paper.tex   # pdfTeX engine
-xelatex paper.tex    # XeTeX engine
-lualatex paper.tex   # LuaTeX engine
-bibtex paper         # fast native BibTeX processor
+ratex -c
 ```
 
-### 2. TeXstudio Setup
-- If you selected the `latexmk` replacement option in the Mac/Windows installer, **TeXstudio works out of the box** (press `F5`).
+### Editor Compatibility Aliases
+You do **not** need to invoke `pdflatex`, `xelatex`, or `bibtex` manually in normal use.
+
+However, `ratex` installs drop-in binary aliases (`ratex`, `texmk`, `pdflatex`, `xelatex`, `lualatex`, `bibtex`, and `latexmk`) so existing editor pipelines work immediately without reconfiguration.
+
+#### TeXstudio Setup
+- If you selected the `latexmk` replacement option during installation, **TeXstudio works out of the box** (press `F5`).
 - **Manual configuration:**
   1. Open **Options** &rarr; **Configure TeXstudio** &rarr; **Build**.
   2. Set **Default Compiler** to:
      ```text
-     texmk -pdf -interaction=nonstopmode %.tex
+     ratex -pdf -interaction=nonstopmode %.tex
      ```
   3. Press **F5** to compile.
 
-### 3. VS Code (LaTeX Workshop) Setup
+#### VS Code (LaTeX Workshop) Setup
 Add this recipe to your VS Code `settings.json`:
 
 ```json
 "latex-workshop.latex.tools": [
   {
     "name": "ratex",
-    "command": "texmk",
+    "command": "ratex",
     "args": ["-pdf", "-interaction=nonstopmode", "%DOC%"]
   }
 ],
@@ -123,7 +106,6 @@ Add this recipe to your VS Code `settings.json`:
   { "name": "ratex", "tools": ["ratex"] }
 ]
 ```
-
 ---
 
 ## Build from Source

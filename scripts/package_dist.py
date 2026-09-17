@@ -40,6 +40,7 @@ REPO = Path(__file__).resolve().parent.parent
 
 BINARIES = ["texmk"]
 ALIASES = {
+    "ratex": "texmk",
     "pdflatex": "texmk",
     "xelatex": "texmk",
     "lualatex": "texmk",

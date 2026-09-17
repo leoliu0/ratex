@@ -35,6 +35,7 @@ Name: "replaceLatexmk"; Description: "Replace latexmk with texmk (recommended fo
 
 [Files]
 ; Core binary and launcher aliases
+Source: "..\..\dist\tex-suite-windows-x86_64\bin\ratex.exe"; DestDir: "{app}\bin"; Flags: ignoreversion
 Source: "..\..\dist\tex-suite-windows-x86_64\bin\texmk.exe"; DestDir: "{app}\bin"; Flags: ignoreversion
 Source: "..\..\dist\tex-suite-windows-x86_64\bin\pdflatex.exe"; DestDir: "{app}\bin"; Flags: ignoreversion
 Source: "..\..\dist\tex-suite-windows-x86_64\bin\xelatex.exe"; DestDir: "{app}\bin"; Flags: ignoreversion

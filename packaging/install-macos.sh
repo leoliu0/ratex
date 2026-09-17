@@ -18,7 +18,7 @@ MARK_END='# <<< tex-suite <<<'
 DATA_MANIFEST_NAME='.tex-suite-managed-files-v1'
 DATA_MANIFEST_HEADER='TEX-SUITE-MANAGED-FILES-1'
 
-BIN_NAMES="texmk pdflatex xelatex lualatex tex-bibtex bibtex latexmk pdflatex.fmt"
+BIN_NAMES="ratex texmk pdflatex xelatex lualatex tex-bibtex bibtex latexmk pdflatex.fmt"
 
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 log() { printf '%s\n' "$*"; }

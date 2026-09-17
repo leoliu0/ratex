@@ -27,7 +27,7 @@ pub(crate) fn main() -> ExitCode {
         "xelatex" => (Some("engine"), Some("xelatex")),
         "lualatex" => (Some("engine"), Some("lualatex")),
         "tex-bibtex" | "bibtex" => (Some("bibtex"), None),
-        "latexmk" => (None, None),
+        "ratex" | "latexmk" => (None, None),
         _ => {
             eprintln!(
                 "tex-suite launcher: unsupported executable name `{}`",

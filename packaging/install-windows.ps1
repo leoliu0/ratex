@@ -73,6 +73,7 @@ $Script:ExtraExes = @()
 # Public alias -> canonical program. Release bundles contain the aliases as
 # tiny launchers, avoiding duplicate copies of the PDF engine.
 $Script:Shims = @(
+    @{ Name = 'ratex.exe';      Parent = 'texmk.exe' },
     @{ Name = 'pdflatex.exe';   Parent = 'texmk.exe' },
     @{ Name = 'xelatex.exe';    Parent = 'texmk.exe' },
     @{ Name = 'lualatex.exe';   Parent = 'texmk.exe' },

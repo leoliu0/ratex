@@ -172,9 +172,8 @@ def main():
         shutil.copy2(target_bin, usr_bin / "texmk")
 
         # Create symlink aliases
-        for alias in ["pdflatex", "xelatex", "lualatex", "tex-bibtex", "bibtex", "latexmk"]:
+        for alias in ["ratex", "pdflatex", "xelatex", "lualatex", "tex-bibtex", "bibtex", "latexmk"]:
             (usr_bin / alias).symlink_to("texmk")
-
         # Copy texmf data using package_dist asset staging
         stage_texmf = usr_share / "texmf"
         package_dist.stage_assets(stage_texmf)

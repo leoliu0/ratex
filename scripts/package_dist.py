@@ -474,13 +474,7 @@ def verify_archive(out: Path, root_name: str, is_windows: bool, has_format: bool
             names = tf.getnames()
     s = ".exe" if is_windows else ""
     expect = [
-        f"{root_name}/bin/pdflatex{s}",
-        f"{root_name}/bin/xelatex{s}",
-        f"{root_name}/bin/lualatex{s}",
-        f"{root_name}/bin/tex-bibtex{s}",
-        f"{root_name}/bin/bibtex{s}",
-        f"{root_name}/bin/texmk{s}",
-        f"{root_name}/bin/latexmk{s}",
+        f"{root_name}/bin/ratex{s}",
         f"{root_name}/README.txt",
         f"{root_name}/manifest.json",
     ]

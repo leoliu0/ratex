@@ -1999,6 +1999,17 @@ mod tests {
         assert_eq!(kpse.find("shadow", Format::Tex), Some(local));
     }
 
+    fn advance_directory_clock(path: &Path, prev: &DirectoryGeneration) {
+        for _ in 0..100 {
+            if let Some(current) = directory_generation(path) {
+                if current.mtime_sec != prev.mtime_sec || current.mtime_nsec != prev.mtime_nsec {
+                    return;
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
     #[cfg(all(unix, not(target_os = "macos")))]
     #[test]
     fn local_snapshot_cache_tracks_live_membership_and_case_changes() {
@@ -2015,6 +2026,7 @@ mod tests {
 
         // A newly-created, lexically earlier casefold match must replace the
         // cached choice, while a true exact candidate always wins live.
+        advance_directory_clock(&cwd, first.generation.as_ref().unwrap());
         let earlier = tmp.write("project/MIXED.TEX", "earlier");
         assert_eq!(kpse.find("mixed.tex", Format::Tex), Some(earlier.clone()));
         let after_creation = kpse.local_directory_snapshot(&cwd).unwrap();
@@ -2022,24 +2034,28 @@ mod tests {
         let exact = tmp.write("project/mixed.tex", "exact");
         assert_eq!(kpse.find("mixed.tex", Format::Tex), Some(exact.clone()));
 
+        advance_directory_clock(&cwd, after_creation.generation.as_ref().unwrap());
         std::fs::remove_file(exact).unwrap();
         std::fs::remove_file(earlier).unwrap();
         assert_eq!(kpse.find("mixed.tex", Format::Tex), Some(original.clone()));
         let after_removal = kpse.local_directory_snapshot(&cwd).unwrap();
         assert!(!Rc::ptr_eq(&after_creation, &after_removal));
 
+        advance_directory_clock(&cwd, after_removal.generation.as_ref().unwrap());
         let renamed = cwd.join("MiXeD.tEx");
         std::fs::rename(&original, &renamed).unwrap();
         assert_eq!(kpse.find("mixed.tex", Format::Tex), Some(renamed.clone()));
         let after_case_change = kpse.local_directory_snapshot(&cwd).unwrap();
         assert!(!Rc::ptr_eq(&after_removal, &after_case_change));
 
+        advance_directory_clock(&cwd, after_case_change.generation.as_ref().unwrap());
         std::fs::remove_file(&renamed).unwrap();
         std::fs::create_dir(&renamed).unwrap();
         assert_eq!(kpse.find("mixed.tex", Format::Tex), None);
         let after_replacement = kpse.local_directory_snapshot(&cwd).unwrap();
         assert!(!Rc::ptr_eq(&after_case_change, &after_replacement));
 
+        advance_directory_clock(&cwd, after_replacement.generation.as_ref().unwrap());
         std::fs::remove_dir(&renamed).unwrap();
         let final_file = tmp.write("project/mIXeD.tex", "final");
         assert_eq!(kpse.find("mixed.tex", Format::Tex), Some(final_file));

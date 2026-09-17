@@ -1999,10 +1999,11 @@ mod tests {
         assert_eq!(kpse.find("shadow", Format::Tex), Some(local));
     }
 
+    #[cfg(all(unix, not(target_os = "macos")))]
     fn advance_directory_clock(path: &Path, prev: &DirectoryGeneration) {
         for _ in 0..100 {
             if let Some(current) = directory_generation(path) {
-                if current.mtime_sec != prev.mtime_sec || current.mtime_nsec != prev.mtime_nsec {
+                if &current != prev {
                     return;
                 }
             }

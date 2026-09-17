@@ -1630,13 +1630,15 @@ mod tests {
         eng.eqtb.assign_cat(b'~', 10, false); // non-global at level 1: no save
         eng.eqtb.cur_level = 2;
         eng.eqtb.assign_cat(b'~', 10, false); // pushes a save item
-        assert!(save_format(&eng, Path::new("/tmp/never.fmt")).is_err());
+        let tmp = std::env::temp_dir().join(format!("never-{}.fmt", std::process::id()));
+        assert!(save_format(&eng, &tmp).is_err());
 
         // Boxes (even non-void) are dumpable: LaTeX's boot assigns box
         // registers, and tex.web's \dump only requires top-level state.
         let mut eng = build_booted_engine();
         eng.eqtb.assign_box(1, None, true);
-        assert!(save_format(&eng, Path::new("/tmp/never.fmt")).is_ok());
+        assert!(save_format(&eng, &tmp).is_ok());
+        let _ = std::fs::remove_file(&tmp);
         eng.eqtb.assign_box(
             2,
             Some(crate::boxes::Node::Rule {

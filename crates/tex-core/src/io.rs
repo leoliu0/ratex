@@ -1998,7 +1998,7 @@ mod tests {
         ));
         let output = missing_parent.join("result.out");
         assert!(!missing_parent.exists());
-        let output = output.to_string_lossy();
+        let output = output.to_string_lossy().replace('\\', "/");
         let cases = [
             (
                 format!("\\message{{before}}\n\\immediate\\openout4={output}\n\\end\n"),
@@ -2020,7 +2020,7 @@ mod tests {
                 .find(|diagnostic| diagnostic.message.starts_with("Cannot open output file"))
                 .expect("openout diagnostic");
             assert!(
-                diagnostic.message.contains(output.as_ref()),
+                diagnostic.message.contains(&output),
                 "{}",
                 diagnostic.message
             );

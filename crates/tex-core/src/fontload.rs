@@ -1688,13 +1688,12 @@ mod tests {
             std::process::id()
         ));
         std::fs::write(&path, b"not an OpenType font").unwrap();
+        let font_path = path.to_string_lossy().replace('\\', "/");
         let source = format!(
-            "\\relax\n\\font\\broken={}\n\\end\n",
-            path.to_string_lossy()
+            "\\relax\n\\font\\broken={font_path}\n\\end\n"
         );
         let engine = run_font_error(source);
         let _ = std::fs::remove_file(&path);
-
         let diagnostic = engine
             .diagnostics
             .iter()

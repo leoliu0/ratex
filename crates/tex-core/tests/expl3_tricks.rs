@@ -135,15 +135,17 @@ fn numeric_conditional_keeps_operand_conditionals_nested() {
 
 #[test]
 fn pdffilesize_missing_is_empty() {
+    let tmp = std::env::temp_dir().join(format!("ratex-filesize-test-{}", std::process::id()));
+    std::fs::write(&tmp, "hello world").unwrap();
+    let tmp_path = tmp.to_string_lossy().replace('\\', "/");
     let mut e = boot();
     run_tex(
         &mut e,
-        r#"
-\catcode`\{=1 \catcode`\}=2
-\edef\missing{\pdffilesize{uenc.dfu}}
-\edef\present{\pdffilesize{ot1enc.dfu}}
-"#,
+        &format!(
+            "\\catcode`\\{{=1 \\catcode`\\}}=2\n\\edef\\missing{{\\pdffilesize{{nonexistent-file-xyz.tex}}}}\n\\edef\\present{{\\pdffilesize{{{tmp_path}}}}}\n"
+        ),
     );
+    let _ = std::fs::remove_file(&tmp);
     assert_eq!(e.error_count, 0, "errors:\n{}", e.term);
     let body = |nm: &[u8]| {
         let id = e.cs.lookup(nm).unwrap();
@@ -1629,10 +1631,10 @@ fn usex_via_expargs_macro() {
 fn input_from_macro_runs_file_before_rest() {
     let path = std::env::temp_dir().join("tex_input_order.tex");
     std::fs::write(&path, r"\def\z{file}").unwrap();
+    let path_str = path.to_string_lossy().replace('\\', "/");
     let mut e = boot();
     let src = format!(
-        "\\catcode`\\{{=1 \\catcode`\\}}=2 \\catcode`\\#=6\n\\def\\x{{\\input {} \\def\\z{{after}}}}\n\\x\n",
-        path.display()
+        "\\catcode`\\{{=1 \\catcode`\\}}=2 \\catcode`\\#=6\n\\def\\x{{\\input {path_str} \\def\\z{{after}}}}\n\\x\n"
     );
     run_tex(&mut e, &src);
     assert_eq!(e.error_count, 0, "errors:\n{}", e.term);
@@ -2226,20 +2228,20 @@ fn read_uses_catcodes_comments_balancing_and_disabled_endlinechar() {
     let path =
         std::env::temp_dir().join(format!("rust-tex-read-tokens-{}.dat", std::process::id()));
     std::fs::write(&path, b"\n\\value%comment\n{a\nb}\n").unwrap();
+    let path_str = path.to_string_lossy().replace('\\', "/");
     let mut e = boot();
     let source = format!(
         r#"
 \catcode`\{{=1 \catcode`\}}=2 \catcode`\%=14
 \def\value{{73}}\endlinechar=-1
-\openin1={}
+\openin1={path_str}
 \read1 to\line \def\empty{{}}
 \ifx\line\empty \count0=1\fi
 \read1 to\line \count1=\line
 \read1 to\line \def\expected{{{{ab}}}}
 \ifx\line\expected \count2=1\fi
 \closein1
-"#,
-        path.display()
+        "#
     );
     run_tex(&mut e, &source);
     std::fs::remove_file(path).unwrap();

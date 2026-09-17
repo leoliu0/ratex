@@ -28,15 +28,7 @@ def build_deb(stage_root: Path, output_dir: Path, version: str, arch: str = "amd
     deb_name = f"ratex_{version}_{arch}.deb"
     deb_path = output_dir.resolve() / deb_name
 
-    with tempfile.TemporaryDirectory(prefix="deb-build-") as tmpdir:
-        tmp = Path(tmpdir)
-        # 1. debian-binary
-        (tmp / "debian-binary").write_text("2.0\n")
-
-        # 2. control.tar.gz
-        control_dir = tmp / "control"
-        control_dir.mkdir()
-        control_content = f"""Package: ratex
+    control_content = f"""Package: ratex
 Version: {version}
 Section: tex
 Priority: optional
@@ -46,16 +38,39 @@ Description: Ultra-fast, pure-Rust TeX engine and typesetting toolchain
  Ratex is an ultra-fast, pure-Rust TeX engine and typesetting toolchain.
 Provides: ratex
 """
+    if shutil.which("dpkg-deb"):
+        with tempfile.TemporaryDirectory(prefix="deb-stage-") as tmpdir:
+            tmp = Path(tmpdir)
+            for item in stage_root.iterdir():
+                if item.is_dir():
+                    shutil.copytree(item, tmp / item.name)
+                else:
+                    shutil.copy2(item, tmp / item.name)
+            debian_dir = tmp / "DEBIAN"
+            debian_dir.mkdir()
+            (debian_dir / "control").write_text(control_content)
+            cmd = ["dpkg-deb", "--build", "--root-owner-group", str(tmp), str(deb_path)]
+            subprocess.run(cmd, check=True)
+            return deb_path
+
+    with tempfile.TemporaryDirectory(prefix="deb-build-") as tmpdir:
+        tmp = Path(tmpdir)
+        # 1. debian-binary
+        (tmp / "debian-binary").write_text("2.0\n")
+
+        # 2. control.tar.gz
+        control_dir = tmp / "control"
+        control_dir.mkdir()
         (control_dir / "control").write_text(control_content)
 
         control_tar = tmp / "control.tar.gz"
-        with tarfile.open(control_tar, "w:gz") as tar:
+        with tarfile.open(control_tar, "w:gz", format=tarfile.GNU_FORMAT) as tar:
             for item in control_dir.iterdir():
                 tar.add(item, arcname=f"./{item.name}")
 
         # 3. data.tar.xz
         data_tar = tmp / "data.tar.xz"
-        with tarfile.open(data_tar, "w:xz") as tar:
+        with tarfile.open(data_tar, "w:xz", format=tarfile.GNU_FORMAT) as tar:
             for item in stage_root.iterdir():
                 tar.add(item, arcname=f"./{item.name}")
 

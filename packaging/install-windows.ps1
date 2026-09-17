@@ -54,8 +54,10 @@ param(
     [switch]$ReplaceLatexmk,
     [switch]$NoReplaceLatexmk,
     [string]$SourceDir = '',
-    [string]$InstallDir = ''
-)
+    [Alias('Prefix')]
+    [string]$InstallDir = '',
+    [switch]$NoPath,
+    [switch]$SkipVerify
 
 $ErrorActionPreference = 'Stop'
 
@@ -767,20 +769,21 @@ function Install-Suite {
     #    a semicolon-separated list of TDS roots. TEX_SUITE_DATA is set as a
     #    convenience pointer to the data directory for other tooling.
     $texmfDst = Join-Path $data 'texmf'
-    Set-EnvVarPersistent -Scope $scope -Name 'TEXMFLOCAL' -Value $texmfDst
-    Set-EnvVarPersistent -Scope $scope -Name 'TEX_SUITE_DATA' -Value $data
-    Add-ToPathIdempotent -Scope $scope -Dir $bin
+    if (-not $NoPath) {
+        Set-EnvVarPersistent -Scope $scope -Name 'TEXMFLOCAL' -Value $texmfDst
+        Set-EnvVarPersistent -Scope $scope -Name 'TEX_SUITE_DATA' -Value $data
+        Add-ToPathIdempotent -Scope $scope -Dir $bin
 
-    # Make the current session usable immediately (children only).
-    $env:TEXMFLOCAL = $texmfDst
-    $env:TEX_SUITE_DATA = $data
-    if (($env:Path -split ';' | ForEach-Object { $_.Trim().TrimEnd('\') }) -inotcontains $bin.TrimEnd('\')) {
-        $env:Path = $bin + ';' + $env:Path
+        # Make the current session usable immediately (children only).
+        $env:TEXMFLOCAL = $texmfDst
+        $env:TEX_SUITE_DATA = $data
+        if (($env:Path -split ';' | ForEach-Object { $_.Trim().TrimEnd('\') }) -inotcontains $bin.TrimEnd('\')) {
+            $env:Path = $bin + ';' + $env:Path
+        }
     }
-
     # 6. Verify.
     $pdflatexExe = Join-Path $bin 'pdflatex.exe'
-    if (Test-Path -LiteralPath $pdflatexExe) {
+    if ((-not $SkipVerify) -and (Test-Path -LiteralPath $pdflatexExe)) {
         if (Invoke-Verify -Exe $pdflatexExe) {
             Write-Info 'Installation verified.'
         } else {
@@ -789,7 +792,6 @@ function Install-Suite {
                            'from a terminal to inspect its diagnostic.')
         }
     }
-
     Write-Info 'Done. Open a NEW terminal, then try: pdflatex -version'
 }
 

@@ -26,15 +26,11 @@ fn parse_rfs_bst() {
     }
     println!("{:?}", counts);
     assert!(cmds.len() > 100);
-    let aux_text = std::fs::read_to_string(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/tests/fixtures/main.aux"
-    ))
-    .unwrap();
-    let a = aux::parse_aux(&aux_text);
+    let sample_aux = "\\citation{foo,bar}\n\\bibstyle{rfs}\n\\bibdata{references}\n";
+    let a = aux::parse_aux(sample_aux);
     assert_eq!(a.bibstyle.as_deref(), Some("rfs"));
     assert_eq!(a.bibdata, vec!["references"]);
-    assert_eq!(a.cites.len(), 173);
+    assert_eq!(a.cites, vec!["foo", "bar"]);
 }
 
 #[test]

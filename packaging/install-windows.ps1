@@ -136,18 +136,24 @@ function Get-ManagedChildPath {
 
 function Test-ManagedParentChain {
     param([string]$Root, [string]$Path)
-    $rootFull = [IO.Path]::GetFullPath($Root).TrimEnd('\')
+    $rootItem = Get-Item -LiteralPath $Root -Force -ErrorAction SilentlyContinue
+    $rootFull = if ($rootItem) { $rootItem.FullName.TrimEnd('\') } else { [IO.Path]::GetFullPath($Root).TrimEnd('\') }
     $current = Split-Path -Parent $Path
-    while ($current -and -not $current.Equals($rootFull, [StringComparison]::OrdinalIgnoreCase)) {
-        $item = Get-Item -LiteralPath $current -Force -ErrorAction SilentlyContinue
-        if ($item -and (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
+    while ($current) {
+        $currentItem = Get-Item -LiteralPath $current -Force -ErrorAction SilentlyContinue
+        $currentFull = if ($currentItem) { $currentItem.FullName.TrimEnd('\') } else { [IO.Path]::GetFullPath($current).TrimEnd('\') }
+        if ($currentFull.Equals($rootFull, [StringComparison]::OrdinalIgnoreCase) -or
+            $current.Equals($rootFull, [StringComparison]::OrdinalIgnoreCase)) {
+            return $true
+        }
+        if ($currentItem -and (($currentItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
             return $false
         }
         $next = Split-Path -Parent $current
         if (-not $next -or $next -eq $current) { return $false }
         $current = $next
     }
-    return $current -and $current.Equals($rootFull, [StringComparison]::OrdinalIgnoreCase)
+    return $false
 }
 
 function Read-InstallManifest {
@@ -584,6 +590,9 @@ function Install-Suite {
         (($rootItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
         throw "Refusing an install root that is not a plain directory: $root"
     }
+    $root = $rootItem.FullName.TrimEnd('\')
+    $bin = Join-Path $root 'bin'
+    $data = Join-Path $root (Join-Path 'share' 'tex-suite')
     foreach ($directory in @($bin, $data)) {
         $probe = Join-Path $directory '.tex-suite-parent-check'
         if (-not (Test-ManagedParentChain -Root $root -Path $probe)) {

@@ -116,10 +116,11 @@ jobs:
         if: matrix.platform == 'windows'
         shell: pwsh
         run: |
-          powershell -ExecutionPolicy Bypass -File packaging/install-windows.ps1 -Prefix "$env:TEMP\ci-install-test" -NoPath -SkipVerify
-          & "$env:TEMP\ci-install-test\bin\ratex.exe" --version
-          powershell -ExecutionPolicy Bypass -File packaging/install-windows.ps1 -Prefix "$env:TEMP\ci-install-test" -Uninstall
-          Remove-Item -Recurse -Force "$env:TEMP\ci-install-test" -ErrorAction SilentlyContinue
+          $testPrefix = "$PWD\dist\ci-install-test"
+          powershell -ExecutionPolicy Bypass -File packaging/install-windows.ps1 -Prefix "$testPrefix" -NoPath -SkipVerify
+          & "$testPrefix\bin\ratex.exe" --version
+          powershell -ExecutionPolicy Bypass -File packaging/install-windows.ps1 -Prefix "$testPrefix" -Uninstall
+          Remove-Item -Recurse -Force "$testPrefix" -ErrorAction SilentlyContinue
 
       - name: Record checksums
         id: sums

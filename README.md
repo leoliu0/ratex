@@ -52,7 +52,7 @@ tar -xzf tex-suite-v0.1.0-linux-x86_64.tar.gz && sudo ./tex-suite-linux-x86_64/i
 
 ### macOS
 Download and run the native installer package:
-- [macOS Apple Silicon (.pkg)](https://github.com/leoliu0/ratex/releases/download/v0.1.0/ratex-v0.1.0-macos-arm64.pkg)
+- [macOS Apple Silicon (.pkg)](https://github.com/leoliu0/ratex/releases/download/v0.1.0/ratex-v0.1.0-macos-aarch64.pkg)
 - [macOS Intel (.pkg)](https://github.com/leoliu0/ratex/releases/download/v0.1.0/ratex-v0.1.0-macos-x86_64.pkg)
 
 ### Windows

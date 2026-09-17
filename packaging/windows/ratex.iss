@@ -29,6 +29,8 @@ ChangesEnvironment=yes
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
+[Tasks]
+Name: "envPath"; Description: "Add ratex to environment PATH (recommended)"; GroupDescription: "System Integration:"
 [Files]
 
 ; Core binary

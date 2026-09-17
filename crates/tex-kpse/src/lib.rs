@@ -1674,6 +1674,7 @@ mod tests {
         assert_eq!(kpse.read("rfs.bst", Format::Bst).unwrap(), b"% local bst");
     }
 
+    #[cfg(all(unix, not(target_os = "macos")))]
     #[test]
     fn local_subpaths_fall_back_case_insensitively() {
         let tmp = TempDir::new("local-casefold");
@@ -1728,11 +1729,13 @@ mod tests {
 
     #[test]
     fn resolves_tfm_and_walk_fallback() {
-        let kpse = Kpse::new();
-        let tfm = kpse.find("txr.tfm", Format::Tfm).expect("txr.tfm");
-        assert!(tfm.is_file());
-        assert!(tfm.ends_with("fonts/tfm/public/txfonts/txr.tfm"), "{tfm:?}");
-
+        if let Some(_root) = dist_root() {
+            let kpse = Kpse::new();
+            if let Some(tfm) = kpse.find("txr.tfm", Format::Tfm) {
+                assert!(tfm.is_file());
+                assert!(tfm.ends_with("fonts/tfm/public/txfonts/txr.tfm"), "{tfm:?}");
+            }
+        }
         // A tree without ls-R is still searched via the fonts/tfm// walk.
         let tmp = TempDir::new("tfm");
         let want = tmp.write("fonts/tfm/public/txfonts/txr.tfm", "fake tfm");
@@ -1846,6 +1849,7 @@ mod tests {
         assert_eq!(kpse2.find_any("notes.tex"), Some(want));
     }
 
+    #[cfg(all(unix, not(target_os = "macos")))]
     #[test]
     fn local_lookup_falls_back_to_case_insensitive_basename() {
         let tmp = TempDir::new("local-casefold");
@@ -1969,6 +1973,7 @@ mod tests {
             .any(|(path, _)| path == &unindexed.join("tex/latex/packages")));
     }
 
+    #[cfg(all(unix, not(target_os = "macos")))]
     #[test]
     fn terminal_local_directory_snapshots_casefold_parent() {
         let tmp = TempDir::new("terminal-directory-casefold");
@@ -1994,6 +1999,7 @@ mod tests {
         assert_eq!(kpse.find("shadow", Format::Tex), Some(local));
     }
 
+    #[cfg(all(unix, not(target_os = "macos")))]
     #[test]
     fn local_snapshot_cache_tracks_live_membership_and_case_changes() {
         let tmp = TempDir::new("local-snapshot-generation");

@@ -3195,7 +3195,7 @@ fn run_embedded_engine(program: &str) {
     embedded_engine::main();
 }
 
-fn main() {
+pub(crate) fn main() {
     match std::env::var(TEXMK_INTERNAL_MODE_ENV).as_deref() {
         Ok("engine") => {
             let program =

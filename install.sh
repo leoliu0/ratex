@@ -15,10 +15,9 @@ usage() {
     cat <<'EOF'
 Usage: ./install.sh [options]
 
-Cross-platform installer for the Rust TeX suite: pdflatex, xelatex,
-lualatex, bibtex, texmk, latexmk, plus the runtime data directory
-(texmf overlay; the compressed LaTeX format is embedded). Auto-dispatches
-to the native installer for Linux, macOS, and (via guidance) Windows.
+Cross-platform installer for ratex: ultra-fast, pure-Rust TeX engine
+and typesetting toolchain. Auto-dispatches to the native installer
+for Linux, macOS, and (via guidance) Windows.
 
 Modes (auto-detected unless overridden):
   bundle       run this script from an extracted release archive: the
@@ -37,9 +36,7 @@ Options (forwarded to the platform installer):
   --data-dir DIR   Override the runtime data directory
   --link           Symlink binaries into PREFIX/bin instead of copying
   --no-path        Do not edit shell profiles
-  --skip-verify    Skip the post-install pdflatex version check
-  --alias-latexmk  Create 'latexmk' alias pointing to texmk (default)
-  --no-alias-latexmk Do not create 'latexmk' alias
+  --skip-verify    Skip the post-install ratex version check
   --uninstall      Remove installed binaries, data dir, and profile block
   -h, --help       Show this help and exit
 

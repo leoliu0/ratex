@@ -22,6 +22,10 @@ path = "src/bin/bibtex.rs"
 name = "texmk"
 path = "src/bin/texmk.rs"
 
+
+[[bin]]
+name = "ratex"
+path = "src/bin/ratex.rs"
 [dependencies]
 mimalloc = "0.1.52"
 libmimalloc-sys = "0.1.49"

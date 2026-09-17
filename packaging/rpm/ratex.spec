@@ -6,12 +6,7 @@ License:        MIT or Apache-2.0
 URL:            https://github.com/leoliu0/ratex
 Source0:        %{name}-%{version}.tar.gz
 
-Provides:       texmk
-Provides:       latexmk
-Provides:       pdflatex
-Provides:       xelatex
-Provides:       lualatex
-Provides:       bibtex
+Provides:       ratex
 
 %description
 Ratex is an ultra-fast, memory-safe, drop-in replacement for pdflatex and
@@ -28,13 +23,7 @@ mkdir -p $RPM_BUILD_ROOT%{_datadir}/tex-suite
 ./install.sh --prefix $RPM_BUILD_ROOT%{_prefix} --no-path --skip-verify --alias-latexmk
 
 %files
-%{_bindir}/texmk
-%{_bindir}/latexmk
-%{_bindir}/pdflatex
-%{_bindir}/xelatex
-%{_bindir}/lualatex
-%{_bindir}/tex-bibtex
-%{_bindir}/bibtex
+%{_bindir}/ratex
 %{_datadir}/tex-suite/texmf
 
 %changelog

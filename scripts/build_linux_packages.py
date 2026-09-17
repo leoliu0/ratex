@@ -43,9 +43,8 @@ Priority: optional
 Architecture: {arch}
 Maintainer: Leo Liu <leoliu0@users.noreply.github.com>
 Description: Ultra-fast, pure-Rust TeX engine and typesetting toolchain
- Ratex is an ultra-fast, memory-safe, drop-in replacement for pdflatex and
- latexmk with an embedded precompiled LaTeX format and near-instant startup.
-Provides: pdflatex, latexmk, texmk, xelatex, lualatex, bibtex
+ Ratex is an ultra-fast, pure-Rust TeX engine and typesetting toolchain.
+Provides: ratex
 """
         (control_dir / "control").write_text(control_content)
 
@@ -90,12 +89,6 @@ arch = x86_64
 license = MIT
 license = Apache-2.0
 provides = ratex
-provides = texmk
-provides = latexmk
-provides = pdflatex
-provides = xelatex
-provides = lualatex
-provides = bibtex
 """
         (pkgdir / ".PKGINFO").write_text(pkginfo)
 
@@ -118,7 +111,7 @@ Summary:        Ultra-fast, pure-Rust TeX engine and typesetting toolchain
 License:        MIT or Apache-2.0
 URL:            https://github.com/leoliu0/ratex
 BuildArch:      x86_64
-Provides:       texmk, pdflatex, xelatex, lualatex
+Provides:       ratex
 
 %description
 Ultra-fast pure-Rust TeX engine and toolchain.
@@ -163,18 +156,18 @@ def main():
         usr_share = stage / "usr" / "share" / "tex-suite"
         usr_share.mkdir(parents=True)
 
-        target_bin = REPO / "target" / "release" / "texmk"
+        target_bin = REPO / "target" / "release" / "ratex"
+        if not target_bin.exists():
+            target_bin = REPO / "target" / "release" / "texmk"
         if not target_bin.exists():
             print("Building release binaries...")
             subprocess.run(["cargo", "build", "--release", "--workspace"], cwd=REPO, check=True)
+            target_bin = REPO / "target" / "release" / "ratex"
+            if not target_bin.exists():
+                target_bin = REPO / "target" / "release" / "texmk"
 
         # Copy canonical binary
-        shutil.copy2(target_bin, usr_bin / "texmk")
-
-        # Create symlink aliases
-        for alias in ["ratex", "pdflatex", "xelatex", "lualatex", "tex-bibtex", "bibtex", "latexmk"]:
-            (usr_bin / alias).symlink_to("texmk")
-        # Copy texmf data using package_dist asset staging
+        shutil.copy2(target_bin, usr_bin / "ratex")
         stage_texmf = usr_share / "texmf"
         package_dist.stage_assets(stage_texmf)
 

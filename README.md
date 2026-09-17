@@ -24,7 +24,7 @@ Tested and verified against **3,000 real-world arXiv papers** across mathematics
 ## Key Features
 
 - **100% Self-Contained**: Embeds the LaTeX format, over 24,000 packages, all AMS math symbols, and CJK (Chinese, Japanese, Korean) fonts directly in the binary. No external TeX Live installation needed.
-- **Drop-in Engine Replacement**: Replaces `pdflatex`, `xelatex`, and `lualatex` everywhere. On macOS and Windows, optionally replaces `latexmk` with `texmk` for zero-configuration IDE compatibility.
+- **All-in-One Engine & Toolchain**: Combines the TeX engine, package resolver, BibTeX interpreter, and build convergence into a single unified `ratex` command.
 - **Sub-10ms Incremental Builds**: Built-in cryptographic dependency graph and auxiliary state validator enables near-instant rebuilds on document edits.
 - **Memory-Safe Pure Rust**: Written with strict bounds checks, eliminating buffer overflows, segfaults, and memory corruption bugs common in legacy C TeX engines.
 - **Compiler-Grade Diagnostics**: Beautiful rustc-style error reporting with physical source line excerpts, underlines, and actionable fix suggestions.
@@ -76,13 +76,9 @@ ratex -output-directory=build paper.tex
 ratex -c
 ```
 
-### Editor Compatibility Aliases
-You do **not** need to invoke `pdflatex`, `xelatex`, or `bibtex` manually in normal use.
-
-However, `ratex` installs drop-in binary aliases (`ratex`, `texmk`, `pdflatex`, `xelatex`, `lualatex`, `bibtex`, and `latexmk`) so existing editor pipelines work immediately without reconfiguration.
-
+### Editor Setup
+Configure your editor or build system to invoke `ratex`:
 #### TeXstudio Setup
-- If you selected the `latexmk` replacement option during installation, **TeXstudio works out of the box** (press `F5`).
 - **Manual configuration:**
   1. Open **Options** &rarr; **Configure TeXstudio** &rarr; **Build**.
   2. Set **Default Compiler** to:

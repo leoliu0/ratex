@@ -38,16 +38,8 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 
-BINARIES = ["texmk"]
-ALIASES = {
-    "ratex": "texmk",
-    "pdflatex": "texmk",
-    "xelatex": "texmk",
-    "lualatex": "texmk",
-    "tex-bibtex": "texmk",
-    "bibtex": "texmk",
-    "latexmk": "texmk",
-}
+BINARIES = ["ratex"]
+ALIASES = {}
 # xelatex/lualatex are themselves tiny instances of the generic launcher.
 # Reuse one of them to create every alias in a Windows zip.
 WINDOWS_LAUNCHER = "xelatex"

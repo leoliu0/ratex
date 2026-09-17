@@ -108,7 +108,7 @@ jobs:
         run: |
           mkdir -p /tmp/ci-install-test
           ./install.sh --prefix /tmp/ci-install-test --no-path --skip-verify
-          /tmp/ci-install-test/bin/texmk --version
+          /tmp/ci-install-test/bin/ratex --version
           ./install.sh --prefix /tmp/ci-install-test --uninstall
           rm -rf /tmp/ci-install-test
 
@@ -117,7 +117,7 @@ jobs:
         shell: pwsh
         run: |
           powershell -ExecutionPolicy Bypass -File packaging/install-windows.ps1 -Prefix "$env:TEMP\ci-install-test" -NoPath -SkipVerify
-          & "$env:TEMP\ci-install-test\bin\texmk.exe" --version
+          & "$env:TEMP\ci-install-test\bin\ratex.exe" --version
           powershell -ExecutionPolicy Bypass -File packaging/install-windows.ps1 -Prefix "$env:TEMP\ci-install-test" -Uninstall
           Remove-Item -Recurse -Force "$env:TEMP\ci-install-test" -ErrorAction SilentlyContinue
 

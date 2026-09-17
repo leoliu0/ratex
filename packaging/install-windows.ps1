@@ -68,19 +68,9 @@ if (-not $PSScriptRoot) {
 
 # --------------------------------------------------------------- constants
 
-$Script:CoreExes = @('texmk.exe')
+$Script:CoreExes = @('ratex.exe')
 $Script:ExtraExes = @()
-# Public alias -> canonical program. Release bundles contain the aliases as
-# tiny launchers, avoiding duplicate copies of the PDF engine.
-$Script:Shims = @(
-    @{ Name = 'ratex.exe';      Parent = 'texmk.exe' },
-    @{ Name = 'pdflatex.exe';   Parent = 'texmk.exe' },
-    @{ Name = 'xelatex.exe';    Parent = 'texmk.exe' },
-    @{ Name = 'lualatex.exe';   Parent = 'texmk.exe' },
-    @{ Name = 'tex-bibtex.exe'; Parent = 'texmk.exe' },
-    @{ Name = 'bibtex.exe';     Parent = 'texmk.exe' },
-    @{ Name = 'latexmk.exe'; Parent = 'texmk.exe' }
-)
+$Script:Shims = @()
 if ($ReplaceLatexmk) { $AliasLatexmk = $true }
 if ($NoReplaceLatexmk) { $NoAliasLatexmk = $true }
 
@@ -413,7 +403,7 @@ function Find-Source {
     foreach ($c in $candidates) {
         if (-not $c) { continue }
         $bin = Join-Path $c 'bin'
-        if (Test-Path -LiteralPath (Join-Path $bin 'texmk.exe')) {
+        if ((Test-Path -LiteralPath (Join-Path $bin 'ratex.exe')) -or (Test-Path -LiteralPath (Join-Path $bin 'texmk.exe'))) {
             $data = Join-Path $c (Join-Path 'share' 'tex-suite')
             return [pscustomobject]@{
                 Mode   = 'bundle'
@@ -429,7 +419,7 @@ function Find-Source {
     foreach ($c in $candidates) {
         if (-not $c) { continue }
         $rel = Join-Path $c 'target\release'
-        if (Test-Path -LiteralPath (Join-Path $rel 'texmk.exe')) {
+        if ((Test-Path -LiteralPath (Join-Path $rel 'ratex.exe')) -or (Test-Path -LiteralPath (Join-Path $rel 'texmk.exe'))) {
             $texmf = $null
             foreach ($t in @((Join-Path $c (Join-Path 'share\tex-suite' 'texmf')), (Join-Path $c 'texmf'))) {
                 if (Test-Path -LiteralPath $t) { $texmf = $t; break }
@@ -783,17 +773,17 @@ function Install-Suite {
         }
     }
     # 6. Verify.
-    $pdflatexExe = Join-Path $bin 'pdflatex.exe'
-    if ((-not $SkipVerify) -and (Test-Path -LiteralPath $pdflatexExe)) {
-        if (Invoke-Verify -Exe $pdflatexExe) {
+    $ratexExe = Join-Path $bin 'ratex.exe'
+    if ((-not $SkipVerify) -and (Test-Path -LiteralPath $ratexExe)) {
+        if (Invoke-Verify -Exe $ratexExe) {
             Write-Info 'Installation verified.'
         } else {
-            Write-Warning ('pdflatex.exe -version did not return a version ' +
+            Write-Warning ('ratex.exe -version did not return a version ' +
                            'banner. Files were installed; run the executable ' +
                            'from a terminal to inspect its diagnostic.')
         }
     }
-    Write-Info 'Done. Open a NEW terminal, then try: pdflatex -version'
+    Write-Info 'Done. Open a NEW terminal, then try: ratex -version'
 }
 
 # ---- uninstall ---------------------------------------------------------------

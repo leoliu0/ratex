@@ -18,7 +18,7 @@ MARK_END='# <<< tex-suite <<<'
 DATA_MANIFEST_NAME='.tex-suite-managed-files-v1'
 DATA_MANIFEST_HEADER='TEX-SUITE-MANAGED-FILES-1'
 
-BIN_NAMES="ratex texmk pdflatex xelatex lualatex tex-bibtex bibtex latexmk pdflatex.fmt"
+BIN_NAMES="ratex"
 
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 log() { printf '%s\n' "$*"; }
@@ -162,7 +162,7 @@ SRC_BIN=""; SRC_FMT=""; SRC_TEXMF=""
 
 try_bundle() {
     _b="$1"
-    [ -x "$_b/bin/pdflatex" ] || return 1
+    [ -x "$_b/bin/ratex" ] || [ -x "$_b/bin/texmk" ] || [ -x "$_b/bin/pdflatex" ] || return 1
     SRC_BIN="$_b/bin"
     if [ -f "$_b/share/tex-suite/pdflatex.fmt" ]; then
         SRC_FMT="$_b/share/tex-suite/pdflatex.fmt"
@@ -212,13 +212,13 @@ resolve_payload() {
 
     _repo=$(find_repo_root) || die "no release bundle found and this is not a cargo checkout; pass --bundle DIR or run from the repo"
     _target="${CARGO_TARGET_DIR:-$_repo/target}/release"
-    if [ "$FROM_SOURCE" = 1 ] || [ ! -x "$_target/pdflatex" ]; then
+    if [ "$FROM_SOURCE" = 1 ] || { [ ! -x "$_target/ratex" ] && [ ! -x "$_target/texmk" ] && [ ! -x "$_target/pdflatex" ]; }; then
         [ "$NO_BUILD" = 1 ] && die "--no-build given but a build is required (target/release incomplete)"
         command -v cargo >/dev/null 2>&1 || die "cargo not found; install Rust (https://rustup.rs) or pass --bundle DIR"
         log "Building release binaries: cargo build --release --workspace"
         ( CDPATH= cd -- "$_repo" && cargo build --release --workspace ) || die "cargo build failed"
     fi
-    [ -x "$_target/pdflatex" ] || die "build did not produce $_target/pdflatex"
+    [ -x "$_target/ratex" ] || [ -x "$_target/texmk" ] || [ -x "$_target/pdflatex" ] || die "build did not produce $_target/ratex"
     SRC_BIN="$_target"
     SRC_FMT=""
     for _t in "$_repo/texmf" "$_repo/packaging/texmf"; do
@@ -429,19 +429,7 @@ preflight_install() {
     [ ! -L "$BIN_DIR" ] || die "refusing a binary directory that is a symlink: $BIN_DIR"
     [ ! -L "$DATA_DIR/texmf" ] \
         || die "refusing a texmf directory that is a symlink: $DATA_DIR/texmf"
-    preflight_destination B pdflatex "$BIN_DIR/pdflatex"
-    preflight_destination B xelatex "$BIN_DIR/xelatex"
-    preflight_destination B lualatex "$BIN_DIR/lualatex"
-    if [ -f "$SRC_BIN/tex-bibtex" ] || [ -f "$SRC_BIN/bibtex" ]; then
-        preflight_destination B tex-bibtex "$BIN_DIR/tex-bibtex"
-        preflight_destination B bibtex "$BIN_DIR/bibtex"
-    fi
-    if [ -f "$SRC_BIN/texmk" ]; then
-        preflight_destination B texmk "$BIN_DIR/texmk"
-        if [ "$ALIAS_LATEXMK" = 1 ]; then
-            preflight_destination B latexmk "$BIN_DIR/latexmk"
-        fi
-    fi
+    preflight_destination B ratex "$BIN_DIR/ratex"
     if [ -n "$SRC_FMT" ]; then
         preflight_destination B pdflatex.fmt "$BIN_DIR/pdflatex.fmt"
         preflight_destination F pdflatex.fmt "$DATA_DIR/pdflatex.fmt"
@@ -482,18 +470,7 @@ write_data_manifest() {
         printf '%s\n' "$DATA_MANIFEST_HEADER"
         printf 'PREFIX\t%s\n' "$PREFIX"
         printf 'DATA\t%s\n' "$DATA_DIR"
-        for _wm_bin in pdflatex xelatex lualatex; do
-            printf 'B\t%s\n' "$_wm_bin"
-        done
-        if [ -f "$SRC_BIN/tex-bibtex" ] || [ -f "$SRC_BIN/bibtex" ]; then
-            printf 'B\ttex-bibtex\nB\tbibtex\n'
-        fi
-        if [ -f "$SRC_BIN/texmk" ]; then
-            printf 'B\ttexmk\n'
-            if [ "$ALIAS_LATEXMK" = 1 ]; then
-                printf 'B\tlatexmk\n'
-            fi
-        fi
+        printf 'B\tratex\n'
         if [ -n "$SRC_FMT" ]; then
             printf 'B\tpdflatex.fmt\n'
             printf 'F\tpdflatex.fmt\n'
@@ -610,16 +587,11 @@ do_install() {
     fi
 
     log "Installing binaries to $BIN_DIR"
-    install_one texmk texmk
-    install_alias pdflatex texmk
-    install_alias xelatex texmk
-    install_alias lualatex texmk
-    install_alias tex-bibtex texmk
-    install_alias bibtex texmk
-    if [ "$ALIAS_LATEXMK" = 1 ]; then
-        install_alias latexmk texmk
+    if [ -f "$SRC_BIN/ratex" ]; then
+        install_one ratex ratex
+    else
+        install_one texmk ratex
     fi
-
     log "Installing runtime data to $DATA_DIR"
     if [ -n "$SRC_FMT" ]; then
         rm -f -- "$DATA_DIR/pdflatex.fmt" "$BIN_DIR/pdflatex.fmt" 2>/dev/null || true
@@ -664,22 +636,21 @@ do_install() {
 
     if [ "$SKIP_VERIFY" = 0 ]; then
         log "Verifying installation"
-        if [ ! -x "$BIN_DIR/pdflatex" ]; then
-            die "verification failed: $BIN_DIR/pdflatex is missing or not executable"
+        if [ ! -x "$BIN_DIR/ratex" ]; then
+            die "verification failed: $BIN_DIR/ratex is missing or not executable"
         fi
         _ok=0
         for _flag in -version --version -v; do
-            if _out=$("$BIN_DIR/pdflatex" "$_flag" 2>/dev/null); then
+            if _out=$("$BIN_DIR/ratex" "$_flag" 2>/dev/null); then
                 printf '  %s\n' "$_out"
                 _ok=1
                 break
             fi
         done
         if [ "$_ok" = 1 ]; then
-            [ -x "$BIN_DIR/texmk" ] && "$BIN_DIR/texmk" --version 2>/dev/null | sed 's/^/  /' || true
             log "Verification passed."
         else
-            warn "pdflatex is installed but did not answer a version flag; check manually."
+            warn "ratex is installed but did not answer a version flag; check manually."
         fi
     fi
 
@@ -687,7 +658,7 @@ do_install() {
 
 Done. Next steps:
   - open a new terminal (or:  source ~/.zshrc )
-  - compile:  pdflatex paper.tex   or   latexmk -pdf paper.tex
+  - compile:  ratex paper.tex
   - data dir: $DATA_DIR
   - uninstall later with:  $0 --uninstall --prefix "$PREFIX" --data-dir "$DATA_DIR"
 EOF

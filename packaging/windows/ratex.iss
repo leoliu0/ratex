@@ -29,20 +29,10 @@ ChangesEnvironment=yes
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
-[Tasks]
-Name: "envPath"; Description: "Add ratex to environment PATH (recommended)"; GroupDescription: "System Integration:"
-Name: "replaceLatexmk"; Description: "Replace latexmk with texmk (recommended for TeXstudio & VS Code)"; GroupDescription: "Editor Compatibility:"
-
 [Files]
-; Core binary and launcher aliases
+
+; Core binary
 Source: "..\..\dist\tex-suite-windows-x86_64\bin\ratex.exe"; DestDir: "{app}\bin"; Flags: ignoreversion
-Source: "..\..\dist\tex-suite-windows-x86_64\bin\texmk.exe"; DestDir: "{app}\bin"; Flags: ignoreversion
-Source: "..\..\dist\tex-suite-windows-x86_64\bin\pdflatex.exe"; DestDir: "{app}\bin"; Flags: ignoreversion
-Source: "..\..\dist\tex-suite-windows-x86_64\bin\xelatex.exe"; DestDir: "{app}\bin"; Flags: ignoreversion
-Source: "..\..\dist\tex-suite-windows-x86_64\bin\lualatex.exe"; DestDir: "{app}\bin"; Flags: ignoreversion
-Source: "..\..\dist\tex-suite-windows-x86_64\bin\bibtex.exe"; DestDir: "{app}\bin"; Flags: ignoreversion
-Source: "..\..\dist\tex-suite-windows-x86_64\bin\tex-bibtex.exe"; DestDir: "{app}\bin"; Flags: ignoreversion
-Source: "..\..\dist\tex-suite-windows-x86_64\bin\latexmk.exe"; DestDir: "{app}\bin"; Flags: ignoreversion; Tasks: replaceLatexmk
 
 ; Runtime assets
 Source: "..\..\dist\tex-suite-windows-x86_64\share\tex-suite\*"; DestDir: "{app}\share\tex-suite"; Flags: ignoreversion recursesubdirs createallsubdirs

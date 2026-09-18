@@ -90,8 +90,12 @@ fn dependency_content_hash(bytes: &[u8]) -> u64 {
 
 impl FontLoader {
     pub fn new() -> Self {
+        Self::with_kpse(tex_kpse::Kpse::new())
+    }
+
+    pub fn with_kpse(kpse: tex_kpse::Kpse) -> Self {
         FontLoader {
-            kpse: tex_kpse::Kpse::new(),
+            kpse,
             map: crate::fontmap::FontMap::default(),
             tfm_cache: crate::FxHashMap::default(),
             enc_cache: crate::FxHashMap::default(),
@@ -1962,10 +1966,15 @@ mod tests {
     /// their physical base fonts. Skips silently when TeX Live is absent.
     #[test]
     fn vf_newtx_real_files() {
-        if !std::path::Path::new("/usr/share/texmf-dist/fonts/vf/public/newtx/ntxsy.vf").exists() {
+        let texmf = std::path::Path::new("/usr/share/texmf-dist");
+        if !texmf.join("fonts/vf/public/newtx/ntxsy.vf").exists() {
             return;
         }
-        let mut fl = FontLoader::new();
+        let kpse = tex_kpse::Kpse::with_roots(
+            &std::env::current_dir().unwrap(),
+            &[texmf],
+        );
+        let mut fl = FontLoader::with_kpse(kpse);
         for (name, base) in [
             ("ntxsy", "txsys"),
             ("ntxexx", "txexs"),

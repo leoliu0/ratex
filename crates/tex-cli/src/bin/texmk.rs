@@ -2139,6 +2139,25 @@ fn bibliography_dependency_path(
                 .then(|| std::fs::canonicalize(&path).unwrap_or(path))
         })
 }
+fn extra_bibliography_dependency_path(
+    name: &str,
+    format: tex_kpse::Format,
+    variable: &str,
+) -> Option<PathBuf> {
+    let extension = format.extensions()[0];
+    let requested = Path::new(name);
+    let with_extension = if requested.extension().is_some() {
+        requested.to_path_buf()
+    } else {
+        PathBuf::from(format!("{name}{extension}"))
+    };
+    std::env::var_os(variable)
+        .into_iter()
+        .flat_map(|value| std::env::split_paths(&value).collect::<Vec<_>>())
+        .map(|directory| directory.join(&with_extension))
+        .find(|path| path.is_file())
+        .map(|path| std::fs::canonicalize(&path).unwrap_or(path))
+}
 
 
 fn bibliography_tool_identity() -> String {
@@ -2212,7 +2231,18 @@ fn bibliography_signature(aux: &str, aux_dir: &Path, source_dir: &Path) -> u64 {
         identity.push('}');
         identity.push('\n');
     }
-    let kpse = tex_kpse::Kpse::with_roots(source_dir, &[]);
+    let mut extra_roots = Vec::new();
+    for env in ["TEXMFHOME", "TEXMFLOCAL"] {
+        if let Ok(v) = std::env::var(env) {
+            for p in std::env::split_paths(&v) {
+                if p.is_dir() {
+                    extra_roots.push(p);
+                }
+            }
+        }
+    }
+    let extra_refs: Vec<&Path> = extra_roots.iter().map(|p| p.as_path()).collect();
+    let kpse = tex_kpse::Kpse::with_roots(source_dir, &extra_refs);
     for (name, format, extra_variable) in aux_bibliography_dependencies(aux) {
         identity.push_str("resolved:");
         identity.push_str(format.extensions()[0]);
@@ -2235,7 +2265,15 @@ fn bibliography_signature(aux: &str, aux_dir: &Path, source_dir: &Path) -> u64 {
         identity.push_str(extra_variable);
         identity.push(':');
         identity.push_str(name);
-        identity.push_str("=<missing>");
+        match extra_bibliography_dependency_path(name, format, extra_variable) {
+            Some(path) => {
+                identity.push('=');
+                identity.push_str(&path.to_string_lossy());
+                let (exists, hash) = file_hash(&path);
+                identity.push_str(&format!(":{exists}:{hash}"));
+            }
+            None => identity.push_str("=<missing>"),
+        }
         identity.push('\n');
     }
     stable_hash(identity.as_bytes())

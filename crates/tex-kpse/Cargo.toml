@@ -14,5 +14,5 @@ tar = { workspace = true }
 tar = { workspace = true }
 
 [features]
-default = []
+default = ["embed-packages"]
 embed-packages = []

@@ -518,18 +518,51 @@ impl Kpse {
                 roots.push(p);
             }
         }
-        if let Ok(exe) = std::env::current_exe() {
-            if let Some(bin_dir) = exe.parent() {
+
+        if !Self::environment_flag("TEX_RS_HERMETIC") {
+            for env in ["TEXMFHOME", "TEXMFVAR", "TEXMFCONFIG", "TEXMFLOCAL", "TEXMFDIST"] {
+                if let Ok(v) = std::env::var(env) {
+                    for p in std::env::split_paths(&v) {
+                        if !p.as_os_str().is_empty() && !roots.iter().any(|r| r == &p) {
+                            roots.push(p);
+                        }
+                    }
+                }
+            }
+            if let Ok(home) = std::env::var("HOME") {
                 for cand in [
-                    bin_dir.join("texmf"),
-                    bin_dir.join("../share/tex-suite/texmf"),
-                    bin_dir.join("../share/ratex/texmf"),
-                    bin_dir.join("../share/texmf"),
-                    bin_dir.join("../../texmf"),
+                    PathBuf::from(&home).join("texmf"),
+                    PathBuf::from(&home).join(".texlive/texmf-var"),
                 ] {
-                    if cand.is_dir() && !roots.iter().any(|r| r == &cand) {
+                    if cand.exists() && !roots.iter().any(|r| r == &cand) {
                         roots.push(cand);
                     }
+                }
+            }
+            if let Ok(exe) = std::env::current_exe() {
+                if let Some(bin_dir) = exe.parent() {
+                    for cand in [
+                        bin_dir.join("texmf"),
+                        bin_dir.join("../share/tex-suite/texmf"),
+                        bin_dir.join("../share/ratex/texmf"),
+                        bin_dir.join("../share/texmf"),
+                        bin_dir.join("../../texmf"),
+                    ] {
+                        if cand.is_dir() && !roots.iter().any(|r| r == &cand) {
+                            roots.push(cand);
+                        }
+                    }
+                }
+            }
+            for p in [
+                "/var/lib/texmf",
+                "/usr/share/texmf-dist",
+                "/usr/share/texmf",
+                "/usr/local/share/texmf",
+                "/usr/local/texlive",
+            ] {
+                if Path::new(p).exists() && !roots.iter().any(|r| r.as_os_str() == p) {
+                    roots.push(PathBuf::from(p));
                 }
             }
         }

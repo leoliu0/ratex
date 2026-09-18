@@ -36,3 +36,31 @@ jobs:
       - name: Run packaging tests (linux only)
         if: runner.os == 'Linux'
         run: python3 scripts/test_package_dist.py
+
+      - name: Build release ratex binary
+        if: runner.os == 'Linux'
+        run: cargo build --release --bin ratex
+
+      - name: Stage bundled assets
+        if: runner.os == 'Linux'
+        run: |
+          mkdir -p target/share/tex-suite/texmf
+          tar --zstd -xf crates/tex-kpse/assets/packages.tar.zst -C target/share/tex-suite/texmf
+          python3 -c '
+          import os
+          from pathlib import Path
+          root = Path("target/share/tex-suite/texmf")
+          lines = ["% ls-R", ""]
+          for dirpath, _, filenames in os.walk(root):
+              rel = Path(dirpath).relative_to(root).as_posix()
+              prefix = f"./{rel}" if rel != "." else "./"
+              lines.append(f"{prefix}:")
+              for f in sorted(filenames):
+                  if f != "ls-R": lines.append(f)
+              lines.append("")
+          (root / "ls-R").write_text("\n".join(lines))
+          '
+
+      - name: Test 10 real-world arXiv papers (zero TeX Live)
+        if: runner.os == 'Linux'
+        run: python3 scripts/test_arxiv_ci.py --ratex target/release/ratex

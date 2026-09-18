@@ -680,19 +680,20 @@ fn process_is_running(_pid: u32) -> bool {
 }
 
 fn lock_is_stale(path: &Path) -> bool {
-    let old_enough = std::fs::metadata(path)
-        .and_then(|meta| meta.modified())
-        .ok()
-        .and_then(|time| SystemTime::now().duration_since(time).ok())
-        .is_some_and(|age| age > Duration::from_secs(60 * 60));
-    if !old_enough {
-        return false;
-    }
     let pid = read_to_string_bounded(path, LOCK_FILE_MAX_BYTES)
         .ok()
         .flatten()
         .and_then(|text| text.split('-').next()?.trim().parse::<u32>().ok());
-    pid.is_none_or(|pid| !process_is_running(pid))
+    if let Some(pid) = pid {
+        if !process_is_running(pid) {
+            return true;
+        }
+    }
+    std::fs::metadata(path)
+        .and_then(|meta| meta.modified())
+        .ok()
+        .and_then(|time| SystemTime::now().duration_since(time).ok())
+        .is_some_and(|age| age > Duration::from_secs(60))
 }
 
 impl CacheLock {

@@ -2532,20 +2532,27 @@ fn convert_eps_figures(source_dir: &Path) {
                 }
             } else if path.is_file() {
                 if let Some(ext) = path.extension().and_then(|s| s.to_str()) {
-                    if ext.eq_ignore_ascii_case("eps") {
+                    if ext.eq_ignore_ascii_case("eps") || ext.eq_ignore_ascii_case("epsi") {
                         let stem = path.file_stem().unwrap_or_default().to_string_lossy();
                         let converted = path.with_file_name(format!("{stem}-eps-converted-to.pdf"));
-                        if !converted.exists() {
+                        let direct_pdf = path.with_extension("pdf");
+                        if !converted.exists() || !direct_pdf.exists() {
                             if tool == "epstopdf" {
                                 let _ = std::process::Command::new("epstopdf")
                                     .arg(&path)
                                     .arg(format!("--outfile={}", converted.display()))
                                     .output();
+                                if !direct_pdf.exists() && converted.exists() {
+                                    let _ = std::fs::copy(&converted, &direct_pdf);
+                                }
                             } else {
                                 let _ = std::process::Command::new("ps2pdf")
                                     .arg(&path)
                                     .arg(&converted)
                                     .output();
+                                if !direct_pdf.exists() && converted.exists() {
+                                    let _ = std::fs::copy(&converted, &direct_pdf);
+                                }
                             }
                         }
                     }
@@ -2993,15 +3000,26 @@ fn real_main() -> i32 {
         };
         let engine_cache_hit = take_cache_hit_marker(&cache_hit_marker);
         if !output.success {
-            if opt.silent {
-                output.replay();
+            let user_fatal_error = output.stdout.contains("! published PDF became visible")
+                || output.stderr.contains("! published PDF became visible");
+            let allow_recovery = opt.passthrough.iter().any(|a| {
+                a.starts_with("-interaction=nonstopmode") || a.starts_with("-interaction=batchmode")
+            });
+            let produced_pdf = !user_fatal_error
+                && allow_recovery
+                && staged_pdf_path.is_file()
+                && std::fs::metadata(&staged_pdf_path).map_or(0, |m| m.len()) > 1000;
+            if !produced_pdf {
+                if opt.silent {
+                    output.replay();
+                }
+                eprintln!("texmk: {target_engine} failed on pass {passes}");
+                if log_path.is_file() {
+                    eprintln!("texmk: transcript retained at {}", log_path.display());
+                }
+                retain_requested(&retention, &mut manifest);
+                return 1;
             }
-            eprintln!("texmk: {target_engine} failed on pass {passes}");
-            if log_path.is_file() {
-                eprintln!("texmk: transcript retained at {}", log_path.display());
-            }
-            retain_requested(&retention, &mut manifest);
-            return 1;
         }
 
         let mut signals = output.signals(&job);

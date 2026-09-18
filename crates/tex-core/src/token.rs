@@ -213,6 +213,7 @@ impl CatTable {
         t[0] = CAT_IGNORED;
         t[b'\r' as usize] = CAT_EOL;
         t[b' ' as usize] = CAT_SPACE;
+        t[b'\t' as usize] = CAT_SPACE;
         t[b'%' as usize] = CAT_COMMENT;
         // Knuth tex.web §232: specials ({}, $, &, #, ^, _) are other_char in INITEX
         t[0x7F] = CAT_INVALID;

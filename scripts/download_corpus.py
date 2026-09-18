@@ -113,13 +113,17 @@ def find_main_tex(project_dir: Path):
     if not candidates:
         return tex_files[0].relative_to(project_dir).as_posix()
 
-    prio_names = ["main.tex", "paper.tex", "ms.tex", "article.tex"]
+    prio_names = ["main.tex", "paper.tex", "ms.tex", "article.tex", "manuscript.tex"]
     for p in prio_names:
         for c in candidates:
             if c.name.lower() == p and c.parent == project_dir:
                 return c.relative_to(project_dir).as_posix()
 
     root_candidates = [c for c in candidates if c.parent == project_dir]
+    manuscripts = [c for c in root_candidates if "supp" not in c.name.lower()]
+    if manuscripts:
+        chosen = sorted(manuscripts, key=lambda c: ("manu" not in c.name.lower(), c.name))[0]
+        return chosen.relative_to(project_dir).as_posix()
     if root_candidates:
         return root_candidates[0].relative_to(project_dir).as_posix()
 

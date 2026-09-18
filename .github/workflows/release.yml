@@ -87,8 +87,8 @@ jobs:
         run: |
           mkdir -p /tmp/pkg-stage
           tar -xzf dist/tex-suite-*.tar.gz -C /tmp/pkg-stage
-          ./packaging/macos/build-pkg.sh /tmp/pkg-stage/tex-suite-* "${{ matrix.arch }}" "0.1.0" dist
-
+          VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          ./packaging/macos/build-pkg.sh /tmp/pkg-stage/tex-suite-* "${{ matrix.arch }}" "$VERSION" dist
 
       - name: Package distribution (windows)
         if: matrix.platform == 'windows'

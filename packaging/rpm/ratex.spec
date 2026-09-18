@@ -1,5 +1,5 @@
 Name:           ratex
-Version:        0.1.0
+Version:        0.2.0
 Release:        1%{?dist}
 Summary:        Ultra-fast, pure-Rust TeX engine and typesetting toolchain
 License:        MIT or Apache-2.0

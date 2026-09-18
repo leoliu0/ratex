@@ -34,29 +34,29 @@ Tested and verified against **3,000 real-world arXiv papers** across mathematics
 ## Installation
 
 ### Linux
-Download the native package for your distribution from [GitHub Releases](https://github.com/leoliu0/ratex/releases/tag/v0.1.0):
+Download the native package for your distribution from [GitHub Releases](https://github.com/leoliu0/ratex/releases/tag/v0.2.0):
 
 ```bash
 # Ubuntu / Debian (.deb)
-sudo apt install ./ratex_0.1.0_amd64.deb
+sudo apt install ./ratex_0.2.0_amd64.deb
 
 # Fedora / RHEL / openSUSE (.rpm)
-sudo dnf install ./ratex-0.1.0-1.x86_64.rpm
+sudo dnf install ./ratex-0.2.0-1.x86_64.rpm
 
 # Arch Linux (AUR)
 yay -S ratex-bin   # or: paru -S ratex-bin
 
 # Any Linux (Universal Tarball Installer)
-tar -xzf tex-suite-v0.1.0-linux-x86_64.tar.gz && sudo ./tex-suite-linux-x86_64/install.sh
+tar -xzf tex-suite-v0.2.0-linux-x86_64.tar.gz && sudo ./tex-suite-linux-x86_64/install.sh
 ```
 
 ### macOS
 Download and run the native installer package:
-- [macOS Apple Silicon (.pkg)](https://github.com/leoliu0/ratex/releases/download/v0.1.0/ratex-v0.1.0-macos-aarch64.pkg)
-- [macOS Intel (.pkg)](https://github.com/leoliu0/ratex/releases/download/v0.1.0/ratex-v0.1.0-macos-x86_64.pkg)
+- [macOS Apple Silicon (.pkg)](https://github.com/leoliu0/ratex/releases/download/v0.2.0/ratex-v0.2.0-macos-aarch64.pkg)
+- [macOS Intel (.pkg)](https://github.com/leoliu0/ratex/releases/download/v0.2.0/ratex-v0.2.0-macos-x86_64.pkg)
 
 ### Windows
-- [Download Windows Setup (.exe)](https://github.com/leoliu0/ratex/releases/download/v0.1.0/ratex-setup-v0.1.0-windows-x64.exe)
+- [Download Windows Setup (.exe)](https://github.com/leoliu0/ratex/releases/download/v0.2.0/ratex-setup-v0.2.0-windows-x64.exe)
 
 ---
 

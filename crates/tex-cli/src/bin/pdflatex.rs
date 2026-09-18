@@ -560,7 +560,6 @@ fn compute_cache_identity() -> Option<String> {
         "BSTINPUTS",
         "BIBINPUTS",
         "TEX_RS_HERMETIC",
-        "TEX_RS_ALLOW_SYSTEM_TEXMF",
         "SOURCE_DATE_EPOCH",
         "TZ",
         TEXMK_PUBLISHED_OUTPUT_ENV,

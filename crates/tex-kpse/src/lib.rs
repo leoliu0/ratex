@@ -504,68 +504,38 @@ impl Kpse {
 
     /// Build a resolver with an explicit local directory. `extra_roots` are
     /// TDS trees searched before the default roots (TEXMFLOCAL-style
-    /// precedence). Setting `TEX_RS_HERMETIC=1` limits resolution to the
-    /// working directory, explicit roots, and resources embedded in the
-    /// executable. `TEX_RS_ALLOW_SYSTEM_TEXMF=1` explicitly restores the
-    /// environment and system search paths.
+    /// precedence). `ratex` operates in strict hermetic mode: it resolves from
+    /// project files and its own bundled installation assets (`share/tex-suite/texmf`
+    /// or `share/ratex/texmf`), with zero fallback to external TeX Live.
     pub fn with_roots(cwd: &Path, extra_roots: &[&Path]) -> Self {
         let mut roots: Vec<PathBuf> = extra_roots.iter().map(|p| p.to_path_buf()).collect();
-        let hermetic = Self::environment_flag("TEX_RS_HERMETIC")
-            && !Self::environment_flag("TEX_RS_ALLOW_SYSTEM_TEXMF");
-        if !hermetic {
-            for env in ["TEXMFHOME", "TEXMFVAR", "TEXMFCONFIG", "TEXMFLOCAL", "TEXMFDIST"] {
-                if let Ok(v) = std::env::var(env) {
-                    for p in std::env::split_paths(&v) {
-                        if !p.as_os_str().is_empty() && !roots.iter().any(|r| r == &p) {
-                            roots.push(p);
-                        }
-                    }
-                }
+
+        // Bundled installation roots: always discovered relative to the executable
+        // or through TEX_SUITE_DATA / RATEX_DATA_DIR.
+        if let Ok(data_dir) = std::env::var("TEX_SUITE_DATA").or_else(|_| std::env::var("RATEX_DATA_DIR")) {
+            let p = PathBuf::from(data_dir).join("texmf");
+            if p.is_dir() && !roots.iter().any(|r| r == &p) {
+                roots.push(p);
             }
-            if let Ok(home) = std::env::var("HOME") {
+        }
+        if let Ok(exe) = std::env::current_exe() {
+            if let Some(bin_dir) = exe.parent() {
                 for cand in [
-                    PathBuf::from(&home).join("texmf"),
-                    PathBuf::from(&home).join(".texlive/texmf-var"),
+                    bin_dir.join("texmf"),
+                    bin_dir.join("../share/tex-suite/texmf"),
+                    bin_dir.join("../share/ratex/texmf"),
+                    bin_dir.join("../share/texmf"),
+                    bin_dir.join("../../texmf"),
                 ] {
-                    if cand.exists() && !roots.iter().any(|r| r == &cand) {
+                    if cand.is_dir() && !roots.iter().any(|r| r == &cand) {
                         roots.push(cand);
                     }
                 }
             }
-            if let Ok(data_dir) = std::env::var("TEX_SUITE_DATA") {
-                let p = PathBuf::from(data_dir).join("texmf");
-                if p.exists() && !roots.iter().any(|r| r == &p) {
-                    roots.push(p);
-                }
-            }
-            if let Ok(exe) = std::env::current_exe() {
-                if let Some(bin_dir) = exe.parent() {
-                    for cand in [
-                        bin_dir.join("texmf"),
-                        bin_dir.join("../share/tex-suite/texmf"),
-                        bin_dir.join("../share/texmf"),
-                        bin_dir.join("../../texmf"),
-                    ] {
-                        if cand.exists() && !roots.iter().any(|r| r == &cand) {
-                            roots.push(cand);
-                        }
-                    }
-                }
-            }
-            for p in [
-                "/var/lib/texmf",
-                "/usr/share/texmf-dist",
-                "/usr/share/texmf",
-                "/usr/local/share/texmf",
-                "/usr/local/texlive",
-            ] {
-                if Path::new(p).exists() && !roots.iter().any(|r| r.as_os_str() == p) {
-                    roots.push(PathBuf::from(p));
-                }
-            }
         }
+
         let dbs = roots.iter().map(|_| RefCell::new(None)).collect();
-        let extra_paths = if hermetic {
+        let extra_paths = if Self::environment_flag("TEX_RS_HERMETIC") {
             HashMap::new()
         } else {
             Self::parse_extra_paths()

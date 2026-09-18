@@ -80,11 +80,9 @@ target/release/tex-index target/release/tex-index-data \
   /usr/share/texmf-dist /var/lib/texmf
 ```
 
-Run texmk with `--allow-system-texmf`; a direct engine invocation can set
-`TEX_RS_ALLOW_SYSTEM_TEXMF=1`. The engine looks for `tex-index-data` beside its
-executable. Set `TEX_INDEX_DIR` to another directory, or to an empty value to
-disable the index. A missing, stale, or invalid index safely falls back to the
-normal resolver and should be regenerated after the TeX installation changes.
+The engine automatically indexes its bundled installation assets via `ls-R`
+for sub-millisecond lookups. Set `TEX_INDEX_DIR` to another directory, or to an
+empty value to disable the index.
 
 `PHASE_TIMING=1` prints compilation phases. `TEXDEBUG=TEX_PDF_SERIAL` disables
 the PDF workers for controlled comparisons. Use `scripts/bench_cold.py` for

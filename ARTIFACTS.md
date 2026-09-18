@@ -64,11 +64,9 @@ uses small launchers because zip archives do not preserve symlinks portably.
 The archive does not carry a second raw `pdflatex.fmt` unless a distributor
 explicitly supplies `scripts/package_dist.py --fmt FILE`.
 
-Resolution is self-contained by default: project inputs remain ordinary
-files, while TeX support files come from the executable. Use
-`texmk --allow-system-texmf` or set `TEX_RS_ALLOW_SYSTEM_TEXMF=1` for a direct
-engine alias to search an installed TeX tree as well.
-
+Resolution is strictly self-contained: project inputs remain ordinary
+files, while TeX support files come from ratex's bundled installation assets.
+Ratex operates in pure hermetic mode with zero external TeX Live dependencies.
 Here, self-contained refers to the TeX toolchain and its runtime data. A
 document's own `.tex`, image, bibliography, and local style files remain its
 inputs. Platform executables also use the operating system ABI; for example,
@@ -90,12 +88,10 @@ The regression suite verifies self-containment through observable behavior:
   extensionless generic inputs, T1 and TS1 fonts, NewTX, and BibTeX's
   `plain.bst`. It verifies the PDF and the embedded-resource paths recorded in
   the TeX and BibTeX logs.
-- `copied_texmk_ignores_external_tex_trees_until_explicitly_enabled` creates
-  packages available only through `TEXINPUTS`, `TEXMFHOME`, and an
-  executable-adjacent TeX tree. Every default build must fail with a useful
-  missing-file diagnostic. The same inputs must succeed with
-  `--allow-system-texmf`, and a later default build must not reuse cache state
-  produced by that opt-in build.
+- `copied_texmk_ignores_external_tex_trees` creates
+  packages available only through `TEXINPUTS` and `TEXMFHOME`.
+  Every build in hermetic mode fails with a useful missing-file diagnostic,
+  proving external system TeX installations cannot silently contaminate builds.
 - `copied_texmk_symlink_personalities_need_no_sibling_executables` creates one
   physical executable and the shipped relative aliases. It checks dispatch by
   version banner, compiles through the `pdflatex` alias, and runs the `bibtex`

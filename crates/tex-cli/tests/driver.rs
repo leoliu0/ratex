@@ -302,27 +302,12 @@ fn copied_texmk_ignores_external_tex_trees_until_explicitly_enabled() {
     let output = Command::new(&standalone)
         .args(["--allow-system-texmf", "allowed.tex"])
         .current_dir(&project)
-        .env_clear()
-        .env("HOME", fixture.0.join("home"))
-        .env("TEX_RS_CACHE_DIR", fixture.0.join("cache-allowed"))
-        .env("TEXINPUTS", &texinputs)
-        .env("TEXMFHOME", &texmfhome)
         .output()
         .unwrap();
     assert!(
-        output.status.success(),
-        "{}\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
+        !output.status.success(),
+        "--allow-system-texmf must be rejected"
     );
-    let log = std::fs::read_to_string(
-        find_file(&fixture.0.join("cache-allowed/texmk/jobs"), "allowed.log").unwrap(),
-    )
-    .unwrap();
-    for (_, _, marker) in external_packages {
-        assert!(log.contains(marker), "missing {marker} in:\n{log}");
-    }
-
     let hermetic_after_opt_in = Command::new(&standalone)
         .arg("allowed.tex")
         .current_dir(&project)
@@ -1673,7 +1658,6 @@ printf '%%PDF-1.4 /Type /Page ' > "$out/$job.pdf"
     );
     let run = || {
         Command::new(env!("CARGO_BIN_EXE_texmk"))
-            .arg("--allow-system-texmf")
             .arg("main.tex")
             .current_dir(&f.0)
             .env("TEXMK_LIB", &f.0)
@@ -1753,7 +1737,6 @@ printf '%%PDF-1.4 /Type /Page ' > "$out/$job.pdf"
     );
     let run = || {
         Command::new(env!("CARGO_BIN_EXE_texmk"))
-            .arg("--allow-system-texmf")
             .arg("main.tex")
             .current_dir(&f.0)
             .env("TEXMK_LIB", &f.0)

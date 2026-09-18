@@ -12,3 +12,7 @@ tar = { workspace = true }
 
 [dev-dependencies]
 tar = { workspace = true }
+
+[features]
+default = []
+embed-packages = []

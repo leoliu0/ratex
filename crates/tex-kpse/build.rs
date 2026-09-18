@@ -12,8 +12,20 @@ const CHUNK_TARGET: usize = 4 * 1024 * 1024;
 const COMPRESSION_LEVEL: i32 = 19;
 
 fn main() {
-    println!("cargo:rerun-if-changed=assets/packages.tar.zst");
     let out = PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
+    if std::env::var("CARGO_FEATURE_EMBED_PACKAGES").is_err() {
+        // Lean build: do not embed the 80+ MB package archive in the binary.
+        std::fs::write(out.join("packages.bin"), b"").unwrap();
+        std::fs::write(out.join("package_names.bin"), b"").unwrap();
+        let generated = "static PACKAGE_CHUNKS: &[(u32, u32)] = &[];\n\
+                         static PACKAGE_NAMES: &[u8; 0] = b\"\";\n\
+                         static PACKAGE_INDEX: &[(u32, u32, u32, u32, u32)] = &[];\n\
+                         static PACKAGE_FOLDED: &[u32] = &[];\n";
+        std::fs::write(out.join("packages_index.rs"), generated).unwrap();
+        return;
+    }
+
+    println!("cargo:rerun-if-changed=assets/packages.tar.zst");
     let archive = std::fs::File::open("assets/packages.tar.zst").unwrap();
     let mut archive = tar::Archive::new(zstd::Decoder::new(archive).unwrap());
     let mut blob =

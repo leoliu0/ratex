@@ -37,7 +37,6 @@ const TEXMK_CACHE_HIT_MARKER_ENV: &str = "TEX_RS_CACHE_HIT_MARKER";
 const TEXMK_PUBLISHED_OUTPUT_ENV: &str = "TEX_RS_TEXMK_PUBLISHED_OUTPUT";
 const TEXMK_INTERNAL_MODE_ENV: &str = "TEXMK_INTERNAL_MODE";
 const HERMETIC_ENV: &str = "TEX_RS_HERMETIC";
-const ALLOW_SYSTEM_TEXMF_ENV: &str = "TEX_RS_ALLOW_SYSTEM_TEXMF";
 const AUX_GRAPH_MAX_DEPTH: usize = 32;
 const AUX_GRAPH_MAX_FILES: usize = 256;
 const AUX_GRAPH_MAX_INCLUDES: usize = 1024;
@@ -76,7 +75,6 @@ struct Options {
     silent: bool,
     keep_intermediates: bool,
     keep_logs: bool,
-    allow_system_texmf: bool,
     clean: CleanMode,
     /// Explicit engine override ("pdflatex", "xelatex", "lualatex"), or auto-detect.
     engine: Option<String>,
@@ -151,7 +149,6 @@ fn usage() {
   -jobname NAME                 job name (default: file stem)
   --keep-intermediates, -k       export auxiliary files beside the PDF
   --keep-logs                    export the transcript beside the PDF
-  --allow-system-texmf           allow packages from an installed TeX tree
   --optimize-pdf-size            spend more CPU minimizing converted PNG streams
   -c                             remove cached state; preserve the PDF
   -C                             remove cached state and an owned PDF
@@ -173,7 +170,6 @@ fn parse_args(argv: &[String]) -> Result<Options, String> {
     let mut silent = true;
     let mut keep_intermediates = false;
     let mut keep_logs = false;
-    let mut allow_system_texmf = false;
     let mut clean = CleanMode::None;
     let mut engine: Option<String> = None;
     let mut passthrough: Vec<String> = Vec::new();
@@ -223,7 +219,6 @@ fn parse_args(argv: &[String]) -> Result<Options, String> {
             "--verbose" | "-verbose" | "--noisy" | "-noisy" | "-V" => silent = false,
             "--keep-intermediates" | "-keep-intermediates" | "-k" => keep_intermediates = true,
             "--keep-logs" | "-keep-logs" => keep_logs = true,
-            "--allow-system-texmf" => allow_system_texmf = true,
             "-c" => clean = CleanMode::Aux,
             "-C" => clean = CleanMode::All,
             "-interaction" => {
@@ -263,7 +258,6 @@ fn parse_args(argv: &[String]) -> Result<Options, String> {
             silent,
             keep_intermediates,
             keep_logs,
-            allow_system_texmf,
             clean,
             engine,
             passthrough,
@@ -473,10 +467,9 @@ fn build_identity(
     output_dir: &Path,
     aux_identity: &str,
     passthrough: &[String],
-    allow_system_texmf: bool,
 ) -> String {
     format!(
-        "source={}\njob={job}\nengine={engine}\noutput={}\naux={aux_identity}\nsystem-texmf={allow_system_texmf}\noptions={passthrough:?}",
+        "source={}\njob={job}\nengine={engine}\noutput={}\naux={aux_identity}\noptions={passthrough:?}",
         source.display(),
         output_dir.display()
     )
@@ -2146,25 +2139,6 @@ fn bibliography_dependency_path(
         })
 }
 
-fn extra_bibliography_dependency_path(
-    name: &str,
-    format: tex_kpse::Format,
-    variable: &str,
-) -> Option<PathBuf> {
-    let extension = format.extensions()[0];
-    let requested = Path::new(name);
-    let with_extension = if requested.extension().is_some() {
-        requested.to_path_buf()
-    } else {
-        PathBuf::from(format!("{name}{extension}"))
-    };
-    std::env::var_os(variable)
-        .into_iter()
-        .flat_map(|value| std::env::split_paths(&value).collect::<Vec<_>>())
-        .map(|directory| directory.join(&with_extension))
-        .find(|path| path.is_file())
-        .map(|path| std::fs::canonicalize(&path).unwrap_or(path))
-}
 
 fn bibliography_tool_identity() -> String {
     static IDENTITY: std::sync::OnceLock<String> = std::sync::OnceLock::new();
@@ -2203,12 +2177,6 @@ fn embedded_bibliography_dependency(name: &str, format: tex_kpse::Format) -> boo
     tex_kpse::has_embedded_package(&filename)
 }
 
-fn system_texmf_allowed() -> bool {
-    std::env::var_os(ALLOW_SYSTEM_TEXMF_ENV).is_some_and(|value| {
-        let value = value.to_string_lossy();
-        !value.is_empty() && value != "0" && !value.eq_ignore_ascii_case("false")
-    })
-}
 
 fn bibliography_signature(aux: &str, aux_dir: &Path, source_dir: &Path) -> u64 {
     let mut identity = bibliography_tool_identity();
@@ -2224,7 +2192,6 @@ fn bibliography_signature(aux: &str, aux_dir: &Path, source_dir: &Path) -> u64 {
         "TEXMFDIST",
         "TEX_SUITE_DATA",
         HERMETIC_ENV,
-        ALLOW_SYSTEM_TEXMF_ENV,
     ] {
         identity.push_str(variable);
         identity.push('=');
@@ -2267,18 +2234,7 @@ fn bibliography_signature(aux: &str, aux_dir: &Path, source_dir: &Path) -> u64 {
         identity.push_str(extra_variable);
         identity.push(':');
         identity.push_str(name);
-        match system_texmf_allowed()
-            .then(|| extra_bibliography_dependency_path(name, format, extra_variable))
-            .flatten()
-        {
-            Some(path) => {
-                identity.push('=');
-                identity.push_str(&path.to_string_lossy());
-                let (exists, hash) = file_hash(&path);
-                identity.push_str(&format!(":{exists}:{hash}"));
-            }
-            None => identity.push_str("=<missing>"),
-        }
+        identity.push_str("=<missing>");
         identity.push('\n');
     }
     stable_hash(identity.as_bytes())
@@ -2512,11 +2468,7 @@ fn real_main() -> i32 {
             return 2;
         }
     };
-    if opt.allow_system_texmf {
-        std::env::set_var(ALLOW_SYSTEM_TEXMF_ENV, "1");
-    } else {
-        std::env::set_var(HERMETIC_ENV, "1");
-    }
+    std::env::set_var(HERMETIC_ENV, "1");
     if !opt.file.is_file() {
         eprintln!("texmk: no such file: {}", opt.file.display());
         return 1;
@@ -2577,7 +2529,6 @@ fn real_main() -> i32 {
         &output_dir,
         &aux_identity,
         &opt.passthrough,
-        opt.allow_system_texmf || system_texmf_allowed(),
     );
     let key = stable_hash(identity.as_bytes());
     let cache_choice = opt.cache_dir.clone().unwrap_or_else(platform_cache_dir);
@@ -3178,9 +3129,7 @@ fn invoked_name() -> String {
 }
 
 fn enable_embedded_resources_by_default() {
-    if !system_texmf_allowed() {
-        std::env::set_var(HERMETIC_ENV, "1");
-    }
+    std::env::set_var(HERMETIC_ENV, "1");
 }
 
 fn run_embedded_bibtex() -> ! {

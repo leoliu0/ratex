@@ -73,7 +73,8 @@ def main():
     parser.add_argument("--ratex", default="ratex", help="Path to ratex executable")
     args = parser.parse_args()
 
-    ratex_bin = shutil.which(args.ratex) or str(Path(args.ratex).resolve())
+    bin_path = shutil.which(args.ratex) or args.ratex
+    ratex_bin = str(Path(bin_path).resolve())
     print(f"==> Testing 10 real-world arXiv papers using: {ratex_bin}")
     print("=" * 70)
 

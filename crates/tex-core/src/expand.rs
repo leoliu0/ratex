@@ -3294,6 +3294,35 @@ impl Engine {
         if self.stopped_on_error {
             return;
         }
+        let is_duplicate = if let Some(last) = &self.last_error_message {
+            last == msg
+                || (msg.contains("Not in outer par mode") && last.contains("Not in outer par mode"))
+        } else {
+            false
+        };
+        if is_duplicate {
+            self.consecutive_error_count += 1;
+            self.error_count += 1;
+            if self.consecutive_error_count == 2 {
+                let note = if crate::diagnostics::color_enabled() {
+                    format!(
+                        "\x1b[1;36m  = note:\x1b[0m subsequent identical '{}' errors suppressed to avoid clutter\n",
+                        msg.lines().next().unwrap_or(msg).trim()
+                    )
+                } else {
+                    format!(
+                        "  = note: subsequent identical '{}' errors suppressed to avoid clutter\n",
+                        msg.lines().next().unwrap_or(msg).trim()
+                    )
+                };
+                self.diagnostic_print_nl(&note);
+            }
+            return;
+        } else {
+            self.last_error_message = Some(msg.to_string());
+            self.consecutive_error_count = 1;
+        }
+
         let diagnostic = self.make_error_diagnostic(msg);
         let rendered = diagnostic.render();
         self.diagnostic_print_nl(&rendered);

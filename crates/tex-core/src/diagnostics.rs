@@ -36,6 +36,7 @@ pub struct Diagnostic {
     /// Parent files ordered from the direct includer outwards.
     pub included_from: Vec<SourceContext>,
     pub help: Option<String>,
+    pub note: Option<String>,
 }
 
 /// A bounded, slice-like collection of diagnostics retained for library
@@ -86,6 +87,7 @@ impl DiagnosticStore {
                 expansion: Vec::new(),
                 included_from: Vec::new(),
                 help: None,
+                note: None,
             });
             self.entries.push(diagnostic);
             self.overflowed = true;
@@ -145,24 +147,70 @@ impl IntoIterator for DiagnosticStore {
     }
 }
 
+pub fn color_enabled() -> bool {
+    if std::env::var_os("NO_COLOR").is_some() {
+        return false;
+    }
+    if let Some(c) = std::env::var_os("CLICOLOR_FORCE") {
+        if c != "0" {
+            return true;
+        }
+    }
+    if let Some(c) = std::env::var_os("CLICOLOR") {
+        if c == "0" {
+            return false;
+        }
+    }
+    use std::io::IsTerminal;
+    std::io::stderr().is_terminal()
+}
+
 impl Diagnostic {
     pub fn render(&self) -> String {
+        self.render_styled(color_enabled())
+    }
+
+    pub fn render_styled(&self, color: bool) -> String {
         let mut out = String::new();
         let message = bounded_text(&self.message, MAX_MESSAGE_BYTES).replace('\n', "\n  | ");
-        out.push_str(match self.severity {
-            DiagnosticSeverity::Error => "! ",
-            DiagnosticSeverity::Warning => "warning: ",
-        });
-        out.push_str(&message);
-        out.push('\n');
+        if color {
+            match self.severity {
+                DiagnosticSeverity::Error => {
+                    out.push_str("\x1b[1;31merror\x1b[0m\x1b[1m: ");
+                    out.push_str(&message);
+                    out.push_str("\x1b[0m\n");
+                }
+                DiagnosticSeverity::Warning => {
+                    out.push_str("\x1b[1;33mwarning\x1b[0m\x1b[1m: ");
+                    out.push_str(&message);
+                    out.push_str("\x1b[0m\n");
+                }
+            }
+        } else {
+            out.push_str(match self.severity {
+                DiagnosticSeverity::Error => "! ",
+                DiagnosticSeverity::Warning => "warning: ",
+            });
+            out.push_str(&message);
+            out.push('\n');
+        }
 
         if let Some(primary) = &self.primary {
-            out.push_str(&format!(
-                "  --> {}:{}:{}\n",
-                bounded_inline(&primary.name, 4096),
-                primary.line,
-                primary.column
-            ));
+            if color {
+                out.push_str(&format!(
+                    "  \x1b[1;34m-->\x1b[0m {}:{}:{}\n",
+                    bounded_inline(&primary.name, 4096),
+                    primary.line,
+                    primary.column
+                ));
+            } else {
+                out.push_str(&format!(
+                    "  --> {}:{}:{}\n",
+                    bounded_inline(&primary.name, 4096),
+                    primary.line,
+                    primary.column
+                ));
+            }
             if !primary.text.is_empty() {
                 let (line, caret, width) = source_window(
                     &primary.text,
@@ -170,19 +218,50 @@ impl Diagnostic {
                     self.highlight_len,
                 );
                 let gutter = primary.line.to_string().len();
-                out.push_str(&format!("{:gutter$} |\n", ""));
-                out.push_str(&format!("{} | {}\n", primary.line, line));
-                out.push_str(&format!(
-                    "{:gutter$} | {}{}\n",
-                    "",
-                    " ".repeat(caret),
-                    "^".repeat(width.max(1))
-                ));
+                if color {
+                    out.push_str(&format!("\x1b[1;34m{:gutter$} |\x1b[0m\n", ""));
+                    out.push_str(&format!("\x1b[1;34m{} |\x1b[0m {}\n", primary.line, line));
+                    let caret_color = match self.severity {
+                        DiagnosticSeverity::Error => "\x1b[1;31m",
+                        DiagnosticSeverity::Warning => "\x1b[1;33m",
+                    };
+                    out.push_str(&format!(
+                        "\x1b[1;34m{:gutter$} |\x1b[0m {}{}{}\x1b[0m\n",
+                        "",
+                        " ".repeat(caret),
+                        caret_color,
+                        "^".repeat(width.max(1))
+                    ));
+                } else {
+                    out.push_str(&format!("{:gutter$} |\n", ""));
+                    out.push_str(&format!("{} | {}\n", primary.line, line));
+                    out.push_str(&format!(
+                        "{:gutter$} | {}{}\n",
+                        "",
+                        " ".repeat(caret),
+                        "^".repeat(width.max(1))
+                    ));
+                }
             }
         }
 
+        if let Some(note) = &self.note {
+            if color {
+                out.push_str("  \x1b[1;36m= note:\x1b[0m ");
+            } else {
+                out.push_str("  = note: ");
+            }
+            let note = bounded_text(note.trim(), MAX_HELP_BYTES).replace('\n', "\n  =       ");
+            out.push_str(note.trim());
+            out.push('\n');
+        }
+
         if !self.expansion.is_empty() {
-            out.push_str("  = while expanding: ");
+            if color {
+                out.push_str("  \x1b[1;34m= while expanding:\x1b[0m ");
+            } else {
+                out.push_str("  = while expanding: ");
+            }
             out.push_str(
                 &self
                     .expansion
@@ -194,15 +273,28 @@ impl Diagnostic {
             out.push('\n');
         }
         for parent in &self.included_from {
-            out.push_str(&format!(
-                "  = included from {}:{}:{}\n",
-                bounded_inline(&parent.name, 4096),
-                parent.line,
-                parent.column
-            ));
+            if color {
+                out.push_str(&format!(
+                    "  \x1b[1;34m= included from:\x1b[0m {}:{}:{}\n",
+                    bounded_inline(&parent.name, 4096),
+                    parent.line,
+                    parent.column
+                ));
+            } else {
+                out.push_str(&format!(
+                    "  = included from {}:{}:{}\n",
+                    bounded_inline(&parent.name, 4096),
+                    parent.line,
+                    parent.column
+                ));
+            }
         }
         if let Some(help) = &self.help {
-            out.push_str("  = help: ");
+            if color {
+                out.push_str("  \x1b[1;36m= help:\x1b[0m ");
+            } else {
+                out.push_str("  = help: ");
+            }
             let help = bounded_text(help.trim(), MAX_HELP_BYTES).replace('\n', "\n  =       ");
             out.push_str(help.trim());
             out.push('\n');
@@ -239,6 +331,9 @@ impl Engine {
         self.math_diagnostic_sources.clear();
         self.math_diagnostic_depth = 0;
         self.reported_missing_math_atoms.clear();
+        self.math_entry_source = None;
+        self.last_error_message = None;
+        self.consecutive_error_count = 0;
     }
 
     pub(crate) fn enter_macro_diagnostic(
@@ -301,7 +396,7 @@ impl Engine {
         Some((mark, source.span))
     }
 
-    fn current_physical_source(&self) -> Option<(SourceMark, usize)> {
+    pub(crate) fn current_physical_source(&self) -> Option<(SourceMark, usize)> {
         let source = self.diagnostic_physical_source?;
         let current_cs = self
             .diagnostic_source_cs
@@ -573,20 +668,76 @@ impl Engine {
             String::new()
         };
         let custom_help = clean_help_without_interactive_boilerplate(&custom_help);
-        let help = if custom_help.is_empty() {
-            default_help(message)
+        let (final_message, note, intuitive_help) = if severity == DiagnosticSeverity::Error {
+            self.intuitive_error(message)
         } else {
-            Some(custom_help)
+            (message.to_string(), None, None)
         };
+        let help = intuitive_help.or_else(|| {
+            if custom_help.is_empty() {
+                default_help(message)
+            } else {
+                Some(custom_help)
+            }
+        });
 
         Diagnostic {
             severity,
-            message: bounded_text(message, MAX_MESSAGE_BYTES),
+            message: bounded_text(&final_message, MAX_MESSAGE_BYTES),
             primary,
             highlight_len,
             expansion,
             included_from,
             help,
+            note,
+        }
+    }
+
+    pub(crate) fn intuitive_error(
+        &self,
+        message: &str,
+    ) -> (String, Option<String>, Option<String>) {
+        if message.contains("Not in outer par mode") {
+            (
+                "floating environment cannot be placed inside another float or unclosed environment".to_string(),
+                None,
+                Some("a float (\\begin{table} or \\begin{figure}) cannot be placed inside another float, minipage, or unclosed environment; check earlier tables or figures for an unclosed \\begin{table} or \\begin{figure}".to_string()),
+            )
+        } else if message.contains("Lonely \\item") {
+            (
+                "\\item used outside of a list environment".to_string(),
+                None,
+                Some("\\item must be placed inside an enclosing list environment such as \\begin{enumerate}, \\begin{itemize}, or \\begin{description}".to_string()),
+            )
+        } else if message.contains("ended by \\end{enumerate}") || message.contains("ended by \\end{itemize}") {
+            (
+                format!("mismatched closing environment: {}", message.trim_start_matches("! ").trim_start_matches("LaTeX Error: ").trim()),
+                None,
+                Some("this \\end{...} has no matching opening \\begin{...}; check that the list environment was opened earlier".to_string()),
+            )
+        } else if message.contains("Unicode character") && message.contains("not set up for use with LaTeX") {
+            (
+                format!("unrecognized Unicode character in 8-bit TeX: {}", message.trim_start_matches("! ").trim_start_matches("LaTeX Error: ").trim()),
+                None,
+                Some("raw non-ASCII Unicode characters require an input encoding or CJK package in standard pdfLaTeX; replace with ASCII/English text, load \\usepackage[utf8]{inputenc}, or compile with XeLaTeX / LuaLaTeX".to_string()),
+            )
+        } else if message.contains("Extra }, or forgotten $") {
+            let note = self.math_entry_source.as_ref().map(|e| {
+                format!("math mode was opened at {}:{}:{} and was never closed before this closing brace", e.name, e.line, e.column)
+            });
+            (
+                "unexpected closing delimiter '}' while in math mode".to_string(),
+                note,
+                Some("a closing brace '}' was encountered while still in math mode; this almost always means a preceding formula opened with '$' was never closed (e.g. '$N = ...'), or a closing '$' is missing before '}'".to_string()),
+            )
+        } else if message.contains("on input line") && message.contains("ended by \\end{table}") {
+            (
+                message.to_string(),
+                None,
+                Some("an inner environment (such as \\begin{tabular}) was not closed before \\end{table}; check that \\end{tabular} precedes \\end{table}".to_string()),
+            )
+        } else {
+            (message.to_string(), None, None)
         }
     }
 
@@ -638,6 +789,7 @@ impl Engine {
             help: help
                 .map(|text| bounded_text(text.trim(), MAX_HELP_BYTES))
                 .or_else(|| default_help(message)),
+            note: None,
         };
         self.diagnostic_print_nl(&diagnostic.render());
         self.diagnostics.push(diagnostic);

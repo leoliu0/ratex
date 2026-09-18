@@ -2832,6 +2832,11 @@ fn real_main() -> i32 {
     let cache_hit_marker = engine_cache_dir.join(".texmk-cache-hit");
     // The engine may omit this one future output from directory-membership
     // fingerprints. Direct reads and missing-file probes remain dependencies.
+    use std::io::IsTerminal;
+    let force_color = std::env::var_os("CLICOLOR_FORCE").map_or_else(
+        || std::io::stderr().is_terminal() && std::env::var_os("NO_COLOR").is_none(),
+        |v| v != "0",
+    );
     let engine_env = [
         (
             OsString::from(TEXMK_INTERNAL_MODE_ENV),
@@ -2848,6 +2853,10 @@ fn real_main() -> i32 {
         (
             OsString::from(TEXMK_PUBLISHED_OUTPUT_ENV),
             pdf_path.as_os_str().to_os_string(),
+        ),
+        (
+            OsString::from("CLICOLOR_FORCE"),
+            OsString::from(if force_color { "1" } else { "0" }),
         ),
     ];
     let initial_aux_snapshot = artifact_snapshot(&aux_dir);

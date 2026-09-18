@@ -307,6 +307,9 @@ pub struct Engine {
     /// inner boxes must not consume the pending shipout.
     pub shipout_depth: usize,
     pub par_page_lists: Vec<Vec<crate::boxes::Node>>,
+    pub math_entry_source: Option<crate::input::SourceContext>,
+    pub last_error_message: Option<String>,
+    pub consecutive_error_count: usize,
     pub read_eof: Vec<bool>, // (amount, is_hmove)
     pub read_files: Vec<Option<Box<dyn std::io::BufRead>>>,
     pub loaded_files: Vec<std::path::PathBuf>,
@@ -888,6 +891,9 @@ impl Engine {
             shipout_pending: false,
             shipout_depth: usize::MAX,
             par_page_lists: Vec::new(),
+            math_entry_source: None,
+            last_error_message: None,
+            consecutive_error_count: 0,
             read_eof: Vec::new(),
             read_files: Vec::new(),
             loaded_files: Vec::new(),

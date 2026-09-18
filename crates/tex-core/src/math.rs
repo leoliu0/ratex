@@ -293,6 +293,9 @@ impl Engine {
         if self.math_lists.is_empty() && self.pending_display_formula.is_none() {
             self.math_diagnostic_sources.clear();
         }
+        if self.math_entry_source.is_none() {
+            self.math_entry_source = self.current_physical_source().map(|(m, _)| m.to_context());
+        }
         let mut display = _display;
         if !display && self.mode == Mode::Horizontal {
             // tex.web §1134: a second math_shift promotes to display math.
@@ -559,6 +562,9 @@ impl Engine {
             } else {
                 (mlist, None)
             };
+            if self.math_lists.is_empty() {
+                self.math_entry_source = None;
+            }
             self.finish_display_math(formula, tag, disp_regs.unwrap(), outer_mode);
             return;
         }
@@ -584,6 +590,9 @@ impl Engine {
                 self.cur_list.extend(hlist);
                 self.cur_list.push(Node::MathKern(ms, 2));
             }
+        }
+        if self.math_lists.is_empty() {
+            self.math_entry_source = None;
         }
     }
 

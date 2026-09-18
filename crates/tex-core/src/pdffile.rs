@@ -1405,6 +1405,22 @@ pub fn write_pdf(doc: &PdfDoc) -> Vec<u8> {
     if let Some((root, _)) = &outlines {
         cat.push_str(&format!(" /Outlines {} 0 R", root));
     }
+    let has_tagged_pdf = doc
+        .pages
+        .iter()
+        .any(|p| p.display_list.as_ref().is_some_and(|dl| dl.has_structure_tags()));
+    if has_tagged_pdf {
+        let struct_tree_root_obj = b.alloc();
+        cat.push_str(&format!(
+            " /MarkInfo << /Marked true >> /StructTreeRoot {} 0 R",
+            struct_tree_root_obj
+        ));
+        b.set(
+            struct_tree_root_obj,
+            "<< /Type /StructTreeRoot /RoleMap << /H1 /H /H2 /H /H3 /H /H4 /H /H5 /H /H6 /H >> >>"
+                .to_string(),
+        );
+    }
     let extra = String::from_utf8_lossy(&doc.catalog_extra);
     if !extra.trim().is_empty() {
         cat.push(' ');

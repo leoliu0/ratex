@@ -25,11 +25,21 @@ pub enum DiagnosticSeverity {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DiagnosticLabel {
+    pub source: SourceContext,
+    pub highlight_len: usize,
+    pub label: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Diagnostic {
     pub severity: DiagnosticSeverity,
     pub message: String,
+    pub original_message: Option<String>,
     pub primary: Option<SourceContext>,
     pub highlight_len: usize,
+    pub primary_label: Option<String>,
+    pub related: Option<DiagnosticLabel>,
     /// Macro calls ordered from the user-facing outer call to the innermost.
     /// A literal `…` entry marks frames omitted to honor `\\errorcontextlines`.
     pub expansion: Vec<String>,
@@ -57,6 +67,16 @@ impl Default for DiagnosticStore {
         }
     }
 }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct DiagnosticRepeat {
+    raw_message: String,
+    source_name: String,
+    line: u32,
+    column: usize,
+    origin_level: Option<u16>,
+    hidden: usize,
+}
+
 
 impl DiagnosticStore {
     pub fn clear(&mut self) {
@@ -82,8 +102,11 @@ impl DiagnosticStore {
             self.entries.push(Diagnostic {
                 severity: DiagnosticSeverity::Warning,
                 message: OMITTED_DIAGNOSTICS_MESSAGE.to_string(),
+                original_message: None,
                 primary: None,
                 highlight_len: 1,
+                primary_label: None,
+                related: None,
                 expansion: Vec::new(),
                 included_from: Vec::new(),
                 help: None,
@@ -171,9 +194,37 @@ impl Diagnostic {
     }
 
     pub fn render_styled(&self, color: bool) -> String {
+        self.render_internal(color, false)
+    }
+
+    pub(crate) fn render_transcript(&self) -> String {
+        self.render_internal(false, true)
+    }
+
+    fn render_internal(&self, color: bool, is_transcript: bool) -> String {
         let mut out = String::new();
         let message = bounded_text(&self.message, MAX_MESSAGE_BYTES).replace('\n', "\n  | ");
-        if color {
+        if is_transcript {
+            if self.severity == DiagnosticSeverity::Error {
+                if let Some(orig) = &self.original_message {
+                    let orig_text = bounded_text(orig, MAX_MESSAGE_BYTES).replace('\n', "\n  | ");
+                    out.push_str("! ");
+                    out.push_str(&orig_text);
+                    out.push('\n');
+                    out.push_str("error: ");
+                    out.push_str(&message);
+                    out.push('\n');
+                } else {
+                    out.push_str("! ");
+                    out.push_str(&message);
+                    out.push('\n');
+                }
+            } else {
+                out.push_str("warning: ");
+                out.push_str(&message);
+                out.push('\n');
+            }
+        } else if color {
             match self.severity {
                 DiagnosticSeverity::Error => {
                     out.push_str("\x1b[1;31merror\x1b[0m\x1b[1m: ");
@@ -188,59 +239,173 @@ impl Diagnostic {
             }
         } else {
             out.push_str(match self.severity {
-                DiagnosticSeverity::Error => "! ",
+                DiagnosticSeverity::Error => "error: ",
                 DiagnosticSeverity::Warning => "warning: ",
             });
             out.push_str(&message);
             out.push('\n');
         }
 
-        if let Some(primary) = &self.primary {
+        let same_line_single_window = match (&self.primary, &self.related) {
+            (Some(p), Some(r)) => {
+                if p.name == r.source.name
+                    && p.line == r.source.line
+                    && !p.text.is_empty()
+                    && p.text == r.source.text
+                {
+                    let (chars, _) = expand_tabs_and_controls(&p.text, 0);
+                    let total_cells: usize = chars.iter().map(|(_, cells)| cells).sum();
+                    total_cells <= MAX_SOURCE_COLUMNS
+                } else {
+                    false
+                }
+            }
+            _ => false,
+        };
+
+        if same_line_single_window {
+            let p = self.primary.as_ref().unwrap();
+            let r = self.related.as_ref().unwrap();
+            let gutter = p.line.to_string().len();
+            let (line, p_caret, p_width) = source_window(
+                &p.text,
+                p.display_column.saturating_sub(1),
+                self.highlight_len,
+            );
+            let (_, r_caret, r_width) = source_window(
+                &r.source.text,
+                r.source.display_column.saturating_sub(1),
+                r.highlight_len,
+            );
             if color {
                 out.push_str(&format!(
                     "  \x1b[1;34m-->\x1b[0m {}:{}:{}\n",
-                    bounded_inline(&primary.name, 4096),
-                    primary.line,
-                    primary.column
+                    bounded_inline(&p.name, 4096),
+                    p.line,
+                    p.column
                 ));
+                out.push_str(&format!("\x1b[1;34m{:gutter$} |\x1b[0m\n", ""));
+                out.push_str(&format!("\x1b[1;34m{} |\x1b[0m {}\n", p.line, line));
             } else {
                 out.push_str(&format!(
                     "  --> {}:{}:{}\n",
-                    bounded_inline(&primary.name, 4096),
-                    primary.line,
-                    primary.column
+                    bounded_inline(&p.name, 4096),
+                    p.line,
+                    p.column
                 ));
+                out.push_str(&format!("{:gutter$} |\n", ""));
+                out.push_str(&format!("{} | {}\n", p.line, line));
             }
-            if !primary.text.is_empty() {
-                let (line, caret, width) = source_window(
-                    &primary.text,
-                    primary.display_column.saturating_sub(1),
-                    self.highlight_len,
-                );
-                let gutter = primary.line.to_string().len();
+            let p_label = self.primary_label.as_deref().map(|l| bounded_text(l.trim(), MAX_HELP_BYTES));
+            render_caret_row(
+                &mut out,
+                gutter,
+                p_caret,
+                p_width,
+                p_label.as_deref(),
+                match self.severity {
+                    DiagnosticSeverity::Error => "\x1b[1;31m",
+                    DiagnosticSeverity::Warning => "\x1b[1;33m",
+                },
+                color,
+            );
+            let r_label = bounded_text(r.label.trim(), MAX_HELP_BYTES);
+            render_caret_row(
+                &mut out,
+                gutter,
+                r_caret,
+                r_width,
+                Some(&r_label),
+                "\x1b[1;34m",
+                color,
+            );
+        } else {
+            if let Some(primary) = &self.primary {
                 if color {
-                    out.push_str(&format!("\x1b[1;34m{:gutter$} |\x1b[0m\n", ""));
-                    out.push_str(&format!("\x1b[1;34m{} |\x1b[0m {}\n", primary.line, line));
-                    let caret_color = match self.severity {
-                        DiagnosticSeverity::Error => "\x1b[1;31m",
-                        DiagnosticSeverity::Warning => "\x1b[1;33m",
-                    };
                     out.push_str(&format!(
-                        "\x1b[1;34m{:gutter$} |\x1b[0m {}{}{}\x1b[0m\n",
-                        "",
-                        " ".repeat(caret),
-                        caret_color,
-                        "^".repeat(width.max(1))
+                        "  \x1b[1;34m-->\x1b[0m {}:{}:{}\n",
+                        bounded_inline(&primary.name, 4096),
+                        primary.line,
+                        primary.column
                     ));
                 } else {
-                    out.push_str(&format!("{:gutter$} |\n", ""));
-                    out.push_str(&format!("{} | {}\n", primary.line, line));
                     out.push_str(&format!(
-                        "{:gutter$} | {}{}\n",
-                        "",
-                        " ".repeat(caret),
-                        "^".repeat(width.max(1))
+                        "  --> {}:{}:{}\n",
+                        bounded_inline(&primary.name, 4096),
+                        primary.line,
+                        primary.column
                     ));
+                }
+                if !primary.text.is_empty() {
+                    let (line, caret, width) = source_window(
+                        &primary.text,
+                        primary.display_column.saturating_sub(1),
+                        self.highlight_len,
+                    );
+                    let gutter = primary.line.to_string().len();
+                    if color {
+                        out.push_str(&format!("\x1b[1;34m{:gutter$} |\x1b[0m\n", ""));
+                        out.push_str(&format!("\x1b[1;34m{} |\x1b[0m {}\n", primary.line, line));
+                    } else {
+                        out.push_str(&format!("{:gutter$} |\n", ""));
+                        out.push_str(&format!("{} | {}\n", primary.line, line));
+                    }
+                    let p_label = self.primary_label.as_deref().map(|l| bounded_text(l.trim(), MAX_HELP_BYTES));
+                    render_caret_row(
+                        &mut out,
+                        gutter,
+                        caret,
+                        width,
+                        p_label.as_deref(),
+                        match self.severity {
+                            DiagnosticSeverity::Error => "\x1b[1;31m",
+                            DiagnosticSeverity::Warning => "\x1b[1;33m",
+                        },
+                        color,
+                    );
+                }
+            }
+            if let Some(related) = &self.related {
+                let r_source = &related.source;
+                if color {
+                    out.push_str(&format!(
+                        "  \x1b[1;34m:::\x1b[0m {}:{}:{}\n",
+                        bounded_inline(&r_source.name, 4096),
+                        r_source.line,
+                        r_source.column
+                    ));
+                } else {
+                    out.push_str(&format!(
+                        "  ::: {}:{}:{}\n",
+                        bounded_inline(&r_source.name, 4096),
+                        r_source.line,
+                        r_source.column
+                    ));
+                }
+                if !r_source.text.is_empty() {
+                    let (line, caret, width) = source_window(
+                        &r_source.text,
+                        r_source.display_column.saturating_sub(1),
+                        related.highlight_len,
+                    );
+                    let gutter = r_source.line.to_string().len();
+                    if color {
+                        out.push_str(&format!("\x1b[1;34m{:gutter$} |\x1b[0m\n", ""));
+                        out.push_str(&format!("\x1b[1;34m{} |\x1b[0m {}\n", r_source.line, line));
+                    } else {
+                        out.push_str(&format!("{:gutter$} |\n", ""));
+                        out.push_str(&format!("{} | {}\n", r_source.line, line));
+                    }
+                    let r_label = bounded_text(related.label.trim(), MAX_HELP_BYTES);
+                    render_caret_row(
+                        &mut out,
+                        gutter,
+                        caret,
+                        width,
+                        Some(&r_label),
+                        "\x1b[1;34m",
+                        color,
+                    );
                 }
             }
         }
@@ -253,6 +418,17 @@ impl Diagnostic {
             }
             let note = bounded_text(note.trim(), MAX_HELP_BYTES).replace('\n', "\n  =       ");
             out.push_str(note.trim());
+            out.push('\n');
+        }
+
+        if let Some(help) = &self.help {
+            if color {
+                out.push_str("  \x1b[1;36m= help:\x1b[0m ");
+            } else {
+                out.push_str("  = help: ");
+            }
+            let help = bounded_text(help.trim(), MAX_HELP_BYTES).replace('\n', "\n  =       ");
+            out.push_str(help.trim());
             out.push('\n');
         }
 
@@ -272,6 +448,7 @@ impl Diagnostic {
             );
             out.push('\n');
         }
+
         for parent in &self.included_from {
             if color {
                 out.push_str(&format!(
@@ -289,17 +466,34 @@ impl Diagnostic {
                 ));
             }
         }
-        if let Some(help) = &self.help {
-            if color {
-                out.push_str("  \x1b[1;36m= help:\x1b[0m ");
-            } else {
-                out.push_str("  = help: ");
-            }
-            let help = bounded_text(help.trim(), MAX_HELP_BYTES).replace('\n', "\n  =       ");
-            out.push_str(help.trim());
-            out.push('\n');
-        }
+
         out
+    }
+}
+
+fn render_caret_row(
+    out: &mut String,
+    gutter: usize,
+    caret: usize,
+    width: usize,
+    label: Option<&str>,
+    caret_color: &str,
+    color: bool,
+) {
+    if color {
+        out.push_str(&format!("\x1b[1;34m{:gutter$} |\x1b[0m {}{}{}", "", " ".repeat(caret), caret_color, "^".repeat(width.max(1))));
+        if let Some(l) = label {
+            out.push(' ');
+            out.push_str(l);
+        }
+        out.push_str("\x1b[0m\n");
+    } else {
+        out.push_str(&format!("{:gutter$} | {}{}", "", " ".repeat(caret), "^".repeat(width.max(1))));
+        if let Some(l) = label {
+            out.push(' ');
+            out.push_str(l);
+        }
+        out.push('\n');
     }
 }
 
@@ -331,9 +525,9 @@ impl Engine {
         self.math_diagnostic_sources.clear();
         self.math_diagnostic_depth = 0;
         self.reported_missing_math_atoms.clear();
-        self.math_entry_source = None;
-        self.last_error_message = None;
-        self.consecutive_error_count = 0;
+        self.diagnostic_repeat = None;
+        self.last_paragraph_layout = None;
+        self.last_pack = None;
     }
 
     pub(crate) fn enter_macro_diagnostic(
@@ -416,7 +610,7 @@ impl Engine {
 
     /// Capture the current source position and move it back to the token that
     /// began the current operation whenever it is still visible on the line.
-    pub(crate) fn current_token_source_mark(&self) -> Option<SourceMark> {
+    pub(crate) fn current_known_token_source_mark(&self) -> Option<SourceMark> {
         let current_cs = self
             .diagnostic_source_cs
             .or_else(|| self.cur_tok.is_cs().then(|| self.cur_tok.cs_id()));
@@ -433,6 +627,15 @@ impl Engine {
         if let Some((mark, _)) = self.current_physical_source() {
             return Some(mark);
         }
+        None
+    }
+
+    /// Capture the current source position and move it back to the token that
+    /// began the current operation whenever it is still visible on the line.
+    pub(crate) fn current_token_source_mark(&self) -> Option<SourceMark> {
+        if let Some(mark) = self.current_known_token_source_mark() {
+            return Some(mark);
+        }
         let mut mark = self.input.current_source_mark()?;
         if let Some(id) = self
             .diagnostic_source_cs
@@ -447,19 +650,75 @@ impl Engine {
         Some(mark)
     }
 
-    pub(crate) fn record_group_opening(&mut self) {
-        if let Some(source) = self.current_token_source_mark() {
-            self.diagnostic_group_openings
-                .push((self.eqtb.cur_level, source));
+    pub(crate) fn push_group_level_at(
+        &mut self,
+        kind: crate::eqtb::LevelType,
+        source: Option<SourceMark>,
+    ) {
+        let prev_level = self.eqtb.cur_level;
+        self.eqtb.push_level(kind);
+        if self.eqtb.cur_level > prev_level {
+            if let Some(mark) = source {
+                self.diagnostic_group_openings
+                    .push((self.eqtb.cur_level, mark));
+            }
         }
     }
 
     pub(crate) fn push_group_level(&mut self, kind: crate::eqtb::LevelType) {
-        self.eqtb.push_level(kind);
-        self.record_group_opening();
+        let mark = self.current_token_source_mark();
+        self.push_group_level_at(kind, mark);
+    }
+
+    pub(crate) fn group_origin(&self, kind: crate::eqtb::LevelType) -> Option<(u16, &SourceMark)> {
+        for item in self.eqtb.save_stack.iter().rev() {
+            if let crate::eqtb::SaveItem::Level(level, ty) = item {
+                if *ty == kind {
+                    let mark = self
+                        .diagnostic_group_openings
+                        .iter()
+                        .rev()
+                        .find_map(|(opening_level, mark)| {
+                            (*opening_level == *level).then_some(mark)
+                        });
+                    return mark.map(|m| (*level, m));
+                }
+            }
+        }
+        None
+    }
+
+    pub(crate) fn environment_origin(&self, expected: &str) -> Option<&SourceMark> {
+        let id = self.cs.lookup(b"@currenvir")?;
+        let equiv = self.eqtb.get(id)?;
+        if let crate::eqtb::Equiv::Macro(m) = equiv {
+            if m.num_params == 0 && !m.has_param_refs {
+                let name = self.tokens_to_string(&m.body);
+                if name.trim() == expected {
+                    let level = self.eqtb.definition_level(id)?;
+                    if level > crate::eqtb::LEVEL_ONE {
+                        return self
+                            .diagnostic_group_openings
+                            .iter()
+                            .rev()
+                            .find_map(|(opening_level, mark)| {
+                                (*opening_level == level).then_some(mark)
+                            });
+                    }
+                }
+            }
+        }
+        None
     }
 
     pub(crate) fn forget_group_opening(&mut self, level: u16) {
+        if self
+            .diagnostic_repeat
+            .as_ref()
+            .is_some_and(|repeat| repeat.origin_level == Some(level))
+        {
+            self.flush_diagnostic_repeats();
+        }
         if self
             .diagnostic_group_openings
             .last()
@@ -490,11 +749,15 @@ impl Engine {
             .map_or_else(|| self.input.current_file_line(), |source| source.line)
     }
 
-    pub(crate) fn make_error_diagnostic(&self, message: &str) -> Diagnostic {
+    pub(crate) fn make_error_diagnostic(&self, message: &str) -> (Diagnostic, Option<u16>) {
         self.make_diagnostic(message, DiagnosticSeverity::Error)
     }
 
-    fn make_diagnostic(&self, message: &str, severity: DiagnosticSeverity) -> Diagnostic {
+    fn make_diagnostic(
+        &self,
+        message: &str,
+        severity: DiagnosticSeverity,
+    ) -> (Diagnostic, Option<u16>) {
         let configured_context = self.eqtb.int_params[IntParam::ErrorContextLines.idx() as usize];
         // Current LaTeX formats use -1 as their inherited/default value. A
         // literal clamp to zero silently hid every macro and include note in
@@ -575,6 +838,7 @@ impl Engine {
                     Source::TokList {
                         owner: Some(owner), ..
                     } => Some(*owner),
+                    Source::MacroFrame(frame) => frame.owner,
                     _ => None,
                 })
                 .collect::<Vec<_>>()
@@ -668,77 +932,324 @@ impl Engine {
             String::new()
         };
         let custom_help = clean_help_without_interactive_boilerplate(&custom_help);
-        let (final_message, note, intuitive_help) = if severity == DiagnosticSeverity::Error {
-            self.intuitive_error(message)
-        } else {
-            (message.to_string(), None, None)
+        let mut diagnostic = Diagnostic {
+            severity,
+            message: bounded_text(message, MAX_MESSAGE_BYTES),
+            original_message: None,
+            primary,
+            highlight_len,
+            primary_label: None,
+            related: None,
+            expansion,
+            included_from,
+            help: None,
+            note: None,
         };
-        let help = intuitive_help.or_else(|| {
-            if custom_help.is_empty() {
+
+        let cause_level = if severity == DiagnosticSeverity::Error {
+            self.explain_error(message, &mut diagnostic)
+        } else {
+            None
+        };
+
+        if diagnostic.help.is_none() {
+            diagnostic.help = if custom_help.is_empty() {
                 default_help(message)
             } else {
                 Some(custom_help)
-            }
-        });
-
-        Diagnostic {
-            severity,
-            message: bounded_text(&final_message, MAX_MESSAGE_BYTES),
-            primary,
-            highlight_len,
-            expansion,
-            included_from,
-            help,
-            note,
+            };
         }
+
+        (diagnostic, cause_level)
     }
 
-    pub(crate) fn intuitive_error(
+    pub(crate) fn explain_error(
         &self,
-        message: &str,
-    ) -> (String, Option<String>, Option<String>) {
-        if message.contains("Not in outer par mode") {
-            (
-                "floating environment cannot be placed inside another float or unclosed environment".to_string(),
-                None,
-                Some("a float (\\begin{table} or \\begin{figure}) cannot be placed inside another float, minipage, or unclosed environment; check earlier tables or figures for an unclosed \\begin{table} or \\begin{figure}".to_string()),
-            )
-        } else if message.contains("Lonely \\item") {
-            (
-                "\\item used outside of a list environment".to_string(),
-                None,
-                Some("\\item must be placed inside an enclosing list environment such as \\begin{enumerate}, \\begin{itemize}, or \\begin{description}".to_string()),
-            )
-        } else if message.contains("ended by \\end{enumerate}") || message.contains("ended by \\end{itemize}") {
-            (
-                format!("mismatched closing environment: {}", message.trim_start_matches("! ").trim_start_matches("LaTeX Error: ").trim()),
-                None,
-                Some("this \\end{...} has no matching opening \\begin{...}; check that the list environment was opened earlier".to_string()),
-            )
-        } else if message.contains("Unicode character") && message.contains("not set up for use with LaTeX") {
-            (
-                format!("unrecognized Unicode character in 8-bit TeX: {}", message.trim_start_matches("! ").trim_start_matches("LaTeX Error: ").trim()),
-                None,
-                Some("raw non-ASCII Unicode characters require an input encoding or CJK package in standard pdfLaTeX; replace with ASCII/English text, load \\usepackage[utf8]{inputenc}, or compile with XeLaTeX / LuaLaTeX".to_string()),
-            )
-        } else if message.contains("Extra }, or forgotten $") {
-            let note = self.math_entry_source.as_ref().map(|e| {
-                format!("math mode was opened at {}:{}:{} and was never closed before this closing brace", e.name, e.line, e.column)
-            });
-            (
-                "unexpected closing delimiter '}' while in math mode".to_string(),
-                note,
-                Some("a closing brace '}' was encountered while still in math mode; this almost always means a preceding formula opened with '$' was never closed (e.g. '$N = ...'), or a closing '$' is missing before '}'".to_string()),
-            )
-        } else if message.contains("on input line") && message.contains("ended by \\end{table}") {
-            (
-                message.to_string(),
-                None,
-                Some("an inner environment (such as \\begin{tabular}) was not closed before \\end{table}; check that \\end{tabular} precedes \\end{table}".to_string()),
-            )
+        raw_message: &str,
+        diagnostic: &mut Diagnostic,
+    ) -> Option<u16> {
+        let is_latex_error = raw_message.starts_with("LaTeX Error:")
+            || raw_message.starts_with("! LaTeX Error:");
+        let normalized_latex = raw_message
+            .trim_start_matches("! ")
+            .trim_start_matches("LaTeX Error: ")
+            .trim();
+        let is_primitive = !self.diagnostic_use_err_help;
+
+        let configured_context = self.eqtb.int_params[IntParam::ErrorContextLines.idx() as usize];
+        let context_limit = if configured_context < 0 {
+            DEFAULT_CONTEXT_FRAMES
         } else {
-            (message.to_string(), None, None)
+            (configured_context as usize).min(MAX_CONTEXT_FRAMES)
+        };
+
+        if is_primitive
+            && (raw_message == "Extra }, or forgotten $."
+                || raw_message == "Extra }, or forgotten $")
+        {
+            diagnostic.original_message = Some(raw_message.to_string());
+            diagnostic.message = "math is still open at this closing brace".to_string();
+            if let Some((level, opener_mark)) =
+                self.group_origin(crate::eqtb::LevelType::MathShift)
+            {
+                let opener_ctx = opener_mark.to_context();
+                let is_literal_dollar = opener_ctx
+                    .text
+                    .as_bytes()
+                    .get(opener_ctx.display_column.saturating_sub(1))
+                    == Some(&b'$');
+                let opener_label = if is_literal_dollar {
+                    "math starts here".to_string()
+                } else {
+                    "math starts while expanding this call".to_string()
+                };
+                if let Some(detection_ctx) = diagnostic.primary.take() {
+                    diagnostic.related = Some(DiagnosticLabel {
+                        source: detection_ctx,
+                        highlight_len: diagnostic.highlight_len.max(1),
+                        label: "a closing brace was reached here".to_string(),
+                    });
+                }
+                diagnostic.primary = Some(opener_ctx.clone());
+                diagnostic.highlight_len = 1;
+                diagnostic.primary_label = Some(opener_label);
+                diagnostic.included_from =
+                    crate::input::InputStack::source_context_chain(opener_ctx, MAX_CONTEXT_FRAMES + 1)
+                        .into_iter()
+                        .skip(1)
+                        .take(context_limit)
+                        .collect();
+                diagnostic.help = Some(
+                    "a missing closing math delimiter is likely: if this brace should close the surrounding text or group, finish the formula before it; otherwise remove the stray brace".to_string(),
+                );
+                return Some(level);
+            } else {
+                diagnostic.primary_label = Some("a closing brace was reached here".to_string());
+                diagnostic.help = Some(
+                    "a closing brace '}' was encountered while still in math mode: if this brace should close the surrounding text or group, finish the formula before it; otherwise remove the stray brace".to_string(),
+                );
+                return None;
+            }
         }
+
+        if is_primitive && raw_message.starts_with("Missing $ inserted") {
+            if raw_message.contains("(\\right)") {
+                return None;
+            }
+            if self.mode.is_m() {
+                if raw_message == "Missing $ inserted." || raw_message == "Missing $ inserted" {
+                    diagnostic.original_message = Some(raw_message.to_string());
+                    diagnostic.message =
+                        "vertical command was reached before math closed".to_string();
+                    if let Some((level, opener_mark)) =
+                        self.group_origin(crate::eqtb::LevelType::MathShift)
+                    {
+                        let opener_ctx = opener_mark.to_context();
+                        let is_literal_dollar = opener_ctx
+                            .text
+                            .as_bytes()
+                            .get(opener_ctx.display_column.saturating_sub(1))
+                            == Some(&b'$');
+                        let opener_label = if is_literal_dollar {
+                            "math starts here".to_string()
+                        } else {
+                            "math starts while expanding this call".to_string()
+                        };
+                        if let Some(detection_ctx) = diagnostic.primary.take() {
+                            diagnostic.related = Some(DiagnosticLabel {
+                                source: detection_ctx,
+                                highlight_len: diagnostic.highlight_len.max(1),
+                                label: "vertical command was reached here".to_string(),
+                            });
+                        }
+                        diagnostic.primary = Some(opener_ctx.clone());
+                        diagnostic.highlight_len = 1;
+                        diagnostic.primary_label = Some(opener_label);
+                        diagnostic.included_from =
+                            crate::input::InputStack::source_context_chain(
+                                opener_ctx,
+                                MAX_CONTEXT_FRAMES + 1,
+                            )
+                            .into_iter()
+                            .skip(1)
+                            .take(context_limit)
+                            .collect();
+                        diagnostic.help = Some(
+                            "close the active formula with '$' before starting a paragraph or vertical space".to_string(),
+                        );
+                        return Some(level);
+                    } else {
+                        diagnostic.primary_label =
+                            Some("vertical command was reached here".to_string());
+                        diagnostic.help = Some(
+                            "close the active formula with '$' before starting a paragraph or vertical space".to_string(),
+                        );
+                        return None;
+                    }
+                }
+            } else if !self.mode.is_m()
+                && (raw_message == "Missing $ inserted."
+                    || raw_message == "Missing $ inserted"
+                    || raw_message.contains("(\\left)"))
+            {
+                diagnostic.original_message = Some(raw_message.to_string());
+                diagnostic.message = "math command used outside math mode".to_string();
+                diagnostic.primary_label = Some("math command used here".to_string());
+                diagnostic.help = Some(
+                    "this command is only allowed in math mode; enclose the intended formula in '$...$'".to_string(),
+                );
+                return None;
+            }
+        }
+
+        if is_latex_error
+            && normalized_latex.contains("\\begin{")
+            && normalized_latex.contains("ended by \\end{")
+        {
+            if let (Some(x), Some(y)) = (
+                between(normalized_latex, "\\begin{", "}"),
+                between(normalized_latex, "ended by \\end{", "}"),
+            ) {
+                diagnostic.original_message = Some(raw_message.to_string());
+                if x != "document" {
+                    diagnostic.message = format!("cannot close {y} while {x} is still open");
+                    diagnostic.primary_label = Some(format!("ended by \\end{{{y}}} here"));
+                    if let Some(opener_mark) = self.environment_origin(x) {
+                        diagnostic.related = Some(DiagnosticLabel {
+                            source: opener_mark.to_context(),
+                            highlight_len: 1,
+                            label: format!("\\begin{{{x}}} was opened here"),
+                        });
+                    }
+                    diagnostic.help = Some(format!(
+                        "use \\end{{{x}}} if {x} was intended to end here; otherwise close {x} before \\end{{{y}}}"
+                    ));
+                } else if y != "document" {
+                    diagnostic.message = format!("no matching \\begin{{{y}}} is active");
+                    diagnostic.primary_label = Some(format!("stray \\end{{{y}}} reached here"));
+                    diagnostic.help = Some(format!(
+                        "add \\begin{{{y}}} around the intended contents or remove this stray \\end{{{y}}}"
+                    ));
+                }
+                return None;
+            }
+        }
+
+        if is_latex_error
+            && (normalized_latex
+                == "Lonely \\item -- perhaps a missing list environment?"
+                || normalized_latex.starts_with("Lonely \\item"))
+        {
+            diagnostic.original_message = Some(raw_message.to_string());
+            diagnostic.message = "list item has no enclosing list".to_string();
+            diagnostic.primary_label = Some("\\item used outside any list".to_string());
+            diagnostic.help = Some(
+                "\\item must be inside an enclosing list; for example: \\begin{itemize} \\item ... \\end{itemize}, or remove \\item for an ordinary paragraph".to_string(),
+            );
+            return None;
+        }
+
+        if is_latex_error && normalized_latex.starts_with("Not in outer par mode") {
+            diagnostic.original_message = Some(raw_message.to_string());
+            if let Some((level, math_mark)) =
+                self.group_origin(crate::eqtb::LevelType::MathShift)
+            {
+                diagnostic.message = "a float cannot start while math is still open".to_string();
+                let opener_ctx = math_mark.to_context();
+                let is_literal_dollar = opener_ctx
+                    .text
+                    .as_bytes()
+                    .get(opener_ctx.display_column.saturating_sub(1))
+                    == Some(&b'$');
+                let opener_label = if is_literal_dollar {
+                    "math starts here".to_string()
+                } else {
+                    "math starts while expanding this call".to_string()
+                };
+                if let Some(float_ctx) = diagnostic.primary.take() {
+                    diagnostic.related = Some(DiagnosticLabel {
+                        source: float_ctx,
+                        highlight_len: diagnostic.highlight_len.max(1),
+                        label: "float attempted here".to_string(),
+                    });
+                }
+                diagnostic.primary = Some(opener_ctx.clone());
+                diagnostic.highlight_len = 1;
+                diagnostic.primary_label = Some(opener_label);
+                diagnostic.included_from =
+                    crate::input::InputStack::source_context_chain(opener_ctx, MAX_CONTEXT_FRAMES + 1)
+                        .into_iter()
+                        .skip(1)
+                        .take(context_limit)
+                        .collect();
+                diagnostic.help =
+                    Some("finish the active formula before starting a float".to_string());
+                return Some(level);
+            } else if self.mode.is_inner() {
+                let box_origin = self.group_origin(crate::eqtb::LevelType::Box);
+                if let Some((level, box_mark)) = box_origin {
+                    diagnostic.message = "a float cannot start inside this box".to_string();
+                    let box_ctx = box_mark.to_context();
+                    if let Some(float_ctx) = diagnostic.primary.take() {
+                        diagnostic.related = Some(DiagnosticLabel {
+                            source: float_ctx,
+                            highlight_len: diagnostic.highlight_len.max(1),
+                            label: "float attempted here".to_string(),
+                        });
+                    }
+                    diagnostic.primary = Some(box_ctx.clone());
+                    diagnostic.highlight_len = 1;
+                    diagnostic.primary_label = Some("enclosing box opened here".to_string());
+                    diagnostic.included_from =
+                        crate::input::InputStack::source_context_chain(box_ctx, MAX_CONTEXT_FRAMES + 1)
+                            .into_iter()
+                            .skip(1)
+                            .take(context_limit)
+                            .collect();
+                    diagnostic.help = Some(
+                        "move the float outside the enclosing box, or close the box before the float".to_string(),
+                    );
+                    return Some(level);
+                } else {
+                    diagnostic.message = "a float cannot start in the current mode".to_string();
+                    diagnostic.primary_label = Some("float attempted here".to_string());
+                    diagnostic.help = Some(
+                        "floats (such as figure or table) can only appear in outer vertical mode; move the float outside any enclosing box or environment".to_string(),
+                    );
+                    return None;
+                }
+            } else {
+                diagnostic.message = "a float cannot start in the current mode".to_string();
+                diagnostic.primary_label = Some("float attempted here".to_string());
+                diagnostic.help = Some(
+                    "floats (such as figure or table) can only appear in outer vertical mode; move the float outside any enclosing box or environment".to_string(),
+                );
+                return None;
+            }
+        }
+
+        if is_latex_error
+            && normalized_latex.contains("Unicode character")
+            && normalized_latex.contains("not set up for use with LaTeX")
+        {
+            diagnostic.original_message = Some(raw_message.to_string());
+            if let Some(target) = between(
+                normalized_latex,
+                "Unicode character ",
+                " not set up for use with LaTeX",
+            ) {
+                diagnostic.message = format!("unsupported Unicode character {target}");
+            } else {
+                diagnostic.message = "unsupported Unicode character".to_string();
+            }
+            diagnostic.primary_label = Some("character not configured for LaTeX".to_string());
+            diagnostic.help = Some(
+                "this character has no configured representation in 8-bit LaTeX; replace it with the intended LaTeX command or map it with \\DeclareUnicodeCharacter".to_string(),
+            );
+            return None;
+        }
+
+        None
     }
 
     pub(crate) fn warning_at(&mut self, message: &str, source: Option<SourceContext>) {
@@ -760,30 +1271,140 @@ impl Engine {
         source: Option<SourceContext>,
         terminal_visible: bool,
     ) {
+        self.flush_diagnostic_repeats();
         let saved = std::mem::replace(&mut self.diagnostic_source_override, source);
-        let diagnostic = self.make_diagnostic(message, DiagnosticSeverity::Warning);
+        let (diagnostic, _) = self.make_diagnostic(message, DiagnosticSeverity::Warning);
         self.diagnostic_source_override = saved;
-        let rendered = diagnostic.render();
-        if terminal_visible {
-            self.diagnostic_print_nl(&rendered);
-        } else {
-            if !self.log.is_empty() && !self.log.ends_with('\n') {
-                self.append_log("\n");
-            }
-            self.append_log(&rendered);
-        }
+        self.emit_diagnostic(&diagnostic, terminal_visible);
         self.diagnostics.push(diagnostic);
+    }
+
+    pub(crate) fn flush_diagnostic_repeats(&mut self) {
+        if let Some(repeat) = self.diagnostic_repeat.take() {
+            if repeat.hidden > 0 {
+                let note = if color_enabled() {
+                    format!(
+                        "\x1b[1;36m = note:\x1b[0m {} additional reports at {}:{}:{}; full details are in the transcript\n",
+                        repeat.hidden, repeat.source_name, repeat.line, repeat.column
+                    )
+                } else {
+                    format!(
+                        " = note: {} additional reports at {}:{}:{}; full details are in the transcript\n",
+                        repeat.hidden, repeat.source_name, repeat.line, repeat.column
+                    )
+                };
+                if !self.diagnostic_output.is_empty() && !self.diagnostic_output.ends_with('\n') {
+                    self.append_diagnostic("\n");
+                }
+                self.append_diagnostic(&note);
+            }
+        }
+    }
+
+    pub(crate) fn emit_diagnostic(&mut self, diagnostic: &Diagnostic, terminal_visible: bool) {
+        let transcript = diagnostic.render_transcript();
+        if !self.log.is_empty() && !self.log.ends_with('\n') {
+            self.append_log("\n");
+        }
+        self.append_log(&transcript);
+        if !self.log.ends_with('\n') {
+            self.append_log("\n");
+        }
+
+        if terminal_visible {
+            let rendered = diagnostic.render();
+            if !self.diagnostic_output.is_empty() && !self.diagnostic_output.ends_with('\n') {
+                self.append_diagnostic("\n");
+            }
+            self.append_diagnostic(&rendered);
+            if !self.diagnostic_output.ends_with('\n') {
+                self.append_diagnostic("\n");
+            }
+        }
+    }
+
+    pub fn error(&mut self, msg: &str) {
+        if self.stopped_on_error {
+            return;
+        }
+
+        let (diagnostic, cause_level) = self.make_error_diagnostic(msg);
+        self.diagnostics.push(diagnostic.clone());
+        self.error_count += 1;
+
+        if self.interaction_mode == crate::engine::InteractionMode::Batch {
+            self.emit_diagnostic(&diagnostic, false);
+        } else if diagnostic.primary.is_none() || msg.len() > MAX_MESSAGE_BYTES {
+            self.flush_diagnostic_repeats();
+            self.emit_diagnostic(&diagnostic, true);
+        } else {
+            let primary = diagnostic.primary.as_ref().unwrap();
+            let matches = self.diagnostic_repeat.as_ref().is_some_and(|repeat| {
+                repeat.raw_message == msg
+                    && repeat.source_name == primary.name
+                    && repeat.line == primary.line
+                    && repeat.column == primary.column
+                    && repeat.origin_level == cause_level
+            });
+
+            if matches {
+                if let Some(repeat) = &mut self.diagnostic_repeat {
+                    repeat.hidden += 1;
+                }
+                self.emit_diagnostic(&diagnostic, false);
+            } else {
+                self.flush_diagnostic_repeats();
+                self.emit_diagnostic(&diagnostic, true);
+                self.diagnostic_repeat = Some(DiagnosticRepeat {
+                    raw_message: msg.to_string(),
+                    source_name: primary.name.clone(),
+                    line: primary.line,
+                    column: primary.column,
+                    origin_level: cause_level,
+                    hidden: 0,
+                });
+            }
+        }
+
+        if self.halt_on_error || self.interaction_mode == crate::engine::InteractionMode::ErrorStop {
+            self.flush_diagnostic_repeats();
+            self.stopped_on_error = true;
+            self.end_occurred = true;
+        } else if self.error_count as usize >= self.max_errors.max(1) {
+            self.flush_diagnostic_repeats();
+            let message = format!(
+                "Too many errors; stopping after {} error{}.",
+                self.error_count,
+                if self.error_count == 1 { "" } else { "s" }
+            );
+            let (stopped, _) = self.make_error_diagnostic(&message);
+            self.emit_diagnostic(&stopped, self.interaction_mode != crate::engine::InteractionMode::Batch);
+            self.diagnostics.push(stopped);
+            self.stopped_on_error = true;
+            self.end_occurred = true;
+        }
+    }
+
+    pub fn fatal_error(&mut self, msg: &str) {
+        self.error(msg);
+        self.flush_diagnostic_repeats();
+        self.stopped_on_error = true;
+        self.end_occurred = true;
     }
 
     /// Record a failure that occurs after TeX input processing, such as PDF
     /// serialization or an output-file write. Such failures must not inherit
     /// the scanner's last source location, which would blame unrelated TeX.
     pub fn external_fatal_error(&mut self, message: &str, help: Option<&str>) {
+        self.flush_diagnostic_repeats();
         let diagnostic = Diagnostic {
             severity: DiagnosticSeverity::Error,
             message: bounded_text(message, MAX_MESSAGE_BYTES),
+            original_message: None,
             primary: None,
             highlight_len: 1,
+            primary_label: None,
+            related: None,
             expansion: Vec::new(),
             included_from: Vec::new(),
             help: help
@@ -791,7 +1412,7 @@ impl Engine {
                 .or_else(|| default_help(message)),
             note: None,
         };
-        self.diagnostic_print_nl(&diagnostic.render());
+        self.emit_diagnostic(&diagnostic, self.interaction_mode != crate::engine::InteractionMode::Batch);
         self.diagnostics.push(diagnostic);
         self.error_count += 1;
         self.stopped_on_error = true;
@@ -806,6 +1427,7 @@ impl Engine {
             return;
         }
         self.diagnostics_finished = true;
+        self.flush_diagnostic_repeats();
         if self.stopped_on_error || (self.ini_mode && self.format_done) {
             return;
         }

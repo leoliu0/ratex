@@ -77,11 +77,62 @@ pub struct Macro {
 
 #[derive(Clone, Debug)]
 pub struct MacroReplacement {
-    body: Rc<[Token]>,
-    references: Vec<(usize, usize)>,
+    pub(crate) body: Rc<[Token]>,
+    pub(crate) references: Rc<[(usize, usize)]>,
 }
-
 impl Macro {
+    pub(crate) fn ensure_replacement_plan(&self) -> Rc<[(usize, usize)]> {
+        let mut cached = self.replacement.borrow_mut();
+        if cached
+            .as_ref()
+            .is_none_or(|plan| !Rc::ptr_eq(&plan.body, &self.body))
+        {
+            let references: Rc<[(usize, usize)]> = self
+                .body
+                .iter()
+                .enumerate()
+                .filter_map(|(position, token)| {
+                    (0x4000_0001..0x8000_0000)
+                        .contains(&token.0)
+                        .then_some((position, (token.0 & 0x3FFF_FFFF).wrapping_sub(1) as usize))
+                })
+                .collect::<Vec<_>>()
+                .into();
+            *cached = Some(MacroReplacement {
+                body: self.body.clone(),
+                references: references.clone(),
+            });
+            references
+        } else {
+            cached.as_ref().unwrap().references.clone()
+        }
+    }
+
+    pub(crate) fn replacement_length(
+        &self,
+        args: &[smallvec::SmallVec<[Token; 16]>],
+        limit: usize,
+    ) -> Option<usize> {
+        let references = self.ensure_replacement_plan();
+        let mut length = self.body.len();
+        for &(_, parameter) in references.iter() {
+            if let Some(arg) = args.get(parameter) {
+                let next = length
+                    .checked_sub(1)?
+                    .checked_add(arg.len())?;
+                if next > limit {
+                    return None;
+                }
+                length = next;
+            }
+        }
+        if length > limit {
+            None
+        } else {
+            Some(length)
+        }
+    }
+
     pub(crate) fn append_replacement(
         &self,
         args: &[smallvec::SmallVec<[Token; 16]>],
@@ -93,7 +144,7 @@ impl Macro {
             .as_ref()
             .is_none_or(|plan| !Rc::ptr_eq(&plan.body, &self.body))
         {
-            let references = self
+            let references: Rc<[(usize, usize)]> = self
                 .body
                 .iter()
                 .enumerate()
@@ -102,15 +153,18 @@ impl Macro {
                         .contains(&token.0)
                         .then_some((position, (token.0 & 0x3FFF_FFFF).wrapping_sub(1) as usize))
                 })
-                .collect();
+                .collect::<Vec<_>>()
+                .into();
             *cached = Some(MacroReplacement {
                 body: self.body.clone(),
                 references,
             });
         }
         let plan = cached.as_ref().unwrap();
+        let references = plan.references.clone();
+        drop(cached);
         let mut length = self.body.len();
-        for &(_, parameter) in &plan.references {
+        for &(_, parameter) in references.iter() {
             if let Some(arg) = args.get(parameter) {
                 let Some(next) = length
                     .checked_sub(1)
@@ -129,7 +183,7 @@ impl Macro {
         }
         output.reserve(length);
         let mut start = 0;
-        for &(position, parameter) in &plan.references {
+        for &(position, parameter) in references.iter() {
             if let Some(arg) = args.get(parameter) {
                 output.extend_from_slice(&self.body[start..position]);
                 output.extend_from_slice(arg);
@@ -560,6 +614,11 @@ impl Eqtb {
     pub fn get(&self, id: CsId) -> Option<&Equiv> {
         self.entries.get(id as usize).and_then(|e| e.equiv.as_ref())
     }
+    #[inline(always)]
+    pub(crate) fn definition_level(&self, id: CsId) -> Option<u16> {
+        self.entries.get(id as usize).map(|e| e.level)
+    }
+
 
     /// follow \let aliases to the effective meaning
     #[inline(always)]

@@ -50,6 +50,7 @@ pub struct PdfPage {
     pub attr_extra: Vec<u8>,
     /// raw dict entries contributed by \pdfpageresources (copied at shipout)
     pub resources_extra: Vec<u8>,
+    pub display_list: Option<crate::boxes::DisplayList>,
 }
 
 impl PdfPage {
@@ -65,6 +66,7 @@ impl PdfPage {
             dests: Vec::new(),
             attr_extra: Vec::new(),
             resources_extra: Vec::new(),
+            display_list: None,
         }
     }
 }

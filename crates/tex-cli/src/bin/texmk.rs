@@ -2832,11 +2832,7 @@ fn real_main() -> i32 {
     let cache_hit_marker = engine_cache_dir.join(".texmk-cache-hit");
     // The engine may omit this one future output from directory-membership
     // fingerprints. Direct reads and missing-file probes remain dependencies.
-    use std::io::IsTerminal;
-    let force_color = std::env::var_os("CLICOLOR_FORCE").map_or_else(
-        || std::io::stderr().is_terminal() && std::env::var_os("NO_COLOR").is_none(),
-        |v| v != "0",
-    );
+    let force_color = tex_core::diagnostics::color_enabled();
     let engine_env = [
         (
             OsString::from(TEXMK_INTERNAL_MODE_ENV),
@@ -2886,7 +2882,9 @@ fn real_main() -> i32 {
         trusted_owned: &trusted_aux_owned,
         manifest_path: &manifest_path,
     };
-    let engine = match tool_override(&[target_engine, "pdflatex"])
+    let engine_override = tool_override(&[target_engine, "pdflatex"]);
+    let using_embedded_engine = engine_override.is_none();
+    let engine = match engine_override
         .map(Ok)
         .unwrap_or_else(std::env::current_exe)
     {
@@ -3009,8 +3007,8 @@ fn real_main() -> i32 {
         };
         let engine_cache_hit = take_cache_hit_marker(&cache_hit_marker);
         if !output.success {
-            let user_fatal_error = output.stdout.contains("! published PDF became visible")
-                || output.stderr.contains("! published PDF became visible");
+            let user_fatal_error = output.stdout.contains("published PDF became visible")
+                || output.stderr.contains("published PDF became visible");
             let allow_recovery = opt.passthrough.iter().any(|a| {
                 a.starts_with("-interaction=nonstopmode") || a.starts_with("-interaction=batchmode")
             });
@@ -3020,7 +3018,11 @@ fn real_main() -> i32 {
                 && std::fs::metadata(&staged_pdf_path).map_or(0, |m| m.len()) > 1000;
             if !produced_pdf {
                 if opt.silent {
-                    output.replay();
+                    if using_embedded_engine && !output.stderr.is_empty() {
+                        eprint!("{}", output.stderr);
+                    } else {
+                        output.replay();
+                    }
                 }
                 eprintln!("texmk: {target_engine} failed on pass {passes}");
                 if log_path.is_file() {

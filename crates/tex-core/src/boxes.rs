@@ -225,6 +225,101 @@ pub struct DiscNode {
 pub struct MathDiagnosticOrigin {
     pub(crate) id: u64,
 }
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct SpanId(pub u32);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StructureTag {
+    Heading(u8),
+    Paragraph,
+    Formula,
+    Table,
+    Figure,
+}
+
+impl StructureTag {
+    pub fn tag_name(&self) -> &'static str {
+        match self {
+            StructureTag::Paragraph => "/P",
+            StructureTag::Heading(1) => "/H1",
+            StructureTag::Heading(2) => "/H2",
+            StructureTag::Heading(3) => "/H3",
+            StructureTag::Heading(4) => "/H4",
+            StructureTag::Heading(5) => "/H5",
+            StructureTag::Heading(_) => "/H6",
+            StructureTag::Formula => "/Formula",
+            StructureTag::Table => "/Table",
+            StructureTag::Figure => "/Figure",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum DisplayItem {
+    GlyphRun {
+        font: crate::tfm::FontId,
+        x_bp: f64,
+        y_bp: f64,
+        glyphs: Vec<u8>,
+        tag: Option<StructureTag>,
+        span: Option<SpanId>,
+    },
+    Rule {
+        x_bp: f64,
+        y_bp: f64,
+        width_bp: f64,
+        height_bp: f64,
+    },
+    Image {
+        obj_id: u64,
+        x_bp: f64,
+        y_bp: f64,
+        width_bp: f64,
+        height_bp: f64,
+    },
+    Link {
+        rect_bp: [f64; 4],
+        dest: String,
+    },
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct DisplayList {
+    pub items: Vec<DisplayItem>,
+}
+
+impl DisplayList {
+    pub fn new() -> Self {
+        Self { items: Vec::new() }
+    }
+
+    pub fn push(&mut self, item: DisplayItem) {
+        self.items.push(item);
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.items.is_empty()
+    }
+
+    pub fn len(&self) -> usize {
+        self.items.len()
+    }
+
+    pub fn has_structure_tags(&self) -> bool {
+        self.items
+            .iter()
+            .any(|item| matches!(item, DisplayItem::GlyphRun { tag: Some(_), .. }))
+    }
+    pub fn tag_range(&mut self, start: usize, end: usize, tag: StructureTag) {
+        let bound = end.min(self.items.len());
+        for item in self.items[start..bound].iter_mut() {
+            if let DisplayItem::GlyphRun { tag: item_tag, .. } = item {
+                *item_tag = Some(tag);
+            }
+        }
+    }
+}
+
 
 #[derive(Clone, Debug)]
 pub enum Node {
@@ -603,6 +698,29 @@ pub struct PackResult {
     pub sign: u8,
     pub order: u8,
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PackRecord {
+    pub badness: i32,
+    pub delta: i64,
+    pub stretch: [i64; 4],
+    pub shrink: [i64; 4],
+    pub sign: u8,
+    pub order: u8,
+}
+
+impl PackResult {
+    pub fn record(&self) -> PackRecord {
+        PackRecord {
+            badness: self.badness,
+            delta: self.delta,
+            stretch: self.stretch,
+            shrink: self.shrink,
+            sign: self.sign,
+            order: self.order,
+        }
+    }
+}
+
 
 pub(crate) fn glue_sums(list: &[Node]) -> ([i64; 4], [i64; 4]) {
     let mut stretch = [0i64; 4];

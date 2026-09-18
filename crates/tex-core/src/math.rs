@@ -293,9 +293,7 @@ impl Engine {
         if self.math_lists.is_empty() && self.pending_display_formula.is_none() {
             self.math_diagnostic_sources.clear();
         }
-        if self.math_entry_source.is_none() {
-            self.math_entry_source = self.current_physical_source().map(|(m, _)| m.to_context());
-        }
+        let math_entry_mark = self.current_known_token_source_mark();
         let mut display = _display;
         if !display && self.mode == Mode::Horizontal {
             // tex.web §1134: a second math_shift promotes to display math.
@@ -390,7 +388,7 @@ impl Engine {
             // tex.web push_math: the display math group level (exit_math /
             // \\endgroup pop it; dropping this push leaves one pop too many
 
-            self.push_group_level(crate::eqtb::LevelType::MathShift);
+            self.push_group_level_at(crate::eqtb::LevelType::MathShift, math_entry_mark.clone());
             self.eqtb.assign_dim_param(
                 crate::prim::DimParam::DisplayWidth,
                 self.pre_display_l as i32,
@@ -448,7 +446,7 @@ impl Engine {
                 self.space_factor,
                 self.prev_graf,
             ));
-            self.push_group_level(crate::eqtb::LevelType::MathShift);
+            self.push_group_level_at(crate::eqtb::LevelType::MathShift, math_entry_mark);
             // tex.web push_math: eq_word_define(cur_fam_code,-1)
             self.eqtb
                 .assign_int_param(crate::prim::IntParam::CurFam, -1, false);
@@ -562,9 +560,6 @@ impl Engine {
             } else {
                 (mlist, None)
             };
-            if self.math_lists.is_empty() {
-                self.math_entry_source = None;
-            }
             self.finish_display_math(formula, tag, disp_regs.unwrap(), outer_mode);
             return;
         }
@@ -590,9 +585,6 @@ impl Engine {
                 self.cur_list.extend(hlist);
                 self.cur_list.push(Node::MathKern(ms, 2));
             }
-        }
-        if self.math_lists.is_empty() {
-            self.math_entry_source = None;
         }
     }
 

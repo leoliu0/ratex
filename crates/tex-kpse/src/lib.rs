@@ -474,6 +474,24 @@ pub type LookupDependencies = (
     Vec<PathBuf>,
     bool,
 );
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LookupSourceKind {
+    Local,
+    Absolute,
+    EnvironmentPath,
+    Database,
+    SubtreeWalk,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LookupExplanation {
+    pub name: String,
+    pub format: Format,
+    pub resolved: Option<PathBuf>,
+    pub source_kind: Option<LookupSourceKind>,
+    pub searched_roots: usize,
+}
+
 
 impl Default for Kpse {
     fn default() -> Self {
@@ -1107,6 +1125,112 @@ impl Kpse {
             self.find_cache.borrow_mut().insert(key, hit.clone());
         }
         hit
+    }
+    /// Explain how a lookup was resolved and which precedence source matched.
+    pub fn explain_lookup(&self, name: &str, fmt: Format) -> LookupExplanation {
+        let p = Path::new(name);
+        if p.is_absolute() {
+            let found = p.is_file();
+            return LookupExplanation {
+                name: name.to_string(),
+                format: fmt,
+                resolved: found.then(|| p.to_path_buf()),
+                source_kind: found.then_some(LookupSourceKind::Absolute),
+                searched_roots: 0,
+            };
+        }
+        for candidate in Self::candidates(name, fmt) {
+            if let Some(local) = self.find_local(&candidate) {
+                return LookupExplanation {
+                    name: name.to_string(),
+                    format: fmt,
+                    resolved: Some(local),
+                    source_kind: Some(LookupSourceKind::Local),
+                    searched_roots: 0,
+                };
+            }
+        }
+        if name.contains('/') {
+            for (idx, root) in self.roots.iter().enumerate() {
+                let full = root.join(name);
+                if full.is_file() {
+                    return LookupExplanation {
+                        name: name.to_string(),
+                        format: fmt,
+                        resolved: Some(clean(full)),
+                        source_kind: Some(LookupSourceKind::Database),
+                        searched_roots: idx + 1,
+                    };
+                }
+            }
+            return LookupExplanation {
+                name: name.to_string(),
+                format: fmt,
+                resolved: None,
+                source_kind: None,
+                searched_roots: self.roots.len(),
+            };
+        }
+        let candidates = Self::candidates(name, fmt);
+        if let Some(paths) = self.extra_paths.get(&fmt) {
+            for base in paths {
+                for cand in &candidates {
+                    let p = base.join(cand);
+                    if p.is_file() {
+                        return LookupExplanation {
+                            name: name.to_string(),
+                            format: fmt,
+                            resolved: Some(p),
+                            source_kind: Some(LookupSourceKind::EnvironmentPath),
+                            searched_roots: 0,
+                        };
+                    }
+                }
+            }
+        }
+        for i in 0..self.roots.len() {
+            let db = self.db_of(i);
+            for cand in &candidates {
+                if let Some(dirs) = db.get(cand) {
+                    for rel in dirs {
+                        let full = self.roots[i].join(rel);
+                        if full.is_file() {
+                            return LookupExplanation {
+                                name: name.to_string(),
+                                format: fmt,
+                                resolved: Some(clean(full)),
+                                source_kind: Some(LookupSourceKind::Database),
+                                searched_roots: i + 1,
+                            };
+                        }
+                    }
+                }
+            }
+            if db
+                .packed
+                .as_ref()
+                .map_or_else(|| db.db.is_empty(), |p| p.is_empty())
+            {
+                for cand in &candidates {
+                    if let Some(hit) = self.walk_cached(i, fmt, cand) {
+                        return LookupExplanation {
+                            name: name.to_string(),
+                            format: fmt,
+                            resolved: Some(hit),
+                            source_kind: Some(LookupSourceKind::SubtreeWalk),
+                            searched_roots: i + 1,
+                        };
+                    }
+                }
+            }
+        }
+        LookupExplanation {
+            name: name.to_string(),
+            format: fmt,
+            resolved: None,
+            source_kind: None,
+            searched_roots: self.roots.len(),
+        }
     }
 
     fn find_uncached(&self, name: &str, fmt: Format) -> Option<PathBuf> {

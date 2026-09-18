@@ -104,7 +104,73 @@ pub enum Source {
         /// Number of macro ancestry entries that belong to this list.
         trace_depth: u8,
     },
+    MacroFrame(MacroFrame),
 }
+#[derive(Clone, Debug)]
+pub struct MacroFrame {
+    pub body: std::rc::Rc<[Token]>,
+    pub args: smallvec::SmallVec<[smallvec::SmallVec<[Token; 16]>; 9]>,
+    pub references: std::rc::Rc<[(usize, usize)]>,
+    pub ref_idx: usize,
+    pub body_pos: usize,
+    pub arg_pos: usize,
+    pub name: &'static str,
+    pub owner: Option<CsId>,
+    pub trace_depth: u8,
+    pub delivered_brace_balance: i32,
+}
+
+impl MacroFrame {
+    #[inline(always)]
+    pub fn is_exhausted(&self) -> bool {
+        self.body_pos >= self.body.len()
+    }
+
+    #[inline(always)]
+    pub fn next_token(&mut self) -> Option<Token> {
+        while self.ref_idx < self.references.len() {
+            let (param_pos, param_idx) = self.references[self.ref_idx];
+            if self.body_pos < param_pos {
+                let tok = self.body[self.body_pos];
+                self.body_pos += 1;
+                self.track_brace(tok);
+                return Some(tok);
+            }
+            if let Some(arg) = self.args.get(param_idx) {
+                if self.arg_pos < arg.len() {
+                    let tok = arg[self.arg_pos];
+                    self.arg_pos += 1;
+                    self.track_brace(tok);
+                    return Some(tok);
+                }
+            }
+            self.body_pos += 1;
+            self.arg_pos = 0;
+            self.ref_idx += 1;
+        }
+        if self.body_pos < self.body.len() {
+            let tok = self.body[self.body_pos];
+            self.body_pos += 1;
+            self.track_brace(tok);
+            Some(tok)
+        } else {
+            None
+        }
+    }
+
+    #[inline(always)]
+    fn track_brace(&mut self, tok: Token) {
+        if tok.is_char() {
+            let cc = tok.cc();
+            if cc == 1 {
+                self.delivered_brace_balance += 1;
+            } else if cc == 2 {
+                self.delivered_brace_balance -= 1;
+            }
+        }
+    }
+}
+
 
 #[derive(Clone, Debug)]
 pub enum TokTokens {
@@ -320,7 +386,7 @@ impl InputStack {
     pub(crate) fn source_line_at(&self, index: usize) -> Option<u32> {
         match self.stack.get(index)? {
             Source::File { line_no, .. } => Some(*line_no),
-            Source::TokList { .. } => None,
+            Source::TokList { .. } | Source::MacroFrame(_) => None,
         }
     }
 

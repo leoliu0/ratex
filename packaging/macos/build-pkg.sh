@@ -4,7 +4,7 @@ set -euo pipefail
 # Build native macOS .pkg installer for ratex
 BUNDLE_DIR="${1:-dist/tex-suite-macos-aarch64}"
 ARCH="${2:-arm64}"
-VERSION="${3:-0.2.0}"
+VERSION="${3:-0.2.1}"
 OUTPUT_DIR="${4:-dist}"
 
 mkdir -p "$OUTPUT_DIR"

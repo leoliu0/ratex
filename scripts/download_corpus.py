@@ -246,15 +246,21 @@ def main():
                         help="Earliest OAI datestamp to harvest (YYYY-MM-DD)")
     parser.add_argument("--candidate-factor", type=float, default=2.0,
                         help="Candidate-pool size as a multiple of --target")
+    parser.add_argument("--candidates-file", type=Path, default=None,
+                        help="Pre-harvested candidates JSON file to avoid OAI query")
     args = parser.parse_args()
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
     max_bytes = int(args.max_mb * 1024 * 1024)
 
-    print("Harvesting candidate papers across arXiv archives...")
-    candidate_target = max(args.target, int(args.target * args.candidate_factor))
-    candidates = harvest_candidates(candidate_target, args.from_date)
-    print(f"Total unique candidate IDs harvested: {len(candidates)}")
+    if args.candidates_file and args.candidates_file.is_file():
+        print(f"Loading candidate papers from {args.candidates_file}...")
+        candidates = json.loads(args.candidates_file.read_text())
+    else:
+        print("Harvesting candidate papers across arXiv archives...")
+        candidate_target = max(args.target, int(args.target * args.candidate_factor))
+        candidates = harvest_candidates(candidate_target, args.from_date)
+    print(f"Total candidate IDs available: {len(candidates)}")
 
     successful = []
     for meta_path in args.out_dir.glob("*/.project_meta.json"):

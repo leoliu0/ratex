@@ -188,6 +188,14 @@ pub struct ParaParams {
     /// easy-line class merge — starts at prev_graf+1 (§17015, §17253).
     pub prev_graf: i32,
 }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ParagraphLayoutRecord {
+    pub lines: usize,
+    pub demerits: i64,
+    pub pass: u8,
+    pub emergency_stretch: i32,
+}
+
 #[inline]
 fn penalty_shape_at(shape: &[i32], index: usize, fallback: i32) -> i32 {
     if shape.is_empty() {
@@ -242,6 +250,29 @@ impl Engine {
         final_widow_penalty: i32,
         display_widow: bool,
     ) -> Node {
+        let (node, record) =
+            self.break_paragraph_with_record(hlist, final_widow_penalty, display_widow);
+        if self.eqtb.int_params[crate::prim::IntParam::TracingParagraphs.idx() as usize] > 0 {
+            let pass_name = match record.pass {
+                0 => "@firstpass",
+                1 => "@secondpass",
+                _ => "@emergencypass",
+            };
+            self.append_log(&format!(
+                "\n{} lines={} demerits={}\n",
+                pass_name, record.lines, record.demerits
+            ));
+        }
+        self.last_paragraph_layout = Some(record);
+        node
+    }
+
+    pub fn break_paragraph_with_record(
+        &mut self,
+        hlist: NodeList,
+        final_widow_penalty: i32,
+        display_widow: bool,
+    ) -> (Node, ParagraphLayoutRecord) {
         let params = self.para_params();
         let mut list = hlist;
 
@@ -323,16 +354,46 @@ impl Engine {
             let line = crate::boxes::hpack(inner, None, crate::boxes::HBOX, &self.eqtb).node;
             let mut vlines = vec![line];
             vlines.extend(post_adj);
-            return crate::boxes::vpack(vlines, None, crate::boxes::VBOX, &self.eqtb).node;
+            let node = crate::boxes::vpack(vlines, None, crate::boxes::VBOX, &self.eqtb).node;
+            let record = ParagraphLayoutRecord {
+                lines: 1,
+                demerits: 0,
+                pass: 2,
+                emergency_stretch: extra_stretch,
+            };
+            self.last_paragraph_layout = Some(record.clone());
+            return (node, record);
         };
-        self.build_lines(
+        let mut cur = Some(end.clone());
+        let mut total_lines: usize = 0;
+        while let Some(b) = cur {
+            cur = b.prev.clone();
+            total_lines += 1;
+        }
+        let total_lines = total_lines.saturating_sub(1);
+        let pass_num = if !second_pass {
+            0
+        } else if !final_ran {
+            1
+        } else {
+            2
+        };
+        let record = ParagraphLayoutRecord {
+            lines: total_lines,
+            demerits: end.demerits,
+            pass: pass_num,
+            emergency_stretch: extra_stretch,
+        };
+        let node = self.build_lines(
             list,
             &params,
             end,
             final_pass,
             final_widow_penalty,
             display_widow,
-        )
+        );
+        self.last_paragraph_layout = Some(record.clone());
+        (node, record)
     }
 
     /// insert discretionary hyphens into words; returns the indices of the
@@ -1839,5 +1900,31 @@ mod plural_penalty_tests {
             .collect();
 
         assert_eq!(penalties, vec![2_110, 1_220]);
+    }
+    #[test]
+    fn paragraph_layout_record_tracks_lines_and_pass() {
+        let mut engine = Engine::new(true);
+        engine.eqtb.dim_params[DimParam::HSize.idx() as usize] = 65_536;
+        engine.eqtb.int_params[IntParam::Pretolerance.idx() as usize] = 10_000;
+        engine.eqtb.int_params[IntParam::Tolerance.idx() as usize] = 10_000;
+        engine.eqtb.int_params[IntParam::LinePenalty.idx() as usize] = 10;
+
+        let rule = || Node::Rule {
+            width: 65_536,
+            height: 0,
+            depth: 0,
+        };
+        let list = vec![
+            rule(),
+            Node::Glue(Glue::zero()),
+            rule(),
+            Node::Penalty(10_000),
+            Node::Glue(Glue::fil(GLUE_FIL, 0)),
+        ];
+        let (_node, record) = engine.break_paragraph_with_record(list, 0, false);
+        assert_eq!(record.lines, 2);
+        assert_eq!(record.pass, 0); // pretolerance succeeded
+        assert!(record.demerits > 0);
+        assert_eq!(engine.last_paragraph_layout.as_ref(), Some(&record));
     }
 }

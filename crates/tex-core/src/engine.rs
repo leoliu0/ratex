@@ -307,9 +307,9 @@ pub struct Engine {
     /// inner boxes must not consume the pending shipout.
     pub shipout_depth: usize,
     pub par_page_lists: Vec<Vec<crate::boxes::Node>>,
-    pub math_entry_source: Option<crate::input::SourceContext>,
-    pub last_error_message: Option<String>,
-    pub consecutive_error_count: usize,
+    pub(crate) diagnostic_repeat: Option<crate::diagnostics::DiagnosticRepeat>,
+    pub last_paragraph_layout: Option<crate::linebreak::ParagraphLayoutRecord>,
+    pub last_pack: Option<crate::boxes::PackRecord>,
     pub read_eof: Vec<bool>, // (amount, is_hmove)
     pub read_files: Vec<Option<Box<dyn std::io::BufRead>>>,
     pub loaded_files: Vec<std::path::PathBuf>,
@@ -718,8 +718,11 @@ impl Engine {
     /// Set both representations of TeX's interaction mode. The eqtb value is
     /// exposed as the readable e-TeX \interactionmode parameter.
     pub fn set_interaction_mode(&mut self, mode: InteractionMode) {
-        self.interaction_mode = mode;
-        self.eqtb.set_runtime_interaction_mode(mode.number());
+        if self.interaction_mode != mode {
+            self.flush_diagnostic_repeats();
+            self.interaction_mode = mode;
+            self.eqtb.set_runtime_interaction_mode(mode.number());
+        }
     }
 
     /// Apply a completed \interactionmode assignment at the main-control
@@ -729,7 +732,10 @@ impl Engine {
             return;
         };
         if let Some(mode) = InteractionMode::from_number(value) {
-            self.interaction_mode = mode;
+            if self.interaction_mode != mode {
+                self.flush_diagnostic_repeats();
+                self.interaction_mode = mode;
+            }
         } else {
             self.error(&format!(
                 "Bad interaction mode ({value}); expected 0 (batch), 1 (nonstop), 2 (scroll), or 3 (error stop); mode left unchanged"
@@ -891,9 +897,9 @@ impl Engine {
             shipout_pending: false,
             shipout_depth: usize::MAX,
             par_page_lists: Vec::new(),
-            math_entry_source: None,
-            last_error_message: None,
-            consecutive_error_count: 0,
+            diagnostic_repeat: None,
+            last_paragraph_layout: None,
+            last_pack: None,
             read_eof: Vec::new(),
             read_files: Vec::new(),
             loaded_files: Vec::new(),

@@ -484,7 +484,7 @@ fn ini_format_write_failure_is_structured_logged_and_batch_aware() {
             assert!(output.stderr.is_empty(), "{}", failure_output(&output));
         } else {
             assert!(
-                text(&output.stderr).contains("! Cannot write format `pdflatex.fmt`"),
+                text(&output.stderr).contains("Cannot write format `pdflatex.fmt`"),
                 "{}",
                 failure_output(&output)
             );
@@ -973,14 +973,19 @@ x
     assert!(!output.status.success(), "{}", failure_output(&output));
     let stderr = text(&output.stderr);
     assert!(
-        stderr.contains("LaTeX Error: \\begin{center} on input line 3 ended by \\end{flushleft}."),
+        stderr.contains("cannot close flushleft while center is still open"),
         "{stderr}"
     );
     assert!(stderr.contains("main.tex:5:1"), "{stderr}");
     assert!(stderr.contains("5 | \\end{flushleft}"), "{stderr}");
     assert!(
-        stderr.contains("change `\\end{flushleft}` to `\\end{center}`"),
+        stderr.contains("center") && stderr.contains("flushleft"),
         "{stderr}"
+    );
+    let log = job.log();
+    assert!(
+        log.contains("LaTeX Error: \\begin{center} on input line 3 ended by \\end{flushleft}."),
+        "{log}"
     );
     for legacy in [
         "Type  H",
@@ -992,6 +997,18 @@ x
         assert!(!stderr.contains(legacy), "{stderr}");
     }
     assert!(!stderr.contains("while expanding:"), "{stderr}");
+    job.write(
+        "main.tex",
+        r"\documentclass{article}
+\begin{document}
+\begin{center}
+x
+\end{center}
+\end{document}
+",
+    );
+    let fixed = job.compile(&["-interaction=nonstopmode", "-halt-on-error"]);
+    assert!(fixed.status.success(), "{}", failure_output(&fixed));
 }
 
 #[test]
@@ -1704,7 +1721,7 @@ fn inspection_commands_produce_structured_bounded_diagnostics() {
     assert_eq!(output.status.code(), Some(1), "{}", failure_output(&output));
     let stderr = text(&output.stderr);
     assert!(
-        stderr.contains("! Inspection requested by \\show\n"),
+        stderr.contains("Inspection requested by \\show\n"),
         "{stderr}"
     );
     assert!(
@@ -1712,12 +1729,12 @@ fn inspection_commands_produce_structured_bounded_diagnostics() {
         "{stderr}"
     );
     assert!(
-        stderr.contains("! Inspection requested by \\showthe\n"),
+        stderr.contains("Inspection requested by \\showthe\n"),
         "{stderr}"
     );
     assert!(stderr.contains("| value: 42"), "{stderr}");
     assert!(
-        stderr.contains("! Inspection requested by \\showtokens\n"),
+        stderr.contains("Inspection requested by \\showtokens\n"),
         "{stderr}"
     );
     assert!(stderr.contains("| tokens: abc\\foo"), "{stderr}");
@@ -1810,7 +1827,7 @@ fn multiline_errmessage_cannot_spoof_source_or_help_records() {
     let output = job.compile(&["-plain", "-interaction=nonstopmode"]);
     assert_eq!(output.status.code(), Some(1), "{}", failure_output(&output));
     let stderr = text(&output.stderr);
-    assert!(stderr.contains("! first\n  | main.tex:999:999"), "{stderr}");
+    assert!(stderr.contains("first\n  | main.tex:999:999"), "{stderr}");
     assert!(stderr.contains("\n  | 999 | fake"), "{stderr}");
     assert!(stderr.contains("\n  |  = help: fake"), "{stderr}");
     assert!(stderr.contains("  --> main.tex:1:"), "{stderr}");
@@ -2232,7 +2249,7 @@ fn late_pdf_write_failure_is_structured_logged_and_batch_aware() {
             assert!(stderr.is_empty(), "{}", failure_output(&output));
         } else {
             assert!(
-                stderr.contains("! Cannot write PDF `main.pdf`:"),
+                stderr.contains("Cannot write PDF `main.pdf`:"),
                 "{stderr}"
             );
             assert!(stderr.contains("output directory"), "{stderr}");

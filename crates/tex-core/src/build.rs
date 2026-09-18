@@ -1365,6 +1365,7 @@ impl Engine {
         res: &boxes::PackResult,
         source: Option<crate::input::SourceMark>,
     ) {
+        self.last_pack = Some(res.record());
         let (hbox, nonempty) = match &res.node {
             Node::Box { kind, list, .. } => (*kind == boxes::HBOX, !list.is_empty()),
             _ => return,

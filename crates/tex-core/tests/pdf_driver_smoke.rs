@@ -194,3 +194,61 @@ fn pdfrestore_keeps_following_image_in_the_restored_coordinate_system() {
     );
     std::fs::remove_dir_all(dir).unwrap();
 }
+#[test]
+fn display_list_captures_rules_and_glyphs() {
+    let source = r#"\catcode`\{=1 \catcode`\}=2
+\pdfpagewidth=100pt \pdfpageheight=100pt
+\pdfhorigin=0pt \pdfvorigin=0pt
+\setbox0=\hbox{\hrule width 50pt height 5pt depth 0pt}
+\shipout\box0
+\end"#;
+    let mut e = Engine::new(true);
+    e.init_primitives();
+    e.add_nullfont();
+    e.input.push_file("display_list.tex".into(), source.as_bytes().to_vec());
+    e.run();
+    assert_eq!(e.error_count, 0, "{}", e.term);
+    assert_eq!(e.pdf_doc.pages.len(), 1);
+    let page = &e.pdf_doc.pages[0];
+    let dl = page.display_list.as_ref().expect("display list should be present");
+    assert!(!dl.is_empty());
+    let has_rule = dl.items.iter().any(|item| matches!(item, tex_core::boxes::DisplayItem::Rule { width_bp, .. } if (*width_bp - 49.8).abs() < 1.0));
+    assert!(has_rule, "display list should capture the 50pt rule: {:?}", dl.items);
+}
+
+#[test]
+fn tagged_pdf_emits_markinfo_and_struct_tree_root() {
+    let source = r#"\catcode`\{=1 \catcode`\}=2
+\pdfpagewidth=100pt \pdfpageheight=100pt
+\pdfhorigin=0pt \pdfvorigin=0pt
+\setbox0=\hbox{\hrule width 50pt height 5pt depth 0pt}
+\shipout\box0
+\end"#;
+    let mut e = Engine::new(true);
+    e.init_primitives();
+    e.add_nullfont();
+    e.input.push_file("tagged.tex".into(), source.as_bytes().to_vec());
+    e.run();
+    assert_eq!(e.error_count, 0, "{}", e.term);
+    assert_eq!(e.pdf_doc.pages.len(), 1);
+    let page = &mut e.pdf_doc.pages[0];
+    let dl = page.display_list.as_mut().expect("display list should be present");
+    dl.push(tex_core::boxes::DisplayItem::GlyphRun {
+        font: 0,
+        x_bp: 10.0,
+        y_bp: 10.0,
+        glyphs: vec![b'H', b'i'],
+        tag: Some(tex_core::boxes::StructureTag::Paragraph),
+        span: Some(tex_core::boxes::SpanId(42)),
+    });
+    let bytes = tex_core::pdffile::write_pdf(&e.pdf_doc);
+    let pdf = lopdf::Document::load_mem(&bytes).expect("valid PDF");
+    let catalog = pdf
+        .trailer
+        .get(b"Root")
+        .and_then(lopdf::Object::as_reference)
+        .and_then(|id| pdf.get_dictionary(id))
+        .expect("PDF catalog dictionary");
+    assert!(catalog.has(b"MarkInfo"), "Catalog must have /MarkInfo: {:?}", catalog);
+    assert!(catalog.has(b"StructTreeRoot"), "Catalog must have /StructTreeRoot: {:?}", catalog);
+}

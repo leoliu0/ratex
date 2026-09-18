@@ -463,6 +463,18 @@ impl Engine {
         if let Some(path) = &resolved {
             self.loaded_files.push(absolute(path.clone()));
         }
+        if crate::debug_flag("lookups") {
+            let explanation = self.font_loader.kpse.explain_lookup(name, tex_kpse::Format::Tex);
+            let msg = format!(
+                "[kpse:lookup] {} ({:?}) -> {:?} via {:?} (searched {} roots)\n",
+                explanation.name,
+                explanation.format,
+                explanation.resolved,
+                explanation.source_kind,
+                explanation.searched_roots
+            );
+            self.append_log(&msg);
+        }
         resolved
     }
 

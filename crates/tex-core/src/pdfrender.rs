@@ -268,6 +268,7 @@ pub struct RenderCtx<'a> {
     matrix_stack: Vec<Matrix>,
     pos_stack: Vec<SavePoint>,
     pub color_stack: Vec<String>,
+    pub display_list: crate::boxes::DisplayList,
 }
 
 #[inline]
@@ -386,6 +387,7 @@ impl Engine {
             matrix_stack: Vec::new(),
             pos_stack: Vec::new(),
             color_stack: Vec::new(),
+            display_list: crate::boxes::DisplayList::new(),
         }
     }
 
@@ -462,6 +464,7 @@ impl Engine {
             dests: std::mem::take(&mut ctx.dests),
             attr_extra: ctx.eng.pdf_page_attr.as_bytes().to_vec(),
             resources_extra: ctx.eng.pdf_page_resources.clone(),
+            display_list: Some(std::mem::take(&mut ctx.display_list)),
         }
     }
 
@@ -1464,6 +1467,34 @@ impl<'a> RenderCtx<'a> {
         self.begin_string(x_sp, v_sp, f, ratio);
         push_pdf_char(&mut self.content, c);
         self.adv_char_width(f, c);
+        let x_bp = sp_to_bp(x_sp);
+        let y_bp = self.y_pdf(sp_to_bp(v_sp));
+        let merged = if let Some(crate::boxes::DisplayItem::GlyphRun {
+            font: last_f,
+            y_bp: last_y,
+            glyphs,
+            ..
+        }) = self.display_list.items.last_mut()
+        {
+            if *last_f == f && (*last_y - y_bp).abs() < 1e-3 {
+                glyphs.push(c);
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+        if !merged {
+            self.display_list.push(crate::boxes::DisplayItem::GlyphRun {
+                font: f,
+                x_bp,
+                y_bp,
+                glyphs: vec![c],
+                tag: None,
+                span: None,
+            });
+        }
     }
 
     /// pdfTeX `pdf_set_rule`: close the text object, then draw inside a
@@ -1478,6 +1509,12 @@ impl<'a> RenderCtx<'a> {
         let h = sp_to_bp(h_sp);
         self.note_point(x, y);
         self.note_point(x + w, y + h);
+        self.display_list.push(crate::boxes::DisplayItem::Rule {
+            x_bp: x,
+            y_bp: y,
+            width_bp: w,
+            height_bp: h,
+        });
         self.end_text();
         self.content.push_str("q\n");
         const ONE_BP: i64 = 65782;

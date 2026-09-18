@@ -21,7 +21,7 @@ impl Engine {
             }
             let si = self.input.stack.len() - 1;
             match self.input.stack[si] {
-                Source::TokList { .. } => {
+                Source::TokList { .. } | Source::MacroFrame(_) => {
                     if let Some(t) = self.toklist_next(si) {
                         self.diagnostic_token_from_file = false;
                         return t;
@@ -50,6 +50,7 @@ impl Engine {
     pub(crate) fn toklist_next(&mut self, si: usize) -> Option<Token> {
         let trace_depth = match &self.input.stack[si] {
             Source::TokList { trace_depth, .. } => *trace_depth as usize,
+            Source::MacroFrame(frame) => frame.trace_depth as usize,
             _ => unreachable!(),
         };
         if !self.align_macro_arg && self.diagnostic_trace_hold == 0 {
@@ -64,6 +65,11 @@ impl Engine {
                     // currently being processed still belongs to this source;
                     // retaining it preserves the macro call chain for errors
                     // in a tail-position replacement token.
+                    return Some(t);
+                }
+            }
+            Source::MacroFrame(frame) => {
+                if let Some(t) = frame.next_token() {
                     return Some(t);
                 }
             }

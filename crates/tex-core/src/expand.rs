@@ -244,34 +244,38 @@ impl Engine {
                     Some(crate::input::Source::TokList { trace_depth, .. }) => {
                         *trace_depth as usize
                     }
+                    Some(crate::input::Source::MacroFrame(frame)) => {
+                        frame.trace_depth as usize
+                    }
                     _ => break,
                 };
                 if !self.align_macro_arg && self.diagnostic_trace_hold == 0 {
                     self.diagnostic_macro_trace.truncate(trace_depth);
                 }
-                let Some(crate::input::Source::TokList { toks, pos, .. }) =
-                    self.input.stack.last_mut()
-                else {
-                    unreachable!()
-                };
-                let (has_tok, t) = {
-                    let s = &toks[..];
-                    if *pos < s.len() {
-                        let tok = s[*pos];
-                        *pos += 1;
-                        (true, tok)
-                    } else {
-                        (false, Token(0))
+                match self.input.stack.last_mut() {
+                    Some(crate::input::Source::TokList { toks, pos, .. }) => {
+                        let s = &toks[..];
+                        if *pos < s.len() {
+                            let tok = s[*pos];
+                            *pos += 1;
+                            self.diagnostic_token_from_file = false;
+                            self.diagnostic_synthetic_source = None;
+                            self.diagnostic_physical_source = None;
+                            break 'fetch tok;
+                        }
                     }
-                };
-                if has_tok {
-                    self.diagnostic_token_from_file = false;
-                    self.diagnostic_synthetic_source = None;
-                    self.diagnostic_physical_source = None;
-                    break 'fetch t;
-                } else {
-                    if let Some(crate::input::Source::TokList { toks, name, .. }) = self.input.stack.pop()
-                    {
+                    Some(crate::input::Source::MacroFrame(frame)) => {
+                        if let Some(tok) = frame.next_token() {
+                            self.diagnostic_token_from_file = false;
+                            self.diagnostic_synthetic_source = None;
+                            self.diagnostic_physical_source = None;
+                            break 'fetch tok;
+                        }
+                    }
+                    _ => unreachable!(),
+                }
+                if let Some(src) = self.input.stack.pop() {
+                    if let crate::input::Source::TokList { toks, name, .. } = src {
                         if name == crate::align::U_PART_SRC {
                             self.align_u_template_finished();
                         }
@@ -566,14 +570,26 @@ impl Engine {
     }
 
     fn pop_exhausted_token_lists(&mut self) {
-        while let Some(crate::input::Source::TokList { toks, pos, name, .. }) = self.input.stack.last() {
-            if *pos >= toks.len() {
-                if *name == crate::align::U_PART_SRC {
-                    self.align_u_template_finished();
+        while let Some(src) = self.input.stack.last() {
+            match src {
+                crate::input::Source::TokList { toks, pos, name, .. } => {
+                    if *pos >= toks.len() {
+                        if *name == crate::align::U_PART_SRC {
+                            self.align_u_template_finished();
+                        }
+                        self.input.stack.pop();
+                    } else {
+                        break;
+                    }
                 }
-                self.input.stack.pop();
-            } else {
-                break;
+                crate::input::Source::MacroFrame(frame) => {
+                    if frame.is_exhausted() {
+                        self.input.stack.pop();
+                    } else {
+                        break;
+                    }
+                }
+                _ => break,
             }
         }
     }
@@ -614,6 +630,28 @@ impl Engine {
         );
         true
     }
+    fn try_push_macro_frame(&mut self, frame: crate::input::MacroFrame) -> bool {
+        self.pop_exhausted_token_lists();
+        let cut = if self.scanner_status == ScannerStatus::Aligning {
+            self.align_pushed_base.min(self.pushed.len())
+        } else {
+            0
+        };
+        if !self.ensure_token_list_room(self.pushed.len().saturating_sub(cut)) {
+            return false;
+        }
+        if !self.ensure_input_stack_room(1 + usize::from(self.pushed.len() > cut)) {
+            return false;
+        }
+        if self.pushed.len() > cut {
+            let mut rest = self.pushed.split_off(cut);
+            rest.reverse();
+            self.input.push_toks(rest, "<pushback>");
+        }
+        self.input.stack.push(crate::input::Source::MacroFrame(frame));
+        true
+    }
+
 
     fn begin_token_list(
         &mut self,
@@ -2796,12 +2834,7 @@ impl Engine {
                     }
                 }
             }
-            let mut body = self
-                .token_vec_pool
-                .pop()
-                .unwrap_or_else(|| Vec::with_capacity(m.body.len() + 16));
-            body.clear();
-            if !m.append_replacement(&args, &mut body, crate::input::MAX_TOKEN_LIST_TOKENS) {
+            let Some(length) = m.replacement_length(&args, crate::input::MAX_TOKEN_LIST_TOKENS) else {
                 self.fatal_error_at(
                     &format!(
                         "TeX capacity exceeded, sorry [macro expansion size={}]",
@@ -2810,8 +2843,23 @@ impl Engine {
                     origin.map(crate::input::SourceMark::to_context),
                 );
                 return;
+            };
+            if length == 0 {
+                return;
             }
-            self.push_macro_tokens(body, id);
+            let references = m.ensure_replacement_plan();
+            self.try_push_macro_frame(crate::input::MacroFrame {
+                body: std::rc::Rc::clone(&m.body),
+                args,
+                references,
+                ref_idx: 0,
+                body_pos: 0,
+                arg_pos: 0,
+                name: "<macro>",
+                owner: Some(id),
+                trace_depth: self.diagnostic_macro_trace.len().min(255) as u8,
+                delivered_brace_balance: 0,
+            });
         } else {
             self.push_tokens_rc(std::rc::Rc::clone(&m.body), id);
         }
@@ -3279,80 +3327,6 @@ impl Engine {
         self.append_log(s);
     }
 
-    pub(crate) fn diagnostic_print_nl(&mut self, s: &str) {
-        if !self.diagnostic_output.is_empty() && !self.diagnostic_output.ends_with('\n') {
-            self.append_diagnostic("\n");
-        }
-        self.append_diagnostic(s);
-        if !self.log.is_empty() && !self.log.ends_with('\n') {
-            self.append_log("\n");
-        }
-        self.append_log(s);
-    }
-
-    pub fn error(&mut self, msg: &str) {
-        if self.stopped_on_error {
-            return;
-        }
-        let is_duplicate = if let Some(last) = &self.last_error_message {
-            last == msg
-                || (msg.contains("Not in outer par mode") && last.contains("Not in outer par mode"))
-        } else {
-            false
-        };
-        if is_duplicate {
-            self.consecutive_error_count += 1;
-            self.error_count += 1;
-            if self.consecutive_error_count == 2 {
-                let note = if crate::diagnostics::color_enabled() {
-                    format!(
-                        "\x1b[1;36m  = note:\x1b[0m subsequent identical '{}' errors suppressed to avoid clutter\n",
-                        msg.lines().next().unwrap_or(msg).trim()
-                    )
-                } else {
-                    format!(
-                        "  = note: subsequent identical '{}' errors suppressed to avoid clutter\n",
-                        msg.lines().next().unwrap_or(msg).trim()
-                    )
-                };
-                self.diagnostic_print_nl(&note);
-            }
-            return;
-        } else {
-            self.last_error_message = Some(msg.to_string());
-            self.consecutive_error_count = 1;
-        }
-
-        let diagnostic = self.make_error_diagnostic(msg);
-        let rendered = diagnostic.render();
-        self.diagnostic_print_nl(&rendered);
-        self.diagnostics.push(diagnostic);
-        self.error_count += 1;
-        if self.halt_on_error || self.interaction_mode == crate::engine::InteractionMode::ErrorStop
-        {
-            self.stopped_on_error = true;
-            self.end_occurred = true;
-        } else if self.error_count as usize >= self.max_errors.max(1) {
-            let message = format!(
-                "Too many errors; stopping after {} error{}.",
-                self.error_count,
-                if self.error_count == 1 { "" } else { "s" }
-            );
-            let stopped = self.make_error_diagnostic(&message);
-            self.diagnostic_print_nl(&stopped.render());
-            self.diagnostics.push(stopped);
-            self.stopped_on_error = true;
-            self.end_occurred = true;
-        }
-    }
-
-    /// Report an error from which the current scan cannot recover, even in
-    /// nonstop or batch mode.
-    pub fn fatal_error(&mut self, msg: &str) {
-        self.error(msg);
-        self.stopped_on_error = true;
-        self.end_occurred = true;
-    }
 }
 
 fn posix_regex_error_detail(error: &posix_regex::compile::Error) -> String {

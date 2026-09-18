@@ -1411,28 +1411,32 @@ impl Engine {
         };
         if file {
             let name = String::from_utf8_lossy(&body).trim().to_string();
-            let Some(path) = self
-                .resolve_input_path(&name)
-                .or_else(|| self.font_loader.kpse.find_any(&name))
-            else {
-                self.fatal_error_at(
-                    &format!("PDF object file `{name}` was not found"),
-                    origin.as_ref().map(crate::input::SourceMark::to_context),
-                );
-                return;
-            };
-            match std::fs::read(&path) {
-                Ok(bytes) => {
-                    self.record_loaded_bytes(&path, &bytes);
-                    self.loaded_files.push(path);
-                    body = bytes;
-                }
-                Err(error) => {
+            if let Some(bytes) = tex_kpse::get_embedded_package(&name) {
+                body = bytes;
+            } else {
+                let Some(path) = self
+                    .resolve_input_path(&name)
+                    .or_else(|| self.font_loader.kpse.find_any(&name))
+                else {
                     self.fatal_error_at(
-                        &format!("Cannot read PDF object file `{}`: {error}", path.display()),
+                        &format!("PDF object file `{name}` was not found"),
                         origin.as_ref().map(crate::input::SourceMark::to_context),
                     );
                     return;
+                };
+                match std::fs::read(&path) {
+                    Ok(bytes) => {
+                        self.record_loaded_bytes(&path, &bytes);
+                        self.loaded_files.push(path);
+                        body = bytes;
+                    }
+                    Err(error) => {
+                        self.fatal_error_at(
+                            &format!("Cannot read PDF object file `{}`: {error}", path.display()),
+                            origin.as_ref().map(crate::input::SourceMark::to_context),
+                        );
+                        return;
+                    }
                 }
             }
         }

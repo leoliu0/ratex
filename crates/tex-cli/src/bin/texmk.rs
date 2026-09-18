@@ -2160,6 +2160,7 @@ fn extra_bibliography_dependency_path(
 }
 
 
+
 fn bibliography_tool_identity() -> String {
     static IDENTITY: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     IDENTITY
@@ -2496,6 +2497,64 @@ fn run_bibtex(aux_stem: &Path, source_dir: &Path, silent: bool) -> i32 {
         }
     }
 }
+fn tool_available(name: &str) -> bool {
+    std::process::Command::new(name)
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success())
+}
+
+fn convert_eps_figures(source_dir: &Path) {
+    let tool = if tool_available("epstopdf") {
+        Some("epstopdf")
+    } else if tool_available("ps2pdf") {
+        Some("ps2pdf")
+    } else {
+        None
+    };
+    let Some(tool) = tool else { return };
+
+    let mut dirs_to_visit = vec![source_dir.to_path_buf()];
+    while let Some(dir) = dirs_to_visit.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                if !path
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .starts_with('.')
+                {
+                    dirs_to_visit.push(path);
+                }
+            } else if path.is_file() {
+                if let Some(ext) = path.extension().and_then(|s| s.to_str()) {
+                    if ext.eq_ignore_ascii_case("eps") {
+                        let stem = path.file_stem().unwrap_or_default().to_string_lossy();
+                        let converted = path.with_file_name(format!("{stem}-eps-converted-to.pdf"));
+                        if !converted.exists() {
+                            if tool == "epstopdf" {
+                                let _ = std::process::Command::new("epstopdf")
+                                    .arg(&path)
+                                    .arg(format!("--outfile={}", converted.display()))
+                                    .output();
+                            } else {
+                                let _ = std::process::Command::new("ps2pdf")
+                                    .arg(&path)
+                                    .arg(&converted)
+                                    .output();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 
 fn real_main() -> i32 {
     let argv: Vec<String> = std::env::args().collect();
@@ -2517,6 +2576,7 @@ fn real_main() -> i32 {
         .parent()
         .unwrap_or_else(|| Path::new("."))
         .to_path_buf();
+    convert_eps_figures(&source_dir);
     let target_engine = opt
         .engine
         .as_deref()
@@ -2837,6 +2897,10 @@ fn real_main() -> i32 {
     // bibtex depends on .aux, not on a PDF. Refresh .bbl from a previous
     // aux so the first typeset can consume it.
     let initial_aux_graph = read_aux_graph(&aux_path, &aux_dir, &source_dir);
+    let source_bbl = source_dir.join(format!("{job}.bbl"));
+    if !bbl_path.is_file() && source_bbl.is_file() {
+        let _ = std::fs::copy(&source_bbl, &bbl_path);
+    }
     let mut aux_graph_warning_emitted = false;
     if let Some(issue) = &initial_aux_graph.issue {
         eprintln!("texmk: warning: {issue}; bibliography cache reuse is disabled for this build");
@@ -2852,26 +2916,33 @@ fn real_main() -> i32 {
             let _ = std::fs::remove_file(&bbl_path);
             let rc = run_bibtex(&aux_stem, &source_dir, opt.silent);
             if rc != 0 {
-                manifest.bibliography_signature = None;
-                manifest.bibliography_output_hash = None;
-                let _ = std::fs::remove_file(&bbl_path);
-                retain_requested(&retention, &mut manifest);
-                return rc;
+                let source_bbl = source_dir.join(format!("{job}.bbl"));
+                if source_bbl.is_file() {
+                    let _ = std::fs::copy(&source_bbl, &bbl_path);
+                    bibtex_done = true;
+                } else {
+                    manifest.bibliography_signature = None;
+                    manifest.bibliography_output_hash = None;
+                    let _ = std::fs::remove_file(&bbl_path);
+                    retain_requested(&retention, &mut manifest);
+                    return rc;
+                }
+            } else {
+                let Some(output_hash) = regular_file_hash(&bbl_path) else {
+                    eprintln!(
+                        "texmk: bibtex succeeded without producing a regular output file {}",
+                        bbl_path.display()
+                    );
+                    manifest.bibliography_signature = None;
+                    manifest.bibliography_output_hash = None;
+                    retain_requested(&retention, &mut manifest);
+                    return 1;
+                };
+                bibtex_done = true;
+                bibtex_runs += 1;
+                manifest.bibliography_signature = Some(signature);
+                manifest.bibliography_output_hash = Some(output_hash);
             }
-            let Some(output_hash) = regular_file_hash(&bbl_path) else {
-                eprintln!(
-                    "texmk: bibtex succeeded without producing a regular output file {}",
-                    bbl_path.display()
-                );
-                manifest.bibliography_signature = None;
-                manifest.bibliography_output_hash = None;
-                retain_requested(&retention, &mut manifest);
-                return 1;
-            };
-            bibtex_done = true;
-            bibtex_runs += 1;
-            manifest.bibliography_signature = Some(signature);
-            manifest.bibliography_output_hash = Some(output_hash);
         }
     } else {
         manifest.bibliography_signature = None;
@@ -3008,32 +3079,39 @@ fn real_main() -> i32 {
             let _ = std::fs::remove_file(&bbl_path);
             let rc = run_bibtex(&aux_stem, &source_dir, opt.silent);
             if rc != 0 {
-                manifest.bibliography_signature = None;
-                manifest.bibliography_output_hash = None;
-                let _ = std::fs::remove_file(&bbl_path);
-                retain_requested(&retention, &mut manifest);
-                return rc;
+                let source_bbl = source_dir.join(format!("{job}.bbl"));
+                if source_bbl.is_file() {
+                    let _ = std::fs::copy(&source_bbl, &bbl_path);
+                    bibtex_done = true;
+                } else {
+                    manifest.bibliography_signature = None;
+                    manifest.bibliography_output_hash = None;
+                    let _ = std::fs::remove_file(&bbl_path);
+                    retain_requested(&retention, &mut manifest);
+                    return rc;
+                }
+            } else {
+                let Some(output_hash) = regular_file_hash(&bbl_path) else {
+                    eprintln!(
+                        "texmk: bibtex succeeded without producing a regular output file {}",
+                        bbl_path.display()
+                    );
+                    manifest.bibliography_signature = None;
+                    manifest.bibliography_output_hash = None;
+                    retain_requested(&retention, &mut manifest);
+                    return 1;
+                };
+                bibtex_done = true;
+                bibtex_runs += 1;
+                manifest.bibliography_signature = bibliography_signature;
+                manifest.bibliography_output_hash = Some(output_hash);
+                if !opt.silent {
+                    eprintln!(
+                        "texmk: rerun required after regenerating the bibliography from auxiliary state"
+                    );
+                }
+                continue;
             }
-            let Some(output_hash) = regular_file_hash(&bbl_path) else {
-                eprintln!(
-                    "texmk: bibtex succeeded without producing a regular output file {}",
-                    bbl_path.display()
-                );
-                manifest.bibliography_signature = None;
-                manifest.bibliography_output_hash = None;
-                retain_requested(&retention, &mut manifest);
-                return 1;
-            };
-            bibtex_done = true;
-            bibtex_runs += 1;
-            manifest.bibliography_signature = bibliography_signature;
-            manifest.bibliography_output_hash = Some(output_hash);
-            if !opt.silent {
-                eprintln!(
-                    "texmk: rerun required after regenerating the bibliography from auxiliary state"
-                );
-            }
-            continue;
         }
         if !bibdata {
             manifest.bibliography_signature = None;

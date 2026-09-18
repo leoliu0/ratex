@@ -1075,7 +1075,8 @@ impl Kpse {
         // tex4ht alias scripts next to font names) cannot shadow the real
         // format file.
         let mut candidates: Vec<String>;
-        if name.ends_with(".tex") || name.ends_with(".ltx") {
+        let ext_already = fmt.extensions().iter().any(|ext| name.ends_with(ext));
+        if ext_already || name.ends_with(".tex") || name.ends_with(".ltx") {
             candidates = vec![name.to_string()];
         } else {
             let default_exts = match fmt {

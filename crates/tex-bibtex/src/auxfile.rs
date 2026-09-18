@@ -85,7 +85,7 @@ pub fn parse_aux(text: &str) -> Aux {
             "bibdata" => {
                 if let Some((body, _)) = brace_group(lb, j) {
                     for name in body.split(',') {
-                        let n = name.trim();
+                        let n = name.trim().strip_suffix(".bib").unwrap_or(name.trim());
                         if !n.is_empty() {
                             aux.bibdata.push(n.to_string());
                         }

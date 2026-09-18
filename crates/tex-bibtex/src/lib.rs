@@ -49,6 +49,16 @@ fn search_file(name: &str, env_vars: &[&str], cwd: &Path) -> Option<PathBuf> {
     if direct.is_file() {
         return Some(direct);
     }
+    if let Ok(entries) = std::fs::read_dir(cwd) {
+        for entry in entries.flatten() {
+            if entry.file_name().to_string_lossy().eq_ignore_ascii_case(name) {
+                let p = entry.path();
+                if p.is_file() {
+                    return Some(p);
+                }
+            }
+        }
+    }
     for env_var in env_vars {
         let Ok(paths) = std::env::var(env_var) else {
             continue;
@@ -78,7 +88,7 @@ fn search_file(name: &str, env_vars: &[&str], cwd: &Path) -> Option<PathBuf> {
     } else {
         return None;
     };
-    tex_kpse::Kpse::new()
+    tex_kpse::Kpse::with_roots(cwd, &[])
         .find(name, fmt)
         .filter(|p| p.is_file())
 }

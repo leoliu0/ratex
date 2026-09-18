@@ -124,7 +124,7 @@ fn parse_aux_file(path: &Path, aux: &mut Aux, depth: usize) -> Result<(), String
                 }
                 if let Some(arg) = aux_arg(&src, &mut rest) {
                     for f in arg.split(',') {
-                        let f = f.trim();
+                        let f = f.trim().strip_suffix(".bib").unwrap_or(f.trim());
                         if !f.is_empty() {
                             aux.bib_files.push(f.to_string());
                         }
@@ -241,9 +241,11 @@ fn resolve_text_with_kpse(
 }
 
 fn missing_input_message(name: &str, fmt: Format) -> String {
+    let ext = fmt.extensions()[0];
+    let bare = name.strip_suffix(ext).unwrap_or(name);
     match fmt {
-        Format::Bst => format!("I couldn't open style file {name}.bst"),
-        Format::Bib => format!("I couldn't open database file {name}.bib"),
+        Format::Bst => format!("I couldn't open style file {bare}.bst"),
+        Format::Bib => format!("I couldn't open database file {bare}.bib"),
         _ => format!("I couldn't open input file {name}"),
     }
 }

@@ -183,7 +183,7 @@ def main():
 
         # Copy canonical binary
         shutil.copy2(target_bin, usr_bin / "ratex")
-        stage_texmf = usr_share / "texmf"
+        stage_texmf = usr_share / "tex-suite" / "texmf"
         package_dist.stage_assets(stage_texmf)
 
         # Build Debian package (.deb)

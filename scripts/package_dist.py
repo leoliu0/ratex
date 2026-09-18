@@ -366,8 +366,9 @@ def stage_assets(texmf_stage: Path, full: bool = False) -> dict:
                             shutil.copy2(p, dst)
                             placed[str(rel)] = "system-full"
             print(f"    staged {len(placed)} complete assets into {texmf_stage.name}!")
+            generate_lsr(texmf_stage)
+            placed["ls-R"] = "generated-index"
             return placed
-
     for rel, candidates in ESSENTIAL_ASSETS.items():
         dst = texmf_stage / rel
         src = find_asset(rel, candidates, roots)

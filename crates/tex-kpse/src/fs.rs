@@ -277,7 +277,7 @@ impl Metadata {
             Self::Native(m) => m.modified(),
             Self::Memory {
                 epoch, generation, ..
-            } => Ok(UNIX_EPOCH + Duration::from_secs(*epoch) + Duration::from_nanos(*generation)),
+            } => Ok(UNIX_EPOCH + Duration::from_secs(*epoch) + Duration::from_micros(*generation)),
         }
     }
     pub fn permissions(&self) -> Permissions {

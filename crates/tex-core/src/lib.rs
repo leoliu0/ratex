@@ -7,7 +7,9 @@ pub mod align;
 pub mod boxes;
 pub mod build;
 pub mod control;
+mod clock;
 pub mod diagnostics;
+pub mod driver;
 pub mod engine;
 pub mod eqtb;
 pub mod expand;
@@ -34,8 +36,11 @@ pub mod scan;
 pub mod scanner;
 pub mod tfm;
 pub mod token;
+pub mod synctex;
+pub mod pdf_svg;
 
 pub use engine::Engine;
+pub use pdffile::PdfEncryptConfig;
 #[inline]
 pub fn debug_flag(name: &str) -> bool {
     use std::sync::OnceLock;

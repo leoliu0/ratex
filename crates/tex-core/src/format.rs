@@ -597,7 +597,7 @@ pub fn save_format_with_encoding(
         FormatEncoding::Zstd(level) => zstd::encode_all(&w.buf[..], level)
             .map_err(|e| format!("zstd compression failed: {e}"))?,
     };
-    std::fs::write(path, &payload)
+    tex_kpse::fs::write(path, &payload)
         .map_err(|e| format!("cannot write {}: {}", path.display(), e))?;
     Ok(payload.len())
 }
@@ -843,7 +843,7 @@ pub fn load_format(path: &Path) -> Result<Engine, String> {
 
 fn read_format_file(path: &Path) -> Result<Vec<u8>, String> {
     let metadata =
-        std::fs::metadata(path).map_err(|e| format!("cannot inspect {}: {e}", path.display()))?;
+        tex_kpse::fs::metadata(path).map_err(|e| format!("cannot inspect {}: {e}", path.display()))?;
     if metadata.len() > MAX_FORMAT_BYTES as u64 {
         return Err(format!(
             "format file {} is too large ({} bytes; limit is {} bytes)",
@@ -852,7 +852,7 @@ fn read_format_file(path: &Path) -> Result<Vec<u8>, String> {
             MAX_FORMAT_BYTES
         ));
     }
-    std::fs::read(path).map_err(|e| format!("cannot read {}: {e}", path.display()))
+    tex_kpse::fs::read(path).map_err(|e| format!("cannot read {}: {e}", path.display()))
 }
 
 /// Validate the header and return the wire version plus a reader positioned

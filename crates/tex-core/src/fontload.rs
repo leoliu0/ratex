@@ -45,6 +45,12 @@ pub struct VfFont {
     pub chars: Vec<Option<Rc<[VfStep]>>>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TrackedFont {
+    pub base_font: u16,
+    pub tracking: i32,
+}
+
 pub struct FontLoader {
     pub kpse: tex_kpse::Kpse,
     pub map: crate::fontmap::FontMap,
@@ -55,6 +61,8 @@ pub struct FontLoader {
     /// engine font id of a VF-backed font -> base engine font ids
     /// (u16::MAX = the base TFM was missing at load time)
     pub vf_bases: crate::FxHashMap<u16, Vec<u16>>,
+    /// Tracked fonts created by \letterspacefont: derived font id -> TrackedFont
+    pub tracked_fonts: crate::FxHashMap<u16, TrackedFont>,
     /// pdftex.map is loaded on first font lookup, not at construction:
     /// the find forces kpse database setup, which is pure startup waste
     /// for format-booted runs that never select a mapped font.
@@ -101,6 +109,7 @@ impl FontLoader {
             enc_cache: crate::FxHashMap::default(),
             vf_fonts: crate::FxHashMap::default(),
             vf_bases: crate::FxHashMap::default(),
+            tracked_fonts: crate::FxHashMap::default(),
             map_loaded: false,
             dependency_files: Vec::new(),
             dependency_directories: Vec::new(),
@@ -140,14 +149,32 @@ impl FontLoader {
         self.dependency_tracking_complete &= complete;
     }
 
+    pub fn is_tracked_font(&self, f: u16) -> bool {
+        self.tracked_fonts.contains_key(&f)
+    }
+
+    pub fn get_tracked_font(&self, f: u16) -> Option<&TrackedFont> {
+        self.tracked_fonts.get(&f)
+    }
+
+    pub fn register_tracked_font(&mut self, derived: u16, base: u16, tracking: i32) {
+        self.tracked_fonts.insert(
+            derived,
+            TrackedFont {
+                base_font: base,
+                tracking,
+            },
+        );
+    }
+
     /// Remove the positive file dependency added by a metadata-only lookup,
     /// while retaining its earlier search-path, index, and directory state.
     pub fn discard_file_dependency_since(&mut self, start: usize, selected: &std::path::Path) {
         let same_path = |path: &std::path::Path| {
             path == selected
-                || std::fs::canonicalize(path)
+                || tex_kpse::fs::canonicalize(path)
                     .ok()
-                    .zip(std::fs::canonicalize(selected).ok())
+                    .zip(tex_kpse::fs::canonicalize(selected).ok())
                     .is_some_and(|(left, right)| left == right)
         };
         if let Some(offset) = self.dependency_files[start..]
@@ -162,7 +189,7 @@ impl FontLoader {
         let resolved = self.kpse.find(name, format);
         self.record_lookup_dependency(name, format, resolved.as_deref());
         if let Some(path) = resolved {
-            if let Ok(data) = std::fs::read(&path) {
+            if let Ok(data) = tex_kpse::fs::read(&path) {
                 self.dependency_file_digests.push((
                     path.clone(),
                     data.len() as u64,
@@ -713,7 +740,10 @@ impl FontLoader {
                     let n = vf_uint(data, &mut cur.0, 1 + (op - 239) as usize)? as usize;
                     cur.0 = (cur.0 + n).min(cur.1);
                 }
-                _ => unreachable!(), // ops >= 242 break out above
+                // bop/eop are not legal inside a virtual-font character
+                // packet. Reject malformed input instead of panicking.
+                139 | 140 => return None,
+                _ => return None, // ops >= 242 break out above
             }
         }
         Some(steps)
@@ -901,7 +931,7 @@ impl Engine {
             || clean_name.ends_with(".ttc")
             || clean_name.starts_with('/');
         if is_otf {
-            match std::fs::read(clean_name) {
+            match tex_kpse::fs::read(clean_name) {
                 Ok(data) => match ttf_parser::Face::parse(&data, 0) {
                     Ok(face) => {
                         self.record_loaded_bytes(std::path::Path::new(clean_name), &data);
@@ -1496,6 +1526,7 @@ impl Engine {
             self.error("letterspacing: invalid font identifier");
             return;
         }
+        self.scan_optional_equals();
         let e = self.scan_int().clamp(-1000, 1000);
         let k = self.letter_space_font(u, f, e);
         if k != 0 {
@@ -1582,6 +1613,7 @@ impl Engine {
             }),
         );
         self.font_loader.vf_bases.insert(k, vec![f]);
+        self.font_loader.register_tracked_font(k, f, e);
         k
     }
 }
@@ -1923,6 +1955,7 @@ mod tests {
             enc_cache: crate::FxHashMap::default(),
             vf_fonts: crate::FxHashMap::default(),
             vf_bases: crate::FxHashMap::default(),
+            tracked_fonts: crate::FxHashMap::default(),
             map_loaded: true,
             dependency_files: Vec::new(),
             dependency_directories: Vec::new(),

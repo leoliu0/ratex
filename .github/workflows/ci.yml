@@ -10,6 +10,52 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  libraries:
+    name: C and WebAssembly libraries
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: Swatinem/rust-cache@v2
+      - name: Install Wasm build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang lld
+          cargo install wasm-bindgen-cli --version 0.2.122 --locked --root target/libtex-tools
+      - name: Build libraries
+        run: ./scripts/build-libs.sh
+      - name: Exercise shared and static C libraries
+        run: |
+          cc crates/libtex/examples/smoke.c -Itarget/libtex/include -Ltarget/libtex -Wl,-rpath,"$PWD/target/libtex" -ltex -o target/libtex/smoke
+          target/libtex/smoke target/libtex/hello.pdf
+          cc crates/libtex/examples/smoke.c -Itarget/libtex/include target/libtex/libtex.a -ldl -lpthread -lm -o target/libtex/smoke-static
+          target/libtex/smoke-static
+      - name: Exercise Node.js module and native PDF parity
+        run: |
+          node scripts/test-wasm.cjs
+          node scripts/test-wasm-web.mjs
+      - name: Exercise browser module
+        run: |
+          python3 -m http.server 8765 --bind 127.0.0.1 >target/wasm/http.log 2>&1 &
+          server=$!
+          trap 'kill "$server"' EXIT
+          google-chrome --headless --no-sandbox --disable-gpu --virtual-time-budget=120000 --dump-dom http://127.0.0.1:8765/examples/wasm/smoke.html >target/wasm/browser.html
+          python3 -c 'from pathlib import Path; s = Path("target/wasm/browser.html").read_text(); assert "PASS {" in s and "FAIL " not in s.split("<script")[0], s'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: libtex-linux-and-wasm
+          path: |
+            target/libtex/
+            target/wasm/web/
+            target/wasm/nodejs/
   test:
     name: Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

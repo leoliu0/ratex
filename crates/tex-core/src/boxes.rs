@@ -263,6 +263,8 @@ pub enum DisplayItem {
         glyphs: Vec<u8>,
         tag: Option<StructureTag>,
         span: Option<SpanId>,
+        source_file_id: u32,
+        source_line: u32,
     },
     Rule {
         x_bp: f64,
@@ -282,6 +284,21 @@ pub enum DisplayItem {
         dest: String,
     },
 }
+impl DisplayItem {
+    pub fn glyph_run(font: crate::tfm::FontId, x_bp: f64, y_bp: f64, glyphs: Vec<u8>) -> Self {
+        Self::GlyphRun {
+            font,
+            x_bp,
+            y_bp,
+            glyphs,
+            tag: None,
+            span: None,
+            source_file_id: 0,
+            source_line: 0,
+        }
+    }
+}
+
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct DisplayList {
@@ -1003,7 +1020,7 @@ pub fn leader_layout(
 /// remainder; `scaled_out` = the quotient*divisor rounded onto the 10^-dd
 /// raster. Used only for the expansion-ratio computation, where the result
 /// is the ratio (a per-mille integer), not a scaled quantity.
-fn divide_scaled(s: i64, m: i64, dd: u32) -> (i64, i64) {
+pub(crate) fn divide_scaled(s: i64, m: i64, dd: u32) -> (i64, i64) {
     let (mut s, mut m) = (s, m);
     let mut sign = 1i64;
     if s < 0 {

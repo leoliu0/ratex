@@ -1131,7 +1131,7 @@ impl Engine {
                     self.set_no_ligatures(f);
                 }
             }
-            LetterspaceFont => self.do_letterspacefont(),
+            Letterspacefont => self.do_letterspacefont(),
             PdfSetRandomSeed => {
                 self.random_seed = self.scan_int();
             }
@@ -1424,7 +1424,7 @@ impl Engine {
                     );
                     return;
                 };
-                match std::fs::read(&path) {
+                match tex_kpse::fs::read(&path) {
                     Ok(bytes) => {
                         self.record_loaded_bytes(&path, &bytes);
                         self.loaded_files.push(path);
@@ -1567,7 +1567,7 @@ impl Engine {
             );
             return;
         };
-        let bytes = match std::fs::read(&path) {
+        let bytes = match tex_kpse::fs::read(&path) {
             Ok(bytes) => bytes,
             Err(error) => {
                 self.error_at(
@@ -1622,24 +1622,22 @@ impl Engine {
             let w_sp = (jpeg.width as f64 / jpeg.dpi_x * 72.27 * 65536.0).round() as i32;
             let h_sp = (jpeg.height as f64 / jpeg.dpi_y * 72.27 * 65536.0).round() as i32;
             ((w_sp, h_sp), [0, 0, w_sp, h_sp])
+        } else if let Some((w, h, rx, ry)) = read_png_dims(&bytes) {
+            let w_sp = (w as f64 / rx as f64 * 72.27 * 65536.0).round() as i32;
+            let h_sp = (h as f64 / ry as f64 * 72.27 * 65536.0).round() as i32;
+            ((w_sp, h_sp), [0, 0, w_sp, h_sp])
+        } else if let Some(svg) = crate::pdf_svg::parse_svg_dims(&bytes) {
+            let w_sp = (svg.width as f64 / svg.dpi * 72.27 * 65536.0).round() as i32;
+            let h_sp = (svg.height as f64 / svg.dpi * 72.27 * 65536.0).round() as i32;
+            ((w_sp, h_sp), [0, 0, w_sp, h_sp])
         } else {
-            let b = &bytes;
-            match read_png_dims(b) {
-                Some((w, h, rx, ry)) => {
-                    let w_sp = (w as f64 / rx as f64 * 72.27 * 65536.0).round() as i32;
-                    let h_sp = (h as f64 / ry as f64 * 72.27 * 65536.0).round() as i32;
-                    ((w_sp, h_sp), [0, 0, w_sp, h_sp])
-                }
-                None => {
-                    self.error_at(
-                        &format!(
-                            "Unsupported or invalid image `{file}` (expected PDF, JPEG, or PNG)"
-                        ),
-                        origin.as_ref().map(crate::input::SourceMark::to_context),
-                    );
-                    return;
-                }
-            }
+            self.error_at(
+                &format!(
+                    "Unsupported or invalid image `{file}` (expected PDF, JPEG, or PNG); valid SVG is also accepted"
+                ),
+                origin.as_ref().map(crate::input::SourceMark::to_context),
+            );
+            return;
         };
         let d = scan_d.unwrap_or(0);
         let (w, h) = match (scan_w, scan_h) {

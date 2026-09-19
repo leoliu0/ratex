@@ -5,10 +5,13 @@ members = [
     "crates/tex-kpse",
     "crates/tex-cli",
     "crates/tex-bibtex",
+    "crates/tex-runtime",
+    "crates/libtex",
+    "crates/tex-wasm",
 ]
 
 [workspace.package]
-version = "0.2.1"
+version = "0.3.0"
 edition = "2021"
 
 [workspace.dependencies]
@@ -25,3 +28,8 @@ codegen-units = 16
 panic = "abort"
 debug = 1
 strip = "none"
+
+# C callers must never observe a Rust unwind. Exported entry points catch it.
+[profile.ffi-release]
+inherits = "release"
+panic = "unwind"

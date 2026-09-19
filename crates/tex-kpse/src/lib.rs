@@ -3,6 +3,9 @@
 //! Searches the standard TeX Live directory roots using their `ls-R`
 //! filename databases, plus the current working directory for user files.
 
+pub mod fs;
+use fs::PathExt;
+
 // Independently compressed chunks and a sorted member index are generated
 // once at build time. Runtime lookup inflates only the containing chunk, while
 // related small files still share enough context for effective compression.
@@ -373,13 +376,12 @@ struct DirectorySnapshot {
 }
 
 fn directory_generation(path: &Path) -> Option<DirectoryGeneration> {
-    let metadata = std::fs::metadata(path).ok()?;
+    let metadata = crate::fs::metadata(path).ok()?;
     if !metadata.is_dir() {
         return None;
     }
     #[cfg(unix)]
     {
-        use std::os::unix::fs::MetadataExt;
         Some(DirectoryGeneration {
             len: metadata.len(),
             modified: metadata.modified().ok(),
@@ -425,7 +427,7 @@ fn snapshot_entries_fingerprint<'a>(
 /// carry no fingerprint and are never retained for dependency tracking.
 fn scan_directory(path: &Path) -> Option<DirectorySnapshot> {
     let before = directory_generation(path);
-    let read_dir = std::fs::read_dir(path).ok()?;
+    let read_dir = crate::fs::read_dir(path).ok()?;
     let mut complete = before.is_some();
     let mut entries = Vec::new();
     for entry in read_dir {
@@ -502,7 +504,7 @@ impl Default for Kpse {
 impl Kpse {
     /// Build a resolver rooted at the process working directory.
     pub fn new() -> Self {
-        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let cwd = crate::fs::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         Self::with_roots(&cwd, &[])
     }
 
@@ -526,13 +528,14 @@ impl Kpse {
     /// project files and its own bundled installation assets (`share/tex-suite/texmf`
     /// or `share/ratex/texmf`), with zero fallback to external TeX Live.
     pub fn with_roots(cwd: &Path, extra_roots: &[&Path]) -> Self {
+        if crate::fs::is_memory() { return Self::explicit(cwd, Vec::new()); }
         let mut roots: Vec<PathBuf> = extra_roots.iter().map(|p| p.to_path_buf()).collect();
 
         // Bundled installation roots: always discovered relative to the executable
         // or through TEX_SUITE_DATA / RATEX_DATA_DIR.
         if let Ok(data_dir) = std::env::var("TEX_SUITE_DATA").or_else(|_| std::env::var("RATEX_DATA_DIR")) {
             let p = PathBuf::from(data_dir).join("texmf");
-            if p.is_dir() && !roots.iter().any(|r| r == &p) {
+            if p.tex_is_dir() && !roots.iter().any(|r| r == &p) {
                 roots.push(p);
             }
         }
@@ -552,7 +555,7 @@ impl Kpse {
                     PathBuf::from(&home).join("texmf"),
                     PathBuf::from(&home).join(".texlive/texmf-var"),
                 ] {
-                    if cand.exists() && !roots.iter().any(|r| r == &cand) {
+                    if cand.tex_exists() && !roots.iter().any(|r| r == &cand) {
                         roots.push(cand);
                     }
                 }
@@ -566,7 +569,7 @@ impl Kpse {
                         bin_dir.join("../share/texmf"),
                         bin_dir.join("../../texmf"),
                     ] {
-                        if cand.is_dir() && !roots.iter().any(|r| r == &cand) {
+                        if cand.tex_is_dir() && !roots.iter().any(|r| r == &cand) {
                             roots.push(cand);
                         }
                     }
@@ -579,7 +582,7 @@ impl Kpse {
                 "/usr/local/share/texmf",
                 "/usr/local/texlive",
             ] {
-                if Path::new(p).exists() && !roots.iter().any(|r| r.as_os_str() == p) {
+                if Path::new(p).tex_exists() && !roots.iter().any(|r| r.as_os_str() == p) {
                     roots.push(PathBuf::from(p));
                 }
             }
@@ -672,7 +675,7 @@ impl Kpse {
             present: &mut Vec<PathBuf>,
             missing: &mut Vec<PathBuf>,
         ) -> bool {
-            let is_file = path.is_file();
+            let is_file = path.tex_is_file();
             if is_file {
                 present.push(path);
             } else {
@@ -685,9 +688,9 @@ impl Kpse {
             if clean(left.to_path_buf()) == clean(right.to_path_buf()) {
                 return true;
             }
-            std::fs::canonicalize(left)
+            crate::fs::canonicalize(left)
                 .ok()
-                .zip(std::fs::canonicalize(right).ok())
+                .zip(crate::fs::canonicalize(right).ok())
                 .is_some_and(|(left, right)| left == right)
         }
 
@@ -834,18 +837,18 @@ impl Kpse {
         // be recorded because they may appear without the index changing.
         for i in 0..self.roots.len() {
             let root = &self.roots[i];
-            if !root.is_dir() {
+            if !root.tex_is_dir() {
                 missing_directories.push(root.clone());
                 continue;
             }
 
             let lsr = root.join("ls-R");
             let lsr_lua = root.join("ls-R.lua");
-            let index_path = if lsr.is_file() {
+            let index_path = if lsr.tex_is_file() {
                 Some(lsr)
             } else {
                 record_file(lsr, &mut present, &mut missing_files);
-                if lsr_lua.is_file() {
+                if lsr_lua.tex_is_file() {
                     Some(lsr_lua)
                 } else {
                     record_file(lsr_lua, &mut present, &mut missing_files);
@@ -911,7 +914,7 @@ impl Kpse {
                 for spec in fmt.tds_paths() {
                     let subtree = spec.strip_suffix("//").unwrap_or(spec);
                     let start = root.join(subtree);
-                    if !start.is_dir() {
+                    if !start.tex_is_dir() {
                         missing_directories.push(start);
                     }
                 }
@@ -994,7 +997,7 @@ impl Kpse {
 
     fn find_local(&self, name: &str) -> Option<PathBuf> {
         let exact = self.cwd.join(name);
-        if exact.is_file() {
+        if exact.tex_is_file() {
             return Some(exact);
         }
         let mut path = self.cwd.clone();
@@ -1004,7 +1007,7 @@ impl Kpse {
                 Component::ParentDir => path.push(".."),
                 Component::Normal(wanted) => {
                     let exact = path.join(wanted);
-                    if exact.exists() {
+                    if exact.tex_exists() {
                         path = exact;
                         continue;
                     }
@@ -1019,12 +1022,12 @@ impl Kpse {
                 Component::RootDir | Component::Prefix(_) => return None,
             }
         }
-        path.is_file().then_some(path)
+        path.tex_is_file().then_some(path)
     }
 
     fn find_local_traced(&self, name: &str) -> (Option<PathBuf>, Vec<(PathBuf, u64)>, bool) {
         let exact = self.cwd.join(name);
-        if exact.is_file() {
+        if exact.tex_is_file() {
             return (Some(exact), Vec::new(), true);
         }
         let mut path = self.cwd.clone();
@@ -1038,13 +1041,13 @@ impl Kpse {
                 Component::ParentDir => path.push(".."),
                 Component::Normal(wanted) => {
                     let exact = path.join(wanted);
-                    if exact.exists() {
+                    if exact.tex_exists() {
                         // At the last component an exact directory or special
                         // file suppresses the case-insensitive fallback. Track
                         // its parent membership so replacing it with a
                         // differently-cased regular file cannot hide behind a
                         // cached lower-priority result.
-                        if component_index + 1 == component_count && !exact.is_file() {
+                        if component_index + 1 == component_count && !exact.tex_is_file() {
                             let Some(snapshot) = self.local_directory_snapshot(&path) else {
                                 return (None, directories, false);
                             };
@@ -1052,7 +1055,7 @@ impl Kpse {
                                 return (None, directories, false);
                             };
                             directories.push((path.clone(), fingerprint));
-                            if !exact.exists() || exact.is_file() {
+                            if !exact.tex_exists() || exact.tex_is_file() {
                                 return (None, directories, false);
                             }
                         }
@@ -1083,7 +1086,7 @@ impl Kpse {
                 }
             }
         }
-        (path.is_file().then_some(path), directories, complete)
+        (path.tex_is_file().then_some(path), directories, complete)
     }
 
     fn candidates(name: &str, fmt: Format) -> Vec<String> {
@@ -1116,7 +1119,7 @@ impl Kpse {
         }
         let key = (name.to_string(), fmt);
         if let Some(Some(hit)) = self.find_cache.borrow().get(&key) {
-            if hit.is_file() {
+            if hit.tex_is_file() {
                 return Some(hit.clone());
             }
         }
@@ -1130,7 +1133,7 @@ impl Kpse {
     pub fn explain_lookup(&self, name: &str, fmt: Format) -> LookupExplanation {
         let p = Path::new(name);
         if p.is_absolute() {
-            let found = p.is_file();
+            let found = p.tex_is_file();
             return LookupExplanation {
                 name: name.to_string(),
                 format: fmt,
@@ -1153,7 +1156,7 @@ impl Kpse {
         if name.contains('/') {
             for (idx, root) in self.roots.iter().enumerate() {
                 let full = root.join(name);
-                if full.is_file() {
+                if full.tex_is_file() {
                     return LookupExplanation {
                         name: name.to_string(),
                         format: fmt,
@@ -1176,7 +1179,7 @@ impl Kpse {
             for base in paths {
                 for cand in &candidates {
                     let p = base.join(cand);
-                    if p.is_file() {
+                    if p.tex_is_file() {
                         return LookupExplanation {
                             name: name.to_string(),
                             format: fmt,
@@ -1194,7 +1197,7 @@ impl Kpse {
                 if let Some(dirs) = db.get(cand) {
                     for rel in dirs {
                         let full = self.roots[i].join(rel);
-                        if full.is_file() {
+                        if full.tex_is_file() {
                             return LookupExplanation {
                                 name: name.to_string(),
                                 format: fmt,
@@ -1236,7 +1239,7 @@ impl Kpse {
     fn find_uncached(&self, name: &str, fmt: Format) -> Option<PathBuf> {
         let p = Path::new(name);
         if p.is_absolute() {
-            return if p.is_file() {
+            return if p.tex_is_file() {
                 Some(p.to_path_buf())
             } else {
                 None
@@ -1247,7 +1250,7 @@ impl Kpse {
         if name.contains('/') {
             for root in &self.roots {
                 let full = root.join(name);
-                if full.is_file() {
+                if full.tex_is_file() {
                     return Some(clean(full));
                 }
             }
@@ -1258,7 +1261,7 @@ impl Kpse {
             for base in paths {
                 for cand in &candidates {
                     let p = base.join(cand);
-                    if p.is_file() {
+                    if p.tex_is_file() {
                         return Some(p);
                     }
                 }
@@ -1272,7 +1275,7 @@ impl Kpse {
                 if let Some(dirs) = db.get(cand) {
                     for rel in dirs {
                         let full = self.roots[i].join(rel);
-                        if full.is_file() {
+                        if full.tex_is_file() {
                             return Some(clean(full));
                         }
                     }
@@ -1313,7 +1316,7 @@ impl Kpse {
     /// kpsewhich-style: find any file by name across all databases.
     pub fn find_any(&self, name: &str) -> Option<PathBuf> {
         if Path::new(name).is_absolute() {
-            return if Path::new(name).is_file() {
+            return if Path::new(name).tex_is_file() {
                 Some(PathBuf::from(name))
             } else {
                 None
@@ -1327,7 +1330,7 @@ impl Kpse {
             if let Some(dirs) = db.get(name) {
                 for rel in dirs {
                     let full = self.roots[i].join(rel);
-                    if full.is_file() {
+                    if full.tex_is_file() {
                         return Some(clean(full));
                     }
                 }
@@ -1343,7 +1346,7 @@ impl Kpse {
     }
     pub fn read(&self, name: &str, fmt: Format) -> Option<Vec<u8>> {
         if let Some(p) = self.find(name, fmt) {
-            if let Ok(d) = std::fs::read(p) {
+            if let Ok(d) = crate::fs::read(p) {
                 return Some(d);
             }
         }
@@ -1376,7 +1379,7 @@ impl Kpse {
     fn walk_cached(&self, root_idx: usize, fmt: Format, cand: &str) -> Option<PathBuf> {
         let key = (root_idx, fmt, cand.to_string());
         if let Some(Some(hit)) = self.walk_cache.borrow().get(&key) {
-            if hit.is_file() {
+            if hit.tex_is_file() {
                 return Some(hit.clone());
             }
         }
@@ -1420,7 +1423,7 @@ fn walk_find_impl(
     root: &Path,
     fmt: Format,
     cand: &str,
-    mut visited_directory: impl FnMut(&Path, Option<&[(std::fs::DirEntry, std::fs::FileType)]>),
+    mut visited_directory: impl FnMut(&Path, Option<&[(crate::fs::DirEntry, crate::fs::FileType)]>),
 ) -> (Option<PathBuf>, bool) {
     let cand_lower = cand.to_lowercase();
     let mut ci_hit: Option<PathBuf> = None;
@@ -1433,13 +1436,13 @@ fn walk_find_impl(
             None => (*spec, false),
         };
         let start = root.join(sub);
-        if !start.is_dir() {
+        if !start.tex_is_dir() {
             continue;
         }
         if !recursive {
             visited_directory(&start, None);
             let hit = start.join(cand);
-            if hit.is_file() {
+            if hit.tex_is_file() {
                 return (Some(hit), complete);
             }
             continue;
@@ -1451,14 +1454,14 @@ fn walk_find_impl(
             }
             budget -= 1;
             // Canonicalize to break symlink cycles.
-            let Ok(canon) = dir.canonicalize() else {
+            let Ok(canon) = dir.tex_canonicalize() else {
                 complete = false;
                 continue;
             };
             if !visited.insert(canon) {
                 continue;
             }
-            let Ok(entries) = std::fs::read_dir(&dir) else {
+            let Ok(entries) = crate::fs::read_dir(&dir) else {
                 complete = false;
                 continue;
             };
@@ -1502,7 +1505,7 @@ fn walk_find_impl(
     (ci_hit, complete)
 }
 
-fn directory_entries_fingerprint(entries: &[(std::fs::DirEntry, std::fs::FileType)]) -> u64 {
+fn directory_entries_fingerprint(entries: &[(crate::fs::DirEntry, crate::fs::FileType)]) -> u64 {
     use std::hash::{Hash, Hasher};
 
     let mut hash = std::collections::hash_map::DefaultHasher::new();
@@ -1557,14 +1560,14 @@ fn load_lsr(root: &Path) -> LsR {
     let mut lsr = LsR::new();
     for name in ["ls-R", "ls-R.lua"] {
         let path = root.join(name);
-        if !path.is_file() {
+        if !path.tex_is_file() {
             continue;
         }
         if let Some(packed) = filename_index::Packed::load(&path) {
             let (size, hash) = dependency_content_identity(packed.source_bytes());
             lsr.source_dependency = Some((path, size, hash));
             lsr.packed = Some(packed);
-        } else if let Ok(bytes) = std::fs::read(&path) {
+        } else if let Ok(bytes) = crate::fs::read(&path) {
             let (size, hash) = dependency_content_identity(&bytes);
             if let Ok(text) = String::from_utf8(bytes) {
                 lsr = LsR::parse(text);

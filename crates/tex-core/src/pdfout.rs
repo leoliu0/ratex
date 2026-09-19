@@ -1,6 +1,7 @@
 use crate::boxes::{Node, WhatIt};
 use crate::engine::Engine;
 use crate::token::Token;
+pub use crate::pdffile::PdfEncryptConfig;
 
 // PDF document model: pages, annotations, destinations, embedded fonts.
 // Serialization lives in `pdffile`; page rendering in `pdfrender`.
@@ -99,6 +100,9 @@ pub struct PdfDoc {
     /// are remapped to entries in `fonts`. This lets the serializer retain
     /// only the required Type 1 glyph programs.
     pub font_chars: std::collections::BTreeMap<usize, [u64; 4]>,
+    pub encrypt: Option<PdfEncryptConfig>,
+    pub pdfa: bool,
+    pub minor_version: Option<i32>,
 }
 
 /// A Type 1 font prepared for embedding.
@@ -150,6 +154,9 @@ impl PdfDoc {
             open_action: None,
             fonts: Vec::new(),
             font_chars: std::collections::BTreeMap::new(),
+            encrypt: None,
+            pdfa: false,
+            minor_version: None,
         }
     }
 

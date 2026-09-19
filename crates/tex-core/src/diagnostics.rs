@@ -1818,7 +1818,7 @@ fn default_help(message: &str) -> Option<String> {
     {
         Some("adjust the vertical material or glue near the reported box")
     } else if message.starts_with("Unsupported or invalid image") {
-        Some("use a valid PDF, JPEG, or PNG image and check that the file is not truncated or corrupt")
+        Some("use a valid PDF, JPEG, PNG, or SVG image and check that the file is not truncated or corrupt")
     } else if message.starts_with("Cannot include PDF") {
         Some("check that the PDF is valid and that the requested page and page box exist")
     } else if message.starts_with("Undefined PDF image object") {

@@ -161,7 +161,7 @@ impl Trie {
     /// `\hyphenation{...}` blocks, `%` comments, whitespace-separated
     /// entries. Returns (patterns added, exceptions added).
     pub fn load_hyphen_file(&mut self, path: &std::path::Path) -> std::io::Result<(usize, usize)> {
-        let text = std::fs::read_to_string(path)?;
+        let text = tex_kpse::fs::read_to_string(path)?;
         Ok(self.load_hyphen_str(&text))
     }
 

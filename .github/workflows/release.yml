@@ -13,6 +13,47 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  libraries:
+    name: Native and WebAssembly libraries
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: Swatinem/rust-cache@v2
+      - name: Install Wasm build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang lld
+          cargo install wasm-bindgen-cli --version 0.2.122 --locked --root target/libtex-tools
+      - name: Build and test libraries
+        run: |
+          ./scripts/build-libs.sh
+          cc crates/libtex/examples/smoke.c -Itarget/libtex/include -Ltarget/libtex -Wl,-rpath,"$PWD/target/libtex" -ltex -o target/libtex/smoke
+          target/libtex/smoke target/libtex/hello.pdf
+          cc crates/libtex/examples/smoke.c -Itarget/libtex/include target/libtex/libtex.a -ldl -lpthread -lm -o target/libtex/smoke-static
+          target/libtex/smoke-static
+          node scripts/test-wasm.cjs
+          node scripts/test-wasm-web.mjs
+      - name: Package libraries
+        shell: bash
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          mkdir -p dist
+          tar -C target/libtex -czf "dist/libtex-v${version}-linux-x86_64.tar.gz" include libtex.so libtex.a
+          tar -C target/wasm -czf "dist/libtex-v${version}-wasm.tar.gz" web nodejs
+          cd dist
+          sha256sum libtex-* > SHA256SUMS-libraries.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: libtex-libraries
+          path: dist/*
+          if-no-files-found: error
+
   build:
     name: ${{ matrix.label }}
     runs-on: ${{ matrix.os }}
@@ -184,7 +225,7 @@ jobs:
 
   release:
     name: Publish GitHub Release
-    needs: build
+    needs: [build, libraries]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:

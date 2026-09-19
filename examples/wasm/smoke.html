@@ -1,0 +1,32 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>libtex WebAssembly smoke test</title>
+<pre id="result">Loading libtex…</pre>
+<script type="module">
+import init, { TexSession } from '../../target/wasm/web/tex.js';
+const report = document.querySelector('#result');
+try {
+  await init();
+  const encoder = new TextEncoder();
+  const session = new TexSession();
+  session.setEpoch(1700000000);
+  session.addFile('main.tex', encoder.encode(String.raw`\documentclass{article}\usepackage{amsmath}\begin{document}\input{body}\bibliographystyle{plain}\bibliography{refs}\end{document}`));
+  session.addFile('body.tex', encoder.encode(String.raw`Browser $x^2$. Citation~\cite{paper}.`));
+  session.addFile('refs.bib', encoder.encode('@article{paper,author={Ada Lovelace},title={Browser Test},journal={Testing},year={2024}}'));
+  const result = session.compile('main.tex');
+  if (result.status !== 0) throw new Error(result.diagnostics + '\n' + result.log);
+  if (new TextDecoder().decode(result.pdf.slice(0, 5)) !== '%PDF-') throw new Error('Invalid PDF');
+  if (!result.bibtexRuns || !result.fileNames.includes('main.bbl')) throw new Error('Missing bibliography');
+  window.libtexTest = { ok: true, pdfBytes: result.pdf.length, passes: result.passes, bibtexRuns: result.bibtexRuns };
+  result.free();
+  session.addFile('main.tex', encoder.encode(String.raw`\documentclass{article}\begin{document}\input{missing-file}\end{document}`));
+  const failed = session.compile('main.tex');
+  if (failed.status !== 1 || failed.pdf.length) throw new Error('Missing-file error was not reported');
+  failed.free();
+  session.free();
+  report.textContent = 'PASS ' + JSON.stringify(window.libtexTest);
+} catch (error) {
+  window.libtexTest = { ok: false, error: String(error), stack: error.stack };
+  report.textContent = 'FAIL ' + String(error);
+}
+</script>

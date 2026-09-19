@@ -765,7 +765,7 @@ pub enum Prim {
     //      the enum tail so earlier codes hold).
     PdfFontExpand,
     PdfNoLigatures,
-    LetterspaceFont,
+    Letterspacefont,
     EfCode,
     LpCode,
     RpCode,
@@ -803,6 +803,8 @@ pub enum Prim {
 /// codes keep their values. The four parameter families occupy dedicated
 /// high ranges that carry the parameter index directly.
 impl Prim {
+    #[allow(non_upper_case_globals)]
+    pub const LetterspaceFont: Prim = Prim::Letterspacefont;
     #[inline]
     pub(crate) fn penalty_shape_index(self) -> Option<usize> {
         match self {
@@ -1137,7 +1139,7 @@ impl Prim {
             Prim::FontCharIc => 318,
             Prim::PdfFontExpand => 319,
             Prim::PdfNoLigatures => 320,
-            Prim::LetterspaceFont => 321,
+            Prim::Letterspacefont => 321,
             Prim::EfCode => 322,
             Prim::LpCode => 323,
             Prim::RpCode => 324,
@@ -1497,7 +1499,7 @@ impl Prim {
             318 => Some(Prim::FontCharIc),
             319 => Some(Prim::PdfFontExpand),
             320 => Some(Prim::PdfNoLigatures),
-            321 => Some(Prim::LetterspaceFont),
+            321 => Some(Prim::Letterspacefont),
             322 => Some(Prim::EfCode),
             323 => Some(Prim::LpCode),
             324 => Some(Prim::RpCode),

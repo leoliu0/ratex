@@ -196,8 +196,8 @@ pub struct Engine {
     pub(crate) diagnostic_use_err_help: bool,
 
     // write streams
-    pub write_streams: Vec<Option<std::fs::File>>,
-    /// Resolved path for each open TeX output stream. `std::fs::File` does
+    pub write_streams: Vec<Option<tex_kpse::fs::File>>,
+    /// Resolved path for each open TeX output stream. `tex_kpse::fs::File` does
     /// not retain a displayable path, but write failures need to name the
     /// destination that the user can fix.
     pub(crate) write_stream_paths: Vec<Option<String>>,
@@ -217,7 +217,9 @@ pub struct Engine {
 
     // output
     pub pdf_doc: crate::pdfout::PdfDoc,
-    pub out_file: Option<std::fs::File>,
+    pub synctex: crate::synctex::SyncTexData,
+    pub synctex_enabled: bool,
+    pub out_file: Option<tex_kpse::fs::File>,
     pub font_loader: crate::fontload::FontLoader,
     pub pdf_outlines: Vec<(String, String, i32)>,
 
@@ -639,7 +641,7 @@ impl Engine {
     }
 
     fn resident_bytes() -> u64 {
-        let Ok(buf) = std::fs::read_to_string("/proc/self/statm") else {
+        let Ok(buf) = tex_kpse::fs::read_to_string("/proc/self/statm") else {
             return 0;
         };
         let pages = buf
@@ -827,6 +829,8 @@ impl Engine {
             penalty_shapes: std::array::from_fn(|_| std::rc::Rc::from([])),
             penalty_shape_levels: [crate::eqtb::LEVEL_ONE; 4],
             pdf_doc: crate::pdfout::PdfDoc::new(),
+            synctex: crate::synctex::SyncTexData::new(),
+            synctex_enabled: true,
             out_file: None,
             font_loader: crate::fontload::FontLoader::new(),
             pdf_outlines: Vec::new(),
@@ -1479,7 +1483,7 @@ impl Engine {
         d!(eng, b"pdffontattr", PdfFontAttr);
         d!(eng, b"pdffontexpand", PdfFontExpand);
         d!(eng, b"pdfnoligatures", PdfNoLigatures);
-        d!(eng, b"letterspacefont", LetterspaceFont);
+        d!(eng, b"letterspacefont", Letterspacefont);
         d!(eng, b"efcode", EfCode);
         d!(eng, b"lpcode", LpCode);
         d!(eng, b"rpcode", RpCode);
@@ -1804,6 +1808,15 @@ impl Engine {
                 crate::boxes::Node::Box { .. } | crate::boxes::Node::Rule { .. }
             )
         })
+    }
+    #[inline]
+    pub fn is_tracked_font(&self, f: u16) -> bool {
+        self.font_loader.is_tracked_font(f)
+    }
+
+    #[inline]
+    pub fn tracked_font(&self, f: u16) -> Option<&crate::fontload::TrackedFont> {
+        self.font_loader.get_tracked_font(f)
     }
 }
 

@@ -240,6 +240,8 @@ fn tagged_pdf_emits_markinfo_and_struct_tree_root() {
         glyphs: vec![b'H', b'i'],
         tag: Some(tex_core::boxes::StructureTag::Paragraph),
         span: Some(tex_core::boxes::SpanId(42)),
+        source_file_id: 1,
+        source_line: 10,
     });
     let bytes = tex_core::pdffile::write_pdf(&e.pdf_doc);
     let pdf = lopdf::Document::load_mem(&bytes).expect("valid PDF");
@@ -251,4 +253,186 @@ fn tagged_pdf_emits_markinfo_and_struct_tree_root() {
         .expect("PDF catalog dictionary");
     assert!(catalog.has(b"MarkInfo"), "Catalog must have /MarkInfo: {:?}", catalog);
     assert!(catalog.has(b"StructTreeRoot"), "Catalog must have /StructTreeRoot: {:?}", catalog);
+}
+
+#[test]
+fn synctex_records_generated_for_rendered_page() {
+    let source = r#"\catcode`\{=1 \catcode`\}=2
+\pdfpagewidth=100pt \pdfpageheight=100pt
+\pdfhorigin=0pt \pdfvorigin=0pt
+\setbox0=\hbox{\hrule width 50pt height 5pt depth 0pt}
+\shipout\box0
+\end"#;
+    let mut e = Engine::new(true);
+    e.init_primitives();
+    e.add_nullfont();
+    e.synctex_enabled = true;
+    e.input.push_file("synctex_doc.tex".into(), source.as_bytes().to_vec());
+    e.run();
+    assert_eq!(e.error_count, 0, "{}", e.term);
+    assert_eq!(e.pdf_doc.pages.len(), 1);
+    // Verify synctex state exists and can serialize to gz
+    assert!(e.synctex_enabled);
+    let file_id = e.synctex.get_or_register_file("synctex_doc.tex");
+    assert_eq!(file_id, 1);
+    e.synctex.record_point(1, file_id, 4, 65536 * 10, 65536 * 20);
+    let gz = e.synctex.to_synctex_gz().expect("valid synctex gz");
+    assert!(!gz.is_empty());
+    assert_eq!(&gz[..2], &[0x1f, 0x8b]);
+}
+#[test]
+fn encrypted_pdf_emits_encrypt_dict_and_trailer_id() {
+    let source = r#"\catcode`\{=1 \catcode`\}=2
+\pdfpagewidth=100pt \pdfpageheight=100pt
+\pdfhorigin=0pt \pdfvorigin=0pt
+\setbox0=\hbox{\hrule width 50pt height 5pt depth 0pt}
+\shipout\box0
+\end"#;
+    let mut e = Engine::new(true);
+    e.init_primitives();
+    e.add_nullfont();
+    e.input.push_file("enc.tex".into(), source.as_bytes().to_vec());
+    e.run();
+    assert_eq!(e.error_count, 0, "{}", e.term);
+    assert_eq!(e.pdf_doc.pages.len(), 1);
+
+    let fixed_id = [
+        0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf0, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66,
+        0x77, 0x88,
+    ];
+    let mut enc_cfg = tex_core::pdffile::PdfEncryptConfig::new("user_secret", "owner_secret");
+    enc_cfg.permissions = -4;
+    enc_cfg.file_id = Some(fixed_id);
+    e.pdf_doc.encrypt = Some(enc_cfg);
+
+    let pdf_bytes = tex_core::pdffile::write_pdf(&e.pdf_doc);
+    let pdf = lopdf::Document::load_mem(&pdf_bytes).expect("valid PDF");
+
+    // Verify trailer has /Encrypt and /ID
+    assert!(
+        pdf.trailer.has(b"Encrypt"),
+        "Trailer must contain /Encrypt entry: {:?}",
+        pdf.trailer
+    );
+    assert!(
+        pdf.trailer.has(b"ID"),
+        "Trailer must contain /ID entry: {:?}",
+        pdf.trailer
+    );
+
+    let encrypt_ref = pdf
+        .trailer
+        .get(b"Encrypt")
+        .and_then(lopdf::Object::as_reference)
+        .expect("Encrypt must be an indirect reference");
+    let encrypt_dict = pdf
+        .get_dictionary(encrypt_ref)
+        .expect("Encrypt dictionary");
+
+    assert_eq!(
+        encrypt_dict.get(b"Filter").and_then(lopdf::Object::as_name).unwrap(),
+        b"Standard"
+    );
+    assert_eq!(
+        encrypt_dict.get(b"V").and_then(lopdf::Object::as_i64).unwrap(),
+        2
+    );
+    assert_eq!(
+        encrypt_dict.get(b"R").and_then(lopdf::Object::as_i64).unwrap(),
+        3
+    );
+    assert_eq!(
+        encrypt_dict
+            .get(b"Length")
+            .and_then(lopdf::Object::as_i64)
+            .unwrap(),
+        128
+    );
+    assert_eq!(
+        encrypt_dict.get(b"P").and_then(lopdf::Object::as_i64).unwrap(),
+        -4
+    );
+
+    let o_obj = encrypt_dict.get(b"O").expect("/O entry must be present");
+    let u_obj = encrypt_dict.get(b"U").expect("/U entry must be present");
+
+    let o_bytes = o_obj.as_str().expect("/O string");
+    let u_bytes = u_obj.as_str().expect("/U string");
+    assert_eq!(o_bytes.len(), 32, "/O must be 32 bytes");
+    assert_eq!(u_bytes.len(), 32, "/U must be 32 bytes");
+
+    // Check cryptographic correctness
+    let expected_o = tex_core::pdffile::compute_o_hash(b"user_secret", b"owner_secret");
+    assert_eq!(o_bytes, &expected_o[..]);
+    let expected_key = tex_core::pdffile::compute_file_encryption_key(
+        b"user_secret",
+        &expected_o,
+        -4,
+        &fixed_id,
+    );
+    let expected_u = tex_core::pdffile::compute_u_hash(&expected_key, &fixed_id);
+    assert_eq!(u_bytes, &expected_u[..]);
+}
+
+#[test]
+fn pdfa_emits_output_intents_with_srgb() {
+    let source = r#"\catcode`\{=1 \catcode`\}=2
+\pdfpagewidth=100pt \pdfpageheight=100pt
+\pdfhorigin=0pt \pdfvorigin=0pt
+\pdfminorversion=4
+\pdfcatalog{/GTS_PDFA1 (PDF/A-1b)}
+\setbox0=\hbox{\hrule width 50pt height 5pt depth 0pt}
+\shipout\box0
+\end"#;
+    let mut e = Engine::new(true);
+    e.init_primitives();
+    e.add_nullfont();
+    e.input.push_file("pdfa.tex".into(), source.as_bytes().to_vec());
+    e.run();
+    assert_eq!(e.error_count, 0, "{}", e.term);
+    assert_eq!(e.pdf_doc.pages.len(), 1);
+
+    let pdf_bytes = tex_core::pdffile::write_pdf(&e.pdf_doc);
+    let pdf = lopdf::Document::load_mem(&pdf_bytes).expect("valid PDF");
+    let catalog = pdf
+        .trailer
+        .get(b"Root")
+        .and_then(lopdf::Object::as_reference)
+        .and_then(|id| pdf.get_dictionary(id))
+        .expect("PDF catalog dictionary");
+
+    assert!(
+        catalog.has(b"OutputIntents"),
+        "Catalog must contain /OutputIntents: {:?}",
+        catalog
+    );
+    let intents_arr = catalog
+        .get(b"OutputIntents")
+        .and_then(lopdf::Object::as_array)
+        .expect("/OutputIntents must be an array");
+    assert!(!intents_arr.is_empty(), "/OutputIntents array must not be empty");
+
+    let intent_dict = match &intents_arr[0] {
+        lopdf::Object::Dictionary(d) => d,
+        lopdf::Object::Reference(r) => pdf.get_dictionary(*r).expect("OutputIntent dict"),
+        other => panic!("Unexpected object in /OutputIntents: {:?}", other),
+    };
+
+    assert_eq!(
+        intent_dict.get(b"Type").and_then(lopdf::Object::as_name).unwrap(),
+        b"OutputIntent"
+    );
+    assert_eq!(
+        intent_dict.get(b"S").and_then(lopdf::Object::as_name).unwrap(),
+        b"GTS_PDFA1"
+    );
+    let cid = intent_dict
+        .get(b"OutputConditionIdentifier")
+        .expect("OutputConditionIdentifier");
+    assert_eq!(cid.as_str().unwrap(), b"sRGB");
+
+    // Verify metadata validation function passes
+    assert!(tex_core::pdffile::validate_pdfa_metadata(&e.pdf_doc).is_ok());
+    let cat_str = format!("{:?}", catalog);
+    assert!(cat_str.contains("OutputIntents"));
 }

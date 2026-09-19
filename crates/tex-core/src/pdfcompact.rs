@@ -6,6 +6,9 @@ pub(crate) fn serialize(
     packable: &[bool],
     catalog: usize,
     info: usize,
+    encrypt: Option<usize>,
+    file_id: Option<[u8; 16]>,
+    minor_version: Option<i32>,
 ) -> Vec<u8> {
     let packed: Vec<_> = objects
         .iter()
@@ -17,7 +20,9 @@ pub(crate) fn serialize(
     let xref_id = objects.len() + streams + 1;
     // type, byte offset or object-stream number, generation or stream index
     let mut xref = vec![(0u8, 0u64, 65535u16); xref_id + 1];
-    let mut out = b"%PDF-1.5\n%\xe2\xe3\xcf\xd3\n".to_vec();
+    let mv = minor_version.unwrap_or(5);
+    let mut out = format!("%PDF-1.{mv}\n%").into_bytes();
+    out.extend_from_slice(b"\xe2\xe3\xcf\xd3\n");
     let write_object =
         |out: &mut Vec<u8>, xref: &mut Vec<(u8, u64, u16)>, id: usize, body: &[u8]| {
             xref[id] = (1, out.len() as u64, 0);
@@ -65,7 +70,22 @@ pub(crate) fn serialize(
         entries.extend_from_slice(&generation.to_be_bytes());
     }
     let compressed = crate::pdffile::flate(&entries);
-    writeln!(out, "{xref_id} 0 obj\n<< /Type /XRef /Size {} /W [1 8 2] /Root {catalog} 0 R /Info {info} 0 R /Length {} /Filter /FlateDecode >>\nstream", xref_id + 1, compressed.len()).unwrap();
+    let mut xref_dict = format!(
+        "{xref_id} 0 obj\n<< /Type /XRef /Size {} /W [1 8 2] /Root {catalog} 0 R /Info {info} 0 R",
+        xref_id + 1
+    );
+    if let Some(enc) = encrypt {
+        xref_dict.push_str(&format!(" /Encrypt {enc} 0 R"));
+    }
+    if let Some(fid) = file_id {
+        let hex_id: String = fid.iter().map(|b| format!("{:02X}", b)).collect();
+        xref_dict.push_str(&format!(" /ID [<{hex_id}> <{hex_id}>]"));
+    }
+    xref_dict.push_str(&format!(
+        " /Length {} /Filter /FlateDecode >>\nstream",
+        compressed.len()
+    ));
+    writeln!(out, "{xref_dict}").unwrap();
     out.extend_from_slice(&compressed);
     write!(out, "\nendstream\nendobj\nstartxref\n{startxref}\n%%EOF\n").unwrap();
     out
@@ -87,7 +107,7 @@ mod tests {
         objects[206] = Some(b"<< /Length 3 >>\nstream\nabc\nendstream".to_vec());
         let mut packable = vec![true; objects.len()];
         packable[206] = false;
-        let bytes = serialize(&objects, &packable, 1, 5);
+        let bytes = serialize(&objects, &packable, 1, 5, None, None, None);
         let doc = lopdf::Document::load_mem(&bytes).unwrap();
         assert_eq!(
             doc.catalog()
@@ -121,9 +141,14 @@ pub(crate) fn serialize_compatible(
     objects: &[Option<Vec<u8>>],
     catalog: usize,
     info: usize,
+    encrypt: Option<usize>,
+    file_id: Option<[u8; 16]>,
+    minor_version: Option<i32>,
 ) -> Vec<u8> {
     // ---- assemble file
-    let mut buf = b"%PDF-1.5\n%\xe2\xe3\xcf\xd3\n".to_vec();
+    let mv = minor_version.unwrap_or(5);
+    let mut buf = format!("%PDF-1.{mv}\n%").into_bytes();
+    buf.extend_from_slice(b"\xe2\xe3\xcf\xd3\n");
     let mut offsets = vec![0usize; objects.len() + 1];
     for (i, obj) in objects.iter().enumerate() {
         let Some(bytes) = obj else { continue };
@@ -143,15 +168,20 @@ pub(crate) fn serialize_compatible(
             buf.extend_from_slice(format!("{:010} 00000 n \n", off).as_bytes());
         }
     }
-    buf.extend_from_slice(
-        format!(
-            "trailer\n<< /Size {} /Root {} 0 R /Info {} 0 R >>\nstartxref\n{}\n%%EOF\n",
-            n + 1,
-            catalog,
-            info,
-            xref_pos
-        )
-        .as_bytes(),
+    let mut trailer = format!(
+        "trailer\n<< /Size {} /Root {} 0 R /Info {} 0 R",
+        n + 1,
+        catalog,
+        info
     );
+    if let Some(enc) = encrypt {
+        trailer.push_str(&format!(" /Encrypt {enc} 0 R"));
+    }
+    if let Some(fid) = file_id {
+        let hex_id: String = fid.iter().map(|b| format!("{:02X}", b)).collect();
+        trailer.push_str(&format!(" /ID [<{hex_id}> <{hex_id}>]"));
+    }
+    trailer.push_str(&format!(" >>\nstartxref\n{}\n%%EOF\n", xref_pos));
+    buf.extend_from_slice(trailer.as_bytes());
     buf
 }

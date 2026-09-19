@@ -40,6 +40,7 @@ struct ActiveNode {
     start_fsh: i64,
     left_prot: i32,
     prev: Option<Rc<ActiveNode>>,
+    pub ratio: i32,
 }
 
 fn char_protrusion_width(
@@ -671,6 +672,8 @@ impl Engine {
     ) -> Option<Rc<ActiveNode>> {
 
         let n = list.len();
+        let pdf_adjust =
+            self.eqtb.int_params[crate::prim::IntParam::PdfAdjustSpacing.idx() as usize];
         // cumulative measurements; discs contribute their no_break text and
         let mut cum_w = vec![0i64; n + 1];
         let mut cum_st = vec![[0i64; 4]; n + 1];
@@ -683,8 +686,7 @@ impl Engine {
         let mut shrink_steps = 0i64;
         {
             let fonts = crate::boxes::eqtb_fonts(&self.eqtb);
-            let pdf_adjust =
-                self.eqtb.int_params[crate::prim::IntParam::PdfAdjustSpacing.idx() as usize];
+
             let mut record_expansion = |font: u16| {
                 if pdf_adjust >= 2 && (stretch_steps == 0 || shrink_steps == 0) {
                     let ex = &self.eqtb.expand[font as usize];
@@ -858,6 +860,7 @@ impl Engine {
             start_fsh: 0,
             left_prot: start_left_prot,
             prev: None,
+            ratio: 0,
         });
         let mut actives: Vec<Rc<ActiveNode>> = vec![start];
         // tex.web §25121–25133: easy_line is last_special_line (looseness
@@ -881,7 +884,7 @@ impl Engine {
                 let btype: BreakType = $btype;
                 let penalty: i32 = $penalty;
                 let endw: i64 = $endw;
-                let mut champions: HashMap<(i32, usize), (i64, Rc<ActiveNode>)> = HashMap::new();
+                let mut champions: HashMap<(i32, usize), (i64, Rc<ActiveNode>, i32)> = HashMap::new();
                 let mut idx = 0usize;
                 while idx < actives.len() {
                     let a = actives[idx].clone();
@@ -948,19 +951,65 @@ impl Engine {
                     let mut shortfall = target - width + (a.left_prot + right_prot) as i64;
                     // pdftex.web: retain half an expansion step when the
                     // available font adjustment exceeds the shortfall.
-                    if shortfall > 0 && font_st > 0 {
+                    let cur_ratio = if pdf_adjust >= 2 && shortfall > 0 && font_st > 0 {
+                        let raw_ratio = (crate::boxes::divide_scaled(shortfall, font_st, 3).0).clamp(0, 1000) as i32;
+                        let line_st_steps = {
+                            let mut steps = 0i64;
+                            for node in &list[a.pos..cand.min(n)] {
+                                if let Node::Char { font, .. } | Node::Ligature { font, .. } = node {
+                                    let ex = &self.eqtb.expand[*font as usize];
+                                    if ex.step > 0 && ex.stretch != 0 {
+                                        let r = self.eqtb.expand[ex.stretch as usize].ratio;
+                                        if r > 0 {
+                                            steps = (r / ex.step) as i64;
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                            if steps == 0 { stretch_steps } else { steps }
+                        };
                         shortfall = if font_st > shortfall {
-                            (font_st / stretch_steps) / 2
+                            if line_st_steps > 0 {
+                                (font_st / line_st_steps) / 2
+                            } else {
+                                0
+                            }
                         } else {
                             shortfall - font_st
                         };
-                    } else if shortfall < 0 && font_sh > 0 {
+                        raw_ratio
+                    } else if pdf_adjust >= 2 && shortfall < 0 && font_sh > 0 {
+                        let raw_ratio = (crate::boxes::divide_scaled(shortfall, font_sh, 3).0).clamp(-1000, 0) as i32;
+                        let line_sh_steps = {
+                            let mut steps = 0i64;
+                            for node in &list[a.pos..cand.min(n)] {
+                                if let Node::Char { font, .. } | Node::Ligature { font, .. } = node {
+                                    let ex = &self.eqtb.expand[*font as usize];
+                                    if ex.step > 0 && ex.shrink != 0 {
+                                        let r = -self.eqtb.expand[ex.shrink as usize].ratio;
+                                        if r > 0 {
+                                            steps = (r / ex.step) as i64;
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                            if steps == 0 { shrink_steps } else { steps }
+                        };
                         shortfall = if font_sh > -shortfall {
-                            -(font_sh / shrink_steps) / 2
+                            if line_sh_steps > 0 {
+                                -(font_sh / line_sh_steps) / 2
+                            } else {
+                                0
+                            }
                         } else {
                             shortfall + font_sh
                         };
-                    }
+                        raw_ratio
+                    } else {
+                        0
+                    };
                     let (b, fit) = if shortfall == 0 {
                         (0, DECENT)
                     } else if shortfall > 0 {
@@ -1015,9 +1064,9 @@ impl Engine {
                             // minimal_demerits. Rust scans this class in
                             // active-list order, so an equal candidate must
                             // replace the current champion.
-                            Some((best_d, _)) if *best_d < d => {}
+                            Some((best_d, _, _)) if *best_d < d => {}
                             _ => {
-                                champions.insert(key, (d, a.clone()));
+                                champions.insert(key, (d, a.clone(), cur_ratio));
                             }
                         }
                     }
@@ -1025,7 +1074,7 @@ impl Engine {
                     if hopeless || forced {
 
                         if final_pass && champions.is_empty() && is_only {
-                            champions.insert((a.line + 1, DECENT), (a.demerits, a.clone()));
+                            champions.insert((a.line + 1, DECENT), (a.demerits, a.clone(), 0));
                         }
                         actives.remove(idx);
                         continue;
@@ -1044,7 +1093,7 @@ impl Engine {
                 const AWFUL_BAD: i64 = (1 << 30) - 1;
                 let adj = params.adj_demerits as i64;
                 let mut group_min: HashMap<i32, i64> = HashMap::new();
-                for (key, (d, _)) in &champions {
+                for (key, (d, _, _)) in &champions {
                     let e = group_min.entry(key.0).or_insert(AWFUL_BAD);
                     if *d < *e {
                         *e = *d;
@@ -1052,7 +1101,7 @@ impl Engine {
                 }
                 let mut keys: Vec<_> = champions
                     .iter()
-                    .filter(|((cls, _), (d, _))| {
+                    .filter(|((cls, _), (d, _, _))| {
                         let m = group_min[cls];
                         let cutoff = if adj.abs() >= AWFUL_BAD - m {
                             AWFUL_BAD - 1
@@ -1067,7 +1116,7 @@ impl Engine {
                 let mut new_nodes: Vec<((i32, usize), Rc<ActiveNode>)> =
                     Vec::with_capacity(keys.len());
                 for key in keys {
-                    let (d, prev) = &champions[&key];
+                    let (d, prev, ratio) = &champions[&key];
                     let (start_w, start_st, start_sh, start_fst, start_fsh) = start_state(
                         list,
                         &after_prune,
@@ -1103,6 +1152,7 @@ impl Engine {
                             start_fsh,
                             left_prot,
                             prev: Some(prev.clone()),
+                            ratio: *ratio,
                         }),
                     ));
                 }

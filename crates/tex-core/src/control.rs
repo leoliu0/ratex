@@ -184,7 +184,7 @@ impl Engine {
                     if !matches!(
                         p,
                         Prim::Font
-                            | Prim::LetterspaceFont
+                            | Prim::Letterspacefont
                             | Prim::PdfFontExpand
                             | Prim::PdfNoLigatures
                             | Prim::TextFont

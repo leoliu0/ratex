@@ -689,6 +689,7 @@ impl Engine {
             r
         }
     }
+    #[cfg(not(target_arch = "wasm32"))]
     fn local_clock() -> (i32, i32, i32, i32) {
         let mut t: libc::time_t = 0;
         let mut tm: libc::tm = unsafe { std::mem::zeroed() };
@@ -751,29 +752,16 @@ impl Engine {
             IntParam::Time | IntParam::Day | IntParam::Month | IntParam::Year => {
                 // TeX Live / Web2C §241: \time, \day, \month, \year are initialized
                 // from system local time (or SOURCE_DATE_EPOCH in UTC when set).
-                let (year, month, day, time_mins) =
-                    if let Ok(s) = std::env::var("SOURCE_DATE_EPOCH") {
-                        if let Ok(epoch) = s.trim().parse::<i64>() {
-                            let mut tm: libc::tm = unsafe { std::mem::zeroed() };
-                            let t = epoch as libc::time_t;
-                            unsafe {
-                                #[cfg(unix)]
-                                libc::gmtime_r(&t, &mut tm);
-                                #[cfg(windows)]
-                                libc::gmtime_s(&mut tm, &t);
-                            }
-                            (
-                                tm.tm_year + 1900,
-                                tm.tm_mon + 1,
-                                tm.tm_mday,
-                                tm.tm_hour * 60 + tm.tm_min,
-                            )
-                        } else {
-                            Self::local_clock()
-                        }
-                    } else {
-                        Self::local_clock()
-                    };
+                let (year, month, day, time_mins) = if let Some(epoch) = tex_kpse::fs::epoch() {
+                    crate::clock::utc(epoch as i64)
+                } else if let Some(epoch) = std::env::var("SOURCE_DATE_EPOCH").ok().and_then(|s| s.trim().parse().ok()) {
+                    crate::clock::utc(epoch)
+                } else {
+                    #[cfg(not(target_arch = "wasm32"))]
+                    { Self::local_clock() }
+                    #[cfg(target_arch = "wasm32")]
+                    { crate::clock::utc(0) }
+                };
                 match p {
                     IntParam::Time => time_mins,
                     IntParam::Day => day,

@@ -80,6 +80,7 @@ impl Engine {
     /// (full PFB, no subsetting) and rewrite page font references from
     /// engine font ids to document font indices.
     pub fn embed_used_fonts(&mut self) {
+        self.pdf_doc.minor_version = Some(self.eqtb.int_params[crate::prim::IntParam::PdfMinorVersion.idx() as usize]);
         use std::collections::BTreeSet;
         let mut used: BTreeSet<u16> = BTreeSet::new();
         for fonts in self
@@ -110,7 +111,7 @@ impl Engine {
                 );
             }
             let pfb_bytes = match pfb_path {
-                Some(path) => match std::fs::read(&path) {
+                Some(path) => match tex_kpse::fs::read(&path) {
                     Ok(bytes) => {
                         self.record_loaded_bytes(&path, &bytes);
                         self.loaded_files.push(path);

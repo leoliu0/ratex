@@ -27,6 +27,7 @@ pub(crate) fn main() -> ExitCode {
         "xelatex" => (Some("engine"), Some("xelatex")),
         "lualatex" => (Some("engine"), Some("lualatex")),
         "tex-bibtex" | "bibtex" => (Some("bibtex"), None),
+        "latexdiff" => (Some("latexdiff"), None),
         "ratex" | "latexmk" => (None, None),
         _ => {
             eprintln!(

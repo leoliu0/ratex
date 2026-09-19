@@ -5,7 +5,11 @@ mod allocator;
 #[global_allocator]
 static GLOBAL: allocator::EngineAllocator = allocator::EngineAllocator;
 
+#[cfg(test)]
+use tex_core::driver::png_embed_options;
 /// Precompiled format containing standard LaTeX packages baked directly into the binary.
+use tex_core::driver::{finalize_format_load, install_pdftex_config_registers};
+
 static EMBEDDED_DEFAULT_FMT: &[u8] = include_bytes!("../../assets/default.fmt.zst");
 const DEPCACHE_MAX_BYTES: u64 = 512 * 1024 * 1024;
 const DEPCACHE_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(30 * 24 * 60 * 60);
@@ -1459,7 +1463,6 @@ fn maybe_gc_depcache(directory: &std::path::Path, current: &std::path::Path) {
 }
 
 use tex_core::engine::{Engine, InteractionMode, DEFAULT_MAX_ERRORS};
-use tex_core::pdffile;
 use tex_core::prim::{DimParam, IntParam};
 
 #[cfg(unix)]
@@ -1572,19 +1575,6 @@ fn configure_engine(
     engine.max_errors = max_errors;
 }
 
-fn png_embed_options(
-    optimize_pdf_size: bool,
-    requested_level: u32,
-) -> tex_core::pdf_images::PngEmbedOptions {
-    if optimize_pdf_size {
-        tex_core::pdf_images::PngEmbedOptions::size(requested_level.min(9))
-    } else {
-        // Level 3 is the measured throughput/size knee. Higher levels belong
-        // to the explicit size path, where the extra trials are intentional.
-        tex_core::pdf_images::PngEmbedOptions::speed(requested_level.min(3))
-    }
-}
-
 fn emit_transcript(engine: &Engine) {
     if !engine.term.is_empty() {
         print!("{}", engine.term);
@@ -1622,25 +1612,6 @@ fn format_boot_failure(engine: &Engine) -> Option<FormatBootFailure> {
 /// pdftexconfig.tex assigns these legacy pdfTeX integer controls before
 /// latex.ltx builds the format. The core does not otherwise use their values,
 /// so stable count-register aliases provide the required assignable behavior.
-fn install_pdftex_config_registers(engine: &mut Engine) {
-    for (name, register) in [
-        (b"pdfdecimaldigits" as &[u8], 250),
-        (b"pdfpkresolution" as &[u8], 251),
-        (b"synctex" as &[u8], 252),
-        (b"pdftracingfonts" as &[u8], 256),
-        (b"pdfdraftmode" as &[u8], 257),
-    ] {
-        let id = engine.cs.intern(name);
-        if matches!(
-            engine.eqtb.get(id),
-            None | Some(tex_core::eqtb::Equiv::Prim(tex_core::prim::Prim::Relax))
-        ) {
-            engine
-                .eqtb
-                .assign(id, tex_core::eqtb::Equiv::CountReg(register), true);
-        }
-    }
-}
 
 fn write_early_transcript(engine: &Engine, out_dir: &str, job: &str) -> Result<String, String> {
     let path = format!("{out_dir}{job}.log");
@@ -1731,6 +1702,7 @@ pub(crate) fn main() {
     let mut halt_on_error = false;
     let mut interaction_mode = InteractionMode::ErrorStop;
     let mut max_errors = DEFAULT_MAX_ERRORS;
+    let mut synctex_enabled = true; // Enabled by default
     let mut i = 1;
     while i < args.len() {
         if args[i] == "--" {
@@ -1848,6 +1820,17 @@ pub(crate) fn main() {
                 .unwrap_or_else(|| {
                     usage_error(&program, "--max-errors requires a positive integer")
                 });
+        } else if matches!(args[i].as_str(), "-synctex" | "--synctex") {
+            i += 1;
+            let Some(value) = args.get(i) else {
+                usage_error(&program, "-synctex requires a value (1 or 0)");
+            };
+            synctex_enabled = value != "0" && value != "off" && value != "false";
+        } else if let Some(val) = args[i]
+            .strip_prefix("-synctex=")
+            .or_else(|| args[i].strip_prefix("--synctex="))
+        {
+            synctex_enabled = val != "0" && val != "off" && val != "false";
         } else if matches!(
             args[i].as_str(),
             "-file-line-error" | "-file-line-error-style" | "-no-shell-escape"
@@ -1919,10 +1902,17 @@ pub(crate) fn main() {
     );
     let expected_pdf = std::path::PathBuf::from(format!("{}{}.pdf", out_dir, job));
     let expected_log = std::path::PathBuf::from(format!("{}{}.log", aux_dir, job));
-    let outputs_missing_at_start: Vec<_> = [expected_pdf.clone(), expected_log.clone()]
-        .into_iter()
-        .filter(|path| !path.is_file())
-        .collect();
+    let expected_synctex =
+        synctex_enabled.then(|| std::path::PathBuf::from(format!("{}{}.synctex.gz", out_dir, job)));
+    let outputs_missing_at_start: Vec<_> = [
+        Some(expected_pdf.clone()),
+        Some(expected_log.clone()),
+        expected_synctex,
+    ]
+    .into_iter()
+    .flatten()
+    .filter(|path| !path.is_file())
+    .collect();
     if !plain && !ini {
         if let Some(pdf_size) = check_depcache(
             &private_cache,
@@ -1953,6 +1943,7 @@ pub(crate) fn main() {
     let mut eng = Engine::new(ini || !plain);
     eng.init_primitives();
     eng.allow_missing_main_aux = !plain && !ini;
+    eng.synctex_enabled = synctex_enabled;
     configure_engine(&mut eng, halt_on_error, interaction_mode, max_errors);
     phase_timer.mark("startup");
     eng.out_dir = out_dir.clone();
@@ -2090,77 +2081,8 @@ pub(crate) fn main() {
                 );
             }
         }
-        // The format is settled (loaded or just dumped); the user file runs in
-        // production mode, so a stray \dump cannot end the job silently.
-        eng.ini_mode = false;
-        eng.end_occurred = false;
-        eng.explicit_end_seen = false;
-        eng.reset_job_diagnostics();
-        eng.main_steps = 0;
-        eng.expansion_steps = 0;
-        eng.term.clear();
-        eng.log.clear();
-        eng.input.clear_sources();
+        tex_core::driver::prepare_latex_job(&mut eng);
         configure_engine(&mut eng, halt_on_error, interaction_mode, max_errors);
-        // (tex.web §372). color.cfg then takes the luatex branch.
-        // pdfTeX identity: those names must compare \\ifx-equal \\@undefined.
-        for name in [
-            b"luatexversion" as &[u8],
-            b"luatexrevision",
-            b"luatexbanner",
-            b"directlua",
-            b"outputmode",
-            b"tex_luatexversion:D",
-            b"tex_directlua:D",
-            b"XeTeXversion",
-            b"XeTeXrevision",
-            b"XeTeXfonttype",
-            b"XeTeXglyph",
-            b"XeTeXglyphindex",
-            b"XeTeXglyphname",
-            b"XeTeXpicfile",
-            b"XeTeXpdffile",
-            b"xetexversion",
-            b"xetexrevision",
-        ] {
-            if let Some(id) = eng.cs.lookup(name) {
-                eng.eqtb.undefine(id, true);
-            }
-        }
-        if let Some(id) = eng.cs.lookup(b"undefined") {
-            eng.eqtb.undefine(id, true);
-        }
-        let lang = eng.cs.intern(b"languagename");
-        if eng.eqtb.get(lang).is_none() {
-            eng.eqtb.assign(
-                lang,
-                tex_core::eqtb::Equiv::Macro(std::rc::Rc::new(tex_core::eqtb::Macro {
-                    replacement: Default::default(),
-                    num_params: 0,
-                    has_param_refs: false,
-                    params: vec![],
-                    prefix: vec![],
-                    body: b"english"
-                        .iter()
-                        .map(|&c| tex_core::token::Token::letter(c))
-                        .collect::<Vec<_>>()
-                        .into(),
-                    long: false,
-                    outer: false,
-                    protected: false,
-                })),
-                true,
-            );
-        }
-        let sp = eng.cs.intern(b" ");
-        if eng.eqtb.get(sp).is_none() {
-            eng.eqtb.assign(
-                sp,
-                tex_core::eqtb::Equiv::Prim(tex_core::prim::Prim::ExSpace),
-                true,
-            );
-        }
-        install_pdftex_config_registers(&mut eng);
     } else {
         let _ = eng.hyphen_trie.load_hyphen_file(std::path::Path::new(
             "/usr/share/texmf-dist/tex/generic/hyphen/hyphen.tex",
@@ -2196,54 +2118,7 @@ pub(crate) fn main() {
     if eng.input_file(&file) {
         // Knuth: everyjob is inserted on top of the * file so it runs first.
         if !plain && !ini {
-            // Format \\everyjob contains \\directlua{...}. Install the
-            // swallow-group stub for that, then \\let it to \\@undefined
-            // so color.cfg / iftex see a pdfTeX engine.
-            let dl = eng.cs.intern(b"directlua");
-            eng.eqtb.assign(
-                dl,
-                tex_core::eqtb::Equiv::Prim(tex_core::prim::Prim::DirectLua),
-                true,
-            );
-            if let Some(let_id) = eng.cs.lookup(b"let") {
-                let undef = eng.cs.intern(b"@undefined");
-                eng.push_tokens_named(
-                    vec![
-                        tex_core::token::Token::from_cs(let_id),
-                        tex_core::token::Token::from_cs(dl),
-                        tex_core::token::Token::from_cs(undef),
-                    ],
-                    "<pdftex-not-luatex>",
-                );
-            }
-            if let Some(def_id) = eng.cs.lookup(b"def") {
-                // xcolor `\\providecommand*\\rangeRGB{255}` is a no-op if
-                // the name was csname-poisoned to \\relax; force pdfTeX
-                // defaults so \\ifnum\\rangeRGB=255 takes the RGB driver.
-                for (name, body) in [
-                    (b"rangeRGB" as &[u8], b"255" as &[u8]),
-                    (b"rangeHSB", b"240"),
-                    (b"rangeHsb", b"360"),
-                    (b"rangeGray", b"15"),
-                ] {
-                    let id = eng.cs.intern(name);
-                    let mut toks = vec![
-                        tex_core::token::Token::from_cs(def_id),
-                        tex_core::token::Token::from_cs(id),
-                        tex_core::token::Token::char(1, b'{' as u32),
-                    ];
-                    for &b in body {
-                        toks.push(tex_core::token::Token::char(12, b as u32));
-                    }
-                    toks.push(tex_core::token::Token::char(2, b'}' as u32));
-                    eng.push_tokens_named(toks, "<pdftex-range>");
-                }
-            }
-            let ej =
-                (*eng.eqtb.tok_params[tex_core::prim::ToksParam::EveryJob.idx() as usize]).clone();
-            if !ej.is_empty() {
-                eng.push_tokens_named(ej, "<everyjob>");
-            }
+            tex_core::driver::insert_everyjob(&mut eng);
         }
         eng.run();
         eng.finish_job_diagnostics();
@@ -2326,210 +2201,17 @@ pub(crate) fn main() {
         }
     }
     if !eng.pdf_doc.pages.is_empty() {
-        // embed fonts used
-        use std::collections::BTreeSet;
-        let mut used: BTreeSet<u16> = BTreeSet::new();
-        for fonts in eng
-            .pdf_doc
-            .pages
-            .iter()
-            .map(|p| &p.fonts)
-            .chain(eng.pdf_doc.form_fonts.iter().map(|(_, fonts)| fonts))
-        {
-            for (fid, _) in fonts {
-                used.insert(*fid as u16);
-            }
-        }
-        let mut fidx: Vec<(u16, usize)> = Vec::new();
-        for (n, fid) in used.iter().enumerate() {
-            if let Some(font) = eng.eqtb.fonts.get(*fid as usize) {
-                let pfb_bytes = font
-                    .type1_path
-                    .as_ref()
-                    .and_then(|name| eng.font_loader.kpse.read(name, tex_kpse::Format::Type1));
-                let widths = (0..=255u8)
-                    .map(|c| {
-                        let w = font.char_width(c);
-                        if font.at_size != 0 {
-                            ((w as i64 * 10_000 + font.at_size as i64 / 2) / font.at_size as i64)
-                                as i32
-                        } else {
-                            0
-                        }
-                    })
-                    .collect();
-                let mut ef = pdffile::make_embed_font(
-                    font.map_fontname
-                        .clone()
-                        .unwrap_or_else(|| font.tfm_name.clone()),
-                    pfb_bytes.as_deref(),
-                    font.encoding.as_deref(),
-                    0,
-                    255,
-                    widths,
-                );
-                pdffile::set_font_usage(
-                    &mut ef,
-                    eng.pdf_doc
-                        .font_chars
-                        .get(&(*fid as usize))
-                        .copied()
-                        .unwrap_or([0; 4]),
-                );
-                if font.at_size != 0 {
-                    let to_units =
-                        |val: i32| -> f64 { (val as f64 * 1000.0 / font.at_size as f64).round() };
-                    let (ta, td, tc, ts) = tex_core::pdf_fonts::tfm_descriptor(font);
-                    let asc = to_units(font.char_height(b'd'));
-                    let cap = to_units(font.char_height(b'H'));
-                    let desc = -to_units(font.char_depth(b'p'));
-                    ef.ascent = if asc > 0.0 { asc } else { ta };
-                    ef.cap_height = if cap > 0.0 { cap } else { tc };
-                    ef.descent = if ef.ascent == 0.0 {
-                        0.0
-                    } else if desc != 0.0 {
-                        desc
-                    } else {
-                        td
-                    };
-                    if ef.ascent - ef.descent > 3000.0 {
-                        ef.descent = ef.ascent - 3000.0;
-                    }
-                    ef.stem_v = ts.max(100.0);
-                }
-                eng.pdf_doc.fonts.push(ef);
-                fidx.insert(n, (*fid, n));
-            }
-        }
-        // remap page font indices: pages reference engine font ids; convert to doc font index
-        for fonts in eng
-            .pdf_doc
-            .pages
-            .iter_mut()
-            .map(|p| &mut p.fonts)
-            .chain(eng.pdf_doc.form_fonts.iter_mut().map(|(_, fonts)| fonts))
-        {
-            for pf in fonts.iter_mut() {
-                if let Some(pos) = fidx.iter().find(|(fid, _)| *fid == pf.0 as u16) {
-                    pf.0 = pos.1;
-                }
-            }
-        }
-        phase_timer.mark("fonts");
-        // embed image XObjects
-        struct ImageJob<'a> {
-            object: i32,
-            mask: i32,
-            bytes: Vec<u8>,
-            path: &'a str,
-        }
-        fn embed_chunk(
-            jobs: &[ImageJob<'_>],
-            options: tex_core::pdf_images::PngEmbedOptions,
-        ) -> Result<Vec<tex_core::pdf_images::EmbeddedImage>, String> {
-            let mut objects = Vec::with_capacity(jobs.len().saturating_mul(2));
-            for job in jobs {
-                let mut next = job.mask;
-                let embedded = if job.bytes.starts_with(&[0xff, 0xd8]) {
-                    tex_core::pdf_images::embed_jpeg(&job.bytes, job.object)
-                        .map(|image| vec![image])
+        let pdf = match tex_core::driver::finish_pdf(&mut eng, optimize_pdf_size) {
+            Ok(pdf) => pdf,
+            Err(error) => {
+                let help = if error.starts_with("Unsupported or invalid image:") {
+                    "verify that each image is a supported, valid JPEG or PNG file"
                 } else {
-                    tex_core::pdf_images::embed_png_with_options(
-                        &job.bytes, job.object, &mut next, options,
-                    )
-                }
-                .ok_or_else(|| format!("Unsupported or invalid image: {}", job.path))?;
-                objects.extend(embedded);
-            }
-            Ok(objects)
-        }
-        let mut used_images: Vec<_> = eng
-            .pdf_images
-            .iter()
-            .filter(|(_, image)| image.used)
-            .map(|(object, image)| (*object, image.clone()))
-            .collect();
-        used_images.sort_unstable_by_key(|(object, _)| *object);
-        let compression_level =
-            eng.eqtb.int_params[IntParam::PdfCompressLevel.idx() as usize].clamp(0, 9) as u32;
-        let png_options = png_embed_options(optimize_pdf_size, compression_level);
-        let mut next_obj = eng.pdf_next_obj;
-        let mut jobs = Vec::with_capacity(used_images.len());
-        for (object, image) in &used_images {
-            // PDF page resources were imported while scanning \pdfximage.
-            if image.embedded {
-                continue;
-            }
-            let bytes = match std::fs::read(&image.path) {
-                Ok(bytes) => bytes,
-                Err(error) => fail_after_transcript(
-                    &mut eng,
-                    &log_path,
-                    &format!("Cannot read image `{}`: {error}", image.path),
-                    "check that the image still exists and is readable, then compile again",
-                ),
-            };
-            eng.record_loaded_bytes(std::path::Path::new(&image.path), &bytes);
-            let mask = next_obj;
-            if tex_core::pdf_images::png_needs_soft_mask(&bytes) {
-                next_obj = match next_obj.checked_add(1) {
-                    Some(value) => value,
-                    None => fail_after_transcript(
-                        &mut eng,
-                        &log_path,
-                        "PDF image object number overflow",
-                        "reduce the number of PDF objects or split the document into smaller parts",
-                    ),
+                    "check the document fonts and images"
                 };
+                fail_after_transcript(&mut eng, &log_path, &error, help)
             }
-            jobs.push(ImageJob {
-                object: *object,
-                mask,
-                bytes,
-                path: &image.path,
-            });
-        }
-        let workers = std::thread::available_parallelism()
-            .map_or(1, usize::from)
-            .min(8)
-            .min(jobs.len());
-        let embedded_result = if workers <= 1 {
-            embed_chunk(&jobs, png_options)
-        } else {
-            std::thread::scope(|scope| {
-                let handles: Vec<_> = jobs
-                    .chunks(jobs.len().div_ceil(workers))
-                    .map(|chunk| scope.spawn(move || embed_chunk(chunk, png_options)))
-                    .collect();
-                let mut objects = Vec::with_capacity(jobs.len().saturating_mul(2));
-                let mut error = None;
-                for handle in handles {
-                    match handle.join() {
-                        Ok(Ok(chunk)) => objects.extend(chunk),
-                        Ok(Err(message)) => error = Some(message),
-                        Err(_) => error = Some("Image embedding worker panicked".to_string()),
-                    }
-                }
-                match error {
-                    Some(message) => Err(message),
-                    None => Ok(objects),
-                }
-            })
         };
-        let embedded = match embedded_result {
-            Ok(embedded) => embedded,
-            Err(error) => fail_after_transcript(
-                &mut eng,
-                &log_path,
-                &error,
-                "verify that each image is a supported, valid JPEG or PNG file",
-            ),
-        };
-        for image in embedded {
-            eng.pdf_doc.objects.push((image.obj_num, image.bytes));
-        }
-        phase_timer.mark("images");
-        let pdf = pdffile::write_pdf(&eng.pdf_doc);
         phase_timer.mark("pdf_serialize");
         let out = format!("{}{}.pdf", eng.out_dir, job);
         if !eng.out_dir.is_empty() {
@@ -2542,6 +2224,12 @@ pub(crate) fn main() {
                 &format!("Cannot write PDF `{out}`: {error}"),
                 "check that the output directory exists, has free space, and is writable",
             );
+        }
+        if eng.synctex_enabled && !eng.synctex.pages.is_empty() {
+            let synctex_out = format!("{}{}.synctex.gz", eng.out_dir, job);
+            if let Ok(gz_bytes) = eng.synctex.to_synctex_gz() {
+                let _ = atomic_write_file(std::path::Path::new(&synctex_out), &gz_bytes);
+            }
         }
         phase_timer.mark("pdf_write");
         let pdf_len = std::fs::metadata(&out)
@@ -2600,104 +2288,15 @@ pub(crate) fn main() {
     }
 }
 
-fn finalize_format_load(eng: &mut Engine) {
-    install_pdftex_config_registers(eng);
-    // Real LaTeX starts each document with \baselineskip=0pt (tex.web §224);
-    // font sizes (\normalsize, etc.) set it when the document class is loaded.
-    eng.eqtb.glue_params[tex_core::prim::GlueParam::BaselineSkip.idx() as usize] =
-        tex_core::boxes::Glue::zero();
-    // Format images predating the italic-correction primitive
-    // stored LaTeX's `\@@italiccorr` as `\relax`. Rebind both
-    // names so loaded and freshly bootstrapped formats agree.
-    for name in [b"/" as &[u8], b"@@italiccorr"] {
-        let id = eng.cs.intern(name);
-        eng.eqtb.assign(
-            id,
-            tex_core::eqtb::Equiv::Prim(tex_core::prim::Prim::ItalicCorrection),
-            true,
-        );
-    }
-    for name in [b"pdfrandomseed" as &[u8], b"randomseed", b"tex_randomseed:D"] {
-        let id = eng.cs.intern(name);
-        eng.eqtb.assign(
-            id,
-            tex_core::eqtb::Equiv::Prim(tex_core::prim::Prim::PdfRandomSeed),
-            true,
-        );
-    }
-    for name in [b"pdfsetrandomseed" as &[u8], b"setrandomseed", b"tex_setrandomseed:D"] {
-        let id = eng.cs.intern(name);
-        eng.eqtb.assign(
-            id,
-            tex_core::eqtb::Equiv::Prim(tex_core::prim::Prim::PdfSetRandomSeed),
-            true,
-        );
-    }
-    // Compat shim for formats dumped before the
-    // active-char namespace split: their boot wrote the
-    // kernel tie to the hash slot, where encoding
-    // defaults (\DeclareTextAccentDefault) later
-    // clobbered it, so no usable tie survives on either
-    // slot. Synthesize latex.ltx:9414's protected tie
-    // directly on the active slot; no-op when the format
-    // already carries one (post-split dumps).
-    let act = eng
-        .cs
-        .intern(&tex_core::engine::Engine::active_cs_name(b'~'));
-    if eng.eqtb.get(act).is_none() {
-        let id_of = |eng: &tex_core::engine::Engine, name: &[u8]| eng.cs.lookup(name);
-        let tie: Option<tex_core::eqtb::Equiv> = {
-            let ifincs = id_of(eng, b"ifincsname");
-            let expafter = id_of(eng, b"expandafter");
-            let nobreak = id_of(eng, b"nobreakspace");
-            let fi = id_of(eng, b"fi");
-            match (ifincs, expafter, nobreak, fi) {
-                (Some(a), Some(b), Some(c), Some(d)) => {
-                    let body = vec![
-                        tex_core::token::Token::from_cs(a),
-                        tex_core::token::Token::from_cs(b),
-                        tex_core::token::Token::char(13, b'~' as u32),
-                        tex_core::token::Token::from_cs(d),
-                        tex_core::token::Token::from_cs(b),
-                        tex_core::token::Token::from_cs(c),
-                        tex_core::token::Token::from_cs(d),
-                    ];
-                    Some(tex_core::eqtb::Equiv::Macro(std::rc::Rc::new(
-                        tex_core::eqtb::Macro {
-                            replacement: Default::default(),
-                            num_params: 0,
-                            has_param_refs: false,
-                            params: Vec::new(),
-                            prefix: Vec::new(),
-                            body: body.into(),
-                            long: false,
-                            outer: false,
-                            protected: true,
-                        },
-                    )))
-                }
-                _ => None,
-            }
-        };
-        if let Some(eq) = tie {
-            eng.eqtb.assign(act, eq, true);
-        }
-    }
-    // tex.web §240: period is the null delimiter (code 0)
-    eng.eqtb.del_code[b'.' as usize] = 0;
-    // tex.web §1014: page_goal starts at max_dimen
-    eng.eqtb.dim_params[tex_core::prim::DimParam::PageGoal.idx() as usize] = 0x3FFF_FFFF;
-    eng.page_goal_set = false;
-}
-
 #[cfg(test)]
 mod startup_tests {
     use super::{
         authenticated_depcache_body, backtrace_requested, check_depcache, decode_record_path,
         dependency_fingerprint, dependency_name_may_match, effective_clock_identity_at,
-        encode_record_path, finalize_format_load, format_boot_failure, install_pdftex_config_registers,
-        png_embed_options, published_name_in_directory, seal_depcache_record, write_depcache,
-        DepcacheInputs, FormatBootFailure, DEPCACHE_RECORD_MAX_BYTES, EMBEDDED_DEFAULT_FMT,
+        encode_record_path, finalize_format_load, format_boot_failure,
+        install_pdftex_config_registers, png_embed_options, published_name_in_directory,
+        seal_depcache_record, write_depcache, DepcacheInputs, FormatBootFailure,
+        DEPCACHE_RECORD_MAX_BYTES, EMBEDDED_DEFAULT_FMT,
     };
     use std::ffi::OsStr;
     use tex_core::engine::Engine;
@@ -2828,10 +2427,7 @@ mod startup_tests {
             tex_core::format::load_format_from(EMBEDDED_DEFAULT_FMT).expect("embedded format");
         finalize_format_load(&mut engine);
 
-        for name in [
-            b"pdftracingfonts" as &[u8],
-            b"pdfdraftmode",
-        ] {
+        for name in [b"pdftracingfonts" as &[u8], b"pdfdraftmode"] {
             let id = engine
                 .cs
                 .lookup(name)
@@ -2867,12 +2463,20 @@ mod startup_tests {
                 matches!(engine.eqtb.get(id), Some(tex_core::eqtb::Equiv::Prim(p)) if *p == expected)
             );
         }
-        let undef_id = engine.cs.lookup(b"@undefined").expect("@undefined in format");
+        let undef_id = engine
+            .cs
+            .lookup(b"@undefined")
+            .expect("@undefined in format");
         assert!(engine.eqtb.get(undef_id).is_none());
-        let glue_id = engine.cs.lookup(b"pdfadjustinterwordglue").expect("pdfadjustinterwordglue");
+        let glue_id = engine
+            .cs
+            .lookup(b"pdfadjustinterwordglue")
+            .expect("pdfadjustinterwordglue");
         assert!(matches!(
             engine.eqtb.get(glue_id),
-            Some(tex_core::eqtb::Equiv::Prim(tex_core::prim::Prim::IntP(tex_core::prim::IntParam::PdfAdjustInterwordGlue)))
+            Some(tex_core::eqtb::Equiv::Prim(tex_core::prim::Prim::IntP(
+                tex_core::prim::IntParam::PdfAdjustInterwordGlue
+            )))
         ));
     }
     fn backtrace_zero_and_empty_disable_panic_backtraces() {

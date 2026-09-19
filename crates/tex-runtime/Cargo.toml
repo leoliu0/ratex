@@ -1,0 +1,12 @@
+[package]
+name = "tex-runtime"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+tex-core = { path = "../tex-core" }
+tex-kpse = { path = "../tex-kpse" }
+tex-bibtex = { path = "../tex-bibtex" }
+
+[dev-dependencies]
+lopdf = { version = "0.44.0", default-features = false }

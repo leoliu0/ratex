@@ -439,6 +439,7 @@ impl<'a> Interp<'a> {
         }
         if self.syms.contains_key(name) {
             self.log.warn(format!("duplicate function \"{name}\""));
+            return;
         }
         self.syms.insert(name.to_string(), Sym::Wiz(Rc::new(body)));
     }
@@ -634,7 +635,7 @@ impl<'a> Interp<'a> {
                     self.push(Lit::Empty, st);
                 } else {
                     let e = self.cur.unwrap();
-                    match &self.entries[e].fields[idx] {
+                    match self.entries[e].fields.get(idx).and_then(Option::as_ref) {
                         Some(v) => self.push(Lit::Str(v.clone()), st),
                         None => self.push(Lit::Missing, st),
                     }
@@ -2149,7 +2150,7 @@ pub fn format_name(fmt: &[u8], which: i64, list: &[u8]) -> String {
                         i += 1;
                     }
                 }
-                if end_of_group && to_be_written {
+                if end_of_group && to_be_written && part.is_some() {
                     // pass 2: output
                     let (mut cur, last) = part.unwrap();
                     let mut j = gstart;

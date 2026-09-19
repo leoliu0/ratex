@@ -1,6 +1,6 @@
 # Maintainer: Leo Liu <leoliu0@users.noreply.github.com>
 pkgname=ratex-bin
-pkgver=0.2.1
+pkgver=0.3.0
 pkgrel=1
 pkgdesc="Ultra-fast, pure-Rust TeX engine and complete self-contained typesetting suite"
 arch=('x86_64')

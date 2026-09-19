@@ -17,6 +17,8 @@
 mod embedded_bibtex;
 #[path = "pdflatex.rs"]
 mod embedded_engine;
+#[path = "latexdiff.rs"]
+mod latexdiff;
 
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
@@ -58,12 +60,13 @@ enum CleanMode {
     All,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct Signals {
     rerun: bool,
     undef_refs: bool,
     undef_cites: bool,
     bbl_missing: bool,
+    user_warnings: Vec<String>,
 }
 
 struct Options {
@@ -834,6 +837,7 @@ fn ignored_state_file(path: &Path) -> bool {
         .is_some_and(|name| {
             name == ".lock"
                 || name == "manifest"
+                || name.ends_with(".synctex.gz")
                 || name.contains(".tmp-")
                 || name.ends_with(".tmp")
         })
@@ -1623,6 +1627,11 @@ impl Signals {
         self.undef_refs |= other.undef_refs;
         self.undef_cites |= other.undef_cites;
         self.bbl_missing |= other.bbl_missing;
+        for w in other.user_warnings {
+            if !self.user_warnings.contains(&w) {
+                self.user_warnings.push(w);
+            }
+        }
     }
 }
 
@@ -1640,6 +1649,7 @@ struct SignalScanner {
     bbl_marker: Vec<u8>,
     overlap: Vec<u8>,
     max_pattern_len: usize,
+    current_line_bytes: Vec<u8>,
     line_citation: bool,
     line_undefined: bool,
     line_no_file: bool,
@@ -1667,14 +1677,15 @@ impl SignalScanner {
             bbl_marker,
             overlap: Vec::with_capacity(max_pattern_len.saturating_sub(1)),
             max_pattern_len,
+            current_line_bytes: Vec::new(),
             line_citation: false,
             line_undefined: false,
             line_no_file: false,
             line_bbl: false,
         }
     }
-
     fn scan_fragment(&mut self, fragment: &[u8]) {
+        self.current_line_bytes.extend_from_slice(fragment);
         let mut window = Vec::with_capacity(self.overlap.len() + fragment.len());
         window.extend_from_slice(&self.overlap);
         window.extend_from_slice(fragment);
@@ -1696,6 +1707,24 @@ impl SignalScanner {
     fn finish_line(&mut self) {
         self.signals.undef_cites |= self.line_citation && self.line_undefined;
         self.signals.bbl_missing |= self.line_no_file && self.line_bbl;
+
+        let line_str = String::from_utf8_lossy(&self.current_line_bytes);
+        let trimmed = line_str.trim();
+        if trimmed.starts_with("LaTeX Warning: Reference")
+            || trimmed.starts_with("LaTeX Warning: Citation")
+            || trimmed.starts_with("LaTeX Warning: There were undefined")
+            || trimmed.starts_with("warning: Overfull \\hbox")
+            || trimmed.starts_with("warning: Underfull \\hbox")
+            || trimmed.starts_with("warning: Overfull \\vbox")
+            || trimmed.starts_with("Overfull \\hbox")
+            || trimmed.starts_with("Underfull \\hbox")
+            || trimmed.starts_with("Overfull \\vbox")
+        {
+            if !self.signals.user_warnings.contains(&trimmed.to_string()) {
+                self.signals.user_warnings.push(trimmed.to_string());
+            }
+        }
+        self.current_line_bytes.clear();
         self.line_citation = false;
         self.line_undefined = false;
         self.line_no_file = false;
@@ -2159,8 +2188,6 @@ fn extra_bibliography_dependency_path(
         .map(|path| std::fs::canonicalize(&path).unwrap_or(path))
 }
 
-
-
 fn bibliography_tool_identity() -> String {
     static IDENTITY: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     IDENTITY
@@ -2197,7 +2224,6 @@ fn embedded_bibliography_dependency(name: &str, format: tex_kpse::Format) -> boo
     };
     tex_kpse::has_embedded_package(&filename)
 }
-
 
 fn bibliography_signature(aux: &str, aux_dir: &Path, source_dir: &Path) -> u64 {
     let mut identity = bibliography_tool_identity();
@@ -2518,7 +2544,9 @@ fn convert_eps_figures(source_dir: &Path) {
 
     let mut dirs_to_visit = vec![source_dir.to_path_buf()];
     while let Some(dir) = dirs_to_visit.pop() {
-        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
         for entry in entries.flatten() {
             let path = entry.path();
             if path.is_dir() {
@@ -2561,7 +2589,6 @@ fn convert_eps_figures(source_dir: &Path) {
         }
     }
 }
-
 
 fn real_main() -> i32 {
     let argv: Vec<String> = std::env::args().collect();
@@ -3079,7 +3106,7 @@ fn real_main() -> i32 {
             bbl_missing: signals.bbl_missing || (bibdata && !bbl_path.is_file()),
             ..signals
         };
-        last_signals = Some(sig);
+        last_signals = Some(sig.clone());
         let snap_after = match strict_state_snapshot(&aux_dir) {
             Ok(snapshot) => snapshot,
             Err(error) => {
@@ -3249,6 +3276,9 @@ fn real_main() -> i32 {
                 eprintln!("texmk: warning: unresolved {kind} remain");
             }
         }
+        for w in &sig.user_warnings {
+            eprintln!("texmk: warning: {w}");
+        }
     }
     if child_cache_hit && !opt.keep_intermediates && !opt.keep_logs {
         // A validated engine cache hit guarantees that private aux state did
@@ -3299,7 +3329,16 @@ pub(crate) fn main() {
             return;
         }
         Ok("bibtex") => run_embedded_bibtex(),
+        Ok("latexdiff") => {
+            let args: Vec<String> = std::env::args().skip(1).collect();
+            std::process::exit(latexdiff::latexdiff_main(&args));
+        }
         _ => {}
+    }
+
+    let args: Vec<String> = std::env::args().collect();
+    if args.len() > 1 && args[1] == "latexdiff" {
+        std::process::exit(latexdiff::latexdiff_main(&args[2..]));
     }
 
     match invoked_name().as_str() {
@@ -3307,6 +3346,10 @@ pub(crate) fn main() {
         "xelatex" => run_embedded_engine("xelatex"),
         "lualatex" => run_embedded_engine("lualatex"),
         "bibtex" | "tex-bibtex" => run_embedded_bibtex(),
+        "latexdiff" => {
+            let diff_args = if args.len() > 1 { &args[1..] } else { &[] };
+            std::process::exit(latexdiff::latexdiff_main(diff_args));
+        }
         _ => std::process::exit(real_main()),
     }
 }

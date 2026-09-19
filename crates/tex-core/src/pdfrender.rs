@@ -447,6 +447,26 @@ impl Engine {
         // engine-level results
         ctx.eng.pdf_doc.outlines = ctx.eng.pdf_outlines.clone();
         ctx.eng.pdf_doc.pages_attr = ctx.eng.pdf_pages_attr.clone().into_bytes();
+        if ctx.eng.synctex_enabled {
+            let page_num = (ctx.eng.pdf_doc.pages.len() + 1) as u32;
+            for item in &ctx.display_list.items {
+                if let crate::boxes::DisplayItem::GlyphRun {
+                    x_bp,
+                    y_bp,
+                    source_file_id,
+                    source_line,
+                    ..
+                } = item
+                {
+                    if *source_file_id > 0 && *source_line > 0 {
+                        let x_sp = bp_to_sp(*x_bp);
+                        let y_from_top_bp = (h_bp - *y_bp).max(0.0);
+                        let y_sp = bp_to_sp(y_from_top_bp);
+                        ctx.eng.synctex.record_point(page_num, *source_file_id, *source_line, x_sp as i64, y_sp as i64);
+                    }
+                }
+            }
+        }
         PdfPage {
             content: {
                 ctx.end_text();
@@ -1486,6 +1506,13 @@ impl<'a> RenderCtx<'a> {
             false
         };
         if !merged {
+            let file_name = self.eng.input.current_file_name();
+            let line = self.eng.input.current_file_line();
+            let file_id = if file_name.is_empty() {
+                0
+            } else {
+                self.eng.synctex.get_or_register_file(&file_name)
+            };
             self.display_list.push(crate::boxes::DisplayItem::GlyphRun {
                 font: f,
                 x_bp,
@@ -1493,6 +1520,8 @@ impl<'a> RenderCtx<'a> {
                 glyphs: vec![c],
                 tag: None,
                 span: None,
+                source_file_id: file_id,
+                source_line: line,
             });
         }
     }

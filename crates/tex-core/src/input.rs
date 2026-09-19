@@ -551,14 +551,14 @@ impl InputStack {
 
     pub fn read_file(&mut self, path: &std::path::Path) -> std::io::Result<Rc<[u8]>> {
         let key = path.to_string_lossy().into_owned();
-        let meta = std::fs::metadata(path)?;
+        let meta = tex_kpse::fs::metadata(path)?;
         let stamp = meta.modified().ok().map(|mtime| (mtime, meta.len()));
         if stamp.is_some() && self.disk_stamps.get(&key).copied() == stamp {
             if let Some(bytes) = self.file_bytes.get(&key) {
                 return Ok(bytes.clone());
             }
         }
-        let bytes: Rc<[u8]> = std::fs::read(path)?.into();
+        let bytes: Rc<[u8]> = tex_kpse::fs::read(path)?.into();
         self.file_bytes.insert(key.clone(), bytes.clone());
         if let Some(stamp) = stamp {
             self.disk_stamps.insert(key, stamp);

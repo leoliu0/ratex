@@ -1859,7 +1859,7 @@ impl Engine {
                 }
                 let sz = resolved
                     .and_then(|path| {
-                        let metadata = std::fs::metadata(&path).ok()?;
+                        let metadata = tex_kpse::fs::metadata(&path).ok()?;
                         if !metadata.is_file() {
                             return None;
                         }
@@ -1990,7 +1990,7 @@ impl Engine {
                         .resolve_input_path(name.trim())
                         .or_else(|| self.font_loader.kpse.find_any(name.trim()))
                     {
-                        let Ok(data) = std::fs::read(&path) else {
+                        let Ok(data) = tex_kpse::fs::read(&path) else {
                             return None;
                         };
                         self.record_loaded_bytes(&path, &data);
@@ -2053,7 +2053,7 @@ impl Engine {
                     // cache can represent byte-range reads, fail closed rather
                     // than publishing a cache entry sampled after the pass.
                     self.font_loader.dependency_tracking_complete = false;
-                    let Ok(mut input) = std::fs::File::open(&path) else {
+                    let Ok(mut input) = tex_kpse::fs::File::open(&path) else {
                         return None;
                     };
                     if input.seek(SeekFrom::Start(offset as u64)).is_err() {

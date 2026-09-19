@@ -1979,3 +1979,41 @@ A citation~\cite{sample}.
     assert!(contains_file(&root.join("cache"), "main.bbl"));
     let _ = std::fs::remove_dir_all(root);
 }
+
+#[test]
+fn latexdiff_can_be_invoked_via_ratex_and_standalone() {
+    let old_tex = "\\begin{document}\nFirst version.\n\\end{document}";
+    let new_tex = "\\begin{document}\nSecond version.\n\\end{document}";
+
+    let root = std::env::temp_dir().join(format!("latexdiff-driver-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+
+    let old_file = root.join("old.tex");
+    let new_file = root.join("new.tex");
+    std::fs::write(&old_file, old_tex).unwrap();
+    std::fs::write(&new_file, new_tex).unwrap();
+
+    // Standalone latexdiff
+    let output = Command::new(env!("CARGO_BIN_EXE_latexdiff"))
+        .arg(&old_file)
+        .arg(&new_file)
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("\\DIFdel") && stdout.contains("\\DIFadd"));
+
+    // ratex latexdiff ...
+    let output2 = Command::new(env!("CARGO_BIN_EXE_ratex"))
+        .arg("latexdiff")
+        .arg(&old_file)
+        .arg(&new_file)
+        .output()
+        .unwrap();
+    assert!(output2.status.success());
+    let stdout2 = String::from_utf8_lossy(&output2.stdout);
+    assert!(stdout2.contains("\\DIFdel") && stdout2.contains("\\DIFadd"));
+
+    let _ = std::fs::remove_dir_all(&root);
+}

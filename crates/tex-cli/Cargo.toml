@@ -22,6 +22,10 @@ path = "src/bin/bibtex.rs"
 name = "texmk"
 path = "src/bin/texmk.rs"
 
+[[bin]]
+name = "latexdiff"
+path = "src/bin/latexdiff.rs"
+
 
 [[bin]]
 name = "ratex"
@@ -32,3 +36,4 @@ libmimalloc-sys = "0.1.49"
 libc = { workspace = true }
 tex-core = { path = "../tex-core" }
 tex-kpse = { path = "../tex-kpse" }
+tex-bibtex = { path = "../tex-bibtex" }

@@ -703,6 +703,238 @@ pub fn make_embed_font(
     }
 }
 
+// ---------------------------------------------------------------- encryption
+
+/// Configuration for standard PDF encryption (Standard security handler, /V 2, /R 3, 128-bit key).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PdfEncryptConfig {
+    pub user_password: Vec<u8>,
+    pub owner_password: Vec<u8>,
+    pub permissions: i32,
+    pub file_id: Option<[u8; 16]>,
+}
+
+impl PdfEncryptConfig {
+    pub fn new(user_password: impl AsRef<[u8]>, owner_password: impl AsRef<[u8]>) -> Self {
+        Self {
+            user_password: user_password.as_ref().to_vec(),
+            owner_password: owner_password.as_ref().to_vec(),
+            permissions: -4,
+            file_id: None,
+        }
+    }
+}
+
+impl Default for PdfEncryptConfig {
+    fn default() -> Self {
+        Self::new("", "")
+    }
+}
+
+/// Computed PDF standard encryption dictionary fields.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StandardEncryptionDict {
+    pub filter: &'static str,
+    pub v: i32,
+    pub r: i32,
+    pub length: i32,
+    pub p: i32,
+    pub o: [u8; 32],
+    pub u: [u8; 32],
+    pub file_encryption_key: [u8; 16],
+}
+
+impl StandardEncryptionDict {
+    pub fn to_pdf_dict(&self) -> String {
+        let hex_o: String = self.o.iter().map(|b| format!("{:02X}", b)).collect();
+        let hex_u: String = self.u.iter().map(|b| format!("{:02X}", b)).collect();
+        format!(
+            "<< /Filter /Standard /V {} /R {} /Length {} /P {} /O <{}> /U <{}> >>",
+            self.v, self.r, self.length, self.p, hex_o, hex_u
+        )
+    }
+}
+
+/// Standard 32-byte password padding string (ISO 32000-1 §7.6.3.3).
+pub const STANDARD_ENCRYPTION_PADDING: [u8; 32] = [
+    0x28, 0xBF, 0x4E, 0x5E, 0x4E, 0x75, 0x8A, 0x41,
+    0x64, 0x00, 0x4E, 0x56, 0xFF, 0xFA, 0x01, 0x08,
+    0x2E, 0x2E, 0x00, 0xB6, 0xD0, 0x68, 0x3E, 0x80,
+    0x2F, 0x0C, 0xA9, 0xFE, 0x64, 0x53, 0x69, 0x7A,
+];
+
+fn pad_password(pwd: &[u8]) -> [u8; 32] {
+    let mut out = [0u8; 32];
+    let len = pwd.len().min(32);
+    out[..len].copy_from_slice(&pwd[..len]);
+    if len < 32 {
+        out[len..].copy_from_slice(&STANDARD_ENCRYPTION_PADDING[..32 - len]);
+    }
+    out
+}
+
+struct Rc4 {
+    s: [u8; 256],
+    i: u8,
+    j: u8,
+}
+
+impl Rc4 {
+    fn new(key: &[u8]) -> Self {
+        assert!(!key.is_empty() && key.len() <= 256);
+        let mut s = [0u8; 256];
+        for (i, v) in s.iter_mut().enumerate() {
+            *v = i as u8;
+        }
+        let mut j: u8 = 0;
+        for i in 0..256 {
+            j = j.wrapping_add(s[i]).wrapping_add(key[i % key.len()]);
+            s.swap(i, j as usize);
+        }
+        Rc4 { s, i: 0, j: 0 }
+    }
+
+    fn apply(&mut self, data: &mut [u8]) {
+        for b in data.iter_mut() {
+            self.i = self.i.wrapping_add(1);
+            self.j = self.j.wrapping_add(self.s[self.i as usize]);
+            self.s.swap(self.i as usize, self.j as usize);
+            let k = self.s[(self.s[self.i as usize].wrapping_add(self.s[self.j as usize])) as usize];
+            *b ^= k;
+        }
+    }
+}
+
+/// Algorithm 3.3: Compute /O hash for Revision 3 (128-bit key) using MD5 and RC4.
+pub fn compute_o_hash(user_pwd: &[u8], owner_pwd: &[u8]) -> [u8; 32] {
+    let effective_owner = if owner_pwd.is_empty() {
+        user_pwd
+    } else {
+        owner_pwd
+    };
+    let padded_owner = pad_password(effective_owner);
+    let mut digest = md5::compute(&padded_owner).0;
+    for _ in 0..50 {
+        digest = md5::compute(&digest).0;
+    }
+    let key = &digest[..16];
+    let mut text = pad_password(user_pwd);
+    let mut rc4 = Rc4::new(key);
+    rc4.apply(&mut text);
+    for i in 1..=19u8 {
+        let mut round_key = [0u8; 16];
+        for k in 0..16 {
+            round_key[k] = key[k] ^ i;
+        }
+        let mut round_rc4 = Rc4::new(&round_key);
+        round_rc4.apply(&mut text);
+    }
+    text
+}
+
+/// Algorithm 3.2: Compute file encryption key for Revision 3 (128-bit key).
+pub fn compute_file_encryption_key(
+    user_pwd: &[u8],
+    o_hash: &[u8; 32],
+    permissions: i32,
+    file_id: &[u8],
+) -> [u8; 16] {
+    let padded_user = pad_password(user_pwd);
+    let p_bytes = (permissions as u32).to_le_bytes();
+    let mut ctx = md5::Context::new();
+    ctx.consume(&padded_user);
+    ctx.consume(o_hash);
+    ctx.consume(&p_bytes);
+    ctx.consume(file_id);
+    let mut digest = ctx.finalize().0;
+    for _ in 0..50 {
+        digest = md5::compute(&digest[..16]).0;
+    }
+    let mut key = [0u8; 16];
+    key.copy_from_slice(&digest[..16]);
+    key
+}
+
+/// Algorithm 3.5: Compute /U hash for Revision 3 (128-bit key) using MD5 and RC4.
+pub fn compute_u_hash(file_encryption_key: &[u8; 16], file_id: &[u8]) -> [u8; 32] {
+    let mut ctx = md5::Context::new();
+    ctx.consume(&STANDARD_ENCRYPTION_PADDING);
+    ctx.consume(file_id);
+    let mut u_digest = ctx.finalize().0;
+    let mut rc4 = Rc4::new(file_encryption_key);
+    rc4.apply(&mut u_digest);
+    for i in 1..=19u8 {
+        let mut round_key = [0u8; 16];
+        for k in 0..16 {
+            round_key[k] = file_encryption_key[k] ^ i;
+        }
+        let mut round_rc4 = Rc4::new(&round_key);
+        round_rc4.apply(&mut u_digest);
+    }
+    let mut u_val = [0u8; 32];
+    u_val[..16].copy_from_slice(&u_digest);
+    u_val
+}
+
+/// Generate standard PDF encryption dictionary (/V 2, /R 3, 128-bit key).
+pub fn generate_encryption_dictionary(
+    config: &PdfEncryptConfig,
+    file_id: &[u8; 16],
+) -> (StandardEncryptionDict, String) {
+    let o = compute_o_hash(&config.user_password, &config.owner_password);
+    let key = compute_file_encryption_key(
+        &config.user_password,
+        &o,
+        config.permissions,
+        file_id,
+    );
+    let u = compute_u_hash(&key, file_id);
+    let dict = StandardEncryptionDict {
+        filter: "Standard",
+        v: 2,
+        r: 3,
+        length: 128,
+        p: config.permissions,
+        o,
+        u,
+        file_encryption_key: key,
+    };
+    let dict_str = dict.to_pdf_dict();
+    (dict, dict_str)
+}
+
+// ---------------------------------------------------------------- PDF/A validation
+
+/// Validate PDF/A metadata: checks that if PDF/A compliance is requested,
+/// an /OutputIntents dictionary containing /OutputConditionIdentifier (sRGB) is present.
+pub fn validate_pdfa_metadata(doc: &PdfDoc) -> Result<(), String> {
+    let extra = String::from_utf8_lossy(&doc.catalog_extra);
+    let pdfa_requested = doc.pdfa
+        || extra.contains("/GTS_PDFA1")
+        || extra.contains("PDF/A")
+        || extra.contains("PDFA")
+        || doc
+            .minor_version
+            .is_some_and(|v| v <= 4 && (extra.contains("OutputIntent") || extra.contains("GTS_")));
+    if pdfa_requested && extra.contains("/OutputIntents") {
+        if !extra.contains("/OutputConditionIdentifier") || !extra.contains("sRGB") {
+            return Err("PDF/A validation error: /OutputIntents dictionary must contain /OutputConditionIdentifier (sRGB)".to_string());
+        }
+    }
+    Ok(())
+}
+
+/// Validate a catalog dictionary string for PDF/A /OutputIntents conformance tags.
+pub fn validate_pdfa_catalog(catalog_str: &str) -> Result<(), String> {
+    if !catalog_str.contains("/OutputIntents") {
+        return Err("PDF/A metadata validation failed: missing /OutputIntents in catalog".to_string());
+    }
+    if !catalog_str.contains("/OutputConditionIdentifier") || !catalog_str.contains("sRGB") {
+        return Err("PDF/A metadata validation failed: /OutputIntents must contain /OutputConditionIdentifier (sRGB)".to_string());
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------- serializer
 
 struct PdfBuilder {
@@ -1027,7 +1259,7 @@ pub fn write_pdf(doc: &PdfDoc) -> Vec<u8> {
             },
         ))
     };
-    if jobs.len() >= 4 && !crate::debug_flag("TEX_PDF_SERIAL") {
+    if !cfg!(target_arch = "wasm32") && jobs.len() >= 4 && !crate::debug_flag("TEX_PDF_SERIAL") {
         // At most three helper threads, with TeX's thread processing a share.
         let workers = std::thread::available_parallelism().map_or(1, |n| n.get().min(4));
         std::thread::scope(|scope| {
@@ -1422,6 +1654,17 @@ pub fn write_pdf(doc: &PdfDoc) -> Vec<u8> {
         );
     }
     let extra = String::from_utf8_lossy(&doc.catalog_extra);
+    let pdfa_requested = doc.pdfa
+        || extra.contains("/GTS_PDFA1")
+        || extra.contains("PDF/A")
+        || extra.contains("PDFA")
+        || doc
+            .minor_version
+            .is_some_and(|v| v <= 4 && (extra.contains("OutputIntent") || extra.contains("GTS_")));
+
+    if pdfa_requested && !extra.contains("/OutputIntents") {
+        cat.push_str(" /OutputIntents [ << /Type /OutputIntent /S /GTS_PDFA1 /OutputConditionIdentifier (sRGB) /Info (sRGB) >> ]");
+    }
     if !extra.trim().is_empty() {
         cat.push(' ');
         cat.push_str(&extra);
@@ -1429,12 +1672,33 @@ pub fn write_pdf(doc: &PdfDoc) -> Vec<u8> {
     cat.push_str(" >>");
     b.set(catalog_obj, cat);
 
+    let (encrypt_obj, file_id) = if let Some(enc_cfg) = &doc.encrypt {
+        let fid: [u8; 16] = enc_cfg.file_id.unwrap_or_else(|| {
+            let mut ctx = md5::Context::new();
+            if !doc.info.is_empty() {
+                ctx.consume(&doc.info);
+            } else {
+                ctx.consume(b"ratex-default-doc-id");
+            }
+            ctx.finalize().0
+        });
+        let (_enc_dict, dict_str) = generate_encryption_dictionary(enc_cfg, &fid);
+        let enc_obj = b.alloc();
+        b.set_bytes(enc_obj, dict_str.into_bytes());
+        (Some(enc_obj), Some(fid))
+    } else {
+        (None, None)
+    };
+
     // Raw extension objects can contain duplicate keys, uncompressed streams
     // and arbitrary syntax. Preserve the existing parser's normalization for
     // those documents, in memory, before writing the final file once.
     let normalize = !doc.objects.is_empty()
         || !doc.names_extra.is_empty()
         || !doc.pages_attr.is_empty()
+        || doc.encrypt.is_some()
+        || doc.pdfa
+        || doc.minor_version.is_some_and(|v| v <= 4)
         || ["/Type", "/Pages", "/Names", "/Outlines", "/OpenAction"]
             .iter()
             .any(|key| {
@@ -1452,9 +1716,24 @@ pub fn write_pdf(doc: &PdfDoc) -> Vec<u8> {
                 })
         });
     if normalize {
-        crate::pdfcompact::serialize_compatible(&b.objs, catalog_obj, info_obj)
+        crate::pdfcompact::serialize_compatible(
+            &b.objs,
+            catalog_obj,
+            info_obj,
+            encrypt_obj,
+            file_id,
+            doc.minor_version,
+        )
     } else {
-        crate::pdfcompact::serialize(&b.objs, &b.packable, catalog_obj, info_obj)
+        crate::pdfcompact::serialize(
+            &b.objs,
+            &b.packable,
+            catalog_obj,
+            info_obj,
+            encrypt_obj,
+            file_id,
+            doc.minor_version,
+        )
     }
 }
 
@@ -1534,9 +1813,9 @@ pub fn optimize_pdf_file(path: &str) {
         doc.compress();
         let mut modern_bytes = Vec::new();
         if doc.save_modern(&mut modern_bytes).is_ok() {
-            if let Ok(meta_old) = std::fs::metadata(path) {
+            if let Ok(meta_old) = tex_kpse::fs::metadata(path) {
                 if (modern_bytes.len() as u64) < meta_old.len() && !modern_bytes.is_empty() {
-                    let _ = std::fs::write(path, &modern_bytes);
+                    let _ = tex_kpse::fs::write(path, &modern_bytes);
                 }
             }
         }

@@ -2,6 +2,7 @@
 //! \message, \special, \show, \lowercase/\uppercase, \advance arithmetic.
 
 use crate::boxes::Node;
+use tex_kpse::fs::PathExt;
 use crate::engine::Engine;
 use crate::eqtb::Equiv;
 use crate::prim::Prim;
@@ -111,6 +112,17 @@ fn compatibility_input(name: &str) -> Option<&'static [u8]> {
     Some(match name {
         "language.dat" | "language.dat.lua" => b"english hyphen.tex\n",
         "hyphen.cfg" => b"\\chardef\\l@nohyphenation=255\n\\chardef\\l@english=0\n\\chardef\\l@USenglish=0\n\\def\\languagename{english}\n\\relax\n",
+        "graphics.cfg" => br"\ProvidesFile{graphics.cfg}[2026/01/01 v1.0 Ratex graphics configuration]
+\ExecuteOptions{pdftex}
+\AtEndOfPackage{
+  \@ifundefined{Gin@extensions}{}{
+    \edef\Gin@extensions{\Gin@extensions,.svg,.SVG}
+    \@namedef{Gin@rule@.svg}#1{{png}{.svg}{#1}}
+    \@namedef{Gin@rule@.SVG}#1{{png}{.SVG}{#1}}
+  }
+}
+\endinput
+",
         "fontspec.sty" => br"\ProvidesPackage{fontspec}[2026/01/01 v2.9 Rust compatibility stub]
 \def\@fontspec@gobbleopt[#1]{}
 \def\@fontspec@cmd{\@ifnextchar[{\@fontspec@opt}{\@fontspec@noopt}}
@@ -275,7 +287,16 @@ impl Engine {
             Some(p) => {
                 let key = p.to_string_lossy().into_owned();
                 let data = match self.input.read_file(&p) {
-                    Ok(bytes) => bytes,
+                    Ok(bytes) => {
+                        let is_pdftex_def = p.file_name().and_then(|f| f.to_str()).map_or(false, |s| s == "pdftex.def");
+                        if is_pdftex_def {
+                            let mut b = bytes.to_vec();
+                            b.extend_from_slice(b"\n\\@namedef{Gin@rule@.svg}#1{{png}{.svg}{#1}}\n\\@namedef{Gin@rule@.SVG}#1{{png}{.SVG}{#1}}\n\\edef\\Gin@extensions{\\Gin@extensions,.svg,.SVG}\n");
+                            std::rc::Rc::from(b.into_boxed_slice())
+                        } else {
+                            bytes
+                        }
+                    }
                     Err(e) => {
                         self.error_at(
                             &format!("Cannot read {}: {}", name, e),
@@ -370,18 +391,18 @@ impl Engine {
         }
         let requested = std::path::Path::new(name);
         let absolute = |path: std::path::PathBuf| {
-            std::fs::canonicalize(&path).unwrap_or_else(|_| {
+            tex_kpse::fs::canonicalize(&path).unwrap_or_else(|_| {
                 if path.is_absolute() {
                     path
                 } else {
-                    std::env::current_dir()
+                    tex_kpse::fs::current_dir()
                         .unwrap_or_else(|_| std::path::PathBuf::from("."))
                         .join(path)
                 }
             })
         };
         if requested.is_absolute() {
-            if requested.is_file() {
+            if requested.tex_is_file() {
                 self.loaded_files.push(absolute(requested.to_path_buf()));
                 return Some(requested.to_path_buf());
             }
@@ -391,7 +412,7 @@ impl Engine {
         if !requested.is_absolute() {
             if let Some(dir) = self.aux_dir.clone() {
                 for cand in [dir.join(name), dir.join(format!("{name}.tex"))] {
-                    if cand.is_file() {
+                    if cand.tex_is_file() {
                         self.loaded_files.push(absolute(cand.clone()));
                         return Some(cand);
                     }
@@ -403,7 +424,7 @@ impl Engine {
                     std::path::Path::new(&self.out_dir).join(name),
                     std::path::Path::new(&self.out_dir).join(format!("{name}.tex")),
                 ] {
-                    if cand.is_file() {
+                    if cand.tex_is_file() {
                         self.loaded_files.push(absolute(cand.clone()));
                         return Some(cand);
                     }
@@ -420,7 +441,7 @@ impl Engine {
         if !requested.is_absolute() {
             if let Some(dir) = self.main_dir.clone() {
                 for cand in [dir.join(name), dir.join(format!("{name}.tex"))] {
-                    if cand.is_file() {
+                    if cand.tex_is_file() {
                         self.loaded_files.push(absolute(cand.clone()));
                         return Some(cand);
                     }
@@ -431,7 +452,7 @@ impl Engine {
                     std::path::Path::new(name).to_path_buf(),
                     std::path::Path::new(&format!("{name}.tex")).to_path_buf(),
                 ] {
-                    if cand.is_file() {
+                    if cand.tex_is_file() {
                         self.loaded_files.push(absolute(cand.clone()));
                         return Some(cand);
                     }
@@ -624,7 +645,7 @@ impl Engine {
                 .parent()
                 .unwrap_or_else(|| std::path::Path::new(""));
             if !parent.as_os_str().is_empty() {
-                if let Err(error) = std::fs::create_dir_all(parent) {
+                if let Err(error) = tex_kpse::fs::create_dir_all(parent) {
                     self.error_at(
                         &format!(
                             "Cannot create output directory `{}` for \\openout{stream}: {error}",
@@ -636,7 +657,7 @@ impl Engine {
                 }
             }
         }
-        match std::fs::File::create(full) {
+        match tex_kpse::fs::File::create(full) {
             Ok(f) => {
                 self.input.invalidate_disk_files();
                 self.write_streams[idx] = Some(f);
@@ -921,7 +942,11 @@ impl Engine {
         }
         let path = self.resolve_input_path(&name);
         if let Some(p) = path {
-            if let Ok(bytes) = std::fs::read(&p) {
+            if let Ok(mut bytes) = tex_kpse::fs::read(&p) {
+                if name == "pdftex.def" {
+                    let rule_bytes = b"\n\\@namedef{Gin@rule@.svg}#1{{png}{.svg}{#1}}\n\\@namedef{Gin@rule@.SVG}#1{{png}{.SVG}{#1}}\n";
+                    bytes.extend_from_slice(rule_bytes);
+                }
                 self.record_loaded_bytes(&p, &bytes);
                 let is_empty = bytes.is_empty();
                 self.read_files[n as usize] = Some(Box::new(std::io::Cursor::new(bytes)));

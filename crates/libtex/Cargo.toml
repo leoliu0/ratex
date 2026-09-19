@@ -1,0 +1,11 @@
+[package]
+name = "libtex"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "tex"
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[dependencies]
+tex-runtime = { path = "../tex-runtime" }

@@ -23,15 +23,15 @@ Tested and verified against **3,000 real-world arXiv papers** across mathematics
 
 ## Key Features
 
+- **Sub-10ms Incremental Builds**: Built-in cryptographic dependency graph and auxiliary state validator enables near-instant rebuilds (0.8–8.2 ms) on document edits.
 - **100% Self-Contained**: Embeds the LaTeX format, over 24,000 packages, all AMS math symbols, and CJK (Chinese, Japanese, Korean) fonts directly in the binary. No external TeX Live installation needed.
-- **All-in-One Engine & Toolchain**: Combines the TeX engine, package resolver, BibTeX interpreter, SyncTeX generation, and build convergence into a single unified `ratex` command.
-- **Native SVG & Vector Graphics**: First-class support for `.svg` via pure-Rust in-memory rasterization directly in `\includegraphics`—no Inkscape or external shell execution required.
-- **Embedded C API (`libtex`) & WebAssembly (`tex.wasm`)**: Compile complete LaTeX documents in-memory from C/C++, Node.js, or client-side browser runtimes without spawning subprocesses or touching disk.
-- **Built-in `latexdiff`**: Integrated visual document diffing with `ratex latexdiff old.tex new.tex` computing word/token LCS differences and injecting standard revision markup.
+- **All-in-One Engine & Toolchain**: Combines the TeX engine, package resolver, BibTeX interpreter, and build convergence into a single unified `ratex` command.
 - **SyncTeX by Default**: Automatic `.synctex.gz` coordinate generation matching PDF boxes to source lines for instant forward/inverse search in VS Code, TeXstudio, VimTeX, and AUCTeX.
-- **Sub-10ms Incremental Builds**: Built-in cryptographic dependency graph and auxiliary state validator enables near-instant rebuilds on document edits.
-- **Memory-Safe Pure Rust**: Written with strict bounds checks, eliminating buffer overflows, segfaults, and memory corruption bugs common in legacy C TeX engines.
 - **Compiler-Grade Diagnostics**: Beautiful rustc-style error reporting with physical source line excerpts, underlines, and actionable fix suggestions streamed directly to the terminal.
+- **Native SVG & Vector Graphics**: First-class support for `.svg` via pure-Rust in-memory rasterization directly in `\includegraphics`—no Inkscape or external shell execution required.
+- **Built-in `latexdiff`**: Integrated visual document diffing with `ratex latexdiff old.tex new.tex` computing word/token LCS differences and injecting standard revision markup.
+- **Embedded C API (`libtex`) & WebAssembly (`tex.wasm`)**: Compile complete LaTeX documents in-memory from C/C++, Node.js, or client-side browser runtimes without spawning subprocesses or touching disk.
+- **Memory-Safe Pure Rust**: Written with strict bounds checks, eliminating buffer overflows, segfaults, and memory corruption bugs common in legacy C TeX engines.
 ---
 
 ## Installation

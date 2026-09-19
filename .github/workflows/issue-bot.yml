@@ -1,0 +1,165 @@
+name: Issue Assistant Bot
+
+on:
+  issues:
+    types: [opened]
+  issue_comment:
+    types: [created]
+
+permissions:
+  issues: write
+  contents: write
+  pull-requests: write
+
+jobs:
+  ai-triage-and-fix:
+    # Do not trigger on comments from bots or repo owner unless invoked with /fix or /test
+    if: >
+      github.event_name == 'issues' ||
+      (github.event_name == 'issue_comment' &&
+       !github.event.comment.user.login.endsWith('[bot]') &&
+       (contains(github.event.comment.body, '/fix') ||
+        contains(github.event.comment.body, '/reproduce') ||
+        contains(github.event.comment.body, '/test')))
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      # Extract code snippet from issue body and attempt reproduction with ratex
+      - name: Test TeX Reproduction Snippet
+        id: test-tex
+        run: |
+          python3 - << 'EOF'
+          import os, re, subprocess, json
+
+          event_path = os.environ.get("GITHUB_EVENT_PATH")
+          if not event_path or not os.path.exists(event_path):
+              exit(0)
+
+          with open(event_path) as f:
+              data = json.load(f)
+
+          body = ""
+          if "comment" in data:
+              body = data["comment"].get("body", "")
+          elif "issue" in data:
+              body = data["issue"].get("body", "")
+
+          # Extract ```tex or ```latex code blocks
+          snippets = re.findall(r'```(?:tex|latex)?\s*([\s\S]*?)```', body)
+          if not snippets:
+              # Fallback: check if body itself looks like a tex document
+              if "\\documentclass" in body:
+                  snippets = [body]
+
+          if snippets:
+              tex_code = snippets[0].strip()
+              os.makedirs("/tmp/reproduce", exist_ok=True)
+              with open("/tmp/reproduce/test.tex", "w") as f:
+                  f.write(tex_code)
+              print("FOUND_SNIPPET=true")
+              with open(os.environ["GITHUB_OUTPUT"], "a") as out:
+                  out.write("has_snippet=true\n")
+          else:
+              print("NO_SNIPPET=true")
+              with open(os.environ["GITHUB_OUTPUT"], "a") as out:
+                  out.write("has_snippet=false\n")
+          EOF
+
+      # If snippet was found, compile ratex and test reproduction
+      - name: Compile and Test Reproduction
+        if: steps.test-tex.outputs.has_snippet == 'true'
+        id: run-reproduce
+        run: |
+          cargo build --release --bin ratex
+          set +e
+          OUTPUT=$(/home/runner/work/ratex/ratex/target/release/ratex /tmp/reproduce/test.tex 2>&1)
+          EXIT_CODE=$?
+          echo "RATE_EXIT_CODE=$EXIT_CODE" >> $GITHUB_OUTPUT
+          
+          # Clean output formatting
+          echo "LOG_OUTPUT<<EOF" >> $GITHUB_OUTPUT
+          echo "$OUTPUT" | head -n 40 >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      # AI Assistance / Triage Reply using GitHub Script
+      - name: Reply to Issue
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const isComment = context.eventName === 'issue_comment';
+            const issueNumber = context.issue.number;
+            const hasSnippet = '${{ steps.test-tex.outputs.has_snippet }}' === 'true';
+            const exitCode = '${{ steps.run-reproduce.outputs.RATE_EXIT_CODE }}';
+            const logs = `${{ steps.run-reproduce.outputs.LOG_OUTPUT }}`;
+            const author = isComment ? context.payload.comment.user.login : context.payload.issue.user.login;
+
+            if (author.includes('[bot]') && !isComment) return;
+
+            let message = '';
+            if (hasSnippet) {
+              if (exitCode === '0') {
+                message = `🤖 **Ratex Bot Reproduction Report**
+
+I ran your minimal reproduction snippet against the current \`main\` branch of \`ratex\`:
+
+✅ **Compiled Successfully (Exit Code 0)**
+
+\`\`\`text
+${logs}
+\`\`\`
+
+The document compiled without fatal errors. If you are experiencing visual bugs or unexpected layout differences compared to TeX Live, please provide a comparison screenshot or mention the specific output discrepancy.`;
+              } else {
+                message = `🤖 **Ratex Bot Reproduction Report**
+
+I reproduced the error against the current \`main\` branch of \`ratex\`:
+
+❌ **Compilation Failed (Exit Code ${exitCode})**
+
+\`\`\`text
+${logs}
+\`\`\`
+
+This issue has been labeled as \`reproduced-bug\` and flagged for investigation.`;
+
+                // Add label
+                try {
+                  await github.rest.issues.addLabels({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    issue_number: issueNumber,
+                    labels: ['bug', 'reproduced']
+                  });
+                } catch (e) {}
+              }
+            } else {
+              // Only prompt for snippet on initial issue open
+              if (!isComment && author !== 'leoliu0') {
+                message = `Hi @${author}! 👋 Thanks for opening this issue.
+
+To help diagnose and fix this quickly, please provide a **minimal self-contained \`.tex\` reproduction snippet** wrapped in triple backticks:
+
+\`\`\`latex
+\\documentclass{article}
+\\begin{document}
+% Your minimal snippet reproducing the error
+\\end{document}
+\`\`\`
+
+As soon as a code snippet is provided, I will automatically test and verify it against \`ratex\`.`;
+              }
+            }
+
+            if (message) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issueNumber,
+                body: message
+              });
+            }

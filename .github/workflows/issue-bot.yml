@@ -13,7 +13,6 @@ permissions:
 
 jobs:
   ai-triage-and-fix:
-    # Do not trigger on comments from bots or repo owner unless invoked with /fix or /test
     if: >
       github.event_name == 'issues' ||
       (github.event_name == 'issue_comment' &&
@@ -49,23 +48,18 @@ jobs:
           elif "issue" in data:
               body = data["issue"].get("body", "")
 
-          # Extract ```tex or ```latex code blocks
           snippets = re.findall(r'```(?:tex|latex)?\s*([\s\S]*?)```', body)
-          if not snippets:
-              # Fallback: check if body itself looks like a tex document
-              if "\\documentclass" in body:
-                  snippets = [body]
+          if not snippets and "\\documentclass" in body:
+              snippets = [body]
 
           if snippets:
               tex_code = snippets[0].strip()
               os.makedirs("/tmp/reproduce", exist_ok=True)
               with open("/tmp/reproduce/test.tex", "w") as f:
                   f.write(tex_code)
-              print("FOUND_SNIPPET=true")
               with open(os.environ["GITHUB_OUTPUT"], "a") as out:
                   out.write("has_snippet=true\n")
           else:
-              print("NO_SNIPPET=true")
               with open(os.environ["GITHUB_OUTPUT"], "a") as out:
                   out.write("has_snippet=false\n")
           EOF
@@ -81,16 +75,74 @@ jobs:
           EXIT_CODE=$?
           echo "RATE_EXIT_CODE=$EXIT_CODE" >> $GITHUB_OUTPUT
           
-          # Clean output formatting
           echo "LOG_OUTPUT<<EOF" >> $GITHUB_OUTPUT
           echo "$OUTPUT" | head -n 40 >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
 
-      # AI Assistance / Triage Reply using GitHub Script
+      # Call Gemini 3.8 Flash to analyze compilation failure or answer question
+      - name: AI Diagnosis with Gemini 3.8 Flash
+        if: steps.test-tex.outputs.has_snippet == 'true' && steps.run-reproduce.outputs.RATE_EXIT_CODE != '0' && env.GEMINI_API_KEY != ''
+        id: gemini-ai
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          python3 - << 'EOF'
+          import os, json, urllib.request
+
+          api_key = os.environ.get("GEMINI_API_KEY")
+          if not api_key:
+              exit(0)
+
+          tex_snippet = ""
+          if os.path.exists("/tmp/reproduce/test.tex"):
+              with open("/tmp/reproduce/test.tex") as f:
+                  tex_snippet = f.read()
+
+          logs = """${{ steps.run-reproduce.outputs.LOG_OUTPUT }}"""
+
+          prompt = f"""You are the automated AI maintainer for 'ratex', an ultra-fast, pure-Rust TeX engine.
+A user reported a compilation failure on the following snippet:
+
+LaTeX Snippet:
+```latex
+{tex_snippet}
+```
+
+Ratex Compiler Error:
+```text
+{logs}
+```
+
+Please analyze:
+1. What went wrong (root cause in TeX/LaTeX or missing package/macro behavior).
+2. A suggested workaround for the user in their LaTeX document.
+3. Keep your response concise, friendly, and formatted in clean markdown."""
+
+          url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key={api_key}"
+          req = urllib.request.Request(
+              url,
+              data=json.dumps({"contents": [{"parts": [{"text": prompt}]}]}).encode("utf-8"),
+              headers={"Content-Type": "application/json"}
+          )
+
+          try:
+              with urllib.request.urlopen(req, timeout=30) as resp:
+                  res = json.loads(resp.read().decode("utf-8"))
+                  candidates = res.get("candidates", [])
+                  if candidates:
+                      analysis = candidates[0]["content"]["parts"][0]["text"]
+                      with open("/tmp/gemini_analysis.md", "w") as f:
+                          f.write(analysis)
+          except Exception as e:
+              print(f"Gemini API error: {e}")
+          EOF
+
+      # Reply to Issue
       - name: Reply to Issue
         uses: actions/github-script@v7
         with:
           script: |
+            const fs = require('fs');
             const isComment = context.eventName === 'issue_comment';
             const issueNumber = context.issue.number;
             const hasSnippet = '${{ steps.test-tex.outputs.has_snippet }}' === 'true';
@@ -99,6 +151,11 @@ jobs:
             const author = isComment ? context.payload.comment.user.login : context.payload.issue.user.login;
 
             if (author.includes('[bot]') && !isComment) return;
+
+            let geminiAdvice = '';
+            if (fs.existsSync('/tmp/gemini_analysis.md')) {
+              geminiAdvice = '\n\n---\n\n### 🧠 Gemini 3.8 Flash AI Diagnosis\n\n' + fs.readFileSync('/tmp/gemini_analysis.md', 'utf8');
+            }
 
             let message = '';
             if (hasSnippet) {
@@ -123,11 +180,10 @@ I reproduced the error against the current \`main\` branch of \`ratex\`:
 
 \`\`\`text
 ${logs}
-\`\`\`
+\`\`\`${geminiAdvice}
 
 This issue has been labeled as \`reproduced-bug\` and flagged for investigation.`;
 
-                // Add label
                 try {
                   await github.rest.issues.addLabels({
                     owner: context.repo.owner,
@@ -138,7 +194,6 @@ This issue has been labeled as \`reproduced-bug\` and flagged for investigation.
                 } catch (e) {}
               }
             } else {
-              // Only prompt for snippet on initial issue open
               if (!isComment && author !== 'leoliu0') {
                 message = `Hi @${author}! 👋 Thanks for opening this issue.
 

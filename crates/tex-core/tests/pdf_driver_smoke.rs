@@ -436,3 +436,58 @@ fn pdfa_emits_output_intents_with_srgb() {
     let cat_str = format!("{:?}", catalog);
     assert!(cat_str.contains("OutputIntents"));
 }
+
+#[test]
+fn truetype_font_emits_truetype_subtype_and_fontfile2() {
+    let mut doc = tex_core::pdfout::PdfDoc::new();
+    // TrueType font header magic \x00\x01\x00\x00
+    let mut ttf_bytes = vec![0x00, 0x01, 0x00, 0x00];
+    ttf_bytes.resize(100, 0);
+    let font = tex_core::pdffile::make_embed_font(
+        "TestTrueType".to_string(),
+        Some(&ttf_bytes),
+        Some(&["A".to_string()]),
+        0,
+        1,
+        vec![500, 500],
+    );
+    assert!(font.is_truetype);
+    doc.fonts.push(font);
+    doc.pages.push(tex_core::pdfout::PdfPage {
+        width: 100,
+        height: 100,
+        width_bp: 100.0,
+        height_bp: 100.0,
+        content: b"BT /F1 10 Tf 10 10 Td (A) Tj ET".to_vec(),
+        fonts: vec![(0, 1)],
+        annots: Vec::new(),
+        dests: Vec::new(),
+        attr_extra: Vec::new(),
+        resources_extra: Vec::new(),
+        display_list: None,
+    });
+    let pdf_bytes = tex_core::pdffile::write_pdf(&doc);
+    let pdf = lopdf::Document::load_mem(&pdf_bytes).expect("valid PDF");
+    let font_obj = pdf.objects.values().find_map(|obj| {
+        if let lopdf::Object::Dictionary(dict) = obj {
+            if dict.get(b"Type").and_then(lopdf::Object::as_name).ok() == Some(b"Font") {
+                return Some(dict);
+            }
+        }
+        None
+    }).expect("font dictionary must exist");
+
+    assert_eq!(font_obj.get(b"Subtype").and_then(lopdf::Object::as_name).ok(), Some(b"TrueType" as &[u8]));
+
+    let desc_obj = pdf.objects.values().find_map(|obj| {
+        if let lopdf::Object::Dictionary(dict) = obj {
+            if dict.get(b"Type").and_then(lopdf::Object::as_name).ok() == Some(b"FontDescriptor") {
+                return Some(dict);
+            }
+        }
+        None
+    }).expect("font descriptor must exist");
+
+    assert!(desc_obj.has(b"FontFile2"), "FontDescriptor must contain /FontFile2");
+    assert!(!desc_obj.has(b"FontFile"), "FontDescriptor must not contain /FontFile");
+}

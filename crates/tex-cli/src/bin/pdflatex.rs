@@ -1677,11 +1677,16 @@ fn backtrace_requested(value: Option<&std::ffi::OsStr>) -> bool {
 }
 
 pub(crate) fn main() {
+    main_with_args(std::env::args_os().collect());
+}
+
+pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
     install_panic_reporter();
     let mut phase_timer = PhaseTimer::new();
     apply_mem_limit();
     let program = program_name();
-    let args: Vec<String> = std::env::args_os()
+    let args: Vec<String> = args_os
+        .into_iter()
         .map(|arg| {
             arg.into_string().unwrap_or_else(|arg| {
                 usage_error(

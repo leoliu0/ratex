@@ -24,7 +24,7 @@ Tested and verified against **3,000 real-world arXiv papers** across mathematics
 ## Key Features
 
 - **Sub-10ms Incremental Builds**: Built-in cryptographic dependency graph and auxiliary state validator enables near-instant rebuilds (0.8–8.2 ms) on document edits.
-- **100% Self-Contained**: Embeds the LaTeX format, over 24,000 packages, all AMS math symbols, and CJK (Chinese, Japanese, Korean) fonts directly in the binary. No external TeX Live installation needed.
+- **100% Self-Contained**: Embeds the LaTeX format, over 24,000 packages, and all standard AMS math and Latin fonts directly in the binary. No external TeX Live installation needed. (CJK scripts can be typeset using standard TrueType/OpenType font maps or system fonts).
 - **All-in-One Engine & Toolchain**: Combines the TeX engine, package resolver, BibTeX interpreter, and build convergence into a single unified `ratex` command.
 - **SyncTeX by Default**: Automatic `.synctex.gz` coordinate generation matching PDF boxes to source lines for instant forward/inverse search in VS Code, TeXstudio, VimTeX, and AUCTeX.
 - **Compiler-Grade Diagnostics**: Beautiful rustc-style error reporting with physical source line excerpts, underlines, and actionable fix suggestions streamed directly to the terminal.
@@ -114,6 +114,9 @@ ratex latexdiff old.tex new.tex diff.tex
 # Or compile diff directly to PDF:
 ratex diff.tex
 ```
+
+### CJK (Chinese, Japanese, Korean) Typesetting
+Ratex supports TrueType and OpenType fonts via standard font mapping (e.g. `\pdfmapline{+min ... <ipaexm.ttf}`). As of v0.3.0, TrueType fonts are properly embedded with `/Subtype /TrueType` and `/FontFile2`. When using `CJKutf8`, ensure the referenced font files (`.ttf` or `.pfb`) are placed in the project directory or accessible via system font paths.
 ---
 
 ## Build from Source

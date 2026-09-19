@@ -3335,12 +3335,25 @@ pub(crate) fn main() {
         }
         _ => {}
     }
-
     let args: Vec<String> = std::env::args().collect();
     if args.len() > 1 && args[1] == "latexdiff" {
         std::process::exit(latexdiff::latexdiff_main(&args[2..]));
     }
-
+    // Fast single-pass mode for short documents or direct compilation:
+    if args.len() > 1 && (args[1] == "-1" || args[1] == "--single-pass" || args[1] == "-c") {
+        let program = std::env::var("TEX_SUITE_PROGRAM_NAME").unwrap_or_else(|_| "pdflatex".to_string());
+        enable_embedded_resources_by_default();
+        std::env::set_var("TEX_SUITE_PROGRAM_NAME", &program);
+        // Strip the -1/--single-pass/-c flag when invoking embedded pdflatex
+        let filtered_args: Vec<std::ffi::OsString> = std::env::args_os()
+            .enumerate()
+            .filter(|(idx, _)| *idx != 1)
+            .map(|(_, arg)| arg)
+            .collect();
+        std::env::set_var(TEXMK_INTERNAL_MODE_ENV, "engine");
+        embedded_engine::main_with_args(filtered_args);
+        return;
+    }
     match invoked_name().as_str() {
         "pdflatex" => run_embedded_engine("pdflatex"),
         "xelatex" => run_embedded_engine("xelatex"),

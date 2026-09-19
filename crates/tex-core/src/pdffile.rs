@@ -645,7 +645,13 @@ pub fn make_embed_font(
     last_char: u8,
     widths_10000: Vec<i32>,
 ) -> EmbedFont {
+    let is_truetype = pfb.map_or(false, |b| {
+        b.starts_with(&[0x00, 0x01, 0x00, 0x00]) || b.starts_with(b"true") || b.starts_with(b"ttcf")
+    });
     let (font_file, length1, length2, length3, metrics) = match pfb {
+        Some(bytes) if is_truetype => {
+            (bytes.to_vec(), bytes.len(), 0, 0, parse_metrics(b""))
+        }
         Some(bytes) => {
             let p = parse_type1(bytes);
             let m = parse_metrics(&p.data[..p.length1.min(p.data.len())]);
@@ -686,6 +692,7 @@ pub fn make_embed_font(
         length1,
         length2,
         length3,
+        is_truetype,
         encoding_diff,
         first_char,
         last_char,
@@ -1236,13 +1243,26 @@ pub fn write_pdf(doc: &PdfDoc) -> Vec<u8> {
             if !attempted_files.insert(key) {
                 return None;
             }
-            let Some(Some(glyphs)) = glyphs_by_file.get(&key) else {
-                return None;
-            };
+            let glyphs = glyphs_by_file.get(&key)?;
             Some((font, key, glyphs))
         })
         .collect();
-    let prepare = |&(font, key, glyphs): &(&EmbedFont, FontFileKey, &BTreeSet<String>)| {
+    let prepare = |&(font, key, glyphs): &(&EmbedFont, FontFileKey, &Option<BTreeSet<String>>)| {
+        if font.is_truetype {
+            return Some((
+                key,
+                PreparedType1 {
+                    pdf_name: font.base_font.clone(),
+                    program: Type1Program {
+                        data: font.font_file.clone(),
+                        length1: font.length1,
+                        length2: 0,
+                        length3: 0,
+                    },
+                },
+            ));
+        }
+        let glyphs = glyphs.as_ref()?;
         let mut subset = subset_type1(
             &font.font_file,
             font.length1,
@@ -1382,11 +1402,12 @@ pub fn write_pdf(doc: &PdfDoc) -> Vec<u8> {
             Some(o) => format!(" /ToUnicode {} 0 R", o),
             None => String::new(),
         };
+        let subtype = if f.is_truetype { "/TrueType" } else { "/Type1" };
         b.set(
             fo.font,
             format!(
-                "<< /Type /Font /Subtype /Type1 /BaseFont /{} /FirstChar {} /LastChar {} /Widths {} /FontDescriptor {} 0 R{}{} >>",
-                escape_pdf_name(pdf_name), first, last, widths, fo.desc, enc, tounicode_ref
+                "<< /Type /Font /Subtype {} /BaseFont /{} /FirstChar {} /LastChar {} /Widths {} /FontDescriptor {} 0 R{}{} >>",
+                subtype, escape_pdf_name(pdf_name), first, last, widths, fo.desc, enc, tounicode_ref
             ),
         );
         let (ascent, descent) = if f.ascent - f.descent > 3000.0 {
@@ -1402,7 +1423,8 @@ pub fn write_pdf(doc: &PdfDoc) -> Vec<u8> {
             num(f.italic_angle), num(ascent), num(descent), num(f.cap_height), num(f.stem_v),
         );
         if let Some(file) = fo.file {
-            desc.push_str(&format!(" /FontFile {} 0 R", file));
+            let font_file_key = if f.is_truetype { "/FontFile2" } else { "/FontFile" };
+            desc.push_str(&format!(" {} {} 0 R", font_file_key, file));
         }
         desc.push_str(" >>");
         b.set(fo.desc, desc);
@@ -1419,12 +1441,17 @@ pub fn write_pdf(doc: &PdfDoc) -> Vec<u8> {
                         )
                     },
                 );
-                b.set_stream(
-                    file,
-                    &format!(
+                let dict = if f.is_truetype {
+                    format!("/Length1 {}", length1)
+                } else {
+                    format!(
                         "/Length1 {} /Length2 {} /Length3 {}",
                         length1, length2, length3
-                    ),
+                    )
+                };
+                b.set_stream(
+                    file,
+                    &dict,
                     font_data,
                     true,
                 );

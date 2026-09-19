@@ -114,6 +114,7 @@ pub struct EmbedFont {
     pub length1: usize,
     pub length2: usize,
     pub length3: usize,
+    pub is_truetype: bool,
     /// glyph names by slot (None = the font's built-in encoding)
     pub encoding_diff: Option<Vec<String>>,
     pub first_char: u8,

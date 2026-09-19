@@ -24,39 +24,42 @@ Tested and verified against **3,000 real-world arXiv papers** across mathematics
 ## Key Features
 
 - **100% Self-Contained**: Embeds the LaTeX format, over 24,000 packages, all AMS math symbols, and CJK (Chinese, Japanese, Korean) fonts directly in the binary. No external TeX Live installation needed.
-- **All-in-One Engine & Toolchain**: Combines the TeX engine, package resolver, BibTeX interpreter, and build convergence into a single unified `ratex` command.
+- **All-in-One Engine & Toolchain**: Combines the TeX engine, package resolver, BibTeX interpreter, SyncTeX generation, and build convergence into a single unified `ratex` command.
+- **Native SVG & Vector Graphics**: First-class support for `.svg` via pure-Rust in-memory rasterization directly in `\includegraphics`—no Inkscape or external shell execution required.
+- **Embedded C API (`libtex`) & WebAssembly (`tex.wasm`)**: Compile complete LaTeX documents in-memory from C/C++, Node.js, or client-side browser runtimes without spawning subprocesses or touching disk.
+- **Built-in `latexdiff`**: Integrated visual document diffing with `ratex latexdiff old.tex new.tex` computing word/token LCS differences and injecting standard revision markup.
+- **SyncTeX by Default**: Automatic `.synctex.gz` coordinate generation matching PDF boxes to source lines for instant forward/inverse search in VS Code, TeXstudio, VimTeX, and AUCTeX.
 - **Sub-10ms Incremental Builds**: Built-in cryptographic dependency graph and auxiliary state validator enables near-instant rebuilds on document edits.
 - **Memory-Safe Pure Rust**: Written with strict bounds checks, eliminating buffer overflows, segfaults, and memory corruption bugs common in legacy C TeX engines.
-- **Compiler-Grade Diagnostics**: Beautiful rustc-style error reporting with physical source line excerpts, underlines, and actionable fix suggestions.
-
+- **Compiler-Grade Diagnostics**: Beautiful rustc-style error reporting with physical source line excerpts, underlines, and actionable fix suggestions streamed directly to the terminal.
 ---
 
 ## Installation
 
 ### Linux
-Download the native package for your distribution from [GitHub Releases](https://github.com/leoliu0/ratex/releases/tag/v0.2.0):
+Download the native package for your distribution from [GitHub Releases](https://github.com/leoliu0/ratex/releases/tag/v0.3.0):
 
 ```bash
 # Ubuntu / Debian (.deb)
-sudo apt install ./ratex_0.2.0_amd64.deb
+sudo apt install ./ratex_0.3.0_amd64.deb
 
 # Fedora / RHEL / openSUSE (.rpm)
-sudo dnf install ./ratex-0.2.0-1.x86_64.rpm
+sudo dnf install ./ratex-0.3.0-1.x86_64.rpm
 
 # Arch Linux (AUR)
 yay -S ratex-bin   # or: paru -S ratex-bin
 
 # Any Linux (Universal Tarball Installer)
-tar -xzf tex-suite-v0.2.0-linux-x86_64.tar.gz && sudo ./tex-suite-linux-x86_64/install.sh
+tar -xzf tex-suite-v0.3.0-linux-x86_64.tar.gz && sudo ./tex-suite-linux-x86_64/install.sh
 ```
 
 ### macOS
 Download and run the native installer package:
-- [macOS Apple Silicon (.pkg)](https://github.com/leoliu0/ratex/releases/download/v0.2.0/ratex-v0.2.0-macos-aarch64.pkg)
-- [macOS Intel (.pkg)](https://github.com/leoliu0/ratex/releases/download/v0.2.0/ratex-v0.2.0-macos-x86_64.pkg)
+- [macOS Apple Silicon (.pkg)](https://github.com/leoliu0/ratex/releases/download/v0.3.0/ratex-v0.3.0-macos-aarch64.pkg)
+- [macOS Intel (.pkg)](https://github.com/leoliu0/ratex/releases/download/v0.3.0/ratex-v0.3.0-macos-x86_64.pkg)
 
 ### Windows
-- [Download Windows Setup (.exe)](https://github.com/leoliu0/ratex/releases/download/v0.2.0/ratex-setup-v0.2.0-windows-x64.exe)
+- [Download Windows Setup (.exe)](https://github.com/leoliu0/ratex/releases/download/v0.3.0/ratex-setup-v0.3.0-windows-x64.exe)
 
 ---
 
@@ -102,6 +105,15 @@ Add this recipe to your VS Code `settings.json`:
   { "name": "ratex", "tools": ["ratex"] }
 ]
 ```
+
+### Document Revision Diffing (`latexdiff`)
+```bash
+# Compare two versions and write visual markup directly:
+ratex latexdiff old.tex new.tex diff.tex
+
+# Or compile diff directly to PDF:
+ratex diff.tex
+```
 ---
 
 ## Build from Source
@@ -121,6 +133,9 @@ sudo ./install.sh
 ---
 
 ## Architecture
+
+For the native C API and browser/Node.js WebAssembly module, see
+[Building and using libtex](docs/libraries.md).
 
 The project is structured as a modular Cargo workspace:
 

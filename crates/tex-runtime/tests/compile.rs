@@ -10,6 +10,15 @@ fn session(source: &str) -> Session {
 const HELLO: &str = r"\documentclass{article}\begin{document}Hello from libtex.\end{document}";
 
 #[test]
+fn italian_babel_option_is_available() {
+    let result = session(
+        r"\documentclass{article}\usepackage[italian]{babel}\begin{document}Ciao.\end{document}",
+    )
+    .compile("main.tex");
+    assert_eq!(result.status, Status::Success, "{}", result.diagnostics);
+}
+
+#[test]
 fn bundled_latex_and_nested_inputs_produce_a_real_pdf() {
     let mut s = session(
         r"\documentclass{article}\usepackage{amsmath}\begin{document}\input{parts/body}\end{document}",

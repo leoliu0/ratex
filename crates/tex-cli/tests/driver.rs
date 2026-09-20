@@ -1892,9 +1892,9 @@ printf '%%PDF-1.4 /Type /Page ' > "$out/$job.pdf"
         .unwrap()
         .unwrap()
         .path();
-    std::fs::write(old_job.join(".lock"), "999999-1").unwrap();
+    std::fs::write(old_job.with_extension("lock"), "999999-1").unwrap();
     let old = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1);
-    for path in [old_job.join(".lock"), old_job.join("manifest")] {
+    for path in [old_job.with_extension("lock"), old_job.join("manifest")] {
         std::fs::OpenOptions::new()
             .write(true)
             .open(path)

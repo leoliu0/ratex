@@ -68,7 +68,6 @@ impl<'a> Scanner<'a> {
         self.i += 1;
         while self.i < self.b.len() && depth > 0 {
             match self.b[self.i] {
-                b'\\' => self.i += 1, // skip escaped char
                 c if c == open => depth += 1,
                 c if c == close => depth -= 1,
                 _ => {}
@@ -77,17 +76,16 @@ impl<'a> Scanner<'a> {
         }
     }
 
-    /// identifier (letters, digits, and a few punctuation chars)
+    /// BibTeX identifiers admit every non-whitespace byte except delimiters.
     fn ident(&mut self) -> String {
         let start = self.i;
         while self.i < self.b.len() {
             let c = self.b[self.i];
-            if c.is_ascii_alphanumeric()
-                || c == b'-'
-                || c == b'_'
-                || c == b'.'
-                || c == b':'
-                || c == b'+'
+            if !c.is_ascii_whitespace()
+                && !matches!(
+                    c,
+                    b'"' | b'#' | b'%' | b'\'' | b'(' | b')' | b',' | b'=' | b'{' | b'}'
+                )
             {
                 self.i += 1;
             } else {
@@ -122,7 +120,6 @@ fn read_value(
                 sc.i += 1;
                 while sc.i < sc.b.len() && depth > 0 {
                     match sc.b[sc.i] {
-                        b'\\' => sc.i += 1,
                         b'{' => depth += 1,
                         b'}' => depth -= 1,
                         b'\n' => *line += 1,
@@ -265,6 +262,11 @@ pub fn parse_bib(src: &str, path: &str, db: &mut Database, log: &mut Logger) {
                         continue;
                     }
                     let fname = sc.ident().to_ascii_lowercase();
+                    if fname.is_empty() {
+                        log.error(format!("{path}: expected a field name in entry \"{cite}\""));
+                        sc.i += 1;
+                        continue;
+                    }
                     sc.ws();
                     if sc.b.get(sc.i) != Some(&b'=') {
                         // not a field assignment; skip token
@@ -304,5 +306,74 @@ pub fn parse_bib(src: &str, path: &str, db: &mut Database, log: &mut Logger) {
                 });
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse_with_progress_deadline(source: &'static str) -> (Database, Logger) {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut db = Database::default();
+            let mut log = Logger::new();
+            parse_bib(source, "test.bib", &mut db, &mut log);
+            let _ = sender.send((db, log));
+        });
+        receiver
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("BibTeX scanner failed to make progress")
+    }
+
+    #[test]
+    fn field_identifiers_preserve_backslashes_and_following_fields() {
+        let (db, log) = parse_with_progress_deadline(
+            r#"@article{paper, \Journal={Ignored field}, title={Kept title}, year=2026}"#,
+        );
+        assert_eq!(log.errors, 0);
+        assert_eq!(
+            db.entries[0].fields,
+            [
+                ("\\journal".into(), "Ignored field".into()),
+                ("title".into(), "Kept title".into()),
+                ("year".into(), "2026".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn braced_values_count_backslash_prefixed_braces() {
+        let (db, log) = parse_with_progress_deadline(
+            r#"@book{paper, publisher={Taylor \{\&} Francis (2003)}, year={2003}}
+               @book{next, title={Next entry}}"#,
+        );
+        assert_eq!(log.errors, 0);
+        assert_eq!(
+            db.entries[0].fields,
+            [
+                ("publisher".into(), r"Taylor \{\&} Francis (2003)".into()),
+                ("year".into(), "2003".into()),
+            ]
+        );
+        assert_eq!(db.entries[1].cite, "next");
+        assert_eq!(
+            db.entries[1].fields,
+            [("title".into(), "Next entry".into())]
+        );
+    }
+
+    #[test]
+    fn invalid_field_punctuation_reports_error_and_reaches_next_entry() {
+        let (db, log) = parse_with_progress_deadline(
+            r#"@misc{broken, " } @misc{next, title={Surviving entry}}"#,
+        );
+        assert!(log.errors > 0);
+        let entry = db
+            .entries
+            .iter()
+            .find(|entry| entry.cite == "next")
+            .unwrap();
+        assert_eq!(entry.fields, [("title".into(), "Surviving entry".into())]);
     }
 }

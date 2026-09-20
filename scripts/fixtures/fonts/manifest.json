@@ -392,6 +392,169 @@
     "min_pages": 2
   },
   {
+    "name": "xcharter_outlines",
+    "description": "XCharter Roman and Bold outline embedding and text metrics (corpus 2501.02045)",
+    "dir": "xcharter_outlines",
+    "main_tex": "main.tex",
+    "engine": "pdflatex",
+    "reference_engine": "pdflatex",
+    "required_fonts": [
+      "XCharter-Roman",
+      "XCharter-Bold"
+    ],
+    "expected_text": [
+      "XCharter Roman regular text.",
+      "XCharter Bold text."
+    ],
+    "check_type": "text_t1",
+    "min_ink_pixels": 500
+  },
+  {
+    "name": "stix2_script",
+    "description": "STIX2 math script regular and bold font outlines (corpus 2310.20084)",
+    "dir": "stix2_script",
+    "main_tex": "main.tex",
+    "engine": "pdflatex",
+    "reference_engine": "pdflatex",
+    "required_fonts": [
+      "STIXTwoMath"
+    ],
+    "expected_text": [
+      "STIX2 math script regular and bold:"
+    ],
+    "check_type": "symbol_math",
+    "min_ink_pixels": 300
+  },
+  {
+    "name": "ccicons_outline",
+    "description": "Creative Commons ccicons font outline embedding (corpus 2404.02465)",
+    "dir": "ccicons_outline",
+    "main_tex": "main.tex",
+    "engine": "pdflatex",
+    "reference_engine": "pdflatex",
+    "required_fonts": [
+      "CCIcons"
+    ],
+    "expected_text": [
+      "Testing ccicons outline glyphs:"
+    ],
+    "check_type": "symbol",
+    "min_ink_pixels": 200
+  },
+  {
+    "name": "lato_text",
+    "description": "Lato text font metrics and outlines (corpus 2410.08224)",
+    "dir": "lato_text",
+    "main_tex": "main.tex",
+    "engine": "pdflatex",
+    "reference_engine": "pdflatex",
+    "required_fonts": [
+      "Lato-Regular",
+      "Lato-Bold"
+    ],
+    "expected_text": [
+      "Lato Regular body text.",
+      "Lato Bold text."
+    ],
+    "check_type": "text_t1",
+    "min_ink_pixels": 500
+  },
+  {
+    "name": "twemojis_pdf",
+    "description": "Packaged all-twemojis.pdf vector emoji inclusion (corpus 2501.02045)",
+    "dir": "twemojis_pdf",
+    "main_tex": "main.tex",
+    "engine": "pdflatex",
+    "reference_engine": "pdflatex",
+    "required_fonts": [],
+    "expected_text": [
+      "Testing twemojis inclusion:"
+    ],
+    "check_type": "packaged_graphic",
+    "min_ink_pixels": 400
+  },
+  {
+    "name": "doclicense_graphic",
+    "description": "Packaged doclicense-CC-by-88x31 vector graphic inclusion (corpus 2501.07828)",
+    "dir": "doclicense_graphic",
+    "main_tex": "main.tex",
+    "engine": "pdflatex",
+    "reference_engine": "pdflatex",
+    "required_fonts": [],
+    "expected_text": [
+      "Testing doclicense-CC-by-88x31 vector graphic:"
+    ],
+    "check_type": "packaged_graphic",
+    "min_ink_pixels": 400
+  },
+  {
+    "name": "bera_outlines",
+    "description": "Bera Serif, Sans, and Sans Mono outline embedding and metrics (corpus 2107.13272)",
+    "dir": "bera_outlines",
+    "main_tex": "main.tex",
+    "engine": "pdflatex",
+    "reference_engine": "pdflatex",
+    "required_fonts": [
+      "BeraSerif-Roman",
+      "BeraSerif-Bold",
+      "BeraSans-Roman",
+      "BeraSans-Bold",
+      "BeraSansMono-Roman"
+    ],
+    "expected_text": [
+      "Bera Serif Regular text.",
+      "Bera Serif Bold text.",
+      "Bera Sans Regular text.",
+      "Bera Sans Bold text.",
+      "Bera Sans Mono Regular text."
+    ],
+    "check_type": "text_t1",
+    "min_ink_pixels": 500
+  },
+  {
+    "name": "duckuments_graphics",
+    "description": "Packaged duckuments graphics example-image-duck and example-image-duck-portrait inclusion (corpus 2309.04589)",
+    "dir": "duckuments_graphics",
+    "main_tex": "main.tex",
+    "engine": "pdflatex",
+    "reference_engine": "pdflatex",
+    "required_fonts": [],
+    "expected_text": [
+      "Testing duckuments graphics:"
+    ],
+    "check_type": "packaged_graphic",
+    "min_ink_pixels": 500
+  },
+  {
+    "name": "fdsymbol_outline",
+    "description": "FdSymbol Book family outline embedding and math symbol metrics (corpus 2501.02045)",
+    "dir": "fdsymbol_outline",
+    "main_tex": "main.tex",
+    "engine": "pdflatex",
+    "reference_engine": "pdflatex",
+    "required_fonts": [
+      "FdSymbolA-Book",
+      "FdSymbolB-Book"
+    ],
+    "expected_text": [
+      "Testing FdSymbol Book family outlines:"
+    ],
+    "check_type": "symbol_math",
+    "min_ink_pixels": 300
+  },
+  {
+    "name": "image_worker_memory",
+    "description": "Concurrent raster embedding stays within the default process address-space guard",
+    "dir": "image_worker_memory",
+    "main_tex": "main.tex",
+    "engine": "pdflatex",
+    "reference_engine": "pdflatex",
+    "required_fonts": ["CMR10"],
+    "expected_text": ["All thirty-two raster images must remain visible."],
+    "check_type": "text_t1",
+    "min_ink_pixels": 10000
+  },
+  {
     "name": "error_missing_font",
     "description": "Negative case: Missing font must produce a clear error and no valid PDF",
     "dir": "error_missing_font",

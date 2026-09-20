@@ -334,24 +334,40 @@ pub fn finish_pdf(eng: &mut Engine, optimize_pdf_size: bool) -> Result<Vec<u8>, 
     #[cfg(not(target_arch = "wasm32"))]
     let workers = std::thread::available_parallelism()
         .map_or(1, usize::from)
-        .min(8)
+        .min(4)
         .min(jobs.len());
     let embedded_result = if workers <= 1 {
         embed_chunk(&jobs, png_options)
     } else {
         std::thread::scope(|scope| {
-            let handles: Vec<_> = jobs
-                .chunks(jobs.len().div_ceil(workers))
-                .map(|chunk| scope.spawn(move || embed_chunk(chunk, png_options)))
-                .collect();
+            // Keep the same bounded concurrency as font subsetting and use the
+            // caller for one chunk. Extra threads also reserve libc/TLS arenas,
+            // which can exhaust the address-space cap long before resident RAM.
+            let chunk_size = jobs.len().div_ceil(workers);
+            let (local, remaining) = jobs.split_at(chunk_size);
+            let mut handles = Vec::with_capacity(workers - 1);
             let mut objects = Vec::with_capacity(jobs.len().saturating_mul(2));
             let mut error = None;
-            for handle in handles {
-                match handle.join() {
-                    Ok(Ok(chunk)) => objects.extend(chunk),
-                    Ok(Err(message)) => error = Some(message),
-                    Err(_) => error = Some("Image embedding worker panicked".to_string()),
+            let mut collect = |result| match result {
+                Ok(chunk) => objects.extend(chunk),
+                Err(message) => error = Some(message),
+            };
+            for chunk in remaining.chunks(chunk_size) {
+                match std::thread::Builder::new()
+                    .name("pdf-image".into())
+                    .spawn_scoped(scope, move || embed_chunk(chunk, png_options))
+                {
+                    Ok(handle) => handles.push(handle),
+                    Err(_) => collect(embed_chunk(chunk, png_options)),
                 }
+            }
+            collect(embed_chunk(local, png_options));
+            for handle in handles {
+                collect(
+                    handle
+                        .join()
+                        .unwrap_or_else(|_| Err("Image embedding worker panicked".to_string())),
+                );
             }
             match error {
                 Some(message) => Err(message),

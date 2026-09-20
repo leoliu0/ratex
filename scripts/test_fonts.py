@@ -1036,6 +1036,11 @@ def validate_pdf_font_embedding(pdf_path: Path, case: dict[str, Any]) -> list[st
                 f"boxes_forms contract violated: expected PDF Form XObject reuse (invoked >= 2 times via Do), "
                 f"got {len(form_invocations)} invocations"
             )
+    elif check_type == "packaged_graphic":
+        if len(discovered_forms) == 0:
+            errors.append("packaged_graphic contract violated: expected at least 1 PDF Form XObject (/Subtype /Form) in document")
+        if len(form_invocations) < 1:
+            errors.append("packaged_graphic contract violated: expected at least 1 Form invocation ('/Do') in content stream")
 
     elif check_type == "native_shaping":
         lm_fonts = [f for f in all_fonts if "lmroman" in f["base_font"].lower() or "latinmodern" in f["base_font"].lower()]

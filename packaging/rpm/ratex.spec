@@ -1,5 +1,5 @@
 Name:           ratex
-Version:        0.4.1
+Version:        0.4.2
 Release:        1%{?dist}
 Summary:        Ultra-fast, pure-Rust TeX engine and typesetting toolchain
 License:        (MIT or Apache-2.0) and LPPL-1.3c and GPL-2.0-only and (GPL-2.0-or-later with Font-exception-2.0) and OFL-1.1 and GUST and Arphic and IPA and Wadalab

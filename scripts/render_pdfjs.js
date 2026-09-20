@@ -81,9 +81,16 @@ async function loadCanvas() {
   }
 
   try {
-    const { createCanvas } = require('@napi-rs/canvas');
+    const napiCanvas = require('@napi-rs/canvas');
+    if (napiCanvas.Path2D) {
+      Object.assign(globalThis, {
+        Path2D: napiCanvas.Path2D,
+        DOMMatrix: napiCanvas.DOMMatrix,
+        ImageData: napiCanvas.ImageData,
+      });
+    }
     return {
-      createCanvas,
+      createCanvas: napiCanvas.createCanvas,
       backend: '@napi-rs/canvas (cjs)',
     };
   } catch {
@@ -137,8 +144,16 @@ async function probe() {
 }
 
 class NodeCanvasFactory {
-  constructor(createCanvas) {
-    this.createCanvas = createCanvas;
+  constructor(optionsOrFn) {
+    if (typeof optionsOrFn === 'function') {
+      this.createCanvas = optionsOrFn;
+    } else if (optionsOrFn && typeof optionsOrFn.createCanvas === 'function') {
+      this.createCanvas = optionsOrFn.createCanvas;
+    } else if (NodeCanvasFactory._createCanvas) {
+      this.createCanvas = NodeCanvasFactory._createCanvas;
+    } else {
+      throw new Error('NodeCanvasFactory: no createCanvas implementation provided');
+    }
   }
 
   create(width, height) {
@@ -174,6 +189,9 @@ async function renderPdf(pdfPath, outDir, scale = 2.0) {
 
   const { pdfjs } = await loadPdfjs();
   const canvasMod = await loadCanvas();
+  if (canvasMod) {
+    NodeCanvasFactory._createCanvas = canvasMod.createCanvas;
+  }
 
   fs.mkdirSync(outDir, { recursive: true });
   const rawBytes = fs.readFileSync(pdfPath);
@@ -181,19 +199,27 @@ async function renderPdf(pdfPath, outDir, scale = 2.0) {
 
   // Strict: disable system font substitution and disable FontFace so pdf.js
   // renders embedded font outlines directly via canvas paths in headless Node.
-  const loadingTask = pdfjs.getDocument({
+  // Pass CanvasFactory into getDocument so internal scratch canvases (e.g. for
+  // Form XObjects, groups, masks, and patterns) use the same backend and prototype.
+  const getDocumentParams = {
     data: data,
     isEvalSupported: false,
     useSystemFonts: false,
     disableFontFace: true,
     verbosity: 0,
-  });
+  };
+  if (canvasMod) {
+    getDocumentParams.CanvasFactory = NodeCanvasFactory;
+  }
 
+  const loadingTask = pdfjs.getDocument(getDocumentParams);
   const doc = await loadingTask.promise;
   const numPages = doc.numPages;
   const pagesInfo = [];
 
-  const canvasFactory = canvasMod ? new NodeCanvasFactory(canvasMod.createCanvas) : null;
+  const canvasFactory = canvasMod
+    ? (doc.canvasFactory || new NodeCanvasFactory(canvasMod.createCanvas))
+    : null;
   const isCjk = (c) => (c >= 0x2e80 && c <= 0x9fff) || (c >= 0x3000 && c <= 0x30ff) || (c >= 0xff00 && c <= 0xffef);
 
   for (let i = 1; i <= numPages; i++) {

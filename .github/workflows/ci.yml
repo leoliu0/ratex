@@ -146,6 +146,7 @@ jobs:
           python3 scripts/test_fonts.py \
             --ratex target/release/ratex \
             --output target/font-evidence-smoke \
+            --require-pdfjs \
             --skip-reference \
             --case t1_latin_modern \
             --case t1_cm_super \
@@ -167,7 +168,17 @@ jobs:
             --case shaping_features \
             --case font_styles_restoration \
             --case boxes_forms \
-            --case unioned_subsets
+            --case unioned_subsets \
+            --case xcharter_outlines \
+            --case fdsymbol_outline \
+            --case image_worker_memory \
+            --case stix2_script \
+            --case ccicons_outline \
+            --case lato_text \
+            --case twemojis_pdf \
+            --case doclicense_graphic \
+            --case bera_outlines \
+            --case duckuments_graphics
       - name: Artifact font smoke (windows)
         if: runner.os == 'Windows'
         shell: pwsh
@@ -175,6 +186,7 @@ jobs:
           python scripts/test_fonts.py `
             --ratex target/release/ratex.exe `
             --output target/font-evidence-smoke `
+            --require-pdfjs `
             --skip-reference `
             --case t1_latin_modern `
             --case t1_cm_super `
@@ -196,7 +208,17 @@ jobs:
             --case shaping_features `
             --case font_styles_restoration `
             --case boxes_forms `
-            --case unioned_subsets
+            --case unioned_subsets `
+            --case xcharter_outlines `
+            --case fdsymbol_outline `
+            --case image_worker_memory `
+            --case stix2_script `
+            --case ccicons_outline `
+            --case lato_text `
+            --case twemojis_pdf `
+            --case doclicense_graphic `
+            --case bera_outlines `
+            --case duckuments_graphics
       - name: Package distribution (linux)
         if: runner.os == 'Linux'
         run: python3 scripts/package_dist.py --platform linux --arch x86_64
@@ -211,28 +233,8 @@ jobs:
           python3 scripts/test_fonts.py \
             --ratex "$EXTRACTED_RATEX" \
             --output /tmp/font-smoke-archive \
-            --skip-reference \
-            --case t1_latin_modern \
-            --case t1_cm_super \
-            --case t2a_russian \
-            --case lgr_greek \
-            --case cjkutf8_japanese \
-            --case cjkutf8_chinese \
-            --case cjkutf8_korean \
-            --case issue_3_mapped_truetype \
-            --case issue_4_cjkutf8_ja \
-            --case issue_5_stmaryrd \
-            --case issue_6_bbding \
-            --case issue_8_latin_modern \
-            --case fontspec_native \
-            --case xecjk_native \
-            --case opentype_cff \
-            --case truetype_collection \
-            --case unicode_supplementary \
-            --case shaping_features \
-            --case font_styles_restoration \
-            --case boxes_forms \
-            --case unioned_subsets
+            --require-pdfjs \
+            --skip-reference
           rm -rf /tmp/ci-archive-test /tmp/font-smoke-archive
 
       - name: Test shell installer end-to-end (linux)
@@ -244,29 +246,8 @@ jobs:
           python3 scripts/test_fonts.py \
             --ratex /tmp/ci-install-test/bin/ratex \
             --output /tmp/font-smoke-installed \
-            --skip-reference \
-            --case t1_latin_modern \
-            --case t1_cm_super \
-            --case t2a_russian \
-            --case lgr_greek \
-            --case cjkutf8_japanese \
-            --case cjkutf8_chinese \
-            --case cjkutf8_korean \
-            --case issue_3_mapped_truetype \
-            --case issue_4_cjkutf8_ja \
-            --case issue_5_stmaryrd \
-            --case issue_6_bbding \
-            --case issue_8_latin_modern \
-            --case fontspec_native \
-            --case xecjk_native \
-            --case opentype_cff \
-            --case truetype_collection \
-            --case unicode_supplementary \
-            --case shaping_features \
-            --case font_styles_restoration \
-            --case boxes_forms \
-            --case unioned_subsets
-          ./install.sh --prefix /tmp/ci-install-test --uninstall
+            --require-pdfjs \
+            --skip-reference
           rm -rf /tmp/ci-install-test /tmp/font-smoke-installed
 
       - name: Package distribution (macos)
@@ -283,29 +264,8 @@ jobs:
           python3 scripts/test_fonts.py \
             --ratex "$EXTRACTED_RATEX" \
             --output /tmp/font-smoke-archive \
-            --skip-reference \
-            --case t1_latin_modern \
-            --case t1_cm_super \
-            --case t2a_russian \
-            --case lgr_greek \
-            --case cjkutf8_japanese \
-            --case cjkutf8_chinese \
-            --case cjkutf8_korean \
-            --case issue_3_mapped_truetype \
-            --case issue_4_cjkutf8_ja \
-            --case issue_5_stmaryrd \
-            --case issue_6_bbding \
-            --case issue_8_latin_modern \
-            --case fontspec_native \
-            --case xecjk_native \
-            --case opentype_cff \
-            --case truetype_collection \
-            --case unicode_supplementary \
-            --case shaping_features \
-            --case font_styles_restoration \
-            --case boxes_forms \
-            --case unioned_subsets
-          rm -rf /tmp/ci-archive-test /tmp/font-smoke-archive
+            --require-pdfjs \
+            --skip-reference
 
       - name: Package distribution (windows)
         if: runner.os == 'Windows'
@@ -324,29 +284,9 @@ jobs:
           python scripts/test_fonts.py `
             --ratex $extractedRatex `
             --output "$env:RUNNER_TEMP\font-smoke-archive" `
-            --skip-reference `
-            --case t1_latin_modern `
-            --case t1_cm_super `
-            --case t2a_russian `
-            --case lgr_greek `
-            --case cjkutf8_japanese `
-            --case cjkutf8_chinese `
-            --case cjkutf8_korean `
-            --case issue_3_mapped_truetype `
-            --case issue_4_cjkutf8_ja `
-            --case issue_5_stmaryrd `
-            --case issue_6_bbding `
-            --case issue_8_latin_modern `
-            --case fontspec_native `
-            --case xecjk_native `
-            --case opentype_cff `
-            --case truetype_collection `
-            --case unicode_supplementary `
-            --case shaping_features `
-            --case font_styles_restoration `
-            --case boxes_forms `
-            --case unioned_subsets
-          Remove-Item -Recurse -Force $testDir -ErrorAction SilentlyContinue
+            --require-pdfjs `
+            --skip-reference
+          if ($LASTEXITCODE -ne 0) { throw "Archive font verification failed" }
           Remove-Item -Recurse -Force "$env:RUNNER_TEMP\font-smoke-archive" -ErrorAction SilentlyContinue
       - name: Stage bundled assets
         if: runner.os == 'Linux'

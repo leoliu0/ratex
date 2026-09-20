@@ -633,6 +633,86 @@ their respective upstream licenses.
   Computer Modern bold small caps (cmbcsc10) and large small caps (cmcsc12). Type 1 vector outlines and metrics generated deterministically offline from canonical METAFONT sources using mftrace/potrace and mf nullmode.
 
 
+48. Additional corpus font and package resource closures
+--------------------------------------------------------
+
+bera (r77682, TeX Live revision 77682)
+- Upstream: https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/bera.tar.xz
+- SHA256: a3174491eacc119a1747345242c68e35194a28a5af160361ba291ca84429324b (312,592 bytes)
+- License: Bitstream-Vera
+- Terms: Bitstream Vera license; original copyright and trademark notice retained; unmodified upstream fonts.
+- Shipped notice: doc/fonts/bera/LICENSE
+- Corresponding source: bera.zip in sources.tar.zst; exact pins in packages.lock.json.
+
+ccicons (1.6, TeX Live revision 77682)
+- Upstream: https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/ccicons.tar.xz
+- SHA256: 26b63ae8eb4718bc8176fa69557309476d2d244d4f938a973dc4170a40dc4a01 (15,584 bytes)
+- License: OFL-1.1 / LPPL-1.3c
+- Terms: SIL Open Font License for fonts, LPPL-1.3c for macros; upstream source archive retained.
+- Shipped notice: doc/fonts/ccicons/OFL.txt
+- Corresponding source: ccicons.source.tar.xz in sources.tar.zst; exact pins in packages.lock.json.
+
+doclicense (3.3.0, TeX Live revision 77682)
+- Upstream: https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/doclicense.tar.xz
+- SHA256: 033d4289a33e4b6b2e1c866232f8a7a67b60af83ee14efa25d027aa8b0a97848 (236,980 bytes)
+- License: CC0-1.0 / LPPL-1.3c
+- Terms: CC0 license graphics and texts; LPPL macros with corresponding source archive retained.
+- Corresponding source: doclicense.source.tar.xz in sources.tar.zst; exact pins in packages.lock.json.
+
+lato (3.3, TeX Live revision 79618)
+- Upstream: https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/lato.tar.xz
+- SHA256: 76f75b64c2e597c174007c12b51de2a80b47d63bf8738684298b1e23b636a1b0 (12,322,520 bytes)
+- License: OFL-1.1 / LPPL-1.3c
+- Terms: SIL Open Font License for unmodified fonts; complete LPPL macro sources included in runtime tree.
+- Shipped notice: doc/fonts/lato/README
+- Shipped notice: doc/fonts/lato/OFL.txt
+- LaTeX sources: tex/latex/lato in the runtime archive; fonts are unmodified upstream OFL files.
+
+stix2-type1 (2.0.2, TeX Live revision 79618)
+- Upstream: https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/stix2-type1.tar.xz
+- SHA256: 6dcfc35bd01aadcfd3113f55bd481e8c65dc93d7e6f6cc8bc4be7f9726fcb9e0 (3,110,752 bytes)
+- License: OFL-1.1 / LPPL-1.3
+- Terms: SIL Open Font License for unmodified fonts; LPPL support files with corresponding source archive retained.
+- Shipped notice: doc/fonts/stix2-type1/README.txt
+- Shipped notice: doc/fonts/stix2-type1/OFL.txt
+- Corresponding source: stix2-type1.source.tar.xz in sources.tar.zst; exact pins in packages.lock.json.
+
+twemojis (1.3.1 (twemoji v14.0.1), TeX Live revision 79618)
+- Upstream: https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/twemojis.tar.xz
+- SHA256: 97c49a218e4c9a570dccda5cf1cb74939465a7da81818ab304cc43ceb7b2155e (4,425,052 bytes)
+- License: CC-BY-4.0 / LPPL-1.3
+- Terms: Emoji graphics copyright 2019 Twitter, Inc. and other contributors, CC-BY-4.0; LPPL macros with source archive retained.
+- Shipped notice: doc/latex/twemojis/NOTICE.txt
+- Corresponding source: twemojis.source.tar.xz in sources.tar.zst; exact pins in packages.lock.json.
+
+xcharter (1.26, TeX Live revision 78931)
+- Upstream: https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/xcharter.tar.xz
+- SHA256: 92ae152668b18a271830f2efa4d26792c7dc69cc36ee8f2967695de154f1bf04 (2,210,356 bytes)
+- License: Bitstream-Charter / LPPL-1.3
+- Terms: Original Bitstream Charter copyright and trademark notice retained; complete LPPL macro sources included in runtime tree.
+- Shipped notice: doc/fonts/xcharter/README
+- LaTeX sources: tex/latex/xcharter in the runtime archive; fonts are unmodified upstream Bitstream-licensed files.
+
+duckuments (0.5, TeX Live revision 77682)
+- Upstream: https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/duckuments.tar.xz
+- SHA256: a78498f371b8ec4ed9fe94d43865673af0a77da95b9221ba317070d5ddd65d93 (484,468 bytes)
+- License: LPPL-1.3c.
+- Complete macro and example-image PDF resources; corresponding source in duckuments.source.tar.xz.
+
+fdsymbol (1.0, TeX Live revision 77682)
+- Upstream: https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/fdsymbol.tar.xz
+- SHA256: 6c7dd3cfdfb4fe751f8103cf0c9ce6dbb0fcfa8103062e2777fd5b0189a688f9 (878,640 bytes)
+- License: OFL-1.1 / LPPL-1.3c
+- Terms: SIL Open Font License for fonts, LPPL-1.3c for macros; upstream source archive retained.
+- Shipped notice: doc/fonts/fdsymbol/OFL.txt
+- Shipped notice: doc/latex/fdsymbol/README.txt
+- Corresponding source: fdsymbol.source.tar.xz in sources.tar.zst; exact pins in packages.lock.json.
+
+Twitter emoji graphics remain subject to CC-BY-4.0 attribution obligations;
+shipping the graphics does not remove attribution requirements for documents.
+The original attribution and license link are in doc/latex/twemojis/NOTICE.txt.
+
+
 Distribution Architecture, Source Availability & GPL Compliance
 ===============================================================
 Ratex splits distribution artifacts into two distinct deterministic archives:
@@ -681,6 +761,8 @@ Ratex splits distribution artifacts into two distinct deterministic archives:
      Official TeX Live source archive with virtual font generation scripts for Almost European fonts.
    - `stix.source.tar.xz` (27,808 bytes, SHA256: 28e71c9103859f50113b71c3fb788f09b9ea83d233d01c6475b923b048d242c0):
      Official TeX Live source archive with STIX fonts build and conversion sources.
+   - `fdsymbol.source.tar.xz` (17,776 bytes, SHA256: 44968e81d80de4c34e4b6d46d2bd36412796fc8b26dfa655c59f24739fadc596):
+     Official TeX Live source archive containing fdsymbol.dtx and fdsymbol.ins source files.
 
    All source archives are cryptographically pinned in `packages.lock.json`
    under the `source_distribution` manifest.

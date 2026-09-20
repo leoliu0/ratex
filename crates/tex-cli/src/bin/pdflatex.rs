@@ -264,6 +264,14 @@ fn valid_jobname(name: &str) -> bool {
         )
 }
 
+fn directory_prefix(dir: &str) -> String {
+    format!(
+        "{}{}",
+        dir.trim_end_matches(['/', '\\']),
+        std::path::MAIN_SEPARATOR
+    )
+}
+
 fn depcache_path(
     cache_root: &std::path::Path,
     primary_file: &str,
@@ -1724,12 +1732,12 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
             let Some(dir) = args.get(i).filter(|dir| !dir.is_empty()) else {
                 usage_error(&program, "-output-directory requires a non-empty directory");
             };
-            out_dir = format!("{}/", dir.trim_end_matches('/'));
+            out_dir = directory_prefix(dir);
         } else if let Some(dir) = args[i].strip_prefix("-output-directory=") {
             if dir.is_empty() {
                 usage_error(&program, "-output-directory requires a non-empty directory");
             }
-            out_dir = format!("{}/", dir.trim_end_matches('/'));
+            out_dir = directory_prefix(dir);
         } else if matches!(
             args[i].as_str(),
             "-aux-directory" | "-auxdir" | "--aux-directory"
@@ -1877,10 +1885,10 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
     }
     let aux_dir = requested_aux_dir
         .as_ref()
-        .map(|dir| format!("{}/", dir.to_string_lossy().trim_end_matches(['/', '\\'])))
+        .map(|dir| directory_prefix(&dir.to_string_lossy()))
         .unwrap_or_else(|| out_dir.clone());
     if !aux_dir.is_empty() {
-        if let Err(error) = std::fs::create_dir_all(aux_dir.trim_end_matches(['/', '\\'])) {
+        if let Err(error) = std::fs::create_dir_all(&aux_dir) {
             emit_cli_message(
                 interaction_mode,
                 format_args!("{program}: cannot create auxiliary directory {aux_dir}: {error}"),
@@ -2237,7 +2245,7 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
         phase_timer.mark("pdf_serialize");
         let out = format!("{}{}.pdf", eng.out_dir, job);
         if !eng.out_dir.is_empty() {
-            let _ = std::fs::create_dir_all(eng.out_dir.trim_end_matches('/'));
+            let _ = std::fs::create_dir_all(&eng.out_dir);
         }
         if let Err(error) = atomic_write_file(std::path::Path::new(&out), &pdf) {
             fail_after_transcript(
@@ -2314,8 +2322,8 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
 mod startup_tests {
     use super::{
         authenticated_depcache_body, backtrace_requested, check_depcache, decode_record_path,
-        dependency_fingerprint, dependency_name_may_match, effective_clock_identity_at,
-        encode_record_path, finalize_format_load, format_boot_failure,
+        dependency_fingerprint, dependency_name_may_match, directory_prefix,
+        effective_clock_identity_at, encode_record_path, finalize_format_load, format_boot_failure,
         install_pdftex_config_registers, png_embed_options, published_name_in_directory,
         seal_depcache_record, write_depcache, DepcacheInputs, FormatBootFailure,
         DEPCACHE_RECORD_MAX_BYTES, EMBEDDED_DEFAULT_FMT,
@@ -2329,6 +2337,16 @@ mod startup_tests {
         let encoded = encode_record_path(path);
         assert!(!encoded.contains(['\n', '\r', '\t']));
         assert_eq!(decode_record_path(&encoded).as_deref(), Some(path));
+    }
+
+    #[test]
+    fn directory_prefix_uses_the_native_separator() {
+        assert_eq!(
+            directory_prefix("build/\\"),
+            format!("build{}", std::path::MAIN_SEPARATOR)
+        );
+        #[cfg(windows)]
+        assert_eq!(directory_prefix(r"\\?\C:\temp\pdf"), r"\\?\C:\temp\pdf\");
     }
 
     #[test]

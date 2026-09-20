@@ -406,10 +406,11 @@ fn startup_filesystem_errors_respect_batch_mode() {
         failure_output(&visible_output)
     );
     let stderr = text(&visible_output.stderr);
-    assert!(
-        stderr.contains("pdflatex: cannot create output directory blocked-output/"),
-        "{stderr}"
+    let expected = format!(
+        "pdflatex: cannot create output directory blocked-output{}",
+        std::path::MAIN_SEPARATOR
     );
+    assert!(stderr.contains(&expected), "{stderr}");
 }
 
 #[test]

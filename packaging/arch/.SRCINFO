@@ -19,6 +19,6 @@ pkgbase = ratex-bin
 	options = !strip
 	options = !debug
 	source_x86_64 = ratex-bin-0.4.0.tar.gz::https://github.com/leoliu0/ratex/releases/download/v0.4.0/tex-suite-v0.4.0-linux-x86_64.tar.gz
-	sha256sums_x86_64 = 204e7984d433f9ce46e5f548305d5f955732e913cc8327221da62264626a53e9
+	sha256sums_x86_64 = a4e96526a72cc82882f9e3e90af9e601564c7ec1642fe62c2e4c746bffc34d49
 
 pkgname = ratex-bin

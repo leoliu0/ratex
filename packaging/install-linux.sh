@@ -1,8 +1,7 @@
 #!/bin/sh
 # install-linux.sh — installer for the Rust TeX engine suite on Linux.
 #
-# Installs pdflatex/xelatex/lualatex/bibtex/texmk/latexmk plus the runtime
-# texmf overlay. The compressed production format is embedded in pdflatex.
+# Installs ratex plus the runtime texmf overlay.
 #   1. an extracted release bundle (bin/ + share/tex-suite/ next to this
 #      script, or a tex-suite-linux-<arch>/ subdir), or
 #   2. a source checkout (--from-source builds with cargo, or reuses a
@@ -27,8 +26,7 @@ usage() {
     cat <<'EOF'
 Usage: install-linux.sh [options]
 
-Install the Rust TeX suite (pdflatex, xelatex, lualatex, bibtex, texmk,
-latexmk) and its texmf overlay on Linux. The LaTeX format is embedded.
+Install ratex and its runtime texmf overlay on Linux.
 
 Modes (auto-detected unless overridden):
   bundle       binaries + share/tex-suite found next to this script or in a
@@ -47,9 +45,7 @@ Options:
                    (default: PREFIX/share/tex-suite)
   --link           Symlink binaries into PREFIX/bin instead of copying
   --no-path        Do not edit shell profiles
-  --skip-verify    Skip the post-install pdflatex version check
-  --alias-latexmk  Create 'latexmk' alias pointing to texmk (default)
-  --no-alias-latexmk Do not create 'latexmk' alias
+  --skip-verify    Skip the post-install ratex version check
   --uninstall      Remove installed binaries, data dir, and profile block
   -h, --help       Show this help and exit
 
@@ -329,23 +325,6 @@ install_one() {
     fi
     chmod 755 -- "$_dst" 2>/dev/null || true
     log "  installed $_dst"
-}
-
-install_alias() {
-    _alias="$1"
-    _target="$2"
-    [ -e "$BIN_DIR/$_target" ] || { warn "cannot create $_alias: $_target is missing"; return 0; }
-    rm -f -- "$BIN_DIR/$_alias" 2>/dev/null || true
-    if ln -s -- "$_target" "$BIN_DIR/$_alias" 2>/dev/null; then
-        log "  installed $BIN_DIR/$_alias -> $_target"
-    elif ln -- "$BIN_DIR/$_target" "$BIN_DIR/$_alias" 2>/dev/null; then
-        log "  installed $BIN_DIR/$_alias (hard link to $_target)"
-    else
-        cp -f -- "$BIN_DIR/$_target" "$BIN_DIR/$_alias" \
-            || die "failed to install alias $_alias"
-        chmod 755 -- "$BIN_DIR/$_alias" 2>/dev/null || true
-        warn "symlinks unavailable; installed $_alias as a copy"
-    fi
 }
 
 safe_manifest_relative() {

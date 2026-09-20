@@ -77,7 +77,6 @@ pub(crate) struct DiagnosticRepeat {
     hidden: usize,
 }
 
-
 impl DiagnosticStore {
     pub fn clear(&mut self) {
         self.entries.clear();
@@ -296,7 +295,10 @@ impl Diagnostic {
                 out.push_str(&format!("{:gutter$} |\n", ""));
                 out.push_str(&format!("{} | {}\n", p.line, line));
             }
-            let p_label = self.primary_label.as_deref().map(|l| bounded_text(l.trim(), MAX_HELP_BYTES));
+            let p_label = self
+                .primary_label
+                .as_deref()
+                .map(|l| bounded_text(l.trim(), MAX_HELP_BYTES));
             render_caret_row(
                 &mut out,
                 gutter,
@@ -350,7 +352,10 @@ impl Diagnostic {
                         out.push_str(&format!("{:gutter$} |\n", ""));
                         out.push_str(&format!("{} | {}\n", primary.line, line));
                     }
-                    let p_label = self.primary_label.as_deref().map(|l| bounded_text(l.trim(), MAX_HELP_BYTES));
+                    let p_label = self
+                        .primary_label
+                        .as_deref()
+                        .map(|l| bounded_text(l.trim(), MAX_HELP_BYTES));
                     render_caret_row(
                         &mut out,
                         gutter,
@@ -481,14 +486,25 @@ fn render_caret_row(
     color: bool,
 ) {
     if color {
-        out.push_str(&format!("\x1b[1;34m{:gutter$} |\x1b[0m {}{}{}", "", " ".repeat(caret), caret_color, "^".repeat(width.max(1))));
+        out.push_str(&format!(
+            "\x1b[1;34m{:gutter$} |\x1b[0m {}{}{}",
+            "",
+            " ".repeat(caret),
+            caret_color,
+            "^".repeat(width.max(1))
+        ));
         if let Some(l) = label {
             out.push(' ');
             out.push_str(l);
         }
         out.push_str("\x1b[0m\n");
     } else {
-        out.push_str(&format!("{:gutter$} | {}{}", "", " ".repeat(caret), "^".repeat(width.max(1))));
+        out.push_str(&format!(
+            "{:gutter$} | {}{}",
+            "",
+            " ".repeat(caret),
+            "^".repeat(width.max(1))
+        ));
         if let Some(l) = label {
             out.push(' ');
             out.push_str(l);
@@ -674,13 +690,9 @@ impl Engine {
         for item in self.eqtb.save_stack.iter().rev() {
             if let crate::eqtb::SaveItem::Level(level, ty) = item {
                 if *ty == kind {
-                    let mark = self
-                        .diagnostic_group_openings
-                        .iter()
-                        .rev()
-                        .find_map(|(opening_level, mark)| {
-                            (*opening_level == *level).then_some(mark)
-                        });
+                    let mark = self.diagnostic_group_openings.iter().rev().find_map(
+                        |(opening_level, mark)| (*opening_level == *level).then_some(mark),
+                    );
                     return mark.map(|m| (*level, m));
                 }
             }
@@ -697,13 +709,9 @@ impl Engine {
                 if name.trim() == expected {
                     let level = self.eqtb.definition_level(id)?;
                     if level > crate::eqtb::LEVEL_ONE {
-                        return self
-                            .diagnostic_group_openings
-                            .iter()
-                            .rev()
-                            .find_map(|(opening_level, mark)| {
-                                (*opening_level == level).then_some(mark)
-                            });
+                        return self.diagnostic_group_openings.iter().rev().find_map(
+                            |(opening_level, mark)| (*opening_level == level).then_some(mark),
+                        );
                     }
                 }
             }
@@ -968,8 +976,8 @@ impl Engine {
         raw_message: &str,
         diagnostic: &mut Diagnostic,
     ) -> Option<u16> {
-        let is_latex_error = raw_message.starts_with("LaTeX Error:")
-            || raw_message.starts_with("! LaTeX Error:");
+        let is_latex_error =
+            raw_message.starts_with("LaTeX Error:") || raw_message.starts_with("! LaTeX Error:");
         let normalized_latex = raw_message
             .trim_start_matches("! ")
             .trim_start_matches("LaTeX Error: ")
@@ -989,8 +997,7 @@ impl Engine {
         {
             diagnostic.original_message = Some(raw_message.to_string());
             diagnostic.message = "math is still open at this closing brace".to_string();
-            if let Some((level, opener_mark)) =
-                self.group_origin(crate::eqtb::LevelType::MathShift)
+            if let Some((level, opener_mark)) = self.group_origin(crate::eqtb::LevelType::MathShift)
             {
                 let opener_ctx = opener_mark.to_context();
                 let is_literal_dollar = opener_ctx
@@ -1013,12 +1020,14 @@ impl Engine {
                 diagnostic.primary = Some(opener_ctx.clone());
                 diagnostic.highlight_len = 1;
                 diagnostic.primary_label = Some(opener_label);
-                diagnostic.included_from =
-                    crate::input::InputStack::source_context_chain(opener_ctx, MAX_CONTEXT_FRAMES + 1)
-                        .into_iter()
-                        .skip(1)
-                        .take(context_limit)
-                        .collect();
+                diagnostic.included_from = crate::input::InputStack::source_context_chain(
+                    opener_ctx,
+                    MAX_CONTEXT_FRAMES + 1,
+                )
+                .into_iter()
+                .skip(1)
+                .take(context_limit)
+                .collect();
                 diagnostic.help = Some(
                     "a missing closing math delimiter is likely: if this brace should close the surrounding text or group, finish the formula before it; otherwise remove the stray brace".to_string(),
                 );
@@ -1065,15 +1074,14 @@ impl Engine {
                         diagnostic.primary = Some(opener_ctx.clone());
                         diagnostic.highlight_len = 1;
                         diagnostic.primary_label = Some(opener_label);
-                        diagnostic.included_from =
-                            crate::input::InputStack::source_context_chain(
-                                opener_ctx,
-                                MAX_CONTEXT_FRAMES + 1,
-                            )
-                            .into_iter()
-                            .skip(1)
-                            .take(context_limit)
-                            .collect();
+                        diagnostic.included_from = crate::input::InputStack::source_context_chain(
+                            opener_ctx,
+                            MAX_CONTEXT_FRAMES + 1,
+                        )
+                        .into_iter()
+                        .skip(1)
+                        .take(context_limit)
+                        .collect();
                         diagnostic.help = Some(
                             "close the active formula with '$' before starting a paragraph or vertical space".to_string(),
                         );
@@ -1136,8 +1144,7 @@ impl Engine {
         }
 
         if is_latex_error
-            && (normalized_latex
-                == "Lonely \\item -- perhaps a missing list environment?"
+            && (normalized_latex == "Lonely \\item -- perhaps a missing list environment?"
                 || normalized_latex.starts_with("Lonely \\item"))
         {
             diagnostic.original_message = Some(raw_message.to_string());
@@ -1151,9 +1158,7 @@ impl Engine {
 
         if is_latex_error && normalized_latex.starts_with("Not in outer par mode") {
             diagnostic.original_message = Some(raw_message.to_string());
-            if let Some((level, math_mark)) =
-                self.group_origin(crate::eqtb::LevelType::MathShift)
-            {
+            if let Some((level, math_mark)) = self.group_origin(crate::eqtb::LevelType::MathShift) {
                 diagnostic.message = "a float cannot start while math is still open".to_string();
                 let opener_ctx = math_mark.to_context();
                 let is_literal_dollar = opener_ctx
@@ -1176,12 +1181,14 @@ impl Engine {
                 diagnostic.primary = Some(opener_ctx.clone());
                 diagnostic.highlight_len = 1;
                 diagnostic.primary_label = Some(opener_label);
-                diagnostic.included_from =
-                    crate::input::InputStack::source_context_chain(opener_ctx, MAX_CONTEXT_FRAMES + 1)
-                        .into_iter()
-                        .skip(1)
-                        .take(context_limit)
-                        .collect();
+                diagnostic.included_from = crate::input::InputStack::source_context_chain(
+                    opener_ctx,
+                    MAX_CONTEXT_FRAMES + 1,
+                )
+                .into_iter()
+                .skip(1)
+                .take(context_limit)
+                .collect();
                 diagnostic.help =
                     Some("finish the active formula before starting a float".to_string());
                 return Some(level);
@@ -1200,12 +1207,14 @@ impl Engine {
                     diagnostic.primary = Some(box_ctx.clone());
                     diagnostic.highlight_len = 1;
                     diagnostic.primary_label = Some("enclosing box opened here".to_string());
-                    diagnostic.included_from =
-                        crate::input::InputStack::source_context_chain(box_ctx, MAX_CONTEXT_FRAMES + 1)
-                            .into_iter()
-                            .skip(1)
-                            .take(context_limit)
-                            .collect();
+                    diagnostic.included_from = crate::input::InputStack::source_context_chain(
+                        box_ctx,
+                        MAX_CONTEXT_FRAMES + 1,
+                    )
+                    .into_iter()
+                    .skip(1)
+                    .take(context_limit)
+                    .collect();
                     diagnostic.help = Some(
                         "move the float outside the enclosing box, or close the box before the float".to_string(),
                     );
@@ -1366,7 +1375,8 @@ impl Engine {
             }
         }
 
-        if self.halt_on_error || self.interaction_mode == crate::engine::InteractionMode::ErrorStop {
+        if self.halt_on_error || self.interaction_mode == crate::engine::InteractionMode::ErrorStop
+        {
             self.flush_diagnostic_repeats();
             self.stopped_on_error = true;
             self.end_occurred = true;
@@ -1378,7 +1388,10 @@ impl Engine {
                 if self.error_count == 1 { "" } else { "s" }
             );
             let (stopped, _) = self.make_error_diagnostic(&message);
-            self.emit_diagnostic(&stopped, self.interaction_mode != crate::engine::InteractionMode::Batch);
+            self.emit_diagnostic(
+                &stopped,
+                self.interaction_mode != crate::engine::InteractionMode::Batch,
+            );
             self.diagnostics.push(stopped);
             self.stopped_on_error = true;
             self.end_occurred = true;
@@ -1412,7 +1425,10 @@ impl Engine {
                 .or_else(|| default_help(message)),
             note: None,
         };
-        self.emit_diagnostic(&diagnostic, self.interaction_mode != crate::engine::InteractionMode::Batch);
+        self.emit_diagnostic(
+            &diagnostic,
+            self.interaction_mode != crate::engine::InteractionMode::Batch,
+        );
         self.diagnostics.push(diagnostic);
         self.error_count += 1;
         self.stopped_on_error = true;
@@ -1644,6 +1660,14 @@ impl Engine {
                         && append_bounded(&mut bytes, name, limit)
                         && (name.len() <= 1 || append_bounded(&mut bytes, b" ", limit))
                 }
+            } else if token.is_unicode_char() {
+                let mut encoded = [0u8; 4];
+                let character = char::from_u32(token.chr()).unwrap_or(char::REPLACEMENT_CHARACTER);
+                append_bounded(
+                    &mut bytes,
+                    character.encode_utf8(&mut encoded).as_bytes(),
+                    limit,
+                )
             } else {
                 append_bounded(&mut bytes, &[token.chr() as u8], limit)
             };

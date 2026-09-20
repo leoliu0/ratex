@@ -795,6 +795,12 @@ pub enum Prim {
     PdfXImageBBox,
     PdfRandomSeed,
     PdfSetRandomSeed,
+    NoBoundary,
+    RatexUnicodeVersion,
+    RatexNativeTextMode,
+    RatexUtfEight,
+    RatexLiteralChar,
+    RatexCjkText,
 }
 
 /// Stable wire codes for the format dump (`crate::format`). Unit variants
@@ -1166,6 +1172,12 @@ impl Prim {
             Prim::PdfXImageBBox => 345,
             Prim::PdfRandomSeed => 346,
             Prim::PdfSetRandomSeed => 347,
+            Prim::NoBoundary => 348,
+            Prim::RatexUnicodeVersion => 349,
+            Prim::RatexNativeTextMode => 350,
+            Prim::RatexUtfEight => 351,
+            Prim::RatexLiteralChar => 352,
+            Prim::RatexCjkText => 353,
             Prim::ScriptScriptStyle => 284,
             Prim::Patterns => 287,
             Prim::Hyphenation => 288,
@@ -1526,6 +1538,12 @@ impl Prim {
             345 => Some(Prim::PdfXImageBBox),
             346 => Some(Prim::PdfRandomSeed),
             347 => Some(Prim::PdfSetRandomSeed),
+            348 => Some(Prim::NoBoundary),
+            349 => Some(Prim::RatexUnicodeVersion),
+            350 => Some(Prim::RatexNativeTextMode),
+            351 => Some(Prim::RatexUtfEight),
+            352 => Some(Prim::RatexLiteralChar),
+            353 => Some(Prim::RatexCjkText),
             0x1000..=0x1fff => {
                 let i = c & 0x0fff;
                 Some(Prim::IntP(IntParam::from_idx(i)?))

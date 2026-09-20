@@ -102,9 +102,9 @@ fn forms_embed_fonts_used_only_inside_forms() {
     assert!(e.pdf_doc.pages[0].fonts.is_empty());
     assert_eq!(e.pdf_doc.form_fonts.len(), 1);
     assert_eq!(e.pdf_doc.form_fonts[0].1.len(), 1);
-    e.embed_used_fonts();
+    e.embed_used_fonts().unwrap();
     assert_eq!(e.pdf_doc.fonts.len(), 1);
-    let pdf = tex_core::pdffile::write_pdf(&e.pdf_doc);
+    let pdf = tex_core::pdffile::write_pdf(&e.pdf_doc).expect("valid embedded fonts");
     let parsed = lopdf::Document::load_mem(&pdf).unwrap();
     let form = parsed
         .objects
@@ -204,7 +204,7 @@ fn undefined_pdf_xobject_references_are_located_and_omitted() {
     let page = String::from_utf8_lossy(&e.pdf_doc.pages[0].content);
     assert!(!page.contains("/Im91 Do"), "{page}");
     assert!(!page.contains("/Fm92 Do"), "{page}");
-    let pdf = tex_core::pdffile::write_pdf(&e.pdf_doc);
+    let pdf = tex_core::pdffile::write_pdf(&e.pdf_doc).expect("valid embedded fonts");
     lopdf::Document::load_mem(&pdf).expect("invalid references must not break the PDF");
 }
 

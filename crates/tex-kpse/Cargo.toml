@@ -9,7 +9,7 @@ zstd = { workspace = true }
 [build-dependencies]
 zstd = { workspace = true }
 tar = { workspace = true }
-
+ttf-parser = { workspace = true }
 [dev-dependencies]
 tar = { workspace = true }
 

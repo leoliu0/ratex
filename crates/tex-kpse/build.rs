@@ -20,20 +20,58 @@ fn main() {
         let generated = "static PACKAGE_CHUNKS: &[(u32, u32)] = &[];\n\
                          static PACKAGE_NAMES: &[u8; 0] = b\"\";\n\
                          static PACKAGE_INDEX: &[(u32, u32, u32, u32, u32)] = &[];\n\
-                         static PACKAGE_FOLDED: &[u32] = &[];\n";
+                         static PACKAGE_FOLDED: &[u32] = &[];\n\
+                         static EMBEDDED_FONT_FACES: &[EmbeddedFontFace] = &[];\n";
         std::fs::write(out.join("packages_index.rs"), generated).unwrap();
         return;
     }
+    println!("cargo:rerun-if-changed=assets/packages.lock.json");
+    let lock_text = std::fs::read_to_string("assets/packages.lock.json")
+        .expect("assets/packages.lock.json must be present");
+    let mut part_names = Vec::new();
+    let mut in_parts = false;
+    for line in lock_text.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("\"parts\":") {
+            in_parts = true;
+        } else if in_parts {
+            if trimmed.starts_with(']') {
+                break;
+            }
+            if trimmed.starts_with("\"name\":") {
+                if let Some(val) = trimmed.split(':').nth(1) {
+                    let name = val
+                        .trim()
+                        .trim_matches(|c| c == '"' || c == ',' || c == ' ');
+                    if name.starts_with("packages.tar.zst.") {
+                        part_names.push(name.to_string());
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        !part_names.is_empty(),
+        "No packages.tar.zst.* parts declared in assets/packages.lock.json"
+    );
 
-    println!("cargo:rerun-if-changed=assets/packages.tar.zst");
-    let archive = std::fs::File::open("assets/packages.tar.zst").unwrap();
-    let mut archive = tar::Archive::new(zstd::Decoder::new(archive).unwrap());
+    let assets_dir = std::path::Path::new("assets");
+    let mut chained_reader: Box<dyn Read> = Box::new(std::io::empty());
+    for part_name in &part_names {
+        let p = assets_dir.join(part_name);
+        println!("cargo:rerun-if-changed={}", p.display());
+        let file = std::fs::File::open(&p)
+            .unwrap_or_else(|e| panic!("failed to open locked part {}: {e}", p.display()));
+        chained_reader = Box::new(chained_reader.chain(file));
+    }
+    let mut archive = tar::Archive::new(zstd::Decoder::new(chained_reader).unwrap());
     let mut blob =
         std::io::BufWriter::new(std::fs::File::create(out.join("packages.bin")).unwrap());
     let mut index: BTreeMap<String, (usize, usize, usize)> = BTreeMap::new();
     let mut chunks: Vec<(usize, usize)> = Vec::new();
     let mut chunk = Vec::with_capacity(CHUNK_TARGET);
     let mut blob_offset = 0usize;
+    let mut font_faces = Vec::new();
     for entry in archive.entries().unwrap() {
         let mut entry = entry.unwrap();
         if !entry.header().entry_type().is_file() {
@@ -59,6 +97,34 @@ fn main() {
         index.insert(name.to_owned(), (chunk_index, member_offset, member_len));
         if chunk.len() >= CHUNK_TARGET {
             write_chunk(&mut blob, &mut chunks, &mut blob_offset, &mut chunk);
+        }
+        let is_font = name.ends_with(".otf")
+            || name.ends_with(".ttf")
+            || name.ends_with(".ttc")
+            || name.ends_with(".otc");
+        if is_font {
+            let count = ttf_parser::fonts_in_collection(&data).unwrap_or(1);
+            for face_idx in 0..count {
+                if let Ok(face) = ttf_parser::Face::parse(&data, face_idx) {
+                    // Legacy name 1 (Family) and name 2 (Subfamily) preserve distinct optical
+                    // sizes (e.g. 'LM Roman 10' vs 'LM Roman 12') and avoid ambiguity.
+                    // Postscript name 6 gives exact font identification.
+                    let family = best_name(&face, 1).unwrap_or_default();
+                    let subfamily = best_name(&face, 2).unwrap_or_else(|| "Regular".to_string());
+                    let postscript = best_name(&face, 6).unwrap_or_default();
+                    let weight = face.weight().to_number();
+                    let italic = face.is_italic();
+                    font_faces.push((
+                        name.to_owned(),
+                        face_idx,
+                        family,
+                        subfamily,
+                        postscript,
+                        weight,
+                        italic,
+                    ));
+                }
+            }
         }
     }
     write_chunk(&mut blob, &mut chunks, &mut blob_offset, &mut chunk);
@@ -118,6 +184,20 @@ fn main() {
         "static PACKAGE_FOLDED: &[u32] = &{packed_folded:?};"
     )
     .unwrap();
+    writeln!(
+        generated,
+        "static EMBEDDED_FONT_FACES: &[EmbeddedFontFace] = &["
+    )
+    .unwrap();
+    for (file, face_index, family, subfamily, postscript, weight, italic) in font_faces {
+        writeln!(
+            generated,
+            "    EmbeddedFontFace {{ file: {:?}, face_index: {}, family: {:?}, subfamily: {:?}, postscript: {:?}, weight: {}, italic: {} }},",
+            file, face_index, family, subfamily, postscript, weight, italic
+        )
+        .unwrap();
+    }
+    writeln!(generated, "];").unwrap();
 }
 
 fn packed(value: usize) -> u32 {
@@ -138,4 +218,27 @@ fn write_chunk(
     chunks.push((*blob_offset, compressed.len()));
     *blob_offset += compressed.len();
     chunk.clear();
+}
+
+/// Prefer English-US Windows records (0x0409) over localized or platform-specific records,
+/// falling back to Unicode and generic records.
+fn best_name(face: &ttf_parser::Face, name_id: u16) -> Option<String> {
+    let mut best_match: Option<(u8, String)> = None;
+    for record in face.names() {
+        if record.name_id != name_id {
+            continue;
+        }
+        if let Some(s) = record.to_string() {
+            let prio = match record.platform_id {
+                ttf_parser::PlatformId::Windows if record.language_id == 0x0409 => 4,
+                ttf_parser::PlatformId::Windows => 3,
+                ttf_parser::PlatformId::Unicode => 2,
+                _ => 1,
+            };
+            if best_match.as_ref().map_or(true, |(p, _)| prio > *p) {
+                best_match = Some((prio, s));
+            }
+        }
+    }
+    best_match.map(|(_, s)| s)
 }

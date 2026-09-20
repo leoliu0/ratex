@@ -665,9 +665,7 @@ mod tests {
         engine.init_primitives();
         engine.eqtb.tok_params[crate::prim::ToksParam::EveryEOF.idx() as usize] =
             std::rc::Rc::new(vec![Token::letter(b'Z')]);
-        engine
-            .input
-            .push_file("sub.tex".into(), b"A".to_vec());
+        engine.input.push_file("sub.tex".into(), b"A".to_vec());
 
         assert_eq!(engine.get_next_raw(), Token::letter(b'A'));
         assert_eq!(engine.get_next_raw(), Token::space());

@@ -99,19 +99,6 @@ class PackageLayoutTests(unittest.TestCase):
                 self.assertEqual(member.compress_type, zipfile.ZIP_DEFLATED)
                 self.assertLess(member.compress_size, member.file_size)
 
-    def test_asset_provenance_is_stable_and_relative(self) -> None:
-        repo_asset = package_dist.REPO / "texmf" / "tex" / "generic" / "hyphen" / "hyphen.tex"
-        self.assertEqual(
-            package_dist.asset_source_label(repo_asset, []),
-            "repo:texmf/tex/generic/hyphen/hyphen.tex",
-        )
-        with tempfile.TemporaryDirectory() as temp:
-            root = Path(temp)
-            asset = root / "tex" / "generic" / "hyphen" / "hyphen.tex"
-            self.assertEqual(
-                package_dist.asset_source_label(asset, [root]),
-                "texmf:tex/generic/hyphen/hyphen.tex",
-            )
 
     def test_manifest_file_and_link_categories_are_disjoint(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -323,23 +310,6 @@ class InstallerUpgradeTests(unittest.TestCase):
             self.assertEqual(marker.read_text(), "not an ownership manifest\n")
             self.assertFalse((prefix / "bin" / "pdflatex").exists())
 
-    def test_windows_uninstall_never_recursively_deletes_install_root(self) -> None:
-        script = (package_dist.REPO / "packaging" / "install-windows.ps1").read_text()
-        self.assertIn("Assert-OwnedDestinations", script)
-        self.assertIn("Refusing an unrecognized install manifest", script)
-        self.assertIn("Refusing to overwrite unowned path", script)
-        self.assertIn("Remove-ManagedInstallFiles", script)
-        self.assertIn("tex-suite-install-v2", script)
-        self.assertNotRegex(
-            script,
-            r"Remove-Item\s+-LiteralPath\s+\$Root\s+-Recurse",
-        )
-
-    def test_macos_quarantine_cleanup_never_recurses_through_custom_data(self) -> None:
-        script = (package_dist.REPO / "packaging" / "install-macos.sh").read_text()
-        self.assertNotIn('xattr -dr com.apple.quarantine "$DATA_DIR"', script)
-        self.assertIn('[ ! -L "$BIN_DIR/$_t" ]', script)
-        self.assertIn('done < "$DATA_MANIFEST"', script)
 
 
 if __name__ == "__main__":

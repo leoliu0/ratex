@@ -36,7 +36,9 @@ pub(crate) struct Worker {
 
 impl Worker {
     pub(crate) fn new() -> Option<Self> {
-        if cfg!(target_arch = "wasm32") { return None; }
+        if cfg!(target_arch = "wasm32") {
+            return None;
+        }
         static PARALLEL: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         if !*PARALLEL
             .get_or_init(|| std::thread::available_parallelism().is_ok_and(|n| n.get() > 1))

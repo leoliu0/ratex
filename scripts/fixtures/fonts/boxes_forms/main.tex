@@ -1,0 +1,46 @@
+\documentclass{article}
+\usepackage{fontspec}
+\usepackage{xeCJK}
+\setmainfont{Latin Modern Roman}
+\setCJKmainfont{IPAexMincho}
+
+% Define a reusable form component combining Latin Modern and CJK glyphs
+\newbox\reusableform
+\setbox\reusableform=\hbox{\fbox{\textbf{Form Badge:} \textit{Reusable Form Component} with IPAexMincho: フォーム再利用}}
+
+\ifdefined\pdfxform
+  \pdfxform\reusableform
+  \edef\formid{\the\pdflastxform}
+  \def\putreusableform{\pdfrefxform\formid}
+\else
+  \def\putreusableform{\copy\reusableform}
+\fi
+
+\begin{document}
+\section*{Tables and Boxes Layout}
+
+\begin{tabular}{|l|c|r|}
+\hline
+Header 1 & Header 2 & Header 3 \\
+\hline
+Item Alpha & 123.45 & \$50.00 \\
+Item Beta  & 678.90 & \$100.00 \\
+\hline
+\end{tabular}
+
+\bigskip
+\fbox{Framed box with IPAexMincho: 日本語の枠組みテスト。}
+
+\bigskip
+\noindent\putreusableform
+
+\bigskip
+\noindent Reused instance of the form:
+
+\noindent\putreusableform
+
+\bigskip
+CJK Punctuation Wrapping:
+これは長い日本語の段落です。句読点（、や。）が行頭に来てはならない禁則処理を検証します。
+括弧「これ」や『それ』の行末行頭禁則も検証対象です。
+\end{document}

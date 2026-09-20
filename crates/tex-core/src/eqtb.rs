@@ -117,9 +117,7 @@ impl Macro {
         let mut length = self.body.len();
         for &(_, parameter) in references.iter() {
             if let Some(arg) = args.get(parameter) {
-                let next = length
-                    .checked_sub(1)?
-                    .checked_add(arg.len())?;
+                let next = length.checked_sub(1)?.checked_add(arg.len())?;
                 if next > limit {
                     return None;
                 }
@@ -229,6 +227,7 @@ pub enum SaveItem {
     LcCode(u8, u8, u16),
     SfCode(u8, u16, u16),
     UcCode(u8, u8, u16),
+    UnicodeCase(bool, u32, Option<(u32, u16)>),
     StyleFont(u8, u16, u16, u16), // (0=textfont,1=scriptfont,2=ssfont, fam, fontid, level)
     FontParam(u16, usize, i32, u16), // font, param index (0-based), old, level
     HyphenChar(u16, i32, u16),
@@ -300,6 +299,8 @@ pub struct Eqtb {
     pub sf_levels: Vec<u16>,
     pub uc_code: Vec<u8>,
     pub uc_levels: Vec<u16>,
+    /// Unicode overrides, keyed by (uppercase, scalar); the byte tables stay hot.
+    pub unicode_case_codes: crate::FxHashMap<(bool, u32), (u32, u16)>,
 
     /// style_fonts[style][fam] -> font id (0 = none); style: 0=text 1=script 2=ss
     pub style_fonts: [[u16; 256]; 3],
@@ -579,6 +580,7 @@ impl Eqtb {
             sf_levels: vec![LEVEL_ONE; 256],
             uc_code: uc_code.to_vec(),
             uc_levels: vec![LEVEL_ONE; 256],
+            unicode_case_codes: crate::FxHashMap::default(),
             style_fonts: [[0; 256]; 3],
             style_font_levels: [[LEVEL_ONE; 256]; 3],
             fonts: Vec::new(),
@@ -618,7 +620,6 @@ impl Eqtb {
     pub(crate) fn definition_level(&self, id: CsId) -> Option<u16> {
         self.entries.get(id as usize).map(|e| e.level)
     }
-
 
     /// follow \let aliases to the effective meaning
     #[inline(always)]
@@ -964,6 +965,46 @@ impl Eqtb {
             |old, ol| SaveItem::UcCode(c, old, ol),
         );
     }
+
+    pub fn case_code(&self, character: u32, uppercase: bool) -> u32 {
+        if !self.unicode_case_codes.is_empty() {
+            if let Some(&(value, _)) = self.unicode_case_codes.get(&(uppercase, character)) {
+                return value;
+            }
+        }
+        let table = if uppercase {
+            &self.uc_code
+        } else {
+            &self.lc_code
+        };
+        table.get(character as usize).copied().unwrap_or(0) as u32
+    }
+
+    pub fn assign_case_code(&mut self, character: u32, value: u32, uppercase: bool, global: bool) {
+        if character < 256 {
+            let byte = u8::try_from(value).unwrap_or(0);
+            if uppercase {
+                self.assign_uc_code(character as u8, byte, global);
+            } else {
+                self.assign_lc_code(character as u8, byte, global);
+            }
+        }
+        let key = (uppercase, character);
+        let old = self.unicode_case_codes.get(&key).copied();
+        if character < 256 && value < 256 && old.is_none() {
+            return;
+        }
+        if !global
+            && self.cur_level > LEVEL_ONE
+            && old.map(|(_, level)| level) != Some(self.cur_level)
+        {
+            self.push_save(SaveItem::UnicodeCase(uppercase, character, old));
+        }
+        self.unicode_case_codes.insert(
+            key,
+            (value, if global { LEVEL_ONE } else { self.cur_level }),
+        );
+    }
     /// tex.web set_font: `define(cur_font_loc, data, cur_chr)` — a font
     /// selection is a group-scoped assignment; \globaldefs>0 forces it
     /// global, <0 forces it local ("Adjust for the setting of \globaldefs").
@@ -1201,6 +1242,20 @@ impl Eqtb {
                     if self.uc_levels[c as usize] > LEVEL_ONE {
                         self.uc_code[c as usize] = v;
                         self.uc_levels[c as usize] = l;
+                    }
+                }
+                SaveItem::UnicodeCase(uppercase, character, old) => {
+                    let key = (uppercase, character);
+                    if self
+                        .unicode_case_codes
+                        .get(&key)
+                        .is_some_and(|&(_, level)| level > LEVEL_ONE)
+                    {
+                        if let Some(value) = old {
+                            self.unicode_case_codes.insert(key, value);
+                        } else {
+                            self.unicode_case_codes.remove(&key);
+                        }
                     }
                 }
                 SaveItem::StyleFont(style, fam, v, l) => {

@@ -1,0 +1,373 @@
+Ratex Bundled Font Notices, Copyrights, and Licensing Information
+=================================================================
+
+This document records the licensing terms, copyrights, upstream locations,
+cryptographic checksums, and source availability obligations for all fonts
+and TeX support packages bundled in the Ratex distribution.
+
+The Ratex engine software is licensed under MIT and Apache-2.0. That code license
+does NOT replace, alter, or supersede the individual redistribution licenses of
+the bundled font families and TeX packages. All bundled fonts remain governed by
+their respective upstream licenses.
+
+
+1. Latin Modern (LM)
+--------------------
+- Maintainers: Bogusław Jackowski and Janusz M. Nowacki (GUST, Poland)
+- Upstream: CTAN /fonts/lm (Revision 77682, Version 2.005)
+  Retrieval URL: https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/lm.tar.xz
+  SHA256: 6ecafd1f066d189a0688c10572a01d45c231fa236d6ec1cca726ca4eef41e57c (11,944,800 bytes)
+- Licenses: GUST Font License (GFLL) v1.0 and LaTeX Project Public License (LPPL) v1.3c
+- Shipped License Texts:
+  * doc/fonts/lm/GUST-FONT-LICENSE.TXT
+  * doc/fonts/lm/MANIFEST-Latin-Modern.TXT
+- Terms: Latin Modern is an outline font family (Type 1 text and math, OpenType)
+  derived from Donald E. Knuth's Computer Modern fonts. Any modified version must
+  be renamed so that the names do not contain "Latin Modern" or "LM".
+
+
+2. CM-Super
+-----------
+- Author / Maintainer: Vladimir Volovich <vvv@vsu.ru>
+- Upstream: CTAN /fonts/ps-type1/cm-super (Revision 15878, Version 0.3.4)
+  Retrieval URL: https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/cm-super.tar.xz
+  SHA256: 70867904e38451ab1a11ba4677dd5891914f128170b53fac26d3e9dca9d326e4 (64,562,404 bytes)
+- License: GNU General Public License v2.0 or later, with Special Font Exception:
+  "As a special exception, permission is granted to include these font
+   programs in a Postscript or PDF file that consists of a document that
+   contains text to be displayed or printed using these fonts, regardless
+   of the conditions or license applying to the document itself."
+- Shipped License Texts:
+  * doc/fonts/cm-super/COPYING
+  * doc/fonts/cm-super/README
+- Corresponding Source Obligations:
+  The CM-Super font outlines were converted from METAFONT sources using TeXtrace
+  and PfEdit/FontForge scripts. The complete corresponding source code archive
+  (METAFONT sources, conversion scripts, and encodings) is maintained at CTAN
+  (/fonts/ps-type1/cm-super). Ratex provides reproducible retrieval pins and
+  retains the upstream source archive in repository distribution assets.
+
+
+3. CBfonts (Greek LGR) and Greek Font Encoding Support
+------------------------------------------------------
+- Authors / Maintainers: Claudio Beccari, Apostolos Syropoulos, Günter Milde
+- Upstream:
+  * CTAN /fonts/greek/cbfonts (Revision 54080)
+    Retrieval URL: https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/cbfonts.tar.xz
+    SHA256: b4ec36812e215fcc2ba2e7b12df17bf98adf31b77c044f22d4c5568465e8f0ee (66,006,520 bytes)
+  * CTAN /language/greek/greek-inputenc (Revision 66634, Version 1.9)
+    Retrieval URL: https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/greek-inputenc.tar.xz
+    SHA256: ce0405bb0402a07266a0d43b13a313fb897ecf96b355b00c2394c9c31416f513 (6,864 bytes)
+- License: LaTeX Project Public License (LPPL) v1.3c
+- Shipped License Texts:
+  * doc/fonts/cbfonts/README
+  * doc/latex/greek-inputenc/README.md
+- Terms: Complete collection of Greek fonts matching Computer Modern in Type 1
+  format, metrics (TFM), font definitions (cbfonts-fd), common Greek font encoding
+  definitions (greek-fontenc), and UTF-8 inputenc mappings (lgrenc.dfu).
+
+
+4. Wadalab (Japanese Kanji)
+---------------------------
+- Authors / Maintainers: Wadalab Kanji Project, Tanaka Laboratory (Univ. of Tokyo), Werner Lemberg
+- Upstream: CTAN /fonts/wadalab (Revision 42428, Version 0-12)
+  Retrieval URL: https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/wadalab.tar.xz
+  SHA256: 81918f1cd7ef1ced85c2adb30c8d6e5eaeba17d43af86b4a888b698085c47018 (17,772,744 bytes)
+- License: Wadalab Font License (freely redistributable with derivation notice)
+- Shipped License Texts:
+  * doc/fonts/wadalab/README
+- Required Derivation Notice:
+  (1) The distributed fonts are derived from the Wadalab fonts distributed by
+      the Wadalab Project (ftp.ipl.t.u-tokyo.ac.jp).
+  (2) Modifications: The original Wadalab outlines were processed with FontForge
+      by Werner Lemberg to generate Adobe Glyph List-compliant glyph names for
+      proper PDF ToUnicode CMaps, along with virtual Unicode subfonts for CJKutf8.
+
+
+5. IPAex Fonts (IPAexフォント)
+------------------------------
+- Author: Information-technology Promotion Agency (IPA), Japan
+- Upstream: CTAN /fonts/ipaex (Revision 61719, Version 00401)
+  Retrieval URL: https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/ipaex.tar.xz
+  SHA256: 7db75b91663a5fa711d72fba2d1934580e0570c58d2937f5f54aa3ac7cf43e15 (15,865,176 bytes)
+- License: IPA Font License Agreement v1.0
+- Shipped License Texts:
+  * doc/fonts/ipaex/IPA_Font_License_Agreement_v1.0.txt
+- Terms: TrueType fonts (IPAexMincho and IPAexGothic). Redistribution and embedding
+  in digital documents are permitted provided the copyright notice and agreement text
+  are included with the distribution.
+
+
+6. Harano Aji Fonts (原ノ味フォント)
+-----------------------------------
+- Authors: Harano Aji Font Project (Kento MATSUI), Adobe, SIL International
+- Upstream: CTAN /fonts/haranoaji (Revision 76078, Version 20250811)
+  Retrieval URL: https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/haranoaji.tar.xz
+  SHA256: e9410a8fe32dde7421fb8e4ae46f4e7aa58fe2a487fdb5c2e268ed622c14252b (26,259,784 bytes)
+- License: SIL Open Font License (OFL) v1.1
+- Shipped License Texts:
+  * doc/fonts/haranoaji/LICENSE
+- Terms: OpenType Japanese fonts derived from Adobe Source Han font families
+  (Source Han Mincho and Source Han Sans). Free to use, modify, embed, and bundle.
+
+
+7. Arphic Fonts and Arphic TrueType (文鼎字型)
+---------------------------------------------
+- Authors: Arphic Technology Co., Ltd. (Taiwan) and Werner Lemberg
+- Upstream:
+  * CTAN /fonts/arphic (Revision 15878, Version 1999)
+    Retrieval URL: https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/arphic.tar.xz
+    SHA256: fb0eb8ec13e210a3d1023478c35bd897f5e60049a05c87258ca19fa8452cb31b (27,383,316 bytes)
+  * CTAN /fonts/arphic-ttf (Revision 42675)
+    Retrieval URL: https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/arphic-ttf.doc.tar.xz
+    SHA256: 86ca73a8fb4e606e0f425c0277928bbb26565d8db28663c5f3c2a2e91caf9feb (13,072 bytes)
+- License: Arphic Public License
+- Shipped License Texts:
+  * doc/fonts/arphic-ttf/ARPHICPL.txt
+  * doc/fonts/arphic/gbsnu/README
+- Terms: Provides four Chinese font families in Type 1 and TrueType formats:
+  AR PL SungtiL GB (gbsn), AR PL KaitiM GB (gkai), AR PL Mingti2L Big5 (bsmi),
+  and AR PL KaitiM Big5 (bkai). Commercial and non-commercial redistribution
+  is permitted with attribution under the Arphic Public License.
+
+
+8. UHC Fonts (Korean HLaTeX)
+----------------------------
+- Author: Koaunghi Un
+- Upstream: CTAN /fonts/korean/HLaTeX (Revision 16791, Version 1.0)
+  Retrieval URL: https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/uhc.tar.xz
+  SHA256: 6c3df3ca1acee37f2a46fc2c42c24b4f27b89f985e95760f8a6b28f03f6c43af (3,600,148 bytes)
+- License: LaTeX Project Public License (LPPL) v1.0 or later
+- Shipped License Texts:
+  * doc/fonts/uhc/umj/README
+- Terms: Korean fonts providing the c70mj -> uwmj -> wmj -> umj Type 1 and virtual
+  font dependency closure for Korean CJKutf8 typesetting.
+
+
+9. Un-fonts Core (은글꼴)
+-------------------------
+- Authors: Koaunghi Un, Won-kyu Park <wkpark@kldp.org>, Jungshik Shin <jshin@mailaps.org>
+- Upstream: CTAN /fonts/unfonts-core (Revision 56291, Version 1.0.2)
+  Retrieval URL: https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/unfonts-core.tar.xz
+  SHA256: 513990ad0501f2388cdcad68ac635ad94d21b4fed9424a58db7ef9d7d6922bc1 (14,727,532 bytes)
+- License: GNU General Public License v2.0 (GPL-2.0) WITHOUT Font Exception
+- Shipped License Texts:
+  * doc/fonts/unfonts-core/COPYING
+  * doc/fonts/unfonts-core/README.md
+- Legal Status & Corresponding Source Obligations:
+  Un-fonts Core (UnBatang, UnDotum, UnGraphic, UnDinaru, UnPilgi, UnGungseo) are
+  licensed under the standard GNU GPL version 2 without a verified font embedding
+  exception. Distributing compiled binaries bundling these fonts triggers the GPLv2
+  source disclosure requirements.
+  Ratex records the exact upstream archive SHA256 pin and makes available the
+  corresponding source archive at the pinned retrieval URL. Users and redistributors
+  should note that documents embedding Un-fonts may be subject to copyleft provisions
+  unless a separate font exception is secured from copyright holders.
+
+
+10. Nanum Type 1 Fonts
+----------------------
+- Author: NAVER Corporation / Sandoll Communications
+- Upstream: CTAN /fonts/nanumtype1 (Revision 29558, Version 3.0)
+  Retrieval URL: https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/nanumtype1.tar.xz
+  SHA256: 77e94f530f1e3298c81b40ea5a2dd0f3bd8956af0ea750d3cf68dee581ffdbd9 (28,242,732 bytes)
+- License: SIL Open Font License (OFL) v1.1
+- Shipped License Texts:
+  * doc/fonts/nanumtype1/COPYING
+- Terms: Nanum Myeongjo and Nanum Gothic Korean Type 1 fonts and map files.
+
+
+11. stmaryrd (St Mary's Road Symbol Font)
+-----------------------------------------
+- Authors: Alan Jeffrey, Jeremy Gibbons; Type 1 conversion by Taco Hoekwater
+- Upstream: CTAN /fonts/stmaryrd (Revision 77682, Version 1998)
+  Retrieval URL: https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/stmaryrd.tar.xz
+  SHA256: 3dcd9aeeeb8c502cc0ee908838a5154f0ea03c810cbf5d4e5088c1eee44a4079 (166,144 bytes)
+- License: Public Domain
+- Shipped License Texts:
+  * doc/fonts/stmaryrd/README
+  * doc/fonts/stmaryrd/README.hoekwater
+- Terms: Mathematical and computer science symbol fonts (stmary10, etc.) in
+  Type 1, METAFONT, and TFM formats. Donated to the public domain without warranty.
+
+
+12. bbding (Blakowski Dingbats)
+-------------------------------
+- Authors: Karel Horak, Peter Møller Neergaard
+- Upstream: CTAN /fonts/bbding (Revision 77682, Version 1.01)
+  Retrieval URL: https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/bbding.tar.xz
+  SHA256: 55e0bca1e18927c792b1fd5cc48592c02fdd5fff3691c26ab0db82ba4b335892 (11,680 bytes)
+- License: LaTeX Project Public License (LPPL) v1.0 or later
+- Shipped License Texts:
+  * doc/latex/bbding/README
+- Terms: Dingbat symbol font (bbding10) in Type 1 and TFM formats.
+
+
+13. Babel Russian (Языковой модуль Russian для Babel)
+------------------------------------------------------
+- Author / Maintainer: Igor A. Kotelnikov
+- Upstream: CTAN /macros/latex/contrib/babel-contrib/russian (Revision 57375, Version 1.3m)
+  Retrieval URL: https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/babel-russian.tar.xz
+  SHA256: 5962e93e52acb95a13705a9534bdef6faf3fcc89ba36f97cd85af15a94e83679 (19,008 bytes)
+- License: LaTeX Project Public License (LPPL) v1.3c or later
+- Shipped License Texts:
+  * doc/generic/babel-russian/README.md
+- Terms: Russian language definition file (russianb.ldf) for Babel, providing
+  hyphenation rules, translations, and font encoding setup for T2A/Cyrillic.
+
+
+14. LaTeX Base Distribution Legal Notices
+-----------------------------------------
+- Author: The LaTeX Project
+- Upstream: CTAN /macros/latex/base (Revision 76924)
+- License: LaTeX Project Public License (LPPL) v1.3c
+- Shipped License Texts:
+  * doc/latex/base/manifest.txt
+  * doc/latex/base/legal.txt
+  * doc/latex/base/lppl.txt
+  * doc/latex/base/README.md
+- Terms: Official legal statements, manifest, and conditions of distribution for
+  the LaTeX kernel. Bundled to comply with LPPL attribution requirements for
+  derived TU encoding adapters and kernel macros.
+
+
+15. URW Base 35 PostScript Fonts
+--------------------------------
+- Authors: URW++ Design and Development GmbH
+- Upstream: CTAN /fonts/urw/base35 (TeX Live packages times, helvetic, palatino, zapfding, symbol, courier, bookman, avantgar, ncntrsbk, zapfchan)
+- License: GNU General Public License v2.0 or later with Aladdin Free Public License / Font Exception
+- Shipped License Texts:
+  * doc/fonts/urw-base35/COPYING
+  * doc/fonts/urw-base35/README
+- Corresponding Source Obligations:
+  The complete corresponding source code archive (base35.zip) is maintained at CTAN (/fonts/urw/base35.zip)
+  and included in sources.tar.zst.
+- Terms: Complete authentic Type 1 outline programs and metrics matching standard PostScript Base 35 faces:
+  Nimbus Roman No9 L (Times), Nimbus Sans L (Helvetica), URW Palladio L (Palatino), Dingbats (Zapf Dingbats),
+  Standard Symbols L (Symbol), Nimbus Mono L (Courier), URW Bookman L (Bookman), URW Gothic L (Avant Garde),
+  Century Schoolbook L (New Century Schoolbook), and URW Chancery L (Zapf Chancery).
+
+
+16. Bitstream Charter and Adobe Utopia Fonts
+--------------------------------------------
+- Authors: Bitstream Inc., Adobe Systems Inc.
+- Upstream: CTAN /fonts/charter, /fonts/utopia
+- Licenses: Bitstream Free Font License / Adobe Utopia Free Font License (other-free)
+- Shipped License Texts:
+  * doc/fonts/utopia/LICENSE-utopia.txt
+  * doc/fonts/utopia/README-utopia.txt
+- Terms: Type 1 outlines, metrics, and virtual fonts for Bitstream Charter and Adobe Utopia.
+
+
+17. Recoverable Mathematical & Calligraphic Symbol Fonts
+-------------------------------------------------------
+- Packages:
+  * calligra-type1 (Version 001.000, other-free): Type 1 version of Calligra calligraphy font
+  * mathabx-type1 (Version 2024, LPPL): Type 1 conversion of mathabx mathematical symbols
+  * doublestroke (Version 1.111, other-free): dsrom/dsss double stroke blackboard bold Type 1 fonts
+  * bbold-type1 (Version 2024, other-free): Adobe Type 1 version of bbold Blackboard Bold
+  * yhmath (Version 1.6, LPPL-1.3c): Extended maths fonts (yhcmex Type 1 and VFs; source in yhmath.source.tar.xz)
+  * ae (Version 1.4, LPPL): Virtual fonts for T1 Computer Modern (source in ae.source.tar.xz)
+  * esint-type1 (Version 2024, Public Domain): Font esint10 Type 1 integral symbols
+
+
+18. TXFonts (Times-like Mathematics & Text)
+------------------------------------------
+- Author: Young Ryu
+- Upstream: CTAN /fonts/txfonts (Revision 77682)
+- License: GNU General Public License (GPL)
+- Shipped License Texts:
+  * doc/fonts/txfonts/README
+- Corresponding Source Obligations:
+  Complete METAFONT, macro, and Type 1 source distribution (txfonts.zip) preserved in sources.tar.zst.
+- Terms: Complete 47 Type 1 outline programs, metrics, virtual fonts, and dvips maps for Times-compatible math.
+
+
+19. Linux Libertine and Biolinum Fonts
+--------------------------------------
+- Authors: Philipp H. Poll and the Libertine Open Fonts Project
+- Upstream: CTAN /fonts/libertine (Revision 77682, Version 5.3.0)
+- Licenses: GPL with font exception / SIL Open Font License / LPPL
+- Terms: Type 1, OpenType, metrics, encodings, and maps for Linux Libertine and Linux Biolinum.
+
+
+20. Font Awesome 5
+------------------
+- Authors: Fonticons, Inc. (Dave Gandy) and Marcel Krüger
+- Upstream: CTAN /fonts/fontawesome5 (Revision 77682, Version 5.15.4)
+- Licenses: SIL Open Font License v1.1 / LPPL-1.3c
+- Terms: Type 1, OpenType, and encodings for free Font Awesome 5 icons in LaTeX.
+
+
+21. STIX Fonts
+--------------
+- Authors: STI Pub Companies (AIP, AMS, APS, IEEE, IOP, ACS)
+- Upstream: CTAN /fonts/stix (Revision 78101, Version 1.1.3)
+- Licenses: SIL Open Font License v1.1 / LPPL-1.3
+- Corresponding Source Obligations:
+  Conversion and build sources preserved in stix.source.tar.xz in sources.tar.zst.
+- Terms: Complete Type 1 and OpenType math and text fonts for scientific publishing.
+
+
+22. Math Design Fonts
+---------------------
+- Author: Paul Pichaureau
+- Upstream: CTAN /fonts/mathdesign (Revision 31639, Version 2.31)
+- License: GNU General Public License (GPL)
+- Shipped License Texts:
+  * doc/fonts/mathdesign/README
+- Corresponding Source Obligations:
+  Full source archive (mathdesign.zip) preserved in sources.tar.zst.
+- Terms: Type 1 outlines, metrics, and maps for Utopia (mdput), Charter (mdbch), and Garamond (mdugm) math fonts.
+
+Distribution Architecture, Source Availability & GPL Compliance
+===============================================================
+Ratex splits distribution artifacts into two distinct deterministic archives:
+
+1. Runtime Payload (`packages.tar.zst`, sharded as `packages.tar.zst.00`..`05`):
+   Contains all pre-compiled font outlines (Type 1 PFB, OpenType OTF, and
+   TrueType TTF), font metrics (TFM), virtual fonts (VF), encodings (ENC), font
+   definitions (FD), and mapping files (MAP) required for offline typesetting.
+   Raw development sources are excluded from the runtime binary payload.
+   Exact compressed and uncompressed sizes, member counts, and SHA256 hashes
+   are recorded in packages.lock.json alongside the distribution.
+
+2. Corresponding Source Archive (`sources.tar.zst`):
+   Under the GNU General Public License v2.0 (GPLv2 Section 3) and related
+   licenses, distributing binaries or embedded font programs requires providing
+   the complete corresponding machine-readable source code. Pointing to external
+   URLs or hashes alone does not satisfy this legal obligation.
+
+   Therefore, Ratex packages and distributes the complete, verbatim corresponding
+   source archives alongside binary releases in `sources.tar.zst`:
+   - `cm-super.zip` (67,319,801 bytes, SHA256: f3f856a5006ae7d2bbc2d9a338ca5ae25b6fba19eebee3ba20892845aafa7987):
+     Upstream CTAN package by Vladimir Volovich with Type 1 PFB outlines, AFM
+     metrics, dvips encodings, and inf archives.
+   - `fonts-unfonts-core_1.0.2-080608.orig.tar.xz` (14,988,620 bytes, SHA256: 14abb309f9d979cc20212fabfbd7f50b55c42183985ae507390c7461ce0b307c):
+     Official upstream source tarball released by Won-kyu Park / KLDP (as packaged
+     in Debian main), comprising the 12 TrueType font programs and author documentation.
+   - `lh.source.tar.xz` (41,756 bytes, SHA256: e200068f4bf14c8cbb844030e49a73500f08e35906487a68cb73b8f51ea65122):
+     METAFONT source code for all LH Cyrillic fonts (T2A, T2B, T2C, X2).
+   - `lhcyr.source.tar.xz` (2,356 bytes, SHA256: 3b393e47f8da3b8e2d903863761ed796c1b64bcac39d4d94796d6637760c7df6):
+     LaTeX Cyrillic style and font definition sources.
+   - `babel-russian.source.tar.xz` (26,068 bytes, SHA256: ba61c255385376334213b208d6b9a54816f76d20502f5c612a6c9bb7e2cc03d8):
+     Original russianb.dtx and russianb.ins source files.
+   - `stmaryrd.source.tar.xz` (6,248 bytes, SHA256: 28d350526d65fed4b6e1e4ba8c58e88348ac5c5ed567ff217a4220447fde1d2d):
+     Original METAFONT source files and stmaryrd.dtx.
+   - `bbding.source.tar.xz` (10,156 bytes, SHA256: f47be23cd57a035ff1d17c6b069040dc44bcdc8943b6a2f7880a1b3cf60f47e9):
+     Original bbding.dtx and bbding10.mf source files.
+   - `base35.zip` (1,968,003 bytes, SHA256: 07abaf13d6dbff68b884a877c91c9692283562273adc2d52a4bf9bfdd90668fd):
+     Upstream CTAN package by URW++ with PostScript Base 35 Type 1 PFB outlines, AFM metrics, and PFM files.
+   - `txfonts.zip` (1,706,528 bytes, SHA256: 26bea7fab28a21f21d26c36013938e52bc20ef1ccdad4a0e83b16243ffbcaece):
+     Official CTAN source release by Young Ryu containing complete Type 1 outlines, METAFONT and TeX macro sources.
+   - `mathdesign.zip` (6,971,155 bytes, SHA256: 9e54999967f2b7fefc6ffdb7fb48b6ef6ce3c8a4f1dd65b25e594596cb90be0a):
+     Official CTAN source release by Paul Pichaureau with Type 1 outlines, FontForge sources, and macro definitions.
+   - `yhmath.source.tar.xz` (16,512 bytes, SHA256: 96872c0dc2d022a3f43ad2240bd16775b6ee4f6afe0ba2b6afa4a9903a92049f):
+     Official TeX Live source archive with yhmath METAFONT sources, macros, and documentation.
+   - `ae.source.tar.xz` (19,988 bytes, SHA256: 219d3e8b1c2d057d3583d3a99837744f52a6ce94cd2d845f1996a355dfda8dc7):
+     Official TeX Live source archive with virtual font generation scripts for Almost European fonts.
+   - `stix.source.tar.xz` (27,808 bytes, SHA256: 28e71c9103859f50113b71c3fb788f09b9ea83d233d01c6475b923b048d242c0):
+     Official TeX Live source archive with STIX fonts build and conversion sources.
+
+   All source archives are cryptographically pinned in `packages.lock.json`
+   under the `source_distribution` manifest.

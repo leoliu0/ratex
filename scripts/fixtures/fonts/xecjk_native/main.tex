@@ -1,0 +1,25 @@
+\documentclass{article}
+\usepackage{fontspec}
+\usepackage{xeCJK}
+
+\setmainfont{Latin Modern Roman}
+\setsansfont{Latin Modern Sans}
+\setCJKmainfont{HaranoAjiMincho}
+\setCJKsansfont{HaranoAjiGothic}
+\newCJKfontfamily\chinesefont{gbsn00lp.ttf}
+
+\begin{document}
+
+\section{\sffamily Native xeCJK Mixed Typography}
+
+This is an English paragraph containing Latin characters, mixed with Japanese: 日本語のテストと漢字の表示。
+And Chinese: {\chinesefont 中文测试与混合排版。}
+
+\textbf{Bold English} mixed with \textbf{太字の日本語（ボールド）}。
+
+{\sffamily
+Sans-Serif English mixed with ゴシック体の日本語。
+The Latin and CJK fonts must both reflect their respective sans-serif faces.
+}
+
+\end{document}

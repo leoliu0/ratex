@@ -1,0 +1,24 @@
+\documentclass{article}
+\usepackage{fontspec}
+\setmainfont{Latin Modern Roman}
+
+\newfontfamily\fontligon{Latin Modern Roman}[Ligatures=Common,Kerning=On]
+\newfontfamily\fontligoff{Latin Modern Roman}[Ligatures=NoCommon,Kerning=Off]
+
+\begin{document}
+\section*{Shaping and Layout Features}
+
+\subsection*{Ligature Comparison}
+Ligatures Enabled: {\fontligon fi fl ffi ffl}
+
+Ligatures Disabled: {\fontligoff fi fl ffi ffl}
+
+\subsection*{Kerning Comparison}
+Kerning Enabled: {\fontligon AV WA To TeX LT}
+
+Kerning Disabled: {\fontligoff AV WA To TeX LT}
+
+\subsection*{Accents and Combining Marks}
+Accented characters: \'e, \`a, \^o, \"u, \c{c}, \~n.
+Combining marks: é, à (combining acute and grave).
+\end{document}

@@ -66,13 +66,17 @@ fn letterspacefont_execution_registers_tracked_font_in_font_loader() {
     assert!(e.font_loader.is_tracked_font(spaced_font_id));
     assert!(e.is_tracked_font(spaced_font_id));
 
-    let tracked = e.font_loader.get_tracked_font(spaced_font_id)
+    let tracked = e
+        .font_loader
+        .get_tracked_font(spaced_font_id)
         .expect("tracked font metadata registered in font_loader");
     assert_eq!(tracked.base_font, base_font_id);
     assert_eq!(tracked.tracking, 50);
 
     // Verify tracked font from engine helper
-    let tracked_eng = e.tracked_font(spaced_font_id).expect("tracked font via engine");
+    let tracked_eng = e
+        .tracked_font(spaced_font_id)
+        .expect("tracked font via engine");
     assert_eq!(tracked_eng.base_font, base_font_id);
     assert_eq!(tracked_eng.tracking, 50);
 

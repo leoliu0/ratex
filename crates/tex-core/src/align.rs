@@ -1283,7 +1283,8 @@ impl Engine {
                         col_items.push(box_node);
                     }
                 }
-                let col_vbox = crate::boxes::vpack(col_items, None, crate::boxes::VBOX, &self.eqtb).node;
+                let col_vbox =
+                    crate::boxes::vpack(col_items, None, crate::boxes::VBOX, &self.eqtb).node;
                 cols.push(col_vbox);
                 let t = col_tabskip(
                     &self.align_preamble,
@@ -1293,7 +1294,13 @@ impl Engine {
                 );
                 cols.push(Node::Glue(t));
             }
-            let hbox = crate::boxes::hpack(cols, self.align_to.map(|(d, _)| d), crate::boxes::HBOX, &self.eqtb).node;
+            let hbox = crate::boxes::hpack(
+                cols,
+                self.align_to.map(|(d, _)| d),
+                crate::boxes::HBOX,
+                &self.eqtb,
+            )
+            .node;
             self.align_preamble.clear();
             self.align_rows.clear();
             self.align_cur_row.clear();
@@ -2172,7 +2179,6 @@ mod tests {
         assert_eq!(e.eqtb.count[0], 37, "input after alignment was not reached");
     }
 
-
     #[test]
     fn control_sequence_begin_group_does_not_hide_alignment_tab() {
         // TeX's alignment brace counter follows explicit brace tokens. A
@@ -2276,7 +2282,12 @@ mod tests {
             "\\setbox0=\\vbox{\\halign{#\\hfil&#\\hfil\\cr ",
             "a\\vadjust{\\vskip1pt}&b\\vadjust{\\vskip2pt}\\cr}}\n",
         ));
-        assert_eq!(e.error_count, 0, "errors: {:?}", e.diagnostics.iter().map(|d| d.render()).collect::<Vec<_>>());
+        assert_eq!(
+            e.error_count,
+            0,
+            "errors: {:?}",
+            e.diagnostics.iter().map(|d| d.render()).collect::<Vec<_>>()
+        );
         let l = box0_list(&e);
         assert_eq!(l.len(), 3, "row + two adjustments: {l:?}");
         assert!(matches!(l[0], Node::Box { .. }));
@@ -2574,9 +2585,18 @@ mod tests {
         ));
         assert_eq!(e.error_count, 0);
         let b = e.eqtb.boxed[0].as_ref().unwrap();
-        let Node::Box { list, .. } = b else { panic!("expected vbox"); };
-        let hboxes: Vec<_> = list.iter().filter(|n| matches!(n, Node::Box { .. })).collect();
-        assert_eq!(hboxes.len(), 3, "expected 3 row boxes for 2 non-empty + 1 empty row");
+        let Node::Box { list, .. } = b else {
+            panic!("expected vbox");
+        };
+        let hboxes: Vec<_> = list
+            .iter()
+            .filter(|n| matches!(n, Node::Box { .. }))
+            .collect();
+        assert_eq!(
+            hboxes.len(),
+            3,
+            "expected 3 row boxes for 2 non-empty + 1 empty row"
+        );
     }
 
     #[test]
@@ -2589,10 +2609,17 @@ mod tests {
         ));
         assert_eq!(e.error_count, 0);
         let b = e.eqtb.boxed[0].as_ref().unwrap();
-        let Node::Box { list, .. } = b else { panic!("expected hbox"); };
+        let Node::Box { list, .. } = b else {
+            panic!("expected hbox");
+        };
         let valign_box = list.iter().find(|n| matches!(n, Node::Box { .. })).unwrap();
-        let Node::Box { list: vcols, .. } = valign_box else { panic!("expected valign hbox"); };
-        let vboxes: Vec<_> = vcols.iter().filter(|n| matches!(n, Node::Box { .. })).collect();
+        let Node::Box { list: vcols, .. } = valign_box else {
+            panic!("expected valign hbox");
+        };
+        let vboxes: Vec<_> = vcols
+            .iter()
+            .filter(|n| matches!(n, Node::Box { .. }))
+            .collect();
         assert_eq!(vboxes.len(), 2, "expected 2 column vboxes");
     }
 
@@ -2608,8 +2635,13 @@ mod tests {
         ));
         assert_eq!(e.error_count, 0);
         let b = e.eqtb.boxed[0].as_ref().unwrap();
-        let Node::Box { list, .. } = b else { panic!("expected vbox"); };
-        let hboxes: Vec<_> = list.iter().filter(|n| matches!(n, Node::Box { .. })).collect();
+        let Node::Box { list, .. } = b else {
+            panic!("expected vbox");
+        };
+        let hboxes: Vec<_> = list
+            .iter()
+            .filter(|n| matches!(n, Node::Box { .. }))
+            .collect();
         assert_eq!(hboxes.len(), 1, "expected 1 row box");
     }
 }

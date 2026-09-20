@@ -116,7 +116,30 @@ also execute an extracted archive on each supported operating system. A
 Windows runner is required to exercise process forwarding by the small `.exe`
 launcher.
 
-## Corpus and benchmark retention
+## Corpus and benchmark artifacts
+
+### Source acquisition
+
+Download a separate source sample without replacing the existing corpus:
+
+```sh
+python3 scripts/download_corpus.py \
+  --target 1000 --out-dir corpus/additional --workers 3
+```
+
+Use `--candidates-file PATH` with a JSON list of `[arxiv_id, archive]` pairs
+to reuse a selected candidate pool or exclude IDs from an earlier sample.
+The downloader uses arXiv's dedicated export host, spaces source requests
+across all workers, and harvests OAI metadata serially with a three-second
+delay. PDF-only submissions and downloads without an extracted TeX entry
+point do not count toward the requested project total.
+
+Preserve the source manifest and acquisition settings. Downloaded sources
+are test inputs, not evidence of successful compilation or embedded-font
+coverage. Standalone checks must exercise the packaged binary without
+external TEXMF resources; a reference TeX Live environment stays separate.
+
+### Generated evidence retention
 
 `scripts/test_corpus.py` and `scripts/bench_cold.py` retain compact failure
 evidence by default. Child output is consumed as it is produced, hashed in

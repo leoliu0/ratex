@@ -1,0 +1,13 @@
+\documentclass{article}
+\usepackage{CJKutf8}
+\makeatletter
+\DeclareFontFamily{C70}{ipxt}{\hyphenchar\font\m@ne}
+\DeclareFontShape{C70}{ipxt}{m}{n}{<-> CJK * ipxt}{\CJKnormal}
+\makeatother
+\pdfmapfile{+ipxt.map}
+
+\begin{document}
+\begin{CJK}{UTF8}{ipxt}
+日本語のテスト：Ratex TrueType mapping test.
+\end{CJK}
+\end{document}

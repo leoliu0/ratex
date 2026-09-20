@@ -410,9 +410,24 @@ pub fn import_pdf_page(
                         copy_object(value, doc, ids, objects, next, depth + 1)?,
                     );
                 }
-                if copy.get(b"Type").and_then(Object::as_name).map(|n| n == b"FontDescriptor").unwrap_or(false) {
-                    let asc = copy.get(b"Ascent").ok().and_then(|o| o.as_float().ok().map(|x| x as f64).or_else(|| o.as_i64().ok().map(|x| x as f64)));
-                    let desc = copy.get(b"Descent").ok().and_then(|o| o.as_float().ok().map(|x| x as f64).or_else(|| o.as_i64().ok().map(|x| x as f64)));
+                if copy
+                    .get(b"Type")
+                    .and_then(Object::as_name)
+                    .map(|n| n == b"FontDescriptor")
+                    .unwrap_or(false)
+                {
+                    let asc = copy.get(b"Ascent").ok().and_then(|o| {
+                        o.as_float()
+                            .ok()
+                            .map(|x| x as f64)
+                            .or_else(|| o.as_i64().ok().map(|x| x as f64))
+                    });
+                    let desc = copy.get(b"Descent").ok().and_then(|o| {
+                        o.as_float()
+                            .ok()
+                            .map(|x| x as f64)
+                            .or_else(|| o.as_i64().ok().map(|x| x as f64))
+                    });
                     if let (Some(a), Some(d)) = (asc, desc) {
                         if a - d > 3000.0 {
                             copy.set(b"Descent", Object::Integer((a - 3000.0) as i64));
@@ -431,7 +446,10 @@ pub fn import_pdf_page(
                         );
                     }
                 }
-                let content = if matches!(dict.get(b"Filter").and_then(Object::as_name), Ok(b"FlateDecode")) {
+                let content = if matches!(
+                    dict.get(b"Filter").and_then(Object::as_name),
+                    Ok(b"FlateDecode")
+                ) {
                     let mut decoder = flate2::read::ZlibDecoder::new(&stream.content[..]);
                     let mut decompressed = Vec::new();
                     use std::io::Read;
@@ -453,16 +471,16 @@ pub fn import_pdf_page(
     let doc = match Document::load_mem(bytes) {
         Ok(doc) => doc,
         Err(e) => {
-            if let Some(repaired) = repair_xref_empty_section(bytes)
-                .and_then(|r| Document::load_mem(&r).ok())
+            if let Some(repaired) =
+                repair_xref_empty_section(bytes).and_then(|r| Document::load_mem(&r).ok())
             {
                 repaired
-            } else if let Some(repaired) = repair_xref_single_newline(bytes)
-                .and_then(|r| Document::load_mem(&r).ok())
+            } else if let Some(repaired) =
+                repair_xref_single_newline(bytes).and_then(|r| Document::load_mem(&r).ok())
             {
                 repaired
-            } else if let Some(rebuilt) = repair_pdf_xref_rebuild(bytes)
-                .and_then(|r| Document::load_mem(&r).ok())
+            } else if let Some(rebuilt) =
+                repair_pdf_xref_rebuild(bytes).and_then(|r| Document::load_mem(&r).ok())
             {
                 rebuilt
             } else {
@@ -2396,7 +2414,11 @@ trailer\n<< /Size 4 /Root 1 0 R >>\n\
 startxref\n220\n%%EOF\n";
         let mut next = 10;
         let res = import_pdf_page(pdf_data, 1, b"CropBox", 5, &mut next);
-        assert!(res.is_ok(), "inverted CropBox should be normalized: {:?}", res.err());
+        assert!(
+            res.is_ok(),
+            "inverted CropBox should be normalized: {:?}",
+            res.err()
+        );
         let (w, h, bbox, _, _) = res.unwrap();
         assert_eq!(w, 200.0);
         assert_eq!(h, 200.0);

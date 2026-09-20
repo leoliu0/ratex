@@ -5,10 +5,10 @@
 //! back to source file and line numbers for forward and inverse search in editors
 //! (VS Code LaTeX Workshop, TeXstudio, VimTeX, Emacs AUCTeX, etc.).
 
-use std::collections::HashMap;
-use std::io::Write;
 use flate2::write::GzEncoder;
 use flate2::Compression;
+use std::collections::HashMap;
+use std::io::Write;
 
 /// A record representing a point or box in SyncTeX format.
 #[derive(Clone, Debug, PartialEq)]
@@ -109,7 +109,10 @@ impl SyncTexData {
             for r in records {
                 if r.w_sp == 0 && r.h_sp == 0 {
                     // Point record: x<link>,<line>:<x>,<y>
-                    out.push_str(&format!("x{},{}:{},{}\n", r.file_id, r.line, r.x_sp, r.y_sp));
+                    out.push_str(&format!(
+                        "x{},{}:{},{}\n",
+                        r.file_id, r.line, r.x_sp, r.y_sp
+                    ));
                 } else {
                     // Box record: [link,line:x,y:w,h,depth
                     out.push_str(&format!(

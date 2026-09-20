@@ -35,24 +35,24 @@ Per-engine status (durable, not page-count-only):
            (--mem-limit-mib; distinct from timeout/failure)
 
 Modes (--mode):
-  campaign     (DEFAULT) 104-document parity campaign: 100 corpus projects plus
-             the four private docs (trust, beamer, ai, cluster_ceo) inventoried
-             from the prepared/source manifests. Each side compiles in its own
+  campaign     (DEFAULT) converged exact-parity campaign: corpus projects
+             (1,000 by default from corpus/standalone-1000 or 100 from corpus)
+             plus optional private docs. Each side compiles in its own
              frozen isolated copy until aux state CONVERGES (cross-refs +
              BibTeX honoring shipped .bbl files; system bibtex for the
-             reference, native tex-bibtex for Rust output; never a system
-             fallback for the Rust side). Rust .depcache/.pagecache artifacts
-             are removed before every pass. Comparison is exact 150-DPI RGB
-             pixel parity (no cropping, no tolerance) with geometry and page
-             count checks, per-page scores, worst-page artifacts, and a hard
-             gate (output/<dir>/gate.json) that fails on incomplete coverage,
-             compilation errors, unconverged runs, invalid PDFs, or any page
-             or document below --page-min/--doc-min percent. Unavailable
-             reference inputs are RETAINED blockers, never excluded.
-  single-pass LEGACY diagnostic: exactly one pdflatex invocation per engine,
+             reference, native ratex embedded bibtex or tex-bibtex for Rust
+             output; never a system fallback for the Rust side). Rust
+             .depcache/.pagecache artifacts are removed before every pass.
+             Comparison is exact 150-DPI RGB pixel parity (no cropping, no
+             tolerance) with geometry and page count checks, per-page scores,
+             worst-page artifacts, and a hard gate (output/<dir>/gate.json)
+             that fails on incomplete coverage, compilation errors, unconverged
+             runs, invalid PDFs, or any page or document below
+             --page-min/--doc-min percent. Unavailable reference inputs are
+             RETAINED blockers, never excluded.
+  single-pass LEGACY diagnostic: exactly one engine invocation per project,
              no bibtex, 72-DPI similarity metrics. Useful for triage only —
              it never claims campaign success.
-
 Usage:
   scripts/test_corpus.py [--mode campaign] [--max-passes 5]
       [--jobs 4] [--timeout 60] [--mem-limit-mib 4096] [--output output/corpus]
@@ -94,8 +94,10 @@ try:
 except ImportError:  # graceful degrade: equality-only raster comparison
     np = None
 
-import pymupdf  # installed PyMuPDF (fitz replacement)
-
+try:
+    import pymupdf  # installed PyMuPDF (fitz replacement)
+except ImportError:  # graceful degrade
+    pymupdf = None
 try:
     from bounded_capture import (
         DEFAULT_MAX_CAPTURE_BYTES,
@@ -109,6 +111,18 @@ except ModuleNotFoundError:  # support `python -m scripts.test_corpus`
         run_bounded,
     )
 
+try:
+    from test_fonts import validate_pdf_font_embedding
+except ModuleNotFoundError:
+    from scripts.test_fonts import validate_pdf_font_embedding
+
+
+def is_ratex_cli(bin_path: str | Path | None) -> bool:
+    """Return True if bin_path is the Ratex driver executable (ratex or texmk)."""
+    if not bin_path:
+        return False
+    stem = Path(bin_path).stem.lower()
+    return stem in ("ratex", "texmk", "latexmk") or stem.startswith("ratex")
 
 def validate_artifact_id(aid: object) -> str:
     """Return a path-safe project identifier or raise ``ValueError``."""
@@ -189,10 +203,12 @@ def first_line(text: str, limit: int = 200) -> str:
     return text.splitlines()[0][:limit] if text.strip() else ""
 
 
-def capture_version(bin_path: Path, timeout: float) -> str:
+def capture_version(bin_path: Path | str, timeout: float,
+                    env: dict[str, str] | None = None) -> str:
     try:
         r = subprocess.run([str(bin_path), "--version"], stdin=subprocess.DEVNULL,
-                           capture_output=True, text=True, timeout=timeout)
+                           capture_output=True, text=True, timeout=timeout,
+                           env={**os.environ, **env} if env is not None else None)
         return first_line((r.stdout or "") + (r.stderr or ""))
     except Exception as e:  # noqa: BLE001 - version string is best-effort
         return f"<error: {e}>"
@@ -318,14 +334,36 @@ def pdf_info(pdf: Path) -> dict:
         info["pdf_error"] = "empty PDF"
         return info
     try:
-        doc = pymupdf.open(str(pdf))
-        try:
-            info["pages"] = doc.page_count
-            info["pdf_valid"] = doc.page_count >= 1
-            if not info["pdf_valid"]:
-                info["pdf_error"] = "PDF contains no pages"
-        finally:
-            doc.close()
+        if pymupdf is not None:
+            doc = pymupdf.open(str(pdf))
+            try:
+                info["pages"] = doc.page_count
+                info["pdf_valid"] = doc.page_count >= 1
+                if not info["pdf_valid"]:
+                    info["pdf_error"] = "PDF contains no pages"
+            finally:
+                doc.close()
+        elif shutil.which("pdfinfo"):
+            proc = subprocess.run(
+                ["pdfinfo", str(pdf)],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+            )
+            if proc.returncode == 0:
+                m = re.search(r"^Pages:\s+(\d+)", proc.stdout, re.MULTILINE)
+                pages = int(m.group(1)) if m else 0
+                info["pages"] = pages
+                info["pdf_valid"] = pages >= 1
+            else:
+                info["pdf_valid"] = False
+                info["pdf_error"] = proc.stderr.strip() or "pdfinfo failed"
+        else:
+            with open(pdf, "rb") as f:
+                header = f.read(1024)
+            info["pdf_valid"] = b"%PDF-" in header and info["pdf_bytes"] > 500
+            info["pages"] = 1
     except Exception as exc:  # corrupt / truncated output still counts as invalid
         info["pdf_valid"] = False
         detail = str(exc).strip().replace("\n", " ")
@@ -361,19 +399,127 @@ def classify(run: dict, pdf_valid: bool, errors: list[str]) -> str:
     if run["exit"] != 0 or errors:
         return "errors"
     return "clean"
+def classify_failure_kind(run: dict, pdf_stat: dict, errors: list[str],
+                          compare: dict | None = None,
+                          log_text: str = "",
+                          font_errors: list[str] | None = None) -> str:
+    """Classify failure kind distinctly:
+    - unsupported-engine: required engine feature/engine unavailable (luacode, luatexja, ptex, fontspec on pdflatex, opentype math)
+    - missing-asset: missing file/font/package (.sty, .cls, .ttf, .pfb, .tfm, etc.)
+    - compilation: general syntax/macro error
+    - extraction: PDF valid but text extraction/layer failed
+    - embedding: PDF valid but font embedding/glyph inspection validation failed
+    - render: geometry/page count mismatch or raster parity failure
+    - timeout: process group timed out
+    - memlimit: killed by RLIMIT_AS address cap
+    - clean: successful compilation
+    """
+    if run.get("timed_out"):
+        return "timeout"
+    if run.get("mem_killed"):
+        return "memlimit"
+
+    combined_err = " ".join(errors) + " " + log_text
+
+    # Missing asset check for outline program gaps:
+    # "has no associated outline program" indicates a missing font outline asset (.pfb/.ttf/.otf),
+    # never an unsupported engine capability or generic compilation failure.
+    if (
+        "has no associated outline program" in combined_err
+        or "no associated outline program" in combined_err
+    ):
+        return "missing-asset"
+
+    # 1. Unsupported engine
+    if any(p in combined_err for p in (
+        "requires LuaTeX", "requires either XeTeX or LuaTeX", "requires XeLaTeX",
+        "cannot run in pdfTeX", "luacode", "luatexja.sty not found",
+        "Package fontspec Error: The fontspec package requires",
+        "Ratex does not implement OpenType MATH",
+        "Use classic LaTeX math fonts, or compile with a full XeTeX or LuaTeX engine",
+        "This package requires LuaTeX", "XeTeX is required",
+        "LaTeX Error: This package requires LuaTeX",
+    )):
+        return "unsupported-engine"
+
+    # 2. Missing asset
+    if any(p in combined_err for p in (
+        "not found", "File `", "File '", "cannot find font",
+        "I can't find file", "Font \\", "checksum mismatch",
+        "kpathsea: Running mktexmf",
+        "Metric (TFM) file not found",
+        "has no associated outline program",
+        "no associated outline program",
+    )):
+        return "missing-asset"
+
+    # 3. Invalid or missing PDF
+    if not pdf_stat.get("pdf_valid"):
+        return "compilation"
+
+    # 4. Font embedding / glyph errors on valid PDF
+    if font_errors or (compare and compare.get("font_embedding_failure")):
+        return "embedding"
+
+    # 5. Text extraction failure on valid PDF
+    if compare and compare.get("text_extraction_failure"):
+        return "extraction"
+
+    # 6. If PDF exists, check compare for render/geometry/parity
+    if compare:
+        if compare.get("unsupported_engine"):
+            return "unsupported-engine"
+        if not compare.get("page_count_match") or not compare.get("geometry_match") or compare.get("page_failures"):
+            return "render"
+
+    if run.get("exit", 0) != 0 or errors:
+        return "compilation"
+
+    return "clean"
 
 
 def compile_engine(engine: str, bin_path: str, ws: Path, tex_rel: Path,
                    idir: Path, timeout: float,
                    mem_limit_mib: int = DEFAULT_MEM_LIMIT_MIB,
-                   max_capture_bytes: int = DEFAULT_MAX_CAPTURE_BYTES) -> dict:
+                   max_capture_bytes: int = DEFAULT_MAX_CAPTURE_BYTES,
+                   env: dict | None = None,
+                   ref_engine: str = "pdflatex") -> dict:
     """Single pass + classification + artifact persistence for one engine."""
     work_dir = ws / tex_rel.parent
     cap_path = idir / f"{engine}.stdout.log"
+
+    if engine == "rust" and is_ratex_cli(bin_path):
+        flags = ("-1", "-interaction=nonstopmode", "-halt-on-error", "-no-shell-escape")
+    elif engine == "rust":
+        flags = ("-interaction=nonstopmode", "-halt-on-error", "-no-shell-escape")
+    else:
+        flags = REF_ENGINE_FLAGS.get(ref_engine, ("-interaction=nonstopmode", "-no-shell-escape"))
+
+    run_env = dict(env if env is not None else os.environ)
+    home_dir = ws / f".home_{engine}"
+    cache_dir = ws / f".cache_{engine}"
+    home_dir.mkdir(parents=True, exist_ok=True)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    run_env.setdefault("HOME", str(home_dir))
+    run_env.setdefault("XDG_CACHE_HOME", str(cache_dir))
+    if engine == "rust":
+        run_env["TEX_RS_HERMETIC"] = "1"
+        run_env.setdefault("TEX_RS_CACHE_DIR", str(cache_dir / "tex-rs"))
+        for k in (
+            "TEXMFHOME", "TEXMFVAR", "TEXMFCACHE", "TEXMFCONFIG",
+            "TEXINPUTS", "BIBINPUTS", "BSTINPUTS", "TEXFORMATS",
+            "LUAINPUTS", "TEXMFLOCAL", "TEXMFSYSVAR", "TEXMFSYSCONFIG",
+            "TEXMF", "TEXMFCNF", "TEXMFDIST", "TEXMFMAIN",
+            "TEXFONTMAPS", "ENCFONTS", "TFMFONTS", "T1FONTS", "VFFONTS",
+            "TTFONTS", "OPENTYPEFONTS", "OSFONTDIR",
+            "TEX_RS_TEXMF", "TEX_RS_FONT_DIR", "LUAOTFLOAD_TOOL_FORCE_CACHE",
+        ):
+            run_env.pop(k, None)
+
     run = run_compile(bin_path, work_dir, tex_rel.name, cap_path, timeout,
+                      env=run_env, flags=flags,
                       mem_limit_mib=mem_limit_mib,
                       max_capture_bytes=max_capture_bytes)
-
     stem_pdf = work_dir / f"{tex_rel.stem}.pdf"
     stem_log = work_dir / f"{tex_rel.stem}.log"
 
@@ -395,13 +541,26 @@ def compile_engine(engine: str, bin_path: str, ws: Path, tex_rel: Path,
     if not errors and run["spawn_error"]:
         errors = [f"spawn-error: {run['spawn_error']}"]
 
+    font_embedding_errors: list[str] = []
+    if pdf_stat["pdf_valid"] and kept_pdf.is_file():
+        try:
+            font_embedding_errors = validate_pdf_font_embedding(kept_pdf, {})
+        except Exception as e:
+            font_embedding_errors = [f"validator error: {e}"]
+
     status = classify(run, pdf_stat["pdf_valid"], errors)
+    log_text = (tex_capture or {}).get("excerpt", "") if isinstance(tex_capture, dict) else ""
+    failure_kind = classify_failure_kind(run, pdf_stat, errors, log_text=log_text, font_errors=font_embedding_errors)
+
     return {
         "engine": engine, "bin": bin_path, "status": status,
+        "failure_kind": failure_kind,
         "exit": run["exit"], "timed_out": run["timed_out"],
         "mem_killed": run["mem_killed"], "kill_signal": run["kill_signal"],
         "time_ms": round(run["time_ms"], 1),
         "errors": errors,
+        "font_embedding_errors": font_embedding_errors,
+        "font_embedding_valid": len(font_embedding_errors) == 0,
         "capture": run["capture"], "tex_log_capture": tex_capture,
         **pdf_stat,
         "pdf": str(kept_pdf) if kept_pdf.is_file() else None,
@@ -433,6 +592,8 @@ def _project_failure_reasons(res: dict, cfg: dict) -> list[str]:
             reasons.append(f"{engine}-invalid-pdf")
         if campaign and not state.get("converged"):
             reasons.append(f"{engine}-not-converged")
+        if state.get("font_embedding_errors"):
+            reasons.append(f"{engine}-font-embedding")
     compare = res.get("compare") or {}
     if not compare.get("compared"):
         reasons.append("not-compared")
@@ -452,12 +613,30 @@ def _project_failure_reasons(res: dict, cfg: dict) -> list[str]:
         parity = compare.get("document_exact_parity")
         if parity is None or parity < cfg["doc_min"]:
             reasons.append("document-parity")
+        if (
+            compare.get("font_embedding_failure")
+            or (res.get("rust") or {}).get("font_embedding_errors")
+            or (res.get("ref") or {}).get("font_embedding_errors")
+        ):
+            if "font-embedding" not in reasons:
+                reasons.append("font-embedding")
+        if compare.get("text_extraction_failure"):
+            reasons.append("text-extraction")
     else:
         if not compare.get("page_count_match"):
             reasons.append("page-count-mismatch")
         if (compare.get("pages_identical") != compare.get("pages_compared")
                 or compare.get("unmatched_pages")):
             reasons.append("pixel-mismatch")
+        if (
+            compare.get("font_embedding_failure")
+            or (res.get("rust") or {}).get("font_embedding_errors")
+            or (res.get("ref") or {}).get("font_embedding_errors")
+        ):
+            if "font-embedding" not in reasons:
+                reasons.append("font-embedding")
+        if compare.get("text_extraction_failure"):
+            reasons.append("text-extraction")
     return reasons
 
 
@@ -636,12 +815,13 @@ def _failure_bundle(res: dict, reasons: list[str]) -> dict:
         state = res.get(engine) or {}
         engines[engine] = {
             key: state.get(key) for key in (
-                "bin", "ref_engine", "status", "exit", "timed_out",
+                "bin", "ref_engine", "status", "failure_kind", "exit", "timed_out",
                 "mem_killed", "kill_signal", "time_ms", "passes",
                 "converged", "errors", "aux_hashes", "capture",
                 "tex_log_capture", "captured_log", "tex_log", "pdf",
                 "pdf_produced", "pdf_exists", "pdf_valid", "pdf_bytes",
                 "pdf_sha1", "pdf_error", "pages",
+                "font_embedding_errors", "font_embedding_valid",
             ) if key in state
         }
         records = state.get("pass_records") or []
@@ -663,6 +843,9 @@ def _failure_bundle(res: dict, reasons: list[str]) -> dict:
                 "compared", "note", "page_count_match", "geometry_match",
                 "document_exact_parity", "worst_page", "worst_page_parity",
                 "page_failures", "raster_warnings", "worst_artifacts",
+                "font_embedding_failure", "font_embedding_errors",
+                "text_extraction_failure", "text_extraction_error",
+                "mean_text_similarity",
             ) if key in compare
         },
     }
@@ -787,16 +970,17 @@ PRIVATE_IGNORE = (".git", "archive", "Submission", ".ipynb_checkpoints",
 
 REF_ENGINE_FLAGS = {
     "pdflatex": ("-interaction=nonstopmode", "-no-shell-escape"),
-    # XeTeX/LuaTeX have no -no-shell-escape switch (shell-escape is off by
-    # default in TeX Live); passing it would inject an undefined-control-seq
-    # error line into otherwise-correct builds.
-    "xelatex": ("-interaction=nonstopmode",),
-    "lualatex": ("-interaction=nonstopmode",),
+    "xelatex": ("-interaction=nonstopmode", "-no-shell-escape"),
+    "lualatex": ("-interaction=nonstopmode", "-no-shell-escape"),
 }
 FONTSPEC_RE = re.compile(
-    r"\\(?:usepackage|RequirePackage)(?:\[[^\]]*\])?\{(?:fontspec|xeCJK)\}")
+    r"\\(?:usepackage|RequirePackage)(?:\[[^\]]*\])?\{[^}]*\b(?:fontspec|xeCJK|xunicode|unicode-math|bxjsarticle|bxjsbook|zxjatype|xecyr|xltxtra|polyglossia|bidi)\b[^}]*\}",
+    re.DOTALL,
+)
 LUALATEX_RE = re.compile(
-    r"\\(?:usepackage|RequirePackage)(?:\[[^\]]*\])?\{(?:luacode|luatextra)\}")
+    r"\\(?:usepackage|RequirePackage)(?:\[[^\]]*\])?\{[^}]*\b(?:luacode|luatextra|luatexja|luamplib|lualibs|luaotfload|luatexbase)\b[^}]*\}",
+    re.DOTALL,
+)
 
 
 def sha256_file(path: Path) -> str:
@@ -807,16 +991,57 @@ def sha256_file(path: Path) -> str:
     return h.hexdigest()
 
 
-def campaign_env(overlay: Path | None) -> tuple[dict, list[str], dict]:
-    """Child environment for every campaign subprocess (both engines
-    identically). Diagnostic probes are removed for both sides; the isolated
-    dependency overlay is exported via BOTH absolute TEXMFHOME (full TDS
-    tree) and TEXMFVAR (the self-contained updmap-user font maps —
-    nanumfonts.map/umj.map — that the plain user map lacks) so Rust and
-    reference searches resolve the SAME added packages and maps. The values
-    actually set are returned for provenance recording."""
-    env = dict(os.environ)
-    removed = [k for k in DIAGNOSTIC_VARS if env.pop(k, None) is not None]
+def campaign_environments(
+    overlay: Path | None,
+    rust_home: Path | None = None,
+    rust_cache: Path | None = None,
+    ref_home: Path | None = None,
+    ref_cache: Path | None = None,
+) -> tuple[dict, dict, list[str], dict]:
+    """Produce separate, isolated child environments for Rust and Reference subprocesses.
+
+    Rust runs in a strictly hermetic environment (TEX_RS_HERMETIC=1) with no host
+    TEXMF variables or external font paths, and dedicated fresh HOME and cache.
+    Reference receives host TeX Live environment plus the isolated TDS dependency overlay
+    exported via TEXMFHOME and TEXMFVAR, and its own dedicated fresh HOME and cache.
+    """
+    base_env = dict(os.environ)
+    removed = [k for k in DIAGNOSTIC_VARS if base_env.pop(k, None) is not None]
+
+    # Rust environment: strictly hermetic, no host TEXMF or search paths
+    rust_env = dict(base_env)
+    rust_env["TEX_RS_HERMETIC"] = "1"
+    for k in (
+        "TEXMFHOME", "TEXMFVAR", "TEXMFCACHE", "TEXMFCONFIG",
+        "TEXINPUTS", "BIBINPUTS", "BSTINPUTS", "TEXFORMATS",
+        "LUAINPUTS", "TEXMFLOCAL", "TEXMFSYSVAR", "TEXMFSYSCONFIG",
+        "TEXMF", "TEXMFCNF", "TEXMFDIST", "TEXMFMAIN",
+        "TEXFONTMAPS", "ENCFONTS", "TFMFONTS", "T1FONTS", "VFFONTS",
+        "TTFONTS", "OPENTYPEFONTS", "OSFONTDIR",
+        "TEX_RS_TEXMF", "TEX_RS_FONT_DIR", "LUAOTFLOAD_TOOL_FORCE_CACHE",
+    ):
+        rust_env.pop(k, None)
+    rust_env["LANG"] = "C.UTF-8"
+    rust_env["LC_ALL"] = "C.UTF-8"
+    if rust_home is not None:
+        rust_env["HOME"] = str(rust_home)
+    if rust_cache is not None:
+        rust_env["XDG_CACHE_HOME"] = str(rust_cache)
+        rust_env["TEX_RS_CACHE_DIR"] = str(rust_cache / "tex-rs")
+
+    # Reference environment: uses host TeX Live + overlay with fresh HOME
+    ref_env = dict(base_env)
+    ref_env.pop("TEX_RS_HERMETIC", None)
+    ref_env.pop("TEX_RS_CACHE_DIR", None)
+    ref_env.pop("TEX_RS_TEXMF", None)
+    ref_env.pop("TEX_RS_FONT_DIR", None)
+    for k in ("TEXMFCACHE", "TEXMFCONFIG"):
+        ref_env.pop(k, None)
+    if ref_home is not None:
+        ref_env["HOME"] = str(ref_home)
+    if ref_cache is not None:
+        ref_env["XDG_CACHE_HOME"] = str(ref_cache)
+
     overlay_vars: dict = {}
     if overlay is not None:
         ov = Path(overlay).resolve()
@@ -825,15 +1050,15 @@ def campaign_env(overlay: Path | None) -> tuple[dict, list[str], dict]:
             print(f"CAMPAIGN: WARNING: overlay TEXMFVAR tree missing: {var}; "
                   "generated font maps (nanumfonts.map/umj.map) will not "
                   "resolve — failures retained", file=sys.stderr)
-        existing = env.get("TEXMFHOME", "").strip(":")
-        env["TEXMFHOME"] = f"{existing}:{ov}" if existing else str(ov)
-        env["TEXMFVAR"] = str(var)
-        overlay_vars = {"TEXMFHOME": env["TEXMFHOME"],
-                        "TEXMFVAR": env["TEXMFVAR"],
+        existing = ref_env.get("TEXMFHOME", "").strip(":")
+        ref_env["TEXMFHOME"] = f"{existing}:{ov}" if existing else str(ov)
+        ref_env["TEXMFVAR"] = str(var)
+        overlay_vars = {"TEXMFHOME": ref_env["TEXMFHOME"],
+                        "TEXMFVAR": ref_env["TEXMFVAR"],
                         "overlay": str(ov),
                         "texmf_var_exists": var.is_dir()}
-    return env, removed, overlay_vars
 
+    return rust_env, ref_env, removed, overlay_vars
 
 def discover_prepared_manifest() -> tuple[dict, Path | None]:
     """Most complete of the known four-document prepared manifests."""
@@ -971,16 +1196,112 @@ def verify_frozen_identical(ws_rust: Path, ws_ref: Path) -> None:
             f"rust-only={only_r} ref-only={only_f} differ={differ}")
 
 
-def detect_ref_engine(src_dir: Path, tex_rel: Path) -> str:
-    """Choose the SYSTEM engine for the reference build.
-
-    The rust binary is pdflatex-only. Pixel-comparing it to xelatex/lualatex
-    (OpenType vs TFM) cannot reach the 97% gate, so fontspec/luacode docs
-    still compile with pdflatex on both sides. A TEXMFHOME fontspec.sty shim
-    lets those files load. luacode docs that truly need Lua stay flagged via
-    LUALATEX_RE but still run pdflatex — failures are retained.
+def detect_ref_engine(src_dir: Path, tex_rel: Path, entry: dict | None = None) -> str:
+    """Choose the genuine reference engine (pdflatex, xelatex, or lualatex)
+    based on document source requirements, magic comments, project includes,
+    and declared metadata. No fontspec.sty shim assumption is made.
     """
-    _ = (src_dir, tex_rel)
+    if entry:
+        eng = (entry.get("ref_engine") or entry.get("engine") or "").lower()
+        if "lualatex" in eng or "luatex" in eng:
+            return "lualatex"
+        if "xelatex" in eng or "xetex" in eng:
+            return "xelatex"
+        if "pdflatex" in eng:
+            return "pdflatex"
+
+    # Check project latexmkrc / .latexmkrc
+    for rc_name in ("latexmkrc", ".latexmkrc"):
+        rc_path = src_dir / rc_name
+        if rc_path.is_file():
+            try:
+                rc_text = rc_path.read_text(errors="replace")
+                if re.search(r"\$pdf_mode\s*=\s*4", rc_text) or re.search(r"\$pdflatex\s*=.*(?:xelatex|xetex)", rc_text, re.IGNORECASE):
+                    return "xelatex"
+                if re.search(r"\$pdf_mode\s*=\s*5", rc_text) or re.search(r"\$pdflatex\s*=.*(?:lualatex|luatex)", rc_text, re.IGNORECASE):
+                    return "lualatex"
+                if re.search(r"\$pdf_mode\s*=\s*1", rc_text):
+                    return "pdflatex"
+            except OSError:
+                pass
+
+    main_tex = src_dir / tex_rel
+    raw_main = _read_text(main_tex)
+    if not raw_main:
+        return "pdflatex"
+
+    # Magic comments in main_tex (first 30 lines)
+    for line in raw_main.splitlines()[:30]:
+        m = re.search(r"%\s*!(?:TEX|TeX|tex)\s+(?:TS-)?program\s*=\s*([a-zA-Z0-9_\-]+)", line, re.IGNORECASE)
+        if m:
+            prog = m.group(1).lower()
+            if "lualatex" in prog or "luatex" in prog:
+                return "lualatex"
+            if "xelatex" in prog or "xetex" in prog:
+                return "xelatex"
+            if "pdflatex" in prog:
+                return "pdflatex"
+
+    def _strip_comments(text: str) -> str:
+        lines = []
+        for line in text.splitlines():
+            lines.append(re.sub(r"(?<!\\)%.*$", "", line))
+        return "\n".join(lines)
+
+    # Transitively collect main_tex and included files / packages in src_dir
+    visited: set[Path] = set()
+    to_visit: list[Path] = [main_tex]
+    collected: list[str] = []
+    while to_visit:
+        curr = to_visit.pop()
+        if curr in visited or not curr.is_file():
+            continue
+        visited.add(curr)
+        text = _read_text(curr)
+        stripped = _strip_comments(text)
+        collected.append(stripped)
+
+        # \input{...}, \include{...}, \subfile{...}
+        for inc in re.findall(r"\\(?:input|include|subfile)\{([^}]+)\}", stripped):
+            inc = inc.strip()
+            for candidate in (src_dir / inc, src_dir / f"{inc}.tex"):
+                if candidate.is_file() and candidate not in visited:
+                    to_visit.append(candidate)
+
+        # \input filename (unbraced)
+        for inc in re.findall(r"\\input\s+([^\s%{}]+)", stripped):
+            inc = inc.strip()
+            for candidate in (src_dir / inc, src_dir / f"{inc}.tex"):
+                if candidate.is_file() and candidate not in visited:
+                    to_visit.append(candidate)
+
+        # \documentclass{...}, \LoadClass{...}, \LoadClassWithOptions{...} -> local .cls
+        for cls_match in re.findall(r"\\(?:documentclass|LoadClass|LoadClassWithOptions)(?:\[[^\]]*\])?\{([^}]+)\}", stripped):
+            cls_name = cls_match.strip()
+            cls_path = src_dir / f"{cls_name}.cls"
+            if cls_path.is_file() and cls_path not in visited:
+                to_visit.append(cls_path)
+
+        # \usepackage{...} or \RequirePackage{...} -> local .sty
+        for pkg_match in re.findall(r"\\(?:usepackage|RequirePackage)(?:\[[^\]]*\])?\{([^}]+)\}", stripped, re.DOTALL):
+            for pkg in pkg_match.split(","):
+                pkg_name = pkg.strip()
+                sty_path = src_dir / f"{pkg_name}.sty"
+                if sty_path.is_file() and sty_path not in visited:
+                    to_visit.append(sty_path)
+
+    full_text = "\n".join(collected)
+
+    # 1. LuaTeX specific packages
+    if LUALATEX_RE.search(full_text):
+        return "lualatex"
+
+    # 2. XeTeX / fontspec / Unicode packages
+    if FONTSPEC_RE.search(full_text):
+        return "xelatex"
+    if re.search(r"\\(?:documentclass|LoadClass|LoadClassWithOptions)(?:\[[^\]]*\])?\{[^}]*\b(?:bxjsarticle|bxjsbook)\b[^}]*\}", full_text):
+        return "xelatex"
+
     return "pdflatex"
 
 
@@ -1009,7 +1330,10 @@ def run_bibtex(bibtex: str, work: Path, job: str, env: dict,
                log_path: Path, timeout: float,
                mem_limit_mib: int = DEFAULT_MEM_LIMIT_MIB,
                max_capture_bytes: int = DEFAULT_MAX_CAPTURE_BYTES) -> dict:
-    run = run_compile(bibtex, work, job, log_path, timeout, env=env, flags=(),
+    bib_env = dict(env)
+    if is_ratex_cli(bibtex):
+        bib_env["TEXMK_INTERNAL_MODE"] = "bibtex"
+    run = run_compile(bibtex, work, job, log_path, timeout, env=bib_env, flags=(),
                       mem_limit_mib=mem_limit_mib,
                       max_capture_bytes=max_capture_bytes)
     return {"exit": run["exit"], "timed_out": run["timed_out"],
@@ -1040,7 +1364,12 @@ def converge_engine(engine: str, bin_path: str, ws: Path, tex_rel: Path,
     job = tex_rel.stem
     plog = idir / "passlogs"
     plog.mkdir(parents=True, exist_ok=True)
-    flags = REF_ENGINE_FLAGS[ref_engine]
+    if engine == "rust" and is_ratex_cli(bin_path):
+        flags = ("-1", "-interaction=nonstopmode", "-halt-on-error", "-no-shell-escape")
+    elif engine == "rust":
+        flags = ("-interaction=nonstopmode", "-halt-on-error", "-no-shell-escape")
+    else:
+        flags = REF_ENGINE_FLAGS.get(ref_engine, ("-interaction=nonstopmode", "-no-shell-escape"))
     passes: list[dict] = []
     bib_runs: list[dict] = []
     bbl_is_source = (work / f"{job}.bbl").is_file()
@@ -1054,9 +1383,19 @@ def converge_engine(engine: str, bin_path: str, ws: Path, tex_rel: Path,
         for ext in RUST_CACHE_EXTS:
             (work / f"{job}.{ext}").unlink(missing_ok=True)
         (work / f"{job}.pdf").unlink(missing_ok=True)
-        cache_dir = work / ".tex_rs_cache"
+        cache_dir = work / f".cache_{engine}"
+        home_dir = work / f".home_{engine}"
         shutil.rmtree(cache_dir, ignore_errors=True)
-        pass_env = {**env, "TEX_RS_CACHE_DIR": str(cache_dir)}
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        home_dir.mkdir(parents=True, exist_ok=True)
+        pass_env = {
+            **env,
+            "HOME": env.get("HOME", str(home_dir)),
+            "XDG_CACHE_HOME": env.get("XDG_CACHE_HOME", str(cache_dir)),
+        }
+        if engine == "rust":
+            pass_env["TEX_RS_HERMETIC"] = "1"
+            pass_env["TEX_RS_CACHE_DIR"] = str(cache_dir / "tex-rs")
         cap = plog / f"{engine}-pass{i}.stdout.log"
         run = run_compile(bin_path, work, f"{job}.tex", cap, timeout,
                           env=pass_env, flags=flags, mem_limit_mib=mem_limit_mib,
@@ -1090,7 +1429,7 @@ def converge_engine(engine: str, bin_path: str, ws: Path, tex_rel: Path,
         if bibtex and not bbl_is_source and aux_wants_bibliography(work, job):
             bl = plog / f"{engine}-bibtex-pass{i}.log"
             bib_runs.append({"pass": i, **run_bibtex(
-                bibtex, work, job, env, bl, timeout,
+                bibtex, work, job, pass_env, bl, timeout,
                 mem_limit_mib=mem_limit_mib,
                 max_capture_bytes=max_capture_bytes)})
         cur = aux_state(work, job)
@@ -1131,14 +1470,32 @@ def converge_engine(engine: str, bin_path: str, ws: Path, tex_rel: Path,
         status = "unconverged"
     else:
         status = "clean"
+
+    font_embedding_errors: list[str] = []
+    if pdf_stat["pdf_valid"] and kept_pdf.is_file():
+        try:
+            font_embedding_errors = validate_pdf_font_embedding(kept_pdf, {})
+        except Exception as e:
+            font_embedding_errors = [f"validator error: {e}"]
+
+    failure_kind = classify_failure_kind(
+        {"timed_out": timed_out, "mem_killed": mem_killed, "exit": last.get("exit", 0), "spawn_error": last.get("spawn_error")},
+        pdf_stat,
+        errors,
+        log_text=((kept_log_capture or {}).get("excerpt", "") if isinstance(kept_log_capture, dict) else ""),
+        font_errors=font_embedding_errors,
+    )
     rec = {
         "engine": engine, "bin": bin_path, "ref_engine": ref_engine,
-        "status": status, "exit": last.get("exit"), "timed_out": timed_out,
+        "status": status, "failure_kind": failure_kind,
+        "exit": last.get("exit"), "timed_out": timed_out,
         "mem_killed": mem_killed, "kill_signal": last.get("kill_signal"),
         "time_ms": round(total_ms, 1), "passes": len(passes),
         "converged": converged, "pass_records": passes,
         "bibtex_runs": bib_runs, "shipped_bbl": bbl_is_source,
         "errors": errors, "aux_hashes": cur,
+        "font_embedding_errors": font_embedding_errors,
+        "font_embedding_valid": len(font_embedding_errors) == 0,
         "capture": last.get("capture"),
         "tex_log_capture": kept_log_capture,
         "captured_log": str(kept_stdout) if kept_stdout.is_file() else None,
@@ -1152,11 +1509,15 @@ def converge_engine(engine: str, bin_path: str, ws: Path, tex_rel: Path,
     rec["pdf_exists"] = kept_pdf.is_file()
     return rec
 
+compile_campaign_engine = converge_engine
+
 
 def exact_parity_compare(aid: str, a_path: Path | None, b_path: Path | None,
                          a_pages: int | None, b_pages: int | None,
                          out_root: Path, dpi: float, page_min: float,
-                         doc_min: float) -> dict:
+                         doc_min: float,
+                         rust_font_errors: list[str] | None = None,
+                         ref_font_errors: list[str] | None = None) -> dict:
     """Exact RGB raster parity per doc_parity.rs: identical geometry and page
     count, 150 DPI, byte-exact pixels — no registration, cropping or
     tolerance. Every page gets a score; the worst page keeps expected/actual/
@@ -1170,7 +1531,16 @@ def exact_parity_compare(aid: str, a_path: Path | None, b_path: Path | None,
                  "worst_page_parity": None, "worst_artifacts": None,
                  "page_failures": [], "doc_gate": None,
                  "raster_warnings": [], "producer_rust": None,
-                 "repaired": None}
+                 "repaired": None,
+                 "font_embedding_failure": bool(rust_font_errors or ref_font_errors),
+                 "font_embedding_errors": list(rust_font_errors or []) + list(ref_font_errors or []),
+                 "font_embedding_errors_by_engine": {
+                     "rust": list(rust_font_errors or []),
+                     "ref": list(ref_font_errors or []),
+                 },
+                 "text_extraction_failure": False,
+                 "text_extraction_error": None,
+                 "mean_text_similarity": None}
     if np is None:
         out["note"] = "numpy required for exact campaign parity"
         return out
@@ -1198,6 +1568,7 @@ def exact_parity_compare(aid: str, a_path: Path | None, b_path: Path | None,
         geometry_ok = True
         worst_pct: float | None = None
         worst_page = 0
+        text_sims: list[float] = []
         for i in range(n):
             pa, pb = da[i], db[i]
             pymupdf.TOOLS.mupdf_warnings(reset=True)
@@ -1210,12 +1581,22 @@ def exact_parity_compare(aid: str, a_path: Path | None, b_path: Path | None,
                               colorspace=pymupdf.csRGB, alpha=False)
             pymupdf.TOOLS.mupdf_warnings(reset=True)
             pixels = a.width * a.height
+            ta = _norm_text(pa)
+            tb = _norm_text(pb)
+            sim = round(difflib.SequenceMatcher(None, ta, tb).ratio(), 4)
+            text_sims.append(sim)
             entry = {"page": i + 1, "pixels": pixels,
                      "rust_dims_px": [a.width, a.height],
                      "ref_dims_px": [b.width, b.height],
                      "rust_size_pt": [round(pa.rect.width, 3), round(pa.rect.height, 3)],
                      "ref_size_pt": [round(pb.rect.width, 3), round(pb.rect.height, 3)],
-                     "dims_match": (a.width, a.height) == (b.width, b.height)}
+                     "dims_match": (a.width, a.height) == (b.width, b.height),
+                     "text_similarity": sim}
+            if tb.strip() and not ta.strip():
+                entry["extraction_failure"] = True
+                out["text_extraction_failure"] = True
+                if not out["text_extraction_error"]:
+                    out["text_extraction_error"] = f"page {i + 1} text layer missing in rust PDF"
             if not entry["dims_match"]:
                 # identical geometry is part of the parity rule: no crop/tolerance
                 geometry_ok = False
@@ -1246,6 +1627,8 @@ def exact_parity_compare(aid: str, a_path: Path | None, b_path: Path | None,
         out["unmatched_pages"] = abs(a_pages - b_pages)
         out["geometry_match"] = geometry_ok and a_pages == b_pages
         out["compared"] = True
+        if text_sims:
+            out["mean_text_similarity"] = round(statistics.fmean(text_sims), 4)
         if total:
             doc_pct = 100.0 * (1 - differing / total)
             out["document_exact_parity"] = round(doc_pct, 6)
@@ -1330,22 +1713,39 @@ def process_campaign_project(entry: dict, out_root: Path, cfg: dict) -> dict:
             drift = check_prepared_drift(src, recorded.get(aid) or {})
             if drift:
                 res["prepared"]["active_vs_prepared_drift"] = drift
-        ref_engine = detect_ref_engine(src, tex_rel)
+        ref_engine = detect_ref_engine(src, tex_rel, entry)
         res["ref_engine"] = ref_engine
         res["ref_bin"] = cfg["ref_bins"][ref_engine]
-        # Both engines converge INDEPENDENTLY from the identical frozen
-        # source (verify_frozen_identical ran before any mutation): no aux,
-        # .bbl, or oracle state ever flows ref -> rust. Divergence is a
-        # gate-visible failure, never masked. No system binary produces Rust
-        # output; the Rust side uses native tex-bibtex for generated .bbls.
+        res["rust_bin"] = cfg["rust_bin"]
+        res["rust_bin_sha256"] = cfg.get("rust_bin_sha256")
+        res["ref_bin_sha256"] = cfg.get("ref_bins_info", {}).get(ref_engine, {}).get("sha256")
+        main_tex_file = src / tex_rel
+        res["main_tex_sha256"] = sha256_file(main_tex_file) if main_tex_file.is_file() else None
+
+        rust_home = ws_rust / ".home"
+        rust_cache = ws_rust / ".cache"
+        rust_home.mkdir(parents=True, exist_ok=True)
+        rust_cache.mkdir(parents=True, exist_ok=True)
+
+        ref_home = ws_ref / ".home"
+        ref_cache = ws_ref / ".cache"
+        ref_home.mkdir(parents=True, exist_ok=True)
+        ref_cache.mkdir(parents=True, exist_ok=True)
+
+        p_rust_env, p_ref_env, _, _ = campaign_environments(
+            cfg.get("overlay_path"),
+            rust_home=rust_home, rust_cache=rust_cache,
+            ref_home=ref_home, ref_cache=ref_cache
+        )
+
         ref = converge_engine("ref", cfg["ref_bins"][ref_engine], ws_ref,
-                              tex_rel, idir, cfg["env"], cfg["timeout"],
+                              tex_rel, idir, p_ref_env, cfg["timeout"],
                               cfg["max_passes"], cfg["sys_bibtex"], ref_engine,
                               cfg["mem_limit_mib"], cfg["max_capture_bytes"])
         rust = converge_engine("rust", cfg["rust_bin"], ws_rust, tex_rel,
-                               idir, cfg["env"], cfg["timeout"],
+                               idir, p_rust_env, cfg["timeout"],
                                cfg["max_passes"], cfg["rust_bibtex"],
-                               "pdflatex", cfg["mem_limit_mib"],
+                               ref_engine, cfg["mem_limit_mib"],
                                cfg["max_capture_bytes"])
         res["ref"] = ref
         res["rust"] = rust
@@ -1354,9 +1754,10 @@ def process_campaign_project(entry: dict, out_root: Path, cfg: dict) -> dict:
             Path(rust["pdf"]) if rust["pdf"] else None,
             Path(ref["pdf"]) if ref["pdf"] else None,
             rust["pages"], ref["pages"], out_root, cfg["dpi"],
-            cfg["page_min"], cfg["doc_min"])
+            cfg["page_min"], cfg["doc_min"],
+            rust_font_errors=rust.get("font_embedding_errors"),
+            ref_font_errors=ref.get("font_embedding_errors"))
         res["compare"] = cmp
-        # provenance warning ONLY: recorded oracle pages from an earlier
         # prepared campaign never pin the live reference (active sources
         # legitimately drift). Parity is current active reference vs native
         # Rust with identical page count/geometry; that comparison is the
@@ -1407,25 +1808,48 @@ def campaign_gate(selected: list[dict], results: dict[str, dict],
         for eng in ("rust", "ref"):
             x = r.get(eng) or {}
             if x.get("status") != "clean" or not x.get("converged"):
-                failures.append({"kind": "compilation", "id": aid,
+                f_kind = x.get("failure_kind") or "compilation"
+                failures.append({"kind": f_kind, "id": aid,
                                  "engine": eng, "status": x.get("status"),
                                  "converged": x.get("converged"),
                                  "passes": x.get("passes"),
                                  "errors": (x.get("errors") or [])[:3]})
             elif not x.get("pdf_valid"):
-                failures.append({"kind": "invalid-pdf", "id": aid,
+                f_kind = x.get("failure_kind") or "compilation"
+                failures.append({"kind": f_kind, "id": aid,
                                  "engine": eng})
         # oracle_pages_note is provenance only (active source drift); a
         # genuinely missing source/dependency already raised harness_error.
         c = r.get("compare") or {}
+        rust_state = r.get("rust") or {}
+        ref_state = r.get("ref") or {}
+        font_errs = (
+            c.get("font_embedding_errors")
+            or (
+                (rust_state.get("font_embedding_errors") or [])
+                + (ref_state.get("font_embedding_errors") or [])
+            )
+        )
+        if (
+            font_errs
+            or c.get("font_embedding_failure")
+            or rust_state.get("font_embedding_errors")
+            or ref_state.get("font_embedding_errors")
+        ):
+            if not any(f.get("id") == aid and f.get("kind") == "embedding" for f in failures):
+                failures.append({"kind": "embedding", "id": aid,
+                                 "errors": (font_errs or [])[:5]})
+        if c.get("text_extraction_failure"):
+            failures.append({"kind": "extraction", "id": aid,
+                             "detail": c.get("text_extraction_error") or "text extraction failed"})
         if not c.get("compared"):
             failures.append({"kind": "not-compared", "id": aid,
                              "note": c.get("note")})
             continue
         if not c.get("page_count_match"):
-            failures.append({"kind": "page-count", "id": aid})
+            failures.append({"kind": "render", "subkind": "page-count", "id": aid})
         if not c.get("geometry_match"):
-            failures.append({"kind": "geometry", "id": aid})
+            failures.append({"kind": "render", "subkind": "geometry", "id": aid})
         if c.get("raster_warnings"):
             failures.append({"kind": "raster-warnings", "id": aid,
                              "count": len(c["raster_warnings"])})
@@ -1433,11 +1857,11 @@ def campaign_gate(selected: list[dict], results: dict[str, dict],
             failures.append({"kind": "producer", "id": aid,
                              "producer": c.get("producer_rust")})
         for pf in c.get("page_failures") or []:
-            failures.append({"kind": "page-parity", "id": aid, **pf,
+            failures.append({"kind": "render", "subkind": "page-parity", "id": aid, **pf,
                              "min_pct": cfg["page_min"]})
         dp = c.get("document_exact_parity")
         if dp is None or dp < cfg["doc_min"]:
-            failures.append({"kind": "doc-parity", "id": aid,
+            failures.append({"kind": "render", "subkind": "doc-parity", "id": aid,
                              "parity": dp, "min_pct": cfg["doc_min"]})
     return {"ok": not failures, "gate_utc": now_iso(), "mode": "campaign",
             "expected": len(ids), "completed": len(results),
@@ -1474,6 +1898,8 @@ def qualification_ledger(selected: list[dict], results: dict[str, dict],
                     reasons.append(f"{engine}-not-converged")
                 if not state.get("pdf_valid"):
                     reasons.append(f"{engine}-invalid-pdf")
+                if state.get("font_embedding_errors"):
+                    reasons.append(f"{engine}-font-embedding")
             compare = result.get("compare") or {}
             if not compare.get("compared"):
                 reasons.append("not-compared")
@@ -1489,6 +1915,13 @@ def qualification_ledger(selected: list[dict], results: dict[str, dict],
                 prod_ref = compare.get("producer_ref")
                 if prod_rust != "tex-rs" and (not prod_ref or prod_rust != prod_ref):
                     reasons.append("wrong-rust-producer")
+                if (
+                    compare.get("font_embedding_failure")
+                    and not any(r.endswith("-font-embedding") for r in reasons)
+                ):
+                    reasons.append("font-embedding")
+                if compare.get("text_extraction_failure"):
+                    reasons.append("text-extraction")
                 if parity is None or parity <= doc_min:
                     reasons.append("document-parity-not-above-threshold")
         projects.append({
@@ -1506,6 +1939,7 @@ def qualification_ledger(selected: list[dict], results: dict[str, dict],
             "document_exact_parity_strictly_above_pct": doc_min,
             "both_engines_clean_and_converged": True,
             "both_pdfs_valid": True,
+            "both_pdfs_font_embedding_valid": True,
             "page_count_and_geometry_match": True,
             "no_raster_warnings": True,
             "rust_pdf_producer": "tex-rs",
@@ -1524,11 +1958,14 @@ def summarize_campaign(results: dict[str, dict], page_min: float,
               ("clean", "errors", "failure", "timeout", "unconverged",
                "memlimit")}
            for e in ("rust", "ref")}
+    failure_kinds = {e: {} for e in ("rust", "ref")}
     for r in results.values():
         for e in ("rust", "ref"):
             st = (r.get(e) or {}).get("status")
             if st in eng[e]:
                 eng[e][st] += 1
+            fk = (r.get(e) or {}).get("failure_kind") or "clean"
+            failure_kinds[e][fk] = failure_kinds[e].get(fk, 0) + 1
     rastered = [r for r in results.values()
                 if (r.get("compare") or {}).get("compared")]
     doc_p = [r["compare"]["document_exact_parity"] for r in rastered
@@ -1536,9 +1973,33 @@ def summarize_campaign(results: dict[str, dict], page_min: float,
     pages_all = [p["exact_parity_pct"] for r in rastered
                  for p in r["compare"]["per_page"]
                  if p.get("exact_parity_pct") is not None]
+    font_embedding_failures_by_engine = {
+        "rust": sum(
+            1 for r in results.values()
+            if bool((r.get("rust") or {}).get("font_embedding_errors"))
+        ),
+        "ref": sum(
+            1 for r in results.values()
+            if bool((r.get("ref") or {}).get("font_embedding_errors"))
+        ),
+    }
+    font_embedding_failures = sum(
+        1 for r in results.values()
+        if bool((r.get("rust") or {}).get("font_embedding_errors"))
+        or bool((r.get("ref") or {}).get("font_embedding_errors"))
+        or bool((r.get("compare") or {}).get("font_embedding_failure"))
+    )
+    text_extraction_failures = sum(
+        1 for r in results.values()
+        if bool((r.get("compare") or {}).get("text_extraction_failure"))
+    )
     return {
         "projects_completed": len(results),
         "status_counts": eng,
+        "failure_kind_counts": failure_kinds,
+        "font_embedding_failures": font_embedding_failures,
+        "font_embedding_failures_by_engine": font_embedding_failures_by_engine,
+        "text_extraction_failures": text_extraction_failures,
         "par": sum(1 for r in results.values()
                    for e in ("rust", "ref")
                    if r.get(e, {}).get("status") == "clean"
@@ -1600,7 +2061,9 @@ def _norm_text(page) -> str:
 
 
 def compare_pdfs(a_path: Path | None, b_path: Path | None,
-                 a_pages: int | None, b_pages: int | None) -> dict:
+                 a_pages: int | None, b_pages: int | None,
+                 rust_font_errors: list[str] | None = None,
+                 ref_font_errors: list[str] | None = None) -> dict:
     """a = rust output, b = reference output."""
     out = {
         "raster_dpi": DPI, "compared": False, "page_count_match": None,
@@ -1608,6 +2071,14 @@ def compare_pdfs(a_path: Path | None, b_path: Path | None,
         "mean_pixel_diff": None, "max_pixel_diff": None,
         "pct_pixels_diff": None, "worst_page": None,
         "text_similarity": None, "per_page": [], "note": None,
+        "font_embedding_failure": bool(rust_font_errors or ref_font_errors),
+        "font_embedding_errors": list(rust_font_errors or []) + list(ref_font_errors or []),
+        "font_embedding_errors_by_engine": {
+            "rust": list(rust_font_errors or []),
+            "ref": list(ref_font_errors or []),
+        },
+        "text_extraction_failure": False,
+        "text_extraction_error": None,
     }
     if not (a_path and b_path and Path(a_path).is_file() and Path(b_path).is_file()):
         out["note"] = "one or both PDFs missing; no raster comparison"
@@ -1670,6 +2141,11 @@ def compare_pdfs(a_path: Path | None, b_path: Path | None,
             entry["text_ratio"] = round(difflib.SequenceMatcher(None, ta, tb).ratio(), 4)
             text_a.append(ta)
             text_b.append(tb)
+            if tb.strip() and not ta.strip():
+                entry["extraction_failure"] = True
+                out["text_extraction_failure"] = True
+                if not out["text_extraction_error"]:
+                    out["text_extraction_error"] = f"page {i + 1} text layer missing in rust PDF"
             out["per_page"].append(entry)
         out["compared"] = True
         out["pages_compared"] = n
@@ -1707,22 +2183,50 @@ def process_project(entry: dict, corpus_dir: Path, out_root: Path,
     stripped_r = prepare_workspace(src, ws_rust, tex_rel, out_root=out_root)
     stripped_f = prepare_workspace(src, ws_ref, tex_rel, out_root=out_root)
 
+    rust_home = ws_rust / ".home"
+    rust_cache = ws_rust / ".cache"
+    rust_home.mkdir(parents=True, exist_ok=True)
+    rust_cache.mkdir(parents=True, exist_ok=True)
+
+    ref_home = ws_ref / ".home"
+    ref_cache = ws_ref / ".cache"
+    ref_home.mkdir(parents=True, exist_ok=True)
+    ref_cache.mkdir(parents=True, exist_ok=True)
+
+    p_rust_env, p_ref_env, _, _ = campaign_environments(
+        None, rust_home=rust_home, rust_cache=rust_cache,
+        ref_home=ref_home, ref_cache=ref_cache
+    )
+
+    ref_engine = detect_ref_engine(src, tex_rel, entry)
+    ref_bin = cfg.get("ref_bins", {}).get(ref_engine, sys_bin)
     res_rust = compile_engine("rust", rust_bin, ws_rust, tex_rel, idir,
                               timeout, mem_limit_mib,
-                              cfg["max_capture_bytes"])
-    res_ref = compile_engine("ref", sys_bin, ws_ref, tex_rel, idir,
+                              cfg["max_capture_bytes"], env=p_rust_env,
+                              ref_engine=ref_engine)
+    res_ref = compile_engine("ref", ref_bin, ws_ref, tex_rel, idir,
                              timeout, mem_limit_mib,
-                             cfg["max_capture_bytes"])
+                             cfg["max_capture_bytes"], env=p_ref_env,
+                             ref_engine=ref_engine)
 
     cmp = compare_pdfs(
         Path(res_rust["pdf"]) if res_rust["pdf"] else None,
         Path(res_ref["pdf"]) if res_ref["pdf"] else None,
         res_rust["pages"], res_ref["pages"],
+        rust_font_errors=res_rust.get("font_embedding_errors"),
+        ref_font_errors=res_ref.get("font_embedding_errors"),
     )
 
+    main_tex_file = src / tex_rel
     result = {
         "id": aid, "archive": entry.get("archive"), "main_tex": entry["main_tex"],
         "mode": "single-pass", "manifest_index": entry.get("manifest_index"),
+        "ref_engine": ref_engine,
+        "rust_bin": rust_bin,
+        "rust_bin_sha256": cfg.get("rust_bin_sha256"),
+        "sys_bin": ref_bin,
+        "sys_bin_sha256": sha256_file(Path(ref_bin)) if Path(ref_bin).is_file() else cfg.get("sys_bin_sha256"),
+        "main_tex_sha256": sha256_file(main_tex_file) if main_tex_file.is_file() else None,
         "finished_utc": now_iso(),
         "stripped_generated": {"rust": stripped_r, "ref": stripped_f},
         "rust": res_rust, "ref": res_ref, "compare": cmp,
@@ -1801,12 +2305,14 @@ def build_report(meta: dict, results: dict[str, dict]) -> dict:
 # Main
 
 def run_campaign(args) -> int:
-    """104-document converged exact-parity campaign: inventory, freeze,
+    """Converged exact-parity campaign: inventory, freeze,
     converge, compare, gate. Every failure/blocker is retained."""
     rust_bin = os.path.abspath(args.rust)
     if not Path(rust_bin).is_file():
         print(f"Error: rust binary not found: {rust_bin}", file=sys.stderr)
         return 1
+    sys_bibtex = os.path.abspath(args.sys_bibtex)
+    args.output = args.output.resolve()
     ref_bins = {}
     for engine, path in (("pdflatex", args.sys), ("xelatex", args.sys_xelatex),
                          ("lualatex", args.sys_lualatex)):
@@ -1816,24 +2322,36 @@ def run_campaign(args) -> int:
             # missing reference engine: retained blocker for affected docs
             print(f"CAMPAIGN: reference engine missing: {engine} -> {ap_}",
                   file=sys.stderr)
-    rust_bibtex = os.path.abspath(str(args.rust_bibtex))
-    if not Path(rust_bibtex).is_file():
-        print(f"CAMPAIGN: native tex-bibtex missing: {rust_bibtex}; Rust docs "
-              "needing generated bibliographies will be retained failures",
-              file=sys.stderr)
-        rust_bibtex = None
-    sys_bibtex = os.path.abspath(str(args.sys_bibtex))
-    env, removed_diag, overlay_vars = campaign_env(args.overlay)
+    rust_bibtex = None
+    if args.rust_bibtex:
+        if Path(args.rust_bibtex).is_file():
+            rust_bibtex = os.path.abspath(str(args.rust_bibtex))
+        else:
+            print(f"CAMPAIGN: specified rust-bibtex not found: {args.rust_bibtex}", file=sys.stderr)
+    elif is_ratex_cli(rust_bin):
+        # ratex dispatches native embedded bibtex when called with TEXMK_INTERNAL_MODE=bibtex
+        rust_bibtex = rust_bin
+    else:
+        sibling = Path(rust_bin).parent / "tex-bibtex"
+        if not sibling.is_file():
+            sibling = Path(rust_bin).parent / "bibtex"
+        if sibling.is_file():
+            rust_bibtex = os.path.abspath(str(sibling))
+        else:
+            print(f"CAMPAIGN: native bibtex missing for {rust_bin}; Rust docs "
+                  "needing generated bibliographies will be retained failures",
+                  file=sys.stderr)
+            rust_bibtex = None
+    rust_env, ref_env, removed_diag, overlay_vars = campaign_environments(args.overlay)
     if args.overlay and not Path(args.overlay).is_dir():
         print(f"CAMPAIGN: WARNING: overlay dir missing: {args.overlay}; "
               "running without it — dependency failures will be retained "
               "gate blockers", file=sys.stderr)
-        env, removed_diag, overlay_vars = campaign_env(None)
+        rust_env, ref_env, removed_diag, overlay_vars = campaign_environments(None)
         args.overlay = None
     if overlay_vars:
-        print(f"CAMPAIGN: TEXMFHOME={overlay_vars['TEXMFHOME']} "
-              f"TEXMFVAR={overlay_vars['TEXMFVAR']} "
-              "(identical for both engines)")
+        print(f"CAMPAIGN: Reference TEXMFHOME={overlay_vars['TEXMFHOME']} "
+              f"TEXMFVAR={overlay_vars['TEXMFVAR']} (Rust engine isolated with TEX_RS_HERMETIC=1)")
 
     # ---- inventory: a deterministic manifest range plus optional privates ----
     manifest_file = args.corpus_dir / "manifest.json"
@@ -1915,8 +2433,12 @@ def run_campaign(args) -> int:
     todo = [e for e in entries if e["id"] not in results]
 
     cfg = {"rust_bin": rust_bin, "ref_bins": ref_bins,
+           "rust_bin_sha256": sha256_file(rust_bin) if Path(rust_bin).is_file() else None,
+           "ref_bins_info": {k: {"path": v, "sha256": sha256_file(v) if Path(v).is_file() else None} for k, v in ref_bins.items()},
            "rust_bibtex": rust_bibtex, "sys_bibtex": sys_bibtex,
-           "env": env, "timeout": args.timeout, "max_passes": args.max_passes,
+           "rust_env": rust_env, "ref_env": ref_env,
+           "env": ref_env, "timeout": args.timeout, "max_passes": args.max_passes,
+           "overlay_path": args.overlay,
            "mem_limit_mib": args.mem_limit_mib,
            "max_capture_bytes": args.max_capture_bytes,
            "dpi": args.dpi, "page_min": args.page_min, "doc_min": args.doc_min,
@@ -1945,19 +2467,41 @@ def run_campaign(args) -> int:
         "doc_min_pct": args.doc_min,
         "qualification_min_pct": args.qualification_min,
         "rust_bin": rust_bin, "rust_version": capture_version(args.rust, 10),
+        "rust_bin_sha256": sha256_file(Path(rust_bin)) if Path(rust_bin).is_file() else None,
+        "rust_bibtex": rust_bibtex,
+        "rust_bibtex_version": (
+            capture_version(rust_bibtex, 10, env={"TEXMK_INTERNAL_MODE": "bibtex"})
+            if rust_bibtex else None
+        ),
+        "rust_bibtex_sha256": sha256_file(Path(rust_bibtex)) if rust_bibtex and Path(rust_bibtex).is_file() else None,
         "ref_bins": ref_bins,
-        "sys_bibtex": sys_bibtex, "rust_bibtex": rust_bibtex,
+        "ref_bins_info": {
+            k: {
+                "path": v,
+                "sha256": sha256_file(v) if Path(v).is_file() else None,
+                "version": capture_version(v, 10),
+            } for k, v in ref_bins.items()
+        },
+        "sys_bibtex": sys_bibtex,
+        "sys_bibtex_version": capture_version(sys_bibtex, 10),
+        "sys_bibtex_sha256": sha256_file(Path(sys_bibtex)) if Path(sys_bibtex).is_file() else None,
         "overlay": str(args.overlay) if args.overlay else None,
         "overlay_vars": overlay_vars,
         "removed_diagnostics": removed_diag,
         "private_provenance": getattr(args, "priv_prov", {}),
-        "pymupdf_version": pymupdf.__version__, "numpy": np is not None,
+        "pymupdf_version": pymupdf.__version__ if pymupdf else None, "numpy": np is not None,
         "selected": len(entries), "resumed": len(results), "planned": len(todo),
         "expected_total": (
-            104
-            if not (args.only or args.corpus_only or args.private_only)
-            and args.offset == 0 and args.limit == 100
-            else None
+            1000
+            if args.corpus_only and not args.only and args.offset == 0
+            and args.limit >= 1000 and args.corpus_dir == Path("corpus/standalone-1000")
+            else (
+                104
+                if not (args.only or args.corpus_only or args.private_only)
+                and args.offset == 0 and args.limit == 100
+                and args.corpus_dir == Path("corpus")
+                else None
+            )
         ),
         "retain": args.retain, "keep_work": cfg["keep_work"],
         "artifact_policy": "bounded-retention-v1",
@@ -2080,17 +2624,19 @@ def run_campaign(args) -> int:
 
 def main() -> int:
     ap = argparse.ArgumentParser(
-        description="Corpus/parity harness: Rust pdflatex vs system engines. "
-                    "Default --mode campaign = converged 104-document exact "
-                    "150dpi RGB parity gate; --mode single-pass = legacy "
-                    "one-invocation 72dpi diagnostic.")
+        description="Corpus/parity harness: Rust ratex/pdflatex vs system engines. "
+                    "Default --mode campaign = converged exact 150dpi RGB parity gate; "
+                    "--mode single-pass = legacy one-invocation 72dpi diagnostic.")
     ap.add_argument("--mode", choices=("campaign", "single-pass"),
                     default="campaign",
                     help="campaign = default goal-grade converged gate; "
                          "single-pass = legacy diagnostic only")
-    ap.add_argument("--corpus-dir", type=Path, default=Path("corpus"))
-    ap.add_argument("--rust", type=Path, default=Path("target/release/pdflatex"),
-                    help="Rust pdflatex binary")
+    ap.add_argument("--corpus-dir", type=Path,
+                    default=Path("corpus/standalone-1000") if Path("corpus/standalone-1000/manifest.json").is_file() else Path("corpus"),
+                    help="Corpus directory root (default: corpus/standalone-1000 or corpus)")
+    ap.add_argument("--rust", type=Path,
+                    default=Path("target/release/ratex") if Path("target/release/ratex").exists() else Path("target/release/pdflatex"),
+                    help="Rust ratex binary (default: target/release/ratex or target/release/pdflatex)")
     ap.add_argument("--sys", type=Path, default=Path("/usr/bin/pdflatex"),
                     help="Reference system pdflatex")
     ap.add_argument("--sys-xelatex", type=Path, default=Path("/usr/bin/xelatex"),
@@ -2098,15 +2644,14 @@ def main() -> int:
     ap.add_argument("--sys-lualatex", type=Path,
                     default=Path("/usr/bin/lualatex"),
                     help="Reference system LuaTeX (luacode docs)")
-    ap.add_argument("--rust-bibtex", type=Path,
-                    default=Path("target/release/tex-bibtex"),
-                    help="native Rust BibTeX for the Rust side (never system)")
+    ap.add_argument("--rust-bibtex", type=Path, default=None,
+                    help="native Rust BibTeX for the Rust side (never system; defaults to ratex embedded bibtex or tex-bibtex)")
     ap.add_argument("--sys-bibtex", type=Path, default=Path("/usr/bin/bibtex"),
                     help="system BibTeX for the reference side")
     ap.add_argument("--overlay", type=Path,
                     default=Path("output/parity-deps/texmf"),
                     help="isolated TDS dependency overlay exported as TEXMFHOME "
-                         "identically to both engines (campaign mode)")
+                         "to reference engine (campaign mode)")
     ap.add_argument("--max-passes", type=int, default=5,
                     help="convergence pass bound per engine (campaign mode)")
     ap.add_argument("--dpi", type=float, default=CAMPAIGN_DPI,
@@ -2127,8 +2672,8 @@ def main() -> int:
                          "'memlimit'. 0 disables (default: 4 GiB)")
     ap.add_argument("--offset", type=int, default=0,
                     help="Zero-based first corpus manifest entry")
-    ap.add_argument("--limit", type=int, default=100,
-                    help="Number of corpus manifest entries after --offset")
+    ap.add_argument("--limit", type=int, default=1000,
+                    help="Number of corpus manifest entries after --offset (default: 1000)")
     ap.add_argument("--only", type=str, default=None,
                     help="Comma-separated project ids (overrides range)")
     ap.add_argument("--qualification-min", type=float, default=95.0,
@@ -2179,10 +2724,16 @@ def main() -> int:
     if not args.rust.is_file():
         print(f"Error: rust binary not found: {args.rust}", file=sys.stderr)
         return 1
+    ref_bins = {}
+    for engine, path in (("pdflatex", args.sys), ("xelatex", args.sys_xelatex),
+                         ("lualatex", args.sys_lualatex)):
+        ap_ = os.path.abspath(str(path))
+        ref_bins[engine] = ap_
+        if not Path(ap_).is_file():
+            print(f"SINGLE-PASS: reference engine missing: {engine} -> {ap_}", file=sys.stderr)
     if not args.sys.is_file():
         print(f"Error: reference binary not found: {args.sys}", file=sys.stderr)
         return 1
-
     if args.offset < 0 or args.limit < 0:
         print("Error: --offset and --limit must be non-negative", file=sys.stderr)
         return 1
@@ -2222,11 +2773,17 @@ def main() -> int:
                 results[r["id"]] = r
     todo = [e for e in selected if e["id"] not in results]
 
+    rust_env, ref_env, _, _ = campaign_environments(None)
     single_cfg = {
         "retain": args.retain,
         "keep_work": args.keep_work,
         "max_capture_bytes": args.max_capture_bytes,
         "doc_min": args.doc_min,
+        "rust_env": rust_env,
+        "ref_env": ref_env,
+        "ref_bins": ref_bins,
+        "rust_bin_sha256": sha256_file(Path(args.rust)) if Path(args.rust).is_file() else None,
+        "sys_bin_sha256": sha256_file(Path(args.sys)) if Path(args.sys).is_file() else None,
     }
     for resumed in results.values():
         apply_artifact_retention(resumed, args.output, single_cfg)
@@ -2234,8 +2791,8 @@ def main() -> int:
 
     meta = {
         "passes_per_engine": 1,
-        "single_pass_notice": "SINGLE PASS: exactly one pdflatex invocation per engine "
-                              "per project; bibtex is NOT run; source .bbl preserved.",
+        "single_pass_notice": "SINGLE PASS: exactly one engine invocation per project; "
+                              "bibtex is NOT run; source .bbl preserved.",
         "started_utc": now_iso(),
         "corpus_dir": str(args.corpus_dir), "manifest": str(manifest_file),
         "output": str(args.output), "jobs": args.jobs, "timeout_s": args.timeout,
@@ -2247,7 +2804,8 @@ def main() -> int:
         "rust_version": capture_version(args.rust, 10),
         "sys_bin": os.path.abspath(args.sys),
         "sys_version": capture_version(args.sys, 10),
-        "pymupdf_version": pymupdf.__version__, "numpy": np is not None,
+        "ref_bins": ref_bins,
+        "pymupdf_version": pymupdf.__version__ if pymupdf else None, "numpy": np is not None,
         "selected": len(selected), "resumed": len(results), "planned": len(todo),
         "retain": args.retain, "keep_work": args.keep_work,
         "artifact_policy": "bounded-retention-v1",
@@ -2263,7 +2821,7 @@ def main() -> int:
     print("=" * 78)
     print(f"*** {meta['single_pass_notice']} ***")
     print(f"Corpus {len(selected)} projects | rust={meta['rust_bin']}")
-    print(f"                          | ref ={meta['sys_bin']}")
+    print(f"                          | ref engines={ref_bins}")
     print(f"jobs={args.jobs} timeout={args.timeout}s output={args.output} "
           f"resumed={len(results)} to-run={len(todo)}")
     print("=" * 78, flush=True)

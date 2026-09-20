@@ -110,7 +110,7 @@ impl Engine {
         if matches!(self.mode, Mode::Horizontal | Mode::RestrictedHorizontal) {
             let continues_character = if t.is_cs() {
                 match self.eqtb.resolve(t.cs_id()) {
-                    Some(Equiv::CharDef(_) | Equiv::Prim(Prim::Char)) => true,
+                    Some(Equiv::CharDef(_) | Equiv::Prim(Prim::Char | Prim::NoBoundary)) => true,
                     Some(Equiv::CharTok(raw)) => matches!(Token(*raw).cc(), 11 | 12),
                     _ => false,
                 }
@@ -118,6 +118,8 @@ impl Engine {
                 matches!(t.cc(), 11 | 12)
             };
             if !continues_character {
+                self.finish_native_utf8();
+                self.flush_native_text();
                 let font = self.eqtb.cur_font_val;
                 if font != 0 {
                     if self.mode == Mode::Horizontal {
@@ -305,7 +307,7 @@ impl Engine {
                     }
                     Some(Equiv::CharDef(v)) => {
                         self.reject_assignment_prefixes(&format!("\\char\"{v:X}"));
-                        self.char_token(v as u8, false);
+                        self.unicode_char_token(v, false);
                     }
 
                     // tex.web math_given (\S1177) recovers a text-mode
@@ -382,7 +384,7 @@ impl Engine {
                 4 => self.error("Misplaced alignment tab character &"),
                 10 => self.hspace_token(),
                 13 => self.active_char(c),
-                11 | 12 => self.char_token(c, cc == 11),
+                11 | 12 => self.text_character_token(t),
                 5 | 7 | 8 => {
                     if cc == 7 {
                         self.super_token(c);
@@ -398,6 +400,79 @@ impl Engine {
                 }
                 _ => {}
             }
+        }
+    }
+
+    fn text_character_token(&mut self, token: Token) {
+        if self.mode.is_v() {
+            self.push_token(token);
+            self.start_paragraph(true);
+            return;
+        }
+        if !token.is_unicode_char()
+            && !self.mode.is_m()
+            && (token.chr() >= 128 || self.native_utf8_len != 0)
+            && self.native_text_active()
+        {
+            self.native_utf8_bytes[self.native_utf8_len] = token.chr() as u8;
+            self.native_utf8_len += 1;
+            match std::str::from_utf8(&self.native_utf8_bytes[..self.native_utf8_len]) {
+                Ok(text) => {
+                    let scalar = text.chars().next().unwrap() as u32;
+                    self.native_utf8_len = 0;
+                    self.unicode_char_token(scalar, token.cc() == 11);
+                }
+                Err(error) if error.error_len().is_none() && self.native_utf8_len < 4 => {}
+                Err(_) => {
+                    self.native_utf8_len = 0;
+                    self.error("Invalid UTF-8 sequence in native text");
+                }
+            }
+            return;
+        }
+        self.finish_native_utf8();
+        self.unicode_char_token(token.chr(), token.cc() == 11);
+    }
+
+    fn finish_native_utf8(&mut self) {
+        if self.native_utf8_len != 0 {
+            self.native_utf8_len = 0;
+            self.error("Incomplete UTF-8 sequence in native text");
+        }
+    }
+
+    pub(crate) fn unicode_char_token(&mut self, scalar: u32, is_letter: bool) {
+        if self.mode.is_v() {
+            self.push_token(Token::unicode_char(if is_letter { 11 } else { 12 }, scalar));
+            self.start_paragraph(true);
+            return;
+        }
+        // Resolve the scoped CJK face only when a CJK character actually uses
+        // it. A Latin-only bold heading must not require a CJK bold face.
+        if !self.mode.is_m() && char::from_u32(scalar).is_some_and(crate::native_layout::is_cjk) {
+            if let Some(cs) = self.cs.lookup(b"ratex@cjkfont") {
+                if matches!(self.eqtb.resolve(cs), Some(Equiv::Macro(_))) {
+                    self.push_token(Token::unicode_char(if is_letter { 11 } else { 12 }, scalar));
+                    self.push_token(Token::from_cs(cs));
+                    return;
+                }
+            }
+        }
+        if !self.mode.is_m() && self.append_native_char(scalar) {
+            self.space_factor =
+                u8::try_from(scalar).map_or(1000, |byte| self.space_factor_of(byte));
+            return;
+        }
+        if let Ok(byte) = u8::try_from(scalar) {
+            self.char_token(byte, is_letter);
+        } else if self.mode.is_m() {
+            self.error(
+                "Unicode math requires OpenType MATH support, which Ratex does not implement",
+            );
+        } else {
+            self.error(&format!(
+                "Unicode character U+{scalar:04X} requires a native font selection"
+            ));
         }
     }
 
@@ -613,11 +688,9 @@ impl Engine {
                 self.scan_optional_equals();
                 let (v, value_source) = self.scan_int_with_source();
                 let g = self.take_global();
-                if !(0..=255).contains(&v) {
+                if u32::try_from(v).ok().and_then(char::from_u32).is_none() {
                     self.error_at(
-                        &format!(
-                            "Character code {v} is out of range for \\chardef; expected 0 through 255 and used 0"
-                        ),
+                        &format!("Invalid Unicode scalar {v} for \\chardef; used 0"),
                         value_source,
                     );
                     self.eqtb.assign(t, Equiv::CharDef(0), g);
@@ -756,10 +829,8 @@ impl Engine {
                 // level-tracked so \mathrm/\operator@font groups restore
                 // cur_fam at \egroup (a direct write leaks fam 0 into the
                 // following subscripts, turning math italic upright)
-                let capture_value_source = matches!(
-                    ip,
-                    IntParam::InteractionMode | IntParam::HangAfter
-                );
+                let capture_value_source =
+                    matches!(ip, IntParam::InteractionMode | IntParam::HangAfter);
                 let (v, value_source) = if capture_value_source {
                     self.scan_int_with_source()
                 } else {
@@ -875,10 +946,7 @@ impl Engine {
         match self.eqtb.resolve(id).cloned() {
             Some(Equiv::Prim(Prim::IntP(ip))) => {
                 self.scan_optional_equals();
-                let capture_value_source = matches!(
-                    ip,
-                    IntParam::HangAfter
-                );
+                let capture_value_source = matches!(ip, IntParam::HangAfter);
                 let (v, value_source) = if capture_value_source {
                     self.scan_int_with_source()
                 } else {
@@ -1405,7 +1473,11 @@ impl Engine {
                 // `\the\toks` in `revtex4-2` tabular preambles) must also store
                 // the literal token rather than demanding a parameter digit.
                 if from_unexp || self.unexpanded_parameter || self.no_expand_tok == Some(t) {
-                    out.push(if t.is_cs() { t } else { Token::char(6, b'#' as u32) });
+                    out.push(if t.is_cs() {
+                        t
+                    } else {
+                        Token::char(6, b'#' as u32)
+                    });
                     continue;
                 }
                 let t2 = self.raw_token();
@@ -1836,7 +1908,8 @@ mod definable_cs_recovery_tests {
         let mut eng = engine();
         let hash_tok = Token::char(6, b'#' as u32);
         let myhash = eng.cs.intern(b"myhash");
-        eng.eqtb.assign(myhash, crate::eqtb::Equiv::CharTok(hash_tok.0), false);
+        eng.eqtb
+            .assign(myhash, crate::eqtb::Equiv::CharTok(hash_tok.0), false);
         let mymacro = eng.cs.intern(b"mymacro");
         eng.input.push_toks(
             vec![

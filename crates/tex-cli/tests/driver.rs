@@ -376,22 +376,21 @@ fn copied_texmk_symlink_personalities_need_no_sibling_executables() {
         cmd.output().expect("command failed after retries")
     };
 
-    for (alias, banner) in [
-        ("pdflatex", "pdfTeX-"),
-        ("xelatex", "XeTeX"),
-        ("lualatex", "LuaHBTeX"),
-        ("latexmk", "texmk (Rust TeX engine)"),
-    ] {
+    for alias in ["pdflatex", "xelatex", "lualatex", "latexmk"] {
         let mut cmd = Command::new(bin.join(alias));
         cmd.arg("--version")
             .env_clear()
             .env("HOME", fixture.0.join("home"));
         let output = run_with_retry(cmd);
         assert!(output.status.success(), "{alias} --version failed");
+        let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(
-            String::from_utf8_lossy(&output.stdout).contains(banner),
-            "wrong {alias} personality: {}",
-            String::from_utf8_lossy(&output.stdout)
+            stdout.to_lowercase().contains("ratex"),
+            "alias {alias} did not identify Ratex engine: {stdout}"
+        );
+        assert!(
+            !stdout.contains("LuaHBTeX") && !stdout.contains("XeTeX 3."),
+            "alias {alias} falsely claimed non-Ratex runtime: {stdout}"
         );
     }
 
@@ -401,7 +400,8 @@ fn copied_texmk_symlink_personalities_need_no_sibling_executables() {
     )
     .unwrap();
     let mut engine_cmd = Command::new(bin.join("pdflatex"));
-    engine_cmd.args(["-interaction=batchmode", "-halt-on-error", "engine.tex"])
+    engine_cmd
+        .args(["-interaction=batchmode", "-halt-on-error", "engine.tex"])
         .current_dir(&project)
         .env_clear()
         .env("HOME", fixture.0.join("home"));
@@ -425,7 +425,8 @@ fn copied_texmk_symlink_personalities_need_no_sibling_executables() {
     )
     .unwrap();
     let mut bibtex_cmd = Command::new(bin.join("bibtex"));
-    bibtex_cmd.arg("main")
+    bibtex_cmd
+        .arg("main")
         .current_dir(&project)
         .env_clear()
         .env("HOME", fixture.0.join("home"));
@@ -2016,4 +2017,38 @@ fn latexdiff_can_be_invoked_via_ratex_and_standalone() {
     assert!(stdout2.contains("\\DIFdel") && stdout2.contains("\\DIFadd"));
 
     let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn test_automatic_optimal_pass_detection_stops_on_first_pass_for_trivial_aux() {
+    let f = Fixture::new(
+        "optimal-pass-detection",
+        r#"printf '\\relax\n\\gdef \\@abspage@last{1}\n' > "$aux/$job.aux"
+printf '%%PDF-1.4 /Type /Pages /Count 1 /Type /Page ' > "$out/$job.pdf"
+"#,
+    );
+    let out = f.output(&["-V"]);
+    assert!(out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("1 Ratex pass(es)") || stderr.contains("1 pdflatex pass(es)"),
+        "Expected 1 pass for trivial aux document, got: {stderr}"
+    );
+}
+
+#[test]
+fn test_automatic_optimal_pass_detection_runs_second_pass_for_cross_references() {
+    let f = Fixture::new(
+        "optimal-pass-detection-refs",
+        r#"printf '\\relax\n\\newlabel{sec:intro}{{1}{1}}\n' > "$aux/$job.aux"
+printf '%%PDF-1.4 /Type /Pages /Count 1 /Type /Page ' > "$out/$job.pdf"
+"#,
+    );
+    let out = f.output(&["-V"]);
+    assert!(out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("2 Ratex pass(es)") || stderr.contains("2 pdflatex pass(es)"),
+        "Expected 2 passes for cross-reference document, got: {stderr}"
+    );
 }

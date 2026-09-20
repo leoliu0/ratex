@@ -244,9 +244,7 @@ impl Engine {
                     Some(crate::input::Source::TokList { trace_depth, .. }) => {
                         *trace_depth as usize
                     }
-                    Some(crate::input::Source::MacroFrame(frame)) => {
-                        frame.trace_depth as usize
-                    }
+                    Some(crate::input::Source::MacroFrame(frame)) => frame.trace_depth as usize,
                     _ => break,
                 };
                 if !self.align_macro_arg && self.diagnostic_trace_hold == 0 {
@@ -572,7 +570,9 @@ impl Engine {
     fn pop_exhausted_token_lists(&mut self) {
         while let Some(src) = self.input.stack.last() {
             match src {
-                crate::input::Source::TokList { toks, pos, name, .. } => {
+                crate::input::Source::TokList {
+                    toks, pos, name, ..
+                } => {
                     if *pos >= toks.len() {
                         if *name == crate::align::U_PART_SRC {
                             self.align_u_template_finished();
@@ -648,10 +648,11 @@ impl Engine {
             rest.reverse();
             self.input.push_toks(rest, "<pushback>");
         }
-        self.input.stack.push(crate::input::Source::MacroFrame(frame));
+        self.input
+            .stack
+            .push(crate::input::Source::MacroFrame(frame));
         true
     }
-
 
     fn begin_token_list(
         &mut self,
@@ -848,7 +849,10 @@ impl Engine {
                                         t = t_only;
                                         continue 'resolve;
                                     }
-                                    if t_only.0 < 0x8000_0000 && t_only.cc() != 13 && !matches!(t_only.cc(), 1 | 2 | 4) {
+                                    if t_only.0 < 0x8000_0000
+                                        && t_only.cc() != 13
+                                        && !matches!(t_only.cc(), 1 | 2 | 4)
+                                    {
                                         self.cur_tok = t_only;
                                         self.cur_cs = None;
                                         self.cur_prim = None;
@@ -1129,6 +1133,9 @@ impl Engine {
                 | LeftMarginKern
                 | RightMarginKern
                 | UcharCat
+                | RatexUnicodeVersion
+                | RatexNativeTextMode
+                | RatexUtfEight
                 | FileSize
                 | PdfMatch
                 | PdfLastMatch
@@ -1214,13 +1221,19 @@ impl Engine {
                 }
                 Prim::IfFontChar => {
                     let f = self.scan_font_id();
-                    let c = self.scan_character_code("\\iffontchar");
-                    self.eqtb
-                        .fonts
-                        .get(f as usize)
-                        .map(|font| font.char_width(c))
-                        .unwrap_or(0)
-                        != 0
+                    let c = if self.font_loader.native_fonts.contains_key(&f) {
+                        self.scan_unicode_character_code("\\iffontchar")
+                    } else {
+                        self.scan_character_code("\\iffontchar") as u32
+                    };
+                    self.native_char_present(f, c).unwrap_or_else(|| {
+                        u8::try_from(c).ok().is_some_and(|byte| {
+                            self.eqtb
+                                .fonts
+                                .get(f as usize)
+                                .is_some_and(|font| font.exists_char(byte))
+                        })
+                    })
                 }
                 Prim::IfEOF => {
                     let n = self.scan_int();
@@ -1381,7 +1394,7 @@ impl Engine {
                             Some(Equiv::Prim(p)) if self.is_expandable(p) => {
                                 match self.expand_prim(p, id) {
                                     Some(tok) if tok.is_char() => {
-                                        name.push(tok.chr() as u8);
+                                        tok.append_character_bytes(&mut name);
                                     }
                                     Some(tok) => self.push_token(tok),
                                     None => {}
@@ -1404,7 +1417,7 @@ impl Engine {
                     if t.is_char() && t.cc() == 9 {
                         continue;
                     }
-                    name.push(t.chr() as u8);
+                    t.append_character_bytes(&mut name);
                 }
                 self.csname_depth = self.csname_depth.saturating_sub(1);
                 let id = self.cs.intern(&name);
@@ -1453,7 +1466,7 @@ impl Engine {
                         bytes.extend_from_slice(name);
                     }
                 } else {
-                    bytes.push(t.chr() as u8);
+                    t.append_character_bytes(&mut bytes);
                 }
                 self.exp_string(&bytes);
                 None
@@ -1713,7 +1726,9 @@ impl Engine {
                         match self.eqtb.resolve(id).cloned() {
                             Some(Equiv::Prim(p)) if self.is_expandable(p) => {
                                 match self.expand_prim(p, id) {
-                                    Some(tok) if tok.is_char() => name.push(tok.chr() as u8),
+                                    Some(tok) if tok.is_char() => {
+                                        tok.append_character_bytes(&mut name)
+                                    }
                                     Some(tok) => self.push_token(tok),
                                     None => {}
                                 }
@@ -1729,7 +1744,7 @@ impl Engine {
                     if t.is_char() && t.cc() == 9 {
                         continue;
                     }
-                    name.push(t.chr() as u8);
+                    t.append_character_bytes(&mut name);
                 }
                 self.csname_depth = self.csname_depth.saturating_sub(1);
                 let def = if let Some(id) = self.cs.lookup(&name) {
@@ -1820,8 +1835,54 @@ impl Engine {
                 self.exp_string(b"29");
                 None
             }
+            RatexUnicodeVersion => {
+                self.exp_string(b"1");
+                None
+            }
+            RatexNativeTextMode => {
+                self.exp_string(if self.native_text_active() && !self.mode.is_m() {
+                    b"1"
+                } else {
+                    b"0"
+                });
+                None
+            }
+            RatexUtfEight => {
+                let tokens = self.scan_general_text();
+                let mut bytes = [0u8; 4];
+                let mut valid = (2..=4).contains(&tokens.len());
+                for (token, byte) in tokens.iter().zip(bytes.iter_mut()) {
+                    let value = if token.is_cs() {
+                        let name = self.cs.name(token.cs_id());
+                        (name.len() == 1).then(|| name[0] as u32)
+                    } else {
+                        Some(token.chr())
+                    };
+                    match value.and_then(|value| u8::try_from(value).ok()) {
+                        Some(value) => *byte = value,
+                        None => valid = false,
+                    }
+                }
+                let scalar = if valid {
+                    std::str::from_utf8(&bytes[..tokens.len()])
+                        .ok()
+                        .and_then(|text| {
+                            let mut chars = text.chars();
+                            let scalar = chars.next()?;
+                            chars.next().is_none().then_some(scalar)
+                        })
+                } else {
+                    None
+                };
+                if let Some(scalar) = scalar {
+                    Some(Token::unicode_char(12, scalar as u32))
+                } else {
+                    self.error("Invalid UTF-8 sequence in native text");
+                    None
+                }
+            }
             UcharCat => {
-                let c = self.scan_character_code("\\Ucharcat") as u32;
+                let c = self.scan_unicode_character_code("\\Ucharcat");
                 let (category, source) = self.scan_int_with_source();
                 let cat = if (0..=15).contains(&category) {
                     category as u8
@@ -1834,7 +1895,7 @@ impl Engine {
                     );
                     12
                 };
-                self.push_token(Token::char(cat, c));
+                self.push_token(Token::unicode_char(cat, c));
                 None
             }
             PdfFileSize | FileSize => {
@@ -2320,8 +2381,9 @@ impl Engine {
         let mut l = 0i32;
         let res = 'skip: loop {
             if self.pushed.is_empty() {
-                if let Some(crate::input::Source::TokList { toks, pos, name, .. }) =
-                    self.input.stack.last_mut()
+                if let Some(crate::input::Source::TokList {
+                    toks, pos, name, ..
+                }) = self.input.stack.last_mut()
                 {
                     let is_peek = *name == crate::align::PEEK_SRC;
                     let s = &toks[..];
@@ -2488,63 +2550,62 @@ impl Engine {
                 depth += 1;
             } else {
                 match is {
-
-                Prim::Unless => self.skip_count_unless_target(&mut depth),
-                Prim::Fi => {
-                    if depth > 0 {
-                        depth -= 1;
-                    } else if self.if_stack.len() > target + 1 {
-                        // This closes a conditional opened while scanning the
-                        // target's numeric operand, not the target itself.
-                        self.if_stack.pop();
-                    } else {
-                        self.if_stack.pop();
-                        return;
-                    }
-                }
-                Prim::Or => {
-                    if depth == 0 && self.if_stack.len() == target + 1 {
-                        if if_case {
-                            let st = self.if_stack.last_mut().unwrap();
-                            if st.matched {
-                                self.skip_case_skip();
-                                return;
-                            }
-                            st.if_case -= 1;
-                            if st.if_case == 0 {
-                                st.accepting = true;
-                                st.matched = true;
-                                return;
-                            }
+                    Prim::Unless => self.skip_count_unless_target(&mut depth),
+                    Prim::Fi => {
+                        if depth > 0 {
+                            depth -= 1;
+                        } else if self.if_stack.len() > target + 1 {
+                            // This closes a conditional opened while scanning the
+                            // target's numeric operand, not the target itself.
+                            self.if_stack.pop();
+                        } else {
+                            self.if_stack.pop();
+                            return;
                         }
                     }
-                }
-                Prim::ElIf | Prim::ElIfX => {
-                    if depth == 0 && self.if_stack.len() == target + 1 {
-                        self.skip_branch(false, target);
-                        return;
-                    }
-                }
-                Prim::Else => {
-                    if depth == 0 && self.if_stack.len() == target + 1 {
-                        let st = self.if_stack.last().cloned();
-                        match st {
-                            Some(s) => {
-                                if s.matched {
-                                    self.skip_to_fi();
-                                } else {
-                                    let st2 = self.if_stack.last_mut().unwrap();
-                                    st2.accepting = true;
-                                    st2.matched = true;
+                    Prim::Or => {
+                        if depth == 0 && self.if_stack.len() == target + 1 {
+                            if if_case {
+                                let st = self.if_stack.last_mut().unwrap();
+                                if st.matched {
+                                    self.skip_case_skip();
+                                    return;
+                                }
+                                st.if_case -= 1;
+                                if st.if_case == 0 {
+                                    st.accepting = true;
+                                    st.matched = true;
+                                    return;
                                 }
                             }
-                            None => {}
                         }
-                        return;
                     }
+                    Prim::ElIf | Prim::ElIfX => {
+                        if depth == 0 && self.if_stack.len() == target + 1 {
+                            self.skip_branch(false, target);
+                            return;
+                        }
+                    }
+                    Prim::Else => {
+                        if depth == 0 && self.if_stack.len() == target + 1 {
+                            let st = self.if_stack.last().cloned();
+                            match st {
+                                Some(s) => {
+                                    if s.matched {
+                                        self.skip_to_fi();
+                                    } else {
+                                        let st2 = self.if_stack.last_mut().unwrap();
+                                        st2.accepting = true;
+                                        st2.matched = true;
+                                    }
+                                }
+                                None => {}
+                            }
+                            return;
+                        }
+                    }
+                    _ => {}
                 }
-                _ => {}
-            }
             }
         }
     }
@@ -2834,7 +2895,8 @@ impl Engine {
                     }
                 }
             }
-            let Some(length) = m.replacement_length(&args, crate::input::MAX_TOKEN_LIST_TOKENS) else {
+            let Some(length) = m.replacement_length(&args, crate::input::MAX_TOKEN_LIST_TOKENS)
+            else {
                 self.fatal_error_at(
                     &format!(
                         "TeX capacity exceeded, sorry [macro expansion size={}]",
@@ -3230,7 +3292,7 @@ impl Engine {
                     out.push(b' ');
                 }
             } else {
-                out.push(t.chr() as u8);
+                t.append_character_bytes(&mut out);
             }
         }
         out
@@ -3326,7 +3388,6 @@ impl Engine {
         }
         self.append_log(s);
     }
-
 }
 
 fn posix_regex_error_detail(error: &posix_regex::compile::Error) -> String {

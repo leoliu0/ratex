@@ -1,0 +1,28 @@
+\documentclass{article}
+\usepackage[LGR,T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage[greek,english]{babel}
+
+\begin{document}
+\section{Greek Typography and LGR Boundary Test}
+
+English introduction before the Greek passage.
+
+\textgreek{
+Ἐν ἀρχῇ ἦν ὁ λόγος, καὶ ὁ λόγος ἦν πρὸς τὸν θεόν, καὶ θεὸς ἦν ὁ λόγος.
+Ἑλληνικό κείμενο με τόνους, πνεύματα και ειδικά σημεία στίξης.
+}
+
+\bigskip
+\textgreek{\textbf{Έντονη γραφή: Ἡ Ἑλλάς εἶναι χῶρα τῆς νοτιοανατολικῆς Εὐρώπης.}}
+
+\bigskip
+\textgreek{\textit{Πλάγια γραφή: Ὁ Ἀριστοτέλης καὶ ὁ Πλάτων περὶ φιλοσοφίας.}}
+
+\bigskip
+% Real \noboundary test: verify \noboundary suppresses word boundary ligature/context without error
+\textgreek{
+\noboundary σ\noboundary
+}
+
+\end{document}

@@ -584,6 +584,42 @@ function Install-Suite {
     Write-Info ("Installing from " + $src.Mode + " source: " + $src.BinDir)
     Write-Info "Install root: $root"
 
+    $tempTexmf = $null
+    if ($src.Mode -eq 'repo') {
+        $assetsDir = Join-Path $src.Root (Join-Path 'crates' (Join-Path 'tex-kpse' 'assets'))
+        $legalDir = Join-Path $assetsDir 'legal'
+        $noticesFile = Join-Path $legalDir 'NOTICES-FONTS.txt'
+        $sourcesFile = Join-Path $assetsDir 'sources.tar.zst'
+        $lockFile = Join-Path $assetsDir 'packages.lock.json'
+
+        if (-not (Test-Path -LiteralPath $legalDir) -or
+            -not (Test-Path -LiteralPath $noticesFile) -or
+            -not (Test-Path -LiteralPath $sourcesFile) -or
+            -not (Test-Path -LiteralPath $lockFile)) {
+            throw "Required font redistribution assets missing in $assetsDir (expected legal\NOTICES-FONTS.txt, sources.tar.zst, and packages.lock.json)"
+        }
+
+        $tempTexmf = Join-Path ([IO.Path]::GetTempPath()) ('tex-suite-stage-texmf-' + [guid]::NewGuid().ToString('N'))
+        $tempDocFonts = Join-Path $tempTexmf (Join-Path 'doc' 'fonts')
+        New-Item -ItemType Directory -Force -Path $tempDocFonts | Out-Null
+        if ($src.Texmf -and (Test-Path -LiteralPath $src.Texmf)) {
+            Copy-Tree -Src $src.Texmf -Dst $tempTexmf
+        }
+        Copy-Tree -Src $legalDir -Dst $tempDocFonts
+        Copy-Item -LiteralPath $sourcesFile -Destination (Join-Path $tempDocFonts 'sources.tar.zst') -Force
+        Copy-Item -LiteralPath $lockFile -Destination (Join-Path $tempDocFonts 'packages.lock.json') -Force
+        $src.Texmf = $tempTexmf
+    } elseif ($src.Texmf -and (Test-Path -LiteralPath (Join-Path $src.Texmf (Join-Path 'doc' 'fonts')))) {
+        $docFonts = Join-Path $src.Texmf (Join-Path 'doc' 'fonts')
+        if (-not (Test-Path -LiteralPath (Join-Path $docFonts 'NOTICES-FONTS.txt')) -or
+            -not (Test-Path -LiteralPath (Join-Path $docFonts 'sources.tar.zst')) -or
+            -not (Test-Path -LiteralPath (Join-Path $docFonts 'packages.lock.json'))) {
+            throw "Font redistribution payload incomplete in $docFonts"
+        }
+    }
+
+    try {
+
     New-Item -ItemType Directory -Force -Path $root | Out-Null
     $rootItem = Get-Item -LiteralPath $root -Force
     if (-not $rootItem.PSIsContainer -or
@@ -793,6 +829,11 @@ function Install-Suite {
         }
     }
     Write-Info 'Done. Open a NEW terminal, then try: ratex -version'
+    } finally {
+        if ($tempTexmf -and (Test-Path -LiteralPath $tempTexmf)) {
+            Remove-Item -LiteralPath $tempTexmf -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
 }
 
 # ---- uninstall ---------------------------------------------------------------

@@ -7,6 +7,27 @@ fn session(source: &str) -> Session {
     session
 }
 
+fn native_text(pdf: &mut lopdf::Document) -> String {
+    // lopdf 0.44 prioritizes /Encoding over /ToUnicode and does not handle
+    // stream Encoding CMaps. For these extraction-only assertions, decode
+    // the original source codes through their original /ToUnicode maps.
+    // The unmodified PDFs' glyph addressing is checked by Poppler/pdf.js.
+    for object in pdf.objects.values_mut() {
+        if let Ok(font) = object.as_dict_mut() {
+            if font.has_type(b"Font")
+                && font
+                    .get(b"Subtype")
+                    .and_then(lopdf::Object::as_name)
+                    .is_ok_and(|subtype| subtype == b"Type0")
+            {
+                assert!(font.has(b"ToUnicode"));
+                font.remove(b"Encoding");
+            }
+        }
+    }
+    pdf.extract_text(&[1]).unwrap()
+}
+
 const HELLO: &str = r"\documentclass{article}\begin{document}Hello from libtex.\end{document}";
 
 #[test]
@@ -189,4 +210,105 @@ fn subdirectory_entry_and_local_package_override() {
     let text = pdf.extract_text(&[1]).unwrap();
     assert!(text.contains("Local override"), "{text}");
     assert!(text.contains("Nested entry"), "{text}");
+}
+
+#[test]
+fn native_fontspec_selection_and_styles_in_memory_fs() {
+    let mut s = session(
+        r"\documentclass{article}
+\usepackage{fontspec}
+\setmainfont{Latin Modern Roman}
+\setsansfont{Latin Modern Sans}
+\setmonofont{Latin Modern Mono}
+\begin{document}
+\section{Native Fontspec Heading}
+Regular Roman text. \textbf{Bold Roman glyphs.} \textit{Italic Roman shapes.}
+{\sffamily Sans Serif text.}
+{\ttfamily Monospace typewriter text.}
+\end{document}",
+    );
+    let r = s.compile("main.tex");
+    assert_eq!(r.status, Status::Success, "{}\n{}", r.diagnostics, r.log);
+    assert!(r.pdf.starts_with(b"%PDF-"));
+    let mut pdf = lopdf::Document::load_mem(&r.pdf).unwrap();
+    assert_eq!(pdf.get_pages().len(), 1);
+    assert!(
+        pdf.objects.values().any(|o| o
+            .as_dict()
+            .is_ok_and(|d| { d.has(b"FontFile2") || d.has(b"FontFile3") })),
+        "PDF must contain embedded OpenType FontFile2 or FontFile3 stream"
+    );
+    let text = native_text(&mut pdf);
+    assert!(text.contains("Native Fontspec Heading"), "{text}");
+    assert!(text.contains("Bold Roman glyphs"), "{text}");
+    assert!(text.contains("Sans Serif text"), "{text}");
+    assert!(text.contains("Monospace typewriter text"), "{text}");
+}
+
+#[test]
+fn native_font_missing_or_bad_selection_returns_explicit_error() {
+    let mut s = session(
+        r"\documentclass{article}
+\usepackage{fontspec}
+\setmainfont{NonexistentPhantomFont12345}
+\begin{document}
+Should fail because font is missing.
+\end{document}",
+    );
+    let r = s.compile("main.tex");
+    assert_eq!(r.status, Status::CompilationError);
+    assert!(r.pdf.is_empty());
+    assert!(
+        r.diagnostics.contains("NonexistentPhantomFont12345")
+            || r.log.contains("NonexistentPhantomFont12345")
+            || r.diagnostics.contains("font")
+            || r.log.contains("font"),
+        "diagnostics: {}\nlog: {}",
+        r.diagnostics,
+        r.log
+    );
+}
+
+#[test]
+fn native_font_project_local_override_and_isolation_between_sessions() {
+    let font_bytes = tex_kpse::get_embedded_package("lmroman10-regular.otf")
+        .expect("lmroman10-regular.otf should be embedded");
+
+    // Session 1: supplies a local font file with Path=./
+    let mut s1 = Session::new();
+    s1.set_epoch(Some(1_700_000_000)).unwrap();
+    s1.add_file("custom.otf", &font_bytes).unwrap();
+    s1.add_file(
+        "main.tex",
+        br"\documentclass{article}
+\usepackage{fontspec}
+\setmainfont[Path=./]{custom.otf}
+\begin{document}
+Local font in MemoryFs session.
+\end{document}",
+    )
+    .unwrap();
+    let r1 = s1.compile("main.tex");
+    assert_eq!(r1.status, Status::Success, "{}\n{}", r1.diagnostics, r1.log);
+    assert!(r1.pdf.starts_with(b"%PDF-"));
+    let mut pdf1 = lopdf::Document::load_mem(&r1.pdf).unwrap();
+    let text1 = native_text(&mut pdf1);
+    assert!(text1.contains("Local font in MemoryFs session"), "{text1}");
+
+    // Session 2: completely independent, does not have custom.otf in memory
+    let mut s2 = Session::new();
+    s2.set_epoch(Some(1_700_000_000)).unwrap();
+    s2.add_file(
+        "main.tex",
+        br"\documentclass{article}
+\usepackage{fontspec}
+\setmainfont[Path=./]{custom.otf}
+\begin{document}
+Should fail because custom.otf is not in this session.
+\end{document}",
+    )
+    .unwrap();
+    let r2 = s2.compile("main.tex");
+    assert_eq!(r2.status, Status::CompilationError);
+    assert!(r2.pdf.is_empty());
 }

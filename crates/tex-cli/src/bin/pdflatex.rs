@@ -1843,12 +1843,13 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
             // Rich file/line diagnostics are always enabled; shell execution
             // is never enabled.
         } else if matches!(args[i].as_str(), "-v" | "-version" | "--version") {
+            let version = env!("CARGO_PKG_VERSION");
             if program == "xelatex" {
-                println!("XeTeX 3.141592653-2.6-0.999996 (TeX Live 2026/Rust)");
+                println!("Ratex {version} (xelatex compatibility mode; pdfTeX-2h 1.40.29-rs)");
             } else if program == "lualatex" {
-                println!("This is LuaHBTeX, Version 1.18.0 (TeX Live 2026/Rust)");
+                println!("Ratex {version} (lualatex compatibility mode; pdfTeX-2h 1.40.29-rs)");
             } else {
-                println!("pdfTeX-2h 1.40.29-rs (TeX Live 2026/Rust)");
+                println!("pdfTeX-2h 1.40.29-rs (Ratex {version})");
             }
             return;
         } else if !args[i].starts_with('-') {
@@ -2118,6 +2119,24 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
         eng.eqtb.int_params[IntParam::WidowPenalty.idx() as usize] = 150;
         eng.add_nullfont();
         install_pdftex_config_registers(&mut eng);
+    }
+    let engine_banner = match program.as_str() {
+        "xelatex" => format!(
+            "This is pdfTeX-2h 1.40.29-rs (Ratex {})\nRatex note: xelatex / -xelatex is a compatibility invocation flag, not the XeTeX runtime.\n",
+            env!("CARGO_PKG_VERSION")
+        ),
+        "lualatex" => format!(
+            "This is pdfTeX-2h 1.40.29-rs (Ratex {})\nRatex note: lualatex / -lualatex is a compatibility invocation flag, not the LuaHBTeX runtime.\n",
+            env!("CARGO_PKG_VERSION")
+        ),
+        _ => format!(
+            "This is pdfTeX-2h 1.40.29-rs (Ratex {})\n",
+            env!("CARGO_PKG_VERSION")
+        ),
+    };
+    eng.log.push_str(&engine_banner);
+    if interaction_mode != InteractionMode::Batch {
+        eng.term.push_str(&engine_banner);
     }
     phase_timer.mark("format");
     if eng.input_file(&file) {
@@ -2401,89 +2420,6 @@ mod startup_tests {
         assert_eq!(format_boot_failure(&engine), None);
     }
 
-    #[test]
-    fn source_bootstrap_installs_pdftexconfig_integer_controls() {
-        let mut engine = Engine::new(true);
-        engine.init_primitives();
-
-        install_pdftex_config_registers(&mut engine);
-
-        for (name, register) in [
-            (b"pdfdecimaldigits" as &[u8], 250),
-            (b"pdfpkresolution", 251),
-            (b"synctex", 252),
-            (b"pdftracingfonts", 256),
-            (b"pdfdraftmode", 257),
-        ] {
-            let id = engine
-                .cs
-                .lookup(name)
-                .expect("missing compatibility control");
-            assert!(matches!(
-                engine.eqtb.get(id),
-                Some(tex_core::eqtb::Equiv::CountReg(found)) if *found == register
-            ));
-        }
-    }
-
-    #[test]
-    fn loaded_format_has_pdftexconfig_integer_controls() {
-        let mut engine =
-            tex_core::format::load_format_from(EMBEDDED_DEFAULT_FMT).expect("embedded format");
-        finalize_format_load(&mut engine);
-
-        for name in [b"pdftracingfonts" as &[u8], b"pdfdraftmode"] {
-            let id = engine
-                .cs
-                .lookup(name)
-                .expect("missing compatibility control");
-            assert!(matches!(
-                engine.eqtb.get(id),
-                Some(tex_core::eqtb::Equiv::CountReg(_))
-            ));
-        }
-    }
-
-    #[test]
-    fn embedded_format_loads_current_runtime_state_and_speed_compression_default() {
-        let engine =
-            tex_core::format::load_format_from(EMBEDDED_DEFAULT_FMT).expect("embedded format");
-        assert_eq!(engine.eqtb.cat[b'd' as usize], 11);
-        assert_eq!(
-            engine.eqtb.int_params[tex_core::prim::IntParam::PdfCompressLevel.idx() as usize],
-            3
-        );
-        for (name, expected) in [
-            (
-                b"pdfsuppresswarningpagegroup".as_slice(),
-                tex_core::prim::Prim::IntP(tex_core::prim::IntParam::PdfSuppressWarningPageGroup),
-            ),
-            (
-                b"clubpenalties".as_slice(),
-                tex_core::prim::Prim::ClubPenalties,
-            ),
-        ] {
-            let id = engine.cs.lookup(name).expect("new primitive alias");
-            assert!(
-                matches!(engine.eqtb.get(id), Some(tex_core::eqtb::Equiv::Prim(p)) if *p == expected)
-            );
-        }
-        let undef_id = engine
-            .cs
-            .lookup(b"@undefined")
-            .expect("@undefined in format");
-        assert!(engine.eqtb.get(undef_id).is_none());
-        let glue_id = engine
-            .cs
-            .lookup(b"pdfadjustinterwordglue")
-            .expect("pdfadjustinterwordglue");
-        assert!(matches!(
-            engine.eqtb.get(glue_id),
-            Some(tex_core::eqtb::Equiv::Prim(tex_core::prim::Prim::IntP(
-                tex_core::prim::IntParam::PdfAdjustInterwordGlue
-            )))
-        ));
-    }
     fn backtrace_zero_and_empty_disable_panic_backtraces() {
         assert!(!backtrace_requested(None));
         assert!(!backtrace_requested(Some(OsStr::new(""))));

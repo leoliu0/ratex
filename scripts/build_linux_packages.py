@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -28,11 +29,13 @@ def build_deb(stage_root: Path, output_dir: Path, version: str, arch: str = "amd
     deb_name = f"ratex_{version}_{arch}.deb"
     deb_path = output_dir.resolve() / deb_name
 
+    installed_size = sum(p.stat().st_size for p in stage_root.rglob("*") if p.is_file())
     control_content = f"""Package: ratex
 Version: {version}
 Section: tex
 Priority: optional
 Architecture: {arch}
+Installed-Size: {(installed_size + 1023) // 1024}
 Maintainer: Leo Liu <leoliu0@users.noreply.github.com>
 Description: Ultra-fast, pure-Rust TeX engine and typesetting toolchain
  Ratex is an ultra-fast, pure-Rust TeX engine and typesetting toolchain.
@@ -92,17 +95,26 @@ def build_arch_pkg(stage_root: Path, output_dir: Path, version: str) -> Path:
         pkgdir = tmp / "pkg"
         shutil.copytree(stage_root, pkgdir)
 
+        installed_size = sum(p.stat().st_size for p in stage_root.rglob("*") if p.is_file())
         # .PKGINFO
         pkginfo = f"""pkgname = ratex
 pkgver = {version}-1
 pkgdesc = Ultra-fast, pure-Rust TeX engine and typesetting toolchain
 url = https://github.com/leoliu0/ratex
-builddate = 1710000000
+builddate = {int(os.environ.get("SOURCE_DATE_EPOCH", time.time()))}
 packager = Leo Liu <leoliu0@users.noreply.github.com>
-size = 50000000
+size = {installed_size}
 arch = x86_64
 license = MIT
 license = Apache-2.0
+license = LPPL-1.3c
+license = GPL-2.0-only
+license = GPL-2.0-or-later WITH Font-exception-2.0
+license = OFL-1.1
+license = custom:GUST
+license = custom:IPA
+license = custom:Arphic
+license = custom:Wadalab
 provides = ratex
 """
         (pkgdir / ".PKGINFO").write_text(pkginfo)
@@ -123,7 +135,7 @@ def build_rpm(stage_root: Path, output_dir: Path, version: str) -> Path:
 Version:        {version}
 Release:        1
 Summary:        Ultra-fast, pure-Rust TeX engine and typesetting toolchain
-License:        MIT or Apache-2.0
+License:        (MIT or Apache-2.0) and LPPL-1.3c and GPL-2.0-only and (GPL-2.0-or-later with Font-exception-2.0) and OFL-1.1 and GUST and Arphic and IPA and Wadalab
 URL:            https://github.com/leoliu0/ratex
 BuildArch:      x86_64
 Provides:       ratex
@@ -183,8 +195,8 @@ def main():
 
         # Copy canonical binary
         shutil.copy2(target_bin, usr_bin / "ratex")
-        stage_texmf = usr_share / "tex-suite" / "texmf"
-        package_dist.stage_assets(stage_texmf)
+        package_dist.stage_font_redistribution(usr_share / "texmf" / "doc" / "fonts")
+        shutil.copy2(REPO / "LICENSE", usr_share / "LICENSE")
 
         # Build Debian package (.deb)
         print("==> Building Debian package (.deb)...")

@@ -175,6 +175,7 @@ pub enum WhatIt {
         obj: i32,
     },
     User(i32),
+    CjkText(Option<char>),
 }
 
 /// leader kinds (tex.web subtypes a_leaders/c_leaders/x_leaders)
@@ -266,6 +267,17 @@ pub enum DisplayItem {
         source_file_id: u32,
         source_line: u32,
     },
+    NativeGlyphRun {
+        run: std::rc::Rc<crate::native_layout::NativeRun>,
+        start: usize,
+        end: usize,
+        x_bp: f64,
+        y_bp: f64,
+        tag: Option<StructureTag>,
+        span: Option<SpanId>,
+        source_file_id: u32,
+        source_line: u32,
+    },
     Rule {
         x_bp: f64,
         y_bp: f64,
@@ -299,7 +311,6 @@ impl DisplayItem {
     }
 }
 
-
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct DisplayList {
     pub items: Vec<DisplayItem>,
@@ -323,26 +334,41 @@ impl DisplayList {
     }
 
     pub fn has_structure_tags(&self) -> bool {
-        self.items
-            .iter()
-            .any(|item| matches!(item, DisplayItem::GlyphRun { tag: Some(_), .. }))
+        self.items.iter().any(|item| {
+            matches!(
+                item,
+                DisplayItem::GlyphRun { tag: Some(_), .. }
+                    | DisplayItem::NativeGlyphRun { tag: Some(_), .. }
+            )
+        })
     }
     pub fn tag_range(&mut self, start: usize, end: usize, tag: StructureTag) {
         let bound = end.min(self.items.len());
         for item in self.items[start..bound].iter_mut() {
-            if let DisplayItem::GlyphRun { tag: item_tag, .. } = item {
-                *item_tag = Some(tag);
+            match item {
+                DisplayItem::GlyphRun { tag: item_tag, .. }
+                | DisplayItem::NativeGlyphRun { tag: item_tag, .. } => {
+                    *item_tag = Some(tag);
+                }
+                _ => {}
             }
         }
     }
 }
-
 
 #[derive(Clone, Debug)]
 pub enum Node {
     Char {
         c: u8,
         font: FontId,
+    },
+    NativeGlyphRun {
+        run: std::rc::Rc<crate::native_layout::NativeRun>,
+        start: usize,
+        end: usize,
+        width: i32,
+        height: i32,
+        depth: i32,
     },
     /// `letters` = the component letters that formed the glyph (hyphenation
     /// needs them: a break point may fall inside the ligature)
@@ -534,6 +560,12 @@ fn single_dims(n: &Node, eqtb: &crate::eqtb::Eqtb) -> (i32, i32, i32) {
             let (_, bh, bd) = leader_dims(body);
             (glue.width, bh, bd)
         }
+        Node::NativeGlyphRun {
+            width,
+            height,
+            depth,
+            ..
+        } => (*width, *height, *depth),
     }
 }
 
@@ -629,6 +661,16 @@ pub fn vlist_dims(list: &[Node], eqtb: &crate::eqtb::Eqtb) -> (i32, i32, i32) {
                 x += d + *ih as i64;
                 d = *id as i64;
                 w = w.max(*iw as i64);
+            }
+            Node::NativeGlyphRun {
+                width,
+                height,
+                depth,
+                ..
+            } => {
+                x += d + *height as i64;
+                d = *depth as i64;
+                w = w.max(*width as i64);
             }
             // penalty, mark, ins, whatsit, math-only nodes: do_nothing
             _ => {}
@@ -737,7 +779,6 @@ impl PackResult {
         }
     }
 }
-
 
 pub(crate) fn glue_sums(list: &[Node]) -> ([i64; 4], [i64; 4]) {
     let mut stretch = [0i64; 4];
@@ -957,6 +998,7 @@ pub fn vtop_md(
         let first_h = match list.first() {
             Some(Node::Box { h: bh, .. }) => *bh,
             Some(Node::Rule { height, .. }) => *height,
+            Some(Node::NativeGlyphRun { height, .. }) => *height,
             _ => 0,
         };
         *dd = *dd - first_h + *hh;
@@ -1424,6 +1466,11 @@ pub fn split_vlist(list: &[Node], target: i64) -> (NodeList, NodeList) {
                 ..
             }
             | Node::Ins {
+                height: h,
+                depth: d,
+                ..
+            }
+            | Node::NativeGlyphRun {
                 height: h,
                 depth: d,
                 ..

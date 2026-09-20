@@ -190,6 +190,15 @@ mod tests {
     }
 
     #[test]
+    fn builtin_encoding_with_non_ascii_cleartext() {
+        let mut clear = b"/Encoding 256 array\ndup 65 /A put\nreadonly def\n% ".to_vec();
+        clear.resize(16383, b' ');
+        clear.extend_from_slice("あ\n".as_bytes());
+        let encoding = builtin_encoding(&clear).unwrap();
+        assert_eq!(encoding[65], "A");
+    }
+
+    #[test]
     fn metrics_from_cleartext() {
         let clear = b"/FontMatrix [0.001 0 0 0.001 0 0 ] readonly def\n\
                       /FontBBox {-180 -293 1340 1014 } readonly def\n\
@@ -256,7 +265,7 @@ pub fn tfm_descriptor(font: &crate::tfm::Font) -> (f64, f64, f64, f64) {
 pub fn builtin_encoding(cleartext: &[u8]) -> Option<Vec<String>> {
     let text = String::from_utf8_lossy(cleartext);
     let p = text.find("/Encoding")?;
-    let body = &text[p..text.len().min(p + 16384)];
+    let body = &text[p..];
     let mut names: Vec<(usize, String)> = Vec::new();
     let mut from = 0usize;
     while let Some(dup) = body[from..].find("dup") {
@@ -329,6 +338,23 @@ pub fn glyph_to_unicode(glyph: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// Cmap lookup needs the encoded glyph scalar, not its extraction expansion
+/// (for example the `fi` glyph is U+FB01 but extracts as two letters).
+pub(crate) fn glyph_to_scalar(glyph: &str) -> Option<char> {
+    let base = glyph.split('.').next()?;
+    if let Ok(index) = GLYPH_LIST.binary_search_by(|(name, _)| name.cmp(&base)) {
+        let mut chars = GLYPH_LIST[index].1.chars();
+        let scalar = chars.next()?;
+        if chars.next().is_none() {
+            return Some(scalar);
+        }
+    }
+    let unicode = glyph_to_unicode(glyph)?;
+    let mut chars = unicode.chars();
+    let scalar = chars.next()?;
+    chars.next().is_none().then_some(scalar)
 }
 
 /// Merged Adobe Glyph List + pdfglyphlist + texglyphlist (tex entries

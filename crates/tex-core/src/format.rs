@@ -32,7 +32,7 @@ use crate::tfm::{CharInfo, ExtRecipe, Font, LigStep};
 use crate::token::{CsTable, Token};
 
 const MAGIC: &[u8; 8] = b"RUSTEXFM";
-const VERSION: u16 = 10;
+const VERSION: u16 = 12;
 /// A production format is currently about 8 MiB decoded. Keep corrupt or
 /// unrelated external files from turning format probing into an unbounded
 /// allocation while leaving ample room for future format growth.
@@ -238,6 +238,9 @@ fn fixed<const N: usize>(r: &mut R) -> io::Result<[u8; N]> {
 
 /// Reasons a `\dump` would be refused (tex.web: \dump at top level only).
 pub fn check_dumpable(eng: &Engine) -> Result<(), String> {
+    if !eng.font_loader.native_fonts.is_empty() {
+        return Err("cannot dump: native font programs are not serialized; select native fonts after loading the format".to_string());
+    }
     if !eng.eqtb.save_stack.is_empty() {
         let mut n_level = 0u32;
         let mut n_eq = 0u32;
@@ -578,7 +581,6 @@ pub fn save_format_with_encoding(
         w.str(name);
         w.bytes(word);
     }
-
     // paragraph shape
     w.u32(eng.par_shape.len() as u32);
     for (a, b) in &eng.par_shape {
@@ -590,6 +592,22 @@ pub fn save_format_with_encoding(
         for value in shape.iter() {
             w.i32(*value);
         }
+    }
+    let mut unicode_codes: Vec<_> = eng.eqtb.unicode_case_codes.iter().collect();
+    unicode_codes.sort_unstable_by_key(|(key, _)| **key);
+    w.u32(unicode_codes.len() as u32);
+    for (&(uppercase, character), &(value, level)) in unicode_codes {
+        w.u8(u8::from(uppercase));
+        w.u32(character);
+        w.u32(value);
+        w.u16(level);
+    }
+    w.u32(eng.hyphen_tries.len() as u32);
+    let mut langs: Vec<u8> = eng.hyphen_tries.keys().copied().collect();
+    langs.sort_unstable();
+    for lang in langs {
+        w.u8(lang);
+        write_trie(&mut w, &eng.hyphen_tries[&lang]);
     }
 
     let payload = match encoding {
@@ -842,8 +860,8 @@ pub fn load_format(path: &Path) -> Result<Engine, String> {
 }
 
 fn read_format_file(path: &Path) -> Result<Vec<u8>, String> {
-    let metadata =
-        tex_kpse::fs::metadata(path).map_err(|e| format!("cannot inspect {}: {e}", path.display()))?;
+    let metadata = tex_kpse::fs::metadata(path)
+        .map_err(|e| format!("cannot inspect {}: {e}", path.display()))?;
     if metadata.len() > MAX_FORMAT_BYTES as u64 {
         return Err(format!(
             "format file {} is too large ({} bytes; limit is {} bytes)",
@@ -865,7 +883,7 @@ fn parse_header(data: &[u8]) -> Result<(R<'_>, u16), String> {
     }
     let mut r = R::new(&data[MAGIC.len()..]);
     let version = r.u16().map_err(io_err)?;
-    if version != VERSION && version != 9 && version != 8 {
+    if !(8..=VERSION).contains(&version) {
         return Err("format version mismatch".to_string());
     }
     if r.u16().map_err(io_err)? != SEMANTICS {
@@ -937,6 +955,10 @@ fn load_format_uncompressed(data: &[u8]) -> Result<Engine, String> {
             _ => {}
         }
     }
+    for (id, font) in eng.eqtb.fonts.iter().enumerate() {
+        eng.font_loader
+            .restore_native_font(id as crate::tfm::FontId, font)?;
+    }
 
     // Engine identity is not format state. Older dumps serialized the
     // assignable backing slot before e-TeX mode was enabled, which made
@@ -962,12 +984,19 @@ pub fn load_format_into(path: &Path, eng: &mut Engine) -> Result<(), String> {
 
 pub fn load_format_bytes_into(data: &[u8], eng: &mut Engine) -> Result<(), String> {
     let scratch = load_format_from(data)?;
+    // Resolve native declarations using the caller's project resolver before
+    // committing any format state. Font files may be supplied by MemoryFs.
+    for (id, font) in scratch.eqtb.fonts.iter().enumerate() {
+        eng.font_loader
+            .restore_native_font(id as crate::tfm::FontId, font)?;
+    }
     // Full success only now: transplant the boot state while keeping the
     // caller's process-wide setup (font_loader, ids, out_dir, pdf_doc).
     eng.cs = scratch.cs;
     eng.primitive_names = scratch.primitive_names;
     eng.eqtb = scratch.eqtb;
     eng.hyphen_trie = scratch.hyphen_trie;
+    eng.hyphen_tries = scratch.hyphen_tries;
     eng.hyphen_exceptions = scratch.hyphen_exceptions;
     eng.par_shape = scratch.par_shape;
     eng.penalty_shapes = scratch.penalty_shapes;
@@ -1150,7 +1179,6 @@ fn load_state(r: &mut R, eng: &mut Engine, version: u16) -> io::Result<()> {
         let word = r.bytes()?;
         eng.hyphen_exceptions.push((name, word));
     }
-
     // paragraph shape
     let n = r.count()?;
     for _ in 0..n {
@@ -1166,6 +1194,43 @@ fn load_state(r: &mut R, eng: &mut Engine, version: u16) -> io::Result<()> {
                 values.push(r.i32()?);
             }
             *shape = Rc::from(values);
+        }
+    }
+    if version >= 11 {
+        let count = r.count()?;
+        for _ in 0..count {
+            let uppercase = match r.u8()? {
+                0 => false,
+                1 => true,
+                _ => return Err(bad("invalid Unicode case table selector")),
+            };
+            let character = r.u32()?;
+            let value = r.u32()?;
+            let level = r.u16()?;
+            if char::from_u32(character).is_none()
+                || char::from_u32(value).is_none()
+                || level != crate::eqtb::LEVEL_ONE
+                || eng
+                    .eqtb
+                    .unicode_case_codes
+                    .insert((uppercase, character), (value, level))
+                    .is_some()
+            {
+                return Err(bad("invalid Unicode case table entry"));
+            }
+        }
+    }
+    if version >= 12 {
+        let n_tries = r.count()?;
+        if n_tries > 255 {
+            return Err(bad("too many hyphenation languages"));
+        }
+        for _ in 0..n_tries {
+            let lang = r.u8()?;
+            let trie = read_trie(r)?;
+            if lang == 0 || eng.hyphen_tries.insert(lang, trie).is_some() {
+                return Err(bad("duplicate hyphenation language"));
+            }
         }
     }
 
@@ -1550,9 +1615,11 @@ mod tests {
             edges.sort_unstable();
             trans_sorted.push(edges);
         }
+        let mut tries_sorted: Vec<_> = eng.hyphen_tries.keys().copied().collect();
+        tries_sorted.sort_unstable();
         s.push_str(&format!(
-            "trie_trans={:?}\ntrie_vals={:?}\n",
-            trans_sorted, eng.hyphen_trie.values
+            "trie_trans={:?}\ntrie_vals={:?}\nhyphen_tries={:?}\n",
+            trans_sorted, eng.hyphen_trie.values, tries_sorted
         ));
         s.push_str(&format!(
             "hyexc={:?}\nparshape={:?}\npenaltyshapes={:?}\n",
@@ -1610,6 +1677,49 @@ mod tests {
     }
 
     #[test]
+    fn language_patterns_and_byte_exceptions_survive_format_loading() {
+        let mut eng = build_booted_engine();
+        eng.hyphen_trie.add_pattern("ab1cd");
+        eng.trie_for_language_mut(0).add_exception("a-bcd");
+        eng.trie_for_language_mut(7).add_exception("abc-d");
+        let word = [0xe0, 0xe1, 0xe2, 0xe3];
+        eng.trie_for_language_mut(1)
+            .add_pattern_bytes(&[0xe0, b'1', 0xe1, 0xe2, 0xe3]);
+        let path = std::env::temp_dir().join(format!(
+            "ratex-language-roundtrip-{}.fmt",
+            std::process::id()
+        ));
+        save_format(&eng, &path).unwrap();
+        let mut loaded = build_booted_engine();
+        load_format_into(&path, &mut loaded).unwrap();
+        std::fs::remove_file(path).unwrap();
+        assert_eq!(
+            loaded
+                .trie_for_language(0)
+                .unwrap()
+                .hyphenate(b"abcd", 1, 1),
+            vec![1]
+        );
+        assert_eq!(
+            loaded
+                .trie_for_language(7)
+                .unwrap()
+                .hyphenate(b"abcd", 1, 1),
+            vec![3]
+        );
+        assert_eq!(
+            loaded.trie_for_language(1).unwrap().hyphenate(&word, 1, 1),
+            vec![1]
+        );
+        assert!(loaded
+            .trie_for_language(0)
+            .unwrap()
+            .hyphenate(&word, 1, 1)
+            .is_empty());
+        assert!(loaded.trie_for_language(8).is_none());
+    }
+
+    #[test]
     fn primitive_codes_roundtrip_exhaustively() {
         for c in 0..=u16::MAX {
             if let Some(p) = Prim::from_code(c) {
@@ -1649,6 +1759,22 @@ mod tests {
             true,
         );
         assert!(check_dumpable(&eng).is_ok());
+    }
+
+    #[test]
+    fn native_font_dump_preserves_existing_format() {
+        let mut eng = build_booted_engine();
+        eng.input.push_file(
+            "native-format.tex".into(),
+            br#"\font\native="ratex:{Latin Modern Roman}" at 10pt\end"#.to_vec(),
+        );
+        eng.run();
+        assert_eq!(eng.error_count, 0, "{:?}", eng.diagnostics);
+        let path = std::env::temp_dir().join(format!("native-font-{}.fmt", std::process::id()));
+        std::fs::write(&path, b"existing format").unwrap();
+        assert!(save_format(&eng, &path).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), b"existing format");
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]
@@ -1774,6 +1900,8 @@ mod tests {
             for _ in 0..4 {
                 w.u32(0); // no e-TeX penalty-array entries
             }
+            w.u32(0); // no Unicode case-code overrides
+            w.u32(0); // no additional hyphenation languages
             w.buf
         };
         // truncated blob must not panic
@@ -1810,7 +1938,7 @@ mod tests {
             + V8_INT_PARAMS * std::mem::size_of::<i32>()
             + V8_INT_PARAMS * std::mem::size_of::<u16>();
         legacy.drain(new_level_offset..new_level_offset + delta * std::mem::size_of::<u16>());
-        legacy.truncate(legacy.len() - 4 * std::mem::size_of::<u32>());
+        legacy.truncate(legacy.len() - 6 * std::mem::size_of::<u32>());
         legacy[MAGIC.len()..MAGIC.len() + 2].copy_from_slice(&8u16.to_le_bytes());
         let legacy_eng = load_format_from(&legacy).expect("version 8 format loads");
         assert!(legacy_eng.format_done);

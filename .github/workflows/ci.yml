@@ -56,6 +56,7 @@ jobs:
             target/libtex/
             target/wasm/web/
             target/wasm/nodejs/
+            target/wasm/fonts/
   test:
     name: Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -69,6 +70,10 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
 
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -84,14 +89,274 @@ jobs:
         run: python3 scripts/test_package_dist.py
 
       - name: Build release ratex binary
-        if: runner.os == 'Linux'
         run: cargo build --release --bin ratex
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install pdf.js test dependencies
+        run: npm ci --prefix scripts
+
+      - name: Install system test dependencies (linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends poppler-utils bubblewrap texlive-latex-base texlive-latex-extra texlive-xetex texlive-fonts-recommended texlive-fonts-extra cm-super texlive-lang-cjk texlive-lang-chinese texlive-lang-cyrillic texlive-lang-greek fonts-ipaexfont
+          if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+
+      - name: Install system test dependencies (macos)
+        if: runner.os == 'macOS'
+        run: brew install poppler
+
+      - name: Install system test dependencies (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          choco install poppler --no-progress
+          "C:\ProgramData\chocolatey\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Install Python test dependencies (unix)
+        if: runner.os != 'Windows'
+        run: python3 -m pip install --upgrade fonttools pillow numpy pypdf
+
+      - name: Install Python test dependencies (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: python -m pip install --upgrade fonttools pillow numpy pypdf
+
+      - name: PDF font validator regressions
+        run: python scripts/test_font_validation.py
+
+      - name: Linux full independent-viewer font verification gate
+        if: runner.os == 'Linux'
+        run: |
+          python3 scripts/test_fonts.py \
+            --ratex target/release/ratex \
+            --output target/font-evidence-full \
+            --require-isolation \
+            --require-pdfjs
+
+      - name: Artifact font smoke (macos)
+        if: runner.os == 'macOS'
+        run: |
+          python3 scripts/test_fonts.py \
+            --ratex target/release/ratex \
+            --output target/font-evidence-smoke \
+            --skip-reference \
+            --case t1_latin_modern \
+            --case t1_cm_super \
+            --case t2a_russian \
+            --case lgr_greek \
+            --case cjkutf8_japanese \
+            --case cjkutf8_chinese \
+            --case cjkutf8_korean \
+            --case issue_3_mapped_truetype \
+            --case issue_4_cjkutf8_ja \
+            --case issue_5_stmaryrd \
+            --case issue_6_bbding \
+            --case issue_8_latin_modern \
+            --case fontspec_native \
+            --case xecjk_native \
+            --case opentype_cff \
+            --case truetype_collection \
+            --case unicode_supplementary \
+            --case shaping_features \
+            --case font_styles_restoration \
+            --case boxes_forms \
+            --case unioned_subsets
+      - name: Artifact font smoke (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          python scripts/test_fonts.py `
+            --ratex target/release/ratex.exe `
+            --output target/font-evidence-smoke `
+            --skip-reference `
+            --case t1_latin_modern `
+            --case t1_cm_super `
+            --case t2a_russian `
+            --case lgr_greek `
+            --case cjkutf8_japanese `
+            --case cjkutf8_chinese `
+            --case cjkutf8_korean `
+            --case issue_3_mapped_truetype `
+            --case issue_4_cjkutf8_ja `
+            --case issue_5_stmaryrd `
+            --case issue_6_bbding `
+            --case issue_8_latin_modern `
+            --case fontspec_native `
+            --case xecjk_native `
+            --case opentype_cff `
+            --case truetype_collection `
+            --case unicode_supplementary `
+            --case shaping_features `
+            --case font_styles_restoration `
+            --case boxes_forms `
+            --case unioned_subsets
+      - name: Package distribution (linux)
+        if: runner.os == 'Linux'
+        run: python3 scripts/package_dist.py --platform linux --arch x86_64
+
+      - name: Test extracted archive distribution (linux)
+        if: runner.os == 'Linux'
+        run: |
+          mkdir -p /tmp/ci-archive-test
+          tar -xzf dist/tex-suite-*.tar.gz -C /tmp/ci-archive-test
+          EXTRACTED_RATEX=$(ls -d /tmp/ci-archive-test/tex-suite-*/bin/ratex | head -n1)
+          "$EXTRACTED_RATEX" --version
+          python3 scripts/test_fonts.py \
+            --ratex "$EXTRACTED_RATEX" \
+            --output /tmp/font-smoke-archive \
+            --skip-reference \
+            --case t1_latin_modern \
+            --case t1_cm_super \
+            --case t2a_russian \
+            --case lgr_greek \
+            --case cjkutf8_japanese \
+            --case cjkutf8_chinese \
+            --case cjkutf8_korean \
+            --case issue_3_mapped_truetype \
+            --case issue_4_cjkutf8_ja \
+            --case issue_5_stmaryrd \
+            --case issue_6_bbding \
+            --case issue_8_latin_modern \
+            --case fontspec_native \
+            --case xecjk_native \
+            --case opentype_cff \
+            --case truetype_collection \
+            --case unicode_supplementary \
+            --case shaping_features \
+            --case font_styles_restoration \
+            --case boxes_forms \
+            --case unioned_subsets
+          rm -rf /tmp/ci-archive-test /tmp/font-smoke-archive
+
+      - name: Test shell installer end-to-end (linux)
+        if: runner.os == 'Linux'
+        run: |
+          mkdir -p /tmp/ci-install-test
+          ./install.sh --prefix /tmp/ci-install-test --no-path --skip-verify
+          /tmp/ci-install-test/bin/ratex --version
+          python3 scripts/test_fonts.py \
+            --ratex /tmp/ci-install-test/bin/ratex \
+            --output /tmp/font-smoke-installed \
+            --skip-reference \
+            --case t1_latin_modern \
+            --case t1_cm_super \
+            --case t2a_russian \
+            --case lgr_greek \
+            --case cjkutf8_japanese \
+            --case cjkutf8_chinese \
+            --case cjkutf8_korean \
+            --case issue_3_mapped_truetype \
+            --case issue_4_cjkutf8_ja \
+            --case issue_5_stmaryrd \
+            --case issue_6_bbding \
+            --case issue_8_latin_modern \
+            --case fontspec_native \
+            --case xecjk_native \
+            --case opentype_cff \
+            --case truetype_collection \
+            --case unicode_supplementary \
+            --case shaping_features \
+            --case font_styles_restoration \
+            --case boxes_forms \
+            --case unioned_subsets
+          ./install.sh --prefix /tmp/ci-install-test --uninstall
+          rm -rf /tmp/ci-install-test /tmp/font-smoke-installed
+
+      - name: Package distribution (macos)
+        if: runner.os == 'macOS'
+        run: python3 scripts/package_dist.py --platform macos --arch $(uname -m)
+
+      - name: Test extracted archive distribution (macos)
+        if: runner.os == 'macOS'
+        run: |
+          mkdir -p /tmp/ci-archive-test
+          tar -xzf dist/tex-suite-*.tar.gz -C /tmp/ci-archive-test
+          EXTRACTED_RATEX=$(ls -d /tmp/ci-archive-test/tex-suite-*/bin/ratex | head -n1)
+          "$EXTRACTED_RATEX" --version
+          python3 scripts/test_fonts.py \
+            --ratex "$EXTRACTED_RATEX" \
+            --output /tmp/font-smoke-archive \
+            --skip-reference \
+            --case t1_latin_modern \
+            --case t1_cm_super \
+            --case t2a_russian \
+            --case lgr_greek \
+            --case cjkutf8_japanese \
+            --case cjkutf8_chinese \
+            --case cjkutf8_korean \
+            --case issue_3_mapped_truetype \
+            --case issue_4_cjkutf8_ja \
+            --case issue_5_stmaryrd \
+            --case issue_6_bbding \
+            --case issue_8_latin_modern \
+            --case fontspec_native \
+            --case xecjk_native \
+            --case opentype_cff \
+            --case truetype_collection \
+            --case unicode_supplementary \
+            --case shaping_features \
+            --case font_styles_restoration \
+            --case boxes_forms \
+            --case unioned_subsets
+          rm -rf /tmp/ci-archive-test /tmp/font-smoke-archive
+
+      - name: Package distribution (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: python scripts/package_dist.py --platform windows --arch x86_64
+
+      - name: Test extracted archive distribution (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $archiveZip = (Get-Item dist/tex-suite-*.zip).FullName
+          $testDir = "$env:RUNNER_TEMP\ci-archive-test"
+          Expand-Archive -Path $archiveZip -DestinationPath $testDir
+          $extractedRatex = (Get-Item "$testDir\tex-suite-*\bin\ratex.exe").FullName
+          & $extractedRatex --version
+          python scripts/test_fonts.py `
+            --ratex $extractedRatex `
+            --output "$env:RUNNER_TEMP\font-smoke-archive" `
+            --skip-reference `
+            --case t1_latin_modern `
+            --case t1_cm_super `
+            --case t2a_russian `
+            --case lgr_greek `
+            --case cjkutf8_japanese `
+            --case cjkutf8_chinese `
+            --case cjkutf8_korean `
+            --case issue_3_mapped_truetype `
+            --case issue_4_cjkutf8_ja `
+            --case issue_5_stmaryrd `
+            --case issue_6_bbding `
+            --case issue_8_latin_modern `
+            --case fontspec_native `
+            --case xecjk_native `
+            --case opentype_cff `
+            --case truetype_collection `
+            --case unicode_supplementary `
+            --case shaping_features `
+            --case font_styles_restoration `
+            --case boxes_forms `
+            --case unioned_subsets
+          Remove-Item -Recurse -Force $testDir -ErrorAction SilentlyContinue
+          Remove-Item -Recurse -Force "$env:RUNNER_TEMP\font-smoke-archive" -ErrorAction SilentlyContinue
       - name: Stage bundled assets
         if: runner.os == 'Linux'
         run: |
           mkdir -p target/share/tex-suite/texmf
-          tar --zstd -xf crates/tex-kpse/assets/packages.tar.zst -C target/share/tex-suite/texmf
+          if [ -f crates/tex-kpse/assets/packages.tar.zst ]; then
+            tar --zstd -xf crates/tex-kpse/assets/packages.tar.zst -C target/share/tex-suite/texmf
+          else
+            cat crates/tex-kpse/assets/packages.tar.zst.* | tar --zstd -xf - -C target/share/tex-suite/texmf
+          fi
           python3 -c '
           import os
           from pathlib import Path

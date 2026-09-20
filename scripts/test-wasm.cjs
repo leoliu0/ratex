@@ -8,7 +8,13 @@ const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 const session = new TexSession();
 session.setEpoch(1700000000);
-session.addFile('main.tex', encoder.encode(String.raw`\documentclass{article}\begin{document}Hello from libtex.\end{document}`));
+session.addFile('main.tex', encoder.encode(String.raw`\documentclass{article}
+\usepackage{fontspec}
+\setmainfont{Latin Modern Roman}
+\begin{document}
+Native font selection in libtex C ABI: \textbf{Bold glyphs} and \textit{italic shapes}.
+\end{document}
+`));
 let result = session.compile('main.tex');
 assert.equal(result.status, 0, result.diagnostics + '\n' + result.log);
 assert.ok(decoder.decode(result.pdf.slice(0, 5)) === '%PDF-');
@@ -17,7 +23,7 @@ assert.ok(result.fileNames.includes('main.aux'));
 fs.writeFileSync(path.join(root, 'target/wasm/hello.pdf'), result.pdf);
 const native = path.join(root, 'target/libtex/hello.pdf');
 if (fs.existsSync(native)) assert.deepEqual(Buffer.from(result.pdf), fs.readFileSync(native));
-console.log(`Wasm Node.js: PDF ${result.pdf.length} bytes, ${result.passes} passes`);
+console.log(`Wasm Node.js: native-font PDF ${result.pdf.length} bytes, ${result.passes} passes`);
 result.free();
 
 session.addFile('main.tex', encoder.encode(String.raw`\documentclass{article}\usepackage{amsmath}\begin{document}\input{parts/body}\bibliographystyle{plain}\bibliography{refs}\end{document}`));
@@ -29,6 +35,26 @@ assert.ok(result.bibtexRuns > 0);
 assert.match(decoder.decode(result.file('main.bbl')), /Lovelace/);
 console.log(`Wasm Node.js: nested inputs and BibTeX, ${result.passes} passes`);
 result.free();
+session.addFile('main.tex', encoder.encode(String.raw`\documentclass{article}
+\usepackage{fontspec}
+\setmainfont{Latin Modern Roman}
+\setsansfont{Latin Modern Sans}
+\setmonofont{Latin Modern Mono}
+\begin{document}
+Roman font. {\sffamily Sans font.} {\ttfamily Monospace font.}
+\end{document}`));
+result = session.compile('main.tex');
+assert.equal(result.status, 0, result.diagnostics + '\n' + result.log);
+console.log(`Wasm Node.js: multi-family fontspec styles, ${result.passes} passes`);
+result.free();
+
+session.addFile('main.tex', encoder.encode(String.raw`\documentclass{article}\usepackage{fontspec}\setmainfont{NonexistentPhantomFont}\begin{document}Fail\end{document}`));
+result = session.compile('main.tex');
+assert.equal(result.status, 1);
+assert.equal(result.pdf.length, 0);
+console.log('Wasm Node.js: missing native font error handled');
+result.free();
+
 
 session.addFile('main.tex', encoder.encode(String.raw`\documentclass{article}\begin{document}\input{missing-file}\end{document}`));
 result = session.compile('main.tex');

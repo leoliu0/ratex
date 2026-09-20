@@ -38,6 +38,7 @@ fn precedes_break(n: &Node) -> bool {
         n,
         Node::Box { .. }
             | Node::Rule { .. }
+            | Node::NativeGlyphRun { .. }
             | Node::Ins { .. }
             | Node::Mark { .. }
             | Node::Adj(_)
@@ -70,7 +71,9 @@ fn prune_page_top_list(list: NodeList, topskip: &Glue) -> NodeList {
             | Some(n @ Node::Whatsit(_)) => out.push(n),
             Some(n) => {
                 let h = match &n {
-                    Node::Box { h, .. } | Node::Rule { height: h, .. } => *h as i64,
+                    Node::Box { h, .. }
+                    | Node::Rule { height: h, .. }
+                    | Node::NativeGlyphRun { height: h, .. } => *h as i64,
                     Node::Glue(_) | Node::Kern(_) | Node::ExplicitKern(_) | Node::Penalty(_) => {
                         continue
                     }
@@ -110,6 +113,11 @@ fn page_vert_break(list: &[Node], w: i64, d: i64) -> (Option<usize>, i64) {
         } else {
             match &list[i] {
                 Node::Box { h, d: bd, .. }
+                | Node::NativeGlyphRun {
+                    height: h,
+                    depth: bd,
+                    ..
+                }
                 | Node::Rule {
                     height: h,
                     depth: bd,
@@ -512,6 +520,12 @@ impl Engine {
                     self.last_page_kern = 0;
                     self.last_page_node_type = 3;
                 }
+                Node::NativeGlyphRun { .. } => {
+                    self.last_page_glue = None;
+                    self.last_page_penalty = 0;
+                    self.last_page_kern = 0;
+                    self.last_page_node_type = 0;
+                }
                 Node::Ins { .. } => {
                     self.last_page_glue = None;
                     self.last_page_penalty = 0;
@@ -543,7 +557,8 @@ impl Engine {
                         // iff the IMMEDIATELY preceding page node (page_tail) is
                         // non-discardable (precedes_break). Subsequent glues never
                         // break.
-                        let legal0 = st.box_seen && idx > 0 && precedes_break(&self.page_list[idx - 1]);
+                        let legal0 =
+                            st.box_seen && idx > 0 && precedes_break(&self.page_list[idx - 1]);
                         if legal0 {
                             self.try_page_break(&mut st, idx, 0);
                         }
@@ -601,6 +616,11 @@ impl Engine {
                     }
                 }
                 Node::Box { h, d, .. }
+                | Node::NativeGlyphRun {
+                    height: h,
+                    depth: d,
+                    ..
+                }
                 | Node::Rule {
                     height: h,
                     depth: d,
@@ -898,9 +918,17 @@ impl Engine {
                 st.stretch[0] as f64 / 65536.0,
                 st.shrink[0] as f64 / 65536.0,
                 self.page_goal() as f64 / 65536.0,
-                if b == AWFUL_BAD as i64 { "*".to_string() } else { b.to_string() },
+                if b == AWFUL_BAD as i64 {
+                    "*".to_string()
+                } else {
+                    b.to_string()
+                },
                 penalty,
-                if cost == AWFUL_BAD { "*".to_string() } else { cost.to_string() },
+                if cost == AWFUL_BAD {
+                    "*".to_string()
+                } else {
+                    cost.to_string()
+                },
                 if better { "#" } else { "" }
             );
             self.append_log(&msg);
@@ -1552,7 +1580,8 @@ impl Engine {
         }
         if self.eqtb.int_params[IntParam::TracingOutput.idx() as usize] > 0 {
             let depth = self.eqtb.int_params[IntParam::ShowBoxDepth.idx() as usize].max(0) as usize;
-            let breadth = self.eqtb.int_params[IntParam::ShowBoxBreadth.idx() as usize].max(0) as usize;
+            let breadth =
+                self.eqtb.int_params[IntParam::ShowBoxBreadth.idx() as usize].max(0) as usize;
             let mut out = crate::maincontrol::InspectionText::new();
             out.push(format_args!("\nCompleted box being shipped out\n"));
             self.show_node_into(&boxn, 0, depth, breadth, &mut out);

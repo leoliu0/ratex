@@ -95,7 +95,7 @@ fn pdf_driver_primitives_smoke() {
     assert!(!norm.contains("BAD"), "BAD marker in: {norm}");
     assert_eq!(e.error_count, 0, "{}", e.term);
     assert!(e.font_loader.map.contains_key("zzprobe"));
-    let pdf_bytes = tex_core::pdffile::write_pdf(&e.pdf_doc);
+    let pdf_bytes = tex_core::pdffile::write_pdf(&e.pdf_doc).expect("valid embedded fonts");
     let pdf = lopdf::Document::load_mem(&pdf_bytes).expect("valid PDF");
     let info = pdf
         .trailer
@@ -136,7 +136,7 @@ fn file_stream_preserves_binary_bytes_and_following_input() {
     std::fs::remove_file(path).unwrap();
     assert_eq!(e.error_count, 0, "{}", e.term);
     assert_eq!(e.eqtb.count[1], 73);
-    let bytes = tex_core::pdffile::write_pdf(&e.pdf_doc);
+    let bytes = tex_core::pdffile::write_pdf(&e.pdf_doc).expect("valid embedded fonts");
     let pdf = lopdf::Document::load_mem(&bytes).unwrap();
     let stream = pdf
         .get_object((e.eqtb.count[0] as u32, 0))
@@ -175,7 +175,7 @@ fn pdfrestore_keeps_following_image_in_the_restored_coordinate_system() {
     e.run();
     assert_eq!(e.error_count, 0, "{}", e.term);
 
-    let bytes = tex_core::pdffile::write_pdf(&e.pdf_doc);
+    let bytes = tex_core::pdffile::write_pdf(&e.pdf_doc).expect("valid embedded fonts");
     let pdf = lopdf::Document::load_mem(&bytes).unwrap();
     let page = *pdf.get_pages().values().next().expect("one output page");
     let stream = String::from_utf8(pdf.get_page_content(page)).unwrap();
@@ -205,15 +205,23 @@ fn display_list_captures_rules_and_glyphs() {
     let mut e = Engine::new(true);
     e.init_primitives();
     e.add_nullfont();
-    e.input.push_file("display_list.tex".into(), source.as_bytes().to_vec());
+    e.input
+        .push_file("display_list.tex".into(), source.as_bytes().to_vec());
     e.run();
     assert_eq!(e.error_count, 0, "{}", e.term);
     assert_eq!(e.pdf_doc.pages.len(), 1);
     let page = &e.pdf_doc.pages[0];
-    let dl = page.display_list.as_ref().expect("display list should be present");
+    let dl = page
+        .display_list
+        .as_ref()
+        .expect("display list should be present");
     assert!(!dl.is_empty());
     let has_rule = dl.items.iter().any(|item| matches!(item, tex_core::boxes::DisplayItem::Rule { width_bp, .. } if (*width_bp - 49.8).abs() < 1.0));
-    assert!(has_rule, "display list should capture the 50pt rule: {:?}", dl.items);
+    assert!(
+        has_rule,
+        "display list should capture the 50pt rule: {:?}",
+        dl.items
+    );
 }
 
 #[test]
@@ -227,12 +235,16 @@ fn tagged_pdf_emits_markinfo_and_struct_tree_root() {
     let mut e = Engine::new(true);
     e.init_primitives();
     e.add_nullfont();
-    e.input.push_file("tagged.tex".into(), source.as_bytes().to_vec());
+    e.input
+        .push_file("tagged.tex".into(), source.as_bytes().to_vec());
     e.run();
     assert_eq!(e.error_count, 0, "{}", e.term);
     assert_eq!(e.pdf_doc.pages.len(), 1);
     let page = &mut e.pdf_doc.pages[0];
-    let dl = page.display_list.as_mut().expect("display list should be present");
+    let dl = page
+        .display_list
+        .as_mut()
+        .expect("display list should be present");
     dl.push(tex_core::boxes::DisplayItem::GlyphRun {
         font: 0,
         x_bp: 10.0,
@@ -243,7 +255,7 @@ fn tagged_pdf_emits_markinfo_and_struct_tree_root() {
         source_file_id: 1,
         source_line: 10,
     });
-    let bytes = tex_core::pdffile::write_pdf(&e.pdf_doc);
+    let bytes = tex_core::pdffile::write_pdf(&e.pdf_doc).expect("valid embedded fonts");
     let pdf = lopdf::Document::load_mem(&bytes).expect("valid PDF");
     let catalog = pdf
         .trailer
@@ -251,8 +263,16 @@ fn tagged_pdf_emits_markinfo_and_struct_tree_root() {
         .and_then(lopdf::Object::as_reference)
         .and_then(|id| pdf.get_dictionary(id))
         .expect("PDF catalog dictionary");
-    assert!(catalog.has(b"MarkInfo"), "Catalog must have /MarkInfo: {:?}", catalog);
-    assert!(catalog.has(b"StructTreeRoot"), "Catalog must have /StructTreeRoot: {:?}", catalog);
+    assert!(
+        catalog.has(b"MarkInfo"),
+        "Catalog must have /MarkInfo: {:?}",
+        catalog
+    );
+    assert!(
+        catalog.has(b"StructTreeRoot"),
+        "Catalog must have /StructTreeRoot: {:?}",
+        catalog
+    );
 }
 
 #[test]
@@ -267,7 +287,8 @@ fn synctex_records_generated_for_rendered_page() {
     e.init_primitives();
     e.add_nullfont();
     e.synctex_enabled = true;
-    e.input.push_file("synctex_doc.tex".into(), source.as_bytes().to_vec());
+    e.input
+        .push_file("synctex_doc.tex".into(), source.as_bytes().to_vec());
     e.run();
     assert_eq!(e.error_count, 0, "{}", e.term);
     assert_eq!(e.pdf_doc.pages.len(), 1);
@@ -275,7 +296,8 @@ fn synctex_records_generated_for_rendered_page() {
     assert!(e.synctex_enabled);
     let file_id = e.synctex.get_or_register_file("synctex_doc.tex");
     assert_eq!(file_id, 1);
-    e.synctex.record_point(1, file_id, 4, 65536 * 10, 65536 * 20);
+    e.synctex
+        .record_point(1, file_id, 4, 65536 * 10, 65536 * 20);
     let gz = e.synctex.to_synctex_gz().expect("valid synctex gz");
     assert!(!gz.is_empty());
     assert_eq!(&gz[..2], &[0x1f, 0x8b]);
@@ -291,21 +313,22 @@ fn encrypted_pdf_emits_encrypt_dict_and_trailer_id() {
     let mut e = Engine::new(true);
     e.init_primitives();
     e.add_nullfont();
-    e.input.push_file("enc.tex".into(), source.as_bytes().to_vec());
+    e.input
+        .push_file("enc.tex".into(), source.as_bytes().to_vec());
     e.run();
     assert_eq!(e.error_count, 0, "{}", e.term);
     assert_eq!(e.pdf_doc.pages.len(), 1);
 
     let fixed_id = [
-        0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf0, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66,
-        0x77, 0x88,
+        0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf0, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77,
+        0x88,
     ];
     let mut enc_cfg = tex_core::pdffile::PdfEncryptConfig::new("user_secret", "owner_secret");
     enc_cfg.permissions = -4;
     enc_cfg.file_id = Some(fixed_id);
     e.pdf_doc.encrypt = Some(enc_cfg);
 
-    let pdf_bytes = tex_core::pdffile::write_pdf(&e.pdf_doc);
+    let pdf_bytes = tex_core::pdffile::write_pdf(&e.pdf_doc).expect("valid embedded fonts");
     let pdf = lopdf::Document::load_mem(&pdf_bytes).expect("valid PDF");
 
     // Verify trailer has /Encrypt and /ID
@@ -325,20 +348,27 @@ fn encrypted_pdf_emits_encrypt_dict_and_trailer_id() {
         .get(b"Encrypt")
         .and_then(lopdf::Object::as_reference)
         .expect("Encrypt must be an indirect reference");
-    let encrypt_dict = pdf
-        .get_dictionary(encrypt_ref)
-        .expect("Encrypt dictionary");
+    let encrypt_dict = pdf.get_dictionary(encrypt_ref).expect("Encrypt dictionary");
 
     assert_eq!(
-        encrypt_dict.get(b"Filter").and_then(lopdf::Object::as_name).unwrap(),
+        encrypt_dict
+            .get(b"Filter")
+            .and_then(lopdf::Object::as_name)
+            .unwrap(),
         b"Standard"
     );
     assert_eq!(
-        encrypt_dict.get(b"V").and_then(lopdf::Object::as_i64).unwrap(),
+        encrypt_dict
+            .get(b"V")
+            .and_then(lopdf::Object::as_i64)
+            .unwrap(),
         2
     );
     assert_eq!(
-        encrypt_dict.get(b"R").and_then(lopdf::Object::as_i64).unwrap(),
+        encrypt_dict
+            .get(b"R")
+            .and_then(lopdf::Object::as_i64)
+            .unwrap(),
         3
     );
     assert_eq!(
@@ -349,7 +379,10 @@ fn encrypted_pdf_emits_encrypt_dict_and_trailer_id() {
         128
     );
     assert_eq!(
-        encrypt_dict.get(b"P").and_then(lopdf::Object::as_i64).unwrap(),
+        encrypt_dict
+            .get(b"P")
+            .and_then(lopdf::Object::as_i64)
+            .unwrap(),
         -4
     );
 
@@ -364,12 +397,8 @@ fn encrypted_pdf_emits_encrypt_dict_and_trailer_id() {
     // Check cryptographic correctness
     let expected_o = tex_core::pdffile::compute_o_hash(b"user_secret", b"owner_secret");
     assert_eq!(o_bytes, &expected_o[..]);
-    let expected_key = tex_core::pdffile::compute_file_encryption_key(
-        b"user_secret",
-        &expected_o,
-        -4,
-        &fixed_id,
-    );
+    let expected_key =
+        tex_core::pdffile::compute_file_encryption_key(b"user_secret", &expected_o, -4, &fixed_id);
     let expected_u = tex_core::pdffile::compute_u_hash(&expected_key, &fixed_id);
     assert_eq!(u_bytes, &expected_u[..]);
 }
@@ -387,12 +416,13 @@ fn pdfa_emits_output_intents_with_srgb() {
     let mut e = Engine::new(true);
     e.init_primitives();
     e.add_nullfont();
-    e.input.push_file("pdfa.tex".into(), source.as_bytes().to_vec());
+    e.input
+        .push_file("pdfa.tex".into(), source.as_bytes().to_vec());
     e.run();
     assert_eq!(e.error_count, 0, "{}", e.term);
     assert_eq!(e.pdf_doc.pages.len(), 1);
 
-    let pdf_bytes = tex_core::pdffile::write_pdf(&e.pdf_doc);
+    let pdf_bytes = tex_core::pdffile::write_pdf(&e.pdf_doc).expect("valid embedded fonts");
     let pdf = lopdf::Document::load_mem(&pdf_bytes).expect("valid PDF");
     let catalog = pdf
         .trailer
@@ -410,7 +440,10 @@ fn pdfa_emits_output_intents_with_srgb() {
         .get(b"OutputIntents")
         .and_then(lopdf::Object::as_array)
         .expect("/OutputIntents must be an array");
-    assert!(!intents_arr.is_empty(), "/OutputIntents array must not be empty");
+    assert!(
+        !intents_arr.is_empty(),
+        "/OutputIntents array must not be empty"
+    );
 
     let intent_dict = match &intents_arr[0] {
         lopdf::Object::Dictionary(d) => d,
@@ -419,11 +452,17 @@ fn pdfa_emits_output_intents_with_srgb() {
     };
 
     assert_eq!(
-        intent_dict.get(b"Type").and_then(lopdf::Object::as_name).unwrap(),
+        intent_dict
+            .get(b"Type")
+            .and_then(lopdf::Object::as_name)
+            .unwrap(),
         b"OutputIntent"
     );
     assert_eq!(
-        intent_dict.get(b"S").and_then(lopdf::Object::as_name).unwrap(),
+        intent_dict
+            .get(b"S")
+            .and_then(lopdf::Object::as_name)
+            .unwrap(),
         b"GTS_PDFA1"
     );
     let cid = intent_dict
@@ -438,56 +477,99 @@ fn pdfa_emits_output_intents_with_srgb() {
 }
 
 #[test]
-fn truetype_font_emits_truetype_subtype_and_fontfile2() {
-    let mut doc = tex_core::pdfout::PdfDoc::new();
-    // TrueType font header magic \x00\x01\x00\x00
-    let mut ttf_bytes = vec![0x00, 0x01, 0x00, 0x00];
-    ttf_bytes.resize(100, 0);
-    let font = tex_core::pdffile::make_embed_font(
-        "TestTrueType".to_string(),
-        Some(&ttf_bytes),
-        Some(&["A".to_string()]),
-        0,
-        1,
-        vec![500, 500],
+fn mapped_truetype_preserves_used_outlines_and_extraction() {
+    use std::path::Path;
+    let ttf = include_bytes!("fixtures/ratex_test_font.ttf");
+    let fs = tex_kpse::fs::MemoryFs::new(Path::new("/project"), 903).unwrap();
+    fs.insert(Path::new("mapped.ttf"), ttf.to_vec()).unwrap();
+    let mut names = vec!["/.notdef"; 256];
+    names[b'A' as usize] = "/A";
+    fs.insert(
+        Path::new("mapped.enc"),
+        format!("/MappedEncoding [ {} ] def", names.join(" ")).into_bytes(),
+    )
+    .unwrap();
+    let _scope = fs.enter();
+    let mut engine = Engine::new(true);
+    engine.init_primitives();
+    engine.add_nullfont();
+    engine.input.push_file(
+        "mapped.tex".into(),
+        br#"\catcode`\{=1 \catcode`\}=2
+\pdfmapline{cmr10 RatexTestFont <mapped.enc <mapped.ttf}
+\font\mapped=cmr10 at 10pt
+\shipout\hbox{\mapped A}
+\end"#
+            .to_vec(),
     );
-    assert!(font.is_truetype);
-    doc.fonts.push(font);
-    doc.pages.push(tex_core::pdfout::PdfPage {
-        width: 100,
-        height: 100,
-        width_bp: 100.0,
-        height_bp: 100.0,
-        content: b"BT /F1 10 Tf 10 10 Td (A) Tj ET".to_vec(),
-        fonts: vec![(0, 1)],
-        annots: Vec::new(),
-        dests: Vec::new(),
-        attr_extra: Vec::new(),
-        resources_extra: Vec::new(),
-        display_list: None,
-    });
-    let pdf_bytes = tex_core::pdffile::write_pdf(&doc);
-    let pdf = lopdf::Document::load_mem(&pdf_bytes).expect("valid PDF");
-    let font_obj = pdf.objects.values().find_map(|obj| {
-        if let lopdf::Object::Dictionary(dict) = obj {
-            if dict.get(b"Type").and_then(lopdf::Object::as_name).ok() == Some(b"Font") {
-                return Some(dict);
-            }
-        }
-        None
-    }).expect("font dictionary must exist");
+    engine.run();
+    assert_eq!(engine.error_count, 0, "{}", engine.term);
+    let bytes = tex_core::driver::finish_pdf(&mut engine, false).expect("mapped font finalization");
+    let pdf = lopdf::Document::load_mem(&bytes).expect("valid PDF");
+    let parent = pdf
+        .objects
+        .values()
+        .filter_map(|object| object.as_dict().ok())
+        .find(|dict| dict.get(b"Subtype").and_then(lopdf::Object::as_name).ok() == Some(b"Type0"))
+        .expect("composite font");
+    let encoding = parent.get(b"Encoding").unwrap().as_reference().unwrap();
+    let encoding = pdf
+        .get_object(encoding)
+        .unwrap()
+        .as_stream()
+        .unwrap()
+        .decompressed_content()
+        .unwrap();
+    let encoding = String::from_utf8(encoding).unwrap();
+    let gid: u16 = encoding
+        .lines()
+        .find_map(|line| {
+            let mut fields = line.split_whitespace();
+            (fields.next()? == "<41>")
+                .then(|| fields.next()?.parse().ok())
+                .flatten()
+        })
+        .expect("A must resolve to a subset glyph");
+    assert_ne!(gid, 0, "a used letter cannot become .notdef");
+    let descendant = parent.get(b"DescendantFonts").unwrap().as_array().unwrap()[0]
+        .as_reference()
+        .unwrap();
+    let descendant = pdf.get_dictionary(descendant).unwrap();
+    let descriptor = descendant
+        .get(b"FontDescriptor")
+        .unwrap()
+        .as_reference()
+        .unwrap();
+    let descriptor = pdf.get_dictionary(descriptor).unwrap();
+    let program = descriptor
+        .get(b"FontFile2")
+        .unwrap()
+        .as_reference()
+        .unwrap();
+    let program = pdf
+        .get_object(program)
+        .unwrap()
+        .as_stream()
+        .unwrap()
+        .decompressed_content()
+        .unwrap();
+    let embedded = ttf_parser::Face::parse(&program, 0).expect("standalone TrueType subset");
+    let original = ttf_parser::Face::parse(ttf, 0).unwrap();
+    let original_gid = original.glyph_index('A').unwrap();
+    assert!(embedded.number_of_glyphs() < original.number_of_glyphs());
+    assert_eq!(
+        embedded.glyph_bounding_box(ttf_parser::GlyphId(gid)),
+        original.glyph_bounding_box(original_gid)
+    );
+    assert_eq!(
+        embedded.glyph_hor_advance(ttf_parser::GlyphId(gid)),
+        original.glyph_hor_advance(original_gid)
+    );
+    assert_eq!(pdf.extract_text(&[1]).unwrap().trim(), "A");
 
-    assert_eq!(font_obj.get(b"Subtype").and_then(lopdf::Object::as_name).ok(), Some(b"TrueType" as &[u8]));
-
-    let desc_obj = pdf.objects.values().find_map(|obj| {
-        if let lopdf::Object::Dictionary(dict) = obj {
-            if dict.get(b"Type").and_then(lopdf::Object::as_name).ok() == Some(b"FontDescriptor") {
-                return Some(dict);
-            }
-        }
-        None
-    }).expect("font descriptor must exist");
-
-    assert!(desc_obj.has(b"FontFile2"), "FontDescriptor must contain /FontFile2");
-    assert!(!desc_obj.has(b"FontFile"), "FontDescriptor must not contain /FontFile");
+    engine.pdf_doc.fonts[0].used_gids.insert(u16::MAX);
+    assert!(
+        tex_core::pdffile::write_pdf(&engine.pdf_doc).is_err(),
+        "invalid glyphs must abort serialization, not fall back to mismapped full-font bytes"
+    );
 }

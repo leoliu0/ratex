@@ -5,7 +5,12 @@
 
 int main(int argc, char **argv) {
     const char *name = "main.tex";
-    const char *source = "\\documentclass{article}\\begin{document}Hello from libtex.\\end{document}";
+    const char *source = "\\documentclass{article}\n"
+        "\\usepackage{fontspec}\n"
+        "\\setmainfont{Latin Modern Roman}\n"
+        "\\begin{document}\n"
+        "Native font selection in libtex C ABI: \\textbf{Bold glyphs} and \\textit{italic shapes}.\n"
+        "\\end{document}\n";
     assert(tex_abi_version() == 1);
     tex_session *session = tex_session_new();
     assert(session);
@@ -34,7 +39,7 @@ int main(int argc, char **argv) {
         assert(fwrite(pdf.data, 1, pdf.len, output) == pdf.len);
         assert(fclose(output) == 0);
     }
-    printf("C ABI: PDF %zu bytes, %u passes\n", pdf.len, tex_result_passes(result));
+    printf("C ABI: native-font PDF %zu bytes, %u passes\n", pdf.len, tex_result_passes(result));
     tex_result_free(result);
     tex_result_free(NULL);
     tex_session_free(NULL);

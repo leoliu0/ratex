@@ -14,17 +14,21 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import threading
 import time
 import urllib.parse
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
 ARCHIVES = ["cs", "math", "physics", "stat", "econ", "q-fin", "q-bio"]
-USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (TeX-Benchmark/1.0; mailto:leo@dd)"
+USER_AGENT = "ratex-corpus/0.3 (+https://github.com/leoliu0/ratex)"
 OAI_URL = "https://oaipmh.arxiv.org/oai"
 OAI_NS = "http://www.openarchives.org/OAI/2.0/"
 ARXIV_RAW_NS = "http://arxiv.org/OAI/arXivRaw/"
 MODERN_ID_RE = re.compile(r"\d{4}\.\d{4,5}")
+SOURCE_REQUEST_INTERVAL = 0.5
+_SOURCE_REQUEST_LOCK = threading.Lock()
+_source_request_at = 0.0
 
 
 def harvest_candidates(target: int, from_date: str):
@@ -45,6 +49,9 @@ def harvest_candidates(target: int, from_date: str):
                     "from": from_date,
                 }
                 url = f"{OAI_URL}?{urllib.parse.urlencode(params)}"
+            # OAI-PMH requires one connection and at least three seconds
+            # between requests, including transitions between archives.
+            time.sleep(3.0)
             cmd = [
                 "curl", "-sL", "--fail", "--max-time", "90",
                 "--retry", "4", "--retry-all-errors", "--retry-delay", "3",
@@ -78,7 +85,6 @@ def harvest_candidates(target: int, from_date: str):
             )
             if not token or added == 0:
                 break
-            time.sleep(3.0)
     interleaved = []
     max_len = max(len(v) for v in candidates_by_arch.values()) if candidates_by_arch else 0
     for i in range(max_len):
@@ -131,6 +137,7 @@ def find_main_tex(project_dir: Path):
 
 
 def download_project(aid: str, arch: str, out_dir: Path, max_bytes: int):
+    global _source_request_at
     target_dir = out_dir / aid
     meta_file = target_dir / ".project_meta.json"
     if target_dir.is_dir() and meta_file.is_file():
@@ -144,12 +151,19 @@ def download_project(aid: str, arch: str, out_dir: Path, max_bytes: int):
 
     try:
         cmd = [
-            "curl", "-sL", "--max-time", "25",
+            "curl", "-fsSL", "--max-time", "25",
             "--max-filesize", str(max_bytes),
             "-A", USER_AGENT,
-            f"https://arxiv.org/e-print/{aid}",
+            f"https://export.arxiv.org/src/{aid}",
             "-o", str(tmp_path)
         ]
+        # Share pacing across source workers, independently of OAI's stricter
+        # metadata limit. Concurrent transfers must not create request bursts.
+        with _SOURCE_REQUEST_LOCK:
+            delay = _source_request_at + SOURCE_REQUEST_INTERVAL - time.monotonic()
+            if delay > 0:
+                time.sleep(delay)
+            _source_request_at = time.monotonic()
         res = subprocess.run(cmd, capture_output=True, timeout=30)
         if res.returncode != 0 or not tmp_path.is_file():
             return None
@@ -324,8 +338,6 @@ def main():
                     except StopIteration:
                         pass
 
-                # Polite delay between completions
-                time.sleep(0.1)
 
     manifest_path = args.out_dir / "manifest.json"
     manifest_path.write_text(json.dumps(successful[:args.target], indent=2))

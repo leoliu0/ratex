@@ -332,7 +332,6 @@ pub fn parse_tfm(data: &[u8], tfm_name: &str, at_size: i32) -> Result<Font, Stri
         None
     };
 
-
     let kerns: Vec<i32> = (0..nk).map(|k| scale(rd_fix(kern_off + k * 4))).collect();
 
     let ext: Vec<ExtRecipe> = (0..ne)

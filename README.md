@@ -7,24 +7,25 @@
 **ratex** is an ultra-fast, self-contained, pure-Rust TeX engine and typesetting toolchain. Built from scratch with zero unsafe memory compromises, it provides a high-performance, all-in-one replacement for traditional TeX engines and build tools.
 
 
-## Performance Highlights
+## Verification and Performance
 
-Tested and verified against **3,000 real-world arXiv papers** across mathematics, physics, and computer science:
+The unreleased v0.4.0 Linux candidate passes the 29-case font matrix through both
+the packaged standalone binary and an installed copy. Checks use filesystem
+isolation, disabled networking, pinned reference fonts, and Poppler/pdf.js
+rendering and text extraction. The workspace suite passes 767 tests (1 ignored);
+the C and WebAssembly interfaces also pass execution checks, including Chromium.
 
-| Workload | ratex | TeX Live (`pdflatex` / `latexmk`) | Advantage |
-|---|---|---|---|
-| **Incremental Rebuild (Warm)** | **$0.8 - 8.2\text{ ms}$** | $40 - 60\text{ ms}$ | **$10\times - 70\times$ FASTER** ⚡ |
-| **Short Papers (1–3 pages) Cold** | **$11 - 13\text{ ms}$** | $39 - 41\text{ ms}$ | **$3.1\times - 3.6\times$ FASTER** ⚡ |
-| **Full 3,000-Paper Corpus Throughput** | **$89\text{ papers / min}$** | $53\text{ papers / min}$ | **$1.7\times$ FASTER** ⚡ |
-| **Clean Compiles Across arXiv** | **$2,620\text{ papers}$** | $2,613\text{ papers}$ | **More robust than TeX Live** |
-| **Visual Document Parity** | **$96.39\%$ mean parity** | Baseline ($100\%$) | **Publication-grade visual fidelity** |
+The new 1,000-project corpus campaign is a separate release gate. Its failures
+are retained rather than hidden by aggregate pixel scores. Historical
+3,000-project results did not establish the standalone font coverage above.
+See [PERFORMANCE.md](PERFORMANCE.md) for benchmark scope and measurements.
 
 ---
 
 ## Key Features
 
-- **Sub-10ms Incremental Builds**: Built-in cryptographic dependency graph and auxiliary state validator enables near-instant rebuilds (0.8–8.2 ms) on document edits.
-- **100% Self-Contained**: Embeds the LaTeX format, over 24,000 packages, and all standard AMS math and Latin fonts directly in the binary. No external TeX Live installation needed. (CJK scripts can be typeset using standard TrueType/OpenType font maps or system fonts).
+- **Validated incremental builds**: Dependency and auxiliary-state checks reuse unchanged results without re-running the typesetting engine.
+- **Self-contained typesetting**: The source build embeds the LaTeX format, package resources, and the pinned Latin, Cyrillic, Greek, and CJK font families described below. Compilation needs neither TeX Live nor runtime font downloads.
 - **All-in-One Engine & Toolchain**: Combines the TeX engine, package resolver, BibTeX interpreter, and build convergence into a single unified `ratex` command.
 - **SyncTeX by Default**: Automatic `.synctex.gz` coordinate generation matching PDF boxes to source lines for instant forward/inverse search in VS Code, TeXstudio, VimTeX, and AUCTeX.
 - **Compiler-Grade Diagnostics**: Beautiful rustc-style error reporting with physical source line excerpts, underlines, and actionable fix suggestions streamed directly to the terminal.
@@ -115,8 +116,56 @@ ratex latexdiff old.tex new.tex diff.tex
 ratex diff.tex
 ```
 
-### CJK (Chinese, Japanese, Korean) Typesetting
-Ratex supports TrueType and OpenType fonts via standard font mapping (e.g. `\pdfmapline{+min ... <ipaexm.ttf}`). As of v0.3.0, TrueType fonts are properly embedded with `/Subtype /TrueType` and `/FontFile2`. When using `CJKutf8`, ensure the referenced font files (`.ttf` or `.pfb`) are placed in the project directory or accessible via system font paths.
+### Fonts and Unicode in the source build
+
+The bundled font inventory includes Latin Modern text/math and native OTF faces,
+CM-Super with EC/LH metrics, LGR Greek, Wadalab Japanese, IPA/IPAex,
+Harano Aji, Arphic Chinese, Korean UHC/Un-fonts and Nanum, `stmaryrd`, and
+`bbding`. Classic `CJKutf8` families `min`, `goth`, `gbsn`, `gkai`, `bsmi`,
+`bkai`, and `mj` use their own matching metrics and outlines, without system fonts.
+Exact package versions, hashes, and resource paths are in
+[`packages.lock.json`](crates/tex-kpse/assets/packages.lock.json).
+
+Ratex's `fontspec` and `xeCJK` adapters select real native fonts:
+
+```latex
+\documentclass{article}
+\usepackage{fontspec}
+\usepackage{xeCJK}
+\setmainfont{Latin Modern Roman}
+\setCJKmainfont{IPAexMincho}
+\begin{document}
+Roman text, \textbf{bold}, \textit{italic}, and 日本語のテスト。
+\end{document}
+```
+
+Supported commands include `\setmainfont`, `\setsansfont`, `\setmonofont`,
+`\fontspec`, `\newfontfamily`, `\newfontface`, `\defaultfontfeatures`,
+`\addfontfeatures`, the corresponding CJK family selectors, and NFSS
+family/style/size switching. Selection options include `Path`, `Extension`,
+explicit style files, `FontIndex`, numeric `Scale`, `Script`, `Language`,
+ligatures, kerning, number features, `RawFeature`, and variation coordinates.
+The selected face must actually provide the requested style, feature, and glyphs;
+missing resources and forbidden embedding are errors, not font substitutions.
+Use project-local font files or bundled names; Ratex does not search OS font stores.
+
+Mapped TrueType, CFF OpenType, and collection faces are embedded as CID fonts
+with glyph addressing and Unicode extraction maps. Subsets are shared across
+pages, sizes, aliases, and forms. Type 1 fonts retain their Type 1 representation.
+Font licenses, notices, and required corresponding sources ship under
+`share/tex-suite/texmf/doc/fonts`; the engine's MIT/Apache license does not
+replace those licenses.
+
+**Engine limits:** these adapters are not XeTeX or LuaTeX emulation.
+`-xelatex` and `-lualatex` are compatibility selectors for Ratex, not launches
+of those engines. OpenType MATH/`unicode-math`, Lua execution/`luatexja`,
+`ctex`, vertical Japanese layout, and full bidirectional paragraph layout
+are not supported. Use classic LaTeX mathematics and `CJKutf8` or the native
+font selectors above. Native Latin hyphenation uses the existing ASCII-word
+patterns; arbitrary Unicode hyphenation is not implied by shaping support.
+Native fonts must be selected after loading a format; dumping native font state
+is rejected rather than silently losing it.
+
 ---
 
 ## Build from Source

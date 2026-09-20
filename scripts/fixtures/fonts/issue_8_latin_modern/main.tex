@@ -1,0 +1,25 @@
+\documentclass{article}
+\usepackage{iftex}
+\ifPDFTeX
+  \typeout{TEST: PDFTeX branch}
+  \usepackage[T1]{fontenc}
+  \usepackage{lmodern}
+\else
+  \typeout{TEST: non-PDFTeX branch}
+  \usepackage{fontspec}
+  \setmainfont{Latin Modern Roman}
+  \setsansfont{Latin Modern Sans}
+\fi
+\usepackage{amsmath,amssymb}
+
+\begin{document}
+\section{\sffamily Heading spacing test}
+Normal text, \textbf{bold text}, and \textit{italic text}.
+\[
+  \sum_{k=0}^{n}\binom{n}{k}x^k=(1+x)^n,
+  \qquad
+  A=\begin{pmatrix}1&-i\\i&0\end{pmatrix},
+  \qquad
+  \mathbb{C}^{2}\otimes\mathbb{C}^{2}.
+\]
+\end{document}

@@ -1,0 +1,24 @@
+\documentclass{article}
+\usepackage{fontspec}
+\setmainfont{Latin Modern Roman}
+\setsansfont{Latin Modern Sans}
+\setmonofont{Latin Modern Mono}
+
+\begin{document}
+Base Roman Regular font.
+\textbf{Bold Roman face.}
+\textit{Italic Roman face.}
+\textbf{\textit{Bold Italic Roman face.}}
+Back to Base Roman Regular.
+
+{\sffamily
+Scoped Sans Serif block.
+\textbf{Bold Sans Serif inside group.}
+}
+Back to Base Roman Regular after group exit.
+
+{\ttfamily
+Scoped Monospace typewriter block.
+}
+Final check: Base Roman Regular restored.
+\end{document}

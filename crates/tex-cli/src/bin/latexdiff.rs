@@ -231,11 +231,22 @@ pub fn run_latexdiff(old_path: &Path, new_path: &Path) -> Result<String, String>
 
 /// CLI entry point for `ratex latexdiff old.tex new.tex [output.tex]`
 pub fn latexdiff_main(args: &[String]) -> i32 {
+    if args
+        .iter()
+        .any(|a| matches!(a.as_str(), "-v" | "-version" | "--version"))
+    {
+        println!("latexdiff (Ratex {})", env!("CARGO_PKG_VERSION"));
+        return 0;
+    }
     if args.len() < 2 || args.iter().any(|a| a == "-h" || a == "--help") {
         eprintln!("Usage: ratex latexdiff [OPTIONS] <old.tex> <new.tex> [output.tex]");
         eprintln!("       latexdiff <old.tex> <new.tex> [output.tex]");
         eprintln!("\nComputes token-level visual diff with \\DIFadd and \\DIFdel markup.");
-        return if args.iter().any(|a| a == "-h" || a == "--help") { 0 } else { 1 };
+        return if args.iter().any(|a| a == "-h" || a == "--help") {
+            0
+        } else {
+            1
+        };
     }
 
     let non_flags: Vec<&String> = args.iter().filter(|a| !a.starts_with('-')).collect();
@@ -272,7 +283,6 @@ pub(crate) fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     std::process::exit(latexdiff_main(&args));
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -325,8 +335,16 @@ mod tests {
         let new_file = temp_dir.join("new.tex");
         let out_file = temp_dir.join("diff.tex");
 
-        fs::write(&old_file, "\\begin{document}\nOriginal sentence.\n\\end{document}").unwrap();
-        fs::write(&new_file, "\\begin{document}\nModified sentence.\n\\end{document}").unwrap();
+        fs::write(
+            &old_file,
+            "\\begin{document}\nOriginal sentence.\n\\end{document}",
+        )
+        .unwrap();
+        fs::write(
+            &new_file,
+            "\\begin{document}\nModified sentence.\n\\end{document}",
+        )
+        .unwrap();
 
         let exit_code = latexdiff_main(&[
             old_file.to_str().unwrap().to_string(),

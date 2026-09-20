@@ -1,7 +1,7 @@
 use crate::boxes::{Node, WhatIt};
 use crate::engine::Engine;
-use crate::token::Token;
 pub use crate::pdffile::PdfEncryptConfig;
+use crate::token::Token;
 
 // PDF document model: pages, annotations, destinations, embedded fonts.
 // Serialization lives in `pdffile`; page rendering in `pdfrender`.
@@ -103,18 +103,51 @@ pub struct PdfDoc {
     pub encrypt: Option<PdfEncryptConfig>,
     pub pdfa: bool,
     pub minor_version: Option<i32>,
+    pub native_bindings: std::collections::BTreeMap<usize, Vec<NativeBindingInfo>>,
+    pub legacy_bindings: std::collections::BTreeMap<usize, Vec<LegacyBindingInfo>>,
 }
 
-/// A Type 1 font prepared for embedding.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum EmbedFontSubtype {
+    Type1,
+    TrueType,
+    Cff,
+}
+
+#[derive(Clone, Debug)]
+pub struct NativeBindingInfo {
+    pub code_map: std::collections::HashMap<u16, smallvec::SmallVec<[usize; 1]>>,
+    pub entries: Vec<(u16, u16, String)>,
+    pub next_code: u32,
+}
+#[derive(Clone, Debug)]
+pub struct LegacyBindingInfo {
+    pub code_map: std::collections::HashMap<u8, smallvec::SmallVec<[usize; 1]>>,
+    pub entries: Vec<(u8, u8, String)>,
+    pub next_code: u16,
+}
+
+/// Keep the engine font in the low bits and its native code-space shard above it.
+pub(crate) fn font_resource_key(font_id: u16, binding: usize) -> usize {
+    (binding << u16::BITS) | usize::from(font_id)
+}
+
+/// A font prepared for embedding (Type 1 or OpenType/TrueType/CFF).
 pub struct EmbedFont {
     pub obj_font: i32,
     pub base_font: String,
-    /// full Type 1 program (cleartext + encrypted + trailer)
-    pub font_file: Vec<u8>,
+    /// full Type 1 program or raw font data
+    pub font_file: std::rc::Rc<Vec<u8>>,
     pub length1: usize,
     pub length2: usize,
     pub length3: usize,
     pub is_truetype: bool,
+    pub subtype: EmbedFontSubtype,
+    pub face_index: u32,
+    pub variations: Vec<(ttf_parser::Tag, f32)>,
+    pub allow_subsetting: bool,
+    pub content_hash: [u8; 16],
+    pub units_per_em: u16,
     /// glyph names by slot (None = the font's built-in encoding)
     pub encoding_diff: Option<Vec<String>>,
     pub first_char: u8,
@@ -130,13 +163,17 @@ pub struct EmbedFont {
     pub cap_height: f64,
     pub stem_v: f64,
     pub flags: i32,
-    /// /ToUnicode mappings: (code, Unicode string). Non-identity mappings
-    /// only; empty when no glyph names are known.
+    /// /ToUnicode mappings: (code, Unicode string).
     pub to_unicode: Vec<(u8, String)>,
-    /// Character codes actually painted with this font. An empty set keeps
-    /// the complete program, which is the conservative behavior for callers
-    /// that construct `EmbedFont` values directly.
+    /// Character codes actually painted with this font.
     pub used_chars: [u64; 4],
+    /// CID font indicators and mappings
+    pub is_cid: bool,
+    pub is_native: bool,
+    pub legacy_cids: Vec<(u8, u16, String)>,
+    pub native_cids: Vec<(u16, u16, String)>,
+    pub used_gids: std::collections::BTreeSet<u16>,
+    pub to_unicode_2byte: Vec<(u16, String)>,
 }
 
 impl PdfDoc {
@@ -158,6 +195,8 @@ impl PdfDoc {
             encrypt: None,
             pdfa: false,
             minor_version: None,
+            native_bindings: std::collections::BTreeMap::new(),
+            legacy_bindings: std::collections::BTreeMap::new(),
         }
     }
 
@@ -185,6 +224,83 @@ impl PdfDoc {
     pub fn record_font_char(&mut self, font: usize, character: u8) {
         let words = self.font_chars.entry(font).or_insert([0; 4]);
         words[character as usize / 64] |= 1_u64 << (character as usize % 64);
+    }
+
+    pub fn get_or_alloc_native_code(
+        &mut self,
+        font_id: usize,
+        glyph_id: u16,
+        text: &str,
+    ) -> (usize, u16) {
+        let bindings = self.native_bindings.entry(font_id).or_default();
+        for (index, binding) in bindings.iter().enumerate() {
+            if let Some(indices) = binding.code_map.get(&glyph_id) {
+                for &entry in indices {
+                    if binding.entries[entry].2 == text {
+                        return (index, binding.entries[entry].0);
+                    }
+                }
+            }
+        }
+        if bindings
+            .last()
+            .is_none_or(|binding| binding.next_code > u16::MAX as u32)
+        {
+            bindings.push(NativeBindingInfo {
+                code_map: std::collections::HashMap::new(),
+                entries: Vec::new(),
+                next_code: 1,
+            });
+        }
+        let binding_index = bindings.len() - 1;
+        let binding = &mut bindings[binding_index];
+        let code = binding.next_code as u16;
+        binding.next_code += 1;
+        binding
+            .code_map
+            .entry(glyph_id)
+            .or_default()
+            .push(binding.entries.len());
+        binding.entries.push((code, glyph_id, text.to_owned()));
+        (binding_index, code)
+    }
+    pub fn get_or_alloc_legacy_code(
+        &mut self,
+        font_id: usize,
+        base_char: u8,
+        text: &str,
+    ) -> (usize, u8) {
+        let bindings = self.legacy_bindings.entry(font_id).or_default();
+        for (index, binding) in bindings.iter().enumerate() {
+            if let Some(indices) = binding.code_map.get(&base_char) {
+                for &entry in indices {
+                    if binding.entries[entry].2 == text {
+                        return (index, binding.entries[entry].0);
+                    }
+                }
+            }
+        }
+        if bindings
+            .last()
+            .is_none_or(|binding| binding.next_code > u8::MAX as u16)
+        {
+            bindings.push(LegacyBindingInfo {
+                code_map: std::collections::HashMap::new(),
+                entries: Vec::new(),
+                next_code: 1,
+            });
+        }
+        let binding_index = bindings.len() - 1;
+        let binding = &mut bindings[binding_index];
+        let code = binding.next_code as u8;
+        binding.next_code += 1;
+        binding
+            .code_map
+            .entry(base_char)
+            .or_default()
+            .push(binding.entries.len());
+        binding.entries.push((code, base_char, text.to_owned()));
+        (binding_index, code)
     }
 }
 

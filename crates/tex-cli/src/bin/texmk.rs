@@ -31,7 +31,6 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, SystemTime};
 
 const MAX_PASSES: u32 = 5;
-const VERSION: &str = "texmk (Rust TeX engine) 1.0";
 const CACHE_MAX_BYTES: u64 = 512 * 1024 * 1024;
 const CACHE_MAX_AGE: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 const CACHE_GC_INTERVAL: Duration = Duration::from_secs(60 * 60);
@@ -85,61 +84,12 @@ struct Options {
     passthrough: Vec<String>,
 }
 
-/// Scan source file preamble to auto-detect whether document requires XeLaTeX / LuaLaTeX.
-fn detect_engine(src_path: &Path) -> &'static str {
-    let Ok(mut file) = std::fs::File::open(src_path) else {
-        return "pdflatex";
-    };
-    let mut preamble_end = PrefixMatcher::new(b"\\begin{document}");
-    let mut xetex = [
-        PrefixMatcher::new(b"fontsetup"),
-        PrefixMatcher::new(b"fontspec"),
-        PrefixMatcher::new(b"xeCJK"),
-        PrefixMatcher::new(b"unicode-math"),
-        PrefixMatcher::new(b"polyglossia"),
-        PrefixMatcher::new(b"ucharclasses"),
-        PrefixMatcher::new(b"xunicode"),
-        PrefixMatcher::new(b"xltxtra"),
-        PrefixMatcher::new(b"ctexart"),
-        PrefixMatcher::new(b"ctexrep"),
-        PrefixMatcher::new(b"ctexbook"),
-    ];
-    let mut luatex = [
-        PrefixMatcher::new(b"luacode"),
-        PrefixMatcher::new(b"luatex"),
-    ];
-    let mut needs_xetex = false;
-    let mut needs_luatex = false;
-    let mut buffer = [0u8; IO_BUFFER_BYTES];
-    loop {
-        let read = match file.read(&mut buffer) {
-            Ok(read) => read,
-            Err(_) => return "pdflatex",
-        };
-        if read == 0 {
-            break;
-        }
-        for &byte in &buffer[..read] {
-            if preamble_end.feed(byte) {
-                return if needs_xetex {
-                    "xelatex"
-                } else if needs_luatex {
-                    "lualatex"
-                } else {
-                    "pdflatex"
-                };
-            }
-            needs_xetex |= xetex.iter_mut().any(|matcher| matcher.feed(byte));
-            needs_luatex |= luatex.iter_mut().any(|matcher| matcher.feed(byte));
-        }
-    }
-    if needs_xetex {
-        "xelatex"
-    } else if needs_luatex {
-        "lualatex"
-    } else {
-        "pdflatex"
-    }
+/// Documents default to Ratex's native engine (pdflatex compatibility).
+/// Native fontspec and xeCJK are supported directly; unsupported Lua or
+/// OpenType MATH requests receive core diagnostics rather than claiming
+/// successful alternate engine execution.
+fn detect_engine(_src_path: &Path) -> &'static str {
+    "pdflatex"
 }
 
 fn usage() {
@@ -238,7 +188,14 @@ fn parse_args(argv: &[String]) -> Result<Options, String> {
                 std::process::exit(0);
             }
             "-v" | "-version" | "--version" => {
-                println!("{VERSION}");
+                let version = env!("CARGO_PKG_VERSION");
+                let invoked = invoked_name();
+                match invoked.as_str() {
+                    "ratex" => println!("ratex {version} (Rust TeX engine)"),
+                    "texmk" => println!("texmk 1.0 (Ratex {version}; Rust TeX engine)"),
+                    "latexmk" => println!("latexmk (Ratex {version}; Rust TeX engine)"),
+                    _ => println!("ratex {version} (Rust TeX engine)"),
+                }
                 std::process::exit(0);
             }
             other if other.starts_with('-') => passthrough.push(a.clone()),
@@ -1012,6 +969,47 @@ fn state_change_summary(
         names.push_str(&format!(", and {} more", changed.len() - SHOWN));
     }
     names
+}
+
+/// Inspects whether the auxiliary state produced on the first pass is already
+/// complete and stable, making a second pass redundant.
+///
+/// A document requires a second pass if:
+/// - Cross-references, citations, or labels are pending resolution (`sig.rerun`, `sig.undef_refs`, `sig.undef_cites`).
+/// - Bibliography generation is needed (`need_bibtex`, `sig.bbl_missing`).
+/// - Secondary auxiliary structures were written (.toc, .lof, .lot, .out, .nav, .snm, .vrb, .idx, etc.).
+/// - The .aux files contain non-inert commands like `\newlabel`, `\citation`, `\bibdata`, `\@writefile`.
+fn is_trivially_converged_first_pass(
+    aux_dir: &Path,
+    snap_after: &BTreeMap<PathBuf, (u64, u64)>,
+    sig: &Signals,
+    need_bibtex: bool,
+) -> bool {
+    if sig.rerun || sig.undef_refs || sig.undef_cites || sig.bbl_missing || need_bibtex {
+        return false;
+    }
+    for rel_path in snap_after.keys() {
+        if rel_path.extension().and_then(|ext| ext.to_str()) != Some("aux") {
+            return false;
+        }
+        let full_path = aux_dir.join(rel_path);
+        let Ok(content) = std::fs::read_to_string(&full_path) else {
+            return false;
+        };
+        for line in content.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() || trimmed.starts_with('%') || trimmed == "\\relax" {
+                continue;
+            }
+            if trimmed.starts_with("\\gdef \\@abspage@last{")
+                || trimmed.starts_with("\\gdef\\@abspage@last{")
+            {
+                continue;
+            }
+            return false;
+        }
+    }
+    true
 }
 
 fn artifact_snapshot(root: &Path) -> BTreeMap<PathBuf, (u64, u64, Option<SystemTime>)> {
@@ -2615,6 +2613,18 @@ fn real_main() -> i32 {
         .engine
         .as_deref()
         .unwrap_or_else(|| detect_engine(&source));
+    let engine_override = tool_override(&[target_engine, "pdflatex"]);
+    let using_embedded_engine = engine_override.is_none();
+    let executed_engine = if using_embedded_engine {
+        "Ratex"
+    } else {
+        target_engine
+    };
+    if using_embedded_engine && matches!(target_engine, "xelatex" | "lualatex") {
+        eprintln!(
+            "texmk: {target_engine} compatibility mode uses Ratex, not the XeTeX or LuaTeX runtime."
+        );
+    }
     let job = opt.jobname.clone().unwrap_or_else(|| {
         source
             .file_stem()
@@ -2909,8 +2919,6 @@ fn real_main() -> i32 {
         trusted_owned: &trusted_aux_owned,
         manifest_path: &manifest_path,
     };
-    let engine_override = tool_override(&[target_engine, "pdflatex"]);
-    let using_embedded_engine = engine_override.is_none();
     let engine = match engine_override
         .map(Ok)
         .unwrap_or_else(std::env::current_exe)
@@ -3177,7 +3185,10 @@ fn real_main() -> i32 {
         // This typeset did not change aux/toc/out: another pass cannot
         // resolve more labels. Sticky "Rerun to get" is not a reason to
         // typeset again.
-        if !files_changed {
+        let is_stable = !files_changed
+            || (passes == 1
+                && is_trivially_converged_first_pass(&aux_dir, &snap_after, &sig, need_bibtex));
+        if is_stable {
             if !opt.silent {
                 eprintln!("texmk: auxiliary state stable after pass {passes}");
             }
@@ -3194,7 +3205,7 @@ fn real_main() -> i32 {
 
     if !converged {
         eprintln!(
-            "texmk: build FAILED: no convergence after {MAX_PASSES} {target_engine} pass(es)"
+            "texmk: build FAILED: no convergence after {MAX_PASSES} {executed_engine} pass(es)"
         );
         if log_path.is_file() {
             eprintln!("texmk: transcript retained at {}", log_path.display());
@@ -3242,13 +3253,13 @@ fn real_main() -> i32 {
     };
     match pages {
         Some(n) => eprintln!(
-            "texmk: build OK: {} ({} page{}, {passes} {target_engine} pass(es){bib_note})",
+            "texmk: build OK: {} ({} page{}, {passes} {executed_engine} pass(es){bib_note})",
             pdf_path.display(),
             n,
             if n == 1 { "" } else { "s" }
         ),
         None if pdf_path.is_file() => eprintln!(
-            "texmk: build OK: {} (page count unknown, {passes} {target_engine} pass(es){bib_note})",
+            "texmk: build OK: {} (page count unknown, {passes} {executed_engine} pass(es){bib_note})",
             pdf_path.display()
         ),
         None => {
@@ -3311,6 +3322,13 @@ fn enable_embedded_resources_by_default() {
 fn run_embedded_bibtex() -> ! {
     enable_embedded_resources_by_default();
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args
+        .iter()
+        .any(|a| matches!(a.as_str(), "-v" | "-version" | "--version"))
+    {
+        println!("BibTeX 0.99d (Ratex {}; Rust)", env!("CARGO_PKG_VERSION"));
+        std::process::exit(0);
+    }
     std::process::exit(embedded_bibtex::run(&args, "1.0"));
 }
 
@@ -3340,11 +3358,12 @@ pub(crate) fn main() {
         std::process::exit(latexdiff::latexdiff_main(&args[2..]));
     }
     // Fast single-pass mode for short documents or direct compilation:
-    if args.len() > 1 && (args[1] == "-1" || args[1] == "--single-pass" || args[1] == "-c") {
-        let program = std::env::var("TEX_SUITE_PROGRAM_NAME").unwrap_or_else(|_| "pdflatex".to_string());
+    if args.len() > 1 && (args[1] == "-1" || args[1] == "--single-pass") {
+        let program =
+            std::env::var("TEX_SUITE_PROGRAM_NAME").unwrap_or_else(|_| "pdflatex".to_string());
         enable_embedded_resources_by_default();
         std::env::set_var("TEX_SUITE_PROGRAM_NAME", &program);
-        // Strip the -1/--single-pass/-c flag when invoking embedded pdflatex
+        // Strip the single-pass flag when invoking embedded pdflatex.
         let filtered_args: Vec<std::ffi::OsString> = std::env::args_os()
             .enumerate()
             .filter(|(idx, _)| *idx != 1)
@@ -3430,7 +3449,7 @@ mod io_safety_tests {
         let mut bytes = vec![b'x'; IO_BUFFER_BYTES - 4];
         bytes.extend_from_slice(b"fontspec\n\\begin{document}\n");
         std::fs::write(&source.0, bytes).unwrap();
-        assert_eq!(detect_engine(&source.0), "xelatex");
+        assert_eq!(detect_engine(&source.0), "pdflatex");
         std::fs::write(&source.0, b"\\begin{document}\nfontspec").unwrap();
         assert_eq!(detect_engine(&source.0), "pdflatex");
 

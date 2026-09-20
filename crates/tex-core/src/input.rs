@@ -171,7 +171,6 @@ impl MacroFrame {
     }
 }
 
-
 #[derive(Clone, Debug)]
 pub enum TokTokens {
     Rc(std::rc::Rc<[Token]>),

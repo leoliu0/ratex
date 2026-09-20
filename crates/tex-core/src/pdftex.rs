@@ -77,10 +77,10 @@ impl Engine {
     }
 
     /// End-of-job: embed every engine font referenced by a shipped page
-    /// (full PFB, no subsetting) and rewrite page font references from
-    /// engine font ids to document font indices.
-    pub fn embed_used_fonts(&mut self) {
-        self.pdf_doc.minor_version = Some(self.eqtb.int_params[crate::prim::IntParam::PdfMinorVersion.idx() as usize]);
+    /// and rewrite page/form font-binding references to document font indices.
+    pub fn embed_used_fonts(&mut self) -> Result<(), String> {
+        self.pdf_doc.minor_version =
+            Some(self.eqtb.int_params[crate::prim::IntParam::PdfMinorVersion.idx() as usize]);
         use std::collections::BTreeSet;
         let mut used: BTreeSet<u16> = BTreeSet::new();
         for fonts in self
@@ -94,86 +94,311 @@ impl Engine {
                 used.insert(*fid as u16);
             }
         }
-        let mut remap: Vec<(u16, usize)> = Vec::new();
-        for (n, fid) in used.iter().enumerate() {
-            let Some(font) = self.eqtb.fonts.get(*fid as usize).cloned() else {
+        let mut remap: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
+        for fid in used {
+            let Some(font) = self.eqtb.fonts.get(fid as usize).cloned() else {
                 continue;
             };
-            let pfb_path = font
-                .type1_path
-                .as_ref()
-                .and_then(|name| self.font_loader.kpse.find(name, tex_kpse::Format::Type1));
-            if let Some(name) = font.type1_path.as_deref() {
-                self.font_loader.record_lookup_dependency(
-                    name,
-                    tex_kpse::Format::Type1,
-                    pfb_path.as_deref(),
-                );
-            }
-            let pfb_bytes = match pfb_path {
-                Some(path) => match tex_kpse::fs::read(&path) {
-                    Ok(bytes) => {
-                        self.record_loaded_bytes(&path, &bytes);
-                        self.loaded_files.push(path);
-                        Some(bytes)
-                    }
-                    Err(_) => None,
-                },
-                None => font
-                    .type1_path
-                    .as_ref()
-                    .and_then(|name| self.font_loader.kpse.read(name, tex_kpse::Format::Type1)),
+            let prog = self.font_loader.program_for_font(&font)?;
+            let doc_font_idx = self.pdf_doc.fonts.len();
+
+            let at_size = font.at_size;
+            let to_units = |val: i32| -> f64 {
+                if at_size != 0 {
+                    (val as f64 * 1000.0 / at_size as f64).round()
+                } else {
+                    0.0
+                }
             };
-            let widths = (0..=255u8)
-                .map(|c| {
-                    let w = font.char_width(c);
-                    if font.at_size != 0 {
-                        ((w as i64 * 10_000 + font.at_size as i64 / 2) / font.at_size as i64) as i32
-                    } else {
-                        0
-                    }
-                })
-                .collect();
-            let mut ef = crate::pdffile::make_embed_font(
-                font.map_fontname
-                    .clone()
-                    .unwrap_or_else(|| font.tfm_name.clone()),
-                pfb_bytes.as_deref(),
-                font.encoding.as_deref(),
-                0,
-                255,
-                widths,
-            );
-            crate::pdffile::set_font_usage(
-                &mut ef,
-                self.pdf_doc
-                    .font_chars
-                    .get(&(*fid as usize))
-                    .copied()
-                    .unwrap_or([0; 4]),
-            );
-            // PFBs of the CM family lack Ascent/Descent/CapHeight/StemV;
-            // fall back to TFM-derived values where the cleartext had none.
             let (ta, td, tc, ts) = crate::pdf_fonts::tfm_descriptor(&font);
-            if ef.ascent == 0.0 {
-                ef.ascent = ta;
+            let asc = to_units(font.char_height(b'd'));
+            let cap = to_units(font.char_height(b'H'));
+            let desc = -to_units(font.char_depth(b'p'));
+            let ascent = if asc > 0.0 { asc } else { ta };
+            let cap_height = if cap > 0.0 { cap } else { tc };
+            let mut descent = if ascent == 0.0 {
+                0.0
+            } else if desc != 0.0 {
+                desc
+            } else {
+                td
+            };
+            if ascent - descent > 3000.0 {
+                descent = ascent - 3000.0;
             }
-            if ef.descent == 0.0 {
-                ef.descent = if ef.ascent == 0.0 { 0.0 } else { td };
-            } else if ef.ascent == 0.0 {
-                ef.descent = 0.0;
+            let stem_v = ts.max(100.0);
+
+            match prog.kind {
+                crate::font_program::FontProgramKind::Type1 => {
+                    let has_bindings = self.pdf_doc.legacy_bindings.contains_key(&(fid as usize));
+                    if has_bindings {
+                        let bindings = self
+                            .pdf_doc
+                            .legacy_bindings
+                            .get(&(fid as usize))
+                            .cloned()
+                            .unwrap();
+                        let pfb_bytes = prog.data.as_slice();
+                        let base_encoding = font.encoding.as_ref().cloned().or_else(|| {
+                            let type1 = crate::pdf_fonts::parse_type1(pfb_bytes);
+                            crate::pdf_fonts::builtin_encoding(&type1.data[..type1.length1])
+                        });
+                        for (b_idx, binding) in bindings.iter().enumerate() {
+                            let cur_idx = self.pdf_doc.fonts.len();
+                            let mut used_chars = [0u64; 4];
+                            let mut widths = vec![0i32; 256];
+                            let mut diffs = vec![String::new(); 256];
+                            let mut to_unicode = Vec::new();
+                            for &(code, base_char, ref text) in &binding.entries {
+                                used_chars[code as usize / 64] |= 1_u64 << (code as usize % 64);
+                                let w = font.char_width(base_char);
+                                if at_size != 0 {
+                                    widths[code as usize] =
+                                        ((w as i64 * 10_000 + at_size as i64 / 2) / at_size as i64)
+                                            as i32;
+                                }
+                                let glyph_name = base_encoding
+                                    .as_ref()
+                                    .and_then(|enc| enc.get(base_char as usize))
+                                    .filter(|name| !name.is_empty() && name.as_str() != ".notdef")
+                                    .cloned()
+                                    .ok_or_else(|| {
+                                        format!(
+                                        "Font `{}` has no encoded glyph for used slot {base_char}",
+                                        font.tfm_name
+                                    )
+                                    })?;
+                                diffs[code as usize] = glyph_name;
+                                to_unicode.push((code, text.clone()));
+                            }
+                            let mut ef = crate::pdffile::make_embed_font(
+                                font.map_fontname
+                                    .clone()
+                                    .unwrap_or_else(|| font.tfm_name.clone()),
+                                Some(pfb_bytes),
+                                Some(&diffs),
+                                0,
+                                255,
+                                widths,
+                            );
+                            ef.to_unicode = to_unicode;
+                            crate::pdffile::set_font_usage(&mut ef, used_chars);
+                            ef.ascent = ascent;
+                            ef.cap_height = cap_height;
+                            ef.descent = descent;
+                            ef.stem_v = stem_v;
+                            self.pdf_doc.fonts.push(ef);
+                            remap.insert(crate::pdfout::font_resource_key(fid, b_idx), cur_idx);
+                        }
+                    } else {
+                        let pfb_bytes = prog.data.as_slice();
+                        let widths = (0..=255u8)
+                            .map(|c| {
+                                let w = font.char_width(c);
+                                if at_size != 0 {
+                                    ((w as i64 * 10_000 + at_size as i64 / 2) / at_size as i64)
+                                        as i32
+                                } else {
+                                    0
+                                }
+                            })
+                            .collect();
+                        let mut ef = crate::pdffile::make_embed_font(
+                            font.map_fontname
+                                .clone()
+                                .unwrap_or_else(|| font.tfm_name.clone()),
+                            Some(pfb_bytes),
+                            font.encoding.as_deref(),
+                            0,
+                            255,
+                            widths,
+                        );
+                        crate::pdffile::set_font_usage(
+                            &mut ef,
+                            self.pdf_doc
+                                .font_chars
+                                .get(&(fid as usize))
+                                .copied()
+                                .unwrap_or([0; 4]),
+                        );
+                        ef.ascent = ascent;
+                        ef.cap_height = cap_height;
+                        ef.descent = descent;
+                        ef.stem_v = stem_v;
+                        self.pdf_doc.fonts.push(ef);
+                        remap.insert(fid as usize, doc_font_idx);
+                    }
+                }
+                crate::font_program::FontProgramKind::TrueType
+                | crate::font_program::FontProgramKind::Cff => {
+                    let base_font = font
+                        .map_fontname
+                        .clone()
+                        .unwrap_or_else(|| prog.postscript_name.clone());
+                    let is_native = self.pdf_doc.native_bindings.contains_key(&(fid as usize));
+                    if is_native {
+                        let bindings = self
+                            .pdf_doc
+                            .native_bindings
+                            .get(&(fid as usize))
+                            .ok_or_else(|| {
+                                format!("Native font `{base_font}` has no used glyph bindings")
+                            })?;
+                        for (b_idx, binding) in bindings.iter().enumerate() {
+                            let cur_idx = self.pdf_doc.fonts.len();
+                            let mut used_gids = std::collections::BTreeSet::new();
+                            let mut native_cids = Vec::new();
+                            let mut to_unicode_2byte = Vec::new();
+                            for &(code, gid, ref txt) in &binding.entries {
+                                used_gids.insert(gid);
+                                native_cids.push((code, gid, txt.clone()));
+                                if !txt.is_empty() {
+                                    to_unicode_2byte.push((code, txt.clone()));
+                                }
+                            }
+                            let ef = crate::pdfout::EmbedFont {
+                                obj_font: 0,
+                                base_font: base_font.clone(),
+                                font_file: prog.data.clone(),
+                                length1: prog.data.len(),
+                                length2: 0,
+                                length3: 0,
+                                is_truetype: prog.kind
+                                    == crate::font_program::FontProgramKind::TrueType,
+                                subtype: if prog.kind
+                                    == crate::font_program::FontProgramKind::TrueType
+                                {
+                                    crate::pdfout::EmbedFontSubtype::TrueType
+                                } else {
+                                    crate::pdfout::EmbedFontSubtype::Cff
+                                },
+                                face_index: prog.face_index,
+                                variations: prog.variations.clone(),
+                                allow_subsetting: prog.allow_subsetting,
+                                content_hash: prog.content_hash,
+                                units_per_em: prog.units_per_em,
+                                encoding_diff: None,
+                                first_char: 0,
+                                last_char: 255,
+                                widths: Vec::new(),
+                                font_matrix_scale: 1.0,
+                                font_bbox: [-500.0, -300.0, 1500.0, 1200.0],
+                                italic_angle: 0.0,
+                                ascent,
+                                descent,
+                                cap_height,
+                                stem_v,
+                                flags: 4,
+                                to_unicode: Vec::new(),
+                                used_chars: [0; 4],
+                                is_cid: true,
+                                is_native: true,
+                                legacy_cids: Vec::new(),
+                                native_cids,
+                                used_gids,
+                                to_unicode_2byte,
+                            };
+                            self.pdf_doc.fonts.push(ef);
+                            remap.insert(crate::pdfout::font_resource_key(fid, b_idx), cur_idx);
+                        }
+                    } else {
+                        // Legacy mapped SFNT font
+                        let recorded_chars = self
+                            .pdf_doc
+                            .font_chars
+                            .get(&(fid as usize))
+                            .copied()
+                            .unwrap_or([0; 4]);
+                        let face = prog.face()?;
+                        let bindings = self.pdf_doc.legacy_bindings.get(&(fid as usize));
+                        for b_idx in 0..bindings.map_or(1, Vec::len) {
+                            let mut used_chars = [0; 4];
+                            let mut legacy_cids = Vec::new();
+                            let mut used_gids = std::collections::BTreeSet::new();
+                            let mut to_unicode = Vec::new();
+                            let mut add_glyph = |code: u8,
+                                                 slot: u8,
+                                                 text: Option<&str>|
+                             -> Result<(), String> {
+                                let (gid, unicode) = crate::font_program::legacy_glyph(
+                                    &face,
+                                    font.encoding.as_deref(),
+                                    slot,
+                                )
+                                .map_err(|error| format!("Font `{}`: {error}", font.tfm_name))?;
+                                let unicode = text.map_or(unicode, str::to_owned);
+                                legacy_cids.push((code, gid, unicode.clone()));
+                                used_gids.insert(gid);
+                                to_unicode.push((code, unicode));
+                                used_chars[code as usize / 64] |= 1_u64 << (code as usize % 64);
+                                Ok(())
+                            };
+                            if let Some(bindings) = bindings {
+                                for (code, slot, text) in &bindings[b_idx].entries {
+                                    add_glyph(*code, *slot, Some(text))?;
+                                }
+                            } else {
+                                for slot in 0..=255u8 {
+                                    if recorded_chars[slot as usize / 64]
+                                        & (1_u64 << (slot as usize % 64))
+                                        != 0
+                                    {
+                                        add_glyph(slot, slot, None)?;
+                                    }
+                                }
+                            }
+
+                            let ef = crate::pdfout::EmbedFont {
+                                obj_font: 0,
+                                base_font: base_font.clone(),
+                                font_file: prog.data.clone(),
+                                length1: prog.data.len(),
+                                length2: 0,
+                                length3: 0,
+                                is_truetype: prog.kind
+                                    == crate::font_program::FontProgramKind::TrueType,
+                                subtype: if prog.kind
+                                    == crate::font_program::FontProgramKind::TrueType
+                                {
+                                    crate::pdfout::EmbedFontSubtype::TrueType
+                                } else {
+                                    crate::pdfout::EmbedFontSubtype::Cff
+                                },
+                                face_index: prog.face_index,
+                                variations: prog.variations.clone(),
+                                allow_subsetting: prog.allow_subsetting,
+                                content_hash: prog.content_hash,
+                                units_per_em: prog.units_per_em,
+                                encoding_diff: font.encoding.clone(),
+                                first_char: 0,
+                                last_char: 255,
+                                widths: Vec::new(),
+                                font_matrix_scale: 1.0,
+                                font_bbox: [-500.0, -300.0, 1500.0, 1200.0],
+                                italic_angle: 0.0,
+                                ascent,
+                                descent,
+                                cap_height,
+                                stem_v,
+                                flags: 4,
+                                to_unicode,
+                                used_chars,
+                                is_cid: true,
+                                is_native: false,
+                                legacy_cids,
+                                native_cids: Vec::new(),
+                                used_gids,
+                                to_unicode_2byte: Vec::new(),
+                            };
+                            self.pdf_doc.fonts.push(ef);
+                            remap.insert(
+                                crate::pdfout::font_resource_key(fid, b_idx),
+                                self.pdf_doc.fonts.len() - 1,
+                            );
+                        }
+                    }
+                }
             }
-            if ef.ascent - ef.descent > 3000.0 {
-                ef.descent = ef.ascent - 3000.0;
-            }
-            if ef.cap_height == 0.0 {
-                ef.cap_height = tc;
-            }
-            if ef.stem_v == 0.0 {
-                ef.stem_v = ts;
-            }
-            self.pdf_doc.fonts.push(ef);
-            remap.push((*fid, n));
         }
         for fonts in self
             .pdf_doc
@@ -183,10 +408,11 @@ impl Engine {
             .chain(self.pdf_doc.form_fonts.iter_mut().map(|(_, fonts)| fonts))
         {
             for pf in fonts.iter_mut() {
-                if let Some(pos) = remap.iter().find(|(fid, _)| *fid == pf.0 as u16) {
-                    pf.0 = pos.1;
+                if let Some(&new_idx) = remap.get(&pf.0) {
+                    pf.0 = new_idx;
                 }
             }
         }
+        Ok(())
     }
 }

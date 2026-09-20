@@ -10,6 +10,9 @@ crc32fast = "1.5"
 zstd = { workspace = true }
 rustybuzz = { workspace = true }
 ttf-parser = { workspace = true }
+subsetter = "0.2.6"
+unicode-linebreak = "0.1"
+unicode-segmentation = "1.12"
 smallvec = "1.16"
 lopdf = { version = "0.44.0", default-features = false }
 png = "0.18.1"

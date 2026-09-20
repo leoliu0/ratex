@@ -1,0 +1,40 @@
+\documentclass{article}
+\usepackage{fontspec}
+
+\setmainfont[Path=./]{shared.ttf}
+\newfontface\sharedalias[Path=./,Scale=1.2]{shared.ttf}
+
+\newbox\sharedformbox
+\setbox\sharedformbox=\hbox{{\sharedalias [Form: shared TrueType in Form XObject]}}
+\ifdefined\pdfxform
+  \pdfxform\sharedformbox
+  \edef\sharedformref{\the\pdflastxform}
+  \def\putsharedform{\pdfrefxform\sharedformref}
+\else
+  \def\putsharedform{\copy\sharedformbox}
+\fi
+
+\begin{document}
+{\Large\noindent Page 1\par}
+{\normalsize Ratex TrueType mapping test at normal size.}
+
+{\Large Large size header using shared font program.}
+
+{\Huge Huge headline.}
+
+\bigskip
+\putsharedform
+
+\clearpage
+
+{\Large\noindent Page 2\par}
+{\small Second page using small size with shared TrueType font.}
+
+{\sharedalias Scaled alias binding using identical shared outline program.}
+
+\bigskip
+Reused form on second page:
+
+\putsharedform
+
+\end{document}

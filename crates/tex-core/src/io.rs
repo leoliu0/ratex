@@ -2,11 +2,11 @@
 //! \message, \special, \show, \lowercase/\uppercase, \advance arithmetic.
 
 use crate::boxes::Node;
-use tex_kpse::fs::PathExt;
 use crate::engine::Engine;
 use crate::eqtb::Equiv;
 use crate::prim::Prim;
 use crate::token::{Token, CAT_LETTER};
+use tex_kpse::fs::PathExt;
 
 const MAX_TEX_INPUT_STREAM: i32 = 15;
 
@@ -105,13 +105,53 @@ fn read_line_bounded(
     Ok((read_any, overflow))
 }
 
-/// Small compatibility inputs used by the partial XeTeX/LuaTeX surface.
+/// Engine-owned package adapters and small bootstrap inputs.
 /// They are immutable virtual files: keeping them in `InputStack`'s byte
 /// cache avoids fixed names and repeated writes in the process temp folder.
 fn compatibility_input(name: &str) -> Option<&'static [u8]> {
     Some(match name {
         "language.dat" | "language.dat.lua" => b"english hyphen.tex\n",
-        "hyphen.cfg" => b"\\chardef\\l@nohyphenation=255\n\\chardef\\l@english=0\n\\chardef\\l@USenglish=0\n\\def\\languagename{english}\n\\relax\n",
+        "pdflatex.ini" => br"\input pdftexconfig.tex
+\pdfcompresslevel=3
+\input latex.ltx
+\endinput
+",
+        "hyphen.cfg" => br"\chardef\l@nohyphenation=255
+\chardef\l@english=0
+\chardef\l@USenglish=0
+\chardef\l@russian=1
+\count19=1
+% Initialize the standard paired eight-bit letter ranges at format creation,
+% never while loading a user's saved format.
+\begingroup
+\count@=128
+\loop
+  \@tempcnta=\count@ \advance\@tempcnta by32
+  \global\lccode\count@=\@tempcnta
+  \global\uccode\count@=\count@
+  \global\sfcode\count@=999
+  \global\lccode\@tempcnta=\@tempcnta
+  \global\uccode\@tempcnta=\count@
+  \advance\count@ by1
+\ifnum\count@<160 \repeat
+\count@=192
+\loop
+  \@tempcnta=\count@ \advance\@tempcnta by32
+  \global\lccode\count@=\@tempcnta
+  \global\uccode\count@=\count@
+  \global\sfcode\count@=999
+  \global\lccode\@tempcnta=\@tempcnta
+  \global\uccode\@tempcnta=\count@
+  \advance\count@ by1
+\ifnum\count@<224 \repeat
+\endgroup
+\language=0 \input hyphen.tex
+\language=1 \input ratex-hyph-ru.tex
+\language=0
+\def\languagename{english}
+\relax
+",
+        "ratex-hyph-ru.tex" => include_bytes!("../../tex-kpse/assets/legal/ratex-hyph-ru.t2a"),
         "graphics.cfg" => br"\ProvidesFile{graphics.cfg}[2026/01/01 v1.0 Ratex graphics configuration]
 \ExecuteOptions{pdftex}
 \AtEndOfPackage{
@@ -123,62 +163,15 @@ fn compatibility_input(name: &str) -> Option<&'static [u8]> {
 }
 \endinput
 ",
-        "fontspec.sty" => br"\ProvidesPackage{fontspec}[2026/01/01 v2.9 Rust compatibility stub]
-\def\@fontspec@gobbleopt[#1]{}
-\def\@fontspec@cmd{\@ifnextchar[{\@fontspec@opt}{\@fontspec@noopt}}
-\def\@fontspec@opt[#1]#2{\@ifnextchar[{\@fontspec@gobbleopt}{}}
-\def\@fontspec@noopt#1{\@ifnextchar[{\@fontspec@gobbleopt}{}}
-\let\setmainfont\@fontspec@cmd
-\let\setsansfont\@fontspec@cmd
-\let\setmonofont\@fontspec@cmd
-\def\newfontfamily#1{\@fontspec@cmd}
-\def\setfontfamily#1{\@fontspec@cmd}
-\def\newfontface#1{\@fontspec@cmd}
-\providecommand\addfontfeatures[2][]{}
-\providecommand\fontspec[2][]{}
-\providecommand\defaultfontfeatures[2][]{}
-\providecommand\emfontdeclare[1]{}
-\providecommand\strongfontdeclare[1]{}
-\@ifundefined{DeclareUnicodeCharacter}{}{%
-  \DeclareUnicodeCharacter{2212}{\ensuremath{-}}%
-  \DeclareUnicodeCharacter{2013}{--}%
-  \DeclareUnicodeCharacter{2014}{---}%
-  \DeclareUnicodeCharacter{2018}{`}%
-  \DeclareUnicodeCharacter{2019}{'}%
-  \DeclareUnicodeCharacter{201C}{``}%
-  \DeclareUnicodeCharacter{201D}{''}%
-  \DeclareUnicodeCharacter{2026}{\dots}%
-  \DeclareUnicodeCharacter{00D7}{\ensuremath{\times}}%
-  \DeclareUnicodeCharacter{2264}{\ensuremath{\le}}%
-  \DeclareUnicodeCharacter{2265}{\ensuremath{\ge}}%
-  \DeclareUnicodeCharacter{2260}{\ensuremath{\ne}}%
-  \DeclareUnicodeCharacter{2208}{\ensuremath{\in}}%
-  \DeclareUnicodeCharacter{2192}{\ensuremath{\to}}%
-  \DeclareUnicodeCharacter{221E}{\ensuremath{\infty}}%
-  \DeclareUnicodeCharacter{2202}{\ensuremath{\partial}}%
-  \DeclareUnicodeCharacter{00B7}{\ensuremath{\cdot}}%
-}
-\endinput
-",
-        "unicode-math.sty" => br"\ProvidesPackage{unicode-math}[2026/01/01 v0.9 Rust compatibility stub]
-\RequirePackage{amsmath,amssymb}
-\providecommand\setmathfont[2][]{}
-\providecommand\unimathsetup[1]{}
-\endinput
-",
-        "luacode.sty" => br"\ProvidesPackage{luacode}[2026/01/01 v1.0 Rust compatibility stub]
-\long\def\luaexec#1{}
-\def\luacode{\begingroup\catcode`\^^M=12 \luacode@scan}
-\def\luacode@scan#1\endluacode{\endgroup}
-\endinput
-",
-        "luatextra.sty" => br"\ProvidesPackage{luatextra}[2026/01/01 v1.0 Rust compatibility stub]
-\RequirePackage{fontspec}
-\endinput
-",
-        "luaotfload.sty" => br"\ProvidesPackage{luaotfload}[2026/01/01 v1.0 Rust compatibility stub]
-\endinput
-",
+        "fontspec.sty" => include_bytes!("../assets/ratex-fontspec.sty"),
+        "xeCJK.sty" => include_bytes!("../assets/ratex-xeCJK.sty"),
+        "tuenc.def" => include_bytes!("../assets/ratex-tuenc.def"),
+        "UTF8.chr" => include_bytes!("../assets/ratex-UTF8.chr"),
+        "unicode-math.sty" => br"\PackageError{unicode-math}{Ratex does not implement OpenType MATH}{Use classic LaTeX math fonts, or compile with a full XeTeX or LuaTeX engine.}\endinput",
+        "ctex.sty" | "ctexart.cls" | "ctexrep.cls" | "ctexbook.cls" =>
+            br"\PackageError{ctex}{ctex is not supported by Ratex}{Use supported CJKutf8 or xeCJK for Chinese typesetting, or compile with a genuine ctex engine.}\endinput",
+        "luacode.sty" | "luatextra.sty" | "luaotfload.sty" | "luatexja.sty" =>
+            br"\PackageError{ratex}{LuaTeX execution is not supported by Ratex}{The lualatex compatibility flag does not provide a Lua runtime. Use native fontspec and xeCJK for font selection, or compile with LuaTeX.}\endinput",
         _ => return None,
     })
 }
@@ -263,7 +256,8 @@ impl Engine {
             );
             return false;
         }
-        if let Some(bytes) = compatibility_input(name) {
+        let path = self.resolve_input_path(name);
+        if let Some(bytes) = path.is_none().then(|| compatibility_input(name)).flatten() {
             let key = format!("<compat:{name}>");
             let data = self
                 .input
@@ -282,13 +276,15 @@ impl Engine {
             self.input.push_file_from(key, data, included_from);
             return true;
         }
-        let path = self.resolve_input_path(name);
         match path {
             Some(p) => {
                 let key = p.to_string_lossy().into_owned();
                 let data = match self.input.read_file(&p) {
                     Ok(bytes) => {
-                        let is_pdftex_def = p.file_name().and_then(|f| f.to_str()).map_or(false, |s| s == "pdftex.def");
+                        let is_pdftex_def = p
+                            .file_name()
+                            .and_then(|f| f.to_str())
+                            .map_or(false, |s| s == "pdftex.def");
                         if is_pdftex_def {
                             let mut b = bytes.to_vec();
                             b.extend_from_slice(b"\n\\@namedef{Gin@rule@.svg}#1{{png}{.svg}{#1}}\n\\@namedef{Gin@rule@.SVG}#1{{png}{.SVG}{#1}}\n\\edef\\Gin@extensions{\\Gin@extensions,.svg,.SVG}\n");
@@ -467,6 +463,11 @@ impl Engine {
         if self.allow_missing_main_aux && name == format!("{}.aux", self.job_name) {
             return None;
         }
+        // Project/managed files above retain precedence. Engine adapters win
+        // over installed legacy shims and engine-specific upstream packages.
+        if compatibility_input(name).is_some() {
+            return None;
+        }
         let resolved = self
             .font_loader
             .kpse
@@ -485,7 +486,10 @@ impl Engine {
             self.loaded_files.push(absolute(path.clone()));
         }
         if crate::debug_flag("lookups") {
-            let explanation = self.font_loader.kpse.explain_lookup(name, tex_kpse::Format::Tex);
+            let explanation = self
+                .font_loader
+                .kpse
+                .explain_lookup(name, tex_kpse::Format::Tex);
             let msg = format!(
                 "[kpse:lookup] {} ({:?}) -> {:?} via {:?} (searched {} roots)\n",
                 explanation.name,
@@ -524,8 +528,8 @@ impl Engine {
             return;
         }
         let toks = self.scan_balanced_raw(true);
-        let mut words: Vec<String> = Vec::new();
-        let mut cur = String::new();
+        let mut words: Vec<Vec<u8>> = Vec::new();
+        let mut cur: Vec<u8> = Vec::new();
         for t in &toks {
             if !t.is_char() {
                 self.error(if is_patterns {
@@ -543,24 +547,30 @@ impl Engine {
             }
             let c = t.chr() as u8;
             if is_patterns && (c.is_ascii_digit() || c == b'.') {
-                cur.push(c as char);
+                cur.push(c);
             } else if c == b'-' && !is_patterns {
-                cur.push('-');
+                cur.push(b'-');
             } else {
                 let lc = self.eqtb.lc_code[c as usize];
                 if lc != 0 {
-                    cur.push(lc as char);
+                    cur.push(lc);
                 }
             }
         }
         if !cur.is_empty() {
             words.push(cur);
         }
+        let lang = self.eqtb.int_params[crate::prim::IntParam::Language.idx() as usize];
+        let cur_lang = if lang < 0 || lang > 255 {
+            0
+        } else {
+            lang as u8
+        };
         for w in words {
             if is_patterns {
-                self.hyphen_trie.add_pattern(&w);
+                self.trie_for_language_mut(cur_lang).add_pattern_bytes(&w);
             } else {
-                self.hyphen_trie.add_exception(&w);
+                self.trie_for_language_mut(cur_lang).add_exception_bytes(&w);
             }
         }
     }
@@ -816,7 +826,7 @@ impl Engine {
                     }
                 }
             } else {
-                out.push(t.chr() as u8);
+                t.append_character_bytes(&mut out);
             }
         }
         String::from_utf8_lossy(&out).into_owned()
@@ -934,13 +944,13 @@ impl Engine {
         // kpathsea/web2c lookup: output directory first for relative
         // names, then the kpse search path (covers literal paths too)
 
-        if let Some(data) = compatibility_input(&name) {
+        let path = self.resolve_input_path(&name);
+        if let Some(data) = path.is_none().then(|| compatibility_input(&name)).flatten() {
             let is_empty = data.is_empty();
             self.read_files[n as usize] = Some(Box::new(std::io::Cursor::new(data)));
             self.read_eof[n as usize] = is_empty;
             return;
         }
-        let path = self.resolve_input_path(&name);
         if let Some(p) = path {
             if let Ok(mut bytes) = tex_kpse::fs::read(&p) {
                 if name == "pdftex.def" {
@@ -1252,14 +1262,19 @@ impl Engine {
                             break;
                         }
                     }
-                    if name.len() == MAX_FILE_NAME_BYTES {
+                    let additional = if t2.is_unicode_char() {
+                        char::from_u32(t2.chr()).map_or(0, char::len_utf8)
+                    } else {
+                        1
+                    };
+                    if additional > MAX_FILE_NAME_BYTES.saturating_sub(name.len()) {
                         self.fatal_error_at(
                             "TeX capacity exceeded, sorry [file name exceeds 4096 bytes]",
                             origin.as_ref().map(crate::input::SourceMark::to_context),
                         );
                         return String::new();
                     }
-                    name.push(t2.chr() as u8);
+                    t2.append_character_bytes(&mut name);
                 } else if t2.is_cs() {
                     let additional = self.cs.name(t2.cs_id()).len();
                     if additional > MAX_FILE_NAME_BYTES.saturating_sub(name.len()) {
@@ -1297,14 +1312,19 @@ impl Engine {
                     break;
                 }
                 if t2.is_char() {
-                    if name.len() == MAX_FILE_NAME_BYTES {
+                    let additional = if t2.is_unicode_char() {
+                        char::from_u32(t2.chr()).map_or(0, char::len_utf8)
+                    } else {
+                        1
+                    };
+                    if additional > MAX_FILE_NAME_BYTES.saturating_sub(name.len()) {
                         self.fatal_error_at(
                             "TeX capacity exceeded, sorry [file name exceeds 4096 bytes]",
                             origin.as_ref().map(crate::input::SourceMark::to_context),
                         );
                         return String::new();
                     }
-                    name.push(t2.chr() as u8);
+                    t2.append_character_bytes(&mut name);
                 } else if t2.is_cs() {
                     let additional = self.cs.name(t2.cs_id()).len();
                     if additional > MAX_FILE_NAME_BYTES.saturating_sub(name.len()) {
@@ -1337,18 +1357,23 @@ impl Engine {
                 break;
             }
             if cur.is_char() {
-                let c = cur.chr() as u8;
-                if c == b' ' || c == b'\t' || c == b'\r' || c == b'\n' {
+                let c = cur.chr();
+                if matches!(c, 32 | 9 | 13 | 10) {
                     break;
                 }
-                if name.len() == MAX_FILE_NAME_BYTES {
+                let additional = if cur.is_unicode_char() {
+                    char::from_u32(c).map_or(0, char::len_utf8)
+                } else {
+                    1
+                };
+                if additional > MAX_FILE_NAME_BYTES.saturating_sub(name.len()) {
                     self.fatal_error_at(
                         "TeX capacity exceeded, sorry [file name exceeds 4096 bytes]",
                         origin.as_ref().map(crate::input::SourceMark::to_context),
                     );
                     return String::new();
                 }
-                name.push(c);
+                cur.append_character_bytes(&mut name);
             }
             cur = self.get_x_raw();
         }
@@ -1414,15 +1439,14 @@ impl Engine {
             if t.is_cs() {
                 continue;
             }
-            let c = t.chr() as u8;
-            let mapped = if up {
-                self.eqtb.uc_code[c as usize]
-            } else {
-                self.eqtb.lc_code[c as usize]
-            };
+            let mapped = self.eqtb.case_code(t.chr(), up);
             // lccode/uccode 0 = leave unchanged
             if mapped != 0 {
-                *t = Token::char(t.cc(), mapped as u32);
+                *t = if t.is_unicode_char() {
+                    Token::unicode_char(t.cc(), mapped)
+                } else {
+                    Token::char(t.cc(), mapped)
+                };
             }
         }
     }

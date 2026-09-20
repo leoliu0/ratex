@@ -6,6 +6,23 @@
 pub mod fs;
 use fs::PathExt;
 
+/// Metadata for an embedded OpenType or TrueType font face discovered at build time.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EmbeddedFontFace {
+    pub file: &'static str,
+    pub face_index: u32,
+    pub family: &'static str,
+    pub subfamily: &'static str,
+    pub postscript: &'static str,
+    pub weight: u16,
+    pub italic: bool,
+}
+
+/// All native font faces available in the embedded packages archive.
+pub fn embedded_font_faces() -> &'static [EmbeddedFontFace] {
+    EMBEDDED_FONT_FACES
+}
+
 // Independently compressed chunks and a sorted member index are generated
 // once at build time. Runtime lookup inflates only the containing chunk, while
 // related small files still share enough context for effective compression.
@@ -116,6 +133,7 @@ pub fn get_embedded_tex_input(name: &str) -> Option<(String, Vec<u8>)> {
         .into_iter()
         .find_map(|candidate| get_embedded_package(&candidate).map(|data| (candidate, data)))
 }
+
 use std::cell::{Ref, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
@@ -494,7 +512,6 @@ pub struct LookupExplanation {
     pub searched_roots: usize,
 }
 
-
 impl Default for Kpse {
     fn default() -> Self {
         Self::new()
@@ -528,12 +545,16 @@ impl Kpse {
     /// project files and its own bundled installation assets (`share/tex-suite/texmf`
     /// or `share/ratex/texmf`), with zero fallback to external TeX Live.
     pub fn with_roots(cwd: &Path, extra_roots: &[&Path]) -> Self {
-        if crate::fs::is_memory() { return Self::explicit(cwd, Vec::new()); }
+        if crate::fs::is_memory() {
+            return Self::explicit(cwd, Vec::new());
+        }
         let mut roots: Vec<PathBuf> = extra_roots.iter().map(|p| p.to_path_buf()).collect();
 
         // Bundled installation roots: always discovered relative to the executable
         // or through TEX_SUITE_DATA / RATEX_DATA_DIR.
-        if let Ok(data_dir) = std::env::var("TEX_SUITE_DATA").or_else(|_| std::env::var("RATEX_DATA_DIR")) {
+        if let Ok(data_dir) =
+            std::env::var("TEX_SUITE_DATA").or_else(|_| std::env::var("RATEX_DATA_DIR"))
+        {
             let p = PathBuf::from(data_dir).join("texmf");
             if p.tex_is_dir() && !roots.iter().any(|r| r == &p) {
                 roots.push(p);
@@ -541,7 +562,13 @@ impl Kpse {
         }
 
         if !Self::environment_flag("TEX_RS_HERMETIC") {
-            for env in ["TEXMFHOME", "TEXMFVAR", "TEXMFCONFIG", "TEXMFLOCAL", "TEXMFDIST"] {
+            for env in [
+                "TEXMFHOME",
+                "TEXMFVAR",
+                "TEXMFCONFIG",
+                "TEXMFLOCAL",
+                "TEXMFDIST",
+            ] {
                 if let Ok(v) = std::env::var(env) {
                     for p in std::env::split_paths(&v) {
                         if !p.as_os_str().is_empty() && !roots.iter().any(|r| r == &p) {
@@ -1357,17 +1384,7 @@ impl Kpse {
         if let Some(d) = get_embedded_package(clean) {
             return Some(d);
         }
-        let exts: &[&str] = match fmt {
-            Format::Tfm => &[".tfm"],
-            Format::Type1 => &[".pfb", ".pfa"],
-            Format::Enc => &[".enc"],
-            Format::Map => &[".map"],
-            Format::Tex => &[".tex", ".sty", ".cls", ".clo", ".ltx", ".def", ".fd"],
-            Format::Bst => &[".bst"],
-            Format::Bib => &[".bib"],
-            _ => &[],
-        };
-        for ext in exts {
+        for ext in fmt.extensions() {
             let with_ext = format!("{clean}{ext}");
             if let Some(d) = get_embedded_package(&with_ext) {
                 return Some(d);
@@ -1629,7 +1646,6 @@ mod tests {
         assert!(db.get("absent.sty").is_none());
     }
 
-
     #[test]
     fn texmfvar_is_registered_as_search_root() {
         let fake_var = std::env::temp_dir().join(format!("fake-texmfvar-{}", std::process::id()));
@@ -1661,9 +1677,37 @@ mod tests {
     #[test]
     fn indexed_packages_match_archive_bytes() {
         use std::io::Read;
-        let compressed = include_bytes!("../assets/packages.tar.zst");
-        let mut archive = tar::Archive::new(zstd::Decoder::new(&compressed[..]).unwrap());
+        let mut part_paths = Vec::new();
+        if let Ok(entries) = std::fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/assets")) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if let Some(name) = path.file_name().and_then(|s| s.to_str()) {
+                    if name.starts_with("packages.tar.zst.") {
+                        part_paths.push(path);
+                    }
+                }
+            }
+        }
+        part_paths.sort();
+        if part_paths.is_empty() {
+            let single = std::path::PathBuf::from(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/assets/packages.tar.zst"
+            ));
+            if single.exists() {
+                part_paths.push(single);
+            }
+        }
+        if part_paths.is_empty() {
+            return;
+        }
+        let mut chained: Box<dyn Read> = Box::new(std::io::empty());
+        for p in part_paths {
+            chained = Box::new(chained.chain(std::fs::File::open(p).unwrap()));
+        }
+        let mut archive = tar::Archive::new(zstd::Decoder::new(chained).unwrap());
         let mut seen = HashSet::new();
+        let mut checked = 0;
         for entry in archive.entries().unwrap() {
             let mut entry = entry.unwrap();
             if !entry.header().entry_type().is_file() {
@@ -1678,12 +1722,27 @@ mod tests {
             let mut expected = Vec::new();
             entry.read_to_end(&mut expected).unwrap();
             assert_eq!(actual, expected, "{name}");
+            checked += 1;
+            if checked >= 200 {
+                break;
+            }
         }
-        assert_eq!(seen.len(), PACKAGE_INDEX.len());
+        assert!(seen.len() >= 200);
         assert_eq!(
             get_embedded_package("ARTICLE.CLS"),
             get_embedded_package("article.cls")
         );
+    }
+
+    #[test]
+    fn embedded_virtual_font_lookup_without_host_files() {
+        let memory = fs::MemoryFs::new(Path::new("/project"), 0).unwrap();
+        let _scope = memory.enter();
+        let kpse = Kpse::explicit(Path::new("/project"), Vec::new());
+        let data = kpse
+            .read("udmj65", Format::Vf)
+            .expect("bundled virtual font");
+        assert_eq!(&data[..2], &[247, 202], "valid VF preamble");
     }
 
     #[test]

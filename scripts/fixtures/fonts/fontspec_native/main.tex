@@ -1,0 +1,31 @@
+\documentclass{article}
+\usepackage{fontspec}
+
+\setmainfont{Latin Modern Roman}
+\setsansfont{Latin Modern Sans}
+\setmonofont{Latin Modern Mono}
+
+\begin{document}
+
+\section{\sffamily Native Fontspec Selection Test}
+
+This paragraph is set in Latin Modern Roman.
+Testing styles: \textbf{Bold Roman}, \textit{Italic Roman}, and \textbf{\textit{Bold Italic Roman}}.
+
+Ligatures test: \verb|fi fl ffi ffl| produce fi fl ffi ffl.
+Punctuation test: ``quotes'', en--dash, em---dash.
+
+\bigskip
+{\sffamily
+This paragraph is set in Latin Modern Sans.
+\textbf{Bold Sans Serif}, \textit{Italic Sans Serif}.
+Notice the distinctly different stroke geometry from Roman.
+}
+
+\bigskip
+{\ttfamily
+This paragraph is set in Latin Modern Mono (Monospace typewriter).
+printf("Code output: x = %d\textbackslash n", 42);
+}
+
+\end{document}

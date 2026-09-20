@@ -113,8 +113,10 @@ Both interfaces expose PDF bytes, accumulated logs, rendered diagnostics,
 generated files, TeX pass count, and BibTeX run count. The default clock is the
 host clock; set UTC Unix seconds for reproducible dates. Shell tools, Biber,
 interactive terminal input, and operating-system file access are unavailable
-through the library API. This is the existing pdfLaTeX-compatible engine, with
-its existing TeX compatibility limits.
+through the library API. Native `fontspec`/`xeCJK` selection uses the same
+bundled faces and shaping path as the CLI. Supply custom font files with
+`add_file` and select them by project-relative `Path`; a separate session
+cannot access those files. See the [font capabilities and engine limits](../README.md#fonts-and-unicode-in-the-source-build).
 
 ## Verification
 
@@ -126,7 +128,8 @@ node scripts/test-wasm.cjs
 node scripts/test-wasm-web.mjs
 ```
 
-The Rust integration suite covers nested inputs, cross-references, bibliography
-generation, images/fonts, errors, nonconvergence, and isolation. The Wasm test
-executes real document builds and compares the basic PDF with the native C
-example when `target/libtex/hello.pdf` exists.
+The Rust integration suite covers nested inputs, cross-references, bibliography,
+images, native font selection, errors, nonconvergence, and session isolation.
+The C, Node.js Wasm, and web-target Wasm smoke programs compile real native-font
+documents. The Node.js and web-target checks compare PDF bytes with the native
+C output when `target/libtex/hello.pdf` exists.

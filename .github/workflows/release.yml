@@ -24,6 +24,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
       - uses: Swatinem/rust-cache@v2
       - name: Install Wasm build tools
         run: |
@@ -44,8 +47,8 @@ jobs:
         run: |
           version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
           mkdir -p dist
-          tar -C target/libtex -czf "dist/libtex-v${version}-linux-x86_64.tar.gz" include libtex.so libtex.a
-          tar -C target/wasm -czf "dist/libtex-v${version}-wasm.tar.gz" web nodejs
+          tar -C target/libtex -czf "dist/libtex-v${version}-linux-x86_64.tar.gz" include libtex.so libtex.a fonts
+          tar -C target/wasm -czf "dist/libtex-v${version}-wasm.tar.gz" web nodejs fonts
           cd dist
           sha256sum libtex-* > SHA256SUMS-libraries.txt
       - uses: actions/upload-artifact@v4
@@ -85,8 +88,49 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install pdf.js test dependencies
+        run: npm ci --prefix scripts
+
+      - name: Install system test dependencies (linux)
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends poppler-utils bubblewrap texlive-latex-base texlive-latex-extra texlive-xetex texlive-fonts-recommended texlive-fonts-extra cm-super texlive-lang-cjk texlive-lang-chinese texlive-lang-cyrillic texlive-lang-greek fonts-ipaexfont
+          if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+
+      - name: Install system test dependencies (macos)
+        if: matrix.platform == 'macos'
+        run: brew install poppler
+
+      - name: Install system test dependencies (windows)
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          choco install poppler --no-progress
+          "C:\ProgramData\chocolatey\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Install Python test dependencies (unix)
+        if: matrix.platform != 'windows'
+        run: python3 -m pip install --upgrade fonttools pillow numpy pypdf
+
+      - name: Install Python test dependencies (windows)
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: python -m pip install --upgrade fonttools pillow numpy pypdf
 
       - name: Cache cargo
         uses: actions/cache@v4
@@ -101,14 +145,21 @@ jobs:
       - name: Build release binaries
         run: cargo build --release --workspace
 
-      - name: Check all targets and regression tests
+      - name: Run workspace tests
+        run: cargo test --workspace --locked
+
+      - name: Run packaging tests (linux only)
+        if: matrix.platform == 'linux'
+        run: python3 scripts/test_package_dist.py
+
+      - name: Linux full independent-viewer font verification gate
+        if: matrix.platform == 'linux'
         run: |
-          cargo check --workspace --all-targets --locked
-          cargo test -p tex-kpse --lib --locked
-          cargo test -p tex-core --test review_regressions --locked
-          cargo test -p tex-core --test boot_debug test_load_default_fmt_blob --locked
-          cargo test -p tex-cli --test driver --locked
-          cargo test -p tex-cli --test cache --locked
+          python3 scripts/test_fonts.py \
+            --ratex target/release/ratex \
+            --output /tmp/font-evidence-full \
+            --require-isolation \
+            --require-pdfjs
 
       - name: Package distribution (unix)
         if: matrix.platform != 'windows'
@@ -122,6 +173,7 @@ jobs:
         if: matrix.platform == 'linux'
         shell: bash
         run: python3 scripts/build_linux_packages.py --output-dir dist
+
       - name: Build macOS native installer (.pkg)
         if: matrix.platform == 'macos'
         shell: bash
@@ -130,18 +182,92 @@ jobs:
           tar -xzf dist/tex-suite-*.tar.gz -C /tmp/pkg-stage
           VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
           ./packaging/macos/build-pkg.sh /tmp/pkg-stage/tex-suite-* "${{ matrix.arch }}" "$VERSION" dist
+          rm -rf /tmp/pkg-stage
 
       - name: Package distribution (windows)
         if: matrix.platform == 'windows'
         run: python scripts/package_dist.py --platform windows --arch x86_64
         shell: pwsh
+
       - name: Build Windows native installer (.exe)
         if: matrix.platform == 'windows'
         shell: pwsh
         run: |
           Expand-Archive -Path (Get-Item dist/tex-suite-*.zip).FullName -DestinationPath dist
           iscc packaging/windows/ratex.iss
+          Remove-Item -Recurse -Force dist/tex-suite-windows-* -ErrorAction SilentlyContinue
 
+      - name: Test extracted archive distribution (unix)
+        if: matrix.platform != 'windows'
+        shell: bash
+        run: |
+          mkdir -p /tmp/ci-archive-test
+          tar -xzf dist/tex-suite-*.tar.gz -C /tmp/ci-archive-test
+          EXTRACTED_RATEX=$(ls -d /tmp/ci-archive-test/tex-suite-*/bin/ratex | head -n1)
+          "$EXTRACTED_RATEX" --version
+          python3 scripts/test_fonts.py \
+            --ratex "$EXTRACTED_RATEX" \
+            --output /tmp/font-smoke-archive \
+            --skip-reference \
+            --case t1_latin_modern \
+            --case t1_cm_super \
+            --case t2a_russian \
+            --case lgr_greek \
+            --case cjkutf8_japanese \
+            --case cjkutf8_chinese \
+            --case cjkutf8_korean \
+            --case issue_3_mapped_truetype \
+            --case issue_4_cjkutf8_ja \
+            --case issue_5_stmaryrd \
+            --case issue_6_bbding \
+            --case issue_8_latin_modern \
+            --case fontspec_native \
+            --case xecjk_native \
+            --case opentype_cff \
+            --case truetype_collection \
+            --case unicode_supplementary \
+            --case shaping_features \
+            --case font_styles_restoration \
+            --case boxes_forms \
+            --case unioned_subsets
+          rm -rf /tmp/ci-archive-test /tmp/font-smoke-archive
+
+      - name: Test extracted archive distribution (windows)
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          $archiveZip = (Get-Item dist/tex-suite-*.zip).FullName
+          $testDir = "$env:RUNNER_TEMP\ci-archive-test"
+          Expand-Archive -Path $archiveZip -DestinationPath $testDir
+          $extractedRatex = (Get-Item "$testDir\tex-suite-*\bin\ratex.exe").FullName
+          & $extractedRatex --version
+          python scripts/test_fonts.py `
+            --ratex $extractedRatex `
+            --output "$env:RUNNER_TEMP\font-smoke-archive" `
+            --skip-reference `
+            --case t1_latin_modern `
+            --case t1_cm_super `
+            --case t2a_russian `
+            --case lgr_greek `
+            --case cjkutf8_japanese `
+            --case cjkutf8_chinese `
+            --case cjkutf8_korean `
+            --case issue_3_mapped_truetype `
+            --case issue_4_cjkutf8_ja `
+            --case issue_5_stmaryrd `
+            --case issue_6_bbding `
+            --case issue_8_latin_modern `
+            --case fontspec_native `
+            --case xecjk_native `
+            --case opentype_cff `
+            --case truetype_collection `
+            --case unicode_supplementary `
+            --case shaping_features `
+            --case font_styles_restoration `
+            --case boxes_forms `
+            --case unioned_subsets
+          Remove-Item -Recurse -Force $testDir -ErrorAction SilentlyContinue
+          Remove-Item -Recurse -Force "$env:RUNNER_TEMP\font-smoke-archive" -ErrorAction SilentlyContinue
 
       - name: Test shell installer end-to-end (unix)
         if: matrix.platform != 'windows'
@@ -150,8 +276,33 @@ jobs:
           mkdir -p /tmp/ci-install-test
           ./install.sh --prefix /tmp/ci-install-test --no-path --skip-verify
           /tmp/ci-install-test/bin/ratex --version
+          python3 scripts/test_fonts.py \
+            --ratex /tmp/ci-install-test/bin/ratex \
+            --output /tmp/font-smoke-installed \
+            --skip-reference \
+            --case t1_latin_modern \
+            --case t1_cm_super \
+            --case t2a_russian \
+            --case lgr_greek \
+            --case cjkutf8_japanese \
+            --case cjkutf8_chinese \
+            --case cjkutf8_korean \
+            --case issue_3_mapped_truetype \
+            --case issue_4_cjkutf8_ja \
+            --case issue_5_stmaryrd \
+            --case issue_6_bbding \
+            --case issue_8_latin_modern \
+            --case fontspec_native \
+            --case xecjk_native \
+            --case opentype_cff \
+            --case truetype_collection \
+            --case unicode_supplementary \
+            --case shaping_features \
+            --case font_styles_restoration \
+            --case boxes_forms \
+            --case unioned_subsets
           ./install.sh --prefix /tmp/ci-install-test --uninstall
-          rm -rf /tmp/ci-install-test
+          rm -rf /tmp/ci-install-test /tmp/font-smoke-installed
 
       - name: Test macOS native installer (.pkg)
         if: matrix.platform == 'macos'
@@ -162,6 +313,32 @@ jobs:
           sudo installer -pkg "$PKG_FILE" -target /
           echo "==> Verifying installed ratex binary..."
           /usr/local/bin/ratex --version
+          python3 scripts/test_fonts.py \
+            --ratex /usr/local/bin/ratex \
+            --output /tmp/font-smoke-pkg \
+            --skip-reference \
+            --case t1_latin_modern \
+            --case t1_cm_super \
+            --case t2a_russian \
+            --case lgr_greek \
+            --case cjkutf8_japanese \
+            --case cjkutf8_chinese \
+            --case cjkutf8_korean \
+            --case issue_3_mapped_truetype \
+            --case issue_4_cjkutf8_ja \
+            --case issue_5_stmaryrd \
+            --case issue_6_bbding \
+            --case issue_8_latin_modern \
+            --case fontspec_native \
+            --case xecjk_native \
+            --case opentype_cff \
+            --case truetype_collection \
+            --case unicode_supplementary \
+            --case shaping_features \
+            --case font_styles_restoration \
+            --case boxes_forms \
+            --case unioned_subsets
+          rm -rf /tmp/font-smoke-pkg
           echo "==> Cleaning up installed files..."
           sudo rm -f /usr/local/bin/ratex /usr/local/bin/texmk /usr/local/bin/pdflatex /usr/local/bin/xelatex /usr/local/bin/lualatex /usr/local/bin/bibtex
           sudo rm -rf /usr/local/share/tex-suite
@@ -176,25 +353,78 @@ jobs:
           sudo dpkg -i "$DEB_FILE"
           echo "==> Verifying installed ratex binary..."
           /usr/bin/ratex --version
-          echo "==> Purging deb package..."
+          python3 scripts/test_fonts.py \
+            --ratex /usr/bin/ratex \
+            --output /tmp/font-smoke-deb \
+            --skip-reference \
+            --case t1_latin_modern \
+            --case t1_cm_super \
+            --case t2a_russian \
+            --case lgr_greek \
+            --case cjkutf8_japanese \
+            --case cjkutf8_chinese \
+            --case cjkutf8_korean \
+            --case issue_3_mapped_truetype \
+            --case issue_4_cjkutf8_ja \
+            --case issue_5_stmaryrd \
+            --case issue_6_bbding \
+            --case issue_8_latin_modern \
+            --case fontspec_native \
+            --case xecjk_native \
+            --case opentype_cff \
+            --case truetype_collection \
+            --case unicode_supplementary \
+            --case shaping_features \
+            --case font_styles_restoration \
+            --case boxes_forms \
+            --case unioned_subsets
+          rm -rf /tmp/font-smoke-deb
           sudo dpkg --purge ratex
 
       - name: Test PowerShell installer script (windows)
         if: matrix.platform == 'windows'
         shell: pwsh
         run: |
-          $testPrefix = "$PWD\dist\ci-script-test"
+          $testPrefix = "$env:RUNNER_TEMP\ci-script-test"
           powershell -ExecutionPolicy Bypass -File packaging/install-windows.ps1 -Prefix "$testPrefix" -NoPath -SkipVerify
+          if ($LASTEXITCODE -ne 0) { throw "PowerShell installation failed" }
           & "$testPrefix\bin\ratex.exe" --version
+          python scripts/test_fonts.py `
+            --ratex "$testPrefix\bin\ratex.exe" `
+            --output "$env:RUNNER_TEMP\font-smoke-script" `
+            --skip-reference `
+            --case t1_latin_modern `
+            --case t1_cm_super `
+            --case t2a_russian `
+            --case lgr_greek `
+            --case cjkutf8_japanese `
+            --case cjkutf8_chinese `
+            --case cjkutf8_korean `
+            --case issue_3_mapped_truetype `
+            --case issue_4_cjkutf8_ja `
+            --case issue_5_stmaryrd `
+            --case issue_6_bbding `
+            --case issue_8_latin_modern `
+            --case fontspec_native `
+            --case xecjk_native `
+            --case opentype_cff `
+            --case truetype_collection `
+            --case unicode_supplementary `
+            --case shaping_features `
+            --case font_styles_restoration `
+            --case boxes_forms `
+            --case unioned_subsets
+          if ($LASTEXITCODE -ne 0) { throw "Installed font verification failed" }
           powershell -ExecutionPolicy Bypass -File packaging/install-windows.ps1 -Prefix "$testPrefix" -Uninstall
+          if ($LASTEXITCODE -ne 0) { throw "PowerShell uninstall failed" }
           Remove-Item -Recurse -Force "$testPrefix" -ErrorAction SilentlyContinue
-
+          Remove-Item -Recurse -Force "$env:RUNNER_TEMP\font-smoke-script" -ErrorAction SilentlyContinue
       - name: Test Windows native installer (.exe)
         if: matrix.platform == 'windows'
         shell: pwsh
         run: |
           $installer = (Get-Item dist/ratex-setup-*-windows-x64.exe).FullName
-          $testPrefix = "$PWD\dist\ci-exe-test"
+          $testPrefix = "$env:RUNNER_TEMP\ci-exe-test"
           Write-Host "==> Installing via native Inno Setup installer..."
           Start-Process -FilePath $installer -ArgumentList "/VERYSILENT", "/NORESTART", "/SUPPRESSMSGBOXES", "/DIR=$testPrefix" -Wait -NoNewWindow
           if (-not (Test-Path "$testPrefix\bin\ratex.exe")) {
@@ -202,17 +432,43 @@ jobs:
           }
           Write-Host "==> Verifying installed ratex.exe..."
           & "$testPrefix\bin\ratex.exe" --version
+          python scripts/test_fonts.py `
+            --ratex "$testPrefix\bin\ratex.exe" `
+            --output "$env:RUNNER_TEMP\font-smoke-exe" `
+            --skip-reference `
+            --case t1_latin_modern `
+            --case t1_cm_super `
+            --case t2a_russian `
+            --case lgr_greek `
+            --case cjkutf8_japanese `
+            --case cjkutf8_chinese `
+            --case cjkutf8_korean `
+            --case issue_3_mapped_truetype `
+            --case issue_4_cjkutf8_ja `
+            --case issue_5_stmaryrd `
+            --case issue_6_bbding `
+            --case issue_8_latin_modern `
+            --case fontspec_native `
+            --case xecjk_native `
+            --case opentype_cff `
+            --case truetype_collection `
+            --case unicode_supplementary `
+            --case shaping_features `
+            --case font_styles_restoration `
+            --case boxes_forms `
+            --case unioned_subsets
           Write-Host "==> Testing uninstaller..."
           $uninstaller = (Get-Item "$testPrefix\unins000.exe").FullName
           Start-Process -FilePath $uninstaller -ArgumentList "/VERYSILENT", "/NORESTART", "/SUPPRESSMSGBOXES" -Wait -NoNewWindow
           Start-Sleep -Seconds 2
           Remove-Item -Recurse -Force "$testPrefix" -ErrorAction SilentlyContinue
+          Remove-Item -Recurse -Force "$env:RUNNER_TEMP\font-smoke-exe" -ErrorAction SilentlyContinue
       - name: Record checksums
         id: sums
         shell: bash
         run: |
           cd dist
-          sha256sum * > SHA256SUMS-${{ matrix.label }}.txt 2>/dev/null || true
+          sha256sum * > SHA256SUMS-${{ matrix.label }}.txt
           cat SHA256SUMS-${{ matrix.label }}.txt
 
       - name: Upload artifacts

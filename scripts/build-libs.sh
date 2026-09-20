@@ -29,6 +29,7 @@ if [[ "$mode" == native || "$mode" == all ]]; then
             cp "$target_dir/ffi-release/$name" "$target_dir/libtex/$name"
         fi
     done
+    python3 -c 'import sys; sys.path.insert(0, "."); from pathlib import Path; from scripts.package_dist import stage_font_redistribution; stage_font_redistribution(Path(sys.argv[1]))' "$target_dir/libtex/fonts"
     echo "Native libraries: $target_dir/libtex/"
 fi
 
@@ -38,5 +39,6 @@ if [[ "$mode" == wasm || "$mode" == all ]]; then
         "$bindgen" "$target_dir/wasm32-unknown-unknown/release/tex_wasm.wasm" \
             --target "$target" --out-dir "$target_dir/wasm/$target" --out-name tex
     done
+    python3 -c 'import sys; sys.path.insert(0, "."); from pathlib import Path; from scripts.package_dist import stage_font_redistribution; stage_font_redistribution(Path(sys.argv[1]))' "$target_dir/wasm/fonts"
     echo "Browser and Node.js modules: $target_dir/wasm/"
 fi

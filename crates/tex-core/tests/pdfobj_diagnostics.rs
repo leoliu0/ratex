@@ -80,7 +80,7 @@ fn useobjnum_rejects_invalid_unreserved_and_duplicate_numbers_without_emitting_o
     assert!(!objects.contains("InvalidUnreserved"), "{objects}");
     assert!(!objects.contains("InvalidDuplicate"), "{objects}");
 
-    let pdf = tex_core::pdffile::write_pdf(&engine.pdf_doc);
+    let pdf = tex_core::pdffile::write_pdf(&engine.pdf_doc).expect("valid embedded fonts");
     lopdf::Document::load_mem(&pdf).expect("invalid useobjnum input must not corrupt the PDF");
 }
 
@@ -113,10 +113,9 @@ fn pdfximagebbox_queries_bounding_box_coordinates_correctly() {
     engine.init_primitives();
     engine.add_nullfont();
     engine.set_interaction_mode(InteractionMode::Nonstop);
-    engine.input.push_file(
-        "test-bbox.tex".to_string(),
-        lines.join("\n").into_bytes(),
-    );
+    engine
+        .input
+        .push_file("test-bbox.tex".to_string(), lines.join("\n").into_bytes());
     engine.run();
     assert_eq!(engine.error_count, 0, "{}", engine.diagnostic_output);
     assert_eq!(engine.eqtb.dimen[0], 0);

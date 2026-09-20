@@ -19,6 +19,7 @@ impl Engine {
     // ---------- characters & spaces ----------
 
     pub fn hspace_token(&mut self) {
+        self.flush_native_text();
         let f = self.eqtb.cur_font_val;
         if f != 0 && matches!(self.mode, Mode::Horizontal | Mode::RestrictedHorizontal) {
             if self.mode == Mode::Horizontal {
@@ -85,6 +86,14 @@ impl Engine {
     /// WITHOUT space-factor scaling of stretch/shrink and without
     /// \fontdimen7 extra space. \spacefactor is left unchanged.
     pub fn ex_space(&mut self) {
+        self.flush_native_text();
+        let f = self.eqtb.cur_font_val;
+        if f != 0 && matches!(self.mode, Mode::Horizontal | Mode::RestrictedHorizontal) {
+            if self.mode == Mode::Horizontal {
+                self.flush_hyphen_disc(f);
+            }
+            self.flush_right_boundary_kern(f);
+        }
         match self.mode {
             Mode::Horizontal | Mode::RestrictedHorizontal => {
                 let ss = self.eqtb.glue_params[GlueParam::SpaceSkip.idx() as usize].clone();
@@ -129,11 +138,12 @@ impl Engine {
     pub fn char_token(&mut self, c: u8, is_letter: bool) {
         match self.mode {
             Mode::Horizontal | Mode::RestrictedHorizontal => {
-                self.append_char(c);
+                if !self.append_native_char(c as u32) {
+                    self.append_char(c);
+                }
                 self.space_factor = self.space_factor_of(c);
             }
             Mode::Vertical | Mode::InternalVertical => {
-                // tex.web §1091: back_input the letter, new_graf(true).
                 // LaTeX \\everypar (\\g__para_standard_everypar_tl) runs
                 // \\tex_par:D to cancel that dummy paragraph; the letter
                 // must not already be on the list or it becomes its own para.
@@ -143,7 +153,6 @@ impl Engine {
                 self.start_paragraph(true);
             }
             Mode::Math | Mode::DisplayMath => {
-
                 let mc = self.eqtb.math_code[c as usize];
                 if mc & 0x8000 != 0 {
                     self.active_char(c);
@@ -280,6 +289,7 @@ impl Engine {
     }
 
     pub fn append_h_glue(&mut self, g: Glue, leader: bool) {
+        self.flush_native_text();
         let _ = leader;
         match self.mode {
             Mode::Horizontal | Mode::RestrictedHorizontal => {
@@ -311,6 +321,7 @@ impl Engine {
     }
 
     pub fn append_h_kern(&mut self, d: i32) {
+        self.flush_native_text();
         match self.mode {
             Mode::Horizontal | Mode::RestrictedHorizontal => {
                 self.cur_list.push(Node::Kern(d));
@@ -329,6 +340,7 @@ impl Engine {
     }
 
     pub fn append_h_penalty(&mut self, n: i32) {
+        self.flush_native_text();
         match self.mode {
             Mode::Horizontal | Mode::RestrictedHorizontal => {
                 self.cur_list.push(Node::Penalty(n));
@@ -388,10 +400,7 @@ impl Engine {
             // next box contributes.
             let trigger = matches!(
                 n,
-                Node::Box { .. }
-                    | Node::Rule { .. }
-                    | Node::Ins { .. }
-                    | Node::Penalty(_)
+                Node::Box { .. } | Node::Rule { .. } | Node::Ins { .. } | Node::Penalty(_)
             );
             match &n {
                 Node::Box { h, d, .. } => {
@@ -441,13 +450,13 @@ impl Engine {
     }
 
     pub fn append_whatsit(&mut self, n: Node) {
+        self.flush_native_text();
         match self.mode {
             Mode::Vertical | Mode::InternalVertical => self.vlist_append(n),
             Mode::Math | Mode::DisplayMath => self.append_mlist_node(n),
             _ => self.cur_list.push(n),
         }
     }
-
     // ---------- characters with ligatures & kerns ----------
 
     /// Return whether a font contains a character and, when requested by
@@ -549,12 +558,82 @@ impl Engine {
         }
     }
 
+    /// Implement \noboundary primitive logic:
+    /// skips current right boundary and suppresses next implicit left boundary / starts new ligature chain.
+    pub fn no_boundary(&mut self) {
+        self.flush_native_text();
+        self.native_text.suppress_right_boundary = true;
+        self.native_text.suppress_left_boundary = true;
+        self.native_text.no_lig_prev = true;
+    }
+
+    pub(crate) fn find_left_boundary_step(&self, f: u16, next: u8) -> Option<LigKernStep> {
+        let font = self.eqtb.fonts.get(f as usize)?;
+        let first = font.lig_kern.first()?;
+        if first.skip != 255 {
+            return None;
+        }
+        let mut k = 256 * (first.op as usize) + (first.rem as usize);
+        if k >= font.lig_kern.len() {
+            return None;
+        }
+        let mut jumps = 0;
+        loop {
+            if k >= font.lig_kern.len() || jumps > 128 {
+                return None;
+            }
+            let step = &font.lig_kern[k];
+            if step.next_char == next {
+                if step.op >= 128 {
+                    let idx = ((step.op as usize) - 128) * 256 + step.rem as usize;
+                    let amt = font.kerns.get(idx).copied().unwrap_or(0);
+                    return Some(LigKernStep {
+                        is_kern: true,
+                        kern_amount: amt,
+                        lig_char: 0,
+                        keep_left: false,
+                        keep_right: false,
+                        iterate: false,
+                    });
+                } else {
+                    let lig = step.rem;
+                    let keep_left = (step.op & 1) != 0;
+                    let keep_right = (step.op & 2) != 0;
+                    let iterate = (step.op & 4) != 0;
+                    return Some(LigKernStep {
+                        is_kern: false,
+                        kern_amount: 0,
+                        lig_char: lig,
+                        keep_left,
+                        keep_right,
+                        iterate,
+                    });
+                }
+            }
+            if step.stop {
+                return None;
+            }
+            k += (step.skip as usize) + 1;
+            jumps += 1;
+        }
+    }
+
     /// tex.web §20237–§20238: when leaving the character loop, TeX checks
     /// if the last character/ligature has a lig/kern step with the font's
-    /// right boundary character (font_bchar), and if so appends the kern.
+    /// right boundary character (font_bchar), and if so appends the kern or ligature.
     pub(crate) fn flush_right_boundary_kern(&mut self, f: u16) {
-        let Some(font) = self.eqtb.fonts.get(f as usize) else { return; };
-        let Some(bchar) = font.bchar else { return; };
+        if self.native_text.suppress_right_boundary {
+            self.native_text.suppress_right_boundary = false;
+            self.native_text.suppress_left_boundary = false;
+            self.native_text.no_lig_prev = false;
+            return;
+        }
+        let Some(font) = self.eqtb.fonts.get(f as usize) else {
+            return;
+        };
+        let Some(bchar) = font.bchar else {
+            return;
+        };
         let last_char = match self.cur_list.last() {
             Some(Node::Char { c, font: pf }) if *pf == f => Some(*c),
             Some(Node::Ligature { c, font: pf, .. }) if *pf == f => Some(*c),
@@ -562,13 +641,35 @@ impl Engine {
         };
         if let Some(c) = last_char {
             if let Some(step) = self.find_lig_kern(f, c, bchar) {
-                if step.is_kern && step.kern_amount != 0 {
-                    self.cur_list.push(Node::Kern(step.kern_amount));
+                if step.is_kern {
+                    if step.kern_amount != 0 {
+                        self.cur_list.push(Node::Kern(step.kern_amount));
+                    }
+                } else {
+                    let _ = self.cur_list.pop();
+                    let lc = step.lig_char;
+                    self.cur_list.push(Node::Char { c: lc, font: f });
+                    if let Some(step2) = self.find_lig_kern(f, lc, bchar) {
+                        if step2.is_kern && step2.kern_amount != 0 {
+                            self.cur_list.push(Node::Kern(step2.kern_amount));
+                        }
+                    }
                 }
             }
         }
     }
     fn append_char_lig(&mut self, c: u8, f: u16) {
+        let suppress_lb = self.native_text.suppress_left_boundary;
+        self.native_text.suppress_left_boundary = false;
+        let no_lig = self.native_text.no_lig_prev;
+        self.native_text.no_lig_prev = false;
+
+        if no_lig {
+            self.flush_hyphen_disc(f);
+            self.cur_list.push(Node::Char { c, font: f });
+            return;
+        }
+
         // ligature & kern with previous char (either Char or an already-formed Ligature)
         let prev: Option<(u8, [u8; 3], u8)> = match self.cur_list.last() {
             Some(Node::Char { c: pc, font: pf }) if *pf == f => Some((*pc, [0; 3], 0)),
@@ -581,6 +682,28 @@ impl Engine {
             }) if *pf == f => Some((*lc, *letters, *n_letters)),
             _ => None,
         };
+
+        if prev.is_none() && !suppress_lb {
+            if let Some(step) = self.find_left_boundary_step(f, c) {
+                if step.is_kern {
+                    if step.kern_amount != 0 {
+                        self.cur_list.push(Node::Kern(step.kern_amount));
+                    }
+                } else {
+                    let lc = step.lig_char;
+                    if step.keep_right {
+                        self.cur_list.push(Node::Char { c: lc, font: f });
+                        self.append_char_lig(c, f);
+                    } else if step.iterate {
+                        self.append_char_lig(lc, f);
+                    } else {
+                        self.cur_list.push(Node::Char { c: lc, font: f });
+                    }
+                    return;
+                }
+            }
+        }
+
         if let Some((pc, pletters, pn)) = prev {
             if let Some(step) = self.find_lig_kern(f, pc, c) {
                 if step.is_kern {
@@ -617,11 +740,8 @@ impl Engine {
                         letters,
                         n_letters: n as u8,
                     });
-                    let _ = ends_hyphen; // the disc rides at settle time
-                                         // (flush_hyphen_disc at the first non-ligating append) —
-                                         // pushing it here would break the "---" -> em-dash chain
+                    let _ = ends_hyphen;
                     if step.keep_right {
-                        // re-add the new char after lig (iterate)
                         if step.iterate {
                             self.append_char_lig(c, f);
                         } else {
@@ -805,7 +925,7 @@ impl Engine {
 
     /// \hbox to 10pt{...} etc: scan spec, push group context
     pub fn begin_box(&mut self, kind: u8) {
-        // scan "to"/"spread" target (tex.web scan_spec uses scan_keyword
+        self.flush_native_text();
         // (character keywords), not control sequences)
         let mut target: Option<(i32, bool)> = None; // (dim, is_spread)
         if self.scan_keyword(b"to") {
@@ -883,6 +1003,7 @@ impl Engine {
 
     /// called on the matching `}` for a box group or plain group
     pub fn end_box(&mut self) {
+        self.flush_native_text();
         if self.box_kinds.is_empty() {
             self.error("Too many }'s");
             return;
@@ -1077,6 +1198,7 @@ impl Engine {
     }
 
     pub fn append_box_node(&mut self, b: Option<Node>) {
+        self.flush_native_text();
         match b {
             None => {}
             Some(node) => match self.mode {
@@ -1470,14 +1592,13 @@ impl Engine {
     }
 
     pub fn append_take_node(&mut self, n: Node) {
+        self.flush_native_text();
         match self.mode {
             Mode::Horizontal | Mode::RestrictedHorizontal => self.cur_list.push(n),
             Mode::Vertical | Mode::InternalVertical => self.vlist_append(n),
             Mode::Math | Mode::DisplayMath => self.append_mlist_node(n),
         }
     }
-
-    // ---------- moves (raise/lower/moveleft/moveright) ----------
 
     pub fn box_move(&mut self, d: i32, negate: bool, horizontal: bool) {
         let d = if negate { -d } else { d };
@@ -1643,7 +1764,7 @@ impl Engine {
         match self.current_tail() {
             None if self.mode == Mode::Vertical => self.last_page_node_type,
             None => -1,
-            Some(Node::Char { .. }) => 0,
+            Some(Node::Char { .. }) | Some(Node::NativeGlyphRun { .. }) => 0,
             Some(Node::Box { kind, .. }) if *kind == boxes::HBOX => 1,
             Some(Node::Box { .. }) => 2,
             Some(Node::Rule { .. }) => 3,
@@ -2058,6 +2179,7 @@ impl Engine {
     }
 
     pub fn start_paragraph(&mut self, indent: bool) {
+        self.flush_native_text();
         match self.mode {
             Mode::Horizontal => {
                 if indent {
@@ -2192,7 +2314,7 @@ impl Engine {
     }
 
     pub fn end_paragraph(&mut self) {
-        // tex.web §22509 resume_after_display: `prev_graf:=prev_graf+3` —
+        self.flush_native_text();
         // a displayed equation counts as three lines of the interrupted
         // paragraph, and §17015/§17253 make the resumed fragment's line
         // numbering (and so \parshape/\hangindent lookup and \prevgraf)

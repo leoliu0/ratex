@@ -4,8 +4,8 @@
 //!
 //! Reproduces bibtex 0.99e .bbl output byte-for-byte for standard styles.
 
-pub mod driver;
 pub mod auxfile;
+pub mod driver;
 pub use auxfile as aux;
 pub mod bib;
 pub mod bst;
@@ -52,7 +52,11 @@ fn search_file(name: &str, env_vars: &[&str], cwd: &Path) -> Option<PathBuf> {
     }
     if let Ok(entries) = std::fs::read_dir(cwd) {
         for entry in entries.flatten() {
-            if entry.file_name().to_string_lossy().eq_ignore_ascii_case(name) {
+            if entry
+                .file_name()
+                .to_string_lossy()
+                .eq_ignore_ascii_case(name)
+            {
                 let p = entry.path();
                 if p.is_file() {
                     return Some(p);

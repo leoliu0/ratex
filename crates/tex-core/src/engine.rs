@@ -205,6 +205,7 @@ pub struct Engine {
 
     // hyphenation
     pub hyphen_trie: crate::hyphen::Trie,
+    pub hyphen_tries: crate::FxHashMap<u8, crate::hyphen::Trie>,
     pub hyphen_exceptions: Vec<(String, Vec<u8>)>,
     pub par_shape: Vec<(i32, i32)>,
     /// group level of the current par_shape assignment (tex.web tracks
@@ -221,6 +222,9 @@ pub struct Engine {
     pub synctex_enabled: bool,
     pub out_file: Option<tex_kpse::fs::File>,
     pub font_loader: crate::fontload::FontLoader,
+    pub native_text: crate::native_layout::NativeTextState,
+    pub(crate) native_utf8_bytes: [u8; 4],
+    pub(crate) native_utf8_len: usize,
     pub pdf_outlines: Vec<(String, String, i32)>,
 
     pub job_running: bool,
@@ -823,6 +827,7 @@ impl Engine {
             write_stream_paths: (0..16).map(|_| None).collect(),
             writebuf: Vec::new(),
             hyphen_trie: crate::hyphen::Trie::new(),
+            hyphen_tries: crate::FxHashMap::default(),
             hyphen_exceptions: Vec::new(),
             par_shape: Vec::new(),
             par_shape_level: crate::eqtb::LEVEL_ONE,
@@ -833,6 +838,9 @@ impl Engine {
             synctex_enabled: true,
             out_file: None,
             font_loader: crate::fontload::FontLoader::new(),
+            native_text: crate::native_layout::NativeTextState::default(),
+            native_utf8_bytes: [0; 4],
+            native_utf8_len: 0,
             pdf_outlines: Vec::new(),
             job_running: true,
             end_occurred: false,
@@ -1317,6 +1325,12 @@ impl Engine {
         d!(eng, b"fontcharht", FontCharHt);
         d!(eng, b"fontchardp", FontCharDp);
         d!(eng, b"fontcharic", FontCharIc);
+        d!(eng, b"noboundary", NoBoundary);
+        d!(eng, b"RatexUnicodeVersion", RatexUnicodeVersion);
+        d!(eng, b"RatexNativeTextMode", RatexNativeTextMode);
+        d!(eng, b"RatexUTFviii", RatexUtfEight);
+        d!(eng, b"RatexLiteralChar", RatexLiteralChar);
+        d!(eng, b"ratexcjktext", RatexCjkText);
         d!(eng, b"hskip", HSkip);
         d!(eng, b"vskip", VSkip);
         d!(eng, b"mskip", MSkip);
@@ -1805,7 +1819,9 @@ impl Engine {
         !self.page_list.iter().any(|n| {
             matches!(
                 n,
-                crate::boxes::Node::Box { .. } | crate::boxes::Node::Rule { .. }
+                crate::boxes::Node::Box { .. }
+                    | crate::boxes::Node::Rule { .. }
+                    | crate::boxes::Node::NativeGlyphRun { .. }
             )
         })
     }

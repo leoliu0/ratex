@@ -401,21 +401,24 @@ impl Engine {
     /// inserted disc nodes (pattern-inserted, as opposed to explicit `\-`)
     fn hyphenate_list(&mut self, list: &mut NodeList) -> HashSet<usize> {
         let mut inserted = HashSet::new();
-        if self.hyphen_trie.is_empty() {
-            return inserted;
-        }
-        // tex.web §18261/§18149: cur_lang := language (<=0 or >255 maps to 0).
-        // If cur_lang has no patterns (such as language 2, \l@nohyphenation),
-        // TeX returns immediately without hyphenating.
         let lang = self.eqtb.int_params[IntParam::Language.idx() as usize];
-        let cur_lang = if lang <= 0 || lang > 255 { 0 } else { lang };
-        if cur_lang != 0 {
+        let cur_lang = if lang <= 0 || lang > 255 {
+            0
+        } else {
+            lang as u8
+        };
+        if cur_lang == 255 {
             return inserted;
         }
+        let trie = match self.trie_for_language(cur_lang) {
+            Some(t) if !t.is_empty() => t,
+            _ => return inserted,
+        };
         // Formats and embedders can construct an Eqtb without going through
         // tex.web §21112 norm_min: \lefthyphenmin and \righthyphenmin are clamped to 1..=63.
         let lh = self.eqtb.int_params[IntParam::LeftHyphenMin.idx() as usize].clamp(1, 63) as usize;
-        let rh = self.eqtb.int_params[IntParam::RightHyphenMin.idx() as usize].clamp(1, 63) as usize;
+        let rh =
+            self.eqtb.int_params[IntParam::RightHyphenMin.idx() as usize].clamp(1, 63) as usize;
         let minimum_letters = lh.saturating_add(rh);
         // TeX considers at most 63 letters while hyphenating. A larger
         // minimum sum therefore disables automatic hyphenation.
@@ -481,6 +484,41 @@ impl Engine {
                         node_font = *font;
                     }
                 }
+                Node::NativeGlyphRun {
+                    run, start, end, ..
+                } => {
+                    let slice_glyphs = &run.glyphs[*start..*end];
+                    let mut is_ascii_letters = true;
+                    let mut letters = Vec::new();
+                    for g in slice_glyphs {
+                        let text_slice =
+                            &run.text[g.cluster_start as usize..g.cluster_end as usize];
+                        if text_slice.is_empty() {
+                            continue;
+                        }
+                        for b in text_slice.bytes() {
+                            if b.is_ascii_alphabetic() {
+                                let lc = self.eqtb.lc_code.get(b as usize).copied().unwrap_or(0);
+                                if lc != 0 {
+                                    letters.push(lc);
+                                } else {
+                                    is_ascii_letters = false;
+                                    break;
+                                }
+                            } else {
+                                is_ascii_letters = false;
+                                break;
+                            }
+                        }
+                        if !is_ascii_letters {
+                            break;
+                        }
+                    }
+                    if is_ascii_letters && !letters.is_empty() {
+                        node_letters = letters;
+                        node_font = run.font;
+                    }
+                }
                 _ => {}
             }
             if !node_letters.is_empty() {
@@ -497,6 +535,7 @@ impl Engine {
                     // (hyphenating it under word_font) and start a fresh
                     // word at this node with the new font
                     self.flush_hyphen_word(
+                        trie,
                         list,
                         i,
                         &word,
@@ -518,6 +557,7 @@ impl Engine {
                 }
             } else if !word.is_empty() {
                 self.flush_hyphen_word(
+                    trie,
                     list,
                     i,
                     &word,
@@ -552,6 +592,7 @@ impl Engine {
     /// without a usable hyphenchar simply does not hyphenate.
     fn flush_hyphen_word(
         &self,
+        trie: &crate::hyphen::Trie,
         list: &[Node],
         end: usize,
         word: &[u8],
@@ -582,7 +623,7 @@ impl Engine {
         if closed_by_hyphen || !prev_ok || word.len() < lh.saturating_add(rh) {
             return;
         }
-        let points = self.hyphen_trie.hyphenate(word, lh, rh);
+        let points = trie.hyphenate(word, lh, rh);
         let mut disc_at_node: Option<usize> = None;
         for &k in &points {
             if k == 0 || k >= word_positions.len() {
@@ -594,6 +635,37 @@ impl Engine {
                 continue; // one disc per node
             }
             let disc = match &list[pos] {
+                Node::NativeGlyphRun {
+                    run, start, end, ..
+                } if slot > 0 => {
+                    let hyphen_char_str = (hyphen_c as char).to_string();
+                    let slice_start_byte = run.glyphs[*start].cluster_start as usize;
+                    let slice_end_byte = run.glyphs[*end - 1].cluster_end as usize;
+                    let split_byte = slice_start_byte + slot as usize;
+                    if split_byte > slice_end_byte {
+                        continue;
+                    }
+                    let pre_slice = &run.text[slice_start_byte..split_byte];
+                    let post_slice = &run.text[split_byte..slice_end_byte];
+                    let pre_str = format!("{pre_slice}{hyphen_char_str}");
+                    let post_str = post_slice.to_string();
+
+                    let pre_break = match self.shape_native_slice(run.font, &pre_str) {
+                        Ok(nodes) => nodes,
+                        Err(_) => continue,
+                    };
+                    let post_break = match self.shape_native_slice(run.font, &post_str) {
+                        Ok(nodes) => nodes,
+                        Err(_) => continue,
+                    };
+                    disc_at_node = Some(pos);
+                    Node::Disc(crate::boxes::DiscNode {
+                        pre_break,
+                        post_break,
+                        no_break: vec![list[pos].clone()],
+                        replace_count: 1,
+                    })
+                }
                 Node::Ligature {
                     letters,
                     n_letters,
@@ -624,31 +696,44 @@ impl Engine {
                     })
                 }
                 _ => {
-                    // A break replaces the kern to the next letter with
-                    // the kern to the hyphen (tex.web reconstitute).
                     let (left_pos, _) = word_positions[k - 1];
-                    let (left, font) = match &list[left_pos] {
-                        Node::Char { c, font } | Node::Ligature { c, font, .. } => (*c, *font),
+                    match &list[left_pos] {
+                        Node::Char { c, font } | Node::Ligature { c, font, .. } => {
+                            let (left, font) = (*c, *font);
+                            let kern = crate::boxes::get_kern(&self.eqtb, font, left, hyphen_c);
+                            let mut pre_break = Vec::with_capacity(if kern == 0 { 1 } else { 2 });
+                            if kern != 0 {
+                                pre_break.push(Node::Kern(kern));
+                            }
+                            pre_break.push(Node::Char { c: hyphen_c, font });
+                            let mut no_break = Vec::new();
+                            if pos > 0 && matches!(list[pos - 1], Node::Kern(_)) {
+                                pos -= 1;
+                                no_break.push(list[pos].clone());
+                            }
+                            disc_at_node = Some(word_positions[k].0);
+                            Node::Disc(crate::boxes::DiscNode {
+                                pre_break,
+                                post_break: Vec::new(),
+                                replace_count: no_break.len(),
+                                no_break,
+                            })
+                        }
+                        Node::NativeGlyphRun { run, .. } => {
+                            let hyphen_str = (hyphen_c as char).to_string();
+                            let pre_break = self
+                                .shape_native_slice(run.font, &hyphen_str)
+                                .unwrap_or_default();
+                            disc_at_node = Some(word_positions[k].0);
+                            Node::Disc(crate::boxes::DiscNode {
+                                pre_break,
+                                post_break: Vec::new(),
+                                replace_count: 0,
+                                no_break: Vec::new(),
+                            })
+                        }
                         _ => unreachable!("hyphenation position is a letter"),
-                    };
-                    let kern = crate::boxes::get_kern(&self.eqtb, font, left, hyphen_c);
-                    let mut pre_break = Vec::with_capacity(if kern == 0 { 1 } else { 2 });
-                    if kern != 0 {
-                        pre_break.push(Node::Kern(kern));
                     }
-                    pre_break.push(Node::Char { c: hyphen_c, font });
-                    let mut no_break = Vec::new();
-                    if pos > 0 && matches!(list[pos - 1], Node::Kern(_)) {
-                        pos -= 1;
-                        no_break.push(list[pos].clone());
-                    }
-                    disc_at_node = Some(word_positions[k].0);
-                    Node::Disc(crate::boxes::DiscNode {
-                        pre_break,
-                        post_break: Vec::new(),
-                        replace_count: no_break.len(),
-                        no_break,
-                    })
                 }
             };
             edits.push((pos, disc));
@@ -670,7 +755,6 @@ impl Engine {
         bg_st: [i64; 4],
         bg_sh: [i64; 4],
     ) -> Option<Rc<ActiveNode>> {
-
         let n = list.len();
         let pdf_adjust =
             self.eqtb.int_params[crate::prim::IntParam::PdfAdjustSpacing.idx() as usize];
@@ -803,6 +887,7 @@ impl Engine {
                     }
                     Node::Box { w, .. } => (*w as i64, [0; 4], [0; 4], 0, 0),
                     Node::Rule { width: w, .. } => (*w as i64, [0; 4], [0; 4], 0, 0),
+                    Node::NativeGlyphRun { width, .. } => (*width as i64, [0; 4], [0; 4], 0, 0),
                     _ => (0, [0; 4], [0; 4], 0, 0),
                 };
                 cum_w[i + 1] = cum_w[i] + w;
@@ -874,7 +959,6 @@ impl Engine {
             last_special_line
         };
 
-
         // evaluate one candidate breakpoint; `cand` == n is the virtual
         // end-of-paragraph break (tex: try_break at cur_p = null)
         macro_rules! consider {
@@ -884,7 +968,8 @@ impl Engine {
                 let btype: BreakType = $btype;
                 let penalty: i32 = $penalty;
                 let endw: i64 = $endw;
-                let mut champions: HashMap<(i32, usize), (i64, Rc<ActiveNode>, i32)> = HashMap::new();
+                let mut champions: HashMap<(i32, usize), (i64, Rc<ActiveNode>, i32)> =
+                    HashMap::new();
                 let mut idx = 0usize;
                 while idx < actives.len() {
                     let a = actives[idx].clone();
@@ -952,11 +1037,13 @@ impl Engine {
                     // pdftex.web: retain half an expansion step when the
                     // available font adjustment exceeds the shortfall.
                     let cur_ratio = if pdf_adjust >= 2 && shortfall > 0 && font_st > 0 {
-                        let raw_ratio = (crate::boxes::divide_scaled(shortfall, font_st, 3).0).clamp(0, 1000) as i32;
+                        let raw_ratio = (crate::boxes::divide_scaled(shortfall, font_st, 3).0)
+                            .clamp(0, 1000) as i32;
                         let line_st_steps = {
                             let mut steps = 0i64;
                             for node in &list[a.pos..cand.min(n)] {
-                                if let Node::Char { font, .. } | Node::Ligature { font, .. } = node {
+                                if let Node::Char { font, .. } | Node::Ligature { font, .. } = node
+                                {
                                     let ex = &self.eqtb.expand[*font as usize];
                                     if ex.step > 0 && ex.stretch != 0 {
                                         let r = self.eqtb.expand[ex.stretch as usize].ratio;
@@ -967,7 +1054,11 @@ impl Engine {
                                     }
                                 }
                             }
-                            if steps == 0 { stretch_steps } else { steps }
+                            if steps == 0 {
+                                stretch_steps
+                            } else {
+                                steps
+                            }
                         };
                         shortfall = if font_st > shortfall {
                             if line_st_steps > 0 {
@@ -980,11 +1071,13 @@ impl Engine {
                         };
                         raw_ratio
                     } else if pdf_adjust >= 2 && shortfall < 0 && font_sh > 0 {
-                        let raw_ratio = (crate::boxes::divide_scaled(shortfall, font_sh, 3).0).clamp(-1000, 0) as i32;
+                        let raw_ratio = (crate::boxes::divide_scaled(shortfall, font_sh, 3).0)
+                            .clamp(-1000, 0) as i32;
                         let line_sh_steps = {
                             let mut steps = 0i64;
                             for node in &list[a.pos..cand.min(n)] {
-                                if let Node::Char { font, .. } | Node::Ligature { font, .. } = node {
+                                if let Node::Char { font, .. } | Node::Ligature { font, .. } = node
+                                {
                                     let ex = &self.eqtb.expand[*font as usize];
                                     if ex.step > 0 && ex.shrink != 0 {
                                         let r = -self.eqtb.expand[ex.shrink as usize].ratio;
@@ -995,7 +1088,11 @@ impl Engine {
                                     }
                                 }
                             }
-                            if steps == 0 { shrink_steps } else { steps }
+                            if steps == 0 {
+                                shrink_steps
+                            } else {
+                                steps
+                            }
                         };
                         shortfall = if font_sh > -shortfall {
                             if line_sh_steps > 0 {
@@ -1072,7 +1169,6 @@ impl Engine {
                     }
                     let hopeless = b > INF_BAD;
                     if hopeless || forced {
-
                         if final_pass && champions.is_empty() && is_only {
                             champions.insert((a.line + 1, DECENT), (a.demerits, a.clone(), 0));
                         }
@@ -1184,11 +1280,9 @@ impl Engine {
                     }
                 }
                 if actives.is_empty() {
-
                     return None; // pass failed: active list drained
                 }
                 if cand == n {
-
                     let mut opt: Option<&Rc<ActiveNode>> = None;
                     for a in &actives {
                         match opt {
@@ -1756,6 +1850,7 @@ fn push_dims(eqtb: &crate::eqtb::Eqtb, n: Node, seg: &mut NodeList, w: &mut i64)
         Node::Kern(k) | Node::ExplicitKern(k) => *k,
         Node::Box { w: bw, .. } => *bw,
         Node::Rule { width, .. } => *width,
+        Node::NativeGlyphRun { width, .. } => *width,
         _ => 0,
     };
     *w += wd as i64;
@@ -1770,6 +1865,7 @@ fn disc_list_width(eqtb: &crate::eqtb::Eqtb, l: &[Node]) -> i64 {
             Node::Ligature { lig_width, .. } => *lig_width as i64,
             Node::Kern(k) | Node::ExplicitKern(k) => *k as i64,
             Node::Box { w, .. } | Node::Rule { width: w, .. } => *w as i64,
+            Node::NativeGlyphRun { width, .. } => *width as i64,
             _ => 0,
         })
         .sum()

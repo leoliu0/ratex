@@ -59,24 +59,38 @@ impl Trie {
         }
     }
 
-    /// compile one `\patterns` entry, e.g. `.ach4`, `a1bc3cd`, `4tion`.
-    pub fn add_pattern(&mut self, pat: &str) {
+    /// compile one `\patterns` entry over raw bytes, e.g. `.ach4`, `a1bc3cd`, `4tion`,
+    /// or TeX hex-escaped byte patterns like `.^^e0^^e11^^f0`.
+    pub fn add_pattern_bytes(&mut self, pat: &[u8]) {
         let mut key: Vec<u8> = Vec::with_capacity(pat.len());
-        // values[i] applies to the gap before key char i; index key.len() = after last
         let mut values: Vec<(usize, u8)> = Vec::new();
         let mut pos = 0usize;
-        for ch in pat.bytes() {
+        let mut i = 0usize;
+        while i < pat.len() {
+            let ch = pat[i];
             match ch {
                 b'0'..=b'9' => {
                     if ch != b'0' {
                         values.push((pos, ch - b'0'));
                     }
+                    i += 1;
                 }
-                b'a'..=b'z' | b'.' => {
+                b'^' if i + 3 < pat.len() && pat[i + 1] == b'^' => {
+                    if let (Some(h1), Some(h2)) = (hex_val(pat[i + 2]), hex_val(pat[i + 3])) {
+                        key.push((h1 << 4) | h2);
+                        pos += 1;
+                        i += 4;
+                    } else {
+                        key.push(ch);
+                        pos += 1;
+                        i += 1;
+                    }
+                }
+                _ => {
                     key.push(ch);
                     pos += 1;
+                    i += 1;
                 }
-                _ => return, // malformed pattern: ignore
             }
         }
         if !key.is_empty() {
@@ -84,21 +98,50 @@ impl Trie {
         }
     }
 
-    /// compile one `\hyphenation` entry, e.g. `ta-ble`, `ta-ble-b`.
-    pub fn add_exception(&mut self, word: &str) {
+    /// compile one `\patterns` entry, e.g. `.ach4`, `a1bc3cd`, `4tion`.
+    pub fn add_pattern(&mut self, pat: &str) {
+        self.add_pattern_bytes(pat.as_bytes());
+    }
+
+    /// compile one `\hyphenation` entry over raw bytes, e.g. `ta-ble`, `ta-ble-b`.
+    pub fn add_exception_bytes(&mut self, word: &[u8]) {
         let mut key: Vec<u8> = Vec::with_capacity(word.len());
         let mut points: Vec<usize> = Vec::new();
-        for ch in word.bytes() {
+        let mut i = 0usize;
+        while i < word.len() {
+            let ch = word[i];
             match ch {
-                b'-' => points.push(key.len()),
-                b'A'..=b'Z' => key.push(ch + 32),
-                b'a'..=b'z' => key.push(ch),
-                _ => return, // malformed: ignore
+                b'-' => {
+                    points.push(key.len());
+                    i += 1;
+                }
+                b'^' if i + 3 < word.len() && word[i + 1] == b'^' => {
+                    if let (Some(h1), Some(h2)) = (hex_val(word[i + 2]), hex_val(word[i + 3])) {
+                        key.push((h1 << 4) | h2);
+                        i += 4;
+                    } else {
+                        key.push(ch);
+                        i += 1;
+                    }
+                }
+                b'A'..=b'Z' => {
+                    key.push(ch + 32);
+                    i += 1;
+                }
+                _ => {
+                    key.push(ch);
+                    i += 1;
+                }
             }
         }
         if key.len() >= 2 {
             self.exceptions.insert(key, points);
         }
+    }
+
+    /// compile one `\hyphenation` entry, e.g. `ta-ble`, `ta-ble-b`.
+    pub fn add_exception(&mut self, word: &str) {
+        self.add_exception_bytes(word.as_bytes());
     }
 
     /// Hyphenation points for a lowercased word. Returns sorted `k` values
@@ -161,18 +204,27 @@ impl Trie {
     /// `\hyphenation{...}` blocks, `%` comments, whitespace-separated
     /// entries. Returns (patterns added, exceptions added).
     pub fn load_hyphen_file(&mut self, path: &std::path::Path) -> std::io::Result<(usize, usize)> {
-        let text = tex_kpse::fs::read_to_string(path)?;
-        Ok(self.load_hyphen_str(&text))
+        let bytes = tex_kpse::fs::read(path)?;
+        Ok(self.load_hyphen_bytes(&bytes))
     }
 
     /// Same as [`Trie::load_hyphen_file`] over already-read content.
     pub fn load_hyphen_str(&mut self, text: &str) -> (usize, usize) {
+        self.load_hyphen_bytes(text.as_bytes())
+    }
+
+    /// Parse hyphenation patterns and exceptions from raw bytes.
+    pub fn load_hyphen_bytes(&mut self, bytes: &[u8]) -> (usize, usize) {
         let mut npat = 0;
         let mut nexc = 0;
-        let clean: String = strip_comments(text);
-        let bytes = clean.as_bytes();
         let mut i = 0usize;
         while i < bytes.len() {
+            if bytes[i] == b'%' {
+                while i < bytes.len() && bytes[i] != b'\n' {
+                    i += 1;
+                }
+                continue;
+            }
             if bytes[i..].starts_with(b"\\patterns") || bytes[i..].starts_with(b"\\hyphenation") {
                 let is_pat = bytes[i + 1] == b'p';
                 i += if is_pat {
@@ -180,7 +232,6 @@ impl Trie {
                 } else {
                     b"\\hyphenation".len()
                 };
-                // skip junk up to opening brace
                 while i < bytes.len() && bytes[i] != b'{' {
                     i += 1;
                 }
@@ -194,22 +245,33 @@ impl Trie {
                     match bytes[i] {
                         b'{' => depth += 1,
                         b'}' => depth -= 1,
+                        b'%' => {
+                            while i < bytes.len() && bytes[i] != b'\n' {
+                                i += 1;
+                            }
+                            continue;
+                        }
                         _ => {}
                     }
                     i += 1;
                 }
-                let body = &clean[start..i.saturating_sub(1).max(start)];
-                for tok in body.split_whitespace() {
-                    if is_pat {
-                        self.add_pattern(tok);
-                        npat += 1;
-                    } else {
-                        self.add_exception(tok);
-                        nexc += 1;
+                let body = &bytes[start..i.saturating_sub(1).max(start)];
+                for line in body.split(|&b| b == b'\n') {
+                    let text = line.split(|&b| b == b'%').next().unwrap_or_default();
+                    for tok in text
+                        .split(|b| b.is_ascii_whitespace())
+                        .filter(|t| !t.is_empty())
+                    {
+                        if is_pat {
+                            self.add_pattern_bytes(tok);
+                            npat += 1;
+                        } else {
+                            self.add_exception_bytes(tok);
+                            nexc += 1;
+                        }
                     }
                 }
             } else {
-                // skip to next whitespace
                 while i < bytes.len() && !bytes[i].is_ascii_whitespace() {
                     i += 1;
                 }
@@ -222,16 +284,13 @@ impl Trie {
     }
 }
 
-fn strip_comments(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    for line in text.lines() {
-        match line.find('%') {
-            Some(p) => out.push_str(&line[..p]),
-            None => out.push_str(line),
-        }
-        out.push('\n');
+fn hex_val(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
     }
-    out
 }
 
 use crate::engine::Engine;
@@ -243,6 +302,24 @@ impl Engine {
     pub fn load_hyphenation_file(&mut self, path: &str) -> std::io::Result<(usize, usize)> {
         self.hyphen_trie
             .load_hyphen_file(std::path::Path::new(path))
+    }
+
+    /// Language zero uses the original format slot; other languages are independent.
+    pub fn trie_for_language(&self, lang: u8) -> Option<&Trie> {
+        if lang == 0 {
+            Some(&self.hyphen_trie)
+        } else {
+            self.hyphen_tries.get(&lang)
+        }
+    }
+
+    /// Retrieve a mutable reference to the hyphenation trie for a language code.
+    pub fn trie_for_language_mut(&mut self, lang: u8) -> &mut Trie {
+        if lang == 0 {
+            &mut self.hyphen_trie
+        } else {
+            self.hyphen_tries.entry(lang).or_insert_with(Trie::new)
+        }
     }
 }
 
@@ -269,5 +346,12 @@ mod tests {
         assert_eq!(t.hyphenate(b"hyphenation", 2, 3), vec![2, 6]);
         assert_eq!(t.hyphenate(b"algorithm", 2, 3), vec![2, 4]);
         assert_eq!(t.hyphenate(b"table", 2, 3), vec![2]);
+    }
+
+    #[test]
+    fn pattern_comments_do_not_override_breaks() {
+        let mut trie = Trie::new();
+        trie.load_hyphen_bytes(b"\\patterns{ab1cd % a9bcd is not a pattern\n}");
+        assert_eq!(trie.hyphenate(b"abcd", 1, 1), vec![2]);
     }
 }

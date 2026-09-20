@@ -25,8 +25,10 @@ from prune_corpus_artifacts import apply_plan, make_plan  # noqa: E402
 from test_corpus import (  # noqa: E402
     apply_artifact_retention,
     campaign_gate,
+    classify_failure_kind,
     compile_engine,
     prepare_workspace,
+    qualification_ledger,
     validate_manifest_entry,
 )
 
@@ -530,6 +532,85 @@ class RetentionTests(unittest.TestCase):
             self.assertFalse((root / "pdf" / "none.rust.pdf").exists())
             self.assertFalse((root / "worst" / "none-p1-diff.png").exists())
             self.assertFalse((root / "work" / "none").exists())
+
+    def test_reference_only_embedding_failure_blocks_qualification_and_retains_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            aid = "ref_embed_fail"
+            result = campaign_result(root, aid, failed=False)
+            ref_font_err = "validator error: unhandled PDF format error"
+            result["ref"]["font_embedding_errors"] = [ref_font_err]
+            result["ref"]["font_embedding_valid"] = False
+            result["ref"]["failure_kind"] = "embedding"
+            result["compare"]["font_embedding_failure"] = True
+            result["compare"]["font_embedding_errors"] = [ref_font_err]
+            result["compare"]["font_embedding_errors_by_engine"] = {
+                "rust": [],
+                "ref": [ref_font_err],
+            }
+
+            # 1. campaign_gate must fail with kind "embedding"
+            gate = campaign_gate(
+                [{"id": aid}],
+                {aid: result},
+                {"dpi": 150, "page_min": 99.0, "doc_min": 99.0},
+            )
+            self.assertFalse(gate["ok"])
+            embed_failures = [f for f in gate["failures"] if f.get("kind") == "embedding"]
+            self.assertEqual(len(embed_failures), 1)
+            self.assertEqual(embed_failures[0]["id"], aid)
+
+            # 2. qualification_ledger must disqualify the project
+            ledger = qualification_ledger([{"id": aid}], {aid: result}, 99.0)
+            self.assertEqual(ledger["qualified_count"], 0)
+            self.assertNotIn(aid, ledger["qualified_ids"])
+            self.assertFalse(ledger["projects"][0]["qualified"])
+            self.assertIn("ref-font-embedding", ledger["projects"][0]["reasons"])
+
+            # 3. apply_artifact_retention must keep evidence under retain="failures"
+            apply_artifact_retention(
+                result,
+                root,
+                {
+                    "retain": "failures",
+                    "keep_work": False,
+                    "doc_min": 99.0,
+                },
+            )
+            self.assertTrue(result["retention"]["failure"])
+            self.assertTrue(result["retention"]["evidence_retained"])
+            self.assertTrue((root / "results" / aid / "failure.json").is_file())
+            self.assertTrue((root / "pdf" / f"{aid}.ref.pdf").is_file())
+            self.assertTrue((root / "pdf" / f"{aid}.rust.pdf").is_file())
+
+    def test_missing_outline_program_classifies_as_missing_asset(self) -> None:
+        run = {"exit": 1, "timed_out": False, "mem_killed": False}
+        pdf_stat = {"pdf_valid": False}
+        err = ["Font `\\test` (TFM `test`) has no associated outline program"]
+
+        # Missing outline must classify as missing-asset, not compilation or unsupported-engine
+        self.assertEqual(classify_failure_kind(run, pdf_stat, err), "missing-asset")
+
+        # Preamble mentions of font packages must not disguise the missing asset as unsupported-engine
+        log_with_fontspec = "\\usepackage{fontspec}\nFont `cmr10` (TFM `cmr10`) has no associated outline program"
+        self.assertEqual(
+            classify_failure_kind(run, pdf_stat, err, log_text=log_with_fontspec),
+            "missing-asset",
+        )
+
+        # Genuine engine requirement error remains unsupported-engine
+        unsupported = ["Package fontspec Error: The fontspec package requires either XeTeX or LuaTeX"]
+        self.assertEqual(
+            classify_failure_kind(run, pdf_stat, unsupported),
+            "unsupported-engine",
+        )
+
+        # Generic syntax error remains compilation
+        syntax_err = ["! Undefined control sequence: \\xyz"]
+        self.assertEqual(
+            classify_failure_kind(run, pdf_stat, syntax_err),
+            "compilation",
+        )
 
 
 class PruneTests(unittest.TestCase):

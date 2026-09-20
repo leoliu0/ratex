@@ -1,0 +1,532 @@
+[
+  {
+    "name": "issue_3_mapped_truetype",
+    "description": "Issue #3: Mapped TrueType / CID rendering and subsetting with user font map",
+    "dir": "issue_3_mapped_truetype",
+    "main_tex": "main.tex",
+    "engine": "pdflatex",
+    "reference_engine": "pdflatex",
+    "required_fonts": [
+      "IPAexMincho"
+    ],
+    "expected_text": [
+      "日本語のテスト",
+      "Ratex TrueType mapping test"
+    ],
+    "check_type": "mapped_ttf",
+    "min_ink_pixels": 500
+  },
+  {
+    "name": "issue_4_cjkutf8_ja",
+    "description": "Issue #4: CJKutf8 Japanese out-of-the-box font embedding (Wadalab/IPAex mincho)",
+    "dir": "issue_4_cjkutf8_ja",
+    "main_tex": "main.tex",
+    "engine": "pdflatex",
+    "reference_engine": "pdflatex",
+    "required_fonts": [],
+    "expected_text": [
+      "日本語のテスト"
+    ],
+    "check_type": "cjk_embedded",
+    "min_ink_pixels": 500
+  },
+  {
+    "name": "issue_5_stmaryrd",
+    "description": "Issue #5: stmaryrd delimiter and symbol fonts closure across math sizes",
+    "dir": "issue_5_stmaryrd",
+    "main_tex": "main.tex",
+    "engine": "pdflatex",
+    "reference_engine": "pdflatex",
+    "required_fonts": [
+      "stmary10"
+    ],
+    "expected_text": [
+      "x"
+    ],
+    "check_type": "symbol_math",
+    "min_ink_pixels": 300
+  },
+  {
+    "name": "issue_6_bbding",
+    "description": "Issue #6: bbding symbol font bbding10 closure and rendering",
+    "dir": "issue_6_bbding",
+    "main_tex": "main.tex",
+    "engine": "pdflatex",
+    "reference_engine": "pdflatex",
+    "required_fonts": [
+      "bbding"
+    ],
+    "expected_text": [],
+    "check_type": "symbol",
+    "min_ink_pixels": 200
+  },
+  {
+    "name": "issue_8_latin_modern",
+    "description": "Issue #8: Latin Modern text and math font embedding and style geometry",
+    "dir": "issue_8_latin_modern",
+    "main_tex": "main.tex",
+    "engine": "pdflatex",
+    "reference_engine": "pdflatex",
+    "required_fonts": [
+      "LMRoman",
+      "LMMath"
+    ],
+    "expected_text": [
+      "Heading spacing test",
+      "Normal text",
+      "bold text",
+      "italic text"
+    ],
+    "check_type": "text_math",
+    "min_ink_pixels": 1000
+  },
+  {
+    "name": "t1_latin_modern",
+    "description": "Classic T1 Latin Modern full style and European accent coverage",
+    "dir": "t1_latin_modern",
+    "main_tex": "main.tex",
+    "engine": "pdflatex",
+    "reference_engine": "pdflatex",
+    "required_fonts": [
+      "LMRoman",
+      "LMSans",
+      "LMMono"
+    ],
+    "expected_text": [
+      "European accented characters test",
+      "café",
+      "naïve",
+      "façade",
+      "Größe",
+      "Smørrebrød"
+    ],
+    "check_type": "text_t1",
+    "min_ink_pixels": 1000
+  },
+  {
+    "name": "t1_cm_super",
+    "description": "Classic T1 European Computer Modern (CM-Super / sfrm) Type 1 outlines",
+    "dir": "t1_cm_super",
+    "main_tex": "main.tex",
+    "engine": "pdflatex",
+    "reference_engine": "pdflatex",
+    "required_fonts": [
+      "sfrm1000"
+    ],
+    "expected_text": [
+      "CM-Super European Computer Modern Test",
+      "café",
+      "résumé",
+      "naïve",
+      "façade"
+    ],
+    "check_type": "text_t1",
+    "min_ink_pixels": 1000
+  },
+  {
+    "name": "t2a_russian",
+    "description": "Classic T2A Cyrillic font definitions, style variants, and advertised sizes metric closure",
+    "dir": "t2a_russian",
+    "main_tex": "main.tex",
+    "engine": "pdflatex",
+    "reference_engine": "pdflatex",
+    "required_fonts": [],
+    "expected_text": [
+      "Русская типографика",
+      "Привет, мир!",
+      "Все люди рождаются свободными",
+      "Жирный шрифт",
+      "Курсивный шрифт",
+      "Жирный курсивный",
+      "Жирный увеличенный",
+      "Огромный размер"
+    ],
+    "check_type": "text_t2a",
+    "min_ink_pixels": 1000
+  },
+  {
+    "name": "lgr_greek",
+    "description": "Classic LGR Greek font definitions, cbfonts, and noboundary behavior",
+    "dir": "lgr_greek",
+    "main_tex": "main.tex",
+    "engine": "pdflatex",
+    "reference_engine": "pdflatex",
+    "required_fonts": [],
+    "expected_text": [
+      "Greek Typography",
+      "λόγος"
+    ],
+    "check_type": "text_lgr",
+    "min_ink_pixels": 1000
+  },
+  {
+    "name": "cjkutf8_japanese",
+    "description": "Classic Japanese CJKutf8 with distinct mincho and gothic embedded outlines",
+    "dir": "cjkutf8_japanese",
+    "main_tex": "main.tex",
+    "engine": "pdflatex",
+    "reference_engine": "pdflatex",
+    "required_fonts": [],
+    "expected_text": [
+      "明朝体テスト",
+      "吾輩は猫である",
+      "ゴシック体テスト"
+    ],
+    "check_type": "cjk_ja",
+    "min_ink_pixels": 1000
+  },
+  {
+    "name": "cjkutf8_chinese",
+    "description": "Classic Chinese CJKutf8 with gbsn, gkai, bsmi, bkai and paragraph wrapping",
+    "dir": "cjkutf8_chinese",
+    "main_tex": "main.tex",
+    "engine": "pdflatex",
+    "reference_engine": "pdflatex",
+    "required_fonts": [],
+    "expected_text": [
+      "宋体",
+      "简体中文",
+      "楷体",
+      "明體",
+      "繁體中文",
+      "楷體"
+    ],
+    "check_type": "cjk_zh",
+    "min_ink_pixels": 1000
+  },
+  {
+    "name": "cjkutf8_korean",
+    "description": "Classic Korean CJKutf8 with c70mj / uwmj* metric and outline closure",
+    "dir": "cjkutf8_korean",
+    "main_tex": "main.tex",
+    "engine": "pdflatex",
+    "reference_engine": "pdflatex",
+    "required_fonts": [],
+    "expected_text": [
+      "한국어 CJK 명조체 테스트",
+      "나랏말싸미",
+      "안녕하세요"
+    ],
+    "check_type": "cjk_ko",
+    "min_ink_pixels": 1000
+  },
+  {
+    "name": "fontspec_native",
+    "description": "Native fontspec selection with real Latin Modern Roman, Sans, Mono and styles",
+    "dir": "fontspec_native",
+    "main_tex": "main.tex",
+    "engine": "xelatex",
+    "reference_engine": "xelatex",
+    "required_fonts": [
+      "LMRoman",
+      "LMSans",
+      "LMMono"
+    ],
+    "expected_text": [
+      "Native Fontspec Selection Test",
+      "Bold Roman",
+      "Italic Roman",
+      "Sans Serif",
+      "Monospace"
+    ],
+    "check_type": "native_fontspec",
+    "min_ink_pixels": 1000
+  },
+  {
+    "name": "xecjk_native",
+    "description": "Native xeCJK typography with mixed Latin and CJK font selection",
+    "dir": "xecjk_native",
+    "main_tex": "main.tex",
+    "engine": "xelatex",
+    "reference_engine": "xelatex",
+    "required_fonts": [
+      "LMRoman",
+      "HaranoAjiMincho"
+    ],
+    "expected_text": [
+      "Native xeCJK Mixed Typography",
+      "日本語のテスト",
+      "中文测试",
+      "太字の日本語"
+    ],
+    "check_type": "native_xecjk",
+    "min_ink_pixels": 1000
+  },
+  {
+    "name": "opentype_cff",
+    "description": "Native OpenType font selection with CFF outline program (OTTO / CIDFontType0)",
+    "dir": "opentype_cff",
+    "main_tex": "main.tex",
+    "engine": "xelatex",
+    "reference_engine": "xelatex",
+    "required_fonts": [
+      "LMRoman"
+    ],
+    "expected_text": [
+      "OpenType CFF font embedding and rendering test"
+    ],
+    "check_type": "native_cff",
+    "min_ink_pixels": 500
+  },
+  {
+    "name": "truetype_collection",
+    "description": "TrueType collection (TTC) font selection with nonzero face index",
+    "dir": "truetype_collection",
+    "main_tex": "main.tex",
+    "engine": "xelatex",
+    "reference_engine": "xelatex",
+    "required_fonts": [
+      "CollectionFaceOne"
+    ],
+    "expected_text": [
+      "TrueType Collection Nonzero Face Test"
+    ],
+    "check_type": "native_ttc",
+    "min_ink_pixels": 500
+  },
+  {
+    "name": "unicode_supplementary",
+    "description": "Supplementary Unicode characters (astral plane codepoints) and glyph IDs > 255",
+    "dir": "unicode_supplementary",
+    "main_tex": "main.tex",
+    "engine": "xelatex",
+    "reference_engine": "xelatex",
+    "required_fonts": [
+      "RatexSupplementaryMincho"
+    ],
+    "expected_text": [
+      "Supplementary Unicode astral plane test",
+      "𝐀𝐁𝐂𝐃"
+    ],
+    "check_type": "native_supplementary",
+    "min_ink_pixels": 500
+  },
+  {
+    "name": "shaping_features",
+    "description": "Advanced OpenType shaping features: ligatures on/off, accents, combining marks, and kerning on/off",
+    "dir": "shaping_features",
+    "main_tex": "main.tex",
+    "engine": "xelatex",
+    "reference_engine": "xelatex",
+    "required_fonts": [
+      "LMRoman"
+    ],
+    "expected_text": [
+      "Shaping and Layout Features",
+      "Ligatures Enabled: fi fl ffi ffl",
+      "Ligatures Disabled: fi fl ffi ffl",
+      "Kerning Enabled: AV WA To TeX LT",
+      "Kerning Disabled: AV WA To TeX LT",
+      "é, à"
+    ],
+    "check_type": "native_shaping",
+    "min_ink_pixels": 800
+  },
+  {
+    "name": "font_styles_restoration",
+    "description": "Font family/series/shape switching and local scope/group restoration",
+    "dir": "font_styles_restoration",
+    "main_tex": "main.tex",
+    "engine": "xelatex",
+    "reference_engine": "xelatex",
+    "required_fonts": [
+      "LMRoman",
+      "LMSans",
+      "LMMono"
+    ],
+    "expected_text": [
+      "Base Roman Regular",
+      "Bold Roman face",
+      "Italic Roman face",
+      "Scoped Sans Serif block",
+      "Scoped Monospace typewriter block",
+      "Final check: Base Roman Regular restored"
+    ],
+    "check_type": "native_styles",
+    "min_ink_pixels": 1000
+  },
+  {
+    "name": "boxes_forms",
+    "description": "Complex layout with tables, boxes, CJK punctuation, and reusable PDF Form XObjects",
+    "dir": "boxes_forms",
+    "main_tex": "main.tex",
+    "engine": "xelatex",
+    "reference_engine": "xelatex",
+    "required_fonts": [
+      "LMRoman",
+      "IPAexMincho"
+    ],
+    "expected_text": [
+      "Tables and Boxes Layout",
+      "Item Alpha",
+      "Item Beta",
+      "Form Badge",
+      "Reusable Form Component with IPAexMincho: フォーム再利用",
+      "日本語の枠組みテスト"
+    ],
+    "check_type": "native_boxes",
+    "min_ink_pixels": 1000
+  },
+  {
+    "name": "unioned_subsets",
+    "description": "Multi-page, multi-size, form and alias subset union: pages and forms sharing a face produce a single shared subset font program",
+    "dir": "unioned_subsets",
+    "main_tex": "main.tex",
+    "engine": "xelatex",
+    "reference_engine": "xelatex",
+    "required_fonts": [
+      "RatexSharedMincho"
+    ],
+    "expected_text": [
+      "Page 1",
+      "Ratex TrueType mapping test at normal size",
+      "Large size header using shared font program",
+      "Huge headline",
+      "Page 2",
+      "Second page using small size with shared TrueType font",
+      "Scaled alias binding using identical shared outline program",
+      "shared TrueType in Form XObject"
+    ],
+    "check_type": "unioned_subsets",
+    "min_ink_pixels": 500,
+    "min_pages": 2
+  },
+  {
+    "name": "error_missing_font",
+    "description": "Negative case: Missing font must produce a clear error and no valid PDF",
+    "dir": "error_missing_font",
+    "main_tex": "main.tex",
+    "engine": "xelatex",
+    "reference_engine": "xelatex",
+    "expect_failure": true,
+    "expected_error_substrings": [
+      "not found",
+      "cannot find font",
+      "unknown font",
+      "unable to load font",
+      "font not found"
+    ],
+    "check_type": "negative_error"
+  },
+  {
+    "name": "error_restricted_font",
+    "description": "Negative case: Font with restricted license embedding (fsType) must be rejected",
+    "dir": "error_restricted_font",
+    "main_tex": "main.tex",
+    "engine": "xelatex",
+    "reference_engine": "xelatex",
+    "expect_failure": true,
+    "expected_error_substrings": [
+      "restricted",
+      "embedding",
+      "forbidden",
+      "permission",
+      "not allowed",
+      "fstype"
+    ],
+    "check_type": "negative_error"
+  },
+  {
+    "name": "cache_invalidation",
+    "description": "Dependency tracking: Updating a local font file invalidates cache and triggers recompilation",
+    "dir": "cache_invalidation",
+    "main_tex": "main.tex",
+    "engine": "xelatex",
+    "reference_engine": "xelatex",
+    "expected_text": [
+      "Ratex pattern text: testing string"
+    ],
+    "check_type": "cache_invalidation",
+    "min_ink_pixels": 400
+  },
+  {
+    "name": "error_missing_used_glyph",
+    "description": "Negative case: Missing used glyph must produce a clear error and no valid PDF",
+    "dir": "error_missing_used_glyph",
+    "main_tex": "main.tex",
+    "engine": "xelatex",
+    "reference_engine": "xelatex",
+    "expect_failure": true,
+    "expected_error_substrings": [
+      "missing glyph",
+      "glyph not found",
+      "unmappable",
+      "undefined glyph",
+      "missing used glyph",
+      "not in font"
+    ],
+    "check_type": "negative_error"
+  },
+  {
+    "name": "error_bad_font_index",
+    "description": "Negative case: Collection FontIndex out of bounds must produce a clear error",
+    "dir": "error_bad_font_index",
+    "main_tex": "main.tex",
+    "engine": "xelatex",
+    "reference_engine": "xelatex",
+    "expect_failure": true,
+    "expected_error_substrings": [
+      "fontindex",
+      "face index",
+      "out of bounds",
+      "invalid face",
+      "collection",
+      "index"
+    ],
+    "check_type": "negative_error"
+  },
+  {
+    "name": "error_malformed_font",
+    "description": "Negative case: Malformed or corrupt font program must produce an actionable diagnostic",
+    "dir": "error_malformed_font",
+    "main_tex": "main.tex",
+    "engine": "xelatex",
+    "reference_engine": "xelatex",
+    "expect_failure": true,
+    "expected_error_substrings": [
+      "malformed",
+      "invalid font",
+      "corrupt",
+      "table",
+      "parse",
+      "sfnt",
+      "failed to load"
+    ],
+    "check_type": "negative_error"
+  },
+  {
+    "name": "error_unsupported_option",
+    "description": "Negative case: Unsupported engine capability or font option must produce an explicit diagnostic",
+    "dir": "error_unsupported_option",
+    "main_tex": "main.tex",
+    "engine": "xelatex",
+    "reference_engine": "xelatex",
+    "expect_failure": true,
+    "expected_error_substrings": [
+      "unsupported",
+      "vertical",
+      "capability",
+      "not supported",
+      "invalid option"
+    ],
+    "check_type": "negative_error"
+  },
+  {
+    "name": "error_unavailable_style",
+    "description": "Negative case: Requesting an unavailable real style without synthetic fallback must produce an error",
+    "dir": "error_unavailable_style",
+    "main_tex": "main.tex",
+    "engine": "xelatex",
+    "reference_engine": "xelatex",
+    "expect_failure": true,
+    "expected_error_substrings": [
+      "unavailable",
+      "style",
+      "bold",
+      "face",
+      "not found",
+      "cannot find"
+    ],
+    "check_type": "negative_error"
+  }
+]

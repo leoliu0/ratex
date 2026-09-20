@@ -28,7 +28,7 @@ impl Token {
     #[inline]
     pub fn char(cc: u8, c: u32) -> Token {
         debug_assert!(cc < 16);
-        Token(((cc as u32) << 24) | c)
+        Token(((cc as u32) << 24) | c | if c > 255 { 0x0080_0000 } else { 0 })
     }
     #[inline]
     pub fn is_char(&self) -> bool {
@@ -42,7 +42,31 @@ impl Token {
     /// character code, valid only for char tokens
     #[inline]
     pub fn chr(&self) -> u32 {
-        self.0 & 0x00FF_FFFF
+        self.0 & 0x007F_FFFF
+    }
+    /// A decoded scalar, distinguished from legacy UTF-8 source bytes.
+    #[inline]
+    pub fn unicode_char(cc: u8, scalar: u32) -> Token {
+        let mut token = Self::char(cc, scalar);
+        if scalar > 127 {
+            token.0 |= 0x0080_0000;
+        }
+        token
+    }
+
+    #[inline]
+    pub fn is_unicode_char(self) -> bool {
+        self.is_char() && self.0 & 0x0080_0000 != 0
+    }
+
+    pub(crate) fn append_character_bytes(self, bytes: &mut Vec<u8>) {
+        if self.is_unicode_char() {
+            if let Some(character) = char::from_u32(self.chr()) {
+                bytes.extend_from_slice(character.encode_utf8(&mut [0u8; 4]).as_bytes());
+            }
+        } else {
+            bytes.push(self.chr() as u8);
+        }
     }
     #[inline]
     pub fn other(c: u8) -> Token {

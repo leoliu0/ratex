@@ -43,17 +43,24 @@ fn test_preamble_format_fast_boot() {
     let mut eng1 = Engine::new(false);
     let fmt_bytes = include_bytes!("../../tex-cli/assets/default.fmt.zst");
     tex_core::format::load_format_bytes_into(fmt_bytes, &mut eng1).unwrap();
-    eng1.input.push_file("p.tex".to_string(), br"\documentclass{article}\usepackage{amsmath}".to_vec());
+    eng1.input.push_file(
+        "p.tex".to_string(),
+        br"\documentclass{article}\usepackage{amsmath}".to_vec(),
+    );
     eng1.run();
     assert_eq!(tex_core::format::check_dumpable(&eng1), Ok(()));
-    
+
     let tmp = std::env::temp_dir().join(format!("preamble_fast_boot_{}.fmt", std::process::id()));
     let fmt_path = tmp.as_path();
     tex_core::format::save_format(&eng1, fmt_path).expect("save preamble");
 
     let mut eng2 = Engine::new(false);
     tex_core::format::load_format_into(fmt_path, &mut eng2).expect("load preamble");
-    eng2.input.push_file("b.tex".to_string(), br"\begin{document} Math: $\begin{pmatrix} a & b \\ c & d \end{pmatrix}$ \end{document}".to_vec());
+    eng2.input.push_file(
+        "b.tex".to_string(),
+        br"\begin{document} Math: $\begin{pmatrix} a & b \\ c & d \end{pmatrix}$ \end{document}"
+            .to_vec(),
+    );
     eng2.run();
     let _ = std::fs::remove_file(fmt_path);
     assert_eq!(eng2.error_count, 0);

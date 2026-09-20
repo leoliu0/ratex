@@ -229,14 +229,14 @@ struct LinkFrame {
 pub struct RenderCtx<'a> {
     pub eng: &'a mut Engine,
     pub content: String,
-    pub used_fonts: Vec<(u16, u16)>, // (engine font id, pdf font resource num)
+    pub used_fonts: Vec<(usize, u16)>, // (engine font/binding key, PDF resource number)
     pub page_height_bp: f64,
-    pub cur_font: u16,
+    pub cur_font: usize,
     pub cur_pdf_font: u16,
     links: Vec<LinkFrame>,
     pub annots: Vec<Annot>,
     pub dests: Vec<crate::pdfout::Dest>,
-    pub page_fonts: Vec<(u16, u16)>, // (engine font id, resource num)
+    pub page_fonts: Vec<(usize, u16)>, // (engine font/binding key, resource number)
     // containing-box context for leaders grids and null-rule sentinels (sp)
     pub left_edge_sp: i64,
     pub box_w_sp: i64,
@@ -247,6 +247,9 @@ pub struct RenderCtx<'a> {
     // deltas accumulated on the integer sp raster exactly as pdfTeX does.
     doing_text: bool,
     doing_string: bool,
+    doing_hex_string: bool,
+    advance_cache: std::collections::HashMap<(u16, u32), i64>,
+    font_programs: std::collections::HashMap<u16, std::rc::Rc<crate::font_program::FontProgram>>,
     cur_tm_a: i32,
     pdf_f: u16,
     last_f: u16,
@@ -269,6 +272,7 @@ pub struct RenderCtx<'a> {
     pos_stack: Vec<SavePoint>,
     pub color_stack: Vec<String>,
     pub display_list: crate::boxes::DisplayList,
+    cjk_text: Option<char>,
 }
 
 #[inline]
@@ -371,6 +375,9 @@ impl Engine {
             box_d_sp: 0,
             doing_text: false,
             doing_string: false,
+            doing_hex_string: false,
+            advance_cache: std::collections::HashMap::new(),
+            font_programs: std::collections::HashMap::new(),
             cur_tm_a: 0,
             pdf_f: 0,
             last_f: 0,
@@ -388,6 +395,7 @@ impl Engine {
             pos_stack: Vec::new(),
             color_stack: Vec::new(),
             display_list: crate::boxes::DisplayList::new(),
+            cjk_text: None,
         }
     }
 
@@ -462,7 +470,13 @@ impl Engine {
                         let x_sp = bp_to_sp(*x_bp);
                         let y_from_top_bp = (h_bp - *y_bp).max(0.0);
                         let y_sp = bp_to_sp(y_from_top_bp);
-                        ctx.eng.synctex.record_point(page_num, *source_file_id, *source_line, x_sp as i64, y_sp as i64);
+                        ctx.eng.synctex.record_point(
+                            page_num,
+                            *source_file_id,
+                            *source_line,
+                            x_sp as i64,
+                            y_sp as i64,
+                        );
                     }
                 }
             }
@@ -477,10 +491,7 @@ impl Engine {
             width_bp: w_bp,
             height_bp: h_bp,
             annots: std::mem::take(&mut ctx.annots),
-            fonts: std::mem::take(&mut ctx.page_fonts)
-                .into_iter()
-                .map(|(id, num)| (id as usize, num))
-                .collect(),
+            fonts: std::mem::take(&mut ctx.page_fonts),
             dests: std::mem::take(&mut ctx.dests),
             attr_extra: ctx.eng.pdf_page_attr.as_bytes().to_vec(),
             resources_extra: ctx.eng.pdf_page_resources.clone(),
@@ -495,7 +506,8 @@ impl Engine {
         h: i32,
         d: i32,
     ) -> (Vec<u8>, Vec<(usize, u16)>) {
-        let mut ctx = self.new_ctx((h + d) as i64);
+        // Form coordinates are baseline-relative: the dictionary spans [-d, h].
+        let mut ctx = self.new_ctx(h as i64);
         // pdfTeX `pdfshipoutbegin(false)` for forms: matrix/annotation
         // tracking is page-shipout only.
         ctx.page_mode = false;
@@ -519,13 +531,7 @@ impl Engine {
                     .map(crate::input::SourceMark::to_context),
             );
         }
-        (
-            ctx.content.into_bytes(),
-            ctx.page_fonts
-                .into_iter()
-                .map(|(id, num)| (id as usize, num))
-                .collect(),
-        )
+        (ctx.content.into_bytes(), ctx.page_fonts)
     }
 }
 
@@ -749,6 +755,17 @@ impl<'a> RenderCtx<'a> {
                         set,
                     );
                 }
+                Node::NativeGlyphRun {
+                    run,
+                    start,
+                    end,
+                    height,
+                    depth,
+                    ..
+                } => {
+                    self.emit_native_glyph_run_sp(run, *start, *end, x, cur_y + *height as i64);
+                    cur_y += (*height + *depth) as i64;
+                }
                 Node::Leaders { glue, kind, body } => {
                     let adv = glue_advance_sp(
                         glue.width,
@@ -836,6 +853,16 @@ impl<'a> RenderCtx<'a> {
                     let adv = self.font_lig_advance_sp(*font, *lig_width);
                     self.emit_char_sp(*font, *c, cur_x, y, 0);
                     cur_x += adv;
+                }
+                Node::NativeGlyphRun {
+                    run,
+                    start,
+                    end,
+                    width,
+                    ..
+                } => {
+                    self.emit_native_glyph_run_sp(run, *start, *end, cur_x, y);
+                    cur_x += *width as i64;
                 }
                 Node::Glue(g) => {
                     let adv = glue_advance_sp(
@@ -927,6 +954,16 @@ impl<'a> RenderCtx<'a> {
                                 let adv = self.font_char_advance_sp(*font, *c);
                                 self.emit_char_sp(*font, *c, cur_x, y, 0);
                                 cur_x += adv;
+                            }
+                            Node::NativeGlyphRun {
+                                run,
+                                start,
+                                end,
+                                width,
+                                ..
+                            } => {
+                                self.emit_native_glyph_run_sp(run, *start, *end, cur_x, y);
+                                cur_x += *width as i64;
                             }
                             other => {
                                 let single: NodeList = vec![other.clone()];
@@ -1120,7 +1157,8 @@ impl<'a> RenderCtx<'a> {
         }
     }
 
-    fn ensure_font(&mut self, f: u16) -> u16 {
+    fn ensure_font(&mut self, f: u16, binding: usize) -> u16 {
+        let f = crate::pdfout::font_resource_key(f, binding);
         if self.cur_font == f && self.cur_pdf_font != 0 {
             return self.cur_pdf_font;
         }
@@ -1129,7 +1167,11 @@ impl<'a> RenderCtx<'a> {
             self.cur_pdf_font = *num;
             return *num;
         }
-        let num = (self.used_fonts.len() + 1) as u16;
+        let Ok(num) = u16::try_from(self.used_fonts.len() + 1) else {
+            self.eng
+                .error("PDF page exceeds the supported font resource count");
+            return 0;
+        };
         self.used_fonts.push((f, num));
         self.page_fonts.push((f, num));
         self.cur_font = f;
@@ -1193,11 +1235,16 @@ impl<'a> RenderCtx<'a> {
         self.last_f_size = 0;
         self.doing_string = false;
         self.cur_tm_a = 0;
+        self.doing_hex_string = false;
     }
 
     /// pdfTeX `pdf_end_string`.
     fn end_string(&mut self) {
-        if self.doing_string {
+        if self.doing_hex_string {
+            self.content.push_str(">]TJ");
+            self.doing_hex_string = false;
+            self.doing_string = false;
+        } else if self.doing_string {
             self.content.push_str(")]TJ");
             self.doing_string = false;
         }
@@ -1205,12 +1252,15 @@ impl<'a> RenderCtx<'a> {
 
     /// pdfTeX `pdf_end_string_nl`.
     fn end_string_nl(&mut self) {
-        if self.doing_string {
+        if self.doing_hex_string {
+            self.content.push_str(">]TJ\n");
+            self.doing_hex_string = false;
+            self.doing_string = false;
+        } else if self.doing_string {
             self.content.push_str(")]TJ\n");
             self.doing_string = false;
         }
     }
-
     /// pdfTeX `pdf_end_text`.
     fn end_text(&mut self) {
         if self.doing_text {
@@ -1218,6 +1268,7 @@ impl<'a> RenderCtx<'a> {
             self.content.push_str("ET\n");
             self.doing_text = false;
         }
+        self.doing_hex_string = false;
     }
 
     /// auto-expand ratio of an engine font (`get_font_auto_expand_ratio`).
@@ -1226,7 +1277,7 @@ impl<'a> RenderCtx<'a> {
     }
 
     /// pdfTeX `pdf_set_font`: dedup on (resource number, font size).
-    fn set_font(&mut self, f: u16) {
+    fn set_font(&mut self, f: u16, binding: usize) {
         self.pdf_f = f;
         let at_size_sp = self
             .eng
@@ -1242,7 +1293,7 @@ impl<'a> RenderCtx<'a> {
             .get(f as usize)
             .and_then(|ex| if ex.blink != 0 { Some(ex.blink) } else { None })
             .unwrap_or(f);
-        let num = self.ensure_font(base_f);
+        let num = self.ensure_font(base_f, binding);
         if num == self.last_f && at_size_sp == self.last_f_size {
             return;
         }
@@ -1291,15 +1342,15 @@ impl<'a> RenderCtx<'a> {
     /// `ratio` is the effective auto-expand ratio in thousandths: for a real
     /// font it is `get_font_auto_expand_ratio(f)`; a VF glyph recursed with
     /// an inherited ratio from its expanded wrapper carries it explicitly.
-    fn begin_string(&mut self, cur_h: i64, cur_v: i64, f: u16, ratio: i32) {
+    fn begin_string(&mut self, cur_h: i64, cur_v: i64, f: u16, binding: usize, ratio: i32) {
         let mut must_set_text_pos = false;
         if !self.doing_text {
             self.begin_text();
             must_set_text_pos = true;
         }
-        if self.pdf_f != f {
+        if self.pdf_f != f || self.cur_font != crate::pdfout::font_resource_key(f, binding) {
             self.end_string();
-            self.set_font(f);
+            self.set_font(f, binding);
         }
         let at_size_sp = self
             .eng
@@ -1344,7 +1395,7 @@ impl<'a> RenderCtx<'a> {
         }
         if must_set_text_pos {
             self.end_string();
-            self.set_font(f);
+            self.set_font(f, binding);
             self.set_text_pos(cur_h, cur_v, v, v_out, ratio);
         }
         let s = if must_set_text_pos { 0 } else { s };
@@ -1366,11 +1417,47 @@ impl<'a> RenderCtx<'a> {
         self.doing_string = true;
     }
 
+    fn pdf_char_width(&mut self, f: u16, character: u8) -> Result<i64, String> {
+        let key = (f, 0x1_0000 | u32::from(character));
+        if let Some(&width) = self.advance_cache.get(&key) {
+            return Ok(width);
+        }
+        let font = self
+            .eng
+            .eqtb
+            .fonts
+            .get(f as usize)
+            .cloned()
+            .ok_or_else(|| format!("Missing font {f} during shipout"))?;
+        let program = if let Some(program) = self.font_programs.get(&f) {
+            program.clone()
+        } else {
+            let program = self.eng.font_loader.program_for_font(&font)?;
+            self.font_programs.insert(f, program.clone());
+            program
+        };
+        let width = if program.is_type1() {
+            font.char_width(character) as i64
+        } else {
+            let face = program.face()?;
+            let (glyph, _) =
+                crate::font_program::legacy_glyph(&face, font.encoding.as_deref(), character)
+                    .map_err(|error| format!("Font `{}`: {error}", font.tfm_name))?;
+            let advance = face
+                .glyph_hor_advance(ttf_parser::GlyphId(glyph))
+                .unwrap_or(0) as f64;
+            let pdf_width = (advance * 1000.0 / face.units_per_em() as f64).round() as i64;
+            round_xn_over_d(font.at_size as i64, pdf_width, 1000)
+        };
+        self.advance_cache.insert(key, width);
+        Ok(width)
+    }
+
     /// pdfTeX `adv_char_width(f, c)`: advance `delta_h` on the same raster.
     /// The font id is the expanded clone (canonical `auto_expand_vf` maps
     /// VF local bases through `auto_expand_font`), so its baked width is
     /// already pre-scaled; no synthetic scaling here.
-    fn adv_char_width(&mut self, f: u16, c: u8) {
+    fn adv_char_width(&mut self, f: u16, w: i64) {
         let at_size_sp = self
             .eng
             .eqtb
@@ -1379,7 +1466,6 @@ impl<'a> RenderCtx<'a> {
             .map(|ff| ff.at_size as i64)
             .unwrap_or(0);
         let (_, m) = divide_scaled(at_size_sp, ONE_HUNDRED_BP_SP, 6);
-        let w = self.font_char_width(f, c) as i64;
         let s_out = if self.cur_tm_a == 0 {
             let (_, out) = divide_scaled(w, m, 4);
             out
@@ -1404,9 +1490,115 @@ impl<'a> RenderCtx<'a> {
         self.emit_char_sp(f, c, x_sp, v_sp, 0);
     }
 
+    fn emit_cjk_char_sp(
+        &mut self,
+        f: u16,
+        c: u8,
+        x_sp: i64,
+        v_sp: i64,
+        inherited_ratio: i32,
+        semantic_text: &str,
+    ) {
+        let at_size_sp = self
+            .eng
+            .eqtb
+            .fonts
+            .get(f as usize)
+            .map(|ff| ff.at_size as i64)
+            .unwrap_or(0);
+        let size_bp = sp_to_bp(at_size_sp);
+        let x = sp_to_bp(x_sp);
+        let y = sp_to_bp(v_sp);
+        self.note_point(x, y + 0.75 * size_bp);
+        self.note_point(x + 0.5 * size_bp, y - 0.25 * size_bp);
+        if at_size_sp <= 0 {
+            return;
+        }
+        let self_ratio = self.font_ratio(f);
+        let ratio = if self_ratio != 0 {
+            self_ratio
+        } else {
+            inherited_ratio
+        };
+        let base_f = self
+            .eng
+            .eqtb
+            .expand
+            .get(f as usize)
+            .and_then(|ex| if ex.blink != 0 { Some(ex.blink) } else { None })
+            .unwrap_or(f);
+        let advance = match self.pdf_char_width(f, c) {
+            Ok(width) => width,
+            Err(error) => {
+                self.eng.error(&error);
+                return;
+            }
+        };
+        let (binding_idx, code) =
+            self.eng
+                .pdf_doc
+                .get_or_alloc_legacy_code(base_f as usize, c, semantic_text);
+        self.begin_string(x_sp, v_sp, f, binding_idx, ratio);
+        push_pdf_char(&mut self.content, code);
+        self.adv_char_width(f, advance);
+        let x_bp = sp_to_bp(x_sp);
+        let y_bp = self.y_pdf(sp_to_bp(v_sp));
+        let merged = if let Some(crate::boxes::DisplayItem::GlyphRun {
+            font: last_f,
+            y_bp: last_y,
+            glyphs,
+            ..
+        }) = self.display_list.items.last_mut()
+        {
+            if *last_f == f && (*last_y - y_bp).abs() < 1e-3 {
+                glyphs.push(code);
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+        if !merged {
+            let file_name = self.eng.input.current_file_name();
+            let line = self.eng.input.current_file_line();
+            let file_id = if file_name.is_empty() {
+                0
+            } else {
+                self.eng.synctex.get_or_register_file(&file_name)
+            };
+            self.display_list.push(crate::boxes::DisplayItem::GlyphRun {
+                font: f,
+                x_bp,
+                y_bp,
+                glyphs: vec![code],
+                tag: None,
+                span: None,
+                source_file_id: file_id,
+                source_line: line,
+            });
+        }
+    }
+
     /// pdfTeX `output_one_char`: begin the string (emitting Tf/Tm/Td as the
     /// canonical state machine requires), print the char, advance the raster.
     fn emit_char_sp(&mut self, f: u16, c: u8, x_sp: i64, v_sp: i64, inherited_ratio: i32) {
+        let text = self.cjk_text;
+        if text.is_some() {
+            self.cjk_text = Some('\u{00A0}');
+        }
+        self.emit_char_sp_with_text(f, c, x_sp, v_sp, inherited_ratio, text);
+    }
+
+    fn emit_char_sp_with_text(
+        &mut self,
+        f: u16,
+        c: u8,
+        x_sp: i64,
+        v_sp: i64,
+        inherited_ratio: i32,
+        logical_ch: Option<char>,
+    ) {
         let at_size_sp = self
             .eng
             .eqtb
@@ -1460,21 +1652,52 @@ impl<'a> RenderCtx<'a> {
                     })
                 })
                 .and_then(|vf| vf.chars.get(c as usize).cloned().flatten());
+            let tfm_name = self
+                .eng
+                .eqtb
+                .fonts
+                .get(f as usize)
+                .map(|ff| ff.tfm_name.clone())
+                .unwrap_or_default();
             if let Some(steps) = steps {
-                for st in steps.iter() {
+                for (step_idx, st) in steps.iter().enumerate() {
                     let Some(&bfid) = bases.get(st.base as usize) else {
+                        self.eng.error(&format!(
+                            "Virtual font `{tfm_name}` references missing base font index {}",
+                            st.base
+                        ));
                         continue;
                     };
                     if bfid == u16::MAX {
+                        self.eng.error(&format!(
+                            "Virtual font `{tfm_name}` requires missing base font index {}",
+                            st.base
+                        ));
                         continue;
                     }
-                    // `vf_packet_base[f] := vf_packet_base[bf]`: the packet
-                    // offsets are reused unchanged — expansion enters only
-                    // through the local base fonts' pre-scaled widths.
-                    self.emit_char_sp(bfid, st.ch, x_sp + st.dx as i64, v_sp + st.dy as i64, ratio);
+                    let text = logical_ch.map(|ch| if step_idx > 0 { '\u{00A0}' } else { ch });
+                    // A base can itself be virtual (notably Korean Hangul).
+                    // Carry source semantics until reaching a real outline.
+                    self.emit_char_sp_with_text(
+                        bfid,
+                        st.ch,
+                        x_sp + st.dx as i64,
+                        v_sp + st.dy as i64,
+                        ratio,
+                        text,
+                    );
                 }
+            } else {
+                self.eng.error(&format!(
+                    "Virtual font `{tfm_name}` has no character packet for slot {c}"
+                ));
             }
-            return; // VF font without a packet for this char: nothing to draw
+            return;
+        }
+        if let Some(ch) = logical_ch {
+            let mut utf8 = [0; 4];
+            self.emit_cjk_char_sp(f, c, x_sp, v_sp, ratio, ch.encode_utf8(&mut utf8));
+            return;
         }
         let base_f = self
             .eng
@@ -1483,10 +1706,17 @@ impl<'a> RenderCtx<'a> {
             .get(f as usize)
             .and_then(|ex| if ex.blink != 0 { Some(ex.blink) } else { None })
             .unwrap_or(f);
+        let advance = match self.pdf_char_width(f, c) {
+            Ok(width) => width,
+            Err(error) => {
+                self.eng.error(&error);
+                return;
+            }
+        };
         self.eng.pdf_doc.record_font_char(base_f as usize, c);
-        self.begin_string(x_sp, v_sp, f, ratio);
+        self.begin_string(x_sp, v_sp, f, 0, ratio);
         push_pdf_char(&mut self.content, c);
-        self.adv_char_width(f, c);
+        self.adv_char_width(f, advance);
         let x_bp = sp_to_bp(x_sp);
         let y_bp = self.y_pdf(sp_to_bp(v_sp));
         let merged = if let Some(crate::boxes::DisplayItem::GlyphRun {
@@ -1524,6 +1754,259 @@ impl<'a> RenderCtx<'a> {
                 source_line: line,
             });
         }
+    }
+
+    fn begin_hex_string(&mut self, cur_h: i64, cur_v: i64, f: u16, binding: usize, ratio: i32) {
+        let mut must_set_text_pos = false;
+        if !self.doing_text {
+            self.begin_text();
+            must_set_text_pos = true;
+        }
+        if self.pdf_f != f
+            || self.cur_font != crate::pdfout::font_resource_key(f, binding)
+            || (self.doing_string && !self.doing_hex_string)
+        {
+            self.end_string();
+            self.set_font(f, binding);
+        }
+        let at_size_sp = self
+            .eng
+            .eqtb
+            .fonts
+            .get(f as usize)
+            .map(|ff| ff.at_size as i64)
+            .unwrap_or(0);
+        let (_, m) = divide_scaled(at_size_sp, ONE_HUNDRED_BP_SP, 6);
+        let gap = cur_h - (self.tj_start_h + self.delta_h);
+        let (s, s_out) = if self.cur_tm_a == 0 {
+            divide_scaled(gap, m, 3)
+        } else {
+            let (s, _) = divide_scaled(
+                round_xn_over_d(gap, 1000, 1000 + self.cur_tm_a as i64),
+                m,
+                3,
+            );
+            let s_out = if s.abs() < GAP_SPLIT_LIMIT {
+                let mut o = round_xn_over_d(
+                    round_xn_over_d(m, s.abs(), 1000),
+                    1000 + self.cur_tm_a as i64,
+                    1000,
+                );
+                if s < 0 {
+                    o = -o;
+                }
+                o
+            } else {
+                0
+            };
+            (s, s_out)
+        };
+        let (v, v_out) = if (cur_v - self.pdf_v).abs() >= MIN_BP_VAL {
+            divide_scaled(self.pdf_v - cur_v, ONE_HUNDRED_BP_SP, 5)
+        } else {
+            (0, 0)
+        };
+        if !must_set_text_pos {
+            must_set_text_pos = v != 0 || s.abs() >= GAP_SPLIT_LIMIT || ratio != self.cur_tm_a;
+        }
+        if must_set_text_pos {
+            self.end_string();
+            self.set_font(f, binding);
+            self.set_text_pos(cur_h, cur_v, v, v_out, ratio);
+        }
+        let s = if must_set_text_pos { 0 } else { s };
+        let s_out = if must_set_text_pos { 0 } else { s_out };
+        if !self.doing_string {
+            self.content.push_str(" [");
+            if s == 0 {
+                self.content.push('<');
+            }
+        }
+        if s != 0 {
+            if self.doing_hex_string {
+                self.content.push('>');
+            } else if self.doing_string {
+                self.content.push(')');
+            }
+            push_i64(&mut self.content, -s);
+            self.content.push('<');
+            self.delta_h += s_out;
+        }
+        self.doing_string = true;
+        self.doing_hex_string = true;
+    }
+
+    fn native_glyph_nom_advance_sp(&mut self, fid: u16, gid: u16) -> i64 {
+        if let Some(&adv) = self.advance_cache.get(&(fid, u32::from(gid))) {
+            return adv;
+        }
+        let at_size_sp = self
+            .eng
+            .eqtb
+            .fonts
+            .get(fid as usize)
+            .map(|ff| ff.at_size as i64)
+            .unwrap_or(0);
+        let adv_sp = if at_size_sp <= 0 {
+            0
+        } else if let Some(native) = self.eng.font_loader.native_fonts.get(&fid) {
+            if let Ok(face) = native.program.face() {
+                let upem = face.units_per_em() as i64;
+                if upem > 0 {
+                    let adv = face
+                        .glyph_hor_advance(ttf_parser::GlyphId(gid))
+                        .unwrap_or(0) as f64;
+                    let pdf_width = (adv * 1000.0 / upem as f64).round() as i64;
+                    round_xn_over_d(at_size_sp, pdf_width, 1000)
+                } else {
+                    0
+                }
+            } else {
+                0
+            }
+        } else {
+            0
+        };
+        self.advance_cache.insert((fid, u32::from(gid)), adv_sp);
+        adv_sp
+    }
+
+    fn emit_native_glyph_run_sp(
+        &mut self,
+        run: &std::rc::Rc<crate::native_layout::NativeRun>,
+        start: usize,
+        end: usize,
+        cur_x: i64,
+        y: i64,
+    ) {
+        if start >= end || start >= run.glyphs.len() {
+            return;
+        }
+        let bound_end = end.min(run.glyphs.len());
+        let fid = run.font;
+        let at_size_sp = self
+            .eng
+            .eqtb
+            .fonts
+            .get(fid as usize)
+            .map(|ff| ff.at_size as i64)
+            .unwrap_or(0);
+        if at_size_sp <= 0 {
+            return;
+        }
+        let (_, m) = divide_scaled(at_size_sp, ONE_HUNDRED_BP_SP, 6);
+        let ratio = self.font_ratio(fid);
+        let file_name = self.eng.input.current_file_name();
+        let line = self.eng.input.current_file_line();
+        let file_id = if file_name.is_empty() {
+            0
+        } else {
+            self.eng.synctex.get_or_register_file(&file_name)
+        };
+        let x_bp = sp_to_bp(cur_x);
+        let y_bp = self.y_pdf(sp_to_bp(y));
+        let size_bp = sp_to_bp(at_size_sp);
+        self.note_point(x_bp, y_bp + 0.75 * size_bp);
+
+        self.display_list
+            .push(crate::boxes::DisplayItem::NativeGlyphRun {
+                run: run.clone(),
+                start,
+                end: bound_end,
+                x_bp,
+                y_bp,
+                tag: None,
+                span: None,
+                source_file_id: file_id,
+                source_line: line,
+            });
+
+        if self.eng.synctex_enabled && file_id > 0 && line > 0 {
+            let page_num = (self.eng.pdf_doc.pages.len() + 1) as u32;
+            let y_from_top_sp = (self.page_height_sp - y).max(0);
+            self.eng
+                .synctex
+                .record_point(page_num, file_id, line, cur_x, y_from_top_sp);
+        }
+
+        let mut pen_x = cur_x;
+        let mut idx = start;
+        while idx < bound_end {
+            let c_start = run.glyphs[idx].cluster_start;
+            let c_end = run.glyphs[idx].cluster_end;
+            let mut j = idx + 1;
+            while j < bound_end
+                && run.glyphs[j].cluster_start == c_start
+                && run.glyphs[j].cluster_end == c_end
+            {
+                j += 1;
+            }
+            let cluster_glyph_count = j - idx;
+            let extraction = if (c_start as usize) < run.text.len()
+                && (c_end as usize) <= run.text.len()
+                && c_start <= c_end
+            {
+                &run.text[c_start as usize..c_end as usize]
+            } else {
+                ""
+            };
+
+            if cluster_glyph_count > 1 {
+                self.end_string();
+                let mut actual_hex = String::from("FEFF");
+                for u in extraction.encode_utf16() {
+                    use std::fmt::Write;
+                    let _ = write!(&mut actual_hex, "{:04X}", u);
+                }
+                self.content.push_str("/Span << /ActualText <");
+                self.content.push_str(&actual_hex);
+                self.content.push_str("> >> BDC\n");
+            }
+
+            for k in idx..j {
+                let g = &run.glyphs[k];
+                let txt = if cluster_glyph_count == 1 {
+                    extraction
+                } else if k == idx {
+                    extraction
+                } else {
+                    ""
+                };
+                let (binding_idx, code) =
+                    self.eng
+                        .pdf_doc
+                        .get_or_alloc_native_code(fid as usize, g.glyph_id, txt);
+                let glyph_target_x = pen_x + g.x_offset as i64;
+                let glyph_target_y = y - g.y_offset as i64;
+
+                self.begin_hex_string(glyph_target_x, glyph_target_y, fid, binding_idx, ratio);
+                use std::fmt::Write;
+                let _ = write!(&mut self.content, "{:04X}", code);
+
+                let nom_sp = self.native_glyph_nom_advance_sp(fid, g.glyph_id);
+                let (_, nom_out) = if self.cur_tm_a == 0 {
+                    divide_scaled(nom_sp, m, 4)
+                } else {
+                    let (_, out) = divide_scaled(
+                        round_xn_over_d(nom_sp, 1000, 1000 + self.cur_tm_a as i64),
+                        m,
+                        4,
+                    );
+                    (0, out)
+                };
+                self.delta_h += nom_out;
+                pen_x += g.x_advance as i64;
+            }
+
+            if cluster_glyph_count > 1 {
+                self.end_string();
+                self.content.push_str("EMC\n");
+            }
+
+            idx = j;
+        }
+
+        self.note_point(sp_to_bp(pen_x), y_bp - 0.25 * size_bp);
     }
 
     /// pdfTeX `pdf_set_rule`: close the text object, then draw inside a
@@ -1635,13 +2118,12 @@ impl<'a> RenderCtx<'a> {
                 self.push_bp(self.origin_v - (v_sp + *d as i64));
                 self.content.push_str(&format!(" cm /Im{obj} Do\nQ\n"));
             }
-            PdfRefXForm { obj, w: _, h: _, d } => {
+            PdfRefXForm { obj, .. } => {
                 self.end_text();
-                let v_sp = cur_v;
                 self.content.push_str("q\n1 0 0 1 ");
                 self.push_bp(cur_h - self.origin_h);
                 self.content.push(' ');
-                self.push_bp(self.origin_v - (v_sp + *d as i64));
+                self.push_bp(self.origin_v - cur_v);
                 self.content.push_str(&format!(" cm /Fm{obj} Do\nQ\n"));
             }
             PdfSetMatrix { matrix, source } => {
@@ -1882,11 +2364,15 @@ impl<'a> RenderCtx<'a> {
             } => {
                 let p = path.clone();
                 let src = source.clone();
-                self.eng.exec_openout(*stream, &p, *create_parent, src.as_ref());
+                self.eng
+                    .exec_openout(*stream, &p, *create_parent, src.as_ref());
             }
             CloseOut { stream, source } => {
                 let src = source.clone();
                 self.eng.exec_closeout(*stream, src.as_ref());
+            }
+            CjkText(text) => {
+                self.cjk_text = *text;
             }
             _ => {}
         }

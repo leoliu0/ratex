@@ -439,8 +439,8 @@ impl Engine {
                         break 'scan_loop;
                     }
                     Some(Prim::LcCodeP) => {
-                        let c = self.scan_character_table_index("\\lccode");
-                        v = self.eqtb.lc_code[c] as i64;
+                        let c = self.scan_unicode_character_code("\\lccode");
+                        v = self.eqtb.case_code(c, false) as i64;
                         break 'scan_loop;
                     }
                     Some(Prim::SfCodeP) => {
@@ -449,8 +449,8 @@ impl Engine {
                         break 'scan_loop;
                     }
                     Some(Prim::UcCodeP) => {
-                        let c = self.scan_character_table_index("\\uccode");
-                        v = self.eqtb.uc_code[c] as i64;
+                        let c = self.scan_unicode_character_code("\\uccode");
+                        v = self.eqtb.case_code(c, true) as i64;
                         break 'scan_loop;
                     }
                     Some(Prim::IntP(p)) => {
@@ -754,13 +754,20 @@ impl Engine {
                 // from system local time (or SOURCE_DATE_EPOCH in UTC when set).
                 let (year, month, day, time_mins) = if let Some(epoch) = tex_kpse::fs::epoch() {
                     crate::clock::utc(epoch as i64)
-                } else if let Some(epoch) = std::env::var("SOURCE_DATE_EPOCH").ok().and_then(|s| s.trim().parse().ok()) {
+                } else if let Some(epoch) = std::env::var("SOURCE_DATE_EPOCH")
+                    .ok()
+                    .and_then(|s| s.trim().parse().ok())
+                {
                     crate::clock::utc(epoch)
                 } else {
                     #[cfg(not(target_arch = "wasm32"))]
-                    { Self::local_clock() }
+                    {
+                        Self::local_clock()
+                    }
                     #[cfg(target_arch = "wasm32")]
-                    { crate::clock::utc(0) }
+                    {
+                        crate::clock::utc(0)
+                    }
                 };
                 match p {
                     IntParam::Time => time_mins,
@@ -871,6 +878,23 @@ impl Engine {
                 &format!(
                     "Character code {character} is out of range for {command}; expected 0 through 255 and used character 0"
                 ),
+                source,
+            );
+            0
+        }
+    }
+
+    pub(crate) fn scan_unicode_character_code(&mut self, command: &str) -> u32 {
+        let (character, source) = self.scan_int_with_source();
+        if u32::try_from(character)
+            .ok()
+            .and_then(char::from_u32)
+            .is_some()
+        {
+            character as u32
+        } else {
+            self.error_at(
+                &format!("Invalid Unicode scalar {character} for {command}; used character 0"),
                 source,
             );
             0
@@ -1933,16 +1957,16 @@ impl Engine {
                 emit_the!(self.eqtb.del_code[c].to_string().as_bytes());
             }
             Some(Prim::LcCodeP) => {
-                let c = self.scan_character_table_index("\\lccode");
-                emit_the!(self.eqtb.lc_code[c].to_string().as_bytes());
+                let c = self.scan_unicode_character_code("\\lccode");
+                emit_the!(self.eqtb.case_code(c, false).to_string().as_bytes());
             }
             Some(Prim::SfCodeP) => {
                 let c = self.scan_character_table_index("\\sfcode");
                 emit_the!(self.eqtb.sf_code[c].to_string().as_bytes());
             }
             Some(Prim::UcCodeP) => {
-                let c = self.scan_character_table_index("\\uccode");
-                emit_the!(self.eqtb.uc_code[c].to_string().as_bytes());
+                let c = self.scan_unicode_character_code("\\uccode");
+                emit_the!(self.eqtb.case_code(c, true).to_string().as_bytes());
             }
             Some(
                 p @ (Prim::FontCharWd | Prim::FontCharHt | Prim::FontCharDp | Prim::FontCharIc),
@@ -2475,6 +2499,18 @@ impl Engine {
     fn scan_font_char_dimen(&mut self, p: Prim) -> i32 {
         let font = self.scan_font_id();
         let (character, source) = self.scan_int_with_source();
+        if let Ok(scalar) = u32::try_from(character) {
+            if let Some((width, height, depth, italic)) = self.native_char_dimensions(font, scalar)
+            {
+                return match p {
+                    Prim::FontCharWd => width,
+                    Prim::FontCharHt => height,
+                    Prim::FontCharDp => depth,
+                    Prim::FontCharIc => italic,
+                    _ => unreachable!(),
+                };
+            }
+        }
         let c = if (0..=255).contains(&character) {
             character as u8
         } else {
@@ -3465,8 +3501,13 @@ mod showthe_mark_tests {
             outer: false,
             protected: true,
         };
-        engine.eqtb.assign(id, Equiv::Macro(std::rc::Rc::new(m)), true);
-        assert_eq!(engine.meaning_of(Token::from_cs(id)), "\\protected\\long macro:->");
+        engine
+            .eqtb
+            .assign(id, Equiv::Macro(std::rc::Rc::new(m)), true);
+        assert_eq!(
+            engine.meaning_of(Token::from_cs(id)),
+            "\\protected\\long macro:->"
+        );
 
         let m_plo = crate::eqtb::Macro {
             replacement: Default::default(),
@@ -3479,8 +3520,13 @@ mod showthe_mark_tests {
             outer: true,
             protected: true,
         };
-        engine.eqtb.assign(id, Equiv::Macro(std::rc::Rc::new(m_plo)), true);
-        assert_eq!(engine.meaning_of(Token::from_cs(id)), "\\protected\\long\\outer macro:->");
+        engine
+            .eqtb
+            .assign(id, Equiv::Macro(std::rc::Rc::new(m_plo)), true);
+        assert_eq!(
+            engine.meaning_of(Token::from_cs(id)),
+            "\\protected\\long\\outer macro:->"
+        );
     }
 
     #[test]
@@ -3501,8 +3547,13 @@ mod showthe_mark_tests {
             outer: false,
             protected: true,
         };
-        engine.eqtb.assign(id, Equiv::Macro(std::rc::Rc::new(m)), true);
-        assert_eq!(engine.meaning_of(Token::from_cs(id)), "/protected/long macro:->");
+        engine
+            .eqtb
+            .assign(id, Equiv::Macro(std::rc::Rc::new(m)), true);
+        assert_eq!(
+            engine.meaning_of(Token::from_cs(id)),
+            "/protected/long macro:->"
+        );
     }
 
     #[test]
@@ -3547,10 +3598,22 @@ mod showthe_mark_tests {
     fn pagediscards_and_splitdiscards_are_registered_primitives() {
         let mut engine = Engine::new(true);
         engine.init_primitives();
-        let pd = engine.cs.lookup(b"pagediscards").expect("pagediscards primitive");
-        assert!(matches!(engine.eqtb.get(pd), Some(Equiv::Prim(crate::prim::Prim::PageDiscards))));
-        let sd = engine.cs.lookup(b"splitdiscards").expect("splitdiscards primitive");
-        assert!(matches!(engine.eqtb.get(sd), Some(Equiv::Prim(crate::prim::Prim::SplitDiscards))));
+        let pd = engine
+            .cs
+            .lookup(b"pagediscards")
+            .expect("pagediscards primitive");
+        assert!(matches!(
+            engine.eqtb.get(pd),
+            Some(Equiv::Prim(crate::prim::Prim::PageDiscards))
+        ));
+        let sd = engine
+            .cs
+            .lookup(b"splitdiscards")
+            .expect("splitdiscards primitive");
+        assert!(matches!(
+            engine.eqtb.get(sd),
+            Some(Equiv::Prim(crate::prim::Prim::SplitDiscards))
+        ));
     }
 
     #[test]
@@ -3599,7 +3662,13 @@ mod showthe_mark_tests {
     fn lastnodetype_character_node_is_zero() {
         let mut engine = Engine::new(true);
         engine.mode = crate::engine::Mode::RestrictedHorizontal;
-        engine.cur_list.push(crate::boxes::Node::Char { c: b'A', font: 0 });
-        assert_eq!(engine.last_node_type_value(), 0, "lastnodetype for character node should be 0");
+        engine
+            .cur_list
+            .push(crate::boxes::Node::Char { c: b'A', font: 0 });
+        assert_eq!(
+            engine.last_node_type_value(),
+            0,
+            "lastnodetype for character node should be 0"
+        );
     }
 }

@@ -4,8 +4,8 @@
 //! and rasterizes them to RGBA PNG streams in memory so \includegraphics can
 //! embed SVG images directly into PDF documents without calling Inkscape.
 
-use std::io::Cursor;
 use png::Encoder;
+use std::io::Cursor;
 
 pub struct SvgInfo {
     pub width: u32,
@@ -140,7 +140,9 @@ mod tests {
     #[test]
     fn test_is_svg() {
         assert!(is_svg(b"<svg width=\"100\" height=\"100\"></svg>"));
-        assert!(is_svg(b"<?xml version=\"1.0\"?>\n<svg viewBox=\"0 0 50 50\"></svg>"));
+        assert!(is_svg(
+            b"<?xml version=\"1.0\"?>\n<svg viewBox=\"0 0 50 50\"></svg>"
+        ));
         assert!(!is_svg(b"\x89PNG\r\n\x1a\n"));
         assert!(!is_svg(b"%PDF-1.5"));
     }

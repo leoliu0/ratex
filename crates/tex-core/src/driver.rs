@@ -255,94 +255,7 @@ pub fn insert_everyjob(eng: &mut Engine) {
 }
 
 pub fn finish_pdf(eng: &mut Engine, optimize_pdf_size: bool) -> Result<Vec<u8>, String> {
-    // embed fonts used
-    use std::collections::BTreeSet;
-    let mut used: BTreeSet<u16> = BTreeSet::new();
-    for fonts in eng
-        .pdf_doc
-        .pages
-        .iter()
-        .map(|p| &p.fonts)
-        .chain(eng.pdf_doc.form_fonts.iter().map(|(_, fonts)| fonts))
-    {
-        for (fid, _) in fonts {
-            used.insert(*fid as u16);
-        }
-    }
-    let mut fidx: Vec<(u16, usize)> = Vec::new();
-    for (n, fid) in used.iter().enumerate() {
-        if let Some(font) = eng.eqtb.fonts.get(*fid as usize) {
-            let pfb_bytes = font
-                .type1_path
-                .as_ref()
-                .and_then(|name| eng.font_loader.kpse.read(name, tex_kpse::Format::Type1));
-            let widths = (0..=255u8)
-                .map(|c| {
-                    let w = font.char_width(c);
-                    if font.at_size != 0 {
-                        ((w as i64 * 10_000 + font.at_size as i64 / 2) / font.at_size as i64) as i32
-                    } else {
-                        0
-                    }
-                })
-                .collect();
-            let mut ef = pdffile::make_embed_font(
-                font.map_fontname
-                    .clone()
-                    .unwrap_or_else(|| font.tfm_name.clone()),
-                pfb_bytes.as_deref(),
-                font.encoding.as_deref(),
-                0,
-                255,
-                widths,
-            );
-            pdffile::set_font_usage(
-                &mut ef,
-                eng.pdf_doc
-                    .font_chars
-                    .get(&(*fid as usize))
-                    .copied()
-                    .unwrap_or([0; 4]),
-            );
-            if font.at_size != 0 {
-                let to_units =
-                    |val: i32| -> f64 { (val as f64 * 1000.0 / font.at_size as f64).round() };
-                let (ta, td, tc, ts) = crate::pdf_fonts::tfm_descriptor(font);
-                let asc = to_units(font.char_height(b'd'));
-                let cap = to_units(font.char_height(b'H'));
-                let desc = -to_units(font.char_depth(b'p'));
-                ef.ascent = if asc > 0.0 { asc } else { ta };
-                ef.cap_height = if cap > 0.0 { cap } else { tc };
-                ef.descent = if ef.ascent == 0.0 {
-                    0.0
-                } else if desc != 0.0 {
-                    desc
-                } else {
-                    td
-                };
-                if ef.ascent - ef.descent > 3000.0 {
-                    ef.descent = ef.ascent - 3000.0;
-                }
-                ef.stem_v = ts.max(100.0);
-            }
-            eng.pdf_doc.fonts.push(ef);
-            fidx.insert(n, (*fid, n));
-        }
-    }
-    // remap page font indices: pages reference engine font ids; convert to doc font index
-    for fonts in eng
-        .pdf_doc
-        .pages
-        .iter_mut()
-        .map(|p| &mut p.fonts)
-        .chain(eng.pdf_doc.form_fonts.iter_mut().map(|(_, fonts)| fonts))
-    {
-        for pf in fonts.iter_mut() {
-            if let Some(pos) = fidx.iter().find(|(fid, _)| *fid == pf.0 as u16) {
-                pf.0 = pos.1;
-            }
-        }
-    }
+    eng.embed_used_fonts()?;
     // embed image XObjects
     struct ImageJob<'a> {
         object: i32,
@@ -450,7 +363,5 @@ pub fn finish_pdf(eng: &mut Engine, optimize_pdf_size: bool) -> Result<Vec<u8>, 
     for image in embedded {
         eng.pdf_doc.objects.push((image.obj_num, image.bytes));
     }
-    let pdf = pdffile::write_pdf(&eng.pdf_doc);
-
-    Ok(pdf)
+    pdffile::write_pdf(&eng.pdf_doc)
 }

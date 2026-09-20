@@ -60,6 +60,7 @@ impl Engine {
             EndGroup => self.end_semi_simple(),
             BGroup => self.begin_group(false),
             EGroup => self.end_group(),
+            NoBoundary => self.no_boundary(),
 
             Par => self.par_primitive(),
             Indent => self.start_paragraph(true),
@@ -363,27 +364,34 @@ impl Engine {
                     self.eqtb.assign_del_code(c as u8, v, g);
                 }
             }
-            LcCodeP => {
-                let g = self.take_assignment_prefixes("\\lccode");
-                let (c, character_source) = self.scan_int_with_source();
+            LcCodeP | UcCodeP => {
+                let uppercase = p == UcCodeP;
+                let command = if uppercase { "\\uccode" } else { "\\lccode" };
+                let global = self.take_assignment_prefixes(command);
+                let (character, character_source) = self.scan_int_with_source();
                 self.scan_optional_equals();
-                let (v, value_source) = self.scan_int_with_source();
-                if !(0..=255).contains(&c) {
+                let (value, value_source) = self.scan_int_with_source();
+                if u32::try_from(character)
+                    .ok()
+                    .and_then(char::from_u32)
+                    .is_none()
+                {
                     self.error_at(
                         &format!(
-                            "Character code {c} is out of range for \\lccode; expected 0 through 255; assignment ignored"
+                            "Invalid Unicode scalar {character} for {command}; assignment ignored"
                         ),
                         character_source,
                     );
-                } else if !(0..=255).contains(&v) {
+                } else if u32::try_from(value).ok().and_then(char::from_u32).is_none() {
                     self.error_at(
                         &format!(
-                            "Lowercase code {v} is out of range; expected 0 through 255; assignment ignored"
+                            "Invalid Unicode scalar {value} for {command}; assignment ignored"
                         ),
                         value_source,
                     );
                 } else {
-                    self.eqtb.assign_lc_code(c as u8, v as u8, g);
+                    self.eqtb
+                        .assign_case_code(character as u32, value as u32, uppercase, global);
                 }
             }
             SfCodeP => {
@@ -407,29 +415,6 @@ impl Engine {
                     );
                 } else {
                     self.eqtb.assign_sf_code(c as u8, v as u16, g);
-                }
-            }
-            UcCodeP => {
-                let g = self.take_assignment_prefixes("\\uccode");
-                let (c, character_source) = self.scan_int_with_source();
-                self.scan_optional_equals();
-                let (v, value_source) = self.scan_int_with_source();
-                if !(0..=255).contains(&c) {
-                    self.error_at(
-                        &format!(
-                            "Character code {c} is out of range for \\uccode; expected 0 through 255; assignment ignored"
-                        ),
-                        character_source,
-                    );
-                } else if !(0..=255).contains(&v) {
-                    self.error_at(
-                        &format!(
-                            "Uppercase code {v} is out of range; expected 0 through 255; assignment ignored"
-                        ),
-                        value_source,
-                    );
-                } else {
-                    self.eqtb.assign_uc_code(c as u8, v as u8, g);
                 }
             }
             Lowercase | Uppercase => {
@@ -630,22 +615,56 @@ impl Engine {
                 let detail = self.show_ifs_description();
                 self.report_inspection("\\showifs", detail, source);
             }
-            Char => {
+            Char | RatexLiteralChar => {
+                if p == RatexLiteralChar && self.mode.is_v() {
+                    self.push_token(Token::from_cs(id));
+                    self.start_paragraph(true);
+                    return;
+                }
                 let (value, source) = self.scan_int_with_source();
-                let character = if (0..=255).contains(&value) {
-                    value as u8
+                let maximum = if self.native_text_active() {
+                    0x10ffff
+                } else {
+                    255
+                };
+                let character = if (0..=maximum).contains(&value)
+                    && char::from_u32(value as u32).is_some()
+                {
+                    value as u32
                 } else {
                     self.error_at(
-                        &format!(
-                            "Character code {value} is out of range for \\char; expected 0 through 255 and used 0"
-                        ),
+                        &format!("Character code {value} is out of range for \\char; expected 0 through {maximum} and used 0"),
                         source.clone(),
                     );
                     0
                 };
                 let previous = std::mem::replace(&mut self.diagnostic_source_override, source);
-                self.char_token(character, false);
+                if p != RatexLiteralChar
+                    || self.mode.is_m()
+                    || !self.append_native_literal_char(character)
+                {
+                    self.unicode_char_token(character, false);
+                }
                 self.diagnostic_source_override = previous;
+            }
+            RatexCjkText => {
+                let plane = self.scan_pdf_string();
+                let slot = self.scan_int();
+                let text = if plane.is_empty() {
+                    None
+                } else {
+                    let text = u32::from_str_radix(&plane, 16)
+                        .ok()
+                        .and_then(|plane| plane.checked_mul(256))
+                        .filter(|_| (0..=255).contains(&slot))
+                        .and_then(|plane| plane.checked_add(slot as u32))
+                        .and_then(char::from_u32);
+                    if text.is_none() {
+                        self.error("Invalid CJK Unicode plane or character slot");
+                    }
+                    text
+                };
+                self.append_whatsit(Node::Whatsit(crate::boxes::WhatIt::CjkText(text)));
             }
             Accent => {
                 match self.mode {
@@ -1898,6 +1917,23 @@ impl Engine {
         }
         let indent = "  ".repeat(depth.min(MAX_SAFE_SHOWBOX_DEPTH));
         match node {
+            Node::NativeGlyphRun {
+                run,
+                start,
+                end,
+                width,
+                height,
+                depth: run_depth,
+            } => {
+                out.push(format_args!(
+                    "{indent}native glyph run (font {}): {} glyph(s), width {}, height {}, depth {}\n",
+                    run.font,
+                    end.saturating_sub(*start),
+                    self.scaled_to_string(*width),
+                    self.scaled_to_string(*height),
+                    self.scaled_to_string(*run_depth)
+                ));
+            }
             Node::Box {
                 kind,
                 w,
@@ -2120,6 +2156,7 @@ fn whatsit_kind_name(whatsit: &crate::boxes::WhatIt) -> &'static str {
         WhatIt::PdfEndLink => "PDF link end",
         WhatIt::Special(_) => "special",
         WhatIt::SavePos { .. } => "position save",
+        WhatIt::CjkText(_) => "CJK source text",
         WhatIt::User(_) => "user whatsit",
     }
 }

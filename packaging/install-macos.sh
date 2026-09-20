@@ -159,6 +159,12 @@ SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 
 # ------------------------------------------------------------------ payload
 SRC_BIN=""; SRC_FMT=""; SRC_TEXMF=""
+STAGE_TEXMF=""
+
+cleanup_stage() {
+    [ -z "${STAGE_TEXMF:-}" ] || rm -rf -- "$STAGE_TEXMF" 2>/dev/null || true
+}
+trap cleanup_stage EXIT INT TERM HUP
 
 try_bundle() {
     _b="$1"
@@ -192,21 +198,58 @@ resolve_payload() {
         [ -d "$BUNDLE_ARG" ] || die "--bundle: not a directory: $BUNDLE_ARG"
         try_bundle "$BUNDLE_ARG" \
             || die "--bundle $BUNDLE_ARG has no executable bin/pdflatex"
+        if [ -n "$SRC_TEXMF" ] && [ -d "$SRC_TEXMF/doc/fonts" ]; then
+            if [ ! -f "$SRC_TEXMF/doc/fonts/NOTICES-FONTS.txt" ] \
+                || [ ! -f "$SRC_TEXMF/doc/fonts/sources.tar.zst" ] \
+                || [ ! -f "$SRC_TEXMF/doc/fonts/packages.lock.json" ]; then
+                die "font redistribution payload incomplete in $SRC_TEXMF/doc/fonts"
+            fi
+        fi
         log "Using release bundle at $BUNDLE_ARG"
         return 0
     fi
 
     if [ "$FROM_SOURCE" = 0 ]; then
-        try_bundle "$SCRIPT_DIR" && { log "Using release bundle at $SCRIPT_DIR"; return 0; }
+        if try_bundle "$SCRIPT_DIR"; then
+            if [ -n "$SRC_TEXMF" ] && [ -d "$SRC_TEXMF/doc/fonts" ]; then
+                if [ ! -f "$SRC_TEXMF/doc/fonts/NOTICES-FONTS.txt" ] \
+                    || [ ! -f "$SRC_TEXMF/doc/fonts/sources.tar.zst" ] \
+                    || [ ! -f "$SRC_TEXMF/doc/fonts/packages.lock.json" ]; then
+                    die "font redistribution payload incomplete in $SRC_TEXMF/doc/fonts"
+                fi
+            fi
+            log "Using release bundle at $SCRIPT_DIR"
+            return 0
+        fi
         # bundle dirs use the aarch64 token (package_dist.py); accept arm64 too
         for _tok in "$ARCH" aarch64 arm64; do
             _d="$SCRIPT_DIR/tex-suite-macos-$_tok"
-            if [ -d "$_d" ] && try_bundle "$_d"; then log "Using release bundle at $_d"; return 0; fi
+            if [ -d "$_d" ] && try_bundle "$_d"; then
+                if [ -n "$SRC_TEXMF" ] && [ -d "$SRC_TEXMF/doc/fonts" ]; then
+                    if [ ! -f "$SRC_TEXMF/doc/fonts/NOTICES-FONTS.txt" ] \
+                        || [ ! -f "$SRC_TEXMF/doc/fonts/sources.tar.zst" ] \
+                        || [ ! -f "$SRC_TEXMF/doc/fonts/packages.lock.json" ]; then
+                        die "font redistribution payload incomplete in $SRC_TEXMF/doc/fonts"
+                    fi
+                fi
+                log "Using release bundle at $_d"
+                return 0
+            fi
         done
         for _cand in "$SCRIPT_DIR"/tex-suite-macos-*/; do
             [ -d "$_cand" ] || continue
             _cand=${_cand%/}
-            if try_bundle "$_cand"; then log "Using release bundle at $_cand"; return 0; fi
+            if try_bundle "$_cand"; then
+                if [ -n "$SRC_TEXMF" ] && [ -d "$SRC_TEXMF/doc/fonts" ]; then
+                    if [ ! -f "$SRC_TEXMF/doc/fonts/NOTICES-FONTS.txt" ] \
+                        || [ ! -f "$SRC_TEXMF/doc/fonts/sources.tar.zst" ] \
+                        || [ ! -f "$SRC_TEXMF/doc/fonts/packages.lock.json" ]; then
+                        die "font redistribution payload incomplete in $SRC_TEXMF/doc/fonts"
+                    fi
+                fi
+                log "Using release bundle at $_cand"
+                return 0
+            fi
         done
     fi
 
@@ -221,9 +264,27 @@ resolve_payload() {
     [ -x "$_target/ratex" ] || [ -x "$_target/texmk" ] || [ -x "$_target/pdflatex" ] || die "build did not produce $_target/ratex"
     SRC_BIN="$_target"
     SRC_FMT=""
+    _assets_dir="$_repo/crates/tex-kpse/assets"
+    _legal_dir="$_assets_dir/legal"
+    _sources_zst="$_assets_dir/sources.tar.zst"
+    _packages_lock="$_assets_dir/packages.lock.json"
+    if [ ! -d "$_legal_dir" ] || [ ! -f "$_legal_dir/NOTICES-FONTS.txt" ] \
+        || [ ! -f "$_sources_zst" ] || [ ! -f "$_packages_lock" ]; then
+        die "required font redistribution assets missing in $_assets_dir (expected legal/NOTICES-FONTS.txt, sources.tar.zst, and packages.lock.json)"
+    fi
+
+    STAGE_TEXMF=$(mktemp -d 2>/dev/null || mktemp -d -t texsuite-stage)
+    mkdir -p -- "$STAGE_TEXMF/doc/fonts" || die "cannot create temporary font redistribution directory"
     for _t in "$_repo/texmf" "$_repo/packaging/texmf"; do
-        if [ -d "$_t" ]; then SRC_TEXMF="$_t"; break; fi
+        if [ -d "$_t" ]; then
+            cp -R -- "$_t"/. "$STAGE_TEXMF/" || die "failed to copy texmf overlay"
+            break
+        fi
     done
+    cp -R -- "$_legal_dir"/. "$STAGE_TEXMF/doc/fonts/" || die "failed to copy font legal notices"
+    cp -f -- "$_sources_zst" "$STAGE_TEXMF/doc/fonts/sources.tar.zst" || die "failed to copy font sources archive"
+    cp -f -- "$_packages_lock" "$STAGE_TEXMF/doc/fonts/packages.lock.json" || die "failed to copy font lock inventory"
+    SRC_TEXMF="$STAGE_TEXMF"
     log "Installing from checkout: $_repo (target: $_target)"
 }
 

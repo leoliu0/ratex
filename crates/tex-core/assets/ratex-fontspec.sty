@@ -1,0 +1,187 @@
+\NeedsTeXFormat{LaTeX2e}
+\ProvidesPackage{fontspec}[2026/09/20 Ratex native font selection]
+\DeclareOption*{\PackageError{fontspec}{Unsupported package option \CurrentOption}{Ratex implements native font selection, not the complete XeTeX or LuaTeX runtime.}}
+\ProcessOptions\relax
+\input{tuenc.def}
+\def\encodingdefault{TU}
+\ExplSyntaxOn
+\int_new:N \g_ratex_font_family_int
+\tl_new:N \g_ratex_font_defaults_tl
+\tl_gset:Nn \g_ratex_font_defaults_tl {Ligatures=TeX}
+\prop_new:N \g_ratex_font_defaults_prop
+\prop_new:N \g_ratex_font_selectors_prop
+\prop_new:N \g_ratex_font_options_prop
+\tl_new:N \l_ratex_font_family_tl
+\tl_new:N \l_ratex_font_selector_tl
+\tl_new:N \l_ratex_font_options_tl
+\tl_new:N \l_ratex_font_extra_tl
+\cs_new_protected:Npn \ratex_font_shape:nnn #1#2#3
+  {
+    \use:x
+      {
+        \exp_not:N \DeclareFontShape {TU}{\l_ratex_font_family_tl}{#1}{#2}
+          {<->"ratex:{\exp_not:V \l_ratex_font_selector_tl}:{\exp_not:V \l_ratex_font_options_tl,Style=#3}"}{}
+      }
+  }
+\cs_new_protected:Npn \ratex_font_declare:nnn #1#2#3
+  {
+    \int_gincr:N \g_ratex_font_family_int
+    \tl_set:Nx \l_ratex_font_family_tl {ratex\int_use:N \g_ratex_font_family_int}
+    \tl_set:Nx \l_ratex_font_selector_tl {#1}
+    \tl_set_eq:NN \l_ratex_font_options_tl \g_ratex_font_defaults_tl
+    \prop_get:NnNT \g_ratex_font_defaults_prop {#3} \l_ratex_font_extra_tl
+      {\tl_put_right:Nx \l_ratex_font_options_tl {,\exp_not:V \l_ratex_font_extra_tl}}
+    \prop_get:NVNT \g_ratex_font_defaults_prop \l_ratex_font_selector_tl \l_ratex_font_extra_tl
+      {\tl_put_right:Nx \l_ratex_font_options_tl {,\exp_not:V \l_ratex_font_extra_tl}}
+    \tl_put_right:Nx \l_ratex_font_options_tl {,#2}
+    \prop_gput:NVV \g_ratex_font_selectors_prop \l_ratex_font_family_tl \l_ratex_font_selector_tl
+    \prop_gput:NVV \g_ratex_font_options_prop \l_ratex_font_family_tl \l_ratex_font_options_tl
+    \DeclareFontFamily{TU}{\l_ratex_font_family_tl}{}
+    \ratex_font_shape:nnn {m}{n}{Regular}
+    \ratex_font_shape:nnn {m}{it}{Italic}
+    \ratex_font_shape:nnn {m}{sl}{Slanted}
+    \ratex_font_shape:nnn {m}{sc}{Regular,+smcp}
+    \ratex_font_shape:nnn {b}{n}{Bold}
+    \ratex_font_shape:nnn {b}{it}{BoldItalic}
+    \ratex_font_shape:nnn {b}{sl}{BoldSlanted}
+    \ratex_font_shape:nnn {b}{sc}{Bold,+smcp}
+    \ratex_font_shape:nnn {bx}{n}{Bold}
+    \ratex_font_shape:nnn {bx}{it}{BoldItalic}
+    \ratex_font_shape:nnn {bx}{sl}{BoldSlanted}
+    \ratex_font_shape:nnn {bx}{sc}{Bold,+smcp}
+  }
+\cs_new_protected:Npn \ratex_font_shape_face:nn #1#2
+  {
+    \use:x
+      {
+        \exp_not:N \DeclareFontShape {TU}{\l_ratex_font_family_tl}{#1}{#2}
+          {<->"ratex:{\exp_not:V \l_ratex_font_selector_tl}:{\exp_not:V \l_ratex_font_options_tl}"}{}
+      }
+  }
+\cs_new_protected:Npn \ratex_font_declare_face:nnn #1#2#3
+  {
+    \int_gincr:N \g_ratex_font_family_int
+    \tl_set:Nx \l_ratex_font_family_tl {ratex\int_use:N \g_ratex_font_family_int}
+    \tl_set:Nx \l_ratex_font_selector_tl {#1}
+    \tl_set_eq:NN \l_ratex_font_options_tl \g_ratex_font_defaults_tl
+    \prop_get:NnNT \g_ratex_font_defaults_prop {#3} \l_ratex_font_extra_tl
+      {\tl_put_right:Nx \l_ratex_font_options_tl {,\exp_not:V \l_ratex_font_extra_tl}}
+    \prop_get:NVNT \g_ratex_font_defaults_prop \l_ratex_font_selector_tl \l_ratex_font_extra_tl
+      {\tl_put_right:Nx \l_ratex_font_options_tl {,\exp_not:V \l_ratex_font_extra_tl}}
+    \tl_put_right:Nx \l_ratex_font_options_tl {,#2}
+    \prop_gput:NVV \g_ratex_font_selectors_prop \l_ratex_font_family_tl \l_ratex_font_selector_tl
+    \prop_gput:NVV \g_ratex_font_options_prop \l_ratex_font_family_tl \l_ratex_font_options_tl
+    \DeclareFontFamily{TU}{\l_ratex_font_family_tl}{}
+    \ratex_font_shape_face:nn {m}{n}
+    \ratex_font_shape_face:nn {m}{it}
+    \ratex_font_shape_face:nn {m}{sl}
+    \ratex_font_shape_face:nn {m}{sc}
+    \ratex_font_shape_face:nn {b}{n}
+    \ratex_font_shape_face:nn {b}{it}
+    \ratex_font_shape_face:nn {b}{sl}
+    \ratex_font_shape_face:nn {b}{sc}
+    \ratex_font_shape_face:nn {bx}{n}
+    \ratex_font_shape_face:nn {bx}{it}
+    \ratex_font_shape_face:nn {bx}{sl}
+    \ratex_font_shape_face:nn {bx}{sc}
+  }
+\cs_new_protected:Npn \ratex_font_select:n #1
+  {\fontencoding{TU}\fontfamily{#1}\selectfont}
+\NewDocumentCommand \defaultfontfeatures {s O{} m}
+  {
+    \tl_if_blank:nTF {#2}
+      {
+        \IfBooleanTF{#1}
+          {\tl_gput_right:Nn \g_ratex_font_defaults_tl {,#3}}
+          {\tl_gset:Nn \g_ratex_font_defaults_tl {#3}}
+      }
+      {
+        \clist_map_inline:nn {#2}
+          {
+            \IfBooleanTF{#1}
+              {
+                \prop_get:NnNTF \g_ratex_font_defaults_prop {##1} \l_ratex_font_extra_tl
+                  {\tl_put_right:Nn \l_ratex_font_extra_tl {,#3}}
+                  {\tl_set:Nn \l_ratex_font_extra_tl {#3}}
+                \prop_gput:NnV \g_ratex_font_defaults_prop {##1} \l_ratex_font_extra_tl
+              }
+              {\prop_gput:Nnn \g_ratex_font_defaults_prop {##1}{#3}}
+          }
+      }
+  }
+\NewDocumentCommand \setmainfont {O{} m O{}}
+  {
+    \ratex_font_declare:nnn {#2}{#1,#3}{\rmfamily}
+    \cs_gset:Npx \rmdefault {\l_ratex_font_family_tl}
+    \normalfont
+  }
+\NewDocumentCommand \setsansfont {O{} m O{}}
+  {
+    \ratex_font_declare:nnn {#2}{#1,#3}{\sffamily}
+    \cs_gset:Npx \sfdefault {\l_ratex_font_family_tl}
+  }
+\NewDocumentCommand \setmonofont {O{} m O{}}
+  {
+    \ratex_font_declare:nnn {#2}{#1,#3}{\ttfamily}
+    \cs_gset:Npx \ttdefault {\l_ratex_font_family_tl}
+  }
+\NewDocumentCommand \fontspec {O{} m O{}}
+  {
+    \ratex_font_declare:nnn {#2}{#1,#3}{}
+    \exp_args:NV \ratex_font_select:n \l_ratex_font_family_tl
+  }
+\cs_new_protected:Npn \ratex_font_define:Nnn #1#2#3
+  {
+    \ratex_font_declare:nnn {#2}{#3}{#1}
+    \use:x
+      {
+        \exp_not:N \DeclareRobustCommand \exp_not:N #1
+          {\exp_not:N \ratex_font_select:n {\l_ratex_font_family_tl}}
+      }
+  }
+\NewDocumentCommand \newfontfamily {m O{} m O{}}
+  {\ratex_font_define:Nnn #1{#3}{#2,#4}}
+\cs_new_protected:Npn \ratex_font_define_face:Nnn #1#2#3
+  {
+    \ratex_font_declare_face:nnn {#2}{#3}{#1}
+    \use:x
+      {
+        \exp_not:N \DeclareRobustCommand \exp_not:N #1
+          {\exp_not:N \ratex_font_select:n {\l_ratex_font_family_tl}}
+      }
+  }
+\NewDocumentCommand \newfontface {m O{} m O{}}
+  {\ratex_font_define_face:Nnn #1{#3}{#2,#4}}
+\NewDocumentCommand \addfontfeatures {m}
+  {
+    \prop_get:NVNTF \g_ratex_font_selectors_prop \f@family \l_ratex_font_selector_tl
+      {
+        \prop_get:NVN \g_ratex_font_options_prop \f@family \l_ratex_font_options_tl
+        \use:x
+          {
+            \exp_not:N \fontspec
+              [\exp_not:V \l_ratex_font_options_tl,\exp_not:n {#1}]
+              {\exp_not:V \l_ratex_font_selector_tl}
+          }
+      }
+      {\PackageError{fontspec}{No~native~font~is~selected}{Select~a~font~with~fontspec~first.}}
+  }
+\cs_new_eq:NN \addfontfeature \addfontfeatures
+% Keep LaTeX's protection and csname guards around the active UTF-8 path.
+% Decode only at the existing typesetting boundary for selected native fonts.
+\cs_new_eq:NN \ratex_utf_two:nn \UTFviii@two@octets@combine
+\cs_new_eq:NN \ratex_utf_three:nnn \UTFviii@three@octets@combine
+\cs_new_eq:NN \ratex_utf_four:nnnn \UTFviii@four@octets@combine
+\cs_set:Npn \UTFviii@two@octets@combine #1#2
+  {\ifnum\RatexNativeTextMode>0~\RatexUTFviii{#1#2}\else\ratex_utf_two:nn{#1}{#2}\fi}
+\cs_set:Npn \UTFviii@three@octets@combine #1#2#3
+  {\ifnum\RatexNativeTextMode>0~\RatexUTFviii{#1#2#3}\else\ratex_utf_three:nnn{#1}{#2}{#3}\fi}
+\cs_set:Npn \UTFviii@four@octets@combine #1#2#3#4
+  {\ifnum\RatexNativeTextMode>0~\RatexUTFviii{#1#2#3#4}\else\ratex_utf_four:nnnn{#1}{#2}{#3}{#4}\fi}
+\setsansfont{Latin~Modern~Sans}
+\setmonofont{Latin~Modern~Mono}
+\setmainfont{Latin~Modern~Roman}
+\DeclareFontSubstitution{TU}{\rmdefault}{m}{n}
+\ExplSyntaxOff
+\RequirePackage[TU]{fontenc}
+\endinput

@@ -645,9 +645,7 @@ fn lock_is_stale(path: &Path) -> bool {
         .flatten()
         .and_then(|text| text.split('-').next()?.trim().parse::<u32>().ok());
     if let Some(pid) = pid {
-        if !process_is_running(pid) {
-            return true;
-        }
+        return !process_is_running(pid);
     }
     std::fs::metadata(path)
         .and_then(|meta| meta.modified())
@@ -1402,7 +1400,7 @@ fn gc_cache(jobs_dir: &Path, current: &Path) {
         let Ok(key) = u64::from_str_radix(name, 16) else {
             continue;
         };
-        let lock_path = path.join(".lock");
+        let lock_path = path.with_extension("lock");
         if lock_path.exists() {
             if !lock_is_stale(&lock_path) {
                 continue;
@@ -2848,6 +2846,14 @@ fn real_main() -> i32 {
         }
     };
     let requested_job_dir = jobs_dir.join(format!("{key:016x}"));
+    // Own the job before creating it; garbage collection must not delete its lock.
+    let lock = match CacheLock::acquire(&requested_job_dir.with_extension("lock")) {
+        Ok(lock) => lock,
+        Err(error) => {
+            eprintln!("texmk: {error}");
+            return 1;
+        }
+    };
     if let Err(error) = std::fs::create_dir_all(&requested_job_dir) {
         eprintln!(
             "texmk: cannot create job cache {}: {error}",
@@ -2857,13 +2863,6 @@ fn real_main() -> i32 {
     }
     let job_dir = match canonical_private_child(&requested_job_dir, &jobs_dir, "job cache") {
         Ok(directory) => directory,
-        Err(error) => {
-            eprintln!("texmk: {error}");
-            return 1;
-        }
-    };
-    let lock = match CacheLock::acquire(&job_dir.join(".lock")) {
-        Ok(lock) => lock,
         Err(error) => {
             eprintln!("texmk: {error}");
             return 1;
@@ -3579,6 +3578,49 @@ mod io_safety_tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_file(&self.0);
         }
+    }
+
+    #[test]
+    fn garbage_collection_preserves_a_job_locked_before_creation() {
+        let root = TempFile::new("gc-pending-job");
+        std::fs::create_dir(&root.0).unwrap();
+        let pending = root.0.join("0123456789abcdef");
+        let current = root.0.join("fedcba9876543210");
+        let lock = CacheLock::try_acquire(&pending.with_extension("lock")).unwrap();
+        std::fs::create_dir(&pending).unwrap();
+        std::fs::write(pending.join("main.aux"), b"pending compilation").unwrap();
+
+        gc_cache(&root.0, &current);
+        let preserved = std::fs::read(pending.join("main.aux"))
+            .is_ok_and(|bytes| bytes == b"pending compilation");
+        drop(lock);
+        gc_cache(&root.0, &current);
+        let orphan_removed = !pending.exists();
+        std::fs::remove_dir_all(&root.0).unwrap();
+
+        assert!(
+            preserved,
+            "garbage collection removed a pending compilation"
+        );
+        assert!(
+            orphan_removed,
+            "unlocked incomplete jobs must remain reclaimable"
+        );
+    }
+
+    #[test]
+    fn live_build_lock_does_not_expire_during_long_compile() {
+        let path = TempFile::new("live-build-lock");
+        let lock = CacheLock::try_acquire(&path.0).unwrap();
+        OpenOptions::new()
+            .write(true)
+            .open(&path.0)
+            .unwrap()
+            .set_modified(SystemTime::now() - Duration::from_secs(120))
+            .unwrap();
+
+        assert!(!lock_is_stale(&path.0));
+        drop(lock);
     }
 
     #[test]

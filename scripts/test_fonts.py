@@ -1085,8 +1085,8 @@ class FontTestHarness:
             return
         ref_env_dir = self.output_dir / "ref_env"
         ref_env_dir.mkdir(parents=True, exist_ok=True)
-        # Give the reference the exact locked font programs/metrics, never
-        # whichever stale scratch TEXMF tree happens to exist on this machine.
+        # Pin font programs, metrics, and packaged graphics for the reference.
+        # Leave the kernel and general macro packages to the host TeX Live.
         try:
             from bundle_packages import reconstruct_archive
         except ModuleNotFoundError:
@@ -1096,6 +1096,12 @@ class FontTestHarness:
         lock = json.loads(lock_path.read_text())
         reference_root = ref_env_dir / "texmf"
         reference_root.mkdir(exist_ok=True)
+        reference_prefixes = (
+            "fonts/",
+            "tex/latex/doclicense/",
+            "tex/latex/duckuments/",
+            "tex/latex/twemojis/",
+        )
         with tempfile.TemporaryDirectory(prefix="ratex-ref-fonts-") as scratch:
             archive_path = Path(scratch) / "packages.tar.zst"
             reconstruct_archive(assets_dir, archive_path, lock_path)
@@ -1107,7 +1113,7 @@ class FontTestHarness:
                         relative = Path(member.name)
                         if not member.isfile() or relative.is_absolute() or ".." in relative.parts:
                             continue
-                        if member.name.startswith("fonts/") or member.name.endswith(".fd"):
+                        if member.name.startswith(reference_prefixes) or member.name.endswith(".fd"):
                             target = reference_root / relative
                             target.parent.mkdir(parents=True, exist_ok=True)
                             with archive.extractfile(member) as source, target.open("wb") as output:
@@ -1932,6 +1938,8 @@ class FontTestHarness:
                 "engine": safe_ref.get("engine"),
                 "exit_code": safe_ref.get("exit_code"),
                 "pdf_valid": safe_ref.get("pdf_valid"),
+                "stdout_excerpt": (safe_ref.get("stdout") or "")[-4096:],
+                "stderr_excerpt": (safe_ref.get("stderr") or "")[-4096:],
             },
             "comparison": comparison,
         }
@@ -2025,6 +2033,13 @@ class FontTestHarness:
                     if case_res["status"] != "pass":
                         for r in case_res.get("reasons", [])[:4]:
                             print(f"       ! {r}")
+                        for engine in ("rust", "reference"):
+                            run = case_res.get(engine, {})
+                            if run.get("exit_code") not in (None, 0):
+                                for stream in ("stdout", "stderr"):
+                                    excerpt = run.get(f"{stream}_excerpt", run.get(stream, ""))
+                                    if excerpt:
+                                        print(f"       {engine} {stream}:\n{excerpt[-4096:]}")
                 except Exception as exc:
                     results[cname] = {
                         "name": cname,

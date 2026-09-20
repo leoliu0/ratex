@@ -103,7 +103,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends poppler-utils bubblewrap texlive-latex-base texlive-latex-extra texlive-xetex texlive-fonts-recommended texlive-fonts-extra cm-super texlive-lang-cjk texlive-lang-chinese texlive-lang-cyrillic texlive-lang-greek fonts-ipaexfont
+          sudo apt-get install -y --no-install-recommends poppler-utils bubblewrap texlive-latex-base texlive-latex-extra texlive-xetex texlive-fonts-recommended texlive-fonts-extra cm-super texlive-science texlive-lang-cjk texlive-lang-chinese texlive-lang-japanese texlive-lang-korean texlive-lang-cyrillic texlive-lang-greek latex-cjk-all lmodern fonts-ipaexfont
           if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
             sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           fi
@@ -252,7 +252,7 @@ jobs:
 
       - name: Package distribution (macos)
         if: runner.os == 'macOS'
-        run: python3 scripts/package_dist.py --platform macos --arch $(uname -m)
+        run: python3 scripts/package_dist.py --platform macos
 
       - name: Test extracted archive distribution (macos)
         if: runner.os == 'macOS'

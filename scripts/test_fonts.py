@@ -95,7 +95,8 @@ def probe_bwrap() -> dict[str, Any]:
         proc = subprocess.run(
             [bwrap_path, "--version"],
             capture_output=True,
-            text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=5,
             check=False,
         )
@@ -126,7 +127,8 @@ def probe_pdfjs() -> dict[str, Any]:
         proc = subprocess.run(
             [node_bin, str(helper), "--probe"],
             capture_output=True,
-            text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=10,
             check=False,
         )
@@ -158,7 +160,8 @@ def parse_pdffonts(pdf_path: Path) -> tuple[list[dict[str, Any]], list[str]]:
         proc = subprocess.run(
             [pdffonts_bin, str(pdf_path)],
             capture_output=True,
-            text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=15,
             check=False,
         )
@@ -221,9 +224,10 @@ def extract_text(pdf_path: Path) -> tuple[str, list[str]]:
 
     try:
         proc = subprocess.run(
-            [pdftotext_bin, str(pdf_path), "-"],
+            [pdftotext_bin, "-enc", "UTF-8", str(pdf_path), "-"],
             capture_output=True,
-            text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=15,
             check=False,
         )
@@ -1145,7 +1149,8 @@ class FontTestHarness:
             chk = subprocess.run(
                 ["kpsewhich", "-engine=xelatex", "ctexhook.sty"],
                 capture_output=True,
-                text=True,
+                encoding="utf-8",
+                errors="replace",
                 check=False,
             )
             if chk.returncode == 0 and chk.stdout.strip():
@@ -1246,7 +1251,8 @@ class FontTestHarness:
             v_proc = subprocess.run(
                 [str(self.ratex_path), "--version"],
                 capture_output=True,
-                text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=5,
                 check=False,
             )
@@ -1324,7 +1330,14 @@ class FontTestHarness:
             fixture = Path(__file__).resolve().parent / "fixtures/fonts/cache_invalidation/dynamic.ttf"
             shutil.copyfile(fixture, sentinel_file)
             sentinel_package.write_text(r"\ProvidesPackage{forbidden_external_package}" + "\n")
-            res = subprocess.run(test_cmd, capture_output=True, text=True, timeout=5, check=False)
+            res = subprocess.run(
+                test_cmd,
+                capture_output=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=5,
+                check=False,
+            )
             blocked = res.returncode == 0
             return {
                 "verified": blocked,
@@ -1375,7 +1388,14 @@ class FontTestHarness:
         node_bin = shutil.which("node") or "node"
         cmd = [node_bin, str(helper_path), str(pdf_path), str(out_dir), "2.0"]
         try:
-            res = subprocess.run(cmd, capture_output=True, text=True, timeout=30, check=False)
+            res = subprocess.run(
+                cmd,
+                capture_output=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=30,
+                check=False,
+            )
             if res.returncode != 0:
                 return [], {}, [f"pdf.js render failed (code {res.returncode}): {res.stderr[:300]}"]
             data = json.loads(res.stdout)
@@ -1477,7 +1497,8 @@ class FontTestHarness:
                 cwd=work_dir,
                 env=exec_env,
                 capture_output=True,
-                text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=self.args.timeout,
                 check=False,
             )
@@ -1572,7 +1593,8 @@ class FontTestHarness:
                 cwd=work_dir,
                 env=ref_env,
                 capture_output=True,
-                text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=self.args.timeout,
                 check=False,
             )

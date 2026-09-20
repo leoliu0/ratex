@@ -9,10 +9,10 @@
 
 ## Verification and Performance
 
-The v0.4.2 Linux build passes all 39 font and graphics fixtures through both
+The v0.4.3 Linux build passes all 39 font and graphics fixtures through both
 the packaged standalone binary and an installed copy. Checks use filesystem
 isolation, disabled networking, pinned reference fonts, and Poppler/pdf.js
-rendering and text extraction. The workspace suite passes 787 tests. Release
+rendering and text extraction. The workspace suite passes 791 tests. Release
 gates also exercise the C and WebAssembly interfaces, including Chromium.
 
 On the frozen 1,000-project corpus, Ratex compiles 942 projects from unchanged
@@ -29,7 +29,7 @@ See [PERFORMANCE.md](PERFORMANCE.md) for benchmark scope and measurements.
 
 ## Key Features
 
-- **Validated incremental builds**: Dependency and auxiliary-state checks reuse unchanged results without re-running the typesetting engine.
+- **Validated incremental builds**: Dependency and auxiliary-state checks reuse unchanged results without re-running the typesetting engine. Per-job locks protect active compilations from cache cleanup, including concurrent startup.
 - **Self-contained typesetting**: The source build embeds the LaTeX format, package resources, and the pinned Latin, Cyrillic, Greek, and CJK font families described below. Compilation needs neither TeX Live nor runtime font downloads.
 - **All-in-One Engine & Toolchain**: Combines the TeX engine, package resolver, BibTeX interpreter, and build convergence into a single unified `ratex` command.
 - **SyncTeX by Default**: Automatic `.synctex.gz` coordinate generation matching PDF boxes to source lines for instant forward/inverse search in VS Code, TeXstudio, VimTeX, and AUCTeX.
@@ -43,30 +43,30 @@ See [PERFORMANCE.md](PERFORMANCE.md) for benchmark scope and measurements.
 ## Installation
 
 ### Linux
-Download the native package for your distribution from [GitHub Releases](https://github.com/leoliu0/ratex/releases/tag/v0.4.2):
+Download the native package for your distribution from [GitHub Releases](https://github.com/leoliu0/ratex/releases/tag/v0.4.3):
 
 ```bash
 # Ubuntu / Debian (.deb)
-sudo apt install ./ratex_0.4.2_amd64.deb
+sudo apt install ./ratex_0.4.3_amd64.deb
 
 # Fedora / RHEL / openSUSE (.rpm)
-sudo dnf install ./ratex-0.4.2-1.x86_64.rpm
+sudo dnf install ./ratex-0.4.3-1.x86_64.rpm
 
 # Arch Linux (AUR): prebuilt binary or source build
 yay -S ratex-bin
 yay -S ratex
 
 # Any Linux (Universal Tarball Installer)
-tar -xzf tex-suite-v0.4.2-linux-x86_64.tar.gz && sudo ./tex-suite-linux-x86_64/install.sh
+tar -xzf tex-suite-v0.4.3-linux-x86_64.tar.gz && sudo ./tex-suite-linux-x86_64/install.sh
 ```
 
 ### macOS
 Download and run the native installer package:
-- [macOS Apple Silicon (.pkg)](https://github.com/leoliu0/ratex/releases/download/v0.4.2/ratex-v0.4.2-macos-aarch64.pkg)
-- [macOS Intel (.pkg)](https://github.com/leoliu0/ratex/releases/download/v0.4.2/ratex-v0.4.2-macos-x86_64.pkg)
+- [macOS Apple Silicon (.pkg)](https://github.com/leoliu0/ratex/releases/download/v0.4.3/ratex-v0.4.3-macos-aarch64.pkg)
+- [macOS Intel (.pkg)](https://github.com/leoliu0/ratex/releases/download/v0.4.3/ratex-v0.4.3-macos-x86_64.pkg)
 
 ### Windows
-- [Download Windows Setup (.exe)](https://github.com/leoliu0/ratex/releases/download/v0.4.2/ratex-setup-v0.4.2-windows-x64.exe)
+- [Download Windows Setup (.exe)](https://github.com/leoliu0/ratex/releases/download/v0.4.3/ratex-setup-v0.4.3-windows-x64.exe)
 
 ---
 

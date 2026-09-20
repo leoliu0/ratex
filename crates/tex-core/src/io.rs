@@ -110,48 +110,11 @@ fn read_line_bounded(
 /// cache avoids fixed names and repeated writes in the process temp folder.
 fn compatibility_input(name: &str) -> Option<&'static [u8]> {
     Some(match name {
-        "language.dat" | "language.dat.lua" => b"english hyphen.tex\n",
         "pdflatex.ini" => br"\input pdftexconfig.tex
 \pdfcompresslevel=3
 \input latex.ltx
 \endinput
 ",
-        "hyphen.cfg" => br"\chardef\l@nohyphenation=255
-\chardef\l@english=0
-\chardef\l@USenglish=0
-\chardef\l@russian=1
-\count19=1
-% Initialize the standard paired eight-bit letter ranges at format creation,
-% never while loading a user's saved format.
-\begingroup
-\count@=128
-\loop
-  \@tempcnta=\count@ \advance\@tempcnta by32
-  \global\lccode\count@=\@tempcnta
-  \global\uccode\count@=\count@
-  \global\sfcode\count@=999
-  \global\lccode\@tempcnta=\@tempcnta
-  \global\uccode\@tempcnta=\count@
-  \advance\count@ by1
-\ifnum\count@<160 \repeat
-\count@=192
-\loop
-  \@tempcnta=\count@ \advance\@tempcnta by32
-  \global\lccode\count@=\@tempcnta
-  \global\uccode\count@=\count@
-  \global\sfcode\count@=999
-  \global\lccode\@tempcnta=\@tempcnta
-  \global\uccode\@tempcnta=\count@
-  \advance\count@ by1
-\ifnum\count@<224 \repeat
-\endgroup
-\language=0 \input hyphen.tex
-\language=1 \input ratex-hyph-ru.tex
-\language=0
-\def\languagename{english}
-\relax
-",
-        "ratex-hyph-ru.tex" => include_bytes!("../../tex-kpse/assets/legal/ratex-hyph-ru.t2a"),
         "graphics.cfg" => br"\ProvidesFile{graphics.cfg}[2026/01/01 v1.0 Ratex graphics configuration]
 \ExecuteOptions{pdftex}
 \AtEndOfPackage{
@@ -522,16 +485,54 @@ impl Engine {
             return;
         }
         self.skip_spaces_relax();
-        let open = self.get_token();
-        if !(open.is_char() && open.cc() == 1) {
-            self.error("Missing { inserted (\\patterns or \\hyphenation)");
+        if !self.scan_left_brace() {
             return;
         }
-        let toks = self.scan_balanced_raw(true);
-        let mut words: Vec<Vec<u8>> = Vec::new();
-        let mut cur: Vec<u8> = Vec::new();
-        for t in &toks {
-            if !t.is_char() {
+        let origin = self.current_token_source_mark();
+        let language = self.eqtb.int_params[crate::prim::IntParam::Language.idx() as usize];
+        let language = u8::try_from(language).unwrap_or(0);
+        let mut word = Vec::new();
+        loop {
+            // TeX expands macros while scanning patterns and exceptions.
+            // Authentic pattern files use active accents and macro wrappers.
+            let token = self.get_x_raw();
+            if self.stopped_on_error {
+                return;
+            }
+            if token == crate::input::EOF_MARKER {
+                self.fatal_error_at(
+                    "File ended while scanning hyphenation patterns or exceptions",
+                    origin.as_ref().map(crate::input::SourceMark::to_context),
+                );
+                return;
+            }
+            let closing = token.is_char() && token.cc() == 2;
+            if token.is_space() || closing {
+                if !word.is_empty() {
+                    if is_patterns {
+                        self.trie_for_language_mut(language)
+                            .add_pattern_bytes(&word);
+                    } else {
+                        self.trie_for_language_mut(language)
+                            .add_exception_bytes(&word);
+                    }
+                    word.clear();
+                }
+                if closing {
+                    if is_patterns
+                        && self.eqtb.int_params
+                            [crate::prim::IntParam::SavingHyphCodes.idx() as usize]
+                            > 0
+                    {
+                        let mut codes = Box::new([0; 256]);
+                        codes.copy_from_slice(&self.eqtb.lc_code[..256]);
+                        self.hyphen_codes.insert(language, codes);
+                    }
+                    return;
+                }
+                continue;
+            }
+            if !token.is_char() {
                 self.error(if is_patterns {
                     "Letter expected in \\patterns"
                 } else {
@@ -539,38 +540,22 @@ impl Engine {
                 });
                 continue;
             }
-            if t.cc() == 10 {
-                if !cur.is_empty() {
-                    words.push(std::mem::take(&mut cur));
-                }
-                continue;
-            }
-            let c = t.chr() as u8;
+            let c = token.chr() as u8;
             if is_patterns && (c.is_ascii_digit() || c == b'.') {
-                cur.push(c);
+                word.push(c);
             } else if c == b'-' && !is_patterns {
-                cur.push(b'-');
+                word.push(b'-');
             } else {
-                let lc = self.eqtb.lc_code[c as usize];
+                let lc = if is_patterns {
+                    self.eqtb.lc_code[c as usize]
+                } else {
+                    self.hyphen_codes
+                        .get(&language)
+                        .map_or(self.eqtb.lc_code[c as usize], |codes| codes[c as usize])
+                };
                 if lc != 0 {
-                    cur.push(lc);
+                    word.push(lc);
                 }
-            }
-        }
-        if !cur.is_empty() {
-            words.push(cur);
-        }
-        let lang = self.eqtb.int_params[crate::prim::IntParam::Language.idx() as usize];
-        let cur_lang = if lang < 0 || lang > 255 {
-            0
-        } else {
-            lang as u8
-        };
-        for w in words {
-            if is_patterns {
-                self.trie_for_language_mut(cur_lang).add_pattern_bytes(&w);
-            } else {
-                self.trie_for_language_mut(cur_lang).add_exception_bytes(&w);
             }
         }
     }

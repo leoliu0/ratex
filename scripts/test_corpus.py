@@ -1,67 +1,21 @@
 #!/usr/bin/env python3
-"""
-Concurrent corpus comparison harness: Rust pdflatex vs system pdflatex.
+"""Compare unchanged projects using the public Ratex and system latexmk drivers.
 
-For every entry in corpus/manifest.json (100 by default):
+Campaign mode (default) gives each driver a fresh source copy, home and cache.
+The drivers own pass convergence and bibliography processing; their actual
+commands, exit status, logs and generated PDFs are retained in the report.
+Source documents are never edited. Reference-only and Rust-only runs retain
+every selected project but do not claim cross-engine output parity.
 
-  1. Build two fully isolated per-engine workspace copies under
-     output/corpus/work/<id>/{rust,ref}/ — no compilation ever touches corpus/,
-     so there is zero cross-engine aux contamination and the source tree stays pristine.
-  2. Strip known generated main-job artifacts (stem.aux/.log/.out/.toc/.pdf/...)
-     from the copies. Source PDFs (graphics includes) and source .bbl files are
-     PRESERVED, so a single pass can still resolve bibliography and cross-refs
-     that the author shipped.
-  3. Compile ONE pass with each engine (single pdflatex invocation per engine;
-     bibtex is NOT run — reported prominently in the summary).
-     Subprocesses run argv-list only (never shell=True), stdin=DEVNULL (EOF on
-     any error prompt instead of hanging), in their own process group so a
-     timeout SIGKILLs the whole group. Combined output is drained while it is
-     produced, hashed in full, and retained as a bounded head/tail excerpt.
-  4. Persist an atomic per-project checkpoint JSON with complete metrics.
-     By default, successful PDFs/logs/workspaces are removed and failures keep
-     only bounded final logs, valid PDFs, render evidence and reproduction data.
-     The aggregate report (output/corpus/report.json) is rewritten atomically
-     after every completion, so partial results always survive a crash.
-  5. Compare: pagewise raster diff at 72 dpi via PyMuPDF (image dimensions,
-     mean/max absolute pixel difference, % pixels differing, identical-page
-     count) plus text-layer similarity, alongside page counts.
+Full comparisons use exact 150-DPI RGB parity, page counts and page geometry.
+The gate retains compilation, dependency, convergence and rendering failures.
+The explicit legacy single-pass mode invokes engines once, without bibliography
+processing, and is diagnostic only.
 
-Per-engine status (durable, not page-count-only):
-  clean    exit 0, valid PDF, no TeX errors in the log
-  errors   valid PDF produced but nonzero exit or TeX errors in the log
-  failure  no valid PDF
-  timeout  process group killed after --timeout seconds
-  memlimit child killed by a signal under the RLIMIT_AS cap
-           (--mem-limit-mib; distinct from timeout/failure)
-
-Modes (--mode):
-  campaign     (DEFAULT) converged exact-parity campaign: corpus projects
-             (1,000 by default from corpus/standalone-1000 or 100 from corpus)
-             plus optional private docs. Each side compiles in its own
-             frozen isolated copy until aux state CONVERGES (cross-refs +
-             BibTeX honoring shipped .bbl files; system bibtex for the
-             reference, native ratex embedded bibtex or tex-bibtex for Rust
-             output; never a system fallback for the Rust side). Rust
-             .depcache/.pagecache artifacts are removed before every pass.
-             Comparison is exact 150-DPI RGB pixel parity (no cropping, no
-             tolerance) with geometry and page count checks, per-page scores,
-             worst-page artifacts, and a hard gate (output/<dir>/gate.json)
-             that fails on incomplete coverage, compilation errors, unconverged
-             runs, invalid PDFs, or any page or document below
-             --page-min/--doc-min percent. Unavailable reference inputs are
-             RETAINED blockers, never excluded.
-  single-pass LEGACY diagnostic: exactly one engine invocation per project,
-             no bibtex, 72-DPI similarity metrics. Useful for triage only —
-             it never claims campaign success.
-Usage:
-  scripts/test_corpus.py [--mode campaign] [--max-passes 5]
-      [--jobs 4] [--timeout 60] [--mem-limit-mib 4096] [--output output/corpus]
-      [--rust target/release/pdflatex] [--sys /usr/bin/pdflatex]
-      [--rust-bibtex target/release/tex-bibtex] [--sys-bibtex /usr/bin/bibtex]
-      [--offset 0] [--limit 100] [--only id1,id2] [--corpus-only]
-      [--private-only] [--qualification-min 95] [--no-resume]
-      [--retain failures|all|none] [--keep-work]
-      [--max-capture-bytes 1048576]
+Examples:
+  scripts/test_corpus.py --rust target/release/ratex --corpus-only
+  scripts/test_corpus.py --engine ref --sys-latexmk /usr/bin/latexmk --only id1,id2
+  scripts/test_corpus.py --retain all --keep-work --output output/corpus
 """
 
 from __future__ import annotations
@@ -115,6 +69,23 @@ try:
     from test_fonts import validate_pdf_font_embedding
 except ModuleNotFoundError:
     from scripts.test_fonts import validate_pdf_font_embedding
+
+REFERENCE_SYSTEM_PATH = os.pathsep.join(
+    path
+    for path in (
+        "/usr/local/sbin",
+        "/usr/local/bin",
+        "/usr/sbin",
+        "/usr/bin",
+        "/sbin",
+        "/bin",
+        "/usr/bin/site_perl",
+        "/usr/bin/vendor_perl",
+        "/usr/bin/core_perl",
+    )
+    if Path(path).is_dir()
+)
+
 
 
 def is_ratex_cli(bin_path: str | Path | None) -> bool:
@@ -257,23 +228,13 @@ def _mem_limit_preexec(limit_bytes: int):
     return _set_limits
 
 
-def run_compile(bin_path: str, work_dir: Path, tex_name: str, cap_path: Path,
+def run_command(cmd: list[str], work_dir: Path, cap_path: Path,
                 timeout: float, env: dict | None = None,
-                flags: tuple[str, ...] | None = None,
                 mem_limit_mib: int = DEFAULT_MEM_LIMIT_MIB,
                 max_capture_bytes: int = DEFAULT_MAX_CAPTURE_BYTES) -> dict:
-    """One engine pass. argv list (no shell), stdin DEVNULL, new process
-    group, with merged output drained through a bounded head/tail capture.
-    Timeout kills and reaps the whole group. Every child gets RLIMIT_AS =
-    mem_limit_mib in the
-    preexec path (0 or non-POSIX disables); signal death with the cap armed
-    reports mem_killed/kill_signal distinctly from timeout. `flags` overrides
-    the pdfLaTeX flag set (XeTeX/LuaTeX have no -no-shell-escape)."""
-    if flags is None:
-        flags = ("-interaction=nonstopmode", "-no-shell-escape")
+    """Execute one child command with bounded head/tail capture and RLIMIT_AS guard."""
     limit_bytes = max(0, int(mem_limit_mib)) * (1 << 20)
     preexec = _mem_limit_preexec(limit_bytes) if limit_bytes and resource else None
-    cmd = [bin_path, *flags, tex_name]
     child = run_bounded(
         cmd,
         cwd=work_dir,
@@ -291,8 +252,6 @@ def run_compile(bin_path: str, work_dir: Path, tex_name: str, cap_path: Path,
     kill_signal = None
     mem_killed = False
     if not timed_out and rc is not None and rc < 0:
-        # The harness never signal-kills a non-timed-out child: death by
-        # signal with RLIMIT_AS armed is the cap firing (abort/segv/bus).
         try:
             kill_signal = signal.Signals(-rc).name
         except ValueError:
@@ -303,6 +262,20 @@ def run_compile(bin_path: str, work_dir: Path, tex_name: str, cap_path: Path,
             "mem_killed": mem_killed, "kill_signal": kill_signal,
             "capture": child["capture"]}
 
+
+def run_compile(bin_path: str, work_dir: Path, tex_name: str, cap_path: Path,
+                timeout: float, env: dict | None = None,
+                flags: tuple[str, ...] | None = None,
+                mem_limit_mib: int = DEFAULT_MEM_LIMIT_MIB,
+                max_capture_bytes: int = DEFAULT_MAX_CAPTURE_BYTES) -> dict:
+    """One engine pass. argv list (no shell), stdin DEVNULL, new process
+    group, with merged output drained through a bounded head/tail capture."""
+    if flags is None:
+        flags = ("-interaction=nonstopmode", "-no-shell-escape")
+    cmd = [bin_path, *flags, tex_name]
+    return run_command(cmd, work_dir, cap_path, timeout, env=env,
+                       mem_limit_mib=mem_limit_mib,
+                       max_capture_bytes=max_capture_bytes)
 
 def pdf_info(pdf: Path) -> dict:
     """Validate a PDF and report pages/bytes/sha. Never trust existence alone."""
@@ -418,6 +391,16 @@ def classify_failure_kind(run: dict, pdf_stat: dict, errors: list[str],
         return "timeout"
     if run.get("mem_killed"):
         return "memlimit"
+    # 0. Missing or invalid source prerequisite
+    if any(
+        "source directory missing" in e
+        or "main_tex source file missing" in e
+        or "main_tex missing" in e
+        or "corpus dir missing" in e
+        for e in errors
+    ):
+        return "invalid-source"
+
 
     combined_err = " ".join(errors) + " " + log_text
 
@@ -584,7 +567,10 @@ def _project_failure_reasons(res: dict, cfg: dict) -> list[str]:
     if res.get("harness_error"):
         reasons.append("harness-error")
     campaign = res.get("mode") == "campaign"
+    engine_filter = cfg.get("engine_filter", "both")
     for engine in ("rust", "ref"):
+        if engine_filter != "both" and engine != engine_filter:
+            continue
         state = res.get(engine) or {}
         if state.get("status") != "clean":
             reasons.append(f"{engine}-status:{state.get('status')}")
@@ -596,7 +582,8 @@ def _project_failure_reasons(res: dict, cfg: dict) -> list[str]:
             reasons.append(f"{engine}-font-embedding")
     compare = res.get("compare") or {}
     if not compare.get("compared"):
-        reasons.append("not-compared")
+        if engine_filter == "both":
+            reasons.append("not-compared")
     elif campaign:
         if not compare.get("page_count_match"):
             reasons.append("page-count-mismatch")
@@ -941,7 +928,6 @@ CAMPAIGN_DPI = 150.0
 PAGE_MIN_PARITY_DEFAULT = 99.0   # every page must clear this exact-pixel floor
 DOC_MIN_PARITY_DEFAULT = 99.0    # document aggregate exact-pixel floor
 AUX_EXTS = ("aux", "out", "toc", "nav", "snm", "bbl", "lof", "lot", "brf")
-RUST_CACHE_EXTS = ("depcache", "pagecache")
 # Remove engine diagnostics identically for both compilers.
 DIAGNOSTIC_VARS = ["TEXDEBUG", "PHASE_TIMING"]
 
@@ -1321,155 +1307,121 @@ def _read_text(path: Path) -> str:
         return ""
 
 
-def aux_wants_bibliography(work: Path, job: str) -> bool:
-    aux = _read_text(work / f"{job}.aux")
-    return "\\bibdata{" in aux and "\\citation{" in aux
-
-
-def run_bibtex(bibtex: str, work: Path, job: str, env: dict,
-               log_path: Path, timeout: float,
-               mem_limit_mib: int = DEFAULT_MEM_LIMIT_MIB,
-               max_capture_bytes: int = DEFAULT_MAX_CAPTURE_BYTES) -> dict:
-    bib_env = dict(env)
-    if is_ratex_cli(bibtex):
-        bib_env["TEXMK_INTERNAL_MODE"] = "bibtex"
-    run = run_compile(bibtex, work, job, log_path, timeout, env=bib_env, flags=(),
-                      mem_limit_mib=mem_limit_mib,
-                      max_capture_bytes=max_capture_bytes)
-    return {"exit": run["exit"], "timed_out": run["timed_out"],
-            "mem_killed": run["mem_killed"], "kill_signal": run["kill_signal"],
-            "cmd": run["cmd"], "log": str(log_path),
-            "capture": run["capture"]}
-
-
-def converge_engine(engine: str, bin_path: str, ws: Path, tex_rel: Path,
-                    idir: Path, env: dict, timeout: float, max_passes: int,
-                    bibtex: str | None, ref_engine: str,
-                    mem_limit_mib: int = DEFAULT_MEM_LIMIT_MIB,
-                    max_capture_bytes: int = DEFAULT_MAX_CAPTURE_BYTES) -> dict:
-    """Converged bibliography/cross-ref build in one isolated workspace.
-
-    NO cross-engine state ever transfers: both sides start from the identical
-    frozen active source and converge independently; the gate exposes any
-    divergence. Rust output/dependency caches (.depcache/.pagecache) and the
-    previous PDF are deleted before EVERY pass. Bibliography honoring: a .bbl
-    genuinely shipped in the source is the author's bibliography and is NEVER
-    overwritten (freeze preserves it; bibtex stays off); when the aux cites
-    with no shipped .bbl, the reference side runs system BibTeX and the Rust
-    side runs native tex-bibtex — never a system binary for Rust output.
-    Every pass is measured and hashed. Bounded pass captures are temporary;
-    the retention step keeps only final failure evidence unless requested.
-    """
-    work = ws / tex_rel.parent
+def compile_campaign_ref(
+    ws_ref: Path,
+    tex_rel: Path,
+    idir: Path,
+    env: dict,
+    timeout: float,
+    cfg: dict,
+    ref_engine: str,
+    mem_limit_mib: int = DEFAULT_MEM_LIMIT_MIB,
+    max_capture_bytes: int = DEFAULT_MAX_CAPTURE_BYTES,
+) -> dict:
+    """Run real system latexmk reference inside a safe isolated environment."""
+    work_dir = ws_ref / tex_rel.parent
     job = tex_rel.stem
-    plog = idir / "passlogs"
-    plog.mkdir(parents=True, exist_ok=True)
-    if engine == "rust" and is_ratex_cli(bin_path):
-        flags = ("-1", "-interaction=nonstopmode", "-halt-on-error", "-no-shell-escape")
-    elif engine == "rust":
-        flags = ("-interaction=nonstopmode", "-halt-on-error", "-no-shell-escape")
+    bbl_is_source = (work_dir / f"{job}.bbl").is_file()
+    cap_path = idir / "ref.stdout.log"
+    latexmk_bin = cfg.get("sys_latexmk") or shutil.which("latexmk") or "/usr/bin/latexmk"
+    ref_bin = cfg.get("ref_bins", {}).get(ref_engine) or f"/usr/bin/{ref_engine}"
+
+    if ref_engine == "xelatex":
+        engine_flags = ["-xelatex", f"-pdfxelatex={ref_bin} -interaction=nonstopmode %O %S"]
+    elif ref_engine == "lualatex":
+        engine_flags = ["-lualatex", f"-pdflualatex={ref_bin} -interaction=nonstopmode %O %S"]
     else:
-        flags = REF_ENGINE_FLAGS.get(ref_engine, ("-interaction=nonstopmode", "-no-shell-escape"))
-    passes: list[dict] = []
-    bib_runs: list[dict] = []
-    bbl_is_source = (work / f"{job}.bbl").is_file()
-    prev = aux_state(work, job)
-    cur = prev
-    stable = False
-    timed_out = False
-    mem_killed = False
-    total_ms = 0.0
-    for i in range(1, max_passes + 1):
-        for ext in RUST_CACHE_EXTS:
-            (work / f"{job}.{ext}").unlink(missing_ok=True)
-        (work / f"{job}.pdf").unlink(missing_ok=True)
-        cache_dir = work / f".cache_{engine}"
-        home_dir = work / f".home_{engine}"
-        shutil.rmtree(cache_dir, ignore_errors=True)
-        cache_dir.mkdir(parents=True, exist_ok=True)
-        home_dir.mkdir(parents=True, exist_ok=True)
-        pass_env = {
-            **env,
-            "HOME": env.get("HOME", str(home_dir)),
-            "XDG_CACHE_HOME": env.get("XDG_CACHE_HOME", str(cache_dir)),
-        }
-        if engine == "rust":
-            pass_env["TEX_RS_HERMETIC"] = "1"
-            pass_env["TEX_RS_CACHE_DIR"] = str(cache_dir / "tex-rs")
-        cap = plog / f"{engine}-pass{i}.stdout.log"
-        run = run_compile(bin_path, work, f"{job}.tex", cap, timeout,
-                          env=pass_env, flags=flags, mem_limit_mib=mem_limit_mib,
-                          max_capture_bytes=max_capture_bytes)
-        total_ms += run["time_ms"]
-        tl = plog / f"{engine}-pass{i}.tex.log"
-        tex_capture = None
-        if (work / f"{job}.log").is_file():
-            tex_capture = capture_file(
-                work / f"{job}.log", tl, max_bytes=max_capture_bytes,
-                error_pattern=ERROR_LINE_RE,
-            )
-        passes.append({"pass": i, "exit": run["exit"],
-                       "timed_out": run["timed_out"],
-                       "mem_killed": run["mem_killed"],
-                       "kill_signal": run["kill_signal"],
-                       "spawn_error": run["spawn_error"],
-                       "time_ms": round(run["time_ms"], 1),
-                       "cmd": run["cmd"], "capture": run["capture"],
-                       "tex_capture": tex_capture,
-                       "stdout_log": str(cap),
-                       "tex_log": str(tl) if tex_capture else None})
-        if run["timed_out"]:
-            timed_out = True
-            break
-        if run["mem_killed"]:
-            # dead on the address-space cap: further passes repeat the same
-            # runaway; report distinctly instead of burning max_passes
-            mem_killed = True
-            break
-        if bibtex and not bbl_is_source and aux_wants_bibliography(work, job):
-            bl = plog / f"{engine}-bibtex-pass{i}.log"
-            bib_runs.append({"pass": i, **run_bibtex(
-                bibtex, work, job, pass_env, bl, timeout,
-                mem_limit_mib=mem_limit_mib,
-                max_capture_bytes=max_capture_bytes)})
-        cur = aux_state(work, job)
-        stable = cur == prev
-        prev = cur
-        if stable and run["exit"] == 0:
-            break
-    last = passes[-1] if passes else {}
+        engine_flags = ["-pdf", f"-pdflatex={ref_bin} -interaction=nonstopmode %O %S"]
+
+    latexmk_cmd = [
+        str(latexmk_bin),
+        *engine_flags,
+        "-interaction=nonstopmode",
+        tex_rel.name,
+    ]
+
+    ref_home = ws_ref / ".home"
+    ref_cache = ws_ref / ".cache"
+    ref_home.mkdir(parents=True, exist_ok=True)
+    ref_cache.mkdir(parents=True, exist_ok=True)
+
+    bwrap_path = shutil.which("bwrap") if not cfg.get("no_sandbox") else None
+    use_bwrap = bwrap_path is not None and Path(bwrap_path).is_file()
+
+    overlay_path = cfg.get("overlay_path")
+
+    if use_bwrap:
+        bwrap_cmd = [
+            bwrap_path,
+            "--ro-bind", "/usr", "/usr",
+            "--ro-bind", "/lib", "/lib",
+        ]
+        if Path("/lib64").is_dir():
+            bwrap_cmd += ["--ro-bind", "/lib64", "/lib64"]
+        bwrap_cmd += [
+            "--ro-bind", "/etc", "/etc",
+            "--ro-bind", "/var", "/var",
+            "--ro-bind", "/bin", "/bin",
+            "--dev", "/dev",
+            "--proc", "/proc",
+            "--tmpfs", "/tmp",
+            "--unshare-net",
+            "--bind", str(ws_ref), str(ws_ref),
+            "--bind", str(ref_home), str(ref_home),
+            "--bind", str(ref_cache), str(ref_cache),
+        ]
+        if overlay_path and Path(overlay_path).is_dir():
+            bwrap_cmd += ["--ro-bind", str(overlay_path), str(overlay_path)]
+        bwrap_cmd += [
+            "--setenv", "PATH", REFERENCE_SYSTEM_PATH,
+            "--setenv", "HOME", str(ref_home),
+            "--setenv", "XDG_CACHE_HOME", str(ref_cache),
+        ]
+        if overlay_path and Path(overlay_path).is_dir():
+            bwrap_cmd += ["--setenv", "TEXMFHOME", str(overlay_path)]
+        full_cmd = bwrap_cmd + latexmk_cmd
+        run_env = dict(env if env is not None else os.environ)
+    else:
+        latexmk_cmd.insert(1, "-norc")
+        full_cmd = latexmk_cmd
+        run_env = dict(env if env is not None else os.environ)
+        run_env["PATH"] = "/usr/bin:/bin:" + run_env.get("PATH", "")
+        run_env["HOME"] = str(ref_home)
+        run_env["XDG_CACHE_HOME"] = str(ref_cache)
+        if overlay_path and Path(overlay_path).is_dir():
+            run_env["TEXMFHOME"] = str(overlay_path)
+
+    run = run_command(
+        full_cmd,
+        work_dir=work_dir,
+        cap_path=cap_path,
+        timeout=timeout,
+        env=run_env,
+        mem_limit_mib=mem_limit_mib,
+        max_capture_bytes=max_capture_bytes,
+    )
+
+    stem_pdf = work_dir / f"{job}.pdf"
+    stem_log = work_dir / f"{job}.log"
+    kept_pdf = out_root_of(idir) / "pdf" / f"{pdf_basename(idir.name, 'ref')}"
+    pdf_stat = persist_valid_pdf(stem_pdf, kept_pdf)
+
     kept_log = None
-    kept_log_capture = None
-    if (work / f"{job}.log").is_file():
-        kept_log = idir / f"{engine}.tex.log"
-        kept_log_capture = capture_file(
-            work / f"{job}.log", kept_log, max_bytes=max_capture_bytes,
+    tex_capture = None
+    if stem_log.is_file():
+        kept_log = idir / "ref.tex.log"
+        tex_capture = capture_file(
+            stem_log, kept_log, max_bytes=max_capture_bytes,
             error_pattern=ERROR_LINE_RE,
         )
-    kept_stdout = idir / f"{engine}.stdout.log"
-    last_stdout = Path(last["stdout_log"]) if last.get("stdout_log") else None
-    if last_stdout and last_stdout.is_file():
-        shutil.copyfile(last_stdout, kept_stdout)
-    kept_pdf = out_root_of(idir) / "pdf" / f"{pdf_basename(idir.name, engine)}"
-    pdf_stat = persist_valid_pdf(work / f"{job}.pdf", kept_pdf)
-    errors = ((kept_log_capture or {}).get("errors")
-              or (last.get("capture") or {}).get("errors") or [])
-    if not errors and last.get("spawn_error"):
-        errors = [f"spawn-error: {last['spawn_error']}"]
-    mem_killed = mem_killed or bool(last.get("mem_killed"))
-    converged = stable and last.get("exit") == 0 and not timed_out
-    if timed_out:
-        status = "timeout"
-    elif mem_killed:
-        status = "memlimit"
-    elif last.get("spawn_error") or not pdf_stat["pdf_valid"]:
-        status = "failure"
-    elif last.get("exit") != 0 or errors:
-        status = "errors"
-    elif not converged:
-        status = "unconverged"
-    else:
-        status = "clean"
+
+    stdout_text = _read_text(cap_path)
+    log_text = _read_text(kept_log) if kept_log else ""
+
+    errors = ((tex_capture or {}).get("errors")
+              or run["capture"].get("errors") or [])
+    if not errors and run["spawn_error"]:
+        errors = [f"spawn-error: {run['spawn_error']}"]
 
     font_embedding_errors: list[str] = []
     if pdf_stat["pdf_valid"] and kept_pdf.is_file():
@@ -1478,38 +1430,211 @@ def converge_engine(engine: str, bin_path: str, ws: Path, tex_rel: Path,
         except Exception as e:
             font_embedding_errors = [f"validator error: {e}"]
 
+    rule_runs = re.findall(r"Run number (\d+) of rule '([^']+)'", stdout_text)
+    passes = max((int(number) for number, rule in rule_runs
+                  if rule == ref_engine), default=0)
+    bib_runs = [{"run": int(number), "rule": rule}
+                for number, rule in rule_runs
+                if rule.split()[0] in ("bibtex", "biber")]
+
+    converged = bool(run["exit"] == 0 and pdf_stat["pdf_valid"]
+                     and not run["timed_out"] and not run["mem_killed"])
+    status = classify(run, pdf_stat["pdf_valid"], errors)
+    if status == "clean" and not converged:
+        status = "unconverged"
+
     failure_kind = classify_failure_kind(
-        {"timed_out": timed_out, "mem_killed": mem_killed, "exit": last.get("exit", 0), "spawn_error": last.get("spawn_error")},
+        run,
         pdf_stat,
         errors,
-        log_text=((kept_log_capture or {}).get("excerpt", "") if isinstance(kept_log_capture, dict) else ""),
+        log_text=log_text,
         font_errors=font_embedding_errors,
     )
+
     rec = {
-        "engine": engine, "bin": bin_path, "ref_engine": ref_engine,
-        "status": status, "failure_kind": failure_kind,
-        "exit": last.get("exit"), "timed_out": timed_out,
-        "mem_killed": mem_killed, "kill_signal": last.get("kill_signal"),
-        "time_ms": round(total_ms, 1), "passes": len(passes),
-        "converged": converged, "pass_records": passes,
-        "bibtex_runs": bib_runs, "shipped_bbl": bbl_is_source,
-        "errors": errors, "aux_hashes": cur,
+        "engine": "ref",
+        "driver": "latexmk",
+        "bin": str(latexmk_bin),
+        "ref_engine": ref_engine,
+        "ref_bin": ref_bin,
+        "status": status,
+        "failure_kind": failure_kind,
+        "exit": run["exit"],
+        "timed_out": run["timed_out"],
+        "mem_killed": run["mem_killed"],
+        "kill_signal": run["kill_signal"],
+        "time_ms": round(run["time_ms"], 1),
+        "passes": passes,
+        "converged": converged,
+        "pass_records": [{"pass": 1, "cmd": run["cmd"], "time_ms": round(run["time_ms"], 1), "exit": run["exit"]}],
+        "bibtex_runs": bib_runs,
+        "shipped_bbl": bbl_is_source,
+        "errors": errors,
+        "aux_hashes": aux_state(work_dir, job),
         "font_embedding_errors": font_embedding_errors,
         "font_embedding_valid": len(font_embedding_errors) == 0,
-        "capture": last.get("capture"),
-        "tex_log_capture": kept_log_capture,
-        "captured_log": str(kept_stdout) if kept_stdout.is_file() else None,
-        "tex_log": str(kept_log)
-        if kept_log else None, "pass_log_dir": str(plog),
+        "capture": run["capture"],
+        "tex_log_capture": tex_capture,
+        "captured_log": str(cap_path) if cap_path.is_file() else None,
+        "tex_log": str(kept_log) if kept_log and kept_log.is_file() else None,
+        "pass_log_dir": None,
+        "sandboxed": use_bwrap,
+        "cmd": run["cmd"],
     }
     rec.update(pdf_stat)
-    # persisted copy wins: the workspace path may be deleted by --no-keep-work
     rec["pdf"] = str(kept_pdf) if kept_pdf.is_file() else None
     rec["pdf_produced"] = pdf_stat["pdf_exists"]
     rec["pdf_exists"] = kept_pdf.is_file()
     return rec
 
-compile_campaign_engine = converge_engine
+
+def compile_campaign_rust(
+    ws_rust: Path,
+    tex_rel: Path,
+    idir: Path,
+    env: dict,
+    timeout: float,
+    cfg: dict,
+    ref_engine: str,
+    mem_limit_mib: int = DEFAULT_MEM_LIMIT_MIB,
+    max_capture_bytes: int = DEFAULT_MAX_CAPTURE_BYTES,
+) -> dict:
+    """Run public Ratex driver (not Ratex -1) with full convergence and EPS preprocessing."""
+    work_dir = ws_rust / tex_rel.parent
+    job = tex_rel.stem
+    bbl_is_source = (work_dir / f"{job}.bbl").is_file()
+    cap_path = idir / "rust.stdout.log"
+    rust_bin = cfg["rust_bin"]
+
+    rust_home = ws_rust / ".home"
+    rust_cache = ws_rust / ".cache"
+    rust_home.mkdir(parents=True, exist_ok=True)
+    rust_cache.mkdir(parents=True, exist_ok=True)
+
+    run_env = dict(env if env is not None else os.environ)
+    run_env["TEX_RS_HERMETIC"] = "1"
+    run_env["HOME"] = str(rust_home)
+    run_env["XDG_CACHE_HOME"] = str(rust_cache)
+    run_env["TEX_RS_CACHE_DIR"] = str(rust_cache / "tex-rs")
+    for k in (
+        "TEXMFHOME", "TEXMFVAR", "TEXMFCACHE", "TEXMFCONFIG",
+        "TEXINPUTS", "BIBINPUTS", "BSTINPUTS", "TEXFORMATS",
+        "LUAINPUTS", "TEXMFLOCAL", "TEXMFSYSVAR", "TEXMFSYSCONFIG",
+        "TEXMF", "TEXMFCNF", "TEXMFDIST", "TEXMFMAIN",
+        "TEXFONTMAPS", "ENCFONTS", "TFMFONTS", "T1FONTS", "VFFONTS",
+        "TTFONTS", "OPENTYPEFONTS", "OSFONTDIR",
+        "TEX_RS_TEXMF", "TEX_RS_FONT_DIR", "LUAOTFLOAD_TOOL_FORCE_CACHE",
+        "TEXMK_LIB", "TEXMK_INTERNAL_MODE",
+    ):
+        run_env.pop(k, None)
+
+    if ref_engine == "xelatex":
+        engine_flag = "-xelatex"
+    elif ref_engine == "lualatex":
+        engine_flag = "-lualatex"
+    else:
+        engine_flag = "-pdf"
+    cmd = [
+        str(rust_bin),
+        engine_flag,
+        "-interaction=nonstopmode",
+        "--keep-logs",
+        "--cache-directory", str(rust_cache / "tex-rs"),
+        tex_rel.name,
+    ]
+
+    run = run_command(
+        cmd,
+        work_dir=work_dir,
+        cap_path=cap_path,
+        timeout=timeout,
+        env=run_env,
+        mem_limit_mib=mem_limit_mib,
+        max_capture_bytes=max_capture_bytes,
+    )
+
+    stem_pdf = work_dir / f"{job}.pdf"
+    stem_log = work_dir / f"{job}.log"
+    kept_pdf = out_root_of(idir) / "pdf" / f"{pdf_basename(idir.name, 'rust')}"
+    pdf_stat = persist_valid_pdf(stem_pdf, kept_pdf)
+
+    kept_log = None
+    tex_capture = None
+    if stem_log.is_file():
+        kept_log = idir / "rust.tex.log"
+        tex_capture = capture_file(
+            stem_log, kept_log, max_bytes=max_capture_bytes,
+            error_pattern=ERROR_LINE_RE,
+        )
+
+    stdout_text = _read_text(cap_path)
+    log_text = _read_text(kept_log) if kept_log else ""
+
+    errors = ((tex_capture or {}).get("errors")
+              or run["capture"].get("errors") or [])
+    if not errors and run["spawn_error"]:
+        errors = [f"spawn-error: {run['spawn_error']}"]
+
+    font_embedding_errors: list[str] = []
+    if pdf_stat["pdf_valid"] and kept_pdf.is_file():
+        try:
+            font_embedding_errors = validate_pdf_font_embedding(kept_pdf, {})
+        except Exception as e:
+            font_embedding_errors = [f"validator error: {e}"]
+
+    pass_matches = re.findall(r"(\d+) \S+ pass\(es\)|failed on pass (\d+)", stdout_text)
+    passes = int(next(value for value in pass_matches[-1] if value)) if pass_matches else 0
+    bib_matches = re.findall(r"(\d+) bibtex run\(s\)", stdout_text)
+    bib_runs = [{"tool": "tex-bibtex"}
+                for _ in range(int(bib_matches[-1]) if bib_matches else 0)]
+
+    converged = bool(run["exit"] == 0 and pdf_stat["pdf_valid"]
+                     and not run["timed_out"] and not run["mem_killed"])
+    status = classify(run, pdf_stat["pdf_valid"], errors)
+    if status == "clean" and not converged:
+        status = "unconverged"
+
+    failure_kind = classify_failure_kind(
+        run,
+        pdf_stat,
+        errors,
+        log_text=log_text,
+        font_errors=font_embedding_errors,
+    )
+
+    rec = {
+        "engine": "rust",
+        "driver": "ratex",
+        "bin": str(rust_bin),
+        "ref_engine": ref_engine,
+        "status": status,
+        "failure_kind": failure_kind,
+        "exit": run["exit"],
+        "timed_out": run["timed_out"],
+        "mem_killed": run["mem_killed"],
+        "kill_signal": run["kill_signal"],
+        "time_ms": round(run["time_ms"], 1),
+        "passes": passes,
+        "converged": converged,
+        "pass_records": [{"pass": 1, "cmd": run["cmd"], "time_ms": round(run["time_ms"], 1), "exit": run["exit"]}],
+        "bibtex_runs": bib_runs,
+        "shipped_bbl": bbl_is_source,
+        "errors": errors,
+        "aux_hashes": aux_state(work_dir, job),
+        "font_embedding_errors": font_embedding_errors,
+        "font_embedding_valid": len(font_embedding_errors) == 0,
+        "capture": run["capture"],
+        "tex_log_capture": tex_capture,
+        "captured_log": str(cap_path) if cap_path.is_file() else None,
+        "tex_log": str(kept_log) if kept_log and kept_log.is_file() else None,
+        "pass_log_dir": None,
+        "cmd": run["cmd"],
+    }
+    rec.update(pdf_stat)
+    rec["pdf"] = str(kept_pdf) if kept_pdf.is_file() else None
+    rec["pdf_produced"] = pdf_stat["pdf_exists"]
+    rec["pdf_exists"] = kept_pdf.is_file()
+    return rec
 
 
 def exact_parity_compare(aid: str, a_path: Path | None, b_path: Path | None,
@@ -1687,7 +1812,12 @@ def process_campaign_project(entry: dict, out_root: Path, cfg: dict) -> dict:
         if entry.get("blocker"):
             raise RuntimeError(entry["blocker"])
         src: Path = entry["src_dir"]
+        if not src.is_dir():
+            raise FileNotFoundError(f"corpus source directory missing: {src}")
         tex_rel = Path(entry["main_tex"])
+        main_tex_file = src / tex_rel
+        if not main_tex_file.is_file():
+            raise FileNotFoundError(f"main_tex source file missing: {main_tex_file}")
         ws_root = out_root / "work" / aid
         ws_rust = ws_root / "rust"
         ws_ref = ws_root / "ref"
@@ -1719,7 +1849,6 @@ def process_campaign_project(entry: dict, out_root: Path, cfg: dict) -> dict:
         res["rust_bin"] = cfg["rust_bin"]
         res["rust_bin_sha256"] = cfg.get("rust_bin_sha256")
         res["ref_bin_sha256"] = cfg.get("ref_bins_info", {}).get(ref_engine, {}).get("sha256")
-        main_tex_file = src / tex_rel
         res["main_tex_sha256"] = sha256_file(main_tex_file) if main_tex_file.is_file() else None
 
         rust_home = ws_rust / ".home"
@@ -1738,30 +1867,55 @@ def process_campaign_project(entry: dict, out_root: Path, cfg: dict) -> dict:
             ref_home=ref_home, ref_cache=ref_cache
         )
 
-        ref = converge_engine("ref", cfg["ref_bins"][ref_engine], ws_ref,
-                              tex_rel, idir, p_ref_env, cfg["timeout"],
-                              cfg["max_passes"], cfg["sys_bibtex"], ref_engine,
-                              cfg["mem_limit_mib"], cfg["max_capture_bytes"])
-        rust = converge_engine("rust", cfg["rust_bin"], ws_rust, tex_rel,
-                               idir, p_rust_env, cfg["timeout"],
-                               cfg["max_passes"], cfg["rust_bibtex"],
-                               ref_engine, cfg["mem_limit_mib"],
-                               cfg["max_capture_bytes"])
+        engine_filter = cfg.get("engine_filter", "both")
+        if engine_filter in ("both", "ref"):
+            ref = compile_campaign_ref(
+                ws_ref, tex_rel, idir, p_ref_env, cfg["timeout"],
+                cfg, ref_engine, cfg["mem_limit_mib"], cfg["max_capture_bytes"]
+            )
+        else:
+            ref = {
+                "engine": "ref", "driver": "latexmk", "status": "skipped",
+                "failure_kind": "skipped", "converged": True, "pdf_valid": False,
+                "pages": None, "pdf": None, "exit": 0, "errors": [],
+                "time_ms": 0.0, "passes": 0, "font_embedding_errors": [],
+                "font_embedding_valid": True,
+            }
+
+        if engine_filter in ("both", "rust"):
+            rust = compile_campaign_rust(
+                ws_rust, tex_rel, idir, p_rust_env, cfg["timeout"],
+                cfg, ref_engine, cfg["mem_limit_mib"], cfg["max_capture_bytes"]
+            )
+        else:
+            rust = {
+                "engine": "rust", "driver": "ratex", "status": "skipped",
+                "failure_kind": "skipped", "converged": True, "pdf_valid": False,
+                "pages": None, "pdf": None, "exit": 0, "errors": [],
+                "time_ms": 0.0, "passes": 0, "font_embedding_errors": [],
+                "font_embedding_valid": True,
+            }
         res["ref"] = ref
         res["rust"] = rust
-        cmp = exact_parity_compare(
-            aid,
-            Path(rust["pdf"]) if rust["pdf"] else None,
-            Path(ref["pdf"]) if ref["pdf"] else None,
-            rust["pages"], ref["pages"], out_root, cfg["dpi"],
-            cfg["page_min"], cfg["doc_min"],
-            rust_font_errors=rust.get("font_embedding_errors"),
-            ref_font_errors=ref.get("font_embedding_errors"))
+
+        if engine_filter == "both":
+            cmp = exact_parity_compare(
+                aid,
+                Path(rust["pdf"]) if rust["pdf"] else None,
+                Path(ref["pdf"]) if ref["pdf"] else None,
+                rust["pages"], ref["pages"], out_root, cfg["dpi"],
+                cfg["page_min"], cfg["doc_min"],
+                rust_font_errors=rust.get("font_embedding_errors"),
+                ref_font_errors=ref.get("font_embedding_errors"))
+        else:
+            cmp = {
+                "compared": False,
+                "note": f"{engine_filter}-only run",
+                "page_failures": [],
+                "per_page": [],
+                "raster_warnings": [],
+            }
         res["compare"] = cmp
-        # prepared campaign never pin the live reference (active sources
-        # legitimately drift). Parity is current active reference vs native
-        # Rust with identical page count/geometry; that comparison is the
-        # contract. A genuinely missing source/dependency stays a blocker.
         exp = (entry.get("prepared") or {}).get("oracle_pages_recorded")
         if exp is not None and ref["pages"] != exp:
             res["oracle_pages_note"] = {"reference_built": ref["pages"],
@@ -1772,14 +1926,19 @@ def process_campaign_project(entry: dict, out_root: Path, cfg: dict) -> dict:
         import traceback
         traceback.print_exc()
         res["harness_error"] = str(e)
+        is_source_err = isinstance(e, FileNotFoundError) or "source" in str(e).lower() or "main_tex" in str(e).lower() or "missing" in str(e).lower()
+        f_kind = "invalid-source" if is_source_err else "compilation"
         res.setdefault("rust", {"engine": "rust", "status": "failure",
+                                "failure_kind": f_kind,
                                 "exit": None, "pdf_valid": False, "pages": None,
                                 "errors": [f"harness: {e}"], "pdf": None,
                                 "converged": False})
         res.setdefault("ref", {"engine": "ref", "status": "failure",
+                               "failure_kind": f_kind,
                                "exit": None, "pdf_valid": False, "pages": None,
-                               "errors": [], "pdf": None, "converged": False})
-        res.setdefault("compare", {"compared": False, "note": "harness error",
+                               "errors": [f"harness: {e}"], "pdf": None,
+                               "converged": False})
+        res.setdefault("compare", {"compared": False, "note": f"harness error: {e}",
                                    "page_failures": [], "per_page": [],
                                    "raster_warnings": []})
     res["finished_utc"] = now_iso()
@@ -1805,7 +1964,10 @@ def campaign_gate(selected: list[dict], results: dict[str, dict],
         if r.get("harness_error"):
             failures.append({"kind": "harness", "id": aid,
                              "detail": r["harness_error"]})
+        engine_filter = cfg.get("engine_filter", "both")
         for eng in ("rust", "ref"):
+            if engine_filter != "both" and eng != engine_filter:
+                continue
             x = r.get(eng) or {}
             if x.get("status") != "clean" or not x.get("converged"):
                 f_kind = x.get("failure_kind") or "compilation"
@@ -1818,6 +1980,8 @@ def campaign_gate(selected: list[dict], results: dict[str, dict],
                 f_kind = x.get("failure_kind") or "compilation"
                 failures.append({"kind": f_kind, "id": aid,
                                  "engine": eng})
+        if engine_filter != "both":
+            continue
         # oracle_pages_note is provenance only (active source drift); a
         # genuinely missing source/dependency already raised harness_error.
         c = r.get("compare") or {}
@@ -1956,7 +2120,7 @@ def summarize_campaign(results: dict[str, dict], page_min: float,
                        doc_min: float) -> dict:
     eng = {e: {s: 0 for s in
               ("clean", "errors", "failure", "timeout", "unconverged",
-               "memlimit")}
+               "memlimit", "skipped")}
            for e in ("rust", "ref")}
     failure_kinds = {e: {} for e in ("rust", "ref")}
     for r in results.values():
@@ -2308,40 +2472,29 @@ def run_campaign(args) -> int:
     """Converged exact-parity campaign: inventory, freeze,
     converge, compare, gate. Every failure/blocker is retained."""
     rust_bin = os.path.abspath(args.rust)
-    if not Path(rust_bin).is_file():
+    if not Path(rust_bin).is_file() and args.engine != "ref":
         print(f"Error: rust binary not found: {rust_bin}", file=sys.stderr)
         return 1
-    sys_bibtex = os.path.abspath(args.sys_bibtex)
+    if args.engine != "ref" and not is_ratex_cli(rust_bin):
+        print("Error: campaign mode requires the ratex or texmk driver; "
+              "use --mode single-pass for raw engines", file=sys.stderr)
+        return 1
+    sys_latexmk = os.path.abspath(str(args.sys_latexmk)) if args.sys_latexmk else (shutil.which("latexmk") or "/usr/bin/latexmk")
+    if not Path(sys_latexmk).is_file() and args.engine != "rust":
+        print(f"Error: reference latexmk not found: {sys_latexmk}", file=sys.stderr)
+        return 1
+    sys_bibtex = "/usr/bin/bibtex"
     args.output = args.output.resolve()
     ref_bins = {}
     for engine, path in (("pdflatex", args.sys), ("xelatex", args.sys_xelatex),
                          ("lualatex", args.sys_lualatex)):
         ap_ = os.path.abspath(str(path))
         ref_bins[engine] = ap_
-        if not Path(ap_).is_file():
+        if not Path(ap_).is_file() and args.engine != "rust":
             # missing reference engine: retained blocker for affected docs
             print(f"CAMPAIGN: reference engine missing: {engine} -> {ap_}",
                   file=sys.stderr)
-    rust_bibtex = None
-    if args.rust_bibtex:
-        if Path(args.rust_bibtex).is_file():
-            rust_bibtex = os.path.abspath(str(args.rust_bibtex))
-        else:
-            print(f"CAMPAIGN: specified rust-bibtex not found: {args.rust_bibtex}", file=sys.stderr)
-    elif is_ratex_cli(rust_bin):
-        # ratex dispatches native embedded bibtex when called with TEXMK_INTERNAL_MODE=bibtex
-        rust_bibtex = rust_bin
-    else:
-        sibling = Path(rust_bin).parent / "tex-bibtex"
-        if not sibling.is_file():
-            sibling = Path(rust_bin).parent / "bibtex"
-        if sibling.is_file():
-            rust_bibtex = os.path.abspath(str(sibling))
-        else:
-            print(f"CAMPAIGN: native bibtex missing for {rust_bin}; Rust docs "
-                  "needing generated bibliographies will be retained failures",
-                  file=sys.stderr)
-            rust_bibtex = None
+    rust_bibtex = rust_bin if is_ratex_cli(rust_bin) else None
     rust_env, ref_env, removed_diag, overlay_vars = campaign_environments(args.overlay)
     if args.overlay and not Path(args.overlay).is_dir():
         print(f"CAMPAIGN: WARNING: overlay dir missing: {args.overlay}; "
@@ -2425,8 +2578,7 @@ def run_campaign(args) -> int:
             # campaign checkpoints only; any schema gap triggers a re-run
             if r.get("mode") != "campaign" or "compare" not in r:
                 continue
-            if not all(isinstance(r.get(e), dict) and "status" in r[e]
-                       and "converged" in r[e] for e in ("rust", "ref")):
+            if not all(isinstance(r.get(e), dict) and "status" in r[e] for e in ("rust", "ref")):
                 continue
             if any(e["id"] == r["id"] for e in entries):
                 results[r["id"]] = r
@@ -2435,9 +2587,11 @@ def run_campaign(args) -> int:
     cfg = {"rust_bin": rust_bin, "ref_bins": ref_bins,
            "rust_bin_sha256": sha256_file(rust_bin) if Path(rust_bin).is_file() else None,
            "ref_bins_info": {k: {"path": v, "sha256": sha256_file(v) if Path(v).is_file() else None} for k, v in ref_bins.items()},
-           "rust_bibtex": rust_bibtex, "sys_bibtex": sys_bibtex,
+           "sys_latexmk": sys_latexmk,
+           "engine_filter": args.engine,
+           "no_sandbox": args.no_sandbox,
            "rust_env": rust_env, "ref_env": ref_env,
-           "env": ref_env, "timeout": args.timeout, "max_passes": args.max_passes,
+           "env": ref_env, "timeout": args.timeout,
            "overlay_path": args.overlay,
            "mem_limit_mib": args.mem_limit_mib,
            "max_capture_bytes": args.max_capture_bytes,
@@ -2449,18 +2603,21 @@ def run_campaign(args) -> int:
         apply_artifact_retention(resumed, args.output, cfg)
         atomic_write_json(ckpt_dir / f"{resumed['id']}.json", resumed)
     meta = {
-        "mode": "campaign",
-        "notice": f"CONVERGED CAMPAIGN: aux+bibtex until stable (max "
-                  f"{args.max_passes} passes/engine); gate = exact RGB parity "
-                  f"@{args.dpi:g}dpi, every page >= {args.page_min}%, doc "
+        "notice": f"CONVERGED CAMPAIGN: real latexmk reference vs public Ratex driver; "
+                  f"gate = exact RGB parity @{args.dpi:g}dpi, every page >= {args.page_min}%, doc "
                   f">= {args.doc_min}%, identical geometry/page counts.",
+        "sys_latexmk": sys_latexmk,
+        "sys_latexmk_version": capture_version(sys_latexmk, 10),
+        "sys_latexmk_sha256": sha256_file(Path(sys_latexmk)) if Path(sys_latexmk).is_file() else None,
+        "engine_filter": args.engine,
+        "sandbox": "disabled" if args.no_sandbox else ("bwrap" if shutil.which("bwrap") else "direct"),
         "started_utc": now_iso(),
         "corpus_dir": str(args.corpus_dir), "manifest": str(manifest_file),
         "manifest_sha256": sha256_file(manifest_file),
         "manifest_offset": args.offset,
         "manifest_limit": args.limit,
         "output": str(args.output), "jobs": args.jobs,
-        "timeout_s": args.timeout, "max_passes": args.max_passes,
+        "timeout_s": args.timeout,
         "mem_limit_mib": args.mem_limit_mib,
         "max_capture_bytes": args.max_capture_bytes,
         "dpi": args.dpi, "page_min_pct": args.page_min,
@@ -2536,10 +2693,11 @@ def run_campaign(args) -> int:
 
     print("=" * 78)
     print(f"*** {meta['notice']} ***")
-    print(f"Campaign {len(entries)} documents | rust={rust_bin}")
+    print(f"Campaign {len(entries)} documents | rust={rust_bin} | latexmk={sys_latexmk}")
     print(f"  ref={ {k: Path(v).name for k, v in ref_bins.items()} }")
-    print(f"jobs={args.jobs} timeout={args.timeout}s max-passes={args.max_passes} "
+    print(f"jobs={args.jobs} timeout={args.timeout}s "
           f"mem-limit={args.mem_limit_mib}MiB output={args.output} "
+          f"engine={args.engine} sandbox={'disabled' if args.no_sandbox else ('bwrap' if shutil.which('bwrap') else 'direct')} "
           f"resumed={len(results)} to-run={len(todo)}")
     print("=" * 78, flush=True)
 
@@ -2602,8 +2760,8 @@ def run_campaign(args) -> int:
     dt = time.perf_counter() - t0
     print("=" * 78)
     print(f"CAMPAIGN ({len(results)}/{len(entries)} completed in {dt:.1f}s) "
-          f"— independent convergence attempted (max {args.max_passes} passes); "
-          f"bibtex honored; gate decides parity at {args.dpi:g}dpi")
+          f"— public drivers own convergence and bibliography; "
+          f"gate decides parity at {args.dpi:g}dpi")
     print(f"  rust status: {s['status_counts']['rust']}")
     print(f"  ref  status: {s['status_counts']['ref']}")
     print(f"  page-count match {s['page_count_match']} | geometry match "
@@ -2635,8 +2793,8 @@ def main() -> int:
                     default=Path("corpus/standalone-1000") if Path("corpus/standalone-1000/manifest.json").is_file() else Path("corpus"),
                     help="Corpus directory root (default: corpus/standalone-1000 or corpus)")
     ap.add_argument("--rust", type=Path,
-                    default=Path("target/release/ratex") if Path("target/release/ratex").exists() else Path("target/release/pdflatex"),
-                    help="Rust ratex binary (default: target/release/ratex or target/release/pdflatex)")
+                    default=Path("target/release/ratex"),
+                    help="Rust ratex driver (default: target/release/ratex); raw engines require --mode single-pass")
     ap.add_argument("--sys", type=Path, default=Path("/usr/bin/pdflatex"),
                     help="Reference system pdflatex")
     ap.add_argument("--sys-xelatex", type=Path, default=Path("/usr/bin/xelatex"),
@@ -2644,16 +2802,17 @@ def main() -> int:
     ap.add_argument("--sys-lualatex", type=Path,
                     default=Path("/usr/bin/lualatex"),
                     help="Reference system LuaTeX (luacode docs)")
-    ap.add_argument("--rust-bibtex", type=Path, default=None,
-                    help="native Rust BibTeX for the Rust side (never system; defaults to ratex embedded bibtex or tex-bibtex)")
-    ap.add_argument("--sys-bibtex", type=Path, default=Path("/usr/bin/bibtex"),
-                    help="system BibTeX for the reference side")
+    ap.add_argument("--sys-latexmk", type=Path,
+                    default=Path("/usr/bin/latexmk") if Path("/usr/bin/latexmk").is_file() else Path(shutil.which("latexmk") or "latexmk"),
+                    help="Reference system latexmk driver (default: /usr/bin/latexmk)")
+    ap.add_argument("--engine", choices=("both", "ref", "rust"), default="both",
+                    help="Which engine(s) to compile: both (default, full parity comparison), ref (reference latexmk only), rust (Ratex driver only)")
+    ap.add_argument("--no-sandbox", action="store_true",
+                    help="Disable bwrap sandbox isolation for reference latexmk")
     ap.add_argument("--overlay", type=Path,
                     default=Path("output/parity-deps/texmf"),
                     help="isolated TDS dependency overlay exported as TEXMFHOME "
                          "to reference engine (campaign mode)")
-    ap.add_argument("--max-passes", type=int, default=5,
-                    help="convergence pass bound per engine (campaign mode)")
     ap.add_argument("--dpi", type=float, default=CAMPAIGN_DPI,
                     help="campaign raster DPI (parity rule: 150)")
     ap.add_argument("--page-min", type=float, default=PAGE_MIN_PARITY_DEFAULT,

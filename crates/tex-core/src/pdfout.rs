@@ -81,6 +81,8 @@ pub struct PdfDoc {
     /// Reserved font dictionaries for forms, with the same font-index
     /// remapping as pages. Each form has its own resource namespace.
     pub form_fonts: Vec<(i32, Vec<(usize, u16)>)>,
+    /// Shared descriptors for standard PDF fonts embedded while importing pages.
+    pub(crate) imported_base14_fonts: std::collections::BTreeMap<Vec<u8>, i32>,
     pub info: Vec<u8>,
     /// raw dict body contributed by \pdfcatalog
     pub catalog_extra: Vec<u8>,
@@ -184,6 +186,7 @@ impl PdfDoc {
             pages: Vec::new(),
             objects: Vec::new(),
             form_fonts: Vec::new(),
+            imported_base14_fonts: std::collections::BTreeMap::new(),
             info: Vec::new(),
             catalog_extra: Vec::new(),
             names_extra: Vec::new(),

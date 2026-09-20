@@ -29,17 +29,21 @@ publish_one() {
         echo "==> Repository not yet created on AUR or empty. Initializing new repo..."
         mkdir -p "$temp_dir/repo"
         cd "$temp_dir/repo"
-        git init
+        git init -b master
         git remote add origin "ssh://aur@aur.archlinux.org/${pkg}.git"
     fi
+    git config user.name "Leo Liu"
+    git config user.email "leoliu0@users.noreply.github.com"
 
     cp "$pkgbuild_src" "$temp_dir/repo/PKGBUILD"
     printf '%s\n' "$srcinfo" > "$temp_dir/repo/.SRCINFO"
 
     git add PKGBUILD .SRCINFO
+    local version
     version="$(printf '%s\n' "$srcinfo" | awk '/pkgver = / {print $3; exit}')"
     if git diff --staged --quiet; then
         echo "==> No changes to commit for $pkg on AUR."
+        cd "$SCRIPT_DIR"
         return 0
     fi
 

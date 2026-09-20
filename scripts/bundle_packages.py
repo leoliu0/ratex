@@ -66,6 +66,7 @@ BASELINE_FAMILY_MAP_ROOTS = [
     "fonts/map/dvips/psnfss/charter.map",
     "fonts/map/dvips/psnfss/utopia.map",
     "fonts/map/dvips/metapost/troff.map",
+    "fonts/map/dvips/psnfss/pazo.map",
 ]
 
 CYRILLIC_EC_FAMILIES = [
@@ -200,6 +201,118 @@ UPSTREAM_PACKAGES = {
         "map_files": [],
         "tds_dirs": [
             ("tex/generic/babel-russian", "tex/generic/babel-russian"),
+        ],
+    },
+    "babel-spanish": {
+        "version": "5.0q",
+        "revision": 79461,
+        "license": "LPPL-1.3c",
+        "ctan_path": "/macros/latex/contrib/babel-contrib/spanish",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/babel-spanish.tar.xz",
+        "upstream_sha256": "58b92ff26bc27683adbb19a1805a6a6c2e06594f5aa4c80170b92b0ff7c10b74",
+        "upstream_size_bytes": 8892,
+        "description": "Spanish language support for Babel (spanish.ldf, romanidx.sty)",
+        "source_obligations": "LPPL-1.3c; source archive preserved in sources.tar.zst",
+        "license_files": ["doc/generic/babel-spanish/README.md"],
+        "map_files": [],
+        "tds_dirs": [
+            ("tex/generic/babel-spanish", "tex/generic/babel-spanish"),
+        ],
+    },
+    "babel-portuges": {
+        "version": "1.2u",
+        "revision": 77682,
+        "license": "LPPL-1.3c",
+        "ctan_path": "/macros/latex/contrib/babel-contrib/portuges",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/babel-portuges.tar.xz",
+        "upstream_sha256": "640354f13f5f17019c19060437ab8b7bbda7cd2975239865fe5a2c7465e200f7",
+        "upstream_size_bytes": 2632,
+        "description": "Portuguese and Brazilian support for Babel (portuges.ldf, brazilian.ldf)",
+        "source_obligations": "LPPL-1.3c; source archive preserved in sources.tar.zst",
+        "license_files": ["doc/generic/babel-portuges/README.md"],
+        "map_files": [],
+        "tds_dirs": [
+            ("tex/generic/babel-portuges", "tex/generic/babel-portuges"),
+        ],
+    },
+    "hyphen-spanish": {
+        "version": "5.0",
+        "revision": 78069,
+        "license": "LPPL-1.3c / MIT",
+        "ctan_path": "/language/hyphenation/eshyph",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/hyphen-spanish.tar.xz",
+        "upstream_sha256": "ba1c9340f186573770ad28a513bb4aaa334b7bee50f5f902544f381fb058d835",
+        "upstream_size_bytes": 16428,
+        "description": "Spanish hyphenation patterns (loadhyph-es.tex, hyph-es.tex)",
+        "source_obligations": "LPPL-1.3c / MIT; source archive preserved in sources.tar.zst",
+        "license_files": [],
+        "map_files": [],
+        "tds_dirs": [
+            ("tex/generic/hyph-utf8", "tex/generic/hyph-utf8"),
+        ],
+    },
+    "hyphen-portuguese": {
+        "version": "2024",
+        "revision": 78069,
+        "license": "GPL-2.0-or-later / LPPL",
+        "ctan_path": "/language/hyphenation/pt-hyph",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/hyphen-portuguese.tar.xz",
+        "upstream_sha256": "68031bec21717fe36f442b2af3fa168aa6bfb4c35f981c9e167b276c497e448e",
+        "upstream_size_bytes": 3772,
+        "description": "Portuguese hyphenation patterns (loadhyph-pt.tex, hyph-pt.tex)",
+        "source_obligations": "GPL-2.0-or-later / LPPL; source archive preserved in sources.tar.zst",
+        "license_files": [],
+        "map_files": [],
+        "tds_dirs": [
+            ("tex/generic/hyph-utf8", "tex/generic/hyph-utf8"),
+        ],
+    },
+    "hyphen-english": {
+        "version": "2024",
+        "revision": 78069,
+        "license": "LPPL-1.3c / Knuth",
+        "ctan_path": "/language/hyphenation/hyph-utf8",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/hyphen-english.tar.xz",
+        "upstream_sha256": "cb22c0c51786d47aff5cef7dc6d0a47ab291d6da88c21ac6a9929f4409a456ab",
+        "upstream_size_bytes": 41348,
+        "description": "English hyphenation patterns (loadhyph-en-gb.tex, loadhyph-en-us.tex)",
+        "source_obligations": "LPPL-1.3c; source archive preserved in sources.tar.zst",
+        "license_files": [],
+        "map_files": [],
+        "tds_dirs": [
+            ("tex/generic/hyph-utf8", "tex/generic/hyph-utf8"),
+        ],
+    },
+    "hyphen-russian": {
+        "version": "2024",
+        "revision": 78069,
+        "license": "LPPL-1.2",
+        "ctan_path": "/language/hyphenation/hyph-utf8",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/hyphen-russian.tar.xz",
+        "upstream_sha256": "0886909c81731d7a51636f831fac58ff19317d2f1f81a87953090bb13aef9a8a",
+        "upstream_size_bytes": 34300,
+        "description": "Russian hyphenation patterns (loadhyph-ru.tex, hyph-ru.tex, hyph-ru.t2a.tex)",
+        "source_obligations": "LPPL-1.2; source archive preserved in sources.tar.zst",
+        "license_files": [],
+        "map_files": [],
+        "tds_dirs": [
+            ("tex/generic/hyph-utf8", "tex/generic/hyph-utf8"),
+        ],
+    },
+    "ruhyphen": {
+        "version": "1.6",
+        "revision": 79618,
+        "license": "LPPL-1.2",
+        "ctan_path": "/language/hyphenation/ruhyphen",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/ruhyphen.tar.xz",
+        "upstream_sha256": "09a5ee8b916df34c038574d78fb090b1a22d479f318c72e554617fa59504b3f7",
+        "upstream_size_bytes": 56708,
+        "description": "Russian hyphenation system (ruhyphen.tex, koi2t2a.tex, ruhyphal.tex, hypht2.tex)",
+        "source_obligations": "LPPL-1.2; source archive preserved in sources.tar.zst",
+        "license_files": [],
+        "map_files": [],
+        "tds_dirs": [
+            ("tex/generic/ruhyphen", "tex/generic/ruhyphen"),
         ],
     },
     "cbfonts": {
@@ -1019,6 +1132,440 @@ UPSTREAM_PACKAGES = {
         "map_files": [],
         "tds_dirs": [],
     },
+    'arev': {
+        'ctan_path': '/fonts/arev',
+        'description': 'Fonts and LaTeX support files for Arev Sans',
+        'license': 'lppl1.3a',
+        'license_files': ['doc/fonts/arev/ArevSansLicense.txt', 'doc/fonts/arev/BitstreamVeraLicense.txt', 'doc/fonts/arev/README'],
+        'map_files': ['fonts/map/dvips/arev/arev.map'],
+        'revision': 79618,
+        'source_obligations': 'lppl1.3a; official CTAN distribution',
+        'tds_dirs': [('fonts/afm/public/arev', 'fonts/afm/public/arev'), ('fonts/enc/dvips/arev', 'fonts/enc/dvips/arev'), ('fonts/map/dvips/arev', 'fonts/map/dvips/arev'), ('fonts/tfm/public/arev', 'fonts/tfm/public/arev'), ('fonts/type1/public/arev', 'fonts/type1/public/arev'), ('fonts/vf/public/arev', 'fonts/vf/public/arev'), ('tex/latex/arev', 'tex/latex/arev')],
+        'upstream_sha256': 'e765d7c7a83a752adcf3212a48fc4a07240cf7cddfe9edb6449f2abb829eee7c',
+        'upstream_size_bytes': 964648,
+        'upstream_url': 'https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/arev.tar.xz',
+        'version': '2024',
+    },
+    'baskervaldx': {
+        'ctan_path': '/fonts/baskervaldx',
+        'description': 'Extension and modification of BaskervaldADF with LaTeX support',
+        'license': 'gpl2+ lppl1.3',
+        'license_files': ['doc/fonts/baskervaldx/COPYING', 'doc/fonts/baskervaldx/README'],
+        'map_files': ['fonts/map/dvips/baskervaldx/Baskervaldx.map'],
+        'revision': 78931,
+        'source_obligations': 'gpl2+ lppl1.3; official CTAN distribution',
+        'tds_dirs': [('fonts/afm/public/baskervaldx', 'fonts/afm/public/baskervaldx'), ('fonts/enc/dvips/baskervaldx', 'fonts/enc/dvips/baskervaldx'), ('fonts/map/dvips/baskervaldx', 'fonts/map/dvips/baskervaldx'), ('fonts/opentype/public/baskervaldx', 'fonts/opentype/public/baskervaldx'), ('fonts/tfm/public/baskervaldx', 'fonts/tfm/public/baskervaldx'), ('fonts/type1/public/baskervaldx', 'fonts/type1/public/baskervaldx'), ('fonts/vf/public/baskervaldx', 'fonts/vf/public/baskervaldx'), ('tex/latex/baskervaldx', 'tex/latex/baskervaldx')],
+        'upstream_sha256': 'ad08b214d7cfe5cab350e52c347f22b7e06ddaf1200d0321eda69d756bf65ac0',
+        'upstream_size_bytes': 680416,
+        'upstream_url': 'https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/baskervaldx.tar.xz',
+        'version': '1.08',
+    },
+    'bbm': {
+        'ctan_path': '/fonts/cm/bbm',
+        'description': '"Blackboard-style" cm fonts',
+        'license': 'other-free',
+        'license_files': ['doc/fonts/bbm/README'],
+        'map_files': ['fonts/map/dvips/bbm/bbm.map'],
+        'revision': 77682,
+        'source_obligations': 'other-free; authentic METAFONT source archive',
+        'tds_dirs': [('fonts/source/public/bbm', 'fonts/source/public/bbm'), ('fonts/tfm/public/bbm', 'fonts/tfm/public/bbm')],
+        'upstream_sha256': '5684bfe87f5153ad9a05fb6c3df58ea06d6d0a3bee747c07f891b3206398bc66',
+        'upstream_size_bytes': 32608,
+        'upstream_url': 'https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/bbm.tar.xz',
+        'version': '2024',
+    },
+    'boondox': {
+        'ctan_path': '/fonts/boondox',
+        'description': 'Mathematical alphabets derived from the STIX fonts',
+        'license': 'ofl lppl1.1',
+        'license_files': ['doc/fonts/boondox/README'],
+        'map_files': ['fonts/map/dvips/boondox/boondox.map'],
+        'revision': 79618,
+        'source_obligations': 'ofl lppl1.1; official CTAN distribution',
+        'tds_dirs': [('fonts/map/dvips/boondox', 'fonts/map/dvips/boondox'), ('fonts/tfm/public/boondox', 'fonts/tfm/public/boondox'), ('fonts/type1/public/boondox', 'fonts/type1/public/boondox'), ('fonts/vf/public/boondox', 'fonts/vf/public/boondox'), ('tex/latex/boondox', 'tex/latex/boondox')],
+        'upstream_sha256': '8cba8ce1f30d8e7a471a4f755a9adbf6db09009aa19a501fd5e7b07b393a73a9',
+        'upstream_size_bytes': 204704,
+        'upstream_url': 'https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/boondox.tar.xz',
+        'version': '1.02d',
+    },
+    'cabin': {
+        'ctan_path': '/fonts/cabin',
+        'description': 'A humanist Sans Serif font, with LaTeX support',
+        'license': 'ofl lppl',
+        'license_files': ['doc/fonts/cabin/OFL.txt', 'doc/fonts/cabin/README'],
+        'map_files': ['fonts/map/dvips/cabin/cabin.map'],
+        'revision': 77682,
+        'source_obligations': 'ofl lppl; official CTAN distribution',
+        'tds_dirs': [('fonts/enc/dvips/cabin', 'fonts/enc/dvips/cabin'), ('fonts/map/dvips/cabin', 'fonts/map/dvips/cabin'), ('fonts/opentype/impallari/cabin', 'fonts/opentype/impallari/cabin'), ('fonts/tfm/impallari/cabin', 'fonts/tfm/impallari/cabin'), ('fonts/type1/impallari/cabin', 'fonts/type1/impallari/cabin'), ('fonts/vf/impallari/cabin', 'fonts/vf/impallari/cabin'), ('tex/latex/cabin', 'tex/latex/cabin')],
+        'upstream_sha256': 'b29c8cf5cd39e208b3ca707ea88cea2cb5d9286c656ae936c0389f757f860e1b',
+        'upstream_size_bytes': 2896428,
+        'upstream_url': 'https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/cabin.tar.xz',
+        'version': '2024',
+    },
+    'cjk-ko': {
+        'ctan_path': '/language/korean/cjk-ko',
+        'description': 'Korean TeX (ko.TeX) macros and kotex.sty package for CJKutf8 and Korean document support',
+        'license': 'LPPL-1.3c / GPL-2.0 / Public Domain',
+        'license_files': [],
+        'map_files': [],
+        'revision': 70300,
+        'source_obligations': 'LPPL-1.3c / GPL-2.0; corresponding upstream source archive preserved in cjk-ko.zip',
+        'tds_dirs': [('tex/latex/cjk-ko', 'tex/latex/cjk-ko')],
+        'upstream_sha256': '026b8f250c5045fd4e5f760b4f201b225f95194cfb89f69286614485ef3a4f35',
+        'upstream_size_bytes': 8840,
+        'upstream_url': 'https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/cjk-ko.tar.xz',
+        'version': '2.5',
+    },
+    'cm-mf-extra-bold': {
+        'ctan_path': '/fonts/cm/mf-extra/bold',
+        'description': 'Extra Metafont files for CM',
+        'license': 'gpl pd',
+        'license_files': [],
+        'map_files': ['fonts/map/dvips/cmextra/cmextra-t1.map'],
+        'revision': 54512,
+        'source_obligations': 'gpl pd; authentic METAFONT source archive',
+        'tds_dirs': [('fonts/source/public/cm-mf-extra-bold', 'fonts/source/public/cm-mf-extra-bold'), ('fonts/tfm/public/cm-mf-extra-bold', 'fonts/tfm/public/cm-mf-extra-bold')],
+        'upstream_sha256': 'b65fca9dfff9d0b22c6a55e28b2fc4c2071b17d9b0c7674eb26cbdd06f144dab',
+        'upstream_size_bytes': 4896,
+        'upstream_url': 'https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/cm-mf-extra-bold.tar.xz',
+        'version': '2024',
+    },
+    'cmcyr': {
+        'ctan_path': '/fonts/cyrillic/cmcyr',
+        'description': 'Computer Modern fonts with cyrillic extensions',
+        'license': 'pd',
+        'license_files': [],
+        'map_files': [],
+        'revision': 68681,
+        'source_obligations': 'pd; authentic METAFONT source archive',
+        'tds_dirs': [('fonts/map/dvips/cmcyr', 'fonts/map/dvips/cmcyr'), ('fonts/source/public/cmcyr', 'fonts/source/public/cmcyr'), ('fonts/tfm/public/cmcyr', 'fonts/tfm/public/cmcyr'), ('fonts/type1/public/cmcyr', 'fonts/type1/public/cmcyr'), ('fonts/vf/public/cmcyr', 'fonts/vf/public/cmcyr')],
+        'upstream_sha256': '263793446f5389af3e61174db0c4b7600c109210443a948c3f28923258f0d90a',
+        'upstream_size_bytes': 901468,
+        'upstream_url': 'https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/cmcyr.tar.xz',
+        'version': '2024',
+    },
+    'dutchcal': {
+        'ctan_path': '/fonts/dutchcal',
+        'description': 'A reworking of ESSTIX13, adding a bold version',
+        'license': 'lppl',
+        'license_files': ['doc/fonts/dutchcal/README'],
+        'map_files': ['fonts/map/dvips/dutchcal/dutchcal.map'],
+        'revision': 77682,
+        'source_obligations': 'lppl; official CTAN distribution',
+        'tds_dirs': [('fonts/afm/public/dutchcal', 'fonts/afm/public/dutchcal'), ('fonts/map/dvips/dutchcal', 'fonts/map/dvips/dutchcal'), ('fonts/tfm/public/dutchcal', 'fonts/tfm/public/dutchcal'), ('fonts/type1/public/dutchcal', 'fonts/type1/public/dutchcal'), ('fonts/vf/public/dutchcal', 'fonts/vf/public/dutchcal'), ('tex/latex/dutchcal', 'tex/latex/dutchcal')],
+        'upstream_sha256': 'cb7ddc48e0d2d5153a6715d5c333554b981d0233074481bf444f162b4c1af1c4',
+        'upstream_size_bytes': 36192,
+        'upstream_url': 'https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/dutchcal.tar.xz',
+        'version': '1.0',
+    },
+    'ebgaramond': {
+        'ctan_path': '/fonts/ebgaramond',
+        'description': 'LaTeX support for EBGaramond fonts',
+        'license': 'ofl lppl',
+        'license_files': ['doc/fonts/ebgaramond/OFL.txt', 'doc/fonts/ebgaramond/README'],
+        'map_files': ['fonts/map/dvips/ebgaramond/EBGaramond.map'],
+        'revision': 78251,
+        'source_obligations': 'ofl lppl; official CTAN distribution',
+        'tds_dirs': [('fonts/enc/dvips/ebgaramond', 'fonts/enc/dvips/ebgaramond'), ('fonts/map/dvips/ebgaramond', 'fonts/map/dvips/ebgaramond'), ('fonts/opentype/public/ebgaramond', 'fonts/opentype/public/ebgaramond'), ('fonts/tfm/public/ebgaramond', 'fonts/tfm/public/ebgaramond'), ('fonts/type1/public/ebgaramond', 'fonts/type1/public/ebgaramond'), ('fonts/vf/public/ebgaramond', 'fonts/vf/public/ebgaramond'), ('tex/latex/ebgaramond', 'tex/latex/ebgaramond')],
+        'upstream_sha256': '905f7f54b37e065fd8d8be81f8de4becd3b2ccf4920adb852f9721b0b611d278',
+        'upstream_size_bytes': 8391124,
+        'upstream_url': 'https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/ebgaramond.tar.xz',
+        'version': '2024',
+    },
+    'els-cas-templates': {
+        'ctan_path': '/macros/latex/contrib/els-cas-templates',
+        'description': 'Elsevier CAS journal templates (cas-dc.cls, cas-sc.cls, cas-common.sty) and thumbnail stock icons',
+        'license': 'LPPL-1.3c',
+        'license_files': [],
+        'map_files': [],
+        'revision': 71189,
+        'source_obligations': 'LPPL-1.3c; corresponding upstream source archive preserved in els-cas-templates.zip',
+        'tds_dirs': [('tex/latex/els-cas-templates', 'tex/latex/els-cas-templates'), ('bibtex/bst/els-cas-templates', 'bibtex/bst/els-cas-templates')],
+        'upstream_sha256': '7a0503f99e128d0c93b6c3a5b48c244c6a27ed45e5271c339f3162301443d813',
+        'upstream_size_bytes': 54876,
+        'upstream_url': 'https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/els-cas-templates.tar.xz',
+        'version': '2.4',
+    },
+    'esstix': {
+        'ctan_path': '/fonts/esstix',
+        'description': 'PostScript versions of the ESSTIX, with macro support',
+        'license': 'ofl',
+        'license_files': ['doc/fonts/esstix/README'],
+        'map_files': ['fonts/map/dvips/esstix/ESSTIX.map'],
+        'revision': 77682,
+        'source_obligations': 'ofl; official CTAN distribution',
+        'tds_dirs': [('fonts/afm/esstix', 'fonts/afm/esstix'), ('fonts/map/dvips/esstix', 'fonts/map/dvips/esstix'), ('fonts/tfm/public/esstix', 'fonts/tfm/public/esstix'), ('fonts/type1/public/esstix', 'fonts/type1/public/esstix'), ('fonts/vf/public/esstix', 'fonts/vf/public/esstix'), ('tex/latex/esstix', 'tex/latex/esstix')],
+        'upstream_sha256': '7cbfaa770ce2b8a3345b617f8d0a9829917d2834a6083ec9bf45b9c5638df6f3',
+        'upstream_size_bytes': 202188,
+        'upstream_url': 'https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/esstix.tar.xz',
+        'version': '1.0',
+    },
+    'esvect': {
+        'ctan_path': '/macros/latex/contrib/esvect',
+        'description': 'Vector arrows',
+        'license': 'gpl',
+        'license_files': ['doc/latex/esvect/README'],
+        'map_files': ['fonts/map/dvips/esvect/esvect.map'],
+        'revision': 77682,
+        'source_obligations': 'gpl; official CTAN distribution',
+        'tds_dirs': [('fonts/map/dvips/esvect', 'fonts/map/dvips/esvect'), ('fonts/source/public/esvect', 'fonts/source/public/esvect'), ('fonts/tfm/public/esvect', 'fonts/tfm/public/esvect'), ('fonts/type1/public/esvect', 'fonts/type1/public/esvect'), ('tex/latex/esvect', 'tex/latex/esvect')],
+        'upstream_sha256': '9cc260745a4c9cb2cc329ab39f4e2ad33a226f508785a282db42ec9f6fd1a431',
+        'upstream_size_bytes': 66876,
+        'upstream_url': 'https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/esvect.tar.xz',
+        'version': '1.3',
+    },
+    'eurosym': {
+        'ctan_path': '/fonts/eurosym',
+        'description': 'Metafont and macros for Euro sign',
+        'license': 'other-free',
+        'license_files': ['doc/fonts/eurosym/COPYING', 'doc/fonts/eurosym/README', 'doc/fonts/eurosym/README.type1'],
+        'map_files': ['fonts/map/dvips/eurosym/eurosym.map'],
+        'revision': 78101,
+        'source_obligations': 'other-free; official CTAN distribution',
+        'tds_dirs': [('fonts/map/dvips/eurosym', 'fonts/map/dvips/eurosym'), ('fonts/source/public/eurosym', 'fonts/source/public/eurosym'), ('fonts/tfm/public/eurosym', 'fonts/tfm/public/eurosym'), ('fonts/type1/public/eurosym', 'fonts/type1/public/eurosym'), ('tex/latex/eurosym', 'tex/latex/eurosym')],
+        'upstream_sha256': 'db2f7325383f6fa4ed2dc805c432da40fa1ecc742026928001b0cded9b3de07f',
+        'upstream_size_bytes': 139868,
+        'upstream_url': 'https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/eurosym.tar.xz',
+        'version': '1.4-subrfix',
+    },
+    'fontawesome': {
+        'ctan_path': '/fonts/fontawesome',
+        'description': 'Font containing web-related icons',
+        'license': 'lppl1.3',
+        'license_files': ['doc/fonts/fontawesome/README.md'],
+        'map_files': ['fonts/map/dvips/fontawesome/fontawesome.map'],
+        'revision': 78348,
+        'source_obligations': 'lppl1.3; official CTAN distribution',
+        'tds_dirs': [('fonts/enc/dvips/fontawesome', 'fonts/enc/dvips/fontawesome'), ('fonts/map/dvips/fontawesome', 'fonts/map/dvips/fontawesome'), ('fonts/opentype/public/fontawesome', 'fonts/opentype/public/fontawesome'), ('fonts/tfm/public/fontawesome', 'fonts/tfm/public/fontawesome'), ('fonts/type1/public/fontawesome', 'fonts/type1/public/fontawesome'), ('tex/latex/fontawesome', 'tex/latex/fontawesome')],
+        'upstream_sha256': '98afe54919526e4d98381b3f6e6034fd3ae44c4c6174b17fe603d58206ddbfb0',
+        'upstream_size_bytes': 276176,
+        'upstream_url': 'https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/fontawesome.tar.xz',
+        'version': '4.6.3.2',
+    },
+    'fpl': {
+        'ctan_path': '/fonts/fpl',
+        'description': 'SC and OsF fonts for URW Palladio L',
+        'license': 'gpl2 lppl1',
+        'license_files': ['doc/fonts/fpl/COPYING', 'doc/fonts/fpl/README'],
+        'map_files': [],
+        'revision': 79618,
+        'source_obligations': 'GPL-2.0 with font exception / LPPL-1.0; corresponding source preserved in fpl.source.tar.xz',
+        'tds_dirs': [('fonts/afm/public/fpl', 'fonts/afm/public/fpl'), ('fonts/type1/public/fpl', 'fonts/type1/public/fpl')],
+        'upstream_sha256': '98ea140d101e0802ff266614d57f486495f1a6d063561d1474e68ac764fbc4aa',
+        'upstream_size_bytes': 288420,
+        'upstream_url': 'https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/fpl.tar.xz',
+        'version': '1.003',
+    },
+    'heuristica': {
+        'ctan_path': '/fonts/heuristica',
+        'description': 'Fonts extending Utopia, with LaTeX support files',
+        'license': 'ofl lppl1.3',
+        'license_files': ['doc/fonts/heuristica/OFL.txt', 'doc/fonts/heuristica/README'],
+        'map_files': ['fonts/map/dvips/heuristica/Heuristica.map'],
+        'revision': 79618,
+        'source_obligations': 'ofl lppl1.3; official CTAN distribution',
+        'tds_dirs': [('fonts/enc/dvips/heuristica', 'fonts/enc/dvips/heuristica'), ('fonts/map/dvips/heuristica', 'fonts/map/dvips/heuristica'), ('fonts/opentype/public/heuristica', 'fonts/opentype/public/heuristica'), ('fonts/tfm/public/heuristica', 'fonts/tfm/public/heuristica'), ('fonts/type1/public/heuristica', 'fonts/type1/public/heuristica'), ('fonts/vf/public/heuristica', 'fonts/vf/public/heuristica'), ('tex/latex/heuristica', 'tex/latex/heuristica')],
+        'upstream_sha256': 'caea9d54929833f329a68dda0977b88c8ef3b481b4a3137d9a0ce2e10c25db4c',
+        'upstream_size_bytes': 1079032,
+        'upstream_url': 'https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/heuristica.tar.xz',
+        'version': '1.093',
+    },
+    'hfbright': {
+        'ctan_path': '/fonts/ps-type1/hfbright',
+        'description': 'The hfbright fonts',
+        'license': 'lppl',
+        'license_files': ['doc/fonts/hfbright/README'],
+        'map_files': ['fonts/map/dvips/hfbright/hfbright.map'],
+        'revision': 29349,
+        'source_obligations': 'lppl; official CTAN distribution',
+        'tds_dirs': [('fonts/afm/public/hfbright', 'fonts/afm/public/hfbright'), ('fonts/enc/dvips/hfbright', 'fonts/enc/dvips/hfbright'), ('fonts/map/dvips/hfbright', 'fonts/map/dvips/hfbright'), ('fonts/type1/public/hfbright', 'fonts/type1/public/hfbright')],
+        'upstream_sha256': '6db651416b07dbb7946e46f7bb7ab141d2bb1cf099de3f6daf7c91a95b0269a8',
+        'upstream_size_bytes': 832824,
+        'upstream_url': 'https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/hfbright.tar.xz',
+        'version': '2024',
+    },
+    'ifsym': {
+        'ctan_path': '/fonts/ifsym',
+        'description': 'A collection of symbols',
+        'license': 'other-free',
+        'license_files': [],
+        'map_files': ['fonts/map/dvips/ifsym/ifsym.map'],
+        'revision': 77682,
+        'source_obligations': 'other-free; authentic METAFONT source archive',
+        'tds_dirs': [('fonts/source/public/ifsym', 'fonts/source/public/ifsym'), ('fonts/tfm/public/ifsym', 'fonts/tfm/public/ifsym'), ('tex/latex/ifsym', 'tex/latex/ifsym')],
+        'upstream_sha256': 'f29b0f761b885098d8bbe2d770fb23c3d4d75c6a8d263c4179e2432f611df9c8',
+        'upstream_size_bytes': 9800,
+        'upstream_url': 'https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/ifsym.tar.xz',
+        'version': '2024',
+    },
+    'inconsolata': {
+        'ctan_path': '/fonts/inconsolata',
+        'description': 'A monospaced font, with support files for use with TeX',
+        'license': 'ofl apache2 lppl1.3',
+        'license_files': ['doc/fonts/inconsolata/OFL.txt', 'doc/fonts/inconsolata/README'],
+        'map_files': ['fonts/map/dvips/inconsolata/zi4.map'],
+        'revision': 79618,
+        'source_obligations': 'ofl apache2 lppl1.3; official CTAN distribution',
+        'tds_dirs': [('fonts/enc/dvips/inconsolata', 'fonts/enc/dvips/inconsolata'), ('fonts/map/dvips/inconsolata', 'fonts/map/dvips/inconsolata'), ('fonts/opentype/public/inconsolata', 'fonts/opentype/public/inconsolata'), ('fonts/tfm/public/inconsolata', 'fonts/tfm/public/inconsolata'), ('fonts/type1/public/inconsolata', 'fonts/type1/public/inconsolata'), ('tex/latex/inconsolata', 'tex/latex/inconsolata')],
+        'upstream_sha256': 'd3d9d4c42f421588a8f50f34e4aa8d482ec684d8baed536c27b7b3604a7af06e',
+        'upstream_size_bytes': 299552,
+        'upstream_url': 'https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/inconsolata.tar.xz',
+        'version': '1.121',
+    },
+    'kpfonts': {
+        'ctan_path': '/fonts/kpfonts',
+        'description': 'A complete set of fonts for text and mathematics',
+        'license': 'lppl gpl',
+        'license_files': ['doc/fonts/kpfonts/README.txt'],
+        'map_files': ['fonts/map/dvips/kpfonts/kpfonts.map'],
+        'revision': 77682,
+        'source_obligations': 'lppl gpl; official CTAN distribution',
+        'tds_dirs': [('fonts/afm/public/kpfonts', 'fonts/afm/public/kpfonts'), ('fonts/enc/dvips/kpfonts', 'fonts/enc/dvips/kpfonts'), ('fonts/map/dvips/kpfonts', 'fonts/map/dvips/kpfonts'), ('fonts/tfm/public/kpfonts', 'fonts/tfm/public/kpfonts'), ('fonts/type1/public/kpfonts', 'fonts/type1/public/kpfonts'), ('fonts/vf/public/kpfonts', 'fonts/vf/public/kpfonts'), ('tex/latex/kpfonts', 'tex/latex/kpfonts')],
+        'upstream_sha256': '097726a3219d4725fffc9c900beb47edeefe743ce16cda6d2a5b73c6de3f1c80',
+        'upstream_size_bytes': 2241572,
+        'upstream_url': 'https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/kpfonts.tar.xz',
+        'version': '3.36',
+    },
+    'marvosym': {
+        'ctan_path': '/fonts/marvosym',
+        'description': "Martin Vogel's Symbols (marvosym) font",
+        'license': 'ofl',
+        'license_files': ['doc/fonts/marvosym/OFL.txt', 'doc/fonts/marvosym/README'],
+        'map_files': ['fonts/map/dvips/marvosym/marvosym.map'],
+        'revision': 79618,
+        'source_obligations': 'ofl; official CTAN distribution',
+        'tds_dirs': [('fonts/afm/public/marvosym', 'fonts/afm/public/marvosym'), ('fonts/map/dvips/marvosym', 'fonts/map/dvips/marvosym'), ('fonts/tfm/public/marvosym', 'fonts/tfm/public/marvosym'), ('fonts/truetype/public/marvosym', 'fonts/truetype/public/marvosym'), ('fonts/type1/public/marvosym', 'fonts/type1/public/marvosym'), ('tex/latex/marvosym', 'tex/latex/marvosym')],
+        'upstream_sha256': 'd8b1740e2c639f3acc6827fd040d14c55d9c3a62c3e8874fa15aed4e1f0c8cf7',
+        'upstream_size_bytes': 133504,
+        'upstream_url': 'https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/marvosym.tar.xz',
+        'version': '2.2a',
+    },
+    'mathpazo': {
+        'ctan_path': '/fonts/mathpazo',
+        'description': 'Pazo Math fonts matching Palatino text fonts',
+        'license': 'GPL-2.0 with font exception',
+        'license_files': ['doc/fonts/mathpazo/README', 'doc/fonts/mathpazo/gpl.txt'],
+        'map_files': [],
+        'revision': 77682,
+        'source_obligations': 'GPL-2.0 with font exception; corresponding source preserved in mathpazo.source.tar.xz',
+        'tds_dirs': [('fonts/afm/public/mathpazo', 'fonts/afm/public/mathpazo'), ('fonts/tfm/public/mathpazo', 'fonts/tfm/public/mathpazo'), ('fonts/type1/public/mathpazo', 'fonts/type1/public/mathpazo'), ('fonts/vf/public/mathpazo', 'fonts/vf/public/mathpazo')],
+        'upstream_sha256': 'b42822082e609bc2c707bb2657ff5bf6f491718ab391d2c884f7dfed0d51ec15',
+        'upstream_size_bytes': 63628,
+        'upstream_url': 'https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/mathpazo.tar.xz',
+        'version': '1.003',
+    },
+    'mnsymbol': {
+        'ctan_path': '/fonts/mnsymbol',
+        'description': 'Mathematical symbol font for Adobe MinionPro',
+        'license': 'pd',
+        'license_files': ['doc/latex/mnsymbol/README'],
+        'map_files': ['fonts/map/dvips/mnsymbol/MnSymbol.map'],
+        'revision': 78931,
+        'source_obligations': 'pd; official CTAN distribution',
+        'tds_dirs': [('fonts/enc/dvips/mnsymbol', 'fonts/enc/dvips/mnsymbol'), ('fonts/map/dvips/mnsymbol', 'fonts/map/dvips/mnsymbol'), ('fonts/map/vtex/mnsymbol', 'fonts/map/vtex/mnsymbol'), ('fonts/opentype/public/mnsymbol', 'fonts/opentype/public/mnsymbol'), ('fonts/source/public/mnsymbol', 'fonts/source/public/mnsymbol'), ('fonts/tfm/public/mnsymbol', 'fonts/tfm/public/mnsymbol'), ('fonts/type1/public/mnsymbol', 'fonts/type1/public/mnsymbol'), ('tex/latex/mnsymbol', 'tex/latex/mnsymbol')],
+        'upstream_sha256': '7bdaf593dda367c23342fc4d3c551c736a50ceeb5d28eed99feb9779afd91038',
+        'upstream_size_bytes': 4426360,
+        'upstream_url': 'https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/mnsymbol.tar.xz',
+        'version': '1.4',
+    },
+    'pxfonts': {
+        'ctan_path': '/fonts/pxfonts',
+        'description': 'Palatino-like fonts in support of mathematics',
+        'license': 'gpl',
+        'license_files': [],
+        'map_files': ['fonts/map/dvips/pxfonts/pxfonts.map', 'fonts/map/dvips/pxfonts/pxr.map', 'fonts/map/dvips/pxfonts/pxr1.map', 'fonts/map/dvips/pxfonts/pxr2.map', 'fonts/map/dvips/pxfonts/pxr3.map'],
+        'revision': 77682,
+        'source_obligations': 'gpl; official CTAN distribution',
+        'tds_dirs': [('fonts/afm/public/pxfonts', 'fonts/afm/public/pxfonts'), ('fonts/map/dvips/pxfonts', 'fonts/map/dvips/pxfonts'), ('fonts/tfm/public/pxfonts', 'fonts/tfm/public/pxfonts'), ('fonts/type1/public/pxfonts', 'fonts/type1/public/pxfonts'), ('fonts/vf/public/pxfonts', 'fonts/vf/public/pxfonts'), ('tex/latex/pxfonts', 'tex/latex/pxfonts')],
+        'upstream_sha256': 'bdddf89946b2a237a75d8d9ee9f2bc6597c868ba2eb73c0a4925a1e631aecd60',
+        'upstream_size_bytes': 459976,
+        'upstream_url': 'https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/pxfonts.tar.xz',
+        'version': '2024',
+    },
+    'skaknew': {
+        'ctan_path': '/fonts/chess/skaknew',
+        'description': 'The skak chess fonts redone in Adobe Type 1',
+        'license': 'lppl1.2',
+        'license_files': ['doc/fonts/skaknew/README'],
+        'map_files': ['fonts/map/dvips/skaknew/SkakNew.map'],
+        'revision': 79618,
+        'source_obligations': 'lppl1.2; official CTAN distribution',
+        'tds_dirs': [('fonts/afm/public/skaknew', 'fonts/afm/public/skaknew'), ('fonts/map/dvips/skaknew', 'fonts/map/dvips/skaknew'), ('fonts/opentype/public/skaknew', 'fonts/opentype/public/skaknew'), ('fonts/tfm/public/skaknew', 'fonts/tfm/public/skaknew'), ('fonts/type1/public/skaknew', 'fonts/type1/public/skaknew')],
+        'upstream_sha256': '0de354f04a18d3fb99de5e969d693464290b2464c4128a5b3aa6d88b81b47839',
+        'upstream_size_bytes': 160044,
+        'upstream_url': 'https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/skaknew.tar.xz',
+        'version': '2024',
+    },
+    't2': {
+        'ctan_path': '/macros/latex/contrib/t2',
+        'description': 'T2 Cyrillic support package providing mathtext.sty, citehack.sty, and misccorr.sty',
+        'license': 'LPPL-1.3c',
+        'license_files': [],
+        'map_files': [],
+        'revision': 47870,
+        'source_obligations': 'LPPL-1.3c; corresponding upstream source archive preserved in t2.zip',
+        'tds_dirs': [('tex/latex/t2', 'tex/latex/t2')],
+        'upstream_sha256': 'b58966fcb138e6b0e6f3a59f3b25b2567fcb30fa60f770ae8b61ccff14553b24',
+        'upstream_size_bytes': 27048,
+        'upstream_url': 'https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/t2.tar.xz',
+        'version': '2018',
+    },
+    'tex-gyre': {
+        'ctan_path': '/fonts/tex-gyre',
+        'description': 'TeX Fonts extending freely available URW fonts',
+        'license': 'gfl',
+        'license_files': ['doc/fonts/tex-gyre/GUST-FONT-LICENSE.txt', 'doc/fonts/tex-gyre/README-TeX-Gyre-Adventor.txt', 'doc/fonts/tex-gyre/README-TeX-Gyre-Bonum.txt'],
+        'map_files': ['fonts/map/dvips/tex-gyre/qag.map', 'fonts/map/dvips/tex-gyre/qbk.map', 'fonts/map/dvips/tex-gyre/qcr.map', 'fonts/map/dvips/tex-gyre/qcs.map', 'fonts/map/dvips/tex-gyre/qhv.map', 'fonts/map/dvips/tex-gyre/qpl.map', 'fonts/map/dvips/tex-gyre/qtm.map', 'fonts/map/dvips/tex-gyre/qzc.map'],
+        'revision': 68624,
+        'source_obligations': 'gfl; official CTAN distribution',
+        'tds_dirs': [('fonts/afm/public/tex-gyre', 'fonts/afm/public/tex-gyre'), ('fonts/enc/dvips/tex-gyre', 'fonts/enc/dvips/tex-gyre'), ('fonts/map/dvips/tex-gyre', 'fonts/map/dvips/tex-gyre'), ('fonts/opentype/public/tex-gyre', 'fonts/opentype/public/tex-gyre'), ('fonts/tfm/public/tex-gyre', 'fonts/tfm/public/tex-gyre'), ('fonts/type1/public/tex-gyre', 'fonts/type1/public/tex-gyre'), ('tex/latex/tex-gyre', 'tex/latex/tex-gyre')],
+        'upstream_sha256': 'dfb4f55c4b02993003777a48663987bd102a3c5a2913172571e05fe2eb18407d',
+        'upstream_size_bytes': 7748428,
+        'upstream_url': 'https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/tex-gyre.tar.xz',
+        'version': '2.501',
+    },
+    'utfsym': {
+        'ctan_path': '/graphics/pgf/contrib/utfsym',
+        'description': 'Unicode symbol macro package providing utfsym.sty and 1680 vector TikZ symbol definitions',
+        'license': 'CC0-1.0',
+        'license_files': [],
+        'map_files': [],
+        'revision': 63076,
+        'source_obligations': 'CC0-1.0 Universal Public Domain Dedication; corresponding source in utfsym.zip',
+        'tds_dirs': [('tex/latex/utfsym', 'tex/latex/utfsym')],
+        'upstream_sha256': 'f0f94d99e53d285319cec2c045296f7ccb4bc3814083a8de536a9cf82bb401e8',
+        'upstream_size_bytes': 1889160,
+        'upstream_url': 'https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/utfsym.tar.xz',
+        'version': '0.9.0',
+    },
+    'wasy-type1': {
+        'ctan_path': '/fonts/wasy-type1',
+        'description': 'Type 1 versions of wasy fonts',
+        'license': 'pd',
+        'license_files': ['doc/fonts/wasy-type1/README'],
+        'map_files': ['fonts/map/dvips/wasy-type1/wasy.map'],
+        'revision': 53534,
+        'source_obligations': 'pd; official CTAN distribution',
+        'tds_dirs': [('fonts/afm/public/wasy-type1', 'fonts/afm/public/wasy-type1'), ('fonts/map/dvips/wasy-type1', 'fonts/map/dvips/wasy-type1'), ('fonts/type1/public/wasy-type1', 'fonts/type1/public/wasy-type1')],
+        'upstream_sha256': '1bd86eff809059e4a7c009d8fbe2dd756e568de1d91d6489d82766a1b6f60129',
+        'upstream_size_bytes': 261536,
+        'upstream_url': 'https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/wasy-type1.tar.xz',
+        'version': '001.002',
+    },
+    'yfonts-t1': {
+        'ctan_path': '/fonts/ps-type1/yfonts',
+        'description': 'Old German-style fonts, in Adobe type 1 format',
+        'license': 'other-free',
+        'license_files': ['doc/fonts/yfonts-t1/README'],
+        'map_files': ['fonts/map/dvips/yfonts-t1/yfrak.map'],
+        'revision': 36013,
+        'source_obligations': 'other-free; official CTAN distribution',
+        'tds_dirs': [('dvips/yfonts-t1', 'dvips/yfonts-t1'), ('fonts/afm/public/yfonts-t1', 'fonts/afm/public/yfonts-t1'), ('fonts/map/dvips/yfonts-t1', 'fonts/map/dvips/yfonts-t1'), ('fonts/type1/public/yfonts-t1', 'fonts/type1/public/yfonts-t1')],
+        'upstream_sha256': 'a62b2726e5d6c68c640863b50eeda748763740b81be48cf2237a705c3ac62528',
+        'upstream_size_bytes': 145940,
+        'upstream_url': 'https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/yfonts-t1.tar.xz',
+        'version': '1.0',
+    },
 }
 
 # Corresponding source archives for GPLv2 and open-source distribution compliance
@@ -1046,6 +1593,22 @@ SOURCE_ARCHIVES_INFO = {
         "size_bytes": 6971155,
         "license": "GPL-2.0",
         "provenance": "Official CTAN package release by Paul Pichaureau containing Type 1 outlines, FontForge sources, and macro definitions",
+    },
+    "fpl": {
+        "archive": "fpl.source.tar.xz",
+        "url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/fpl.source.tar.xz",
+        "sha256": "2c8e350bed490838429d6ade800d1d075dacfee017f67d8e86bebbfc470581fc",
+        "size_bytes": 30656,
+        "license": "GPL-2.0 / LPPL-1.0",
+        "provenance": "Official TeX Live source archive containing FPL FontForge and metric sources",
+    },
+    "mathpazo": {
+        "archive": "mathpazo.source.tar.xz",
+        "url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/mathpazo.source.tar.xz",
+        "sha256": "a0bc235b3f682cb65301ea2be4e599ceb5ddcaca559dd574adf717de1e7f7d93",
+        "size_bytes": 17980,
+        "license": "GPL-2.0 with font exception",
+        "provenance": "Official TeX Live source archive containing Pazo Math fontinst, metrics, and build sources",
     },
     "yhmath": {
         "archive": "yhmath.source.tar.xz",
@@ -1127,6 +1690,38 @@ SOURCE_ARCHIVES_INFO = {
         "license": "LPPL-1.3c",
         "provenance": "Official TeX Live source archive containing russianb.dtx and russianb.ins source files",
     },
+    "babel-spanish": {
+        "archive": "babel-spanish.source.tar.xz",
+        "url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/babel-spanish.source.tar.xz",
+        "sha256": "42d8bde6d46b711f2ffa315fab1f75e858bf9327a37a601a61d39cc08a0123b6",
+        "size_bytes": 29796,
+        "license": "LPPL-1.3c",
+        "provenance": "Official TeX Live source archive containing spanish.dtx, spanish.ins, and documentation sources",
+    },
+    "babel-portuges": {
+        "archive": "babel-portuges.source.tar.xz",
+        "url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/babel-portuges.source.tar.xz",
+        "sha256": "7ee261caa2606904e7b2cc1ce4f077c37145b60e5df1c2aa6f85fee90f1b088e",
+        "size_bytes": 6332,
+        "license": "LPPL-1.3c",
+        "provenance": "Official TeX Live source archive containing portuges.dtx and portuges.ins source files",
+    },
+    "hyph-utf8": {
+        "archive": "hyph-utf8.source.tar.xz",
+        "url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/hyph-utf8.source.tar.xz",
+        "sha256": "5ab1a0375270b69dca2c1e095e8e0631713a2b80ac9c5736475a9b3c36d51753",
+        "size_bytes": 36044,
+        "license": "LPPL / MIT / Public Domain",
+        "provenance": "Official TeX Live source archive containing hyph-utf8 generator scripts, encoding definitions, and pattern conversion tools",
+    },
+    "ruhyphen": {
+        "archive": "ruhyphen.source.tar.xz",
+        "url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/ruhyphen.source.tar.xz",
+        "sha256": "2f229e3472560956365b4e1ac8ada8f5c1388cc8f95a4e5893eb4dad2b365150",
+        "size_bytes": 13656,
+        "license": "LPPL-1.2",
+        "provenance": "Official TeX Live source archive containing ruhyphen source scripts and documentation",
+    },
     "ec": {
         "archive": "ec.tar.xz",
         "url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/ec.tar.xz",
@@ -1150,6 +1745,39 @@ SOURCE_ARCHIVES_INFO = {
         "size_bytes": 56092,
         "license": "Public Domain",
         "provenance": "Official CTAN package release by Ralph Smith and Taco Hoekwater containing Type 1 outlines, metrics, and METAFONT sources",
+    },
+
+    'cjk-ko': {
+        'archive': 'cjk-ko.zip',
+        'license': 'LPPL-1.3c / GPL-2.0 / Public Domain',
+        'provenance': 'Authoritative CTAN package distribution by ko.TeX team containing full LaTeX macros and documentation sources',
+        'sha256': '28db8f29e112ff40047ad07f6052ae180f4192e780ed74b0db85e211c3a9f55a',
+        'size_bytes': 175960,
+        'url': 'https://mirror.aarnet.edu.au/pub/CTAN/language/korean/cjk-ko.zip',
+    },
+    'els-cas-templates': {
+        'archive': 'els-cas-templates.zip',
+        'license': 'LPPL-1.3c',
+        'provenance': 'Official Elsevier STM Document Lab release containing complete class, style, thumbnail assets, and documentation',
+        'sha256': '36d97da01c6bbd134f315bff6c3de553735e2550444a6ddd4f869ddc67a20757',
+        'size_bytes': 3305507,
+        'url': 'https://mirror.aarnet.edu.au/pub/CTAN/macros/latex/contrib/els-cas-templates.zip',
+    },
+    't2': {
+        'archive': 't2.zip',
+        'license': 'LPPL-1.3c',
+        'provenance': 'Authoritative CTAN package distribution by Vladimir Volovich and Werner Lemberg containing DocStrip dtx/ins sources',
+        'sha256': '29865cabc7e0bbbc8289144f2f1b7ad5a4d744ed179a9d87fdb82133e589d8a6',
+        'size_bytes': 138360,
+        'url': 'https://mirror.aarnet.edu.au/pub/CTAN/macros/latex/contrib/t2.zip',
+    },
+    'utfsym': {
+        'archive': 'utfsym.zip',
+        'license': 'CC0-1.0',
+        'provenance': 'Authoritative CTAN distribution by Daniel Benjamin Stegemann containing complete TikZ sources and generator scripts',
+        'sha256': '14c4aa17e60ec94f6cc0ff989e4946a88cdeac8753dff4148eed301f38c155f9',
+        'size_bytes': 6530598,
+        'url': 'https://mirror.aarnet.edu.au/pub/CTAN/graphics/pgf/contrib/utfsym.zip',
     },
 }
 
@@ -1347,6 +1975,275 @@ def generate_lh_metrics(combined_dir, cache_dir, scratch_dir):
         "files": generated_tfms,
     }
 
+
+def generate_metafont_outlines(combined_dir, cache_dir, scratch_dir):
+    """
+    Deterministic offline regeneration of Type 1 outlines, metrics, and maps
+    for BBM, IFSYM, and Computer Modern extra fonts (cmbcsc10, cmcsc12)
+    using pinned canonical METAFONT sources from bbm.tar.xz, ifsym.tar.xz,
+    cm-mf-extra-bold.tar.xz, cmcyr.tar.xz, and cm.tar.xz.
+    Traces Bezier outline programs using mftrace and potrace.
+    """
+    print("  [MF Outlines] Regenerating authentic Type 1 outlines from pinned METAFONT sources...")
+
+    # Locate declared real build dependencies via shutil.which with explicit error
+    mftrace_cmd = []
+    mftrace_exe = shutil.which("mftrace")
+    tools_bin = os.path.join(cache_dir, "tools/bin")
+    if mftrace_exe:
+        mftrace_cmd = [mftrace_exe]
+    elif os.path.exists(os.path.join(tools_bin, "mftrace.py")):
+        mftrace_cmd = ["python3", os.path.join(tools_bin, "mftrace.py")]
+    else:
+        raise RuntimeError(
+            "Required build tool 'mftrace' not found via PATH or cache. "
+            "Please ensure mftrace (with potrace backend) is available to generate METAFONT outlines."
+        )
+
+    mf_exe = shutil.which("mf")
+    if not mf_exe:
+        raise RuntimeError("Required build tool 'mf' (METAFONT) not found via PATH.")
+
+    potrace_exe = shutil.which("potrace")
+    if not potrace_exe:
+        raise RuntimeError("Required build tool 'potrace' not found via PATH.")
+
+    env = os.environ.copy()
+    if os.path.exists(tools_bin):
+        env["PATH"] = f"{tools_bin}:{env['PATH']}"
+
+    work_dir = os.path.join(scratch_dir, "mf_outlines_work")
+    os.makedirs(work_dir, exist_ok=True)
+
+    # Extract pinned upstream METAFONT source archives from cache (zero host font dependency)
+    bbm_src_dir = os.path.join(work_dir, "bbm_src")
+    with tarfile.open(os.path.join(cache_dir, "bbm.tar.xz"), "r:xz") as tf:
+        tf.extractall(bbm_src_dir)
+    ifsym_src_dir = os.path.join(work_dir, "ifsym_src")
+    with tarfile.open(os.path.join(cache_dir, "ifsym.tar.xz"), "r:xz") as tf:
+        tf.extractall(ifsym_src_dir)
+    cmextra_src_dir = os.path.join(work_dir, "cmextra_src")
+    with tarfile.open(os.path.join(cache_dir, "cm-mf-extra-bold.tar.xz"), "r:xz") as tf:
+        tf.extractall(cmextra_src_dir)
+    cmcyr_src_dir = os.path.join(work_dir, "cmcyr_src")
+    with tarfile.open(os.path.join(cache_dir, "cmcyr.tar.xz"), "r:xz") as tf:
+        tf.extractall(cmcyr_src_dir)
+    cm_src_dir = os.path.join(work_dir, "cm_src")
+    with tarfile.open(os.path.join(cache_dir, "cm.tar.xz"), "r:xz") as tf:
+        tf.extractall(cm_src_dir)
+
+    mf_dirs = []
+    for d in [bbm_src_dir, ifsym_src_dir, cmextra_src_dir, cmcyr_src_dir, cm_src_dir]:
+        for root, _, files in os.walk(d):
+            if any(f.endswith(".mf") for f in files):
+                mf_dirs.append(root)
+    env["MFINPUTS"] = ":".join(mf_dirs)
+
+    bbm_fonts = [
+        "bbm5", "bbm6", "bbm7", "bbm8", "bbm9", "bbm10", "bbm12", "bbm17",
+        "bbmbx5", "bbmbx6", "bbmbx7", "bbmbx8", "bbmbx9", "bbmbx10", "bbmbx12",
+        "bbmsl8", "bbmsl9", "bbmsl10", "bbmsl12",
+        "bbmss8", "bbmss9", "bbmss10", "bbmss12", "bbmss17"
+    ]
+    ifsym_fonts = ["ifsym10", "ifsymb10", "ifgeo10", "ifclk10", "ifwea10"]
+    cmextra_fonts = ["cmbcsc10", "cmcsc12"]
+
+    generated_records = {}
+    pkg_owners = {}
+
+    bbm_pfb_dir = os.path.join(combined_dir, "fonts/type1/public/bbm")
+    bbm_map_dir = os.path.join(combined_dir, "fonts/map/dvips/bbm")
+    ifsym_pfb_dir = os.path.join(combined_dir, "fonts/type1/public/ifsym")
+    ifsym_map_dir = os.path.join(combined_dir, "fonts/map/dvips/ifsym")
+    cmextra_pfb_dir = os.path.join(combined_dir, "fonts/type1/public/cmextra")
+    cmextra_tfm_dir = os.path.join(combined_dir, "fonts/tfm/public/cmextra")
+    cmextra_map_dir = os.path.join(combined_dir, "fonts/map/dvips/cmextra")
+
+    for d in [bbm_pfb_dir, bbm_map_dir, ifsym_pfb_dir, ifsym_map_dir, cmextra_pfb_dir, cmextra_tfm_dir, cmextra_map_dir]:
+        os.makedirs(d, exist_ok=True)
+
+    for f in bbm_fonts:
+        cmd = mftrace_cmd + ["--formats=pfb", "--noround", "--no-afm", f]
+        subprocess.run(cmd, cwd=bbm_pfb_dir, env=env, check=True, capture_output=True)
+        rel = f"fonts/type1/public/bbm/{f}.pfb"
+        with open(os.path.join(combined_dir, rel), "rb") as fp:
+            generated_records[rel] = hashlib.sha256(fp.read()).hexdigest()
+        pkg_owners[rel] = "bbm"
+
+    bbm_map_rel = "fonts/map/dvips/bbm/bbm.map"
+    with open(os.path.join(combined_dir, bbm_map_rel), "w") as fp:
+        for f in bbm_fonts:
+            fp.write(f"{f} {f} <{f}.pfb\n")
+    with open(os.path.join(combined_dir, bbm_map_rel), "rb") as fp:
+        generated_records[bbm_map_rel] = hashlib.sha256(fp.read()).hexdigest()
+    pkg_owners[bbm_map_rel] = "bbm"
+
+    for f in ifsym_fonts:
+        cmd = mftrace_cmd + ["--formats=pfb", "--noround", "--no-afm", f]
+        subprocess.run(cmd, cwd=ifsym_pfb_dir, env=env, check=True, capture_output=True)
+        rel = f"fonts/type1/public/ifsym/{f}.pfb"
+        with open(os.path.join(combined_dir, rel), "rb") as fp:
+            generated_records[rel] = hashlib.sha256(fp.read()).hexdigest()
+        pkg_owners[rel] = "ifsym"
+
+    ifsym_map_rel = "fonts/map/dvips/ifsym/ifsym.map"
+    with open(os.path.join(combined_dir, ifsym_map_rel), "w") as fp:
+        for f in ifsym_fonts:
+            fp.write(f"{f} {f} <{f}.pfb\n")
+    with open(os.path.join(combined_dir, ifsym_map_rel), "rb") as fp:
+        generated_records[ifsym_map_rel] = hashlib.sha256(fp.read()).hexdigest()
+    pkg_owners[ifsym_map_rel] = "ifsym"
+
+    for f in cmextra_fonts:
+        cmd = mftrace_cmd + ["--formats=pfb", "--noround", "--no-afm", f]
+        subprocess.run(cmd, cwd=cmextra_pfb_dir, env=env, check=True, capture_output=True)
+        rel = f"fonts/type1/public/cmextra/{f}.pfb"
+        with open(os.path.join(combined_dir, rel), "rb") as fp:
+            generated_records[rel] = hashlib.sha256(fp.read()).hexdigest()
+        pkg_owners[rel] = "cm-mf-extra-bold" if f == "cmbcsc10" else "cmcyr"
+
+    subprocess.run([mf_exe, "\\mode:=ljfour; nonstopmode; input cmcsc12.mf"], cwd=cmextra_tfm_dir, env=env, check=True, capture_output=True)
+    tfm12_rel = "fonts/tfm/public/cmextra/cmcsc12.tfm"
+    with open(os.path.join(combined_dir, tfm12_rel), "rb") as fp:
+        generated_records[tfm12_rel] = hashlib.sha256(fp.read()).hexdigest()
+    pkg_owners[tfm12_rel] = "cmcyr"
+
+    cmextra_map_rel = "fonts/map/dvips/cmextra/cmextra-t1.map"
+    with open(os.path.join(combined_dir, cmextra_map_rel), "w") as fp:
+        for f in cmextra_fonts:
+            fp.write(f"{f} {f} <{f}.pfb\n")
+    with open(os.path.join(combined_dir, cmextra_map_rel), "rb") as fp:
+        generated_records[cmextra_map_rel] = hashlib.sha256(fp.read()).hexdigest()
+    pkg_owners[cmextra_map_rel] = "cm-mf-extra-bold"
+
+    print(f"  [MF Outlines] Successfully generated {len(generated_records)} authentic font files & maps.")
+    return {
+        "generator": "mftrace with potrace backend from authentic CTAN METAFONT sources",
+        "source_archives": ["bbm.tar.xz", "ifsym.tar.xz", "cm-mf-extra-bold.tar.xz", "cmcyr.tar.xz", "cm.tar.xz"],
+        "total_generated": len(generated_records),
+        "files": generated_records,
+        "pkg_owners": pkg_owners,
+    }
+
+LANGUAGE_DAT_ENTRIES = [
+    # English (Knuth original, default language 0)
+    ("english", "hyphen.tex", ["usenglish", "USenglish", "american"]),
+    ("dumylang", "dumyhyph.tex", []),
+    ("nohyphenation", "zerohyph.tex", []),
+    # English extensions
+    ("ukenglish", "loadhyph-en-gb.tex", ["british", "UKenglish"]),
+    ("usenglishmax", "loadhyph-en-us.tex", []),
+    # Basque
+    ("basque", "loadhyph-eu.tex", []),
+    # French
+    ("french", "loadhyph-fr.tex", ["patois", "francais"]),
+    # German
+    ("german", "loadhyph-de-1901.tex", []),
+    ("ngerman", "loadhyph-de-1996.tex", []),
+    ("swissgerman", "loadhyph-de-ch-1901.tex", []),
+    ("german-x-2024-02-28", "dehypht-x-2024-02-28.tex", ["german-x-latest"]),
+    ("ngerman-x-2024-02-28", "dehyphn-x-2024-02-28.tex", ["ngerman-x-latest"]),
+    # Greek
+    ("greek", "loadhyph-el-polyton.tex", ["polygreek"]),
+    ("monogreek", "loadhyph-el-monoton.tex", []),
+    ("ancientgreek", "loadhyph-grc.tex", []),
+    ("ibycus", "ibyhyph.tex", []),
+    # Spanish (with mexican and mexicanspanish synonyms)
+    ("spanish", "loadhyph-es.tex", ["espanol", "mexican", "mexicanspanish"]),
+    # Portuguese (with brazilian and brazil synonyms)
+    ("portuguese", "loadhyph-pt.tex", ["portuges", "brazilian", "brazil"]),
+    # Russian (authentic 8-bit T2A via ruhyphen)
+    ("russian", "loadhyph-ru.tex", []),
+    # Pinyin
+    ("pinyin", "loadhyph-zh-latn-pinyin.tex", []),
+]
+
+LOADER_DEPENDENCY_CLOSURE = {
+    "hyphen.tex": [],
+    "dumyhyph.tex": [],
+    "zerohyph.tex": [],
+    "loadhyph-en-gb.tex": ["hyph-en-gb.tex"],
+    "loadhyph-en-us.tex": ["hyph-en-us.tex"],
+    "loadhyph-eu.tex": ["conv-utf8-ec.tex", "hyph-eu.tex"],
+    "loadhyph-fr.tex": ["conv-utf8-ec.tex", "hyph-fr.tex"],
+    "loadhyph-de-1901.tex": ["dehypht.tex"],
+    "loadhyph-de-1996.tex": ["dehyphn.tex"],
+    "loadhyph-de-ch-1901.tex": ["conv-utf8-ec.tex", "hyph-de-ch-1901.tex"],
+    "dehypht-x-2024-02-28.tex": ["dehypht-x-2024-02-28.pat"],
+    "dehyphn-x-2024-02-28.tex": ["dehyphn-x-2024-02-28.pat"],
+    "loadhyph-el-polyton.tex": ["grphyph5.tex"],
+    "loadhyph-el-monoton.tex": ["grmhyph5.tex"],
+    "loadhyph-grc.tex": ["grahyph5.tex"],
+    "ibyhyph.tex": [],
+    "loadhyph-es.tex": ["conv-utf8-ec.tex", "hyph-es.tex"],
+    "loadhyph-pt.tex": ["conv-utf8-ec.tex", "hyph-pt.tex"],
+    "loadhyph-ru.tex": [
+        "ruhyphen.tex", "catkoi.tex", "koi2t2a.tex",
+        "ruhyphal.tex", "cyryoal.tex", "hypht2.tex",
+    ],
+    "loadhyph-zh-latn-pinyin.tex": ["hyph-zh-latn-pinyin.ec.tex"],
+}
+
+
+def generate_language_dat(combined_dir):
+    """
+    Deterministically generates tex/generic/config/language.dat.
+    Validates complete physical presence of every declared loader and secondary
+    dependency in combined_dir. Strict verification: no silent English fallback.
+    """
+    print("  Validating hyphenation resource closure and generating tex/generic/config/language.dat...")
+    available_basenames = set()
+    for root, _, files in os.walk(combined_dir):
+        for f in files:
+            available_basenames.add(f)
+
+    # Validate all loaders and secondary dependencies
+    for lang, loader, aliases in LANGUAGE_DAT_ENTRIES:
+        if loader not in available_basenames:
+            raise RuntimeError(
+                f"REJECTED: Missing primary hyphenation pattern loader '{loader}' for language '{lang}'!"
+            )
+        deps = LOADER_DEPENDENCY_CLOSURE.get(loader, [])
+        for dep in deps:
+            if dep not in available_basenames:
+                raise RuntimeError(
+                    f"REJECTED: Missing required dependency '{dep}' for loader '{loader}' (language '{lang}')!"
+                )
+
+    lines = [
+        "% Deterministically generated language.dat for Ratex",
+        "% English default (language 0), authentic 8-bit pattern loaders, zero silent fallbacks",
+        "",
+    ]
+    for lang, loader, aliases in LANGUAGE_DAT_ENTRIES:
+        lines.append(f"{lang} {loader}")
+        for alias in aliases:
+            lines.append(f"={alias}")
+
+    content = "\n".join(lines) + "\n"
+    target_rel = "tex/generic/config/language.dat"
+    target_full = os.path.join(combined_dir, target_rel)
+    os.makedirs(os.path.dirname(target_full), exist_ok=True)
+    with open(target_full, "w", encoding="utf-8") as f:
+        f.write(content)
+    os.utime(target_full, (FIXED_MTIME, FIXED_MTIME))
+
+    fhash = sha256_file(target_full)
+    fsz = os.path.getsize(target_full)
+    print(f"  Generated {target_rel}: {len(LANGUAGE_DAT_ENTRIES)} languages, {fsz} bytes, sha256={fhash[:16]}...")
+    return {
+        "output_file": target_rel,
+        "sha256": fhash,
+        "size_bytes": fsz,
+        "total_languages": len(LANGUAGE_DAT_ENTRIES),
+        "validated_loaders": sorted(LOADER_DEPENDENCY_CLOSURE.keys()),
+        "entries": [
+            {"language": lang, "loader": loader, "synonyms": aliases}
+            for lang, loader, aliases in LANGUAGE_DAT_ENTRIES
+        ],
+    }
+
+
 def build_bundle(baseline_path, output_dir, lock_file_path, cache_dir, legal_dir, sources_out=None):
     """
     Builds packages.tar.zst and packages.lock.json using ONLY hash-pinned upstream archives
@@ -1356,7 +2253,7 @@ def build_bundle(baseline_path, output_dir, lock_file_path, cache_dir, legal_dir
     if not os.path.exists(baseline_path):
         raise FileNotFoundError(f"Baseline archive not found at: {baseline_path}")
 
-    print(f"[1/7] Verifying baseline archive: {baseline_path}...")
+    print(f"[1/8] Verifying baseline archive: {baseline_path}...")
     baseline_hash = sha256_file(baseline_path)
     baseline_size = os.path.getsize(baseline_path)
     if baseline_hash != PINNED_BASELINE_SHA256:
@@ -1393,7 +2290,7 @@ def build_bundle(baseline_path, output_dir, lock_file_path, cache_dir, legal_dir
     os.makedirs(baseline_dir, exist_ok=True)
     os.makedirs(combined_dir, exist_ok=True)
 
-    print(f"[2/7] Extracting baseline archive to scratch...")
+    print(f"[2/8] Extracting baseline archive to scratch...")
     res = subprocess.run(["tar", "-I", "zstd", "-xf", baseline_path, "-C", baseline_dir])
     if res.returncode != 0:
         raise RuntimeError("Failed to extract baseline archive.")
@@ -1422,7 +2319,7 @@ def build_bundle(baseline_path, output_dir, lock_file_path, cache_dir, legal_dir
 
     print(f"  Baseline tree contains {baseline_file_count} files ({len(baseline_by_basename)} unique basenames).")
 
-    print(f"[3/7] Extracting and verifying payload ONLY from pinned upstream archives...")
+    print(f"[3/8] Extracting and verifying payload ONLY from pinned upstream archives...")
     new_files_by_pkg = {}
     new_basenames = {}
     identical_overlays = 0
@@ -1540,6 +2437,12 @@ def build_bundle(baseline_path, output_dir, lock_file_path, cache_dir, legal_dir
         "babel-russian": [
             ("babel-russian-README.md", "doc/generic/babel-russian/README.md"),
         ],
+        "babel-spanish": [
+            ("babel-spanish-README.md", "doc/generic/babel-spanish/README.md"),
+        ],
+        "babel-portuges": [
+            ("babel-portuges-README.md", "doc/generic/babel-portuges/README.md"),
+        ],
         "rsfs": [
             ("rsfs-README.txt", "doc/fonts/rsfs/README"),
             ("rsfs-README.type1.txt", "doc/fonts/rsfs/README.type1"),
@@ -1561,6 +2464,10 @@ def build_bundle(baseline_path, output_dir, lock_file_path, cache_dir, legal_dir
         "mathdesign": [
             ("mathdesign-README.txt", "doc/fonts/mathdesign/README"),
         ],
+        "mathpazo": [
+            ("mathpazo-README.txt", "doc/fonts/mathpazo/README"),
+            ("fpl-COPYING.txt", "doc/fonts/mathpazo/gpl.txt"),
+        ],
     }
 
     for pkg_id, files_list in package_legal_mapping.items():
@@ -1579,12 +2486,19 @@ def build_bundle(baseline_path, output_dir, lock_file_path, cache_dir, legal_dir
     print(f"  Pure archive extraction verified: {len(new_basenames)} unique basenames added.")
     print(f"  Verified clean overlays: {identical_overlays} identical files, 0 conflicting basenames.")
 
-    print(f"[4/7] Generating complete LH Cyrillic metrics and consolidating default pdftex.map...")
+    print(f"[4/8] Generating complete LH Cyrillic metrics and consolidating default pdftex.map...")
     lh_provenance = generate_lh_metrics(combined_dir, cache_dir, scratch)
     for target_rel, fhash in lh_provenance["files"].items():
         fname = os.path.basename(target_rel)
         new_basenames[fname] = ("lh", target_rel, fhash)
         new_files_by_pkg["lh"][target_rel] = fhash
+
+    mf_outlines_provenance = generate_metafont_outlines(combined_dir, cache_dir, scratch)
+    for target_rel, fhash in mf_outlines_provenance["files"].items():
+        fname = os.path.basename(target_rel)
+        pkg_owner = mf_outlines_provenance.get("pkg_owners", {}).get(target_rel, "cm")
+        new_basenames[fname] = (pkg_owner, target_rel, fhash)
+        new_files_by_pkg.setdefault(pkg_owner, {})[target_rel] = fhash
 
     pdftex_map_rel = "fonts/map/pdftex/updmap/pdftex.map"
     pdftex_map_path = os.path.join(combined_dir, pdftex_map_rel)
@@ -1604,11 +2518,29 @@ def build_bundle(baseline_path, output_dir, lock_file_path, cache_dir, legal_dir
 
     def parse_map_components(norm_line):
         parts = norm_line.split()
+        if not parts:
+            return None, None, None
         tfm = parts[0]
         enc = None
         fontfile = None
-        for p in parts[1:]:
-            if p.startswith("<["):
+        i = 1
+        while i < len(parts):
+            p = parts[i]
+            if p == "<[":
+                if i + 1 < len(parts):
+                    enc = parts[i + 1]
+                    i += 2
+                    continue
+            elif p == "<<" or p == "<":
+                if i + 1 < len(parts):
+                    nxt = parts[i + 1]
+                    if nxt.endswith(".enc"):
+                        enc = nxt
+                    else:
+                        fontfile = nxt
+                    i += 2
+                    continue
+            elif p.startswith("<["):
                 enc = p[2:]
             elif p.startswith("<<"):
                 fontfile = p[2:]
@@ -1617,6 +2549,7 @@ def build_bundle(baseline_path, output_dir, lock_file_path, cache_dir, legal_dir
                     enc = p[1:]
                 else:
                     fontfile = p[1:]
+            i += 1
         return tfm, enc, fontfile
 
     map_lines = {}
@@ -1736,7 +2669,10 @@ def build_bundle(baseline_path, output_dir, lock_file_path, cache_dir, legal_dir
     print(f"  Consolidated {len(map_lines)} total map entries ({upstream_added} from upstream roots, "
           f"{len(map_lines)-upstream_added} retained from baseline family roots, "
           f"{len(unavailable_baseline_entries)} unavailable baseline entries documented).")
-    print(f"[5/7] Writing deterministic sorted tar archive...")
+    print(f"[5/8] Generating validated language.dat hyphenation closure...")
+    lang_dat_provenance = generate_language_dat(combined_dir)
+
+    print(f"[6/8] Writing deterministic sorted tar archive...")
     all_files = []
     total_uncompressed = 0
     unique_basenames = set()
@@ -1782,7 +2718,7 @@ def build_bundle(baseline_path, output_dir, lock_file_path, cache_dir, legal_dir
     output_hash = sha256_file(temp_full)
     print(f"  Full archive created in {elapsed:.1f}s: {output_size} bytes ({output_size / (1024*1024):.2f} MiB, sha256={output_hash[:16]}...)")
 
-    print(f"[6/7] Sharding into deterministic <=70 MiB parts...")
+    print(f"[7/8] Sharding into deterministic <=70 MiB parts...")
     os.makedirs(output_dir, exist_ok=True)
     for item in os.listdir(output_dir):
         if item == "packages.tar.zst" or item.startswith("packages.tar.zst."):
@@ -1832,7 +2768,7 @@ def build_bundle(baseline_path, output_dir, lock_file_path, cache_dir, legal_dir
             "source_archives": source_records,
         }
 
-    print(f"[7/7] Generating machine-readable asset lock: {lock_file_path}...")
+    print(f"[8/8] Generating machine-readable asset lock: {lock_file_path}...")
     package_records = {}
     for pkg_id, pkg_info in UPSTREAM_PACKAGES.items():
         files_dict = new_files_by_pkg.get(pkg_id, {})
@@ -1885,6 +2821,7 @@ def build_bundle(baseline_path, output_dir, lock_file_path, cache_dir, legal_dir
             "baseline_roots": baseline_root_records,
             "unavailable_baseline_entries": unavailable_baseline_entries,
         },
+        "hyphenation_config": lang_dat_provenance,
         "metric_closures": {
             "lh_cyrillic": {
                 "compiler": lh_provenance["compiler"],
@@ -1892,6 +2829,11 @@ def build_bundle(baseline_path, output_dir, lock_file_path, cache_dir, legal_dir
                 "total_generated": lh_provenance["total_generated"],
                 "source_archives": lh_provenance["source_archives"],
             },
+        },
+        "metafont_outline_closures": {
+            "generator": mf_outlines_provenance["generator"],
+            "total_generated": mf_outlines_provenance["total_generated"],
+            "source_archives": mf_outlines_provenance["source_archives"],
         },
         "basename_collision_policy": {
             "status": "verified_clean",

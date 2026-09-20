@@ -320,11 +320,324 @@ their respective upstream licenses.
   Full source archive (mathdesign.zip) preserved in sources.tar.zst.
 - Terms: Type 1 outlines, metrics, and maps for Utopia (mdput), Charter (mdbch), and Garamond (mdugm) math fonts.
 
+
+23. Inconsolata
+---------------
+- Author / Maintainer: Raph Levien, Michael Sharpe
+- Upstream: CTAN /fonts/inconsolata
+  Retrieval URL: https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/inconsolata.tar.xz
+  SHA256: d3d9d4c42f4215888a75e3c78be99de190a6ea17c60317e0892701df9ce8a6e8 (299,552 bytes)
+- License: SIL Open Font License v1.1 (OFL-1.1)
+- Shipped License Texts:
+  * doc/fonts/inconsolata/OFL.txt
+- Terms & Modified-Font Naming Restrictions:
+  Monospaced font family for listings and technical text. Reserved Font Name: Inconsolata. Modifications must not use the Reserved Font Name.
+
+24. TeX Gyre
+------------
+- Author / Maintainer: Bogusław Jackowski and Janusz M. Nowacki (GUST, Poland)
+- Upstream: CTAN /fonts/tex-gyre
+  Retrieval URL: https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/tex-gyre.tar.xz
+  SHA256: dfb4f55c4b029930777dfb813aa268be9314d1f23ee2bb74b0fb589eb4324f60 (7,748,428 bytes)
+- License: GUST Font License (GFLL) v1.0
+- Shipped License Texts:
+  * doc/fonts/tex-gyre/GUST-FONT-LICENSE.txt
+- Terms & Modified-Font Naming Restrictions:
+  Complete font families (Adventor, Bonum, Chorus, Cursor, Heros, Pagella, Termes, Schola) derived from URW Base 35 fonts. Modifications must be renamed to not contain 'TeX Gyre'.
+
+25. FPL (Free Palatino Letters) and Pazo Math
+------------------------------------------------
+- Authors / Maintainers: Ralf Stubner (FPL); Diego Puga (Pazo Math)
+- Upstream:
+  * CTAN /fonts/fpl
+    Retrieval URL: https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/fpl.tar.xz
+    SHA256: 98ea140d101e0802ff266614d57f486495f1a6d063561d1474e68ac764fbc4aa (288,420 bytes)
+  * CTAN /fonts/mathpazo
+    Retrieval URL: https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/mathpazo.tar.xz
+    SHA256: b42822082e609bc2c707bb2657ff5bf6f491718ab391d2c884f7dfed0d51ec15 (63,628 bytes)
+- Licenses: FPL is dual-licensed under GPL-2.0 with a document-embedding font
+  exception or LPPL-1.0; Pazo Math is GPL-2.0 with the same font exception.
+- Shipped License Texts:
+  * doc/fonts/fpl/README
+  * doc/fonts/fpl/COPYING
+  * doc/fonts/mathpazo/README
+  * doc/fonts/mathpazo/gpl.txt
+- Terms & Source Availability:
+  FPL supplies four Palatino-compatible small-caps and old-style-figure fonts.
+  Pazo Math supplies five Palatino-matching math fonts (fplmr, fplmri, fplmb,
+  fplmbi, and fplmbb). Corresponding source is preserved in fpl.source.tar.xz
+  and mathpazo.source.tar.xz.
+
+26. PX Fonts (Palatino-like Math and Text)
+------------------------------------------
+- Author / Maintainer: Young Ryu
+- Upstream: CTAN /fonts/pxfonts
+  Retrieval URL: https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/pxfonts.tar.xz
+  SHA256: bdddf89946b2a237fa99c0d12753bc668971f16ebf051eec7b4f58c7075c3db1 (459,976 bytes)
+- License: GNU General Public License v2.0 or later (GPL-2.0-or-later)
+- Shipped License Texts:
+  * doc/fonts/pxfonts/README
+- Terms & Modified-Font Naming Restrictions:
+  Complete Palatino-matching math font set in Type 1 format with virtual fonts (rpxr, rpxmi, etc.).
+
+27. Wasy Type 1 (Waldi Symbol Fonts)
+------------------------------------
+- Author / Maintainer: Roland Waldi
+- Upstream: CTAN /fonts/wasy-type1
+  Retrieval URL: https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/wasy-type1.tar.xz
+  SHA256: 1bd86eff809059e4555f89a9df9c4d9f67c33958cc1c73ec48ee5f58c71d6244 (261,536 bytes)
+- License: Public Domain
+- Shipped License Texts:
+  * doc/fonts/wasy-type1/README
+- Terms & Modified-Font Naming Restrictions:
+  Type 1 outlines of Roland Waldi's wasy symbol fonts (wasy10, wasy8, wasy7, wasy6, wasy5, wasyb10).
+
+28. Eurosym
+-----------
+- Author / Maintainer: Henrik Theiling
+- Upstream: CTAN /fonts/eurosym
+  Retrieval URL: https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/eurosym.tar.xz
+  SHA256: db2f7325383f6fa4c49df5d5c05d9e504c59a3f2b6099df3d789fa4358826d9e (139,868 bytes)
+- License: GPL-2.0-or-later / other-free
+- Shipped License Texts:
+  * doc/fonts/eurosym/COPYING
+- Terms & Modified-Font Naming Restrictions:
+  Official European Currency symbol fonts in Type 1 outlines (feymr10, feybr10, etc.) and metrics.
+
+29. MnSymbol (Minion Symbol Fonts)
+----------------------------------
+- Author / Maintainer: Achim Blumensath
+- Upstream: CTAN /fonts/mnsymbol
+  Retrieval URL: https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/mnsymbol.tar.xz
+  SHA256: 7bdaf593dda367c29cb16f4da12a95c37cb84a6c02611a14c6fb73d159194bb8 (4,426,360 bytes)
+- License: LaTeX Project Public License v1.2 (LPPL-1.2)
+- Shipped License Texts:
+  * doc/fonts/mnsymbol/COPYING
+- Terms & Modified-Font Naming Restrictions:
+  Mathematical symbol font designed to accompany Adobe MinionPro, supplied in Type 1 and OpenType formats with complete LaTeX support.
+
+30. Computer Modern Bright and HFBRIGHT
+---------------------------------------
+- Author / Maintainer: Walter Schmidt
+- Upstream: CTAN /fonts/hfbright
+  Retrieval URL: https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/hfbright.tar.xz
+  SHA256: 6db651416b07dbb73fc9bcf72eafe4f1a2608ef0ba01d8e134c4415848529241 (832,824 bytes)
+- License: LaTeX Project Public License v1.0 (LPPL-1.0)
+- Shipped License Texts:
+  * doc/fonts/hfbright/README
+- Terms & Modified-Font Naming Restrictions:
+  PostScript Type 1 outlines for the Computer Modern Bright font family (hfbrmi10, etc.).
+
+31. Font Awesome
+----------------
+- Author / Maintainer: Dave Gandy
+- Upstream: CTAN /fonts/fontawesome
+  Retrieval URL: https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/fontawesome.tar.xz
+  SHA256: 98afe54919526e4de552f4c330dfc109cbca89c748c1e7a5d3f1ca62e697e089 (276,176 bytes)
+- License: SIL Open Font License v1.1 (OFL-1.1)
+- Shipped License Texts:
+  * doc/fonts/fontawesome/OFL.txt
+- Terms & Modified-Font Naming Restrictions:
+  Font Awesome v4 icon outlines and LaTeX support macros. Reserved Font Name: FontAwesome.
+
+32. ESVECT (Vector Arrows)
+--------------------------
+- Author / Maintainer: Eddie Saudrais
+- Upstream: CTAN /fonts/esvect
+  Retrieval URL: https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/esvect.tar.xz
+  SHA256: 9cc260745a4c9cb2ce7b70dddf7b514b8f59990544cc6e919df5144b2f293a9a (66,876 bytes)
+- License: GNU General Public License v2.0 or later (GPL-2.0-or-later)
+- Shipped License Texts:
+  * doc/fonts/esvect/README
+- Terms & Modified-Font Naming Restrictions:
+  Vector arrow symbols for LaTeX, providing vect10 Type 1 outlines. Corresponding source preserved in esvect.source.tar.xz.
+
+33. MarVoSym (Martin Vogel's Symbols)
+-------------------------------------
+- Author / Maintainer: Martin Vogel, Thomas Henlich
+- Upstream: CTAN /fonts/marvosym
+  Retrieval URL: https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/marvosym.tar.xz
+  SHA256: d8b1740e2c639f3a58e22e5a40989f660d5b746c82701e4a5bf46b4125b29352 (133,504 bytes)
+- License: SIL Open Font License v1.1 (OFL-1.1)
+- Shipped License Texts:
+  * doc/fonts/marvosym/OFL.txt
+- Terms & Modified-Font Naming Restrictions:
+  Symbol font including official Euro currency glyphs, astronomical, astrological, and technical symbols (umvs, marvosym.pfb).
+
+34. YFonts-T1 (Blackletter Fonts)
+---------------------------------
+- Author / Maintainer: Torsten Bronger
+- Upstream: CTAN /fonts/yfonts-t1
+  Retrieval URL: https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/yfonts-t1.tar.xz
+  SHA256: a62b2726e5d6c68c17bca8fa7b26c2cf93ae48e02eb4759bf9ec579e0a02cb93 (145,940 bytes)
+- License: GNU General Public License v2.0 or later (GPL-2.0-or-later)
+- Shipped License Texts:
+  * doc/fonts/yfonts-t1/README
+- Terms & Modified-Font Naming Restrictions:
+  PostScript Type 1 outlines for Yannis Haralambous' Old German Fraktur, Schwabacher, and Gothic fonts (yswab, ygoth).
+
+35. Boondox (Calligraphic & Blackboard Fonts)
+---------------------------------------------
+- Author / Maintainer: Michael Sharpe
+- Upstream: CTAN /fonts/boondox
+  Retrieval URL: https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/boondox.tar.xz
+  SHA256: 8cba8ce1f30d8e7ae3d3aa2a1705ae8074d2222384a6c27f3df3bc1be1ff71eb (204,704 bytes)
+- License: SIL Open Font License v1.1 (OFL-1.1)
+- Shipped License Texts:
+  * doc/fonts/boondox/OFL.txt
+- Terms & Modified-Font Naming Restrictions:
+  Calligraphic and double-struck fonts derived from the STIX collection, providing BOONDOX-r-cal virtual font and outlines.
+
+36. Dutchcal (Dutch Calligraphic Font)
+--------------------------------------
+- Author / Maintainer: TeX Users Group
+- Upstream: CTAN /fonts/dutchcal
+  Retrieval URL: https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/dutchcal.tar.xz
+  SHA256: cb7ddc48e0d2d515b1fbba25a74e5cb42a781b4fc66113b5ffadcf3e1bb494ce (36,192 bytes)
+- License: LaTeX Project Public License v1.3c (LPPL-1.3c)
+- Shipped License Texts:
+  * doc/fonts/dutchcal/README
+- Terms & Modified-Font Naming Restrictions:
+  Calligraphic font derived from ESSTIX, providing dutchcal-r.vf and DutchCalReg.pfb.
+
+37. Cabin
+---------
+- Author / Maintainer: Pablo Impallari, Igino Marini
+- Upstream: CTAN /fonts/cabin
+  Retrieval URL: https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/cabin.tar.xz
+  SHA256: b29c8cf5cd39e208b02e737c355848bb248ddb96919dbd729bc119b9bf896e38 (2,896,428 bytes)
+- License: SIL Open Font License v1.1 (OFL-1.1)
+- Shipped License Texts:
+  * doc/fonts/cabin/OFL.txt
+- Terms & Modified-Font Naming Restrictions:
+  Humanist sans-serif font family. Reserved Font Name: Cabin. Providing Cabin-Bold-tlf-t1 virtual fonts, metrics, and OpenType outlines.
+
+38. Kp-Fonts (Johannes Kepler Fonts)
+------------------------------------
+- Author / Maintainer: Christophe Caignaert
+- Upstream: CTAN /fonts/kpfonts
+  Retrieval URL: https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/kpfonts.tar.xz
+  SHA256: 097726a3219d4725357a70a8ba9a764d26f7431ec5e683f2e0fc50e2ae2499d6 (2,241,572 bytes)
+- License: GNU General Public License v2.0 or later with font exception (GPL-2.0-or-later)
+- Shipped License Texts:
+  * doc/fonts/kpfonts/README
+  * doc/fonts/kpfonts/COPYING
+- Terms & Modified-Font Naming Restrictions:
+  Comprehensive set of text and mathematical fonts, providing jkpmn7t virtual fonts, Type 1 outlines, metrics, and encodings.
+
+39. EB Garamond
+---------------
+- Author / Maintainer: Georg Duffner
+- Upstream: CTAN /fonts/ebgaramond
+  Retrieval URL: https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/ebgaramond.tar.xz
+  SHA256: 905f7f54b37e065f3f09ba96f6cfb06b0d912444ff99c42ae8677c728e21a221 (8,391,124 bytes)
+- License: SIL Open Font License v1.1 (OFL-1.1)
+- Shipped License Texts:
+  * doc/fonts/ebgaramond/OFL.txt
+- Terms & Modified-Font Naming Restrictions:
+  Classical revival of Claude Garamont's 1592 fonts. Reserved Font Name: EB Garamond. Providing EBGaramond virtual fonts and OpenType outlines.
+
+40. SkakNew (Chess Figurine Fonts)
+----------------------------------
+- Author / Maintainer: Ulrich Dirr
+- Upstream: CTAN /fonts/skaknew
+  Retrieval URL: https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/skaknew.tar.xz
+  SHA256: 0de354f04a18d3fb668d27771744b827e7f9189ef94d2e7b165089c894819e68 (160,044 bytes)
+- License: LaTeX Project Public License v1.3c (LPPL-1.3c)
+- Shipped License Texts:
+  * doc/fonts/skaknew/README
+- Terms & Modified-Font Naming Restrictions:
+  Chess diagram and figurine fonts in Type 1 and OpenType format (SkakNew-Figurine).
+
+41. Heuristica
+--------------
+- Author / Maintainer: Andrey V. Panov
+- Upstream: CTAN /fonts/heuristica
+  Retrieval URL: https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/heuristica.tar.xz
+  SHA256: caea9d54929833f3801f464fececf7ceb2e65efd9ef4bb07c1bbf9e6584284b3 (1,079,032 bytes)
+- License: SIL Open Font License v1.1 (OFL-1.1)
+- Shipped License Texts:
+  * doc/fonts/heuristica/OFL.txt
+- Terms & Modified-Font Naming Restrictions:
+  Extension of the Utopia font with complete Cyrillic support. Reserved Font Name: Heuristica. Providing Heuristica virtual fonts and outlines.
+
+42. ESSTIX
+----------
+- Author / Maintainer: Elsevier, STI Pub Companies
+- Upstream: CTAN /fonts/esstix
+  Retrieval URL: https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/esstix.tar.xz
+  SHA256: 7cbfaa770ce2b8a349c25983756ca3d8d6411516e8db3722248aeaf90d9a652e (202,188 bytes)
+- License: SIL Open Font License v1.1 (OFL-1.1)
+- Shipped License Texts:
+  * doc/fonts/esstix/OFL.txt
+- Terms & Modified-Font Naming Restrictions:
+  PostScript Type 1 versions of the ESSTIX symbol fonts (esstixcal, etc.).
+
+43. Baskervaldx
+---------------
+- Author / Maintainer: Michael Sharpe
+- Upstream: CTAN /fonts/baskervaldx
+  Retrieval URL: https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/baskervaldx.tar.xz
+  SHA256: ad08b214d7cfe5ca43a2bc0d8b4e7053e1a0b77b7f4335c03c58288cf2436d4f (680,416 bytes)
+- License: GNU General Public License v2.0 or later with font exception (GPL-2.0-or-later)
+- Shipped License Texts:
+  * doc/fonts/baskervaldx/README
+  * doc/fonts/baskervaldx/COPYING
+- Terms & Modified-Font Naming Restrictions:
+  Baskerville revival based on Baskervald ADF, providing Baskervaldx-Reg Type 1 outlines, virtual fonts, and metrics.
+
+44. Arev (Arev Sans Math & Text)
+--------------------------------
+- Author / Maintainer: Tavmjong Bah
+- Upstream: CTAN /fonts/arev
+  Retrieval URL: https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/arev.tar.xz
+  SHA256: e765d7c7a83a752a1215fe36ef7d389a9c2caea7ae7d7f7e91d607f2ef84a20b (964,648 bytes)
+- License: Bitstream Vera Font License / LPPL-1.3c
+- Shipped License Texts:
+  * doc/fonts/arev/README
+- Terms & Modified-Font Naming Restrictions:
+  Sans-serif math font based on Bitstream Vera Sans (favmr7y, ArevSans-Roman.pfb).
+
+45. BBM (Blackboard Bold Math - Derived Type 1 Outlines)
+--------------------------------------------------------
+- Author / Maintainer: Gilles F. Robert (METAFONT source); traced outlines generated by Ratex font pipeline
+- Upstream: CTAN /fonts/cm/bbm
+  Retrieval URL: https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/bbm.tar.xz
+  SHA256: 5684bfe87f5153ad9a05fb6c3df58ea06d6d0a3bee747c07f891b3206398bc66 (32,608 bytes)
+- License: Other-free / Permissive (free use, modification, and redistribution)
+- Shipped License Texts:
+  * doc/fonts/bbm/README (shipped as crates/tex-kpse/assets/legal/bbm-README.txt)
+- Terms & Modified-Font Naming Restrictions:
+  Permissive distribution and modification under Gilles F. Robert's license statement: "You may freely use, modify and/or distribute this file." Computer Modern blackboard bold double-struck mathematical characters (bbm10, bbm12, bbm7, etc.). Type 1 vector outlines generated deterministically offline from Gilles F. Robert's canonical METAFONT sources using mftrace/potrace. Corresponding METAFONT sources preserved in bbm.tar.xz.
+
+46. IFSYM (Symbol Fonts - Derived Type 1 Outlines)
+--------------------------------------------------
+- Author / Maintainer: Ingo Kloeckl (METAFONT source); traced outlines generated by Ratex font pipeline
+- Upstream: CTAN /fonts/ifsym
+  Retrieval URL: https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/ifsym.tar.xz
+  SHA256: f29b0f761b885098d8bbe2d770fb23c3d4d75c6a8d263c4179e2432f611df9c8 (9,800 bytes)
+- License: LaTeX Project Public License v1.0 or later (LPPL-1.0+ / LPPL-1.2; CTAN catalogue designates other-free)
+- Shipped License Texts:
+  * fonts/source/public/ifsym/ifsym.gen (source header notice)
+- Terms & Modified-Font Naming Restrictions:
+  Redistributable and modifiable under the terms of the LaTeX Project Public License v1.0 or later per author Ingo Kloeckl's notice in ifsym.gen: "This program can be redistributed and/or modified under the terms of the LaTeX Project Public License Distributed from CTAN archives in directory macros/latex/base/lppl.txt; either version 1 of the License, or any later version." Symbol font family (ifsym10, ifgeo10, ifclk10, ifwea10). Type 1 vector outlines generated deterministically offline from Ingo Kloeckl's canonical METAFONT sources using mftrace/potrace. Corresponding METAFONT sources preserved in ifsym.tar.xz.
+
+47. Computer Modern Extra Bold & Large Small Caps (Derived Type 1 Outlines)
+---------------------------------------------------------------------------
+- Author / Maintainer: Donald E. Knuth / CTAN contributors; traced outlines generated by Ratex font pipeline
+- Upstream: CTAN /fonts/cm-mf-extra-bold
+  Retrieval URL: https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/cm-mf-extra-bold.tar.xz
+  SHA256: b65fca9dfff9d0b22c6a55e28b2fc4c2071b17d9b0c7674eb26cbdd06f144dab (4,896 bytes)
+- License: Knuth License / Public Domain
+- Terms & Modified-Font Naming Restrictions:
+  Computer Modern bold small caps (cmbcsc10) and large small caps (cmcsc12). Type 1 vector outlines and metrics generated deterministically offline from canonical METAFONT sources using mftrace/potrace and mf nullmode.
+
+
 Distribution Architecture, Source Availability & GPL Compliance
 ===============================================================
 Ratex splits distribution artifacts into two distinct deterministic archives:
 
-1. Runtime Payload (`packages.tar.zst`, sharded as `packages.tar.zst.00`..`05`):
+1. Runtime Payload (`packages.tar.zst`, sharded as `packages.tar.zst.00`..`06`):
    Contains all pre-compiled font outlines (Type 1 PFB, OpenType OTF, and
    TrueType TTF), font metrics (TFM), virtual fonts (VF), encodings (ENC), font
    definitions (FD), and mapping files (MAP) required for offline typesetting.

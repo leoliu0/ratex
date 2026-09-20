@@ -156,3 +156,37 @@ fn d5_rfs_reproduces_oracle_bbl() {
         ".bbl must match real bibtex (modulo per-line trailing whitespace)"
     );
 }
+
+#[test]
+fn driver_accepts_dotted_jobnames_and_repeated_identical_directives() {
+    let tmp = std::env::temp_dir().join(format!("tex-bibtex-dotted-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(&tmp).unwrap();
+    std::fs::copy(fixtures().join("plain.bst"), tmp.join("plain.bst")).unwrap();
+    std::fs::write(
+        tmp.join("refs.bib"),
+        "@article{entry, title={Entry}, author={A. B}, journal={J}, year=2001}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        tmp.join("paper.v1.aux"),
+        concat!(
+            "\\citation{entry}\n",
+            "\\bibstyle{plain}\n",
+            "\\bibdata{refs}\n",
+            "\\bibstyle{plain}\n",
+            "\\bibdata{refs.bib}\n",
+        ),
+    )
+    .unwrap();
+
+    let rc = tex_bibtex::driver::run(
+        &[tmp.join("paper.v1").to_string_lossy().into_owned()],
+        "test",
+    );
+    assert_eq!(rc, 0);
+    assert!(std::fs::read_to_string(tmp.join("paper.v1.bbl"))
+        .unwrap()
+        .contains("\\bibitem{entry}"));
+    let _ = std::fs::remove_dir_all(&tmp);
+}

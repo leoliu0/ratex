@@ -409,7 +409,7 @@ dependencies = [
 
 [[package]]
 name = "libtex"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "tex-runtime",
 ]
@@ -814,14 +814,14 @@ checksum = "c1bbb9f3c5c463a01705937a24fdabc5047929ac764b2d5b9cf681c1f5041ed5"
 
 [[package]]
 name = "tex-bibtex"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "tex-kpse",
 ]
 
 [[package]]
 name = "tex-cli"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "libc",
  "libmimalloc-sys",
@@ -833,7 +833,7 @@ dependencies = [
 
 [[package]]
 name = "tex-core"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "crc32fast",
  "flate2",
@@ -854,7 +854,7 @@ dependencies = [
 
 [[package]]
 name = "tex-kpse"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "tar",
  "ttf-parser",
@@ -863,7 +863,7 @@ dependencies = [
 
 [[package]]
 name = "tex-runtime"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "lopdf",
  "tex-bibtex",
@@ -873,7 +873,7 @@ dependencies = [
 
 [[package]]
 name = "tex-wasm"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "getrandom",
  "js-sys",

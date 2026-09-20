@@ -192,7 +192,7 @@ fn parse_args(argv: &[String]) -> Result<Options, String> {
                 let invoked = invoked_name();
                 match invoked.as_str() {
                     "ratex" => println!("ratex {version} (Rust TeX engine)"),
-                    "texmk" => println!("texmk 1.0 (Ratex {version}; Rust TeX engine)"),
+                    "texmk" => println!("texmk {version} (Ratex; Rust TeX engine)"),
                     "latexmk" => println!("latexmk (Ratex {version}; Rust TeX engine)"),
                     _ => println!("ratex {version} (Rust TeX engine)"),
                 }
@@ -2223,6 +2223,147 @@ fn embedded_bibliography_dependency(name: &str, format: tex_kpse::Format) -> boo
     tex_kpse::has_embedded_package(&filename)
 }
 
+fn bibliography_dependencies_available(aux: &str, aux_dir: &Path, source_dir: &Path) -> bool {
+    let mut extra_roots = Vec::new();
+    for env in ["TEXMFHOME", "TEXMFLOCAL"] {
+        if let Ok(value) = std::env::var(env) {
+            extra_roots.extend(std::env::split_paths(&value).filter(|path| path.is_dir()));
+        }
+    }
+    let extra_refs: Vec<&Path> = extra_roots.iter().map(PathBuf::as_path).collect();
+    let kpse = tex_kpse::Kpse::with_roots(source_dir, &extra_refs);
+    aux_bibliography_dependencies(aux)
+        .into_iter()
+        .all(|(name, format, extra_variable)| {
+            bibliography_dependency_path(&kpse, aux_dir, source_dir, name, format).is_some()
+                || embedded_bibliography_dependency(name, format)
+                || extra_bibliography_dependency_path(name, format, extra_variable).is_some()
+        })
+}
+
+fn source_bibliography_is_current(
+    source_bbl: &Path,
+    aux: &str,
+    aux_dir: &Path,
+    source_dir: &Path,
+) -> bool {
+    let Ok(source_metadata) = std::fs::metadata(source_bbl) else {
+        return false;
+    };
+    if !source_metadata.is_file() {
+        return false;
+    }
+    let Ok(source_modified) = source_metadata.modified() else {
+        return false;
+    };
+    let Ok(source_bytes) = std::fs::read(source_bbl) else {
+        return false;
+    };
+
+    let mut extra_roots = Vec::new();
+    for variable in ["TEXMFHOME", "TEXMFLOCAL"] {
+        if let Ok(value) = std::env::var(variable) {
+            extra_roots.extend(std::env::split_paths(&value).filter(|path| path.is_dir()));
+        }
+    }
+    let extra_refs: Vec<&Path> = extra_roots.iter().map(PathBuf::as_path).collect();
+    let kpse = tex_kpse::Kpse::with_roots(source_dir, &extra_refs);
+    let comparison_roots: Vec<PathBuf> = [aux_dir, source_dir]
+        .into_iter()
+        .map(|path| std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf()))
+        .chain(
+            extra_roots
+                .iter()
+                .map(|path| std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())),
+        )
+        .collect();
+    let mut bibliography_sources = Vec::new();
+    for (name, format, extra_variable) in aux_bibliography_dependencies(aux) {
+        let primary = bibliography_dependency_path(&kpse, aux_dir, source_dir, name, format);
+        let extra = extra_bibliography_dependency_path(name, format, extra_variable);
+        let embedded = embedded_bibliography_dependency(name, format);
+        if matches!(format, tex_kpse::Format::Bib) {
+            if let Some(bytes) = primary
+                .as_deref()
+                .and_then(|path| std::fs::read(path).ok())
+                .or_else(|| kpse.read(name, format))
+            {
+                bibliography_sources.push(bytes);
+            }
+            if extra != primary {
+                if let Some(bytes) = extra.as_deref().and_then(|path| std::fs::read(path).ok()) {
+                    bibliography_sources.push(bytes);
+                }
+            }
+        }
+        if primary.is_none() && extra.is_none() && !embedded {
+            return false;
+        }
+        let primary_is_local = primary
+            .as_ref()
+            .is_some_and(|path| comparison_roots.iter().any(|root| path.starts_with(root)));
+        for path in primary
+            .as_deref()
+            .filter(|_| !embedded || primary_is_local)
+            .into_iter()
+            .chain(extra.as_deref())
+        {
+            let Ok(modified) = std::fs::metadata(path).and_then(|metadata| metadata.modified())
+            else {
+                return false;
+            };
+            if modified > source_modified {
+                return false;
+            }
+        }
+    }
+    for key in aux_citations(aux) {
+        if key == "*" {
+            continue;
+        }
+        let needle = format!("{{{key}}}");
+        let covered = source_bytes
+            .windows(needle.len())
+            .any(|window| window == needle.as_bytes());
+        let exists_in_database = bibliography_sources.iter().any(|database| {
+            database
+                .windows(key.len())
+                .any(|window| window == key.as_bytes())
+        });
+        if exists_in_database && !covered {
+            return false;
+        }
+    }
+    true
+}
+
+fn adopt_source_bibliography(
+    manifest: &mut Manifest,
+    source_bbl: &Path,
+    staged_bbl: &Path,
+    aux: &str,
+    aux_dir: &Path,
+    source_dir: &Path,
+    signature: u64,
+) -> bool {
+    if !source_bibliography_is_current(source_bbl, aux, aux_dir, source_dir) {
+        return false;
+    }
+    let Some(source_hash) = regular_file_hash(source_bbl) else {
+        return false;
+    };
+    if !owned_file_matches(staged_bbl, source_hash)
+        && (source_bbl == staged_bbl
+            || std::fs::copy(source_bbl, staged_bbl).is_err()
+            || !owned_file_matches(staged_bbl, source_hash))
+    {
+        return false;
+    }
+    manifest.bibliography_signature = Some(signature);
+    manifest.bibliography_output_hash = Some(source_hash);
+    true
+}
+
 fn bibliography_signature(aux: &str, aux_dir: &Path, source_dir: &Path) -> u64 {
     let mut identity = bibliography_tool_identity();
     identity.push('\n');
@@ -2955,9 +3096,24 @@ fn real_main() -> i32 {
         eprintln!("texmk: warning: {issue}; bibliography cache reuse is disabled for this build");
         aux_graph_warning_emitted = true;
     }
-    if initial_aux_graph.complete && aux_has_bibdata(&initial_aux_graph.combined) {
-        prev_cites = Some(aux_citations(&initial_aux_graph.combined));
-        let signature = bibliography_signature(&initial_aux_graph.combined, &aux_dir, &source_dir);
+    let initial_aux_text = &initial_aux_graph.combined;
+    let initial_bibdata = aux_has_bibdata(initial_aux_text);
+    let initial_bibliography_ready = initial_bibdata
+        && bibliography_dependencies_available(initial_aux_text, &aux_dir, &source_dir);
+    if initial_aux_graph.complete && initial_bibliography_ready {
+        prev_cites = Some(aux_citations(initial_aux_text));
+        let signature = bibliography_signature(initial_aux_text, &aux_dir, &source_dir);
+        if adopt_source_bibliography(
+            &mut manifest,
+            &source_bbl,
+            &bbl_path,
+            initial_aux_text,
+            &aux_dir,
+            &source_dir,
+            signature,
+        ) {
+            bibtex_done = true;
+        }
         let bibliography_output_matches = manifest
             .bibliography_output_hash
             .is_some_and(|expected| owned_file_matches(&bbl_path, expected));
@@ -3108,10 +3264,25 @@ fn real_main() -> i32 {
         let aux_text = &aux_graph.combined;
         let cites = aux_citations(aux_text);
         let bibdata = aux_has_bibdata(aux_text);
-        let bibliography_signature = (bibdata && aux_graph.complete)
+        let bibliography_ready =
+            bibdata && bibliography_dependencies_available(aux_text, &aux_dir, &source_dir);
+        let bibliography_signature = (bibliography_ready && aux_graph.complete)
             .then(|| bibliography_signature(aux_text, &aux_dir, &source_dir));
+        if bibliography_signature.is_some_and(|signature| {
+            adopt_source_bibliography(
+                &mut manifest,
+                &source_bbl,
+                &bbl_path,
+                aux_text,
+                &aux_dir,
+                &source_dir,
+                signature,
+            )
+        }) {
+            bibtex_done = true;
+        }
         let sig = Signals {
-            bbl_missing: signals.bbl_missing || (bibdata && !bbl_path.is_file()),
+            bbl_missing: signals.bbl_missing || (bibliography_ready && !bbl_path.is_file()),
             ..signals
         };
         last_signals = Some(sig.clone());
@@ -3130,7 +3301,7 @@ fn real_main() -> i32 {
         let cites_changed = prev_cites.as_ref().is_some_and(|p| *p != cites);
         prev_cites = Some(cites);
 
-        let need_bibtex = bibdata
+        let need_bibtex = bibliography_ready
             && (sig.bbl_missing
                 || cites_changed
                 || manifest.bibliography_signature != bibliography_signature
@@ -3177,7 +3348,7 @@ fn real_main() -> i32 {
                 continue;
             }
         }
-        if !bibdata {
+        if !bibliography_ready {
             manifest.bibliography_signature = None;
             manifest.bibliography_output_hash = None;
         }
@@ -3187,6 +3358,7 @@ fn real_main() -> i32 {
         // typeset again.
         let is_stable = !files_changed
             || (passes == 1
+                && !snap_before.is_empty()
                 && is_trivially_converged_first_pass(&aux_dir, &snap_after, &sig, need_bibtex));
         if is_stable {
             if !opt.silent {

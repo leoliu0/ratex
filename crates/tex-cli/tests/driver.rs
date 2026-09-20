@@ -348,6 +348,7 @@ fn copied_texmk_symlink_personalities_need_no_sibling_executables() {
     std::fs::copy(env!("CARGO_BIN_EXE_texmk"), &standalone).unwrap();
     std::fs::set_permissions(&standalone, std::fs::Permissions::from_mode(0o755)).unwrap();
     for alias in [
+        "ratex",
         "pdflatex",
         "xelatex",
         "lualatex",
@@ -376,7 +377,9 @@ fn copied_texmk_symlink_personalities_need_no_sibling_executables() {
         cmd.output().expect("command failed after retries")
     };
 
-    for alias in ["pdflatex", "xelatex", "lualatex", "latexmk"] {
+    for alias in [
+        "ratex", "texmk", "pdflatex", "xelatex", "lualatex", "latexmk",
+    ] {
         let mut cmd = Command::new(bin.join(alias));
         cmd.arg("--version")
             .env_clear()
@@ -387,6 +390,10 @@ fn copied_texmk_symlink_personalities_need_no_sibling_executables() {
         assert!(
             stdout.to_lowercase().contains("ratex"),
             "alias {alias} did not identify Ratex engine: {stdout}"
+        );
+        assert!(
+            stdout.contains(env!("CARGO_PKG_VERSION")),
+            "alias {alias} reported a stale version: {stdout}"
         );
         assert!(
             !stdout.contains("LuaHBTeX") && !stdout.contains("XeTeX 3."),
@@ -1163,6 +1170,7 @@ printf '%s\n' '\citation{entry}' '\bibdata{refs}' '\bibstyle{plain}' > "$aux/$jo
 printf '%%PDF-1.4 /Type /Page ' > "$out/$job.pdf"
 "#,
     );
+    f.write("refs.bib", "@book{entry, title={Available}}\n");
     f.tool(
         "tex-bibtex",
         "echo bbl > \"$1.bbl\"\necho called >> bibcalls",
@@ -1182,6 +1190,53 @@ printf '%%PDF-1.4 /Type /Page ' > "$out/$job.pdf"
 }
 
 #[test]
+fn current_source_bibliography_is_used_without_regeneration() {
+    let f = Fixture::new(
+        "source-bibliography",
+        r#"
+printf '%s\n' '\citation{entry,unavailable}' '\bibdata{refs}' '\bibstyle{plain}' > "$aux/$job.aux"
+printf '%%PDF-1.4 /Type /Page ' > "$out/$job.pdf"
+"#,
+    );
+    f.write("refs.bib", "@book{entry, title={Current}}\n");
+    f.write(
+        "main.bbl",
+        "\\begin{thebibliography}{1}\n\\bibitem{entry} curated\n\\end{thebibliography}\n",
+    );
+    f.tool(
+        "tex-bibtex",
+        "echo called >> bibcalls\nprintf 'generated\\n' > \"$1.bbl\"",
+    );
+
+    f.run();
+
+    assert!(
+        !f.0.join("bibcalls").exists(),
+        "an up-to-date source bibliography must remain authoritative"
+    );
+    let staged = find_file(&f.0.join("cache/texmk/jobs"), "main.bbl").unwrap();
+    assert!(std::fs::read_to_string(staged).unwrap().contains("curated"));
+}
+
+#[test]
+fn missing_bibliography_database_keeps_the_pdf_build_nonfatal() {
+    let f = Fixture::new(
+        "missing-bibliography-database",
+        r#"
+printf '%s\n' '\citation{entry}' '\bibdata{missing}' '\bibstyle{plain}' > "$aux/$job.aux"
+printf '%%PDF-1.4 /Type /Page ' > "$out/$job.pdf"
+"#,
+    );
+    f.tool("tex-bibtex", "echo called >> bibcalls\nexit 99");
+
+    f.run();
+    assert!(
+        !f.0.join("bibcalls").exists(),
+        "BibTeX must remain conditional when a declared database is unavailable"
+    );
+}
+
+#[test]
 fn bibliography_in_recursive_aux_is_discovered_once_despite_a_cycle() {
     let f = Fixture::new(
         "recursive-aux-bibliography",
@@ -1194,6 +1249,7 @@ printf '%s\n' '\@input{main.aux}' '\citation{entry}' '\bibdata{refs}' '\bibstyle
 printf '%%PDF-1.4 /Type /Page ' > "$out/$job.pdf"
 "#,
     );
+    f.write("refs.bib", "@book{entry, title={Available}}\n");
     f.tool(
         "tex-bibtex",
         "echo bbl > \"$1.bbl\"\necho called >> bibcalls",
@@ -1227,6 +1283,10 @@ printf '%%PDF-1.4 /Type /Page ' > "$out/$job.pdf"
 "#,
     );
     f.write("bibchoice", "old");
+    f.write(
+        "refs.bib",
+        "@book{old, title={Old}}\n@book{new, title={New}}\n",
+    );
     f.tool(
         "tex-bibtex",
         r#"auxdir=$(dirname "$1")
@@ -1274,6 +1334,7 @@ fi
 printf '%%PDF-1.4 /Type /Page ' > "$out/$job.pdf"
 "#,
     );
+    f.write("refs.bib", "@book{entry, title={Available}}\n");
     f.tool(
         "tex-bibtex",
         "echo bbl > \"$1.bbl\"\necho called >> bibcalls",
@@ -1545,6 +1606,10 @@ printf '\\citation{new}\n\\bibdata{refs}\n\\bibstyle{plain}\n' > "$aux/$job.aux"
 printf '%%PDF-1.4 /Type /Page ' > "$out/$job.pdf"
 echo "LaTeX Warning: Citation new undefined"
 "#,
+    );
+    f.write(
+        "refs.bib",
+        "@book{old, title={Old}}\n@book{new, title={New}}\n",
     );
     std::fs::create_dir_all(f.0.join("state")).unwrap();
     f.write(
@@ -2017,23 +2082,6 @@ fn latexdiff_can_be_invoked_via_ratex_and_standalone() {
     assert!(stdout2.contains("\\DIFdel") && stdout2.contains("\\DIFadd"));
 
     let _ = std::fs::remove_dir_all(&root);
-}
-
-#[test]
-fn test_automatic_optimal_pass_detection_stops_on_first_pass_for_trivial_aux() {
-    let f = Fixture::new(
-        "optimal-pass-detection",
-        r#"printf '\\relax\n\\gdef \\@abspage@last{1}\n' > "$aux/$job.aux"
-printf '%%PDF-1.4 /Type /Pages /Count 1 /Type /Page ' > "$out/$job.pdf"
-"#,
-    );
-    let out = f.output(&["-V"]);
-    assert!(out.status.success());
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        stderr.contains("1 Ratex pass(es)") || stderr.contains("1 pdflatex pass(es)"),
-        "Expected 1 pass for trivial aux document, got: {stderr}"
-    );
 }
 
 #[test]

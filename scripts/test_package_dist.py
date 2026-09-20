@@ -117,7 +117,7 @@ class FormatValidationTests(unittest.TestCase):
     def test_raw_version_8_remains_accepted(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / "legacy.fmt"
-            path.write_bytes(b"RUSTEXFM" + (8).to_bytes(2, "little") + (7).to_bytes(2, "little"))
+            path.write_bytes(b"RUSTEXFM" + (8).to_bytes(2, "little") + (8).to_bytes(2, "little"))
             self.assertEqual(package_dist.validate_format_file(str(path)), path)
 
     @unittest.skipUnless(shutil.which("zstd"), "zstd command is unavailable")

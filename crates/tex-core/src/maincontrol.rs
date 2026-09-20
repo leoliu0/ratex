@@ -1579,35 +1579,55 @@ impl Engine {
             }
         }
         let file = self.scan_pdf_string();
-        let Some(path) = self.resolve_input_path(&file) else {
+        let (path, bytes, bundled) = if let Some(path) = self.resolve_input_path(&file) {
+            let bytes = match tex_kpse::fs::read(&path) {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    self.error_at(
+                        &format!("Cannot read image `{}`: {error}", path.display()),
+                        origin.as_ref().map(crate::input::SourceMark::to_context),
+                    );
+                    return;
+                }
+            };
+            self.record_loaded_bytes(&path, &bytes);
+            self.loaded_files.push(path.clone());
+            (path, bytes, false)
+        } else if !std::path::Path::new(&file).is_absolute() {
+            let Some(bytes) = tex_kpse::get_embedded_package(&file) else {
+                self.error_at(
+                    &format!("Image file `{file}` was not found"),
+                    origin.as_ref().map(crate::input::SourceMark::to_context),
+                );
+                return;
+            };
+            (std::path::PathBuf::from(&file), bytes, true)
+        } else {
             self.error_at(
                 &format!("Image file `{file}` was not found"),
                 origin.as_ref().map(crate::input::SourceMark::to_context),
             );
             return;
         };
-        let bytes = match tex_kpse::fs::read(&path) {
-            Ok(bytes) => bytes,
-            Err(error) => {
-                self.error_at(
-                    &format!("Cannot read image `{}`: {error}", path.display()),
-                    origin.as_ref().map(crate::input::SourceMark::to_context),
-                );
-                return;
-            }
-        };
-        self.record_loaded_bytes(&path, &bytes);
-        self.loaded_files.push(path.clone());
         let obj = self.alloc_pdf_obj();
         let mut image_pages = 1;
         let ((nat_w, nat_h), img_bbox) = if bytes.starts_with(b"%PDF-") {
-            match crate::pdf_images::import_pdf_page(
-                &bytes,
-                page,
-                page_box,
-                obj,
-                &mut self.pdf_next_obj,
-            ) {
+            let imported = {
+                let font_loader = &mut self.font_loader;
+                let base14_fonts = &mut self.pdf_doc.imported_base14_fonts;
+                let next_object = &mut self.pdf_next_obj;
+                let mut resolve_type1 = |name: &str| font_loader.read_type1_dependency(name);
+                crate::pdf_images::import_pdf_page_with_base14(
+                    &bytes,
+                    page,
+                    page_box,
+                    obj,
+                    next_object,
+                    base14_fonts,
+                    &mut resolve_type1,
+                )
+            };
+            match imported {
                 Ok((w, h, bbox, objects, total_pages)) => {
                     image_pages = total_pages as i32;
                     self.pdf_doc.objects.extend(
@@ -1678,6 +1698,11 @@ impl Engine {
                 path: path.to_string_lossy().into_owned(),
                 used: false,
                 embedded: bytes.starts_with(b"%PDF-"),
+                resource_bytes: if bundled && !bytes.starts_with(b"%PDF-") {
+                    Some(std::sync::Arc::new(bytes))
+                } else {
+                    None
+                },
                 width: w,
                 height: h,
                 depth: d,

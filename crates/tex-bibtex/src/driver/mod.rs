@@ -122,24 +122,29 @@ fn parse_aux_file(path: &Path, aux: &mut Aux, depth: usize) -> Result<(), String
                 i = rest;
             }
             "bibdata" => {
-                if !aux.bib_files.is_empty() {
-                    return Err("illegal, another \\bibdata command".into());
-                }
                 if let Some(arg) = aux_arg(&src, &mut rest) {
-                    for f in arg.split(',') {
-                        let f = f.trim().strip_suffix(".bib").unwrap_or(f.trim());
-                        if !f.is_empty() {
-                            aux.bib_files.push(f.to_string());
-                        }
+                    let files: Vec<String> = arg
+                        .split(',')
+                        .map(str::trim)
+                        .map(|name| name.strip_suffix(".bib").unwrap_or(name))
+                        .filter(|name| !name.is_empty())
+                        .map(str::to_string)
+                        .collect();
+                    if aux.bib_files.is_empty() {
+                        aux.bib_files = files;
+                    } else if aux.bib_files != files {
+                        return Err("illegal, another \\bibdata command".into());
                     }
                 }
                 i = rest;
             }
             "bibstyle" => {
-                if aux.style.is_some() {
-                    return Err("illegal, another \\bibstyle command".into());
+                if let Some(style) = aux_arg(&src, &mut rest) {
+                    if aux.style.as_deref().is_some_and(|current| current != style) {
+                        return Err("illegal, another \\bibstyle command".into());
+                    }
+                    aux.style = Some(style);
                 }
-                aux.style = aux_arg(&src, &mut rest);
                 i = rest;
             }
             "@input" => {
@@ -285,12 +290,11 @@ pub fn run(args: &[String], version: &str) -> i32 {
         eprintln!("  writes a .bbl and a .blg next to it.");
         return 2;
     };
-    // accept "dir/jobname", "dir/jobname.aux", "jobname.aux"
     let path = PathBuf::from(&aux_arg);
-    let aux_path = if path.extension().is_none() {
-        path.with_extension("aux")
-    } else {
+    let aux_path = if path.tex_exists() || aux_arg.ends_with(".aux") {
         path
+    } else {
+        PathBuf::from(format!("{aux_arg}.aux"))
     };
     let aux_dir = aux_path.parent().map(|p| p.to_path_buf());
 

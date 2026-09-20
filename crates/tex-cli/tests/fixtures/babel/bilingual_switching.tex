@@ -1,0 +1,28 @@
+\documentclass{article}
+\usepackage[english,spanish]{babel}
+\makeatletter
+\newcommand\checkpatterns[1]{%
+  \ifnum\language=\csname l@#1\endcsname\else
+    \errmessage{Wrong active hyphenation language}%
+  \fi}
+\makeatother
+\begin{document}
+\typeout{P1_LANG=\languagename}
+\checkpatterns{spanish}
+
+\selectlanguage{english}
+\typeout{P2_LANG=\languagename}
+\checkpatterns{english}
+
+\selectlanguage{spanish}
+\typeout{P3_LANG=\languagename}
+\checkpatterns{spanish}
+
+\begin{otherlanguage}{english}
+\typeout{P4_LANG=\languagename}
+\checkpatterns{english}
+\end{otherlanguage}
+
+\typeout{P5_LANG=\languagename}
+\checkpatterns{spanish}
+\end{document}

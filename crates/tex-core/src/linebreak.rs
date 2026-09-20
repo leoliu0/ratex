@@ -414,6 +414,7 @@ impl Engine {
             Some(t) if !t.is_empty() => t,
             _ => return inserted,
         };
+        let language_codes = self.hyphen_codes.get(&cur_lang).map(Box::as_ref);
         // Formats and embedders can construct an Eqtb without going through
         // tex.web §21112 norm_min: \lefthyphenmin and \righthyphenmin are clamped to 1..=63.
         let lh = self.eqtb.int_params[IntParam::LeftHyphenMin.idx() as usize].clamp(1, 63) as usize;
@@ -452,7 +453,10 @@ impl Engine {
             let mut node_font: u16 = 0;
             match &list[i] {
                 Node::Char { c, font } => {
-                    let lc = self.eqtb.lc_code.get(*c as usize).copied().unwrap_or(0);
+                    let lc = language_codes.map_or_else(
+                        || self.eqtb.lc_code.get(*c as usize).copied().unwrap_or(0),
+                        |codes| codes[*c as usize],
+                    );
                     if lc != 0 {
                         node_letters.push(lc);
                         node_font = *font;
@@ -467,12 +471,16 @@ impl Engine {
                     let mut ok = *n_letters > 0;
                     let mut lcs = Vec::with_capacity(*n_letters as usize);
                     for j in 0..*n_letters as usize {
-                        let lc = self
-                            .eqtb
-                            .lc_code
-                            .get(letters[j] as usize)
-                            .copied()
-                            .unwrap_or(0);
+                        let lc = language_codes.map_or_else(
+                            || {
+                                self.eqtb
+                                    .lc_code
+                                    .get(letters[j] as usize)
+                                    .copied()
+                                    .unwrap_or(0)
+                            },
+                            |codes| codes[letters[j] as usize],
+                        );
                         if lc == 0 {
                             ok = false;
                             break;
@@ -498,7 +506,10 @@ impl Engine {
                         }
                         for b in text_slice.bytes() {
                             if b.is_ascii_alphabetic() {
-                                let lc = self.eqtb.lc_code.get(b as usize).copied().unwrap_or(0);
+                                let lc = language_codes.map_or_else(
+                                    || self.eqtb.lc_code.get(b as usize).copied().unwrap_or(0),
+                                    |codes| codes[b as usize],
+                                );
                                 if lc != 0 {
                                     letters.push(lc);
                                 } else {
@@ -2072,5 +2083,42 @@ mod plural_penalty_tests {
         assert_eq!(record.pass, 0); // pretolerance succeeded
         assert!(record.demerits > 0);
         assert_eq!(engine.last_paragraph_layout.as_ref(), Some(&record));
+    }
+    #[test]
+    fn saved_language_codes_drive_runtime_hyphenation() {
+        let mut engine = Engine::new(true);
+        engine.eqtb.int_params[IntParam::Language.idx() as usize] = 7;
+        engine.eqtb.int_params[IntParam::LeftHyphenMin.idx() as usize] = 1;
+        engine.eqtb.int_params[IntParam::RightHyphenMin.idx() as usize] = 1;
+        engine.eqtb.hyphen_char.push(b'-' as i32);
+        engine.eqtb.lc_code[b'X' as usize] = b'x';
+        engine.eqtb.lc_code[b'b' as usize] = b'b';
+        engine.trie_for_language_mut(7).add_pattern_bytes(b"a1b");
+
+        let mut codes = Box::new([0; 256]);
+        codes[b'X' as usize] = b'a';
+        codes[b'b' as usize] = b'b';
+        engine.hyphen_codes.insert(7, codes);
+
+        let word = || {
+            vec![
+                Node::Glue(Glue::zero()),
+                Node::Char { font: 0, c: b'X' },
+                Node::Char { font: 0, c: b'b' },
+                Node::Penalty(10_000),
+            ]
+        };
+        let mut with_saved_codes = word();
+        engine.hyphenate_list(&mut with_saved_codes);
+        assert!(with_saved_codes
+            .iter()
+            .any(|node| matches!(node, Node::Disc(_))));
+
+        engine.hyphen_codes.remove(&7);
+        let mut with_current_codes = word();
+        engine.hyphenate_list(&mut with_current_codes);
+        assert!(!with_current_codes
+            .iter()
+            .any(|node| matches!(node, Node::Disc(_))));
     }
 }

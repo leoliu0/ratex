@@ -194,7 +194,8 @@ jobs:
         shell: pwsh
         run: |
           Expand-Archive -Path (Get-Item dist/tex-suite-*.zip).FullName -DestinationPath dist
-          iscc packaging/windows/ratex.iss
+          $version = (Select-String -Path Cargo.toml -Pattern '^version = "([^"]+)"').Matches[0].Groups[1].Value
+          iscc "/DMyAppVersion=$version" packaging/windows/ratex.iss
           Remove-Item -Recurse -Force dist/tex-suite-windows-* -ErrorAction SilentlyContinue
 
       - name: Test extracted archive distribution (unix)

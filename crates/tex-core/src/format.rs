@@ -32,7 +32,7 @@ use crate::tfm::{CharInfo, ExtRecipe, Font, LigStep};
 use crate::token::{CsTable, Token};
 
 const MAGIC: &[u8; 8] = b"RUSTEXFM";
-const VERSION: u16 = 12;
+const VERSION: u16 = 13;
 /// A production format is currently about 8 MiB decoded. Keep corrupt or
 /// unrelated external files from turning format probing into an unbounded
 /// allocation while leaving ample room for future format growth.
@@ -41,7 +41,7 @@ const MAX_FORMAT_BYTES: usize = 128 * 1024 * 1024;
 /// wire layout (new engine invariants the loaded state must satisfy, e.g.
 /// guards added to `check_dumpable` after the file was written). A `.fmt`
 /// from a different engine generation must be rejected, not loaded.
-pub const SEMANTICS: u16 = 7;
+pub const SEMANTICS: u16 = 8;
 
 const NUM_CODES: usize = 256;
 
@@ -609,6 +609,13 @@ pub fn save_format_with_encoding(
         w.u8(lang);
         write_trie(&mut w, &eng.hyphen_tries[&lang]);
     }
+    w.u32(eng.hyphen_codes.len() as u32);
+    let mut code_languages: Vec<u8> = eng.hyphen_codes.keys().copied().collect();
+    code_languages.sort_unstable();
+    for language in code_languages {
+        w.u8(language);
+        w.bytes(eng.hyphen_codes[&language].as_slice());
+    }
 
     let payload = match encoding {
         FormatEncoding::Raw => w.buf,
@@ -997,6 +1004,7 @@ pub fn load_format_bytes_into(data: &[u8], eng: &mut Engine) -> Result<(), Strin
     eng.eqtb = scratch.eqtb;
     eng.hyphen_trie = scratch.hyphen_trie;
     eng.hyphen_tries = scratch.hyphen_tries;
+    eng.hyphen_codes = scratch.hyphen_codes;
     eng.hyphen_exceptions = scratch.hyphen_exceptions;
     eng.par_shape = scratch.par_shape;
     eng.penalty_shapes = scratch.penalty_shapes;
@@ -1230,6 +1238,22 @@ fn load_state(r: &mut R, eng: &mut Engine, version: u16) -> io::Result<()> {
             let trie = read_trie(r)?;
             if lang == 0 || eng.hyphen_tries.insert(lang, trie).is_some() {
                 return Err(bad("duplicate hyphenation language"));
+            }
+        }
+    }
+    if version >= 13 {
+        let n_codes = r.count()?;
+        if n_codes > 256 {
+            return Err(bad("too many hyphenation code tables"));
+        }
+        for _ in 0..n_codes {
+            let language = r.u8()?;
+            let raw = r.bytes()?;
+            let codes: [u8; 256] = raw
+                .try_into()
+                .map_err(|_| bad("invalid hyphenation code table"))?;
+            if eng.hyphen_codes.insert(language, Box::new(codes)).is_some() {
+                return Err(bad("duplicate hyphenation code language"));
             }
         }
     }
@@ -1553,6 +1577,9 @@ mod tests {
         eng.hyphen_trie.add_exception("ta-ble");
         eng.hyphen_exceptions
             .push(("lang-german".to_string(), b"ab-cd".to_vec()));
+        let mut language_codes = Box::new([0; 256]);
+        language_codes[b'X' as usize] = b'x';
+        eng.hyphen_codes.insert(7, language_codes);
         eng.par_shape.push((3, 4));
         eng.par_shape.push((-1, i32::MAX));
         eng.penalty_shapes[0] = Rc::from(vec![10, 20]);
@@ -1617,9 +1644,15 @@ mod tests {
         }
         let mut tries_sorted: Vec<_> = eng.hyphen_tries.keys().copied().collect();
         tries_sorted.sort_unstable();
+        let mut codes_sorted: Vec<_> = eng
+            .hyphen_codes
+            .iter()
+            .map(|(&language, codes)| (language, codes.to_vec()))
+            .collect();
+        codes_sorted.sort_unstable_by_key(|(language, _)| *language);
         s.push_str(&format!(
-            "trie_trans={:?}\ntrie_vals={:?}\nhyphen_tries={:?}\n",
-            trans_sorted, eng.hyphen_trie.values, tries_sorted
+            "trie_trans={:?}\ntrie_vals={:?}\nhyphen_tries={:?}\nhyphen_codes={:?}\n",
+            trans_sorted, eng.hyphen_trie.values, tries_sorted, codes_sorted
         ));
         s.push_str(&format!(
             "hyexc={:?}\nparshape={:?}\npenaltyshapes={:?}\n",

@@ -1086,13 +1086,17 @@ impl Engine {
     }
 
     fn do_def_register(&mut self, mk: impl Fn(&mut Self, u16) -> Equiv) {
-        let t = self.scan_definable_cs();
-
+        let target = self.scan_definable_cs();
+        let global = self.take_global();
+        // tex.web §1224: make the target unexpandable before scanning its
+        // register number. Compact idioms such as
+        // `\toksdef\L0\L{...}` otherwise expand the target's old macro
+        // meaning while the numeric scanner looks one token ahead.
+        self.eqtb.assign(target, Equiv::Prim(Prim::Relax), global);
         self.scan_optional_equals();
         let idx = self.scan_reg_num();
-        let e = mk(self, idx);
-        let g = self.take_global();
-        self.eqtb.assign(t, e, g);
+        let value = mk(self, idx);
+        self.eqtb.assign(target, value, global);
         self.clear_prefixes();
     }
     /// \def/\gdef/\edef/\xdef
@@ -1949,5 +1953,28 @@ mod definable_cs_recovery_tests {
         assert_eq!(eng.error_count, 0, "{}", eng.diagnostic_output);
         assert_eq!(eng.eqtb.toks[0], eng.eqtb.toks[1]);
         assert_eq!(eng.eqtb.toks[0].len(), 11);
+    }
+
+    #[test]
+    fn shorthand_definition_hides_targets_old_macro_during_number_scan() {
+        let mut eng = Engine::new(false);
+        eng.init_primitives();
+        eng.add_nullfont();
+        eng.set_interaction_mode(crate::engine::InteractionMode::Nonstop);
+        eng.input.push_file(
+            "compact-toksdef.tex".to_string(),
+            b"\\def\\L{old-L}\\def\\S{old-S}\\toksdef\\L0\\L{}\\toksdef\\S2\\S{8-7 --8 }\\end"
+                .to_vec(),
+        );
+
+        eng.run();
+
+        assert_eq!(eng.error_count, 0, "{}", eng.diagnostic_output);
+        assert!(eng.eqtb.toks[0].is_empty());
+        let value: Vec<u8> = eng.eqtb.toks[2]
+            .iter()
+            .filter_map(|token| token.is_char().then(|| token.chr() as u8))
+            .collect();
+        assert_eq!(value, b"8-7 --8 ");
     }
 }

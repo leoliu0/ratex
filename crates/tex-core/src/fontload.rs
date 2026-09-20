@@ -216,6 +216,10 @@ impl FontLoader {
         // no separate disk dependency.
         self.kpse.read(name, format)
     }
+
+    pub(crate) fn read_type1_dependency(&mut self, name: &str) -> Option<Vec<u8>> {
+        self.read_dependency(name, tex_kpse::Format::Type1)
+    }
     /// Load pdftex.map on first use (idempotent).
     pub fn ensure_map(&mut self) {
         if !self.map_loaded {
@@ -910,12 +914,18 @@ pub fn parse_map_line(line: &str) -> Option<MapEntry> {
     let mut pfb: Option<String> = None;
     let mut slant = 0.0;
     let mut extend = 1.0;
-    for tok in it {
-        if let Some(rest) = tok.strip_prefix('<') {
-            // `<<` (include without re-encoding) takes the same file kind
-            let rest = rest.trim_start_matches('<');
+    while let Some(mut tok) = it.next() {
+        if !tok.starts_with('<') {
+            continue;
+        }
+        loop {
+            // Download markers can be separated from their filename by
+            // whitespace, including the `<<` and `<[` forms.
+            let rest = tok.trim_start_matches('<');
             let rest = rest.strip_prefix('[').unwrap_or(rest);
             if rest.is_empty() {
+                let Some(next) = it.next() else { break };
+                tok = next;
                 continue;
             }
             if rest.ends_with(".enc") {
@@ -925,6 +935,7 @@ pub fn parse_map_line(line: &str) -> Option<MapEntry> {
             } else if pfb.is_none() {
                 pfb = Some(basename(rest).to_string());
             }
+            break;
         }
     }
     for section in quoted {
@@ -2290,6 +2301,20 @@ mod tests {
         assert_eq!(e.enc_file.as_deref(), Some("ntx-ec-tlf.enc"));
         assert_eq!(e.enc_name.as_deref(), Some("encntx-ec-tlf"));
         assert_eq!(e.pfb.as_deref(), Some("ztmr.pfb"));
+    }
+
+    #[test]
+    fn separated_download_markers_resolve_font_and_encoding_files() {
+        let entry = parse_map_line("cmr10 CMR10 < cmr10.pfb").unwrap();
+        assert_eq!(entry.pfb.as_deref(), Some("cmr10.pfb"));
+
+        let entry = parse_map_line(
+            "custom Custom \"CustomEncoding ReEncodeFont\" <[ custom.enc << custom.pfb",
+        )
+        .unwrap();
+        assert_eq!(entry.enc_file.as_deref(), Some("custom.enc"));
+        assert_eq!(entry.pfb.as_deref(), Some("custom.pfb"));
+        assert_eq!(entry.enc_name.as_deref(), Some("CustomEncoding"));
     }
 
     #[test]

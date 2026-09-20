@@ -573,3 +573,84 @@ fn mapped_truetype_preserves_used_outlines_and_extraction() {
         "invalid glyphs must abort serialization, not fall back to mismapped full-font bytes"
     );
 }
+
+#[test]
+fn bundled_jpeg_embeds_without_disk_and_project_image_takes_precedence() {
+    use std::path::Path;
+
+    fn compile_image() -> lopdf::Document {
+        let mut engine = Engine::new(true);
+        engine.init_primitives();
+        engine.add_nullfont();
+        engine.input.push_file(
+            "image.tex".into(),
+            br#"\catcode`\{=1 \catcode`\}=2
+\pdfximage{thumbnails/cas-email.jpeg}
+\shipout\hbox{\pdfrefximage\pdflastximage}
+\end"#
+                .to_vec(),
+        );
+        engine.run();
+        assert_eq!(engine.error_count, 0, "{}", engine.term);
+        let bytes = tex_core::driver::finish_pdf(&mut engine, false).unwrap();
+        lopdf::Document::load_mem(&bytes).unwrap()
+    }
+
+    let fs = tex_kpse::fs::MemoryFs::new(Path::new("/project"), 0).unwrap();
+    let _scope = fs.enter();
+    let pdf = compile_image();
+    let image = pdf
+        .objects
+        .values()
+        .filter_map(|object| object.as_stream().ok())
+        .find(|stream| {
+            stream
+                .dict
+                .get(b"Subtype")
+                .and_then(lopdf::Object::as_name)
+                .ok()
+                == Some(b"Image")
+        })
+        .expect("Bundled JPEG must be included in the PDF");
+    assert_eq!(
+        image.dict.get(b"Filter").unwrap().as_name().unwrap(),
+        b"DCTDecode"
+    );
+    assert_eq!(
+        image.content,
+        tex_kpse::get_embedded_package("cas-email.jpeg").unwrap()
+    );
+
+    // A project-provided image shadows the bundled resource. Its actual
+    // format is sniffed from the bytes, independently of the extension.
+    let mut png = Vec::new();
+    {
+        let mut encoder = png::Encoder::new(&mut png, 1, 1);
+        encoder.set_color(png::ColorType::Rgb);
+        encoder.set_depth(png::BitDepth::Eight);
+        let mut writer = encoder.write_header().unwrap();
+        writer.write_image_data(&[255, 0, 0]).unwrap();
+    }
+    fs.insert(Path::new("thumbnails/cas-email.jpeg"), png)
+        .unwrap();
+    let pdf = compile_image();
+    let image = pdf
+        .objects
+        .values()
+        .filter_map(|object| object.as_stream().ok())
+        .find(|stream| {
+            stream
+                .dict
+                .get(b"Subtype")
+                .and_then(lopdf::Object::as_name)
+                .ok()
+                == Some(b"Image")
+        })
+        .unwrap();
+    assert_eq!(image.dict.get(b"Width").unwrap().as_i64().unwrap(), 1);
+    assert_eq!(image.dict.get(b"Height").unwrap().as_i64().unwrap(), 1);
+    assert_eq!(
+        image.dict.get(b"Filter").unwrap().as_name().unwrap(),
+        b"FlateDecode"
+    );
+}

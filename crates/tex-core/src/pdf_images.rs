@@ -341,8 +341,138 @@ fn repair_pdf_xref_rebuild(bytes: &[u8]) -> Option<Vec<u8>> {
     Some(rebuilt)
 }
 
-/// Import one PDF page as a unit-square Form XObject, preserving vector
-/// content and copying only the resources reachable from that page.
+fn base14_program(name: &[u8]) -> Option<(&'static str, i64)> {
+    match name {
+        b"Times-Roman" => Some(("utmr8a.pfb", 34)),
+        b"Times-Bold" => Some(("utmb8a.pfb", 34)),
+        b"Times-Italic" => Some(("utmri8a.pfb", 98)),
+        b"Times-BoldItalic" => Some(("utmbi8a.pfb", 98)),
+        b"Helvetica" => Some(("uhvr8a.pfb", 32)),
+        b"Helvetica-Bold" => Some(("uhvb8a.pfb", 32)),
+        b"Helvetica-Oblique" => Some(("uhvro8a.pfb", 96)),
+        b"Helvetica-BoldOblique" => Some(("uhvbo8a.pfb", 96)),
+        b"Courier" => Some(("ucrr8a.pfb", 33)),
+        b"Courier-Bold" => Some(("ucrb8a.pfb", 33)),
+        b"Courier-Oblique" => Some(("ucrro8a.pfb", 97)),
+        b"Courier-BoldOblique" => Some(("ucrbo8a.pfb", 97)),
+        b"Symbol" => Some(("usyr.pfb", 4)),
+        b"ZapfDingbats" => Some(("uzdr.pfb", 4)),
+        _ => None,
+    }
+}
+
+fn embed_imported_base14_font(
+    name: &[u8],
+    cache: &mut std::collections::BTreeMap<Vec<u8>, i32>,
+    objects: &mut Vec<EmbeddedImage>,
+    next: &mut i32,
+    resolve_type1: &mut dyn FnMut(&str) -> Option<Vec<u8>>,
+) -> Option<i32> {
+    if let Some(&descriptor) = cache.get(name) {
+        return Some(descriptor);
+    }
+    let (filename, flags) = base14_program(name)?;
+    let bytes = resolve_type1(filename)?;
+    let program = crate::pdf_fonts::parse_type1(&bytes);
+    if program.data.is_empty() {
+        return None;
+    }
+    let cleartext = &program.data[..program.length1.min(program.data.len())];
+    let metrics = crate::pdf_fonts::parse_metrics(cleartext);
+
+    let font_file_object = *next;
+    *next = (*next).checked_add(1)?;
+    let compressed = crate::pdffile::flate(&program.data);
+    let mut font_file = lopdf::Dictionary::new();
+    font_file.set(b"Length", compressed.len() as i64);
+    font_file.set(b"Length1", program.length1 as i64);
+    font_file.set(b"Length2", program.length2 as i64);
+    font_file.set(b"Length3", program.length3 as i64);
+    font_file.set(b"Filter", lopdf::Object::Name(b"FlateDecode".to_vec()));
+    let mut font_file_bytes = Vec::new();
+    serialize_pdf_object(
+        &lopdf::Object::Stream(lopdf::Stream::new(font_file, compressed)),
+        &mut font_file_bytes,
+    );
+    objects.push(EmbeddedImage {
+        obj_num: font_file_object,
+        bytes: font_file_bytes,
+    });
+
+    let descriptor_object = *next;
+    *next = (*next).checked_add(1)?;
+    let bbox = if metrics.font_bbox == [0.0; 4] {
+        [-200.0, -300.0, 1200.0, 1000.0]
+    } else {
+        metrics.font_bbox
+    };
+    let mut descriptor = lopdf::Dictionary::new();
+    descriptor.set(b"Type", lopdf::Object::Name(b"FontDescriptor".to_vec()));
+    descriptor.set(b"FontName", lopdf::Object::Name(name.to_vec()));
+    descriptor.set(b"Flags", flags);
+    descriptor.set(
+        b"FontBBox",
+        lopdf::Object::Array(
+            bbox.into_iter()
+                .map(|value| lopdf::Object::Real(value as f32))
+                .collect(),
+        ),
+    );
+    descriptor.set(
+        b"ItalicAngle",
+        lopdf::Object::Real(metrics.italic_angle as f32),
+    );
+    descriptor.set(
+        b"Ascent",
+        lopdf::Object::Real(if metrics.ascent == 0.0 {
+            718.0
+        } else {
+            metrics.ascent
+        } as f32),
+    );
+    descriptor.set(
+        b"Descent",
+        lopdf::Object::Real(if metrics.descent == 0.0 {
+            -207.0
+        } else {
+            metrics.descent
+        } as f32),
+    );
+    descriptor.set(
+        b"CapHeight",
+        lopdf::Object::Real(if metrics.cap_height == 0.0 {
+            718.0
+        } else {
+            metrics.cap_height
+        } as f32),
+    );
+    descriptor.set(
+        b"StemV",
+        lopdf::Object::Real(if metrics.stem_v == 0.0 {
+            80.0
+        } else {
+            metrics.stem_v
+        } as f32),
+    );
+    descriptor.set(
+        b"FontFile",
+        lopdf::Object::Reference((font_file_object as u32, 0)),
+    );
+    let mut descriptor_bytes = Vec::new();
+    serialize_pdf_object(
+        &lopdf::Object::Dictionary(descriptor),
+        &mut descriptor_bytes,
+    );
+    objects.push(EmbeddedImage {
+        obj_num: descriptor_object,
+        bytes: descriptor_bytes,
+    });
+    cache.insert(name.to_vec(), descriptor_object);
+    Some(descriptor_object)
+}
+
+/// Import one PDF page without resolving replacement programs for unembedded
+/// standard PDF fonts.
 pub fn import_pdf_page(
     bytes: &[u8],
     page: u32,
@@ -350,6 +480,29 @@ pub fn import_pdf_page(
     object: i32,
     next_object: &mut i32,
 ) -> Result<(f64, f64, [f64; 4], Vec<EmbeddedImage>, usize), String> {
+    let mut cache = std::collections::BTreeMap::new();
+    let mut no_type1_font = |_: &str| None;
+    import_pdf_page_with_base14(
+        bytes,
+        page,
+        page_box,
+        object,
+        next_object,
+        &mut cache,
+        &mut no_type1_font,
+    )
+}
+
+pub(crate) fn import_pdf_page_with_base14(
+    bytes: &[u8],
+    page: u32,
+    page_box: &[u8],
+    object: i32,
+    next_object: &mut i32,
+    imported_base14_fonts: &mut std::collections::BTreeMap<Vec<u8>, i32>,
+    resolve_type1: &mut dyn FnMut(&str) -> Option<Vec<u8>>,
+) -> Result<(f64, f64, [f64; 4], Vec<EmbeddedImage>, usize), String> {
+    let mut working_base14_fonts = imported_base14_fonts.clone();
     use lopdf::{Dictionary, Document, Object, ObjectId};
     fn inherited<'a>(doc: &'a Document, mut id: ObjectId, key: &[u8]) -> Option<&'a Object> {
         let mut seen = std::collections::HashSet::new();
@@ -368,6 +521,8 @@ pub fn import_pdf_page(
         ids: &mut std::collections::BTreeMap<ObjectId, i32>,
         objects: &mut Vec<EmbeddedImage>,
         next: &mut i32,
+        base14_fonts: &mut std::collections::BTreeMap<Vec<u8>, i32>,
+        resolve_type1: &mut dyn FnMut(&str) -> Option<Vec<u8>>,
         depth: usize,
     ) -> Result<Object, String> {
         if depth > 256 {
@@ -385,7 +540,16 @@ pub fn import_pdf_page(
                         .objects
                         .get(id)
                         .ok_or_else(|| format!("Missing PDF resource {id:?}"))?;
-                    let copied = copy_object(original, doc, ids, objects, next, depth + 1)?;
+                    let copied = copy_object(
+                        original,
+                        doc,
+                        ids,
+                        objects,
+                        next,
+                        base14_fonts,
+                        resolve_type1,
+                        depth + 1,
+                    )?;
                     let mut bytes = Vec::new();
                     serialize_pdf_object(&copied, &mut bytes);
                     objects.push(EmbeddedImage {
@@ -399,7 +563,18 @@ pub fn import_pdf_page(
             Object::Array(values) => Object::Array(
                 values
                     .iter()
-                    .map(|v| copy_object(v, doc, ids, objects, next, depth + 1))
+                    .map(|value| {
+                        copy_object(
+                            value,
+                            doc,
+                            ids,
+                            objects,
+                            next,
+                            base14_fonts,
+                            resolve_type1,
+                            depth + 1,
+                        )
+                    })
                     .collect::<Result<_, _>>()?,
             ),
             Object::Dictionary(dict) => {
@@ -407,7 +582,16 @@ pub fn import_pdf_page(
                 for (key, value) in dict {
                     copy.set(
                         key.clone(),
-                        copy_object(value, doc, ids, objects, next, depth + 1)?,
+                        copy_object(
+                            value,
+                            doc,
+                            ids,
+                            objects,
+                            next,
+                            base14_fonts,
+                            resolve_type1,
+                            depth + 1,
+                        )?,
                     );
                 }
                 if copy
@@ -434,6 +618,34 @@ pub fn import_pdf_page(
                         }
                     }
                 }
+                let unembedded_base14 = copy
+                    .get(b"Type")
+                    .and_then(Object::as_name)
+                    .is_ok_and(|name| name == b"Font")
+                    && copy
+                        .get(b"Subtype")
+                        .and_then(Object::as_name)
+                        .is_ok_and(|name| name == b"Type1")
+                    && copy.get(b"FontDescriptor").is_err();
+                let base_font = unembedded_base14
+                    .then(|| {
+                        copy.get(b"BaseFont")
+                            .ok()
+                            .and_then(|value| value.as_name().ok())
+                    })
+                    .flatten()
+                    .map(<[u8]>::to_vec);
+                if let Some(base_font) = base_font {
+                    if let Some(descriptor) = embed_imported_base14_font(
+                        &base_font,
+                        base14_fonts,
+                        objects,
+                        next,
+                        resolve_type1,
+                    ) {
+                        copy.set(b"FontDescriptor", Object::Reference((descriptor as u32, 0)));
+                    }
+                }
                 Object::Dictionary(copy)
             }
             Object::Stream(stream) => {
@@ -442,7 +654,16 @@ pub fn import_pdf_page(
                     if key != b"Length" {
                         dict.set(
                             key.clone(),
-                            copy_object(value, doc, ids, objects, next, depth + 1)?,
+                            copy_object(
+                                value,
+                                doc,
+                                ids,
+                                objects,
+                                next,
+                                base14_fonts,
+                                resolve_type1,
+                                depth + 1,
+                            )?,
                         );
                     }
                 }
@@ -534,7 +755,16 @@ pub fn import_pdf_page(
     let mut objects = Vec::new();
     let mut ids = std::collections::BTreeMap::new();
     let resources = match inherited(&doc, page_id, b"Resources") {
-        Some(value) => copy_object(value, &doc, &mut ids, &mut objects, next_object, 0)?,
+        Some(value) => copy_object(
+            value,
+            &doc,
+            &mut ids,
+            &mut objects,
+            next_object,
+            &mut working_base14_fonts,
+            resolve_type1,
+            0,
+        )?,
         None => Object::Dictionary(Dictionary::new()),
     };
     let content = doc
@@ -547,7 +777,16 @@ pub fn import_pdf_page(
     ).into_bytes();
     serialize_pdf_object(&resources, &mut bytes);
     if let Ok(group) = doc.get_dictionary(page_id).and_then(|d| d.get(b"Group")) {
-        let group = copy_object(group, &doc, &mut ids, &mut objects, next_object, 0)?;
+        let group = copy_object(
+            group,
+            &doc,
+            &mut ids,
+            &mut objects,
+            next_object,
+            &mut working_base14_fonts,
+            resolve_type1,
+            0,
+        )?;
         bytes.extend_from_slice(b" /Group ");
         serialize_pdf_object(&group, &mut bytes);
     }
@@ -572,6 +811,7 @@ pub fn import_pdf_page(
     }
     let (w, h) = if rotate % 180 == 0 { (w, h) } else { (h, w) };
     let bbox = [x0 * unit, y0 * unit, x1 * unit, y1 * unit];
+    *imported_base14_fonts = working_base14_fonts;
     Ok((w * unit, h * unit, bbox, objects, total_pages))
 }
 

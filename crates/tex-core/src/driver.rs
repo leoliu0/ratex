@@ -260,7 +260,7 @@ pub fn finish_pdf(eng: &mut Engine, optimize_pdf_size: bool) -> Result<Vec<u8>, 
     struct ImageJob<'a> {
         object: i32,
         mask: i32,
-        bytes: Vec<u8>,
+        bytes: std::borrow::Cow<'a, [u8]>,
         path: &'a str,
     }
     fn embed_chunk(
@@ -307,11 +307,14 @@ pub fn finish_pdf(eng: &mut Engine, optimize_pdf_size: bool) -> Result<Vec<u8>, 
         if image.embedded {
             continue;
         }
-        let bytes = match tex_kpse::fs::read(&image.path) {
-            Ok(bytes) => bytes,
-            Err(error) => return Err(format!("Cannot read image `{}`: {error}", image.path)),
+        let bytes = if let Some(bytes) = &image.resource_bytes {
+            std::borrow::Cow::Borrowed(bytes.as_slice())
+        } else {
+            let bytes = tex_kpse::fs::read(&image.path)
+                .map_err(|error| format!("Cannot read image `{}`: {error}", image.path))?;
+            eng.record_loaded_bytes(std::path::Path::new(&image.path), &bytes);
+            std::borrow::Cow::Owned(bytes)
         };
-        eng.record_loaded_bytes(std::path::Path::new(&image.path), &bytes);
         let mask = next_obj;
         if crate::pdf_images::png_needs_soft_mask(&bytes) {
             next_obj = match next_obj.checked_add(1) {

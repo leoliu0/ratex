@@ -206,6 +206,9 @@ pub struct Engine {
     // hyphenation
     pub hyphen_trie: crate::hyphen::Trie,
     pub hyphen_tries: crate::FxHashMap<u8, crate::hyphen::Trie>,
+    /// e-TeX `\savinghyphcodes`: language-specific lowercase tables captured
+    /// when that language's patterns are loaded.
+    pub hyphen_codes: crate::FxHashMap<u8, Box<[u8; 256]>>,
     pub hyphen_exceptions: Vec<(String, Vec<u8>)>,
     pub par_shape: Vec<(i32, i32)>,
     /// group level of the current par_shape assignment (tex.web tracks
@@ -828,6 +831,7 @@ impl Engine {
             writebuf: Vec::new(),
             hyphen_trie: crate::hyphen::Trie::new(),
             hyphen_tries: crate::FxHashMap::default(),
+            hyphen_codes: crate::FxHashMap::default(),
             hyphen_exceptions: Vec::new(),
             par_shape: Vec::new(),
             par_shape_level: crate::eqtb::LEVEL_ONE,
@@ -1202,6 +1206,7 @@ impl Engine {
             (b"currentiftype", IntParam::CurrentIfType),
             (b"currentifbranch", IntParam::CurrentIfBranch),
             (b"lastnodetype", IntParam::LastNodeType),
+            (b"savinghyphcodes", IntParam::SavingHyphCodes),
             (b"savingvdiscards", IntParam::SavingVDiscards),
             (b"tracingnesting", IntParam::TracingNesting),
             (b"pdfobjcompresslevel", IntParam::PdfObjCompressLevel),
@@ -1846,6 +1851,8 @@ pub struct PdfImageInfo {
     /// true when the file was imported as a PDF Form XObject during scan:
     /// the image bytes are already embedded, so shipping must not re-read it.
     pub embedded: bool,
+    /// Bundled raster bytes retained for deferred embedding without a disk file.
+    pub resource_bytes: Option<std::sync::Arc<Vec<u8>>>,
     pub bbox: [i32; 4],
 }
 #[cfg(test)]

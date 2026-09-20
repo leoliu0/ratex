@@ -2041,10 +2041,6 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
             // pdftexconfig.tex (paper size and driver settings) before
             // latex.ltx builds and dumps the format.
             install_pdftex_config_registers(&mut eng);
-            let hyphen_path = eng.resolve_input_path("hyphen.tex").unwrap_or_else(|| {
-                std::path::PathBuf::from("/usr/share/texmf-dist/tex/generic/hyphen/hyphen.tex")
-            });
-            let _ = eng.hyphen_trie.load_hyphen_file(&hyphen_path);
             eng.add_nullfont();
             eng.input_file("pdflatex.ini");
             eng.run();
@@ -2090,9 +2086,11 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
         tex_core::driver::prepare_latex_job(&mut eng);
         configure_engine(&mut eng, halt_on_error, interaction_mode, max_errors);
     } else {
-        let _ = eng.hyphen_trie.load_hyphen_file(std::path::Path::new(
-            "/usr/share/texmf-dist/tex/generic/hyphen/hyphen.tex",
-        ));
+        if plain {
+            let _ = eng.hyphen_trie.load_hyphen_file(std::path::Path::new(
+                "/usr/share/texmf-dist/tex/generic/hyphen/hyphen.tex",
+            ));
+        }
         eng.eqtb.dim_params[DimParam::HSize.idx() as usize] = (6.25 * 72.27 * 65536.0) as i32;
         eng.eqtb.dim_params[DimParam::VSize.idx() as usize] = 0;
         eng.eqtb.dim_params[DimParam::MaxDepth.idx() as usize] = (4.0 * 65536.0) as i32;

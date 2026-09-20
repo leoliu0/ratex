@@ -32,7 +32,6 @@ from test_corpus import (  # noqa: E402
     validate_manifest_entry,
 )
 
-
 def campaign_result(root: Path, aid: str, *, failed: bool = False) -> dict:
     idir = root / "results" / aid
     pdfdir = root / "pdf"
@@ -763,6 +762,32 @@ class PruneTests(unittest.TestCase):
             )
             self.assertEqual(action["action"], "delete")
             self.assertNotIn("sha256", action)
+
+
+class CampaignOrchestrationTests(unittest.TestCase):
+    def test_invalid_source_classified_distinctly(self) -> None:
+        run = {"exit": 1, "timed_out": False, "mem_killed": False}
+        pdf_stat = {"pdf_valid": False, "pdf_exists": False}
+        err = ["harness: corpus source directory missing: /nowhere"]
+        self.assertEqual(classify_failure_kind(run, pdf_stat, err), "invalid-source")
+
+        err2 = ["harness: main_tex source file missing: /nowhere/main.tex"]
+        self.assertEqual(classify_failure_kind(run, pdf_stat, err2), "invalid-source")
+
+    def test_engine_filter_ref_only_gates_cleanly(self) -> None:
+        aid = "filter-test"
+        res = {
+            "id": aid,
+            "mode": "campaign",
+            "ref": {"status": "clean", "converged": True, "pdf_valid": True, "pages": 1, "errors": []},
+            "rust": {"status": "skipped", "converged": True, "pdf_valid": False, "pages": None},
+            "compare": {"compared": False, "note": "ref-only run"},
+        }
+        cfg = {"dpi": 150, "page_min": 99.0, "doc_min": 99.0, "engine_filter": "ref"}
+        gate = campaign_gate([{"id": aid}], {aid: res}, cfg)
+        self.assertTrue(gate["ok"])
+        self.assertEqual(len(gate["failures"]), 0)
+
 
 
 if __name__ == "__main__":

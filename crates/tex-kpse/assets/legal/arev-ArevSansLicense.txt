@@ -1,0 +1,1 @@
+The modifications to the Vera fonts present in Arev Sans are released under the same license as that used by Bitstream for the Vera fonts (make the appropriate substitutions of names).

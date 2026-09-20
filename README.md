@@ -9,19 +9,20 @@
 
 ## Verification and Performance
 
-The v0.4.2 Linux candidate passes all 39 font and graphics fixtures through both
+The v0.4.2 Linux build passes all 39 font and graphics fixtures through both
 the packaged standalone binary and an installed copy. Checks use filesystem
 isolation, disabled networking, pinned reference fonts, and Poppler/pdf.js
 rendering and text extraction. The workspace suite passes 787 tests. Release
 gates also exercise the C and WebAssembly interfaces, including Chromium.
 
-The frozen 1,000-project comparison uses genuine `latexmk` and unchanged sources.
-The reference compiles 891 projects: 883 with its default bibliography rules,
-plus eight when their existing shipped bibliographies are explicitly selected.
-A release must compile every reference-successful project. Compilation coverage
-does not establish whole-document visual parity; the standalone fixture suite
-checks rendering and font embedding separately. Historical 3,000-project results
-did not establish the standalone font coverage above.
+On the frozen 1,000-project corpus, Ratex compiles 942 projects from unchanged
+sources, up from 927. Genuine `latexmk` compiles 891: 883 with its default
+bibliography rules, plus eight using their existing shipped bibliographies.
+All 891 also compile with Ratex, and no previous Ratex successes were lost.
+The remaining 58 fail in both runs. This compares compilation coverage, not
+whole-document visual parity; the standalone fixture suite checks rendering
+and font embedding separately. Historical 3,000-project results did not establish
+the standalone font coverage above.
 See [PERFORMANCE.md](PERFORMANCE.md) for benchmark scope and measurements.
 
 ---

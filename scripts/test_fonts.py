@@ -1085,7 +1085,7 @@ class FontTestHarness:
             return
         ref_env_dir = self.output_dir / "ref_env"
         ref_env_dir.mkdir(parents=True, exist_ok=True)
-        # Pin font programs, metrics, and packaged graphics for the reference.
+        # Pin font programs, metrics, selection profiles, and packaged graphics.
         # Leave the kernel and general macro packages to the host TeX Live.
         try:
             from bundle_packages import reconstruct_archive
@@ -1113,7 +1113,9 @@ class FontTestHarness:
                         relative = Path(member.name)
                         if not member.isfile() or relative.is_absolute() or ".." in relative.parts:
                             continue
-                        if member.name.startswith(reference_prefixes) or member.name.endswith(".fd"):
+                        if member.name.startswith(reference_prefixes) or member.name.endswith(
+                            (".fd", ".fontspec")
+                        ):
                             target = reference_root / relative
                             target.parent.mkdir(parents=True, exist_ok=True)
                             with archive.extractfile(member) as source, target.open("wb") as output:

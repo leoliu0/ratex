@@ -91,6 +91,10 @@ jobs:
       - name: Build release ratex binary
         run: cargo build --release --bin ratex
 
+      - name: Build Windows alias launcher
+        if: runner.os == 'Windows'
+        run: cargo build --release --bin xelatex
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:

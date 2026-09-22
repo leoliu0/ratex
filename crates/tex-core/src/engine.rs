@@ -64,6 +64,13 @@ pub const DEFAULT_MAX_ERRORS: usize = 100;
 /// have no fixed upper bound. Set TEX_EXPANSION_LIMIT to opt into a watchdog.
 pub const DEFAULT_EXPANSION_LIMIT: u64 = 0;
 
+/// Concrete TeX semantics executed by one engine instance.
+///
+/// Automatic selection belongs to the build runtime and is deliberately not
+/// represented here: once token execution begins, the semantic profile is
+/// fixed for the lifetime of the engine.
+pub use crate::engine_mode::{EngineChoice, EngineKind};
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum InteractionMode {
     Batch,
@@ -136,6 +143,9 @@ pub struct Engine {
     pub mode: Mode,
     pub mode_level: u16, // nesting of box modes
     pub cur_list: Vec<crate::boxes::Node>,
+    /// Stable, generation-checked ownership for nodes exposed across
+    /// subsystem boundaries (notably the Lua node API).
+    pub node_arena: crate::node_arena::NodeArena,
     pub prev_depth: i32, // special marker: -1000pt means unset
     pub space_factor: i32,
     pub prev_graf: i32,
@@ -144,6 +154,9 @@ pub struct Engine {
     /// was required. This recovery state belongs to one TeX engine/job.
     pub(crate) definable_cs_recovery_count: u8,
 
+    /// Semantic profile for this job. It is immutable after construction.
+    pub engine_kind: EngineKind,
+    pub(crate) lua: Option<Box<crate::engine_lua::LuaEngine>>,
     pub ini_mode: bool, // -ini: format-building mode
     pub format_name: String,
     pub job_name: String,
@@ -346,6 +359,18 @@ pub struct Engine {
     /// resolve here before falling back to the TDS (matches running TeX from
     /// the document's own directory).
     pub main_dir: Option<std::path::PathBuf>,
+    pub xetex_char_classes: crate::FxHashMap<u32, u8>,
+    pub xetex_interchar_toks: crate::FxHashMap<(u8, u8), Vec<crate::token::Token>>,
+    pub xetex_last_char_class: Option<u8>,
+    pub xetex_interchartokenstate: i32,
+    pub xetex_use_glyph_metrics: i32,
+    pub xetex_generate_actual_text: i32,
+    pub xetex_input_normalization: i32,
+    pub xetex_dash_break_state: i32,
+    pub asset_fingerprint: u64,
+    pub cur_catcode_table: i32,
+    pub catcode_tables: crate::FxHashMap<i32, (Vec<u8>, crate::FxHashMap<u32, (u8, u16)>)>,
+    pub saved_catcode_tables: Vec<(u16, i32, Vec<u8>, crate::FxHashMap<u32, (u8, u16)>)>,
     pub job_ended_by_end: bool,
     pub align_preamble: Vec<crate::align::ColSpec>,
     pub align_tabskip_0: crate::boxes::Glue,
@@ -559,6 +584,33 @@ pub struct Engine {
 }
 
 impl Engine {
+    pub fn execute_directlua(&mut self, code: &str) -> Result<(), String> {
+        if self.lua.is_none() {
+            let lua_engine = crate::engine_lua::LuaEngine::new()?;
+            self.lua = Some(Box::new(lua_engine));
+        }
+        let mut lua = self.lua.take().unwrap();
+        lua.sync_from_engine(self);
+        let result = lua.execute(code);
+        lua.sync_to_engine(self);
+        self.lua = Some(lua);
+
+        let output_items = result?;
+        if !output_items.is_empty() {
+            let mut combined = String::new();
+            for item in output_items {
+                combined.push_str(&item.text);
+                if item.newline {
+                    combined.push('\n');
+                }
+            }
+            if self.ensure_input_stack_room(1) {
+                self.input.push_file("<directlua>".to_string(), combined.into_bytes());
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) fn append_transcript_bounded(buffer: &mut String, text: &str) {
         const MARKER: &str = "\n! Transcript truncated at the 32 MiB safety limit.\n";
         if text.is_empty() || (buffer.len() >= MAX_TERM_BYTES && buffer.ends_with(MARKER)) {
@@ -771,6 +823,10 @@ impl Engine {
     }
 
     pub fn new(ini_mode: bool) -> Engine {
+        Self::new_with_kind(EngineKind::PdfTeX, ini_mode)
+    }
+
+    pub fn new_with_kind(engine_kind: EngineKind, ini_mode: bool) -> Engine {
         let mut cs = CsTable::new();
         let par = cs.intern(b"par");
         let e = Engine {
@@ -794,6 +850,7 @@ impl Engine {
             mode: Mode::Vertical,
             mode_level: 0,
             cur_list: Vec::new(),
+            node_arena: crate::node_arena::NodeArena::new(),
             prev_depth: -1000 * 65536,
             space_factor: 1000,
             pdf_images: crate::FxHashMap::default(),
@@ -802,6 +859,8 @@ impl Engine {
             prev_graf: 0,
             after_token: false,
             definable_cs_recovery_count: 0,
+            engine_kind,
+            lua: None,
             ini_mode,
             format_name: String::new(),
             job_name: String::new(),
@@ -927,6 +986,18 @@ impl Engine {
             allow_missing_main_aux: false,
             main_dir: None,
             job_ended_by_end: false,
+            xetex_char_classes: crate::FxHashMap::default(),
+            xetex_interchar_toks: crate::FxHashMap::default(),
+            xetex_last_char_class: None,
+            xetex_interchartokenstate: 0,
+            xetex_use_glyph_metrics: 1,
+            xetex_generate_actual_text: 0,
+            xetex_input_normalization: 0,
+            xetex_dash_break_state: 0,
+            asset_fingerprint: 0,
+            cur_catcode_table: 0,
+            catcode_tables: crate::FxHashMap::default(),
+            saved_catcode_tables: Vec::new(),
             align_preamble: Vec::new(),
             align_tabskip_0: crate::boxes::Glue::zero(),
             align_loop_start: None,
@@ -1011,6 +1082,17 @@ impl Engine {
             random_seed: 123456789,
         };
         e
+    }
+    pub fn asset_fingerprint(&self) -> u64 {
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        for (path, len, digest) in &self.loaded_file_digests {
+            for b in path.to_string_lossy().as_bytes() {
+                h = (h ^ u64::from(*b)).wrapping_mul(0x1000_0000_01b3);
+            }
+            h = (h ^ len).wrapping_mul(0x1000_0000_01b3);
+            h = (h ^ digest).wrapping_mul(0x1000_0000_01b3);
+        }
+        h
     }
 
     pub fn init_primitives(&mut self) {
@@ -1558,6 +1640,48 @@ impl Engine {
         d!(eng, b"pdfunescapehex", PdfUnescapeHex);
         d!(eng, b"filesize", FileSize);
         d!(eng, b"end", End);
+        if eng.engine_kind != EngineKind::PdfTeX {
+            for name in [
+                b"pdftexversion" as &[u8],
+                b"pdftexrevision",
+                b"pdftexbanner",
+            ] {
+                if let Some(id) = eng.cs.lookup(name) {
+                    eng.eqtb.undefine(id, true);
+                }
+            }
+        }
+        if eng.engine_kind != EngineKind::XeTeX {
+            for name in [
+                b"XeTeXversion" as &[u8],
+                b"XeTeXrevision",
+                b"XeTeXfonttype",
+                b"XeTeXglyph",
+                b"XeTeXglyphindex",
+                b"XeTeXglyphname",
+                b"XeTeXpicfile",
+                b"XeTeXpdffile",
+                b"xetexversion",
+                b"xetexrevision",
+            ] {
+                if let Some(id) = eng.cs.lookup(name) {
+                    eng.eqtb.undefine(id, true);
+                }
+            }
+        }
+        if eng.engine_kind != EngineKind::LuaTeX {
+            for name in [
+                b"luatexversion" as &[u8],
+                b"luatexrevision",
+                b"luatexbanner",
+                b"directlua",
+                b"outputmode",
+            ] {
+                if let Some(id) = eng.cs.lookup(name) {
+                    eng.eqtb.undefine(id, true);
+                }
+            }
+        }
         // TeX82 defaults (tex.web §25 / plain.tex)
         eng.eqtb.glue_params[GlueParam::ParFillSkip.idx() as usize] =
             crate::boxes::Glue::fil(crate::boxes::GLUE_FIL, 0);
@@ -1626,6 +1750,8 @@ impl Engine {
         eng.eqtb.dim_params[DimParam::PdfVOrigin.idx() as usize] = sp_in;
         eng.eqtb.dim_params[DimParam::PdfPageWidth.idx() as usize] = 0;
         eng.eqtb.dim_params[DimParam::PdfPageHeight.idx() as usize] = 0;
+        eng.init_xetex_primitives();
+        eng.init_luatex_primitives();
     }
     pub fn pop_group(&mut self) -> crate::eqtb::LevelType {
         let closing_level = self.eqtb.cur_level;
@@ -1652,6 +1778,17 @@ impl Engine {
         }
         for t in ag {
             self.push_token(t);
+        }
+        while let Some(&(lvl, _, _, _)) = self.saved_catcode_tables.last() {
+            if lvl >= closing_level {
+                let (_, table, cat, ucat) = self.saved_catcode_tables.pop().unwrap();
+                self.cur_catcode_table = table;
+                self.eqtb.cat = cat;
+                self.eqtb.cat_levels.fill(crate::eqtb::LEVEL_ONE);
+                self.eqtb.unicode_cat_codes = ucat;
+            } else {
+                break;
+            }
         }
         self.forget_group_opening(closing_level);
         ty

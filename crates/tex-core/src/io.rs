@@ -115,6 +115,52 @@ fn compatibility_input(name: &str) -> Option<&'static [u8]> {
 \input latex.ltx
 \endinput
 ",
+        "xelatex.ini" => br"\begingroup
+  \catcode`\{=1
+  \catcode`\}=2
+  \catcode`\#=6
+  \csname protected\endcsname\gdef\pdfmapfile#1{\special{pdf:mapfile #1}}
+  \csname protected\endcsname\gdef\pdfmapline#1{\special{pdf:mapline #1}}
+\endgroup
+\input latex.ltx
+\endinput
+",
+        "lualatex.ini" => br"\input luatexconfig.tex
+\begingroup
+  \catcode`\{=1
+  \catcode`\}=2
+  \global\everyjob{\directlua{require('lualatexquotejobname.lua')}}
+\endgroup
+\input latex.ltx
+\endinput
+",
+        "luatexconfig.tex" => br"\begingroup
+  \catcode`\{=1
+  \catcode`\}=2
+  \catcode`\#=6
+  \globaldefs=1
+  \input{pdftexconfig}
+  \globaldefs=0
+\endgroup
+\endinput
+",
+        "lualatexquotejobname.lua" => br#"local jobname_cache = {}
+if callback and callback.register then
+    callback.register('process_jobname', function(jobname)
+        local cached = jobname_cache[jobname]
+        if cached ~= nil then return cached end
+        local clean, n_quotes = jobname:gsub([["]], [[]])
+        if n_quotes % 2 ~= 0 then
+            texio.write_nl('! Unbalanced quotes in jobname: ' .. jobname)
+        end
+        if jobname:find(' ') then
+            clean = '"' .. clean .. '"'
+        end
+        jobname_cache[jobname] = clean
+        return clean
+    end)
+end
+"#,
         "graphics.cfg" => br"\ProvidesFile{graphics.cfg}[2026/01/01 v1.0 Ratex graphics configuration]
 \ExecuteOptions{pdftex}
 \AtEndOfPackage{
@@ -130,11 +176,6 @@ fn compatibility_input(name: &str) -> Option<&'static [u8]> {
         "xeCJK.sty" => include_bytes!("../assets/ratex-xeCJK.sty"),
         "tuenc.def" => include_bytes!("../assets/ratex-tuenc.def"),
         "UTF8.chr" => include_bytes!("../assets/ratex-UTF8.chr"),
-        "unicode-math.sty" => br"\PackageError{unicode-math}{Ratex does not implement OpenType MATH}{Use classic LaTeX math fonts, or compile with a full XeTeX or LuaTeX engine.}\endinput",
-        "ctex.sty" | "ctexart.cls" | "ctexrep.cls" | "ctexbook.cls" =>
-            br"\PackageError{ctex}{ctex is not supported by Ratex}{Use supported CJKutf8 or xeCJK for Chinese typesetting, or compile with a genuine ctex engine.}\endinput",
-        "luacode.sty" | "luatextra.sty" | "luaotfload.sty" | "luatexja.sty" =>
-            br"\PackageError{ratex}{LuaTeX execution is not supported by Ratex}{The lualatex compatibility flag does not provide a Lua runtime. Use native fontspec and xeCJK for font selection, or compile with LuaTeX.}\endinput",
         _ => return None,
     })
 }
@@ -794,11 +835,10 @@ impl Engine {
         for t in toks {
             if t.is_cs() {
                 let name = self.cs.name(t.cs_id());
-                // Active-char placeholder ids (engine::active_cs_name):
-                // [0xFF,0,'A','C','T',0,c] — detokenize as the character
-                // byte c, not the internal name.
-                if let [0xff, 0, b'A', b'C', b'T', 0, c] = name {
-                    out.push(*c);
+                // Active-character placeholder ids detokenize to their source
+                // bytes, not to the internal collision-proof name.
+                if let Some((bytes, len)) = Self::active_cs_source_bytes(name) {
+                    out.extend_from_slice(&bytes[..len]);
                 } else {
                     out.push(b'\\');
                     out.extend_from_slice(name);
@@ -862,7 +902,9 @@ impl Engine {
     }
 
     pub fn do_special(&mut self) {
-        let _ = self.scan_general_text_expanded();
+        let toks = self.scan_general_text_expanded();
+        let s = self.tokens_to_string(&toks);
+        self.cur_list.push(crate::boxes::Node::Whatsit(crate::boxes::WhatIt::Special(s)));
     }
 
     pub fn do_message(&mut self, err: bool) {

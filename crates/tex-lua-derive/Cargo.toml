@@ -1,0 +1,19 @@
+[package]
+name = "tex-lua-derive"
+version.workspace = true
+edition = "2024"
+authors = ["CppCXY", "Ratex contributors"]
+description = "Derive macros for the in-tree Ratex Lua runtime"
+license = "MIT"
+repository = "https://github.com/leoliu0/ratex"
+publish = false
+
+[lib]
+name = "luars_derive"
+proc-macro = true
+doctest = false
+
+[dependencies]
+syn = { version = "2", features = ["full", "extra-traits"] }
+quote = "1"
+proc-macro2 = "1"

@@ -1,0 +1,951 @@
+// Comprehensive metamethod tests
+use crate::*;
+
+#[test]
+fn test_add_metamethod() {
+    let mut vm = GlobalState::new(SafeOption::default());
+    vm.open_stdlib(crate::stdlib::Stdlib::All).unwrap();
+    let result = vm.main_state().execute(
+        r#"
+        local a = {val = 5}
+        local b = {val = 3}
+        setmetatable(a, {__add = function(x, y) return {val = x.val + y.val} end})
+        setmetatable(b, {__add = function(x, y) return {val = x.val + y.val} end})
+        local c = a + b
+        assert(c.val == 8)
+    "#,
+    );
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_add_metamethod_with_number() {
+    let mut vm = GlobalState::new(SafeOption::default());
+    vm.open_stdlib(crate::stdlib::Stdlib::All).unwrap();
+    let result = vm.main_state().execute(
+        r#"
+        local a = {val = 5}
+        setmetatable(a, {__add = function(x, y) 
+            if type(y) == "number" then
+                return {val = x.val + y}
+            else
+                return {val = x.val + y.val}
+            end
+        end})
+        local c = a + 10
+        assert(c.val == 15)
+    "#,
+    );
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_sub_metamethod() {
+    let mut vm = GlobalState::new(SafeOption::default());
+    vm.open_stdlib(crate::stdlib::Stdlib::All).unwrap();
+    let result = vm.main_state().execute(
+        r#"
+        local a = {val = 10}
+        local b = {val = 3}
+        setmetatable(a, {__sub = function(x, y) return {val = x.val - y.val} end})
+        setmetatable(b, {__sub = function(x, y) return {val = x.val - y.val} end})
+        local c = a - b
+        assert(c.val == 7)
+    "#,
+    );
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_mul_metamethod() {
+    let mut vm = GlobalState::new(SafeOption::default());
+    vm.open_stdlib(crate::stdlib::Stdlib::All).unwrap();
+    let result = vm.main_state().execute(
+        r#"
+        local a = {val = 5}
+        setmetatable(a, {__mul = function(x, y) return {val = x.val * y} end})
+        local c = a * 3
+        assert(c.val == 15)
+    "#,
+    );
+    if let Err(e) = &result {
+        eprintln!("Error: {}", e);
+    }
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_div_metamethod() {
+    let mut vm = GlobalState::new(SafeOption::default());
+    vm.open_stdlib(crate::stdlib::Stdlib::All).unwrap();
+    let result = vm.main_state().execute(
+        r#"
+        local a = {val = 20}
+        setmetatable(a, {__div = function(x, y) return {val = x.val / y} end})
+        local c = a / 4
+        assert(c.val == 5)
+    "#,
+    );
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_mod_metamethod() {
+    let mut vm = GlobalState::new(SafeOption::default());
+    vm.open_stdlib(crate::stdlib::Stdlib::All).unwrap();
+    let result = vm.main_state().execute(
+        r#"
+        local a = {val = 17}
+        setmetatable(a, {__mod = function(x, y) return {val = x.val % y} end})
+        local c = a % 5
+        assert(c.val == 2)
+    "#,
+    );
+    if let Err(e) = &result {
+        eprintln!("test_index_metamethod_table error: {:?}", e);
+    }
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_pow_metamethod() {
+    let mut vm = GlobalState::new(SafeOption::default());
+    vm.open_stdlib(crate::stdlib::Stdlib::All).unwrap();
+    let result = vm.main_state().execute(
+        r#"
+        local a = {val = 2}
+        setmetatable(a, {__pow = function(x, y) return {val = x.val ^ y} end})
+        local c = a ^ 4
+        assert(c.val == 16)
+    "#,
+    );
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_unm_metamethod() {
+    let mut vm = GlobalState::new(SafeOption::default());
+    vm.open_stdlib(crate::stdlib::Stdlib::All).unwrap();
+    let result = vm.main_state().execute(
+        r#"
+        local a = {val = 10}
+        setmetatable(a, {__unm = function(x) return {val = -x.val} end})
+        local c = -a
+        assert(c.val == -10)
+    "#,
+    );
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_idiv_metamethod() {
+    let mut vm = GlobalState::new(SafeOption::default());
+    vm.open_stdlib(crate::stdlib::Stdlib::All).unwrap();
+    let result = vm.main_state().execute(
+        r#"
+        local a = {val = 17}
+        setmetatable(a, {__idiv = function(x, y) return {val = x.val // y} end})
+        local c = a // 5
+        assert(c.val == 3)
+    "#,
+    );
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_band_metamethod() {
+    let mut vm = GlobalState::new(SafeOption::default());
+    vm.open_stdlib(crate::stdlib::Stdlib::All).unwrap();
+    let result = vm.main_state().execute(
+        r#"
+        local a = {val = 5}  -- 101
+        local b = {val = 3}  -- 011
+        setmetatable(a, {__band = function(x, y) return {val = x.val & y.val} end})
+        setmetatable(b, {__band = function(x, y) return {val = x.val & y.val} end})
+        local c = a & b  -- 001 = 1
+        assert(c.val == 1)
+    "#,
+    );
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_bor_metamethod() {
+    let mut vm = GlobalState::new(SafeOption::default());
+    vm.open_stdlib(crate::stdlib::Stdlib::All).unwrap();
+    let result = vm.main_state().execute(
+        r#"
+        local a = {val = 5}  -- 101
+        local b = {val = 3}  -- 011
+        setmetatable(a, {__bor = function(x, y) return {val = x.val | y.val} end})
+        setmetatable(b, {__bor = function(x, y) return {val = x.val | y.val} end})
+        local c = a | b  -- 111 = 7
+        assert(c.val == 7)
+    "#,
+    );
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_bxor_metamethod() {
+    let mut vm = GlobalState::new(SafeOption::default());
+    vm.open_stdlib(crate::stdlib::Stdlib::All).unwrap();
+    let result = vm.main_state().execute(
+        r#"
+        local a = {val = 5}  -- 101
+        local b = {val = 3}  -- 011
+        setmetatable(a, {__bxor = function(x, y) return {val = x.val ~ y.val} end})
+        setmetatable(b, {__bxor = function(x, y) return {val = x.val ~ y.val} end})
+        local c = a ~ b  -- 110 = 6
+        assert(c.val == 6)
+    "#,
+    );
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_bnot_metamethod() {
+    let mut vm = GlobalState::new(SafeOption::default());
+    vm.open_stdlib(crate::stdlib::Stdlib::All).unwrap();
+    let result = vm.main_state().execute(
+        r#"
+        local a = {val = 5}
+        setmetatable(a, {__bnot = function(x) return {val = ~x.val} end})
+        local c = ~a
+        assert(c.val == ~5)
+    "#,
+    );
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_shl_metamethod() {
+    let mut vm = GlobalState::new(SafeOption::default());
+    vm.open_stdlib(crate::stdlib::Stdlib::All).unwrap();
+    let result = vm.main_state().execute(
+        r#"
+        local a = {val = 5}
+        setmetatable(a, {__shl = function(x, n) return {val = x.val << n} end})
+        local c = a << 2
+        assert(c.val == 20)
+    "#,
+    );
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_shr_metamethod() {
+    let mut vm = GlobalState::new(SafeOption::default());
+    vm.open_stdlib(crate::stdlib::Stdlib::All).unwrap();
+    let result = vm.main_state().execute(
+        r#"
+        local a = {val = 20}
+        setmetatable(a, {__shr = function(x, n) return {val = x.val >> n} end})
+        local c = a >> 2
+        assert(c.val == 5)
+    "#,
+    );
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_index_metamethod_function() {
+    let mut vm = GlobalState::new(SafeOption::default());
+    vm.open_stdlib(crate::stdlib::Stdlib::All).unwrap();
+    let result = vm.main_state().execute(
+        r#"
+        local t = {}
+        setmetatable(t, {
+            __index = function(tbl, key)
+                return "value_" .. key
+            end
+        })
+        assert(t.foo == "value_foo")
+    "#,
+    );
+    if let Err(e) = &result {
+        eprintln!("test_index_metamethod_function error: {:?}", e);
+    }
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_index_metamethod_table() {
+    let mut vm = GlobalState::new(SafeOption::default());
+    vm.open_stdlib(crate::stdlib::Stdlib::All).unwrap();
+    let result = vm.main_state().execute(
+        r#"
+        local defaults = {x = 10, y = 20}
+        local t = {}
+        setmetatable(t, {__index = defaults})
+        assert(t.x == 10 and t.y == 20)
+    "#,
+    );
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_newindex_metamethod_function() {
+    let mut vm = GlobalState::new(SafeOption::default());
+    vm.open_stdlib(crate::stdlib::Stdlib::All).unwrap();
+    let result = vm.main_state().execute(
+        r#"
+        local storage = {}
+        local t = {}
+        local mt = {
+            __newindex = function(tbl, key, value)
+                print("__newindex called with", key, value)
+                storage[key] = value * 2
+            end,
+            __index = storage
+        }
+        setmetatable(t, mt)
+        print("Metatable set:", getmetatable(t) == mt)
+        print("About to set t.val = 5")
+        t.val = 5
+        print("storage.val =", storage.val)
+        assert(storage.val == 10)
+    "#,
+    );
+    if let Err(e) = &result {
+        eprintln!("Error: {:?}", e);
+    }
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_newindex_metamethod_table() {
+    let mut vm = GlobalState::new(SafeOption::default());
+    vm.open_stdlib(crate::stdlib::Stdlib::All).unwrap();
+    let result = vm.main_state().execute(
+        r#"
+        local storage = {}
+        local t = {}
+        setmetatable(t, {__newindex = storage, __index = storage})
+        t.name = "test"
+        assert(storage.name == "test")
+    "#,
+    );
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_call_metamethod() {
+    let mut vm = GlobalState::new(SafeOption::default());
+    vm.open_stdlib(crate::stdlib::Stdlib::All).unwrap();
+    let result = vm.main_state().execute(
+        r#"
+        local t = {}
+        setmetatable(t, {
+            __call = function(tbl, a, b)
+                return a + b
+            end
+        })
+        local result = t(3, 5)
+        assert(result == 8)
+    "#,
+    );
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_tostring_metamethod() {
+    let mut vm = GlobalState::new(SafeOption::default());
+    vm.open_stdlib(crate::stdlib::Stdlib::All).unwrap();
+    let result = vm.main_state().execute(
+        r#"
+        local t = {x = 1, y = 2}
+        setmetatable(t, {
+            __tostring = function(tbl)
+                return "Point(" .. tbl.x .. "," .. tbl.y .. ")"
+            end
+        })
+        assert(tostring(t) == "Point(1,2)")
+    "#,
+    );
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_len_metamethod() {
+    let mut vm = GlobalState::new(SafeOption::default());
+    vm.open_stdlib(crate::stdlib::Stdlib::All).unwrap();
+    let result = vm.main_state().execute(
+        r#"
+        local t = {a = 1, b = 2, c = 3}
+        setmetatable(t, {
+            __len = function(tbl)
+                local count = 0
+                for _ in pairs(tbl) do
+                    count = count + 1
+                end
+                return count
+            end
+        })
+        assert(#t == 3)
+    "#,
+    );
+    if result.is_err() {
+        eprintln!("test_len_metamethod error: {:?}", result.as_ref().err());
+    }
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_eq_metamethod() {
+    let mut vm = GlobalState::new(SafeOption::default());
+    vm.open_stdlib(crate::stdlib::Stdlib::All).unwrap();
+    let result = vm.main_state().execute(
+        r#"
+        local a = {val = 5}
+        local b = {val = 5}
+        local mt = {__eq = function(x, y) return x.val == y.val end}
+        setmetatable(a, mt)
+        setmetatable(b, mt)
+        local result = (a == b)
+        -- Don't use assert to avoid potential issue with print/assert
+        if not result then
+            error("Expected a == b to be true")
+        end
+    "#,
+    );
+    if let Err(e) = &result {
+        println!("ERROR in test_eq_metamethod: {:?}", e);
+    }
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_lt_metamethod() {
+    let mut vm = GlobalState::new(SafeOption::default());
+    vm.open_stdlib(crate::stdlib::Stdlib::All).unwrap();
+    let result = vm.main_state().execute(
+        r#"
+        local a = {val = 3}
+        local b = {val = 5}
+        setmetatable(a, {__lt = function(x, y) return x.val < y.val end})
+        setmetatable(b, {__lt = function(x, y) return x.val < y.val end})
+        assert(a < b)
+    "#,
+    );
+    if let Err(e) = &result {
+        eprintln!("test_lt_metamethod error: {:?}", e);
+    }
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_le_metamethod() {
+    let mut vm = GlobalState::new(SafeOption::default());
+    vm.open_stdlib(crate::stdlib::Stdlib::All).unwrap();
+    let result = vm.main_state().execute(
+        r#"
+        local a = {val = 3}
+        local b = {val = 3}
+        setmetatable(a, {__le = function(x, y) return x.val <= y.val end})
+        setmetatable(b, {__le = function(x, y) return x.val <= y.val end})
+        assert(a <= b)
+    "#,
+    );
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_concat_metamethod() {
+    let mut vm = GlobalState::new(SafeOption::default());
+    vm.open_stdlib(crate::stdlib::Stdlib::All).unwrap();
+    let result = vm.main_state().execute(
+        r#"
+        local a = {str = "Hello"}
+        local b = {str = "World"}
+        setmetatable(a, {__concat = function(x, y) return {str = x.str .. " " .. y.str} end})
+        setmetatable(b, {__concat = function(x, y) return {str = x.str .. " " .. y.str} end})
+        local c = a .. b
+        assert(c.str == "Hello World")
+    "#,
+    );
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_nested_index_chain() {
+    let mut vm = GlobalState::new(SafeOption::default());
+    vm.open_stdlib(crate::stdlib::Stdlib::All).unwrap();
+    let result = vm.main_state().execute(
+        r#"
+        local level1 = {a = 1}
+        local level2 = {}
+        local level3 = {}
+        setmetatable(level2, {__index = level1})
+        setmetatable(level3, {__index = level2})
+        assert(level3.a == 1)
+    "#,
+    );
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_multiple_metamethods_same_object() {
+    let mut vm = GlobalState::new(SafeOption::default());
+    vm.open_stdlib(crate::stdlib::Stdlib::All).unwrap();
+    let result = vm.main_state().execute(
+        r#"
+        local mt = {
+            __add = function(a, b) 
+                local result = {x = a.x + 5}
+                setmetatable(result, mt)
+                return result
+            end,
+            __sub = function(a, b) 
+                local result = {x = a.x - 3}
+                setmetatable(result, mt)
+                return result
+            end,
+            __tostring = function(o) return "Obj(" .. o.x .. ")" end
+        }
+        local obj = {x = 10}
+        setmetatable(obj, mt)
+        local r1 = obj + obj
+        local r2 = obj - obj
+        local s = tostring(obj)
+        assert(r1.x == 15 and r2.x == 7 and s == "Obj(10)")
+    "#,
+    );
+    if let Err(e) = &result {
+        eprintln!("Error: {:?}", e);
+    }
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_string_metatable_len() {
+    let mut vm = GlobalState::new(SafeOption::default());
+    vm.open_stdlib(crate::stdlib::Stdlib::All).unwrap();
+    let result = vm.main_state().execute(
+        r#"
+        local s = "hello"
+        assert(s:len() == 5)
+        assert(#s == 5)
+    "#,
+    );
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_string_metatable_upper() {
+    let mut vm = GlobalState::new(SafeOption::default());
+    vm.open_stdlib(crate::stdlib::Stdlib::All).unwrap();
+    let result = vm.main_state().execute(
+        r#"
+        local s = "hello"
+        assert(s:upper() == "HELLO")
+    "#,
+    );
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_string_metatable_lower() {
+    let mut vm = GlobalState::new(SafeOption::default());
+    vm.open_stdlib(crate::stdlib::Stdlib::All).unwrap();
+    let result = vm.main_state().execute(
+        r#"
+        local s = "HELLO"
+        assert(s:lower() == "hello")
+    "#,
+    );
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_string_metatable_sub() {
+    let mut vm = GlobalState::new(SafeOption::default());
+    vm.open_stdlib(crate::stdlib::Stdlib::All).unwrap();
+    let result = vm.main_state().execute(
+        r#"
+        local s = "hello world"
+        assert(s:sub(1, 5) == "hello")
+    "#,
+    );
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_getmetatable_table() {
+    let mut vm = GlobalState::new(SafeOption::default());
+    vm.open_stdlib(crate::stdlib::Stdlib::All).unwrap();
+    let result = vm.main_state().execute(
+        r#"
+        local t = {}
+        local mt = {__index = {x = 1}}
+        setmetatable(t, mt)
+        assert(getmetatable(t) == mt)
+    "#,
+    );
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_getmetatable_string() {
+    let mut vm = GlobalState::new(SafeOption::default());
+    vm.open_stdlib(crate::stdlib::Stdlib::All).unwrap();
+    let result = vm.main_state().execute(
+        r#"
+        local s = "hello"
+        local mt = getmetatable(s)
+        assert(mt ~= nil)
+        assert(mt.__index == string)
+    "#,
+    );
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_arithmetic_metamethod_chain() {
+    let mut vm = GlobalState::new(SafeOption::default());
+    vm.open_stdlib(crate::stdlib::Stdlib::All).unwrap();
+    let result = vm.main_state().execute(
+        r#"
+        local mt = {
+            __add = function(a, b) 
+                local result = {n = a.n + b.n}
+                setmetatable(result, getmetatable(a))
+                return result
+            end,
+            __mul = function(a, b) 
+                local result = {n = a.n * b.n}
+                setmetatable(result, getmetatable(a))
+                return result
+            end
+        }
+        local t = {n = 2}
+        setmetatable(t, mt)
+        local r = (t + t) * t
+        assert(r.n == 8)  -- (2 + 2) * 2
+    "#,
+    );
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_index_with_rawget() {
+    let mut vm = GlobalState::new(SafeOption::default());
+    vm.open_stdlib(crate::stdlib::Stdlib::All).unwrap();
+    let result = vm.main_state().execute(
+        r#"
+        local t = {real = 1}
+        setmetatable(t, {
+            __index = function(tbl, key)
+                return "meta_" .. key
+            end
+        })
+        assert(t.real == 1)
+        assert(t.fake == "meta_fake")
+        assert(rawget(t, "real") == 1)
+        assert(rawget(t, "fake") == nil)
+    "#,
+    );
+    if let Err(e) = &result {
+        eprintln!("Error: {}", e);
+    }
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_newindex_with_rawset() {
+    let mut vm = GlobalState::new(SafeOption::default());
+    vm.open_stdlib(crate::stdlib::Stdlib::All).unwrap();
+    let result = vm.main_state().execute(
+        r#"
+        local storage = {}
+        local t = {}
+        setmetatable(t, {
+            __newindex = function(tbl, key, value)
+                storage[key] = value
+            end
+        })
+        t.a = 1
+        rawset(t, "b", 2)
+        assert(storage.a == 1)
+        assert(storage.b == nil)
+        assert(rawget(t, "b") == 2)
+    "#,
+    );
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_mode_weak_tables() {
+    let mut vm = GlobalState::new(SafeOption::default());
+    vm.open_stdlib(crate::stdlib::Stdlib::All).unwrap();
+    let result = vm.main_state().execute(
+        r#"
+        local t = {}
+        setmetatable(t, {__mode = "k"})
+        local key = {}
+        t[key] = "value"
+        assert(t[key] == "value")
+    "#,
+    );
+    assert!(result.is_ok());
+}
+
+// ===== ipairs / pairs metamethod tests =====
+
+#[test]
+fn test_ipairs_with_index_metamethod() {
+    let mut vm = GlobalState::new(SafeOption::default());
+    vm.open_stdlib(crate::stdlib::Stdlib::All).unwrap();
+
+    let result = vm.main_state().execute(
+        r#"
+        -- ipairs should trigger __index metamethod
+        local a = {n = 10}
+        setmetatable(a, {
+            __index = function(t, k)
+                if k <= t.n then return k * 10 end
+            end
+        })
+
+        local count = 0
+        for k, v in ipairs(a) do
+            count = count + 1
+            assert(k == count, "ipairs key mismatch")
+            assert(v == count * 10, "ipairs value mismatch")
+        end
+        assert(count == a.n, "ipairs should iterate " .. a.n .. " times, got " .. count)
+    "#,
+    );
+
+    assert!(result.is_ok(), "ipairs with __index failed: {:?}", result);
+}
+
+#[test]
+fn test_ipairs_with_index_table() {
+    let mut vm = GlobalState::new(SafeOption::default());
+    vm.open_stdlib(crate::stdlib::Stdlib::All).unwrap();
+
+    let result = vm.main_state().execute(
+        r#"
+        -- ipairs with __index pointing to another table
+        local backing = {100, 200, 300, 400, 500}
+        local proxy = setmetatable({}, { __index = backing })
+
+        local sum = 0
+        local count = 0
+        for _, v in ipairs(proxy) do
+            sum = sum + v
+            count = count + 1
+        end
+        assert(count == 5, "expected 5 iterations, got " .. count)
+        assert(sum == 1500, "expected sum 1500, got " .. sum)
+    "#,
+    );
+
+    assert!(
+        result.is_ok(),
+        "ipairs with __index table failed: {:?}",
+        result
+    );
+}
+
+#[test]
+fn test_ipairs_stops_at_nil() {
+    let mut vm = GlobalState::new(SafeOption::default());
+    vm.open_stdlib(crate::stdlib::Stdlib::All).unwrap();
+
+    let result = vm.main_state().execute(
+        r#"
+        -- ipairs with __index that returns nil at index 4
+        local a = setmetatable({}, {
+            __index = function(_, k)
+                if k <= 3 then return k * 100 end
+                -- returns nil for k > 3
+            end
+        })
+
+        local count = 0
+        for k, v in ipairs(a) do
+            count = count + 1
+        end
+        assert(count == 3, "ipairs should stop at nil, got " .. count)
+    "#,
+    );
+
+    assert!(result.is_ok(), "ipairs stops at nil failed: {:?}", result);
+}
+
+#[test]
+fn test_pairs_with_pairs_metamethod() {
+    let mut vm = GlobalState::new(SafeOption::default());
+    vm.open_stdlib(crate::stdlib::Stdlib::All).unwrap();
+
+    let result = vm.main_state().execute(
+        r#"
+        -- Custom iterator via __pairs
+        local data = {10, 20, 30}
+        local t = setmetatable({}, {
+            __pairs = function(self)
+                local i = 0
+                return function()
+                    i = i + 1
+                    if i <= #data then return i, data[i] end
+                end, self, nil
+            end
+        })
+
+        local sum = 0
+        local count = 0
+        for k, v in pairs(t) do
+            sum = sum + v
+            count = count + 1
+        end
+        assert(count == 3, "pairs metamethod: expected 3, got " .. count)
+        assert(sum == 60, "pairs metamethod: expected sum 60, got " .. sum)
+    "#,
+    );
+
+    assert!(result.is_ok(), "pairs with __pairs failed: {:?}", result);
+}
+
+#[test]
+fn test_pairs_with_tbc_variable() {
+    let mut vm = GlobalState::new(SafeOption::default());
+    vm.open_stdlib(crate::stdlib::Stdlib::All).unwrap();
+
+    let result = vm.main_state().execute(
+        r#"
+        -- __pairs returns a to-be-closed variable (4th return value)
+        local closed = false
+        local t = setmetatable({}, {
+            __pairs = function(self)
+                local tbc = setmetatable({}, {
+                    __close = function() closed = true end
+                })
+                local i = 0
+                return function()
+                    i = i + 1
+                    if i <= 3 then return i, i * 10 end
+                end, self, nil, tbc
+            end
+        })
+
+        for k, v in pairs(t) do end
+        assert(closed, "to-be-closed variable should have been closed")
+    "#,
+    );
+
+    assert!(
+        result.is_ok(),
+        "pairs with TBC variable failed: {:?}",
+        result
+    );
+}
+
+#[test]
+fn test_pairs_without_metamethod_returns_4_values() {
+    let mut vm = GlobalState::new(SafeOption::default());
+    vm.open_stdlib(crate::stdlib::Stdlib::All).unwrap();
+
+    let result = vm.main_state().execute(
+        r#"
+        -- pairs without __pairs should still work (returns next, t, nil, nil)
+        local t = {a = 1, b = 2}
+        local x, y, z = pairs(t)
+        assert(type(x) == "function", "pairs should return function as 1st value")
+        assert(y == t, "pairs should return table as 2nd value")
+        assert(z == nil, "pairs should return nil as 3rd value")
+
+        -- Verify standard iteration still works
+        local keys = {}
+        for k, v in pairs(t) do
+            keys[k] = v
+        end
+        assert(keys.a == 1 and keys.b == 2)
+    "#,
+    );
+
+    assert!(
+        result.is_ok(),
+        "pairs without metamethod failed: {:?}",
+        result
+    );
+}
+
+#[test]
+fn test_pairs_yield_inside_pairs_metamethod() {
+    let mut vm = GlobalState::new(SafeOption::default());
+    vm.open_stdlib(crate::stdlib::Stdlib::All).unwrap();
+
+    let result = vm.main_state().execute(
+        r#"
+        -- __pairs metamethod that yields before returning the iterator
+        local t = setmetatable({10, 20, 30}, {__pairs = function(t)
+            local inc = coroutine.yield()   -- yield inside __pairs!
+            return function(t, i)
+                if i > 1 then return i - inc, t[i - inc] else return nil end
+            end, t, #t + 1
+        end})
+
+        local res = {}
+        local co = coroutine.wrap(function()
+            for i, p in pairs(t) do res[#res + 1] = p end
+        end)
+
+        co()     -- start: __pairs runs, hits yield
+        co(1)    -- resume with inc=1, iteration proceeds
+
+        assert(res[1] == 30, "expected 30, got " .. tostring(res[1]))
+        assert(res[2] == 20, "expected 20, got " .. tostring(res[2]))
+        assert(res[3] == 10, "expected 10, got " .. tostring(res[3]))
+        assert(#res == 3, "expected 3 results, got " .. #res)
+    "#,
+    );
+
+    assert!(result.is_ok(), "yield inside __pairs failed: {:?}", result);
+}
+
+#[test]
+fn test_pairs_yield_multiple_times_in_pairs_metamethod() {
+    let mut vm = GlobalState::new(SafeOption::default());
+    vm.open_stdlib(crate::stdlib::Stdlib::All).unwrap();
+
+    let result = vm.main_state().execute(
+        r#"
+        -- __pairs yields twice: once to get the step, once to get the start
+        local t = setmetatable({100, 200, 300}, {__pairs = function(t)
+            local step = coroutine.yield("need step")
+            local start = coroutine.yield("need start")
+            local i = start
+            return function()
+                if i >= 1 then
+                    local idx = i
+                    i = i - step
+                    return idx, t[idx]
+                end
+            end, t, nil
+        end})
+
+        local res = {}
+        local co = coroutine.create(function()
+            for k, v in pairs(t) do res[#res + 1] = v end
+        end)
+
+        local ok, msg = coroutine.resume(co)           -- start
+        assert(ok and msg == "need step")
+        ok, msg = coroutine.resume(co, 1)               -- provide step=1
+        assert(ok and msg == "need start")
+        ok = coroutine.resume(co, 3)                     -- provide start=3
+        assert(ok)
+
+        assert(#res == 3, "expected 3, got " .. #res)
+        assert(res[1] == 300 and res[2] == 200 and res[3] == 100)
+    "#,
+    );
+
+    assert!(
+        result.is_ok(),
+        "multiple yields inside __pairs failed: {:?}",
+        result
+    );
+}

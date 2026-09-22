@@ -1,5 +1,9 @@
 //! JavaScript boundary for the shared in-memory document compiler.
 #[cfg(target_arch = "wasm32")]
+#[global_allocator]
+static GLOBAL: dlmalloc::GlobalDlmalloc = dlmalloc::GlobalDlmalloc;
+
+#[cfg(target_arch = "wasm32")]
 mod bindings {
     use tex_runtime::{Compilation, Session};
     use wasm_bindgen::prelude::*;

@@ -1,0 +1,1116 @@
+// IO library implementation
+// Implements: close, flush, input, lines, open, output, read, write, type
+mod file;
+mod popen;
+
+use crate::lib_registry::LibraryModule;
+use crate::lua_value::{LuaUserdata, LuaValue};
+use crate::lua_vm::{LuaResult, LuaState};
+pub use file::{LuaFile, create_file_metatable};
+use std::fs::OpenOptions;
+use std::io::{self, Write};
+
+pub(crate) enum ReadOneResult {
+    Value(LuaValue),
+    Fail,
+    IoError(io::Error),
+}
+
+pub(crate) enum ReadManyResult {
+    Values(Vec<LuaValue>),
+    Fail(Vec<LuaValue>),
+    IoError(io::Error),
+}
+
+/// Create a LuaValue from raw bytes. If valid UTF-8 and ASCII-only, creates a string.
+/// Otherwise creates a binary value to preserve exact byte values.
+fn bytes_to_lua_value(l: &mut LuaState, bytes: Vec<u8>) -> LuaResult<LuaValue> {
+    l.create_bytes(&bytes)
+}
+
+pub fn create_io_lib() -> LibraryModule {
+    crate::lib_module!("io", {
+        "write" => io_write,
+        "read" => io_read,
+        "flush" => io_flush,
+        "open" => io_open,
+        "lines" => io_lines,
+        "input" => io_input,
+        "output" => io_output,
+        "type" => io_type,
+        "tmpfile" => io_tmpfile,
+        "close" => io_close,
+        "popen" => io_popen,
+    })
+    .with_initializer(init_io_streams)
+}
+
+// Note: stdin, stdout, stderr should be initialized separately with init_io_streams()
+
+/// Initialize io standard streams (called after library registration)
+pub fn init_io_streams(l: &mut LuaState) -> LuaResult<()> {
+    let io_table = l
+        .get_global_value("io")?
+        .ok_or_else(|| l.error("io table not found".to_string()))?;
+
+    if !io_table.is_table() {
+        return Err(l.error("io must be a table".to_string()));
+    };
+
+    // Create stdin
+    let stdin_val = create_stdin(l)?;
+    let stdin_key = l.create_string("stdin")?;
+    l.raw_set(&io_table, stdin_key, stdin_val);
+    let registry = l.global_state_mut().registry;
+    let input_key = l.create_string("_IO_input")?;
+    l.raw_set(&registry, input_key, stdin_val);
+    l.global_state_mut().io_default_input = Some(stdin_val);
+
+    // Create stdout
+    let stdout_val = create_stdout(l)?;
+    let stdout_key = l.create_string("stdout")?;
+    l.raw_set(&io_table, stdout_key, stdout_val);
+    let output_key = l.create_string("_IO_output")?;
+    l.raw_set(&registry, output_key, stdout_val);
+    l.global_state_mut().io_default_output = Some(stdout_val);
+
+    // Create stderr
+    let stderr_val = create_stderr(l)?;
+    let stderr_key = l.create_string("stderr")?;
+    l.raw_set(&io_table, stderr_key, stderr_val);
+
+    Ok(())
+}
+
+/// Create stdin file handle
+fn create_stdin(l: &mut LuaState) -> LuaResult<LuaValue> {
+    let file = LuaFile::stdin();
+    let file_mt = create_file_metatable(l)?;
+    let userdata = l.create_userdata(LuaUserdata::new(file))?;
+
+    if let Some(ud) = userdata.as_userdata_mut() {
+        ud.set_metatable(file_mt);
+    }
+
+    // Register userdata for __gc finalization if present
+    l.global_state_mut().gc.check_finalizer(&userdata);
+
+    Ok(userdata)
+}
+
+/// Create stdout file handle
+fn create_stdout(l: &mut LuaState) -> LuaResult<LuaValue> {
+    let file = LuaFile::stdout();
+    let file_mt = create_file_metatable(l)?;
+    let userdata = l.create_userdata(LuaUserdata::new(file))?;
+
+    if let Some(ud) = userdata.as_userdata_mut() {
+        ud.set_metatable(file_mt);
+    }
+
+    // Register userdata for __gc finalization if present
+    l.global_state_mut().gc.check_finalizer(&userdata);
+
+    Ok(userdata)
+}
+
+/// Create stderr file handle
+fn create_stderr(l: &mut LuaState) -> LuaResult<LuaValue> {
+    let file = LuaFile::stderr();
+    let file_mt = create_file_metatable(l)?;
+    let userdata = l.create_userdata(LuaUserdata::new(file))?;
+
+    if let Some(ud) = userdata.as_userdata_mut() {
+        ud.set_metatable(file_mt);
+    }
+
+    // Register userdata for __gc finalization if present
+    l.global_state_mut().gc.check_finalizer(&userdata);
+
+    Ok(userdata)
+}
+
+/// io.write(...) - Write to default output file
+/// Helper: get the default output file handle (fast path via VM cache, fallback to registry/io.stdout)
+#[inline]
+fn get_default_output(l: &mut LuaState) -> LuaResult<LuaValue> {
+    // Fast path: use cached handle from VM
+    if let Some(handle) = l.global_state_mut().io_default_output {
+        return Ok(handle);
+    }
+
+    // Slow path: look up from registry
+    let registry = l.global_state_mut().registry;
+    let key = l.create_string("_IO_output")?;
+
+    let output_file = if let Some(registry_table) = registry.as_table() {
+        registry_table.raw_get(&key)
+    } else {
+        None
+    };
+
+    if let Some(output) = output_file {
+        // Cache it for next time
+        l.global_state_mut().io_default_output = Some(output);
+        return Ok(output);
+    }
+
+    // Fallback: use io.stdout
+    let io_table = l
+        .get_global_value("io")?
+        .ok_or_else(|| l.error("io not found".to_string()))?;
+    let stdout_key = l.create_string("stdout")?;
+
+    if let Some(io_tbl) = io_table.as_table() {
+        let handle = io_tbl
+            .raw_get(&stdout_key)
+            .ok_or_else(|| l.error("stdout not found".to_string()))?;
+        // Cache it
+        l.global_state_mut().io_default_output = Some(handle);
+        Ok(handle)
+    } else {
+        Err(l.error("io table is not a table".to_string()))
+    }
+}
+
+fn reset_default_output_to_stdout(l: &mut LuaState) -> LuaResult<()> {
+    let io_table = l
+        .get_global_value("io")?
+        .ok_or_else(|| l.error("io not found".to_string()))?;
+    let stdout_key = l.create_string("stdout")?;
+
+    let stdout_handle = if let Some(io_tbl) = io_table.as_table() {
+        io_tbl
+            .raw_get(&stdout_key)
+            .ok_or_else(|| l.error("stdout not found".to_string()))?
+    } else {
+        return Err(l.error("io table is not a table".to_string()));
+    };
+
+    let registry = l.global_state_mut().registry;
+    let output_key = l.create_string("_IO_output")?;
+    l.raw_set(&registry, output_key, stdout_handle);
+    l.global_state_mut().io_default_output = Some(stdout_handle);
+    Ok(())
+}
+
+/// Helper: get the default input file handle (fast path via VM cache, fallback to registry/io.stdin)
+#[inline]
+fn get_default_input(l: &mut LuaState) -> LuaResult<LuaValue> {
+    // Fast path: use cached handle from VM
+    if let Some(handle) = l.global_state_mut().io_default_input {
+        return Ok(handle);
+    }
+
+    // Slow path: look up from registry
+    let registry = l.global_state_mut().registry;
+    let key = l.create_string("_IO_input")?;
+
+    let input_file = if let Some(registry_table) = registry.as_table() {
+        registry_table.raw_get(&key)
+    } else {
+        None
+    };
+
+    if let Some(input) = input_file {
+        l.global_state_mut().io_default_input = Some(input);
+        return Ok(input);
+    }
+
+    // Fallback: use io.stdin
+    let io_table = l
+        .get_global_value("io")?
+        .ok_or_else(|| l.error("io not found".to_string()))?;
+    let stdin_key = l.create_string("stdin")?;
+
+    if let Some(io_tbl) = io_table.as_table() {
+        let handle = io_tbl
+            .raw_get(&stdin_key)
+            .ok_or_else(|| l.error("stdin not found".to_string()))?;
+        l.global_state_mut().io_default_input = Some(handle);
+        Ok(handle)
+    } else {
+        Err(l.error("io table is not a table".to_string()))
+    }
+}
+
+fn io_write(l: &mut LuaState) -> LuaResult<usize> {
+    let file_handle = get_default_output(l)?;
+
+    // Get the file from userdata
+    if let Some(ud) = file_handle.as_userdata_mut() {
+        let Ok(data) = ud.get_data_mut() else {
+            return Err(l.error("attempt to use an expired file handle".to_string()));
+        };
+        if let Some(lua_file) = data.downcast_mut::<LuaFile>() {
+            if lua_file.is_closed() {
+                return Err(l.error("default output file is closed".to_string()));
+            }
+            // Write all arguments
+            let mut i = 1;
+            while let Some(arg) = l.get_arg(i) {
+                let write_result = if let Some(bytes) = arg.as_bytes() {
+                    lua_file.write_bytes(bytes)
+                } else if let Some(n) = arg.as_integer() {
+                    lua_file.write(&n.to_string())
+                } else if let Some(n) = arg.as_float() {
+                    lua_file.write(&n.to_string())
+                } else {
+                    return Err(crate::stdlib::debug::arg_typeerror(
+                        l,
+                        i,
+                        "string or number",
+                        &arg,
+                    ));
+                };
+
+                if let Err(e) = write_result {
+                    return Err(l.error(format!("write error: {}", e)));
+                }
+
+                i += 1;
+            }
+
+            // Return the file handle
+            l.push_value(file_handle)?;
+            return Ok(1);
+        }
+    }
+
+    Err(l.error("expected file handle".to_string()))
+}
+
+/// io.read([format, ...]) - Read from default input
+fn io_read(l: &mut LuaState) -> LuaResult<usize> {
+    let file_handle = get_default_input(l)?;
+
+    if let Some(ud) = file_handle.as_userdata_mut() {
+        let Ok(data) = ud.get_data_mut() else {
+            return Err(l.error("attempt to use an expired file handle".to_string()));
+        };
+        if let Some(lua_file) = data.downcast_mut::<LuaFile>() {
+            if lua_file.is_closed() {
+                return Err(l.error("default input file is closed".to_string()));
+            }
+            let mut formats: Vec<LuaValue> = Vec::new();
+            let mut i = 1;
+            while let Some(v) = l.get_arg(i) {
+                formats.push(v);
+                i += 1;
+            }
+
+            let read_result = read_many_formats_file(l, lua_file, &formats)?;
+            return push_read_results(l, read_result);
+        }
+    }
+
+    Err(l.error("expected file handle for default input".to_string()))
+}
+
+/// Helper function: read one value from a LuaFile using a format specifier.
+/// Shared by io.read, io.lines, and file:read.
+fn read_one_format_file(
+    l: &mut LuaState,
+    lua_file: &mut LuaFile,
+    fmt: &LuaValue,
+) -> LuaResult<ReadOneResult> {
+    use file::ReadNumberResult;
+
+    // Check if format is an integer (byte count)
+    if let Some(n) = fmt.as_integer() {
+        let n = n as usize;
+        if n == 0 {
+            // read(0) returns "" if not EOF, nil if EOF
+            match lua_file.is_eof() {
+                Ok(true) => return Ok(ReadOneResult::Fail),
+                Ok(false) => return Ok(ReadOneResult::Value(l.create_string("")?)),
+                Err(e) => return Ok(ReadOneResult::IoError(e)),
+            }
+        }
+        match lua_file.read_bytes(n) {
+            Ok(bytes) => {
+                if bytes.is_empty() {
+                    return Ok(ReadOneResult::Fail);
+                }
+                return Ok(ReadOneResult::Value(bytes_to_lua_value(l, bytes)?));
+            }
+            Err(e) => return Ok(ReadOneResult::IoError(e)),
+        }
+    }
+
+    // Get format string (default "l" for nil sentinel)
+    let format_str = fmt
+        .as_str()
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| "l".to_string());
+    let format = format_str.strip_prefix('*').unwrap_or(&format_str);
+
+    let first_char = format.chars().next().unwrap_or('l');
+    match first_char {
+        'l' => match lua_file.read_line() {
+            Ok(Some(line)) => Ok(ReadOneResult::Value(bytes_to_lua_value(l, line)?)),
+            Ok(None) => Ok(ReadOneResult::Fail),
+            Err(e) => Ok(ReadOneResult::IoError(e)),
+        },
+        'L' => match lua_file.read_line_with_newline() {
+            Ok(Some(line)) => Ok(ReadOneResult::Value(bytes_to_lua_value(l, line)?)),
+            Ok(None) => Ok(ReadOneResult::Fail),
+            Err(e) => Ok(ReadOneResult::IoError(e)),
+        },
+        'a' => match lua_file.read_all() {
+            Ok(content) => Ok(ReadOneResult::Value(bytes_to_lua_value(l, content)?)),
+            Err(e) => Ok(ReadOneResult::IoError(e)),
+        },
+        'n' => match lua_file.read_number() {
+            Ok(Some(ReadNumberResult::Integer(n))) => {
+                Ok(ReadOneResult::Value(LuaValue::integer(n)))
+            }
+            Ok(Some(ReadNumberResult::Float(n))) => Ok(ReadOneResult::Value(LuaValue::float(n))),
+            Ok(None) => Ok(ReadOneResult::Fail),
+            Err(e) => Ok(ReadOneResult::IoError(e)),
+        },
+        _ => Err(l.error("invalid format".to_string())),
+    }
+}
+
+pub(crate) fn read_many_formats_file(
+    l: &mut LuaState,
+    lua_file: &mut LuaFile,
+    formats: &[LuaValue],
+) -> LuaResult<ReadManyResult> {
+    let effective_formats: Vec<LuaValue> = if formats.is_empty() {
+        vec![LuaValue::nil()]
+    } else {
+        formats.to_vec()
+    };
+
+    let mut values = Vec::with_capacity(effective_formats.len());
+    for fmt in &effective_formats {
+        match read_one_format_file(l, lua_file, fmt)? {
+            ReadOneResult::Value(value) => values.push(value),
+            ReadOneResult::Fail => return Ok(ReadManyResult::Fail(values)),
+            ReadOneResult::IoError(error) => return Ok(ReadManyResult::IoError(error)),
+        }
+    }
+
+    Ok(ReadManyResult::Values(values))
+}
+
+pub(crate) fn push_read_results(l: &mut LuaState, result: ReadManyResult) -> LuaResult<usize> {
+    match result {
+        ReadManyResult::Values(values) => {
+            let nresults = values.len();
+            for value in values {
+                l.push_value(value)?;
+            }
+            Ok(nresults)
+        }
+        ReadManyResult::Fail(values) => {
+            let nresults = values.len() + 1;
+            for value in values {
+                l.push_value(value)?;
+            }
+            l.push_value(LuaValue::nil())?;
+            Ok(nresults)
+        }
+        ReadManyResult::IoError(error) => {
+            l.push_value(LuaValue::nil())?;
+            let msg = l.create_string(&format!("{}", error))?;
+            l.push_value(msg)?;
+            let errno = error.raw_os_error().unwrap_or(0);
+            l.push_value(LuaValue::integer(errno as i64))?;
+            Ok(3)
+        }
+    }
+}
+
+/// io.flush() - Flush stdout
+fn io_flush(l: &mut LuaState) -> LuaResult<usize> {
+    let file_handle = get_default_output(l)?;
+
+    if let Some(ud) = file_handle.as_userdata_mut() {
+        let Ok(data) = ud.get_data_mut() else {
+            return Err(l.error("attempt to use an expired file handle".to_string()));
+        };
+        if let Some(lua_file) = data.downcast_mut::<LuaFile>() {
+            if let Err(e) = lua_file.flush() {
+                // Return nil, errmsg, errno (like C Lua)
+                l.push_value(LuaValue::nil())?;
+                let msg = format!("{}", e);
+                let errno = e.raw_os_error().unwrap_or(0) as i64;
+                let err_str = l.create_string(&msg)?;
+                l.push_value(err_str)?;
+                l.push_value(LuaValue::integer(errno))?;
+                return Ok(3);
+            }
+            l.push_value(file_handle)?;
+            return Ok(1);
+        }
+    }
+
+    // Fallback: flush stdout directly
+    io::stdout().flush().ok();
+    l.push_value(LuaValue::boolean(true))?;
+    Ok(1)
+}
+
+/// io.open(filename [, mode]) - Open a file
+fn io_open(l: &mut LuaState) -> LuaResult<usize> {
+    let filename_val = l
+        .get_arg(1)
+        .ok_or_else(|| l.error("bad argument #1 to 'io.open' (string expected)".to_string()))?;
+    let filename_str = match filename_val.as_str() {
+        Some(s) => s.to_string(),
+        None => return Err(l.error("bad argument #1 to 'io.open' (string expected)".to_string())),
+    };
+
+    let mode_str = l
+        .get_arg(2)
+        .and_then(|v| v.as_str().map(|s| s.to_string()))
+        .unwrap_or_else(|| "r".to_string());
+
+    // Strip 'b' suffix (binary mode, no-op on most platforms)
+    let mode = mode_str.trim_end_matches('b');
+
+    let file_result = match mode {
+        "r" => LuaFile::open_read(&filename_str),
+        "w" => LuaFile::open_write(&filename_str),
+        "a" => LuaFile::open_append(&filename_str),
+        "r+" => LuaFile::open_readwrite(&filename_str),
+        "w+" => LuaFile::open_write_read(&filename_str),
+        "a+" => LuaFile::open_append_read(&filename_str),
+        _ => return Err(l.error(format!("invalid mode: {}", mode_str))),
+    };
+
+    match file_result {
+        Ok(file) => {
+            // Create file metatable
+            let file_mt = create_file_metatable(l)?;
+
+            // Create userdata
+            let userdata = l.create_userdata(LuaUserdata::new(file))?;
+
+            // Set metatable
+            if let Some(ud) = userdata.as_userdata_mut() {
+                ud.set_metatable(file_mt);
+            }
+
+            // Register userdata for __gc finalization if present
+            l.global_state_mut().gc.check_finalizer(&userdata);
+
+            l.push_value(userdata)?;
+            Ok(1)
+        }
+        Err(e) => {
+            // Return nil, error message, and errno (matching C Lua)
+            l.push_value(LuaValue::nil())?;
+            let err_msg = format!("{}: {}", filename_str, e);
+            let err_str = l.create_string(&err_msg)?;
+            l.push_value(err_str)?;
+            let errno = e.raw_os_error().unwrap_or(0) as i64;
+            l.push_value(LuaValue::integer(errno))?;
+            Ok(3)
+        }
+    }
+}
+
+const MAXARGLINE: usize = 250;
+
+/// io.lines([filename]) - Return iterator for lines
+fn io_lines(l: &mut LuaState) -> LuaResult<usize> {
+    let filename = l.get_arg(1);
+
+    // Collect format arguments (start from arg 2)
+    let mut formats: Vec<LuaValue> = Vec::new();
+    let mut i = 2;
+    while let Some(v) = l.get_arg(i) {
+        formats.push(v);
+        i += 1;
+    }
+
+    if formats.len() > MAXARGLINE {
+        return Err(l.error("too many arguments".to_string()));
+    }
+
+    // Check if we have a filename (not nil)
+    let has_filename = filename.as_ref().is_some_and(|v| !v.is_nil());
+
+    if has_filename {
+        let filename_val = filename.unwrap();
+        // io.lines(filename, ...) - open file and return iterator
+        let filename_str = match filename_val.as_str() {
+            Some(s) => s.to_string(),
+            None => return Err(l.error("bad argument #1 to 'lines' (string expected)".to_string())),
+        };
+
+        match LuaFile::open_read(&filename_str) {
+            Ok(file) => {
+                let file_mt = create_file_metatable(l)?;
+                let userdata = l.create_userdata(LuaUserdata::new(file))?;
+                if let Some(ud) = userdata.as_userdata_mut() {
+                    ud.set_metatable(file_mt);
+                }
+                l.global_state_mut().gc.check_finalizer(&userdata);
+
+                let state_table = l.create_table(0, 4)?;
+                let file_key = l.create_string("file")?;
+                l.raw_set(&state_table, file_key, userdata);
+                let closed_key = l.create_string("closed")?;
+                l.raw_set(&state_table, closed_key, LuaValue::boolean(false));
+
+                // Store formats
+                let fmts_table = l.create_table(formats.len(), 0)?;
+                for (idx, fmt) in formats.iter().enumerate() {
+                    l.raw_seti(&fmts_table, (idx + 1) as i64, *fmt);
+                }
+                let fmts_key = l.create_string("fmts")?;
+                l.raw_set(&state_table, fmts_key, fmts_table);
+                let nfmts_key = l.create_string("nfmts")?;
+                l.raw_set(
+                    &state_table,
+                    nfmts_key,
+                    LuaValue::integer(formats.len() as i64),
+                );
+
+                // Also set __call so the table is directly callable (for load() etc.)
+                let mt = l.create_table(0, 1)?;
+                let call_key = l.create_string("__call")?;
+                l.raw_set(&mt, call_key, LuaValue::cfunction(io_lines_call));
+                if let Some(t) = state_table.as_table_mut() {
+                    t.set_metatable(Some(mt));
+                }
+
+                // Create C closure for the iterator (captures state table as upvalue)
+                // This allows both `for l in io.lines(file)` and `local f = io.lines(file); f()` to work
+                let vm = l.global_state_mut();
+                let iterator_closure = vm.create_c_closure(io_lines_next, vec![state_table])?;
+
+                l.push_value(iterator_closure)?;
+                if l.global_state().language() == crate::LuaLanguageLevel::Lua53 {
+                    return Ok(1);
+                }
+                l.push_value(state_table)?;
+                l.push_value(LuaValue::nil())?;
+                l.push_value(userdata)?;
+                Ok(4)
+            }
+            Err(e) => Err(l.error(format!("cannot open file '{}': {}", filename_str, e))),
+        }
+    } else {
+        // io.lines() or io.lines(nil, ...) - read from default input
+        let registry = l.global_state_mut().registry;
+        let key = l.create_string("_IO_input")?;
+        let input_file = if let Some(registry_table) = registry.as_table() {
+            registry_table
+                .raw_get(&key)
+                .ok_or_else(|| l.error("default input file is not set".to_string()))?
+        } else {
+            return Err(l.error("registry is not a table".to_string()));
+        };
+
+        let state_table = l.create_table(0, 5)?;
+        let file_key = l.create_string("file")?;
+        l.raw_set(&state_table, file_key, input_file);
+        let closed_key = l.create_string("closed")?;
+        l.raw_set(&state_table, closed_key, LuaValue::boolean(false));
+        let noclose_key = l.create_string("noclose")?;
+        l.raw_set(&state_table, noclose_key, LuaValue::boolean(true));
+
+        // Store formats
+        let fmts_table = l.create_table(formats.len(), 0)?;
+        for (idx, fmt) in formats.iter().enumerate() {
+            l.raw_seti(&fmts_table, (idx + 1) as i64, *fmt);
+        }
+        let fmts_key = l.create_string("fmts")?;
+        l.raw_set(&state_table, fmts_key, fmts_table);
+        let nfmts_key = l.create_string("nfmts")?;
+        l.raw_set(
+            &state_table,
+            nfmts_key,
+            LuaValue::integer(formats.len() as i64),
+        );
+
+        let mt = l.create_table(0, 1)?;
+        let call_key = l.create_string("__call")?;
+        l.raw_set(&mt, call_key, LuaValue::cfunction(io_lines_call));
+        if let Some(t) = state_table.as_table_mut() {
+            t.set_metatable(Some(mt));
+        }
+
+        // Create C closure for the iterator
+        let vm = l.global_state_mut();
+        let iterator_closure = vm.create_c_closure(io_lines_next, vec![state_table])?;
+
+        l.push_value(iterator_closure)?;
+        if l.global_state().language() == crate::LuaLanguageLevel::Lua53 {
+            return Ok(1);
+        }
+        l.push_value(state_table)?;
+        l.push_value(LuaValue::nil())?;
+        l.push_value(LuaValue::nil())?;
+        Ok(4)
+    }
+}
+
+/// Iterator function for io.lines generic for loop
+/// When called from generic for: io_lines_next(state_table, control) - state is arg 1
+/// When called standalone: f() - state is in upvalue
+fn io_lines_next(l: &mut LuaState) -> LuaResult<usize> {
+    // Try to get state from arg 1 first (generic for passes it)
+    let state_val = match l.get_arg(1) {
+        Some(v) if v.is_table() => v,
+        _ => {
+            // Get from upvalue (standalone call)
+            if let Some(frame_idx) = l.call_depth().checked_sub(1) {
+                if let Some(func_val) = l.get_frame_func(frame_idx) {
+                    if let Some(cclosure) = func_val.as_cclosure() {
+                        if let Some(upval) = cclosure.upvalues().first() {
+                            *upval
+                        } else {
+                            return Err(l.error("iterator state not found".to_string()));
+                        }
+                    } else {
+                        return Err(l.error("iterator state not found".to_string()));
+                    }
+                } else {
+                    return Err(l.error("iterator state not found".to_string()));
+                }
+            } else {
+                return Err(l.error("iterator state not found".to_string()));
+            }
+        }
+    };
+
+    io_lines_call_inner(l, &state_val)
+}
+
+/// __call metamethod for io.lines iterator table
+pub(crate) fn io_lines_call(l: &mut LuaState) -> LuaResult<usize> {
+    // arg 1 is the table itself (self), arg 2+ are args from caller
+    let state_val = l
+        .get_arg(1)
+        .ok_or_else(|| l.error("iterator requires state".to_string()))?;
+
+    io_lines_call_inner(l, &state_val)
+}
+
+/// Shared implementation for io.lines iteration
+fn io_lines_call_inner(l: &mut LuaState, state_val: &LuaValue) -> LuaResult<usize> {
+    // Check if already closed
+    let closed_key = l.create_string("closed")?;
+    let is_closed = l
+        .raw_get(state_val, &closed_key)
+        .and_then(|v| v.as_boolean())
+        .unwrap_or(false);
+    if is_closed {
+        return Err(l.error("file is already closed".to_string()));
+    }
+
+    let file_key = l.create_string("file")?;
+    let file_val = l
+        .raw_get(state_val, &file_key)
+        .ok_or_else(|| l.error("file not found in state".to_string()))?;
+
+    // Get format count
+    let nfmts_key = l.create_string("nfmts")?;
+    let nfmts = l
+        .raw_get(state_val, &nfmts_key)
+        .and_then(|v| v.as_integer())
+        .unwrap_or(0) as usize;
+
+    // Get formats table
+    let fmts_key = l.create_string("fmts")?;
+    let fmts_table = l.raw_get(state_val, &fmts_key).unwrap_or_default();
+
+    if let Some(ud) = file_val.as_userdata_mut() {
+        let Ok(data) = ud.get_data_mut() else {
+            return Err(l.error("attempt to use an expired file handle".to_string()));
+        };
+        if let Some(lua_file) = data.downcast_mut::<LuaFile>() {
+            if nfmts == 0 {
+                // Default: read a line
+                let res = lua_file.read_line();
+                match res {
+                    Ok(Some(line)) => {
+                        let line = bytes_to_lua_value(l, line)?;
+                        l.push_value(line)?;
+                        return Ok(1);
+                    }
+                    Ok(None) => {
+                        return io_lines_close_on_eof(l, lua_file, state_val, &closed_key);
+                    }
+                    Err(e) => return Err(l.error(format!("read error: {}", e))),
+                }
+            } else {
+                let mut formats = Vec::with_capacity(nfmts);
+                for idx in 1..=nfmts {
+                    let fmt = if let Some(ft) = fmts_table.as_table() {
+                        ft.raw_geti(idx as i64).unwrap_or(LuaValue::nil())
+                    } else {
+                        LuaValue::nil()
+                    };
+                    formats.push(fmt);
+                }
+                match read_many_formats_file(l, lua_file, &formats)? {
+                    ReadManyResult::Values(results) => {
+                        let nresults = results.len();
+                        for result in results {
+                            l.push_value(result)?;
+                        }
+                        return Ok(nresults);
+                    }
+                    ReadManyResult::Fail(results) => {
+                        if results.is_empty() {
+                            return io_lines_close_on_eof(l, lua_file, state_val, &closed_key);
+                        }
+                        let nresults = results.len() + 1;
+                        for result in results {
+                            l.push_value(result)?;
+                        }
+                        l.push_value(LuaValue::nil())?;
+                        return Ok(nresults);
+                    }
+                    ReadManyResult::IoError(error) => {
+                        return Err(l.error(format!("{}", error)));
+                    }
+                }
+            }
+        }
+    }
+
+    Err(l.error("expected file handle".to_string()))
+}
+
+/// Helper: close file (or not) on EOF and return nil
+fn io_lines_close_on_eof(
+    l: &mut LuaState,
+    lua_file: &mut LuaFile,
+    state_val: &LuaValue,
+    closed_key: &LuaValue,
+) -> LuaResult<usize> {
+    let noclose_key = l.create_string("noclose")?;
+    let no_close = l
+        .raw_get(state_val, &noclose_key)
+        .and_then(|v| v.as_boolean())
+        .unwrap_or(false);
+    if !no_close {
+        let _ = lua_file.close();
+    }
+    if let Some(t) = state_val.as_table_mut() {
+        t.raw_set(closed_key, LuaValue::boolean(true));
+    }
+    l.push_value(LuaValue::nil())?;
+    Ok(1)
+}
+
+/// Read one value from file using a format specifier
+/// io.input([file]) - Set or get default input file
+fn io_input(l: &mut LuaState) -> LuaResult<usize> {
+    let arg = l.get_arg(1);
+
+    if let Some(arg_val) = arg {
+        // Set new input file
+        if let Some(filename) = arg_val.as_str() {
+            // Open file for reading
+            let lua_file = match LuaFile::open_read(filename) {
+                Ok(f) => f,
+                Err(e) => {
+                    return Err(l.error(format!("cannot open file '{}': {}", filename, e)));
+                }
+            };
+            let file_mt = create_file_metatable(l)?;
+            let userdata = l.create_userdata(LuaUserdata::new(lua_file))?;
+
+            if let Some(ud) = userdata.as_userdata_mut() {
+                ud.set_metatable(file_mt);
+            }
+
+            l.global_state_mut().gc.check_finalizer(&userdata);
+
+            // Store in registry and update cache
+            let registry = l.global_state_mut().registry;
+            let key = l.create_string("_IO_input")?;
+            l.raw_set(&registry, key, userdata);
+            l.global_state_mut().io_default_input = Some(userdata);
+        } else if arg_val.is_userdata() {
+            // Verify it's a valid file handle
+            if let Some(ud) = arg_val.as_userdata_mut() {
+                let Ok(data) = ud.get_data_mut() else {
+                    return Err(l.error("attempt to use an expired file handle".to_string()));
+                };
+                if data.downcast_ref::<LuaFile>().is_none() {
+                    return Err(crate::stdlib::debug::arg_typeerror(l, 1, "FILE*", &arg_val));
+                }
+            }
+
+            // Store in registry and update cache
+            let registry = l.global_state_mut().registry;
+            let key = l.create_string("_IO_input")?;
+            l.raw_set(&registry, key, arg_val);
+            l.global_state_mut().io_default_input = Some(arg_val);
+        } else {
+            return Err(crate::stdlib::debug::arg_typeerror(l, 1, "FILE*", &arg_val));
+        }
+    }
+
+    // Return current input file
+    let handle = get_default_input(l)?;
+    l.push_value(handle)?;
+    Ok(1)
+}
+
+/// io.output([file]) - Set or get default output file
+fn io_output(l: &mut LuaState) -> LuaResult<usize> {
+    let arg = l.get_arg(1);
+
+    if let Some(arg_val) = arg {
+        // Set new output file
+        if let Some(filename) = arg_val.as_str() {
+            // Create parent directories if they don't exist
+            if let Some(parent) = std::path::Path::new(filename).parent()
+                && !parent.as_os_str().is_empty()
+            {
+                let _ = std::fs::create_dir_all(parent);
+            }
+
+            // Open file for writing
+            let file = match std::fs::File::create(filename) {
+                Ok(f) => f,
+                Err(e) => {
+                    return Err(l.error(format!("cannot open file '{}': {}", filename, e)));
+                }
+            };
+
+            let lua_file = LuaFile::from_file(file);
+            let file_mt = create_file_metatable(l)?;
+            let userdata = l.create_userdata(LuaUserdata::new(lua_file))?;
+
+            if let Some(ud) = userdata.as_userdata_mut() {
+                ud.set_metatable(file_mt);
+            }
+
+            l.global_state_mut().gc.check_finalizer(&userdata);
+
+            // Store in registry and update cache
+            let registry = l.global_state_mut().registry;
+            let key = l.create_string("_IO_output")?;
+            l.raw_set(&registry, key, userdata);
+            l.global_state_mut().io_default_output = Some(userdata);
+        } else if arg_val.is_userdata() {
+            // Verify it's a valid file handle
+            if let Some(ud) = arg_val.as_userdata_mut() {
+                let Ok(data) = ud.get_data_mut() else {
+                    return Err(l.error("attempt to use an expired file handle".to_string()));
+                };
+                if data.downcast_ref::<LuaFile>().is_none() {
+                    return Err(l.error("bad argument #1 to 'output' (file expected)".to_string()));
+                }
+            }
+
+            // Store in registry and update cache
+            let registry = l.global_state_mut().registry;
+            let key = l.create_string("_IO_output")?;
+            l.raw_set(&registry, key, arg_val);
+            l.global_state_mut().io_default_output = Some(arg_val);
+        } else {
+            return Err(
+                l.error("bad argument #1 to 'output' (string or file expected)".to_string())
+            );
+        }
+    }
+
+    // Return current output file
+    let handle = get_default_output(l)?;
+    l.push_value(handle)?;
+    Ok(1)
+}
+
+/// io.type(obj) - Check if obj is a file handle
+fn io_type(l: &mut LuaState) -> LuaResult<usize> {
+    let obj = l.get_arg(1);
+
+    if let Some(val) = obj
+        && let Some(ud) = val.as_userdata_mut()
+    {
+        let Ok(data) = ud.get_data_mut() else {
+            return Err(l.error("attempt to use an expired file handle".to_string()));
+        };
+        if let Some(lua_file) = data.downcast_ref::<LuaFile>() {
+            if lua_file.is_closed() {
+                let result = l.create_string("closed file")?;
+                l.push_value(result)?;
+                return Ok(1);
+            } else {
+                let result = l.create_string("file")?;
+                l.push_value(result)?;
+                return Ok(1);
+            }
+        }
+    }
+
+    l.push_value(LuaValue::nil())?;
+    Ok(1)
+}
+
+/// io.tmpfile() - Create a temporary file
+fn io_tmpfile(l: &mut LuaState) -> LuaResult<usize> {
+    // Create a temporary file manually without external dependencies
+    // Use system temp directory + random name
+    let temp_dir = std::env::temp_dir();
+
+    // Generate a unique filename using timestamp and process ID
+    let timestamp = crate::platform_time::unix_nanos();
+    let pid = std::process::id();
+    let filename = format!("lua_tmp_{}_{}.tmp", pid, timestamp);
+    let temp_path = temp_dir.join(filename);
+
+    // Open with read+write, create new, delete on close (platform-specific)
+    match OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(&temp_path)
+    {
+        Ok(file) => {
+            // On success, try to delete the file immediately
+            // On Unix, the file remains accessible via the open handle
+            // On Windows, we'll need to delete it on close
+            #[cfg(unix)]
+            let _ = std::fs::remove_file(&temp_path);
+
+            // Wrap in LuaFile (read+write mode for tmpfile)
+            let lua_file = LuaFile::from_file_rw(file);
+
+            // Create file metatable
+            let file_mt = create_file_metatable(l)?;
+
+            // Create userdata
+            let userdata = l.create_userdata(LuaUserdata::new(lua_file))?;
+
+            // Set metatable
+            if let Some(ud) = userdata.as_userdata_mut() {
+                ud.set_metatable(file_mt);
+            }
+
+            l.push_value(userdata)?;
+            Ok(1)
+        }
+        Err(e) => {
+            l.push_value(LuaValue::nil())?;
+            let err_str = l.create_string(&e.to_string())?;
+            l.push_value(err_str)?;
+            Ok(2)
+        }
+    }
+}
+
+/// io.close([file]) - Close a file
+fn io_close(l: &mut LuaState) -> LuaResult<usize> {
+    let file_arg = l.get_arg(1);
+
+    let is_default_output = file_arg.is_none();
+    let restore_default_output = if let Some(file) = file_arg {
+        get_default_output(l).is_ok_and(|current| current == file)
+    } else {
+        false
+    };
+    let file_val = if let Some(file) = file_arg {
+        file
+    } else {
+        // No file given - close default output
+        get_default_output(l)?
+    };
+
+    let close_result = if let Some(ud) = file_val.as_userdata_mut() {
+        let Ok(data) = ud.get_data_mut() else {
+            return Err(l.error("attempt to use an expired file handle".to_string()));
+        };
+        if let Some(lua_file) = data.downcast_mut::<LuaFile>() {
+            // Cannot close already-closed files
+            if lua_file.is_closed() {
+                return Err(l.error("attempt to use a closed file".to_string()));
+            }
+            // Cannot close standard streams - return nil, msg
+            if lua_file.is_std_stream() {
+                l.push_value(LuaValue::nil())?;
+                let msg = l.create_string("cannot close standard file")?;
+                l.push_value(msg)?;
+                return Ok(2);
+            }
+            lua_file.close_with_result()
+        } else {
+            return Err(l.error("expected file handle".to_string()));
+        }
+    } else {
+        return Err(l.error("expected file handle".to_string()));
+    };
+
+    match close_result {
+        Ok(file::LuaFileCloseResult::Closed) => {
+            if is_default_output {
+                l.global_state_mut().io_default_output = None;
+            } else if restore_default_output {
+                reset_default_output_to_stdout(l)?;
+            }
+            l.push_value(LuaValue::boolean(true))?;
+            Ok(1)
+        }
+        Ok(file::LuaFileCloseResult::Process(status)) => {
+            if is_default_output {
+                l.global_state_mut().io_default_output = None;
+            } else if restore_default_output {
+                reset_default_output_to_stdout(l)?;
+            }
+            if status.success {
+                l.push_value(LuaValue::boolean(true))?;
+            } else {
+                l.push_value(LuaValue::nil())?;
+            }
+            let kind = l.create_string(status.kind)?;
+            l.push_value(kind)?;
+            l.push_value(LuaValue::integer(status.code as i64))?;
+            Ok(3)
+        }
+        Err(e) => Err(l.error(format!("close error: {}", e))),
+    }
+}
+
+/// io.popen(prog [, mode]) - Execute program and return file handle
+fn io_popen(l: &mut LuaState) -> LuaResult<usize> {
+    let command = l
+        .get_arg(1)
+        .and_then(|v| v.as_str().map(|s| s.to_string()))
+        .ok_or_else(|| l.error("bad argument #1 to 'popen' (string expected)".to_string()))?;
+    let mode = l
+        .get_arg(2)
+        .and_then(|v| v.as_str().map(|s| s.to_string()))
+        .unwrap_or_else(|| "r".to_string());
+
+    if !popen::validate_popen_mode(&mode) {
+        return Err(l.error("bad argument #2 to 'popen' (invalid mode)".to_string()));
+    }
+
+    match LuaFile::popen(&command, &mode) {
+        Ok(file) => {
+            let file_mt = create_file_metatable(l)?;
+            let userdata = l.create_userdata(LuaUserdata::new(file))?;
+
+            if let Some(ud) = userdata.as_userdata_mut() {
+                ud.set_metatable(file_mt);
+            }
+
+            l.global_state_mut().gc.check_finalizer(&userdata);
+            l.push_value(userdata)?;
+            Ok(1)
+        }
+        Err(error) => {
+            l.push_value(LuaValue::nil())?;
+            let err_str = l.create_string(&error.to_string())?;
+            l.push_value(err_str)?;
+            let errno = error.raw_os_error().unwrap_or(0) as i64;
+            l.push_value(LuaValue::integer(errno))?;
+            Ok(3)
+        }
+    }
+}

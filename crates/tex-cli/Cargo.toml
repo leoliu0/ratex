@@ -31,9 +31,9 @@ path = "src/bin/latexdiff.rs"
 name = "ratex"
 path = "src/bin/ratex.rs"
 [dependencies]
-mimalloc = "0.1.52"
-libmimalloc-sys = "0.1.49"
+dlmalloc = { workspace = true }
 libc = { workspace = true }
 tex-core = { path = "../tex-core" }
 tex-kpse = { path = "../tex-kpse" }
 tex-bibtex = { path = "../tex-bibtex" }
+tex-ps = { path = "../tex-ps" }

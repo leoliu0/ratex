@@ -1,0 +1,7 @@
+[package]
+name = "tex-mplib"
+version.workspace = true
+edition = "2021"
+description = "Pure-Rust MetaPost 3.00 engine and mplib implementation"
+
+[dependencies]

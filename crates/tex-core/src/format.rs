@@ -19,7 +19,7 @@
 //! production `.fmt` may wrap that whole byte stream in a zstd frame; loading
 //! detects the frame from its magic bytes rather than its filename.
 
-use std::io::{self, Read};
+use std::io;
 use std::path::Path;
 use std::rc::Rc;
 
@@ -32,7 +32,7 @@ use crate::tfm::{CharInfo, ExtRecipe, Font, LigStep};
 use crate::token::{CsTable, Token};
 
 const MAGIC: &[u8; 8] = b"RUSTEXFM";
-const VERSION: u16 = 13;
+const VERSION: u16 = 14;
 /// A production format is currently about 8 MiB decoded. Keep corrupt or
 /// unrelated external files from turning format probing into an unbounded
 /// allocation while leaving ample room for future format growth.
@@ -361,6 +361,7 @@ pub fn save_format_with_encoding(
     w.u16(VERSION);
     w.u16(SEMANTICS);
     w.u16(eng.eqtb.cur_font_val);
+    w.u8(eng.engine_kind as u8);
     // control-sequence names (id = position)
     w.u32(eng.cs.len() as u32);
     for id in eng.cs.all_ids() {
@@ -619,8 +620,10 @@ pub fn save_format_with_encoding(
 
     let payload = match encoding {
         FormatEncoding::Raw => w.buf,
-        FormatEncoding::Zstd(level) => zstd::encode_all(&w.buf[..], level)
-            .map_err(|e| format!("zstd compression failed: {e}"))?,
+        FormatEncoding::Zstd(_level) => ruzstd::encoding::compress_to_vec(
+            &w.buf[..],
+            ruzstd::encoding::CompressionLevel::Fastest,
+        ),
     };
     tex_kpse::fs::write(path, &payload)
         .map_err(|e| format!("cannot write {}: {}", path.display(), e))?;
@@ -910,14 +913,18 @@ pub fn load_format_from(data: &[u8]) -> Result<Engine, String> {
         ));
     }
     if data.len() >= 4 && data[..4] == ZSTD_MAGIC {
-        let decoder = zstd::stream::read::Decoder::new(data)
-            .map_err(|e| format!("zstd decompression failed: {e}"))?;
+        let decoder = ruzstd::decoding::StreamingDecoder::new_with_max_window_size(
+            data,
+            MAX_FORMAT_BYTES as u64,
+        )
+        .map_err(|e| format!("zstd decompression failed: {e}"))?;
         let mut decompressed = Vec::with_capacity(
             data.len()
                 .saturating_mul(16)
                 .min(MAX_FORMAT_BYTES)
                 .min(16 * 1024 * 1024),
         );
+        use std::io::Read;
         decoder
             .take(MAX_FORMAT_BYTES as u64 + 1)
             .read_to_end(&mut decompressed)
@@ -966,6 +973,15 @@ fn load_format_uncompressed(data: &[u8]) -> Result<Engine, String> {
         eng.font_loader
             .restore_native_font(id as crate::tfm::FontId, font)?;
     }
+    if eng.engine_kind == crate::engine::EngineKind::XeTeX {
+        eng.init_xetex_primitives();
+    } else if eng.engine_kind == crate::engine::EngineKind::LuaTeX {
+        eng.init_luatex_primitives();
+        if eng.lua.is_none() {
+            let lua_eng = crate::engine_lua::LuaEngine::new().map_err(|e| e)?;
+            eng.lua = Some(Box::new(lua_eng));
+        }
+    }
 
     // Engine identity is not format state. Older dumps serialized the
     // assignable backing slot before e-TeX mode was enabled, which made
@@ -1011,6 +1027,8 @@ pub fn load_format_bytes_into(data: &[u8], eng: &mut Engine) -> Result<(), Strin
     eng.penalty_shape_levels = scratch.penalty_shape_levels;
     eng.format_done = scratch.format_done;
     eng.ini_mode = scratch.ini_mode;
+    eng.engine_kind = scratch.engine_kind;
+    eng.lua = scratch.lua;
     Ok(())
 }
 
@@ -1020,6 +1038,15 @@ fn io_err(e: io::Error) -> String {
 
 fn load_state(r: &mut R, eng: &mut Engine, version: u16) -> io::Result<()> {
     eng.eqtb.cur_font_val = r.u16()?;
+    if version >= 14 {
+        let kind_byte = r.u8()?;
+        eng.engine_kind = match kind_byte {
+            0 => crate::engine::EngineKind::PdfTeX,
+            1 => crate::engine::EngineKind::XeTeX,
+            2 => crate::engine::EngineKind::LuaTeX,
+            _ => return Err(bad("invalid format engine kind")),
+        };
+    }
 
     let n = r.count()?;
     let mut cs = CsTable::new();
@@ -1821,6 +1848,7 @@ mod tests {
             w.u16(VERSION);
             w.u16(SEMANTICS);
             w.u16(0); // cur_font: no font selected
+            w.u8(0); // engine_kind: PdfTeX
             w.u32(eng.cs.len() as u32);
             for id in eng.cs.all_ids() {
                 w.bytes(eng.cs.name(id));
@@ -1954,6 +1982,7 @@ mod tests {
         // e-TeX penalty arrays.
         let mut prefix = R::new(&data[MAGIC.len() + 4..]);
         prefix.u16().unwrap(); // current font
+        prefix.u8().unwrap(); // engine kind
         let cs_count = prefix.count().unwrap();
         for _ in 0..cs_count {
             prefix.bytes().unwrap();
@@ -1963,6 +1992,8 @@ mod tests {
         let int_params_offset = MAGIC.len() + 4 + prefix.p;
 
         let mut legacy = data.clone();
+        legacy.remove(MAGIC.len() + 4 + 2);
+        let int_params_offset = int_params_offset - 1;
         const V8_INT_PARAMS: usize = 95;
         let delta = NUM_INT_PARAMS - V8_INT_PARAMS;
         let new_value_offset = int_params_offset + V8_INT_PARAMS * std::mem::size_of::<i32>();

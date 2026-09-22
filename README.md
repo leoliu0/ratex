@@ -9,7 +9,7 @@
 
 ## Verification and Performance
 
-The v0.4.3 Linux build passes all 39 font and graphics fixtures through both
+The v0.4.4 Linux build passes all 39 font and graphics fixtures through both
 the packaged standalone binary and an installed copy. Checks use filesystem
 isolation, disabled networking, pinned reference fonts, and Poppler/pdf.js
 rendering and text extraction. The workspace suite passes 791 tests. Release
@@ -43,30 +43,30 @@ See [PERFORMANCE.md](PERFORMANCE.md) for benchmark scope and measurements.
 ## Installation
 
 ### Linux
-Download the native package for your distribution from [GitHub Releases](https://github.com/leoliu0/ratex/releases/tag/v0.4.3):
+Download the native package for your distribution from [GitHub Releases](https://github.com/leoliu0/ratex/releases/tag/v0.4.4):
 
 ```bash
 # Ubuntu / Debian (.deb)
-sudo apt install ./ratex_0.4.3_amd64.deb
+sudo apt install ./ratex_0.4.4_amd64.deb
 
 # Fedora / RHEL / openSUSE (.rpm)
-sudo dnf install ./ratex-0.4.3-1.x86_64.rpm
+sudo dnf install ./ratex-0.4.4-1.x86_64.rpm
 
 # Arch Linux (AUR): prebuilt binary or source build
 yay -S ratex-bin
 yay -S ratex
 
 # Any Linux (Universal Tarball Installer)
-tar -xzf tex-suite-v0.4.3-linux-x86_64.tar.gz && sudo ./tex-suite-linux-x86_64/install.sh
+tar -xzf tex-suite-v0.4.4-linux-x86_64.tar.gz && sudo ./tex-suite-linux-x86_64/install.sh
 ```
 
 ### macOS
 Download and run the native installer package:
-- [macOS Apple Silicon (.pkg)](https://github.com/leoliu0/ratex/releases/download/v0.4.3/ratex-v0.4.3-macos-aarch64.pkg)
-- [macOS Intel (.pkg)](https://github.com/leoliu0/ratex/releases/download/v0.4.3/ratex-v0.4.3-macos-x86_64.pkg)
+- [macOS Apple Silicon (.pkg)](https://github.com/leoliu0/ratex/releases/download/v0.4.4/ratex-v0.4.4-macos-aarch64.pkg)
+- [macOS Intel (.pkg)](https://github.com/leoliu0/ratex/releases/download/v0.4.4/ratex-v0.4.4-macos-x86_64.pkg)
 
 ### Windows
-- [Download Windows Setup (.exe)](https://github.com/leoliu0/ratex/releases/download/v0.4.3/ratex-setup-v0.4.3-windows-x64.exe)
+- [Download Windows Setup (.exe)](https://github.com/leoliu0/ratex/releases/download/v0.4.4/ratex-setup-v0.4.4-windows-x64.exe)
 
 ---
 

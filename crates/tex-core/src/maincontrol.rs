@@ -300,11 +300,11 @@ impl Engine {
                 let (c, character_source) = self.scan_int_with_source();
                 self.scan_optional_equals();
                 let (v, value_source) = self.scan_int_with_source();
-                if !(0..=255).contains(&c) {
+                let character = self.valid_profile_character_code(c);
+                if character.is_none() {
+                    let max = if self.engine_kind == crate::engine::EngineKind::PdfTeX { 255 } else { 1114111 };
                     self.error_at(
-                        &format!(
-                            "Character code {c} is out of range for \\catcode; expected 0 through 255; assignment ignored"
-                        ),
+                        &format!("Character code {c} is out of range for \\catcode; expected 0 through {max}; assignment ignored"),
                         character_source,
                     );
                 } else if !(0..=15).contains(&v) {
@@ -315,7 +315,7 @@ impl Engine {
                         value_source,
                     );
                 } else {
-                    self.eqtb.assign_cat(c as u8, v as u8, g);
+                    self.eqtb.assign_cat_code(character.unwrap(), v as u8, g);
                 }
             }
             MathCode => {
@@ -323,11 +323,11 @@ impl Engine {
                 let (c, character_source) = self.scan_int_with_source();
                 self.scan_optional_equals();
                 let (v, value_source) = self.scan_int_with_source();
-                if !(0..=255).contains(&c) {
+                let character = self.valid_profile_character_code(c);
+                if character.is_none() {
+                    let max = if self.engine_kind == crate::engine::EngineKind::PdfTeX { 255 } else { 1114111 };
                     self.error_at(
-                        &format!(
-                            "Character code {c} is out of range for \\mathcode; expected 0 through 255; assignment ignored"
-                        ),
+                        &format!("Character code {c} is out of range for \\mathcode; expected 0 through {max}; assignment ignored"),
                         character_source,
                     );
                 } else if !(0..=32768).contains(&v) {
@@ -338,7 +338,8 @@ impl Engine {
                         value_source,
                     );
                 } else {
-                    self.eqtb.assign_math_code(c as u8, v as u16, g);
+                    self.eqtb
+                        .assign_math_code_for(character.unwrap(), v as u32, g);
                 }
             }
             DelCode => {
@@ -346,11 +347,11 @@ impl Engine {
                 let (c, character_source) = self.scan_int_with_source();
                 self.scan_optional_equals();
                 let (v, value_source) = self.scan_int_with_source();
-                if !(0..=255).contains(&c) {
+                let character = self.valid_profile_character_code(c);
+                if character.is_none() {
+                    let max = if self.engine_kind == crate::engine::EngineKind::PdfTeX { 255 } else { 1114111 };
                     self.error_at(
-                        &format!(
-                            "Character code {c} is out of range for \\delcode; expected 0 through 255; assignment ignored"
-                        ),
+                        &format!("Character code {c} is out of range for \\delcode; expected 0 through {max}; assignment ignored"),
                         character_source,
                     );
                 } else if !(-1..=0xFF_FFFF).contains(&v) {
@@ -361,7 +362,8 @@ impl Engine {
                         value_source,
                     );
                 } else {
-                    self.eqtb.assign_del_code(c as u8, v, g);
+                    self.eqtb
+                        .assign_delimiter_code_for(character.unwrap(), i64::from(v), g);
                 }
             }
             LcCodeP | UcCodeP => {
@@ -371,27 +373,25 @@ impl Engine {
                 let (character, character_source) = self.scan_int_with_source();
                 self.scan_optional_equals();
                 let (value, value_source) = self.scan_int_with_source();
-                if u32::try_from(character)
-                    .ok()
-                    .and_then(char::from_u32)
-                    .is_none()
-                {
+                let character = self.valid_profile_character_code(character);
+                let value = self.valid_profile_character_code(value);
+                if character.is_none() {
                     self.error_at(
-                        &format!(
-                            "Invalid Unicode scalar {character} for {command}; assignment ignored"
-                        ),
+                        &format!("Invalid character code for {command}; assignment ignored"),
                         character_source,
                     );
-                } else if u32::try_from(value).ok().and_then(char::from_u32).is_none() {
+                } else if value.is_none() {
                     self.error_at(
-                        &format!(
-                            "Invalid Unicode scalar {value} for {command}; assignment ignored"
-                        ),
+                        &format!("Invalid case-mapping value for {command}; assignment ignored"),
                         value_source,
                     );
                 } else {
-                    self.eqtb
-                        .assign_case_code(character as u32, value as u32, uppercase, global);
+                    self.eqtb.assign_case_code(
+                        character.unwrap(),
+                        value.unwrap(),
+                        uppercase,
+                        global,
+                    );
                 }
             }
             SfCodeP => {
@@ -399,11 +399,11 @@ impl Engine {
                 let (c, character_source) = self.scan_int_with_source();
                 self.scan_optional_equals();
                 let (v, value_source) = self.scan_int_with_source();
-                if !(0..=255).contains(&c) {
+                let character = self.valid_profile_character_code(c);
+                if character.is_none() {
+                    let max = if self.engine_kind == crate::engine::EngineKind::PdfTeX { 255 } else { 1114111 };
                     self.error_at(
-                        &format!(
-                            "Character code {c} is out of range for \\sfcode; expected 0 through 255; assignment ignored"
-                        ),
+                        &format!("Character code {c} is out of range for \\sfcode; expected 0 through {max}; assignment ignored"),
                         character_source,
                     );
                 } else if !(0..=32767).contains(&v) {
@@ -414,7 +414,8 @@ impl Engine {
                         value_source,
                     );
                 } else {
-                    self.eqtb.assign_sf_code(c as u8, v as u16, g);
+                    self.eqtb
+                        .assign_space_factor_code(character.unwrap(), v as u16, g);
                 }
             }
             Lowercase | Uppercase => {
@@ -530,7 +531,9 @@ impl Engine {
             Special => self.do_special(),
             Message => self.do_message(false),
             ErrMessage => self.do_message(true),
-            DirectLua => self.do_directlua(),
+            DirectLua => {
+                let _ = self.expand_prim(DirectLua, id);
+            }
             OpenIn => self.do_openin(),
             CloseIn => self.do_closein(),
             Read => self.do_read(false),
@@ -805,7 +808,7 @@ impl Engine {
                     let origin = self.math_diagnostic_origin_at(command_source);
                     self.append_mlist_node(Node::MathChar {
                         fam,
-                        c,
+                        c: u32::from(c),
                         class,
                         origin,
                     });
@@ -1178,16 +1181,86 @@ impl Engine {
             // quantity; \XeTeXrevision expands to its decimal revision
             // string. hyperref/iftex probe these to select driver code.
             XeTeXVersion => {
-                for b in b"2" {
+                for b in b"0" {
                     self.push_token(crate::token::Token::char(12, *b as u32));
                 }
             }
             XeTeXRevision => {
-                for b in b".9995" {
+                for b in b".999998" {
                     self.push_token(crate::token::Token::char(12, *b as u32));
                 }
             }
-            // tex.web: conditionals are executed from the main loop, not
+            XeTeXGlyph => {
+                self.do_xetex_glyph();
+            }
+            XeTeXCharClass => {
+                self.do_xetex_charclass_assign();
+            }
+            XeTeXInterCharToks => {
+                self.do_xetex_interchartoks_assign();
+            }
+            XeTeXUseGlyphMetrics => {
+                self.scan_optional_equals();
+                self.xetex_use_glyph_metrics = self.scan_int();
+            }
+            XeTeXInterCharTokenState => {
+                self.scan_optional_equals();
+                self.xetex_interchartokenstate = self.scan_int();
+            }
+            XeTeXInputNormalization => {
+                self.scan_optional_equals();
+                self.xetex_input_normalization = self.scan_int();
+            }
+            XeTeXGenerateActualText => {
+                self.scan_optional_equals();
+                self.xetex_generate_actual_text = self.scan_int();
+            }
+            XeTeXDashBreakState => {
+                self.scan_optional_equals();
+                self.xetex_dash_break_state = self.scan_int();
+            }
+            CatCodeTable => {
+                let g = self.take_assignment_prefixes("\\catcodetable");
+                self.scan_optional_equals();
+                let table_idx = self.scan_int();
+                if !g && self.eqtb.cur_level > crate::eqtb::LEVEL_ONE {
+                    self.saved_catcode_tables.push((
+                        self.eqtb.cur_level,
+                        self.cur_catcode_table,
+                        self.eqtb.cat.clone(),
+                        self.eqtb.unicode_cat_codes.clone(),
+                    ));
+                }
+                if let Some((cat, ucat)) = self.catcode_tables.get(&table_idx) {
+                    self.eqtb.cat = cat.clone();
+                    self.eqtb.cat_levels.fill(crate::eqtb::LEVEL_ONE);
+                    self.eqtb.unicode_cat_codes = ucat.clone();
+                }
+                self.cur_catcode_table = table_idx;
+            }
+            InitCatCodeTable => {
+                let _ = self.take_assignment_prefixes("\\initcatcodetable");
+                self.scan_optional_equals();
+                let table_idx = self.scan_int();
+                let default_cat = crate::token::CatTable::initex().0;
+                self.catcode_tables.insert(table_idx, (default_cat.to_vec(), crate::FxHashMap::default()));
+            }
+            SaveCatCodeTable => {
+                let _ = self.take_assignment_prefixes("\\savecatcodetable");
+                self.scan_optional_equals();
+                let table_idx = self.scan_int();
+                self.catcode_tables.insert(
+                    table_idx,
+                    (self.eqtb.cat.clone(), self.eqtb.unicode_cat_codes.clone()),
+                );
+            }
+            XeTeXPicFile | XeTeXPdfFile => {
+                self.do_pdfximage();
+            }
+            Ustack => {}
+            Ustartmath | Ustopmath => {
+                self.push_token(Token::char(3, b'$' as u32));
+            }
             // expanded by get_token (they must be storeable by \edef etc)
             IfChar | IfCat | IfOdd | IfNum | IfDim | IfVoid | IfHBox | IfVBox | IfHMode
             | IfVMode | IfInner | IfMMode | IfTrue | IfFalse | IfEOF | IfDef | IfCSName
@@ -1238,7 +1311,7 @@ impl Engine {
         self.skip_spaces_relax();
         let t = self.get_x_raw();
         let base: Option<u8> = if t.is_char() && (t.cc() == 11 || t.cc() == 12) {
-            Some(t.chr() as u8)
+            u8::try_from(t.chr()).ok()
         } else if t.is_cs() && matches!(self.eqtb.resolve(t.cs_id()), Some(Equiv::Prim(Prim::Char)))
         {
             Some(self.scan_character_code("\\char"))
@@ -1330,14 +1403,23 @@ impl Engine {
         }
     }
 
-    /// LuaTeX `\\directlua{...}`: consume the group and ignore it.
+    /// LuaTeX `\directlua [ <reg> ] { <lua-code> }`: execute Lua code and inject output.
     fn do_directlua(&mut self) {
         self.skip_spaces_relax();
         let t = self.get_token();
-        if t.is_char() && t.cc() == 1 {
-            let _ = self.scan_balanced_raw(true);
+        if t.is_char() && t.chr() == u32::from(b'[') {
+            let _ = self.scan_int();
+            let close = self.get_token();
+            if !(close.is_char() && close.chr() == u32::from(b']')) {
+                self.push_token(close);
+            }
         } else {
             self.push_token(t);
+        }
+        let toks = self.scan_general_text_expanded();
+        let code = self.tokens_to_string(&toks);
+        if let Err(err) = self.execute_directlua(&code) {
+            self.error(&format!("LuaTeX error: {err}"));
         }
     }
 
@@ -1611,6 +1693,10 @@ impl Engine {
         };
         let obj = self.alloc_pdf_obj();
         let mut image_pages = 1;
+        let is_eps = bytes.starts_with(b"%!PS")
+            || bytes.starts_with(b"%!ps")
+            || bytes.starts_with(b"%!")
+            || bytes.starts_with(&[0xC5, 0xD0, 0xD3, 0xC6]);
         let ((nat_w, nat_h), img_bbox) = if bytes.starts_with(b"%PDF-") {
             let imported = {
                 let font_loader = &mut self.font_loader;
@@ -1657,6 +1743,63 @@ impl Engine {
                     return;
                 }
             }
+        } else if is_eps {
+            match tex_ps::eps_to_pdf(&bytes) {
+                Ok(eps_out) => {
+                    let imported = {
+                        let font_loader = &mut self.font_loader;
+                        let base14_fonts = &mut self.pdf_doc.imported_base14_fonts;
+                        let next_object = &mut self.pdf_next_obj;
+                        let mut resolve_type1 = |name: &str| font_loader.read_type1_dependency(name);
+                        crate::pdf_images::import_pdf_page_with_base14(
+                            &eps_out.pdf_bytes,
+                            1,
+                            page_box,
+                            obj,
+                            next_object,
+                            base14_fonts,
+                            &mut resolve_type1,
+                        )
+                    };
+                    match imported {
+                        Ok((w, h, bbox, objects, total_pages)) => {
+                            image_pages = total_pages as i32;
+                            self.pdf_doc.objects.extend(
+                                objects
+                                    .into_iter()
+                                    .map(|image| (image.obj_num, image.bytes)),
+                            );
+                            let sp_per_bp = 72.27 / 72.0 * 65536.0;
+                            (
+                                (
+                                    (w * sp_per_bp).round() as i32,
+                                    (h * sp_per_bp).round() as i32,
+                                ),
+                                [
+                                    (bbox[0] * sp_per_bp).round() as i32,
+                                    (bbox[1] * sp_per_bp).round() as i32,
+                                    (bbox[2] * sp_per_bp).round() as i32,
+                                    (bbox[3] * sp_per_bp).round() as i32,
+                                ],
+                            )
+                        }
+                        Err(error) => {
+                            self.error_at(
+                                &format!("Cannot include EPS as PDF `{file}`: {error}"),
+                                origin.as_ref().map(crate::input::SourceMark::to_context),
+                            );
+                            return;
+                        }
+                    }
+                }
+                Err(error) => {
+                    self.error_at(
+                        &format!("Cannot parse PostScript/EPS `{file}`: {error}"),
+                        origin.as_ref().map(crate::input::SourceMark::to_context),
+                    );
+                    return;
+                }
+            }
         } else if let Some(jpeg) = crate::pdf_images::jpeg_info(&bytes) {
             let w_sp = (jpeg.width as f64 / jpeg.dpi_x * 72.27 * 65536.0).round() as i32;
             let h_sp = (jpeg.height as f64 / jpeg.dpi_y * 72.27 * 65536.0).round() as i32;
@@ -1697,8 +1840,8 @@ impl Engine {
             crate::engine::PdfImageInfo {
                 path: path.to_string_lossy().into_owned(),
                 used: false,
-                embedded: bytes.starts_with(b"%PDF-"),
-                resource_bytes: if bundled && !bytes.starts_with(b"%PDF-") {
+                embedded: bytes.starts_with(b"%PDF-") || is_eps,
+                resource_bytes: if bundled && !bytes.starts_with(b"%PDF-") && !is_eps {
                     Some(std::sync::Arc::new(bytes))
                 } else {
                     None

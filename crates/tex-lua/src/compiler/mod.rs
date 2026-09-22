@@ -1,0 +1,213 @@
+// Lua bytecode compiler - Main module
+// Port of Lua 5.5 lparser.c and lcode.c
+
+// Submodules
+mod code; // Code generation (lcode.c)
+mod expr_parser; // Expression parser functions (lparser.c)
+mod expression; // Expression parsing and expdesc
+mod func_state; // FuncState and related structures (lparser.h)
+mod parse_literal; // Number parsing utilities
+mod parser; // Lexer/token provider
+mod statement; // Statement parsing (lparser.c)
+
+// Re-exports
+pub use crate::compiler::parser::LuaLanguageLevel;
+use crate::compiler::parser::{LuaLexer, LuaTokenKind};
+use crate::lua_value::{LuaProto, UpvalueDesc};
+use crate::lua_vm::GlobalState;
+use crate::lua_vm::OpCode;
+pub use code::*;
+pub use expression::*;
+pub use func_state::*;
+
+// Structures are now in separate files (func_state.rs, expression.rs)
+const BYTE_SOURCE_MARKER: char = '\u{f0000}';
+const BYTE_SOURCE_ESCAPE: char = '\u{f0001}';
+const BYTE_SOURCE_BASE: u32 = 0xf0100;
+
+fn encode_byte_source(source: &[u8]) -> String {
+    fn push_valid(output: &mut String, text: &str) {
+        for ch in text.chars() {
+            output.push(ch);
+            if ch == BYTE_SOURCE_MARKER {
+                output.push(BYTE_SOURCE_ESCAPE);
+            }
+        }
+    }
+
+    let mut output = String::with_capacity(source.len());
+    let mut offset = 0;
+    while offset < source.len() {
+        match std::str::from_utf8(&source[offset..]) {
+            Ok(text) => {
+                push_valid(&mut output, text);
+                break;
+            }
+            Err(error) => {
+                let valid_end = offset + error.valid_up_to();
+                let valid = std::str::from_utf8(&source[offset..valid_end])
+                    .expect("from_utf8 reported a valid prefix");
+                push_valid(&mut output, valid);
+                offset = valid_end;
+                let invalid_len = error.error_len().unwrap_or(source.len() - offset);
+                for &byte in &source[offset..offset + invalid_len] {
+                    output.push(BYTE_SOURCE_MARKER);
+                    output.push(char::from_u32(BYTE_SOURCE_BASE + u32::from(byte)).unwrap());
+                }
+                offset += invalid_len;
+            }
+        }
+    }
+    output
+}
+
+// Port of luaY_parser from lparser.c
+pub fn compile_code(source: &str, vm: &mut GlobalState) -> Result<LuaProto, String> {
+    compile_code_with_name(source, vm, "@chunk")
+}
+
+pub fn compile_code_with_name(
+    source: &str,
+    vm: &mut GlobalState,
+    chunk_name: &str,
+) -> Result<LuaProto, String> {
+    compile_code_with_name_mode(source, vm, chunk_name, false)
+}
+
+pub fn compile_code_bytes_with_name(
+    source: &[u8],
+    vm: &mut GlobalState,
+    chunk_name: &str,
+) -> Result<LuaProto, String> {
+    let encoded = encode_byte_source(source);
+    compile_code_with_name_mode(&encoded, vm, chunk_name, true)
+}
+
+fn compile_code_with_name_mode(
+    source: &str,
+    vm: &mut GlobalState,
+    chunk_name: &str,
+    byte_markers: bool,
+) -> Result<LuaProto, String> {
+    let level = vm.version;
+    let mut lexer = match LuaLexer::new_with_byte_markers(source, level, byte_markers) {
+        Ok(lexer) => lexer,
+        Err(err) => {
+            return Err(format!("{}:{}", func_state::format_source(chunk_name), err));
+        }
+    };
+    // Check for lexer errors before parsing
+    let mut compiler_state = CompilerState::new();
+    let mut fs = FuncState::new(
+        &mut lexer,
+        vm,
+        &mut compiler_state,
+        true,
+        chunk_name.to_string(),
+    );
+
+    // Port of mainfunc from lparser.c
+    // main function is always vararg
+
+    // Set use_hidden_vararg for main function (vararg with no named parameters)
+    // This corresponds to PF_VAHID flag in Lua 5.5
+    fs.chunk.use_hidden_vararg = true;
+
+    // Generate VARARGPREP if function is vararg
+    // Reset line to 1 for first instruction (VARARGPREP), regardless of comments before
+    if fs.is_vararg {
+        let saved_line = fs.lexer.line;
+        fs.lexer.line = 1;
+        // Main function has 0 fixed parameters (lparser.c:954)
+        code::code_abc(&mut fs, OpCode::VarargPrep, 0, 0, 0);
+        fs.lexer.line = saved_line;
+    }
+
+    // Main function in Lua 5.5 has _ENV as first upvalue (lparser.c:1928-1931)
+    // env = allocupvalue(fs);
+    // env->instack = 1;
+    // env->idx = 0;
+    // env->kind = VDKREG;
+    fs.upvalues.push(Upvaldesc {
+        name: "_ENV".to_string(),
+        in_stack: true,
+        idx: 0,
+        kind: VarKind::VDKREG,
+    });
+    fs.nups = 1;
+
+    // Open first block
+    let bl = BlockCnt {
+        previous: None,
+        first_label: 0,
+        first_goto: 0,
+        nactvar: 0,
+        upval: false,
+        is_loop: 0,
+        in_scope: false, // Port of lparser.c:2012: first block has insidetbc=false
+    };
+    let block_id = fs.compiler_state.alloc_blockcnt(bl);
+    fs.block_cnt_id = Some(block_id);
+
+    // Parse statements (statlist)
+    if let Err(err) = statement::statlist(&mut fs) {
+        if let Some(lex_err) = fs.lexer.take_error() {
+            return Err(format!(
+                "{}:{}",
+                func_state::format_source(chunk_name),
+                lex_err
+            ));
+        }
+        return Err(err);
+    }
+
+    // Check for proper ending
+    if fs.lexer.current_token() != LuaTokenKind::TkEof {
+        return Err(fs.token_error("expected end of file"));
+    }
+
+    if let Some(lex_err) = fs.lexer.take_error() {
+        return Err(format!(
+            "{}:{}",
+            func_state::format_source(chunk_name),
+            lex_err
+        ));
+    }
+
+    // Generate final RETURN (return with 0 values)
+    // Port of lparser.c:765: luaK_ret(fs, luaY_nvarstack(fs), 0);
+    let first_reg = fs.nvarstack();
+    code::ret(&mut fs, first_reg, 0);
+
+    //  Port of close_func from lparser.c:885-891
+    // Must call leaveblock AFTER generating RETURN to solve pending gotos!
+    // This resolves exported gotos that jumped out of inner blocks to labels in main chunk
+    statement::leaveblock(&mut fs)?;
+
+    // Port of close_func from lparser.c:763 - finish code generation
+    code::finish(&mut fs);
+    fs.check_pending_checklimit()?;
+
+    // Set vararg flag on chunk
+    fs.chunk.is_vararg = fs.is_vararg;
+
+    // Set upvalue descriptors for main chunk (same as child functions in expr_parser.rs)
+    for upval in &fs.upvalues {
+        fs.chunk.upvalue_descs.push(UpvalueDesc {
+            name: upval.name.clone(),
+            is_local: upval.in_stack,
+            index: upval.idx as u32,
+        });
+    }
+    fs.chunk.upvalue_count = fs.upvalues.len();
+
+    // Set source name and line info for main chunk
+    fs.chunk.source_name = Some(fs.source_name.clone());
+    fs.chunk.linedefined = 0; // Main function starts at line 0
+    fs.chunk.lastlinedefined = 0; // Main function ends at line 0 (convention)
+
+    // Cache proto data size for GC
+    fs.chunk.compute_proto_data_size();
+
+    Ok(fs.chunk)
+}

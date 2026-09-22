@@ -1001,6 +1001,9 @@ fn is_trivially_converged_first_pass(
             }
             if trimmed.starts_with("\\gdef \\@abspage@last{")
                 || trimmed.starts_with("\\gdef\\@abspage@last{")
+                || trimmed.starts_with("\\providecommand\\color")
+                || trimmed.starts_with("\\providecommand\\transparent")
+                || trimmed.starts_with("\\providecommand\\HyperFirstAtBeginDocument")
             {
                 continue;
             }
@@ -2660,25 +2663,7 @@ fn run_bibtex(aux_stem: &Path, source_dir: &Path, silent: bool) -> i32 {
         }
     }
 }
-fn tool_available(name: &str) -> bool {
-    std::process::Command::new(name)
-        .arg("--version")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .is_ok_and(|s| s.success())
-}
-
 fn convert_eps_figures(source_dir: &Path) {
-    let tool = if tool_available("epstopdf") {
-        Some("epstopdf")
-    } else if tool_available("ps2pdf") {
-        Some("ps2pdf")
-    } else {
-        None
-    };
-    let Some(tool) = tool else { return };
-
     let mut dirs_to_visit = vec![source_dir.to_path_buf()];
     while let Some(dir) = dirs_to_visit.pop() {
         let Ok(entries) = std::fs::read_dir(&dir) else {
@@ -2702,21 +2687,12 @@ fn convert_eps_figures(source_dir: &Path) {
                         let converted = path.with_file_name(format!("{stem}-eps-converted-to.pdf"));
                         let direct_pdf = path.with_extension("pdf");
                         if !converted.exists() || !direct_pdf.exists() {
-                            if tool == "epstopdf" {
-                                let _ = std::process::Command::new("epstopdf")
-                                    .arg(&path)
-                                    .arg(format!("--outfile={}", converted.display()))
-                                    .output();
-                                if !direct_pdf.exists() && converted.exists() {
-                                    let _ = std::fs::copy(&converted, &direct_pdf);
-                                }
-                            } else {
-                                let _ = std::process::Command::new("ps2pdf")
-                                    .arg(&path)
-                                    .arg(&converted)
-                                    .output();
-                                if !direct_pdf.exists() && converted.exists() {
-                                    let _ = std::fs::copy(&converted, &direct_pdf);
+                            if let Ok(bytes) = std::fs::read(&path) {
+                                if let Ok(out) = tex_ps::eps_to_pdf(&bytes) {
+                                    let _ = std::fs::write(&converted, &out.pdf_bytes);
+                                    if !direct_pdf.exists() {
+                                        let _ = std::fs::write(&direct_pdf, &out.pdf_bytes);
+                                    }
                                 }
                             }
                         }
@@ -2759,9 +2735,9 @@ fn real_main() -> i32 {
     } else {
         target_engine
     };
-    if using_embedded_engine && matches!(target_engine, "xelatex" | "lualatex") {
+    if using_embedded_engine && target_engine == "xelatex" {
         eprintln!(
-            "texmk: {target_engine} compatibility mode uses Ratex, not the XeTeX or LuaTeX runtime."
+            "texmk: {target_engine} compatibility mode uses Ratex, not the XeTeX runtime."
         );
     }
     let job = opt.jobname.clone().unwrap_or_else(|| {
@@ -3527,22 +3503,6 @@ pub(crate) fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() > 1 && args[1] == "latexdiff" {
         std::process::exit(latexdiff::latexdiff_main(&args[2..]));
-    }
-    // Fast single-pass mode for short documents or direct compilation:
-    if args.len() > 1 && (args[1] == "-1" || args[1] == "--single-pass") {
-        let program =
-            std::env::var("TEX_SUITE_PROGRAM_NAME").unwrap_or_else(|_| "pdflatex".to_string());
-        enable_embedded_resources_by_default();
-        std::env::set_var("TEX_SUITE_PROGRAM_NAME", &program);
-        // Strip the single-pass flag when invoking embedded pdflatex.
-        let filtered_args: Vec<std::ffi::OsString> = std::env::args_os()
-            .enumerate()
-            .filter(|(idx, _)| *idx != 1)
-            .map(|(_, arg)| arg)
-            .collect();
-        std::env::set_var(TEXMK_INTERNAL_MODE_ENV, "engine");
-        embedded_engine::main_with_args(filtered_args);
-        return;
     }
     match invoked_name().as_str() {
         "pdflatex" => run_embedded_engine("pdflatex"),

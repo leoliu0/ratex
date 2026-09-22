@@ -5,9 +5,12 @@ edition.workspace = true
 
 [dependencies]
 tex-kpse = { path = "../tex-kpse" }
+tex-lua = { path = "../tex-lua" }
+tex-mplib = { path = "../tex-mplib" }
+tex-ps = { path = "../tex-ps" }
 flate2 = { workspace = true }
 crc32fast = "1.5"
-zstd = { workspace = true }
+ruzstd = { workspace = true }
 rustybuzz = { workspace = true }
 ttf-parser = { workspace = true }
 subsetter = "0.2.6"

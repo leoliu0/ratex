@@ -1,0 +1,1795 @@
+// Lua Virtual Machine
+// Executes compiled bytecode with register-based architecture
+use std::collections::HashMap;
+use std::ffi::c_void;
+use std::ptr::null_mut;
+
+pub mod async_thread;
+pub mod call_info;
+mod const_string;
+pub mod debug_info;
+mod error_msg;
+pub(crate) mod execute;
+mod file_layout;
+pub mod lua_error;
+pub mod lua_limits;
+mod lua_ref;
+mod lua_rng;
+mod lua_state;
+pub mod opcode;
+mod safe_option;
+#[cfg(feature = "sandbox")]
+mod sandbox;
+#[cfg(feature = "shared-proto")]
+mod shared_proto;
+pub(crate) mod stk_id;
+mod string_arth;
+mod tm_kind;
+
+use crate::compiler::{
+    LuaLanguageLevel, compile_code, compile_code_bytes_with_name, compile_code_with_name,
+};
+use crate::gc::GC;
+use crate::gc::{
+    CreateResult, FunctionPtr, GcKind, GcObjectPtr, GcState, ObjectAllocator, ProtoPtr, ThreadPtr,
+    UpvaluePtr,
+};
+use crate::lua_value::lua_convert::{FromLua, IntoLua};
+use crate::lua_value::{LuaProto, LuaUpvalue, LuaUserdata, LuaValue, LuaValueKind, UpvalueStore};
+pub use crate::lua_vm::call_info::{CallInfo, CallInfoPtr};
+use crate::lua_vm::const_string::ConstString;
+pub use crate::lua_vm::debug_info::DebugInfo;
+pub(crate) use crate::lua_vm::error_msg::ErrorMsg;
+use crate::lua_vm::file_layout::inspect_file_chunk_layout;
+pub use crate::lua_vm::lua_error::LuaError;
+use crate::lua_vm::lua_ref::RefManager;
+use crate::lua_vm::lua_ref::store_in_registry;
+pub use crate::lua_vm::lua_ref::{
+    LUA_REFNIL, LuaAnyRef, LuaFunctionRef, LuaRefValue, LuaStringRef, LuaTableRef, RefId,
+    UserDataRef,
+};
+pub(crate) use crate::lua_vm::stk_id::StkId;
+
+type ArithMetaFn = fn(&mut LuaState) -> LuaResult<usize>;
+pub(crate) use crate::lua_vm::lua_state::CApiStackParking;
+pub use crate::lua_vm::lua_state::LuaState;
+pub use crate::lua_vm::safe_option::SafeOption;
+#[cfg(feature = "sandbox")]
+pub use crate::lua_vm::sandbox::SandboxConfig;
+use crate::platform_time::{PlatformInstant, unix_nanos};
+use crate::stdlib::Stdlib;
+use crate::{LuaEnum, LuaRegistrable, OpaqueUserData, RustCallback, lib_registry};
+pub(crate) use execute::arith::{lua_shiftl, luai_numpow};
+pub use execute::{get_metamethod_event, get_metatable};
+pub use lua_rng::LuaRng;
+pub use opcode::{Instruction, OpCode};
+use std::future::Future;
+use std::pin::Pin;
+use std::ptr::NonNull;
+pub use string_arth::*;
+pub use tm_kind::TmKind;
+
+pub type LuaResult<T> = Result<T, LuaError>;
+/// C Function type - Rust function callable from Lua
+/// Now takes LuaContext instead of LuaVM for better ergonomics
+pub type CFunction = fn(&mut LuaState) -> LuaResult<usize>;
+
+#[doc(hidden)]
+pub trait LuaTypedCallback<Args, R>: 'static {
+    fn invoke_typed(&self, state: &mut LuaState) -> LuaResult<usize>;
+}
+
+#[doc(hidden)]
+pub trait LuaTypedAsyncCallback<Args, R>: 'static {
+    fn invoke_typed_async(&self, state: &mut LuaState) -> LuaResult<async_thread::AsyncFuture>;
+}
+
+fn typed_callback_arg<T: FromLua>(state: &mut LuaState, index: usize) -> LuaResult<T> {
+    let value = state.get_arg(index).unwrap_or_default();
+    match T::from_lua(value, state) {
+        Ok(value) => Ok(value),
+        Err(msg) => Err(state.error(msg)),
+    }
+}
+
+impl<Func, R> LuaTypedCallback<(), R> for Func
+where
+    Func: Fn() -> R + 'static,
+    R: IntoLua,
+{
+    fn invoke_typed(&self, state: &mut LuaState) -> LuaResult<usize> {
+        match (self)().into_lua(state) {
+            Ok(count) => Ok(count),
+            Err(msg) => Err(state.error(msg)),
+        }
+    }
+}
+
+macro_rules! impl_lua_typed_callback {
+    ($(($(($ty:ident, $value:ident) => $index:literal),+)),* $(,)?) => {
+        $(
+            impl<Func, R, $($ty),+> LuaTypedCallback<($($ty,)+), R> for Func
+            where
+                Func: Fn($($ty),+) -> R + 'static,
+                R: IntoLua,
+                $($ty: FromLua),+
+            {
+                fn invoke_typed(&self, state: &mut LuaState) -> LuaResult<usize> {
+                    $(
+                        let $value = typed_callback_arg::<$ty>(state, $index)?;
+                    )+
+
+                    match (self)($($value),+).into_lua(state) {
+                        Ok(count) => Ok(count),
+                        Err(msg) => Err(state.error(msg)),
+                    }
+                }
+            }
+        )*
+    };
+}
+
+impl_lua_typed_callback!(
+    ((A, a) => 1),
+    ((A, a) => 1, (B, b) => 2),
+    ((A, a) => 1, (B, b) => 2, (C, c) => 3),
+    ((A, a) => 1, (B, b) => 2, (C, c) => 3, (D, d) => 4),
+    ((A, a) => 1, (B, b) => 2, (C, c) => 3, (D, d) => 4, (E, e) => 5),
+    ((A, a) => 1, (B, b) => 2, (C, c) => 3, (D, d) => 4, (E, e) => 5, (T6, t6) => 6),
+    ((A, a) => 1, (B, b) => 2, (C, c) => 3, (D, d) => 4, (E, e) => 5, (T6, t6) => 6, (T7, t7) => 7),
+    ((A, a) => 1, (B, b) => 2, (C, c) => 3, (D, d) => 4, (E, e) => 5, (T6, t6) => 6, (T7, t7) => 7, (T8, t8) => 8)
+);
+
+impl<Func, Fut, R> LuaTypedAsyncCallback<(), R> for Func
+where
+    Func: Fn() -> Fut + 'static,
+    Fut: Future<Output = LuaResult<R>> + 'static,
+    R: async_thread::IntoAsyncLua,
+{
+    fn invoke_typed_async(&self, _state: &mut LuaState) -> LuaResult<async_thread::AsyncFuture> {
+        let future = (self)();
+        Ok(Box::pin(async move {
+            let value = future.await?;
+            Ok(value.into_async_lua())
+        }))
+    }
+}
+
+macro_rules! impl_lua_typed_async_callback {
+    ($(($(($ty:ident, $value:ident) => $index:literal),+)),* $(,)?) => {
+        $(
+            impl<Func, Fut, R, $($ty),+> LuaTypedAsyncCallback<($($ty,)+), R> for Func
+            where
+                Func: Fn($($ty),+) -> Fut + 'static,
+                Fut: Future<Output = LuaResult<R>> + 'static,
+                R: async_thread::IntoAsyncLua,
+                $($ty: FromLua),+
+            {
+                fn invoke_typed_async(&self, state: &mut LuaState) -> LuaResult<async_thread::AsyncFuture> {
+                    $(
+                        let $value = typed_callback_arg::<$ty>(state, $index)?;
+                    )+
+
+                    let future = (self)($($value),+);
+                    Ok(Box::pin(async move {
+                        let value = future.await?;
+                        Ok(value.into_async_lua())
+                    }))
+                }
+            }
+        )*
+    };
+}
+
+impl_lua_typed_async_callback!(
+    ((A, a) => 1),
+    ((A, a) => 1, (B, b) => 2),
+    ((A, a) => 1, (B, b) => 2, (C, c) => 3),
+    ((A, a) => 1, (B, b) => 2, (C, c) => 3, (D, d) => 4),
+    ((A, a) => 1, (B, b) => 2, (C, c) => 3, (D, d) => 4, (E, e) => 5),
+    ((A, a) => 1, (B, b) => 2, (C, c) => 3, (D, d) => 4, (E, e) => 5, (T6, t6) => 6),
+    ((A, a) => 1, (B, b) => 2, (C, c) => 3, (D, d) => 4, (E, e) => 5, (T6, t6) => 6, (T7, t7) => 7),
+    ((A, a) => 1, (B, b) => 2, (C, c) => 3, (D, d) => 4, (E, e) => 5, (T6, t6) => 6, (T7, t7) => 7, (T8, t8) => 8)
+);
+
+// Debug hook event types
+pub const LUA_HOOKCALL: i32 = 0;
+pub const LUA_HOOKRET: i32 = 1;
+pub const LUA_HOOKLINE: i32 = 2;
+pub const LUA_HOOKCOUNT: i32 = 3;
+pub const LUA_HOOKTAILCALL: i32 = 4;
+
+// Debug hook masks
+pub const LUA_MASKCALL: u8 = 1 << LUA_HOOKCALL as u8;
+pub const LUA_MASKRET: u8 = 1 << LUA_HOOKRET as u8;
+pub const LUA_MASKLINE: u8 = 1 << LUA_HOOKLINE as u8;
+pub const LUA_MASKCOUNT: u8 = 1 << LUA_HOOKCOUNT as u8;
+
+/// Global VM state (equivalent to global_State in Lua C API)
+/// Manages global resources shared by all execution threads/coroutines
+pub struct GlobalState {
+    /// Global environment table (_G and _ENV point to this)
+    pub(crate) global: LuaValue,
+
+    /// Registry table (like Lua's LUA_REGISTRYINDEX)
+    pub(crate) registry: LuaValue,
+
+    /// Reference manager for luaL_ref/luaL_unref mechanism
+    pub(crate) ref_manager: RefManager,
+
+    /// Object pool for unified object management
+    pub(crate) object_allocator: ObjectAllocator,
+
+    /// Garbage collector state
+    pub(crate) gc: GC,
+
+    /// Main thread execution state (embedded)
+    pub(crate) main_state: ThreadPtr,
+
+    /// String metatable (shared by all strings)
+    pub(crate) string_mt: Option<LuaValue>,
+
+    /// Number metatable (shared by all numbers: integers and floats)
+    pub(crate) number_mt: Option<LuaValue>,
+
+    /// Boolean metatable (shared by all booleans)
+    pub(crate) bool_mt: Option<LuaValue>,
+
+    /// Nil metatable
+    pub(crate) nil_mt: Option<LuaValue>,
+
+    /// Metatables shared by the remaining non-table value types.
+    pub(crate) light_userdata_mt: Option<LuaValue>,
+    pub(crate) function_mt: Option<LuaValue>,
+    pub(crate) thread_mt: Option<LuaValue>,
+
+    pub(crate) safe_option: SafeOption,
+
+    /// Shared C call depth counter — tracks real Rust stack depth across all
+    /// coroutines.  Incremented on every entry to `lua_execute` and on every
+    /// C-function frame push; decremented on the corresponding exits.
+    /// Replaces the old per-LuaState `c_call_depth`.
+    pub(crate) n_ccalls: usize,
+
+    pub(crate) version: LuaLanguageLevel,
+
+    /// Lua 5.3's weak per-prototype closure cache.
+    pub(crate) closure_cache53: HashMap<ProtoPtr, FunctionPtr>,
+
+    /// Random number generator — xoshiro256** matching C Lua exactly
+    pub(crate) rng: LuaRng,
+
+    /// Start time for os.clock() measurements
+    pub(crate) start_time: PlatformInstant,
+
+    pub(crate) const_strings: ConstString,
+
+    /// Global error message storage shared by the single-threaded runtime.
+    pub(crate) error_msg: ErrorMsg,
+
+    pub(crate) extra_space: *mut c_void,
+
+    /// Cached default I/O file handles for fast access (avoids registry lookup per io.write/read)
+    pub(crate) io_default_output: Option<LuaValue>,
+    pub(crate) io_default_input: Option<LuaValue>,
+
+    /// Native modules stay loaded while any function pointer from them can be called.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) native_libraries: Vec<(String, libloading::Library)>,
+}
+
+impl GlobalState {
+    /// Create an upstream-compatible Lua 5.5 state.
+    pub fn new(option: SafeOption) -> Pin<Box<Self>> {
+        Self::new_with_language(option, LuaLanguageLevel::Lua55)
+    }
+
+    /// Create an isolated state with an explicit source and library dialect.
+    pub fn new_with_language(option: SafeOption, version: LuaLanguageLevel) -> Pin<Box<Self>> {
+        let mut gc = GC::new(option.clone());
+        gc.set_temporary_memory_limit(isize::MAX / 2);
+        let mut object_allocator = ObjectAllocator::new();
+        #[cfg(feature = "shared-proto")]
+        let cs = shared_proto::get_or_init_const_strings(&mut object_allocator, &mut gc);
+        #[cfg(not(feature = "shared-proto"))]
+        let cs = ConstString::new(&mut object_allocator, &mut gc);
+        let time = unix_nanos();
+
+        let mut inner = Box::pin(GlobalState {
+            global: LuaValue::nil(),
+            registry: LuaValue::nil(),
+            ref_manager: RefManager::new(),
+            object_allocator,
+            gc,
+            main_state: ThreadPtr::null(), //,
+            string_mt: None,
+            number_mt: None,
+            bool_mt: None,
+            nil_mt: None,
+            light_userdata_mt: None,
+            function_mt: None,
+            thread_mt: None,
+            safe_option: option.clone(),
+            n_ccalls: 0,
+            version,
+            closure_cache53: HashMap::new(),
+            // Initialize RNG with a deterministic seed for reproducibility
+            rng: LuaRng::from_seed_time(time),
+            // Record start time for os.clock()
+            start_time: PlatformInstant::now(),
+            const_strings: cs,
+            error_msg: ErrorMsg::None,
+            extra_space: null_mut(),
+            io_default_output: None,
+            io_default_input: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            native_libraries: Vec::new(),
+        });
+
+        // Set GlobalState pointer in main_state
+        let thread_value = {
+            let state = unsafe { inner.as_mut().get_unchecked_mut() };
+            let vm_handle = GlobalStateHandle::from_global(state);
+            let allocator = &mut state.object_allocator as *mut ObjectAllocator;
+            let gc = &mut state.gc as *mut GC;
+            unsafe {
+                (*allocator)
+                    .create_thread(&mut *gc, LuaState::new(6, vm_handle, true, option.clone()))
+            }
+            .unwrap()
+        };
+
+        inner.main_state = thread_value.as_thread_ptr().unwrap();
+
+        // Initialize registry (like Lua's init_registry)
+        // Registry is a GC root and protects all values stored in it
+        let registry = inner.create_table(2, 8).unwrap();
+        inner.registry = registry;
+
+        // Set _G to point to the global table itself
+        let globals_value = inner.create_table(0, 20).unwrap();
+        inner.global = globals_value;
+        inner.set_global("_G", globals_value).unwrap();
+        inner.set_global("_ENV", globals_value).unwrap();
+
+        inner.gc.clear_temporary_memory_limit();
+        inner
+    }
+
+    pub(crate) fn main_state(&mut self) -> &mut LuaState {
+        &mut self.main_state.as_mut_ref().data
+    }
+
+    #[cold]
+    #[inline(never)]
+    pub fn error(&mut self, msg: String) -> LuaError {
+        self.error_msg = ErrorMsg::Msg(msg);
+        LuaError::RuntimeError
+    }
+
+    #[cold]
+    #[inline(never)]
+    pub fn error_with_object(&mut self, obj: LuaValue) -> LuaError {
+        self.error_msg = ErrorMsg::Object(obj);
+        LuaError::RuntimeError
+    }
+
+    #[inline(always)]
+    pub fn take_error(&mut self) -> ErrorMsg {
+        std::mem::take(&mut self.error_msg)
+    }
+
+    #[inline]
+    pub(crate) fn get_error_object_ref(&self) -> Option<&LuaValue> {
+        if let ErrorMsg::Object(ref obj) = self.error_msg {
+            Some(obj)
+        } else {
+            None
+        }
+    }
+
+    #[inline]
+    pub fn set_extra_space(&mut self, pointer: *mut c_void) {
+        self.extra_space = pointer;
+    }
+
+    #[inline]
+    pub fn extra_space(&self) -> *mut c_void {
+        self.extra_space
+    }
+
+    /// Register a CFunction in package.preload\[name\].
+    /// When Lua code calls `require("name")`, the preload searcher will
+    /// find this function and call it as the module loader.
+    pub fn register_preload(&mut self, name: &str, loader: CFunction) -> LuaResult<()> {
+        let preload_val = self.registry_get("_PRELOAD")?;
+        if let Some(preload) = preload_val
+            && preload.is_table()
+        {
+            let key = self.create_string(name)?;
+            self.raw_set(&preload, key, LuaValue::cfunction(loader));
+        }
+        Ok(())
+    }
+
+    /// Set a value in the registry by integer key
+    pub fn registry_seti(&mut self, key: i64, value: LuaValue) {
+        self.raw_seti(&self.registry.clone(), key, value);
+    }
+
+    /// Get a value from the registry by integer key
+    pub fn registry_geti(&self, key: i64) -> Option<LuaValue> {
+        self.raw_geti(&self.registry, key)
+    }
+
+    /// Set a value in the registry by string key
+    pub fn registry_set(&mut self, key: &str, value: LuaValue) -> LuaResult<()> {
+        let key_value = self.create_string(key)?;
+
+        // Use VM table_set so we always run the GC barrier
+        let registry = self.registry;
+        self.raw_set(&registry, key_value, value);
+        Ok(())
+    }
+
+    /// Get a value from the registry by string key
+    pub fn registry_get(&mut self, key: &str) -> LuaResult<Option<LuaValue>> {
+        let key = self.create_string(key)?;
+        Ok(self.raw_get(&self.registry, &key))
+    }
+
+    /// Create a reference to a Lua value (like luaL_ref in C API)
+    ///
+    /// This stores the value in the registry and returns a LuaRefValue.
+    /// - For nil: returns LUA_REFNIL (no storage)
+    /// - For GC objects: stores in registry, returns ref ID
+    /// - For simple values: stores directly in LuaRefValue
+    ///
+    /// You must call release_ref() when done to free registry entries.
+    pub fn create_ref(&mut self, value: LuaValue) -> LuaRefValue {
+        let ref_id = self.ref_manager.alloc_ref_id();
+        self.registry_seti(ref_id as i64, value);
+        LuaRefValue::new_registry(ref_id)
+    }
+
+    /// Get the value from a reference
+    pub fn get_ref_value(&self, lua_ref: &LuaRefValue) -> LuaValue {
+        lua_ref.get(self)
+    }
+
+    /// Release a reference created by create_ref (like luaL_unref in C API)
+    ///
+    /// This frees the registry entry and allows the value to be garbage collected.
+    /// After calling this, the LuaRefValue should not be used.
+    pub fn release_ref(&mut self, lua_ref: LuaRefValue) {
+        let ref_id = lua_ref.ref_id();
+        if ref_id > 0 {
+            // Remove from registry
+            self.registry_seti(ref_id as i64, LuaValue::nil());
+            // Return ref_id to free list
+            self.ref_manager.free_ref_id(ref_id);
+        }
+    }
+
+    /// Release a reference by raw ID (for C API compatibility)
+    pub fn release_ref_id(&mut self, ref_id: RefId) {
+        if ref_id > 0 {
+            self.registry_seti(ref_id as i64, LuaValue::nil());
+            self.ref_manager.free_ref_id(ref_id);
+        }
+    }
+
+    /// Get value from registry by raw ref ID (for C API compatibility)
+    pub fn get_ref_value_by_id(&self, ref_id: RefId) -> LuaValue {
+        if ref_id == LUA_REFNIL {
+            return LuaValue::nil();
+        }
+        if ref_id <= 0 {
+            return LuaValue::nil();
+        }
+        self.registry_geti(ref_id as i64).unwrap_or_default()
+    }
+
+    pub const fn language(&self) -> LuaLanguageLevel {
+        self.version
+    }
+
+    pub fn open_stdlib(&mut self, lib: Stdlib) -> LuaResult<()> {
+        lib_registry::create_standard_registry(lib).load_all(self)?;
+        Ok(())
+    }
+
+    /// Open multiple standard libraries at once.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use luars::Stdlib;
+    /// vm.open_stdlibs(&[Stdlib::Math, Stdlib::String, Stdlib::Table])?;
+    /// ```
+    pub fn open_stdlibs(&mut self, libs: &[Stdlib]) -> LuaResult<()> {
+        for lib in libs {
+            self.open_stdlib(*lib)?;
+        }
+        Ok(())
+    }
+
+    /// Serialize a Lua value to JSON (requires 'serde' feature)
+    #[cfg(feature = "serde")]
+    pub fn serialize_to_json(&self, value: &LuaValue) -> Result<serde_json::Value, String> {
+        use crate::serde::lua_to_json;
+
+        lua_to_json(value)
+    }
+
+    /// Serialize a Lua value to a JSON string (requires 'serde' feature)
+    #[cfg(feature = "serde")]
+    pub fn serialize_to_json_string(
+        &self,
+        value: &LuaValue,
+        pretty: bool,
+    ) -> Result<String, String> {
+        use crate::serde::lua_to_json_string;
+
+        lua_to_json_string(value, pretty)
+    }
+
+    /// Deserialize a JSON value to Lua (requires 'serde' feature)
+    #[cfg(feature = "serde")]
+    pub fn deserialize_from_json(&mut self, json: &serde_json::Value) -> Result<LuaValue, String> {
+        use crate::serde::json_to_lua;
+
+        json_to_lua(json, self)
+    }
+
+    /// Deserialize a JSON string to Lua (requires 'serde' feature)
+    #[cfg(feature = "serde")]
+    pub fn deserialize_from_json_string(&mut self, json_str: &str) -> Result<LuaValue, String> {
+        use crate::serde::json_string_to_lua;
+
+        json_string_to_lua(json_str, self)
+    }
+
+    #[inline]
+    pub(crate) fn prepare_loaded_chunk(&mut self, chunk: LuaProto) -> LuaResult<ProtoPtr> {
+        #[cfg(feature = "shared-proto")]
+        {
+            use crate::gc::share_proto;
+
+            let proto = self.create_proto(chunk)?;
+            share_proto(proto);
+            Ok(proto)
+        }
+
+        #[cfg(not(feature = "shared-proto"))]
+        self.create_proto(chunk)
+    }
+
+    #[inline]
+    pub(crate) fn create_loaded_function(
+        &mut self,
+        chunk: LuaProto,
+        upvalues: UpvalueStore,
+    ) -> LuaResult<LuaValue> {
+        let chunk = self.prepare_loaded_chunk(chunk)?;
+        self.create_function(chunk, upvalues)
+    }
+
+    /// Register a synchronous Rust closure as a Lua global function.
+    ///
+    /// This is the synchronous counterpart to [`crate::LuaState::register_async`].
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// vm.register_function("add", |state| {
+    ///     let a = state.get_arg(1).and_then(|v| v.as_integer()).unwrap_or(0);
+    ///     let b = state.get_arg(2).and_then(|v| v.as_integer()).unwrap_or(0);
+    ///     state.push_value(LuaValue::integer(a + b))?;
+    ///     Ok(1)
+    /// })?;
+    /// ```
+    pub fn register_function<F>(&mut self, name: &str, f: F) -> LuaResult<()>
+    where
+        F: Fn(&mut LuaState) -> LuaResult<usize> + 'static,
+    {
+        let closure_val = self.create_closure(f)?;
+        self.set_global(name, closure_val)
+    }
+
+    /// Register a typed Rust closure as a Lua global function.
+    ///
+    /// Arguments are extracted via `FromLua`, and the return value is pushed via
+    /// `IntoLua`. This currently supports callbacks with up to 4 arguments.
+    pub fn register_function_typed<F, Args, R>(&mut self, name: &str, f: F) -> LuaResult<()>
+    where
+        F: LuaTypedCallback<Args, R>,
+    {
+        self.register_function(name, move |state| f.invoke_typed(state))
+    }
+
+    /// Create a typed Rust closure as a standalone Lua function handle.
+    pub fn create_function_typed<F, Args, R>(&mut self, f: F) -> LuaResult<LuaFunctionRef>
+    where
+        F: LuaTypedCallback<Args, R>,
+    {
+        let closure_val = self.create_closure(move |state| f.invoke_typed(state))?;
+        Ok(self.to_function_ref(closure_val).unwrap())
+    }
+
+    /// Register a typed async Rust closure as a Lua global function.
+    ///
+    /// Arguments are extracted via `FromLua`, and the awaited return value is
+    /// converted via `IntoAsyncLua`. This currently supports callbacks with up to
+    /// 8 arguments.
+    pub fn register_async_typed<F, Args, R>(&mut self, name: &str, f: F) -> LuaResult<()>
+    where
+        F: LuaTypedAsyncCallback<Args, R>,
+    {
+        let wrapper = move |state: &mut LuaState| {
+            let future = f.invoke_typed_async(state)?;
+            state.set_pending_future(future);
+            state.do_yield(vec![async_thread::async_sentinel_value()])?;
+            Ok(0)
+        };
+
+        let closure_val = self.create_closure(wrapper)?;
+        self.set_global(name, closure_val)
+    }
+
+    /// Register a UserData type as a Lua global with its static methods.
+    pub fn register_type_of<T: LuaRegistrable>(&mut self, name: &str) -> LuaResult<()> {
+        let static_methods = T::lua_static_methods();
+        let class_table = self.create_table(0, static_methods.len())?;
+
+        for &(method_name, func) in static_methods {
+            let key = self.create_string(method_name)?;
+            self.raw_set(&class_table, key, LuaValue::cfunction(func));
+        }
+
+        self.set_global(name, class_table)
+    }
+
+    /// Create a table and immediately wrap it in a managed `LuaTableRef`.
+    pub fn create_table_ref(
+        &mut self,
+        array_size: usize,
+        hash_size: usize,
+    ) -> LuaResult<LuaTableRef> {
+        let table = self.create_table(array_size, hash_size)?;
+        Ok(self.to_table_ref(table).unwrap())
+    }
+
+    /// Get a global variable as a `LuaTableRef`.
+    /// Returns `Ok(None)` if the global doesn't exist or is not a table.
+    pub fn get_global_table(&mut self, name: &str) -> LuaResult<Option<LuaTableRef>> {
+        match self.get_global(name)? {
+            Some(val) if val.is_table() => Ok(self.to_table_ref(val)),
+            _ => Ok(None),
+        }
+    }
+
+    /// Get a handle to the current global environment table.
+    pub fn globals_table(&mut self) -> LuaTableRef {
+        self.to_table_ref(self.global)
+            .expect("global environment must be a table")
+    }
+
+    /// Get a global variable as a `LuaFunctionRef`.
+    /// Returns `Ok(None)` if the global doesn't exist or is not a function.
+    pub fn get_global_function(&mut self, name: &str) -> LuaResult<Option<LuaFunctionRef>> {
+        match self.get_global(name)? {
+            Some(val) if val.is_function() => Ok(self.to_function_ref(val)),
+            _ => Ok(None),
+        }
+    }
+
+    /// Create any `T: 'static` into Lua as opaque userdata.
+    ///
+    /// The value cannot be accessed from Lua code directly; it is an opaque
+    /// handle. From Rust callbacks, use `downcast_ref::<T>()` to retrieve it.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let client = reqwest::Client::new();
+    /// let ud = vm.create_any(client)?;
+    /// vm.set_global("http_client", ud)?;
+    /// ```
+    pub fn create_any<T: 'static>(&mut self, value: T) -> LuaResult<LuaValue> {
+        let ud = LuaUserdata::new(OpaqueUserData::new(value));
+        self.create_userdata(ud)
+    }
+
+    pub fn to_ref(&mut self, value: LuaValue) -> LuaAnyRef {
+        let ref_id = store_in_registry(self, value);
+        LuaAnyRef::from_raw(ref_id, GlobalStateHandle::from_global(self))
+    }
+
+    pub fn to_table_ref(&mut self, value: LuaValue) -> Option<LuaTableRef> {
+        if !value.is_table() {
+            return None;
+        }
+        let ref_id = store_in_registry(self, value);
+        Some(LuaTableRef::from_raw(
+            ref_id,
+            GlobalStateHandle::from_global(self),
+        ))
+    }
+
+    pub fn to_function_ref(&mut self, value: LuaValue) -> Option<LuaFunctionRef> {
+        if !value.is_function() {
+            return None;
+        }
+        let ref_id = store_in_registry(self, value);
+        Some(LuaFunctionRef::from_raw(
+            ref_id,
+            GlobalStateHandle::from_global(self),
+        ))
+    }
+
+    pub fn to_string_ref(&mut self, value: LuaValue) -> Option<LuaStringRef> {
+        if !value.is_string() {
+            return None;
+        }
+        let ref_id = store_in_registry(self, value);
+        Some(LuaStringRef::from_raw(
+            ref_id,
+            GlobalStateHandle::from_global(self),
+        ))
+    }
+
+    pub fn to_userdata_ref<T: 'static>(&mut self, value: LuaValue) -> Option<UserDataRef<T>> {
+        let userdata = value.as_userdata_mut()?;
+        userdata.downcast_ref::<T>()?;
+        let ref_id = store_in_registry(self, value);
+        Some(UserDataRef::from_raw(
+            ref_id,
+            GlobalStateHandle::from_global(self),
+        ))
+    }
+
+    /// Compile source code using VM's string pool.
+    ///
+    /// This owner-level helper does not choose an error target state.
+    pub fn compile(&mut self, source: &str) -> Result<LuaProto, String> {
+        self.gc.disable_memory_check();
+        let chunk = match compile_code(source, self) {
+            Ok(c) => c,
+            Err(e) => {
+                self.gc.enable_memory_check();
+                return Err(e);
+            }
+        };
+
+        self.gc.enable_memory_check();
+        self.gc
+            .check_memory()
+            .map_err(|_| self.gc.get_error_message())?;
+        Ok(chunk)
+    }
+
+    pub fn compile_with_name(
+        &mut self,
+        source: &str,
+        chunk_name: &str,
+    ) -> Result<LuaProto, String> {
+        self.gc.disable_memory_check();
+        let chunk = match compile_code_with_name(source, self, chunk_name) {
+            Ok(c) => c,
+            Err(e) => {
+                self.gc.enable_memory_check();
+                return Err(e);
+            }
+        };
+
+        self.gc.enable_memory_check();
+        self.gc
+            .check_memory()
+            .map_err(|_| self.gc.get_error_message())?;
+        Ok(chunk)
+    }
+
+    pub fn compile_bytes_with_name(
+        &mut self,
+        source: &[u8],
+        chunk_name: &str,
+    ) -> Result<LuaProto, String> {
+        self.gc.disable_memory_check();
+        let chunk = match compile_code_bytes_with_name(source, self, chunk_name) {
+            Ok(chunk) => chunk,
+            Err(error) => {
+                self.gc.enable_memory_check();
+                return Err(error);
+            }
+        };
+        self.gc.enable_memory_check();
+        self.gc
+            .check_memory()
+            .map_err(|_| self.gc.get_error_message())?;
+        Ok(chunk)
+    }
+
+    pub(crate) fn load_proto_from_file(&mut self, path: &str) -> Result<ProtoPtr, String> {
+        use crate::lua_value::chunk_serializer;
+
+        #[cfg(miri)]
+        let resolved_path = std::path::PathBuf::from(path);
+
+        #[cfg(not(miri))]
+        let resolved_path =
+            std::fs::canonicalize(path).map_err(|e| format!("cannot open {}: {}", path, e))?;
+
+        let file_bytes =
+            std::fs::read(&resolved_path).map_err(|e| format!("cannot open {}: {}", path, e))?;
+        let layout = inspect_file_chunk_layout(&file_bytes);
+
+        if layout.is_binary && !self.safe_option.allow_load_bytecode {
+            return Err(
+                "attempt to load a binary chunk (bytecode loading is disabled)".to_string(),
+            );
+        }
+
+        #[cfg(feature = "shared-proto")]
+        {
+            use crate::lua_vm::shared_proto::SHARED_FILE_PROTO_CACHE;
+
+            let metadata = std::fs::metadata(&resolved_path)
+                .map_err(|e| format!("cannot open {}: {}", path, e))?;
+            let len = metadata.len();
+            let modified = metadata.modified().ok();
+            let version = self.version;
+            if let Some(proto) = SHARED_FILE_PROTO_CACHE.with(|cache| {
+                let cache = cache.borrow();
+                cache.get(&resolved_path).and_then(|entry| {
+                    (entry.len == len && entry.modified == modified && entry.version == version)
+                        .then_some(entry.proto)
+                })
+            }) {
+                return Ok(proto);
+            }
+        }
+
+        let chunk_name = format!("@{}", resolved_path.display());
+
+        let chunk = if layout.is_binary {
+            let bytes = &file_bytes[layout.skip_offset..];
+            if self.version == LuaLanguageLevel::Lua53 {
+                if bytes.get(4) != Some(&0x53) {
+                    return Err("binary chunk is not standard Lua 5.3".to_string());
+                }
+                crate::lua_value::chunk53::load(bytes, self)
+                    .map_err(|error| format!("binary load error: {error}"))?
+            } else {
+                if bytes.get(4) == Some(&0x53) {
+                    return Err(format!(
+                        "standard Lua 5.3 binary chunks are incompatible with {} mode",
+                        self.version
+                    ));
+                }
+                chunk_serializer::deserialize_chunk_with_strings_vm(bytes, self)
+                    .map_err(|error| format!("binary load error: {error}"))?
+            }
+        } else {
+            let text = &file_bytes[layout.text_start..];
+            let normalized = if file_bytes.first() == Some(&b'#') {
+                let mut source =
+                    Vec::with_capacity(1 + file_bytes.len().saturating_sub(layout.skip_offset));
+                source.push(b'\n');
+                source.extend_from_slice(&file_bytes[layout.skip_offset..]);
+                Some(source)
+            } else if text.first() == Some(&b'#') {
+                let rest = text
+                    .iter()
+                    .position(|&byte| byte == b'\n')
+                    .map_or(&[][..], |newline| &text[newline + 1..]);
+                let mut source = Vec::with_capacity(1 + rest.len());
+                source.push(b'\n');
+                source.extend_from_slice(rest);
+                Some(source)
+            } else {
+                None
+            };
+            let bytes = normalized.as_deref().unwrap_or(text);
+            if self.version == LuaLanguageLevel::Lua53 {
+                self.compile_bytes_with_name(bytes, &chunk_name)?
+            } else {
+                let code_str = String::from_utf8(bytes.to_vec())
+                    .map_err(|_| "source file is not valid UTF-8".to_string())?;
+                self.compile_with_name(&code_str, &chunk_name)?
+            }
+        };
+
+        let proto = self
+            .prepare_loaded_chunk(chunk)
+            .map_err(|_| self.gc.get_error_message())?;
+
+        #[cfg(feature = "shared-proto")]
+        {
+            use crate::lua_vm::shared_proto::SHARED_FILE_PROTO_CACHE;
+
+            let metadata = std::fs::metadata(&resolved_path)
+                .map_err(|e| format!("cannot open {}: {}", path, e))?;
+            SHARED_FILE_PROTO_CACHE.with(|cache| {
+                use crate::lua_vm::shared_proto::SharedFileProtoEntry;
+
+                cache.borrow_mut().insert(
+                    resolved_path,
+                    SharedFileProtoEntry {
+                        proto,
+                        len: metadata.len(),
+                        modified: metadata.modified().ok(),
+                        version: self.version,
+                    },
+                );
+            });
+        }
+
+        Ok(proto)
+    }
+
+    pub fn get_global(&mut self, name: &str) -> LuaResult<Option<LuaValue>> {
+        let key = self.create_string(name)?;
+        Ok(self.raw_get(&self.global, &key))
+    }
+
+    pub fn set_global(&mut self, name: &str, value: LuaValue) -> LuaResult<()> {
+        let key = self.create_string(name)?;
+
+        // Use VM table_set so we always run the GC barrier
+        let global = self.global;
+        self.raw_set(&global, key, value);
+
+        Ok(())
+    }
+
+    #[cfg(feature = "sandbox")]
+    pub fn create_sandbox_env(&mut self, config: &SandboxConfig) -> LuaResult<LuaValue> {
+        use crate::lua_vm::sandbox::SANDBOX_LIB_GLOBALS;
+
+        let env = self.create_table(0, 24)?;
+        let g_key = self.create_string("_G")?;
+        let env_key = self.create_string("_ENV")?;
+
+        self.copy_global_into_table(&env, "_G")?;
+        self.copy_global_into_table(&env, "_ENV")?;
+        self.raw_set(&env, g_key, env);
+        self.raw_set(&env, env_key, env);
+
+        if config.basic {
+            use crate::lua_vm::sandbox::SANDBOX_SAFE_BASIC_GLOBALS;
+
+            for &name in SANDBOX_SAFE_BASIC_GLOBALS {
+                self.copy_global_into_table(&env, name)?;
+            }
+            if config.allow_require {
+                self.copy_global_into_table(&env, "require")?;
+            }
+            if config.allow_load {
+                self.copy_global_into_table(&env, "load")?;
+            }
+            if config.allow_loadfile {
+                self.copy_global_into_table(&env, "loadfile")?;
+            }
+            if config.allow_dofile {
+                self.copy_global_into_table(&env, "dofile")?;
+            }
+            if config.allow_collectgarbage {
+                self.copy_global_into_table(&env, "collectgarbage")?;
+            }
+        }
+
+        for &(lib, global_name) in SANDBOX_LIB_GLOBALS {
+            let enabled = match lib {
+                Stdlib::Math => config.math,
+                Stdlib::String => config.string,
+                Stdlib::Table => config.table,
+                Stdlib::Utf8 => config.utf8,
+                Stdlib::Coroutine => config.coroutine,
+                Stdlib::Os => config.os,
+                Stdlib::Io => config.io,
+                Stdlib::Package => config.package,
+                Stdlib::Debug => config.debug,
+                Stdlib::Basic | Stdlib::All => false,
+            };
+
+            if enabled {
+                self.copy_global_into_table(&env, global_name)?;
+            }
+        }
+
+        for (name, value) in &config.injected_globals {
+            let key = self.create_string(name)?;
+            self.raw_set(&env, key, *value);
+        }
+
+        Ok(env)
+    }
+
+    #[cfg(feature = "sandbox")]
+    fn copy_global_into_table(&mut self, table: &LuaValue, name: &str) -> LuaResult<()> {
+        let key = self.create_string(name)?;
+        if let Some(value) = self.raw_get(&self.global, &key) {
+            self.raw_set(table, key, value);
+        }
+        Ok(())
+    }
+
+    /// Set the metatable for all strings
+    /// This allows string methods to be called with : syntax (e.g., str:upper())
+    pub fn set_string_metatable(&mut self, string_lib_table: LuaValue) -> LuaResult<()> {
+        // Create a metatable with __index + arithmetic metamethods
+        // This matches Lua 5.5's createmetatable() in lstrlib.c
+        let mt_value = self.create_table(0, 10)?;
+
+        // Set __index to point to the string library
+        let index_key = self
+            .const_strings
+            .get_tm_value(crate::lua_vm::TmKind::Index);
+        self.raw_set(&mt_value, index_key, string_lib_table);
+
+        // Add arithmetic metamethods for string-to-number coercion
+        // (Lua 5.5: strings auto-coerce to numbers for arithmetic)
+        use crate::lua_vm::TmKind;
+        let arith_metas: &[(TmKind, ArithMetaFn)] = &[
+            (TmKind::Add, string_arith_add),
+            (TmKind::Sub, string_arith_sub),
+            (TmKind::Mul, string_arith_mul),
+            (TmKind::Mod, string_arith_mod),
+            (TmKind::Pow, string_arith_pow),
+            (TmKind::Div, string_arith_div),
+            (TmKind::IDiv, string_arith_idiv),
+            (TmKind::Unm, string_arith_unm),
+        ];
+        for &(tm, func) in arith_metas {
+            let key = self.const_strings.get_tm_value(tm);
+            self.raw_set(&mt_value, key, LuaValue::cfunction(func));
+        }
+
+        // Store in the VM
+        self.string_mt = Some(mt_value);
+
+        Ok(())
+    }
+
+    // ============ Coroutine Support ============
+
+    /// Create a new thread (coroutine) - returns ThreadId-based LuaValue
+    pub fn create_thread(&mut self, func: LuaValue) -> CreateResult {
+        // Create a new LuaState for the coroutine
+        let mut thread = LuaState::new(
+            1,
+            GlobalStateHandle::from_global(self),
+            false,
+            self.safe_option.clone(),
+        );
+
+        // Push the function onto the thread's stack (updates stack_top)
+        // It will be used when resume() is first called
+        thread
+            .push_value(func)
+            .expect("Failed to push function onto coroutine stack");
+
+        // Create thread in ObjectPool and return LuaValue
+        self.object_allocator.create_thread(&mut self.gc, thread)
+    }
+
+    /// Create an empty thread (coroutine) with no initial function on its stack.
+    pub fn create_empty_thread(&mut self) -> CreateResult {
+        let thread = LuaState::new(
+            1,
+            GlobalStateHandle::from_global(self),
+            false,
+            self.safe_option.clone(),
+        );
+
+        self.object_allocator.create_thread(&mut self.gc, thread)
+    }
+
+    /// Resume a coroutine - DEPRECATED: Use thread_state.resume() instead
+    /// This method is kept for backward compatibility but delegates to LuaState
+    pub fn resume_thread(
+        &mut self,
+        thread_val: LuaValue,
+        args: Vec<LuaValue>,
+    ) -> LuaResult<(bool, Vec<LuaValue>)> {
+        // Get ThreadId from LuaValue
+        let Some(l) = thread_val.as_thread_mut() else {
+            return Err(self.error("invalid thread".to_string()));
+        };
+
+        if l.is_main_thread() {
+            return Err(self.error("cannot resume main thread".to_string()));
+        }
+
+        // Borrow mutably and delegate to LuaState::resume
+        l.resume(args)
+    }
+
+    /// Fast table get - NO metatable support!
+    /// Use this for normal field access (GETFIELD, GETTABLE, GETI)
+    /// This is the correct behavior for Lua bytecode instructions
+    /// Only use table_get_with_meta when you explicitly need __index metamethod
+    #[inline(always)]
+    pub fn raw_get(&self, table_value: &LuaValue, key: &LuaValue) -> Option<LuaValue> {
+        let table = table_value.as_table()?;
+        table.raw_get(key)
+    }
+
+    /// Iterate over all key-value pairs in a table (raw, no metamethods).
+    ///
+    /// Returns a `Vec` of `(key, value)` pairs. This is a snapshot; modifying
+    /// the table afterwards does not affect the returned pairs.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// for (k, v) in vm.table_pairs(&table)? {
+    ///     println!("{} = {}", k, v);
+    /// }
+    /// ```
+    pub fn table_pairs(&self, table_value: &LuaValue) -> LuaResult<Vec<(LuaValue, LuaValue)>> {
+        let table = table_value.as_table().ok_or(LuaError::RuntimeError)?;
+        Ok(table.iter_all())
+    }
+
+    /// Get the length of the array part of a table (like `#t` in Lua).
+    pub fn table_length(&self, table_value: &LuaValue) -> LuaResult<usize> {
+        let table = table_value.as_table().ok_or(LuaError::RuntimeError)?;
+        Ok(table.len())
+    }
+
+    // ============ Async Support ============
+
+    /// Register an async function as a Lua global.
+    ///
+    /// The async function factory `f` receives the Lua arguments as `Vec<LuaValue>`
+    /// and returns a `Future` that produces `LuaResult<Vec<LuaValue>>`.
+    ///
+    /// From Lua code, the function looks and behaves like a normal synchronous
+    /// function. The async yield/resume is driven transparently by `AsyncThread`.
+    ///
+    /// **Important**: The function MUST be called from within an `AsyncThread`
+    /// (i.e., the coroutine must be yieldable). Use `create_async_thread()` or
+    /// `execute_async()` to run Lua code that calls async functions.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// vm.register_async("sleep", |args| async move {
+    ///     let secs = args[0].as_number().unwrap_or(1.0);
+    ///     tokio::time::sleep(Duration::from_secs_f64(secs)).await;
+    ///     Ok(vec![LuaValue::boolean(true)])
+    /// })?;
+    /// ```
+    /// Register a Rust enum as a Lua global table of integer constants.
+    ///
+    /// Each variant becomes a key in the table with its discriminant as value.
+    /// The enum must implement `LuaEnum` (auto-derived by `#[derive(LuaUserData)]`
+    /// on C-like enums).
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// #[derive(LuaUserData)]
+    /// enum Color { Red, Green, Blue }
+    ///
+    /// vm.register_enum::<Color>("Color")?;
+    /// // Lua: Color.Red == 0, Color.Green == 1, Color.Blue == 2
+    /// ```
+    pub fn register_enum_of<T: LuaEnum>(&mut self, name: &str) -> LuaResult<()> {
+        let variants = T::variants();
+        let table = self.create_table(0, variants.len())?;
+        for &(vname, value) in variants {
+            let key = self.create_string(vname)?;
+            let val = LuaValue::integer(value);
+            self.raw_set(&table, key, val);
+        }
+        self.set_global(name, table)
+    }
+
+    #[inline(always)]
+    pub fn raw_set(&mut self, table_value: &LuaValue, key: LuaValue, value: LuaValue) -> bool {
+        let Some(table) = table_value.as_table_mut() else {
+            return false;
+        };
+        let (new_key, delta) = table.raw_set(&key, value);
+
+        // Track table resize delta in GC
+        if delta != 0
+            && let Some(table_ptr) = table_value.as_table_ptr()
+        {
+            self.gc.track_resize(table_ptr, delta);
+        }
+
+        // GC backward barrier (luaC_barrierback)
+        let need_barrier = (new_key && key.iscollectable()) || value.iscollectable();
+        if need_barrier && let Some(gc_ptr) = table_value.as_gc_ptr() {
+            self.gc.barrier_back(gc_ptr);
+        }
+        true
+    }
+
+    #[inline(always)]
+    pub fn raw_geti(&self, table_value: &LuaValue, key: i64) -> Option<LuaValue> {
+        let table = table_value.as_table()?;
+        table.raw_geti(key)
+    }
+
+    pub fn raw_seti(&mut self, table_value: &LuaValue, key: i64, value: LuaValue) -> bool {
+        let Some(table) = table_value.as_table_mut() else {
+            return false;
+        };
+        let delta = table.raw_seti(key, value);
+
+        // Track table resize delta in GC
+        if delta != 0
+            && let Some(table_ptr) = table_value.as_table_ptr()
+        {
+            self.gc.track_resize(table_ptr, delta);
+        }
+
+        // GC backward barrier
+        if value.is_collectable()
+            && let Some(gc_ptr) = table_value.as_gc_ptr()
+        {
+            self.gc.barrier_back(gc_ptr);
+        }
+        true
+    }
+
+    /// Create a string and register it with GC
+    /// For short strings (4 bytes), use interning (global deduplication)
+    /// Create a string value with automatic interning for short strings
+    /// Returns LuaValue directly with ZERO allocation overhead for interned strings
+    ///
+    /// Performance characteristics:
+    /// - Cache hit (interned): O(1) hash lookup, 0 allocations, 0 atomic ops
+    /// - Cache miss (new): 1 Box allocation, GC registration, pool insertion
+    /// - Long string: 1 Box allocation, GC registration, no pooling
+    #[inline]
+    pub fn create_string(&mut self, s: &str) -> CreateResult {
+        self.object_allocator.create_string(&mut self.gc, s)
+    }
+
+    #[inline]
+    pub fn create_binary(&mut self, data: Vec<u8>) -> CreateResult {
+        self.object_allocator.create_binary(&mut self.gc, data)
+    }
+
+    #[inline]
+    pub fn create_bytes(&mut self, bytes: &[u8]) -> CreateResult {
+        self.object_allocator.create_bytes(&mut self.gc, bytes)
+    }
+
+    /// Create string from owned String (avoids clone for non-interned strings)
+    #[inline]
+    pub fn create_string_owned(&mut self, s: String) -> CreateResult {
+        self.object_allocator.create_string_owned(&mut self.gc, s)
+    }
+
+    /// Create a new table
+    #[inline(always)]
+    pub fn create_table(&mut self, array_size: usize, hash_size: usize) -> CreateResult {
+        self.object_allocator
+            .create_table(&mut self.gc, array_size, hash_size)
+    }
+
+    /// Create new userdata
+    pub fn create_userdata(&mut self, data: LuaUserdata) -> CreateResult {
+        self.object_allocator.create_userdata(&mut self.gc, data)
+    }
+
+    #[inline(always)]
+    pub fn create_proto(&mut self, chunk: LuaProto) -> LuaResult<ProtoPtr> {
+        self.object_allocator.create_proto(&mut self.gc, chunk)
+    }
+
+    /// Create a function in object pool
+    #[inline(always)]
+    pub fn create_function(&mut self, chunk: ProtoPtr, upvalues: UpvalueStore) -> CreateResult {
+        self.object_allocator
+            .create_function(&mut self.gc, chunk, upvalues)
+    }
+
+    /// Create a C closure (native function with upvalues stored as closed upvalues)
+    /// The upvalues are automatically created as closed upvalues with the given values
+    #[inline]
+    pub fn create_c_closure(&mut self, func: CFunction, upvalues: Vec<LuaValue>) -> CreateResult {
+        self.object_allocator
+            .create_c_closure(&mut self.gc, func, upvalues)
+    }
+
+    /// Create an RClosure from a Rust closure (`Box<dyn Fn>`).
+    /// Unlike CFunction (bare fn pointer), this can capture arbitrary Rust state.
+    #[inline]
+    pub fn create_rclosure(&mut self, func: RustCallback, upvalues: Vec<LuaValue>) -> CreateResult {
+        self.object_allocator
+            .create_rclosure(&mut self.gc, func, upvalues)
+    }
+
+    /// Convenience: create an RClosure from any `Fn(&mut LuaState) -> LuaResult<usize> + 'static`.
+    /// Boxes the closure automatically.
+    #[inline]
+    pub fn create_closure<F>(&mut self, func: F) -> CreateResult
+    where
+        F: Fn(&mut LuaState) -> LuaResult<usize> + 'static,
+    {
+        self.create_rclosure(Box::new(func), Vec::new())
+    }
+
+    /// Convenience: create an RClosure with upvalues from any
+    /// `Fn(&mut LuaState) -> LuaResult<usize> + 'static`.
+    #[inline]
+    pub fn create_closure_with_upvalues<F>(
+        &mut self,
+        func: F,
+        upvalues: Vec<LuaValue>,
+    ) -> CreateResult
+    where
+        F: Fn(&mut LuaState) -> LuaResult<usize> + 'static,
+    {
+        self.create_rclosure(Box::new(func), upvalues)
+    }
+
+    /// Create an open upvalue pointing to a stack index
+    #[inline(always)]
+    pub fn create_upvalue_open(
+        &mut self,
+        stack_index: usize,
+        stk_id: StkId,
+    ) -> LuaResult<UpvaluePtr> {
+        let upval = LuaUpvalue::new_open(stack_index, stk_id);
+        self.object_allocator.create_upvalue(&mut self.gc, upval)
+    }
+
+    /// Create a closed upvalue with a value
+    #[inline(always)]
+    pub fn create_upvalue_closed(&mut self, value: LuaValue) -> LuaResult<UpvaluePtr> {
+        let upval = LuaUpvalue::new_closed(value);
+        self.object_allocator.create_upvalue(&mut self.gc, upval)
+    }
+
+    // Port of Lua 5.5's luaC_condGC macro:
+    // #define luaC_condGC(L,pre,pos) \
+    //   { if (G(L)->GCdebt <= 0) { pre; luaC_step(L); pos;}; }
+    //
+    /// Check GC and run a step if needed (like luaC_checkGC in Lua 5.5)
+    ///
+    ///  Must check gc_stopped and gc_stopem before running GC!
+    /// - gc_stopped: User explicitly stopped GC (collectgarbage("stop"))
+    /// - gc_stopem: GC is already running (prevents recursive GC during allocation)
+    #[inline(always)]
+    fn check_gc(&mut self, l: &mut LuaState) -> bool {
+        if self.gc.gc_debt <= 0 {
+            self.gc.step(l);
+            return true;
+        }
+
+        false
+    }
+
+    // ============ GC Management ============
+    /// Perform a full GC cycle (like luaC_fullgc in Lua 5.5)
+    /// This is the internal version that can be called in emergency situations
+    fn full_gc(&mut self, l: &mut LuaState, is_emergency: bool) {
+        self.gc.gc_emergency = is_emergency;
+
+        // Dispatch based on GC mode (from luaC_fullgc)
+        match self.gc.gc_kind {
+            GcKind::GenMinor => {
+                self.full_gen(l);
+            }
+            GcKind::Inc => {
+                self.full_inc(l);
+            }
+            GcKind::GenMajor => {
+                // Temporarily switch to incremental mode
+                self.gc.gc_kind = GcKind::Inc;
+                self.full_inc(l);
+                self.gc.gc_kind = GcKind::GenMajor;
+            }
+        }
+
+        self.object_allocator.trim_after_full_gc();
+        self.gc.gc_emergency = false;
+    }
+
+    /// Full GC cycle for incremental mode (like fullinc in Lua 5.5)
+    fn full_inc(&mut self, l: &mut LuaState) {
+        // If we're keeping invariant (in marking phase), sweep first
+        if self.gc.keep_invariant() {
+            self.gc.enter_sweep(l);
+        }
+
+        // Run until pause state
+        self.gc.run_until_state(l, GcState::Pause);
+        // Run finalizers
+        self.gc.run_until_state(l, GcState::CallFin);
+        // Complete the cycle
+        self.gc.run_until_state(l, GcState::Pause);
+
+        // Set pause for next cycle
+        self.gc.set_pause();
+    }
+
+    /// Full GC cycle for generational mode (like fullgen in Lua 5.5)
+    ///
+    /// Port of Lua 5.5 lgc.c:
+    /// ```c
+    /// static void fullgen (lua_State *L, global_State *g) {
+    ///   minor2inc(L, g, KGC_INC);
+    ///   entergen(L, g);
+    /// }
+    /// ```
+    fn full_gen(&mut self, l: &mut LuaState) {
+        self.gc.change_to_incremental_mode(l, GcKind::Inc);
+        self.gc.enter_gen(l);
+    }
+
+    pub(crate) fn close(&mut self) {
+        let state = &mut self.main_state.as_mut_ref().data as *mut LuaState;
+        let gc = &mut self.gc as *mut GC;
+        unsafe {
+            (*gc).finalize_all_on_close(&mut *state);
+        }
+    }
+
+    /// Get GC statistics
+    pub fn gc_stats(&self) -> String {
+        let stats = self.gc.stats();
+        format!(
+            "GC Stats:\n\
+            - Bytes allocated: {}\n\
+            - Threshold: {}\n\
+            - Total collections: {}\n\
+            - Minor collections: {}\n\
+            - Major collections: {}\n\
+            - Objects collected: {}\n\
+            - Young generation size: {}\n\
+            - Old generation size: {}\n\
+            - Promoted objects: {}",
+            stats.bytes_allocated,
+            stats.threshold,
+            stats.collection_count,
+            stats.minor_collections,
+            stats.major_collections,
+            stats.objects_collected,
+            stats.young_gen_size,
+            stats.old_gen_size,
+            stats.promoted_objects
+        )
+    }
+
+    pub(crate) fn get_main_thread_ptr(&self) -> ThreadPtr {
+        self.main_state
+    }
+
+    pub fn get_basic_metatable(&self, kind: LuaValueKind) -> Option<LuaValue> {
+        match kind {
+            LuaValueKind::String => self.string_mt,
+            LuaValueKind::Integer | LuaValueKind::Float => self.number_mt,
+            LuaValueKind::Boolean => self.bool_mt,
+            LuaValueKind::Nil => self.nil_mt,
+            LuaValueKind::Userdata => self.light_userdata_mt,
+            LuaValueKind::Function
+            | LuaValueKind::CFunction
+            | LuaValueKind::CClosure
+            | LuaValueKind::RClosure => self.function_mt,
+            LuaValueKind::Thread => self.thread_mt,
+            LuaValueKind::Table => None,
+        }
+    }
+
+    pub fn set_basic_metatable(&mut self, kind: LuaValueKind, mt: Option<LuaValue>) {
+        match kind {
+            LuaValueKind::String => self.string_mt = mt,
+            LuaValueKind::Integer | LuaValueKind::Float => self.number_mt = mt,
+            LuaValueKind::Boolean => self.bool_mt = mt,
+            LuaValueKind::Nil => self.nil_mt = mt,
+            LuaValueKind::Userdata => self.light_userdata_mt = mt,
+            LuaValueKind::Function
+            | LuaValueKind::CFunction
+            | LuaValueKind::CClosure
+            | LuaValueKind::RClosure => self.function_mt = mt,
+            LuaValueKind::Thread => self.thread_mt = mt,
+            LuaValueKind::Table => {}
+        }
+    }
+
+    pub fn get_basic_metatables(&self) -> Vec<LuaValue> {
+        [
+            self.string_mt,
+            self.number_mt,
+            self.bool_mt,
+            self.nil_mt,
+            self.light_userdata_mt,
+            self.function_mt,
+            self.thread_mt,
+        ]
+        .into_iter()
+        .flatten()
+        .collect()
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct GlobalStateHandle(NonNull<GlobalState>);
+
+impl GlobalStateHandle {
+    pub(crate) fn from_global(state: &mut GlobalState) -> Self {
+        Self(NonNull::from(state))
+    }
+
+    pub(crate) fn as_ref<'a>(self) -> &'a GlobalState {
+        unsafe { self.0.as_ref() }
+    }
+
+    pub(crate) fn as_mut<'a>(mut self) -> &'a mut GlobalState {
+        unsafe { self.0.as_mut() }
+    }
+
+    pub(crate) fn gc_debt(self) -> isize {
+        self.as_ref().gc.gc_debt
+    }
+
+    pub(crate) fn gc_barrier(
+        self,
+        state: *mut LuaState,
+        owner_ptr: GcObjectPtr,
+        value_gc_ptr: GcObjectPtr,
+    ) {
+        self.as_mut()
+            .gc
+            .barrier(unsafe { &mut *state }, owner_ptr, value_gc_ptr);
+    }
+
+    pub(crate) fn link_thread_with_open_upvalues(self, thread_ptr: ThreadPtr) {
+        self.as_mut().gc.link_thread_with_open_upvalues(thread_ptr);
+    }
+
+    pub(crate) fn check_gc(self, state: *mut LuaState) -> bool {
+        self.as_mut().check_gc(unsafe { &mut *state })
+    }
+
+    pub(crate) fn full_gc(self, state: *mut LuaState, emergency: bool) {
+        self.as_mut().full_gc(unsafe { &mut *state }, emergency);
+    }
+
+    pub(crate) fn change_gc_mode(self, state: *mut LuaState, kind: GcKind) {
+        self.as_mut().gc.change_mode(unsafe { &mut *state }, kind);
+    }
+    pub(crate) fn gc_total_bytes(self) -> isize {
+        self.as_ref().gc.get_total_bytes()
+    }
+
+    pub(crate) fn gc_is_running(self) -> bool {
+        !self.as_ref().gc.gc_stopped
+    }
+
+    pub(crate) fn gc_set_running(self, running: bool) {
+        self.as_mut().gc.gc_stopped = !running;
+    }
+
+    pub(crate) fn gc_parameter(self, index: usize) -> i32 {
+        crate::gc::decode_param(self.as_ref().gc.gc_params[index])
+    }
+
+    pub(crate) fn gc_set_parameter(self, index: usize, value: i32) -> i32 {
+        let old = self.gc_parameter(index);
+        self.as_mut().gc.gc_params[index] = crate::gc::code_param(value.max(0) as u32);
+        old
+    }
+
+    pub(crate) fn gc_step(self, state: *mut LuaState, kibibytes: i32) -> bool {
+        let global = self.as_mut();
+        global.gc.api_step(unsafe { &mut *state }, kibibytes)
+    }
+
+    pub(crate) fn take_finalizer_error(self) -> Option<String> {
+        self.as_mut().gc.take_finalizer_error()
+    }
+}
+
+#[cfg(test)]
+
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_count_hook_preserves_multret_unpack_results() {
+        let mut vm = GlobalState::new(SafeOption::default());
+        vm.open_stdlib(Stdlib::All).unwrap();
+
+        let results = vm
+            .main_state()
+            .execute(
+                r#"
+                local count = 0
+                local function f(...) return #({...}), ... end
+                local a = {}
+                for i = 1, 30 do a[i] = i end
+
+                debug.sethook(function() count = count + 1 end, '', 1)
+                local t = {f(table.unpack(a, 1, 30))}
+                debug.sethook()
+
+                return #t, t[#t], count > 0
+                "#,
+            )
+            .unwrap();
+
+        assert_eq!(results.len(), 3);
+        assert_eq!(results[0].as_integer(), Some(31));
+        assert_eq!(results[1].as_integer(), Some(30));
+        assert_eq!(results[2].as_bool(), Some(true));
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn test_json_serialization() {
+        let mut vm = GlobalState::new(SafeOption::default());
+
+        // Test 1: Simple values
+        let num = LuaValue::number(42.5);
+        let json = vm.serialize_to_json(&num).unwrap();
+        assert_eq!(json, serde_json::json!(42.5));
+
+        let bool_val = LuaValue::boolean(true);
+        let json = vm.serialize_to_json(&bool_val).unwrap();
+        assert_eq!(json, serde_json::json!(true));
+
+        let nil = LuaValue::nil();
+        let json = vm.serialize_to_json(&nil).unwrap();
+        assert_eq!(json, serde_json::json!(null));
+
+        // Test 2: String
+        let str_val = vm.create_string("hello world").unwrap();
+        let json = vm.serialize_to_json(&str_val).unwrap();
+        assert_eq!(json, serde_json::json!("hello world"));
+
+        // Test 3: Array-like table
+        let arr = vm.create_table(3, 0).unwrap();
+        vm.raw_set(&arr, LuaValue::number(1.0), LuaValue::number(10.0));
+        vm.raw_set(&arr, LuaValue::number(2.0), LuaValue::number(20.0));
+        vm.raw_set(&arr, LuaValue::number(3.0), LuaValue::number(30.0));
+
+        let json = vm.serialize_to_json(&arr).unwrap();
+        assert_eq!(json, serde_json::json!([10, 20, 30]));
+
+        // Test 4: Object-like table
+        let obj = vm.create_table(0, 2).unwrap();
+        let key1 = vm.create_string("name").unwrap();
+        let key2 = vm.create_string("age").unwrap();
+        let val1 = vm.create_string("Alice").unwrap();
+        vm.raw_set(&obj, key1, val1);
+        vm.raw_set(&obj, key2, LuaValue::number(30.0));
+
+        let json = vm.serialize_to_json(&obj).unwrap();
+        let expected = serde_json::json!({"name": "Alice", "age": 30});
+        assert_eq!(json, expected);
+
+        // Test 5: Nested structure
+        let root = vm.create_table(0, 2).unwrap();
+        let inner = vm.create_table(2, 0).unwrap();
+        vm.raw_set(&inner, LuaValue::number(1.0), LuaValue::number(1.0));
+        vm.raw_set(&inner, LuaValue::number(2.0), LuaValue::number(2.0));
+
+        let key = vm.create_string("data").unwrap();
+        vm.raw_set(&root, key, inner);
+        let key2 = vm.create_string("count").unwrap();
+        vm.raw_set(&root, key2, LuaValue::number(100.0));
+
+        let json = vm.serialize_to_json(&root).unwrap();
+        let expected = serde_json::json!({"data": [1, 2], "count": 100});
+        assert_eq!(json, expected);
+
+        println!("✓ JSON serialization test passed");
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn test_json_deserialization() {
+        let mut vm = GlobalState::new(SafeOption::default());
+
+        // Test 1: Simple values
+        let json = serde_json::json!(42);
+        let lua_val = vm.deserialize_from_json(&json).unwrap();
+        assert_eq!(lua_val.as_number(), Some(42.0));
+
+        let json = serde_json::json!(true);
+        let lua_val = vm.deserialize_from_json(&json).unwrap();
+        assert_eq!(lua_val.as_bool(), Some(true));
+
+        let json = serde_json::json!(null);
+        let lua_val = vm.deserialize_from_json(&json).unwrap();
+        assert!(lua_val.is_nil());
+
+        // Test 2: String
+        let json = serde_json::json!("hello");
+        let lua_val = vm.deserialize_from_json(&json).unwrap();
+        assert_eq!(lua_val.as_str(), Some("hello"));
+
+        // Test 3: Array
+        let json = serde_json::json!([1, 2, 3]);
+        let lua_val = vm.deserialize_from_json(&json).unwrap();
+        assert!(lua_val.is_table());
+
+        let val1 = vm.raw_get(&lua_val, &LuaValue::number(1.0)).unwrap();
+        assert_eq!(val1.as_number(), Some(1.0));
+
+        // Test 4: Object
+        let json = serde_json::json!({"name": "Bob", "age": 25});
+        let lua_val = vm.deserialize_from_json(&json).unwrap();
+        assert!(lua_val.is_table());
+
+        let key = vm.create_string("name").unwrap();
+        let name = vm.raw_get(&lua_val, &key).unwrap();
+        assert_eq!(name.as_str(), Some("Bob"));
+
+        println!("✓ JSON deserialization test passed");
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn test_json_roundtrip() {
+        let mut vm = GlobalState::new(SafeOption::default());
+
+        // Create a complex Lua structure
+        let root = vm.create_table(0, 3).unwrap();
+
+        let key1 = vm.create_string("name").unwrap();
+        let val1 = vm.create_string("Test").unwrap();
+        vm.raw_set(&root, key1, val1);
+
+        let key2 = vm.create_string("count").unwrap();
+        vm.raw_set(&root, key2, LuaValue::number(42.0));
+
+        let key3 = vm.create_string("items").unwrap();
+        let items = vm.create_table(3, 0).unwrap();
+        vm.raw_set(&items, LuaValue::number(1.0), LuaValue::number(10.0));
+        vm.raw_set(&items, LuaValue::number(2.0), LuaValue::number(20.0));
+        vm.raw_set(&items, LuaValue::number(3.0), LuaValue::number(30.0));
+        vm.raw_set(&root, key3, items);
+
+        // Serialize to JSON
+        let json = vm.serialize_to_json(&root).unwrap();
+
+        // Deserialize back to Lua
+        let reconstructed = vm.deserialize_from_json(&json).unwrap();
+
+        // Verify structure
+        assert!(reconstructed.is_table());
+
+        let key = vm.create_string("name").unwrap();
+        let name = vm.raw_get(&reconstructed, &key).unwrap();
+        assert_eq!(name.as_str(), Some("Test"));
+
+        let key = vm.create_string("count").unwrap();
+        let count = vm.raw_get(&reconstructed, &key).unwrap();
+        assert_eq!(count.as_number(), Some(42.0));
+
+        println!("✓ JSON roundtrip test passed");
+    }
+
+    #[cfg(feature = "shared-proto")]
+    #[test]
+    fn test_shared_const_strings_reused_across_vms() {
+        let vm1 = GlobalState::new(SafeOption::default());
+        let vm2 = GlobalState::new(SafeOption::default());
+
+        let gc_tm1 = vm1.const_strings.tmname[TmKind::Gc as usize]
+            .as_string_ptr()
+            .unwrap();
+        let gc_tm2 = vm2.const_strings.tmname[TmKind::Gc as usize]
+            .as_string_ptr()
+            .unwrap();
+        let type_name1 = vm1.const_strings.str_number.as_string_ptr().unwrap();
+        let type_name2 = vm2.const_strings.str_number.as_string_ptr().unwrap();
+
+        assert_eq!(gc_tm1, gc_tm2);
+        assert_eq!(type_name1, type_name2);
+        assert!(gc_tm1.as_ref().header.is_shared());
+        assert!(type_name1.as_ref().header.is_shared());
+    }
+}

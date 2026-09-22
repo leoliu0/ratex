@@ -5,6 +5,7 @@
 
 pub mod fs;
 use fs::PathExt;
+use std::io::Read;
 
 /// Metadata for an embedded OpenType or TrueType font face discovered at build time.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -20,7 +21,11 @@ pub struct EmbeddedFontFace {
 
 /// All native font faces available in the embedded packages archive.
 pub fn embedded_font_faces() -> &'static [EmbeddedFontFace] {
-    EMBEDDED_FONT_FACES
+    if fs::embedded_allowed() {
+        EMBEDDED_FONT_FACES
+    } else {
+        &[]
+    }
 }
 
 // Independently compressed chunks and a sorted member index are generated
@@ -33,6 +38,22 @@ const CHUNK_CACHE_CAPACITY: usize = 4;
 type CachedChunk = (usize, std::sync::Arc<[u8]>);
 static CHUNK_CACHE: std::sync::OnceLock<std::sync::Mutex<std::collections::VecDeque<CachedChunk>>> =
     std::sync::OnceLock::new();
+const MAX_PACKAGE_CHUNK_BYTES: usize = 128 * 1024 * 1024;
+
+fn decode_package_chunk(compressed: &[u8], expected_len: usize) -> Option<Vec<u8>> {
+    if expected_len > MAX_PACKAGE_CHUNK_BYTES {
+        return None;
+    }
+    let window = u64::try_from(expected_len.max(1)).ok()?;
+    let decoder =
+        ruzstd::decoding::StreamingDecoder::new_with_max_window_size(compressed, window).ok()?;
+    let mut decoded = Vec::with_capacity(expected_len);
+    decoder
+        .take(u64::try_from(expected_len).ok()?.saturating_add(1))
+        .read_to_end(&mut decoded)
+        .ok()?;
+    (decoded.len() == expected_len).then_some(decoded)
+}
 
 fn package_entry(filename: &str) -> Option<usize> {
     let name = std::path::Path::new(filename)
@@ -67,10 +88,13 @@ fn ascii_folded_cmp(left: &[u8], right: &[u8]) -> std::cmp::Ordering {
 }
 
 pub fn has_embedded_package(filename: &str) -> bool {
-    package_entry(filename).is_some()
+    fs::embedded_allowed() && package_entry(filename).is_some()
 }
 
 pub fn get_embedded_package(filename: &str) -> Option<Vec<u8>> {
+    if !fs::embedded_allowed() {
+        return None;
+    }
     let index = package_entry(filename)?;
     let (_, _, chunk_index, member_offset, member_length) = PACKAGE_INDEX[index];
     let chunk_index = chunk_index as usize;
@@ -90,12 +114,13 @@ pub fn get_embedded_package(filename: &str) -> Option<Vec<u8>> {
     let chunk = match chunk {
         Some(bytes) => bytes,
         None => {
-            let (offset, length) = *PACKAGE_CHUNKS.get(chunk_index)?;
+            let (offset, length, decoded_length) = *PACKAGE_CHUNKS.get(chunk_index)?;
             let offset = offset as usize;
             let length = length as usize;
             let end = offset.checked_add(length)?;
             let compressed = PACKAGES.get(offset..end)?;
-            let bytes: std::sync::Arc<[u8]> = zstd::decode_all(compressed).ok()?.into();
+            let bytes: std::sync::Arc<[u8]> =
+                decode_package_chunk(compressed, decoded_length as usize)?.into();
             let mut cache = cache.lock().ok()?;
             if let Some(position) = cache.iter().position(|(index, _)| *index == chunk_index) {
                 cache.remove(position);
@@ -1705,7 +1730,12 @@ mod tests {
         for p in part_paths {
             chained = Box::new(chained.chain(std::fs::File::open(p).unwrap()));
         }
-        let mut archive = tar::Archive::new(zstd::Decoder::new(chained).unwrap());
+        let decoder = ruzstd::decoding::StreamingDecoder::new_with_max_window_size(
+            chained,
+            512 * 1024 * 1024,
+        )
+        .unwrap();
+        let mut archive = tar::Archive::new(decoder);
         let mut seen = HashSet::new();
         let mut checked = 0;
         for entry in archive.entries().unwrap() {

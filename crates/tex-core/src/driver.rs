@@ -84,7 +84,9 @@ pub fn finalize_format_load(eng: &mut Engine) {
     // slot. Synthesize latex.ltx:9414's protected tie
     // directly on the active slot; no-op when the format
     // already carries one (post-split dumps).
-    let act = eng.cs.intern(&crate::engine::Engine::active_cs_name(b'~'));
+    let act = eng
+        .cs
+        .intern(&crate::engine::Engine::active_cs_name(u32::from(b'~')));
     if eng.eqtb.get(act).is_none() {
         let id_of = |eng: &crate::engine::Engine, name: &[u8]| eng.cs.lookup(name);
         let tie: Option<crate::eqtb::Equiv> = {
@@ -143,29 +145,49 @@ pub fn prepare_latex_job(eng: &mut Engine) {
     eng.term.clear();
     eng.log.clear();
     eng.input.clear_sources();
-    // (tex.web §372). color.cfg then takes the luatex branch.
-    // pdfTeX identity: those names must compare \\ifx-equal \\@undefined.
-    for name in [
-        b"luatexversion" as &[u8],
-        b"luatexrevision",
-        b"luatexbanner",
-        b"directlua",
-        b"outputmode",
-        b"tex_luatexversion:D",
-        b"tex_directlua:D",
-        b"XeTeXversion",
-        b"XeTeXrevision",
-        b"XeTeXfonttype",
-        b"XeTeXglyph",
-        b"XeTeXglyphindex",
-        b"XeTeXglyphname",
-        b"XeTeXpicfile",
-        b"XeTeXpdffile",
-        b"xetexversion",
-        b"xetexrevision",
-    ] {
-        if let Some(id) = eng.cs.lookup(name) {
-            eng.eqtb.undefine(id, true);
+    if eng.engine_kind != crate::engine::EngineKind::LuaTeX {
+        for name in [
+            b"luatexversion" as &[u8],
+            b"luatexrevision",
+            b"luatexbanner",
+            b"directlua",
+            b"outputmode",
+            b"tex_luatexversion:D",
+            b"tex_directlua:D",
+        ] {
+            if let Some(id) = eng.cs.lookup(name) {
+                eng.eqtb.undefine(id, true);
+            }
+        }
+    }
+    if eng.engine_kind != crate::engine::EngineKind::XeTeX {
+        for name in [
+            b"XeTeXversion" as &[u8],
+            b"XeTeXrevision",
+            b"XeTeXfonttype",
+            b"XeTeXglyph",
+            b"XeTeXglyphindex",
+            b"XeTeXglyphname",
+            b"XeTeXpicfile",
+            b"XeTeXpdffile",
+            b"xetexversion",
+            b"xetexrevision",
+        ] {
+            if let Some(id) = eng.cs.lookup(name) {
+                eng.eqtb.undefine(id, true);
+            }
+        }
+    }
+    if eng.engine_kind != crate::engine::EngineKind::PdfTeX {
+        for name in [
+            b"pdftexversion" as &[u8],
+            b"pdftexrevision",
+            b"pdftexbanner",
+            b"tex_pdftexversion:D",
+        ] {
+            if let Some(id) = eng.cs.lookup(name) {
+                eng.eqtb.undefine(id, true);
+            }
         }
     }
     if let Some(id) = eng.cs.lookup(b"undefined") {
@@ -205,15 +227,21 @@ pub fn prepare_latex_job(eng: &mut Engine) {
 }
 
 pub fn insert_everyjob(eng: &mut Engine) {
-    // Format \\everyjob contains \\directlua{...}. Install the
-    // swallow-group stub for that, then \\let it to \\@undefined
-    // so color.cfg / iftex see a pdfTeX engine.
     let dl = eng.cs.intern(b"directlua");
     eng.eqtb.assign(
         dl,
         crate::eqtb::Equiv::Prim(crate::prim::Prim::DirectLua),
         true,
     );
+    if eng.engine_kind == crate::engine::EngineKind::LuaTeX {
+        let code = b"\\ExplSyntaxOn\\long\\def\\lua_load_module:n#1{\\directlua{pcall(require, '#1')}}\\let\\sys_if_engine_luatex:TF\\use_i:nn\\let\\sys_if_engine_luatex:T\\use:n\\let\\sys_if_engine_luatex:F\\use_none:n\\let\\sys_if_engine_pdftex:TF\\use_ii:nn\\let\\sys_if_engine_pdftex:T\\use_none:n\\let\\sys_if_engine_pdftex:F\\use:n\\ExplSyntaxOff ";
+        eng.input.push_file("<luatex-init>".to_string(), code.to_vec());
+        let ej = (*eng.eqtb.tok_params[crate::prim::ToksParam::EveryJob.idx() as usize]).clone();
+        if !ej.is_empty() {
+            eng.push_tokens_named(ej, "<everyjob>");
+        }
+        return;
+    }
     if let Some(let_id) = eng.cs.lookup(b"let") {
         let undef = eng.cs.intern(b"@undefined");
         eng.push_tokens_named(

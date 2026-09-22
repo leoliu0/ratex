@@ -161,7 +161,7 @@ impl Engine {
             let id = if t.is_cs() && t.0 < NOEXP_FLAG {
                 Some(t.cs_id())
             } else if t.is_char() && t.cc() == 13 {
-                Some(self.active_cs_id(t.chr() as u8))
+                Some(self.active_cs_id(t.chr()))
             } else {
                 None
             };
@@ -179,9 +179,9 @@ impl Engine {
         } else if a.is_char() && b.is_char() {
             a.cc() == b.cc() && a.chr() == b.chr()
         } else if a.is_cs() && b.is_char() && b.cc() == 13 {
-            self.active_cs_lookup(b.chr() as u8) == Some(a.cs_id())
+            self.active_cs_lookup(b.chr()) == Some(a.cs_id())
         } else if b.is_cs() && a.is_char() && a.cc() == 13 {
-            self.active_cs_lookup(a.chr() as u8) == Some(b.cs_id())
+            self.active_cs_lookup(a.chr()) == Some(b.cs_id())
         } else {
             false
         }
@@ -405,7 +405,7 @@ impl Engine {
                 self.diagnostic_source_cs = Some(t.cs_id());
                 t.cs_id()
             } else if t.is_char() && t.cc() == 13 {
-                let id = self.active_cs_id(t.chr() as u8);
+                let id = self.active_cs_id(t.chr());
                 self.diagnostic_source_cs = Some(id);
                 id
             } else {
@@ -545,7 +545,7 @@ impl Engine {
         self.begin_token_list(toks, false, "<macro>", Some(owner));
     }
     #[inline]
-    fn ensure_input_stack_room(&mut self, needed: usize) -> bool {
+    pub(crate) fn ensure_input_stack_room(&mut self, needed: usize) -> bool {
         if self.input.stack.len().saturating_add(needed) <= crate::input::MAX_INPUT_STACK {
             return true;
         }
@@ -787,7 +787,7 @@ impl Engine {
                 }
 
                 t = if t.is_char() && t.cc() == 13 {
-                    let id = self.active_cs_id(t.chr() as u8);
+                    let id = self.active_cs_id(t.chr());
                     self.diagnostic_source_cs = Some(id);
                     Token::from_cs(id)
                 } else {
@@ -1080,6 +1080,7 @@ impl Engine {
                 | RomanNumeral
                 | Detokenize
                 | ScanTokens
+                | DirectLua
                 | Input
                 | Expanded
                 | UnExpanded
@@ -1149,6 +1150,12 @@ impl Engine {
                 | BotMarksClass
                 | SplitFirstMarksClass
                 | SplitBotMarksClass
+                | Prim::XeTeXRevision
+                | Prim::XeTeXGlyphName
+                | Prim::XeTeXFeatureName
+                | Prim::XeTeXVariationName
+                | Prim::LuaTeXRevision
+                | Prim::LuaTeXBanner
         )
     }
 
@@ -1263,7 +1270,7 @@ impl Engine {
                     let mut id2 = if t2.is_cs() {
                         t2.cs_id()
                     } else {
-                        self.active_cs_id(t2.chr() as u8)
+                        self.active_cs_id(t2.chr())
                     };
                     let invocation = id2;
                     for _ in 0..1024 {
@@ -1318,7 +1325,7 @@ impl Engine {
                 let id = if t.is_cs() {
                     Some(t.cs_id())
                 } else if t.is_char() && t.cc() == 13 {
-                    Some(self.active_cs_id(t.chr() as u8))
+                    Some(self.active_cs_id(t.chr()))
                 } else {
                     None
                 };
@@ -1457,8 +1464,8 @@ impl Engine {
                 let esc = self.eqtb.int_params[crate::prim::IntParam::EscapeChar.idx() as usize];
                 if t.is_cs() {
                     let name = self.cs.name(t.cs_id());
-                    if let [0xff, 0, b'A', b'C', b'T', 0, c] = name {
-                        bytes.push(*c);
+                    if let Some((source_bytes, len)) = Self::active_cs_source_bytes(name) {
+                        bytes.extend_from_slice(&source_bytes[..len]);
                     } else {
                         if esc >= 0 && esc <= 255 {
                             bytes.push(esc as u8);
@@ -1549,6 +1556,25 @@ impl Engine {
                 if self.ensure_input_stack_room(1) {
                     self.input
                         .push_file("<scantokens>".to_string(), text.into_bytes());
+                }
+                None
+            }
+            DirectLua => {
+                self.skip_spaces_relax();
+                let t = self.get_token();
+                if t.is_char() && t.chr() == u32::from(b'[') {
+                    let _ = self.scan_int();
+                    let close = self.get_token();
+                    if !(close.is_char() && close.chr() == u32::from(b']')) {
+                        self.push_token(close);
+                    }
+                } else {
+                    self.push_token(t);
+                }
+                let toks = self.scan_general_text_expanded();
+                let code = self.tokens_to_string(&toks);
+                if let Err(err) = self.execute_directlua(&code) {
+                    self.error(&format!("LuaTeX error: {err}"));
                 }
                 None
             }
@@ -1690,7 +1716,7 @@ impl Engine {
                 let def = if t.is_cs() {
                     self.eqtb.resolve(t.cs_id()).is_some()
                 } else if t.is_char() && t.cc() == 13 {
-                    let id = self.active_cs_id(t.chr() as u8);
+                    let id = self.active_cs_id(t.chr());
                     self.eqtb.resolve(id).is_some()
                 } else {
                     false
@@ -2212,6 +2238,18 @@ impl Engine {
                 self.exp_string(&decoded);
                 None
             }
+            Prim::XeTeXRevision | Prim::XeTeXGlyphName | Prim::XeTeXFeatureName | Prim::XeTeXVariationName => {
+                self.expand_xetex_query(p);
+                None
+            }
+            Prim::LuaTeXRevision => {
+                self.exp_string(b"0");
+                None
+            }
+            Prim::LuaTeXBanner => {
+                self.exp_string(b"This is LuaTeX, Version 1.24.0");
+                None
+            }
             _ => None,
         }
     }
@@ -2219,13 +2257,19 @@ impl Engine {
     /// stores the token as macro input. `\unexpanded` has a distinct marker
     /// because it must survive any intervening macro-argument scanners.
     pub(crate) fn unfreeze_input_token(&self, t: Token) -> Token {
-        if t.0 < NOEXP_FLAG || t.0 >= UNEXPANDED_CS_FLAG {
+        if t.0 >= UNEXPANDED_CS_FLAG && t.0 < 0xFFFF_0000 {
             return t;
         }
-        let id = t.0 & 0x3FFF_FFFF;
+        let id = if t.0 >= NOEXP_FLAG && t.0 < UNEXPANDED_CS_FLAG {
+            t.0 & 0x3FFF_FFFF
+        } else if t.is_cs() {
+            t.cs_id()
+        } else {
+            return t;
+        };
         let name = self.cs.name(id);
-        if name.len() == 7 && name[..6] == [0xFF, 0x00, b'A', b'C', b'T', 0x00] {
-            Token::char(13, name[6] as u32)
+        if let Some(scalar) = Self::active_cs_scalar(name) {
+            Token::char(13, scalar)
         } else {
             Token::from_cs(id)
         }
@@ -2235,8 +2279,8 @@ impl Engine {
         if t.0 >= UNEXPANDED_CS_FLAG && t.0 < 0xFFFF_0000 {
             let id = t.0 & 0x1FFF_FFFF;
             let name = self.cs.name(id);
-            if name.len() == 7 && name[..6] == [0xFF, 0x00, b'A', b'C', b'T', 0x00] {
-                Token::char(13, name[6] as u32)
+            if let Some(scalar) = Self::active_cs_scalar(name) {
+                Token::char(13, scalar)
             } else {
                 Token::from_cs(id)
             }
@@ -2734,8 +2778,11 @@ impl Engine {
         if b.is_cs() {
             return (b.0 & 0x3FFF_FFFF) == (id & 0x3FFF_FFFF);
         }
-        // Active `_` with \\def_{_} (body is cc13 not a CS) loops otherwise.
-        b.is_char() && b.cc() == 13 && self.cs.name(id) == [b.chr() as u8]
+        // An active character is interned under its collision-proof scalar
+        // identity, not under the source spelling of the control symbol.
+        b.is_char()
+            && b.cc() == CAT_ACTIVE
+            && Self::active_cs_scalar(self.cs.name(id)) == Some(b.chr())
     }
     pub fn expand_macro(&mut self, id: CsId, m: &Macro, invocation: CsId) {
         if self.is_self_quark(id, m) {
@@ -3273,8 +3320,8 @@ impl Engine {
             }
             if t.is_cs() {
                 let name = self.cs.name(t.cs_id());
-                if let [0xff, 0, b'A', b'C', b'T', 0, c] = name {
-                    out.push(*c);
+                if let Some((bytes, len)) = Self::active_cs_source_bytes(name) {
+                    out.extend_from_slice(&bytes[..len]);
                     continue;
                 }
                 if esc >= 0 && esc <= 255 {
@@ -3303,12 +3350,12 @@ impl Engine {
     }
     fn ifx_equal_inner(&self, mut a: Token, mut b: Token) -> bool {
         if a.is_char() && a.cc() == 13 {
-            if let Some(id) = self.active_cs_lookup(a.chr() as u8) {
+            if let Some(id) = self.active_cs_lookup(a.chr()) {
                 a = Token::from_cs(id);
             }
         }
         if b.is_char() && b.cc() == 13 {
-            if let Some(id) = self.active_cs_lookup(b.chr() as u8) {
+            if let Some(id) = self.active_cs_lookup(b.chr()) {
                 b = Token::from_cs(id);
             }
         }

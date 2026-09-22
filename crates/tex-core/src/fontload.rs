@@ -743,6 +743,7 @@ impl FontLoader {
             language: options.language,
             features: options.features,
             tex_ligatures: options.tex_ligatures,
+            vertical: options.vertical,
         };
         self.native_fonts.insert(fid, Rc::new(native_font));
         self.native_instances
@@ -1474,6 +1475,7 @@ impl Engine {
                 language: options.language,
                 features: options.features,
                 tex_ligatures: options.tex_ligatures,
+                vertical: options.vertical,
             };
 
             let id = self.push_engine_font(std::rc::Rc::new(font), cs);

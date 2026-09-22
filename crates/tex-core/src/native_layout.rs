@@ -38,6 +38,8 @@ pub struct NativeTextState {
     pub buffer: String,
     /// Tracks if last appended character was CJK (for CJK/Latin spacing)
     pub last_was_cjk: Option<bool>,
+    /// Tracks if last appended character was RTL
+    pub last_was_rtl: Option<bool>,
     /// \noboundary flag: suppress next left boundary ligature/kern
     pub suppress_left_boundary: bool,
     /// \noboundary flag: suppress right boundary ligature/kern
@@ -59,6 +61,7 @@ impl NativeTextState {
         self.current_font = None;
         self.buffer.clear();
         self.last_was_cjk = None;
+        self.last_was_rtl = None;
         self.suppress_left_boundary = false;
         self.suppress_right_boundary = false;
         self.no_lig_prev = false;
@@ -210,8 +213,8 @@ pub fn is_line_end_forbidden(ch: char) -> bool {
     )
 }
 
-/// Check for strong RTL / unsupported bidi characters.
-pub fn is_unsupported_bidi(ch: char) -> bool {
+/// Check if a character has strong Right-To-Left bidirectional directionality.
+pub fn char_bidi_is_rtl(ch: char) -> bool {
     matches!(
         ch as u32,
         0x0590..=0x05FF // Hebrew
@@ -219,11 +222,58 @@ pub fn is_unsupported_bidi(ch: char) -> bool {
         | 0x0700..=0x074F // Syriac
         | 0x0750..=0x077F // Arabic Supplement
         | 0x0780..=0x07BF // Thaana
+        | 0x07C0..=0x07FF // NKo
+        | 0x0800..=0x083F // Samaritan
+        | 0x0840..=0x085F // Mandaic
         | 0x08A0..=0x08FF // Arabic Extended-A
         | 0xFB1D..=0xFB4F // Hebrew Presentation Forms
         | 0xFB50..=0xFDFF // Arabic Presentation Forms-A
         | 0xFE70..=0xFEFF // Arabic Presentation Forms-B
+        | 0x1EE00..=0x1EEFF // Arabic Mathematical Alphabetic Symbols
     )
+}
+
+/// Detects the predominant script of a text run for HarfBuzz shaping.
+pub fn detect_script(text: &str) -> Option<rustybuzz::Script> {
+    for ch in text.chars() {
+        match ch as u32 {
+            0x0590..=0x05FF | 0xFB1D..=0xFB4F => return Some(rustybuzz::script::HEBREW),
+            0x0600..=0x06FF | 0x0750..=0x077F | 0x08A0..=0x08FF | 0xFB50..=0xFDFF | 0xFE70..=0xFEFF => {
+                return Some(rustybuzz::script::ARABIC);
+            }
+            0x0700..=0x074F => return Some(rustybuzz::script::SYRIAC),
+            0x0780..=0x07BF => return Some(rustybuzz::script::THAANA),
+            0x0900..=0x097F => return Some(rustybuzz::script::DEVANAGARI),
+            0x0980..=0x09FF => return Some(rustybuzz::script::BENGALI),
+            0x0A00..=0x0A7F => return Some(rustybuzz::script::GURMUKHI),
+            0x0A80..=0x0AFF => return Some(rustybuzz::script::GUJARATI),
+            0x0B00..=0x0B7F => return Some(rustybuzz::script::ORIYA),
+            0x0B80..=0x0BFF => return Some(rustybuzz::script::TAMIL),
+            0x0C00..=0x0C7F => return Some(rustybuzz::script::TELUGU),
+            0x0C80..=0x0CFF => return Some(rustybuzz::script::KANNADA),
+            0x0D00..=0x0D7F => return Some(rustybuzz::script::MALAYALAM),
+            0x0D80..=0x0DFF => return Some(rustybuzz::script::SINHALA),
+            0x0E00..=0x0E7F => return Some(rustybuzz::script::THAI),
+            0x0E80..=0x0EFF => return Some(rustybuzz::script::LAO),
+            0x0F00..=0x0FFF => return Some(rustybuzz::script::TIBETAN),
+            0x1000..=0x109F => return Some(rustybuzz::script::MYANMAR),
+            0x10A0..=0x10FF => return Some(rustybuzz::script::GEORGIAN),
+            0x1100..=0x11FF | 0xAC00..=0xD7AF => return Some(rustybuzz::script::HANGUL),
+            0x3040..=0x309F => return Some(rustybuzz::script::HIRAGANA),
+            0x30A0..=0x30FF => return Some(rustybuzz::script::KATAKANA),
+            0x4E00..=0x9FFF | 0x3400..=0x4DBF | 0x20000..=0x2CEAF => return Some(rustybuzz::script::HAN),
+            0x0370..=0x03FF | 0x1F00..=0x1FFF => return Some(rustybuzz::script::GREEK),
+            0x0400..=0x04FF | 0x0500..=0x052F => return Some(rustybuzz::script::CYRILLIC),
+            0x0041..=0x007A | 0x00C0..=0x024F => return Some(rustybuzz::script::LATIN),
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Backward compatibility stub: Ratex now natively supports bidirectional text layout.
+pub fn is_unsupported_bidi(_ch: char) -> bool {
+    false
 }
 
 /// Check for default-ignorable characters that may have GID 0 without error.
@@ -399,10 +449,13 @@ impl Engine {
             return true;
         };
 
-        if is_unsupported_bidi(ch) {
-            self.error("Ratex does not support bidirectional/RTL text layout");
-            return true;
+        let ch_is_rtl = char_bidi_is_rtl(ch);
+        if let Some(last_rtl) = self.native_text.last_was_rtl {
+            if last_rtl != ch_is_rtl {
+                self.flush_native_text();
+            }
         }
+        self.native_text.last_was_rtl = Some(ch_is_rtl);
 
         let ch_is_cjk = is_cjk(ch);
         let ch_is_punct = is_cjk_punctuation(ch);
@@ -611,7 +664,17 @@ impl Engine {
 
         let mut buffer = rustybuzz::UnicodeBuffer::new();
         buffer.push_str(&shaped_text);
-        if let Some(script) = native_font.script {
+        let is_rtl = raw_text.chars().any(char_bidi_is_rtl);
+        let is_vertical = native_font.vertical;
+        if is_vertical {
+            buffer.set_direction(rustybuzz::Direction::TopToBottom);
+        } else if is_rtl {
+            buffer.set_direction(rustybuzz::Direction::RightToLeft);
+        } else {
+            buffer.set_direction(rustybuzz::Direction::LeftToRight);
+        }
+
+        if let Some(script) = native_font.script.or_else(|| detect_script(&shaped_text)) {
             buffer.set_script(script);
         }
         if let Some(language) = native_font.language.clone() {

@@ -23,6 +23,9 @@ pub struct FontProgram {
     pub units_per_em: u16,
     pub allow_subsetting: bool,
     pub content_hash: [u8; 16],
+    pub has_opentype: bool,
+    pub has_aat: bool,
+    pub has_graphite: bool,
 }
 
 impl FontProgram {
@@ -63,6 +66,9 @@ impl FontProgram {
                 units_per_em: 1000,
                 allow_subsetting: true,
                 content_hash,
+                has_opentype: false,
+                has_aat: false,
+                has_graphite: false,
             });
         }
 
@@ -174,6 +180,10 @@ impl FontProgram {
             }
         }
 
+        let has_opentype = sfnt_has_table(&data, b"GSUB") || sfnt_has_table(&data, b"GPOS");
+        let has_aat = sfnt_has_table(&data, b"morx") || sfnt_has_table(&data, b"mort");
+        let has_graphite = sfnt_has_table(&data, b"Silf") || sfnt_has_table(&data, b"Glat");
+
         Ok(FontProgram {
             data,
             face_index,
@@ -183,9 +193,11 @@ impl FontProgram {
             units_per_em,
             allow_subsetting,
             content_hash,
+            has_opentype,
+            has_aat,
+            has_graphite,
         })
     }
-
     /// Obtain a ttf_parser::Face configured with this program's face_index and variation coordinates.
     pub fn face(&self) -> Result<ttf_parser::Face<'_>, String> {
         match self.kind {
@@ -221,6 +233,47 @@ impl FontProgram {
     pub fn is_cff(&self) -> bool {
         self.kind == FontProgramKind::Cff
     }
+}
+/// Scans SFNT (or TTC) table directory for a matching 4-byte table tag.
+pub fn sfnt_has_table(data: &[u8], tag: &[u8; 4]) -> bool {
+    if data.len() < 12 {
+        return false;
+    }
+    if data.starts_with(b"ttcf") {
+        if data.len() < 16 {
+            return false;
+        }
+        let num_fonts = u32::from_be_bytes([data[8], data[9], data[10], data[11]]) as usize;
+        for i in 0..num_fonts {
+            let offset_pos = 12 + i * 4;
+            if offset_pos + 4 > data.len() {
+                break;
+            }
+            let font_offset = u32::from_be_bytes([
+                data[offset_pos],
+                data[offset_pos + 1],
+                data[offset_pos + 2],
+                data[offset_pos + 3],
+            ]) as usize;
+            if font_offset < data.len() && sfnt_has_table(&data[font_offset..], tag) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    let num_tables = u16::from_be_bytes([data[4], data[5]]) as usize;
+    let mut offset = 12;
+    for _ in 0..num_tables {
+        if offset + 16 > data.len() {
+            break;
+        }
+        if &data[offset..offset + 4] == tag {
+            return true;
+        }
+        offset += 16;
+    }
+    false
 }
 
 /// Resolve the same legacy slot for PDF addressing and PDF-pen advances.

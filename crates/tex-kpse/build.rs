@@ -6,10 +6,7 @@ use std::path::PathBuf;
 // cross-file redundancy. Four MiB chunks preserve random access while getting
 // close to the compression ratio of the original solid archive.
 const CHUNK_TARGET: usize = 4 * 1024 * 1024;
-// Compression happens only at build time. Level 19 reduces the embedded
-// package payload by about another 2 MiB versus level 12 while preserving the
-// same four-MiB runtime chunks and therefore the same decompression footprint.
-const COMPRESSION_LEVEL: i32 = 19;
+const MAX_ARCHIVE_WINDOW_BYTES: u64 = 512 * 1024 * 1024;
 
 fn main() {
     let out = PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
@@ -17,7 +14,7 @@ fn main() {
         // Lean build: do not embed the 80+ MB package archive in the binary.
         std::fs::write(out.join("packages.bin"), b"").unwrap();
         std::fs::write(out.join("package_names.bin"), b"").unwrap();
-        let generated = "static PACKAGE_CHUNKS: &[(u32, u32)] = &[];\n\
+        let generated = "static PACKAGE_CHUNKS: &[(u32, u32, u32)] = &[];\n\
                          static PACKAGE_NAMES: &[u8; 0] = b\"\";\n\
                          static PACKAGE_INDEX: &[(u32, u32, u32, u32, u32)] = &[];\n\
                          static PACKAGE_FOLDED: &[u32] = &[];\n\
@@ -64,11 +61,16 @@ fn main() {
             .unwrap_or_else(|e| panic!("failed to open locked part {}: {e}", p.display()));
         chained_reader = Box::new(chained_reader.chain(file));
     }
-    let mut archive = tar::Archive::new(zstd::Decoder::new(chained_reader).unwrap());
+    let decoder = ruzstd::decoding::StreamingDecoder::new_with_max_window_size(
+        chained_reader,
+        MAX_ARCHIVE_WINDOW_BYTES,
+    )
+    .expect("locked package archive must be a valid bounded zstd frame");
+    let mut archive = tar::Archive::new(decoder);
     let mut blob =
         std::io::BufWriter::new(std::fs::File::create(out.join("packages.bin")).unwrap());
     let mut index: BTreeMap<String, (usize, usize, usize)> = BTreeMap::new();
-    let mut chunks: Vec<(usize, usize)> = Vec::new();
+    let mut chunks: Vec<(usize, usize, usize)> = Vec::new();
     let mut chunk = Vec::with_capacity(CHUNK_TARGET);
     let mut blob_offset = 0usize;
     let mut font_faces = Vec::new();
@@ -131,13 +133,13 @@ fn main() {
     blob.flush().unwrap();
     let mut generated =
         std::io::BufWriter::new(std::fs::File::create(out.join("packages_index.rs")).unwrap());
-    let chunks: Vec<(u32, u32)> = chunks
+    let chunks: Vec<(u32, u32, u32)> = chunks
         .into_iter()
-        .map(|(offset, length)| (packed(offset), packed(length)))
+        .map(|(offset, compressed, decoded)| (packed(offset), packed(compressed), packed(decoded)))
         .collect();
     writeln!(
         generated,
-        "static PACKAGE_CHUNKS: &[(u32, u32)] = &{chunks:?};"
+        "static PACKAGE_CHUNKS: &[(u32, u32, u32)] = &{chunks:?};"
     )
     .unwrap();
 
@@ -206,16 +208,20 @@ fn packed(value: usize) -> u32 {
 
 fn write_chunk(
     blob: &mut impl Write,
-    chunks: &mut Vec<(usize, usize)>,
+    chunks: &mut Vec<(usize, usize, usize)>,
     blob_offset: &mut usize,
     chunk: &mut Vec<u8>,
 ) {
     if chunk.is_empty() {
         return;
     }
-    let compressed = zstd::encode_all(chunk.as_slice(), COMPRESSION_LEVEL).unwrap();
+    let decoded_len = chunk.len();
+    let compressed = ruzstd::encoding::compress_to_vec(
+        chunk.as_slice(),
+        ruzstd::encoding::CompressionLevel::Fastest,
+    );
     blob.write_all(&compressed).unwrap();
-    chunks.push((*blob_offset, compressed.len()));
+    chunks.push((*blob_offset, compressed.len(), decoded_len));
     *blob_offset += compressed.len();
     chunk.clear();
 }

@@ -10,6 +10,7 @@ pub struct NativeFont {
     pub language: Option<rustybuzz::Language>,
     pub features: Vec<rustybuzz::Feature>,
     pub tex_ligatures: bool,
+    pub vertical: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -38,6 +39,7 @@ pub struct NativeFontOptions {
     pub features: Vec<rustybuzz::Feature>,
     pub tex_ligatures: bool,
     pub variations: Vec<(ttf_parser::Tag, f32)>,
+    pub vertical: bool,
 }
 
 impl Default for NativeFontOptions {
@@ -67,6 +69,7 @@ impl Default for NativeFontOptions {
             features: Vec::new(),
             tex_ligatures: false,
             variations: Vec::new(),
+            vertical: false,
         }
     }
 }
@@ -341,6 +344,18 @@ pub fn parse_fontspec_options(input: &str) -> Result<NativeFontOptions, String> 
                                 return Err(format!("Unsupported Contextuals option `{other}`"));
                             }
                         }
+                    }
+                }
+                "vertical" | "vert" => {
+                    let on = match val.to_ascii_lowercase().as_str() {
+                        "true" | "yes" | "on" | "" => true,
+                        "false" | "no" | "off" => false,
+                        _ => true,
+                    };
+                    options.vertical = on;
+                    if on {
+                        push_feature(&mut options, b"vert", 1);
+                        push_feature(&mut options, b"vkrn", 1);
                     }
                 }
                 "scale" => {

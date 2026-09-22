@@ -129,9 +129,29 @@ pub struct LegacyBindingInfo {
     pub next_code: u16,
 }
 
-/// Keep the engine font in the low bits and its native code-space shard above it.
-pub(crate) fn font_resource_key(font_id: u16, binding: usize) -> usize {
-    (binding << u16::BITS) | usize::from(font_id)
+/// Binding zero is permanently reserved for a font's original one-byte code
+/// space. Semantic remaps and native glyph maps occupy disjoint shards.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct FontBinding(usize);
+
+impl FontBinding {
+    pub const RAW: Self = Self(0);
+
+    pub fn remapped(index: usize) -> Self {
+        Self(
+            index
+                .checked_add(1)
+                .expect("PDF font binding index overflow"),
+        )
+    }
+
+    pub fn remapped_index(self) -> Option<usize> {
+        self.0.checked_sub(1)
+    }
+
+    pub fn resource_key(self, font_id: u16) -> usize {
+        (self.0 << u16::BITS) | usize::from(font_id)
+    }
 }
 
 /// A font prepared for embedding (Type 1 or OpenType/TrueType/CFF).
@@ -234,13 +254,13 @@ impl PdfDoc {
         font_id: usize,
         glyph_id: u16,
         text: &str,
-    ) -> (usize, u16) {
+    ) -> (FontBinding, u16) {
         let bindings = self.native_bindings.entry(font_id).or_default();
         for (index, binding) in bindings.iter().enumerate() {
             if let Some(indices) = binding.code_map.get(&glyph_id) {
                 for &entry in indices {
                     if binding.entries[entry].2 == text {
-                        return (index, binding.entries[entry].0);
+                        return (FontBinding::remapped(index), binding.entries[entry].0);
                     }
                 }
             }
@@ -265,20 +285,20 @@ impl PdfDoc {
             .or_default()
             .push(binding.entries.len());
         binding.entries.push((code, glyph_id, text.to_owned()));
-        (binding_index, code)
+        (FontBinding::remapped(binding_index), code)
     }
     pub fn get_or_alloc_legacy_code(
         &mut self,
         font_id: usize,
         base_char: u8,
         text: &str,
-    ) -> (usize, u8) {
+    ) -> (FontBinding, u8) {
         let bindings = self.legacy_bindings.entry(font_id).or_default();
         for (index, binding) in bindings.iter().enumerate() {
             if let Some(indices) = binding.code_map.get(&base_char) {
                 for &entry in indices {
                     if binding.entries[entry].2 == text {
-                        return (index, binding.entries[entry].0);
+                        return (FontBinding::remapped(index), binding.entries[entry].0);
                     }
                 }
             }
@@ -303,7 +323,7 @@ impl PdfDoc {
             .or_default()
             .push(binding.entries.len());
         binding.entries.push((code, base_char, text.to_owned()));
-        (binding_index, code)
+        (FontBinding::remapped(binding_index), code)
     }
 }
 
@@ -770,5 +790,29 @@ mod tests {
             zoom: None,
         };
         assert_eq!((d.name.as_str(), d.kind), ("a", 0));
+    }
+    #[test]
+    fn font_binding_shards_do_not_alias_raw_or_each_other() {
+        let mut doc = PdfDoc::new();
+        let font_id = 17;
+        let mut allocated = Vec::new();
+        for index in 0..=u8::MAX {
+            allocated.push(doc.get_or_alloc_legacy_code(
+                font_id as usize,
+                b'A',
+                &format!("semantic-{index}"),
+            ));
+        }
+
+        assert_eq!(allocated[0].0.remapped_index(), Some(0));
+        assert_eq!(allocated[0].1, 1);
+        assert_eq!(allocated[usize::from(u8::MAX)].0.remapped_index(), Some(1));
+        assert_eq!(allocated[usize::from(u8::MAX)].1, 1);
+        let raw_key = FontBinding::RAW.resource_key(font_id);
+        let first_key = allocated[0].0.resource_key(font_id);
+        let overflow_key = allocated[usize::from(u8::MAX)].0.resource_key(font_id);
+        assert_ne!(raw_key, first_key);
+        assert_ne!(raw_key, overflow_key);
+        assert_ne!(first_key, overflow_key);
     }
 }

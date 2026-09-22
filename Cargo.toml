@@ -8,18 +8,23 @@ members = [
     "crates/tex-runtime",
     "crates/libtex",
     "crates/tex-wasm",
+    "crates/tex-lua",
+    "crates/tex-lua-derive",
+    "crates/tex-mplib",
+    "crates/tex-ps",
 ]
 
 [workspace.package]
-version = "0.4.3"
+version = "0.4.4"
 edition = "2021"
 
 [workspace.dependencies]
 flate2 = { version = "1.0", default-features = false, features = ["zlib-rs"] }
+dlmalloc = { version = "0.2.14", features = ["global"] }
 libc = "0.2"
+ruzstd = "0.9.0"
 rustybuzz = "0.14"
 ttf-parser = "0.21"
-zstd = "0.13"
 tar = "0.4"
 
 [profile.release]

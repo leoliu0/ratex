@@ -1602,9 +1602,11 @@ impl Engine {
         let name = self.cs.name(id);
         if let Some(active) = active_character(name) {
             return match active {
-                b' ' => "␠".to_string(),
-                b'\t' => "⇥".to_string(),
-                _ => char::from(active).to_string(),
+                value if value == u32::from(b' ') => "␠".to_string(),
+                value if value == u32::from(b'\t') => "⇥".to_string(),
+                value => char::from_u32(value)
+                    .unwrap_or(char::REPLACEMENT_CHARACTER)
+                    .to_string(),
             };
         }
         let shown = &name[..name.len().min(MAX_CONTROL_SEQUENCE_BYTES)];
@@ -1653,8 +1655,8 @@ impl Engine {
                 append_bounded(&mut bytes, b"##", limit)
             } else if token.is_cs() {
                 let name = self.cs.name(token.cs_id());
-                if let Some(active) = active_character(name) {
-                    append_bounded(&mut bytes, &[active], limit)
+                if let Some((active, len)) = Self::active_cs_source_bytes(name) {
+                    append_bounded(&mut bytes, &active[..len], limit)
                 } else {
                     append_bounded(&mut bytes, b"\\", limit)
                         && append_bounded(&mut bytes, name, limit)
@@ -1689,8 +1691,8 @@ impl Engine {
     }
 }
 
-fn active_character(name: &[u8]) -> Option<u8> {
-    (name.len() == 7 && name[..6] == [0xff, 0, b'A', b'C', b'T', 0]).then(|| name[6])
+fn active_character(name: &[u8]) -> Option<u32> {
+    Engine::active_cs_scalar(name)
 }
 
 fn trace_noise(name: &str) -> bool {
@@ -2169,7 +2171,7 @@ mod tests {
     #[test]
     fn diagnostic_token_text_distinguishes_parameters_and_active_characters() {
         let mut engine = Engine::new(false);
-        let active = engine.active_cs_id(b'~');
+        let active = engine.active_cs_id(u32::from(b'~'));
         let word = engine.cs.intern(b"hello");
         let tokens = [
             Token(PAR_REF_FLAG | 1),

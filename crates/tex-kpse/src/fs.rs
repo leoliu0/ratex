@@ -27,32 +27,222 @@ pub struct MemoryFs {
     epoch: u64,
 }
 
-thread_local! {
-    static ACTIVE: RefCell<Option<MemoryFs>> = const { RefCell::new(None) };
+#[derive(Clone)]
+enum Backend {
+    Memory(MemoryFs),
+    Disk,
 }
 
-pub struct Scope(Option<MemoryFs>);
+/// Filesystem and resource policy for one compilation.
+///
+/// Contexts are installed only on the current thread and restored by `Scope`.
+/// Paths are resolved against `cwd`; reads and writes outside their respective
+/// roots are rejected before touching the backing filesystem.
+#[derive(Clone)]
+pub struct ResourceContext {
+    backend: Backend,
+    cwd: PathBuf,
+    input_roots: Vec<PathBuf>,
+    write_roots: Vec<PathBuf>,
+    output_root: PathBuf,
+    aux_root: PathBuf,
+    epoch: Option<u64>,
+    allow_embedded: bool,
+}
+
+impl ResourceContext {
+    pub fn memory(
+        fs: MemoryFs,
+        output_root: &Path,
+        aux_root: &Path,
+        allow_embedded: bool,
+    ) -> io::Result<Self> {
+        let output_root = fs.resolve(output_root)?;
+        let aux_root = fs.resolve(aux_root)?;
+        Ok(Self {
+            cwd: fs.cwd.clone(),
+            backend: Backend::Memory(fs),
+            input_roots: vec![PathBuf::from("/project")],
+            write_roots: dedup_roots(vec![output_root.clone(), aux_root.clone()]),
+            output_root,
+            aux_root,
+            epoch: None,
+            allow_embedded,
+        })
+    }
+
+    pub fn disk(
+        cwd: &Path,
+        allowed_input_roots: &[PathBuf],
+        output_root: &Path,
+        aux_root: &Path,
+        allow_embedded: bool,
+        epoch: Option<u64>,
+    ) -> io::Result<Self> {
+        let cwd = std::fs::canonicalize(cwd)?;
+        let output_root = normalize_native(output_root, &cwd)?;
+        let aux_root = normalize_native(aux_root, &cwd)?;
+        std::fs::create_dir_all(&output_root)?;
+        std::fs::create_dir_all(&aux_root)?;
+        let output_root = std::fs::canonicalize(output_root)?;
+        let aux_root = std::fs::canonicalize(aux_root)?;
+        let mut input_roots = Vec::with_capacity(allowed_input_roots.len() + 3);
+        input_roots.push(cwd.clone());
+        input_roots.push(output_root.clone());
+        input_roots.push(aux_root.clone());
+        for root in allowed_input_roots {
+            input_roots.push(std::fs::canonicalize(normalize_native(root, &cwd)?)?);
+        }
+        Ok(Self {
+            backend: Backend::Disk,
+            cwd,
+            input_roots: dedup_roots(input_roots),
+            write_roots: dedup_roots(vec![output_root.clone(), aux_root.clone()]),
+            output_root,
+            aux_root,
+            epoch,
+            allow_embedded,
+        })
+    }
+
+    pub fn enter(&self) -> Scope {
+        Scope(ACTIVE.with(|slot| slot.replace(Some(self.clone()))))
+    }
+
+    pub fn cwd(&self) -> &Path {
+        &self.cwd
+    }
+
+    pub fn output_root(&self) -> &Path {
+        &self.output_root
+    }
+
+    pub fn aux_root(&self) -> &Path {
+        &self.aux_root
+    }
+
+    pub fn allows_embedded(&self) -> bool {
+        self.allow_embedded
+    }
+
+    fn resolve_read(&self, path: &Path) -> io::Result<PathBuf> {
+        match &self.backend {
+            Backend::Memory(fs) => {
+                let path = fs.resolve(path)?;
+                ensure_beneath(&path, &self.input_roots)?;
+                Ok(path)
+            }
+            Backend::Disk => {
+                let path = std::fs::canonicalize(normalize_native(path, &self.cwd)?)?;
+                ensure_beneath(&path, &self.input_roots)?;
+                Ok(path)
+            }
+        }
+    }
+
+    fn resolve_write(&self, path: &Path) -> io::Result<PathBuf> {
+        match &self.backend {
+            Backend::Memory(fs) => {
+                let path = fs.resolve(path)?;
+                ensure_beneath(&path, &self.write_roots)?;
+                Ok(path)
+            }
+            Backend::Disk => {
+                let path = normalize_native(path, &self.cwd)?;
+                let existing = existing_ancestor(&path)?;
+                let suffix = path.strip_prefix(existing).map_err(|_| {
+                    io::Error::new(io::ErrorKind::InvalidInput, "invalid output path")
+                })?;
+                let path = std::fs::canonicalize(existing)?.join(suffix);
+                ensure_beneath(&path, &self.write_roots)?;
+                Ok(path)
+            }
+        }
+    }
+}
+
+fn dedup_roots(mut roots: Vec<PathBuf>) -> Vec<PathBuf> {
+    roots.sort();
+    roots.dedup();
+    roots
+}
+
+fn ensure_beneath(path: &Path, roots: &[PathBuf]) -> io::Result<()> {
+    if roots.iter().any(|root| path.starts_with(root)) {
+        Ok(())
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "path is outside the resource context",
+        ))
+    }
+}
+
+fn normalize_native(path: &Path, cwd: &Path) -> io::Result<PathBuf> {
+    let path = if path.is_absolute() {
+        path.to_owned()
+    } else {
+        cwd.join(path)
+    };
+    let mut result = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::Prefix(prefix) => result.push(prefix.as_os_str()),
+            Component::RootDir => result.push(component.as_os_str()),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !result.pop() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::PermissionDenied,
+                        "path escapes the filesystem root",
+                    ));
+                }
+            }
+            Component::Normal(part) => result.push(part),
+        }
+    }
+    Ok(result)
+}
+
+fn existing_ancestor(path: &Path) -> io::Result<&Path> {
+    path.ancestors()
+        .find(|candidate| candidate.exists())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no existing path ancestor"))
+}
+
+thread_local! {
+    static ACTIVE: RefCell<Option<ResourceContext>> = const { RefCell::new(None) };
+}
+
+pub struct Scope(Option<ResourceContext>);
 impl Drop for Scope {
     fn drop(&mut self) {
         ACTIVE.with(|slot| *slot.borrow_mut() = self.0.take());
     }
 }
 
-fn active() -> Option<MemoryFs> {
+fn active() -> Option<ResourceContext> {
     ACTIVE.with(|slot| slot.borrow().clone())
 }
 
 pub fn is_memory() -> bool {
-    ACTIVE.with(|slot| slot.borrow().is_some())
+    active().is_some_and(|context| matches!(context.backend, Backend::Memory(_)))
+}
+
+pub fn embedded_allowed() -> bool {
+    active().is_none_or(|context| context.allow_embedded)
 }
 
 pub fn epoch() -> Option<u64> {
-    ACTIVE.with(|slot| slot.borrow().as_ref().map(|fs| fs.epoch))
+    active().and_then(|context| match &context.backend {
+        Backend::Memory(fs) => Some(fs.epoch),
+        Backend::Disk => context.epoch,
+    })
 }
 
 pub fn current_dir() -> io::Result<PathBuf> {
     match active() {
-        Some(fs) => Ok(fs.cwd),
+        Some(context) => Ok(context.cwd),
         None => std::env::current_dir(),
     }
 }
@@ -74,7 +264,14 @@ impl MemoryFs {
     }
 
     pub fn enter(&self) -> Scope {
-        Scope(ACTIVE.with(|slot| slot.replace(Some(self.clone()))))
+        ResourceContext::memory(
+            self.clone(),
+            Path::new("/project"),
+            Path::new("/project"),
+            true,
+        )
+        .expect("the virtual project root is valid")
+        .enter()
     }
 
     fn resolve(&self, path: &Path) -> io::Result<PathBuf> {
@@ -160,13 +357,19 @@ impl MemoryFs {
 
 pub fn read(path: impl AsRef<Path>) -> io::Result<Vec<u8>> {
     match active() {
-        Some(fs) => fs
-            .state
-            .borrow()
-            .files
-            .get(&fs.resolve(path.as_ref())?)
-            .cloned()
-            .ok_or_else(missing),
+        Some(context) => {
+            let path = context.resolve_read(path.as_ref())?;
+            match &context.backend {
+                Backend::Memory(fs) => fs
+                    .state
+                    .borrow()
+                    .files
+                    .get(&path)
+                    .cloned()
+                    .ok_or_else(missing),
+                Backend::Disk => std::fs::read(path),
+            }
+        }
         None => std::fs::read(path),
     }
 }
@@ -181,16 +384,27 @@ pub fn write(path: impl AsRef<Path>, bytes: impl AsRef<[u8]>) -> io::Result<()> 
 
 pub fn create_dir_all(path: impl AsRef<Path>) -> io::Result<()> {
     match active() {
-        Some(fs) => fs.make_dirs(path.as_ref()),
+        Some(context) => {
+            let path = context.resolve_write(path.as_ref())?;
+            match &context.backend {
+                Backend::Memory(fs) => fs.make_dirs(&path),
+                Backend::Disk => std::fs::create_dir_all(path),
+            }
+        }
         None => std::fs::create_dir_all(path),
     }
 }
 
 pub fn canonicalize(path: impl AsRef<Path>) -> io::Result<PathBuf> {
     match active() {
-        Some(fs) => {
-            let path = fs.resolve(path.as_ref())?;
-            metadata(&path)?;
+        Some(context) => {
+            let path = context.resolve_read(path.as_ref())?;
+            if let Backend::Memory(fs) = &context.backend {
+                let state = fs.state.borrow();
+                if !state.files.contains_key(&path) && !state.directories.contains(&path) {
+                    return Err(missing());
+                }
+            }
             Ok(path)
         }
         None => std::fs::canonicalize(path),
@@ -230,21 +444,26 @@ pub enum Metadata {
 
 pub fn metadata(path: impl AsRef<Path>) -> io::Result<Metadata> {
     match active() {
-        Some(fs) => {
-            let path = fs.resolve(path.as_ref())?;
-            let state = fs.state.borrow();
-            let directory = state.directories.contains(&path);
-            let len = match state.files.get(&path) {
-                Some(bytes) => bytes.len() as u64,
-                None if directory => 0,
-                None => return Err(missing()),
-            };
-            Ok(Metadata::Memory {
-                len,
-                directory,
-                epoch: fs.epoch,
-                generation: state.generation,
-            })
+        Some(context) => {
+            let path = context.resolve_read(path.as_ref())?;
+            match &context.backend {
+                Backend::Memory(fs) => {
+                    let state = fs.state.borrow();
+                    let directory = state.directories.contains(&path);
+                    let len = match state.files.get(&path) {
+                        Some(bytes) => bytes.len() as u64,
+                        None if directory => 0,
+                        None => return Err(missing()),
+                    };
+                    Ok(Metadata::Memory {
+                        len,
+                        directory,
+                        epoch: fs.epoch,
+                        generation: state.generation,
+                    })
+                }
+                Backend::Disk => std::fs::metadata(path).map(Metadata::Native),
+            }
         }
         None => std::fs::metadata(path).map(Metadata::Native),
     }
@@ -320,46 +539,56 @@ pub enum File {
 impl File {
     pub fn open(path: impl AsRef<Path>) -> io::Result<Self> {
         match active() {
-            Some(fs) => {
-                let path = fs.resolve(path.as_ref())?;
-                if !fs.state.borrow().files.contains_key(&path) {
-                    return Err(missing());
+            Some(context) => {
+                let path = context.resolve_read(path.as_ref())?;
+                match &context.backend {
+                    Backend::Memory(fs) => {
+                        if !fs.state.borrow().files.contains_key(&path) {
+                            return Err(missing());
+                        }
+                        Ok(Self::Memory {
+                            fs: fs.clone(),
+                            path,
+                            position: 0,
+                            writable: false,
+                        })
+                    }
+                    Backend::Disk => std::fs::File::open(path).map(Self::Native),
                 }
-                Ok(Self::Memory {
-                    fs,
-                    path,
-                    position: 0,
-                    writable: false,
-                })
             }
             None => std::fs::File::open(path).map(Self::Native),
         }
     }
     pub fn create(path: impl AsRef<Path>) -> io::Result<Self> {
         match active() {
-            Some(fs) => {
-                let path = fs.resolve(path.as_ref())?;
-                {
-                    let mut state = fs.state.borrow_mut();
-                    if !path.parent().is_some_and(|p| state.directories.contains(p)) {
-                        return Err(missing());
+            Some(context) => {
+                let path = context.resolve_write(path.as_ref())?;
+                match &context.backend {
+                    Backend::Memory(fs) => {
+                        {
+                            let mut state = fs.state.borrow_mut();
+                            if !path.parent().is_some_and(|p| state.directories.contains(p)) {
+                                return Err(missing());
+                            }
+                            if state.directories.contains(&path) {
+                                return Err(io::Error::new(
+                                    io::ErrorKind::AlreadyExists,
+                                    "path is a directory",
+                                ));
+                            }
+                            state.files.insert(path.clone(), Vec::new());
+                            state.written.insert(path.clone());
+                            state.generation += 1;
+                        }
+                        Ok(Self::Memory {
+                            fs: fs.clone(),
+                            path,
+                            position: 0,
+                            writable: true,
+                        })
                     }
-                    if state.directories.contains(&path) {
-                        return Err(io::Error::new(
-                            io::ErrorKind::AlreadyExists,
-                            "path is a directory",
-                        ));
-                    }
-                    state.files.insert(path.clone(), Vec::new());
-                    state.written.insert(path.clone());
-                    state.generation += 1;
+                    Backend::Disk => std::fs::File::create(path).map(Self::Native),
                 }
-                Ok(Self::Memory {
-                    fs,
-                    path,
-                    position: 0,
-                    writable: true,
-                })
             }
             None => std::fs::File::create(path).map(Self::Native),
         }
@@ -505,29 +734,36 @@ pub fn read_dir(
     path: impl AsRef<Path>,
 ) -> io::Result<Box<dyn Iterator<Item = io::Result<DirEntry>>>> {
     match active() {
-        Some(fs) => {
-            let path = fs.resolve(path.as_ref())?;
-            let state = fs.state.borrow();
-            if !state.directories.contains(&path) {
-                return Err(missing());
+        Some(context) => {
+            let path = context.resolve_read(path.as_ref())?;
+            match &context.backend {
+                Backend::Memory(fs) => {
+                    let state = fs.state.borrow();
+                    if !state.directories.contains(&path) {
+                        return Err(missing());
+                    }
+                    let entries: Vec<_> = state
+                        .files
+                        .keys()
+                        .map(|path| (path, false))
+                        .chain(state.directories.iter().map(|path| (path, true)))
+                        .filter(|(entry, _)| entry.parent() == Some(path.as_path()))
+                        .map(|(entry, directory)| {
+                            Ok(DirEntry::Memory {
+                                path: entry.clone(),
+                                directory,
+                            })
+                        })
+                        .collect();
+                    Ok(Box::new(entries.into_iter()))
+                }
+                Backend::Disk => Ok(Box::new(
+                    std::fs::read_dir(path)?.map(|entry| entry.map(DirEntry::Native)),
+                )),
             }
-            let entries: Vec<_> = state
-                .files
-                .keys()
-                .map(|p| (p, false))
-                .chain(state.directories.iter().map(|p| (p, true)))
-                .filter(|(p, _)| p.parent() == Some(path.as_path()))
-                .map(|(p, directory)| {
-                    Ok(DirEntry::Memory {
-                        path: p.clone(),
-                        directory,
-                    })
-                })
-                .collect();
-            Ok(Box::new(entries.into_iter()))
         }
         None => Ok(Box::new(
-            std::fs::read_dir(path)?.map(|e| e.map(DirEntry::Native)),
+            std::fs::read_dir(path)?.map(|entry| entry.map(DirEntry::Native)),
         )),
     }
 }
@@ -535,6 +771,15 @@ pub fn read_dir(
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn temp_root(label: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "ratex-resource-context-{}-{label}",
+            std::process::id()
+        ));
+        std::fs::remove_dir_all(&root).ok();
+        std::fs::create_dir_all(&root).unwrap();
+        root
+    }
 
     #[test]
     fn live_output_streams_and_aliases_share_bytes() {
@@ -571,5 +816,78 @@ mod tests {
         assert!(failure.is_err());
         assert_eq!(read("file").unwrap(), b"outer");
         assert_eq!(epoch(), Some(1));
+    }
+    #[test]
+    fn memory_context_limits_outputs_and_embedded_resources() {
+        let fs = MemoryFs::new(Path::new("/project/src"), 7).unwrap();
+        fs.insert(Path::new("/project/src/main.tex"), b"input".to_vec())
+            .unwrap();
+        let context = ResourceContext::memory(
+            fs.clone(),
+            Path::new("/project/out"),
+            Path::new("/project/aux"),
+            false,
+        )
+        .unwrap();
+        {
+            let _scope = context.enter();
+            assert_eq!(current_dir().unwrap(), Path::new("/project/src"));
+            assert_eq!(epoch(), Some(7));
+            assert!(!embedded_allowed());
+            assert!(!crate::has_embedded_package("article.cls"));
+            assert_eq!(read("main.tex").unwrap(), b"input");
+            create_dir_all("/project/out").unwrap();
+            write("/project/out/main.pdf", b"pdf").unwrap();
+            assert!(write("/project/src/leak.aux", b"blocked").is_err());
+            assert!(read("/etc/passwd").is_err());
+        }
+        assert!(embedded_allowed());
+        assert!(crate::has_embedded_package("article.cls"));
+        assert_eq!(fs.outputs()["out/main.pdf"], b"pdf");
+    }
+
+    #[test]
+    fn disk_context_enforces_read_and_write_roots() {
+        let root = temp_root("disk");
+        let project = root.join("project");
+        let extra = root.join("extra");
+        let output = root.join("output");
+        let aux = root.join("aux");
+        let outside = root.join("outside.txt");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::create_dir_all(&extra).unwrap();
+        std::fs::write(project.join("main.tex"), b"project").unwrap();
+        std::fs::write(extra.join("font.otf"), b"font").unwrap();
+        std::fs::write(&outside, b"outside").unwrap();
+        let context = ResourceContext::disk(
+            &project,
+            std::slice::from_ref(&extra),
+            &output,
+            &aux,
+            false,
+            Some(11),
+        )
+        .unwrap();
+        {
+            let _scope = context.enter();
+            assert_eq!(
+                current_dir().unwrap(),
+                std::fs::canonicalize(&project).unwrap()
+            );
+            assert_eq!(epoch(), Some(11));
+            assert_eq!(read("main.tex").unwrap(), b"project");
+            assert_eq!(read(extra.join("font.otf")).unwrap(), b"font");
+            assert!(read(&outside).is_err());
+            assert!(File::create("source-output.txt").is_err());
+            create_dir_all(output.join("nested")).unwrap();
+            write(output.join("nested/result.pdf"), b"pdf").unwrap();
+            write(aux.join("main.aux"), b"aux").unwrap();
+        }
+        assert_eq!(
+            std::fs::read(output.join("nested/result.pdf")).unwrap(),
+            b"pdf"
+        );
+        assert_eq!(std::fs::read(aux.join("main.aux")).unwrap(), b"aux");
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

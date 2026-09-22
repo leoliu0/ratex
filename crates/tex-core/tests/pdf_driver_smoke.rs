@@ -504,6 +504,31 @@ fn mapped_truetype_preserves_used_outlines_and_extraction() {
     );
     engine.run();
     assert_eq!(engine.error_count, 0, "{}", engine.term);
+    let raw_key = engine.pdf_doc.pages[0].fonts[0].0;
+    let font_id = raw_key as u16;
+    assert_eq!(
+        raw_key,
+        tex_core::pdfout::FontBinding::RAW.resource_key(font_id)
+    );
+    let (semantic_binding, semantic_code) =
+        engine
+            .pdf_doc
+            .get_or_alloc_legacy_code(font_id as usize, b'A', "Alpha");
+    let semantic_key = semantic_binding.resource_key(font_id);
+    assert_ne!(raw_key, semantic_key);
+    let semantic_resource = engine.pdf_doc.pages[0]
+        .fonts
+        .iter()
+        .map(|(_, resource)| *resource)
+        .max()
+        .unwrap_or(0)
+        + 1;
+    let page = &mut engine.pdf_doc.pages[0];
+    page.fonts.push((semantic_key, semantic_resource));
+    page.content.extend_from_slice(
+        format!("\nBT /F{semantic_resource} 10 Tf 100 100 Td <{semantic_code:02X}> Tj ET\n")
+            .as_bytes(),
+    );
     let bytes = tex_core::driver::finish_pdf(&mut engine, false).expect("mapped font finalization");
     let pdf = lopdf::Document::load_mem(&bytes).expect("valid PDF");
     let parent = pdf
@@ -566,6 +591,27 @@ fn mapped_truetype_preserves_used_outlines_and_extraction() {
         original.glyph_hor_advance(original_gid)
     );
     assert_eq!(pdf.extract_text(&[1]).unwrap().trim(), "A");
+    let semantic_mapping = format!("<{semantic_code:02X}> <0041006C007000680061>").into_bytes();
+    assert!(
+        pdf.objects
+            .values()
+            .filter_map(|object| object.as_stream().ok())
+            .filter_map(|stream| stream.decompressed_content().ok())
+            .any(|content| content
+                .windows(semantic_mapping.len())
+                .any(|window| window == semantic_mapping)),
+        "semantic remap must retain its own ToUnicode mapping"
+    );
+    let composite_fonts = pdf
+        .objects
+        .values()
+        .filter_map(|object| object.as_dict().ok())
+        .filter(|dict| dict.get(b"Subtype").and_then(lopdf::Object::as_name).ok() == Some(b"Type0"))
+        .count();
+    assert_eq!(
+        composite_fonts, 2,
+        "raw and semantic code spaces need distinct font dictionaries"
+    );
 
     engine.pdf_doc.fonts[0].used_gids.insert(u16::MAX);
     assert!(
@@ -652,5 +698,68 @@ fn bundled_jpeg_embeds_without_disk_and_project_image_takes_precedence() {
     assert_eq!(
         image.dict.get(b"Filter").unwrap().as_name().unwrap(),
         b"FlateDecode"
+    );
+}
+
+#[test]
+fn eps_image_includes_natively_without_external_converter() {
+    let dir = std::env::temp_dir().join(format!("eps_smoke_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let eps_file = dir.join("test_box.eps");
+    std::fs::write(
+        &eps_file,
+        b"%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: 0 0 120 80\n%%EndComments\n0.2 0.4 0.8 setrgbcolor\nnewpath\n10 10 moveto\n110 10 lineto\n110 70 lineto\n10 70 lineto\nclosepath\nfill\nshowpage\n%%EOF\n",
+    )
+    .unwrap();
+
+    let tex_source = format!(
+        "\\catcode`\\{{=1 \\catcode`\\}}=2 \\pdfximage{{{}}}\\immediate\\pdfximage{{{}}}\\noindent\\pdfrefximage\\pdflastximage\\end\n",
+        eps_file.to_string_lossy().replace('\\', "/"),
+        eps_file.to_string_lossy().replace('\\', "/")
+    );
+
+    let mut eng = Engine::new(true);
+    eng.init_primitives();
+    eng.add_nullfont();
+    eng.out_dir = format!("{}/", dir.display());
+    eng.input
+        .push_file("doc.tex".to_string(), tex_source.into_bytes());
+    eng.run();
+    let _ = std::fs::remove_dir_all(&dir);
+
+    assert_eq!(eng.error_count, 0, "errors: {:?}, term: {}", eng.diagnostics, eng.term);
+    assert!(!eng.pdf_doc.objects.is_empty(), "PDF objects must be produced");
+    let mut found_form = false;
+    for (_, bytes) in &eng.pdf_doc.objects {
+        let s = String::from_utf8_lossy(bytes);
+        if s.contains("/Subtype /Form") {
+            found_form = true;
+            break;
+        }
+    }
+    assert!(found_form, "Form XObject for EPS must be embedded");
+}
+#[test]
+fn cjk_latin_mixed_script_raw_binding_isolation() {
+    let dir_buf = std::env::temp_dir().join(format!("cjk_mix_{}", std::process::id()));
+    std::fs::create_dir_all(&dir_buf).unwrap();
+    let dir = dir_buf.to_string_lossy().replace('\\', "/");
+
+    let tex_source = "\\catcode`\\{=1 \\catcode`\\}=2\n\\font\\tenrm=cmr10\n\\tenrm\n\\ratexcjktext{4E}1\\relax\nA\n\\ratexcjktext{}0\\relax\nB\n\\end\n";
+
+    let mut eng = Engine::new(true);
+    eng.init_primitives();
+    eng.add_nullfont();
+    eng.out_dir = format!("{}/", dir);
+    eng.input
+        .push_file("doc.tex".to_string(), tex_source.as_bytes().to_vec());
+    eng.run();
+    let _ = std::fs::remove_dir_all(&dir_buf);
+
+    assert_eq!(eng.error_count, 0, "errors: {:?}", eng.diagnostics);
+    let bindings = eng.pdf_doc.legacy_bindings.get(&1);
+    assert!(
+        bindings.is_none() || bindings.unwrap().is_empty(),
+        "CMR10 must not acquire legacy remapped bindings when mixed with CJK text whatsit"
     );
 }

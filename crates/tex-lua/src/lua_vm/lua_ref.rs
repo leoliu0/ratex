@@ -1,0 +1,1351 @@
+/// Lua reference mechanism (similar to luaL_ref/luaL_unref in C API)
+///
+/// This module provides a way to store Lua values in the registry and get a stable reference to them.
+/// This is useful for keeping values alive across GC cycles and for passing values between Rust and Lua.
+use std::ffi::c_void;
+use std::marker::PhantomData;
+
+use crate::LuaResult;
+use crate::LuaState;
+use crate::lua_value::LuaValue;
+use crate::lua_value::LuaValueKind;
+use crate::lua_value::lua_convert::collect_into_lua_values;
+use crate::lua_value::lua_convert::{FromLua, FromLuaMulti, IntoLua};
+use crate::lua_vm::{GlobalState, GlobalStateHandle, get_metatable};
+
+/// A reference ID in the registry.
+/// Similar to Lua's luaL_ref return value.
+pub type RefId = i32;
+
+/// Special reference constants (matching Lua's C API)
+pub const LUA_REFNIL: RefId = -1; // Reference to nil (no storage needed)
+pub const LUA_NOREF: RefId = -2; // Invalid reference
+
+/// Internal state for managing references in the registry
+pub(crate) struct RefManager {
+    /// Next available reference ID
+    next_ref_id: RefId,
+
+    /// Free list of released reference IDs (for reuse)
+    free_list: Vec<RefId>,
+}
+
+impl RefManager {
+    pub fn new() -> Self {
+        RefManager {
+            next_ref_id: 1, // Start from 1, reserve negatives for special values
+            free_list: Vec::new(),
+        }
+    }
+
+    /// Allocate a new reference ID
+    pub fn alloc_ref_id(&mut self) -> RefId {
+        if let Some(ref_id) = self.free_list.pop() {
+            ref_id
+        } else {
+            let ref_id = self.next_ref_id;
+            self.next_ref_id = self.next_ref_id.wrapping_add(1);
+            if self.next_ref_id < 0 {
+                // Wrapped around, skip special values
+                self.next_ref_id = 1;
+            }
+            ref_id
+        }
+    }
+
+    /// Free a reference ID (add to free list for reuse)
+    pub fn free_ref_id(&mut self, ref_id: RefId) {
+        if ref_id > 0 && !self.free_list.contains(&ref_id) {
+            self.free_list.push(ref_id);
+        }
+    }
+}
+
+/// A reference to a Lua value stored in the VM's registry.
+///
+/// This is similar to Lua's C API luaL_ref mechanism:
+/// - For GC objects, stores them in the registry and keeps a reference ID
+/// - For simple values (numbers, booleans, nil), stores them directly
+/// - Must be manually released with vm.release_ref() or holds the value forever
+///
+/// # Examples
+/// ```ignore
+/// // Create a reference to a table
+/// let table_ref = vm.create_ref(table_value);
+///
+/// // Get the value back
+/// let value = vm.get_ref_value(&table_ref);
+///
+/// // Release the reference when done
+/// vm.release_ref(table_ref);
+/// ```
+pub struct LuaRefValue {
+    /// The actual storage
+    ref_id: RefId,
+}
+
+impl LuaRefValue {
+    /// Create a new reference with a registry ID
+    pub(crate) fn new_registry(ref_id: RefId) -> Self {
+        Self { ref_id }
+    }
+
+    /// Get the reference ID (if stored in registry)
+    pub fn ref_id(&self) -> RefId {
+        self.ref_id
+    }
+
+    /// Get the Lua value from this reference (requires VM access)
+    pub fn get(&self, global_state: &GlobalState) -> LuaValue {
+        if self.ref_id > 0 {
+            global_state
+                .registry_geti(self.ref_id as i64)
+                .unwrap_or_default()
+        } else {
+            LuaValue::nil() // Invalid reference, treat as nil
+        }
+    }
+
+    /// Check if this is a valid reference
+    pub fn is_valid(&self) -> bool {
+        self.ref_id > 0
+    }
+}
+
+impl std::fmt::Debug for LuaRefValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "LuaRefValue::Registry(ref_id={})", self.ref_id)
+    }
+}
+
+// ============================================================================
+// User-facing Ref types (mlua-inspired)
+// ============================================================================
+
+/// Internal core shared by all user-facing Ref types.
+///
+/// Holds a registry reference ID and a handle to the owning global state.
+/// Automatically releases the registry entry on `Drop` (RAII).
+///
+/// `!Send + !Sync` by design — Lua VM is single-threaded.
+struct RefInner {
+    ref_id: RefId,
+    global_state: GlobalStateHandle,
+    /// Makes RefInner !Send + !Sync
+    _marker: PhantomData<*const ()>,
+}
+
+impl RefInner {
+    /// Create a new RefInner. The value must already be stored in the registry.
+    fn new(ref_id: RefId, global_state: GlobalStateHandle) -> Self {
+        RefInner {
+            ref_id,
+            global_state,
+            _marker: PhantomData,
+        }
+    }
+
+    /// Retrieve the LuaValue from the registry.
+    #[inline]
+    fn to_value(&self) -> LuaValue {
+        let global_state = self.global_state.as_ref();
+        global_state
+            .registry_geti(self.ref_id as i64)
+            .unwrap_or_default()
+    }
+
+    /// Get a reference to the VM.
+    #[inline]
+    fn global_state(&self) -> &GlobalState {
+        self.global_state.as_ref()
+    }
+
+    /// Get a mutable reference to the VM.
+    #[allow(clippy::mut_from_ref)]
+    #[inline]
+    fn global_state_mut(&self) -> &mut GlobalState {
+        self.global_state.as_mut()
+    }
+
+    fn dispose(&mut self) {
+        if self.ref_id > 0 {
+            self.global_state.as_mut().release_ref_id(self.ref_id);
+            self.ref_id = LUA_NOREF; // Mark as released
+        }
+    }
+}
+
+impl Drop for RefInner {
+    fn drop(&mut self) {
+        self.dispose();
+    }
+}
+
+impl std::fmt::Debug for RefInner {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "RefInner(ref_id={})", self.ref_id)
+    }
+}
+
+impl Clone for RefInner {
+    fn clone(&self) -> Self {
+        let global_state = self.global_state_mut();
+        let value = self.to_value();
+        let ref_id = store_in_registry(global_state, value);
+        RefInner::new(ref_id, self.global_state)
+    }
+}
+
+// ---- helper: create a registry ref for a LuaValue ---------------------------
+
+fn collect_single_value<T: IntoLua>(
+    global_state: &mut GlobalState,
+    value: T,
+    context: &str,
+) -> LuaResult<LuaValue> {
+    let base_top = global_state.main_state().get_top();
+
+    let pushed = {
+        let state = global_state.main_state();
+        match value.into_lua(state) {
+            Ok(pushed) => pushed,
+            Err(err) => {
+                state.set_top_raw(base_top);
+                return Err(global_state.error(err));
+            }
+        }
+    };
+
+    if pushed != 1 {
+        global_state.main_state().set_top_raw(base_top);
+        return Err(global_state.error(format!(
+            "{} expects exactly one Lua value, got {}",
+            context, pushed
+        )));
+    }
+
+    let result = {
+        let state = global_state.main_state();
+        let Some(value) = state.stack_get(base_top) else {
+            state.set_top_raw(base_top);
+            return Err(global_state
+                .error("internal error: failed to collect Lua value from stack".to_owned()));
+        };
+        state.set_top_raw(base_top);
+        value
+    };
+
+    Ok(result)
+}
+
+/// Store a LuaValue in the VM registry and return its RefId.
+pub(crate) fn store_in_registry(global_state: &mut GlobalState, value: LuaValue) -> RefId {
+    let ref_id = global_state.ref_manager.alloc_ref_id();
+    global_state.registry_seti(ref_id as i64, value);
+    ref_id
+}
+
+// ============================================================================
+// LuaTableRef
+// ============================================================================
+
+/// A user-facing reference to a Lua table.
+///
+/// Holds the table in the VM registry so it won't be garbage-collected.
+/// The registry entry is automatically released when this value is dropped.
+///
+/// `!Send + !Sync` — cannot be transferred across threads.
+///
+/// # Example
+///
+/// ```ignore
+/// let tbl = vm.create_table_ref(0, 4)?;
+/// tbl.set("name", LuaValue::from("Alice"))?;
+/// let name: String = tbl.get_as("name")?;
+/// // tbl is automatically released here
+/// ```
+pub struct LuaTableRef {
+    inner: RefInner,
+}
+
+impl LuaTableRef {
+    /// Create from an already-registered ref id. The caller guarantees the
+    /// value at `ref_id` is a table.
+    pub(crate) fn from_raw(ref_id: RefId, global_state: GlobalStateHandle) -> Self {
+        LuaTableRef {
+            inner: RefInner::new(ref_id, global_state),
+        }
+    }
+
+    // ==================== Read ====================
+
+    /// Get a value by string key (raw access, no metamethods).
+    pub fn get(&self, key: &str) -> LuaResult<LuaValue> {
+        let vm = self.inner.global_state_mut();
+        let table = self.inner.to_value();
+        let key_val = vm.create_string(key)?;
+        Ok(vm
+            .main_state()
+            .table_get(&table, &key_val)?
+            .unwrap_or(LuaValue::nil()))
+    }
+
+    /// Get a value by integer key.
+    pub fn geti(&self, key: i64) -> LuaResult<LuaValue> {
+        let vm = self.inner.global_state_mut();
+        let table = self.inner.to_value();
+        vm.main_state().table_geti(&table, key)
+    }
+
+    /// Get a value by arbitrary LuaValue key.
+    pub fn get_value(&self, key: &LuaValue) -> LuaResult<LuaValue> {
+        let vm = self.inner.global_state_mut();
+        let table = self.inner.to_value();
+        Ok(vm
+            .main_state()
+            .table_get(&table, key)?
+            .unwrap_or(LuaValue::nil()))
+    }
+
+    /// Get a value by string key and convert to a Rust type via `FromLua`.
+    pub fn get_as<T: FromLua>(&self, key: &str) -> LuaResult<T> {
+        let val = self.get(key)?;
+        let vm = self.inner.global_state_mut();
+        T::from_lua(val, vm.main_state()).map_err(|msg| vm.error(msg))
+    }
+
+    pub fn set_typed<K: IntoLua, V: IntoLua>(&self, key: K, value: V) -> LuaResult<()> {
+        let vm = self.inner.global_state_mut();
+        let key = collect_single_value(vm, key, "LuaTableRef::set_typed(key)")?;
+        let value = collect_single_value(vm, value, "LuaTableRef::set_typed(value)")?;
+        let table = self.inner.to_value();
+        vm.main_state().table_set(&table, key, value)?;
+        Ok(())
+    }
+
+    /// Get a value by arbitrary Rust-convertible key and convert it to `T`.
+    pub fn get_typed<K: IntoLua, T: FromLua>(&self, key: K) -> LuaResult<T> {
+        let vm = self.inner.global_state_mut();
+        let key = collect_single_value(vm, key, "LuaTableRef::get_typed(key)")?;
+        let table = self.inner.to_value();
+        let value = vm
+            .main_state()
+            .table_get(&table, &key)?
+            .unwrap_or(LuaValue::nil());
+        T::from_lua(value, vm.main_state()).map_err(|msg| vm.error(msg))
+    }
+
+    /// Returns true if the table contains a non-nil value for the given key.
+    pub fn contains_key<K: IntoLua>(&self, key: K) -> LuaResult<bool> {
+        let value: LuaValue = self.get_typed(key)?;
+        Ok(!value.is_nil())
+    }
+
+    /// Returns true if this table currently has a metatable.
+    pub fn has_metatable(&self) -> bool {
+        self.inner
+            .to_value()
+            .as_table()
+            .is_some_and(|table| table.has_metatable())
+    }
+
+    /// Get the table's metatable, if present.
+    pub fn get_metatable(&self) -> Option<LuaTableRef> {
+        let vm = self.inner.global_state_mut();
+        let value = self.inner.to_value();
+        let metatable = get_metatable(vm.main_state(), &value)?;
+        if !metatable.is_table() {
+            return None;
+        }
+        let ref_id = store_in_registry(vm, metatable);
+        Some(LuaTableRef::from_raw(ref_id, self.inner.global_state))
+    }
+
+    /// Set or clear the table's metatable.
+    pub fn set_metatable(&self, metatable: Option<&LuaTableRef>) -> LuaResult<()> {
+        let vm = self.inner.global_state_mut();
+        let value = self.inner.to_value();
+        let Some(table) = value.as_table_mut() else {
+            return Err(vm
+                .main_state()
+                .error("LuaTableRef does not reference a table".to_string()));
+        };
+
+        table.set_metatable(metatable.map(LuaTableRef::to_value));
+        if let Some(gc_ptr) = value.as_gc_ptr() {
+            vm.main_state().gc_barrier_back(gc_ptr);
+        }
+        vm.gc.check_finalizer(&value);
+        Ok(())
+    }
+
+    // ==================== Write ====================
+
+    /// Set a string-keyed value.
+    pub fn set(&self, key: &str, value: LuaValue) -> LuaResult<()> {
+        let vm = self.inner.global_state_mut();
+        let table = self.inner.to_value();
+        let key_val = vm.create_string(key)?;
+        vm.main_state().table_set(&table, key_val, value)?;
+        Ok(())
+    }
+
+    /// Set an integer-keyed value.
+    pub fn seti(&self, key: i64, value: LuaValue) -> LuaResult<()> {
+        let vm = self.inner.global_state_mut();
+        let table = self.inner.to_value();
+        vm.main_state().table_seti(&table, key, value)?;
+        Ok(())
+    }
+
+    /// Set an arbitrary key-value pair.
+    pub fn set_value(&self, key: LuaValue, value: LuaValue) -> LuaResult<()> {
+        let vm = self.inner.global_state_mut();
+        let table = self.inner.to_value();
+        vm.raw_set(&table, key, value);
+        Ok(())
+    }
+
+    /// Set an arbitrary key-value pair from Rust-convertible values.
+    pub fn rawset_typed<K: IntoLua, V: IntoLua>(&self, key: K, value: V) -> LuaResult<()> {
+        let vm = self.inner.global_state_mut();
+        let key = collect_single_value(vm, key, "LuaTableRef::rawset_typed(key)")?;
+        let value = collect_single_value(vm, value, "LuaTableRef::rawset_typed(value)")?;
+        let table = self.inner.to_value();
+        vm.raw_set(&table, key, value);
+        Ok(())
+    }
+
+    pub fn rawget_typed<K: IntoLua, V: FromLua>(&self, key: K) -> LuaResult<V> {
+        let vm = self.inner.global_state_mut();
+        let key = collect_single_value(vm, key, "LuaTableRef::rawget_typed(key)")?;
+        let table = self.inner.to_value();
+        let value = vm.raw_get(&table, &key).unwrap_or_default();
+        V::from_lua(value, vm.main_state()).map_err(|msg| vm.error(msg))
+    }
+
+    pub fn rawseti_typed<V: IntoLua>(&self, key: i64, value: V) -> LuaResult<()> {
+        let vm = self.inner.global_state_mut();
+        let value = collect_single_value(vm, value, "LuaTableRef::rawseti_typed(value)")?;
+        let table = self.inner.to_value();
+        vm.raw_seti(&table, key, value);
+        Ok(())
+    }
+
+    pub fn rawgeti_typed<V: FromLua>(&self, key: i64) -> LuaResult<V> {
+        let vm = self.inner.global_state_mut();
+        let table = self.inner.to_value();
+        let value = vm.raw_geti(&table, key).unwrap_or_default();
+        V::from_lua(value, vm.main_state()).map_err(|msg| vm.error(msg))
+    }
+
+    // ==================== Iteration ====================
+
+    /// Get all key-value pairs (snapshot, no metamethods).
+    pub fn pairs(&self) -> LuaResult<Vec<(LuaValue, LuaValue)>> {
+        let vm = self.inner.global_state();
+        let table = self.inner.to_value();
+        vm.table_pairs(&table)
+    }
+
+    /// Get the array length (equivalent to Lua's `#t`).
+    pub fn len(&self) -> LuaResult<usize> {
+        let vm = self.inner.global_state();
+        let table = self.inner.to_value();
+        vm.table_length(&table)
+    }
+
+    pub fn is_empty(&self) -> LuaResult<bool> {
+        self.len().map(|len| len == 0)
+    }
+
+    /// Append a value to the array part (equivalent to `table.insert`).
+    pub fn push(&self, value: LuaValue) -> LuaResult<()> {
+        let current_len = self.len()?;
+        self.seti((current_len + 1) as i64, value)
+    }
+
+    /// Append a Rust value to the array part of the table.
+    pub fn push_typed<V: IntoLua>(&self, value: V) -> LuaResult<()> {
+        let vm = self.inner.global_state_mut();
+        let value = collect_single_value(vm, value, "LuaTableRef::push_typed(value)")?;
+        let current_len = self.len()?;
+        self.seti((current_len + 1) as i64, value)
+    }
+
+    /// Convert all table pairs to typed Rust key-value pairs.
+    pub fn pairs_typed<K: FromLua, V: FromLua>(&self) -> LuaResult<Vec<(K, V)>> {
+        let pairs = self.pairs()?;
+        let vm = self.inner.global_state_mut();
+        let mut converted = Vec::with_capacity(pairs.len());
+        for (key, value) in pairs {
+            let key = K::from_lua(key, vm.main_state()).map_err(|msg| vm.error(msg))?;
+            let value = V::from_lua(value, vm.main_state()).map_err(|msg| vm.error(msg))?;
+            converted.push((key, value));
+        }
+        Ok(converted)
+    }
+
+    /// Read contiguous sequence values from `1..` until a nil is encountered.
+    pub fn sequence_values<V: FromLua>(&self) -> LuaResult<Vec<V>> {
+        let vm = self.inner.global_state_mut();
+        let table = self.inner.to_value();
+        let mut values = Vec::new();
+        let mut index = 1_i64;
+
+        while let Some(value) = vm.raw_geti(&table, index) {
+            if value.is_nil() {
+                break;
+            }
+            let value = V::from_lua(value, vm.main_state()).map_err(|msg| vm.error(msg))?;
+            values.push(value);
+            index += 1;
+        }
+        Ok(values)
+    }
+
+    // ==================== Conversion ====================
+
+    /// Get the underlying LuaValue (retrieved from registry).
+    pub fn to_value(&self) -> LuaValue {
+        self.inner.to_value()
+    }
+
+    /// Get the registry reference ID.
+    pub fn ref_id(&self) -> RefId {
+        self.inner.ref_id
+    }
+}
+
+impl std::fmt::Debug for LuaTableRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "LuaTableRef(ref_id={})", self.inner.ref_id)
+    }
+}
+
+impl Clone for LuaTableRef {
+    fn clone(&self) -> Self {
+        LuaTableRef {
+            inner: self.inner.clone(),
+        }
+    }
+}
+
+// ============================================================================
+// LuaFunctionRef
+// ============================================================================
+
+/// A user-facing reference to a Lua function (Lua closure, C function, or Rust closure).
+///
+/// The function value is held in the VM registry and released on drop.
+///
+/// `!Send + !Sync`.
+///
+/// # Example
+///
+/// ```ignore
+/// let greet = vm.get_global_function("greet")?.unwrap();
+/// let result: String = greet.call1("World")?;
+/// ```
+pub struct LuaFunctionRef {
+    inner: RefInner,
+}
+
+impl LuaFunctionRef {
+    pub(crate) fn from_raw(ref_id: RefId, vm: GlobalStateHandle) -> Self {
+        LuaFunctionRef {
+            inner: RefInner::new(ref_id, vm),
+        }
+    }
+
+    /// Return the number of upvalues captured by this function.
+    pub fn upvalue_count(&self) -> usize {
+        let func = self.inner.to_value();
+
+        if let Some(lua_func) = func.as_lua_function() {
+            return lua_func.upvalues().len();
+        }
+
+        if let Some(cclosure) = func.as_cclosure() {
+            return cclosure.upvalues().len();
+        }
+
+        if let Some(rclosure) = func.as_rclosure() {
+            return rclosure.upvalues().len();
+        }
+
+        0
+    }
+
+    /// Read an upvalue as a raw Lua value.
+    pub fn get_upvalue_value(&self, n: usize) -> Option<(String, LuaValue)> {
+        if n == 0 {
+            return None;
+        }
+
+        let func = self.inner.to_value();
+        let up_idx = n - 1;
+
+        if let Some(lua_func) = func.as_lua_function() {
+            let upvalue_ptr = *lua_func.upvalues().get(up_idx)?;
+            let name = lua_func
+                .chunk()
+                .upvalue_descs
+                .get(up_idx)
+                .map(|desc| desc.name.to_string())
+                .unwrap_or_default();
+            let value = upvalue_ptr.as_ref().data.get_value();
+            return Some((name, value));
+        }
+
+        if let Some(cclosure) = func.as_cclosure() {
+            let value = *cclosure.upvalues().get(up_idx)?;
+            return Some((String::new(), value));
+        }
+
+        if let Some(rclosure) = func.as_rclosure() {
+            let value = *rclosure.upvalues().get(up_idx)?;
+            return Some((String::new(), value));
+        }
+
+        None
+    }
+
+    /// Read and convert an upvalue.
+    pub fn get_upvalue<T: FromLua>(&self, n: usize) -> LuaResult<Option<(String, T)>> {
+        let Some((name, value)) = self.get_upvalue_value(n) else {
+            return Ok(None);
+        };
+
+        let vm = self.inner.global_state_mut();
+        let value = T::from_lua(value, vm.main_state()).map_err(|msg| vm.error(msg))?;
+        Ok(Some((name, value)))
+    }
+
+    /// Replace an upvalue with a raw Lua value.
+    pub fn set_upvalue_value(&self, n: usize, value: LuaValue) -> LuaResult<Option<String>> {
+        if n == 0 {
+            return Ok(None);
+        }
+
+        let vm = self.inner.global_state_mut();
+        let state = vm.main_state();
+        let func = self.inner.to_value();
+        let up_idx = n - 1;
+
+        if let Some(lua_func) = func.as_lua_function() {
+            let Some(upvalue_ptr) = lua_func.upvalues().get(up_idx).copied() else {
+                return Ok(None);
+            };
+            let name = lua_func
+                .chunk()
+                .upvalue_descs
+                .get(up_idx)
+                .map(|desc| desc.name.to_string())
+                .unwrap_or_default();
+
+            upvalue_ptr.as_mut_ref().data.set_value(value);
+            if value.is_collectable()
+                && let Some(value_gc_ptr) = value.as_gc_ptr()
+            {
+                state.gc_barrier(upvalue_ptr, value_gc_ptr);
+            }
+            return Ok(Some(name));
+        }
+
+        let cclosure_owner = func.as_cclosure_ptr();
+        if let Some(cclosure) = func.as_cclosure_mut() {
+            let Some(slot) = cclosure.upvalues_mut().get_mut(up_idx) else {
+                return Ok(None);
+            };
+            *slot = value;
+            if value.is_collectable()
+                && let Some(owner) = cclosure_owner
+            {
+                state.gc_barrier_back(owner.into());
+            }
+            return Ok(Some(String::new()));
+        }
+
+        let rclosure_owner = func.as_rclosure_ptr();
+        if let Some(rclosure) = func.as_rclosure_mut() {
+            let Some(slot) = rclosure.upvalues_mut().get_mut(up_idx) else {
+                return Ok(None);
+            };
+            *slot = value;
+            if value.is_collectable()
+                && let Some(owner) = rclosure_owner
+            {
+                state.gc_barrier_back(owner.into());
+            }
+            return Ok(Some(String::new()));
+        }
+
+        Ok(None)
+    }
+
+    /// Replace an upvalue with a Rust value.
+    pub fn set_upvalue<T: IntoLua>(&self, n: usize, value: T) -> LuaResult<Option<String>> {
+        let vm = self.inner.global_state_mut();
+        let value = collect_single_value(vm, value, "LuaFunctionRef::set_upvalue(value)")?;
+        self.set_upvalue_value(n, value)
+    }
+
+    /// Return an opaque identity for the requested upvalue.
+    pub fn upvalue_id(&self, n: usize) -> Option<*mut c_void> {
+        if n == 0 {
+            return None;
+        }
+
+        let func = self.inner.to_value();
+        let up_idx = n - 1;
+
+        if let Some(lua_func) = func.as_lua_function() {
+            let upvalue = lua_func.upvalues().get(up_idx)?;
+            return Some(upvalue.as_ptr() as *mut c_void);
+        }
+
+        if let Some(cclosure) = func.as_cclosure() {
+            let upvalue = cclosure.upvalues().get(up_idx)?;
+            return Some(upvalue as *const _ as *mut c_void);
+        }
+
+        if let Some(rclosure) = func.as_rclosure() {
+            let upvalue = rclosure.upvalues().get(up_idx)?;
+            return Some(upvalue as *const _ as *mut c_void);
+        }
+
+        None
+    }
+
+    /// Make two Lua function upvalues share the same storage.
+    pub fn join_upvalue(&self, n1: usize, other: &LuaFunctionRef, n2: usize) -> LuaResult<bool> {
+        if n1 == 0 || n2 == 0 {
+            return Ok(false);
+        }
+
+        let vm = self.inner.global_state_mut();
+        if !std::ptr::eq(self.inner.global_state(), other.inner.global_state()) {
+            return Err(vm.error(
+                "LuaFunctionRef::join_upvalue requires functions from the same Lua VM".to_string(),
+            ));
+        }
+
+        let func1 = self.inner.to_value();
+        let func2 = other.inner.to_value();
+
+        let Some(lua_func2) = func2.as_lua_function() else {
+            return Err(vm.error("LuaFunctionRef::join_upvalue expects Lua functions".to_string()));
+        };
+        let Some(shared_upvalue) = lua_func2.upvalues().get(n2 - 1).copied() else {
+            return Ok(false);
+        };
+
+        let func1_owner = func1.as_function_ptr();
+        let Some(lua_func1) = func1.as_lua_function_mut() else {
+            return Err(vm.error("LuaFunctionRef::join_upvalue expects Lua functions".to_string()));
+        };
+        let Some(slot) = lua_func1.upvalues_mut().get_mut(n1 - 1) else {
+            return Ok(false);
+        };
+        *slot = shared_upvalue;
+
+        if let Some(owner) = func1_owner {
+            vm.main_state().gc_barrier_back(owner.into());
+        }
+
+        Ok(true)
+    }
+
+    /// Call the function synchronously.
+    pub fn call_raw(&self, args: Vec<LuaValue>) -> LuaResult<Vec<LuaValue>> {
+        let vm = self.inner.global_state_mut();
+        let func = self.inner.to_value();
+        vm.main_state().call(func, args)
+    }
+
+    /// Call the function and return the first result (or nil if no results).
+    pub fn call1_raw(&self, args: Vec<LuaValue>) -> LuaResult<LuaValue> {
+        let results = self.call_raw(args)?;
+        Ok(results.into_iter().next().unwrap_or(LuaValue::nil()))
+    }
+
+    /// Call the function with Rust arguments and convert all results into a Rust type.
+    pub fn call<A: IntoLua, R: FromLuaMulti>(&self, args: A) -> LuaResult<R> {
+        let vm = self.inner.global_state_mut();
+        let args = collect_into_lua_values(vm.main_state(), args).map_err(|msg| vm.error(msg))?;
+        let func = self.inner.to_value();
+        let results = vm.main_state().call(func, args)?;
+        R::from_lua_multi(results, vm.main_state()).map_err(|msg| vm.error(msg))
+    }
+
+    /// Call the function with Rust arguments and convert the first result into a Rust type.
+    pub fn call1<A: IntoLua, R: FromLua>(&self, args: A) -> LuaResult<R> {
+        let vm = self.inner.global_state_mut();
+        let args = collect_into_lua_values(vm.main_state(), args).map_err(|msg| vm.error(msg))?;
+        let func = self.inner.to_value();
+        let result = vm
+            .main_state()
+            .call(func, args)?
+            .into_iter()
+            .next()
+            .unwrap_or(LuaValue::nil());
+        R::from_lua(result, vm.main_state()).map_err(|msg| vm.error(msg))
+    }
+
+    /// Call the function asynchronously.
+    pub async fn call_async(&self, args: Vec<LuaValue>) -> LuaResult<Vec<LuaValue>> {
+        let vm = self.inner.global_state_mut();
+        let func = self.inner.to_value();
+        vm.main_state().call_async(func, args).await
+    }
+
+    /// Get the underlying LuaValue.
+    pub fn to_value(&self) -> LuaValue {
+        self.inner.to_value()
+    }
+
+    /// Get the registry reference ID.
+    pub fn ref_id(&self) -> RefId {
+        self.inner.ref_id
+    }
+}
+
+impl Clone for LuaFunctionRef {
+    fn clone(&self) -> Self {
+        LuaFunctionRef {
+            inner: self.inner.clone(),
+        }
+    }
+}
+
+impl std::fmt::Debug for LuaFunctionRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "LuaFunctionRef(ref_id={})", self.inner.ref_id)
+    }
+}
+
+// ============================================================================
+// LuaStringRef
+// ============================================================================
+
+/// A user-facing reference to a Lua string.
+///
+/// `!Send + !Sync`.
+pub struct LuaStringRef {
+    inner: RefInner,
+}
+
+impl LuaStringRef {
+    pub(crate) fn from_raw(ref_id: RefId, global_state: GlobalStateHandle) -> Self {
+        LuaStringRef {
+            inner: RefInner::new(ref_id, global_state),
+        }
+    }
+
+    /// Get the string content. The returned `&str` is valid as long as the
+    /// underlying GC string is alive (guaranteed by the registry ref).
+    pub fn as_str(&self) -> Option<&str> {
+        let value = self.inner.to_value();
+        // Safety: the registry ref keeps the GcString alive, and we return
+        // a reference whose lifetime is tied to `&self`.
+        // LuaValue::as_str() dereferences the GcString pointer directly.
+        // The GC won't collect it because the registry holds a reference.
+        value.as_str().map(|s| {
+            // Extend lifetime from the temporary to &self.
+            // This is safe because the GC object is pinned by the registry.
+            unsafe { &*(s as *const str) }
+        })
+    }
+
+    /// Get the raw bytes of the underlying Lua string value.
+    pub fn as_bytes(&self) -> Option<&[u8]> {
+        let value = self.inner.to_value();
+        value
+            .as_bytes()
+            .map(|bytes| unsafe { &*(bytes as *const [u8]) })
+    }
+
+    /// Copy the string content into an owned String.
+    pub fn to_string_lossy(&self) -> String {
+        self.as_str()
+            .map(str::to_owned)
+            .unwrap_or_else(|| String::from_utf8_lossy(self.as_bytes().unwrap_or(&[])).into_owned())
+    }
+
+    /// Get the byte length.
+    pub fn byte_len(&self) -> usize {
+        self.as_bytes().map(|s| s.len()).unwrap_or(0)
+    }
+
+    /// Get the underlying LuaValue.
+    pub fn to_value(&self) -> LuaValue {
+        self.inner.to_value()
+    }
+
+    /// Get the registry reference ID.
+    pub fn ref_id(&self) -> RefId {
+        self.inner.ref_id
+    }
+}
+
+impl std::fmt::Debug for LuaStringRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "LuaStringRef(ref_id={}, {:?})",
+            self.inner.ref_id,
+            self.as_str()
+        )
+    }
+}
+
+impl std::fmt::Display for LuaStringRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.to_string_lossy())
+    }
+}
+
+impl Clone for LuaStringRef {
+    fn clone(&self) -> Self {
+        LuaStringRef {
+            inner: self.inner.clone(),
+        }
+    }
+}
+
+// ============================================================================
+// UserDataRef<T>
+// ============================================================================
+
+/// A typed user-facing reference to Lua userdata.
+///
+/// Holds the userdata in the VM registry so it stays alive across Rust calls,
+/// and provides typed downcast access to the wrapped Rust value.
+pub struct UserDataRef<T: 'static> {
+    inner: RefInner,
+    _marker: PhantomData<fn() -> T>,
+}
+
+impl<T: 'static> UserDataRef<T> {
+    pub(crate) fn from_raw(ref_id: RefId, vm: GlobalStateHandle) -> Self {
+        UserDataRef {
+            inner: RefInner::new(ref_id, vm),
+            _marker: PhantomData,
+        }
+    }
+
+    /// Get an immutable typed view of the underlying userdata.
+    pub fn get(&self) -> LuaResult<&T> {
+        let value = self.inner.to_value();
+        let expected = std::any::type_name::<T>();
+        let Some(userdata) = value.as_userdata_mut() else {
+            let vm = self.inner.global_state_mut();
+            return Err(vm.error(format!(
+                "expected userdata {}, got {}",
+                expected,
+                value.type_name()
+            )));
+        };
+
+        let Some(inner) = userdata.downcast_ref::<T>() else {
+            let actual = userdata.type_name();
+            let vm = self.inner.global_state_mut();
+            return Err(vm.error(format!("expected userdata {}, got {}", expected, actual)));
+        };
+
+        Ok(unsafe { &*(inner as *const T) })
+    }
+
+    /// Get a mutable typed view of the underlying userdata.
+    pub fn get_mut(&mut self) -> LuaResult<&mut T> {
+        let value = self.inner.to_value();
+        let expected = std::any::type_name::<T>();
+        let Some(userdata) = value.as_userdata_mut() else {
+            let vm = self.inner.global_state_mut();
+            return Err(vm.error(format!(
+                "expected userdata {}, got {}",
+                expected,
+                value.type_name()
+            )));
+        };
+
+        let Some(inner) = userdata.downcast_mut::<T>() else {
+            let actual = userdata.type_name();
+            let vm = self.inner.global_state_mut();
+            return Err(vm.error(format!("expected userdata {}, got {}", expected, actual)));
+        };
+
+        Ok(unsafe { &mut *(inner as *mut T) })
+    }
+
+    /// Get the wrapped type name reported by the userdata.
+    pub fn type_name(&self) -> LuaResult<&'static str> {
+        let value = self.inner.to_value();
+        let Some(userdata) = value.as_userdata_mut() else {
+            let vm = self.inner.global_state_mut();
+            return Err(vm.error(format!(
+                "expected userdata {}, got {}",
+                std::any::type_name::<T>(),
+                value.type_name()
+            )));
+        };
+        Ok(userdata.type_name())
+    }
+
+    /// Get the underlying LuaValue.
+    pub fn to_value(&self) -> LuaValue {
+        self.inner.to_value()
+    }
+
+    /// Get the registry reference ID.
+    pub fn ref_id(&self) -> RefId {
+        self.inner.ref_id
+    }
+}
+
+impl<T: 'static> FromLua for UserDataRef<T> {
+    fn from_lua(value: LuaValue, state: &mut LuaState) -> Result<Self, String> {
+        let expected = std::any::type_name::<T>();
+        let Some(userdata) = value.as_userdata_mut() else {
+            return Err(format!(
+                "expected userdata {}, got {}",
+                expected,
+                value.type_name()
+            ));
+        };
+
+        if userdata.downcast_ref::<T>().is_none() {
+            return Err(format!(
+                "expected userdata {}, got {}",
+                expected,
+                userdata.type_name()
+            ));
+        }
+
+        let vm = state.global_state_mut();
+        let ref_id = store_in_registry(vm, value);
+        Ok(UserDataRef::from_raw(ref_id, state.global_state_handle()))
+    }
+}
+
+impl<T: 'static> IntoLua for UserDataRef<T> {
+    fn into_lua(self, state: &mut LuaState) -> Result<usize, String> {
+        state
+            .push_value(self.to_value())
+            .map_err(|e| format!("{:?}", e))?;
+        Ok(1)
+    }
+}
+
+impl<T: 'static> std::fmt::Debug for UserDataRef<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "UserDataRef<{}>(ref_id={})",
+            std::any::type_name::<T>(),
+            self.inner.ref_id
+        )
+    }
+}
+
+impl<T: 'static> Clone for UserDataRef<T> {
+    fn clone(&self) -> Self {
+        UserDataRef {
+            inner: self.inner.clone(),
+            _marker: PhantomData,
+        }
+    }
+}
+
+// ============================================================================
+// LuaAnyRef
+// ============================================================================
+
+/// A generic user-facing reference to any Lua value.
+///
+/// Can be down-cast to a typed ref (`LuaTableRef`, `LuaFunctionRef`, `LuaStringRef`)
+/// when the concrete type is known.
+///
+/// `!Send + !Sync`.
+///
+/// # Example
+///
+/// ```ignore
+/// let any = vm.to_ref(some_value);
+/// if let Some(tbl) = any.as_table() {
+///     tbl.set("key", LuaValue::integer(1))?;
+/// }
+/// ```
+pub struct LuaAnyRef {
+    inner: RefInner,
+}
+
+impl LuaAnyRef {
+    pub(crate) fn from_raw(ref_id: RefId, vm: GlobalStateHandle) -> Self {
+        LuaAnyRef {
+            inner: RefInner::new(ref_id, vm),
+        }
+    }
+
+    /// Get the underlying LuaValue.
+    pub fn to_value(&self) -> LuaValue {
+        self.inner.to_value()
+    }
+
+    /// Try to convert to a `LuaTableRef`. Returns `None` if the value is not a table.
+    /// **Creates a new registry entry** so that both refs are independent.
+    pub fn as_table(&self) -> Option<LuaTableRef> {
+        let value = self.inner.to_value();
+        if !value.is_table() {
+            return None;
+        }
+        let vm = self.inner.global_state_mut();
+        let ref_id = store_in_registry(vm, value);
+        Some(LuaTableRef::from_raw(ref_id, self.inner.global_state))
+    }
+
+    /// Try to convert to a `LuaFunctionRef`.
+    pub fn as_function(&self) -> Option<LuaFunctionRef> {
+        let value = self.inner.to_value();
+        if !value.is_function() {
+            return None;
+        }
+        let vm = self.inner.global_state_mut();
+        let ref_id = store_in_registry(vm, value);
+        Some(LuaFunctionRef::from_raw(ref_id, self.inner.global_state))
+    }
+
+    /// Try to convert to a `LuaStringRef`.
+    pub fn as_string(&self) -> Option<LuaStringRef> {
+        let value = self.inner.to_value();
+        if !value.is_string() {
+            return None;
+        }
+        let vm = self.inner.global_state_mut();
+        let ref_id = store_in_registry(vm, value);
+        Some(LuaStringRef::from_raw(ref_id, self.inner.global_state))
+    }
+
+    /// Try to convert to a typed userdata ref.
+    pub fn as_userdata<T: 'static>(&self) -> Option<UserDataRef<T>> {
+        let value = self.inner.to_value();
+        let userdata = value.as_userdata_mut()?;
+        userdata.downcast_ref::<T>()?;
+        let vm = self.inner.global_state_mut();
+        let ref_id = store_in_registry(vm, value);
+        Some(UserDataRef::from_raw(ref_id, self.inner.global_state))
+    }
+
+    /// Get the value's type kind.
+    pub fn kind(&self) -> LuaValueKind {
+        self.inner.to_value().kind()
+    }
+
+    /// Get the referenced value's metatable, if present.
+    pub fn get_metatable(&self) -> Option<LuaTableRef> {
+        let vm = self.inner.global_state_mut();
+        let value = self.inner.to_value();
+        let metatable = get_metatable(vm.main_state(), &value)?;
+        if !metatable.is_table() {
+            return None;
+        }
+        let ref_id = store_in_registry(vm, metatable);
+        Some(LuaTableRef::from_raw(ref_id, self.inner.global_state))
+    }
+
+    /// Set or clear the referenced value's metatable.
+    pub fn set_metatable(&self, metatable: Option<&LuaTableRef>) -> LuaResult<()> {
+        let vm = self.inner.global_state_mut();
+        let value = self.inner.to_value();
+        let mt_value = metatable.map(LuaTableRef::to_value);
+
+        if let Some(table) = value.as_table_mut() {
+            table.set_metatable(mt_value);
+            if let Some(gc_ptr) = value.as_gc_ptr() {
+                vm.main_state().gc_barrier_back(gc_ptr);
+            }
+            vm.gc.check_finalizer(&value);
+            return Ok(());
+        }
+
+        if let Some(userdata) = value.as_userdata_mut() {
+            userdata.set_metatable(mt_value.unwrap_or_else(LuaValue::nil));
+            if let Some(gc_ptr) = value.as_gc_ptr() {
+                vm.main_state().gc_barrier_back(gc_ptr);
+            }
+            vm.gc.check_finalizer(&value);
+            return Ok(());
+        }
+
+        match value.kind() {
+            LuaValueKind::String
+            | LuaValueKind::Integer
+            | LuaValueKind::Float
+            | LuaValueKind::Boolean
+            | LuaValueKind::Nil => {
+                vm.set_basic_metatable(value.kind(), mt_value);
+                Ok(())
+            }
+            _ => Err(vm.error(format!(
+                "metatables are not supported for {} values",
+                value.type_name()
+            ))),
+        }
+    }
+
+    /// Extract the value as a Rust type via `FromLua`.
+    pub fn get_as<T: crate::FromLua>(&self) -> LuaResult<T> {
+        let val = self.inner.to_value();
+        let vm = self.inner.global_state_mut();
+        T::from_lua(val, vm.main_state()).map_err(|msg| vm.error(msg))
+    }
+
+    /// Get the registry reference ID.
+    pub fn ref_id(&self) -> RefId {
+        self.inner.ref_id
+    }
+}
+
+impl std::fmt::Debug for LuaAnyRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "LuaAnyRef(ref_id={}, kind={:?})",
+            self.inner.ref_id,
+            self.kind()
+        )
+    }
+}
+
+impl Clone for LuaAnyRef {
+    fn clone(&self) -> Self {
+        LuaAnyRef {
+            inner: self.inner.clone(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{GlobalState, LuaValue, lua_vm::SafeOption};
+
+    #[test]
+    fn test_lua_ref_mechanism() {
+        let mut global_state = GlobalState::new(SafeOption::default());
+
+        // Create some test values
+        let table = global_state.create_table(0, 2).unwrap();
+        let num_key = global_state.create_string("num").unwrap();
+        let str_key = global_state.create_string("str").unwrap();
+        let str_val = global_state.create_string("hello").unwrap();
+        global_state.raw_set(&table, num_key, LuaValue::number(42.0));
+        global_state.raw_set(&table, str_key, str_val);
+
+        let number = LuaValue::number(123.456);
+        let nil_val = LuaValue::nil();
+
+        // Test 1: Create references
+        let table_ref = global_state.create_ref(table);
+        let number_ref = global_state.create_ref(number);
+        let nil_ref = global_state.create_ref(nil_val);
+
+        // Test 2: Retrieve values through references
+        let retrieved_table = global_state.get_ref_value(&table_ref);
+        assert!(retrieved_table.is_table(), "Should retrieve table");
+
+        let retrieved_num = global_state.get_ref_value(&number_ref);
+        assert_eq!(
+            retrieved_num.as_number(),
+            Some(123.456),
+            "Should retrieve number"
+        );
+
+        let retrieved_nil = global_state.get_ref_value(&nil_ref);
+        assert!(retrieved_nil.is_nil(), "Should retrieve nil");
+
+        // Test 3: Verify table contents
+        let num_key2 = global_state.create_string("num").unwrap();
+        let val = global_state.raw_get(&retrieved_table, &num_key2);
+        assert_eq!(
+            val.and_then(|v| v.as_number()),
+            Some(42.0),
+            "Table content should be preserved"
+        );
+
+        // Test 4: Get ref IDs
+        let table_ref_id = table_ref.ref_id();
+        assert!(table_ref_id > 0, "Ref ID should be positive");
+
+        let number_ref_id = number_ref.ref_id();
+        assert!(number_ref_id > 0, "Number ref should not have ID");
+
+        // Test 5: Release references
+        global_state.release_ref(table_ref);
+        global_state.release_ref(number_ref);
+        global_state.release_ref(nil_ref);
+
+        // Test 6: After release, ref should return nil
+        let after_release = global_state.get_ref_value_by_id(table_ref_id);
+        assert!(after_release.is_nil(), "Released ref should return nil");
+
+        println!("✓ Lua ref mechanism test passed");
+    }
+
+    #[test]
+    fn test_ref_id_reuse() {
+        let mut global_state = GlobalState::new(SafeOption::default());
+
+        // Create and release multiple refs to test ID reuse
+        let t1 = global_state.create_table(0, 0).unwrap();
+        let ref1 = global_state.create_ref(t1);
+        let id1 = ref1.ref_id();
+        global_state.release_ref(ref1);
+
+        // Create another ref - should reuse the ID
+        let t2 = global_state.create_table(0, 0).unwrap();
+        let ref2 = global_state.create_ref(t2);
+        let id2 = ref2.ref_id();
+
+        assert_eq!(id1, id2, "Ref IDs should be reused");
+
+        global_state.release_ref(ref2);
+
+        println!("✓ Ref ID reuse test passed");
+    }
+
+    #[test]
+    fn test_multiple_refs() {
+        let mut global_state = GlobalState::new(SafeOption::default());
+
+        // Create multiple refs and verify they don't interfere
+        let mut refs = Vec::new();
+        for i in 0..10 {
+            let table = global_state.create_table(0, 1).unwrap();
+            let key = global_state.create_string("value").unwrap();
+            let num_val = LuaValue::number(i as f64);
+            global_state.raw_set(&table, key, num_val);
+            refs.push(global_state.create_ref(table));
+        }
+
+        // Verify all refs are still valid
+        for (i, lua_ref) in refs.iter().enumerate() {
+            let table = global_state.get_ref_value(lua_ref);
+            let key = global_state.create_string("value").unwrap();
+            let val = global_state.raw_get(&table, &key);
+            assert_eq!(
+                val.and_then(|v| v.as_number()),
+                Some(i as f64),
+                "Ref {} should have correct value",
+                i
+            );
+        }
+
+        // Release all refs
+        for lua_ref in refs {
+            global_state.release_ref(lua_ref);
+        }
+
+        println!("✓ Multiple refs test passed");
+    }
+}

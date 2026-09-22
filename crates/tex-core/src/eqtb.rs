@@ -11,7 +11,7 @@ use std::rc::Rc;
 use crate::boxes::{Glue, Node};
 use crate::prim::{DimParam, GlueParam, IntParam, Prim, ToksParam};
 use crate::tfm::Font;
-use crate::token::{CsId, Token};
+use crate::token::{CsId, Token, CAT_OTHER};
 
 pub const LEVEL_ONE: u16 = 1;
 pub const MAX_GROUP_LEVEL: u16 = u16::MAX;
@@ -228,6 +228,10 @@ pub enum SaveItem {
     SfCode(u8, u16, u16),
     UcCode(u8, u8, u16),
     UnicodeCase(bool, u32, Option<(u32, u16)>),
+    UnicodeCat(u32, Option<(u8, u16)>),
+    UnicodeMath(u32, Option<(u32, u16)>),
+    UnicodeDel(u32, Option<(i64, u16)>),
+    UnicodeSf(u32, Option<(u16, u16)>),
     StyleFont(u8, u16, u16, u16), // (0=textfont,1=scriptfont,2=ssfont, fam, fontid, level)
     FontParam(u16, usize, i32, u16), // font, param index (0-based), old, level
     HyphenChar(u16, i32, u16),
@@ -299,7 +303,11 @@ pub struct Eqtb {
     pub sf_levels: Vec<u16>,
     pub uc_code: Vec<u8>,
     pub uc_levels: Vec<u16>,
-    /// Unicode overrides, keyed by (uppercase, scalar); the byte tables stay hot.
+    /// Sparse Unicode overrides; the byte tables remain the pdfTeX hot path.
+    pub unicode_cat_codes: crate::FxHashMap<u32, (u8, u16)>,
+    pub unicode_math_codes: crate::FxHashMap<u32, (u32, u16)>,
+    pub unicode_del_codes: crate::FxHashMap<u32, (i64, u16)>,
+    pub unicode_sf_codes: crate::FxHashMap<u32, (u16, u16)>,
     pub unicode_case_codes: crate::FxHashMap<(bool, u32), (u32, u16)>,
 
     /// style_fonts[style][fam] -> font id (0 = none); style: 0=text 1=script 2=ss
@@ -581,6 +589,10 @@ impl Eqtb {
             uc_code: uc_code.to_vec(),
             uc_levels: vec![LEVEL_ONE; 256],
             unicode_case_codes: crate::FxHashMap::default(),
+            unicode_cat_codes: crate::FxHashMap::default(),
+            unicode_math_codes: crate::FxHashMap::default(),
+            unicode_del_codes: crate::FxHashMap::default(),
+            unicode_sf_codes: crate::FxHashMap::default(),
             style_fonts: [[0; 256]; 3],
             style_font_levels: [[LEVEL_ONE; 256]; 3],
             fonts: Vec::new(),
@@ -738,6 +750,43 @@ impl Eqtb {
         }
         vals[idx] = v;
         levels[idx] = if global { LEVEL_ONE } else { cur_level };
+    }
+
+    fn sparse_slot<T: Copy>(
+        values: &mut crate::FxHashMap<u32, (T, u16)>,
+        character: u32,
+        value: T,
+        global: bool,
+        cur_level: u16,
+        stack: &mut Vec<SaveItem>,
+        save: impl FnOnce(Option<(T, u16)>) -> SaveItem,
+    ) {
+        let old = values.get(&character).copied();
+        let old_level = old.map_or(LEVEL_ONE, |(_, level)| level);
+        if !global && old_level < cur_level {
+            stack.push(save(old));
+        }
+        values.insert(
+            character,
+            (value, if global { LEVEL_ONE } else { cur_level }),
+        );
+    }
+
+    fn restore_sparse<T>(
+        values: &mut crate::FxHashMap<u32, (T, u16)>,
+        character: u32,
+        old: Option<(T, u16)>,
+    ) {
+        if values
+            .get(&character)
+            .is_some_and(|value| value.1 > LEVEL_ONE)
+        {
+            if let Some(value) = old {
+                values.insert(character, value);
+            } else {
+                values.remove(&character);
+            }
+        }
     }
 
     pub fn assign_int_param(&mut self, p: IntParam, v: i32, global: bool) {
@@ -963,6 +1012,116 @@ impl Eqtb {
             self.cur_level,
             &mut self.save_stack,
             |old, ol| SaveItem::UcCode(c, old, ol),
+        );
+    }
+
+    pub fn cat_code(&self, character: u32) -> u8 {
+        self.unicode_cat_codes
+            .get(&character)
+            .map(|&(value, _)| value)
+            .or_else(|| self.cat.get(character as usize).copied())
+            .unwrap_or(CAT_OTHER)
+    }
+
+    pub fn assign_cat_code(&mut self, character: u32, value: u8, global: bool) {
+        if let Ok(character) = u8::try_from(character) {
+            self.assign_cat(character, value, global);
+            return;
+        }
+        Self::sparse_slot(
+            &mut self.unicode_cat_codes,
+            character,
+            value,
+            global,
+            self.cur_level,
+            &mut self.save_stack,
+            |old| SaveItem::UnicodeCat(character, old),
+        );
+    }
+
+    pub fn math_code_for(&self, character: u32) -> u32 {
+        self.unicode_math_codes
+            .get(&character)
+            .map(|&(value, _)| value)
+            .or_else(|| {
+                self.math_code
+                    .get(character as usize)
+                    .copied()
+                    .map(u32::from)
+            })
+            .unwrap_or(0)
+    }
+
+    pub fn assign_math_code_for(&mut self, character: u32, value: u32, global: bool) {
+        if let (Ok(character), Ok(value)) = (u8::try_from(character), u16::try_from(value)) {
+            if !self.unicode_math_codes.contains_key(&u32::from(character)) {
+                self.assign_math_code(character, value, global);
+                return;
+            }
+        }
+        Self::sparse_slot(
+            &mut self.unicode_math_codes,
+            character,
+            value,
+            global,
+            self.cur_level,
+            &mut self.save_stack,
+            |old| SaveItem::UnicodeMath(character, old),
+        );
+    }
+
+    pub fn delimiter_code_for(&self, character: u32) -> i64 {
+        self.unicode_del_codes
+            .get(&character)
+            .map(|&(value, _)| value)
+            .or_else(|| {
+                self.del_code
+                    .get(character as usize)
+                    .copied()
+                    .map(i64::from)
+            })
+            .unwrap_or(-1)
+    }
+
+    pub fn assign_delimiter_code_for(&mut self, character: u32, value: i64, global: bool) {
+        if let (Ok(character), Ok(value)) = (u8::try_from(character), i32::try_from(value)) {
+            if !self.unicode_del_codes.contains_key(&u32::from(character)) {
+                self.assign_del_code(character, value, global);
+                return;
+            }
+        }
+        Self::sparse_slot(
+            &mut self.unicode_del_codes,
+            character,
+            value,
+            global,
+            self.cur_level,
+            &mut self.save_stack,
+            |old| SaveItem::UnicodeDel(character, old),
+        );
+    }
+
+    pub fn space_factor_code(&self, character: u32) -> u16 {
+        self.unicode_sf_codes
+            .get(&character)
+            .map(|&(value, _)| value)
+            .or_else(|| self.sf_code.get(character as usize).copied())
+            .unwrap_or(1000)
+    }
+
+    pub fn assign_space_factor_code(&mut self, character: u32, value: u16, global: bool) {
+        if let Ok(character) = u8::try_from(character) {
+            self.assign_sf_code(character, value, global);
+            return;
+        }
+        Self::sparse_slot(
+            &mut self.unicode_sf_codes,
+            character,
+            value,
+            global,
+            self.cur_level,
+            &mut self.save_stack,
+            |old| SaveItem::UnicodeSf(character, old),
         );
     }
 
@@ -1257,6 +1416,18 @@ impl Eqtb {
                             self.unicode_case_codes.remove(&key);
                         }
                     }
+                }
+                SaveItem::UnicodeCat(character, old) => {
+                    Self::restore_sparse(&mut self.unicode_cat_codes, character, old);
+                }
+                SaveItem::UnicodeMath(character, old) => {
+                    Self::restore_sparse(&mut self.unicode_math_codes, character, old);
+                }
+                SaveItem::UnicodeDel(character, old) => {
+                    Self::restore_sparse(&mut self.unicode_del_codes, character, old);
+                }
+                SaveItem::UnicodeSf(character, old) => {
+                    Self::restore_sparse(&mut self.unicode_sf_codes, character, old);
                 }
                 SaveItem::StyleFont(style, fam, v, l) => {
                     self.style_fonts[style as usize][fam as usize] = v;
@@ -1561,5 +1732,41 @@ mod tests {
 
         assert!(eq.boxed[255].is_none());
         assert_eq!(eq.box_levels[255], LEVEL_ONE);
+    }
+    #[test]
+    fn unicode_code_tables_restore_local_assignments_and_keep_globals() {
+        let mut eq = Eqtb::new(true);
+        let character = '界' as u32;
+
+        assert_eq!(eq.cat_code(character), CAT_OTHER);
+        assert_eq!(eq.math_code_for(character), 0);
+        assert_eq!(eq.delimiter_code_for(character), -1);
+        assert_eq!(eq.space_factor_code(character), 1000);
+
+        eq.assign_cat_code(character, 11, true);
+        eq.assign_math_code_for(character, 0x0123_4567, true);
+        eq.assign_delimiter_code_for(character, 0x0123_4567_89ab, true);
+        eq.assign_space_factor_code(character, 2000, true);
+
+        eq.push_level(LevelType::Simple);
+        eq.assign_cat_code(character, 13, false);
+        eq.assign_math_code_for(character, 7, false);
+        eq.assign_delimiter_code_for(character, 8, false);
+        eq.assign_space_factor_code(character, 900, false);
+        assert_eq!(eq.cat_code(character), 13);
+        assert_eq!(eq.math_code_for(character), 7);
+
+        let mut after = Vec::new();
+        eq.pop_level(&mut after);
+        assert_eq!(eq.cat_code(character), 11);
+        assert_eq!(eq.math_code_for(character), 0x0123_4567);
+        assert_eq!(eq.delimiter_code_for(character), 0x0123_4567_89ab);
+        assert_eq!(eq.space_factor_code(character), 2000);
+
+        eq.push_level(LevelType::Simple);
+        eq.assign_cat_code(character, 12, false);
+        eq.assign_cat_code(character, 10, true);
+        eq.pop_level(&mut after);
+        assert_eq!(eq.cat_code(character), 10);
     }
 }

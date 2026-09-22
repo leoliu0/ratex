@@ -1,0 +1,337 @@
+// CallInfo - Information about a single function call
+// Equivalent to CallInfo structure in Lua C API (lstate.h)
+
+use crate::LuaValue;
+use crate::gc::UpvaluePtr;
+use crate::lua_value::LuaProto;
+use crate::lua_vm::StkId;
+use std::ops::{Deref, DerefMut};
+use std::ptr::NonNull;
+
+/// Call status flags (equivalent to Lua's CIST_* flags)
+pub mod call_status {
+    /// Packed nresults field: stores wanted_results + 1, so MULTRET (-1) becomes 0.
+    pub const CIST_NRESULTS_MASK: u32 = 0xFFFF;
+
+    /// Lua function (has bytecode)
+    pub const CIST_LUA: u32 = 0;
+    /// C function
+    pub const CIST_C: u32 = 1 << 21;
+    /// Function is a tail call
+    pub const CIST_TAIL: u32 = 1 << 22;
+    #[allow(unused)]
+    /// Call is running a for loop
+    pub const CIST_HOOKYIELD: u32 = 1 << 23;
+    /// Yieldable protected call (pcall body yielded)
+    pub const CIST_YPCALL: u32 = 1 << 24;
+    #[allow(unused)]
+    /// Call is in error-protected mode (pcall/xpcall)
+    pub const CIST_FRESH: u32 = 1 << 25;
+    /// Function is closing TBC variables during return
+    pub const CIST_CLSRET: u32 = 1 << 26;
+    /// Error recovery status saved across yield (precover)
+    pub const CIST_RECST: u32 = 1 << 20;
+
+    /// Pending metamethod finish operation (GET/SET) after yield resume.
+    /// When set, the `pending_finish_get` field contains a valid value
+    /// that must be handled in the startfunc loop before dispatching.
+    pub const CIST_PENDING_FINISH: u32 = 1 << 27;
+
+    /// xpcall: this C frame is for an xpcall call.
+    /// The error handler is stored at func_pos (base - func_offset),
+    /// and the actual body starts at func_pos + 1.
+    pub const CIST_XPCALL: u32 = 1 << 28;
+
+    /// Yieldable unprotected call (dofile body yielded)
+    /// Like CIST_YPCALL but without error catching — results are moved
+    /// without prepending true/false.
+    pub const CIST_YCALL: u32 = 1 << 29;
+
+    /// Frame was interrupted by a hook (set during hook callback).
+    /// Used by debug.getinfo to report namewhat="hook".
+    pub const CIST_HOOKED: u32 = 1 << 30;
+
+    /// Synthetic C frame used while invoking a `__gc` metamethod.
+    /// Exposes the internal finalizer call to the debug API.
+    pub const CIST_FIN: u32 = 1 << 31;
+
+    /// Offset for __call metamethod count (bits 16-19)
+    pub const CIST_CCMT: u32 = 16;
+    /// Mask for __call metamethod count (0xf at bits 16-19)
+    pub const MAX_CCMT: u32 = 0xF << CIST_CCMT;
+
+    #[inline(always)]
+    pub fn with_nresults(call_status: u32, nresults: i32) -> u32 {
+        debug_assert!(nresults >= -1, "nresults must be >= -1");
+        debug_assert!(
+            nresults < (CIST_NRESULTS_MASK as i32),
+            "nresults out of range"
+        );
+        (call_status & !CIST_NRESULTS_MASK) | ((nresults + 1) as u32)
+    }
+
+    #[inline(always)]
+    pub fn get_nresults(call_status: u32) -> i32 {
+        ((call_status & CIST_NRESULTS_MASK) as i32) - 1
+    }
+
+    /// Extract __call count from call_status
+    #[inline(always)]
+    pub fn get_ccmt_count(call_status: u32) -> u8 {
+        ((call_status & MAX_CCMT) >> CIST_CCMT) as u8
+    }
+
+    /// Set __call count in call_status
+    #[inline(always)]
+    pub fn set_ccmt_count(call_status: u32, count: u8) -> u32 {
+        (call_status & !MAX_CCMT) | (((count as u32) << CIST_CCMT) & MAX_CCMT)
+    }
+}
+
+/// Information about a single function call on the call stack
+/// This is similar to CallInfo in lstate.h
+#[derive(Clone)]
+pub struct CallInfo {
+    /// Base index in the stack for this call frame's registers
+    /// Combined with `func_offset`, this recovers the frame's function slot.
+    /// NOTE: This may be updated by VARARGPREP after stack rearrangement
+    pub base: usize,
+
+    /// Cached raw pointer to this frame's base register (base + stack ptr).
+    /// Eliminates `stack_mut().as_mut_ptr().add(base)` in hot opcodes.
+    /// Updated on stack reallocation via `LuaState::fix_call_info_base_stk`.
+    pub base_stk: StkId,
+
+    /// Pointer to the caller's `CallInfo`, mirroring C Lua's `previous` link.
+    /// The actual `CallInfo` objects live in stable storage, so this raw
+    /// pointer stays valid for the whole lifetime of the call frame.
+    pub previous: *mut CallInfo,
+
+    /// Offset from original base to func position (for vararg functions after buildhiddenargs)
+    /// When nextraargs > 0 and buildhiddenargs was called:
+    /// - func_offset = totalargs + 1 (the shift amount)
+    ///   Otherwise: func_offset = 1 (base - 1 = func)
+    pub func_offset: u32,
+
+    /// Top of stack for this frame (first free slot)
+    /// Equivalent to Lua's CallInfo.top
+    pub top: u32,
+
+    /// Program counter (for Lua functions only)
+    /// Points to next instruction to execute
+    /// Equivalent to Lua's CallInfo.u.l.savedpc
+    pub pc: u32,
+
+    /// Call status flags (CIST_*)
+    /// Low 16 bits pack expected nresults as (nresults + 1).
+    /// Equivalent to Lua's CallInfo.callstatus
+    pub call_status: u32,
+
+    /// Number of extra arguments in vararg functions
+    /// Equivalent to Lua's CallInfo.u.l.nextraargs
+    pub nextraargs: i32,
+
+    /// Cached raw pointer to the Chunk for Lua functions.
+    /// Avoids Rc deref in the startfunc header (hot path).
+    /// Null for C function frames.
+    /// Safety: valid as long as the frame is active (func keeps the Rc alive).
+    pub chunk_ptr: *const LuaProto,
+
+    /// Cached pointer to the upvalue array for Lua closures.
+    /// Avoids the func → GcPtr → GcRClosure → LuaFunction → UpvalueStore enum match
+    /// chain on every GetUpval/SetUpval (saves 2-3 loads + 1 branch per access).
+    /// Null for C function frames (never accessed).
+    /// Safety: valid as long as this frame is active (func keeps the closure alive).
+    pub upvalue_ptrs: *const UpvaluePtr,
+
+    /// Reused i32 payload.
+    /// - When CIST_CLSRET is set: saved nres for return continuation.
+    /// - When CIST_PENDING_FINISH is set: pending finish destination/state.
+    pub aux_i32: i32,
+
+    /// Lua C API continuation saved across a yield.
+    /// Function and state pointers are stored as integers so CallInfo remains Send.
+    pub c_k_function: usize,
+    pub c_k_context: isize,
+    pub c_k_status: i32,
+    pub c_k_state: usize,
+    pub c_k_func_index: u32,
+    pub c_k_error_func_index: u32,
+}
+
+#[derive(Clone, Copy)]
+pub struct CallInfoPtr(NonNull<CallInfo>);
+
+impl CallInfoPtr {
+    #[inline(always)]
+    pub fn from_mut(value: &mut CallInfo) -> Self {
+        Self(NonNull::from(value))
+    }
+
+    #[inline(always)]
+    pub fn as_ptr(self) -> *mut CallInfo {
+        self.0.as_ptr()
+    }
+
+    #[inline(always)]
+    pub unsafe fn as_ref<'a>(self) -> &'a CallInfo {
+        unsafe { self.0.as_ref() }
+    }
+
+    #[inline(always)]
+    pub unsafe fn as_mut<'a>(self) -> &'a mut CallInfo {
+        unsafe { &mut *self.0.as_ptr() }
+    }
+}
+
+impl Deref for CallInfoPtr {
+    type Target = CallInfo;
+
+    #[inline(always)]
+    fn deref(&self) -> &Self::Target {
+        unsafe { self.0.as_ref() }
+    }
+}
+
+impl DerefMut for CallInfoPtr {
+    #[inline(always)]
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        unsafe { &mut *self.0.as_ptr() }
+    }
+}
+
+impl CallInfo {
+    /// Create a new call frame for a Lua function
+    pub fn new_lua(sp: *mut LuaValue, base: usize, nparams: usize) -> Self {
+        Self {
+            base,
+            base_stk: StkId::from_stack(sp, base),
+            previous: std::ptr::null_mut(),
+            chunk_ptr: std::ptr::null(),
+            upvalue_ptrs: std::ptr::null(),
+            func_offset: 1, // Initially base - 1 = func
+            top: (base + nparams) as u32,
+            pc: 0,
+            call_status: call_status::with_nresults(call_status::CIST_LUA, -1),
+            nextraargs: 0,
+            aux_i32: -1,
+            c_k_function: 0,
+            c_k_context: 0,
+            c_k_status: 0,
+            c_k_state: 0,
+            c_k_func_index: 0,
+            c_k_error_func_index: u32::MAX,
+        }
+    }
+
+    /// Create a new call frame for a C function
+    pub fn new_c(sp: *mut crate::lua_value::LuaValue, base: usize, nparams: usize) -> Self {
+        Self {
+            base,
+            base_stk: StkId::from_stack(sp, base),
+            previous: std::ptr::null_mut(),
+            chunk_ptr: std::ptr::null(),
+            upvalue_ptrs: std::ptr::null(),
+            func_offset: 1,
+            top: (base + nparams) as u32,
+            pc: 0,
+            call_status: call_status::with_nresults(call_status::CIST_C, -1),
+            nextraargs: 0,
+            aux_i32: -1,
+            c_k_function: 0,
+            c_k_context: 0,
+            c_k_status: 0,
+            c_k_state: 0,
+            c_k_func_index: 0,
+            c_k_error_func_index: u32::MAX,
+        }
+    }
+
+    /// Check if this is a Lua function call
+    #[inline(always)]
+    pub fn is_lua(&self) -> bool {
+        self.call_status & call_status::CIST_C == 0
+    }
+
+    /// Check if this is a C function call
+    #[inline(always)]
+    pub fn is_c(&self) -> bool {
+        self.call_status & call_status::CIST_C != 0
+    }
+
+    /// Check if this is a tail call
+    #[inline(always)]
+    pub fn is_tail(&self) -> bool {
+        self.call_status & call_status::CIST_TAIL != 0
+    }
+
+    /// Mark as tail call
+    #[inline(always)]
+    pub fn set_tail(&mut self) {
+        self.call_status |= call_status::CIST_TAIL;
+    }
+
+    #[inline(always)]
+    pub fn save_pc(&mut self, pc: usize) {
+        self.pc = pc as u32;
+    }
+
+    #[inline(always)]
+    pub fn nresults(&self) -> i32 {
+        call_status::get_nresults(self.call_status)
+    }
+
+    #[inline(always)]
+    pub fn set_nresults(&mut self, nresults: i32) {
+        self.call_status = call_status::with_nresults(self.call_status, nresults);
+    }
+
+    #[inline(always)]
+    pub fn saved_nres(&self) -> i32 {
+        self.aux_i32
+    }
+
+    #[inline(always)]
+    pub fn set_saved_nres(&mut self, nres: i32) {
+        self.aux_i32 = nres;
+    }
+
+    #[inline(always)]
+    pub fn pending_finish_get(&self) -> i32 {
+        self.aux_i32
+    }
+
+    #[inline(always)]
+    pub fn set_pending_finish_get(&mut self, value: i32) {
+        self.aux_i32 = value;
+    }
+
+    #[inline(always)]
+    pub fn func_index(&self) -> usize {
+        self.base - self.func_offset as usize
+    }
+}
+
+impl Default for CallInfo {
+    fn default() -> Self {
+        Self {
+            base: 0,
+            base_stk: StkId::null(),
+            previous: std::ptr::null_mut(),
+            chunk_ptr: std::ptr::null(),
+            upvalue_ptrs: std::ptr::null(),
+            func_offset: 1,
+            top: 0,
+            pc: 0,
+            call_status: call_status::with_nresults(0, -1),
+            nextraargs: 0,
+            aux_i32: -1,
+            c_k_function: 0,
+            c_k_context: 0,
+            c_k_status: 0,
+            c_k_state: 0,
+            c_k_func_index: 0,
+            c_k_error_func_index: u32::MAX,
+        }
+    }
+}

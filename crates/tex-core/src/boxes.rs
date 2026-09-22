@@ -449,7 +449,7 @@ pub enum Node {
     },
     MathChar {
         fam: u8,
-        c: u8,
+        c: u32,
         class: u8,
         origin: MathDiagnosticOrigin,
     },

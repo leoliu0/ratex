@@ -1,7 +1,7 @@
 ; Inno Setup script for ratex (TeX engine & toolchain) on Windows
 #define MyAppName "ratex"
 #ifndef MyAppVersion
-#define MyAppVersion "0.4.3"
+#define MyAppVersion "0.4.4"
 #endif
 #define MyAppPublisher "Leo Liu"
 #define MyAppURL "https://github.com/leoliu0/ratex"

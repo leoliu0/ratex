@@ -1,4 +1,7 @@
 //! C ABI. See include/tex.h for ownership and pointer validity requirements.
+#[global_allocator]
+static GLOBAL: dlmalloc::GlobalDlmalloc = dlmalloc::GlobalDlmalloc;
+
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use tex_runtime::{Compilation, Session, Status};
 

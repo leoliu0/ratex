@@ -1,0 +1,8 @@
+[package]
+name = "tex-ps"
+version.workspace = true
+edition = "2021"
+description = "Pure-Rust PostScript Level 2/3 and EPS interpreter and PDF renderer"
+
+[dependencies]
+flate2 = { workspace = true }

@@ -1,3 +1,9 @@
+[target.'cfg(all(unix, not(target_os = "macos")))']
+rustflags = ["-C", "link-arg=-Wl,--export-dynamic"]
+
+[target.'cfg(target_os = "macos")']
+rustflags = ["-C", "link-arg=-Wl,-export_dynamic"]
+
 [target.wasm32-unknown-unknown]
 # TeX format loading and recursive layout use more stack than wasm-ld's default.
 rustflags = ["-C", "link-arg=-zstack-size=8388608"]

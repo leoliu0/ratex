@@ -1,6 +1,6 @@
 //! Repro for utf8.def:335 — filehook IfFileExists + with@hooks sitting
 //! after \xdef\@curr@file{\csname...\endcsname}.
-use tex_core::engine::Engine;
+use tex_core::engine::{Engine, EngineKind};
 use tex_core::eqtb::Equiv;
 
 fn boot() -> Engine {
@@ -300,9 +300,17 @@ fn write_serialization_preserves_utf8_token_bytes() {
     assert_eq!(e.write_tokens_to_string(&chars), text);
     let active: Vec<_> = text
         .bytes()
-        .map(|b| Token::from_cs(e.active_cs_id(b)))
+        .map(|b| Token::from_cs(e.active_cs_id(u32::from(b))))
         .collect();
     assert_eq!(e.write_tokens_to_string(&active), text);
+    assert_eq!(e.tokens_to_string(&active), text);
+    let unicode_active = Token::from_cs(e.active_cs_id('界' as u32));
+    assert_eq!(e.write_tokens_to_string(&[unicode_active]), "界");
+    assert_eq!(e.tokens_to_string(&[unicode_active]), "界");
+    assert_eq!(
+        Engine::active_cs_scalar(e.cs.name(unicode_active.cs_id())),
+        Some('界' as u32)
+    );
 
     let accent = Token::from_cs(e.cs.intern(b"\""));
     assert_eq!(
@@ -332,4 +340,116 @@ fn assignment_does_not_prefetch_a_conditional_number() {
     assert_eq!(body(&e, b"result"), "-1");
     assert_eq!(body(&e, b"after"), "DONE");
     assert_eq!(e.error_count, 0, "{}", e.term);
+}
+
+#[test]
+fn integer_bindings_are_scaled_point_dimension_units() {
+    let mut e = boot();
+    run_tex(
+        &mut e,
+        &(PRE.to_string()
+            + r#"
+\chardef\@ne=1
+\mathchardef\mtwo=2
+\let\alias\@ne
+\count2=-3
+\dimen0=42\@ne
+\dimen2=1.5\mtwo
+\dimen4=7\alias
+\dimen6=2\count2
+\dimen8=5\@ne\def\after{DONE}
+\edef\result{\number\dimen0,\number\dimen2,\number\dimen4,\number\dimen6,\number\dimen8}
+"#),
+    );
+    assert_eq!(body(&e, b"result"), "42,3,7,-6,5");
+    assert_eq!(body(&e, b"after"), "DONE");
+    assert_eq!(e.error_count, 0, "{}", e.term);
+}
+
+#[test]
+fn full_expansion_stores_unexpandable_active_character_identity() {
+    use tex_core::token::Token;
+
+    let mut e = boot();
+    run_tex(
+        &mut e,
+        &(PRE.to_string()
+            + r#"
+\catcode`?=13 \let?=\relax
+\def\macroA{?}
+\edef\macroB{?}
+\edef\macroC{\expanded{?}}
+\edef\result{\number\expandafter`\macroA/\number\expandafter`\macroB}
+"#),
+    );
+    assert_eq!(body(&e, b"result"), "63/63");
+    for name in [
+        b"macroA".as_slice(),
+        b"macroB".as_slice(),
+        b"macroC".as_slice(),
+    ] {
+        let id = e.cs.lookup(name).unwrap();
+        let Some(Equiv::Macro(m)) = e.eqtb.resolve(id) else {
+            panic!("\\{} is not a macro", String::from_utf8_lossy(name));
+        };
+        assert_eq!(m.body.as_ref(), &[Token::char(13, b'?' as u32)]);
+    }
+    assert_eq!(e.error_count, 0, "{}", e.term);
+}
+
+#[test]
+fn native_profiles_assign_full_scalar_character_tables() {
+    let mut engine = boot();
+    engine.engine_kind = EngineKind::LuaTeX;
+    run_tex(
+        &mut engine,
+        "\\catcode\"754C=11 \
+         \\mathcode\"754C=1234 \
+         \\delcode\"754C=5678 \
+         \\sfcode\"754C=2000 \
+         \\lccode\"754C=\"754C \
+         \\uccode\"754C=\"754C \\end",
+    );
+
+    let character = '界' as u32;
+    assert_eq!(engine.eqtb.cat_code(character), 11);
+    assert_eq!(engine.eqtb.math_code_for(character), 1234);
+    assert_eq!(engine.eqtb.delimiter_code_for(character), 5678);
+    assert_eq!(engine.eqtb.space_factor_code(character), 2000);
+    assert_eq!(engine.eqtb.case_code(character, false), character);
+    assert_eq!(engine.eqtb.case_code(character, true), character);
+    assert_eq!(engine.error_count, 0, "{}", engine.term);
+}
+
+#[test]
+fn pdftex_profile_keeps_character_tables_byte_bounded() {
+    let mut engine = boot();
+    run_tex(&mut engine, "\\catcode\"754C=11 \\end");
+
+    assert_eq!(
+        engine.eqtb.cat_code('界' as u32),
+        tex_core::token::CAT_OTHER
+    );
+    assert_eq!(engine.error_count, 1, "{}", engine.term);
+}
+
+#[test]
+fn native_active_character_definitions_preserve_unicode_identity() {
+    let mut engine = boot();
+    engine.engine_kind = EngineKind::XeTeX;
+    run_tex(
+        &mut engine,
+        &(PRE.to_string() + "\\catcode\"1F980=13 \\def🦀{OK}\\edef\\result{🦀}\\end"),
+    );
+
+    assert_eq!(
+        engine.error_count, 0,
+        "{} {:?}",
+        engine.term, engine.diagnostics
+    );
+    assert_eq!(body(&engine, b"result"), "OK");
+    let active = engine
+        .active_cs_lookup('🦀' as u32)
+        .expect("active crab id");
+    assert!(matches!(engine.eqtb.resolve(active), Some(Equiv::Macro(_))));
 }

@@ -100,7 +100,6 @@ impl Engine {
                 continue;
             };
             let prog = self.font_loader.program_for_font(&font)?;
-            let doc_font_idx = self.pdf_doc.fonts.len();
 
             let at_size = font.at_size;
             let to_units = |val: i32| -> f64 {
@@ -130,80 +129,90 @@ impl Engine {
 
             match prog.kind {
                 crate::font_program::FontProgramKind::Type1 => {
-                    let has_bindings = self.pdf_doc.legacy_bindings.contains_key(&(fid as usize));
-                    if has_bindings {
-                        let bindings = self
-                            .pdf_doc
-                            .legacy_bindings
-                            .get(&(fid as usize))
-                            .cloned()
-                            .unwrap();
-                        let pfb_bytes = prog.data.as_slice();
-                        let base_encoding = font.encoding.as_ref().cloned().or_else(|| {
-                            let type1 = crate::pdf_fonts::parse_type1(pfb_bytes);
-                            crate::pdf_fonts::builtin_encoding(&type1.data[..type1.length1])
-                        });
-                        for (b_idx, binding) in bindings.iter().enumerate() {
-                            let cur_idx = self.pdf_doc.fonts.len();
+                    let pfb_bytes = prog.data.as_slice();
+                    let base_encoding = font.encoding.as_ref().cloned().or_else(|| {
+                        let type1 = crate::pdf_fonts::parse_type1(pfb_bytes);
+                        crate::pdf_fonts::builtin_encoding(&type1.data[..type1.length1])
+                    });
+                    if let Some(bindings) =
+                        self.pdf_doc.legacy_bindings.get(&(fid as usize)).cloned()
+                    {
+                        for (binding_index, binding) in bindings.iter().enumerate() {
+                            let document_index = self.pdf_doc.fonts.len();
                             let mut used_chars = [0u64; 4];
                             let mut widths = vec![0i32; 256];
-                            let mut diffs = vec![String::new(); 256];
+                            let mut differences = vec![String::new(); 256];
                             let mut to_unicode = Vec::new();
                             for &(code, base_char, ref text) in &binding.entries {
                                 used_chars[code as usize / 64] |= 1_u64 << (code as usize % 64);
-                                let w = font.char_width(base_char);
+                                let width = font.char_width(base_char);
                                 if at_size != 0 {
-                                    widths[code as usize] =
-                                        ((w as i64 * 10_000 + at_size as i64 / 2) / at_size as i64)
-                                            as i32;
+                                    widths[code as usize] = ((width as i64 * 10_000
+                                        + at_size as i64 / 2)
+                                        / at_size as i64)
+                                        as i32;
                                 }
                                 let glyph_name = base_encoding
                                     .as_ref()
-                                    .and_then(|enc| enc.get(base_char as usize))
-                                    .filter(|name| !name.is_empty() && name.as_str() != ".notdef")
+                                    .and_then(|encoding| encoding.get(base_char as usize))
+                                    .filter(|name| {
+                                        !name.is_empty() && name.as_str() != ".notdef"
+                                    })
                                     .cloned()
                                     .ok_or_else(|| {
                                         format!(
-                                        "Font `{}` has no encoded glyph for used slot {base_char}",
-                                        font.tfm_name
-                                    )
+                                            "Font `{}` has no encoded glyph for used slot {base_char}",
+                                            font.tfm_name
+                                        )
                                     })?;
-                                diffs[code as usize] = glyph_name;
+                                differences[code as usize] = glyph_name;
                                 to_unicode.push((code, text.clone()));
                             }
-                            let mut ef = crate::pdffile::make_embed_font(
+                            let mut embedded = crate::pdffile::make_embed_font(
                                 font.map_fontname
                                     .clone()
                                     .unwrap_or_else(|| font.tfm_name.clone()),
                                 Some(pfb_bytes),
-                                Some(&diffs),
+                                Some(&differences),
                                 0,
                                 255,
                                 widths,
                             );
-                            ef.to_unicode = to_unicode;
-                            crate::pdffile::set_font_usage(&mut ef, used_chars);
-                            ef.ascent = ascent;
-                            ef.cap_height = cap_height;
-                            ef.descent = descent;
-                            ef.stem_v = stem_v;
-                            self.pdf_doc.fonts.push(ef);
-                            remap.insert(crate::pdfout::font_resource_key(fid, b_idx), cur_idx);
+                            embedded.to_unicode = to_unicode;
+                            crate::pdffile::set_font_usage(&mut embedded, used_chars);
+                            embedded.ascent = ascent;
+                            embedded.cap_height = cap_height;
+                            embedded.descent = descent;
+                            embedded.stem_v = stem_v;
+                            self.pdf_doc.fonts.push(embedded);
+                            remap.insert(
+                                crate::pdfout::FontBinding::remapped(binding_index)
+                                    .resource_key(fid),
+                                document_index,
+                            );
                         }
-                    } else {
-                        let pfb_bytes = prog.data.as_slice();
+                    }
+
+                    let raw_chars = self
+                        .pdf_doc
+                        .font_chars
+                        .get(&(fid as usize))
+                        .copied()
+                        .unwrap_or([0; 4]);
+                    if raw_chars.iter().any(|&word| word != 0) {
+                        let document_index = self.pdf_doc.fonts.len();
                         let widths = (0..=255u8)
-                            .map(|c| {
-                                let w = font.char_width(c);
+                            .map(|character| {
+                                let width = font.char_width(character);
                                 if at_size != 0 {
-                                    ((w as i64 * 10_000 + at_size as i64 / 2) / at_size as i64)
+                                    ((width as i64 * 10_000 + at_size as i64 / 2) / at_size as i64)
                                         as i32
                                 } else {
                                     0
                                 }
                             })
                             .collect();
-                        let mut ef = crate::pdffile::make_embed_font(
+                        let mut embedded = crate::pdffile::make_embed_font(
                             font.map_fontname
                                 .clone()
                                 .unwrap_or_else(|| font.tfm_name.clone()),
@@ -213,20 +222,16 @@ impl Engine {
                             255,
                             widths,
                         );
-                        crate::pdffile::set_font_usage(
-                            &mut ef,
-                            self.pdf_doc
-                                .font_chars
-                                .get(&(fid as usize))
-                                .copied()
-                                .unwrap_or([0; 4]),
+                        crate::pdffile::set_font_usage(&mut embedded, raw_chars);
+                        embedded.ascent = ascent;
+                        embedded.cap_height = cap_height;
+                        embedded.descent = descent;
+                        embedded.stem_v = stem_v;
+                        self.pdf_doc.fonts.push(embedded);
+                        remap.insert(
+                            crate::pdfout::FontBinding::RAW.resource_key(fid),
+                            document_index,
                         );
-                        ef.ascent = ascent;
-                        ef.cap_height = cap_height;
-                        ef.descent = descent;
-                        ef.stem_v = stem_v;
-                        self.pdf_doc.fonts.push(ef);
-                        remap.insert(fid as usize, doc_font_idx);
                     }
                 }
                 crate::font_program::FontProgramKind::TrueType
@@ -299,10 +304,16 @@ impl Engine {
                                 to_unicode_2byte,
                             };
                             self.pdf_doc.fonts.push(ef);
-                            remap.insert(crate::pdfout::font_resource_key(fid, b_idx), cur_idx);
+                            remap.insert(
+                                crate::pdfout::FontBinding::remapped(b_idx).resource_key(fid),
+                                cur_idx,
+                            );
                         }
                     } else {
-                        // Legacy mapped SFNT font
+                        // A legacy mapped SFNT can be painted through its
+                        // original byte encoding and through one or more
+                        // semantic remaps. Each code space needs its own PDF
+                        // dictionary even though the font program is shared.
                         let recorded_chars = self
                             .pdf_doc
                             .font_chars
@@ -310,8 +321,19 @@ impl Engine {
                             .copied()
                             .unwrap_or([0; 4]);
                         let face = prog.face()?;
-                        let bindings = self.pdf_doc.legacy_bindings.get(&(fid as usize));
-                        for b_idx in 0..bindings.map_or(1, Vec::len) {
+                        let bindings = self
+                            .pdf_doc
+                            .legacy_bindings
+                            .get(&(fid as usize))
+                            .cloned()
+                            .unwrap_or_default();
+                        let mut resource_bindings = Vec::with_capacity(bindings.len() + 1);
+                        if recorded_chars.iter().any(|&word| word != 0) {
+                            resource_bindings.push(crate::pdfout::FontBinding::RAW);
+                        }
+                        resource_bindings
+                            .extend((0..bindings.len()).map(crate::pdfout::FontBinding::remapped));
+                        for resource_binding in resource_bindings {
                             let mut used_chars = [0; 4];
                             let mut legacy_cids = Vec::new();
                             let mut used_gids = std::collections::BTreeSet::new();
@@ -333,8 +355,8 @@ impl Engine {
                                 used_chars[code as usize / 64] |= 1_u64 << (code as usize % 64);
                                 Ok(())
                             };
-                            if let Some(bindings) = bindings {
-                                for (code, slot, text) in &bindings[b_idx].entries {
+                            if let Some(index) = resource_binding.remapped_index() {
+                                for (code, slot, text) in &bindings[index].entries {
                                     add_glyph(*code, *slot, Some(text))?;
                                 }
                             } else {
@@ -348,7 +370,7 @@ impl Engine {
                                 }
                             }
 
-                            let ef = crate::pdfout::EmbedFont {
+                            let embedded = crate::pdfout::EmbedFont {
                                 obj_font: 0,
                                 base_font: base_font.clone(),
                                 font_file: prog.data.clone(),
@@ -390,11 +412,9 @@ impl Engine {
                                 used_gids,
                                 to_unicode_2byte: Vec::new(),
                             };
-                            self.pdf_doc.fonts.push(ef);
-                            remap.insert(
-                                crate::pdfout::font_resource_key(fid, b_idx),
-                                self.pdf_doc.fonts.len() - 1,
-                            );
+                            let document_index = self.pdf_doc.fonts.len();
+                            self.pdf_doc.fonts.push(embedded);
+                            remap.insert(resource_binding.resource_key(fid), document_index);
                         }
                     }
                 }

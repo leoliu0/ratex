@@ -141,7 +141,7 @@ impl Engine {
                 if !self.append_native_char(c as u32) {
                     self.append_char(c);
                 }
-                self.space_factor = self.space_factor_of(c);
+                self.space_factor = self.space_factor_of(u32::from(c));
             }
             Mode::Vertical | Mode::InternalVertical => {
                 // LaTeX \\everypar (\\g__para_standard_everypar_tl) runs
@@ -155,7 +155,7 @@ impl Engine {
             Mode::Math | Mode::DisplayMath => {
                 let mc = self.eqtb.math_code[c as usize];
                 if mc & 0x8000 != 0 {
-                    self.active_char(c);
+                    self.active_char(u32::from(c));
                 } else {
                     self.append_mathchar(mc);
                 }
@@ -168,8 +168,8 @@ impl Engine {
     /// directly; above 1000 (sentence punctuation) sets the code — but never
     /// crosses 1000 upward: after an uppercase letter (sf=999) a period
     /// yields sf=1000, i.e. NO sentence boost after capitals.
-    pub fn space_factor_of(&self, c: u8) -> i32 {
-        let main_s = self.eqtb.sf_code[c as usize] as i32;
+    pub fn space_factor_of(&self, c: u32) -> i32 {
+        let main_s = i32::from(self.eqtb.space_factor_code(c));
         if main_s == 1000 {
             1000
         } else if main_s < 1000 {
@@ -185,7 +185,7 @@ impl Engine {
         }
     }
 
-    pub fn active_char(&mut self, c: u8) {
+    pub fn active_char(&mut self, c: u32) {
         // tex.web: an active character is a control sequence whose entry
         // lives in the active region — look it up there, not in the hash
         // (where the control symbol of the same character lives).
@@ -200,7 +200,8 @@ impl Engine {
                 }
             }
             None => {
-                self.error(&format!("Undefined active character `{}'", c as char));
+                let shown = char::from_u32(c).unwrap_or(char::REPLACEMENT_CHARACTER);
+                self.error(&format!("Undefined active character `{shown}'"));
             }
             _ => {}
         }
@@ -1956,8 +1957,9 @@ impl Engine {
         for &expected in kw {
             let t = self.get_token();
             collected.push(t);
-            if !t.is_char() || (t.chr() as u8).to_ascii_lowercase() != expected.to_ascii_lowercase()
-            {
+            let matches = t.is_char()
+                && u8::try_from(t.chr()).is_ok_and(|actual| actual.eq_ignore_ascii_case(&expected));
+            if !matches {
                 for t in collected.into_iter().rev() {
                     self.push_token(t);
                 }
@@ -2150,11 +2152,49 @@ impl Engine {
     /// former and must never clobber the kernel tie in the latter). We
     /// model the separate region with collision-proof placeholder names
     /// in the shared cs table.
-    pub fn active_cs_name(c: u8) -> [u8; 7] {
-        [0xFF, 0x00, b'A', b'C', b'T', 0x00, c]
+    pub fn active_cs_name(c: u32) -> Vec<u8> {
+        debug_assert!(char::from_u32(c).is_some(), "invalid active character");
+        let mut name = vec![0xFF, 0x00, b'A', b'C', b'T'];
+        if let Ok(byte) = u8::try_from(c) {
+            name.extend_from_slice(&[0x00, byte]);
+        } else {
+            name.push(0x01);
+            name.extend_from_slice(&c.to_be_bytes());
+        }
+        name
     }
 
-    pub fn active_cs_id(&mut self, c: u8) -> CsId {
+    pub fn active_cs_scalar(name: &[u8]) -> Option<u32> {
+        if name.len() == 7 && name[..6] == [0xFF, 0x00, b'A', b'C', b'T', 0x00] {
+            return Some(u32::from(name[6]));
+        }
+        if name.len() == 10 && name[..6] == [0xFF, 0x00, b'A', b'C', b'T', 0x01] {
+            let scalar = u32::from_be_bytes(name[6..10].try_into().ok()?);
+            return char::from_u32(scalar).map(u32::from);
+        }
+        None
+    }
+
+    /// Recover the physical bytes represented by an active-character control
+    /// sequence. Byte-engine active characters retain their original byte;
+    /// Unicode active characters use their scalar's UTF-8 encoding.
+    pub(crate) fn active_cs_source_bytes(name: &[u8]) -> Option<([u8; 4], usize)> {
+        if name.len() == 7 && name[..6] == [0xFF, 0x00, b'A', b'C', b'T', 0x00] {
+            let mut bytes = [0; 4];
+            bytes[0] = name[6];
+            return Some((bytes, 1));
+        }
+        if name.len() == 10 && name[..6] == [0xFF, 0x00, b'A', b'C', b'T', 0x01] {
+            let scalar = u32::from_be_bytes(name[6..10].try_into().ok()?);
+            let character = char::from_u32(scalar)?;
+            let mut bytes = [0; 4];
+            let len = character.encode_utf8(&mut bytes).len();
+            return Some((bytes, len));
+        }
+        None
+    }
+
+    pub fn active_cs_id(&mut self, c: u32) -> CsId {
         let name = Self::active_cs_name(c);
         match self.cs.lookup(&name) {
             Some(id) => id,
@@ -2162,7 +2202,7 @@ impl Engine {
         }
     }
 
-    pub fn active_cs_lookup(&self, c: u8) -> Option<CsId> {
+    pub fn active_cs_lookup(&self, c: u32) -> Option<CsId> {
         self.cs.lookup(&Self::active_cs_name(c))
     }
 
@@ -2336,7 +2376,10 @@ impl Engine {
         // vertical list. Treating it as an abandoned paragraph destroyed
         // the float markers, stranding the box in `\@currlist` and ending
         // in `Float(s) lost` at the next clearpage.
-        let has_content = !self.cur_list.is_empty();
+        let has_content = self.cur_list.iter().any(|n| match n {
+            Node::Glue(_) | Node::Kern(_) | Node::ExplicitKern(_) | Node::Penalty(_) => false,
+            _ => true,
+        });
 
         if !has_content {
             self.cur_list.clear();

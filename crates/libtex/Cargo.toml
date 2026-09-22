@@ -8,4 +8,5 @@ name = "tex"
 crate-type = ["cdylib", "staticlib", "rlib"]
 
 [dependencies]
+dlmalloc = { workspace = true }
 tex-runtime = { path = "../tex-runtime" }

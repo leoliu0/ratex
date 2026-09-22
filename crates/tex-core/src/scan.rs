@@ -2,7 +2,7 @@
 //! \meaning, general text.
 
 use crate::boxes::Glue;
-use crate::engine::{Engine, PhysicalTokenSource};
+use crate::engine::{Engine, EngineKind, PhysicalTokenSource};
 use crate::eqtb::Equiv;
 use crate::input::{SourceContext, SourceMark};
 use crate::prim::{DimParam, IntParam, Prim};
@@ -24,6 +24,14 @@ enum NumericOrigin {
 }
 use crate::scaled::{mult, ONE};
 use crate::token::Token;
+
+fn ascii_character(token: Token) -> Option<u8> {
+    token
+        .is_char()
+        .then(|| u8::try_from(token.chr()).ok())
+        .flatten()
+        .filter(u8::is_ascii)
+}
 
 fn font_character_code_primitive(primitive: Prim) -> &'static str {
     match primitive {
@@ -268,7 +276,7 @@ impl Engine {
     }
 
     fn is_digit_token(t: Token) -> bool {
-        t.is_char() && (b'0'..=b'9').contains(&(t.chr() as u8)) && t.cc() == 12
+        t.cc() == 12 && ascii_character(t).is_some_and(|c| c.is_ascii_digit())
     }
 
     /// TeX scan_int: signs, digits (dec/oct/hex), char consts, cs values.
@@ -383,7 +391,14 @@ impl Engine {
                     }
                 } else if t2.is_cs() {
                     let name = self.cs.name(t2.cs_id());
-                    v = name.first().copied().unwrap_or(0) as i64;
+                    v = if self.engine_kind == EngineKind::PdfTeX {
+                        name.first().copied().unwrap_or(0) as i64
+                    } else {
+                        std::str::from_utf8(name)
+                            .ok()
+                            .and_then(|name| name.chars().next())
+                            .map_or(0, |character| character as i64)
+                    };
                 } else {
                     self.error("Missing character after `");
                     v = 0;
@@ -402,7 +417,7 @@ impl Engine {
             }
             if t.is_cs() {
                 match self.cur_prim {
-                    Some(Prim::Count) => {
+                    Some(Prim::Count | Prim::Attribute) => {
                         let idx = self.scan_reg_num();
                         v = self.eqtb.count[idx as usize] as i64;
                         break 'scan_loop;
@@ -424,32 +439,32 @@ impl Engine {
                         break 'scan_loop;
                     }
                     Some(Prim::CatCode) => {
-                        let c = self.scan_character_table_index("\\catcode");
-                        v = self.eqtb.cat[c] as i64;
+                        let c = self.scan_profile_character_code("\\catcode");
+                        v = i64::from(self.eqtb.cat_code(c));
                         break 'scan_loop;
                     }
                     Some(Prim::MathCode) => {
-                        let c = self.scan_character_table_index("\\mathcode");
-                        v = self.eqtb.math_code[c] as i64;
+                        let c = self.scan_profile_character_code("\\mathcode");
+                        v = i64::from(self.eqtb.math_code_for(c));
                         break 'scan_loop;
                     }
                     Some(Prim::DelCode) => {
-                        let c = self.scan_character_table_index("\\delcode");
-                        v = self.eqtb.del_code[c] as i64;
+                        let c = self.scan_profile_character_code("\\delcode");
+                        v = self.eqtb.delimiter_code_for(c);
                         break 'scan_loop;
                     }
                     Some(Prim::LcCodeP) => {
-                        let c = self.scan_unicode_character_code("\\lccode");
+                        let c = self.scan_profile_character_code("\\lccode");
                         v = self.eqtb.case_code(c, false) as i64;
                         break 'scan_loop;
                     }
                     Some(Prim::SfCodeP) => {
-                        let c = self.scan_character_table_index("\\sfcode");
-                        v = self.eqtb.sf_code[c] as i64;
+                        let c = self.scan_profile_character_code("\\sfcode");
+                        v = i64::from(self.eqtb.space_factor_code(c));
                         break 'scan_loop;
                     }
                     Some(Prim::UcCodeP) => {
-                        let c = self.scan_unicode_character_code("\\uccode");
+                        let c = self.scan_profile_character_code("\\uccode");
                         v = self.eqtb.case_code(c, true) as i64;
                         break 'scan_loop;
                     }
@@ -618,6 +633,42 @@ impl Engine {
                     }
                     Some(Prim::PdfXImageBBox) => {
                         v = self.scan_pdf_ximage_bbox() as i64;
+                        break 'scan_loop;
+                    }
+                    Some(Prim::XeTeXCharClass) => {
+                        v = self.scan_xetex_charclass_val() as i64;
+                        break 'scan_loop;
+                    }
+                    Some(
+                        p @ (Prim::XeTeXVersion
+                        | Prim::XeTeXFontType
+                        | Prim::XeTeXCountGlyphs
+                        | Prim::XeTeXGlyphIndex
+                        | Prim::XeTeXCharGlyph
+                        | Prim::XeTeXGlyphBounds
+                        | Prim::XeTeXUseGlyphMetrics
+                        | Prim::XeTeXInterCharTokenState
+                        | Prim::XeTeXCountFeatures
+                        | Prim::XeTeXFeatureCode
+                        | Prim::XeTeXCountVariations
+                        | Prim::XeTeXVariation
+                        | Prim::XeTeXInputNormalization
+                        | Prim::XeTeXGenerateActualText
+                        | Prim::XeTeXDashBreakState),
+                    ) => {
+                        v = self.scan_xetex_int_query(p) as i64;
+                        break 'scan_loop;
+                    }
+                    Some(Prim::LuaTeXVersion) => {
+                        v = 124;
+                        break 'scan_loop;
+                    }
+                    Some(Prim::OutputMode) => {
+                        v = 1;
+                        break 'scan_loop;
+                    }
+                    Some(Prim::CatCodeTable) => {
+                        v = self.cur_catcode_table as i64;
                         break 'scan_loop;
                     }
                     Some(Prim::Skip) => {
@@ -901,8 +952,21 @@ impl Engine {
         }
     }
 
-    fn scan_character_table_index(&mut self, command: &str) -> usize {
-        self.scan_character_code(command) as usize
+    pub(crate) fn valid_profile_character_code(&self, character: i32) -> Option<u32> {
+        if self.engine_kind == EngineKind::PdfTeX {
+            u8::try_from(character).ok().map(u32::from)
+        } else {
+            u32::try_from(character)
+                .ok()
+                .filter(|&scalar| char::from_u32(scalar).is_some())
+        }
+    }
+    pub(crate) fn scan_profile_character_code(&mut self, command: &str) -> u32 {
+        if self.engine_kind == EngineKind::PdfTeX {
+            u32::from(self.scan_character_code(command))
+        } else {
+            self.scan_unicode_character_code(command)
+        }
     }
 
     pub(crate) fn scan_math_family(&mut self, command: &str) -> usize {
@@ -928,6 +992,15 @@ impl Engine {
         let r = self.scan_dimen_inner(mu, trail);
         self.in_expanded_scan = prev;
         r
+    }
+
+    fn scan_math_style_param(&mut self) {
+        self.skip_spaces_relax();
+        let tok = self.get_token();
+        if tok.is_char() && tok.chr() >= u32::from(b'0') && tok.chr() <= u32::from(b'9') {
+            self.push_token(tok);
+            let _ = self.scan_int();
+        }
     }
 
     fn scan_dimen_inner(&mut self, mu: bool, _trail: bool) -> i32 {
@@ -1157,7 +1230,25 @@ impl Engine {
                     frac_f = 0;
                     direct = Some(self.scan_pdf_ximage_bbox());
                 }
-                Some(Prim::Count) => {
+                Some(Prim::Umathfractiondelsize) => {
+                    self.scan_math_style_param();
+                    int_part = 1;
+                    frac_f = 0;
+                    direct = Some(20 * 65536);
+                }
+                Some(Prim::Umathstacknumup | Prim::Umathstackdenomdown) => {
+                    self.scan_math_style_param();
+                    int_part = 1;
+                    frac_f = 0;
+                    direct = Some(6 * 65536);
+                }
+                Some(Prim::Umathstackvgap) => {
+                    self.scan_math_style_param();
+                    int_part = 1;
+                    frac_f = 0;
+                    direct = Some(2 * 65536);
+                }
+                Some(Prim::Count | Prim::Attribute) => {
                     // internal integer coerced to dimen (sp), tex.web scan_something_internal
                     let i = self.scan_reg_num();
                     int_part = self.eqtb.count[i as usize] as i64;
@@ -1289,7 +1380,14 @@ impl Engine {
         self.skip_spaces_relax();
         let t = self.get_token();
         if t.is_cs() {
-            match self.eqtb.resolve(t.cs_id()).cloned() {
+            let equiv = self.eqtb.resolve(t.cs_id()).cloned();
+            if let Some(value) = equiv.as_ref().and_then(|equiv| self.eqtb.int_of(equiv)) {
+                // tex.web scan_dimen: every internal integer accepted here
+                // denotes that many scaled points. This includes chardef and
+                // mathchardef constants as well as count-register aliases.
+                return UnitKind::InternalSp(i64::from(value));
+            }
+            match equiv {
                 Some(Equiv::Prim(Prim::GlueP(p))) => {
                     return UnitKind::InternalSp(
                         self.eqtb.glue_params[p.idx() as usize].width as i64,
@@ -1358,7 +1456,7 @@ impl Engine {
                 Some(Equiv::DimenReg(i)) => {
                     return UnitKind::InternalSp(self.eqtb.dimen[i as usize] as i64);
                 }
-                Some(Equiv::Prim(Prim::Count)) => {
+                Some(Equiv::Prim(Prim::Count | Prim::Attribute)) => {
                     let i = self.scan_reg_num();
                     UnitKind::InternalSp(self.eqtb.count[i as usize] as i64)
                 }
@@ -1379,13 +1477,13 @@ impl Engine {
                 }
             }
         } else if t.is_char() {
-            if (t.chr() as u8).to_ascii_lowercase() == b't' {
+            if ascii_character(t).is_some_and(|c| c.eq_ignore_ascii_case(&b't')) {
                 let t2 = self.get_token();
-                if t2.is_char() && (t2.chr() as u8).to_ascii_lowercase() == b'r' {
+                if ascii_character(t2).is_some_and(|c| c.eq_ignore_ascii_case(&b'r')) {
                     let t3 = self.get_token();
-                    if t3.is_char() && (t3.chr() as u8).to_ascii_lowercase() == b'u' {
+                    if ascii_character(t3).is_some_and(|c| c.eq_ignore_ascii_case(&b'u')) {
                         let t4 = self.get_token();
-                        if t4.is_char() && (t4.chr() as u8).to_ascii_lowercase() == b'e' {
+                        if ascii_character(t4).is_some_and(|c| c.eq_ignore_ascii_case(&b'e')) {
                             self.skip_spaces();
                             return self.scan_unit_d(mu, depth + 1);
                         } else {
@@ -1406,9 +1504,14 @@ impl Engine {
                 "pt", "in", "pc", "cm", "mm", "bp", "dd", "cc", "sp", "em", "ex", "px", "mu",
                 "fil", "fill", "filll",
             ];
-            let mut kw: Vec<u8> = vec![t.chr() as u8];
+            let Some(first) = ascii_character(t) else {
+                self.push_token(t);
+                self.error("Illegal unit of measure (pt inserted).");
+                return UnitKind::Ratio(1, 1);
+            };
+            let mut kw: Vec<u8> = vec![first];
             let mut cur = String::new();
-            cur.push((t.chr() as u8).to_ascii_lowercase() as char);
+            cur.push(first.to_ascii_lowercase() as char);
             if kw[0].is_ascii_alphabetic() {
                 while kw.len() < 5 {
                     let can_extend = UNITS
@@ -1418,9 +1521,9 @@ impl Engine {
                         break;
                     }
                     let t2 = self.get_token();
-                    if t2.is_char() && (t2.chr() as u8).is_ascii_alphabetic() {
-                        kw.push(t2.chr() as u8);
-                        cur.push((t2.chr() as u8).to_ascii_lowercase() as char);
+                    if let Some(character) = ascii_character(t2).filter(u8::is_ascii_alphabetic) {
+                        kw.push(character);
+                        cur.push(character.to_ascii_lowercase() as char);
                     } else {
                         self.push_token(t2);
                         break;
@@ -1532,15 +1635,14 @@ impl Engine {
             }
             let t = self.get_token();
             let mut matched = false;
-            if t.is_char() {
-                let c = (t.chr() as u8).to_ascii_lowercase();
+            if let Some(c) = ascii_character(t).map(|c| c.to_ascii_lowercase()) {
                 if c == kw[0] {
                     let mut kt: Vec<Token> = Vec::new();
                     let mut all = true;
                     for &k in &kw[1..] {
                         let tx = self.get_token();
                         kt.push(tx);
-                        if !(tx.is_char() && (tx.chr() as u8).to_ascii_lowercase() == k) {
+                        if !ascii_character(tx).is_some_and(|c| c.to_ascii_lowercase() == k) {
                             all = false;
                             break;
                         }
@@ -1579,7 +1681,7 @@ impl Engine {
         let mut order = 1u8;
         loop {
             let t = self.get_token();
-            if t.is_char() && (t.chr() as u8) == b'l' && order < 3 {
+            if ascii_character(t) == Some(b'l') && order < 3 {
                 order += 1;
             } else {
                 self.push_token(t);
@@ -1591,9 +1693,8 @@ impl Engine {
     pub fn scan_relational(&mut self) -> u8 {
         self.skip_spaces_relax();
         let t = self.get_x_raw_keep_cond();
-        if t.is_char() {
-            let c = t.chr() as u8;
-            if c == b'<' || c == b'=' || c == b'>' {
+        if let Some(c) = ascii_character(t) {
+            if matches!(c, b'<' | b'=' | b'>') {
                 return c;
             }
         }
@@ -1779,7 +1880,7 @@ impl Engine {
                 self.csname_depth = prev_csname_depth;
                 return out;
             }
-            out.push(t);
+            out.push(self.unfreeze_input_token(t));
         }
     }
 
@@ -1923,7 +2024,7 @@ impl Engine {
             Some(Prim::PdfElapsedTime) => {
                 emit_the!(b"0");
             }
-            Some(Prim::Count) => {
+            Some(Prim::Count | Prim::Attribute) => {
                 let idx = self.scan_reg_num();
                 emit_the!(self.eqtb.count[idx as usize].to_string().as_bytes());
             }
@@ -1945,27 +2046,27 @@ impl Engine {
                 emit_the_toks!(toks);
             }
             Some(Prim::CatCode) => {
-                let c = self.scan_character_table_index("\\catcode");
-                emit_the!(self.eqtb.cat[c].to_string().as_bytes());
+                let c = self.scan_profile_character_code("\\catcode");
+                emit_the!(self.eqtb.cat_code(c).to_string().as_bytes());
             }
             Some(Prim::MathCode) => {
-                let c = self.scan_character_table_index("\\mathcode");
-                emit_the!(self.eqtb.math_code[c].to_string().as_bytes());
+                let c = self.scan_profile_character_code("\\mathcode");
+                emit_the!(self.eqtb.math_code_for(c).to_string().as_bytes());
             }
             Some(Prim::DelCode) => {
-                let c = self.scan_character_table_index("\\delcode");
-                emit_the!(self.eqtb.del_code[c].to_string().as_bytes());
+                let c = self.scan_profile_character_code("\\delcode");
+                emit_the!(self.eqtb.delimiter_code_for(c).to_string().as_bytes());
             }
             Some(Prim::LcCodeP) => {
-                let c = self.scan_unicode_character_code("\\lccode");
+                let c = self.scan_profile_character_code("\\lccode");
                 emit_the!(self.eqtb.case_code(c, false).to_string().as_bytes());
             }
             Some(Prim::SfCodeP) => {
-                let c = self.scan_character_table_index("\\sfcode");
-                emit_the!(self.eqtb.sf_code[c].to_string().as_bytes());
+                let c = self.scan_profile_character_code("\\sfcode");
+                emit_the!(self.eqtb.space_factor_code(c).to_string().as_bytes());
             }
             Some(Prim::UcCodeP) => {
-                let c = self.scan_unicode_character_code("\\uccode");
+                let c = self.scan_profile_character_code("\\uccode");
                 emit_the!(self.eqtb.case_code(c, true).to_string().as_bytes());
             }
             Some(
@@ -2006,6 +2107,18 @@ impl Engine {
                 let f = self.scan_font_id() as usize;
                 let v = self.test_no_ligatures(f as u16);
                 emit_the!(v.to_string().as_bytes());
+            }
+            Some(Prim::Umathfractiondelsize) => {
+                self.scan_math_style_param();
+                emit_the!(b"20.0pt");
+            }
+            Some(Prim::Umathstacknumup | Prim::Umathstackdenomdown) => {
+                self.scan_math_style_param();
+                emit_the!(b"6.0pt");
+            }
+            Some(Prim::Umathstackvgap) => {
+                self.scan_math_style_param();
+                emit_the!(b"2.0pt");
             }
             Some(
                 p @ (Prim::EfCode
@@ -2109,6 +2222,54 @@ impl Engine {
             }
             Some(Prim::PdfPagesAttr) => {
                 emit_the_toks!(self.pdf_pages_attr_toks.clone());
+            }
+            Some(Prim::XeTeXVersion) => {
+                emit_the!(b"0");
+            }
+            Some(Prim::XeTeXRevision) => {
+                emit_the!(b".999998");
+            }
+            Some(Prim::LuaTeXVersion) => {
+                emit_the!(b"124");
+            }
+            Some(Prim::LuaTeXRevision) => {
+                emit_the!(b"0");
+            }
+            Some(Prim::LuaTeXBanner) => {
+                emit_the!(b"This is LuaTeX, Version 1.24.0");
+            }
+            Some(Prim::OutputMode) => {
+                emit_the!(b"1");
+            }
+            Some(Prim::CatCodeTable) => {
+                emit_the!(self.cur_catcode_table.to_string().as_bytes());
+            }
+            Some(Prim::XeTeXCharClass) => {
+                let v = self.scan_xetex_charclass_val();
+                emit_the!(v.to_string().as_bytes());
+            }
+            Some(Prim::XeTeXInterCharToks) => {
+                let toks = self.scan_xetex_interchartoks_the();
+                emit_the_toks!(toks);
+            }
+            Some(
+                p @ (Prim::XeTeXFontType
+                | Prim::XeTeXCountGlyphs
+                | Prim::XeTeXGlyphIndex
+                | Prim::XeTeXCharGlyph
+                | Prim::XeTeXGlyphBounds
+                | Prim::XeTeXUseGlyphMetrics
+                | Prim::XeTeXInterCharTokenState
+                | Prim::XeTeXCountFeatures
+                | Prim::XeTeXFeatureCode
+                | Prim::XeTeXCountVariations
+                | Prim::XeTeXVariation
+                | Prim::XeTeXInputNormalization
+                | Prim::XeTeXGenerateActualText
+                | Prim::XeTeXDashBreakState),
+            ) => {
+                let v = self.scan_xetex_int_query(p);
+                emit_the!(v.to_string().as_bytes());
             }
             Some(Prim::Dimen) => {
                 let idx = self.scan_reg_num();
@@ -2285,7 +2446,7 @@ impl Engine {
             // \meaning reports its eqtb binding (\meaning~ → macro:->…);
             // only a truly unbound one falls back, as "undefined".
             if cat == 13 {
-                return match self.active_cs_lookup(c as u8) {
+                return match self.active_cs_lookup(c) {
                     Some(id) if self.eqtb.resolve(id).is_some() => {
                         self.meaning_of(Token::from_cs(id))
                     }

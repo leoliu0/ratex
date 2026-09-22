@@ -1,0 +1,148 @@
+use crate::{
+    LuaProto,
+    gc::UpvaluePtr,
+    lua_value::{UpvalueDesc, UpvalueStore},
+    lua_vm::{LuaResult, LuaState},
+};
+
+/// Handle OP_CLOSURE instruction
+/// Create a closure from prototype Bx and store in R[A]
+///
+/// Based on lvm.c:1929-1934 and pushclosure (lvm.c:834-849)
+pub fn push_closure(
+    lua_state: &mut LuaState,
+    base: usize,
+    a: usize,
+    bx: usize,
+    current_chunk: &LuaProto,
+    parent_upvalues: &[UpvaluePtr],
+) -> LuaResult<()> {
+    // Get child prototype
+    if bx >= current_chunk.child_protos.len() {
+        return Err(lua_state.error(format!(
+            "corrupt bytecode: closure prototype index {} out of range",
+            bx
+        )));
+    }
+    let proto = current_chunk.child_protos[bx];
+
+    // Get upvalue descriptors
+    let upvalue_descs = &proto.as_ref().data.upvalue_descs;
+    let num_upvalues = upvalue_descs.len();
+
+    // Build UpvalueStore — avoid heap allocation for 0-1 upvalues
+    let upvalue_store = match num_upvalues {
+        0 => UpvalueStore::Empty,
+        1 => {
+            let uv = resolve_upvalue(lua_state, base, &upvalue_descs[0], parent_upvalues)?;
+            UpvalueStore::One(uv)
+        }
+        _ => {
+            let mut upvalue_vec = Vec::with_capacity(num_upvalues);
+            for desc in upvalue_descs {
+                upvalue_vec.push(resolve_upvalue(lua_state, base, desc, parent_upvalues)?);
+            }
+            UpvalueStore::Many(upvalue_vec.into_boxed_slice())
+        }
+    };
+
+    if lua_state.global_state().language() == crate::LuaLanguageLevel::Lua53
+        && let Some(cached) = lua_state
+            .global_state()
+            .closure_cache53
+            .get(&proto)
+            .copied()
+        && cached.as_ref().data.upvalues() == upvalue_store.as_slice()
+    {
+        lua_state.stack_mut()[base + a] = crate::LuaValue::function(cached);
+        return Ok(());
+    }
+
+    // Create the function with the proto and upvalues.
+    let closure_value = lua_state.create_function(proto, upvalue_store)?;
+    if lua_state.global_state().language() == crate::LuaLanguageLevel::Lua53 {
+        let closure_ptr = closure_value
+            .as_function_ptr()
+            .expect("create_function must return a Lua closure");
+        lua_state
+            .global_state_mut()
+            .closure_cache53
+            .insert(proto, closure_ptr);
+    }
+
+    lua_state.stack_mut()[base + a] = closure_value;
+    Ok(())
+}
+
+/// Resolve a single upvalue from its descriptor
+#[inline]
+fn resolve_upvalue(
+    lua_state: &mut LuaState,
+    base: usize,
+    desc: &UpvalueDesc,
+    parent_upvalues: &[UpvaluePtr],
+) -> LuaResult<UpvaluePtr> {
+    if desc.is_local {
+        let stack_index = base + desc.index as usize;
+        lua_state.find_or_create_upvalue(stack_index)
+    } else {
+        let parent_idx = desc.index as usize;
+        if parent_idx >= parent_upvalues.len() {
+            return Err(lua_state.error(format!(
+                "corrupt bytecode: closure upvalue index {} out of range",
+                parent_idx
+            )));
+        }
+        Ok(parent_upvalues[parent_idx])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::SafeOption;
+    use crate::lua_value::LuaProto;
+    use crate::lua_vm::{GlobalState, LuaError};
+
+    #[test]
+    fn invalid_closure_proto_index_sets_fresh_error_message() {
+        let mut vm = GlobalState::new(SafeOption::default());
+        let state = vm.main_state();
+
+        let err = push_closure(state, 0, 0, 0, &LuaProto::new(), &[]).unwrap_err();
+        let msg = state.get_error_msg(err);
+
+        assert_eq!(err, LuaError::RuntimeError);
+        assert!(
+            msg.contains("closure prototype index 0 out of range"),
+            "{msg}"
+        );
+    }
+
+    #[test]
+    fn invalid_closure_upvalue_index_sets_fresh_error_message() {
+        let mut vm = GlobalState::new(SafeOption::default());
+
+        let mut child = LuaProto::new();
+        child.upvalue_descs.push(UpvalueDesc {
+            name: "uv0".to_string(),
+            is_local: false,
+            index: 0,
+        });
+
+        let child_ptr = vm.create_proto(child).unwrap();
+
+        let mut parent = LuaProto::new();
+        parent.child_protos.push(child_ptr);
+
+        let state = vm.main_state();
+        let err = push_closure(state, 0, 0, 0, &parent, &[]).unwrap_err();
+        let msg = state.get_error_msg(err);
+
+        assert_eq!(err, LuaError::RuntimeError);
+        assert!(
+            msg.contains("closure upvalue index 0 out of range"),
+            "{msg}"
+        );
+    }
+}

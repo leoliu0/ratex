@@ -1157,8 +1157,8 @@ impl<'a> RenderCtx<'a> {
         }
     }
 
-    fn ensure_font(&mut self, f: u16, binding: usize) -> u16 {
-        let f = crate::pdfout::font_resource_key(f, binding);
+    fn ensure_font(&mut self, f: u16, binding: crate::pdfout::FontBinding) -> u16 {
+        let f = binding.resource_key(f);
         if self.cur_font == f && self.cur_pdf_font != 0 {
             return self.cur_pdf_font;
         }
@@ -1277,7 +1277,7 @@ impl<'a> RenderCtx<'a> {
     }
 
     /// pdfTeX `pdf_set_font`: dedup on (resource number, font size).
-    fn set_font(&mut self, f: u16, binding: usize) {
+    fn set_font(&mut self, f: u16, binding: crate::pdfout::FontBinding) {
         self.pdf_f = f;
         let at_size_sp = self
             .eng
@@ -1342,13 +1342,20 @@ impl<'a> RenderCtx<'a> {
     /// `ratio` is the effective auto-expand ratio in thousandths: for a real
     /// font it is `get_font_auto_expand_ratio(f)`; a VF glyph recursed with
     /// an inherited ratio from its expanded wrapper carries it explicitly.
-    fn begin_string(&mut self, cur_h: i64, cur_v: i64, f: u16, binding: usize, ratio: i32) {
+    fn begin_string(
+        &mut self,
+        cur_h: i64,
+        cur_v: i64,
+        f: u16,
+        binding: crate::pdfout::FontBinding,
+        ratio: i32,
+    ) {
         let mut must_set_text_pos = false;
         if !self.doing_text {
             self.begin_text();
             must_set_text_pos = true;
         }
-        if self.pdf_f != f || self.cur_font != crate::pdfout::font_resource_key(f, binding) {
+        if self.pdf_f != f || self.cur_font != binding.resource_key(f) {
             self.end_string();
             self.set_font(f, binding);
         }
@@ -1584,9 +1591,6 @@ impl<'a> RenderCtx<'a> {
     /// canonical state machine requires), print the char, advance the raster.
     fn emit_char_sp(&mut self, f: u16, c: u8, x_sp: i64, v_sp: i64, inherited_ratio: i32) {
         let text = self.cjk_text;
-        if text.is_some() {
-            self.cjk_text = Some('\u{00A0}');
-        }
         self.emit_char_sp_with_text(f, c, x_sp, v_sp, inherited_ratio, text);
     }
 
@@ -1695,9 +1699,23 @@ impl<'a> RenderCtx<'a> {
             return;
         }
         if let Some(ch) = logical_ch {
-            let mut utf8 = [0; 4];
-            self.emit_cjk_char_sp(f, c, x_sp, v_sp, ratio, ch.encode_utf8(&mut utf8));
-            return;
+            let is_cjk_font = self.eng.eqtb.fonts.get(f as usize).is_some_and(|font| {
+                font.tfm_name.starts_with("ud")
+                    || font.tfm_name.starts_with("ipx")
+                    || font.tfm_name.starts_with("cjk")
+                    || font.tfm_name.starts_with("song")
+                    || font.tfm_name.starts_with("hei")
+                    || font.tfm_name.starts_with("kai")
+                    || font.tfm_name.starts_with("fs")
+                    || font.encoding.as_ref().is_some_and(|e| e.iter().any(|s| s.starts_with("uni") || s.starts_with("u")))
+                    || self.eng.font_loader.program_for_font(font).is_ok_and(|p| p.kind != crate::font_program::FontProgramKind::Type1)
+            });
+            if is_cjk_font {
+                let mut utf8 = [0; 4];
+                self.emit_cjk_char_sp(f, c, x_sp, v_sp, ratio, ch.encode_utf8(&mut utf8));
+                self.cjk_text = None;
+                return;
+            }
         }
         let base_f = self
             .eng
@@ -1714,7 +1732,7 @@ impl<'a> RenderCtx<'a> {
             }
         };
         self.eng.pdf_doc.record_font_char(base_f as usize, c);
-        self.begin_string(x_sp, v_sp, f, 0, ratio);
+        self.begin_string(x_sp, v_sp, f, crate::pdfout::FontBinding::RAW, ratio);
         push_pdf_char(&mut self.content, c);
         self.adv_char_width(f, advance);
         let x_bp = sp_to_bp(x_sp);
@@ -1756,14 +1774,21 @@ impl<'a> RenderCtx<'a> {
         }
     }
 
-    fn begin_hex_string(&mut self, cur_h: i64, cur_v: i64, f: u16, binding: usize, ratio: i32) {
+    fn begin_hex_string(
+        &mut self,
+        cur_h: i64,
+        cur_v: i64,
+        f: u16,
+        binding: crate::pdfout::FontBinding,
+        ratio: i32,
+    ) {
         let mut must_set_text_pos = false;
         if !self.doing_text {
             self.begin_text();
             must_set_text_pos = true;
         }
         if self.pdf_f != f
-            || self.cur_font != crate::pdfout::font_resource_key(f, binding)
+            || self.cur_font != binding.resource_key(f)
             || (self.doing_string && !self.doing_hex_string)
         {
             self.end_string();
@@ -2339,8 +2364,8 @@ impl<'a> RenderCtx<'a> {
                     self.close_link(fr);
                 }
             }
-            Special(_) => {
-                // DVI \special has no direct PDF meaning; ignored
+            Special(s) => {
+                self.handle_special(s, cur_h, cur_v);
             }
             SavePos { .. } => {
                 // position is relative to the page edges, in sp
@@ -2375,6 +2400,69 @@ impl<'a> RenderCtx<'a> {
                 self.cjk_text = *text;
             }
             _ => {}
+        }
+    }
+    fn handle_special(&mut self, text: &str, _cur_h: i64, _cur_v: i64) {
+        use std::fmt::Write;
+        let trimmed = text.trim();
+        if let Some(content) = trimmed
+            .strip_prefix("pdf:literal")
+            .or_else(|| trimmed.strip_prefix("pdf:code"))
+        {
+            let payload = content.trim();
+            let payload = payload.strip_prefix("direct").unwrap_or(payload).trim();
+            self.end_text();
+            self.content.push_str(payload);
+            self.content.push('\n');
+        } else if let Some(spec) = trimmed.strip_prefix("color push") {
+            let spec = spec.trim();
+            self.end_text();
+            if let Some(rest) = spec.strip_prefix("rgb") {
+                let parts: Vec<&str> = rest.split_whitespace().collect();
+                if parts.len() >= 3 {
+                    let _ = writeln!(
+                        self.content,
+                        "{} {} {} rg {} {} {} RG",
+                        parts[0], parts[1], parts[2], parts[0], parts[1], parts[2]
+                    );
+                }
+            } else if let Some(rest) = spec.strip_prefix("gray") {
+                let g = rest.trim();
+                let _ = writeln!(self.content, "{g} g {g} G");
+            } else if let Some(rest) = spec.strip_prefix("cmyk") {
+                let parts: Vec<&str> = rest.split_whitespace().collect();
+                if parts.len() >= 4 {
+                    let _ = writeln!(
+                        self.content,
+                        "{} {} {} {} k {} {} {} {} K",
+                        parts[0], parts[1], parts[2], parts[3], parts[0], parts[1], parts[2], parts[3]
+                    );
+                }
+            }
+        } else if trimmed == "color pop" {
+            self.end_text();
+            self.content.push_str("0 g 0 G\n");
+        } else if let Some(rest) = trimmed.strip_prefix("x:scale") {
+            let parts: Vec<&str> = rest.split_whitespace().collect();
+            if parts.len() >= 2 {
+                let sx: f64 = parts[0].parse().unwrap_or(1.0);
+                let sy: f64 = parts[1].parse().unwrap_or(1.0);
+                self.end_text();
+                let _ = writeln!(self.content, "{sx:.4} 0 0 {sy:.4} 0 0 cm");
+            }
+        } else if let Some(rest) = trimmed.strip_prefix("x:rotate") {
+            let deg: f64 = rest.trim().parse().unwrap_or(0.0);
+            let rad = deg.to_radians();
+            let cos = rad.cos();
+            let sin = rad.sin();
+            self.end_text();
+            let _ = writeln!(self.content, "{cos:.4} {sin:.4} {:.4} {cos:.4} 0 0 cm", -sin);
+        } else if trimmed == "x:gsave" {
+            self.end_text();
+            self.content.push_str("q\n");
+        } else if trimmed == "x:grestore" {
+            self.end_text();
+            self.content.push_str("Q\n");
         }
     }
 }

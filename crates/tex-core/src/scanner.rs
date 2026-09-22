@@ -6,7 +6,7 @@
 //! `line_peek() == None`. State: 0 = new line (N), 1 = mid line (M),
 //! 2 = skip spaces (S).
 
-use crate::engine::{Engine, PhysicalTokenSource};
+use crate::engine::{Engine, EngineKind, PhysicalTokenSource};
 use crate::input::{physical_line_bounds, Source, EOF_MARKER, PAR_END};
 use crate::token::*;
 
@@ -108,6 +108,49 @@ impl Engine {
         }
     }
 
+    /// Decode one source character for Unicode engines while preserving
+    /// pdfTeX's byte-oriented input contract.
+    fn file_line_peek_scalar(&self, si: usize) -> Option<(u32, usize)> {
+        let Source::File {
+            line_buf: Some(buf),
+            line_pos,
+            ..
+        } = self.input.stack.get(si)?
+        else {
+            return None;
+        };
+        let first = *buf.get(*line_pos)?;
+        if self.engine_kind == EngineKind::PdfTeX || first.is_ascii() {
+            return Some((u32::from(first), 1));
+        }
+        let width = match first {
+            0xC2..=0xDF => 2,
+            0xE0..=0xEF => 3,
+            0xF0..=0xF4 => 4,
+            _ => return Some((u32::from(first), 1)),
+        };
+        let Some(end) = line_pos.checked_add(width) else {
+            return Some((u32::from(first), 1));
+        };
+        let Some(bytes) = buf.get(*line_pos..end) else {
+            return Some((u32::from(first), 1));
+        };
+        let Ok(text) = std::str::from_utf8(bytes) else {
+            return Some((u32::from(first), 1));
+        };
+        let character = text
+            .chars()
+            .next()
+            .expect("a nonempty UTF-8 slice has one character");
+        Some((character as u32, width))
+    }
+
+    fn file_line_advance_by(&mut self, si: usize, width: usize) {
+        if let Some(Source::File { line_pos, .. }) = self.input.stack.get_mut(si) {
+            *line_pos += width;
+        }
+    }
+
     fn file_line_clear(&mut self, si: usize) {
         if let Some(Source::File {
             line_buf,
@@ -193,28 +236,28 @@ impl Engine {
                     // \nfss@catcodes sets ^^M to 9 for .fd files) yields no
                     // token. Spaces-only lines count as blank.
                     let mut any = false;
-                    while let Some(b) = self.file_line_peek(si) {
-                        let cat = self.eqtb.cat[b as usize];
+                    while let Some((character, width)) = self.file_line_peek_scalar(si) {
+                        let cat = self.eqtb.cat_code(character);
                         if cat == CAT_SPACE || cat == CAT_IGNORED {
-                            self.file_line_advance(si);
+                            self.file_line_advance_by(si, width);
                             continue;
                         }
                         any = true;
                         break;
                     }
-                    if !any && self.file_line_peek(si).is_none() {
+                    if !any && self.file_line_peek_scalar(si).is_none() {
                         let el =
                             self.eqtb.int_params[crate::prim::IntParam::EndLineChar.idx() as usize];
                         self.file_line_clear(si);
                         if !(0..=255).contains(&el) {
                             continue;
                         }
-                        let cat = self.eqtb.cat[el as usize];
+                        let cat = self.eqtb.cat_code(el as u32);
                         match cat {
                             CAT_EOL => return Some(PAR_END),
                             CAT_SPACE | CAT_COMMENT | CAT_IGNORED => continue,
                             CAT_INVALID => {
-                                self.invalid_character_error(si, el as u8, usize::MAX);
+                                self.invalid_character_error(si, el as u32, usize::MAX);
                                 if self.stopped_on_error {
                                     return Some(EOF_MARKER);
                                 }
@@ -224,10 +267,10 @@ impl Engine {
                             _ => return Some(Token::char(cat, el as u32)),
                         }
                     }
-                    let b = self.file_line_peek(si).unwrap();
+                    let (character, width) = self.file_line_peek_scalar(si).unwrap();
                     let token_start = self.file_line_pos(si);
-                    self.file_line_advance(si);
-                    if let Some(t) = self.tokenize_char(b, si) {
+                    self.file_line_advance_by(si, width);
+                    if let Some(t) = self.tokenize_char(character, si) {
                         // ^^ notation is translated before TeX applies the
                         // N/M/S state machine. A translated space at the start
                         // of a line is therefore ignored, just like a literal
@@ -248,8 +291,8 @@ impl Engine {
                     // comment or otherwise consumed rest of line: loop
                 }
                 1 => {
-                    let b = match self.file_line_peek(si) {
-                        Some(b) => b,
+                    let (character, width) = match self.file_line_peek_scalar(si) {
+                        Some(character) => character,
                         None => {
                             // end of line: endline char token (usually space)
                             let el = self.eqtb.int_params
@@ -270,7 +313,7 @@ impl Engine {
                                 // token; negative => no token at all)
                                 continue;
                             }
-                            let cat = self.eqtb.cat[el as usize];
+                            let cat = self.eqtb.cat_code(el as u32);
 
                             if cat == CAT_EOL {
                                 return Some(Token::space());
@@ -279,7 +322,7 @@ impl Engine {
                                 continue;
                             }
                             if cat == CAT_INVALID {
-                                self.invalid_character_error(si, el as u8, usize::MAX);
+                                self.invalid_character_error(si, el as u32, usize::MAX);
                                 if self.stopped_on_error {
                                     return Some(EOF_MARKER);
                                 }
@@ -296,8 +339,8 @@ impl Engine {
                         }
                     };
                     let token_start = self.file_line_pos(si);
-                    self.file_line_advance(si);
-                    if let Some(t) = self.tokenize_char(b, si) {
+                    self.file_line_advance_by(si, width);
+                    if let Some(t) = self.tokenize_char(character, si) {
                         if t.is_char() && t.cc() == CAT_SPACE {
                             // mid_line + spacer: state <- skip_blanks
                             let s2 = match &mut self.input.stack[si] {
@@ -313,18 +356,18 @@ impl Engine {
                 2 => {
                     // skip spaces
                     let mut skipped = false;
-                    while let Some(b) = self.file_line_peek(si) {
-                        let cat = self.eqtb.cat[b as usize];
+                    while let Some((character, width)) = self.file_line_peek_scalar(si) {
+                        let cat = self.eqtb.cat_code(character);
                         if cat == CAT_SPACE {
-                            self.file_line_advance(si);
+                            self.file_line_advance_by(si, width);
                             skipped = true;
                             continue;
                         }
                         break;
                     }
                     let _ = skipped;
-                    let b = match self.file_line_peek(si) {
-                        Some(b) => b,
+                    let (character, width) = match self.file_line_peek_scalar(si) {
+                        Some(character) => character,
                         None => {
                             // tex.web skip_blanks at line end: state <- new_line,
                             // so the NEXT line is re-examined by the new-line logic
@@ -341,8 +384,8 @@ impl Engine {
                         }
                     };
                     let token_start = self.file_line_pos(si);
-                    self.file_line_advance(si);
-                    if let Some(t) = self.tokenize_char(b, si) {
+                    self.file_line_advance_by(si, width);
+                    if let Some(t) = self.tokenize_char(character, si) {
                         // A ^^-translated space is still skipped in state S.
                         if t.is_char() && t.cc() == CAT_SPACE {
                             continue;
@@ -413,10 +456,28 @@ impl Engine {
         true
     }
 
+    fn append_control_sequence_character(&self, name: &mut Vec<u8>, character: u32) {
+        if self.engine_kind == EngineKind::PdfTeX {
+            name.push(character as u8);
+            return;
+        }
+        let mut encoded = [0u8; 4];
+        let character = char::from_u32(character).unwrap_or(char::REPLACEMENT_CHARACTER);
+        name.extend_from_slice(character.encode_utf8(&mut encoded).as_bytes());
+    }
+
+    fn source_character_token(&self, cat: u8, character: u32) -> Token {
+        if self.engine_kind != EngineKind::PdfTeX && character > 127 {
+            Token::unicode_char(cat, character)
+        } else {
+            Token::char(cat, character)
+        }
+    }
+
     /// Tokenize a consumed character. None = rest of line consumed (comment);
     /// caller should re-loop.
-    fn tokenize_char(&mut self, b: u8, si: usize) -> Option<Token> {
-        let cat = self.eqtb.cat[b as usize];
+    fn tokenize_char(&mut self, character: u32, si: usize) -> Option<Token> {
+        let cat = self.eqtb.cat_code(character);
 
         match cat {
             CAT_COMMENT => {
@@ -431,12 +492,14 @@ impl Engine {
                 None
             }
             CAT_ESCAPE => {
-                // scan control-sequence name
+                // Control-sequence names remain byte strings internally.
+                // Unicode engines encode source scalars as UTF-8; pdfTeX
+                // preserves its historic one-byte names.
                 let mut name: Vec<u8> = Vec::new();
                 let mut end_state = 1u8;
                 loop {
-                    let nb = match self.file_line_peek(si) {
-                        Some(b) => b,
+                    let (next, width) = match self.file_line_peek_scalar(si) {
+                        Some(character) => character,
                         None => {
                             if name.is_empty() {
                                 // TeX appends endlinechar before scanning an
@@ -445,44 +508,43 @@ impl Engine {
                                 let el = self.eqtb.int_params
                                     [crate::prim::IntParam::EndLineChar.idx() as usize];
                                 if (0..=255).contains(&el) {
-                                    name.push(el as u8);
+                                    self.append_control_sequence_character(&mut name, el as u32);
                                 }
                                 self.file_line_clear(si);
                                 end_state = 0;
                             }
-                            // control word complete at line end: KEEP the
-                            // exhausted buffer so the next line is re-examined
-                            // by the new-line logic — clearing here pre-loaded
-                            // the following line in skip_blanks state and
-                            // swallowed its blank-line \par
+                            // Keep an exhausted control-word line so the next
+                            // line is re-examined in new-line state.
                             break;
                         }
                     };
                     if name.is_empty() {
-                        // first char: ^^ notation applies; decides word vs symbol
-                        self.file_line_advance(si);
-                        let c = self.expand_sup(nb, si);
-                        let ccat = self.eqtb.cat[c as usize];
-                        if ccat == CAT_LETTER {
-                            name.push(c);
-                            // control word: following blanks are skipped (tex.web
-                            // state <- skip_blanks after a letter-class cs)
+                        // ^^ notation is byte syntax. A decoded non-ASCII
+                        // scalar is already one source character.
+                        self.file_line_advance_by(si, width);
+                        let expanded = if width == 1 {
+                            u8::try_from(next)
+                                .map(|byte| u32::from(self.expand_sup(byte, si)))
+                                .unwrap_or(next)
+                        } else {
+                            next
+                        };
+                        let expanded_cat = self.eqtb.cat_code(expanded);
+                        self.append_control_sequence_character(&mut name, expanded);
+                        if expanded_cat == CAT_LETTER {
                             end_state = 2;
                             continue;
                         }
-                        // single-char control symbol (or active char via ^^)
-                        name.push(c);
-                        if c == b' ' {
+                        if expanded == u32::from(b' ') {
                             end_state = 2;
                         }
                         break;
                     }
-                    // continuation: raw bytes, letters only (tex.web); the
-                    // terminator byte stays in the buffer for the next token
-                    let ccat = self.eqtb.cat[nb as usize];
-                    if ccat == CAT_LETTER {
-                        self.file_line_advance(si);
-                        name.push(nb);
+                    // A control word continues through every letter scalar;
+                    // the first non-letter remains for the next token.
+                    if self.eqtb.cat_code(next) == CAT_LETTER {
+                        self.file_line_advance_by(si, width);
+                        self.append_control_sequence_character(&mut name, next);
                         continue;
                     }
                     break;
@@ -496,58 +558,71 @@ impl Engine {
                 Some(Token::from_cs(id))
             }
             CAT_SUPER => {
+                let Ok(byte) = u8::try_from(character) else {
+                    return Some(Token::char(CAT_SUPER, character));
+                };
                 let before = self.file_line_pos(si);
-                let c = self.expand_sup(b, si);
+                let expanded = self.expand_sup(byte, si);
                 if self.file_line_pos(si) == before {
                     // A lone superscript character is an ordinary catcode-7
                     // token. Re-dispatch only when ^^ notation consumed input.
-                    Some(Token::char(CAT_SUPER, b as u32))
-                } else if self.eqtb.cat[c as usize] == CAT_INVALID {
-                    self.invalid_character_error(si, c, before.saturating_sub(1));
+                    Some(self.source_character_token(CAT_SUPER, character))
+                } else if self.eqtb.cat_code(u32::from(expanded)) == CAT_INVALID {
+                    self.invalid_character_error(si, u32::from(expanded), before.saturating_sub(1));
                     if self.stopped_on_error {
                         Some(EOF_MARKER)
                     } else {
                         None
                     }
                 } else {
-                    self.tokenize_char(c, si)
+                    self.tokenize_char(u32::from(expanded), si)
                 }
             }
-            CAT_ACTIVE => Some(Token::char(13, b as u32)),
-
+            CAT_ACTIVE => Some(self.source_character_token(CAT_ACTIVE, character)),
             CAT_SPACE => {
-                // tex.web §347: every spacer token has character code 32
+                // tex.web §347: every spacer token has character code 32.
                 Some(Token::space())
             }
             CAT_IGNORED => None,
             CAT_INVALID => {
-                let column = self.file_line_pos(si).saturating_sub(1);
-                self.invalid_character_error(si, b, column);
+                let width = char::from_u32(character).map_or(1, char::len_utf8);
+                let column = self.file_line_pos(si).saturating_sub(width);
+                self.invalid_character_error(si, character, column);
                 if self.stopped_on_error {
                     Some(EOF_MARKER)
                 } else {
                     None
                 }
             }
-            _ => Some(Token::char(cat, b as u32)),
+            _ => Some(self.source_character_token(cat, character)),
         }
     }
 
-    fn invalid_character_error(&mut self, si: usize, byte: u8, byte_column: usize) {
+    fn invalid_character_error(&mut self, si: usize, character: u32, byte_column: usize) {
         // Synthetic tokenizers (notably `\\read`) can retain the physical
-        // command that supplied their bytes.  Prefer that call site over a
+        // command that supplied their bytes. Prefer that call site over a
         // misleading `<read>:1:1` location.
         let source = self
             .diagnostic_source_override
             .clone()
             .or_else(|| self.input.source_context_at(si, byte_column));
-        let showing = if byte.is_ascii_graphic() || byte == b' ' {
+        let showing = if let Ok(byte) = u8::try_from(character) {
+            if byte.is_ascii_graphic() || byte == b' ' {
+                format!(
+                    " (byte 0x{byte:02X}, '{}')",
+                    char::from(byte).escape_default()
+                )
+            } else {
+                format!(" (byte 0x{byte:02X})")
+            }
+        } else if let Some(character) = char::from_u32(character) {
             format!(
-                " (byte 0x{byte:02X}, '{}')",
-                char::from(byte).escape_default()
+                " (U+{:04X}, '{}')",
+                character as u32,
+                character.escape_default()
             )
         } else {
-            format!(" (byte 0x{byte:02X})")
+            format!(" (invalid scalar U+{character:X})")
         };
         self.error_at(
             &format!("Text line contains an invalid character{showing}"),
@@ -563,7 +638,7 @@ impl Engine {
         let semantic_cs = if token.is_cs() {
             Some(token.cs_id())
         } else if token.is_char() && token.cc() == CAT_ACTIVE {
-            Some(self.active_cs_id(token.chr() as u8))
+            Some(self.active_cs_id(token.chr()))
         } else {
             None
         };
@@ -671,5 +746,68 @@ mod tests {
         assert_eq!(engine.get_next_raw(), Token::space());
         assert_eq!(engine.get_next_raw(), Token::letter(b'Z'));
         assert_eq!(engine.get_next_raw(), crate::input::EOF_MARKER);
+    }
+    #[test]
+    fn unicode_profiles_decode_source_scalars_without_changing_pdftex_bytes() {
+        let source = "é".as_bytes().to_vec();
+
+        let mut unicode = Engine::new_with_kind(EngineKind::XeTeX, true);
+        unicode.init_primitives();
+        unicode
+            .input
+            .push_file("unicode.tex".into(), source.clone());
+        assert_eq!(
+            unicode.get_next_raw(),
+            Token::unicode_char(CAT_OTHER, 'é' as u32)
+        );
+
+        let mut pdftex = Engine::new_with_kind(EngineKind::PdfTeX, true);
+        pdftex.init_primitives();
+        pdftex.input.push_file("bytes.tex".into(), source);
+        assert_eq!(
+            pdftex.get_next_raw(),
+            Token::char(CAT_OTHER, u32::from("é".as_bytes()[0]))
+        );
+    }
+
+    #[test]
+    fn unicode_letters_and_active_characters_keep_scalar_identity() {
+        let mut engine = Engine::new_with_kind(EngineKind::LuaTeX, true);
+        engine.init_primitives();
+        engine.eqtb.assign_cat_code('界' as u32, CAT_LETTER, true);
+        engine.eqtb.assign_cat_code('🦀' as u32, CAT_ACTIVE, true);
+        engine
+            .input
+            .push_file("unicode.tex".into(), "\\界 🦀".as_bytes().to_vec());
+
+        let control_word = engine.get_next_raw();
+        assert!(control_word.is_cs());
+        assert_eq!(engine.cs.name(control_word.cs_id()), "界".as_bytes());
+        assert_eq!(
+            engine.get_next_raw(),
+            Token::unicode_char(CAT_ACTIVE, '🦀' as u32)
+        );
+    }
+    #[test]
+    fn unicode_active_definition_source_keeps_brace_tokens() {
+        let mut engine = Engine::new_with_kind(EngineKind::XeTeX, true);
+        engine.init_primitives();
+        engine.eqtb.assign_cat_code('🦀' as u32, CAT_ACTIVE, true);
+        engine.eqtb.assign_cat(b'{', CAT_BGROUP, true);
+        engine.eqtb.assign_cat(b'}', CAT_EGROUP, true);
+        engine
+            .input
+            .push_file("unicode.tex".into(), "\\def🦀{OK}".as_bytes().to_vec());
+
+        let definition = engine.get_next_raw();
+        assert_eq!(engine.cs.name(definition.cs_id()), b"def");
+        assert_eq!(
+            engine.get_next_raw(),
+            Token::unicode_char(CAT_ACTIVE, '🦀' as u32)
+        );
+        assert_eq!(engine.get_next_raw(), Token::char(CAT_BGROUP, b'{' as u32));
+        assert_eq!(engine.get_next_raw(), Token::letter(b'O'));
+        assert_eq!(engine.get_next_raw(), Token::letter(b'K'));
+        assert_eq!(engine.get_next_raw(), Token::char(CAT_EGROUP, b'}' as u32));
     }
 }

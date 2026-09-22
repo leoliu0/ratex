@@ -4,10 +4,10 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-zstd = { workspace = true }
+ruzstd = { workspace = true }
 
 [build-dependencies]
-zstd = { workspace = true }
+ruzstd = { workspace = true }
 tar = { workspace = true }
 ttf-parser = { workspace = true }
 [dev-dependencies]

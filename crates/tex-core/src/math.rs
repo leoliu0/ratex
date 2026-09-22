@@ -236,14 +236,14 @@ fn set_limits_subtype(op: &mut NodeList, st: u8) {
         })
     ) {
         if let Some(Node::MathChar { c, .. }) = op.first_mut() {
-            *c = st;
+            *c = u32::from(st);
         }
     } else if matches!(op.first(), Some(Node::MathChar { class: CL_OP, .. })) {
         op.insert(
             0,
             Node::MathChar {
                 fam: 255,
-                c: st,
+                c: u32::from(st),
                 class: CL_OP,
                 origin: MathDiagnosticOrigin::default(),
             },
@@ -1122,7 +1122,7 @@ impl Engine {
         }
         self.append_mlist_node(Node::MathChar {
             fam,
-            c,
+            c: u32::from(c),
             class,
             origin,
         });
@@ -1748,14 +1748,16 @@ impl Engine {
             return 0;
         }
         if t.is_char() {
-            let c = t.chr() as u8;
-            // tex.web §240: period is the null delimiter (code 0)
-            if c == b'.' {
+            let character = t.chr();
+            // tex.web §240: period is the null delimiter (code 0).
+            if character == u32::from(b'.') {
                 return 0;
             }
-            let d = self.eqtb.del_code[c as usize];
-            if d >= 0 {
-                return d;
+            let delimiter = self.eqtb.delimiter_code_for(character);
+            if let Ok(delimiter) = i32::try_from(delimiter) {
+                if delimiter >= 0 {
+                    return delimiter;
+                }
             }
             self.error_at(
                 "Missing delimiter (. inserted)",
@@ -2053,9 +2055,9 @@ impl Engine {
 
     fn math_noad_char(n: &Node) -> Option<(u8, u8)> {
         match n {
-            Node::MathChar { fam, c, .. } if *fam != 255 => Some((*fam, *c)),
+            Node::MathChar { fam, c, .. } if *fam != 255 => Some((*fam, *c as u8)),
             Node::Scripts { nucleus, .. } if nucleus.len() == 1 => match &nucleus[0] {
-                Node::MathChar { fam, c, .. } if *fam != 255 => Some((*fam, *c)),
+                Node::MathChar { fam, c, .. } if *fam != 255 => Some((*fam, *c as u8)),
                 _ => None,
             },
             _ => None,
@@ -2064,10 +2066,10 @@ impl Engine {
 
     fn set_math_noad_char(n: &mut Node, c: u8) {
         match n {
-            Node::MathChar { c: current, .. } => *current = c,
+            Node::MathChar { c: current, .. } => *current = u32::from(c),
             Node::Scripts { nucleus, .. } => {
                 if let Some(Node::MathChar { c: current, .. }) = nucleus.first_mut() {
-                    *current = c;
+                    *current = u32::from(c);
                 }
             }
             _ => {}
@@ -2197,7 +2199,7 @@ impl Engine {
                             i + 1,
                             Node::MathChar {
                                 fam: q_fam,
-                                c: replacement,
+                                c: u32::from(replacement),
                                 class: CL_ORD,
                                 origin: MathDiagnosticOrigin::default(),
                             },
@@ -2597,7 +2599,7 @@ impl Engine {
                     let origin = self.math_diagnostic_origin_at(command_source);
                     self.append_mlist_node(Node::MathChar {
                         fam,
-                        c,
+                        c: u32::from(c),
                         class,
                         origin,
                     });
@@ -2639,23 +2641,25 @@ impl Engine {
                 if *fam == 255 {
                     vec![]
                 } else if *class == CL_OP {
-                    let (b, _) = self.op_char_box(*fam, *c, style, false, origin);
+                    let byte = *c as u8;
+                    let (b, _) = self.op_char_box(*fam, byte, style, false, origin);
                     vec![b]
                 } else {
-                    // tex.web fetch(A): the char node is created from the fam
-                    // font unconditionally — a nullfont/missing-char fam gives
-                    // a zero-width glyph, never a dropped atom (which would
-                    // silently lose the math and its spacing).
                     let fid = self.eqtb.style_fonts[font_size(style)][*fam as usize];
-                    if !self.math_font_has_character_or_warn(fid, *c, origin) {
+                    if self.font_loader.native_fonts.contains_key(&fid) {
+                        if let Some(ch) = char::from_u32(*c) {
+                            if let Ok(nodes) = self.shape_native_slice(fid, &ch.to_string()) {
+                                return nodes;
+                            }
+                        }
+                    }
+                    let byte = *c as u8;
+                    if !self.math_font_has_character_or_warn(fid, byte, origin) {
                         return Vec::new();
                     }
-                    let mut out = vec![Node::Char { c: *c, font: fid }];
-                    // tex.web §14865: `math_text_char` suppresses italic
-                    // correction only in a text font. A final/standalone
-                    // math char retains its correction even in that font.
+                    let mut out = vec![Node::Char { c: byte, font: fid }];
                     if let Some(f) = self.eqtb.fonts.get(fid as usize) {
-                        let ic = f.char_italic(*c);
+                        let ic = f.char_italic(byte);
                         if ic != 0 && !(math_text_char && f.space() != 0) {
                             out.push(Node::Kern(ic));
                         }
@@ -2834,7 +2838,7 @@ impl Engine {
                 if *fam == 255 {
                     (hpack(Vec::new(), None, HBOX, &self.eqtb).node, 0)
                 } else {
-                    self.op_char_box(*fam, *c, style, false, origin)
+                    self.op_char_box(*fam, *c as u8, style, false, origin)
                 }
             }
             [Node::DelimBox {
@@ -2906,15 +2910,22 @@ impl Engine {
                     nuc = hpack(Vec::new(), None, HBOX, &self.eqtb).node;
                 } else {
                     let fid = self.eqtb.style_fonts[font_size(style)][*fam as usize];
-                    if self.math_font_has_character_or_warn(fid, *c, origin) {
+                    if self.font_loader.native_fonts.contains_key(&fid) {
+                        if let Some(ch) = char::from_u32(*c) {
+                            if let Ok(nodes) = self.shape_native_slice(fid, &ch.to_string()) {
+                                nuc = hpack(nodes, None, HBOX, &self.eqtb).node;
+                            } else {
+                                nuc = hpack(Vec::new(), None, HBOX, &self.eqtb).node;
+                            }
+                        } else {
+                            nuc = hpack(Vec::new(), None, HBOX, &self.eqtb).node;
+                        }
+                    } else {
+                        let byte = *c as u8;
+                    if self.math_font_has_character_or_warn(fid, byte, origin) {
                         let f = self.eqtb.fonts[fid as usize].clone();
-                        // tex.web §14865 (@<Determine the char list...@>): a
-                        // no-subscript nucleus keeps its italic correction as a
-                        // TRAILING kern in the character list (width grows, delta
-                        // resets to 0); with a subscript the ic stays as `delta`
-                        // and shifts the superscript right instead.
-                        let ic = f.char_italic(*c);
-                        let mut core: NodeList = vec![Node::Char { c: *c, font: fid }];
+                        let ic = f.char_italic(byte);
+                        let mut core: NodeList = vec![Node::Char { c: byte, font: fid }];
                         if sub.is_none() && ic != 0 {
                             core.push(Node::Kern(ic));
                             delta = 0;
@@ -2923,12 +2934,11 @@ impl Engine {
                         }
                         nuc = hpack(core, None, HBOX, &self.eqtb).node;
                     } else {
-                        // The missing zero-width nucleus must not discard its
-                        // scripts; TeX still lays those out around an empty box.
                         nuc = hpack(Vec::new(), None, HBOX, &self.eqtb).node;
                     }
                 }
             }
+        }
             // A standalone \delimiter is an ordinary math-character noad:
             // scripts use the character shifts, not sub-box drop parameters.
             [Node::DelimBox {
@@ -2962,7 +2972,7 @@ impl Engine {
                 if *fam == 255 {
                     nuc = hpack(Vec::new(), None, HBOX, &self.eqtb).node;
                 } else {
-                    let (b, d) = self.op_char_box(*fam, *c, style, sub.is_some(), origin);
+                    let (b, d) = self.op_char_box(*fam, *c as u8, style, sub.is_some(), origin);
                     delta = d;
                     nuc = b;
                 }
@@ -3444,7 +3454,7 @@ impl Engine {
                 if let Some((fid, f)) = self.fam_font(style | 1, *fam) {
                     let sk = self.skew_char_of(fid, &f);
                     if sk >= 0 && sk <= 255 {
-                        self.char_kern(fid, &f, *c, sk as u8)
+                        self.char_kern(fid, &f, *c as u8, sk as u8)
                     } else {
                         0
                     }

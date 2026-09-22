@@ -1,0 +1,640 @@
+// Table library
+// Implements: concat, insert, move, pack, remove, sort, unpack
+
+use crate::lib_registry::LibraryModule;
+use crate::lua_value::LuaValue;
+use crate::lua_vm::{LuaResult, LuaState};
+use crate::stdlib::basic::lua_float_to_string;
+use crate::stdlib::sort_table::table_sort;
+
+pub fn create_table_lib() -> LibraryModule {
+    crate::lib_module!("table", {
+        "concat" => table_concat,
+        "create" => table_create,
+        "insert" => table_insert,
+        "move" => table_move,
+        "pack" => table_pack,
+        "remove" => table_remove,
+        "sort" => table_sort,
+        "unpack" => table_unpack,
+    })
+}
+
+/// table.create(narray [, nhash]) - Create a pre-allocated table (Lua 5.5)
+fn table_create(l: &mut LuaState) -> LuaResult<usize> {
+    let narray = l.get_arg(1).and_then(|v| v.as_integer()).unwrap_or(0);
+
+    let nhash = l.get_arg(2).and_then(|v| v.as_integer()).unwrap_or(0);
+
+    // Validate arguments
+    if narray < 0 {
+        return Err(l.error("bad argument #1 to 'create' (out of range)".to_string()));
+    }
+    if nhash < 0 {
+        return Err(l.error("bad argument #2 to 'create' (out of range)".to_string()));
+    }
+
+    // Check for overflow (INT_MAX in Lua is i32::MAX)
+    if narray > i32::MAX as i64 {
+        return Err(l.error("bad argument #1 to 'create' (out of range)".to_string()));
+    }
+    if nhash > i32::MAX as i64 {
+        return Err(l.error("bad argument #2 to 'create' (out of range)".to_string()));
+    }
+
+    // Limit to reasonable sizes to avoid allocation panics
+    let max_safe = 1 << 24; // ~16M elements
+    let na = std::cmp::min(narray as usize, max_safe);
+    let nh = if nhash as usize > max_safe {
+        return Err(l.error("table overflow".to_string()));
+    } else {
+        nhash as usize
+    };
+
+    // Create table with pre-allocated sizes
+    let table = l.create_table(na, nh)?;
+    l.push_value(table)?;
+    Ok(1)
+}
+
+/// table.concat(list [, sep [, i [, j]]]) - Concatenate table elements
+///
+/// Optimized with three-tier fast paths:
+/// 1. All-strings (no binary, no numbers): single allocation, direct &str copies
+/// 2. Strings + numbers (no binary): single String allocation, itoa/float formatting
+/// 3. Has binary: Vec<u8> buffer, try UTF-8 conversion at the end
+fn table_concat(l: &mut LuaState) -> LuaResult<usize> {
+    let table_val = l
+        .get_arg(1)
+        .ok_or_else(|| l.error("bad argument #1 to 'concat' (table expected)".to_string()))?;
+
+    let sep_value = l.get_arg(2);
+    let sep_owned: Vec<u8>;
+    let sep_text_owned: String;
+    let (sep_bytes, sep_text): (&[u8], Option<&str>) = match &sep_value {
+        Some(v) => {
+            if v.is_nil() {
+                (&[], Some(""))
+            } else if let Some(bytes) = v.as_bytes() {
+                sep_owned = bytes.to_vec();
+                if let Some(s) = v.as_str() {
+                    sep_text_owned = s.to_string();
+                    (&sep_owned, Some(&sep_text_owned))
+                } else {
+                    (&sep_owned, None)
+                }
+            } else {
+                return Err(l.error("bad argument #2 to 'concat' (string expected)".to_string()));
+            }
+        }
+        None => (&[], Some("")),
+    };
+
+    if !table_val.is_table() {
+        return Err(l.error("bad argument #1 to 'concat' (table expected)".to_string()));
+    }
+
+    let has_meta = table_val
+        .as_table_mut()
+        .map(|t| t.has_metatable())
+        .unwrap_or(true);
+
+    let i = l.get_arg(3).and_then(|v| v.as_integer()).unwrap_or(1);
+    let j = match l.get_arg(4).and_then(|v| v.as_integer()) {
+        Some(j) => j,
+        None => {
+            if has_meta {
+                l.obj_len(&table_val)?
+            } else {
+                table_val.as_table_mut().unwrap().len() as i64
+            }
+        }
+    };
+
+    // If i > j, return empty string immediately
+    if i > j {
+        let result = l.create_string("")?;
+        l.push_value(result)?;
+        return Ok(1);
+    }
+
+    let count = (j - i + 1) as usize;
+
+    if !has_meta {
+        // ---- Fast path: raw access, no metamethod overhead ----
+        let table = table_val.as_table_mut().unwrap();
+        let sep_total = sep_bytes.len().saturating_mul(count.saturating_sub(1));
+
+        // Phase 1: scan types + compute exact string length
+        let mut total_len: usize = sep_total;
+        let mut needs_bytes = sep_text.is_none();
+        let mut has_numbers = false;
+
+        for idx in i..=j {
+            let value = table.raw_geti(idx).unwrap_or(LuaValue::nil());
+            if let Some(bytes) = value.as_bytes() {
+                total_len += bytes.len();
+                needs_bytes |= value.as_str().is_none();
+            } else if value.as_integer().is_some() {
+                total_len += 20; // max i64 string width
+                has_numbers = true;
+            } else if value.as_number().is_some() {
+                total_len += 24; // generous float estimate
+                has_numbers = true;
+            } else {
+                let msg = format!("invalid value (at index {}) in table for 'concat'", idx);
+                return Err(l.error(msg));
+            }
+        }
+
+        // Phase 2: build result with a single allocation
+        let table = table_val.as_table_mut().unwrap();
+
+        if needs_bytes {
+            // Byte path: concatenate as raw bytes when any piece lacks a UTF-8 view
+            let mut buf: Vec<u8> = Vec::with_capacity(total_len);
+            for idx in i..=j {
+                if idx > i {
+                    buf.extend_from_slice(sep_bytes);
+                }
+                let value = table.raw_geti(idx).unwrap_or(LuaValue::nil());
+                if let Some(bytes) = value.as_bytes() {
+                    buf.extend_from_slice(bytes);
+                } else if let Some(ival) = value.as_integer() {
+                    let mut itoa_buf = itoa::Buffer::new();
+                    buf.extend_from_slice(itoa_buf.format(ival).as_bytes());
+                } else if let Some(f) = value.as_number() {
+                    buf.extend_from_slice(lua_float_to_string(f).as_bytes());
+                }
+            }
+            let result = l.create_bytes(&buf)?;
+            l.push_value(result)?;
+        } else if !has_numbers {
+            // Ultra-fast path: all strings — zero intermediate allocations
+            let mut result = String::with_capacity(total_len);
+            let sep = sep_text.unwrap_or("");
+            for idx in i..=j {
+                if idx > i {
+                    result.push_str(sep);
+                }
+                let value = table.raw_geti(idx).unwrap_or(LuaValue::nil());
+                result.push_str(value.as_str().unwrap());
+            }
+            let result = l.create_string(&result)?;
+            l.push_value(result)?;
+        } else {
+            // Strings + numbers path: single allocation, itoa for integers
+            let mut result = String::with_capacity(total_len);
+            let sep = sep_text.unwrap_or("");
+            for idx in i..=j {
+                if idx > i {
+                    result.push_str(sep);
+                }
+                let value = table.raw_geti(idx).unwrap_or(LuaValue::nil());
+                if let Some(s) = value.as_str() {
+                    result.push_str(s);
+                } else if let Some(ival) = value.as_integer() {
+                    let mut itoa_buf = itoa::Buffer::new();
+                    result.push_str(itoa_buf.format(ival));
+                } else if let Some(f) = value.as_number() {
+                    result.push_str(&lua_float_to_string(f));
+                }
+            }
+            let result = l.create_string(&result)?;
+            l.push_value(result)?;
+        }
+    } else {
+        // ---- Metamethod path: uses table_geti / obj_len ----
+        // Still two-pass for pre-sizing optimization
+        let mut total_len: usize = sep_bytes.len().saturating_mul(count.saturating_sub(1));
+        let mut needs_bytes = sep_text.is_none();
+
+        for idx in i..=j {
+            let value = l.table_geti(&table_val, idx)?;
+            if let Some(bytes) = value.as_bytes() {
+                total_len += bytes.len();
+                needs_bytes |= value.as_str().is_none();
+            } else if value.as_integer().is_some() {
+                total_len += 20;
+            } else if value.as_number().is_some() {
+                total_len += 24;
+            } else {
+                let msg = format!("invalid value (at index {}) in table for 'concat'", idx);
+                return Err(l.error(msg));
+            }
+        }
+
+        if needs_bytes {
+            let mut buf: Vec<u8> = Vec::with_capacity(total_len);
+            for idx in i..=j {
+                if idx > i {
+                    buf.extend_from_slice(sep_bytes);
+                }
+                let value = l.table_geti(&table_val, idx)?;
+                if let Some(bytes) = value.as_bytes() {
+                    buf.extend_from_slice(bytes);
+                } else if let Some(ival) = value.as_integer() {
+                    let mut itoa_buf = itoa::Buffer::new();
+                    buf.extend_from_slice(itoa_buf.format(ival).as_bytes());
+                } else if let Some(f) = value.as_number() {
+                    buf.extend_from_slice(lua_float_to_string(f).as_bytes());
+                }
+            }
+            let result = l.create_bytes(&buf)?;
+            l.push_value(result)?;
+        } else {
+            let mut result = String::with_capacity(total_len);
+            let sep = sep_text.unwrap_or("");
+            for idx in i..=j {
+                if idx > i {
+                    result.push_str(sep);
+                }
+                let value = l.table_geti(&table_val, idx)?;
+                if let Some(s) = value.as_str() {
+                    result.push_str(s);
+                } else if let Some(ival) = value.as_integer() {
+                    let mut itoa_buf = itoa::Buffer::new();
+                    result.push_str(itoa_buf.format(ival));
+                } else if let Some(f) = value.as_number() {
+                    result.push_str(&lua_float_to_string(f));
+                }
+            }
+            let result = l.create_string(&result)?;
+            l.push_value(result)?;
+        }
+    }
+
+    Ok(1)
+}
+
+/// table.insert(list, [pos,] value) - Insert element
+fn table_insert(l: &mut LuaState) -> LuaResult<usize> {
+    let table_val = l
+        .get_arg(1)
+        .ok_or_else(|| l.error("bad argument #1 to 'insert' (table expected)".to_string()))?;
+    let argc = l.arg_count();
+
+    if !table_val.is_table() {
+        return Err(l.error("bad argument #1 to 'insert' (table expected)".to_string()));
+    }
+
+    // Fast path: no metatable → use raw operations (avoids obj_len overhead)
+    let has_meta = table_val
+        .as_table_mut()
+        .map(|t| t.has_metatable())
+        .unwrap_or(true);
+
+    if argc == 2 {
+        // table.insert(list, value) - append at end
+        let value = l
+            .get_arg(2)
+            .ok_or_else(|| l.error("bad argument #2 to 'insert' (value expected)".to_string()))?;
+        if has_meta {
+            let len = l.obj_len(&table_val)?;
+            l.table_seti(&table_val, len.wrapping_add(1), value)?;
+        } else {
+            // Fast path: raw len + raw set (no metamethod overhead)
+            let table = table_val.as_table_mut().unwrap();
+            let len = table.len() as i64;
+            let delta = table.raw_seti(len + 1, value);
+            if delta != 0
+                && let Some(table_ptr) = table_val.as_table_ptr()
+            {
+                l.gc_track_table_resize(table_ptr, delta);
+            }
+            // GC barrier for collectable values
+            if value.iscollectable()
+                && let Some(gc_ptr) = table_val.as_gc_ptr()
+            {
+                l.gc_barrier_back(gc_ptr);
+            }
+        }
+    } else if argc == 3 {
+        // table.insert(list, pos, value)
+        let pos = l
+            .get_arg(2)
+            .ok_or_else(|| l.error("bad argument #2 to 'insert' (number expected)".to_string()))?
+            .as_integer()
+            .ok_or_else(|| l.error("bad argument #2 to 'insert' (number expected)".to_string()))?;
+
+        let value = l
+            .get_arg(3)
+            .ok_or_else(|| l.error("bad argument #3 to 'insert' (value expected)".to_string()))?;
+
+        if has_meta {
+            let len = l.obj_len(&table_val)?;
+            if pos < 1 || pos > len + 1 {
+                return Err(
+                    l.error("bad argument #2 to 'insert' (position out of bounds)".to_string())
+                );
+            }
+            // Shift elements up
+            let mut i = len;
+            while i >= pos {
+                let val = l.table_geti(&table_val, i)?;
+                l.table_seti(&table_val, i + 1, val)?;
+                i -= 1;
+            }
+            l.table_seti(&table_val, pos, value)?;
+        } else {
+            // Fast path: raw operations
+            let table = table_val.as_table_mut().unwrap();
+            let len = table.len() as i64;
+            if pos < 1 || pos > len + 1 {
+                return Err(
+                    l.error("bad argument #2 to 'insert' (position out of bounds)".to_string())
+                );
+            }
+            // Shift elements up using raw access
+            let mut total_delta: isize = 0;
+            let mut i = len;
+            while i >= pos {
+                let val = table.raw_geti(i).unwrap_or(LuaValue::nil());
+                total_delta += table.raw_seti(i + 1, val);
+                i -= 1;
+            }
+            total_delta += table.raw_seti(pos, value);
+            if total_delta != 0
+                && let Some(table_ptr) = table_val.as_table_ptr()
+            {
+                l.gc_track_table_resize(table_ptr, total_delta);
+            }
+            if value.iscollectable()
+                && let Some(gc_ptr) = table_val.as_gc_ptr()
+            {
+                l.gc_barrier_back(gc_ptr);
+            }
+        }
+    } else {
+        return Err(l.error("wrong number of arguments to 'insert'".to_string()));
+    }
+
+    Ok(0)
+}
+
+/// table.remove(list [, pos]) - Remove element
+fn table_remove(l: &mut LuaState) -> LuaResult<usize> {
+    let table_val = l
+        .get_arg(1)
+        .ok_or_else(|| l.error("bad argument #1 to 'remove' (table expected)".to_string()))?;
+
+    if !table_val.is_table() {
+        return Err(l.error("bad argument #1 to 'remove' (table expected)".to_string()));
+    }
+
+    let has_meta = table_val
+        .as_table_mut()
+        .map(|t| t.has_metatable())
+        .unwrap_or(true);
+
+    let has_pos_arg = l.get_arg(2).is_some();
+
+    if has_meta {
+        // Metamethod path: use obj_len + table_geti/table_seti
+        let len = l.obj_len(&table_val)?;
+        let pos = l.get_arg(2).and_then(|v| v.as_integer()).unwrap_or(len);
+
+        if has_pos_arg && pos != len && (pos < 1 || pos > len.wrapping_add(1)) {
+            return Err(l.error("bad argument #2 to 'remove' (position out of bounds)".to_string()));
+        }
+
+        let removed = l.table_geti(&table_val, pos)?;
+        let mut i = pos;
+        while i < len {
+            let next_val = l.table_geti(&table_val, i.wrapping_add(1))?;
+            l.table_seti(&table_val, i, next_val)?;
+            i += 1;
+        }
+        l.table_seti(&table_val, i, LuaValue::nil())?;
+        l.push_value(removed)?;
+    } else {
+        // Fast path: raw operations
+        let table = table_val.as_table_mut().unwrap();
+        let len = table.len() as i64;
+        let pos = l.get_arg(2).and_then(|v| v.as_integer()).unwrap_or(len);
+
+        if has_pos_arg && pos != len && (pos < 1 || pos > len.wrapping_add(1)) {
+            return Err(l.error("bad argument #2 to 'remove' (position out of bounds)".to_string()));
+        }
+
+        let removed = table.raw_geti(pos).unwrap_or(LuaValue::nil());
+
+        // Shift elements down using raw access
+        let mut i = pos;
+        while i < len {
+            let next_val = table.raw_geti(i + 1).unwrap_or(LuaValue::nil());
+            table.raw_seti(i, next_val);
+            i += 1;
+        }
+        table.raw_seti(i, LuaValue::nil());
+        l.push_value(removed)?;
+    }
+
+    Ok(1)
+}
+
+/// table.move(a1, f, e, t [, a2]) - Move elements
+fn table_move(l: &mut LuaState) -> LuaResult<usize> {
+    let src_val = l
+        .get_arg(1)
+        .ok_or_else(|| l.error("bad argument #1 to 'move' (table expected)".to_string()))?;
+
+    let f = l
+        .get_arg(2)
+        .ok_or_else(|| l.error("bad argument #2 to 'move' (number expected)".to_string()))?
+        .as_integer()
+        .ok_or_else(|| l.error("bad argument #2 to 'move' (number expected)".to_string()))?;
+
+    let e = l
+        .get_arg(3)
+        .ok_or_else(|| l.error("bad argument #3 to 'move' (number expected)".to_string()))?
+        .as_integer()
+        .ok_or_else(|| l.error("bad argument #3 to 'move' (number expected)".to_string()))?;
+
+    let t = l
+        .get_arg(4)
+        .ok_or_else(|| l.error("bad argument #4 to 'move' (number expected)".to_string()))?
+        .as_integer()
+        .ok_or_else(|| l.error("bad argument #4 to 'move' (number expected)".to_string()))?;
+
+    let dst_value = l.get_arg(5).unwrap_or(src_val);
+
+    if !src_val.is_table() {
+        return Err(l.error("bad argument #1 to 'move' (table expected)".to_string()));
+    }
+
+    // Validate destination is a table
+    if !dst_value.is_table() {
+        return Err(l.error("bad argument #5 to 'move' (table expected)".to_string()));
+    }
+
+    // Validation matching C Lua's tmove (ltablib.c):
+    // 1. n = (unsigned)(e - f); if n >= LUA_MAXINTEGER error "too many"
+    // 2. n++; if t > LUA_MAXINTEGER - n + 1 error "wrap around"
+    if e >= f {
+        let n = (e as u64).wrapping_sub(f as u64);
+        if n >= i64::MAX as u64 {
+            return Err(l.error("too many elements to move".to_string()));
+        }
+        let n = n + 1; // count of elements
+        let limit = i64::MAX - (n as i64) + 1;
+        if t > limit {
+            return Err(l.error("destination wrap around".to_string()));
+        }
+    }
+
+    // Use metamethod-respecting access (like C Lua's lua_geti/lua_seti)
+    // Handle overlap correctly (C Lua: backward only when f < t <= e, same table)
+    if f <= e {
+        // Fast path: both tables have no metatables → use raw access
+        let use_raw = src_val.as_table().is_some_and(|t| !t.has_metatable())
+            && dst_value.as_table().is_some_and(|t| !t.has_metatable());
+
+        if use_raw {
+            // Raw access path: no metamethods, much faster
+            if t > f && t <= e && src_val.as_gc_ptr() == dst_value.as_gc_ptr() {
+                // Overlapping forward move on same table: iterate backwards
+                for i in (0..=(e - f)).rev() {
+                    let val = l.raw_geti(&src_val, f.wrapping_add(i)).unwrap_or_default();
+                    l.raw_seti(&dst_value, t.wrapping_add(i), val);
+                }
+            } else {
+                // No overlap or different tables: iterate forwards
+                for i in 0..=(e - f) {
+                    let val = l.raw_geti(&src_val, f.wrapping_add(i)).unwrap_or_default();
+                    l.raw_seti(&dst_value, t.wrapping_add(i), val);
+                }
+            }
+        } else if t > f && t <= e {
+            // Overlapping forward move: iterate backwards to avoid overwriting
+            for i in (0..=(e - f)).rev() {
+                let key = LuaValue::integer(f.wrapping_add(i));
+                let val = l.table_get(&src_val, &key)?.unwrap_or(LuaValue::nil());
+                let dst_key = LuaValue::integer(t.wrapping_add(i));
+                l.table_set(&dst_value, dst_key, val)?;
+            }
+        } else {
+            // No overlap or backward move: iterate forwards
+            for i in 0..=(e - f) {
+                let key = LuaValue::integer(f.wrapping_add(i));
+                let val = l.table_get(&src_val, &key)?.unwrap_or(LuaValue::nil());
+                let dst_key = LuaValue::integer(t.wrapping_add(i));
+                l.table_set(&dst_value, dst_key, val)?;
+            }
+        }
+    }
+
+    l.push_value(dst_value)?;
+    Ok(1)
+}
+
+/// table.pack(...) - Pack values into table
+/// OPTIMIZED: Direct array writes, single GC barrier, no intermediate allocation
+fn table_pack(l: &mut LuaState) -> LuaResult<usize> {
+    let n = l.arg_count();
+    let table = l.create_table(n, 1)?;
+
+    // Set 'n' field
+    let n_key = l.create_string("n")?;
+
+    // Get raw table pointer — safe because table is on GC heap, not on stack.
+    // This avoids per-element vm_mut() → as_table_mut() → set_int indirection.
+    let table_mut = table
+        .as_table_mut()
+        .expect("create_table must return a table");
+    let impl_table = &mut table_mut.impl_table;
+
+    let mut has_collectable = false;
+    // Cache stack base for direct reads
+    let frame_base = l
+        .current_frame()
+        .expect("table.pack requires active frame")
+        .base;
+
+    for i in 0..n {
+        let stack_idx = frame_base + i;
+        let arg = if stack_idx < l.stack.len() {
+            l.stack[stack_idx]
+        } else {
+            LuaValue::nil()
+        };
+        if arg.iscollectable() {
+            has_collectable = true;
+        }
+        // Direct array write — table was created with array size = n,
+        // so indices 1..n are guaranteed in-bounds
+
+        impl_table.write_array((i + 1) as i64, arg);
+    }
+
+    // Set "n" field through the LuaTable (needs to invalidate TM cache)
+    table_mut.raw_set(&n_key, LuaValue::integer(n as i64));
+
+    // Single GC barrier for the whole batch
+    if has_collectable && let Some(gc_ptr) = table.as_gc_ptr() {
+        l.gc_barrier_back(gc_ptr);
+    }
+
+    l.push_value(table)?;
+    Ok(1)
+}
+
+/// table.unpack(list [, i [, j]]) - Unpack table into values
+fn table_unpack(l: &mut LuaState) -> LuaResult<usize> {
+    let table_val = l
+        .get_arg(1)
+        .ok_or_else(|| l.error("bad argument #1 to 'unpack' (table expected)".to_string()))?;
+
+    if !table_val.is_table() {
+        return Err(l.error("bad argument #1 to 'unpack' (table expected)".to_string()));
+    }
+
+    let has_meta = table_val
+        .as_table_mut()
+        .map(|t| t.has_metatable())
+        .unwrap_or(true);
+
+    let i = l.get_arg(2).and_then(|v| v.as_integer()).unwrap_or(1);
+    let j = match l.get_arg(3).and_then(|v| v.as_integer()) {
+        Some(j) => j,
+        None => {
+            if has_meta {
+                l.obj_len(&table_val)?
+            } else {
+                table_val.as_table_mut().unwrap().len() as i64
+            }
+        }
+    };
+
+    // Handle empty range
+    if i > j {
+        return Ok(0);
+    }
+
+    // Check for excessive range (Lua 5.5: "too many results to unpack")
+    let n = (j as u64).wrapping_sub(i as u64); // count - 1 (wrapping is OK)
+    if n >= i32::MAX as u64 || !l.check_stack((n as usize).wrapping_add(1)) {
+        return Err(l.error("too many results to unpack".to_string()));
+    }
+    let count = (n + 1) as usize;
+
+    // Ensure physical stack has room
+    l.ensure_stack_capacity(count)?;
+
+    if !has_meta {
+        // Fast path: raw access, no metamethod overhead
+        let table = table_val.as_table_mut().unwrap();
+        for idx in i..=j {
+            let val = table.raw_geti(idx).unwrap_or(LuaValue::nil());
+            l.push_value(val)?;
+        }
+    } else {
+        // Metamethod path: use table_geti to respect __index
+        for idx in i..=j {
+            let val = l.table_geti(&table_val, idx)?;
+            l.push_value(val)?;
+        }
+    }
+
+    Ok(count)
+}

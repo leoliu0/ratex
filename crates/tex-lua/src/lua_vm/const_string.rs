@@ -1,0 +1,244 @@
+use crate::{
+    LuaValue,
+    gc::{GC, ObjectAllocator},
+    lua_vm::TmKind,
+};
+
+/// Number of tag methods (must match TmKind::N)
+const TM_N: usize = 26;
+
+#[derive(Clone, Copy)]
+pub struct ConstString {
+    // Pre-cached metamethod name strings as array indexed by TmKind discriminant.
+    // Layout: tmname[TmKind::Index as usize] = "__index", etc.
+    // This replaces individual named fields for O(1) lookup via array index.
+    pub tmname: [LuaValue; TM_N],
+
+    // Individual aliases kept for direct access where TmKind is not available
+    pub tm_pairs: LuaValue,     // "__pairs"
+    pub tm_ipairs: LuaValue,    // "__ipairs"
+    pub tm_name: LuaValue,      // "__name"
+    pub tm_metatable: LuaValue, // "__metatable"
+
+    // Pre-cached coroutine status strings for fast coroutine.status
+    pub str_suspended: LuaValue, // "suspended"
+    pub str_running: LuaValue,   // "running"
+    pub str_normal: LuaValue,    // "normal"
+    pub str_dead: LuaValue,      // "dead"
+
+    // Pre-cached type name strings for type() / tostring() / math.type()
+    pub str_nil: LuaValue,      // "nil"
+    pub str_boolean: LuaValue,  // "boolean"
+    pub str_number: LuaValue,   // "number"
+    pub str_string: LuaValue,   // "string"
+    pub str_table: LuaValue,    // "table"
+    pub str_function: LuaValue, // "function"
+    pub str_userdata: LuaValue, // "userdata"
+    pub str_thread: LuaValue,   // "thread"
+    pub str_true: LuaValue,     // "true"
+    pub str_false: LuaValue,    // "false"
+    pub str_integer: LuaValue,  // "integer" (for math.type)
+    pub str_float: LuaValue,    // "float"   (for math.type)
+
+    // Pre-cached debug hook event name strings
+    pub str_hook_call: LuaValue,      // "call"
+    pub str_hook_return: LuaValue,    // "return"
+    pub str_hook_line: LuaValue,      // "line"
+    pub str_hook_count: LuaValue,     // "count"
+    pub str_hook_tail_call: LuaValue, // "tail call"
+
+    pub str_n: LuaValue, // "n" (for vararg table)
+}
+
+impl ConstString {
+    pub fn new(allocator: &mut ObjectAllocator, gc: &mut GC) -> Self {
+        let nil = LuaValue::nil();
+        let mut cs = Self {
+            tmname: [nil; TM_N],
+            tm_pairs: nil,
+            tm_ipairs: nil,
+            tm_name: nil,
+            tm_metatable: nil,
+            str_suspended: nil,
+            str_running: nil,
+            str_normal: nil,
+            str_dead: nil,
+            str_nil: nil,
+            str_boolean: nil,
+            str_number: nil,
+            str_string: nil,
+            str_table: nil,
+            str_function: nil,
+            str_userdata: nil,
+            str_thread: nil,
+            str_true: nil,
+            str_false: nil,
+            str_integer: nil,
+            str_float: nil,
+            str_hook_call: nil,
+            str_hook_return: nil,
+            str_hook_line: nil,
+            str_hook_count: nil,
+            str_hook_tail_call: nil,
+            str_n: nil,
+        };
+
+        // Pre-create all metamethod name strings indexed by TmKind discriminant
+        // (like Lua's luaT_init: G(L)->tmname[i])
+        let tm_names: [&str; TM_N] = [
+            "__index",    // 0  Index
+            "__newindex", // 1  NewIndex
+            "__gc",       // 2  Gc
+            "__mode",     // 3  Mode
+            "__len",      // 4  Len
+            "__eq",       // 5  Eq
+            "__add",      // 6  Add
+            "__sub",      // 7  Sub
+            "__mul",      // 8  Mul
+            "__mod",      // 9  Mod
+            "__pow",      // 10 Pow
+            "__div",      // 11 Div
+            "__idiv",     // 12 IDiv
+            "__band",     // 13 Band
+            "__bor",      // 14 Bor
+            "__bxor",     // 15 Bxor
+            "__shl",      // 16 Shl
+            "__shr",      // 17 Shr
+            "__unm",      // 18 Unm
+            "__bnot",     // 19 Bnot
+            "__lt",       // 20 Lt
+            "__le",       // 21 Le
+            "__concat",   // 22 Concat
+            "__call",     // 23 Call
+            "__close",    // 24 Close
+            "__tostring", // 25 ToString
+        ];
+        for (i, name) in tm_names.iter().enumerate() {
+            cs.tmname[i] = allocator.create_string(gc, name).unwrap();
+        }
+
+        // Extra metamethod-like strings (not indexed by TmKind)
+        cs.tm_pairs = allocator.create_string(gc, "__pairs").unwrap();
+        cs.tm_ipairs = allocator.create_string(gc, "__ipairs").unwrap();
+        cs.tm_name = allocator.create_string(gc, "__name").unwrap();
+        cs.tm_metatable = allocator.create_string(gc, "__metatable").unwrap();
+        // Pre-create coroutine status strings
+        cs.str_suspended = allocator.create_string(gc, "suspended").unwrap();
+        cs.str_running = allocator.create_string(gc, "running").unwrap();
+        cs.str_normal = allocator.create_string(gc, "normal").unwrap();
+        cs.str_dead = allocator.create_string(gc, "dead").unwrap();
+
+        // Pre-create type name strings (for type(), tostring(), math.type())
+        cs.str_nil = allocator.create_string(gc, "nil").unwrap();
+        cs.str_boolean = allocator.create_string(gc, "boolean").unwrap();
+        cs.str_number = allocator.create_string(gc, "number").unwrap();
+        cs.str_string = allocator.create_string(gc, "string").unwrap();
+        cs.str_table = allocator.create_string(gc, "table").unwrap();
+        cs.str_function = allocator.create_string(gc, "function").unwrap();
+        cs.str_userdata = allocator.create_string(gc, "userdata").unwrap();
+        cs.str_thread = allocator.create_string(gc, "thread").unwrap();
+        cs.str_true = allocator.create_string(gc, "true").unwrap();
+        cs.str_false = allocator.create_string(gc, "false").unwrap();
+        cs.str_integer = allocator.create_string(gc, "integer").unwrap();
+        cs.str_float = allocator.create_string(gc, "float").unwrap();
+        cs.str_n = allocator.create_string(gc, "n").unwrap();
+
+        // Fix all metamethod name strings — they should never be collected
+        // (like Lua's luaC_fix in luaT_init)
+        for i in 0..TM_N {
+            gc.fixed(cs.tmname[i].as_gc_ptr().unwrap());
+        }
+        gc.fixed(cs.tm_pairs.as_gc_ptr().unwrap());
+        gc.fixed(cs.tm_ipairs.as_gc_ptr().unwrap());
+        gc.fixed(cs.tm_name.as_gc_ptr().unwrap());
+        gc.fixed(cs.tm_metatable.as_gc_ptr().unwrap());
+        gc.fixed(cs.str_suspended.as_gc_ptr().unwrap());
+        gc.fixed(cs.str_running.as_gc_ptr().unwrap());
+        gc.fixed(cs.str_normal.as_gc_ptr().unwrap());
+        gc.fixed(cs.str_dead.as_gc_ptr().unwrap());
+        gc.fixed(cs.str_nil.as_gc_ptr().unwrap());
+        gc.fixed(cs.str_boolean.as_gc_ptr().unwrap());
+        gc.fixed(cs.str_number.as_gc_ptr().unwrap());
+        gc.fixed(cs.str_string.as_gc_ptr().unwrap());
+        gc.fixed(cs.str_table.as_gc_ptr().unwrap());
+        gc.fixed(cs.str_function.as_gc_ptr().unwrap());
+        gc.fixed(cs.str_userdata.as_gc_ptr().unwrap());
+        gc.fixed(cs.str_thread.as_gc_ptr().unwrap());
+        gc.fixed(cs.str_true.as_gc_ptr().unwrap());
+        gc.fixed(cs.str_false.as_gc_ptr().unwrap());
+        gc.fixed(cs.str_integer.as_gc_ptr().unwrap());
+        gc.fixed(cs.str_float.as_gc_ptr().unwrap());
+
+        // Pre-create debug hook event name strings
+        cs.str_hook_call = allocator.create_string(gc, "call").unwrap();
+        cs.str_hook_return = allocator.create_string(gc, "return").unwrap();
+        cs.str_hook_line = allocator.create_string(gc, "line").unwrap();
+        cs.str_hook_count = allocator.create_string(gc, "count").unwrap();
+        cs.str_hook_tail_call = allocator.create_string(gc, "tail call").unwrap();
+        gc.fixed(cs.str_hook_call.as_gc_ptr().unwrap());
+        gc.fixed(cs.str_hook_return.as_gc_ptr().unwrap());
+        gc.fixed(cs.str_hook_line.as_gc_ptr().unwrap());
+        gc.fixed(cs.str_hook_count.as_gc_ptr().unwrap());
+        gc.fixed(cs.str_hook_tail_call.as_gc_ptr().unwrap());
+        gc.fixed(cs.str_n.as_gc_ptr().unwrap());
+
+        cs.attach_to_gc(gc);
+        cs
+    }
+
+    pub fn attach_to_gc(&self, gc: &mut GC) {
+        gc.tm_gc = self.tmname[TmKind::Gc as usize];
+        gc.tm_mode = self.tmname[TmKind::Mode as usize];
+    }
+
+    #[cfg(feature = "shared-proto")]
+    pub fn share_all(&mut self) {
+        use crate::gc::share_lua_value;
+
+        for value in &mut self.tmname {
+            share_lua_value(value);
+        }
+
+        share_lua_value(&mut self.tm_pairs);
+        share_lua_value(&mut self.tm_ipairs);
+        share_lua_value(&mut self.tm_name);
+        share_lua_value(&mut self.tm_metatable);
+        share_lua_value(&mut self.str_suspended);
+        share_lua_value(&mut self.str_running);
+        share_lua_value(&mut self.str_normal);
+        share_lua_value(&mut self.str_dead);
+        share_lua_value(&mut self.str_nil);
+        share_lua_value(&mut self.str_boolean);
+        share_lua_value(&mut self.str_number);
+        share_lua_value(&mut self.str_string);
+        share_lua_value(&mut self.str_table);
+        share_lua_value(&mut self.str_function);
+        share_lua_value(&mut self.str_userdata);
+        share_lua_value(&mut self.str_thread);
+        share_lua_value(&mut self.str_true);
+        share_lua_value(&mut self.str_false);
+        share_lua_value(&mut self.str_integer);
+        share_lua_value(&mut self.str_float);
+        share_lua_value(&mut self.str_hook_call);
+        share_lua_value(&mut self.str_hook_return);
+        share_lua_value(&mut self.str_hook_line);
+        share_lua_value(&mut self.str_hook_count);
+        share_lua_value(&mut self.str_hook_tail_call);
+        share_lua_value(&mut self.str_n);
+    }
+
+    /// Get pre-cached metamethod name string by TmKind enum value — O(1) array index.
+    /// This is the fast path for metamethod lookup in hot code.
+    /// Equivalent to C Lua's `G(L)->tmname[event]`.
+    #[inline(always)]
+    pub fn get_tm_value(&self, tm: TmKind) -> LuaValue {
+        self.tmname[tm as usize]
+    }
+
+    /// Borrowed version of [`get_tm_value`], avoiding a 16-byte `LuaValue` copy
+    /// in metamethod lookup hot paths.
+    #[inline(always)]
+    pub fn get_tm_ref(&self, tm: TmKind) -> &LuaValue {
+        &self.tmname[tm as usize]
+    }
+}

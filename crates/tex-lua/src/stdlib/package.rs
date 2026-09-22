@@ -1,0 +1,551 @@
+// Package library
+// Implements: config, cpath, loaded, loadlib, path, preload, searchers, searchpath
+
+use crate::LuaLanguageLevel;
+use crate::lib_registry::LibraryModule;
+use crate::lua_value::{LuaValue, UpvalueStore};
+use crate::lua_vm::{LuaResult, LuaState};
+
+pub fn create_package_lib() -> LibraryModule {
+    crate::lib_module!("package", {
+        "loadlib" => package_loadlib,
+        "searchpath" => package_searchpath,
+    })
+    .with_initializer(init_package_fields)
+}
+
+// Initialize package library fields (called after module is loaded)
+pub fn init_package_fields(l: &mut LuaState) -> LuaResult<()> {
+    // Get package table (should already exist from module creation)
+    let package_table = l
+        .get_global_value("package")?
+        .ok_or_else(|| l.error("package table not found".to_string()))?;
+
+    if !package_table.is_table() {
+        return Err(l.error("package must be a table".to_string()));
+    };
+
+    // Create all keys
+    let loaded_key = l.create_string("loaded")?;
+    let preload_key = l.create_string("preload")?;
+    let path_key = l.create_string("path")?;
+    let cpath_key = l.create_string("cpath")?;
+    let config_key = l.create_string("config")?;
+    let searchers_key = l.create_string("searchers")?;
+
+    // Create all values
+    let loaded_table = l.create_table(0, 0)?;
+    let preload_table = l.create_table(0, 0)?;
+    let no_environment = l
+        .global_state_mut()
+        .registry_get("LUA_NOENV")?
+        .is_some_and(|value| value.is_truthy());
+    let (path_default, cpath_default, version_suffix) = match l.global_state().version {
+        LuaLanguageLevel::Lua53 => (
+            "/usr/local/share/lua/5.3/?.lua;/usr/local/share/lua/5.3/?/init.lua;/usr/local/lib/lua/5.3/?.lua;/usr/local/lib/lua/5.3/?/init.lua;./?.lua;./?/init.lua",
+            "/usr/local/lib/lua/5.3/?.so;/usr/local/lib/lua/5.3/loadall.so;./?.so",
+            "_5_3",
+        ),
+        _ => (
+            "/usr/local/share/lua/5.5/?.lua;/usr/local/share/lua/5.5/?/init.lua;/usr/local/lib/lua/5.5/?.lua;/usr/local/lib/lua/5.5/?/init.lua;./?.lua;./?/init.lua",
+            "/usr/local/lib/lua/5.5/?.so;/usr/local/lib/lua/5.5/loadall.so;./?.so",
+            "_5_5",
+        ),
+    };
+    let cpath_default = if cfg!(windows) {
+        cpath_default.replace(".so", ".dll")
+    } else {
+        cpath_default.to_owned()
+    };
+    let path =
+        package_path_from_environment("LUA_PATH", version_suffix, path_default, no_environment);
+    let cpath =
+        package_path_from_environment("LUA_CPATH", version_suffix, &cpath_default, no_environment);
+    let path_value = l.create_string(&path)?;
+    let cpath_value = l.create_string(&cpath)?;
+
+    #[cfg(windows)]
+    let config_str = "\\\n;\n?\n!\n-";
+    #[cfg(not(windows))]
+    let config_str = "/\n;\n?\n!\n-";
+    let config_value = l.create_string(config_str)?;
+
+    // Create searchers array
+    let searchers_table_value = l.create_table(4, 0)?;
+    let searchers_table = searchers_table_value.as_table_mut().unwrap();
+
+    // Fill searchers array
+    searchers_table.raw_seti(1, LuaValue::cfunction(searcher_preload));
+    searchers_table.raw_seti(2, LuaValue::cfunction(searcher_lua));
+    searchers_table.raw_seti(3, LuaValue::cfunction(searcher_c));
+    searchers_table.raw_seti(4, LuaValue::cfunction(searcher_c_all_in_one));
+
+    // Set all fields in package table
+    l.raw_set(&package_table, loaded_key, loaded_table);
+    l.raw_set(&package_table, preload_key, preload_table);
+    l.raw_set(&package_table, path_key, path_value);
+    l.raw_set(&package_table, cpath_key, cpath_value);
+    l.raw_set(&package_table, config_key, config_value);
+    l.raw_set(&package_table, searchers_key, searchers_table_value);
+
+    // Add package itself to package.loaded (normally lib_registry does this,
+    // but package.loaded doesn't exist yet when the package module is first loaded)
+    let package_mod_key = l.create_string("package")?;
+    l.raw_set(&loaded_table, package_mod_key, package_table);
+
+    // Store loaded table and package table in registry for use by require
+    // This matches standard Lua's LUA_LOADED_TABLE ("_LOADED") and upvalue approach
+    let vm = l.global_state_mut();
+    vm.registry_set("_LOADED", loaded_table)?;
+    vm.registry_set("_PRELOAD", preload_table)?;
+    // Store the original package table so require can find searchers
+    // even if the global 'package' is reassigned
+    vm.registry_set("_PACKAGE", package_table)?;
+
+    Ok(())
+}
+
+fn package_path_from_environment(
+    name: &str,
+    suffix: &str,
+    default: &str,
+    no_environment: bool,
+) -> String {
+    let versioned = format!("{name}{suffix}");
+    let path = (!no_environment)
+        .then(|| std::env::var_os(&versioned).or_else(|| std::env::var_os(name)))
+        .flatten();
+    let Some(path) = path else {
+        return default.to_owned();
+    };
+    let path = path.to_string_lossy();
+    if path.contains(";;") {
+        path.replace(";;", &format!(";{default};"))
+    } else {
+        path.into_owned()
+    }
+}
+
+// Helper to get the original package table from registry
+fn get_package_from_registry(l: &mut LuaState) -> LuaResult<LuaValue> {
+    let vm = l.global_state_mut();
+    vm.registry_get("_PACKAGE")?
+        .ok_or_else(|| vm.error("package table not found".to_string()))
+}
+
+// Searcher 1: Check package.preload
+fn searcher_preload(l: &mut LuaState) -> LuaResult<usize> {
+    let modname_val = l
+        .get_arg(1)
+        .ok_or_else(|| l.error("module name expected".to_string()))?;
+
+    // Get preload table from registry
+    let vm = l.global_state_mut();
+    let preload_val = vm.registry_get("_PRELOAD")?.unwrap_or(LuaValue::nil());
+
+    let Some(preload_table) = preload_val.as_table_mut() else {
+        return Err(l.error("package.preload is not a table".to_string()));
+    };
+
+    let loader = preload_table
+        .raw_get(&modname_val)
+        .unwrap_or(LuaValue::nil());
+
+    if loader.is_nil() {
+        // Return error message like Lua 5.5
+        let modname_str = modname_val.as_str().unwrap_or("?");
+        let err_msg =
+            l.create_string(&format!("\n\tno field package.preload['{}']", modname_str))?;
+        l.push_value(err_msg)?;
+        Ok(1)
+    } else {
+        l.push_value(loader)?;
+        let preload_str = l.create_string(":preload:")?;
+        l.push_value(preload_str)?;
+        Ok(2)
+    }
+}
+
+// Searcher 2: Search package.path
+fn searcher_lua(l: &mut LuaState) -> LuaResult<usize> {
+    let modname_val = l
+        .get_arg(1)
+        .ok_or_else(|| l.error("module name expected".to_string()))?;
+
+    let Some(modname) = modname_val.as_str() else {
+        return Err(l.error("module name expected".to_string()));
+    };
+
+    // Get the original package table from registry to access package.path
+    let package_val = get_package_from_registry(l)?;
+
+    let Some(package_table) = package_val.as_table() else {
+        return Err(l.error("Invalid package table".to_string()));
+    };
+
+    let path_key = l.create_string("path")?;
+
+    let Some(path_value) = package_table.raw_get(&path_key) else {
+        return Err(l.error("'package.path' must be a string".to_string()));
+    };
+    let Some(path_str) = path_value.as_str() else {
+        return Err(l.error("'package.path' must be a string".to_string()));
+    };
+
+    // Search for the file, using platform directory separator
+    let dirsep = std::path::MAIN_SEPARATOR_STR;
+    let result = search_path(modname, path_str, ".", dirsep)?;
+
+    match result {
+        Some(filepath) => {
+            l.push_value(LuaValue::cfunction(lua_file_loader))?;
+            let filepath_str = l.create_string(&filepath)?;
+            l.push_value(filepath_str)?;
+            Ok(2)
+        }
+        None => {
+            let err = format!(
+                "\n\tno file '{}'",
+                path_str
+                    .split(';')
+                    .map(|template| { template.replace('?', &modname.replace('.', "/")) })
+                    .collect::<Vec<_>>()
+                    .join("'\n\tno file '")
+            );
+            let err_str = l.create_string(&err)?;
+            l.push_value(err_str)?;
+            Ok(1)
+        }
+    }
+}
+
+// Loader function for Lua files (called by searcher_lua)
+// Called as: loader(modname, filepath)
+fn lua_file_loader(l: &mut LuaState) -> LuaResult<usize> {
+    // First arg is modname, second arg is filepath (passed by searcher)
+    let modname_val = l
+        .get_arg(1)
+        .ok_or_else(|| l.error("module name expected".to_string()))?;
+    let filepath_val = l
+        .get_arg(2)
+        .ok_or_else(|| l.error("file path expected".to_string()))?;
+
+    let Some(filepath_str) = filepath_val.as_str() else {
+        return Err(l.error("file path must be a string".to_string()));
+    };
+
+    let proto = l.load_proto_from_file(filepath_str)?;
+
+    // Create a function from the chunk with _ENV upvalue
+    let vm = l.global_state_mut();
+    let env_upvalue = vm.create_upvalue_closed(vm.global)?;
+    let func = vm.create_function(proto, UpvalueStore::from_single(env_upvalue))?;
+
+    // Call the function to execute the module and get its return value
+    // The module should return its exports (usually a table)
+    // Pass modname and filepath as arguments so the module can access them via ...
+    l.push_value(func)?;
+    l.push_value(modname_val)?;
+    l.push_value(filepath_val)?;
+    let func_idx = l.get_top() - 3;
+    let (success, result_count) = l.pcall_stack_based(func_idx, 2)?;
+
+    if !success {
+        // Module threw an error
+        let error_val = l.stack_get(func_idx).unwrap_or_default();
+        let error_msg = if let Some(err) = error_val.as_str() {
+            err.to_string()
+        } else {
+            "error loading module".to_string()
+        };
+        return Err(l.error(format!(
+            "error loading module from '{}': {}",
+            filepath_str, error_msg
+        )));
+    }
+
+    // Return what the module returned (or nil if it returned nothing)
+    if result_count > 0 {
+        // Module returned a value, keep it on stack
+        Ok(1)
+    } else {
+        // Module returned nothing, return nil
+        l.push_value(LuaValue::nil())?;
+        Ok(1)
+    }
+}
+
+// Searcher 3: Search package.cpath for C modules.
+fn searcher_c(l: &mut LuaState) -> LuaResult<usize> {
+    let modname = l
+        .get_arg(1)
+        .and_then(|value| value.as_str().map(str::to_owned))
+        .ok_or_else(|| l.error("module name expected".to_string()))?;
+    let cpath = package_cpath(l)?;
+    let Some(path) = search_path(&modname, &cpath, ".", std::path::MAIN_SEPARATOR_STR)? else {
+        let err = missing_native_module_message(&modname, &cpath);
+        let err = l.create_string(&err)?;
+        l.push_value(err)?;
+        return Ok(1);
+    };
+    let loader = load_native_module_function(l, &path, &modname).map_err(|error| {
+        l.error(format!(
+            "error loading module '{modname}' from file '{path}':\n\t{}",
+            error.message()
+        ))
+    })?;
+    l.push_value(loader)?;
+    let path = l.create_string(&path)?;
+    l.push_value(path)?;
+    Ok(2)
+}
+
+// Searcher 4: Search the root library for a submodule entry point.
+fn searcher_c_all_in_one(l: &mut LuaState) -> LuaResult<usize> {
+    let modname = l
+        .get_arg(1)
+        .and_then(|value| value.as_str().map(str::to_owned))
+        .ok_or_else(|| l.error("module name expected".to_string()))?;
+    let Some(root_name) = modname.split('.').next().filter(|root| *root != modname) else {
+        return Ok(0);
+    };
+    let cpath = package_cpath(l)?;
+    let Some(path) = search_path(root_name, &cpath, ".", std::path::MAIN_SEPARATOR_STR)? else {
+        return Ok(0);
+    };
+    let loader = match load_native_module_function(l, &path, &modname) {
+        Ok(loader) => loader,
+        Err(NativeLoadError::Symbol(_)) => {
+            let message = format!("\n\tno module '{modname}' in file '{path}'");
+            let message = l.create_string(&message)?;
+            l.push_value(message)?;
+            return Ok(1);
+        }
+        Err(error) => {
+            return Err(l.error(format!(
+                "error loading module '{modname}' from file '{path}':\n\t{}",
+                error.message()
+            )));
+        }
+    };
+    l.push_value(loader)?;
+    let path = l.create_string(&path)?;
+    l.push_value(path)?;
+    Ok(2)
+}
+
+fn package_cpath(l: &mut LuaState) -> LuaResult<String> {
+    let package = get_package_from_registry(l)?;
+    let cpath_key = l.create_string("cpath")?;
+    package
+        .as_table()
+        .and_then(|table| table.raw_get(&cpath_key))
+        .and_then(|value| value.as_str().map(str::to_owned))
+        .ok_or_else(|| l.error("'package.cpath' must be a string".to_string()))
+}
+
+fn missing_native_module_message(name: &str, cpath: &str) -> String {
+    let search_name = name.replace('.', std::path::MAIN_SEPARATOR_STR);
+    cpath
+        .split(';')
+        .map(|template| format!("\n\tno file '{}'", template.replace('?', &search_name)))
+        .collect()
+}
+
+fn native_open_symbols(module_name: &str) -> Vec<String> {
+    let module_name = module_name.replace('.', "_");
+    if let Some((prefix, suffix)) = module_name.split_once('-') {
+        vec![format!("luaopen_{prefix}"), format!("luaopen_{suffix}")]
+    } else {
+        vec![format!("luaopen_{module_name}")]
+    }
+}
+
+#[derive(Debug)]
+enum NativeLoadError {
+    Open(String),
+    Symbol(String),
+}
+
+impl NativeLoadError {
+    fn message(&self) -> &str {
+        match self {
+            Self::Open(message) | Self::Symbol(message) => message,
+        }
+    }
+}
+
+fn load_native_module_function(
+    l: &mut LuaState,
+    path: &str,
+    module_name: &str,
+) -> Result<LuaValue, NativeLoadError> {
+    let mut last_error = None;
+    for symbol in native_open_symbols(module_name) {
+        match load_native_function(l, path, &symbol) {
+            Ok(function) => return Ok(function),
+            Err(error @ NativeLoadError::Open(_)) => return Err(error),
+            Err(error @ NativeLoadError::Symbol(_)) => last_error = Some(error),
+        }
+    }
+    Err(last_error
+        .unwrap_or_else(|| NativeLoadError::Symbol("module has no open function".to_string())))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn load_native_function(
+    l: &mut LuaState,
+    path: &str,
+    symbol: &str,
+) -> Result<LuaValue, NativeLoadError> {
+    use libloading::{Library, Symbol};
+    use std::ffi::c_void;
+
+    let library_index = l
+        .global_state()
+        .native_libraries
+        .iter()
+        .position(|(loaded_path, _)| loaded_path == path);
+    let library_index = if let Some(index) = library_index {
+        index
+    } else {
+        let library = unsafe { Library::new(path) }
+            .map_err(|error| NativeLoadError::Open(error.to_string()))?;
+        let libraries = &mut l.global_state_mut().native_libraries;
+        libraries.push((path.to_owned(), library));
+        libraries.len() - 1
+    };
+    if symbol == "*" {
+        return Ok(LuaValue::boolean(true));
+    }
+    type OpenFunction = unsafe extern "C" fn(*mut crate::c_api::lua_State) -> std::ffi::c_int;
+    let callback = {
+        let library = &l.global_state().native_libraries[library_index].1;
+        unsafe {
+            let entry: Symbol<'_, OpenFunction> = library
+                .get(symbol.as_bytes())
+                .map_err(|error| NativeLoadError::Symbol(error.to_string()))?;
+            *entry as *const () as *mut c_void
+        }
+    };
+    crate::c_api::external_c_function(l, callback)
+        .map_err(|error| NativeLoadError::Symbol(l.get_error_msg(error)))
+}
+
+#[cfg(target_arch = "wasm32")]
+fn load_native_function(
+    _l: &mut LuaState,
+    _path: &str,
+    _symbol: &str,
+) -> Result<LuaValue, NativeLoadError> {
+    Err(NativeLoadError::Open(
+        "dynamic libraries are not supported on this platform".to_string(),
+    ))
+}
+// Helper: Search for a file in path templates
+fn search_path(name: &str, path: &str, sep: &str, rep: &str) -> LuaResult<Option<String>> {
+    let searchname = name.replace(sep, rep);
+    let templates: Vec<&str> = path.split(';').collect();
+
+    for template in templates {
+        let filepath = template.replace('?', &searchname);
+
+        // Check if file exists
+        if std::path::Path::new(&filepath).exists() {
+            return Ok(Some(filepath));
+        }
+    }
+
+    Ok(None)
+}
+
+fn package_loadlib(l: &mut LuaState) -> LuaResult<usize> {
+    let path = l
+        .get_arg(1)
+        .and_then(|value| value.as_str().map(str::to_owned))
+        .ok_or_else(|| l.error("bad argument #1 to 'loadlib' (string expected)".to_string()))?;
+    let symbol = l
+        .get_arg(2)
+        .and_then(|value| value.as_str().map(str::to_owned))
+        .ok_or_else(|| l.error("bad argument #2 to 'loadlib' (string expected)".to_string()))?;
+
+    match load_native_function(l, &path, &symbol) {
+        Ok(loader) => {
+            l.push_value(loader)?;
+            Ok(1)
+        }
+        Err(error) => {
+            l.push_value(LuaValue::nil())?;
+            let message = l.create_string(error.message())?;
+            l.push_value(message)?;
+            let stage = l.create_string(match error {
+                NativeLoadError::Open(_) => "open",
+                NativeLoadError::Symbol(_) => "init",
+            })?;
+            l.push_value(stage)?;
+            Ok(3)
+        }
+    }
+}
+
+fn package_searchpath(l: &mut LuaState) -> LuaResult<usize> {
+    let name_val = l
+        .get_arg(1)
+        .ok_or_else(|| l.error("bad argument #1 to 'searchpath' (string expected)".to_string()))?;
+    let path_val = l
+        .get_arg(2)
+        .ok_or_else(|| l.error("bad argument #2 to 'searchpath' (string expected)".to_string()))?;
+
+    let Some(name_str) = name_val.as_str() else {
+        return Err(l.error("bad argument #1 to 'searchpath' (string expected)".to_string()));
+    };
+
+    let Some(path_str) = path_val.as_str() else {
+        return Err(l.error("bad argument #2 to 'searchpath' (string expected)".to_string()));
+    };
+
+    // Optional sep and rep arguments
+    let sep_val = l.get_arg(3);
+
+    let sep = if let Some(sep_val) = &sep_val {
+        sep_val.as_str().unwrap_or(".")
+    } else {
+        "."
+    };
+
+    let rep_val = l.get_arg(4);
+
+    #[cfg(windows)]
+    let default_rep = "\\";
+    #[cfg(not(windows))]
+    let default_rep = "/";
+
+    let rep = if let Some(rep_val) = &rep_val {
+        rep_val.as_str().unwrap_or(default_rep)
+    } else {
+        default_rep
+    };
+
+    match search_path(name_str, path_str, sep, rep)? {
+        Some(filepath) => {
+            let filepath_str = l.create_string(&filepath)?;
+            l.push_value(filepath_str)?;
+            Ok(1)
+        }
+        None => {
+            let searchname = name_str.replace(sep, rep);
+            let err = format!(
+                "\n\tno file '{}'",
+                path_str
+                    .split(';')
+                    .map(|template| { template.replace('?', &searchname) })
+                    .collect::<Vec<_>>()
+                    .join("'\n\tno file '")
+            );
+            l.push_value(LuaValue::nil())?;
+            let err_str = l.create_string(&err)?;
+            l.push_value(err_str)?;
+            Ok(2)
+        }
+    }
+}

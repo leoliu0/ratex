@@ -332,7 +332,8 @@ impl Engine {
                 self.clear_prefixes();
             }
             let cc = t.cc();
-            let c = t.chr() as u8;
+            let scalar = t.chr();
+            let c = scalar as u8;
             match cc {
                 1 => {
                     // tex.web: a `{` in math mode opens a subformula whose
@@ -383,7 +384,7 @@ impl Engine {
                 }
                 4 => self.error("Misplaced alignment tab character &"),
                 10 => self.hspace_token(),
-                13 => self.active_char(c),
+                13 => self.active_char(scalar),
                 11 | 12 => self.text_character_token(t),
                 5 | 7 | 8 => {
                     if cc == 7 {
@@ -447,6 +448,20 @@ impl Engine {
             self.start_paragraph(true);
             return;
         }
+        if !self.mode.is_m() && self.xetex_interchartokenstate > 0 {
+            let cur_class = self.xetex_char_classes.get(&scalar).copied().unwrap_or(0);
+            if let Some(prev_class) = self.xetex_last_char_class {
+                if let Some(toks) = self.xetex_interchar_toks.get(&(prev_class, cur_class)).cloned() {
+                    if !toks.is_empty() {
+                        self.xetex_last_char_class = Some(cur_class);
+                        self.push_token(Token::unicode_char(if is_letter { 11 } else { 12 }, scalar));
+                        self.push_tokens(toks);
+                        return;
+                    }
+                }
+            }
+            self.xetex_last_char_class = Some(cur_class);
+        }
         // Resolve the scoped CJK face only when a CJK character actually uses
         // it. A Latin-only bold heading must not require a CJK bold face.
         if !self.mode.is_m() && char::from_u32(scalar).is_some_and(crate::native_layout::is_cjk) {
@@ -459,16 +474,19 @@ impl Engine {
             }
         }
         if !self.mode.is_m() && self.append_native_char(scalar) {
-            self.space_factor =
-                u8::try_from(scalar).map_or(1000, |byte| self.space_factor_of(byte));
+            self.space_factor = self.space_factor_of(scalar);
             return;
         }
         if let Ok(byte) = u8::try_from(scalar) {
             self.char_token(byte, is_letter);
         } else if self.mode.is_m() {
-            self.error(
-                "Unicode math requires OpenType MATH support, which Ratex does not implement",
-            );
+            let origin = self.math_diagnostic_origin();
+            self.append_mlist_node(crate::boxes::Node::MathChar {
+                fam: 0,
+                c: scalar,
+                class: 0,
+                origin,
+            });
         } else {
             self.error(&format!(
                 "Unicode character U+{scalar:04X} requires a native font selection"
@@ -591,7 +609,7 @@ impl Engine {
                 self.do_setbox();
                 true
             }
-            Count => {
+            Count | Attribute => {
                 let idx = self.scan_reg_num();
                 self.scan_optional_equals();
                 let v = self.scan_int();
@@ -663,7 +681,7 @@ impl Engine {
                 self.append_box_node(b);
                 true
             }
-            CountDef => {
+            CountDef | AttributeDef => {
                 self.do_def_register(|_engine, idx| Equiv::CountReg(idx));
                 true
             }
@@ -1061,7 +1079,7 @@ impl Engine {
 
         if t.is_char() && t.cc() == 13 {
             self.definable_cs_recovery_count = 0;
-            let aid = self.active_cs_id(t.chr() as u8);
+            let aid = self.active_cs_id(t.chr());
 
             return aid;
         }
@@ -1501,8 +1519,8 @@ impl Engine {
                     out.push(Token::char(6, b'#' as u32));
                     continue;
                 }
-                if t2.is_char() && (b'1'..=b'9').contains(&(t2.chr() as u8)) {
-                    let parameter = (t2.chr() & 0xF) as u8;
+                if t2.is_char() && (u32::from(b'1')..=u32::from(b'9')).contains(&t2.chr()) {
+                    let parameter = (t2.chr() - u32::from(b'0')) as u8;
                     if parameter <= num_params {
                         out.push(Token(PAR_REF_FLAG | u32::from(parameter)));
                     } else {
@@ -1576,7 +1594,7 @@ impl Engine {
             if tc.is_cs() {
                 self.copy_meaning(target, tc.cs_id(), global);
             } else if tc.is_char() && tc.cc() == 13 {
-                let id = self.active_cs_id(tc.chr() as u8);
+                let id = self.active_cs_id(tc.chr());
                 self.copy_meaning(target, id, global);
             } else {
                 self.eqtb.assign(target, Equiv::CharTok(tc.0), global);
@@ -1603,7 +1621,7 @@ impl Engine {
             if t.is_cs() {
                 self.copy_meaning(target, t.cs_id(), global);
             } else if t.is_char() && t.cc() == 13 {
-                let id = self.active_cs_id(t.chr() as u8);
+                let id = self.active_cs_id(t.chr());
                 self.copy_meaning(target, id, global);
             } else if t.0 >= crate::expand::PAR_REF_FLAG
                 && t.0 < 0xFFFF_0000
@@ -1717,14 +1735,14 @@ impl Engine {
             if t.is_cs() {
                 break;
             }
-            if name.len() == MAX_CONTROL_SEQUENCE_NAME_BYTES {
+            t.append_character_bytes(&mut name);
+            if name.len() > MAX_CONTROL_SEQUENCE_NAME_BYTES {
                 self.fatal_error_at(
                     "TeX capacity exceeded, sorry [control sequence name exceeds 2000 bytes]",
                     origin.as_ref().map(crate::input::SourceMark::to_context),
                 );
                 return self.cs.lookup(b"relax").unwrap_or(0);
             }
-            name.push(t.chr() as u8);
         }
         let id = self.cs.intern(&name);
         self.last_named_cs = Some(id);

@@ -11,6 +11,8 @@ use tex_core::driver::png_embed_options;
 use tex_core::driver::{finalize_format_load, install_pdftex_config_registers};
 
 static EMBEDDED_DEFAULT_FMT: &[u8] = include_bytes!("../../assets/default.fmt.zst");
+static EMBEDDED_XELATEX_FMT: &[u8] = include_bytes!("../../assets/xelatex.fmt.zst");
+static EMBEDDED_LUALATEX_FMT: &[u8] = include_bytes!("../../assets/lualatex.fmt.zst");
 const DEPCACHE_MAX_BYTES: u64 = 512 * 1024 * 1024;
 const DEPCACHE_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(30 * 24 * 60 * 60);
 const DEPCACHE_GC_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60 * 60);
@@ -1481,7 +1483,8 @@ fn apply_mem_limit() {
         Err(_) => 512,
     };
     let rss = mib.saturating_mul(1 << 20);
-    // 4x RSS, at least 2 GiB: mimalloc may reserve arenas. Still << host RAM.
+    // Keep enough virtual address space for allocator metadata and transient
+    // decompression buffers while preserving the requested RSS guard.
     let as_bytes = rss.saturating_mul(4).max(2 << 30);
     let lim = libc::rlimit {
         rlim_cur: as_bytes as libc::rlim_t,
@@ -1855,7 +1858,7 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
             if program == "xelatex" {
                 println!("Ratex {version} (xelatex compatibility mode; pdfTeX-2h 1.40.29-rs)");
             } else if program == "lualatex" {
-                println!("Ratex {version} (lualatex compatibility mode; pdfTeX-2h 1.40.29-rs)");
+                println!("LuaTeX 1.24.0 (Ratex {version})");
             } else {
                 println!("pdfTeX-2h 1.40.29-rs (Ratex {version})");
             }
@@ -1954,8 +1957,16 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
             let _ = std::fs::create_dir_all(directory);
         }
     }
-    let mut eng = Engine::new(ini || !plain);
+    let engine_kind = match program.as_str() {
+        "lualatex" => tex_core::engine::EngineKind::LuaTeX,
+        "xelatex" => tex_core::engine::EngineKind::XeTeX,
+        _ => tex_core::engine::EngineKind::PdfTeX,
+    };
+    let mut eng = Engine::new_with_kind(engine_kind, ini || !plain);
     eng.init_primitives();
+    if engine_kind == tex_core::engine::EngineKind::LuaTeX {
+        eng.init_luatex_primitives();
+    }
     eng.allow_missing_main_aux = !plain && !ini;
     eng.synctex_enabled = synctex_enabled;
     configure_engine(&mut eng, halt_on_error, interaction_mode, max_errors);
@@ -1969,11 +1980,16 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
     }
     eng.job_name = job.clone();
     if !plain && !ini {
+        let fmt_file_name = match program.as_str() {
+            "lualatex" => "lualatex.fmt",
+            "xelatex" => "xelatex.fmt",
+            _ => "pdflatex.fmt",
+        };
         let exe_fmt = std::env::current_exe()
             .ok()
-            .and_then(|p| p.parent().map(|d| d.join("pdflatex.fmt")));
+            .and_then(|p| p.parent().map(|d| d.join(fmt_file_name)));
         let cand_paths = [
-            Some(std::path::PathBuf::from("pdflatex.fmt")),
+            Some(std::path::PathBuf::from(fmt_file_name)),
             exe_fmt.clone(),
         ];
         let mut loaded = false;
@@ -1993,8 +2009,11 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
                                     cand.display()
                                 ),
                             );
-                            eng = Engine::new(ini || !plain);
+                            eng = Engine::new_with_kind(engine_kind, ini || !plain);
                             eng.init_primitives();
+                            if engine_kind == tex_core::engine::EngineKind::LuaTeX {
+                                eng.init_luatex_primitives();
+                            }
                             configure_engine(&mut eng, halt_on_error, interaction_mode, max_errors);
                             eng.out_dir = out_dir.clone();
                             eng.aux_dir = requested_aux_dir.clone();
@@ -2021,8 +2040,13 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
                 }
             }
         }
-        if !loaded && !EMBEDDED_DEFAULT_FMT.is_empty() {
-            match tex_core::format::load_format_bytes_into(EMBEDDED_DEFAULT_FMT, &mut eng) {
+        let embedded_fmt = match program.as_str() {
+            "lualatex" => EMBEDDED_LUALATEX_FMT,
+            "xelatex" => EMBEDDED_XELATEX_FMT,
+            _ => EMBEDDED_DEFAULT_FMT,
+        };
+        if !loaded && !embedded_fmt.is_empty() {
+            match tex_core::format::load_format_bytes_into(embedded_fmt, &mut eng) {
                 Ok(()) => {
                     if eng.eqtb.cat[b'd' as usize] == 11 && eng.eqtb.cat[b'@' as usize] != 0 {
                         loaded = true;
@@ -2050,7 +2074,12 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
             // latex.ltx builds and dumps the format.
             install_pdftex_config_registers(&mut eng);
             eng.add_nullfont();
-            eng.input_file("pdflatex.ini");
+            let ini_file = match program.as_str() {
+                "lualatex" => "lualatex.ini",
+                "xelatex" => "xelatex.ini",
+                _ => "pdflatex.ini",
+            };
+            eng.input_file(ini_file);
             eng.run();
             eng.finish_job_diagnostics();
             if let Some(failure) = format_boot_failure(&eng) {
@@ -2132,7 +2161,7 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
             env!("CARGO_PKG_VERSION")
         ),
         "lualatex" => format!(
-            "This is pdfTeX-2h 1.40.29-rs (Ratex {})\nRatex note: lualatex / -lualatex is a compatibility invocation flag, not the LuaHBTeX runtime.\n",
+            "This is LuaTeX, Version 1.24.0 (Ratex {})\n",
             env!("CARGO_PKG_VERSION")
         ),
         _ => format!(

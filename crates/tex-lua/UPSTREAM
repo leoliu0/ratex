@@ -1,0 +1,8 @@
+Repository: https://github.com/CppCXY/lua-rs
+Commit: 79d69c7282842c6dcfc4f68ec92ebb62628e8ebe
+Upstream crate: luars 0.26.3
+License: MIT (see LICENSE-MIT)
+
+The src tree was imported from the commit above. Ratex-specific compatibility
+work is maintained in-tree. This import is a Lua 5.5 starting point and is not
+itself a claim of Lua 5.3 or LuaTeX compatibility.

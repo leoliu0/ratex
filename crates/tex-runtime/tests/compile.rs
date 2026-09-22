@@ -1,4 +1,5 @@
-use tex_runtime::{Session, Status};
+use tex_core::engine::EngineKind;
+use tex_runtime::{CompileRequest, EngineChoice, PassPolicy, Session, Status};
 
 fn session(source: &str) -> Session {
     let mut session = Session::new();
@@ -311,4 +312,43 @@ Should fail because custom.otf is not in this session.
     let r2 = s2.compile("main.tex");
     assert_eq!(r2.status, Status::CompilationError);
     assert!(r2.pdf.is_empty());
+}
+
+#[test]
+fn compile_request_records_engine_and_honors_output_roots() {
+    let s = session(HELLO);
+    let mut request = CompileRequest::new("main.tex");
+    request.job_name = Some("single".into());
+    request.output_root = Some("dist".into());
+    request.aux_root = Some("work".into());
+    let result = s.compile_request(request);
+    assert_eq!(result.status, Status::Success, "{}", result.diagnostics);
+    assert_eq!(result.selected_engine, EngineKind::PdfTeX);
+    assert_eq!(result.passes, 2);
+    assert_eq!(result.bibtex_runs, 0);
+    assert_eq!(result.files["dist/single.pdf"], result.pdf);
+    assert!(result.files.contains_key("work/single.log"));
+}
+
+#[test]
+fn unsupported_explicit_profile_is_not_run_as_pdftex() {
+    let s = session(HELLO);
+    let mut request = CompileRequest::new("main.tex");
+    request.engine = EngineChoice::Explicit(EngineKind::XeTeX);
+    let result = s.compile_request(request);
+    assert_eq!(result.status, Status::UnsupportedEngine);
+    assert_eq!(result.selected_engine, EngineKind::XeTeX);
+    assert_eq!(result.passes, 0);
+    assert!(result.pdf.is_empty());
+}
+
+#[test]
+fn luatex_engine_compilation_succeeds() {
+    let s = session(HELLO);
+    let mut request = CompileRequest::new("main.tex");
+    request.engine = EngineChoice::Explicit(EngineKind::LuaTeX);
+    let result = s.compile_request(request);
+    assert_eq!(result.status, Status::Success, "{}", result.diagnostics);
+    assert_eq!(result.selected_engine, EngineKind::LuaTeX);
+    assert!(!result.pdf.is_empty());
 }

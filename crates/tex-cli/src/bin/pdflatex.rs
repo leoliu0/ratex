@@ -1959,7 +1959,6 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
     }
     let engine_kind = match program.as_str() {
         "lualatex" => tex_core::engine::EngineKind::LuaTeX,
-        "xelatex" => tex_core::engine::EngineKind::XeTeX,
         _ => tex_core::engine::EngineKind::PdfTeX,
     };
     let mut eng = Engine::new_with_kind(engine_kind, ini || !plain);
@@ -1982,7 +1981,6 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
     if !plain && !ini {
         let fmt_file_name = match program.as_str() {
             "lualatex" => "lualatex.fmt",
-            "xelatex" => "xelatex.fmt",
             _ => "pdflatex.fmt",
         };
         let exe_fmt = std::env::current_exe()
@@ -2042,7 +2040,6 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
         }
         let embedded_fmt = match program.as_str() {
             "lualatex" => EMBEDDED_LUALATEX_FMT,
-            "xelatex" => EMBEDDED_XELATEX_FMT,
             _ => EMBEDDED_DEFAULT_FMT,
         };
         if !loaded && !embedded_fmt.is_empty() {
@@ -2076,7 +2073,6 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
             eng.add_nullfont();
             let ini_file = match program.as_str() {
                 "lualatex" => "lualatex.ini",
-                "xelatex" => "xelatex.ini",
                 _ => "pdflatex.ini",
             };
             eng.input_file(ini_file);

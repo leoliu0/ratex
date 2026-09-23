@@ -227,13 +227,13 @@ pub fn prepare_latex_job(eng: &mut Engine) {
 }
 
 pub fn insert_everyjob(eng: &mut Engine) {
-    let dl = eng.cs.intern(b"directlua");
-    eng.eqtb.assign(
-        dl,
-        crate::eqtb::Equiv::Prim(crate::prim::Prim::DirectLua),
-        true,
-    );
     if eng.engine_kind == crate::engine::EngineKind::LuaTeX {
+        let dl = eng.cs.intern(b"directlua");
+        eng.eqtb.assign(
+            dl,
+            crate::eqtb::Equiv::Prim(crate::prim::Prim::DirectLua),
+            true,
+        );
         let code = b"\\ExplSyntaxOn\\long\\def\\lua_load_module:n#1{\\directlua{pcall(require, '#1')}}\\let\\sys_if_engine_luatex:TF\\use_i:nn\\let\\sys_if_engine_luatex:T\\use:n\\let\\sys_if_engine_luatex:F\\use_none:n\\let\\sys_if_engine_pdftex:TF\\use_ii:nn\\let\\sys_if_engine_pdftex:T\\use_none:n\\let\\sys_if_engine_pdftex:F\\use:n\\ExplSyntaxOff ";
         eng.input.push_file("<luatex-init>".to_string(), code.to_vec());
         let ej = (*eng.eqtb.tok_params[crate::prim::ToksParam::EveryJob.idx() as usize]).clone();
@@ -242,6 +242,7 @@ pub fn insert_everyjob(eng: &mut Engine) {
         }
         return;
     }
+    let dl = eng.cs.intern(b"directlua");
     if let Some(let_id) = eng.cs.lookup(b"let") {
         let undef = eng.cs.intern(b"@undefined");
         eng.push_tokens_named(

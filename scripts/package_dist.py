@@ -197,7 +197,7 @@ def validate_format_file(explicit: str) -> Path:
     )
     # Keep this in step with tex_core::format::parse_header, which accepts the
     # preceding v8 wire layout and fills its newly added fields with defaults.
-    accepted_versions = {expected[0], 9, 8}
+    accepted_versions = set(range(8, expected[0] + 1))
 
     def compatible(path: Path) -> bool:
         if not path.is_file():

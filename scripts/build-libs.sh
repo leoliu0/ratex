@@ -21,7 +21,7 @@ if [[ "$mode" == wasm || "$mode" == all ]]; then
 fi
 
 if [[ "$mode" == native || "$mode" == all ]]; then
-    cargo build --locked --profile ffi-release -p libtex
+    cargo build --locked --profile ffi-release -p libtex ${CARGO_BUILD_JOBS:+-j "$CARGO_BUILD_JOBS"}
     mkdir -p "$target_dir/libtex/include"
     cp crates/libtex/include/tex.h "$target_dir/libtex/include/tex.h"
     for name in libtex.so libtex.a libtex.dylib tex.dll tex.dll.lib tex.lib; do
@@ -34,7 +34,7 @@ if [[ "$mode" == native || "$mode" == all ]]; then
 fi
 
 if [[ "$mode" == wasm || "$mode" == all ]]; then
-    cargo build --locked --release -p tex-wasm --target wasm32-unknown-unknown
+    cargo build --locked --release -p tex-wasm --target wasm32-unknown-unknown ${CARGO_BUILD_JOBS:+-j "$CARGO_BUILD_JOBS"}
     for target in web nodejs; do
         "$bindgen" "$target_dir/wasm32-unknown-unknown/release/tex_wasm.wasm" \
             --target "$target" --out-dir "$target_dir/wasm/$target" --out-name tex

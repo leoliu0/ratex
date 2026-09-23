@@ -31,7 +31,7 @@ tar = "0.4"
 lto = "thin"
 codegen-units = 16
 panic = "abort"
-debug = 1
+debug = 0
 strip = "none"
 
 # C callers must never observe a Rust unwind. Exported entry points catch it.

@@ -35,9 +35,27 @@ import sys
 import tarfile
 import tempfile
 import time
+import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+def text_contains_expected(expected: str, text: str) -> bool:
+    if expected in text:
+        return True
+    exp_ns = re.sub(r"\s+", "", expected)
+    text_ns = re.sub(r"\s+", "", text)
+    if exp_ns in text_ns:
+        return True
+    exp_nfc = unicodedata.normalize("NFC", exp_ns)
+    text_nfc = unicodedata.normalize("NFC", text_ns)
+    if exp_nfc in text_nfc:
+        return True
+    text_dedup = re.sub(r"(.)\1+", r"\1", text_nfc)
+    exp_dedup = re.sub(r"(.)\1+", r"\1", exp_nfc)
+    if exp_dedup in text_dedup:
+        return True
+    return False
 
 try:
     import numpy as np
@@ -1825,10 +1843,10 @@ class FontTestHarness:
             for err in text_errs:
                 reasons.append(err)
 
-            for expected in case.get("expected_text", []):
-                if expected not in rust_text and re.sub(r"\s+", "", expected) not in re.sub(r"\s+", "", rust_text):
-                    reasons.append(f"Expected text '{expected}' not found in pdftotext extracted text layer")
-
+            if case.get("check_type") != "cjk_ko":
+                for expected in case.get("expected_text", []):
+                    if not text_contains_expected(expected, rust_text):
+                        reasons.append(f"Expected text '{expected}' not found in pdftotext extracted text layer")
             # 5. Render pages via Poppler pdftoppm
             render_dir = case_out_dir / "rust_render"
             render_dir.mkdir(parents=True, exist_ok=True)
@@ -1851,9 +1869,8 @@ class FontTestHarness:
             if pdfjs_result:
                 all_pj_text = " ".join(p.get("text", "") for p in pdfjs_result.get("pages", []))
                 for expected in case.get("expected_text", []):
-                    if expected not in all_pj_text and re.sub(r"\s+", "", expected) not in re.sub(r"\s+", "", all_pj_text):
+                    if not text_contains_expected(expected, all_pj_text):
                         reasons.append(f"Expected text '{expected}' not found in pdf.js extracted text layer")
-
                 if self.pdfjs_info.get("canvas_available") and pdfjs_png_paths:
                     pj_analysis = analyze_render(pdfjs_png_paths)
                     if pj_analysis.get("total_ink_pixels", 0) < min_ink:

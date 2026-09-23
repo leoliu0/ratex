@@ -81,7 +81,7 @@ jobs:
 
       # Call Gemini 3.8 Flash to analyze compilation failure or answer question
       - name: AI Diagnosis with Gemini 3.8 Flash
-        if: steps.test-tex.outputs.has_snippet == 'true' && steps.run-reproduce.outputs.RATE_EXIT_CODE != '0' && env.GEMINI_API_KEY != ''
+        if: steps.test-tex.outputs.has_snippet == 'true' && steps.run-reproduce.outputs.RATE_EXIT_CODE != '0'
         id: gemini-ai
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}

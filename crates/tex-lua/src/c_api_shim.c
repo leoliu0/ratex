@@ -129,7 +129,13 @@ struct tex_lua_jump_frame {
     struct tex_lua_jump_frame *previous;
 };
 
-static _Thread_local struct tex_lua_jump_frame *tex_lua_active_jump;
+#if defined(_MSC_VER)
+#define THREAD_LOCAL __declspec(thread)
+#else
+#define THREAD_LOCAL _Thread_local
+#endif
+
+static THREAD_LOCAL struct tex_lua_jump_frame *tex_lua_active_jump;
 int tex_lua_invoke_c(lua_CFunction function, lua_State *state, int *result) {
     struct tex_lua_jump_frame frame;
     frame.previous = tex_lua_active_jump;

@@ -638,6 +638,7 @@ fn os_rename(l: &mut LuaState) -> LuaResult<usize> {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn os_setlocale(l: &mut LuaState) -> LuaResult<usize> {
     let locale = match l.get_arg(1) {
         None => None,
@@ -682,6 +683,13 @@ fn os_setlocale(l: &mut LuaState) -> LuaResult<usize> {
         let value = l.create_bytes(bytes)?;
         l.push_value(value)?;
     }
+    Ok(1)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn os_setlocale(l: &mut LuaState) -> LuaResult<usize> {
+    let c_str = l.create_string("C")?;
+    l.push_value(c_str)?;
     Ok(1)
 }
 

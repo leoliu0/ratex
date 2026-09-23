@@ -101,22 +101,22 @@ jobs:
           logs = """${{ steps.run-reproduce.outputs.LOG_OUTPUT }}"""
 
           prompt = f"""You are the automated AI maintainer for 'ratex', an ultra-fast, pure-Rust TeX engine.
-A user reported a compilation failure on the following snippet:
-
-LaTeX Snippet:
-```latex
-{tex_snippet}
-```
-
-Ratex Compiler Error:
-```text
-{logs}
-```
-
-Please analyze:
-1. What went wrong (root cause in TeX/LaTeX or missing package/macro behavior).
-2. A suggested workaround for the user in their LaTeX document.
-3. Keep your response concise, friendly, and formatted in clean markdown."""
+              A user reported a compilation failure on the following snippet:
+              
+              LaTeX Snippet:
+              ```latex
+              {tex_snippet}
+              ```
+              
+              Ratex Compiler Error:
+              ```text
+              {logs}
+              ```
+              
+              Please analyze:
+              1. What went wrong (root cause in TeX/LaTeX or missing package/macro behavior).
+              2. A suggested workaround for the user in their LaTeX document.
+              3. Keep your response concise, friendly, and formatted in clean markdown."""
 
           url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key={api_key}"
           req = urllib.request.Request(
@@ -161,29 +161,29 @@ Please analyze:
             if (hasSnippet) {
               if (exitCode === '0') {
                 message = `🤖 **Ratex Bot Reproduction Report**
-
-I ran your minimal reproduction snippet against the current \`main\` branch of \`ratex\`:
-
-✅ **Compiled Successfully (Exit Code 0)**
-
-\`\`\`text
-${logs}
-\`\`\`
-
-The document compiled without fatal errors. If you are experiencing visual bugs or unexpected layout differences compared to TeX Live, please provide a comparison screenshot or mention the specific output discrepancy.`;
-              } else {
-                message = `🤖 **Ratex Bot Reproduction Report**
-
-I reproduced the error against the current \`main\` branch of \`ratex\`:
-
-❌ **Compilation Failed (Exit Code ${exitCode})**
-
-\`\`\`text
-${logs}
-\`\`\`${geminiAdvice}
-
-This issue has been labeled as \`reproduced-bug\` and flagged for investigation.`;
-
+              
+              I ran your minimal reproduction snippet against the current \`main\` branch of \`ratex\`:
+              
+              ✅ **Compiled Successfully (Exit Code 0)**
+              
+              \`\`\`text
+              ${logs}
+              \`\`\`
+              
+              The document compiled without fatal errors. If you are experiencing visual bugs or unexpected layout differences compared to TeX Live, please provide a comparison screenshot or mention the specific output discrepancy.`;
+                            } else {
+                              message = `🤖 **Ratex Bot Reproduction Report**
+              
+              I reproduced the error against the current \`main\` branch of \`ratex\`:
+              
+              ❌ **Compilation Failed (Exit Code ${exitCode})**
+              
+              \`\`\`text
+              ${logs}
+              \`\`\`${geminiAdvice}
+              
+              This issue has been labeled as \`reproduced-bug\` and flagged for investigation.`;
+              
                 try {
                   await github.rest.issues.addLabels({
                     owner: context.repo.owner,
@@ -196,18 +196,18 @@ This issue has been labeled as \`reproduced-bug\` and flagged for investigation.
             } else {
               if (!isComment && author !== 'leoliu0') {
                 message = `Hi @${author}! 👋 Thanks for opening this issue.
-
-To help diagnose and fix this quickly, please provide a **minimal self-contained \`.tex\` reproduction snippet** wrapped in triple backticks:
-
-\`\`\`latex
-\\documentclass{article}
-\\begin{document}
-% Your minimal snippet reproducing the error
-\\end{document}
-\`\`\`
-
-As soon as a code snippet is provided, I will automatically test and verify it against \`ratex\`.`;
-              }
+              
+              To help diagnose and fix this quickly, please provide a **minimal self-contained \`.tex\` reproduction snippet** wrapped in triple backticks:
+              
+              \`\`\`latex
+              \\documentclass{article}
+              \\begin{document}
+              % Your minimal snippet reproducing the error
+              \\end{document}
+              \`\`\`
+              
+              As soon as a code snippet is provided, I will automatically test and verify it against \`ratex\`.`;
+                            }
             }
 
             if (message) {

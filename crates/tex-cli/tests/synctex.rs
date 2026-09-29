@@ -2,6 +2,9 @@
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static NEXT_PROJECT: AtomicU64 = AtomicU64::new(0);
 
 struct Project(PathBuf);
 
@@ -11,10 +14,19 @@ impl Project {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let path =
-            std::env::temp_dir().join(format!("ratex-synctex-{}-{nonce}", std::process::id()));
-        std::fs::create_dir_all(&path).unwrap();
-        Self(path)
+        for _ in 0..32 {
+            let sequence = NEXT_PROJECT.fetch_add(1, Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!(
+                "ratex-synctex-{}-{nonce}-{sequence}",
+                std::process::id()
+            ));
+            match std::fs::create_dir(&path) {
+                Ok(()) => return Self(path),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => panic!("cannot create {}: {error}", path.display()),
+            }
+        }
+        panic!("could not reserve an isolated SyncTeX test directory");
     }
 
     fn texmk(&self) -> Output {

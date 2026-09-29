@@ -34,6 +34,18 @@ jobs:
           cp Formula/ratex.rb "$(brew --repository leoliu0/ratex)/Formula/ratex.rb"
           brew install leoliu0/ratex/ratex
           brew test leoliu0/ratex/ratex
+      - name: Exercise archive installer migration
+        run: |
+          bundle="$(brew --prefix leoliu0/ratex/ratex)"
+          work="$(mktemp -d)"
+          trap 'rm -rf "$work"' EXIT
+          mkdir -p "$work/home"
+          export HOME="$work/home"
+          sh packaging/install-macos.sh --bundle "$bundle" --prefix "$work/old install" --no-path
+          touch "$work/old install/bin/unrelated"
+          sh packaging/install-macos.sh --uninstall --prefix "$work/old install"
+          test ! -e "$work/old install/bin/ratex"
+          test -f "$work/old install/bin/unrelated"
       - name: Publish verified formula
         run: |
           git config user.name 'github-actions[bot]'

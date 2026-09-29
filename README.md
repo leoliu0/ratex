@@ -74,6 +74,37 @@ Download and run the native installer package:
 - [macOS Apple Silicon (.pkg)](https://github.com/leoliu0/ratex/releases/download/v0.4.5/ratex-v0.4.5-macos-aarch64.pkg)
 - [macOS Intel (.pkg)](https://github.com/leoliu0/ratex/releases/download/v0.4.5/ratex-v0.4.5-macos-x86_64.pkg)
 
+#### Migrating from the GitHub installer to Homebrew
+
+Homebrew does not overwrite an installation in `~/.local` or a GitHub `.pkg`
+installation in `/usr/local`. Remove or stop selecting the old copy before
+switching editors.
+
+1. In Terminal, run `type -a ratex` to identify existing copies.
+2. For an installation made with the archive's `install.sh`, run its uninstaller
+   from the extracted archive with the **same prefix and data directory** used
+   during installation:
+   ```bash
+   ./install.sh --uninstall --prefix "$HOME/.local"
+   # System install, only if you originally used --system:
+   sudo ./install.sh --uninstall --prefix /usr/local
+   ```
+   Include your original `--data-dir` or `--app-support` option if used.
+   The uninstaller preserves unmanaged files; a missing ownership manifest means
+   it will not remove that installation. Do not run it against a Homebrew prefix.
+3. For the native GitHub `.pkg` or a manually copied binary, the shell uninstaller
+   cannot establish ownership. Inspect `pkgutil --files io.github.leoliu0.ratex`
+   for a `.pkg` installation. Move only confirmed old Ratex files aside before
+   Homebrew links into `/usr/local`; do not delete other TeX tools or use
+   `brew link --overwrite`. `pkgutil --forget` alone does not remove files.
+4. Install the maintained tap using the commands above. Open a new Terminal,
+   run `type -a ratex` and `"$(brew --prefix)/bin/ratex" --version`, then configure
+   TeXstudio with that absolute Homebrew path as described below.
+
+If core's `ratex` is already installed, use `brew uninstall ratex` before
+installing `leoliu0/ratex/ratex`. Neither uninstall your documents nor TeX Live
+just to change which executable your editor uses.
+
 ### Windows
 - [Download Windows Setup (.exe)](https://github.com/leoliu0/ratex/releases/download/v0.4.5/ratex-setup-v0.4.5-windows-x64.exe)
 
@@ -98,13 +129,43 @@ ratex -c
 ### Editor Setup
 Configure your editor or build system to invoke `ratex`:
 #### TeXstudio Setup
-- **Manual configuration:**
-  1. Open **Options** &rarr; **Configure TeXstudio** &rarr; **Build**.
-  2. Set **Default Compiler** to:
-     ```text
-     ratex -pdf -interaction=nonstopmode %.tex
-     ```
-  3. Press **F5** to compile.
+1. Find the executable in Terminal: `command -v ratex`. For Homebrew, use
+   `echo "$(brew --prefix)/bin/ratex"` and verify that path with `--version`.
+   Typical paths are `/opt/homebrew/bin/ratex` (Apple Silicon) and
+   `/usr/local/bin/ratex` (Intel). Use your actual prefix.
+2. Open **Options → Configure TeXstudio → Commands** (on macOS,
+   **TeXstudio → Preferences → Commands**). Set **Latexmk** to the command
+   below, replacing the executable path with yours:
+   ```text
+   "/opt/homebrew/bin/ratex" -pdf -interaction=nonstopmode "%.tex"
+   ```
+3. Under **Build**, select **Latexmk** as **Default Compiler** and
+   **Compile & View** as **Build & View**. The command belongs in **Commands**,
+   not in the Default Compiler selector. Press **F6** to compile or **F5**
+   to compile and view.
+
+An absolute executable path avoids macOS GUI apps depending on your Terminal
+PATH. Quoting `"%.tex"` handles project paths containing spaces. Do not paste
+`$(brew --prefix)` into TeXstudio: its command field is not a shell.
+Keep the PDF and `.synctex.gz` together for the internal viewer's source navigation.
+See the [TeXstudio command documentation](https://texstudio-org.github.io/configuration.html#configuring-the-latex-related-commands).
+
+**Optional aliases:** the maintained Homebrew tap installs only `ratex`, so it
+does not replace TeX Live's `latexmk` or other compiler commands. To opt into a
+Ratex-backed `latexmk` command for your editor, create an isolated alias:
+
+```bash
+mkdir -p "$HOME/.local/ratex-editor/bin"
+ln -s "$(brew --prefix)/bin/ratex" "$HOME/.local/ratex-editor/bin/latexmk"
+```
+
+Set TeXstudio's **Commands → Latexmk** executable to that alias's absolute
+path, with `-pdf -interaction=nonstopmode "%.tex"` as its arguments.
+Do not add this directory to PATH unless you explicitly want other programs
+to select the alias too. To undo it, remove only that symlink and restore
+your previous TeXstudio command. `ln -s` deliberately refuses to overwrite
+an existing file.
+
 
 #### VS Code (LaTeX Workshop) Setup
 Add this recipe to your VS Code `settings.json`:

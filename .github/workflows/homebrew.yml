@@ -30,6 +30,8 @@ jobs:
           HOMEBREW_NO_AUTO_UPDATE: "1"
         run: |
           brew tap leoliu0/ratex "$PWD"
+          mkdir -p "$(brew --repository leoliu0/ratex)/Formula"
+          cp Formula/ratex.rb "$(brew --repository leoliu0/ratex)/Formula/ratex.rb"
           brew install leoliu0/ratex/ratex
           brew test leoliu0/ratex/ratex
       - name: Publish verified formula

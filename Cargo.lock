@@ -461,7 +461,7 @@ dependencies = [
 
 [[package]]
 name = "libtex"
-version = "0.4.4"
+version = "0.4.5"
 dependencies = [
  "dlmalloc",
  "tex-runtime",
@@ -904,14 +904,14 @@ checksum = "c1bbb9f3c5c463a01705937a24fdabc5047929ac764b2d5b9cf681c1f5041ed5"
 
 [[package]]
 name = "tex-bibtex"
-version = "0.4.4"
+version = "0.4.5"
 dependencies = [
  "tex-kpse",
 ]
 
 [[package]]
 name = "tex-cli"
-version = "0.4.4"
+version = "0.4.5"
 dependencies = [
  "dlmalloc",
  "libc",
@@ -923,7 +923,7 @@ dependencies = [
 
 [[package]]
 name = "tex-core"
-version = "0.4.4"
+version = "0.4.5"
 dependencies = [
  "crc32fast",
  "flate2",
@@ -947,7 +947,7 @@ dependencies = [
 
 [[package]]
 name = "tex-kpse"
-version = "0.4.4"
+version = "0.4.5"
 dependencies = [
  "ruzstd",
  "tar",
@@ -956,7 +956,7 @@ dependencies = [
 
 [[package]]
 name = "tex-lua"
-version = "0.4.4"
+version = "0.4.5"
 dependencies = [
  "cc",
  "chrono",
@@ -972,7 +972,7 @@ dependencies = [
 
 [[package]]
 name = "tex-lua-derive"
-version = "0.4.4"
+version = "0.4.5"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -981,18 +981,18 @@ dependencies = [
 
 [[package]]
 name = "tex-mplib"
-version = "0.4.4"
+version = "0.4.5"
 
 [[package]]
 name = "tex-ps"
-version = "0.4.4"
+version = "0.4.5"
 dependencies = [
  "flate2",
 ]
 
 [[package]]
 name = "tex-runtime"
-version = "0.4.4"
+version = "0.4.5"
 dependencies = [
  "lopdf",
  "tex-bibtex",
@@ -1002,7 +1002,7 @@ dependencies = [
 
 [[package]]
 name = "tex-wasm"
-version = "0.4.4"
+version = "0.4.5"
 dependencies = [
  "dlmalloc",
  "getrandom",

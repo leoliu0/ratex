@@ -126,6 +126,7 @@ jobs:
             choco install poppler --no-progress --yes
             if ($LASTEXITCODE -eq 0) {
               "C:\ProgramData\chocolatey\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+              $env:PATH = "C:\ProgramData\chocolatey\bin;$env:PATH"
               if ((Get-Command pdffonts -ErrorAction SilentlyContinue) -and
                   (Get-Command pdftoppm -ErrorAction SilentlyContinue) -and
                   (Get-Command pdftotext -ErrorAction SilentlyContinue)) {

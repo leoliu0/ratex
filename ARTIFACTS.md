@@ -78,6 +78,14 @@ and packaging verifies the completed archive before returning success. The
 installers keep an ownership manifest and remove or replace only paths created
 by an earlier tex-suite install.
 
+### Release publication
+
+On version tags, verified platform artifacts are published even if another
+platform's build fails. The workflow still reports failure when an expected
+Linux, macOS, Windows, or library artifact is missing; failed builds do not
+publish their unverified output. Windows packaging requires working Poppler
+tools before running PDF verification.
+
 ### Testing the self-contained contract
 
 The regression suite verifies self-containment through observable behavior:

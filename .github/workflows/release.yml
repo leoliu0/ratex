@@ -122,8 +122,19 @@ jobs:
         if: matrix.platform == 'windows'
         shell: pwsh
         run: |
-          choco install poppler --no-progress
-          "C:\ProgramData\chocolatey\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          for ($attempt = 1; $attempt -le 3; $attempt++) {
+            choco install poppler --no-progress --yes
+            if ($LASTEXITCODE -eq 0) {
+              "C:\ProgramData\chocolatey\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+              if ((Get-Command pdffonts -ErrorAction SilentlyContinue) -and
+                  (Get-Command pdftoppm -ErrorAction SilentlyContinue) -and
+                  (Get-Command pdftotext -ErrorAction SilentlyContinue)) {
+                break
+              }
+            }
+            if ($attempt -eq 3) { throw "Poppler installation failed or its tools are unavailable" }
+            Start-Sleep -Seconds (10 * $attempt)
+          }
 
       - name: Install Python test dependencies (unix)
         if: matrix.platform != 'windows'
@@ -347,10 +358,12 @@ jobs:
   release:
     name: Publish GitHub Release
     needs: [build, libraries]
-    if: startsWith(github.ref, 'refs/tags/v')
+    # Publish verified artifacts even if a different platform's job failed.
+    # The final step still fails this job if any required artifact is absent.
+    if: ${{ always() && startsWith(github.ref, 'refs/tags/v') }}
     runs-on: ubuntu-latest
     steps:
-      - name: Download all build artifacts
+      - name: Download successful build artifacts
         uses: actions/download-artifact@v4
         with:
           path: artifacts
@@ -361,3 +374,23 @@ jobs:
         with:
           files: artifacts/*
           generate_release_notes: true
+
+      - name: Require every platform and library asset
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME}"
+          for asset in \
+            "tex-suite-${version}-linux-x86_64.tar.gz" \
+            "tex-suite-${version}-macos-x86_64.tar.gz" \
+            "tex-suite-${version}-macos-aarch64.tar.gz" \
+            "tex-suite-${version}-windows-x86_64.zip" \
+            "ratex-${version}-macos-x86_64.pkg" \
+            "ratex-${version}-macos-aarch64.pkg" \
+            "ratex-setup-${version}-windows-x64.exe" \
+            "libtex-${version}-linux-x86_64.tar.gz" \
+            "libtex-${version}-wasm.tar.gz"; do
+            if [ ! -f "artifacts/$asset" ]; then
+              echo "::error::Missing release asset from a successful build: $asset"
+              exit 1
+            fi
+          done

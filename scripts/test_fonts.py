@@ -147,7 +147,7 @@ def probe_pdfjs() -> dict[str, Any]:
             capture_output=True,
             encoding="utf-8",
             errors="replace",
-            timeout=10,
+            timeout=30,  # Cold Windows Node/canvas startup can exceed ten seconds.
             check=False,
         )
         if proc.returncode == 0 and proc.stdout.strip():

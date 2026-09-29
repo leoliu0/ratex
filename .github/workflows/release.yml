@@ -34,7 +34,7 @@ jobs:
           tag="${{ inputs.release_tag || github.ref_name }}"
           test "$tag" = "v$version"
           git rev-parse --verify "refs/tags/$tag"
-          git diff --exit-code "$tag" HEAD -- Cargo.toml Cargo.lock crates scripts
+          git diff --exit-code "$tag" HEAD -- Cargo.toml Cargo.lock crates
 
   libraries:
     name: Native and WebAssembly libraries

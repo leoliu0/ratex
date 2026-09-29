@@ -5,6 +5,11 @@ on:
     tags:
       - "v*"
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Existing tag to republish after a workflow repair"
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -15,8 +20,25 @@ env:
   PYTHONUTF8: "1"
 
 jobs:
+  validate:
+    name: Validate release source
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Require matching version and engine source
+        shell: bash
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          tag="${{ inputs.release_tag || github.ref_name }}"
+          test "$tag" = "v$version"
+          git rev-parse --verify "refs/tags/$tag"
+          git diff --exit-code "$tag" HEAD -- Cargo.toml Cargo.lock crates scripts
+
   libraries:
     name: Native and WebAssembly libraries
+    needs: validate
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -62,6 +84,7 @@ jobs:
   build:
     name: ${{ matrix.label }}
     runs-on: ${{ matrix.os }}
+    needs: validate
     strategy:
       fail-fast: false
       matrix:
@@ -187,6 +210,14 @@ jobs:
         if: matrix.platform == 'linux'
         shell: bash
         run: python3 scripts/build_linux_packages.py --output-dir dist
+
+      - name: Reclaim Rust intermediates before macOS packaging
+        if: matrix.platform == 'macos'
+        shell: bash
+        run: |
+          df -h .
+          rm -rf target/debug target/release/deps target/release/build target/release/incremental
+          df -h .
 
       - name: Build macOS native installer (.pkg)
         if: matrix.platform == 'macos'
@@ -358,10 +389,10 @@ jobs:
 
   release:
     name: Publish GitHub Release
-    needs: [build, libraries]
+    needs: [validate, build, libraries]
     # Publish verified artifacts even if a different platform's job failed.
     # The final step still fails this job if any required artifact is absent.
-    if: ${{ always() && startsWith(github.ref, 'refs/tags/v') }}
+    if: ${{ always() && needs.validate.result == 'success' && (startsWith(github.ref, 'refs/tags/v') || inputs.release_tag != '') }}
     runs-on: ubuntu-latest
     steps:
       - name: Download successful build artifacts
@@ -374,12 +405,13 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: artifacts/*
+          tag_name: ${{ inputs.release_tag || github.ref_name }}
           generate_release_notes: true
 
       - name: Require every platform and library asset
         shell: bash
         run: |
-          version="${GITHUB_REF_NAME}"
+          version="${{ inputs.release_tag || github.ref_name }}"
           for asset in \
             "tex-suite-${version}-linux-x86_64.tar.gz" \
             "tex-suite-${version}-macos-x86_64.tar.gz" \

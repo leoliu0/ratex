@@ -2070,7 +2070,7 @@ pub fn write_pdf(doc: &PdfDoc) -> Result<Vec<u8>, String> {
     // ---- emit catalog
     let mut cat = format!("<< /Type /Catalog /Pages {} 0 R", pages_obj);
     if names_obj != 0 {
-        cat.push_str(&format!(" /Names << /D {} 0 R >>", names_obj));
+        cat.push_str(&format!(" /Names << /Dests {} 0 R >>", names_obj));
     }
     if let Some((page, view)) = &doc.open_action {
         if let Some(&(content, page_obj, _)) =
@@ -2214,7 +2214,10 @@ fn emit_annot(b: &mut PdfBuilder, obj: usize, a: &Annot) {
         body.push_str(&format!(" /A << /S /URI /URI ({}) >>", escape_string(uri)));
     }
     if let Some(dest) = &a.dest {
-        body.push_str(&format!(" /Dest ({})", escape_string(dest)));
+        body.push_str(&format!(
+            " /A << /S /GoTo /D ({}) >>",
+            escape_string(dest)
+        ));
     }
     if !a.attr.is_empty() {
         body.push(' ');

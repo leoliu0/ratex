@@ -252,8 +252,6 @@ fn tagged_pdf_emits_markinfo_and_struct_tree_root() {
         glyphs: vec![b'H', b'i'],
         tag: Some(tex_core::boxes::StructureTag::Paragraph),
         span: Some(tex_core::boxes::SpanId(42)),
-        source_file_id: 1,
-        source_line: 10,
     });
     let bytes = tex_core::pdffile::write_pdf(&e.pdf_doc).expect("valid embedded fonts");
     let pdf = lopdf::Document::load_mem(&bytes).expect("valid PDF");
@@ -762,4 +760,186 @@ fn cjk_latin_mixed_script_raw_binding_isolation() {
         bindings.is_none() || bindings.unwrap().is_empty(),
         "CMR10 must not acquire legacy remapped bindings when mixed with CJK text whatsit"
     );
+}
+
+fn named_destination_page(pdf: &lopdf::Document, name: &[u8]) -> lopdf::ObjectId {
+    let catalog = pdf.catalog().expect("PDF catalog");
+    let (_, names) = pdf
+        .dereference(catalog.get(b"Names").expect("catalog /Names"))
+        .expect("resolve catalog /Names");
+    let names = names.as_dict().expect("/Names dictionary");
+    let (_, destinations) = pdf
+        .dereference(names.get(b"Dests").expect("catalog /Names /Dests"))
+        .expect("resolve destination name tree");
+    let entries = destinations
+        .as_dict()
+        .and_then(|tree| tree.get(b"Names"))
+        .and_then(lopdf::Object::as_array)
+        .expect("destination name-tree entries");
+
+    for pair in entries.chunks_exact(2) {
+        if pair[0].as_str().ok() != Some(name) {
+            continue;
+        }
+        let (_, value) = pdf.dereference(&pair[1]).expect("resolve named destination");
+        return match value {
+            lopdf::Object::Array(destination) => destination[0]
+                .as_reference()
+                .expect("destination page reference"),
+            lopdf::Object::Dictionary(dictionary) => {
+                let (_, destination) = pdf
+                    .dereference(dictionary.get(b"D").expect("destination /D"))
+                    .expect("resolve destination /D");
+                destination
+                    .as_array()
+                    .expect("destination array")[0]
+                    .as_reference()
+                    .expect("destination page reference")
+            }
+            other => panic!("unexpected named destination value: {other:?}"),
+        };
+    }
+    panic!(
+        "named destination not found: {}",
+        String::from_utf8_lossy(name)
+    );
+}
+
+fn goto_link_rect(
+    pdf: &lopdf::Document,
+    page: lopdf::ObjectId,
+    destination: &[u8],
+) -> [f64; 4] {
+    let page = pdf.get_dictionary(page).expect("page dictionary");
+    let (_, annotations) = pdf
+        .dereference(page.get(b"Annots").expect("page annotations"))
+        .expect("resolve page annotations");
+    for annotation in annotations.as_array().expect("annotation array") {
+        let (_, annotation) = pdf.dereference(annotation).expect("resolve annotation");
+        let annotation = annotation.as_dict().expect("annotation dictionary");
+        let Ok(action) = annotation.get(b"A") else {
+            continue;
+        };
+        let (_, action) = pdf.dereference(action).expect("resolve link action");
+        let action = action.as_dict().expect("link action dictionary");
+        if action.get(b"S").and_then(lopdf::Object::as_name).ok() != Some(b"GoTo")
+            || action.get(b"D").and_then(lopdf::Object::as_str).ok() != Some(destination)
+        {
+            continue;
+        }
+        let rect = annotation
+            .get(b"Rect")
+            .and_then(lopdf::Object::as_array)
+            .expect("link rectangle");
+        return std::array::from_fn(|index| {
+            rect[index].as_float().expect("link rectangle number") as f64
+        });
+    }
+    panic!(
+        "GoTo annotation not found for {}",
+        String::from_utf8_lossy(destination)
+    );
+}
+
+fn assert_clickable_text_rect(rect: [f64; 4]) {
+    let [x0, y0, x1, y1] = rect;
+    assert!(
+        [x0, y0, x1, y1].iter().all(|coordinate| coordinate.is_finite()),
+        "link rectangle must be finite: {rect:?}"
+    );
+    assert!(
+        x0 >= 0.0 && y0 >= 0.0 && x1 <= 612.0 && y1 <= 792.0,
+        "link rectangle must stay on the page: {rect:?}"
+    );
+    assert!(
+        (5.0..100.0).contains(&(x1 - x0)),
+        "link rectangle must cover only its text width: {rect:?}"
+    );
+    assert!(
+        (5.0..30.0).contains(&(y1 - y0)),
+        "link rectangle must cover one text line: {rect:?}"
+    );
+}
+
+#[test]
+fn hyperref_internal_links_resolve_across_pages_with_clickable_rectangles() {
+    const SOURCE: &[u8] = br"\documentclass{article}
+\usepackage{hyperref}
+\begin{document}
+\tableofcontents
+\section{Anchor}\label{sec:anchor}
+Visible text on anchor page.
+\newpage
+\section{Links}
+Jump to \hyperref[sec:anchor]{Anchor}.
+\end{document}
+";
+
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let dir =
+        std::env::temp_dir().join(format!("ratex-hyperref-{}-{nonce}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+
+    let run_pass = || {
+        let mut engine = Engine::new(false);
+        tex_core::format::load_format_bytes_into(
+            include_bytes!("../../tex-cli/assets/default.fmt.zst"),
+            &mut engine,
+        )
+        .expect("load embedded LaTeX format");
+        tex_core::driver::finalize_format_load(&mut engine);
+        tex_core::driver::prepare_latex_job(&mut engine);
+        engine.set_interaction_mode(tex_core::engine::InteractionMode::Nonstop);
+        engine.halt_on_error = true;
+        engine.allow_missing_main_aux = true;
+        engine.job_name = "hyperlinks".to_string();
+        engine.main_dir = Some(dir.clone());
+        engine.aux_dir = Some(dir.clone());
+        engine.out_dir = format!("{}/", dir.display());
+        engine
+            .input
+            .push_file("hyperlinks.tex".to_string(), SOURCE.to_vec());
+        tex_core::driver::insert_everyjob(&mut engine);
+        engine.run();
+        for stream in &mut engine.write_streams {
+            stream.take();
+        }
+        assert_eq!(
+            engine.error_count, 0,
+            "hyperref compilation failed:\n{}",
+            engine.term
+        );
+        engine
+    };
+
+    drop(run_pass());
+    let mut engine = run_pass();
+    assert_eq!(engine.pdf_doc.pages.len(), 2, "expected cross-page fixture");
+    let bytes = tex_core::driver::finish_pdf(&mut engine, false).expect("finish PDF");
+    let pdf = lopdf::Document::load_mem(&bytes).expect("hyperref output must be a valid PDF");
+    let pages = pdf.get_pages();
+    let first_page = pages[&1];
+    let second_page = pages[&2];
+
+    assert_eq!(
+        named_destination_page(&pdf, b"section.1"),
+        first_page,
+        "section.1 destination must resolve to page 1"
+    );
+    assert_eq!(
+        named_destination_page(&pdf, b"section.2"),
+        second_page,
+        "section.2 destination must resolve to page 2"
+    );
+
+    // The contents entry navigates forward, and the explicit \hyperref
+    // navigates back. Both rectangles must be line-sized rather than spanning
+    // most of the page and intercepting unrelated clicks.
+    assert_clickable_text_rect(goto_link_rect(&pdf, first_page, b"section.2"));
+    assert_clickable_text_rect(goto_link_rect(&pdf, second_page, b"section.1"));
+
+    std::fs::remove_dir_all(dir).unwrap();
 }

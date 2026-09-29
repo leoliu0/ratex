@@ -117,12 +117,13 @@ fn version_seven_records_are_complete_and_authenticated() {
     let stamped: Vec<_> = record
         .lines()
         .filter(|line| {
-            ["PDF\t", "FILE\t", "READ\t", "AUX\t"]
+            ["PDF\t", "SYNCTEX\t", "FILE\t", "READ\t", "AUX\t"]
                 .iter()
                 .any(|prefix| line.starts_with(prefix))
         })
         .collect();
     assert!(stamped.iter().any(|line| line.starts_with("PDF\t")));
+    assert!(stamped.iter().any(|line| line.starts_with("SYNCTEX\t")));
     assert!(stamped.iter().any(|line| line.starts_with("READ\t")));
     assert!(stamped.iter().any(|line| line.starts_with("AUX\t")));
     for line in stamped {
@@ -339,6 +340,37 @@ fn missing_transcript_forces_a_rebuild() {
     std::fs::remove_file(job.0.join("main.log")).unwrap();
     job.successful_compile();
     assert!(job.0.join("main.log").is_file());
+}
+
+#[test]
+fn missing_synctex_sidecar_invalidates_the_dependency_cache() {
+    let job = Job::new();
+    std::fs::write(
+        job.0.join("main.tex"),
+        "\\documentclass{article}\\begin{document}Synchronized.\\end{document}\n",
+    )
+    .unwrap();
+    job.successful_compile();
+    job.successful_compile();
+
+    let sidecar = job.0.join("main.synctex.gz");
+    assert!(sidecar.is_file());
+    std::fs::write(job.0.join("main.log"), "cache sentinel").unwrap();
+    job.successful_compile();
+    assert_eq!(
+        std::fs::read_to_string(job.0.join("main.log")).unwrap(),
+        "cache sentinel",
+        "the stable build never reached a dependency-cache hit"
+    );
+
+    std::fs::remove_file(&sidecar).unwrap();
+    job.successful_compile();
+    assert!(sidecar.is_file(), "the missing SyncTeX sidecar was not rebuilt");
+    assert_ne!(
+        std::fs::read_to_string(job.0.join("main.log")).unwrap(),
+        "cache sentinel",
+        "a cache hit was accepted without its recorded SyncTeX output"
+    );
 }
 
 #[test]

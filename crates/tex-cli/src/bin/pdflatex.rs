@@ -70,11 +70,19 @@ fn anchored_path(path: &std::path::Path) -> std::path::PathBuf {
     }
 }
 
-/// Return texmk's public output only when the companion cache-hit marker
+/// Public outputs which texmk publishes after a successful private build.
+/// They are ignored only in cwd membership snapshots; direct reads and
+/// missing-file probes still invalidate the cache.
+struct TexmkPublishedOutputs {
+    pdf: std::path::PathBuf,
+    synctex: std::path::PathBuf,
+}
+
+/// Return texmk's public outputs only when the companion cache-hit marker
 /// proves that this process was launched with the requested private cache.
 /// Canonicalizing the existing parent gives directory dependency paths the
-/// same spelling even while the output itself does not exist yet.
-fn texmk_published_output(cache_root: &std::path::Path) -> Option<std::path::PathBuf> {
+/// same spelling even while either output does not exist yet.
+fn texmk_published_outputs(cache_root: &std::path::Path) -> Option<TexmkPublishedOutputs> {
     let marker = std::env::var_os(TEXMK_CACHE_HIT_MARKER_ENV)
         .filter(|value| !value.is_empty())
         .map(std::path::PathBuf::from)?;
@@ -91,7 +99,9 @@ fn texmk_published_output(cache_root: &std::path::Path) -> Option<std::path::Pat
     }
     let name = output.file_name()?.to_owned();
     let parent = std::fs::canonicalize(output.parent()?).ok()?;
-    Some(parent.join(name))
+    let pdf = parent.join(name);
+    let synctex = pdf.with_extension("synctex.gz");
+    Some(TexmkPublishedOutputs { pdf, synctex })
 }
 
 fn hex_digit(value: u8) -> char {
@@ -281,6 +291,7 @@ fn depcache_path(
     out_dir: &str,
     aux_dir: &str,
     optimize_pdf_size: bool,
+    synctex_enabled: bool,
 ) -> std::path::PathBuf {
     // Keep the spelling used by this invocation: relative inputs are resolved
     // from that spelling's parent, so two symlinks to one source are not
@@ -319,6 +330,11 @@ fn depcache_path(
             b"size" as &[u8]
         } else {
             b"speed" as &[u8]
+        },
+        if synctex_enabled {
+            b"synctex" as &[u8]
+        } else {
+            b"no-synctex" as &[u8]
         },
     ]);
     cache_root
@@ -660,14 +676,14 @@ fn stable_directory_identity(path: &std::path::Path) -> Option<(FileStamp, u64)>
 
 fn stable_directory_identity_excluding(
     path: &std::path::Path,
-    excluded_name: &std::ffi::OsStr,
+    excluded_names: &[&std::ffi::OsStr],
 ) -> Option<(FileStamp, u64)> {
     let before_meta = std::fs::metadata(path).ok()?;
     if !before_meta.is_dir() {
         return None;
     }
     let before = FileStamp::from_metadata(&before_meta);
-    let hash = tex_kpse::directory_fingerprint_excluding(path, &[excluded_name])?;
+    let hash = tex_kpse::directory_fingerprint_excluding(path, excluded_names)?;
     let after_meta = std::fs::metadata(path).ok()?;
     if !after_meta.is_dir() {
         return None;
@@ -676,21 +692,22 @@ fn stable_directory_identity_excluding(
     (before == after).then_some((after, hash))
 }
 
-fn published_name_in_directory<'a>(
+fn published_names_in_directory<'a>(
     directory: &std::path::Path,
-    published_output: Option<&'a std::path::Path>,
-) -> Option<&'a std::ffi::OsStr> {
+    published_outputs: Option<&'a TexmkPublishedOutputs>,
+) -> Option<[&'a std::ffi::OsStr; 2]> {
     // Full recursive TEXMF directory snapshots do not enumerate a concrete
     // MISS for every possible child. Restrict this exception to cwd, where
     // every local candidate is probed and recorded before casefold fallback.
     if absolute_path(directory) != absolute_path(std::path::Path::new(".")) {
         return None;
     }
-    let output = published_output?;
-    let output_parent = output.parent()?;
-    (absolute_path(output_parent) == absolute_path(directory))
-        .then(|| output.file_name())
-        .flatten()
+    let outputs = published_outputs?;
+    let output_parent = outputs.pdf.parent()?;
+    if absolute_path(output_parent) != absolute_path(directory) {
+        return None;
+    }
+    Some([outputs.pdf.file_name()?, outputs.synctex.file_name()?])
 }
 
 fn dependency_name_may_match(
@@ -721,7 +738,7 @@ fn directory_identity_matches(
     stored: FileStamp,
     hash: u64,
     cache_meta: &std::fs::Metadata,
-    excluded_name: Option<&std::ffi::OsStr>,
+    excluded_names: Option<&[&std::ffi::OsStr]>,
 ) -> bool {
     let Ok(meta) = std::fs::metadata(path) else {
         return false;
@@ -733,8 +750,8 @@ fn directory_identity_matches(
     if stamp_allows_hash_skip(current, stored, cache_meta) {
         return true;
     }
-    (match excluded_name {
-        Some(name) => tex_kpse::directory_fingerprint_excluding(path, &[name]),
+    (match excluded_names {
+        Some(names) => tex_kpse::directory_fingerprint_excluding(path, names),
         None => tex_kpse::directory_fingerprint(path),
     }) == Some(hash)
 }
@@ -770,7 +787,8 @@ fn check_depcache(
     primary_file: &str,
     expected_pdf: &std::path::Path,
     expected_log: &std::path::Path,
-    published_output: Option<&std::path::Path>,
+    expected_synctex: Option<&std::path::Path>,
+    published_outputs: Option<&TexmkPublishedOutputs>,
 ) -> Option<usize> {
     let (cache_meta, content) = read_depcache_record(cache_path)?;
     let mut lines = authenticated_depcache_body(&content)?.lines();
@@ -792,6 +810,20 @@ fn check_depcache(
     let pdf_size = usize::try_from(pdf_stamp.size).ok()?;
     if !dependency_identity_matches(&pdf_path, pdf_stamp, pdf_hash, &cache_meta) {
         return None;
+    }
+    let synctex_line = lines.next()?;
+    match expected_synctex {
+        Some(expected) => {
+            let (path, stamp, hash) =
+                parse_stamped_entry(synctex_line.strip_prefix("SYNCTEX\t")?)?;
+            if absolute_path(&path) != absolute_path(expected)
+                || !dependency_identity_matches(&path, stamp, hash, &cache_meta)
+            {
+                return None;
+            }
+        }
+        None if synctex_line == "SYNCTEX\t-" => {}
+        None => return None,
     }
     if std::fs::metadata(primary_file).is_err() || !expected_log.is_file() {
         return None;
@@ -828,8 +860,14 @@ fn check_depcache(
         }
         if let Some(rest) = line.strip_prefix("DIRX\t") {
             let (path, stamp, hash) = parse_stamped_entry(rest)?;
-            let excluded_name = published_name_in_directory(&path, published_output)?;
-            if !directory_identity_matches(&path, stamp, hash, &cache_meta, Some(excluded_name)) {
+            let excluded_names = published_names_in_directory(&path, published_outputs)?;
+            if !directory_identity_matches(
+                &path,
+                stamp,
+                hash,
+                &cache_meta,
+                Some(&excluded_names),
+            ) {
                 return None;
             }
             continue;
@@ -1016,6 +1054,7 @@ struct DepcacheInputs<'a> {
     primary_file: &'a str,
     pdf_path: &'a str,
     pdf_size: usize,
+    synctex_path: Option<&'a std::path::Path>,
     deps: &'a [std::path::PathBuf],
     directories: &'a [(std::path::PathBuf, u64)],
     reads: &'a [(std::path::PathBuf, u64, u64)],
@@ -1023,7 +1062,7 @@ struct DepcacheInputs<'a> {
     missing: &'a [std::path::PathBuf],
     missing_directories: &'a [std::path::PathBuf],
     outputs_missing_at_start: &'a [std::path::PathBuf],
-    published_output: Option<&'a std::path::Path>,
+    published_outputs: Option<&'a TexmkPublishedOutputs>,
     aux_start: &'a [(std::path::PathBuf, u64, u64)],
 }
 
@@ -1048,10 +1087,20 @@ fn write_depcache(cache_path: &std::path::Path, inputs: DepcacheInputs<'_>) {
         encode_record_path(&primary_file)
     );
     push_stamped_entry(&mut out, "PDF", &pdf_path, pdf_stamp, pdf_hash);
+    let mut recorded_stamps = vec![(pdf_path.clone(), pdf_stamp)];
+    if let Some(path) = inputs.synctex_path {
+        let path = absolute_path(path);
+        let Some((stamp, hash)) = stable_dependency_identity(&path) else {
+            return;
+        };
+        push_stamped_entry(&mut out, "SYNCTEX", &path, stamp, hash);
+        recorded_stamps.push((path, stamp));
+    } else {
+        out.push_str("SYNCTEX\t-\n");
+    }
     if out.len() as u64 > DEPCACHE_RECORD_MAX_BYTES {
         return;
     }
-    let mut recorded_stamps = vec![(pdf_path.clone(), pdf_stamp)];
     let mut recorded_directory_stamps = Vec::new();
     let mut missing_file_paths = Vec::new();
     let mut missing_directory_paths = Vec::new();
@@ -1184,16 +1233,18 @@ fn write_depcache(cache_path: &std::path::Path, inputs: DepcacheInputs<'_>) {
                 return;
             }
         }
-        let published_name = published_name_in_directory(&directory, inputs.published_output)
-            .filter(|name| {
-                !missing
-                    .iter()
-                    .chain(&missing_directories)
-                    .any(|path| dependency_name_may_match(path, &directory, name))
+        let published_names =
+            published_names_in_directory(&directory, inputs.published_outputs).filter(|names| {
+                !names.iter().any(|name| {
+                    missing
+                        .iter()
+                        .chain(&missing_directories)
+                        .any(|path| dependency_name_may_match(path, &directory, name))
+                })
             });
-        let (record_kind, stored_hash) = if let Some(name) = published_name {
+        let (record_kind, stored_hash) = if let Some(names) = published_names {
             let Some((excluded_stamp, excluded_hash)) =
-                stable_directory_identity_excluding(&directory, name)
+                stable_directory_identity_excluding(&directory, &names)
             else {
                 return;
             };
@@ -1908,7 +1959,7 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
     });
     let aux_start = snapshot_aux_state(&job, &aux_dir);
     let cache_root = requested_cache_dir.unwrap_or_else(platform_cache_dir);
-    let published_output = texmk_published_output(&cache_root);
+    let published_outputs = texmk_published_outputs(&cache_root);
     let private_cache = depcache_path(
         &cache_root,
         &file,
@@ -1916,6 +1967,7 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
         &out_dir,
         &aux_dir,
         optimize_pdf_size,
+        synctex_enabled,
     );
     let expected_pdf = std::path::PathBuf::from(format!("{}{}.pdf", out_dir, job));
     let expected_log = std::path::PathBuf::from(format!("{}{}.log", aux_dir, job));
@@ -1924,7 +1976,7 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
     let outputs_missing_at_start: Vec<_> = [
         Some(expected_pdf.clone()),
         Some(expected_log.clone()),
-        expected_synctex,
+        expected_synctex.clone(),
     ]
     .into_iter()
     .flatten()
@@ -1936,7 +1988,8 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
             &file,
             &expected_pdf,
             &expected_log,
-            published_output.as_deref(),
+            expected_synctex.as_deref(),
+            published_outputs.as_ref(),
         ) {
             report_texmk_cache_hit(&cache_root);
             maybe_touch_depcache(&private_cache);
@@ -2280,10 +2333,26 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
                 "check that the output directory exists, has free space, and is writable",
             );
         }
-        if eng.synctex_enabled && !eng.synctex.pages.is_empty() {
+        if eng.synctex_enabled {
             let synctex_out = format!("{}{}.synctex.gz", eng.out_dir, job);
-            if let Ok(gz_bytes) = eng.synctex.to_synctex_gz() {
-                let _ = atomic_write_file(std::path::Path::new(&synctex_out), &gz_bytes);
+            let gz_bytes = match eng.synctex.to_synctex_gz() {
+                Ok(bytes) => bytes,
+                Err(error) => fail_after_transcript(
+                    &mut eng,
+                    &log_path,
+                    &format!("Cannot compress SyncTeX data for `{synctex_out}`: {error}"),
+                    "check that sufficient memory is available",
+                ),
+            };
+            if let Err(error) =
+                atomic_write_file(std::path::Path::new(&synctex_out), &gz_bytes)
+            {
+                fail_after_transcript(
+                    &mut eng,
+                    &log_path,
+                    &format!("Cannot write SyncTeX file `{synctex_out}`: {error}"),
+                    "check that the output directory exists, has free space, and is writable",
+                );
             }
         }
         phase_timer.mark("pdf_write");
@@ -2308,6 +2377,7 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
                     primary_file: &file,
                     pdf_path: &out,
                     pdf_size: pdf_len,
+                    synctex_path: expected_synctex.as_deref(),
                     deps: &eng.loaded_files,
                     directories: &eng.font_loader.dependency_directories,
                     reads: &eng.loaded_file_digests,
@@ -2315,7 +2385,7 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
                     missing: &eng.missing_files,
                     missing_directories: &eng.font_loader.dependency_missing_directories,
                     outputs_missing_at_start: &outputs_missing_at_start,
-                    published_output: published_output.as_deref(),
+                    published_outputs: published_outputs.as_ref(),
                     aux_start: &aux_start,
                 },
             );
@@ -2349,9 +2419,9 @@ mod startup_tests {
         authenticated_depcache_body, backtrace_requested, check_depcache, decode_record_path,
         dependency_fingerprint, dependency_name_may_match, directory_prefix,
         effective_clock_identity_at, encode_record_path, finalize_format_load, format_boot_failure,
-        install_pdftex_config_registers, png_embed_options, published_name_in_directory,
+        install_pdftex_config_registers, png_embed_options, published_names_in_directory,
         seal_depcache_record, write_depcache, DepcacheInputs, FormatBootFailure,
-        DEPCACHE_RECORD_MAX_BYTES, EMBEDDED_DEFAULT_FMT,
+        TexmkPublishedOutputs, DEPCACHE_RECORD_MAX_BYTES, EMBEDDED_DEFAULT_FMT,
     };
     use std::ffi::OsStr;
     use tex_core::engine::Engine;
@@ -2393,15 +2463,23 @@ mod startup_tests {
     fn published_output_directory_exclusion_is_limited_to_cwd() {
         let directory = std::env::current_dir().unwrap();
         let local_output = directory.join("main.pdf");
+        let local_outputs = TexmkPublishedOutputs {
+            synctex: local_output.with_extension("synctex.gz"),
+            pdf: local_output,
+        };
         assert_eq!(
-            published_name_in_directory(&directory, Some(&local_output)),
-            Some(OsStr::new("main.pdf"))
+            published_names_in_directory(&directory, Some(&local_outputs)),
+            Some([OsStr::new("main.pdf"), OsStr::new("main.synctex.gz")])
         );
 
         let recursive_walk_directory = directory.join("texmf/tex/latex/generated");
         let remote_output = recursive_walk_directory.join("main.pdf");
+        let remote_outputs = TexmkPublishedOutputs {
+            synctex: remote_output.with_extension("synctex.gz"),
+            pdf: remote_output,
+        };
         assert_eq!(
-            published_name_in_directory(&recursive_walk_directory, Some(&remote_output)),
+            published_names_in_directory(&recursive_walk_directory, Some(&remote_outputs)),
             None
         );
     }
@@ -2583,6 +2661,7 @@ mod startup_tests {
                 primary_file: &primary_text,
                 pdf_path: &pdf_text,
                 pdf_size: 3,
+                synctex_path: None,
                 deps: &[],
                 directories: &[],
                 reads: &[],
@@ -2590,7 +2669,7 @@ mod startup_tests {
                 missing: &[],
                 missing_directories: &[],
                 outputs_missing_at_start: &[],
-                published_output: None,
+                published_outputs: None,
                 aux_start: &[],
             },
         );
@@ -2603,6 +2682,7 @@ mod startup_tests {
                 primary_file: &primary_text,
                 pdf_path: &pdf_text,
                 pdf_size: 3,
+                synctex_path: None,
                 deps: &[],
                 directories: &[],
                 reads: &[],
@@ -2610,7 +2690,7 @@ mod startup_tests {
                 missing: &[],
                 missing_directories: &[],
                 outputs_missing_at_start: &[],
-                published_output: None,
+                published_outputs: None,
                 aux_start: &[],
             },
         );
@@ -2622,13 +2702,13 @@ mod startup_tests {
             "the size-only dependency was not recorded"
         );
         assert_eq!(
-            check_depcache(&cache, &primary_text, &pdf, &log, None),
+            check_depcache(&cache, &primary_text, &pdf, &log, None, None),
             Some(3)
         );
 
         std::fs::write(&observed, b"changed size").unwrap();
         assert_eq!(
-            check_depcache(&cache, &primary_text, &pdf, &log, None),
+            check_depcache(&cache, &primary_text, &pdf, &log, None, None),
             None
         );
         let _ = std::fs::remove_dir_all(root);

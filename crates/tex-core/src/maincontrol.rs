@@ -2318,6 +2318,7 @@ fn whatsit_kind_name(whatsit: &crate::boxes::WhatIt) -> &'static str {
         WhatIt::Write { .. } => "deferred write",
         WhatIt::OpenOut { .. } => "deferred openout",
         WhatIt::CloseOut { .. } => "deferred closeout",
+        WhatIt::SyncPoint { .. } => "SyncTeX source point",
         WhatIt::PdfDest { .. } => "PDF destination",
         WhatIt::PdfAnnot { .. } => "PDF annotation",
         WhatIt::PdfStartLink { .. } => "PDF link start",

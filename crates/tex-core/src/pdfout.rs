@@ -12,7 +12,7 @@ pub struct Annot {
     pub rect: [f64; 4],
     /// external URL: serialized as /A <</S /URI /URI (...)>>
     pub uri: Option<String>,
-    /// internal named destination: serialized as /Dest (name)
+    /// internal named destination: serialized as a /GoTo action
     pub dest: Option<String>,
     /// extra key/value dict body from \pdfstartlink user{...}
     pub attr: String,

@@ -36,6 +36,8 @@ pub struct NativeTextState {
     pub current_font: Option<FontId>,
     /// Accumulated source text
     pub buffer: String,
+    /// Physical source for the buffered run, captured before shipout.
+    pub source: Option<(u32, u32)>,
     /// Tracks if last appended character was CJK (for CJK/Latin spacing)
     pub last_was_cjk: Option<bool>,
     /// Tracks if last appended character was RTL
@@ -506,6 +508,25 @@ impl Engine {
             self.native_text.current_font = Some(target_font);
         }
 
+        if self.synctex_enabled {
+            if let Some((path, line)) = self.input.current_file_position() {
+                if !path.is_empty() && line > 0 {
+                    let changed = self.native_text.source.is_none_or(|(file_id, previous_line)| {
+                        previous_line != line
+                            || self.synctex.files.get((file_id - 1) as usize).map(String::as_str)
+                                != Some(path)
+                    });
+                    if changed {
+                        self.flush_native_text();
+                        if let Some((path, line)) = self.input.current_file_position() {
+                            let file_id = self.synctex.get_or_register_file(path);
+                            self.native_text.source = Some((file_id, line));
+                        }
+                    }
+                }
+            }
+        }
+
         self.native_text.buffer.push(ch);
         self.native_text.last_was_cjk = Some(ch_is_cjk);
         true
@@ -559,6 +580,17 @@ impl Engine {
                     Ok(face) => calculate_slice_dims(&run.glyphs, &face, at_size, upem),
                     Err(_) => (0, 0, 0),
                 };
+                if self.synctex_enabled {
+                    if let Some((path, line)) = self.input.current_file_position() {
+                        if !path.is_empty() && line > 0 {
+                            let file_id = self.synctex.get_or_register_file(path);
+                            self.cur_list.push(Node::Whatsit(crate::boxes::WhatIt::SyncPoint {
+                                file_id,
+                                line,
+                            }));
+                        }
+                    }
+                }
                 self.cur_list.push(Node::NativeGlyphRun {
                     run,
                     start: 0,
@@ -592,6 +624,7 @@ impl Engine {
         };
 
         let raw_text = std::mem::take(&mut self.native_text.buffer);
+        let source = self.native_text.source.take();
         let Some(native_font) = self.font_loader.native_fonts.get(&font_id).cloned() else {
             self.error(&format!("Font {} is not a registered native font", font_id));
             return;
@@ -599,7 +632,17 @@ impl Engine {
 
         match self.shape_native_run_nodes(font_id, &native_font, &raw_text) {
             Ok(nodes) => {
-                self.cur_list.extend(nodes);
+                for node in nodes {
+                    if matches!(node, Node::NativeGlyphRun { .. }) {
+                        if let Some((file_id, line)) = source {
+                            self.cur_list.push(Node::Whatsit(crate::boxes::WhatIt::SyncPoint {
+                                file_id,
+                                line,
+                            }));
+                        }
+                    }
+                    self.cur_list.push(node);
+                }
             }
             Err(err) => {
                 self.error(&err);

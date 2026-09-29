@@ -347,6 +347,9 @@ struct Manifest {
     pdf: PathBuf,
     pdf_owned: bool,
     pdf_hash: Option<u64>,
+    synctex: PathBuf,
+    synctex_owned: bool,
+    synctex_hash: Option<u64>,
     exports: BTreeMap<PathBuf, u64>,
     aux_files: BTreeMap<PathBuf, u64>,
     bibliography_signature: Option<u64>,
@@ -375,7 +378,7 @@ fn read_manifest(path: &Path) -> Option<Manifest> {
     let mut lines = text.lines();
     if !matches!(
         lines.next()?,
-        "TEXMK-CACHE-1" | "TEXMK-CACHE-2" | "TEXMK-CACHE-3"
+        "TEXMK-CACHE-1" | "TEXMK-CACHE-2" | "TEXMK-CACHE-3" | "TEXMK-CACHE-4"
     ) {
         return None;
     }
@@ -388,6 +391,14 @@ fn read_manifest(path: &Path) -> Option<Manifest> {
                 manifest.pdf = PathBuf::from(hex_decode(fields.next()?)?);
                 manifest.pdf_owned = fields.next()? == "1";
                 manifest.pdf_hash = match fields.next()? {
+                    "-" => None,
+                    value => value.parse().ok(),
+                };
+            }
+            "synctex" => {
+                manifest.synctex = PathBuf::from(hex_decode(fields.next()?)?);
+                manifest.synctex_owned = fields.next()? == "1";
+                manifest.synctex_hash = match fields.next()? {
                     "-" => None,
                     value => value.parse().ok(),
                 };
@@ -537,7 +548,7 @@ fn take_cache_hit_marker(path: &Path) -> bool {
 }
 
 fn write_manifest(path: &Path, manifest: &Manifest) -> std::io::Result<()> {
-    let mut text = String::from("TEXMK-CACHE-3\n");
+    let mut text = String::from("TEXMK-CACHE-4\n");
     text.push_str(&format!("identity\t{}\n", hex_encode(&manifest.identity)));
     text.push_str(&format!(
         "pdf\t{}\t{}\t{}\n",
@@ -545,6 +556,15 @@ fn write_manifest(path: &Path, manifest: &Manifest) -> std::io::Result<()> {
         u8::from(manifest.pdf_owned),
         manifest
             .pdf_hash
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "-".to_string())
+    ));
+    text.push_str(&format!(
+        "synctex\t{}\t{}\t{}\n",
+        hex_encode(&manifest.synctex.to_string_lossy()),
+        u8::from(manifest.synctex_owned),
+        manifest
+            .synctex_hash
             .map(|value| value.to_string())
             .unwrap_or_else(|| "-".to_string())
     ));
@@ -1347,7 +1367,7 @@ fn clean_owned_artifacts(
     output_dir: &Path,
     aux_dir: &Path,
     pdf_path: &Path,
-    remove_pdf: bool,
+    remove_outputs: bool,
 ) {
     for (path, expected) in &manifest.exports {
         if owned_descendant_matches(path, output_dir, *expected) {
@@ -1359,7 +1379,7 @@ fn clean_owned_artifacts(
             let _ = std::fs::remove_file(path);
         }
     }
-    if remove_pdf
+    if remove_outputs
         && manifest.pdf_owned
         && manifest.pdf == pdf_path
         && manifest.pdf_hash.is_some()
@@ -1367,6 +1387,14 @@ fn clean_owned_artifacts(
         && manifest.pdf_hash == Some(file_hash(&manifest.pdf).1)
     {
         let _ = std::fs::remove_file(&manifest.pdf);
+    }
+    if remove_outputs
+        && manifest.synctex_owned
+        && manifest.synctex_hash.is_some()
+        && manifest.synctex.is_file()
+        && manifest.synctex_hash == Some(file_hash(&manifest.synctex).1)
+    {
+        let _ = std::fs::remove_file(&manifest.synctex);
     }
 }
 
@@ -2846,6 +2874,7 @@ fn real_main() -> i32 {
     };
     maybe_gc_cache(&jobs_dir, &job_dir);
     let pdf_path = artifact_path(&output_dir, &job, ".pdf");
+    let synctex_path = artifact_path(&output_dir, &job, ".synctex.gz");
     let mut aux_dir = explicit_aux_dir.unwrap_or_else(|| job_dir.join("aux"));
     if aux_dir.exists() {
         aux_dir = if managed_aux {
@@ -2907,9 +2936,16 @@ fn real_main() -> i32 {
             identity: identity.clone(),
             pdf: pdf_path.clone(),
             pdf_owned: !pdf_path.exists(),
+            synctex: synctex_path.clone(),
+            synctex_owned: !synctex_path.exists(),
             ..Manifest::default()
         },
     };
+    if manifest.synctex != synctex_path {
+        manifest.synctex = synctex_path.clone();
+        manifest.synctex_owned = !synctex_path.exists();
+        manifest.synctex_hash = None;
+    }
     if opt.clean != CleanMode::None {
         clean_owned_artifacts(
             &manifest,
@@ -2961,6 +2997,7 @@ fn real_main() -> i32 {
         }
     };
     let staged_pdf_path = artifact_path(&stage_dir, &job, ".pdf");
+    let staged_synctex_path = artifact_path(&stage_dir, &job, ".synctex.gz");
     let engine_cache_dir = job_dir.join("engine-cache");
     if let Err(error) = std::fs::create_dir_all(&engine_cache_dir) {
         eprintln!(
@@ -3057,6 +3094,7 @@ fn real_main() -> i32 {
     let mut last_output = String::new();
     let mut last_signals: Option<Signals> = None;
     let mut staged_pdf_written_this_run = false;
+    let mut staged_synctex_written_this_run = false;
     let mut child_cache_hit = false;
 
     // bibtex depends on .aux, not on a PDF. Refresh .bbl from a previous
@@ -3143,6 +3181,7 @@ fn real_main() -> i32 {
             }
         };
         let pdf_before = file_identity(&staged_pdf_path);
+        let synctex_before = file_identity(&staged_synctex_path);
 
         let mut args: Vec<String> = vec![
             "-interaction=nonstopmode".to_string(),
@@ -3202,6 +3241,10 @@ fn real_main() -> i32 {
         let mut signals = output.signals(&job);
         let output = output.combined();
         let pdf_after = file_identity(&staged_pdf_path);
+        let synctex_after = file_identity(&staged_synctex_path);
+        if synctex_after.is_some() && (synctex_before != synctex_after || engine_cache_hit) {
+            staged_synctex_written_this_run = true;
+        }
         if pdf_after.is_some() && pdf_before != pdf_after {
             staged_pdf_written_this_run = true;
         }
@@ -3368,6 +3411,42 @@ fn real_main() -> i32 {
         retain_requested(&retention, &mut manifest);
         return 1;
     }
+    if staged_synctex_written_this_run {
+        let visible_synctex_matches_manifest = child_cache_hit
+            && manifest.synctex == synctex_path
+            && manifest.synctex_hash.is_some()
+            && (same_file(&staged_synctex_path, &synctex_path)
+                || manifest
+                    .synctex_hash
+                    .is_some_and(|expected| owned_file_matches(&synctex_path, expected)));
+        if !visible_synctex_matches_manifest {
+            if let Err(error) = atomic_publish(&staged_synctex_path, &synctex_path) {
+                eprintln!(
+                    "texmk: build FAILED: cannot publish {} atomically: {error}",
+                    synctex_path.display()
+                );
+                return 1;
+            }
+        }
+        manifest.synctex_hash = regular_file_hash(&synctex_path);
+        if manifest.synctex_hash.is_none() {
+            eprintln!(
+                "texmk: build FAILED: SyncTeX output {} is not a readable regular file",
+                synctex_path.display()
+            );
+            return 1;
+        }
+    } else {
+        if manifest.synctex == synctex_path
+            && manifest.synctex_owned
+            && manifest
+                .synctex_hash
+                .is_some_and(|expected| owned_file_matches(&synctex_path, expected))
+        {
+            let _ = std::fs::remove_file(&synctex_path);
+        }
+        manifest.synctex_hash = None;
+    }
     let visible_pdf_matches_manifest = child_cache_hit
         && manifest.pdf == pdf_path
         && manifest.pdf_hash.is_some()
@@ -3387,7 +3466,7 @@ fn real_main() -> i32 {
     }
     if let Err(error) = write_manifest(&manifest_path, &manifest) {
         eprintln!(
-            "texmk: warning: PDF was published but ownership metadata could not be updated at {}: {error}",
+            "texmk: warning: outputs were published but ownership metadata could not be updated at {}: {error}",
             manifest_path.display()
         );
     }

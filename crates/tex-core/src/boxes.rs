@@ -153,6 +153,11 @@ pub enum WhatIt {
         stream: u16,
         source: Option<crate::input::SourceContext>,
     },
+    /// Source position captured while building the list, before page shipout.
+    SyncPoint {
+        file_id: u32,
+        line: u32,
+    },
     PdfDest {
         name: String,
         kind: u8,
@@ -264,8 +269,6 @@ pub enum DisplayItem {
         glyphs: Vec<u8>,
         tag: Option<StructureTag>,
         span: Option<SpanId>,
-        source_file_id: u32,
-        source_line: u32,
     },
     NativeGlyphRun {
         run: std::rc::Rc<crate::native_layout::NativeRun>,
@@ -275,8 +278,6 @@ pub enum DisplayItem {
         y_bp: f64,
         tag: Option<StructureTag>,
         span: Option<SpanId>,
-        source_file_id: u32,
-        source_line: u32,
     },
     Rule {
         x_bp: f64,
@@ -305,8 +306,6 @@ impl DisplayItem {
             glyphs,
             tag: None,
             span: None,
-            source_file_id: 0,
-            source_line: 0,
         }
     }
 }

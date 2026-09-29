@@ -1,10 +1,10 @@
 # Build artifacts and caches
 
 `texmk document.tex` keeps the project directory clean by default. The final
-PDF is written beside the source, while auxiliary files and the complete TeX
-transcript live in a persistent per-job cache. The cache makes later builds
-fast and still preserves the log needed to diagnose a failed or successful
-build.
+PDF and its `document.synctex.gz` editor-navigation sidecar are written beside
+the source (or together in the selected output directory). Auxiliary files and
+the complete TeX transcript live in a persistent per-job cache. The cache
+makes later builds fast and preserves the log needed for diagnostics.
 
 The default cache root follows the platform convention:
 
@@ -22,11 +22,10 @@ project sources or project output.
 
 Cache hits are content-validated. The record is tied to the complete engine
 invocation and checks the source, format override, relevant search environment,
-all loaded files, auxiliary state, and staged PDF, and requires the retained
-transcript to exist. Publication of
-the final PDF and requested retained files uses a same-directory temporary file
-and atomic replacement, so an interrupted or failed rebuild cannot expose a
-partially written result.
+all loaded files, auxiliary state, staged PDF and SyncTeX sidecar, and requires
+the retained transcript to exist. Each published output uses a same-directory
+temporary file and atomic replacement, so no individual file is exposed while
+partially written.
 
 A newly created or changed auxiliary file always triggers a real convergence
 pass before caching. Even apparently empty LaTeX boilerplate can change a later
@@ -41,14 +40,14 @@ Use `texmk --keep-logs document.tex` to copy the transcript beside the PDF,
 or `texmk --keep-intermediates document.tex` (short form `-k`) to copy all
 auxiliary files. `texmk -c document.tex` removes the matching private cache
 and exported files that have not been modified. `texmk -C document.tex` also
-removes an unchanged PDF that `texmk` originally created. It preserves a PDF
-that predated the build or was changed afterwards.
+removes unchanged PDF and SyncTeX outputs that `texmk` originally created.
+It preserves preexisting or subsequently modified outputs.
 
 `pdflatex` keeps the traditional direct-engine behavior: without directory
-options it writes the PDF, transcript, and auxiliary files beside the source.
-Use `-output-directory DIR` for the PDF and `-aux-directory DIR` for the
-transcript and auxiliary files. Its dependency cache is private; override its
-location with `--cache-directory DIR`.
+options it writes the PDF, SyncTeX sidecar, transcript, and auxiliary files
+beside the source. Use `-output-directory DIR` for the PDF and SyncTeX sidecar,
+and `-aux-directory DIR` for the transcript and auxiliary files. Its dependency
+cache is private; override its location with `--cache-directory DIR`.
 
 PNG conversion uses the normal speed setting by default. Pass
 `--optimize-pdf-size` to `pdflatex` or `texmk` to spend more CPU selecting

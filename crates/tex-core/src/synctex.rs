@@ -8,6 +8,7 @@
 use flate2::write::GzEncoder;
 use flate2::Compression;
 use std::collections::HashMap;
+use std::fmt::Write as _;
 use std::io::Write;
 
 /// A record representing a point or box in SyncTeX format.
@@ -33,6 +34,8 @@ pub struct SyncTexData {
     file_map: HashMap<String, u32>,
     /// Records grouped by 1-based page number.
     pub pages: HashMap<u32, Vec<SyncRecord>>,
+    /// Physical PDF page dimensions in scaled points.
+    page_sizes: HashMap<u32, (i64, i64)>,
 }
 
 impl SyncTexData {
@@ -49,6 +52,10 @@ impl SyncTexData {
         self.files.push(path.to_string());
         self.file_map.insert(path.to_string(), id);
         id
+    }
+
+    pub fn record_page_size(&mut self, page: u32, width_sp: i64, height_sp: i64) {
+        self.page_sizes.insert(page, (width_sp, height_sp));
     }
 
     /// Record a synchronization point on a given 1-based page.
@@ -89,7 +96,7 @@ impl SyncTexData {
         let mut out = String::new();
         out.push_str("SyncTeX Version:1\n");
         for (i, path) in self.files.iter().enumerate() {
-            out.push_str(&format!("Input:{}:{}\n", i + 1, path));
+            writeln!(out, "Input:{}:{}", i + 1, path).expect("writing to String");
         }
         out.push_str("Output:pdf\n");
         out.push_str("Magnification:1000\n");
@@ -104,28 +111,91 @@ impl SyncTexData {
         let mut total_records = 0;
         for page in sorted_pages {
             let records = &self.pages[&page];
-            total_records += records.len();
-            out.push_str(&format!("{{{page}\n"));
-            for r in records {
-                if r.w_sp == 0 && r.h_sp == 0 {
-                    // Point record: x<link>,<line>:<x>,<y>
-                    out.push_str(&format!(
-                        "x{},{}:{},{}\n",
-                        r.file_id, r.line, r.x_sp, r.y_sp
-                    ));
-                } else {
-                    // Box record: [link,line:x,y:w,h,depth
-                    out.push_str(&format!(
-                        "k{},{}:{},{}:{},{},0\n",
-                        r.file_id, r.line, r.x_sp, r.y_sp, r.w_sp, r.h_sp
-                    ));
+            let (width_sp, height_sp) = self.page_sizes.get(&page).copied().unwrap_or_else(|| {
+                (
+                    records
+                        .iter()
+                        .map(|record| record.x_sp.saturating_add(record.w_sp))
+                        .max()
+                        .unwrap_or(0)
+                        .saturating_add(655_360),
+                    records
+                        .iter()
+                        .map(|record| record.y_sp.saturating_add(record.h_sp))
+                        .max()
+                        .unwrap_or(0)
+                        .saturating_add(655_360),
+                )
+            });
+            let Some(first) = records.first() else {
+                continue;
+            };
+            writeln!(out, "{{{page}").expect("writing to String");
+            // SyncTeX's inverse search needs a page box containing line
+            // boxes. A flat sequence of x points parses, but edit returns
+            // the first line on the page regardless of the clicked y.
+            writeln!(
+                out,
+                "[{},{}:0,{}:{},{},0",
+                first.file_id, first.line, height_sp, width_sp, height_sp
+            )
+            .expect("writing to String");
+            total_records += 1;
+            let mut start = 0;
+            while start < records.len() {
+                let anchor = &records[start];
+                let mut end = start + 1;
+                while end < records.len()
+                    && records[end].file_id == anchor.file_id
+                    && records[end].line == anchor.line
+                    && records[end].y_sp == anchor.y_sp
+                    && records[end].x_sp >= records[end - 1].x_sp
+                {
+                    end += 1;
                 }
+                let last = &records[end - 1];
+                let width = last
+                    .x_sp
+                    .saturating_add(last.w_sp)
+                    .saturating_sub(anchor.x_sp)
+                    .max(5 * 65_536);
+                writeln!(
+                    out,
+                    "({},{}:{},{}:{},655360,131072",
+                    anchor.file_id, anchor.line, anchor.x_sp, anchor.y_sp, width
+                )
+                .expect("writing to String");
+                for record in &records[start..end] {
+                    if record.w_sp == 0 && record.h_sp == 0 {
+                        writeln!(
+                            out,
+                            "x{},{}:{},{}",
+                            record.file_id, record.line, record.x_sp, record.y_sp
+                        )
+                        .expect("writing to String");
+                    } else {
+                        writeln!(
+                            out,
+                            "h{},{}:{},{}:{},{},0",
+                            record.file_id,
+                            record.line,
+                            record.x_sp,
+                            record.y_sp,
+                            record.w_sp,
+                            record.h_sp
+                        )
+                        .expect("writing to String");
+                    }
+                }
+                out.push_str(")\n");
+                total_records += end - start + 1;
+                start = end;
             }
-            out.push_str(&format!("}}{page}\n"));
+            writeln!(out, "]\n}}{page}").expect("writing to String");
         }
 
         out.push_str("Postamble:\n");
-        out.push_str(&format!("Count:{}\n", total_records));
+        writeln!(out, "Count:{}", total_records).expect("writing to String");
         out.push_str("Post scriptum:\n");
         out
     }
@@ -144,7 +214,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn synctex_roundtrip_format() {
+    fn serializes_queryable_point_and_box_records() {
         let mut data = SyncTexData::new();
         let f1 = data.get_or_register_file("main.tex");
         assert_eq!(f1, 1);
@@ -161,9 +231,15 @@ mod tests {
         assert!(text.contains("Input:2:chapter1.tex"));
         assert!(text.contains("{1"));
         assert!(text.contains(&format!("x1,10:{},{}", 65536 * 72, 65536 * 100)));
-        assert!(text.contains(&format!("k2,25:{},{}", 65536 * 50, 65536 * 200)));
+        assert!(text.contains(&format!(
+            "h2,25:{},{}:{},{},0",
+            65536 * 50,
+            65536 * 200,
+            65536 * 300,
+            65536 * 12
+        )));
         assert!(text.contains("}1"));
-        assert!(text.contains("Count:2"));
+        assert!(text.contains("Count:5"));
 
         let gz = data.to_synctex_gz().expect("compression must succeed");
         assert!(!gz.is_empty());

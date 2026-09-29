@@ -640,6 +640,19 @@ impl InputStack {
         });
     }
 
+    /// Borrow the physical source coordinate without cloning its path for
+    /// every typeset word. Token-list expansions retain their parent file.
+    pub fn current_file_position(&self) -> Option<(&str, u32)> {
+        for source in self.stack.iter().rev() {
+            if let Source::File { name, line_no, .. } = source {
+                return Some((name, *line_no));
+            }
+        }
+        self.last_finished_file
+            .as_ref()
+            .map(|context| (context.name.as_str(), context.line))
+    }
+
     pub fn current_file_name(&self) -> String {
         for s in self.stack.iter().rev() {
             if let Source::File { name, .. } = s {

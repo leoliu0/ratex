@@ -451,7 +451,7 @@ fn copied_texmk_symlink_personalities_need_no_sibling_executables() {
 }
 
 #[test]
-fn publishing_the_pdf_does_not_defer_the_first_engine_cache_hit() {
+fn publishing_outputs_does_not_defer_the_first_engine_cache_hit() {
     let nonce = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
@@ -476,6 +476,7 @@ fn publishing_the_pdf_does_not_defer_the_first_engine_cache_hit() {
         String::from_utf8_lossy(&cold.stderr)
     );
     assert!(source.join("main.pdf").is_file());
+    assert!(source.join("main.synctex.gz").is_file());
 
     let private_log = find_file(&fixture.0.join("cache/texmk/jobs"), "main.log").unwrap();
     std::fs::write(&private_log, "first-warm-run cache sentinel").unwrap();
@@ -489,7 +490,7 @@ fn publishing_the_pdf_does_not_defer_the_first_engine_cache_hit() {
     assert_eq!(
         std::fs::read_to_string(private_log).unwrap(),
         "first-warm-run cache sentinel",
-        "publishing main.pdf invalidated an unrelated source-directory membership snapshot"
+        "publishing final PDF/SyncTeX outputs invalidated the source-directory membership snapshot"
     );
 }
 

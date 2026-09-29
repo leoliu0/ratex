@@ -257,8 +257,6 @@ pub fn shaped_glyphs_to_native_display_item(
         y_bp,
         tag: None,
         span: None,
-        source_file_id: 0,
-        source_line: 0,
     }
 }
 

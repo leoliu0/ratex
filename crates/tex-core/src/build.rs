@@ -516,12 +516,27 @@ impl Engine {
         // output hyphen char — but only once the next token is known not to
         // ligature with it ("--" forms the en-dash first). flush points:
         // here (next char), glue/space appends, and end_paragraph.
+        // Record the source when text enters the paragraph, not during
+        // shipout: by then the input scanner is usually at \end{document}.
+        // A marker at each word gives inverse search a local hit without
+        // interrupting ligatures within a word.
         let tail_charish = matches!(
             self.cur_list.last(),
             Some(Node::Char { font: pf, .. } | Node::Ligature { font: pf, .. }) if *pf == f
         );
         if !tail_charish {
             self.flush_hyphen_disc(f);
+            if self.synctex_enabled {
+                if let Some((path, line)) = self.input.current_file_position() {
+                    if !path.is_empty() && line > 0 {
+                        let file_id = self.synctex.get_or_register_file(path);
+                        self.cur_list.push(Node::Whatsit(crate::boxes::WhatIt::SyncPoint {
+                            file_id,
+                            line,
+                        }));
+                    }
+                }
+            }
         }
         self.append_char_lig(c, f);
     }

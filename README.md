@@ -32,7 +32,7 @@ See [PERFORMANCE.md](PERFORMANCE.md) for benchmark scope and measurements.
 - **Validated incremental builds**: Dependency and auxiliary-state checks reuse unchanged results without re-running the typesetting engine. Per-job locks protect active compilations from cache cleanup, including concurrent startup.
 - **Self-contained typesetting**: The source build embeds the LaTeX format, package resources, and the pinned Latin, Cyrillic, Greek, and CJK font families described below. Compilation needs neither TeX Live nor runtime font downloads.
 - **All-in-One Engine & Toolchain**: Combines the TeX engine, package resolver, BibTeX interpreter, and build convergence into a single unified `ratex` command.
-- **SyncTeX by Default**: Automatic `.synctex.gz` coordinate generation matching PDF boxes to source lines for instant forward/inverse search in VS Code, TeXstudio, VimTeX, and AUCTeX.
+- **SyncTeX by Default**: A PDF-adjacent `.synctex.gz` maps rendered text to source lines for forward/inverse search in VS Code, TeXstudio, VimTeX, and AUCTeX.
 - **Compiler-Grade Diagnostics**: Beautiful rustc-style error reporting with physical source line excerpts, underlines, and actionable fix suggestions streamed directly to the terminal.
 - **Native SVG & Vector Graphics**: First-class support for `.svg` via pure-Rust in-memory rasterization directly in `\includegraphics`—no Inkscape or external shell execution required.
 - **Built-in `latexdiff`**: Integrated visual document diffing with `ratex latexdiff old.tex new.tex` computing word/token LCS differences and injecting standard revision markup.
@@ -112,6 +112,11 @@ Add this recipe to your VS Code `settings.json`:
   { "name": "ratex", "tools": ["ratex"] }
 ]
 ```
+
+The compiler writes `document.synctex.gz` beside `document.pdf`, including
+when `-output-directory` selects another directory. Keep both files together
+for editor forward/inverse search. `hyperref` internal links and table-of-contents
+entries resolve to clickable PDF destinations.
 
 ### Document Revision Diffing (`latexdiff`)
 ```bash

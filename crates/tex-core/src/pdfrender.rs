@@ -407,6 +407,11 @@ impl Engine {
         let height_sp = self.eqtb.dim_params[DimParam::PdfPageHeight.idx() as usize];
         let w_bp = sp_to_bp(width_sp as i64);
         let h_bp = sp_to_bp(height_sp as i64);
+        if self.synctex_enabled {
+            let page = (self.pdf_doc.pages.len() + 1) as u32;
+            self.synctex
+                .record_page_size(page, width_sp as i64, height_sp as i64);
+        }
         let mut ctx = self.new_ctx(height_sp as i64);
         ctx.box_w_sp = width_sp as i64;
         ctx.box_h_sp = height_sp as i64;
@@ -455,32 +460,6 @@ impl Engine {
         // engine-level results
         ctx.eng.pdf_doc.outlines = ctx.eng.pdf_outlines.clone();
         ctx.eng.pdf_doc.pages_attr = ctx.eng.pdf_pages_attr.clone().into_bytes();
-        if ctx.eng.synctex_enabled {
-            let page_num = (ctx.eng.pdf_doc.pages.len() + 1) as u32;
-            for item in &ctx.display_list.items {
-                if let crate::boxes::DisplayItem::GlyphRun {
-                    x_bp,
-                    y_bp,
-                    source_file_id,
-                    source_line,
-                    ..
-                } = item
-                {
-                    if *source_file_id > 0 && *source_line > 0 {
-                        let x_sp = bp_to_sp(*x_bp);
-                        let y_from_top_bp = (h_bp - *y_bp).max(0.0);
-                        let y_sp = bp_to_sp(y_from_top_bp);
-                        ctx.eng.synctex.record_point(
-                            page_num,
-                            *source_file_id,
-                            *source_line,
-                            x_sp as i64,
-                            y_sp as i64,
-                        );
-                    }
-                }
-            }
-        }
         PdfPage {
             content: {
                 ctx.end_text();
@@ -663,7 +642,8 @@ impl<'a> RenderCtx<'a> {
             });
             return;
         }
-        // PDF rect: y grows upward; tex y grows upward within the page
+        // Link frames accumulate top-down TeX page coordinates; convert the
+        // vertical bounds once when the PDF annotation is closed.
         let y0 = self.y_pdf(fr.max_y);
         let y1 = self.y_pdf(fr.min_y);
         self.annots.push(Annot {
@@ -821,7 +801,7 @@ impl<'a> RenderCtx<'a> {
                     cur_y += *d as i64;
                 }
                 Node::Whatsit(w) => {
-                    self.note_point(sp_to_bp(x), self.y_pdf(sp_to_bp(cur_y)));
+                    self.note_point(sp_to_bp(x), sp_to_bp(cur_y));
                     self.emit_whatsit_sp(w, x, cur_y);
                 }
                 Node::Ins { box_node, .. } => {
@@ -1022,7 +1002,7 @@ impl<'a> RenderCtx<'a> {
                     cur_x += adv;
                 }
                 Node::Whatsit(w) => {
-                    self.note_point(sp_to_bp(cur_x), self.y_pdf(sp_to_bp(y)));
+                    self.note_point(sp_to_bp(cur_x), sp_to_bp(y));
                     self.emit_whatsit_sp(w, cur_x, y);
                     if let crate::boxes::WhatIt::PdfRefXImage { w, .. }
                     | crate::boxes::WhatIt::PdfRefXForm { w, .. } = w
@@ -1516,8 +1496,8 @@ impl<'a> RenderCtx<'a> {
         let size_bp = sp_to_bp(at_size_sp);
         let x = sp_to_bp(x_sp);
         let y = sp_to_bp(v_sp);
-        self.note_point(x, y + 0.75 * size_bp);
-        self.note_point(x + 0.5 * size_bp, y - 0.25 * size_bp);
+        self.note_point(x, y - 0.75 * size_bp);
+        self.note_point(x + 0.5 * size_bp, y + 0.25 * size_bp);
         if at_size_sp <= 0 {
             return;
         }
@@ -1567,13 +1547,6 @@ impl<'a> RenderCtx<'a> {
             false
         };
         if !merged {
-            let file_name = self.eng.input.current_file_name();
-            let line = self.eng.input.current_file_line();
-            let file_id = if file_name.is_empty() {
-                0
-            } else {
-                self.eng.synctex.get_or_register_file(&file_name)
-            };
             self.display_list.push(crate::boxes::DisplayItem::GlyphRun {
                 font: f,
                 x_bp,
@@ -1581,8 +1554,6 @@ impl<'a> RenderCtx<'a> {
                 glyphs: vec![code],
                 tag: None,
                 span: None,
-                source_file_id: file_id,
-                source_line: line,
             });
         }
     }
@@ -1614,8 +1585,8 @@ impl<'a> RenderCtx<'a> {
         let x = sp_to_bp(x_sp);
         let y = sp_to_bp(v_sp);
         // approximate glyph extent feeds link rectangles
-        self.note_point(x, y + 0.75 * size_bp);
-        self.note_point(x + 0.5 * size_bp, y - 0.25 * size_bp);
+        self.note_point(x, y - 0.75 * size_bp);
+        self.note_point(x + 0.5 * size_bp, y + 0.25 * size_bp);
         if at_size_sp <= 0 {
             return; // nullfont: nothing to draw
         }
@@ -1754,13 +1725,6 @@ impl<'a> RenderCtx<'a> {
             false
         };
         if !merged {
-            let file_name = self.eng.input.current_file_name();
-            let line = self.eng.input.current_file_line();
-            let file_id = if file_name.is_empty() {
-                0
-            } else {
-                self.eng.synctex.get_or_register_file(&file_name)
-            };
             self.display_list.push(crate::boxes::DisplayItem::GlyphRun {
                 font: f,
                 x_bp,
@@ -1768,8 +1732,6 @@ impl<'a> RenderCtx<'a> {
                 glyphs: vec![c],
                 tag: None,
                 span: None,
-                source_file_id: file_id,
-                source_line: line,
             });
         }
     }
@@ -1921,17 +1883,10 @@ impl<'a> RenderCtx<'a> {
         }
         let (_, m) = divide_scaled(at_size_sp, ONE_HUNDRED_BP_SP, 6);
         let ratio = self.font_ratio(fid);
-        let file_name = self.eng.input.current_file_name();
-        let line = self.eng.input.current_file_line();
-        let file_id = if file_name.is_empty() {
-            0
-        } else {
-            self.eng.synctex.get_or_register_file(&file_name)
-        };
         let x_bp = sp_to_bp(cur_x);
         let y_bp = self.y_pdf(sp_to_bp(y));
         let size_bp = sp_to_bp(at_size_sp);
-        self.note_point(x_bp, y_bp + 0.75 * size_bp);
+        self.note_point(x_bp, sp_to_bp(y) - 0.75 * size_bp);
 
         self.display_list
             .push(crate::boxes::DisplayItem::NativeGlyphRun {
@@ -1942,18 +1897,7 @@ impl<'a> RenderCtx<'a> {
                 y_bp,
                 tag: None,
                 span: None,
-                source_file_id: file_id,
-                source_line: line,
             });
-
-        if self.eng.synctex_enabled && file_id > 0 && line > 0 {
-            let page_num = (self.eng.pdf_doc.pages.len() + 1) as u32;
-            let y_from_top_sp = (self.page_height_sp - y).max(0);
-            self.eng
-                .synctex
-                .record_point(page_num, file_id, line, cur_x, y_from_top_sp);
-        }
-
         let mut pen_x = cur_x;
         let mut idx = start;
         while idx < bound_end {
@@ -2031,7 +1975,7 @@ impl<'a> RenderCtx<'a> {
             idx = j;
         }
 
-        self.note_point(sp_to_bp(pen_x), y_bp - 0.25 * size_bp);
+        self.note_point(sp_to_bp(pen_x), sp_to_bp(y) + 0.25 * size_bp);
     }
 
     /// pdfTeX `pdf_set_rule`: close the text object, then draw inside a
@@ -2041,11 +1985,12 @@ impl<'a> RenderCtx<'a> {
             return;
         }
         let x = sp_to_bp(x_sp);
-        let y = self.y_pdf(sp_to_bp(v_down_sp));
+        let y_down = sp_to_bp(v_down_sp);
+        let y = self.y_pdf(y_down);
         let w = sp_to_bp(w_sp);
         let h = sp_to_bp(h_sp);
-        self.note_point(x, y);
-        self.note_point(x + w, y + h);
+        self.note_point(x, y_down - h);
+        self.note_point(x + w, y_down);
         self.display_list.push(crate::boxes::DisplayItem::Rule {
             x_bp: x,
             y_bp: y,
@@ -2253,6 +2198,12 @@ impl<'a> RenderCtx<'a> {
                 self.set_origin(cur_h, cur_v);
                 self.content.push_str("Q\n");
             }
+            SyncPoint { file_id, line } => {
+                if self.page_mode && self.eng.synctex_enabled {
+                    let page = (self.eng.pdf_doc.pages.len() + 1) as u32;
+                    self.eng.synctex.record_point(page, *file_id, *line, cur_h, cur_v);
+                }
+            }
             PdfDest { name, kind, params } => {
                 // first definition of a name wins
                 if !self.dests.iter().any(|d| &d.name == name) {
@@ -2332,7 +2283,7 @@ impl<'a> RenderCtx<'a> {
             }
             PdfStartLink { attr, uri, name } => {
                 let x = sp_to_bp(cur_h);
-                let y = self.y_pdf(sp_to_bp(cur_v));
+                let y = sp_to_bp(cur_v);
                 self.links.push(LinkFrame {
                     uri: uri.clone(),
                     dest: name.clone(),
@@ -2348,7 +2299,7 @@ impl<'a> RenderCtx<'a> {
                     // include the pen position at closing time
                     let mut fr = fr;
                     let x = sp_to_bp(cur_h);
-                    let y = self.y_pdf(sp_to_bp(cur_v));
+                    let y = sp_to_bp(cur_v);
                     if x < fr.min_x {
                         fr.min_x = x;
                     }

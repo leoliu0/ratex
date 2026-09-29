@@ -61,6 +61,15 @@ tar -xzf tex-suite-v0.4.5-linux-x86_64.tar.gz && sudo ./tex-suite-linux-x86_64/i
 ```
 
 ### macOS
+Install the maintained Homebrew package (updated automatically after successful releases):
+
+```bash
+brew tap leoliu0/ratex https://github.com/leoliu0/ratex.git
+brew install leoliu0/ratex/ratex
+```
+
+This tap is independent of `homebrew/core`; `brew install ratex` uses core's separately reviewed version.
+
 Download and run the native installer package:
 - [macOS Apple Silicon (.pkg)](https://github.com/leoliu0/ratex/releases/download/v0.4.5/ratex-v0.4.5-macos-aarch64.pkg)
 - [macOS Intel (.pkg)](https://github.com/leoliu0/ratex/releases/download/v0.4.5/ratex-v0.4.5-macos-x86_64.pkg)

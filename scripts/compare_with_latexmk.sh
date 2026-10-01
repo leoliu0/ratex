@@ -10,14 +10,17 @@ REF="/home/leo/dd/tex/trust_own/main.pdf"
 OP=$(pdfinfo "$OURS" 2>/dev/null | awk '/^Pages/{print $2}')
 RP=$(pdfinfo "$REF"  2>/dev/null | awk '/^Pages/{print $2}')
 echo "COMPARE: pages ours=$OP ref=$RP"
-pdftotext "$OURS" /tmp/cmp_ours.txt 2>/dev/null
-pdftotext "$REF"  /tmp/cmp_ref.txt  2>/dev/null
+TMP=$(mktemp -d) || exit 1
+trap 'rm -rf -- "$TMP"' EXIT
+pdftotext "$OURS" "$TMP/ours.txt" 2>/dev/null || { echo "COMPARE: pdftotext failed: $OURS"; exit 1; }
+pdftotext "$REF"  "$TMP/ref.txt"  2>/dev/null || { echo "COMPARE: pdftotext failed: $REF"; exit 1; }
 norm() { tr -s ' \n' ' ' < "$1" | sed 's/ //g' | md5sum | cut -d' ' -f1; }
-OH=$(norm /tmp/cmp_ours.txt); RH=$(norm /tmp/cmp_ref.txt)
+OH=$(norm "$TMP/ours.txt"); RH=$(norm "$TMP/ref.txt")
 echo "COMPARE: text-hash ours=$OH ref=$RH"
-if [ "$OP" = "$RP" ] && [ "$OH" = "$RH" ]; then
+if [ -n "$OP" ] && [ "$OP" = "$RP" ] && [ "$OH" = "$RH" ]; then
   echo "COMPARE: MATCH"
 else
   echo "COMPARE: DIFFER"
-  diff <(tr -s ' \n' '\n' < /tmp/cmp_ours.txt) <(tr -s ' \n' '\n' < /tmp/cmp_ref.txt) | head -20
+  diff <(tr -s ' \n' '\n' < "$TMP/ours.txt") <(tr -s ' \n' '\n' < "$TMP/ref.txt") | head -20
+  exit 1
 fi

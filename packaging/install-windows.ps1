@@ -3,8 +3,8 @@
     Installer for the tex-suite Rust TeX engine collection on Windows.
 
 .DESCRIPTION
-    Self-contained installer for pdflatex, xelatex, lualatex, bibtex and
-    texmk/latexmk. Copies the release binaries into <root>\bin and the texmf
+    Self-contained installer for ratex (latexmk-like driver with embedded
+    TeX engines). Copies the release binary into <root>\bin and the texmf
     TDS tree into <root>\share\tex-suite,
     then persistently registers <root>\bin in PATH and sets TEXMFLOCAL.
 
@@ -49,10 +49,6 @@ param(
     [switch]$Uninstall,
     [switch]$System,
     [switch]$Help,
-    [switch]$AliasLatexmk,
-    [switch]$NoAliasLatexmk,
-    [switch]$ReplaceLatexmk,
-    [switch]$NoReplaceLatexmk,
     [string]$SourceDir = '',
     [Alias('Prefix')]
     [string]$InstallDir = '',
@@ -69,31 +65,6 @@ if (-not $PSScriptRoot) {
 # --------------------------------------------------------------- constants
 
 $Script:CoreExes = @('ratex.exe')
-$Script:ExtraExes = @()
-$Script:Shims = @()
-if ($ReplaceLatexmk) { $AliasLatexmk = $true }
-if ($NoReplaceLatexmk) { $NoAliasLatexmk = $true }
-
-if (-not $Uninstall) {
-    if (-not $AliasLatexmk -and -not $NoAliasLatexmk) {
-        if ([Environment]::UserInteractive) {
-            $ans = Read-Host 'Install "latexmk" alias pointing to texmk? (recommended for TeXstudio/VS Code) [Y/n]'
-            if ($ans -match '^[nN]') {
-                $NoAliasLatexmk = $true
-            } else {
-                $AliasLatexmk = $true
-            }
-        } else {
-            $AliasLatexmk = $true
-        }
-    }
-}
-
-if ($NoAliasLatexmk) {
-    $Script:Shims = @($Script:Shims | Where-Object { $_.Name -ne 'latexmk.exe' })
-}
-$Script:AllInstalledExes = $Script:CoreExes + $Script:ExtraExes + ($Script:Shims | ForEach-Object { $_.Name })
-$Script:EnvVars = @('TEXMFLOCAL', 'TEX_SUITE_DATA')
 $Script:InstallManifestName = '.tex-suite-install.json'
 $Script:InstallManifestSchema = 'tex-suite-install-v2'
 
@@ -320,10 +291,38 @@ function Get-StoredPathValue {
 }
 
 function Set-StoredPathValue {
+    # Writes through the registry: [Environment]::SetEnvironmentVariable always
+    # stores REG_SZ, which would turn entries such as %USERPROFILE%\.cargo\bin
+    # into literal, unresolvable text. Keep REG_EXPAND_SZ (the Windows default
+    # for Path) unless the existing value is a plain REG_SZ without %VARS%.
     param([string]$Scope, [string]$Value)
-    # .NET stores REG_EXPAND_SZ when the value contains '%', preserving
-    # unexpanded variables, and broadcasts WM_SETTINGCHANGE automatically.
-    [Environment]::SetEnvironmentVariable('Path', $Value, [EnvironmentVariableTarget]::$Scope)
+    if ($Scope -eq 'Machine') {
+        $key = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey(
+            'SYSTEM\CurrentControlSet\Control\Session Manager\Environment', $true)
+    } else {
+        $key = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Environment')
+    }
+    if (-not $key) { throw "Cannot open the $Scope environment registry key for writing." }
+    try {
+        $kind = [Microsoft.Win32.RegistryValueKind]::ExpandString
+        if (($key.GetValueNames() -contains 'Path') -and
+            $key.GetValueKind('Path') -eq [Microsoft.Win32.RegistryValueKind]::String -and
+            -not $Value.Contains('%')) {
+            $kind = [Microsoft.Win32.RegistryValueKind]::String
+        }
+        if ($Value) {
+            $key.SetValue('Path', $Value, $kind)
+        } else {
+            $key.DeleteValue('Path', $false)
+        }
+    } finally {
+        $key.Close()
+    }
+    # Setting and clearing a scratch variable through .NET broadcasts
+    # WM_SETTINGCHANGE, so Explorer and new terminals see the new PATH.
+    $refresh = 'TEX_SUITE_ENV_REFRESH'
+    [Environment]::SetEnvironmentVariable($refresh, '1', [EnvironmentVariableTarget]::$Scope)
+    [Environment]::SetEnvironmentVariable($refresh, $null, [EnvironmentVariableTarget]::$Scope)
 }
 
 function Add-ToPathIdempotent {
@@ -405,11 +404,11 @@ function Find-Source {
     }
     $candidates += (Get-Location).Path
 
-    # Prefer a staged bundle: <root>\bin\texmk.exe + <root>\share\tex-suite.
+    # Prefer a staged bundle: <root>\bin\ratex.exe + <root>\share\tex-suite.
     foreach ($c in $candidates) {
         if (-not $c) { continue }
         $bin = Join-Path $c 'bin'
-        if ((Test-Path -LiteralPath (Join-Path $bin 'ratex.exe')) -or (Test-Path -LiteralPath (Join-Path $bin 'texmk.exe'))) {
+        if (Test-Path -LiteralPath (Join-Path $bin 'ratex.exe')) {
             $data = Join-Path $c (Join-Path 'share' 'tex-suite')
             return [pscustomobject]@{
                 Mode   = 'bundle'
@@ -425,7 +424,7 @@ function Find-Source {
     foreach ($c in $candidates) {
         if (-not $c) { continue }
         $rel = Join-Path $c 'target\release'
-        if ((Test-Path -LiteralPath (Join-Path $rel 'ratex.exe')) -or (Test-Path -LiteralPath (Join-Path $rel 'texmk.exe'))) {
+        if (Test-Path -LiteralPath (Join-Path $rel 'ratex.exe')) {
             $texmf = $null
             foreach ($t in @((Join-Path $c (Join-Path 'share\tex-suite' 'texmf')), (Join-Path $c 'texmf'))) {
                 if (Test-Path -LiteralPath $t) { $texmf = $t; break }
@@ -458,16 +457,6 @@ function Copy-ExeTo {
     }
 }
 
-function Write-CmdWrapper {
-    param([string]$BinDir, [string]$WrapperBaseName, [string]$TargetExe)
-    $path = Join-Path $BinDir ($WrapperBaseName + '.cmd')
-    $content = ("@echo off`r`n" +
-                "rem tex-suite wrapper: forwards to $TargetExe`r`n" +
-                "`"%~dp0$TargetExe`" %*`r`n")
-    [IO.File]::WriteAllText($path, $content, [Text.Encoding]::ASCII)
-    Write-Info "Created helper wrapper $path (forwards to $TargetExe)."
-}
-
 function Copy-Tree {
     param([string]$Src, [string]$Dst)
     New-Item -ItemType Directory -Force -Path $Dst | Out-Null
@@ -487,8 +476,8 @@ function Copy-Tree {
 
 function Invoke-Verify {
     param([string]$Exe)
-    # The engines use TeX-style single-dash flags: `pdflatex -version` prints
-    # the version banner; `--version` is accepted as a fallback.
+    # TeX-style single-dash flag first: `ratex -version` prints the version
+    # banner; `--version` is accepted as a fallback.
     $tmp = [IO.Path]::GetTempPath()
     $outFile = Join-Path $tmp ('tex-suite-verify-' + [guid]::NewGuid().ToString('N') + '.out')
     $errFile = $outFile + '.err'
@@ -502,7 +491,7 @@ function Invoke-Verify {
                 $text = [IO.File]::ReadAllText($outFile).Trim()
             }
             if ($proc.ExitCode -eq 0 -and $text -ne '') {
-                Write-Info "Verification OK: pdflatex $flag ->"
+                Write-Info "Verification OK: ratex $flag ->"
                 foreach ($line in ($text -split "`r?`n" | Select-Object -First 3)) {
                     Write-Host "    $line"
                 }
@@ -521,7 +510,7 @@ function Show-Usage {
     $script = if ($PSScriptRoot) { Join-Path $PSScriptRoot 'install-windows.ps1' } else { 'install-windows.ps1' }
     $text = @"
 
-tex-suite installer (Windows)  --  pdflatex / xelatex / lualatex / bibtex / texmk
+tex-suite installer (Windows)  --  ratex
 
 USAGE
   powershell -NoProfile -ExecutionPolicy Bypass -File "$script" [options]
@@ -539,18 +528,18 @@ OPTIONS
                   directory containing this script, else a Cargo checkout
                   (target\release) in the current/parent directories.
   -InstallDir <p> Install root override (files go to <p>\bin and
-                  <p>\share\tex-suite).
-  -AliasLatexmk   Install 'latexmk.exe' alias pointing to texmk (default).
-  -NoAliasLatexmk Do not install 'latexmk.exe' alias.
+                  <p>\share\tex-suite). Alias: -Prefix.
+  -NoPath         Do not change PATH, TEXMFLOCAL or TEX_SUITE_DATA.
+  -SkipVerify     Skip the post-install ratex -version check.
   -Help           Show this message.
 
 WHAT IT DOES
-  1. Copies canonical engines and small alias launchers to <root>\bin.
+  1. Copies ratex.exe to <root>\bin.
   2. Copies the texmf tree to <root>\share\tex-suite. The compressed LaTeX
-     format is embedded in pdflatex.exe; an external format is optional.
+     format is embedded in ratex.exe; an external format is optional.
      TEXMFLOCAL points at <root>\share\tex-suite\texmf.
   3. Adds <root>\bin to the persistent User (or Machine) PATH idempotently.
-  4. Verifies the install by running: pdflatex.exe -version
+  4. Verifies the install by running: ratex.exe -version
 
 After installing, open a NEW terminal so the updated PATH is picked up.
 
@@ -577,8 +566,8 @@ function Install-Suite {
     $src = Find-Source -Explicit $SourceDir
     if (-not $src) {
         throw ("Could not find tex-suite build output. Expected a staged bundle " +
-               "(bin\pdflatex.exe + share\tex-suite\) next to this script, or a " +
-               'Cargo checkout with target\release\pdflatex.exe. Run ' +
+               "(bin\ratex.exe + share\tex-suite\) next to this script, or a " +
+               'Cargo checkout with target\release\ratex.exe. Run ' +
                '"cargo build --release --workspace" first, or pass -SourceDir.')
     }
     Write-Info ("Installing from " + $src.Mode + " source: " + $src.BinDir)
@@ -640,19 +629,9 @@ function Install-Suite {
 
     $existingManifest = Read-InstallManifest -Root $root
     $desiredFiles = New-Object 'System.Collections.Generic.List[string]'
-    foreach ($name in ($Script:CoreExes + $Script:ExtraExes)) {
+    foreach ($name in $Script:CoreExes) {
         if (Test-Path -LiteralPath (Join-Path $src.BinDir $name)) {
             [void]$desiredFiles.Add((Join-Path 'bin' $name))
-        }
-    }
-    foreach ($shim in $Script:Shims) {
-        $stagedAlias = Join-Path $src.BinDir $shim.Name
-        $stagedParent = Join-Path $src.BinDir $shim.Parent
-        if ((Test-Path -LiteralPath $stagedAlias) -or (Test-Path -LiteralPath $stagedParent)) {
-            [void]$desiredFiles.Add((Join-Path 'bin' $shim.Name))
-        } else {
-            $wrapper = [IO.Path]::GetFileNameWithoutExtension($shim.Name) + '.cmd'
-            [void]$desiredFiles.Add((Join-Path 'bin' $wrapper))
         }
     }
     if ($src.Fmt -and (Test-Path -LiteralPath $src.Fmt)) {
@@ -702,46 +681,18 @@ function Install-Suite {
     }
     $managedFiles = New-Object 'System.Collections.Generic.List[string]'
 
-    # 1. Engine binaries
-    foreach ($name in ($Script:CoreExes + $Script:ExtraExes)) {
+    # 1. Binary
+    foreach ($name in $Script:CoreExes) {
         $s = Join-Path $src.BinDir $name
         if (-not (Test-Path -LiteralPath $s)) {
-            if ($Script:CoreExes -contains $name) {
-                throw "Required binary not found in source: $s"
-            }
-            Write-Warning "Optional binary not found in source, skipping: $name"
-            continue
+            throw "Required binary not found in source: $s"
         }
         Copy-ExeTo -Src $s -Dst (Join-Path $bin $name)
         [void]$managedFiles.Add((Join-Path 'bin' $name))
         Write-Info "Installed $name"
     }
 
-    # 2. Aliases. A current bundle/source build contains the correctly named
-    # launcher. Older payloads contain full, personality-aware executables;
-    # copying each alias by its own name preserves those payloads too.
-    foreach ($shim in $Script:Shims) {
-        $parent = Join-Path $bin $shim.Parent
-        $stagedAlias = Join-Path $src.BinDir $shim.Name
-        if (Test-Path -LiteralPath $stagedAlias) {
-            Copy-ExeTo -Src $stagedAlias -Dst (Join-Path $bin $shim.Name)
-            [void]$managedFiles.Add((Join-Path 'bin' $shim.Name))
-            Write-Info ("Installed " + $shim.Name + ' (alias executable)')
-        } elseif (Test-Path -LiteralPath $parent) {
-            Copy-ExeTo -Src $parent -Dst (Join-Path $bin $shim.Name)
-            [void]$managedFiles.Add((Join-Path 'bin' $shim.Name))
-            Write-Warning ("Installed " + $shim.Name + " as a full copy of " + $shim.Parent)
-        } else {
-            # Parent missing (e.g. not built): fall back to a .cmd wrapper
-            # pointing at the parent if it ever shows up next to the bin dir.
-            Write-CmdWrapper -BinDir $bin `
-                -WrapperBaseName ([IO.Path]::GetFileNameWithoutExtension($shim.Name)) `
-                -TargetExe $shim.Parent
-            [void]$managedFiles.Add((Join-Path 'bin' ([IO.Path]::GetFileNameWithoutExtension($shim.Name) + '.cmd')))
-        }
-    }
-
-    # 3. Runtime data: optional external format + texmf TDS tree
+    # 2. Runtime data: optional external format + texmf TDS tree
     if ($src.Fmt -and (Test-Path -LiteralPath $src.Fmt)) {
         Copy-ExeTo -Src $src.Fmt -Dst (Join-Path $data 'pdflatex.fmt')
         Copy-ExeTo -Src $src.Fmt -Dst (Join-Path $bin 'pdflatex.fmt')
@@ -761,7 +712,7 @@ function Install-Suite {
                 Write-Warning "Legacy format path is not a file; leaving it unchanged: $legacyFmt"
             }
         }
-        Write-Info 'Using the compressed LaTeX format embedded in pdflatex.exe'
+        Write-Info 'Using the compressed LaTeX format embedded in ratex.exe'
     }
     if ($src.Texmf -and (Test-Path -LiteralPath $src.Texmf)) {
         $texmfDst = Join-Path $data 'texmf'
@@ -856,31 +807,31 @@ function Remove-InstallTree {
 
 function Uninstall-Suite {
     $admin = Test-IsAdmin
-    $roots = @()
-    $scopes = @('User')
-
+    # Each root is cleaned in the environment scope its installer used.
+    $targets = @()
     if ($InstallDir) {
-        $roots += (Get-FullPath $InstallDir)
-        if ($System) { $scopes = @('Machine') }
+        $scope = if ($System -and $admin) { 'Machine' } else { 'User' }
+        $targets += [pscustomobject]@{ Root = (Get-FullPath $InstallDir); Scope = $scope }
     } elseif ($System) {
         if (-not $admin) {
             throw '-System requires an elevated (Administrator) PowerShell or Command Prompt.'
         }
-        $roots += Get-MachineRoot
-        $scopes = @('Machine')
+        $targets += [pscustomobject]@{ Root = (Get-MachineRoot); Scope = 'Machine' }
     } else {
-        $roots += Get-UserRoot
-        $roots += Get-MachineRoot   # also clean a machine install, if admin
-    }
-    if (-not $admin) { $scopes = @('User') }
-
-    foreach ($root in ($roots | Select-Object -Unique)) {
-        $bin = Join-Path $root 'bin'
-        foreach ($scope in $scopes) {
-            Remove-FromPathIdempotent -Scope $scope -Dir $bin
-            Clear-EnvVarIfOurs -Scope $scope -Name 'TEXMFLOCAL' -RootPrefix $root
-            Clear-EnvVarIfOurs -Scope $scope -Name 'TEX_SUITE_DATA' -RootPrefix $root
+        $targets += [pscustomobject]@{ Root = (Get-UserRoot); Scope = 'User' }
+        # A machine install is writable (files and Machine environment) only
+        # when elevated; otherwise its removal would fail with access denied.
+        if ($admin) {
+            $targets += [pscustomobject]@{ Root = (Get-MachineRoot); Scope = 'Machine' }
         }
+    }
+
+    foreach ($target in $targets) {
+        $root = $target.Root
+        $bin = Join-Path $root 'bin'
+        Remove-FromPathIdempotent -Scope $target.Scope -Dir $bin
+        Clear-EnvVarIfOurs -Scope $target.Scope -Name 'TEXMFLOCAL' -RootPrefix $root
+        Clear-EnvVarIfOurs -Scope $target.Scope -Name 'TEX_SUITE_DATA' -RootPrefix $root
         Remove-InstallTree -Root $root
     }
     if (-not $admin) {

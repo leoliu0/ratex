@@ -16,8 +16,6 @@ MARK_END='# <<< tex-suite <<<'
 DATA_MANIFEST_NAME='.tex-suite-managed-files-v1'
 DATA_MANIFEST_HEADER='TEX-SUITE-MANAGED-FILES-1'
 
-BIN_NAMES="ratex"
-
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 log() { printf '%s\n' "$*"; }
 warn() { printf 'warning: %s\n' "$*" >&2; }
@@ -50,7 +48,8 @@ Options:
   -h, --help       Show this help and exit
 
 Environment overrides:
-  TEX_SUITE_DATA   default data directory when --data-dir is not given
+  TEX_SUITE_DATA   default data directory when neither --data-dir nor
+                   --prefix/--system is given
   CARGO_TARGET_DIR cargo target directory (used for source builds)
 
 Examples:
@@ -62,7 +61,7 @@ EOF
 
 # ---------------------------------------------------------------- arg parsing
 PREFIX=""
-DATA_DIR="${TEX_SUITE_DATA:-}"
+DATA_DIR=""
 BUNDLE_ARG=""
 FROM_SOURCE=0
 NO_BUILD=0
@@ -70,7 +69,6 @@ DO_LINK=0
 NO_PATH=0
 SKIP_VERIFY=0
 UNINSTALL=0
-ALIAS_LATEXMK=""
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -85,8 +83,6 @@ while [ $# -gt 0 ]; do
         --no-build)    NO_BUILD=1; shift ;;
         --link)        DO_LINK=1; shift ;;
         --no-path)     NO_PATH=1; shift ;;
-        --alias-latexmk|--replace-latexmk)       ALIAS_LATEXMK=1; shift ;;
-        --no-alias-latexmk|--no-replace-latexmk) ALIAS_LATEXMK=0; shift ;;
         --skip-verify) SKIP_VERIFY=1; shift ;;
         --uninstall)   UNINSTALL=1; shift ;;
         -h|--help)     usage; exit 0 ;;
@@ -94,8 +90,24 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-[ -n "$PREFIX" ] || PREFIX="${HOME:?HOME is not set}/.local"
-[ -n "$DATA_DIR" ] || DATA_DIR="$PREFIX/share/tex-suite"
+PREFIX_DEFAULTED=0
+if [ -z "$PREFIX" ]; then
+    PREFIX="${HOME:?HOME is not set}/.local"
+    PREFIX_DEFAULTED=1
+fi
+# The profile block exports TEX_SUITE_DATA for the active install; it must
+# not redirect the data of an install to an explicitly chosen prefix.
+if [ -z "$DATA_DIR" ]; then
+    if [ "$PREFIX_DEFAULTED" = 1 ] && [ -n "${TEX_SUITE_DATA:-}" ]; then
+        DATA_DIR="$TEX_SUITE_DATA"
+    else
+        DATA_DIR="$PREFIX/share/tex-suite"
+    fi
+fi
+case "$PREFIX$DATA_DIR" in
+    *'
+'*) die "install paths must not contain a newline" ;;
+esac
 
 case "$PREFIX" in
     /*) ;;
@@ -114,6 +126,10 @@ OLD_MANIFEST_VALID=0
 if [ "$(id -u)" != 0 ] && [ "$PREFIX" = "/usr/local" ]; then
     die "system install to /usr/local needs root: re-run with sudo"
 fi
+if [ "$UNINSTALL" = 0 ] && [ "$PREFIX_DEFAULTED" = 1 ] && [ "$(id -u)" = 0 ] \
+    && [ -n "${SUDO_USER:-}" ]; then
+    die "refusing a per-user install to $PREFIX as root under sudo (it would leave root-owned files); run without sudo, or use --system / --prefix DIR"
+fi
 
 detect_arch() {
     case "$(uname -m)" in
@@ -130,14 +146,23 @@ SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 SRC_BIN=""; SRC_FMT=""; SRC_TEXMF=""
 STAGE_TEXMF=""
 
-cleanup_stage() {
+TMP_FILE=""
+
+cleanup() {
     [ -z "${STAGE_TEXMF:-}" ] || rm -rf -- "$STAGE_TEXMF" 2>/dev/null || true
+    [ -z "${TMP_FILE:-}" ] || rm -f -- "$TMP_FILE" 2>/dev/null || true
 }
-trap cleanup_stage EXIT INT TERM HUP
+# Signal traps must exit: a handler that returns lets the script continue
+# with the staging directory already deleted. `exit` runs the EXIT trap.
+trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 try_bundle() {
-    _b="$1"
-    [ -x "$_b/bin/ratex" ] || [ -x "$_b/bin/texmk" ] || [ -x "$_b/bin/pdflatex" ] || return 1
+    [ -x "$1/bin/ratex" ] || return 1
+    # Absolute, so --link never creates a symlink relative to the caller's cwd.
+    _b=$(CDPATH= cd -- "$1" && pwd) || return 1
     SRC_BIN="$_b/bin"
     if [ -f "$_b/share/tex-suite/pdflatex.fmt" ]; then
         SRC_FMT="$_b/share/tex-suite/pdflatex.fmt"
@@ -150,6 +175,14 @@ try_bundle() {
         SRC_TEXMF=""
     fi
     return 0
+}
+
+check_font_payload() {
+    [ -n "$SRC_TEXMF" ] && [ -d "$SRC_TEXMF/doc/fonts" ] || return 0
+    for _fp in NOTICES-FONTS.txt sources.tar.zst packages.lock.json; do
+        [ -f "$SRC_TEXMF/doc/fonts/$_fp" ] \
+            || die "font redistribution payload incomplete in $SRC_TEXMF/doc/fonts"
+    done
 }
 
 find_repo_root() {
@@ -167,64 +200,28 @@ resolve_payload() {
     if [ -n "$BUNDLE_ARG" ]; then
         [ -d "$BUNDLE_ARG" ] || die "--bundle: not a directory: $BUNDLE_ARG"
         try_bundle "$BUNDLE_ARG" \
-            || die "--bundle $BUNDLE_ARG has no executable bin/pdflatex"
-        if [ -n "$SRC_TEXMF" ] && [ -d "$SRC_TEXMF/doc/fonts" ]; then
-            if [ ! -f "$SRC_TEXMF/doc/fonts/NOTICES-FONTS.txt" ] \
-                || [ ! -f "$SRC_TEXMF/doc/fonts/sources.tar.zst" ] \
-                || [ ! -f "$SRC_TEXMF/doc/fonts/packages.lock.json" ]; then
-                die "font redistribution payload incomplete in $SRC_TEXMF/doc/fonts"
-            fi
-        fi
+            || die "--bundle $BUNDLE_ARG has no executable bin/ratex"
+        check_font_payload
         log "Using release bundle at $BUNDLE_ARG"
         return 0
     fi
 
     if [ "$FROM_SOURCE" = 0 ]; then
-        if try_bundle "$SCRIPT_DIR"; then
-            if [ -n "$SRC_TEXMF" ] && [ -d "$SRC_TEXMF/doc/fonts" ]; then
-                if [ ! -f "$SRC_TEXMF/doc/fonts/NOTICES-FONTS.txt" ] \
-                    || [ ! -f "$SRC_TEXMF/doc/fonts/sources.tar.zst" ] \
-                    || [ ! -f "$SRC_TEXMF/doc/fonts/packages.lock.json" ]; then
-                    die "font redistribution payload incomplete in $SRC_TEXMF/doc/fonts"
-                fi
-            fi
-            log "Using release bundle at $SCRIPT_DIR"
-            return 0
-        fi
-        _d="$SCRIPT_DIR/tex-suite-linux-$ARCH"
-        if [ -d "$_d" ] && try_bundle "$_d"; then
-            if [ -n "$SRC_TEXMF" ] && [ -d "$SRC_TEXMF/doc/fonts" ]; then
-                if [ ! -f "$SRC_TEXMF/doc/fonts/NOTICES-FONTS.txt" ] \
-                    || [ ! -f "$SRC_TEXMF/doc/fonts/sources.tar.zst" ] \
-                    || [ ! -f "$SRC_TEXMF/doc/fonts/packages.lock.json" ]; then
-                    die "font redistribution payload incomplete in $SRC_TEXMF/doc/fonts"
-                fi
-            fi
-            log "Using release bundle at $_d"
-            return 0
-        fi
-        for _cand in "$SCRIPT_DIR"/tex-suite-linux-*/; do
-            [ -d "$_cand" ] || continue
+        for _cand in "$SCRIPT_DIR" "$SCRIPT_DIR/tex-suite-linux-$ARCH" \
+            "$SCRIPT_DIR"/tex-suite-linux-*/; do
             _cand=${_cand%/}
-            if try_bundle "$_cand"; then
-                if [ -n "$SRC_TEXMF" ] && [ -d "$SRC_TEXMF/doc/fonts" ]; then
-                    if [ ! -f "$SRC_TEXMF/doc/fonts/NOTICES-FONTS.txt" ] \
-                        || [ ! -f "$SRC_TEXMF/doc/fonts/sources.tar.zst" ] \
-                        || [ ! -f "$SRC_TEXMF/doc/fonts/packages.lock.json" ]; then
-                        die "font redistribution payload incomplete in $SRC_TEXMF/doc/fonts"
-                    fi
-                fi
-                log "Using release bundle at $_cand"
-                return 0
-            fi
+            [ -d "$_cand" ] && try_bundle "$_cand" || continue
+            check_font_payload
+            log "Using release bundle at $_cand"
+            return 0
         done
     fi
 
     # source checkout
     _repo=$(find_repo_root) || die "no release bundle found and this is not a cargo checkout; pass --bundle DIR or run from the repo"
     _target="${CARGO_TARGET_DIR:-$_repo/target}/release"
-    if [ ! -x "$_target/ratex" ] && [ ! -x "$_target/texmk" ] && [ ! -x "$_target/pdflatex" ]; then
-        [ "$NO_BUILD" = 1 ] && die "--no-build given but a build is required (target/release incomplete)"
+    if [ ! -x "$_target/ratex" ]; then
+        [ "$NO_BUILD" = 1 ] && die "--no-build given but a build is required ($_target/ratex is missing)"
         command -v cargo >/dev/null 2>&1 || die "cargo not found; install Rust or pass --bundle DIR"
         log "Building release binaries: cargo build --release --workspace"
         ( CDPATH= cd -- "$_repo" && cargo build --release --workspace ) || die "cargo build failed"
@@ -233,7 +230,7 @@ resolve_payload() {
         log "Building release binaries: cargo build --release --workspace"
         ( CDPATH= cd -- "$_repo" && cargo build --release --workspace ) || die "cargo build failed"
     fi
-    [ -x "$_target/ratex" ] || [ -x "$_target/texmk" ] || [ -x "$_target/pdflatex" ] || die "build did not produce $_target/ratex"
+    [ -x "$_target/ratex" ] || die "build did not produce $_target/ratex"
     SRC_BIN="$_target"
     SRC_FMT=""
     _assets_dir="$_repo/crates/tex-kpse/assets"
@@ -261,16 +258,36 @@ resolve_payload() {
 }
 
 # --------------------------------------------------------------- profile mgmt
+# Remove tex-suite blocks from a profile. With NEEDLE arguments, only blocks
+# containing one of them as an exact line are removed (uninstall keeps the
+# block of another prefix). An unterminated block is kept verbatim. The file
+# is rewritten in place, so symlinked dotfiles, modes and owners survive.
 strip_block() {
     _f="$1"
     [ -f "$_f" ] || return 0
     grep -qF "$MARK_BEGIN" "$_f" 2>/dev/null || return 0
-    awk -v b="$MARK_BEGIN" -v e="$MARK_END" '
-        index($0, b) { skip=1 }
-        !skip { print }
-        index($0, e) { skip=0 }
-    ' "$_f" > "$_f.texsuite.tmp" && mv -- "$_f.texsuite.tmp" "$_f"
-    log "  cleaned tex-suite block from $_f"
+    TMP_FILE=$(mktemp) || die "cannot create a temporary file"
+    TEXSUITE_N1="${2:-}" TEXSUITE_N2="${3:-}" awk -v b="$MARK_BEGIN" -v e="$MARK_END" '
+        BEGIN {
+            n1 = ENVIRON["TEXSUITE_N1"]; n2 = ENVIRON["TEXSUITE_N2"]
+            any = (n1 == "" && n2 == "")
+        }
+        !inb && index($0, b) { inb = 1; hit = any; buf = $0 "\n"; next }
+        inb {
+            buf = buf $0 "\n"
+            if ((n1 != "" && $0 == n1) || (n2 != "" && $0 == n2)) hit = 1
+            if (index($0, e)) { if (!hit) printf "%s", buf; inb = 0; buf = "" }
+            next
+        }
+        { print }
+        END { if (inb) printf "%s", buf }
+    ' "$_f" > "$TMP_FILE" || die "cannot rewrite $_f"
+    if ! cmp -s -- "$TMP_FILE" "$_f"; then
+        cat -- "$TMP_FILE" > "$_f" || die "cannot rewrite $_f"
+        log "  cleaned tex-suite block from $_f"
+    fi
+    rm -f -- "$TMP_FILE"
+    TMP_FILE=""
 }
 
 write_block() {
@@ -289,11 +306,20 @@ write_block() {
     log "  updated $_f"
 }
 
+# Single-quote for sh: every byte, including " $ ` \, stays literal.
+sh_quote() {
+    printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
+}
+
+path_line() {
+    printf 'export PATH=%s:"$PATH"' "$(sh_quote "$BIN_DIR")"
+}
+
 update_profiles() {
     [ "$NO_PATH" = 1 ] && { log "Skipping shell profile updates (--no-path)"; return 0; }
-    _l1="export PATH=\"$BIN_DIR:\$PATH\""
-    _l2="export TEX_SUITE_DATA=\"$DATA_DIR\""
-    _l3="export TEXMFLOCAL=\"$DATA_DIR/texmf\""
+    _l1=$(path_line)
+    _l2="export TEX_SUITE_DATA=$(sh_quote "$DATA_DIR")"
+    _l3="export TEXMFLOCAL=$(sh_quote "$DATA_DIR/texmf")"
     _touched=0
     for _f in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.profile" "$HOME/.bash_profile"; do
         if [ -f "$_f" ]; then
@@ -309,21 +335,16 @@ update_profiles() {
 }
 
 # ------------------------------------------------------------------ install
-install_one() {
-    _t="$1"; shift
-    _src=""
-    for _n in "$@"; do
-        if [ -f "$SRC_BIN/$_n" ]; then _src="$SRC_BIN/$_n"; break; fi
-    done
-    [ -n "$_src" ] || { warn "source binary not found for '$_t' (looked for: $*); skipping"; return 0; }
-    _dst="$BIN_DIR/$_t"
+install_ratex() {
+    _src="$SRC_BIN/ratex"
+    _dst="$BIN_DIR/ratex"
+    rm -f -- "$_dst" 2>/dev/null || true   # never write through a stale symlink
     if [ "$DO_LINK" = 1 ]; then
-        ln -sf -- "$_src" "$_dst" || cp -f -- "$_src" "$_dst"
+        ln -s -- "$_src" "$_dst" || die "failed to link $_dst -> $_src"
     else
-        rm -f -- "$_dst" 2>/dev/null || true   # never write through a stale symlink
         cp -f -- "$_src" "$_dst" || die "failed to copy $_src -> $_dst"
+        chmod 755 -- "$_dst" 2>/dev/null || true
     fi
-    chmod 755 -- "$_dst" 2>/dev/null || true
     log "  installed $_dst"
 }
 
@@ -369,6 +390,12 @@ validate_existing_manifest() {
                     || die "unsafe binary ownership record in $DATA_MANIFEST"
                 ;;
             F|D) safe_manifest_relative "$_vm_rel" || die "unsafe data ownership record in $DATA_MANIFEST" ;;
+            C)
+                case "$_vm_rel" in
+                    bin|share|.) ;;
+                    *) die "unsafe created-directory record in $DATA_MANIFEST" ;;
+                esac
+                ;;
             *) die "unrecognized ownership record in $DATA_MANIFEST: $_vm_kind" ;;
         esac
     done < "$DATA_MANIFEST"
@@ -419,6 +446,13 @@ preflight_install() {
                     || die "unsafe texmf payload path: $_pf_rel"
                 preflight_destination F "texmf/$_pf_rel" "$DATA_DIR/texmf/$_pf_rel"
             done
+        # Directories are recorded too; reject them before anything changes.
+        (CDPATH= cd -- "$SRC_TEXMF" && find . -type d -print) |
+            while IFS= read -r _pf_rel; do
+                [ "$_pf_rel" = . ] && continue
+                safe_manifest_relative "${_pf_rel#./}" \
+                    || die "unsafe texmf payload directory: ${_pf_rel#./}"
+            done
     fi
 }
 
@@ -428,41 +462,48 @@ legacy_format_is_owned() {
         && manifest_has F pdflatex.fmt
 }
 
+# Every failure must reach the caller: this runs on the left of `||`, where
+# `set -e` is ignored and a `die` in a pipeline subshell only ends that subshell.
+manifest_records() {
+    printf '%s\n' "$DATA_MANIFEST_HEADER" || return 1
+    printf 'PREFIX\t%s\n' "$PREFIX" || return 1
+    printf 'DATA\t%s\n' "$DATA_DIR" || return 1
+    printf 'B\tratex\n' || return 1
+    if [ -n "$SRC_FMT" ]; then
+        printf 'B\tpdflatex.fmt\nF\tpdflatex.fmt\n' || return 1
+    fi
+    # Directories this install created (relative to PREFIX); uninstall
+    # removes them again when they are empty.
+    if [ "$CREATED_BIN" = 1 ]; then printf 'C\tbin\n' || return 1; fi
+    if [ "$CREATED_SHARE" = 1 ]; then printf 'C\tshare\n' || return 1; fi
+    if [ "$CREATED_PREFIX" = 1 ]; then printf 'C\t.\n' || return 1; fi
+    if [ -n "$SRC_TEXMF" ]; then
+        (CDPATH= cd -- "$SRC_TEXMF" && find . \( -type f -o -type l \) -print) |
+            LC_ALL=C sort |
+            while IFS= read -r _wm_rel; do
+                _wm_rel=${_wm_rel#./}
+                safe_manifest_relative "$_wm_rel" \
+                    || die "unsafe texmf payload path: $_wm_rel"
+                printf 'F\ttexmf/%s\n' "$_wm_rel" || exit 1
+            done || return 1
+        (CDPATH= cd -- "$SRC_TEXMF" && find . -depth -type d -print) |
+            while IFS= read -r _wm_rel; do
+                [ "$_wm_rel" = . ] && continue
+                _wm_rel=${_wm_rel#./}
+                safe_manifest_relative "$_wm_rel" \
+                    || die "unsafe texmf payload directory: $_wm_rel"
+                printf 'D\ttexmf/%s\n' "$_wm_rel" || exit 1
+            done || return 1
+    fi
+    printf 'D\ttexmf\n'
+}
+
 write_data_manifest() {
-    _wm_tmp="$DATA_MANIFEST.tmp.$$"
-    {
-        printf '%s\n' "$DATA_MANIFEST_HEADER"
-        printf 'PREFIX\t%s\n' "$PREFIX"
-        printf 'DATA\t%s\n' "$DATA_DIR"
-        printf 'B\tratex\n'
-        if [ -n "$SRC_FMT" ]; then
-            printf 'B\tpdflatex.fmt\n'
-            printf 'F\tpdflatex.fmt\n'
-        fi
-        if [ -n "$SRC_TEXMF" ]; then
-            (CDPATH= cd -- "$SRC_TEXMF" && find . \( -type f -o -type l \) -print) |
-                LC_ALL=C sort |
-                while IFS= read -r _wm_rel; do
-                    _wm_rel=${_wm_rel#./}
-                    safe_manifest_relative "$_wm_rel" \
-                        || die "unsafe texmf payload path: $_wm_rel"
-                    printf 'F\ttexmf/%s\n' "$_wm_rel"
-                done
-            (CDPATH= cd -- "$SRC_TEXMF" && find . -depth -type d -print) |
-                while IFS= read -r _wm_rel; do
-                    [ "$_wm_rel" = . ] && continue
-                    _wm_rel=${_wm_rel#./}
-                    safe_manifest_relative "$_wm_rel" \
-                        || die "unsafe texmf payload directory: $_wm_rel"
-                    printf 'D\ttexmf/%s\n' "$_wm_rel"
-                done
-        fi
-        printf 'D\ttexmf\n'
-    } > "$_wm_tmp" || { rm -f -- "$_wm_tmp"; die "cannot write data ownership manifest"; }
-    mv -- "$_wm_tmp" "$DATA_MANIFEST" || {
-        rm -f -- "$_wm_tmp"
-        die "cannot install data ownership manifest at $DATA_MANIFEST"
-    }
+    TMP_FILE="$DATA_MANIFEST.tmp.$$"
+    manifest_records > "$TMP_FILE" || die "cannot write data ownership manifest"
+    mv -- "$TMP_FILE" "$DATA_MANIFEST" \
+        || die "cannot install data ownership manifest at $DATA_MANIFEST"
+    TMP_FILE=""
 }
 
 data_parent_is_contained() {
@@ -488,9 +529,19 @@ remove_manifest_entries() {
         warn "data ownership manifest is invalid; preserving data: $DATA_MANIFEST"
         return 0
     fi
+    _rm_created_bin=0; _rm_created_share=0; _rm_created_prefix=0
     while IFS="$(printf '\t')" read -r _rm_kind _rm_rel; do
         case "$_rm_kind" in
             "$DATA_MANIFEST_HEADER"|PREFIX|DATA) continue ;;
+            C)
+                case "$_rm_rel" in
+                    bin) _rm_created_bin=1 ;;
+                    share) _rm_created_share=1 ;;
+                    .) _rm_created_prefix=1 ;;
+                    *) warn "ignoring unsafe created-directory record: $_rm_rel" ;;
+                esac
+                continue
+                ;;
         esac
         safe_manifest_relative "$_rm_rel" || {
             warn "ignoring unsafe managed-data path: $_rm_rel"
@@ -524,38 +575,35 @@ remove_manifest_entries() {
     if [ "$_rm_keep_manifest" != keep ]; then
         rm -f -- "$DATA_MANIFEST" || warn "could not remove $DATA_MANIFEST"
         rmdir -- "$DATA_DIR" 2>/dev/null || true
+        # Non-recursive: a directory holding anything else is kept.
+        [ "$_rm_created_bin" = 0 ] || rmdir -- "$BIN_DIR" 2>/dev/null || true
+        [ "$_rm_created_share" = 0 ] || rmdir -- "$PREFIX/share" 2>/dev/null || true
+        [ "$_rm_created_prefix" = 0 ] || rmdir -- "$PREFIX" 2>/dev/null || true
     fi
 }
 
 do_install() {
     resolve_payload
-    if [ -z "$ALIAS_LATEXMK" ]; then
-        if [ -t 0 ]; then
-            printf 'Install "latexmk" alias pointing to texmk? (recommended for TeXstudio/VS Code) [Y/n]: '
-            read -r _answer || _answer="y"
-            case "$_answer" in
-                [nN]*) ALIAS_LATEXMK=0 ;;
-                *)     ALIAS_LATEXMK=1 ;;
-            esac
-        else
-            ALIAS_LATEXMK=1
-        fi
-    fi
-
-
+    _new_prefix=0; _new_share=0; _new_bin=0
+    [ -e "$PREFIX" ] || [ -L "$PREFIX" ] || _new_prefix=1
+    [ -e "$PREFIX/share" ] || [ -L "$PREFIX/share" ] || _new_share=1
+    [ -e "$BIN_DIR" ] || [ -L "$BIN_DIR" ] || _new_bin=1
     mkdir -p -- "$BIN_DIR" "$DATA_DIR" || die "cannot create $BIN_DIR / $DATA_DIR (use sudo for --system)"
     validate_existing_manifest
     preflight_install
+    # A reinstall inherits the created-directory records of the previous one.
+    CREATED_PREFIX=0; CREATED_SHARE=0; CREATED_BIN=0
+    if [ "$_new_prefix" = 1 ] || manifest_has C .; then CREATED_PREFIX=1; fi
+    if [ -d "$PREFIX/share" ] && { [ "$_new_share" = 1 ] || manifest_has C share; }; then
+        CREATED_SHARE=1
+    fi
+    if [ "$_new_bin" = 1 ] || manifest_has C bin; then CREATED_BIN=1; fi
     if [ "$OLD_MANIFEST_VALID" = 1 ]; then
         remove_manifest_entries keep
     fi
 
     log "Installing binaries to $BIN_DIR"
-    if [ -f "$SRC_BIN/ratex" ]; then
-        install_one ratex ratex
-    else
-        install_one texmk ratex
-    fi
+    install_ratex
 
     log "Installing runtime data to $DATA_DIR"
     if [ -n "$SRC_FMT" ]; then
@@ -638,14 +686,16 @@ do_uninstall() {
     else
         warn "no ownership manifest found; preserving install and data files"
     fi
-    if [ -f /etc/profile.d/tex-suite.sh ]; then
-        rm -f -- /etc/profile.d/tex-suite.sh 2>/dev/null \
-            && log "  removed /etc/profile.d/tex-suite.sh" \
-            || warn "/etc/profile.d/tex-suite.sh still present (remove with sudo)"
-    fi
     log "Cleaning shell profiles"
+    # Only the block that puts this prefix on PATH (current quoting, or the
+    # double-quoted form written by earlier installers).
+    _cur_line=$(path_line)
+    _old_line="export PATH=\"$BIN_DIR:\$PATH\""
     for _f in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.profile" "$HOME/.bash_profile"; do
-        strip_block "$_f" || true
+        strip_block "$_f" "$_cur_line" "$_old_line"
+        if [ -f "$_f" ] && grep -qF "$MARK_BEGIN" "$_f" 2>/dev/null; then
+            warn "kept a tex-suite block for another install in $_f"
+        fi
     done
     cat <<EOF
 Uninstall complete. To drop the variables from your CURRENT shell session run:

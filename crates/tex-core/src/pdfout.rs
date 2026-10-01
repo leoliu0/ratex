@@ -193,6 +193,9 @@ pub struct PdfDoc {
     /// `\pdftrailerid` text (`pdf_trailer_id_toks`): its MD5 replaces the
     /// default /ID; empty text writes no /ID. `None` = no such command.
     pub(crate) trailer_id_text: Option<Vec<u8>>,
+    /// LuaTeX `\pdfvariable trailerid` / `pdf.settrailerid`: the /ID array
+    /// text, written verbatim (pdfgen.c `print_ID`); empty = unset.
+    pub(crate) trailer_id_raw: Vec<u8>,
     /// `\pdfomitcharset`: no /CharSet in Type 1 font descriptors.
     pub(crate) omit_charset: bool,
     /// `\pdfpageref`: object numbers fixed for pages (0-based index).
@@ -446,6 +449,7 @@ impl PdfDoc {
             ptex_banner_key: Some("PTEX.Fullbanner"),
             output_name: String::new(),
             trailer_id_text: None,
+            trailer_id_raw: Vec::new(),
             omit_charset: false,
             page_objnums: std::collections::BTreeMap::new(),
             reserved_objects: 0,

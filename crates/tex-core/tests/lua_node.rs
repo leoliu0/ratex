@@ -23,6 +23,9 @@ const PRELUDE: &str = include_str!("lua_node/prelude.lua");
 /// Run a Lua chunk with `\directlua`; the lines it passed to `P(...)`
 /// (tab-joined `tostring`s) are returned. Same prelude as the LuaTeX probes.
 pub fn run_lua(code: &str) -> Vec<String> {
+    // the probe files live in an absolute temp path; TeX Live's default
+    // `openout_any = p` (also applied to Lua's io.open) would refuse them
+    std::env::set_var("openout_any", "a");
     let dir = std::env::temp_dir().join(format!("lua_node_{}_{:?}", std::process::id(), std::thread::current().id()));
     std::fs::create_dir_all(&dir).unwrap();
     let out = dir.join("out.txt");

@@ -32,6 +32,7 @@ impl Engine {
             b"info" => return Some(Var::Text("info")),
             b"names" => return Some(Var::Text("names")),
             b"trailer" => return Some(Var::Text("trailer")),
+            b"trailerid" => return Some(Var::Text("trailerid")),
             b"pageattr" => return Some(Var::Text("pageattr")),
             b"pagesattr" => return Some(Var::Text("pagesattr")),
             b"pageresources" => return Some(Var::Text("pageresources")),
@@ -53,6 +54,7 @@ impl Engine {
             "info" => self.pdf_doc.info.clone(),
             "names" => self.pdf_doc.names_extra.clone(),
             "trailer" => self.pdf_doc.trailer_extra.clone(),
+            "trailerid" => self.pdf_doc.trailer_id_raw.clone(),
             "pageattr" => self.pdf_page_attr.clone().into_bytes(),
             "pagesattr" => self.pdf_pages_attr.clone().into_bytes(),
             _ => self.pdf_page_resources.clone(),
@@ -68,6 +70,7 @@ impl Engine {
             "info" => self.pdf_doc.info = text,
             "names" => self.pdf_doc.names_extra = text,
             "trailer" => self.pdf_doc.trailer_extra = text,
+            "trailerid" => self.pdf_doc.trailer_id_raw = text,
             "pageattr" => {
                 self.pdf_page_attr = string();
                 self.pdf_page_attr_toks = toks;

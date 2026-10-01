@@ -585,10 +585,6 @@ impl Engine {
 /// pdfTeX's default `\pdfspacefont` (pdftex.web `pdf_space_font_name`).
 const DEFAULT_SPACE_FONT: &str = "pdftexspace";
 
-/// `\pdftexbanner` (pdfTeX's `ptexbanner` + version + kpathsea strings).
-pub(crate) const PDFTEX_BANNER: &str =
-    "This is pdfTeX, Version 3.141592653-2.6-1.40.29 (TeX Live 2026/Arch Linux) kpathsea version 6.4.2";
-
 /// Backend bookkeeping behind the PDF-object primitives. Object numbers are
 /// drawn from the engine's `pdf_next_obj`, like `\pdfobj`, and the writer
 /// places the page or font dictionary at the reserved number.
@@ -608,10 +604,6 @@ pub(crate) struct PdfBackend {
     pub(crate) last_ximage_colordepth: i32,
     /// `\pdfspacefont`: TFM of the font for faked interword spaces.
     pub(crate) space_font_name: String,
-    /// The loaded space font (`pdf_dummy_font`); 0 until first needed.
-    pub(crate) dummy_font: u16,
-    /// pdftex.web "Initialize variables for PDF output" ran.
-    output_initialized: bool,
 }
 
 impl Default for PdfBackend {
@@ -624,55 +616,13 @@ impl Default for PdfBackend {
             font_objs: Default::default(),
             last_ximage_colordepth: 0,
             space_font_name: DEFAULT_SPACE_FONT.to_string(),
-            dummy_font: 0,
-            output_initialized: false,
         }
     }
-}
-
-/// utils.c `getresnameprefix`: six base-62 digits of the CRC-32 of the job
-/// identification string.
-pub(crate) fn resname_prefix(job_id: &str) -> String {
-    const DIGITS: &[u8] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
-    let mut crc = crc32fast::hash(job_id.as_bytes()) as u64;
-    let mut prefix = String::with_capacity(6);
-    for _ in 0..6 {
-        prefix.push(DIGITS[(crc % DIGITS.len() as u64) as usize] as char);
-        crc /= DIGITS.len() as u64;
-    }
-    prefix
 }
 
 impl Engine {
     fn pdf_int(&self, p: crate::prim::IntParam) -> i32 {
         self.eqtb.int_params[p.idx() as usize]
-    }
-
-    /// pdftex.web "Initialize variables for PDF output", run before the
-    /// first page, form or image is written: fixes the resource-name prefix
-    /// from `\pdfuniqueresname` (utils.c `setjobid` + `getresnameprefix`).
-    /// The job id has pdfTeX's layout (date, time, job name, banner); this
-    /// engine has no format-ident string, so that field is left out.
-    pub(crate) fn pdf_output_init(&mut self) {
-        if self.pdf_backend.output_initialized {
-            return;
-        }
-        self.pdf_backend.output_initialized = true;
-        use crate::prim::IntParam;
-        if self.pdf_int(IntParam::PdfUniqueResname) > 0 {
-            let time = self.pdf_int(IntParam::Time);
-            let job_id = format!(
-                "{:04}/{:02}/{:02} {:02}:{:02} {} {}",
-                self.pdf_int(IntParam::Year),
-                self.pdf_int(IntParam::Month),
-                self.pdf_int(IntParam::Day),
-                time / 60,
-                time % 60,
-                self.job_name,
-                PDFTEX_BANNER,
-            );
-            self.pdf_doc.resname_prefix = resname_prefix(&job_id);
-        }
     }
 
     /// pdftex.web `pdf_init_font` / `pdf_use_font`: give font `f` its PDF
@@ -812,25 +762,6 @@ impl Engine {
         let toks = self.scan_general_text_expanded();
         let name = self.tokens_to_bytes(&toks);
         self.pdf_backend.space_font_name = String::from_utf8_lossy(&name).into_owned();
-    }
-
-    /// pdftex.web `pdf_read_dummy_font`: load `\pdfspacefont` at its design
-    /// size with pdfTeX's map line and mark its space character used.
-    pub(crate) fn pdf_dummy_font(&mut self) -> u16 {
-        if self.pdf_backend.dummy_font != 0 {
-            return self.pdf_backend.dummy_font;
-        }
-        let name = self.pdf_backend.space_font_name.clone();
-        // mapfile.c `pdfmaplinesp`
-        self.process_map_item("=pdftexspace PdfTeX-Space <pdftexspace.pfb", false);
-        let Some(font) = self.font_loader.load_tfm(&name, 0) else {
-            self.fatal_error_at(&format!("Font {name} not found (\\pdfspacefont)"), None);
-            return 0;
-        };
-        let f = self.push_engine_font(font, 0);
-        self.pdf_backend.dummy_font = f;
-        self.pdf_doc.record_font_char(f as usize, b' ');
-        f
     }
 
     /// pdftex.web `make_font_copy`: `\pdfcopyfont <cs> = <font>` defines a

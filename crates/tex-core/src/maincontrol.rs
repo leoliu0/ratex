@@ -1614,6 +1614,8 @@ impl Engine {
         let box_reg = self.scan_reg_num();
         let obj = self.alloc_pdf_obj();
         self.pdf_last_xform = obj;
+        // \pdfxformname: forms are painted as `/Fm<object number> Do`
+        self.pdf_doc.form_names.insert(obj, obj);
         let b = self.eqtb.boxed.get(box_reg as usize).cloned().flatten();
         let (w, h, d) = match &b {
             Some(Node::Box { w, h, d, .. }) => (*w, *h, *d),

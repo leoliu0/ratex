@@ -1312,9 +1312,17 @@ impl Engine {
         let t = self.get_x_raw();
         let base: Option<u8> = if t.is_char() && (t.cc() == 11 || t.cc() == 12) {
             u8::try_from(t.chr()).ok()
-        } else if t.is_cs() && matches!(self.eqtb.resolve(t.cs_id()), Some(Equiv::Prim(Prim::Char)))
-        {
-            Some(self.scan_character_code("\\char"))
+        } else if t.is_cs() {
+            match self.eqtb.resolve(t.cs_id()) {
+                // TeX's char_given command includes \chardef characters.
+                // LaTeX's \i uses this form for the dotless accent base.
+                Some(Equiv::CharDef(c)) if *c <= u8::MAX as u32 => Some(*c as u8),
+                Some(Equiv::Prim(Prim::Char)) => Some(self.scan_character_code("\\char")),
+                _ => {
+                    self.push_token(t);
+                    None
+                }
+            }
         } else {
             self.push_token(t);
             None

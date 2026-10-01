@@ -339,7 +339,9 @@ impl Engine {
                     // tex.web §1045 any_mode(mac_param): report_illegal_case.
                     let mut shown = Vec::new();
                     match u8::try_from(scalar) {
-                        Ok(byte) => crate::token::push_printable(&mut shown, &[byte]),
+                        Ok(byte) => {
+                            crate::tex_bytes::push_printable(&self.xprn, &mut shown, &[byte])
+                        }
                         Err(_) => t.append_character_bytes(&mut shown),
                     }
                     self.error(&format!(

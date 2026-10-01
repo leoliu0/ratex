@@ -139,17 +139,46 @@ pub const CL_INNER: u8 = 7;
 /// an Ord whose nucleus is a sub-mlist. Keeping the singleton as a character
 /// is essential because `make_scripts` then uses its italic correction and
 /// skips the box-nucleus drop calculations.
-pub(crate) fn finish_math_group(mut inner: NodeList) -> Node {
-    if inner.len() == 1
-        && matches!(
-            inner.first(),
-            Some(Node::MathChar {
-                class: CL_ORD,
-                ..
-            })
-        )
-    {
-        return inner.pop().unwrap();
+pub(crate) fn finish_math_group(mut inner: NodeList, flatten: i32) -> Node {
+    // luatex `close_math_group`: one scriptless simple noad is flattened
+    // into its field when `\mathflattenmode` has the bit of its class
+    // (ord 1, bin 2, rel 4, punct 8, inner 16); other engines use 1
+    let bit = |class: u8| -> bool {
+        match class {
+            CL_ORD => flatten & 1 != 0,
+            CL_BIN => flatten & 2 != 0,
+            CL_REL => flatten & 4 != 0,
+            CL_PUNCT => flatten & 8 != 0,
+            CL_INNER => flatten & 16 != 0,
+            _ => false,
+        }
+    };
+    if inner.len() == 1 {
+        match inner.first() {
+            Some(Node::MathChar { fam, class, .. }) if *fam != 255 && bit(*class) => {
+                let mut n = inner.pop().unwrap();
+                if let Node::MathChar { class, .. } = &mut n {
+                    *class = CL_ORD;
+                }
+                return n;
+            }
+            Some(Node::Scripts { nucleus, sup: None, sub: None })
+                if matches!(
+                    nucleus.first(),
+                    Some(Node::MathChar { fam: 255, class, .. }) if *class != CL_ORD && bit(*class)
+                ) =>
+            {
+                let mut n = inner.pop().unwrap();
+                if let Node::Scripts { nucleus, .. } = &mut n {
+                    if let Some(Node::MathChar { class, c, .. }) = nucleus.first_mut() {
+                        *class = CL_ORD;
+                        *c = 0;
+                    }
+                }
+                return n;
+            }
+            _ => {}
+        }
     }
     let mut nucleus = Vec::with_capacity(inner.len() + 1);
     nucleus.push(Node::MathChar {
@@ -842,11 +871,15 @@ impl Engine {
                 // shifted the rows by \displayindent (§800).
                 let (ads, bds, _, _, pre, post, ..) = regs;
                 page.push(Node::Penalty(pre));
-                page.push(Node::Glue(ads));
+                if self.display_skip_applies(&ads) {
+                    page.push(Node::Glue(ads));
+                }
                 self.prev_depth = final_pd;
                 page.extend(rows);
                 page.push(Node::Penalty(post));
-                page.push(Node::Glue(bds));
+                if self.display_skip_applies(&bds) {
+                    page.push(Node::Glue(bds));
+                }
                 if outer_mode == Mode::Vertical {
                     self.page_list = page;
                     self.saved_lists.push((
@@ -913,10 +946,16 @@ impl Engine {
                 }
                 e = self.box_w(&ab) as i64;
                 // q = e + math_quad(text_size): quad of the fam-2 symbols font
-                let mq = self
-                    .fam_font(0, 2)
-                    .map(|(_, f)| f.quad() as i64)
-                    .unwrap_or(0);
+                let mq = if self.is_luamath() {
+                    // luatex: round_xn_over_d(\matheqnogapstep, math quad, 1000)
+                    let step = self.eqtb.int_params[IntParam::MathEqnoGapStep.idx() as usize];
+                    let quad = self.math_quad_style(2);
+                    i64::from(crate::tfm::round_xn_over_d(quad, step, 1000))
+                } else {
+                    self.fam_font(0, 2)
+                        .map(|(_, f)| f.quad() as i64)
+                        .unwrap_or(0)
+                };
                 q = e + mq;
                 // tex.web §1199: `if (a=null) or danger then e:=0; q:=0`
                 if danger {
@@ -970,7 +1009,17 @@ impl Engine {
             // oracle shows (t6: consecutive $$ get \abovedisplayshortskip).
             // etex.ch: `if pre_display_direction<0 then s:=-s-z`
             let s_clear = if x < 0 { -s - z } else { s };
-            let is_short = !leqno && (s_clear + d > self.pre_display_size);
+            let is_short = if self.is_luamath()
+                && self.eqtb.int_params[IntParam::MathEqDirMode.idx() as usize] > 0
+            {
+                // luatex \matheqdirmode: the tag side is judged against the
+                // direction of the text
+                let reversed = x < 0;
+                let near = a.is_some() && ((!reversed && leqno) || (reversed && !leqno));
+                !(s_clear + d <= self.pre_display_size || near)
+            } else {
+                !leqno && (s_clear + d > self.pre_display_size)
+            };
             let (above, below) = if is_short {
                 (regs.2.clone(), regs.3.clone())
             } else {
@@ -1013,7 +1062,8 @@ impl Engine {
                 // tex.web append_to_vlist gives the tag box ordinary interline
                 // glue from prev_depth, then prev_depth := tag depth.
                 if let Some(ab) = a.take() {
-                    let ab = self.app_display(lr_box.as_ref(), ab, 0, z, s, x);
+                    let own_s = if self.is_luamath() { 0 } else { s };
+                    let ab = self.app_display(lr_box.as_ref(), ab, 0, z, own_s, x);
                     let (th, td) = match &ab {
                         Node::Box { h, d, .. } => (*h as i64, *d as i64),
                         _ => (0, 0),
@@ -1025,7 +1075,7 @@ impl Engine {
                     self.prev_depth = td as i32;
                     page.push(Node::Penalty(crate::scaled::INF_PENALTY));
                 }
-            } else {
+            } else if self.display_skip_applies(&above) {
                 page.push(Node::Glue(above));
             }
             // the display line itself (§22592): with a tag, b becomes
@@ -1033,14 +1083,28 @@ impl Engine {
             let mut line = r0.node;
             if e != 0 {
                 let ab = a.take().unwrap();
-                let kern = Node::ExplicitKern((z - w - e - d) as i32);
-                let (seq, nd) = if leqno {
-                    (vec![ab, kern, line], 0i64)
+                if self.is_luamath() {
+                    // luatex finish_displayed_math: the line is
+                    // [kern d] eq [kern] eqno (or eqno [kern] eq [kern]) and
+                    // shifted by \displayindent only
+                    let r = (z - w - e - d) as i32;
+                    let seq = if leqno {
+                        vec![ab, Node::Kern(r), line, Node::Kern((i64::from(r) + e) as i32)]
+                    } else {
+                        vec![Node::Kern(d as i32), line, Node::Kern(r), ab]
+                    };
+                    d = 0;
+                    line = hpack(seq, None, HBOX, &self.eqtb).node;
                 } else {
-                    (vec![line, kern, ab], d)
-                };
-                d = nd;
-                line = hpack(seq, None, HBOX, &self.eqtb).node;
+                    let kern = Node::ExplicitKern((z - w - e - d) as i32);
+                    let (seq, nd) = if leqno {
+                        (vec![ab, kern, line], 0i64)
+                    } else {
+                        (vec![line, kern, ab], d)
+                    };
+                    d = nd;
+                    line = hpack(seq, None, HBOX, &self.eqtb).node;
+                }
             }
             let line = self.app_display(lr_box.as_ref(), line, d, z, s, x);
             // tex.web append_to_vlist: the display box joins the vlist with
@@ -1089,7 +1153,9 @@ impl Engine {
             page.extend(migrated);
             page.push(Node::Penalty(post));
             if let Some(g) = g2 {
-                page.push(Node::Glue(g));
+                if self.display_skip_applies(&g) {
+                    page.push(Node::Glue(g));
+                }
             }
             if outer_mode == Mode::Vertical {
                 self.page_list = page;
@@ -1756,7 +1822,8 @@ impl Engine {
                     // noad; other groups remain raw until conversion so they
                     // acquire the style in force at their use site.
                     let inner = self.scan_math_group_braced(ScanKind::Brace);
-                    self.append_mlist_node(finish_math_group(inner));
+                    let flatten = self.math_flatten_mode();
+                    self.append_mlist_node(finish_math_group(inner, flatten));
                 } else {
                     self.begin_group(true);
                 }

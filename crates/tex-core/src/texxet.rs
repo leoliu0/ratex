@@ -205,7 +205,13 @@ impl Engine {
             l.push(WItem::Own(Node::MathKern(0, END_L)));
             l
         };
-        v += 2 * quad;
+        if self.is_luamath() {
+            // luatex enter_display_math: x_over_n(quad, 1000) * \predisplaygapfactor
+            v += (quad / 1000)
+                * i64::from(self.eqtb.int_params[crate::prim::IntParam::PreDisplayGapFactor.idx() as usize]);
+        } else {
+            v += 2 * quad;
+        }
         let mut stack: Vec<u8> = Vec::new();
         let mut lr_problems = 0;
         let mut w = -MAX_DIMEN;

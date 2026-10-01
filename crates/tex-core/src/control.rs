@@ -315,10 +315,11 @@ impl Engine {
                             self.show.brace_lines.pop();
                             self.mode = saved_mode;
                             if depth == self.math_lists.len() {
+                                let flatten = self.math_flatten_mode();
                                 if let Some(l) = self.math_lists.last_mut() {
                                     if start_mark <= l.len() {
                                         let inner = l.split_off(start_mark);
-                                        l.push(crate::math::finish_math_group(inner));
+                                        l.push(crate::math::finish_math_group(inner, flatten));
                                     }
                                 }
                             }

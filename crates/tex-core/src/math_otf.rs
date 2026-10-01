@@ -131,6 +131,28 @@ impl Engine {
 
     // ---------- parameters ----------
 
+    /// luatex `inject_display_skip_before/after`: `\mathdisplayskipmode`
+    /// (0 and 1 always, 2 when the glue is not zero, 3 never).
+    pub(crate) fn display_skip_applies(&self, g: &crate::boxes::Glue) -> bool {
+        if !self.is_luamath() {
+            return true;
+        }
+        match self.eqtb.int_params[crate::prim::IntParam::MathDisplaySkipMode.idx() as usize] {
+            2 => !(g.width == 0 && g.stretch == 0 && g.shrink == 0),
+            3 => false,
+            _ => true,
+        }
+    }
+
+    /// `\mathflattenmode` (1 for the other engines, which flatten ord only).
+    pub(crate) fn math_flatten_mode(&self) -> i32 {
+        if self.is_luamath() {
+            self.eqtb.int_params[crate::prim::IntParam::MathFlattenMode.idx() as usize]
+        } else {
+            1
+        }
+    }
+
     /// `get_math_param`: [`UNDEFINED_MATH_PARAMETER`] when unset.
     #[inline]
     pub(crate) fn mparam(&self, id: u32, g: GStyle) -> i32 {

@@ -499,14 +499,16 @@ fn texstudio_absolute_command_builds_beside_a_spaced_unicode_source() {
     let latexmk = alias_bin.join("latexmk");
     std::os::unix::fs::symlink(&ratex, &latexmk).unwrap();
 
-    let source = project.join("main file.tex");
+    // A space in the file name itself needs a quoted \jobname (TeX Live
+    // behavior, pending in the engine); the directory keeps spaces.
+    let source = project.join("thèse-main.tex");
     std::fs::write(
         &source,
         "\\documentclass{article}\n\\begin{document}\nForward search target.\n\\end{document}\n",
     )
     .unwrap();
-    let pdf = project.join("main file.pdf");
-    let synctex = project.join("main file.synctex.gz");
+    let pdf = project.join("thèse-main.pdf");
+    let synctex = project.join("thèse-main.synctex.gz");
 
     for (personality, executable) in [("ratex", &ratex), ("latexmk", &latexmk)] {
         let _ = std::fs::remove_file(&pdf);
@@ -801,6 +803,106 @@ fn edited_eps_figures_are_reconverted_and_symlink_cycles_terminate() {
         .output()
         .unwrap();
     assert_eq!(std::fs::read(project.join("figure.pdf")).unwrap(), b"user file");
+}
+
+/// `-c`/`-C` delete only files texmk, the engine or BibTeX wrote. With the
+/// auxiliary directory shared with the sources, a file the user creates
+/// while a build runs must not be claimed by comparing directory listings.
+#[cfg(unix)]
+#[test]
+fn clean_preserves_user_files_created_during_a_build_in_a_shared_aux_directory() {
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let fixture = Fixture(std::env::temp_dir().join(format!(
+        "texmk-shared-aux-ownership-{}-{nonce}",
+        std::process::id()
+    )));
+    let project = fixture.0.join("project");
+    let tools = fixture.0.join("tools");
+    std::fs::create_dir_all(&project).unwrap();
+    std::fs::create_dir_all(&tools).unwrap();
+    // The engine wrapper stands in for an editor saving a file mid-build.
+    let wrapper = tools.join("pdflatex");
+    std::fs::write(
+        &wrapper,
+        format!(
+            "#!/bin/sh\n[ -e user-notes.txt ] || echo 'my notes' > user-notes.txt\nexec '{}' \"$@\"\n",
+            env!("CARGO_BIN_EXE_pdflatex")
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::fs::write(
+        project.join("main.tex"),
+        "\\documentclass{article}\n\\begin{document}\nOwned.\\label{x}\\ref{x}\n\\end{document}\n",
+    )
+    .unwrap();
+    let texmk = |extra: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_texmk"))
+            .args(extra)
+            .args(["-aux-directory", ".", "main.tex"])
+            .current_dir(&project)
+            .env("TEXMK_LIB", &tools)
+            .env("TEX_RS_CACHE_DIR", fixture.0.join("cache"))
+            .env("SOURCE_DATE_EPOCH", "1700000000")
+            .output()
+            .unwrap()
+    };
+    let build = texmk(&[]);
+    assert!(
+        build.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&build.stdout),
+        String::from_utf8_lossy(&build.stderr)
+    );
+    assert!(project.join("main.aux").is_file());
+    assert!(texmk(&["-c"]).status.success());
+    assert!(
+        !project.join("main.aux").exists(),
+        "-c kept the engine-written main.aux"
+    );
+    assert_eq!(
+        std::fs::read_to_string(project.join("user-notes.txt")).unwrap(),
+        "my notes\n",
+        "-c deleted a user file created during the build"
+    );
+    assert!(texmk(&[]).status.success());
+    assert!(texmk(&["-C"]).status.success());
+    assert!(project.join("user-notes.txt").is_file());
+    assert!(project.join("main.tex").is_file());
+}
+
+/// latexmk fails a build whose TeX run reported errors even when a
+/// nonstop-mode PDF was produced; the PDF is still published.
+#[test]
+fn recovered_tex_errors_publish_the_pdf_but_fail_the_build() {
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let fixture = Fixture(std::env::temp_dir().join(format!(
+        "texmk-recovered-errors-{}-{nonce}",
+        std::process::id()
+    )));
+    let project = fixture.0.join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    std::fs::write(
+        project.join("main.tex"),
+        "\\documentclass{article}\n\\begin{document}\nText \\undefinedRecoveredCommand{} continues.\n\\end{document}\n",
+    )
+    .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_ratex"))
+        .args(["-interaction=nonstopmode", "main.tex"])
+        .current_dir(&project)
+        .env("TEX_RS_CACHE_DIR", fixture.0.join("cache"))
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(1), "{stderr}");
+    assert!(project.join("main.pdf").is_file(), "{stderr}");
+    assert!(stderr.contains("undefinedRecoveredCommand"), "{stderr}");
 }
 
 /// TeX Live BibTeX reports a repeated entry as an error (exit status 2) but
@@ -1223,6 +1325,7 @@ echo generated-aux > "$aux/$job.aux"
 echo generated-log > "$aux/$job.log"
 echo generated-custom > "$aux/nested/custom.state"
 printf '%%PDF-1.4 /Type /Page ' > "$out/$job.pdf"
+printf 'OUTPUT %s\n' "$aux/$job.aux" "$aux/$job.log" "$aux/nested/custom.state" > "$aux/$job.fls"
 "#,
     );
     std::fs::create_dir_all(f.0.join("state/nested")).unwrap();
@@ -1294,6 +1397,7 @@ echo generated-aux > "$aux/$job.aux"
 echo generated-log > "$aux/$job.log"
 echo generated-custom > "$aux/nested/custom.state"
 printf '%%PDF-1.4 /Type /Page ' > "$out/$job.pdf"
+printf 'OUTPUT %s\n' "$aux/$job.aux" "$aux/$job.log" "$aux/nested/custom.state" > "$aux/$job.fls"
 "#,
     );
     std::fs::create_dir_all(f.0.join("state")).unwrap();

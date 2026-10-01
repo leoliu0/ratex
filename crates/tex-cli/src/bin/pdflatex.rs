@@ -1634,6 +1634,28 @@ fn parse_interaction(program: &str, value: &str) -> InteractionMode {
     }
 }
 
+/// `-recorder`: a web2c-style `<job>.fls` listing the files this run read
+/// (`INPUT`) and wrote (`OUTPUT`). texmk claims ownership only of OUTPUT
+/// files, never of whatever else appears in a shared directory.
+fn write_recorder(engine: &Engine, aux_dir: &str, job: &str, log_path: &str) {
+    use std::fmt::Write;
+    let cwd = std::env::current_dir().unwrap_or_default();
+    let mut text = format!("PWD {}\n", cwd.display());
+    for path in &engine.loaded_files {
+        let _ = writeln!(text, "INPUT {}", path.display());
+    }
+    let fls_path = format!("{aux_dir}{job}.fls");
+    for path in engine
+        .written_files
+        .iter()
+        .map(|path| path.display().to_string())
+        .chain([log_path.to_string(), fls_path.clone()])
+    {
+        let _ = writeln!(text, "OUTPUT {path}");
+    }
+    let _ = atomic_write_file(std::path::Path::new(&fls_path), text.as_bytes());
+}
+
 /// The parenthesized part of pdfTeX's `Output written on FILE (N pages, M
 /// bytes).` summary; texmk reads the page count from it.
 fn output_summary(pages: Option<usize>, bytes: usize) -> String {
@@ -1815,6 +1837,7 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
     let mut jobname: Option<String> = None;
     let mut ini = false;
     let mut plain = false;
+    let mut recorder = false;
     let mut halt_on_error = false;
     let mut interaction_mode = InteractionMode::ErrorStop;
     let mut max_errors = DEFAULT_MAX_ERRORS;
@@ -1891,6 +1914,8 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
                 );
             }
             jobname = Some(name.to_string());
+        } else if opt == "-recorder" {
+            recorder = true;
         } else if opt == "-ini" {
             ini = true;
         } else if opt == "-plain" {
@@ -2359,6 +2384,9 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
             }
         }
         std::process::exit(1);
+    }
+    if recorder {
+        write_recorder(&eng, &aux_dir, &job, &log_path);
     }
     let compilation_had_errors = eng.error_count > 0;
     if compilation_had_errors {

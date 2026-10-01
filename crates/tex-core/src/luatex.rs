@@ -328,9 +328,9 @@ impl Engine {
         for &(group, name) in LUATEX_PRIMITIVES {
             let equiv = if name == b"alignmark" {
                 // chr '#' of `mac_param_cmd` (commands.c)
-                Some(Equiv::CharTok(Token::char(6, u32::from(b'#')).0))
+                Some(Equiv::CharTok(Token::char(6, crate::token::ALIGN_PRIM_CHR).0))
             } else if name == b"aligntab" {
-                Some(Equiv::CharTok(Token::char(4, u32::from(b'&')).0))
+                Some(Equiv::CharTok(Token::char(4, crate::token::ALIGN_PRIM_CHR).0))
             } else if let Some(p) = luatex_only(name) {
                 Some(Equiv::Prim(p))
             } else if let Some(&(_, target)) = ALIASES.iter().find(|(n, _)| *n == name) {

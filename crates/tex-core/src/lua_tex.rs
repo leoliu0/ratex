@@ -515,11 +515,9 @@ pub(crate) fn install(lua: &mut Lua) -> Result<(), String> {
 
     // ---- token lists and definitions ----
     reg!(lua, t, "quit_local", || -> Result<(), String> {
-        with_engine(|e| {
-            let end = e.lua_end_local_control_token();
-            e.push_token(end);
-        })
+        with_engine(Engine::end_local_control)
     });
+    reg!(lua, t, "local_level", || -> Result<i64, String> { with_engine(|e| i64::from(e.local_level)) });
     reg!(lua, t, "hash_tokens", || -> Result<Vec<LuaBytes>, String> {
         with_engine(|e| {
             let mut names = Vec::new();

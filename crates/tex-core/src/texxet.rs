@@ -179,7 +179,7 @@ impl Engine {
     /// `just_box` with the text direction `x` before the display: R-text
     /// lines are measured mirrored, reflected segments are reversed
     /// (`just_reverse`), and LR anomalies void the size (max_dimen).
-    pub(crate) fn display_line_size(&self, just_box: &Node, x: i32, quad: i64) -> i64 {
+    pub(crate) fn display_line_size(&self, just_box: &Node, x: i32, gap: i64) -> i64 {
         let Node::Box {
             w: box_w,
             list,
@@ -205,7 +205,7 @@ impl Engine {
             l.push(WItem::Own(Node::MathKern(0, END_L)));
             l
         };
-        v += 2 * quad;
+        v += gap;
         let mut stack: Vec<u8> = Vec::new();
         let mut lr_problems = 0;
         let mut w = -MAX_DIMEN;

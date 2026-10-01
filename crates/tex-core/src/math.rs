@@ -1165,7 +1165,14 @@ impl Engine {
             .get(self.eqtb.cur_font_val as usize)
             .map(|f| f.quad() as i64)
             .unwrap_or(0);
-        self.display_line_size(line, x, quad)
+        // luatex texmath.c: x_over_n(quad, 1000) * \predisplaygapfactor
+        // (2000 by default) instead of 2em
+        let gap = if self.engine_kind == crate::engine::EngineKind::LuaTeX {
+            quad / 1000 * i64::from(self.eqtb.int_params[IntParam::PreDisplayGapFactor.idx() as usize])
+        } else {
+            2 * quad
+        };
+        self.display_line_size(line, x, gap)
     }
 
     pub fn append_mlist_node(&mut self, n: Node) {
@@ -2580,6 +2587,15 @@ impl Engine {
                 let Some((kern, op, replacement)) = action else {
                     break;
                 };
+                // luatex mlist.c: \noligs / \nokerns switch the font's math
+                // ligatures and kerns off
+                if self.engine_kind == crate::engine::EngineKind::LuaTeX
+                    && self.eqtb.int_params
+                        [(if kern.is_some() { IntParam::NoKerns } else { IntParam::NoLigs }).idx() as usize]
+                        != 0
+                {
+                    break;
+                }
                 if let Some(kern) = kern {
                     nodes.insert(i + 1, Node::Kern(kern));
                     math_text.insert(i + 1, false);
@@ -2846,7 +2862,24 @@ impl Engine {
                     style = start;
                 }
                 // inter-atom mu glue comes first (tex.web second pass)
+                let after_penalty = matches!(out.last(), Some(Node::Penalty(_)));
                 self.insert_spacing(&mut out, prev, Some(cls), sp_style);
+                // luatex mlist.c: \prebinoppenalty / \prerelpenalty precede a
+                // Bin / Rel noad that is not the first one
+                if self.engine_kind == crate::engine::EngineKind::LuaTeX
+                    && self.math_penalties.get()
+                    && prev.is_some()
+                    && !after_penalty
+                {
+                    let pre = match cls {
+                        CL_BIN => self.eqtb.int_params[IntParam::PreBinOpPenalty.idx() as usize],
+                        CL_REL => self.eqtb.int_params[IntParam::PreRelPenalty.idx() as usize],
+                        _ => 10000,
+                    };
+                    if pre < 10000 {
+                        out.push(Node::Penalty(pre));
+                    }
+                }
                 out.extend(nodes);
                 // tex.web pass 2: after a Bin/Rel noad in inline text math,
                 // a \binoppenalty/\relpenalty breakpoint follows (skipped when

@@ -874,7 +874,9 @@ impl Engine {
                 } else {
                     format!("Font \\{cs_name}={name} not loadable: {extra}")
                 };
-                self.error_at(&message, declaration_source);
+                if self.eqtb.int_params[crate::prim::IntParam::SuppressFontNotFoundError.idx() as usize] == 0 {
+                    self.error_at(&message, declaration_source);
+                }
             }
         }
     }

@@ -2661,6 +2661,17 @@ impl Engine {
                     _ => "undefined".to_string(),
                 };
             }
+            // luatex mac_param_cmd / tab_mark_cmd with the `tab_mark_cmd_code`
+            // character: `\alignmark` and `\aligntab`
+            if matches!(cat, 4 | 6) && c == crate::token::ALIGN_PRIM_CHR {
+                let esc = self.eqtb.int_params[crate::prim::IntParam::EscapeChar.idx() as usize];
+                let mut s = String::new();
+                if (0..=255).contains(&esc) {
+                    s.push_str(&crate::tex_bytes::bytes_to_text(&[esc as u8]));
+                }
+                s.push_str(if cat == 6 { "alignmark" } else { "aligntab" });
+                return s;
+            }
             let word = match cat {
                 0 => "escape character ",
                 1 => "begin-group character ",
@@ -2729,7 +2740,26 @@ impl Engine {
                 s.push_str(&self.tokens_to_text(&m.body));
                 s
             }
-            Some(Equiv::Prim(p)) => format!("{}{}", esc_str, self.prim_name(p)),
+            Some(Equiv::Prim(p)) => {
+                // tex.web print_meaning: \topmark.. show their current text
+                let mark = match p {
+                    Prim::TopMark => Some(0),
+                    Prim::FirstMark => Some(1),
+                    Prim::BotMark => Some(2),
+                    Prim::SplitFirstMark => Some(3),
+                    Prim::SplitBotMark => Some(4),
+                    _ => None,
+                };
+                match mark {
+                    Some(which) => format!(
+                        "{}{}:{}",
+                        esc_str,
+                        self.prim_name(p),
+                        self.tokens_to_text(&self.mark_tokens_class(which, 0))
+                    ),
+                    None => format!("{}{}", esc_str, self.prim_name(p)),
+                }
+            }
             Some(Equiv::LuaCall { slot, protected: false }) => format!("expandable luacall {slot}"),
             Some(Equiv::LuaCall { slot, protected: true }) => format!("luacall {slot}"),
             Some(Equiv::CharDef(c)) => format!("{}char\"{:X}", esc_str, c),

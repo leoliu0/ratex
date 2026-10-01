@@ -1672,7 +1672,14 @@ impl Engine {
                     return out;
                 }
                 if self.is_macro_param(t2) {
-                    out.push(Token::char(6, b'#' as u32));
+                    // luatex scan_toks stores the second token as read, so a
+                    // doubled `\alignmark` stays the control sequence
+                    let keeps_cs = t2.is_cs()
+                        && matches!(
+                            self.eqtb.resolve(t2.cs_id()),
+                            Some(Equiv::CharTok(v)) if Token(*v).chr() == crate::token::ALIGN_PRIM_CHR
+                        );
+                    out.push(if keeps_cs { t2 } else { Token::char(6, b'#' as u32) });
                     continue;
                 }
                 if t2.is_char() && (u32::from(b'1')..=u32::from(b'9')).contains(&t2.chr()) {

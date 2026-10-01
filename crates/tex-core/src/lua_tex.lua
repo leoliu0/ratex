@@ -398,17 +398,7 @@ function tex.triggerbuildpage() T.trigger_build_page() end
 function tex.getpagestate() return T.page_state() end
 function tex.resetparagraph() T.reset_paragraph() end
 
-local local_level = 0
-do
-  local runtoks = tex.runtoks
-  function tex.runtoks(...)
-    local_level = local_level + 1
-    local ok, err = pcall(runtoks, ...)
-    local_level = local_level - 1
-    if not ok then error(err, 0) end
-  end
-end
-function tex.getlocallevel() return local_level end
+function tex.getlocallevel() return T.local_level() end
 function tex.quittoks() T.quit_local() end
 
 function tex.hashtokens() return T.hash_tokens() end

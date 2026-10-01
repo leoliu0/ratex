@@ -3066,7 +3066,7 @@ impl Engine {
 
     /// tex.web get_token under an absorbing scan: an \outer macro is
     /// reported by `forbidden_outer` and replaced by a space.
-    #[inline]
+    #[inline(always)]
     pub(crate) fn raw_token_outer(&mut self) -> Token {
         let t = self.raw_token();
         if self.outer_scan.is_some() && self.is_outer_macro_token(t) {

@@ -365,6 +365,10 @@ pub struct InputStack {
     /// Retain its final position so runaway definitions and arguments do not
     /// degrade to the unhelpful "line 0" location.
     last_finished_file: Option<SourceContext>,
+    /// Index of the topmost `Source::File`, a hint validated on every use:
+    /// `current_file_line` runs on hot paths (every skipped conditional)
+    /// below stacks of macro frames.
+    top_file: std::cell::Cell<usize>,
 }
 
 /// Return the content end and next-line offset for a physical line.
@@ -392,6 +396,7 @@ impl InputStack {
             file_bytes: HashMap::new(),
             disk_stamps: HashMap::new(),
             last_finished_file: None,
+            top_file: std::cell::Cell::new(usize::MAX),
         }
     }
 
@@ -759,6 +764,7 @@ impl InputStack {
             line_end_len: 0,
             line_pos: 0,
         });
+        self.top_file.set(self.stack.len() - 1);
     }
     pub fn push_toks(&mut self, toks: impl Into<TokTokens>, name: &'static str) {
         self.push_toks_owned(toks, name, None, 0);
@@ -812,8 +818,12 @@ impl InputStack {
     }
 
     pub fn current_file_line(&self) -> u32 {
-        for s in self.stack.iter().rev() {
+        if let Some(Source::File { line_no, .. }) = self.stack.get(self.top_file.get()) {
+            return *line_no;
+        }
+        for (index, s) in self.stack.iter().enumerate().rev() {
             if let Source::File { line_no, .. } = s {
+                self.top_file.set(index);
                 return *line_no;
             }
         }
@@ -825,13 +835,22 @@ impl InputStack {
     /// `current_file_name` and `current_file_line` in one pass, sharing the
     /// name of an open file instead of copying it.
     pub(crate) fn current_file_location(&self) -> (Rc<str>, u32) {
-        for s in self.stack.iter().rev() {
+        if let Some(Source::File {
+            diagnostic_name,
+            line_no,
+            ..
+        }) = self.stack.get(self.top_file.get())
+        {
+            return (diagnostic_name.clone(), *line_no);
+        }
+        for (index, s) in self.stack.iter().enumerate().rev() {
             if let Source::File {
                 diagnostic_name,
                 line_no,
                 ..
             } = s
             {
+                self.top_file.set(index);
                 return (diagnostic_name.clone(), *line_no);
             }
         }

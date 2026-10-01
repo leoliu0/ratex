@@ -502,8 +502,11 @@ impl Engine {
                 self.eqtb.push_save(crate::eqtb::SaveItem::AfterGroup(tok));
                 true
             }
+            // tex.web §1211 prefixed_command: after each prefix, <Get the
+            // next non-blank non-relax non-call token> (implicit spaces too)
             Global => {
                 self.global_flag = true;
+                self.skip_spaces_relax();
                 true
             }
             Def | GDef | EDef | XDef => {
@@ -520,14 +523,17 @@ impl Engine {
             }
             Long => {
                 self.long_flag = true;
+                self.skip_spaces_relax();
                 true
             }
             Outer => {
                 self.outer_flag = true;
+                self.skip_spaces_relax();
                 true
             }
             Protected => {
                 self.protected_flag = true;
+                self.skip_spaces_relax();
                 true
             }
             Advance => {
@@ -1576,11 +1582,19 @@ impl Engine {
                 self.push_token(tb);
             }
         } else {
-            self.skip_raw_spaces();
-            let eq = self.raw_token();
+            // tex.web §1221: `repeat get_token until cur_cmd<>spacer`, then
+            // an explicit `=` may be followed by one spacer; implicit
+            // spaces (\let to a blank) are spacers in both places
+            let eq = loop {
+                self.skip_raw_spaces();
+                let t = self.raw_token();
+                if !self.raw_token_has_cmd(t, 10) {
+                    break t;
+                }
+            };
             if eq.is_char() && eq.chr() == b'=' as u32 && eq.cc() == 12 {
                 let sp = self.raw_token();
-                if !(sp.is_char() && sp.cc() == 10) {
+                if !self.raw_token_has_cmd(sp, 10) {
                     self.push_token(sp);
                 }
             } else {

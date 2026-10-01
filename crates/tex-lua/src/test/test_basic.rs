@@ -1,5 +1,5 @@
 // Tests for basic library functions
-use crate::lua_value::chunk_serializer::serialize_chunk;
+use crate::lua_value::chunk_serializer::serialize_chunk_with_pool;
 use crate::*;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -419,7 +419,7 @@ fn test_load_rejects_binary_when_bytecode_loading_disabled() {
 fn test_dofile_rejects_binary_when_bytecode_loading_disabled() {
     let mut builder_vm = GlobalState::new(SafeOption::default());
     let chunk = builder_vm.main_state().compile_chunk("return 42").unwrap();
-    let bytes = serialize_chunk(&chunk, false).unwrap();
+    let bytes = serialize_chunk_with_pool(&chunk, false).unwrap();
 
     let unique = SystemTime::now()
         .duration_since(UNIX_EPOCH)

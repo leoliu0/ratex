@@ -44,6 +44,11 @@ identify the offending operand, state the legal range, and say whether TeX
 ignored the assignment, substituted zero, or left the old value unchanged.
 Arithmetic errors name the operation and preserve the destination value.
 
+Recoverable math errors preserve the following input: an invalid delimiter
+becomes `.` and its offending token is read again; a display closed with only
+one `$` reports an error and resumes the paragraph. An incompatible unbox
+reports an error without consuming the box register.
+
 Inspection primitives such as `\show`, `\showthe`, `\showtokens`, `\showbox`,
 `\showlists`, `\showgroups`, and `\showifs` use the same structured, bounded
 output instead of dumping internal engine state. File, font, image, PDF object,

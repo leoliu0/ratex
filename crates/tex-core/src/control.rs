@@ -226,69 +226,6 @@ impl Engine {
                             return;
                         }
 
-                        // l3 variant wrappers reference \exp_args:N<spec>
-                        // expanders lazily (\exp_not:c{exp_args:NNcc}); a
-                        // boot that has not generated the spec yet would see
-                        // the expander as undefined and pass c-args through
-                        // as raw character groups (expl3 quark/variant
-                        // generation dies). Synthesize the standard expander
-                        // for N[nc]* specs on first use: \expanded{ \exp_not:N
-                        // #1 (\cs:w #j \cs_end: for c) ({#j} for n) ... }.
-                        let name: Vec<u8> = self.cs.name(id).to_vec();
-                        if name.starts_with(b"exp_args:N")
-                            && name.len() > 10
-                            && name[10..].iter().all(|c| matches!(c, b'N' | b'n' | b'c'))
-                        {
-                            let spec = &name[10..];
-                            let k = spec.len() as u8;
-                            let mut body: Vec<Token> = Vec::new();
-                            if let (Some(&ex), Some(&noex), Some(&csw), Some(&cse)) = (
-                                self.cs.prim_ids.get("expanded"),
-                                self.cs.prim_ids.get("noexpand"),
-                                self.cs.prim_ids.get("csname"),
-                                self.cs.prim_ids.get("endcsname"),
-                            ) {
-                                body.push(Token::from_cs(ex));
-                                body.push(Token::char(1, b'{' as u32));
-                                for (i, letter) in spec.iter().enumerate() {
-                                    let pref = PAR_REF_FLAG | (i as u32 + 1);
-                                    match letter {
-                                        b'N' => body.push(Token::from_cs(noex)),
-                                        b'n' => body.push(Token::char(1, b'{' as u32)),
-                                        b'c' => body.push(Token::from_cs(csw)),
-                                        _ => {}
-                                    }
-                                    body.push(Token(pref));
-                                    match letter {
-                                        b'N' => {}
-                                        b'n' => body.push(Token::char(2, b'}' as u32)),
-                                        b'c' => body.push(Token::from_cs(cse)),
-                                        _ => {}
-                                    }
-                                }
-                                body.push(Token::char(2, b'}' as u32));
-                                let has_param_refs = k > 0
-                                    && body.iter().any(|t| t.0 >= 0x4000_0000 && t.0 < 0x8000_0000);
-                                let m = crate::eqtb::Macro {
-                                    replacement: Default::default(),
-                                    num_params: k,
-                                    has_param_refs,
-                                    params: vec![Vec::new(); k as usize],
-                                    prefix: Vec::new(),
-                                    body: body.into(),
-                                    long: false,
-                                    outer: false,
-                                    protected: false,
-                                };
-                                self.eqtb
-                                    .assign(id, Equiv::Macro(std::rc::Rc::new(m)), true);
-                                if let Some(Equiv::Macro(m)) = self.eqtb.resolve(id).cloned() {
-                                    self.expand_macro(id, &m, id);
-                                }
-                                return;
-                            }
-                        }
-
                         let source = self
                             .current_token_source_mark()
                             .map(|mark| mark.to_context());
@@ -654,7 +591,7 @@ impl Engine {
             Toks => {
                 let idx = self.scan_reg_num();
                 self.scan_optional_equals();
-                let toks = Rc::new(self.scan_token_list());
+                let toks = Rc::new(self.scan_token_list_of(Some(id)));
                 let g = self.take_global();
                 self.eqtb.assign_toks_reg(idx, toks, g);
                 self.clear_prefixes();
@@ -923,7 +860,7 @@ impl Engine {
             }
             ToksP(tp) => {
                 self.scan_optional_equals();
-                let toks = Rc::new(self.scan_token_list());
+                let toks = Rc::new(self.scan_token_list_of(Some(id)));
 
                 let g = self.take_global();
                 self.eqtb.assign_toks_param(tp, toks, g);
@@ -1028,7 +965,7 @@ impl Engine {
             }
             Some(Equiv::Prim(Prim::ToksP(tp))) => {
                 self.scan_optional_equals();
-                let toks = Rc::new(self.scan_token_list());
+                let toks = Rc::new(self.scan_token_list_of(Some(id)));
                 let g = self.take_global();
                 self.eqtb.assign_toks_param(tp, toks, g);
                 self.clear_prefixes();
@@ -1068,7 +1005,7 @@ impl Engine {
             }
             Some(Equiv::ToksReg(i)) => {
                 self.scan_optional_equals();
-                let toks = Rc::new(self.scan_token_list());
+                let toks = Rc::new(self.scan_token_list_of(Some(id)));
                 let g = self.take_global();
                 self.eqtb.assign_toks_reg(i, toks, g);
                 self.clear_prefixes();
@@ -1279,13 +1216,11 @@ impl Engine {
                 None => self.def_prefix.push(t),
             }
         }
-        let mut body = self.collect_def_body(
-            target,
-            num_params,
-            expanded,
-            hash_brace.is_some(),
-            definition_start.clone(),
-        );
+        let has_brace = hash_brace.is_some();
+        let scan = crate::expand::OuterScan::Definition;
+        let mut body = self.with_outer_scan(scan, Some(target), |e| {
+            e.collect_def_body(target, num_params, expanded, has_brace, definition_start.clone())
+        });
         if preserve_trace {
             self.diagnostic_trace_hold -= 1;
         }
@@ -1435,7 +1370,7 @@ impl Engine {
                             }
                         }
                         self.push_token(nxt);
-                        let toks = self.scan_general_text();
+                        let toks = self.scan_general_text_of(Some(raw.cs_id()));
                         if self.stopped_on_error
                             || !self.store_unexpanded_in_edef(
                                 &mut out,
@@ -1449,15 +1384,12 @@ impl Engine {
                         continue;
                     }
                 }
-                if self.forbid_outer_in_definition(raw, target) {
-                    Token::char(10, u32::from(b' '))
-                } else {
-                    self.get_token_from(raw)
-                }
+                self.get_token_from(raw)
             } else {
+                // tex.web §336: an \outer token ends the definition.
                 let raw = self.raw_token();
-                if self.forbid_outer_in_definition(raw, target) {
-                    Token::char(10, u32::from(b' '))
+                if self.is_outer_macro_token(raw) {
+                    self.forbidden_outer(raw)
                 } else {
                     raw
                 }
@@ -1495,7 +1427,7 @@ impl Engine {
                     }
                 }
                 self.push_token(nxt);
-                let toks = self.scan_general_text();
+                let toks = self.scan_general_text_of(Some(t.cs_id()));
                 if self.stopped_on_error
                     || !self.store_unexpanded_in_edef(&mut out, &toks, definition_start.as_ref())
                 {
@@ -1609,30 +1541,6 @@ impl Engine {
         }
     }
 
-    /// tex.web §336-§339 `check_outer_validity` while defining: an `\outer`
-    /// macro may not appear in a definition body. TeX reports it, backs the
-    /// control sequence up behind an inserted `}`, and stores a space in its
-    /// place, so the definition ends and the macro runs afterwards.
-    fn forbid_outer_in_definition(&mut self, raw: Token, target: CsId) -> bool {
-        let id = if raw.is_cs() && raw.0 < crate::expand::NOEXP_FLAG {
-            raw.cs_id()
-        } else if raw.is_char() && raw.cc() == 13 {
-            self.active_cs_id(raw.chr())
-        } else {
-            return false;
-        };
-        if !matches!(self.eqtb.resolve(id), Some(Equiv::Macro(m)) if m.outer) {
-            return false;
-        }
-        self.error(&format!(
-            "Forbidden control sequence found while scanning definition of {}",
-            self.display_cs(target)
-        ));
-        self.push_token(raw);
-        self.push_token(Token::char(2, u32::from(b'}')));
-        true
-    }
-
     /// \let (and \futurelet)
     fn do_let(&mut self, future: bool) {
         let global = self.take_global();
@@ -1738,6 +1646,12 @@ impl Engine {
     /// \expandafter\expandafter{\expandafter\GTS@Car\GTS@GlobalString...\GTS@Nil}`
     /// run `\GTS@Car` at top level and hang looking for `\GTS@Nil`.
     pub fn scan_token_list(&mut self) -> Vec<Token> {
+        self.scan_token_list_of(self.cur_cs)
+    }
+
+    /// `scan_token_list` for the assignment command `owner` (tex.web §1226
+    /// sets cur_cs to it), named when an \outer macro interrupts the text.
+    pub(crate) fn scan_token_list_of(&mut self, owner: Option<CsId>) -> Vec<Token> {
         self.skip_spaces_relax();
         let t = self.get_token();
         if t.is_cs() {
@@ -1758,7 +1672,8 @@ impl Engine {
             }
         }
         if t.is_char() && t.cc() == 1 {
-            return self.scan_balanced_raw(true).to_vec();
+            let scan = crate::expand::OuterScan::Text;
+            return self.with_outer_scan(scan, owner, |e| e.scan_balanced_raw(true).to_vec());
         }
         self.error("Missing { inserted (token list)");
         self.push_token(t);

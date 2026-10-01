@@ -10,9 +10,7 @@ use crate::token::{CsId, CsTable, Token};
 pub enum ScannerStatus {
     Normal,
     Skipping,
-    Defining,
     Aligning,
-    Absorbing, // \mark, \write text
 }
 
 #[derive(Clone, Debug)]
@@ -526,6 +524,10 @@ pub struct Engine {
     /// Nested scanners must not use or discard a surrounding list's marks.
     pub math_group_marks: Vec<(usize, usize, Mode)>,
     pub scanner_status: ScannerStatus,
+    /// tex.web scanner_status/warning_index of an absorbing scan
+    /// (definition, general text, alignment preamble): an \outer macro read
+    /// while it is set is reported by `forbidden_outer` (§336-§339).
+    pub(crate) outer_scan: Option<(crate::expand::OuterScan, Option<CsId>)>,
     /// Semantic nest frames: mode, list, previous depth, space factor, paragraph lines.
     pub saved_lists: Vec<(Mode, Vec<crate::boxes::Node>, i32, i32, i32)>,
     /// saved state pushed by paragraph start (pops with \par, not with groups)
@@ -1072,6 +1074,7 @@ impl Engine {
             current_macro: 0,
             math_style_stack: Vec::new(),
             scanner_status: ScannerStatus::Normal,
+            outer_scan: None,
             saved_lists: Vec::new(),
             unless_next: false,
             last_badness: 0,

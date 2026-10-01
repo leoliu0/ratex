@@ -862,6 +862,7 @@ impl Engine {
     }
 
     pub fn do_write(&mut self, immediate: bool) {
+        let write = self.cur_cs;
         let source = self
             .current_token_source_mark()
             .as_ref()
@@ -870,7 +871,7 @@ impl Engine {
         // tex.web §1371: \write<n>{toks} collects the list RAW (scan_toks,
         // no expansion) and expands at emission like \xdef (protected macros
         // stay frozen).
-        let toks = self.scan_general_text();
+        let toks = self.scan_general_text_of(write);
         // Retain the command site because deferred expansion and file I/O can
         // happen after this input file and its macro stack have disappeared.
         // All non-immediate writes are structural whatsits, including the
@@ -916,6 +917,10 @@ impl Engine {
         let saved_end_occurred = self.end_occurred;
         let errors_before = self.error_count;
         let saved_source = std::mem::replace(&mut self.diagnostic_source_override, source.cloned());
+        // tex.web §1371: the text is scanned like general text of \write.
+        let write = self.cs.lookup(b"write");
+        let saved_outer_scan =
+            self.outer_scan.replace((crate::expand::OuterScan::Text, write));
 
         // tex.web §1371-§1372: the text is expanded as `{` text `}` \endwrite,
         // so a macro argument cannot run past the text; the sentinel stands
@@ -948,7 +953,9 @@ impl Engine {
             } else if t.is_right_brace() && depth > 0 {
                 depth -= 1;
                 if depth == 0 {
-                    // §1372: the balanced text must be followed by \endwrite.
+                    // §1372: the balanced text must be followed by \endwrite;
+                    // the text scan (and its \outer check) is over.
+                    self.outer_scan = saved_outer_scan;
                     let next = self.get_token();
                     if next != crate::page::WRITE_END_TOKEN && next != crate::input::EOF_MARKER {
                         self.error("Unbalanced write command");
@@ -982,12 +989,22 @@ impl Engine {
         self.end_occurred =
             saved_end_occurred || (self.end_occurred && self.error_count > errors_before);
         self.diagnostic_source_override = saved_source;
+        self.outer_scan = saved_outer_scan;
         self.pushed = saved;
-        self.write_tokens_to_string(&out)
+        self.print_tokens_to_string(&out)
     }
 
     pub fn write_tokens_to_string(&self, toks: &[Token]) -> String {
         String::from_utf8_lossy(&self.token_list_bytes(toks)).into_owned()
+    }
+
+    /// The text TeX prints for a token list on the terminal, the log or a
+    /// \write file: unprintable bytes appear in `^^` notation (§59).
+    pub(crate) fn print_tokens_to_string(&self, toks: &[Token]) -> String {
+        let bytes = self.token_list_bytes(toks);
+        let mut printed = Vec::with_capacity(bytes.len());
+        crate::token::push_printable(&mut printed, &bytes);
+        String::from_utf8_lossy(&printed).into_owned()
     }
 
     /// The bytes TeX's `show_token_list` would produce for an expanded
@@ -1079,7 +1096,7 @@ impl Engine {
         if self.stopped_on_error {
             return;
         }
-        let text = self.write_tokens_to_string(&toks);
+        let text = self.print_tokens_to_string(&toks);
         if err {
             let text = normalize_errmessage(&text);
             let previous = std::mem::replace(&mut self.diagnostic_use_err_help, true);

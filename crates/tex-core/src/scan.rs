@@ -1644,17 +1644,30 @@ impl Engine {
         }
     }
 
-    /// scan a braced general text (raw, balanced); opening brace consumed by
-    /// caller? Here: expects next token to be `{`; returns contents.
+    /// scan a braced general text (raw, balanced) for the current command
+    /// (`cur_cs`, tex.web's warning_index); returns the contents.
     pub fn scan_general_text(&mut self) -> Vec<Token> {
-        if !self.scan_left_brace() {
-            return Vec::new();
-        }
-        self.scan_balanced_raw(true).into_vec()
+        self.scan_general_text_of(self.cur_cs)
+    }
+
+    /// `scan_general_text` for the command `owner`, which tex.web §338
+    /// names when an \outer macro interrupts the text.
+    pub(crate) fn scan_general_text_of(&mut self, owner: Option<crate::token::CsId>) -> Vec<Token> {
+        self.with_outer_scan(crate::expand::OuterScan::Text, owner, |e| {
+            if !e.scan_left_brace() {
+                return Vec::new();
+            }
+            e.scan_balanced_raw(true).into_vec()
+        })
     }
 
     /// like scan_general_text but expanding (\edef semantics)
     pub fn scan_general_text_expanded(&mut self) -> Vec<Token> {
+        let owner = self.cur_cs;
+        self.with_outer_scan(crate::expand::OuterScan::Text, owner, Self::scan_expanded_text)
+    }
+
+    fn scan_expanded_text(&mut self) -> Vec<Token> {
         if !self.scan_left_brace() {
             return Vec::new();
         }
@@ -1703,7 +1716,7 @@ impl Engine {
                         }
                     }
                     self.push_token(nxt);
-                    let u = self.scan_general_text();
+                    let u = self.scan_general_text_of(Some(raw.cs_id()));
                     if self.stopped_on_error {
                         self.in_expanded_scan = prev_expanded_scan;
                         self.csname_depth = prev_csname_depth;
@@ -1754,7 +1767,7 @@ impl Engine {
                     }
                 }
                 self.push_token(nxt);
-                let u = self.scan_general_text();
+                let u = self.scan_general_text_of(Some(t.cs_id()));
                 if self.stopped_on_error {
                     self.in_expanded_scan = prev_expanded_scan;
                     self.csname_depth = prev_csname_depth;

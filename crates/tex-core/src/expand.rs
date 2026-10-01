@@ -169,6 +169,18 @@ enum Unbalanced {
     Fatal,
 }
 
+/// The absorbing scans of tex.web §338-§339 (scanner_status defining,
+/// absorbing, aligning): what an \outer control sequence interrupts.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum OuterScan {
+    /// A macro definition body (\def, \edef, ...).
+    Definition,
+    /// General text (\message, \toks, \write, \expanded, ...).
+    Text,
+    /// An alignment preamble.
+    Preamble,
+}
+
 impl Engine {
     pub(crate) fn freeze_unexpanded_toks(&mut self, mut toks: Vec<Token>) -> Vec<Token> {
         for t in &mut toks {
@@ -457,6 +469,9 @@ impl Engine {
             }
             match equiv.cloned() {
                 Some(Equiv::Macro(m)) => {
+                    if m.outer && self.outer_scan.is_some() {
+                        return self.forbidden_outer(t);
+                    }
                     // edef/write/expanded list. Nested \\romannumeral (f-expansion)
                     // clears in_expanded_scan and must expand \\exp_end_continue_f:w.
                     if m.protected && self.in_expanded_scan && self.csname_depth == 0 {
@@ -516,11 +531,17 @@ impl Engine {
                                     return tok;
                                 }
                                 if tok.0 >= NOEXP_FLAG && tok.0 < UNEXPANDED_CS_FLAG {
+                                    // tex.web §358: the marked token means \relax.
                                     let tok = Token::from_cs(tok.0 & 0x3FFF_FFFF);
                                     self.set_cur_cs(tok);
+                                    self.no_expand_tok = Some(tok);
+                                    self.cur_prim = Some(Prim::Relax);
                                     return tok;
                                 }
                                 if !tok.is_cs() {
+                                    if tok.is_char() {
+                                        self.set_cur_char(tok);
+                                    }
                                     return tok;
                                 }
                                 self.push_token(tok);
@@ -773,10 +794,6 @@ impl Engine {
                 if t.0 >= NOEXP_FLAG && t.0 < 0xFFFF_0000 {
                     let cs = t.0 & 0x3FFF_FFFF;
                     let tok = Token::from_cs(cs);
-                    if self.eqtb.get(cs).is_none() {
-                        // Lazily synthesize l3 exp_args:N<spec> expanders.
-                        self.synth_exp_args_if_match(cs);
-                    }
                     self.no_expand_tok = Some(tok);
                     self.cur_tok = tok;
                     self.cur_cs = Some(cs);
@@ -837,6 +854,9 @@ impl Engine {
                     let equiv = self.eqtb.get(id);
                     match equiv {
                         Some(Equiv::Macro(m)) => {
+                            if m.outer && self.outer_scan.is_some() {
+                                return self.forbidden_outer(t);
+                            }
                             if m.protected && self.in_expanded_scan && self.csname_depth == 0 {
                                 self.set_cur_cs(t);
                                 return t;
@@ -928,16 +948,6 @@ impl Engine {
                                 return tok;
                             }
                             if self.is_expandable(p) {
-                                // A \csname-created exp_args:N<spec> may carry the
-                                // relax default from an earlier pass; repair it.
-                                if p == Prim::Relax
-                                    && self.cs.name(id) != b"relax"
-                                    && self.name_is_synth_exp_args(id)
-                                {
-                                    self.synth_exp_args_if_match(id);
-                                    break 'expand;
-                                }
-
                                 match self.expand_prim(p, id) {
                                     Some(tok) => {
                                         if tok.0 >= UNEXPANDED_CS_FLAG && tok.0 < 0xFFFF_0000 {
@@ -975,9 +985,6 @@ impl Engine {
                             }
                         }
                         None => {
-                            if self.synth_exp_args_if_match(id) {
-                                break 'expand;
-                            }
                             self.undefined_cs_error(t);
                             break 'expand;
                         }
@@ -993,63 +1000,6 @@ impl Engine {
             }
             t = self.raw_token();
         }
-    }
-
-    /// true when the cs name is exp_args:N followed only by l3 arg letters.
-    pub fn name_is_synth_exp_args(&self, id: CsId) -> bool {
-        let name = self.cs.name(id);
-        if name.len() < 11 || name[0] != b'e' {
-            return false;
-        }
-        name.starts_with(b"exp_args:N")
-            && name[10..].iter().all(|c| {
-                matches!(
-                    c,
-                    b'N' | b'n' | b'c' | b'o' | b'f' | b'e' | b'V' | b'v' | b'x'
-                )
-            })
-    }
-
-    /// l3 variant wrappers reference \exp_args:N<spec> expanders lazily
-    /// (\exp_not:c{exp_args:NNcc}); a boot that has not generated the spec
-    /// yet would see the expander as undefined (then relax-poisoned via
-    /// \csname) and pass c-args through as raw character groups, killing
-    /// expl3 quark/variant generation. Synthesize the standard expander on
-    /// first use as the same \::-chain body real l3 builds:
-    /// \exp_args:NNxn -> \::N \::x \::n \:::  (params grabbed from stream).
-    /// Returns true when the name matched and the macro was assigned.
-    pub fn synth_exp_args_if_match(&mut self, id: CsId) -> bool {
-        if !self.name_is_synth_exp_args(id) {
-            return false;
-        }
-        let name = self.cs.name(id);
-        let spec = &name[10..];
-        let mut body: Vec<Token> = Vec::new();
-        for &letter in spec {
-            let helper = [b':', b':', letter];
-            match self.cs.lookup(&helper) {
-                Some(h) => body.push(Token::from_cs(h)),
-                None => return false,
-            }
-        }
-        match self.cs.lookup(b":::") {
-            Some(t) => body.push(Token::from_cs(t)),
-            None => return false,
-        }
-        let m = crate::eqtb::Macro {
-            replacement: Default::default(),
-            num_params: 0,
-            has_param_refs: false,
-            params: Vec::new(),
-            prefix: Vec::new(),
-            body: body.into(),
-            long: true,
-            outer: false,
-            protected: false,
-        };
-        self.eqtb
-            .assign(id, Equiv::Macro(std::rc::Rc::new(m)), true);
-        true
     }
 
     #[inline(always)]
@@ -1151,6 +1101,9 @@ impl Engine {
     /// Execute an expandable primitive; None = keep expanding,
     /// Some(t) = t is the resulting current token.
     pub fn expand_prim(&mut self, p: Prim, id: CsId) -> Option<Token> {
+        // tex.web expand: cur_cs is the expanding control sequence, which a
+        // general-text scan names in its errors (warning_index).
+        self.cur_cs = Some(id);
         if p == Prim::IfCase {
             // The case frame must exist while its numeric operand expands:
             // nested conditionals can remain open until after the first digit.
@@ -1376,40 +1329,21 @@ impl Engine {
                         return None;
                     }
                     if t.is_cs() {
-                        let id = t.cs_id();
-                        let is_end = matches!(
-                            self.eqtb.resolve(id),
-                            Some(Equiv::Prim(crate::prim::Prim::EndCsName))
-                        );
-                        if is_end {
+                        // tex.web §372: the name ends at the first
+                        // unexpandable control sequence. Anything but
+                        // \endcsname, a \noexpand-marked token (which means
+                        // \relax) included, is an error and is read again.
+                        if self.cur_prim == Some(Prim::EndCsName) {
                             break;
                         }
-                        // get_x_raw strips \\noexpand and returns the frozen CS.
-                        // Expand leftover expandable prims (\\expanded) so
-                        // \\csname\\noexpand\\expanded{...}\\endcsname works.
-                        // Do NOT re-expand macros — that steals following args.
-                        match self.eqtb.resolve(id).cloned() {
-                            Some(Equiv::Prim(p)) if self.is_expandable(p) => {
-                                match self.expand_prim(p, id) {
-                                    Some(tok) if tok.is_char() => {
-                                        tok.append_character_bytes(&mut name);
-                                    }
-                                    Some(tok) => self.push_token(tok),
-                                    None => {}
-                                }
-                                continue;
-                            }
-                            _ => {
-                                self.push_token(t);
-                                self.error_at(
-                                    "Missing \\endcsname inserted",
-                                    csname_origin
-                                        .as_ref()
-                                        .map(crate::input::SourceMark::to_context),
-                                );
-                                break;
-                            }
-                        }
+                        self.push_token(t);
+                        self.error_at(
+                            "Missing \\endcsname inserted",
+                            csname_origin
+                                .as_ref()
+                                .map(crate::input::SourceMark::to_context),
+                        );
+                        break;
                     }
 
                     if t.is_char() && t.cc() == 9 {
@@ -1421,12 +1355,7 @@ impl Engine {
                 let id = self.cs.intern(&name);
                 self.last_named_cs = Some(id);
                 if self.eqtb.get(id).is_none() {
-                    // l3 variant wrappers reference \exp_args:N<spec>
-                    // expanders lazily (\exp_not:c{exp_args:NNcc}). If the
-                    // boot has not generated that spec yet, the plain relax
-                    // default would poison the name (cs_if_free then reports
-                    // it as defined and the synthesis never runs). Synthesize
-                    // the real expander on creation instead.
+                    // tex.web §372: a new name means \relax (locally).
                     let relax = self.cs.lookup(b"relax").unwrap();
                     let r = self.eqtb.get(relax).cloned();
                     if let Some(e) = r {
@@ -2247,26 +2176,27 @@ impl Engine {
         } else {
             return t;
         };
-        let name = self.cs.name(id);
-        if let Some(scalar) = Self::active_cs_scalar(name) {
-            Token::char(13, scalar)
-        } else {
-            Token::from_cs(id)
-        }
+        self.cs_input_token(id)
     }
 
     fn unfreeze_unexpanded_token(&self, t: Token) -> Token {
         if t.0 >= UNEXPANDED_CS_FLAG && t.0 < 0xFFFF_0000 {
-            let id = t.0 & 0x1FFF_FFFF;
-            let name = self.cs.name(id);
-            if let Some(scalar) = Self::active_cs_scalar(name) {
-                Token::char(13, scalar)
-            } else {
-                Token::from_cs(id)
-            }
+            self.cs_input_token(t.0 & 0x1FFF_FFFF)
         } else {
             t.unfreeze()
         }
+    }
+
+    /// The input token for control sequence `id`: active characters are
+    /// stored as character tokens.
+    #[inline]
+    fn cs_input_token(&self, id: CsId) -> Token {
+        if self.cs.is_active(id) {
+            if let Some(scalar) = Self::active_cs_scalar(self.cs.name(id)) {
+                return Token::char(CAT_ACTIVE, scalar);
+            }
+        }
+        Token::from_cs(id)
     }
 
     /// Return the character/category identity used by `\if` and `\ifcat`.
@@ -2862,18 +2792,30 @@ impl Engine {
         ArgAbort
     }
 
-    /// True for a control sequence or active character whose meaning is an
-    /// \outer macro, and for the end-of-\write and end-of-output sentinels,
-    /// which stand for TeX's frozen outer `\endwrite`. Takes the token as
-    /// fetched: tokens guarded by \noexpand are exempt (tex.web §358).
+    /// True for an \outer macro token (see `is_outer_macro_token`) and for
+    /// the end-of-\write and end-of-output sentinels, which stand for TeX's
+    /// frozen outer `\endwrite`.
     #[inline(always)]
     fn is_outer_token(&self, t: Token) -> bool {
+        if t.0 >= crate::page::WRITE_END_TOKEN.0 {
+            t != EOF_MARKER && t != PAR_END
+        } else {
+            self.is_outer_macro_token(t)
+        }
+    }
+
+    /// True for a control sequence or active character whose meaning is an
+    /// \outer macro. Takes the token as fetched: tokens guarded by
+    /// \noexpand are exempt (tex.web §358).
+    #[inline(always)]
+    pub(crate) fn is_outer_macro_token(&self, t: Token) -> bool {
+        if !self.eqtb.has_outer_macros() {
+            return false;
+        }
         if t.is_cs() {
             t.0 < NOEXP_FLAG && self.is_outer_cs(t.cs_id())
-        } else if t.0 < 0x8000_0000 {
-            t.cc() == CAT_ACTIVE && self.is_outer_active(t.chr())
         } else {
-            t.0 >= crate::page::WRITE_END_TOKEN.0 && t != EOF_MARKER && t != PAR_END
+            t.is_char() && t.cc() == CAT_ACTIVE && self.is_outer_active(t.chr())
         }
     }
 
@@ -2885,6 +2827,53 @@ impl Engine {
     #[inline(never)]
     fn is_outer_active(&self, c: u32) -> bool {
         self.active_cs_lookup(c).is_some_and(|id| self.is_outer_cs(id))
+    }
+
+    /// Run `scan` as the absorbing scan `kind` of `owner` (tex.web's
+    /// scanner_status and warning_index), restoring the enclosing one.
+    pub(crate) fn with_outer_scan<R>(
+        &mut self,
+        kind: OuterScan,
+        owner: Option<CsId>,
+        scan: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        let saved = self.outer_scan.replace((kind, owner));
+        let result = scan(self);
+        self.outer_scan = saved;
+        result
+    }
+
+    /// tex.web §336-§339 check_outer_validity during an absorbing scan: the
+    /// \outer token `outer` is reported and backed up behind the inserted
+    /// `}` (`\cr}` for a preamble), and TeX reads a space in its place,
+    /// which is returned as the current token.
+    #[cold]
+    #[inline(never)]
+    pub(crate) fn forbidden_outer(&mut self, outer: Token) -> Token {
+        let (kind, owner) = self.outer_scan.unwrap_or((OuterScan::Text, None));
+        let what = match kind {
+            OuterScan::Definition => "definition",
+            OuterScan::Text => "text",
+            OuterScan::Preamble => "preamble",
+        };
+        let message = match owner {
+            Some(id) => format!(
+                "Forbidden control sequence found while scanning {what} of {}",
+                self.display_cs(id)
+            ),
+            None => format!("Forbidden control sequence found while scanning {what}"),
+        };
+        self.error(&message);
+        self.push_token(outer);
+        self.push_token(Token::char(CAT_EGROUP, u32::from(b'}')));
+        if kind == OuterScan::Preamble {
+            let cr = self.crcr_token();
+            self.push_token(cr);
+            self.align_brace_depth = -1_000_000;
+        }
+        let space = Token::space();
+        self.set_cur_char(space);
+        space
     }
     pub fn skip_raw_spaces(&mut self) {
         if self.pushed.is_empty() {
@@ -2948,8 +2937,8 @@ impl Engine {
     }
 
     /// Append the balanced text after an already consumed `{` to `out`
-    /// (when `collect`), without the closing brace. A macro argument also
-    /// rejects \outer macros.
+    /// (when `collect`), without the closing brace. A macro argument
+    /// rejects \outer macros; general text reports them (`forbidden_outer`).
     fn scan_balanced_raw_collect(
         &mut self,
         long: bool,
@@ -2960,30 +2949,29 @@ impl Engine {
     ) -> Result<(), Unbalanced> {
         if self.pushed.is_empty() {
             let partoken_id = self.partoken_id();
-            let fast = match self.input.stack.last_mut() {
-                Some(crate::input::Source::TokList { toks, pos, .. }) => {
-                    let s = &toks[*pos..];
-                    balanced_end(s, long, partoken_id).map(|end| {
-                        if collect {
-                            out.extend_from_slice(&s[..end - 1]);
-                        }
-                        *pos += end;
-                    })
-                }
-                Some(crate::input::Source::MacroFrame(frame)) => {
-                    let s = frame.segment();
-                    let end = balanced_end(s, long, partoken_id);
-                    if let Some(end) = end {
-                        if collect {
-                            out.extend_from_slice(&s[..end - 1]);
-                        }
-                        frame.skip(end);
-                    }
-                    end.map(drop)
-                }
+            let fast = match self.input.stack.last() {
+                Some(crate::input::Source::TokList { toks, pos, .. }) => Some(&toks[*pos..]),
+                Some(crate::input::Source::MacroFrame(frame)) => Some(frame.segment()),
                 _ => None,
-            };
-            if fast.is_some() {
+            }
+            .and_then(|s| {
+                let end = balanced_end(s, long, partoken_id)?;
+                let text = &s[..end - 1];
+                // An \outer token needs the token-by-token path.
+                if self.eqtb.has_outer_macros() && text.iter().any(|&t| self.is_outer_token(t)) {
+                    return None;
+                }
+                if collect {
+                    out.extend_from_slice(text);
+                }
+                Some(end)
+            });
+            if let Some(end) = fast {
+                match self.input.stack.last_mut() {
+                    Some(crate::input::Source::TokList { pos, .. }) => *pos += end,
+                    Some(crate::input::Source::MacroFrame(frame)) => frame.skip(end),
+                    _ => unreachable!(),
+                }
                 // The opening brace was fetched by raw_token() and counted
                 // in align_brace_depth; the matching brace was taken from
                 // the list directly.
@@ -2996,7 +2984,7 @@ impl Engine {
         let mut scanned = 0;
         loop {
             let raw = self.raw_token();
-            let stored = self.unfreeze_input_token(raw);
+            let mut stored = self.unfreeze_input_token(raw);
             let t = self.unfreeze_unexpanded_token(stored);
             if t == EOF_MARKER {
                 self.fatal_error_at(
@@ -3016,8 +3004,12 @@ impl Engine {
                 }
             } else if !long && self.is_partoken(t) {
                 return Err(Unbalanced::Paragraph(stored));
-            } else if macro_arg && self.is_outer_token(raw) {
-                return Err(Unbalanced::Outer(stored));
+            } else if macro_arg {
+                if self.is_outer_token(raw) {
+                    return Err(Unbalanced::Outer(stored));
+                }
+            } else if self.outer_scan.is_some() && self.is_outer_macro_token(raw) {
+                stored = self.forbidden_outer(raw);
             }
             // Check after recognizing the outer closing brace: a list of
             // exactly MAX_TOKEN_LIST_TOKENS tokens remains legal, while a
@@ -3070,36 +3062,50 @@ impl Engine {
                 );
                 return Err(ArgAbort);
             }
-            matched.push(stored);
-            // Keep the longest suffix of the recent tokens that is still a
-            // prefix of the delimiter; the rest belongs to the argument.
-            while !matched
-                .iter()
-                .enumerate()
-                .all(|(i, token)| self.delim_eq(token.unfreeze(), delim[i]))
-            {
-                let rm = matched.remove(0);
+            if matched.is_empty() && !self.delim_eq(stored.unfreeze(), delim[0]) {
+                // The common case: the token cannot start the delimiter.
                 if !self.scanned_token_list_has_room(out.len() - start, 1, "macro parameter size", origin)
                 {
                     return Err(ArgAbort);
                 }
-                out.push(rm);
-            }
-            if matched.len() == delim.len() {
-                if let Some(last) = delim.last() {
-                    if last.is_char() && last.cc() == 1 {
-                        // tex.web §392 / @8063: When the parameter delimiter ends
-                        // with `#{`, both the delimiter match and the subsequent
-                        // macro body scan see a left brace. Only one should affect
-                        // align_state, so TeX decrements align_state here.
-                        self.align_brace_depth = self.align_brace_depth.saturating_sub(1);
+                out.push(stored);
+            } else {
+                matched.push(stored);
+                // Keep the longest suffix of the recent tokens that is still
+                // a prefix of the delimiter; the rest belongs to the argument.
+                while !matched
+                    .iter()
+                    .enumerate()
+                    .all(|(i, token)| self.delim_eq(token.unfreeze(), delim[i]))
+                {
+                    let rm = matched.remove(0);
+                    if !self.scanned_token_list_has_room(
+                        out.len() - start,
+                        1,
+                        "macro parameter size",
+                        origin,
+                    ) {
+                        return Err(ArgAbort);
                     }
+                    out.push(rm);
                 }
-                Self::strip_outer_braces(out, start);
-                return Ok(());
-            }
-            if !matched.is_empty() {
-                continue;
+                if matched.len() == delim.len() {
+                    if let Some(last) = delim.last() {
+                        if last.is_char() && last.cc() == 1 {
+                            // tex.web §392 / @8063: When the parameter delimiter
+                            // ends with `#{`, both the delimiter match and the
+                            // subsequent macro body scan see a left brace. Only
+                            // one should affect align_state, so TeX decrements
+                            // align_state here.
+                            self.align_brace_depth = self.align_brace_depth.saturating_sub(1);
+                        }
+                    }
+                    Self::strip_outer_braces(out, start);
+                    return Ok(());
+                }
+                if !matched.is_empty() {
+                    continue;
+                }
             }
             // tex.web §392 matches the delimiter before §396 rejects an
             // illegal paragraph. A non-long #1\par parameter may therefore

@@ -39,6 +39,11 @@ pub enum UdValue {
     Number(f64),
     /// A Rust string — will be interned by the VM when converting to LuaValue
     Str(String),
+    /// An 8-bit clean Lua string (any bytes, not necessarily UTF-8).
+    Bytes(Vec<u8>),
+    /// A userdata value seen from `set_field`/`set_int_field`: the
+    /// [`UserDataTrait::handle_id`] of the assigned userdata.
+    Handle(i64),
     /// A light C function — used for returning methods from `get_field`
     Function(LuaCFunction),
     /// Owned userdata value (as return from arithmetic trait methods).
@@ -54,6 +59,8 @@ impl Clone for UdValue {
             UdValue::Integer(i) => UdValue::Integer(*i),
             UdValue::Number(n) => UdValue::Number(*n),
             UdValue::Str(s) => UdValue::Str(s.clone()),
+            UdValue::Bytes(b) => UdValue::Bytes(b.clone()),
+            UdValue::Handle(h) => UdValue::Handle(*h),
             UdValue::Function(f) => UdValue::Function(*f),
             UdValue::UserdataOwned(_) => UdValue::Nil,
         }
@@ -128,6 +135,24 @@ pub trait UserDataTrait: 'static {
     /// Get a field value by name.
     /// Returns `Some(value)` if the field exists, `None` to fall through to metatable.
     fn get_field(&self, _key: &str) -> Option<UdValue> {
+        None
+    }
+
+    /// Get a field value by integer key (`obj[1]`). `None` falls through to
+    /// the metatable.
+    fn get_int_field(&self, _key: i64) -> Option<UdValue> {
+        None
+    }
+
+    /// Set a field value by integer key; same contract as [`Self::set_field`].
+    fn set_int_field(&mut self, _key: i64, _value: UdValue) -> Option<Result<(), String>> {
+        None
+    }
+
+    /// Identity of this userdata for host code that stores handles to host
+    /// objects: when `Some(h)`, assigning this userdata through `set_field`
+    /// arrives as `UdValue::Handle(h)`.
+    fn handle_id(&self) -> Option<i64> {
         None
     }
 
@@ -405,6 +430,8 @@ impl fmt::Debug for UdValue {
             UdValue::Integer(i) => write!(f, "Integer({})", i),
             UdValue::Number(n) => write!(f, "Number({})", n),
             UdValue::Str(s) => write!(f, "Str({:?})", s),
+            UdValue::Bytes(b) => write!(f, "Bytes({:?})", b),
+            UdValue::Handle(h) => write!(f, "Handle({})", h),
             UdValue::Function(_) => write!(f, "Function(<cfunction>)"),
             UdValue::UserdataOwned(ud) => write!(f, "UserdataOwned({})", ud.type_name()),
         }
@@ -419,6 +446,8 @@ impl fmt::Display for UdValue {
             UdValue::Integer(i) => write!(f, "{}", i),
             UdValue::Number(n) => write!(f, "{}", n),
             UdValue::Str(s) => write!(f, "{}", s),
+            UdValue::Bytes(b) => write!(f, "{}", String::from_utf8_lossy(b)),
+            UdValue::Handle(h) => write!(f, "userdata:{}", h),
             UdValue::Function(_) => write!(f, "function"),
             UdValue::UserdataOwned(ud) => write!(f, "{}", ud.type_name()),
         }
@@ -439,6 +468,8 @@ pub fn udvalue_to_lua_value(lua_state: &mut LuaState, udv: UdValue) -> LuaResult
         UdValue::Integer(i) => Ok(LuaValue::integer(i)),
         UdValue::Number(n) => Ok(LuaValue::float(n)),
         UdValue::Str(s) => lua_state.create_string(&s),
+        UdValue::Bytes(b) => lua_state.create_bytes(&b),
+        UdValue::Handle(_) => Ok(LuaValue::nil()),
         UdValue::Function(f) => Ok(LuaValue::cfunction(f.0)),
         UdValue::UserdataOwned(ud) => {
             let userdata = LuaUserdata::from_boxed(ud);
@@ -462,6 +493,13 @@ pub fn lua_value_to_udvalue(value: &LuaValue) -> UdValue {
         UdValue::Number(n)
     } else if let Some(s) = value.as_str() {
         UdValue::Str(s.to_owned())
+    } else if let Some(b) = value.as_bytes() {
+        UdValue::Bytes(b.to_vec())
+    } else if let Some(h) = value
+        .as_userdata_mut()
+        .and_then(|ud| ud.get_trait().handle_id())
+    {
+        UdValue::Handle(h)
     } else {
         UdValue::Nil
     }

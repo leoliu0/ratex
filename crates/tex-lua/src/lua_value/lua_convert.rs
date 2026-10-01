@@ -189,6 +189,19 @@ where
     }
 }
 
+// ==================== Userdata values ====================
+
+impl IntoLua for crate::UdValue {
+    /// Lets a native callback return a fresh userdata
+    /// (`UdValue::UserdataOwned`) or any other trait-world value.
+    fn into_lua(self, state: &mut LuaState) -> Result<usize, String> {
+        let value = crate::lua_value::userdata_trait::udvalue_to_lua_value(state, self)
+            .map_err(|e| format!("{:?}", e))?;
+        state.push_value(value).map_err(|e| format!("{:?}", e))?;
+        Ok(1)
+    }
+}
+
 // ==================== Boolean ====================
 
 impl FromLua for bool {

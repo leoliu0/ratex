@@ -19,7 +19,7 @@ pub struct NodeUd {
     pub h: u32,
 }
 
-fn glyph_dims(fonts: &[Rc<Font>], font: i32, c: i32) -> (i32, i32, i32) {
+pub(crate) fn glyph_dimensions(fonts: &[Rc<Font>], font: i32, c: i32) -> (i32, i32, i32) {
     let Some(f) = fonts.get(font as usize) else { return (0, 0, 0) };
     if let Some(ci) = f.lua_char(c as u32) {
         return (ci.width, ci.height, ci.depth);
@@ -62,7 +62,7 @@ impl Engine {
             return Val::Nil;
         }
         let fonts = &self.eqtb.fonts;
-        let v = s.get_field(n, name, &|f, c| glyph_dims(fonts, f, c));
+        let v = s.get_field(n, name, &|f, c| glyph_dimensions(fonts, f, c));
         if matches!(v, Val::Toks) {
             return Val::Bytes(self.lua_node_tokens(n));
         }
@@ -192,7 +192,7 @@ impl Engine {
 
     /// A character-string as a token list (catcode 12, spaces 10).
     fn lua_text_tokens(&self, text: &[u8]) -> Vec<crate::token::Token> {
-        crate::luatex::text_tokens(text)
+        text.iter().map(|&b| if b == b' ' { crate::token::Token::space() } else { crate::token::Token::other(b) }).collect()
     }
 
     pub(crate) fn lua_nodes_tostring(&self, n: u32, tag: &str) -> String {
@@ -232,7 +232,7 @@ fn opt_node(h: u32) -> UdValue {
     if h == 0 { UdValue::Nil } else { UdValue::Integer(i64::from(h)) }
 }
 
-fn h32(v: Option<i64>) -> u32 {
+pub(crate) fn handle32(v: Option<i64>) -> u32 {
     v.unwrap_or(0) as u32
 }
 
@@ -241,7 +241,7 @@ fn rnd(v: Option<f64>) -> i64 {
 }
 
 /// a value usable as `lua_tointeger` argument
-fn vint(v: &Value) -> i64 {
+pub(crate) fn value_int(v: &Value) -> i64 {
     if let Some(i) = v.as_integer() {
         i
     } else if let Some(n) = v.as_number() {
@@ -253,7 +253,7 @@ fn vint(v: &Value) -> i64 {
     }
 }
 
-fn vnum(v: &Value) -> f64 {
+pub(crate) fn value_num(v: &Value) -> f64 {
     if let Some(n) = v.as_number() {
         n
     } else if let Some(i) = v.as_integer() {
@@ -270,10 +270,10 @@ fn is_num(v: Option<&Value>) -> bool {
 }
 
 fn vround(v: &Value) -> i64 {
-    (vnum(v) + 0.5).floor() as i64
+    (value_num(v) + 0.5).floor() as i64
 }
 
-fn vbytes(v: &Value) -> Option<Vec<u8>> {
+pub(crate) fn value_bytes(v: &Value) -> Option<Vec<u8>> {
     v.as_string_handle().map(|s| s.to_bytes())
 }
 
@@ -292,19 +292,19 @@ pub(crate) fn install(lua: &mut Lua) -> Result<LuaTable, String> {
     // ---- identity, links ----
     nat!(lua, n, "getid", |h: Option<i64>| -> Result<Option<i64>, String> {
         with_engine(|e| {
-            let h = h32(h);
+            let h = handle32(h);
             e.lua_nodes.valid(h).then(|| i64::from(e.lua_nodes.id(h)))
         })
     });
     nat!(lua, n, "getsubtype", |h: Option<i64>| -> Result<Option<i64>, String> {
         with_engine(|e| {
-            let h = h32(h);
+            let h = handle32(h);
             e.lua_nodes.valid(h).then(|| i64::from(e.lua_nodes.subtype(h)))
         })
     });
     nat!(lua, n, "setsubtype", |h: Option<i64>, v: Option<i64>| -> Result<(), String> {
         with_engine(|e| {
-            let h = h32(h);
+            let h = handle32(h);
             if let (true, Some(v)) = (e.lua_nodes.valid(h), v) {
                 e.lua_nodes.node_mut(h).subtype = v as u16;
             }
@@ -312,7 +312,7 @@ pub(crate) fn install(lua: &mut Lua) -> Result<LuaTable, String> {
     });
     nat!(lua, n, "getnext", |h: Option<i64>| -> Result<Option<i64>, String> {
         with_engine(|e| {
-            let h = h32(h);
+            let h = handle32(h);
             if !e.lua_nodes.valid(h) {
                 return None;
             }
@@ -322,7 +322,7 @@ pub(crate) fn install(lua: &mut Lua) -> Result<LuaTable, String> {
     });
     nat!(lua, n, "getprev", |h: Option<i64>| -> Result<Option<i64>, String> {
         with_engine(|e| {
-            let h = h32(h);
+            let h = handle32(h);
             if !e.lua_nodes.valid(h) {
                 return None;
             }
@@ -332,7 +332,7 @@ pub(crate) fn install(lua: &mut Lua) -> Result<LuaTable, String> {
     });
     nat!(lua, n, "getboth", |h: Option<i64>| -> Result<(Option<i64>, Option<i64>), String> {
         with_engine(|e| {
-            let h = h32(h);
+            let h = handle32(h);
             if !e.lua_nodes.valid(h) {
                 return (None, None);
             }
@@ -342,7 +342,7 @@ pub(crate) fn install(lua: &mut Lua) -> Result<LuaTable, String> {
     });
     nat!(lua, n, "setnext", |h: Option<i64>, v: Option<f64>| -> Result<(), String> {
         with_engine(|e| {
-            let h = h32(h);
+            let h = handle32(h);
             if e.lua_nodes.valid(h) {
                 e.lua_nodes.node_mut(h).next = v.map_or(0, |v| v as u32);
             }
@@ -350,7 +350,7 @@ pub(crate) fn install(lua: &mut Lua) -> Result<LuaTable, String> {
     });
     nat!(lua, n, "setprev", |h: Option<i64>, v: Option<f64>| -> Result<(), String> {
         with_engine(|e| {
-            let h = h32(h);
+            let h = handle32(h);
             if e.lua_nodes.valid(h) {
                 e.lua_nodes.node_mut(h).prev = v.map_or(0, |v| v as u32);
             }
@@ -358,7 +358,7 @@ pub(crate) fn install(lua: &mut Lua) -> Result<LuaTable, String> {
     });
     nat!(lua, n, "setboth", |h: Option<i64>, p: Option<f64>, x: Option<f64>| -> Result<(), String> {
         with_engine(|e| {
-            let h = h32(h);
+            let h = handle32(h);
             if e.lua_nodes.valid(h) {
                 let nd = e.lua_nodes.node_mut(h);
                 nd.prev = p.map_or(0, |v| v as u32);
@@ -369,7 +369,7 @@ pub(crate) fn install(lua: &mut Lua) -> Result<LuaTable, String> {
     nat!(lua, n, "setlink", |args: Variadic<Value>| -> Result<Option<i64>, String> {
         let vals: Vec<Option<u32>> = args
             .iter()
-            .map(|v| if is_num(Some(v)) { Some(vint(v) as u32) } else { None })
+            .map(|v| if is_num(Some(v)) { Some(value_int(v) as u32) } else { None })
             .collect();
         with_engine(|e| {
             let s = &mut e.lua_nodes;
@@ -403,7 +403,7 @@ pub(crate) fn install(lua: &mut Lua) -> Result<LuaTable, String> {
     });
     nat!(lua, n, "setsplit", |l: Option<i64>, r: Option<i64>| -> Result<(), String> {
         with_engine(|e| {
-            let (l, r) = (h32(l), h32(r));
+            let (l, r) = (handle32(l), handle32(r));
             if l == 0 || r == 0 {
                 return;
             }
@@ -431,7 +431,7 @@ pub(crate) fn install(lua: &mut Lua) -> Result<LuaTable, String> {
             } else {
                 Err("invalid node id for creating new node".to_string())
             }
-        } else if let Some(b) = vbytes(&id) {
+        } else if let Some(b) = value_bytes(&id) {
             type_by_name(&b).map(|t| t.id).ok_or_else(|| "invalid node id for creating new node".to_string())
         } else {
             Err("invalid node id for creating new node".to_string())
@@ -443,7 +443,7 @@ pub(crate) fn install(lua: &mut Lua) -> Result<LuaTable, String> {
                     if let Some(i) = s.as_integer() {
                         whatsit_info(i as u16).filter(|_| (0..=255).contains(&i)).map(|w| u16::from(w.id))
                     } else {
-                        vbytes(s).and_then(|b| whatsit_by_name(&b))
+                        value_bytes(s).and_then(|b| whatsit_by_name(&b))
                     }
                 }
                 None => None,
@@ -451,8 +451,8 @@ pub(crate) fn install(lua: &mut Lua) -> Result<LuaTable, String> {
             r.ok_or_else(|| "creating a whatsit requires the subtype number as a second argument".to_string())
         } else {
             match &sub {
-                Some(s) if s.as_integer().is_some() => Ok(vint(s) as u16),
-                Some(s) => match vbytes(s) {
+                Some(s) if s.as_integer().is_some() => Ok(value_int(s) as u16),
+                Some(s) => match value_bytes(s) {
                     Some(b) => {
                         let t = type_info(idv);
                         Ok(t.and_then(|t| t.subtypes.iter().find(|(_, n)| n.as_bytes() == b.as_slice()).map(|(i, _)| *i)).unwrap_or(0))
@@ -467,7 +467,7 @@ pub(crate) fn install(lua: &mut Lua) -> Result<LuaTable, String> {
     });
     nat!(lua, n, "free", |h: Option<i64>| -> Result<Option<i64>, String> {
         with_engine(|e| {
-            let h = h32(h);
+            let h = handle32(h);
             if !e.lua_nodes.valid(h) {
                 return None;
             }
@@ -478,7 +478,7 @@ pub(crate) fn install(lua: &mut Lua) -> Result<LuaTable, String> {
     });
     nat!(lua, n, "flush_node", |h: Option<i64>| -> Result<(), String> {
         with_engine(|e| {
-            let h = h32(h);
+            let h = handle32(h);
             if e.lua_nodes.valid(h) {
                 e.lua_flush_node(h);
             }
@@ -486,7 +486,7 @@ pub(crate) fn install(lua: &mut Lua) -> Result<LuaTable, String> {
     });
     nat!(lua, n, "flush_list", |h: Option<i64>| -> Result<(), String> {
         with_engine(|e| {
-            let mut h = h32(h);
+            let mut h = handle32(h);
             while e.lua_nodes.valid(h) {
                 let nx = e.lua_nodes.next(h);
                 e.lua_flush_node(h);
@@ -496,7 +496,7 @@ pub(crate) fn install(lua: &mut Lua) -> Result<LuaTable, String> {
     });
     nat!(lua, n, "copy", |h: Option<i64>| -> Result<Option<i64>, String> {
         with_engine(|e| {
-            let h = h32(h);
+            let h = handle32(h);
             if !e.lua_nodes.valid(h) {
                 return None;
             }
@@ -506,7 +506,7 @@ pub(crate) fn install(lua: &mut Lua) -> Result<LuaTable, String> {
     });
     nat!(lua, n, "copy_list", |h: Option<i64>, stop: Option<i64>| -> Result<Option<i64>, String> {
         with_engine(|e| {
-            let (h, stop) = (h32(h), h32(stop));
+            let (h, stop) = (handle32(h), handle32(stop));
             if !e.lua_nodes.valid(h) {
                 return None;
             }
@@ -516,7 +516,7 @@ pub(crate) fn install(lua: &mut Lua) -> Result<LuaTable, String> {
     });
     nat!(lua, n, "remove", |head: Option<i64>, cur: Option<i64>| -> Result<(Option<i64>, Option<i64>), String> {
         with_engine(|e| {
-            let (head, cur) = (h32(head), h32(cur));
+            let (head, cur) = (handle32(head), handle32(cur));
             if head != 0 && !e.lua_nodes.valid(head) {
                 return Ok((None, None));
             }
@@ -526,7 +526,7 @@ pub(crate) fn install(lua: &mut Lua) -> Result<LuaTable, String> {
     });
     nat!(lua, n, "insert_before", |head: Option<i64>, cur: Option<i64>, node: Option<i64>| -> Result<(Option<i64>, Option<i64>), String> {
         with_engine(|e| {
-            let (head, cur, nn) = (h32(head), h32(cur), h32(node));
+            let (head, cur, nn) = (handle32(head), handle32(cur), handle32(node));
             if nn == 0 {
                 return Ok((Some(i64::from(head)).filter(|h| *h != 0), Some(i64::from(cur)).filter(|c| *c != 0)));
             }
@@ -536,7 +536,7 @@ pub(crate) fn install(lua: &mut Lua) -> Result<LuaTable, String> {
     });
     nat!(lua, n, "insert_after", |head: Option<i64>, cur: Option<i64>, node: Option<i64>| -> Result<(Option<i64>, Option<i64>), String> {
         with_engine(|e| {
-            let (head, cur, nn) = (h32(head), h32(cur), h32(node));
+            let (head, cur, nn) = (handle32(head), handle32(cur), handle32(node));
             if nn == 0 {
                 return (Some(i64::from(head)).filter(|h| *h != 0), Some(i64::from(cur)).filter(|c| *c != 0));
             }
@@ -546,7 +546,7 @@ pub(crate) fn install(lua: &mut Lua) -> Result<LuaTable, String> {
     });
     nat!(lua, n, "slide", |h: Option<i64>| -> Result<Option<i64>, String> {
         with_engine(|e| {
-            let h = h32(h);
+            let h = handle32(h);
             if !e.lua_nodes.valid(h) {
                 return None;
             }
@@ -555,7 +555,7 @@ pub(crate) fn install(lua: &mut Lua) -> Result<LuaTable, String> {
     });
     nat!(lua, n, "tail", |h: Option<i64>| -> Result<Option<i64>, String> {
         with_engine(|e| {
-            let h = h32(h);
+            let h = handle32(h);
             if !e.lua_nodes.valid(h) {
                 return None;
             }
@@ -564,7 +564,7 @@ pub(crate) fn install(lua: &mut Lua) -> Result<LuaTable, String> {
     });
     nat!(lua, n, "end_of_math", |h: Option<i64>| -> Result<Option<i64>, String> {
         with_engine(|e| {
-            let h = h32(h);
+            let h = handle32(h);
             if !e.lua_nodes.valid(h) {
                 return None;
             }
@@ -574,7 +574,7 @@ pub(crate) fn install(lua: &mut Lua) -> Result<LuaTable, String> {
     });
     nat!(lua, n, "length", |h: Option<i64>, stop: Option<i64>| -> Result<i64, String> {
         with_engine(|e| {
-            let (h, stop) = (h32(h), h32(stop));
+            let (h, stop) = (handle32(h), handle32(stop));
             if !e.lua_nodes.valid(h) {
                 return 0;
             }
@@ -583,7 +583,7 @@ pub(crate) fn install(lua: &mut Lua) -> Result<LuaTable, String> {
     });
     nat!(lua, n, "count", |id: Option<i64>, h: Option<i64>, stop: Option<i64>| -> Result<i64, String> {
         with_engine(|e| {
-            let (h, stop) = (h32(h), h32(stop));
+            let (h, stop) = (handle32(h), handle32(stop));
             if !e.lua_nodes.valid(h) {
                 return 0;
             }
@@ -593,7 +593,7 @@ pub(crate) fn install(lua: &mut Lua) -> Result<LuaTable, String> {
 
     // ---- fields ----
     nat!(lua, n, "getfield", |h: Option<i64>, key: Value| -> Result<UdValue, String> {
-        let hh = h32(h);
+        let hh = handle32(h);
         if let Some(i) = key.as_integer() {
             return with_engine(|e| {
                 let s = &e.lua_nodes;
@@ -613,7 +613,7 @@ pub(crate) fn install(lua: &mut Lua) -> Result<LuaTable, String> {
         })
     });
     nat!(lua, n, "getfield_ud", |h: Option<i64>, key: Value| -> Result<UdValue, String> {
-        let hh = h32(h);
+        let hh = handle32(h);
         if let Some(i) = key.as_integer() {
             return with_engine(|e| {
                 let s = &e.lua_nodes;
@@ -635,7 +635,7 @@ pub(crate) fn install(lua: &mut Lua) -> Result<LuaTable, String> {
     });
     nat!(lua, n, "has_field", |h: Option<i64>, key: Option<String>| -> Result<bool, String> {
         with_engine(|e| {
-            let h = h32(h);
+            let h = handle32(h);
             if !e.lua_nodes.valid(h) {
                 return false;
             }
@@ -657,7 +657,7 @@ pub(crate) fn install(lua: &mut Lua) -> Result<LuaTable, String> {
     // ---- attributes ----
     nat!(lua, n, "has_attribute", |h: Option<i64>, id: Option<i64>, val: Option<i64>| -> Result<Option<i64>, String> {
         with_engine(|e| {
-            let h = h32(h);
+            let h = handle32(h);
             if !e.lua_nodes.valid(h) {
                 return None;
             }
@@ -667,7 +667,7 @@ pub(crate) fn install(lua: &mut Lua) -> Result<LuaTable, String> {
     });
     nat!(lua, n, "get_attribute", |h: Option<i64>, id: Option<i64>| -> Result<Option<i64>, String> {
         with_engine(|e| {
-            let h = h32(h);
+            let h = handle32(h);
             if !e.lua_nodes.valid(h) || !has_attr_type(e.lua_nodes.id(h), e.lua_nodes.subtype(h)) {
                 return None;
             }
@@ -687,7 +687,7 @@ pub(crate) fn install(lua: &mut Lua) -> Result<LuaTable, String> {
     });
     nat!(lua, n, "find_attribute", |h: Option<i64>, id: Option<i64>| -> Result<Variadic<UdValue>, String> {
         with_engine(|e| {
-            let mut c = h32(h);
+            let mut c = handle32(h);
             let i = id.unwrap_or(0) as i32;
             while e.lua_nodes.valid(c) {
                 if has_attr_type(e.lua_nodes.id(c), e.lua_nodes.subtype(c)) {
@@ -711,14 +711,14 @@ pub(crate) fn install(lua: &mut Lua) -> Result<LuaTable, String> {
         })
     });
     nat!(lua, n, "set_attribute", |args: Variadic<Value>| -> Result<(), String> {
-        let h = args.first().map_or(0, |v| vint(v) as u32);
+        let h = args.first().map_or(0, |v| value_int(v) as u32);
         if h == 0 {
             return Ok(());
         }
         if args.len() != 3 {
             return Err("incorrect number of arguments".to_string());
         }
-        let (i, val) = (vint(&args[1]) as i32, vint(&args[2]) as i32);
+        let (i, val) = (value_int(&args[1]) as i32, value_int(&args[2]) as i32);
         with_engine(|e| {
             if !e.lua_nodes.valid(h) {
                 return;
@@ -732,7 +732,7 @@ pub(crate) fn install(lua: &mut Lua) -> Result<LuaTable, String> {
     });
     nat!(lua, n, "unset_attribute", |h: Option<i64>, id: f64, val: Option<f64>| -> Result<Option<i64>, String> {
         with_engine(|e| {
-            let h = h32(h);
+            let h = handle32(h);
             if !e.lua_nodes.valid(h) {
                 return None;
             }
@@ -749,7 +749,7 @@ pub(crate) fn install(lua: &mut Lua) -> Result<LuaTable, String> {
     });
     nat!(lua, n, "getattributelist", |h: Option<i64>| -> Result<Option<i64>, String> {
         with_engine(|e| {
-            let h = h32(h);
+            let h = handle32(h);
             if !e.lua_nodes.valid(h) || !has_attr_type(e.lua_nodes.id(h), e.lua_nodes.subtype(h)) {
                 return None;
             }
@@ -759,12 +759,12 @@ pub(crate) fn install(lua: &mut Lua) -> Result<LuaTable, String> {
     });
     nat!(lua, n, "setattributelist", |h: Option<i64>, v: Option<Value>| -> Result<(), String> {
         let kind = match &v {
-            Some(v) if v.as_integer().is_some() => Some(vint(v) as u32),
+            Some(v) if v.as_integer().is_some() => Some(value_int(v) as u32),
             Some(v) if v.as_boolean() == Some(true) => Some(u32::MAX),
             _ => None,
         };
         with_engine(|e| {
-            let h = h32(h);
+            let h = handle32(h);
             if !e.lua_nodes.valid(h) || !has_attr_type(e.lua_nodes.id(h), e.lua_nodes.subtype(h)) {
                 return;
             }
@@ -795,13 +795,13 @@ pub(crate) fn install(lua: &mut Lua) -> Result<LuaTable, String> {
 }
 
 fn set_field_native(args: &[Value], direct: bool) -> Result<(), String> {
-    let h = args.first().map_or(0, |v| if direct { vint(v) as u32 } else { node_of(v) });
+    let h = args.first().map_or(0, |v| if direct { value_int(v) as u32 } else { node_of(v) });
     let Some(key) = args.get(1) else { return Ok(()) };
     if let Some(i) = key.as_integer() {
         if args.len() != 3 {
             return Err("incorrect number of arguments".to_string());
         }
-        let val = vint(&args[2]) as i32;
+        let val = value_int(&args[2]) as i32;
         return with_engine(|e| {
             if !e.lua_nodes.valid(h) {
                 return;
@@ -821,7 +821,7 @@ fn set_field_native(args: &[Value], direct: bool) -> Result<(), String> {
                 SetVal::Int(i)
             } else if let Some(n) = v.as_number() {
                 SetVal::Num(n)
-            } else if let Some(b) = vbytes(v) {
+            } else if let Some(b) = value_bytes(v) {
                 SetVal::Bytes(b)
             } else if v.is_nil() {
                 SetVal::Nil
@@ -845,7 +845,7 @@ fn install_accessors(lua: &mut Lua, n: &LuaTable) -> Result<(), String> {
         ($get:literal, $set:literal, |$s:ident, $h:ident| $getter:expr, |$s2:ident, $h2:ident, $v:ident| $setter:expr) => {
             nat!(lua, n, $get, |h: Option<i64>| -> Result<Option<i64>, String> {
                 with_engine(|e| {
-                    let $h = h32(h);
+                    let $h = handle32(h);
                     let $s = &e.lua_nodes;
                     if !$s.valid($h) {
                         return None;
@@ -855,7 +855,7 @@ fn install_accessors(lua: &mut Lua, n: &LuaTable) -> Result<(), String> {
             });
             nat!(lua, n, $set, |h: Option<i64>, v: Option<f64>| -> Result<(), String> {
                 with_engine(|e| {
-                    let $h2 = h32(h);
+                    let $h2 = handle32(h);
                     let $s2 = &mut e.lua_nodes;
                     if !$s2.valid($h2) {
                         return;
@@ -937,7 +937,7 @@ fn install_accessors(lua: &mut Lua, n: &LuaTable) -> Result<(), String> {
     // font and family
     nat!(lua, n, "getfont", |h: Option<i64>| -> Result<Option<i64>, String> {
         with_engine(|e| {
-            let h = h32(h);
+            let h = handle32(h);
             if !e.lua_nodes.valid(h) {
                 return None;
             }
@@ -952,7 +952,7 @@ fn install_accessors(lua: &mut Lua, n: &LuaTable) -> Result<(), String> {
     });
     nat!(lua, n, "setfont", |h: Option<i64>, f: Option<i64>, c: Option<i64>| -> Result<(), String> {
         with_engine(|e| {
-            let h = h32(h);
+            let h = handle32(h);
             if e.lua_nodes.valid(h) && e.lua_nodes.id(h) == GLYPH {
                 let nd = e.lua_nodes.node_mut(h);
                 nd.f[1] = f.unwrap_or(0) as i32;
@@ -964,7 +964,7 @@ fn install_accessors(lua: &mut Lua, n: &LuaTable) -> Result<(), String> {
     });
     nat!(lua, n, "getfam", |h: Option<i64>| -> Result<Option<i64>, String> {
         with_engine(|e| {
-            let h = h32(h);
+            let h = handle32(h);
             if !e.lua_nodes.valid(h) {
                 return None;
             }
@@ -980,7 +980,7 @@ fn install_accessors(lua: &mut Lua, n: &LuaTable) -> Result<(), String> {
     });
     nat!(lua, n, "setfam", |h: Option<i64>, v: Option<i64>| -> Result<(), String> {
         with_engine(|e| {
-            let h = h32(h);
+            let h = handle32(h);
             let Some(v) = v else { return };
             if !e.lua_nodes.valid(h) {
                 return;
@@ -999,7 +999,7 @@ fn install_accessors(lua: &mut Lua, n: &LuaTable) -> Result<(), String> {
     nat!(lua, n, "getkern", |h: Option<i64>, exp: Option<Value>| -> Result<Variadic<UdValue>, String> {
         let want_exp = is_truthy(exp.as_ref());
         with_engine(|e| {
-            let h = h32(h);
+            let h = handle32(h);
             if !e.lua_nodes.valid(h) {
                 return Variadic(vec![UdValue::Nil]);
             }
@@ -1020,7 +1020,7 @@ fn install_accessors(lua: &mut Lua, n: &LuaTable) -> Result<(), String> {
     });
     nat!(lua, n, "setkern", |h: Option<i64>, v: Option<f64>, sub: Option<i64>| -> Result<(), String> {
         with_engine(|e| {
-            let h = h32(h);
+            let h = handle32(h);
             if !e.lua_nodes.valid(h) {
                 return;
             }
@@ -1042,7 +1042,7 @@ fn install_accessors(lua: &mut Lua, n: &LuaTable) -> Result<(), String> {
     nat!(lua, n, "getwidth", |h: Option<i64>, exp: Option<Value>| -> Result<Variadic<UdValue>, String> {
         let want_exp = is_truthy(exp.as_ref());
         with_engine(|e| {
-            let h = h32(h);
+            let h = handle32(h);
             if !e.lua_nodes.valid(h) {
                 return Variadic(vec![UdValue::Nil]);
             }
@@ -1050,7 +1050,7 @@ fn install_accessors(lua: &mut Lua, n: &LuaTable) -> Result<(), String> {
             match node.id {
                 HLIST | VLIST | RULE | UNSET => Variadic(vec![UdValue::Integer(i64::from(node.f[0]))]),
                 GLYPH => {
-                    let (w, _, _) = glyph_dims(&e.eqtb.fonts, node.f[1], node.f[0]);
+                    let (w, _, _) = glyph_dimensions(&e.eqtb.fonts, node.f[1], node.f[0]);
                     let mut v = vec![UdValue::Number(f64::from(w))];
                     if want_exp {
                         v.push(UdValue::Integer(i64::from(node.f[12])));
@@ -1074,7 +1074,7 @@ fn install_accessors(lua: &mut Lua, n: &LuaTable) -> Result<(), String> {
     });
     nat!(lua, n, "setwidth", |h: Option<i64>, v: Option<f64>| -> Result<(), String> {
         with_engine(|e| {
-            let h = h32(h);
+            let h = handle32(h);
             if !e.lua_nodes.valid(h) {
                 return;
             }
@@ -1095,7 +1095,7 @@ fn install_accessors(lua: &mut Lua, n: &LuaTable) -> Result<(), String> {
     });
     nat!(lua, n, "getheight", |h: Option<i64>| -> Result<Option<i64>, String> {
         with_engine(|e| {
-            let h = h32(h);
+            let h = handle32(h);
             if !e.lua_nodes.valid(h) {
                 return None;
             }
@@ -1103,7 +1103,7 @@ fn install_accessors(lua: &mut Lua, n: &LuaTable) -> Result<(), String> {
             match node.id {
                 HLIST | VLIST | RULE | UNSET => Some(i64::from(node.f[2])),
                 INS => Some(i64::from(node.f[2])),
-                GLYPH => Some(i64::from(glyph_dims(&e.eqtb.fonts, node.f[1], node.f[0]).1)),
+                GLYPH => Some(i64::from(glyph_dimensions(&e.eqtb.fonts, node.f[1], node.f[0]).1)),
                 FENCE => Some(i64::from(node.f[2])),
                 _ => None,
             }
@@ -1111,7 +1111,7 @@ fn install_accessors(lua: &mut Lua, n: &LuaTable) -> Result<(), String> {
     });
     nat!(lua, n, "setheight", |h: Option<i64>, v: Option<f64>| -> Result<(), String> {
         with_engine(|e| {
-            let h = h32(h);
+            let h = handle32(h);
             if !e.lua_nodes.valid(h) {
                 return;
             }
@@ -1125,7 +1125,7 @@ fn install_accessors(lua: &mut Lua, n: &LuaTable) -> Result<(), String> {
     });
     nat!(lua, n, "getdepth", |h: Option<i64>| -> Result<Option<i64>, String> {
         with_engine(|e| {
-            let h = h32(h);
+            let h = handle32(h);
             if !e.lua_nodes.valid(h) {
                 return None;
             }
@@ -1133,7 +1133,7 @@ fn install_accessors(lua: &mut Lua, n: &LuaTable) -> Result<(), String> {
             match node.id {
                 HLIST | VLIST | RULE | UNSET => Some(i64::from(node.f[1])),
                 INS => Some(i64::from(node.f[1])),
-                GLYPH => Some(i64::from(glyph_dims(&e.eqtb.fonts, node.f[1], node.f[0]).2)),
+                GLYPH => Some(i64::from(glyph_dimensions(&e.eqtb.fonts, node.f[1], node.f[0]).2)),
                 FENCE => Some(i64::from(node.f[3])),
                 _ => None,
             }
@@ -1141,7 +1141,7 @@ fn install_accessors(lua: &mut Lua, n: &LuaTable) -> Result<(), String> {
     });
     nat!(lua, n, "setdepth", |h: Option<i64>, v: Option<f64>| -> Result<(), String> {
         with_engine(|e| {
-            let h = h32(h);
+            let h = handle32(h);
             if !e.lua_nodes.valid(h) {
                 return;
             }
@@ -1156,7 +1156,7 @@ fn install_accessors(lua: &mut Lua, n: &LuaTable) -> Result<(), String> {
     nat!(lua, n, "getwhd", |h: Option<i64>, exp: Option<Value>| -> Result<Variadic<UdValue>, String> {
         let want_exp = is_truthy(exp.as_ref());
         with_engine(|e| {
-            let h = h32(h);
+            let h = handle32(h);
             if !e.lua_nodes.valid(h) {
                 return Variadic(vec![]);
             }
@@ -1172,7 +1172,7 @@ fn install_accessors(lua: &mut Lua, n: &LuaTable) -> Result<(), String> {
             match t.id {
                 HLIST | VLIST | RULE | UNSET => Variadic(whd(t)),
                 GLYPH => {
-                    let (w, ht, d) = glyph_dims(&e.eqtb.fonts, t.f[1], t.f[0]);
+                    let (w, ht, d) = glyph_dimensions(&e.eqtb.fonts, t.f[1], t.f[0]);
                     let mut v = vec![
                         UdValue::Integer(i64::from(w)),
                         UdValue::Integer(i64::from(ht)),
@@ -1196,7 +1196,7 @@ fn install_accessors(lua: &mut Lua, n: &LuaTable) -> Result<(), String> {
         })
     });
     nat!(lua, n, "setwhd", |args: Variadic<Value>| -> Result<(), String> {
-        let h = args.first().map_or(0, |v| vint(v) as u32);
+        let h = args.first().map_or(0, |v| value_int(v) as u32);
         let top = args.len();
         with_engine(|e| {
             let s = &mut e.lua_nodes;
@@ -1224,7 +1224,7 @@ fn install_accessors(lua: &mut Lua, n: &LuaTable) -> Result<(), String> {
     // glue
     nat!(lua, n, "getglue", |h: Option<i64>| -> Result<Variadic<UdValue>, String> {
         with_engine(|e| {
-            let h = h32(h);
+            let h = handle32(h);
             if !e.lua_nodes.valid(h) {
                 return Variadic(vec![]);
             }
@@ -1250,7 +1250,7 @@ fn install_accessors(lua: &mut Lua, n: &LuaTable) -> Result<(), String> {
         })
     });
     nat!(lua, n, "setglue", |args: Variadic<Value>| -> Result<Variadic<UdValue>, String> {
-        let h = args.first().map_or(0, |v| vint(v) as u32);
+        let h = args.first().map_or(0, |v| value_int(v) as u32);
         let top = args.len();
         with_engine(|e| {
             let s = &mut e.lua_nodes;
@@ -1266,15 +1266,15 @@ fn install_accessors(lua: &mut Lua, n: &LuaTable) -> Result<(), String> {
                     nd.f[base] = if num(1) { vround(&args[1]) as i32 } else { 0 };
                     nd.f[base + 1] = if num(2) { vround(&args[2]) as i32 } else { 0 };
                     nd.f[base + 2] = if num(3) { vround(&args[3]) as i32 } else { 0 };
-                    nd.f[base + 3] = if num(4) { vint(&args[4]) as i32 } else { 0 };
-                    nd.f[base + 4] = if num(5) { vint(&args[5]) as i32 } else { 0 };
+                    nd.f[base + 3] = if num(4) { value_int(&args[4]) as i32 } else { 0 };
+                    nd.f[base + 4] = if num(5) { value_int(&args[5]) as i32 } else { 0 };
                     Variadic(vec![])
                 }
                 HLIST | VLIST => {
                     let nd = s.node_mut(h);
-                    nd.fl = if num(1) { vnum(&args[1]) } else { 0.0 };
-                    nd.f[5] = if num(2) { vint(&args[2]) as i32 } else { 0 };
-                    nd.f[6] = if num(3) { vint(&args[3]) as i32 } else { 0 };
+                    nd.fl = if num(1) { value_num(&args[1]) } else { 0.0 };
+                    nd.f[5] = if num(2) { value_int(&args[2]) as i32 } else { 0 };
+                    nd.f[6] = if num(3) { value_int(&args[3]) as i32 } else { 0 };
                     Variadic(vec![])
                 }
                 _ => Variadic(vec![]),
@@ -1283,7 +1283,7 @@ fn install_accessors(lua: &mut Lua, n: &LuaTable) -> Result<(), String> {
     });
     nat!(lua, n, "is_zero_glue", |h: Option<i64>| -> Result<Variadic<UdValue>, String> {
         with_engine(|e| {
-            let h = h32(h);
+            let h = handle32(h);
             if !e.lua_nodes.valid(h) {
                 return Variadic(vec![]);
             }
@@ -1299,7 +1299,7 @@ fn install_accessors(lua: &mut Lua, n: &LuaTable) -> Result<(), String> {
     nat!(lua, n, "effective_glue", |glue: Option<i64>, parent: Option<i64>, round: Option<Value>| -> Result<Option<UdValue>, String> {
         let round = is_truthy(round.as_ref());
         with_engine(|e| {
-            let (g, p) = (h32(glue), h32(parent));
+            let (g, p) = (handle32(glue), handle32(parent));
             if !e.lua_nodes.valid(g) || e.lua_nodes.id(g) != GLUE {
                 return None;
             }
@@ -1315,7 +1315,7 @@ fn install_accessors(lua: &mut Lua, n: &LuaTable) -> Result<(), String> {
     // dir
     nat!(lua, n, "getdir", |h: Option<i64>| -> Result<UdValue, String> {
         with_engine(|e| {
-            let h = h32(h);
+            let h = handle32(h);
             if !e.lua_nodes.valid(h) {
                 return UdValue::Nil;
             }
@@ -1336,7 +1336,7 @@ fn install_accessors(lua: &mut Lua, n: &LuaTable) -> Result<(), String> {
     });
     nat!(lua, n, "getdirection", |h: Option<i64>| -> Result<Variadic<UdValue>, String> {
         with_engine(|e| {
-            let h = h32(h);
+            let h = handle32(h);
             if !e.lua_nodes.valid(h) {
                 return Variadic(vec![UdValue::Nil]);
             }
@@ -1352,7 +1352,7 @@ fn install_accessors(lua: &mut Lua, n: &LuaTable) -> Result<(), String> {
     });
     nat!(lua, n, "setdir", |h: Option<i64>, v: Option<String>| -> Result<(), String> {
         with_engine(|e| {
-            let h = h32(h);
+            let h = handle32(h);
             if !e.lua_nodes.valid(h) {
                 return Ok(());
             }
@@ -1369,7 +1369,7 @@ fn install_accessors(lua: &mut Lua, n: &LuaTable) -> Result<(), String> {
     nat!(lua, n, "setdirection", |h: Option<i64>, v: Option<i64>, cancel: Option<Value>| -> Result<(), String> {
         let cancel = cancel.as_ref().and_then(|c| c.as_boolean());
         with_engine(|e| {
-            let h = h32(h);
+            let h = handle32(h);
             if !e.lua_nodes.valid(h) {
                 return Ok(());
             }
@@ -1396,7 +1396,7 @@ fn install_accessors(lua: &mut Lua, n: &LuaTable) -> Result<(), String> {
     // offsets
     nat!(lua, n, "getoffsets", |h: Option<i64>| -> Result<Variadic<UdValue>, String> {
         with_engine(|e| {
-            let h = h32(h);
+            let h = handle32(h);
             if !e.lua_nodes.valid(h) {
                 return Variadic(vec![]);
             }
@@ -1409,7 +1409,7 @@ fn install_accessors(lua: &mut Lua, n: &LuaTable) -> Result<(), String> {
         })
     });
     nat!(lua, n, "setoffsets", |args: Variadic<Value>| -> Result<(), String> {
-        let h = args.first().map_or(0, |v| vint(v) as u32);
+        let h = args.first().map_or(0, |v| value_int(v) as u32);
         with_engine(|e| {
             let s = &mut e.lua_nodes;
             if !s.valid(h) {
@@ -1431,7 +1431,7 @@ fn install_accessors(lua: &mut Lua, n: &LuaTable) -> Result<(), String> {
     // data
     nat!(lua, n, "getdata", |h: Option<i64>| -> Result<Variadic<UdValue>, String> {
         with_engine(|e| {
-            let h = h32(h);
+            let h = handle32(h);
             if !e.lua_nodes.valid(h) {
                 return Variadic(vec![UdValue::Nil]);
             }
@@ -1457,11 +1457,11 @@ fn install_accessors(lua: &mut Lua, n: &LuaTable) -> Result<(), String> {
     });
     nat!(lua, n, "setdata", |h: Option<i64>, v: Option<Value>| -> Result<(), String> {
         let (iv, bv) = match &v {
-            Some(v) => (vround(v), vbytes(v)),
+            Some(v) => (vround(v), value_bytes(v)),
             None => (0, None),
         };
         with_engine(|e| {
-            let h = h32(h);
+            let h = handle32(h);
             if !e.lua_nodes.valid(h) {
                 return;
             }
@@ -1493,11 +1493,8 @@ impl Engine {
     /// `fam_fnt(fam, size)`: the font of family `fam` in the text size
     /// (`size` = 0), script (256) or scriptscript (512) size.
     pub(crate) fn lua_family_font(&self, fam: i32, size: i32) -> i64 {
-        let idx = (fam.clamp(0, 255) + size) as usize;
-        self.eqtb
-            .math_fonts
-            .get(idx.min(self.eqtb.math_fonts.len().saturating_sub(1)))
-            .map_or(0, |f| i64::from(*f))
+        let sz = (size / 256).clamp(0, 2) as usize;
+        self.eqtb.style_fonts[sz][fam.clamp(0, 255) as usize] as i64
     }
 
     pub(crate) fn lua_flush_node(&mut self, n: u32) {
@@ -1553,7 +1550,7 @@ fn install_lists(lua: &mut Lua, n: &LuaTable) -> Result<(), String> {
     // lists and discretionaries
     nat!(lua, n, "getlist", |h: Option<i64>| -> Result<Option<i64>, String> {
         with_engine(|e| {
-            let h = h32(h);
+            let h = handle32(h);
             if !e.lua_nodes.valid(h) {
                 return None;
             }
@@ -1573,7 +1570,7 @@ fn install_lists(lua: &mut Lua, n: &LuaTable) -> Result<(), String> {
     });
     nat!(lua, n, "setlist", |h: Option<i64>, v: Option<f64>| -> Result<(), String> {
         with_engine(|e| {
-            let h = h32(h);
+            let h = handle32(h);
             if !e.lua_nodes.valid(h) {
                 return;
             }
@@ -1589,7 +1586,7 @@ fn install_lists(lua: &mut Lua, n: &LuaTable) -> Result<(), String> {
     nat!(lua, n, "getdisc", |h: Option<i64>, tails: Option<Value>| -> Result<Variadic<UdValue>, String> {
         let tails = is_truthy(tails.as_ref());
         with_engine(|e| {
-            let h = h32(h);
+            let h = handle32(h);
             let s = &mut e.lua_nodes;
             if !s.valid(h) || s.id(h) != DISC {
                 return Variadic(vec![]);
@@ -1613,29 +1610,29 @@ fn install_lists(lua: &mut Lua, n: &LuaTable) -> Result<(), String> {
         })
     });
     nat!(lua, n, "setdisc", |args: Variadic<Value>| -> Result<(), String> {
-        let h = args.first().map_or(0, |v| vint(v) as u32);
+        let h = args.first().map_or(0, |v| value_int(v) as u32);
         let top = args.len();
         with_engine(|e| {
             let s = &mut e.lua_nodes;
             if !s.valid(h) || s.id(h) != DISC {
                 return;
             }
-            let get = |i: usize| if top > i { vint(&args[i]) as i32 } else { 0 };
+            let get = |i: usize| if top > i { value_int(&args[i]) as i32 } else { 0 };
             let nd = s.node_mut(h);
             nd.f[0] = get(1);
             nd.f[1] = get(2);
             nd.f[2] = get(3);
             if top > 4 {
-                nd.subtype = vint(&args[4]) as u16;
+                nd.subtype = value_int(&args[4]) as u16;
             }
             if top > 5 {
-                nd.f[3] = vint(&args[5]) as i32;
+                nd.f[3] = value_int(&args[5]) as i32;
             }
         })
     });
     nat!(lua, n, "flatten_discretionaries", |h: Option<i64>| -> Result<(Option<i64>, i64), String> {
         with_engine(|e| {
-            let h = h32(h);
+            let h = handle32(h);
             if !e.lua_nodes.valid(h) {
                 return (None, 0);
             }
@@ -1645,7 +1642,7 @@ fn install_lists(lua: &mut Lua, n: &LuaTable) -> Result<(), String> {
     });
     nat!(lua, n, "first_glyph", |h: Option<i64>, t: Option<i64>| -> Result<Option<i64>, String> {
         with_engine(|e| {
-            let (h, t) = (h32(h), h32(t));
+            let (h, t) = (handle32(h), handle32(t));
             if !e.lua_nodes.valid(h) {
                 return None;
             }
@@ -1655,14 +1652,14 @@ fn install_lists(lua: &mut Lua, n: &LuaTable) -> Result<(), String> {
     });
     nat!(lua, n, "has_glyph", |h: Option<i64>| -> Result<Option<i64>, String> {
         with_engine(|e| {
-            let g = e.lua_nodes.has_glyph(h32(h));
+            let g = e.lua_nodes.has_glyph(handle32(h));
             (g != 0).then_some(i64::from(g))
         })
     });
     nat!(lua, n, "is_char", |h: Option<i64>, font: Option<Value>| -> Result<Variadic<UdValue>, String> {
-        let font_arg = font.as_ref().filter(|v| is_num(Some(v))).map(vint);
+        let font_arg = font.as_ref().filter(|v| is_num(Some(v))).map(value_int);
         with_engine(|e| {
-            let h = h32(h);
+            let h = handle32(h);
             if !e.lua_nodes.valid(h) {
                 return Variadic(vec![UdValue::Nil, UdValue::Integer(0)]);
             }
@@ -1687,7 +1684,7 @@ fn install_lists(lua: &mut Lua, n: &LuaTable) -> Result<(), String> {
     });
     nat!(lua, n, "is_glyph", |h: Option<i64>| -> Result<Variadic<UdValue>, String> {
         with_engine(|e| {
-            let h = h32(h);
+            let h = handle32(h);
             if !e.lua_nodes.valid(h) {
                 return Variadic(vec![UdValue::Boolean(false), UdValue::Integer(0)]);
             }
@@ -1701,13 +1698,13 @@ fn install_lists(lua: &mut Lua, n: &LuaTable) -> Result<(), String> {
     });
     nat!(lua, n, "uses_font", |h: Option<i64>, f: Option<i64>| -> Result<bool, String> {
         with_engine(|e| {
-            let h = h32(h);
+            let h = handle32(h);
             e.lua_nodes.valid(h) && e.lua_nodes.uses_font(h, f.unwrap_or(0))
         })
     });
     nat!(lua, n, "protect_glyph", |h: Option<i64>| -> Result<(), String> {
         with_engine(|e| {
-            let h = h32(h);
+            let h = handle32(h);
             if e.lua_nodes.valid(h) {
                 e.lua_nodes.protect(h, true);
             }
@@ -1715,7 +1712,7 @@ fn install_lists(lua: &mut Lua, n: &LuaTable) -> Result<(), String> {
     });
     nat!(lua, n, "unprotect_glyph", |h: Option<i64>| -> Result<(), String> {
         with_engine(|e| {
-            let h = h32(h);
+            let h = handle32(h);
             if e.lua_nodes.valid(h) {
                 e.lua_nodes.protect(h, false);
             }
@@ -1723,7 +1720,7 @@ fn install_lists(lua: &mut Lua, n: &LuaTable) -> Result<(), String> {
     });
     nat!(lua, n, "protect_glyphs", |h: Option<i64>, t: Option<i64>| -> Result<(), String> {
         with_engine(|e| {
-            let (mut head, tail) = (h32(h), h32(t));
+            let (mut head, tail) = (handle32(h), handle32(t));
             while e.lua_nodes.valid(head) {
                 e.lua_nodes.protect(head, true);
                 if head == tail {
@@ -1735,7 +1732,7 @@ fn install_lists(lua: &mut Lua, n: &LuaTable) -> Result<(), String> {
     });
     nat!(lua, n, "unprotect_glyphs", |h: Option<i64>, t: Option<i64>| -> Result<(), String> {
         with_engine(|e| {
-            let (mut head, tail) = (h32(h), h32(t));
+            let (mut head, tail) = (handle32(h), handle32(t));
             while e.lua_nodes.valid(head) {
                 e.lua_nodes.protect(head, false);
                 if head == tail {
@@ -1747,7 +1744,7 @@ fn install_lists(lua: &mut Lua, n: &LuaTable) -> Result<(), String> {
     });
     nat!(lua, n, "protrusion_skippable", |h: Option<i64>| -> Result<Option<bool>, String> {
         with_engine(|e| {
-            let h = h32(h);
+            let h = handle32(h);
             e.lua_nodes.valid(h).then(|| e.lua_nodes.cp_skippable(h))
         })
     });
@@ -1769,13 +1766,13 @@ fn install_lists(lua: &mut Lua, n: &LuaTable) -> Result<(), String> {
     });
     nat!(lua, n, "tostring", |h: Option<i64>| -> Result<Option<String>, String> {
         with_engine(|e| {
-            let h = h32(h);
+            let h = handle32(h);
             (e.lua_nodes.valid(h)).then(|| e.lua_nodes_tostring(h, "direct"))
         })
     });
     nat!(lua, n, "tostring_node", |h: Option<i64>| -> Result<Option<String>, String> {
         with_engine(|e| {
-            let h = h32(h);
+            let h = handle32(h);
             (e.lua_nodes.valid(h)).then(|| e.lua_nodes_tostring(h, "node"))
         })
     });
@@ -1791,7 +1788,7 @@ fn install_lists(lua: &mut Lua, n: &LuaTable) -> Result<(), String> {
             (h != 0).then_some(i64::from(h))
         }))
     });
-    nat!(lua, n, "tonode", |h: Option<i64>| -> Result<UdValue, String> { Ok(node_ud(h32(h))) });
+    nat!(lua, n, "tonode", |h: Option<i64>| -> Result<UdValue, String> { Ok(node_ud(handle32(h))) });
     nat!(lua, n, "fix_node_lists", |v: Option<Value>| -> Result<(), String> {
         let b = v.as_ref().and_then(|v| v.as_boolean()).or_else(|| v.as_ref().and_then(|v| v.as_integer()).map(|i| i != 0));
         with_engine(|e| {
@@ -1832,4 +1829,4 @@ fn install_lists(lua: &mut Lua, n: &LuaTable) -> Result<(), String> {
     Ok(())
 }
 
-pub(crate) use self::{h32 as handle32, vint as value_int};
+

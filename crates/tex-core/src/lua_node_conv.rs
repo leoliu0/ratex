@@ -204,10 +204,10 @@ impl Engine {
         let n = self.lua_new_node(GLUE, subtype);
         let node = self.lua_nodes.node_mut(n);
         node.f[sl::G_WIDTH] = g.width;
+        node.f[sl::G_STRETCH] = g.stretch;
+        node.f[sl::G_SHRINK] = g.shrink;
         node.f[sl::G_SORDER] = crate::lua_node_pack::lua_order_of(g.stretch_order);
         node.f[sl::G_HORDER] = crate::lua_node_pack::lua_order_of(g.shrink_order);
-        node.f[sl::G_SORDER] = i32::from(g.stretch_order);
-        node.f[sl::G_HORDER] = i32::from(g.shrink_order);
         node.f[sl::G_ZERO] = i32::from(g.zero_glue);
         n
     }
@@ -301,11 +301,11 @@ impl Engine {
         let head = self.import_sub(list, ctx);
         let nd = self.lua_nodes.node_mut(n);
         nd.f[sl::B_WIDTH] = *w;
+        nd.f[sl::B_HEIGHT] = *h;
         nd.f[sl::B_DEPTH] = *d;
         nd.f[sl::B_ORDER] = crate::lua_node_pack::lua_order_of(*glue_order);
         nd.f[sl::B_DIR] = 0;
         nd.f[sl::B_SHIFT] = *shift;
-        nd.f[sl::B_ORDER] = i32::from(*glue_order);
         nd.f[sl::B_SIGN] = i32::from(*glue_sign);
         nd.fl = *glue_set;
         nd.f[sl::B_HEAD] = head as i32;
@@ -439,10 +439,10 @@ impl Engine {
                     let s = self.lua_nodes.new_node(GLUE_SPEC, 0, 0);
                     let f = &mut self.lua_nodes.node_mut(s).f;
                     f[0] = split_top_skip.width;
+                    f[1] = split_top_skip.stretch;
+                    f[2] = split_top_skip.shrink;
                     f[3] = crate::lua_node_pack::lua_order_of(split_top_skip.stretch_order);
                     f[4] = crate::lua_node_pack::lua_order_of(split_top_skip.shrink_order);
-                    f[3] = i32::from(split_top_skip.stretch_order);
-                    f[4] = i32::from(split_top_skip.shrink_order);
                     s
                 };
                 let head = match &**box_node {
@@ -529,10 +529,10 @@ impl Engine {
         let zero_glue = f[sl::G_ZERO] != 0 && f[sl::G_WIDTH] == 0 && f[sl::G_STRETCH] == 0 && f[sl::G_SHRINK] == 0;
         Glue {
             width: f[sl::G_WIDTH],
+            stretch: f[sl::G_STRETCH],
+            shrink: f[sl::G_SHRINK],
             stretch_order: crate::lua_node_pack::engine_order(f[sl::G_SORDER]),
             shrink_order: crate::lua_node_pack::engine_order(f[sl::G_HORDER]),
-            stretch_order: f[sl::G_SORDER] as u8,
-            shrink_order: f[sl::G_HORDER] as u8,
             subtype,
             zero_glue,
         }
@@ -647,12 +647,12 @@ impl Engine {
                 out.push(Node::Box {
                     kind,
                     w: f[sl::B_WIDTH],
+                    list,
                     h: f[sl::B_HEIGHT],
                     d: f[sl::B_DEPTH],
                     shift: f[sl::B_SHIFT],
                     glue_order: crate::lua_node_pack::engine_order(f[sl::B_ORDER]),
                     glue_sign: f[sl::B_SIGN] as u8,
-                    glue_order: f[sl::B_ORDER] as u8,
                     glue_set: nd.fl,
                     lr: if nd.subtype == 6 { BOX_LR_DLIST } else { f[sl::B_LR] as u8 },
                 });
@@ -669,10 +669,10 @@ impl Engine {
                     let sf = self.lua_nodes.node(spec).f;
                     Glue {
                         width: sf[0],
+                        stretch: sf[1],
+                        shrink: sf[2],
                         stretch_order: crate::lua_node_pack::engine_order(sf[3]),
                         shrink_order: crate::lua_node_pack::engine_order(sf[4]),
-                        stretch_order: sf[3] as u8,
-                        shrink_order: sf[4] as u8,
                         ..Glue::default()
                     }
                 } else {

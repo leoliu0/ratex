@@ -1,5 +1,6 @@
 use std::ffi::c_void;
 
+mod callback;
 mod chunk;
 mod function;
 mod lua;
@@ -11,6 +12,7 @@ mod test;
 mod value;
 mod variadic;
 
+pub use callback::CallbackLua;
 pub use chunk::Chunk;
 pub use function::LuaFunction;
 pub use lua::Lua;

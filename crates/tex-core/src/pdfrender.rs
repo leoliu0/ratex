@@ -76,13 +76,14 @@ fn push_decimal(buf: &mut String, mut value: i64, decimal_digits: u32) {
     let _ = write!(buf, "{fraction:0width$}");
 }
 
-/// pdfTeX `pdf_print_bp`: print `sp` as bp with 3 decimals (trailing zeros
-/// trimmed) and return the corresponding displacement on the sp raster
-/// (`scaled_out`), exactly as `divide_scaled(s, one_hundred_bp, 5)` does.
+/// pdfTeX `pdf_print_bp`: print `sp` as bp with `digits` decimals (pdfTeX
+/// `fixed_decimal_digits`; trailing zeros trimmed) and return the
+/// corresponding displacement on the sp raster (`scaled_out`), exactly as
+/// `divide_scaled(s, one_hundred_bp, digits + 2)` does.
 #[inline]
-pub(crate) fn push_bp_sp(buf: &mut String, sp: i64) -> i64 {
-    let (value, out) = divide_scaled(sp, ONE_HUNDRED_BP_SP, 5);
-    push_decimal(buf, value, 3);
+pub(crate) fn push_bp_sp(buf: &mut String, sp: i64, digits: u32) -> i64 {
+    let (value, out) = divide_scaled(sp, ONE_HUNDRED_BP_SP, digits + 2);
+    push_decimal(buf, value, digits);
     out
 }
 
@@ -109,17 +110,18 @@ fn round_xn_over_d(x: i64, n: i64, d: i64) -> i64 {
 }
 
 /// pdfTeX `pdf_print_bp` for a bp coordinate: quantize to sp, then print
-/// with `divide_scaled(s, one_hundred_bp, digits+2)` / `pdf_print_real(..., 3)`
-/// semantics (3 decimals, trailing zeros trimmed).
+/// with `divide_scaled(s, one_hundred_bp, digits+2)` / `pdf_print_real(.., digits)`.
 #[inline]
-fn push_print_bp(buf: &mut String, bp: f64) {
+fn push_print_bp(buf: &mut String, bp: f64, digits: u32) {
     let sp_per_bp = 72.27 * 65536.0 / 72.0;
-    push_bp_sp(buf, (bp * sp_per_bp).round() as i64);
+    push_bp_sp(buf, (bp * sp_per_bp).round() as i64, digits);
 }
 
-/// pdfTeX's minimum move threshold: `divide_scaled(one_hundred_bp,
-/// 10^(fixed_decimal_digits+2), 0)` with the default 3 decimals = 66 sp.
-const MIN_BP_VAL: i64 = 66;
+/// pdfTeX's minimum move threshold `min_bp_val`: `divide_scaled(one_hundred_bp,
+/// 10^(fixed_decimal_digits+2), 0)` (66 sp with the default 3 decimals).
+fn min_bp_val(digits: u32) -> i64 {
+    divide_scaled(ONE_HUNDRED_BP_SP, 10_i64.pow(digits + 2), 0).0
+}
 /// pdfTeX's TJ-continuation threshold `@'100000` (1/1000 em units).
 const GAP_SPLIT_LIMIT: i64 = 32768;
 /// pdfTeX `matrix_entry` (utils.c §1278): an accumulated page CTM.
@@ -234,6 +236,9 @@ pub struct RenderCtx<'a> {
     pub cur_font: usize,
     pub cur_pdf_font: u16,
     links: Vec<LinkFrame>,
+    /// pdfTeX `fixed_decimal_digits` and the derived `min_bp_val`.
+    decimal_digits: u32,
+    min_bp_val: i64,
     pub annots: Vec<Annot>,
     pub dests: Vec<crate::pdfout::Dest>,
     pub page_fonts: Vec<(usize, u16)>, // (engine font/binding key, resource number)
@@ -342,16 +347,14 @@ mod text_encoding_tests {
         assert_eq!(operands[4].as_str().unwrap(), b"B");
     }
 }
-/// pdfTeX `pdf_print_bp` for a bp value: quantize to sp, then print with
-/// `divide_scaled(s, one_hundred_bp, digits+2)` / `pdf_print_real(..., 3)`
-/// semantics (3 decimals, trailing zeros trimmed).
-fn push_pdfnum(buf: &mut String, v: f64) {
-    push_print_bp(buf, v);
+/// pdfTeX `pdf_print_bp` for a bp value with `digits` decimals.
+fn push_pdfnum(buf: &mut String, v: f64, digits: u32) {
+    push_print_bp(buf, v, digits);
 }
 
-fn pdfnum(v: f64) -> String {
+fn pdfnum(v: f64, digits: u32) -> String {
     let mut s = String::with_capacity(16);
-    push_pdfnum(&mut s, v);
+    push_pdfnum(&mut s, v, digits);
     s
 }
 
@@ -360,6 +363,7 @@ impl Engine {
     /// bottom-left (pdfTeX `pdf_origin_h := 0; pdf_origin_v :=
     /// cur_page_height`, set in `pdf_ship_out`).
     fn new_ctx(&mut self, page_height_sp: i64) -> RenderCtx<'_> {
+        let decimal_digits = self.pdf_doc.decimal_digits;
         RenderCtx {
             eng: self,
             content: String::new(),
@@ -368,6 +372,8 @@ impl Engine {
             cur_font: 0,
             cur_pdf_font: 0,
             links: Vec::new(),
+            decimal_digits,
+            min_bp_val: min_bp_val(decimal_digits),
             annots: Vec::new(),
             dests: Vec::new(),
             page_fonts: Vec::new(),
@@ -410,7 +416,7 @@ impl Engine {
         let height_sp = self.eqtb.dim_params[DimParam::PdfPageHeight.idx() as usize];
         let w_bp = sp_to_bp(width_sp as i64);
         let h_bp = sp_to_bp(height_sp as i64);
-        if self.synctex_enabled {
+        if self.synctex_active() {
             let page = (self.pdf_doc.pages.len() + 1) as u32;
             self.synctex
                 .record_page_size(page, width_sp as i64, height_sp as i64);
@@ -1093,9 +1099,9 @@ impl<'a> RenderCtx<'a> {
         push_decimal(&mut self.content, m, d);
     }
 
-    /// pdfTeX `pdf_print_bp(s)`: print a sp displacement as bp (3 decimals).
+    /// pdfTeX `pdf_print_bp(s)`: print a sp displacement as bp.
     fn push_bp(&mut self, sp: i64) {
-        let out = push_bp_sp(&mut self.content, sp);
+        let out = push_bp_sp(&mut self.content, sp, self.decimal_digits);
         self.scaled_out = out;
     }
 
@@ -1103,8 +1109,8 @@ impl<'a> RenderCtx<'a> {
     /// TeX-space point (h, v_down), emitting `cm` when the move is visible.
     /// `scaled_out`-snapped so the recorded origin matches the printed raster.
     fn set_origin(&mut self, h_sp: i64, v_down_sp: i64) {
-        if (h_sp - self.origin_h).abs() >= MIN_BP_VAL
-            || (v_down_sp - self.origin_v).abs() >= MIN_BP_VAL
+        if (h_sp - self.origin_h).abs() >= self.min_bp_val
+            || (v_down_sp - self.origin_v).abs() >= self.min_bp_val
         {
             self.content.push_str("1 0 0 1 ");
             self.push_bp(h_sp - self.origin_h);
@@ -1122,8 +1128,8 @@ impl<'a> RenderCtx<'a> {
     /// pdfTeX `pdf_set_origin_temp`: emit the re-centering `cm` without
     /// updating the tracked origin (used inside a `q..Q` scope).
     fn set_origin_temp(&mut self, h_sp: i64, v_down_sp: i64) {
-        if (h_sp - self.origin_h).abs() >= MIN_BP_VAL
-            || (v_down_sp - self.origin_v).abs() >= MIN_BP_VAL
+        if (h_sp - self.origin_h).abs() >= self.min_bp_val
+            || (v_down_sp - self.origin_v).abs() >= self.min_bp_val
         {
             self.content.push_str("1 0 0 1 ");
             self.push_bp(h_sp - self.origin_h);
@@ -1238,7 +1244,7 @@ impl<'a> RenderCtx<'a> {
             self.push_bp(cur_h - self.tj_start_h);
             self.pdf_h = self.tj_start_h + self.scaled_out;
             self.content.push(' ');
-            self.push_real(v, 3);
+            self.push_real(v, self.decimal_digits);
             self.pdf_v -= v_out;
             self.content.push_str(" Td");
         }
@@ -1301,8 +1307,8 @@ impl<'a> RenderCtx<'a> {
             };
             (s, s_out)
         };
-        let (v, v_out) = if (cur_v - self.pdf_v).abs() >= MIN_BP_VAL {
-            divide_scaled(self.pdf_v - cur_v, ONE_HUNDRED_BP_SP, 5)
+        let (v, v_out) = if (cur_v - self.pdf_v).abs() >= self.min_bp_val {
+            divide_scaled(self.pdf_v - cur_v, ONE_HUNDRED_BP_SP, self.decimal_digits + 2)
         } else {
             (0, 0)
         };
@@ -1710,8 +1716,8 @@ impl<'a> RenderCtx<'a> {
             };
             (s, s_out)
         };
-        let (v, v_out) = if (cur_v - self.pdf_v).abs() >= MIN_BP_VAL {
-            divide_scaled(self.pdf_v - cur_v, ONE_HUNDRED_BP_SP, 5)
+        let (v, v_out) = if (cur_v - self.pdf_v).abs() >= self.min_bp_val {
+            divide_scaled(self.pdf_v - cur_v, ONE_HUNDRED_BP_SP, self.decimal_digits + 2)
         } else {
             (0, 0)
         };
@@ -2003,8 +2009,8 @@ impl<'a> RenderCtx<'a> {
                 let w_sp = *w as i64;
                 let hd_sp = (*h + *d) as i64;
                 self.content.push_str("q\n");
-                let sx = pdfnum(sp_to_bp(w_sp));
-                let sy = pdfnum(sp_to_bp(hd_sp));
+                let sx = pdfnum(sp_to_bp(w_sp), self.decimal_digits);
+                let sy = pdfnum(sp_to_bp(hd_sp), self.decimal_digits);
                 self.content.push_str(&format!("{sx} 0 0 {sy} "));
                 self.push_bp(cur_h - self.origin_h);
                 self.content.push(' ');
@@ -2122,7 +2128,7 @@ impl<'a> RenderCtx<'a> {
                 self.content.push_str("Q\n");
             }
             SyncPoint { file_id, line } => {
-                if self.page_mode && self.eng.synctex_enabled {
+                if self.page_mode && self.eng.synctex_active() {
                     let page = (self.eng.pdf_doc.pages.len() + 1) as u32;
                     self.eng.synctex.record_point(page, *file_id, *line, cur_h, cur_v);
                 }

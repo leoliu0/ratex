@@ -1680,14 +1680,22 @@ enum SynctexMode {
 }
 
 impl SynctexMode {
-    fn parse(value: &str) -> Self {
+    /// The initial `\synctex` value selected by a `-synctex=` argument.
+    fn parse_option(value: &str) -> i32 {
         match value.trim() {
-            "off" | "false" => Self::Off,
-            value => match value.parse::<i64>() {
-                Ok(0) => Self::Off,
-                Ok(number) if number < 0 => Self::Uncompressed,
-                _ => Self::Compressed,
-            },
+            "off" | "false" => 0,
+            value => value
+                .parse::<i64>()
+                .map(|number| number.clamp(i32::MIN.into(), i32::MAX.into()) as i32)
+                .unwrap_or(1),
+        }
+    }
+
+    fn from_option(value: i32) -> Self {
+        match value {
+            0 => Self::Off,
+            value if value < 0 => Self::Uncompressed,
+            _ => Self::Compressed,
         }
     }
 
@@ -1755,6 +1763,52 @@ fn write_early_transcript(engine: &Engine, out_dir: &str, job: &str) -> Result<S
     std::fs::write(&path, &engine.log)
         .map(|()| path.clone())
         .map_err(|error| format!("cannot write transcript {path}: {error}"))
+}
+
+/// Write the SyncTeX file when a page was shipped while `\synctex` was
+/// nonzero, as pdfTeX does (never with `-synctex=0`).
+fn publish_synctex(
+    eng: &mut Engine,
+    log_path: &str,
+    synctex_mode: SynctexMode,
+    synctex_out: Option<&std::path::Path>,
+) {
+    let Some(synctex_out) = synctex_out.filter(|_| eng.synctex.is_open()) else {
+        return;
+    };
+    let bytes = match synctex_mode {
+        SynctexMode::Uncompressed => Ok(eng.synctex.serialize_text().into_bytes()),
+        _ => eng.synctex.to_synctex_gz(),
+    };
+    let bytes = match bytes {
+        Ok(bytes) => bytes,
+        Err(error) => fail_after_transcript(
+            eng,
+            log_path,
+            &format!(
+                "Cannot compress SyncTeX data for `{}`: {error}",
+                synctex_out.display()
+            ),
+            "check that sufficient memory is available",
+        ),
+    };
+    if let Err(error) = atomic_write_file(synctex_out, &bytes) {
+        fail_after_transcript(
+            eng,
+            log_path,
+            &format!(
+                "Cannot write SyncTeX file `{}`: {error}",
+                synctex_out.display()
+            ),
+            "check that the output directory exists, has free space, and is writable",
+        );
+    }
+    if synctex_mode == SynctexMode::Compressed {
+        // As pdfTeX does: SyncTeX readers open `<job>.synctex` before
+        // `<job>.synctex.gz`, so an uncompressed file left by an earlier
+        // build would shadow this one.
+        let _ = std::fs::remove_file(synctex_out.with_extension(""));
+    }
 }
 
 fn fail_after_transcript(engine: &mut Engine, log_path: &str, message: &str, help: &str) -> ! {
@@ -1845,8 +1899,10 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
     let mut halt_on_error = false;
     let mut interaction_mode = InteractionMode::ErrorStop;
     let mut max_errors = DEFAULT_MAX_ERRORS;
-    // Ratex writes SyncTeX by default; `-synctex=0` disables it.
-    let mut synctex_mode = SynctexMode::Compressed;
+    // Ratex writes SyncTeX by default (as if `-synctex=1`); `-synctex=0`
+    // disables it for the whole run, like pdfTeX.
+    let mut synctex_option = 1;
+    let mut draftmode = false;
     let mut i = 1;
     while i < args.len() {
         // Like web2c's getopt_long_only, every long option may be spelled
@@ -1960,9 +2016,11 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
             let Some(value) = args.get(i) else {
                 usage_error(&program, "-synctex requires a value (1, -1, or 0)");
             };
-            synctex_mode = SynctexMode::parse(value);
+            synctex_option = SynctexMode::parse_option(value);
         } else if let Some(value) = opt.strip_prefix("-synctex=") {
-            synctex_mode = SynctexMode::parse(value);
+            synctex_option = SynctexMode::parse_option(value);
+        } else if opt == "-draftmode" {
+            draftmode = true;
         } else if matches!(
             opt,
             "-file-line-error" | "-file-line-error-style" | "-no-shell-escape" | "-disable-write18"
@@ -2024,6 +2082,7 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
     let Some(file) = file else {
         usage_error(&program, "no input file");
     };
+    let synctex_mode = SynctexMode::from_option(synctex_option);
 
     if !out_dir.is_empty() {
         if let Err(error) = std::fs::create_dir_all(&out_dir) {
@@ -2122,7 +2181,6 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
         eng.init_luatex_primitives();
     }
     eng.allow_missing_main_aux = !plain && !ini;
-    eng.synctex_enabled = synctex_mode != SynctexMode::Off;
     configure_engine(&mut eng, halt_on_error, interaction_mode, max_errors);
     phase_timer.mark("startup");
     eng.out_dir = out_dir.clone();
@@ -2304,6 +2362,11 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
         eng.eqtb.int_params[IntParam::WidowPenalty.idx() as usize] = 150;
         eng.add_nullfont();
     }
+    // pdfTeX applies -synctex and -draftmode after the format is loaded.
+    eng.eqtb.int_params[IntParam::Synctex.idx() as usize] = synctex_option;
+    if draftmode {
+        eng.eqtb.int_params[IntParam::PdfDraftMode.idx() as usize] = 1;
+    }
     let engine_banner = match program.as_str() {
         "xelatex" => format!(
             "This is pdfTeX-2h 1.40.29-rs (Ratex {})\nRatex note: xelatex / -xelatex is a compatibility invocation flag, not the XeTeX runtime.\n",
@@ -2411,6 +2474,11 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
             std::process::exit(1);
         }
     }
+    if eng.pdf_draft_mode() && !eng.pdf_doc.pages.is_empty() {
+        // pdfTeX draft mode still writes SyncTeX, but no PDF.
+        publish_synctex(&mut eng, &log_path, synctex_mode, expected_synctex.as_deref());
+        std::process::exit(if eng.error_count > 0 { 1 } else { 0 });
+    }
     if !eng.pdf_doc.pages.is_empty() {
         let pages = eng.pdf_doc.pages.len();
         let pdf = match tex_core::driver::finish_pdf(&mut eng, optimize_pdf_size) {
@@ -2431,41 +2499,7 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
         }
         // Publish SyncTeX before the PDF: viewers reload on a PDF change and
         // read the SyncTeX file at that moment, so it must already match.
-        if let Some(synctex_out) = expected_synctex.as_deref() {
-            let bytes = match synctex_mode {
-                SynctexMode::Uncompressed => Ok(eng.synctex.serialize_text().into_bytes()),
-                _ => eng.synctex.to_synctex_gz(),
-            };
-            let bytes = match bytes {
-                Ok(bytes) => bytes,
-                Err(error) => fail_after_transcript(
-                    &mut eng,
-                    &log_path,
-                    &format!(
-                        "Cannot compress SyncTeX data for `{}`: {error}",
-                        synctex_out.display()
-                    ),
-                    "check that sufficient memory is available",
-                ),
-            };
-            if let Err(error) = atomic_write_file(synctex_out, &bytes) {
-                fail_after_transcript(
-                    &mut eng,
-                    &log_path,
-                    &format!(
-                        "Cannot write SyncTeX file `{}`: {error}",
-                        synctex_out.display()
-                    ),
-                    "check that the output directory exists, has free space, and is writable",
-                );
-            }
-            if synctex_mode == SynctexMode::Compressed {
-                // As pdfTeX does: SyncTeX readers open `<job>.synctex` before
-                // `<job>.synctex.gz`, so an uncompressed file left by an
-                // earlier build would shadow this one.
-                let _ = std::fs::remove_file(synctex_out.with_extension(""));
-            }
-        }
+        publish_synctex(&mut eng, &log_path, synctex_mode, expected_synctex.as_deref());
         if let Err(error) = atomic_write_file(std::path::Path::new(&out), &pdf) {
             fail_after_transcript(
                 &mut eng,

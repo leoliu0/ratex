@@ -132,7 +132,12 @@ pub struct PdfDoc {
     pub font_chars: std::collections::BTreeMap<usize, [u64; 4]>,
     pub encrypt: Option<PdfEncryptConfig>,
     pub pdfa: bool,
+    /// PDF header version frozen at the first shipout (`\pdfmajorversion`,
+    /// `\pdfminorversion`).
+    pub major_version: i32,
     pub minor_version: Option<i32>,
+    /// pdfTeX `fixed_decimal_digits`: fractional digits of PDF coordinates.
+    pub decimal_digits: u32,
     pub native_bindings: std::collections::BTreeMap<usize, Vec<NativeBindingInfo>>,
     pub legacy_bindings: std::collections::BTreeMap<usize, Vec<LegacyBindingInfo>>,
 }
@@ -285,7 +290,9 @@ impl PdfDoc {
             font_chars: std::collections::BTreeMap::new(),
             encrypt: None,
             pdfa: false,
+            major_version: 1,
             minor_version: None,
+            decimal_digits: 3,
             native_bindings: std::collections::BTreeMap::new(),
             legacy_bindings: std::collections::BTreeMap::new(),
         }

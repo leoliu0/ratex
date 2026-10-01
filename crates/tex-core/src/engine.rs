@@ -121,12 +121,34 @@ pub struct Ids {
     pub cs_escape: u8,
 }
 
+/// TeX's `ignore_depth` (-1000pt): the INITEX value of `\pdfignoreddimen`.
+pub const IGNORE_DEPTH: i32 = -65_536_000;
+
+/// Name of the internal frozen `\pdfprimitive` marker. The trailing space
+/// keeps it out of reach of names scanned from input.
+pub(crate) const PDF_PRIMITIVE_EXEC_NAME: &[u8] = b"pdfprimitive ";
+
+/// pdfTeX output parameters that the first shipout freezes
+/// (`check_pdfversion`, `fix_pdf_draftmode`, `fixed_decimal_digits`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PdfFixedParams {
+    pub major_version: i32,
+    pub minor_version: i32,
+    /// `\pdfdraftmode` clamped to 0..1 (pdfTeX `fixed_pdf_draftmode`).
+    pub draftmode: i32,
+    /// `\pdfdecimaldigits` clamped to 0..4.
+    pub decimal_digits: u32,
+}
+
 pub struct Engine {
     pub cs: CsTable,
     pub eqtb: Eqtb,
     /// Original control-sequence name of each primitive. Unlike an eqtb
     /// reverse lookup, this survives formats redefining (for example) \input.
     pub(crate) primitive_names: crate::FxHashMap<u16, &'static [u8]>,
+    /// pdfTeX `prim_lookup`: the primitive meaning of every primitive name
+    /// as defined by INITEX, for `\pdfprimitive` and `\ifpdfprimitive`.
+    pub(crate) primitive_meanings: crate::FxHashMap<Box<[u8]>, Prim>,
     pub input: InputStack,
     pub ids: Ids,
 
@@ -238,7 +260,9 @@ pub struct Engine {
     // output
     pub pdf_doc: crate::pdfout::PdfDoc,
     pub synctex: crate::synctex::SyncTexData,
-    pub synctex_enabled: bool,
+    /// pdfTeX output parameters frozen by the first shipout (pdfTeX
+    /// `check_pdfversion`/`fix_pdf_draftmode`).
+    pub pdf_fixed: Option<PdfFixedParams>,
     pub out_file: Option<tex_kpse::fs::File>,
     pub font_loader: crate::fontload::FontLoader,
     pub native_text: crate::native_layout::NativeTextState,
@@ -556,6 +580,9 @@ pub struct Engine {
     /// \pdflastobj / \pdflastxform / \pdflastximage / \pdflastlink /
     /// \pdflastannot: object numbers of the last allocated PDF objects.
     pub pdf_last_obj: i32,
+    /// pdfTeX `\pdfretval`: multi-purpose return value (-1 after an invalid
+    /// `\pdfobj useobjnum`).
+    pub pdf_retval: i32,
     pub pdf_last_xform: i32,
     pub pdf_last_ximage: i32,
     pub pdf_last_ximage_pages: i32,
@@ -837,6 +864,7 @@ impl Engine {
             cs,
             eqtb: Eqtb::new(ini_mode),
             primitive_names: crate::FxHashMap::default(),
+            primitive_meanings: crate::FxHashMap::default(),
             input: InputStack::new(),
             par_saves: 0,
             resume_after_display: false,
@@ -898,7 +926,7 @@ impl Engine {
             penalty_shape_levels: [crate::eqtb::LEVEL_ONE; 4],
             pdf_doc: crate::pdfout::PdfDoc::new(),
             synctex: crate::synctex::SyncTexData::new(),
-            synctex_enabled: true,
+            pdf_fixed: None,
             out_file: None,
             font_loader: crate::fontload::FontLoader::new(),
             native_text: crate::native_layout::NativeTextState::default(),
@@ -948,6 +976,7 @@ impl Engine {
             pdf_page_resources: Vec::new(),
             pdf_page_resources_toks: Vec::new(),
             pdf_last_obj: 0,
+            pdf_retval: 0,
             pdf_last_xform: 0,
             pdf_last_ximage: 0,
             pdf_last_ximage_pages: 0,
@@ -1759,7 +1788,69 @@ impl Engine {
         eng.eqtb.dim_params[DimParam::PdfPageHeight.idx() as usize] = 0;
         eng.init_xetex_primitives();
         eng.init_luatex_primitives();
+        // pdfTeX / e-TeX engine primitives (prim codes 400-413).
+        d!(eng, b"quitvmode", QuitVMode);
+        d!(eng, b"pdfprimitive", PdfPrimitive);
+        def(PDF_PRIMITIVE_EXEC_NAME, PdfPrimitiveExec, eng);
+        d!(eng, b"ifpdfprimitive", IfPdfPrimitive);
+        d!(eng, b"ifpdfabsnum", IfPdfAbsNum);
+        d!(eng, b"ifpdfabsdim", IfPdfAbsDim);
+        d!(eng, b"setlanguage", SetLanguage);
+        d!(eng, b"parshapelength", ParShapeLength);
+        d!(eng, b"parshapeindent", ParShapeIndent);
+        d!(eng, b"parshapedimen", ParShapeDimen);
+        d!(eng, b"gluetomu", GlueToMu);
+        d!(eng, b"mutoglue", MuToGlue);
+        d!(eng, b"pdfretval", PdfRetval);
+        d!(eng, b"pdfinsertht", PdfInsertHt);
+        let engine_ints: [(&'static [u8], IntParam, i32); 11] = [
+            (b"synctex", IntParam::Synctex, 0),
+            (b"pdfdecimaldigits", IntParam::PdfDecimalDigits, 3),
+            (b"pdfdraftmode", IntParam::PdfDraftMode, 0),
+            (b"pdfpkresolution", IntParam::PdfPkResolution, 0),
+            (b"pdftracingfonts", IntParam::PdfTracingFonts, 0),
+            (b"pdfmajorversion", IntParam::PdfMajorVersion, 1),
+            (b"lastlinefit", IntParam::LastLineFit, 0),
+            (b"tracingassigns", IntParam::TracingAssigns, 0),
+            (b"tracinggroups", IntParam::TracingGroups, 0),
+            (b"tracingifs", IntParam::TracingIfs, 0),
+            (b"tracingscantokens", IntParam::TracingScanTokens, 0),
+        ];
+        for (name, p, value) in engine_ints {
+            def(name, IntP(p), eng);
+            eng.eqtb.int_params[p.idx() as usize] = value;
+        }
+        // pdftex.web: pdf_ignored_dimen := ignore_depth and the four line
+        // dimensions start "ignored".
+        let engine_dimens: [(&'static [u8], DimParam); 5] = [
+            (b"pdffirstlineheight", DimParam::PdfFirstLineHeight),
+            (b"pdflastlinedepth", DimParam::PdfLastLineDepth),
+            (b"pdfeachlineheight", DimParam::PdfEachLineHeight),
+            (b"pdfeachlinedepth", DimParam::PdfEachLineDepth),
+            (b"pdfignoreddimen", DimParam::PdfIgnoredDimen),
+        ];
+        for (name, p) in engine_dimens {
+            def(name, DimP(p), eng);
+            eng.eqtb.dim_params[p.idx() as usize] = IGNORE_DEPTH;
+        }
+        eng.primitive_meanings = eng
+            .cs
+            .all_ids()
+            .filter_map(|id| match eng.eqtb.get(id) {
+                Some(Equiv::Prim(p)) if *p != PdfPrimitiveExec => {
+                    Some((std::boxed::Box::from(eng.cs.name(id)), *p))
+                }
+                _ => None,
+            })
+            .collect();
     }
+    /// SyncTeX records are taken while `\synctex` is nonzero (synctex.c
+    /// `SYNCTEX_VALUE`).
+    #[inline]
+    pub fn synctex_active(&self) -> bool {
+        self.eqtb.int_params[IntParam::Synctex.idx() as usize] != 0
+    }
+
     pub fn pop_group(&mut self) -> crate::eqtb::LevelType {
         let closing_level = self.eqtb.cur_level;
         let mut ag = Vec::new();

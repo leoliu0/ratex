@@ -495,7 +495,8 @@ impl Session {
         engine.main_dir = Some(cwd.to_owned());
         engine.aux_dir = Some(aux_dir.to_owned());
         engine.out_dir = format!("{}/", output_dir.display());
-        engine.synctex_enabled = request.synctex;
+        engine.eqtb.int_params[tex_core::prim::IntParam::Synctex.idx() as usize] =
+            i32::from(request.synctex);
         if engine.input_file(path.to_str().unwrap()) {
             driver::insert_everyjob(&mut engine);
             engine.run();

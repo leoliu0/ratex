@@ -121,9 +121,35 @@ pub enum IntParam {
     PdfPrependKern,
     /// pdfTeX switch for appending kerns (microtype kerning feature).
     PdfAppendKern,
+    /// pdfTeX/SyncTeX `\synctex`: SyncTeX recording is active while nonzero;
+    /// `-synctex=N` sets the initial value.
+    Synctex,
+    /// pdfTeX `\pdfdecimaldigits`: fractional digits of PDF coordinates,
+    /// frozen (clamped to 0..4) at the first shipout.
+    PdfDecimalDigits,
+    /// pdfTeX `\pdfdraftmode`: when positive at the first shipout, no PDF is
+    /// written (`-draftmode` sets it).
+    PdfDraftMode,
+    /// pdfTeX `\pdfpkresolution` (PK bitmap font resolution).
+    PdfPkResolution,
+    /// pdfTeX `\pdftracingfonts`: font identifiers in box displays also show
+    /// the TFM name and size.
+    PdfTracingFonts,
+    /// pdfTeX `\pdfmajorversion`: integer part of the PDF header version.
+    PdfMajorVersion,
+    /// e-TeX `\lastlinefit` (last_line_fit in line_break).
+    LastLineFit,
+    /// e-TeX `\tracingassigns`.
+    TracingAssigns,
+    /// e-TeX `\tracinggroups`.
+    TracingGroups,
+    /// e-TeX `\tracingifs`.
+    TracingIfs,
+    /// e-TeX `\tracingscantokens`.
+    TracingScanTokens,
 }
 
-pub const NUM_INT_PARAMS: usize = 99;
+pub const NUM_INT_PARAMS: usize = 110;
 
 impl IntParam {
     #[inline]
@@ -231,6 +257,17 @@ impl IntParam {
         IntParam::PdfAdjustInterwordGlue,
         IntParam::PdfPrependKern,
         IntParam::PdfAppendKern,
+        IntParam::Synctex,
+        IntParam::PdfDecimalDigits,
+        IntParam::PdfDraftMode,
+        IntParam::PdfPkResolution,
+        IntParam::PdfTracingFonts,
+        IntParam::PdfMajorVersion,
+        IntParam::LastLineFit,
+        IntParam::TracingAssigns,
+        IntParam::TracingGroups,
+        IntParam::TracingIfs,
+        IntParam::TracingScanTokens,
     ];
 
     pub fn from_idx(i: u16) -> Option<Self> {
@@ -284,9 +321,21 @@ pub enum DimParam {
     PreDisplaySize,
     /// pdfTeX `\pdfpxdimen`: the size of the `px` unit
     PdfPxDimen,
+    /// pdfTeX `\pdffirstlineheight`: height of a paragraph's first line box
+    /// unless it equals `\pdfignoreddimen`.
+    PdfFirstLineHeight,
+    /// pdfTeX `\pdflastlinedepth`: depth of a paragraph's last line box.
+    PdfLastLineDepth,
+    /// pdfTeX `\pdfeachlineheight`: height of every paragraph line box.
+    PdfEachLineHeight,
+    /// pdfTeX `\pdfeachlinedepth`: depth of every paragraph line box.
+    PdfEachLineDepth,
+    /// pdfTeX `\pdfignoreddimen`: the `\prevdepth` value meaning "ignore"
+    /// and the "unset" marker of the four line dimensions above.
+    PdfIgnoredDimen,
 }
 
-pub const NUM_DIM_PARAMS: usize = 39;
+pub const NUM_DIM_PARAMS: usize = 44;
 
 impl DimParam {
     #[inline]
@@ -334,6 +383,11 @@ impl DimParam {
         DimParam::PrevDepth,
         DimParam::PreDisplaySize,
         DimParam::PdfPxDimen,
+        DimParam::PdfFirstLineHeight,
+        DimParam::PdfLastLineDepth,
+        DimParam::PdfEachLineHeight,
+        DimParam::PdfEachLineDepth,
+        DimParam::PdfIgnoredDimen,
     ];
 
     pub fn from_idx(i: u16) -> Option<Self> {
@@ -835,6 +889,28 @@ pub enum Prim {
     Ustartmath,
     Ustopmath,
     PdfNoBuiltinToUnicode,
+    // ---- appended: pdfTeX/e-TeX engine primitives (stable codes 400-413)
+    /// pdfTeX `\quitvmode`: start a paragraph (like `\indent`) only in
+    /// vertical mode; no-op elsewhere.
+    QuitVMode,
+    /// pdfTeX `\pdfprimitive`: use the primitive meaning of the next name.
+    PdfPrimitive,
+    IfPdfPrimitive,
+    IfPdfAbsNum,
+    IfPdfAbsDim,
+    /// TeX82 `\setlanguage`: language whatsit without changing `\language`.
+    SetLanguage,
+    ParShapeLength,
+    ParShapeIndent,
+    ParShapeDimen,
+    GlueToMu,
+    MuToGlue,
+    PdfRetval,
+    PdfInsertHt,
+    /// Internal frozen form of `\pdfprimitive` that `\pdfprimitive` puts in
+    /// front of a name whose primitive meaning is unexpandable (pdfTeX
+    /// `frozen_primitive`).
+    PdfPrimitiveExec,
 }
 
 /// Stable wire codes for the format dump (`crate::format`). Unit variants
@@ -1243,6 +1319,20 @@ impl Prim {
             Prim::Ustartmath => 382,
             Prim::Ustopmath => 383,
             Prim::PdfNoBuiltinToUnicode => 384,
+            Prim::QuitVMode => 400,
+            Prim::PdfPrimitive => 401,
+            Prim::IfPdfPrimitive => 402,
+            Prim::IfPdfAbsNum => 403,
+            Prim::IfPdfAbsDim => 404,
+            Prim::SetLanguage => 405,
+            Prim::ParShapeLength => 406,
+            Prim::ParShapeIndent => 407,
+            Prim::ParShapeDimen => 408,
+            Prim::GlueToMu => 409,
+            Prim::MuToGlue => 410,
+            Prim::PdfRetval => 411,
+            Prim::PdfInsertHt => 412,
+            Prim::PdfPrimitiveExec => 413,
             Prim::ScriptScriptStyle => 284,
             Prim::Patterns => 287,
             Prim::Hyphenation => 288,
@@ -1640,6 +1730,20 @@ impl Prim {
             382 => Some(Prim::Ustartmath),
             383 => Some(Prim::Ustopmath),
             384 => Some(Prim::PdfNoBuiltinToUnicode),
+            400 => Some(Prim::QuitVMode),
+            401 => Some(Prim::PdfPrimitive),
+            402 => Some(Prim::IfPdfPrimitive),
+            403 => Some(Prim::IfPdfAbsNum),
+            404 => Some(Prim::IfPdfAbsDim),
+            405 => Some(Prim::SetLanguage),
+            406 => Some(Prim::ParShapeLength),
+            407 => Some(Prim::ParShapeIndent),
+            408 => Some(Prim::ParShapeDimen),
+            409 => Some(Prim::GlueToMu),
+            410 => Some(Prim::MuToGlue),
+            411 => Some(Prim::PdfRetval),
+            412 => Some(Prim::PdfInsertHt),
+            413 => Some(Prim::PdfPrimitiveExec),
             0x1000..=0x1fff => {
                 let i = c & 0x0fff;
                 Some(Prim::IntP(IntParam::from_idx(i)?))

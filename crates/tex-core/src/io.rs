@@ -173,16 +173,18 @@ fn read_line_bounded(
 /// cache avoids fixed names and repeated writes in the process temp folder.
 fn compatibility_input(name: &str) -> Option<&'static [u8]> {
     Some(match name {
-        // pdftexconfig.tex without the \pdfdecimaldigits/\pdfpkresolution
-        // settings this engine does not implement (those stay undefined)
+        // pdftexconfig.tex (TeX Live keeps \pdfcompresslevel=9; this engine
+        // trades a little size for speed)
         "pdflatex.ini" => br"\pdfoutput=1
 \pdfpageheight=297 true mm
 \pdfpagewidth=210 true mm
 \pdfminorversion=7
 \pdfobjcompresslevel=2
+\pdfcompresslevel=3
+\pdfdecimaldigits=3
+\pdfpkresolution=600
 \pdfhorigin=1 true in
 \pdfvorigin=1 true in
-\pdfcompresslevel=3
 \input latex.ltx
 \endinput
 ",

@@ -2291,9 +2291,9 @@ pub fn write_pdf(doc: &PdfDoc) -> Result<Vec<u8>, String> {
         let mut media_box = String::new();
         if !page_attr.contains("/MediaBox") {
             media_box.push_str(" /MediaBox [0 0 ");
-            crate::pdfrender::push_bp_sp(&mut media_box, page.width_sp);
+            crate::pdfrender::push_bp_sp(&mut media_box, page.width_sp, doc.decimal_digits);
             media_box.push(' ');
-            crate::pdfrender::push_bp_sp(&mut media_box, page.height_sp);
+            crate::pdfrender::push_bp_sp(&mut media_box, page.height_sp, doc.decimal_digits);
             media_box.push(']');
         }
         b.set(
@@ -2538,7 +2538,7 @@ pub fn write_pdf(doc: &PdfDoc) -> Result<Vec<u8>, String> {
             info_obj,
             encrypt_obj,
             file_id,
-            doc.minor_version,
+            (doc.major_version, doc.minor_version.unwrap_or(5)),
         )
     } else {
         crate::pdfcompact::serialize(
@@ -2548,7 +2548,7 @@ pub fn write_pdf(doc: &PdfDoc) -> Result<Vec<u8>, String> {
             info_obj,
             encrypt_obj,
             file_id,
-            doc.minor_version,
+            (doc.major_version, doc.minor_version.unwrap_or(5)),
         )
     })
 }

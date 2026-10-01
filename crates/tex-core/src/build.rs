@@ -638,7 +638,7 @@ impl Engine {
             Some(Node::Char { font: pf, .. } | Node::Ligature { font: pf, .. }) if *pf == f
         );
         if !tail_charish {
-            if self.synctex_enabled {
+            if self.synctex_active() {
                 if let Some((path, line)) = self.input.current_file_position() {
                     if !path.is_empty() && line > 0 {
                         let file_id = self.synctex.get_or_register_file(path);

@@ -1438,6 +1438,9 @@ impl Engine {
         }
         self.warn_unresolved_outline_targets();
         self.warn_unresolved_dest_names();
+        if self.pdf_draft_mode() && !self.pdf_doc.pages.is_empty() {
+            self.warning_at("\\pdfdraftmode enabled, not changing output pdf", None);
+        }
         let open_groups = self
             .eqtb
             .save_stack

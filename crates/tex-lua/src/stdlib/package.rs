@@ -469,21 +469,30 @@ fn load_native_function(
     ))
 }
 /// C: searchpath. Returns the first readable file, or the "no file" list.
+/// 5.3 (pushnexttemplate) skips empty templates; 5.4+ (getnextfilename) tries every
+/// template, empty ones included, and lists the whole substituted path in the message.
 fn search_path(name: &str, path: &str, sep: &str, rep: &str, lua53: bool) -> Result<String, String> {
     let name = if sep.is_empty() { name.to_owned() } else { name.replace(sep, rep) };
-    let mut tried = Vec::new();
-    for template in path.split(';').filter(|template| !template.is_empty()) {
-        let filename = template.replace('?', &name);
-        if std::fs::File::open(&filename).is_ok() {
-            return Ok(filename);
-        }
-        tried.push(format!("no file '{filename}'"));
-    }
     if lua53 {
-        Err(tried.iter().map(|entry| format!("\n\t{entry}")).collect())
-    } else {
-        Err(tried.join("\n\t"))
+        let mut tried = String::new();
+        for template in path.split(';').filter(|template| !template.is_empty()) {
+            let filename = template.replace('?', &name);
+            if std::fs::File::open(&filename).is_ok() {
+                return Ok(filename);
+            }
+            tried.push_str(&format!("\n\tno file '{filename}'"));
+        }
+        return Err(tried);
     }
+    let path = path.replace('?', &name);
+    if !path.is_empty() {
+        for filename in path.split(';') {
+            if std::fs::File::open(filename).is_ok() {
+                return Ok(filename.to_owned());
+            }
+        }
+    }
+    Err(format!("no file '{}'", path.replace(';', "'\n\tno file '")))
 }
 
 fn package_loadlib(l: &mut LuaState) -> LuaResult<usize> {

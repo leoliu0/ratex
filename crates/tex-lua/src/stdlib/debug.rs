@@ -655,6 +655,7 @@ pub fn ordererror(l: &mut LuaState, p1: &LuaValue, p2: &LuaValue) -> LuaError {
 /// Generate a call error with function name info (mirrors luaG_callerror).
 /// Used when attempting to call a non-callable value.
 pub fn callerror(l: &mut LuaState, val: &LuaValue) -> LuaError {
+    let t = objtypename(l, val);
     // Look at the current frame's instruction to determine what was being called
     let ci_idx = l.call_depth().wrapping_sub(1);
     if let Some(ci) = l.get_frame(ci_idx)
@@ -665,15 +666,17 @@ pub fn callerror(l: &mut LuaState, val: &LuaValue) -> LuaError {
         let chunk = lua_func.chunk();
         let pc = ci.pc.saturating_sub(1) as usize;
         if let Some((kind, name)) = funcnamefromcode(chunk, pc) {
-            let t = objtypename(l, val);
-            return l.error(format!(
-                "attempt to call a {} value ({} '{}')",
-                t, kind, name
-            ));
+            let extra = match kind {
+                // 5.3's luaG_typeerror names only stack slots; a metamethod is none.
+                "metamethod" if is_lua53(l) => String::new(),
+                // 5.4+ funcnamefromcall: `tmname + 2`
+                "metamethod" => format!(" (metamethod '{}')", name.trim_start_matches("__")),
+                _ => format!(" ({kind} '{name}')"),
+            };
+            return l.error(format!("attempt to call a {t} value{extra}"));
         }
     }
     // Fallback: no name info available
-    let t = objtypename(l, val);
     l.error(format!("attempt to call a {} value", t))
 }
 
@@ -1154,11 +1157,6 @@ fn debug_getlocal(l: &mut LuaState) -> LuaResult<usize> {
     let local_index = lauxlib::check_integer(l, arg + 2)?;
     let func_or_level = l.get_arg(arg + 1).unwrap_or_default();
     let lua53 = is_lua53(l);
-    let (temporary, vararg, c_temporary) = if lua53 {
-        ("(*temporary)", "(*vararg)", "(*temporary)")
-    } else {
-        ("(temporary)", "(vararg)", "(C temporary)")
-    };
 
     // Case 1: a function → parameter names only (lua_getlocal(L, NULL, n))
     if func_or_level.is_function() {
@@ -1166,6 +1164,8 @@ fn debug_getlocal(l: &mut LuaState) -> LuaResult<usize> {
         if let Some(lua_func) = func_or_level.as_lua_function()
             && local_index > 0
         {
+            // 5.5 starts the vararg parameter after VARARGPREP (startpc 1), so only named
+            // parameters qualify; 5.3 has no vararg parameter at all.
             name = lua_func
                 .chunk()
                 .locals
@@ -1188,159 +1188,17 @@ fn debug_getlocal(l: &mut LuaState) -> LuaResult<usize> {
     }
     let level = level as usize;
 
-    // Level 0 → the temporaries of debug.getlocal itself
-    if level == 0 {
-        if local_index <= 0 {
-            return push_fail(l);
+    let frame_idx = target.call_depth() - 1 - level;
+    match findlocal(target, frame_idx, local_index, lua53) {
+        Some((name, slot)) => {
+            let value = target.stack_get(slot).unwrap_or_default();
+            let name = l.create_string(name)?;
+            l.push_value(name)?;
+            l.push_value(value)?;
+            Ok(2)
         }
-        let local_index = local_index as usize;
-        let ci_idx = target.call_depth() - 1;
-        let ci = target.get_call_info(ci_idx);
-        let base = ci.base;
-        let stack_top = target.get_top();
-        let nargs = stack_top.saturating_sub(base);
-        if local_index > nargs {
-            return push_fail(l);
-        }
-        let val = target.stack_get(base + local_index - 1).unwrap_or_default();
-        let name_str = l.create_string(c_temporary)?;
-        l.push_value(name_str)?;
-        l.push_value(val)?;
-        return Ok(2);
+        None => push_fail(l),
     }
-
-    let call_depth = target.call_depth();
-    let frame_idx = call_depth - 1 - level;
-
-    let frame_func = target
-        .get_frame_func(frame_idx)
-        .ok_or_else(|| l.error("invalid stack level".to_string()))?;
-
-    if let Some(lua_func) = frame_func.as_lua_function() {
-        let chunk = lua_func.chunk();
-
-        // Handle negative local_index → vararg access
-        if local_index < 0 {
-            if !chunk.is_vararg {
-                return push_fail(l);
-            }
-            let nparams = chunk.param_count;
-            let ci = target.get_call_info(frame_idx);
-            let nextra = ci.nextraargs as usize;
-            let var_idx = ((-local_index) - 1) as usize;
-
-            if var_idx >= nextra {
-                return push_fail(l);
-            }
-
-            let base = ci.base;
-            let func_offset = ci.func_offset as usize;
-            let original_func_pos = if func_offset > 0 {
-                base - func_offset
-            } else {
-                base.saturating_sub(1)
-            };
-            let value_idx = original_func_pos + 1 + nparams + var_idx;
-
-            if value_idx < target.stack_len() {
-                let value = target.stack_get(value_idx).unwrap_or_default();
-                let name_str = l.create_string(vararg)?;
-                l.push_value(name_str)?;
-                l.push_value(value)?;
-                return Ok(2);
-            }
-            return push_fail(l);
-        }
-
-        // Positive local_index → normal local access
-        let local_index = local_index as usize;
-        if local_index == 0 {
-            return push_fail(l);
-        }
-
-        let pc = target.get_frame_pc(frame_idx) as usize;
-        let pc = if pc > 0 { pc - 1 } else { 0 };
-
-        let mut active_count = 0;
-        let mut reg = 0;
-        let mut found_name = None;
-        for locvar in &chunk.locals {
-            if (locvar.startpc as usize) > pc {
-                break;
-            }
-            if pc < locvar.endpc as usize {
-                if locvar.name == "(vararg table)" {
-                    reg += 1;
-                    continue;
-                }
-                active_count += 1;
-                if active_count == local_index {
-                    found_name = Some(&locvar.name);
-                    break;
-                }
-                reg += 1;
-            }
-        }
-
-        if let Some(name) = found_name {
-            let base = target.get_frame_base(frame_idx);
-            let value_idx = base + reg;
-
-            let limit = if frame_idx == target.call_depth() - 1 {
-                target.get_top()
-            } else {
-                let next_ci = target.get_call_info(frame_idx + 1);
-                next_ci.base - next_ci.func_offset as usize
-            };
-            if value_idx < limit {
-                let value = target.stack_get(value_idx).unwrap_or_default();
-                let name_str = l.create_string(name)?;
-                l.push_value(name_str)?;
-                l.push_value(value)?;
-                return Ok(2);
-            }
-        } else {
-            let base = target.get_frame_base(frame_idx);
-            let limit = if frame_idx == target.call_depth() - 1 {
-                target.get_top()
-            } else {
-                let next_ci = target.get_call_info(frame_idx + 1);
-                next_ci.base - next_ci.func_offset as usize
-            };
-            let n = local_index;
-            if (limit as isize - base as isize) >= n as isize && n > 0 {
-                let value_idx = base + n - 1;
-                let value = target.stack_get(value_idx).unwrap_or_default();
-                let name_str = l.create_string(temporary)?;
-                l.push_value(name_str)?;
-                l.push_value(value)?;
-                return Ok(2);
-            }
-        }
-    } else {
-        // C function — all accessible slots are "C temporaries"
-        if local_index > 0 {
-            let local_index = local_index as usize;
-            let base = target.get_frame_base(frame_idx);
-            let limit = if frame_idx == target.call_depth() - 1 {
-                target.get_top()
-            } else {
-                let next_ci = target.get_call_info(frame_idx + 1);
-                next_ci.base - next_ci.func_offset as usize
-            };
-            if (limit as isize - base as isize) >= local_index as isize {
-                let value_idx = base + local_index - 1;
-                let value = target.stack_get(value_idx).unwrap_or_default();
-                let name_str = l.create_string(c_temporary)?;
-                l.push_value(name_str)?;
-                l.push_value(value)?;
-                return Ok(2);
-            }
-        }
-    }
-
-    // No local variable found
-    push_fail(l)
 }
 
 /// debug.setlocal([thread,] level, local, value) - Set the value of a local variable
@@ -1356,117 +1214,69 @@ fn debug_setlocal(l: &mut LuaState) -> LuaResult<usize> {
     }
     let level = level as usize;
     let value = lauxlib::check_any(l, arg + 3)?;
-    let lua53 = is_lua53(l);
-    let (temporary, vararg) = if lua53 { ("(*temporary)", "(*vararg)") } else { ("(temporary)", "(vararg)") };
-
     let frame_idx = call_depth - 1 - level;
-
-    let frame_func = target
-        .get_frame_func(frame_idx)
-        .ok_or_else(|| l.error("invalid stack level".to_string()))?;
-
-    if let Some(lua_func) = frame_func.as_lua_function() {
-        let chunk = lua_func.chunk();
-
-        // Handle negative local_index → vararg set
-        if local_index < 0 {
-            if !chunk.is_vararg {
-                return push_fail(l);
-            }
-            let nparams = chunk.param_count;
-            let ci = target.get_call_info(frame_idx);
-            let nextra = ci.nextraargs as usize;
-            let var_idx = ((-local_index) - 1) as usize;
-
-            if var_idx >= nextra {
-                return push_fail(l);
-            }
-
-            let base = ci.base;
-            let func_offset = ci.func_offset as usize;
-            let original_func_pos = if func_offset > 0 {
-                base - func_offset
-            } else {
-                base.saturating_sub(1)
-            };
-            let value_idx = original_func_pos + 1 + nparams + var_idx;
-
-            if value_idx < target.stack_len() {
-                target.stack_set(value_idx, value)?;
-                let name_str = l.create_string(vararg)?;
-                l.push_value(name_str)?;
-                return Ok(1);
-            }
-            return push_fail(l);
+    match findlocal(target, frame_idx, local_index, is_lua53(l)) {
+        Some((name, slot)) => {
+            let name = l.create_string(name)?;
+            target.stack_set(slot, value)?;
+            l.push_value(name)?;
+            Ok(1)
         }
-
-        let local_index = local_index as usize;
-        if local_index == 0 {
-            return push_fail(l);
-        }
-
-        let pc = target.get_frame_pc(frame_idx) as usize;
-        let pc = if pc > 0 { pc - 1 } else { 0 };
-
-        let mut active_count = 0;
-        let mut reg = 0;
-        let mut found_name = None;
-        for locvar in &chunk.locals {
-            if (locvar.startpc as usize) > pc {
-                break;
-            }
-            if pc < locvar.endpc as usize {
-                if locvar.name == "(vararg table)" {
-                    reg += 1;
-                    continue;
-                }
-                active_count += 1;
-                if active_count == local_index {
-                    found_name = Some(&locvar.name);
-                    break;
-                }
-                reg += 1;
-            }
-        }
-
-        if let Some(name) = found_name {
-            let base = target.get_frame_base(frame_idx);
-            let value_idx = base + reg;
-
-            let limit = if frame_idx == target.call_depth() - 1 {
-                target.get_top()
-            } else {
-                let next_ci = target.get_call_info(frame_idx + 1);
-                next_ci.base - next_ci.func_offset as usize
-            };
-            if value_idx < limit {
-                target.stack_set(value_idx, value)?;
-                let name_str = l.create_string(name)?;
-                l.push_value(name_str)?;
-                return Ok(1);
-            }
-        } else {
-            // Temporary register — same limit calculation as getlocal
-            let base = target.get_frame_base(frame_idx);
-            let limit = if frame_idx == target.call_depth() - 1 {
-                target.get_top()
-            } else {
-                let next_ci = target.get_call_info(frame_idx + 1);
-                next_ci.base - next_ci.func_offset as usize
-            };
-            let n = local_index;
-            if (limit as isize - base as isize) >= n as isize && n > 0 {
-                let value_idx = base + n - 1;
-                target.stack_set(value_idx, value)?;
-                let name_str = l.create_string(temporary)?;
-                l.push_value(name_str)?;
-                return Ok(1);
-            }
-        }
+        None => push_fail(l),
     }
+}
 
-    // No local variable found
-    push_fail(l)
+/// luaG_findlocal: name and stack slot of local `n` of the frame `frame_idx` of `target`.
+/// Negative `n` selects a vararg of a Lua frame; slots without a variable name between the
+/// frame base and the next frame (or the top) are temporaries.
+fn findlocal<'a>(target: &'a LuaState, frame_idx: usize, n: i64, lua53: bool) -> Option<(&'a str, usize)> {
+    let ci = target.get_call_info(frame_idx);
+    let base = ci.base;
+    let func = target.get_frame_func(frame_idx)?;
+    let temporary = if let Some(lua_func) = func.as_lua_function() {
+        // SAFETY: the frame keeps its closure (and so the prototype) alive while `target`
+        // is borrowed.
+        let chunk: &'a LuaProto = unsafe { &*(lua_func.chunk() as *const LuaProto) };
+        if n < 0 {
+            // findvararg
+            if !chunk.is_vararg {
+                return None;
+            }
+            let var_idx = (n.unsigned_abs() - 1) as usize;
+            if var_idx >= ci.nextraargs as usize {
+                return None;
+            }
+            let func_offset = ci.func_offset as usize;
+            let original_func_pos = if func_offset > 0 { base - func_offset } else { base.saturating_sub(1) };
+            let slot = original_func_pos + 1 + chunk.param_count + var_idx;
+            if slot >= target.stack_len() {
+                return None;
+            }
+            return Some((if lua53 { "(*vararg)" } else { "(vararg)" }, slot));
+        }
+        if n > 0 {
+            let pc = (target.get_frame_pc(frame_idx) as usize).saturating_sub(1);
+            if let Some(name) = getlocalname(chunk, n as usize, pc) {
+                return Some((name, base + n as usize - 1));
+            }
+        }
+        if lua53 { "(*temporary)" } else { "(temporary)" }
+    } else if lua53 {
+        "(*temporary)"
+    } else {
+        "(C temporary)"
+    };
+    let limit = if frame_idx + 1 == target.call_depth() {
+        target.get_top()
+    } else {
+        let next_ci = target.get_call_info(frame_idx + 1);
+        next_ci.base - next_ci.func_offset as usize
+    };
+    if n > 0 && limit.saturating_sub(base) >= n as usize {
+        Some((temporary, base + n as usize - 1))
+    } else {
+        None
+    }
 }
 
 /// debug.getupvalue(f, up) - Get the name and value of an upvalue

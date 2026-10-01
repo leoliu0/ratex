@@ -30,6 +30,9 @@ impl Default for SafeOption {
 
 pub(crate) struct LuaSafeState {
     pub max_stack_size: usize,
+    /// The *original* `max_stack_size`: it is exceeded only by `STACK_ERROR_ZONE` slots
+    /// while a stack overflow is being handled.
+    pub base_stack_size: usize,
     /// Maximum Lua call-stack depth (number of CallInfo frames).
     /// A pure-Lua recursion guard.  Default: `MAX_CALL_DEPTH` (bounded by the stack size).
     pub max_call_depth: usize,
@@ -52,6 +55,7 @@ impl From<SafeOption> for LuaSafeState {
     fn from(option: SafeOption) -> Self {
         Self {
             max_stack_size: option.max_stack_size,
+            base_stack_size: option.max_stack_size,
             max_call_depth: option.max_call_depth,
             max_c_stack_depth: option.max_c_stack_depth,
             base_c_stack_depth: option.max_c_stack_depth,

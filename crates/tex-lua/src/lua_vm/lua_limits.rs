@@ -22,6 +22,11 @@ pub const LUA_MINSTACK: usize = 20;
 /// Matches Lua 5.5's LUAI_MAXSTACK.
 pub const LUAI_MAXSTACK: usize = 1_000_000;
 
+/// Slots a stack may grow past its limit once it overflowed, so the error can be handled
+/// (C Lua's `ERRORSTACKSIZE - LUAI_MAXSTACK`). Overflowing that zone too is "error in
+/// error handling" (`LUA_ERRERR`).
+pub const STACK_ERROR_ZONE: usize = 200;
+
 /// Default maximum Lua call-stack depth (number of call frames).
 /// Every frame occupies at least its function slot, so C Lua bounds call depth
 /// only through `LUAI_MAXSTACK`; Lua-to-Lua calls do not consume native stack.

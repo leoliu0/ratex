@@ -59,7 +59,7 @@ fn x_over_n(x: i64, n: i64) -> i64 {
 /// dropped, whatsits/marks/insertions stay, and a `split_top_skip` glue
 /// shrunk by the first box's height opens the list. Scanning stops at the
 /// first box/rule; everything after it is untouched.
-fn prune_page_top_list(list: NodeList, topskip: &Glue, snaps: &mut usize) -> NodeList {
+fn prune_page_top_list(list: NodeList, topskip: &Glue, snaps: &mut usize, attr: crate::boxes::Attr) -> NodeList {
     let mut out: NodeList = Vec::new();
     let mut it = list.into_iter();
     loop {
@@ -87,7 +87,7 @@ fn prune_page_top_list(list: NodeList, topskip: &Glue, snaps: &mut usize) -> Nod
                     width: pad,
                     subtype: crate::boxes::glue_subtype::SPLIT_TOP_SKIP,
                     ..topskip.fresh()
-                }, crate::boxes::Attr::NONE));
+                }, attr));
                 out.push(n);
                 out.extend(it);
                 return out;
@@ -657,7 +657,7 @@ impl Engine {
                             Node::Glue(Glue {
                                 subtype: crate::boxes::glue_subtype::TOP_SKIP,
                                 ..Glue::new(pad)
-                            }, crate::boxes::Attr::NONE),
+                            }, self.eqtb.cur_attr),
                         );
                         // tex.web §19509-§19516: \topskip is linked ahead of the box,
                         // and build_page jumps to `continue` to process \topskip through
@@ -1189,7 +1189,7 @@ impl Engine {
                             let pos = (base + i).min(queue.len());
                             let rest: NodeList = queue.drain(pos..).collect();
                             let mut snaps = 0;
-                            let pruned = prune_page_top_list(rest, &topskip, &mut snaps);
+                            let pruned = prune_page_top_list(rest, &topskip, &mut snaps, self.eqtb.cur_attr);
                             for _ in 0..snaps {
                                 self.report_discarded_snap();
                             }
@@ -1218,7 +1218,7 @@ impl Engine {
                             cost,
                             split_top_skip: topskip,
                             split_max_depth: splitmax,
-                            box_node: Box::new(rr.node), attr: crate::boxes::Attr::NONE,
+                            box_node: Box::new(rr.node), attr: self.eqtb.cur_attr,
                         });
                     }
                     if let Some(s) = states.get_mut(&num) {
@@ -1367,7 +1367,7 @@ impl Engine {
                             Node::Glue(Glue {
                                 subtype: crate::boxes::glue_subtype::TOP_SKIP,
                                 ..Glue::new(pad)
-                            }, crate::boxes::Attr::NONE),
+                            }, self.eqtb.cur_attr),
                         );
                         self.page_processed += 1;
                     }

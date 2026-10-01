@@ -1451,6 +1451,7 @@ fn load_state(r: &mut R, eng: &mut Engine) -> io::Result<()> {
     q.unicode_del_codes = read_code_map(r, |r| Ok(r.u64()? as i64))?;
     q.unicode_sf_codes = read_code_map(r, |r| r.u16())?;
     q.attributes = read_code_map(r, |r| r.i32())?;
+    q.refresh_cur_attr();
     q.math_params = read_code_map(r, |r| r.i32())?;
     q.math_glue_params = read_code_map(r, |r| {
         let mut v = [0i32; 6];

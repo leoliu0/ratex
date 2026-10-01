@@ -464,7 +464,7 @@ impl Engine {
             let mut inner: NodeList = Vec::with_capacity(list.len() + 2);
             // tex.web §887: \leftskip glue only when it is not zero_glue
             if !params.left_skip.zero_glue {
-                inner.push(Node::Glue(params.left_skip, crate::boxes::Attr::NONE));
+                inner.push(Node::Glue(params.left_skip, self.eqtb.cur_attr));
             }
             let mut post_adj: NodeList = Vec::new();
             for n in list.into_iter() {
@@ -474,7 +474,7 @@ impl Engine {
                     inner.push(n);
                 }
             }
-            inner.push(Node::Glue(params.right_skip.clone(), crate::boxes::Attr::NONE));
+            inner.push(Node::Glue(params.right_skip.clone(), self.eqtb.cur_attr));
             let line = crate::boxes::hpack(inner, None, crate::boxes::HBOX, &self.eqtb).node;
             let mut vlines = vec![line];
             vlines.extend(post_adj);
@@ -673,6 +673,7 @@ impl Engine {
         let mut hc = [0u8; 66];
         let mut hn = 0usize;
         let mut hb = s;
+        let first_attr = list[s].attr();
         let mut hyf_bchar: Option<u8> = None;
         'word: loop {
             match list.get(s) {
@@ -773,6 +774,7 @@ impl Engine {
             init_lft: false,
             hyphen_passed: 0,
             hold: Vec::new(),
+            attr: first_attr,
         };
         let (start, j0) = match &list[ha] {
             Node::Char { c, font: f, .. } if *f == hf => {
@@ -1746,7 +1748,7 @@ impl Engine {
             let mut nat_w = 0i64;
             // "Insert LR nodes at the beginning of the current line"
             if texxet && !lr.is_empty() {
-                seg.extend(lr.iter().map(|k| Node::MathKern(0, k - 1, crate::boxes::Attr::NONE)));
+                seg.extend(lr.iter().map(|k| Node::MathKern(0, k - 1, self.eqtb.cur_attr)));
                 self.texxet_nodes = true;
             }
             if let Some(dc) = pending_post.take() {
@@ -1841,7 +1843,7 @@ impl Engine {
                             if texxet {
                                 crate::texxet::lr_adjust(&mut lr, kind);
                             }
-                            break_math = Some(Node::MathKern(0, kind, crate::boxes::Attr::NONE));
+                            break_math = Some(Node::MathKern(0, kind, list[j].attr()));
                         }
                         i = j + 1;
                         while i < list.len() && is_prunable(&list[i]) {
@@ -1891,7 +1893,7 @@ impl Engine {
                                     side: 0,
                                     width: -pw,
                                     font: f,
-                                    c, attr: crate::boxes::Attr::NONE,
+                                    c, attr: self.eqtb.cur_attr,
                                 },
                             );
                         }
@@ -1907,7 +1909,7 @@ impl Engine {
                             side: 1,
                             width: -pw,
                             font: f,
-                            c, attr: crate::boxes::Attr::NONE,
+                            c, attr: self.eqtb.cur_attr,
                         });
                     }
                 }
@@ -1915,7 +1917,7 @@ impl Engine {
             seg.extend(break_math);
             // "Insert LR nodes at the end of the current line"
             if texxet && !lr.is_empty() {
-                seg.extend(lr.iter().rev().map(|&k| Node::MathKern(0, k, crate::boxes::Attr::NONE)));
+                seg.extend(lr.iter().rev().map(|&k| Node::MathKern(0, k, self.eqtb.cur_attr)));
                 self.texxet_nodes = true;
             }
             if texxet {
@@ -1926,10 +1928,10 @@ impl Engine {
             let mut inner: NodeList = Vec::with_capacity(seg.len() + 2);
             // tex.web §887: \leftskip glue only when it is not zero_glue
             if !params.left_skip.zero_glue {
-                inner.push(Node::Glue(params.left_skip, crate::boxes::Attr::NONE));
+                inner.push(Node::Glue(params.left_skip, self.eqtb.cur_attr));
             }
             inner.extend(seg);
-            inner.push(Node::Glue(params.right_skip, crate::boxes::Attr::NONE));
+            inner.push(Node::Glue(params.right_skip, self.eqtb.cur_attr));
             let mut r = crate::boxes::hpack_expand(self, inner, target, crate::boxes::HBOX);
             // tex.web §17436: the parshape indent is the line box's
             // shift_amount, never an in-line kern (a kern would overshoot
@@ -1970,11 +1972,11 @@ impl Engine {
             // interline glue placeholder (page builder owns real baseline
             // spacing between line boxes)
             if !lines.is_empty() {
-                lines.push(Node::Glue(Glue::zero(), crate::boxes::Attr::NONE));
+                lines.push(Node::Glue(Glue::zero(), self.eqtb.cur_attr));
             }
             lines.push(r.node);
             if !post_adj.is_empty() {
-                lines.push(Node::VAdjust(post_adj, crate::boxes::Attr::NONE));
+                lines.push(Node::VAdjust(post_adj, self.eqtb.cur_attr));
             }
             // tex.web §17438: interline penalty after every line but the
             // last — interlinepenalty, plus clubpenalty after line 1, plus
@@ -2003,7 +2005,7 @@ impl Engine {
                     pen += params.broken_penalty;
                 }
                 if pen != 0 {
-                    lines.push(Node::Penalty(pen, crate::boxes::Attr::NONE));
+                    lines.push(Node::Penalty(pen, self.eqtb.cur_attr));
                 }
             }
             if let Some(dc) = break_disc {
@@ -2168,7 +2170,7 @@ impl Engine {
                 .fresh();
             skip.subtype = crate::boxes::glue_subtype::SPLIT_TOP_SKIP;
             skip.width = (skip.width - height).max(0);
-            rest.insert(i, Node::Glue(skip, crate::boxes::Attr::NONE));
+            rest.insert(i, Node::Glue(skip, self.eqtb.cur_attr));
         }
         let mut seen = std::collections::HashSet::new();
         for node in &top {
@@ -2248,11 +2250,14 @@ struct Reconstitute<'a> {
     init_lft: bool,
     hyphen_passed: usize,
     hold: NodeList,
+    /// the attribute list of the word's first letter, which every node the
+    /// reconstitution makes carries
+    attr: crate::boxes::Attr,
 }
 
 impl Reconstitute<'_> {
     fn char_node(&self, c: u8) -> Node {
-        Node::Char { c, font: self.hf, attr: crate::boxes::Attr::NONE }
+        Node::Char { c, font: self.hf, attr: self.attr }
     }
 
     /// set_cur_r: (cur_r, cur_rh) for the cursor after position `j`
@@ -2282,7 +2287,7 @@ impl Reconstitute<'_> {
             lig_depth: self.font.char_depth(c),
             letters,
             n_letters: n as u8,
-            subtype, attr: crate::boxes::Attr::NONE,
+            subtype, attr: self.attr,
         });
     }
 
@@ -2411,7 +2416,7 @@ impl Reconstitute<'_> {
                 lig_present = false;
             }
             if w != 0 {
-                self.hold.push(Node::Kern(w, crate::boxes::Attr::NONE));
+                self.hold.push(Node::Kern(w, self.attr));
                 w = 0;
             }
             let Some((c, orig)) = stack.pop() else {

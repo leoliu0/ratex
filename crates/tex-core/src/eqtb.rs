@@ -8,7 +8,7 @@
 
 use std::rc::Rc;
 
-use crate::boxes::{Glue, Node};
+use crate::boxes::{Attr, Glue, Node};
 use crate::prim::{DimParam, GlueParam, IntParam, Prim, ToksParam};
 use crate::tfm::Font;
 use crate::token::{CsId, Token, CAT_OTHER};
@@ -282,6 +282,41 @@ struct EqEntry {
     level: u16,
 }
 
+/// Deduplicated LuaTeX attribute lists: `Attr(n)` names the n-th distinct
+/// list of sorted `(attribute number, value)` pairs, `Attr::NONE` the empty
+/// one. Lists are never freed; a document only ever has a handful.
+pub struct AttrLists {
+    lists: Vec<Rc<[(i32, i32)]>>,
+    index: crate::FxHashMap<Rc<[(i32, i32)]>, u32>,
+}
+
+impl AttrLists {
+    fn new() -> Self {
+        AttrLists { lists: vec![Rc::from(Vec::new())], index: crate::FxHashMap::default() }
+    }
+
+    /// The handle of the list holding exactly `pairs` (sorted by number,
+    /// every value set).
+    pub fn intern(&mut self, pairs: &[(i32, i32)]) -> Attr {
+        if pairs.is_empty() {
+            return Attr::NONE;
+        }
+        if let Some(&i) = self.index.get(pairs) {
+            return Attr(i);
+        }
+        let rc: Rc<[(i32, i32)]> = Rc::from(pairs);
+        let i = self.lists.len() as u32;
+        self.lists.push(rc.clone());
+        self.index.insert(rc, i);
+        Attr(i)
+    }
+
+    /// The `(number, value)` pairs of `attr`.
+    pub fn pairs(&self, attr: Attr) -> &[(i32, i32)] {
+        &self.lists[attr.0 as usize]
+    }
+}
+
 pub struct Eqtb {
     entries: Vec<EqEntry>,
     pub save_stack: Vec<SaveItem>,
@@ -343,6 +378,12 @@ pub struct Eqtb {
     pub cat_tables: crate::FxHashMap<i32, CatCodeTable>,
     /// LuaTeX attribute registers that hold a value (others are unset).
     pub attributes: crate::FxHashMap<u32, (i32, u16)>,
+    /// Interned attribute lists (sorted `(number, value)` pairs of the set
+    /// registers) the nodes' [`Attr`] handles index.
+    pub attr_lists: AttrLists,
+    /// The list of the current `\attribute` values (luatex
+    /// `current_attribute_list`): what a node created now carries.
+    pub cur_attr: Attr,
     /// LuaTeX `\Umath` parameters that hold a value: key `param * 8 + style`.
     pub math_params: crate::FxHashMap<u32, (i32, u16)>,
     /// LuaTeX `\Umath` spacing parameters (`param * 8 + style`): `[kind,
@@ -648,6 +689,8 @@ impl Eqtb {
             cat_table_level: LEVEL_ONE,
             cat_tables: crate::FxHashMap::default(),
             attributes: crate::FxHashMap::default(),
+            attr_lists: AttrLists::new(),
+            cur_attr: Attr::NONE,
             math_params: crate::FxHashMap::default(),
             math_glue_params: crate::FxHashMap::default(),
             lua_math_codes: crate::FxHashMap::default(),
@@ -1214,6 +1257,24 @@ impl Eqtb {
             &mut self.save_stack,
             |old| SaveItem::Attribute(n, old),
         );
+        self.refresh_cur_attr();
+    }
+
+    /// Recompute [`Self::cur_attr`] after a register changed (luatex
+    /// `attr_list_cache = cache_disabled`).
+    pub fn refresh_cur_attr(&mut self) {
+        if self.attributes.is_empty() {
+            self.cur_attr = Attr::NONE;
+            return;
+        }
+        let mut regs: Vec<(i32, i32)> = self
+            .attributes
+            .iter()
+            .filter(|(_, &(v, _))| v != UNUSED_ATTRIBUTE)
+            .map(|(&k, &(v, _))| (k as i32, v))
+            .collect();
+        regs.sort_unstable();
+        self.cur_attr = self.attr_lists.intern(&regs);
     }
 
     /// `\Umath<param><style>` (LuaTeX `get_math_param`); [`UNDEFINED_MATH_PARAMETER`]
@@ -1751,6 +1812,7 @@ impl Eqtb {
                 }
                 SaveItem::Attribute(n, old) => {
                     Self::restore_sparse(&mut self.attributes, n, old);
+                    self.refresh_cur_attr();
                 }
                 SaveItem::MathParam(key, old) => {
                     Self::restore_sparse(&mut self.math_params, key, old);

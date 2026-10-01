@@ -130,23 +130,42 @@ impl Engine {
         }
     }
 
-    /// The engine's `\attribute` registers as sorted pairs.
-    pub(crate) fn lua_attribute_registers(&self) -> Vec<(i32, i32)> {
-        let mut regs: Vec<(i32, i32)> = self
-            .eqtb
-            .attributes
-            .iter()
-            .filter(|(_, &(v, _))| v != UNUSED_ATTRIBUTE)
-            .map(|(&k, &(v, _))| (k as i32, v))
-            .collect();
-        regs.sort_unstable();
-        regs
+    /// The Lua attribute list (0 for none) standing for engine attribute
+    /// list `a`.
+    pub(crate) fn lua_attr_handle(&mut self, a: boxes::Attr) -> u32 {
+        if a == boxes::Attr::NONE {
+            0
+        } else {
+            self.lua_nodes.cached_attr_list(a.0, self.eqtb.attr_lists.pairs(a))
+        }
     }
 
-    /// A new node of type `id` with the current attribute list.
+    /// The engine attribute list of Lua attribute list `h`.
+    pub(crate) fn engine_attr_of_list(&mut self, h: u32) -> boxes::Attr {
+        if h == 0 {
+            return boxes::Attr::NONE;
+        }
+        if let Some(a) = self.lua_nodes.engine_attr_of(h) {
+            return boxes::Attr(a);
+        }
+        let pairs = self.lua_nodes.attr_pairs(h);
+        self.eqtb.attr_lists.intern(&pairs)
+    }
+
+    /// The Lua attribute list of the current `\attribute` values.
+    pub(crate) fn lua_current_attr_handle(&mut self) -> u32 {
+        let a = self.eqtb.cur_attr;
+        self.lua_attr_handle(a)
+    }
+
+    /// A new node of type `id` with the current attribute list (or, while
+    /// an engine node is imported, the list of that node).
     pub(crate) fn lua_new_node(&mut self, id: u8, subtype: u16) -> u32 {
-        let regs = if has_attr_type(id, subtype) { self.lua_attribute_registers() } else { Vec::new() };
-        let attr = self.lua_nodes.current_attr_list(&regs);
+        let attr = match self.lua_nodes.import_attr {
+            Some(h) => h,
+            None if has_attr_type(id, subtype) => self.lua_current_attr_handle(),
+            None => 0,
+        };
         self.lua_nodes.new_node(id, subtype, attr)
     }
 
@@ -319,6 +338,14 @@ impl Engine {
     }
 
     fn import_node(&mut self, node: &Node, ctx: &mut LangCtx) -> u32 {
+        let a = self.lua_attr_handle(node.attr());
+        let saved = self.lua_nodes.import_attr.replace(a);
+        let n = self.import_node_inner(node, ctx);
+        self.lua_nodes.import_attr = saved;
+        n
+    }
+
+    fn import_node_inner(&mut self, node: &Node, ctx: &mut LangCtx) -> u32 {
         match node {
             Node::Char { c, font, .. } => self.import_glyph_node(u32::from(*c), *font, ctx, GLYPH_CHARACTER),
             Node::LuaGlyph(g) => {
@@ -550,6 +577,18 @@ impl Engine {
     /// Append the engine form of node `n` (not its successors) to `out`.
     /// Lists below `n` are consumed.
     fn export_node(&mut self, n: u32, out: &mut NodeList) {
+        let (id, attr) = (self.lua_nodes.id(n), self.lua_nodes.node(n).attr);
+        let before = out.len();
+        self.export_node_inner(n, out);
+        if attr != 0 && id != TEMP {
+            let a = self.engine_attr_of_list(attr);
+            for node in &mut out[before..] {
+                node.set_attr(a);
+            }
+        }
+    }
+
+    fn export_node_inner(&mut self, n: u32, out: &mut NodeList) {
         let (id, sub) = (self.lua_nodes.id(n), self.lua_nodes.subtype(n));
         let f = self.lua_nodes.node(n).f;
         match id {

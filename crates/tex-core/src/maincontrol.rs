@@ -118,7 +118,7 @@ impl Engine {
             MSkip => {
                 let g = self.scan_glue(true);
                 if self.mode.is_m() {
-                    self.append_mlist_node(Node::MuGlue(g, crate::boxes::Attr::NONE));
+                    self.append_mlist_node(Node::MuGlue(g, self.eqtb.cur_attr));
                 } else {
                     self.error(
                         "\\mskip is only valid in math mode; use \\hskip or \\vskip for text spacing",
@@ -129,7 +129,7 @@ impl Engine {
                 // tex.web §1061 append_kern: subtype explicit
                 let d = self.scan_dimen(false, false);
                 if self.mode.is_m() {
-                    self.append_mlist_node(Node::ExplicitKern(d, crate::boxes::Attr::NONE));
+                    self.append_mlist_node(Node::ExplicitKern(d, self.eqtb.cur_attr));
                 } else if self.mode.is_v() {
                     self.append_v_kern(d);
                 } else {
@@ -139,7 +139,7 @@ impl Engine {
             MKern => {
                 let d = self.scan_dimen(true, false);
                 if self.mode.is_m() {
-                    self.append_mlist_node(Node::MathKern(d, 0, crate::boxes::Attr::NONE));
+                    self.append_mlist_node(Node::MathKern(d, 0, self.eqtb.cur_attr));
                 } else {
                     self.error("\\mkern is only valid in math mode; use \\kern for text spacing");
                 }
@@ -164,7 +164,7 @@ impl Engine {
                             BeginR => crate::boxes::BEGIN_R,
                             _ => crate::boxes::END_R,
                         };
-                        self.cur_list.push(Node::MathKern(0, kind, crate::boxes::Attr::NONE));
+                        self.cur_list.push(Node::MathKern(0, kind, self.eqtb.cur_attr));
                         self.texxet_nodes = true;
                     } else {
                         // etex.ch eTeX_enabled: "Sorry, this optional e-TeX
@@ -240,7 +240,7 @@ impl Engine {
                 if self.mode.is_v() {
                     self.append_v_penalty(n);
                 } else if self.mode.is_m() {
-                    self.append_mlist_node(Node::Penalty(n, crate::boxes::Attr::NONE));
+                    self.append_mlist_node(Node::Penalty(n, self.eqtb.cur_attr));
                 } else {
                     self.append_h_penalty(n);
                 }
@@ -317,15 +317,15 @@ impl Engine {
             }
             LastKern => {
                 let v = self.last_kern_value();
-                self.append_take_node(Node::Kern(v, crate::boxes::Attr::NONE));
+                self.append_take_node(Node::Kern(v, self.eqtb.cur_attr));
             }
             LastPenalty => {
                 let v = self.last_penalty_value();
-                self.append_take_node(Node::Penalty(v, crate::boxes::Attr::NONE));
+                self.append_take_node(Node::Penalty(v, self.eqtb.cur_attr));
             }
             LastSkip => {
                 let g = self.last_skip_value();
-                self.append_take_node(Node::Glue(g, crate::boxes::Attr::NONE));
+                self.append_take_node(Node::Glue(g, self.eqtb.cur_attr));
             }
             VSplit => self.do_vsplit(),
             Insert => self.do_insert(),
@@ -560,13 +560,13 @@ impl Engine {
                         glue_order: 0,
                         glue_set: 0.0,
                         lr: 0,
-                        dir: 0, attr: crate::boxes::Attr::NONE,
+                        dir: 0, attr: self.eqtb.cur_attr,
                     });
                     self.page_append(Node::Glue(crate::boxes::Glue::fil(
                         crate::boxes::GLUE_FILL,
                         0,
-                    ), crate::boxes::Attr::NONE));
-                    self.page_append(Node::Penalty(-0x4000_0000, crate::boxes::Attr::NONE));
+                    ), self.eqtb.cur_attr));
+                    self.page_append(Node::Penalty(-0x4000_0000, self.eqtb.cur_attr));
                     self.lua_page_filter(crate::lua_callbacks::page_info::END, false);
                     self.build_page();
                     return;
@@ -774,7 +774,7 @@ impl Engine {
                     }
                     text
                 };
-                self.append_whatsit(Node::Whatsit(crate::boxes::WhatIt::CjkText(text), crate::boxes::Attr::NONE));
+                self.append_whatsit(Node::Whatsit(crate::boxes::WhatIt::CjkText(text), self.eqtb.cur_attr));
             }
             Accent => {
                 match self.mode {
@@ -820,11 +820,11 @@ impl Engine {
                         _ => None,
                     };
                     if let Some(correction) = correction {
-                        self.cur_list.push(Node::ExplicitKern(correction, crate::boxes::Attr::NONE));
+                        self.cur_list.push(Node::ExplicitKern(correction, self.eqtb.cur_attr));
                     }
                 }
                 // tex.web §1112: `mmode+ital_corr: tail_append(new_kern(0))`
-                Mode::Math | Mode::DisplayMath => self.append_mlist_node(Node::Kern(0, crate::boxes::Attr::NONE)),
+                Mode::Math | Mode::DisplayMath => self.append_mlist_node(Node::Kern(0, self.eqtb.cur_attr)),
             },
             // math
             MathChar => {
@@ -977,7 +977,7 @@ impl Engine {
                         small: (sf, sc),
                         large: (lf, lc),
                         size: 3,
-                        origin, attr: crate::boxes::Attr::NONE,
+                        origin, attr: self.eqtb.cur_attr,
                     });
                 }
             }
@@ -1012,7 +1012,7 @@ impl Engine {
                     if let Some(s) = self.math_style_stack.last_mut() {
                         *s = style;
                     }
-                    self.append_mlist_node(Node::Style(style, crate::boxes::Attr::NONE));
+                    self.append_mlist_node(Node::Style(style, self.eqtb.cur_attr));
                 } else {
                     self.error("Missing $ inserted");
                 }
@@ -1062,15 +1062,15 @@ impl Engine {
                 self.append_whatsit(Node::Whatsit(crate::boxes::WhatIt::PdfLiteral {
                     origin,
                     data,
-                }, crate::boxes::Attr::NONE));
+                }, self.eqtb.cur_attr));
             }
             PdfSave => {
                 let source = self.current_token_source_mark();
-                self.append_whatsit(Node::Whatsit(crate::boxes::WhatIt::PdfSave { source }, crate::boxes::Attr::NONE));
+                self.append_whatsit(Node::Whatsit(crate::boxes::WhatIt::PdfSave { source }, self.eqtb.cur_attr));
             }
             PdfRestore => {
                 let source = self.current_token_source_mark();
-                self.append_whatsit(Node::Whatsit(crate::boxes::WhatIt::PdfRestore { source }, crate::boxes::Attr::NONE));
+                self.append_whatsit(Node::Whatsit(crate::boxes::WhatIt::PdfRestore { source }, self.eqtb.cur_attr));
             }
             PdfSetMatrix => {
                 let source = self.current_token_source_mark();
@@ -1078,11 +1078,11 @@ impl Engine {
                 self.append_whatsit(Node::Whatsit(crate::boxes::WhatIt::PdfSetMatrix {
                     matrix,
                     source,
-                }, crate::boxes::Attr::NONE));
+                }, self.eqtb.cur_attr));
             }
             PdfStartLink => self.do_pdfstartlink(),
             PdfEndLink => {
-                self.append_whatsit(Node::Whatsit(crate::boxes::WhatIt::PdfEndLink, crate::boxes::Attr::NONE));
+                self.append_whatsit(Node::Whatsit(crate::boxes::WhatIt::PdfEndLink, self.eqtb.cur_attr));
             }
             PdfDest => self.do_pdfdest(),
             PdfOutline => self.do_pdfoutline(),
@@ -1136,7 +1136,7 @@ impl Engine {
                         };
                         self.append_whatsit(Node::Whatsit(
                             crate::boxes::WhatIt::PdfColorStack { stack, cmd, data },
-                        crate::boxes::Attr::NONE));
+                        self.eqtb.cur_attr));
                     }
                     None => self.error(
                         "Color stack action is missing; expected set, push, pop, or current",
@@ -1145,7 +1145,7 @@ impl Engine {
             }
             PdfColorStackPrim => {}
             PdfSavePos => {
-                self.append_whatsit(Node::Whatsit(crate::boxes::WhatIt::SavePos { obj: 0 }, crate::boxes::Attr::NONE));
+                self.append_whatsit(Node::Whatsit(crate::boxes::WhatIt::SavePos { obj: 0 }, self.eqtb.cur_attr));
             }
             PdfLastXPos | PdfLastYPos => {
                 let command = if p == PdfLastXPos {
@@ -1186,7 +1186,7 @@ impl Engine {
                     w,
                     h,
                     d,
-                }, crate::boxes::Attr::NONE));
+                }, self.eqtb.cur_attr));
             }
             PdfRefXImage => {
                 let (id, source) = self.scan_int_with_source();
@@ -1208,7 +1208,7 @@ impl Engine {
                     w,
                     h,
                     d,
-                }, crate::boxes::Attr::NONE));
+                }, self.eqtb.cur_attr));
             }
             PdfFontAttr => self.do_pdffontattr(),
             PdfNoBuiltinToUnicode => self.do_pdfnobuiltintounicode(),
@@ -1240,15 +1240,15 @@ impl Engine {
             PdfLastXImageColorDepth => {}
             PdfInterwordSpaceOn | PdfInterwordSpaceOff => self.append_whatsit(Node::Whatsit(
                 crate::boxes::WhatIt::PdfInterwordSpace(p == PdfInterwordSpaceOn),
-            crate::boxes::Attr::NONE)),
+            self.eqtb.cur_attr)),
             PdfFakeSpace => {
-                self.append_whatsit(Node::Whatsit(crate::boxes::WhatIt::PdfFakeSpace, crate::boxes::Attr::NONE))
+                self.append_whatsit(Node::Whatsit(crate::boxes::WhatIt::PdfFakeSpace, self.eqtb.cur_attr))
             }
             PdfRunningLinkOn | PdfRunningLinkOff => self.append_whatsit(Node::Whatsit(
                 crate::boxes::WhatIt::PdfRunningLink(p == PdfRunningLinkOn),
-            crate::boxes::Attr::NONE)),
+            self.eqtb.cur_attr)),
             PdfSnapRefPoint => {
-                self.append_whatsit(Node::Whatsit(crate::boxes::WhatIt::PdfSnapRefPoint, crate::boxes::Attr::NONE))
+                self.append_whatsit(Node::Whatsit(crate::boxes::WhatIt::PdfSnapRefPoint, self.eqtb.cur_attr))
             }
             PdfSnapY => {
                 // pdftex.web new_snap_node: negative snap glue is an error
@@ -1263,11 +1263,11 @@ impl Engine {
                     );
                     return;
                 }
-                self.append_whatsit(Node::Whatsit(crate::boxes::WhatIt::PdfSnapY(glue), crate::boxes::Attr::NONE));
+                self.append_whatsit(Node::Whatsit(crate::boxes::WhatIt::PdfSnapY(glue), self.eqtb.cur_attr));
             }
             PdfSnapYComp => {
                 let ratio = self.scan_int().clamp(0, 1000);
-                self.append_whatsit(Node::Whatsit(crate::boxes::WhatIt::PdfSnapYComp(ratio), crate::boxes::Attr::NONE));
+                self.append_whatsit(Node::Whatsit(crate::boxes::WhatIt::PdfSnapYComp(ratio), self.eqtb.cur_attr));
             }
             PdfUncompress | PdfTolerance | PdfThread | PdfStartThread
             | PdfEndThread => {
@@ -1567,9 +1567,9 @@ impl Engine {
             accent_node
         };
         let delta = ((w - a) as f64 / 2.0 + h as f64 * t_sl - x as f64 * s).round() as i32;
-        self.cur_list.push(Node::AccentKern(delta, crate::boxes::Attr::NONE));
+        self.cur_list.push(Node::AccentKern(delta, self.eqtb.cur_attr));
         self.cur_list.push(accent_part);
-        self.cur_list.push(Node::AccentKern(-a - delta, crate::boxes::Attr::NONE));
+        self.cur_list.push(Node::AccentKern(-a - delta, self.eqtb.cur_attr));
         self.cur_list.push(base_node);
         self.space_factor = 1000;
     }

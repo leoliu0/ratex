@@ -318,7 +318,7 @@ impl Engine {
                                 if let Some(l) = self.math_lists.last_mut() {
                                     if start_mark <= l.len() {
                                         let inner = l.split_off(start_mark);
-                                        l.push(crate::math::finish_math_group(inner));
+                                        l.push(crate::math::finish_math_group(inner, self.eqtb.cur_attr));
                                     }
                                 }
                             }
@@ -468,7 +468,7 @@ impl Engine {
                 fam: 0,
                 c: scalar,
                 class: 0,
-                origin, attr: crate::boxes::Attr::NONE,
+                origin, attr: self.eqtb.cur_attr,
             });
         } else {
             self.error(&format!(

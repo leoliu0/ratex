@@ -777,6 +777,83 @@ pub enum Node {
     VAdjust(NodeList, Attr),
 }
 
+impl Node {
+    /// The node's attribute list ([`Attr::NONE`] for the variants LuaTeX
+    /// gives none).
+    pub fn attr(&self) -> Attr {
+        match self {
+            Node::Char { attr, .. }
+            | Node::Ligature { attr, .. }
+            | Node::MarginKern { attr, .. }
+            | Node::Rule { attr, .. }
+            | Node::Leaders { attr, .. }
+            | Node::Box { attr, .. }
+            | Node::Mark { attr, .. }
+            | Node::Ins { attr, .. }
+            | Node::ChoiceAlt { attr, .. }
+            | Node::MathChar { attr, .. }
+            | Node::Frac { attr, .. }
+            | Node::Radical { attr, .. }
+            | Node::Scripts { attr, .. }
+            | Node::DelimBox { attr, .. }
+            | Node::OpLimits { attr, .. }
+            | Node::Accent { attr, .. }
+            | Node::Overline { attr, .. } => *attr,
+            Node::Glue(_, a)
+            | Node::Kern(_, a)
+            | Node::ExplicitKern(_, a)
+            | Node::AccentKern(_, a)
+            | Node::Penalty(_, a)
+            | Node::Adj(_, a)
+            | Node::Whatsit(_, a)
+            | Node::Style(_, a)
+            | Node::MuGlue(_, a)
+            | Node::VAdjust(_, a)
+            | Node::MathKern(_, _, a) => *a,
+            Node::LuaGlyph(g) => g.attr,
+            Node::Disc(d) => d.attr,
+            _ => Attr::NONE,
+        }
+    }
+
+    /// Give the node attribute list `a` (a no-op for the variants without).
+    pub fn set_attr(&mut self, a: Attr) {
+        match self {
+            Node::Char { attr, .. }
+            | Node::Ligature { attr, .. }
+            | Node::MarginKern { attr, .. }
+            | Node::Rule { attr, .. }
+            | Node::Leaders { attr, .. }
+            | Node::Box { attr, .. }
+            | Node::Mark { attr, .. }
+            | Node::Ins { attr, .. }
+            | Node::ChoiceAlt { attr, .. }
+            | Node::MathChar { attr, .. }
+            | Node::Frac { attr, .. }
+            | Node::Radical { attr, .. }
+            | Node::Scripts { attr, .. }
+            | Node::DelimBox { attr, .. }
+            | Node::OpLimits { attr, .. }
+            | Node::Accent { attr, .. }
+            | Node::Overline { attr, .. } => *attr = a,
+            Node::Glue(_, x)
+            | Node::Kern(_, x)
+            | Node::ExplicitKern(_, x)
+            | Node::AccentKern(_, x)
+            | Node::Penalty(_, x)
+            | Node::Adj(_, x)
+            | Node::Whatsit(_, x)
+            | Node::Style(_, x)
+            | Node::MuGlue(_, x)
+            | Node::VAdjust(_, x)
+            | Node::MathKern(_, _, x) => *x = a,
+            Node::LuaGlyph(g) => g.attr = a,
+            Node::Disc(d) => d.attr = a,
+            _ => {}
+        }
+    }
+}
+
 pub type NodeList = Vec<Node>;
 
 /// (width, height, depth) of a glyph of a Lua font as hpack counts them
@@ -1119,7 +1196,7 @@ fn finish_glue(
                         list.push(Node::Rule {
                             width: rule_w as i32,
                             height: crate::build::RULE_FILL,
-                            depth: crate::build::RULE_FILL, attr: crate::boxes::Attr::NONE,
+                            depth: crate::build::RULE_FILL, attr: eqtb.cur_attr,
                         });
                     }
                 }
@@ -1168,7 +1245,7 @@ pub fn hpack_add(
             glue_order: order,
             glue_set: set,
             lr: 0,
-            dir: 0, attr: crate::boxes::Attr::NONE,
+            dir: 0, attr: eqtb.cur_attr,
         },
         badness: bad,
         delta,
@@ -1254,7 +1331,7 @@ pub fn vpack_add_md(
             glue_order: order,
             glue_set: set,
             lr: 0,
-            dir: 0, attr: crate::boxes::Attr::NONE,
+            dir: 0, attr: eqtb.cur_attr,
         },
         badness: bad,
         delta,
@@ -1673,9 +1750,9 @@ pub fn hpack_expand(
         if expanded == 0 {
             continue;
         }
-        let cur = match &list[i] {
-            Node::Kern(k, _) => *k,
-            _ => 0,
+        let (cur, attr) = match &list[i] {
+            Node::Kern(k, a) => (*k, *a),
+            _ => (0, Attr::NONE),
         };
         let nonzero = if ratio > 0 {
             kern_stretch(&eng.eqtb, f, lc, rc, cur) != 0
@@ -1683,7 +1760,7 @@ pub fn hpack_expand(
             kern_shrink(&eng.eqtb, f, lc, rc, cur) != 0
         };
         if nonzero {
-            list[i] = Node::Kern(get_kern(&eng.eqtb, expanded, lc, rc), crate::boxes::Attr::NONE);
+            list[i] = Node::Kern(get_kern(&eng.eqtb, expanded, lc, rc), attr);
         }
     }
     hpack(list, Some(w), kind, &eng.eqtb)

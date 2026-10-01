@@ -778,7 +778,7 @@ impl Engine {
                 names: Box::new((full, shown)),
                 create_parent,
                 source: source.map(Box::new),
-            }, crate::boxes::Attr::NONE));
+            }, self.eqtb.cur_attr));
             return;
         }
         self.exec_openout(stream, &full, create_parent, source.as_ref());
@@ -884,7 +884,7 @@ impl Engine {
             self.append_whatsit(Node::Whatsit(crate::boxes::WhatIt::CloseOut {
                 stream,
                 source: source.map(Box::new),
-            }, crate::boxes::Attr::NONE));
+            }, self.eqtb.cur_attr));
             return;
         }
         self.exec_closeout(stream, source.as_ref());
@@ -931,7 +931,7 @@ impl Engine {
                 stream: if n < 0 { 17 } else { n.min(16) as u16 },
                 tokens: toks,
                 source: source.map(Box::new),
-            }, crate::boxes::Attr::NONE));
+            }, self.eqtb.cur_attr));
             return;
         }
         let text = self.expand_write_list(&toks, source.as_ref());
@@ -1165,7 +1165,7 @@ impl Engine {
     pub fn do_special(&mut self) {
         let toks = self.scan_general_text_expanded();
         let s = self.tokens_to_text(&toks);
-        self.cur_list.push(crate::boxes::Node::Whatsit(crate::boxes::WhatIt::Special(s), crate::boxes::Attr::NONE));
+        self.cur_list.push(crate::boxes::Node::Whatsit(crate::boxes::WhatIt::Special(s), self.eqtb.cur_attr));
     }
 
     pub fn do_message(&mut self, err: bool) {

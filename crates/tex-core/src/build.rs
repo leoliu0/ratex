@@ -146,7 +146,7 @@ impl Engine {
         match self.mode {
             Mode::Horizontal | Mode::RestrictedHorizontal => {
                 let g = self.interword_glue();
-                self.cur_list.push(Node::Glue(g, crate::boxes::Attr::NONE));
+                self.cur_list.push(Node::Glue(g, self.eqtb.cur_attr));
             }
             Mode::Vertical | Mode::InternalVertical => {
                 // spaces are ignored in vertical mode
@@ -236,7 +236,7 @@ impl Engine {
                 if self.engine_kind == crate::engine::EngineKind::LuaTeX {
                     g.subtype = glue_subtype::SPACE_SKIP;
                 }
-                self.cur_list.push(Node::Glue(g, crate::boxes::Attr::NONE));
+                self.cur_list.push(Node::Glue(g, self.eqtb.cur_attr));
             }
             Mode::Math | Mode::DisplayMath => {
                 // tex.web mmode+ex_space: goto append_normal_space — a plain
@@ -244,7 +244,7 @@ impl Engine {
                 let f = self.eqtb.cur_font_val;
                 if let Some(font) = self.eqtb.fonts.get(f as usize) {
                     let g = Glue::spec(font.space(), font.space_stretch(), 0, font.space_shrink(), 0);
-                    self.append_mlist_node(Node::Glue(g, crate::boxes::Attr::NONE));
+                    self.append_mlist_node(Node::Glue(g, self.eqtb.cur_attr));
                 }
             }
             Mode::Vertical | Mode::InternalVertical => {}
@@ -274,7 +274,7 @@ impl Engine {
             expansion_factor: 0,
             data: 0,
             subtype: crate::lua_node::GLYPH_CHARACTER as u8,
-            components: Vec::new(), attr: crate::boxes::Attr::NONE,
+            components: Vec::new(), attr: self.eqtb.cur_attr,
         }))
     }
 
@@ -429,15 +429,15 @@ impl Engine {
         let _ = leader;
         match self.mode {
             Mode::Horizontal | Mode::RestrictedHorizontal => {
-                self.cur_list.push(Node::Glue(g, crate::boxes::Attr::NONE));
+                self.cur_list.push(Node::Glue(g, self.eqtb.cur_attr));
                 self.space_factor = 1000;
             }
             Mode::Vertical | Mode::InternalVertical => {
                 self.start_paragraph(false);
-                self.cur_list.push(Node::Glue(g, crate::boxes::Attr::NONE));
+                self.cur_list.push(Node::Glue(g, self.eqtb.cur_attr));
             }
             Mode::Math | Mode::DisplayMath => {
-                self.append_mlist_node(Node::Glue(g, crate::boxes::Attr::NONE));
+                self.append_mlist_node(Node::Glue(g, self.eqtb.cur_attr));
             }
         }
     }
@@ -445,13 +445,13 @@ impl Engine {
     pub fn append_v_glue(&mut self, g: Glue) {
         match self.mode {
             Mode::Vertical | Mode::InternalVertical => {
-                self.vlist_append(Node::Glue(g, crate::boxes::Attr::NONE));
+                self.vlist_append(Node::Glue(g, self.eqtb.cur_attr));
             }
             Mode::Horizontal | Mode::RestrictedHorizontal => {
                 self.error("You can't use \\vskip in horizontal mode");
             }
             Mode::Math | Mode::DisplayMath => {
-                self.append_mlist_node(Node::Glue(g, crate::boxes::Attr::NONE));
+                self.append_mlist_node(Node::Glue(g, self.eqtb.cur_attr));
             }
         }
     }
@@ -460,7 +460,7 @@ impl Engine {
         self.flush_native_text();
         match self.mode {
             Mode::Horizontal | Mode::RestrictedHorizontal => {
-                self.cur_list.push(Node::ExplicitKern(d, crate::boxes::Attr::NONE));
+                self.cur_list.push(Node::ExplicitKern(d, self.eqtb.cur_attr));
             }
             _ => self.error("Bad \\kern context"),
         }
@@ -469,7 +469,7 @@ impl Engine {
     pub fn append_v_kern(&mut self, d: i32) {
         match self.mode {
             Mode::Vertical | Mode::InternalVertical => {
-                self.vlist_append(Node::ExplicitKern(d, crate::boxes::Attr::NONE));
+                self.vlist_append(Node::ExplicitKern(d, self.eqtb.cur_attr));
             }
             _ => self.error("Bad \\kern context"),
         }
@@ -479,7 +479,7 @@ impl Engine {
         self.flush_native_text();
         match self.mode {
             Mode::Horizontal | Mode::RestrictedHorizontal => {
-                self.cur_list.push(Node::Penalty(n, crate::boxes::Attr::NONE));
+                self.cur_list.push(Node::Penalty(n, self.eqtb.cur_attr));
             }
             _ => self.error("You can't use \\penalty in this mode"),
         }
@@ -488,10 +488,10 @@ impl Engine {
     pub fn append_v_penalty(&mut self, n: i32) {
         match self.mode {
             Mode::Vertical | Mode::InternalVertical => {
-                self.vlist_append(Node::Penalty(n, crate::boxes::Attr::NONE));
+                self.vlist_append(Node::Penalty(n, self.eqtb.cur_attr));
             }
             Mode::Math | Mode::DisplayMath => {
-                self.append_mlist_node(Node::Penalty(n, crate::boxes::Attr::NONE));
+                self.append_mlist_node(Node::Penalty(n, self.eqtb.cur_attr));
             }
             _ => self.error("You can't use \\penalty in this mode"),
         }
@@ -582,7 +582,7 @@ impl Engine {
                             // still a node on the page list, and build_page
                             // treats a glue after a non-discardable node as a
                             // legal breakpoint (suppressing zero glue here
-                            self.page_append(Node::Glue(glue, crate::boxes::Attr::NONE));
+                            self.page_append(Node::Glue(glue, self.eqtb.cur_attr));
                         }
                     }
                     self.prev_depth = *d;
@@ -706,7 +706,7 @@ impl Engine {
                         self.cur_list.push(Node::Whatsit(crate::boxes::WhatIt::SyncPoint {
                             file_id,
                             line,
-                        }, crate::boxes::Attr::NONE));
+                        }, self.eqtb.cur_attr));
                     }
                 }
             }
@@ -751,7 +751,7 @@ impl Engine {
             && matches!(self.mode, Mode::Horizontal | Mode::RestrictedHorizontal)
             && self.cur_font_is_lua()
         {
-            self.cur_list.push(Node::Whatsit(crate::boxes::WhatIt::Boundary { kind: 0, value: 0 }, crate::boxes::Attr::NONE));
+            self.cur_list.push(Node::Whatsit(crate::boxes::WhatIt::Boundary { kind: 0, value: 0 }, self.eqtb.cur_attr));
         }
     }
 
@@ -807,7 +807,7 @@ impl Engine {
             };
             self.lig_kern_run(f, &mut cur, LigStack::one(item), Some(c), None);
         } else {
-            self.cur_list.push(Node::Char { c, font: f, attr: crate::boxes::Attr::NONE });
+            self.cur_list.push(Node::Char { c, font: f, attr: self.eqtb.cur_attr });
         }
     }
 
@@ -856,7 +856,7 @@ impl Engine {
                 None => true,
                 Some(LigKernOp::Kern(w)) => {
                     self.lig_wrapup(f, cur, stack.is_empty(), true);
-                    self.cur_list.push(Node::Kern(w, crate::boxes::Attr::NONE));
+                    self.cur_list.push(Node::Kern(w, self.eqtb.cur_attr));
                     false
                 }
                 Some(LigKernOp::Lig { op, ch }) => {
@@ -944,7 +944,7 @@ impl Engine {
                 return;
             };
             if top.is_char {
-                self.cur_list.push(Node::Char { c: top.ch, font: f, attr: crate::boxes::Attr::NONE });
+                self.cur_list.push(Node::Char { c: top.ch, font: f, attr: self.eqtb.cur_attr });
                 return;
             }
             // main_loop_move_lig: a pseudo-ligature becomes cur_l
@@ -1005,7 +1005,7 @@ impl Engine {
             lig_depth,
             letters,
             n_letters: n as u8,
-            subtype, attr: crate::boxes::Attr::NONE,
+            subtype, attr: self.eqtb.cur_attr,
         });
         cur.cur_l = Some(ch);
         cur.lig_present = true;
@@ -1063,11 +1063,11 @@ impl Engine {
                 expansion_factor: 0,
                 data: 0,
                 subtype: 0,
-                components: Vec::new(), attr: crate::boxes::Attr::NONE,
+                components: Vec::new(), attr: self.eqtb.cur_attr,
             })));
         }
         let byte = u8::try_from(c).ok()?;
-        font.char_present(byte).then_some(Node::Char { c: byte, font: f, attr: crate::boxes::Attr::NONE })
+        font.char_present(byte).then_some(Node::Char { c: byte, font: f, attr: self.eqtb.cur_attr })
     }
 
     /// Width, height and depth of character `c` of font `f`.
@@ -1119,7 +1119,7 @@ impl Engine {
             self.vlist_append(Node::Rule {
                 width,
                 height,
-                depth, attr: crate::boxes::Attr::NONE,
+                depth, attr: self.eqtb.cur_attr,
             });
             return;
         }
@@ -1129,7 +1129,7 @@ impl Engine {
         let node = Node::Rule {
             width,
             height,
-            depth, attr: crate::boxes::Attr::NONE,
+            depth, attr: self.eqtb.cur_attr,
         };
         match self.mode {
             Mode::Horizontal | Mode::RestrictedHorizontal => {
@@ -1353,9 +1353,9 @@ impl Engine {
             if outer_mode.is_v() {
                 self.cur_list.extend(inner);
             } else if outer_mode.is_m() {
-                self.append_mlist_node(Node::VAdjust(inner, crate::boxes::Attr::NONE));
+                self.append_mlist_node(Node::VAdjust(inner, self.eqtb.cur_attr));
             } else {
-                self.cur_list.push(Node::VAdjust(inner, crate::boxes::Attr::NONE));
+                self.cur_list.push(Node::VAdjust(inner, self.eqtb.cur_attr));
             }
             return;
         }
@@ -1448,7 +1448,7 @@ impl Engine {
                     cost: ins_float_cost,
                     split_top_skip: ins_split_top_skip,
                     split_max_depth: ins_split_max_depth,
-                    box_node: Box::new(node), attr: crate::boxes::Attr::NONE,
+                    box_node: Box::new(node), attr: self.eqtb.cur_attr,
                 };
             }
         }
@@ -1535,7 +1535,7 @@ impl Engine {
                             // tex.web append_to_vlist: the glue node is
                             // appended even when it is zero (a legal
                             // \vsplit breakpoint)
-                            self.cur_list.push(Node::Glue(glue, crate::boxes::Attr::NONE));
+                            self.cur_list.push(Node::Glue(glue, self.eqtb.cur_attr));
                         }
                         self.prev_depth = *d;
                     }
@@ -1761,7 +1761,7 @@ impl Engine {
             self.error("Leaders not followed by proper glue");
             return;
         };
-        let node = Node::Leaders { glue, kind, body, attr: crate::boxes::Attr::NONE };
+        let node = Node::Leaders { glue, kind, body, attr: self.eqtb.cur_attr };
         match self.mode {
             Mode::Horizontal | Mode::RestrictedHorizontal => {
                 self.cur_list.push(node);
@@ -2232,7 +2232,7 @@ impl Engine {
             let hc = self.eqtb.hyphen_char.get(f as usize).copied().unwrap_or(-1);
             if let Ok(c) = u8::try_from(hc) {
                 if self.font_has_character_or_warn(f, c, None) {
-                    pre_break.push(Node::Char { c, font: f, attr: crate::boxes::Attr::NONE });
+                    pre_break.push(Node::Char { c, font: f, attr: self.eqtb.cur_attr });
                 }
             }
         }
@@ -2511,15 +2511,15 @@ impl Engine {
         match self.mode {
             Mode::Vertical | Mode::InternalVertical => self.vlist_append(Node::Mark {
                 class,
-                tokens: toks, attr: crate::boxes::Attr::NONE,
+                tokens: toks, attr: self.eqtb.cur_attr,
             }),
             Mode::Math | Mode::DisplayMath => self.append_mlist_node(Node::Mark {
                 class,
-                tokens: toks, attr: crate::boxes::Attr::NONE,
+                tokens: toks, attr: self.eqtb.cur_attr,
             }),
             _ => self.cur_list.push(Node::Mark {
                 class,
-                tokens: toks, attr: crate::boxes::Attr::NONE,
+                tokens: toks, attr: self.eqtb.cur_attr,
             }),
         }
     }
@@ -2739,7 +2739,7 @@ impl Engine {
                     // tex.web new_graf (§1091): in outer vmode \parskip glue
                     // is appended unconditionally
                     let ps = self.eqtb.glue_params[GlueParam::ParSkip.idx() as usize];
-                    self.page_list.push(Node::Glue(ps.param(glue_subtype::PAR_SKIP), crate::boxes::Attr::NONE));
+                    self.page_list.push(Node::Glue(ps.param(glue_subtype::PAR_SKIP), self.eqtb.cur_attr));
                     if self.engine_kind == crate::engine::EngineKind::LuaTeX {
                         indent = self.lua_new_graf(indent);
                     }
@@ -2795,7 +2795,7 @@ impl Engine {
                 let resume = std::mem::take(&mut self.resume_after_display);
                 if !resume && !self.cur_list.is_empty() {
                     let ps = self.eqtb.glue_params[GlueParam::ParSkip.idx() as usize];
-                    self.cur_list.push(Node::Glue(ps.param(glue_subtype::PAR_SKIP), crate::boxes::Attr::NONE));
+                    self.cur_list.push(Node::Glue(ps.param(glue_subtype::PAR_SKIP), self.eqtb.cur_attr));
                 }
                 let indent = if self.engine_kind == crate::engine::EngineKind::LuaTeX && !resume {
                     self.lua_new_graf(indent)
@@ -2952,10 +2952,10 @@ impl Engine {
         // this, a space after \end{tabular} survives into the final line and
         // forces a phantom second line in float/tabular paragraphs.
         match self.cur_list.last_mut() {
-            Some(slot @ Node::Glue(_, _)) => *slot = Node::Penalty(10000, crate::boxes::Attr::NONE),
-            _ => self.cur_list.push(Node::Penalty(10000, crate::boxes::Attr::NONE)),
+            Some(slot @ Node::Glue(_, _)) => *slot = Node::Penalty(10000, self.eqtb.cur_attr),
+            _ => self.cur_list.push(Node::Penalty(10000, self.eqtb.cur_attr)),
         }
-        self.cur_list.push(Node::Glue(pfs, crate::boxes::Attr::NONE));
+        self.cur_list.push(Node::Glue(pfs, self.eqtb.cur_attr));
         let content = std::mem::take(&mut self.cur_list);
         // tex.web §21764/§21181: the widow penalty before the final line is
         // \displaywidowpenalty when a display interrupted the paragraph
@@ -3179,7 +3179,7 @@ impl Engine {
                         };
                         // tex.web append_to_vlist appends the glue node even
                         // when it is zero
-                        out.push(Node::Glue(glue, crate::boxes::Attr::NONE));
+                        out.push(Node::Glue(glue, self.eqtb.cur_attr));
                     }
                     prev_depth = d;
                     held_placeholder = false;
@@ -3189,7 +3189,7 @@ impl Engine {
                     if held_placeholder {
                         // a placeholder not followed by a box: keep it
                         // (defensive; build_lines only emits them pre-box)
-                        out.push(Node::Glue(Glue::zero(), crate::boxes::Attr::NONE));
+                        out.push(Node::Glue(Glue::zero(), self.eqtb.cur_attr));
                         held_placeholder = false;
                     }
                     out.push(n);
@@ -3197,7 +3197,7 @@ impl Engine {
             }
         }
         if held_placeholder {
-            out.push(Node::Glue(Glue::zero(), crate::boxes::Attr::NONE));
+            out.push(Node::Glue(Glue::zero(), self.eqtb.cur_attr));
         }
         (out, prev_depth)
     }

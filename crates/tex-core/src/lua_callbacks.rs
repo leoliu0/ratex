@@ -420,7 +420,11 @@ impl Engine {
     /// A `local_par` node as `new_graf` makes it (LuaTeX keeps one at the
     /// head of every paragraph).
     fn lua_local_par_node(&mut self) -> u32 {
+        let attr = self.par_langs.last().map_or(self.eqtb.cur_attr, |p| p.attr);
+        let attr = self.lua_attr_handle(attr);
+        let saved = self.lua_nodes.import_attr.replace(attr);
         let n = self.lua_new_node(crate::lua_node::LOCAL_PAR, 0);
+        self.lua_nodes.import_attr = saved;
         let inter = self.eqtb.int_params[crate::prim::IntParam::InterLinePenalty.idx() as usize];
         let broken = self.eqtb.int_params[crate::prim::IntParam::BrokenPenalty.idx() as usize];
         let f = &mut self.lua_nodes.node_mut(n).f;

@@ -24,7 +24,7 @@ pub(crate) fn hpack_lr_check(list: &mut NodeList) -> i32 {
     let mut stack: Vec<u8> = Vec::new();
     let mut problems = 0;
     for n in list.iter_mut() {
-        let Node::MathKern(w, kind, _) = *n else {
+        let Node::MathKern(w, kind, attr) = *n else {
             continue;
         };
         if kind == 0 {
@@ -35,7 +35,7 @@ pub(crate) fn hpack_lr_check(list: &mut NodeList) -> i32 {
                 stack.pop();
             } else {
                 problems += 1;
-                *n = Node::ExplicitKern(w, crate::boxes::Attr::NONE);
+                *n = Node::ExplicitKern(w, attr);
             }
         } else {
             stack.push(math_end_lr_type(kind));
@@ -155,9 +155,9 @@ impl Engine {
         let skip = |p: GlueParam| -> Node {
             let g = self.eqtb.glue_params[p.idx() as usize];
             if is_zero_glue(&g) {
-                Node::Kern(0, crate::boxes::Attr::NONE)
+                Node::Kern(0, self.eqtb.cur_attr)
             } else {
-                Node::Glue(g, crate::boxes::Attr::NONE)
+                Node::Glue(g, self.eqtb.cur_attr)
             }
         };
         Some(Node::Box {
@@ -171,7 +171,7 @@ impl Engine {
             glue_order: *glue_order,
             glue_set: *glue_set,
             lr: 0,
-            dir: 0, attr: crate::boxes::Attr::NONE,
+            dir: 0, attr: self.eqtb.cur_attr,
         })
     }
 
@@ -375,30 +375,30 @@ impl Engine {
                 let r = list.pop().unwrap();
                 (list.pop().unwrap(), r)
             }
-            _ => (Node::Kern(0, crate::boxes::Attr::NONE), Node::Kern(0, crate::boxes::Attr::NONE)),
+            _ => (Node::Kern(0, self.eqtb.cur_attr), Node::Kern(0, self.eqtb.cur_attr)),
         };
         let mut out: NodeList = Vec::with_capacity(hlist.len() + 6);
         match left {
             Node::Glue(g, _) => {
-                out.push(Node::Glue(g, crate::boxes::Attr::NONE));
-                out.push(Node::MathKern(0, BEGIN_M, crate::boxes::Attr::NONE));
-                out.push(Node::Glue(cancel_glue(&g, d), crate::boxes::Attr::NONE));
+                out.push(Node::Glue(g, self.eqtb.cur_attr));
+                out.push(Node::MathKern(0, BEGIN_M, self.eqtb.cur_attr));
+                out.push(Node::Glue(cancel_glue(&g, d), self.eqtb.cur_attr));
             }
             _ => {
-                out.push(Node::MathKern(0, BEGIN_M, crate::boxes::Attr::NONE));
-                out.push(Node::Kern(d as i32, crate::boxes::Attr::NONE));
+                out.push(Node::MathKern(0, BEGIN_M, self.eqtb.cur_attr));
+                out.push(Node::Kern(d as i32, self.eqtb.cur_attr));
             }
         }
         out.append(&mut hlist);
         match right {
             Node::Glue(g, _) => {
-                out.push(Node::Glue(cancel_glue(&g, e), crate::boxes::Attr::NONE));
-                out.push(Node::MathKern(0, END_M, crate::boxes::Attr::NONE));
-                out.push(Node::Glue(g, crate::boxes::Attr::NONE));
+                out.push(Node::Glue(cancel_glue(&g, e), self.eqtb.cur_attr));
+                out.push(Node::MathKern(0, END_M, self.eqtb.cur_attr));
+                out.push(Node::Glue(g, self.eqtb.cur_attr));
             }
             _ => {
-                out.push(Node::Kern(e as i32, crate::boxes::Attr::NONE));
-                out.push(Node::MathKern(0, END_M, crate::boxes::Attr::NONE));
+                out.push(Node::Kern(e as i32, self.eqtb.cur_attr));
+                out.push(Node::MathKern(0, END_M, self.eqtb.cur_attr));
             }
         }
         match line {
@@ -413,6 +413,7 @@ impl Engine {
                 glue_set,
                 lr,
                 dir,
+                attr,
                 ..
             }) => Node::Box {
                 kind,
@@ -425,7 +426,8 @@ impl Engine {
                 glue_order,
                 glue_set,
                 lr,
-                dir, attr: crate::boxes::Attr::NONE,
+                dir,
+                attr,
             },
             _ => {
                 let mut packed = crate::boxes::hpack(out, None, HBOX, &self.eqtb).node;

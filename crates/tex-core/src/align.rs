@@ -1218,7 +1218,7 @@ impl Engine {
                 glue_order: 0,
                 glue_set: 0.0,
                 lr: 0,
-                dir: 0, attr: crate::boxes::Attr::NONE,
+                dir: 0, attr: self.eqtb.cur_attr,
             };
             self.align_rows.push(vec![Cell {
                 packed: Some(node),
@@ -1432,6 +1432,7 @@ impl Engine {
         // §804: package the preamble (unset columns of the final widths
         // separated by tabskip glue) to find the alignment's glue setting;
         // \overfullrule is suppressed for this pack.
+        let cur_attr = self.eqtb.cur_attr;
         let column = |w: i32| Node::Box {
             kind: if valign { crate::boxes::VBOX } else { crate::boxes::HBOX },
             w: if valign { 0 } else { w },
@@ -1443,13 +1444,14 @@ impl Engine {
             glue_order: 0,
             glue_set: 0.0,
             lr: 0,
-            dir: 0, attr: crate::boxes::Attr::NONE,
+            dir: 0,
+            attr: cur_attr,
         };
         let mut preamble: NodeList = Vec::with_capacity(2 * ncols + 1);
-        preamble.push(Node::Glue(t0, crate::boxes::Attr::NONE));
+        preamble.push(Node::Glue(t0, self.eqtb.cur_attr));
         for j in 0..ncols {
             preamble.push(column(widths[j]));
-            preamble.push(Node::Glue(tabs[j], crate::boxes::Attr::NONE));
+            preamble.push(Node::Glue(tabs[j], self.eqtb.cur_attr));
         }
         let preamble_len = preamble.len();
         let (dim, spread) = match self.align_to {
@@ -1582,7 +1584,7 @@ impl Engine {
                 _ => (a, b),
             });
             let mut line: NodeList = Vec::with_capacity(2 * row.len() + 1);
-            line.push(Node::Glue(t0, crate::boxes::Attr::NONE));
+            line.push(Node::Glue(t0, self.eqtb.cur_attr));
             for (c, cell) in row.into_iter().enumerate() {
                 // grid slots covered by an earlier spanning cell
                 let Some(mut cell_box) = cell.packed else { continue };
@@ -1594,13 +1596,13 @@ impl Engine {
                 for k in c + 1..=end {
                     let g = tabs[k - 1];
                     t += tab_amount(&g) + widths[k] as i64;
-                    covered.push(Node::Glue(g, crate::boxes::Attr::NONE));
+                    covered.push(Node::Glue(g, self.eqtb.cur_attr));
                     covered.push(column(widths[k]));
                 }
                 set_unset_cell(&mut cell_box, w, t, valign, row_a, row_b);
                 line.push(cell_box);
                 line.extend(covered);
-                line.push(Node::Glue(tabs[end], crate::boxes::Attr::NONE));
+                line.push(Node::Glue(tabs[end], self.eqtb.cur_attr));
             }
             let row_box = Node::Box {
                 kind: if valign { crate::boxes::VBOX } else { crate::boxes::HBOX },
@@ -1613,7 +1615,7 @@ impl Engine {
                 glue_order: p_order,
                 glue_set: p_set,
                 lr: if display { crate::boxes::BOX_LR_DLIST } else { 0 },
-                dir: 0, attr: crate::boxes::Attr::NONE,
+                dir: 0, attr: self.eqtb.cur_attr,
             };
             if !valign {
                 // tex.web append_to_vlist at fin_row time
@@ -1627,7 +1629,7 @@ impl Engine {
                             subtype: crate::boxes::glue_subtype::BASELINE_SKIP,
                             ..bs.fresh()
                         }
-                    }, crate::boxes::Attr::NONE));
+                    }, self.eqtb.cur_attr));
                 }
                 prev = Some(row_b);
             }

@@ -297,6 +297,12 @@ fn write_packages_blob(generated: &mut impl Write, path: &std::path::Path, len: 
         .replace('\\', "\\\\")
         .replace('"', "\\\"");
     let incbin = format!(".incbin \"{path}\"");
+    // The blob gets an object-file section of its own in every format, so no
+    // other label in the crate ever sits 600+ MiB past a symbol. Mach-O
+    // relocations to assembler-temporary labels (e.g. arm64 jump tables
+    // `LJTI*` in `__TEXT,__const`) are encoded relative to the preceding
+    // symbol in the same section, and that offset would overflow the 24-bit
+    // ARM64_RELOC_ADDEND field ("addend too big for relocation").
     let lines: Vec<String> = match format {
         ObjectFormat::Elf => vec![
             ".pushsection .rodata.tex_kpse_packages,\"a\"".into(),
@@ -310,7 +316,7 @@ fn write_packages_blob(generated: &mut impl Write, path: &std::path::Path, len: 
             ".popsection".into(),
         ],
         ObjectFormat::MachO => vec![
-            ".pushsection __TEXT,__const".into(),
+            ".pushsection __TEXT,__tex_kpse_blob,regular".into(),
             format!(".globl {label}"),
             format!(".private_extern {label}"),
             ".p2align 4".into(),
@@ -319,7 +325,8 @@ fn write_packages_blob(generated: &mut impl Write, path: &std::path::Path, len: 
             ".popsection".into(),
         ],
         ObjectFormat::Coff => vec![
-            ".pushsection .rdata,\"dr\"".into(),
+            // `$` grouping: linked into `.rdata`, ordered by the suffix.
+            ".pushsection .rdata$tex_kpse_packages,\"dr\"".into(),
             format!(".globl {label}"),
             ".p2align 4".into(),
             format!("{label}:"),

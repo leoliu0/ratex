@@ -710,3 +710,63 @@ fn quoted_font_names_end_at_the_end_of_the_line() {
     assert!(e.term.contains("[cmr10]"), "{}", e.term);
     assert_eq!(e.error_count, 0, "{}", e.term);
 }
+
+/// tex.web §107 `xn_over_d` truncates: space factor 1250 turns cmr10's
+/// 109226sp interword stretch into 136532sp, not 136533sp. The 1sp shifts
+/// the glue on this line enough to flip pdfTeX's TJ rounding; the expected
+/// array is `pdftex -ini` output for the same input.
+#[test]
+fn space_factor_glue_truncates_like_pdftex() {
+    let e = engine(
+        r"\pdfoutput=1 \hoffset=-1in \sfcode`\,=1250 \font\tenrm=cmr10
+\setbox0\hbox{\tenrm x, \global\skip1=\lastskip}\message{[\the\skip1]}
+\shipout\hbox to 2031622sp{\tenrm x, y z}
+\end",
+    );
+    assert!(e.term.contains("[3.33333pt plus 2.08331pt minus 0.88889pt]"), "{}", e.term);
+    let page = String::from_utf8_lossy(&e.pdf_doc.pages[0].content);
+    assert!(page.contains("[(x,)-697(y)-625(z)]TJ"), "{page}");
+}
+
+/// `\font ... scaled` sizes the font with the same truncating `xn_over_d`
+/// (tex.web §1258): cmr10 scaled 2074 is 1359216sp, identical to `at
+/// 1359216sp`, as in pdftex.
+#[test]
+fn font_scaled_size_truncates_like_pdftex() {
+    let e = engine(
+        r"\font\big=cmr10 scaled 2074 \font\bigb=cmr10 at 1359216sp
+\message{[\fontname\big][\ifx\big\bigb same\else diff\fi]}
+\end",
+    );
+    assert!(e.term.contains("[cmr10 at 20.73999pt][same]"), "{}", e.term);
+}
+
+/// pdftex -ini output for this page: `\pdfsetmatrix` echoes its plain
+/// numbers verbatim, and `pdf_print_char` writes `(`, `)`, space and `\` as
+/// octal escapes while DEL stays raw.
+#[test]
+fn setmatrix_and_string_bytes_print_like_pdftex() {
+    let e = engine(
+        r"\pdfoutput=1 \font\tenrm=cmr10
+\shipout\hbox{\pdfsave\pdfsetmatrix{.5 0 0 -.25}\tenrm(a)\char32\char127\char92\pdfrestore}
+\end",
+    );
+    let page = String::from_utf8_lossy(&e.pdf_doc.pages[0].content);
+    assert!(page.contains("\n.5 0 0 -.25 0 0 cm\n"), "{page}");
+    assert!(page.contains("[(\\050a\\051\\040\x7f\\134)]TJ"), "{page}");
+}
+
+/// pdftex.web `pdf_set_rule` centers a hairline at `y - (h + 1)/2` with
+/// Pascal real division, truncated when passed on as scaled: an even 0.4pt
+/// rule sits 13108sp above its bottom edge. `pdftex -ini` prints 25.907
+/// here; integer halving gives 25.906.
+#[test]
+fn hairline_rule_center_truncates_like_pdftex() {
+    let e = engine(
+        r"\pdfoutput=1 \pdfpagewidth=100pt \pdfpageheight=100pt
+\shipout\vbox{\kern100031sp\hrule height .4pt width 10pt}
+\end",
+    );
+    let page = String::from_utf8_lossy(&e.pdf_doc.pages[0].content);
+    assert!(page.contains("q\n1 0 0 1 72 25.907 cm\n[]0 d 0 J 0.398 w"), "{page}");
+}

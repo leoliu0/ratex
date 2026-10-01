@@ -177,7 +177,8 @@ fn do_round(x: f64) -> i64 {
 /// must yield exactly 4 numbers). Stricter than pdfTeX, which then echoes the
 /// raw token string (an input with more than four numbers therefore silently
 /// corrupts the content stream there); we require exactly four finite numbers
-/// and emit them canonicalized, so a malformed matrix can never reach the PDF.
+/// and echo the string only when it is plain PDF number syntax, so a
+/// malformed matrix can never reach the PDF.
 fn parse_matrix(s: &str) -> Option<[f64; 4]> {
     let mut it = s.split_ascii_whitespace();
     let mut v = [0.0f64; 4];
@@ -194,10 +195,25 @@ fn parse_matrix(s: &str) -> Option<[f64; 4]> {
     }
     Some(v)
 }
-/// Print a parsed `\pdfsetmatrix` component. Matrix entries are
-/// dimensionless numbers (not bp dimensions), so they are never re-quantized
-/// through the sp raster: integral values print bare, others use Rust's
-/// shortest round-tripping decimal form.
+/// PDF real/integer syntax (ISO 32000 §7.3.3): optional sign, digits with at
+/// most one `.`, at least one digit; no exponent.
+fn is_pdf_number(t: &str) -> bool {
+    let t = t.strip_prefix(['+', '-']).unwrap_or(t);
+    let mut digits = 0;
+    let mut dots = 0;
+    for b in t.bytes() {
+        match b {
+            b'0'..=b'9' => digits += 1,
+            b'.' => dots += 1,
+            _ => return false,
+        }
+    }
+    digits > 0 && dots <= 1
+}
+/// Print a parsed `\pdfsetmatrix` component that is not plain PDF number
+/// syntax. Matrix entries are dimensionless numbers (not bp dimensions), so
+/// they are never re-quantized through the sp raster: integral values print
+/// bare, others use Rust's shortest round-tripping decimal form.
 fn push_matrix_num(buf: &mut String, v: f64) {
     use std::fmt::Write;
     if v.fract() == 0.0 && v.abs() < (i64::MAX as f64) {
@@ -318,22 +334,17 @@ fn push_i64(s: &mut String, mut v: i64) {
     }
 }
 
+/// pdfTeX `pdf_print_char`: bytes <= 32, `(`, `)`, `\` and bytes > 127 are
+/// written as three-digit octal escapes (`pdf_print_octal`), all others raw.
 #[inline]
 fn push_pdf_char(s: &mut String, b: u8) {
-    match b {
-        b'(' | b')' | b'\\' => {
-            s.push('\\');
-            s.push(b as char);
-        }
-        32..=126 => s.push(b as char),
-        _ => {
-            // Three octal digits keep a following ASCII digit from becoming
-            // part of the escape. Never encode font bytes as UTF-8 characters.
-            s.push('\\');
-            s.push((b'0' + (b >> 6)) as char);
-            s.push((b'0' + ((b >> 3) & 7)) as char);
-            s.push((b'0' + (b & 7)) as char);
-        }
+    if b <= 32 || b == b'(' || b == b')' || b == b'\\' || b > 127 {
+        s.push('\\');
+        s.push((b'0' + (b >> 6)) as char);
+        s.push((b'0' + ((b >> 3) & 7)) as char);
+        s.push((b'0' + (b & 7)) as char);
+    } else {
+        s.push(b as char);
     }
 }
 
@@ -358,6 +369,16 @@ mod text_encoding_tests {
         assert_eq!(operands[2].as_str().unwrap(), b"A");
         assert_eq!(operands[3].as_i64().unwrap(), 30);
         assert_eq!(operands[4].as_str().unwrap(), b"B");
+    }
+
+    /// pdflatex writes `(`, `)`, `\`, space and high bytes as octal, DEL raw.
+    #[test]
+    fn literal_text_escapes_like_pdf_print_char() {
+        let mut text = String::new();
+        for byte in [b'(', b')', b'\\', b' ', b'!', 127, 200, 12] {
+            push_pdf_char(&mut text, byte);
+        }
+        assert_eq!(text, "\\050\\051\\134\\040!\x7f\\310\\014");
     }
 
     /// /Widths divide by pdfTeX's snapped `pdf_font_size`, not the raw at
@@ -2218,16 +2239,22 @@ impl<'a> RenderCtx<'a> {
         });
         self.end_text();
         self.content.push_str("q\n");
+        // pdftex.web `pdf_set_rule`: `(h + 1)/2` is Pascal real division and
+        // the real argument reaches the scaled parameter truncated toward
+        // zero, so an even 0.4pt hairline is centered 13108sp (not 13107sp)
+        // above its bottom edge.
         const ONE_BP: i64 = 65782;
         if h_sp <= ONE_BP {
-            self.set_origin_temp(x_sp, v_down_sp - (h_sp + 1) / 2);
+            let y = (v_down_sp as f64 - (h_sp + 1) as f64 / 2.0) as i64;
+            self.set_origin_temp(x_sp, y);
             self.content.push_str("[]0 d 0 J ");
             self.push_bp(h_sp);
             self.content.push_str(" w 0 0 m ");
             self.push_bp(w_sp);
             self.content.push_str(" 0 l S\n");
         } else if w_sp <= ONE_BP {
-            self.set_origin_temp(x_sp + (w_sp + 1) / 2, v_down_sp);
+            let x = (x_sp as f64 + (w_sp + 1) as f64 / 2.0) as i64;
+            self.set_origin_temp(x, v_down_sp);
             self.content.push_str("[]0 d 0 J ");
             self.push_bp(w_sp);
             self.content.push_str(" w 0 0 m 0 ");
@@ -2332,9 +2359,11 @@ impl<'a> RenderCtx<'a> {
                 // the current pen and the supplied matrix concatenates at
                 // that origin. Malformed input emits no content at all
                 // (canonical `\pdfsetmatrix` "Unrecognized format." error).
-                // pdfTeX echoes the raw token string on success; we
-                // canonicalize the parsed numbers instead, so a malformed
-                // stream can never slip through a token-level parse.
+                // pdfTeX echoes the raw token string on success. We echo it
+                // too when every entry is plain PDF number syntax, and
+                // otherwise (`1e3`, `inf`, ...) emit the parsed numbers
+                // canonicalized, so a malformed stream can never slip
+                // through a token-level parse.
                 let Some([a, b, c, d]) = parse_matrix(matrix) else {
                     self.end_text();
                     let message = format!(
@@ -2370,14 +2399,18 @@ impl<'a> RenderCtx<'a> {
                 }
                 self.end_text();
                 self.set_origin(cur_h, cur_v);
-                let mut buf = String::new();
-                for v in [a, b, c, d] {
-                    if !buf.is_empty() {
-                        buf.push(' ');
+                if matrix.split_ascii_whitespace().all(is_pdf_number) {
+                    self.content.push_str(matrix);
+                } else {
+                    let mut buf = String::new();
+                    for v in [a, b, c, d] {
+                        if !buf.is_empty() {
+                            buf.push(' ');
+                        }
+                        push_matrix_num(&mut buf, v);
                     }
-                    push_matrix_num(&mut buf, v);
+                    self.content.push_str(&buf);
                 }
-                self.content.push_str(&buf);
                 self.content.push_str(" 0 0 cm\n");
             }
             PdfSave { source } => {

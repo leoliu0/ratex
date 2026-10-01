@@ -95,6 +95,9 @@ pub enum Equiv {
     /// `\let\x={`: the cs stands for a character token (raw token bits)
     CharTok(u32),
     MathCharDef(u16),
+    /// LuaTeX `\Umathchardef`/`\Umathcharnumdef`: `(class + 8 * family) *
+    /// 0x200000 + character` as a wrapped 32 bit integer (`xmath_given_cmd`).
+    UMathCharDef(i32),
     FontRef(u16),
     /// \let alias: follows the target dynamically (TeX semantics)
     Alias(CsId),
@@ -119,6 +122,7 @@ impl Equiv {
             Equiv::CharDef(_) => "CharDef",
             Equiv::CharTok(_) => "CharTok",
             Equiv::MathCharDef(_) => "MathCharDef",
+            Equiv::UMathCharDef(_) => "UMathCharDef",
             Equiv::FontRef(_) => "FontRef",
             Equiv::Alias(_) => "Alias",
             Equiv::Prim(_) => "Prim",
@@ -243,6 +247,12 @@ pub enum SaveItem {
     Attribute(u32, Option<(i32, u16)>),
     /// LuaTeX `\Umath` parameter (`param * 8 + style`) before a local assignment.
     MathParam(u32, Option<(i32, u16)>),
+    /// LuaTeX `\Umathcode` entry (packed, see [`Eqtb::lua_math_code`]).
+    LuaMathCode(u32, Option<(u64, u16)>),
+    /// LuaTeX `\Udelcode` entry (packed, see [`Eqtb::lua_del_code`]).
+    LuaDelCode(u32, Option<(u64, u16)>),
+    /// LuaTeX `\Umath` mu-glue parameter before a local assignment.
+    MathGlueParam(u32, Option<([i32; 6], u16)>),
     /// LuaTeX `\catcodetable` before a local assignment: (table, level).
     CatCodeTable(i32, u16),
     StyleFont(u8, u16, u16, u16), // (0=textfont,1=scriptfont,2=ssfont, fam, fontid, level)
@@ -335,6 +345,15 @@ pub struct Eqtb {
     pub attributes: crate::FxHashMap<u32, (i32, u16)>,
     /// LuaTeX `\Umath` parameters that hold a value: key `param * 8 + style`.
     pub math_params: crate::FxHashMap<u32, (i32, u16)>,
+    /// LuaTeX `\Umath` spacing parameters (`param * 8 + style`): `[kind,
+    /// width, stretch, shrink, stretch order, shrink order]`, kind 0 a
+    /// glue spec and 1/2/3 `\thinmuskip`/`\medmuskip`/`\thickmuskip`.
+    pub math_glue_params: crate::FxHashMap<u32, ([i32; 6], u16)>,
+    /// LuaTeX math codes that were assigned (class, family and character
+    /// packed by `pack_lua_math_code`); others read the INITEX defaults.
+    pub lua_math_codes: crate::FxHashMap<u32, (u64, u16)>,
+    /// LuaTeX delimiter codes that were assigned.
+    pub lua_del_codes: crate::FxHashMap<u32, (u64, u16)>,
 
     /// style_fonts[style][fam] -> font id (0 = none); style: 0=text 1=script 2=ss
     pub style_fonts: [[u16; 256]; 3],
@@ -630,6 +649,9 @@ impl Eqtb {
             cat_tables: crate::FxHashMap::default(),
             attributes: crate::FxHashMap::default(),
             math_params: crate::FxHashMap::default(),
+            math_glue_params: crate::FxHashMap::default(),
+            lua_math_codes: crate::FxHashMap::default(),
+            lua_del_codes: crate::FxHashMap::default(),
             style_fonts: [[0; 256]; 3],
             style_font_levels: [[LEVEL_ONE; 256]; 3],
             fonts: Vec::new(),
@@ -1215,6 +1237,126 @@ impl Eqtb {
         );
     }
 
+    /// `\Umath<param><style>` for the spacing parameters (mu glue), if set.
+    pub fn math_glue_param(&self, param: u32, style: u8) -> Option<[i32; 6]> {
+        self.math_glue_params
+            .get(&(param * 8 + u32::from(style)))
+            .map(|&(value, _)| value)
+    }
+
+    pub fn assign_math_glue_param(&mut self, param: u32, style: u8, value: [i32; 6], global: bool) {
+        let key = param * 8 + u32::from(style);
+        Self::sparse_slot(
+            &mut self.math_glue_params,
+            key,
+            value,
+            global,
+            self.cur_level,
+            &mut self.save_stack,
+            |old| SaveItem::MathGlueParam(key, old),
+        );
+    }
+
+    /// LuaTeX `get_math_code` (mathcodes.c): `(class, family, character)`.
+    /// An active character is class 8. Codes nothing assigned read the INITEX
+    /// table (`\mathcode` of a letter is class 7, family 1).
+    pub fn lua_math_code(&self, character: u32) -> (u32, u32, u32) {
+        if let Some(&(packed, _)) = self.lua_math_codes.get(&character) {
+            let class = ((packed >> 32) & 0xF) as u32;
+            if class == 8 {
+                return (8, 0, 0);
+            }
+            return (class, ((packed >> 21) & 0xFF) as u32, (packed & 0x1F_FFFF) as u32);
+        }
+        match self.math_code.get(character as usize) {
+            Some(&raw) if raw & 0x8000 != 0 => (8, 0, 0),
+            Some(&raw) => (
+                u32::from(raw >> 12) & 7,
+                u32::from(raw >> 8) & 15,
+                u32::from(raw & 0xFF),
+            ),
+            None => (0, 0, character),
+        }
+    }
+
+    /// `\the\Umathcodenum` (`get_math_code_num`).
+    pub fn lua_math_code_num(&self, character: u32) -> i32 {
+        let (class, family, slot) = self.lua_math_code(character);
+        ((class + family * 8) as i32)
+            .wrapping_mul(0x20_0000)
+            .wrapping_add(slot as i32)
+    }
+
+    /// LuaTeX `set_math_code`: the class/family/character fields are
+    /// 3/8/21 bit wide; class 8 with family and character 0 is an active
+    /// character.
+    pub fn assign_lua_math_code(&mut self, character: u32, class: i32, family: i32, slot: i32, global: bool) {
+        let class: u64 = if class == 8 && family == 0 && slot == 0 { 8 } else { (class & 7) as u64 };
+        let packed = (class << 32) | (((family & 0xFF) as u64) << 21) | ((slot & 0x1F_FFFF) as u64);
+        Self::sparse_slot(
+            &mut self.lua_math_codes,
+            character,
+            packed,
+            global,
+            self.cur_level,
+            &mut self.save_stack,
+            |old| SaveItem::LuaMathCode(character, old),
+        );
+    }
+
+    /// LuaTeX `get_del_code`: `(small family, small char, large family,
+    /// large char)`; the small family is -1 for an undefined code.
+    pub fn lua_del_code(&self, character: u32) -> (i32, u32, u32, u32) {
+        if let Some(&(packed, _)) = self.lua_del_codes.get(&character) {
+            return (
+                ((packed >> 50) & 0xFF) as i32,
+                ((packed >> 29) & 0x1F_FFFF) as u32,
+                ((packed >> 21) & 0xFF) as u32,
+                (packed & 0x1F_FFFF) as u32,
+            );
+        }
+        match self.del_code.get(character as usize) {
+            Some(&raw) if raw >= 0 => (
+                (raw >> 20) & 0xFF,
+                ((raw >> 12) & 0xFF) as u32,
+                ((raw >> 8) & 0xF) as u32,
+                (raw & 0xFF) as u32,
+            ),
+            _ => (-1, 0, 0, 0),
+        }
+    }
+
+    /// `\the\Udelcode` (`get_del_code_num`): only meaningful for old style
+    /// delimiter codes.
+    pub fn lua_del_code_num(&self, character: u32) -> i32 {
+        let (small_family, small_char, large_family, large_char) = self.lua_del_code(character);
+        if small_family < 0 {
+            -1
+        } else {
+            (small_family * 256 + small_char as i32)
+                .wrapping_mul(4096)
+                .wrapping_add(large_family as i32 * 256)
+                .wrapping_add(large_char as i32)
+        }
+    }
+
+    /// LuaTeX `set_del_code` (fields are 8/21/8/21 bits wide).
+    pub fn assign_lua_del_code(&mut self, character: u32, small_family: i32, small_char: i32, large_family: i32, large_char: i32, global: bool) {
+        let packed = ((small_family & 0xFF) as u64) << 50
+            | ((small_char & 0x1F_FFFF) as u64) << 29
+            | ((large_family & 0xFF) as u64) << 21
+            | ((large_char & 0x1F_FFFF) as u64);
+        Self::sparse_slot(
+            &mut self.lua_del_codes,
+            character,
+            packed,
+            global,
+            self.cur_level,
+            &mut self.save_stack,
+            |old| SaveItem::LuaDelCode(character, old),
+        );
+    }
+
     pub fn math_code_for(&self, character: u32) -> u32 {
         self.unicode_math_codes
             .get(&character)
@@ -1613,6 +1755,15 @@ impl Eqtb {
                 SaveItem::MathParam(key, old) => {
                     Self::restore_sparse(&mut self.math_params, key, old);
                 }
+                SaveItem::LuaMathCode(key, old) => {
+                    Self::restore_sparse(&mut self.lua_math_codes, key, old);
+                }
+                SaveItem::LuaDelCode(key, old) => {
+                    Self::restore_sparse(&mut self.lua_del_codes, key, old);
+                }
+                SaveItem::MathGlueParam(key, old) => {
+                    Self::restore_sparse(&mut self.math_glue_params, key, old);
+                }
                 SaveItem::CatCodeTable(table, level) => {
                     if self.cat_table_level > LEVEL_ONE {
                         self.switch_cat_table(table);
@@ -1657,6 +1808,7 @@ impl Eqtb {
             Equiv::AttributeReg(i) => Some(self.attribute(u32::from(*i))),
             Equiv::CharDef(v) => Some(*v as i32),
             Equiv::MathCharDef(v) => Some(*v as i32),
+            Equiv::UMathCharDef(v) => Some(*v),
             _ => None,
         }
     }

@@ -258,6 +258,14 @@ impl Engine {
                     // forever. Appending the MathChar node to the current
                     // list renders the glyph directly (visually equivalent
                     // for the \fnsymbol/\ast cases) without the replay.
+                    Some(Equiv::MathCharDef(v)) if self.engine_kind == crate::engine::EngineKind::LuaTeX => {
+                        self.reject_assignment_prefixes(&format!("\\mathchar\"{v:X}"));
+                        self.math_given_command(i32::from(v), false, id);
+                    }
+                    Some(Equiv::UMathCharDef(v)) => {
+                        self.reject_assignment_prefixes("\\Umathchar");
+                        self.math_given_command(v, true, id);
+                    }
                     Some(Equiv::MathCharDef(v)) => {
                         self.reject_assignment_prefixes(&format!("\\mathchar\"{v:X}"));
                         self.append_mathchar(v as u16);
@@ -412,6 +420,13 @@ impl Engine {
             self.start_paragraph(true);
             return;
         }
+        if self.engine_kind == crate::engine::EngineKind::LuaTeX
+            && matches!(self.mode, Mode::Horizontal | Mode::RestrictedHorizontal)
+            && self.cur_font_is_lua()
+        {
+            self.append_lua_glyph(scalar);
+            return;
+        }
         if !self.mode.is_m() && self.xetex_interchartokenstate > 0 {
             let cur_class = self.xetex_char_classes.get(&scalar).copied().unwrap_or(0);
             if let Some(prev_class) = self.xetex_last_char_class {
@@ -443,6 +458,10 @@ impl Engine {
         }
         if let Ok(byte) = u8::try_from(scalar) {
             self.char_token(byte, is_letter);
+        } else if self.mode.is_m() && self.engine_kind == crate::engine::EngineKind::LuaTeX {
+            let (class, family, slot) = self.eqtb.lua_math_code(scalar);
+            let source = self.current_token_source_mark();
+            self.set_math_char_lua(class, family, slot, scalar, source);
         } else if self.mode.is_m() {
             let origin = self.math_diagnostic_origin();
             self.append_mlist_node(crate::boxes::Node::MathChar {
@@ -611,21 +630,12 @@ impl Engine {
                 self.clear_prefixes();
                 true
             }
-            Umathfractiondelsize | Umathstacknumup | Umathstackdenomdown | Umathstackvgap => {
-                // maincontrol.c set_math_param_cmd: <style> <equals> <dimen>
-                let name = match p {
-                    Umathfractiondelsize => "\\Umathfractiondelsize",
-                    Umathstacknumup => "\\Umathstacknumup",
-                    Umathstackdenomdown => "\\Umathstackdenomdown",
-                    _ => "\\Umathstackvgap",
-                };
-                let g = self.take_assignment_prefixes(name);
-                let style = self.scan_math_style();
-                self.scan_optional_equals();
-                let v = self.scan_dimen(false, false);
-                self.eqtb.assign_math_param(crate::luatex::umath_param_id(p), style, v, g);
+            UMath(id) => {
+                // maincontrol.c set_math_param_cmd
+                self.set_math_param_command(id);
                 true
             }
+            U(u) => self.uprim_assign(u, id),
             Attribute => {
                 let n = self.scan_attribute_num();
                 self.scan_optional_equals();

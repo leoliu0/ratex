@@ -941,12 +941,16 @@ impl Engine {
         d
     }
 
-    fn lk_pre_hyphen_char(&self, _lang: i32) -> i32 {
-        i32::from(b'-')
+    fn lk_pre_hyphen_char(&self, lang: i32) -> i32 {
+        u8::try_from(lang)
+            .ok()
+            .and_then(|l| self.lua_tex.lang.get(&l))
+            .and_then(|p| p.pre_hyphen)
+            .unwrap_or(i32::from(b'-'))
     }
 
-    fn lk_post_hyphen_char(&self, _lang: i32) -> i32 {
-        0
+    fn lk_post_hyphen_char(&self, lang: i32) -> i32 {
+        u8::try_from(lang).ok().and_then(|l| self.lua_tex.lang.get(&l)).map_or(0, |p| p.post_hyphen)
     }
 
     fn lk_insert_character(&mut self, c: i32) -> u32 {

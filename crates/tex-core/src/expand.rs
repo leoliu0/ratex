@@ -3904,6 +3904,7 @@ impl Engine {
             (Some(x), Some(y)) => match (&x, &y) {
                 (Equiv::CharDef(v1), Equiv::CharDef(v2)) => v1 == v2,
                 (Equiv::MathCharDef(v1), Equiv::MathCharDef(v2)) => v1 == v2,
+                (Equiv::UMathCharDef(v1), Equiv::UMathCharDef(v2)) => v1 == v2,
                 (Equiv::FontRef(v1), Equiv::FontRef(v2)) => v1 == v2,
                 (Equiv::CountReg(v1), Equiv::CountReg(v2)) => v1 == v2,
                 (Equiv::AttributeReg(v1), Equiv::AttributeReg(v2)) => v1 == v2,

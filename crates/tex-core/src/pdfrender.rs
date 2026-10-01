@@ -1111,6 +1111,7 @@ impl<'a> RenderCtx<'a> {
                     list: inner,
                     kind,
                     lr,
+                    ..
                 } => {
                     let (bh, bd) = (*h as i64, *d as i64);
                     let sh = if rtl { -(*shift as i64) } else { *shift as i64 };
@@ -1324,6 +1325,9 @@ impl<'a> RenderCtx<'a> {
                 {
                     cur_x += self.emit_lua_glyph(*font, u32::from(*c), cur_x, y, 0, 0, 0);
                 }
+                Node::LuaGlyph(g) => {
+                    cur_x += self.emit_lua_glyph(g.font, g.c, cur_x, y, g.xoffset, g.yoffset, g.expansion_factor);
+                }
                 Node::Char { c, font } => {
                     let adv = self.font_char_advance_sp(*font, *c);
                     self.emit_char_sp(*font, *c, cur_x, y, 0);
@@ -1389,6 +1393,7 @@ impl<'a> RenderCtx<'a> {
                     list: inner,
                     kind,
                     lr,
+                    ..
                 } => {
                     let (bw, bh, sh) = (*w as i64, *h as i64, *shift as i64);
 
@@ -1533,6 +1538,7 @@ impl<'a> RenderCtx<'a> {
             list: inner,
             kind,
             lr,
+            ..
         } = b
         else {
             return;

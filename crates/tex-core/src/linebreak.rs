@@ -429,6 +429,7 @@ impl Engine {
                 &params,
                 threshold,
                 final_pass,
+                second_pass,
                 extra_stretch,
                 bg_w,
                 bg_st,
@@ -988,6 +989,7 @@ impl Engine {
         params: &ParaParams,
         threshold: i32,
         final_pass: bool,
+        second_pass: bool,
         extra_stretch: i32,
         bg_w: i64,
         bg_st: [i64; 4],
@@ -1043,6 +1045,10 @@ impl Engine {
                             0
                         };
                         (fonts.char_width(*font, *c) as i64, [0; 4], [0; 4], fst, fsh)
+                    }
+                    Node::LuaGlyph(g) => {
+                        prev_exp_char = None;
+                        (crate::boxes::lua_glyph_dims(&self.eqtb, g).0 as i64, [0; 4], [0; 4], 0, 0)
                     }
                     Node::Ligature {
                         c, font, lig_width, ..
@@ -1683,7 +1689,11 @@ impl Engine {
                         params.ex_hyphen_penalty
                     };
                     let endw = cum_w[i] + disc_list_width(&self.eqtb, &dc.pre_break);
-                    consider!(i, true, pen, BreakType::Hyphenated, false, endw);
+                    // luatex: syllable discretionaries (subtype > automatic)
+                    // only break in the second pass
+                    if second_pass || dc.subtype <= 2 {
+                        consider!(i, true, pen, BreakType::Hyphenated, false, endw);
+                    }
                 }
                 _ => {}
             }
@@ -2533,6 +2543,7 @@ fn push_dims(eqtb: &crate::eqtb::Eqtb, n: Node, seg: &mut NodeList, w: &mut i64)
     let fonts = crate::boxes::eqtb_fonts(eqtb);
     let wd = match &n {
         Node::Char { c, font } => fonts.char_width(*font, *c),
+        Node::LuaGlyph(g) => crate::boxes::lua_glyph_dims(eqtb, g).0,
         Node::Ligature { lig_width, .. } => *lig_width,
         Node::Glue(g) => g.width,
         Node::Kern(k) | Node::ExplicitKern(k) | Node::AccentKern(k) => *k,
@@ -2551,6 +2562,7 @@ fn disc_list_width(eqtb: &crate::eqtb::Eqtb, l: &[Node]) -> i64 {
     l.iter()
         .map(|nn| match nn {
             Node::Char { c, font } => fonts.char_width(*font, *c) as i64,
+            Node::LuaGlyph(g) => crate::boxes::lua_glyph_dims(eqtb, g).0 as i64,
             Node::Ligature { lig_width, .. } => *lig_width as i64,
             Node::Kern(k) | Node::ExplicitKern(k) | Node::AccentKern(k) => *k as i64,
             Node::Box { w, .. } | Node::Rule { width: w, .. } => *w as i64,

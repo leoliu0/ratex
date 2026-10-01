@@ -213,9 +213,63 @@ pub enum IntParam {
     PdfOmitMediaBox,
     /// LuaTeX `\pdfvariable linking`.
     PdfLinking,
+    // ---- LuaTeX-only integer parameters (INITEX values in luatex.rs) ----
+    AutomaticHyphenMode,
+    AutomaticHyphenPenalty,
+    BreakAfterDirMode,
+    CompoundHyphenMode,
+    DiscretionaryLigatureMode,
+    ExceptionPenalty,
+    ExplicitHyphenPenalty,
+    FixupBoxesMode,
+    GlyphDimensionsMode,
+    HyphenationBounds,
+    HyphenPenaltyMode,
+    LocalBrokenPenalty,
+    LocalInterLinePenalty,
+    LuaCopyInputNodes,
+    MathDefaultsMode,
+    MathDelimitersMode,
+    MathDisplaySkipMode,
+    MathEmptyDisplayMode,
+    MathEqDirMode,
+    MathEqnoGapStep,
+    MathFlattenMode,
+    MathItalicsMode,
+    MathNoLimitsMode,
+    MathPenaltiesMode,
+    MathRulesFam,
+    MathRulesMode,
+    MathRuleThicknessMode,
+    MathScriptBoxMode,
+    MathScriptCharMode,
+    MathScriptsMode,
+    MathSurroundMode,
+    NoKerns,
+    NoLigs,
+    NoSpaces,
+    OutputBox,
+    PreBinOpPenalty,
+    PreDisplayGapFactor,
+    PreRelPenalty,
+    ShapeMode,
+    SuppressFontNotFoundError,
+    SuppressIfCsnameError,
+    SuppressLongError,
+    SuppressMathParError,
+    SuppressOuterError,
+    SuppressPrimitiveError,
+    VariableFam,
+    /// LuaTeX `\textdirection` and the other direction parameters (0 = TLT).
+    TextDirection,
+    ParDirection,
+    BodyDirection,
+    LineDirection,
+    MathDirection,
+    PageDirection,
 }
 
-pub const NUM_INT_PARAMS: usize = 140;
+pub const NUM_INT_PARAMS: usize = 140 + 52;
 
 impl IntParam {
     #[inline]
@@ -364,6 +418,58 @@ impl IntParam {
         IntParam::PdfRecompress,
         IntParam::PdfOmitMediaBox,
         IntParam::PdfLinking,
+        IntParam::AutomaticHyphenMode,
+        IntParam::AutomaticHyphenPenalty,
+        IntParam::BreakAfterDirMode,
+        IntParam::CompoundHyphenMode,
+        IntParam::DiscretionaryLigatureMode,
+        IntParam::ExceptionPenalty,
+        IntParam::ExplicitHyphenPenalty,
+        IntParam::FixupBoxesMode,
+        IntParam::GlyphDimensionsMode,
+        IntParam::HyphenationBounds,
+        IntParam::HyphenPenaltyMode,
+        IntParam::LocalBrokenPenalty,
+        IntParam::LocalInterLinePenalty,
+        IntParam::LuaCopyInputNodes,
+        IntParam::MathDefaultsMode,
+        IntParam::MathDelimitersMode,
+        IntParam::MathDisplaySkipMode,
+        IntParam::MathEmptyDisplayMode,
+        IntParam::MathEqDirMode,
+        IntParam::MathEqnoGapStep,
+        IntParam::MathFlattenMode,
+        IntParam::MathItalicsMode,
+        IntParam::MathNoLimitsMode,
+        IntParam::MathPenaltiesMode,
+        IntParam::MathRulesFam,
+        IntParam::MathRulesMode,
+        IntParam::MathRuleThicknessMode,
+        IntParam::MathScriptBoxMode,
+        IntParam::MathScriptCharMode,
+        IntParam::MathScriptsMode,
+        IntParam::MathSurroundMode,
+        IntParam::NoKerns,
+        IntParam::NoLigs,
+        IntParam::NoSpaces,
+        IntParam::OutputBox,
+        IntParam::PreBinOpPenalty,
+        IntParam::PreDisplayGapFactor,
+        IntParam::PreRelPenalty,
+        IntParam::ShapeMode,
+        IntParam::SuppressFontNotFoundError,
+        IntParam::SuppressIfCsnameError,
+        IntParam::SuppressLongError,
+        IntParam::SuppressMathParError,
+        IntParam::SuppressOuterError,
+        IntParam::SuppressPrimitiveError,
+        IntParam::VariableFam,
+        IntParam::TextDirection,
+        IntParam::ParDirection,
+        IntParam::BodyDirection,
+        IntParam::LineDirection,
+        IntParam::MathDirection,
+        IntParam::PageDirection,
     ];
 
     pub fn from_idx(i: u16) -> Option<Self> {
@@ -431,9 +537,15 @@ pub enum DimParam {
     PdfIgnoredDimen,
     /// LuaTeX `\pdfvariable xformmargin`.
     PdfXFormMargin,
+    /// LuaTeX `\pagetopoffset`, `\pageleftoffset`, `\pagebottomoffset` and
+    /// `\pagerightoffset` (shift of the page box on the page).
+    PageTopOffset,
+    PageLeftOffset,
+    PageBottomOffset,
+    PageRightOffset,
 }
 
-pub const NUM_DIM_PARAMS: usize = 45;
+pub const NUM_DIM_PARAMS: usize = 45 + 4;
 
 impl DimParam {
     #[inline]
@@ -487,6 +599,10 @@ impl DimParam {
         DimParam::PdfEachLineDepth,
         DimParam::PdfIgnoredDimen,
         DimParam::PdfXFormMargin,
+        DimParam::PageTopOffset,
+        DimParam::PageLeftOffset,
+        DimParam::PageBottomOffset,
+        DimParam::PageRightOffset,
     ];
 
     pub fn from_idx(i: u16) -> Option<Self> {
@@ -514,9 +630,11 @@ pub enum GlueParam {
     ThinMuSkip,
     MedMuSkip,
     ThickMuSkip,
+    /// LuaTeX `\mathsurroundskip`.
+    MathSurroundSkip,
 }
 
-pub const NUM_GLUE_PARAMS: usize = 17;
+pub const NUM_GLUE_PARAMS: usize = 18;
 
 impl GlueParam {
     #[inline]
@@ -985,10 +1103,6 @@ pub enum Prim {
     Attribute,
     AttributeDef,
     Ustack,
-    Umathfractiondelsize,
-    Umathstacknumup,
-    Umathstackdenomdown,
-    Umathstackvgap,
     Ustartmath,
     Ustopmath,
     PdfNoBuiltinToUnicode,
@@ -1108,6 +1222,10 @@ pub enum Prim {
     ULeft,
     UMiddle,
     URight,
+    /// LuaTeX-only primitive with its own [`crate::uprim::UPrim`] identity.
+    U(crate::uprim::UPrim),
+    /// LuaTeX `\Umath<param>` (`set_math_param_cmd`), by `math_param_*` number.
+    UMath(u8),
 }
 
 /// Stable wire codes for the format dump (`crate::format`). Unit variants
@@ -1518,10 +1636,6 @@ impl Prim {
             Prim::Attribute => 375,
             Prim::AttributeDef => 376,
             Prim::Ustack => 377,
-            Prim::Umathfractiondelsize => 378,
-            Prim::Umathstacknumup => 379,
-            Prim::Umathstackdenomdown => 380,
-            Prim::Umathstackvgap => 381,
             Prim::Ustartmath => 382,
             Prim::Ustopmath => 383,
             Prim::PdfNoBuiltinToUnicode => 384,
@@ -1600,6 +1714,8 @@ impl Prim {
             Prim::ULeft => 652,
             Prim::UMiddle => 653,
             Prim::URight => 654,
+            Prim::U(u) => 0x5000 | u.idx(),
+            Prim::UMath(id) => 0x5800 | id as u16,
             Prim::ScriptScriptStyle => 284,
             Prim::Patterns => 287,
             Prim::Hyphenation => 288,
@@ -1988,10 +2104,6 @@ impl Prim {
             375 => Some(Prim::Attribute),
             376 => Some(Prim::AttributeDef),
             377 => Some(Prim::Ustack),
-            378 => Some(Prim::Umathfractiondelsize),
-            379 => Some(Prim::Umathstacknumup),
-            380 => Some(Prim::Umathstackdenomdown),
-            381 => Some(Prim::Umathstackvgap),
             382 => Some(Prim::Ustartmath),
             383 => Some(Prim::Ustopmath),
             384 => Some(Prim::PdfNoBuiltinToUnicode),
@@ -2070,6 +2182,10 @@ impl Prim {
             652 => Some(Prim::ULeft),
             653 => Some(Prim::UMiddle),
             654 => Some(Prim::URight),
+            0x5000..=0x57ff => Some(Prim::U(crate::uprim::UPrim::from_idx(c & 0x07ff)?)),
+            0x5800..=0x58ff if (c & 0xff) < crate::uprim::UMATH_NAMES.len() as u16 => {
+                Some(Prim::UMath((c & 0xff) as u8))
+            }
             0x1000..=0x1fff => {
                 let i = c & 0x0fff;
                 Some(Prim::IntP(IntParam::from_idx(i)?))
@@ -2101,6 +2217,7 @@ impl Prim {
                     14 => GlueParam::ThinMuSkip,
                     15 => GlueParam::MedMuSkip,
                     16 => GlueParam::ThickMuSkip,
+                    17 => GlueParam::MathSurroundSkip,
                     _ => return None,
                 }))
             }

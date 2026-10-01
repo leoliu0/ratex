@@ -197,6 +197,11 @@ impl Engine {
         }
         g.stretch = crate::scaled::xn_over_d(g.stretch, sf as i32, 1000);
         g.shrink = crate::scaled::xn_over_d(g.shrink, 1000, sf as i32);
+        // luatex run_app_space / app_space: every text space is typed
+        // `spaceskip` (`space_skip_code + 1`)
+        if self.engine_kind == crate::engine::EngineKind::LuaTeX {
+            g.subtype = glue_subtype::SPACE_SKIP;
+        }
         g
     }
 
@@ -227,6 +232,10 @@ impl Engine {
                         None => Glue::zero(),
                     }
                 };
+                let mut g = g;
+                if self.engine_kind == crate::engine::EngineKind::LuaTeX {
+                    g.subtype = glue_subtype::SPACE_SKIP;
+                }
                 self.cur_list.push(Node::Glue(g));
             }
             Mode::Math | Mode::DisplayMath => {
@@ -240,6 +249,42 @@ impl Engine {
             }
             Mode::Vertical | Mode::InternalVertical => {}
         }
+    }
+
+    /// Whether the current font is a Lua font (its characters become
+    /// [`Node::LuaGlyph`] in LuaTeX).
+    #[inline]
+    pub(crate) fn cur_font_is_lua(&self) -> bool {
+        self.eqtb.fonts.get(self.eqtb.cur_font_val as usize).is_some_and(|f| f.lua.is_some())
+    }
+
+    /// LuaTeX `new_char`: a glyph node for character `c` of the current
+    /// font, recording the language state of the moment.
+    pub(crate) fn new_lua_glyph(&self, c: u32) -> Node {
+        let ctx = self.lang_ctx();
+        Node::LuaGlyph(Box::new(crate::boxes::LuaGlyph {
+            c,
+            font: self.eqtb.cur_font_val,
+            lang: ctx.lang,
+            left: ctx.left,
+            right: ctx.right,
+            uchyph: ctx.uchyph,
+            xoffset: 0,
+            yoffset: 0,
+            expansion_factor: 0,
+            data: 0,
+            subtype: crate::lua_node::GLYPH_CHARACTER as u8,
+            components: Vec::new(),
+        }))
+    }
+
+    /// LuaTeX `run_char`: append a glyph node for character `c` of the
+    /// current Lua font. Ligatures, kerns and hyphens are built later by the
+    /// text passes (`new_ligkern`).
+    pub(crate) fn append_lua_glyph(&mut self, c: u32) {
+        let glyph = self.new_lua_glyph(c);
+        self.cur_list.push(glyph);
+        self.space_factor = self.space_factor_of(c);
     }
 
     pub fn char_token(&mut self, c: u8, is_letter: bool) {
@@ -260,6 +305,12 @@ impl Engine {
                 self.start_paragraph(true);
             }
             Mode::Math | Mode::DisplayMath => {
+                if self.engine_kind == crate::engine::EngineKind::LuaTeX {
+                    let (class, family, slot) = self.eqtb.lua_math_code(u32::from(c));
+                    let source = self.current_token_source_mark();
+                    self.set_math_char_lua(class, family, slot, u32::from(c), source);
+                    return;
+                }
                 let mc = self.eqtb.math_code[c as usize];
                 if mc & 0x8000 != 0 {
                     self.active_char(u32::from(c));
@@ -468,8 +519,26 @@ impl Engine {
     pub fn vlist_append(&mut self, n: Node) {
         self.vlist_append_il(n, true);
     }
-    pub fn vlist_append_il(&mut self, n: Node, interline: bool) {
+    pub fn vlist_append_il(&mut self, mut n: Node, interline: bool) {
         if self.mode == Mode::Vertical {
+            // luatex append_to_vlist: `append_to_vlist_filter` supplies the
+            // nodes (and `prev_depth`) instead of the interline glue
+            if interline && self.engine_kind == crate::engine::EngineKind::LuaTeX && matches!(n, Node::Box { .. }) {
+                match self.lua_append_to_vlist(n, "box", self.prev_depth) {
+                    Ok((list, depth)) => {
+                        for item in list {
+                            self.page_append(item);
+                        }
+                        if let Some(d) = depth {
+                            self.prev_depth = d;
+                        }
+                        self.lua_page_filter(crate::lua_callbacks::page_info::BOX, true);
+                        self.build_page();
+                        return;
+                    }
+                    Err(back) => n = back,
+                }
+            }
             // tex.web append_to_vlist (§21374): interline glue is
             // materialized AT APPEND TIME against prev_depth with the
             // CURRENT \baselineskip — deferring it to the page builder
@@ -525,8 +594,17 @@ impl Engine {
                 }
                 _ => {}
             }
+            let page_info = match &n {
+                Node::Box { .. } => Some(crate::lua_callbacks::page_info::BOX),
+                Node::Ins { .. } => Some(crate::lua_callbacks::page_info::INSERT),
+                Node::Penalty(_) => Some(crate::lua_callbacks::page_info::PENALTY),
+                _ => None,
+            };
             self.page_append(n);
             if trigger {
+                if let Some(info) = page_info {
+                    self.lua_page_filter(info, true);
+                }
                 self.build_page();
             }
         } else {
@@ -667,6 +745,14 @@ impl Engine {
             self.lig_kern_loop(f, LigStack::default(), None);
         }
         self.native_text.suppress_left_boundary = true;
+        // LuaTeX run_boundary: `\noboundary` leaves a boundary node (subtype
+        // 0) between the glyphs of a Lua font, which blocks ligatures/kerns
+        if self.engine_kind == crate::engine::EngineKind::LuaTeX
+            && matches!(self.mode, Mode::Horizontal | Mode::RestrictedHorizontal)
+            && self.cur_font_is_lua()
+        {
+            self.cur_list.push(Node::Whatsit(crate::boxes::WhatIt::Boundary { kind: 0, value: 0 }));
+        }
     }
 
     /// tex.web main loop when the character chain ends (any command other
@@ -955,6 +1041,38 @@ impl Engine {
             Some(font) => (font.char_width(c), font.char_height(c), font.char_depth(c)),
             None => (0, 0, 0),
         }
+    }
+
+    /// `new_glyph(f, c)`: the node for character `c` of font `f` when the
+    /// font has it (a glyph for a Lua font, a character node otherwise).
+    pub(crate) fn new_glyph_node(&self, f: u16, c: u32) -> Option<Node> {
+        let font = self.eqtb.fonts.get(f as usize)?;
+        if font.lua.is_some() {
+            if !font.lua_char_exists(c) {
+                return None;
+            }
+            return Some(Node::LuaGlyph(Box::new(crate::boxes::LuaGlyph {
+                c,
+                font: f,
+                lang: 0,
+                left: 0,
+                right: 0,
+                uchyph: 0,
+                xoffset: 0,
+                yoffset: 0,
+                expansion_factor: 0,
+                data: 0,
+                subtype: 0,
+                components: Vec::new(),
+            })));
+        }
+        let byte = u8::try_from(c).ok()?;
+        font.char_present(byte).then_some(Node::Char { c: byte, font: f })
+    }
+
+    /// Width, height and depth of character `c` of font `f`.
+    pub(crate) fn glyph_whd(&self, f: u16, c: u32) -> (i32, i32, i32) {
+        crate::boxes::lua_glyph_whd(&self.eqtb.fonts, i32::from(f), c as i32, 0)
     }
 
 
@@ -1983,6 +2101,13 @@ impl Engine {
             None if self.mode == Mode::Vertical => self.last_page_node_type,
             None => -1,
             Some(Node::Char { .. }) | Some(Node::NativeGlyphRun { .. }) => 0,
+            Some(Node::LuaGlyph(g)) => {
+                if u16::from(g.subtype) & crate::lua_node::GLYPH_LIGATURE != 0 {
+                    7
+                } else {
+                    0
+                }
+            }
             Some(Node::Box { kind, .. }) if *kind == boxes::HBOX => 1,
             Some(Node::Box { .. }) => 2,
             Some(Node::Rule { .. }) => 3,
@@ -2044,23 +2169,50 @@ impl Engine {
     /// its three parts are typeset as restricted-horizontal groups.
     pub fn do_discretionary(&mut self) {
         self.flush_native_text();
-        self.cur_list.push(Node::Disc(crate::boxes::DiscNode::new(Vec::new(), Vec::new(), Vec::new(), 0)));
+        let mut disc = crate::boxes::DiscNode::new(Vec::new(), Vec::new(), Vec::new(), 0);
+        if self.engine_kind == crate::engine::EngineKind::LuaTeX {
+            // luatex append_discretionary: `\discretionary [penalty <n>]`
+            // keeps the \hyphenpenalty of the moment (no exhyphenpenalty
+            // rule for an empty pre-break text)
+            disc.penalty = self.eqtb.int_params[IntParam::HyphenPenalty.idx() as usize];
+            if self.scan_keyword(b"penalty") {
+                disc.penalty = self.scan_int();
+            }
+        }
+        self.cur_list.push(Node::Disc(disc));
         self.begin_disc_part(0);
     }
 
     /// tex.web §1117 for `\-`: the pre-break text is the current font's
-    /// \hyphenchar when it is in 0..=255 and present in the font.
+    /// \hyphenchar when it is in 0..=255 and present in the font. LuaTeX
+    /// makes an explicit discretionary (subtype 1, `\exhyphenpenalty`) whose
+    /// pre-break text is the language's pre-hyphen character; a Lua font
+    /// makes it a glyph.
     pub fn append_hyphen_discretionary(&mut self) {
         self.flush_native_text();
         let f = self.eqtb.cur_font_val;
-        let hc = self.eqtb.hyphen_char.get(f as usize).copied().unwrap_or(-1);
+        let lua_mode = self.engine_kind == crate::engine::EngineKind::LuaTeX;
         let mut pre_break = Vec::new();
-        if let Ok(c) = u8::try_from(hc) {
-            if self.font_has_character_or_warn(f, c, None) {
-                pre_break.push(Node::Char { c, font: f });
+        if lua_mode && self.cur_font_is_lua() {
+            let lang = u8::try_from(self.eqtb.int_params[IntParam::Language.idx() as usize]).unwrap_or(0);
+            let c = self.lua_tex.lang.get(&lang).and_then(|p| p.pre_hyphen).unwrap_or(i32::from(b'-'));
+            if c > 0 {
+                pre_break.push(self.new_lua_glyph(c as u32));
+            }
+        } else {
+            let hc = self.eqtb.hyphen_char.get(f as usize).copied().unwrap_or(-1);
+            if let Ok(c) = u8::try_from(hc) {
+                if self.font_has_character_or_warn(f, c, None) {
+                    pre_break.push(Node::Char { c, font: f });
+                }
             }
         }
-        self.cur_list.push(Node::Disc(crate::boxes::DiscNode::new(pre_break, Vec::new(), Vec::new(), 0)));
+        let mut disc = crate::boxes::DiscNode::new(pre_break, Vec::new(), Vec::new(), 0);
+        if lua_mode {
+            disc.subtype = 1;
+            disc.penalty = self.eqtb.int_params[IntParam::ExHyphenPenalty.idx() as usize];
+        }
+        self.cur_list.push(Node::Disc(disc));
     }
 
     /// `new_save_level(disc_group); scan_left_brace; push_nest;
@@ -2102,6 +2254,7 @@ impl Engine {
                 Node::Char { .. }
                     | Node::Ligature { .. }
                     | Node::NativeGlyphRun { .. }
+                    | Node::LuaGlyph(_)
                     | Node::Box { .. }
                     | Node::Rule { .. }
                     | Node::Kern(_)
@@ -2427,6 +2580,7 @@ impl Engine {
             Mode::Horizontal => self.end_paragraph(),
             Mode::Vertical => {
                 self.resume_after_display = false;
+                self.lua_page_filter(crate::lua_callbacks::page_info::VMODE_PAR, true);
                 self.build_page();
             }
             Mode::InternalVertical => {
@@ -2551,6 +2705,7 @@ impl Engine {
                 }
             }
             Mode::Vertical => {
+                let mut indent = indent;
                 self.par_interrupted = false;
                 // tex.web resume_after_display (§1194): when text follows a
                 // display the new hlist is pushed directly — no \parskip,
@@ -2561,6 +2716,9 @@ impl Engine {
                     // is appended unconditionally
                     let ps = self.eqtb.glue_params[GlueParam::ParSkip.idx() as usize];
                     self.page_list.push(Node::Glue(ps.param(glue_subtype::PAR_SKIP)));
+                    if self.engine_kind == crate::engine::EngineKind::LuaTeX {
+                        indent = self.lua_new_graf(indent);
+                    }
                 }
                 // (tex.web: a paragraph is not a group; no eqtb level)
                 // In outer vmode, the global contribution list (page_list)
@@ -2599,6 +2757,7 @@ impl Engine {
                 // §1091: `if nest_ptr=1 then build_page` comes last, so an
                 // output routine it fires is read BEFORE the \everypar
                 // tokens (which then run in the paragraph, not the routine)
+                self.lua_page_filter(crate::lua_callbacks::page_info::NEW_GRAF, true);
                 self.build_page();
             }
             Mode::InternalVertical => {
@@ -2851,6 +3010,7 @@ impl Engine {
 
                 if !self.in_display_init {
                     let pages_before = self.pdf_doc.pages.len();
+                    self.lua_page_filter(crate::lua_callbacks::page_info::HMODE_PAR, true);
                     self.build_page();
                     // tex.web: a page shipped inside this paragraph interrupts
                     // it — the resumed content has no complete line yet, so

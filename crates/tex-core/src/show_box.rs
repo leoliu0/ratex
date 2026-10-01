@@ -366,6 +366,7 @@ impl<'a> BoxDisplay<'a> {
                 glue_order,
                 glue_set,
                 lr,
+                ..
             } => {
                 self.print_esc(match *kind {
                     crate::boxes::HBOX => "h",
@@ -394,6 +395,9 @@ impl<'a> BoxDisplay<'a> {
                 if *shift != 0 {
                     self.print(", shifted ");
                     self.print_scaled(*shift);
+                }
+                if self.e.engine_kind == crate::engine::EngineKind::LuaTeX {
+                    self.print(", direction TLT");
                 }
                 // etex.ch "Display if this box is never to be reversed"
                 if *kind == crate::boxes::HBOX && *lr == crate::boxes::BOX_LR_DLIST {
@@ -482,6 +486,9 @@ impl<'a> BoxDisplay<'a> {
             Node::Kern(k) => {
                 self.print_esc("kern");
                 self.print_scaled(*k);
+                if self.e.engine_kind == crate::engine::EngineKind::LuaTeX {
+                    self.print(" (font)");
+                }
             }
             Node::ExplicitKern(k) => {
                 self.print_esc("kern");
@@ -543,6 +550,29 @@ impl<'a> BoxDisplay<'a> {
             Node::Penalty(p) => {
                 self.print_esc("penalty ");
                 self.print_int(*p as i64);
+            }
+            Node::Disc(d) if self.e.engine_kind == crate::engine::EngineKind::LuaTeX => {
+                // texnodes.c show_box: `\discretionary (penalty n)` with the
+                // three lists marked `<`, `>` and `=`
+                let penalty = if d.penalty != crate::boxes::DISC_PENALTY_TEX {
+                    d.penalty
+                } else if d.pre_break.is_empty() {
+                    self.e.eqtb.int_params[crate::prim::IntParam::ExHyphenPenalty.idx() as usize]
+                } else {
+                    self.e.eqtb.int_params[crate::prim::IntParam::HyphenPenalty.idx() as usize]
+                };
+                self.print_esc("discretionary");
+                self.print(" (penalty ");
+                self.print_int(i64::from(penalty));
+                self.out.push(b')');
+                for (mark, list) in [(b'<', &d.pre_break), (b'>', &d.post_break), (b'=', &d.no_break)] {
+                    if !list.is_empty() {
+                        let len = self.prefix.len();
+                        self.prefix.extend_from_slice(&[b'.', mark, b' ']);
+                        self.show_node_list(list);
+                        self.prefix.truncate(len);
+                    }
+                }
             }
             Node::Disc(d) => {
                 self.print_esc("discretionary");

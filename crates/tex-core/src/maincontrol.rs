@@ -372,6 +372,15 @@ impl Engine {
                     self.eqtb.assign_cat_code(character.unwrap(), v as u8, g);
                 }
             }
+            MathCode if self.engine_kind == crate::engine::EngineKind::LuaTeX => {
+                self.assign_lua_math_code_command(crate::uprims::MathExt::Tex, "\\mathcode");
+            }
+            DelCode if self.engine_kind == crate::engine::EngineKind::LuaTeX => {
+                self.assign_lua_del_code_command(crate::uprims::MathExt::Tex, "\\delcode");
+            }
+            MathChar if self.engine_kind == crate::engine::EngineKind::LuaTeX => {
+                self.math_char_num_command(crate::uprims::MathExt::Tex, id);
+            }
             MathCode => {
                 let g = self.take_assignment_prefixes("\\mathcode");
                 let (c, character_source) = self.scan_int_with_source();
@@ -541,6 +550,7 @@ impl Engine {
                         glue_order: 0,
                         glue_set: 0.0,
                         lr: 0,
+                        dir: 0,
                     });
                     self.page_append(Node::Glue(crate::boxes::Glue::fil(
                         crate::boxes::GLUE_FILL,
@@ -711,7 +721,7 @@ impl Engine {
                     return;
                 }
                 let (value, source) = self.scan_int_with_source();
-                let maximum = if self.native_text_active() {
+                let maximum = if self.native_text_active() || self.engine_kind == crate::engine::EngineKind::LuaTeX {
                     0x10ffff
                 } else {
                     255
@@ -793,6 +803,9 @@ impl Engine {
                                 .get(*font as usize)
                                 .map_or(0, |font| font.char_italic(*c)),
                         ),
+                        Some(Node::LuaGlyph(g)) => {
+                            Some(self.lua_char(g.font, g.c).map_or(0, |ci| ci.italic))
+                        }
                         _ => None,
                     };
                     if let Some(correction) = correction {
@@ -1355,6 +1368,7 @@ impl Engine {
             Ustartmath | Ustopmath => {
                 self.push_token(Token::char(3, b'$' as u32));
             }
+            U(u) if !u.is_expandable() => self.uprim_command(u, id),
             // expanded by get_token (they must be storeable by \edef etc)
             IfChar | IfCat | IfOdd | IfNum | IfDim | IfVoid | IfHBox | IfVBox | IfHMode
             | IfVMode | IfInner | IfMMode | IfTrue | IfFalse | IfEOF | IfDef | IfCSName
@@ -1392,21 +1406,29 @@ impl Engine {
     ///   kern(delta) [accent char] kern(-a-delta) base_char
     /// so the sequence is exactly as wide as the base character.
     fn do_accent(&mut self) {
-        let acc = self.scan_character_code("\\accent");
-        let f_acc = self.eqtb.cur_font_val;
-        let Some(af) = self.eqtb.fonts.get(f_acc as usize) else {
-            return; // nullfont: nothing happens (tex.web new_character fails)
+        let lua_mode = self.engine_kind == crate::engine::EngineKind::LuaTeX;
+        let acc: u32 = if lua_mode {
+            self.scan_unicode_character_code("\\accent")
+        } else {
+            u32::from(self.scan_character_code("\\accent"))
         };
-        if !af.char_present(acc) {
+        let f_acc = self.eqtb.cur_font_val;
+        if self.eqtb.fonts.get(f_acc as usize).is_none() {
+            return; // nullfont: nothing happens (tex.web new_character fails)
+        }
+        let Some(accent_node) = self.new_glyph_node(f_acc, acc) else {
             // char_warning: no accent glyph — drop the accent; the base
             // character stays in the stream and typesets normally.
             let accent_source = self
                 .current_token_source_mark()
                 .map(|mark| mark.to_context());
-            self.font_has_character_or_warn(f_acc, acc, accent_source);
+            if let Ok(byte) = u8::try_from(acc) {
+                self.font_has_character_or_warn(f_acc, byte, accent_source);
+            }
             return;
-        }
-        let a = af.char_width(acc);
+        };
+        let (a, _, _) = self.glyph_whd(f_acc, acc);
+        let af = &self.eqtb.fonts[f_acc as usize];
         let x = af.x_height();
         let s = f64::from(af.param(1)) / 65536.0; // accent font slant
         // tex.web §1123 do_assignments: expand, skip blanks/\relax and
@@ -1478,14 +1500,18 @@ impl Engine {
             }
         };
         // §1124: a letter, other char, \chardef'd char or \char is the base
-        let base: Option<u8> = if t.is_char() && (t.cc() == 11 || t.cc() == 12) {
-            u8::try_from(t.chr()).ok()
+        let base: Option<u32> = if t.is_char() && (t.cc() == 11 || t.cc() == 12) {
+            Some(t.chr()).filter(|c| lua_mode || *c < 256)
         } else if t.is_cs() {
             match self.eqtb.resolve(t.cs_id()).cloned() {
-                Some(Equiv::Prim(Prim::Char)) => Some(self.scan_character_code("\\char")),
-                Some(Equiv::CharDef(v)) => u8::try_from(v).ok(),
+                Some(Equiv::Prim(Prim::Char)) => Some(if lua_mode {
+                    self.scan_unicode_character_code("\\char")
+                } else {
+                    u32::from(self.scan_character_code("\\char"))
+                }),
+                Some(Equiv::CharDef(v)) => Some(v).filter(|c| lua_mode || *c < 256),
                 Some(Equiv::CharTok(raw)) if matches!(Token(raw).cc(), 11 | 12) => {
-                    u8::try_from(Token(raw).chr()).ok()
+                    Some(Token(raw).chr()).filter(|c| lua_mode || *c < 256)
                 }
                 _ => None,
             }
@@ -1497,33 +1523,23 @@ impl Engine {
         }
         let Some(bc) = base else {
             // no usable base character: append the accent alone
-            self.cur_list.push(Node::Char {
-                c: acc,
-                font: f_acc,
-            });
+            self.cur_list.push(accent_node);
             self.space_factor = 1000;
             return;
         };
         let f_base = self.eqtb.cur_font_val;
-        let exists = self
-            .eqtb
-            .fonts
-            .get(f_base as usize)
-            .map(|f| f.char_present(bc))
-            .unwrap_or(false);
-        if !exists {
+        let Some(base_node) = self.new_glyph_node(f_base, bc) else {
             let source = self
                 .current_token_source_mark()
                 .map(|mark| mark.to_context());
-            self.font_has_character_or_warn(f_base, bc, source);
-            self.cur_list.push(Node::Char {
-                c: acc,
-                font: f_acc,
-            });
+            if let Ok(byte) = u8::try_from(bc) {
+                self.font_has_character_or_warn(f_base, byte, source);
+            }
+            self.cur_list.push(accent_node);
             self.space_factor = 1000;
             return;
-        }
-        let (w, h, _) = self.char_dims(f_base, bc);
+        };
+        let (w, h, _) = self.glyph_whd(f_base, bc);
         let t_sl = self
             .eqtb
             .fonts
@@ -1533,34 +1549,19 @@ impl Engine {
         // If the base height differs from the x-height, the accent char is
         // packed into a box shifted by x-h (tex.web §1274).
         let accent_part: Node = if h != x {
-            let mut b = crate::boxes::hpack(
-                vec![Node::Char {
-                    c: acc,
-                    font: f_acc,
-                }],
-                None,
-                crate::boxes::HBOX,
-                &self.eqtb,
-            )
-            .node;
+            let mut b = crate::boxes::hpack(vec![accent_node], None, crate::boxes::HBOX, &self.eqtb).node;
             if let Node::Box { shift, .. } = &mut b {
                 *shift = x - h;
             }
             b
         } else {
-            Node::Char {
-                c: acc,
-                font: f_acc,
-            }
+            accent_node
         };
         let delta = ((w - a) as f64 / 2.0 + h as f64 * t_sl - x as f64 * s).round() as i32;
         self.cur_list.push(Node::AccentKern(delta));
         self.cur_list.push(accent_part);
         self.cur_list.push(Node::AccentKern(-a - delta));
-        self.cur_list.push(Node::Char {
-            c: bc,
-            font: f_base,
-        });
+        self.cur_list.push(base_node);
         self.space_factor = 1000;
     }
 

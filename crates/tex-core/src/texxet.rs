@@ -171,6 +171,7 @@ impl Engine {
             glue_order: *glue_order,
             glue_set: *glue_set,
             lr: 0,
+            dir: 0,
         })
     }
 
@@ -263,6 +264,7 @@ impl Engine {
                                 .map_or(0, |f| f.char_width(*c) as i64),
                             true,
                         ),
+                        Node::LuaGlyph(g) => (crate::boxes::lua_glyph_dims(&self.eqtb, g).0 as i64, true),
                         Node::Ligature { lig_width, .. } => (*lig_width as i64, true),
                         Node::Box { w, .. } => (*w as i64, true),
                         Node::Rule { width, .. } => (*width as i64, true),
@@ -410,6 +412,7 @@ impl Engine {
                 glue_order,
                 glue_set,
                 lr,
+                dir,
                 ..
             }) => Node::Box {
                 kind,
@@ -422,6 +425,7 @@ impl Engine {
                 glue_order,
                 glue_set,
                 lr,
+                dir,
             },
             _ => {
                 let mut packed = crate::boxes::hpack(out, None, HBOX, &self.eqtb).node;
@@ -455,6 +459,7 @@ fn just_copied(n: &Node) -> bool {
     matches!(
         n,
         Node::Char { .. }
+            | Node::LuaGlyph(_)
             | Node::Ligature { .. }
             | Node::NativeGlyphRun { .. }
             | Node::Box { .. }

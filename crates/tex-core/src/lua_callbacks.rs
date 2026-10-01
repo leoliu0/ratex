@@ -497,3 +497,196 @@ impl Engine {
         self.lua_node_filter(Cb::PostLinebreakFilter, group, lines)
     }
 }
+
+/// The `info` argument of `buildpage_filter` (luatex `lua_key_index`).
+pub(crate) mod page_info {
+    pub const VMODE_PAR: &str = "vmode_par";
+    pub const HMODE_PAR: &str = "hmode_par";
+    pub const INSERT: &str = "insert";
+    pub const BOX: &str = "box";
+    pub const NEW_GRAF: &str = "new_graf";
+    pub const PENALTY: &str = "penalty";
+    pub const BEFORE_DISPLAY: &str = "before_display";
+    pub const AFTER_DISPLAY: &str = "after_display";
+    pub const ALIGNMENT: &str = "alignment";
+    pub const AFTER_OUTPUT: &str = "after_output";
+    pub const END: &str = "end";
+}
+
+impl Engine {
+    /// luatex `checked_page_filter` (`checked`: not while the output routine
+    /// runs) and `normal_page_filter`: `buildpage_filter(info)` just before
+    /// the page builder is entered.
+    #[inline]
+    pub(crate) fn lua_page_filter(&mut self, info: &str, checked: bool) {
+        if self.lua_cb[Cb::BuildpageFilter as usize] <= 0 || (checked && self.output_depth > 0) {
+            return;
+        }
+        self.lua_node_filter_s(Cb::BuildpageFilter, info);
+    }
+
+    /// luatex `new_graf`: `new_graf(mode, indented)` may change the
+    /// indentation (`nil` counts as `false`, any other type is ignored).
+    pub(crate) fn lua_new_graf(&mut self, indented: bool) -> bool {
+        if !self.cb_defined(Cb::NewGraf) {
+            return indented;
+        }
+        let mode = if self.mode == crate::engine::Mode::Vertical { 1 } else { -1 };
+        let rets = self.lua_cb_call(Cb::NewGraf, "new_graf", vec![CbArg::Int(mode), CbArg::Bool(indented)]);
+        match rets.as_deref().and_then(|r| r.first()) {
+            Some(CbRet::Bool(b)) => *b,
+            Some(CbRet::Nil) => false,
+            _ => indented,
+        }
+    }
+
+    /// luatex `make_local_par_node`: `insert_local_par(node, "new_graf")` with
+    /// the paragraph's `local_par` node.
+    pub(crate) fn lua_insert_local_par(&mut self) {
+        if !self.cb_defined(Cb::InsertLocalPar) {
+            return;
+        }
+        let n = self.lua_local_par_node();
+        let _ = self.lua_cb_call(Cb::InsertLocalPar, "insert_local_par", vec![CbArg::Node(n), CbArg::str("new_graf")]);
+        self.lua_nodes.flush_node(n);
+    }
+
+    /// luatex `lua_appendtovlist_callback`: `append_to_vlist_filter(box,
+    /// location, prev_depth, mirrored)` returns the nodes to append and the
+    /// new `prev_depth`. `Err(box)` hands the box back when no function is
+    /// registered (the built-in interline glue applies).
+    pub(crate) fn lua_append_to_vlist(
+        &mut self,
+        b: Node,
+        location: &str,
+        prev_depth: i32,
+    ) -> Result<(NodeList, Option<i32>), Node> {
+        if !self.cb_defined(Cb::AppendToVlistFilter) {
+            return Err(b);
+        }
+        let first = self.lua_nodes_from_engine(vec![b]) as u32;
+        let args = vec![
+            CbArg::Node(first),
+            CbArg::str(location),
+            CbArg::Int(i64::from(prev_depth)),
+            CbArg::Bool(false),
+        ];
+        let Some(rets) = self.lua_cb_call(Cb::AppendToVlistFilter, "append to vlist", args) else {
+            let mut back = self.lua_nodes_to_engine(i64::from(first));
+            return Err(back.remove(0));
+        };
+        let list = match rets.first() {
+            Some(CbRet::Node(h)) => self.lua_nodes_to_engine(i64::from(*h)),
+            Some(CbRet::Nil) | None => Vec::new(),
+            Some(_) => {
+                self.warning_at("(append to vlist): error: node or nil expected", None);
+                Vec::new()
+            }
+        };
+        let depth = match rets.get(1) {
+            Some(CbRet::Int(d)) => Some(*d as i32),
+            Some(CbRet::Num(d)) => Some(d.round() as i32),
+            _ => None,
+        };
+        Ok((list, depth))
+    }
+
+    /// luatex `process_input_buffer`: `line` (no end of line character) may be
+    /// replaced by a string the callback returns; the result loses trailing
+    /// spaces.
+    pub(crate) fn lua_process_input_line(&mut self, line: &mut Vec<u8>) {
+        if !self.cb_defined(Cb::ProcessInputBuffer) {
+            return;
+        }
+        let rets = self.lua_cb_call(Cb::ProcessInputBuffer, "process_input_buffer", vec![CbArg::Str(std::mem::take(line))]);
+        if let Some(CbRet::Str(s)) = rets.and_then(|r| r.into_iter().next()) {
+            *line = s;
+            while line.last() == Some(&b' ') {
+                line.pop();
+            }
+        }
+    }
+
+    /// luatex `write_out`: `process_output_buffer(text)` for a line that goes
+    /// to a `\write` file.
+    pub(crate) fn lua_process_output_line(&mut self, raw: &[u8]) -> Option<Vec<u8>> {
+        if !self.cb_defined(Cb::ProcessOutputBuffer) {
+            return None;
+        }
+        let rets = self.lua_cb_call(Cb::ProcessOutputBuffer, "process_output_buffer", vec![CbArg::Str(raw.to_vec())]);
+        match rets.and_then(|r| r.into_iter().next()) {
+            Some(CbRet::Str(s)) => Some(s),
+            _ => None,
+        }
+    }
+
+    /// luatex `lua_glyph_not_found_callback`: a glyph whose character the font
+    /// lacks reaches the output. Without a callback `char_warning` applies.
+    pub(crate) fn lua_glyph_not_found(&mut self, font: crate::tfm::FontId, c: u32) {
+        if self.cb_defined(Cb::GlyphNotFound) {
+            let _ = self.lua_cb_call(Cb::GlyphNotFound, "glyph not found", vec![CbArg::Int(i64::from(font)), CbArg::Int(i64::from(c))]);
+            return;
+        }
+        if self.eqtb.int_params[crate::prim::IntParam::TracingLostChars.idx() as usize] <= 0 {
+            return;
+        }
+        let name = self.eqtb.fonts.get(usize::from(font)).map_or_else(String::new, |f| f.tfm_name.clone());
+        self.warning_at(
+            &format!("Missing character: There is no {} (U+{c:04X}) in font {name}!", char::from_u32(c).unwrap_or('?')),
+            None,
+        );
+    }
+
+    /// luatex `hpack_quality` / `vpack_quality`: the box was badly packed
+    /// (`what` is underfull, loose, tight or overfull, `value` the badness or
+    /// the overshoot). Returns what the callback produced: a rule for an
+    /// hbox, which hpack appends to the box; `None` when no function is
+    /// registered (the message is printed).
+    pub(crate) fn lua_pack_quality(&mut self, hbox: bool, what: &str, value: i32, bx: &Node, line_start: i32, line: i32) -> Option<NodeList> {
+        let cb = if hbox { Cb::HpackQuality } else { Cb::VpackQuality };
+        if !self.cb_defined(cb) {
+            return None;
+        }
+        let first = self.lua_nodes_from_engine(vec![bx.clone()]) as u32;
+        let args = vec![
+            CbArg::str(what),
+            CbArg::Int(i64::from(value)),
+            CbArg::Node(first),
+            CbArg::Int(i64::from(line_start.abs())),
+            CbArg::Int(i64::from(line)),
+        ];
+        let rets = self.lua_cb_call(cb, if hbox { "hpack quality" } else { "vpack quality" }, args);
+        self.lua_nodes.flush_list(first);
+        let rule = match rets.as_deref().and_then(|r| r.first()) {
+            Some(CbRet::Node(h)) if hbox => self.lua_nodes_to_engine(i64::from(*h)),
+            _ => Vec::new(),
+        };
+        Some(rule)
+    }
+
+    /// luatex `start_page_number` / `stop_page_number` (`->`): whether a
+    /// function replaces the built-in page number printing.
+    pub(crate) fn lua_page_number_callback(&mut self, cb: Cb) -> bool {
+        if !self.cb_defined(cb) {
+            return false;
+        }
+        let _ = self.lua_cb_call(cb, "page number", Vec::new());
+        true
+    }
+
+    /// luatex `finish_pdfpage(is_page)` after a page or form is written.
+    pub(crate) fn lua_finish_pdfpage(&mut self, page: bool) {
+        if self.cb_defined(Cb::FinishPdfpage) {
+            let _ = self.lua_cb_call(Cb::FinishPdfpage, "finish pdfpage", vec![CbArg::Bool(page)]);
+        }
+    }
+
+    /// luatex `finish_pdffile`, `stop_run` and `wrapup_run` (`->`): run when
+    /// the output is closed.
+    pub(crate) fn lua_simple_callback(&mut self, cb: Cb) {
+        if self.cb_defined(cb) {
+            let what = CALLBACK_NAMES[cb as usize];
+            let _ = self.lua_cb_call(cb, what, Vec::new());
+        }
+    }
+}

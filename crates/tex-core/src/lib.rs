@@ -47,6 +47,8 @@ mod lua_sys_status;
 mod lua_sys_unicode;
 mod lua_sys_zlib;
 mod lua_cmds;
+pub mod uprim;
+mod uprims;
 mod lua_img;
 mod lua_lang;
 mod lua_pdf;

@@ -1,9 +1,11 @@
 #![cfg(unix)]
 
-use std::os::unix::fs::{MetadataExt, PermissionsExt};
+use std::os::unix::fs::MetadataExt;
 use std::path::PathBuf;
 use std::process::Command;
 use std::{hash::Hasher, io::Write};
+
+mod support;
 
 struct Fixture(PathBuf);
 impl Fixture {
@@ -36,9 +38,10 @@ mkdir -p "$out" "$aux"
         std::fs::write(self.0.join(name), text).unwrap();
     }
     fn tool(&self, name: &str, body: &str) {
-        self.write(name, &format!("#!/bin/sh\nset -eu\n{body}\n"));
-        std::fs::set_permissions(self.0.join(name), std::fs::Permissions::from_mode(0o755))
-            .unwrap();
+        support::install_executable(
+            &self.0.join(name),
+            format!("#!/bin/sh\nset -eu\n{body}\n").as_bytes(),
+        );
     }
     fn output(&self, args: &[&str]) -> std::process::Output {
         Command::new(env!("CARGO_BIN_EXE_texmk"))
@@ -146,8 +149,10 @@ fn one_copied_texmk_builds_with_embedded_latex_and_bibtex_resources() {
     std::fs::create_dir_all(&project).unwrap();
     std::fs::create_dir_all(&poison).unwrap();
     let standalone = bin.join("texmk");
-    std::fs::copy(env!("CARGO_BIN_EXE_texmk"), &standalone).unwrap();
-    std::fs::set_permissions(&standalone, std::fs::Permissions::from_mode(0o755)).unwrap();
+    support::copy_executable(
+        std::path::Path::new(env!("CARGO_BIN_EXE_texmk")),
+        &standalone,
+    );
     std::fs::write(
         poison.join("article.cls"),
         "\\errmessage{external article.cls was read}\n",
@@ -171,31 +176,18 @@ fn one_copied_texmk_builds_with_embedded_latex_and_bibtex_resources() {
     )
     .unwrap();
 
-    let mut output = None;
-    for _ in 0..20 {
-        match Command::new(&standalone)
-            .arg("main.tex")
-            .current_dir(&project)
-            .env_clear()
-            .env("HOME", fixture.0.join("home"))
-            .env("TEX_RS_CACHE_DIR", fixture.0.join("cache"))
-            .env("TEXMFHOME", fixture.0.join("external-texmf"))
-            .env("TEXMFLOCAL", fixture.0.join("external-texmf"))
-            .env("TEXMFDIST", fixture.0.join("external-texmf"))
-            .env("SOURCE_DATE_EPOCH", "1700000000")
-            .output()
-        {
-            Ok(out) => {
-                output = Some(out);
-                break;
-            }
-            Err(e) if e.raw_os_error() == Some(26) => {
-                std::thread::sleep(std::time::Duration::from_millis(50));
-            }
-            Err(e) => panic!("failed to run standalone texmk: {e}"),
-        }
-    }
-    let output = output.expect("standalone texmk output");
+    let output = Command::new(&standalone)
+        .arg("main.tex")
+        .current_dir(&project)
+        .env_clear()
+        .env("HOME", fixture.0.join("home"))
+        .env("TEX_RS_CACHE_DIR", fixture.0.join("cache"))
+        .env("TEXMFHOME", fixture.0.join("external-texmf"))
+        .env("TEXMFLOCAL", fixture.0.join("external-texmf"))
+        .env("TEXMFDIST", fixture.0.join("external-texmf"))
+        .env("SOURCE_DATE_EPOCH", "1700000000")
+        .output()
+        .unwrap();
     assert!(
         output.status.success(),
         "{}\n{}",
@@ -255,8 +247,10 @@ fn copied_texmk_ignores_external_tex_trees_until_explicitly_enabled() {
         std::fs::create_dir_all(directory).unwrap();
     }
     let standalone = bin.join("texmk");
-    std::fs::copy(env!("CARGO_BIN_EXE_texmk"), &standalone).unwrap();
-    std::fs::set_permissions(&standalone, std::fs::Permissions::from_mode(0o755)).unwrap();
+    support::copy_executable(
+        std::path::Path::new(env!("CARGO_BIN_EXE_texmk")),
+        &standalone,
+    );
 
     let external_packages = [
         (
@@ -292,19 +286,19 @@ fn copied_texmk_ignores_external_tex_trees_until_explicitly_enabled() {
     }
 
     for (package, _, _) in &external_packages {
-        let output = output_retrying_text_busy(
-            Command::new(&standalone)
-                .arg(format!("{package}.tex"))
-                .current_dir(&project)
-                .env_clear()
-                .env("HOME", fixture.0.join("home"))
-                .env(
-                    "TEX_RS_CACHE_DIR",
-                    fixture.0.join(format!("cache-default-{package}")),
-                )
-                .env("TEXINPUTS", &texinputs)
-                .env("TEXMFHOME", &texmfhome),
-        );
+        let output = Command::new(&standalone)
+            .arg(format!("{package}.tex"))
+            .current_dir(&project)
+            .env_clear()
+            .env("HOME", fixture.0.join("home"))
+            .env(
+                "TEX_RS_CACHE_DIR",
+                fixture.0.join(format!("cache-default-{package}")),
+            )
+            .env("TEXINPUTS", &texinputs)
+            .env("TEXMFHOME", &texmfhome)
+            .output()
+            .unwrap();
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(!output.status.success(), "{package} unexpectedly resolved");
         assert!(
@@ -323,26 +317,26 @@ fn copied_texmk_ignores_external_tex_trees_until_explicitly_enabled() {
         ),
     )
     .unwrap();
-    let output = output_retrying_text_busy(
-        Command::new(&standalone)
-            .args(["--allow-system-texmf", "allowed.tex"])
-            .current_dir(&project)
-            .env("TEX_RS_CACHE_DIR", fixture.0.join("cache-rejected")),
-    );
+    let output = Command::new(&standalone)
+        .args(["--allow-system-texmf", "allowed.tex"])
+        .current_dir(&project)
+        .env("TEX_RS_CACHE_DIR", fixture.0.join("cache-rejected"))
+        .output()
+        .unwrap();
     assert!(
         !output.status.success(),
         "--allow-system-texmf must be rejected"
     );
-    let hermetic_after_opt_in = output_retrying_text_busy(
-        Command::new(&standalone)
-            .arg("allowed.tex")
-            .current_dir(&project)
-            .env_clear()
-            .env("HOME", fixture.0.join("home"))
-            .env("TEX_RS_CACHE_DIR", fixture.0.join("cache-allowed"))
-            .env("TEXINPUTS", &texinputs)
-            .env("TEXMFHOME", &texmfhome),
-    );
+    let hermetic_after_opt_in = Command::new(&standalone)
+        .arg("allowed.tex")
+        .current_dir(&project)
+        .env_clear()
+        .env("HOME", fixture.0.join("home"))
+        .env("TEX_RS_CACHE_DIR", fixture.0.join("cache-allowed"))
+        .env("TEXINPUTS", &texinputs)
+        .env("TEXMFHOME", &texmfhome)
+        .output()
+        .unwrap();
     assert!(
         !hermetic_after_opt_in.status.success(),
         "a hermetic build reused state produced with external TeX trees"
@@ -370,8 +364,10 @@ fn copied_texmk_symlink_personalities_need_no_sibling_executables() {
     std::fs::create_dir_all(&bin).unwrap();
     std::fs::create_dir_all(&project).unwrap();
     let standalone = bin.join("texmk");
-    std::fs::copy(env!("CARGO_BIN_EXE_texmk"), &standalone).unwrap();
-    std::fs::set_permissions(&standalone, std::fs::Permissions::from_mode(0o755)).unwrap();
+    support::copy_executable(
+        std::path::Path::new(env!("CARGO_BIN_EXE_texmk")),
+        &standalone,
+    );
     for alias in [
         "ratex",
         "pdflatex",
@@ -389,27 +385,16 @@ fn copied_texmk_symlink_personalities_need_no_sibling_executables() {
         .filter(|entry| entry.file_type().unwrap().is_file())
         .count();
     assert_eq!(physical_files, 1);
-    let run_with_retry = |mut cmd: Command| -> std::process::Output {
-        for _ in 0..20 {
-            match cmd.output() {
-                Err(e) if e.raw_os_error() == Some(26) => {
-                    std::thread::sleep(std::time::Duration::from_millis(50));
-                }
-                Ok(out) => return out,
-                Err(e) => panic!("command failed: {e}"),
-            }
-        }
-        cmd.output().expect("command failed after retries")
-    };
 
     for alias in [
         "ratex", "texmk", "pdflatex", "xelatex", "lualatex", "latexmk",
     ] {
-        let mut cmd = Command::new(bin.join(alias));
-        cmd.arg("--version")
+        let output = Command::new(bin.join(alias))
+            .arg("--version")
             .env_clear()
-            .env("HOME", fixture.0.join("home"));
-        let output = run_with_retry(cmd);
+            .env("HOME", fixture.0.join("home"))
+            .output()
+            .unwrap();
         assert!(output.status.success(), "{alias} --version failed");
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(
@@ -431,13 +416,13 @@ fn copied_texmk_symlink_personalities_need_no_sibling_executables() {
         "\\documentclass{article}\\begin{document}alias\\end{document}\n",
     )
     .unwrap();
-    let mut engine_cmd = Command::new(bin.join("pdflatex"));
-    engine_cmd
+    let engine = Command::new(bin.join("pdflatex"))
         .args(["-interaction=batchmode", "-halt-on-error", "engine.tex"])
         .current_dir(&project)
         .env_clear()
-        .env("HOME", fixture.0.join("home"));
-    let engine = run_with_retry(engine_cmd);
+        .env("HOME", fixture.0.join("home"))
+        .output()
+        .unwrap();
     assert!(
         engine.status.success(),
         "{}\n{}",
@@ -456,13 +441,13 @@ fn copied_texmk_symlink_personalities_need_no_sibling_executables() {
         "\\citation{entry}\n\\bibstyle{plain}\n\\bibdata{refs}\n",
     )
     .unwrap();
-    let mut bibtex_cmd = Command::new(bin.join("bibtex"));
-    bibtex_cmd
+    let bibtex = Command::new(bin.join("bibtex"))
         .arg("main")
         .current_dir(&project)
         .env_clear()
-        .env("HOME", fixture.0.join("home"));
-    let bibtex = run_with_retry(bibtex_cmd);
+        .env("HOME", fixture.0.join("home"))
+        .output()
+        .unwrap();
     assert!(
         bibtex.status.success(),
         "{}\n{}",
@@ -473,20 +458,6 @@ fn copied_texmk_symlink_personalities_need_no_sibling_executables() {
     assert!(std::fs::read_to_string(project.join("main.blg"))
         .unwrap()
         .contains("The style file: <embedded:plain.bst>"));
-}
-
-fn output_retrying_text_busy(cmd: &mut Command) -> std::process::Output {
-    // A freshly copied executable can briefly report ETXTBSY while another
-    // test thread still holds its write descriptor across fork.
-    for _ in 0..20 {
-        match cmd.output() {
-            Err(e) if e.raw_os_error() == Some(26) => {
-                std::thread::sleep(std::time::Duration::from_millis(50));
-            }
-            result => return result.unwrap(),
-        }
-    }
-    cmd.output().unwrap()
 }
 
 fn synctex_input_paths(synctex_gz: &std::path::Path) -> Vec<String> {
@@ -519,8 +490,10 @@ fn texstudio_absolute_command_builds_beside_a_spaced_unicode_source() {
         std::fs::create_dir_all(directory).unwrap();
     }
     let ratex = prefix_bin.join("ratex");
-    std::fs::copy(env!("CARGO_BIN_EXE_ratex"), &ratex).unwrap();
-    std::fs::set_permissions(&ratex, std::fs::Permissions::from_mode(0o755)).unwrap();
+    support::copy_executable(
+        std::path::Path::new(env!("CARGO_BIN_EXE_ratex")),
+        &ratex,
+    );
     let latexmk = alias_bin.join("latexmk");
     std::os::unix::fs::symlink(&ratex, &latexmk).unwrap();
 
@@ -542,15 +515,15 @@ fn texstudio_absolute_command_builds_beside_a_spaced_unicode_source() {
         // and a macOS GUI app does not inherit the Terminal PATH. An empty
         // PATH directory (rather than an unset PATH, which execvp replaces
         // with /bin:/usr/bin) keeps an installed Ratex out of reach.
-        let output = output_retrying_text_busy(
-            Command::new(executable)
-                .args(["-pdf", "-interaction=nonstopmode"])
-                .arg(&source)
-                .current_dir(&gui_cwd)
-                .env_clear()
-                .env("PATH", &gui_path)
-                .env("HOME", fixture.0.join(format!("home-{personality}"))),
-        );
+        let output = Command::new(executable)
+            .args(["-pdf", "-interaction=nonstopmode"])
+            .arg(&source)
+            .current_dir(&gui_cwd)
+            .env_clear()
+            .env("PATH", &gui_path)
+            .env("HOME", fixture.0.join(format!("home-{personality}")))
+            .output()
+            .unwrap();
         assert!(
             output.status.success(),
             "{personality} failed:\n{}\n{}",
@@ -630,15 +603,14 @@ fn eps_figures_and_bibliographies_build_without_any_external_program() {
         "magick",
     ] {
         let stub = trap_bin.join(program);
-        std::fs::write(
+        support::install_executable(
             &stub,
             format!(
                 "#!/bin/sh\necho \"{program} $*\" >> '{}'\nexit 1\n",
                 spawned.display()
-            ),
-        )
-        .unwrap();
-        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+            )
+            .as_bytes(),
+        );
     }
     std::fs::write(
         project.join("figure.eps"),
@@ -850,15 +822,14 @@ fn clean_preserves_user_files_created_during_a_build_in_a_shared_aux_directory()
     std::fs::create_dir_all(&tools).unwrap();
     // The engine wrapper stands in for an editor saving a file mid-build.
     let wrapper = tools.join("pdflatex");
-    std::fs::write(
+    support::install_executable(
         &wrapper,
         format!(
             "#!/bin/sh\n[ -e user-notes.txt ] || echo 'my notes' > user-notes.txt\nexec '{}' \"$@\"\n",
             env!("CARGO_BIN_EXE_pdflatex")
-        ),
-    )
-    .unwrap();
-    std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
+        )
+        .as_bytes(),
+    );
     std::fs::write(
         project.join("main.tex"),
         "\\documentclass{article}\n\\begin{document}\nOwned.\\label{x}\\ref{x}\n\\end{document}\n",
@@ -2334,7 +2305,7 @@ printf '%%PDF-1.4 /Type /Page ' > "$out/$job.pdf"
         "echo bbl > \"$1.bbl\"\necho called >> bibcalls",
     );
     let run = || {
-        Command::new(env!("CARGO_BIN_EXE_texmk"))
+        let output = Command::new(env!("CARGO_BIN_EXE_texmk"))
             .arg("main.tex")
             .current_dir(&f.0)
             .env("TEXMK_LIB", &f.0)
@@ -2342,11 +2313,16 @@ printf '%%PDF-1.4 /Type /Page ' > "$out/$job.pdf"
             .env("TEXMFHOME", &texmf)
             .env("TEXBIBINPUTS", &extra)
             .output()
-            .unwrap()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     };
 
-    assert!(run().status.success());
-    assert!(run().status.success());
+    run();
+    run();
     assert_eq!(
         std::fs::read_to_string(f.0.join("bibcalls"))
             .unwrap()
@@ -2360,12 +2336,7 @@ printf '%%PDF-1.4 /Type /Page ' > "$out/$job.pdf"
         "@book{entry, title={Version two}}\n",
     )
     .unwrap();
-    let output = run();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    run();
     assert_eq!(
         std::fs::read_to_string(f.0.join("bibcalls"))
             .unwrap()

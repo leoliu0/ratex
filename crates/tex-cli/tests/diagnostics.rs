@@ -2,6 +2,9 @@ use std::path::PathBuf;
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+#[cfg(unix)]
+mod support;
+
 static NEXT_JOB: AtomicUsize = AtomicUsize::new(0);
 
 struct Job {
@@ -46,11 +49,10 @@ impl Job {
 
     #[cfg(unix)]
     fn tool(&self, name: &str, body: &str) {
-        use std::os::unix::fs::PermissionsExt;
-
-        self.write(name, &format!("#!/bin/sh\nset -eu\n{body}\n"));
-        std::fs::set_permissions(self.dir.join(name), std::fs::Permissions::from_mode(0o755))
-            .unwrap();
+        support::install_executable(
+            &self.dir.join(name),
+            format!("#!/bin/sh\nset -eu\n{body}\n").as_bytes(),
+        );
     }
 
     #[cfg(unix)]

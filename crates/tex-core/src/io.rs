@@ -813,8 +813,7 @@ impl Engine {
         if !immediate {
             self.append_whatsit(Node::Whatsit(crate::boxes::WhatIt::OpenOut {
                 stream,
-                path: full,
-                shown,
+                names: Box::new((full, shown)),
                 create_parent,
                 source,
             }));

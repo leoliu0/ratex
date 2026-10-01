@@ -594,10 +594,10 @@ impl<'a> BoxDisplay<'a> {
     /// tex.web §1356 + pdftex.web "Display the whatsit node".
     fn display_whatsit(&mut self, w: &WhatIt) {
         match w {
-            WhatIt::OpenOut { stream, shown, .. } => {
+            WhatIt::OpenOut { stream, names, .. } => {
                 self.print_write_whatsit("openout", *stream);
                 self.out.push(b'=');
-                self.print(shown);
+                self.print(&names.1);
             }
             WhatIt::Write { stream, tokens, .. } => {
                 self.print_write_whatsit("write", *stream);

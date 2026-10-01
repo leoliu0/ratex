@@ -2854,12 +2854,11 @@ impl<'a> RenderCtx<'a> {
             }
             OpenOut {
                 stream,
-                path,
-                shown: _,
+                names,
                 create_parent,
                 source,
             } => {
-                let p = path.clone();
+                let p = names.0.clone();
                 let src = source.clone();
                 self.eng
                     .exec_openout(*stream, &p, *create_parent, src.as_ref());

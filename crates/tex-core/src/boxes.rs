@@ -275,10 +275,11 @@ pub enum WhatIt {
     /// whatsit and takes effect in list order at shipout (`out_what` @1414)
     OpenOut {
         stream: u16,
-        path: String,
-        /// tex.web `print_file_name(open_name,open_area,open_ext)`: the
-        /// name as scanned (no `.tex` appended), quoted when it has spaces
-        shown: String,
+        /// (path, shown): the resolved output path, and tex.web
+        /// `print_file_name(open_name,open_area,open_ext)`: the name as
+        /// scanned (no `.tex` appended), quoted when it has spaces. Boxed to
+        /// keep the hot `Node` enum compact.
+        names: Box<(String, String)>,
         /// Managed auxiliary directories mirror nested `\\include` paths.
         /// Traditional and absolute `\\openout` paths do not create parents.
         create_parent: bool,

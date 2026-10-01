@@ -65,6 +65,20 @@ impl Engine {
             Par => self.par_primitive(),
             Indent => self.start_paragraph(true),
             NoIndent => self.start_paragraph(false),
+            // pdftex.web start_par chr 2: \indent in vertical mode, nothing
+            // in horizontal and math mode
+            QuitVMode => {
+                if self.mode.is_v() {
+                    self.start_paragraph(true);
+                }
+            }
+            SetLanguage => self.set_language(id),
+            PdfPrimitiveExec => {
+                let t = self.pdf_primitive_target();
+                self.push_token(t);
+            }
+            PdfRetval | ParShapeLength | ParShapeIndent | ParShapeDimen | GlueToMu
+            | MuToGlue => self.report_illegal_case(id),
             HSkip | HFil | HFill | HFilL | HFilNeg | HSS => {
                 if self.mode.is_v() {
                     self.push_token(Token::from_cs(id));
@@ -207,12 +221,14 @@ impl Engine {
                     _ => 2,
                 });
             }
-            Discretionary => {
+            Discretionary | HyphenDisc => {
                 if self.mode.is_v() {
                     // Start the paragraph before adding replacement text,
                     // and let everypar run before scanning the arguments.
                     self.push_token(Token::from_cs(id));
                     self.start_paragraph(true);
+                } else if p == HyphenDisc {
+                    self.append_hyphen_discretionary();
                 } else {
                     self.do_discretionary();
                 }
@@ -1321,6 +1337,16 @@ impl Engine {
         }
     }
 
+    /// tex.web §1050 report_illegal_case (`you_cant`).
+    pub(crate) fn report_illegal_case(&mut self, id: CsId) {
+        let name = match self.eqtb.resolve(id) {
+            Some(crate::eqtb::Equiv::Prim(p)) => self.prim_name(*p),
+            _ => ::std::string::String::from_utf8_lossy(self.cs.name(id)).into_owned(),
+        };
+        let mode = self.mode.name();
+        self.error(&format!("You can't use `\\{name}' in {mode}"));
+    }
+
     /// tex.web §1267-1275 make_accent: `\accent <number 0-255> <filler>
     /// <char>`. Typesets the next character with an accent character taken
     /// from slot <number> of the current font, stacked above the base char
@@ -1555,6 +1581,8 @@ impl Engine {
             };
             if *scanned {
                 if let Some(message) = message {
+                    // pdftex.web: `pdf_retval := -1 {signal the problem}`
+                    self.pdf_retval = -1;
                     self.error_at(&message, source.clone());
                     omit_requested_obj = true;
                 }
@@ -2447,6 +2475,7 @@ fn whatsit_kind_name(whatsit: &crate::boxes::WhatIt) -> &'static str {
         WhatIt::PdfAnnot { .. } => "PDF annotation",
         WhatIt::PdfStartLink { .. } => "PDF link start",
         WhatIt::PdfEndLink => "PDF link end",
+        WhatIt::Language { .. } => "language",
         WhatIt::Special(_) => "special",
         WhatIt::SavePos { .. } => "position save",
         WhatIt::CjkText(_) => "CJK source text",

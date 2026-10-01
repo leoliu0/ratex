@@ -32,7 +32,7 @@ use crate::tfm::{CharInfo, ExtRecipe, Font, LigStep};
 use crate::token::{CsTable, Token};
 
 const MAGIC: &[u8; 8] = b"RUSTEXFM";
-const VERSION: u16 = 18;
+const VERSION: u16 = 19;
 /// A production format is currently about 8 MiB decoded. Keep corrupt or
 /// unrelated external files from turning format probing into an unbounded
 /// allocation while leaving ample room for future format growth.
@@ -437,11 +437,17 @@ pub fn save_format_with_encoding(
     w.u16(SEMANTICS);
     w.u16(eng.eqtb.cur_font_val);
     w.u8(eng.engine_kind as u8);
-    // control-sequence names (id = position)
+    // control-sequence names (id = position); the low two bits of each
+    // length mark frozen ids (1 = found by name, 2 = anonymous)
     w.u32(eng.cs.len() as u32);
     for id in eng.cs.all_ids() {
         let name = eng.cs.name(id);
-        w.varint(name.len() as u32);
+        let kind = match eng.cs.frozen_kind(id) {
+            None => 0,
+            Some(true) => 1,
+            Some(false) => 2,
+        };
+        w.varint(((name.len() as u32) << 2) | kind);
         w.buf.extend_from_slice(name);
     }
 
@@ -1069,6 +1075,7 @@ pub fn load_format_bytes_into(data: &[u8], eng: &mut Engine) -> Result<(), Strin
     eng.hyphen_exceptions = scratch.hyphen_exceptions;
     eng.par_shape = scratch.par_shape;
     eng.penalty_shapes = scratch.penalty_shapes;
+    eng.primitive_table = scratch.primitive_table;
     eng.penalty_shape_levels = scratch.penalty_shape_levels;
     eng.format_done = scratch.format_done;
     eng.ini_mode = scratch.ini_mode;
@@ -1095,8 +1102,16 @@ fn load_state(r: &mut R, eng: &mut Engine) -> io::Result<()> {
     let n = r.count()?;
     let mut cs = CsTable::new();
     for _ in 0..n {
-        let len = r.varint()? as usize;
-        cs.intern(r.take(len)?);
+        let tagged = r.varint()?;
+        let name = r.take((tagged >> 2) as usize)?;
+        match tagged & 3 {
+            0 => {
+                cs.intern(name);
+            }
+            kind => {
+                cs.push_frozen(name, kind == 1);
+            }
+        }
     }
     if cs.name(eng.ids.par) != b"par" {
         return Err(io::Error::new(

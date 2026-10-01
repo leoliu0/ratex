@@ -229,6 +229,14 @@ pub enum WhatIt {
         dp: i32,
     },
     PdfEndLink,
+    /// tex.web §1341 `language_node` (`\setlanguage`, `fix_language`):
+    /// line_break hyphenates the following words with this language and
+    /// these `\lefthyphenmin`/`\righthyphenmin` values.
+    Language {
+        lang: u8,
+        lhm: u8,
+        rhm: u8,
+    },
     Special(String),
     SavePos {
         obj: i32,

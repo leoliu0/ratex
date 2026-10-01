@@ -516,8 +516,7 @@ impl Engine {
             match &n {
                 Node::Box { h, d, .. } => {
                     if interline {
-                        const IGNORE: i32 = -1000 * 65536;
-                        if self.prev_depth > IGNORE {
+                        if self.prev_depth > self.ignore_depth() {
                             let bs = self.eqtb.glue_params[GlueParam::BaselineSkip.idx() as usize]
                                 .clone();
                             let ls =
@@ -546,8 +545,7 @@ impl Engine {
                 Node::Rule { .. } => {
                     // tex.web §1067/§1068: hrule in vmode does NOT get interline
                     // glue, and sets prev_depth := ignore_depth
-                    const IGNORE: i32 = -1000 * 65536;
-                    self.prev_depth = IGNORE;
+                    self.prev_depth = self.ignore_depth();
                 }
                 _ => {}
             }
@@ -602,6 +600,11 @@ impl Engine {
     }
 
     pub fn append_char(&mut self, c: u8) {
+        // tex.web §1034: a character starting a chain in unrestricted
+        // horizontal mode first checks the paragraph's language
+        if self.mode == Mode::Horizontal && self.native_text.lig_chain.is_none() {
+            self.fix_language();
+        }
         let f = self.eqtb.cur_font_val;
         let present = self
             .eqtb
@@ -1014,7 +1017,7 @@ impl Engine {
             // node; vpackage resolves it to the enclosing box's width
             // (§13468). Baking \hsize in here made \noalign{\hrule} blocks
             // (booktabs) blow the alignment up to full text width.
-            self.prev_depth = -1000 * 65536;
+            self.prev_depth = self.ignore_depth();
             self.vlist_append(Node::Rule {
                 width,
                 height,
@@ -1136,7 +1139,7 @@ impl Engine {
             1 | 2 | 3 => {
                 self.normal_paragraph();
                 self.mode = Mode::InternalVertical;
-                self.prev_depth = -1000 * 65536;
+                self.prev_depth = self.ignore_depth();
                 let toks = (*self.eqtb.tok_params
                     [crate::prim::ToksParam::EveryVBox.idx() as usize])
                     .clone();
@@ -1146,7 +1149,7 @@ impl Engine {
             }
             9 => {
                 self.mode = Mode::InternalVertical;
-                self.prev_depth = -1000 * 65536;
+                self.prev_depth = self.ignore_depth();
             }
             _ => self.mode = Mode::InternalVertical,
         }
@@ -1367,8 +1370,7 @@ impl Engine {
                 }
                 Mode::InternalVertical => {
                     if let Node::Box { h, d, .. } = &node {
-                        const IGNORE_DEPTH: i32 = -1000 * 65536;
-                        if self.prev_depth > IGNORE_DEPTH {
+                        if self.prev_depth > self.ignore_depth() {
                             let bs = self.eqtb.glue_params
                                 [crate::prim::GlueParam::BaselineSkip.idx() as usize]
                                 .clone();
@@ -2011,6 +2013,26 @@ impl Engine {
         self.begin_disc_part(0);
     }
 
+    /// tex.web §1117 for `\-`: the pre-break text is the current font's
+    /// \hyphenchar when it is in 0..=255 and present in the font.
+    pub fn append_hyphen_discretionary(&mut self) {
+        self.flush_native_text();
+        let f = self.eqtb.cur_font_val;
+        let hc = self.eqtb.hyphen_char.get(f as usize).copied().unwrap_or(-1);
+        let mut pre_break = Vec::new();
+        if let Ok(c) = u8::try_from(hc) {
+            if self.font_has_character_or_warn(f, c, None) {
+                pre_break.push(Node::Char { c, font: f });
+            }
+        }
+        self.cur_list.push(Node::Disc(crate::boxes::DiscNode {
+            pre_break,
+            post_break: Vec::new(),
+            no_break: Vec::new(),
+            replace_count: 0,
+        }));
+    }
+
     /// `new_save_level(disc_group); scan_left_brace; push_nest;
     /// mode:=-hmode; space_factor:=1000` for part `part` (0 pre-break,
     /// 1 post-break, 2 no-break); the part index rides in box_shifts.
@@ -2237,7 +2259,7 @@ impl Engine {
         self.box_kinds.push(8);
         self.insert_nums.push(n);
         self.mode = Mode::InternalVertical;
-        self.prev_depth = -1000 * 65536;
+        self.prev_depth = self.ignore_depth();
         // consume the group's opening `{` (tex.web scan_left_brace)
         self.skip_spaces_relax();
         let t = self.get_x_raw();
@@ -2506,6 +2528,7 @@ impl Engine {
                 self.mode = Mode::Horizontal;
                 self.cur_list = Vec::new();
                 self.space_factor = 1000;
+                self.begin_paragraph_language();
                 // tex.web new_graf zeroes the level's prev_graf; a display
                 // RESUMPTION (resume_after_display) does not — the count
                 // already sitting in the field (fragment lines + 3 per
@@ -2549,6 +2572,7 @@ impl Engine {
                 self.mode = Mode::Horizontal;
                 self.cur_list = Vec::new();
                 self.space_factor = 1000;
+                self.begin_paragraph_language();
                 if !resume {
                     *self.prev_graf_mut() = 0;
                 }
@@ -2652,6 +2676,7 @@ impl Engine {
                 self.prev_graf,
             ));
             self.prev_graf = pg;
+            self.end_paragraph_language();
             self.prev_depth = pd;
             self.space_factor = sf;
             self.mode = saved_mode;
@@ -2728,6 +2753,7 @@ impl Engine {
             self.prev_graf,
         ));
         self.prev_graf = pg;
+        self.end_paragraph_language();
         self.prev_depth = pd;
 
         let mut lines_opt = Some(lines);
@@ -2806,7 +2832,7 @@ impl Engine {
     /// used when a paragraph's lines land in an internal vlist, which the
     /// page builder never processes
     fn fill_line_interline(&self, outer_prev_depth: i32, list: NodeList) -> (NodeList, i32) {
-        const IGNORE: i32 = -1000 * 65536;
+        let ignore_depth = self.ignore_depth();
         let bs = self.eqtb.glue_params[GlueParam::BaselineSkip.idx() as usize].clone();
         let ls = self.eqtb.glue_params[GlueParam::LineSkip.idx() as usize].clone();
         let lsl = self.eqtb.dim_params[DimParam::LineSkipLimit.idx() as usize];
@@ -2828,12 +2854,12 @@ impl Engine {
                 }
                 Node::Rule { .. } => {
                     held_placeholder = false;
-                    prev_depth = IGNORE;
+                    prev_depth = ignore_depth;
                     out.push(n);
                 }
                 Node::Box { h, d, .. } => {
                     let (h, d) = (h, d);
-                    if prev_depth > IGNORE {
+                    if prev_depth > ignore_depth {
                         let b = bs.width as i64 - prev_depth as i64 - h as i64;
                         let glue = if b < lsl as i64 {
                             ls.clone()

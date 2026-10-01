@@ -977,6 +977,8 @@ pub enum Prim {
     /// front of a name whose primitive meaning is unexpandable (pdfTeX
     /// `frozen_primitive`).
     PdfPrimitiveExec,
+    /// TeX82 `\-` (tex.web §1114 `discretionary` chr 1).
+    HyphenDisc,
     /// e-TeX TeXXeT text-direction primitives (`valign` with a nonzero
     /// modifier in etex.ch)
     BeginL,
@@ -1422,6 +1424,7 @@ impl Prim {
             Prim::PdfRetval => 411,
             Prim::PdfInsertHt => 412,
             Prim::PdfPrimitiveExec => 413,
+            Prim::HyphenDisc => 414,
             Prim::BeginL => 600,
             Prim::EndL => 601,
             Prim::BeginR => 602,
@@ -1853,6 +1856,7 @@ impl Prim {
             411 => Some(Prim::PdfRetval),
             412 => Some(Prim::PdfInsertHt),
             413 => Some(Prim::PdfPrimitiveExec),
+            414 => Some(Prim::HyphenDisc),
             600 => Some(Prim::BeginL),
             601 => Some(Prim::EndL),
             602 => Some(Prim::BeginR),

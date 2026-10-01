@@ -50,6 +50,17 @@ impl Mode {
             Mode::InternalVertical | Mode::RestrictedHorizontal | Mode::Math
         )
     }
+    /// tex.web §211 print_mode.
+    pub fn name(self) -> &'static str {
+        match self {
+            Mode::Vertical => "vertical mode",
+            Mode::InternalVertical => "internal vertical mode",
+            Mode::Horizontal => "horizontal mode",
+            Mode::RestrictedHorizontal => "restricted horizontal mode",
+            Mode::Math => "math mode",
+            Mode::DisplayMath => "display math mode",
+        }
+    }
 }
 /// Hard stop for a runaway main loop (latex.ltx boot is well below this).
 pub const MAX_MAIN_STEPS: u64 = 100_000_000;
@@ -117,6 +128,9 @@ pub(crate) struct PhysicalTokenSource {
 pub struct Ids {
     pub par: CsId,
     pub cs_escape: u8,
+    /// pdftex.web `frozen_primitive`: the internal `\pdfprimitive` that
+    /// precedes the name of an unexpandable primitive.
+    pub frozen_primitive: CsId,
 }
 
 /// pdfTeX output parameters that the first shipout freezes
@@ -137,6 +151,16 @@ pub struct Engine {
     /// Original control-sequence name of each primitive. Unlike an eqtb
     /// reverse lookup, this survives formats redefining (for example) \input.
     pub(crate) primitive_names: crate::FxHashMap<u16, &'static [u8]>,
+    /// pdftex.web `prim_lookup`: primitive meaning of each primitive name,
+    /// fixed at initialization (redefinitions do not change it).
+    pub(crate) primitive_table: crate::FxHashMap<Box<[u8]>, Prim>,
+    /// pdftex.web `pdf_retval` (`\pdfretval`).
+    pub pdf_retval: i32,
+    /// tex.web `clang`: the language of the innermost paragraph.
+    pub(crate) clang: u8,
+    /// One entry per open paragraph (tex.web new_graf's `prev_graf`
+    /// language encoding and the enclosing `clang`).
+    pub(crate) par_langs: Vec<crate::language::ParLang>,
     pub input: InputStack,
     pub ids: Ids,
 
@@ -865,14 +889,20 @@ impl Engine {
     pub fn new_with_kind(engine_kind: EngineKind, ini_mode: bool) -> Engine {
         let mut cs = CsTable::new();
         let par = cs.intern(b"par");
-        let e = Engine {
+        let frozen_primitive = cs.push_frozen(b"pdfprimitive", false);
+        let mut e = Engine {
             ids: Ids {
                 par,
                 cs_escape: b'\\',
+                frozen_primitive,
             },
             cs,
             eqtb: Eqtb::new(ini_mode),
             primitive_names: crate::FxHashMap::default(),
+            primitive_table: crate::FxHashMap::default(),
+            pdf_retval: 0,
+            clang: 0,
+            par_langs: Vec::new(),
             input: InputStack::new(),
             par_saves: 0,
             resume_after_display: false,
@@ -1126,7 +1156,25 @@ impl Engine {
             after_assignment: None,
             random_seed: 123456789,
         };
+        // pdftex.web: \pdfignoreddimen starts at TeX82's ignore_depth and
+        // the four line dimensions at \pdfignoreddimen ("not set")
+        for p in [
+            DimParam::PdfFirstLineHeight,
+            DimParam::PdfLastLineDepth,
+            DimParam::PdfEachLineHeight,
+            DimParam::PdfEachLineDepth,
+            DimParam::PdfIgnoredDimen,
+        ] {
+            e.eqtb.dim_params[p.idx() as usize] = -1000 * 65536;
+        }
         e
+    }
+
+    /// pdftex.web `pdf_ignored_dimen`: the `\prevdepth` at or below which
+    /// no interline glue is added (TeX82's constant `ignore_depth`).
+    #[inline]
+    pub fn ignore_depth(&self) -> i32 {
+        self.eqtb.dim_params[DimParam::PdfIgnoredDimen.idx() as usize]
     }
     pub fn asset_fingerprint(&self) -> u64 {
         let mut h: u64 = 0xcbf2_9ce4_8422_2325;
@@ -1854,19 +1902,29 @@ impl Engine {
         eng.eqtb.dim_params[DimParam::PdfPageHeight.idx() as usize] = 0;
         eng.init_xetex_primitives();
         eng.init_luatex_primitives();
-        // pdfTeX / e-TeX engine primitives (prim codes 400-413). Only the
-        // ones with implemented semantics are registered.
+        // pdfTeX / e-TeX engine primitives (prim codes 400-413).
         d!(eng, b"ifpdfabsnum", IfPdfAbsNum);
         d!(eng, b"ifpdfabsdim", IfPdfAbsDim);
-        let engine_ints: [(&'static [u8], IntParam, i32); 10] = [
+        d!(eng, b"quitvmode", QuitVMode);
+        d!(eng, b"pdfprimitive", PdfPrimitive);
+        d!(eng, b"ifpdfprimitive", IfPdfPrimitive);
+        d!(eng, b"setlanguage", SetLanguage);
+        d!(eng, b"parshapelength", ParShapeLength);
+        d!(eng, b"parshapeindent", ParShapeIndent);
+        d!(eng, b"parshapedimen", ParShapeDimen);
+        d!(eng, b"-", HyphenDisc);
+        d!(eng, b"gluetomu", GlueToMu);
+        d!(eng, b"mutoglue", MuToGlue);
+        d!(eng, b"pdfretval", PdfRetval);
+        d!(eng, b"pdfinsertht", PdfInsertHt);
+        let engine_ints: [(&'static [u8], IntParam, i32); 11] = [
             (b"synctex", IntParam::Synctex, 0),
             (b"pdfdecimaldigits", IntParam::PdfDecimalDigits, 3),
             (b"pdfdraftmode", IntParam::PdfDraftMode, 0),
             (b"pdfpkresolution", IntParam::PdfPkResolution, 0),
             (b"pdftracingfonts", IntParam::PdfTracingFonts, 0),
             (b"pdfmajorversion", IntParam::PdfMajorVersion, 1),
-            // e-TeX tracing switches the LaTeX kernel assigns (their
-            // tracing output is not implemented yet)
+            (b"lastlinefit", IntParam::LastLineFit, 0),
             (b"tracingassigns", IntParam::TracingAssigns, 0),
             (b"tracinggroups", IntParam::TracingGroups, 0),
             (b"tracingifs", IntParam::TracingIfs, 0),
@@ -1876,6 +1934,28 @@ impl Engine {
             def(name, IntP(p), eng);
             eng.eqtb.int_params[p.idx() as usize] = value;
         }
+        for (name, p) in [
+            (&b"pdffirstlineheight"[..], DimParam::PdfFirstLineHeight),
+            (b"pdflastlinedepth", DimParam::PdfLastLineDepth),
+            (b"pdfeachlineheight", DimParam::PdfEachLineHeight),
+            (b"pdfeachlinedepth", DimParam::PdfEachLineDepth),
+            (b"pdfignoreddimen", DimParam::PdfIgnoredDimen),
+        ] {
+            def(name, DimP(p), eng);
+        }
+        // pdftex.web frozen_primitive: the internal \pdfprimitive marker
+        eng.eqtb
+            .assign(eng.ids.frozen_primitive, Equiv::Prim(PdfPrimitiveExec), true);
+        // pdftex.web prim_lookup table: every primitive name registered
+        let mut table = crate::FxHashMap::default();
+        for id in eng.cs.all_ids() {
+            if let Some(Equiv::Prim(p)) = eng.eqtb.get(id) {
+                if id != eng.ids.frozen_primitive {
+                    table.insert(eng.cs.name(id).to_vec().into_boxed_slice(), *p);
+                }
+            }
+        }
+        eng.primitive_table = table;
     }
     /// SyncTeX records are taken while `\synctex` is nonzero (synctex.c
     /// `SYNCTEX_VALUE`).

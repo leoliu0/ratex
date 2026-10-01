@@ -26,8 +26,6 @@ pub const WRITE_END_TOKEN: crate::token::Token = crate::token::Token(0xFFFF_FFFB
 
 /// tex.web `deplorable`: cost of a break at awful badness
 const DEPLORABLE: i32 = 100_000;
-/// `\prevdepth` sentinel meaning "nothing contributed yet on this page"
-const DEPTH_NONE: i32 = -1000 * 65536;
 /// mark classes are small; guard the per-class mark vectors anyway
 const MAX_MARK_CLASS: usize = 65536;
 
@@ -640,7 +638,7 @@ impl Engine {
                             st.goal_set = true;
                             self.page_goal = self.vsize_goal();
                             self.page_goal_set = true;
-                            self.page_prev_depth = DEPTH_NONE;
+                            self.page_prev_depth = self.ignore_depth();
                         }
                         let ts =
                             self.eqtb.dim_params[crate::prim::DimParam::TopSkip.idx() as usize];
@@ -660,8 +658,8 @@ impl Engine {
                                 spot.cut += 1;
                             }
                         }
-                    } else if self.page_prev_depth > DEPTH_NONE {
-                        self.page_prev_depth = DEPTH_NONE;
+                    } else if self.page_prev_depth > self.ignore_depth() {
+                        self.page_prev_depth = self.ignore_depth();
                     }
                     st.box_seen = true;
                     self.contribute_box(&mut st, h, d);
@@ -1268,7 +1266,7 @@ impl Engine {
         self.eqtb.dim_params[DimParam::PageDepth.idx() as usize] = 0;
         self.page_stretch = [0; 4];
         self.page_shrink = [0; 4];
-        self.page_prev_depth = DEPTH_NONE;
+        self.page_prev_depth = self.ignore_depth();
         self.page_goal = 0x3FFF_FFFF;
         self.page_goal_set = false;
         // <Start a new current page> (tex.web §19955): page_contents := empty
@@ -1339,7 +1337,7 @@ impl Engine {
                     // accounting (contribute_box/gap semantics)
                     let mut total = 0i64;
                     let mut depth = 0i64;
-                    let mut prev_d = DEPTH_NONE;
+                    let mut prev_d = self.ignore_depth();
                     let md64 = self.max_depth();
                     let mut stretch = [0i64; 4];
                     let mut shrink = [0i64; 4];

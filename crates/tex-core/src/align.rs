@@ -411,7 +411,7 @@ impl Engine {
         self.mode = Mode::RestrictedHorizontal;
         self.space_factor = 1000;
         self.prev_graf = 0;
-        self.prev_depth = -1000 * 65536;
+        self.prev_depth = self.ignore_depth();
         self.align_rows.clear();
         self.align_row_adjust.clear();
         self.align_adjust.clear();
@@ -645,7 +645,7 @@ impl Engine {
         self.box_kinds.push(CELL_GROUP_KIND);
         self.mode = mode;
         if mode.is_v() {
-            self.prev_depth = -1000 * 65536;
+            self.prev_depth = self.ignore_depth();
         }
         // NOTE: tex.web parks align_state at 1000000 only while a u-template
         // plays (init_col @15564), not for cell groups generally; a
@@ -685,7 +685,7 @@ impl Engine {
         };
         self.align_push_cell_group(cell_mode);
         if self.align_is_valign {
-            self.prev_depth = -1000 * 65536;
+            self.prev_depth = self.ignore_depth();
         }
         self.align_cell_level = self.eqtb.cur_level;
         self.align_delimiter_balance_base = self.align_token_list_brace_balance();
@@ -1145,7 +1145,7 @@ impl Engine {
         self.align_state = PH_IDLE;
         // an empty \noalign still matters when it reset \prevdepth
         // (\noalign{\nointerlineskip})
-        if !inner.is_empty() || (!self.align_is_valign && end_pd <= -1000 * 65536) {
+        if !inner.is_empty() || (!self.align_is_valign && end_pd <= self.ignore_depth()) {
             let node = Node::Box {
                 kind: crate::boxes::VBOX,
                 w: 0,
@@ -1448,7 +1448,7 @@ impl Engine {
                 self.mode,
                 Mode::Vertical | Mode::InternalVertical | Mode::DisplayMath
             )
-            && self.prev_depth > -1000 * 65536
+            && self.prev_depth > self.ignore_depth()
         {
             Some(self.prev_depth)
         } else {
@@ -1460,7 +1460,7 @@ impl Engine {
                     row.into_iter().next().and_then(|c| c.packed)
                 {
                     if !valign {
-                        prev = (end_pd > -1000 * 65536).then_some(end_pd);
+                        prev = (end_pd > self.ignore_depth()).then_some(end_pd);
                     }
                     // §811: running dimensions of top-level rules extend to
                     // the alignment's boundaries
@@ -1601,7 +1601,7 @@ impl Engine {
                 if let Some(d) = prev {
                     self.prev_depth = d;
                 } else if !rows.is_empty() {
-                    self.prev_depth = -1000 * 65536;
+                    self.prev_depth = self.ignore_depth();
                 }
                 self.page_list.extend(rows);
                 self.build_page();
@@ -1610,7 +1610,7 @@ impl Engine {
                 if let Some(d) = prev {
                     self.prev_depth = d;
                 } else if !rows.is_empty() {
-                    self.prev_depth = -1000 * 65536;
+                    self.prev_depth = self.ignore_depth();
                 }
                 self.cur_list.extend(rows);
             }

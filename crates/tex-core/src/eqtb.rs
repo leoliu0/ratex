@@ -201,6 +201,10 @@ pub struct Eqtb {
     pub cur_level: u16,
     group_level_capacity_exceeded: bool,
     pending_interaction_mode: Option<i32>,
+    /// Set once any control sequence has been given an \outer macro meaning
+    /// and never cleared: until then no token can be \outer, so scanners
+    /// skip the per-token meaning lookup of tex.web §336.
+    outer_macros: bool,
 
     /// tex.web cur_font_loc: current font, group-scoped via SaveItem::CurFont
     pub cur_font_val: u16,
@@ -490,6 +494,7 @@ impl Eqtb {
             save_stack: Vec::new(),
             cur_level: LEVEL_ONE,
             group_level_capacity_exceeded: false,
+            outer_macros: false,
             pending_interaction_mode: None,
             cur_font_val: 0,
             int_params,
@@ -628,6 +633,9 @@ impl Eqtb {
             let old = self.entries[idx].equiv.clone();
             let ol = self.entries[idx].level;
             self.push_save(SaveItem::Eq(id, old, ol));
+        }
+        if matches!(&equiv, Equiv::Macro(m) if m.outer) {
+            self.outer_macros = true;
         }
         self.entries[idx].equiv = Some(equiv);
         self.entries[idx].level = if global { LEVEL_ONE } else { cur_level };
@@ -1399,6 +1407,9 @@ impl Eqtb {
 
     /// Restore one control-sequence entry from a format dump.
     pub(crate) fn restore_eq(&mut self, id: CsId, equiv: Option<Equiv>, level: u16) {
+        if matches!(&equiv, Some(Equiv::Macro(m)) if m.outer) {
+            self.outer_macros = true;
+        }
         let e = self.ensure_entry(id);
         e.equiv = equiv;
         e.level = level;
@@ -1407,6 +1418,12 @@ impl Eqtb {
     /// Clear all control-sequence entries before restoring from a format dump.
     pub(crate) fn clear_entries(&mut self) {
         self.entries.clear();
+    }
+
+    /// False while no \outer macro has ever been defined.
+    #[inline(always)]
+    pub(crate) fn has_outer_macros(&self) -> bool {
+        self.outer_macros
     }
 }
 

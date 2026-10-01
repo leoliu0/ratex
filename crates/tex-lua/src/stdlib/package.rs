@@ -5,6 +5,7 @@ use crate::LuaLanguageLevel;
 use crate::lib_registry::LibraryModule;
 use crate::lua_value::{LuaValue, UpvalueStore};
 use crate::lua_vm::{LuaResult, LuaState};
+use crate::stdlib::lauxlib;
 
 pub fn create_package_lib() -> LibraryModule {
     crate::lib_module!("package", {
@@ -65,9 +66,9 @@ pub fn init_package_fields(l: &mut LuaState) -> LuaResult<()> {
     let cpath_value = l.create_string(&cpath)?;
 
     #[cfg(windows)]
-    let config_str = "\\\n;\n?\n!\n-";
+    let config_str = "\\\n;\n?\n!\n-\n";
     #[cfg(not(windows))]
-    let config_str = "/\n;\n?\n!\n-";
+    let config_str = "/\n;\n?\n!\n-\n";
     let config_value = l.create_string(config_str)?;
 
     // Create searchers array
@@ -87,6 +88,14 @@ pub fn init_package_fields(l: &mut LuaState) -> LuaResult<()> {
     l.raw_set(&package_table, cpath_key, cpath_value);
     l.raw_set(&package_table, config_key, config_value);
     l.raw_set(&package_table, searchers_key, searchers_table_value);
+    if l.global_state().version == LuaLanguageLevel::Lua53 {
+        // LUA_COMPAT_MODULE (TeX Live scripts still call module())
+        let loaders_key = l.create_string("loaders")?;
+        l.raw_set(&package_table, loaders_key, searchers_table_value);
+        let seeall_key = l.create_string("seeall")?;
+        l.raw_set(&package_table, seeall_key, LuaValue::cfunction(ll_seeall));
+        l.set_global_value("module", LuaValue::cfunction(ll_module))?;
+    }
 
     // Add package itself to package.loaded (normally lib_registry does this,
     // but package.loaded doesn't exist yet when the package module is first loaded)
@@ -133,160 +142,197 @@ fn get_package_from_registry(l: &mut LuaState) -> LuaResult<LuaValue> {
         .ok_or_else(|| vm.error("package table not found".to_string()))
 }
 
-// Searcher 1: Check package.preload
-fn searcher_preload(l: &mut LuaState) -> LuaResult<usize> {
-    let modname_val = l
-        .get_arg(1)
-        .ok_or_else(|| l.error("module name expected".to_string()))?;
+fn is_lua53(l: &LuaState) -> bool {
+    l.global_state().language() == LuaLanguageLevel::Lua53
+}
 
-    // Get preload table from registry
-    let vm = l.global_state_mut();
-    let preload_val = vm.registry_get("_PRELOAD")?.unwrap_or(LuaValue::nil());
+/// A searcher's "not found" entry: Lua 5.3 searchers start each entry with
+/// "\n\t"; from 5.4 on, `require` adds the separator itself.
+fn not_found_entry(lua53: bool, entry: &str) -> String {
+    if lua53 { format!("\n\t{entry}") } else { entry.to_owned() }
+}
 
-    let Some(preload_table) = preload_val.as_table_mut() else {
-        return Err(l.error("package.preload is not a table".to_string()));
-    };
-
-    let loader = preload_table
-        .raw_get(&modname_val)
-        .unwrap_or(LuaValue::nil());
-
-    if loader.is_nil() {
-        // Return error message like Lua 5.5
-        let modname_str = modname_val.as_str().unwrap_or("?");
-        let err_msg =
-            l.create_string(&format!("\n\tno field package.preload['{}']", modname_str))?;
-        l.push_value(err_msg)?;
-        Ok(1)
-    } else {
-        l.push_value(loader)?;
-        let preload_str = l.create_string(":preload:")?;
-        l.push_value(preload_str)?;
-        Ok(2)
+/// `package.<field>` of the package table, which must be a string.
+fn package_string_field(l: &mut LuaState, field: &str) -> LuaResult<String> {
+    let package = get_package_from_registry(l)?;
+    let key = l.create_string(field)?;
+    match package.as_table().and_then(|table| table.raw_get(&key)) {
+        Some(value) if value.is_string() || value.is_number() => {
+            Ok(String::from_utf8_lossy(&lauxlib::tolstring(l, &value)?).into_owned())
+        }
+        _ => Err(lauxlib::lual_error(l, format!("'package.{field}' must be a string"))),
     }
 }
 
-// Searcher 2: Search package.path
+// Searcher 1: package.preload
+fn searcher_preload(l: &mut LuaState) -> LuaResult<usize> {
+    let name = String::from_utf8_lossy(&lauxlib::check_lstring(l, 1)?).into_owned();
+    let preload = l.global_state_mut().registry_get("_PRELOAD")?.unwrap_or_default();
+    let Some(preload_table) = preload.as_table() else {
+        return Err(lauxlib::lual_error(l, "'package.preload' must be a table"));
+    };
+    let key = l.create_string(&name)?;
+    let loader = preload_table.raw_get(&key).unwrap_or_default();
+    let lua53 = is_lua53(l);
+    if loader.is_nil() {
+        let message = not_found_entry(lua53, &format!("no field package.preload['{name}']"));
+        let message = l.create_string(&message)?;
+        l.push_value(message)?;
+        return Ok(1);
+    }
+    l.push_value(loader)?;
+    if lua53 {
+        return Ok(1);
+    }
+    let data = l.create_string(":preload:")?;
+    l.push_value(data)?;
+    Ok(2)
+}
+
+// Searcher 2: package.path
 fn searcher_lua(l: &mut LuaState) -> LuaResult<usize> {
-    let modname_val = l
-        .get_arg(1)
-        .ok_or_else(|| l.error("module name expected".to_string()))?;
-
-    let Some(modname) = modname_val.as_str() else {
-        return Err(l.error("module name expected".to_string()));
+    let name = String::from_utf8_lossy(&lauxlib::check_lstring(l, 1)?).into_owned();
+    let path = package_string_field(l, "path")?;
+    let lua53 = is_lua53(l);
+    let filename = match search_path(&name, &path, ".", std::path::MAIN_SEPARATOR_STR, lua53) {
+        Ok(filename) => filename,
+        Err(message) => {
+            let message = l.create_string(&message)?;
+            l.push_value(message)?;
+            return Ok(1);
+        }
     };
-
-    // Get the original package table from registry to access package.path
-    let package_val = get_package_from_registry(l)?;
-
-    let Some(package_table) = package_val.as_table() else {
-        return Err(l.error("Invalid package table".to_string()));
-    };
-
-    let path_key = l.create_string("path")?;
-
-    let Some(path_value) = package_table.raw_get(&path_key) else {
-        return Err(l.error("'package.path' must be a string".to_string()));
-    };
-    let Some(path_str) = path_value.as_str() else {
-        return Err(l.error("'package.path' must be a string".to_string()));
-    };
-
-    // Search for the file, using platform directory separator
-    let dirsep = std::path::MAIN_SEPARATOR_STR;
-    let result = search_path(modname, path_str, ".", dirsep)?;
-
-    match result {
-        Some(filepath) => {
-            l.push_value(LuaValue::cfunction(lua_file_loader))?;
-            let filepath_str = l.create_string(&filepath)?;
-            l.push_value(filepath_str)?;
+    // checkload: the loaded chunk is the loader, the file name its data
+    match load_lua_file(l, &filename) {
+        Ok(function) => {
+            l.push_value(function)?;
+            let filename = l.create_string(&filename)?;
+            l.push_value(filename)?;
             Ok(2)
         }
-        None => {
-            let err = format!(
-                "\n\tno file '{}'",
-                path_str
-                    .split(';')
-                    .map(|template| { template.replace('?', &modname.replace('.', "/")) })
-                    .collect::<Vec<_>>()
-                    .join("'\n\tno file '")
-            );
-            let err_str = l.create_string(&err)?;
-            l.push_value(err_str)?;
-            Ok(1)
-        }
+        Err(message) => Err(lauxlib::lual_error(
+            l,
+            format!("error loading module '{name}' from file '{filename}':\n\t{message}"),
+        )),
     }
 }
 
-// Loader function for Lua files (called by searcher_lua)
-// Called as: loader(modname, filepath)
-fn lua_file_loader(l: &mut LuaState) -> LuaResult<usize> {
-    // First arg is modname, second arg is filepath (passed by searcher)
-    let modname_val = l
-        .get_arg(1)
-        .ok_or_else(|| l.error("module name expected".to_string()))?;
-    let filepath_val = l
-        .get_arg(2)
-        .ok_or_else(|| l.error("file path expected".to_string()))?;
+/// `luaL_loadfile` with the global environment.
+fn load_lua_file(l: &mut LuaState, filename: &str) -> Result<LuaValue, String> {
+    let proto = l.load_proto_from_file(filename).map_err(|error| l.get_error_message(error))?;
+    let global = l.global_state().global;
+    let function = l.create_upvalue_closed(global).and_then(|env| {
+        l.global_state_mut()
+            .create_function(proto, UpvalueStore::from_single(env))
+    });
+    function.map_err(|error| l.get_error_message(error))
+}
 
-    let Some(filepath_str) = filepath_val.as_str() else {
-        return Err(l.error("file path must be a string".to_string()));
-    };
-
-    let proto = l.load_proto_from_file(filepath_str)?;
-
-    // Create a function from the chunk with _ENV upvalue
-    let vm = l.global_state_mut();
-    let env_upvalue = vm.create_upvalue_closed(vm.global)?;
-    let func = vm.create_function(proto, UpvalueStore::from_single(env_upvalue))?;
-
-    // Call the function to execute the module and get its return value
-    // The module should return its exports (usually a table)
-    // Pass modname and filepath as arguments so the module can access them via ...
-    l.push_value(func)?;
-    l.push_value(modname_val)?;
-    l.push_value(filepath_val)?;
-    let func_idx = l.get_top() - 3;
-    let (success, result_count) = l.pcall_stack_based(func_idx, 2)?;
-
-    if !success {
-        // Module threw an error
-        let error_val = l.stack_get(func_idx).unwrap_or_default();
-        let error_msg = if let Some(err) = error_val.as_str() {
-            err.to_string()
+/// `luaL_pushmodule` (LUA_COMPAT_MODULE): LOADED[modname], or the global
+/// table path `modname` (created if missing), registered in LOADED.
+fn push_module(l: &mut LuaState, modname: &str) -> LuaResult<LuaValue> {
+    let loaded = l.global_state_mut().registry_get("_LOADED")?.unwrap_or_default();
+    let key = l.create_string(modname)?;
+    if let Some(module) = l.table_get(&loaded, &key)?.filter(|value| value.is_table()) {
+        return Ok(module);
+    }
+    // luaL_findtable(_G, modname)
+    let mut table = l.global_state().global;
+    for part in modname.split('.') {
+        let part_key = l.create_string(part)?;
+        let field = table.as_table().and_then(|t| t.raw_get(&part_key)).unwrap_or_default();
+        table = if field.is_nil() {
+            let created = l.create_table(0, 1)?;
+            l.table_set(&table, part_key, created)?;
+            created
+        } else if field.is_table() {
+            field
         } else {
-            "error loading module".to_string()
+            return Err(lauxlib::lual_error(l, format!("name conflict for module '{modname}'")));
         };
-        return Err(l.error(format!(
-            "error loading module from '{}': {}",
-            filepath_str, error_msg
-        )));
     }
+    l.table_set(&loaded, key, table)?;
+    Ok(table)
+}
 
-    // Return what the module returned (or nil if it returned nothing)
-    if result_count > 0 {
-        // Module returned a value, keep it on stack
-        Ok(1)
-    } else {
-        // Module returned nothing, return nil
-        l.push_value(LuaValue::nil())?;
-        Ok(1)
+/// module(name [, ...]) (Lua 5.3 with LUA_COMPAT_MODULE)
+fn ll_module(l: &mut LuaState) -> LuaResult<usize> {
+    let modname = String::from_utf8_lossy(&lauxlib::check_lstring(l, 1)?).into_owned();
+    let options = l.get_args();
+    let module = push_module(l, &modname)?;
+    let name_key = l.create_string("_NAME")?;
+    if l.table_get(&module, &name_key)?.is_none_or(|value| value.is_nil()) {
+        // modinit
+        let m_key = l.create_string("_M")?;
+        l.table_set(&module, m_key, module)?;
+        let name_value = l.create_string(&modname)?;
+        l.table_set(&module, name_key, name_value)?;
+        let package = modname.rfind('.').map_or("", |dot| &modname[..=dot]);
+        let package_key = l.create_string("_PACKAGE")?;
+        let package_value = l.create_string(package)?;
+        l.table_set(&module, package_key, package_value)?;
     }
+    // set_env: the calling Lua function's first upvalue becomes the module
+    let depth = l.call_depth();
+    let caller = (depth >= 2).then(|| l.get_frame_func(depth - 2)).flatten();
+    let Some(caller) = caller.filter(|function| function.as_lua_function().is_some()) else {
+        return Err(lauxlib::lual_error(l, "'module' not called from a Lua function"));
+    };
+    if let Some(function) = caller.as_lua_function()
+        && let Some(&upvalue) = function.upvalues().first()
+    {
+        upvalue.as_mut_ref().data.set_value(module);
+        if let Some(gc_ptr) = module.as_gc_ptr() {
+            l.gc_barrier(upvalue, gc_ptr);
+        }
+    }
+    // dooptions
+    for option in options.into_iter().skip(1) {
+        if option.is_function() {
+            l.call(option, vec![module])?;
+        }
+    }
+    l.push_value(module)?;
+    Ok(1)
+}
+
+/// package.seeall(module) (Lua 5.3 with LUA_COMPAT_MODULE)
+fn ll_seeall(l: &mut LuaState) -> LuaResult<usize> {
+    let module = l.get_arg(1).unwrap_or_default();
+    if !module.is_table() {
+        return Err(lauxlib::typeerror(l, 1, "table"));
+    }
+    let metatable = match module.as_table().and_then(|t| t.get_metatable()) {
+        Some(metatable) => metatable,
+        None => {
+            let metatable = l.create_table(0, 1)?;
+            if let Some(table) = module.as_table_mut() {
+                table.set_metatable(Some(metatable));
+            }
+            if let Some(gc_ptr) = module.as_gc_ptr() {
+                l.gc_barrier_back(gc_ptr);
+            }
+            metatable
+        }
+    };
+    let index_key = l.create_string("__index")?;
+    let global = l.global_state().global;
+    l.table_set(&metatable, index_key, global)?;
+    Ok(0)
 }
 
 // Searcher 3: Search package.cpath for C modules.
 fn searcher_c(l: &mut LuaState) -> LuaResult<usize> {
-    let modname = l
-        .get_arg(1)
-        .and_then(|value| value.as_str().map(str::to_owned))
-        .ok_or_else(|| l.error("module name expected".to_string()))?;
-    let cpath = package_cpath(l)?;
-    let Some(path) = search_path(&modname, &cpath, ".", std::path::MAIN_SEPARATOR_STR)? else {
-        let err = missing_native_module_message(&modname, &cpath);
-        let err = l.create_string(&err)?;
-        l.push_value(err)?;
-        return Ok(1);
+    let modname = String::from_utf8_lossy(&lauxlib::check_lstring(l, 1)?).into_owned();
+    let cpath = package_string_field(l, "cpath")?;
+    let lua53 = is_lua53(l);
+    let path = match search_path(&modname, &cpath, ".", std::path::MAIN_SEPARATOR_STR, lua53) {
+        Ok(path) => path,
+        Err(message) => {
+            let message = l.create_string(&message)?;
+            l.push_value(message)?;
+            return Ok(1);
+        }
     };
     let loader = load_native_module_function(l, &path, &modname).map_err(|error| {
         l.error(format!(
@@ -302,21 +348,19 @@ fn searcher_c(l: &mut LuaState) -> LuaResult<usize> {
 
 // Searcher 4: Search the root library for a submodule entry point.
 fn searcher_c_all_in_one(l: &mut LuaState) -> LuaResult<usize> {
-    let modname = l
-        .get_arg(1)
-        .and_then(|value| value.as_str().map(str::to_owned))
-        .ok_or_else(|| l.error("module name expected".to_string()))?;
+    let modname = String::from_utf8_lossy(&lauxlib::check_lstring(l, 1)?).into_owned();
     let Some(root_name) = modname.split('.').next().filter(|root| *root != modname) else {
         return Ok(0);
     };
-    let cpath = package_cpath(l)?;
-    let Some(path) = search_path(root_name, &cpath, ".", std::path::MAIN_SEPARATOR_STR)? else {
+    let cpath = package_string_field(l, "cpath")?;
+    let lua53 = is_lua53(l);
+    let Ok(path) = search_path(root_name, &cpath, ".", std::path::MAIN_SEPARATOR_STR, lua53) else {
         return Ok(0);
     };
     let loader = match load_native_module_function(l, &path, &modname) {
         Ok(loader) => loader,
         Err(NativeLoadError::Symbol(_)) => {
-            let message = format!("\n\tno module '{modname}' in file '{path}'");
+            let message = not_found_entry(lua53, &format!("no module '{modname}' in file '{path}'"));
             let message = l.create_string(&message)?;
             l.push_value(message)?;
             return Ok(1);
@@ -332,24 +376,6 @@ fn searcher_c_all_in_one(l: &mut LuaState) -> LuaResult<usize> {
     let path = l.create_string(&path)?;
     l.push_value(path)?;
     Ok(2)
-}
-
-fn package_cpath(l: &mut LuaState) -> LuaResult<String> {
-    let package = get_package_from_registry(l)?;
-    let cpath_key = l.create_string("cpath")?;
-    package
-        .as_table()
-        .and_then(|table| table.raw_get(&cpath_key))
-        .and_then(|value| value.as_str().map(str::to_owned))
-        .ok_or_else(|| l.error("'package.cpath' must be a string".to_string()))
-}
-
-fn missing_native_module_message(name: &str, cpath: &str) -> String {
-    let search_name = name.replace('.', std::path::MAIN_SEPARATOR_STR);
-    cpath
-        .split(';')
-        .map(|template| format!("\n\tno file '{}'", template.replace('?', &search_name)))
-        .collect()
 }
 
 fn native_open_symbols(module_name: &str) -> Vec<String> {
@@ -442,21 +468,22 @@ fn load_native_function(
         "dynamic libraries are not supported on this platform".to_string(),
     ))
 }
-// Helper: Search for a file in path templates
-fn search_path(name: &str, path: &str, sep: &str, rep: &str) -> LuaResult<Option<String>> {
-    let searchname = name.replace(sep, rep);
-    let templates: Vec<&str> = path.split(';').collect();
-
-    for template in templates {
-        let filepath = template.replace('?', &searchname);
-
-        // Check if file exists
-        if std::path::Path::new(&filepath).exists() {
-            return Ok(Some(filepath));
+/// C: searchpath. Returns the first readable file, or the "no file" list.
+fn search_path(name: &str, path: &str, sep: &str, rep: &str, lua53: bool) -> Result<String, String> {
+    let name = if sep.is_empty() { name.to_owned() } else { name.replace(sep, rep) };
+    let mut tried = Vec::new();
+    for template in path.split(';').filter(|template| !template.is_empty()) {
+        let filename = template.replace('?', &name);
+        if std::fs::File::open(&filename).is_ok() {
+            return Ok(filename);
         }
+        tried.push(format!("no file '{filename}'"));
     }
-
-    Ok(None)
+    if lua53 {
+        Err(tried.iter().map(|entry| format!("\n\t{entry}")).collect())
+    } else {
+        Err(tried.join("\n\t"))
+    }
 }
 
 fn package_loadlib(l: &mut LuaState) -> LuaResult<usize> {
@@ -488,63 +515,26 @@ fn package_loadlib(l: &mut LuaState) -> LuaResult<usize> {
     }
 }
 
+/// package.searchpath(name, path [, sep [, rep]])
 fn package_searchpath(l: &mut LuaState) -> LuaResult<usize> {
-    let name_val = l
-        .get_arg(1)
-        .ok_or_else(|| l.error("bad argument #1 to 'searchpath' (string expected)".to_string()))?;
-    let path_val = l
-        .get_arg(2)
-        .ok_or_else(|| l.error("bad argument #2 to 'searchpath' (string expected)".to_string()))?;
-
-    let Some(name_str) = name_val.as_str() else {
-        return Err(l.error("bad argument #1 to 'searchpath' (string expected)".to_string()));
-    };
-
-    let Some(path_str) = path_val.as_str() else {
-        return Err(l.error("bad argument #2 to 'searchpath' (string expected)".to_string()));
-    };
-
-    // Optional sep and rep arguments
-    let sep_val = l.get_arg(3);
-
-    let sep = if let Some(sep_val) = &sep_val {
-        sep_val.as_str().unwrap_or(".")
-    } else {
-        "."
-    };
-
-    let rep_val = l.get_arg(4);
-
-    #[cfg(windows)]
-    let default_rep = "\\";
-    #[cfg(not(windows))]
-    let default_rep = "/";
-
-    let rep = if let Some(rep_val) = &rep_val {
-        rep_val.as_str().unwrap_or(default_rep)
-    } else {
-        default_rep
-    };
-
-    match search_path(name_str, path_str, sep, rep)? {
-        Some(filepath) => {
-            let filepath_str = l.create_string(&filepath)?;
-            l.push_value(filepath_str)?;
+    let name = String::from_utf8_lossy(&lauxlib::check_lstring(l, 1)?).into_owned();
+    let path = String::from_utf8_lossy(&lauxlib::check_lstring(l, 2)?).into_owned();
+    let sep = lauxlib::opt_lstring(l, 3)?.map_or_else(|| ".".to_owned(), |s| String::from_utf8_lossy(&s).into_owned());
+    let rep = lauxlib::opt_lstring(l, 4)?.map_or_else(
+        || std::path::MAIN_SEPARATOR_STR.to_owned(),
+        |s| String::from_utf8_lossy(&s).into_owned(),
+    );
+    let lua53 = is_lua53(l);
+    match search_path(&name, &path, &sep, &rep, lua53) {
+        Ok(filename) => {
+            let filename = l.create_string(&filename)?;
+            l.push_value(filename)?;
             Ok(1)
         }
-        None => {
-            let searchname = name_str.replace(sep, rep);
-            let err = format!(
-                "\n\tno file '{}'",
-                path_str
-                    .split(';')
-                    .map(|template| { template.replace('?', &searchname) })
-                    .collect::<Vec<_>>()
-                    .join("'\n\tno file '")
-            );
+        Err(message) => {
             l.push_value(LuaValue::nil())?;
-            let err_str = l.create_string(&err)?;
-            l.push_value(err_str)?;
+            let message = l.create_string(&message)?;
+            l.push_value(message)?;
             Ok(2)
         }
     }

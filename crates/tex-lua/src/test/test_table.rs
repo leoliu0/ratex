@@ -542,3 +542,60 @@ fn test_table_argument_errors_follow_dialect() {
         "#,
     );
 }
+
+/// Run `code` at both language levels; it must not raise.
+fn run_both_levels(code: &str) {
+    for level in [LuaLanguageLevel::Lua53, LuaLanguageLevel::Lua55] {
+        let mut vm = GlobalState::new_with_language(SafeOption::default(), level);
+        vm.open_stdlib(crate::stdlib::Stdlib::All).unwrap();
+        let result = vm.main_state().execute(code);
+        assert!(result.is_ok(), "{level}: {result:?}");
+    }
+}
+
+#[test]
+fn test_table_sort_matches_ltablib_for_invalid_orders() {
+    // Expected values come from texlua (5.3.6) and lua 5.5.1, which agree.
+    run_both_levels(
+        r#"
+        -- comparators that are not strict weak orders never panic: they either
+        -- give some permutation or ltablib's error
+        local errs = {}
+        for _, n in ipairs{2, 3, 4, 5, 10, 50, 200} do
+          local t = {} for i = 1, n do t[i] = (i * 7919) % n end
+          local ok, e = pcall(table.sort, t, function() return true end)
+          errs[#errs + 1] = ok and "ok" or e
+          local t2 = {} for i = 1, n do t2[i] = (i * 7919) % n end
+          ok = pcall(table.sort, t2, function(a, b) return a <= b end)
+          errs[#errs + 1] = tostring(ok)
+        end
+        local bad = "invalid order function for sorting"
+        assert(table.concat(errs, ",") == "ok,true,ok,true," .. bad .. ",false," .. bad
+          .. ",true," .. bad .. ",false," .. bad .. ",false," .. bad .. ",false",
+          table.concat(errs, ","))
+        -- NaN in the default order
+        local t = {} for i = 1, 300 do t[i] = (i % 3 == 0) and 0/0 or (i * 37) % 101 end
+        assert(pcall(table.sort, t))
+        local t = {3, 0/0, 1, 0/0, 2, 5, 0/0, 4}
+        assert(pcall(table.sort, t))
+        -- the comparator sequence is ltablib's
+        local c = 0
+        local t = {} for i = 1, 100 do t[i] = (i * 31) % 100 end
+        table.sort(t, function(a, b) c = c + 1 return a < b end)
+        assert(c == 626, c)
+        -- comparator type
+        local ok, e = pcall(table.sort, {3, 2, 1}, 3)
+        assert(e:find("bad argument #2 to 'table.sort' (function expected, got number)", 1, true), e)
+        assert(pcall(table.sort, {1}, 3))
+        -- mixed integers and floats compare exactly above 2^53
+        local t = {9007199254740993, 2.0^53, 9007199254740991, 1.5, 1}
+        table.sort(t)
+        assert(t[3] == 9007199254740991 and t[4] == 2.0^53 and t[5] == 9007199254740993
+          and math.type(t[5]) == "integer")
+        local t = {math.maxinteger, 2.0^63, math.mininteger, -2.0^63, 0.5, 0}
+        table.sort(t)
+        assert(t[1] == -2.0^63 or t[1] == math.mininteger)
+        assert(t[5] == math.maxinteger and t[6] == 2.0^63)
+        "#,
+    );
+}

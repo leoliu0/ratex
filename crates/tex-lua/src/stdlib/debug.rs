@@ -1,12 +1,12 @@
 // Debug library implementation
 // Implements: traceback, getinfo, getlocal, getmetatable, getupvalue, etc.
 
-use crate::compiler::format_source;
 use crate::lib_registry::LibraryModule;
 use crate::lua_value::{LuaProto, LuaValue};
 use crate::lua_vm::call_info::call_status;
 use crate::lua_vm::opcode::OpCode;
 use crate::lua_vm::{LuaError, LuaResult, LuaState, TmKind, get_metatable};
+use crate::stdlib::lauxlib;
 use crate::{Instruction, LUA_MASKCALL, LUA_MASKCOUNT, LUA_MASKLINE, LUA_MASKRET, lib_module};
 
 /// Get the type name of an object, checking __name in metatable first.
@@ -367,7 +367,12 @@ fn getfuncname(l: &LuaState, ci_frame_idx: usize) -> Option<(&'static str, Strin
         // prev.pc points to the instruction AFTER the call (due to pc += 1 in fetch).
         // So the call instruction is at pc - 1.
         let pc = prev.pc.saturating_sub(1) as usize;
-        return funcnamefromcode(chunk, pc);
+        let (kind, name) = funcnamefromcode(chunk, pc)?;
+        // Lua 5.4+ name metamethods without the "__" prefix (ldebug.c `tmname + 2`)
+        if kind == "metamethod" && l.global_state().language() != crate::LuaLanguageLevel::Lua53 {
+            return Some((kind, name.trim_start_matches("__").to_owned()));
+        }
+        return Some((kind, name));
     }
     // Previous frame is C — cannot determine name from bytecode
     None
@@ -582,50 +587,6 @@ pub(crate) fn find_global_func_name(l: &LuaState, target: &LuaValue) -> Option<S
     None
 }
 
-/// Generate a standard argument error message.
-/// Mirrors C Lua's luaL_argerror.
-pub fn argerror(l: &mut LuaState, narg: usize, extramsg: &str) -> LuaError {
-    let result = current_func_name_with_kind(l);
-    let (kind, fname) = match &result {
-        Some((k, n)) => (*k, n.as_str()),
-        None => {
-            // Fallback: search loaded modules for the function (like pushglobalfuncname)
-            let ci_idx = l.call_depth().wrapping_sub(1);
-            let func_val = l.get_frame_func(ci_idx);
-            let global_name = func_val.as_ref().and_then(|f| find_global_func_name(l, f));
-            if let Some(name) = global_name {
-                return l.error(format!(
-                    "bad argument #{} to '{}' ({})",
-                    narg, name, extramsg
-                ));
-            }
-            ("function", "?")
-        }
-    };
-    // For method calls, adjust argument numbering and handle "bad self"
-    if kind == "method" {
-        let adjusted_narg = narg.wrapping_sub(1);
-        if adjusted_narg == 0 {
-            return l.error(format!("calling '{}' on bad self ({})", fname, extramsg));
-        }
-        return l.error(format!(
-            "bad argument #{} to '{}' ({})",
-            adjusted_narg, fname, extramsg
-        ));
-    }
-    l.error(format!(
-        "bad argument #{} to '{}' ({})",
-        narg, fname, extramsg
-    ))
-}
-
-/// Generate a type error for a function argument.
-/// Mirrors C Lua's luaL_typeerror.
-pub fn arg_typeerror(l: &mut LuaState, narg: usize, expected: &str, val: &LuaValue) -> LuaError {
-    let actual = objtypename(l, val);
-    argerror(l, narg, &format!("{} expected, got {}", expected, actual))
-}
-
 /// Get variable info for a specific register.
 /// Like varinfo() but for a known register number.
 pub fn varinfo_for_reg(l: &LuaState, reg: u32) -> String {
@@ -654,52 +615,6 @@ pub fn varinfo_for_reg(l: &LuaState, reg: u32) -> String {
     }
 }
 
-/// Resolve the source variable for an operand passed to a string arithmetic
-/// metamethod. The current frame is the C metamethod; its caller owns MMBIN.
-pub fn caller_arith_varinfo(l: &LuaState, blame_first: bool) -> String {
-    let depth = l.call_depth();
-    if depth < 2 {
-        return String::new();
-    }
-    let caller_idx = depth - 2;
-    let Some(ci) = l.get_frame(caller_idx) else {
-        return String::new();
-    };
-    if !ci.is_lua() {
-        return String::new();
-    }
-    let Some(function) = l.get_frame_func(caller_idx) else {
-        return String::new();
-    };
-    let Some(function) = function.as_lua_function() else {
-        return String::new();
-    };
-    let chunk = function.chunk();
-    let currentpc = ci.pc.saturating_sub(1) as usize;
-    let Some(instruction) = chunk.code.get(currentpc).copied() else {
-        return String::new();
-    };
-    let reg = match instruction.get_opcode() {
-        OpCode::MmBin => Some(if blame_first {
-            instruction.get_a()
-        } else {
-            instruction.get_b()
-        }),
-        OpCode::MmBinI | OpCode::MmBinK => {
-            let register_is_first = !instruction.get_k();
-            (blame_first == register_is_first).then(|| instruction.get_a())
-        }
-        _ => None,
-    };
-    if let Some(reg) = reg
-        && let Some((kind, name)) = getobjname(chunk, currentpc, reg)
-    {
-        format!(" ({} '{}')", kind, name)
-    } else {
-        String::new()
-    }
-}
-
 /// Generate an arithmetic/bitwise type error (mirrors luaG_opinterror).
 /// Determines which operand is the "bad" one and generates a type error.
 pub fn opinterror(
@@ -717,7 +632,12 @@ pub fn opinterror(
         (p2, p2_reg)
     };
     let blame_type = objtypename(l, blame_val);
-    let info = varinfo_for_reg(l, blame_reg);
+    let mut info = varinfo_for_reg(l, blame_reg);
+    // Lua 5.3 arithmetic reads constants as RK operands, not registers, so
+    // varinfo finds no name for them.
+    if is_lua53(l) && info.starts_with(" (constant ") {
+        info.clear();
+    }
     l.error(format!("attempt to {} a {} value{}", op, blame_type, info))
 }
 
@@ -763,6 +683,121 @@ pub fn pub_getfuncname(l: &LuaState, ci_frame_idx: usize) -> Option<(&'static st
     getfuncname(l, ci_frame_idx)
 }
 
+fn is_lua53(l: &LuaState) -> bool {
+    l.global_state().language() == crate::LuaLanguageLevel::Lua53
+}
+
+/// C: getthread. Returns the argument offset (1 when a thread is given) and
+/// the target state.
+fn getthread(l: &mut LuaState) -> (usize, *mut LuaState) {
+    match l.get_arg(1) {
+        Some(value) if value.is_thread() => {
+            (1, value.as_thread_mut().map_or(l as *mut LuaState, |t| t as *mut LuaState))
+        }
+        _ => (0, l as *mut LuaState),
+    }
+}
+
+/// `luaL_pushfail` (nil) and return one result.
+fn push_fail(l: &mut LuaState) -> LuaResult<usize> {
+    l.push_value(LuaValue::nil())?;
+    Ok(1)
+}
+
+/// C: luaL_traceback. Frames are read with the same level numbering as
+/// `lua_getstack` (level 0 is the running function of `target`).
+fn traceback_text(l: &mut LuaState, target: &LuaState, msg: Option<&[u8]>, mut level: usize) -> Vec<u8> {
+    const LEVELS1: usize = 10;
+    const LEVELS2: usize = 11;
+    let lua53 = is_lua53(l);
+    let depth = target.call_depth();
+    let last = depth.saturating_sub(1); // lastlevel()
+    let mut out = Vec::new();
+    if let Some(msg) = msg {
+        out.extend_from_slice(msg);
+        out.push(b'\n');
+    }
+    out.extend_from_slice(b"stack traceback:");
+    let mut limit2show: isize = if last.saturating_sub(level) > LEVELS1 + LEVELS2 { LEVELS1 as isize } else { -1 };
+    while let Some(info) = target.get_info_by_level(level, "Slntf") {
+        if limit2show == 0 {
+            let n = last - level - LEVELS2 + 1;
+            if lua53 {
+                out.extend_from_slice(b"\n\t...");
+            } else {
+                out.extend_from_slice(format!("\n\t...\t(skipping {n} levels)").as_bytes());
+            }
+            level += n;
+            limit2show -= 1;
+            continue;
+        }
+        limit2show -= 1;
+        let short_src = info.short_src.as_deref().unwrap_or("?");
+        out.extend_from_slice(format!("\n\t{short_src}:").as_bytes());
+        if let Some(line) = info.currentline.filter(|&line| line > 0) {
+            out.extend_from_slice(format!("{line}:").as_bytes());
+        }
+        out.extend_from_slice(b" in ");
+        let what = info.what.unwrap_or("?");
+        let namewhat = info.namewhat.as_deref().unwrap_or("");
+        let global = || info.func.as_ref().and_then(|f| find_global_func_name(target, f));
+        let name = if lua53 {
+            if let Some(global) = global() {
+                format!("function '{global}'")
+            } else if !namewhat.is_empty() {
+                format!("{namewhat} '{}'", info.name.as_deref().unwrap_or("?"))
+            } else if what == "main" {
+                "main chunk".to_owned()
+            } else if what != "C" {
+                format!("function <{short_src}:{}>", info.linedefined.unwrap_or(0))
+            } else {
+                "?".to_owned()
+            }
+        } else if !namewhat.is_empty() {
+            format!("{namewhat} '{}'", info.name.as_deref().unwrap_or("?"))
+        } else if what == "main" {
+            "main chunk".to_owned()
+        } else if what != "C" {
+            format!("function <{short_src}:{}>", info.linedefined.unwrap_or(0))
+        } else if let Some(global) = global() {
+            format!("function '{global}'")
+        } else {
+            "?".to_owned()
+        };
+        out.extend_from_slice(name.as_bytes());
+        if info.istailcall == Some(true) {
+            out.extend_from_slice(b"\n\t(...tail calls...)");
+        }
+        level += 1;
+    }
+    out
+}
+
+/// debug.debug(): read and run lines from stdin until "cont" (ldblib.c).
+fn debug_debug(l: &mut LuaState) -> LuaResult<usize> {
+    use std::io::{BufRead, Write};
+    loop {
+        eprint!("lua_debug> ");
+        let _ = std::io::stderr().flush();
+        let mut line = String::new();
+        match std::io::stdin().lock().read_line(&mut line) {
+            Ok(0) | Err(_) => return Ok(0),
+            Ok(_) => {}
+        }
+        if line == "cont\n" || line == "cont" {
+            return Ok(0);
+        }
+        let result = l
+            .load_with_name(&line, "=(debug command)")
+            .and_then(|function| l.call(function, Vec::new()).map(|_| ()));
+        if let Err(error) = result {
+            let message = l.get_error_message(error);
+            eprintln!("{message}");
+            let _ = std::io::stderr().flush();
+        }
+    }
+}
+
 pub fn create_debug_lib() -> LibraryModule {
     let mut module = lib_module!("debug", {
         "traceback" => debug_traceback,
@@ -780,6 +815,7 @@ pub fn create_debug_lib() -> LibraryModule {
         "sethook" => debug_sethook,
         "setuservalue" => debug_setuservalue,
         "getuservalue" => debug_getuservalue,
+        "debug" => debug_debug,
     });
     module.initializer = Some(debug_lib_init);
     module
@@ -807,137 +843,24 @@ fn debug_lib_init(l: &mut LuaState) -> LuaResult<()> {
 
 /// debug.traceback([message [, level]]) - Get stack traceback
 fn debug_traceback(l: &mut LuaState) -> LuaResult<usize> {
-    let arg1 = l.get_arg(1).unwrap_or_default();
-
-    // Check if first arg is a thread (coroutine)
-    // C Lua's db_traceback uses getthread() to detect this.
-    let (arg_offset, target_ptr): (usize, *const LuaState) = if arg1.is_thread() {
-        let thread = arg1.as_thread_mut().unwrap() as *const LuaState;
-        (1, thread)
-    } else {
-        (0, l as *const LuaState)
-    };
-
-    // Get message argument (can be nil)
-    let message_val = l.get_arg(1 + arg_offset).unwrap_or_default();
-    let message_str = if message_val.is_nil() {
-        None
-    } else if let Some(s) = message_val.as_str() {
-        Some(s.to_string())
-    } else {
-        // If first arg (after thread) is not a string or nil (e.g., function, table),
-        // return it as-is (passthrough). Matches C Lua's luaL_traceback behavior.
-        l.push_value(message_val)?;
+    let (arg, target) = getthread(l);
+    let msg_value = l.get_arg(arg + 1).unwrap_or_default();
+    let msg = lauxlib::to_lstr(l, &msg_value);
+    if msg.is_none() && !msg_value.is_nil() {
+        l.push_value(msg_value)?; // non-string message: return it untouched
         return Ok(1);
+    }
+    let same = std::ptr::eq(target, l);
+    let level = lauxlib::opt_integer(l, arg + 2, if same { 1 } else { 0 })?;
+    let msg = msg.map(|m| m.to_vec());
+    // SAFETY: `target` is `l` or a live coroutine passed as argument 1.
+    let text = if level < 0 {
+        traceback_text(l, unsafe { &*target }, msg.as_deref(), usize::MAX)
+    } else {
+        traceback_text(l, unsafe { &*target }, msg.as_deref(), level as usize)
     };
-
-    // Get level argument (default is 1 for current thread, 0 for other thread)
-    let default_level = if arg_offset > 0 { 0i64 } else { 1i64 };
-    let level = l
-        .get_arg(2 + arg_offset)
-        .and_then(|v| v.as_integer())
-        .unwrap_or(default_level)
-        .max(0) as usize;
-
-    // SAFETY: target_ptr points to a valid LuaState (either `l` itself or a coroutine)
-    let target: &LuaState = unsafe { &*target_ptr };
-
-    // Generate traceback
-    let mut trace = String::new();
-
-    if let Some(msg) = message_str {
-        trace.push_str(&msg);
-        trace.push('\n');
-    }
-
-    trace.push_str("stack traceback:");
-
-    // Get call stack info from target state
-    let call_depth = target.call_depth();
-
-    let start_level = level;
-
-    // Port of luaL_traceback from lauxlib.c
-    const LEVELS1: usize = 10;
-    const LEVELS2: usize = 11;
-
-    // call_depth counts all active frames, including the current C frame for
-    // debug.traceback itself. So the number of visible frames is the total
-    // depth minus the requested skip level.
-    let top_frame = call_depth.saturating_sub(start_level);
-    if top_frame > 0 {
-        let frames: Vec<usize> = (0..top_frame).rev().collect();
-        let total = frames.len();
-        let limit2show: isize = if total > LEVELS1 + LEVELS2 {
-            LEVELS1 as isize
-        } else {
-            -1 // show all
-        };
-
-        let mut countdown = limit2show;
-
-        for (idx, &i) in frames.iter().enumerate() {
-            if countdown == 0 {
-                let n = total - LEVELS1 - LEVELS2;
-                trace.push_str(&format!("\n\t...\t(skipping {} levels)", n));
-                countdown -= 1;
-                continue;
-            } else if countdown > 0 {
-                countdown -= 1;
-            }
-
-            if limit2show > 0 && idx > LEVELS1 && idx < total - LEVELS2 {
-                continue;
-            }
-
-            if let Some(func) = target.get_frame_func(i) {
-                let pc = target.get_frame_pc(i);
-
-                if let Some(func_obj) = func.as_lua_function() {
-                    let chunk = func_obj.chunk();
-                    let source = chunk.source_name.as_deref().unwrap_or("?");
-                    let source_display = format_source(source);
-
-                    let pc_idx = pc.saturating_sub(1) as usize;
-                    let line = if !chunk.line_info.is_empty() && pc_idx < chunk.line_info.len() {
-                        chunk.line_info[pc_idx]
-                    } else {
-                        0
-                    };
-
-                    let func_desc = if let Some((kind, name)) = getfuncname(target, i) {
-                        format!("{} '{}'", kind, name)
-                    } else if chunk.linedefined == 0 {
-                        "main chunk".to_string()
-                    } else {
-                        format!("function <{}:{}>", source_display, chunk.linedefined)
-                    };
-
-                    if line > 0 {
-                        trace.push_str(&format!(
-                            "\n\t{}:{}: in {}",
-                            source_display, line, func_desc
-                        ));
-                    } else {
-                        trace.push_str(&format!("\n\t{}: in {}", source_display, func_desc));
-                    }
-                } else if func.is_c_callable() {
-                    if let Some(name) = find_global_func_name(target, &func) {
-                        trace.push_str(&format!("\n\t[C]: in function '{}'", name));
-                    } else if let Some((kind, name)) = getfuncname(target, i) {
-                        trace.push_str(&format!("\n\t[C]: in {} '{}'", kind, name));
-                    } else {
-                        trace.push_str("\n\t[C]: in ?");
-                    }
-                } else {
-                    trace.push_str("\n\t?: in function");
-                }
-            }
-        }
-    }
-
-    let result = l.create_string(&trace)?;
-    l.push_value(result)?;
+    let value = l.create_bytes(&text)?;
+    l.push_value(value)?;
     Ok(1)
 }
 
@@ -945,61 +868,36 @@ fn debug_traceback(l: &mut LuaState) -> LuaResult<usize> {
 /// Thin wrapper: delegates to LuaState::get_info_by_level / get_info_for_func,
 /// then converts the DebugInfo struct to a Lua table.
 fn debug_getinfo(l: &mut LuaState) -> LuaResult<usize> {
-    // Parse arguments — handle optional thread first argument (like C Lua's getthread)
-    let arg1 = l
-        .get_arg(1)
-        .ok_or_else(|| l.error("getinfo requires at least 1 argument".to_string()))?;
-
-    let (arg_offset, target_ptr): (usize, *const LuaState) = if arg1.is_thread() {
-        let thread = arg1.as_thread_mut().unwrap() as *const LuaState;
-        (1, thread)
-    } else {
-        (0, l as *const LuaState)
-    };
-
+    let (arg, target_ptr) = getthread(l);
+    // SAFETY: `target_ptr` is `l` or a live coroutine passed as argument 1.
     let target: &LuaState = unsafe { &*target_ptr };
-
-    let func_or_level = l
-        .get_arg(1 + arg_offset)
-        .ok_or_else(|| l.error("getinfo requires at least 1 argument".to_string()))?;
-    let what_arg = l.get_arg(2 + arg_offset);
-
-    let default_what = "flnSrtu";
-
-    let what_str = what_arg
-        .as_ref()
-        .and_then(|w| w.as_str().map(|s| s.to_string()))
-        .unwrap_or_else(|| default_what.to_string());
-
-    // Validate 'what' option string — reject unknown characters (mirrors C Lua)
-    for ch in what_str.chars() {
-        if !"SluntrLf>".contains(ch) {
-            return Err(l.error(format!("invalid option '{}'", ch)));
-        }
-    }
-
-    // '>' is only valid when first arg is a function (it means "get func from stack")
-    let is_func = func_or_level.is_function();
-    if !is_func && what_str.contains('>') {
-        return Err(l.error("invalid option '>'".to_string()));
-    }
-
-    // Get DebugInfo from core method on target state
-    let info = if is_func {
-        target.get_info_for_func(&func_or_level, &what_str)
-    } else if let Some(level) = func_or_level.as_integer() {
-        if level < 0 {
-            return Ok(0); // out of range
-        }
-        match target.get_info_by_level(level as usize, &what_str) {
-            Some(info) => info,
-            None => return Ok(0), // level out of range → return nothing (falsy)
-        }
-    } else {
-        return Err(
-            l.error("bad argument #1 to 'getinfo' (function or number expected)".to_string())
-        );
+    let lua53 = is_lua53(l);
+    let options = match lauxlib::opt_lstring(l, arg + 2)? {
+        Some(text) => String::from_utf8_lossy(&text).into_owned(),
+        None => if lua53 { "flnStu" } else { "flnSrtu" }.to_owned(),
     };
+    if !lua53 && options.starts_with('>') {
+        return Err(lauxlib::argerror(l, arg + 2, "invalid option '>'"));
+    }
+    let valid = if lua53 { "SlnutLf" } else { "SlnutrLf" };
+    let func_or_level = l.get_arg(arg + 1).unwrap_or_default();
+    let info = if func_or_level.is_function() {
+        if !options.chars().all(|c| valid.contains(c)) {
+            return Err(lauxlib::argerror(l, arg + 2, "invalid option"));
+        }
+        target.get_info_for_func(&func_or_level, &options)
+    } else {
+        let level = lauxlib::check_integer(l, arg + 1)?;
+        let info = usize::try_from(level).ok().and_then(|level| target.get_info_by_level(level, &options));
+        let Some(info) = info else {
+            return push_fail(l); // level out of range
+        };
+        if !options.chars().all(|c| valid.contains(c)) {
+            return Err(lauxlib::argerror(l, arg + 2, "invalid option"));
+        }
+        info
+    };
+    let what_str = options;
 
     // Convert DebugInfo to Lua table
     let info_table = l.create_table(0, 12)?;
@@ -1069,17 +967,17 @@ fn debug_getinfo(l: &mut LuaState) -> LuaResult<usize> {
         let k = l.create_string("istailcall")?;
         l.raw_set(&info_table, k, LuaValue::boolean(istailcall));
     }
-    if let Some(extraargs) = info.extraargs {
+    if let Some(extraargs) = info.extraargs.filter(|_| !lua53) {
         let k = l.create_string("extraargs")?;
         l.raw_set(&info_table, k, LuaValue::integer(extraargs as i64));
     }
 
     // 'r' fields
-    if let Some(ftransfer) = info.ftransfer {
+    if let Some(ftransfer) = info.ftransfer.filter(|_| !lua53) {
         let k = l.create_string("ftransfer")?;
         l.raw_set(&info_table, k, LuaValue::integer(ftransfer as i64));
     }
-    if let Some(ntransfer) = info.ntransfer {
+    if let Some(ntransfer) = info.ntransfer.filter(|_| !lua53) {
         let k = l.create_string("ntransfer")?;
         l.raw_set(&info_table, k, LuaValue::integer(ntransfer as i64));
     }
@@ -1114,30 +1012,20 @@ fn debug_getinfo(l: &mut LuaState) -> LuaResult<usize> {
 
 /// debug.getmetatable(value) - Get metatable of a value (no protection)
 fn debug_getmetatable(l: &mut LuaState) -> LuaResult<usize> {
-    let value = l
-        .get_arg(1)
-        .ok_or_else(|| l.error("getmetatable() requires argument 1".to_string()))?;
-
-    // For tables, get metatable directly
-    let v = get_metatable(l, &value).unwrap_or_default();
-    // For other types, return nil (simplified)
-    l.push_value(v)?;
+    let value = lauxlib::check_any(l, 1)?;
+    let metatable = get_metatable(l, &value).unwrap_or_default();
+    l.push_value(metatable)?;
     Ok(1)
 }
 
 /// debug.setmetatable(value, table) - Set metatable of a value
 fn debug_setmetatable(l: &mut LuaState) -> LuaResult<usize> {
-    let value = l
-        .get_arg(1)
-        .ok_or_else(|| l.error("setmetatable() requires argument 1".to_string()))?;
-
-    let metatable = l.get_arg(2);
-
-    let mt_val = match metatable {
+    let value = l.get_arg(1).unwrap_or_default();
+    let mt_val = match l.get_arg(2) {
         Some(mt) if mt.is_nil() => None,
         Some(mt) if mt.is_table() => Some(mt),
-        Some(_) => return Err(l.error("setmetatable() requires a table or nil".to_string())),
-        None => None,
+        _ if is_lua53(l) => return Err(lauxlib::argerror(l, 2, "nil or table expected")),
+        _ => return Err(lauxlib::typeerror(l, 2, "nil or table")),
     };
 
     if let Some(table) = value.as_table_mut() {
@@ -1176,7 +1064,9 @@ fn debug_gethook(l: &mut LuaState) -> LuaResult<usize> {
     let mask = target.hook_mask;
     let count = target.base_hook_count;
 
-    // Push hook function (or nil if not set)
+    if hook.is_nil() && !is_lua53(l) {
+        return push_fail(l);
+    }
     l.push_value(hook)?;
 
     // Build mask string
@@ -1209,63 +1099,34 @@ fn debug_gethook(l: &mut LuaState) -> LuaResult<usize> {
 ///
 /// Calling with no arguments clears the hook.
 fn debug_sethook(l: &mut LuaState) -> LuaResult<usize> {
-    let arg1 = l.get_arg(1);
-    let arg2 = l.get_arg(2);
-    let arg3 = l.get_arg(3);
-
-    // Detect if first arg is a thread
-    let (hook_val, mask_val, count_val, target_ptr): (
-        Option<LuaValue>,
-        Option<LuaValue>,
-        Option<LuaValue>,
-        *mut LuaState,
-    ) = if let Some(a1) = arg1 {
-        if a1.is_thread() {
-            // debug.sethook(thread, hook, mask [, count])
-            let thread = a1.as_thread_mut().unwrap() as *mut LuaState;
-            (l.get_arg(2), l.get_arg(3), l.get_arg(4), thread)
-        } else {
-            // debug.sethook(hook, mask [, count])
-            (Some(a1), arg2, arg3, l as *mut LuaState)
-        }
+    let (arg, target_ptr) = getthread(l);
+    let hook_value = l.get_arg(arg + 1).unwrap_or_default();
+    let (hook, mask, count) = if hook_value.is_nil() {
+        (LuaValue::nil(), 0u8, 0i32)
     } else {
-        // debug.sethook() — clear hook
-        (None, None, None, l as *mut LuaState)
-    };
-
-    // Parse hook function
-    let hook = match hook_val {
-        Some(v) if v.is_function() => v,
-        Some(v) if v.is_nil() => LuaValue::nil(),
-        None => LuaValue::nil(),
-        _ => LuaValue::nil(),
-    };
-
-    // Parse mask string
-    let mut mask: u8 = 0;
-    if let Some(mask_str_val) = mask_val
-        && let Some(s) = mask_str_val.as_str()
-    {
-        for ch in s.chars() {
-            match ch {
-                'c' => mask |= LUA_MASKCALL,
-                'r' => mask |= LUA_MASKRET,
-                'l' => mask |= LUA_MASKLINE,
-                _ => {} // ignore unknown characters
-            }
+        let smask = lauxlib::check_lstring(l, arg + 2)?.to_vec();
+        if !hook_value.is_function() {
+            return Err(lauxlib::typeerror(l, arg + 1, "function"));
         }
-    }
+        let count = lauxlib::opt_integer(l, arg + 3, 0)? as i32;
+        let mut mask = 0u8;
+        if smask.contains(&b'c') {
+            mask |= LUA_MASKCALL;
+        }
+        if smask.contains(&b'r') {
+            mask |= LUA_MASKRET;
+        }
+        if smask.contains(&b'l') {
+            mask |= LUA_MASKLINE;
+        }
+        if count > 0 {
+            mask |= LUA_MASKCOUNT;
+        }
+        (hook_value, mask, count)
+    };
 
-    // Parse count
-    let count = count_val.and_then(|v| v.as_integer()).unwrap_or(0) as i32;
-    if count > 0 {
-        mask |= LUA_MASKCOUNT;
-    }
-
-    // If hook is nil, clear everything
-    if hook.is_nil() {
-        mask = 0;
-    }
+    // lua_sethook: an empty mask turns the hook off
+    let hook = if mask == 0 { LuaValue::nil() } else { hook };
 
     // Set hook state on the target thread
     // SAFETY: target_ptr points to a valid LuaState
@@ -1287,103 +1148,68 @@ fn debug_getregistry(l: &mut LuaState) -> LuaResult<usize> {
 
 /// debug.getlocal([thread,] f, local) - Get the name and value of a local variable
 fn debug_getlocal(l: &mut LuaState) -> LuaResult<usize> {
-    // Parse arguments: [thread,] level/func, local_index
-    // Detect optional thread argument
-    let arg1 = l
-        .get_arg(1)
-        .ok_or_else(|| l.error("bad argument #1 to 'getlocal'".to_string()))?;
-
-    // Detect optional thread argument and set target state
-    let (func_or_level, local_idx_val, target_ptr): (LuaValue, LuaValue, *const LuaState) =
-        if arg1.is_thread() {
-            // debug.getlocal(thread, f, local)
-            let a2 = l
-                .get_arg(2)
-                .ok_or_else(|| l.error("bad argument #2 to 'getlocal'".to_string()))?;
-            let a3 = l
-                .get_arg(3)
-                .ok_or_else(|| l.error("bad argument #3 to 'getlocal'".to_string()))?;
-            let thread = arg1.as_thread_mut().unwrap() as *const LuaState;
-            (a2, a3, thread)
-        } else {
-            // debug.getlocal(f, local)
-            let a2 = l
-                .get_arg(2)
-                .ok_or_else(|| l.error("bad argument #2 to 'getlocal'".to_string()))?;
-            (arg1, a2, l as *const LuaState)
-        };
-
-    // SAFETY: target_ptr points to a valid LuaState
+    let (arg, target_ptr) = getthread(l);
+    // SAFETY: `target_ptr` is `l` or a live coroutine passed as argument 1.
     let target: &LuaState = unsafe { &*target_ptr };
+    let local_index = lauxlib::check_integer(l, arg + 2)?;
+    let func_or_level = l.get_arg(arg + 1).unwrap_or_default();
+    let lua53 = is_lua53(l);
+    let (temporary, vararg, c_temporary) = if lua53 {
+        ("(*temporary)", "(*vararg)", "(*temporary)")
+    } else {
+        ("(temporary)", "(vararg)", "(C temporary)")
+    };
 
-    let local_index = local_idx_val
-        .as_integer()
-        .ok_or_else(|| l.error("bad argument to 'getlocal' (number expected)".to_string()))?;
-
-    // Case 1: first arg is a function → get parameter names from prototype (no values)
+    // Case 1: a function → parameter names only (lua_getlocal(L, NULL, n))
     if func_or_level.is_function() {
-        if let Some(lua_func) = func_or_level.as_lua_function() {
-            let chunk = lua_func.chunk();
-            if local_index <= 0 {
-                return Ok(0);
-            }
-            let idx = local_index as usize;
-            let mut count = 0;
-            for locvar in &chunk.locals {
-                if locvar.startpc > 0 {
-                    break;
-                }
-                count += 1;
-                if count == idx {
-                    let name = &locvar.name;
-                    if name.is_empty() || name.starts_with('(') {
-                        return Ok(0);
-                    }
-                    let name_str = l.create_string(name)?;
-                    l.push_value(name_str)?;
-                    return Ok(1);
-                }
-            }
+        let mut name = None;
+        if let Some(lua_func) = func_or_level.as_lua_function()
+            && local_index > 0
+        {
+            name = lua_func
+                .chunk()
+                .locals
+                .iter()
+                .take_while(|locvar| locvar.startpc == 0)
+                .nth(local_index as usize - 1)
+                .map(|locvar| locvar.name.clone());
         }
-        return Ok(0);
+        let value = match name {
+            Some(name) => l.create_string(&name)?,
+            None => LuaValue::nil(),
+        };
+        l.push_value(value)?;
+        return Ok(1);
     }
 
-    // Case 2: first arg is a level number
-    let level = func_or_level.as_integer().ok_or_else(|| {
-        l.error("bad argument to 'getlocal' (number or function expected)".to_string())
-    })?;
-
-    if level < 0 {
-        return Err(l.error("bad argument #1 to 'getlocal' (level out of range)".to_string()));
+    let level = lauxlib::check_integer(l, arg + 1)?;
+    if level < 0 || level as usize >= target.call_depth() {
+        return Err(lauxlib::argerror(l, arg + 1, "level out of range"));
     }
     let level = level as usize;
 
-    // Level 0 → C temporaries
+    // Level 0 → the temporaries of debug.getlocal itself
     if level == 0 {
-        let local_index = local_index as usize;
-        if local_index == 0 {
-            return Ok(0);
+        if local_index <= 0 {
+            return push_fail(l);
         }
+        let local_index = local_index as usize;
         let ci_idx = target.call_depth() - 1;
         let ci = target.get_call_info(ci_idx);
         let base = ci.base;
         let stack_top = target.get_top();
         let nargs = stack_top.saturating_sub(base);
         if local_index > nargs {
-            return Ok(0);
+            return push_fail(l);
         }
         let val = target.stack_get(base + local_index - 1).unwrap_or_default();
-        let name_str = l.create_string("(*temporary)")?;
+        let name_str = l.create_string(c_temporary)?;
         l.push_value(name_str)?;
         l.push_value(val)?;
         return Ok(2);
     }
 
     let call_depth = target.call_depth();
-    if level >= call_depth {
-        return Err(l.error("bad argument #1 to 'getlocal' (level out of range)".to_string()));
-    }
-
     let frame_idx = call_depth - 1 - level;
 
     let frame_func = target
@@ -1396,7 +1222,7 @@ fn debug_getlocal(l: &mut LuaState) -> LuaResult<usize> {
         // Handle negative local_index → vararg access
         if local_index < 0 {
             if !chunk.is_vararg {
-                return Ok(0);
+                return push_fail(l);
             }
             let nparams = chunk.param_count;
             let ci = target.get_call_info(frame_idx);
@@ -1404,7 +1230,7 @@ fn debug_getlocal(l: &mut LuaState) -> LuaResult<usize> {
             let var_idx = ((-local_index) - 1) as usize;
 
             if var_idx >= nextra {
-                return Ok(0);
+                return push_fail(l);
             }
 
             let base = ci.base;
@@ -1418,18 +1244,18 @@ fn debug_getlocal(l: &mut LuaState) -> LuaResult<usize> {
 
             if value_idx < target.stack_len() {
                 let value = target.stack_get(value_idx).unwrap_or_default();
-                let name_str = l.create_string("(*vararg)")?;
+                let name_str = l.create_string(vararg)?;
                 l.push_value(name_str)?;
                 l.push_value(value)?;
                 return Ok(2);
             }
-            return Ok(0);
+            return push_fail(l);
         }
 
         // Positive local_index → normal local access
         let local_index = local_index as usize;
         if local_index == 0 {
-            return Ok(0);
+            return push_fail(l);
         }
 
         let pc = target.get_frame_pc(frame_idx) as usize;
@@ -1485,7 +1311,7 @@ fn debug_getlocal(l: &mut LuaState) -> LuaResult<usize> {
             if (limit as isize - base as isize) >= n as isize && n > 0 {
                 let value_idx = base + n - 1;
                 let value = target.stack_get(value_idx).unwrap_or_default();
-                let name_str = l.create_string("(*temporary)")?;
+                let name_str = l.create_string(temporary)?;
                 l.push_value(name_str)?;
                 l.push_value(value)?;
                 return Ok(2);
@@ -1505,7 +1331,7 @@ fn debug_getlocal(l: &mut LuaState) -> LuaResult<usize> {
             if (limit as isize - base as isize) >= local_index as isize {
                 let value_idx = base + local_index - 1;
                 let value = target.stack_get(value_idx).unwrap_or_default();
-                let name_str = l.create_string("(*temporary)")?;
+                let name_str = l.create_string(c_temporary)?;
                 l.push_value(name_str)?;
                 l.push_value(value)?;
                 return Ok(2);
@@ -1513,60 +1339,25 @@ fn debug_getlocal(l: &mut LuaState) -> LuaResult<usize> {
         }
     }
 
-    // No local variable found, return nil
-    Ok(0)
+    // No local variable found
+    push_fail(l)
 }
 
 /// debug.setlocal([thread,] level, local, value) - Set the value of a local variable
 fn debug_setlocal(l: &mut LuaState) -> LuaResult<usize> {
-    // Parse arguments: [thread,] level, local_index, value
-    let arg1 = l
-        .get_arg(1)
-        .ok_or_else(|| l.error("bad argument #1 to 'setlocal'".to_string()))?;
-
-    let (level_val, local_val, value, target_ptr): (LuaValue, LuaValue, LuaValue, *mut LuaState) =
-        if arg1.is_thread() {
-            // debug.setlocal(thread, level, local, value)
-            let a2 = l
-                .get_arg(2)
-                .ok_or_else(|| l.error("bad argument #2 to 'setlocal'".to_string()))?;
-            let a3 = l
-                .get_arg(3)
-                .ok_or_else(|| l.error("bad argument #3 to 'setlocal'".to_string()))?;
-            let a4 = l
-                .get_arg(4)
-                .ok_or_else(|| l.error("bad argument #4 to 'setlocal'".to_string()))?;
-            let thread = arg1.as_thread_mut().unwrap() as *mut LuaState;
-            (a2, a3, a4, thread)
-        } else {
-            let a2 = l
-                .get_arg(2)
-                .ok_or_else(|| l.error("bad argument #2 to 'setlocal'".to_string()))?;
-            let a3 = l
-                .get_arg(3)
-                .ok_or_else(|| l.error("bad argument #3 to 'setlocal'".to_string()))?;
-            (arg1, a2, a3, l as *mut LuaState)
-        };
-
-    // SAFETY: target_ptr points to a valid LuaState (either l or a coroutine)
+    let (arg, target_ptr) = getthread(l);
+    // SAFETY: `target_ptr` is `l` or a live coroutine passed as argument 1.
     let target: &mut LuaState = unsafe { &mut *target_ptr };
-
-    let level = level_val
-        .as_integer()
-        .ok_or_else(|| l.error("bad argument #1 to 'setlocal' (number expected)".to_string()))?;
-    let local_index = local_val
-        .as_integer()
-        .ok_or_else(|| l.error("bad argument #2 to 'setlocal' (number expected)".to_string()))?;
-
-    if level < 0 {
-        return Err(l.error("bad argument #1 to 'setlocal' (level out of range)".to_string()));
+    let level = lauxlib::check_integer(l, arg + 1)?;
+    let local_index = lauxlib::check_integer(l, arg + 2)?;
+    let call_depth = target.call_depth();
+    if level < 0 || level as usize >= call_depth {
+        return Err(lauxlib::argerror(l, arg + 1, "level out of range"));
     }
     let level = level as usize;
-
-    let call_depth = target.call_depth();
-    if level >= call_depth {
-        return Err(l.error("bad argument #1 to 'setlocal' (level out of range)".to_string()));
-    }
+    let value = lauxlib::check_any(l, arg + 3)?;
+    let lua53 = is_lua53(l);
+    let (temporary, vararg) = if lua53 { ("(*temporary)", "(*vararg)") } else { ("(temporary)", "(vararg)") };
 
     let frame_idx = call_depth - 1 - level;
 
@@ -1580,7 +1371,7 @@ fn debug_setlocal(l: &mut LuaState) -> LuaResult<usize> {
         // Handle negative local_index → vararg set
         if local_index < 0 {
             if !chunk.is_vararg {
-                return Ok(0);
+                return push_fail(l);
             }
             let nparams = chunk.param_count;
             let ci = target.get_call_info(frame_idx);
@@ -1588,7 +1379,7 @@ fn debug_setlocal(l: &mut LuaState) -> LuaResult<usize> {
             let var_idx = ((-local_index) - 1) as usize;
 
             if var_idx >= nextra {
-                return Ok(0);
+                return push_fail(l);
             }
 
             let base = ci.base;
@@ -1602,16 +1393,16 @@ fn debug_setlocal(l: &mut LuaState) -> LuaResult<usize> {
 
             if value_idx < target.stack_len() {
                 target.stack_set(value_idx, value)?;
-                let name_str = l.create_string("(*vararg)")?;
+                let name_str = l.create_string(vararg)?;
                 l.push_value(name_str)?;
                 return Ok(1);
             }
-            return Ok(0);
+            return push_fail(l);
         }
 
         let local_index = local_index as usize;
         if local_index == 0 {
-            return Ok(0);
+            return push_fail(l);
         }
 
         let pc = target.get_frame_pc(frame_idx) as usize;
@@ -1667,35 +1458,25 @@ fn debug_setlocal(l: &mut LuaState) -> LuaResult<usize> {
             if (limit as isize - base as isize) >= n as isize && n > 0 {
                 let value_idx = base + n - 1;
                 target.stack_set(value_idx, value)?;
-                let name_str = l.create_string("(*temporary)")?;
+                let name_str = l.create_string(temporary)?;
                 l.push_value(name_str)?;
                 return Ok(1);
             }
         }
     }
 
-    // No local variable found, return nil
-    Ok(0)
+    // No local variable found
+    push_fail(l)
 }
 
 /// debug.getupvalue(f, up) - Get the name and value of an upvalue
 fn debug_getupvalue(l: &mut LuaState) -> LuaResult<usize> {
-    let func = l
-        .get_arg(1)
-        .ok_or_else(|| l.error("getupvalue requires 2 arguments".to_string()))?;
-    let up_index_val = l
-        .get_arg(2)
-        .ok_or_else(|| l.error("getupvalue requires 2 arguments".to_string()))?;
-
-    // Check that first argument is a function
+    let up_index = lauxlib::check_integer(l, 2)?;
+    let func = l.get_arg(1).unwrap_or_default();
     if !func.is_function() {
-        return Err(l.error("bad argument #1 to 'getupvalue' (function expected)".to_string()));
+        return Err(lauxlib::typeerror(l, 1, "function"));
     }
-
-    let up_index = up_index_val
-        .as_integer()
-        .ok_or_else(|| l.error("bad argument #2 to 'getupvalue' (number expected)".to_string()))?
-        as usize;
+    let up_index = usize::try_from(up_index).unwrap_or(0);
 
     if let Some(lua_func) = func.as_lua_function() {
         // Get upvalue from Lua function
@@ -1709,7 +1490,7 @@ fn debug_getupvalue(l: &mut LuaState) -> LuaResult<usize> {
                 // Use actual upvalue name from chunk (or "(no name)" if stripped)
                 let name = &chunk.upvalue_descs[up_index - 1].name;
                 let display_name = if name.is_empty() {
-                    "(*no name)"
+                    if is_lua53(l) { "(*no name)" } else { "(no name)" }
                 } else {
                     name.as_str()
                 };
@@ -1750,25 +1531,13 @@ fn debug_getupvalue(l: &mut LuaState) -> LuaResult<usize> {
 
 /// debug.setupvalue(f, up, value) - Set the value of an upvalue
 fn debug_setupvalue(l: &mut LuaState) -> LuaResult<usize> {
-    let func = l
-        .get_arg(1)
-        .ok_or_else(|| l.error("setupvalue requires 3 arguments".to_string()))?;
-    let up_index_val = l
-        .get_arg(2)
-        .ok_or_else(|| l.error("setupvalue requires 3 arguments".to_string()))?;
-    let value = l
-        .get_arg(3)
-        .ok_or_else(|| l.error("setupvalue requires 3 arguments".to_string()))?;
-
-    // Check that first argument is a function
+    let value = lauxlib::check_any(l, 3)?;
+    let up_index = lauxlib::check_integer(l, 2)?;
+    let func = l.get_arg(1).unwrap_or_default();
     if !func.is_function() {
-        return Err(l.error("bad argument #1 to 'setupvalue' (function expected)".to_string()));
+        return Err(lauxlib::typeerror(l, 1, "function"));
     }
-
-    let up_index = up_index_val
-        .as_integer()
-        .ok_or_else(|| l.error("bad argument #2 to 'setupvalue' (number expected)".to_string()))?
-        as usize;
+    let up_index = usize::try_from(up_index).unwrap_or(0);
 
     if let Some(lua_func) = func.as_lua_function() {
         // Set upvalue in Lua function
@@ -1797,7 +1566,7 @@ fn debug_setupvalue(l: &mut LuaState) -> LuaResult<usize> {
 
             // Return the upvalue name ("(no name)" if stripped)
             let display_name = if upvalue_name.is_empty() {
-                "(*no name)".to_string()
+                if is_lua53(l) { "(*no name)" } else { "(no name)" }.to_string()
             } else {
                 upvalue_name
             };
@@ -1813,152 +1582,99 @@ fn debug_setupvalue(l: &mut LuaState) -> LuaResult<usize> {
 
 /// debug.upvalueid(f, n) - Get a unique identifier for an upvalue
 fn debug_upvalueid(l: &mut LuaState) -> LuaResult<usize> {
-    let func = l
-        .get_arg(1)
-        .ok_or_else(|| l.error("upvalueid requires 2 arguments".to_string()))?;
-    let up_index_val = l
-        .get_arg(2)
-        .ok_or_else(|| l.error("upvalueid requires 2 arguments".to_string()))?;
+    match checkupval(l, 1, 2, is_lua53(l))? {
+        Some(id) => {
+            l.push_value(LuaValue::lightuserdata(id))?;
+            Ok(1)
+        }
+        None => push_fail(l),
+    }
+}
 
-    // Check that first argument is a function
+/// C: checkupval. Returns the upvalue id of upvalue `argnup` of function
+/// `argf`; with `required`, an invalid index is an argument error.
+fn checkupval(l: &mut LuaState, argf: usize, argnup: usize, required: bool) -> LuaResult<Option<*mut std::ffi::c_void>> {
+    let nup = lauxlib::check_integer(l, argnup)?;
+    let func = l.get_arg(argf).unwrap_or_default();
     if !func.is_function() {
-        return Err(l.error("bad argument #1 to 'upvalueid' (function expected)".to_string()));
+        return Err(lauxlib::typeerror(l, argf, "function"));
     }
-
-    let up_index = up_index_val
-        .as_integer()
-        .ok_or_else(|| l.error("bad argument #2 to 'upvalueid' (number expected)".to_string()))?
-        as usize;
-
-    if let Some(lua_func) = func.as_lua_function() {
-        let upvalues = lua_func.upvalues();
-        if up_index > 0 && up_index <= upvalues.len() {
-            let upvalue = &upvalues[up_index - 1];
-            // Return light userdata (pointer) like C Lua
-            let ptr = upvalue.as_ptr() as *mut std::ffi::c_void;
-            l.push_value(LuaValue::lightuserdata(ptr))?;
-            return Ok(1);
+    let index = usize::try_from(nup).ok().and_then(|n| n.checked_sub(1));
+    let id = index.and_then(|index| {
+        if let Some(function) = func.as_lua_function() {
+            function.upvalues().get(index).map(|up| up.as_ptr() as *mut std::ffi::c_void)
+        } else if let Some(closure) = func.as_cclosure() {
+            closure.upvalues().get(index).map(|up| up as *const _ as *mut std::ffi::c_void)
+        } else {
+            None
         }
-    } else if let Some(cclosure) = func.as_cclosure() {
-        let upvalues = cclosure.upvalues();
-        if up_index > 0 && up_index <= upvalues.len() {
-            let ptr = &upvalues[up_index - 1] as *const _ as *mut std::ffi::c_void;
-            l.push_value(LuaValue::lightuserdata(ptr))?;
-            return Ok(1);
-        }
+    });
+    if required && id.is_none() {
+        return Err(lauxlib::argerror(l, argnup, "invalid upvalue index"));
     }
-    if l.global_state().language() == crate::LuaLanguageLevel::Lua53 {
-        return Err(l.error("bad argument #2 to 'upvalueid' (invalid upvalue index)".to_string()));
-    }
-
-    Ok(0)
+    Ok(id)
 }
 
 /// debug.upvaluejoin(f1, n1, f2, n2) - Make upvalue n1 of f1 refer to upvalue n2 of f2
 fn debug_upvaluejoin(l: &mut LuaState) -> LuaResult<usize> {
-    let func1 = l
-        .get_arg(1)
-        .ok_or_else(|| l.error("upvaluejoin requires 4 arguments".to_string()))?;
-    let n1_val = l
-        .get_arg(2)
-        .ok_or_else(|| l.error("upvaluejoin requires 4 arguments".to_string()))?;
-    let func2 = l
-        .get_arg(3)
-        .ok_or_else(|| l.error("upvaluejoin requires 4 arguments".to_string()))?;
-    let n2_val = l
-        .get_arg(4)
-        .ok_or_else(|| l.error("upvaluejoin requires 4 arguments".to_string()))?;
-
-    // Check that arguments are functions
-    if !func1.is_function() || !func2.is_function() {
-        return Err(l.error("bad argument to 'upvaluejoin' (function expected)".to_string()));
+    checkupval(l, 1, 2, true)?;
+    checkupval(l, 3, 4, true)?;
+    let func1 = l.get_arg(1).unwrap_or_default();
+    let func2 = l.get_arg(3).unwrap_or_default();
+    if func1.as_lua_function().is_none() {
+        return Err(lauxlib::argerror(l, 1, "Lua function expected"));
     }
-
-    // Check that they are Lua functions (not C functions)
-    if func1.is_cfunction() || func2.is_cfunction() {
-        return Err(l.error("bad argument to 'upvaluejoin' (Lua function expected)".to_string()));
+    let Some(lua_func2) = func2.as_lua_function() else {
+        return Err(lauxlib::argerror(l, 3, "Lua function expected"));
+    };
+    let n1 = lauxlib::check_integer(l, 2)? as usize;
+    let n2 = lauxlib::check_integer(l, 4)? as usize;
+    let shared = lua_func2.upvalues()[n2 - 1];
+    if let Some(lua_func1) = func1.as_lua_function_mut() {
+        lua_func1.upvalues_mut()[n1 - 1] = shared;
     }
-
-    let n1 = n1_val
-        .as_integer()
-        .ok_or_else(|| l.error("bad argument #2 to 'upvaluejoin' (number expected)".to_string()))?
-        as usize;
-    let n2 = n2_val
-        .as_integer()
-        .ok_or_else(|| l.error("bad argument #4 to 'upvaluejoin' (number expected)".to_string()))?
-        as usize;
-
-    // Get both Lua functions
-    let lua_func1 = func1
-        .as_lua_function()
-        .ok_or_else(|| l.error("upvaluejoin: function 1 is not a Lua function".to_string()))?;
-    let lua_func2 = func2
-        .as_lua_function()
-        .ok_or_else(|| l.error("upvaluejoin: function 2 is not a Lua function".to_string()))?;
-
-    // Check upvalue indices
-    let upvalues1 = lua_func1.upvalues();
-    let upvalues2 = lua_func2.upvalues();
-    if n1 == 0 || n1 > upvalues1.len() {
-        return Err(l.error(format!("invalid upvalue index {} for function 1", n1)));
-    }
-    if n2 == 0 || n2 > upvalues2.len() {
-        return Err(l.error(format!("invalid upvalue index {} for function 2", n2)));
-    }
-
-    // Clone the upvalue from func2
-    let upvalue_to_share = upvalues2[n2 - 1];
-
-    // Replace upvalue in func1 - we need mutable access
-    let lua_func1_mut = func1.as_lua_function_mut().ok_or_else(|| {
-        l.error("upvaluejoin: cannot get mutable reference to function 1".to_string())
-    })?;
-
-    let upvalues1_mut = lua_func1_mut.upvalues_mut();
-    upvalues1_mut[n1 - 1] = upvalue_to_share;
-
     Ok(0)
 }
 
 /// debug.setuservalue(udata, value [, n]) - Set user value of a userdata
 fn debug_setuservalue(l: &mut LuaState) -> LuaResult<usize> {
-    let udata = l.get_arg(1).ok_or_else(|| {
-        l.error("bad argument #1 to 'setuservalue' (userdata expected)".to_string())
-    })?;
-
-    // Must be full userdata (not light userdata)
-    if udata.ttislightuserdata() {
-        return Err(l.error(
-            "bad argument #1 to 'setuservalue' (full userdata expected, got light userdata)"
-                .to_string(),
-        ));
+    let udata = l.get_arg(1).unwrap_or_default();
+    if !udata.is_userdata() || udata.ttislightuserdata() {
+        return Err(lauxlib::typeerror(l, 1, "userdata"));
     }
-
-    if !udata.is_userdata() {
-        let t = udata.type_name();
-        return Err(l.error(format!(
-            "bad argument #1 to 'setuservalue' (userdata expected, got {})",
-            t
-        )));
+    let value = lauxlib::check_any(l, 2)?;
+    let n = if is_lua53(l) { 1 } else { lauxlib::opt_integer(l, 3, 1)? };
+    if n == 1 && crate::c_api::set_userdata_uservalue(l, &udata, value) {
+        l.push_value(udata)?;
+        return Ok(1);
     }
-
-    // For now, setuservalue is a no-op (user values not yet stored in LuaUserdata)
-    l.push_value(udata)?;
-    Ok(1)
+    // Only userdata created through the C API carry a user value; others
+    // have none (Lua 5.4+: 0 user values, so setiuservalue fails).
+    if is_lua53(l) {
+        return Err(lauxlib::lual_error(l, "userdata has no user value"));
+    }
+    push_fail(l)
 }
 
 /// debug.getuservalue(udata [, n]) - Get user value of a userdata
 fn debug_getuservalue(l: &mut LuaState) -> LuaResult<usize> {
-    let udata = l.get_arg(1).ok_or_else(|| {
-        l.error("bad argument #1 to 'getuservalue' (userdata expected)".to_string())
-    })?;
-
+    let udata = l.get_arg(1).unwrap_or_default();
+    let lua53 = is_lua53(l);
+    let n = if lua53 { 1 } else { lauxlib::opt_integer(l, 2, 1)? };
     if !udata.is_userdata() || udata.ttislightuserdata() {
-        l.push_value(LuaValue::nil())?;
-        return Ok(1);
+        return push_fail(l);
     }
-
-    // User values not yet supported, return nil
-    l.push_value(LuaValue::nil())?;
-    Ok(1)
+    let value = if n == 1 { crate::c_api::userdata_uservalue(&udata) } else { None };
+    match value {
+        Some(value) => {
+            l.push_value(value)?;
+            if lua53 {
+                return Ok(1);
+            }
+            l.push_value(LuaValue::boolean(true))?;
+            Ok(2)
+        }
+        // no such user value: 5.3 pushes nil; 5.5 pushes nil (LUA_TNONE)
+        None => push_fail(l),
+    }
 }

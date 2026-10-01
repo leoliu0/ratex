@@ -273,3 +273,68 @@ fn test_install_library_supports_preload_modules() {
 
     assert!(result.is_ok(), "Error: {:?}", result.err());
 }
+
+/// Write `files` into a fresh directory and run `code` with package.path
+/// pointing there.
+fn run_with_modules(level: LuaLanguageLevel, files: &[(&str, &str)], code: &str) {
+    let dir = std::env::temp_dir().join(format!(
+        "tex-lua-package-{}-{}-{level:?}",
+        std::process::id(),
+        files.len()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    for (name, text) in files {
+        std::fs::write(dir.join(name), text).unwrap();
+    }
+    let mut vm = GlobalState::new_with_language(SafeOption::default(), level);
+    vm.open_stdlib(crate::stdlib::Stdlib::All).unwrap();
+    let prefix = format!("package.path = {:?}\n", format!("{}/?.lua", dir.display()));
+    let result = vm.main_state().execute(&format!("{prefix}{code}"));
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert!(result.is_ok(), "{level}: {result:?}");
+}
+
+#[test]
+fn test_package_module_compat_53() {
+    // Expected behaviour from texlua (Lua 5.3 with LUA_COMPAT_MODULE).
+    run_with_modules(
+        LuaLanguageLevel::Lua53,
+        &[("mymod.lua", "module('mymod', package.seeall)\nfunction hello() return type(print) end\n")],
+        r#"
+        assert(package.config == "/\n;\n?\n!\n-\n")
+        assert(package.loaders == package.searchers)
+        local m = require("mymod")
+        assert(m == mymod and m.hello() == "function" and m._NAME == "mymod" and m._PACKAGE == "")
+        local function f()
+          module("a.b.c", package.seeall)
+          return _NAME, _PACKAGE, _M
+        end
+        local name, pkg, mod = f()
+        assert(name == "a.b.c" and pkg == "a.b." and a.b.c == mod and package.loaded["a.b.c"] == mod)
+        assert(select('#', require("mymod")) == 1)
+        "#,
+    );
+}
+
+#[test]
+fn test_require_loader_contract() {
+    for level in [LuaLanguageLevel::Lua53, LuaLanguageLevel::Lua55] {
+        run_with_modules(
+            level,
+            &[("two.lua", "return select('#', ...), ...\n"), ("bad.lua", "x = = 1\n"), ("boom.lua", "error('boom', 0)\n")],
+            r#"
+            local n, name, file = require("two")
+            assert(n == 2 and (name == nil or name:find("two%.lua$")), n)
+            assert(package.loaded.two == 2)
+            local ok, e = pcall(require, "bad")
+            assert(e:find("^error loading module 'bad' from file '.-bad%.lua':\n\t.-bad%.lua:1: "), e)
+            ok, e = pcall(require, "boom")
+            assert(e == "boom", e)   -- loader errors propagate unchanged
+            ok, e = pcall(require)
+            assert(e:find("string expected, got no value", 1, true), e)
+            ok, e = pcall(require, 42)
+            assert(e:find("^module '42' not found:"), e)
+            "#,
+        );
+    }
+}

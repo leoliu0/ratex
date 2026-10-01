@@ -102,6 +102,32 @@ extern int tex_lua_setglobal_impl(lua_State *, const char *);
 extern int tex_lua_settable_impl(lua_State *, int);
 extern int tex_lua_seti_impl(lua_State *, int, lua_Integer);
 extern int tex_lua_next_impl(lua_State *, int, int *);
+extern int lua_rawget(lua_State *, int);
+extern void lua_pushnil(lua_State *);
+extern int lua_isnumber(lua_State *, int);
+extern int lua_isinteger(lua_State *, int);
+extern int lua_gettop(lua_State *);
+extern void lua_copy(lua_State *, int, int);
+
+#define LUA_IDSIZE 60
+typedef struct lua_Debug {
+    int event;
+    const char *name;
+    const char *namewhat;
+    const char *what;
+    const char *source;
+    int currentline;
+    int linedefined;
+    int lastlinedefined;
+    unsigned char nups;
+    unsigned char nparams;
+    char isvararg;
+    char istailcall;
+    char short_src[LUA_IDSIZE];
+    void *i_ci;
+} lua_Debug;
+extern int lua_getstack(lua_State *, int, lua_Debug *);
+extern int lua_getinfo(lua_State *, const char *, lua_Debug *);
 
 
 void *tex_lua_default_alloc(
@@ -122,6 +148,12 @@ void *tex_lua_default_alloc(
 #define LUA_YIELD 1
 #define LUA_ERRMEM 4
 #define LUA_REGISTRYINDEX (-1001000)
+#define LUA_TNONE (-1)
+#define LUA_TNIL 0
+#define LUA_TBOOLEAN 1
+#define LUA_TLIGHTUSERDATA 2
+#define LUA_TNUMBER 3
+#define LUA_TSTRING 4
 #define LUA_TTABLE 5
 
 struct tex_lua_jump_frame {
@@ -246,7 +278,9 @@ int lua_yieldk(
     lua_KFunction continuation
 ) {
     int status = tex_lua_yieldk_impl(state, nresults, context, continuation);
-    if (status == LUA_YIELD && tex_lua_active_jump != NULL) {
+    /* Like lua_yieldk (ldo.c), a yield that is not allowed raises an error. */
+    if (status != LUA_YIELD) lua_error(state);
+    if (tex_lua_active_jump != NULL) {
         longjmp(tex_lua_active_jump->environment, LUA_YIELD);
     }
     return status;
@@ -464,22 +498,24 @@ void luaL_openlib(
         lua_settop(state, -(upvalue_count + 1));
     }
 }
+/* The lauxlib functions below follow lauxlib.c (Lua 5.3.6). */
+
 int luaL_getmetafield(lua_State *state, int object_index, const char *event) {
-    int absolute = lua_absindex(state, object_index);
-    if (!lua_getmetatable(state, absolute)) return 0;
-    int kind = lua_getfield(state, -1, event);
-    if (kind == 0) {
+    if (!lua_getmetatable(state, object_index)) return LUA_TNIL;
+    lua_pushstring(state, event);
+    int kind = lua_rawget(state, -2);
+    if (kind == LUA_TNIL) {
         lua_settop(state, -3);
-        return 0;
+    } else {
+        lua_rotate(state, -2, -1);
+        lua_settop(state, -2);
     }
-    lua_rotate(state, -2, -1);
-    lua_settop(state, -2);
     return kind;
 }
 
 int luaL_callmeta(lua_State *state, int object_index, const char *event) {
     int absolute = lua_absindex(state, object_index);
-    if (luaL_getmetafield(state, absolute, event) == 0) return 0;
+    if (luaL_getmetafield(state, absolute, event) == LUA_TNIL) return 0;
     lua_pushvalue(state, absolute);
     lua_callk(state, 1, 1, 0, NULL);
     return 1;
@@ -492,27 +528,140 @@ const char *luaL_tolstring(lua_State *state, int index, size_t *length) {
         }
     } else {
         switch (lua_type(state, index)) {
-            case 0:
-                lua_pushstring(state, "nil");
+            case LUA_TNUMBER:
+                if (lua_isinteger(state, index)) {
+                    lua_pushfstring(state, "%I", lua_tointegerx(state, index, NULL));
+                } else {
+                    lua_pushfstring(state, "%f", lua_tonumberx(state, index, NULL));
+                }
                 break;
-            case 1:
-                lua_pushstring(state, lua_toboolean(state, index) ? "true" : "false");
-                break;
-            case 3:
-            case 4:
+            case LUA_TSTRING:
                 lua_pushvalue(state, index);
                 break;
-            default:
-                lua_pushfstring(
-                    state,
-                    "%s: %p",
-                    lua_typename(state, lua_type(state, index)),
-                    (void *)lua_topointer(state, index)
-                );
+            case LUA_TBOOLEAN:
+                lua_pushstring(state, lua_toboolean(state, index) ? "true" : "false");
                 break;
+            case LUA_TNIL:
+                lua_pushstring(state, "nil");
+                break;
+            default: {
+                int kind = luaL_getmetafield(state, index, "__name");
+                const char *name = kind == LUA_TSTRING
+                    ? lua_tolstring(state, -1, NULL)
+                    : lua_typename(state, lua_type(state, index));
+                lua_pushfstring(state, "%s: %p", name, (void *)lua_topointer(state, index));
+                if (kind != LUA_TNIL) {
+                    lua_rotate(state, -2, -1);
+                    lua_settop(state, -2);
+                }
+                break;
+            }
         }
     }
     return lua_tolstring(state, -1, length);
+}
+
+/* Search package.loaded (two levels deep) for the value at 'object_index'. */
+static int find_field(lua_State *state, int object_index, int level) {
+    if (level == 0 || lua_type(state, -1) != LUA_TTABLE) return 0;
+    lua_pushnil(state);
+    while (lua_next(state, -2)) {
+        if (lua_type(state, -2) == LUA_TSTRING) {
+            if (lua_rawequal(state, object_index, -1)) {
+                lua_settop(state, -2);
+                return 1;
+            } else if (find_field(state, object_index, level - 1)) {
+                /* stack: key table name; remove the table, join "key.name" */
+                lua_rotate(state, -2, -1);
+                lua_settop(state, -2);
+                lua_pushstring(state, ".");
+                lua_rotate(state, -2, 1);
+                lua_concat(state, 3);
+                return 1;
+            }
+        }
+        lua_settop(state, -2);
+    }
+    return 0;
+}
+
+static int push_global_function_name(lua_State *state, lua_Debug *record) {
+    int top = lua_gettop(state);
+    lua_getinfo(state, "f", record);
+    lua_getfield(state, LUA_REGISTRYINDEX, "_LOADED");
+    if (find_field(state, top + 1, 2)) {
+        const char *name = lua_tolstring(state, -1, NULL);
+        if (strncmp(name, "_G.", 3) == 0) {
+            lua_pushstring(state, name + 3);
+            lua_rotate(state, -2, -1);
+            lua_settop(state, -2);
+        }
+        lua_copy(state, -1, top + 1);
+        lua_settop(state, -3);
+        return 1;
+    }
+    lua_settop(state, top);
+    return 0;
+}
+
+static void push_function_name(lua_State *state, lua_Debug *record) {
+    if (push_global_function_name(state, record)) {
+        lua_pushfstring(state, "function '%s'", lua_tolstring(state, -1, NULL));
+        lua_rotate(state, -2, -1);
+        lua_settop(state, -2);
+    } else if (*record->namewhat != '\0') {
+        lua_pushfstring(state, "%s '%s'", record->namewhat, record->name);
+    } else if (*record->what == 'm') {
+        lua_pushstring(state, "main chunk");
+    } else if (*record->what != 'C') {
+        lua_pushfstring(state, "function <%s:%d>", record->short_src, record->linedefined);
+    } else {
+        lua_pushstring(state, "?");
+    }
+}
+
+static int last_level(lua_State *state) {
+    lua_Debug record;
+    int low = 1;
+    int high = 1;
+    while (lua_getstack(state, high, &record)) {
+        low = high;
+        high *= 2;
+    }
+    while (low < high) {
+        int middle = (low + high) / 2;
+        if (lua_getstack(state, middle, &record)) low = middle + 1;
+        else high = middle;
+    }
+    return high - 1;
+}
+
+#define TRACEBACK_LEVELS1 10
+#define TRACEBACK_LEVELS2 11
+
+void luaL_traceback(lua_State *state, lua_State *source, const char *message, int level) {
+    lua_Debug record;
+    int top = lua_gettop(state);
+    int last = last_level(source);
+    int first_part = last - level > TRACEBACK_LEVELS1 + TRACEBACK_LEVELS2 ? TRACEBACK_LEVELS1 : -1;
+    if (message != NULL) lua_pushfstring(state, "%s\n", message);
+    luaL_checkstack(state, 10, NULL);
+    lua_pushstring(state, "stack traceback:");
+    while (lua_getstack(source, level++, &record)) {
+        if (first_part-- == 0) {
+            lua_pushstring(state, "\n\t...");
+            level = last - TRACEBACK_LEVELS2 + 1;
+        } else {
+            lua_getinfo(source, "Slnt", &record);
+            lua_pushfstring(state, "\n\t%s:", record.short_src);
+            if (record.currentline > 0) lua_pushfstring(state, "%d:", record.currentline);
+            lua_pushstring(state, " in ");
+            push_function_name(state, &record);
+            if (record.istailcall) lua_pushstring(state, "\n\t(...tail calls...)");
+            lua_concat(state, lua_gettop(state) - top);
+        }
+    }
+    lua_concat(state, lua_gettop(state) - top);
 }
 
 struct text_buffer {
@@ -563,6 +712,23 @@ static int append_printf(struct text_buffer *buffer, const char *format, ...) {
     return ok;
 }
 
+/* luaO_utf8esc: write the UTF-8 bytes of 'code' at the end of 'buffer' (8 bytes). */
+static int utf8_escape(char *buffer, unsigned long code) {
+    int count = 1;
+    if (code < 0x80) {
+        buffer[7] = (char)code;
+    } else {
+        unsigned int first_byte_max = 0x3f;
+        do {
+            buffer[8 - (count++)] = (char)(0x80 | (code & 0x3f));
+            code >>= 6;
+            first_byte_max >>= 1;
+        } while (code > first_byte_max);
+        buffer[8 - count] = (char)((~first_byte_max << 1) | code);
+    }
+    return count;
+}
+
 static char *format_lua_string(
     const char *format,
     va_list arguments,
@@ -589,11 +755,36 @@ static char *format_lua_string(
                 if (!append_bytes(&output, value, strlen(value))) goto failure;
                 break;
             }
-            case 'c': if (!append_printf(&output, "%c", va_arg(arguments, int))) goto failure; break;
+            case 'c': {
+                unsigned char byte = (unsigned char)va_arg(arguments, int);
+                if (byte >= 0x20 && byte < 0x7f) {
+                    if (!append_bytes(&output, (const char *)&byte, 1)) goto failure;
+                } else if (!append_printf(&output, "<\\%d>", byte)) {
+                    goto failure;
+                }
+                break;
+            }
             case 'd': if (!append_printf(&output, "%d", va_arg(arguments, int))) goto failure; break;
             case 'I': if (!append_printf(&output, "%lld", (long long)va_arg(arguments, lua_Integer))) goto failure; break;
-            case 'U': if (!append_printf(&output, "%llu", (unsigned long long)va_arg(arguments, lua_Unsigned))) goto failure; break;
-            case 'f': if (!append_printf(&output, "%.14g", va_arg(arguments, lua_Number))) goto failure; break;
+            case 'U': {
+                /* luaO_utf8esc: the argument is a 'long' code point */
+                char utf8[8];
+                int count = utf8_escape(utf8, (unsigned long)va_arg(arguments, long));
+                if (!append_bytes(&output, utf8 + sizeof(utf8) - count, (size_t)count)) goto failure;
+                break;
+            }
+            case 'f': {
+                /* luaO_tostring: "%.14g", plus ".0" when it looks like an integer */
+                char number[64];
+                int count = snprintf(number, sizeof(number), "%.14g", va_arg(arguments, lua_Number));
+                if (count < 0 || (size_t)count >= sizeof(number) - 2) goto failure;
+                if (number[strspn(number, "-0123456789")] == '\0') {
+                    number[count++] = '.';
+                    number[count++] = '0';
+                }
+                if (!append_bytes(&output, number, (size_t)count)) goto failure;
+                break;
+            }
             case 'p': if (!append_printf(&output, "%p", va_arg(arguments, void *))) goto failure; break;
             default:
                 *invalid_specifier = *cursor;
@@ -663,14 +854,46 @@ int luaL_error(lua_State *state, const char *format, ...) {
     return lua_error(state);
 }
 
-static int tex_lua_bad_argument(lua_State *state, int argument, const char *message) {
-    lua_pushfstring(state, "bad argument #%d (%s)", argument, message);
-    return lua_error(state);
+int luaL_argerror(lua_State *state, int argument, const char *message) {
+    lua_Debug record;
+    if (!lua_getstack(state, 0, &record)) {
+        return luaL_error(state, "bad argument #%d (%s)", argument, message);
+    }
+    lua_getinfo(state, "n", &record);
+    if (strcmp(record.namewhat, "method") == 0) {
+        argument--;
+        if (argument == 0) {
+            return luaL_error(state, "calling '%s' on bad self (%s)", record.name, message);
+        }
+    }
+    if (record.name == NULL) {
+        record.name = push_global_function_name(state, &record)
+            ? lua_tolstring(state, -1, NULL)
+            : "?";
+    }
+    return luaL_error(state, "bad argument #%d to '%s' (%s)", argument, record.name, message);
+}
+
+static int type_error(lua_State *state, int argument, const char *expected) {
+    const char *actual;
+    if (luaL_getmetafield(state, argument, "__name") == LUA_TSTRING) {
+        actual = lua_tolstring(state, -1, NULL);
+    } else if (lua_type(state, argument) == LUA_TLIGHTUSERDATA) {
+        actual = "light userdata";
+    } else {
+        actual = lua_typename(state, lua_type(state, argument));
+    }
+    const char *message = lua_pushfstring(state, "%s expected, got %s", expected, actual);
+    return luaL_argerror(state, argument, message);
+}
+
+static void tag_error(lua_State *state, int argument, int tag) {
+    type_error(state, argument, lua_typename(state, tag));
 }
 
 const char *luaL_checklstring(lua_State *state, int argument, size_t *length) {
     const char *value = lua_tolstring(state, argument, length);
-    if (value == NULL) tex_lua_bad_argument(state, argument, "string expected");
+    if (value == NULL) tag_error(state, argument, LUA_TSTRING);
     return value;
 }
 
@@ -690,7 +913,7 @@ const char *luaL_optlstring(
 lua_Number luaL_checknumber(lua_State *state, int argument) {
     int valid = 0;
     lua_Number value = lua_tonumberx(state, argument, &valid);
-    if (!valid) tex_lua_bad_argument(state, argument, "number expected");
+    if (!valid) tag_error(state, argument, LUA_TNUMBER);
     return value;
 }
 
@@ -703,7 +926,13 @@ lua_Number luaL_optnumber(lua_State *state, int argument, lua_Number default_val
 lua_Integer luaL_checkinteger(lua_State *state, int argument) {
     int valid = 0;
     lua_Integer value = lua_tointegerx(state, argument, &valid);
-    if (!valid) tex_lua_bad_argument(state, argument, "number has no integer representation");
+    if (!valid) {
+        if (lua_isnumber(state, argument)) {
+            luaL_argerror(state, argument, "number has no integer representation");
+        } else {
+            tag_error(state, argument, LUA_TNUMBER);
+        }
+    }
     return value;
 }
 
@@ -714,37 +943,25 @@ lua_Integer luaL_optinteger(lua_State *state, int argument, lua_Integer default_
 }
 
 void luaL_checktype(lua_State *state, int argument, int expected) {
-    if (lua_type(state, argument) != expected) {
-        const char *type_name = lua_typename(state, expected);
-        lua_pushfstring(state, "bad argument #%d (%s expected)", argument, type_name);
-        lua_error(state);
-    }
+    if (lua_type(state, argument) != expected) tag_error(state, argument, expected);
 }
 
 void luaL_checkany(lua_State *state, int argument) {
-    if (lua_type(state, argument) == -1) {
-        tex_lua_bad_argument(state, argument, "value expected");
+    if (lua_type(state, argument) == LUA_TNONE) {
+        luaL_argerror(state, argument, "value expected");
     }
-}
-
-int luaL_argerror(lua_State *state, int argument, const char *message) {
-    return tex_lua_bad_argument(
-        state,
-        argument,
-        message == NULL ? "invalid argument" : message
-    );
 }
 
 void luaL_checkstack(lua_State *state, int size, const char *message) {
     if (!lua_checkstack(state, size)) {
-        if (message == NULL) luaL_error(state, "stack overflow");
-        luaL_error(state, "stack overflow (%s)", message);
+        if (message != NULL) luaL_error(state, "stack overflow (%s)", message);
+        else luaL_error(state, "stack overflow");
     }
 }
 
 void *luaL_checkudata(lua_State *state, int argument, const char *name) {
     void *value = luaL_testudata(state, argument, name);
-    if (value == NULL) tex_lua_bad_argument(state, argument, "userdata expected");
+    if (value == NULL) type_error(state, argument, name);
     return value;
 }
 
@@ -754,10 +971,9 @@ int luaL_checkoption(
     const char *default_value,
     const char *const options[]
 ) {
-    const char *value = luaL_optlstring(state, argument, default_value, NULL);
-    if (options == NULL) {
-        return luaL_argerror(state, argument, "option list is null");
-    }
+    const char *value = default_value != NULL
+        ? luaL_optlstring(state, argument, default_value, NULL)
+        : luaL_checklstring(state, argument, NULL);
     for (int index = 0; options[index] != NULL; index++) {
         if (strcmp(value, options[index]) == 0) return index;
     }

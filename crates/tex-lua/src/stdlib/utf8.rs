@@ -1,10 +1,14 @@
-// UTF-8 library
-// Implements: char, charpattern, codes, codepoint, len, offset
+//! UTF-8 library: a port of lutf8lib.c. Lua 5.3 (LuaTeX) decodes at most
+//! four bytes up to U+10FFFF and accepts surrogates; Lua 5.5 decodes up to six
+//! bytes (2^31 - 1) and rejects surrogates and values above U+10FFFF unless
+//! `lax` is true.
 
+use crate::LuaLanguageLevel;
 use crate::lib_registry::LibraryModule;
 use crate::lua_value::LuaValue;
 use crate::lua_vm::LuaResult;
 use crate::lua_vm::LuaState;
+use crate::stdlib::lauxlib::{argerror, check_integer, check_lstring, lual_error, opt_integer};
 
 pub fn create_utf8_lib() -> LibraryModule {
     let mut module = crate::lib_module!("utf8", {
@@ -30,381 +34,228 @@ pub fn create_utf8_lib() -> LibraryModule {
     module
 }
 
-/// Helper: translate a relative string position (negative means back from end)
-/// Matches C Lua's u_posrelat
+const MAXUNICODE: u32 = 0x10FFFF;
+const MAXUTF: u32 = 0x7FFFFFFF;
+const MSG_INVALID: &str = "invalid UTF-8 code";
+
+/// C: u_posrelat.
 #[inline]
 fn u_posrelat(pos: i64, len: usize) -> i64 {
     if pos >= 0 {
         pos
+    } else if pos.unsigned_abs() > len as u64 {
+        0
     } else {
-        let upos = (-pos) as usize;
-        if upos > len { 0 } else { len as i64 + pos + 1 }
+        len as i64 + pos + 1
     }
+}
+
+/// The byte at `i`, or 0 past the end (C strings end with '\0').
+#[inline]
+fn byte_at(s: &[u8], i: usize) -> u8 {
+    s.get(i).copied().unwrap_or(0)
 }
 
 #[inline]
-fn iscont(b: u8) -> bool {
-    (b & 0xC0) == 0x80
+fn iscont(s: &[u8], i: usize) -> bool {
+    byte_at(s, i) & 0xC0 == 0x80
 }
 
-const MAXUNICODE: u32 = 0x10FFFF;
-const MAXUTF: u32 = 0x7FFFFFFF;
+fn is_lua53(l: &LuaState) -> bool {
+    l.global_state().language() == LuaLanguageLevel::Lua53
+}
 
-/// Decode one UTF-8 sequence from byte slice. Returns (codepoint, byte_length).
-/// If strict is true, rejects surrogates and values > MAXUNICODE.
-fn decode_utf8(s: &[u8], strict: bool) -> Result<(u32, usize), String> {
-    if s.is_empty() {
-        return Err("invalid UTF-8 code".to_string());
-    }
-    let c = s[0];
+/// C: utf8_decode. Decodes the sequence at `s[i..]`; returns the code point
+/// and the index just past it.
+fn utf8_decode(s: &[u8], i: usize, lua53: bool, strict: bool) -> Option<(u32, usize)> {
+    let mut c = byte_at(s, i) as u32;
     if c < 0x80 {
-        return Ok((c as u32, 1));
+        return Some((c, i + 1));
     }
-    // Determine expected length and limits
-    static LIMITS: [u32; 6] = [u32::MAX, 0x80, 0x800, 0x10000, 0x200000, 0x4000000];
+    let mut res: u32 = 0;
     let mut count = 0usize;
-    let mut mask = c;
-    while mask & 0x40 != 0 {
+    while c & 0x40 != 0 {
         count += 1;
-        mask <<= 1;
-    }
-    if count == 0 || count > 5 {
-        return Err("invalid UTF-8 code".to_string());
-    }
-    // First byte contributes: c & ((1 << (7-count)) - 1) = c & (0x7F >> count)
-    let mut res = (c & (0x7F >> count)) as u32;
-    for i in 1..=count {
-        if i >= s.len() || !iscont(s[i]) {
-            return Err("invalid UTF-8 code".to_string());
+        let cc = byte_at(s, i + count) as u32;
+        if cc & 0xC0 != 0x80 {
+            return None;
         }
-        res = (res << 6) | (s[i] & 0x3F) as u32;
+        res = (res << 6) | (cc & 0x3F);
+        c <<= 1;
     }
-    if res > MAXUTF || res < LIMITS[count] {
-        return Err("invalid UTF-8 code".to_string());
+    if lua53 {
+        // limits = {0xFF, 0x7F, 0x7FF, 0xFFFF}; surrogates are accepted
+        const LIMITS: [u32; 4] = [0xFF, 0x7F, 0x7FF, 0xFFFF];
+        if count > 3 {
+            return None;
+        }
+        res |= (c & 0x7F) << (count * 5);
+        if res > MAXUNICODE || res <= LIMITS[count] {
+            return None;
+        }
+    } else {
+        const LIMITS: [u32; 6] = [u32::MAX, 0x80, 0x800, 0x10000, 0x200000, 0x4000000];
+        if count > 5 {
+            return None;
+        }
+        res |= ((c & 0x7F) as u64).wrapping_shl(count as u32 * 5) as u32;
+        if res > MAXUTF || res < LIMITS[count] {
+            return None;
+        }
+        if strict && (res > MAXUNICODE || (0xD800..=0xDFFF).contains(&res)) {
+            return None;
+        }
     }
-    if strict && (res > MAXUNICODE || (0xD800..=0xDFFF).contains(&res)) {
-        return Err("invalid UTF-8 code".to_string());
-    }
-    Ok((res, count + 1))
+    Some((res, i + count + 1))
 }
 
-/// Encode a codepoint into extended UTF-8 bytes (supports up to 0x7FFFFFFF)
-fn encode_utf8_extended(x: u32) -> Vec<u8> {
+/// C: luaO_utf8esc.
+fn push_utf8(out: &mut Vec<u8>, mut x: u32) {
     if x < 0x80 {
-        return vec![x as u8];
+        out.push(x as u8);
+        return;
     }
-    let mut bytes = Vec::new();
-    let mut x = x;
+    let mut buf = [0u8; 8];
+    let mut n = 1;
     let mut mfb: u32 = 0x3f;
     loop {
-        bytes.push(0x80 | (x & 0x3f) as u8);
+        buf[8 - n] = 0x80 | (x & 0x3f) as u8;
+        n += 1;
         x >>= 6;
         mfb >>= 1;
         if x <= mfb {
             break;
         }
     }
-    bytes.push(((!mfb << 1) | x) as u8);
-    bytes.reverse();
-    bytes
+    buf[8 - n] = ((!mfb << 1) | x) as u8;
+    out.extend_from_slice(&buf[8 - n..]);
 }
 
+/// utf8.len(s [, i [, j [, lax]]])
 fn utf8_len(l: &mut LuaState) -> LuaResult<usize> {
-    let s_value = l
-        .get_arg(1)
-        .ok_or_else(|| l.error("bad argument #1 to 'len' (string expected)".to_string()))?;
-    let Some(bytes) = s_value.as_bytes() else {
-        return Err(l.error("bad argument #1 to 'len' (string expected)".to_string()));
+    let s = check_lstring(l, 1)?;
+    let len = s.len();
+    let mut posi = u_posrelat(opt_integer(l, 2, 1)?, len);
+    let mut posj = u_posrelat(opt_integer(l, 3, -1)?, len);
+    let lua53 = is_lua53(l);
+    let lax = !lua53 && l.get_arg(4).is_some_and(|v| v.is_truthy());
+    let (initial, last) = if lua53 {
+        ("initial position out of string", "final position out of string")
+    } else {
+        ("initial position out of bounds", "final position out of bounds")
     };
-
-    let len = bytes.len();
-    let lax = l.global_state().language() != crate::LuaLanguageLevel::Lua53
-        && l.get_arg(4)
-            .and_then(|value| value.as_bool())
-            .unwrap_or(false);
-
-    // Get byte positions using u_posrelat (like C Lua)
-    let i_raw = l.get_arg(2).and_then(|v| v.as_integer()).unwrap_or(1);
-    let j_raw = l.get_arg(3).and_then(|v| v.as_integer()).unwrap_or(-1);
-
-    let mut posi = u_posrelat(i_raw, len);
-    let mut posj = u_posrelat(j_raw, len);
-
-    let lua53 = l.global_state().language() == crate::LuaLanguageLevel::Lua53;
     if posi < 1 || {
         posi -= 1;
         posi
     } > len as i64
     {
-        let detail = if lua53 {
-            "initial position out of string"
-        } else {
-            "initial position out of bounds"
-        };
-        return Err(l.error(format!("bad argument #2 to 'len' ({detail})")));
+        return Err(argerror(l, 2, initial));
     }
     posj -= 1;
     if posj >= len as i64 {
-        let detail = if lua53 {
-            "final position out of string"
-        } else {
-            "final position out of bounds"
-        };
-        return Err(l.error(format!("bad argument #3 to 'len' ({detail})")));
+        return Err(argerror(l, 3, last));
     }
-
     let mut n: i64 = 0;
-    // Keep posi/posj as i64 for the loop comparison (C Lua uses signed lua_Integer).
-    // Casting a negative posj to usize would wrap to usize::MAX, breaking empty-range detection.
     while posi <= posj {
-        let pos = posi as usize;
-        if pos >= bytes.len() {
-            break;
-        }
-        match decode_utf8(&bytes[pos..], !lax) {
-            Ok((_code, char_len)) => {
-                posi += char_len as i64;
+        match utf8_decode(&s, posi as usize, lua53, !lax) {
+            Some((_, next)) => {
+                posi = next as i64;
                 n += 1;
             }
-            Err(_) => {
-                // Conversion error: return nil + error position
+            None => {
                 l.push_value(LuaValue::nil())?;
-                l.push_value(LuaValue::integer(pos as i64 + 1))?;
+                l.push_value(LuaValue::integer(posi + 1))?;
                 return Ok(2);
             }
         }
     }
-
     l.push_value(LuaValue::integer(n))?;
     Ok(1)
 }
 
+/// utf8.char(...)
 fn utf8_char(l: &mut LuaState) -> LuaResult<usize> {
-    let args = l.get_args();
-    let max_codepoint = if l.global_state().language() == crate::LuaLanguageLevel::Lua53 {
-        MAXUNICODE
-    } else {
-        MAXUTF
-    };
-
-    let mut result_bytes: Vec<u8> = Vec::new();
-    for arg in args {
-        if let Some(code) = arg.as_integer() {
-            if code < 0 || code > max_codepoint as i64 {
-                return Err(l.error("bad argument to 'char' (value out of range)".to_string()));
-            }
-            let code = code as u32;
-            if let Some(ch) = char::from_u32(code) {
-                let mut buf = [0u8; 4];
-                let s = ch.encode_utf8(&mut buf);
-                result_bytes.extend_from_slice(s.as_bytes());
-            } else {
-                // Extended encoding for surrogates and values > 0x10FFFF
-                result_bytes.extend_from_slice(&encode_utf8_extended(code));
-            }
-        } else {
-            return Err(l.error("bad argument to 'char' (number expected)".to_string()));
+    let max = if is_lua53(l) { MAXUNICODE } else { MAXUTF };
+    let mut out = Vec::new();
+    for arg in 1..=l.arg_count() {
+        let code = check_integer(l, arg)?;
+        // 5.5 checks `(lua_Unsigned)code <= MAXUTF`, 5.3 `0 <= code <= MAXUNICODE`
+        if code < 0 || code > max as i64 {
+            return Err(argerror(l, arg, "value out of range"));
         }
+        push_utf8(&mut out, code as u32);
     }
-
-    let val = l.create_bytes(&result_bytes)?;
-    l.push_value(val)?;
+    let value = l.create_bytes(&out)?;
+    l.push_value(value)?;
     Ok(1)
 }
 
-/// utf8.codes(s [, lax]) - Returns an iterator for UTF-8 characters
-fn utf8_codes(l: &mut LuaState) -> LuaResult<usize> {
-    let s_value = l
-        .get_arg(1)
-        .ok_or_else(|| l.error("bad argument #1 to 'codes' (string expected)".to_string()))?;
-    if s_value.as_bytes().is_none() {
-        return Err(l.error("bad argument #1 to 'codes' (string expected)".to_string()));
-    }
-
-    // Create state table: {string = s, position = 0}
-    let state_table = l.create_table(2, 0)?;
-    let string_key = LuaValue::integer(1);
-    let position_key = LuaValue::integer(2);
-
-    if let Some(table) = state_table.as_table_mut() {
-        table.raw_set(&string_key, s_value);
-        table.raw_set(&position_key, LuaValue::integer(0));
-    }
-
-    l.push_value(LuaValue::cfunction(utf8_codes_iterator))?;
-    l.push_value(state_table)?;
-    l.push_value(LuaValue::nil())?;
-    Ok(3)
-}
-
-/// Iterator function for utf8.codes
-fn utf8_codes_iterator(l: &mut LuaState) -> LuaResult<usize> {
-    let t_value = l
-        .get_arg(1)
-        .ok_or_else(|| l.error("utf8.codes iterator: invalid state".to_string()))?;
-
-    let string_key = 1;
-    let position_key = 2;
-
-    // Extract string and position from state table
-    let Some(table) = t_value.as_table() else {
-        return Err(l.error("utf8.codes iterator: invalid state".to_string()));
-    };
-
-    let Some(s_val) = table.raw_geti(string_key) else {
-        return Err(l.error("utf8.codes iterator: string not found".to_string()));
-    };
-
-    // Accept both string and binary
-    let Some(bytes) = s_val.as_bytes() else {
-        return Err(l.error("utf8.codes iterator: invalid string".to_string()));
-    };
-
-    let lax = false; // TODO: support lax codes iterator
-
-    let pos = table
-        .raw_geti(position_key)
-        .and_then(|v| v.as_integer())
-        .unwrap_or(0) as usize;
-
-    if pos >= bytes.len() {
-        l.push_value(LuaValue::nil())?;
-        return Ok(1);
-    }
-
-    // Decode next UTF-8 character using decode_utf8
-    let remaining = &bytes[pos..];
-    match decode_utf8(remaining, !lax) {
-        Ok((code_point, char_len)) => {
-            // Update position in the state table
-            l.raw_seti(
-                &t_value,
-                position_key,
-                LuaValue::integer((pos + char_len) as i64),
-            );
-
-            l.push_value(LuaValue::integer((pos + 1) as i64))?; // 1-based position
-            l.push_value(LuaValue::integer(code_point as i64))?;
-            Ok(2)
-        }
-        Err(e) => Err(l.error(e)),
-    }
-}
-
-/// utf8.codepoint(s [, i [, j [, lax]]]) - Returns code points of characters
-/// Follows C Lua's codepoint() using u_posrelat for indices
+/// utf8.codepoint(s [, i [, j [, lax]]])
 fn utf8_codepoint(l: &mut LuaState) -> LuaResult<usize> {
-    let s_value = l
-        .get_arg(1)
-        .ok_or_else(|| l.error("bad argument #1 to 'codepoint' (string expected)".to_string()))?;
-    // Accept both string and binary values
-    let Some(bytes) = s_value.as_bytes() else {
-        return Err(l.error("bad argument #1 to 'codepoint' (string expected)".to_string()));
-    };
-
-    let len = bytes.len();
-
-    let i_raw = l.get_arg(2).and_then(|v| v.as_integer()).unwrap_or(1);
-    let posi = u_posrelat(i_raw, len);
-    let j_raw = l.get_arg(3).and_then(|v| v.as_integer()).unwrap_or(posi);
-    let pose = u_posrelat(j_raw, len);
-    let lax = l.global_state().language() != crate::LuaLanguageLevel::Lua53
-        && l.get_arg(4)
-            .and_then(|value| value.as_bool())
-            .unwrap_or(false);
-
-    // luaL_argcheck
-    let range_detail = if l.global_state().language() == crate::LuaLanguageLevel::Lua53 {
-        "out of range"
-    } else {
-        "out of bounds"
-    };
+    let s = check_lstring(l, 1)?;
+    let len = s.len();
+    let posi = u_posrelat(opt_integer(l, 2, 1)?, len);
+    let pose = u_posrelat(opt_integer(l, 3, posi)?, len);
+    let lua53 = is_lua53(l);
+    let lax = !lua53 && l.get_arg(4).is_some_and(|v| v.is_truthy());
+    let range = if lua53 { "out of range" } else { "out of bounds" };
     if posi < 1 {
-        return Err(l.error(format!("bad argument #2 to 'codepoint' ({range_detail})")));
+        return Err(argerror(l, 2, range));
     }
     if pose > len as i64 {
-        return Err(l.error(format!("bad argument #3 to 'codepoint' ({range_detail})")));
+        return Err(argerror(l, 3, range));
     }
     if posi > pose {
-        return Ok(0); // empty interval
+        return Ok(0);
     }
-
-    let mut count = 0;
-    let se = pose as usize; // end byte (1-based inclusive → byte index)
-    let mut pos = (posi - 1) as usize; // 0-based start
-
-    while pos < se {
-        let remaining = &bytes[pos..];
-        // Decode one UTF-8 character
-        let (code, char_len) = decode_utf8(remaining, !lax).map_err(|e| l.error(e))?;
+    if pose - posi >= i32::MAX as i64 {
+        return Err(lual_error(l, "string slice too long"));
+    }
+    let end = pose as usize;
+    let mut pos = (posi - 1) as usize;
+    let mut n = 0;
+    while pos < end {
+        let Some((code, next)) = utf8_decode(&s, pos, lua53, !lax) else {
+            return Err(lual_error(l, MSG_INVALID));
+        };
         l.push_value(LuaValue::integer(code as i64))?;
-        count += 1;
-        pos += char_len;
+        n += 1;
+        pos = next;
     }
-
-    Ok(count)
+    Ok(n)
 }
 
-/// utf8.offset(s, n [, i]) - Returns byte position where n-th character
-/// counting from position 'i' starts and ends; 0 means character at 'i'.
-/// Follows C Lua 5.5's byteoffset() exactly.
+/// utf8.offset(s, n [, i])
 fn utf8_offset(l: &mut LuaState) -> LuaResult<usize> {
-    let s_value = l
-        .get_arg(1)
-        .ok_or_else(|| l.error("bad argument #1 to 'offset' (string expected)".to_string()))?;
-    let Some(bytes) = s_value.as_bytes() else {
-        return Err(l.error("bad argument #1 to 'offset' (string expected)".to_string()));
-    };
-
-    let n_value = l
-        .get_arg(2)
-        .ok_or_else(|| l.error("bad argument #2 to 'offset' (number expected)".to_string()))?;
-    let Some(n) = n_value.as_integer() else {
-        return Err(l.error("bad argument #2 to 'offset' (number expected)".to_string()));
-    };
-
-    let len = bytes.len();
-    let lua53 = l.global_state().language() == crate::LuaLanguageLevel::Lua53;
-
-    // Default i: if n >= 0 then 1 else len+1
-    let default_i = if n >= 0 { 1i64 } else { len as i64 + 1 };
-    let i_raw = l
-        .get_arg(3)
-        .and_then(|v| v.as_integer())
-        .unwrap_or(default_i);
-    let mut posi = u_posrelat(i_raw, len);
-
-    // luaL_argcheck: 1 <= posi && --posi <= len
+    let s = check_lstring(l, 1)?;
+    let len = s.len();
+    let mut n = check_integer(l, 2)?;
+    let default = if n >= 0 { 1 } else { len as i64 + 1 };
+    let mut posi = u_posrelat(opt_integer(l, 3, default)?, len);
+    let lua53 = is_lua53(l);
     if posi < 1 || {
         posi -= 1;
         posi
     } > len as i64
     {
-        let detail = if lua53 {
-            "position out of range"
-        } else {
-            "position out of bounds"
-        };
-        return Err(l.error(format!("bad argument #3 to 'offset' ({detail})")));
+        let detail = if lua53 { "position out of range" } else { "position out of bounds" };
+        return Err(argerror(l, 3, detail));
     }
-
-    let mut n = n;
-
     if n == 0 {
-        // Find beginning of current byte sequence
-        while posi > 0 && (posi as usize) < len && iscont(bytes[posi as usize]) {
+        // find beginning of current byte sequence
+        while posi > 0 && iscont(&s, posi as usize) {
             posi -= 1;
         }
     } else {
-        if (posi as usize) < len && iscont(bytes[posi as usize]) {
-            return Err(l.error("initial position is a continuation byte".to_string()));
+        if iscont(&s, posi as usize) {
+            return Err(lual_error(l, "initial position is a continuation byte"));
         }
         if n < 0 {
             while n < 0 && posi > 0 {
-                // Find beginning of previous character
+                // find beginning of previous character
                 loop {
                     posi -= 1;
-                    if posi <= 0 || !iscont(bytes[posi as usize]) {
+                    if !(posi > 0 && iscont(&s, posi as usize)) {
                         break;
                     }
                 }
@@ -412,11 +263,11 @@ fn utf8_offset(l: &mut LuaState) -> LuaResult<usize> {
             }
         } else {
             n -= 1; // do not move for 1st character
-            while n > 0 && (posi as usize) < len {
-                // Find beginning of next character
+            while n > 0 && posi < len as i64 {
+                // find beginning of next character (cannot pass the final '\0')
                 loop {
                     posi += 1;
-                    if (posi as usize) >= len || !iscont(bytes[posi as usize]) {
+                    if !iscont(&s, posi as usize) {
                         break;
                     }
                 }
@@ -424,36 +275,105 @@ fn utf8_offset(l: &mut LuaState) -> LuaResult<usize> {
             }
         }
     }
-
     if n != 0 {
-        // Did not find given character - return nil
         l.push_value(LuaValue::nil())?;
         return Ok(1);
     }
-
-    // Push initial position (1-based)
     l.push_value(LuaValue::integer(posi + 1))?;
     if lua53 {
         return Ok(1);
     }
-
-    // Find end position of this character
-    let pos_usize = posi as usize;
-    if pos_usize < len && (bytes[pos_usize] & 0x80) != 0 {
-        // Multi-byte character
-        if iscont(bytes[pos_usize]) {
-            return Err(l.error("initial position is a continuation byte".to_string()));
+    // Lua 5.5 also returns the final position of the character
+    let mut last = posi as usize;
+    if byte_at(&s, last) & 0x80 != 0 {
+        if iscont(&s, last) {
+            return Err(lual_error(l, "initial position is a continuation byte"));
         }
-        let mut end_pos = posi;
-        while (end_pos as usize + 1) < len && iscont(bytes[end_pos as usize + 1]) {
-            end_pos += 1;
+        while iscont(&s, last + 1) {
+            last += 1;
         }
-        // Push final position (1-based)
-        l.push_value(LuaValue::integer(end_pos + 1))?;
-    } else {
-        // One-byte character (or position == len+1): final position is the initial one
-        l.push_value(LuaValue::integer(posi + 1))?;
     }
-
+    l.push_value(LuaValue::integer(last as i64 + 1))?;
     Ok(2)
+}
+
+/// utf8.codes(s [, lax]): returns a stateless iterator, `s` and 0.
+fn utf8_codes(l: &mut LuaState) -> LuaResult<usize> {
+    let lua53 = is_lua53(l);
+    let lax = !lua53 && l.get_arg(2).is_some_and(|v| v.is_truthy());
+    let s = check_lstring(l, 1)?;
+    if !lua53 && iscont(&s, 0) {
+        return Err(argerror(l, 1, MSG_INVALID));
+    }
+    // luaL_checkstring converts a number argument in place
+    let subject = match s {
+        crate::stdlib::lauxlib::LStr::Value(value) => value,
+        crate::stdlib::lauxlib::LStr::Number(ref buf) => l.create_bytes(buf.as_bytes())?,
+    };
+    let iterator: fn(&mut LuaState) -> LuaResult<usize> = match (lua53, lax) {
+        (true, _) => iter_aux53,
+        (false, false) => iter_aux_strict,
+        (false, true) => iter_aux_lax,
+    };
+    l.push_value(LuaValue::cfunction(iterator))?;
+    l.push_value(subject)?;
+    l.push_value(LuaValue::integer(0))?;
+    Ok(3)
+}
+
+/// Lua 5.3 iter_aux: the control value is the previous 1-based position.
+fn iter_aux53(l: &mut LuaState) -> LuaResult<usize> {
+    let s = check_lstring(l, 1)?;
+    let len = s.len() as i64;
+    let mut n = l.get_arg(2).as_ref().and_then(crate::stdlib::lauxlib::tointeger).unwrap_or(0).wrapping_sub(1);
+    if n < 0 {
+        n = 0; // first iteration
+    } else if n < len {
+        n += 1; // skip current byte and its continuations
+        while iscont(&s, n as usize) {
+            n += 1;
+        }
+    }
+    if n >= len {
+        return Ok(0);
+    }
+    match utf8_decode(&s, n as usize, true, true) {
+        Some((code, next)) if !iscont(&s, next) => {
+            l.push_value(LuaValue::integer(n + 1))?;
+            l.push_value(LuaValue::integer(code as i64))?;
+            Ok(2)
+        }
+        _ => Err(lual_error(l, MSG_INVALID)),
+    }
+}
+
+/// Lua 5.5 iter_aux.
+fn iter_aux55(l: &mut LuaState, strict: bool) -> LuaResult<usize> {
+    let s = check_lstring(l, 1)?;
+    let len = s.len() as u64;
+    let mut n = l.get_arg(2).as_ref().and_then(crate::stdlib::lauxlib::tointeger).unwrap_or(0) as u64;
+    if n < len {
+        while iscont(&s, n as usize) {
+            n += 1; // go to next character
+        }
+    }
+    if n >= len {
+        return Ok(0); // (also handles an original negative 'n')
+    }
+    match utf8_decode(&s, n as usize, false, strict) {
+        Some((code, next)) if !iscont(&s, next) => {
+            l.push_value(LuaValue::integer(n as i64 + 1))?;
+            l.push_value(LuaValue::integer(code as i64))?;
+            Ok(2)
+        }
+        _ => Err(lual_error(l, MSG_INVALID)),
+    }
+}
+
+fn iter_aux_strict(l: &mut LuaState) -> LuaResult<usize> {
+    iter_aux55(l, true)
+}
+
+fn iter_aux_lax(l: &mut LuaState) -> LuaResult<usize> {
+    iter_aux55(l, false)
 }

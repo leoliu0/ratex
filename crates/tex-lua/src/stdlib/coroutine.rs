@@ -4,6 +4,7 @@
 use crate::lib_registry::LibraryModule;
 use crate::lua_value::LuaValue;
 use crate::lua_vm::{ErrorMsg, LuaError, LuaResult, LuaState};
+use crate::stdlib::lauxlib;
 
 pub fn create_coroutine_lib() -> LibraryModule {
     crate::lib_module!("coroutine", {
@@ -18,18 +19,28 @@ pub fn create_coroutine_lib() -> LibraryModule {
     })
 }
 
+/// `luaL_checktype(L, 1, LUA_TFUNCTION)`.
+fn check_function(l: &mut LuaState) -> LuaResult<LuaValue> {
+    match l.get_arg(1) {
+        Some(func) if func.is_function() => Ok(func),
+        _ => Err(lauxlib::typeerror(l, 1, "function")),
+    }
+}
+
+/// C: getco. Lua 5.3 says "thread expected"; 5.4+ also names the type.
+fn getco(l: &mut LuaState) -> LuaResult<LuaValue> {
+    match l.get_arg(1) {
+        Some(co) if co.is_thread() => Ok(co),
+        _ if l.global_state().language() == crate::LuaLanguageLevel::Lua53 => {
+            Err(lauxlib::argerror(l, 1, "thread expected"))
+        }
+        _ => Err(lauxlib::typeerror(l, 1, "thread")),
+    }
+}
+
 /// coroutine.create(f) - Create a new coroutine
 fn coroutine_create(l: &mut LuaState) -> LuaResult<usize> {
-    let func = match l.get_arg(1) {
-        Some(f) => f,
-        None => {
-            return Err(l.error("coroutine.create requires a function argument".to_string()));
-        }
-    };
-
-    if !func.is_function() && !func.is_cfunction() {
-        return Err(l.error("coroutine.create requires a function argument".to_string()));
-    }
+    let func = check_function(l)?;
 
     // Use VM's create_thread which properly sets up the thread with the function
     let vm = l.global_state_mut();
@@ -41,16 +52,7 @@ fn coroutine_create(l: &mut LuaState) -> LuaResult<usize> {
 
 /// coroutine.resume(co, ...) - Resume a coroutine
 fn coroutine_resume(l: &mut LuaState) -> LuaResult<usize> {
-    let thread_val = match l.get_arg(1) {
-        Some(t) => t,
-        None => {
-            return Err(l.error("coroutine.resume requires a thread argument".to_string()));
-        }
-    };
-
-    if !thread_val.is_thread() {
-        return Err(l.error("coroutine.resume requires a thread argument".to_string()));
-    }
+    let thread_val = getco(l)?;
 
     // Get remaining arguments
     let all_args = l.get_args();
@@ -125,16 +127,7 @@ fn coroutine_yield(l: &mut LuaState) -> LuaResult<usize> {
 
 /// coroutine.status(co) - Get coroutine status
 fn coroutine_status(l: &mut LuaState) -> LuaResult<usize> {
-    let thread_val = match l.get_arg(1) {
-        Some(t) => t,
-        None => {
-            return Err(l.error("coroutine.status requires a thread argument".to_string()));
-        }
-    };
-
-    if !thread_val.is_thread() {
-        return Err(l.error("coroutine.status requires a thread argument".to_string()));
-    }
+    let thread_val = getco(l)?;
 
     // Check if thread exists and get status
     // Pre-read const strings before mutable borrow of thread
@@ -193,16 +186,7 @@ fn coroutine_running(l: &mut LuaState) -> LuaResult<usize> {
 
 /// coroutine.wrap(f) - Create a wrapped coroutine
 fn coroutine_wrap(l: &mut LuaState) -> LuaResult<usize> {
-    let func = match l.get_arg(1) {
-        Some(f) => f,
-        None => {
-            return Err(l.error("coroutine.wrap requires a function argument".to_string()));
-        }
-    };
-
-    if !func.is_function() && !func.is_cfunction() {
-        return Err(l.error("coroutine.wrap requires a function argument".to_string()));
-    }
+    let func = check_function(l)?;
 
     // Create the coroutine
     let vm = l.global_state_mut();
@@ -249,34 +233,44 @@ fn coroutine_wrap_call(l: &mut LuaState) -> LuaResult<usize> {
             Ok(results.len())
         }
         Err(e) => {
-            // Match Lua's coroutine.wrap semantics: propagate the wrapped
-            // coroutine's actual error value, including dead-coroutine errors
-            // archived on the thread after resume_thread unwinds.
+            // Propagate the wrapped coroutine's actual error value, including
+            // dead-coroutine errors archived on the thread after resume_thread
+            // unwinds. Like auxwrap, string errors get the caller's position.
+            let mut error = None;
             if let Some(thread) = thread_val.as_thread_mut() {
                 let has_active_err_obj = thread.has_error_object();
                 let active_err_obj = thread.error_object();
                 if has_active_err_obj {
                     let _ = thread.get_error_msg(e);
-                    return Err(l.error_with_object(active_err_obj));
-                }
-
-                let active_msg = thread.get_error_msg(e);
-                if !active_msg.is_empty() {
-                    let err_str = l.create_string(&active_msg)?;
-                    return Err(l.error_with_object(err_str));
-                }
-
-                match thread.dead_error() {
-                    ErrorMsg::Object(obj) => return Err(l.error_with_object(*obj)),
-                    ErrorMsg::Msg(msg) if !msg.is_empty() => {
-                        let err_str = l.create_string(msg)?;
-                        return Err(l.error_with_object(err_str));
+                    error = Some(active_err_obj);
+                } else {
+                    let active_msg = thread.get_error_msg(e);
+                    if !active_msg.is_empty() {
+                        error = Some(l.create_string(&active_msg)?);
+                    } else {
+                        match thread.dead_error() {
+                            ErrorMsg::Object(obj) => error = Some(*obj),
+                            ErrorMsg::Msg(msg) if !msg.is_empty() => {
+                                let msg = msg.clone();
+                                error = Some(l.create_string(&msg)?);
+                            }
+                            _ => {}
+                        }
                     }
-                    _ => {}
                 }
             }
-
-            Err(LuaError::RuntimeError)
+            let Some(mut error) = error else {
+                return Err(LuaError::RuntimeError);
+            };
+            if error.is_string() {
+                let position = lauxlib::lual_where(l, 1);
+                if !position.is_empty() {
+                    let mut text = position.into_bytes();
+                    text.extend_from_slice(error.as_bytes().unwrap_or_default());
+                    error = l.create_bytes(&text)?;
+                }
+            }
+            Err(l.error_with_object(error))
         }
     }
 }
@@ -285,11 +279,12 @@ fn coroutine_wrap_call(l: &mut LuaState) -> LuaResult<usize> {
 /// Returns true iff nny == 0 (not inside a non-yieldable C call boundary).
 fn coroutine_isyieldable(l: &mut LuaState) -> LuaResult<usize> {
     // If a thread argument is given, check that thread; otherwise check current
-    let is_yieldable = if let Some(arg) = l.get_arg(1) {
+    let lua53 = l.global_state().language() == crate::LuaLanguageLevel::Lua53;
+    let is_yieldable = if let Some(arg) = l.get_arg(1).filter(|_| !lua53) {
         if let Some(thread) = arg.as_thread_mut() {
             thread.nny == 0
         } else {
-            return Err(l.error("value is not a thread".to_string()));
+            return Err(lauxlib::typeerror(l, 1, "thread"));
         }
     } else {
         l.nny == 0
@@ -313,7 +308,7 @@ fn coroutine_close(l: &mut LuaState) -> LuaResult<usize> {
     let thread_val = match l.get_arg(1) {
         Some(t) if t.is_thread() => t,
         Some(t) if !t.is_nil() => {
-            return Err(l.error("bad argument #1 to 'close' (coroutine expected)".to_string()));
+            return Err(lauxlib::typeerror(l, 1, "thread"));
         }
         _ => {
             // No argument or nil — close self

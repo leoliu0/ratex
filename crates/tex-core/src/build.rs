@@ -620,7 +620,11 @@ impl Engine {
             if self.synctex_active() {
                 if let Some((path, line)) = self.input.current_file_position() {
                     if !path.is_empty() && line > 0 {
-                        let file_id = self.synctex.get_or_register_file(path);
+                        let file_id = match self.lua_tex.synctex_tag {
+                            Some(tag) => tag as u32,
+                            None => self.synctex.get_or_register_file(path),
+                        };
+                        let line = self.lua_tex.synctex_line.map_or(line, |l| l as u32);
                         self.cur_list.push(Node::Whatsit(crate::boxes::WhatIt::SyncPoint {
                             file_id,
                             line,

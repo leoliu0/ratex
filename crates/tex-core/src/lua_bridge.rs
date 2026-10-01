@@ -34,7 +34,7 @@ impl Drop for ActiveGuard {
 }
 
 /// Run `f` on the engine whose Lua call is in progress.
-fn with_engine<R>(f: impl FnOnce(&mut Engine) -> R) -> Result<R, String> {
+pub(crate) fn with_engine<R>(f: impl FnOnce(&mut Engine) -> R) -> Result<R, String> {
     let engine = ACTIVE.with(Cell::get);
     if engine.is_null() {
         return Err("the TeX engine is not available here".to_string());
@@ -194,6 +194,10 @@ impl Engine {
 
     /// The end marker of `tex.runtoks` local control (luatex
     /// `end_local_code`).
+    pub(crate) fn lua_end_local_control_token(&mut self) -> Token {
+        self.lua_end_local_control()
+    }
+
     fn lua_end_local_control(&mut self) -> Token {
         let end = self.cs.intern(&[ANON_PREFIX, b"end-local-control"].concat());
         if self.eqtb.get(end).is_none() {
@@ -205,7 +209,7 @@ impl Engine {
     /// ltexlib.c `runtoks` / maincontrol.c `local_control`: with the end
     /// marker below what Lua put into the input, execute commands in
     /// restricted horizontal mode until the marker is read.
-    fn lua_local_control(&mut self) {
+    pub(crate) fn lua_local_control(&mut self) {
         let sentinel = self.lua_end_local_control();
         let saved = self.save_scanner();
         let mode = std::mem::replace(&mut self.mode, crate::engine::Mode::RestrictedHorizontal);
@@ -222,7 +226,7 @@ impl Engine {
 
     /// LuaTeX command code and `mode` of what `t` means now
     /// (lnewtokenlib.c `get_command` / `get_mode`).
-    fn lua_cmd_mode(&self, t: Token) -> (u8, i64) {
+    pub(crate) fn lua_cmd_mode(&self, t: Token) -> (u8, i64) {
         let t = t.unfreeze();
         if t.is_char() && t.cc() != 13 {
             return (t.cc(), i64::from(t.chr()));
@@ -295,7 +299,7 @@ impl Engine {
         }
     }
 
-    fn lua_tok_csname(&self, t: Token) -> Option<String> {
+    pub(crate) fn lua_tok_csname(&self, t: Token) -> Option<String> {
         let t = t.unfreeze();
         if t.is_char() {
             if t.cc() == 13 {
@@ -310,7 +314,7 @@ impl Engine {
         Some(String::from_utf8_lossy(name).into_owned())
     }
 
-    fn lua_tok_is_protected(&self, t: Token) -> bool {
+    pub(crate) fn lua_tok_is_protected(&self, t: Token) -> bool {
         let t = t.unfreeze();
         if !t.is_cs() {
             return false;
@@ -388,7 +392,7 @@ impl Engine {
     /// lnewtokenlib.c `set_macro`: tokenize `body` under catcode table
     /// `table`; a would-be control sequence must already exist, otherwise
     /// its escape character stays a character.
-    fn lua_string_to_macro_body(&mut self, table: Option<i32>, body: &[u8]) -> Vec<Token> {
+    pub(crate) fn lua_string_to_macro_body(&mut self, table: Option<i32>, body: &[u8]) -> Vec<Token> {
         let text = String::from_utf8_lossy(body);
         let chars: Vec<char> = text.chars().collect();
         let mut out = Vec::with_capacity(chars.len());
@@ -774,7 +778,7 @@ impl Engine {
 
     /// `tex.print`-style string to character tokens (`str_toks`: spaces
     /// are spacers, everything else other characters).
-    fn lua_str_toks(text: &[u8]) -> Vec<Token> {
+    pub(crate) fn lua_str_toks(text: &[u8]) -> Vec<Token> {
         String::from_utf8_lossy(text)
             .chars()
             .map(|c| {
@@ -794,7 +798,7 @@ fn token_arg(packed: i64) -> Result<Token, String> {
         .map_err(|_| "lua <token> expected".to_string())
 }
 
-fn bytes_of(s: &LuaString) -> Vec<u8> {
+pub(crate) fn bytes_of(s: &LuaString) -> Vec<u8> {
     s.as_bytes().map(|b| b.to_vec()).unwrap_or_default()
 }
 
@@ -868,19 +872,7 @@ pub(crate) fn install(lua: &mut Lua) -> Result<(), String> {
     });
     reg!(lua, b, "tok_index", |t: i64| -> Result<Option<i64>, String> {
         let t = token_arg(t)?;
-        with_engine(|e| {
-            let (cmd, mode) = e.lua_cmd_mode(t);
-            let index = match cmd {
-                CMD_ASSIGN_INT => mode - COUNT_BASE,
-                CMD_ASSIGN_ATTR => mode - ATTRIBUTE_BASE,
-                CMD_ASSIGN_DIMEN => mode - DIMEN_BASE,
-                CMD_ASSIGN_GLUE => mode - SKIP_BASE,
-                CMD_ASSIGN_MU_GLUE => mode - MU_SKIP_BASE,
-                CMD_ASSIGN_TOKS => mode - TOKS_BASE,
-                _ => mode,
-            };
-            (0..=65535).contains(&index).then_some(index)
-        })
+        with_engine(|e| e.lua_tok_index(t))
     });
     reg!(lua, b, "tok_cmdname", |t: i64| -> Result<String, String> {
         let t = token_arg(t)?;
@@ -1308,6 +1300,7 @@ pub(crate) fn install(lua: &mut Lua) -> Result<(), String> {
         })
     });
 
+    crate::lua_ud::install_tokens(lua, &b)?;
     lua.set_global("__ratex_bridge", b).map_err(|e| format!("{e:?}"))?;
     let names: LuaTable = lua.create_table().map_err(|e| format!("{e:?}"))?;
     for (code, name) in crate::lua_cmds::COMMAND_NAMES.iter().enumerate() {
@@ -1318,7 +1311,7 @@ pub(crate) fn install(lua: &mut Lua) -> Result<(), String> {
         .set_name("=[ratex bridge]")
         .exec()
         .map_err(|e| format!("bridge prelude: {}", lua.get_error_message(e).message()))?;
-    Ok(())
+    crate::lua_tex::install(lua)
 }
 
 fn register_number(idx: Option<i64>, what: &str) -> Result<u16, String> {
@@ -1327,6 +1320,32 @@ fn register_number(idx: Option<i64>, what: &str) -> Result<u16, String> {
 }
 
 impl Engine {
+    /// lnewtokenlib.c `get_index`: the register or character a token is
+    /// about, `None` when it has no index.
+    pub(crate) fn lua_tok_index(&self, t: Token) -> Option<i64> {
+        let (cmd, mode) = self.lua_cmd_mode(t);
+        let index = match cmd {
+            CMD_ASSIGN_INT => mode - COUNT_BASE,
+            CMD_ASSIGN_ATTR => mode - ATTRIBUTE_BASE,
+            CMD_ASSIGN_DIMEN => mode - DIMEN_BASE,
+            CMD_ASSIGN_GLUE => mode - SKIP_BASE,
+            CMD_ASSIGN_MU_GLUE => mode - MU_SKIP_BASE,
+            CMD_ASSIGN_TOKS => mode - TOKS_BASE,
+            _ => mode,
+        };
+        (0..=65535).contains(&index).then_some(index)
+    }
+
+    /// `tok` of a token object: the engine-independent token value.
+    pub(crate) fn lua_tok_value(t: Token) -> i64 {
+        let t = t.unfreeze();
+        if t.is_cs() {
+            CS_TOKEN_FLAG + i64::from(t.cs_id())
+        } else {
+            i64::from(t.cc()) * (1 << 21) + i64::from(t.chr())
+        }
+    }
+
     fn lua_named_param(&self, name: &[u8]) -> Option<Prim> {
         let id = self.cs.lookup(name)?;
         match self.eqtb.resolve(id) {

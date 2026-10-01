@@ -3815,7 +3815,7 @@ impl Engine {
 /// pdfTeX's `\pdfcreationdate` (web2c `initstarttime`): SOURCE_DATE_EPOCH
 /// (or the sandbox epoch) selects that instant in UTC, written with `Z`;
 /// otherwise the local time is used.
-fn pdf_creation_date() -> String {
+pub(crate) fn pdf_creation_date() -> String {
     let epoch = tex_kpse::fs::epoch()
         .and_then(|epoch| i64::try_from(epoch).ok())
         .or_else(|| {

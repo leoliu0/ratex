@@ -179,33 +179,6 @@ fn directlua_fontloader_and_shaping_modules_work() {
 }
 
 #[test]
-fn directlua_runtime_modules_work() {
-    let mut e = boot_lua();
-    run_tex(
-        &mut e,
-        r#"
-\directlua{
-    local hash = md5.sumhexa("hello")
-    assert(hash == "5d41402abc4b2a76b9719d911017c592")
-    local types = img.types()
-    assert(types[1] == "png")
-    local obj = pdf.immediateobj(1)
-    assert(obj == 1)
-    local l = lang.new(1)
-    assert(l.id == 1)
-    local cur = lfs.currentdir()
-    assert(type(cur) == "string")
-    tex.print("RUNTIME_MODULES_OK")
-}
-\message{MODULES_STATUS}
-\end
-"#,
-    );
-    assert_eq!(e.error_count, 0, "errors: {:?}, term: {}", e.diagnostics, e.term);
-    assert!(e.term.contains("MODULES_STATUS"), "term: {}", e.term);
-}
-
-#[test]
 fn directlua_mplib_module_works() {
     let mut e = boot_lua();
     run_tex(

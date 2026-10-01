@@ -161,6 +161,8 @@ pub struct Engine {
     pub(crate) primitive_names: crate::FxHashMap<u16, &'static [u8]>,
     /// LuaTeX's primitive table (`crate::luatex`); empty for other engines.
     pub(crate) lua_primitives: Vec<crate::luatex::LuaPrimitive>,
+    /// State of the Lua `tex`, `pdf`, `img` and `lang` libraries.
+    pub(crate) lua_tex: crate::lua_tex::TexState,
     /// LuaTeX `\deferred` was read before the pending extension command.
     pub(crate) lua_deferred: bool,
     /// pdftex.web `prim_lookup`: primitive meaning of each primitive name,
@@ -917,6 +919,7 @@ impl Engine {
             eqtb: Eqtb::new(ini_mode),
             primitive_names: crate::FxHashMap::default(),
             lua_primitives: Vec::new(),
+            lua_tex: Default::default(),
             lua_deferred: false,
             primitive_table: crate::FxHashMap::default(),
             pdf_retval: 0,

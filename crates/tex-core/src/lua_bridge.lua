@@ -1,6 +1,5 @@
 -- LuaTeX library surface built on the engine bridge (crates/tex-core/src/lua_bridge.rs).
 local B = __ratex_bridge
-__ratex_bridge = nil
 
 local type, select, rawget, setmetatable, getmetatable, tostring, load =
       type, select, rawget, setmetatable, getmetatable, tostring, load
@@ -10,39 +9,17 @@ local tex, lua = tex, lua
 
 token = token or {}
 local token = token
-local tok_mt = {}
-local function wrap(packed) return setmetatable({ packed }, tok_mt) end
+local wrap, unwrap, is_tok = B.tok_wrap, B.tok_unwrap, function(v) return B.tok_unwrap(v) ~= nil end
 local function packed(t)
-  if getmetatable(t) ~= tok_mt then
+  local p = unwrap(t)
+  if p == nil then
     error("lua <token> expected, not an object with type " .. type(t), 3)
   end
-  return rawget(t, 1)
+  return p
 end
-local fields = {
-  command    = B.tok_cmd,
-  mode       = B.tok_mode,
-  index      = B.tok_index,
-  cmdname    = B.tok_cmdname,
-  csname     = B.tok_csname,
-  active     = B.tok_active,
-  expandable = B.tok_expandable,
-  protected  = B.tok_protected,
-  tok        = B.tok_tok,
-  id         = function(p) return p end,
-}
-tok_mt.__index = function(t, key)
-  local f = fields[key]
-  if f then return f(rawget(t, 1)) end
-  return nil
-end
-tok_mt.__eq = function(a, b) return rawget(a, 1) == rawget(b, 1) end
-tok_mt.__tostring = function(t)
-  return "<lua token " .. rawget(t, 1) .. ": " .. B.tok_tok(rawget(t, 1)) .. ">"
-end
-token.__metatable_of_tokens = tok_mt
 
-function token.type(t) if getmetatable(t) == tok_mt then return "token" end return nil end
-function token.is_token(t) return getmetatable(t) == tok_mt end
+function token.type(t) if is_tok(t) then return "token" end return nil end
+function token.is_token(t) return is_tok(t) end
 function token.create(v, cmd)
   if type(v) == "number" then return wrap(B.create_char(v, cmd)) end
   return wrap(B.create_cs(tostring(v)))
@@ -96,7 +73,7 @@ function token.put_next(...)
   if n == 0 then return end
   local first = ...
   local list = {}
-  if type(first) == "table" and getmetatable(first) ~= tok_mt then
+  if type(first) == "table" then
     if n > 1 then error("only one table permitted in put_next") end
     for i = 1, #first do list[i] = packed(first[i]) end
   else
@@ -184,16 +161,28 @@ local function make_register(get, set, convert)
   })
   return setter, getter, proxy
 end
-local function to_sp(v)
+-- ltexlib.c value conversion of register assignments: counts and
+-- attributes take numbers (lua_tointeger, 0 when not integral), dimensions
+-- numbers (rounded) or strings (tex.sp), token lists strings.
+local function int_conv(what)
+  return function(v)
+    if type(v) ~= "number" then error("unsupported " .. what .. " value type", 4) end
+    return math.tointeger(v) or 0
+  end
+end
+local function dim_conv(v)
   if type(v) == "string" then return tex.sp(v) end
+  if type(v) == "number" then return math.tointeger(v) or math.floor(v + 0.5) end
+  error("unsupported dimen value type", 4)
+end
+local function toks_conv(v)
+  if type(v) ~= "string" then error("unsupported value type", 4) end
   return v
 end
-tex.setcount, tex.getcount, tex.count = make_register(B.count_get, B.count_set)
-tex.setdimen, tex.getdimen, tex.dimen = make_register(B.dimen_get, B.dimen_set, to_sp)
-tex.settoks, tex.gettoks, tex.toks = make_register(B.toks_get, B.toks_set, tostring)
-tex.setattribute, tex.getattribute, tex.attribute = make_register(B.attribute_get, B.attribute_set)
-function tex.isattribute(k) return pcall(tex.getattribute, k) end
-function tex.iscount(k) return pcall(tex.getcount, k) end
+tex.setcount, tex.getcount, tex.count = make_register(B.count_get, B.count_set, int_conv("count"))
+tex.setdimen, tex.getdimen, tex.dimen = make_register(B.dimen_get, B.dimen_set, dim_conv)
+tex.settoks, tex.gettoks, tex.toks = make_register(B.toks_get, B.toks_set, toks_conv)
+tex.setattribute, tex.getattribute, tex.attribute = make_register(B.attribute_get, B.attribute_set, int_conv("attribute"))
 
 -- tex.print & co. (ltexlib.c do_luacprint / luac_store): strings and
 -- numbers become pseudo-file lines, token objects are read back as such.
@@ -207,15 +196,15 @@ local function store(v, partial, cattable)
   local t = type(v)
   if t == "string" or t == "number" then
     B.print_text(partial, cattable, tostring(v))
-  elseif t == "table" and getmetatable(v) == tok_mt then
-    B.print_token(partial, cattable, rawget(v, 1))
+  elseif is_tok(v) then
+    B.print_token(partial, cattable, unwrap(v))
   else
     return false
   end
   return true
 end
 local function is_list(v)
-  return type(v) == "table" and getmetatable(v) ~= tok_mt
+  return type(v) == "table"
 end
 local function cprint(partial, cattable, ...)
   local n, start = select("#", ...), 1

@@ -107,35 +107,6 @@ impl LuaEngine {
             .create_table()
             .map_err(|e| format!("tex table creation failed: {e:?}"))?;
 
-        // tex.sp
-        let sp_fn = self
-            .lua
-            .create_function(|dim_str: String| -> LuaResult<i64> {
-                let s = dim_str.trim();
-                let sp = if let Some(stripped) = s.strip_suffix("pt") {
-                    let pts: f64 = stripped.trim().parse().unwrap_or(0.0);
-                    (pts * 65536.0) as i64
-                } else if let Some(stripped) = s.strip_suffix("sp") {
-                    stripped.trim().parse().unwrap_or(0i64)
-                } else if let Some(stripped) = s.strip_suffix("in") {
-                    let inches: f64 = stripped.trim().parse().unwrap_or(0.0);
-                    (inches * 72.27 * 65536.0) as i64
-                } else if let Some(stripped) = s.strip_suffix("mm") {
-                    let mm: f64 = stripped.trim().parse().unwrap_or(0.0);
-                    (mm * (72.27 / 25.4) * 65536.0) as i64
-                } else if let Some(stripped) = s.strip_suffix("cm") {
-                    let cm: f64 = stripped.trim().parse().unwrap_or(0.0);
-                    (cm * (722.7 / 25.4) * 65536.0) as i64
-                } else {
-                    s.parse().unwrap_or(0i64)
-                };
-                Ok(sp)
-            })
-            .unwrap();
-        tex_tbl.set("sp", sp_fn).unwrap();
-        tex_tbl.set("luatexversion", 124i64).unwrap();
-        tex_tbl.set("luatexrevision", "0").unwrap();
-        tex_tbl.set("luatexbanner", "This is LuaTeX, Version 1.24.0").unwrap();
         // tex.count & co. are installed by `lua_bridge`.
 
         self.lua
@@ -426,57 +397,8 @@ impl LuaEngine {
         md5_tbl.set("sum", sum_fn).unwrap();
         self.lua.set_global("md5", md5_tbl).unwrap();
 
-        // 12. Documented runtime modules: img, pdf, lang, lfs, sha2, gzip, zlib, zip
+        // 12. Documented runtime modules: lfs, sha2, gzip, zlib, zip
         self.lua.execute(r#"
-            img = {}
-            function img.types()
-                return { "png", "jpg", "pdf" }
-            end
-            function img.new()
-                return { xsize = 0, ysize = 0, xres = 72, yres = 72 }
-            end
-            function img.scan(obj)
-                local file = type(obj) == "table" and (obj.filename or obj.file) or obj
-                return {
-                    filename = file,
-                    xsize = 100,
-                    ysize = 100,
-                    xres = 72,
-                    yres = 72,
-                    colordepth = 24,
-                }
-            end
-            function img.node(obj)
-                return node.new(8, 0)
-            end
-            function img.write(obj)
-            end
-
-            pdf = {
-                mapfile = function(s) end,
-                mapline = function(s) end,
-                setmatrix = function(m) end,
-                print = function(s) end,
-                immediateobj = function(s) return 1 end,
-                reserveobj = function() return 1 end,
-                obj = function(s) return 1 end,
-                getcreationdate = function() return "D:20260923000000Z" end,
-                setcreationdate = function(s) end,
-            }
-            if status then
-                status.getcreationdate = pdf.getcreationdate
-            end
-
-            lang = {
-                new = function(id)
-                    return { id = id or 0 }
-                end,
-                hyphenation = function(l, words) end,
-                patterns = function(l, pats) end,
-                clear_patterns = function(l) end,
-                clear_hyphenation = function(l) end,
-            }
-
             lfs = {
                 currentdir = function() return "." end,
                 attributes = function(filepath, aname)
@@ -748,7 +670,22 @@ impl Engine {
             .iter()
             .map(|&b| if i32::from(b) == newline { b'\n' } else { b })
             .collect();
-        let text = String::from_utf8_lossy(&text);
+        let log_text = String::from_utf8_lossy(&text).into_owned();
+        // texio.setescape: the terminal shows control characters as ^^ notation
+        let text = if self.lua_tex.texio_noescape {
+            log_text.clone()
+        } else {
+            let mut s = String::with_capacity(log_text.len());
+            for c in log_text.chars() {
+                if (c as u32) < 32 && c != '\t' && c != '\n' {
+                    s.push_str("^^");
+                    s.push(((c as u8) + 64) as char);
+                } else {
+                    s.push(c);
+                }
+            }
+            s
+        };
         if target != 1 {
             if nl && !self.term.is_empty() && !self.term.ends_with('\n') {
                 self.append_term("\n");
@@ -759,7 +696,7 @@ impl Engine {
             if nl && !self.log.is_empty() && !self.log.ends_with('\n') {
                 self.append_log("\n");
             }
-            self.append_log(&text);
+            self.append_log(&log_text);
         }
     }
 }

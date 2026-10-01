@@ -1,0 +1,209 @@
+NODE	check_discretionaries check_discretionary copy copy_list count current_attr dimensions direct effective_glue end_of_math family_font fields find_attribute first_glyph fix_node_lists flatten_discretionaries flush_list flush_node flush_properties_table free get_attribute get_properties_table getboth getchar getdisc getfield getfont getglue getid getleader getlist getnext getprev getproperty getsubtype getwhd has_attribute has_field has_glyph hpack hyphenating id insert_after insert_before is_char is_glyph is_node is_zero_glue kerning last_node length ligaturing mlist_to_hlist new next prepend_prevdepth prev protect_glyph protect_glyphs protrusion_skippable rangedimensions remove set_attribute set_properties_mode setfield setglue setproperty slide subtype subtypes tail tostring traverse traverse_char traverse_glyph traverse_id traverse_list type types unprotect_glyph unprotect_glyphs unset_attribute usedlist uses_font values vpack whatsits write
+DIRECT	check_discretionaries check_discretionary copy copy_list count current_attr dimensions effective_glue end_of_math find_attribute first_glyph flatten_discretionaries flush_list flush_node flush_properties_table free get_attribute get_properties_table get_synctex_fields getattributelist getboth getbox getchar getcomponents getdata getdepth getdir getdirection getdisc getexpansion getfam getfield getfont getglue getheight getid getkern getlang getleader getlist getnext getnucleus getoffsets getpenalty getprev getproperty getshift getsub getsubtype getsup getwhd getwidth has_attribute has_field has_glyph hpack hyphenating insert_after insert_before is_char is_direct is_glyph is_node is_zero_glue kerning last_node length ligaturing new prepend_prevdepth protect_glyph protect_glyphs protrusion_skippable rangedimensions remove set_attribute set_properties_mode set_synctex_fields setattributelist setboth setbox setchar setcomponents setdata setdepth setdir setdirection setdisc setexpansion setfam setfield setfont setglue setheight setkern setlang setleader setlink setlist setnext setnucleus setoffsets setpenalty setprev setproperty setshift setsplit setsub setsubtype setsup setwhd setwidth slide tail todirect tonode tostring traverse traverse_char traverse_glyph traverse_id traverse_list unprotect_glyph unprotect_glyphs unset_attribute usedlist uses_font vpack write
+type	0	hlist
+type	1	vlist
+type	2	rule
+type	3	ins
+type	4	mark
+type	5	adjust
+type	6	boundary
+type	7	disc
+type	8	whatsit
+type	9	local_par
+type	10	dir
+type	11	math
+type	12	glue
+type	13	kern
+type	14	penalty
+type	15	unset
+type	16	style
+type	17	choice
+type	18	noad
+type	19	radical
+type	20	fraction
+type	21	accent
+type	22	fence
+type	23	math_char
+type	24	sub_box
+type	25	sub_mlist
+type	26	math_text_char
+type	27	delim
+type	28	margin_kern
+type	29	glyph
+type	30	align_record
+type	31	pseudo_file
+type	32	pseudo_line
+type	33	page_insert
+type	34	split_insert
+type	35	expr_stack
+type	36	nested_list
+type	37	span
+type	38	attribute
+type	39	glue_spec
+type	40	attribute_list
+type	41	temp
+type	42	align_stack
+type	43	movement_stack
+type	44	if_stack
+type	45	unhyphenated
+type	46	hyphenated
+type	47	delta
+type	48	passive
+type	49	shape
+whatsit	0	open
+whatsit	1	write
+whatsit	2	close
+whatsit	3	special
+whatsit	4	late_special
+whatsit	7	save_pos
+whatsit	8	late_lua
+whatsit	9	user_defined
+whatsit	16	pdf_literal
+whatsit	17	pdf_late_literal
+whatsit	18	pdf_refobj
+whatsit	19	pdf_annot
+whatsit	20	pdf_start_link
+whatsit	21	pdf_end_link
+whatsit	22	pdf_dest
+whatsit	23	pdf_action
+whatsit	24	pdf_thread
+whatsit	25	pdf_start_thread
+whatsit	26	pdf_end_thread
+whatsit	27	pdf_thread_data
+whatsit	28	pdf_link_data
+whatsit	29	pdf_colorstack
+whatsit	30	pdf_setmatrix
+whatsit	31	pdf_save
+whatsit	32	pdf_restore
+whatsit	33	pdf_link_state
+fields	0	-1=prev 0=next 1=id 2=subtype 3=attr 4=width 5=depth 6=height 7=dir 8=shift 9=glue_order 10=glue_sign 11=glue_set 12=head
+fields	1	-1=prev 0=next 1=id 2=subtype 3=attr 4=width 5=depth 6=height 7=dir 8=shift 9=glue_order 10=glue_sign 11=glue_set 12=head
+fields	2	-1=prev 0=next 1=id 2=subtype 3=attr 4=width 5=depth 6=height 7=dir 8=index 9=left 10=right
+fields	3	-1=prev 0=next 1=id 2=subtype 3=attr 4=cost 5=depth 6=height 7=spec 8=head
+fields	4	-1=prev 0=next 1=id 2=subtype 3=attr 4=class 5=mark
+fields	5	-1=prev 0=next 1=id 2=subtype 3=attr 4=head
+fields	6	-1=prev 0=next 1=id 2=subtype 3=attr 4=value
+fields	7	-1=prev 0=next 1=id 2=subtype 3=attr 4=pre 5=post 6=replace 7=penalty
+fields	9	-1=prev 0=next 1=id 2=subtype 3=attr 4=pen_inter 5=pen_broken 6=dir 7=box_left 8=box_left_width 9=box_right 10=box_right_width
+fields	10	-1=prev 0=next 1=id 2=subtype 3=attr 4=dir 5=level
+fields	11	-1=prev 0=next 1=id 2=subtype 3=attr 4=surround 5=width 6=stretch 7=shrink 8=stretch_order 9=shrink_order
+fields	12	-1=prev 0=next 1=id 2=subtype 3=attr 4=leader 5=width 6=stretch 7=shrink 8=stretch_order 9=shrink_order
+fields	13	-1=prev 0=next 1=id 2=subtype 3=attr 4=kern 5=expansion_factor
+fields	14	-1=prev 0=next 1=id 2=subtype 3=attr 4=penalty
+fields	15	-1=prev 0=next 1=id 2=subtype 3=attr 4=width 5=depth 6=height 7=dir 8=shrink 9=glue_order 10=glue_sign 11=stretch 12=span 13=head
+fields	16	-1=prev 0=next 1=id 2=subtype 3=attr 4=style
+fields	17	-1=prev 0=next 1=id 2=subtype 3=attr 4=display 5=text 6=script 7=scriptscript
+fields	18	-1=prev 0=next 1=id 2=subtype 3=attr 4=nucleus 5=sub 6=sup
+fields	19	-1=prev 0=next 1=id 2=subtype 3=attr 4=nucleus 5=sub 6=sup 7=left 8=degree 9=width 10=options
+fields	20	-1=prev 0=next 1=id 2=subtype 3=attr 4=width 5=num 6=denom 7=left 8=right 9=middle 10=fam 11=options
+fields	21	-1=prev 0=next 1=id 2=subtype 3=attr 4=nucleus 5=sub 6=sup 7=accent 8=bot_accent 9=top_accent 10=overlay_accent 11=fraction
+fields	22	-1=prev 0=next 1=id 2=subtype 3=attr 4=delim 5=italic 6=height 7=depth 8=options 9=class
+fields	23	-1=prev 0=next 1=id 2=subtype 3=attr 4=fam 5=char
+fields	24	-1=prev 0=next 1=id 2=subtype 3=attr 4=head
+fields	25	-1=prev 0=next 1=id 2=subtype 3=attr 4=head
+fields	26	-1=prev 0=next 1=id 2=subtype 3=attr 4=fam 5=char
+fields	27	-1=prev 0=next 1=id 2=subtype 3=attr 4=small_fam 5=small_char 6=large_fam 7=large_char
+fields	28	-1=prev 0=next 1=id 2=subtype 3=attr 4=width 5=glyph
+fields	29	-1=prev 0=next 1=id 2=subtype 3=attr 4=char 5=font 6=lang 7=left 8=right 9=uchyph 10=components 11=xoffset 12=yoffset 13=width 14=height 15=depth 16=expansion_factor 17=data
+fields	30	-1=prev 0=next 1=id 2=subtype
+fields	31	-1=prev 0=next 1=id 2=subtype
+fields	32	-1=prev 0=next 1=id 2=subtype
+fields	33	-1=prev 0=next 1=id 2=subtype 3=height 4=last_ins_ptr 5=best_ins_ptr 6=width 7=stretch 8=shrink 9=stretch_order 10=shrink_order
+fields	34	-1=prev 0=next 1=id 2=subtype 3=height 4=last_ins_ptr 5=best_ins_ptr 6=broken_ptr 7=broken_ins
+fields	35	-1=prev 0=next 1=id 2=subtype
+fields	36	-1=prev 0=next 1=id 2=subtype
+fields	37	-1=prev 0=next 1=id 2=subtype
+fields	38	0=next 1=id 2=number 3=value
+fields	39	0=next 1=id 2=width 3=stretch 4=shrink 5=stretch_order 6=shrink_order
+fields	40	0=next 1=id
+fields	41	-1=prev 0=next 1=id 2=subtype
+fields	42	-1=prev 0=next 1=id 2=subtype
+fields	43	-1=prev 0=next 1=id 2=subtype
+fields	44	-1=prev 0=next 1=id 2=subtype
+fields	45	-1=prev 0=next 1=id 2=subtype
+fields	46	-1=prev 0=next 1=id 2=subtype
+fields	47	-1=prev 0=next 1=id 2=subtype
+fields	48	-1=prev 0=next 1=id 2=subtype
+fields	49	-1=prev 0=next 1=id 2=subtype
+wfields	0	-1=prev 0=next 1=id 2=subtype 3=attr 4=stream 5=name 6=area 7=ext
+wfields	1	-1=prev 0=next 1=id 2=subtype 3=attr 4=stream 5=data
+wfields	2	-1=prev 0=next 1=id 2=subtype 3=attr 4=stream
+wfields	3	-1=prev 0=next 1=id 2=subtype 3=attr 4=data
+wfields	4	-1=prev 0=next 1=id 2=subtype 3=attr 4=data
+wfields	7	-1=prev 0=next 1=id 2=subtype 3=attr
+wfields	8	-1=prev 0=next 1=id 2=subtype 3=attr 4=reg 5=data 6=name 7=string
+wfields	9	-1=prev 0=next 1=id 2=subtype 3=attr 4=user_id 5=type 6=value
+wfields	16	-1=prev 0=next 1=id 2=subtype 3=attr 4=mode 5=data
+wfields	17	-1=prev 0=next 1=id 2=subtype 3=attr 4=mode 5=data
+wfields	18	-1=prev 0=next 1=id 2=subtype 3=attr 4=objnum
+wfields	19	-1=prev 0=next 1=id 2=subtype 3=attr 4=width 5=depth 6=height 7=objnum 8=data
+wfields	20	-1=prev 0=next 1=id 2=subtype 3=attr 4=width 5=depth 6=height 7=objnum 8=link_attr 9=action
+wfields	21	-1=prev 0=next 1=id 2=subtype 3=attr
+wfields	22	-1=prev 0=next 1=id 2=subtype 3=attr 4=width 5=depth 6=height 7=named_id 8=dest_id 9=dest_type 10=xyz_zoom 11=objnum
+wfields	23	-1=prev 0=next 1=id 2=subtype 3=action_type 4=named_id 5=action_id 6=file 7=new_window 8=data 9=struct_id
+wfields	24	-1=prev 0=next 1=id 2=subtype 3=attr 4=width 5=depth 6=height 7=named_id 8=thread_id 9=thread_attr
+wfields	25	-1=prev 0=next 1=id 2=subtype 3=attr 4=width 5=depth 6=height 7=named_id 8=thread_id 9=thread_attr
+wfields	26	-1=prev 0=next 1=id 2=subtype 3=attr
+wfields	27	-1=prev 0=next 1=id 2=subtype
+wfields	28	-1=prev 0=next 1=id 2=subtype
+wfields	29	-1=prev 0=next 1=id 2=subtype 3=attr 4=stack 5=cmd 6=data
+wfields	30	-1=prev 0=next 1=id 2=subtype 3=attr 4=data
+wfields	31	-1=prev 0=next 1=id 2=subtype 3=attr
+wfields	32	-1=prev 0=next 1=id 2=subtype 3=attr
+wfields	33	-1=prev 0=next 1=id 2=subtype 3=attr 4=value
+false	invalid node type id: 99
+false	invalid node type id: foo
+values	dir	0=TLT 1=TRT 2=LTL 3=RTT
+values	direction	0=TLT 1=TRT 2=LTL 3=RTT
+values	glue	0=normal 1=fi 2=fil 3=fill 4=filll
+values	pdf_literal	0=origin 1=page 2=always 3=raw 4=text 5=font 6=special
+values	pdf_action	0=page 1=goto 2=thread 3=user
+values	pdf_window	0=unset 1=new 2=nonew
+values	color_stack	0=set 1=push 2=pop 3=current
+values	pagestate	0=empty 1=box_there 2=inserts_only
+values	foo	nil
+subtypes	glyph	0=unset 1=character 2=ligature 4=ghost 8=left 16=right
+subtypes	glue	0=userskip 1=lineskip 2=baselineskip 3=parskip 4=abovedisplayskip 5=belowdisplayskip 6=abovedisplayshortskip 7=belowdisplayshortskip 8=leftskip 9=rightskip 10=topskip 11=splittopskip 12=tabskip 13=spaceskip 14=xspaceskip 15=parfillskip 16=mathskip 17=thinmuskip 18=medmuskip 19=thickmuskip 98=conditionalmathskip 99=muglue 100=leaders 101=cleaders 102=xleaders 103=gleaders
+subtypes	dir	0=normal 1=cancel
+subtypes	boundary	0=cancel 1=user 2=protrusion 3=word
+subtypes	penalty	0=userpenalty 1=linebreakpenalty 2=linepenalty 3=wordpenalty 4=finalpenalty 5=noadpenalty 6=beforedisplaypenalty 7=afterdisplaypenalty 8=equationnumberpenalty
+subtypes	kern	0=fontkern 1=userkern 2=accentkern 3=italiccorrection
+subtypes	rule	0=normal 1=box 2=image 3=empty 4=user 5=over 6=under 7=fraction 8=radical 9=outline
+subtypes	list	0=unknown 1=line 2=box 3=indent 4=alignment 5=cell 6=equation 7=equationnumber 8=math 9=mathchar 10=hextensible 11=vextensible 12=hdelimiter 13=vdelimiter 14=overdelimiter 15=underdelimiter 16=numerator 17=denominator 18=limits 19=fraction 20=nucleus 21=sup 22=sub 23=degree 24=scripts 25=over 26=under 27=accent 28=radical
+subtypes	hlist	0=unknown 1=line 2=box 3=indent 4=alignment 5=cell 6=equation 7=equationnumber 8=math 9=mathchar 10=hextensible 11=vextensible 12=hdelimiter 13=vdelimiter 14=overdelimiter 15=underdelimiter 16=numerator 17=denominator 18=limits 19=fraction 20=nucleus 21=sup 22=sub 23=degree 24=scripts 25=over 26=under 27=accent 28=radical
+subtypes	vlist	0=unknown 1=line 2=box 3=indent 4=alignment 5=cell 6=equation 7=equationnumber 8=math 9=mathchar 10=hextensible 11=vextensible 12=hdelimiter 13=vdelimiter 14=overdelimiter 15=underdelimiter 16=numerator 17=denominator 18=limits 19=fraction 20=nucleus 21=sup 22=sub 23=degree 24=scripts 25=over 26=under 27=accent 28=radical
+subtypes	adjust	0=normal 1=pre
+subtypes	disc	0=discretionary 1=explicit 2=automatic 3=regular 4=first 5=second
+subtypes	fill	0=normal 1=fi 2=fil 3=fill 4=filll
+subtypes	leader	100=leaders 101=cleaders 102=xleaders 103=gleaders
+subtypes	marginkern	0=left 1=right
+subtypes	math	0=beginmath 1=endmath
+subtypes	noad	0=ord 1=opdisplaylimits 2=oplimits 3=opnolimits 4=bin 5=rel 6=open 7=close 8=punct 9=inner 10=under 11=over 12=vcenter
+subtypes	radical	0=radical 1=uradical 2=uroot 3=uunderdelimiter 4=uoverdelimiter 5=udelimiterunder 6=udelimiterover
+subtypes	accent	0=bothflexible 1=fixedtop 2=fixedbottom 3=fixedboth
+subtypes	fence	0=unset 1=left 2=middle 3=right 4=no
+subtypes	pdf_destination	0=xyz 1=fit 2=fith 3=fitv 4=fitb 5=fitbh 6=fitbv 7=fitr
+subtypes	pdf_literal	0=origin 1=page 2=always 3=raw 4=text 5=font 6=special
+subtypes	foo	nil
+subtypes	whatsit	nil
+subtypes	margin_kern	nil
+subtypes	0	0=unknown 1=line 2=box 3=indent 4=alignment 5=cell 6=equation 7=equationnumber 8=math 9=mathchar 10=hextensible 11=vextensible 12=hdelimiter 13=vdelimiter 14=overdelimiter 15=underdelimiter 16=numerator 17=denominator 18=limits 19=fraction 20=nucleus 21=sup 22=sub 23=degree 24=scripts 25=over 26=under 27=accent 28=radical
+subtypes	1	0=unknown 1=line 2=box 3=indent 4=alignment 5=cell 6=equation 7=equationnumber 8=math 9=mathchar 10=hextensible 11=vextensible 12=hdelimiter 13=vdelimiter 14=overdelimiter 15=underdelimiter 16=numerator 17=denominator 18=limits 19=fraction 20=nucleus 21=sup 22=sub 23=degree 24=scripts 25=over 26=under 27=accent 28=radical
+subtypes	2	0=normal 1=box 2=image 3=empty 4=user 5=over 6=under 7=fraction 8=radical 9=outline
+subtypes	5	0=normal 1=pre
+subtypes	6	0=cancel 1=user 2=protrusion 3=word
+subtypes	7	0=discretionary 1=explicit 2=automatic 3=regular 4=first 5=second
+subtypes	10	0=normal 1=cancel
+subtypes	11	0=beginmath 1=endmath
+subtypes	12	0=userskip 1=lineskip 2=baselineskip 3=parskip 4=abovedisplayskip 5=belowdisplayskip 6=abovedisplayshortskip 7=belowdisplayshortskip 8=leftskip 9=rightskip 10=topskip 11=splittopskip 12=tabskip 13=spaceskip 14=xspaceskip 15=parfillskip 16=mathskip 17=thinmuskip 18=medmuskip 19=thickmuskip 98=conditionalmathskip 99=muglue 100=leaders 101=cleaders 102=xleaders 103=gleaders
+subtypes	13	0=fontkern 1=userkern 2=accentkern 3=italiccorrection
+subtypes	14	0=userpenalty 1=linebreakpenalty 2=linepenalty 3=wordpenalty 4=finalpenalty 5=noadpenalty 6=beforedisplaypenalty 7=afterdisplaypenalty 8=equationnumberpenalty
+subtypes	18	0=ord 1=opdisplaylimits 2=oplimits 3=opnolimits 4=bin 5=rel 6=open 7=close 8=punct 9=inner 10=under 11=over 12=vcenter
+subtypes	19	0=radical 1=uradical 2=uroot 3=uunderdelimiter 4=uoverdelimiter 5=udelimiterunder 6=udelimiterover
+subtypes	21	0=bothflexible 1=fixedtop 2=fixedbottom 3=fixedboth
+subtypes	22	0=unset 1=left 2=middle 3=right 4=no
+subtypes	28	0=left 1=right
+subtypes	29	0=unset 1=character 2=ligature 4=ghost 8=left 16=right
+subtypes	39	0=normal 1=fi 2=fil 3=fill 4=filll
+subtypes	100	nil
+16	nil	29	nil	glyph	nil	node	nil	nil

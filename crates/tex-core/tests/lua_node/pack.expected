@@ -1,0 +1,120 @@
+hpack natural	1	hlist w=100 h=20 d=5 sh=0 set=0.00000 ord=0 sign=0 sub=0	0
+hpack 200	1	hlist w=300 h=20 d=5 sh=0 set=0.00000 ord=0 sign=0 sub=0	10000
+hpack exactly 20	1	hlist w=20 h=20 d=5 sh=0 set=1.00000 ord=0 sign=0 sub=0	1000000
+hpack additional 30	1	hlist w=130 h=20 d=5 sh=0 set=0.00000 ord=0 sign=0 sub=0	10000
+vpack natural	1	vlist w=100 h=20 d=5 sh=0 set=0.00000 ord=0 sign=0 sub=0	0
+vpack 100	1	vlist w=100 h=120 d=5 sh=0 set=0.00000 ord=0 sign=0 sub=0	10000
+vpack exactly 50	1	vlist w=100 h=50 d=5 sh=0 set=0.00000 ord=0 sign=0 sub=0	10000
+vpack additional 50	1	vlist w=100 h=70 d=5 sh=0 set=0.00000 ord=0 sign=0 sub=0	10000
+dimensions	1	100	20	5
+dimensions2	1	100	20	5
+dimensions glue	1	100	20	5
+dimensions glue2	1	0	0	0
+rangedimensions	1	100	20	5
+rangedimensions2	1	0	0	0
+rangedimensions3	1	0	0	0
+rangedimensions v	1	100	20	5
+hpack natural	2	hlist w=160 h=30 d=5 sh=0 set=0.00000 ord=0 sign=0 sub=0	0
+hpack 200	2	hlist w=360 h=30 d=5 sh=0 set=40.00000 ord=0 sign=1 sub=0	10000
+hpack exactly 20	2	hlist w=20 h=30 d=5 sh=0 set=1.00000 ord=0 sign=2 sub=0	1000000
+hpack additional 30	2	hlist w=190 h=30 d=5 sh=0 set=6.00000 ord=0 sign=1 sub=0	10000
+vpack natural	2	vlist w=100 h=65 d=2 sh=0 set=0.00000 ord=0 sign=0 sub=0	0
+vpack 100	2	vlist w=100 h=165 d=2 sh=0 set=20.00000 ord=0 sign=1 sub=0	10000
+vpack exactly 50	2	vlist w=100 h=50 d=2 sh=0 set=1.00000 ord=0 sign=2 sub=0	1000000
+vpack additional 50	2	vlist w=100 h=115 d=2 sh=0 set=10.00000 ord=0 sign=1 sub=0	10000
+dimensions	2	160	30	5
+dimensions2	2	100	20	5
+dimensions glue	2	163	30	5
+dimensions glue2	2	110	20	5
+rangedimensions	2	360	30	5
+rangedimensions2	2	310	20	5
+rangedimensions3	2	210	0	0
+rangedimensions v	2	360	30	5
+hpack natural	3	hlist w=160 h=30 d=5 sh=0 set=0.00000 ord=0 sign=0 sub=0	0
+hpack 200	3	hlist w=360 h=30 d=5 sh=0 set=40.00000 ord=2 sign=1 sub=0	0
+hpack exactly 20	3	hlist w=20 h=30 d=5 sh=0 set=1.00000 ord=0 sign=0 sub=0	1000000
+hpack additional 30	3	hlist w=190 h=30 d=5 sh=0 set=6.00000 ord=2 sign=1 sub=0	0
+vpack natural	3	vlist w=100 h=65 d=2 sh=0 set=0.00000 ord=0 sign=0 sub=0	0
+vpack 100	3	vlist w=100 h=165 d=2 sh=0 set=20.00000 ord=2 sign=1 sub=0	0
+vpack exactly 50	3	vlist w=100 h=50 d=2 sh=0 set=1.00000 ord=0 sign=0 sub=0	1000000
+vpack additional 50	3	vlist w=100 h=115 d=2 sh=0 set=10.00000 ord=2 sign=1 sub=0	0
+dimensions	3	160	30	5
+dimensions2	3	100	20	5
+dimensions glue	3	160	30	5
+dimensions glue2	3	110	20	5
+rangedimensions	3	360	30	5
+rangedimensions2	3	310	20	5
+rangedimensions3	3	210	0	0
+rangedimensions v	3	360	30	5
+hpack natural	4	hlist w=34 h=8 d=9 sh=0 set=0.00000 ord=0 sign=0 sub=0	0
+hpack 200	4	hlist w=234 h=8 d=9 sh=0 set=0.00000 ord=0 sign=0 sub=0	10000
+hpack exactly 20	4	hlist w=20 h=8 d=9 sh=0 set=1.00000 ord=0 sign=0 sub=0	1000000
+hpack additional 30	4	hlist w=64 h=8 d=9 sh=0 set=0.00000 ord=0 sign=0 sub=0	10000
+vpack natural	4	vlist w=20 h=22 d=9 sh=0 set=0.00000 ord=0 sign=0 sub=0	0
+vpack 100	4	vlist w=20 h=122 d=9 sh=0 set=0.00000 ord=0 sign=0 sub=0	10000
+vpack exactly 50	4	vlist w=20 h=50 d=9 sh=0 set=0.00000 ord=0 sign=0 sub=0	10000
+vpack additional 50	4	vlist w=20 h=72 d=9 sh=0 set=0.00000 ord=0 sign=0 sub=0	10000
+dimensions	4	34	8	9
+dimensions2	4	10	7	3
+dimensions glue	4	34	8	9
+dimensions glue2	4	14	7	3
+rangedimensions	4	34	8	9
+rangedimensions2	4	14	7	3
+rangedimensions3	4	4	0	0
+rangedimensions v	4	34	8	9
+hpack natural	5	hlist w=40 h=5 d=5 sh=0 set=0.00000 ord=0 sign=0 sub=0	0
+hpack 200	5	hlist w=240 h=5 d=5 sh=0 set=40.00000 ord=0 sign=1 sub=0	10000
+hpack exactly 20	5	hlist w=20 h=5 d=5 sh=0 set=1.00000 ord=0 sign=2 sub=0	1000000
+hpack additional 30	5	hlist w=70 h=5 d=5 sh=0 set=6.00000 ord=0 sign=1 sub=0	10000
+vpack natural	5	vlist w=10 h=35 d=5 sh=0 set=0.00000 ord=0 sign=0 sub=0	0
+vpack 100	5	vlist w=10 h=135 d=5 sh=0 set=20.00000 ord=0 sign=1 sub=0	10000
+vpack exactly 50	5	vlist w=10 h=50 d=5 sh=0 set=3.00000 ord=0 sign=1 sub=0	2698
+vpack additional 50	5	vlist w=10 h=85 d=5 sh=0 set=10.00000 ord=0 sign=1 sub=0	10000
+dimensions	5	40	5	5
+dimensions2	5	10	5	5
+dimensions glue	5	43	5	5
+dimensions glue2	5	30	5	5
+rangedimensions	5	240	5	5
+rangedimensions2	5	230	5	5
+rangedimensions3	5	220	5	5
+rangedimensions v	5	240	5	5
+hpack natural	6	hlist w=11 h=5 d=5 sh=0 set=0.00000 ord=0 sign=0 sub=0	0
+hpack 200	6	hlist w=211 h=5 d=5 sh=0 set=0.00000 ord=0 sign=0 sub=0	10000
+hpack exactly 20	6	hlist w=20 h=5 d=5 sh=0 set=0.00000 ord=0 sign=0 sub=0	10000
+hpack additional 30	6	hlist w=41 h=5 d=5 sh=0 set=0.00000 ord=0 sign=0 sub=0	10000
+vpack natural	6	vlist w=5 h=5 d=5 sh=0 set=0.00000 ord=0 sign=0 sub=0	0
+vpack 100	6	vlist w=5 h=105 d=5 sh=0 set=0.00000 ord=0 sign=0 sub=0	10000
+vpack exactly 50	6	vlist w=5 h=50 d=5 sh=0 set=0.00000 ord=0 sign=0 sub=0	10000
+vpack additional 50	6	vlist w=5 h=55 d=5 sh=0 set=0.00000 ord=0 sign=0 sub=0	10000
+dimensions	6	11	5	5
+dimensions2	6	3	0	0
+dimensions glue	6	11	5	5
+dimensions glue2	6	8	5	5
+rangedimensions	6	11	5	5
+rangedimensions2	6	8	5	5
+rangedimensions3	6	5	5	5
+rangedimensions v	6	11	5	5
+hpack natural	7	hlist w=30 h=1 d=0 sh=0 set=0.00000 ord=0 sign=0 sub=0	0
+hpack 200	7	hlist w=230 h=1 d=0 sh=0 set=0.00000 ord=0 sign=0 sub=0	10000
+hpack exactly 20	7	hlist w=20 h=1 d=0 sh=0 set=1.00000 ord=0 sign=0 sub=0	1000000
+hpack additional 30	7	hlist w=60 h=1 d=0 sh=0 set=0.00000 ord=0 sign=0 sub=0	10000
+vpack natural	7	vlist w=30 h=1 d=0 sh=0 set=0.00000 ord=0 sign=0 sub=0	0
+vpack 100	7	vlist w=30 h=101 d=0 sh=0 set=0.00000 ord=0 sign=0 sub=0	10000
+vpack exactly 50	7	vlist w=30 h=50 d=0 sh=0 set=0.00000 ord=0 sign=0 sub=0	10000
+vpack additional 50	7	vlist w=30 h=51 d=0 sh=0 set=0.00000 ord=0 sign=0 sub=0	10000
+dimensions	7	30	1	0
+dimensions2	7	30	1	0
+dimensions glue	7	30	1	0
+dimensions glue2	7	30	1	0
+rangedimensions	7	30	1	0
+rangedimensions2	7	30	1	0
+rangedimensions3	7	0	0	0
+rangedimensions v	7	30	1	0
+true
+true
+TRT	1
+TLT
+30	6	5
+10	5	5
+20	6	3
+30	6	5

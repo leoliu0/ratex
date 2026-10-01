@@ -1,0 +1,40 @@
+id	true
+lig	AV	A0 V0	true	29
+kern	AV	A0 k-80000/0 V0	true
+both	AV	A0 k-80000/0 V0
+lig	AVA	A0 V0 A0	true	29
+kern	AVA	A0 k-80000/0 V0 A0	true
+both	AVA	A0 k-80000/0 V0 A0
+lig	ff	<200>2	true	29
+kern	ff	f0 f0	true
+both	ff	<200>2
+lig	ffi	<203>2	true	29
+kern	ffi	f0 f0 i0	true
+both	ffi	<203>2
+lig	fi	<201>2	true	29
+kern	fi	f0 i0	true
+both	fi	<201>2
+lig	ffl	<200>2 l0	true	29
+kern	ffl	f0 f0 l0	true
+both	ffl	<200>2 l0
+lig	fl	<202>2	true	29
+kern	fl	f0 l0	true
+both	fl	<202>2
+lig	ab	a0 <204>2	true	29
+kern	ab	a0 b0	true
+both	ab	a0 <204>2
+lig	cd	<205>2 d0	true	29
+kern	cd	c0 d0	true
+both	cd	<205>2 d0
+lig	ef	e0 <206>2 f0	true	29
+kern	ef	e0 f0	true
+both	ef	e0 <206>2 f0
+lig	AA V	A0 A0 g V0	true	29
+kern	AA V	A0 A0 g V0	true
+both	AA V	A0 A0 g V0
+lig	x	x0	true	29
+kern	x	x0	true
+both	x	x0
+lig no tail	A0 V0 <201>2	true
+lig mid	x0 A0 V0	true
+nil	false

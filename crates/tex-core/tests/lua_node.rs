@@ -1,5 +1,5 @@
 //! The Lua node library (`node`, `node.direct`) against LuaTeX 1.24: the
-//! expected outputs in `tests/lua_node/*.out` were produced by `luatex --ini`
+//! expected outputs in `tests/lua_node/*.expected` were produced by `luatex --ini`
 //! running the same `*.lua` files (see `tests/lua_node/README`-free generator
 //! comment in each test).
 
@@ -51,11 +51,11 @@ pub fn run_lua(code: &str) -> Vec<String> {
 }
 
 /// Run `tests/lua_node/<case>.lua` and compare its `P` output with
-/// `<case>.out`, which LuaTeX 1.24 (`luatex --ini`, same prelude) wrote.
+/// `<case>.expected`, which LuaTeX 1.24 (`luatex --ini`, same prelude) wrote.
 fn check_case(case: &str) {
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/lua_node");
     let code = std::fs::read_to_string(dir.join(format!("{case}.lua"))).unwrap();
-    let expected = std::fs::read_to_string(dir.join(format!("{case}.out"))).unwrap();
+    let expected = std::fs::read_to_string(dir.join(format!("{case}.expected"))).unwrap();
     let actual = run_lua(&code);
     let expected: Vec<&str> = expected.lines().collect();
     for (i, (a, e)) in actual.iter().zip(&expected).enumerate() {

@@ -894,13 +894,13 @@ impl Engine {
                     let baseline = self.eqtb.glue_params
                         [crate::prim::GlueParam::BaselineSkip.idx() as usize]
                         .width;
-                    nodes.push(Node::Glue(Glue {
-                        width: 0,
-                        stretch: (baseline as i64 * 8 / 100) as i32,
-                        shrink: 0,
-                        stretch_order: 0,
-                        shrink_order: 0,
-                    }));
+                    nodes.push(Node::Glue(Glue::spec(
+                        0,
+                        (baseline as i64 * 8 / 100) as i32,
+                        0,
+                        0,
+                        0,
+                    )));
                 } else {
                     nodes.push(Node::Penalty(0));
                 }

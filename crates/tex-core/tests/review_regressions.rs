@@ -896,8 +896,8 @@ fn nonpositive_showboxbreadth_shows_five_items() {
 \setbox0\hbox{aaaaaaa}\showbox0
 \end",
     );
-    assert_eq!(e.log.matches("character 'a'").count(), 5, "{}", e.log);
-    assert!(e.log.contains("omitted by \\showboxbreadth"), "{}", e.log);
+    assert_eq!(e.log.matches("\n.\\tenrm a").count(), 5, "{}", e.log);
+    assert!(e.log.contains("\n.\\tenrm a\n.etc.\n"), "{}", e.log);
 }
 
 /// pdftex -ini: \delimiterfactor=0 is used as given, so with a large

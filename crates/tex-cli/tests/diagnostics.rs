@@ -1562,7 +1562,11 @@ fn paragraph_overfull_warning_points_to_the_paragraph_end() {
     let job = Job::new("structured-paragraph-overfull");
     job.write(
         "main.tex",
-        "\\tracingonline=1\n\\hsize=1pt\nabcdefghijklmnop\\par\n\\end\n",
+        concat!(
+            "\\tracingonline=1 \\showboxdepth=1 \\showboxbreadth=5 \\parindent=20pt ",
+            "\\parfillskip=0pt plus 1fil \\overfullrule=5pt \\font\\x=cmr10 \\x\n",
+            "\\hsize=1pt\nabcdefghijklmnop\\par\n\\end\n"
+        ),
     );
     let output = job.compile(&["-plain", "-interaction=nonstopmode"]);
     assert!(output.status.success(), "{}", failure_output(&output));
@@ -1570,7 +1574,7 @@ fn paragraph_overfull_warning_points_to_the_paragraph_end() {
     let stderr = text(&output.stderr);
     assert!(
         stderr.contains("warning: Overfull \\hbox (")
-            && stderr.contains("in paragraph ending here"),
+            && stderr.contains("in paragraph at lines 3--3"),
         "{stderr}"
     );
     assert!(stderr.contains("  --> main.tex:3:"), "{stderr}");
@@ -1580,10 +1584,14 @@ fn paragraph_overfull_warning_points_to_the_paragraph_end() {
         "{stderr}"
     );
     assert!(!stdout.contains("Overfull \\hbox"), "{stdout}");
+    // tex.web §660: the transcript carries TeX's own report, the short
+    // display of the line and its box display
+    let log = job.log();
     assert!(
-        job.log().contains("in paragraph ending here"),
-        "{}",
-        job.log()
+        log.contains(
+            "\nOverfull \\hbox (96.22246pt too wide) in paragraph at lines 3--3\n[]\\x abcdefghijklmnop |\n\n\\hbox(6.94444+1.94444)x1.0\n.\\hbox(0.0+0.0)x20.0\n.\\x a\n.\\x b\n.\\kern0.27779\n.\\x c\n.etc.\n\n"
+        ),
+        "{log}"
     );
 }
 

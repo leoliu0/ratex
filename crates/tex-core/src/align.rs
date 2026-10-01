@@ -314,6 +314,7 @@ impl Engine {
             self.prev_depth,
             self.space_factor,
             self.prev_graf,
+            self.nest_line(),
         ));
         self.push_group_level(LevelType::Box);
         self.box_targets.push(None);
@@ -403,6 +404,7 @@ impl Engine {
             self.prev_depth,
             self.space_factor,
             self.prev_graf,
+            self.nest_line(),
         ));
         self.push_group_level(LevelType::Box);
         self.box_targets.push(None);
@@ -636,6 +638,7 @@ impl Engine {
             self.prev_depth,
             self.space_factor,
             self.prev_graf,
+            self.nest_line(),
         ));
         self.prev_graf = 0;
         self.push_group_level(LevelType::Box);
@@ -990,7 +993,7 @@ impl Engine {
         let _ = self.box_shifts.pop().unwrap_or(0);
         let _ = self.box_kinds.pop();
         self.pop_group();
-        let (om, ol, pd, sf, pg) = self.saved_lists.pop().unwrap();
+        let (om, ol, pd, sf, pg, _) = self.saved_lists.pop().unwrap();
         self.prev_graf = pg;
         self.cur_list = ol;
         self.mode = om; // tex.web unsave: the enclosing level's mode returns
@@ -1291,21 +1294,25 @@ impl Engine {
         let row_adj = std::mem::take(&mut self.align_row_adjust);
         let max_row_cols = rows_in.iter().map(|r| r.len()).max().unwrap_or(0);
         let ncols = self.align_preamble.len().max(max_row_cols);
-        let t0 = self.align_t0;
-        // tabskip glue following each column
+        let t0 = self.align_t0.param(crate::boxes::glue_subtype::TAB_SKIP);
+        // tabskip glue following each column (tex.web new_param_glue(tab_skip_code))
         let mut tabs: Vec<Glue> = (0..ncols)
             .map(|col| {
                 let pre = &self.align_preamble;
                 if pre.is_empty() {
                     return t0;
                 }
-                if col < pre.len() {
-                    return pre[col].tabskip;
-                }
-                match self.align_loop_start {
-                    Some(ls) if pre.len() > ls => pre[ls + (col - ls) % (pre.len() - ls)].tabskip,
-                    _ => t0,
-                }
+                let g = if col < pre.len() {
+                    pre[col].tabskip
+                } else {
+                    match self.align_loop_start {
+                        Some(ls) if pre.len() > ls => {
+                            pre[ls + (col - ls) % (pre.len() - ls)].tabskip
+                        }
+                        _ => return t0,
+                    }
+                };
+                g.param(crate::boxes::glue_subtype::TAB_SKIP)
             })
             .collect();
         let size = |n: &Node| match n {
@@ -1402,7 +1409,12 @@ impl Engine {
         }
         self.last_badness = res.badness;
         let origin = self.align_origin.clone();
+        // tex.web §804: `pack_begin_line:=-mode_line` while the preamble
+        // is packaged ("in alignment at lines a--b")
+        let align_line = origin.as_ref().map_or(0, |mark| mark.to_context().line as i32);
+        let saved_begin = std::mem::replace(&mut self.pack_begin_line, -align_line);
         self.report_pack_warnings_at(&res, origin);
+        self.pack_begin_line = saved_begin;
         let (p_size, p_sign, p_order, p_set) = match &res.node {
             Node::Box {
                 w,
@@ -1543,11 +1555,12 @@ impl Engine {
                 if let Some(pd) = prev {
                     let gap = bs.width as i64 - pd as i64 - row_a as i64;
                     rows.push(Node::Glue(if gap < lsl as i64 {
-                        ls
+                        ls.param(crate::boxes::glue_subtype::LINE_SKIP)
                     } else {
                         Glue {
                             width: gap as i32,
-                            ..bs
+                            subtype: crate::boxes::glue_subtype::BASELINE_SKIP,
+                            ..bs.fresh()
                         }
                     }));
                 }

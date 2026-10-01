@@ -211,8 +211,10 @@ impl Engine {
         let e = &self.eqtb;
         ParaParams {
             hsize: e.dim_params[DimParam::HSize.idx() as usize],
-            left_skip: e.glue_params[GlueParam::LeftSkip.idx() as usize].clone(),
-            right_skip: e.glue_params[GlueParam::RightSkip.idx() as usize].clone(),
+            left_skip: e.glue_params[GlueParam::LeftSkip.idx() as usize]
+                .param(crate::boxes::glue_subtype::LEFT_SKIP),
+            right_skip: e.glue_params[GlueParam::RightSkip.idx() as usize]
+                .param(crate::boxes::glue_subtype::RIGHT_SKIP),
             pretolerance: e.int_params[IntParam::Pretolerance.idx() as usize],
             tolerance: e.int_params[IntParam::Tolerance.idx() as usize],
             line_penalty: e.int_params[IntParam::LinePenalty.idx() as usize],
@@ -346,7 +348,10 @@ impl Engine {
         }
         let Some(end) = best else {
             let mut inner: NodeList = Vec::with_capacity(list.len() + 2);
-            inner.push(Node::Glue(params.left_skip.clone()));
+            // tex.web §887: \leftskip glue only when it is not zero_glue
+            if !params.left_skip.zero_glue {
+                inner.push(Node::Glue(params.left_skip));
+            }
             let mut post_adj: NodeList = Vec::new();
             for n in list.into_iter() {
                 if let Node::VAdjust(items) = n {
@@ -393,7 +398,6 @@ impl Engine {
             list,
             &params,
             end,
-            final_pass,
             final_widow_penalty,
             display_widow,
         );
@@ -1508,7 +1512,6 @@ impl Engine {
         mut list: NodeList,
         params: &ParaParams,
         end: Rc<ActiveNode>,
-        final_pass: bool,
         final_widow_penalty: i32,
         display_widow: bool,
     ) -> Node {
@@ -1520,7 +1523,6 @@ impl Engine {
         }
         chain.reverse();
 
-        let hfuzz = self.eqtb.dim_params[DimParam::Hfuzz.idx() as usize] as i64;
         // etex.ch post_line_break: `LR_ptr:=LR_save` ... `LR_save:=LR_ptr`;
         // with TeXXeT every line reopens (closes) the text-direction and
         // \beginM/\endM segments still open at its start (end)
@@ -1720,35 +1722,29 @@ impl Engine {
                     crate::texxet::lr_adjust(&mut lr, kind);
                 }
             }
-            let mut inner: NodeList = Vec::new();
-            inner.push(Node::Glue(params.left_skip.clone()));
+            let mut inner: NodeList = Vec::with_capacity(seg.len() + 2);
+            // tex.web §887: \leftskip glue only when it is not zero_glue
+            if !params.left_skip.zero_glue {
+                inner.push(Node::Glue(params.left_skip));
+            }
             inner.extend(seg);
-            inner.push(Node::Glue(params.right_skip.clone()));
+            inner.push(Node::Glue(params.right_skip));
             let mut r = crate::boxes::hpack_expand(self, inner, target, crate::boxes::HBOX);
             // tex.web §17436: the parshape indent is the line box's
             // shift_amount, never an in-line kern (a kern would overshoot
             // the packed width, which already excludes the indent).
+            // tex.web §889: hpack (with its under/overfull report, which
+            // names the paragraph's lines) runs before the line's
+            // shift_amount is set
+            let source = self.current_token_source_mark();
+            let begin_line = self.mode_line();
+            let saved_begin = std::mem::replace(&mut self.pack_begin_line, begin_line);
+            self.report_pack_warnings_at(&r, source);
+            self.pack_begin_line = saved_begin;
             if indent != 0 {
                 if let Node::Box { shift, .. } = &mut r.node {
                     *shift = indent;
                 }
-            }
-            let excess = -r.delta - r.shrink[0];
-            if final_pass && -r.delta > r.shrink[0] && excess > hfuzz {
-                let msg = format!(
-                    "Overfull \\hbox ({:.3}pt too wide) in paragraph ending here",
-                    excess as f64 / 65536.0
-                );
-                let source = self
-                    .current_token_source_mark()
-                    .map(|mark| mark.to_context());
-                self.pack_warning_at(&msg, source);
-            }
-            if r.lr_problems > 0 {
-                let source = self
-                    .current_token_source_mark()
-                    .map(|mark| mark.to_context());
-                self.report_lr_problems(r.lr_problems, source);
             }
             // interline glue placeholder (page builder owns real baseline
             // spacing between line boxes)
@@ -1934,8 +1930,11 @@ impl Engine {
             Node::Box { h, .. } | Node::Rule { height: h, .. } => Some((i, *h)),
             _ => None,
         }) {
-            let mut skip =
-                self.eqtb.glue_params[crate::prim::GlueParam::SplitTopSkip.idx() as usize];
+            // tex.web §968 new_skip_param(split_top_skip_code)
+            let mut skip = self.eqtb.glue_params
+                [crate::prim::GlueParam::SplitTopSkip.idx() as usize]
+                .fresh();
+            skip.subtype = crate::boxes::glue_subtype::SPLIT_TOP_SKIP;
             skip.width = (skip.width - height).max(0);
             rest.insert(i, Node::Glue(skip));
         }

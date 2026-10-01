@@ -42,6 +42,7 @@ pub mod prim;
 pub mod scaled;
 pub mod scan;
 pub mod scanner;
+mod show_box;
 pub mod synctex;
 pub mod tfm;
 mod texxet;

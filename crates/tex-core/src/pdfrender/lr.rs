@@ -228,13 +228,7 @@ impl<'a> RenderCtx<'a> {
                             Some(Node::Leaders { kind, body, .. }) if active_glue(&g, sign, order) => {
                                 // a rigid spec whose orders never match
                                 Item::Own(Node::Leaders {
-                                    glue: Glue {
-                                        width: w as i32,
-                                        stretch: 0,
-                                        shrink: 0,
-                                        stretch_order: 4,
-                                        shrink_order: 4,
-                                    },
+                                    glue: Glue::spec(w as i32, 0, 4, 0, 4),
                                     kind: *kind,
                                     body: body.clone(),
                                 })

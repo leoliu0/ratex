@@ -80,7 +80,12 @@ fn prune_page_top_list(list: NodeList, topskip: &Glue) -> NodeList {
                     _ => continue,
                 };
                 let pad = (topskip.width as i64 - h).max(0) as i32;
-                out.push(Node::Glue(Glue::new(pad)));
+                // tex.web §968 new_skip_param(split_top_skip_code)
+                out.push(Node::Glue(Glue {
+                    width: pad,
+                    subtype: crate::boxes::glue_subtype::SPLIT_TOP_SKIP,
+                    ..topskip.fresh()
+                }));
                 out.push(n);
                 out.extend(it);
                 return out;
@@ -645,7 +650,13 @@ impl Engine {
                         let ts =
                             self.eqtb.dim_params[crate::prim::DimParam::TopSkip.idx() as usize];
                         let pad = (ts as i64 - h as i64).max(0) as i32;
-                        self.page_list.insert(idx, Node::Glue(Glue::new(pad)));
+                        self.page_list.insert(
+                            idx,
+                            Node::Glue(Glue {
+                                subtype: crate::boxes::glue_subtype::TOP_SKIP,
+                                ..Glue::new(pad)
+                            }),
+                        );
                         // tex.web §19509-§19516: \topskip is linked ahead of the box,
                         // and build_page jumps to `continue` to process \topskip through
                         // the normal glue_node path. If precedes_break(page_tail) is true
@@ -1332,7 +1343,13 @@ impl Engine {
                     let ts = self.eqtb.dim_params[DimParam::TopSkip.idx() as usize];
                     let pad = (ts as i64 - h as i64).max(0) as i32;
                     if pad > 0 {
-                        self.page_list.insert(fb, Node::Glue(Glue::new(pad)));
+                        self.page_list.insert(
+                            fb,
+                            Node::Glue(Glue {
+                                subtype: crate::boxes::glue_subtype::TOP_SKIP,
+                                ..Glue::new(pad)
+                            }),
+                        );
                         self.page_processed += 1;
                     }
                     // fold the carried prefix into the fresh page's
@@ -1582,15 +1599,7 @@ impl Engine {
             self.append_log(&msg);
         }
         if self.eqtb.int_params[IntParam::TracingOutput.idx() as usize] > 0 {
-            let depth = self.eqtb.int_params[IntParam::ShowBoxDepth.idx() as usize].max(0) as usize;
-            let breadth =
-                self.eqtb.int_params[IntParam::ShowBoxBreadth.idx() as usize].max(0) as usize;
-            let mut out = crate::maincontrol::InspectionText::new();
-            out.push(format_args!("\nCompleted box being shipped out\n"));
-            self.show_node_into(&boxn, 0, depth, breadth, &mut out);
-            let desc = out.finish();
-            self.append_log(&desc);
-            self.append_term(&desc);
+            self.show_shipped_box(&boxn);
         }
         // page size
         let width = self.eqtb.dim_params[DimParam::PdfPageWidth.idx() as usize];

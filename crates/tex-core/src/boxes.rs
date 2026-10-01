@@ -101,17 +101,63 @@ pub struct Glue {
     pub shrink: i32,
     pub stretch_order: u8,
     pub shrink_order: u8,
+    /// tex.web glue-node subtype (§149): 0 for normal glue, `n+1` for glue
+    /// taken from glue parameter `n` (see [`glue_subtype`]); box displays
+    /// print it as `\glue(\baselineskip)`. Meaningless for eqtb values.
+    pub subtype: u8,
+    /// The spec is TeX's shared `zero_glue`: every all-zero glue parameter
+    /// or register is (`trap_zero_glue`), so glue copied from one is too.
+    /// `short_display` prints no space for such glue.
+    pub zero_glue: bool,
+}
+
+/// tex.web glue-node subtypes: `skip_param_code + 1`.
+pub mod glue_subtype {
+    pub const NORMAL: u8 = 0;
+    pub const LINE_SKIP: u8 = 1;
+    pub const BASELINE_SKIP: u8 = 2;
+    pub const PAR_SKIP: u8 = 3;
+    pub const ABOVE_DISPLAY_SKIP: u8 = 4;
+    pub const BELOW_DISPLAY_SKIP: u8 = 5;
+    pub const ABOVE_DISPLAY_SHORT_SKIP: u8 = 6;
+    pub const BELOW_DISPLAY_SHORT_SKIP: u8 = 7;
+    pub const LEFT_SKIP: u8 = 8;
+    pub const RIGHT_SKIP: u8 = 9;
+    pub const TOP_SKIP: u8 = 10;
+    pub const SPLIT_TOP_SKIP: u8 = 11;
+    pub const TAB_SKIP: u8 = 12;
+    pub const SPACE_SKIP: u8 = 13;
+    pub const XSPACE_SKIP: u8 = 14;
+    pub const PAR_FILL_SKIP: u8 = 15;
+    pub const THIN_MU_SKIP: u8 = 16;
+    pub const MED_MU_SKIP: u8 = 17;
+    pub const THICK_MU_SKIP: u8 = 18;
+    /// tex.web print_skip_param names, indexed by `subtype - 1`.
+    pub const NAMES: [&str; 18] = [
+        "lineskip",
+        "baselineskip",
+        "parskip",
+        "abovedisplayskip",
+        "belowdisplayskip",
+        "abovedisplayshortskip",
+        "belowdisplayshortskip",
+        "leftskip",
+        "rightskip",
+        "topskip",
+        "splittopskip",
+        "tabskip",
+        "spaceskip",
+        "xspaceskip",
+        "parfillskip",
+        "thinmuskip",
+        "medmuskip",
+        "thickmuskip",
+    ];
 }
 
 impl Glue {
     pub fn zero() -> Glue {
-        Glue {
-            width: 0,
-            stretch: 0,
-            shrink: 0,
-            stretch_order: 0,
-            shrink_order: 0,
-        }
+        Glue::new(0)
     }
     pub fn new(w: i32) -> Glue {
         Glue {
@@ -120,15 +166,55 @@ impl Glue {
             shrink: 0,
             stretch_order: 0,
             shrink_order: 0,
+            subtype: glue_subtype::NORMAL,
+            zero_glue: false,
         }
     }
     pub fn fil(order: u8, w: i32) -> Glue {
         Glue {
-            width: w,
             stretch: ONE,
-            shrink: 0,
             stretch_order: order,
-            shrink_order: 0,
+            ..Glue::new(w)
+        }
+    }
+    /// A newly created spec `width plus stretch minus shrink`.
+    pub fn spec(width: i32, stretch: i32, stretch_order: u8, shrink: i32, shrink_order: u8) -> Glue {
+        Glue {
+            width,
+            stretch,
+            shrink,
+            stretch_order,
+            shrink_order,
+            ..Glue::new(0)
+        }
+    }
+    pub fn is_zero(&self) -> bool {
+        self.width == 0 && self.stretch == 0 && self.shrink == 0
+    }
+    /// tex.web new_param_glue: this eqtb glue value as the node of glue
+    /// parameter `subtype` (an all-zero parameter is TeX's `zero_glue`).
+    pub fn param(self, subtype: u8) -> Glue {
+        Glue {
+            subtype,
+            zero_glue: self.is_zero(),
+            ..self
+        }
+    }
+    /// A value read from a glue register or parameter: TeX shares the eqtb
+    /// spec, which is `zero_glue` whenever it is all zero.
+    pub fn eqtb_value(self) -> Glue {
+        Glue {
+            subtype: glue_subtype::NORMAL,
+            zero_glue: self.is_zero(),
+            ..self
+        }
+    }
+    /// The same values as a newly created spec (`new_spec`).
+    pub fn fresh(self) -> Glue {
+        Glue {
+            subtype: glue_subtype::NORMAL,
+            zero_glue: false,
+            ..self
         }
     }
 }

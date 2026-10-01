@@ -24,7 +24,7 @@ pub struct Annot {
 
 /// Identifier of a `\pdfdest`: `name {<string>}` entries go to the /Dests
 /// name tree, `num <n>` entries become standalone destination objects.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum DestId {
     Name(String),
     Num(i32),
@@ -153,6 +153,9 @@ pub struct PdfDoc {
     pub(crate) gen_running_link: bool,
     /// pdfTeX resource names: form XObject number → `n` of `/Fm<n>`.
     pub(crate) form_names: std::collections::BTreeMap<i32, i32>,
+    /// Destinations already shipped (`obj_dest_ptr` set): later ones with
+    /// the same identifier are duplicates.
+    pub(crate) shipped_dests: std::collections::HashSet<DestId>,
     /// `\pdftrailer` entries for the trailer dictionary.
     pub(crate) trailer_extra: Vec<u8>,
     /// `\pdfomitinfodict`: no document information dictionary.
@@ -287,7 +290,8 @@ pub struct EmbedFont {
     /// widths in 1/10000 font units, for first_char..=last_char
     pub widths: Vec<i32>,
     pub font_matrix_scale: f64,
-    /// FontDescriptor metrics (1/1000 font units, degrees for the angle)
+    /// FontDescriptor metrics of SFNT fonts (1/1000 font units, degrees for
+    /// the angle); Type 1 descriptors use `t1_preset` and `t1_keys`
     pub font_bbox: [f64; 4],
     pub italic_angle: f64,
     pub ascent: f64,
@@ -308,6 +312,27 @@ pub struct EmbedFont {
     pub to_unicode_2byte: Vec<(u16, String)>,
     /// `\pdffontattr` text appended to the font dictionary.
     pub font_attr: String,
+    /// Type 1 FontDescriptor inputs (writefont.c `preset_fontmetrics` of
+    /// the TFM, overridden by the keys the program declares). Fonts of one
+    /// program share a descriptor preset from the newest-initialized TFM.
+    pub t1_preset: [i32; crate::pdf_fonts::INT_KEYS_NUM],
+    pub t1_keys: std::rc::Rc<crate::pdf_fonts::Type1Keys>,
+    /// `pdf_init_font` order of the engine font.
+    pub init_order: usize,
+    /// pdfTeX's dictionary of an engine font's own code space (None for
+    /// remapped code spaces, which have no pdfTeX counterpart).
+    pub pdftex: Option<PdfTexFont>,
+}
+
+/// writefont.c `fo_entry` data of a Type 1 font dictionary.
+pub struct PdfTexFont {
+    pub tfm_name: String,
+    /// The map's encoding file: one /Encoding object per file, covering
+    /// the codes every font with that encoding uses. None = the program's
+    /// builtin encoding, which pdfTeX leaves implicit.
+    pub enc_file: Option<String>,
+    /// tounicode.c `write_tounicode` CMap.
+    pub tounicode: Option<std::rc::Rc<str>>,
 }
 
 impl PdfDoc {
@@ -337,6 +362,7 @@ impl PdfDoc {
             mag: 0,
             link_stack: Vec::new(),
             form_names: std::collections::BTreeMap::new(),
+            shipped_dests: std::collections::HashSet::new(),
             trailer_extra: Vec::new(),
             omit_info_dict: false,
             omit_charset: false,
@@ -749,6 +775,12 @@ impl Engine {
                 DestParam::Null => {}
                 DestParam::End => break,
             }
+        }
+        // pdftex.web: a destination already shipped makes this one a
+        // duplicate, dropped right away
+        if self.pdf_doc.shipped_dests.contains(&id) {
+            self.warn_dest_dup(&id);
+            return;
         }
         let node = Node::Whatsit(WhatIt::PdfDest {
             id,

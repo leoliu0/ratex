@@ -2,7 +2,7 @@
 //! streams (flate), Type 1 font embedding with encodings and widths, link
 //! annotations, named destinations, and outlines.
 
-use crate::pdf_fonts::{parse_metrics, parse_type1, Type1Metrics, Type1Program};
+use crate::pdf_fonts::{parse_type1, Type1Keys, Type1Program};
 use crate::pdfout::{
     Annot, Dest, DestId, EmbedFont, EmbedFontSubtype, GotoTarget, Outline, PdfAction, PdfDoc,
 };
@@ -53,7 +53,7 @@ fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
         .position(|part| part == needle)
 }
 
-fn eexec_decrypt(cipher: &[u8]) -> Vec<u8> {
+pub(crate) fn eexec_decrypt(cipher: &[u8]) -> Vec<u8> {
     let mut state = 55_665_u16;
     cipher
         .iter()
@@ -119,7 +119,7 @@ fn charstring_decrypt(cipher: &[u8]) -> Vec<u8> {
         .collect()
 }
 
-fn standard_encoding_name(code: i32) -> Option<&'static str> {
+pub(crate) fn standard_encoding_name(code: i32) -> Option<&'static str> {
     const DIGITS: [&str; 10] = [
         "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine",
     ];
@@ -405,14 +405,16 @@ impl<'a> CharStringTrace<'a> {
 
 /// Remove unused glyphs and subroutines, following calls and StandardEncoding
 /// base/accent glyphs referenced by `seac` composites. The
-/// original charstrings and hint programs are copied byte-for-byte.
+/// original charstrings and hint programs are copied byte-for-byte. Also
+/// returns the kept glyph names (`.notdef`, the request and its `seac`
+/// components).
 fn subset_type1(
     data: &[u8],
     length1: usize,
     length2: usize,
     length3: usize,
     glyphs: &BTreeSet<String>,
-) -> Option<Type1Program> {
+) -> Option<(Type1Program, BTreeSet<String>)> {
     let encrypted_end = length1.checked_add(length2)?;
     let program_end = encrypted_end.checked_add(length3)?;
     if length2 == 0 || program_end > data.len() {
@@ -610,9 +612,6 @@ fn subset_type1(
             .filter(|entry| !trace.used_subrs.contains(&entry.index))
             .map(|entry| entry.range.clone()),
     );
-    if removals.is_empty() {
-        return None;
-    }
     removals.sort_unstable_by_key(|range| range.start);
     let mut compact = Vec::with_capacity(plain.len());
     let mut copied = 0;
@@ -626,12 +625,13 @@ fn subset_type1(
     subset.extend_from_slice(&data[..length1]);
     subset.extend_from_slice(&encrypted);
     subset.extend_from_slice(&data[encrypted_end..program_end]);
-    Some(Type1Program {
+    let program = Type1Program {
         data: subset,
         length1,
         length2: encrypted.len(),
         length3,
-    })
+    };
+    Some((program, keep_glyphs))
 }
 
 /// A Type 1 program decoded once and shared by every engine font (size,
@@ -641,9 +641,9 @@ pub struct Type1Source {
     length1: usize,
     length2: usize,
     length3: usize,
-    metrics: Type1Metrics,
+    keys: std::rc::Rc<Type1Keys>,
     content_hash: [u8; 16],
-    /// The program's own `/Encoding` array, if the cleartext declares one.
+    /// The program's own encoding (writet1.c `t1_builtin_enc`), if declared.
     pub builtin_encoding: Option<std::rc::Rc<[String]>>,
 }
 
@@ -651,15 +651,14 @@ impl Type1Source {
     pub fn new(pfb: &[u8]) -> Self {
         let program = parse_type1(pfb);
         let cleartext = &program.data[..program.length1.min(program.data.len())];
-        let metrics = parse_metrics(cleartext);
         let builtin_encoding = crate::pdf_fonts::builtin_encoding(cleartext).map(Into::into);
         Type1Source {
+            keys: std::rc::Rc::new(Type1Keys::scan(&program)),
             content_hash: md5::compute(&program.data).0,
             font_file: std::rc::Rc::new(program.data),
             length1: program.length1,
             length2: program.length2,
             length3: program.length3,
-            metrics,
             builtin_encoding,
         }
     }
@@ -677,28 +676,16 @@ pub fn make_embed_font(
     used_chars: [u64; 4],
 ) -> EmbedFont {
     // no external encoding: adopt the font's own /Encoding array (if
-    // the cleartext declares one) so extractors see accurate glyph names
+    // the cleartext declares one) so code-to-glyph lookups stay accurate
     let encoding_diff =
         encoding.or_else(|| source.and_then(|source| source.builtin_encoding.clone()));
-    // /ToUnicode (pdfTeX write_tounicode): every encoded slot with a known
-    // Unicode value, ASCII identities included, whether used or not
-    let to_unicode = encoding_diff
-        .iter()
-        .flat_map(|d| d.iter().take(256).enumerate())
-        .filter_map(|(slot, g)| {
-            if g.is_empty() {
-                return None;
-            }
-            Some((slot as u8, crate::pdf_fonts::glyph_to_unicode(g)?))
-        })
-        .collect();
-    let (font_file, length1, length2, length3, metrics, content_hash) = match source {
+    let (font_file, length1, length2, length3, keys, content_hash) = match source {
         Some(source) => (
             source.font_file.clone(),
             source.length1,
             source.length2,
             source.length3,
-            source.metrics.clone(),
+            source.keys.clone(),
             source.content_hash,
         ),
         None => (
@@ -706,7 +693,7 @@ pub fn make_embed_font(
             0,
             0,
             0,
-            Type1Metrics::default(),
+            Default::default(),
             md5::compute(b"").0,
         ),
     };
@@ -729,14 +716,14 @@ pub fn make_embed_font(
         last_char: 255,
         widths: widths_10000,
         font_matrix_scale: 1.0,
-        font_bbox: metrics.font_bbox,
-        italic_angle: metrics.italic_angle,
-        ascent: metrics.ascent,
-        descent: metrics.descent,
-        cap_height: metrics.cap_height,
-        stem_v: metrics.stem_v,
+        font_bbox: [0.0; 4],
+        italic_angle: 0.0,
+        ascent: 0.0,
+        descent: 0.0,
+        cap_height: 0.0,
+        stem_v: 0.0,
         flags: 4,
-        to_unicode,
+        to_unicode: Vec::new(),
         used_chars: [0; 4],
         is_cid: false,
         is_native: false,
@@ -745,6 +732,10 @@ pub fn make_embed_font(
         used_gids: std::collections::BTreeSet::new(),
         to_unicode_2byte: Vec::new(),
         font_attr: String::new(),
+        t1_preset: [0; crate::pdf_fonts::INT_KEYS_NUM],
+        t1_keys: keys,
+        init_order: 0,
+        pdftex: None,
     };
     set_font_usage(&mut font, used_chars);
     font
@@ -1418,6 +1409,7 @@ type FontFileKey = (usize, usize, usize, [u8; 16]);
 struct PreparedType1 {
     program: Type1Program,
     pdf_name: String,
+    charset: BTreeSet<String>,
 }
 
 fn font_file_key(font: &EmbedFont) -> FontFileKey {
@@ -1442,19 +1434,29 @@ fn required_glyphs(font: &EmbedFont) -> Option<BTreeSet<String>> {
     Some(glyphs)
 }
 
-fn subset_font_name(base_font: &str, key: FontFileKey, glyphs: &BTreeSet<String>) -> String {
-    let mut hash = u64::from_le_bytes(key.3[..8].try_into().unwrap());
+/// The descriptor's font name (writefont.c `fd->fontname`): the program's
+/// own `/FontName`, else the map's PostScript name.
+fn type1_font_name(font: &EmbedFont) -> &str {
+    font.t1_keys.font_name.as_deref().unwrap_or(&font.base_font)
+}
+
+/// utils.c `make_subset_tag`: six letters from the MD5 of the sorted glyph
+/// names, the font name and the collision round `round` (a C `int`).
+fn pdftex_subset_tag(glyphs: &BTreeSet<String>, font_name: &str, round: i32) -> String {
+    let mut md5 = md5::Context::new();
     for glyph in glyphs {
-        for &byte in glyph.as_bytes() {
-            hash = (hash ^ byte as u64).wrapping_mul(0x1000_0000_01b3);
-        }
+        md5.consume(glyph.as_bytes());
+        md5.consume(b" ");
     }
-    let mut tag = String::with_capacity(6);
-    for _ in 0..6 {
-        tag.push((b'A' + (hash % 26) as u8) as char);
-        hash = hash.rotate_right(7) ^ (hash >> 11);
+    md5.consume(font_name.as_bytes());
+    md5.consume(round.to_ne_bytes());
+    let digest = md5.finalize().0;
+    let mut a = [0i32; 6];
+    a[0] = digest[..13].iter().map(|&d| i32::from(d)).sum();
+    for i in 1..6 {
+        a[i] = a[i - 1] - i32::from(digest[i - 1]) + i32::from(digest[(i + 12) % 16]);
     }
-    format!("{tag}+{base_font}")
+    a.iter().map(|&v| (b'A' + (v % 26) as u8) as char).collect()
 }
 
 fn rename_type1_font(program: &mut Type1Program, new_name: &str) -> bool {
@@ -1673,7 +1675,8 @@ pub fn write_pdf(doc: &PdfDoc) -> Result<Vec<u8>, String> {
     };
 
     // Font objects: font dict, descriptor, optional font file,
-    // optional /ToUnicode CMap, descendant CIDFont, and encoding CMap.
+    // optional /ToUnicode CMap, descendant CIDFont, and encoding CMap (for
+    // Type 1 pdfTeX fonts: the shared /Encoding and the /Widths array).
     struct FontObjs {
         font: usize,
         desc: usize,
@@ -1681,6 +1684,7 @@ pub fn write_pdf(doc: &PdfDoc) -> Result<Vec<u8>, String> {
         tounicode: Option<usize>,
         cidfont: Option<usize>,
         encoding: Option<usize>,
+        widths: Option<usize>,
     }
 
     #[derive(Clone, PartialEq, Eq, Hash, Debug)]
@@ -1726,10 +1730,12 @@ pub fn write_pdf(doc: &PdfDoc) -> Result<Vec<u8>, String> {
     let mut attempted_files = BTreeSet::new();
     struct Type1Job<'a> {
         data: &'a [u8],
-        name: &'a str,
         key: FontFileKey,
-        glyphs: &'a Option<BTreeSet<String>>,
+        glyphs: &'a BTreeSet<String>,
+        pdf_name: String,
     }
+    // utils.c make_subset_tag keeps the document's tags distinct
+    let mut subset_tags = BTreeSet::new();
     let jobs: Vec<_> = doc
         .fonts
         .iter()
@@ -1738,27 +1744,36 @@ pub fn write_pdf(doc: &PdfDoc) -> Result<Vec<u8>, String> {
             if is_sfnt(font) || !attempted_files.insert(key) {
                 return None;
             }
-            let glyphs = glyphs_by_file.get(&key)?;
+            let glyphs = glyphs_by_file.get(&key)?.as_ref()?;
+            let font_name = type1_font_name(font);
+            let tag = (0..)
+                .map(|round| pdftex_subset_tag(glyphs, font_name, round))
+                .find(|tag| subset_tags.insert(tag.clone()))?;
             Some(Type1Job {
                 data: &font.font_file,
-                name: &font.base_font,
                 key,
                 glyphs,
+                pdf_name: format!("{tag}+{font_name}"),
             })
         })
         .collect();
     let prepare = |job: &Type1Job<'_>| {
-        let glyphs = job.glyphs.as_ref()?;
         let key = job.key;
-        let mut subset = subset_type1(job.data, key.0, key.1, key.2, glyphs)?;
-        let pdf_name = subset_font_name(job.name, key, glyphs);
-        rename_type1_font(&mut subset, &pdf_name).then_some((
-            key,
-            PreparedType1 {
-                program: subset,
-                pdf_name,
-            },
-        ))
+        let (mut subset, mut charset) = subset_type1(job.data, key.0, key.1, key.2, job.glyphs)?;
+        // writefont.c /CharSet: the used glyphs plus `seac` components
+        if !job.glyphs.contains(".notdef") {
+            charset.remove(".notdef");
+        }
+        rename_type1_font(&mut subset, &job.pdf_name).then(|| {
+            (
+                key,
+                PreparedType1 {
+                    program: subset,
+                    pdf_name: job.pdf_name.clone(),
+                    charset,
+                },
+            )
+        })
     };
     if !cfg!(target_arch = "wasm32") && jobs.len() >= 4 && !crate::debug_flag("TEX_PDF_SERIAL") {
         let workers = std::thread::available_parallelism().map_or(1, |n| n.get().min(4));
@@ -1925,6 +1940,9 @@ pub fn write_pdf(doc: &PdfDoc) -> Result<Vec<u8>, String> {
     let mut sfnt_file_cache: HashMap<SfntKey, usize> = HashMap::new();
     let mut tounicode_cache: HashMap<Vec<(u8, String)>, usize> = HashMap::new();
     let mut tounicode_2byte_cache: HashMap<Vec<(u16, String)>, usize> = HashMap::new();
+    let mut pdftex_tounicode_cache: HashMap<std::rc::Rc<str>, usize> = HashMap::new();
+    let mut desc_cache: HashMap<FontFileKey, usize> = HashMap::new();
+    let mut encoding_cache: BTreeMap<&str, usize> = BTreeMap::new();
 
     let font_objs: Vec<FontObjs> = doc
         .fonts
@@ -1936,10 +1954,22 @@ pub fn write_pdf(doc: &PdfDoc) -> Result<Vec<u8>, String> {
             } else {
                 b.alloc()
             };
-            let desc = b.alloc();
             let sfnt = is_sfnt(f);
+            // writefont.c: fonts of one Type 1 program share its descriptor
+            let desc = if sfnt || f.font_file.is_empty() {
+                b.alloc()
+            } else {
+                *desc_cache.entry(key).or_insert_with(|| b.alloc())
+            };
             let cidfont = if sfnt { Some(b.alloc()) } else { None };
-            let encoding = if sfnt { Some(b.alloc()) } else { None };
+            let encoding = if sfnt {
+                Some(b.alloc())
+            } else {
+                // writeenc.c: one /Encoding object per encoding file
+                let enc_file = f.pdftex.as_ref().and_then(|pdftex| pdftex.enc_file.as_deref());
+                enc_file.map(|name| *encoding_cache.entry(name).or_insert_with(|| b.alloc()))
+            };
+            let widths = (!sfnt && f.pdftex.is_some()).then(|| b.alloc());
             let file = if f.font_file.is_empty() {
                 None
             } else if sfnt {
@@ -1978,16 +2008,18 @@ pub fn write_pdf(doc: &PdfDoc) -> Result<Vec<u8>, String> {
                         )
                     }
                 }
+            } else if let Some(pdftex) = &f.pdftex {
+                pdftex.tounicode.as_ref().map(|cmap| {
+                    *pdftex_tounicode_cache.entry(cmap.clone()).or_insert_with(|| b.alloc())
+                })
+            } else if f.to_unicode.is_empty() {
+                None
             } else {
-                if f.to_unicode.is_empty() {
-                    None
-                } else {
-                    Some(
-                        *tounicode_cache
-                            .entry(f.to_unicode.clone())
-                            .or_insert_with(|| b.alloc()),
-                    )
-                }
+                Some(
+                    *tounicode_cache
+                        .entry(f.to_unicode.clone())
+                        .or_insert_with(|| b.alloc()),
+                )
             };
             FontObjs {
                 font,
@@ -1996,6 +2028,7 @@ pub fn write_pdf(doc: &PdfDoc) -> Result<Vec<u8>, String> {
                 tounicode,
                 cidfont,
                 encoding,
+                widths,
             }
         })
         .collect();
@@ -2056,6 +2089,19 @@ pub fn write_pdf(doc: &PdfDoc) -> Result<Vec<u8>, String> {
     let mut emitted_files: std::collections::HashSet<usize> = std::collections::HashSet::new();
     let mut emitted_tounicode: std::collections::HashSet<usize> = std::collections::HashSet::new();
     let mut emitted_encoding: std::collections::HashSet<usize> = std::collections::HashSet::new();
+    let mut emitted_descriptors: std::collections::HashSet<usize> = std::collections::HashSet::new();
+    // pdfTeX walks font objects newest first: the most recently initialized
+    // font of a program creates (and presets) the shared descriptor
+    let mut descriptor_owner: HashMap<FontFileKey, usize> = HashMap::new();
+    for (index, (font, &key)) in doc.fonts.iter().zip(&font_keys).enumerate() {
+        if is_sfnt(font) || font.font_file.is_empty() {
+            continue;
+        }
+        let owner = descriptor_owner.entry(key).or_insert(index);
+        if font.init_order > doc.fonts[*owner].init_order {
+            *owner = index;
+        }
+    }
 
     for ((f, fo), key) in doc.fonts.iter().zip(&font_objs).zip(&font_keys) {
         if is_sfnt(f) {
@@ -2188,59 +2234,121 @@ pub fn write_pdf(doc: &PdfDoc) -> Result<Vec<u8>, String> {
             );
         } else {
             let prepared = prepared_files.get(key);
-            let pdf_name = prepared.map_or(f.base_font.as_str(), |font| font.pdf_name.as_str());
-            let first = f.first_char as i32;
-            let last = f.last_char as i32;
-            let n = (last - first + 1).max(1) as usize;
-            let mut widths = String::from("[ ");
-            for k in 0..n {
-                widths.push_str(&num(f.widths.get(k).copied().unwrap_or(0) as f64 / 10.0));
-                widths.push(' ');
-            }
-            widths.push(']');
-            let mut enc = String::new();
-            if let Some(diffs) = &f.encoding_diff {
-                enc.push_str(" /Encoding << /Type /Encoding /Differences [ ");
-                for (slot, g) in diffs.iter().enumerate() {
-                    if !g.is_empty()
-                        && (f.used_chars == [0; 4]
-                            || (slot <= u8::MAX as usize
-                                && char_is_used(&f.used_chars, slot as u8)))
-                    {
-                        enc.push_str(&format!("{} /{} ", slot, escape_pdf_name(g)));
+            let pdf_name = prepared.map_or(type1_font_name(f), |font| font.pdf_name.as_str());
+            if let Some(pdftex) = &f.pdftex {
+                // writefont.c write_fontdictionary
+                let widths_obj = fo.widths.expect("pdfTeX fonts own a /Widths object");
+                let mut widths = String::from("[");
+                for (k, &width) in f.widths.iter().enumerate() {
+                    if k > 0 {
+                        widths.push(' ');
+                    }
+                    // write_charwidth_array: C `int` division and remainder
+                    widths.push_str(&(width / 10).to_string());
+                    if width % 10 != 0 {
+                        widths.push_str(&format!(".{}", width % 10));
                     }
                 }
-                enc.push_str(" ] >>");
-            }
-            let tounicode_ref = match fo.tounicode {
-                Some(o) => format!(" /ToUnicode {} 0 R", o),
-                None => String::new(),
-            };
-            b.set(
-                fo.font,
-                format!(
-                    "<< /Type /Font /Subtype /Type1 /BaseFont /{} /FirstChar {} /LastChar {} /Widths {} /FontDescriptor {} 0 R{}{}{} >>",
-                    escape_pdf_name(pdf_name), first, last, widths, fo.desc, enc, tounicode_ref,
-                    font_attr_entry(&f.font_attr)
-                ),
-            );
-            let (ascent, descent) = if f.ascent - f.descent > 3000.0 {
-                (f.ascent, f.ascent - 3000.0)
+                widths.push(']');
+                b.set(widths_obj, widths);
+                let mut dict = format!(
+                    "<< /Type /Font /Subtype /Type1 /BaseFont /{} /FontDescriptor {} 0 R /FirstChar {} /LastChar {} /Widths {} 0 R",
+                    pdf_name, fo.desc, f.first_char, f.last_char, widths_obj
+                );
+                if let Some(encoding) = fo.encoding {
+                    dict.push_str(&format!(" /Encoding {encoding} 0 R"));
+                }
+                if let Some(to) = fo.tounicode {
+                    dict.push_str(&format!(" /ToUnicode {to} 0 R"));
+                    if emitted_tounicode.insert(to) {
+                        let cmap = pdftex.tounicode.as_deref().unwrap_or_default();
+                        b.set_stream(to, "", cmap.as_bytes(), true);
+                    }
+                }
+                dict.push_str(&font_attr_entry(&f.font_attr));
+                dict.push_str(" >>");
+                b.set(fo.font, dict);
             } else {
-                (f.ascent, f.descent)
-            };
-            let mut desc = format!(
-                "<< /Type /FontDescriptor /FontName /{} /Flags {} /FontBBox [{} {} {} {}] /ItalicAngle {} /Ascent {} /Descent {} /CapHeight {} /StemV {}",
-                escape_pdf_name(pdf_name),
-                f.flags,
-                num(f.font_bbox[0]), num(f.font_bbox[1]), num(f.font_bbox[2]), num(f.font_bbox[3]),
-                num(f.italic_angle), num(ascent), num(descent), num(f.cap_height), num(f.stem_v),
-            );
-            if let Some(file) = fo.file {
-                desc.push_str(&format!(" /FontFile {} 0 R", file));
+                let first = f.first_char as i32;
+                let last = f.last_char as i32;
+                let n = (last - first + 1).max(1) as usize;
+                let mut widths = String::from("[ ");
+                for k in 0..n {
+                    widths.push_str(&num(f.widths.get(k).copied().unwrap_or(0) as f64 / 10.0));
+                    widths.push(' ');
+                }
+                widths.push(']');
+                let mut enc = String::new();
+                if let Some(diffs) = &f.encoding_diff {
+                    enc.push_str(" /Encoding << /Type /Encoding /Differences [ ");
+                    for (slot, g) in diffs.iter().enumerate() {
+                        if !g.is_empty()
+                            && (f.used_chars == [0; 4]
+                                || (slot <= u8::MAX as usize
+                                    && char_is_used(&f.used_chars, slot as u8)))
+                        {
+                            enc.push_str(&format!("{} /{} ", slot, escape_pdf_name(g)));
+                        }
+                    }
+                    enc.push_str(" ] >>");
+                }
+                let tounicode_ref = match fo.tounicode {
+                    Some(o) => format!(" /ToUnicode {} 0 R", o),
+                    None => String::new(),
+                };
+                b.set(
+                    fo.font,
+                    format!(
+                        "<< /Type /Font /Subtype /Type1 /BaseFont /{} /FirstChar {} /LastChar {} /Widths {} /FontDescriptor {} 0 R{}{}{} >>",
+                        escape_pdf_name(pdf_name), first, last, widths, fo.desc, enc, tounicode_ref,
+                        font_attr_entry(&f.font_attr)
+                    ),
+                );
+                if let Some(to) = fo.tounicode {
+                    if emitted_tounicode.insert(to) {
+                        b.set_stream(to, "", to_unicode_cmap(&f.to_unicode).as_bytes(), true);
+                    }
+                }
             }
-            desc.push_str(" >>");
-            b.set(fo.desc, desc);
+            if emitted_descriptors.insert(fo.desc) {
+                // writefont.c write_fontdescriptor: the TFM preset of the
+                // newest-initialized font of this program, overridden by
+                // the program's own keys (write_fontmetrics order)
+                let owner = descriptor_owner.get(key).map_or(f, |&index| &doc.fonts[index]);
+                let dim = |k: usize| f.t1_keys.dims[k].unwrap_or(owner.t1_preset[k]);
+                let bbox = crate::pdf_fonts::FONTBBOX1_CODE;
+                let mut desc = format!(
+                    "<< /Type /FontDescriptor /FontName /{} /Flags {} /FontBBox [{} {} {} {}]",
+                    pdf_name,
+                    if fo.file.is_some() { 4 } else { f.flags },
+                    dim(bbox),
+                    dim(bbox + 1),
+                    dim(bbox + 2),
+                    dim(bbox + 3),
+                );
+                for (k, key) in ["Ascent", "CapHeight", "Descent", "ItalicAngle", "StemV", "XHeight"]
+                    .into_iter()
+                    .enumerate()
+                {
+                    desc.push_str(&format!(" /{key} {}", dim(k)));
+                }
+                if let Some(file) = fo.file {
+                    let charset = prepared
+                        .map(|font| &font.charset)
+                        .or_else(|| glyphs_by_file.get(key).and_then(Option::as_ref));
+                    if let (false, Some(charset)) = (doc.omit_charset, charset) {
+                        desc.push_str(" /CharSet (");
+                        for glyph in charset {
+                            desc.push('/');
+                            desc.push_str(glyph);
+                        }
+                        desc.push(')');
+                    }
+                    desc.push_str(&format!(" /FontFile {file} 0 R"));
+                }
+                desc.push_str(" >>");
+                b.set(fo.desc, desc);
+            }
             if let Some(file) = fo.file {
                 if emitted_files.insert(file) {
                     let (font_data, length1, length2, length3) = prepared.map_or(
@@ -2261,12 +2369,39 @@ pub fn write_pdf(doc: &PdfDoc) -> Result<Vec<u8>, String> {
                     b.set_stream(file, &dict, font_data, true);
                 }
             }
-            if let Some(to) = fo.tounicode {
-                if emitted_tounicode.insert(to) {
-                    b.set_stream(to, "", to_unicode_cmap(&f.to_unicode).as_bytes(), true);
+        }
+    }
+    // writeenc.c write_enc: each encoding file's object lists the codes
+    // of every font using it, consecutive codes sharing one number
+    for (&enc_file, &object) in &encoding_cache {
+        let mut used = [0u64; 4];
+        let mut names = None;
+        for font in &doc.fonts {
+            if font.pdftex.as_ref().and_then(|pdftex| pdftex.enc_file.as_deref()) == Some(enc_file) {
+                for (word, font_word) in used.iter_mut().zip(font.used_chars) {
+                    *word |= font_word;
                 }
+                names = names.or(font.encoding_diff.as_ref());
             }
         }
+        let mut differences = String::new();
+        let mut previous = -2;
+        for code in (0..=u8::MAX).filter(|&code| char_is_used(&used, code)) {
+            let name = names
+                .and_then(|names| names.get(code as usize))
+                .filter(|name| !name.is_empty())
+                .map_or(".notdef", String::as_str);
+            if i32::from(code) != previous + 1 {
+                if previous != -2 {
+                    differences.push(' ');
+                }
+                differences.push_str(&code.to_string());
+            }
+            differences.push('/');
+            differences.push_str(name);
+            previous = i32::from(code);
+        }
+        b.set(object, format!("<< /Type /Encoding /Differences [{differences}] >>"));
     }
 
     // ---- emit pages
@@ -2765,7 +2900,7 @@ mod tests {
     }
 
     #[test]
-    fn font_usage_trims_widths_but_maps_every_encoded_code() {
+    fn font_usage_trims_widths_but_keeps_the_encoding() {
         let mut usage = [0_u64; 4];
         usage[1] = (1 << (70 - 64)) | (1 << (72 - 64));
         let font = make_embed_font(
@@ -2777,10 +2912,9 @@ mod tests {
         );
         assert_eq!((font.first_char, font.last_char), (70, 72));
         assert_eq!(font.widths, vec![70, 71, 72]);
-        // pdfTeX's ToUnicode covers all 256 codes, ASCII identities included
-        assert_eq!(font.to_unicode.len(), 256);
-        assert_eq!(font.to_unicode[65], (65, "A".to_owned()));
-        assert_eq!(font.to_unicode[70], (70, "\u{146}".to_owned()));
+        // the subsetter still resolves any code through the full vector
+        let encoding = font.encoding_diff.as_ref().unwrap();
+        assert_eq!((encoding.len(), encoding[65].as_str()), (256, "A"));
     }
 
     #[test]
@@ -2873,7 +3007,7 @@ mod tests {
         let mut program = clear.to_vec();
         program.extend_from_slice(&encrypted);
         program.extend_from_slice(trailer);
-        let subset = subset_type1(
+        let (subset, glyphs) = subset_type1(
             &program,
             clear.len(),
             encrypted.len(),
@@ -2881,6 +3015,7 @@ mod tests {
             &["A".to_owned()].into_iter().collect(),
         )
         .expect("synthetic Type 1 program should be subset");
+        assert_eq!(glyphs.into_iter().collect::<Vec<_>>(), [".notdef", "A"]);
         let decrypted =
             eexec_decrypt(&subset.data[subset.length1..subset.length1 + subset.length2]);
         assert!(find_bytes(&decrypted, b"/A ").is_some());

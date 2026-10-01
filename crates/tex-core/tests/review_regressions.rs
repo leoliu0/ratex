@@ -140,6 +140,64 @@ fn forms_embed_fonts_used_only_inside_forms() {
     );
 }
 
+/// pdfTeX (writefont.c, tounicode.c) font dictionaries, checked against
+/// `pdftex` output for the same input: descriptor metrics preset from the
+/// TFM and overridden by the program's keys, /CharSet, no /Encoding for a
+/// builtin-encoded font and the `\pdfglyphtounicode` CMap.
+#[test]
+fn type1_font_dictionaries_follow_pdftex() {
+    let mut e = engine(
+        r"\pdfgentounicode=1 \pdfglyphtounicode{A}{0041}\pdfglyphtounicode{B}{0042 0301}
+\font\x=cmr10 \shipout\hbox{\x AB}
+\end",
+    );
+    e.embed_used_fonts().unwrap();
+    let pdf = tex_core::pdffile::write_pdf(&e.pdf_doc).unwrap();
+    let parsed = lopdf::Document::load_mem(&pdf).unwrap();
+    let font = parsed
+        .objects
+        .values()
+        .find_map(|o| o.as_dict().ok().filter(|d| d.has_type(b"Font")))
+        .expect("font dictionary");
+    assert!(font.get(b"Encoding").is_err(), "builtin encoding stays implicit");
+    let descriptor = parsed.dereference(font.get(b"FontDescriptor").unwrap()).unwrap().1;
+    let descriptor = descriptor.as_dict().unwrap();
+    let int = |key: &[u8]| descriptor.get(key).unwrap().as_i64().unwrap();
+    assert_eq!(
+        [b"Ascent".as_slice(), b"CapHeight", b"Descent", b"ItalicAngle", b"StemV", b"XHeight"].map(int),
+        [694, 683, -194, 0, 69, 431]
+    );
+    let bbox: Vec<i64> = descriptor
+        .get(b"FontBBox")
+        .unwrap()
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_i64().unwrap())
+        .collect();
+    assert_eq!(bbox, [-40, -250, 1009, 750]);
+    assert_eq!(descriptor.get(b"CharSet").unwrap().as_str().unwrap(), b"/A/B");
+    let cmap = parsed.dereference(font.get(b"ToUnicode").unwrap()).unwrap().1;
+    let cmap = cmap.as_stream().unwrap().decompressed_content().unwrap();
+    let cmap = String::from_utf8(cmap).unwrap();
+    assert!(cmap.contains("/CMapName /TeX-cmr10-builtin-0 def"), "{cmap}");
+    assert!(cmap.contains("2 beginbfchar\n<41> <0041>\n<42> <00420301>\nendbfchar"), "{cmap}");
+}
+
+#[test]
+fn duplicate_destinations_warn_like_pdftex() {
+    let source = r"\pdfdest name{a} fit\pdfdest name{a} fit
+\shipout\hbox{A\pdfdest name{a} fit}\pdfdest name{a} fit
+\end";
+    // pdftex: once at the \pdfdest after the shipout, twice when \end
+    // ships the two early ones
+    let e = engine(source);
+    assert_eq!(e.log.matches("has been already used, duplicate ignored").count(), 3, "{}", e.log);
+    assert!(e.log.contains("destination with the same identifier (name{a})"));
+    let e = engine(&format!("\\pdfsuppresswarningdupdest=1 {source}"));
+    assert!(!e.log.contains("duplicate ignored"), "{}", e.log);
+}
+
 #[test]
 fn undefined_pdf_xobject_references_are_located_and_omitted() {
     use tex_core::engine::InteractionMode;
@@ -651,4 +709,64 @@ fn quoted_font_names_end_at_the_end_of_the_line() {
     let e = run_lenient("\\font\\x=\"cmr10\n\\message{[\\fontname\\x]}\\end");
     assert!(e.term.contains("[cmr10]"), "{}", e.term);
     assert_eq!(e.error_count, 0, "{}", e.term);
+}
+
+/// tex.web §107 `xn_over_d` truncates: space factor 1250 turns cmr10's
+/// 109226sp interword stretch into 136532sp, not 136533sp. The 1sp shifts
+/// the glue on this line enough to flip pdfTeX's TJ rounding; the expected
+/// array is `pdftex -ini` output for the same input.
+#[test]
+fn space_factor_glue_truncates_like_pdftex() {
+    let e = engine(
+        r"\pdfoutput=1 \hoffset=-1in \sfcode`\,=1250 \font\tenrm=cmr10
+\setbox0\hbox{\tenrm x, \global\skip1=\lastskip}\message{[\the\skip1]}
+\shipout\hbox to 2031622sp{\tenrm x, y z}
+\end",
+    );
+    assert!(e.term.contains("[3.33333pt plus 2.08331pt minus 0.88889pt]"), "{}", e.term);
+    let page = String::from_utf8_lossy(&e.pdf_doc.pages[0].content);
+    assert!(page.contains("[(x,)-697(y)-625(z)]TJ"), "{page}");
+}
+
+/// `\font ... scaled` sizes the font with the same truncating `xn_over_d`
+/// (tex.web §1258): cmr10 scaled 2074 is 1359216sp, identical to `at
+/// 1359216sp`, as in pdftex.
+#[test]
+fn font_scaled_size_truncates_like_pdftex() {
+    let e = engine(
+        r"\font\big=cmr10 scaled 2074 \font\bigb=cmr10 at 1359216sp
+\message{[\fontname\big][\ifx\big\bigb same\else diff\fi]}
+\end",
+    );
+    assert!(e.term.contains("[cmr10 at 20.73999pt][same]"), "{}", e.term);
+}
+
+/// pdftex -ini output for this page: `\pdfsetmatrix` echoes its plain
+/// numbers verbatim, and `pdf_print_char` writes `(`, `)`, space and `\` as
+/// octal escapes while DEL stays raw.
+#[test]
+fn setmatrix_and_string_bytes_print_like_pdftex() {
+    let e = engine(
+        r"\pdfoutput=1 \font\tenrm=cmr10
+\shipout\hbox{\pdfsave\pdfsetmatrix{.5 0 0 -.25}\tenrm(a)\char32\char127\char92\pdfrestore}
+\end",
+    );
+    let page = String::from_utf8_lossy(&e.pdf_doc.pages[0].content);
+    assert!(page.contains("\n.5 0 0 -.25 0 0 cm\n"), "{page}");
+    assert!(page.contains("[(\\050a\\051\\040\x7f\\134)]TJ"), "{page}");
+}
+
+/// pdftex.web `pdf_set_rule` centers a hairline at `y - (h + 1)/2` with
+/// Pascal real division, truncated when passed on as scaled: an even 0.4pt
+/// rule sits 13108sp above its bottom edge. `pdftex -ini` prints 25.907
+/// here; integer halving gives 25.906.
+#[test]
+fn hairline_rule_center_truncates_like_pdftex() {
+    let e = engine(
+        r"\pdfoutput=1 \pdfpagewidth=100pt \pdfpageheight=100pt
+\shipout\vbox{\kern100031sp\hrule height .4pt width 10pt}
+\end",
+    );
+    let page = String::from_utf8_lossy(&e.pdf_doc.pages[0].content);
+    assert!(page.contains("q\n1 0 0 1 72 25.907 cm\n[]0 d 0 J 0.398 w"), "{page}");
 }

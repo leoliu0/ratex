@@ -12,6 +12,8 @@ pub const PAR_REF_FLAG: u32 = 0x4000_0000;
 pub const NOEXP_FLAG: u32 = 0xC000_0000;
 const UNEXPANDED_PARAMETER_FLAG: u32 = 0x1000_0000;
 const UNEXPANDED_CS_FLAG: u32 = 0xE000_0000;
+/// Capacity reserved for the argument buffer of a macro call.
+const MIN_ARG_BUFFER: usize = 32;
 
 /// True when a token list token may be moved into balanced text as is: it
 /// is a brace, an ordinary character or a plain control sequence. Every
@@ -2294,13 +2296,14 @@ impl Engine {
     }
     fn push_if(&mut self, id: CsId) -> usize {
         let loc = self.current_token_source_mark();
+        let (loc_file, loc_line) = self.input.current_file_location();
         self.if_stack.push(crate::engine::IfState {
             accepting: false,
             matched: false,
             if_case: -1,
             evaluating: true,
-            loc_file: self.input.current_file_name(),
-            loc_line: self.input.current_file_line(),
+            loc_file,
+            loc_line,
             loc_cs: id,
             loc,
         });
@@ -2478,12 +2481,7 @@ impl Engine {
         if length == 0 {
             return None;
         }
-        match self.input.stack.last_mut() {
-            Some(crate::input::Source::TokList { pos, .. }) => *pos += length,
-            Some(crate::input::Source::MacroFrame(frame)) => frame.skip(length),
-            _ => unreachable!(),
-        }
-        self.note_token_list_fetch(trace_depth);
+        self.consume_token_list_front(length, trace_depth);
         if counts_braces {
             self.align_brace_depth = self.align_brace_depth.saturating_add(braces);
         }
@@ -2741,7 +2739,10 @@ impl Engine {
         } else {
             None
         };
-        let buffer = self.token_vec_pool.pop().unwrap_or_default();
+        let mut buffer = self.token_vec_pool.pop().unwrap_or_default();
+        // Recycled buffers converge on a size that holds typical arguments
+        // without regrowing token by token.
+        buffer.reserve(MIN_ARG_BUFFER);
         let mut args = crate::input::MacroArgs::with_buffer(buffer);
         for (i, delim) in m.params.iter().enumerate().take(m.num_params as usize) {
             let keep = selector.map_or(true, |selected| selected == i + 1);
@@ -2779,7 +2780,10 @@ impl Engine {
             self.push_tokens_rc(std::rc::Rc::clone(&m.body), id);
             return;
         }
-        let Some(length) = m.replacement_length(&args, crate::input::MAX_TOKEN_LIST_TOKENS) else {
+        let references = m.ensure_replacement_plan();
+        let Some(length) =
+            m.replacement_length(&references, &args, crate::input::MAX_TOKEN_LIST_TOKENS)
+        else {
             self.recycle_token_vec(args.into_buffer());
             self.fatal_error_at(
                 &format!(
@@ -2796,7 +2800,7 @@ impl Engine {
         }
         let frame = crate::input::MacroFrame::new(
             std::rc::Rc::clone(&m.body),
-            m.ensure_replacement_plan(),
+            references,
             args,
             Some(id),
             self.trace_depth(),
@@ -3128,16 +3132,7 @@ impl Engine {
         scanned: &mut usize,
     ) -> Option<bool> {
         let partoken = self.partoken_id();
-        let (segment, trace_depth) = match self.input.stack.last() {
-            Some(crate::input::Source::TokList {
-                toks,
-                pos,
-                trace_depth,
-                ..
-            }) => (&toks[*pos..], *trace_depth),
-            Some(crate::input::Source::MacroFrame(frame)) => (frame.segment(), frame.trace_depth),
-            _ => return None,
-        };
+        let (segment, trace_depth) = self.token_list_front()?;
         let (mut length, mut after) = balanced_prefix(segment, long, partoken, *depth);
         // An \outer token needs the token-by-token path.
         if self.eqtb.has_outer_macros() {
@@ -3159,17 +3154,100 @@ impl Engine {
         if collect {
             out.extend_from_slice(&segment[..content]);
         }
-        match self.input.stack.last_mut() {
-            Some(crate::input::Source::TokList { pos, .. }) => *pos += length,
-            Some(crate::input::Source::MacroFrame(frame)) => frame.skip(length),
-            _ => unreachable!(),
-        }
-        self.note_token_list_fetch(trace_depth);
+        self.consume_token_list_front(length, trace_depth);
         // raw_token() counts every brace it fetches in align_brace_depth.
         self.align_brace_depth = self.align_brace_depth.saturating_add(after - *depth);
         *depth = after;
         *scanned += content;
         Some(after == 0)
+    }
+
+    /// Move the run of tokens at the front of the current token list that a
+    /// \def body stores as they are (no macro parameter, \outer macro or
+    /// token needing `raw_token`) into `out` at brace depth `depth`, as the
+    /// token loop of `collect_def_body` would. Returns whether the run ended
+    /// with the body's closing brace, or `None` when no token qualifies.
+    pub(crate) fn take_def_body_run(&mut self, out: &mut Vec<Token>, depth: &mut i32) -> Option<bool> {
+        if !self.pushed.is_empty()
+            || !(self.align_state == crate::align::PH_IDLE
+                || (!self.align_macro_arg && self.align_brace_depth >= *depth))
+        {
+            return None;
+        }
+        let (segment, trace_depth) = self.token_list_front()?;
+        let outer = self.eqtb.has_outer_macros();
+        // The token loop reports an overlong body before its first excess token.
+        let room = crate::input::MAX_TOKEN_LIST_TOKENS.saturating_sub(out.len());
+        let mut after = *depth;
+        let mut length = 0;
+        for &t in segment {
+            if !plain_balanced_token(t, true, t)
+                || t.0 >> 24 == 6
+                || (t.is_cs()
+                    && (self.cs.is_active(t.cs_id())
+                        || self.is_macro_param(t)
+                        || (outer && self.is_outer_macro_token(t))))
+            {
+                break;
+            }
+            let top = t.0 >> 24;
+            if top == 2 && after == 1 {
+                after = 0;
+                length += 1;
+                break;
+            }
+            if length == room {
+                break;
+            }
+            match top {
+                1 => after += 1,
+                2 => after -= 1,
+                _ => {}
+            }
+            length += 1;
+        }
+        if length == 0 {
+            return None;
+        }
+        out.extend_from_slice(&segment[..length - usize::from(after == 0)]);
+        self.consume_token_list_front(length, trace_depth);
+        self.align_brace_depth = self.align_brace_depth.saturating_add(after - *depth);
+        *depth = after;
+        Some(after == 0)
+    }
+
+    /// The undelivered tokens of the current token list (or of the current
+    /// segment of a macro replacement) and its macro-trace depth, when no
+    /// token is pushed back and the input comes from a list.
+    #[inline]
+    fn token_list_front(&self) -> Option<(&[Token], u8)> {
+        if !self.pushed.is_empty() {
+            return None;
+        }
+        match self.input.stack.last() {
+            Some(crate::input::Source::TokList {
+                toks,
+                pos,
+                trace_depth,
+                ..
+            }) => Some((&toks[*pos..], *trace_depth)),
+            Some(crate::input::Source::MacroFrame(frame)) => {
+                Some((frame.segment(), frame.trace_depth))
+            }
+            _ => None,
+        }
+    }
+
+    /// Consume `count` tokens of `token_list_front()` as `raw_token` would,
+    /// apart from per-token category handling.
+    #[inline]
+    fn consume_token_list_front(&mut self, count: usize, trace_depth: u8) {
+        match self.input.stack.last_mut() {
+            Some(crate::input::Source::TokList { pos, .. }) => *pos += count,
+            Some(crate::input::Source::MacroFrame(frame)) => frame.skip(count),
+            _ => unreachable!(),
+        }
+        self.note_token_list_fetch(trace_depth);
     }
 
     /// tex.web §392-§397: scan an argument ended by the token list `delim`,
@@ -3302,20 +3380,13 @@ impl Engine {
         room: usize,
     ) -> bool {
         // Inside an alignment, raw_token() may end the cell at a delimiter.
-        if !self.pushed.is_empty() || self.align_state != crate::align::PH_IDLE {
+        if self.align_state != crate::align::PH_IDLE {
             return false;
         }
         let partoken = Token::from_cs(self.partoken_id());
         let outer = self.eqtb.has_outer_macros();
-        let (segment, trace_depth) = match self.input.stack.last() {
-            Some(crate::input::Source::TokList {
-                toks,
-                pos,
-                trace_depth,
-                ..
-            }) => (&toks[*pos..], *trace_depth),
-            Some(crate::input::Source::MacroFrame(frame)) => (frame.segment(), frame.trace_depth),
-            _ => return false,
+        let Some((segment, trace_depth)) = self.token_list_front() else {
+            return false;
         };
         let limit = segment.len().min(room);
         let mut length = 0;
@@ -3336,12 +3407,7 @@ impl Engine {
             return false;
         }
         out.extend_from_slice(&segment[..length]);
-        match self.input.stack.last_mut() {
-            Some(crate::input::Source::TokList { pos, .. }) => *pos += length,
-            Some(crate::input::Source::MacroFrame(frame)) => frame.skip(length),
-            _ => unreachable!(),
-        }
-        self.note_token_list_fetch(trace_depth);
+        self.consume_token_list_front(length, trace_depth);
         true
     }
 

@@ -169,10 +169,14 @@ pub enum WhatIt {
         ht: i32,
         dp: i32,
     },
+    /// `\pdfstartlink`; `wd`/`ht`/`dp` are `RULE_FILL` when running.
     PdfStartLink {
         attr: String,
         uri: Option<String>,
         name: Option<String>,
+        wd: i32,
+        ht: i32,
+        dp: i32,
     },
     PdfEndLink,
     Special(String),

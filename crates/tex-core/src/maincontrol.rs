@@ -1078,20 +1078,7 @@ impl Engine {
             PdfXForm => self.do_pdfxform(),
             PdfMapFile => self.do_pdfmapfile(),
             PdfMapLine => self.do_pdfmapline(),
-            PdfGlyphToUnicode => {
-                // pdftex: \pdfglyphtounicode <glyph name> <unicode value> —
-                // TWO arguments. The generic one-arg consumer left the
-                // second in the stream, leaking hex like "221500B7".
-                for _ in 0..2 {
-                    self.skip_spaces_relax();
-                    let t = self.get_token();
-                    if t.is_char() && t.cc() == 1 {
-                        self.scan_balanced_raw(true);
-                    } else if !(t.is_char() && t.cc() == 10) {
-                        // unbraced single-token arg; spaces between args skip
-                    }
-                }
-            }
+            PdfGlyphToUnicode => self.do_pdfglyphtounicode(),
             PdfXImage => self.do_pdfximage(),
             PdfXImageBBox => {
                 let _ = self.scan_pdf_ximage_bbox();

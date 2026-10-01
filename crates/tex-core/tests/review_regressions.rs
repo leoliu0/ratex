@@ -140,6 +140,64 @@ fn forms_embed_fonts_used_only_inside_forms() {
     );
 }
 
+/// pdfTeX (writefont.c, tounicode.c) font dictionaries, checked against
+/// `pdftex` output for the same input: descriptor metrics preset from the
+/// TFM and overridden by the program's keys, /CharSet, no /Encoding for a
+/// builtin-encoded font and the `\pdfglyphtounicode` CMap.
+#[test]
+fn type1_font_dictionaries_follow_pdftex() {
+    let mut e = engine(
+        r"\pdfgentounicode=1 \pdfglyphtounicode{A}{0041}\pdfglyphtounicode{B}{0042 0301}
+\font\x=cmr10 \shipout\hbox{\x AB}
+\end",
+    );
+    e.embed_used_fonts().unwrap();
+    let pdf = tex_core::pdffile::write_pdf(&e.pdf_doc).unwrap();
+    let parsed = lopdf::Document::load_mem(&pdf).unwrap();
+    let font = parsed
+        .objects
+        .values()
+        .find_map(|o| o.as_dict().ok().filter(|d| d.has_type(b"Font")))
+        .expect("font dictionary");
+    assert!(font.get(b"Encoding").is_err(), "builtin encoding stays implicit");
+    let descriptor = parsed.dereference(font.get(b"FontDescriptor").unwrap()).unwrap().1;
+    let descriptor = descriptor.as_dict().unwrap();
+    let int = |key: &[u8]| descriptor.get(key).unwrap().as_i64().unwrap();
+    assert_eq!(
+        [b"Ascent".as_slice(), b"CapHeight", b"Descent", b"ItalicAngle", b"StemV", b"XHeight"].map(int),
+        [694, 683, -194, 0, 69, 431]
+    );
+    let bbox: Vec<i64> = descriptor
+        .get(b"FontBBox")
+        .unwrap()
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_i64().unwrap())
+        .collect();
+    assert_eq!(bbox, [-40, -250, 1009, 750]);
+    assert_eq!(descriptor.get(b"CharSet").unwrap().as_str().unwrap(), b"/A/B");
+    let cmap = parsed.dereference(font.get(b"ToUnicode").unwrap()).unwrap().1;
+    let cmap = cmap.as_stream().unwrap().decompressed_content().unwrap();
+    let cmap = String::from_utf8(cmap).unwrap();
+    assert!(cmap.contains("/CMapName /TeX-cmr10-builtin-0 def"), "{cmap}");
+    assert!(cmap.contains("2 beginbfchar\n<41> <0041>\n<42> <00420301>\nendbfchar"), "{cmap}");
+}
+
+#[test]
+fn duplicate_destinations_warn_like_pdftex() {
+    let source = r"\pdfdest name{a} fit\pdfdest name{a} fit
+\shipout\hbox{A\pdfdest name{a} fit}\pdfdest name{a} fit
+\end";
+    // pdftex: once at the \pdfdest after the shipout, twice when \end
+    // ships the two early ones
+    let e = engine(source);
+    assert_eq!(e.log.matches("has been already used, duplicate ignored").count(), 3, "{}", e.log);
+    assert!(e.log.contains("destination with the same identifier (name{a})"));
+    let e = engine(&format!("\\pdfsuppresswarningdupdest=1 {source}"));
+    assert!(!e.log.contains("duplicate ignored"), "{}", e.log);
+}
+
 #[test]
 fn undefined_pdf_xobject_references_are_located_and_omitted() {
     use tex_core::engine::InteractionMode;

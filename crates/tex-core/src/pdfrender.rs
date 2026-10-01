@@ -28,7 +28,7 @@ const ONE_HUNDRED_BP_SP: i64 = 6_578_176;
 pub(crate) const SP_PER_BP: f64 = 72.27 * 65536.0 / 72.0;
 /// pdfTeX's `divide_scaled`: return the rounded decimal value and the
 /// corresponding displacement on TeX's scaled-point raster.
-fn divide_scaled(mut s: i64, mut m: i64, decimal_digits: u32) -> (i64, i64) {
+pub(crate) fn divide_scaled(mut s: i64, mut m: i64, decimal_digits: u32) -> (i64, i64) {
     if m == 0 {
         return (0, 0);
     }
@@ -97,8 +97,13 @@ pub(crate) fn pdf_width_tenths(width: i32, at_size: i32) -> i32 {
     if at_size == 0 {
         return 0;
     }
-    let (_, pdf_font_size) = divide_scaled(at_size as i64, ONE_HUNDRED_BP_SP, 6);
-    divide_scaled(width as i64, pdf_font_size, 4).0 as i32
+    divide_scaled(width as i64, pdf_font_size(at_size), 4).0 as i32
+}
+
+/// pdfTeX `pdf_font_size[f]` (`pdf_use_font`): the at size snapped to 6
+/// decimals of bp.
+pub(crate) fn pdf_font_size(at_size: i32) -> i64 {
+    divide_scaled(at_size as i64, ONE_HUNDRED_BP_SP, 6).1
 }
 
 /// pdfTeX `round_xn_over_d` in i128-safe form: round `x * n / d` half-up on
@@ -2429,8 +2434,17 @@ impl<'a> RenderCtx<'a> {
                 }
             }
             PdfDest { id, kind, params } => {
-                // first definition of an identifier wins
-                if !self.dests.iter().any(|d| &d.id == id) {
+                // pdftex.web `do_dest`: the first shipped definition of an
+                // identifier wins; later ones warn and are ignored
+                let duplicate = if self.page_mode {
+                    !self.eng.pdf_doc.shipped_dests.insert(id.clone())
+                } else {
+                    self.dests.iter().any(|d| &d.id == id)
+                };
+                if duplicate && self.page_mode {
+                    self.eng.warn_dest_dup(id);
+                }
+                if !duplicate {
                     // explicit coordinates are page-absolute sp from the
                     // bottom-left corner; the sentinel -32768 keeps the
                     // anchor position

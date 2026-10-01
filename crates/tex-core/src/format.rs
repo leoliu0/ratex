@@ -32,7 +32,7 @@ use crate::tfm::{CharInfo, ExtRecipe, Font, LigStep};
 use crate::token::{CsTable, Token};
 
 const MAGIC: &[u8; 8] = b"RUSTEXFM";
-const VERSION: u16 = 18;
+const VERSION: u16 = 19;
 /// A production format is currently about 8 MiB decoded. Keep corrupt or
 /// unrelated external files from turning format probing into an unbounded
 /// allocation while leaving ample room for future format growth.
@@ -633,6 +633,22 @@ pub fn save_format_with_encoding(
         w.u8(language);
         w.bytes(eng.hyphen_codes[&language].as_slice());
     }
+    // tounicode.c dumptounicode: the \pdfglyphtounicode table
+    w.u32(eng.pdf_backend.glyph_unicode.len() as u32);
+    for (glyph, value) in &eng.pdf_backend.glyph_unicode {
+        w.str(glyph);
+        match value {
+            crate::pdf_fonts::GlyphUnicode::Undef => w.u8(0),
+            crate::pdf_fonts::GlyphUnicode::Code(code) => {
+                w.u8(1);
+                w.u32(*code);
+            }
+            crate::pdf_fonts::GlyphUnicode::Seq(seq) => {
+                w.u8(2);
+                w.str(seq);
+            }
+        }
+    }
 
     let payload = match encoding {
         FormatEncoding::Raw => w.buf,
@@ -1066,6 +1082,7 @@ pub fn load_format_bytes_into(data: &[u8], eng: &mut Engine) -> Result<(), Strin
     eng.hyphen_trie = scratch.hyphen_trie;
     eng.hyphen_tries = scratch.hyphen_tries;
     eng.hyphen_codes = scratch.hyphen_codes;
+    eng.pdf_backend.glyph_unicode = scratch.pdf_backend.glyph_unicode;
     eng.hyphen_exceptions = scratch.hyphen_exceptions;
     eng.par_shape = scratch.par_shape;
     eng.penalty_shapes = scratch.penalty_shapes;
@@ -1265,6 +1282,17 @@ fn load_state(r: &mut R, eng: &mut Engine) -> io::Result<()> {
         if eng.hyphen_codes.insert(language, Box::new(codes)).is_some() {
             return Err(bad("duplicate hyphenation code language"));
         }
+    }
+    let n_glyphs = r.count()?;
+    for _ in 0..n_glyphs {
+        let glyph = r.str()?;
+        let value = match r.u8()? {
+            0 => crate::pdf_fonts::GlyphUnicode::Undef,
+            1 => crate::pdf_fonts::GlyphUnicode::Code(r.u32()?),
+            2 => crate::pdf_fonts::GlyphUnicode::Seq(r.str()?),
+            _ => return Err(bad("invalid glyph-to-unicode entry")),
+        };
+        eng.pdf_backend.glyph_unicode.insert(glyph, value);
     }
     if r.p != r.b.len() {
         return Err(bad("has trailing data"));

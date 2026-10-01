@@ -764,15 +764,18 @@ impl Engine {
                     self.error("You can't use `\\/' in vertical mode");
                 }
                 Mode::Horizontal | Mode::RestrictedHorizontal => {
+                    // tex.web §1113: a kern follows a character or ligature
+                    // even when its italic correction is zero
                     let correction = match self.cur_list.last() {
-                        Some(Node::Char { c, font } | Node::Ligature { c, font, .. }) => self
-                            .eqtb
-                            .fonts
-                            .get(*font as usize)
-                            .map_or(0, |font| font.char_italic(*c)),
-                        _ => 0,
+                        Some(Node::Char { c, font } | Node::Ligature { c, font, .. }) => Some(
+                            self.eqtb
+                                .fonts
+                                .get(*font as usize)
+                                .map_or(0, |font| font.char_italic(*c)),
+                        ),
+                        _ => None,
                     };
-                    if correction != 0 {
+                    if let Some(correction) = correction {
                         self.cur_list.push(Node::ExplicitKern(correction));
                     }
                 }

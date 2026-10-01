@@ -156,6 +156,11 @@ pub struct CsTable {
     /// One bit per id: the name is an active-character placeholder. Token
     /// list scanners test this per control-sequence token.
     active_names: Vec<u64>,
+    /// tex.web frozen control sequences: ids that print with their name but
+    /// cannot be reached by name. The value is `true` for pdfTeX's hidden
+    /// primitive copies (`prim_eqtb`), which `frozen_lookup` finds by name.
+    frozen: std::collections::BTreeMap<CsId, bool>,
+    frozen_by_name: std::collections::HashMap<Vec<u8>, CsId, std::hash::BuildHasherDefault<NameHasher>>,
 }
 
 impl CsTable {
@@ -166,7 +171,30 @@ impl CsTable {
             capacity_exceeded: false,
             active_ids: Box::new([NO_ACTIVE_ID; 256]),
             active_names: Vec::new(),
+            frozen: Default::default(),
+            frozen_by_name: Default::default(),
         }
+    }
+
+    /// A new frozen id named `name`. `by_name` entries are found again by
+    /// [`CsTable::frozen_lookup`].
+    pub fn push_frozen(&mut self, name: &[u8], by_name: bool) -> CsId {
+        let id = self.names.len() as CsId;
+        self.names.push(name.to_vec());
+        self.frozen.insert(id, by_name);
+        if by_name {
+            self.frozen_by_name.insert(name.to_vec(), id);
+        }
+        id
+    }
+
+    pub fn frozen_lookup(&self, name: &[u8]) -> Option<CsId> {
+        self.frozen_by_name.get(name).copied()
+    }
+
+    /// `None` for an ordinary id, else whether it is found by name.
+    pub fn frozen_kind(&self, id: CsId) -> Option<bool> {
+        self.frozen.get(&id).copied()
     }
 
     /// The cached id of 8-bit active character `c`, if known.

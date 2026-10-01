@@ -24,6 +24,7 @@ pub mod format;
 pub mod hyphen;
 pub mod input;
 pub mod io;
+pub mod language;
 pub mod linebreak;
 pub mod maincontrol;
 pub mod math;

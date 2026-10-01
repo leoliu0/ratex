@@ -483,7 +483,7 @@ impl Engine {
                 // first (append_to_vlist: prev_depth := box depth = 0), so
                 // the interline glue above the display = baselineskip − h,
                 // unless at page top where prev_depth <= ignore_depth.
-                if self.prev_depth > -1000 * 65536 {
+                if self.prev_depth > self.ignore_depth() {
                     self.prev_depth = 0;
                 }
                 self.pre_display_size = -0x3FFF_FFFF;
@@ -878,9 +878,9 @@ impl Engine {
             // COPIES the parameter glue spec (stretch/shrink/orders and all)
             // and only adjusts the width; below the limit it appends
             // new_param_glue(line_skip_code) untouched. Glue is Copy, so
-            // clone the spec and overwrite `width`.
+            let ignore_depth = self.ignore_depth();
             let ilg = |prev_depth: i32, h: i64| -> Option<crate::boxes::Glue> {
-                if prev_depth <= -1000 * 65536 {
+                if prev_depth <= ignore_depth {
                     return None;
                 }
                 let d = bs.width as i64 - prev_depth as i64 - h;

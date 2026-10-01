@@ -384,6 +384,14 @@ impl FontLoader {
             return Some(data.clone());
         }
 
+        // 0. A path in the embedded archive's virtual tree (`kpse.find_file`
+        // reports bundled fonts that way).
+        if tex_kpse::embedded_tree::is_embedded_path(name) {
+            let data = Rc::new(tex_kpse::embedded_tree::read(name)?);
+            self.file_bytes_cache.insert(name.to_string(), data.clone());
+            return Some(data);
+        }
+
         // 1. Direct filesystem read (handles project files, relative/absolute paths, MemoryFs)
         if let Ok(data) = tex_kpse::fs::read(name) {
             let path = std::path::PathBuf::from(name);

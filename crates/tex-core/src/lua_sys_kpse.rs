@@ -112,9 +112,7 @@ const FORMATS: &[FormatInfo] = &[
 /// TeX Live's `texmf.cnf` values for the parameters that scripts query.
 const CNF_DEFAULTS: &[(&str, &str)] = &[
     ("TEXMFHOME", "~/texmf"),
-    ("TEXMFVAR", "~/.texlive/texmf-var"),
     ("TEXMFCONFIG", "~/.texlive/texmf-config"),
-    ("TEXMFSYSVAR", "/var/lib/texmf"),
     ("TEXMFSYSCONFIG", "/etc/texmf"),
     ("TEXMFLOCAL", "/usr/local/share/texmf:/usr/share/texmf"),
     ("TEXMFDIST", "/usr/share/texmf-dist"),
@@ -200,12 +198,15 @@ fn raw_var(program: &str, name: &str) -> Option<String> {
             let (_, _, parent) = exe_dirs();
             return Some(parent.parent().unwrap_or(Path::new("")).to_string_lossy().into_owned());
         }
+        // The per-user cache: font databases and caches live below it.
+        "TEXMFVAR" | "TEXMFSYSVAR" => {
+            return Some(crate::lua_sys::cache_dir().join("texmf-var").to_string_lossy().into_owned())
+        }
+        "TEXMFCACHE" => return Some("$TEXMFVAR".to_string()),
+        // The search roots of the engine, then the bundled archive.
         "TEXMF" => {
-            let roots = roots();
-            if roots.is_empty() {
-                return Some("{$TEXMFVAR,$TEXMFHOME,$TEXMFLOCAL,$TEXMFDIST}".to_string());
-            }
-            let list: Vec<String> = roots.iter().map(|r| r.to_string_lossy().into_owned()).collect();
+            let mut list: Vec<String> = roots().iter().map(|r| r.to_string_lossy().into_owned()).collect();
+            list.push(tex_kpse::embedded_tree::ROOT.to_string());
             return Some(format!("{{{}}}", list.join(",")));
         }
         "shell_escape" => {
@@ -233,7 +234,9 @@ fn default_path_template(fmt: &FormatInfo) -> String {
         return ".".to_string();
     }
     let specs: Vec<String> = fmt.path.split(':').map(|spec| format!("$TEXMF/{spec}")).collect();
-    format!(".:{}", specs.join(":"))
+    // Font searches also cover the operating system's fonts (`$OSFONTDIR//`).
+    let system = if matches!(fmt.var, "OPENTYPEFONTS" | "TTFONTS" | "T1FONTS" | "AFMFONTS") { ":$OSFONTDIR//" } else { "" };
+    format!(".:{}{system}", specs.join(":"))
 }
 
 /// `$VAR` / `${VAR}` expansion as `kpathsea_var_expand`.
@@ -409,22 +412,50 @@ fn tilde(elt: &str) -> String {
     elt.to_string()
 }
 
-/// Directories below (and including) `dir`, as `//` path elements list them.
-fn subdirectories(dir: &Path, out: &mut Vec<String>, budget: &mut usize) {
-    out.push(dir.to_string_lossy().into_owned());
-    let Ok(entries) = std::fs::read_dir(dir) else { return };
-    let mut children: Vec<PathBuf> = entries
+/// Whether `path` is a directory: on disk or in the bundled archive.
+pub(crate) fn is_dir(path: &str) -> bool {
+    use tex_kpse::embedded_tree::{self, EmbeddedKind};
+    if embedded_tree::is_embedded_path(path) {
+        return embedded_tree::stat(path) == Some(EmbeddedKind::Directory);
+    }
+    Path::new(path).is_dir()
+}
+
+/// Whether `path` is a regular file: on disk or in the bundled archive.
+pub(crate) fn is_file(path: &str) -> bool {
+    use tex_kpse::embedded_tree::{self, EmbeddedKind};
+    if embedded_tree::is_embedded_path(path) {
+        return matches!(embedded_tree::stat(path), Some(EmbeddedKind::File { .. }));
+    }
+    Path::new(path).is_file()
+}
+
+/// Names of the subdirectories of `dir`, sorted.
+fn child_directories(dir: &str) -> Vec<String> {
+    if tex_kpse::embedded_tree::is_embedded_path(dir) {
+        let entries = tex_kpse::embedded_tree::read_dir(dir).unwrap_or_default();
+        return entries.into_iter().filter(|(_, directory)| *directory).map(|(name, _)| name).collect();
+    }
+    let Ok(entries) = std::fs::read_dir(dir) else { return Vec::new() };
+    let mut children: Vec<String> = entries
         .flatten()
         .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
-        .map(|e| e.path())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
         .collect();
     children.sort();
-    for child in children {
+    children
+}
+
+/// Directories below (and including) `dir`, as `//` path elements list them.
+fn subdirectories(dir: &str, out: &mut Vec<String>, budget: &mut usize) {
+    out.push(dir.to_string());
+    let base = dir.trim_end_matches('/');
+    for child in child_directories(dir) {
         if *budget == 0 {
             return;
         }
         *budget -= 1;
-        subdirectories(&child, out, budget);
+        subdirectories(&format!("{base}/{child}"), out, budget);
     }
 }
 
@@ -442,13 +473,12 @@ fn expand_path(program: &str, path: &str) -> String {
             if trimmed.is_empty() {
                 continue;
             }
-            let dir = Path::new(trimmed);
-            if !dir.is_dir() {
+            if !is_dir(trimmed) {
                 continue;
             }
             if recursive {
                 let mut budget = 100_000;
-                subdirectories(dir, &mut dirs, &mut budget);
+                subdirectories(trimmed, &mut dirs, &mut budget);
             } else {
                 dirs.push(trimmed.to_string());
             }
@@ -473,37 +503,6 @@ fn show_path(program: &str, fmt: &FormatInfo) -> String {
 
 // ------------------------------------------------------------- lookup ---
 
-const EMBEDDED_PREFIX: &str = "<embedded>/";
-
-fn cache_dir() -> PathBuf {
-    let uid = {
-        #[cfg(unix)]
-        {
-            unsafe { libc::getuid() }
-        }
-        #[cfg(not(unix))]
-        {
-            0u32
-        }
-    };
-    std::env::temp_dir().join(format!("ratex-embedded-{uid}-{}", env!("CARGO_PKG_VERSION")))
-}
-
-/// Write an archive member to the cache directory (once) and return its path.
-fn materialize(member: &str) -> Option<PathBuf> {
-    let member = member.strip_prefix(EMBEDDED_PREFIX).unwrap_or(member);
-    let data = tex_kpse::get_embedded_package(member)?;
-    let dir = cache_dir();
-    let target = dir.join(member);
-    if std::fs::metadata(&target).is_ok_and(|m| m.len() == data.len() as u64) {
-        return Some(target);
-    }
-    std::fs::create_dir_all(target.parent()?).ok()?;
-    let part = target.with_extension(format!("part{}", std::process::id()));
-    std::fs::write(&part, &data).ok()?;
-    std::fs::rename(&part, &target).ok()?;
-    Some(target)
-}
 
 fn has_suffix(name: &str, suffixes: &[&str]) -> bool {
     let lower = name.to_ascii_lowercase();
@@ -525,6 +524,9 @@ fn find_one(name: &str, fmt: &FormatInfo) -> Option<PathBuf> {
     if name.is_empty() {
         return None;
     }
+    if tex_kpse::embedded_tree::is_embedded_path(name) {
+        return is_file(name).then(|| PathBuf::from(name));
+    }
     let found = with_engine(|e| match fmt.search {
         Search::Format(format) => e.font_loader.kpse.find(name, format),
         Search::Any => candidates(name, fmt).iter().find_map(|c| e.font_loader.kpse.find_any(c)),
@@ -540,7 +542,7 @@ fn find_one(name: &str, fmt: &FormatInfo) -> Option<PathBuf> {
             .find(|c| tex_kpse::has_embedded_package(c)),
         Search::Any => candidates(name, fmt).into_iter().find(|c| tex_kpse::has_embedded_package(c)),
     }?;
-    materialize(&member)
+    tex_kpse::embedded_tree::member_path(&member).map(PathBuf::from)
 }
 
 /// `find_format`: the format a file name suggests.
@@ -581,9 +583,9 @@ fn path_search(program: &str, path: &str, name: &str, all: bool, must_exist: boo
     let expanded = expand_path(program, &path.replace(';', ":"));
     let mut out = Vec::new();
     for dir in expanded.split(':').filter(|d| !d.is_empty()) {
-        let candidate = Path::new(dir).join(name);
-        if candidate.is_file() {
-            out.push(candidate.to_string_lossy().into_owned());
+        let candidate = format!("{}/{name}", dir.trim_end_matches('/'));
+        if is_file(&candidate) {
+            out.push(candidate);
             if !all {
                 break;
             }
@@ -835,6 +837,11 @@ pub(crate) fn register(lua: &mut Lua, s: &tex_lua::LuaTable) -> Result<(), Strin
     });
     sys_reg!(lua, s, "kpse_readable_file", |name: LuaString| -> Option<LuaBytes> {
         let bytes = bytes_of(&name);
+        if let Ok(text) = std::str::from_utf8(&bytes) {
+            if tex_kpse::embedded_tree::is_embedded_path(text) {
+                return is_file(text).then_some(LuaBytes(bytes));
+            }
+        }
         let path = path_of(&bytes);
         match std::fs::File::open(&path) {
             Ok(_) if path.is_file() => Some(LuaBytes(bytes)),

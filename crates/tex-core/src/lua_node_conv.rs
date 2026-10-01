@@ -420,6 +420,11 @@ impl Engine {
                 self.lua_nodes.node_mut(n).f[0] = *k;
                 n
             }
+            Node::AccentKern(k, _) => {
+                let n = self.lua_new_node(KERN, ACCENT_KERN);
+                self.lua_nodes.node_mut(n).f[0] = *k;
+                n
+            }
             Node::MarginKern { side, width, c, font, .. } => {
                 let n = self.lua_new_node(MARGIN_KERN, u16::from(*side));
                 let g = self.import_glyph_node(u32::from(*c), *font, ctx, GLYPH_CHARACTER);
@@ -642,7 +647,11 @@ impl Engine {
             }
             KERN => {
                 let k = f[0];
-                out.push(if sub == EXPLICIT_KERN { Node::ExplicitKern(k, crate::boxes::Attr::NONE) } else { Node::Kern(k, crate::boxes::Attr::NONE) });
+                out.push(match sub {
+                    EXPLICIT_KERN => Node::ExplicitKern(k, crate::boxes::Attr::NONE),
+                    ACCENT_KERN => Node::AccentKern(k, crate::boxes::Attr::NONE),
+                    _ => Node::Kern(k, crate::boxes::Attr::NONE),
+                });
             }
             MARGIN_KERN => {
                 let g = f[sl::M_GLYPH] as u32;

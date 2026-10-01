@@ -1803,6 +1803,7 @@ impl Engine {
             // nodes are inserted
             let mut break_math: Option<Node> = None;
             let mut pruned_lr: Vec<u8> = Vec::new();
+            let mut break_glue_attr: Option<crate::boxes::Attr> = None;
             if !last {
                 match &mut list[j] {
                     Node::Disc(dc) => {
@@ -1839,6 +1840,11 @@ impl Engine {
                         // \rightskip at packing; explicit-kern break is
                         // zeroed by tex), a math node is kept with width 0;
                         // prune discardables at the start of the next line
+                        if matches!(list[j], Node::Glue(..)) {
+                            // luatex post_line_break turns the glue node itself
+                            // into the \rightskip glue: it keeps its attributes
+                            break_glue_attr = Some(list[j].attr());
+                        }
                         if let Node::MathKern(_, kind @ 1.., _) = list[j] {
                             if texxet {
                                 crate::texxet::lr_adjust(&mut lr, kind);
@@ -1864,7 +1870,7 @@ impl Engine {
                 self.eqtb.int_params[crate::prim::IntParam::PdfProtrudeChars.idx() as usize];
             if protrude_chars > 0 {
                 let left_cand = seg.iter().find_map(|n| match n {
-                    Node::Char { font, c, .. } | Node::Ligature { font, c, .. } => Some((*font, *c)),
+                    Node::Char { font, c, attr } | Node::Ligature { font, c, attr, .. } => Some((*font, *c, *attr)),
                     Node::Glue(_, _)
                     | Node::Penalty(_, _)
                     | Node::Kern(_, _)
@@ -1881,9 +1887,9 @@ impl Engine {
                         list,
                         ..
                     } if list.is_empty() => None,
-                    _ => Some((0, 0)),
+                    _ => Some((0, 0, crate::boxes::Attr::NONE)),
                 });
-                if let Some((f, c)) = left_cand {
+                if let Some((f, c, lattr)) = left_cand {
                     if c != 0 {
                         let pw = char_protrusion_width(&self.eqtb, protrude_chars, f, c, true);
                         if pw != 0 {
@@ -1893,14 +1899,14 @@ impl Engine {
                                     side: 0,
                                     width: -pw,
                                     font: f,
-                                    c, attr: self.eqtb.cur_attr,
+                                    c, attr: lattr,
                                 },
                             );
                         }
                     }
                 }
-                if let Some((f, c)) = seg.iter().rev().find_map(|n| match n {
-                    Node::Char { font, c, .. } | Node::Ligature { font, c, .. } => Some((*font, *c)),
+                if let Some((f, c, rattr)) = seg.iter().rev().find_map(|n| match n {
+                    Node::Char { font, c, attr } | Node::Ligature { font, c, attr, .. } => Some((*font, *c, *attr)),
                     _ => None,
                 }) {
                     let pw = char_protrusion_width(&self.eqtb, protrude_chars, f, c, false);
@@ -1909,7 +1915,7 @@ impl Engine {
                             side: 1,
                             width: -pw,
                             font: f,
-                            c, attr: self.eqtb.cur_attr,
+                            c, attr: rattr,
                         });
                     }
                 }
@@ -1927,11 +1933,14 @@ impl Engine {
             }
             let mut inner: NodeList = Vec::with_capacity(seg.len() + 2);
             // tex.web §887: \leftskip glue only when it is not zero_glue
+            let skip_attr = |n: Option<&Node>, dflt: crate::boxes::Attr| n.map_or(dflt, Node::attr);
+            let left_attr = skip_attr(seg.first(), self.eqtb.cur_attr);
+            let right_attr = break_glue_attr.unwrap_or_else(|| skip_attr(seg.last(), self.eqtb.cur_attr));
             if !params.left_skip.zero_glue {
-                inner.push(Node::Glue(params.left_skip, self.eqtb.cur_attr));
+                inner.push(Node::Glue(params.left_skip, left_attr));
             }
             inner.extend(seg);
-            inner.push(Node::Glue(params.right_skip, self.eqtb.cur_attr));
+            inner.push(Node::Glue(params.right_skip, right_attr));
             let mut r = crate::boxes::hpack_expand(self, inner, target, crate::boxes::HBOX);
             // tex.web §17436: the parshape indent is the line box's
             // shift_amount, never an in-line kern (a kern would overshoot
@@ -2507,12 +2516,10 @@ impl Reconstitute<'_> {
                 }
                 // §918: a discretionary may replace at most 127 nodes
                 if major.len() <= 127 {
-                    out.push(Node::Disc(crate::boxes::DiscNode::new(
-                        pre_break,
-                        post_break,
-                        major.clone(),
-                        major.len(),
-                    )));
+                    out.push(Node::Disc(
+                        crate::boxes::DiscNode::new(pre_break, post_break, major.clone(), major.len())
+                            .with_attr(self.attr),
+                    ));
                 }
                 out.append(&mut major);
                 self.hyphen_passed = j - 1;

@@ -1027,12 +1027,9 @@ impl Engine {
             cur.lig_present = false;
         }
         if self.mode == Mode::Horizontal && self.tail_ends_hyphen(f) {
-            self.cur_list.push(Node::Disc(crate::boxes::DiscNode::new(
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-                0,
-            )));
+            self.cur_list.push(Node::Disc(
+                crate::boxes::DiscNode::new(Vec::new(), Vec::new(), Vec::new(), 0).with_attr(self.eqtb.cur_attr),
+            ));
         }
     }
 
@@ -1196,6 +1193,16 @@ impl Engine {
     pub fn begin_box(&mut self, kind: u8) {
         self.flush_native_text();
         // (character keywords), not control sequences)
+        let mut box_attr = self.eqtb.cur_attr;
+        if self.engine_kind == crate::engine::EngineKind::LuaTeX && kind <= 2 {
+            // LuaTeX scan_full_spec: `attr <n> = <v>` keywords come first
+            while self.scan_keyword(b"attr") {
+                let n = self.scan_attribute_num();
+                self.scan_optional_equals();
+                let v = self.scan_int();
+                box_attr = self.eqtb.attr_lists.with_value(box_attr, n as i32, v);
+            }
+        }
         let mut target: Option<(i32, bool)> = None; // (dim, is_spread)
         if self.scan_keyword(b"to") {
             let d = self.scan_dimen(false, false);
@@ -1237,6 +1244,9 @@ impl Engine {
         self.push_group_level(LevelType::Box);
 
         self.box_targets.push(target);
+        if kind <= 2 && self.engine_kind == crate::engine::EngineKind::LuaTeX {
+            self.box_attrs.push((self.saved_lists.len(), box_attr));
+        }
         self.box_shifts.push(shift);
         self.box_kinds.push(kind);
         match kind {
@@ -1304,6 +1314,13 @@ impl Engine {
         }
         let target = self.box_targets.pop().flatten();
         let shift = self.box_shifts.pop().unwrap_or(0);
+        let box_attr = match self.box_attrs.last() {
+            Some(&(depth, a)) if depth == self.saved_lists.len() => {
+                self.box_attrs.pop();
+                Some(a)
+            }
+            _ => None,
+        };
         let inner = std::mem::replace(&mut self.cur_list, Vec::new());
         let (outer_mode, outer_list, pd, sf, pg, _) = self.saved_lists.pop().unwrap_or((
             // group desync (e.g. runaway end): stay in the current context
@@ -1412,6 +1429,9 @@ impl Engine {
         let mut node = res.node;
         if let Node::Box { shift: s, .. } = &mut node {
             *s += shift;
+        }
+        if let Some(a) = box_attr {
+            node.set_attr(a);
         }
         if kind == 3 {
             node = Node::VCenter {
@@ -2198,7 +2218,7 @@ impl Engine {
     /// its three parts are typeset as restricted-horizontal groups.
     pub fn do_discretionary(&mut self) {
         self.flush_native_text();
-        let mut disc = crate::boxes::DiscNode::new(Vec::new(), Vec::new(), Vec::new(), 0);
+        let mut disc = crate::boxes::DiscNode::new(Vec::new(), Vec::new(), Vec::new(), 0).with_attr(self.eqtb.cur_attr);
         if self.engine_kind == crate::engine::EngineKind::LuaTeX {
             // luatex append_discretionary: `\discretionary [penalty <n>]`
             // keeps the \hyphenpenalty of the moment (no exhyphenpenalty
@@ -2236,7 +2256,7 @@ impl Engine {
                 }
             }
         }
-        let mut disc = crate::boxes::DiscNode::new(pre_break, Vec::new(), Vec::new(), 0);
+        let mut disc = crate::boxes::DiscNode::new(pre_break, Vec::new(), Vec::new(), 0).with_attr(self.eqtb.cur_attr);
         if lua_mode {
             disc.subtype = 1;
             disc.penalty = self.eqtb.int_params[IntParam::ExHyphenPenalty.idx() as usize];

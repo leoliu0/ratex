@@ -315,6 +315,17 @@ impl AttrLists {
     pub fn pairs(&self, attr: Attr) -> &[(i32, i32)] {
         &self.lists[attr.0 as usize]
     }
+
+    /// `base` with attribute `number` set to `value` (luatex
+    /// `do_set_attribute`).
+    pub fn with_value(&mut self, base: Attr, number: i32, value: i32) -> Attr {
+        let mut pairs = self.pairs(base).to_vec();
+        match pairs.binary_search_by_key(&number, |p| p.0) {
+            Ok(i) => pairs[i].1 = value,
+            Err(i) => pairs.insert(i, (number, value)),
+        }
+        self.intern(&pairs)
+    }
 }
 
 pub struct Eqtb {

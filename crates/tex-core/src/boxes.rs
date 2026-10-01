@@ -424,6 +424,11 @@ pub struct DiscNode {
 pub const DISC_PENALTY_TEX: i32 = i32::MIN;
 
 impl DiscNode {
+    pub fn with_attr(mut self, attr: Attr) -> Self {
+        self.attr = attr;
+        self
+    }
+
     pub fn new(pre_break: NodeList, post_break: NodeList, no_break: NodeList, replace_count: usize) -> Self {
         DiscNode { pre_break, post_break, no_break, replace_count, subtype: 0, penalty: DISC_PENALTY_TEX, attr: Attr::NONE }
     }

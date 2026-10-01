@@ -723,6 +723,9 @@ impl Engine {
         };
         // tex.web §1196: the math nodes take \mathsurround before unsave
         let ms = self.eqtb.dim_params[DimParam::MathSurround.idx() as usize];
+        // luatex after_math builds everything before unsave_math: the
+        // nodes carry the attributes in force inside the formula
+        let formula_attr = self.eqtb.cur_attr;
         self.pop_group();
         let (outer_mode, outer_list, pd, sf, pg, _) = self.saved_lists.pop().unwrap_or((
             self.mode,
@@ -758,7 +761,9 @@ impl Engine {
             } else {
                 (mlist, None)
             };
+            let restored_attr = std::mem::replace(&mut self.eqtb.cur_attr, formula_attr);
             self.finish_display_math(formula, tag, danger, disp_regs.unwrap(), outer_mode);
+            self.eqtb.cur_attr = restored_attr;
             // tex.web resume_after_display (§1200) ends with <Scan an
             // optional space>, after unsave has inserted any \aftergroup
             // tokens, then `if nest_ptr=1 then build_page`.
@@ -776,9 +781,9 @@ impl Engine {
             // carrying \mathsurround — justification stretches into the
             // formula and lines may break inside it (never inside a box)
             Mode::Horizontal => {
-                self.cur_list.push(Node::MathKern(ms, 1, self.eqtb.cur_attr));
+                self.cur_list.push(Node::MathKern(ms, 1, formula_attr));
                 self.cur_list.extend(hlist);
-                self.cur_list.push(Node::MathKern(ms, 2, self.eqtb.cur_attr));
+                self.cur_list.push(Node::MathKern(ms, 2, formula_attr));
                 self.space_factor = 1000;
             }
             Mode::Vertical | Mode::InternalVertical => {
@@ -786,9 +791,9 @@ impl Engine {
                 self.vlist_append(hbox);
             }
             _ => {
-                self.cur_list.push(Node::MathKern(ms, 1, self.eqtb.cur_attr));
+                self.cur_list.push(Node::MathKern(ms, 1, formula_attr));
                 self.cur_list.extend(hlist);
-                self.cur_list.push(Node::MathKern(ms, 2, self.eqtb.cur_attr));
+                self.cur_list.push(Node::MathKern(ms, 2, formula_attr));
             }
         }
     }
@@ -3186,7 +3191,31 @@ impl Engine {
         x
     }
 
+    /// What a lone math character nucleus converts to carries that
+    /// character's attribute list (luatex gives the glyph its nucleus'
+    /// `node_attr`), not the scripted noad's.
+    fn nucleus_attr(&self, nucleus: &[Node]) -> crate::boxes::Attr {
+        match nucleus {
+            [n @ (Node::MathChar { .. } | Node::DelimBox { .. })] => n.attr(),
+            _ => self.eqtb.cur_attr,
+        }
+    }
+
     fn make_scripts(
+        &mut self,
+        nucleus: &[Node],
+        sup: Option<&[Node]>,
+        sub: Option<&[Node]>,
+        style: GStyle,
+    ) -> NodeList {
+        let attr = self.nucleus_attr(nucleus);
+        let saved = std::mem::replace(&mut self.eqtb.cur_attr, attr);
+        let out = self.make_scripts_inner(nucleus, sup, sub, style);
+        self.eqtb.cur_attr = saved;
+        out
+    }
+
+    fn make_scripts_inner(
         &mut self,
         nucleus: &[Node],
         sup: Option<&[Node]>,
@@ -3404,6 +3433,21 @@ impl Engine {
     // ---------- make_op with limits (tex.web §744) ----------
 
     fn make_op_limits(
+        &mut self,
+        op: &[Node],
+        above: Option<&[Node]>,
+        below: Option<&[Node]>,
+        style: GStyle,
+        force: bool,
+    ) -> NodeList {
+        let attr = self.nucleus_attr(op);
+        let saved = std::mem::replace(&mut self.eqtb.cur_attr, attr);
+        let out = self.make_op_limits_inner(op, above, below, style, force);
+        self.eqtb.cur_attr = saved;
+        out
+    }
+
+    fn make_op_limits_inner(
         &mut self,
         op: &[Node],
         above: Option<&[Node]>,

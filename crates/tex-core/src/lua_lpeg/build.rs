@@ -204,7 +204,7 @@ pub fn seq(a: &Pat, b: &Pat) -> BResult<Built> {
 pub fn choice(a: &Pat, b: &Pat) -> BResult<Built> {
     let (mut s1, mut s2) = ([0u8; CHARSETSIZE], [0u8; CHARSETSIZE]);
     let mut ta = a.tree.clone();
-    let mut tb = b.tree.clone();
+    let tb = b.tree.clone();
     if tocharset(&ta, 0, &mut s1) && tocharset(&tb, 0, &mut s2) {
         let mut cs = [0u8; CHARSETSIZE];
         for k in 0..CHARSETSIZE {
@@ -375,7 +375,7 @@ pub fn const_capture(values: &[V]) -> Pat {
             let mut entries: Vec<V> = Vec::new();
             tree[0] = TTree { tag: TCAPTURE, cap: CGROUP as u16, ..TTree::default() };
             let mut nd = 1;
-            let mut key_of = |v: &V, entries: &mut Vec<V>| -> u16 {
+            let key_of = |v: &V, entries: &mut Vec<V>| -> u16 {
                 if v.is_nil() {
                     0
                 } else {
@@ -604,4 +604,102 @@ fn checkloops(t: &mut [TTree], mut i: usize, name_error: &dyn Fn(&V) -> String, 
             _ => return Ok(()),
         }
     }
+}
+
+const MAXUNICODE: u32 = 0x10FFFF;
+
+/// Split `[lo, hi]` into code point ranges whose UTF-8 encodings are
+/// sequences of byte ranges.
+fn utf8_sequences(lo: u32, hi: u32, out: &mut Vec<Vec<(u8, u8)>>) {
+    // split at the boundaries of the encoded length
+    for &max in &[0x7Fu32, 0x7FF, 0xFFFF] {
+        if lo <= max && max < hi {
+            utf8_sequences(lo, max, out);
+            utf8_sequences(max + 1, hi, out);
+            return;
+        }
+    }
+    if hi < 0x80 {
+        out.push(vec![(lo as u8, hi as u8)]);
+        return;
+    }
+    // split so that continuation bytes span their full range
+    for i in 1..4u32 {
+        let m: u32 = (1 << (6 * i)) - 1;
+        if lo & !m != hi & !m {
+            if lo & m != 0 {
+                utf8_sequences(lo, lo | m, out);
+                utf8_sequences((lo | m) + 1, hi, out);
+                return;
+            }
+            if hi & m != m {
+                utf8_sequences(lo, (hi & !m) - 1, out);
+                utf8_sequences(hi & !m, hi, out);
+                return;
+            }
+        }
+    }
+    let (a, b) = (encode_utf8(lo), encode_utf8(hi));
+    out.push(a.iter().zip(b.iter()).map(|(&x, &y)| (x, y)).collect());
+}
+
+fn encode_utf8(cp: u32) -> Vec<u8> {
+    if cp < 0x80 {
+        vec![cp as u8]
+    } else if cp < 0x800 {
+        vec![0xC0 | (cp >> 6) as u8, 0x80 | (cp & 0x3F) as u8]
+    } else if cp < 0x10000 {
+        vec![0xE0 | (cp >> 12) as u8, 0x80 | ((cp >> 6) & 0x3F) as u8, 0x80 | (cp & 0x3F) as u8]
+    } else {
+        vec![
+            0xF0 | (cp >> 18) as u8,
+            0x80 | ((cp >> 12) & 0x3F) as u8,
+            0x80 | ((cp >> 6) & 0x3F) as u8,
+            0x80 | (cp & 0x3F) as u8,
+        ]
+    }
+}
+
+/// `utfR(from, to)` (LPeg 1.1): one UTF-8 encoded code point in the range.
+pub fn utf_range(from: i64, to: i64) -> BResult<Pat> {
+    if !(0..=MAXUNICODE as i64).contains(&from) {
+        return Err(Fail::Arg(1, "invalid code point".to_string()));
+    }
+    if !(0..=MAXUNICODE as i64).contains(&to) {
+        return Err(Fail::Arg(2, "invalid code point".to_string()));
+    }
+    if from > to {
+        return Err(Fail::Arg(2, "empty range".to_string()));
+    }
+    let mut sequences = Vec::new();
+    utf8_sequences(from as u32, to as u32, &mut sequences);
+    let mut result: Option<Pat> = None;
+    for seq_ranges in sequences {
+        let mut piece: Option<Pat> = None;
+        for (lo, hi) in seq_ranges {
+            let mut cs = [0u8; CHARSETSIZE];
+            for c in lo..=hi {
+                setchar(&mut cs, c);
+            }
+            let next = from_charset(&cs);
+            piece = Some(match piece {
+                None => next,
+                Some(p) => match seq(&p, &next)? {
+                    Built::New(n) => n,
+                    Built::Operand(0) => p,
+                    Built::Operand(_) => next,
+                },
+            });
+        }
+        let piece = piece.expect("sequence");
+        result = Some(match result {
+            None => piece,
+            Some(r) => match choice(&r, &piece)? {
+                Built::New(n) => n,
+                Built::Operand(0) => r,
+                Built::Operand(_) => piece,
+            },
+        });
+    }
+    Ok(result.expect("range"))
 }

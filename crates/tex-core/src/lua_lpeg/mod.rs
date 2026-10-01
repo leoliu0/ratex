@@ -21,7 +21,7 @@ use std::rc::Rc;
 
 use tex_lua::{
     CallbackLua, Lua, LuaApi, LuaBytes, LuaError, LuaFunction, LuaResult, LuaString, LuaTable, LuaValueKind,
-    UserDataRef, UserDataTrait, Value,
+    UserDataTrait, Value,
 };
 
 use build::*;
@@ -200,8 +200,12 @@ impl Env for CxEnv<'_, '_> {
     }
 
     fn table_set(&mut self, table: &V, key: &V, value: &V) -> LResult<()> {
-        let V::Obj(t) = table else { unreachable!("table capture") };
-        let t = t.as_table().expect("table capture");
+        let Some(t) = (match table {
+            V::Obj(t) => t.as_table(),
+            _ => None,
+        }) else {
+            return Err(self.cx.error(format!("attempt to index a {} value", table.type_name())));
+        };
         let key = v_to_value(self.cx, key)?;
         let value = v_to_value(self.cx, value)?;
         t.raw_set(key, value)
@@ -658,6 +662,13 @@ fn lp_locale(cx: &mut CallbackLua<'_>, shared: &Shared) -> LuaResult<usize> {
     cx.push(table)
 }
 
+fn lp_utfr(cx: &mut CallbackLua<'_>, shared: &Shared) -> LuaResult<usize> {
+    let from = check_integer(cx, 1)?;
+    let to = check_integer(cx, 2)?;
+    let pat = utf_range(from, to).map_err(|f| fail(cx, f))?;
+    push_new(cx, shared, pat)
+}
+
 fn lp_ptree(cx: &mut CallbackLua<'_>, shared: &Shared) -> LuaResult<usize> {
     let a = getpatt(cx, shared, 1)?;
     let finalize = cx.arg_kind(2).is_some_and(|_| arg_v(cx, 2).map(|v| v.truthy()).unwrap_or(false));
@@ -723,6 +734,7 @@ pub(crate) fn install(lua: &mut Lua) -> Result<(), String> {
     reg!(lib, "Cmt", lp_matchtime);
     reg!(lib, "setmaxstack", lp_setmax);
     reg!(lib, "locale", lp_locale);
+    reg!(lib, "utfR", lp_utfr);
     reg!(lib, "ptree", lp_ptree);
     reg!(lib, "pcode", lp_pcode);
     let type_fn = lua.create_callback(lp_type).map_err(err)?;
@@ -739,6 +751,11 @@ pub(crate) fn install(lua: &mut Lua) -> Result<(), String> {
     reg!(metatable, "__div", lp_divcapture);
     reg!(metatable, "__unm", lp_not);
     reg!(metatable, "__sub", lp_diff);
+    reg!(metatable, "__mod", |cx, sh| {
+        let f = arg_v(cx, 2)?;
+        let a = getpatt(cx, sh, 1)?;
+        push_new(cx, sh, capture(&a.pat, CACC, Some(f)))
+    });
     metatable.set("__index", &lib).map_err(err)?;
     metatable.set("__name", PATTERN_NAME).map_err(err)?;
 

@@ -14,9 +14,9 @@ const TAGNAMES: [&str; 17] = [
     "grammar", "behind", "capture", "run-time",
 ];
 
-const CAPKIND: [&str; 15] = [
+const CAPKIND: [&str; 16] = [
     "close", "position", "constant", "backref", "argument", "simple", "table", "function", "query", "string",
-    "num", "substitution", "fold", "runtime", "group",
+    "num", "substitution", "fold", "runtime", "group", "accumulator",
 ];
 
 const OPNAMES: [&str; 24] = [

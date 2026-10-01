@@ -216,17 +216,19 @@ impl CapState<'_> {
             CNUM => self.numcap(),
             CQUERY => self.querycap(),
             CFOLD => self.foldcap(),
+            CACC => self.accumulatorcap(),
             kind => unreachable!("pushcapture: kind {kind}"),
         }
     }
 
     fn tablecap(&mut self) -> LResult<usize> {
         let table = self.env.new_table()?;
+        let tpos = self.stack.len();
+        self.stack.push(table);
         let mut n: i64 = 0;
         let co = self.caps[self.cap];
         self.cap += 1;
         if co.isfull() {
-            self.stack.push(table);
             return Ok(1);
         }
         while !self.caps[self.cap].isclose() {
@@ -235,10 +237,12 @@ impl CapState<'_> {
                 let name = self.luaval(c.idx);
                 self.pushonenestedvalue()?;
                 let value = self.stack.pop().expect("nested value");
+                let table = self.stack[tpos].clone();
                 self.env.table_set(&table, &name, &value)?;
             } else {
                 let k = self.pushcapture()?;
                 let first = self.stack.len() - k;
+                let table = self.stack[first - 1].clone();
                 for i in 0..k {
                     let value = self.stack[first + i].clone();
                     self.env.table_set(&table, &V::Int(n + 1 + i as i64), &value)?;
@@ -248,19 +252,37 @@ impl CapState<'_> {
             }
         }
         self.cap += 1;
-        self.stack.push(table);
         Ok(1)
     }
 
     fn functioncap(&mut self) -> LResult<usize> {
         let f = self.luaval(self.caps[self.cap].idx);
-        let base = self.stack.len();
+        self.stack.push(f);
         let n = self.pushnestedvalues(false)?;
-        let args: Vec<V> = self.stack.drain(base..base + n).collect();
+        let args = self.stack.split_off(self.stack.len() - n);
+        let f = self.stack.pop().expect("function");
         let results = self.env.call(&f, &args)?;
         let count = results.len();
         self.stack.extend(results);
         Ok(count)
+    }
+
+    /// `patt % f` (LPeg 1.1): `f` gets the value produced before `patt`, then
+    /// the values of `patt`; its first result replaces that value.
+    fn accumulatorcap(&mut self) -> LResult<usize> {
+        let f = self.luaval(self.caps[self.cap].idx);
+        if self.stack.is_empty() {
+            return Err(self.env.error("no previous value for accumulator capture".to_string()));
+        }
+        // the function goes below the previous value
+        let at = self.stack.len() - 1;
+        self.stack.insert(at, f);
+        let n = self.pushnestedvalues(false)?;
+        let args = self.stack.split_off(self.stack.len() - (n + 1));
+        let f = self.stack.pop().expect("function");
+        let result = self.env.call(&f, &args)?.into_iter().next().unwrap_or(V::Nil);
+        self.stack.push(result);
+        Ok(0)
     }
 
     fn numcap(&mut self) -> LResult<usize> {
@@ -309,17 +331,17 @@ impl CapState<'_> {
         // leave only one result for the accumulator
         let base = self.stack.len() - n;
         self.stack.truncate(base + 1);
-        let mut acc = self.stack.pop().expect("accumulator");
         while !self.caps[self.cap].isclose() {
-            let at = self.stack.len();
+            // the folding function goes below the accumulator
+            let at = self.stack.len() - 1;
+            self.stack.insert(at, f.clone());
             let k = self.pushcapture()?;
-            let mut args = Vec::with_capacity(k + 1);
-            args.push(acc);
-            args.extend(self.stack.drain(at..at + k));
-            acc = self.env.call(&f, &args)?.into_iter().next().unwrap_or(V::Nil);
+            let args = self.stack.split_off(self.stack.len() - (k + 1));
+            let func = self.stack.pop().expect("folding function");
+            let acc = self.env.call(&func, &args)?.into_iter().next().unwrap_or(V::Nil);
+            self.stack.push(acc);
         }
         self.cap += 1;
-        self.stack.push(acc);
         Ok(1)
     }
 
@@ -363,6 +385,7 @@ impl CapState<'_> {
                 self.substcap(b)?;
                 Ok(1)
             }
+            CACC => Err(self.env.error("invalid context for an accumulator capture".to_string())),
             _ => {
                 let n = self.pushcapture()?;
                 if n > 0 {

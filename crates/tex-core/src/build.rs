@@ -322,20 +322,14 @@ impl Engine {
         self.expand_prim_pub(p, id)
     }
 
+    /// `^` in math mode (outside math the dispatcher inserts a `$`).
     pub fn super_token(&mut self, c: u8) {
-        if self.mode.is_m() {
-            self.append_script(true, c);
-        } else {
-            self.error("Missing $ inserted (superscript)");
-        }
+        self.append_script(true, c);
     }
 
+    /// `_` in math mode (outside math the dispatcher inserts a `$`).
     pub fn sub_token(&mut self, c: u8) {
-        if self.mode.is_m() {
-            self.append_script(false, c);
-        } else {
-            self.error("Missing $ inserted (subscript)");
-        }
+        self.append_script(false, c);
     }
 
     // ---------- glue / kern / penalty appends ----------

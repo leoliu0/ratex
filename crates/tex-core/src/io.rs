@@ -2665,7 +2665,7 @@ mod tests {
              {\\global\\copy2\\count12=1}\n\
              {\\global\\box2\\count13=1}\n\
              \\chardef\\letter=65 {\\global\\letter\\count14=1}\n\
-             \\mathchardef\\symbol=42 {\\global\\symbol\\count15=1}\n\
+             \\catcode`\\$=3 \\mathchardef\\symbol=42 ${\\global\\symbol\\count15=1}$\n\
              {\\global\\partokenname A\\count16=1}\n\
              {\\global\\setbox3=Q\\count17=1}\n\
              \\end\n"

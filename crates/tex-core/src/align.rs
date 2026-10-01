@@ -2121,34 +2121,37 @@ mod tests {
     }
 
     #[test]
-    fn tabular_style_halign_in_hbox() {
-        // LaTeX tabular wraps its \halign in \hbox: the alignment must be
-        // legal in restricted horizontal mode and land as a box in the
-        // surrounding \hbox
+    fn tabular_style_halign_in_vbox() {
+        // LaTeX tabular puts its \halign in a \vbox (an \halign directly in
+        // restricted horizontal mode is an error in TeX): the rows land in
+        // the surrounding box
         let e = run(concat!(
             "\\font\\cmr=cmr10 \\cmr\n",
-            "\\hbox{\\halign{#\\hfil& #\\hfil\\cr a&bb\\cr ccc&d\\cr}}\n",
+            "\\vbox{\\halign{#\\hfil& #\\hfil\\cr a&bb\\cr ccc&d\\cr}}\n",
         ));
         assert_eq!(e.error_count, 0, "errors:\n{}", e.term);
-        // the page list holds the outer hbox
-        let outer = e
-            .page_list
+        let (w, list) = vbox_of(&e);
+        let (w0, w1) = (e.align_col_widths[0], e.align_col_widths[1]);
+        assert!(w0 > 0 && w1 > 0);
+        assert_eq!(w, w0 + w1);
+        let rows = list
             .iter()
-            .find(|n| matches!(n, Node::Box { kind, .. } if *kind == crate::boxes::HBOX))
-            .expect("outer hbox on page list");
-        let inner = match outer {
-            Node::Box { list, .. } => list,
-            _ => unreachable!(),
-        };
-        assert_eq!(inner.len(), 1, "alignment vbox inside hbox: {:?}", inner);
-        match &inner[0] {
-            Node::Box { w, .. } => {
-                let (w0, w1) = (e.align_col_widths[0], e.align_col_widths[1]);
-                assert!(w0 > 0 && w1 > 0);
-                assert_eq!(*w, w0 + w1);
-            }
-            other => panic!("expected alignment vbox: {:?}", other),
-        }
+            .filter(|n| matches!(n, Node::Box { .. }))
+            .count();
+        assert_eq!(rows, 2, "rows: {:?}", list);
+    }
+
+    #[test]
+    fn halign_in_restricted_horizontal_mode_closes_the_box() {
+        // tex.web head_for_vmode: \halign cannot start in an \hbox, so the
+        // box is closed first ("Missing } inserted") and the alignment
+        // follows it in the enclosing vertical mode
+        let e = run(concat!(
+            "\\font\\cmr=cmr10 \\cmr\n",
+            "\\hbox{a\\halign{#\\cr b\\cr}}\n",
+        ));
+        let messages: Vec<&str> = e.diagnostics.iter().map(|d| d.message.as_str()).collect();
+        assert_eq!(messages, ["Missing } inserted"], "{}", e.term);
     }
 
     #[test]
@@ -2276,14 +2279,14 @@ mod tests {
 
     #[test]
     fn booktabs_style_table_skeleton() {
-        // a LaTeX-tabular-shaped alignment inside \hbox: \toprule-like
+        // a LaTeX-tabular-shaped alignment inside \vbox: \toprule-like
         // \noalign rule before the first row, a \multicolumn header
         // (\span\omit), body rows, \midrule, and a \bottomrule followed by
         // \crcr before the closing brace (like \endtabular)
         let e = run(concat!(
             "\\font\\cmr=cmr10 \\cmr\n",
             "\\def\\br{\\noalign{\\hrule}}\n",
-            "\\hbox{\\halign{\\hfil#& \\hfil#\\hfil& #\\hfil\\cr\n",
+            "\\vbox{\\halign{\\hfil#& \\hfil#\\hfil& #\\hfil\\cr\n",
             "\\br\n",
             "\\span\\omit \\hfil Header\\hfil\\cr\n",
             "\\br\n",
@@ -2293,19 +2296,8 @@ mod tests {
             "\\crcr}}\n",
         ));
         assert_eq!(e.error_count, 0, "errors:\n{}", e.term);
-        // alignment vbox sits inside the hbox
-        let outer = e
-            .page_list
-            .iter()
-            .find(|n| matches!(n, Node::Box { kind, .. } if *kind == crate::boxes::HBOX))
-            .expect("outer hbox on page list");
-        let align_box = match outer {
-            Node::Box { list, .. } => match &list[0] {
-                Node::Box { list, .. } => list,
-                other => panic!("expected alignment vbox: {:?}", other),
-            },
-            _ => unreachable!(),
-        };
+        // the rows and rules sit directly in the vbox
+        let (_, align_box) = vbox_of(&e);
         // 3 rules + 3 rows, interleaved with glue; tex.web splices noalign
         // material raw, so the rules sit directly in the alignment vlist
         // with their running width resolved to the alignment width

@@ -158,3 +158,109 @@ fn expandafter_sees_through_unless() {
     assert!(e.term.contains("[Y]"), "{}", e.term);
     assert!(!e.log.contains("Extra \\fi"), "{}", e.log);
 }
+
+/// A trace line ends its line like `end_diagnostic(false)`, so a following
+/// `\message` continues on a fresh line without a separating space, and
+/// consecutive messages are separated by one.
+#[test]
+fn message_after_trace_line_starts_at_column_zero() {
+    let e = run(concat!(
+        "\\tracinggroups=1 \\tracingonline=1\n",
+        "\\message{x}{\\message{a}\\message{b}}\\message{c}\\end\n"
+    ));
+    assert!(
+        e.log
+            .lines()
+            .any(|l| l == "a b{leaving simple group (level 1) entered at line 3}"),
+        "{}",
+        e.log
+    );
+    assert!(e.log.lines().any(|l| l == "c"), "{}", e.log);
+}
+
+/// tex.web `\vskip` in restricted horizontal mode is `off_save`: the box is
+/// closed ("Missing } inserted") before the skip is read again, and a
+/// math-only command in a box opens a formula ("Missing $ inserted") whose
+/// groups nest inside the box group.
+#[test]
+fn vertical_and_math_commands_in_a_box_recover_like_tex() {
+    let e = run(concat!(
+        "\\tracinggroups=1 \\tracingonline=1\n",
+        "\\setbox1\\hbox{a\\vskip 3pt b}\n",
+        "\\setbox1\\hbox{\\mathchoice{}{}{}{}}\n",
+        "\\end\n"
+    ));
+    let lines = trace_lines(&e.log);
+    let expected = [
+        "{entering hbox group (level 1) at line 3}",
+        "{leaving hbox group (level 1) entered at line 3}",
+        "{entering hbox group (level 1) at line 4}",
+        "{entering math shift group (level 2) at line 4}",
+        "{entering math choice group (level 3) at line 4}",
+        "{leaving math choice group (level 3) entered at line 4}",
+        "{entering math choice group (level 3) at line 4}",
+        "{leaving math choice group (level 3) entered at line 4}",
+        "{entering math choice group (level 3) at line 4}",
+        "{leaving math choice group (level 3) entered at line 4}",
+        "{entering math choice group (level 3) at line 4}",
+        "{leaving math choice group (level 3) entered at line 4}",
+    ];
+    assert_eq!(&lines[..expected.len()], &expected, "{}", e.log);
+    assert!(e.log.contains("Missing } inserted"), "{}", e.log);
+    assert!(e.log.contains("Missing $ inserted"), "{}", e.log);
+}
+
+/// The read-only quantities (`\badness`, `\inputlineno`, `\lastnodetype`,
+/// `\lastkern`, ...) are not assignments, `\prevdepth` belongs to vertical
+/// modes: each is an illegal case that consumes only the command.
+#[test]
+fn read_only_quantities_and_aux_values_are_illegal_commands() {
+    let e = run(concat!(
+        "\\scrollmode\n",
+        "\\setbox1\\hbox{a\\lastnodetype=0 \\badness=7 \\inputlineno=1 \\lastkern}\n",
+        "\\setbox1\\vbox{a\\prevdepth=3pt}\n",
+        "\\setbox1\\hbox{\\spacefactor=5 }\n",
+        "\\end\n"
+    ));
+    let messages: Vec<&str> = e.diagnostics.iter().map(|d| d.message.as_str()).collect();
+    let illegal: Vec<&&str> = messages
+        .iter()
+        .filter(|m| m.starts_with("You can't use"))
+        .collect();
+    let expected = [
+        "You can't use `\\lastnodetype' in restricted horizontal mode",
+        "You can't use `\\badness' in restricted horizontal mode",
+        "You can't use `\\inputlineno' in restricted horizontal mode",
+        "You can't use `\\lastkern' in restricted horizontal mode",
+        "You can't use `\\prevdepth' in horizontal mode",
+    ];
+    assert_eq!(illegal.len(), expected.len(), "{messages:?}");
+    for (got, want) in illegal.iter().zip(expected) {
+        assert!(got.starts_with(want), "{got} vs {want}");
+    }
+}
+
+/// tex.web §1121: the part of a discretionary list that is dropped is
+/// displayed after the error.
+#[test]
+fn improper_discretionary_lists_show_the_deleted_sublist() {
+    let e = run(concat!(
+        "\\scrollmode\n",
+        "\\setbox1\\hbox{\\discretionary{\\hskip3pt\\kern2pt}{\\penalty5}{}}\n",
+        "\\end\n"
+    ));
+    assert!(
+        e.log.contains(
+            "The following discretionary sublist has been deleted:\n\\glue 3.0\n\\kern 2.0\n"
+        ),
+        "{}",
+        e.log
+    );
+    assert!(
+        e.log.contains(
+            "The following discretionary sublist has been deleted:\n\\penalty 5\n"
+        ),
+        "{}",
+        e.log
+    );
+}

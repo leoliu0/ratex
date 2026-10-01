@@ -478,6 +478,13 @@ impl Engine {
             ScanTokens => {
                 let _ = self.expand_prim(ScanTokens, id);
             }
+            // tex.web mmode+stop: insert_dollar_sign
+            Dump | End if self.mode.is_m() => self.insert_dollar_sign(Token::from_cs(id)),
+            Dump | End if self.mode == Mode::InternalVertical => {
+                // tex.web `privileged`: \end and \dump belong to the
+                // outer vertical mode
+                self.report_illegal_case(id);
+            }
             Dump => {
                 if !self.ini_mode {
                     // tex.web:1308/1336: \dump exists only while format-building.

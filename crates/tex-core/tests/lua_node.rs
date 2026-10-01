@@ -32,8 +32,10 @@ pub fn run_lua(code: &str) -> Vec<String> {
     let src = format!("\\directlua{{dofile(\"{}\")}}\n\\end\n", path.display());
     e.input.push_file("t.tex".to_string(), src.into_bytes());
     e.run();
+    // LuaTeX runs the chunk as `p.lua` from the current directory
+    let prefix = format!("{}/", dir.display());
     let mut result: Vec<String> = std::fs::read_to_string(&out)
-        .map(|text| text.lines().map(str::to_owned).collect())
+        .map(|text| text.lines().map(|l| l.replace(&prefix, "")).collect())
         .unwrap_or_default();
     if e.error_count > 0 {
         // the first line of the first error message
@@ -46,6 +48,53 @@ pub fn run_lua(code: &str) -> Vec<String> {
     }
     let _ = std::fs::remove_dir_all(&dir);
     result
+}
+
+/// Run `tests/lua_node/<case>.lua` and compare its `P` output with
+/// `<case>.out`, which LuaTeX 1.24 (`luatex --ini`, same prelude) wrote.
+fn check_case(case: &str) {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/lua_node");
+    let code = std::fs::read_to_string(dir.join(format!("{case}.lua"))).unwrap();
+    let expected = std::fs::read_to_string(dir.join(format!("{case}.out"))).unwrap();
+    let actual = run_lua(&code);
+    let expected: Vec<&str> = expected.lines().collect();
+    for (i, (a, e)) in actual.iter().zip(&expected).enumerate() {
+        assert_eq!(a, e, "{case}: line {}", i + 1);
+    }
+    assert_eq!(actual.len(), expected.len(), "{case}: number of lines");
+}
+
+#[test]
+fn node_new_defaults() {
+    check_case("newdefaults");
+}
+#[test]
+fn node_list_functions() {
+    check_case("lists");
+}
+#[test]
+fn node_field_access_and_errors() {
+    check_case("fields");
+}
+#[test]
+fn glyph_language_data() {
+    check_case("langdata");
+}
+#[test]
+fn node_direct_accessors() {
+    check_case("accessors");
+}
+#[test]
+fn node_attributes() {
+    check_case("attrs");
+}
+#[test]
+fn node_hpack_vpack_dimensions() {
+    check_case("pack");
+}
+#[test]
+fn node_misc_functions() {
+    check_case("misc");
 }
 
 #[test]

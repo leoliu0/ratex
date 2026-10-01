@@ -1011,7 +1011,10 @@ impl NodeStore {
             }
             return Ok(());
         }
-        if (id == INS && name == "spec") || (id == UNSET && name == "span") {
+        if (id == INS && name == "spec")
+            || (id == UNSET && name == "span")
+            || (id == WHATSIT && sub == ws::PDF_COLORSTACK && name == "cmd")
+        {
             return Err(cant());
         }
         if id == INS {
@@ -1110,7 +1113,7 @@ impl NodeStore {
                         ext.strs[0] = b;
                     }
                 }
-                _ => self.nodes[n as usize].f[2] = v.to_int() as i32,
+                _ => self.nodes[n as usize].f[2] = v.to_round() as i32,
             },
         }
         Ok(())

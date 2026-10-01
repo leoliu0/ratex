@@ -388,7 +388,7 @@ pub struct Engine {
     pub pdf_pages_attr_toks: Vec<Token>,
     pub pdf_page_resources: Vec<u8>,
     pub pdf_page_resources_toks: Vec<Token>,
-    pub right_delim: Option<i32>,
+    pub right_delim: Option<crate::boxes::Delim>,
     pub math_limits: Option<u8>,
     pub last_delim: Option<i32>,
     pub pending_the_string: Option<String>,
@@ -592,6 +592,8 @@ pub struct Engine {
     /// input after its source stack frame has closed.
     pub(crate) math_diagnostic_sources: Vec<Option<crate::input::SourceMark>>,
     pub(crate) math_diagnostic_depth: usize,
+    /// luatex `cur_f`/`cur_c` of `fetch` (LuaTeX math conversion)
+    pub(crate) lm_cur_f: crate::tfm::FontId,
     pub(crate) reported_missing_math_atoms: crate::FxHashSet<(u64, u16, u8)>,
     pub(crate) token_vec_pool: Vec<Vec<crate::token::Token>>,
     /// The previous line buffer of a file source, reused for the next line.
@@ -1270,6 +1272,7 @@ impl Engine {
             math_penalties: std::cell::Cell::new(false),
             math_diagnostic_sources: Vec::new(),
             math_diagnostic_depth: 0,
+            lm_cur_f: 0,
             reported_missing_math_atoms: crate::FxHashSet::default(),
             pre_display_size: -0x3FFF_FFFF,
             pre_display_l: 0,

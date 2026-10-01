@@ -1123,6 +1123,14 @@ impl Engine {
 
     pub(crate) fn scan_math_family(&mut self, command: &str) -> usize {
         let (family, origin) = self.scan_int_with_origin();
+        if self.engine_kind == crate::engine::EngineKind::LuaTeX {
+            // scanning.c `scan_limited_int(255, "math family")`
+            if (0..=255).contains(&family) {
+                return family as usize;
+            }
+            self.error(&format!("Bad math family ({family})"));
+            return 0;
+        }
         if (0..=15).contains(&family) {
             family as usize
         } else {

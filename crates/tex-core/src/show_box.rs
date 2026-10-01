@@ -523,6 +523,11 @@ impl<'a> BoxDisplay<'a> {
                 self.out.push(b' ');
                 self.print_scaled(*k);
             }
+            Node::ItalicKern(k) => {
+                self.print_esc("kern");
+                self.print_scaled(*k);
+                self.print(" (italic)");
+            }
             Node::AccentKern(k) => {
                 self.print_esc("kern");
                 self.out.push(b' ');
@@ -864,7 +869,18 @@ impl<'a> BoxDisplay<'a> {
         self.print_esc("fam");
         self.print_int(fam as i64);
         self.out.push(b' ');
-        self.print_ascii(c as u8);
+        if self.e.engine_kind == crate::engine::EngineKind::LuaTeX {
+            // texmath.c print_fam_and_char: `print(math_character(p))`
+            // writes the code point as UTF-8 (printing.c `print`)
+            if i64::from(c) == i64::from(self.e.new_line_char()) {
+                self.out.push(b'\n');
+            } else if let Some(ch) = char::from_u32(c) {
+                let mut buf = [0u8; 4];
+                self.out.extend_from_slice(ch.encode_utf8(&mut buf).as_bytes());
+            }
+        } else {
+            self.print_ascii(c as u8);
+        }
     }
 }
 
@@ -1123,7 +1139,11 @@ impl Engine {
                 }
                 Mode::Math | Mode::DisplayMath => {
                     if let Some(frac) = level.incompleat.as_ref() {
-                        d.print("this will begin denominator of:");
+                        d.print(if self.engine_kind == crate::engine::EngineKind::LuaTeX {
+                            "this will be denominator of:"
+                        } else {
+                            "this will begin denominator of:"
+                        });
                         d.show_items_box(std::slice::from_ref(frac));
                     }
                 }

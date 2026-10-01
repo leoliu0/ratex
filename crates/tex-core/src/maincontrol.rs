@@ -804,6 +804,12 @@ impl Engine {
                     Mode::Horizontal | Mode::RestrictedHorizontal => self.do_accent(),
                     // mmode+accent is unmatched in tex.web's main_control
                     // switch: silently ignored.
+                    Mode::Math | Mode::DisplayMath
+                        if self.engine_kind == crate::engine::EngineKind::LuaTeX =>
+                    {
+                        let command_source = self.current_token_source_mark();
+                        self.math_ac_lua(0, true, command_source);
+                    }
                     _ => {}
                 }
             }
@@ -844,6 +850,9 @@ impl Engine {
                 Mode::Math | Mode::DisplayMath => self.append_mlist_node(Node::Kern(0)),
             },
             // math
+            MathChar if self.engine_kind == crate::engine::EngineKind::LuaTeX => {
+                self.math_char_num_command(crate::uprims::MathExt::Tex, id)
+            }
             MathChar => {
                 let command_source = self.current_token_source_mark();
                 let (value, source) = self.scan_int_with_source();
@@ -862,6 +871,12 @@ impl Engine {
                     self.append_mathchar_at(v, command_source);
                 }
             }
+            MathAccent if self.engine_kind == crate::engine::EngineKind::LuaTeX => {
+                if !self.lua_insert_dollar(id) {
+                    let command_source = self.current_token_source_mark();
+                    self.math_ac_lua(0, false, command_source);
+                }
+            }
             MathAccent => {
                 let command_source = self.current_token_source_mark();
                 let (value, source) = self.scan_int_with_source();
@@ -878,6 +893,12 @@ impl Engine {
                 };
                 if self.mode.is_m() {
                     self.do_math_accent_at(v, command_source);
+                }
+            }
+            Radical if self.engine_kind == crate::engine::EngineKind::LuaTeX => {
+                if !self.lua_insert_dollar(id) {
+                    let command_source = self.current_token_source_mark();
+                    self.math_radical_lua(0, command_source);
                 }
             }
             Radical => {
@@ -927,6 +948,21 @@ impl Engine {
             }
             Delimiter => {
                 let command_source = self.current_token_source_mark();
+                if self.engine_kind == crate::engine::EngineKind::LuaTeX {
+                    // texmath.c `scan_delimiter_as_mathchar`
+                    if !self.lua_insert_dollar(id) {
+                        let (class, family, character, _, _) =
+                            self.scan_delcode_lua(crate::uprims::MathExt::Tex, true);
+                        self.set_math_char_lua(
+                            class as u32,
+                            family as u32,
+                            character as u32,
+                            0,
+                            command_source,
+                        );
+                    }
+                    return;
+                }
                 let v = self.scan_delimiter_code("\\delimiter");
                 if self.mode.is_m() {
                     // tex.web §1160 mmode+delim_num:
@@ -964,29 +1000,48 @@ impl Engine {
             Left | ULeft => {
                 if self.mode.is_m() {
                     let command_source = self.current_token_source_mark();
-                    let v = self.scan_delim_int();
-                    self.push_math_group_at(v, command_source);
+                    let fence = if p == ULeft {
+                        self.scan_fence_options()
+                    } else {
+                        crate::boxes::FenceOpts::NONE
+                    };
+                    let v = self.scan_delim(true);
+                    self.push_math_group_at(v, fence, command_source);
+                } else {
+                    self.error("Missing $ inserted (\\left)");
                 }
             }
             Right | URight => {
                 if self.mode.is_m() && !self.mismatched_right_or_middle(Token::from_cs(id), false) {
                     let command_source = self.current_token_source_mark();
-                    let v = self.scan_delim_int();
+                    let fence = if p == URight {
+                        self.scan_fence_options()
+                    } else {
+                        crate::boxes::FenceOpts::NONE
+                    };
+                    let v = self.scan_delim(true);
                     self.right_delim = Some(v);
                     // ends the \left...\right group
-                    self.pop_math_group_delimited_at(v, command_source);
+                    self.pop_math_group_delimited_at(v, fence, command_source);
+                } else {
+                    self.error("Missing $ inserted (\\right)");
                 }
             }
             Middle | UMiddle => {
                 if self.mode.is_m() && !self.mismatched_right_or_middle(Token::from_cs(id), true) {
                     let command_source = self.current_token_source_mark();
-                    let v = self.scan_delim_int();
+                    let fence = if p == UMiddle {
+                        self.scan_fence_options()
+                    } else {
+                        crate::boxes::FenceOpts::NONE
+                    };
+                    let v = self.scan_delim(true);
                     let origin = self.math_diagnostic_origin_at(command_source);
-                    let (sf, sc, lf, lc) = crate::math::delim_code_parts_pub(v);
                     self.append_mlist_node(Node::DelimBox {
-                        small: (sf, sc),
-                        large: (lf, lc),
+                        small: (v.small_fam, v.small_char),
+                        large: (v.large_fam, v.large_char),
                         size: 3,
+                        fence,
                         origin,
                     });
                     self.restart_math_left_group();
@@ -1399,9 +1454,8 @@ impl Engine {
                     self.error("Missing $ inserted");
                 }
             }
-            Ustartmath | Ustopmath => {
-                self.push_token(Token::char(3, b'$' as u32));
-            }
+            Ustartmath => self.math_shift_cs(2, id),
+            Ustopmath => self.math_shift_cs(3, id),
             U(u) if !u.is_expandable() => self.uprim_command(u, id),
             // expanded by get_token (they must be storeable by \edef etc)
             IfChar | IfCat | IfOdd | IfNum | IfDim | IfVoid | IfHBox | IfVBox | IfHMode
@@ -1424,11 +1478,17 @@ impl Engine {
 
     /// tex.web §1050 report_illegal_case (`you_cant`).
     pub(crate) fn report_illegal_case(&mut self, id: CsId) {
+        self.report_illegal_case_in(id, self.mode);
+    }
+
+    /// [`Self::report_illegal_case`] for a given mode (luatex's
+    /// `after_math` reports after it has left the formula).
+    pub(crate) fn report_illegal_case_in(&mut self, id: CsId, mode: Mode) {
         let name = match self.eqtb.resolve(id) {
             Some(crate::eqtb::Equiv::Prim(p)) => self.prim_name(*p),
             _ => ::std::string::String::from_utf8_lossy(self.cs.name(id)).into_owned(),
         };
-        let mode = self.mode.name();
+        let mode = mode.name();
         self.error(&format!("You can't use `\\{name}' in {mode}"));
     }
 

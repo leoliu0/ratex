@@ -5,7 +5,7 @@
 //! nucleus) so that `\showlists` prints exactly what tex.web prints.
 
 use super::{invisible, BoxDisplay, DEFAULT_CODE};
-use crate::boxes::{Glue, Node};
+use crate::boxes::{noad_option, AccentSpec, Delim, Glue, Node};
 
 const CL_OP: u8 = 1;
 
@@ -43,14 +43,19 @@ pub(super) enum NoadKind {
     Close,
     Punct,
     Inner,
-    Radical(u32),
+    Radical {
+        subtype: u8,
+        delim: Delim,
+        width: i32,
+        options: u16,
+    },
     Over,
     Under,
     VCenter,
-    Accent(u8, u32),
-    Left(u32),
-    Right(u32),
-    Middle(u32),
+    Accent(AccentSpec),
+    Left(Delim),
+    Right(Delim),
+    Middle(Delim),
 }
 
 pub(super) struct Noad<'a> {
@@ -60,12 +65,14 @@ pub(super) struct Noad<'a> {
     nucleus: Field<'a>,
     sup: Field<'a>,
     sub: Field<'a>,
+    /// the root degree of a `\Uroot` radical
+    degree: Field<'a>,
 }
 
 pub(super) struct FracItem<'a> {
     pub(super) thickness: i32,
-    pub(super) left: u32,
-    pub(super) right: u32,
+    pub(super) left: Delim,
+    pub(super) right: Delim,
     pub(super) num: Field<'a>,
     pub(super) den: Field<'a>,
 }
@@ -92,18 +99,14 @@ fn kind_of_class(class: u8) -> NoadKind {
     }
 }
 
-/// The 24-bit value tex.web `print_delimiter` shows.
-fn delim24(small: (u8, u8), large: (u8, u8)) -> u32 {
-    ((u32::from(small.0) << 8 | u32::from(small.1)) << 12)
-        | (u32::from(large.0) << 8 | u32::from(large.1))
-}
-
-pub(super) fn code24(code: i32) -> u32 {
-    let c = code as u32;
-    delim24(
-        (((c >> 20) & 0xF) as u8, ((c >> 12) & 0xFF) as u8),
-        (((c >> 8) & 0xF) as u8, (c & 0xFF) as u8),
-    )
+/// The delimiter of a `DelimBox` marker.
+pub(super) fn delim_of(small: (u8, u32), large: (u8, u32)) -> Delim {
+    Delim {
+        small_fam: small.0,
+        small_char: small.1,
+        large_fam: large.0,
+        large_char: large.1,
+    }
 }
 
 pub(super) fn noad<'a>(kind: NoadKind, nucleus: Field<'a>, sup: Field<'a>, sub: Field<'a>) -> Item<'a> {
@@ -123,6 +126,7 @@ fn noad_sub<'a>(
         nucleus,
         sup,
         sub,
+        degree: Field::Empty,
     }))
 }
 
@@ -199,11 +203,11 @@ pub(super) fn field_of<'a>(list: &'a [Node]) -> Field<'a> {
 
 /// The scripts of a `\right` marker, when `node` closes a `\left...\right`
 /// group (the marker may be wrapped by the scripts that follow it).
-fn lr_close<'a>(node: &'a Node) -> Option<(u32, Field<'a>, Field<'a>)> {
+fn lr_close<'a>(node: &'a Node) -> Option<(Delim, Field<'a>, Field<'a>)> {
     let delim = |n: &Node| match n {
         Node::DelimBox {
             small, large, size: 1, ..
-        } => Some(delim24(*small, *large)),
+        } => Some(delim_of(*small, *large)),
         _ => None,
     };
     match node {
@@ -237,17 +241,33 @@ fn atom_noad<'a>(
             sup,
             sub,
         ),
-        Node::Accent { fam, c, body, .. } => noad(
-            NoadKind::Accent(*fam, u32::from(*c)),
-            field_of(body),
-            sup,
-            sub,
-        ),
+        Node::Accent { spec, body, .. } => noad(NoadKind::Accent(*spec), field_of(body), sup, sub),
         Node::Radical {
-            body, thickness, ..
+            body,
+            delim,
+            subtype,
+            width,
+            options,
+            degree,
+            ..
         } => {
-            let code = if *thickness <= -1 { -1 - *thickness } else { 0 };
-            noad(NoadKind::Radical(code24(code)), field_of(body), sup, sub)
+            let kind = NoadKind::Radical {
+                subtype: *subtype,
+                delim: *delim,
+                width: *width,
+                options: *options,
+            };
+            // `\Uhextensible`'s nucleus is an empty `sub_box`: nothing shows
+            let nucleus = if *subtype == 7 { Field::Empty } else { field_of(body) };
+            let degree = degree.as_ref().map_or(Field::Empty, |d| field_of(d));
+            Item::Noad(Box::new(Noad {
+                kind,
+                subtype: 0,
+                nucleus,
+                sup,
+                sub,
+                degree,
+            }))
         }
         Node::Overline { body, under, .. } => noad(
             if *under {
@@ -360,8 +380,8 @@ fn view_node<'a>(node: &'a Node, out: &mut Vec<Item<'a>>) {
             ..
         } => out.push(Item::Frac(Box::new(FracItem {
             thickness: *thickness,
-            left: left.map_or(0, code24),
-            right: right.map_or(0, code24),
+            left: left.unwrap_or_default(),
+            right: right.unwrap_or_default(),
             num: Field::List(view_list(num)),
             den: Field::List(view_list(den)),
         }))),
@@ -402,13 +422,13 @@ pub(super) fn view_list<'a>(list: &'a [Node]) -> Vec<Item<'a>> {
                 large,
                 size: 0,
                 ..
-            } => frames.push(vec![empty_noad_kind(NoadKind::Left(delim24(*small, *large)))]),
+            } => frames.push(vec![empty_noad_kind(NoadKind::Left(delim_of(*small, *large)))]),
             Node::DelimBox {
                 small,
                 large,
-                size: 3,
+                size: 3 | 4,
                 ..
-            } => frames.last_mut().unwrap().push(empty_noad_kind(NoadKind::Middle(delim24(
+            } => frames.last_mut().unwrap().push(empty_noad_kind(NoadKind::Middle(delim_of(
                 *small, *large,
             )))),
             _ => {
@@ -518,13 +538,13 @@ impl<'a> BoxDisplay<'a> {
                 } else {
                     self.print_scaled(f.thickness);
                 }
-                if f.left != 0 {
+                if !f.left.is_null() {
                     self.print(", left-delimiter ");
-                    self.print_delimiter(f.left);
+                    self.print_delimiter(&f.left);
                 }
-                if f.right != 0 {
+                if !f.right.is_null() {
                     self.print(", right-delimiter ");
-                    self.print_delimiter(f.right);
+                    self.print_delimiter(&f.right);
                 }
                 self.subsidiary_field(&f.num, b'\\');
                 self.subsidiary_field(&f.den, b'/');
@@ -540,8 +560,80 @@ impl<'a> BoxDisplay<'a> {
         }
     }
 
-    fn print_delimiter(&mut self, a: u32) {
-        self.print(&format!("\"{a:X}"));
+    /// texmath.c `print_delimiter` (without the `\Uleft` options).
+    fn print_delimiter(&mut self, d: &Delim) {
+        if d.small_fam < 16 && d.large_fam < 16 && d.small_char < 256 && d.large_char < 256 {
+            // traditional tex style
+            let a = ((u32::from(d.small_fam) * 256 + d.small_char) << 12)
+                + u32::from(d.large_fam) * 256
+                + d.large_char;
+            self.print(&format!("\"{a:X}"));
+        } else if (d.large_fam == 0 && d.large_char == 0) || d.small_char > 65535 || d.large_char > 65535 {
+            // luatex style
+            self.print(&format!("\"{:X}\"{:X}", d.small_fam, d.small_char));
+        }
+    }
+
+    /// texmath.c `display_normal_noad`, accent noads; the traditional
+    /// engines print tex.web's `\accent<fam><char>`.
+    fn display_accent(&mut self, spec: &AccentSpec) {
+        if self.e.engine_kind != crate::engine::EngineKind::LuaTeX {
+            self.print_esc("accent");
+            if let Some((fam, c)) = spec.top {
+                self.print_fam_and_char(fam, c);
+            }
+            return;
+        }
+        let (top, bottom, overlay) = (spec.top, spec.bottom, spec.overlay);
+        self.print_esc(match (top.is_some(), bottom.is_some()) {
+            (true, true) => "Umathaccent both",
+            (true, false) => "Umathaccent",
+            (false, true) => "Umathaccent bottom",
+            (false, false) => "Umathaccent overlay",
+        });
+        if spec.fraction != 0 {
+            self.print(" fraction=");
+            self.print_int(i64::from(spec.fraction));
+            self.print(" ");
+        }
+        let mut fc = |d: &mut Self, a: Option<(u8, u32)>| {
+            let (fam, c) = a.unwrap_or((0, 0));
+            d.print_fam_and_char(fam, c);
+        };
+        match spec.subtype {
+            0 => {
+                if top.is_some() {
+                    fc(self, top);
+                    if bottom.is_some() {
+                        fc(self, bottom);
+                    }
+                } else if bottom.is_some() {
+                    fc(self, bottom);
+                } else {
+                    fc(self, overlay);
+                }
+            }
+            1 => {
+                self.print(" fixed ");
+                fc(self, top);
+                if bottom.is_some() {
+                    fc(self, bottom);
+                }
+            }
+            2 => {
+                if top.is_some() {
+                    fc(self, top);
+                }
+                self.print(" fixed ");
+                fc(self, bottom);
+            }
+            _ => {
+                self.print(" fixed ");
+                fc(self, top);
+                self.print(" fixed ");
+                fc(self, bottom);
+            }
+        }
     }
 
     fn display_noad(&mut self, n: &Noad<'_>) {
@@ -557,25 +649,60 @@ impl<'a> BoxDisplay<'a> {
             NoadKind::Over => self.print_esc("overline"),
             NoadKind::Under => self.print_esc("underline"),
             NoadKind::VCenter => self.print_esc("vcenter"),
-            NoadKind::Radical(d) => {
-                self.print_esc("radical");
-                self.print_delimiter(d);
+            NoadKind::Radical {
+                subtype,
+                delim,
+                width,
+                options,
+            } => {
+                self.print_esc(match subtype {
+                    7 => "Uhextensible",
+                    6 => "Udelimiterover",
+                    5 => "Udelimiterunder",
+                    4 => "Uoverdelimiter",
+                    3 => "Uunderdelimiter",
+                    2 => "Uroot",
+                    _ => "radical",
+                });
+                self.print_delimiter(&delim);
+                // `degree(p) != null` only for \Uroot
+                if subtype == 2 {
+                    self.subsidiary_field(&n.degree, b'/');
+                }
+                if width != 0 {
+                    self.print("width=");
+                    self.print_scaled(width);
+                    self.print(" ");
+                }
+                if options & noad_option::SET == noad_option::SET {
+                    self.print(" [ ");
+                    if noad_option::has(options, noad_option::EXACT) {
+                        self.print("exact ");
+                    }
+                    if noad_option::has(options, noad_option::LEFT) {
+                        self.print("left ");
+                    }
+                    if noad_option::has(options, noad_option::MIDDLE) {
+                        self.print("middle ");
+                    }
+                    if noad_option::has(options, noad_option::RIGHT) {
+                        self.print("right ");
+                    }
+                    self.print("]");
+                }
             }
-            NoadKind::Accent(fam, c) => {
-                self.print_esc("accent");
-                self.print_fam_and_char(fam, c);
-            }
+            NoadKind::Accent(spec) => self.display_accent(&spec),
             NoadKind::Left(d) => {
                 self.print_esc("left");
-                self.print_delimiter(d);
+                self.print_delimiter(&d);
             }
             NoadKind::Right(d) => {
                 self.print_esc("right");
-                self.print_delimiter(d);
+                self.print_delimiter(&d);
             }
             NoadKind::Middle(d) => {
                 self.print_esc("middle");
-                self.print_delimiter(d);
+                self.print_delimiter(&d);
             }
         }
         if !matches!(

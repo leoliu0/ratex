@@ -1546,3 +1546,21 @@ fn eight_bit_characters_print_and_wrap_like_pdftex() {
     let e = run_bytes(b"\\message{A\xe9\x01\t\\string\\caf\xe9}\\end\n", Some("cp227.tcx"));
     assert_eq!(e.term_bytes().as_ref(), b"A\xe9^^A\t\\caf\xe9" as &[u8]);
 }
+
+/// pdftex: pushback that predates \halign (TikZ's `\expandafter\halign
+/// \expandafter{\header ...}`) is still part of the preamble.
+#[test]
+fn alignment_preamble_reads_pushback_from_before_halign() {
+    let e = engine(
+        r"\font\tenrm=cmr10 \tenrm
+\def\hdr{\hfil##\hfil\cr}
+\setbox1=\hbox{a}
+\setbox0=\vbox{\expandafter\expandafter\expandafter\halign\expandafter\expandafter\expandafter{\hdr
+  \box1\cr
+  \noalign{\vskip 1pt}%
+  b\cr}}
+\message{[\the\ht0]}
+\end",
+    );
+    assert!(e.term.contains("[12.24998pt]"), "{}", e.term);
+}

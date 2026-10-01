@@ -283,7 +283,8 @@ impl Engine {
         }
         self.align_origin = origin;
         self.align_is_valign = false;
-        self.align_pushed_base = self.pushed.len();
+        // the preamble may read pushback that predates \halign (`\expandafter\halign\expandafter{...`)
+        self.align_pushed_base = 0;
         self.align_state = PH_IDLE;
         // tex.web §15332 / §15369: align_state := -1000000 while preamble scans.
         self.align_brace_depth = -1_000_000;
@@ -395,7 +396,7 @@ impl Engine {
         }
         self.align_origin = origin;
         self.align_is_valign = true;
-        self.align_pushed_base = self.pushed.len();
+        self.align_pushed_base = 0;
         self.align_state = PH_IDLE;
         self.align_brace_depth = -1_000_000;
         self.scanner_status = ScannerStatus::Aligning;

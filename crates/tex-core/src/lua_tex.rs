@@ -69,6 +69,20 @@ pub(crate) struct TexState {
     pub lang: crate::FxHashMap<u8, crate::lua_lang::LangParams>,
     /// `pdf.getmatrix`: the current page matrix during a late Lua call.
     pub pdf_matrix: Option<[f64; 6]>,
+    /// Lists imported for Lua that are tied to the engine (see
+    /// `lua_texnodes`).
+    pub links: Vec<crate::lua_texnodes::Link>,
+    /// `tex.setlist` lists the engine has no counterpart of.
+    pub scratch: Vec<(String, u32)>,
+    /// `token.scan_list`: the box nesting depth whose box goes to Lua, and
+    /// the box once it is complete.
+    pub scan_depth: Option<usize>,
+    pub scan_result: Option<crate::boxes::Node>,
+    /// `tex.permitmathobsolete`: the obsolete `\math...mode` parameters
+    /// accept values.
+    pub permit_math_obsolete: bool,
+    /// Margins of the forms made by `tex.saveboxresource`.
+    pub xform_margin: crate::FxHashMap<i32, i32>,
 }
 
 /// How a register key resolves.
@@ -150,7 +164,7 @@ impl Engine {
         Ok(())
     }
 
-    fn lua_tex_global(&self, global: bool) -> bool {
+    pub(crate) fn lua_tex_global(&self, global: bool) -> bool {
         global || self.eqtb.int_params[crate::prim::IntParam::GlobalDefs.idx() as usize] > 0
     }
 
@@ -617,6 +631,7 @@ pub(crate) fn install(lua: &mut Lua) -> Result<(), String> {
         })
     });
 
+    crate::lua_texnodes::install(lua, &t)?;
     lua.set_global("__ratex_texlib", t).map_err(|e| format!("{e:?}"))?;
     lua.load(include_str!("lua_tex.lua"))
         .set_name("=[ratex tex]")

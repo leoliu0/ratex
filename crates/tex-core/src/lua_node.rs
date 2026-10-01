@@ -118,6 +118,11 @@ pub struct Ext {
     pub opaque: Option<Box<crate::boxes::Node>>,
     /// Tokens of a `mark` (or write) node.
     pub toks: Vec<crate::token::Token>,
+    /// Engine nodes without a Lua counterpart (language whatsits: LuaTeX
+    /// keeps the language in the glyphs) that stood before / after this
+    /// node; they come back in the same place on export.
+    pub pre: Vec<crate::boxes::Node>,
+    pub post: Vec<crate::boxes::Node>,
 }
 
 #[derive(Clone, Debug)]
@@ -799,6 +804,39 @@ impl NodeStore {
             let nx = self.nodes[n as usize].next;
             self.flush_node(n);
             n = nx;
+        }
+    }
+
+    /// A hash of everything reachable from `n` (its fields, attributes,
+    /// strings and sub lists; the following nodes when `chain`): equal
+    /// hashes mean Lua changed nothing.
+    pub fn fingerprint(&self, n: u32, chain: bool) -> u64 {
+        use std::hash::Hasher;
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        self.fingerprint_into(n, chain, &mut h);
+        h.finish()
+    }
+
+    fn fingerprint_into(&self, mut n: u32, chain: bool, h: &mut std::collections::hash_map::DefaultHasher) {
+        use std::hash::Hash;
+        while self.valid(n) {
+            let node = &self.nodes[n as usize];
+            (node.id, node.subtype, node.f, node.fl.to_bits()).hash(h);
+            if node.attr != 0 {
+                self.attr_pairs(node.attr).hash(h);
+            }
+            if let Some(e) = &node.ext {
+                e.strs.hash(h);
+                e.toks.iter().map(|t| t.0).collect::<Vec<_>>().hash(h);
+                e.opaque.is_some().hash(h);
+            }
+            for slot in self.child_slots(n).collect::<Vec<_>>() {
+                self.fingerprint_into(node.f[slot] as u32, true, h);
+            }
+            if !chain {
+                break;
+            }
+            n = node.next;
         }
     }
 

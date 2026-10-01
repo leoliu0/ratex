@@ -1532,6 +1532,12 @@ impl Engine {
                 return;
             }
         }
+        // token.scan_list: the box Lua asked for goes back to Lua
+        if self.lua_tex.scan_depth == Some(self.box_kinds.len()) {
+            self.lua_tex.scan_depth = None;
+            self.lua_tex.scan_result = Some(node);
+            return;
+        }
         // only the \\shipout box itself ships (tex.web box_context);
         // inner \\hbox/\\vbox inside the page must append
         if self.shipout_pending && self.shipout_depth == self.box_kinds.len() {

@@ -328,11 +328,356 @@ local function is_kind(kind)
     return false
   end
 end
-function tex.isbox(k)
+
+-- -------------------------------------------- boxes, lists and the nest ---
+-- ltexlib.c get_box_id: a number, or the name of a \chardef'd register
+local ND = node.direct
+local nd_tonode, nd_todirect = ND.tonode, ND.todirect
+
+local function box_id(k, report)
   local t = type(k)
-  if t == "number" then return k >= 0 and k <= 65535 end
-  if t == "string" then return (T.register_kind(k) or ""):match("^box ") ~= nil end
-  return false
+  if t == "string" then return T.box_index(k) or -1 end
+  if t == "number" then return tointeger(k) or 0 end
+  if report then error("argument must be a string or a number", 0) end
+  return -1
+end
+
+local function last_arg(...)
+  local n = select("#", ...)
+  if n == 0 then return nil end
+  return (select(n, ...))
+end
+
+local function direct_node(v)
+  if type(v) ~= "userdata" or not node.is_node(v) then
+    error("(node lib): lua <node> expected, not an object with type " .. type(v), 0)
+  end
+  return nd_todirect(v)
+end
+
+function tex.isbox(k)
+  local id = box_id(k, false)
+  return id >= 0 and id <= 65535
+end
+
+function tex.getbox(...)
+  local h = T.box_get(box_id(last_arg(...), true))
+  return h and nd_tonode(h)
+end
+
+function tex.setbox(...)
+  local n = select("#", ...)
+  local global = n == 3 and (...) == "global"
+  local k = box_id(n >= 2 and (select(n - 1, ...)) or nil, true)
+  if k < 0 or k > 65535 then error("incorrect index specification for tex.setbox()", 0) end
+  local v = last_arg(...)
+  if type(v) == "boolean" then
+    if v then return end
+    v = nil
+  end
+  if v == nil then
+    T.box_set(k, nil, global)
+    return
+  end
+  local h = direct_node(v)
+  local id = ND.getid(h)
+  if id ~= 0 and id ~= 1 then
+    error("setbox: incompatible node type (" .. node.type(id) .. ")\n", 0)
+  end
+  T.box_set(k, h, global)
+end
+
+function tex.splitbox(k, h, m)
+  local id = box_id(k, true)
+  if tonumber(h) then
+    local mode = 1
+    if type(m) == "string" then
+      if m == "exactly" then mode = 0 elseif m == "additional" then mode = 1 end
+    elseif type(m) == "number" then
+      mode = tointeger(m) or 0
+    end
+    if mode < 0 or mode > 1 then error("wrong mode in splitbox", 0) end
+    local r = T.splitbox(id, floor(tonumber(h) + 0.5), mode == 0)
+    return r and nd_tonode(r)
+  end
+  return nil
+end
+
+function tex.shipout(k)
+  T.shipout(box_id(k, true))
+end
+
+tex.box = view(tex.getbox, tex.setbox)
+
+-- lists of the page builder
+function tex.getlist(...)
+  local name = last_arg(...)
+  if type(name) ~= "string" then return nil end
+  local v = T.list_get(name)
+  if v == nil then return nil end
+  if name == "least_page_cost" or name == "best_size" then return v end
+  return nd_tonode(v)
+end
+
+function tex.setlist(...)
+  local first = ...
+  local top = type(first) == "table" and 2 or 1
+  local name, v = select(top, ...)
+  if type(name) ~= "string" then return end
+  if name == "best_size" or name == "least_page_cost" then
+    T.list_set(name, lua_int(v))
+  else
+    T.list_set(name, v ~= nil and direct_node(v) or nil)
+  end
+end
+tex.lists = setmetatable({}, {
+  __index = function(_, k) return tex.getlist(k) end,
+  __newindex = function(_, k, v) tex.setlist(k, v) end,
+})
+
+-- the semantic nest
+function tex.getnest(...)
+  local n = select("#", ...)
+  local p = -1
+  local ptr = T.nest_ptr()
+  if n == 0 then
+    p = ptr
+  else
+    local k = (select(n, ...))
+    if type(k) == "number" then
+      k = tointeger(k) or 0
+      if k >= 0 and k <= ptr then p = k end
+    elseif type(k) == "string" then
+      if k == "top" then p = ptr elseif k == "ptr" then return ptr end
+    end
+  end
+  if p > -1 then return T.nest_get(p) end
+  return nil
+end
+
+function tex.setnest()
+  error("You can't modify the semantic nest array directly", 0)
+end
+tex.nest = setmetatable({}, {
+  __index = function(_, k) return tex.getnest(k) end,
+  __newindex = function() tex.setnest() end,
+})
+
+-- tex.linebreak(head, params) -> lines, info
+local lb_ints = {
+  "pretolerance", "tracingparagraphs", "tolerance", "looseness", "adjustspacing", "adjdemerits",
+  "protrudechars", "linepenalty", "lastlinefit", "doublehyphendemerits", "finalhyphendemerits",
+  "hangafter", "interlinepenalty", "widowpenalty", "clubpenalty", "brokenpenalty",
+}
+local lb_dims = { "emergencystretch", "hangindent", "hsize" }
+function tex.linebreak(head, params)
+  local h = direct_node(head)
+  if type(params) ~= "table" or select("#", head, params) ~= 2 then params = {} end
+  local p = {}
+  for _, k in ipairs(lb_ints) do
+    local v = params[k]
+    if type(v) == "number" then p[k] = tointeger(v) or 0 end
+  end
+  for _, k in ipairs(lb_dims) do
+    local v = params[k]
+    if type(v) == "number" then p[k] = floor(v + 0.5) end
+  end
+  for _, k in ipairs { "leftskip", "rightskip" } do
+    local v = params[k]
+    if v ~= nil then
+      local d = nd_todirect(v)
+      p[k] = { ND.getfield(d, "width"), ND.getfield(d, "stretch"), ND.getfield(d, "shrink"),
+               ND.getfield(d, "stretch_order"), ND.getfield(d, "shrink_order") }
+    end
+  end
+  if type(params.parshape) == "table" then
+    local flat = {}
+    for _, e in pairs(params.parshape) do
+      local a, b = 0, 0
+      if type(e) == "table" and type(e[1]) == "number" and type(e[2]) == "number" then
+        a, b = floor(e[1] + 0.5), floor(e[2] + 0.5)
+      end
+      flat[#flat + 1], flat[#flat + 2] = a, b
+    end
+    p.parshape = flat
+  end
+  for _, k in ipairs { "interlinepenalties", "clubpenalties", "widowpenalties" } do
+    if type(params[k]) == "table" then
+      local arr = {}
+      for _, v in pairs(params[k]) do
+        arr[#arr + 1] = type(v) == "number" and (tointeger(v) or 0) or 0
+      end
+      p[k] = arr
+    end
+  end
+  local first, demerits, looseness, prevdepth, prevgraf = T.linebreak(h, p)
+  return first and first ~= 0 and nd_tonode(first) or nil,
+    { demerits = demerits, looseness = looseness, prevdepth = prevdepth, prevgraf = prevgraf }
+end
+
+tex.run, tex.finish, tex.show_context = T.run, T.finish, T.show_context
+
+-- tex.getmath / tex.setmath: the \Umath parameters (ltexlib.c)
+local math_param_names = {
+  "quad", "axis", "operatorsize", "overbarkern", "overbarrule", "overbarvgap", "underbarkern",
+  "underbarrule", "underbarvgap", "radicalkern", "radicalrule", "radicalvgap", "radicaldegreebefore",
+  "radicaldegreeafter", "radicaldegreeraise", "stackvgap", "stacknumup", "stackdenomdown",
+  "fractionrule", "fractionnumvgap", "fractionnumup", "fractiondenomvgap", "fractiondenomdown",
+  "fractiondelsize", "skewedfractionhgap", "skewedfractionvgap", "limitabovevgap", "limitabovebgap",
+  "limitabovekern", "limitbelowvgap", "limitbelowbgap", "limitbelowkern", "nolimitsubfactor",
+  "nolimitsupfactor", "underdelimitervgap", "underdelimiterbgap", "overdelimitervgap",
+  "overdelimiterbgap", "subshiftdrop", "supshiftdrop", "subshiftdown", "subsupshiftdown", "subtopmax",
+  "supshiftup", "supbottommin", "supsubbottommax", "subsupvgap", "spaceafterscript",
+  "connectoroverlapmin",
+}
+local math_first_mu_glue = #math_param_names
+do
+  local classes = { "ord", "op", "bin", "rel", "open", "close", "punct", "inner" }
+  for _, a in ipairs(classes) do
+    for _, b in ipairs(classes) do math_param_names[#math_param_names + 1] = a .. b .. "spacing" end
+  end
+end
+local math_style_names = {
+  "display", "crampeddisplay", "text", "crampedtext", "script", "crampedscript", "scriptscript",
+  "crampedscriptscript",
+}
+local math_param_index, math_style_index = {}, {}
+for i, n in ipairs(math_param_names) do math_param_index[n] = i - 1 end
+for i, n in ipairs(math_style_names) do math_style_index[n] = i - 1 end
+
+-- luaL_argerror: the name is the one the caller used, else the global name
+local function bad_arg(fname, i, msg)
+  local info = debug.getinfo(3, "n")
+  local name = info and info.name or ("tex." .. fname)
+  error("bad argument #" .. i .. " to '" .. name .. "' (" .. msg .. ")", 0)
+end
+
+-- luaL_checkoption: index of the option, or an argument error
+local function check_option(fname, v, i, index)
+  local t = type(v)
+  if t == "number" then v, t = tostring(v), "string" end
+  if t ~= "string" then
+    bad_arg(fname, i, "string expected, got " .. (v == nil and "no value" or t))
+  end
+  local k = index[v]
+  if k == nil then bad_arg(fname, i, "invalid option '" .. v .. "'") end
+  return k
+end
+
+function tex.getmath(...)
+  if select("#", ...) ~= 2 then return nil end
+  local name, style = ...
+  local i = check_option("getmath", name, 1, math_param_index)
+  local j = check_option("getmath", style, 2, math_style_index)
+  if i < math_first_mu_glue then return (T.math_get(i, j)) end
+  local w, st, sh, so, sho = T.math_get(i, j)
+  if w == nil then return nil end
+  return new_spec(w, st, sh, so, sho)
+end
+
+function tex.setmath(...)
+  local n = select("#", ...)
+  if n ~= 3 and n ~= 4 then return end
+  local global = n == 4 and (...) == "global"
+  local name, style, value = select(n - 2, ...)
+  local i = check_option("setmath", name, n - 2, math_param_index)
+  local j = check_option("setmath", style, n - 1, math_style_index)
+  if i >= math_first_mu_glue then
+    local d = nd_todirect(value)
+    T.math_set_glue(i, j, ND.getfield(d, "width"), ND.getfield(d, "stretch"), ND.getfield(d, "shrink"),
+      ND.getfield(d, "stretch_order"), ND.getfield(d, "shrink_order"), global)
+  elseif type(value) == "number" then
+    T.math_set(i, j, floor(value + 0.5), global)
+  else
+    error("argument must be a number", 0)
+  end
+end
+
+function tex.permitmathobsolete(on) T.permit_math_obsolete(on and true or false) end
+
+-- box resources (XObject forms; ltexlib.c tex_save_box_resource & co.)
+local null_flag = -0x40000000
+
+-- ext_xn_over_d: x * n / d rounded half away from zero, in floating point
+local function ext_xn_over_d(x, n, d)
+  local r = (x * 1.0 * n) / d
+  if r > 2.220446049250313e-16 then r = r + 0.5 else r = r - 0.5 end
+  if r >= 2147483647.0 or r <= -2147483647.0 then r = 1073741823.0 end
+  if r >= 0 then return floor(r) end
+  return -floor(-r)
+end
+
+function tex.saveboxresource(box, attr, res, immediate, ty, margin)
+  local is_node = type(box) ~= "number"
+  local what = is_node and direct_node(box) or tointeger(box) or 0
+  return T.box_resource_save(what, is_node, type(attr) == "string" and attr or nil,
+    type(res) == "string" and res or nil, immediate == true,
+    type(margin) == "number" and (tointeger(margin) or 0) or nil)
+end
+
+function tex.getboxresourcedimensions(index)
+  if type(index) ~= "number" then return nil, nil, nil, nil end
+  local w, h, d, m = T.box_resource_dimensions(tointeger(index) or 0)
+  if w == nil then error("(pdf backend): xform object " .. index .. " does not exist", 0) end
+  return w, h, d, m
+end
+
+function tex.getboxresourcebox(index)
+  local h = T.box_resource_box(tointeger(index) or 0)
+  return h and nd_tonode(h)
+end
+
+function tex.useboxresource(index, w, h, d)
+  if type(index) ~= "number" then return nil, nil, nil, nil end
+  local nw, nh, nd = T.box_resource_dimensions(tointeger(index) or 0)
+  if nw == nil then error("(pdf backend): xform object " .. index .. " does not exist", 0) end
+  local aw = type(w) == "number" and floor(w + 0.5) or null_flag
+  local ah = type(h) == "number" and floor(h + 0.5) or null_flag
+  local ad = type(d) == "number" and floor(d + 0.5) or null_flag
+  local dw, dh, dd = nw, nh, nd
+  if aw ~= null_flag or ah ~= null_flag or ad ~= null_flag then
+    if aw ~= null_flag and ah ~= null_flag and ad ~= null_flag then
+      dw, dh, dd = aw, ah, ad
+    elseif aw ~= null_flag then
+      dw = aw
+      if ah ~= null_flag then
+        dh = ah
+        dd = ext_xn_over_d(ah, nd, nh)
+      elseif ad ~= null_flag then
+        dd = ad
+        dh = ext_xn_over_d(aw, nh + nd, nw) - ad
+      else
+        dh = ext_xn_over_d(aw, nh, nw)
+        dd = ext_xn_over_d(aw, nd, nw)
+      end
+    elseif ah ~= null_flag then
+      dh = ah
+      if ad ~= null_flag then
+        dd = ad
+        dw = ext_xn_over_d(ah + ad, nw, nh + nd)
+      else
+        dw = ext_xn_over_d(ah, nw, nh)
+        dd = ext_xn_over_d(ah, nd, nh)
+      end
+    else
+      dd = ad
+      dh = nh - (ad - nd)
+      dw = nw
+    end
+  end
+  local rule = node.new("rule", 1)
+  rule.index = tointeger(index) or 0
+  rule.width, rule.height, rule.depth = dw, dh, dd
+  return rule, dw, dh, dd
+end
+
+-- token.scan_glue([mu]) -> glue_spec; token.scan_list() -> box node
+function token.scan_glue(mu)
+  return new_spec(T.scan_glue(mu and true or false))
+end
+function token.scan_list()
+  local h = T.scan_list()
+  return h and nd_tonode(h)
 end
 tex.iscount, tex.isdimen, tex.isskip, tex.ismuskip = is_kind("count"), is_kind("dimen"), is_kind("skip"), is_kind("muskip")
 tex.istoks, tex.isattribute, tex.isglue, tex.ismuglue = is_kind("toks"), is_kind("attribute"), tex.isskip, tex.ismuskip
@@ -349,43 +694,35 @@ function tex.uniform_rand(x)
 end
 function tex.normal_rand() return T.normal_rand() end
 
--- xoshiro256** (the generator of Lua 5.4's math.random)
+-- lua_math_random: math.random's interface on top of the TeX generator
+-- (ltexlib.c `lua_math_random`); lua_math_randomseed is init_rand.
 do
-  local s0, s1, s2, s3 = 0, 0, 0, 0
-  local function rotl(x, n) return (x << n) | (x >> (64 - n)) end
-  local function nextrand()
-    local r = rotl(s1 * 5, 7) * 9
-    local t = s1 << 17
-    s2 = s2 ~ s0; s3 = s3 ~ s1; s1 = s1 ~ s2; s0 = s0 ~ s3
-    s2 = s2 ~ t; s3 = rotl(s3, 45)
-    return r
-  end
-  local function seed(n1, n2)
-    s0, s1, s2, s3 = n1, 0xff, n2, 0
-    for _ = 1, 16 do nextrand() end
-  end
-  seed(0, 0)
-  local function project(ran, lim)
-    if lim & (lim + 1) == 0 then return ran & lim end
-    local l = lim
-    l = l | (l >> 1); l = l | (l >> 2); l = l | (l >> 4); l = l | (l >> 8); l = l | (l >> 16); l = l | (l >> 32)
-    ran = ran & l
-    while math.ult(lim, ran) do ran = nextrand() & l end
-    return ran
-  end
-  function tex.lua_math_randomseed(a, b)
-    if a == nil then a = os.time() end
-    seed(lua_int(a), lua_int(b))
-  end
-  function tex.lua_math_random(m, n)
-    local r = nextrand()
-    local low, up
-    if m == nil then
-      return (r >> 11) * (0.5 / (1 << 52))
+  local function num(v, i)
+    local n = tonumber(v)
+    if n == nil then
+      error("bad argument #" .. i .. " to 'tex.lua_math_random' (number expected, got " ..
+        (v == nil and "no value" or type(v)) .. ")", 3)
     end
-    if n == nil then low, up = 1, lua_int(m) else low, up = lua_int(m), lua_int(n) end
-    if low > up then error("bad argument #" .. (n == nil and 1 or 2) .. " to 'lua_math_random' (interval is empty)", 2) end
-    return (low + project(r, up - low)) + 0.0
+    return n + 0.0
+  end
+  tex.lua_math_randomseed = tex.init_rand
+  function tex.lua_math_random(...)
+    local max = 0x7fffffff
+    local r = T.uniform_rand(max)
+    if r < 0 then r = -r end
+    r = r / max
+    local n = select("#", ...)
+    if n == 0 then return r end
+    if n == 1 then
+      local u = num((...), 1)
+      if not (1.0 <= u) then error("bad argument #1 to 'tex.lua_math_random' (interval is empty)", 2) end
+      return floor(r * u) + 1.0
+    elseif n == 2 then
+      local l, u = num((...), 1), num((select(2, ...)), 2)
+      if not (l <= u) then error("bad argument #2 to 'tex.lua_math_random' (interval is empty)", 2) end
+      return floor(r * (u - l + 1)) + l
+    end
+    error("wrong number of arguments", 2)
   end
 end
 

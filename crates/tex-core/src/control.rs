@@ -1072,6 +1072,29 @@ impl Engine {
                     (self.scan_int(), None)
                 };
                 let v = self.recover_linebreak_int_parameter(ip, v, value_source);
+                if self.engine_kind == crate::engine::EngineKind::LuaTeX {
+                    // maincontrol.c: the obsolete math modes only take a
+                    // value after tex.permitmathobsolete(true)
+                    let obsolete = match ip {
+                        IntParam::MathItalicsMode => Some("mathitalicsmode"),
+                        IntParam::MathNoLimitsMode => Some("mathnolimitssmode"),
+                        IntParam::MathScriptCharMode => Some("mathscriptcharmode"),
+                        IntParam::MathScriptBoxMode => Some("mathscriptboxmode"),
+                        IntParam::MathDefaultsMode => Some("mathdefaultsmode"),
+                        IntParam::MathDelimitersMode => Some("mathdelimitersmode"),
+                        _ => None,
+                    };
+                    if let Some(name) = obsolete {
+                        let g = self.take_global();
+                        if self.lua_tex.permit_math_obsolete {
+                            if self.eqtb.int_params[ip.idx() as usize] != v {
+                                self.warning_at(&format!("(math): \\{name} is obsolete"), None);
+                            }
+                            self.eqtb.assign_int_param(ip, v, g);
+                        }
+                        return true;
+                    }
+                }
                 let g = self.take_global();
                 if ip == crate::prim::IntParam::PrevGraf {
                     *self.prev_graf_mut() = v;

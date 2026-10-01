@@ -954,13 +954,15 @@ impl Engine {
                 depth -= 1;
                 if depth == 0 {
                     // §1372: the balanced text must be followed by \endwrite;
-                    // the text scan (and its \outer check) is over.
+                    // the text scan (and its \outer check) is over. TeX reads
+                    // the follower and skips to \endwrite with the
+                    // non-expanding get_token, so nothing there is expanded.
                     self.outer_scan = saved_outer_scan;
-                    let next = self.get_token();
+                    let next = self.raw_token();
                     if next != crate::page::WRITE_END_TOKEN && next != crate::input::EOF_MARKER {
                         self.error("Unbalanced write command");
                         loop {
-                            let skipped = self.get_token();
+                            let skipped = self.raw_token();
                             if skipped == crate::page::WRITE_END_TOKEN
                                 || skipped == crate::input::EOF_MARKER
                             {
@@ -2528,6 +2530,18 @@ mod tests {
         let engine = run("\\def\\x{\\iffalse{\\fi}}\\immediate\\write16{A:a\\x d}\\end\n".into());
         assert!(engine.term.contains("A:a\n"), "{}", engine.term);
         assert!(!engine.term.contains("A:a}"), "{}", engine.term);
+        assert_eq!(engine.error_count, 1, "{}", engine.term);
+    }
+
+    /// pdftex: after an extra `}` ends the text, TeX skips to \endwrite with
+    /// the non-expanding get_token, so an undefined control sequence there is
+    /// never expanded: "Unbalanced write command" is the only error.
+    #[test]
+    fn unbalanced_write_recovery_skips_without_expanding() {
+        let engine = run("\\def\\x{\\iffalse{\\fi}}\
+                          \\immediate\\write16{A:a\\x B\\nosuchmacro C}\\end\n"
+            .into());
+        assert!(engine.term.contains("A:a\n"), "{}", engine.term);
         assert_eq!(engine.error_count, 1, "{}", engine.term);
     }
 

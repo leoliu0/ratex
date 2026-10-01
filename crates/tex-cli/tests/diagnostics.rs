@@ -320,6 +320,39 @@ fn ini_completion_uses_the_mode_active_when_each_message_is_emitted() {
     assert!(stderr.contains("format build reported 1 error"), "{stderr}");
 }
 
+/// `pdftex -ini -etex` (TeX Live 2026): IniTeX leaves \boxmaxdepth and
+/// \lineskip at zero, so a vbox ending in a box with depth moves its
+/// baseline down and stacked boxes touch; the other values are the plain
+/// TeX settings that IniTeX does not have.
+#[test]
+fn ini_runs_start_from_initex_parameter_values() {
+    let job = Job::new("ini-parameters");
+    job.write(
+        "main.tex",
+        r"\catcode`\{=1 \catcode`\}=2
+\font\tenrm=cmr10 \tenrm
+\setbox1\vbox{\hbox{hi}\hrule width 20pt\hbox{jk}}
+\setbox2\vbox{\hbox{\vrule height 9pt depth 2pt}\hbox{x}}
+\message{[\the\ht1+\the\dp1][\the\ht2+\the\dp2]}
+\message{[\the\tolerance/\the\pretolerance/\the\hyphenpenalty/\the\lefthyphenmin/\the\righthyphenmin/\the\delimiterfactor]}
+\message{[\the\overfullrule/\the\boxmaxdepth/\the\hsize/\the\parindent/\the\hfuzz]}
+\message{[\the\baselineskip/\the\lineskip/\the\parfillskip/\the\medmuskip]}
+\end
+",
+    );
+    let output = job.compile(&["-ini", "-interaction=nonstopmode"]);
+    assert_eq!(output.status.code(), Some(0), "{}", failure_output(&output));
+    let log = job.log().replace('\n', "");
+    for expected in [
+        "[16.23332pt+0.0pt][15.30554pt+0.0pt]",
+        "[10000/0/0/0/0/0]",
+        "[0.0pt/0.0pt/0.0pt/0.0pt/0.0pt]",
+        "[0.0pt/0.0pt/0.0pt/0.0mu]",
+    ] {
+        assert!(log.contains(expected), "{expected}: {log}");
+    }
+}
+
 #[test]
 fn cached_format_fallback_respects_batch_mode() {
     let source = r"\documentclass{article}

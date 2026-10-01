@@ -25,6 +25,8 @@ pub enum LuaError {
     /// Stack overflow while in the error-handler extra zone (C Lua's stackerror).
     /// Produces "error in error handling" without invoking any further handler.
     ErrorInErrorHandling,
+    /// A host handle was used after the `Lua` that owns its value was dropped.
+    StateClosed,
 }
 
 impl std::fmt::Display for LuaError {
@@ -39,6 +41,7 @@ impl std::fmt::Display for LuaError {
             LuaError::Exit => write!(f, "VM Exit"),
             LuaError::CloseThread => write!(f, "Close Thread"),
             LuaError::ErrorInErrorHandling => write!(f, "Error In Error Handling"),
+            LuaError::StateClosed => write!(f, "Lua state closed"),
         }
     }
 }

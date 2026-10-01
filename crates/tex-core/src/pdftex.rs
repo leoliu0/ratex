@@ -113,7 +113,8 @@ impl Engine {
         // End-of-job backend parameters and object-number reservations.
         use crate::prim::IntParam;
         self.pdf_doc.omit_info_dict = self.pdf_int(IntParam::PdfOmitInfoDict) != 0;
-        self.pdf_doc.omit_charset = self.pdf_int(IntParam::PdfOmitCharset) > 0;
+        // writefont.c prints /CharSet only while `getpdfomitcharset() == 0`
+        self.pdf_doc.omit_charset = self.pdf_int(IntParam::PdfOmitCharset) != 0;
         self.pdf_doc.reserved_objects = self.pdf_next_obj - 1;
         self.pdf_doc.page_objnums = self
             .pdf_backend
@@ -124,6 +125,8 @@ impl Engine {
         use std::collections::BTreeSet;
         let gen_tounicode =
             self.eqtb.int_params[crate::prim::IntParam::PdfGenToUnicode.idx() as usize];
+        // pdftex.web `fixed_gen_tounicode`, cleared when no glyph table exists
+        let mut fixed_gen_tounicode = gen_tounicode;
         let mut used: BTreeSet<u16> = BTreeSet::new();
         // pdf_init_font: the first SHIPPED font of a TFM owns the PDF font
         // dictionary; later fonts of that TFM (other sizes) mark their
@@ -301,10 +304,8 @@ impl Engine {
                                 used_chars,
                             );
                             embedded.to_unicode = to_unicode;
-                            embedded.ascent = ascent;
-                            embedded.cap_height = cap_height;
-                            embedded.descent = descent;
-                            embedded.stem_v = stem_v;
+                            embedded.t1_preset = self.preset_fontmetrics(fid);
+                            embedded.init_order = self.pdf_backend.init_order(fid);
                             self.pdf_doc.fonts.push(embedded);
                             remap.insert(
                                 crate::pdfout::FontBinding::remapped(binding_index)
@@ -341,18 +342,49 @@ impl Engine {
                             widths,
                             raw_chars,
                         );
-                        if nobuiltin_tounicode {
-                            embedded.to_unicode.clear();
-                        }
+                        // writefont.c write_fontdictionary: the generated
+                        // CMap (the dummy-space font always asks for one)
+                        let wants_tounicode = (fixed_gen_tounicode > 0
+                            && !self.font_loader.nobuiltin_tounicode.contains(&fid))
+                            || font.tfm_name == "dummy-space";
+                        let names = font.encoding.as_ref().or(source.builtin_encoding.as_ref());
+                        let tounicode = match names {
+                            Some(_) if !wants_tounicode => None,
+                            Some(_) if self.pdf_backend.glyph_unicode.is_empty() => {
+                                // write_tounicode: `fixedgentounicode := 0`
+                                self.warning_at(
+                                    "no GlyphToUnicode entry has been inserted yet!",
+                                    None,
+                                );
+                                fixed_gen_tounicode = 0;
+                                None
+                            }
+                            Some(names) => {
+                                let (cmap, warning) = crate::pdf_fonts::tounicode_cmap(
+                                    &self.pdf_backend.glyph_unicode,
+                                    names,
+                                    &font.tfm_name,
+                                    font.encoding.as_ref().and(font.enc_name.as_deref()),
+                                );
+                                if let Some(warning) = warning {
+                                    self.warning_at(&warning, None);
+                                }
+                                Some(cmap.into())
+                            }
+                            None => None,
+                        };
+                        embedded.pdftex = Some(crate::pdfout::PdfTexFont {
+                            tfm_name: font.tfm_name.clone(),
+                            enc_file: font.encoding.as_ref().and(font.enc_name.clone()),
+                            tounicode,
+                        });
                         embedded.font_attr = font_attr.clone();
                         // \pdffontobjnum fixed the dictionary's number
                         let ff = self.pdf_backend.font_ff.get(&fid).copied().unwrap_or(fid);
                         embedded.obj_font =
                             self.pdf_backend.font_objs.get(&ff).copied().unwrap_or(0);
-                        embedded.ascent = ascent;
-                        embedded.cap_height = cap_height;
-                        embedded.descent = descent;
-                        embedded.stem_v = stem_v;
+                        embedded.t1_preset = self.preset_fontmetrics(fid);
+                        embedded.init_order = self.pdf_backend.init_order(fid);
                         self.pdf_doc.fonts.push(embedded);
                         remap.insert(
                             crate::pdfout::FontBinding::RAW.resource_key(fid),
@@ -429,6 +461,10 @@ impl Engine {
                                 used_gids,
                                 to_unicode_2byte,
                                 font_attr: String::new(),
+                                t1_preset: Default::default(),
+                                t1_keys: Default::default(),
+                                init_order: 0,
+                                pdftex: None,
                             };
                             self.pdf_doc.fonts.push(ef);
                             remap.insert(
@@ -545,6 +581,10 @@ impl Engine {
                                 used_gids,
                                 to_unicode_2byte: Vec::new(),
                                 font_attr: if raw { font_attr.clone() } else { String::new() },
+                                t1_preset: Default::default(),
+                                t1_keys: Default::default(),
+                                init_order: 0,
+                                pdftex: None,
                             };
                             let document_index = self.pdf_doc.fonts.len();
                             self.pdf_doc.fonts.push(embedded);
@@ -598,6 +638,9 @@ pub(crate) struct PdfBackend {
     pub(crate) last_ximage_colordepth: i32,
     /// `\pdfspacefont`: TFM of the font for faked interword spaces.
     pub(crate) space_font_name: String,
+    /// `\pdfglyphtounicode` entries (tounicode.c `glyph_unicode_tree`),
+    /// dumped with the format.
+    pub(crate) glyph_unicode: crate::pdf_fonts::GlyphUnicodeTable,
 }
 
 impl Default for PdfBackend {
@@ -610,13 +653,88 @@ impl Default for PdfBackend {
             font_objs: Default::default(),
             last_ximage_colordepth: 0,
             space_font_name: DEFAULT_SPACE_FONT.to_string(),
+            glyph_unicode: Default::default(),
         }
+    }
+}
+
+impl PdfBackend {
+    /// Creation order of the font object of owner `f` (`pdf_create_obj`).
+    pub(crate) fn init_order(&self, f: u16) -> usize {
+        self.font_reps.iter().position(|&k| k == f).unwrap_or(usize::MAX)
     }
 }
 
 impl Engine {
     fn pdf_int(&self, p: crate::prim::IntParam) -> i32 {
         self.eqtb.int_params[p.idx() as usize]
+    }
+
+    /// writefont.c `preset_fontmetrics`: FontDescriptor values from the TFM
+    /// of font `f` in 1/1000 of `pdf_font_size[f]` (`dividescaled(.., 3)`),
+    /// including pdfTeX's quirks: the angle in degrees is truncated to an
+    /// integer before the division, StemV is a third of `.` (integer
+    /// division) and the bounding box is [0 Descent quad max(CapHeight, Ascent)].
+    pub(crate) fn preset_fontmetrics(&self, f: u16) -> [i32; crate::pdf_fonts::INT_KEYS_NUM] {
+        use crate::pdf_fonts::*;
+        let mut dims = [0; INT_KEYS_NUM];
+        let Some(font) = self.eqtb.fonts.get(f as usize) else {
+            return dims;
+        };
+        let size = crate::pdfrender::pdf_font_size(font.at_size);
+        if size == 0 {
+            return dims;
+        }
+        let scaled = |s: i64| crate::pdfrender::divide_scaled(s, size, 3).0 as i32;
+        let param = |n: usize| {
+            self.eqtb.font_params.get(f as usize).and_then(|p| p.get(n - 1)).copied().unwrap_or(0)
+        };
+        // get_charheight & co.: 0 for characters the TFM lacks
+        let metric = |c: u8, value: fn(&crate::tfm::Font, u8) -> i32| {
+            if font.char_present(c) { i64::from(value(font, c)) } else { 0 }
+        };
+        let angle = -(f64::from(param(1)) / 65536.0).atan() * (180.0 / std::f64::consts::PI);
+        dims[ITALIC_ANGLE_CODE] = scaled(angle as i64);
+        dims[ASCENT_CODE] = scaled(metric(b'h', crate::tfm::Font::char_height));
+        dims[CAPHEIGHT_CODE] = scaled(metric(b'H', crate::tfm::Font::char_height));
+        dims[DESCENT_CODE] = (-scaled(metric(b'y', crate::tfm::Font::char_depth))).min(0);
+        dims[STEMV_CODE] = scaled(metric(b'.', crate::tfm::Font::char_width) / 3);
+        dims[XHEIGHT_CODE] = scaled(i64::from(param(5)));
+        dims[FONTBBOX1_CODE] = 0;
+        dims[FONTBBOX1_CODE + 1] = dims[DESCENT_CODE];
+        dims[FONTBBOX1_CODE + 2] = scaled(i64::from(param(6)));
+        dims[FONTBBOX1_CODE + 3] = dims[CAPHEIGHT_CODE].max(dims[ASCENT_CODE]);
+        dims
+    }
+
+    /// `\pdfglyphtounicode {<glyph>} {<unicode>}` (pdftex.web
+    /// `glyph_to_unicode`, tounicode.c `deftounicode`).
+    pub(crate) fn do_pdfglyphtounicode(&mut self) {
+        let toks = self.scan_general_text_expanded();
+        let glyph = String::from_utf8_lossy(&self.tokens_to_bytes(&toks)).into_owned();
+        let toks = self.scan_general_text_expanded();
+        let unicode = String::from_utf8_lossy(&self.tokens_to_bytes(&toks)).into_owned();
+        let table = &mut self.pdf_backend.glyph_unicode;
+        if let Some(warning) = crate::pdf_fonts::def_tounicode(table, &glyph, &unicode) {
+            self.warning_at(&warning, None);
+        }
+    }
+
+    /// pdftex.web `warn_dest_dup` (silenced by `\pdfsuppresswarningdupdest`).
+    pub(crate) fn warn_dest_dup(&mut self, id: &crate::pdfout::DestId) {
+        if self.pdf_int(crate::prim::IntParam::PdfSuppressWarningDupDest) > 0 {
+            return;
+        }
+        let id = match id {
+            crate::pdfout::DestId::Name(name) => format!("name{{{name}}}"),
+            crate::pdfout::DestId::Num(n) => format!("num{n}"),
+        };
+        self.warning_at(
+            &format!(
+                "destination with the same identifier ({id}) has been already used, duplicate ignored"
+            ),
+            None,
+        );
     }
 
     /// pdftex.web `pdf_init_font` / `pdf_use_font`: give font `f` its PDF

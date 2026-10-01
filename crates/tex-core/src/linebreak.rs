@@ -2,8 +2,9 @@
 //! (feasible breakpoints, per-(line,fitness) champions, two-pass + emergency
 //! pass with artificial-demerits rescue), producing a vbox of line boxes.
 
-use crate::boxes::{Glue, Node, NodeList};
+use crate::boxes::{Glue, Node, NodeList, WhatIt};
 use crate::engine::Engine;
+use crate::language::LangState;
 use crate::fonts::FontResolver;
 use crate::prim::{DimParam, GlueParam, IntParam};
 use crate::scaled::{badness, EJECT_PENALTY, INF_BAD, INF_PENALTY};
@@ -41,6 +42,93 @@ struct ActiveNode {
     left_prot: i32,
     prev: Option<Rc<ActiveNode>>,
     pub ratio: i32,
+    /// e-TeX `active_short` / `active_glue` (\lastlinefit data)
+    short: i64,
+    glue: i64,
+}
+
+/// e-TeX \lastlinefit setup (etex.ch <Check for special treatment of last
+/// line of paragraph>): the infinite stretch of \parfillskip by order.
+#[derive(Clone, Copy)]
+struct LastLineFit {
+    fill_width: [i64; 3],
+    fit: i64,
+}
+
+/// etex.ch `fract(x,n,d,max_answer)`: floor(xn/d+1/2) with the sign of
+/// the operands, `None` on overflow (arith_error).
+fn fract(x: i64, n: i64, d: i64, max_answer: i64) -> Option<i64> {
+    if d == 0 {
+        return None;
+    }
+    let negative = (x < 0) ^ (n < 0) ^ (d < 0);
+    let (x, n, d) = (
+        i128::from(x).abs(),
+        i128::from(n).abs(),
+        i128::from(d).abs(),
+    );
+    let q = (x * n + d / 2) / d;
+    if q > i128::from(max_answer) {
+        return None;
+    }
+    let q = q as i64;
+    Some(if negative { -q } else { q })
+}
+
+/// etex.ch <Perform computations for last line and goto found>: badness,
+/// fitness class and adjustment `g` of the paragraph's last line after
+/// active node `a`, or `None` (not_found) to use the ordinary rules.
+fn last_line_badness(
+    llf: LastLineFit,
+    a: &ActiveNode,
+    shortfall: i64,
+    dst: &[i64; 4],
+    dsh: &[i64; 4],
+) -> Option<(i32, usize, i64)> {
+    const MAX_DIMEN: i64 = 0x3FFF_FFFF;
+    if a.short == 0 || a.glue <= 0 {
+        return None;
+    }
+    if dst[1..] != llf.fill_width {
+        return None;
+    }
+    let g = if a.short > 0 { dst[0] } else { dsh[0] };
+    if g <= 0 {
+        return None;
+    }
+    let g = fract(g, a.short, a.glue, MAX_DIMEN).and_then(|g| {
+        if llf.fit < 1000 {
+            fract(g, llf.fit, 1000, MAX_DIMEN)
+        } else {
+            Some(g)
+        }
+    });
+    let mut g = g.unwrap_or(if a.short > 0 { MAX_DIMEN } else { -MAX_DIMEN });
+    if g > 0 {
+        if g > shortfall {
+            g = shortfall;
+        }
+        if g > 7_230_584 && dst[0] < 1_663_497 {
+            return Some((INF_BAD, VERY_LOOSE, g));
+        }
+        let b = badness(g as i32, dst[0] as i32);
+        let fit = if b > 99 {
+            VERY_LOOSE
+        } else if b > 12 {
+            LOOSE
+        } else {
+            DECENT
+        };
+        Some((b, fit, g))
+    } else if g < 0 {
+        if -g > dsh[0] {
+            g = -dsh[0];
+        }
+        let b = badness(-g as i32, dsh[0] as i32);
+        Some((b, if b > 12 { TIGHT } else { DECENT }, g))
+    } else {
+        None
+    }
 }
 
 fn char_protrusion_width(
@@ -286,6 +374,28 @@ impl Engine {
         bg_st[params.right_skip.stretch_order as usize] += params.right_skip.stretch as i64;
         bg_sh[params.left_skip.shrink_order as usize] += params.left_skip.shrink as i64;
         bg_sh[params.right_skip.shrink_order as usize] += params.right_skip.shrink as i64;
+        // etex.ch <Check for special treatment of last line of paragraph>:
+        // \parfillskip (the list's last node) must stretch infinitely and
+        // \leftskip+\rightskip finitely
+        let last_line_fit = {
+            let fit = self.eqtb.int_params[IntParam::LastLineFit.idx() as usize];
+            match list.last() {
+                Some(Node::Glue(q))
+                    if fit > 0
+                        && q.stretch > 0
+                        && q.stretch_order > 0
+                        && bg_st[1..] == [0, 0, 0] =>
+                {
+                    let mut fill_width = [0i64; 3];
+                    fill_width[q.stretch_order as usize - 1] = q.stretch as i64;
+                    Some(LastLineFit {
+                        fill_width,
+                        fit: fit as i64,
+                    })
+                }
+                _ => None,
+            }
+        };
 
         // 0: pretolerance, no pattern-hyphen breaks
         // 1: tolerance, hyphen breaks, final_pass iff no emergency stretch
@@ -319,6 +429,7 @@ impl Engine {
                 bg_w,
                 bg_st,
                 bg_sh,
+                last_line_fit,
             ) {
                 Some(end) => {
                     best = Some(end);
@@ -369,6 +480,13 @@ impl Engine {
             self.last_paragraph_layout = Some(record.clone());
             return (node, record);
         };
+        // etex.ch <Adjust the final line of the paragraph>
+        if last_line_fit.is_some() && end.short != 0 {
+            if let Some(Node::Glue(q)) = list.last_mut() {
+                q.width += (end.short - end.glue) as i32;
+                q.stretch = 0;
+            }
+        }
         let mut cur = Some(end.clone());
         let mut total_lines: usize = 0;
         while let Some(b) = cur {
@@ -405,38 +523,11 @@ impl Engine {
     /// word"): after every glue node outside math, find the word, insert
     /// its discretionary hyphens and reconstitute ligatures and kerns
     /// around them. Native-font words follow `hyphenate_native_words`.
+    /// The language starts as new_graf recorded it for the paragraph and
+    /// follows the `\setlanguage` whatsits (`adv_past`).
     fn hyphenate_list(&mut self, list: &mut NodeList) {
-        let lang = self.eqtb.int_params[IntParam::Language.idx() as usize];
-        let cur_lang = if lang <= 0 || lang > 255 {
-            0
-        } else {
-            lang as u8
-        };
-        if cur_lang == 255 {
-            return;
-        }
-        let trie = match self.trie_for_language(cur_lang) {
-            Some(t) if !t.is_empty() => t,
-            _ => return,
-        };
-        // Formats and embedders can construct an Eqtb without going through
-        // tex.web §21112 norm_min: \lefthyphenmin and \righthyphenmin are clamped to 1..=63.
-        let lh = self.eqtb.int_params[IntParam::LeftHyphenMin.idx() as usize].clamp(1, 63) as usize;
-        let rh =
-            self.eqtb.int_params[IntParam::RightHyphenMin.idx() as usize].clamp(1, 63) as usize;
-        // TeX considers at most 63 letters while hyphenating. A larger
-        // minimum sum therefore disables automatic hyphenation.
-        if lh + rh > 63 {
-            return;
-        }
-        let ctx = HyphCtx {
-            trie,
-            codes: self.hyphen_codes.get(&cur_lang).map(Box::as_ref),
-            lc_code: &self.eqtb.lc_code,
-            lh,
-            rh,
-            uc_hyph: self.eqtb.int_params[IntParam::UcHyph.idx() as usize] > 0,
-        };
+        let start = self.paragraph_language();
+        let mut lang = start;
         // (first replaced index, end index, replacement)
         let mut edits: Vec<(usize, usize, NodeList)> = Vec::new();
         let mut auto_breaking = true;
@@ -446,8 +537,15 @@ impl Engine {
                 // §866: math-off re-enables automatic breaking (etex.ch:
                 // only math nodes below L_code, i.e. not \beginL..\endR)
                 Node::MathKern(_, kind @ 1..=4) => auto_breaking = crate::boxes::math_end_lr(*kind),
+                Node::Whatsit(WhatIt::Language { lang: l, lhm, rhm }) => {
+                    lang = LangState {
+                        lang: *l,
+                        lhm: *lhm,
+                        rhm: *rhm,
+                    };
+                }
                 Node::Glue(_) | Node::Leaders { .. } if auto_breaking => {
-                    if let Some(edit) = self.hyphenate_word_after(list, i, &ctx) {
+                    if let Some(edit) = self.hyphenate_word_after(list, i, &mut lang) {
                         i = edit.1;
                         edits.push(edit);
                         continue;
@@ -461,8 +559,43 @@ impl Engine {
             list.splice(start..end, nodes);
         }
         if list.iter().any(|n| matches!(n, Node::NativeGlyphRun { .. })) {
-            self.hyphenate_native_words(list, &ctx);
+            if let Some(ctx) = self.hyph_ctx(start) {
+                self.hyphenate_native_words(list, &ctx);
+            }
         }
+    }
+
+    /// tex.web §891 init_cur_lang/init_l_hyf/init_r_hyf: the values
+    /// new_graf stored for the paragraph being broken (the current
+    /// parameters outside a paragraph).
+    fn paragraph_language(&self) -> LangState {
+        match self.par_langs.last() {
+            Some(p) => p.start,
+            None => self.current_language(),
+        }
+    }
+
+    /// Hyphenation inputs for one language state; `None` when the
+    /// language cannot hyphenate (no patterns, or the minima exceed 63).
+    fn hyph_ctx(&self, st: LangState) -> Option<HyphCtx<'_>> {
+        if st.lang == 255 {
+            return None;
+        }
+        let trie = self.trie_for_language(st.lang).filter(|t| !t.is_empty())?;
+        // TeX considers at most 63 letters while hyphenating. A larger
+        // minimum sum therefore disables automatic hyphenation.
+        let (lh, rh) = (usize::from(st.lhm), usize::from(st.rhm));
+        if lh + rh > 63 {
+            return None;
+        }
+        Some(HyphCtx {
+            trie,
+            codes: self.hyphen_codes.get(&st.lang).map(Box::as_ref),
+            lc_code: &self.eqtb.lc_code,
+            lh,
+            rh,
+            uc_hyph: self.eqtb.int_params[IntParam::UcHyph.idx() as usize] > 0,
+        })
     }
 
     /// tex.web §894-§903 for the word after the glue at `g`: returns the
@@ -471,8 +604,9 @@ impl Engine {
         &self,
         list: &[Node],
         g: usize,
-        ctx: &HyphCtx,
+        lang: &mut LangState,
     ) -> Option<(usize, usize, NodeList)> {
+        let mut ctx = self.hyph_ctx(*lang);
         // §896: skip to node ha, the one just before the first letter
         let mut ha = g;
         let mut s = g + 1;
@@ -485,6 +619,18 @@ impl Engine {
                     font,
                     ..
                 } if *n_letters > 0 => (letters[0], *font),
+                // §1363 adv_past in the pre-hyphenation loop
+                Node::Whatsit(WhatIt::Language { lang: l, lhm, rhm }) => {
+                    *lang = LangState {
+                        lang: *l,
+                        lhm: *lhm,
+                        rhm: *rhm,
+                    };
+                    ctx = self.hyph_ctx(*lang);
+                    ha = s;
+                    s += 1;
+                    continue;
+                }
                 // etex.ch: text-direction math nodes are skipped like kerns
                 Node::Ligature { .. } | Node::Kern(_) | Node::Whatsit(_) => {
                     ha = s;
@@ -498,9 +644,9 @@ impl Engine {
                 }
                 _ => return None,
             };
-            let lc = ctx.lc(c);
+            let lc = ctx.as_ref()?.lc(c);
             if lc != 0 {
-                if lc == c || ctx.uc_hyph {
+                if lc == c || ctx.as_ref()?.uc_hyph {
                     break f;
                 }
                 return None;
@@ -508,6 +654,8 @@ impl Engine {
             ha = s;
             s += 1;
         };
+        let ctx = ctx?;
+        let ctx = &ctx;
         let hyf_char = self.eqtb.hyphen_char.get(hf as usize).copied().unwrap_or(-1);
         let hyf_char = u8::try_from(hyf_char).ok()?;
         let font = self.eqtb.fonts.get(hf as usize)?.clone();
@@ -840,6 +988,7 @@ impl Engine {
         bg_w: i64,
         bg_st: [i64; 4],
         bg_sh: [i64; 4],
+        last_line_fit: Option<LastLineFit>,
     ) -> Option<Rc<ActiveNode>> {
         let n = list.len();
         let pdf_adjust =
@@ -1034,6 +1183,8 @@ impl Engine {
             left_prot: start_left_prot,
             prev: None,
             ratio: 0,
+            short: 0,
+            glue: 0,
         });
         let mut actives: Vec<Rc<ActiveNode>> = vec![start];
         // tex.web §25121–25133: easy_line is last_special_line (looseness
@@ -1056,7 +1207,7 @@ impl Engine {
                 let btype: BreakType = $btype;
                 let penalty: i32 = $penalty;
                 let endw: i64 = $endw;
-                let mut champions: HashMap<(i32, usize), (i64, Rc<ActiveNode>, i32)> =
+                let mut champions: HashMap<(i32, usize), (i64, Rc<ActiveNode>, i32, i64, i64)> =
                     HashMap::new();
                 let mut idx = 0usize;
                 while idx < actives.len() {
@@ -1195,12 +1346,28 @@ impl Engine {
                     } else {
                         0
                     };
+                    // etex.ch: with \lastlinefit, `found` keeps the
+                    // last-line adjustment `g`; otherwise it is the
+                    // line's finite stretch or shrink
+                    let mut llf_found: Option<i64> = None;
                     let (b, fit) = if shortfall == 0 {
                         (0, DECENT)
                     } else if shortfall > 0 {
                         // stretching
-                        if dst[1] > 0 || dst[2] > 0 || dst[3] > 0 {
-                            (0, DECENT) // infinite stretch
+                        if dst[1] != 0 || dst[2] != 0 || dst[3] != 0 {
+                            let mut r = (0, DECENT); // infinite stretch
+                            if let Some(llf) = last_line_fit {
+                                match last_line_badness(llf, &a, shortfall, &dst, &dsh)
+                                    .filter(|_| cand == n)
+                                {
+                                    Some((bb, fit, g)) => {
+                                        llf_found = Some(g);
+                                        r = (bb, fit);
+                                    }
+                                    None => shortfall = 0,
+                                }
+                            }
+                            r
                         } else {
                             let bb = badness(shortfall as i32, dst[0] as i32);
                             let fit = if bb > 99 {
@@ -1224,6 +1391,24 @@ impl Engine {
                             (bb, fit)
                         }
                     };
+                    // etex.ch <Adjust the additional data for last line>
+                    let llf_g = match llf_found {
+                        Some(g) => g,
+                        None if last_line_fit.is_some() => {
+                            if cand == n {
+                                shortfall = 0;
+                            }
+                            if shortfall > 0 {
+                                dst[0]
+                            } else if shortfall < 0 {
+                                dsh[0]
+                            } else {
+                                0
+                            }
+                        }
+                        None => 0,
+                    };
+                    let llf_short = if last_line_fit.is_some() { shortfall } else { 0 };
 
                     if b <= threshold {
                         let d = a.demerits
@@ -1249,16 +1434,20 @@ impl Engine {
                             // minimal_demerits. Rust scans this class in
                             // active-list order, so an equal candidate must
                             // replace the current champion.
-                            Some((best_d, _, _)) if *best_d < d => {}
+                            Some((best_d, ..)) if *best_d < d => {}
                             _ => {
-                                champions.insert(key, (d, a.clone(), cur_ratio));
+                                champions
+                                    .insert(key, (d, a.clone(), cur_ratio, llf_short, llf_g));
                             }
                         }
                     }
                     let hopeless = b > INF_BAD;
                     if hopeless || forced {
                         if final_pass && champions.is_empty() && is_only {
-                            champions.insert((a.line + 1, DECENT), (a.demerits, a.clone(), 0));
+                            champions.insert(
+                                (a.line + 1, DECENT),
+                                (a.demerits, a.clone(), 0, llf_short, llf_g),
+                            );
                         }
                         actives.remove(idx);
                         continue;
@@ -1277,7 +1466,7 @@ impl Engine {
                 const AWFUL_BAD: i64 = (1 << 30) - 1;
                 let adj = params.adj_demerits as i64;
                 let mut group_min: HashMap<i32, i64> = HashMap::new();
-                for (key, (d, _, _)) in &champions {
+                for (key, (d, ..)) in &champions {
                     let e = group_min.entry(key.0).or_insert(AWFUL_BAD);
                     if *d < *e {
                         *e = *d;
@@ -1285,7 +1474,7 @@ impl Engine {
                 }
                 let mut keys: Vec<_> = champions
                     .iter()
-                    .filter(|((cls, _), (d, _, _))| {
+                    .filter(|((cls, _), (d, ..))| {
                         let m = group_min[cls];
                         let cutoff = if adj.abs() >= AWFUL_BAD - m {
                             AWFUL_BAD - 1
@@ -1300,7 +1489,7 @@ impl Engine {
                 let mut new_nodes: Vec<((i32, usize), Rc<ActiveNode>)> =
                     Vec::with_capacity(keys.len());
                 for key in keys {
-                    let (d, prev, ratio) = &champions[&key];
+                    let (d, prev, ratio, short, glue) = &champions[&key];
                     let (start_w, start_st, start_sh, start_fst, start_fsh) = start_state(
                         list,
                         &after_prune,
@@ -1337,6 +1526,8 @@ impl Engine {
                             left_prot,
                             prev: Some(prev.clone()),
                             ratio: *ratio,
+                            short: *short,
+                            glue: *glue,
                         }),
                     ));
                 }
@@ -1733,6 +1924,26 @@ impl Engine {
                     *shift = indent;
                 }
             }
+            // pdftex.web <Append the new box to the current vertical list>:
+            // \pdfeachlineheight/depth, then \pdffirstlineheight and
+            // \pdflastlinedepth, each unless it equals \pdfignoreddimen
+            {
+                let dim = |p: DimParam| self.eqtb.dim_params[p.idx() as usize];
+                let ignored = dim(DimParam::PdfIgnoredDimen);
+                let set = |v: i32| (v != ignored).then_some(v);
+                let each_h = set(dim(DimParam::PdfEachLineHeight));
+                let each_d = set(dim(DimParam::PdfEachLineDepth));
+                let first_h = set(dim(DimParam::PdfFirstLineHeight)).filter(|_| li == 0);
+                let last_d = set(dim(DimParam::PdfLastLineDepth)).filter(|_| li + 1 == total_lines);
+                if let Node::Box { h, d, .. } = &mut r.node {
+                    if let Some(v) = first_h.or(each_h) {
+                        *h = v;
+                    }
+                    if let Some(v) = last_d.or(each_d) {
+                        *d = v;
+                    }
+                }
+            }
             let excess = -r.delta - r.shrink[0];
             if final_pass && -r.delta > r.shrink[0] && excess > hfuzz {
                 let msg = format!(
@@ -1913,6 +2124,7 @@ impl Engine {
         // prune_page_top keeps marks/whatsits/inserts while removing
         // discardable nodes before the first box, then inserts splittopskip.
         let mut seen_box = false;
+        let mut snaps = 0;
         rest.retain(|n| {
             if seen_box {
                 return true;
@@ -1927,9 +2139,18 @@ impl Engine {
                 | Node::Penalty(_)
                 | Node::Kern(_)
                 | Node::ExplicitKern(_) => false,
+                Node::Whatsit(
+                    crate::boxes::WhatIt::PdfSnapY(_) | crate::boxes::WhatIt::PdfSnapYComp(_),
+                ) => {
+                    snaps += 1;
+                    false
+                }
                 _ => true,
             }
         });
+        for _ in 0..snaps {
+            self.report_discarded_snap();
+        }
         if let Some((i, height)) = rest.iter().enumerate().find_map(|(i, n)| match n {
             Node::Box { h, .. } | Node::Rule { height: h, .. } => Some((i, *h)),
             _ => None,

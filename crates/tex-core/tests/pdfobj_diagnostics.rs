@@ -89,7 +89,20 @@ fn pdf_xref_with_leading_newline_is_repaired_and_loads_successfully() {
     let pdf_path = "/home/leo/dd/tex/output/corpus-high-risk-95/0803.0966/figure-gamma_rules.pdf";
     if let Ok(bytes) = std::fs::read(pdf_path) {
         let mut next_obj = 100;
-        let res = tex_core::pdf_images::import_pdf_page(&bytes, 1, b"MediaBox", 1, &mut next_obj);
+        let mut fonts = std::collections::BTreeMap::new();
+        let res = tex_core::pdf_images::include_pdf_page(
+            &bytes,
+            &tex_core::pdf_images::PdfIncludeOptions {
+                page: tex_core::pdf_images::PdfPageSelector::Number(1),
+                page_box: tex_core::pdf_images::PDF_BOX_SPEC_MEDIA,
+                file_name: pdf_path,
+                suppress_ptex_info: 0,
+                ptex_underscore: false,
+            },
+            &mut next_obj,
+            &mut fonts,
+            &mut |_: &str| None,
+        );
         assert!(res.is_ok(), "failed to import PDF page: {:?}", res.err());
     }
 }

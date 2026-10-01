@@ -120,12 +120,6 @@ impl LuaTable {
         self.len().map(|len| len == 0)
     }
 
-    /// Return a snapshot of all key-value pairs using raw `LuaValue`s.
-    #[inline]
-    pub fn pairs_raw(&self) -> LuaResult<Vec<(LuaValue, LuaValue)>> {
-        self.inner.pairs()
-    }
-
     /// Return all pairs converted to Rust types.
     #[inline]
     pub fn pairs<K: FromLua, V: FromLua>(&self) -> LuaResult<Vec<(K, V)>> {
@@ -148,30 +142,23 @@ impl LuaTable {
         self.inner.to_value()
     }
 
-    /// # Safety
-    /// The returned `LuaValue` must not be used after the `LuaTable` is dropped.
-    pub unsafe fn to_value(&self) -> LuaValue {
-        self.inner.to_value()
+    /// Whether `self` belongs to the same Lua state as `state`.
+    pub(crate) fn same_state_as(&self, state: &crate::GlobalState) -> bool {
+        self.inner.belongs_to(state)
     }
 }
 
 impl IntoLua for LuaTable {
     #[inline]
     fn into_lua(self, state: &mut crate::LuaState) -> Result<usize, String> {
-        state
-            .push_value(self.inner.to_value())
-            .map_err(|e| format!("{:?}", e))?;
-        Ok(1)
+        self.inner.push_into(state)
     }
 }
 
 impl IntoLua for &LuaTable {
     #[inline]
     fn into_lua(self, state: &mut crate::LuaState) -> Result<usize, String> {
-        state
-            .push_value(self.inner.to_value())
-            .map_err(|e| format!("{:?}", e))?;
-        Ok(1)
+        self.inner.push_into(state)
     }
 }
 

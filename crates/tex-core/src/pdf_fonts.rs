@@ -232,7 +232,7 @@ mod tests {
     }
 }
 
-/// Descriptor metrics derived from TFM when the PFB cleartext lacks them:
+/// Descriptor metrics of SFNT fonts derived from the TFM:
 /// (ascent, descent, cap_height, stem_v) in 1/1000 font units. Ascent is
 /// the tallest character, descent the deepest (negated), CapHeight the
 /// height of `H`, StemV a quarter of `I`'s width (clamped to >= 30).
@@ -258,14 +258,154 @@ pub fn tfm_descriptor(font: &crate::tfm::Font) -> (f64, f64, f64, f64) {
     )
 }
 
-/// Glyph names declared by the font's own `/Encoding 256 array` in the
-/// cleartext (the `dup <code> /<Name> put` sequence). Returns None when
-/// the cleartext declares no encoding, in which case the viewing
-/// application falls back to the font's built-in one.
+/// writefont.c `font_dim` slots (ptexlib.h `font_key` order): the six
+/// numeric FontDescriptor keys, then the four FontBBox values.
+pub const ASCENT_CODE: usize = 0;
+pub const CAPHEIGHT_CODE: usize = 1;
+pub const DESCENT_CODE: usize = 2;
+pub const ITALIC_ANGLE_CODE: usize = 3;
+pub const STEMV_CODE: usize = 4;
+pub const XHEIGHT_CODE: usize = 5;
+pub const FONTBBOX1_CODE: usize = 6;
+/// Number of integer font_dim slots (`INT_KEYS_NUM`).
+pub const INT_KEYS_NUM: usize = 10;
+
+/// Descriptor values a Type 1 program itself declares, as writet1.c
+/// `t1_scan_keys` reads them: lines starting with `/Ascender`, `/CapHeight`,
+/// `/Descender`, `/ItalicAngle`, `/StdVW`, `/XHeight`, `/FontBBox` or
+/// `/FontName` in the cleartext and in the private dictionary up to the
+/// `/Subrs` (or `/CharStrings`) line. Numbers are C `float`s truncated to
+/// `int`, like pdfTeX's `font_dim[k].val = t1_scan_num(..)`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Type1Keys {
+    pub dims: [Option<i32>; INT_KEYS_NUM],
+    pub font_name: Option<String>,
+}
+
+impl Type1Keys {
+    pub fn scan(program: &Type1Program) -> Self {
+        let mut keys = Type1Keys::default();
+        let data = &program.data;
+        let length1 = program.length1.min(data.len());
+        for line in data[..length1].split(|&byte| byte == b'\n') {
+            keys.scan_line(line);
+        }
+        let encrypted_end = length1.saturating_add(program.length2).min(data.len());
+        let private = crate::pdffile::eexec_decrypt(&data[length1..encrypted_end]);
+        // t1_start_eexec drops the four random lead bytes
+        for line in private.get(4..).unwrap_or_default().split(|&byte| byte == b'\n') {
+            // t1_read_subrs: scanning ends at the Subrs/CharStrings line
+            if line.starts_with(b"/Subrs") || line.windows(12).any(|w| w == b"/CharStrings") {
+                break;
+            }
+            keys.scan_line(line);
+        }
+        keys
+    }
+
+    /// writet1.c `t1_scan_keys` for one line.
+    fn scan_line(&mut self, line: &[u8]) {
+        const KEYS: [(&[u8], usize); 7] = [
+            (b"Ascender", ASCENT_CODE),
+            (b"CapHeight", CAPHEIGHT_CODE),
+            (b"Descender", DESCENT_CODE),
+            (b"ItalicAngle", ITALIC_ANGLE_CODE),
+            (b"StdVW", STEMV_CODE),
+            (b"XHeight", XHEIGHT_CODE),
+            (b"FontBBox", FONTBBOX1_CODE),
+        ];
+        let Some(rest) = line.strip_prefix(b"/") else {
+            return;
+        };
+        if rest.starts_with(b"FontType") {
+            return;
+        }
+        if let Some(value) = rest.strip_prefix(b"FontName") {
+            let mut p = value.iter().position(|&b| b != b' ').unwrap_or(value.len());
+            if value.get(p) != Some(&b'/') {
+                return;
+            }
+            p += 1;
+            let end = value[p..]
+                .iter()
+                .position(|&b| b == b' ' || b == b'\n')
+                .map_or(value.len(), |e| p + e);
+            self.font_name = Some(String::from_utf8_lossy(&value[p..end]).into_owned());
+            return;
+        }
+        let Some((value, k)) = KEYS
+            .iter()
+            .find_map(|&(name, k)| rest.strip_prefix(name).map(|value| (value, k)))
+        else {
+            return;
+        };
+        let mut p = value.iter().position(|&b| b != b' ').unwrap_or(value.len());
+        if (k == STEMV_CODE || k == FONTBBOX1_CODE) && matches!(value.get(p), Some(b'[' | b'{')) {
+            p += 1;
+        }
+        if k == FONTBBOX1_CODE {
+            for slot in 0..4 {
+                let Some((number, end)) = scan_c_float(&value[p..]) else {
+                    return;
+                };
+                self.dims[k + slot] = Some(number as i32);
+                p += end;
+            }
+        } else if let Some((number, _)) = scan_c_float(&value[p..]) {
+            self.dims[k] = Some(number as i32);
+        }
+    }
+}
+
+/// writet1.c `t1_scan_num`: `sscanf("%g")` into a C float after skipping
+/// blanks; the returned offset is where pdfTeX resumes (past the run of
+/// digits, `.`, `e`, `E`, `+`, `-`).
+fn scan_c_float(s: &[u8]) -> Option<(f32, usize)> {
+    let start = s.iter().position(|&b| b != b' ').unwrap_or(s.len());
+    let p = &s[start..];
+    let lead = p.iter().take_while(|b| b.is_ascii_whitespace()).count();
+    let q = &p[lead..];
+    let mut n = usize::from(matches!(q.first(), Some(b'+' | b'-')));
+    let int_digits = q[n..].iter().take_while(|b| b.is_ascii_digit()).count();
+    n += int_digits;
+    let mut frac_digits = 0;
+    if q.get(n) == Some(&b'.') {
+        frac_digits = q[n + 1..].iter().take_while(|b| b.is_ascii_digit()).count();
+        n += 1 + frac_digits;
+    }
+    if int_digits + frac_digits == 0 {
+        return None;
+    }
+    if matches!(q.get(n), Some(b'e' | b'E')) {
+        let sign = usize::from(matches!(q.get(n + 1), Some(b'+' | b'-')));
+        let digits = q[n + 1 + sign..].iter().take_while(|b| b.is_ascii_digit()).count();
+        if digits > 0 {
+            n += 1 + sign + digits;
+        }
+    }
+    let value: f32 = std::str::from_utf8(&q[..n]).ok()?.parse().ok()?;
+    let resume = p
+        .iter()
+        .take_while(|&&b| b.is_ascii_digit() || matches!(b, b'.' | b'e' | b'E' | b'+' | b'-'))
+        .count();
+    Some((value, start + resume))
+}
+
+/// Glyph names declared by the font's own encoding (writet1.c
+/// `t1_builtin_enc`): `/Encoding StandardEncoding def`, or the
+/// `dup <code> /<Name> put` entries of an `/Encoding 256 array`. Returns
+/// None when the cleartext declares no encoding.
 pub fn builtin_encoding(cleartext: &[u8]) -> Option<Vec<String>> {
     let text = String::from_utf8_lossy(cleartext);
     let p = text.find("/Encoding")?;
     let body = &text[p..];
+    if body["/Encoding".len()..].trim_start_matches(' ').starts_with("StandardEncoding") {
+        return Some(
+            (0..256)
+                .map(|code| crate::pdffile::standard_encoding_name(code).unwrap_or_default().to_owned())
+                .collect(),
+        );
+    }
     let mut names: Vec<(usize, String)> = Vec::new();
     let mut from = 0usize;
     while let Some(dup) = body[from..].find("dup") {
@@ -295,6 +435,269 @@ pub fn builtin_encoding(cleartext: &[u8]) -> Option<Vec<String>> {
     }
     Some(out)
 }
+
+/// A `\pdfglyphtounicode` value (tounicode.c `glyph_unicode_entry.code`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum GlyphUnicode {
+    /// `UNI_UNDEF`: the entry exists but its value was out of range.
+    Undef,
+    /// One code point.
+    Code(u32),
+    /// `UNI_STRING`: the hex digits of a multi-value entry, blanks removed.
+    Seq(String),
+}
+
+/// tounicode.c `glyph_unicode_tree`: glyph name (or `tfm:<tfm>/<glyph>`)
+/// to Unicode, filled by `\pdfglyphtounicode` and dumped in the format.
+pub type GlyphUnicodeTable = std::collections::BTreeMap<String, GlyphUnicode>;
+
+/// tounicode.c `isXdigit`: decimal digits and UPPERCASE `A`..`F` only.
+fn is_xdigit(byte: u8) -> bool {
+    byte.is_ascii_digit() || (b'A'..=b'F').contains(&byte)
+}
+
+/// tounicode.c `deftounicode` (`\pdfglyphtounicode{glyph}{unicode}`).
+/// Returns the warning pdfTeX prints, if any.
+pub fn def_tounicode(table: &mut GlyphUnicodeTable, glyph: &str, unistr: &str) -> Option<String> {
+    let p = unistr.trim_start_matches(' ');
+    let value = p.trim_end_matches(' ');
+    let mut valid = 1;
+    for byte in value.bytes() {
+        if byte == b' ' {
+            valid = 2;
+        } else if !is_xdigit(byte) {
+            valid = 0;
+            break;
+        }
+    }
+    if value.is_empty() || valid == 0 || glyph.is_empty() || glyph == ".notdef" {
+        return Some(format!("ToUnicode: invalid parameter(s): `{glyph}' => `{p}'"));
+    }
+    let mut warning = None;
+    let entry = if valid == 2 {
+        GlyphUnicode::Seq(p.chars().filter(|&c| c != ' ').collect())
+    } else {
+        // sscanf("%lX"): strtoul saturates on overflow
+        let code = value
+            .bytes()
+            .try_fold(0u64, |acc, b| acc.checked_mul(16)?.checked_add((b as char).to_digit(16)? as u64))
+            .unwrap_or(u64::MAX);
+        if code > 0x10FFFF {
+            warning = Some(format!("ToUnicode: value out of range [0,10FFFF]: {code:X}"));
+            GlyphUnicode::Undef
+        } else {
+            GlyphUnicode::Code(code as u32)
+        }
+    };
+    table.insert(glyph.to_owned(), entry);
+    warning
+}
+
+/// A resolved ToUnicode value: one code point (range-mergeable) or a
+/// literal UTF-16BE hex string.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Uni {
+    Code(u32),
+    Str(String),
+}
+
+/// tounicode.c `check_unicode_value`.
+fn check_unicode_value(s: &str, multiple: bool) -> Option<u32> {
+    let l = s.len();
+    if l == 0 || (multiple && l % 4 != 0) || (!multiple && !(4..=6).contains(&l)) {
+        return None;
+    }
+    if !s.bytes().all(is_xdigit) {
+        return None;
+    }
+    let valid = |code: u32, max: u32| code <= 0xD7FF || (0xE000..=max).contains(&code);
+    if multiple {
+        let mut code = 0;
+        for group in s.as_bytes().chunks(4) {
+            code = u32::from_str_radix(std::str::from_utf8(group).ok()?, 16).ok()?;
+            if !valid(code, 0xFFFF) {
+                return None;
+            }
+        }
+        Some(code)
+    } else {
+        let code = u32::from_str_radix(s, 16).ok()?;
+        valid(code, 0x10FFFF).then_some(code)
+    }
+}
+
+/// tounicode.c `utf16be_str`.
+fn utf16be_str(code: u32) -> String {
+    if code <= 0xFFFF {
+        format!("{code:04X}")
+    } else {
+        let v = code - 0x10000;
+        format!("{:04X}{:04X}", v / 0x400 + 0xD800, v % 0x400 + 0xDC00)
+    }
+}
+
+/// tounicode.c `set_glyph_unicode`: the value of glyph `s` of TFM `tfm`.
+fn glyph_unicode(table: &GlyphUnicodeTable, s: &str, tfm: &str) -> Option<Uni> {
+    if s.is_empty() || s == ".notdef" {
+        return None;
+    }
+    let s = s.split('.').next().unwrap_or_default();
+    if s.is_empty() {
+        return None;
+    }
+    if s.contains('_') {
+        let mut seq = String::new();
+        for component in s.split('_') {
+            match glyph_unicode(table, component, tfm) {
+                Some(Uni::Str(part)) => seq.push_str(&part),
+                Some(Uni::Code(code)) => seq.push_str(&utf16be_str(code)),
+                None => {}
+            }
+        }
+        return Some(Uni::Str(seq));
+    }
+    let entry = table.get(&format!("tfm:{tfm}/{s}")).or_else(|| table.get(s));
+    if let Some(entry) = entry {
+        return match entry {
+            GlyphUnicode::Undef => None,
+            GlyphUnicode::Code(code) => Some(Uni::Code(*code)),
+            GlyphUnicode::Seq(seq) => Some(Uni::Str(seq.clone())),
+        };
+    }
+    if let Some(hex) = s.strip_prefix("uni") {
+        let code = check_unicode_value(hex, true)?;
+        return Some(if hex.len() == 4 { Uni::Code(code) } else { Uni::Str(hex.to_owned()) });
+    }
+    s.strip_prefix('u').and_then(|hex| check_unicode_value(hex, false)).map(Uni::Code)
+}
+
+/// tounicode.c `write_tounicode`: the /ToUnicode CMap of a font whose 256
+/// codes carry `glyph_names` (empty or `.notdef` = no glyph). `enc_name`
+/// is the map's encoding file (None for the font's builtin encoding).
+/// Also returns pdfTeX's warning for an encoding file name not ending in
+/// `.enc`.
+pub fn tounicode_cmap(
+    table: &GlyphUnicodeTable,
+    glyph_names: &[String],
+    tfm: &str,
+    enc_name: Option<&str>,
+) -> (String, Option<String>) {
+    use std::fmt::Write as _;
+    let mut warning = None;
+    let name = match enc_name {
+        Some(enc) => match enc.rfind('.') {
+            Some(dot) if &enc[dot..] == ".enc" => format!("{tfm}-{}", &enc[..dot]),
+            _ => {
+                warning = Some(format!("Dubious encoding file name: `{enc}'"));
+                format!("{tfm}-{enc}")
+            }
+        },
+        None => format!("{tfm}-builtin"),
+    };
+    let mut out = String::with_capacity(2048);
+    let _ = write!(
+        out,
+        "%!PS-Adobe-3.0 Resource-CMap\n\
+         %%DocumentNeededResources: ProcSet (CIDInit)\n\
+         %%IncludeResource: ProcSet (CIDInit)\n\
+         %%BeginResource: CMap (TeX-{name}-0)\n\
+         %%Title: (TeX-{name}-0 TeX {name} 0)\n\
+         %%Version: 1.000\n\
+         %%EndComments\n\
+         /CIDInit /ProcSet findresource begin\n\
+         12 dict begin\n\
+         begincmap\n\
+         /CIDSystemInfo\n\
+         << /Registry (TeX)\n\
+         /Ordering ({name})\n\
+         /Supplement 0\n\
+         >> def\n\
+         /CMapName /TeX-{name}-0 def\n\
+         /CMapType 2 def\n\
+         1 begincodespacerange\n\
+         <00> <FF>\n\
+         endcodespacerange\n"
+    );
+    let gtab: Vec<Option<Uni>> = (0..256)
+        .map(|code| glyph_unicode(table, glyph_names.get(code).map_or("", String::as_str), tfm))
+        .collect();
+    let code_at = |i: usize| match gtab.get(i) {
+        Some(Some(Uni::Code(code))) => Some(*code),
+        _ => None,
+    };
+    // is_last_byte_valid: a range must not carry its last byte past 255
+    let last_byte_valid = |j: usize, i: usize, code: u32| {
+        let s = utf16be_str(code);
+        let last = u32::from_str_radix(&s[s.len() - 2..], 16).unwrap_or(0);
+        (last as i64) < 255 - (i as i64 - j as i64)
+    };
+    let mut range_size = [0usize; 256];
+    let mut i = 0;
+    while i < 256 {
+        match &gtab[i] {
+            Some(Uni::Str(_)) => {
+                range_size[i] = 1;
+                i += 1;
+            }
+            None => i += 1,
+            Some(Uni::Code(_)) => {
+                let j = i;
+                while let (Some(code), Some(next)) = (code_at(i), code_at(i + 1)) {
+                    if code + 1 != next || !last_byte_valid(j, i, code) {
+                        break;
+                    }
+                    i += 1;
+                }
+                i += 1;
+                range_size[j] = i - j;
+            }
+        }
+    }
+    // range starts carry their length; codes inside a range stay 0
+    let ranges: Vec<usize> = (0..256).filter(|&k| range_size[k] > 1).collect();
+    let chars: Vec<usize> = (0..256).filter(|&k| range_size[k] == 1).collect();
+    let mut blocks = ranges.chunks(100).peekable();
+    if blocks.peek().is_none() {
+        out.push_str("0 beginbfrange\nendbfrange\n");
+    }
+    for block in blocks {
+        let _ = writeln!(out, "{} beginbfrange", block.len());
+        for &j in block {
+            let code = code_at(j).unwrap_or_default();
+            let _ = writeln!(out, "<{j:02X}> <{:02X}> <{}>", j + range_size[j] - 1, utf16be_str(code));
+        }
+        out.push_str("endbfrange\n");
+    }
+    let mut blocks = chars.chunks(100).peekable();
+    if blocks.peek().is_none() {
+        out.push_str("0 beginbfchar\nendbfchar\n");
+    }
+    for block in blocks {
+        let _ = writeln!(out, "{} beginbfchar", block.len());
+        for &j in block {
+            match &gtab[j] {
+                Some(Uni::Str(seq)) => {
+                    let _ = writeln!(out, "<{j:02X}> <{seq}>");
+                }
+                Some(Uni::Code(code)) => {
+                    let _ = writeln!(out, "<{j:02X}> <{}>", utf16be_str(*code));
+                }
+                None => {}
+            }
+        }
+        out.push_str("endbfchar\n");
+    }
+    out.push_str(
+        "endcmap\n\
+         CMapName currentdict /CMap defineresource pop\n\
+         end\n\
+         end\n\
+         %%EndResource\n\
+         %%EOF\n",
+    );
+    (out, warning)
+}
+
 /// Map a Type 1 glyph name to its Unicode string (several chars for
 /// composed names). Resolution order: the merged Adobe Glyph List (with
 /// the PDF and TeX extensions), then the `uniXXXX` / `uXXXXXX` naming

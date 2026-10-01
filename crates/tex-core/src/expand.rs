@@ -553,6 +553,9 @@ impl Engine {
                                 continue;
                             }
                         }
+                    } else if p == Prim::PdfPrimitiveExec && !self.in_expanded_scan {
+                        first = self.pdf_primitive_target();
+                        continue;
                     } else {
                         self.set_cur_cs(t);
                         return t;
@@ -748,6 +751,35 @@ impl Engine {
         self.cur_tok = t;
         self.cur_cs = None;
         self.cur_prim = None;
+    }
+
+    /// pdftex.web `prim_eqtb`: the hidden control sequence that keeps the
+    /// INITEX meaning of primitive `name`, created on first use.
+    pub(crate) fn primitive_cs(&mut self, name: &[u8]) -> Option<CsId> {
+        let p = *self.primitive_table.get(name)?;
+        if let Some(id) = self.cs.frozen_lookup(name) {
+            return Some(id);
+        }
+        let id = self.cs.push_frozen(name, true);
+        self.eqtb.assign(id, Equiv::Prim(p), true);
+        Some(id)
+    }
+
+    /// pdftex.web <Reset cur_tok for unexpandable primitives>: after the
+    /// frozen `\pdfprimitive` marker, the next token stands for its
+    /// primitive meaning (frozen `\relax` if its name is no primitive).
+    pub(crate) fn pdf_primitive_target(&mut self) -> Token {
+        let t = self.raw_token();
+        let name = if t.is_cs() {
+            self.cs.name(t.cs_id()).to_vec()
+        } else {
+            Vec::new()
+        };
+        let id = match self.primitive_cs(&name) {
+            Some(id) => id,
+            None => self.primitive_cs(b"relax").expect("relax is a primitive"),
+        };
+        Token::from_cs(id)
     }
 
     /// Get the next token, expanding macros and expandable primitives.
@@ -979,6 +1011,9 @@ impl Engine {
                                     }
                                     None => break 'expand,
                                 }
+                            } else if p == Prim::PdfPrimitiveExec && !self.in_expanded_scan {
+                                t = self.pdf_primitive_target();
+                                continue 'resolve;
                             } else {
                                 self.set_cur_cs(t);
                                 return t;
@@ -1047,6 +1082,9 @@ impl Engine {
                 | IfFontChar
                 | IfPdfAbsNum
                 | IfPdfAbsDim
+                | IfPdfPrimitive
+                | PdfPrimitive
+                | PdfInsertHt
                 | IfCase
                 | Or
                 | Else
@@ -1060,7 +1098,6 @@ impl Engine {
                 | PdfCreationDate
                 | PdfFileDump
                 | PdfStrCmp
-                | PdfElapsedTime
                 | PdfUniformDeviate
                 | PdfNormalDeviate
                 | PdfEscapeString
@@ -1668,6 +1705,59 @@ impl Engine {
                 };
                 self.do_if(def, id)
             }
+            IfPdfPrimitive => {
+                // pdftex.web if_pdfprimitive_code: the next token (read
+                // without expansion) still has the primitive meaning that
+                // its name had in INITEX.
+                let save = self.scanner_status;
+                self.scanner_status = ScannerStatus::Normal;
+                let t = self.raw_token();
+                self.scanner_status = save;
+                let b = t.is_cs()
+                    && match (
+                        self.primitive_table.get(self.cs.name(t.cs_id())),
+                        self.eqtb.resolve(t.cs_id()),
+                    ) {
+                        (Some(p), Some(Equiv::Prim(q))) => p == q,
+                        _ => false,
+                    };
+                self.do_if(b, id)
+            }
+            PdfPrimitive => {
+                // pdftex.web <Implement \pdfprimitive>
+                let save = self.scanner_status;
+                self.scanner_status = ScannerStatus::Normal;
+                let t = self.raw_token();
+                self.scanner_status = save;
+                if !t.is_cs() {
+                    return None;
+                }
+                let name = self.cs.name(t.cs_id()).to_vec();
+                let hidden = self.primitive_cs(&name)?;
+                match self.eqtb.get(hidden) {
+                    Some(Equiv::Prim(p)) if self.is_expandable(*p) => {
+                        Some(Token::from_cs(hidden))
+                    }
+                    _ => {
+                        // the name survives a round trip through a file
+                        self.push_token(t);
+                        self.push_token(Token::from_cs(self.ids.frozen_primitive));
+                        None
+                    }
+                }
+            }
+            PdfInsertHt => {
+                // pdftex.web pdf_insert_ht_code: height(r) of the page
+                // insertion record for class n, else 0pt
+                let n = self.scan_reg_num();
+                // (pdfTeX prints a missing class as `0pt`, not `0.0pt`)
+                let text = match self.page_insertions.iter().find(|s| s.num == n) {
+                    Some(s) => self.scaled_to_string(s.height_raw as i32),
+                    None => "0pt".to_string(),
+                };
+                self.exp_string(text.as_bytes());
+                None
+            }
             IfInCsName => self.do_if(self.csname_depth > 0, id),
 
             IfCSName => {
@@ -2132,18 +2222,20 @@ impl Engine {
                 self.exp_string(&hex);
                 None
             }
-            PdfElapsedTime => {
-                self.exp_string(b"0");
-                None
-            }
             PdfColorStackInit => {
                 let stack = self.pdf_colorstack_init();
                 self.exp_string(stack.to_string().as_bytes());
                 None
             }
-            PdfUniformDeviate | PdfNormalDeviate => {
-                let _ = self.scan_int();
-                self.exp_string(b"0");
+            PdfUniformDeviate => {
+                let x = self.scan_int();
+                let value = self.rng.unif_rand(x);
+                self.exp_string(value.to_string().as_bytes());
+                None
+            }
+            PdfNormalDeviate => {
+                let value = self.rng.norm_rand();
+                self.exp_string(value.to_string().as_bytes());
                 None
             }
             PdfEscapeString | PdfEscapeName | PdfEscapeHex => {
@@ -2331,6 +2423,7 @@ impl Engine {
                 | Prim::IfFontChar
                 | Prim::IfPdfAbsNum
                 | Prim::IfPdfAbsDim
+                | Prim::IfPdfPrimitive
         )
     }
 

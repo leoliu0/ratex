@@ -94,7 +94,7 @@ fn test_rust_metatable_index() {
     let mut lua = tex_lua::Lua::new_lua53(tex_lua::SafeOption::default());
     lua.open_stdlib(tex_lua::Stdlib::All).unwrap();
     let count_tbl = lua.create_table().unwrap();
-    let fn_idx = lua.create_function(|_tbl: tex_lua::LuaValue, k: i64| -> tex_lua::LuaResult<i64> {
+    let fn_idx = lua.create_function(|_tbl: tex_lua::Value, k: i64| -> tex_lua::LuaResult<i64> {
         Ok(k * 10)
     }).unwrap();
     let count_meta = lua.create_table().unwrap();
@@ -104,7 +104,7 @@ fn test_rust_metatable_index() {
     lua.set_global("mycount", count_tbl.clone()).unwrap();
     let g: tex_lua::LuaTable = lua.get_global("mycount").unwrap().unwrap();
     assert!(g.has_metatable(), "global mycount must have metatable");
-    let vals: Vec<tex_lua::LuaValue> = lua.eval_multi("return mycount[1]").unwrap();
+    let vals: Vec<tex_lua::Value> = lua.eval_multi("return mycount[1]").unwrap();
     assert_eq!(vals.len(), 1);
     assert_eq!(vals[0].as_integer(), Some(10));
 }

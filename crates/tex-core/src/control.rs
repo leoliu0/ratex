@@ -69,7 +69,8 @@ impl Engine {
     pub fn dispatch(&mut self, t: Token) {
         if self.output_pending {
             self.output_pending = false;
-            let saved = std::mem::replace(&mut self.prev_depth, -1000 * 65536);
+            let ignore_depth = self.ignore_depth();
+            let saved = std::mem::replace(&mut self.prev_depth, ignore_depth);
             let saved_pg = std::mem::replace(&mut self.prev_graf, 0);
             // tex.web fire_up (§28633-28637) `push_nest; mode:=-vmode`: the
             // output routine runs in INTERNAL vertical mode on a fresh list,

@@ -1,0 +1,34 @@
+banner:string buf_size:number callbacks:number cs_count:number dest_names_size:number development_id:number direct_callbacks:number dvi_gone:number dvi_ptr:number dyn_used:number filename:string fix_mem_end:number fix_mem_max:number fix_mem_min:number font_ptr:number function_callbacks:number hash_extra:number hash_size:number indirect_callbacks:number ini_version:boolean init_pool_ptr:number init_str_ptr:number input_ptr:number inputid:number kpse_used:number largest_used_mark:number late_callbacks:number lc_collate:string lc_ctype:string lc_numeric:string linenumber:number log_name:string luabytecode_bytes:number luabytecodes:number luadebug_option:number luastate_bytes:number luatex_engine:string luatex_hashchars:number luatex_hashtype:string luatex_revision:string luatex_version:number max_buf_stack:number max_in_stack:number max_nest_stack:number max_param_stack:number max_save_stack:number max_strings:number nest_size:number node_mem_usage:string obj_ptr:number obj_tab_size:number output_active:boolean param_size:number pdf_dest_names_ptr:number pdf_gone:number pdf_mem_ptr:number pdf_mem_size:number pdf_os_cntr:number pdf_os_objidx:number pdf_ptr:number pool_ptr:number pool_size:number safer_option:number save_size:number saved_callbacks:number shell_escape:number stack_size:number str_ptr:number total_pages:number var_mem_max:number var_used:number
+nil
+true
+table | nil
+table | 0
+nil | nil
+number | float
+Linux
+1971-01-01 00:00:00
+1577840400
+number | number
+safer_option | number | 0
+ini_version | boolean | true
+luatex_version | number | 124
+luatex_revision | string | 0
+kpse_used | number | 
+format_name | nil | nil
+input_ptr | number | 
+lasterrorstring | nil | nil
+lastluaerrorstring | nil | nil
+lastwarningtag | nil | nil
+lastwarningstring | nil | nil
+lasterrorcontext | nil | nil
+luadebug_option | number | 
+development_id | number | 7724
+hash_size | number | 
+output_active | boolean | false
+bogus | nil | nil
+unix | linux | string | function | string
+nil
+true
+nil
+nil
+true

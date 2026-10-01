@@ -1,0 +1,32 @@
+nil | File exists | 17
+nil | No such file or directory | 2
+true | true | false | false
+file | 5 | rw-rw-rw- | 1 | number
+5 | file
+nil | cannot obtain information from file 'nofile': No such file or directory | 2
+false
+directory
+false
+0 | 0
+link | f1.txt | file
+f1.txt
+true | 2000 | 1000
+nil | No such file or directory | 2
+.,..,d1,f1.txt,hard,sym
+false
+function
+.
+false
+true | nil | No such file or directory | 2
+true | nil | Unable to change working directory to 'nonexd'
+No such file or directory
+
+true | binary
+LuaFileSystem 1.7.0 | LuaFileSystem is a Lua library developed to complement the set of functions related to file systems offered by the standard Lua distribution
+true | true
+f1.txt
+boolean | nil
+nil | No such file or directory
+nil | No such file or directory
+nil | 
+true

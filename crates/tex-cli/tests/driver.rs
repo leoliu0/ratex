@@ -268,19 +268,19 @@ fn copied_texmk_ignores_external_tex_trees_until_explicitly_enabled() {
     }
 
     for (package, _, _) in &external_packages {
-        let output = Command::new(&standalone)
-            .arg(format!("{package}.tex"))
-            .current_dir(&project)
-            .env_clear()
-            .env("HOME", fixture.0.join("home"))
-            .env(
-                "TEX_RS_CACHE_DIR",
-                fixture.0.join(format!("cache-default-{package}")),
-            )
-            .env("TEXINPUTS", &texinputs)
-            .env("TEXMFHOME", &texmfhome)
-            .output()
-            .unwrap();
+        let output = output_retrying_text_busy(
+            Command::new(&standalone)
+                .arg(format!("{package}.tex"))
+                .current_dir(&project)
+                .env_clear()
+                .env("HOME", fixture.0.join("home"))
+                .env(
+                    "TEX_RS_CACHE_DIR",
+                    fixture.0.join(format!("cache-default-{package}")),
+                )
+                .env("TEXINPUTS", &texinputs)
+                .env("TEXMFHOME", &texmfhome),
+        );
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(!output.status.success(), "{package} unexpectedly resolved");
         assert!(
@@ -299,25 +299,25 @@ fn copied_texmk_ignores_external_tex_trees_until_explicitly_enabled() {
         ),
     )
     .unwrap();
-    let output = Command::new(&standalone)
-        .args(["--allow-system-texmf", "allowed.tex"])
-        .current_dir(&project)
-        .output()
-        .unwrap();
+    let output = output_retrying_text_busy(
+        Command::new(&standalone)
+            .args(["--allow-system-texmf", "allowed.tex"])
+            .current_dir(&project),
+    );
     assert!(
         !output.status.success(),
         "--allow-system-texmf must be rejected"
     );
-    let hermetic_after_opt_in = Command::new(&standalone)
-        .arg("allowed.tex")
-        .current_dir(&project)
-        .env_clear()
-        .env("HOME", fixture.0.join("home"))
-        .env("TEX_RS_CACHE_DIR", fixture.0.join("cache-allowed"))
-        .env("TEXINPUTS", &texinputs)
-        .env("TEXMFHOME", &texmfhome)
-        .output()
-        .unwrap();
+    let hermetic_after_opt_in = output_retrying_text_busy(
+        Command::new(&standalone)
+            .arg("allowed.tex")
+            .current_dir(&project)
+            .env_clear()
+            .env("HOME", fixture.0.join("home"))
+            .env("TEX_RS_CACHE_DIR", fixture.0.join("cache-allowed"))
+            .env("TEXINPUTS", &texinputs)
+            .env("TEXMFHOME", &texmfhome),
+    );
     assert!(
         !hermetic_after_opt_in.status.success(),
         "a hermetic build reused state produced with external TeX trees"
@@ -482,10 +482,9 @@ fn texstudio_absolute_command_builds_beside_a_spaced_unicode_source() {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let fixture = Fixture(std::env::temp_dir().join(format!(
-        "texmk-texstudio-{}-{nonce}",
-        std::process::id()
-    )));
+    let fixture = Fixture(
+        std::env::temp_dir().join(format!("texmk-texstudio-{}-{nonce}", std::process::id())),
+    );
     let prefix_bin = fixture.0.join("Homebrew Prefix/bin");
     let alias_bin = fixture.0.join("ratex editor é/bin");
     let project = fixture.0.join("My Thesis é");
@@ -547,11 +546,14 @@ fn texstudio_absolute_command_builds_beside_a_spaced_unicode_source() {
             synctex.is_file(),
             "{personality} did not write SyncTeX beside the PDF"
         );
+        // macOS temp dirs live under the /var -> /private/var symlink, so
+        // compare resolved paths rather than spellings.
+        let canonical_source = std::fs::canonicalize(&source).unwrap();
         let inputs = synctex_input_paths(&synctex);
         assert!(
             inputs
                 .iter()
-                .any(|path| std::path::Path::new(path) == source),
+                .any(|path| std::fs::canonicalize(path).is_ok_and(|p| p == canonical_source)),
             "{personality} SyncTeX does not reference {}: {inputs:?}",
             source.display()
         );
@@ -685,9 +687,7 @@ fn eps_figures_and_bibliographies_build_without_any_external_program() {
                             .dict
                             .get(b"BBox")
                             .and_then(lopdf::Object::as_array)
-                            .map(|values| {
-                                values.iter().filter_map(|v| v.as_float().ok()).collect()
-                            })
+                            .map(|values| values.iter().filter_map(|v| v.as_float().ok()).collect())
                             .unwrap_or_default()
                     })
                 })

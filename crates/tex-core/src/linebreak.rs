@@ -1740,7 +1740,13 @@ impl Engine {
         let mut dead_until = 0usize; // nodes in [i, dead_until) are dead
                                      // chain[0] is the synthetic paragraph start (pos 0, line 0)
         let total_lines = chain.len() - 1;
+        // luatex packs and appends line by line: hold the hpack_quality
+        // calls back until `fill_line_interline` reaches the line
+        self.lua_par_lines.defer = self.engine_kind == crate::engine::EngineKind::LuaTeX
+            && self.cb_defined(crate::lua_callbacks::Cb::HpackQuality);
+        self.lua_par_lines.quality.clear();
         for (li, bp) in chain.iter().skip(1).enumerate() {
+            self.lua_par_lines.ordinal = li;
             let j = bp.pos.min(list.len());
             let mut seg: NodeList = Vec::new();
             let mut nat_w = 0i64;
@@ -2011,6 +2017,10 @@ impl Engine {
             }
         }
         self.lr_save_store(lr_key, lr);
+        self.lua_par_lines.defer = false;
+        if !self.lua_par_lines.hold {
+            self.lua_flush_pack_quality();
+        }
 
         crate::boxes::vpack(lines, None, crate::boxes::VBOX, &self.eqtb).node
     }
@@ -2187,7 +2197,24 @@ impl Engine {
                 }
             }
         }
-        let r = crate::boxes::vpack_add_md(
+        // luatex vsplit: `filtered_vpackage(q, h, exactly, split_max_depth,
+        // split_off_group)` runs `vpack_filter` and reports the packing
+        let lua = self.engine_kind == crate::engine::EngineKind::LuaTeX;
+        let top = if lua {
+            self.lua_pack_filter(
+                crate::lua_callbacks::Cb::VpackFilter,
+                "vpack filter",
+                "split_off",
+                target,
+                true,
+                Some(smd as i32),
+                Some("TLT"),
+                top,
+            )
+        } else {
+            top
+        };
+        let mut r = crate::boxes::vpack_add_md(
             top,
             Some(target),
             false,
@@ -2195,6 +2222,9 @@ impl Engine {
             &self.eqtb,
             smd as i32,
         );
+        if lua {
+            self.report_pack_warnings(&mut r);
+        }
         self.last_badness = r.badness;
         self.vsplat_remainder = Some(rest);
         Some(r.node)

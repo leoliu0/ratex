@@ -317,6 +317,11 @@ impl Engine {
             );
             return false;
         }
+        if self.engine_kind == crate::engine::EngineKind::LuaTeX {
+            if let Some(result) = self.lua_input_file(name, included_from.clone()) {
+                return result;
+            }
+        }
         let path = if raw_name == name {
             self.resolve_input_path(name)
         } else {
@@ -376,7 +381,9 @@ impl Engine {
                 let shown = std::os::unix::ffi::OsStrExt::as_bytes(p.as_os_str()).to_vec();
                 #[cfg(not(unix))]
                 let shown = p.to_string_lossy().into_owned().into_bytes();
-                self.print_file_open(&shown);
+                if !self.lua_report_start_file(crate::lua_cb_files::filetype::TEX, &shown) {
+                    self.print_file_open(&shown);
+                }
                 // tex.web start_input: the file sits above the current
                 // token list. `pushed` is that token list, so leftovers
                 // must park below the file even during \\output — else
@@ -423,7 +430,9 @@ impl Engine {
                     (key, data)
                 });
                 if let Some((key, data)) = found_data {
-                    self.print_file_open(key.as_bytes());
+                    if !self.lua_report_start_file(crate::lua_cb_files::filetype::TEX, key.as_bytes()) {
+                        self.print_file_open(key.as_bytes());
+                    }
                     if !self.pushed.is_empty() {
                         let mut rest = std::mem::take(&mut self.pushed);
                         rest.reverse();
@@ -443,6 +452,71 @@ impl Engine {
                 false
             }
         }
+    }
+
+    /// luatex `start_input` with a `find_read_file` and/or `open_read_file`
+    /// callback (texfileio.c `lua_a_open_in`): the first names the file, the
+    /// second supplies an object whose `reader` yields its lines. `None`
+    /// when neither callback is registered.
+    fn lua_input_file(&mut self, name: &str, included_from: Option<crate::input::SourceMark>) -> Option<bool> {
+        use crate::lua_callbacks::Cb;
+        let find = self.cb_defined(Cb::FindReadFile);
+        let open = self.cb_defined(Cb::OpenReadFile);
+        if !find && !open {
+            return None;
+        }
+        let fnam: Option<String> = if find {
+            self.lua_find_file(Cb::FindReadFile, Some(0), name.as_bytes())
+                .flatten()
+                .map(|b| String::from_utf8_lossy(&b).into_owned())
+        } else {
+            self.resolve_input_path(name).map(|p| p.to_string_lossy().into_owned())
+        };
+        let not_found = |this: &mut Self| {
+            this.fatal_error_at(
+                &format!("File `{}` not found", name),
+                included_from.as_ref().map(crate::input::SourceMark::to_context),
+            );
+            Some(false)
+        };
+        let Some(fnam) = fnam else {
+            return not_found(self);
+        };
+        enum Content {
+            Reader(u32),
+            Bytes(std::rc::Rc<[u8]>),
+        }
+        let content = if open {
+            match self.lua_reader_open(fnam.as_bytes()) {
+                Some(id) => Content::Reader(id),
+                None => return not_found(self),
+            }
+        } else {
+            let path = std::path::PathBuf::from(&fnam);
+            match self.input.read_file(&path) {
+                Ok(bytes) => {
+                    self.loaded_files.push(path.clone());
+                    self.record_loaded_bytes(&path, &bytes);
+                    Content::Bytes(self.from_external(bytes))
+                }
+                Err(_) => return not_found(self),
+            }
+        };
+        if !self.lua_report_start_file(crate::lua_cb_files::filetype::TEX, fnam.as_bytes()) {
+            self.print_file_open(fnam.as_bytes());
+        }
+        if !self.pushed.is_empty() {
+            let mut rest = std::mem::take(&mut self.pushed);
+            rest.reverse();
+            if !self.try_push_tokens_named(rest, "<after-input>") {
+                return Some(false);
+            }
+        }
+        match content {
+            Content::Reader(id) => self.input.push_reader_file(fnam, id, included_from),
+            Content::Bytes(data) => self.input.push_file_from(fnam, data, included_from),
+        }
+        Some(true)
     }
 
     /// A file whose name holds bytes that are not valid UTF-8 (TeX reads
@@ -832,6 +906,24 @@ impl Engine {
             self.fatal_error_at(&format!("I can't write on file `{full}`"), source.cloned());
             return;
         }
+        // luatex lua_a_open_out: a `find_write_file` callback names the file
+        // (and replaces the transcript note)
+        let lua_named = if self.engine_kind == crate::engine::EngineKind::LuaTeX && self.cb_defined(crate::lua_callbacks::Cb::FindWriteFile) {
+            match self
+                .lua_find_file(crate::lua_callbacks::Cb::FindWriteFile, Some(i32::from(stream) + 1), full.as_bytes())
+                .flatten()
+                .filter(|n| !n.is_empty())
+            {
+                Some(n) => Some(String::from_utf8_lossy(&n).into_owned()),
+                None => {
+                    self.fatal_error_at(&format!("I can't write on file `{full}`"), source.cloned());
+                    return;
+                }
+            }
+        } else {
+            None
+        };
+        let full: &str = lua_named.as_deref().unwrap_or(full);
         let idx = (stream as usize).min(self.write_streams.len() - 1);
         if self.write_streams[idx].take().is_some() {
             // canonical: an open on a busy stream closes the old file first
@@ -862,7 +954,9 @@ impl Engine {
                 self.write_streams[idx] = Some(f);
                 self.write_stream_paths[idx] = Some(full.to_string());
                 self.written_files.push(path);
-                self.print_openout_note(stream, full);
+                if lua_named.is_none() {
+                    self.print_openout_note(stream, full);
+                }
             }
             // tex.web §1374: a stream that cannot be opened goes to
             // prompt_file_name, which is fatal without a terminal.
@@ -1229,6 +1323,12 @@ impl Engine {
             self.read_files.push(None);
             self.read_eof.push(true);
         }
+        if self.engine_kind == crate::engine::EngineKind::LuaTeX {
+            self.lua_close_read_reader(n as usize);
+            if self.lua_openin(n as usize, &name) {
+                return;
+            }
+        }
         // kpathsea/web2c lookup: output directory first for relative
         // names, then the kpse search path (covers literal paths too)
 
@@ -1275,6 +1375,9 @@ impl Engine {
         while self.read_files.len() <= n {
             self.read_files.push(None);
             self.read_eof.push(true);
+        }
+        if self.engine_kind == crate::engine::EngineKind::LuaTeX {
+            self.lua_close_read_reader(n);
         }
         self.read_files[n] = None;
         self.read_eof[n] = true;
@@ -1344,7 +1447,17 @@ impl Engine {
         let mut balance = 0i32;
         loop {
             let mut line = Vec::new();
-            let read = if (0..16).contains(&stream) {
+            let reader = self.read_readers.get(stream as usize).copied().unwrap_or(0);
+            let read = if reader != 0 && (0..16).contains(&stream) && self.read_files[stream as usize].is_some() {
+                // an `open_read_file` object: `reader` gives the next line
+                Some(Ok(match self.lua_reader_line(reader) {
+                    Some(l) => {
+                        line = l;
+                        (true, false)
+                    }
+                    None => (false, false),
+                }))
+            } else if (0..16).contains(&stream) {
                 self.read_files
                     .get_mut(stream as usize)
                     .and_then(Option::as_mut)
@@ -1400,6 +1513,9 @@ impl Engine {
             if eof {
                 self.read_files[stream as usize] = None;
                 self.read_eof[stream as usize] = true;
+                if self.engine_kind == crate::engine::EngineKind::LuaTeX {
+                    self.lua_close_read_reader(stream as usize);
+                }
                 if balance != 0 {
                     self.error_at(
                         "File ended within \\read",
@@ -1412,6 +1528,10 @@ impl Engine {
                 line.pop();
             }
             let endline = self.eqtb.int_params[crate::prim::IntParam::EndLineChar.idx() as usize];
+            if line_mode && !eof && self.engine_kind == crate::engine::EngineKind::LuaTeX {
+                // luatex lua_input_ln: \readline lines pass the callback too
+                self.lua_process_input_line(&mut line);
+            }
             if line_mode {
                 if (0..256).contains(&endline) {
                     if line.len() >= crate::input::MAX_TOKEN_LIST_TOKENS {

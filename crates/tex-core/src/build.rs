@@ -1511,6 +1511,24 @@ impl Engine {
                     self.vlist_append(node);
                 }
                 Mode::InternalVertical => {
+                    // luatex append_to_vlist: the callback supplies the
+                    // nodes (and `prev_depth`) instead of the interline glue
+                    let node = if self.engine_kind == crate::engine::EngineKind::LuaTeX
+                        && matches!(node, Node::Box { .. })
+                    {
+                        match self.lua_append_to_vlist(node, "box", self.prev_depth) {
+                            Ok((list, depth)) => {
+                                self.cur_list.extend(list);
+                                if let Some(d) = depth {
+                                    self.prev_depth = d;
+                                }
+                                return;
+                            }
+                            Err(back) => back,
+                        }
+                    } else {
+                        node
+                    };
                     if let Node::Box { h, d, .. } = &node {
                         if self.prev_depth > self.ignore_depth() {
                             let bs = self.eqtb.glue_params
@@ -1851,7 +1869,10 @@ impl Engine {
                 }
                 let (begin, line) = (self.pack_begin_line, self.nest_line());
                 let snapshot = res.node.clone();
-                if let Some(rules) = self.lua_pack_quality(hbox, what, value, &snapshot, begin, line) {
+                if hbox && self.lua_par_lines.defer {
+                    self.lua_defer_pack_quality(what, value, snapshot, begin, line);
+                    msg = None;
+                } else if let Some(rules) = self.lua_pack_quality(hbox, what, value, &snapshot, begin, line) {
                     if let Node::Box { list, .. } = &mut res.node {
                         list.extend(rules);
                     }
@@ -2971,7 +2992,10 @@ impl Engine {
             let content = self.lua_pre_linebreak(content);
             match self.lua_linebreak_filter(content, self.in_display_init) {
                 Ok(list) => (boxes::vpack(list, None, boxes::VBOX, &self.eqtb).node, true),
-                Err(content) => (self.break_paragraph(content, fw, display_widow), false),
+                Err(content) => {
+                    self.lua_par_lines.hold = true;
+                    (self.break_paragraph(content, fw, display_widow), false)
+                }
             }
         } else {
             (self.break_paragraph(content, fw, display_widow), false)
@@ -3037,7 +3061,7 @@ impl Engine {
                 // tex.web append_to_vlist: materialize interline glue NOW
                 // with the \baselineskip in force at paragraph end — the
                 // page builder's lazy interline would read post-group state
-                let (filled, last_d) = self.paragraph_vlist(lines, lua_lines);
+                let (filled, last_d) = self.paragraph_vlist(lines, lua_lines, true);
                 self.page_list.extend(filled);
                 self.mode = Mode::Vertical;
                 self.cur_list = Vec::new();
@@ -3067,7 +3091,7 @@ impl Engine {
                     Node::Box { list, .. } => list,
                     other => vec![other],
                 };
-                let (filled, last_d) = self.paragraph_vlist(taken, lua_lines);
+                let (filled, last_d) = self.paragraph_vlist(taken, lua_lines, false);
                 self.cur_list = inner;
                 self.mode = Mode::InternalVertical;
                 self.cur_list.extend(filled);
@@ -3098,16 +3122,21 @@ impl Engine {
                 self.mode = saved_mode;
             }
         }
+        if lua_mode {
+            // calls no line append consumed (the display branch)
+            self.lua_par_lines.hold = false;
+            self.lua_flush_pack_quality();
+        }
     }
 
     /// The vertical list a broken paragraph appends: interline glue
     /// materialized (unless Lua broke the paragraph and supplied it), then
     /// LuaTeX's `post_linebreak_filter`.
-    fn paragraph_vlist(&mut self, lines: NodeList, lua_lines: bool) -> (NodeList, i32) {
+    fn paragraph_vlist(&mut self, lines: NodeList, lua_lines: bool, main: bool) -> (NodeList, i32) {
         let (filled, last_d) = if lua_lines {
             (lines, self.prev_depth)
         } else {
-            self.fill_line_interline(self.prev_depth, lines)
+            self.fill_line_interline(self.prev_depth, lines, main)
         };
         if self.engine_kind == crate::engine::EngineKind::LuaTeX {
             (self.lua_post_linebreak(filled), last_d)
@@ -3120,7 +3149,7 @@ impl Engine {
     /// baselineskip/lineskip glue (tex.web append_to_vlist §17438-17440):
     /// used when a paragraph's lines land in an internal vlist, which the
     /// page builder never processes
-    fn fill_line_interline(&mut self, outer_prev_depth: i32, list: NodeList) -> (NodeList, i32) {
+    fn fill_line_interline(&mut self, outer_prev_depth: i32, list: NodeList, main: bool) -> (NodeList, i32) {
         let lua_mode = self.engine_kind == crate::engine::EngineKind::LuaTeX;
         let ignore_depth = self.ignore_depth();
         let bs = self.eqtb.glue_params[GlueParam::BaselineSkip.idx() as usize].clone();
@@ -3130,6 +3159,7 @@ impl Engine {
         let mut prev_depth = outer_prev_depth;
         // hold a pending placeholder until we know whether a box follows
         let mut held_placeholder = false;
+        let mut line_k = 0usize;
         for n in list.into_iter() {
             match n {
                 Node::Glue(ref g) if g.width == 0 && g.stretch == 0 && g.shrink == 0 => {
@@ -3141,6 +3171,9 @@ impl Engine {
                     // vertical list raw without interline glue and without
                     // altering prev_depth
                     out.extend(items);
+                    if lua_mode {
+                        self.lua_contribute_filter("adjust");
+                    }
                 }
                 Node::Rule { .. } => {
                     held_placeholder = false;
@@ -3153,6 +3186,13 @@ impl Engine {
                     // luatex append_to_vlist: the callback supplies the
                     // nodes and the depth instead of the interline glue
                     if lua_mode {
+                        // the line's packing report, then `pre_box` while
+                        // earlier material still waits for the page builder
+                        self.lua_fire_pack_quality(line_k, &mut node);
+                        line_k += 1;
+                        if main && (!out.is_empty() || self.page_list.len() > self.page_processed) {
+                            self.lua_contribute_filter("pre_box");
+                        }
                         match self.lua_append_to_vlist(node, "post_linebreak", prev_depth) {
                             Ok((items, depth)) => {
                                 held_placeholder = false;
@@ -3160,6 +3200,7 @@ impl Engine {
                                 if let Some(depth) = depth {
                                     prev_depth = depth;
                                 }
+                                self.lua_contribute_filter("box");
                                 continue;
                             }
                             Err(back) => node = back,
@@ -3184,6 +3225,9 @@ impl Engine {
                     prev_depth = d;
                     held_placeholder = false;
                     out.push(n);
+                    if lua_mode {
+                        self.lua_contribute_filter("box");
+                    }
                 }
                 _ => {
                     if held_placeholder {

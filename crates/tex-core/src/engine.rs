@@ -50,6 +50,17 @@ impl Mode {
             Mode::InternalVertical | Mode::RestrictedHorizontal | Mode::Math
         )
     }
+    /// tex.web §211 print_mode.
+    pub fn name(self) -> &'static str {
+        match self {
+            Mode::Vertical => "vertical mode",
+            Mode::InternalVertical => "internal vertical mode",
+            Mode::Horizontal => "horizontal mode",
+            Mode::RestrictedHorizontal => "restricted horizontal mode",
+            Mode::Math => "math mode",
+            Mode::DisplayMath => "display math mode",
+        }
+    }
 }
 /// Hard stop for a runaway main loop (latex.ltx boot is well below this).
 pub const MAX_MAIN_STEPS: u64 = 100_000_000;
@@ -117,6 +128,9 @@ pub(crate) struct PhysicalTokenSource {
 pub struct Ids {
     pub par: CsId,
     pub cs_escape: u8,
+    /// pdftex.web `frozen_primitive`: the internal `\pdfprimitive` that
+    /// precedes the name of an unexpandable primitive.
+    pub frozen_primitive: CsId,
 }
 
 /// pdfTeX output parameters that the first shipout freezes
@@ -129,6 +143,14 @@ pub struct PdfFixedParams {
     pub draftmode: i32,
     /// `\pdfdecimaldigits` clamped to 0..4.
     pub decimal_digits: u32,
+    /// `fixed_gamma`, `fixed_image_gamma` (0..1000000),
+    /// `fixed_image_hicolor`, `fixed_image_apply_gamma` (0..1).
+    pub gamma: i32,
+    pub image_gamma: i32,
+    pub image_hicolor: bool,
+    pub image_apply_gamma: bool,
+    /// `fixed_inclusion_copy_font` (0..1).
+    pub inclusion_copy_font: bool,
 }
 
 pub struct Engine {
@@ -139,6 +161,16 @@ pub struct Engine {
     pub(crate) primitive_names: crate::FxHashMap<u16, &'static [u8]>,
     /// LuaTeX's primitive table (`crate::luatex`); empty for other engines.
     pub(crate) lua_primitives: Vec<crate::luatex::LuaPrimitive>,
+    /// pdftex.web `prim_lookup`: primitive meaning of each primitive name,
+    /// fixed at initialization (redefinitions do not change it).
+    pub(crate) primitive_table: crate::FxHashMap<Box<[u8]>, Prim>,
+    /// pdftex.web `pdf_retval` (`\pdfretval`).
+    pub pdf_retval: i32,
+    /// tex.web `clang`: the language of the innermost paragraph.
+    pub(crate) clang: u8,
+    /// One entry per open paragraph (tex.web new_graf's `prev_graf`
+    /// language encoding and the enclosing `clang`).
+    pub(crate) par_langs: Vec<crate::language::ParLang>,
     pub input: InputStack,
     pub ids: Ids,
 
@@ -347,6 +379,21 @@ pub struct Engine {
     pub leader_stack: Vec<(u8, usize)>,
     pub insert_nums: Vec<u16>,
     pub pdf_images: crate::FxHashMap<i32, PdfImageInfo>,
+    /// pdfTeX `pdf_page_group_val`: the /Group object of the page (or form)
+    /// being shipped; left over between shipouts like pdfTeX's global.
+    pub pdf_page_group_val: i32,
+    /// writepng.c `transparent_page_group`: the shared page group of PNGs
+    /// with an alpha channel (0 = not allocated), and whether it is written.
+    pub transparent_page_group: i32,
+    pub transparent_page_group_written: bool,
+    /// pdfTeX `warn_pdfpagebox` cleared: the obsolete page-box option
+    /// warning was given.
+    pub pdf_warned_pagebox: bool,
+    /// \pdfxform objects whose /ProcSet is inserted when pdfTeX would write
+    /// them (it depends on \pdfomitprocset at that time).
+    pub pdf_form_procsets: crate::FxHashMap<i32, FormProcset>,
+    /// pdfTeX `pdf_snapx_refpos`/`pdf_snapy_refpos` (\pdfsnaprefpoint).
+    pub pdf_snap_refpos: (i64, i64),
     pub pdf_xforms: crate::FxHashMap<i32, (i32, i32, i32)>,
     /// pdfTeX color stacks (\pdfcolorstack, \pdfcolorstackinit)
     pub color_stacks: crate::pdfrender::ColorStacks,
@@ -848,15 +895,21 @@ impl Engine {
     pub fn new_with_kind(engine_kind: EngineKind, ini_mode: bool) -> Engine {
         let mut cs = CsTable::new();
         let par = cs.intern(b"par");
-        let e = Engine {
+        let frozen_primitive = cs.push_frozen(b"pdfprimitive", false);
+        let mut e = Engine {
             ids: Ids {
                 par,
                 cs_escape: b'\\',
+                frozen_primitive,
             },
             cs,
             eqtb: Eqtb::new(ini_mode),
             primitive_names: crate::FxHashMap::default(),
             lua_primitives: Vec::new(),
+            primitive_table: crate::FxHashMap::default(),
+            pdf_retval: 0,
+            clang: 0,
+            par_langs: Vec::new(),
             input: InputStack::new(),
             par_saves: 0,
             resume_after_display: false,
@@ -874,6 +927,12 @@ impl Engine {
             prev_depth: -1000 * 65536,
             space_factor: 1000,
             pdf_images: crate::FxHashMap::default(),
+            pdf_page_group_val: 0,
+            transparent_page_group: 0,
+            transparent_page_group_written: false,
+            pdf_warned_pagebox: false,
+            pdf_form_procsets: crate::FxHashMap::default(),
+            pdf_snap_refpos: (0, 0),
             pdf_xforms: crate::FxHashMap::default(),
             color_stacks: crate::pdfrender::ColorStacks::default(),
             prev_graf: 0,
@@ -1113,7 +1172,25 @@ impl Engine {
             rng: crate::random::Randoms::from_clock(),
             timer_start: crate::clock::now_micros(),
         };
+        // pdftex.web: \pdfignoreddimen starts at TeX82's ignore_depth and
+        // the four line dimensions at \pdfignoreddimen ("not set")
+        for p in [
+            DimParam::PdfFirstLineHeight,
+            DimParam::PdfLastLineDepth,
+            DimParam::PdfEachLineHeight,
+            DimParam::PdfEachLineDepth,
+            DimParam::PdfIgnoredDimen,
+        ] {
+            e.eqtb.dim_params[p.idx() as usize] = -1000 * 65536;
+        }
         e
+    }
+
+    /// pdftex.web `pdf_ignored_dimen`: the `\prevdepth` at or below which
+    /// no interline glue is added (TeX82's constant `ignore_depth`).
+    #[inline]
+    pub fn ignore_depth(&self) -> i32 {
+        self.eqtb.dim_params[DimParam::PdfIgnoredDimen.idx() as usize]
     }
     pub fn asset_fingerprint(&self) -> u64 {
         let mut h: u64 = 0xcbf2_9ce4_8422_2325;
@@ -1842,15 +1919,26 @@ impl Engine {
         // ones with implemented semantics are registered.
         d!(eng, b"ifpdfabsnum", IfPdfAbsNum);
         d!(eng, b"ifpdfabsdim", IfPdfAbsDim);
-        let engine_ints: [(&'static [u8], IntParam, i32); 10] = [
+        d!(eng, b"quitvmode", QuitVMode);
+        d!(eng, b"pdfprimitive", PdfPrimitive);
+        d!(eng, b"ifpdfprimitive", IfPdfPrimitive);
+        d!(eng, b"setlanguage", SetLanguage);
+        d!(eng, b"parshapelength", ParShapeLength);
+        d!(eng, b"parshapeindent", ParShapeIndent);
+        d!(eng, b"parshapedimen", ParShapeDimen);
+        d!(eng, b"-", HyphenDisc);
+        d!(eng, b"gluetomu", GlueToMu);
+        d!(eng, b"mutoglue", MuToGlue);
+        d!(eng, b"pdfretval", PdfRetval);
+        d!(eng, b"pdfinsertht", PdfInsertHt);
+        let engine_ints: [(&'static [u8], IntParam, i32); 11] = [
             (b"synctex", IntParam::Synctex, 0),
             (b"pdfdecimaldigits", IntParam::PdfDecimalDigits, 3),
             (b"pdfdraftmode", IntParam::PdfDraftMode, 0),
             (b"pdfpkresolution", IntParam::PdfPkResolution, 0),
             (b"pdftracingfonts", IntParam::PdfTracingFonts, 0),
             (b"pdfmajorversion", IntParam::PdfMajorVersion, 1),
-            // e-TeX tracing switches the LaTeX kernel assigns (their
-            // tracing output is not implemented yet)
+            (b"lastlinefit", IntParam::LastLineFit, 0),
             (b"tracingassigns", IntParam::TracingAssigns, 0),
             (b"tracinggroups", IntParam::TracingGroups, 0),
             (b"tracingifs", IntParam::TracingIfs, 0),
@@ -1860,6 +1948,28 @@ impl Engine {
             def(name, IntP(p), eng);
             eng.eqtb.int_params[p.idx() as usize] = value;
         }
+        for (name, p) in [
+            (&b"pdffirstlineheight"[..], DimParam::PdfFirstLineHeight),
+            (b"pdflastlinedepth", DimParam::PdfLastLineDepth),
+            (b"pdfeachlineheight", DimParam::PdfEachLineHeight),
+            (b"pdfeachlinedepth", DimParam::PdfEachLineDepth),
+            (b"pdfignoreddimen", DimParam::PdfIgnoredDimen),
+        ] {
+            def(name, DimP(p), eng);
+        }
+        // pdftex.web frozen_primitive: the internal \pdfprimitive marker
+        eng.eqtb
+            .assign(eng.ids.frozen_primitive, Equiv::Prim(PdfPrimitiveExec), true);
+        // pdftex.web prim_lookup table: every primitive name registered
+        let mut table = crate::FxHashMap::default();
+        for id in eng.cs.all_ids() {
+            if let Some(Equiv::Prim(p)) = eng.eqtb.get(id) {
+                if id != eng.ids.frozen_primitive {
+                    table.insert(eng.cs.name(id).to_vec().into_boxed_slice(), *p);
+                }
+            }
+        }
+        eng.primitive_table = table;
         eng.init_luatex_primitives();
     }
     /// SyncTeX records are taken while `\synctex` is nonzero (synctex.c
@@ -2094,18 +2204,62 @@ impl Engine {
     }
 }
 
+/// Where a `\\pdfxform`'s /ProcSet goes in its object and what it lists.
+#[derive(Clone, Copy, Debug)]
+pub struct FormProcset {
+    pub offset: usize,
+    pub text: bool,
+    pub images: u8,
+}
+
+/// Image file types pdfTeX distinguishes (`img_type`); SVG is rasterized.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ImageKind {
+    Pdf,
+    Png,
+    Jpeg,
+    Svg,
+}
+
+/// pdfTeX `IMAGE_COLOR_B`/`_C`/`_I`: the /ProcSet image procedures.
+pub const IMAGE_COLOR_B: u8 = 1;
+pub const IMAGE_COLOR_C: u8 = 2;
+pub const IMAGE_COLOR_I: u8 = 4;
+
+/// One `\pdfximage` object (pdfTeX `obj_ximage_*` plus `image_entry`).
 #[derive(Clone, Debug)]
 pub struct PdfImageInfo {
     pub path: String,
+    pub kind: ImageKind,
+    /// painted on some page or form
     pub used: bool,
+    /// written with the first page or form painting it (`is_obj_written`)
+    pub written: bool,
     pub width: i32,
     pub height: i32,
     pub depth: i32,
-    /// true when the file was imported as a PDF Form XObject during scan:
-    /// the image bytes are already embedded, so shipping must not re-read it.
-    pub embedded: bool,
+    /// `image_width`/`image_height`: pixels, or sp for PDF pages
+    pub image_width: i32,
+    pub image_height: i32,
+    /// `image_rotate` of PDF pages (multiples of 90 swap the axes)
+    pub rotate: i32,
+    /// `epdf_orig_x`/`epdf_orig_y` in sp
+    pub orig_x: i32,
+    pub orig_y: i32,
+    /// `img_color`: IMAGE_COLOR_* bits for /ProcSet
+    pub color: u8,
+    /// `img_group_ref`: 0 none, -1 PDF page group without an object yet,
+    /// else the page-group object
+    pub group_ref: i32,
+    /// `attr {...}` tokens, written first in the image dictionary
+    pub attr: Option<String>,
+    /// `colorspace <n>`: object number replacing the image's color space
+    pub colorspace: i32,
     /// Bundled raster bytes retained for deferred embedding without a disk file.
     pub resource_bytes: Option<std::sync::Arc<Vec<u8>>>,
+    /// The form XObject of an included PDF page, written on first use.
+    pub pdf_form: Option<std::sync::Arc<crate::pdf_images::PdfForm>>,
+    /// `\pdfximagebbox` values: the page box of PDF images, else zero.
     pub bbox: [i32; 4],
 }
 #[cfg(test)]

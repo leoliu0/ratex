@@ -1256,6 +1256,21 @@ impl GC {
         }
     }
 
+    /// Values held by native code (`GlobalState::rust_roots`) and borrowed by
+    /// live host guards (`StateLiveness` pins) are roots.
+    fn mark_host_pins(&mut self, l: &mut LuaState) {
+        let mut index = 0;
+        while let Some(&value) = l.global_state().rust_roots.get(index) {
+            self.mark_value(l, &value);
+            index += 1;
+        }
+        let liveness = std::rc::Rc::clone(&l.global_state().liveness);
+        for index in 0..liveness.pinned_len() {
+            let value = liveness.pinned_at(index);
+            self.mark_value(l, &value);
+        }
+    }
+
     fn restart_collection(&mut self, l: &mut LuaState) {
         self.stats.collection_count += 1;
 
@@ -1284,6 +1299,7 @@ impl GC {
 
         // Single-byte string cache is a strong root for fast string.sub.
         self.mark_byte_string_cache(l);
+        self.mark_host_pins(l);
 
         // Mark debug hook function (per-thread, on main thread)
         let hook = l.hook;
@@ -2224,8 +2240,10 @@ impl GC {
             }
             gc_ud
                 .data
-                .get_trait()
-                .trace_lua_values(&mut |value| self.mark_value(l, &value));
+                .trait_for_gc()
+                .trace_lua_values(&mut crate::LuaValueVisitor(&mut |value| {
+                    self.mark_value(l, &value)
+                }));
 
             self.gen_link(gc_ptr);
 
@@ -2256,6 +2274,7 @@ impl GC {
 
         // Single-byte string cache is a strong root for fast string.sub.
         self.mark_byte_string_cache(l);
+        self.mark_host_pins(l);
 
         // Mark debug hook function (per-thread, stored on LuaState)
         let hook = l.hook;
@@ -3964,8 +3983,10 @@ impl GC {
                 self.mark_object(l, metatable.as_gc_ptr().unwrap());
             }
             ud.data
-                .get_trait()
-                .trace_lua_values(&mut |value| self.mark_value(l, &value));
+                .trait_for_gc()
+                .trace_lua_values(&mut crate::LuaValueVisitor(&mut |value| {
+                    self.mark_value(l, &value)
+                }));
         } else {
             let header = gc_ptr.header_mut().unwrap();
             //  Only add to gray list if not already gray

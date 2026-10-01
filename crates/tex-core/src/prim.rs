@@ -1014,6 +1014,8 @@ pub enum Prim {
     /// front of a name whose primitive meaning is unexpandable (pdfTeX
     /// `frozen_primitive`).
     PdfPrimitiveExec,
+    /// TeX82 `\-` (tex.web §1114 `discretionary` chr 1).
+    HyphenDisc,
     /// e-TeX TeXXeT text-direction primitives (`valign` with a nonzero
     /// modifier in etex.ch)
     BeginL,
@@ -1059,9 +1061,6 @@ pub enum Prim {
     DviVariable,
     DviFeedback,
     DviExtension,
-    /// TeX82 `\-` (tex.web §1117 append_discretionary with `cur_chr=1`);
-    /// LuaTeX names it `\explicitdiscretionary`.
-    ExplicitHyphen,
     /// LuaTeX `\glet`: `\global\let`.
     GLet,
     /// LuaTeX `\hpack`/`\vpack`/`\tpack`: `\hbox`/`\vbox`/`\vtop` without
@@ -1517,6 +1516,7 @@ impl Prim {
             Prim::PdfRetval => 411,
             Prim::PdfInsertHt => 412,
             Prim::PdfPrimitiveExec => 413,
+            Prim::HyphenDisc => 414,
             Prim::BeginL => 600,
             Prim::EndL => 601,
             Prim::BeginR => 602,
@@ -1549,7 +1549,6 @@ impl Prim {
             Prim::DviVariable => 623,
             Prim::DviFeedback => 624,
             Prim::DviExtension => 625,
-            Prim::ExplicitHyphen => 626,
             Prim::GLet => 627,
             Prim::HPack => 628,
             Prim::VPack => 629,
@@ -1980,6 +1979,7 @@ impl Prim {
             411 => Some(Prim::PdfRetval),
             412 => Some(Prim::PdfInsertHt),
             413 => Some(Prim::PdfPrimitiveExec),
+            414 => Some(Prim::HyphenDisc),
             600 => Some(Prim::BeginL),
             601 => Some(Prim::EndL),
             602 => Some(Prim::BeginR),
@@ -2012,7 +2012,6 @@ impl Prim {
             623 => Some(Prim::DviVariable),
             624 => Some(Prim::DviFeedback),
             625 => Some(Prim::DviExtension),
-            626 => Some(Prim::ExplicitHyphen),
             627 => Some(Prim::GLet),
             628 => Some(Prim::HPack),
             629 => Some(Prim::VPack),

@@ -248,6 +248,11 @@ impl LuaApi for LuaState {
         kind: LuaValueKind,
         metatable: Option<&LuaTable>,
     ) -> LuaResult<()> {
+        if let Some(metatable) = metatable
+            && !metatable.same_state_as(self.global_state())
+        {
+            return Err(self.error("metatable belongs to a different Lua state".to_string()));
+        }
         self.global_state_mut()
             .set_basic_metatable(kind, metatable.map(LuaTable::value));
         Ok(())

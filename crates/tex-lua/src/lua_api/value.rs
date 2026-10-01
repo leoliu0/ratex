@@ -35,6 +35,25 @@ impl Value {
         self.to_value().is_nil()
     }
 
+    /// The value as an integer if it is a number with an exact integer
+    /// representation (strings are not converted).
+    #[inline]
+    pub fn as_integer(&self) -> Option<i64> {
+        self.to_value().as_integer()
+    }
+
+    /// The value as a float if it is a number (strings are not converted).
+    #[inline]
+    pub fn as_number(&self) -> Option<f64> {
+        self.to_value().as_number()
+    }
+
+    /// The value as a boolean if it is one.
+    #[inline]
+    pub fn as_boolean(&self) -> Option<bool> {
+        self.to_value().as_boolean()
+    }
+
     /// Convert the wrapped value into a Rust type.
     #[inline]
     pub fn get<T: FromLua>(&self) -> LuaResult<T> {
@@ -135,19 +154,13 @@ impl Value {
 
 impl IntoLua for Value {
     fn into_lua(self, state: &mut LuaState) -> Result<usize, String> {
-        state
-            .push_value(self.inner.to_value())
-            .map_err(|e| format!("{:?}", e))?;
-        Ok(1)
+        self.inner.push_into(state)
     }
 }
 
 impl IntoLua for &Value {
     fn into_lua(self, state: &mut LuaState) -> Result<usize, String> {
-        state
-            .push_value(self.inner.to_value())
-            .map_err(|e| format!("{:?}", e))?;
-        Ok(1)
+        self.inner.push_into(state)
     }
 }
 

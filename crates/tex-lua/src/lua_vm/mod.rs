@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::ptr::null_mut;
+use std::rc::Rc;
 
 pub mod async_thread;
 pub mod call_info;
@@ -48,8 +49,8 @@ use crate::lua_vm::file_layout::inspect_file_chunk_layout;
 pub use crate::lua_vm::lua_error::LuaError;
 use crate::lua_vm::lua_ref::store_in_registry;
 pub use crate::lua_vm::lua_ref::{
-    LUA_REFNIL, LuaAnyRef, LuaFunctionRef, LuaRefValue, LuaStringRef, LuaTableRef, RefId,
-    UserDataRef,
+    Borrowed, LUA_REFNIL, LuaAnyRef, LuaFunctionRef, LuaRefValue, LuaStringRef, LuaTableRef,
+    RefId, UserDataBorrow, UserDataBorrowMut, UserDataRef,
 };
 pub(crate) use crate::lua_vm::stk_id::StkId;
 
@@ -94,6 +95,31 @@ fn typed_callback_arg<T: FromLua>(state: &mut LuaState, index: usize) -> LuaResu
     T::from_lua(value, state).map_err(|msg| crate::stdlib::lauxlib::argerror(state, index, &msg))
 }
 
+/// One typed-callback parameter: a single argument, or (for `Variadic<T>`)
+/// every argument from its position on.
+#[doc(hidden)]
+pub trait FromLuaArgs: Sized {
+    fn from_lua_args(state: &mut LuaState, index: usize) -> LuaResult<Self>;
+}
+
+impl<T: FromLua> FromLuaArgs for T {
+    #[inline]
+    fn from_lua_args(state: &mut LuaState, index: usize) -> LuaResult<Self> {
+        typed_callback_arg(state, index)
+    }
+}
+
+impl<T: FromLua> FromLuaArgs for crate::Variadic<T> {
+    fn from_lua_args(state: &mut LuaState, index: usize) -> LuaResult<Self> {
+        let count = state.arg_count();
+        let mut values = Vec::with_capacity((count + 1).saturating_sub(index));
+        for arg in index..=count {
+            values.push(typed_callback_arg(state, arg)?);
+        }
+        Ok(crate::Variadic(values))
+    }
+}
+
 impl<Func, R> LuaTypedCallback<(), R> for Func
 where
     Func: Fn() -> R + 'static,
@@ -111,11 +137,11 @@ macro_rules! impl_lua_typed_callback {
             where
                 Func: Fn($($ty),+) -> R + 'static,
                 R: IntoLua,
-                $($ty: FromLua),+
+                $($ty: FromLuaArgs),+
             {
                 fn invoke_typed(&self, state: &mut LuaState) -> LuaResult<usize> {
                     $(
-                        let $value = typed_callback_arg::<$ty>(state, $index)?;
+                        let $value = <$ty as FromLuaArgs>::from_lua_args(state, $index)?;
                     )+
 
                     (self)($($value),+).push_callback_result(state)
@@ -159,11 +185,11 @@ macro_rules! impl_lua_typed_async_callback {
                 Func: Fn($($ty),+) -> Fut + 'static,
                 Fut: Future<Output = LuaResult<R>> + 'static,
                 R: async_thread::IntoAsyncLua,
-                $($ty: FromLua),+
+                $($ty: FromLuaArgs),+
             {
                 fn invoke_typed_async(&self, state: &mut LuaState) -> LuaResult<async_thread::AsyncFuture> {
                     $(
-                        let $value = typed_callback_arg::<$ty>(state, $index)?;
+                        let $value = <$ty as FromLuaArgs>::from_lua_args(state, $index)?;
                     )+
 
                     let future = (self)($($value),+);
@@ -270,6 +296,13 @@ pub struct GlobalState {
     /// Native modules stay loaded while any function pointer from them can be called.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) native_libraries: Vec<(String, libloading::Library)>,
+
+    /// Liveness record shared with host handles (see [`lua_ref::StateLiveness`]).
+    pub(crate) liveness: Rc<lua_ref::StateLiveness>,
+
+    /// Values held by native code across calls into Lua (e.g. `table.sort`'s
+    /// buffer), marked as GC roots. Users push, then truncate back (LIFO).
+    pub(crate) rust_roots: Vec<LuaValue>,
 }
 
 impl GlobalState {
@@ -317,11 +350,15 @@ impl GlobalState {
             io_default_input: None,
             #[cfg(not(target_arch = "wasm32"))]
             native_libraries: Vec::new(),
+            liveness: lua_ref::StateLiveness::new(),
+            rust_roots: Vec::new(),
         });
 
         // Set GlobalState pointer in main_state
         let thread_value = {
             let state = unsafe { inner.as_mut().get_unchecked_mut() };
+            let liveness = Rc::clone(&state.liveness);
+            liveness.attach(state);
             let vm_handle = GlobalStateHandle::from_global(state);
             let allocator = &mut state.object_allocator as *mut ObjectAllocator;
             let gc = &mut state.gc as *mut GC;
@@ -1458,6 +1495,14 @@ impl GlobalState {
         .into_iter()
         .flatten()
         .collect()
+    }
+}
+
+impl Drop for GlobalState {
+    fn drop(&mut self) {
+        // Before any object is freed: handles and guards must stop touching the
+        // state (closures freed below may own handles into it).
+        self.liveness.close();
     }
 }
 

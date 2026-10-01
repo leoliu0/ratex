@@ -102,12 +102,12 @@ impl<T> PagedPool<T> {
     }
 
     pub fn alloc(&mut self, value: T) -> Pooled<T> {
-        #[cfg(miri)]
+        #[cfg(any(miri, tex_lua_boxed_pool))]
         {
             Pooled::boxed(value)
         }
 
-        #[cfg(not(miri))]
+        #[cfg(not(any(miri, tex_lua_boxed_pool)))]
         {
             let slot = {
                 let mut inner = self.inner.borrow_mut();
@@ -155,7 +155,7 @@ enum PooledRepr<T> {
         slot: NonNull<PageSlot<T>>,
         pool: Rc<RefCell<PagedPoolInner<T>>>,
     },
-    #[cfg(any(miri, feature = "shared-proto"))]
+    #[cfg(any(miri, tex_lua_boxed_pool, feature = "shared-proto"))]
     Boxed(Box<T>),
 }
 
@@ -164,7 +164,7 @@ pub struct Pooled<T> {
 }
 
 impl<T> Pooled<T> {
-    #[cfg(any(miri, feature = "shared-proto"))]
+    #[cfg(any(miri, tex_lua_boxed_pool, feature = "shared-proto"))]
     #[inline(always)]
     pub fn boxed(value: T) -> Self {
         Self {
@@ -176,7 +176,7 @@ impl<T> Pooled<T> {
     pub fn as_ptr(&self) -> *const T {
         match &self.repr {
             PooledRepr::Slot { slot, .. } => unsafe { (*slot.as_ptr()).value_ptr() },
-            #[cfg(any(miri, feature = "shared-proto"))]
+            #[cfg(any(miri, tex_lua_boxed_pool, feature = "shared-proto"))]
             PooledRepr::Boxed(value) => value.as_ref() as *const T,
         }
     }
@@ -185,7 +185,7 @@ impl<T> Pooled<T> {
     pub fn as_mut_ptr(&self) -> *mut T {
         match &self.repr {
             PooledRepr::Slot { slot, .. } => unsafe { (&mut *slot.as_ptr()).value_mut_ptr() },
-            #[cfg(any(miri, feature = "shared-proto"))]
+            #[cfg(any(miri, tex_lua_boxed_pool, feature = "shared-proto"))]
             PooledRepr::Boxed(value) => value.as_ref() as *const T as *mut T,
         }
     }
@@ -231,13 +231,13 @@ impl<T> Drop for Pooled<T> {
                     }
                 }
             }
-            #[cfg(any(miri, feature = "shared-proto"))]
+            #[cfg(any(miri, tex_lua_boxed_pool, feature = "shared-proto"))]
             PooledRepr::Boxed(_) => {}
         }
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(any(miri, tex_lua_boxed_pool))))]
 mod tests {
     use super::PagedPool;
 

@@ -4,10 +4,9 @@
 //! `token`, `node`, `callback`, `status`, `lua`, `texio`, and `kpse` modules.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::rc::Rc;
 
-use tex_lua::{Lua, LuaApi, LuaResult, LuaValue, SafeOption, Stdlib};
+use tex_lua::{Lua, LuaApi, LuaResult, SafeOption, Stdlib, Value};
 
 use crate::engine::Engine;
 
@@ -321,7 +320,7 @@ impl LuaEngine {
 
         let type_fn = self
             .lua
-            .create_function(|id_or_node: LuaValue| -> LuaResult<Option<String>> {
+            .create_function(|id_or_node: Value| -> LuaResult<Option<String>> {
                 let id = if let Some(i) = id_or_node.as_integer() {
                     i
                 } else {
@@ -351,7 +350,7 @@ impl LuaEngine {
         // node.has_attribute / set_attribute / get_attribute
         let has_attr_fn = self
             .lua
-            .create_function(|_node: LuaValue, _id: i64| -> LuaResult<Option<i64>> {
+            .create_function(|_node: Value, _id: i64| -> LuaResult<Option<i64>> {
                 Ok(None)
             })
             .unwrap();
@@ -362,7 +361,7 @@ impl LuaEngine {
 
         let set_attr_fn = self
             .lua
-            .create_function(|_node: LuaValue, _id: i64, _val: Option<i64>| -> LuaResult<()> {
+            .create_function(|_node: Value, _id: i64, _val: Option<i64>| -> LuaResult<()> {
                 Ok(())
             })
             .unwrap();
@@ -372,7 +371,7 @@ impl LuaEngine {
         // node.dimensions
         let dimensions_fn = self
             .lua
-            .create_function(|_node: LuaValue| -> LuaResult<(i64, i64, i64)> {
+            .create_function(|_node: Value| -> LuaResult<(i64, i64, i64)> {
                 Ok((0, 0, 0))
             })
             .unwrap();

@@ -2,6 +2,9 @@ use std::path::PathBuf;
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+#[cfg(unix)]
+mod support;
+
 static NEXT_JOB: AtomicUsize = AtomicUsize::new(0);
 
 struct Job {
@@ -33,6 +36,7 @@ impl Job {
             .arg("main.tex")
             .current_dir(&self.dir)
             .env("SOURCE_DATE_EPOCH", "1700000000")
+            .env("TEX_RS_CACHE_DIR", self.dir.join("cache"))
             .env_remove("PHASE_TIMING")
             .env_remove("TEXDEBUG")
             .output()
@@ -45,11 +49,10 @@ impl Job {
 
     #[cfg(unix)]
     fn tool(&self, name: &str, body: &str) {
-        use std::os::unix::fs::PermissionsExt;
-
-        self.write(name, &format!("#!/bin/sh\nset -eu\n{body}\n"));
-        std::fs::set_permissions(self.dir.join(name), std::fs::Permissions::from_mode(0o755))
-            .unwrap();
+        support::install_executable(
+            &self.dir.join(name),
+            format!("#!/bin/sh\nset -eu\n{body}\n").as_bytes(),
+        );
     }
 
     #[cfg(unix)]

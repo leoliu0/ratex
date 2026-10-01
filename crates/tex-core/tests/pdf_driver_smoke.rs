@@ -109,7 +109,7 @@ fn pdf_driver_primitives_smoke() {
             .expect("Producer"),
         b"document override"
     );
-    std::fs::remove_file(image).unwrap();
+    let _ = std::fs::remove_dir_all(&dir_buf);
 }
 
 #[test]

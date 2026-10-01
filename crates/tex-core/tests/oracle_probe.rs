@@ -89,7 +89,12 @@ fn compare(name: &str, src: &str, require_oracle_clean: bool) {
     let _serial = ORACLE_SERIAL
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let dir_buf = std::env::temp_dir().join(format!("oracle_probe_{name}"));
+    // Concurrent test processes (other checkouts, parallel `cargo test`
+    // runs) share the temp directory: a fixed per-probe path lets one process
+    // truncate another's probe.out mid-comparison.
+    let dir_buf =
+        std::env::temp_dir().join(format!("oracle_probe_{name}_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir_buf);
     std::fs::create_dir_all(&dir_buf).unwrap();
     let dir = dir_buf.to_string_lossy().replace('\\', "/");
     let full = format!("{PRE}{src}\n\\closeout15\n\\end\n");
@@ -117,6 +122,7 @@ fn compare(name: &str, src: &str, require_oracle_clean: bool) {
             o.trim()
         );
     }
+    let _ = std::fs::remove_dir_all(&dir_buf);
     eprintln!("OK {name}");
 }
 

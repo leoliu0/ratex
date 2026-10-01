@@ -143,6 +143,25 @@ The embedded packages and their pinned versions are listed in
 - `scripts/bench_cold.py`: fresh-process timing harness; see
   [PERFORMANCE.md](../PERFORMANCE.md).
 
+Tests that run the built binaries must stay correct when `cargo test` runs in
+parallel or several times at once, which share the temp directory and the
+user's `HOME`:
+
+- Name temp files and directories with the process id (plus a per-test serial
+  or nonce), never with a fixed name.
+- A test that expects an engine cache hit sets `SOURCE_DATE_EPOCH` together
+  with `FORCE_SOURCE_DATE=1` (without it the cache key holds the live minute
+  and a run that starts in the next minute misses), and gives the process a
+  private `TEX_RS_CACHE_DIR` and `HOME` (every record snapshots the unindexed
+  `~/.texlive/texmf-var` tree, which any TeX Live run extends through
+  `mktextfm`).
+- Executables that the test or texmk will run (fake engines, copied binaries)
+  are created with `install_executable`/`copy_executable` from
+  `crates/tex-cli/tests/support`, not with `std::fs::write` plus `chmod`. A
+  file this process holds open for writing is duplicated into children that
+  other test threads fork, and executing it before they `exec` fails with
+  ETXTBSY ("Text file busy").
+
 ## BibTeX (`crates/tex-bibtex`)
 
 One engine, a module-by-module port of `bibtex.web` 0.99e plus TeX Live's

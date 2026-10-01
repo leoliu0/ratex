@@ -194,6 +194,41 @@ fn rd_i32(b: &[u8], off: usize) -> i32 {
     v as i32
 }
 
+/// tex.web `store_scaled` (§571-572) / pdfTeX `store_scaled_f`: scale a
+/// fix_word (or a VF DVI quantity) by a size in sp with byte-wise
+/// TRUNCATING multiplication, the size halved below 2^23 so the products
+/// stay in range. TeX guarantees bit-exact portability with this; a rounded
+/// `fix*size/2^20` product differs by a few sp and flips badness boundaries.
+#[derive(Clone, Copy)]
+pub(crate) struct Scaler {
+    z: i64,
+    alpha: i64,
+    beta: i64,
+}
+
+impl Scaler {
+    pub(crate) fn new(size: i32) -> Self {
+        let mut z = size as i64;
+        let mut alpha = 16i64;
+        while z >= 0x80_0000 {
+            z /= 2;
+            alpha += alpha;
+        }
+        Scaler { z, alpha: alpha * z, beta: 256 / alpha }
+    }
+
+    pub(crate) fn scale(self, fix: i32) -> i32 {
+        let [a, b, c, d] = fix.to_be_bytes();
+        let z = self.z;
+        let sw = (((d as i64 * z) / 256 + c as i64 * z) / 256 + b as i64 * z) / self.beta;
+        if a == 0 {
+            sw as i32
+        } else {
+            (sw - self.alpha) as i32
+        }
+    }
+}
+
 pub fn parse_tfm(data: &[u8], tfm_name: &str, at_size: i32) -> Result<Font, String> {
     if data.len() < 24 {
         return Err(format!("tfm {} too short", tfm_name));
@@ -228,28 +263,8 @@ pub fn parse_tfm(data: &[u8], tfm_name: &str, at_size: i32) -> Result<Font, Stri
 
     let dsize = fix_to_sp_design(rd_i32(data, 28)); // header: [24]=checksum, [28]=design size
     let at = if at_size <= 0 { dsize } else { at_size };
-    // tex.web store_scaled (§571-572): byte-wise TRUNCATING multiplication
-    // with z' = at size halved until below 2^23 so the products stay in
-    // range; tex guarantees bit-exact portability with this, and a rounded
-    // fix*at/2^20 product differs by a few sp and flips badness boundaries.
-    let (z, alpha, beta) = {
-        let mut z = at as i64;
-        let mut alpha = 16i64;
-        while z >= 0x80_0000 {
-            z /= 2;
-            alpha += alpha;
-        }
-        (z, alpha * z, 256 / alpha)
-    };
-    let scale = |fix: i32| -> i32 {
-        let [a, b, c, d] = fix.to_be_bytes();
-        let sw = (((d as i64 * z) / 256 + c as i64 * z) / 256 + b as i64 * z) / beta;
-        if a == 0 {
-            sw as i32
-        } else {
-            (sw - alpha) as i32
-        }
-    };
+    let scaler = Scaler::new(at);
+    let scale = |fix: i32| scaler.scale(fix);
 
     let nchars = ec + 1 - bc;
     // An empty font (bc = ec+1, possibly 256) uses the canonical bc=1, ec=0.

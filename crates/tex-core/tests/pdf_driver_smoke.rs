@@ -1126,6 +1126,7 @@ fn font_attr_and_nobuiltin_tounicode_shape_font_dictionaries() {
 \pdfmapline{=cmr10 CMR10 <cmr10.pfb}
 \pdfmapline{=cmr12 CMR12 <cmr12.pfb}
 \font\plain=cmr12
+\pdfgentounicode=1
 \font\flagged=cmr10
 \font\shared=cmr10 at 12pt
 \pdfnobuiltintounicode\flagged
@@ -1158,13 +1159,13 @@ fn font_attr_and_nobuiltin_tounicode_shape_font_dictionaries() {
     };
     let mut fonts: Vec<_> = fonts.iter().map(summary).collect();
     fonts.sort();
-    // Both cmr10 sizes share the attribute (pdfTeX writes one font
-    // dictionary per TFM); only the flagged font loses its CMap.
+    // pdfTeX writes one font dictionary per TFM, owned by the first shipped
+    // font of it: both cmr10 sizes share the flagged font's dictionary
+    // (attribute, no CMap, design-size widths); cmr12 keeps its own CMap.
     assert_eq!(
         fonts,
         [
             ("CMR10".to_string(), 556, false, Some(7)),
-            ("CMR10".to_string(), 556, true, Some(7)),
             ("CMR12".to_string(), 544, true, None),
         ]
     );
@@ -1205,4 +1206,48 @@ fn shipped_glue_rounds_cumulatively() {
     };
     assert_eq!(value("X="), value("W="));
     let _ = std::fs::remove_dir_all(&dir_buf);
+}
+
+/// writefont.c: the built-in /ToUnicode CMap exists only when
+/// \pdfgentounicode > 0 at the end of the job, and (tounicode.c) then maps
+/// every encoded code, ASCII identities included.
+#[test]
+fn pdfgentounicode_gates_full_tounicode_cmaps() {
+    for gen in [0, 1] {
+        let mut engine = Engine::new(true);
+        engine.init_primitives();
+        engine.add_nullfont();
+        engine.input.push_file(
+            "gen.tex".into(),
+            format!(
+                "\\catcode`\\{{=1 \\catcode`\\}}=2\n\\pdfmapline{{=cmr10 CMR10 <cmr10.pfb}}\n\
+                 \\font\\f=cmr10 \\shipout\\hbox{{\\f A}}\\pdfgentounicode={gen}\n\\end"
+            )
+            .into_bytes(),
+        );
+        engine.run();
+        assert_eq!(engine.error_count, 0, "{}", engine.term);
+        let bytes = tex_core::driver::finish_pdf(&mut engine, false).expect("PDF finalization");
+        let pdf = lopdf::Document::load_mem(&bytes).expect("valid PDF");
+        let cmap = pdf
+            .objects
+            .values()
+            .filter_map(|object| object.as_dict().ok())
+            .find(|dict| dict.get(b"Type").and_then(lopdf::Object::as_name).ok() == Some(b"Font"))
+            .expect("font dictionary")
+            .get(b"ToUnicode")
+            .ok()
+            .map(|reference| {
+                let stream = pdf.get_object(reference.as_reference().unwrap()).unwrap();
+                String::from_utf8(stream.as_stream().unwrap().decompressed_content().unwrap())
+                    .unwrap()
+            });
+        match gen {
+            0 => assert_eq!(cmap, None),
+            _ => {
+                let cmap = cmap.expect("ToUnicode with \\pdfgentounicode=1");
+                assert!(cmap.contains("<41> <0041>"), "{cmap}");
+            }
+        }
+    }
 }

@@ -963,19 +963,14 @@ impl Engine {
                 ) else {
                     continue;
                 };
-                crate::boxes::DiscNode {
-                    pre_break,
-                    post_break,
-                    no_break: vec![list[pos].clone()],
-                    replace_count: 1,
-                }
+                crate::boxes::DiscNode::new(pre_break, post_break, vec![list[pos].clone()], 1)
             } else {
-                crate::boxes::DiscNode {
-                    pre_break: self.shape_native_slice(run.font, &hyphen_str).unwrap_or_default(),
-                    post_break: Vec::new(),
-                    replace_count: 0,
-                    no_break: Vec::new(),
-                }
+                crate::boxes::DiscNode::new(
+                    self.shape_native_slice(run.font, &hyphen_str).unwrap_or_default(),
+                    Vec::new(),
+                    Vec::new(),
+                    0,
+                )
             };
             disc_at_node = Some(pos);
             edits.push((pos, Node::Disc(disc)));
@@ -1675,7 +1670,9 @@ impl Engine {
                     }
                 }
                 Node::Disc(dc) => {
-                    let pen = if !dc.pre_break.is_empty() {
+                    let pen = if dc.penalty != crate::boxes::DISC_PENALTY_TEX {
+                        dc.penalty
+                    } else if !dc.pre_break.is_empty() {
                         params.hyphen_penalty
                     } else {
                         params.ex_hyphen_penalty
@@ -1796,12 +1793,7 @@ impl Engine {
                         // line ends with the pre-break text
                         let mut dc = std::mem::replace(
                             dc,
-                            crate::boxes::DiscNode {
-                                pre_break: Vec::new(),
-                                post_break: Vec::new(),
-                                no_break: Vec::new(),
-                                replace_count: 0,
-                            },
+                            crate::boxes::DiscNode::new(Vec::new(), Vec::new(), Vec::new(), 0),
                         );
                         for nn in std::mem::take(&mut dc.pre_break) {
                             push_dims(&self.eqtb, nn, &mut seg, &mut nat_w);
@@ -2493,12 +2485,12 @@ impl Reconstitute<'_> {
                 }
                 // §918: a discretionary may replace at most 127 nodes
                 if major.len() <= 127 {
-                    out.push(Node::Disc(crate::boxes::DiscNode {
+                    out.push(Node::Disc(crate::boxes::DiscNode::new(
                         pre_break,
                         post_break,
-                        no_break: major.clone(),
-                        replace_count: major.len(),
-                    }));
+                        major.clone(),
+                        major.len(),
+                    )));
                 }
                 out.append(&mut major);
                 self.hyphen_passed = j - 1;

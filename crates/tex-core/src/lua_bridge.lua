@@ -439,6 +439,7 @@ function callback.register(name, f)
   local id = callback_ids[name]
   if not id then return nil, "No such callback exists." end
   callbacks[id] = f
+  B.callback_set(id - 1, tf == "function" and 1 or (tf == "boolean" and -1 or 0))
   return id
 end
 function callback.find(name)

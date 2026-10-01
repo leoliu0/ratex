@@ -941,12 +941,12 @@ impl Engine {
             cur.lig_present = false;
         }
         if self.mode == Mode::Horizontal && self.tail_ends_hyphen(f) {
-            self.cur_list.push(Node::Disc(crate::boxes::DiscNode {
-                pre_break: Vec::new(),
-                post_break: Vec::new(),
-                no_break: Vec::new(),
-                replace_count: 0,
-            }));
+            self.cur_list.push(Node::Disc(crate::boxes::DiscNode::new(
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                0,
+            )));
         }
     }
 
@@ -1218,6 +1218,20 @@ impl Engine {
             self.build_discretionary(shift, inner, outer_mode);
             return;
         }
+        // LuaTeX package(): hyphenation, ligaturing and kerning of the
+        // contents and the hpack/vpack filter run before the box is packed
+        let inner = if self.engine_kind == crate::engine::EngineKind::LuaTeX && matches!(kind, 0 | 1 | 2) {
+            let leaders = self
+                .leader_stack
+                .last()
+                .is_some_and(|&(_, depth)| depth == self.box_kinds.len());
+            let shipout = self.shipout_pending && self.shipout_depth == self.box_kinds.len();
+            let setbox = self.setbox_target.is_some() && self.setbox_depth == self.box_kinds.len();
+            let adjusted = outer_mode.is_v() && !(leaders || shipout || setbox);
+            self.lua_pack_inner(kind, inner, target, box_max_depth, adjusted)
+        } else {
+            inner
+        };
         // tex.web package(): vboxes are packed against the value of
         let pack = |list: Vec<Node>, target: Option<(i32, bool)>, k: u8| -> boxes::PackResult {
             let (dim, spread) = match target {
@@ -1998,12 +2012,7 @@ impl Engine {
     /// its three parts are typeset as restricted-horizontal groups.
     pub fn do_discretionary(&mut self) {
         self.flush_native_text();
-        self.cur_list.push(Node::Disc(crate::boxes::DiscNode {
-            pre_break: Vec::new(),
-            post_break: Vec::new(),
-            no_break: Vec::new(),
-            replace_count: 0,
-        }));
+        self.cur_list.push(Node::Disc(crate::boxes::DiscNode::new(Vec::new(), Vec::new(), Vec::new(), 0)));
         self.begin_disc_part(0);
     }
 
@@ -2019,12 +2028,7 @@ impl Engine {
                 pre_break.push(Node::Char { c, font: f });
             }
         }
-        self.cur_list.push(Node::Disc(crate::boxes::DiscNode {
-            pre_break,
-            post_break: Vec::new(),
-            no_break: Vec::new(),
-            replace_count: 0,
-        }));
+        self.cur_list.push(Node::Disc(crate::boxes::DiscNode::new(pre_break, Vec::new(), Vec::new(), 0)));
     }
 
     /// `new_save_level(disc_group); scan_left_brace; push_nest;

@@ -281,9 +281,14 @@ fn finishget_core(
                 && let Some(ud) = t.as_userdata_mut()
             {
                 let trait_obj = ud.get_trait();
-                if let Some(key_str) = key.as_str()
-                    && let Some(udv) = trait_obj.get_field(key_str)
-                {
+                let field = if let Some(key_str) = key.as_str() {
+                    trait_obj.get_field(key_str)
+                } else if key.ttisinteger() {
+                    trait_obj.get_int_field(key.ivalue())
+                } else {
+                    None
+                };
+                if let Some(udv) = field {
                     let result = udvalue_to_lua_value(lua_state, udv)?;
                     dest_stk_id.write(&result);
                     return Ok(true);
@@ -500,12 +505,17 @@ pub(crate) fn finishset(
             // Not a table — try trait-based set_field for userdata first
             if t.ttisfulluserdata()
                 && let Some(ud) = t.as_userdata_mut()
-                && let Some(key_str) = key.as_str()
+                && (key.as_str().is_some() || key.ttisinteger())
             {
                 let udv = lua_value_to_udvalue(&value);
                 {
                     let trait_obj = ud.get_trait_mut();
-                    match trait_obj.set_field(key_str, udv) {
+                    let result = if let Some(key_str) = key.as_str() {
+                        trait_obj.set_field(key_str, udv)
+                    } else {
+                        trait_obj.set_int_field(key.ivalue(), udv)
+                    };
+                    match result {
                         Some(Ok(())) => return Ok(true),
                         Some(Err(msg)) => {
                             return Err(lua_state.error(msg));

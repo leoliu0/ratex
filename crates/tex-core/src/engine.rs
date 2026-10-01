@@ -191,9 +191,12 @@ pub struct Engine {
     pub mode: Mode,
     pub mode_level: u16, // nesting of box modes
     pub cur_list: Vec<crate::boxes::Node>,
-    /// Stable, generation-checked ownership for nodes exposed across
-    /// subsystem boundaries (notably the Lua node API).
-    pub node_arena: crate::node_arena::NodeArena,
+    /// The LuaTeX node store behind `node.*` / `node.direct.*` (see
+    /// `lua_node`).
+    pub(crate) lua_nodes: crate::lua_node::NodeStore,
+    /// LuaTeX `callback_set`: per callback `0` (none), `1` (a function is
+    /// registered) or `-1` (registered as `false`); see `lua_callbacks`.
+    pub(crate) lua_cb: [i8; crate::lua_callbacks::N_CALLBACKS],
     pub prev_depth: i32, // special marker: -1000pt means unset
     pub space_factor: i32,
     pub prev_graf: i32,
@@ -940,7 +943,8 @@ impl Engine {
             mode: Mode::Vertical,
             mode_level: 0,
             cur_list: Vec::new(),
-            node_arena: crate::node_arena::NodeArena::new(),
+            lua_nodes: crate::lua_node::NodeStore::new(),
+            lua_cb: [0; crate::lua_callbacks::N_CALLBACKS],
             prev_depth: -1000 * 65536,
             space_factor: 1000,
             pdf_images: crate::FxHashMap::default(),

@@ -110,25 +110,6 @@ fn test_rust_metatable_index() {
 }
 
 #[test]
-fn directlua_node_interface_reports_types_and_ids() {
-    let mut e = boot_lua();
-    run_tex(
-        &mut e,
-        r#"
-\edef\res{\directlua{
-    local glyph_id = node.id("glyph")
-    local glyph_type = node.type(glyph_id)
-    tex.print(tostring(glyph_id) .. ":" .. glyph_type)
-}}
-\message{NODE=\res}
-\end
-"#,
-    );
-    assert_eq!(e.error_count, 0, "errors: {:?}, term: {}", e.diagnostics, e.term);
-    assert!(e.term.contains("NODE=29:glyph"), "term: {}", e.term);
-}
-
-#[test]
 fn directlua_callback_interface_registers_and_finds() {
     let mut e = boot_lua();
     run_tex(

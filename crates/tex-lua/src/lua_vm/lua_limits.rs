@@ -23,9 +23,10 @@ pub const LUA_MINSTACK: usize = 20;
 pub const LUAI_MAXSTACK: usize = 1_000_000;
 
 /// Default maximum Lua call-stack depth (number of call frames).
-/// This limits how deep pure-Lua calls can nest.
-/// Set high by default — the real recursion guard is `LUAI_MAXCSTACK`.
-pub const MAX_CALL_DEPTH: usize = 1024;
+/// Every frame occupies at least its function slot, so C Lua bounds call depth
+/// only through `LUAI_MAXSTACK`; Lua-to-Lua calls do not consume native stack.
+/// Using the same bound keeps deep (non-tail) recursion working as in Lua 5.3/5.5.
+pub const MAX_CALL_DEPTH: usize = LUAI_MAXSTACK;
 
 /// Default maximum C-stack depth (Rust recursion depth).
 /// Matches C Lua 5.5's `LUAI_MAXCSTACK` (200).

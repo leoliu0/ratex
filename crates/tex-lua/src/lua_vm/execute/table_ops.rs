@@ -481,7 +481,8 @@ pub(crate) fn op_set_table(
         let table = ra.hvalue_mut();
         let meta = table.meta_ptr();
         if meta.is_null() || meta.as_mut_ref().data.no_tm(TmKind::NewIndex.into()) {
-            if !rb.is_nil() && !rb.is_integer() {
+            // nil and NaN keys go to finishset, which raises the error.
+            if !rb.is_nil() && !rb.is_integer() && !(rb.is_float() && rb.fltvalue().is_nan()) {
                 let (_new_key, delta) = table.impl_table.raw_set(rb.get_ref(), *rc_value);
                 if delta != 0 {
                     lua_state.gc_track_table_resize(ra.as_table_ptr(), delta);

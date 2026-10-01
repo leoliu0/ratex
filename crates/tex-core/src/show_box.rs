@@ -449,8 +449,10 @@ impl<'a> BoxDisplay<'a> {
                     self.print_esc(name);
                     self.out.push(b')');
                 }
-                self.out.push(b' ');
-                self.print_spec(g, "");
+                if g.subtype != glue_subtype::NONSCRIPT {
+                    self.out.push(b' ');
+                    self.print_spec(g, "");
+                }
             }
             Node::Leaders { glue, kind, body } => {
                 self.print_esc("");

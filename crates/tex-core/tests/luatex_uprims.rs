@@ -7,6 +7,7 @@ use tex_core::engine::{Engine, EngineKind, InteractionMode};
 fn run(body: &str) -> Vec<String> {
     let mut e = Engine::new_with_kind(EngineKind::LuaTeX, true);
     e.init_primitives();
+    e.add_nullfont();
     e.set_interaction_mode(InteractionMode::Nonstop);
     let pre = "\\catcode`\\{=1 \\catcode`\\}=2 \\catcode`\\#=6 \\catcode`\\$=3 \\catcode`\\^=7 \\catcode`\\_=8\n\
 \\directlua{tex.enableprimitives(\"\",tex.extraprimitives())}\n\
@@ -79,6 +80,191 @@ $$\\Ustack{\\ms{st}}\\radical\"161 {\\ms{rad}}\\overline{\\ms{ov}}\\underline{\\
         [
             "[out:-1]", "[D:0]", "[S:4]", "[c:7]", "[D:0]", "[ct:3]", "[sup:4]", "[sub:5]", "[a:0]",
             "[b:1]", "[cD:0]", "[cT:2]", "[cS:4]", "[cSS:6]", "[st:2]", "[rad:1]", "[ov:1]", "[un:0]"
+        ]
+    );
+}
+
+/// Dimensions of formulas typeset with the traditional cm fonts through the
+/// `\\Umath` parameters `fixup_math_parameters` derives from them: scripts,
+/// operators with limits, delimiters, rules, spacing classes, and the
+/// `\\Umath` parameters / `\\mathscriptsmode` the document changes.
+#[test]
+fn traditional_font_math_dimensions_follow_luatex() {
+    let body = r#"\def\s#1{\t{[#1]}}
+\font\tenrm=cmr10 \font\sevenrm=cmr7 \font\fiverm=cmr5
+\font\teni=cmmi10 \font\seveni=cmmi7 \font\fivei=cmmi5
+\font\tensy=cmsy10 \font\sevensy=cmsy7 \font\fivesy=cmsy5
+\font\tenex=cmex10
+\textfont0=\tenrm \scriptfont0=\sevenrm \scriptscriptfont0=\fiverm
+\textfont1=\teni \scriptfont1=\seveni \scriptscriptfont1=\fivei
+\textfont2=\tensy \scriptfont2=\sevensy \scriptscriptfont2=\fivesy
+\textfont3=\tenex \scriptfont3=\tenex \scriptscriptfont3=\tenex
+\thinmuskip=3mu \medmuskip=4mu plus 2mu minus 4mu \thickmuskip=5mu plus 5mu
+\delcode`(="028300 \delcode`)="029301 \delimiterfactor=901 \delimitershortfall=5pt
+\mathcode`+="202B \mathcode`=="303D \mathcode`,="602C
+\mathchardef\sum="1350 \mathchardef\int="1352 \mathchardef\leq="3114
+\scriptspace=0.5pt \nulldelimiterspace=1.2pt
+\def\b#1{\setbox0\hbox{$#1$}\s{\the\wd0/\the\ht0/\the\dp0}}
+\b{a^b_c}
+\b{x^2 y_i z^{a_b}}
+\b{\displaystyle a^b_c \scriptstyle d^e_f}
+\b{(a+b)^2 \leq c, d}
+\b{\displaystyle\sum_{i=1}^n x}
+\b{\sum_{i=1}^n x}
+\b{\displaystyle\int_0^1 f}
+\b{\displaystyle\int\nolimits_0^1 f}
+\b{\mathop{xy}\limits^a_b}
+\b{\left(a\right)}
+\b{\left(\vrule height 30pt depth 20pt\right)}
+\b{\overline{x}\underline{y}}
+\b{a\mathbin{+}\mathrel{=}\mathpunct{,}\mathinner{b}\mathopen{(}\mathclose{)}}
+\b{\scriptstyle a+b=c}
+\Umathordbinspacing\textstyle=7mu plus 1mu \Umathbinordspacing\scriptstyle=2mu
+\b{a+b} \b{\scriptstyle a+b}
+\Umathsubshiftdown\textstyle=4pt \Umathsupshiftup\textstyle=5pt \Umathspaceafterscript\textstyle=1pt
+\b{a^b_c} \mathscriptsmode=4 \b{a^b_c} \b{a_c} \b{a^b}
+\Umathoverbarvgap\textstyle=3pt \Umathunderbarkern\textstyle=2pt \b{\overline{x}\underline{y}}
+"#;
+    let out = run(body);
+    assert_eq!(
+        out,
+        [
+            "[9.35963pt/8.49002pt/2.47217pt]",
+            "[32.02812pt/8.14003pt/1.94444pt]",
+            "[18.03296pt/8.99002pt/3.02655pt]",
+            "[59.35745pt/8.14003pt/2.5pt]",
+            "[21.82637pt/16.51393pt/12.79865pt]",
+            "[31.39182pt/8.04175pt/3.00005pt]",
+            "[17.6389pt/21.12231pt/15.789pt]",
+            "[22.12503pt/15.65013pt/9.11122pt]",
+            "[10.97687pt/10.31941pt/9.4722pt]",
+            "[13.06369pt/7.5pt/2.5pt]",
+            "[17.90002pt/30.0pt/24.50026pt]",
+            "[10.97687pt/6.30544pt/3.94434pt]",
+            "[41.7997pt/7.5pt/2.5pt]",
+            "[23.70589pt/4.8611pt/0.83334pt]",
+            "[23.46631pt/6.94444pt/0.83333pt]",
+            "[14.90372pt/4.8611pt/0.83334pt]",
+            "[9.85963pt/9.8611pt/2.47217pt]",
+            "[9.85963pt/9.09718pt/3.23608pt]",
+            "[9.85963pt/4.30554pt/3.23608pt]",
+            "[9.80255pt/9.09718pt/0.0pt]",
+            "[10.97687pt/8.1055pt/5.54436pt]"
+        ]
+    );
+}
+
+/// The same for an OpenType-style math font (a Lua font with
+/// `MathConstants`, `mathkern`, `next` and vertical variants).
+#[test]
+fn opentype_font_math_dimensions_follow_luatex() {
+    let body = r#"\def\s#1{\t{[#1]}}
+\directlua{
+local function load(name, size) return font.read_tfm(name, size) end
+local names = {"MathConstants"}
+local C = {"ScriptPercentScaleDown","ScriptScriptPercentScaleDown","DelimitedSubFormulaMinHeight","DisplayOperatorMinHeight","MathLeading","AxisHeight","AccentBaseHeight","FlattenedAccentBaseHeight","SubscriptShiftDown","SubscriptTopMax","SubscriptBaselineDropMin","SuperscriptShiftUp","SuperscriptShiftUpCramped","SuperscriptBottomMin","SuperscriptBaselineDropMax","SubSuperscriptGapMin","SuperscriptBottomMaxWithSubscript","SpaceAfterScript","UpperLimitGapMin","UpperLimitBaselineRiseMin","LowerLimitGapMin","LowerLimitBaselineDropMin","StackTopShiftUp","StackTopDisplayStyleShiftUp","StackBottomShiftDown","StackBottomDisplayStyleShiftDown","StackGapMin","StackDisplayStyleGapMin","StretchStackTopShiftUp","StretchStackBottomShiftDown","StretchStackGapAboveMin","StretchStackGapBelowMin","FractionNumeratorShiftUp","FractionNumeratorDisplayStyleShiftUp","FractionDenominatorShiftDown","FractionDenominatorDisplayStyleShiftDown","FractionNumeratorGapMin","FractionNumeratorDisplayStyleGapMin","FractionRuleThickness","FractionDenominatorGapMin","FractionDenominatorDisplayStyleGapMin","SkewedFractionHorizontalGap","SkewedFractionVerticalGap","OverbarVerticalGap","OverbarRuleThickness","OverbarExtraAscender","UnderbarVerticalGap","UnderbarRuleThickness","UnderbarExtraDescender","RadicalVerticalGap","RadicalDisplayStyleVerticalGap","RadicalRuleThickness","RadicalExtraAscender","RadicalKernBeforeDegree","RadicalKernAfterDegree","RadicalDegreeBottomRaisePercent","MinConnectorOverlap","SubscriptShiftDownWithSuperscript","FractionDelimiterSize","FractionDelimiterDisplayStyleSize","NoLimitSubFactor","NoLimitSupFactor"}
+local function build(size, id)
+  local rm = load("cmr10", size)
+  local mi = load("cmmi10", size)
+  local ex = load("cmex10", size)
+  local sy = load("cmsy10", size)
+  local t = mi
+  t.name = "otfm" .. id
+  t.fullname = t.name
+  local ch = {}
+  for c = 0, 127 do
+    local src = rm.characters[c]
+    if (c >= 65 and c <= 90) or (c >= 97 and c <= 122) or (c < 32) then src = mi.characters[c] or src end
+    if src then ch[c] = src end
+  end
+  for c, v in pairs(ex.characters) do
+    local n = {}
+    for k, x in pairs(v) do n[k] = x end
+    n.next = v.next and (0x1F000 + v.next) or nil
+    if v.extensible then
+      local e = v.extensible
+      local vv = {}
+      local function add(g, rep) if g and g ~= 0 then vv[#vv+1] = {glyph = 0x1F000 + g, extender = rep and 1 or 0, start = 0, ["end"] = 0, advance = (ex.characters[g].height + ex.characters[g].depth)} end end
+      if e.bot then add(e.bot) end
+      if e.rep then add(e.rep, true) end
+      if e.mid and e.mid ~= 0 then add(e.mid) add(e.rep, true) end
+      if e.top then add(e.top) end
+      n.vert_variants = vv
+      n.extensible = nil
+    end
+    ch[0x1F000 + c] = n
+  end
+  ch[0x28] = {width = ch[0x28].width, height = ch[0x28].height, depth = ch[0x28].depth, italic = 0, next = 0x1F000}
+  ch[0x29] = {width = ch[0x29].width, height = ch[0x29].height, depth = ch[0x29].depth, italic = 0, next = 0x1F001}
+  ch[0x61].top_accent = ch[0x61].width * 6 // 10
+  for _, c in ipairs{0x61, 0x62, 0x78, 0x79, 0x31} do
+    ch[c].italic = 20000 + c * 30
+    ch[c].mathkern = {
+      top_right = {{height = 100000, kern = 30000}, {height = 300000, kern = 50000}},
+      bottom_right = {{height = 50000, kern = -20000}, {height = 250000, kern = 40000}},
+      top_left = {{height = 100000, kern = 10000}},
+      bottom_left = {{height = 150000, kern = 25000}, {height = 400000, kern = 35000}},
+    }
+  end
+  t.characters = ch
+  local mc = {}
+  for i, n in ipairs(C) do mc[n] = 20000 + 997 * i end
+  mc.AxisHeight = math.floor(size * 0.25)
+  mc.RadicalDegreeBottomRaisePercent = 60
+  mc.ScriptPercentScaleDown = 70
+  mc.ScriptScriptPercentScaleDown = 50
+  mc.DisplayOperatorMinHeight = math.floor(size * 1.4)
+  mc.MinConnectorOverlap = 10000
+  t.MathConstants = mc
+  return t
+end
+_G.buildfont = function(size, i) return font.define(build(size, i)) end
+}
+\directlua{font.current(buildfont(655360, 1))}
+\textfont0=\font \textfont1=\font \textfont2=\font \textfont3=\font
+\directlua{font.current(buildfont(458752, 2))}
+\scriptfont0=\font \scriptfont1=\font \scriptfont2=\font \scriptfont3=\font
+\directlua{font.current(buildfont(327680, 3))}
+\scriptscriptfont0=\font \scriptscriptfont1=\font \scriptscriptfont2=\font \scriptscriptfont3=\font
+\thinmuskip=3mu \medmuskip=4mu plus 2mu minus 4mu \thickmuskip=5mu plus 5mu
+\Udelcode`(="0 "28 \Udelcode`)="0 "29
+\Umathcode`a="7 1 "61 \Umathcode`b="7 1 "62 \Umathcode`x="7 1 "78 \Umathcode`y="7 1 "79
+\Umathcode`1="0 0 "31 \Umathcode`2="0 0 "32
+\Umathcode`+="2 0 "2B \Umathcode`=="3 0 "3D \Umathcode`(="4 0 "28 \Umathcode`)="5 0 "29
+\Umathchardef\sum="1 0 "1F050
+\Umathchardef\int="1 0 "1F052
+\def\b#1{\setbox0\hbox{$#1$}\s{\the\wd0/\the\ht0/\the\dp0}}
+\b{a^b_x} \b{a^{1+2}_y} \b{\displaystyle a^b}
+\b{\displaystyle\sum_x^y a} \b{\sum_x^y a} \b{\displaystyle\int_x^y a}
+\b{\displaystyle\sum\nolimits_x^y a} \b{\mathop{ab}\limits^x_y}
+\b{\left(a\right)} \b{\left(\vrule height 30pt\right)} \b{\left(\vrule height 90pt\right)}
+\b{a+b=x} \b{(a)+(b)} \b{\overline{a}\underline{b}} \b{\vcenter{\hbox{a}}}
+\b{a^{b^{x}}_{a_y}} \b{a\mathop{x}\nolimits^a} \b{a\mkern3mu b\mskip 4mu plus 2mu x}
+\Umathsubshiftdown\textstyle=4pt \Umathspaceafterscript\textstyle=1pt \mathscriptsmode=3 \b{a^b_x}
+"#;
+    let out = run(body);
+    assert_eq!(
+        out,
+        [
+            "[10.86568pt/5.4249pt/2.99867pt]",
+            "[20.28354pt/5.65823pt/4.35977pt]",
+            "[10.86568pt/5.37926pt/0.0pt]",
+            "[21.74657pt/15.46927pt/9.1386pt]",
+            "[22.79749pt/9.98058pt/2.97258pt]",
+            "[17.30211pt/18.58043pt/12.24977pt]",
+            "[26.68637pt/12.98058pt/5.97258pt]",
+            "[10.27716pt/10.56776pt/4.99963pt]",
+            "[13.41327pt/7.5pt/2.5pt]",
+            "[16.34929pt/33.11104pt/28.11104pt]",
+            "[16.34929pt/91.1942pt/86.1942pt]",
+            "[41.9079pt/6.94444pt/0.83333pt]",
+            "[38.0549pt/7.5pt/2.5pt]",
+            "[10.27716pt/7.27483pt/3.1062pt]",
+            "[2.64294pt/3.57639pt/0.0pt]",
+            "[15.95943pt/5.4249pt/5.66635pt]",
+            "[17.64607pt/7.13329pt/0.0pt]",
+            "[20.24133pt/6.94444pt/0.0pt]",
+            "[11.40962pt/4.30554pt/1.18753pt]"
         ]
     );
 }

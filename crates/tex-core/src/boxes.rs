@@ -136,8 +136,10 @@ pub mod glue_subtype {
     pub const THIN_MU_SKIP: u8 = 16;
     pub const MED_MU_SKIP: u8 = 17;
     pub const THICK_MU_SKIP: u8 = 18;
+    /// luatex `cond_math_glue` (`\nonscript`)
+    pub const NONSCRIPT: u8 = 19;
     /// tex.web print_skip_param names, indexed by `subtype - 1`.
-    pub const NAMES: [&str; 18] = [
+    pub const NAMES: [&str; 19] = [
         "lineskip",
         "baselineskip",
         "parskip",
@@ -156,6 +158,7 @@ pub mod glue_subtype {
         "thinmuskip",
         "medmuskip",
         "thickmuskip",
+        "nonscript",
     ];
 }
 

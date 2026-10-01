@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 #[path = "../allocator.rs"]
 mod allocator;
 #[global_allocator]
@@ -7,9 +5,9 @@ static GLOBAL: allocator::EngineAllocator = allocator::EngineAllocator;
 
 #[cfg(test)]
 use tex_core::driver::png_embed_options;
-/// Precompiled format containing standard LaTeX packages baked directly into the binary.
 use tex_core::driver::{finalize_format_load, install_pdftex_config_registers};
 
+/// Precompiled formats containing standard LaTeX packages, baked into the binary.
 static EMBEDDED_DEFAULT_FMT: &[u8] = include_bytes!("../../assets/default.fmt.zst");
 static EMBEDDED_LUALATEX_FMT: &[u8] = include_bytes!("../../assets/lualatex.fmt.zst");
 const DEPCACHE_MAX_BYTES: u64 = 512 * 1024 * 1024;
@@ -2503,10 +2501,9 @@ mod startup_tests {
     use super::{
         authenticated_depcache_body, backtrace_requested, check_depcache, decode_record_path,
         dependency_fingerprint, dependency_name_may_match, directory_prefix,
-        effective_clock_identity_at, encode_record_path, finalize_format_load, format_boot_failure,
-        install_pdftex_config_registers, png_embed_options, published_names_in_directory,
-        seal_depcache_record, write_depcache, DepcacheInputs, FormatBootFailure,
-        TexmkPublishedOutputs, DEPCACHE_RECORD_MAX_BYTES, EMBEDDED_DEFAULT_FMT,
+        effective_clock_identity_at, encode_record_path, format_boot_failure, png_embed_options,
+        published_names_in_directory, seal_depcache_record, write_depcache, DepcacheInputs,
+        FormatBootFailure, TexmkPublishedOutputs, DEPCACHE_RECORD_MAX_BYTES,
     };
     use std::ffi::OsStr;
     use tex_core::engine::Engine;
@@ -2624,6 +2621,7 @@ mod startup_tests {
         assert_eq!(format_boot_failure(&engine), None);
     }
 
+    #[test]
     fn backtrace_zero_and_empty_disable_panic_backtraces() {
         assert!(!backtrace_requested(None));
         assert!(!backtrace_requested(Some(OsStr::new(""))));

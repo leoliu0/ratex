@@ -6,8 +6,8 @@
 //! `pdflatex`, `xelatex`, `lualatex`, `bibtex`, or `latexdiff` (symlinks), it
 //! runs that tool directly instead.
 //!
-//! Exit codes: 0 = converged, 1 = engine/bibtex failure, TeX errors, or no
-//! convergence, 2 = usage error.
+//! Exit codes: 0 = converged, 1 = engine/bibtex failure or no convergence,
+//! 2 = usage error.
 //!
 //! TeX support files always come from the archive embedded in the executable;
 //! project inputs remain ordinary files.
@@ -1766,9 +1766,12 @@ fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {
 /// an I/O boundary, even when a tool emits an arbitrarily long line.
 struct SignalScanner {
     signals: Signals,
-    bbl_marker: Vec<u8>,
+    bbl_marker: String,
     overlap: Vec<u8>,
+    window: Vec<u8>,
     max_pattern_len: usize,
+    /// The start of the current line, for the warning summary. Reported
+    /// warnings are short; the cap bounds memory for pathological lines.
     current_line_bytes: Vec<u8>,
     line_citation: bool,
     line_undefined: bool,
@@ -1776,17 +1779,19 @@ struct SignalScanner {
     line_bbl: bool,
 }
 
+const SIGNAL_LINE_CAPTURE_BYTES: usize = 4096;
+
 impl SignalScanner {
     fn new(job: &str) -> Self {
-        let bbl_marker = format!("{job}.bbl").into_bytes();
+        let bbl_marker = format!("{job}.bbl");
         let max_pattern_len = [
-            b"Rerun to get".len(),
-            b"Label(s) may have changed".len(),
-            b"There were undefined references".len(),
-            b"There were undefined citations".len(),
-            b"Citation".len(),
-            b"undefined".len(),
-            b"No file ".len(),
+            "Rerun to get".len(),
+            "Label(s) may have changed".len(),
+            "There were undefined references".len(),
+            "There were undefined citations".len(),
+            "Citation".len(),
+            "undefined".len(),
+            "No file ".len(),
             bbl_marker.len(),
         ]
         .into_iter()
@@ -1796,6 +1801,7 @@ impl SignalScanner {
             signals: Signals::default(),
             bbl_marker,
             overlap: Vec::with_capacity(max_pattern_len.saturating_sub(1)),
+            window: Vec::new(),
             max_pattern_len,
             current_line_bytes: Vec::new(),
             line_citation: false,
@@ -1805,30 +1811,40 @@ impl SignalScanner {
         }
     }
     fn scan_fragment(&mut self, fragment: &[u8]) {
-        self.current_line_bytes.extend_from_slice(fragment);
-        let mut window = Vec::with_capacity(self.overlap.len() + fragment.len());
+        let room = SIGNAL_LINE_CAPTURE_BYTES.saturating_sub(self.current_line_bytes.len());
+        self.current_line_bytes
+            .extend_from_slice(&fragment[..room.min(fragment.len())]);
+        let mut window = std::mem::take(&mut self.window);
+        window.clear();
         window.extend_from_slice(&self.overlap);
         window.extend_from_slice(fragment);
-        self.signals.rerun |= contains_bytes(&window, b"Rerun to get")
-            || contains_bytes(&window, b"Label(s) may have changed");
-        self.signals.undef_refs |= contains_bytes(&window, b"There were undefined references");
-        self.signals.undef_cites |= contains_bytes(&window, b"There were undefined citations");
-        self.line_citation |= contains_bytes(&window, b"Citation");
-        self.line_undefined |= contains_bytes(&window, b"undefined");
-        self.line_no_file |= contains_bytes(&window, b"No file ");
-        self.line_bbl |= contains_bytes(&window, &self.bbl_marker);
+        // Transcripts are almost always UTF-8: search them as text, which
+        // is much faster than comparing every byte window.
+        let text = std::str::from_utf8(&window);
+        let contains = |needle: &str| match text {
+            Ok(text) => text.contains(needle),
+            Err(_) => contains_bytes(&window, needle.as_bytes()),
+        };
+        self.signals.rerun |= contains("Rerun to get") || contains("Label(s) may have changed");
+        self.signals.undef_refs |= contains("There were undefined references");
+        self.signals.undef_cites |= contains("There were undefined citations");
+        self.line_citation |= contains("Citation");
+        self.line_undefined |= contains("undefined");
+        self.line_no_file |= contains("No file ");
+        self.line_bbl |= contains(&self.bbl_marker);
 
         let retain = window.len().min(self.max_pattern_len.saturating_sub(1));
         self.overlap.clear();
         self.overlap
             .extend_from_slice(&window[window.len().saturating_sub(retain)..]);
+        self.window = window;
     }
 
     fn finish_line(&mut self) {
         self.signals.undef_cites |= self.line_citation && self.line_undefined;
         self.signals.bbl_missing |= self.line_no_file && self.line_bbl;
 
-        let line_str = String::from_utf8_lossy(&self.current_line_bytes);
+        let line_str = String::from_utf8_lossy(self.current_line_bytes.trim_ascii());
         // The engine's terminal diagnostics already carry a `warning: `
         // severity; texmk adds its own, and the transcript spells the same
         // box warning without it, so store one canonical message.
@@ -2573,6 +2589,7 @@ fn bibliography_signature(aux: &str, aux_dir: &Path, source_dir: &Path) -> u64 {
 
 struct ToolOutput {
     success: bool,
+    code: Option<i32>,
     stdout: String,
     stderr: String,
 }
@@ -2762,8 +2779,10 @@ fn run_tool(
     let status = child.wait();
     let stdout = join_capture(stdout_reader);
     let stderr = join_capture(stderr_reader);
+    let status = status?;
     let captured = ToolOutput {
-        success: status?.success(),
+        success: status.success(),
+        code: status.code(),
         stdout: stdout?,
         stderr: stderr?,
     };
@@ -2792,8 +2811,21 @@ fn run_bibtex(aux_stem: &Path, source_dir: &Path, silent: bool) -> i32 {
         OsString::from(TEXMK_INTERNAL_MODE_ENV),
         OsString::from("bibtex"),
     )];
+    let mut bbl = aux_stem.as_os_str().to_os_string();
+    bbl.push(".bbl");
     match run_tool(&bibtex, &[arg], silent, source_dir, &env) {
         Ok(out) if out.success => 0,
+        // TeX Live BibTeX exits 2 after error messages (duplicate entries,
+        // bad cross-references) that still produce a complete .bbl.
+        Ok(out) if out.code == Some(2) && Path::new(&bbl).is_file() => {
+            let mut blg = aux_stem.as_os_str().to_os_string();
+            blg.push(".blg");
+            eprintln!(
+                "texmk: warning: BibTeX reported errors; see {}",
+                Path::new(&blg).display()
+            );
+            0
+        }
         Ok(out) => {
             if silent {
                 out.replay();
@@ -2807,41 +2839,68 @@ fn run_bibtex(aux_stem: &Path, source_dir: &Path, silent: bool) -> i32 {
         }
     }
 }
+
+/// Convert EPS figures for pdfTeX's graphics rules (epstopdf's
+/// `-eps-converted-to.pdf` name, plus `<name>.pdf` when that does not exist).
+/// A conversion older than its EPS is redone; `<name>.pdf` is refreshed only
+/// while it is still a copy of the previous conversion, never a user file.
 fn convert_eps_figures(source_dir: &Path) {
+    let mut visited = HashSet::new();
     let mut dirs_to_visit = vec![source_dir.to_path_buf()];
     while let Some(dir) = dirs_to_visit.pop() {
+        // Symlinked directories are followed once: a link to an ancestor
+        // would otherwise make this walk endless.
+        if !visited.insert(std::fs::canonicalize(&dir).unwrap_or_else(|_| dir.clone())) {
+            continue;
+        }
         let Ok(entries) = std::fs::read_dir(&dir) else {
             continue;
         };
         for entry in entries.flatten() {
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
             let path = entry.path();
-            if path.is_dir() {
-                if !path
-                    .file_name()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .starts_with('.')
-                {
+            if kind.is_dir() || (kind.is_symlink() && path.is_dir()) {
+                if !entry.file_name().to_string_lossy().starts_with('.') {
                     dirs_to_visit.push(path);
                 }
-            } else if path.is_file() {
-                if let Some(ext) = path.extension().and_then(|s| s.to_str()) {
-                    if ext.eq_ignore_ascii_case("eps") || ext.eq_ignore_ascii_case("epsi") {
-                        let stem = path.file_stem().unwrap_or_default().to_string_lossy();
-                        let converted = path.with_file_name(format!("{stem}-eps-converted-to.pdf"));
-                        let direct_pdf = path.with_extension("pdf");
-                        if !converted.exists() || !direct_pdf.exists() {
-                            if let Ok(bytes) = std::fs::read(&path) {
-                                if let Ok(out) = tex_ps::eps_to_pdf(&bytes) {
-                                    let _ = std::fs::write(&converted, &out.pdf_bytes);
-                                    if !direct_pdf.exists() {
-                                        let _ = std::fs::write(&direct_pdf, &out.pdf_bytes);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
+                continue;
+            }
+            let is_eps = path
+                .extension()
+                .and_then(OsStr::to_str)
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("eps") || ext.eq_ignore_ascii_case("epsi"));
+            if !is_eps {
+                continue;
+            }
+            let Ok(eps_modified) = std::fs::metadata(&path).and_then(|meta| meta.modified()) else {
+                continue;
+            };
+            let stem = path.file_stem().unwrap_or_default().to_string_lossy();
+            let converted = path.with_file_name(format!("{stem}-eps-converted-to.pdf"));
+            let direct_pdf = path.with_extension("pdf");
+            let converted_current = std::fs::metadata(&converted)
+                .and_then(|meta| meta.modified())
+                .is_ok_and(|modified| modified >= eps_modified);
+            let direct_exists = direct_pdf.exists();
+            if converted_current && direct_exists {
+                continue;
+            }
+            let direct_is_previous_conversion = !direct_exists
+                || matches!(
+                    (std::fs::read(&direct_pdf), std::fs::read(&converted)),
+                    (Ok(direct), Ok(previous)) if direct == previous
+                );
+            let Ok(bytes) = std::fs::read(&path) else {
+                continue;
+            };
+            let Ok(out) = tex_ps::eps_to_pdf(&bytes) else {
+                continue;
+            };
+            let _ = std::fs::write(&converted, &out.pdf_bytes);
+            if direct_is_previous_conversion {
+                let _ = std::fs::write(&direct_pdf, &out.pdf_bytes);
             }
         }
     }
@@ -3617,9 +3676,9 @@ fn real_main() -> i32 {
     } else {
         String::new()
     };
-    // As latexmk does, a PDF produced despite TeX errors (recovered in an
-    // explicitly requested nonstop/batch mode) is published, but the build
-    // still reports failure.
+    // A PDF produced despite TeX errors (recovered in an explicitly requested
+    // nonstop/batch mode) is published; the errors are shown and named in the
+    // status line, and the exit status stays 0 as before.
     eprint!("{recovered_diagnostics}");
     let status = if last_pass_failed {
         "finished with TeX errors"
@@ -3674,11 +3733,8 @@ fn real_main() -> i32 {
         retain_requested(&retention, &mut manifest);
     }
     drop(lock);
-    if last_pass_failed {
-        if log_path.is_file() {
-            eprintln!("texmk: transcript retained at {}", log_path.display());
-        }
-        return 1;
+    if last_pass_failed && log_path.is_file() {
+        eprintln!("texmk: transcript retained at {}", log_path.display());
     }
     0
 }

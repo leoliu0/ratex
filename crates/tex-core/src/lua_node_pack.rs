@@ -167,7 +167,7 @@ impl Engine {
         nd.f[sl::B_DIR] = 0;
         nd.f[sl::B_SIGN] = i32::from(*glue_sign);
         nd.f[sl::B_ORDER] = lua_order(*glue_order);
-        nd.fl = *glue_set;
+        nd.fl = f64::from(*glue_set as f32);
         nd.f[sl::B_HEAD] = head as i32;
         (b, res.badness)
     }

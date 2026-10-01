@@ -129,7 +129,7 @@ function direct.tonode(n)
   if type(n) == "number" then return tonode(n) end
   return n
 end
-function direct.is_direct(n) return type(n) == "number" end
+function direct.is_direct(n) if type(n) == "number" then return n end return false end
 
 -- ------------------------------------------------ engine state natives ----
 direct.last_node = N.last_node
@@ -316,7 +316,12 @@ local function lenient_pack(f, what)
 end
 node.hpack = lenient_pack(N.wrap_hpack, "hpack")
 node.vpack = lenient_pack(N.wrap_vpack, "vpack")
-node.tostring = N.tostring_node
+function node.tostring(n) return N.tostring_node(todirect_ud(n)) end
+function node.first_glyph(h, t)
+  if h == nil then return nil, false end
+  local r = direct.first_glyph(todirect_ud(h), todirect_ud(t))
+  return tonode(r), r ~= nil
+end
 function node.is_zero_glue(n)
   local r = N.is_zero_glue(todirect_ud(n))
   if r == nil then error("glue (spec) or list expected", 0) end

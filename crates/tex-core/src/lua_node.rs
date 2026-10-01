@@ -1049,7 +1049,8 @@ impl NodeStore {
                 }
                 self.nodes[n as usize].f[f.slot] = val as i32;
             }
-            K::F => self.nodes[n as usize].fl = v.to_num(),
+            // glue_ratio is a 32 bit float in LuaTeX
+            K::F => self.nodes[n as usize].fl = f64::from(v.to_num() as f32),
             K::N => {
                 let x = v.to_node();
                 self.nodes[n as usize].f[f.slot] = x as i32;

@@ -606,14 +606,18 @@ pub(crate) fn install(lua: &mut Lua) -> Result<LuaTable, String> {
         }
         let Some(name) = key.as_string() else { return Ok(UdValue::Nil) };
         with_engine(|e| {
+            // node 0 is the zero glue spec of LuaTeX's memory
+            if hh == 0 && name == "id" {
+                return UdValue::Integer(i64::from(GLUE_SPEC));
+            }
             if name == "subtype" && e.lua_nodes.valid(hh) && e.lua_nodes.id(hh) == GLUE_SPEC {
                 return UdValue::Integer(0);
             }
             to_ud(e.lua_node_field(hh, &name), true)
         })
     });
-    nat!(lua, n, "getfield_ud", |h: Option<i64>, key: Value| -> Result<UdValue, String> {
-        let hh = handle32(h);
+    nat!(lua, n, "getfield_ud", |v: Option<Value>, key: Value| -> Result<UdValue, String> {
+        let hh = v.as_ref().map_or(0, node_of);
         if let Some(i) = key.as_integer() {
             return with_engine(|e| {
                 let s = &e.lua_nodes;

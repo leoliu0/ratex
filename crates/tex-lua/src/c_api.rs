@@ -1122,7 +1122,7 @@ pub unsafe extern "C" fn lua_tolstring(
         let text = if let Some(integer) = value.as_integer_strict() {
             integer.to_string()
         } else if let Some(number) = value.as_float() {
-            crate::stdlib::basic::lua_float_to_string(number)
+            crate::stdlib::numfmt::lua_float_to_string(number, vm.global_state().language())
         } else {
             return ptr::null();
         };

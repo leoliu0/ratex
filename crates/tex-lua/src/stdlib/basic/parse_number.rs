@@ -2,7 +2,8 @@ use crate::LuaValue;
 
 #[inline(never)]
 pub fn parse_lua_number(s: &str) -> LuaValue {
-    let s = s.trim();
+    // C `isspace` in the "C" locale; Unicode spaces are not separators.
+    let s = s.trim_matches(|c| matches!(c, ' ' | '\t' | '\n' | '\r' | '\x0b' | '\x0c'));
     if s.is_empty() || s.contains('\0') {
         return LuaValue::nil();
     }
@@ -33,9 +34,6 @@ pub fn parse_lua_number(s: &str) -> LuaValue {
         let mut result: u64 = 0;
         let mut has_digits = false;
         for c in hex_part.chars() {
-            if c == '_' {
-                continue; // allow underscores (Lua 5.5 doesn't, but skip for safety)
-            }
             if let Some(d) = c.to_digit(16) {
                 result = result.wrapping_mul(16).wrapping_add(d as u64);
                 has_digits = true;
@@ -141,7 +139,7 @@ fn parse_hex_float(s: &str) -> Option<f64> {
                     exp_adjust -= 4;
                 }
             }
-        } else if !ch.is_whitespace() {
+        } else {
             return None; // Invalid character
         }
     }

@@ -4840,7 +4840,7 @@ impl LuaState {
             }
             LuaValueKind::Float => {
                 if let Some(n) = value.as_number() {
-                    return Ok(n.to_string());
+                    return Ok(crate::stdlib::numfmt::lua_float_to_string(n, self.global_state().language()));
                 }
             }
             LuaValueKind::String => {

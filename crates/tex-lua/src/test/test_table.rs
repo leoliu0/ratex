@@ -488,3 +488,57 @@ fn test_table_newindex_counting() {
 
     assert!(result.is_ok(), "newindex counting failed: {:?}", result);
 }
+
+fn run_lua(level: LuaLanguageLevel, source: &str) {
+    let mut vm = GlobalState::new_with_language(SafeOption::default(), level);
+    vm.open_stdlib(crate::stdlib::Stdlib::All).unwrap();
+    let state = vm.main_state();
+    if let Err(error) = state.execute(source) {
+        let message = state.get_error_msg(error);
+        panic!("{level}: {message}");
+    }
+}
+
+#[test]
+fn test_concat_reads_each_element_once_and_reports_bad_values() {
+    for level in [LuaLanguageLevel::Lua53, LuaLanguageLevel::Lua55] {
+        run_lua(
+            level,
+            r#"
+            local reads = 0
+            local t = setmetatable({}, {
+                __index = function(_, i) reads = reads + 1 return "v" .. i end,
+                __len = function() return 3 end,
+            })
+            assert(table.concat(t, "-") == "v1-v2-v3" and reads == 3)
+            local ok, err = pcall(table.concat, {1, {}, 3})
+            assert(not ok and err == "invalid value (table) at index 2 in table for 'concat'", err)
+            assert(table.concat({}, ",", math.maxinteger, math.maxinteger - 1) == "")
+            local ok2, err2 = pcall(function() return table.concat({}, {}) end)
+            assert(err2:find("^chunk:%d+: bad argument #2 to 'concat' %(string expected, got table%)$"), err2)
+            "#,
+        );
+    }
+}
+
+#[test]
+fn test_table_argument_errors_follow_dialect() {
+    run_lua(
+        LuaLanguageLevel::Lua53,
+        r#"
+        local ok, err = pcall(function() return table.remove({1, 2}, 5) end)
+        assert(err:find("bad argument #1 to 'remove' (position out of bounds)", 1, true), err)
+        "#,
+    );
+    run_lua(
+        LuaLanguageLevel::Lua55,
+        r#"
+        local ok, err = pcall(function() return table.remove({1, 2}, 5) end)
+        assert(err:find("bad argument #2 to 'remove' (position out of bounds)", 1, true), err)
+        ok, err = pcall(function() return table.move({}, 1, math.maxinteger, 2) end)
+        assert(err:find("bad argument #4 to 'move' (destination wrap around)", 1, true), err)
+        ok, err = pcall(function() return table.insert({}, "x", 1, 2) end)
+        assert(err:find("^chunk:%d+: wrong number of arguments to 'insert'$"), err)
+        "#,
+    );
+}

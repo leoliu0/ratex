@@ -273,6 +273,8 @@ pub struct RenderCtx<'a> {
     pub color_stack: Vec<String>,
     pub display_list: crate::boxes::DisplayList,
     cjk_text: Option<char>,
+    /// Virtual font of each VF-backed engine font used on this page.
+    vf_fonts: crate::FxHashMap<u16, Option<std::rc::Rc<crate::fontload::VfFont>>>,
 }
 
 #[inline]
@@ -396,6 +398,7 @@ impl Engine {
             color_stack: Vec::new(),
             display_list: crate::boxes::DisplayList::new(),
             cjk_text: None,
+            vf_fonts: crate::FxHashMap::default(),
         }
     }
 
@@ -513,43 +516,30 @@ impl Engine {
     }
 }
 
-// Glue advance during shipout, tex.web §12438: the glue ratio applies to
-// the matching-order component only; every other glue contributes its
-// natural width. No clamping: negative glue widths must survive so that
-// cancellation pairs (LaTeX \@xaddvskip, setspace) stay balanced.
-fn glue_advance(
-    width: i32,
-    stretch: i32,
-    shrink: i32,
-    stretch_order: u8,
-    shrink_order: u8,
-    sign: u8,
-    order: u8,
-    set: f64,
-) -> f64 {
-    let w = sp_to_bp(width as i64);
-    match sign {
-        1 if stretch_order == order => w + set * sp_to_bp(stretch as i64),
-        2 if shrink_order == order => w - set * sp_to_bp(shrink as i64),
-        _ => w,
-    }
+/// Glue placement inside one shipped box (tex.web §625 hlist_out, §634
+/// vlist_out): the stretch or shrink of matching-order glue accumulates in
+/// `cur_glue` and each glue advances by its width plus the change in the
+/// ROUNDED running total, so rounding never drifts across a list. No
+/// clamping of the width: negative glue must survive so that cancellation
+/// pairs (LaTeX \@xaddvskip, setspace) stay balanced.
+#[derive(Default)]
+struct GlueState {
+    cur_glue: f64,
+    cur_g: i64,
 }
 
-fn glue_advance_sp(
-    width: i32,
-    stretch: i32,
-    shrink: i32,
-    stretch_order: u8,
-    shrink_order: u8,
-    sign: u8,
-    order: u8,
-    set: f64,
-) -> i64 {
-    let w = width as i64;
-    match sign {
-        1 if stretch_order == order => w + (set * stretch as f64).round() as i64,
-        2 if shrink_order == order => w - (set * shrink as f64).round() as i64,
-        _ => w,
+impl GlueState {
+    fn advance(&mut self, glue: &crate::boxes::Glue, sign: u8, order: u8, set: f64) -> i64 {
+        let delta = match sign {
+            1 if glue.stretch_order == order => glue.stretch as f64,
+            2 if glue.shrink_order == order => -(glue.shrink as f64),
+            _ => return glue.width as i64,
+        };
+        let previous = self.cur_g;
+        self.cur_glue += delta;
+        // vet_glue: keep the product within TeX's ±billion range
+        self.cur_g = (set * self.cur_glue).clamp(-1e9, 1e9).round() as i64;
+        glue.width as i64 + self.cur_g - previous
     }
 }
 
@@ -657,6 +647,7 @@ impl<'a> RenderCtx<'a> {
     /// ship a vertical list with its top edge at y
     pub fn ship_vlist(&mut self, list: &NodeList, x: i64, y: i64, sign: u8, order: u8, set: f64) {
         let mut cur_y = y;
+        let mut glue_state = GlueState::default();
         for n in list {
             match n {
                 Node::Box {
@@ -723,16 +714,7 @@ impl<'a> RenderCtx<'a> {
                     cur_y += rh + rd;
                 }
                 Node::Glue(g) => {
-                    cur_y += glue_advance_sp(
-                        g.width,
-                        g.stretch,
-                        g.shrink,
-                        g.stretch_order,
-                        g.shrink_order,
-                        sign,
-                        order,
-                        set,
-                    );
+                    cur_y += glue_state.advance(g, sign, order, set);
                 }
                 Node::NativeGlyphRun {
                     run,
@@ -746,16 +728,7 @@ impl<'a> RenderCtx<'a> {
                     cur_y += (*height + *depth) as i64;
                 }
                 Node::Leaders { glue, kind, body } => {
-                    let adv = glue_advance_sp(
-                        glue.width,
-                        glue.stretch,
-                        glue.shrink,
-                        glue.stretch_order,
-                        glue.shrink_order,
-                        sign,
-                        order,
-                        set,
-                    );
+                    let adv = glue_state.advance(glue, sign, order, set);
                     let (lw, lh, ld) = leader_dims(body);
                     match body {
                         // rule body: one rect spanning the whole advance;
@@ -819,6 +792,7 @@ impl<'a> RenderCtx<'a> {
     /// ship a horizontal list with baseline at y
     pub fn ship_hlist(&mut self, list: &NodeList, x: i64, y: i64, sign: u8, order: u8, set: f64) {
         let mut cur_x = x;
+        let mut glue_state = GlueState::default();
         for n in list {
             match n {
                 Node::Char { c, font } => {
@@ -844,16 +818,7 @@ impl<'a> RenderCtx<'a> {
                     cur_x += *width as i64;
                 }
                 Node::Glue(g) => {
-                    let adv = glue_advance_sp(
-                        g.width,
-                        g.stretch,
-                        g.shrink,
-                        g.stretch_order,
-                        g.shrink_order,
-                        sign,
-                        order,
-                        set,
-                    );
+                    let adv = glue_state.advance(g, sign, order, set);
                     cur_x += adv;
                 }
                 Node::Kern(k) | Node::ExplicitKern(k) | Node::MarginKern { width: k, .. } => {
@@ -954,16 +919,7 @@ impl<'a> RenderCtx<'a> {
                     }
                 }
                 Node::Leaders { glue, kind, body } => {
-                    let adv = glue_advance_sp(
-                        glue.width,
-                        glue.stretch,
-                        glue.shrink,
-                        glue.stretch_order,
-                        glue.shrink_order,
-                        sign,
-                        order,
-                        set,
-                    );
+                    let adv = glue_state.advance(glue, sign, order, set);
                     let (lw, lh, ld) = leader_dims(body);
                     match body {
                         // rule body: one rect over the whole advance; null
@@ -1068,40 +1024,6 @@ impl<'a> RenderCtx<'a> {
             .get(f as usize)
             .map(|ff| ff.char_width(c))
             .unwrap_or(0)
-    }
-
-    fn font_char_advance_bp(&self, f: u16, c: u8) -> f64 {
-        let w = self.font_char_width(f, c) as i64;
-        let ratio = self.eng.eqtb.expand.get(f as usize).map_or(0, |x| x.ratio);
-        let is_already_scaled = self
-            .eng
-            .eqtb
-            .expand
-            .get(f as usize)
-            .map_or(false, |x| x.blink != 0);
-        if is_already_scaled || ratio == 0 {
-            sp_to_bp(w)
-        } else {
-            let h_scale = (1000 + ratio) as f64 / 1000.0;
-            sp_to_bp(((w as f64) * h_scale).round() as i64)
-        }
-    }
-
-    fn font_lig_advance_bp(&self, f: u16, lig_width: i32) -> f64 {
-        let w = lig_width as i64;
-        let ratio = self.eng.eqtb.expand.get(f as usize).map_or(0, |x| x.ratio);
-        let is_already_scaled = self
-            .eng
-            .eqtb
-            .expand
-            .get(f as usize)
-            .map_or(false, |x| x.blink != 0);
-        if is_already_scaled || ratio == 0 {
-            sp_to_bp(w)
-        } else {
-            let h_scale = (1000 + ratio) as f64 / 1000.0;
-            sp_to_bp(((w as f64) * h_scale).round() as i64)
-        }
     }
 
     fn font_char_advance_sp(&self, f: u16, c: u8) -> i64 {
@@ -1470,10 +1392,24 @@ impl<'a> RenderCtx<'a> {
         self.delta_h += s_out;
     }
 
-    fn emit_char(&mut self, f: u16, c: u8, x: f64, y: f64) {
-        let x_sp = (x * SP_PER_BP).round() as i64;
-        let v_sp = (y * SP_PER_BP).round() as i64;
-        self.emit_char_sp(f, c, x_sp, v_sp, 0);
+    /// The parsed virtual font behind engine font `f`; expanded copies
+    /// (`name+20`, `name-15`) fall back to their base font's packets.
+    fn vf_font(&mut self, f: u16) -> Option<std::rc::Rc<crate::fontload::VfFont>> {
+        if let Some(cached) = self.vf_fonts.get(&f) {
+            return cached.clone();
+        }
+        let vf = self.eng.eqtb.fonts.get(f as usize).and_then(|font| {
+            let vf_fonts = &self.eng.font_loader.vf_fonts;
+            let name = &font.tfm_name;
+            vf_fonts.get(&(name.clone(), font.at_size)).cloned().or_else(|| {
+                let idx = name.rfind(['+', '-'])?;
+                (idx > 0 && name[idx + 1..].chars().all(|c| c.is_ascii_digit()))
+                    .then(|| vf_fonts.get(&(name[..idx].to_string(), font.at_size)).cloned())
+                    .flatten()
+            })
+        });
+        self.vf_fonts.insert(f, vf.clone());
+        vf
     }
 
     fn emit_cjk_char_sp(
@@ -1599,72 +1535,44 @@ impl<'a> RenderCtx<'a> {
         // fonts (kerns included as offsets). The VF font itself is never
         // registered as a page resource. Offsets advance on the exact sp
         // raster, as pdfTeX's do_vf_packet does.
-        if let Some(bases) = self.eng.font_loader.vf_bases.get(&f).cloned() {
-            let key = self
-                .eng
-                .eqtb
-                .fonts
-                .get(f as usize)
-                .map(|ff| (ff.tfm_name.clone(), ff.at_size));
-            let steps = key
-                .and_then(|k| {
-                    self.eng.font_loader.vf_fonts.get(&k).cloned().or_else(|| {
-                        let base_name = if let Some(idx) = k.0.rfind(['+', '-']) {
-                            if idx > 0 && k.0[idx + 1..].chars().all(|c| c.is_ascii_digit()) {
-                                &k.0[..idx]
-                            } else {
-                                &k.0
-                            }
-                        } else {
-                            &k.0
-                        };
-                        self.eng
-                            .font_loader
-                            .vf_fonts
-                            .get(&(base_name.to_string(), k.1))
-                            .cloned()
-                    })
-                })
-                .and_then(|vf| vf.chars.get(c as usize).cloned().flatten());
-            let tfm_name = self
-                .eng
-                .eqtb
-                .fonts
-                .get(f as usize)
-                .map(|ff| ff.tfm_name.clone())
-                .unwrap_or_default();
-            if let Some(steps) = steps {
-                for (step_idx, st) in steps.iter().enumerate() {
-                    let Some(&bfid) = bases.get(st.base as usize) else {
-                        self.eng.error(&format!(
-                            "Virtual font `{tfm_name}` references missing base font index {}",
+        if self.eng.font_loader.vf_bases.contains_key(&f) {
+            let font_name = |ctx: &Self| {
+                ctx.eng.eqtb.fonts.get(f as usize).map(|ff| ff.tfm_name.clone()).unwrap_or_default()
+            };
+            let Some(steps) = self.vf_font(f).and_then(|vf| vf.chars.get(c as usize).cloned().flatten())
+            else {
+                self.eng.error(&format!(
+                    "Virtual font `{}` has no character packet for slot {c}",
+                    font_name(self)
+                ));
+                return;
+            };
+            for (step_idx, st) in steps.iter().enumerate() {
+                let base = self.eng.font_loader.vf_bases.get(&f).and_then(|bases| bases.get(st.base as usize));
+                let bfid = match base {
+                    Some(&bfid) if bfid != u16::MAX => bfid,
+                    _ => {
+                        let problem = if base.is_some() { "requires missing" } else { "references missing" };
+                        let message = format!(
+                            "Virtual font `{}` {problem} base font index {}",
+                            font_name(self),
                             st.base
-                        ));
-                        continue;
-                    };
-                    if bfid == u16::MAX {
-                        self.eng.error(&format!(
-                            "Virtual font `{tfm_name}` requires missing base font index {}",
-                            st.base
-                        ));
+                        );
+                        self.eng.error(&message);
                         continue;
                     }
-                    let text = logical_ch.map(|ch| if step_idx > 0 { '\u{00A0}' } else { ch });
-                    // A base can itself be virtual (notably Korean Hangul).
-                    // Carry source semantics until reaching a real outline.
-                    self.emit_char_sp_with_text(
-                        bfid,
-                        st.ch,
-                        x_sp + st.dx as i64,
-                        v_sp + st.dy as i64,
-                        ratio,
-                        text,
-                    );
-                }
-            } else {
-                self.eng.error(&format!(
-                    "Virtual font `{tfm_name}` has no character packet for slot {c}"
-                ));
+                };
+                let text = logical_ch.map(|ch| if step_idx > 0 { '\u{00A0}' } else { ch });
+                // A base can itself be virtual (notably Korean Hangul).
+                // Carry source semantics until reaching a real outline.
+                self.emit_char_sp_with_text(
+                    bfid,
+                    st.ch,
+                    x_sp + st.dx as i64,
+                    v_sp + st.dy as i64,
+                    ratio,
+                    text,
+                );
             }
             return;
         }

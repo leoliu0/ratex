@@ -254,7 +254,7 @@ pub struct EmbedFont {
     pub content_hash: [u8; 16],
     pub units_per_em: u16,
     /// glyph names by slot (None = the font's built-in encoding)
-    pub encoding_diff: Option<Vec<String>>,
+    pub encoding_diff: Option<std::rc::Rc<[String]>>,
     pub first_char: u8,
     pub last_char: u8,
     /// widths in 1/10000 font units, for first_char..=last_char
@@ -279,6 +279,8 @@ pub struct EmbedFont {
     pub native_cids: Vec<(u16, u16, String)>,
     pub used_gids: std::collections::BTreeSet<u16>,
     pub to_unicode_2byte: Vec<(u16, String)>,
+    /// `\pdffontattr` text appended to the font dictionary.
+    pub font_attr: String,
 }
 
 impl PdfDoc {

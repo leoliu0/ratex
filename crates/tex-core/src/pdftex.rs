@@ -95,11 +95,31 @@ impl Engine {
             }
         }
         let mut remap: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
-        for fid in used {
+        // Sizes and expansion steps of one font share its decoded program.
+        let mut type1_sources: crate::FxHashMap<[u8; 16], std::rc::Rc<crate::pdffile::Type1Source>> =
+            crate::FxHashMap::default();
+        for &fid in &used {
             let Some(font) = self.eqtb.fonts.get(fid as usize).cloned() else {
                 continue;
             };
             let prog = self.font_loader.program_for_font(&font)?;
+            // pdfTeX shares one font dictionary between used fonts with the
+            // same TFM, propagating a \pdffontattr set on any of them.
+            let font_attr = self
+                .font_loader
+                .pdf_font_attrs
+                .get(&fid)
+                .or_else(|| {
+                    used.iter()
+                        .filter(|&&other| {
+                            self.eqtb.fonts.get(other as usize)
+                                .is_some_and(|f| f.tfm_name == font.tfm_name)
+                        })
+                        .find_map(|other| self.font_loader.pdf_font_attrs.get(other))
+                })
+                .cloned()
+                .unwrap_or_default();
+            let nobuiltin_tounicode = self.font_loader.nobuiltin_tounicode.contains(&fid);
 
             let at_size = font.at_size;
             let to_units = |val: i32| -> f64 {
@@ -129,11 +149,18 @@ impl Engine {
 
             match prog.kind {
                 crate::font_program::FontProgramKind::Type1 => {
-                    let pfb_bytes = prog.data.as_slice();
-                    let base_encoding = font.encoding.as_ref().cloned().or_else(|| {
-                        let type1 = crate::pdf_fonts::parse_type1(pfb_bytes);
-                        crate::pdf_fonts::builtin_encoding(&type1.data[..type1.length1])
-                    });
+                    let source = type1_sources
+                        .entry(prog.content_hash)
+                        .or_insert_with(|| {
+                            std::rc::Rc::new(crate::pdffile::Type1Source::new(&prog.data))
+                        })
+                        .clone();
+                    let base_encoding =
+                        font.encoding.clone().or_else(|| source.builtin_encoding.clone());
+                    let base_font = font
+                        .map_fontname
+                        .clone()
+                        .unwrap_or_else(|| font.tfm_name.clone());
                     if let Some(bindings) =
                         self.pdf_doc.legacy_bindings.get(&(fid as usize)).cloned()
                     {
@@ -169,17 +196,13 @@ impl Engine {
                                 to_unicode.push((code, text.clone()));
                             }
                             let mut embedded = crate::pdffile::make_embed_font(
-                                font.map_fontname
-                                    .clone()
-                                    .unwrap_or_else(|| font.tfm_name.clone()),
-                                Some(pfb_bytes),
-                                Some(&differences),
-                                0,
-                                255,
+                                base_font.clone(),
+                                Some(&source),
+                                Some(differences.into()),
                                 widths,
+                                used_chars,
                             );
                             embedded.to_unicode = to_unicode;
-                            crate::pdffile::set_font_usage(&mut embedded, used_chars);
                             embedded.ascent = ascent;
                             embedded.cap_height = cap_height;
                             embedded.descent = descent;
@@ -213,16 +236,16 @@ impl Engine {
                             })
                             .collect();
                         let mut embedded = crate::pdffile::make_embed_font(
-                            font.map_fontname
-                                .clone()
-                                .unwrap_or_else(|| font.tfm_name.clone()),
-                            Some(pfb_bytes),
-                            font.encoding.as_deref(),
-                            0,
-                            255,
+                            base_font,
+                            Some(&source),
+                            font.encoding.clone(),
                             widths,
+                            raw_chars,
                         );
-                        crate::pdffile::set_font_usage(&mut embedded, raw_chars);
+                        if nobuiltin_tounicode {
+                            embedded.to_unicode.clear();
+                        }
+                        embedded.font_attr = font_attr.clone();
                         embedded.ascent = ascent;
                         embedded.cap_height = cap_height;
                         embedded.descent = descent;
@@ -302,6 +325,7 @@ impl Engine {
                                 native_cids,
                                 used_gids,
                                 to_unicode_2byte,
+                                font_attr: String::new(),
                             };
                             self.pdf_doc.fonts.push(ef);
                             remap.insert(
@@ -355,6 +379,9 @@ impl Engine {
                                 used_chars[code as usize / 64] |= 1_u64 << (code as usize % 64);
                                 Ok(())
                             };
+                            // Semantic remaps renumber codes, so code-indexed
+                            // user attributes only apply to the raw code space.
+                            let raw = resource_binding.remapped_index().is_none();
                             if let Some(index) = resource_binding.remapped_index() {
                                 for (code, slot, text) in &bindings[index].entries {
                                     add_glyph(*code, *slot, Some(text))?;
@@ -368,6 +395,9 @@ impl Engine {
                                         add_glyph(slot, slot, None)?;
                                     }
                                 }
+                            }
+                            if raw && nobuiltin_tounicode {
+                                to_unicode.clear();
                             }
 
                             let embedded = crate::pdfout::EmbedFont {
@@ -411,6 +441,7 @@ impl Engine {
                                 native_cids: Vec::new(),
                                 used_gids,
                                 to_unicode_2byte: Vec::new(),
+                                font_attr: if raw { font_attr.clone() } else { String::new() },
                             };
                             let document_index = self.pdf_doc.fonts.len();
                             self.pdf_doc.fonts.push(embedded);

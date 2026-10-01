@@ -831,6 +831,7 @@ pub enum Prim {
     Umathstackvgap,
     Ustartmath,
     Ustopmath,
+    PdfNoBuiltinToUnicode,
 }
 
 /// Stable wire codes for the format dump (`crate::format`). Unit variants
@@ -1238,6 +1239,7 @@ impl Prim {
             Prim::Umathstackvgap => 381,
             Prim::Ustartmath => 382,
             Prim::Ustopmath => 383,
+            Prim::PdfNoBuiltinToUnicode => 384,
             Prim::ScriptScriptStyle => 284,
             Prim::Patterns => 287,
             Prim::Hyphenation => 288,
@@ -1634,6 +1636,7 @@ impl Prim {
             381 => Some(Prim::Umathstackvgap),
             382 => Some(Prim::Ustartmath),
             383 => Some(Prim::Ustopmath),
+            384 => Some(Prim::PdfNoBuiltinToUnicode),
             0x1000..=0x1fff => {
                 let i = c & 0x0fff;
                 Some(Prim::IntP(IntParam::from_idx(i)?))

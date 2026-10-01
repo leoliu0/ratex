@@ -2826,7 +2826,7 @@ fn pdffontattr_consumes_font_and_attribute_dictionary() {
         &mut e,
         r#"
 \catcode`\{=1 \catcode`\}=2
-\pdffontattr\font{/ToUnicode 5 0 R}
+\font\x=cmr10 \pdffontattr\x{/ToUnicode 5 0 R}
 \ifvmode\count0=1\fi
 "#,
     );

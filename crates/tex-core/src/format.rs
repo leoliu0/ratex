@@ -818,7 +818,7 @@ fn write_font(w: &mut W, f: &Font) {
         Some(enc) => {
             w.u8(1);
             w.u32(enc.len() as u32);
-            for g in enc {
+            for g in enc.iter() {
                 w.str(g);
             }
         }
@@ -1378,7 +1378,7 @@ fn read_font(r: &mut R) -> io::Result<Font> {
         for _ in 0..n {
             v.push(r.str()?);
         }
-        Some(v)
+        Some(v.into())
     } else {
         None
     };
@@ -1583,7 +1583,7 @@ mod tests {
             type1_path: Some("pfb/cmr10.pfb".to_string()),
             enc_name: Some("ec".to_string()),
             map_fontname: None,
-            encoding: Some(vec!["grave".to_string(), "".to_string()]),
+            encoding: Some(vec!["grave".to_string(), "".to_string()].into()),
         };
         eng.eqtb.fonts.push(Rc::new(font));
         eng.eqtb.font_params.push(vec![1, 2, 3]);

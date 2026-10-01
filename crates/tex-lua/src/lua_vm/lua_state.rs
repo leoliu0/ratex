@@ -3742,6 +3742,14 @@ impl LuaState {
                 return Err(self.error("cannot resume: no frame".to_string()));
             };
             if pop_yield_frame {
+                // The C function that yielded returns now (luaD_poscall in
+                // resume), which fires its return hook.
+                if self.hook_mask & crate::lua_vm::LUA_MASKRET != 0
+                    && self.allow_hook
+                    && self.current_frame().is_some_and(|frame| frame.is_c())
+                {
+                    self.run_hook(LUA_HOOKRET, -1, 0, 0)?;
+                }
                 self.pop_frame();
             }
 

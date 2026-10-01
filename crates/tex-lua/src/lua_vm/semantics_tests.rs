@@ -378,6 +378,23 @@ fn xpcall_keeps_its_frame_and_survives_yields() {
 }
 
 #[test]
+fn resuming_after_a_yield_fires_the_return_hook_of_yield() {
+    run_both(
+        r#"
+        local co = coroutine.create(function()
+            coroutine.yield(10)
+            return 20
+        end)
+        local trace = {}
+        debug.sethook(co, function(e) trace[#trace + 1] = e end, "clr")
+        repeat until not coroutine.resume(co)
+        local got = table.concat(trace, " ")
+        assert(got == "call line call return line return", got)
+        "#,
+    );
+}
+
+#[test]
 fn functions_called_from_library_code_cannot_yield() {
     run_both(
         r#"

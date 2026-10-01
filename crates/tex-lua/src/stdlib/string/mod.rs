@@ -336,7 +336,7 @@ fn add_value(
     e: usize,
     repl: &LuaValue,
     repl_text: Option<&[u8]>,
-) -> LuaResult<()> {
+) -> LuaResult<bool> {
     if let Some(news) = repl_text {
         let mut i = 0;
         while i < news.len() {
@@ -362,7 +362,7 @@ fn add_value(
             }
             i += 1;
         }
-        return Ok(());
+        return Ok(true);
     }
     let result = if repl.is_table() {
         let key = match ms.get_capture(0, s, e) {
@@ -377,13 +377,15 @@ fn add_value(
     };
     if !result.is_truthy() {
         out.extend_from_slice(&ms.src[s..e]);
-    } else if let Some(text) = lauxlib::to_lstr(l, &result) {
+        return Ok(false);
+    }
+    if let Some(text) = lauxlib::to_lstr(l, &result) {
         out.extend_from_slice(&text);
     } else {
         let message = format!("invalid replacement value (a {})", result.type_name());
         return Err(lauxlib::lual_error(l, message));
     }
-    Ok(())
+    Ok(true)
 }
 
 /// string.gsub(s, pattern, repl [, n])
@@ -410,6 +412,7 @@ fn string_gsub(l: &mut LuaState) -> LuaResult<usize> {
     let mut s = 0;
     let mut lastmatch = usize::MAX;
     let mut n: i64 = 0;
+    let mut changed = false;
     let first = if anchor { None } else { pattern::first_literal(p) };
     while n < max_s {
         if let Some(first) = first {
@@ -426,7 +429,7 @@ fn string_gsub(l: &mut LuaState) -> LuaResult<usize> {
         match end {
             Some(e) if e != lastmatch => {
                 n += 1;
-                add_value(l, &ms, &mut out, s, e, &repl, repl_text.as_deref())?;
+                changed |= add_value(l, &ms, &mut out, s, e, &repl, repl_text.as_deref())?;
                 s = e;
                 lastmatch = e;
             }
@@ -440,7 +443,7 @@ fn string_gsub(l: &mut LuaState) -> LuaResult<usize> {
             break;
         }
     }
-    if n == 0 && let LStr::Value(original) = src {
+    if !changed && let LStr::Value(original) = src {
         l.push_value(original)?;
     } else {
         out.extend_from_slice(&src[s..]);

@@ -1850,17 +1850,10 @@ unsafe fn load_bytes(state: *mut lua_State, bytes: &[u8], name: &str, mode: Opti
                     .map_err(|error| state_vm.get_error_message(error))
             })
         }
-    } else if state_vm.global_state().language() == LuaLanguageLevel::Lua53 {
+    } else {
         state_vm
             .load_bytes_with_name(bytes, name)
             .map_err(|error| state_vm.get_error_message(error))
-    } else {
-        match std::str::from_utf8(bytes) {
-            Ok(source) => state_vm
-                .load_with_name(source, name)
-                .map_err(|error| state_vm.get_error_message(error)),
-            Err(_) => Err("source is not valid UTF-8".to_string()),
-        }
     };
     match loaded {
         Ok(function) => {

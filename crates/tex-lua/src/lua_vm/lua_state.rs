@@ -1491,27 +1491,23 @@ impl LuaState {
                 continue;
             }
 
-            // Try trait-based __close for userdata BEFORE metatable lookup.
-            // If the userdata has lua_close implemented, call it and skip the
-            // metatable path entirely (no error even if __close metamethod is absent).
-            if value.ttisfulluserdata()
-                && let Some(ud_mut) = self
-                    .stack_mut()
-                    .get_mut(tbc_idx)
-                    .and_then(|v| v.as_userdata_mut())
-            {
-                if let Ok(trait_obj) = ud_mut.get_trait_mut() {
-                    trait_obj.lua_close();
-                }
-                continue;
-            }
-
             match get_metamethod_event(self, &value, TmKind::Close) {
                 Some(close_fn) => self.call_close_method(&close_fn, &value, None)?,
+                // A userdata without a `__close` metamethod uses its trait-based close.
+                None if value.ttisfulluserdata() => self.close_userdata_trait(tbc_idx),
                 None => return Err(self.non_closable_error(tbc_idx)),
             }
         }
         Ok(())
+    }
+
+    /// `UserDataTrait::lua_close` of the full userdata in stack slot `tbc_idx`.
+    fn close_userdata_trait(&mut self, tbc_idx: usize) {
+        if let Some(ud_mut) = self.stack_mut().get_mut(tbc_idx).and_then(|v| v.as_userdata_mut())
+            && let Ok(trait_obj) = ud_mut.get_trait_mut()
+        {
+            trait_obj.lua_close();
+        }
     }
 
     /// A to-be-closed variable whose `__close` metamethod was removed.
@@ -1584,19 +1580,6 @@ impl LuaState {
                 continue;
             }
 
-            // Try trait-based __close for userdata BEFORE metatable lookup
-            if value.ttisfulluserdata()
-                && let Some(ud_mut) = self
-                    .stack_mut()
-                    .get_mut(tbc_idx)
-                    .and_then(|v| v.as_userdata_mut())
-            {
-                if let Ok(trait_obj) = ud_mut.get_trait_mut() {
-                    trait_obj.lua_close();
-                }
-                continue;
-            }
-
             let caller_depth = self.call_depth();
             let result = match get_metamethod_event(self, &value, TmKind::Close) {
                 Some(close_fn) => {
@@ -1610,6 +1593,10 @@ impl LuaState {
                     self.stack[err_slot] = current_error;
                     self.set_top_raw(err_slot + 1);
                     self.call_close_method(&close_fn, &value, Some(current_error))
+                }
+                None if value.ttisfulluserdata() => {
+                    self.close_userdata_trait(tbc_idx);
+                    Ok(())
                 }
                 None => Err(self.non_closable_error(tbc_idx)),
             };
@@ -1952,9 +1939,7 @@ impl LuaState {
                         info.fill_upvalues_c(nups);
                     }
                     'n' => {
-                        if ci.is_some_and(|ci| ci.call_status & call_status::CIST_FIN != 0) {
-                            info.fill_name("metamethod", "__gc");
-                        } else if let Some(fidx) = frame_idx {
+                        if let Some(fidx) = frame_idx {
                             if let Some((namewhat, name)) = pub_getfuncname(self, fidx) {
                                 info.fill_name(namewhat, &name);
                             } else {

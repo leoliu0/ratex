@@ -4104,30 +4104,38 @@ impl GC {
         let old_allow_hook = l.allow_hook;
         l.allow_hook = false;
 
-        // Keep the internal finalizer invocation visible to the debug API,
-        // matching Lua's C finalizer frame.
+        // Like GCTM, flag the running frame with CIST_FIN while the finalizer runs, so
+        // the debug API names the finalizer (5.5) or that frame (5.3) "__gc". Without a
+        // running frame (C Lua's base_ci), a C marker frame stands in for it.
+        use crate::lua_vm::call_info::call_status::CIST_FIN;
         fn finalizer_frame_marker(_: &mut LuaState) -> LuaResult<usize> {
             Ok(0)
         }
-        let marker_top = l.get_top();
-        let marker = LuaValue::cfunction(finalizer_frame_marker);
-        let result = match l.push_value(marker) {
-            Err(error) => Err(error),
-            Ok(()) => match l.push_frame(&marker, marker_top + 1, 0, 0) {
-                Err(error) => {
-                    l.set_top_raw(marker_top);
-                    Err(error)
-                }
-                Ok(()) => {
-                    let marker_frame = l.call_depth() - 1;
-                    l.get_call_info_mut(marker_frame).call_status |=
-                        crate::lua_vm::call_info::call_status::CIST_FIN;
-                    let result = l.pcall(gc_method, vec![obj_value]);
-                    l.pop_frame();
-                    l.set_top_raw(marker_top);
-                    result
-                }
-            },
+        let result = if l.call_depth() > 0 {
+            let frame = l.call_depth() - 1;
+            l.get_call_info_mut(frame).call_status |= CIST_FIN;
+            let result = l.pcall(gc_method, vec![obj_value]);
+            l.get_call_info_mut(frame).call_status &= !CIST_FIN;
+            result
+        } else {
+            let marker_top = l.get_top();
+            let marker = LuaValue::cfunction(finalizer_frame_marker);
+            match l.push_value(marker) {
+                Err(error) => Err(error),
+                Ok(()) => match l.push_frame(&marker, marker_top + 1, 0, 0) {
+                    Err(error) => {
+                        l.set_top_raw(marker_top);
+                        Err(error)
+                    }
+                    Ok(()) => {
+                        l.get_call_info_mut(0).call_status |= CIST_FIN;
+                        let result = l.pcall(gc_method, vec![obj_value]);
+                        l.pop_frame();
+                        l.set_top_raw(marker_top);
+                        result
+                    }
+                },
+            }
         };
 
         // Restore hook state and GC state
@@ -4149,7 +4157,9 @@ impl GC {
             if l.global_state().language() == crate::LuaLanguageLevel::Lua53 {
                 self.finalizer_error = Some(format!("error in __gc metamethod ({message})"));
             } else {
-                eprintln!("[GC] WARNING: error in __gc: {message}");
+                // luaE_warnerror
+                let warning = format!("error in __gc ({message})");
+                let _ = crate::stdlib::basic::emit_warning(l, &warning);
             }
         }
     }

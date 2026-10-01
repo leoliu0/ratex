@@ -11,7 +11,7 @@ use crate::compiler::parser::{
     to_binary_operator, to_unary_operator,
 };
 use crate::compiler::statement::{self, mark_upval};
-use crate::compiler::{VarDesc, VarKind, binary_k, code, string_k};
+use crate::compiler::{VarDesc, VarKind, code, string_k};
 use crate::lua_value::{LocVar, UpvalueDesc};
 use crate::lua_vm::OpCode;
 use crate::lua_vm::lua_limits::LFIELDS_PER_FLUSH;
@@ -143,7 +143,7 @@ fn simpleexp(fs: &mut FuncState, v: &mut ExpDesc) -> Result<(), String> {
             });
             match string_content {
                 Ok(bytes) => {
-                    let string = fs.vm.create_bytes(&bytes).unwrap();
+                    let string = fs.new_string(&bytes);
                     // Create VKSTR expression (not VK!) - will convert to VK when needed
                     *v = ExpDesc::new_vkstr(string);
                 }
@@ -278,8 +278,10 @@ pub fn suffixedexp(fs: &mut FuncState, v: &mut ExpDesc) -> Result<(), String> {
     }
 }
 
-// Port of funcargs from lparser.c (lines 1024-1065)
+// Port of funcargs from lparser.c (lines 1024-1065). `line` is where the suffixed
+// expression starts: Lua 5.3's call line; 5.4+ use the line of the arguments.
 fn funcargs(fs: &mut FuncState, f: &mut ExpDesc, line: usize) -> Result<(), String> {
+    let line = if fs.lexer.level == LuaLanguageLevel::Lua53 { line } else { fs.lexer.line };
     let mut args = ExpDesc::new_void();
 
     match fs.lexer.current_token() {
@@ -309,12 +311,9 @@ fn funcargs(fs: &mut FuncState, f: &mut ExpDesc, line: usize) -> Result<(), Stri
             if has_byte_markers {
                 vec8 = decode_byte_source_markers(vec8);
             }
-            let k_idx = match String::from_utf8(vec8) {
-                Ok(s) => string_k(fs, &s),
-                Err(e) => binary_k(fs, e.into_bytes()),
-            };
+            let string = fs.new_string(&vec8);
             fs.lexer.bump();
-            args = ExpDesc::new_k(k_idx);
+            args = ExpDesc::new_vkstr(string);
         }
         _ => {
             return Err("function arguments expected".to_string());

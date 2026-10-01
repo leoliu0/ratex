@@ -264,9 +264,14 @@ fn solvegoto(
 }
 
 // Port of checkrepeated from lparser.c:1445-1454
-// Check whether there is already a label with the given 'name'
+// Check whether there is already a visible label with the given 'name': Lua 5.4+ see
+// every label of the enclosing blocks of the function, Lua 5.3 only the current block's.
 fn checkrepeated(fs: &mut FuncState, name: &str) -> Result<(), String> {
-    let first_label = fs.current_block_cnt().map_or(0, |block| block.first_label);
+    let first_label = if fs.lexer.level == LuaLanguageLevel::Lua53 {
+        fs.current_block_cnt().map_or(0, |block| block.first_label)
+    } else {
+        0
+    };
     if let Some(label) = fs.labels[first_label..]
         .iter()
         .find(|label| label.name == name)

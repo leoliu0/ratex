@@ -12,18 +12,15 @@ use crate::{Instruction, LUA_MASKCALL, LUA_MASKCOUNT, LUA_MASKLINE, LUA_MASKRET,
 /// Get the type name of an object, checking __name in metatable first.
 /// Mirrors C Lua's luaT_objtypename.
 pub fn objtypename(l: &mut LuaState, v: &LuaValue) -> String {
-    if let Some(mt) = get_metatable(l, v)
-        && let Some(mt_table) = mt.as_table()
-    {
-        // Create a string key for __name lookup
-        if let Ok(key) = l.create_string("__name")
-            && let Some(name_val) = mt_table.raw_get(&key)
-            && let Some(s) = name_val.as_str()
-        {
-            return s.to_string();
-        }
-    }
-    v.type_name().to_string()
+    metatable_name(l, v).unwrap_or_else(|| v.type_name().to_string())
+}
+
+/// The string `__name` field of the metatable of `v`, if any.
+pub(crate) fn metatable_name(l: &mut LuaState, v: &LuaValue) -> Option<String> {
+    let mt = get_metatable(l, v)?;
+    let mt_table = mt.as_table()?;
+    let key = l.create_string("__name").ok()?;
+    mt_table.raw_get(&key)?.as_str().map(str::to_string)
 }
 
 // ============================================================================
@@ -258,7 +255,12 @@ fn is_env(chunk: &LuaProto, pc: usize, i: Instruction, isup: bool) -> &'static s
 
 /// Extended object name resolution (handles table accesses).
 /// Mirrors Lua 5.5's getobjname.
-fn getobjname(chunk: &LuaProto, lastpc: usize, reg: u32) -> Option<(&'static str, String)> {
+fn getobjname(
+    chunk: &LuaProto,
+    lastpc: usize,
+    reg: u32,
+    lua53: bool,
+) -> Option<(&'static str, String)> {
     let mut pc = lastpc as i32;
     if let Some(result) = basicgetobjname(chunk, &mut pc, reg) {
         return Some(result);
@@ -275,7 +277,9 @@ fn getobjname(chunk: &LuaProto, lastpc: usize, reg: u32) -> Option<(&'static str
             OpCode::GetTable => {
                 let k = i.get_c();
                 let name = rname(chunk, pc as usize, k);
-                let is_method = pc > 0 && {
+                // A method call whose name constant does not fit an RK operand compiles
+                // to MOVE + GETTABLE; Lua 5.3 still emitted OP_SELF for it.
+                let is_method = lua53 && pc > 0 && {
                     let setup = chunk.code[pc as usize - 1];
                     setup.get_opcode() == OpCode::Move
                         && setup.get_a() == i.get_a() + 1
@@ -310,13 +314,13 @@ fn getobjname(chunk: &LuaProto, lastpc: usize, reg: u32) -> Option<(&'static str
 
 /// Determine function name from bytecode at the calling instruction.
 /// Mirrors Lua 5.5's funcnamefromcode.
-fn funcnamefromcode(chunk: &LuaProto, pc: usize) -> Option<(&'static str, String)> {
+fn funcnamefromcode(chunk: &LuaProto, pc: usize, lua53: bool) -> Option<(&'static str, String)> {
     if pc >= chunk.code.len() {
         return None;
     }
     let i = chunk.code[pc];
     match i.get_opcode() {
-        OpCode::Call | OpCode::TailCall => getobjname(chunk, pc, i.get_a()),
+        OpCode::Call | OpCode::TailCall => getobjname(chunk, pc, i.get_a(), lua53),
         OpCode::TForCall | OpCode::TForCall53 => Some(("for iterator", "for iterator".to_string())),
         // Metamethod-triggering instructions
         OpCode::Self_ | OpCode::GetTabUp | OpCode::GetTable | OpCode::GetI | OpCode::GetField => {
@@ -342,13 +346,19 @@ fn funcnamefromcode(chunk: &LuaProto, pc: usize) -> Option<(&'static str, String
 }
 
 /// Get function name by looking at the calling frame.
-/// Mirrors Lua 5.5's getfuncname.
+/// Mirrors Lua 5.5's getfuncname/funcnamefromcall (5.3: getfuncname/funcnamefromcode).
 /// ci_frame_idx is the frame index of the TARGET function.
 fn getfuncname(l: &LuaState, ci_frame_idx: usize) -> Option<(&'static str, String)> {
+    let lua53 = l.global_state().language() == crate::LuaLanguageLevel::Lua53;
+    let ci = l.get_frame(ci_frame_idx)?;
+    // GCTM flags the frame that was running when the finalizer started. Lua 5.3 reports
+    // that frame itself as the "__gc" metamethod; 5.4+ report the finalizer it called.
+    if lua53 && ci.call_status & call_status::CIST_FIN != 0 {
+        return Some(("metamethod", "__gc".to_string()));
+    }
     if ci_frame_idx == 0 {
         return None; // No caller frame
     }
-    let ci = l.get_frame(ci_frame_idx)?;
     // If tail call, cannot find name
     if ci.is_tail() {
         return None;
@@ -359,6 +369,9 @@ fn getfuncname(l: &LuaState, ci_frame_idx: usize) -> Option<(&'static str, Strin
     if prev.call_status & call_status::CIST_HOOKED != 0 {
         return Some(("hook", "?".to_string()));
     }
+    if !lua53 && prev.call_status & call_status::CIST_FIN != 0 {
+        return Some(("metamethod", "__gc".to_string()));
+    }
     if prev.is_lua() {
         // Get caller's chunk
         let prev_func = l.get_frame_func(prev_idx)?;
@@ -367,9 +380,9 @@ fn getfuncname(l: &LuaState, ci_frame_idx: usize) -> Option<(&'static str, Strin
         // prev.pc points to the instruction AFTER the call (due to pc += 1 in fetch).
         // So the call instruction is at pc - 1.
         let pc = prev.pc.saturating_sub(1) as usize;
-        let (kind, name) = funcnamefromcode(chunk, pc)?;
+        let (kind, name) = funcnamefromcode(chunk, pc, lua53)?;
         // Lua 5.4+ name metamethods without the "__" prefix (ldebug.c `tmname + 2`)
-        if kind == "metamethod" && l.global_state().language() != crate::LuaLanguageLevel::Lua53 {
+        if kind == "metamethod" && !lua53 {
             return Some((kind, name.trim_start_matches("__").to_owned()));
         }
         return Some((kind, name));
@@ -510,7 +523,7 @@ pub fn varinfo(l: &LuaState) -> String {
     };
 
     if let Some(reg) = reg
-        && let Some((kind, name)) = getobjname(chunk, currentpc, reg)
+        && let Some((kind, name)) = getobjname(chunk, currentpc, reg, is_lua53(l))
     {
         return format!(" ({} '{}')", kind, name);
     }
@@ -608,7 +621,7 @@ pub fn varinfo_for_reg(l: &LuaState, reg: u32) -> String {
     };
     let chunk = lua_func.chunk();
     let currentpc = ci.pc.saturating_sub(1) as usize;
-    if let Some((kind, name)) = getobjname(chunk, currentpc, reg) {
+    if let Some((kind, name)) = getobjname(chunk, currentpc, reg, is_lua53(l)) {
         format!(" ({} '{}')", kind, name)
     } else {
         String::new()
@@ -665,7 +678,7 @@ pub fn callerror(l: &mut LuaState, val: &LuaValue) -> LuaError {
     {
         let chunk = lua_func.chunk();
         let pc = ci.pc.saturating_sub(1) as usize;
-        if let Some((kind, name)) = funcnamefromcode(chunk, pc) {
+        if let Some((kind, name)) = funcnamefromcode(chunk, pc, is_lua53(l)) {
             let extra = match kind {
                 // 5.3's luaG_typeerror names only stack slots; a metamethod is none.
                 "metamethod" if is_lua53(l) => String::new(),

@@ -947,13 +947,7 @@ impl GlobalState {
                 None
             };
             let bytes = normalized.as_deref().unwrap_or(text);
-            if self.version == LuaLanguageLevel::Lua53 {
-                self.compile_bytes_with_name(bytes, &chunk_name)?
-            } else {
-                let code_str = String::from_utf8(bytes.to_vec())
-                    .map_err(|_| "source file is not valid UTF-8".to_string())?;
-                self.compile_with_name(&code_str, &chunk_name)?
-            }
+            self.compile_bytes_with_name(bytes, &chunk_name)?
         };
 
         let proto = self

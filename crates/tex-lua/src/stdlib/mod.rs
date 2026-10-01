@@ -5,6 +5,7 @@ pub mod bit32;
 pub mod coroutine;
 pub mod debug;
 pub mod io;
+pub(crate) mod lauxlib;
 pub mod math;
 pub mod os;
 pub mod package;

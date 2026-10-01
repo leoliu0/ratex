@@ -309,6 +309,9 @@ raised by a function handle that a callback calls while a coroutine (an async
 script, or one resumed from Lua) runs reaches that coroutine's `pcall` as the
 same Lua value; only a call made by the host alone, with no Lua code running,
 returns the message with its stack traceback.
+With the optional `sandbox` feature, `SandboxConfig::with_stdlib(Stdlib::Bit32)`
+enables Lua 5.3's `bit32` independently of the `math` library; it is hidden until
+selected.
 
 ---
 

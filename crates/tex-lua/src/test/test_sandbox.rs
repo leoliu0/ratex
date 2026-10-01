@@ -37,6 +37,36 @@ fn test_sandbox_blocks_dangerous_basic_functions_by_default() {
 }
 
 #[test]
+fn bit32_is_enabled_without_broadening_the_sandbox_library_selection() {
+    let mut vm = GlobalState::new_with_language(
+        SafeOption::default(),
+        crate::LuaLanguageLevel::Lua53,
+    );
+    vm.open_stdlib(Stdlib::All).unwrap();
+    let mut config = SandboxConfig::default();
+    config.math = false;
+    config.bit32 = false;
+    let hidden = vm
+        .main_state()
+        .execute_sandboxed("return bit32, math", &config)
+        .unwrap();
+    assert!(hidden[0].is_nil());
+    assert!(hidden[1].is_nil());
+
+    let enabled = config.with_stdlib(Stdlib::Bit32);
+    let results = vm
+        .main_state()
+        .execute_sandboxed(
+            "return bit32.band(240, 15), bit32.lrotate(2147483648, 1), math",
+            &enabled,
+        )
+        .unwrap();
+    assert_eq!(results[0].as_integer(), Some(0));
+    assert_eq!(results[1].as_integer(), Some(1));
+    assert!(results[2].is_nil());
+}
+
+#[test]
 fn test_load_sandboxed_uses_own_env() {
     let mut vm = GlobalState::new(SafeOption::default());
     vm.open_stdlib(Stdlib::All).unwrap();

@@ -193,6 +193,9 @@ impl Engine {
                             | Prim::LcCodeP
                             | Prim::SfCodeP
                             | Prim::UcCodeP
+                            | Prim::CatCodeTable
+                            | Prim::InitCatCodeTable
+                            | Prim::SaveCatCodeTable
                     ) {
                         self.clear_prefixes();
                     }

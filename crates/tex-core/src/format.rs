@@ -1582,6 +1582,7 @@ fn read_font(r: &mut R) -> io::Result<Font> {
         enc_name,
         map_fontname,
         encoding,
+        lua: None,
     })
 }
 
@@ -1768,6 +1769,7 @@ mod tests {
             enc_name: Some("ec".to_string()),
             map_fontname: None,
             encoding: Some(vec!["grave".to_string(), "".to_string()].into()),
+            lua: None,
         };
         eng.eqtb.fonts.push(Rc::new(font));
         eng.eqtb.font_params.push(vec![1, 2, 3]);

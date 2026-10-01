@@ -204,14 +204,6 @@ pub(crate) fn check_any(l: &mut LuaState, narg: usize) -> LuaResult<LuaValue> {
         .ok_or_else(|| argerror(l, narg, "value expected"))
 }
 
-/// `luaL_checktype(L, narg, LUA_TTABLE)`.
-pub(crate) fn check_table(l: &mut LuaState, narg: usize) -> LuaResult<LuaValue> {
-    match l.get_arg(narg) {
-        Some(value) if value.is_table() => Ok(value),
-        _ => Err(typeerror(l, narg, "table")),
-    }
-}
-
 /// `luaL_checkoption`: index of the argument in `options`.
 pub(crate) fn check_option(
     l: &mut LuaState,

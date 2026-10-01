@@ -694,3 +694,22 @@ fn test_concat_is_not_merged_across_jump_targets() {
     "#,
     );
 }
+
+#[test]
+fn test_goto_into_local_scope_names_the_variable() {
+    for (level, expected) in [
+        (
+            LuaLanguageLevel::Lua53,
+            "<goto skip> at line 2 jumps into the scope of local 'second'",
+        ),
+        (
+            LuaLanguageLevel::Lua55,
+            "<goto skip> at line 2 jumps into the scope of 'second'",
+        ),
+    ] {
+        let mut vm = GlobalState::new_with_language(SafeOption::default(), level);
+        let source = "local first = 1\ndo goto skip end\nlocal second = 2\n::skip:: print(second)\n";
+        let err = vm.compile(source).unwrap_err();
+        assert!(err.contains(expected), "{level}: {err}");
+    }
+}

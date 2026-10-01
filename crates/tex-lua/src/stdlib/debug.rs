@@ -626,11 +626,6 @@ pub fn arg_typeerror(l: &mut LuaState, narg: usize, expected: &str, val: &LuaVal
     argerror(l, narg, &format!("{} expected, got {}", expected, actual))
 }
 
-/// Like arg_typeerror but for absent arguments (LUA_TNONE).
-pub fn arg_typeerror_novalue(l: &mut LuaState, narg: usize, expected: &str) -> LuaError {
-    argerror(l, narg, &format!("{} expected, got no value", expected))
-}
-
 /// Get variable info for a specific register.
 /// Like varinfo() but for a known register number.
 pub fn varinfo_for_reg(l: &LuaState, reg: u32) -> String {

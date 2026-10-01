@@ -227,14 +227,13 @@ pub fn whatsit_info(sub: u16) -> Option<&'static crate::lua_node_tables::Whatsit
 /// `nodetype_has_attributes`
 pub fn has_attr_type(id: u8, subtype: u16) -> bool {
     match id {
-        HLIST..=GLUE => true,
-        KERN | PENALTY | UNSET | STYLE..=GLYPH => true,
         WHATSIT => !matches!(subtype, ws::PDF_ACTION | 27 | 28),
+        UNSET => false,
+        HLIST..=GLYPH => true,
         _ => false,
     }
 }
 
-/// does `getfield(n, "subtype")` answer for this type
 pub fn has_subtype_type(id: u8) -> bool {
     !matches!(id, LOCAL_PAR | GLUE_SPEC) && id <= TEMP
 }
@@ -388,6 +387,7 @@ impl NodeStore {
                     node.f[2] = 0;
                     node.f[3] = 1;
                     node.f[4] = 1;
+                    node.f[GLYPH_LANG_DATA] = 256 + 1;
                 }
                 HLIST | VLIST => node.f[3] = -1,
                 RULE => {
@@ -990,18 +990,45 @@ impl NodeStore {
         if id == GLYPH && matches!(name, "width" | "height" | "depth") {
             return Ok(());
         }
-        if id == STYLE && name == "style" {
-            if let SetVal::Bytes(b) = &v {
-                if let Some(s) = math_style_from_name(b) {
-                    self.nodes[n as usize].subtype = s;
-                }
+        if id == STYLE {
+            // `style` takes a name (unknown names mean text) or a number;
+            // other names are silently ignored
+            if name == "style" {
+                self.nodes[n as usize].subtype = match &v {
+                    SetVal::Bytes(b) => math_style_from_name(b).unwrap_or(2),
+                    other => other.to_int() as u16,
+                };
             }
+            return Ok(());
+        }
+        if (id == INS && name == "spec") || (id == UNSET && name == "span") {
+            return Err(cant());
+        }
+        if id == GLYPH && matches!(name, "lang" | "left" | "right" | "uchyph") {
+            let f = &mut self.nodes[n as usize].f;
+            let (lang, left, right, uchyph) = split_lang_data(f[GLYPH_LANG_DATA]);
+            let x = v.to_int() as i32;
+            let ld = match name {
+                "lang" => make_lang_data(uchyph, x, left, right),
+                "left" => make_lang_data(uchyph, lang, x, right),
+                "right" => make_lang_data(uchyph, lang, left, x),
+                _ => make_lang_data(x, lang, left, right),
+            };
+            let (lang, left, right, uchyph) = split_lang_data(ld);
+            f[GLYPH_LANG_DATA] = ld;
+            f[2] = lang;
+            f[3] = left;
+            f[4] = right;
+            f[5] = uchyph;
             return Ok(());
         }
         let Some(f) = resolve(id, sub, name) else { return Err(cant()) };
         match f.kind {
             K::I => {
-                let val = if is_dim_field(id, name) { v.to_round() } else { v.to_int() };
+                let mut val = if is_dim_field(id, name) { v.to_round() } else { v.to_int() };
+                if is_quarterword_field(id, name) {
+                    val &= 0xFFFF;
+                }
                 self.nodes[n as usize].f[f.slot] = val as i32;
             }
             K::F => self.nodes[n as usize].fl = v.to_num(),
@@ -1066,13 +1093,43 @@ fn node_val(h: u32) -> Val {
     if h == 0 { Val::Nil } else { Val::Node(h) }
 }
 
+/// texnodes.h `make_lang_data` (int arithmetic, wrapping like the C code
+/// compiled for a two's complement target)
+pub fn make_lang_data(uchyph: i32, lang: i32, left: i32, right: i32) -> i32 {
+    let clamp = |v: i32| if v > 0 && v < 256 { v } else { 255 };
+    (if uchyph > 0 { i32::MIN } else { 0 })
+        .wrapping_add(lang.wrapping_shl(16))
+        .wrapping_add(clamp(left) << 8)
+        .wrapping_add(clamp(right))
+}
+
+/// (lang, left, right, uchyph) of a packed `lang_data`.
+pub fn split_lang_data(ld: i32) -> (i32, i32, i32, i32) {
+    let lang = (((ld as u32 & 0x7FFF_0000) as i32).wrapping_shl(1)) >> 17;
+    (lang, (ld >> 8) & 0xFF, ld & 0xFF, ((ld as u32) >> 31) as i32)
+}
+
+/// Slot of a glyph holding the packed `lang_data` (the separate fields are
+/// views of it).
+pub const GLYPH_LANG_DATA: usize = 9;
+
+/// fields LuaTeX stores in a 16 bit quarterword
+fn is_quarterword_field(id: u8, name: &str) -> bool {
+    match id {
+        HLIST | VLIST | UNSET => matches!(name, "glue_order" | "glue_sign"),
+        GLUE | MATH => matches!(name, "stretch_order" | "shrink_order"),
+        DISC => name == "penalty",
+        _ => false,
+    }
+}
+
 /// fields set with `lua_roundnumber` (dimensions) rather than `lua_tointeger`
 fn is_dim_field(id: u8, name: &str) -> bool {
     match name {
         "width" | "height" | "depth" | "shift" | "stretch" | "shrink" | "kern" | "xoffset" | "yoffset"
-        | "expansion_factor" | "left" | "right" | "surround" | "box_left_width" | "box_right_width" => {
-            !(id == FRACTION && false)
-        }
+        | "expansion_factor" | "left" | "right" | "surround" | "box_left_width" | "box_right_width"
+        | "italic" => true,
+        "fraction" => id == ACCENT,
         _ => false,
     }
 }

@@ -27,7 +27,7 @@ pub fn run_lua(code: &str) -> Vec<String> {
     std::fs::create_dir_all(&dir).unwrap();
     let out = dir.join("out.txt");
     let path = dir.join("p.lua");
-    std::fs::write(&path, format!("OUTFILE=[[{}]]\n{PRELUDE}\n{code}\nPEND()\n", out.display())).unwrap();
+    std::fs::write(&path, format!("OUTFILE=[[{}]]\n{PRELUDE}{code}\nPEND()\n", out.display())).unwrap();
     let mut e = boot_lua();
     let src = format!("\\directlua{{dofile(\"{}\")}}\n\\end\n", path.display());
     e.input.push_file("t.tex".to_string(), src.into_bytes());

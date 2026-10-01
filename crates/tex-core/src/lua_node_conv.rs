@@ -197,6 +197,7 @@ impl Engine {
         f[sl::C_LEFT] = i32::from(ctx.left);
         f[sl::C_RIGHT] = i32::from(ctx.right);
         f[sl::C_UCHYPH] = i32::from(ctx.uchyph);
+        f[GLYPH_LANG_DATA] = make_lang_data(f[sl::C_UCHYPH], f[sl::C_LANG], f[sl::C_LEFT], f[sl::C_RIGHT]);
         n
     }
 

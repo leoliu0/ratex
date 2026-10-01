@@ -643,7 +643,7 @@ pub(crate) fn install(lua: &mut Lua) -> Result<LuaTable, String> {
             let (id, sub) = (e.lua_nodes.id(h), e.lua_nodes.subtype(h));
             match k.as_str() {
                 "next" | "id" => true,
-                "subtype" => id == WHATSIT || has_subtype_type(id),
+                "subtype" => id != ATTRIBUTE && id != GLUE_SPEC && id != ATTRIBUTE_LIST,
                 "attr" => has_attr_type(id, sub),
                 "prev" => id != ATTRIBUTE && id != GLUE_SPEC && id != ATTRIBUTE_LIST,
                 other => {

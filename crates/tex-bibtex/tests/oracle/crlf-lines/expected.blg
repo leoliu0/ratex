@@ -1,0 +1,16 @@
+The top-level auxiliary file: job.aux
+The style file: plain.bst
+Database file #1: crlf.bib
+I was expecting a `,' or a `}'---line 5 of file crlf.bib
+ :  
+ :  author={y},
+(Error may have been on previous line)
+I'm skipping whatever remains of this entry
+Warning--to sort, need author or key in a
+Warning--to sort, need author or key in c
+Warning--empty author in a
+Warning--empty journal in a
+Warning--empty year in a
+Warning--empty publisher in b
+Warning--empty year in b
+(There was 1 error message)

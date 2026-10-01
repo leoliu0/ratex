@@ -1,0 +1,94 @@
+The top-level auxiliary file: job.aux
+The style file: probe.bst
+Database file #1: probe.bib
+Warning--entry type for "p1" isn't style-file defined
+--line 1 of file probe.bib
+Warning--entry type for "p2" isn't style-file defined
+--line 2 of file probe.bib
+Warning--entry type for "p3" isn't style-file defined
+--line 3 of file probe.bib
+Warning--entry type for "p4" isn't style-file defined
+--line 4 of file probe.bib
+Warning--entry type for "p5" isn't style-file defined
+--line 5 of file probe.bib
+Warning--entry type for "p6" isn't style-file defined
+--line 6 of file probe.bib
+Warning--entry type for "p7" isn't style-file defined
+--line 7 of file probe.bib
+Warning--entry type for "p8" isn't style-file defined
+--line 8 of file probe.bib
+Warning--entry type for "p9" isn't style-file defined
+--line 9 of file probe.bib
+Warning--entry type for "p10" isn't style-file defined
+--line 10 of file probe.bib
+Warning--entry type for "p11" isn't style-file defined
+--line 11 of file probe.bib
+Warning--entry type for "p12" isn't style-file defined
+--line 12 of file probe.bib
+Warning--entry type for "p13" isn't style-file defined
+--line 13 of file probe.bib
+Warning--entry type for "p14" isn't style-file defined
+--line 14 of file probe.bib
+I was expecting a `,' or a `}'---line 14 of file probe.bib
+ : @misc{p14, title = {unbalanced } 
+ :                                  braces}, author = {A and B and C and D and E}}
+I'm skipping whatever remains of this entry
+Warning--entry type for "p15" isn't style-file defined
+--line 15 of file probe.bib
+Warning--entry type for "p16" isn't style-file defined
+--line 16 of file probe.bib
+Warning--entry type for "p17" isn't style-file defined
+--line 17 of file probe.bib
+"" is a string literal, not a function, for entry p1
+while executing---line 53 of file probe.bst
+"" is a string literal, not a function, for entry p2
+while executing---line 53 of file probe.bst
+"" is a string literal, not a function, for entry p3
+while executing---line 53 of file probe.bst
+"" is a string literal, not a function, for entry p4
+while executing---line 53 of file probe.bst
+"" is a string literal, not a function, for entry p5
+while executing---line 53 of file probe.bst
+"" is a string literal, not a function, for entry p6
+while executing---line 53 of file probe.bst
+"" is a string literal, not a function, for entry p7
+while executing---line 53 of file probe.bst
+"" is a string literal, not a function, for entry p8
+while executing---line 53 of file probe.bst
+"" is a string literal, not a function, for entry p9
+while executing---line 53 of file probe.bst
+"" is a string literal, not a function, for entry p10
+while executing---line 53 of file probe.bst
+"" is a string literal, not a function, for entry p11
+while executing---line 53 of file probe.bst
+"" is a string literal, not a function, for entry p12
+while executing---line 53 of file probe.bst
+"" is a string literal, not a function, for entry p13
+while executing---line 53 of file probe.bst
+"" is a string literal, not a function, for entry p14
+while executing---line 53 of file probe.bst
+"" is a string literal, not a function, for entry p15
+while executing---line 53 of file probe.bst
+"" is a string literal, not a function, for entry p16
+while executing---line 53 of file probe.bst
+Name 3 in "A, B, C and ,X and Y," has a comma at the end for entry p17
+while executing---line 53 of file probe.bst
+Name 3 in "A, B, C and ,X and Y," has a comma at the end for entry p17
+while executing---line 53 of file probe.bst
+Name 3 in "A, B, C and ,X and Y," has a comma at the end for entry p17
+while executing---line 53 of file probe.bst
+Name 3 in "A, B, C and ,X and Y," has a comma at the end for entry p17
+while executing---line 53 of file probe.bst
+Name 3 in "A, B, C and ,X and Y," has a comma at the end for entry p17
+while executing---line 53 of file probe.bst
+Name 3 in "A, B, C and ,X and Y," has a comma at the end for entry p17
+while executing---line 53 of file probe.bst
+Name 3 in "A, B, C and ,X and Y," has a comma at the end for entry p17
+while executing---line 53 of file probe.bst
+Name 3 in "A, B, C and ,X and Y," has a comma at the end for entry p17
+while executing---line 53 of file probe.bst
+Name 3 in "A, B, C and ,X and Y," has a comma at the end for entry p17
+while executing---line 53 of file probe.bst
+"" is a string literal, not a function, for entry p17
+while executing---line 53 of file probe.bst
+(There were 27 error messages)

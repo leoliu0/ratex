@@ -1,0 +1,19 @@
+The top-level auxiliary file: job.aux
+The style file: errors.bst
+nosuchfn is an unknown function---line 2 of file errors.bst
+"x" can't follow a literal---line 2 of file errors.bst
+"x" can't follow a literal---line 2 of file errors.bst
+Curse you, wizard, before you recurse me:
+function f is illegal in its own definition
+---line 2 of file errors.bst
+Curse you, wizard, before you recurse me:
+function f is illegal in its own definition
+---line 2 of file errors.bst
+f is already a type "wizard-defined" function name
+---line 3 of file errors.bst
+ : function {f
+ :            } { skip$ }
+Illegal, iterate command before read command---line 12 of file errors.bst
+ : iterate
+ :         {g}
+(There were 7 error messages)

@@ -1,0 +1,41 @@
+The top-level auxiliary file: job.aux
+The style file: plain.bst
+Database file #1: errs.bib
+I was expecting a `,' or a `}'---line 10 of file errs.bib
+ :   
+ :   title = {Missing comma},
+(Error may have been on previous line)
+I'm skipping whatever remains of this entry
+Warning--string name "undefinedmacro" is undefined
+--line 17 of file errs.bib
+Warning--I'm ignoring e4's extra "title" field
+--line 23 of file errs.bib
+Repeated entry---line 27 of file errs.bib
+ : @article{e1
+ :            ,
+I'm skipping whatever remains of this entry
+I was expecting a `,' or a `}'---line 37 of file errs.bib
+ : 
+ : @article{e6,
+(Error may have been on previous line)
+I'm skipping whatever remains of this entry
+I was expecting a `,' or a `}'---line 73 of file errs.bib
+ :   year = 20
+ :            a0,
+I'm skipping whatever remains of this entry
+A bad cross reference---entry "e10"
+refers to entry "nonexistent", which doesn't exist
+Warning--I didn't find a database entry for "nothere"
+Warning--I didn't find a database entry for "nonexistent"
+Warning--to sort, need author, editor, or key in e10
+Warning--to sort, need author or key in e12
+Warning--empty author and editor in e10
+Warning--empty publisher in e10
+Warning--empty title in e2
+Warning--empty journal in e2
+Warning--empty year in e2
+Warning--empty journal in e3
+Warning--empty journal in e5
+Warning--empty year in e5
+Warning--empty year in e8
+(There were 5 error messages)

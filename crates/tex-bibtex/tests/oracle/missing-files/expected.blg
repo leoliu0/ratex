@@ -1,0 +1,15 @@
+The top-level auxiliary file: job.aux
+I couldn't open style file nosuch.bst
+---line 1 of file job.aux
+ : \bibstyle{nosuch
+ :                 }
+I'm skipping whatever remains of this command
+I couldn't open database file nobib.bib
+---line 2 of file job.aux
+ : \bibdata{nobib
+ :               }
+I'm skipping whatever remains of this command
+I found no \citation commands---while reading file job.aux
+I found no database files---while reading file job.aux
+I found no style file---while reading file job.aux
+(There were 5 error messages)

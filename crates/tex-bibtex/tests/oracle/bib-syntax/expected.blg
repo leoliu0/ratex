@@ -1,0 +1,60 @@
+The top-level auxiliary file: job.aux
+The style file: plain.bst
+Database file #1: zoo.bib
+Warning--string name "self" is used in its own definition
+--line 5 of file zoo.bib
+You're missing a string name---line 6 of file zoo.bib
+ : @string{ 
+ :          = "x"}
+I'm skipping whatever remains of this command
+I was expecting an "="---line 7 of file zoo.bib
+ : @string{noeq 
+ :              "x"}
+I'm skipping whatever remains of this command
+I was expecting a `,' or a `}'---line 11 of file zoo.bib
+ : @article{p4, author = {G H}, title = {T4}, year = 2001 
+ :                                                        junk}
+I'm skipping whatever remains of this entry
+Unbalanced braces---line 12 of file zoo.bib
+ : @article{p5, title = {T5}, author = {I J}, year = "20
+ :                                                      }01"}
+I'm skipping whatever remains of this entry
+I was expecting a `,' or a `}'---line 13 of file zoo.bib
+ : @article{p6 
+ :             title = {T6}}
+I'm skipping whatever remains of this entry
+"{" immediately follows a field part---line 15 of file zoo.bib
+ : @article
+ :         {p8, title = {T8 {unbalanced}, year = 2002}
+I'm skipping whatever remains of this entry
+Warning--entry type for "p12" isn't style-file defined
+--line 21 of file zoo.bib
+Warning--you've nested cross references--entry "p9"
+refers to entry "p10", which also refers to something
+Warning--you've nested cross references--entry "p10"
+refers to entry "p9", which also refers to something
+Warning--to sort, need author or key in p6
+Warning--to sort, need author or key in p7
+Warning--to sort, need author or key in p9
+Warning--to sort, need author or key in p10
+Warning--to sort, need author or key in p11
+Warning--to sort, need author or key in 
+Warning--to sort, need author or key in p12
+Warning--empty author in p6
+Warning--empty title in p6
+Warning--empty journal in p6
+Warning--empty year in p6
+Warning--empty author in p10
+Warning--need key or journal for p10 to crossref p9
+Warning--empty author in p7
+Warning--empty journal in p7
+Warning--empty year in p7
+Warning--empty author in p9
+Warning--need key or journal for p9 to crossref p10
+Warning--empty journal in p1
+Warning--empty journal in P3
+Warning--empty year in P3
+Warning--empty journal in p4
+Warning--empty journal in p5
+Warning--empty year in p5
+(There were 6 error messages)

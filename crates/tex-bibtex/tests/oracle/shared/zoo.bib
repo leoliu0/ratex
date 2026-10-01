@@ -1,0 +1,21 @@
+@preamble("pre " # "two" )
+@preamble{ {\def\x{y}} }
+@string(foo = {Foo  Bar} # " baz" )
+@string{bar = foo # " " # foo}
+@string{self = self # "x"}
+@string{ = "x"}
+@string{noeq "x"}
+@article(p1, author = "A. B" # foo, title={T1}, year = 1999 )
+@article{p2 , author = {C D}, title = "{T2 "quoted"}", journal = bar, year = 2000, }
+@ARTICLE{P3, AUTHOR = {E F}, TITLE = {T3}, NOTE = jan # " and " # dec}
+@article{p4, author = {G H}, title = {T4}, year = 2001 junk}
+@article{p5, title = {T5}, author = {I J}, year = "20}01"}
+@article{p6 title = {T6}}
+@article{p7, title = {T7}, author =
+@article{p8, title = {T8 {unbalanced}, year = 2002}
+@article{p9, title = {T9}, crossref = {p10}}
+@article{p10, title = {T10}, crossref = {p9}, booktitle = {B}}
+@misc{p11, title = {\"{o}}, howpublished = "a"#"b"}
+@misc{ , title = {nokey}}
+@
+@misc{p12, title = 12345}

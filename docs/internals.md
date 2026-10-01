@@ -143,18 +143,34 @@ The embedded packages and their pinned versions are listed in
 - `scripts/bench_cold.py`: fresh-process timing harness; see
   [PERFORMANCE.md](../PERFORMANCE.md).
 
-## BibTeX compatibility notes
+## BibTeX (`crates/tex-bibtex`)
 
-The BibTeX implementation (`crates/tex-bibtex`) targets byte-identical `.bbl`
-output with TeX Live's `bibtex` 0.99. Behaviors that matter for parity:
+One engine, a module-by-module port of `bibtex.web` 0.99e plus TeX Live's
+`bibtex.ch`. `tex_bibtex::run(args, version)` is the only entry point; the
+`bibtex` binary, `ratex`/`texmk` (`crates/tex-cli/src/bibtex/mod.rs`) and
+tex-runtime call it.
 
-- String limits follow the TeX Live build: `ent_str_size = 500`,
-  `glob_str_size = 200000` (`entry.max$`/`global.max$` start from these).
-- `.bst` identifiers resolve case-insensitively (e.g. `chicago.bst` uses
-  `Volume` for the `volume` field).
-- `SORT` is stable: by `sort.key$` bytes, ties keep the current order.
-- `write$` output wraps at 79 columns, breaking at whitespace found scanning
-  back to index 3 (else forward from 80); continuation lines are indented
-  by two spaces.
-- Cross-referenced parents are included when cited at least
-  `-min-crossrefs` times (default 2).
+- `input.rs`: character classes (bytes 128-255 are letters) and the line
+  scanner shared by the `.aux`, `.bst` and `.bib` readers. `engine.rs`: state,
+  `run`, file lookup. `aux.rs`, `bst.rs`, `bib.rs`: the readers; `.bst`
+  commands run as soon as they are read, so messages interleave as in BibTeX.
+  `exec.rs`: stack machine and built-ins; `text.rs`: string built-ins
+  (`purify$`, `change.case$`, `width$`, `text.prefix$`, `substring$`,
+  `add.period$`). `log.rs`: terminal and `.blg` output.
+- Ground truth is TeX Live 2026 `bibtex`: the `.bbl`, the `.blg` messages and
+  the exit status match byte for byte. The `.blg` banner names Ratex, TeX
+  Live's usage statistics are not written, and files from the embedded
+  archive are announced as `<embedded:NAME>`.
+- Exit status: 0 spotless or warnings, 2 error messages (the `.bbl` is
+  complete; callers continue with it), 3 fatal, 1 unreadable `.aux` or bad
+  command line.
+- TeX Live sizes: `ent_str_size = 500`, `glob_str_size = 200000` (these seed
+  `entry.max$`/`global.max$`), `max_print_line = 79`.
+- Flags: `-terse`, `-min-crossrefs=N` (default 2); other options are reported
+  on stderr and ignored.
+- Tests: `crates/tex-bibtex/tests/oracle.rs` runs every case directory under
+  `tests/oracle/` (aux files and `args`; shared styles and databases in
+  `shared/`) against `expected.{bbl,blg,status}` produced by
+  `/usr/bin/bibtex` with the banner and usage statistics removed. To add a
+  case, create the directory, generate the expected files with TeX Live, and
+  list it in `oracle_cases!`.

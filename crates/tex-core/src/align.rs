@@ -1139,7 +1139,9 @@ impl Engine {
         // Closing \noalign while a paragraph is running forces \par first,
         // breaking the paragraph into lines and restoring mode to InternalVertical.
         if self.mode == Mode::Horizontal {
+            let saved = std::mem::replace(&mut self.lua_par_group, 7);
             self.par_primitive();
+            self.lua_par_group = saved;
         }
         let Some((inner, end_pd)) = self.align_pop_cell_group() else {
             return;

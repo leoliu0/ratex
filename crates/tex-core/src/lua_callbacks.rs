@@ -408,3 +408,92 @@ impl Engine {
         }
     }
 }
+
+impl Engine {
+    /// luatex `line_break_context`: the group the paragraph ends in
+    /// (`math_shift` when a display interrupts it).
+    fn lua_line_break_group(&self) -> &'static str {
+        if self.in_display_init { GROUP_MATH_SHIFT } else { GROUP_NAMES[usize::from(self.lua_par_group)] }
+    }
+}
+impl Engine {
+    /// A `local_par` node as `new_graf` makes it (LuaTeX keeps one at the
+    /// head of every paragraph).
+    fn lua_local_par_node(&mut self) -> u32 {
+        let n = self.lua_new_node(crate::lua_node::LOCAL_PAR, 0);
+        let inter = self.eqtb.int_params[crate::prim::IntParam::InterLinePenalty.idx() as usize];
+        let broken = self.eqtb.int_params[crate::prim::IntParam::BrokenPenalty.idx() as usize];
+        let f = &mut self.lua_nodes.node_mut(n).f;
+        f[0] = inter;
+        f[1] = broken;
+        n
+    }
+
+    /// The paragraph list as Lua sees it in `pre_linebreak_filter`: with
+    /// the `local_par` node in front and the final penalty typed
+    /// `linepenalty`. The head is returned; the paragraph's last node
+    /// before `\parfillskip` is the penalty.
+    fn lua_paragraph_to_lua(&mut self, content: NodeList) -> u32 {
+        let first = self.lua_nodes_from_engine(content) as u32;
+        let lp = self.lua_local_par_node();
+        if first != 0 {
+            self.lua_nodes.couple(lp, first);
+            let tail = self.lua_nodes.tail_of(first);
+            let before = self.lua_nodes.prev(tail);
+            if before != 0 && self.lua_nodes.id(before) == crate::lua_node::PENALTY {
+                self.lua_nodes.node_mut(before).subtype = 2;
+            }
+        }
+        lp
+    }
+
+    /// luatex `lua_node_filter(pre_linebreak_filter_callback, ...)` on the
+    /// paragraph `content`.
+    pub(crate) fn lua_pre_linebreak(&mut self, content: NodeList) -> NodeList {
+        if content.is_empty() || !self.cb_defined(Cb::PreLinebreakFilter) {
+            return content;
+        }
+        let group = self.lua_line_break_group();
+        let first = self.lua_paragraph_to_lua(content);
+        let rets = self.lua_cb_call(Cb::PreLinebreakFilter, "node filter", vec![CbArg::Node(first), CbArg::str(group)]);
+        match rets.as_deref().and_then(|r| r.first()) {
+            None | Some(CbRet::Bool(true)) => self.lua_nodes_to_engine(i64::from(first)),
+            Some(CbRet::Bool(false)) => {
+                self.lua_nodes.flush_list(first);
+                Vec::new()
+            }
+            Some(CbRet::Node(h)) => self.lua_nodes_to_engine(i64::from(*h)),
+            Some(CbRet::Nil) => Vec::new(),
+            Some(other) => {
+                let msg = format!("bad argument #1 (node expected, got {})", other.type_name());
+                self.lua_callback_failed("node filter", &msg);
+                self.lua_nodes_to_engine(i64::from(first))
+            }
+        }
+    }
+
+    /// luatex `lua_linebreak_callback`: Lua breaks the paragraph itself.
+    /// `Ok(lines)` when the callback returned a node list (the lines),
+    /// `Err(content)` when the built-in line breaker has to run.
+    pub(crate) fn lua_linebreak_filter(&mut self, content: NodeList, display: bool) -> Result<NodeList, NodeList> {
+        if content.is_empty() || !self.cb_defined(Cb::LinebreakFilter) {
+            return Err(content);
+        }
+        let first = self.lua_paragraph_to_lua(content);
+        let rets = self.lua_cb_call(Cb::LinebreakFilter, "linebreak", vec![CbArg::Node(first), CbArg::Bool(display)]);
+        match rets.as_deref().and_then(|r| r.first()) {
+            Some(CbRet::Node(h)) => Ok(self.lua_nodes_to_engine(i64::from(*h))),
+            _ => Err(self.lua_nodes_to_engine(i64::from(first))),
+        }
+    }
+
+    /// luatex `lua_node_filter(post_linebreak_filter_callback, ...)` on the
+    /// lines of a paragraph.
+    pub(crate) fn lua_post_linebreak(&mut self, lines: NodeList) -> NodeList {
+        if !self.cb_defined(Cb::PostLinebreakFilter) {
+            return lines;
+        }
+        let group = self.lua_line_break_group();
+        self.lua_node_filter(Cb::PostLinebreakFilter, group, lines)
+    }
+}

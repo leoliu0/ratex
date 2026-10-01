@@ -42,77 +42,152 @@ pub fn detect_program_directive(source: &str) -> Option<EngineKind> {
     None
 }
 
-/// Inspect source text for unambiguous package/primitive requirements.
+/// Packages that only work under LuaTeX.
+///
+/// texmk runs documents needing a Unicode engine (fontspec, xeCJK, ctex,
+/// unicode-math, polyglossia) as `ratex xelatex`, which is the pdfTeX engine
+/// and format with Ratex's native-font packages. The library's PdfTeX engine
+/// is that same engine and format, so those packages need no rule here.
+const LUATEX_PACKAGES: &[&str] = &["luatexja", "luacode", "luatextra"];
+
+/// The text of a line before its first unescaped `%`.
+fn strip_comment(line: &str) -> &str {
+    let mut escaped = false;
+    for (k, &b) in line.as_bytes().iter().enumerate() {
+        if escaped {
+            escaped = false;
+        } else if b == b'\\' {
+            escaped = true;
+        } else if b == b'%' {
+            return &line[..k];
+        }
+    }
+    line
+}
+
+/// Arguments of every `\command[...]{a,b}` occurrence in `text`, split on commas.
+fn command_arguments<'a>(text: &'a str, command: &str) -> Vec<&'a str> {
+    let mut out = Vec::new();
+    let mut rest = text;
+    while let Some(at) = rest.find(command) {
+        rest = &rest[at + command.len()..];
+        // A longer control word (`\usepackagefoo`) is not this command.
+        if rest.starts_with(|c: char| c.is_ascii_alphabetic() || c == '@') {
+            continue;
+        }
+        let mut tail = rest.trim_start();
+        if tail.starts_with('[') {
+            match tail.find(']') {
+                Some(end) => tail = tail[end + 1..].trim_start(),
+                None => break,
+            }
+        }
+        if let Some(body) = tail.strip_prefix('{') {
+            if let Some(end) = body.find('}') {
+                out.extend(body[..end].split(',').map(str::trim));
+            }
+        }
+    }
+    out
+}
+
+/// Inspect the preamble for packages and primitives that require LuaTeX,
+/// after any explicit program directive.
 pub fn detect_required_engine_from_source(source: &str) -> Option<EngineKind> {
     if let Some(engine) = detect_program_directive(source) {
         return Some(engine);
     }
-
-    let in_preamble = true;
-    let mut unicode_math_found = false;
-
+    let mut preamble = String::new();
     for line in source.lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with('%') {
-            continue;
-        }
-        if trimmed.contains("\\begin{document}") {
+        let code = strip_comment(line);
+        if let Some(at) = code.find("\\begin{document}") {
+            preamble.push_str(&code[..at]);
             break;
         }
-        if in_preamble {
-            if trimmed.contains("\\usepackage{luatexja}")
-                || trimmed.contains("\\usepackage{luacode}")
-                || trimmed.contains("\\usepackage{luatextra}")
-                || trimmed.contains("\\directlua")
-            {
-                return Some(EngineKind::LuaTeX);
-            }
-            if trimmed.contains("\\usepackage{unicode-math}")
-                || trimmed.contains("\\usepackage[") && trimmed.contains("]{unicode-math}")
-            {
-                unicode_math_found = true;
-            }
-        }
+        preamble.push_str(code);
+        preamble.push('\n');
     }
-
-    if unicode_math_found {
-        return Some(EngineKind::LuaTeX);
-    }
-    None
+    let lua_package = ["\\usepackage", "\\RequirePackage"]
+        .iter()
+        .flat_map(|cmd| command_arguments(&preamble, cmd))
+        .any(|package| LUATEX_PACKAGES.contains(&package));
+    (lua_package || preamble.contains("\\directlua")).then_some(EngineKind::LuaTeX)
 }
 
-/// Inspect compilation failure log/diagnostics to detect if the document requires a different engine.
+/// Inspect a failed pass's log and diagnostics for an engine requirement the
+/// library can meet by switching to LuaTeX (it cannot run XeTeX).
 pub fn detect_engine_switch_need(
     current: EngineKind,
     log: &str,
     diagnostics: &str,
 ) -> Option<EngineKind> {
-    let combined = format!("{log}\n{diagnostics}");
-    let lower = combined.to_ascii_lowercase();
+    if current == EngineKind::LuaTeX {
+        return None;
+    }
+    let combined = format!("{log}\n{diagnostics}").to_ascii_lowercase();
+    [
+        "xetex or luatex is required",
+        "you must use xelatex or lualatex",
+        "cannot run with pdflatex",
+        "luatex is required",
+        "requires luatex",
+        "directlua",
+    ]
+    .iter()
+    .any(|signal| combined.contains(signal))
+    .then_some(EngineKind::LuaTeX)
+}
 
-    // Check for explicit engine assertions or requirements
-    if lower.contains("xetex is required")
-        || lower.contains("requires xetex")
-        || lower.contains("xetex or luatex is required") && current == EngineKind::PdfTeX
-        || lower.contains("cannot run with pdflatex")
-        || lower.contains("you must use xelatex or lualatex")
-    {
-        if lower.contains("xecjk") || lower.contains("requires xetex") {
-            return Some(EngineKind::XeTeX);
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn detect(src: &str) -> Option<EngineKind> {
+        detect_required_engine_from_source(src)
+    }
+
+    #[test]
+    fn lua_only_packages_select_luatex_in_any_preamble_form() {
+        let doc = |pre: &str| format!("{pre}\n\\begin{{document}}x\\end{{document}}");
+        assert_eq!(detect(&doc(r"\documentclass{article}\usepackage[x]{amsmath,luacode}")), Some(EngineKind::LuaTeX));
+        assert_eq!(detect(&doc("\\documentclass{article}\n\\usepackage[opt]\n  { luatexja }")), Some(EngineKind::LuaTeX));
+        assert_eq!(detect(&doc(r"\documentclass{article}\RequirePackage{luatextra}")), Some(EngineKind::LuaTeX));
+        assert_eq!(detect(&doc(r"\documentclass{article}\directlua{tex.print(1)}")), Some(EngineKind::LuaTeX));
+    }
+
+    #[test]
+    fn unicode_engine_packages_run_on_the_pdftex_engine_like_ratex_xelatex() {
+        for pre in [
+            r"\documentclass{ctexart}",
+            r"\documentclass{article}\usepackage{fontspec}",
+            r"\documentclass{article}\usepackage{xeCJK}",
+            r"\documentclass{article}\usepackage{unicode-math}",
+        ] {
+            assert_eq!(detect(&format!("{pre}\\begin{{document}}x\\end{{document}}")), None, "{pre}");
         }
-        return Some(if current == EngineKind::LuaTeX {
-            EngineKind::XeTeX
-        } else {
-            EngineKind::LuaTeX
-        });
     }
 
-    if lower.contains("luatex is required")
-        || lower.contains("requires luatex")
-        || lower.contains("directlua") && current != EngineKind::LuaTeX
-    {
-        return Some(EngineKind::LuaTeX);
+    #[test]
+    fn comments_body_text_and_similar_names_do_not_select_an_engine() {
+        assert_eq!(detect("\\documentclass{article}\n% \\usepackage{luacode}\n\\begin{document}\\end{document}"), None);
+        assert_eq!(detect("\\documentclass{article}\\usepackage{amsmath} % luacode later\n\\begin{document}\\end{document}"), None);
+        assert_eq!(detect("\\documentclass{article}\n\\begin{document}\\usepackage{luacode}\\end{document}"), None);
+        assert_eq!(detect("\\documentclass{article}\\usepackage{luacodex}\\usepackage@x{luacode}\\begin{document}\\end{document}"), None);
+        assert_eq!(detect("\\documentclass{article}\\usepackage{amsmath}\\begin{document}100\\% luacode\\end{document}"), None);
     }
 
-    None
+    #[test]
+    fn directives_win_over_packages() {
+        assert_eq!(detect("% !TeX program = lualatex\n\\documentclass{article}"), Some(EngineKind::LuaTeX));
+        assert_eq!(detect("%&pdflatex\n\\documentclass{article}\\usepackage{luacode}"), Some(EngineKind::PdfTeX));
+    }
+
+    #[test]
+    fn engine_switches_only_ever_target_luatex() {
+        let switch = |log: &str| detect_engine_switch_need(EngineKind::PdfTeX, log, "");
+        assert_eq!(switch("! Package foo Error: XeTeX or LuaTeX is required"), Some(EngineKind::LuaTeX));
+        assert_eq!(switch("Package bar Error: this requires XeTeX"), None);
+        assert_eq!(switch("! Undefined control sequence. \\directlua"), Some(EngineKind::LuaTeX));
+        assert_eq!(detect_engine_switch_need(EngineKind::LuaTeX, "luatex is required", ""), None);
+    }
 }

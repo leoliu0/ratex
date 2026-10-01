@@ -401,10 +401,24 @@ fn compile_request_records_engine_and_honors_output_roots() {
     let result = s.compile_request(request);
     assert_eq!(result.status, Status::Success, "{}", result.diagnostics);
     assert_eq!(result.selected_engine, EngineKind::PdfTeX);
-    assert_eq!(result.passes, 2);
+    // Like texmk, a pass whose `.aux` holds only inert records is final.
+    assert_eq!(result.passes, 1);
     assert_eq!(result.bibtex_runs, 0);
     assert_eq!(result.files["dist/single.pdf"], result.pdf);
     assert!(result.files.contains_key("work/single.log"));
+}
+
+#[test]
+fn table_of_contents_is_not_mistaken_for_a_converged_first_pass() {
+    let s = session(
+        r"\documentclass{article}\begin{document}\tableofcontents\section{Alpha}\section{Beta}\end{document}",
+    );
+    let result = s.compile("main.tex");
+    assert_eq!(result.status, Status::Success, "{}", result.diagnostics);
+    assert_eq!(result.passes, 2);
+    let pdf = lopdf::Document::load_mem(&result.pdf).unwrap();
+    let text = pdf.extract_text(&[1]).unwrap();
+    assert_eq!(text.matches("Alpha").count(), 2, "{text}");
 }
 
 #[test]

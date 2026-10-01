@@ -176,10 +176,15 @@ pub(crate) enum FoundInputFile {
     Bytes(Vec<u8>),
 }
 
-/// Engine-owned package adapters and small bootstrap inputs.
+/// Engine-owned package adapters and small bootstrap inputs of the pdfTeX
+/// engine and its XeTeX-profile packages. LuaTeX runs the upstream
+/// packages (real fontspec/luaotfload, `graphics.cfg`, `tuenc.def`).
 /// They are immutable virtual files: keeping them in `InputStack`'s byte
 /// cache avoids fixed names and repeated writes in the process temp folder.
-fn compatibility_input(name: &str) -> Option<&'static [u8]> {
+fn compatibility_input(name: &str, kind: crate::engine::EngineKind) -> Option<&'static [u8]> {
+    if kind == crate::engine::EngineKind::LuaTeX {
+        return None;
+    }
     Some(match name {
         // pdftexconfig.tex (TeX Live keeps \pdfcompresslevel=9; this engine
         // trades a little size for speed)
@@ -306,7 +311,7 @@ impl Engine {
             return false;
         }
         let path = self.resolve_input_path(name);
-        if let Some(bytes) = path.is_none().then(|| compatibility_input(name)).flatten() {
+        if let Some(bytes) = path.is_none().then(|| compatibility_input(name, self.engine_kind)).flatten() {
             let key = format!("<compat:{name}>");
             let data = self
                 .input
@@ -517,7 +522,7 @@ impl Engine {
         }
         // Project/managed files above retain precedence. Engine adapters win
         // over installed legacy shims and engine-specific upstream packages.
-        if compatibility_input(name).is_some() {
+        if compatibility_input(name, self.engine_kind).is_some() {
             return None;
         }
         let resolved = self
@@ -568,7 +573,7 @@ impl Engine {
         if let Some(path) = self.resolve_input_path(&name) {
             return Some(FoundInputFile::Path(path));
         }
-        if let Some(data) = compatibility_input(&name) {
+        if let Some(data) = compatibility_input(&name, self.engine_kind) {
             return Some(FoundInputFile::Bytes(data.to_vec()));
         }
         tex_kpse::get_embedded_tex_input(&name).map(|(_, data)| FoundInputFile::Bytes(data))
@@ -1150,7 +1155,7 @@ impl Engine {
         // names, then the kpse search path (covers literal paths too)
 
         let path = self.resolve_input_path(&name);
-        if let Some(data) = path.is_none().then(|| compatibility_input(&name)).flatten() {
+        if let Some(data) = path.is_none().then(|| compatibility_input(&name, self.engine_kind)).flatten() {
             let is_empty = data.is_empty();
             self.read_files[n as usize] = Some(Box::new(std::io::Cursor::new(data)));
             self.read_eof[n as usize] = is_empty;

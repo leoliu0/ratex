@@ -1006,8 +1006,8 @@ impl Engine {
             if let Node::Box { w, .. } = &mut xb {
                 *w += space_after;
             }
-            let sdown = self.mparam_err(MATH_PARAM_SUB_SHIFT_DOWN, cur_style);
-            let ssdown = self.mparam_err(MATH_PARAM_SUB_SUP_SHIFT_DOWN, cur_style);
+            let sdown = if matches!(mode, 2 | 3) { 0 } else { self.mparam_err(MATH_PARAM_SUB_SHIFT_DOWN, cur_style) };
+            let ssdown = if matches!(mode, 2 | 3 | 4) { self.mparam_err(MATH_PARAM_SUB_SUP_SHIFT_DOWN, cur_style) } else { 0 };
             match mode {
                 1 | 5 => shift_down = sdown,
                 2 | 3 => shift_down = ssdown,
@@ -1040,8 +1040,8 @@ impl Engine {
                 *w += space_after;
             }
             let sup_up = self.mparam_err(MATH_PARAM_SUP_SHIFT_UP, cur_style);
-            let sdown = self.mparam_err(MATH_PARAM_SUB_SHIFT_DOWN, cur_style);
-            let ssdown = self.mparam_err(MATH_PARAM_SUB_SUP_SHIFT_DOWN, cur_style);
+            let sdown = if matches!(mode, 3 | 4 | 5) { self.mparam_err(MATH_PARAM_SUB_SHIFT_DOWN, cur_style) } else { 0 };
+            let ssdown = if matches!(mode, 3 | 4 | 5) { self.mparam_err(MATH_PARAM_SUB_SUP_SHIFT_DOWN, cur_style) } else { 0 };
             match mode {
                 1 | 2 => shift_up = sup_up,
                 3 | 5 => shift_up = sup_up + ssdown - sdown,
@@ -1074,6 +1074,16 @@ impl Engine {
                 if let Node::Box { w, .. } = &mut yb {
                     *w += space_after;
                 }
+                let sdown = if matches!(mode, 1 | 4 | 5) {
+                    self.mparam_err(MATH_PARAM_SUB_SHIFT_DOWN, cur_style)
+                } else {
+                    sdown
+                };
+                let ssdown = if matches!(mode, 3 | 4 | 5) {
+                    ssdown
+                } else {
+                    self.mparam_err(MATH_PARAM_SUB_SUP_SHIFT_DOWN, cur_style)
+                };
                 match mode {
                     1 | 5 => shift_down = sdown,
                     2 | 3 => shift_down = ssdown,
@@ -1223,7 +1233,9 @@ impl Engine {
                     continue;
                 }
                 Item::NonScript => {
-                    out.push(Node::Glue(Glue::zero()));
+                    let mut g = Glue::zero();
+                    g.subtype = crate::boxes::glue_subtype::NONSCRIPT;
+                    out.push(Node::Glue(g));
                     continue;
                 }
                 Item::Other(node) => {

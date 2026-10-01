@@ -427,7 +427,10 @@ impl<'a> BoxDisplay<'a> {
                     self.print(", direction TLT");
                 }
                 // etex.ch "Display if this box is never to be reversed"
-                if *kind == crate::boxes::HBOX && *lr == crate::boxes::BOX_LR_DLIST {
+                if *kind == crate::boxes::HBOX
+                    && *lr == crate::boxes::BOX_LR_DLIST
+                    && self.e.engine_kind != crate::engine::EngineKind::LuaTeX
+                {
                     self.print(", display");
                 }
                 self.node_list_display(list);
@@ -474,8 +477,10 @@ impl<'a> BoxDisplay<'a> {
                     self.print_esc(name);
                     self.out.push(b')');
                 }
-                self.out.push(b' ');
-                self.print_spec(g, "");
+                if g.subtype != glue_subtype::NONSCRIPT {
+                    self.out.push(b' ');
+                    self.print_spec(g, "");
+                }
             }
             Node::Leaders { glue, kind, body } => {
                 self.print_esc("");

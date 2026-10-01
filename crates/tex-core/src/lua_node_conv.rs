@@ -80,7 +80,9 @@ pub(crate) struct LangCtx {
 }
 
 fn glue_subtype_to_lua(s: u8) -> u16 {
-    if s >= boxes::glue_subtype::THIN_MU_SKIP {
+    if s == boxes::glue_subtype::NONSCRIPT {
+        COND_MATH_GLUE
+    } else if s >= boxes::glue_subtype::THIN_MU_SKIP {
         u16::from(s) + 1
     } else {
         u16::from(s)
@@ -89,6 +91,7 @@ fn glue_subtype_to_lua(s: u8) -> u16 {
 
 fn glue_subtype_from_lua(s: u16) -> u8 {
     match s {
+        COND_MATH_GLUE => boxes::glue_subtype::NONSCRIPT,
         17..=19 => (s - 1) as u8,
         0..=15 => s as u8,
         _ => 0,

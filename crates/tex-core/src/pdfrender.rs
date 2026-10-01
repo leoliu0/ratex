@@ -1324,6 +1324,9 @@ impl<'a> RenderCtx<'a> {
                 {
                     cur_x += self.emit_lua_glyph(*font, u32::from(*c), cur_x, y, 0, 0, 0);
                 }
+                Node::LuaGlyph(g) => {
+                    cur_x += self.emit_lua_glyph(g.font, g.c, cur_x, y, g.xoffset, g.yoffset, g.expansion_factor);
+                }
                 Node::Char { c, font } => {
                     let adv = self.font_char_advance_sp(*font, *c);
                     self.emit_char_sp(*font, *c, cur_x, y, 0);

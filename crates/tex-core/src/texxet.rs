@@ -263,6 +263,7 @@ impl Engine {
                                 .map_or(0, |f| f.char_width(*c) as i64),
                             true,
                         ),
+                        Node::LuaGlyph(g) => (crate::boxes::lua_glyph_dims(&self.eqtb, g).0 as i64, true),
                         Node::Ligature { lig_width, .. } => (*lig_width as i64, true),
                         Node::Box { w, .. } => (*w as i64, true),
                         Node::Rule { width, .. } => (*width as i64, true),
@@ -455,6 +456,7 @@ fn just_copied(n: &Node) -> bool {
     matches!(
         n,
         Node::Char { .. }
+            | Node::LuaGlyph(_)
             | Node::Ligature { .. }
             | Node::NativeGlyphRun { .. }
             | Node::Box { .. }

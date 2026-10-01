@@ -72,11 +72,11 @@ pub(crate) mod sl {
 
 /// The hyphenation state a glyph created by the engine would have.
 #[derive(Clone, Copy)]
-struct LangCtx {
-    lang: u16,
-    left: u8,
-    right: u8,
-    uchyph: u8,
+pub(crate) struct LangCtx {
+    pub(crate) lang: u16,
+    pub(crate) left: u8,
+    pub(crate) right: u8,
+    pub(crate) uchyph: u8,
 }
 
 fn glue_subtype_to_lua(s: u8) -> u16 {
@@ -120,7 +120,7 @@ fn literal_mode_from_lua(mode: i32) -> u8 {
 }
 
 impl Engine {
-    fn lang_ctx(&self) -> LangCtx {
+    pub(crate) fn lang_ctx(&self) -> LangCtx {
         let l = self.current_language();
         LangCtx {
             lang: u16::from(l.lang),

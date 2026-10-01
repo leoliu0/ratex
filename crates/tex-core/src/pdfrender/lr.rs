@@ -193,6 +193,7 @@ impl<'a> RenderCtx<'a> {
                     None => Class::Other,
                     Some(node) => match node {
                         Node::Char { c, font } => Class::Char(self.font_char_advance_sp(*font, *c)),
+                        Node::LuaGlyph(g) => Class::Char(i64::from(crate::boxes::lua_glyph_dims(&self.eng.eqtb, g).0)),
                         Node::Ligature {
                             font, lig_width, ..
                         } => Class::Char(self.font_lig_advance_sp(*font, *lig_width)),

@@ -412,6 +412,13 @@ impl Engine {
             self.start_paragraph(true);
             return;
         }
+        if self.engine_kind == crate::engine::EngineKind::LuaTeX
+            && matches!(self.mode, Mode::Horizontal | Mode::RestrictedHorizontal)
+            && self.cur_font_is_lua()
+        {
+            self.append_lua_glyph(scalar);
+            return;
+        }
         if !self.mode.is_m() && self.xetex_interchartokenstate > 0 {
             let cur_class = self.xetex_char_classes.get(&scalar).copied().unwrap_or(0);
             if let Some(prev_class) = self.xetex_last_char_class {

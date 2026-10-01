@@ -1556,6 +1556,7 @@ impl Engine {
         }
         // §28663: pop_nest; build_page
         if self.output_depth == 0 {
+            self.lua_page_filter(crate::lua_callbacks::page_info::AFTER_OUTPUT, false);
             self.build_page();
         }
     }
@@ -1611,7 +1612,9 @@ impl Engine {
         // fire during render_page in list order so \pdflastxpos/\pdflastypos
         // from earlier \pdfsavepos nodes are visible.
 
-        if self.eqtb.int_params[IntParam::TracingPages.idx() as usize] > 0 {
+        let lua = self.engine_kind == crate::engine::EngineKind::LuaTeX;
+        let numbered = lua && self.lua_page_number_callback(crate::lua_callbacks::Cb::StartPageNumber);
+        if !numbered && self.eqtb.int_params[IntParam::TracingPages.idx() as usize] > 0 {
             let page = self.eqtb.count[0] as i64 + 1;
             let msg = format!("[{}]", page);
             self.append_term(&msg);
@@ -1626,6 +1629,10 @@ impl Engine {
         let _ = (width, height);
         let page = self.render_page(&boxn);
         self.pdf_doc.push_page(page);
+        if lua {
+            self.lua_finish_pdfpage(true);
+            self.lua_page_number_callback(crate::lua_callbacks::Cb::StopPageNumber);
+        }
     }
 
     /// pdfTeX `fix_pdfoutput` + `check_pdfversion`: the first page (or the

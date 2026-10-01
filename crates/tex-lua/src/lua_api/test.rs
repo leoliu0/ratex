@@ -214,7 +214,7 @@ mod tests {
 
         assert_eq!(first.upvalue_count(), 1);
         let (name, current) = first.get_upvalue::<i64>(1).unwrap().unwrap();
-        assert_eq!(name, "value");
+        assert_eq!(name, b"value");
         assert_eq!(current, 40);
         assert!(first.get_upvalue::<i64>(2).unwrap().is_none());
 
@@ -224,7 +224,7 @@ mod tests {
 
         assert_eq!(
             first.set_upvalue(1, 41_i64).unwrap().as_deref(),
-            Some("value")
+            Some(&b"value"[..])
         );
         assert_eq!(first.call1::<_, i64>(1_i64).unwrap(), 42);
 
@@ -632,6 +632,248 @@ mod tests {
         lua.open_stdlib(Stdlib::All).unwrap();
         let err = lua.load(source).eval::<String>().unwrap_err();
         assert!(lua.get_error_message(err).message.contains("expected near"));
+    }
+
+    // Expectations: `texlua` (Lua 5.3, LUA_UCID) prints the lines of `expected`
+    // for this script, with every byte >= 0x80 of a name shown as <byte>.
+    #[test]
+    fn names_of_raw_bytes_reach_every_consumer() {
+        let script = r####"
+local function show(s)
+  return (tostring(s):gsub('[\128-\255]', function(c) return '<' .. c:byte() .. '>' end))
+end
+local function chunk(source, name)
+  return assert(load((source:gsub('@', '\233')), name or '=t'))
+end
+local out = {}
+local function say(...) out[#out + 1] = table.concat({...}, ' ') end
+
+local f = chunk[[
+  local up@ = nil
+  return function(p@, q@) local l@ = 1; return up@.x, function() return p@ + l@ end end
+]]()
+say(show(select(2, pcall(f))))
+say(show(debug.getlocal(f, 1)), show(debug.getlocal(f, 2)))
+local g = chunk[[local a@, b@ = 1, 2; return function() return a@ + b@ end]]()
+say(show(debug.getupvalue(g, 1)), show(debug.getupvalue(g, 2)), show(debug.setupvalue(g, 2, 5)))
+local dumped = string.dump(g)
+say(show(debug.getupvalue(load(dumped, '=d', 'b'), 1)))
+say(show(debug.getupvalue(load(string.dump(g, true), '=d', 'b'), 1)))
+
+local function thrown(source)
+  return show(select(2, pcall(chunk(source))))
+end
+say(thrown[[local x@ = nil; x@()]])
+say(thrown[[local x@ = nil; return x@ + 1]])
+say(thrown[[local x@ = nil; return x@ .. 'a']])
+say(thrown[[local x@ = 1.5; return x@ | 1]])
+say(thrown[[local s@ = string.rep; s@()]])
+say(thrown[[local s@ = string.rep; s@('x', {})]])
+say(thrown[[local o@ = {}; o@:m@()]])
+
+local object = chunk[[
+  local obj@ = {}
+  function obj@.m@() local i = debug.getinfo(1, 'n'); error(i.namewhat .. ' ' .. i.name .. ' ' .. debug.traceback('', 1), 0) end
+  local function visit@() obj@:m@() end
+  return visit@
+]]()
+local message = select(2, pcall(object))
+say(show(message:match('^[^\n]*')), show(message:match("in method '[^']*'")))
+
+for _, source in ipairs{
+  'local a@ b@', 'for a@ b@', 'goto lbl@', '::l@:: ::l@::', 'x@ = 1 y@ z@', "x = 'ab@",
+} do
+  say(show(select(2, load((source:gsub('@', '\233')), '=c'))))
+end
+
+-- valid UTF-8 names holding the characters the compiler uses as byte markers
+local PUA = '\u{F0000}\u{F0001}'
+local h = assert(load('return function(' .. PUA .. ', ' .. PUA .. '\233) end', '=pua'))()
+say(show(debug.getlocal(h, 1)), show(debug.getlocal(h, 2)))
+local plain = assert(load('return function(' .. PUA .. ') end', '=pua'))()
+say(show(debug.getlocal(plain, 1)))
+return table.concat(out, '\n')"####;
+        let expected = r####"t:2: attempt to index a nil value (upvalue 'up<233>')
+p<233> q<233>
+a<233> b<233> b<233>
+a<233>
+(*no name)
+t:1: attempt to call a nil value (local 'x<233>')
+t:1: attempt to perform arithmetic on a nil value (local 'x<233>')
+t:1: attempt to concatenate a nil value (local 'x<233>')
+t:1: number (local 'x<233>') has no integer representation
+t:1: bad argument #1 to 's<233>' (string expected, got no value)
+t:1: bad argument #2 to 's<233>' (number expected, got table)
+t:1: attempt to call a nil value (method 'm<233>')
+method m<233>  in method 'm<233>'
+c:1: syntax error near <eof>
+c:1: '=' or 'in' expected near 'b<233>'
+c:1: no visible label 'lbl<233>' for <goto> at line 1
+c:1: label 'l<233>' already defined on line 1
+c:1: syntax error near 'z<233>'
+c:1: unfinished string near <eof>
+<243><176><128><128><243><176><128><129> <243><176><128><128><243><176><128><129><233>
+<243><176><128><128><243><176><128><129>"####;
+        let mut lua = Lua::new_lua53(SafeOption::default());
+        lua.open_stdlib(Stdlib::All).unwrap();
+        let shown: String = lua.load(script).eval().unwrap();
+        assert_eq!(shown, expected);
+
+        // A syntax error of a file quotes the name's bytes as well (`loadfile`, `dofile`).
+        let path = std::env::temp_dir().join(format!("tex_lua_raw_names_{}.lua", std::process::id()));
+        std::fs::write(&path, b"for a\xe9 b\xe9 do end\n").unwrap();
+        lua.set_global("badfile", path.to_str().unwrap()).unwrap();
+        let files: String = lua
+            .load(
+                r#"
+                local function show(s)
+                  return (tostring(s):gsub('[\128-\255]', function(c) return '<' .. c:byte() .. '>' end))
+                end
+                local loaded = select(2, loadfile(badfile))
+                local called = select(2, pcall(dofile, badfile))
+                return show(loaded:gsub('^.-:1:', 'P:1:')) .. '\n' .. show(called:gsub('^.-:1:', 'P:1:'))
+                "#,
+            )
+            .eval()
+            .unwrap();
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(
+            files,
+            "P:1: '=' or 'in' expected near 'b<233>'\nP:1: '=' or 'in' expected near 'b<233>'"
+        );
+
+        // The Rust API gives the name as the bytes of the source text.
+        let function: LuaFunction = lua
+            .load("return assert(load('local up\\233 = 40 return function() return up\\233 end', '=t'))()")
+            .eval()
+            .unwrap();
+        let (name, value) = function.get_upvalue::<i64>(1).unwrap().unwrap();
+        assert_eq!((name.as_slice(), value), (&b"up\xe9"[..], 40));
+        assert_eq!(function.set_upvalue(1, 41_i64).unwrap().as_deref(), Some(&b"up\xe9"[..]));
+    }
+
+    /// A Rust callback that runs a captured function while a coroutine
+    /// executes: the function runs on the main thread, whose own call depth
+    /// is 0 (async) or not (resumed from Lua), and the error continues into
+    /// the coroutine's `pcall` as the very value that was raised. The frames,
+    /// open upvalues and to-be-closed variables of the failed call are gone.
+    async fn errors_through_a_callback_keep_their_values(mut lua: Lua, close_check: &str) {
+        lua.open_stdlib(Stdlib::All).unwrap();
+        let call = lua
+            .create_function(|f: LuaFunction| -> crate::LuaResult<()> { f.call::<_, ()>(()) })
+            .unwrap();
+        lua.set_global("call", call).unwrap();
+        lua.register_async_function("suspend", |x: i64| async move {
+            tokio::task::yield_now().await;
+            Ok(x)
+        })
+        .unwrap();
+        let script = format!(
+            r#"
+            local t = {{code = 7}}
+            local escaped
+            local _, e1 = pcall(call, function()
+              local v = 1
+              escaped = function() v = v + 1 return v end
+              error(t)
+            end)
+            local _, e2 = pcall(call, function() error("boom", 0) end)
+            local _, e4 = pcall(call, function()
+              error({{code = 9, text = string.rep("x", 100)}})
+            end)
+            local closed
+            local e3 = t
+            local e5 = e4
+            {close_check}
+            suspend(1)
+            collectgarbage()
+            return table.concat({{tostring(e1 == t), e1.code, e2, tostring(closed == t),
+                                 tostring(e3 == t), escaped(), escaped(), e4.code, #e4.text,
+                                 e5.code, #e5.text}}, ' ')
+            "#
+        );
+        let shown: String = lua.load(&script).eval_async().await.unwrap();
+        assert_eq!(shown, "true 7 boom true true 2 3 9 100 9 100");
+
+        // Nothing of the failed calls is left on the main thread.
+        let traceback: String = lua
+            .load("return debug.traceback('tb')")
+            .set_name("=(command line)")
+            .eval()
+            .unwrap();
+        assert_eq!(traceback, "tb\nstack traceback:\n\t(command line):1: in main chunk");
+        assert_eq!(lua.load("return 1 + 1").eval::<i64>().unwrap(), 2);
+        let message = top_level_error(&mut lua, "error('late', 0)");
+        assert!(message.starts_with("late\nstack traceback:"), "{message}");
+    }
+
+    #[tokio::test]
+    async fn async_coroutine_callback_errors_keep_their_values() {
+        errors_through_a_callback_keep_their_values(
+            Lua::new(SafeOption::default()),
+            r#"
+            local _, e3r = pcall(call, function()
+              local guard <close> = setmetatable({}, {__close = function(_, e)
+                collectgarbage()
+                local junk = {}
+                for i = 1, 200 do junk[i] = {i, tostring(i)} end
+                closed = e
+              end})
+              error(t)
+            end)
+            e3 = e3r
+            -- the error object is referenced by nothing else while __close runs
+            local _, e5r = pcall(call, function()
+              local guard <close> = setmetatable({}, {__close = function(_, e)
+                collectgarbage()
+                local junk = {}
+                for i = 1, 200 do junk[i] = {i, tostring(i)} end
+              end})
+              error({code = 9, text = string.rep("x", 100)})
+            end)
+            e5 = e5r
+            "#,
+        )
+        .await;
+        errors_through_a_callback_keep_their_values(
+            Lua::new_lua53(SafeOption::default()),
+            "closed = t",
+        )
+        .await;
+    }
+
+    #[test]
+    fn resumed_coroutine_callback_errors_keep_their_values_and_main_frames() {
+        let mut lua = Lua::new(SafeOption::default());
+        lua.open_stdlib(Stdlib::All).unwrap();
+        let call = lua
+            .create_function(|f: LuaFunction| -> crate::LuaResult<()> { f.call::<_, ()>(()) })
+            .unwrap();
+        lua.set_global("call", call).unwrap();
+        let shown: String = lua
+            .load(
+                r#"
+                local t = {code = 7}
+                local escaped
+                local co = coroutine.wrap(function()
+                  local _, e1 = pcall(call, function()
+                    local v = 1
+                    escaped = function() v = v + 1 return v end
+                    error(t)
+                  end)
+                  local _, e2 = pcall(call, function() error("boom", 0) end)
+                  coroutine.yield(tostring(e1 == t) .. ' ' .. e2)
+                  return debug.traceback('inner')
+                end)
+                local first = co()
+                local second = co()
+                return first .. ' ' .. escaped() .. ' ' .. escaped() .. ' ' .. debug.traceback('outer')
+                "#,
+            )
+            .set_name("=main")
+            .eval()
+            .unwrap();
+        assert_eq!(shown, "true boom 2 3 outer\nstack traceback:\n\tmain:16: in main chunk");
     }
 
     #[test]

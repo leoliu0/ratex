@@ -1060,7 +1060,7 @@ fn read_proto(
     let mut upvalue_descs = Vec::with_capacity(upvalue_count);
     for _ in 0..upvalue_count {
         upvalue_descs.push(UpvalueDesc {
-            name: String::new(),
+            name: Box::default(),
             is_local: reader.byte()? != 0,
             index: reader.byte()? as u32,
         });
@@ -1087,7 +1087,7 @@ fn read_proto(
     for _ in 0..locvar_count {
         let name = reader
             .string()?
-            .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+            .map(Vec::into_boxed_slice)
             .unwrap_or_default();
         let start = reader.int()?.max(0) as usize;
         let end = reader.int()?.max(0) as usize;
@@ -1101,7 +1101,7 @@ fn read_proto(
     for descriptor in upvalue_descs.iter_mut().take(upvalue_name_count) {
         descriptor.name = reader
             .string()?
-            .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+            .map(Vec::into_boxed_slice)
             .unwrap_or_default();
     }
 
@@ -1795,7 +1795,7 @@ fn write_proto53(
         }
         put_count(out, proto.locals.len(), "local variable")?;
         for local in &proto.locals {
-            put_string(out, Some(local.name.as_bytes()))?;
+            put_string(out, Some(&local.name[..]))?;
             let start = wire
                 .pc_map
                 .get(local.startpc as usize)
@@ -1819,7 +1819,7 @@ fn write_proto53(
         }
         put_count(out, proto.upvalue_descs.len(), "upvalue name")?;
         for descriptor in &proto.upvalue_descs {
-            put_string(out, Some(descriptor.name.as_bytes()))?;
+            put_string(out, Some(&descriptor.name[..]))?;
         }
     }
     Ok(())

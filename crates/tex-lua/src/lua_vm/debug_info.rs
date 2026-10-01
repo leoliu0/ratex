@@ -44,8 +44,9 @@ pub struct DebugInfo {
     pub isvararg: Option<bool>,
 
     // 'n' fields
-    /// Function name (if found from calling context)
-    pub name: Option<String>,
+    /// Function name (if found from calling context); the bytes of the source
+    /// text, which need not be valid UTF-8
+    pub name: Option<Vec<u8>>,
     /// How the name was resolved: "global", "local", "method", "field", "upvalue",
     /// "metamethod", "for iterator", or "" if not found
     pub namewhat: Option<String>,
@@ -120,10 +121,11 @@ impl DebugInfo {
         self.isvararg = Some(true);
     }
 
-    /// Fill name info ('n')
-    pub(crate) fn fill_name(&mut self, namewhat: &str, name: &str) {
+    /// Fill name info ('n'); the name is bytes because it is a name of the
+    /// chunk's source text
+    pub(crate) fn fill_name(&mut self, namewhat: &str, name: &[u8]) {
         self.namewhat = Some(namewhat.to_string());
-        self.name = Some(name.to_string());
+        self.name = Some(name.to_vec());
     }
 
     /// Fill name info ('n') when no name found

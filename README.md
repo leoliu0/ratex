@@ -294,7 +294,14 @@ functions from the host executable, which the workspace links with
 `--export-dynamic` (`.cargo/config.toml`); a host that embeds `tex-lua` must
 link the same way. Host Rust code that needs to allocate inside a native
 callback uses `Lua::create_callback`, whose `CallbackLua` is only borrowed for
-the duration of the call.
+the duration of the call. In Lua 5.3 mode (LuaTeX's dialect) every byte >= 0x80
+is a letter in a name, so the names `LuaFunction::get_upvalue` and
+`set_upvalue` return are the bytes of the source text (`Vec<u8>`), and error
+messages, `debug.getlocal`/`getupvalue` and `string.dump` keep them. An error
+raised by a function handle that a callback calls while a coroutine (an async
+script, or one resumed from Lua) runs reaches that coroutine's `pcall` as the
+same Lua value; only a call made by the host alone, with no Lua code running,
+returns the message with its stack traceback.
 
 ---
 

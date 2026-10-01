@@ -19,15 +19,15 @@ impl LuaFunction {
         self.inner.upvalue_count()
     }
 
-    /// Read and convert one upvalue.
+    /// Read and convert one upvalue; the name is the bytes of the source text.
     #[inline]
-    pub fn get_upvalue<T: FromLua>(&self, n: usize) -> LuaResult<Option<(String, T)>> {
+    pub fn get_upvalue<T: FromLua>(&self, n: usize) -> LuaResult<Option<(Vec<u8>, T)>> {
         self.inner.get_upvalue(n)
     }
 
-    /// Replace one upvalue.
+    /// Replace one upvalue; returns its name (bytes of the source text).
     #[inline]
-    pub fn set_upvalue<T: IntoLua>(&self, n: usize, value: T) -> LuaResult<Option<String>> {
+    pub fn set_upvalue<T: IntoLua>(&self, n: usize, value: T) -> LuaResult<Option<Vec<u8>>> {
         self.inner.set_upvalue(n, value)
     }
 

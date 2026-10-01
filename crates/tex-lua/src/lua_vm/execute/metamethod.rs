@@ -214,9 +214,10 @@ pub fn try_bin_tm(
                     let p1_is_integer = super::arith::ptointeger(&p1, &mut integer, coerce_strings);
                     let blame_reg = if p1_is_integer { p2_reg } else { p1_reg };
                     let info = debug::varinfo_for_reg(lua_state, blame_reg);
-                    return Err(
-                        lua_state.error(format!("number{} has no integer representation", info))
-                    );
+                    let mut message = b"number".to_vec();
+                    message.extend_from_slice(&info);
+                    message.extend_from_slice(b" has no integer representation");
+                    return Err(lua_state.error_bytes(message));
                 } else {
                     "perform bitwise operation on"
                 }

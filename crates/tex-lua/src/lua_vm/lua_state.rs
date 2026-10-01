@@ -1041,6 +1041,29 @@ impl LuaState {
         self.global_state_mut().error(msg)
     }
 
+    /// `error` for a message of bytes: a name quoted in it (a local variable
+    /// of Lua 5.3 may hold any byte >= 0x80) need not be valid UTF-8. Such a
+    /// message is raised as a string error object, with the position that
+    /// `error` would add.
+    #[cold]
+    #[inline(never)]
+    pub fn error_bytes(&mut self, msg: Vec<u8>) -> LuaError {
+        let msg = match String::from_utf8(msg) {
+            Ok(msg) => return self.error(msg),
+            Err(error) => error.into_bytes(),
+        };
+        let location = self.add_runtime_error_info(String::new());
+        let mut full = Vec::with_capacity(location.len() + msg.len());
+        if !msg.starts_with(location.as_bytes()) {
+            full.extend_from_slice(location.as_bytes());
+        }
+        full.extend_from_slice(&msg);
+        match self.create_bytes(&full) {
+            Ok(value) => self.error_with_object(value),
+            Err(error) => error,
+        }
+    }
+
     #[inline(always)]
     fn add_runtime_error_info(&self, msg: String) -> String {
         let Some(ci) = self.current_frame() else {
@@ -1348,7 +1371,7 @@ impl LuaState {
 
     /// Get the name of a local variable at the given stack index
     /// by looking at the current frame's locvars debug info
-    fn get_local_var_name(&self, stack_index: usize) -> Option<String> {
+    fn get_local_var_name(&self, stack_index: usize) -> Option<Box<[u8]>> {
         let ci = self.current_frame()?;
         if !ci.is_lua() {
             return None;
@@ -1403,13 +1426,15 @@ impl LuaState {
 
         if !has_close {
             // Try to get the variable name from locvars
-            let var_name = self.get_local_var_name(stack_index);
-            let msg = if let Some(name) = var_name {
-                format!("variable '{}' got a non-closable value", name)
-            } else {
-                "variable got a non-closable value".to_string()
-            };
-            return Err(self.error(msg));
+            return Err(match self.get_local_var_name(stack_index) {
+                Some(name) => {
+                    let mut msg = b"variable '".to_vec();
+                    msg.extend_from_slice(&name);
+                    msg.extend_from_slice(b"' got a non-closable value");
+                    self.error_bytes(msg)
+                }
+                None => self.error("variable got a non-closable value".to_string()),
+            });
         }
 
         self.tbc_list.push(stack_index);
@@ -1458,13 +1483,15 @@ impl LuaState {
     /// A to-be-closed variable whose `__close` metamethod was removed.
     fn non_closable_error(&mut self, tbc_idx: usize) -> LuaError {
         let msg = match self.get_local_var_name(tbc_idx) {
-            Some(name) => format!(
-                "attempt to close non-closable variable '{}' (no metamethod 'close')",
-                name
-            ),
-            None => "attempt to close variable (no metamethod 'close')".to_string(),
+            Some(name) => {
+                let mut msg = b"attempt to close non-closable variable '".to_vec();
+                msg.extend_from_slice(&name);
+                msg.extend_from_slice(b"' (no metamethod 'close')");
+                msg
+            }
+            None => b"attempt to close variable (no metamethod 'close')".to_vec(),
         };
-        match self.create_string(&msg) {
+        match self.create_bytes(&msg) {
             Ok(object) => self.error_with_object(object),
             Err(error) => error,
         }
@@ -2402,7 +2429,7 @@ impl LuaState {
         let chunk = self
             .global_state_mut()
             .compile_bytes_with_name(source, chunk_name)
-            .map_err(|message| self.compile_error(message))?;
+            .map_err(|message| self.compile_error_bytes(message))?;
         let env_upval = self.global_state_mut().create_upvalue_closed(global)?;
         self.global_state_mut()
             .create_loaded_function(chunk, UpvalueStore::from_single(env_upval))
@@ -2602,6 +2629,14 @@ impl LuaState {
         LuaError::CompileError
     }
 
+    /// `compile_error` for a message of bytes (a syntax error quotes names
+    /// and tokens of the chunk, which need not be valid UTF-8).
+    #[cold]
+    pub fn compile_error_bytes(&mut self, message: Vec<u8>) -> LuaError {
+        self.error_bytes(message);
+        LuaError::CompileError
+    }
+
     pub fn compile_chunk(&mut self, source: &str) -> LuaResult<LuaProto> {
         self.global_state_mut()
             .compile(source)
@@ -2621,7 +2656,7 @@ impl LuaState {
     pub fn load_proto_from_file(&mut self, path: &str) -> LuaResult<ProtoPtr> {
         self.global_state_mut()
             .load_proto_from_file(path)
-            .map_err(|msg| self.error(msg))
+            .map_err(|msg| self.error_bytes(msg))
     }
 
     /// `load_proto_from_file` for contents already read with `read_chunk_file`.
@@ -2632,11 +2667,27 @@ impl LuaState {
     ) -> LuaResult<ProtoPtr> {
         self.global_state_mut()
             .load_proto_from_file_bytes(path, file_bytes)
-            .map_err(|msg| self.error(msg))
+            .map_err(|msg| self.error_bytes(msg))
     }
 
     pub fn get_error_message(&mut self, e: LuaError) -> String {
         self.get_error_msg(e)
+    }
+
+    /// The message of error `e` as the bytes a Lua caller sees: unlike
+    /// `get_error_msg` it keeps the bytes of a message that is not UTF-8.
+    pub(crate) fn take_error_bytes(&mut self, e: LuaError) -> Vec<u8> {
+        if matches!(e, LuaError::OutOfMemory) {
+            return self.get_error_msg(e).into_bytes();
+        }
+        match self.global_state_mut().take_error() {
+            ErrorMsg::Msg(msg) | ErrorMsg::Traced { message: msg, .. } => msg.into_bytes(),
+            ErrorMsg::Object(obj) => match lauxlib::to_lstr(self, &obj) {
+                Some(text) => text.to_vec(),
+                None => format!("(error object is a {} value)", obj.type_name()).into_bytes(),
+            },
+            ErrorMsg::None => Vec::new(),
+        }
     }
 
     /// The error message; for an error that escaped a top-level call, with
@@ -2687,6 +2738,39 @@ impl LuaState {
             }
             Err(error) => {
                 while self.call_depth() > 0 {
+                    self.pop_frame();
+                }
+                self.close_upvalues(func_idx);
+                self.tbc_list.retain(|&index| index < func_idx);
+                self.set_top_raw(func_idx);
+                error
+            }
+        }
+    }
+
+    /// A failed call on a thread that is not the one executing (see `call`):
+    /// no pcall of this thread will unwind the frames of the call, so do it
+    /// as `luaD_pcall` does — pop the frames above `initial_depth`, close the
+    /// upvalues and to-be-closed variables from `func_idx` with the error —
+    /// and raise the error value that is left, which is the original one
+    /// unless a `__close` method replaced it. The value is the pending error
+    /// object (a GC root) from here on.
+    #[cold]
+    #[inline(never)]
+    fn unwind_foreign_error(&mut self, e: LuaError, initial_depth: usize, func_idx: usize) -> LuaError {
+        if self.call_depth() <= initial_depth {
+            // Failed before a frame existed (e.g. calling a non-function).
+            self.set_top_raw(func_idx);
+            return e;
+        }
+        match self.recover_protected_call(e, initial_depth, func_idx, None) {
+            Ok((err, error_in_handler)) => {
+                self.set_top_raw(func_idx);
+                self.set_error_object(err);
+                if error_in_handler { LuaError::ErrorInErrorHandling } else { e }
+            }
+            Err(error) => {
+                while self.call_depth() > initial_depth {
                     self.pop_frame();
                 }
                 self.close_upvalues(func_idx);
@@ -2920,9 +3004,14 @@ impl LuaState {
     /// Unprotected call - like C Lua's lua_call / lua_callk.
     /// Errors propagate as Err(LuaError) to the enclosing pcall boundary.
     /// Does NOT create an error recovery boundary, so __close handlers
-    /// see the correct error chain without an extra pcall frame. A top-level
-    /// call is the host's boundary: its error is rendered with a traceback
-    /// and its frames are unwound (`unwind_host_error`).
+    /// see the correct error chain without an extra pcall frame. A call made
+    /// by the host alone (no thread is executing) is the host's boundary: its
+    /// error is rendered with a traceback and its frames are unwound
+    /// (`unwind_host_error`). A call on a thread other than the one that is
+    /// executing (a Rust callback of a coroutine running a function handle on
+    /// the main thread) raises its error in that thread: the frames of this
+    /// call are unwound here, as no pcall of this thread will do it, and the
+    /// error value stays the one that was raised (`unwind_foreign_error`).
     pub fn call(&mut self, func: LuaValue, args: Vec<LuaValue>) -> LuaResult<Vec<LuaValue>> {
         let initial_depth = self.call_depth();
         // Use stack_top (logical top) instead of stack.len() (physical end).
@@ -2948,6 +3037,9 @@ impl LuaState {
         // A Rust caller has no continuation, so the callee may not yield
         // (C Lua's luaD_callnoyield).
         self.nny += 1;
+        let me: *const LuaState = self;
+        let outer = std::mem::replace(&mut self.global_state_mut().executing, me);
+        let foreign = !outer.is_null() && !std::ptr::eq(outer, me);
         let result = 'call: {
             // Resolve __call metamethod chain if needed
             let (actual_arg_count, ccmt_depth) = match resolve_call_chain(self, func_idx, arg_count) {
@@ -2977,14 +3069,18 @@ impl LuaState {
             })
         };
         let result = match result {
-            Err(error)
-                if initial_depth == 0
-                    && !matches!(error, LuaError::Yield | LuaError::CloseThread) =>
-            {
-                Err(self.unwind_host_error(error, func_idx))
+            Err(error) if !matches!(error, LuaError::Yield | LuaError::CloseThread) => {
+                if foreign {
+                    Err(self.unwind_foreign_error(error, initial_depth, func_idx))
+                } else if initial_depth == 0 {
+                    Err(self.unwind_host_error(error, func_idx))
+                } else {
+                    Err(error)
+                }
             }
             other => other,
         };
+        self.global_state_mut().executing = outer;
         self.nny -= 1;
         result?; // Propagate errors without catching
 
@@ -3592,6 +3688,14 @@ impl LuaState {
     /// - finished=true: coroutine completed normally
     /// - finished=false: coroutine yielded
     pub fn resume(&mut self, args: Vec<LuaValue>) -> LuaResult<(bool, Vec<LuaValue>)> {
+        let me: *const LuaState = self;
+        let outer = std::mem::replace(&mut self.global_state_mut().executing, me);
+        let result = self.resume_thread(args);
+        self.global_state_mut().executing = outer;
+        result
+    }
+
+    fn resume_thread(&mut self, args: Vec<LuaValue>) -> LuaResult<(bool, Vec<LuaValue>)> {
         // Check coroutine state:
         // - dead flag set → dead by error (cannot resume)
         // - call_depth > 0 && !yielded → running (cannot resume)
@@ -4296,7 +4400,7 @@ impl LuaState {
     /// Get a local variable name and value at the given stack level and index.
     /// `level` is 0-based (0 = current frame). `local_idx` is 1-based.
     /// Returns `None` if the level/index is out of range.
-    pub fn get_local(&self, level: usize, local_idx: usize) -> Option<(String, LuaValue)> {
+    pub fn get_local(&self, level: usize, local_idx: usize) -> Option<(Box<[u8]>, LuaValue)> {
         let call_depth = self.call_depth();
         if level >= call_depth {
             return None;
@@ -4320,7 +4424,7 @@ impl LuaState {
                 if active_count == local_idx {
                     let reg = active_count - 1;
                     let value = self.stack_get(base + reg).unwrap_or_default();
-                    return Some((locvar.name.to_string(), value));
+                    return Some((locvar.name.clone(), value));
                 }
             }
         }
@@ -4363,7 +4467,7 @@ impl LuaState {
 
     /// Get an upvalue name and value for the function at the given stack level.
     /// `level` is 0-based. `up_idx` is 1-based.
-    pub fn get_upvalue(&self, level: usize, up_idx: usize) -> Option<(String, LuaValue)> {
+    pub fn get_upvalue(&self, level: usize, up_idx: usize) -> Option<(Box<[u8]>, LuaValue)> {
         let call_depth = self.call_depth();
         if level >= call_depth || up_idx == 0 {
             return None;
@@ -4377,7 +4481,7 @@ impl LuaState {
         if idx >= upvalues.len() || idx >= chunk.upvalue_descs.len() {
             return None;
         }
-        let name = chunk.upvalue_descs[idx].name.to_string();
+        let name = chunk.upvalue_descs[idx].name.clone();
         let value = upvalues[idx].as_ref().data.get_value();
         Some((name, value))
     }

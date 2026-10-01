@@ -31,7 +31,7 @@ pub(crate) fn metatable_name(l: &mut LuaState, v: &LuaValue) -> Option<String> {
 /// Get the name of the Nth active local variable at the given PC.
 /// Mirrors Lua 5.5's luaF_getlocalname.
 /// local_number is 1-based.
-fn getlocalname(chunk: &LuaProto, local_number: usize, pc: usize) -> Option<&str> {
+fn getlocalname(chunk: &LuaProto, local_number: usize, pc: usize) -> Option<&[u8]> {
     let mut n = local_number;
     for locvar in &chunk.locals {
         if (locvar.startpc as usize) > pc {
@@ -116,22 +116,17 @@ fn test_mm_mode(op: OpCode) -> bool {
 }
 
 /// Get the upvalue name from chunk
-fn upvalname(chunk: &LuaProto, uv: usize) -> String {
+fn upvalname(chunk: &LuaProto, uv: usize) -> Vec<u8> {
     if uv < chunk.upvalue_descs.len() {
-        chunk.upvalue_descs[uv].name.clone()
+        chunk.upvalue_descs[uv].name.to_vec()
     } else {
-        "?".to_string()
+        b"?".to_vec()
     }
 }
 
 /// Get a constant name (if it's a string)
-fn kname(chunk: &LuaProto, index: usize) -> Option<String> {
-    if index < chunk.constants.len()
-        && let Some(s) = chunk.constants[index].as_str()
-    {
-        return Some(s.to_string());
-    }
-    None
+fn kname(chunk: &LuaProto, index: usize) -> Option<Vec<u8>> {
+    chunk.constants.get(index)?.as_bytes().map(<[u8]>::to_vec)
 }
 
 /// Find the last instruction before lastpc that sets register reg.
@@ -179,12 +174,12 @@ fn findsetreg(chunk: &LuaProto, lastpc: usize, reg: u32) -> i32 {
 /// Basic object name resolution.
 /// Returns (kind, name) or None.
 /// Mirrors Lua 5.5's basicgetobjname.
-fn basicgetobjname(chunk: &LuaProto, pc: &mut i32, reg: u32) -> Option<(&'static str, String)> {
+fn basicgetobjname(chunk: &LuaProto, pc: &mut i32, reg: u32) -> Option<(&'static str, Vec<u8>)> {
     let pc_val = *pc as usize;
 
     // First try: is reg a local variable at this PC?
     if let Some(name) = getlocalname(chunk, (reg + 1) as usize, pc_val) {
-        return Some(("local", name.to_string()));
+        return Some(("local", name.to_vec()));
     }
 
     // Symbolic execution: find the instruction that set this register
@@ -226,14 +221,14 @@ fn basicgetobjname(chunk: &LuaProto, pc: &mut i32, reg: u32) -> Option<(&'static
 }
 
 /// Get a register name for rname helper
-fn rname(chunk: &LuaProto, pc: usize, c: u32) -> String {
+fn rname(chunk: &LuaProto, pc: usize, c: u32) -> Vec<u8> {
     let mut ppc = pc as i32;
     if let Some((kind, name)) = basicgetobjname(chunk, &mut ppc, c)
         && kind == "constant"
     {
         return name;
     }
-    "?".to_string()
+    b"?".to_vec()
 }
 
 /// Check if the table operand names _ENV (making it a "global")
@@ -248,8 +243,8 @@ fn is_env(chunk: &LuaProto, pc: usize, i: Instruction, isup: bool) -> &'static s
             _ => None,
         }
     };
-    match name {
-        Some(ref n) if n == "_ENV" => "global",
+    match &name {
+        Some(n) if n.as_slice() == b"_ENV" => "global",
         _ => "field",
     }
 }
@@ -261,7 +256,7 @@ fn getobjname(
     lastpc: usize,
     reg: u32,
     lua53: bool,
-) -> Option<(&'static str, String)> {
+) -> Option<(&'static str, Vec<u8>)> {
     let mut pc = lastpc as i32;
     if let Some(result) = basicgetobjname(chunk, &mut pc, reg) {
         return Some(result);
@@ -271,7 +266,7 @@ fn getobjname(
         match i.get_opcode() {
             OpCode::GetTabUp => {
                 let k = i.get_c() as usize;
-                let name = kname(chunk, k).unwrap_or_else(|| "?".to_string());
+                let name = kname(chunk, k).unwrap_or_else(|| b"?".to_vec());
                 let kind = is_env(chunk, pc as usize, i, true);
                 return Some((kind, name));
             }
@@ -294,17 +289,17 @@ fn getobjname(
                 return Some((kind, name));
             }
             OpCode::GetI => {
-                return Some(("field", "integer index".to_string()));
+                return Some(("field", b"integer index".to_vec()));
             }
             OpCode::GetField => {
                 let k = i.get_c() as usize;
-                let field_name = kname(chunk, k).unwrap_or_else(|| "?".to_string());
+                let field_name = kname(chunk, k).unwrap_or_else(|| b"?".to_vec());
                 let kind = is_env(chunk, pc as usize, i, false);
                 return Some((kind, field_name));
             }
             OpCode::Self_ => {
                 let k = i.get_c() as usize;
-                let name = kname(chunk, k).unwrap_or_else(|| "?".to_string());
+                let name = kname(chunk, k).unwrap_or_else(|| b"?".to_vec());
                 return Some(("method", name));
             }
             _ => {}
@@ -315,33 +310,34 @@ fn getobjname(
 
 /// Determine function name from bytecode at the calling instruction.
 /// Mirrors Lua 5.5's funcnamefromcode.
-fn funcnamefromcode(chunk: &LuaProto, pc: usize, lua53: bool) -> Option<(&'static str, String)> {
+fn funcnamefromcode(chunk: &LuaProto, pc: usize, lua53: bool) -> Option<(&'static str, Vec<u8>)> {
     if pc >= chunk.code.len() {
         return None;
     }
     let i = chunk.code[pc];
+    let metamethod = |name: &str| Some(("metamethod", name.as_bytes().to_vec()));
     match i.get_opcode() {
         OpCode::Call | OpCode::TailCall => getobjname(chunk, pc, i.get_a(), lua53),
-        OpCode::TForCall | OpCode::TForCall53 => Some(("for iterator", "for iterator".to_string())),
+        OpCode::TForCall | OpCode::TForCall53 => Some(("for iterator", b"for iterator".to_vec())),
         // Metamethod-triggering instructions
         OpCode::Self_ | OpCode::GetTabUp | OpCode::GetTable | OpCode::GetI | OpCode::GetField => {
-            Some(("metamethod", "__index".to_string()))
+            metamethod("__index")
         }
         OpCode::SetTabUp | OpCode::SetTable | OpCode::SetI | OpCode::SetField => {
-            Some(("metamethod", "__newindex".to_string()))
+            metamethod("__newindex")
         }
         OpCode::MmBin | OpCode::MmBinI | OpCode::MmBinK => {
             let tm = TmKind::from_u8(i.get_c() as u8);
-            Some(("metamethod", tm.name().to_string()))
+            metamethod(tm.name())
         }
-        OpCode::Unm => Some(("metamethod", "__unm".to_string())),
-        OpCode::BNot => Some(("metamethod", "__bnot".to_string())),
-        OpCode::Len => Some(("metamethod", "__len".to_string())),
-        OpCode::Concat => Some(("metamethod", "__concat".to_string())),
-        OpCode::Eq => Some(("metamethod", "__eq".to_string())),
-        OpCode::Lt | OpCode::LtI | OpCode::GtI => Some(("metamethod", "__lt".to_string())),
-        OpCode::Le | OpCode::LeI | OpCode::GeI => Some(("metamethod", "__le".to_string())),
-        OpCode::Close | OpCode::Return => Some(("metamethod", "__close".to_string())),
+        OpCode::Unm => metamethod("__unm"),
+        OpCode::BNot => metamethod("__bnot"),
+        OpCode::Len => metamethod("__len"),
+        OpCode::Concat => metamethod("__concat"),
+        OpCode::Eq => metamethod("__eq"),
+        OpCode::Lt | OpCode::LtI | OpCode::GtI => metamethod("__lt"),
+        OpCode::Le | OpCode::LeI | OpCode::GeI => metamethod("__le"),
+        OpCode::Close | OpCode::Return => metamethod("__close"),
         _ => None,
     }
 }
@@ -349,13 +345,13 @@ fn funcnamefromcode(chunk: &LuaProto, pc: usize, lua53: bool) -> Option<(&'stati
 /// Get function name by looking at the calling frame.
 /// Mirrors Lua 5.5's getfuncname/funcnamefromcall (5.3: getfuncname/funcnamefromcode).
 /// ci_frame_idx is the frame index of the TARGET function.
-fn getfuncname(l: &LuaState, ci_frame_idx: usize) -> Option<(&'static str, String)> {
+fn getfuncname(l: &LuaState, ci_frame_idx: usize) -> Option<(&'static str, Vec<u8>)> {
     let lua53 = l.global_state().language() == crate::LuaLanguageLevel::Lua53;
     let ci = l.get_frame(ci_frame_idx)?;
     // GCTM flags the frame that was running when the finalizer started. Lua 5.3 reports
     // that frame itself as the "__gc" metamethod; 5.4+ report the finalizer it called.
     if lua53 && ci.call_status & call_status::CIST_FIN != 0 {
-        return Some(("metamethod", "__gc".to_string()));
+        return Some(("metamethod", b"__gc".to_vec()));
     }
     if ci_frame_idx == 0 {
         return None; // No caller frame
@@ -368,10 +364,10 @@ fn getfuncname(l: &LuaState, ci_frame_idx: usize) -> Option<(&'static str, Strin
     let prev_idx = ci_frame_idx - 1;
     let prev = l.get_frame(prev_idx)?;
     if prev.call_status & call_status::CIST_HOOKED != 0 {
-        return Some(("hook", "?".to_string()));
+        return Some(("hook", b"?".to_vec()));
     }
     if !lua53 && prev.call_status & call_status::CIST_FIN != 0 {
-        return Some(("metamethod", "__gc".to_string()));
+        return Some(("metamethod", b"__gc".to_vec()));
     }
     if prev.is_lua() {
         // Get caller's chunk
@@ -384,7 +380,7 @@ fn getfuncname(l: &LuaState, ci_frame_idx: usize) -> Option<(&'static str, Strin
         let (kind, name) = funcnamefromcode(chunk, pc, lua53)?;
         // Lua 5.4+ name metamethods without the "__" prefix (ldebug.c `tmname + 2`)
         if kind == "metamethod" && !lua53 {
-            return Some((kind, name.trim_start_matches("__").to_owned()));
+            return Some((kind, name.strip_prefix(b"__").unwrap_or(&name).to_vec()));
         }
         return Some((kind, name));
     }
@@ -396,25 +392,45 @@ fn getfuncname(l: &LuaState, ci_frame_idx: usize) -> Option<(&'static str, Strin
 // Public API for error message generation (mirrors ldebug.c luaG_typeerror)
 // ============================================================================
 
-/// Generate variable info string like " (global 'X')" for error messages.
+/// ` (kind 'name')`, the variable information of an error message.
+fn describe(kind: &str, name: &[u8]) -> Vec<u8> {
+    let mut info = format!(" ({kind} '").into_bytes();
+    info.extend_from_slice(name);
+    info.extend_from_slice(b"')");
+    info
+}
+
+/// Raise `message` followed by variable information, which may quote a name
+/// that is not valid UTF-8.
+pub(crate) fn error_with_info(l: &mut LuaState, message: String, info: &[u8]) -> LuaError {
+    if info.is_empty() {
+        return l.error(message);
+    }
+    let mut full = message.into_bytes();
+    full.extend_from_slice(info);
+    l.error_bytes(full)
+}
+
+/// Generate variable info like " (global 'X')" for error messages (the bytes
+/// of the name are those of the source text).
 /// Mirrors Lua 5.5's varinfo() from ldebug.c.
 /// Must be called AFTER save_pc so the current frame's PC is up to date.
-pub fn varinfo(l: &LuaState) -> String {
+pub fn varinfo(l: &LuaState) -> Vec<u8> {
     let ci_idx = l.call_depth().wrapping_sub(1);
     let ci = match l.get_frame(ci_idx) {
         Some(ci) => ci,
-        None => return String::new(),
+        None => return Vec::new(),
     };
     if !ci.is_lua() {
-        return String::new();
+        return Vec::new();
     }
     let func = match l.get_frame_func(ci_idx) {
         Some(f) => f,
-        None => return String::new(),
+        None => return Vec::new(),
     };
     let lua_func = match func.as_lua_function() {
         Some(f) => f,
-        None => return String::new(),
+        None => return Vec::new(),
     };
     let chunk = lua_func.chunk();
     // currentpc: saved pc points AFTER the current instruction (pc += 1 in fetch)
@@ -422,7 +438,7 @@ pub fn varinfo(l: &LuaState) -> String {
 
     // Get the instruction at currentpc to determine which register holds the object
     if currentpc >= chunk.code.len() {
-        return String::new();
+        return Vec::new();
     }
     let instr = chunk.code[currentpc];
     let op = instr.get_opcode();
@@ -439,32 +455,32 @@ pub fn varinfo(l: &LuaState) -> String {
             let upval_idx = instr.get_b() as usize;
             if upval_idx < chunk.upvalue_descs.len() {
                 let upname = &chunk.upvalue_descs[upval_idx].name;
-                if upname == "_ENV" {
+                if &**upname == b"_ENV" {
                     // For _ENV, report the key as global
                     let c = instr.get_c() as usize;
-                    let name = kname(chunk, c).unwrap_or_else(|| "?".to_string());
-                    return format!(" (global '{}')", name);
+                    let name = kname(chunk, c).unwrap_or_else(|| b"?".to_vec());
+                    return describe("global", &name);
                 } else {
-                    return format!(" (upvalue '{}')", upname);
+                    return describe("upvalue", upname);
                 }
             }
-            return String::new();
+            return Vec::new();
         }
         // SETTABUP: table is upvalue A — the upvalue itself is being indexed
         OpCode::SetTabUp => {
             let upval_idx = instr.get_a() as usize;
             if upval_idx < chunk.upvalue_descs.len() {
                 let upname = &chunk.upvalue_descs[upval_idx].name;
-                if upname == "_ENV" {
+                if &**upname == b"_ENV" {
                     // For _ENV, report the key as global
                     let b = instr.get_b() as usize;
-                    let name = kname(chunk, b).unwrap_or_else(|| "?".to_string());
-                    return format!(" (global '{}')", name);
+                    let name = kname(chunk, b).unwrap_or_else(|| b"?".to_vec());
+                    return describe("global", &name);
                 } else {
-                    return format!(" (upvalue '{}')", upname);
+                    return describe("upvalue", upname);
                 }
             }
-            return String::new();
+            return Vec::new();
         }
         // CALL/TAILCALL: function being called is in register A
         OpCode::Call | OpCode::TailCall => Some(instr.get_a()),
@@ -526,9 +542,9 @@ pub fn varinfo(l: &LuaState) -> String {
     if let Some(reg) = reg
         && let Some((kind, name)) = getobjname(chunk, currentpc, reg, is_lua53(l))
     {
-        return format!(" ({} '{}')", kind, name);
+        return describe(kind, &name);
     }
-    String::new()
+    Vec::new()
 }
 
 /// Generate a type error with variable info.
@@ -537,13 +553,13 @@ pub fn varinfo(l: &LuaState) -> String {
 pub fn typeerror(l: &mut LuaState, val: &LuaValue, op: &str) -> LuaError {
     let tname = objtypename(l, val);
     let info = varinfo(l);
-    l.error(format!("attempt to {} a {} value{}", op, tname, info))
+    error_with_info(l, format!("attempt to {} a {} value", op, tname), &info)
 }
 
 /// Get the name and kind of the current function from the calling frame's bytecode.
 /// Used by C stdlib functions to get their name for error messages.
 /// Mirrors C Lua's approach in luaL_argerror: lua_getinfo(L, 0, "n").
-pub fn current_func_name_with_kind(l: &LuaState) -> Option<(&'static str, String)> {
+pub fn current_func_name_with_kind(l: &LuaState) -> Option<(&'static str, Vec<u8>)> {
     let ci_idx = l.call_depth().wrapping_sub(1);
     getfuncname(l, ci_idx)
 }
@@ -603,29 +619,28 @@ pub(crate) fn find_global_func_name(l: &LuaState, target: &LuaValue) -> Option<S
 
 /// Get variable info for a specific register.
 /// Like varinfo() but for a known register number.
-pub fn varinfo_for_reg(l: &LuaState, reg: u32) -> String {
+pub fn varinfo_for_reg(l: &LuaState, reg: u32) -> Vec<u8> {
     let ci_idx = l.call_depth().wrapping_sub(1);
     let ci = match l.get_frame(ci_idx) {
         Some(ci) => ci,
-        None => return String::new(),
+        None => return Vec::new(),
     };
     if !ci.is_lua() {
-        return String::new();
+        return Vec::new();
     }
     let func = match l.get_frame_func(ci_idx) {
         Some(f) => f,
-        None => return String::new(),
+        None => return Vec::new(),
     };
     let lua_func = match func.as_lua_function() {
         Some(f) => f,
-        None => return String::new(),
+        None => return Vec::new(),
     };
     let chunk = lua_func.chunk();
     let currentpc = ci.pc.saturating_sub(1) as usize;
-    if let Some((kind, name)) = getobjname(chunk, currentpc, reg, is_lua53(l)) {
-        format!(" ({} '{}')", kind, name)
-    } else {
-        String::new()
+    match getobjname(chunk, currentpc, reg, is_lua53(l)) {
+        Some((kind, name)) => describe(kind, &name),
+        None => Vec::new(),
     }
 }
 
@@ -649,10 +664,10 @@ pub fn opinterror(
     let mut info = varinfo_for_reg(l, blame_reg);
     // Lua 5.3 arithmetic reads constants as RK operands, not registers, so
     // varinfo finds no name for them.
-    if is_lua53(l) && info.starts_with(" (constant ") {
+    if is_lua53(l) && info.starts_with(b" (constant ") {
         info.clear();
     }
-    l.error(format!("attempt to {} a {} value{}", op, blame_type, info))
+    error_with_info(l, format!("attempt to {} a {} value", op, blame_type), &info)
 }
 
 /// Generate a comparison error (mirrors luaG_ordererror).
@@ -682,12 +697,14 @@ pub fn callerror(l: &mut LuaState, val: &LuaValue) -> LuaError {
         if let Some((kind, name)) = funcnamefromcode(chunk, pc, is_lua53(l)) {
             let extra = match kind {
                 // 5.3's luaG_typeerror names only stack slots; a metamethod is none.
-                "metamethod" if is_lua53(l) => String::new(),
+                "metamethod" if is_lua53(l) => Vec::new(),
                 // 5.4+ funcnamefromcall: `tmname + 2`
-                "metamethod" => format!(" (metamethod '{}')", name.trim_start_matches("__")),
-                _ => format!(" ({kind} '{name}')"),
+                "metamethod" => {
+                    describe(kind, name.strip_prefix(b"__").unwrap_or(&name))
+                }
+                _ => describe(kind, &name),
             };
-            return l.error(format!("attempt to call a {t} value{extra}"));
+            return error_with_info(l, format!("attempt to call a {t} value"), &extra);
         }
     }
     // Fallback: no name info available
@@ -696,7 +713,7 @@ pub fn callerror(l: &mut LuaState, val: &LuaValue) -> LuaError {
 
 /// Get the function name for a given frame index (public wrapper).
 /// Returns (kind, name) or None.
-pub fn pub_getfuncname(l: &LuaState, ci_frame_idx: usize) -> Option<(&'static str, String)> {
+pub fn pub_getfuncname(l: &LuaState, ci_frame_idx: usize) -> Option<(&'static str, Vec<u8>)> {
     getfuncname(l, ci_frame_idx)
 }
 
@@ -757,30 +774,36 @@ pub(crate) fn traceback_text(lua53: bool, target: &LuaState, msg: Option<&[u8]>,
         let what = info.what.unwrap_or("?");
         let namewhat = info.namewhat.as_deref().unwrap_or("");
         let global = || info.func.as_ref().and_then(|f| find_global_func_name(target, f));
-        let name = if lua53 {
+        let named = || {
+            let mut text = format!("{namewhat} '").into_bytes();
+            text.extend_from_slice(info.name.as_deref().unwrap_or(b"?"));
+            text.push(b'\'');
+            text
+        };
+        let name: Vec<u8> = if lua53 {
             if let Some(global) = global() {
-                format!("function '{global}'")
+                format!("function '{global}'").into_bytes()
             } else if !namewhat.is_empty() {
-                format!("{namewhat} '{}'", info.name.as_deref().unwrap_or("?"))
+                named()
             } else if what == "main" {
-                "main chunk".to_owned()
+                b"main chunk".to_vec()
             } else if what != "C" {
-                format!("function <{short_src}:{}>", info.linedefined.unwrap_or(0))
+                format!("function <{short_src}:{}>", info.linedefined.unwrap_or(0)).into_bytes()
             } else {
-                "?".to_owned()
+                b"?".to_vec()
             }
         } else if !namewhat.is_empty() {
-            format!("{namewhat} '{}'", info.name.as_deref().unwrap_or("?"))
+            named()
         } else if what == "main" {
-            "main chunk".to_owned()
+            b"main chunk".to_vec()
         } else if what != "C" {
-            format!("function <{short_src}:{}>", info.linedefined.unwrap_or(0))
+            format!("function <{short_src}:{}>", info.linedefined.unwrap_or(0)).into_bytes()
         } else if let Some(global) = global() {
-            format!("function '{global}'")
+            format!("function '{global}'").into_bytes()
         } else {
-            "?".to_owned()
+            b"?".to_vec()
         };
-        out.extend_from_slice(name.as_bytes());
+        out.extend_from_slice(&name);
         if info.istailcall == Some(true) {
             out.extend_from_slice(b"\n\t(...tail calls...)");
         }
@@ -964,8 +987,8 @@ fn debug_getinfo(l: &mut LuaState) -> LuaResult<usize> {
     // 'n' fields
     if info.namewhat.is_some() {
         let k = l.create_string("name")?;
-        let v = if let Some(ref name) = info.name {
-            l.create_string(name)?
+        let v = if let Some(name) = &info.name {
+            l.create_bytes(name)?
         } else {
             LuaValue::nil()
         };
@@ -1186,7 +1209,7 @@ fn debug_getlocal(l: &mut LuaState) -> LuaResult<usize> {
                 .map(|locvar| locvar.name.clone());
         }
         let value = match name {
-            Some(name) => l.create_string(&name)?,
+            Some(name) => l.create_bytes(&name)?,
             None => LuaValue::nil(),
         };
         l.push_value(value)?;
@@ -1203,7 +1226,7 @@ fn debug_getlocal(l: &mut LuaState) -> LuaResult<usize> {
     match findlocal(target, frame_idx, local_index, lua53) {
         Some((name, slot)) => {
             let value = target.stack_get(slot).unwrap_or_default();
-            let name = l.create_string(name)?;
+            let name = l.create_bytes(name)?;
             l.push_value(name)?;
             l.push_value(value)?;
             Ok(2)
@@ -1228,7 +1251,7 @@ fn debug_setlocal(l: &mut LuaState) -> LuaResult<usize> {
     let frame_idx = call_depth - 1 - level;
     match findlocal(target, frame_idx, local_index, is_lua53(l)) {
         Some((name, slot)) => {
-            let name = l.create_string(name)?;
+            let name = l.create_bytes(name)?;
             target.stack_set(slot, value)?;
             l.push_value(name)?;
             Ok(1)
@@ -1240,7 +1263,7 @@ fn debug_setlocal(l: &mut LuaState) -> LuaResult<usize> {
 /// luaG_findlocal: name and stack slot of local `n` of the frame `frame_idx` of `target`.
 /// Negative `n` selects a vararg of a Lua frame; slots without a variable name between the
 /// frame base and the next frame (or the top) are temporaries.
-fn findlocal<'a>(target: &'a LuaState, frame_idx: usize, n: i64, lua53: bool) -> Option<(&'a str, usize)> {
+fn findlocal<'a>(target: &'a LuaState, frame_idx: usize, n: i64, lua53: bool) -> Option<(&'a [u8], usize)> {
     let ci = target.get_call_info(frame_idx);
     let base = ci.base;
     let func = target.get_frame_func(frame_idx)?;
@@ -1263,7 +1286,7 @@ fn findlocal<'a>(target: &'a LuaState, frame_idx: usize, n: i64, lua53: bool) ->
             if slot >= target.stack_len() {
                 return None;
             }
-            return Some((if lua53 { "(*vararg)" } else { "(vararg)" }, slot));
+            return Some((if lua53 { b"(*vararg)".as_slice() } else { b"(vararg)".as_slice() }, slot));
         }
         if n > 0 {
             let pc = (target.get_frame_pc(frame_idx) as usize).saturating_sub(1);
@@ -1271,11 +1294,11 @@ fn findlocal<'a>(target: &'a LuaState, frame_idx: usize, n: i64, lua53: bool) ->
                 return Some((name, base + n as usize - 1));
             }
         }
-        if lua53 { "(*temporary)" } else { "(temporary)" }
+        if lua53 { b"(*temporary)".as_slice() } else { b"(temporary)".as_slice() }
     } else if lua53 {
-        "(*temporary)"
+        b"(*temporary)".as_slice()
     } else {
-        "(C temporary)"
+        b"(C temporary)".as_slice()
     };
     let limit = if frame_idx + 1 == target.call_depth() {
         target.get_top()
@@ -1310,12 +1333,12 @@ fn debug_getupvalue(l: &mut LuaState) -> LuaResult<usize> {
             if up_index <= chunk.upvalue_descs.len() {
                 // Use actual upvalue name from chunk (or "(no name)" if stripped)
                 let name = &chunk.upvalue_descs[up_index - 1].name;
-                let display_name = if name.is_empty() {
-                    if is_lua53(l) { "(*no name)" } else { "(no name)" }
+                let display_name: &[u8] = if name.is_empty() {
+                    if is_lua53(l) { b"(*no name)" } else { b"(no name)" }
                 } else {
-                    name.as_str()
+                    name
                 };
-                let name_str = l.create_string(display_name)?;
+                let name_str = l.create_bytes(display_name)?;
 
                 // Get the value
                 let value = upvalue.as_ref().data.get_value();
@@ -1371,7 +1394,7 @@ fn debug_setupvalue(l: &mut LuaState) -> LuaResult<usize> {
             let upvalue_name = if up_index - 1 < chunk.upvalue_descs.len() {
                 chunk.upvalue_descs[up_index - 1].name.clone()
             } else {
-                String::new()
+                Box::default()
             };
 
             // Set the upvalue value (similar to SETUPVAL instruction)
@@ -1386,12 +1409,12 @@ fn debug_setupvalue(l: &mut LuaState) -> LuaResult<usize> {
             }
 
             // Return the upvalue name ("(no name)" if stripped)
-            let display_name = if upvalue_name.is_empty() {
-                if is_lua53(l) { "(*no name)" } else { "(no name)" }.to_string()
+            let display_name: &[u8] = if upvalue_name.is_empty() {
+                if is_lua53(l) { b"(*no name)" } else { b"(no name)" }
             } else {
-                upvalue_name
+                &upvalue_name
             };
-            let name_val = l.create_string(&display_name)?;
+            let name_val = l.create_bytes(display_name)?;
             l.push_value(name_val)?;
             return Ok(1);
         }

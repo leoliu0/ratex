@@ -1,0 +1,16 @@
+@book{early,
+  editor = {Early Ed},
+  title = {Early Parent Book},
+  publisher = {Pub},
+  year = 1980,
+}
+@incollection{c1, author={One A.}, title={Child one}, crossref={proc}, pages={1--2}}
+@incollection{c2, author={Two B.}, title={Child two}, crossref={PROC}, pages={3--4}}
+@incollection{c3, author={Three C.}, title={Child three}, crossref={early}, pages={5--6}}
+@inproceedings{c4, author={Four D.}, title={Child four}, crossref={single}, pages={7--8}}
+@inproceedings{c5, author={Five E.}, title={Child five}, crossref={nest}, pages={9}}
+@incollection{c6, author={Six F.}, title={Child six}, crossref={Proc}}
+@proceedings{proc, editor={Pro Editor}, title={The Big Proceedings}, booktitle={The Big Proceedings}, publisher={PP}, year=1999, address={Here}}
+@proceedings{single, editor={Single Ed}, title={Single Proceedings}, booktitle={Single Proceedings}, year=2000}
+@proceedings{nest, editor={Nest Ed}, title={Nested Proceedings}, booktitle={Nested Proceedings}, year=2001, crossref={grand}}
+@book{grand, editor={Grand Ed}, title={Grand}, publisher={GP}, year=2002}

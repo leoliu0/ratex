@@ -1,0 +1,14 @@
+The top-level auxiliary file: job.aux
+The style file: plainnat.bst
+Database file #1: stress.bib
+Warning--string name "x" is undefined
+--line 5 of file stress.bib
+Warning--to sort, need author or key in fake
+Warning--empty author in fake
+Warning--empty title in fake
+Warning--empty journal in fake
+Warning--empty year in fake
+Warning--empty year in fake
+Warning--empty year in acc11
+Warning--can't use both author and editor fields in acc2
+(There were 9 warnings)

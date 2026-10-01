@@ -1,0 +1,92 @@
+\newcommand{\noopsort}[1]{} \newcommand{\singleletter}[1]{#1}
+\begin{thebibliography}{14}
+\providecommand{\natexlab}[1]{#1}
+\providecommand{\url}[1]{\texttt{#1}}
+\expandafter\ifx\csname urlstyle\endcsname\relax
+  \providecommand{\doi}[1]{doi: #1}\else
+  \providecommand{\doi}{doi: \begingroup \urlstyle{rm}\Url}\fi
+
+\bibitem[fak()]{fake}
+
+
+\bibitem[Alpha and Beta(2010)]{acc10}
+A.~Alpha and B.~Beta.
+\newblock Title with twenty parts.
+\newblock \emph{J}, 1~February 2010.
+
+\bibitem[{Barnes and Noble, Inc.} and {National Aeronautics and Space
+  Administration}(2003)]{acc4}
+{Barnes and Noble, Inc.} and {National Aeronautics and Space Administration}.
+\newblock A {\noopsort{z}}title with noopsort.
+\newblock \url{http://example.com/~foo_bar%20}, 2003.
+\newblock Accessed {\today}.
+
+\bibitem[de~Gaulle et~al.(2001)de~Gaulle, D{\'\i}az, {\v{S}}koda, van~der
+  Waals, and Ma]{acc3}
+Charles de~Gaulle, Jos{\'e} D{\'\i}az, Emil {\v{S}}koda, J.~D. van~der Waals,
+  and Yo-Yo Ma.
+\newblock Proceedings with {$x^2$} math and -- dashes --- and ``quotes''.
+\newblock In \emph{Proc. of the 1st Conf.}, pages 1--5. Org, 2001.
+
+\bibitem[First~von Last et~al.(1900)First~von Last, {Brinch Hansen}, and de~la
+  Vall{\'e}e~Poussin]{acc13}
+Jr~First~von Last, Per {Brinch Hansen}, and Charles Louis Xavier~Joseph de~la
+  Vall{\'e}e~Poussin.
+\newblock Names.
+\newblock \emph{J}, 1900.
+
+\bibitem[G{\"o}del et~al.(1999)G{\"o}del, de~la Vall{\'e}e~Poussin, Serre, van
+  Beethoven, and {\AE}sop]{acc1}
+Kurt G{\"o}del, Fran{\c{c}}ois de~la Vall{\'e}e~Poussin, Jean-Pierre Serre,
+  Ludwig van Beethoven, and {\AE}sop.
+\newblock On {\TeX}: the {DNA} of {$\alpha$}-stable {L}evy processes. second
+  {P}art: {\em really}?
+\newblock \emph{ACM Transactions}, 12\penalty0 (3):\penalty0 100--200, January
+  1999.
+
+\bibitem[M{\"u}ller(1990)]{acc9}
+Hans-J{\"u}rgen M{\"u}ller.
+\newblock \emph{{\"U}ber die {\"A}nderung}.
+\newblock PhD thesis, Universit{\"a}t, 1990.
+
+\bibitem[Org(2011)]{acc12}
+\emph{Manual Without Author}.
+\newblock The Org, 2011.
+
+\bibitem[Polytechnique and Fourier()]{acc11}
+{\'{E}}cole Polytechnique and Fran{\c c}ois Fourier.
+\newblock {T}esting {\'e}c {\'e}c {\i}{\j} {\o}{\o} {\l}{\l} {\aa}{\aa}
+  {\oe}{\oe} {\ae}{\ae}.
+\newblock No year.
+
+\bibitem[Smith(2005{\natexlab{a}})]{acc6}
+John Smith.
+\newblock Same names again.
+\newblock \emph{J}, 2005{\natexlab{a}}.
+
+\bibitem[Smith(2005{\natexlab{b}})]{acc7}
+John Smith.
+\newblock Same names again and again.
+\newblock \emph{J}, 2005{\natexlab{b}}.
+
+\bibitem[Smith et~al.(2005)Smith, Smith, Smith, and Smith]{acc5}
+John Smith, Jane Smith, J.~Smith, and John Smith.
+\newblock Same names.
+\newblock \emph{J}, 2005.
+
+\bibitem[{\relax Th}omas et~al.(2010){\relax Th}omas, Jones, Brown, Green, and
+  White]{acc8}
+A.~{\relax Th}omas, B.~Jones, C.~Brown, D.~Green, and E.~White.
+\newblock A very long title that will need to be wrapped across many output
+  lines because it exceeds the seventy nine character line limit of bibtex
+  output buffer with
+  nospaces_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  end.
+\newblock Working Paper~42, Inst, 2010.
+
+\bibitem[Zola et~al.(1998)]{acc2}
+{\'E}mile Zola et~al.
+\newblock \emph{the {G}reat book of {\relax Ch}inese {\ss}tuff}.
+\newblock IEEE Press, New York, second edition, 1998.
+
+\end{thebibliography}

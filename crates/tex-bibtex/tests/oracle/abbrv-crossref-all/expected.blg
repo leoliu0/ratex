@@ -1,0 +1,7 @@
+The top-level auxiliary file: job.aux
+The style file: abbrv.bst
+Database file #1: xref.bib
+Warning--you've nested cross references--entry "c5"
+refers to entry "nest", which also refers to something
+Warning--I didn't find a database entry for "missing1"
+(There were 2 warnings)

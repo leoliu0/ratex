@@ -1,0 +1,95 @@
+@preamble{ "\newcommand{\noopsort}[1]{} " # "\newcommand{\singleletter}[1]{#1} " }
+@string{ acm = "ACM" }
+@STRING( ieee = {IEEE} # " Press" )
+@string{tw = "Twenty"}
+@comment{ this is a comment @article{fake, title=x} }
+@article{acc1,
+  author = {Kurt G{\"o}del and Fran{\c{c}}ois de la Vall{\'e}e Poussin and Jean-Pierre Serre and Ludwig van Beethoven and {\AE}sop},
+  title = {On {\TeX}: the {DNA} of {$\alpha$}-stable {L}evy processes. Second {P}art: {\em really}?},
+  journal = acm # " Transactions",
+  year = 1999,
+  volume = "12",
+  number = {3},
+  pages = {100--200},
+  month = jan,
+}
+@book{acc2,
+  author = {{\'E}mile Zola and others},
+  editor = {Doe, Jr., John and {von Neumann}, John},
+  title = {the {G}reat book of {\relax Ch}inese {\ss}tuff},
+  publisher = ieee,
+  year = {1998},
+  edition = {second},
+  address = "New York",
+}
+@inproceedings{acc3,
+  author = {de Gaulle, Charles and D{\'\i}az, Jos{\'e} and {\v{S}}koda, Emil and van der Waals, J. D. and Ma, Yo-Yo},
+  title = {Proceedings with {$x^2$} math and -- dashes --- and ``quotes''},
+  booktitle = {Proc. of the 1st Conf.},
+  year = 2001,
+  pages = {1-5},
+  organization = {Org},
+}
+@misc{acc4,
+  author = {{Barnes and Noble, Inc.} and {National Aeronautics and Space Administration}},
+  title = {A {\noopsort{z}}Title with noopsort},
+  howpublished = {\url{http://example.com/~foo_bar%20}},
+  year = {2003},
+  note = {Accessed {\today}},
+}
+@article{acc5,
+  author = {Smith, John and Smith, Jane and Smith, J. and Smith, John},
+  title = {Same names},
+  journal = {J},
+  year = 2005,
+}
+@article{acc6,
+  author = {Smith, John},
+  title = {Same names again},
+  journal = {J},
+  year = 2005,
+}
+@article{acc7,
+  author = {Smith, John},
+  title = {Same names again and again},
+  journal = {J},
+  year = 2005,
+}
+@techreport{acc8,
+  author = {A. {\relax Th}omas and B. Jones and C. Brown and D. Green and E. White},
+  title = {A very long title that will need to be wrapped across many output lines because it exceeds the seventy nine character line limit of bibtex output buffer with nospaces_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa end},
+  institution = {Inst},
+  year = 2010,
+  type = {Working Paper},
+  number = {42},
+}
+@phdthesis{acc9,
+  author = {M{\"u}ller, Hans-J{\"u}rgen},
+  title = {{\"U}ber die {\"A}nderung},
+  school = {Universit{\"a}t},
+  year = 1990,
+}
+@article{acc10,
+  author = {Alpha, A. and Beta, B.},
+  title = "Title with "  # tw # " parts",
+  journal = {J},
+  year = {2010},
+  month = "1~" # feb,
+  key = {Zeta},
+}
+@unpublished{acc11,
+  author = {{\'{E}}cole Polytechnique and Fran{\c c}ois Fourier},
+  title = {{T}esting {\'e}c {\'E}C {\i}{\j} {\o}{\O} {\l}{\L} {\aa}{\AA} {\oe}{\OE} {\ae}{\AE}},
+  note = {No year},
+}
+@manual{acc12,
+  title = {Manual Without Author},
+  organization = {The Org},
+  year = 2011,
+}
+@article{acc13,
+  author = {First von Last, Jr and {Brinch Hansen}, Per and Charles Louis Xavier Joseph de la Vall{\'e}e Poussin},
+  title = {Names},
+  journal = {J},
+  year = 1900,
+}

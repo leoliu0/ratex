@@ -1,0 +1,12 @@
+The top-level auxiliary file: job.aux
+The style file: unsrt.bst
+Database file #1: xref.bib
+A bad cross reference---entry "c3"
+refers to entry "early", which doesn't exist
+Warning--you've nested cross references--entry "c5"
+refers to entry "nest", which also refers to something
+Warning--I didn't find a database entry for "early"
+Warning--empty booktitle in c3
+Warning--empty publisher in c3
+Warning--empty year in c3
+(There was 1 error message)

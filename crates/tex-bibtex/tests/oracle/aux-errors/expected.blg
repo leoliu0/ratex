@@ -1,0 +1,64 @@
+The top-level auxiliary file: job.aux
+The style file: plain.bst
+This database file appears more than once: xampl.bib
+---line 3 of file job.aux
+ : \bibdata{xampl,xampl
+ :                     }
+I'm skipping whatever remains of this command
+Illegal, another \bibdata command---line 4 of file job.aux
+ : \bibdata
+ :         {xampl}
+I'm skipping whatever remains of this command
+White space in argument---line 5 of file job.aux
+ : \citation{a,b
+ :               c,d}
+I'm skipping whatever remains of this command
+Case mismatch error between cite keys A and a
+---line 6 of file job.aux
+ : \citation{A
+ :            }
+I'm skipping whatever remains of this command
+A level-1 auxiliary file: sub.aux
+Already encountered file job.aux
+---line 2 of file sub.aux
+ : \@input{job.aux
+ :                }
+I'm skipping whatever remains of this command
+A level-2 auxiliary file: sub2.aux
+Case mismatch error between cite keys Fromsub and fromsub
+---line 1 of file sub2.aux
+ : \citation{Fromsub
+ :                  ,deep}
+I'm skipping whatever remains of this command
+I couldn't open auxiliary file nosuch.aux
+---line 8 of file job.aux
+ : \@input{nosuch.aux
+ :                   }
+I'm skipping whatever remains of this command
+bad.tex has a wrong extension---line 9 of file job.aux
+ : \@input{bad.tex
+ :                }
+I'm skipping whatever remains of this command
+Stuff after "}"---line 10 of file job.aux
+ : \citation{x
+ :            }{y}
+I'm skipping whatever remains of this command
+Illegal, another \bibstyle command---line 11 of file job.aux
+ : \bibstyle
+ :          {plain}
+I'm skipping whatever remains of this command
+Multiple inclusions of entire database
+---line 12 of file job.aux
+ : \citation{*
+ :            }
+I'm skipping whatever remains of this command
+No "}"---line 13 of file job.aux
+ : \citation{q
+ :            
+I'm skipping whatever remains of this command
+Database file #1: xampl.bib
+Warning--I didn't find a database entry for "a"
+Warning--I didn't find a database entry for "fromsub"
+Warning--empty author in whole-journal
+Warning--empty title in whole-journal
+(There were 12 error messages)

@@ -421,7 +421,7 @@ impl Session {
             if outcome.bibliography_required
                 && bibliography.as_ref() != Some(&outcome.bibliography_inputs)
             {
-                let status = tex_bibtex::driver::run(
+                let status = tex_bibtex::run(
                     &[aux_dir.join(job).to_string_lossy().into_owned()],
                     env!("CARGO_PKG_VERSION"),
                 );
@@ -429,7 +429,13 @@ impl Session {
                 let log =
                     fs::read_to_string(aux_dir.join(format!("{job}.blg"))).unwrap_or_default();
                 result.log.push_str(&format!("--- BibTeX ---\n{log}"));
-                if status != 0 {
+                // 2: BibTeX reported errors but wrote the .bbl; keep going
+                // like latexmk and point at the .blg
+                if status == 2 {
+                    result
+                        .diagnostics
+                        .push_str(&format!("BibTeX reported errors; see {job}.blg\n"));
+                } else if status != 0 {
                     result.status = Status::CompilationError;
                     result.diagnostics.push_str(&log);
                     break;

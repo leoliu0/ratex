@@ -1,0 +1,871 @@
+@p1
+  purify:Hello World
+  tlen:11
+  pre0:
+  pre1:H
+  pre2:He
+  pre3:Hel
+  pre4:Hell
+  pre5:Hello
+  pre6:Hello
+  pre7:Hello W
+  width:5282
+  ct:Hello world
+  cl:hello world
+  cu:HELLO WORLD
+  ap:Hello World.
+  s1:Hel
+  s2:rld
+  s3:ello World
+  s4:or
+  s5:
+  s6:
+  s7:
+  empty:0
+  names:1
+  n=1
+  a:Donald~E. Knuth
+  b:D.~E. Knuth
+  c:Knuth, D.~E.
+  d:Knuth
+  e:DE
+  f:K
+  g:Knuth  D E
+  h:D.E.Knuth x{vv}
+  i:D.~E.K Donald-E.
+  apur:Donald E Knuth
+  act:Donald e. knuth
+@p2
+  purify:Ober ss and AEsop oeuvre Lodz aAOEij
+  tlen:32
+  pre0:
+  pre1:{\"O}
+  pre2:{\"O}b
+  pre3:{\"O}be
+  pre4:{\"O}ber
+  pre5:{\"O}ber
+  pre6:{\"O}ber {\ss}
+  pre7:{\"O}ber {\ss}
+  width:15974
+  ct:{\"O}ber {\ss} and {\ae}sop {\oe}uvre {\l}{\o}d{\'z}
+  {\aa}{\aa}{\oe}{\i}{\j}
+  cl:{\"o}ber {\ss} and {\ae}sop {\oe}uvre {\l}{\o}d{\'z}
+  {\aa}{\aa}{\oe}{\i}{\j}
+  cu:{\"O}BER {SS} AND {\AE}SOP {\OE}UVRE {\L}{\O}D{\'Z} {\AA}{\AA}{\OE}{I}{J}
+  ap:{\"O}ber {\ss} and {\AE}sop {\oe}uvre {\L}{\o}d{\'z}
+  {\aa}{\AA}{\OE}{\i}{\j}.
+  s1:{\"
+  s2:\j}
+  s3:\"O}ber {\ss} and {\AE}sop {\oe}uvre {\L}{\o}d{\'z}
+  {\aa}{\AA}{\OE}{\i}{\j}
+  s4:{\
+  s5:
+  s6:
+  s7:
+  empty:0
+  names:2
+  n=1
+  a:Kurt G{\"o}del
+  b:K.~G{\"o}del
+  c:G{\"o}del, K.
+  d:G{\"o}del
+  e:K
+  f:G
+  g:G{\"o}del  K
+  h:K.G{\"o}del x{vv}
+  i:K.G Kurt
+  n=2
+  a:Emil {\v{S}}koda
+  b:E.~{\v{S}}koda
+  c:{\v{S}}koda, E.
+  d:{\v{S}}koda
+  e:E
+  f:{\v{S}}
+  g:{\v{S}}koda  E
+  h:E.{\v{S}}koda x{vv}
+  i:E.{\v{S}} Emil
+  apur:Kurt Godel and Skoda Emil
+  act:Kurt g{\"o}del and {\v{s}}koda, emil
+@p3
+  purify:The TeXbook a Guide Part II the end
+  tlen:36
+  pre0:
+  pre1:T
+  pre2:Th
+  pre3:The
+  pre4:The
+  pre5:The {T}
+  pre6:The {Te}
+  pre7:The {TeX}
+  width:20250
+  ct:The {TeX}book: a {G}uide. part {II}: {\em the} end
+  cl:the {TeX}book: a {G}uide. part {II}: {\em the} end
+  cu:THE {TeX}BOOK: A {G}UIDE. PART {II}: {\em THE} END
+  ap:The {TeX}book: a {G}uide. Part {II}: {\em the} end.
+  s1:The
+  s2:end
+  s3:he {TeX}book: a {G}uide. Part {II}: {\em the} end
+  s4: e
+  s5:
+  s6:
+  s7:
+  empty:0
+  names:3
+  n=1
+  a:Ludwig van Beethoven
+  b:L.~van Beethoven
+  c:van Beethoven, L.
+  d:Beethoven
+  e:L
+  f:B
+  g:van Beethoven  L
+  h:L.Beethoven x{vv}
+  i:L.B Ludwig
+  n=2
+  a:Charles Louis Xavier~Joseph de~la Vall{\'e}~Poussin
+  b:C.~L. X.~J. de~la Vall{\'e}~Poussin
+  c:de~la Vall{\'e}~Poussin, C. L. X.~J.
+  d:Vall{\'e}~Poussin
+  e:CLXJ
+  f:V-P
+  g:de la Vall{\'e} Poussin  C L X J
+  h:C.L.X.J.Vall{\'e}~Poussin x{vv}
+  i:C.~L. X.~J.V.~P Charles-Louis-Xavier-Joseph
+  n=3
+  a:Jr~First~von Last
+  b:J.~First~von Last
+  c:First~von Last, J.
+  d:Last
+  e:J
+  f:L
+  g:First von Last  J
+  h:J.Last x{vv}
+  i:J.L Jr
+  apur:Ludwig van Beethoven and Charles Louis Xavier Joseph de la Valle Poussin
+  and First von Last Jr
+  act:Ludwig van beethoven and charles louis xavier joseph de la vall{\'e}
+  poussin and first von last, jr
+@p4
+  purify:Title The Sub textbfbold Ecole
+  tlen:32
+  pre0:
+  pre1:T
+  pre2:Ti
+  pre3:Tit
+  pre4:Titl
+  pre5:Title
+  pre6:Title:
+  pre7:Title:
+  width:15518
+  ct:Title: {\relax Th}e sub: \textbf{bold} {\'{e}}cole
+  cl:title: {\relax th}e sub: \textbf{bold} {\'{e}}cole
+  cu:TITLE: {\relax TH}E SUB: \TEXTBF{bold} {\'{E}}COLE
+  ap:Title: {\relax Th}e Sub: \textbf{bold} {\'{E}}cole.
+  s1:Tit
+  s2:ole
+  s3:itle: {\relax Th}e Sub: \textbf{bold} {\'{E}}cole
+  s4:co
+  s5:
+  s6:
+  s7:
+  empty:0
+  names:4
+  n=1
+  a:John von Neumann
+  b:J.~von Neumann
+  c:von Neumann, J.
+  d:Neumann
+  e:J
+  f:N
+  g:von Neumann  J
+  h:J.Neumann x{vv}
+  i:J.N John
+  n=2
+  a:{Barnes and Noble}
+  b:{Barnes and Noble}
+  c:{Barnes and Noble}
+  d:{Barnes and Noble}
+  e:
+  f:B
+  g:{Barnes and Noble}
+  h:{Barnes and Noble} x{vv}
+  i:B
+  n=3
+  a:Jean-Pierre Serre
+  b:J.-P. Serre
+  c:Serre, J.-P.
+  d:Serre
+  e:JP
+  f:S
+  g:Serre  J P
+  h:J.P.Serre x{vv}
+  i:J.-P.S Jean-Pierre
+  n=4
+  a:Yo-Yo Ma
+  b:Y.-Y. Ma
+  c:Ma, Y.-Y.
+  d:Ma
+  e:YY
+  f:M
+  g:Ma  Y Y
+  h:Y.Y.Ma~x{vv}
+  i:Y.-Y.M Yo-Yo
+  apur:von Neumann John and Barnes and Noble and Jean Pierre Serre and Ma Yo Yo
+  act:von neumann, john and {Barnes and Noble} and jean-pierre serre and ma,
+  yo-yo
+@p5
+  purify:end with brace X
+  tlen:16
+  pre0:
+  pre1:e
+  pre2:en
+  pre3:end
+  pre4:end
+  pre5:end w
+  pre6:end wi
+  pre7:end wit
+  width:8421
+  ct:end with brace {X}
+  cl:end with brace {X}
+  cu:END WITH BRACE {X}
+  ap:end with brace {X}.
+  s1:end
+  s2:{X}
+  s3:nd with brace {X}
+  s4: {
+  s5:
+  s6:
+  s7:
+  empty:0
+  names:2
+  n=1
+  a:{\'E}mile Zola
+  b:{\'E}.~Zola
+  c:Zola, {\'E}.
+  d:Zola
+  e:{\'E}
+  f:Z
+  g:Zola  {\'E}
+  h:{\'E}.Zola x{vv}
+  i:{\'E}.Z {\'E}mile
+  n=2
+  a:others
+  b:others
+  c:others
+  d:others
+  e:
+  f:o
+  g:others
+  h:others x{vv}
+  i:o
+  apur:Emile Zola and others
+  act:{\'E}mile zola and others
+@p6
+  purify:question
+  tlen:9
+  pre0:
+  pre1:q
+  pre2:qu
+  pre3:que
+  pre4:ques
+  pre5:quest
+  pre6:questi
+  pre7:questio
+  width:4117
+  ct:question?
+  cl:question?
+  cu:QUESTION?
+  ap:question?
+  s1:que
+  s2:on?
+  s3:uestion?
+  s4:io
+  s5:
+  s6:
+  s7:
+  empty:0
+  names:5
+  n=1
+  a:A.~{\relax Th}omas
+  b:A.~{\relax Th}omas
+  c:{\relax Th}omas, A.
+  d:{\relax Th}omas
+  e:A
+  f:{\relax Th}
+  g:{\relax Th}omas  A
+  h:A.{\relax Th}omas x{vv}
+  i:A.{\relax Th} A.
+  n=2
+  a:B~C~D Jones
+  b:B.~C.~D. Jones
+  c:Jones, B.~C.~D.
+  d:Jones
+  e:BCD
+  f:J
+  g:Jones  B C D
+  h:B.C.D.Jones x{vv}
+  i:B.~C.~D.J B-C-D
+  n=3
+  a:Per {Brinch Hansen}
+  b:P.~{Brinch Hansen}
+  c:{Brinch Hansen}, P.
+  d:{Brinch Hansen}
+  e:P
+  f:B
+  g:{Brinch Hansen}  P
+  h:P.{Brinch Hansen} x{vv}
+  i:P.B Per
+  n=4
+  a:J~Smith
+  b:J.~Smith
+  c:Smith, J.
+  d:Smith
+  e:J
+  f:S
+  g:Smith  J
+  h:J.Smith x{vv}
+  i:J.S J~
+  n=5
+  a:Anders {\aa}ngstr{\"o}m
+  b:A.~{\aa}ngstr{\"o}m
+  c:{\aa}ngstr{\"o}m, A.
+  d:{\aa}ngstr{\"o}m
+  e:A
+  f:{\aa}
+  g:{\aa}ngstr{\"o}m  A
+  h:A.{\aa}ngstr{\"o}m x{vv}
+  i:A.{\aa} Anders
+  apur:A Thomas and B C D Jones and Brinch Hansen Per and Smith J and angstrom
+  Anders
+  act:A. {\relax th}omas and b~c~d jones and {Brinch Hansen}, per and smith, j
+  and {\aa}ngstr{\"o}m, anders
+@p7
+  purify:nested braces it x
+  tlen:19
+  pre0:
+  pre1:{{n}}
+  pre2:{{ne}}
+  pre3:{{nes}}
+  pre4:{{nest}}
+  pre5:{{neste}}
+  pre6:{{nested}}
+  pre7:{{nested}}
+  width:12042
+  ct:{{nested}} {braces {\it x}}
+  cl:{{nested}} {braces {\it x}}
+  cu:{{nested}} {braces {\it x}}
+  ap:{{nested}} {braces {\it x}}.
+  s1:{{n
+  s2:x}}
+  s3:{nested}} {braces {\it x}}
+  s4: x
+  s5:
+  s6:
+  s7:
+  empty:0
+  noauthor
+@p8
+  purify:Ex
+  tlen:5
+  pre0:
+  pre1:E
+  pre2:Ex
+  pre3:Ex!
+  pre4:Ex!
+  pre5:Ex! {.}
+  pre6:Ex! {.}
+  pre7:Ex! {.}
+  width:3043
+  ct:Ex! {.}
+  cl:ex! {.}
+  cu:EX! {.}
+  ap:Ex! {.}
+  s1:Ex!
+  s2:{.}
+  s3:x! {.}
+  s4: {
+  s5:
+  s6:
+  s7:
+  empty:0
+  names:3
+  n=1
+  a:Charles de~Gaulle
+  b:C.~de~Gaulle
+  c:de~Gaulle, C.
+  d:Gaulle
+  e:C
+  f:G
+  g:de Gaulle  C
+  h:C.Gaulle x{vv}
+  i:C.G Charles
+  n=2
+  a:Jos{\'e} D{\'\i}az
+  b:J.~D{\'\i}az
+  c:D{\'\i}az, J.
+  d:D{\'\i}az
+  e:J
+  f:D
+  g:D{\'\i}az  J
+  h:J.D{\'\i}az x{vv}
+  i:J.D Jos{\'e}
+  n=3
+  a:J.~D. van~der Waals
+  b:J.~D. van~der Waals
+  c:van~der Waals, J.~D.
+  d:Waals
+  e:JD
+  f:W
+  g:van der Waals  J D
+  h:J.D.Waals x{vv}
+  i:J.~D.W J.-D.
+  apur:de Gaulle Charles and Diaz Jose and van der Waals J D
+  act:de gaulle, charles and d{\'\i}az, jos{\'e} and van der waals, j. d.
+@p9
+  purify:a b c de      x2  100
+  tlen:30
+  pre0:
+  pre1:a
+  pre2:a-
+  pre3:a-b
+  pre4:a-b~
+  pre5:a-b~c
+  pre6:a-b~c
+  pre7:a-b~c d
+  width:12639
+  ct:a-b~c d{\-}e {\TeX} --- $x^2$ \& 100\%
+  cl:a-b~c d{\-}e {\TeX} --- $x^2$ \& 100\%
+  cu:A-B~C D{\-}E {\TeX} --- $X^2$ \& 100\%
+  ap:a-b~c d{\-}e {\TeX} --- $x^2$ \& 100\%.
+  s1:a-b
+  s2:0\%
+  s3:-b~c d{\-}e {\TeX} --- $x^2$ \& 100\%
+  s4:00
+  s5:
+  s6:
+  s7:
+  empty:0
+  names:3
+  n=1
+  a:Ünïcödé Nämé
+  b:Ünïcödé Nämé
+  c:Ünïcödé Nämé
+  d:Nämé
+  e:
+  f:N
+  g:Ünïcödé Nämé
+  h:Nämé x{vv}
+  i:N
+  n=2
+  a:Öz Ünal
+  b:�.~Ünal
+  c:Ünal, �.
+  d:Ünal
+  e:�
+  f:�
+  g:Ünal  �
+  h:�.Ünal x{vv}
+  i:�.� Öz
+  n=3
+  a:Muhammad ibn~Musa al~Khwarizmi
+  b:M.~i.~M. al~Khwarizmi
+  c:al~Khwarizmi, M. i.~M.
+  d:Khwarizmi
+  e:MiM
+  f:K
+  g:al Khwarizmi  M i M
+  h:M.i.M.Khwarizmi x{vv}
+  i:M.~i.~M.K Muhammad-ibn-Musa
+  apur:Ünïcödé Nämé and Ünal Öz and al Khwarizmi Muhammad ibn Musa
+  act:Ünïcödé nämé and Ünal, Öz and al-khwarizmi, muhammad ibn musa
+@p10
+  purify:
+  tlen:0
+  pre0:
+  pre1:
+  pre2:
+  pre3:
+  pre4:
+  pre5:
+  pre6:
+  pre7:
+  width:0
+  ct:
+  cl:
+  cu:
+  ap:
+  s1:
+  s2:
+  s3:
+  s4:
+  s5:
+  s6:
+  s7:
+  empty:1
+  names:2
+  n=1
+  a:jean de~la fontaine
+  b:jean de~la fontaine
+  c:jean de~la fontaine
+  d:fontaine
+  e:
+  f:f
+  g:jean de la fontaine
+  h:fontaine x{vv}
+  i:f
+  n=2
+  a:Walter {\relax d}e~la Mare
+  b:W.~{\relax d}e~la Mare
+  c:{\relax d}e~la Mare, W.
+  d:Mare
+  e:W
+  f:M
+  g:{\relax d}e la Mare  W
+  h:W.Mare x{vv}
+  i:W.M Walter
+  apur:jean de la fontaine and de la Mare Walter
+  act:jean de la fontaine and {\relax d}e la mare, walter
+@p11
+  purify:aa i ssss  oO lx Lx
+  tlen:19
+  pre0:
+  pre1:{\"{a}}
+  pre2:{\"{a}}{\"a}
+  pre3:{\"{a}}{\"a}
+  pre4:{\"{a}}{\"a} {\'\i}
+  pre5:{\"{a}}{\"a} {\'\i}
+  pre6:{\"{a}}{\"a} {\'\i} {\ss}
+  pre7:{\"{a}}{\"a} {\'\i} {\ss}s
+  width:7471
+  ct:{\"{a}}{\"a} {\'\i} {\ss}ss {\SS} {\o}{\o} {\l}x {\l}x
+  cl:{\"{a}}{\"a} {\'\i} {\ss}ss {\SS} {\o}{\o} {\l}x {\l}x
+  cu:{\"{A}}{\"A} {\'I} {SS}SS {\SS} {\O}{\O} {\L}X {\L}X
+  ap:{\"{a}}{\"a} {\'\i} {\ss}ss {\SS} {\o}{\O} {\l}x {\L}x.
+  s1:{\"
+  s2:L}x
+  s3:\"{a}}{\"a} {\'\i} {\ss}ss {\SS} {\o}{\O} {\l}x {\L}x
+  s4:\L
+  s5:
+  s6:
+  s7:
+  empty:0
+  names:3
+  n=1
+  a:John Doe, Jr.
+  b:J.~Doe, Jr.
+  c:Doe, J., Jr.
+  d:Doe
+  e:J
+  f:D
+  g:Doe  J  Jr.
+  h:J.Doe x{vv}
+  i:J.D John
+  n=2
+  a:A{\-}B Cee
+  b:A.~Cee
+  c:Cee, A.
+  d:Cee
+  e:A
+  f:C
+  g:Cee  A
+  h:A.Cee x{vv}
+  i:A.C A{\-}B
+  n=3
+  a:{\'E}tienne {\v Z}i{\v z}ek
+  b:{\'E}.~{\v Z}i{\v z}ek
+  c:{\v Z}i{\v z}ek, {\'E}.
+  d:{\v Z}i{\v z}ek
+  e:{\'E}
+  f:{\v Z}
+  g:{\v Z}i{\v z}ek  {\'E}
+  h:{\'E}.{\v Z}i{\v z}ek x{vv}
+  i:{\'E}.{\v Z} {\'E}tienne
+  apur:Doe Jr John and AB Cee and Etienne Zizek
+  act:Doe, jr., john and a{\-}b cee and {\'e}tienne {\v z}i{\v z}ek
+@p12
+  purify:spaced out
+  tlen:10
+  pre0:
+  pre1:s
+  pre2:sp
+  pre3:spa
+  pre4:spac
+  pre5:space
+  pre6:spaced
+  pre7:spaced
+  width:4617
+  ct:spaced out
+  cl:spaced out
+  cu:SPACED OUT
+  ap:spaced out.
+  s1:spa
+  s2:out
+  s3:paced out
+  s4: o
+  s5:
+  s6:
+  s7:
+  empty:0
+  names:2
+  n=1
+  a:Leading Spaces
+  b:L.~Spaces
+  c:Spaces, L.
+  d:Spaces
+  e:L
+  f:S
+  g:Spaces  L
+  h:L.Spaces x{vv}
+  i:L.S Leading
+  n=2
+  a:X.~Trailing
+  b:X.~Trailing
+  c:Trailing, X.
+  d:Trailing
+  e:X
+  f:T
+  g:Trailing  X
+  h:X.Trailing x{vv}
+  i:X.T X.
+  apur:Leading Spaces and Trailing X
+  act:Leading spaces and trailing, x.
+@p13
+  purify:UPPER lower MiXeD MiXeD x
+  tlen:25
+  pre0:
+  pre1:U
+  pre2:UP
+  pre3:UPP
+  pre4:UPPE
+  pre5:UPPER
+  pre6:UPPER
+  pre7:UPPER l
+  width:14811
+  ct:Upper lower mixed {MiXeD} {\MakeUppercase{x}}
+  cl:upper lower mixed {MiXeD} {\MakeUppercase{x}}
+  cu:UPPER LOWER MIXED {MiXeD} {\MakeUppercase{X}}
+  ap:UPPER lower MiXeD {MiXeD} {\MakeUppercase{x}}.
+  s1:UPP
+  s2:x}}
+  s3:PPER lower MiXeD {MiXeD} {\MakeUppercase{x}}
+  s4:{x
+  s5:
+  s6:
+  s7:
+  empty:0
+  names:2
+  n=1
+  a:C.~{\MakeUppercase{d}}e~Gaulle
+  b:C.~{\MakeUppercase{d}}e~Gaulle
+  c:{\MakeUppercase{d}}e~Gaulle, C.
+  d:Gaulle
+  e:C
+  f:G
+  g:{\MakeUppercase{d}}e Gaulle  C
+  h:C.Gaulle x{vv}
+  i:C.G C.
+  n=2
+  a:Karel {\v{c}}apek
+  b:K.~{\v{c}}apek
+  c:{\v{c}}apek, K.
+  d:{\v{c}}apek
+  e:K
+  f:{\v{c}}
+  g:{\v{c}}apek  K
+  h:K.{\v{c}}apek x{vv}
+  i:K.{\v{c}} Karel
+  apur:de Gaulle C and capek Karel
+  act:{\MakeUppercase{d}}e gaulle, c. and {\v{c}}apek, karel
+@p14
+  purify:unbalanced
+  tlen:10
+  pre0:
+  pre1:u
+  pre2:un
+  pre3:unb
+  pre4:unba
+  pre5:unbal
+  pre6:unbala
+  pre7:unbalan
+  width:4946
+  ct:unbalanced
+  cl:unbalanced
+  cu:UNBALANCED
+  ap:unbalanced.
+  s1:unb
+  s2:ced
+  s3:nbalanced
+  s4:nc
+  s5:
+  s6:
+  s7:
+  empty:0
+  noauthor
+@p15
+  purify:x
+  tlen:1
+  pre0:
+  pre1:x
+  pre2:x
+  pre3:x
+  pre4:x
+  pre5:x
+  pre6:x
+  pre7:x
+  width:528
+  ct:x
+  cl:x
+  cu:X
+  ap:x.
+  s1:x
+  s2:x
+  s3:
+  s4:
+  s5:
+  s6:
+  s7:
+  empty:0
+  names:1
+  n=1
+  a:{Lastonly}
+  b:{Lastonly}
+  c:{Lastonly}
+  d:{Lastonly}
+  e:
+  f:L
+  g:{Lastonly}
+  h:{Lastonly} x{vv}
+  i:L
+  apur:Lastonly
+  act:{Lastonly}
+@p16
+  purify:Q Is it A no
+  tlen:15
+  pre0:
+  pre1:Q
+  pre2:Q:
+  pre3:Q:
+  pre4:Q: {I}
+  pre5:Q: {Is}
+  pre6:Q: {Is}
+  pre7:Q: {Is} i
+  width:8146
+  ct:Q: {Is} it? {A}: no
+  cl:q: {Is} it? {A}: no
+  cu:Q: {Is} IT? {A}: NO
+  ap:Q: {Is} it? {A}: no.
+  s1:Q:
+  s2: no
+  s3:: {Is} it? {A}: no
+  s4::
+  s5:
+  s6:
+  s7:
+  empty:0
+  names:3
+  n=1
+  a:Firstname~{von} Last
+  b:F.~v. Last
+  c:Last, F.~v.
+  d:Last
+  e:Fv
+  f:L
+  g:Last  F v
+  h:F.v.Last x{vv}
+  i:F.~v.L Firstname-{von}
+  n=2
+  a:Firstname {\relax von}~Last
+  b:F.~{\relax von}~Last
+  c:{\relax von}~Last, F.
+  d:Last
+  e:F
+  f:L
+  g:{\relax von} Last  F
+  h:F.Last x{vv}
+  i:F.L Firstname
+  n=3
+  a:F~{von}~Last
+  b:F.~{von}~Last
+  c:{von}~Last, F.
+  d:{von}~Last
+  e:F
+  f:v-L
+  g:{von} Last  F
+  h:F.{von}~Last x{vv}
+  i:F.v.~L F~
+  apur:Firstname von Last and Firstname von Last and von Last F
+  act:Firstname {von} last and firstname {\relax von} last and {von} last, f
+@p17
+  purify:xy
+  tlen:5
+  pre0:
+  pre1:{\relax}
+  pre2:{\relax}{\ }
+  pre3:{\relax}{\ }x
+  pre4:{\relax}{\ }x{\\}
+  pre5:{\relax}{\ }x{\\}y
+  pre6:{\relax}{\ }x{\\}y
+  pre7:{\relax}{\ }x{\\}y
+  width:1056
+  ct:{\relax}{\ }x{\\}y
+  cl:{\relax}{\ }x{\\}y
+  cu:{\relax}{\ }X{\\}Y
+  ap:{\relax}{\ }x{\\}y.
+  s1:{\r
+  s2:\}y
+  s3:\relax}{\ }x{\\}y
+  s4:\\
+  s5:
+  s6:
+  s7:
+  empty:0
+  names:3
+  n=1
+  a:C~A, B
+  b:C.~A, B
+  c:A, C., B
+  d:A
+  e:C
+  f:A
+  g:A  C  B
+  h:C.A~x{vv}
+  i:C.A C~
+  n=2
+  a:X~
+  b:X.~
+  c:~, X.
+  d:
+  e:X
+  f:
+  g:   X
+  h:X.~x{vv}
+  i:X. X~
+  n=3
+  a:Y
+  b:Y
+  c:Y
+  d:Y
+  e:
+  f:Y
+  g:Y
+  h:Y~x{vv}
+  i:Y
+  apur:A B C and X and Y
+  act:A, b, c and ,x and y,
+p1
+p2
+p3
+p4
+p5
+p6
+p7
+p8
+p9
+p10
+p11
+p12
+p13
+p14
+p15
+p16
+p17

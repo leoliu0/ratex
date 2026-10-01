@@ -1,0 +1,44 @@
+\newcommand{\noopsort}[1]{} \newcommand{\printfirst}[2]{#1}
+  \newcommand{\singleletter}[1]{#1} \newcommand{\switchargs}[2]{#2#1}
+\begin{thebibliography}{OX{\singleletter{stoc}}83}
+
+\bibitem[Knu68]{whole-set}
+Donald~E. Knuth.
+\newblock {\em The Art of Computer Programming}.
+\newblock Four volumes. Addison-Wesley,
+  {\noopsort{1973a}}{\switchargs{--90}{1968}}.
+\newblock Seven volumes planned (this is a cross-referenced set of BOOKs).
+
+\bibitem[Knu73]{inbook-crossref}
+Donald~E. Knuth.
+\newblock {\em Fundamental Algorithms}, section 1.2.
+\newblock Volume~1 of {\em The Art of Computer Programming\/} \cite{whole-set},
+  second edition, {\noopsort{1973b}}1973.
+\newblock This is a cross-referencing INBOOK entry.
+
+\bibitem[Lin77]{incollection-crossref}
+Daniel~D. Lincoll.
+\newblock Semigroups of recurrences.
+\newblock In Lipcoll et~al. \cite{whole-collection}, pages 179--183.
+\newblock This is a cross-referencing INCOLLECTION entry.
+
+\bibitem[LLS77]{whole-collection}
+David~J. Lipcoll, D.~H. Lawrie, and A.~H. Sameh, editors.
+\newblock {\em High Speed Computer and Algorithm Organization}.
+\newblock Number~23 in Fast Computers. Academic Press, New York, third edition,
+  September 1977.
+\newblock This is a cross-referenced BOOK (collection) entry.
+
+\bibitem[OUY83]{inproceedings-crossref}
+Alfred~V. Oaho, Jeffrey~D. Ullman, and Mihalis Yannakakis.
+\newblock On notions of information transfer in {VLSI} circuits.
+\newblock In OX{\singleletter{stoc}} \cite{whole-proceedings}, pages 133--139.
+\newblock This is a cross-referencing INPROCEEDINGS entry.
+
+\bibitem[OX{\singleletter{stoc}}83]{whole-proceedings}
+The OX Association for Computing Machinery.
+\newblock {\em Proc. Fifteenth Annual Symposium on the Theory of Computing},
+  Boston, 1983.
+\newblock This is a cross-referenced PROCEEDINGS.
+
+\end{thebibliography}

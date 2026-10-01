@@ -1,0 +1,9 @@
+The top-level auxiliary file: job.aux
+The style file: eof.bst
+Database file #1: one.bib
+Warning--entry type for "k1" isn't style-file defined
+--line 1 of file one.bib
+Illegal end of style file in command: function---line 3 of file eof.bst
+ : function {f} { "x" write$
+ :                          
+(There was 1 error message)

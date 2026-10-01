@@ -1,0 +1,55 @@
+\begin{thebibliography}{10}
+
+\bibitem{C1}
+O.~A.
+\newblock Child one.
+\newblock In Editor \cite{PROC}, pages 1--2.
+
+\bibitem{c2}
+T.~B.
+\newblock Child two.
+\newblock In Editor \cite{PROC}, pages 3--4.
+
+\bibitem{c3}
+T.~C.
+\newblock Child three.
+\newblock In Ed \cite{early}, pages 5--6.
+
+\bibitem{c4}
+F.~D.
+\newblock Child four.
+\newblock In Ed \cite{single}, pages 7--8.
+
+\bibitem{c5}
+F.~E.
+\newblock Child five.
+\newblock In Ed \cite{nest}, page~9.
+
+\bibitem{early}
+E.~Ed, editor.
+\newblock {\em Early Parent Book}.
+\newblock Pub, 1980.
+
+\bibitem{grand}
+G.~Ed, editor.
+\newblock {\em Grand}.
+\newblock GP, 2002.
+
+\bibitem{nest}
+N.~Ed, editor.
+\newblock {\em Nested Proceedings}. GP, 2001.
+
+\bibitem{single}
+S.~Ed, editor.
+\newblock {\em Single Proceedings}, 2000.
+
+\bibitem{PROC}
+P.~Editor, editor.
+\newblock {\em The Big Proceedings}, Here, 1999. PP.
+
+\bibitem{c6}
+S.~F.
+\newblock Child six.
+\newblock In Editor \cite{PROC}.
+
+\end{thebibliography}

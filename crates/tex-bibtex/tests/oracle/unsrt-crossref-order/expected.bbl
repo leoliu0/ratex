@@ -1,0 +1,37 @@
+\begin{thebibliography}{1}
+
+\bibitem{c1}
+One A.
+\newblock Child one.
+\newblock In Editor \cite{proc}, pages 1--2.
+
+\bibitem{c2}
+Two B.
+\newblock Child two.
+\newblock In Editor \cite{proc}, pages 3--4.
+
+\bibitem{c3}
+Three C.
+\newblock Child three.
+\newblock pages 5--6.
+
+\bibitem{c4}
+Four D.
+\newblock Child four.
+\newblock In Single Ed, editor, {\em Single Proceedings}, pages 7--8, 2000.
+
+\bibitem{c5}
+Five E.
+\newblock Child five.
+\newblock In Nest Ed, editor, {\em Nested Proceedings}, page~9, 2001.
+
+\bibitem{c6}
+Six F.
+\newblock Child six.
+\newblock In Editor \cite{proc}.
+
+\bibitem{proc}
+Pro Editor, editor.
+\newblock {\em The Big Proceedings}, Here, 1999. PP.
+
+\end{thebibliography}

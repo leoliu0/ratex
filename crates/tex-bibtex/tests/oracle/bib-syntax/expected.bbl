@@ -1,0 +1,52 @@
+pre two\def\x{y}
+\begin{thebibliography}{10}
+
+\bibitem{p6}
+
+
+\bibitem{p12}
+12345.
+
+\bibitem{}
+nokey.
+
+\bibitem{p11}
+\"{o}.
+\newblock ab.
+
+\bibitem{p10}
+T10.
+\newblock  \cite{p9}.
+
+\bibitem{p7}
+T7.
+
+\bibitem{p9}
+T9.
+\newblock  \cite{p10}.
+
+\bibitem{p1}
+A.~BFoo~Bar baz.
+\newblock T1.
+\newblock 1999.
+
+\bibitem{p2}
+C~D.
+\newblock {T2 "quoted"}.
+\newblock {\em Foo Bar baz Foo Bar baz}, 2000.
+
+\bibitem{P3}
+E~F.
+\newblock T3.
+\newblock January and December.
+
+\bibitem{p4}
+G~H.
+\newblock T4.
+\newblock 2001.
+
+\bibitem{p5}
+I~J.
+\newblock T5.
+
+\end{thebibliography}

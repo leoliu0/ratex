@@ -74,6 +74,27 @@ fn automatic_bibtex_uses_the_production_engine() {
 }
 
 #[test]
+fn bibtex_error_messages_keep_the_bibliography() {
+    // A repeated entry makes BibTeX exit with status 2 (error messages)
+    // but it still writes a complete .bbl; the build must use it.
+    let mut s = session(
+        r"\documentclass{article}\begin{document}Citation~\cite{paper}.\bibliographystyle{plain}\bibliography{refs}\end{document}",
+    );
+    s.add_file(
+        "refs.bib",
+        br"@article{paper, author={Ada Lovelace}, title={Library Test}, journal={Testing}, year={2024}}
+@article{paper, author={Someone Else}, title={Duplicate}, journal={Testing}, year={2025}}",
+    )
+    .unwrap();
+    let r = s.compile("main.tex");
+    assert_eq!(r.status, Status::Success, "{}\n{}", r.diagnostics, r.log);
+    assert!(r.diagnostics.contains("main.blg"), "{}", r.diagnostics);
+    let bbl = String::from_utf8_lossy(&r.files["main.bbl"]);
+    assert!(bbl.contains("Lovelace") && !bbl.contains("Someone"), "{bbl}");
+    assert!(r.log.contains("Repeated entry"), "{}", r.log);
+}
+
+#[test]
 fn errors_and_repeated_sessions_do_not_reuse_stale_outputs() {
     let mut s = session(HELLO);
     let first = s.compile("main.tex");

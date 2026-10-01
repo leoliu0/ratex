@@ -1,0 +1,67 @@
+\begin{thebibliography}{10}
+
+\bibitem{e12}
+Empty fields.
+
+\bibitem{e10}
+{\em Book no author}.
+\newblock 2000.
+
+\bibitem{e9}
+I.~Author and.
+\newblock Trailing and.
+\newblock {\em J}, 2000.
+
+\bibitem{e1}
+A.~Author.
+\newblock Good one.
+\newblock {\em J}, 2000.
+
+\bibitem{e2}
+B.~Author.
+
+\bibitem{e3}
+C.~Author.
+\newblock Undefined macro.
+\newblock 2000.
+
+\bibitem{e4}
+D.~Author.
+\newblock Dup field.
+\newblock {\em J}, 2000.
+
+\bibitem{e5}
+E.~Author.
+\newblock Unbalanced {brace}, journal = {J}, year = 2000,.
+
+\bibitem{e6}
+F.~Author.
+\newblock After unbalanced.
+\newblock {\em J}, 2000.
+
+\bibitem{e7}
+G.~Author.
+\newblock Parens {"}quote{"} ok.
+\newblock {\em J}, 2000.
+
+\bibitem{e8}
+H.~Author.
+\newblock No year.
+\newblock {\em J}.
+
+\bibitem{e11}
+K.~Author.
+\newblock Case.
+\newblock {\em J}, 2001.
+
+\bibitem{e13}
+L.~Author.
+\newblock Spaces in key.
+\newblock {\em J}, 2002.
+
+\bibitem{e14}
+M.~Author.
+\newblock Bad number.
+\newblock {\em J}, 20.
+
+\end{thebibliography}

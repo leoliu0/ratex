@@ -1,0 +1,49 @@
+\newcommand{\noopsort}[1]{} \newcommand{\printfirst}[2]{#1}
+  \newcommand{\singleletter}[1]{#1} \newcommand{\switchargs}[2]{#2#1}
+\begin{thebibliography}{}
+
+\bibitem[Aamport, 1986]{article-minimal}
+Aamport, L.~A. (1986).
+\newblock The gnats and gnus document preparation system.
+\newblock {\em \mbox{G-Animal's} Journal}.
+
+\bibitem[Knuth, 1968]{whole-set}
+Knuth, D.~E. ({\noopsort{1973a}}{\switchargs{--90}{1968}}).
+\newblock {\em The Art of Computer Programming}.
+\newblock Four volumes. Addison-Wesley.
+\newblock Seven volumes planned (this is a cross-referenced set of BOOKs).
+
+\bibitem[Knuth, 1973]{inbook-crossref}
+Knuth, D.~E. ({\noopsort{1973b}}1973).
+\newblock {\em Fundamental Algorithms}, section 1.2.
+\newblock Volume~1 of \cite{whole-set}, second edition.
+\newblock This is a cross-referencing INBOOK entry.
+
+\bibitem[Knuth, 1981a]{book-full}
+Knuth, D.~E. ({\noopsort{1973c}}1981a).
+\newblock {\em Seminumerical Algorithms}, volume~2 of {\em The Art of Computer
+  Programming}.
+\newblock Addison-Wesley, Reading, Massachusetts, second edition.
+\newblock This is a full BOOK entry.
+
+\bibitem[Knuth, 1981b]{Book-Minimal}
+Knuth, D.~E. ({\noopsort{1973c}}1981b).
+\newblock {\em Seminumerical Algorithms}.
+\newblock Addison-Wesley.
+
+\bibitem[Lincoll, 1977]{INCOLLECTION-crossref}
+Lincoll, D.~D. (1977).
+\newblock Semigroups of recurrences.
+\newblock In Lipcoll, D.~J., Lawrie, D.~H., and Sameh, A.~H., editors, {\em
+  High Speed Computer and Algorithm Organization}, number~23 in Fast Computers,
+  pages 179--183. Academic Press, New York, third edition.
+\newblock This is a cross-referencing INCOLLECTION entry.
+
+\bibitem[Oaho et~al., 1983]{inproceedings-crossref}
+Oaho, A.~V., Ullman, J.~D., and Yannakakis, M. (1983).
+\newblock On notions of information transfer in {VLSI} circuits.
+\newblock In {\em Proc. Fifteenth Annual ACM Symposium on the Theory of
+  Computing}, pages 133--139, Boston.
+\newblock This is a cross-referencing INPROCEEDINGS entry.
+
+\end{thebibliography}

@@ -1,0 +1,189 @@
+The top-level auxiliary file: job.aux
+The style file: sorting.bst
+Database file #1: sorting.bib
+Warning--entry type for "k1" isn't style-file defined
+--line 1 of file sorting.bib
+Warning--entry type for "k2" isn't style-file defined
+--line 2 of file sorting.bib
+Warning--entry type for "k3" isn't style-file defined
+--line 3 of file sorting.bib
+Warning--entry type for "k4" isn't style-file defined
+--line 4 of file sorting.bib
+Warning--entry type for "k5" isn't style-file defined
+--line 5 of file sorting.bib
+Warning--you've exceeded 500, the entry-string-size, for entry k4
+while executing--line 15 of file sorting.bst
+*Please notify the bibstyle designer*
+Warning--you've exceeded 500, the entry-string-size, for entry k3
+while executing--line 15 of file sorting.bst
+*Please notify the bibstyle designer*
+Warning--you've exceeded 500, the entry-string-size, for entry k5
+while executing--line 15 of file sorting.bst
+*Please notify the bibstyle designer*
+Warning--you've exceeded 500, the entry-string-size, for entry k2
+while executing--line 15 of file sorting.bst
+*Please notify the bibstyle designer*
+Warning--you've exceeded 500, the entry-string-size, for entry k1
+while executing--line 15 of file sorting.bst
+*Please notify the bibstyle designer*
+"a" is a string literal, not an integer, for entry k4
+while executing---line 16 of file sorting.bst
+2 is an integer literal, not a string, for entry k4
+while executing---line 16 of file sorting.bst
+`big' is a function literal, not an integer or a string, for entry k4
+while executing---line 16 of file sorting.bst
+You can't assign to type wizard-defined, a nonvariable function class for entry k4
+while executing---line 16 of file sorting.bst
+"zz" isn't a single character for entry k4
+while executing---line 16 of file sorting.bst
+200 isn't valid ASCII for entry k4
+while executing---line 16 of file sorting.bst
+x is an illegal case-conversion string for entry k4
+while executing---line 16 of file sorting.bst
+Warning--"{" isn't a brace-balanced string for entry k4
+while executing--line 16 of file sorting.bst
+Warning--"a } b" isn't a brace-balanced string for entry k4
+while executing--line 16 of file sorting.bst
+There aren't 3 names in "A and B" for entry k4
+while executing---line 16 of file sorting.bst
+The format string "{ff}{z}" has an illegal brace-level-1 letter for entry k4
+while executing---line 16 of file sorting.bst
+ptr=1, stack=
+5
+---the literal stack isn't empty for entry k4
+while executing---line 16 of file sorting.bst
+"a" is a string literal, not an integer, for entry k3
+while executing---line 16 of file sorting.bst
+2 is an integer literal, not a string, for entry k3
+while executing---line 16 of file sorting.bst
+`big' is a function literal, not an integer or a string, for entry k3
+while executing---line 16 of file sorting.bst
+You can't assign to type wizard-defined, a nonvariable function class for entry k3
+while executing---line 16 of file sorting.bst
+"zz" isn't a single character for entry k3
+while executing---line 16 of file sorting.bst
+200 isn't valid ASCII for entry k3
+while executing---line 16 of file sorting.bst
+x is an illegal case-conversion string for entry k3
+while executing---line 16 of file sorting.bst
+Warning--"{" isn't a brace-balanced string for entry k3
+while executing--line 16 of file sorting.bst
+Warning--"a } b" isn't a brace-balanced string for entry k3
+while executing--line 16 of file sorting.bst
+There aren't 3 names in "A and B" for entry k3
+while executing---line 16 of file sorting.bst
+The format string "{ff}{z}" has an illegal brace-level-1 letter for entry k3
+while executing---line 16 of file sorting.bst
+ptr=1, stack=
+5
+---the literal stack isn't empty for entry k3
+while executing---line 16 of file sorting.bst
+"a" is a string literal, not an integer, for entry k5
+while executing---line 16 of file sorting.bst
+2 is an integer literal, not a string, for entry k5
+while executing---line 16 of file sorting.bst
+`big' is a function literal, not an integer or a string, for entry k5
+while executing---line 16 of file sorting.bst
+You can't assign to type wizard-defined, a nonvariable function class for entry k5
+while executing---line 16 of file sorting.bst
+"zz" isn't a single character for entry k5
+while executing---line 16 of file sorting.bst
+200 isn't valid ASCII for entry k5
+while executing---line 16 of file sorting.bst
+x is an illegal case-conversion string for entry k5
+while executing---line 16 of file sorting.bst
+Warning--"{" isn't a brace-balanced string for entry k5
+while executing--line 16 of file sorting.bst
+Warning--"a } b" isn't a brace-balanced string for entry k5
+while executing--line 16 of file sorting.bst
+There aren't 3 names in "A and B" for entry k5
+while executing---line 16 of file sorting.bst
+The format string "{ff}{z}" has an illegal brace-level-1 letter for entry k5
+while executing---line 16 of file sorting.bst
+ptr=1, stack=
+5
+---the literal stack isn't empty for entry k5
+while executing---line 16 of file sorting.bst
+"a" is a string literal, not an integer, for entry k2
+while executing---line 16 of file sorting.bst
+2 is an integer literal, not a string, for entry k2
+while executing---line 16 of file sorting.bst
+`big' is a function literal, not an integer or a string, for entry k2
+while executing---line 16 of file sorting.bst
+You can't assign to type wizard-defined, a nonvariable function class for entry k2
+while executing---line 16 of file sorting.bst
+"zz" isn't a single character for entry k2
+while executing---line 16 of file sorting.bst
+200 isn't valid ASCII for entry k2
+while executing---line 16 of file sorting.bst
+x is an illegal case-conversion string for entry k2
+while executing---line 16 of file sorting.bst
+Warning--"{" isn't a brace-balanced string for entry k2
+while executing--line 16 of file sorting.bst
+Warning--"a } b" isn't a brace-balanced string for entry k2
+while executing--line 16 of file sorting.bst
+There aren't 3 names in "A and B" for entry k2
+while executing---line 16 of file sorting.bst
+The format string "{ff}{z}" has an illegal brace-level-1 letter for entry k2
+while executing---line 16 of file sorting.bst
+ptr=1, stack=
+5
+---the literal stack isn't empty for entry k2
+while executing---line 16 of file sorting.bst
+"a" is a string literal, not an integer, for entry k1
+while executing---line 16 of file sorting.bst
+2 is an integer literal, not a string, for entry k1
+while executing---line 16 of file sorting.bst
+`big' is a function literal, not an integer or a string, for entry k1
+while executing---line 16 of file sorting.bst
+You can't assign to type wizard-defined, a nonvariable function class for entry k1
+while executing---line 16 of file sorting.bst
+"zz" isn't a single character for entry k1
+while executing---line 16 of file sorting.bst
+200 isn't valid ASCII for entry k1
+while executing---line 16 of file sorting.bst
+x is an illegal case-conversion string for entry k1
+while executing---line 16 of file sorting.bst
+Warning--"{" isn't a brace-balanced string for entry k1
+while executing--line 16 of file sorting.bst
+Warning--"a } b" isn't a brace-balanced string for entry k1
+while executing--line 16 of file sorting.bst
+There aren't 3 names in "A and B" for entry k1
+while executing---line 16 of file sorting.bst
+The format string "{ff}{z}" has an illegal brace-level-1 letter for entry k1
+while executing---line 16 of file sorting.bst
+ptr=1, stack=
+5
+---the literal stack isn't empty for entry k1
+while executing---line 16 of file sorting.bst
+"a" is a string literal, not an integer,
+while executing---line 17 of file sorting.bst
+2 is an integer literal, not a string,
+while executing---line 17 of file sorting.bst
+`big' is a function literal, not an integer or a string,
+while executing---line 17 of file sorting.bst
+You can't mess with entries here
+while executing---line 17 of file sorting.bst
+You can't pop an empty literal stack
+while executing---line 17 of file sorting.bst
+You can't assign to type wizard-defined, a nonvariable function class
+while executing---line 17 of file sorting.bst
+"zz" isn't a single character
+while executing---line 17 of file sorting.bst
+200 isn't valid ASCII
+while executing---line 17 of file sorting.bst
+x is an illegal case-conversion string
+while executing---line 17 of file sorting.bst
+Warning--"{" isn't a brace-balanced string
+while executing--line 17 of file sorting.bst
+Warning--"a } b" isn't a brace-balanced string
+while executing--line 17 of file sorting.bst
+There aren't 3 names in "A and B"
+while executing---line 17 of file sorting.bst
+The format string "{ff}{z}" has an illegal brace-level-1 letter
+while executing---line 17 of file sorting.bst
+ptr=1, stack=
+5
+---the literal stack isn't empty
+while executing---line 17 of file sorting.bst
+(There were 62 error messages)

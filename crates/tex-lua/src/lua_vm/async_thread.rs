@@ -339,30 +339,72 @@ enum ResumeResult {
 // ============ Helper: convert AsyncReturnValues to LuaValues ============
 
 /// Convert a vector of `AsyncReturnValue` to `LuaValue` using the VM for string interning.
+///
+/// Every allocation may run a GC step, so the values the future already holds
+/// and the ones built so far are `rust_roots` while the rest is allocated.
+/// The returned values are not rooted: the caller must store them before it
+/// allocates again.
 fn materialize_values(
     vm: &mut GlobalState,
     values: Vec<AsyncReturnValue>,
 ) -> LuaResult<Vec<LuaValue>> {
+    let roots_base = vm.rust_roots.len();
+    let result = materialize_rooted(vm, values);
+    vm.rust_roots.truncate(roots_base);
+    result
+}
+
+fn materialize_rooted(
+    vm: &mut GlobalState,
+    values: Vec<AsyncReturnValue>,
+) -> LuaResult<Vec<LuaValue>> {
+    for value in &values {
+        root_existing_values(vm, value);
+    }
     let mut result = Vec::with_capacity(values.len());
     for v in values {
-        result.push(materialize_single(vm, v)?);
+        let value = materialize_single(vm, v)?;
+        vm.rust_roots.push(value);
+        result.push(value);
     }
     Ok(result)
 }
 
-/// Recursively convert a single `AsyncReturnValue` to a `LuaValue`.
+/// Root the `LuaValue`s the future built itself (`AsyncReturnValue::Value`).
+fn root_existing_values(vm: &mut GlobalState, value: &AsyncReturnValue) {
+    match value {
+        AsyncReturnValue::Value(lv) => vm.rust_roots.push(*lv),
+        AsyncReturnValue::String(_) | AsyncReturnValue::UserData(_) => {}
+        AsyncReturnValue::Table(entries) => {
+            for (k, v) in entries {
+                root_existing_values(vm, k);
+                root_existing_values(vm, v);
+            }
+        }
+    }
+}
+
+/// Recursively convert a single `AsyncReturnValue` to a `LuaValue`. The result
+/// is unrooted; the values already in `rust_roots` stay.
 fn materialize_single(vm: &mut GlobalState, value: AsyncReturnValue) -> LuaResult<LuaValue> {
     match value {
         AsyncReturnValue::Value(lv) => Ok(lv),
         AsyncReturnValue::String(s) => vm.create_string(&s),
         AsyncReturnValue::UserData(ud) => vm.create_userdata(ud),
         AsyncReturnValue::Table(entries) => {
+            let table_root = vm.rust_roots.len();
             let table = vm.create_table(0, entries.len())?;
+            vm.rust_roots.push(table);
             for (k, v) in entries {
+                let entry_root = vm.rust_roots.len();
                 let key = materialize_single(vm, k)?;
+                vm.rust_roots.push(key);
                 let val = materialize_single(vm, v)?;
+                vm.rust_roots.push(val);
                 vm.raw_set(&table, key, val);
+                vm.rust_roots.truncate(entry_root);
             }
+            vm.rust_roots.truncate(table_root);
             Ok(table)
         }
     }

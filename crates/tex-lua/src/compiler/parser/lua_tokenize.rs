@@ -297,9 +297,10 @@ impl<'a> LuaTokenize<'a> {
                 LuaTokenKind::TkComma
             }
             _ if self.reader.is_eof() => LuaTokenKind::TkEof,
-            ch if is_name_start(ch) => {
+            ch if is_name_start(ch, names_take_high_bytes(self.lexer_config.language_level)) => {
+                let high = names_take_high_bytes(self.lexer_config.language_level);
                 self.reader.bump();
-                self.reader.eat_while(is_name_continue);
+                self.reader.eat_while(|ch| is_name_continue(ch, high));
                 let name = self.reader.current_text();
                 self.name_to_kind(name)
             }
@@ -748,10 +749,17 @@ impl<'a> LuaTokenize<'a> {
     }
 }
 
-fn is_name_start(ch: char) -> bool {
-    ch.is_ascii_alphabetic() || ch == '_'
+/// Whether bytes >= 0x80 are letters in names. LuaTeX builds Lua 5.3 with
+/// `LUA_UCID`, where every byte >= 0x80 is a letter (so any UTF-8 text, and
+/// any Latin-1 byte, can be part of a name); stock Lua 5.5 has no such option.
+fn names_take_high_bytes(level: LuaLanguageLevel) -> bool {
+    level == LuaLanguageLevel::Lua53
 }
 
-fn is_name_continue(ch: char) -> bool {
-    ch.is_ascii_alphanumeric() || ch == '_'
+fn is_name_start(ch: char, high: bool) -> bool {
+    ch.is_ascii_alphabetic() || ch == '_' || (high && !ch.is_ascii())
+}
+
+fn is_name_continue(ch: char, high: bool) -> bool {
+    ch.is_ascii_alphanumeric() || ch == '_' || (high && !ch.is_ascii())
 }

@@ -257,7 +257,7 @@ pub fn suffixedexp(fs: &mut FuncState, v: &mut ExpDesc) -> Result<(), String> {
                 // This matches official Lua's codestring (lparser.c:160-164)
                 // which creates VKSTR without calling stringK immediately.
                 // The stringK call happens later in luaK_self via luaK_exp2K (lcode.c:1333)
-                let string = fs.vm.create_string(method_name).unwrap();
+                let string = fs.name_string(method_name);
                 let mut key = ExpDesc::new_vkstr(string);
                 code::self_op(fs, v, &mut key);
 
@@ -457,7 +457,7 @@ pub fn buildglobal(fs: &mut FuncState, varname: &str, var: &mut ExpDesc) -> Resu
     //   e->u.strval = s;
     // }
     // Create key as VKSTR (not VK) so indexed can track it correctly
-    let string = fs.vm.create_string(varname).unwrap();
+    let string = fs.name_string(varname);
     let mut key = ExpDesc::new_void();
     key.kind = ExpKind::VKSTR;
     key.u = ExpUnion::Str(string);

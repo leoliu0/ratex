@@ -79,8 +79,9 @@ pub fn try_concat_pair_utf8(
         let mut offset = 0usize;
         append_utf8_piece_to_bytes(&mut bytes, &mut offset, &left);
         append_utf8_piece_to_bytes(&mut bytes, &mut offset, &right);
-        let s = std::str::from_utf8(&bytes[..total_len])
-            .expect("concat pieces are built from valid UTF-8");
+        // SAFETY: both pieces are valid UTF-8 (`utf8_piece_len` only accepts
+        // `as_str()` strings and integers), and so is their concatenation.
+        let s = unsafe { std::str::from_utf8_unchecked(&bytes[..total_len]) };
         lua_state.create_string(s)?
     } else {
         let mut combined = String::with_capacity(total_len);
@@ -119,8 +120,9 @@ fn concat_utf8_run(lua_state: &mut LuaState, top: usize, total: usize) -> LuaRes
         for value in stack.iter().take(top).skip(top - nn) {
             append_utf8_piece_to_bytes(&mut bytes, &mut offset, value);
         }
-        let s = std::str::from_utf8(&bytes[..total_len])
-            .expect("concat pieces are built from valid UTF-8");
+        // SAFETY: every piece is a valid UTF-8 string (`utf8_piece_len` only
+        // accepts `as_str()` strings and integers), and so is their concatenation.
+        let s = unsafe { std::str::from_utf8_unchecked(&bytes[..total_len]) };
         lua_state.create_string(s)?
     } else {
         let mut combined = String::with_capacity(total_len);

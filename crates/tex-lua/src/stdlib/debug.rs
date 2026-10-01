@@ -2,6 +2,7 @@
 // Implements: traceback, getinfo, getlocal, getmetatable, getupvalue, etc.
 
 use crate::lib_registry::LibraryModule;
+use crate::lua_value::block_userdata::{set_userdata_uservalue, userdata_uservalue};
 use crate::lua_value::{LuaProto, LuaValue};
 use crate::lua_vm::call_info::call_status;
 use crate::lua_vm::opcode::OpCode;
@@ -722,10 +723,9 @@ fn push_fail(l: &mut LuaState) -> LuaResult<usize> {
 
 /// C: luaL_traceback. Frames are read with the same level numbering as
 /// `lua_getstack` (level 0 is the running function of `target`).
-fn traceback_text(l: &mut LuaState, target: &LuaState, msg: Option<&[u8]>, mut level: usize) -> Vec<u8> {
+pub(crate) fn traceback_text(lua53: bool, target: &LuaState, msg: Option<&[u8]>, mut level: usize) -> Vec<u8> {
     const LEVELS1: usize = 10;
     const LEVELS2: usize = 11;
-    let lua53 = is_lua53(l);
     let depth = target.call_depth();
     let last = depth.saturating_sub(1); // lastlevel()
     let mut out = Vec::new();
@@ -869,12 +869,10 @@ fn debug_traceback(l: &mut LuaState) -> LuaResult<usize> {
     let same = std::ptr::eq(target, l);
     let level = lauxlib::opt_integer(l, arg + 2, if same { 1 } else { 0 })?;
     let msg = msg.map(|m| m.to_vec());
+    let lua53 = is_lua53(l);
     // SAFETY: `target` is `l` or a live coroutine passed as argument 1.
-    let text = if level < 0 {
-        traceback_text(l, unsafe { &*target }, msg.as_deref(), usize::MAX)
-    } else {
-        traceback_text(l, unsafe { &*target }, msg.as_deref(), level as usize)
-    };
+    let level = if level < 0 { usize::MAX } else { level as usize };
+    let text = traceback_text(lua53, unsafe { &*target }, msg.as_deref(), level);
     let value = l.create_bytes(&text)?;
     l.push_value(value)?;
     Ok(1)
@@ -1467,7 +1465,7 @@ fn debug_setuservalue(l: &mut LuaState) -> LuaResult<usize> {
     }
     let value = lauxlib::check_any(l, 2)?;
     let n = if is_lua53(l) { 1 } else { lauxlib::opt_integer(l, 3, 1)? };
-    if n == 1 && crate::c_api::set_userdata_uservalue(l, &udata, value) {
+    if n == 1 && set_userdata_uservalue(l, &udata, value) {
         l.push_value(udata)?;
         return Ok(1);
     }
@@ -1487,7 +1485,7 @@ fn debug_getuservalue(l: &mut LuaState) -> LuaResult<usize> {
     if !udata.is_userdata() || udata.ttislightuserdata() {
         return push_fail(l);
     }
-    let value = if n == 1 { crate::c_api::userdata_uservalue(&udata) } else { None };
+    let value = if n == 1 { userdata_uservalue(&udata) } else { None };
     match value {
         Some(value) => {
             l.push_value(value)?;

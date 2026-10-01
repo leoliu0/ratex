@@ -8,13 +8,6 @@ name = "pdflatex"
 path = "src/bin/pdflatex.rs"
 
 [[bin]]
-name = "xelatex"
-path = "src/bin/xelatex.rs"
-
-[[bin]]
-name = "lualatex"
-path = "src/bin/lualatex.rs"
-[[bin]]
 name = "tex-bibtex"
 path = "src/bin/bibtex.rs"
 

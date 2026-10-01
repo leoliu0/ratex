@@ -37,6 +37,7 @@ Strictly enforces:
 import argparse
 import concurrent.futures
 import hashlib
+import io
 import json
 import os
 import re
@@ -1723,6 +1724,88 @@ UPSTREAM_PACKAGES = {
     },
 }
 
+# Append-only overlay on the main archive (`packages-supplement.tar.zst`,
+# recorded under "supplement_archive" in the lock). The baseline archive kept
+# TeX sources and metrics but dropped runtime files that classes and fonts
+# load implicitly: beamer's navigation icons (`\pgfdeclareimage` of
+# beamericonbook etc.), mwe's example images, tcolorbox's skin textures, and
+# the outline and virtual fonts of families whose metrics it kept (newpx).
+# pdfTeX cannot read EPS, so only the graphics formats it embeds are taken.
+# Only files absent from the main archive are added; a basename that the main
+# archive already uses for another path is rejected, because lookup is by
+# basename. The overlay is read before the main parts, so its consolidated
+# pdftex.map supersedes the main one.
+SUPPLEMENT_ARCHIVE_NAME = "packages-supplement.tar.zst"
+RUNTIME_GRAPHICS = (".pdf", ".png", ".jpg", ".jpeg", ".mps")
+SUPPLEMENT_PACKAGES = {
+    "beamer": {
+        "version": "3.78",
+        "revision": 80053,
+        "license": "LPPL-1.3c / GPL-2.0-or-later / FDL",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/beamer.tar.xz",
+        "upstream_sha256": "a46dedb272225d226bc4ba085351ad38634889d0de6c52e30960dec83bb34168",
+        "upstream_size_bytes": 168604,
+        "select": [("tex/latex/beamer", RUNTIME_GRAPHICS)],
+        "map_files": [],
+    },
+    "mwe": {
+        "version": "0.5",
+        "revision": 77682,
+        "license": "LPPL-1.3",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/mwe.tar.xz",
+        "upstream_sha256": "24c9ac357c80f501f5ffcc5ebd22f81495ef97965bbf82672df39e67b9da32a3",
+        "upstream_size_bytes": 807100,
+        "select": [("tex/latex/mwe", RUNTIME_GRAPHICS)],
+        "map_files": [],
+    },
+    "tcolorbox": {
+        "version": "6.10.0",
+        "revision": 79191,
+        "license": "LPPL-1.3",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/tcolorbox.tar.xz",
+        "upstream_sha256": "fbf38b44bccead42f1e99dfaa38c28272406c7e7fb87799fb7239fe116071306",
+        "upstream_size_bytes": 236636,
+        "select": [("tex/latex/tcolorbox", RUNTIME_GRAPHICS)],
+        "map_files": [],
+    },
+    # The main archive holds newpx 1.551's metrics, encodings, map and macros
+    # byte-identical to this archive; the outlines and virtual fonts complete it.
+    "newpx": {
+        "version": "1.551",
+        "revision": 79618,
+        "license": "LPPL-1.3 / GUST-FONT-LICENSE",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/newpx.tar.xz",
+        "upstream_sha256": "086ed91b5987062753e9a30c81a6ac1e57d7dad97af67be081379a33c4e7233f",
+        "upstream_size_bytes": 4776612,
+        "select": [
+            ("fonts/type1/public/newpx", None),
+            ("fonts/vf/public/newpx", None),
+            ("fonts/opentype/public/newpx", None),
+        ],
+        # tlpobj: `execute addMap newpx.map`
+        "map_files": ["fonts/map/dvips/newpx/newpx.map"],
+    },
+}
+# Map files that TeX Live's updmap enables and whose fonts the main archive
+# already ships, but which the baseline consolidation never merged.
+SUPPLEMENT_MAP_ROOTS = [
+    "fonts/map/dvips/avantgar/uag.map",
+    "fonts/map/dvips/ebgaramond-maths/EBGaramond-Maths.map",
+    "fonts/map/dvips/fourier/fourier.map",
+    "fonts/map/dvips/gfsneohellenic/gfsneohellenic.map",
+    "fonts/map/dvips/libertinegc/libertinegc.map",
+    "fonts/map/dvips/mathdesign/mdbch.map",
+    "fonts/map/dvips/mathdesign/mdici.map",
+    "fonts/map/dvips/mathdesign/mdpgd.map",
+    "fonts/map/dvips/mathdesign/mdpus.map",
+    "fonts/map/dvips/mathdesign/mdput.map",
+    "fonts/map/dvips/mathdesign/mdugm.map",
+    "fonts/map/dvips/psnfss/fpls.map",
+    "fonts/map/dvips/rsfso/rsfso.map",
+    "fonts/map/dvips/srbtiks/srbtiks.map",
+]
+PDFTEX_MAP_REL = "fonts/map/pdftex/updmap/pdftex.map"
+
 # Corresponding source archives for GPLv2 and open-source distribution compliance
 SOURCE_ARCHIVES_INFO = {
     "base35": {
@@ -2445,6 +2528,54 @@ def generate_language_dat(combined_dir):
     }
 
 
+def normalize_map_line(line):
+    """One pdftex.map record with collapsed quoted options, or None for a
+    comment. A file token glued to a closing quote (`"... SlantFont"<x.pfb`,
+    as in the mathdesign maps) is split off the way updmap writes it."""
+    s = line.strip()
+    if not s or s[0] in "%#*;":
+        return None
+    s = re.sub(r'"([^"]*)"', lambda m: '"' + ' '.join(m.group(1).split()) + '"', s)
+    return re.sub(r'"<', '" <', s)
+
+
+def parse_map_components(norm_line):
+    parts = norm_line.split()
+    if not parts:
+        return None, None, None
+    tfm = parts[0]
+    enc = None
+    fontfile = None
+    i = 1
+    while i < len(parts):
+        p = parts[i]
+        if p == "<[":
+            if i + 1 < len(parts):
+                enc = parts[i + 1]
+                i += 2
+                continue
+        elif p == "<<" or p == "<":
+            if i + 1 < len(parts):
+                nxt = parts[i + 1]
+                if nxt.endswith(".enc"):
+                    enc = nxt
+                else:
+                    fontfile = nxt
+                i += 2
+                continue
+        elif p.startswith("<["):
+            enc = p[2:]
+        elif p.startswith("<<"):
+            fontfile = p[2:]
+        elif p.startswith("<"):
+            if p.endswith(".enc"):
+                enc = p[1:]
+            else:
+                fontfile = p[1:]
+        i += 1
+    return tfm, enc, fontfile
+
+
 def build_bundle(baseline_path, output_dir, lock_file_path, cache_dir, legal_dir, sources_out=None):
     """
     Builds packages.tar.zst and packages.lock.json using ONLY hash-pinned upstream archives
@@ -2721,48 +2852,6 @@ def build_bundle(baseline_path, output_dir, lock_file_path, cache_dir, legal_dir
     for pkg_files in new_files_by_pkg.values():
         for rel in pkg_files.keys():
             bundled_basenames.add(os.path.basename(rel))
-
-    def normalize_map_line(line):
-        s = line.strip()
-        if not s or s.startswith("%"):
-            return None
-        return re.sub(r'"([^"]*)"', lambda m: '"' + ' '.join(m.group(1).split()) + '"', s)
-
-    def parse_map_components(norm_line):
-        parts = norm_line.split()
-        if not parts:
-            return None, None, None
-        tfm = parts[0]
-        enc = None
-        fontfile = None
-        i = 1
-        while i < len(parts):
-            p = parts[i]
-            if p == "<[":
-                if i + 1 < len(parts):
-                    enc = parts[i + 1]
-                    i += 2
-                    continue
-            elif p == "<<" or p == "<":
-                if i + 1 < len(parts):
-                    nxt = parts[i + 1]
-                    if nxt.endswith(".enc"):
-                        enc = nxt
-                    else:
-                        fontfile = nxt
-                    i += 2
-                    continue
-            elif p.startswith("<["):
-                enc = p[2:]
-            elif p.startswith("<<"):
-                fontfile = p[2:]
-            elif p.startswith("<"):
-                if p.endswith(".enc"):
-                    enc = p[1:]
-                else:
-                    fontfile = p[1:]
-            i += 1
-        return tfm, enc, fontfile
 
     map_lines = {}
     unavailable_baseline_entries = []
@@ -3064,14 +3153,159 @@ def build_bundle(baseline_path, output_dir, lock_file_path, cache_dir, legal_dir
     return lock_data
 
 
+def read_main_archive(assets_dir, lock_data, wanted):
+    """Stream the locked main archive. Returns its member paths (archive
+    order) and the bytes of the members named in `wanted`."""
+    parts = [p["name"] for p in lock_data["output_archive"]["sharding"]["parts"]]
+    cat = subprocess.Popen(["cat"] + [os.path.join(assets_dir, p) for p in parts], stdout=subprocess.PIPE)
+    unzstd = subprocess.Popen(["zstd", "-dc"], stdin=cat.stdout, stdout=subprocess.PIPE)
+    cat.stdout.close()
+    members, contents = [], {}
+    with tarfile.open(fileobj=unzstd.stdout, mode="r|") as tar:
+        for m in tar:
+            if not m.isfile():
+                continue
+            members.append(m.name)
+            if m.name in wanted:
+                contents[m.name] = tar.extractfile(m).read()
+    if unzstd.wait() != 0 or cat.wait() != 0:
+        raise RuntimeError("failed to decompress the locked main archive")
+    return members, contents
+
+
+def build_supplement(assets_dir, lock_file_path, cache_dir):
+    """Write the append-only overlay archive described at SUPPLEMENT_PACKAGES
+    and record it in the lock, leaving the main archive parts untouched."""
+    with open(lock_file_path, "r") as f:
+        lock_data = json.load(f)
+    check_lock(assets_dir, lock_file_path)
+    root_maps = set(SUPPLEMENT_MAP_ROOTS) | {PDFTEX_MAP_REL}
+    for info in SUPPLEMENT_PACKAGES.values():
+        root_maps.update(info["map_files"])
+    main_members, main_contents = read_main_archive(assets_dir, lock_data, root_maps)
+    main_by_basename = {}
+    for rel in main_members:
+        main_by_basename.setdefault(os.path.basename(rel), rel)
+
+    added = {}
+    package_records = {}
+    for pkg_id, info in SUPPLEMENT_PACKAGES.items():
+        arc_path = os.path.join(cache_dir, os.path.basename(info["upstream_url"]))
+        if not os.path.exists(arc_path):
+            raise FileNotFoundError(f"Required upstream archive missing: {arc_path} for {pkg_id}")
+        if sha256_file(arc_path) != info["upstream_sha256"]:
+            raise ValueError(f"REJECTED: upstream archive hash mismatch for {pkg_id} ({arc_path})")
+        files = {}
+        with tarfile.open(arc_path, "r:xz") as tar:
+            for m in sorted((m for m in tar.getmembers() if m.isfile()), key=lambda m: m.name):
+                rel = m.name[len("texmf-dist/"):] if m.name.startswith("texmf-dist/") else m.name
+                selected = any(
+                    rel.startswith(prefix + "/")
+                    and (exts is None or rel.lower().endswith(exts))
+                    for prefix, exts in info["select"]
+                )
+                if not selected:
+                    continue
+                data = tar.extractfile(m).read()
+                fname = os.path.basename(rel)
+                shadow = main_by_basename.get(fname)
+                if shadow == rel:
+                    continue
+                if shadow is not None or fname in {os.path.basename(r) for r in added}:
+                    raise RuntimeError(
+                        f"REJECTED: basename collision on '{fname}': {rel} vs {shadow or 'supplement'}"
+                    )
+                added[rel] = data
+                files[rel] = hashlib.sha256(data).hexdigest()
+        package_records[pkg_id] = {
+            key: info[key]
+            for key in ("version", "revision", "license", "upstream_url", "upstream_sha256",
+                        "upstream_size_bytes", "map_files")
+        }
+        package_records[pkg_id]["file_count"] = len(files)
+        package_records[pkg_id]["files"] = files
+
+    # Consolidate pdftex.map: main records stay byte-identical; the declared
+    # roots contribute records for still-unmapped TFMs whose files exist.
+    available = set(main_by_basename) | {os.path.basename(r) for r in added}
+    main_map = main_contents[PDFTEX_MAP_REL].decode()
+    header = [line for line in main_map.splitlines(keepends=True) if line.startswith("%")]
+    map_lines = {}
+    for line in main_map.splitlines(keepends=True):
+        norm = normalize_map_line(line)
+        if norm:
+            map_lines[norm.split()[0]] = line
+    map_roots = {}
+    unavailable = []
+    for rel in SUPPLEMENT_MAP_ROOTS + [m for info in SUPPLEMENT_PACKAGES.values() for m in info["map_files"]]:
+        text = main_contents.get(rel) or added.get(rel)
+        if text is None:
+            raise FileNotFoundError(f"Declared supplement map root missing: {rel}")
+        record = {"sha256": hashlib.sha256(text).hexdigest(), "added_entries": 0, "unavailable_entries": 0}
+        for line in text.decode(errors="ignore").splitlines():
+            norm = normalize_map_line(line)
+            if not norm:
+                continue
+            tfm, enc, fontfile = parse_map_components(norm)
+            if tfm in map_lines:
+                continue
+            missing = [f for f in (enc, fontfile) if f is not None and f not in available]
+            if fontfile is None or missing:
+                record["unavailable_entries"] += 1
+                unavailable.append({"tfm": tfm, "map": rel, "line": norm,
+                                    "missing": missing or ["font:None (unembedded record)"]})
+                continue
+            map_lines[tfm] = norm + "\n"
+            record["added_entries"] += 1
+        map_roots[rel] = record
+    pdftex_map = "".join(header) + "".join(map_lines[t] for t in sorted(map_lines))
+    added[PDFTEX_MAP_REL] = pdftex_map.encode()
+
+    out_path = os.path.join(assets_dir, SUPPLEMENT_ARCHIVE_NAME)
+    zstd_proc = subprocess.Popen(["zstd", "-19", "-q", "-f", "-o", out_path], stdin=subprocess.PIPE)
+    with tarfile.open(fileobj=zstd_proc.stdin, mode="w|", format=tarfile.USTAR_FORMAT) as tar:
+        for rel in sorted(added):
+            ti = tarfile.TarInfo(rel)
+            ti.size = len(added[rel])
+            ti.uid = ti.gid = 0
+            ti.uname = ti.gname = "root"
+            ti.mtime = FIXED_MTIME
+            ti.mode = 0o644
+            tar.addfile(ti, io.BytesIO(added[rel]))
+    zstd_proc.stdin.close()
+    if zstd_proc.wait() != 0:
+        raise RuntimeError("zstd compression failed.")
+
+    lock_data["supplement_archive"] = {
+        "name": SUPPLEMENT_ARCHIVE_NAME,
+        "sha256": sha256_file(out_path),
+        "size_bytes": os.path.getsize(out_path),
+        "total_members": len(added),
+        "precedence": "read before the main archive; its members shadow same-named main members",
+        "packages": package_records,
+        "map_roots": {
+            "output_map": PDFTEX_MAP_REL,
+            "total_entries": len(map_lines),
+            "roots": map_roots,
+            "unavailable_entries": unavailable,
+        },
+    }
+    with open(lock_file_path, "w") as f:
+        json.dump(lock_data, f, indent=2)
+    print(f"Wrote {out_path}: {len(added)} members, {os.path.getsize(out_path)} bytes; "
+          f"pdftex.map {len(map_lines)} entries")
+
+
 def check_lock(assets_dir, lock_file_path):
     if not os.path.exists(lock_file_path):
         raise FileNotFoundError(f"Lock file not found: {lock_file_path}")
     with open(lock_file_path, "r") as f:
         data = json.load(f)
 
-    parts_info = data["output_archive"]["sharding"]["parts"]
-    print(f"Checking {len(parts_info)} sharded parts...")
+    parts_info = list(data["output_archive"]["sharding"]["parts"])
+    if "supplement_archive" in data:
+        parts_info.append(data["supplement_archive"])
+    print(f"Checking {len(parts_info)} asset files...")
     for part in parts_info:
         name = part["name"]
         expected_hash = part["sha256"]
@@ -3086,7 +3320,7 @@ def check_lock(assets_dir, lock_file_path):
         if actual_hash != expected_hash:
             raise ValueError(f"Hash mismatch on {name}:\nExpected: {expected_hash}\nActual:   {actual_hash}")
         print(f"  OK: {name} (SHA256: {actual_hash[:16]}...)")
-    print("All sharded asset parts match lockfile perfectly!")
+    print("All asset files match lockfile perfectly!")
 
 
 def reconstruct_archive(assets_dir, output_path, lock_file_path=None):
@@ -3158,6 +3392,12 @@ def main():
         metavar="OUTPUT_PATH",
         help="Reconstruct full single packages.tar.zst from assets/ parts into OUTPUT_PATH",
     )
+    parser.add_argument(
+        "--supplement",
+        action="store_true",
+        help="Build the append-only packages-supplement.tar.zst overlay from SUPPLEMENT_PACKAGES "
+        "and record it in the lock (rerun after a full rebuild, which rewrites the lock)",
+    )
 
     args = parser.parse_args()
 
@@ -3167,6 +3407,10 @@ def main():
 
     if args.reconstruct:
         reconstruct_archive(args.assets_dir, args.reconstruct, args.lock)
+        return
+
+    if args.supplement:
+        build_supplement(args.assets_dir, args.lock, args.cache_dir)
         return
 
     if args.build_sources:

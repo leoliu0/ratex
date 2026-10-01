@@ -1,7 +1,5 @@
 //! TFM (TeX Font Metric) parsing and font objects.
 
-use crate::scaled::ONE;
-
 pub const TAG_NO_TAG: u8 = 0;
 pub const TAG_LIG: u8 = 1;
 pub const TAG_LIST: u8 = 2;
@@ -57,8 +55,8 @@ pub struct Font {
     pub enc_name: Option<String>,
     /// pdf font name in map (e.g. NtxRomanUpright)
     pub map_fontname: Option<String>,
-    /// parsed encoding file (glyph names by slot)
-    pub encoding: Option<Vec<String>>,
+    /// parsed encoding file (glyph names by slot), shared with the enc cache
+    pub encoding: Option<std::rc::Rc<[String]>>,
 }
 
 impl Font {
@@ -196,11 +194,6 @@ fn rd_i32(b: &[u8], off: usize) -> i32 {
     v as i32
 }
 
-/// fix-word ratio to design size -> sp
-fn fix_to_sp(fix: i32, dsize: i32) -> i32 {
-    ((fix as i64 * dsize as i64 + if fix >= 0 { 0x80000 } else { -0x80000 }) / 0x100000) as i32
-}
-
 pub fn parse_tfm(data: &[u8], tfm_name: &str, at_size: i32) -> Result<Font, String> {
     if data.len() < 24 {
         return Err(format!("tfm {} too short", tfm_name));
@@ -210,8 +203,8 @@ pub fn parse_tfm(data: &[u8], tfm_name: &str, at_size: i32) -> Result<Font, Stri
         return Err(format!("tfm {} truncated", tfm_name));
     }
     let lh = rd_u16(data, 2);
-    let bc = rd_u16(data, 4) as u8;
-    let ec = rd_u16(data, 6) as u8;
+    let bc = rd_u16(data, 4);
+    let ec = rd_u16(data, 6);
     let nw = rd_u16(data, 8);
     let nh = rd_u16(data, 10);
     let nd = rd_u16(data, 12);
@@ -220,28 +213,49 @@ pub fn parse_tfm(data: &[u8], tfm_name: &str, at_size: i32) -> Result<Font, Stri
     let nk = rd_u16(data, 18);
     let ne = rd_u16(data, 20);
     let np = rd_u16(data, 22);
+    // tex.web §565: reject inconsistent table sizes before indexing.
+    if bc > ec + 1
+        || ec > 255
+        || lh < 2
+        || nw == 0
+        || nh == 0
+        || nd == 0
+        || ni == 0
+        || lf != 6 + lh + (ec + 1 - bc) + nw + nh + nd + ni + nl + nk + ne + np
+    {
+        return Err(format!("tfm {} is not a valid TFM file", tfm_name));
+    }
 
     let dsize = fix_to_sp_design(rd_i32(data, 28)); // header: [24]=checksum, [28]=design size
     let at = if at_size <= 0 { dsize } else { at_size };
-    // scale factor from design units to sp at `at`
-    // tex.web store_scaled (§11128): byte-wise TRUNCATING multiplication
-    // sw = (((d*z)/256 + c*z)/256 + b*z)/16, z = at-size in sp; a=255
-    // negates. tex guarantees bit-exact portability with this; a rounded
+    // tex.web store_scaled (§571-572): byte-wise TRUNCATING multiplication
+    // with z' = at size halved until below 2^23 so the products stay in
+    // range; tex guarantees bit-exact portability with this, and a rounded
     // fix*at/2^20 product differs by a few sp and flips badness boundaries.
+    let (z, alpha, beta) = {
+        let mut z = at as i64;
+        let mut alpha = 16i64;
+        while z >= 0x80_0000 {
+            z /= 2;
+            alpha += alpha;
+        }
+        (z, alpha * z, 256 / alpha)
+    };
     let scale = |fix: i32| -> i32 {
         let [a, b, c, d] = fix.to_be_bytes();
-        let z = at as i64;
-        let sw = (((d as i64 * z) / 256 + c as i64 * z) / 256 + b as i64 * z) / 16;
+        let sw = (((d as i64 * z) / 256 + c as i64 * z) / 256 + b as i64 * z) / beta;
         if a == 0 {
             sw as i32
         } else {
-            (sw - 16 * z) as i32
+            (sw - alpha) as i32
         }
     };
 
+    let nchars = ec + 1 - bc;
+    // An empty font (bc = ec+1, possibly 256) uses the canonical bc=1, ec=0.
+    let (bc, ec) = if nchars == 0 { (1u8, 0u8) } else { (bc as u8, ec as u8) };
     let hdr_end = (6 + lh) * 4;
     let char_info_off = hdr_end;
-    let nchars = ec as usize - bc as usize + 1;
     let width_off = char_info_off + nchars * 4;
     let height_off = width_off + nw * 4;
     let depth_off = height_off + nh * 4;
@@ -348,12 +362,11 @@ pub fn parse_tfm(data: &[u8], tfm_name: &str, at_size: i32) -> Result<Font, Stri
 
     let mut params = Vec::with_capacity(np);
     for k in 0..np {
-        let o = param_off + k * 4;
-        let f = rd_fix(o);
+        let f = rd_fix(param_off + k * 4);
         if k == 0 {
-            // slant: stored as ratio to dsize too? TeX treats param(1) as pure number:
-            // slant = fix/2^20 (radians-ish tan). Store as scaled fraction (tan*65536).
-            params.push((f as i64 * ONE as i64 / 0x100000) as i32);
+            // tex.web §575: the slant is a pure number kept as fix_word/16,
+            // i.e. an arithmetic shift (floor), unscaled by the at size.
+            params.push(f >> 4);
         } else {
             params.push(scale(f));
         }
@@ -385,4 +398,70 @@ pub fn parse_tfm(data: &[u8], tfm_name: &str, at_size: i32) -> Result<Font, Stri
 /// i.e. sp = fix * 2^16 / 2^20 = fix / 16.
 fn fix_to_sp_design(fix: i32) -> i32 {
     (fix as i64 / 16) as i32
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// One-character TFM (code 65) with the given width fix_word and
+    /// font parameters (slant, space).
+    fn tfm(width: i32, params: &[i32]) -> Vec<u8> {
+        let words = |v: &[i32]| v.iter().flat_map(|w| w.to_be_bytes()).collect::<Vec<u8>>();
+        let np = params.len();
+        let lf = 6 + 2 + 1 + 2 + 1 + 1 + 1 + np;
+        let mut data = Vec::new();
+        for half in [lf, 2, 65, 65, 2, 1, 1, 1, 0, 0, 0, np] {
+            data.extend_from_slice(&(half as u16).to_be_bytes());
+        }
+        data.extend(words(&[0, 10 << 20])); // checksum, design size 10pt
+        data.extend_from_slice(&[1, 0, 0, 0]); // char_info: width index 1
+        data.extend(words(&[0, width, 0, 0, 0]));
+        data.extend(words(params));
+        data
+    }
+
+    #[test]
+    fn large_sizes_scale_like_tex_store_scaled() {
+        // tex.web §572 halves z below 2^23 sp and divides by a smaller
+        // beta; scaling at full precision differs by several sp.
+        let at = 74_884_571; // 1142.651pt
+        for (fix, expected) in [
+            (0x000c_c476, 59_755_190),
+            (0x0008_000f, 37_443_351),
+            (0x007a_bcde, 574_447_708),
+            (-0x0002_3456, -10_317_395),
+        ] {
+            let font = parse_tfm(&tfm(fix, &[0, fix]), "probe", at).unwrap();
+            assert_eq!(font.char_width(65), expected, "width {fix:#x}");
+            assert_eq!(font.param(2), expected, "fontdimen2 {fix:#x}");
+        }
+    }
+
+    #[test]
+    fn negative_slant_floors_like_tex() {
+        let font = parse_tfm(&tfm(1 << 20, &[-0x1_0001, 0]), "probe", 0).unwrap();
+        assert_eq!(font.param(1), -4097);
+    }
+
+    #[test]
+    fn inconsistent_headers_are_rejected_without_panicking() {
+        let good = tfm(1 << 20, &[0, 0]);
+        assert!(parse_tfm(&good, "probe", 0).is_ok());
+        // bc > ec + 1, and tables claimed beyond the declared length.
+        let mut bad_range = good.clone();
+        bad_range[4..6].copy_from_slice(&70u16.to_be_bytes());
+        assert!(parse_tfm(&bad_range, "probe", 0).is_err());
+        let mut bad_tables = good.clone();
+        bad_tables[22..24].copy_from_slice(&400u16.to_be_bytes());
+        assert!(parse_tfm(&bad_tables, "probe", 0).is_err());
+        // An empty character range is valid and has no characters.
+        let mut empty = tfm(1 << 20, &[0, 0]);
+        empty[4..6].copy_from_slice(&66u16.to_be_bytes());
+        empty.drain(32..36);
+        let words = (empty.len() / 4) as u16;
+        empty[0..2].copy_from_slice(&words.to_be_bytes());
+        let font = parse_tfm(&empty, "probe", 0).unwrap();
+        assert!(!font.char_present(65) && !font.exists_char(0));
+    }
 }

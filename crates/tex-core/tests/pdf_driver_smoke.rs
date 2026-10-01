@@ -1111,3 +1111,98 @@ fn hyperref_bookmarks_nest_by_level_with_decoded_titles_and_counts() {
         pdf.get_pages()[&2]
     );
 }
+
+/// pdfTeX `\pdfnobuiltintounicode` suppresses the generated /ToUnicode of
+/// one font and `\pdffontattr` appends entries to its dictionary; both are
+/// how cmap.sty and ctex install their own CMaps without duplicate keys.
+#[test]
+fn font_attr_and_nobuiltin_tounicode_shape_font_dictionaries() {
+    let mut engine = Engine::new(true);
+    engine.init_primitives();
+    engine.add_nullfont();
+    engine.input.push_file(
+        "attrs.tex".into(),
+        br#"\catcode`\{=1 \catcode`\}=2
+\pdfmapline{=cmr10 CMR10 <cmr10.pfb}
+\pdfmapline{=cmr12 CMR12 <cmr12.pfb}
+\font\plain=cmr12
+\font\flagged=cmr10
+\font\shared=cmr10 at 12pt
+\pdfnobuiltintounicode\flagged
+\def\attr{/RatexProbe 7}
+\pdffontattr\flagged{\attr}
+\shipout\hbox{\plain\char12 \flagged\char12 \shared\char12}
+\end"#
+            .to_vec(),
+    );
+    engine.run();
+    assert_eq!(engine.error_count, 0, "{}", engine.term);
+    let bytes = tex_core::driver::finish_pdf(&mut engine, false).expect("PDF finalization");
+    let pdf = lopdf::Document::load_mem(&bytes).expect("valid PDF");
+    let fonts: Vec<_> = pdf
+        .objects
+        .values()
+        .filter_map(|object| object.as_dict().ok())
+        .filter(|dict| dict.get(b"Type").and_then(lopdf::Object::as_name).ok() == Some(b"Font"))
+        .collect();
+    let summary = |dict: &&lopdf::Dictionary| {
+        let base = String::from_utf8_lossy(dict.get(b"BaseFont").unwrap().as_name().unwrap());
+        let base = base.split('+').last().unwrap().to_string();
+        let width = dict.get(b"Widths").unwrap().as_array().unwrap()[0].as_float().unwrap();
+        (
+            base,
+            width.round() as i64,
+            dict.has(b"ToUnicode"),
+            dict.get(b"RatexProbe").and_then(lopdf::Object::as_i64).ok(),
+        )
+    };
+    let mut fonts: Vec<_> = fonts.iter().map(summary).collect();
+    fonts.sort();
+    // Both cmr10 sizes share the attribute (pdfTeX writes one font
+    // dictionary per TFM); only the flagged font loses its CMap.
+    assert_eq!(
+        fonts,
+        [
+            ("CMR10".to_string(), 556, false, Some(7)),
+            ("CMR10".to_string(), 556, true, Some(7)),
+            ("CMR12".to_string(), 544, true, None),
+        ]
+    );
+}
+
+/// tex.web §625: shipped glue advances by the change in the ROUNDED
+/// running stretch total, so a box's glue ends exactly at its width; per-glue
+/// rounding drifted by several sp (`\pdflastxpos` disagreed with pdfTeX).
+#[test]
+fn shipped_glue_rounds_cumulatively() {
+    let dir_buf = std::env::temp_dir().join(format!("pdf_glue_{}", std::process::id()));
+    std::fs::create_dir_all(&dir_buf).unwrap();
+    let mut engine = Engine::new(true);
+    engine.init_primitives();
+    engine.add_nullfont();
+    engine.out_dir = format!("{}/", dir_buf.to_string_lossy().replace('\\', "/"));
+    engine.input.push_file(
+        "glue.tex".into(),
+        br#"\catcode`\{=1 \catcode`\}=2 \catcode`\#=6
+\pdfhorigin=0pt \pdfvorigin=0pt
+\immediate\openout3=glue.out
+\dimen0=100.00007pt
+\def\g{\hskip 1pt plus 1sp }
+\shipout\hbox to\dimen0{\g\g\g\g\g\g\g\pdfsavepos\write3{X=\the\pdflastxpos}}
+\immediate\write3{W=\number\dimen0}
+\end"#
+            .to_vec(),
+    );
+    engine.run();
+    assert_eq!(engine.error_count, 0, "{}", engine.term);
+    let out = std::fs::read_to_string(dir_buf.join("glue.out")).expect("glue.out");
+    let value = |key: &str| {
+        out.lines()
+            .find_map(|line| line.strip_prefix(key))
+            .unwrap_or_else(|| panic!("{key} missing in {out}"))
+            .trim()
+            .to_string()
+    };
+    assert_eq!(value("X="), value("W="));
+    let _ = std::fs::remove_dir_all(&dir_buf);
+}

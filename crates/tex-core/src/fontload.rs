@@ -55,7 +55,7 @@ pub struct FontLoader {
     pub kpse: tex_kpse::Kpse,
     pub map: crate::fontmap::FontMap,
     pub tfm_cache: crate::FxHashMap<(String, i32), Rc<Font>>,
-    pub enc_cache: crate::FxHashMap<String, Rc<Vec<String>>>,
+    pub enc_cache: crate::FxHashMap<String, Rc<[String]>>,
     /// virtual fonts by (tfm name, resolved at size)
     pub vf_fonts: crate::FxHashMap<(String, i32), Rc<VfFont>>,
     /// engine font id of a VF-backed font -> base engine font ids
@@ -74,6 +74,11 @@ pub struct FontLoader {
     pub native_instances: crate::FxHashMap<(String, i32), crate::tfm::FontId>,
     /// Native font specs whose NFSS shape substitution was already reported.
     pub substituted_shape_warnings: crate::FxHashSet<String>,
+    /// `\pdffontattr`: extra font dictionary entries by engine font id.
+    pub pdf_font_attrs: crate::FxHashMap<u16, String>,
+    /// `\pdfnobuiltintounicode`: engine fonts whose generated /ToUnicode
+    /// CMap is suppressed (packages then supply their own via \pdffontattr).
+    pub nobuiltin_tounicode: crate::FxHashSet<u16>,
     /// pdftex.map is loaded on first font lookup, not at construction:
     /// the find forces kpse database setup, which is pure startup waste
     /// for format-booted runs that never select a mapped font.
@@ -126,6 +131,8 @@ impl FontLoader {
             file_bytes_cache: crate::FxHashMap::default(),
             native_instances: crate::FxHashMap::default(),
             substituted_shape_warnings: crate::FxHashSet::default(),
+            pdf_font_attrs: crate::FxHashMap::default(),
+            nobuiltin_tounicode: crate::FxHashSet::default(),
             map_loaded: false,
             dependency_files: Vec::new(),
             dependency_directories: Vec::new(),
@@ -275,13 +282,13 @@ impl FontLoader {
             font.map_fontname = Some(me.fontname.clone());
             if let Some(enc) = &me.enc_file {
                 font.enc_name = Some(enc.clone());
-                font.encoding = self.load_enc(enc).map(|e| (*e).clone());
+                font.encoding = self.load_enc(enc);
             } else if let Some(en) = &me.enc_name {
                 // no explicit vector file: try the named encoding as
                 // <name>.enc (e.g. TeXBase1Encoding alongside <8r.enc)
                 if let Some(e) = self.load_enc(en) {
                     font.enc_name = Some(en.clone());
-                    font.encoding = Some((*e).clone());
+                    font.encoding = Some(e);
                 }
             }
             if let Some(pfb) = &me.pfb {
@@ -338,13 +345,13 @@ impl FontLoader {
         Some(rc)
     }
 
-    pub fn load_enc(&mut self, name: &str) -> Option<Rc<Vec<String>>> {
+    pub fn load_enc(&mut self, name: &str) -> Option<Rc<[String]>> {
         if let Some(e) = self.enc_cache.get(name) {
             return Some(e.clone());
         }
         let data = self.read_dependency(name, tex_kpse::Format::Enc)?;
         let text = String::from_utf8_lossy(&data);
-        let rc = Rc::new(parse_enc_names(&text)?);
+        let rc: Rc<[String]> = parse_enc_names(&text)?.into();
         self.enc_cache.insert(name.to_string(), rc.clone());
         Some(rc)
     }
@@ -1178,6 +1185,8 @@ impl FontLoader {
         let mut bases: Vec<Option<Rc<Font>>> = Vec::new();
         let mut base_specs: Vec<VfBase> = Vec::new();
         let mut chars: Vec<Option<Vec<VfStep>>> = vec![None; 256];
+        // vftovp: every packet starts with the first font defined selected.
+        let mut default_font = None;
         loop {
             if pos >= data.len() {
                 return None; // ran off the end without `post`
@@ -1212,6 +1221,7 @@ impl FontLoader {
                     if id <= u8::MAX as u32 {
                         base_idx.insert(id, bases.len() as u8);
                     }
+                    default_font.get_or_insert(id as u8);
                     bases.push(loaded);
                     base_specs.push(VfBase {
                         tfm_name: name,
@@ -1228,7 +1238,14 @@ impl FontLoader {
                     }
                     let mut sub = (pos, pos + pl);
                     pos += pl;
-                    chars[cc] = Self::vf_packet(data, &mut sub, &base_idx, &bases, at);
+                    chars[cc] = Self::vf_packet(
+                        data,
+                        &mut sub,
+                        &base_idx,
+                        &bases,
+                        default_font.unwrap_or(0),
+                        at,
+                    );
                     pos = sub.0.min(pos);
                 }
                 0..=241 => {
@@ -1241,7 +1258,14 @@ impl FontLoader {
                     pos += 4; // cc + char width
                     let mut sub = (pos, pos + pl);
                     pos += pl;
-                    chars[cc] = Self::vf_packet(data, &mut sub, &base_idx, &bases, at);
+                    chars[cc] = Self::vf_packet(
+                        data,
+                        &mut sub,
+                        &base_idx,
+                        &bases,
+                        default_font.unwrap_or(0),
+                        at,
+                    );
                     pos = sub.0.min(pos);
                 }
                 248 => break,     // post: end of packets
@@ -1261,6 +1285,7 @@ impl FontLoader {
         cur: &mut (usize, usize),
         base_idx: &std::collections::HashMap<u32, u8>,
         bases: &[Option<Rc<Font>>],
+        mut font: u8,
         at: i32,
     ) -> Option<Vec<VfStep>> {
         let scale = |raw: i32| -> i64 {
@@ -1269,8 +1294,6 @@ impl FontLoader {
         let mut steps: Vec<VfStep> = Vec::new();
         let (mut x, mut y) = (0i64, 0i64);
         let (mut reg_w, mut reg_x, mut reg_y, mut reg_z) = (0i64, 0i64, 0i64, 0i64);
-        // the font register starts at 0 for every packet (VF spec)
-        let mut font: u8 = 0;
         let mut stack: Vec<(i64, i64, i64, i64, i64, i64, u8)> = Vec::new();
         loop {
             let pos = cur.0;
@@ -1285,12 +1308,12 @@ impl FontLoader {
             match op {
                 0..=127 => {
                     Self::vf_step(&mut steps, base_idx, bases, font, op as u8, x, y);
-                    x += Self::vf_advance(bases, font, op as u8); // set_char advances
+                    x += Self::vf_advance(base_idx, bases, font, op as u8); // set_char advances
                 }
                 128..=131 => {
                     let c = vf_uint(data, &mut cur.0, 1 + (op - 128) as usize)? as u8;
                     Self::vf_step(&mut steps, base_idx, bases, font, c, x, y);
-                    x += Self::vf_advance(bases, font, c);
+                    x += Self::vf_advance(base_idx, bases, font, c);
                 }
                 132 => cur.0 = (cur.0 + 8).min(cur.1), // set_rule: ignored
                 133..=136 => {
@@ -1364,11 +1387,17 @@ impl FontLoader {
         }
     }
 
-    /// set_char advance: the base font's TFM width at its derived size (sp)
-    fn vf_advance(bases: &[Option<Rc<Font>>], font: u8, ch: u8) -> i64 {
-        bases
-            .get(font as usize)
-            .and_then(|b| b.as_ref())
+    /// set_char advance: the base font's TFM width at its derived size (sp);
+    /// `font` is the packet's font number, as declared by `fnt_def`.
+    fn vf_advance(
+        base_idx: &std::collections::HashMap<u32, u8>,
+        bases: &[Option<Rc<Font>>],
+        font: u8,
+        ch: u8,
+    ) -> i64 {
+        base_idx
+            .get(&(font as u32))
+            .and_then(|&bi| bases.get(bi as usize)?.as_ref())
             .map(|b| b.char_width(ch) as i64)
             .unwrap_or(0)
     }
@@ -1650,9 +1679,6 @@ impl Engine {
                 .native_instances
                 .insert((name.to_string(), at_size), id);
 
-            let message = format!("{} (Native) at {}\n", name, self.scaled_to_string(at_size));
-            self.append_term(&message);
-            self.append_log(&message);
             return;
         }
         let Some(font) = self.font_loader.load_tfm(name, at) else {
@@ -1678,22 +1704,15 @@ impl Engine {
         }
         let id = self.push_engine_font(font, cs);
         self.eqtb.assign(cs, Equiv::FontRef(id), global);
-        let message = format!(
-            "{} at {}\n",
-            name,
-            self.scaled_to_string(self.eqtb.fonts[id as usize].at_size)
-        );
-        self.append_term(&message);
-        self.append_log(&message);
     }
 
     /// append a font to the engine font tables; returns its font id.
     /// pdfTeX's `read_font_info` allocates a fresh internal font record per
-    /// `\font` load (char tables are NOT shared between two ids of the same
-    /// tfm), so `tagcode`/`pdfnoligatures` on one identifier must not leak
-    /// into the other; deep-clone the cached `Rc<Font>` to mirror that.
+    /// `\font` load, so `tagcode`/`pdfnoligatures` on one identifier must not
+    /// leak into another id of the same tfm. Ids share the cached `Rc<Font>`;
+    /// every in-place font change (`set_no_ligatures`, `set_tag_code`) clones
+    /// the record and replaces only its own id's slot.
     pub fn push_engine_font(&mut self, font: Rc<Font>, cs: crate::token::CsId) -> u16 {
-        let font = Rc::new((*font).clone());
         let id = self.eqtb.fonts.len() as u16;
         let virtual_font = self
             .font_loader
@@ -2086,11 +2105,9 @@ impl Engine {
     /// `set_no_ligatures` (\pdfnoligatures\f): strip ligature tags from
     /// every existing character of the font.
     pub fn set_no_ligatures(&mut self, f: u16) {
-        let font = Rc::clone(&self.eqtb.fonts[f as usize]);
-        // our parser shares Rc<Font> only through push_engine_font's clone,
-        // but a font record can back one engine id; mutate through a clone
-        // and replace the Rc so no other holder is affected unexpectedly.
-        let mut nf = (*font).clone();
+        // The record may be shared with other ids of the same tfm and the
+        // tfm cache: change a private copy and replace only this id's slot.
+        let mut nf = (*self.eqtb.fonts[f as usize]).clone();
         let (bc, ec) = (nf.bc, nf.ec);
         for c in bc..=ec {
             if nf.char_present(c) && nf.chars[c as usize].tag == crate::tfm::TAG_LIG {
@@ -2098,6 +2115,29 @@ impl Engine {
             }
         }
         self.eqtb.fonts[f as usize] = Rc::new(nf);
+    }
+
+    /// `\pdffontattr <font> {<attributes>}` (pdftex.web "Implement
+    /// \pdffontattr"): the expanded text is appended to the font dictionary.
+    pub fn do_pdffontattr(&mut self) {
+        let f = self.scan_font_id();
+        let attr = self.scan_pdf_string();
+        if f == 0 {
+            self.error("pdfTeX error (font): invalid font identifier");
+            return;
+        }
+        self.font_loader.pdf_font_attrs.insert(f, attr);
+    }
+
+    /// `\pdfnobuiltintounicode <font>`: no /ToUnicode CMap is generated for
+    /// the font (writefont.c `write_fontdictionary`).
+    pub fn do_pdfnobuiltintounicode(&mut self) {
+        let f = self.scan_font_id();
+        if f == 0 {
+            self.error("pdfTeX error (font): invalid font identifier");
+            return;
+        }
+        self.font_loader.nobuiltin_tounicode.insert(f);
     }
 
     /// `test_no_ligatures` (\the\pdfnoligatures\f readback): 1 when no
@@ -2628,6 +2668,40 @@ mod tests {
         let steps200 = vfv.chars[200].as_ref().unwrap();
         assert_eq!(steps200.len(), 1);
         assert_eq!((steps200[0].ch, steps200[0].dx), (1, 0));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Packets start with the FIRST defined font selected and font numbers
+    /// are `fnt_def` identifiers, not table indices (vftovp semantics).
+    #[test]
+    fn vf_packets_use_declared_font_numbers() {
+        let dir = std::env::temp_dir().join(format!("vfnum_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("toybase.tfm"), toy_tfm()).unwrap();
+        std::fs::write(dir.join("toynum.tfm"), toy_tfm()).unwrap();
+        let mut vf = Vec::new();
+        vf.extend_from_slice(&[247, 202, 0]);
+        vf.extend_from_slice(&0u32.to_be_bytes());
+        vf.extend_from_slice(&(10 * 0x100000u32).to_be_bytes());
+        // font number 5 is the only (and so the default) base font
+        vf.extend_from_slice(&[243, 5, 0, 0, 0, 0, 0x00, 0x10, 0, 0, 0, 0xa0, 0, 0, 0, 7]);
+        vf.extend_from_slice(b"toybase");
+        // char 5: set_char_1 twice, no font selection
+        vf.extend_from_slice(&[2, 5, 0x04, 0x28, 0xf6, 0x01, 0x01]);
+        // char 6: fnt_num_5, set_char_1 twice
+        vf.extend_from_slice(&[3, 6, 0x04, 0x28, 0xf6, 171 + 5, 0x01, 0x01]);
+        vf.push(248);
+        std::fs::write(dir.join("toynum.vf"), &vf).unwrap();
+
+        let mut fl = FontLoader::with_kpse(tex_kpse::Kpse::explicit(&dir, vec![]));
+        fl.map_loaded = true;
+        fl.load_tfm("toynum", 655360).expect("toynum loads");
+        let vfv = fl.vf_fonts.get(&("toynum".to_string(), 655360)).expect("vf parsed");
+        for c in [5, 6] {
+            let steps = vfv.chars[c].as_ref().unwrap();
+            let placed: Vec<_> = steps.iter().map(|s| (s.base, s.ch, s.dx)).collect();
+            assert_eq!(placed, [(0, 1, 0), (0, 1, 163840)], "char {c}");
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 

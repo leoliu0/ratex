@@ -1126,20 +1126,8 @@ impl Engine {
                     d,
                 }));
             }
-            PdfFontAttr => {
-                // pdfTeX syntax is \pdffontattr <font identifier> {<attribute>}.
-                // Consuming only the font identifier leaks the dictionary text
-                // into the document as ordinary characters.
-                let _ = self.scan_font_id();
-                self.skip_spaces_relax();
-                let t = self.get_token();
-                if t.is_char() && t.cc() == 1 {
-                    self.scan_balanced_raw(true);
-                } else {
-                    self.push_token(t);
-                    self.error("Missing { inserted for \\pdffontattr");
-                }
-            }
+            PdfFontAttr => self.do_pdffontattr(),
+            PdfNoBuiltinToUnicode => self.do_pdfnobuiltintounicode(),
             PdfFontExpand => {
                 self.do_pdffontexpand();
             }

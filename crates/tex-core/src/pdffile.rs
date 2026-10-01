@@ -2,7 +2,7 @@
 //! streams (flate), Type 1 font embedding with encodings and widths, link
 //! annotations, named destinations, and outlines.
 
-use crate::pdf_fonts::{parse_metrics, parse_type1, Type1Program};
+use crate::pdf_fonts::{parse_metrics, parse_type1, Type1Metrics, Type1Program};
 use crate::pdfout::{
     Annot, Dest, DestId, EmbedFont, EmbedFontSubtype, GotoTarget, Outline, PdfAction, PdfDoc,
 };
@@ -25,7 +25,7 @@ fn char_is_used(chars: &[u64; 4], character: u8) -> bool {
 /// Attach observed character usage and trim the PDF widths/Unicode tables to
 /// the smallest required code interval. The full encoding vector remains
 /// available to the Type 1 subsetter for code-to-glyph-name resolution.
-pub fn set_font_usage(font: &mut EmbedFont, used_chars: [u64; 4]) {
+fn set_font_usage(font: &mut EmbedFont, used_chars: [u64; 4]) {
     let Some(first) = (0..=u8::MAX).find(|&c| char_is_used(&used_chars, c)) else {
         return;
     };
@@ -636,38 +636,59 @@ fn subset_type1(
     })
 }
 
-/// Build an EmbedFont from a font's PFB bytes / encoding vector / TFM widths.
-/// A missing PFB yields a font-dict-only entry (viewer substitutes by
+/// A Type 1 program decoded once and shared by every engine font (size,
+/// expansion step, code binding) that embeds it.
+pub struct Type1Source {
+    font_file: std::rc::Rc<Vec<u8>>,
+    length1: usize,
+    length2: usize,
+    length3: usize,
+    metrics: Type1Metrics,
+    content_hash: [u8; 16],
+    /// The program's own `/Encoding` array, if the cleartext declares one.
+    pub builtin_encoding: Option<std::rc::Rc<[String]>>,
+}
+
+impl Type1Source {
+    pub fn new(pfb: &[u8]) -> Self {
+        let program = parse_type1(pfb);
+        let cleartext = &program.data[..program.length1.min(program.data.len())];
+        let metrics = parse_metrics(cleartext);
+        let builtin_encoding = crate::pdf_fonts::builtin_encoding(cleartext).map(Into::into);
+        Type1Source {
+            content_hash: md5::compute(&program.data).0,
+            font_file: std::rc::Rc::new(program.data),
+            length1: program.length1,
+            length2: program.length2,
+            length3: program.length3,
+            metrics,
+            builtin_encoding,
+        }
+    }
+}
+
+/// Build an EmbedFont for the 256-slot code space from a Type 1 source,
+/// encoding vector, TFM widths (1/10000 units per slot) and the codes used.
+/// A missing source yields a font-dict-only entry (viewer substitutes by
 /// BaseFont name); a missing encoding vector uses the font's built-in one.
 pub fn make_embed_font(
     base_font: String,
-    pfb: Option<&[u8]>,
-    encoding: Option<&[String]>,
-    first_char: u8,
-    last_char: u8,
+    source: Option<&Type1Source>,
+    encoding: Option<std::rc::Rc<[String]>>,
     widths_10000: Vec<i32>,
+    used_chars: [u64; 4],
 ) -> EmbedFont {
-    let (font_file, length1, length2, length3, metrics) = match pfb {
-        Some(bytes) => {
-            let p = parse_type1(bytes);
-            let m = parse_metrics(&p.data[..p.length1.min(p.data.len())]);
-            (p.data, p.length1, p.length2, p.length3, m)
-        }
-        None => (Vec::new(), 0, 0, 0, parse_metrics(b"")),
-    };
     // no external encoding: adopt the font's own /Encoding array (if
     // the cleartext declares one) so extractors see accurate glyph names
-    let encoding_diff = match encoding {
-        Some(e) => Some(e.to_vec()),
-        None => crate::pdf_fonts::builtin_encoding(&font_file[..length1.min(font_file.len())]),
-    };
-    // /ToUnicode: resolve every encoded slot through the glyph list,
+    let encoding_diff =
+        encoding.or_else(|| source.and_then(|source| source.builtin_encoding.clone()));
+    // /ToUnicode: resolve every used encoded slot through the glyph list,
     // keeping only non-identity mappings (ASCII slots extract natively)
     let to_unicode = encoding_diff
         .iter()
-        .flat_map(|d| d.iter().enumerate())
+        .flat_map(|d| d.iter().take(256).enumerate())
         .filter_map(|(slot, g)| {
-            if g.is_empty() || slot > 255 {
+            if g.is_empty() || !char_is_used(&used_chars, slot as u8) {
                 return None;
             }
             let uni = crate::pdf_fonts::glyph_to_unicode(g)?;
@@ -677,11 +698,28 @@ pub fn make_embed_font(
             Some((slot as u8, uni))
         })
         .collect();
-    let content_hash = md5::compute(&font_file).0;
-    EmbedFont {
+    let (font_file, length1, length2, length3, metrics, content_hash) = match source {
+        Some(source) => (
+            source.font_file.clone(),
+            source.length1,
+            source.length2,
+            source.length3,
+            source.metrics.clone(),
+            source.content_hash,
+        ),
+        None => (
+            std::rc::Rc::new(Vec::new()),
+            0,
+            0,
+            0,
+            Type1Metrics::default(),
+            md5::compute(b"").0,
+        ),
+    };
+    let mut font = EmbedFont {
         obj_font: 0,
         base_font,
-        font_file: std::rc::Rc::new(font_file),
+        font_file,
         length1,
         length2,
         length3,
@@ -693,8 +731,8 @@ pub fn make_embed_font(
         content_hash,
         units_per_em: 1000,
         encoding_diff,
-        first_char,
-        last_char,
+        first_char: 0,
+        last_char: 255,
         widths: widths_10000,
         font_matrix_scale: 1.0,
         font_bbox: metrics.font_bbox,
@@ -712,7 +750,10 @@ pub fn make_embed_font(
         native_cids: Vec::new(),
         used_gids: std::collections::BTreeSet::new(),
         to_unicode_2byte: Vec::new(),
-    }
+        font_attr: String::new(),
+    };
+    set_font_usage(&mut font, used_chars);
+    font
 }
 
 // ---------------------------------------------------------------- encryption
@@ -2115,8 +2156,9 @@ pub fn write_pdf(doc: &PdfDoc) -> Result<Vec<u8>, String> {
             b.set(
                 fo.font,
                 format!(
-                    "<< /Type /Font /Subtype /Type0 /BaseFont /{} /Encoding {} 0 R /DescendantFonts [ {} 0 R ]{} >>",
-                    escape_pdf_name(&prep.pdf_name), enc_obj, fo.cidfont.unwrap(), to_ref
+                    "<< /Type /Font /Subtype /Type0 /BaseFont /{} /Encoding {} 0 R /DescendantFonts [ {} 0 R ]{}{} >>",
+                    escape_pdf_name(&prep.pdf_name), enc_obj, fo.cidfont.unwrap(), to_ref,
+                    font_attr_entry(&f.font_attr)
                 ),
             );
         } else {
@@ -2152,8 +2194,9 @@ pub fn write_pdf(doc: &PdfDoc) -> Result<Vec<u8>, String> {
             b.set(
                 fo.font,
                 format!(
-                    "<< /Type /Font /Subtype /Type1 /BaseFont /{} /FirstChar {} /LastChar {} /Widths {} /FontDescriptor {} 0 R{}{} >>",
-                    escape_pdf_name(pdf_name), first, last, widths, fo.desc, enc, tounicode_ref
+                    "<< /Type /Font /Subtype /Type1 /BaseFont /{} /FirstChar {} /LastChar {} /Widths {} /FontDescriptor {} 0 R{}{}{} >>",
+                    escape_pdf_name(pdf_name), first, last, widths, fo.desc, enc, tounicode_ref,
+                    font_attr_entry(&f.font_attr)
                 ),
             );
             let (ascent, descent) = if f.ascent - f.descent > 3000.0 {
@@ -2232,23 +2275,14 @@ pub fn write_pdf(doc: &PdfDoc) -> Result<Vec<u8>, String> {
         } else {
             format!(" {}", res_extra.trim())
         };
+        let (forms, images) = painted_xobjects(&page.content);
         let mut xobj_entries = Vec::new();
         for (obj_num, bytes) in &doc.objects {
             if bytes.starts_with(b"<< /Type /XObject") {
-                let fm_name = format!("/Fm{} Do", obj_num);
-                if page
-                    .content
-                    .windows(fm_name.len())
-                    .any(|part| part == fm_name.as_bytes())
-                {
+                if forms.contains(obj_num) {
                     xobj_entries.push(format!("/Fm{} {} 0 R", obj_num, obj_num));
                 }
-                let im_name = format!("/Im{} Do", obj_num);
-                if page
-                    .content
-                    .windows(im_name.len())
-                    .any(|part| part == im_name.as_bytes())
-                {
+                if images.contains(obj_num) {
                     xobj_entries.push(format!("/Im{} {} 0 R", obj_num, obj_num));
                 }
             }
@@ -2516,6 +2550,43 @@ pub fn write_pdf(doc: &PdfDoc) -> Result<Vec<u8>, String> {
     })
 }
 
+/// Object numbers a content stream paints as `/Fm<n> Do` (forms) and
+/// `/Im<n> Do` (images), found in one pass over the stream.
+fn painted_xobjects(content: &[u8]) -> (BTreeSet<i32>, BTreeSet<i32>) {
+    let mut forms = BTreeSet::new();
+    let mut images = BTreeSet::new();
+    let mut at = 0;
+    while let Some(offset) = content[at..].iter().position(|&byte| byte == b'/') {
+        at += offset + 1;
+        let set = match content.get(at..at + 2) {
+            Some(b"Fm") => &mut forms,
+            Some(b"Im") => &mut images,
+            _ => continue,
+        };
+        let digits = &content[at + 2..];
+        let len = digits.iter().take_while(|byte| byte.is_ascii_digit()).count();
+        // `/Fm<n> Do` names use the decimal object number without padding.
+        if len == 0 || (len > 1 && digits[0] == b'0') || !digits[len..].starts_with(b" Do") {
+            continue;
+        }
+        if let Some(number) = std::str::from_utf8(&digits[..len]).ok().and_then(|n| n.parse().ok()) {
+            set.insert(number);
+        }
+    }
+    (forms, images)
+}
+
+/// `\pdffontattr` text as a font dictionary suffix (pdfTeX prints it after
+/// /ToUnicode).
+fn font_attr_entry(attr: &str) -> String {
+    let attr = attr.trim();
+    if attr.is_empty() {
+        String::new()
+    } else {
+        format!(" {attr}")
+    }
+}
+
 fn emit_annot(b: &mut PdfBuilder, obj: usize, a: &Annot) {
     let [x0, y0, x1, y1] = a.rect;
     // /Border comes from the annotation attributes when present (hyperref
@@ -2655,27 +2726,20 @@ mod tests {
 
     #[test]
     fn font_usage_trims_widths_and_unicode() {
-        let mut font = make_embed_font(
-            "Test".to_owned(),
-            None,
-            Some(&(0..=255).map(|c| format!("g{c}")).collect::<Vec<_>>()),
-            0,
-            255,
-            (0..=255).collect(),
-        );
-        font.to_unicode = vec![
-            (69, "E".to_owned()),
-            (70, "F".to_owned()),
-            (72, "H".to_owned()),
-        ];
         let mut usage = [0_u64; 4];
         usage[1] = (1 << (70 - 64)) | (1 << (72 - 64));
-        set_font_usage(&mut font, usage);
+        let font = make_embed_font(
+            "Test".to_owned(),
+            None,
+            Some((0..=255).map(|c| format!("uni{:04X}", 0x100 + c)).collect()),
+            (0..=255).collect(),
+            usage,
+        );
         assert_eq!((font.first_char, font.last_char), (70, 72));
         assert_eq!(font.widths, vec![70, 71, 72]);
         assert_eq!(
             font.to_unicode,
-            vec![(70, "F".to_owned()), (72, "H".to_owned())]
+            vec![(70, "\u{146}".to_owned()), (72, "\u{148}".to_owned())]
         );
     }
 

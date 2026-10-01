@@ -1582,6 +1582,7 @@ impl Engine {
         d!(eng, b"pdffontattr", PdfFontAttr);
         d!(eng, b"pdffontexpand", PdfFontExpand);
         d!(eng, b"pdfnoligatures", PdfNoLigatures);
+        d!(eng, b"pdfnobuiltintounicode", PdfNoBuiltinToUnicode);
         d!(eng, b"letterspacefont", Letterspacefont);
         d!(eng, b"efcode", EfCode);
         d!(eng, b"lpcode", LpCode);

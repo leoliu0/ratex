@@ -450,6 +450,185 @@ fn outer_macro_ends_alignment_preamble() {
     assert!(e.term.contains("[O]"), "{}", e.term);
 }
 
+fn messages(e: &Engine) -> Vec<&str> {
+    e.diagnostics
+        .iter()
+        .map(|d| d.message.as_str())
+        .map(|m| {
+            if m.starts_with("Parameters must be numbered consecutively") {
+                "Parameters must be numbered consecutively"
+            } else if m.starts_with("Emergency stop") {
+                "Emergency stop"
+            } else {
+                m
+            }
+        })
+        .collect()
+}
+
+/// pdflatex (TeX Live 2026): after the forbidden \outer macro the preamble
+/// ends with `\cr}`, the empty alignment is finished, the macro runs, and
+/// the rest of the template is typeset: `#` is an illegal command.
+#[test]
+fn outer_macro_in_alignment_template_leaves_the_rest_to_the_page() {
+    let e = run_lenient(
+        r"\catcode`\&=4 \outer\def\o{\message{[O]}}
+\halign{#\o&#\cr x&y\cr}
+\end",
+    );
+    assert_eq!(
+        messages(&e),
+        [
+            "Forbidden control sequence found while scanning preamble of \\halign",
+            "Misplaced alignment tab character &",
+            "You can't use `macro parameter character #' in vertical mode",
+            "Misplaced \\cr",
+            "Misplaced alignment tab character &",
+            "Misplaced \\cr",
+            "Too many }'s",
+        ],
+        "{}",
+        e.term
+    );
+    assert!(e.term.contains("[O]"), "{}", e.term);
+}
+
+/// pdflatex: an \outer macro before the `#` leaves the u part without one
+/// ("Missing # inserted"); `\span` expands its token once, so the macro in
+/// the expansion is forbidden as well.
+#[test]
+fn outer_macro_before_the_sharp_of_a_template() {
+    let e = run_lenient(
+        r"\catcode`\&=4 \outer\def\o{\message{[O]}}
+\halign{\o#&#\cr x&y\cr}
+\end",
+    );
+    assert_eq!(
+        messages(&e),
+        [
+            "Forbidden control sequence found while scanning preamble of \\halign",
+            "Missing # inserted in alignment preamble",
+            "You can't use `macro parameter character #' in vertical mode",
+            "Misplaced alignment tab character &",
+            "You can't use `macro parameter character #' in vertical mode",
+            "Misplaced \\cr",
+            "Misplaced alignment tab character &",
+            "Misplaced \\cr",
+            "Too many }'s",
+        ],
+        "{}",
+        e.term
+    );
+    let e = run_lenient(
+        r"\catcode`\&=4 \outer\def\o{\message{[O]}}
+\def\pre{##\o&##\cr}\halign{\span\pre x&y\cr}
+\end",
+    );
+    assert_eq!(
+        messages(&e)[..2],
+        [
+            "Forbidden control sequence found while scanning definition of \\pre",
+            "Misplaced alignment tab character &",
+        ],
+        "{}",
+        e.term
+    );
+}
+
+/// pdflatex: an \outer macro in the parameter text of \def ends the
+/// definition (`}` inserted: "Missing { inserted"); the macro runs next.
+#[test]
+fn outer_macro_in_parameter_text_ends_the_definition() {
+    let e = run_lenient(
+        r"\outer\def\o{\message{[O]}}
+\def\a#1\o{x}\message{[\meaning\a]}
+\def\b#\o{x}\message{[\meaning\b]}
+\end",
+    );
+    assert_eq!(
+        messages(&e),
+        [
+            "Forbidden control sequence found while scanning definition of \\a",
+            "Missing { inserted",
+            "Forbidden control sequence found while scanning definition of \\b",
+            "Parameters must be numbered consecutively",
+            "Missing { inserted",
+        ],
+        "{}",
+        e.term
+    );
+    assert_eq!(e.term.matches("[macro:#1 ->]").count(), 2, "{}", e.term);
+    assert_eq!(e.term.matches("[O]").count(), 2, "{}", e.term);
+}
+
+/// pdflatex: \expandafter reads both tokens with get_token, so it reports
+/// an \outer macro inside an \edef; \ifx and \noexpand read with
+/// scanner_status normal and accept it.
+#[test]
+fn outer_macro_operands_of_expandafter_ifx_and_noexpand() {
+    let e = run_lenient(
+        r"\outer\def\o{\message{[O]}}
+\edef\x{\expandafter\noexpand\o}\message{[\meaning\x]}
+\end",
+    );
+    assert_eq!(
+        messages(&e),
+        [
+            "Forbidden control sequence found while scanning definition of \\x",
+            "Too many }'s",
+        ],
+        "{}",
+        e.term
+    );
+    assert!(e.term.contains("[O]"), "{}", e.term);
+    assert!(e.term.contains("[macro:-> ]"), "{}", e.term);
+    let e = engine(
+        r"\outer\def\o{\message{[O]}}\let\p\o
+\edef\x{\ifx\o\p a\else b\fi\noexpand\o}\message{[\meaning\x]}
+\end",
+    );
+    assert!(e.term.contains("[macro:->a\\o ]"), "{}", e.term);
+}
+
+/// pdflatex: a delimited argument sees an \outer macro as a space followed
+/// by the inserted \par, which ends the call unless the delimiter is \par.
+#[test]
+fn outer_macro_in_delimited_argument_matches_the_inserted_par() {
+    let e = run_lenient(
+        r"\outer\def\o{\message{[O]}}
+\def\a#1\par{[#1]}\edef\x{\a\o\par}\message{[\meaning\x]}
+\end",
+    );
+    assert_eq!(
+        messages(&e),
+        [
+            "Forbidden control sequence found while scanning use of \\a",
+            "Forbidden control sequence found while scanning definition of \\x",
+            "Too many }'s",
+        ],
+        "{}",
+        e.term
+    );
+    assert!(e.term.contains("[macro:->[ ] ]"), "{}", e.term);
+}
+
+/// pdflatex: the end of the input inside an absorbing scan is reported like
+/// an \outer macro (once), then the job stops.
+#[test]
+fn end_of_input_inside_absorbing_scans() {
+    for (source, expected) in [
+        (r"\def\a{x", "File ended while scanning definition of \\a"),
+        (r"\message{x", "File ended while scanning text of \\message"),
+        (r"\halign{#", "File ended while scanning preamble of \\halign"),
+        (r"\def\a#1.{}\a x", "File ended while scanning use of \\a"),
+        (r"\iffalse x", "Incomplete \\iffalse; all text was ignored after line 2"),
+    ] {
+        let e = run_lenient(source);
+        let found = messages(&e);
+        assert_eq!(found.first().copied(), Some(expected), "{source}: {found:?}");
+    }
+}
+
 /// pdflatex: inside \csname, a \noexpand-marked token means \relax, which
 /// ends the name with "Missing \endcsname inserted"; it is read again.
 #[test]

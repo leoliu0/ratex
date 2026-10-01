@@ -413,7 +413,7 @@ impl Engine {
             if t.is_char() && t.chr() == b'`' as u32 {
                 // char constant: next token RAW (no expansion; tex.web get_token
                 // does not expand); a cs contributes its name's first char
-                let t2 = self.raw_token();
+                let t2 = self.raw_token_outer();
                 if t2.is_char() {
                     v = t2.chr() as i64;
                     // tex.web §442: undo raw_token's brace-depth adjustment for
@@ -1810,10 +1810,15 @@ impl Engine {
         loop {
             let raw = self.raw_token();
             if raw == crate::input::EOF_MARKER {
-                self.fatal_error_at(
-                    "Missing } in expanded text",
-                    origin.as_ref().map(crate::input::SourceMark::to_context),
-                );
+                if self.outer_scan.is_some() {
+                    // tex.web §336: the inserted `}` ends the text.
+                    self.outer_scan_file_ended(origin.as_ref());
+                } else {
+                    self.fatal_error_at(
+                        "Missing } in expanded text",
+                        origin.as_ref().map(crate::input::SourceMark::to_context),
+                    );
+                }
                 self.in_expanded_scan = prev_expanded_scan;
                 self.csname_depth = prev_csname_depth;
                 return out;

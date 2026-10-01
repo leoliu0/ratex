@@ -270,6 +270,7 @@ impl Engine {
         }
         self.align_origin = origin;
         self.align_is_valign = false;
+        self.align_pushed_base = self.pushed.len();
         self.align_state = PH_IDLE;
         // tex.web §15332 / §15369: align_state := -1000000 while preamble scans.
         self.align_brace_depth = -1_000_000;
@@ -375,6 +376,7 @@ impl Engine {
         }
         self.align_origin = origin;
         self.align_is_valign = true;
+        self.align_pushed_base = self.pushed.len();
         self.align_state = PH_IDLE;
         self.align_brace_depth = -1_000_000;
         self.scanner_status = ScannerStatus::Aligning;
@@ -482,7 +484,7 @@ impl Engine {
             return false;
         }
         if !self.token_is_left_brace(t) {
-            self.error("Missing { inserted for alignment preamble");
+            self.error("Missing { inserted");
             if !(t.is_char() && t.cc() == 2) {
                 // a stray } must not close the (not yet started) group
                 self.pushed.push(t);
@@ -492,6 +494,7 @@ impl Engine {
         let mut cur = ColSpec::default();
         let mut in_u = true;
         let mut depth = 0i32;
+        let mut loop_seen = false;
         // tex.web §777: scanner_status:=aligning, warning_index:=\halign.
         let owner = self
             .cs
@@ -507,17 +510,18 @@ impl Engine {
             // size machinery loops. Resolve CharTok/prims only to RECOGNIZE
             // structural tokens (array's \\@sharp is \\let to #); store the
             // original token.
-            let t = self.raw_token();
+            let t = self.raw_token_outer();
             if t == crate::input::EOF_MARKER {
-                self.outer_scan = saved_outer_scan;
-                self.fatal_alignment_eof("File ended while scanning an alignment preamble");
-                return false;
+                // tex.web §336: the inserted `\cr}` ends the preamble and the
+                // alignment; the end of the input is read again afterwards.
+                let origin = self.align_origin.clone();
+                self.outer_scan_file_ended(origin.as_ref());
+                self.push_token(Token::char(2, b'}' as u32));
+                if in_u {
+                    self.error("Missing # inserted in alignment preamble");
+                }
+                break;
             }
-            let t = if self.is_outer_macro_token(t) {
-                self.forbidden_outer(t)
-            } else {
-                t
-            };
             let t = if t == crate::input::PAR_END {
                 Token::from_cs(self.partoken_id())
             } else {
@@ -540,13 +544,20 @@ impl Engine {
                 t
             };
             match prim {
-                Some(Prim::Cr) | Some(Prim::CrCr) => break,
+                Some(Prim::Cr) | Some(Prim::CrCr) => {
+                    if in_u {
+                        self.error("Missing # inserted in alignment preamble");
+                    }
+                    break;
+                }
                 Some(Prim::Span) => {
-                    // tex.web §783: in the preamble, `\span` causes the
-                    // following macro to be expanded! It does NOT mean
+                    // tex.web §782: in the preamble, `\span` causes the
+                    // following token to be expanded, once. It does NOT mean
                     // multicolumn (that is only valid in row cells).
-                    let next = self.get_token();
-                    self.pushed.push(next);
+                    let next = self.raw_token_outer();
+                    if !self.expand_token_once(next) {
+                        self.pushed.push(next);
+                    }
                     continue;
                 }
                 Some(Prim::Omit) => {
@@ -581,20 +592,28 @@ impl Engine {
                         if in_u {
                             in_u = false;
                         } else {
-                            self.error("Only one # allowed per alignment entry");
+                            self.error("Only one # is allowed per tab");
                         }
                         continue;
                     }
                     4 if depth == 0 => {
                         let all_spaces =
                             cur.u_part.iter().all(|tok| tok.is_char() && tok.cc() == 10);
-                        if in_u && (cur.u_part.is_empty() || all_spaces) && cur.v_part.is_empty() {
+                        if in_u
+                            && (cur.u_part.is_empty() || all_spaces)
+                            && cur.v_part.is_empty()
+                            && !loop_seen
+                        {
                             // tex.web §782: an empty template between two &
                             // marks the start of the periodic preamble. This
                             // may follow already completed columns (`#&&...`).
+                            loop_seen = true;
                             self.align_loop_start = Some(entries.len());
                             cur.u_part.clear();
                         } else {
+                            if in_u {
+                                self.error("Missing # inserted in alignment preamble");
+                            }
                             cur.tabskip =
                                 self.eqtb.glue_params[GlueParam::TabSkip.idx() as usize].clone();
                             entries.push(std::mem::take(&mut cur));
@@ -828,9 +847,19 @@ impl Engine {
         }
         self.align_push_close(AlignCloseReason::NextCell);
     }
+
+    /// tex.web §1128 align_error: `Misplaced \cr`, or `\crcr`.
+    fn misplaced_cr(&mut self) {
+        if self.cur_prim == Some(Prim::CrCr) {
+            self.error("Misplaced \\crcr");
+        } else {
+            self.error("Misplaced \\cr");
+        }
+    }
+
     pub fn align_cr(&mut self) {
         if self.scanner_status != ScannerStatus::Aligning {
-            self.error("Misplaced \\cr");
+            self.misplaced_cr();
             return;
         }
         if self.align_state & PH_CLOSE != 0 {
@@ -859,7 +888,7 @@ impl Engine {
         // or fully outside a cell is misplaced; otherwise let the close
         // stream's v part unwind the template groups and finish the cell.
         if self.align_phase() == PH_IDLE || !self.box_kinds.contains(&CELL_GROUP_KIND) {
-            self.error("Misplaced \\cr");
+            self.misplaced_cr();
             return;
         }
         if self.align_phase() == PH_U {

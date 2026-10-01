@@ -607,6 +607,10 @@ pub struct Engine {
     /// (definition, general text, alignment preamble): an \outer macro read
     /// while it is set is reported by `forbidden_outer` (§336-§339).
     pub(crate) outer_scan: Option<(crate::expand::OuterScan, Option<CsId>)>,
+    /// The end of the input was already reported as ending an absorbing
+    /// scan; tex.web turns to the terminal afterwards and stops, so the
+    /// end of the input is reported only once (§362).
+    pub(crate) eof_reported: bool,
     /// Semantic nest frames: mode, list, previous depth, space factor,
     /// paragraph lines of the enclosing level, and the input line at which
     /// the level pushed above it was entered (tex.web `mode_line`).
@@ -1240,6 +1244,7 @@ impl Engine {
             math_style_stack: Vec::new(),
             scanner_status: ScannerStatus::Normal,
             outer_scan: None,
+            eof_reported: false,
             saved_lists: Vec::new(),
             output_nest_mark: (0, 0),
             pack_begin_line: 0,

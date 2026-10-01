@@ -4,7 +4,10 @@
 use crate::gc::{GcString, StringPtr};
 use crate::lua_value::{
     LuaValue,
-    lua_value::{LUA_TNIL, LUA_VEMPTY, LUA_VNIL, LUA_VNUMINT, LUA_VSHRSTR, Value, novariant},
+    lua_value::{
+        LUA_TNIL, LUA_VEMPTY, LUA_VNIL, LUA_VNUMINT, LUA_VSHRSTR, Value, float_exact_integer,
+        novariant,
+    },
     short_string_ptr_eq,
 };
 
@@ -1385,19 +1388,14 @@ impl NativeTable {
     /// Generic get
     #[inline]
     pub fn raw_get(&self, key: &LuaValue) -> Option<LuaValue> {
-        // Normalize float keys to integer if they have no fractional part
-        // This ensures t[3.0] and t[3] refer to the same slot
-        // Only check actual float type (ttisfloat), not integers
+        // A float key with an exact integer value is that integer key
+        // (t[3.0] is t[3], t[-0.0] is t[0]; 2^63 stays a float key).
         let mut key = *key;
-        if key.ttisfloat() {
-            let f = key.fltvalue();
-            if f.fract() == 0.0 && f.is_finite() {
-                let i = f as i64;
-                if i as f64 == f {
-                    key = LuaValue::integer(i);
-                }
-            }
-        };
+        if key.ttisfloat()
+            && let Some(i) = float_exact_integer(key.fltvalue())
+        {
+            key = LuaValue::integer(i);
+        }
 
         // Try array part for integers
         if key.ttisinteger() {
@@ -1666,19 +1664,14 @@ impl NativeTable {
     /// NOT inlined: contains resize/rehash cold paths (resize_array, set_node,
     /// migrate_hash_int_keys_to_array) that must NOT inflate lua_execute's frame.
     pub fn raw_set(&mut self, key: &LuaValue, value: LuaValue) -> (bool, isize) {
-        // Normalize float keys to integer if they have no fractional part
-        // This ensures t[3.0] and t[3] refer to the same slot
-        // Only check actual float type (ttisfloat), not integers
+        // A float key with an exact integer value is that integer key
+        // (t[3.0] is t[3], t[-0.0] is t[0]; 2^63 stays a float key).
         let mut key = *key;
-        if key.ttisfloat() {
-            let f = key.fltvalue();
-            if f.fract() == 0.0 && f.is_finite() {
-                let i = f as i64;
-                if i as f64 == f {
-                    key = LuaValue::integer(i);
-                }
-            }
-        };
+        if key.ttisfloat()
+            && let Some(i) = float_exact_integer(key.fltvalue())
+        {
+            key = LuaValue::integer(i);
+        }
 
         // Check if key is an integer in array range (lua5.5's keyinarray check)
         if key.ttisinteger() {

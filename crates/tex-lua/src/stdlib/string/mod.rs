@@ -464,14 +464,8 @@ fn string_gmatch(l: &mut LuaState) -> LuaResult<usize> {
         let init = start_pos(lauxlib::opt_integer(l, 3, 1)?, s.len()) - 1;
         (init as usize).min(s.len() + 1)
     };
-    let s = match s {
-        LStr::Value(value) => value,
-        LStr::Number(text) => l.create_bytes(text.as_bytes())?,
-    };
-    let p = match p {
-        LStr::Value(value) => value,
-        LStr::Number(text) => l.create_bytes(text.as_bytes())?,
-    };
+    let s = s.into_value(l)?;
+    let p = p.into_value(l)?;
     // Upvalues: subject, pattern, next start, end of the last match (-1: none).
     let closure = l.global_state_mut().create_c_closure(
         gmatch_aux,

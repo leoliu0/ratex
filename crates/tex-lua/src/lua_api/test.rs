@@ -534,6 +534,106 @@ mod tests {
         assert_eq!(message, "boom");
     }
 
+    fn top_level_error(lua: &mut Lua, source: &str) -> String {
+        let err = lua.load(source).set_name("=(command line)").exec().unwrap_err();
+        lua.get_error_message(err).message
+    }
+
+    // Expectations: `lua -e` (Lua 5.5.1) and `texlua` (LuaTeX 1.24) output for
+    // the same chunks, without lua.c's own bottom frame "[C]: in ?".
+    #[test]
+    fn top_level_errors_unwind_their_frames() {
+        let mut lua = Lua::new(SafeOption::default());
+        lua.open_stdlib(Stdlib::All).unwrap();
+        let boom = "boom\nstack traceback:\n\t[C]: in global 'error'\n\t\
+                    (command line):1: in local 'f'\n\t(command line):1: in main chunk";
+        for _ in 0..3 {
+            let message = top_level_error(&mut lua, "local function f() error('boom', 0) end f()");
+            assert_eq!(message, boom);
+        }
+        let traceback: String = lua
+            .load("return debug.traceback('tb')")
+            .set_name("=(command line)")
+            .eval()
+            .unwrap();
+        assert_eq!(traceback, "tb\nstack traceback:\n\t(command line):1: in main chunk");
+    }
+
+    #[test]
+    fn top_level_error_closes_pending_variables_with_the_handled_error() {
+        let mut lua = Lua::new(SafeOption::default());
+        lua.open_stdlib(Stdlib::All).unwrap();
+        let message = top_level_error(
+            &mut lua,
+            "local function f()\n\
+             local x <close> = setmetatable({}, {__close = function(_, e) seen = e error('in close') end})\n\
+             error('e')\n\
+             end\n\
+             f()",
+        );
+        assert_eq!(
+            message,
+            "(command line):2: in close\nstack traceback:\n\t[C]: in global 'error'\n\t\
+             (command line):2: in function <(command line):2>"
+        );
+        let seen: String = lua.load("return seen").eval().unwrap();
+        assert_eq!(
+            seen,
+            "(command line):3: e\nstack traceback:\n\t[C]: in global 'error'\n\t\
+             (command line):3: in local 'f'\n\t(command line):5: in main chunk"
+        );
+    }
+
+    #[test]
+    fn top_level_error_objects_are_reported_like_lua_c() {
+        let mut lua = Lua::new_lua53(SafeOption::default());
+        lua.open_stdlib(Stdlib::All).unwrap();
+        let tail = "\nstack traceback:\n\t[C]: in function 'error'\n\t(command line):1: in main chunk";
+        assert_eq!(top_level_error(&mut lua, "error(2^53)"), format!("9.007199254741e+15{tail}"));
+        assert_eq!(top_level_error(&mut lua, "error(-0.0)"), format!("-0.0{tail}"));
+        assert_eq!(top_level_error(&mut lua, "error({})"), format!("(error object is a table value){tail}"));
+        assert_eq!(top_level_error(&mut lua, "error()"), format!("(error object is a nil value){tail}"));
+        let tostring = "error(setmetatable({}, {__tostring = function() return 'TS' end}))";
+        assert_eq!(top_level_error(&mut lua, tostring), "TS");
+    }
+
+    // Expectations: `texlua` (Lua 5.3) and `lua5.5` print "2 3 nil 4 2" and "2 a b".
+    #[test]
+    fn float_keys_equal_to_integers_are_the_integer_keys() {
+        for mut lua in [Lua::new_lua53(SafeOption::default()), Lua::new(SafeOption::default())] {
+            lua.open_stdlib(Stdlib::All).unwrap();
+            let keys: String = lua
+                .load(
+                    "local t = {} t[0.0]=1 t[-0.0]=2 t[2^53]=3 t[2^63]=4 \
+                     return table.concat({tostring(t[0]), tostring(t[math.tointeger(2^53)]), \
+                     tostring(t[math.maxinteger]), tostring(t[2^63]), tostring(t[-0.0])}, ' ')",
+                )
+                .eval()
+                .unwrap();
+            assert_eq!(keys, "2 3 nil 4 2");
+            let array: String = lua
+                .load("local u = {} u[1.0]='a' u[2]='b' return #u .. ' ' .. u[1] .. ' ' .. u[2.0]")
+                .eval()
+                .unwrap();
+            assert_eq!(array, "2 a b");
+        }
+    }
+
+    // Expectations: `texlua` (LUA_UCID: every byte >= 0x80 is a letter) prints
+    // "1 2 2"; stock Lua 5.5 rejects the same chunk with "<name> expected near ...".
+    #[test]
+    fn utf8_identifiers_follow_the_language_level() {
+        let source = "local é = 1 local t = {日 = 2} return é .. ' ' .. t.日 .. ' ' .. #'é'";
+        let mut lua = Lua::new_lua53(SafeOption::default());
+        lua.open_stdlib(Stdlib::All).unwrap();
+        assert_eq!(lua.load(source).eval::<String>().unwrap(), "1 2 2");
+
+        let mut lua = Lua::new(SafeOption::default());
+        lua.open_stdlib(Stdlib::All).unwrap();
+        let err = lua.load(source).eval::<String>().unwrap_err();
+        assert!(lua.get_error_message(err).message.contains("expected near"));
+    }
+
     #[test]
     fn typed_integer_args_follow_lua_checkinteger() {
         let mut lua = Lua::new_lua53(SafeOption::default());
@@ -701,13 +801,13 @@ mod tests {
         let mut lua = Lua::new(SafeOption::default());
         lua.open_stdlib(Stdlib::All).unwrap();
 
-        let module = crate::lua_module!("hostlib", {
+        let module = crate::lib_module!("hostlib", {
             "answer" => |l| {
                 l.push_value(crate::LuaValue::integer(42))?;
                 Ok(1)
             },
-            value "name" => |vm| vm.create_string("hostlib"),
-        });
+        })
+        .with_value("name", |vm| vm.create_string("hostlib"));
 
         lua.install_library(module).unwrap();
 
@@ -715,28 +815,6 @@ mod tests {
         let name: String = lua.load("return hostlib.name").eval().unwrap();
         assert_eq!(answer, 42);
         assert_eq!(name, "hostlib");
-    }
-
-    #[test]
-    fn high_level_lua_install_preload_library_works() {
-        let mut lua = Lua::new(SafeOption::default());
-        lua.open_stdlib(Stdlib::All).unwrap();
-
-        lua.install_library(crate::lua_preload_module!("test_install_module" => |l| {
-            let table = l.create_table(0, 1)?;
-            let key = l.create_string("value")?;
-            l.global_state_mut().raw_set(&table, key, crate::LuaValue::integer(42));
-            l.push_value(table)?;
-            Ok(1)
-        }))
-        .unwrap();
-
-        let value: i64 = lua
-            .load("local mod = require('test_install_module'); return mod.value")
-            .eval()
-            .unwrap();
-
-        assert_eq!(value, 42);
     }
 
     #[test]

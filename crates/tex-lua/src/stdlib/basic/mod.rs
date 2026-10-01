@@ -208,10 +208,7 @@ fn lua_tonumber(l: &mut LuaState) -> LuaResult<usize> {
 /// tostring(v) - Convert to string
 fn lua_tostring(l: &mut LuaState) -> LuaResult<usize> {
     let value = lauxlib::check_any(l, 1)?;
-    let result = match lauxlib::tolstring(l, &value)? {
-        lauxlib::LStr::Value(result) => result,
-        lauxlib::LStr::Number(text) => l.create_bytes(text.as_bytes())?,
-    };
+    let result = lauxlib::tolstring(l, &value)?.into_value(l)?;
     l.push_value(result)?;
     Ok(1)
 }

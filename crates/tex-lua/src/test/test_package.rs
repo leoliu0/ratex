@@ -1,15 +1,6 @@
 // Tests for package library and module system
 use crate::*;
 
-fn luaopen_test_install_module(l: &mut LuaState) -> LuaResult<usize> {
-    let table = l.create_table(0, 1)?;
-    let key = l.create_string("value")?;
-    l.global_state_mut()
-        .raw_set(&table, key, LuaValue::integer(42));
-    l.push_value(table)?;
-    Ok(1)
-}
-
 #[test]
 fn test_package_loaded() {
     let mut vm = GlobalState::new(SafeOption::default());
@@ -227,51 +218,6 @@ fn test_require_return_value() {
     );
 
     assert!(result.is_ok());
-}
-
-#[test]
-fn test_install_library_supports_library_module() {
-    let mut lua = crate::Lua::new(SafeOption::default());
-    lua.open_stdlib(crate::stdlib::Stdlib::All).unwrap();
-
-    let module = crate::lua_module!("hostlib", {
-        "answer" => |l| {
-            l.push_value(LuaValue::integer(42))?;
-            Ok(1)
-        }
-    });
-
-    lua.install_library(module).unwrap();
-
-    let result = lua.execute(
-        r#"
-        assert(type(hostlib) == "table")
-        assert(hostlib.answer() == 42)
-    "#,
-    );
-
-    assert!(result.is_ok(), "Error: {:?}", result.err());
-}
-
-#[test]
-fn test_install_library_supports_preload_modules() {
-    let mut lua = crate::Lua::new(SafeOption::default());
-    lua.open_stdlib(crate::stdlib::Stdlib::All).unwrap();
-
-    lua.install_library(
-        crate::lua_preload_module!("test_install_module" => luaopen_test_install_module),
-    )
-    .unwrap();
-
-    let result = lua.execute(
-        r#"
-        local mod = require('test_install_module')
-        assert(type(mod) == "table")
-        assert(mod.value == 42)
-    "#,
-    );
-
-    assert!(result.is_ok(), "Error: {:?}", result.err());
 }
 
 /// Write `files` into a fresh directory and run `code` with package.path

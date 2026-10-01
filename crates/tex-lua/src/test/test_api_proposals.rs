@@ -128,7 +128,9 @@ fn test_register_function_typed_userdata_ref() {
     let mut vm = GlobalState::new(SafeOption::default());
     vm.open_stdlib(Stdlib::All).unwrap();
 
-    let counter = vm.create_any(Counter { count: 1 }).unwrap();
+    let counter = vm
+        .create_userdata(crate::LuaUserdata::new(crate::OpaqueUserData::new(Counter { count: 1 })))
+        .unwrap();
     vm.set_global("counter", counter).unwrap();
 
     vm.register_function_typed(
@@ -474,28 +476,6 @@ fn test_get_global_as_none() {
     let mut vm = GlobalState::new(SafeOption::default());
     let result = vm.main_state().get_global_as::<i64>("nonexistent").unwrap();
     assert!(result.is_none());
-}
-
-// ============================
-// P8: open_stdlibs
-// ============================
-
-#[test]
-fn test_open_stdlibs() {
-    let mut vm = GlobalState::new(SafeOption::default());
-    vm.open_stdlibs(&[Stdlib::Math, Stdlib::String, Stdlib::Table])
-        .unwrap();
-
-    // Math should work
-    let results = vm.main_state().execute("return math.abs(-5)").unwrap();
-    assert_eq!(results[0].as_integer(), Some(5));
-
-    // String should work
-    let results = vm
-        .main_state()
-        .execute("return string.upper('hello')")
-        .unwrap();
-    assert_eq!(results[0].as_str(), Some("HELLO"));
 }
 
 // ============================

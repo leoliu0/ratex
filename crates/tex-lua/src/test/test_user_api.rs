@@ -1,6 +1,27 @@
 // Tests for the user-facing Ref API and related features
 use crate::lua_vm::SafeOption;
-use crate::{GlobalState, LuaValue, Stdlib, UdValue, UserDataRef, UserDataTrait};
+use crate::{
+    GlobalState, LuaFunctionRef, LuaTableRef, LuaValue, Stdlib, UdValue, UserDataRef, UserDataTrait,
+};
+
+fn global_table(vm: &mut GlobalState, name: &str) -> Option<LuaTableRef> {
+    let value = vm.get_global(name).unwrap()?;
+    vm.to_table_ref(value)
+}
+
+fn global_function(vm: &mut GlobalState, name: &str) -> Option<LuaFunctionRef> {
+    let value = vm.get_global(name).unwrap()?;
+    vm.to_function_ref(value)
+}
+
+/// The registry entry of a reference id; nil once the reference is released.
+fn registry_value(vm: &GlobalState, ref_id: crate::lua_vm::RefId) -> LuaValue {
+    vm.registry_geti(ref_id as i64).unwrap_or_default()
+}
+
+fn opaque<T: 'static>(vm: &mut GlobalState, value: T) -> LuaValue {
+    vm.create_userdata(crate::LuaUserdata::new(crate::OpaqueUserData::new(value))).unwrap()
+}
 
 struct ApiCounter {
     count: i64,
@@ -104,7 +125,7 @@ fn test_table_ref_from_global() {
         )
         .unwrap();
 
-    let config = vm.get_global_table("config").unwrap().unwrap();
+    let config = global_table(&mut vm, "config").unwrap();
     let host: String = config.get_as("host").unwrap();
     assert_eq!(host, "localhost");
     let port: i64 = config.get_as("port").unwrap();
@@ -136,7 +157,7 @@ fn test_lua_state_create_userdata_handle_survives_gc() {
     let mut vm = GlobalState::new(SafeOption::default());
     let state = vm.main_state();
 
-    let mut counter = state
+    let counter = state
         .create_userdata_handle(ApiCounter { count: 7 })
         .unwrap();
     state.collect_garbage().unwrap();
@@ -158,7 +179,7 @@ fn test_table_ref_auto_drop() {
         tbl.set("x", LuaValue::integer(1)).unwrap();
     }
     // After drop, the registry entry should be cleared
-    let val = vm.get_ref_value_by_id(ref_id);
+    let val = registry_value(&vm, ref_id);
     assert!(val.is_nil(), "Registry entry should be released on drop");
 }
 
@@ -179,7 +200,7 @@ fn test_function_ref_call() {
         )
         .unwrap();
 
-    let add = vm.get_global_function("add").unwrap().unwrap();
+    let add = global_function(&mut vm, "add").unwrap();
     let results = add
         .call_raw(vec![LuaValue::integer(3), LuaValue::integer(4)])
         .unwrap();
@@ -199,7 +220,7 @@ fn test_function_ref_call1() {
         )
         .unwrap();
 
-    let greet = vm.get_global_function("greet").unwrap().unwrap();
+    let greet = global_function(&mut vm, "greet").unwrap();
     let name = vm.create_string("World").unwrap();
     let result = greet.call1_raw(vec![name]).unwrap();
     assert_eq!(result.as_str(), Some("Hello, World"));
@@ -218,7 +239,7 @@ fn test_function_ref_call1_typed() {
         )
         .unwrap();
 
-    let greet = vm.get_global_function("greet").unwrap().unwrap();
+    let greet = global_function(&mut vm, "greet").unwrap();
     let result: String = greet.call1("World").unwrap();
     assert_eq!(result, "Hello, World");
 }
@@ -236,7 +257,7 @@ fn test_function_ref_call_typed_multi_return() {
         )
         .unwrap();
 
-    let stats = vm.get_global_function("stats").unwrap().unwrap();
+    let stats = global_function(&mut vm, "stats").unwrap();
     let result: (i64, i64, i64) = stats.call((7, 3)).unwrap();
     assert_eq!(result, (10, 21, 4));
 }
@@ -254,7 +275,7 @@ fn test_function_ref_call_typed_no_args() {
         )
         .unwrap();
 
-    let ping = vm.get_global_function("ping").unwrap().unwrap();
+    let ping = global_function(&mut vm, "ping").unwrap();
     let result: i64 = ping.call1(()).unwrap();
     assert_eq!(result, 42);
 }
@@ -274,7 +295,7 @@ fn test_function_ref_multiple_calls() {
         )
         .unwrap();
 
-    let inc = vm.get_global_function("inc").unwrap().unwrap();
+    let inc = global_function(&mut vm, "inc").unwrap();
     assert_eq!(inc.call1_raw(vec![]).unwrap().as_integer(), Some(1));
     assert_eq!(inc.call1_raw(vec![]).unwrap().as_integer(), Some(2));
     assert_eq!(inc.call1_raw(vec![]).unwrap().as_integer(), Some(3));
@@ -287,10 +308,10 @@ fn test_function_ref_auto_drop() {
 
     let ref_id;
     {
-        let f = vm.get_global_function("noop").unwrap().unwrap();
+        let f = global_function(&mut vm, "noop").unwrap();
         ref_id = f.ref_id();
     }
-    let val = vm.get_ref_value_by_id(ref_id);
+    let val = registry_value(&vm, ref_id);
     assert!(val.is_nil(), "Function ref should be released on drop");
 }
 
@@ -319,7 +340,7 @@ fn test_string_ref_auto_drop() {
         let sref = vm.to_string_ref(s).unwrap();
         ref_id = sref.ref_id();
     }
-    let val = vm.get_ref_value_by_id(ref_id);
+    let val = registry_value(&vm, ref_id);
     assert!(val.is_nil());
 }
 
@@ -423,7 +444,7 @@ fn test_push_any_basic() {
         value: 42,
     };
 
-    let ud = vm.create_any(config).unwrap();
+    let ud = opaque(&mut vm, config);
     assert!(ud.is_userdata());
     vm.set_global("my_config", ud).unwrap();
 
@@ -444,7 +465,7 @@ fn test_push_any_downcast() {
     }
 
     let point = Point { x: 3.0, y: 4.0 };
-    let ud = vm.create_any(point).unwrap();
+    let ud = opaque(&mut vm, point);
     vm.set_global("pt", ud).unwrap();
 
     // Retrieve via Rust and downcast
@@ -464,7 +485,7 @@ fn test_push_any_in_callback() {
     }
 
     let counter = Counter { count: 0 };
-    let ud = vm.create_any(counter).unwrap();
+    let ud = opaque(&mut vm, counter);
     vm.set_global("counter", ud).unwrap();
 
     // Register a function that mutates the opaque userdata
@@ -492,107 +513,6 @@ fn test_push_any_in_callback() {
 }
 
 // ============================================================================
-// UserDataBuilder tests
-// ============================================================================
-
-#[test]
-fn test_userdata_builder_fields() {
-    use crate::lua_value::UserDataBuilder;
-
-    let mut vm = GlobalState::new(SafeOption::default());
-    vm.open_stdlib(Stdlib::Basic).unwrap();
-
-    struct Address {
-        ip: String,
-        port: u16,
-    }
-
-    let addr = Address {
-        ip: "127.0.0.1".to_owned(),
-        port: 8080,
-    };
-
-    let ud = UserDataBuilder::new(addr)
-        .set_type_name("Address")
-        .add_field_getter("ip", |a| crate::UdValue::Str(a.ip.clone()))
-        .add_field_getter("port", |a| crate::UdValue::Integer(a.port as i64))
-        .build(&mut vm)
-        .unwrap();
-
-    vm.set_global("addr", ud).unwrap();
-
-    let results = vm.main_state().execute("return addr.ip").unwrap();
-    assert_eq!(results[0].as_str(), Some("127.0.0.1"));
-
-    let results = vm.main_state().execute("return addr.port").unwrap();
-    assert_eq!(results[0].as_integer(), Some(8080));
-}
-
-#[test]
-fn test_userdata_builder_tostring() {
-    use crate::lua_value::UserDataBuilder;
-
-    let mut vm = GlobalState::new(SafeOption::default());
-    vm.open_stdlib(Stdlib::Basic).unwrap();
-
-    struct Version {
-        major: u32,
-        minor: u32,
-        patch: u32,
-    }
-
-    let ver = Version {
-        major: 1,
-        minor: 2,
-        patch: 3,
-    };
-
-    let ud = UserDataBuilder::new(ver)
-        .set_type_name("Version")
-        .set_tostring(|v| format!("{}.{}.{}", v.major, v.minor, v.patch))
-        .build(&mut vm)
-        .unwrap();
-
-    vm.set_global("ver", ud).unwrap();
-
-    let results = vm.main_state().execute("return tostring(ver)").unwrap();
-    assert_eq!(results[0].as_str(), Some("1.2.3"));
-}
-
-#[test]
-fn test_userdata_builder_setter() {
-    use crate::lua_value::UserDataBuilder;
-
-    let mut vm = GlobalState::new(SafeOption::default());
-
-    struct Config {
-        debug: bool,
-    }
-
-    let cfg = Config { debug: false };
-
-    let ud = UserDataBuilder::new(cfg)
-        .add_field_getter("debug", |c| crate::UdValue::Boolean(c.debug))
-        .add_field_setter("debug", |c, v| {
-            c.debug = v.to_bool();
-            Ok(())
-        })
-        .build(&mut vm)
-        .unwrap();
-
-    vm.set_global("cfg", ud).unwrap();
-
-    // Read default
-    let results = vm.main_state().execute("return cfg.debug").unwrap();
-    assert_eq!(results[0].as_boolean(), Some(false));
-
-    // Set and read back
-    vm.main_state().execute("cfg.debug = true").unwrap();
-    let results = vm.main_state().execute("return cfg.debug").unwrap();
-    assert_eq!(results[0].as_boolean(), Some(true));
-}
-
-// ============================================================================
 // to_ref / to_table_ref / to_function_ref type checks
 // ============================================================================
 
@@ -611,6 +531,6 @@ fn test_to_ref_type_mismatch() {
 #[test]
 fn test_get_global_nonexistent() {
     let mut vm = GlobalState::new(SafeOption::default());
-    assert!(vm.get_global_table("nonexistent").unwrap().is_none());
-    assert!(vm.get_global_function("nonexistent").unwrap().is_none());
+    assert!(global_table(&mut vm, "nonexistent").is_none());
+    assert!(global_function(&mut vm, "nonexistent").is_none());
 }

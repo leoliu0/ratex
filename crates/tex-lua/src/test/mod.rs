@@ -9,6 +9,7 @@ pub mod test_metamethods;
 pub mod test_miri_smoke;
 pub mod test_operators;
 pub mod test_os; // OS library tests
+pub mod test_pack;
 pub mod test_package;
 pub mod test_string;
 pub mod test_syntax;

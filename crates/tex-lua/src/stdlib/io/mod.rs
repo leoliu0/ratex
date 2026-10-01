@@ -9,7 +9,7 @@ use crate::lib_registry::LibraryModule;
 use crate::lua_value::{LuaUserdata, LuaValue};
 use crate::lua_vm::lua_limits::MAX_STRING_SIZE;
 use crate::lua_vm::{LuaResult, LuaState};
-use crate::stdlib::lauxlib;
+use crate::stdlib::{lauxlib, numfmt};
 use crate::LuaLanguageLevel;
 use file::{BufMode, CloseStatus};
 pub use file::LuaFile;
@@ -704,7 +704,13 @@ fn g_write(l: &mut LuaState, handle: LuaValue, file: &mut LuaFile, first: usize)
         } else if let Some(n) = value.as_integer_strict() {
             number.format(n).as_bytes()
         } else if value.is_float() {
-            float_text = value.as_number().unwrap_or_default().to_string();
+            // 5.3 prints LUA_NUMBER_FMT; 5.4+ prints what tostring gives.
+            let n = value.as_number().unwrap_or_default();
+            float_text = if lua53 {
+                numfmt::number2str(n, LuaLanguageLevel::Lua53)
+            } else {
+                numfmt::tostring_float(n, l.global_state().language())
+            };
             float_text.as_bytes()
         } else {
             converted = lauxlib::check_lstring(l, narg)?;

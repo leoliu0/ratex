@@ -212,7 +212,7 @@ fn test_load_does_not_execute() {
 }
 
 #[test]
-fn test_explicit_close_of_default_output_restores_stdout() {
+fn test_explicit_close_of_default_output_leaves_it_closed() {
     let mut vm = GlobalState::new(SafeOption::default());
     vm.open_stdlib(Stdlib::All).unwrap();
 
@@ -233,7 +233,8 @@ fn test_explicit_close_of_default_output_restores_stdout() {
     let (ok, results) = vm.main_state().pcall(func, vec![]).unwrap();
     assert!(!ok);
     let err = results[0].as_str().unwrap();
-    assert!(err.contains("bad argument #1 to 'write'"), "{err}");
+    // As in C Lua, the default output stays closed until io.output changes it.
+    assert!(err.contains("default output file is closed"), "{err}");
 
     let _ = std::fs::remove_file(temp_path.replace("\\\\", "\\"));
 }

@@ -745,8 +745,26 @@ impl Engine {
                 let f = self.scan_font_id();
                 self.scan_optional_equals();
                 let v = self.scan_dimen(false, false);
+                let count = self
+                    .eqtb
+                    .font_params
+                    .get(f as usize)
+                    .map_or(0, Vec::len);
+                let last_font = f as usize + 1 >= self.eqtb.font_params.len();
                 if idx <= 0 {
                     self.error("Font dimension number must be positive");
+                } else if idx as usize > count && !last_font {
+                    // tex.web §579: only the most recently loaded font may
+                    // gain parameters.
+                    let name = self
+                        .eqtb
+                        .font_cs
+                        .get(f as usize)
+                        .map_or_else(|| format!("font {f}"), |&cs| self.display_cs(cs));
+                    self.error(&format!(
+                        "Font {} has only {count} fontdimen parameters",
+                        name.trim_end()
+                    ));
                 } else if idx > MAX_FONT_DIMENS {
                     self.error(&format!(
                         "TeX capacity exceeded, sorry [font dimensions={idx}; maximum={MAX_FONT_DIMENS}]"

@@ -304,3 +304,39 @@ fn outer_macros_end_arguments_and_skipped_text() {
         .iter()
         .any(|d| d.message.starts_with("Incomplete \\iffalse")));
 }
+
+/// pdflatex: \write text is expanded as `{text}\endwrite`, so an argument
+/// scan stops at the closing brace instead of running past the text.
+#[test]
+fn write_text_is_braced_for_argument_scanning() {
+    let e = run_lenient(
+        r"\def\b#1.{[#1]}
+\immediate\write16{[W:X\b a]}
+\message{AFTER}
+\end",
+    );
+    let messages: Vec<&str> = e.diagnostics.iter().map(|d| d.message.as_str()).collect();
+    assert!(messages.contains(&"Argument of \\b has an extra }"), "{messages:?}");
+    assert!(messages.contains(&"Paragraph ended before \\b was complete"), "{messages:?}");
+    assert!(e.term.contains("AFTER"), "{}", e.term);
+}
+
+/// pdflatex: only the most recently loaded font may gain \fontdimen
+/// parameters (tex.web §579).
+#[test]
+fn only_the_last_font_gains_fontdimen_parameters() {
+    let e = run_lenient(
+        r"\font\fa=cmr10 \font\fb=cmr10 at 11pt
+\fontdimen20\fa=1pt
+\fontdimen20\fb=2pt \message{[\the\fontdimen20\fb]}
+\end",
+    );
+    assert!(
+        e.diagnostics
+            .iter()
+            .any(|d| d.message == "Font \\fa has only 7 fontdimen parameters"),
+        "{}",
+        e.term
+    );
+    assert!(e.term.contains("[2.0pt]"), "{}", e.term);
+}

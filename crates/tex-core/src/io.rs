@@ -794,19 +794,47 @@ impl Engine {
         let errors_before = self.error_count;
         let saved_source = std::mem::replace(&mut self.diagnostic_source_override, source.cloned());
 
-        // The sentinel bounds the expansion: without it, a list whose final
-        // token expands away would let get_token continue into the OUTER
-        // stream and leak its tokens into the write string.
-        let mut body = toks.to_vec();
+        // tex.web §1371: the text is expanded as `{` text `}` \endwrite, so a
+        // macro argument cannot run past the text; the sentinel stands for
+        // the frozen outer \endwrite and bounds the expansion.
+        let mut body = Vec::with_capacity(toks.len() + 3);
+        body.push(Token::char(1, u32::from(b'{')));
+        body.extend_from_slice(toks);
+        body.push(Token::char(2, u32::from(b'}')));
         body.push(crate::page::WRITE_END_TOKEN);
         self.push_tokens_named(body, "<write>");
         let prev = self.in_expanded_scan;
         self.in_expanded_scan = true;
         let mut out: Vec<Token> = Vec::new();
+        let mut depth = 0usize;
         loop {
             let t = self.get_token();
             if t == crate::page::WRITE_END_TOKEN || t == crate::input::EOF_MARKER {
                 break;
+            }
+            if t.is_left_brace() {
+                depth += 1;
+                if depth == 1 {
+                    continue;
+                }
+            } else if t.is_right_brace() && depth > 0 {
+                depth -= 1;
+                if depth == 0 {
+                    // §1372: the balanced text must be followed by \endwrite.
+                    let next = self.get_token();
+                    if next != crate::page::WRITE_END_TOKEN && next != crate::input::EOF_MARKER {
+                        self.error("Unbalanced write command");
+                        loop {
+                            let skipped = self.get_token();
+                            if skipped == crate::page::WRITE_END_TOKEN
+                                || skipped == crate::input::EOF_MARKER
+                            {
+                                break;
+                            }
+                        }
+                    }
+                    break;
+                }
             }
             if out.len() >= crate::input::MAX_TOKEN_LIST_TOKENS {
                 self.fatal_error_at(

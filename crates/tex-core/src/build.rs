@@ -1696,7 +1696,11 @@ impl Engine {
             }
         }
         if let Some(m) = msg {
-            self.pack_warning_at(&m, source.map(|mark| mark.to_context()));
+            self.pack_warning_at(&m, source.as_ref().map(|mark| mark.to_context()));
+        }
+        // etex.ch hpack exit: "Report LR problems" after the glue report
+        if res.lr_problems > 0 {
+            self.report_lr_problems(res.lr_problems, source.map(|mark| mark.to_context()));
         }
     }
 
@@ -1889,7 +1893,13 @@ impl Engine {
                 let start = self.page_processed.min(self.page_list.len());
                 self.page_list[start..].last()
             }
-            _ => self.cur_list.last(),
+            // etex.ch find_effective_tail: a trailing \endM is transparent
+            _ => match self.cur_list.as_slice() {
+                [.., Node::MathKern(_, boxes::END_M)] => {
+                    self.cur_list.len().checked_sub(2).map(|i| &self.cur_list[i])
+                }
+                list => list.last(),
+            },
         }
     }
 
@@ -1913,7 +1923,20 @@ impl Engine {
                 }
                 self.page_list.pop()
             }
-            _ => self.cur_list.pop(),
+            _ => {
+                let n = self.cur_list.len();
+                if n >= 2 && matches!(self.cur_list[n - 1], Node::MathKern(_, boxes::END_M)) {
+                    // etex.ch fetch_effective_tail: take the node before the
+                    // \endM and drop a \beginM\endM pair it leaves empty
+                    let tx = self.cur_list.remove(n - 2);
+                    if n >= 3 && matches!(self.cur_list[n - 3], Node::MathKern(_, boxes::BEGIN_M)) {
+                        self.cur_list.truncate(n - 3);
+                    }
+                    Some(tx)
+                } else {
+                    self.cur_list.pop()
+                }
+            }
         }
     }
 
@@ -2593,7 +2616,13 @@ impl Engine {
         // a zero-width line whose adjustment post_line_break migrates into
         // the vertical list (treating it as abandoned stranded the float
         // box in `\@currlist`: `Float(s) lost`).
+        // etex.ch end_graf: `if LR_save<>null then flush_list(LR_save)` —
+        // init_math's line_break keeps it for the display and the resumption
+        let lr_key = self.saved_lists.len();
         if self.cur_list.is_empty() {
+            if !self.in_display_init {
+                self.lr_save_take(lr_key);
+            }
             // tex.web: \parshape/\looseness/\hangafter/\hangindent are reset
             // only in normal_paragraph (§1079) after a real line break — an
             // ABANDONED (empty) paragraph leaves them intact. LaTeX's list
@@ -2642,6 +2671,9 @@ impl Engine {
         });
 
         let lines = self.break_paragraph(content, fw, display_widow);
+        if !self.in_display_init {
+            self.lr_save_take(lr_key);
+        }
         let line_count = match &lines {
             Node::Box { list, .. } => list
                 .iter()

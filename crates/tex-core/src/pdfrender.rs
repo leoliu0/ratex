@@ -8,6 +8,8 @@ use crate::engine::Engine;
 use crate::pdfout::{Annot, PdfPage};
 use crate::prim::{DimParam, IntParam};
 
+mod lr;
+
 /// TeX sp to PDF bp
 #[inline]
 pub fn sp_to_bp(sp: i64) -> f64 {
@@ -243,6 +245,12 @@ pub struct RenderCtx<'a> {
     pub box_w_sp: i64,
     pub box_h_sp: i64,
     pub box_d_sp: i64,
+    /// e-TeX `box_lr` of the box about to be shipped (set with box_w_sp)
+    box_lr: u8,
+    /// etex.ch `cur_dir`: 1 while shipping right-to-left (reflected) text
+    cur_dir: u8,
+    /// etex.ch `LR_problems` accumulated during this ship_out
+    lr_problems: i32,
     // pdfTeX canonical text-object state (pdftex.web §16237+): one persistent
     // BT..ET per text section with relative Td / scaled Tm positioning, all
     // deltas accumulated on the integer sp raster exactly as pdfTeX does.
@@ -387,6 +395,9 @@ impl Engine {
             box_w_sp: 0,
             box_h_sp: 0,
             box_d_sp: 0,
+            box_lr: 0,
+            cur_dir: 0,
+            lr_problems: 0,
             doing_text: false,
             doing_string: false,
             doing_hex_string: false,
@@ -461,8 +472,9 @@ impl Engine {
         }
         // ship_out's this_box is the shipped box: running rule dimensions
         // at its top level take its width/height/depth (§624, §633)
-        if let Node::Box { w, h, d, .. } = page_box {
+        if let Node::Box { w, h, d, lr, .. } = page_box {
             (ctx.box_w_sp, ctx.box_h_sp, ctx.box_d_sp) = (*w as i64, *h as i64, *d as i64);
+            ctx.box_lr = *lr;
         }
         let x0 = ctx.eng.eqtb.dim_params[DimParam::PdfHOrigin.idx() as usize] as i64
             + ctx.eng.eqtb.dim_params[DimParam::HOffset.idx() as usize] as i64;
@@ -490,6 +502,11 @@ impl Engine {
         // pdfTeX's link stack outlives the page; annotation indices do not
         for link in ctx.eng.pdf_doc.link_stack.iter_mut() {
             link.annot = None;
+        }
+        // etex.ch "Check for LR anomalies at the end of ship_out"
+        if ctx.lr_problems > 0 {
+            let problems = std::mem::take(&mut ctx.lr_problems);
+            ctx.eng.report_lr_problems(problems, None);
         }
         // pdfTeX `pdfshipoutend` (utils.c §1367): a save left unmatched at
         // the end of the shipout is fatal (no output file).
@@ -713,6 +730,9 @@ impl<'a> RenderCtx<'a> {
     }
 
     fn vlist_nodes(&mut self, list: &NodeList, x: i64, y: i64, sign: u8, order: u8, set: f64) {
+        // etex.ch: shipping right-to-left, x is the vlist's right edge and
+        // boxes and rules hang leftwards from it
+        let rtl = self.cur_dir == 1;
         let mut cur_y = y;
         let mut glue_state = GlueState::default();
         for n in list {
@@ -727,9 +747,10 @@ impl<'a> RenderCtx<'a> {
                     glue_set,
                     list: inner,
                     kind,
-                    ..
+                    lr,
                 } => {
-                    let (bh, bd, sh) = (*h as i64, *d as i64, *shift as i64);
+                    let (bh, bd) = (*h as i64, *d as i64);
+                    let sh = if rtl { -(*shift as i64) } else { *shift as i64 };
 
                     // thread containing-box context for the inner list
                     let saved = (
@@ -741,6 +762,7 @@ impl<'a> RenderCtx<'a> {
                     self.left_edge_sp = x + sh;
                     (self.box_w_sp, self.box_h_sp, self.box_d_sp) =
                         (*w as i64, *h as i64, *d as i64);
+                    self.box_lr = *lr;
                     if *kind == HBOX {
                         // tex.web: a box's shift_amount is horizontal when
                         // the box sits in a VLIST (display boxes arrive here
@@ -777,7 +799,7 @@ impl<'a> RenderCtx<'a> {
                     };
                     let (rh, rd) = (*height as i64, *depth as i64);
                     let y1 = cur_y + rh; // top of rule
-                    self.emit_rect_sp(x, y1 + rd, w_sp, rh + rd);
+                    self.emit_rect_sp(if rtl { x - w_sp } else { x }, y1 + rd, w_sp, rh + rd);
                     cur_y += rh + rd;
                 }
                 Node::Glue(g) => {
@@ -807,7 +829,8 @@ impl<'a> RenderCtx<'a> {
                                 *width as i64
                             };
                             if w_sp > 0 && adv > 0 {
-                                self.emit_rect_sp(x, cur_y + adv, w_sp, adv);
+                                let rx = if rtl { x - w_sp } else { x };
+                                self.emit_rect_sp(rx, cur_y + adv, w_sp, adv);
                             }
                         }
                         LeaderBody::Box(b) => {
@@ -877,9 +900,31 @@ impl<'a> RenderCtx<'a> {
     }
 
     fn hlist_nodes(&mut self, list: &NodeList, x: i64, y: i64, sign: u8, order: u8, set: f64) {
+        // etex.ch hlist_out with TeXXeT material: LR stack and reversal
+        if self.eng.texxet_nodes {
+            return self.hlist_nodes_lr(list, x, y, sign, order, set);
+        }
         let mut cur_x = x;
         let mut glue_state = GlueState::default();
         for n in list {
+            cur_x = self.hlist_node_out(n, cur_x, y, &mut glue_state, sign, order, set);
+        }
+    }
+
+    /// output one hlist node at `cur_x`; returns the position after it
+    #[inline]
+    #[allow(clippy::too_many_arguments)]
+    fn hlist_node_out(
+        &mut self,
+        n: &Node,
+        mut cur_x: i64,
+        y: i64,
+        glue_state: &mut GlueState,
+        sign: u8,
+        order: u8,
+        set: f64,
+    ) -> i64 {
+        {
             match n {
                 Node::Char { c, font } => {
                     let adv = self.font_char_advance_sp(*font, *c);
@@ -910,7 +955,7 @@ impl<'a> RenderCtx<'a> {
                 Node::Kern(k)
                 | Node::ExplicitKern(k)
                 | Node::MarginKern { width: k, .. }
-                | Node::MathKern(k, 1 | 2) => {
+                | Node::MathKern(k, 1..) => {
                     cur_x += *k as i64;
                 }
                 Node::Penalty(_) => {}
@@ -944,7 +989,7 @@ impl<'a> RenderCtx<'a> {
                     glue_set,
                     list: inner,
                     kind,
-                    ..
+                    lr,
                 } => {
                     let (bw, bh, sh) = (*w as i64, *h as i64, *shift as i64);
 
@@ -955,18 +1000,22 @@ impl<'a> RenderCtx<'a> {
                         self.box_h_sp,
                         self.box_d_sp,
                     );
-                    self.left_edge_sp = if *kind == HBOX { cur_x } else { cur_x + sh };
+                    // etex.ch: right-to-left, a box is entered at its right
+                    // edge (`if cur_dir=right_to_left then cur_h:=edge`)
+                    let start_x = if self.cur_dir == 1 { cur_x + bw } else { cur_x };
+                    self.left_edge_sp = if *kind == HBOX { start_x } else { start_x + sh };
                     (self.box_w_sp, self.box_h_sp, self.box_d_sp) =
                         (*w as i64, *h as i64, *d as i64);
+                    self.box_lr = *lr;
                     if *kind == HBOX {
                         // hbox: the shift is vertical (baseline moves down)
                         let baseline = y + sh;
-                        self.ship_hlist(inner, cur_x, baseline, *glue_sign, *glue_order, *glue_set);
+                        self.ship_hlist(inner, start_x, baseline, *glue_sign, *glue_order, *glue_set);
                     } else {
                         // vbox/vtop in an hlist: the shift is vertical
                         self.ship_vlist(
                             inner,
-                            cur_x,
+                            start_x,
                             y + sh - bh,
                             *glue_sign,
                             *glue_order,
@@ -1001,7 +1050,8 @@ impl<'a> RenderCtx<'a> {
                             other => {
                                 let single: NodeList = vec![other.clone()];
                                 let (w, _, _) = crate::boxes::hlist_dims(&single, &self.eng.eqtb);
-                                self.hlist_nodes(&single, cur_x, y, sign, order, set);
+                                let mut fresh = GlueState::default();
+                                self.hlist_node_out(other, cur_x, y, &mut fresh, sign, order, set);
                                 cur_x += w as i64;
                             }
                         }
@@ -1030,12 +1080,16 @@ impl<'a> RenderCtx<'a> {
                             }
                         }
                         LeaderBody::Box(b) => {
+                            // etex.ch right-to-left: the first box starts
+                            // 10sp earlier (each copy is then entered at its
+                            // right edge by ship_leader_copy)
+                            let first = if self.cur_dir == 1 { cur_x - 10 } else { cur_x };
                             let (positions, _, _) = crate::boxes::leader_layout(
                                 *kind,
                                 lw as i64,
                                 adv,
                                 self.left_edge_sp,
-                                cur_x,
+                                first,
                             );
                             for pos in positions {
                                 self.ship_leader_copy(b, pos, y, false);
@@ -1057,6 +1111,7 @@ impl<'a> RenderCtx<'a> {
                 _ => {}
             }
         }
+        cur_x
     }
 
     /// ship one leader body copy. Horizontal (`vertical == false`): the
@@ -1073,7 +1128,7 @@ impl<'a> RenderCtx<'a> {
             glue_set,
             list: inner,
             kind,
-            ..
+            lr,
         } = b
         else {
             return;
@@ -1085,14 +1140,21 @@ impl<'a> RenderCtx<'a> {
             self.box_h_sp,
             self.box_d_sp,
         );
+        // etex.ch right-to-left: a horizontal copy is entered at its right
+        // edge (`cur_h:=cur_h+leader_wd`), a vertical one hangs left of the
+        // vlist's right edge (`cur_h:=left_edge-shift_amount`)
+        let rtl = self.cur_dir == 1;
+        let x = if rtl && !vertical { x + *w as i64 } else { x };
+        let sh_h = if rtl { -sh } else { sh };
         self.left_edge_sp = x;
         (self.box_w_sp, self.box_h_sp, self.box_d_sp) = (*w as i64, *h as i64, *d as i64);
+        self.box_lr = *lr;
         if vertical {
             if *kind == HBOX {
                 // hbox as a vlist item: top edge at `at`, baseline below
                 self.ship_hlist(inner, x, at + bh + sh, *glue_sign, *glue_order, *glue_set);
             } else {
-                self.ship_vlist(inner, x + sh, at, *glue_sign, *glue_order, *glue_set);
+                self.ship_vlist(inner, x + sh_h, at, *glue_sign, *glue_order, *glue_set);
             }
         } else if *kind == HBOX {
             self.ship_hlist(inner, x, at + sh, *glue_sign, *glue_order, *glue_set);

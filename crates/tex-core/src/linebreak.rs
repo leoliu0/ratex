@@ -443,8 +443,9 @@ impl Engine {
         let mut i = 0;
         while i < list.len() {
             match &list[i] {
-                // §866: math-off re-enables automatic breaking
-                Node::MathKern(_, kind @ (1 | 2)) => auto_breaking = *kind == 2,
+                // §866: math-off re-enables automatic breaking (etex.ch:
+                // only math nodes below L_code, i.e. not \beginL..\endR)
+                Node::MathKern(_, kind @ 1..=4) => auto_breaking = crate::boxes::math_end_lr(*kind),
                 Node::Glue(_) | Node::Leaders { .. } if auto_breaking => {
                     if let Some(edit) = self.hyphenate_word_after(list, i, &ctx) {
                         i = edit.1;
@@ -484,7 +485,13 @@ impl Engine {
                     font,
                     ..
                 } if *n_letters > 0 => (letters[0], *font),
+                // etex.ch: text-direction math nodes are skipped like kerns
                 Node::Ligature { .. } | Node::Kern(_) | Node::Whatsit(_) => {
+                    ha = s;
+                    s += 1;
+                    continue;
+                }
+                Node::MathKern(_, kind) if *kind >= crate::boxes::LR_KIND_MIN => {
                     ha = s;
                     s += 1;
                     continue;
@@ -580,6 +587,8 @@ impl Engine {
                     | Node::VAdjust(_)
                     | Node::Mark { .. },
                 ) => break,
+                // etex.ch: `math_node: if subtype(s)>=L_code then goto done4`
+                Some(Node::MathKern(_, kind)) if *kind >= crate::boxes::LR_KIND_MIN => break,
                 _ => return None,
             }
         }
@@ -966,7 +975,7 @@ impl Engine {
                     Node::Rule { width: w, .. } => (*w as i64, [0; 4], [0; 4], 0, 0),
                     Node::NativeGlyphRun { width, .. } => (*width as i64, [0; 4], [0; 4], 0, 0),
                     // math-on/off nodes carry \mathsurround
-                    Node::MathKern(k, 1 | 2) => (*k as i64, [0; 4], [0; 4], 0, 0),
+                    Node::MathKern(k, 1..) => (*k as i64, [0; 4], [0; 4], 0, 0),
                     _ => (0, [0; 4], [0; 4], 0, 0),
                 };
                 cum_w[i + 1] = cum_w[i] + w;
@@ -1426,10 +1435,15 @@ impl Engine {
         while i < n {
             match &list[i] {
                 Node::MathKern(_, kind) => {
-                    auto_breaking = *kind != 1;
+                    // etex.ch: `if subtype(cur_p)<L_code then
+                    // auto_breaking:=odd(subtype(cur_p))` — text-direction
+                    // nodes leave it alone
+                    if *kind < crate::boxes::LR_KIND_MIN {
+                        auto_breaking = crate::boxes::math_end_lr(*kind);
+                    }
                     // tex.web §866: math_node does kern_break after setting
-                    // auto_breaking, so only a math-off node followed by
-                    // glue is a legal breakpoint (the glue is discarded)
+                    // auto_breaking, so only a math node followed by glue
+                    // (outside a formula) is a legal breakpoint
                     if auto_breaking && i + 1 < n && matches!(list[i + 1], Node::Glue(_)) {
                         consider!(i, false, 0, BreakType::Unhyphenated, false, cum_w[i]);
                     }
@@ -1507,6 +1521,12 @@ impl Engine {
         chain.reverse();
 
         let hfuzz = self.eqtb.dim_params[DimParam::Hfuzz.idx() as usize] as i64;
+        // etex.ch post_line_break: `LR_ptr:=LR_save` ... `LR_save:=LR_ptr`;
+        // with TeXXeT every line reopens (closes) the text-direction and
+        // \beginM/\endM segments still open at its start (end)
+        let texxet = self.eqtb.int_params[IntParam::TeXXeTEnabled.idx() as usize] > 0;
+        let lr_key = self.saved_lists.len();
+        let mut lr: Vec<u8> = self.lr_save_take(lr_key);
         let mut lines: NodeList = Vec::new();
         let mut i = 0usize;
         let mut pending_post: Option<crate::boxes::DiscNode> = None;
@@ -1517,6 +1537,11 @@ impl Engine {
             let j = bp.pos.min(list.len());
             let mut seg: NodeList = Vec::new();
             let mut nat_w = 0i64;
+            // "Insert LR nodes at the beginning of the current line"
+            if texxet && !lr.is_empty() {
+                seg.extend(lr.iter().map(|k| Node::MathKern(0, k - 1)));
+                self.texxet_nodes = true;
+            }
             if let Some(dc) = pending_post.take() {
                 for nn in dc.post_break {
                     push_dims(&self.eqtb, nn, &mut seg, &mut nat_w);
@@ -1554,12 +1579,21 @@ impl Engine {
                     _ => 0,
                 };
                 let node = std::mem::replace(&mut list[i], Node::Kern(0));
+                if let (true, Node::MathKern(_, kind @ 1..)) = (texxet, &node) {
+                    crate::texxet::lr_adjust(&mut lr, *kind);
+                }
                 push_dims(&self.eqtb, node, &mut seg, &mut nat_w);
                 i += 1 + skip;
             }
             let last = bp.pos >= list.len();
             let mut break_disc: Option<crate::boxes::DiscNode> = None;
             let mut broke_at_disc = false;
+            // tex.web §881: a math-node break stays on the line with width 0
+            // (etex.ch adjusts the LR stack there); math nodes pruned from
+            // the next line's start adjust it only after this line's LR end
+            // nodes are inserted
+            let mut break_math: Option<Node> = None;
+            let mut pruned_lr: Vec<u8> = Vec::new();
             if !last {
                 match &mut list[j] {
                     Node::Disc(dc) => {
@@ -1581,6 +1615,9 @@ impl Engine {
                             // post_line_break prunes the next line start
                             i = j + 1 + dc.replace_count;
                             while i < list.len() && is_prunable(&list[i]) {
+                                if let Node::MathKern(_, kind @ 1..) = list[i] {
+                                    pruned_lr.push(kind);
+                                }
                                 i += 1;
                             }
                             dead_until = 0;
@@ -1594,11 +1631,21 @@ impl Engine {
                     | Node::Penalty(_)
                     | Node::ExplicitKern(_)
                     | Node::MathKern(..) => {
-                        // break node dropped (glue becomes \rightskip at
-                        // packing; explicit-kern break is zeroed by tex);
+                        // glue/penalty break node dropped (glue becomes
+                        // \rightskip at packing; explicit-kern break is
+                        // zeroed by tex), a math node is kept with width 0;
                         // prune discardables at the start of the next line
+                        if let Node::MathKern(_, kind @ 1..) = list[j] {
+                            if texxet {
+                                crate::texxet::lr_adjust(&mut lr, kind);
+                            }
+                            break_math = Some(Node::MathKern(0, kind));
+                        }
                         i = j + 1;
                         while i < list.len() && is_prunable(&list[i]) {
+                            if let Node::MathKern(_, kind @ 1..) = list[i] {
+                                pruned_lr.push(kind);
+                            }
                             i += 1;
                         }
                         dead_until = 0;
@@ -1619,6 +1666,9 @@ impl Engine {
                     | Node::Kern(_)
                     | Node::ExplicitKern(_)
                     | Node::Whatsit(_) => None,
+                    // pdftex cp_skipable: zero-width math nodes; only the
+                    // TeXXeT \beginM..\endR kinds are skipped here
+                    Node::MathKern(0, crate::boxes::BEGIN_M..) => None,
                     Node::Box {
                         w: 0,
                         h: 0,
@@ -1659,6 +1709,17 @@ impl Engine {
                     }
                 }
             }
+            seg.extend(break_math);
+            // "Insert LR nodes at the end of the current line"
+            if texxet && !lr.is_empty() {
+                seg.extend(lr.iter().rev().map(|&k| Node::MathKern(0, k)));
+                self.texxet_nodes = true;
+            }
+            if texxet {
+                for kind in pruned_lr {
+                    crate::texxet::lr_adjust(&mut lr, kind);
+                }
+            }
             let mut inner: NodeList = Vec::new();
             inner.push(Node::Glue(params.left_skip.clone()));
             inner.extend(seg);
@@ -1682,6 +1743,12 @@ impl Engine {
                     .current_token_source_mark()
                     .map(|mark| mark.to_context());
                 self.pack_warning_at(&msg, source);
+            }
+            if r.lr_problems > 0 {
+                let source = self
+                    .current_token_source_mark()
+                    .map(|mark| mark.to_context());
+                self.report_lr_problems(r.lr_problems, source);
             }
             // interline glue placeholder (page builder owns real baseline
             // spacing between line boxes)
@@ -1726,6 +1793,7 @@ impl Engine {
                 pending_post = Some(dc);
             }
         }
+        self.lr_save_store(lr_key, lr);
 
         crate::boxes::vpack(lines, None, crate::boxes::VBOX, &self.eqtb).node
     }
@@ -2246,7 +2314,7 @@ fn push_dims(eqtb: &crate::eqtb::Eqtb, n: Node, seg: &mut NodeList, w: &mut i64)
         Node::Box { w: bw, .. } => *bw,
         Node::Rule { width, .. } => *width,
         Node::NativeGlyphRun { width, .. } => *width,
-        Node::MathKern(k, 1 | 2) => *k,
+        Node::MathKern(k, 1..) => *k,
         _ => 0,
     };
     *w += wd as i64;

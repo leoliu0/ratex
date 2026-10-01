@@ -133,6 +133,38 @@ impl Engine {
                     self.error("\\mkern is only valid in math mode; use \\kern for text spacing");
                 }
             }
+            // etex.ch `hmode+valign` with cur_chr>0; vmode+valign starts a
+            // paragraph (back_input; new_graf), mmode+valign is
+            // insert_dollar_sign
+            BeginL | EndL | BeginR | EndR => match self.mode {
+                Mode::Vertical | Mode::InternalVertical => {
+                    self.push_token(Token::from_cs(id));
+                    self.start_paragraph(true);
+                }
+                Mode::Math | Mode::DisplayMath => {
+                    self.push_token(Token::from_cs(id));
+                    self.error("Missing $ inserted.");
+                    self.exit_math();
+                }
+                Mode::Horizontal | Mode::RestrictedHorizontal => {
+                    if self.eqtb.int_params[IntParam::TeXXeTEnabled.idx() as usize] > 0 {
+                        self.flush_native_text();
+                        let kind = match p {
+                            BeginL => crate::boxes::BEGIN_L,
+                            EndL => crate::boxes::END_L,
+                            BeginR => crate::boxes::BEGIN_R,
+                            _ => crate::boxes::END_R,
+                        };
+                        self.cur_list.push(Node::MathKern(0, kind));
+                        self.texxet_nodes = true;
+                    } else {
+                        // etex.ch eTeX_enabled: "Sorry, this optional e-TeX
+                        // feature has been disabled."
+                        let name = self.prim_name(p);
+                        self.error(&format!("Improper \\{name}"));
+                    }
+                }
+            },
             HMove => {
                 let d = self.scan_dimen(false, false);
                 let neg = id_cs_is(self, id, b"moveleft");
@@ -484,7 +516,7 @@ impl Engine {
                         glue_sign: 0,
                         glue_order: 0,
                         glue_set: 0.0,
-                        font: None,
+                        lr: 0,
                     });
                     self.page_append(Node::Glue(crate::boxes::Glue::fil(
                         crate::boxes::GLUE_FILL,
@@ -2119,6 +2151,7 @@ impl Engine {
                 d,
                 shift,
                 list,
+                lr,
                 ..
             } => {
                 let kind = match kind {
@@ -2127,8 +2160,14 @@ impl Engine {
                     2 => "vtop",
                     _ => "vcenter",
                 };
+                // etex.ch "Display if this box is never to be reversed"
+                let display = if *lr == crate::boxes::BOX_LR_DLIST {
+                    ", display"
+                } else {
+                    ""
+                };
                 out.push(format_args!(
-                    "{indent}{kind}: width {}, height {}, depth {}, shift {}; {} child node(s)\n",
+                    "{indent}{kind}: width {}, height {}, depth {}, shift {}{display}; {} child node(s)\n",
                     self.scaled_to_string(*w),
                     self.scaled_to_string(*h),
                     self.scaled_to_string(*d),
@@ -2269,10 +2308,32 @@ impl Engine {
                 above.as_ref().map_or(0, Vec::len),
                 below.as_ref().map_or(0, Vec::len)
             )),
-            Node::MathKern(value, _) => out.push(format_args!(
+            Node::MathKern(value, 0) => out.push(format_args!(
                 "{indent}math kern {}\n",
                 self.scaled_to_string(*value)
             )),
+            // etex.ch "Display math node p"
+            Node::MathKern(value, kind) => {
+                use crate::boxes::{math_end_lr, BEGIN_L, BEGIN_R, MATH_OFF};
+                if *kind > MATH_OFF {
+                    let end = if math_end_lr(*kind) { "end" } else { "begin" };
+                    let dir = if *kind >= BEGIN_R {
+                        'R'
+                    } else if *kind >= BEGIN_L {
+                        'L'
+                    } else {
+                        'M'
+                    };
+                    out.push(format_args!("{indent}\\{end}{dir}\n"));
+                } else {
+                    let on = if *kind == MATH_OFF { "off" } else { "on" };
+                    out.push(format_args!("{indent}\\math{on}"));
+                    if *value != 0 {
+                        out.push(format_args!(", surrounded {}", self.scaled_to_string(*value)));
+                    }
+                    out.push(format_args!("\n"));
+                }
+            }
             Node::Accent { fam, c, body, .. } => out.push(format_args!(
                 "{indent}math accent {c} (family {fam}); {} body node(s)\n",
                 body.len()
@@ -2432,7 +2493,7 @@ mod tests {
             glue_sign: 0,
             glue_order: 0,
             glue_set: 0.0,
-            font: None,
+            lr: 0,
         });
 
         let shown = engine.show_box_description(0);

@@ -703,7 +703,7 @@ mod tests {
                 glue_sign: 0,
                 glue_order: 0,
                 glue_set: 0.0,
-                font: None,
+                lr: 0,
             })
             .unwrap();
         arena

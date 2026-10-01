@@ -2570,6 +2570,10 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
                             break;
                         }
                         loaded = true;
+                        // LuaTeX `\formatname`: the format's base name.
+                        if let Some(stem) = cand.file_stem().and_then(|s| s.to_str()) {
+                            eng.format_name = stem.trim_end_matches(".fmt").to_string();
+                        }
                         eng.loaded_files.push(cand.clone());
                         finalize_format_load(&mut eng);
                         break;

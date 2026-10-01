@@ -591,8 +591,10 @@ impl Engine {
     fn scan_toks_register(&mut self) -> u16 {
         let t = self.get_x_raw();
         if t.is_cs() {
-            if let Some(&Equiv::ToksReg(n)) = self.eqtb.resolve(t.cs_id()) {
-                return n;
+            match self.eqtb.resolve(t.cs_id()) {
+                Some(&Equiv::ToksReg(n)) => return n,
+                Some(Equiv::Prim(Prim::Toks)) => return self.scan_reg_num(),
+                _ => {}
             }
         }
         self.push_token(t);

@@ -185,14 +185,16 @@ fn table_remove(l: &mut LuaState) -> LuaResult<usize> {
         let narg = if l.global_state().language() == crate::LuaLanguageLevel::Lua53 { 1 } else { 2 };
         return Err(lauxlib::argerror(l, narg, "position out of bounds"));
     }
+    // Like ltablib: the removed element goes on the stack right away, so it
+    // stays rooted while the shift below runs __index/__newindex code.
     let removed = list.geti(l, pos)?;
+    l.push_value(removed)?;
     while pos < size {
         let next = list.geti(l, pos + 1)?;
         list.seti(l, pos, next)?;
         pos += 1;
     }
     list.seti(l, pos, LuaValue::nil())?;
-    l.push_value(removed)?;
     Ok(1)
 }
 

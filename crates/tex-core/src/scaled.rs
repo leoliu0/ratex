@@ -55,14 +55,14 @@ pub fn x_over_y(x: i32, y: i32) -> i32 {
     }
 }
 
-/// tex.web §107 xn_over_d(x, n, d) for nonnegative `n` and positive `d`:
-/// `x*n/d` truncated toward zero (the remainder is discarded, not rounded).
+/// tex.web §107 `xn_over_d(x, n, d)`: x*n/d truncated toward zero (the
+/// remainder is dropped, not rounded), e.g. the space-factor scaling of
+/// interword stretch/shrink and `\font ... scaled`.
 pub fn xn_over_d(x: i32, n: i32, d: i32) -> i32 {
     if d <= 0 {
         return i32::MAX;
     }
-    let q = (x.unsigned_abs() as i128 * n as i128) / d as i128;
-    saturate(if x < 0 { -q } else { q })
+    saturate(x as i128 * n as i128 / d as i128)
 }
 
 /// round a scaled to nearest integer

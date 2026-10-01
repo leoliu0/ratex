@@ -63,6 +63,20 @@ impl Engine {
             Par => self.par_primitive(),
             Indent => self.start_paragraph(true),
             NoIndent => self.start_paragraph(false),
+            // pdftex.web start_par chr 2: \indent in vertical mode, nothing
+            // in horizontal and math mode
+            QuitVMode => {
+                if self.mode.is_v() {
+                    self.start_paragraph(true);
+                }
+            }
+            SetLanguage => self.set_language(id),
+            PdfPrimitiveExec => {
+                let t = self.pdf_primitive_target();
+                self.push_token(t);
+            }
+            PdfRetval | ParShapeLength | ParShapeIndent | ParShapeDimen | GlueToMu
+            | MuToGlue => self.report_illegal_case(id),
             HSkip | HFil | HFill | HFilL | HFilNeg | HSS => {
                 if self.mode.is_v() {
                     self.push_token(Token::from_cs(id));
@@ -206,12 +220,14 @@ impl Engine {
                     _ => 2,
                 });
             }
-            Discretionary => {
+            Discretionary | HyphenDisc => {
                 if self.mode.is_v() {
                     // Start the paragraph before adding replacement text,
                     // and let everypar run before scanning the arguments.
                     self.push_token(Token::from_cs(id));
                     self.start_paragraph(true);
+                } else if p == HyphenDisc {
+                    self.append_hyphen_discretionary();
                 } else {
                     self.do_discretionary();
                 }
@@ -548,6 +564,23 @@ impl Engine {
                             }
                             Prim::CloseOut => {
                                 self.do_closeout(true);
+                                return;
+                            }
+                            // pdfTeX writes an \immediate form or image
+                            // object at once
+                            Prim::PdfXForm => {
+                                self.do_pdfxform();
+                                let form = self.pdf_last_xform;
+                                self.write_form_procset(form);
+                                return;
+                            }
+                            Prim::PdfXImage => {
+                                let previous = self.pdf_last_ximage;
+                                self.do_pdfximage();
+                                if self.pdf_last_ximage != previous {
+                                    let image = self.pdf_last_ximage;
+                                    self.write_ximage(image);
+                                }
                                 return;
                             }
                             _ => {}
@@ -1079,20 +1112,7 @@ impl Engine {
             PdfXForm => self.do_pdfxform(),
             PdfMapFile => self.do_pdfmapfile(),
             PdfMapLine => self.do_pdfmapline(),
-            PdfGlyphToUnicode => {
-                // pdftex: \pdfglyphtounicode <glyph name> <unicode value> —
-                // TWO arguments. The generic one-arg consumer left the
-                // second in the stream, leaking hex like "221500B7".
-                for _ in 0..2 {
-                    self.skip_spaces_relax();
-                    let t = self.get_token();
-                    if t.is_char() && t.cc() == 1 {
-                        self.scan_balanced_raw(true);
-                    } else if !(t.is_char() && t.cc() == 10) {
-                        // unbraced single-token arg; spaces between args skip
-                    }
-                }
-            }
+            PdfGlyphToUnicode => self.do_pdfglyphtounicode(),
             PdfXImage => self.do_pdfximage(),
             PdfXImageBBox => {
                 let _ = self.scan_pdf_ximage_bbox();
@@ -1161,8 +1181,11 @@ impl Engine {
             }
             Letterspacefont => self.do_letterspacefont(),
             PdfSetRandomSeed => {
-                self.random_seed = self.scan_int();
+                // pdftex.web: negative seeds are silently made positive.
+                let seed = self.scan_int().saturating_abs();
+                self.rng = crate::random::Randoms::new(seed);
             }
+            PdfResetTimer => self.timer_start = crate::clock::now_micros(),
             PdfTrailer => self.do_pdftrailer(),
             PdfIncludeChars => self.do_pdfincludechars(),
             PdfCopyFont => self.do_pdfcopyfont(),
@@ -1200,7 +1223,7 @@ impl Engine {
                 self.append_whatsit(Node::Whatsit(crate::boxes::WhatIt::PdfSnapYComp(ratio)));
             }
             PdfUncompress | PdfTolerance | PdfThread | PdfStartThread
-            | PdfEndThread | PdfResetTimer => {
+            | PdfEndThread => {
                 // consume the argument syntactically: most take balanced text
                 self.skip_spaces_relax();
                 let t = self.get_token();
@@ -1320,6 +1343,16 @@ impl Engine {
                 ));
             }
         }
+    }
+
+    /// tex.web §1050 report_illegal_case (`you_cant`).
+    pub(crate) fn report_illegal_case(&mut self, id: CsId) {
+        let name = match self.eqtb.resolve(id) {
+            Some(crate::eqtb::Equiv::Prim(p)) => self.prim_name(*p),
+            _ => ::std::string::String::from_utf8_lossy(self.cs.name(id)).into_owned(),
+        };
+        let mode = self.mode.name();
+        self.error(&format!("You can't use `\\{name}' in {mode}"));
     }
 
     /// tex.web §1267-1275 make_accent: `\accent <number 0-255> <filler>
@@ -1556,6 +1589,8 @@ impl Engine {
             };
             if *scanned {
                 if let Some(message) = message {
+                    // pdftex.web: `pdf_retval := -1 {signal the problem}`
+                    self.pdf_retval = -1;
                     self.error_at(&message, source.clone());
                     omit_requested_obj = true;
                 }
@@ -1658,10 +1693,14 @@ impl Engine {
         } else {
             format!(" {}", attr.trim())
         };
-        let (content, fonts) = match &b {
-            Some(node) => self.render_form_box(node, w, h, d),
-            None => (Vec::new(), Vec::new()),
+        let (content, fonts, image_procset, ximages) = match &b {
+            Some(node) => {
+                let form = self.render_form_box(node, w, h, d);
+                (form.content, form.fonts, form.image_procset, form.ximages)
+            }
+            None => (Vec::new(), Vec::new(), 0, Vec::new()),
         };
+        let text = !fonts.is_empty();
         let font_object = self.alloc_pdf_obj();
         self.pdf_doc.objects.push((font_object, b"<< >>".to_vec()));
         self.pdf_doc.form_fonts.push((font_object, fonts));
@@ -1671,7 +1710,7 @@ impl Engine {
                 xobj_entries.push(format!("/Fm{} {} 0 R", obj_num, obj_num));
             }
         }
-        for obj_num in self.pdf_images.keys() {
+        for obj_num in &ximages {
             xobj_entries.push(format!("/Im{} {} 0 R", obj_num, obj_num));
         }
         let xobj_res = if xobj_entries.is_empty() || resources.contains("/XObject") {
@@ -1679,19 +1718,29 @@ impl Engine {
         } else {
             format!(" /XObject << {} >>", xobj_entries.join(" "))
         };
-        let res_str = format!(
-            " /Resources << /Font {font_object} 0 R {} /ProcSet [/PDF /Text]{} >>",
-            resources.trim(),
-            xobj_res
-        );
         let (data, filter) = if !content.is_empty() {
             (crate::pdffile::flate(&content), " /Filter /FlateDecode")
         } else {
             (Vec::new(), "")
         };
+        let head = format!(
+            "<< /Type /XObject /Subtype /Form /FormType 1 /BBox [0 {:.4} {:.4} {:.4}] /Matrix [1 0 0 1 0 0]{} /Resources << /Font {font_object} 0 R {}",
+            -d_bp, w_bp, h_bp, attr_str, resources.trim()
+        );
+        // "Generate ProcSet if desired" goes here once the form is written
+        self.pdf_form_procsets.insert(
+            obj,
+            crate::engine::FormProcset {
+                offset: head.len(),
+                text,
+                images: image_procset,
+            },
+        );
         let mut body = format!(
-            "<< /Type /XObject /Subtype /Form /FormType 1 /BBox [0 {:.4} {:.4} {:.4}] /Matrix [1 0 0 1 0 0]{}{} /Length {}{} >>\nstream\n",
--d_bp, w_bp, h_bp, attr_str, res_str, data.len(), filter
+            "{head}{} >> /Length {}{} >>\nstream\n",
+            xobj_res,
+            data.len(),
+            filter
         )
         .into_bytes();
         body.extend_from_slice(&data);
@@ -1720,16 +1769,19 @@ impl Engine {
         }
     }
 
-    /// \pdfximage [attr{..}] [page <n>] [interpolate|nointerpolate]
-    /// [<box spec>] {<file>}: reserve an image XObject number;
-    /// \pdflastximage reports it.
+    /// pdfTeX `scan_image` (\pdfximage [<rule spec>] [attr {..}]
+    /// [named {..} | page <n>] [colorspace <n>] [<box spec>] {<file>})
+    /// with `read_image` and `scale_image`; \pdflastximage reports it.
     pub fn do_pdfximage(&mut self) {
+        use crate::engine::{ImageKind, IMAGE_COLOR_B, IMAGE_COLOR_C, IMAGE_COLOR_I};
+        use crate::pdf_images::{PDF_BOX_SPEC_ART, PDF_BOX_SPEC_BLEED, PDF_BOX_SPEC_CROP, PDF_BOX_SPEC_MEDIA, PDF_BOX_SPEC_TRIM};
         let origin = self.current_token_source_mark();
+        // check_pdfversion: the first PDF object fixes the output parameters
+        self.fix_pdf_output_params();
+        let Some(fixed) = self.pdf_fixed else { return };
         let mut scan_w: Option<i32> = None;
         let mut scan_h: Option<i32> = None;
         let mut scan_d: Option<i32> = None;
-        let mut page = 1;
-        let mut page_box: &[u8] = b"CropBox";
         loop {
             if self.scan_keyword(b"width") {
                 scan_w = Some(self.scan_dimen(false, false));
@@ -1737,27 +1789,73 @@ impl Engine {
                 scan_h = Some(self.scan_dimen(false, false));
             } else if self.scan_keyword(b"depth") {
                 scan_d = Some(self.scan_dimen(false, false));
-            } else if self.scan_keyword(b"attr") {
-                let _ = self.scan_pdf_string();
-            } else if self.scan_keyword(b"page") {
-                page = self.scan_int().max(1) as u32;
-            } else if self.scan_keyword(b"interpolate") {
-            } else if self.scan_keyword(b"nointerpolate") {
-            } else if self.scan_keyword(b"cropbox") {
-                page_box = b"CropBox";
-            } else if self.scan_keyword(b"mediabox") {
-                page_box = b"MediaBox";
-            } else if self.scan_keyword(b"bleedbox") {
-                page_box = b"BleedBox";
-            } else if self.scan_keyword(b"trimbox") {
-                page_box = b"TrimBox";
-            } else if self.scan_keyword(b"artbox") {
-                page_box = b"ArtBox";
             } else {
                 break;
             }
         }
+        let attr = self.scan_keyword(b"attr").then(|| self.scan_pdf_string());
+        let mut named = None;
+        let mut page = 1;
+        if self.scan_keyword(b"named") {
+            named = Some(self.scan_pdf_string());
+        } else if self.scan_keyword(b"page") {
+            page = self.scan_int();
+        }
+        let colorspace = if self.scan_keyword(b"colorspace") { self.scan_int() } else { 0 };
+        let mut page_box = if self.scan_keyword(b"mediabox") {
+            PDF_BOX_SPEC_MEDIA
+        } else if self.scan_keyword(b"cropbox") {
+            PDF_BOX_SPEC_CROP
+        } else if self.scan_keyword(b"bleedbox") {
+            PDF_BOX_SPEC_BLEED
+        } else if self.scan_keyword(b"trimbox") {
+            PDF_BOX_SPEC_TRIM
+        } else if self.scan_keyword(b"artbox") {
+            PDF_BOX_SPEC_ART
+        } else {
+            0
+        };
+        let int = |e: &Self, p: IntParam| e.eqtb.int_params[p.idx() as usize];
+        if page_box == 0 {
+            page_box = int(self, IntParam::PdfPagebox);
+        }
         let file = self.scan_pdf_string();
+        // The obsolete options warn once and hand their value to the
+        // current parameter (`warn_pdfpagebox`).
+        let always = int(self, IntParam::PdfOptionAlwaysUsePdfPagebox);
+        if always != 0 {
+            self.warning_at(
+                "pdfTeX warning (PDF inclusion): Primitive \\pdfoptionalwaysusepdfpagebox is obsolete; use \\pdfpagebox instead.",
+                origin.as_ref().map(crate::input::SourceMark::to_context),
+            );
+            self.eqtb.int_params[IntParam::PdfForcePagebox.idx() as usize] = always;
+            self.eqtb.int_params[IntParam::PdfOptionAlwaysUsePdfPagebox.idx() as usize] = 0;
+            self.pdf_warned_pagebox = true;
+        }
+        let option_level = int(self, IntParam::PdfOptionPdfInclusionErrorlevel);
+        if option_level != 0 {
+            self.warning_at(
+                "pdfTeX warning (PDF inclusion): Primitive \\pdfoptionpdfinclusionerrorlevel is obsolete; use \\pdfinclusionerrorlevel instead.",
+                origin.as_ref().map(crate::input::SourceMark::to_context),
+            );
+            self.eqtb.int_params[IntParam::PdfInclusionErrorlevel.idx() as usize] = option_level;
+            self.eqtb.int_params[IntParam::PdfOptionPdfInclusionErrorlevel.idx() as usize] = 0;
+        }
+        let force = int(self, IntParam::PdfForcePagebox);
+        if force > 0 {
+            if !self.pdf_warned_pagebox {
+                self.warning_at(
+                    "pdfTeX warning (PDF inclusion): Primitive \\pdfforcepagebox is obsolete; use \\pdfpagebox instead.",
+                    origin.as_ref().map(crate::input::SourceMark::to_context),
+                );
+                self.pdf_warned_pagebox = true;
+            }
+            page_box = force;
+        }
+        if page_box == 0 {
+            page_box = PDF_BOX_SPEC_CROP;
+        }
+
         let (path, bytes, bundled) = if let Some(path) = self.resolve_input_path(&file) {
             let bytes = match tex_kpse::fs::read(&path) {
                 Ok(bytes) => bytes,
@@ -1788,128 +1886,193 @@ impl Engine {
             );
             return;
         };
-        let obj = self.alloc_pdf_obj();
-        self.pdf_backend.last_ximage_colordepth = crate::pdftex::image_color_depth(&bytes);
-        let mut image_pages = 1;
+        let file_name = self.kpse_found_name(&path, bundled);
         let is_eps = bytes.starts_with(b"%!PS")
             || bytes.starts_with(b"%!ps")
             || bytes.starts_with(b"%!")
             || bytes.starts_with(&[0xC5, 0xD0, 0xD3, 0xC6]);
-        let ((nat_w, nat_h), img_bbox) = if bytes.starts_with(b"%PDF-") {
-            let imported = {
+        let obj = self.alloc_pdf_obj();
+        self.pdf_backend.last_ximage_colordepth = crate::pdftex::image_color_depth(&bytes);
+        let mut info = crate::engine::PdfImageInfo {
+            path: path.to_string_lossy().into_owned(),
+            kind: ImageKind::Pdf,
+            used: false,
+            written: false,
+            width: 0,
+            height: 0,
+            depth: 0,
+            image_width: 0,
+            image_height: 0,
+            rotate: 0,
+            orig_x: 0,
+            orig_y: 0,
+            color: 0,
+            group_ref: 0,
+            attr: attr.filter(|attr| !attr.is_empty()),
+            colorspace,
+            resource_bytes: None,
+            pdf_form: None,
+            bbox: [0; 4],
+        };
+        let (mut x_res, mut y_res) = (0i32, 0i32);
+        let mut image_pages = 1;
+        if bytes.starts_with(b"%PDF-") || is_eps {
+            let converted;
+            let pdf_bytes = if is_eps {
+                match tex_ps::eps_to_pdf(&bytes) {
+                    Ok(eps_out) => {
+                        converted = eps_out.pdf_bytes;
+                        &converted[..]
+                    }
+                    Err(error) => {
+                        self.error_at(
+                            &format!("Cannot parse PostScript/EPS `{file}`: {error}"),
+                            origin.as_ref().map(crate::input::SourceMark::to_context),
+                        );
+                        return;
+                    }
+                }
+            } else {
+                &bytes[..]
+            };
+            let options = crate::pdf_images::PdfIncludeOptions {
+                page: match &named {
+                    Some(name) => crate::pdf_images::PdfPageSelector::Named(name.as_bytes()),
+                    None => crate::pdf_images::PdfPageSelector::Number(page),
+                },
+                page_box,
+                file_name: &file_name,
+                suppress_ptex_info: int(self, IntParam::PdfSuppressPtexInfo),
+                ptex_underscore: int(self, IntParam::PdfPtexUseUnderscore) != 0,
+            };
+            let included = {
                 let font_loader = &mut self.font_loader;
                 let base14_fonts = &mut self.pdf_doc.imported_base14_fonts;
                 let next_object = &mut self.pdf_next_obj;
                 let mut resolve_type1 = |name: &str| font_loader.read_type1_dependency(name);
-                crate::pdf_images::import_pdf_page_with_base14(
-                    &bytes,
-                    page,
-                    page_box,
-                    obj,
+                crate::pdf_images::include_pdf_page(
+                    pdf_bytes,
+                    &options,
                     next_object,
                     base14_fonts,
                     &mut resolve_type1,
                 )
             };
-            match imported {
-                Ok((w, h, bbox, objects, total_pages)) => {
-                    image_pages = total_pages as i32;
-                    self.pdf_doc.objects.extend(
-                        objects
-                            .into_iter()
-                            .map(|image| (image.obj_num, image.bytes)),
-                    );
-                    let sp_per_bp = 72.27 / 72.0 * 65536.0;
-                    (
-                        (
-                            (w * sp_per_bp).round() as i32,
-                            (h * sp_per_bp).round() as i32,
-                        ),
-                        [
-                            (bbox[0] * sp_per_bp).round() as i32,
-                            (bbox[1] * sp_per_bp).round() as i32,
-                            (bbox[2] * sp_per_bp).round() as i32,
-                            (bbox[3] * sp_per_bp).round() as i32,
-                        ],
-                    )
-                }
+            let included = match included {
+                Ok(included) => included,
                 Err(error) => {
-                    self.error_at(
-                        &format!("Cannot include PDF `{file}`: {error}"),
+                    // pdftex_fail: fatal, no output file
+                    self.fatal_error_at(
+                        &format!("pdfTeX error (file {file_name}): {error}"),
                         origin.as_ref().map(crate::input::SourceMark::to_context),
                     );
                     return;
                 }
-            }
-        } else if is_eps {
-            match tex_ps::eps_to_pdf(&bytes) {
-                Ok(eps_out) => {
-                    let imported = {
-                        let font_loader = &mut self.font_loader;
-                        let base14_fonts = &mut self.pdf_doc.imported_base14_fonts;
-                        let next_object = &mut self.pdf_next_obj;
-                        let mut resolve_type1 = |name: &str| font_loader.read_type1_dependency(name);
-                        crate::pdf_images::import_pdf_page_with_base14(
-                            &eps_out.pdf_bytes,
-                            1,
-                            page_box,
-                            obj,
-                            next_object,
-                            base14_fonts,
-                            &mut resolve_type1,
-                        )
-                    };
-                    match imported {
-                        Ok((w, h, bbox, objects, total_pages)) => {
-                            image_pages = total_pages as i32;
-                            self.pdf_doc.objects.extend(
-                                objects
-                                    .into_iter()
-                                    .map(|image| (image.obj_num, image.bytes)),
-                            );
-                            let sp_per_bp = 72.27 / 72.0 * 65536.0;
-                            (
-                                (
-                                    (w * sp_per_bp).round() as i32,
-                                    (h * sp_per_bp).round() as i32,
-                                ),
-                                [
-                                    (bbox[0] * sp_per_bp).round() as i32,
-                                    (bbox[1] * sp_per_bp).round() as i32,
-                                    (bbox[2] * sp_per_bp).round() as i32,
-                                    (bbox[3] * sp_per_bp).round() as i32,
-                                ],
-                            )
-                        }
-                        Err(error) => {
-                            self.error_at(
-                                &format!("Cannot include EPS as PDF `{file}`: {error}"),
-                                origin.as_ref().map(crate::input::SourceMark::to_context),
-                            );
-                            return;
-                        }
-                    }
+            };
+            // read_pdf_info: a newer PDF than the output is an error, a
+            // warning or nothing, per \pdfinclusionerrorlevel.
+            let wanted = f64::from((f64::from(fixed.major_version) + f64::from(fixed.minor_version) * 0.1) as f32);
+            if included.version as f32 as f64 > wanted + 0.01 {
+                let message = format!(
+                    "PDF inclusion: found PDF version <{:.1}>, but at most version <{:.1}> allowed",
+                    included.version, wanted
+                );
+                let level = int(self, IntParam::PdfInclusionErrorlevel);
+                if level > 0 {
+                    self.fatal_error_at(
+                        &format!("pdfTeX error (file {file_name}): {message}"),
+                        origin.as_ref().map(crate::input::SourceMark::to_context),
+                    );
+                    return;
+                } else if level == 0 {
+                    self.warning_at(
+                        &format!("pdfTeX warning (file {file_name}): {message}"),
+                        origin.as_ref().map(crate::input::SourceMark::to_context),
+                    );
                 }
+            }
+            for warning in &included.warnings {
+                self.warning_at(
+                    &format!("pdfTeX warning (file {file_name}): {warning}"),
+                    origin.as_ref().map(crate::input::SourceMark::to_context),
+                );
+            }
+            // writeimg.c bp2int on pdfTeX's single-precision page box
+            let bp2int = |bp: f32| (f64::from(bp) * (6_578_176.0 / 100.0)).round() as i32;
+            info.image_width = bp2int(included.width);
+            info.image_height = bp2int(included.height);
+            info.orig_x = bp2int(included.orig_x);
+            info.orig_y = bp2int(included.orig_y);
+            info.rotate = included.rotate;
+            info.group_ref = if included.form.has_group() { -1 } else { 0 };
+            info.bbox = [
+                info.orig_x,
+                info.orig_y,
+                info.orig_x + info.image_width,
+                info.orig_y + info.image_height,
+            ];
+            image_pages = included.total_pages;
+            self.pdf_doc.objects.extend(
+                included
+                    .objects
+                    .into_iter()
+                    .map(|object| (object.obj_num, object.bytes)),
+            );
+            info.pdf_form = Some(std::sync::Arc::new(included.form));
+        } else if bytes.starts_with(&[0xff, 0xd8]) {
+            let jpeg = match crate::pdf_images::jpeg_info(&bytes) {
+                Ok(jpeg) => jpeg,
                 Err(error) => {
-                    self.error_at(
-                        &format!("Cannot parse PostScript/EPS `{file}`: {error}"),
+                    self.fatal_error_at(
+                        &format!("pdfTeX error (file {file_name}): {error}"),
                         origin.as_ref().map(crate::input::SourceMark::to_context),
                     );
                     return;
                 }
+            };
+            if jpeg.progressive && fixed.major_version == 1 && fixed.minor_version <= 2 {
+                self.fatal_error_at(
+                    &format!("pdfTeX error (file {file_name}): cannot use progressive DCT with PDF-1.2"),
+                    origin.as_ref().map(crate::input::SourceMark::to_context),
+                );
+                return;
             }
-        } else if let Some(jpeg) = crate::pdf_images::jpeg_info(&bytes) {
-            let w_sp = (jpeg.width as f64 / jpeg.dpi_x * 72.27 * 65536.0).round() as i32;
-            let h_sp = (jpeg.height as f64 / jpeg.dpi_y * 72.27 * 65536.0).round() as i32;
-            ((w_sp, h_sp), [0, 0, w_sp, h_sp])
-        } else if let Some((w, h, rx, ry)) = read_png_dims(&bytes) {
-            let w_sp = (w as f64 / rx as f64 * 72.27 * 65536.0).round() as i32;
-            let h_sp = (h as f64 / ry as f64 * 72.27 * 65536.0).round() as i32;
-            ((w_sp, h_sp), [0, 0, w_sp, h_sp])
+            info.kind = ImageKind::Jpeg;
+            info.image_width = i32::from(jpeg.width);
+            info.image_height = i32::from(jpeg.height);
+            info.color = if jpeg.components == 1 { IMAGE_COLOR_B } else { IMAGE_COLOR_C };
+            (x_res, y_res) = (jpeg.x_res, jpeg.y_res);
+        } else if let Some(png) = crate::pdf_images::png_info(&bytes) {
+            info.kind = ImageKind::Png;
+            info.image_width = png.width as i32;
+            info.image_height = png.height as i32;
+            info.color = match png.color_type {
+                3 => IMAGE_COLOR_C | IMAGE_COLOR_I,
+                0 | 4 => IMAGE_COLOR_B,
+                _ => IMAGE_COLOR_C,
+            };
+            (x_res, y_res) = (png.x_res, png.y_res);
+            // read_png_info: an alpha channel needs a transparency page
+            // group (PDF 1.4 and newer)
+            if (fixed.major_version > 1 || fixed.minor_version >= 4)
+                && matches!(png.color_type, 4 | 6)
+            {
+                if self.transparent_page_group == 0 {
+                    self.transparent_page_group = self.alloc_pdf_obj();
+                }
+                if self.pdf_page_group_val == 0 {
+                    self.pdf_page_group_val = self.transparent_page_group;
+                }
+                info.group_ref = self.pdf_page_group_val;
+            }
         } else if let Some(svg) = crate::pdf_svg::parse_svg_dims(&bytes) {
-            let w_sp = (svg.width as f64 / svg.dpi * 72.27 * 65536.0).round() as i32;
-            let h_sp = (svg.height as f64 / svg.dpi * 72.27 * 65536.0).round() as i32;
-            ((w_sp, h_sp), [0, 0, w_sp, h_sp])
+            // SVG (a ratex extension) is rasterized at its own resolution.
+            info.kind = ImageKind::Svg;
+            info.image_width = svg.width as i32;
+            info.image_height = svg.height as i32;
+            info.color = IMAGE_COLOR_C;
+            x_res = svg.dpi.round() as i32;
+            y_res = x_res;
         } else {
             self.error_at(
                 &format!(
@@ -1918,38 +2081,112 @@ impl Engine {
                 origin.as_ref().map(crate::input::SourceMark::to_context),
             );
             return;
-        };
-        let d = scan_d.unwrap_or(0);
-        let (w, h) = match (scan_w, scan_h) {
-            (Some(w), Some(h)) => (w, h),
-            (Some(w), None) if nat_w != 0 => {
-                (w, ((nat_h as i64 * w as i64) / nat_w as i64) as i32 - d)
-            }
-            (None, Some(h)) if nat_h != 0 => (
-                ((nat_w as i64 * (h as i64 + d as i64)) / nat_h as i64) as i32,
-                h,
-            ),
-            (w, h) => (w.unwrap_or(nat_w), h.unwrap_or(nat_h - d)),
-        };
+        }
+        if bundled && info.kind != ImageKind::Pdf {
+            info.resource_bytes = Some(std::sync::Arc::new(bytes));
+        }
+        if !self.scale_image(&mut info, (scan_w, scan_h, scan_d), (x_res, y_res), origin.as_ref()) {
+            return;
+        }
         self.pdf_last_ximage = obj;
         self.pdf_last_ximage_pages = image_pages;
-        self.pdf_images.insert(
-            obj,
-            crate::engine::PdfImageInfo {
-                path: path.to_string_lossy().into_owned(),
-                used: false,
-                embedded: bytes.starts_with(b"%PDF-") || is_eps,
-                resource_bytes: if bundled && !bytes.starts_with(b"%PDF-") && !is_eps {
-                    Some(std::sync::Arc::new(bytes))
+        self.pdf_images.insert(obj, info);
+    }
+
+    /// pdfTeX `scale_image`: the natural size from the pixel size and
+    /// resolution (\pdfimageresolution for images without one) or the PDF
+    /// page box, then the `width`/`height`/`depth` overrides scaled to the
+    /// image's aspect ratio.
+    fn scale_image(
+        &mut self,
+        info: &mut crate::engine::PdfImageInfo,
+        (scan_w, scan_h, scan_d): (Option<i32>, Option<i32>, Option<i32>),
+        (mut xr, mut yr): (i32, i32),
+        origin: Option<&crate::input::SourceMark>,
+    ) -> bool {
+        use crate::pdfrender::ext_xn_over_d;
+        const ONE_INCH: f64 = 4_736_287.0;
+        const ONE_HUNDRED_INCH: i64 = 473_628_672;
+        let (x, y) = if info.rotate == 90 || info.rotate == 270 {
+            std::mem::swap(&mut xr, &mut yr);
+            (info.image_height, info.image_width)
+        } else {
+            (info.image_width, info.image_height)
+        };
+        if xr > 65535 || yr > 65535 {
+            (xr, yr) = (0, 0);
+            self.warning_at(
+                "pdfTeX warning (ext1): too large image resolution ignored",
+                origin.map(crate::input::SourceMark::to_context),
+            );
+        }
+        if x <= 0 || y <= 0 || xr < 0 || yr < 0 {
+            self.fatal_error_at(
+                "pdfTeX error (ext1): invalid image dimensions",
+                origin.map(crate::input::SourceMark::to_context),
+            );
+            return false;
+        }
+        if !(xr == 0 && yr == 0)
+            && (f64::from(x) / ONE_INCH >= f64::from(xr) || f64::from(y) / ONE_INCH >= f64::from(yr))
+        {
+            (xr, yr) = (0, 0);
+            self.warning_at(
+                "pdfTeX warning (ext1): too small image resolution ignored",
+                origin.map(crate::input::SourceMark::to_context),
+            );
+        }
+        let (mut w, mut h) = (0, 0);
+        if info.kind == crate::engine::ImageKind::Pdf {
+            (w, h) = (x, y);
+        } else {
+            let default_res = self.eqtb.int_params[IntParam::PdfImageResolution.idx() as usize]
+                .clamp(0, 65535);
+            if default_res > 0 && (xr == 0 || yr == 0) {
+                (xr, yr) = (default_res, default_res);
+            }
+            if scan_w.is_none() && scan_h.is_none() {
+                if xr > 0 && yr > 0 {
+                    w = ext_xn_over_d(ONE_HUNDRED_INCH, x as i64, 100 * xr as i64);
+                    h = ext_xn_over_d(ONE_HUNDRED_INCH, y as i64, 100 * yr as i64);
                 } else {
-                    None
-                },
-                width: w,
-                height: h,
-                depth: d,
-                bbox: img_bbox,
-            },
-        );
+                    w = ext_xn_over_d(ONE_HUNDRED_INCH, x as i64, 7200);
+                    h = ext_xn_over_d(ONE_HUNDRED_INCH, y as i64, 7200);
+                }
+            }
+        }
+        let (x, y) = (x as i64, y as i64);
+        (info.width, info.height, info.depth) = match (scan_w, scan_h, scan_d) {
+            (None, None, None) => (w, h, 0),
+            // depth given: the natural height splits into height + depth
+            (None, None, Some(d)) => (ext_xn_over_d(h as i64, x, y), h - d, d),
+            (None, Some(ht), None) => (ext_xn_over_d(ht as i64, x, y), ht, 0),
+            (None, Some(ht), Some(d)) => (ext_xn_over_d(ht as i64 + d as i64, x, y), ht, d),
+            (Some(wd), None, None) => (wd, ext_xn_over_d(wd as i64, y, x), 0),
+            (Some(wd), None, Some(d)) => (wd, ext_xn_over_d(wd as i64, y, x) - d, d),
+            (Some(wd), Some(ht), None) => (wd, ht, 0),
+            (Some(wd), Some(ht), Some(d)) => (wd, ht, d),
+        };
+        true
+    }
+
+    /// The name kpathsea returns for a found image: relative names get a
+    /// leading `./`, files under the document directory are shown
+    /// relative to it (pdfTeX writes this as /PTEX.FileName).
+    fn kpse_found_name(&self, path: &std::path::Path, bundled: bool) -> String {
+        if bundled {
+            return path.to_string_lossy().into_owned();
+        }
+        let path = match &self.main_dir {
+            Some(dir) if path.is_absolute() => path.strip_prefix(dir).unwrap_or(path),
+            _ => path,
+        };
+        let name = path.to_string_lossy();
+        if path.is_absolute() || name.starts_with("./") || name.starts_with("../") {
+            name.into_owned()
+        } else {
+            format!("./{name}")
+        }
     }
 }
 
@@ -2143,31 +2380,7 @@ fn group_kind_name(kind: LevelType) -> &'static str {
     }
 }
 
-fn read_png_dims(bytes: &[u8]) -> Option<(u32, u32, u32, u32)> {
-    if bytes.len() < 24 || &bytes[..8] != b"\x89PNG\r\n\x1a\n" || &bytes[12..16] != b"IHDR" {
-        return None;
-    }
-    let w = u32::from_be_bytes(bytes[16..20].try_into().ok()?);
-    let h = u32::from_be_bytes(bytes[20..24].try_into().ok()?);
-    let mut rx = 72u32;
-    let mut ry = 72u32;
-    let mut i = 8usize;
-    while i + 8 <= bytes.len() {
-        let len = u32::from_be_bytes(bytes[i..i + 4].try_into().ok()?) as usize;
-        let chunk_type = &bytes[i + 4..i + 8];
-        if chunk_type == b"pHYs" && i + 8 + len <= bytes.len() && len >= 9 {
-            let ppu_x = u32::from_be_bytes(bytes[i + 8..i + 12].try_into().ok()?);
-            let ppu_y = u32::from_be_bytes(bytes[i + 12..i + 16].try_into().ok()?);
-            let unit = bytes[i + 16];
-            if unit == 1 && ppu_x > 0 && ppu_y > 0 {
-                rx = ((ppu_x as f64 * 0.0254).round() as u32).max(1);
-                ry = ((ppu_y as f64 * 0.0254).round() as u32).max(1);
-            }
-        }
-        i += 12 + len;
-    }
-    Some((w, h, rx, ry))
-}
+
 fn id_cs_is(e: &Engine, id: CsId, name: &[u8]) -> bool {
     e.cs.lookup(name) == Some(id)
 }

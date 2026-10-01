@@ -779,6 +779,15 @@ impl<'a> BoxDisplay<'a> {
             }
             WhatIt::SavePos { .. } => self.print_esc("pdfsavepos"),
             WhatIt::User(_) => self.print("whatsit?"),
+            WhatIt::Language { lang, lhm, rhm } => {
+                self.print_esc("setlanguage");
+                self.print_int(*lang as i64);
+                self.print(" (hyphenmin ");
+                self.print_int(*lhm as i64);
+                self.out.push(b',');
+                self.print_int(*rhm as i64);
+                self.out.push(b')');
+            }
             WhatIt::PdfInterwordSpace(true) => self.print_esc("pdfinterwordspaceon"),
             WhatIt::PdfInterwordSpace(false) => self.print_esc("pdfinterwordspaceoff"),
             WhatIt::PdfFakeSpace => self.print_esc("pdffakespace"),

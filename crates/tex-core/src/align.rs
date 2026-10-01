@@ -413,7 +413,7 @@ impl Engine {
         self.mode = Mode::RestrictedHorizontal;
         self.space_factor = 1000;
         self.prev_graf = 0;
-        self.prev_depth = -1000 * 65536;
+        self.prev_depth = self.ignore_depth();
         self.align_rows.clear();
         self.align_row_adjust.clear();
         self.align_adjust.clear();
@@ -648,7 +648,7 @@ impl Engine {
         self.box_kinds.push(CELL_GROUP_KIND);
         self.mode = mode;
         if mode.is_v() {
-            self.prev_depth = -1000 * 65536;
+            self.prev_depth = self.ignore_depth();
         }
         // NOTE: tex.web parks align_state at 1000000 only while a u-template
         // plays (init_col @15564), not for cell groups generally; a
@@ -688,7 +688,7 @@ impl Engine {
         };
         self.align_push_cell_group(cell_mode);
         if self.align_is_valign {
-            self.prev_depth = -1000 * 65536;
+            self.prev_depth = self.ignore_depth();
         }
         self.align_cell_level = self.eqtb.cur_level;
         self.align_delimiter_balance_base = self.align_token_list_brace_balance();
@@ -1148,7 +1148,7 @@ impl Engine {
         self.align_state = PH_IDLE;
         // an empty \noalign still matters when it reset \prevdepth
         // (\noalign{\nointerlineskip})
-        if !inner.is_empty() || (!self.align_is_valign && end_pd <= -1000 * 65536) {
+        if !inner.is_empty() || (!self.align_is_valign && end_pd <= self.ignore_depth()) {
             let node = Node::Box {
                 kind: crate::boxes::VBOX,
                 w: 0,
@@ -1444,8 +1444,11 @@ impl Engine {
         let to_setbox = self.setbox_target.is_some() && self.setbox_depth == self.box_kinds.len();
         // tex.web §800: `if nest[nest_ptr-1].mode_field=mmode then
         // o:=display_indent`; only the rows and the top-level \noalign rules
-        // are shifted (§810, §806), other \noalign material stays put
-        let o = if !valign && !to_setbox && self.mode == Mode::DisplayMath {
+        // are shifted (§810, §806), other \noalign material stays put.
+        // etex.ch §800 also marks those rows `set_box_lr(q)(dlist)` for
+        // ship_out.
+        let display = !valign && !to_setbox && self.mode == Mode::DisplayMath;
+        let o = if display {
             self.eqtb.dim_params[DimParam::DisplayIndent.idx() as usize]
         } else {
             0
@@ -1460,7 +1463,7 @@ impl Engine {
                 self.mode,
                 Mode::Vertical | Mode::InternalVertical | Mode::DisplayMath
             )
-            && self.prev_depth > -1000 * 65536
+            && self.prev_depth > self.ignore_depth()
         {
             Some(self.prev_depth)
         } else {
@@ -1472,7 +1475,7 @@ impl Engine {
                     row.into_iter().next().and_then(|c| c.packed)
                 {
                     if !valign {
-                        prev = (end_pd > -1000 * 65536).then_some(end_pd);
+                        prev = (end_pd > self.ignore_depth()).then_some(end_pd);
                     }
                     // §811: running dimensions of top-level rules extend to
                     // the alignment's boundaries
@@ -1545,7 +1548,7 @@ impl Engine {
                 glue_sign: p_sign,
                 glue_order: p_order,
                 glue_set: p_set,
-                lr: 0,
+                lr: if display { crate::boxes::BOX_LR_DLIST } else { 0 },
             };
             if !valign {
                 // tex.web append_to_vlist at fin_row time
@@ -1614,7 +1617,7 @@ impl Engine {
                 if let Some(d) = prev {
                     self.prev_depth = d;
                 } else if !rows.is_empty() {
-                    self.prev_depth = -1000 * 65536;
+                    self.prev_depth = self.ignore_depth();
                 }
                 self.page_list.extend(rows);
                 self.build_page();
@@ -1623,7 +1626,7 @@ impl Engine {
                 if let Some(d) = prev {
                     self.prev_depth = d;
                 } else if !rows.is_empty() {
-                    self.prev_depth = -1000 * 65536;
+                    self.prev_depth = self.ignore_depth();
                 }
                 self.cur_list.extend(rows);
             }

@@ -5,12 +5,23 @@ use crate::{LuaResult, LuaValue, lua_vm::LuaState};
 /// Searchers and the loader run unprotected, so their errors propagate
 /// unchanged. Lua 5.3 returns the module; Lua 5.5 also the loader data.
 pub fn lua_require(l: &mut LuaState) -> LuaResult<usize> {
+    // C keeps these values on its stack; here they are native-held across
+    // searcher/loader calls, so they are GC roots until require returns.
+    let roots_base = l.global_state().rust_roots.len();
+    let result = require_rooted(l);
+    l.global_state_mut().rust_roots.truncate(roots_base);
+    result
+}
+
+fn require_rooted(l: &mut LuaState) -> LuaResult<usize> {
     let name_bytes = lauxlib::check_lstring(l, 1)?.to_vec();
     let name = String::from_utf8_lossy(&name_bytes).into_owned();
     let name_value = l.create_bytes(&name_bytes)?;
+    l.global_state_mut().rust_roots.push(name_value);
     let lua53 = l.global_state().language() == crate::LuaLanguageLevel::Lua53;
 
     let loaded = l.global_state_mut().registry_get("_LOADED")?.unwrap_or_default();
+    l.global_state_mut().rust_roots.push(loaded);
     if let Some(module) = l.table_get(&loaded, &name_value)?
         && module.is_truthy()
     {
@@ -25,6 +36,7 @@ pub fn lua_require(l: &mut LuaState) -> LuaResult<usize> {
     if !searchers.is_table() {
         return Err(lauxlib::lual_error(l, "'package.searchers' must be a table"));
     }
+    l.global_state_mut().rust_roots.push(searchers);
     let mut messages = Vec::new();
     let (loader, data) = 'search: {
         for i in 1.. {
@@ -48,6 +60,7 @@ pub fn lua_require(l: &mut LuaState) -> LuaResult<usize> {
         }
         unreachable!("the searcher loop only exits by returning or breaking")
     };
+    l.global_state_mut().rust_roots.push(data);
 
     let module = l.call(loader, vec![name_value, data])?.into_iter().next().unwrap_or_default();
     if !module.is_nil() {

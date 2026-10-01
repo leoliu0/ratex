@@ -1,4 +1,5 @@
 use std::ffi::c_void;
+use std::mem::ManuallyDrop;
 use std::pin::Pin;
 
 #[cfg(feature = "sandbox")]
@@ -20,14 +21,14 @@ use crate::{LuaApi, LuaAsyncApi, LuaError, LuaFullError, StackValueApi};
 /// This type sits on top of the low-level runtime and exposes a narrower API that
 /// avoids raw `LuaValue` plumbing in the common host-facing surface.
 pub struct Lua {
-    global_state_owner: Pin<Box<GlobalState>>,
+    global_state_owner: ManuallyDrop<Pin<Box<GlobalState>>>,
 }
 
 impl Lua {
     /// Create a new Lua runtime.
     pub fn new(option: SafeOption) -> Self {
         Lua {
-            global_state_owner: GlobalState::new(option),
+            global_state_owner: ManuallyDrop::new(GlobalState::new(option)),
         }
     }
 
@@ -39,7 +40,9 @@ impl Lua {
     /// Create a state with an explicit language contract.
     pub fn new_with_language(option: SafeOption, language: LuaLanguageLevel) -> Self {
         Lua {
-            global_state_owner: GlobalState::new_with_language(option, language),
+            global_state_owner: ManuallyDrop::new(GlobalState::new_with_language(
+                option, language,
+            )),
         }
     }
 
@@ -195,9 +198,23 @@ impl Lua {
         self.value_to_function(value)
     }
 
-    /// Get a mutable reference to the underlying GlobalState for advanced use cases.
-    pub fn global_state_mut(&mut self) -> &mut GlobalState {
+    /// The underlying VM state (crate-internal: it hands out unrooted values).
+    pub(crate) fn global_state_mut(&mut self) -> &mut GlobalState {
         &mut self.global_state_owner
+    }
+}
+
+impl Drop for Lua {
+    fn drop(&mut self) {
+        let liveness = self.global_state_owner.liveness.clone();
+        if liveness.has_pins() {
+            // A host borrow guard (string bytes, userdata) still points into the
+            // heap: close the state for every handle but leak its memory.
+            liveness.close();
+        } else {
+            // SAFETY: the owner is dropped exactly once, here.
+            unsafe { ManuallyDrop::drop(&mut self.global_state_owner) };
+        }
     }
 }
 
@@ -350,6 +367,12 @@ impl LuaApi for Lua {
     }
 
     #[inline]
+    fn create_bytes(&mut self, bytes: &[u8]) -> LuaResult<LuaString> {
+        let value = self.global_state_owner.main_state().create_bytes(bytes)?;
+        self.value_to_string(value)
+    }
+
+    #[inline]
     fn create_table(&mut self) -> LuaResult<LuaTable> {
         self.create_table_with_capacity(0, 0)
     }
@@ -494,6 +517,13 @@ impl LuaApi for Lua {
         kind: LuaValueKind,
         metatable: Option<&LuaTable>,
     ) -> LuaResult<()> {
+        if let Some(metatable) = metatable
+            && !metatable.same_state_as(&self.global_state_owner)
+        {
+            return Err(self
+                .global_state_owner
+                .error("metatable belongs to a different Lua state".to_string()));
+        }
         self.global_state_owner
             .set_basic_metatable(kind, metatable.map(LuaTable::value));
         Ok(())

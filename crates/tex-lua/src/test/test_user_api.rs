@@ -141,9 +141,9 @@ fn test_lua_state_create_userdata_handle_survives_gc() {
         .unwrap();
     state.collect_garbage().unwrap();
 
-    assert_eq!(counter.get().unwrap().count, 7);
-    counter.get_mut().unwrap().count += 5;
-    assert_eq!(counter.get().unwrap().count, 12);
+    assert_eq!(counter.borrow().unwrap().count, 7);
+    counter.borrow_mut().unwrap().count += 5;
+    assert_eq!(counter.borrow().unwrap().count, 12);
 }
 
 #[test]
@@ -304,7 +304,7 @@ fn test_string_ref_basic() {
     let s = vm.create_string("hello world").unwrap();
     let sref = vm.to_string_ref(s).unwrap();
 
-    assert_eq!(sref.as_str(), Some("hello world"));
+    assert_eq!(sref.as_str().as_deref(), Some("hello world"));
     assert_eq!(sref.byte_len(), 11);
     assert_eq!(sref.to_string_lossy(), "hello world");
     assert_eq!(format!("{}", sref), "hello world");
@@ -359,7 +359,7 @@ fn test_any_ref_string() {
     let s = vm.create_string("any_string").unwrap();
     let any = vm.to_ref(s);
     let sref = any.as_string().unwrap();
-    assert_eq!(sref.as_str(), Some("any_string"));
+    assert_eq!(sref.as_str().as_deref(), Some("any_string"));
 }
 
 #[test]
@@ -382,7 +382,7 @@ fn test_any_ref_userdata_typed() {
 
     let any = vm.to_ref(userdata);
     let counter = any.as_userdata::<ApiCounter>().unwrap();
-    assert_eq!(counter.get().unwrap().count, 5);
+    assert_eq!(counter.borrow().unwrap().count, 5);
     assert_eq!(counter.type_name().unwrap(), "ApiCounter");
 }
 
@@ -394,11 +394,11 @@ fn test_userdata_ref_from_lua_and_mutate() {
         .unwrap();
     vm.set_global("counter", userdata).unwrap();
 
-    let mut counter: UserDataRef<ApiCounter> =
+    let counter: UserDataRef<ApiCounter> =
         vm.main_state().get_global_as("counter").unwrap().unwrap();
-    assert_eq!(counter.get().unwrap().count, 11);
+    assert_eq!(counter.borrow().unwrap().count, 11);
 
-    counter.get_mut().unwrap().count += 9;
+    counter.borrow_mut().unwrap().count += 9;
 
     let results = vm.main_state().execute("return counter.count").unwrap();
     assert_eq!(results[0].as_integer(), Some(20));

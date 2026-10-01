@@ -10,3 +10,5 @@ crate-type = ["cdylib", "staticlib", "rlib"]
 [dependencies]
 dlmalloc = { workspace = true }
 tex-runtime = { path = "../tex-runtime" }
+# libtex.a must carry the embedded package archive itself.
+tex-kpse = { path = "../tex-kpse", features = ["bundle-packages"] }

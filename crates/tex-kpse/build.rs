@@ -17,7 +17,7 @@ fn main() {
         let generated = "static PACKAGES: &[u8] = &[];\n\
                          static PACKAGE_CHUNKS: PackedTable<3> = PackedTable(&[]);\n\
                          static PACKAGE_NAMES: &[u8] = &[];\n\
-                         static PACKAGE_INDEX: PackedTable<5> = PackedTable(&[]);\n\
+                         static PACKAGE_INDEX: PackedTable<6> = PackedTable(&[]);\n\
                          static PACKAGE_FOLDED: PackedTable<1> = PackedTable(&[]);\n\
                          static PACKAGE_DIR_NAMES: &[u8] = &[];\n\
                          static PACKAGE_DIRS: PackedTable<2> = PackedTable(&[]);\n\
@@ -92,9 +92,10 @@ fn main() {
         })
         .collect();
     let mut blob = BlobWriter::create(&out);
-    let mut index: BTreeMap<String, (usize, usize, usize)> = BTreeMap::new();
     // Directory (`/`-separated, relative to the TDS root) of each member.
     let mut member_dirs: BTreeMap<String, String> = BTreeMap::new();
+    // name -> (chunk, offset, length, below the TDS `tex/` subtree)
+    let mut index: BTreeMap<String, (usize, usize, usize, bool)> = BTreeMap::new();
     let mut chunks: Vec<(usize, usize, usize)> = Vec::new();
     let mut chunk = Vec::with_capacity(CHUNK_TARGET);
     let mut font_faces = Vec::new();
@@ -134,7 +135,10 @@ fn main() {
         let member_offset = chunk.len();
         let member_len = data.len();
         chunk.extend_from_slice(&data);
-        index.insert(name.to_owned(), (chunk_index, member_offset, member_len));
+        index.insert(
+            name.to_owned(),
+            (chunk_index, member_offset, member_len, path.starts_with("tex")),
+        );
         if chunk.len() >= CHUNK_TARGET {
             write_chunk(&mut blob, &mut chunks, &mut chunk);
         }
@@ -210,11 +214,11 @@ fn main() {
     // index reuses those same names.
     let mut names = Vec::new();
     let mut folded = BTreeMap::new();
-    let mut index_table = Vec::with_capacity(index.len() * 20);
-    for (position, (name, (chunk, offset, length))) in index.into_iter().enumerate() {
+    let mut index_table = Vec::with_capacity(index.len() * 24);
+    for (position, (name, (chunk, offset, length, in_tex_tree))) in index.into_iter().enumerate() {
         push_u32s(
             &mut index_table,
-            [names.len(), name.len(), chunk, offset, length],
+            [names.len(), name.len(), chunk, offset, length, usize::from(in_tex_tree)],
         );
         push_u32s(&mut member_dir_table, [directories[&member_dirs[&name]]]);
         names.extend_from_slice(name.as_bytes());
@@ -240,7 +244,7 @@ fn main() {
     for (name, file, fields) in [
         ("PACKAGE_CHUNKS", "package_chunks.bin", Some(3)),
         ("PACKAGE_NAMES", "package_names.bin", None),
-        ("PACKAGE_INDEX", "package_index.bin", Some(5)),
+        ("PACKAGE_INDEX", "package_index.bin", Some(6)),
         ("PACKAGE_FOLDED", "package_folded.bin", Some(1)),
         ("PACKAGE_DIR_NAMES", "package_dir_names.bin", None),
         ("PACKAGE_DIRS", "package_dirs.bin", Some(2)),

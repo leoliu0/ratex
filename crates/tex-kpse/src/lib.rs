@@ -192,7 +192,7 @@ fn package_entry(filename: &str) -> Option<usize> {
 }
 
 #[inline]
-fn package_name([offset, length, ..]: [u32; 5]) -> &'static [u8] {
+fn package_name([offset, length, ..]: [u32; 6]) -> &'static [u8] {
     let start = offset as usize;
     &PACKAGE_NAMES[start..start + length as usize]
 }
@@ -212,8 +212,11 @@ pub fn get_embedded_package(filename: &str) -> Option<Vec<u8>> {
     if !fs::embedded_allowed() {
         return None;
     }
-    let index = package_entry(filename)?;
-    let [_, _, chunk_index, member_offset, member_length] = PACKAGE_INDEX.get(index)?;
+    read_package_entry(package_entry(filename)?)
+}
+
+fn read_package_entry(index: usize) -> Option<Vec<u8>> {
+    let [_, _, chunk_index, member_offset, member_length, _] = PACKAGE_INDEX.get(index)?;
     let chunk_index = chunk_index as usize;
     let member_offset = member_offset as usize;
     let member = member_offset..member_offset.checked_add(member_length as usize)?;
@@ -258,13 +261,31 @@ pub fn get_embedded_package(filename: &str) -> Option<Vec<u8>> {
 /// unrelated `foo.sty` can shadow the generic implementation that a package
 /// intended to load.
 pub fn get_embedded_tex_input(name: &str) -> Option<(String, Vec<u8>)> {
-    if is_explicit_path(name) {
+    embedded_tex_input(name, false)
+}
+
+/// Like [`get_embedded_tex_input`], but only members that live below the TDS
+/// `tex/` subtree qualify, as in a kpathsea search of the TEXINPUTS path: a
+/// TFM, encoding or map file that happens to share the name is not a TeX
+/// input.
+pub fn get_embedded_tex_tree_input(name: &str) -> Option<(String, Vec<u8>)> {
+    embedded_tex_input(name, true)
+}
+
+fn embedded_tex_input(name: &str, tex_tree_only: bool) -> Option<(String, Vec<u8>)> {
+    if is_explicit_path(name) || !fs::embedded_allowed() {
         return None;
     }
     let clean = Path::new(name).file_name().and_then(|value| value.to_str()).unwrap_or(name);
     Kpse::candidates(clean, Format::Tex)
         .into_iter()
-        .find_map(|candidate| get_embedded_package(&candidate).map(|data| (candidate, data)))
+        .find_map(|candidate| {
+            let index = package_entry(&candidate)?;
+            if tex_tree_only && PACKAGE_INDEX.get(index)?[5] == 0 {
+                return None;
+            }
+            read_package_entry(index).map(|data| (candidate, data))
+        })
 }
 
 use std::cell::{Ref, RefCell};
@@ -311,6 +332,18 @@ impl Format {
             Format::Otf => &[".otf"],
             Format::Lua => &[".luc", ".luctex", ".texluc", ".lua", ".luatex", ".texlua"],
         }
+    }
+
+    /// Whether a root-relative path (an `ls-R` entry may spell it `./tex/...`)
+    /// lies below one of this format's TDS subtrees.
+    fn tds_tree_contains(&self, rel: &Path) -> bool {
+        let normal: PathBuf = rel
+            .components()
+            .filter(|component| matches!(component, Component::Normal(_)))
+            .collect();
+        self.tds_paths()
+            .iter()
+            .any(|spec| normal.starts_with(spec.trim_end_matches('/')))
     }
 
     /// TDS search specs for this format in kpathsea `texmf.cnf` style: a
@@ -1336,6 +1369,25 @@ impl Kpse {
         }
         hit
     }
+
+    /// [`Kpse::find`] for a search of the format's own path variable only
+    /// (kpathsea's `kpse_find_file`): a filename-database hit counts only
+    /// when its directory lies below one of the format's TDS subtrees, so
+    /// `TEXINPUTS` does not reach a TFM or map file of the same name.
+    pub fn find_in_format_tree(&self, name: &str, fmt: Format) -> Option<PathBuf> {
+        let candidates = Self::candidates(name, fmt);
+        if !Path::new(name).is_absolute() {
+            if let Some(hit) = self.find_in_extra_paths(fmt, &candidates) {
+                return Some(hit);
+            }
+        }
+        for candidate in &candidates {
+            if let Some(local) = self.find_local(candidate) {
+                return Some(local);
+            }
+        }
+        self.find_uncached_in(name, fmt, true)
+    }
     /// Explain how a lookup was resolved and which precedence source matched.
     pub fn explain_lookup(&self, name: &str, fmt: Format) -> LookupExplanation {
         let p = Path::new(name);
@@ -1437,6 +1489,10 @@ impl Kpse {
     }
 
     fn find_uncached(&self, name: &str, fmt: Format) -> Option<PathBuf> {
+        self.find_uncached_in(name, fmt, false)
+    }
+
+    fn find_uncached_in(&self, name: &str, fmt: Format, format_tree_only: bool) -> Option<PathBuf> {
         let p = Path::new(name);
         if p.is_absolute() {
             return if p.tex_is_file() {
@@ -1463,6 +1519,9 @@ impl Kpse {
             for cand in &candidates {
                 if let Some(dirs) = db.get(cand) {
                     for rel in dirs {
+                        if format_tree_only && !fmt.tds_tree_contains(&rel) {
+                            continue;
+                        }
                         let full = self.roots[i].join(rel);
                         if full.tex_is_file() {
                             return Some(clean(full));
@@ -1974,6 +2033,16 @@ mod tests {
     }
 
     #[test]
+    fn embedded_tex_tree_lookup_excludes_font_and_map_files() {
+        // kpathsea's TEXINPUTS search never reaches fonts/ or other trees.
+        for name in ["cmr10.tfm", "cmr10.pfb", "8r.enc", "pdftex.map"] {
+            assert!(has_embedded_package(name), "{name} is embedded");
+            assert!(get_embedded_tex_tree_input(name).is_none(), "{name}");
+        }
+        assert_eq!(get_embedded_tex_tree_input("article.cls").unwrap().0, "article.cls");
+    }
+
+    #[test]
     fn packed_package_index_is_sorted_and_self_consistent() {
         fn records<const N: usize>(table: PackedTable<N>) -> Vec<[u32; N]> {
             assert_eq!(table.0.len() % (N * 4), 0, "table holds whole records");
@@ -1998,7 +2067,7 @@ mod tests {
             expected
                 .entry(name.to_ascii_lowercase())
                 .or_insert(position as u32);
-            let [_, _, chunk, offset, length] = package;
+            let [_, _, chunk, offset, length, _] = package;
             let [_, _, decoded] = chunks[chunk as usize];
             assert!(offset + length <= decoded, "{name} lies inside its chunk");
         }

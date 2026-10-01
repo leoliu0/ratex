@@ -1573,11 +1573,11 @@ impl Engine {
             }
             Node::Whatsit(crate::boxes::WhatIt::OpenOut {
                 stream,
-                path,
+                names,
                 create_parent,
                 source,
             }) => {
-                let p = path.clone();
+                let p = names.0.clone();
                 self.exec_openout(*stream, &p, *create_parent, source.as_ref());
             }
             Node::Whatsit(crate::boxes::WhatIt::CloseOut { stream, source }) => {

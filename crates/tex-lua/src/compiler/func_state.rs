@@ -193,6 +193,18 @@ pub struct VarDesc {
     pub const_value: Option<LuaValue>, // constant value for compile-time constants
 }
 
+/// The bytes of a name made of the lexer's characters. `byte_markers` tells
+/// that the text was built by `encode_byte_source`, so every marker in it
+/// stands for a byte of the chunk; otherwise the name is plain text.
+pub fn name_bytes(name: &str, byte_markers: bool) -> Box<[u8]> {
+    if byte_markers && name.contains(BYTE_SOURCE_MARKER) {
+        crate::compiler::parse_literal::decode_byte_source_markers(name.as_bytes().to_vec())
+            .into_boxed_slice()
+    } else {
+        name.as_bytes().into()
+    }
+}
+
 impl<'a> FuncState<'a> {
     pub fn new(
         lexer: &'a mut LuaLexer<'a>,
@@ -243,13 +255,19 @@ impl<'a> FuncState<'a> {
         string
     }
 
-    /// String object for a name (a variable, field or method name). Bytes of
-    /// the chunk that are not valid UTF-8 reach the lexer as marker
-    /// characters (LuaTeX takes any byte >= 0x80 as a letter); the name is
-    /// made of the original bytes.
+    /// The bytes of a name (a variable, field or method name). Bytes of the
+    /// chunk that are not valid UTF-8 reach the lexer as marker characters
+    /// (LuaTeX takes any byte >= 0x80 as a letter); the name is made of the
+    /// original bytes, which every consumer of a name (constants, debug
+    /// information, error messages, dumps) shows.
+    pub fn name_bytes(&self, name: &str) -> Box<[u8]> {
+        name_bytes(name, self.lexer.has_byte_markers())
+    }
+
+    /// String object for a name (a variable, field or method name).
     pub fn name_string(&mut self, name: &str) -> LuaValue {
         if self.lexer.has_byte_markers() && name.contains(BYTE_SOURCE_MARKER) {
-            let bytes = crate::compiler::parse_literal::decode_byte_source_markers(name.as_bytes().to_vec());
+            let bytes = name_bytes(name, true);
             return self.vm.create_bytes(&bytes).unwrap();
         }
         self.vm.create_string(name).unwrap()
@@ -468,7 +486,7 @@ impl<'a> FuncState<'a> {
                 let pidx = self.chunk.locals.len();
                 var.pidx = pidx;
                 self.chunk.locals.push(crate::lua_value::LocVar {
-                    name: var.name.clone(),
+                    name: name_bytes(&var.name, self.lexer.has_byte_markers()),
                     startpc,
                     endpc: 0, // Will be set in remove_vars
                 });

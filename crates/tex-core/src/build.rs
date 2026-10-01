@@ -1043,6 +1043,23 @@ impl Engine {
 
     // ---------- boxes ----------
 
+    /// tex.web `cur_cmd=cc` for a token fetched WITHOUT expansion: an
+    /// explicit character token of catcode `cc`, or a control sequence or
+    /// active character `\let` to one (an implicit character).
+    pub(crate) fn raw_token_has_cmd(&mut self, t: Token, cc: u8) -> bool {
+        let id = if t.is_char() {
+            if t.cc() != 13 {
+                return t.cc() == cc;
+            }
+            self.active_cs_id(t.chr())
+        } else if t.is_cs() {
+            t.cs_id()
+        } else {
+            return false;
+        };
+        matches!(self.eqtb.resolve(id), Some(crate::eqtb::Equiv::CharTok(v)) if Token(*v).cc() == cc)
+    }
+
     pub(crate) fn token_is_left_brace(&self, t: Token) -> bool {
         if t.is_char() && t.cc() == 1 {
             return true;
@@ -1417,6 +1434,20 @@ impl Engine {
     /// into the current list. Copy variants leave the register intact.
     pub fn do_unbox(&mut self, want_v: bool, copy: bool) {
         let n = self.scan_reg_num();
+        // tex.web §1110 unpackage: fetch the box, return if void, and report
+        // `Incompatible list can't be unboxed` BEFORE the register is changed
+        // (the box stays in place). Math mode never opens boxes.
+        let compatible = match self.eqtb.boxed.get(n as usize) {
+            Some(Some(crate::boxes::Node::Box { kind, .. })) => {
+                !self.mode.is_m() && (*kind != crate::boxes::HBOX) == want_v
+            }
+            Some(Some(_)) => false,
+            _ => return,
+        };
+        if !compatible {
+            self.error("Incompatible list can't be unboxed");
+            return;
+        }
         let node = if copy {
             self.eqtb.boxed.get(n as usize).cloned().flatten()
         } else {
@@ -1427,35 +1458,18 @@ impl Engine {
             self.global_flag = false;
             old
         };
-        let Some(node) = node else { return };
-        match node {
-            crate::boxes::Node::Box { kind, list, .. } => {
-                let is_v = kind != crate::boxes::HBOX;
-                if is_v != want_v {
-                    self.error("Incompatible list can't be unboxed");
-                    return;
-                }
-                // vertical-mode \unhbox/\unhcopy already started a paragraph
-                // at dispatch (tex.web §21105); unpackage only runs in hmode
-                if want_v && self.mode.is_h() {
-                    self.error("Incompatible list can't be unboxed");
-                    return;
-                }
-
-                // tex.web unpackage (§21327-21331): the splice is pure link
-                // surgery (`link(tail):=list_ptr(p)` then advance `tail`) —
-                // append_to_vlist never runs, so NO interline glue is
-                // recomputed AND \prevdepth keeps its pre-splice value.
-                let is_vmode = self.mode == Mode::Vertical;
-                for item in list {
-                    if is_vmode {
-                        self.page_append(item);
-                    } else {
-                        self.cur_list.push(item);
-                    }
-                }
+        let Some(crate::boxes::Node::Box { list, .. }) = node else { return };
+        // tex.web unpackage (§21327-21331): the splice is pure link
+        // surgery (`link(tail):=list_ptr(p)` then advance `tail`) —
+        // append_to_vlist never runs, so NO interline glue is
+        // recomputed AND \prevdepth keeps its pre-splice value.
+        let is_vmode = self.mode == Mode::Vertical;
+        for item in list {
+            if is_vmode {
+                self.page_append(item);
+            } else {
+                self.cur_list.push(item);
             }
-            _ => self.error("Incompatible list can't be unboxed"),
         }
     }
 
@@ -1990,7 +2004,10 @@ impl Engine {
             | Some(Node::Overline { .. })
             | Some(Node::MathKern(..)) => 10,
             Some(Node::Glue(_)) | Some(Node::Leaders { .. }) => 11,
-            Some(Node::Kern(_)) | Some(Node::ExplicitKern(_)) | Some(Node::MarginKern { .. }) => 12,
+            Some(Node::Kern(_))
+            | Some(Node::ExplicitKern(_))
+            | Some(Node::AccentKern(_))
+            | Some(Node::MarginKern { .. }) => 12,
             Some(Node::Penalty(_)) => 13,
             Some(Node::InsDisc) | Some(Node::Empty) => 14,
             Some(Node::NonScript) | Some(Node::MuGlue(_)) => 11,
@@ -2010,7 +2027,11 @@ impl Engine {
         for node in nodes {
             match node {
                 Node::MarginKern { width, .. } => return *width,
-                Node::Glue(_) | Node::Kern(_) | Node::ExplicitKern(_) | Node::Penalty(_) => {
+                Node::Glue(_)
+                | Node::Kern(_)
+                | Node::ExplicitKern(_)
+                | Node::AccentKern(_)
+                | Node::Penalty(_) => {
                     continue
                 }
                 _ => break,
@@ -2085,6 +2106,7 @@ impl Engine {
                     | Node::Rule { .. }
                     | Node::Kern(_)
                     | Node::ExplicitKern(_)
+                    | Node::AccentKern(_)
             )
         }) {
             self.error("Improper discretionary list");
@@ -2124,7 +2146,7 @@ impl Engine {
             return 0;
         }
         match self.current_tail() {
-            Some(Node::Kern(k) | Node::ExplicitKern(k)) => *k,
+            Some(Node::Kern(k) | Node::ExplicitKern(k) | Node::AccentKern(k)) => *k,
             None if self.mode == Mode::Vertical => self.last_page_kern,
             _ => 0,
         }
@@ -2174,7 +2196,7 @@ impl Engine {
     pub fn un_kern(&mut self) {
         if matches!(
             self.current_tail(),
-            Some(Node::Kern(_) | Node::ExplicitKern(_))
+            Some(Node::Kern(_) | Node::ExplicitKern(_) | Node::AccentKern(_))
         ) {
             self.take_current_tail();
         }
@@ -2410,8 +2432,13 @@ impl Engine {
             Mode::InternalVertical => {
                 self.resume_after_display = false;
             }
+            // tex.web §1047 insert_dollar_sign (mmode+par_end): back up the
+            // \par, report the missing $, and close the formula as if the
+            // $ had been typed; the \par is then read again.
             Mode::Math | Mode::DisplayMath => {
-                self.error("Missing $ inserted (\\par in math)");
+                self.push_token(Token::from_cs(self.ids.par));
+                self.error("Missing $ inserted");
+                self.exit_math();
             }
             // tex.web §21179 end_graf: `if mode = hmode` — in restricted hmode (-hmode),
             // \par does not end a paragraph; it is a no-op.
@@ -3128,7 +3155,9 @@ mod structural_state_tests {
         let mut engine = Engine::new(true);
         run_in(
             &mut engine,
-            "\\catcode`\\$=3 \\hbadness=10000 \
+            "\\catcode`\\$=3 \\font\\tsy=cmsy10 \\font\\tex=cmex10 \
+             \\textfont2=\\tsy \\scriptfont2=\\tsy \\scriptscriptfont2=\\tsy \
+             \\textfont3=\\tex \\scriptfont3=\\tex \\scriptscriptfont3=\\tex \\hbadness=10000 \
              \\setbox1\\hbox to 5pt{\\hskip0pt plus 10pt}\
              \\ifnum\\badness=12 \\else\\errmessage{badness \\the\\badness}\\fi\
              \\mathsurround=2pt \\setbox1\\hbox{$\\kern1pt$}\

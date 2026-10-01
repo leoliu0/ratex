@@ -271,11 +271,11 @@ impl Engine {
                 self.keep_opaque(n, &Node::Whatsit(w.clone()));
                 n
             }
-            WhatIt::OpenOut { stream, path, .. } => {
+            WhatIt::OpenOut { stream, names, .. } => {
                 let n = whatsit(self, ws::OPEN);
                 self.lua_nodes.node_mut(n).f[0] = i32::from(*stream);
                 self.lua_nodes.node_mut(n).ext.get_or_insert_with(Default::default).strs =
-                    vec![path.clone().into_bytes(), Vec::new(), Vec::new()];
+                    vec![names.0.clone().into_bytes(), Vec::new(), Vec::new()];
                 self.keep_opaque(n, &Node::Whatsit(w.clone()));
                 n
             }

@@ -195,6 +195,8 @@ enum Unbalanced {
     Outer(Token),
     /// A fatal error has already been reported.
     Fatal,
+    /// The input ended inside a macro argument.
+    Eof,
 }
 
 /// The absorbing scans of tex.web §338-§339 (scanner_status defining,
@@ -1305,8 +1307,8 @@ impl Engine {
         use Prim::*;
         match p {
             ExpandAfter => {
-                let t1 = self.raw_token();
-                let t2 = self.raw_token();
+                let t1 = self.raw_token_outer();
+                let t2 = self.raw_token_outer();
                 if t2.0 >= NOEXP_FLAG && t2.0 < 0xFFFF_0000 {
                     self.push_token(t2);
                 } else if t2.is_cs() || (t2.is_char() && t2.cc() == 13) {
@@ -1368,7 +1370,7 @@ impl Engine {
             }
 
             NoExpand => {
-                let t = self.raw_token();
+                let t = self.raw_token_normal();
                 let id = if t.is_cs() {
                     Some(t.cs_id())
                 } else if t.is_char() && t.cc() == 13 {
@@ -1493,7 +1495,7 @@ impl Engine {
                 None
             }
             Prim::String => {
-                let t = self.raw_token();
+                let t = self.raw_token_normal();
                 let mut bytes: Vec<u8> = Vec::new();
                 let esc = self.eqtb.int_params[crate::prim::IntParam::EscapeChar.idx() as usize];
                 if t.is_cs() {
@@ -1513,9 +1515,9 @@ impl Engine {
                 None
             }
             Prim::Meaning => {
-                let t = self.raw_token();
+                let t = self.raw_token_normal();
                 let text = self.meaning_of(t);
-                self.exp_string(text.as_bytes());
+                self.exp_string(&crate::tex_bytes::text_to_bytes(&text));
                 None
             }
             Number => {
@@ -1536,8 +1538,8 @@ impl Engine {
             }
             Detokenize => {
                 let toks = self.scan_general_text();
-                let text = self.tokens_to_string(&toks);
-                self.exp_string(text.as_bytes());
+                let bytes = self.tokens_to_bytes(&toks);
+                self.exp_string(&bytes);
                 None
             }
             Expanded => {
@@ -1586,10 +1588,10 @@ impl Engine {
             ScanTokens => {
                 // \scantokens{...}: stringify and rescan
                 let toks = self.scan_general_text();
-                let text = self.tokens_to_string(&toks);
+                let text = self.tokens_to_bytes(&toks);
                 if self.ensure_input_stack_room(1) {
                     self.input
-                        .push_file("<scantokens>".to_string(), text.into_bytes());
+                        .push_file("<scantokens>".to_string(), text);
                 }
                 None
             }
@@ -1773,7 +1775,7 @@ impl Engine {
                 self.do_if(ok, id)
             }
             IfDef => {
-                let t = self.raw_token();
+                let t = self.raw_token_normal();
                 let def = if t.is_cs() {
                     self.eqtb.resolve(t.cs_id()).is_some()
                 } else if t.is_char() && t.cc() == 13 {
@@ -1900,8 +1902,8 @@ impl Engine {
             IfX => {
                 // tex.web if_x: operands see expandable PRIMS (\\csname...)
                 // but never macros (\\ifx\\foo x is false for \\def\\foo{x}).
-                let a = self.raw_token();
-                let b = self.raw_token();
+                let a = self.raw_token_normal();
+                let b = self.raw_token_normal();
 
                 let eq = self.ifx_equal(a, b);
                 self.do_if(eq, id)
@@ -2451,7 +2453,7 @@ impl Engine {
 
     /// dispatch the token after \unless (must be a conditional)
     fn expand_prim_of_next(&mut self) -> Option<Token> {
-        let t = self.raw_token();
+        let t = self.raw_token_outer();
         if !t.is_cs() {
             self.error("Missing \\if after \\unless");
             return Some(t);
@@ -2544,6 +2546,7 @@ impl Engine {
     fn pass_text(&mut self) -> Option<Prim> {
         let save_scanner = self.scanner_status;
         self.scanner_status = ScannerStatus::Skipping;
+        let skip_line = self.input.current_file_line();
         let mut l = 0i32;
         let res = 'skip: loop {
             if let Some(delimiter) = self.pass_text_run(&mut l) {
@@ -2551,8 +2554,8 @@ impl Engine {
             }
             let t = self.raw_token();
             if t == EOF_MARKER {
-                self.fatal_conditional_eof();
-                break 'skip None;
+                self.incomplete_conditional(EOF_MARKER, skip_line);
+                continue;
             }
             // A \noexpand-guarded token means \relax here (tex.web §358).
             // Active characters carry meanings like control sequences.
@@ -2572,7 +2575,7 @@ impl Engine {
             let is = match self.eqtb.resolve(id) {
                 Some(Equiv::Prim(p)) => *p,
                 Some(Equiv::Macro(m)) if m.outer => {
-                    self.incomplete_conditional(t);
+                    self.incomplete_conditional(t, skip_line);
                     continue;
                 }
                 _ => continue,
@@ -2665,13 +2668,11 @@ impl Engine {
         found
     }
 
-    /// tex.web §336: an \outer macro ends skipped conditional text. TeX
-    /// inserts \fi before it and reads the macro again afterwards.
-    fn incomplete_conditional(&mut self, outer: Token) {
-        let (opener, line) = self
-            .if_stack
-            .last()
-            .map_or((0, 0), |state| (state.loc_cs, state.loc_line));
+    /// tex.web §336: an \outer macro, or the end of the input, ends skipped
+    /// conditional text. TeX inserts \fi before it and reads it again
+    /// afterwards; `skip_line` is where the skipping began.
+    fn incomplete_conditional(&mut self, outer: Token, skip_line: u32) {
+        let opener = self.if_stack.last().map_or(0, |state| state.loc_cs);
         let opener = if (opener as usize) < self.cs.len() && opener != 0 {
             self.display_cs(opener).trim_end().to_string()
         } else {
@@ -2681,8 +2682,14 @@ impl Engine {
         if let Some(fi) = self.cs.lookup(b"fi") {
             self.push_token(Token::from_cs(fi));
         }
+        if outer == EOF_MARKER {
+            if self.eof_reported {
+                return;
+            }
+            self.eof_reported = true;
+        }
         self.error(&format!(
-            "Incomplete {opener}; all text was ignored after line {line}"
+            "Incomplete {opener}; all text was ignored after line {skip_line}"
         ));
     }
 
@@ -2771,35 +2778,6 @@ impl Engine {
                 _ => {}
             }
         }
-    }
-
-    fn fatal_conditional_eof(&mut self) {
-        let count = self.if_stack.len();
-        let openings = self
-            .if_stack
-            .iter()
-            .rev()
-            .take(3)
-            .map(|state| {
-                let file = state.loc_file.rsplit('/').next().unwrap_or("?");
-                let mut end = file.len().min(256);
-                while end > 0 && !file.is_char_boundary(end) {
-                    end -= 1;
-                }
-                format!("{}:{}", &file[..end], state.loc_line)
-            })
-            .collect::<Vec<_>>()
-            .join(", ");
-        let source = self
-            .if_stack
-            .last()
-            .and_then(|state| state.loc.as_ref().map(crate::input::SourceMark::to_context));
-        self.fatal_error_at(
-            &format!(
-                "File ended while scanning conditional ({count} open; innermost at {openings})"
-            ),
-            source,
-        );
     }
 
     /// Skip the rest of a conditional whose branch was already taken, up to
@@ -3003,11 +2981,7 @@ impl Engine {
         let stored = self.unfreeze_input_token(raw);
         let t = self.unfreeze_unexpanded_token(stored);
         if t == EOF_MARKER {
-            self.fatal_error_at(
-                &format!("File ended while scanning use of {}", self.display_cs(id)),
-                origin.map(crate::input::SourceMark::to_context),
-            );
-            return Err(ArgAbort);
+            return Err(self.abort_file_ended(id, origin));
         }
         if self.is_partoken(t) && !long {
             return Err(self.abort_paragraph(id, stored, origin));
@@ -3076,6 +3050,50 @@ impl Engine {
         ArgAbort
     }
 
+    /// tex.web §336-§339: the input ended inside an argument. The inserted
+    /// \par silently ends the call; the end of the input is read again.
+    #[cold]
+    #[inline(never)]
+    fn abort_file_ended(
+        &mut self,
+        id: CsId,
+        origin: Option<&crate::input::SourceMark>,
+    ) -> ArgAbort {
+        self.push_token(EOF_MARKER);
+        if !self.eof_reported {
+            self.eof_reported = true;
+            self.error_at(
+                &format!("File ended while scanning use of {}", self.display_cs(id)),
+                origin.map(crate::input::SourceMark::to_context),
+            );
+        }
+        ArgAbort
+    }
+
+    /// tex.web §336-§339 for an \outer macro met by a delimited argument:
+    /// the macro is read again after the call, which sees a space in its
+    /// place and then the inserted \par.
+    #[cold]
+    #[inline(never)]
+    fn report_outer_in_argument(
+        &mut self,
+        id: CsId,
+        outer: Token,
+        origin: Option<&crate::input::SourceMark>,
+    ) {
+        let stored = self.unfreeze_input_token(outer);
+        self.push_token(stored);
+        let par = Token::from_cs(self.partoken_id());
+        self.push_token(par);
+        self.error_at(
+            &format!(
+                "Forbidden control sequence found while scanning use of {}",
+                self.display_cs(id)
+            ),
+            origin.map(crate::input::SourceMark::to_context),
+        );
+    }
+
     /// True for an \outer macro token (see `is_outer_macro_token`) and for
     /// the end-of-\write and end-of-output sentinels, which stand for TeX's
     /// frozen outer `\endwrite`.
@@ -3127,6 +3145,46 @@ impl Engine {
         result
     }
 
+    /// tex.web get_token under an absorbing scan: an \outer macro is
+    /// reported by `forbidden_outer` and replaced by a space.
+    #[inline(always)]
+    pub(crate) fn raw_token_outer(&mut self) -> Token {
+        let t = self.raw_token();
+        if self.outer_scan.is_some() && self.is_outer_macro_token(t) {
+            self.forbidden_outer(t)
+        } else {
+            t
+        }
+    }
+
+    /// A token read the way tex.web does with scanner_status:=normal
+    /// (\noexpand, \string, \meaning, \ifx, \ifdefined): an \outer macro is
+    /// no problem, and the end of the input stops the job there without a
+    /// report of its own.
+    #[inline]
+    fn raw_token_normal(&mut self) -> Token {
+        let t = self.raw_token();
+        if t == EOF_MARKER {
+            self.eof_reported = true;
+        }
+        t
+    }
+
+    /// The error line of tex.web §338: `head` is `Forbidden control
+    /// sequence found` or `File ended`.
+    fn outer_scan_message(&self, head: &str) -> String {
+        let (kind, owner) = self.outer_scan.unwrap_or((OuterScan::Text, None));
+        let what = match kind {
+            OuterScan::Definition => "definition",
+            OuterScan::Text => "text",
+            OuterScan::Preamble => "preamble",
+        };
+        match owner {
+            Some(id) => format!("{head} while scanning {what} of {}", self.display_cs(id)),
+            None => format!("{head} while scanning {what}"),
+        }
+    }
+
     /// tex.web §336-§339 check_outer_validity during an absorbing scan: the
     /// \outer token `outer` is reported and backed up behind the inserted
     /// `}` (`\cr}` for a preamble), and TeX reads a space in its place,
@@ -3134,31 +3192,78 @@ impl Engine {
     #[cold]
     #[inline(never)]
     pub(crate) fn forbidden_outer(&mut self, outer: Token) -> Token {
-        let (kind, owner) = self.outer_scan.unwrap_or((OuterScan::Text, None));
-        let what = match kind {
-            OuterScan::Definition => "definition",
-            OuterScan::Text => "text",
-            OuterScan::Preamble => "preamble",
-        };
-        let message = match owner {
-            Some(id) => format!(
-                "Forbidden control sequence found while scanning {what} of {}",
-                self.display_cs(id)
-            ),
-            None => format!("Forbidden control sequence found while scanning {what}"),
-        };
+        let message = self.outer_scan_message("Forbidden control sequence found");
         self.error(&message);
         self.push_token(outer);
-        self.push_token(Token::char(CAT_EGROUP, u32::from(b'}')));
-        if kind == OuterScan::Preamble {
-            let cr = self.crcr_token();
-            self.push_token(cr);
-            self.align_brace_depth = -1_000_000;
-        }
+        self.insert_outer_recovery();
         let space = Token::space();
         self.set_cur_char(space);
         space
     }
+
+    /// tex.web §339: the tokens that end the interrupted absorbing scan.
+    fn insert_outer_recovery(&mut self) {
+        self.push_token(Token::char(CAT_EGROUP, u32::from(b'}')));
+        if self.outer_scan.is_some_and(|(kind, _)| kind == OuterScan::Preamble) {
+            let cr = self.crcr_token();
+            self.push_token(cr);
+            self.align_brace_depth = -1_000_000;
+        }
+    }
+
+    /// tex.web §336-§339 for the end of the input during an absorbing scan.
+    /// TeX inserts the `}` (`\cr}`) that ends the scan, and turns to the
+    /// terminal afterwards, where it stops; here the caller ends the scan
+    /// and the end of the input is read again.
+    #[cold]
+    #[inline(never)]
+    pub(crate) fn outer_scan_file_ended(&mut self, origin: Option<&crate::input::SourceMark>) {
+        if !self.eof_reported {
+            self.eof_reported = true;
+            let message = self.outer_scan_message("File ended");
+            self.error_at(&message, origin.map(crate::input::SourceMark::to_context));
+        }
+        self.push_token(EOF_MARKER);
+    }
+
+    /// tex.web `expand` on a token that was just read: a macro, expandable
+    /// primitive or undefined control sequence is expanded one step (even a
+    /// \protected macro) and true is returned; any other token is left
+    /// alone and false is returned.
+    pub(crate) fn expand_token_once(&mut self, t: Token) -> bool {
+        let invocation = if t.is_cs() && t.0 < NOEXP_FLAG {
+            t.cs_id()
+        } else if t.is_char() && t.cc() == CAT_ACTIVE {
+            self.active_cs_id(t.chr())
+        } else {
+            return false;
+        };
+        let mut id = invocation;
+        for _ in 0..1024 {
+            match self.eqtb.get(id) {
+                Some(Equiv::Alias(next)) => id = *next,
+                _ => break,
+            }
+        }
+        match self.eqtb.get(id).cloned() {
+            Some(Equiv::Macro(m)) => {
+                self.expand_macro(id, &m, invocation);
+                true
+            }
+            Some(Equiv::Prim(p)) if self.is_expandable(p) => {
+                if let Some(tok) = self.expand_prim(p, id) {
+                    self.push_token(tok);
+                }
+                true
+            }
+            None => {
+                self.undefined_cs_error(Token::from_cs(id));
+                true
+            }
+            _ => false,
+        }
+    }
+
     pub fn skip_raw_spaces(&mut self) {
         loop {
             if let Some((segment, trace_depth)) = self.token_list_front() {
@@ -3211,6 +3316,7 @@ impl Engine {
             Ok(()) => Ok(()),
             Err(Unbalanced::Paragraph(par)) => Err(self.abort_paragraph(id, par, origin)),
             Err(Unbalanced::Outer(token)) => Err(self.abort_outer(id, token, origin)),
+            Err(Unbalanced::Eof) => Err(self.abort_file_ended(id, origin)),
             Err(Unbalanced::Fatal) => Err(ArgAbort),
         }
     }
@@ -3246,6 +3352,15 @@ impl Engine {
             let mut stored = self.unfreeze_input_token(raw);
             let t = self.unfreeze_unexpanded_token(stored);
             if t == EOF_MARKER {
+                if macro_arg {
+                    return Err(Unbalanced::Eof);
+                }
+                if self.outer_scan.is_some() {
+                    // The `}` that tex.web inserts closes every open group of
+                    // the text here.
+                    self.outer_scan_file_ended(origin);
+                    return Ok(());
+                }
                 self.fatal_error_at(
                     "Runaway argument / missing }",
                     origin.map(crate::input::SourceMark::to_context),
@@ -3481,6 +3596,7 @@ impl Engine {
     ) -> Result<(), ArgAbort> {
         let start = out.len();
         let mut matched = smallvec::SmallVec::<[Token; 8]>::new();
+        let mut outer_abort = false;
         loop {
             if matched.is_empty() {
                 let room = crate::input::MAX_TOKEN_LIST_TOKENS.saturating_sub(out.len() - start);
@@ -3488,7 +3604,14 @@ impl Engine {
                     continue;
                 }
             }
-            let raw = self.macro_arg_token();
+            let mut raw = self.macro_arg_token();
+            if self.is_outer_token(raw) {
+                // tex.web §336-§339: the \outer token is read again after
+                // the call; the call sees a space, then the inserted \par.
+                self.report_outer_in_argument(id, raw, origin);
+                raw = Token::space();
+                outer_abort = true;
+            }
             let stored = self.unfreeze_input_token(raw);
             let t = self.unfreeze_unexpanded_token(stored);
             if self.align_state & crate::align::PH_CLOSE != 0 && t == self.crcr_token() {
@@ -3496,15 +3619,7 @@ impl Engine {
                 return Err(self.abort_outer(id, t, origin));
             }
             if t == EOF_MARKER {
-                self.fatal_error_at(
-                    &format!(
-                        "Runaway argument of {} (delim={})",
-                        self.display_cs(id),
-                        self.diagnostic_tokens_to_string(delim, 512)
-                    ),
-                    origin.map(crate::input::SourceMark::to_context),
-                );
-                return Err(ArgAbort);
+                return Err(self.abort_file_ended(id, origin));
             }
             if matched.is_empty() && !self.delim_eq(stored.unfreeze(), delim[0]) {
                 // The common case: the token cannot start the delimiter.
@@ -3554,13 +3669,14 @@ impl Engine {
             // tex.web §392 matches the delimiter before §396 rejects an
             // illegal paragraph. A non-long #1\par parameter may therefore
             // use the paragraph token as its terminator.
-            if !long && self.is_partoken(t) {
+            if (!long || outer_abort) && self.is_partoken(t) {
                 out.pop();
+                if outer_abort {
+                    // tex.web §396: the call was ended by an \outer macro,
+                    // which has been reported already.
+                    return Err(ArgAbort);
+                }
                 return Err(self.abort_paragraph(id, stored, origin));
-            }
-            if self.is_outer_token(raw) {
-                out.pop();
-                return Err(self.abort_outer(id, stored, origin));
             }
             if t.is_char() && t.cc() == 2 {
                 out.pop();
@@ -3675,6 +3791,11 @@ impl Engine {
 
     pub fn tokens_to_string(&self, toks: &[Token]) -> String {
         String::from_utf8_lossy(&self.tokens_to_bytes(toks)).into_owned()
+    }
+
+    /// `tokens_to_string` that keeps every byte (see `tex_bytes`).
+    pub(crate) fn tokens_to_text(&self, toks: &[Token]) -> String {
+        crate::tex_bytes::bytes_to_text(&self.tokens_to_bytes(toks))
     }
 
     pub(crate) fn tokens_to_bytes(&self, toks: &[Token]) -> Vec<u8> {

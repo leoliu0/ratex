@@ -183,7 +183,7 @@ fn get_vpos(nodes: &[Node], cur_v: i64, sign: u8, order: u8, set: f64) -> i64 {
                 | crate::boxes::WhatIt::PdfRefXForm { h, d, .. },
             ) => (*h + *d) as i64,
             Node::Glue(g) | Node::Leaders { glue: g, .. } => glue_state.advance(g, sign, order, set),
-            Node::Kern(k) | Node::ExplicitKern(k) => *k as i64,
+            Node::Kern(k) | Node::ExplicitKern(k) | Node::AccentKern(k) => *k as i64,
             _ => 0,
         };
     }
@@ -1213,7 +1213,10 @@ impl<'a> RenderCtx<'a> {
                     let _ = lw;
                     cur_y += adv;
                 }
-                Node::Kern(k) | Node::ExplicitKern(k) | Node::MarginKern { width: k, .. } => {
+                Node::Kern(k)
+                | Node::ExplicitKern(k)
+                | Node::AccentKern(k)
+                | Node::MarginKern { width: k, .. } => {
                     cur_y += *k as i64;
                 }
                 Node::Penalty(_) | Node::Mark { .. } => {}
@@ -1349,6 +1352,7 @@ impl<'a> RenderCtx<'a> {
                 }
                 Node::Kern(k)
                 | Node::ExplicitKern(k)
+                | Node::AccentKern(k)
                 | Node::MarginKern { width: k, .. }
                 | Node::MathKern(k, 1..) => {
                     cur_x += *k as i64;
@@ -2852,7 +2856,7 @@ impl<'a> RenderCtx<'a> {
                 }
             }
             Special(s) => {
-                self.handle_special(s, cur_h, cur_v);
+                self.handle_special(&crate::tex_bytes::text_to_display(s), cur_h, cur_v);
             }
             SavePos { .. } => {
                 // position is relative to the page edges, in sp
@@ -2870,11 +2874,11 @@ impl<'a> RenderCtx<'a> {
             }
             OpenOut {
                 stream,
-                path,
+                names,
                 create_parent,
                 source,
             } => {
-                let p = path.clone();
+                let p = names.0.clone();
                 let src = source.clone();
                 self.eng
                     .exec_openout(*stream, &p, *create_parent, src.as_ref());

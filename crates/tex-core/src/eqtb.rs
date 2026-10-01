@@ -543,19 +543,24 @@ impl Eqtb {
         for c in b'a'..=b'z' {
             math_code[c as usize] = 0x7100 | c as u16;
         }
+        // tex.web §240 INITEX: every \delcode is -1 except the period (the
+        // null delimiter); the plain-like defaults below only serve
+        // format-less engines.
         let mut del_code = [-1i32; 256];
-        for (c, d) in [
-            (b'(', b'('),
-            (b')', b')'),
-            (b'[', b'['),
-            (b']', b']'),
-            (b'<', 0x3Cu8),
-            (b'>', 0x3E),
-        ] {
-            del_code[c as usize] = make_del_code(7, d as u32, 7, d as u32);
+        if !ini {
+            for (c, d) in [
+                (b'(', b'('),
+                (b')', b')'),
+                (b'[', b'['),
+                (b']', b']'),
+                (b'<', 0x3Cu8),
+                (b'>', 0x3E),
+                (b'|', 0x7C),
+            ] {
+                del_code[c as usize] = make_del_code(7, d as u32, 7, d as u32);
+            }
         }
-        del_code[b'.' as usize] = 0; // tex.web §240: period is null delimiter
-        del_code[b'|' as usize] = make_del_code(7, 0x7C, 7, 0x7C);
+        del_code[b'.' as usize] = 0;
         let mut lc_code = [0u8; 256];
         let mut sf_code = [1000u16; 256];
         let mut uc_code = [0u8; 256];

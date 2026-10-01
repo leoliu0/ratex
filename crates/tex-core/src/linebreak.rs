@@ -182,6 +182,8 @@ fn find_protchar_left(slice: &[Node], eqtb: &crate::eqtb::Eqtb, protrude_chars: 
             | Node::Penalty(_)
             | Node::Kern(_)
             | Node::ExplicitKern(_)
+            // pdftex cp_skipable: only a zero-width accent kern is skipped
+            | Node::AccentKern(0)
             | Node::Whatsit(_) => {}
             Node::Box {
                 w: 0,
@@ -733,6 +735,7 @@ impl Engine {
                 None
                 | Some(
                     Node::ExplicitKern(_)
+                    | Node::AccentKern(_)
                     | Node::Whatsit(_)
                     | Node::Glue(_)
                     | Node::Leaders { .. }
@@ -1087,7 +1090,9 @@ impl Engine {
                         };
                         (*k as i64, [0; 4], [0; 4], fst, fsh)
                     }
-                    Node::ExplicitKern(k) => (*k as i64, [0; 4], [0; 4], 0, 0),
+                    Node::ExplicitKern(k) | Node::AccentKern(k) => {
+                        (*k as i64, [0; 4], [0; 4], 0, 0)
+                    }
                     Node::Disc(dc) => {
                         let mut fst = 0i64;
                         let mut fsh = 0i64;
@@ -1852,6 +1857,7 @@ impl Engine {
                     | Node::Penalty(_)
                     | Node::Kern(_)
                     | Node::ExplicitKern(_)
+                    | Node::AccentKern(0)
                     | Node::Whatsit(_) => None,
                     // pdftex cp_skipable: zero-width math nodes; only the
                     // TeXXeT \beginM..\endR kinds are skipped here
@@ -2019,7 +2025,7 @@ impl Engine {
                 None => Some(-10000),
                 Some(Node::Penalty(p)) => Some(*p),
                 Some(Node::Glue(_) | Node::Leaders { .. }) if prev_non_discardable => Some(0),
-                Some(Node::Kern(_) | Node::ExplicitKern(_))
+                Some(Node::Kern(_) | Node::ExplicitKern(_) | Node::AccentKern(_))
                     if matches!(list.get(i + 1), Some(Node::Glue(_) | Node::Leaders { .. })) =>
                 {
                     Some(0)
@@ -2088,7 +2094,7 @@ impl Engine {
                     t += d + g.width as i64;
                     d = 0;
                 }
-                Node::Kern(k) | Node::ExplicitKern(k) => {
+                Node::Kern(k) | Node::ExplicitKern(k) | Node::AccentKern(k) => {
                     t += d + *k as i64;
                     d = 0;
                 }
@@ -2128,7 +2134,8 @@ impl Engine {
                 | Node::Leaders { .. }
                 | Node::Penalty(_)
                 | Node::Kern(_)
-                | Node::ExplicitKern(_) => false,
+                | Node::ExplicitKern(_)
+                | Node::AccentKern(_) => false,
                 Node::Whatsit(
                     crate::boxes::WhatIt::PdfSnapY(_) | crate::boxes::WhatIt::PdfSnapYComp(_),
                 ) => {
@@ -2528,7 +2535,7 @@ fn push_dims(eqtb: &crate::eqtb::Eqtb, n: Node, seg: &mut NodeList, w: &mut i64)
         Node::Char { c, font } => fonts.char_width(*font, *c),
         Node::Ligature { lig_width, .. } => *lig_width,
         Node::Glue(g) => g.width,
-        Node::Kern(k) | Node::ExplicitKern(k) => *k,
+        Node::Kern(k) | Node::ExplicitKern(k) | Node::AccentKern(k) => *k,
         Node::Box { w: bw, .. } => *bw,
         Node::Rule { width, .. } => *width,
         Node::NativeGlyphRun { width, .. } => *width,
@@ -2545,7 +2552,7 @@ fn disc_list_width(eqtb: &crate::eqtb::Eqtb, l: &[Node]) -> i64 {
         .map(|nn| match nn {
             Node::Char { c, font } => fonts.char_width(*font, *c) as i64,
             Node::Ligature { lig_width, .. } => *lig_width as i64,
-            Node::Kern(k) | Node::ExplicitKern(k) => *k as i64,
+            Node::Kern(k) | Node::ExplicitKern(k) | Node::AccentKern(k) => *k as i64,
             Node::Box { w, .. } | Node::Rule { width: w, .. } => *w as i64,
             Node::NativeGlyphRun { width, .. } => *width as i64,
             _ => 0,

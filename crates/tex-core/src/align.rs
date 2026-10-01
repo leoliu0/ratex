@@ -127,6 +127,18 @@ pub(crate) struct AlignSave {
     is_valign: bool,
 }
 
+/// A read-only view of one alignment's state (see [`Engine::align_view`]).
+pub(crate) struct AlignView<'a> {
+    pub(crate) is_valign: bool,
+    pub(crate) in_noalign: bool,
+    pub(crate) preamble: &'a [ColSpec],
+    pub(crate) loop_start: Option<usize>,
+    pub(crate) t0: Glue,
+    pub(crate) rows: &'a [Vec<Cell>],
+    pub(crate) row_adjust: &'a [Vec<Node>],
+    pub(crate) cur_row: &'a [Cell],
+}
+
 impl Engine {
     pub fn align_phase(&self) -> i32 {
         self.align_state & (PH_U | PH_CONTENT)
@@ -236,6 +248,7 @@ impl Engine {
     // ------------------------------------------------------------------
 
     pub fn begin_halign(&mut self) {
+        let show_line = self.nest_line();
         let origin = self.current_token_source_mark();
         if self.scanner_status == ScannerStatus::Aligning
             || self.box_kinds.iter().any(|&k| k == 7)
@@ -270,6 +283,8 @@ impl Engine {
         }
         self.align_origin = origin;
         self.align_is_valign = false;
+        // the preamble may read pushback that predates \halign (`\expandafter\halign\expandafter{...`)
+        self.align_pushed_base = 0;
         self.align_state = PH_IDLE;
         // tex.web §15332 / §15369: align_state := -1000000 while preamble scans.
         self.align_brace_depth = -1_000_000;
@@ -322,6 +337,11 @@ impl Engine {
         self.box_kinds.push(7);
         self.mode = Mode::InternalVertical;
         self.prev_graf = 0;
+        self.show.aligns.push(crate::show_state::AlignNest {
+            level: self.saved_lists.len(),
+            line: show_line,
+            row_line: 0,
+        });
         // tex.web §15350 / init_align: the alignment's internal vertical list inherits prev_depth
         // from the enclosing context (preserved from outer vertical mode / display math).
         self.align_rows.clear();
@@ -341,6 +361,7 @@ impl Engine {
         if self.mode.is_v() {
             self.start_paragraph(true);
         }
+        let show_line = self.nest_line();
         let origin = self.current_token_source_mark();
         if self.scanner_status == ScannerStatus::Aligning
             || self.box_kinds.iter().any(|&k| k == 7)
@@ -375,6 +396,7 @@ impl Engine {
         }
         self.align_origin = origin;
         self.align_is_valign = true;
+        self.align_pushed_base = 0;
         self.align_state = PH_IDLE;
         self.align_brace_depth = -1_000_000;
         self.scanner_status = ScannerStatus::Aligning;
@@ -414,6 +436,11 @@ impl Engine {
         self.space_factor = 1000;
         self.prev_graf = 0;
         self.prev_depth = self.ignore_depth();
+        self.show.aligns.push(crate::show_state::AlignNest {
+            level: self.saved_lists.len(),
+            line: show_line,
+            row_line: 0,
+        });
         self.align_rows.clear();
         self.align_row_adjust.clear();
         self.align_adjust.clear();
@@ -482,7 +509,7 @@ impl Engine {
             return false;
         }
         if !self.token_is_left_brace(t) {
-            self.error("Missing { inserted for alignment preamble");
+            self.error("Missing { inserted");
             if !(t.is_char() && t.cc() == 2) {
                 // a stray } must not close the (not yet started) group
                 self.pushed.push(t);
@@ -492,6 +519,7 @@ impl Engine {
         let mut cur = ColSpec::default();
         let mut in_u = true;
         let mut depth = 0i32;
+        let mut loop_seen = false;
         // tex.web §777: scanner_status:=aligning, warning_index:=\halign.
         let owner = self
             .cs
@@ -507,17 +535,18 @@ impl Engine {
             // size machinery loops. Resolve CharTok/prims only to RECOGNIZE
             // structural tokens (array's \\@sharp is \\let to #); store the
             // original token.
-            let t = self.raw_token();
+            let t = self.raw_token_outer();
             if t == crate::input::EOF_MARKER {
-                self.outer_scan = saved_outer_scan;
-                self.fatal_alignment_eof("File ended while scanning an alignment preamble");
-                return false;
+                // tex.web §336: the inserted `\cr}` ends the preamble and the
+                // alignment; the end of the input is read again afterwards.
+                let origin = self.align_origin.clone();
+                self.outer_scan_file_ended(origin.as_ref());
+                self.push_token(Token::char(2, b'}' as u32));
+                if in_u {
+                    self.error("Missing # inserted in alignment preamble");
+                }
+                break;
             }
-            let t = if self.is_outer_macro_token(t) {
-                self.forbidden_outer(t)
-            } else {
-                t
-            };
             let t = if t == crate::input::PAR_END {
                 Token::from_cs(self.partoken_id())
             } else {
@@ -540,13 +569,20 @@ impl Engine {
                 t
             };
             match prim {
-                Some(Prim::Cr) | Some(Prim::CrCr) => break,
+                Some(Prim::Cr) | Some(Prim::CrCr) => {
+                    if in_u {
+                        self.error("Missing # inserted in alignment preamble");
+                    }
+                    break;
+                }
                 Some(Prim::Span) => {
-                    // tex.web §783: in the preamble, `\span` causes the
-                    // following macro to be expanded! It does NOT mean
+                    // tex.web §782: in the preamble, `\span` causes the
+                    // following token to be expanded, once. It does NOT mean
                     // multicolumn (that is only valid in row cells).
-                    let next = self.get_token();
-                    self.pushed.push(next);
+                    let next = self.raw_token_outer();
+                    if !self.expand_token_once(next) {
+                        self.pushed.push(next);
+                    }
                     continue;
                 }
                 Some(Prim::Omit) => {
@@ -581,20 +617,28 @@ impl Engine {
                         if in_u {
                             in_u = false;
                         } else {
-                            self.error("Only one # allowed per alignment entry");
+                            self.error("Only one # is allowed per tab");
                         }
                         continue;
                     }
                     4 if depth == 0 => {
                         let all_spaces =
                             cur.u_part.iter().all(|tok| tok.is_char() && tok.cc() == 10);
-                        if in_u && (cur.u_part.is_empty() || all_spaces) && cur.v_part.is_empty() {
+                        if in_u
+                            && (cur.u_part.is_empty() || all_spaces)
+                            && cur.v_part.is_empty()
+                            && !loop_seen
+                        {
                             // tex.web §782: an empty template between two &
                             // marks the start of the periodic preamble. This
                             // may follow already completed columns (`#&&...`).
+                            loop_seen = true;
                             self.align_loop_start = Some(entries.len());
                             cur.u_part.clear();
                         } else {
+                            if in_u {
+                                self.error("Missing # inserted in alignment preamble");
+                            }
                             cur.tabskip =
                                 self.eqtb.glue_params[GlueParam::TabSkip.idx() as usize].clone();
                             entries.push(std::mem::take(&mut cur));
@@ -606,7 +650,9 @@ impl Engine {
                 }
             }
             if in_u {
-                if cur.u_part.is_empty() && t.is_char() && t.cc() == 10 {
+                // tex.web §783: a spacer (implicit too) at the start of a
+                // u-template is dropped
+                if cur.u_part.is_empty() && eff.is_char() && eff.cc() == 10 {
                     continue;
                 }
                 cur.u_part.push(t);
@@ -826,9 +872,19 @@ impl Engine {
         }
         self.align_push_close(AlignCloseReason::NextCell);
     }
+
+    /// tex.web §1128 align_error: `Misplaced \cr`, or `\crcr`.
+    fn misplaced_cr(&mut self) {
+        if self.cur_prim == Some(Prim::CrCr) {
+            self.error("Misplaced \\crcr");
+        } else {
+            self.error("Misplaced \\cr");
+        }
+    }
+
     pub fn align_cr(&mut self) {
         if self.scanner_status != ScannerStatus::Aligning {
-            self.error("Misplaced \\cr");
+            self.misplaced_cr();
             return;
         }
         if self.align_state & PH_CLOSE != 0 {
@@ -857,7 +913,7 @@ impl Engine {
         // or fully outside a cell is misplaced; otherwise let the close
         // stream's v part unwind the template groups and finish the cell.
         if self.align_phase() == PH_IDLE || !self.box_kinds.contains(&CELL_GROUP_KIND) {
-            self.error("Misplaced \\cr");
+            self.misplaced_cr();
             return;
         }
         if self.align_phase() == PH_U {
@@ -1279,6 +1335,10 @@ impl Engine {
 
     fn align_start_row(&mut self, first: Option<crate::token::Token>) {
         self.align_cur_col = 0;
+        let line = self.nest_line();
+        if let Some(a) = self.show.aligns.last_mut() {
+            a.row_line = line;
+        }
         self.align_start_cell(first);
     }
     // ------------------------------------------------------------------
@@ -1582,6 +1642,7 @@ impl Engine {
         self.align_in_noalign = false;
         self.align_everycr_done = false;
         let nested = self.align_has_save();
+        self.show.aligns.pop();
         self.align_nested_restore();
         if !nested {
             self.scanner_status = ScannerStatus::Normal;
@@ -1647,6 +1708,38 @@ impl Engine {
                 self.append_box_node(Some(vbox));
             }
         }
+    }
+
+    /// What `\showlists` needs to rebuild tex.web's alignment, row and cell
+    /// levels: the alignment `depth` levels below the innermost one.
+    pub(crate) fn align_view(&self, depth: usize) -> Option<AlignView<'_>> {
+        if depth == 0 {
+            return Some(AlignView {
+                is_valign: self.align_is_valign,
+                in_noalign: self.align_in_noalign,
+                preamble: &self.align_preamble,
+                loop_start: self.align_loop_start,
+                t0: self.align_t0,
+                rows: &self.align_rows,
+                row_adjust: &self.align_row_adjust,
+                cur_row: &self.align_cur_row,
+            });
+        }
+        let sv = self
+            .align_stack
+            .len()
+            .checked_sub(depth)
+            .and_then(|i| self.align_stack.get(i))?;
+        Some(AlignView {
+            is_valign: sv.is_valign,
+            in_noalign: sv.in_noalign,
+            preamble: &sv.preamble,
+            loop_start: sv.loop_start,
+            t0: sv.t0,
+            rows: &sv.rows,
+            row_adjust: &sv.row_adjust,
+            cur_row: &sv.cur_row,
+        })
     }
 }
 
@@ -2196,6 +2289,8 @@ mod tests {
         let e = run(concat!(
             "\\catcode`\\$=3\n",
             "\\font\\cmr=cmr10 \\cmr\n",
+            "\\font\\tsy=cmsy10 \\font\\tex=cmex10 \\textfont2=\\tsy \\scriptfont2=\\tsy \\scriptscriptfont2=\\tsy ",
+            "\\textfont3=\\tex \\scriptfont3=\\tex \\scriptscriptfont3=\\tex\n",
             "\\halign{$$$#$\\cr a\\over b\\cr}\n",
         ));
         assert_eq!(e.error_count, 0, "errors:\n{}", e.term);
@@ -2495,6 +2590,8 @@ mod tests {
         let e = run(concat!(
             "\\catcode`\\$=3\n",
             "\\font\\cmr=cmr10 \\cmr\n",
+            "\\font\\tsy=cmsy10 \\font\\tex=cmex10 \\textfont2=\\tsy \\scriptfont2=\\tsy \\scriptscriptfont2=\\tsy ",
+            "\\textfont3=\\tex \\scriptfont3=\\tex \\scriptscriptfont3=\\tex\n",
             "\\halign{#\\hfil&#\\hfil\\cr\n",
             "  ${1\\over 2}$ & 2\\cr\n",
             "  3 & 4\\cr}\n"

@@ -125,7 +125,7 @@ mod tests {
 
         let mut child = LuaProto::new();
         child.upvalue_descs.push(UpvalueDesc {
-            name: "uv0".to_string(),
+            name: b"uv0".as_slice().into(),
             is_local: false,
             index: 0,
         });

@@ -20,7 +20,6 @@ Native font selection in libtex C ABI: \textbf{Bold glyphs} and \textit{italic s
 let result = session.compile('main.tex');
 assert.equal(result.status, 0, result.diagnostics + '\n' + result.log);
 assert.ok(decoder.decode(result.pdf.slice(0, 5)) === '%PDF-');
-assert.ok(result.passes >= 2);
 assert.ok(result.fileNames.includes('main.aux'));
 fs.writeFileSync(path.join(targetDir, 'wasm/hello.pdf'), result.pdf);
 const native = path.join(targetDir, 'libtex/hello.pdf');

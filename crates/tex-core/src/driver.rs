@@ -124,6 +124,8 @@ pub fn prepare_latex_job(eng: &mut Engine) {
     eng.expansion_steps = 0;
     eng.term.clear();
     eng.log.clear();
+    (eng.term_offset, eng.file_offset) = (0, 0);
+    (eng.term_pad, eng.log_pad) = (false, false);
     eng.input.clear_sources();
     if eng.engine_kind != crate::engine::EngineKind::LuaTeX {
         for name in [

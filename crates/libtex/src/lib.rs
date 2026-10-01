@@ -202,7 +202,7 @@ macro_rules! result_bytes {
         pub unsafe extern "C" fn $name(result: *const TexResult) -> TexBytes {
             guarded(TexBytes::empty(), || {
                 unsafe { result.as_ref() }
-                    .map_or(TexBytes::empty(), |r| TexBytes::new(($get)(&r.0)))
+                    .map_or(TexBytes::empty(), |r| TexBytes::new(($get)(&r.0).as_ref()))
             })
         }
     };
@@ -210,8 +210,8 @@ macro_rules! result_bytes {
 fn pdf(r: &Compilation) -> &[u8] {
     &r.pdf
 }
-fn log(r: &Compilation) -> &[u8] {
-    r.log.as_bytes()
+fn log(r: &Compilation) -> std::borrow::Cow<'_, [u8]> {
+    r.log_bytes()
 }
 fn diagnostics(r: &Compilation) -> &[u8] {
     r.diagnostics.as_bytes()

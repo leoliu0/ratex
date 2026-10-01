@@ -22,6 +22,7 @@ use crate::eqtb::Equiv;
 use crate::prim::{DimParam, GlueParam, IntParam, Prim};
 use crate::scaled::ONE;
 use crate::tfm::{Font, FontId, TAG_EXT, TAG_LIG, TAG_LIST};
+use crate::show_state::{PendingFrac, ScanKind};
 use crate::token::Token;
 
 // ---------- style ladder (tex.web §689) ----------
@@ -582,6 +583,7 @@ impl Engine {
         self.pending_display_formula = Some(formula);
         self.math_lists.push(crate::boxes::NodeList::new());
         self.eqno_leqno = Some(leqno);
+        self.show.eqno_line = self.nest_line();
     }
 
     fn run_everymath(&mut self) {
@@ -592,17 +594,60 @@ impl Engine {
         }
     }
 
+    /// tex.web §1195: pdfTeX typesets no formula unless families 2 and 3
+    /// have at least 22 and 13 \fontdimen parameters in all three sizes.
+    fn insufficient_math_fonts(&self) -> Option<&'static str> {
+        if self.engine_kind != crate::engine_mode::EngineKind::PdfTeX {
+            return None;
+        }
+        // font_params[f] is at least 7 in TeX (the null font has 7)
+        let params = |size: usize, fam: usize| {
+            let fid = self.eqtb.style_fonts[size][fam] as usize;
+            self.eqtb.font_params.get(fid).map_or(0, Vec::len).max(7)
+        };
+        if (0..3).any(|size| params(size, 2) < 22) {
+            Some("Math formula deleted: Insufficient symbol fonts")
+        } else if (0..3).any(|size| params(size, 3) < 13) {
+            Some("Math formula deleted: Insufficient extension fonts")
+        } else {
+            None
+        }
+    }
+
     pub fn exit_math(&mut self) {
         let was_display = self.mode == Mode::DisplayMath;
-        if was_display {
-            let t = self.get_token();
-            if !(t.is_char() && t.cc() == 3) && t != crate::input::EOF_MARKER {
-                self.push_token(t);
-            }
-        }
         // a directive at the very end of the formula (`$\sum_0^1\limits$`)
         // still switches the tail op noad before conversion
         self.flush_math_limits();
+        // tex.web after_math: the font check (flush_math, danger:=true)
+        // precedes the second `$` of a display
+        let mut danger = false;
+        if let Some(message) = self.insufficient_math_fonts() {
+            self.error(message);
+            if let Some(list) = self.math_lists.last_mut() {
+                list.clear();
+            }
+            danger = true;
+        }
+        if was_display {
+            // tex.web §1197 <Check that another $ follows>: get_x_token; a
+            // non-math-shift token is an error and is read again (back_error)
+            let t = self.get_token();
+            if t != crate::input::EOF_MARKER && !(t.is_char() && t.cc() == 3) {
+                self.error("Display math should end with $$");
+                self.push_token(t);
+            }
+            // with \eqno the popped list is the tag; TeX checks again for the
+            // formula itself after unsaving the tag's group
+            if self.eqno_leqno.is_some() {
+                danger = false;
+                if let Some(message) = self.insufficient_math_fonts() {
+                    self.error(message);
+                    self.pending_display_formula = Some(NodeList::new());
+                    danger = true;
+                }
+            }
+        }
         let mlist = self.math_lists.pop().unwrap_or_default();
         // tex.web after_math reads the display registers BEFORE unsave:
         // assignments made inside the display (setspace's \everydisplay
@@ -677,11 +722,14 @@ impl Engine {
             } else {
                 (mlist, None)
             };
-            self.finish_display_math(formula, tag, disp_regs.unwrap(), outer_mode);
+            self.finish_display_math(formula, tag, danger, disp_regs.unwrap(), outer_mode);
             // tex.web resume_after_display (§1200) ends with <Scan an
             // optional space>, after unsave has inserted any \aftergroup
-            // tokens.
+            // tokens, then `if nest_ptr=1 then build_page`.
             self.scan_optional_space();
+            if outer_mode == Mode::Vertical {
+                self.build_page();
+            }
             return;
         }
         let hlist = inline_hlist.unwrap();
@@ -712,6 +760,7 @@ impl Engine {
         &mut self,
         formula: NodeList,
         tag: Option<(NodeList, bool)>,
+        danger: bool,
         regs: (
             crate::boxes::Glue,
             crate::boxes::Glue,
@@ -827,6 +876,11 @@ impl Engine {
                     .map(|(_, f)| f.quad() as i64)
                     .unwrap_or(0);
                 q = e + mq;
+                // tex.web §1199: `if (a=null) or danger then e:=0; q:=0`
+                if danger {
+                    e = 0;
+                    q = 0;
+                }
                 a = Some(ab);
             }
             // §22537 squeeze: if the formula + tag overflow the line, re-pack
@@ -1009,6 +1063,7 @@ impl Engine {
                 self.mode = Mode::Horizontal;
                 self.cur_list = Vec::new();
                 self.space_factor = 1000;
+                self.begin_paragraph_language();
             } else {
                 self.cur_list.extend(page);
                 let outer = std::mem::take(&mut self.cur_list);
@@ -1024,11 +1079,10 @@ impl Engine {
                 self.mode = Mode::Horizontal;
                 self.cur_list = Vec::new();
                 self.space_factor = 1000;
+                self.begin_paragraph_language();
             }
-            // tex.web finish_display does NOT run build_page: the display
-            // nodes stay on the vlist (visible to \lastskip — LaTeX's
-            // theorem \addpenalty/\@xaddvskip dances read them) until the
-            // next box append or paragraph end
+            // resume_after_display transfers these display nodes to the page
+            // builder after consuming the optional following space (§1200).
         }
         // tex.web resume_after_display (§1194): any text following the
         // display resumes hmode directly — start_paragraph must not treat
@@ -1276,6 +1330,20 @@ impl Engine {
     /// atom of the current math list (tex.web "scripts on the tail noad").
     pub fn append_script(&mut self, sup: bool, _c: u8) {
         let limits_req = self.math_limits.take();
+        if self.script_repeats(sup) {
+            // tex.web sub_sup: a second script of the same kind goes on a fresh noad
+            self.error(if sup {
+                "Double superscript"
+            } else {
+                "Double subscript"
+            });
+            self.append_mlist_node(Node::Scripts {
+                nucleus: Vec::new(),
+                sup: None,
+                sub: None,
+            });
+        }
+        self.show.scan_owner = Some(ScanKind::Script { sup, limits: limits_req });
         let group = self.scan_math_group_or_token();
         let cur_depth = self.math_lists.len();
         let group_boundary = self
@@ -1582,6 +1650,7 @@ impl Engine {
     pub fn scan_math_group_or_token(&mut self) -> NodeList {
         // a directive pending here (`\sum\limits\mathop{xy}`) belongs to the
         // tail of the CURRENT list, before any temp/group list is pushed
+        let owner = self.show.scan_owner.take();
         self.flush_math_limits();
         self.skip_spaces_relax();
         let t = self.get_token();
@@ -1590,18 +1659,18 @@ impl Engine {
             return Vec::new();
         }
         if t.is_char() && t.cc() == 1 {
-            return self.scan_math_group_braced();
+            return self.scan_math_group_braced(owner.unwrap_or(ScanKind::Brace));
         }
         // single token: run it into a temporary math list
-        self.math_lists.push(Vec::new());
+        self.begin_math_scan(owner.unwrap_or(ScanKind::Brace));
         self.run_math_token(t);
         self.flush_math_limits();
-        self.math_lists.pop().unwrap_or_default()
+        self.end_math_scan()
     }
 
     /// Execute tokens up to the matching `}` as a nested math list.
-    fn scan_math_group_braced(&mut self) -> NodeList {
-        self.math_lists.push(Vec::new());
+    fn scan_math_group_braced(&mut self, kind: ScanKind) -> NodeList {
+        self.begin_math_scan(kind);
         self.push_group_level(crate::eqtb::LevelType::MathGroup);
         let my_level = self.eqtb.cur_level;
         loop {
@@ -1644,7 +1713,7 @@ impl Engine {
                     // tex.web §1198 removes braces around one scriptless Ord
                     // noad; other groups remain raw until conversion so they
                     // acquire the style in force at their use site.
-                    let inner = self.scan_math_group_braced();
+                    let inner = self.scan_math_group_braced(ScanKind::Brace);
                     self.append_mlist_node(finish_math_group(inner));
                 } else {
                     self.begin_group(true);
@@ -1654,7 +1723,7 @@ impl Engine {
             self.run_math_token(t);
         }
         self.flush_math_limits();
-        self.math_lists.pop().unwrap_or_default()
+        self.end_math_scan()
     }
 
     pub fn do_math_accent(&mut self, mc: u16) {
@@ -1664,9 +1733,15 @@ impl Engine {
 
     pub(crate) fn do_math_accent_at(&mut self, mc: u16, source: Option<crate::input::SourceMark>) {
         let origin = self.math_diagnostic_origin_at(source);
-        let group = self.scan_math_group_or_token();
-        let fam = ((mc >> 8) & 0xF) as u8;
+        let mut fam = ((mc >> 8) & 0xF) as u8;
         let c = (mc & 0xFF) as u8;
+        // tex.web math_ac: a variable-family code takes \fam when it is in range
+        let cur_fam = self.eqtb.int_params[IntParam::CurFam.idx() as usize];
+        if mc >= 0x7000 && (0..16).contains(&cur_fam) {
+            fam = cur_fam as u8;
+        }
+        self.show.scan_owner = Some(ScanKind::Accent { fam, c });
+        let group = self.scan_math_group_or_token();
         self.append_mlist_node(Node::Accent {
             fam,
             c,
@@ -1682,6 +1757,7 @@ impl Engine {
 
     pub(crate) fn do_radical_at(&mut self, delim: i32, source: Option<crate::input::SourceMark>) {
         let origin = self.math_diagnostic_origin_at(source);
+        self.show.scan_owner = Some(ScanKind::Radical { delim });
         let group = self.scan_math_group_or_token();
         self.append_mlist_node(Node::Radical {
             body: group,
@@ -1691,6 +1767,7 @@ impl Engine {
         });
     }
     pub fn do_math_class(&mut self, class: u8) {
+        self.show.scan_owner = Some(ScanKind::Class(class));
         let field = self.scan_math_group_or_token();
         let node = if field.is_empty() {
             Node::MathChar {
@@ -1718,7 +1795,9 @@ impl Engine {
                             fam: 255,
                             c: 0,
                             class,
-                            origin: MathDiagnosticOrigin::default(),
+                            // a group around one non-ord noad (`\mathop{\sum}`): its
+                            // nucleus is a sub-mlist, not the noad's own character
+                            origin: MathDiagnosticOrigin { id: u64::MAX },
                         },
                         other,
                     ];
@@ -1759,6 +1838,7 @@ impl Engine {
     /// put a default-rule bar above (or below) with 3 default_rule_thickness
     /// clearance (tex.web make_over / make_under).
     pub fn do_overline(&mut self, under: bool) {
+        self.show.scan_owner = Some(if under { ScanKind::Under } else { ScanKind::Over });
         let group = self.scan_math_group_or_token();
         // tex.web make_over uses cramped_style; make_under keeps cur_style.
         let g = gstyle_of(self.cur_math_style()) | u8::from(!under);
@@ -1794,47 +1874,45 @@ impl Engine {
                 *d = (extent - body_h as i64) as i32;
             }
         }
-        self.append_mlist_node(vb);
+        self.append_mlist_node(Node::Overline {
+            body: group,
+            under,
+            packed: Box::new(vb),
+        });
     }
 
-    /// tex.web scan_delimiter: a character token with a `\delcode` uses it;
-    /// `\delimiter` scans its 27-bit code; anything else backs up and scans
-    /// an integer.
+    /// tex.web scan_delimiter (§1160, r=false): after the next non-blank
+    /// non-relax non-call token, a letter or other character uses its
+    /// `\delcode` and `\delimiter` scans a 27-bit code; any other token (and
+    /// a negative `\delcode`) is `Missing delimiter (. inserted)`, backed up
+    /// so it is read again, and the null delimiter is used.
     pub fn scan_delim_int(&mut self) -> i32 {
         self.skip_spaces_relax();
         let t = self.get_token();
         let token_source = self.current_token_source_mark();
-        if t == crate::input::EOF_MARKER {
-            self.error_at(
-                "Missing delimiter (. inserted)",
-                token_source.map(|mark| mark.to_context()),
-            );
-            return 0;
-        }
-        if t.is_char() {
-            let character = t.chr();
-            // tex.web §240: period is the null delimiter (code 0).
-            if character == u32::from(b'.') {
-                return 0;
-            }
-            let delimiter = self.eqtb.delimiter_code_for(character);
-            if let Ok(delimiter) = i32::try_from(delimiter) {
-                if delimiter >= 0 {
-                    return delimiter;
-                }
-            }
-            self.error_at(
-                "Missing delimiter (. inserted)",
-                token_source.map(|mark| mark.to_context()),
-            );
-            return 0;
-        }
-        if let Some(Equiv::Prim(Prim::Delimiter)) = self.eqtb.resolve(t.cs_id()).cloned() {
+        let code = if t.is_char() && matches!(t.cc(), 11 | 12) {
+            self.eqtb.delimiter_code_for(t.chr())
+        } else if t.is_cs()
+            && matches!(self.eqtb.resolve(t.cs_id()), Some(Equiv::Prim(Prim::Delimiter)))
+        {
             return self.scan_delimiter_code("\\delimiter");
+        } else {
+            -1
+        };
+        if let Ok(code) = i32::try_from(code) {
+            if code >= 0 {
+                return code;
+            }
         }
-        // tex.web: back_input, then scan a 27-bit integer constant
-        self.push_token(t);
-        self.scan_delimiter_code("delimiter")
+        self.error_at(
+            "Missing delimiter (. inserted)",
+            token_source.map(|mark| mark.to_context()),
+        );
+        // back_error: the offending token is read again
+        if t != crate::input::EOF_MARKER {
+            self.push_token(t);
+        }
+        0
     }
 
     pub(crate) fn scan_delimiter_code(&mut self, command: &str) -> i32 {
@@ -1854,6 +1932,26 @@ impl Engine {
 
     pub fn do_fraction(&mut self, p: Prim) {
         let origin = self.math_diagnostic_origin();
+        if self.fraction_is_ambiguous() {
+            // tex.web §1181: the arguments are scanned, then the fraction is ignored
+            match p {
+                Prim::Above => {
+                    self.scan_dimen(false, false);
+                }
+                Prim::OverWithDelims | Prim::AtopWithDelims => {
+                    self.scan_delim_int();
+                    self.scan_delim_int();
+                }
+                Prim::AboveWithDelims => {
+                    self.scan_delim_int();
+                    self.scan_delim_int();
+                    self.scan_dimen(false, false);
+                }
+                _ => {}
+            }
+            self.error("Ambiguous; you need another { and }");
+            return;
+        }
         // numerator = everything accumulated in the current math list so far.
         // The list slot itself MUST stay: the Frac node is appended to it (at
         // the enclosing group/top level), so popping it here would strand the
@@ -1885,7 +1983,12 @@ impl Engine {
             None => Vec::new(),
         };
         // denominator is scanned into a temporary list on top
-        self.math_lists.push(Vec::new());
+        self.begin_math_scan(ScanKind::Denominator(PendingFrac {
+            num,
+            thickness: DEFAULT_CODE,
+            left: 0,
+            right: 0,
+        }));
         // tex.web: the lexically-following arguments (\above's dimen, the
         // withdelims delimiter pair) are scanned immediately...
         let mut thickness = DEFAULT_CODE;
@@ -1916,7 +2019,9 @@ impl Engine {
         }
         // ...and the denominator is the REST of the current math group (up
         // to the closing brace / end of formula), which stays unconsumed
+        self.set_pending_fraction(thickness, ld, rd);
         let den = self.scan_math_rest_of_group();
+        let num = self.take_pending_numerator();
         let left = if ld > 0 { Some(ld) } else { None };
         let right = if rd > 0 { Some(rd) } else { None };
         self.append_mlist_node(Node::Frac {
@@ -2127,6 +2232,7 @@ impl Engine {
     pub fn begin_mathchoice(&mut self) {
         self.append_mlist_node(Node::Choice);
         for _ in 0..4 {
+            self.show.scan_owner = Some(ScanKind::Choice);
             let body = self.scan_math_group_or_token();
             self.append_mlist_node(Node::ChoiceAlt { body });
         }
@@ -2144,7 +2250,7 @@ impl Engine {
             self.error("Missing { inserted");
             self.push_token(t);
         }
-        let inner = self.scan_math_group_braced();
+        let inner = self.scan_math_group_braced(ScanKind::Brace);
         let mut nucleus = Vec::with_capacity(inner.len() + 1);
         nucleus.push(Node::MathChar {
             fam: 255,
@@ -2196,7 +2302,7 @@ impl Engine {
                 1 | 3 => CL_CLOSE,
                 _ => CL_ORD,
             }),
-            Node::Box { .. } | Node::VCenter { .. } => Some(CL_ORD),
+            Node::Box { .. } | Node::VCenter { .. } | Node::Overline { .. } => Some(CL_ORD),
             Node::Choice => Some(CL_ORD),
             _ => None,
         }
@@ -2932,6 +3038,7 @@ impl Engine {
                 vec![b]
             }
             Node::Box { .. } => vec![n.clone()],
+            Node::Overline { packed, .. } => vec![(**packed).clone()],
             other => vec![other.clone()],
         }
     }

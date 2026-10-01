@@ -740,8 +740,9 @@ impl LuaFunctionRef {
         0
     }
 
-    /// Read an upvalue as a raw Lua value.
-    pub fn get_upvalue_value(&self, n: usize) -> Option<(String, LuaValue)> {
+    /// Read an upvalue as a raw Lua value, with its name (the bytes of the
+    /// source text; empty for a C or Rust closure or a stripped chunk).
+    pub fn get_upvalue_value(&self, n: usize) -> Option<(Vec<u8>, LuaValue)> {
         if n == 0 {
             return None;
         }
@@ -755,7 +756,7 @@ impl LuaFunctionRef {
                 .chunk()
                 .upvalue_descs
                 .get(up_idx)
-                .map(|desc| desc.name.to_string())
+                .map(|desc| desc.name.to_vec())
                 .unwrap_or_default();
             let value = upvalue_ptr.as_ref().data.get_value();
             return Some((name, value));
@@ -763,19 +764,19 @@ impl LuaFunctionRef {
 
         if let Some(cclosure) = func.as_cclosure() {
             let value = *cclosure.upvalues().get(up_idx)?;
-            return Some((String::new(), value));
+            return Some((Vec::new(), value));
         }
 
         if let Some(rclosure) = func.as_rclosure() {
             let value = *rclosure.upvalues().get(up_idx)?;
-            return Some((String::new(), value));
+            return Some((Vec::new(), value));
         }
 
         None
     }
 
     /// Read and convert an upvalue.
-    pub fn get_upvalue<T: FromLua>(&self, n: usize) -> LuaResult<Option<(String, T)>> {
+    pub fn get_upvalue<T: FromLua>(&self, n: usize) -> LuaResult<Option<(Vec<u8>, T)>> {
         let Some((name, value)) = self.get_upvalue_value(n) else {
             return Ok(None);
         };
@@ -786,7 +787,7 @@ impl LuaFunctionRef {
     }
 
     /// Replace an upvalue with a raw Lua value.
-    pub fn set_upvalue_value(&self, n: usize, value: LuaValue) -> LuaResult<Option<String>> {
+    pub fn set_upvalue_value(&self, n: usize, value: LuaValue) -> LuaResult<Option<Vec<u8>>> {
         if n == 0 {
             return Ok(None);
         }
@@ -804,7 +805,7 @@ impl LuaFunctionRef {
                 .chunk()
                 .upvalue_descs
                 .get(up_idx)
-                .map(|desc| desc.name.to_string())
+                .map(|desc| desc.name.to_vec())
                 .unwrap_or_default();
 
             upvalue_ptr.as_mut_ref().data.set_value(value);
@@ -827,7 +828,7 @@ impl LuaFunctionRef {
             {
                 state.gc_barrier_back(owner.into());
             }
-            return Ok(Some(String::new()));
+            return Ok(Some(Vec::new()));
         }
 
         let rclosure_owner = func.as_rclosure_ptr();
@@ -841,14 +842,14 @@ impl LuaFunctionRef {
             {
                 state.gc_barrier_back(owner.into());
             }
-            return Ok(Some(String::new()));
+            return Ok(Some(Vec::new()));
         }
 
         Ok(None)
     }
 
     /// Replace an upvalue with a Rust value.
-    pub fn set_upvalue<T: IntoLua>(&self, n: usize, value: T) -> LuaResult<Option<String>> {
+    pub fn set_upvalue<T: IntoLua>(&self, n: usize, value: T) -> LuaResult<Option<Vec<u8>>> {
         let vm = self.inner.global_state_mut()?;
         let value = collect_single_value(vm, value, "LuaFunctionRef::set_upvalue(value)")?;
         self.set_upvalue_value(n, value)

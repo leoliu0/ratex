@@ -128,6 +128,18 @@ pub struct Compilation {
 }
 
 impl Compilation {
+    /// The exact bytes of the transcript: `log` carries bytes that are not
+    /// valid UTF-8 as private-use escape characters (see `tex_core::tex_bytes`).
+    pub fn log_bytes(&self) -> std::borrow::Cow<'_, [u8]> {
+        tex_core::tex_bytes::text_to_bytes(&self.log)
+    }
+
+    /// The transcript as UTF-8 text, with bytes that are not valid UTF-8
+    /// shown as U+FFFD.
+    pub fn log_text(&self) -> std::borrow::Cow<'_, str> {
+        tex_core::tex_bytes::text_to_display(&self.log)
+    }
+
     pub fn error(status: Status, message: impl Into<String>) -> Self {
         Self::error_for(EngineKind::PdfTeX, status, message)
     }
@@ -444,7 +456,7 @@ impl Session {
                 }
             }
         }
-        let _ = fs::write(aux_dir.join(format!("{job}.log")), result.log.as_bytes());
+        let _ = fs::write(aux_dir.join(format!("{job}.log")), result.log_bytes().as_ref());
         if result.status == Status::Success {
             let _ = fs::write(output_dir.join(format!("{job}.pdf")), &result.pdf);
         }

@@ -1781,26 +1781,28 @@ unsafe fn load_bytes(state: *mut lua_State, bytes: &[u8], name: &str, mode: Opti
         let _ = state_vm.push_value(message);
         return LUA_ERRSYNTAX;
     }
-    let loaded = if binary {
+    let loaded: Result<LuaValue, Vec<u8>> = if binary {
         if bytes.get(4) != Some(&0x53) {
-            Err("binary chunk is not standard Lua 5.3".to_string())
+            Err(b"binary chunk is not standard Lua 5.3".to_vec())
         } else {
-            chunk53::load(bytes, state_vm.global_state_mut()).and_then(|chunk| {
-                let global = state_vm.global_state().global;
-                let env = state_vm
-                    .global_state_mut()
-                    .create_upvalue_closed(global)
-                    .map_err(|error| state_vm.get_error_message(error))?;
-                state_vm
-                    .global_state_mut()
-                    .create_loaded_function(chunk, UpvalueStore::from_single(env))
-                    .map_err(|error| state_vm.get_error_message(error))
-            })
+            chunk53::load(bytes, state_vm.global_state_mut())
+                .map_err(String::into_bytes)
+                .and_then(|chunk| {
+                    let global = state_vm.global_state().global;
+                    let env = state_vm
+                        .global_state_mut()
+                        .create_upvalue_closed(global)
+                        .map_err(|error| state_vm.get_error_message(error).into_bytes())?;
+                    state_vm
+                        .global_state_mut()
+                        .create_loaded_function(chunk, UpvalueStore::from_single(env))
+                        .map_err(|error| state_vm.get_error_message(error).into_bytes())
+                })
         }
     } else {
         state_vm
             .load_bytes_with_name(bytes, name)
-            .map_err(|error| state_vm.get_error_message(error))
+            .map_err(|error| state_vm.take_error_bytes(error))
     };
     match loaded {
         Ok(function) => {
@@ -1808,7 +1810,7 @@ unsafe fn load_bytes(state: *mut lua_State, bytes: &[u8], name: &str, mode: Opti
             LUA_OK
         }
         Err(message) => {
-            if let Ok(error) = state_vm.create_string(&message) {
+            if let Ok(error) = state_vm.create_bytes(&message) {
                 let _ = state_vm.push_value(error);
             }
             LUA_ERRSYNTAX
@@ -2499,7 +2501,7 @@ fn c_closure_user_offset(closure: &crate::lua_value::CClosureFunction) -> usize 
     usize::from(closure.func() as *const () == c_callback_trampoline as *const ())
 }
 
-fn upvalue_name(function: LuaValue, index: usize) -> Option<String> {
+fn upvalue_name(function: LuaValue, index: usize) -> Option<Vec<u8>> {
     if let Some(function) = function.as_lua_function() {
         function.upvalues().get(index)?;
         return Some(
@@ -2507,18 +2509,18 @@ fn upvalue_name(function: LuaValue, index: usize) -> Option<String> {
                 .chunk()
                 .upvalue_descs
                 .get(index)
-                .map_or_else(String::new, |descriptor| descriptor.name.to_string()),
+                .map_or_else(Vec::new, |descriptor| descriptor.name.to_vec()),
         );
     }
     if let Some(closure) = function.as_cclosure() {
         closure
             .upvalues()
             .get(index.checked_add(c_closure_user_offset(closure))?)?;
-        return Some(String::new());
+        return Some(Vec::new());
     }
     if let Some(closure) = function.as_rclosure() {
         closure.upvalues().get(index)?;
-        return Some(String::new());
+        return Some(Vec::new());
     }
     None
 }
@@ -2549,7 +2551,7 @@ pub unsafe extern "C" fn lua_getupvalue(
             .chunk()
             .upvalue_descs
             .get(index)
-            .map_or_else(String::new, |descriptor| descriptor.name.to_string());
+            .map_or_else(Vec::new, |descriptor| descriptor.name.to_vec());
         (name, upvalue.as_ref().data.get_value())
     } else if let Some(closure) = function.as_cclosure() {
         let Some(value) = closure
@@ -2559,12 +2561,12 @@ pub unsafe extern "C" fn lua_getupvalue(
         else {
             return ptr::null();
         };
-        (String::new(), value)
+        (Vec::new(), value)
     } else if let Some(closure) = function.as_rclosure() {
         let Some(value) = closure.upvalues().get(index).copied() else {
             return ptr::null();
         };
-        (String::new(), value)
+        (Vec::new(), value)
     } else {
         return ptr::null();
     };
@@ -2572,7 +2574,7 @@ pub unsafe extern "C" fn lua_getupvalue(
     if name.is_empty() {
         c"".as_ptr()
     } else {
-        c_name(state, name.as_bytes())
+        c_name(state, &name)
     }
 }
 
@@ -2626,7 +2628,7 @@ pub unsafe extern "C" fn lua_setupvalue(
     if name.is_empty() {
         c"".as_ptr()
     } else {
-        c_name(state, name.as_bytes())
+        c_name(state, &name)
     }
 }
 
@@ -2729,7 +2731,7 @@ fn active_local_slot(
     state: &LuaState,
     level: usize,
     local_index: usize,
-) -> Option<(String, usize)> {
+) -> Option<(Box<[u8]>, usize)> {
     if local_index == 0 || level >= state.call_depth() {
         return None;
     }
@@ -2746,7 +2748,7 @@ fn active_local_slot(
         if pc < local.endpc as usize {
             active += 1;
             if active == local_index {
-                return Some((local.name.to_string(), frame.base + active - 1));
+                return Some((local.name.clone(), frame.base + active - 1));
             }
         }
     }
@@ -2818,7 +2820,7 @@ pub unsafe extern "C" fn lua_getinfo(
             .name
             .as_deref()
             .filter(|name| !name.is_empty())
-            .map_or(ptr::null(), |name| c_name(state, name.as_bytes()));
+            .map_or(ptr::null(), |name| c_name(state, name));
         (*record).namewhat = info.namewhat.as_deref().map_or(c"".as_ptr(), |name| {
             if name.is_empty() {
                 c"".as_ptr()
@@ -2901,7 +2903,7 @@ pub unsafe extern "C" fn lua_getlocal(
         let Some(local) = function.chunk().locals.get(local_index as usize - 1) else {
             return ptr::null();
         };
-        return c_name(state, local.name.as_bytes());
+        return c_name(state, &local.name);
     }
     let Some(level) = debug_level(record) else {
         return ptr::null();
@@ -2910,7 +2912,7 @@ pub unsafe extern "C" fn lua_getlocal(
         return ptr::null();
     };
     let _ = state_vm.push_value(value);
-    c_name(state, name.as_bytes())
+    c_name(state, &name)
 }
 
 #[unsafe(no_mangle)]
@@ -2937,7 +2939,7 @@ pub unsafe extern "C" fn lua_setlocal(
         return ptr::null();
     };
     let _ = state_vm.stack_set(slot, value);
-    c_name(state, name.as_bytes())
+    c_name(state, &name)
 }
 
 #[unsafe(no_mangle)]

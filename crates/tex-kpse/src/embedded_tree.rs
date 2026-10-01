@@ -93,7 +93,7 @@ pub fn stat(path: &str) -> Option<EmbeddedKind> {
         return Some(EmbeddedKind::Directory);
     }
     let entry = file_entry(&relative)?;
-    let [_, _, _, _, length] = PACKAGE_INDEX.get(entry)?;
+    let [_, _, _, _, length, _] = PACKAGE_INDEX.get(entry)?;
     Some(EmbeddedKind::File { size: u64::from(length) })
 }
 

@@ -114,6 +114,13 @@ pub(crate) fn lual_error(l: &mut LuaState, msg: impl AsRef<str>) -> LuaError {
     l.error(format!("{}{}", position, msg.as_ref()))
 }
 
+/// `lual_error` for a message of bytes (it may quote a name that is not UTF-8).
+pub(crate) fn lual_error_bytes(l: &mut LuaState, msg: &[u8]) -> LuaError {
+    let mut full = lual_where(l, 1).into_bytes();
+    full.extend_from_slice(msg);
+    l.error_bytes(full)
+}
+
 /// `luaL_argerror`: `"bad argument #narg to 'name' (extramsg)"`.
 pub(crate) fn argerror(l: &mut LuaState, narg: usize, extramsg: &str) -> LuaError {
     let mut narg = narg;
@@ -122,7 +129,10 @@ pub(crate) fn argerror(l: &mut LuaState, narg: usize, extramsg: &str) -> LuaErro
             if kind == "method" {
                 narg -= 1;
                 if narg == 0 {
-                    return lual_error(l, format!("calling '{name}' on bad self ({extramsg})"));
+                    let mut msg = b"calling '".to_vec();
+                    msg.extend_from_slice(&name);
+                    msg.extend_from_slice(format!("' on bad self ({extramsg})").as_bytes());
+                    return lual_error_bytes(l, &msg);
                 }
             }
             name
@@ -132,10 +142,13 @@ pub(crate) fn argerror(l: &mut LuaState, narg: usize, extramsg: &str) -> LuaErro
             function
                 .as_ref()
                 .and_then(|f| find_global_func_name(l, f))
-                .unwrap_or_else(|| "?".to_string())
+                .map_or_else(|| b"?".to_vec(), String::into_bytes)
         }
     };
-    lual_error(l, format!("bad argument #{narg} to '{name}' ({extramsg})"))
+    let mut msg = format!("bad argument #{narg} to '").into_bytes();
+    msg.extend_from_slice(&name);
+    msg.extend_from_slice(format!("' ({extramsg})").as_bytes());
+    lual_error_bytes(l, &msg)
 }
 
 /// `luaL_typeerror`: `"<expected> expected, got <type>"` for argument `narg`.

@@ -4,12 +4,20 @@
 //! (§218-§219, §986) and the `begin_diagnostic`/`end_diagnostic` transcript
 //! discipline (§245) the box-displaying commands share.
 
+mod items;
+mod nest;
+
 use crate::boxes::{glue_subtype, Glue, LeaderBody, Node, WhatIt};
 use crate::build::RULE_FILL;
 use crate::engine::{Engine, Mode};
 use crate::prim::IntParam;
 use crate::tfm::FontId;
-use crate::token::{push_printable, Token};
+use crate::tex_bytes::push_printable;
+use crate::token::Token;
+
+/// `Node::Box::kind` of an alignment column shown as tex.web's unset node
+/// (only in the copy of a preamble list made for a packing report).
+const UNSET_KIND: u8 = 0xFF;
 
 /// tex.web keeps the nesting prefix in the string pool and bounds
 /// `depth_threshold` by the pool space left; this is that bound.
@@ -82,13 +90,17 @@ impl<'a> BoxDisplay<'a> {
     pub(crate) fn print_esc(&mut self, s: &str) {
         let esc = self.e.eqtb.int_params[IntParam::EscapeChar.idx() as usize];
         if (0..256).contains(&esc) {
-            push_printable(&mut self.out, &[esc as u8]);
+            push_printable(&self.e.xprn, &mut self.out, &[esc as u8]);
         }
         self.print(s);
     }
 
     fn print_ascii(&mut self, c: u8) {
-        push_printable(&mut self.out, &[c]);
+        if i32::from(c) == self.e.new_line_char() {
+            self.out.push(b'\n');
+        } else {
+            push_printable(&self.e.xprn, &mut self.out, &[c]);
+        }
     }
 
     /// a character code of a Lua font: UTF-8 beyond the 8-bit range
@@ -148,9 +160,9 @@ impl<'a> BoxDisplay<'a> {
         let cs = eqtb.font_cs.get(shown as usize).copied().unwrap_or(0);
         let esc = eqtb.int_params[IntParam::EscapeChar.idx() as usize];
         if (0..256).contains(&esc) {
-            push_printable(&mut self.out, &[esc as u8]);
+            push_printable(&self.e.xprn, &mut self.out, &[esc as u8]);
         }
-        self.out.extend_from_slice(self.e.cs.name(cs));
+        push_printable(&self.e.xprn, &mut self.out, self.e.cs.name(cs));
         let font = eqtb.fonts.get(f as usize);
         if eqtb.int_params[IntParam::PdfTracingFonts.idx() as usize] > 0 {
             self.print(" (");
@@ -196,7 +208,7 @@ impl<'a> BoxDisplay<'a> {
                 break;
             }
             let bytes = self.e.tokens_to_bytes(std::slice::from_ref(t));
-            push_printable(&mut self.out, &bytes);
+            push_printable(&self.e.xprn, &mut self.out, &bytes);
         }
         self.out.push(b'}');
     }
@@ -204,7 +216,7 @@ impl<'a> BoxDisplay<'a> {
     /// print_mark for data Ratex keeps as text rather than tokens.
     fn print_text_mark(&mut self, text: &str) {
         self.out.push(b'{');
-        let bytes = text.as_bytes();
+        let bytes = &*crate::tex_bytes::text_to_bytes(text);
         let start = self.out.len();
         for (i, &b) in bytes.iter().enumerate() {
             if self.out.len() - start >= MARK_LIMIT {
@@ -213,7 +225,7 @@ impl<'a> BoxDisplay<'a> {
                 }
                 break;
             }
-            push_printable(&mut self.out, &[b]);
+            push_printable(&self.e.xprn, &mut self.out, &[b]);
         }
         self.out.push(b'}');
     }
@@ -313,7 +325,6 @@ impl<'a> BoxDisplay<'a> {
             return;
         }
         let mut n = 0i64;
-        let mut choice_part = 0usize;
         for node in list.iter().filter(|n| !invisible(n)) {
             self.print_ln();
             self.out.extend_from_slice(&self.prefix);
@@ -321,17 +332,6 @@ impl<'a> BoxDisplay<'a> {
             if n > self.breadth_max {
                 self.print("etc.");
                 return;
-            }
-            if let Node::ChoiceAlt { body } = node {
-                // the four \mathchoice parts follow their choice node
-                let c = [b'D', b'T', b'S', b's'][choice_part.min(3)];
-                choice_part += 1;
-                self.print_esc("mathchoice");
-                self.subsidiary_list(body, c);
-                continue;
-            }
-            if matches!(node, Node::Choice) {
-                choice_part = 0;
             }
             self.display_node(node);
         }
@@ -367,7 +367,11 @@ impl<'a> BoxDisplay<'a> {
                 glue_set,
                 lr,
             } => {
-                self.print_esc(if *kind == crate::boxes::HBOX { "h" } else { "v" });
+                self.print_esc(match *kind {
+                    crate::boxes::HBOX => "h",
+                    UNSET_KIND => "unset",
+                    _ => "v",
+                });
                 self.print("box(");
                 self.print_scaled(*h);
                 self.out.push(b'+');
@@ -484,6 +488,12 @@ impl<'a> BoxDisplay<'a> {
                 self.out.push(b' ');
                 self.print_scaled(*k);
             }
+            Node::AccentKern(k) => {
+                self.print_esc("kern");
+                self.out.push(b' ');
+                self.print_scaled(*k);
+                self.print(" (for accent)");
+            }
             Node::MathKern(k, 0) => {
                 self.print_esc("mkern");
                 self.print_scaled(*k);
@@ -574,88 +584,18 @@ impl<'a> BoxDisplay<'a> {
                 self.print_esc("mskip) ");
                 self.print_spec(g, "mu");
             }
-            Node::Choice => self.print_esc("mathchoice"),
-            Node::ChoiceAlt { body } => self.subsidiary_list(body, b'D'),
-            Node::MathChar { fam, c, class, .. } => {
-                self.print_esc(noad_name(*class));
-                self.prefix.push(b'.');
-                self.print_ln();
-                self.out.extend_from_slice(&self.prefix);
-                self.print_fam_and_char(*fam, *c);
-                self.prefix.pop();
-            }
-            Node::Scripts { nucleus, sup, sub } => {
-                let name = match nucleus.as_slice() {
-                    [Node::MathChar { class, .. }] => noad_name(*class),
-                    [Node::OpLimits { .. }] => "mathop",
-                    _ => "mathord",
-                };
-                self.print_esc(name);
-                let nucleus = match nucleus.as_slice() {
-                    [Node::OpLimits { op, .. }] => op.as_slice(),
-                    other => other,
-                };
-                self.subsidiary_list(nucleus, b'.');
-                if let Some(sup) = sup {
-                    self.subsidiary_list(sup, b'^');
-                }
-                if let Some(sub) = sub {
-                    self.subsidiary_list(sub, b'_');
-                }
-            }
-            Node::OpLimits { op, above, below } => {
-                self.print_esc("mathop");
-                self.print_esc("limits");
-                self.subsidiary_list(op, b'.');
-                if let Some(above) = above {
-                    self.subsidiary_list(above, b'^');
-                }
-                if let Some(below) = below {
-                    self.subsidiary_list(below, b'_');
-                }
-            }
-            Node::Frac {
-                num,
-                den,
-                thickness,
-                ..
-            } => {
-                self.print_esc("fraction, thickness ");
-                if *thickness == DEFAULT_CODE {
-                    self.print("= default");
-                } else {
-                    self.print_scaled(*thickness);
-                }
-                self.subsidiary_list(num, b'\\');
-                self.subsidiary_list(den, b'/');
-            }
-            Node::Radical { body, .. } => {
-                self.print_esc("radical");
-                self.subsidiary_list(body, b'.');
-            }
-            Node::Accent { fam, c, body, .. } => {
-                self.print_esc("accent");
-                self.print_fam_and_char(*fam, *c as u32);
-                self.subsidiary_list(body, b'.');
-            }
-            Node::Overline { body, under } => {
-                self.print_esc(if *under { "underline" } else { "overline" });
-                self.subsidiary_list(body, b'.');
-            }
-            Node::VCenter { box_node } => {
-                self.print_esc("vcenter");
-                self.subsidiary_list(std::slice::from_ref(&**box_node), b'.');
-            }
-            Node::DelimBox { small, large, .. } => {
-                self.print_esc("delimiter");
-                self.print(&format!(
-                    "\"{:X}",
-                    ((small.0 as u32 % 16) << 20)
-                        | ((small.1 as u32) << 12)
-                        | ((large.0 as u32 % 16) << 8)
-                        | large.1 as u32
-                ));
-            }
+            // noads are displayed through the mlist view (items.rs)
+            Node::Choice
+            | Node::ChoiceAlt { .. }
+            | Node::MathChar { .. }
+            | Node::Scripts { .. }
+            | Node::OpLimits { .. }
+            | Node::Frac { .. }
+            | Node::Radical { .. }
+            | Node::Accent { .. }
+            | Node::Overline { .. }
+            | Node::VCenter { .. }
+            | Node::DelimBox { .. } => self.display_node_as_items(node),
             Node::InsDisc | Node::Empty => {}
         }
     }
@@ -690,20 +630,10 @@ impl<'a> BoxDisplay<'a> {
     /// tex.web §1356 + pdftex.web "Display the whatsit node".
     fn display_whatsit(&mut self, w: &WhatIt) {
         match w {
-            WhatIt::OpenOut { stream, path, .. } => {
+            WhatIt::OpenOut { stream, names, .. } => {
                 self.print_write_whatsit("openout", *stream);
                 self.out.push(b'=');
-                let path = std::path::Path::new(path);
-                let out_dir = std::path::Path::new(&self.e.out_dir);
-                let shown = [self.e.aux_dir.as_deref(), Some(out_dir)]
-                    .into_iter()
-                    .flatten()
-                    .filter(|dir| !dir.as_os_str().is_empty())
-                    .find_map(|dir| path.strip_prefix(dir).ok())
-                    .unwrap_or(path)
-                    .to_string_lossy()
-                    .into_owned();
-                self.print(shown.strip_suffix(".tex").unwrap_or(&shown));
+                self.print(&names.1);
             }
             WhatIt::Write { stream, tokens, .. } => {
                 self.print_write_whatsit("write", *stream);
@@ -863,39 +793,6 @@ impl<'a> BoxDisplay<'a> {
         self.out.push(b' ');
         self.print_ascii(c as u8);
     }
-
-    /// tex.web print_subsidiary_data for a field held as a node list.
-    fn subsidiary_list(&mut self, list: &[Node], c: u8) {
-        if self.prefix.len() as i64 >= self.depth_threshold {
-            if !list.is_empty() {
-                self.print(" []");
-            }
-            return;
-        }
-        self.prefix.push(c);
-        match list {
-            [] => {}
-            [Node::MathChar { fam, c, .. }] => {
-                self.print_ln();
-                self.out.extend_from_slice(&self.prefix);
-                self.print_fam_and_char(*fam, *c);
-            }
-            other => self.show_node_list(other),
-        }
-        self.prefix.pop();
-    }
-}
-
-fn noad_name(class: u8) -> &'static str {
-    match class {
-        1 => "mathop",
-        2 => "mathbin",
-        3 => "mathrel",
-        4 => "mathopen",
-        5 => "mathclose",
-        6 => "mathpunct",
-        _ => "mathord",
-    }
 }
 
 impl Engine {
@@ -913,19 +810,10 @@ impl Engine {
         self.saved_lists.last().map_or(0, |frame| frame.5)
     }
 
-    /// Append `text` to the transcript and, when `to_term`, to the terminal,
-    /// starting it on a fresh line of each (tex.web `print_nl`).
-    pub(crate) fn print_nl_diagnostic(&mut self, text: &str, to_term: bool) {
-        if !self.log.is_empty() && !self.log.ends_with('\n') {
-            self.append_log("\n");
-        }
-        self.append_log(text);
-        if to_term {
-            if !self.term.is_empty() && !self.term.ends_with('\n') {
-                self.append_term("\n");
-            }
-            self.append_term(text);
-        }
+    /// tex.web end_diagnostic(true): `print_nl(""); print_ln`.
+    fn end_diagnostic(&mut self, term: bool) {
+        self.tex_print_nl(term, true);
+        self.tex_print_ln(term, true);
     }
 
     /// tex.web begin_diagnostic: the terminal sees diagnostics only when
@@ -937,14 +825,10 @@ impl Engine {
     /// `begin_diagnostic; <display>; end_diagnostic(true)` for a display
     /// built by `body` (which starts with tex.web print_nl semantics).
     pub(crate) fn emit_box_diagnostic(&mut self, display: Vec<u8>) {
-        let mut text = String::from_utf8_lossy(&display).into_owned();
-        // end_diagnostic(true): print_nl(""); print_ln
-        if !text.is_empty() && !text.ends_with('\n') {
-            text.push('\n');
-        }
-        text.push('\n');
-        let to_term = self.diagnostic_to_term();
-        self.print_nl_diagnostic(&text, to_term);
+        let term = self.diagnostic_to_term();
+        self.tex_print_nl(term, true);
+        self.tex_print_printed(term, true, &display);
+        self.end_diagnostic(term);
     }
 
     /// tex.web §1296 `\showbox`: `> \box<n>=` and the box display.
@@ -965,11 +849,15 @@ impl Engine {
     /// tex.web §638 `\tracingoutput`: the shipped box, after the
     /// `Completed box being shipped out [<counts>]` line.
     pub(crate) fn show_shipped_box(&mut self, b: &Node) {
-        let mut head = String::from("\nCompleted box being shipped out [");
+        // print_nl(""); print_ln; print("Completed box being shipped out")
+        self.tex_print_nl(true, true);
+        self.tex_print_ln(true, true);
+        self.tex_print_str(true, true, "Completed box being shipped out");
         let mut j = 9;
         while j > 0 && self.eqtb.count[j] == 0 {
             j -= 1;
         }
+        let mut head = String::new();
         for k in 0..=j {
             head.push_str(&self.eqtb.count[k].to_string());
             if k < j {
@@ -977,7 +865,14 @@ impl Engine {
             }
         }
         head.push(']');
-        self.print_nl_diagnostic(&head, true);
+        let near_edge = self.term_offset > crate::tex_print::MAX_PRINT_LINE - 9;
+        if near_edge {
+            self.tex_print_ln(true, true);
+        } else if self.term_offset > 0 || self.file_offset > 0 {
+            self.tex_print_str(true, true, " ");
+        }
+        self.tex_print_str(true, true, "[");
+        self.tex_print_str(true, true, &head);
         let mut d = BoxDisplay::new(self);
         d.show_box(std::slice::from_ref(b));
         let out = d.out;
@@ -1003,28 +898,34 @@ impl Engine {
             d.print_ln();
         }
         let head = std::mem::take(&mut d.out);
-        d.show_box(std::slice::from_ref(r));
+        if self.pack_begin_line < 0 {
+            // tex.web §804: the preamble list holds unset nodes, one per column
+            let mut preamble = r.clone();
+            if let Node::Box { list, .. } = &mut preamble {
+                for n in list.iter_mut() {
+                    if let Node::Box { kind, .. } = n {
+                        *kind = UNSET_KIND;
+                    }
+                }
+            }
+            d.show_box(std::slice::from_ref(&preamble));
+        } else {
+            d.show_box(std::slice::from_ref(r));
+        }
         let display = d.out;
-        let mut text = String::from("\n");
-        text.push_str(&String::from_utf8_lossy(&head));
-        // the header goes to the transcript; the terminal follows Ratex's
-        // structured-warning policy for box reports
-        self.append_log(&text);
+        // print_ln; the header goes to the transcript; the terminal follows
+        // Ratex's structured-warning policy for box reports
+        self.tex_print_ln(false, true);
+        self.tex_print_printed(false, true, &head);
         self.emit_box_diagnostic_inline(display);
     }
 
     /// `begin_diagnostic; show_box; end_diagnostic(true)` continuing the
     /// current transcript line (no print_nl).
     fn emit_box_diagnostic_inline(&mut self, display: Vec<u8>) {
-        let mut text = String::from_utf8_lossy(&display).into_owned();
-        if !text.ends_with('\n') {
-            text.push('\n');
-        }
-        text.push('\n');
-        self.append_log(&text);
-        if self.diagnostic_to_term() {
-            self.append_term(&text);
-        }
+        let term = self.diagnostic_to_term();
+        self.tex_print_printed(term, true, &display);
+        self.end_diagnostic(term);
     }
 
     /// tex.web §218 show_activities (for `\showlists`).
@@ -1032,32 +933,37 @@ impl Engine {
         let mut d = BoxDisplay::new(self);
         // print_nl(""); print_ln
         d.print_ln();
-        let levels = self.nest_levels();
-        let mut math_index = self.math_lists.len();
+        let mut levels = self.nest_levels();
         let mut par_index = self.par_page_lists.len();
         let mut above_is_paragraph = false;
-        let top = levels.len() - 1;
-        for (p, level) in levels.iter().enumerate().rev() {
+        // tex.web keeps the paragraph's starting language in the level's
+        // prev_graf (new_graf §1091) and `clang` in its aux
+        let mut par_lang = self.par_langs.len();
+        let mut clang_above: Option<u8> = None;
+        for p in (0..levels.len()).rev() {
+            let level = &mut levels[p];
             d.print_nl("### ");
             print_mode(&mut d, level.mode);
             d.print(" entered at line ");
             d.print_int(level.line.unsigned_abs() as i64);
+            let mut clang = 0u8;
             if level.mode == Mode::Horizontal {
-                let int = |param: IntParam| self.eqtb.int_params[param.idx() as usize];
-                let norm = |v: i32| v.clamp(1, 63);
-                let lang = int(IntParam::Language);
-                let lang = if (0..=255).contains(&lang) { lang } else { 0 };
-                let (lhm, rhm) = (
-                    norm(int(IntParam::LeftHyphenMin)),
-                    norm(int(IntParam::RightHyphenMin)),
-                );
-                if (lhm, rhm, lang) != (2, 3, 0) {
+                let pl = if par_lang > 0 {
+                    par_lang -= 1;
+                    self.par_langs.get(par_lang)
+                } else {
+                    None
+                };
+                clang = clang_above.unwrap_or(self.clang);
+                clang_above = pl.map(|pl| pl.outer_clang);
+                let start = pl.map_or_else(|| self.current_language(), |pl| pl.start);
+                if (start.lhm, start.rhm, start.lang) != (2, 3, 0) {
                     d.print(" (language");
-                    d.print_int(lang as i64);
+                    d.print_int(i64::from(start.lang));
                     d.print(":hyphenmin");
-                    d.print_int(lhm as i64);
+                    d.print_int(i64::from(start.lhm));
                     d.out.push(b',');
-                    d.print_int(rhm as i64);
+                    d.print_int(i64::from(start.rhm));
                     d.out.push(b')');
                 }
             }
@@ -1074,23 +980,29 @@ impl Engine {
                     d.print_nl("### recent contributions:");
                 }
             }
-            let list: &[Node] = match level.mode {
-                Mode::Vertical => contributions,
-                Mode::Math | Mode::DisplayMath => {
-                    math_index = math_index.saturating_sub(1);
-                    self.math_lists.get(math_index).map_or(&[], Vec::as_slice)
-                }
-                Mode::InternalVertical if above_is_paragraph && par_index > 0 => {
+            if let Some(items) = level.math.as_ref() {
+                d.show_items_box(items);
+            } else {
+                let list: &[Node] = match level.mode {
+                    Mode::Vertical => contributions,
+                    Mode::InternalVertical if above_is_paragraph && par_index > 0 => {
+                        par_index -= 1;
+                        &self.par_page_lists[par_index]
+                    }
+                    _ => level.list,
+                };
+                if level.mode == Mode::Vertical && above_is_paragraph && par_index > 0 {
                     par_index -= 1;
-                    &self.par_page_lists[par_index]
                 }
-                _ => level.list,
-            };
-            if level.mode == Mode::Vertical && above_is_paragraph && par_index > 0 {
-                par_index -= 1;
+                if level.prefix.is_empty() {
+                    d.show_box(list);
+                } else {
+                    let mut items = std::mem::take(&mut level.prefix);
+                    items.extend(nest::plain_items(list));
+                    d.show_items_box(&items);
+                }
             }
             above_is_paragraph = level.mode == Mode::Horizontal;
-            d.show_box(list);
             match level.mode {
                 Mode::Vertical | Mode::InternalVertical => {
                     d.print_nl("prevdepth ");
@@ -1111,15 +1023,17 @@ impl Engine {
                 Mode::Horizontal | Mode::RestrictedHorizontal => {
                     d.print_nl("spacefactor ");
                     d.print_int(level.space_factor as i64);
-                    if level.mode == Mode::Horizontal && p == top {
-                        let lang = self.eqtb.int_params[IntParam::Language.idx() as usize];
-                        if (1..=255).contains(&lang) {
-                            d.print(", current language ");
-                            d.print_int(lang as i64);
-                        }
+                    if level.mode == Mode::Horizontal && clang > 0 {
+                        d.print(", current language ");
+                        d.print_int(i64::from(clang));
                     }
                 }
-                Mode::Math | Mode::DisplayMath => {}
+                Mode::Math | Mode::DisplayMath => {
+                    if let Some(frac) = level.incompleat.as_ref() {
+                        d.print("this will begin denominator of:");
+                        d.show_items_box(std::slice::from_ref(frac));
+                    }
+                }
             }
         }
         d.out
@@ -1179,67 +1093,6 @@ impl Engine {
             }
         }
     }
-
-    /// The semantic nest, bottom level first (tex.web `nest[0..nest_ptr]`).
-    fn nest_levels(&self) -> Vec<NestLevel<'_>> {
-        let frames = &self.saved_lists;
-        let output = self.output_tail.map(|tail| (self.output_nest_mark, tail));
-        let line_of = |i: usize| -> i32 {
-            match output {
-                Some(((base, line), _)) if base == i => line,
-                _ if i == 0 => 0,
-                _ => frames[i - 1].5,
-            }
-        };
-        let mut levels = Vec::with_capacity(frames.len() + 2);
-        for i in 0..=frames.len() {
-            if let Some(((base, _), (_, pd, pg, mode))) = output {
-                if base == i {
-                    let (list, sf) = self
-                        .output_nest
-                        .as_ref()
-                        .map_or((&[][..], 1000), |(l, sf)| (l.as_slice(), *sf));
-                    levels.push(NestLevel {
-                        mode,
-                        line: if i == 0 { 0 } else { frames[i - 1].5 },
-                        list,
-                        prev_depth: pd,
-                        space_factor: sf,
-                        prev_graf: pg,
-                    });
-                }
-            }
-            let level = match frames.get(i) {
-                Some((mode, list, pd, sf, pg, _)) => NestLevel {
-                    mode: *mode,
-                    line: line_of(i),
-                    list,
-                    prev_depth: *pd,
-                    space_factor: *sf,
-                    prev_graf: *pg,
-                },
-                None => NestLevel {
-                    mode: self.mode,
-                    line: line_of(i),
-                    list: &self.cur_list,
-                    prev_depth: self.prev_depth,
-                    space_factor: self.space_factor,
-                    prev_graf: self.prev_graf,
-                },
-            };
-            levels.push(level);
-        }
-        levels
-    }
-}
-
-struct NestLevel<'a> {
-    mode: Mode,
-    line: i32,
-    list: &'a [Node],
-    prev_depth: i32,
-    space_factor: i32,
-    prev_graf: i32,
 }
 
 /// tex.web print_mode.

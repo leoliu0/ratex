@@ -1416,6 +1416,14 @@ impl Engine {
         let ls = self.eqtb.glue_params[GlueParam::LineSkip.idx() as usize];
         let lsl = self.eqtb.dim_params[DimParam::LineSkipLimit.idx() as usize];
         let to_setbox = self.setbox_target.is_some() && self.setbox_depth == self.box_kinds.len();
+        // tex.web §800: `if nest[nest_ptr-1].mode_field=mmode then
+        // o:=display_indent`; only the rows and the top-level \noalign rules
+        // are shifted (§810, §806), other \noalign material stays put
+        let o = if !valign && !to_setbox && self.mode == Mode::DisplayMath {
+            self.eqtb.dim_params[DimParam::DisplayIndent.idx() as usize]
+        } else {
+            0
+        };
         // tex.web init_align: push_nest keeps the enclosing aux, so in a
         // vertical list the first row's interline glue is computed against
         // the enclosing prev_depth (a display uses the depth of the list
@@ -1453,6 +1461,15 @@ impl Engine {
                                 }
                             } else if *width == crate::build::RULE_FILL {
                                 *width = p_size;
+                            }
+                            if o != 0 {
+                                let mut b =
+                                    crate::boxes::hpack(vec![n], None, crate::boxes::HBOX, &self.eqtb)
+                                        .node;
+                                if let Node::Box { shift, .. } = &mut b {
+                                    *shift = o;
+                                }
+                                return b;
                             }
                         }
                         n
@@ -1497,7 +1514,7 @@ impl Engine {
                 w: if valign { row_a } else { p_size },
                 h: if valign { p_size } else { row_a },
                 d: if valign { 0 } else { row_b },
-                shift: 0,
+                shift: o,
                 list: line,
                 glue_sign: p_sign,
                 glue_order: p_order,

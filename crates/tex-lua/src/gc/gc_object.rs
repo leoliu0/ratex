@@ -41,7 +41,8 @@ pub const MASKCOLORS: u8 = (1 << BLACKBIT) | WHITEBITS;
 ///       - Bit 5: BLACK
 ///       - Bit 6: FINALIZEDBIT
 ///       - Bit 7: SHAREDBIT
-///   `_padding: [u8; 3]` — keeps `index` naturally aligned
+///   `touched: bool` — Lua 5.3 open-upvalue `touched` flag (see `is_touched`)
+///   `_padding: [u8; 2]` — keeps `index` naturally aligned
 ///   `index: u32` — position in GcList (32-bit, max ~4.29B objects)
 ///
 ///   `size: u32` — allocation-time memory size estimate (for GC pacing).
@@ -52,7 +53,8 @@ pub const MASKCOLORS: u8 = (1 << BLACKBIT) | WHITEBITS;
 #[repr(C)]
 pub struct GcHeader {
     marked: Cell<u8>,
-    _padding: [u8; 3],
+    touched: Cell<bool>,
+    _padding: [u8; 2],
     index: Cell<u32>,
     size: Cell<u32>,
 }
@@ -106,6 +108,19 @@ impl GcHeader {
     pub fn set_size(&self, size: u32) {
         self.size.set(size);
     }
+
+    /// Lua 5.3's `UpVal.u.open.touched` (meaningful for open upvalues only): set on
+    /// creation and when a closure traversal outside the atomic phase reaches the upvalue;
+    /// `remark_upvalues` marks the values of touched upvalues of unmarked threads once.
+    #[inline(always)]
+    pub fn is_touched(&self) -> bool {
+        self.touched.get()
+    }
+
+    #[inline(always)]
+    pub fn set_touched(&self, touched: bool) {
+        self.touched.set(touched);
+    }
 }
 
 impl Default for GcHeader {
@@ -115,7 +130,8 @@ impl Default for GcHeader {
         // Use GcHeader::with_white(current_white) instead when creating GC objects
         GcHeader {
             marked: Cell::new(G_NEW),
-            _padding: [0; 3],
+            touched: Cell::new(true),
+            _padding: [0; 2],
             index: Cell::new(0),
             size: Cell::new(0),
         }
@@ -134,7 +150,8 @@ impl GcHeader {
         );
         GcHeader {
             marked: Cell::new((1 << (WHITE0BIT + current_white)) | G_NEW),
-            _padding: [0; 3],
+            touched: Cell::new(true),
+            _padding: [0; 2],
             index: Cell::new(0),
             size: Cell::new(0),
         }

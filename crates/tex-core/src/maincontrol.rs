@@ -799,19 +799,9 @@ impl Engine {
                 let command_source = self.current_token_source_mark();
                 let v = self.scan_delimiter_code("\\delimiter");
                 if self.mode.is_m() {
-                    // tex.web §21942-§21944 mmode+delim_num:
+                    // tex.web §1160 mmode+delim_num:
                     // set_math_char(cur_val div @'10000)
-                    let mc = (v >> 12) as u16;
-                    let class = ((mc >> 12) & 0x7) as u8;
-                    let fam = ((mc >> 8) & 0xF) as u8;
-                    let c = (mc & 0xFF) as u8;
-                    let origin = self.math_diagnostic_origin_at(command_source);
-                    self.append_mlist_node(Node::MathChar {
-                        fam,
-                        c: u32::from(c),
-                        class,
-                        origin,
-                    });
+                    self.append_mathchar_at((v >> 12) as u16, command_source);
                 }
             }
             Above | Over | Atop | OverWithDelims | AtopWithDelims | AboveWithDelims => {

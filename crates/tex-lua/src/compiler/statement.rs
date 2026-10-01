@@ -641,17 +641,23 @@ fn test_then_block(fs: &mut FuncState, escapelist: &mut isize) -> Result<(), Str
     // lparser.c:1756: luaX_next(ls); /* skip IF or ELSEIF */
     fs.lexer.bump();
 
-    // Lua 5.3 consumes THEN before emitting the condition jump. Besides
-    // matching its bytecode shape, this assigns the jump to the THEN line
-    // for debug line hooks.
-    let mut condition = expr(fs)?;
-    if condition.kind == ExpKind::VNIL {
-        condition.kind = ExpKind::VFALSE;
-    }
-    check(fs, LuaTokenKind::TkThen)?;
-    fs.lexer.bump();
-    code::goiftrue(fs, &mut condition);
-    let condtrue = condition.f;
+    // Lua 5.3 consumes THEN before emitting the condition jump, which puts the jump
+    // on the THEN line (an extra line hook event there); 5.5's cond() emits it first.
+    let condtrue = if fs.lexer.level == LuaLanguageLevel::Lua55 {
+        let condtrue = cond(fs)?;
+        check(fs, LuaTokenKind::TkThen)?;
+        fs.lexer.bump();
+        condtrue
+    } else {
+        let mut condition = expr(fs)?;
+        if condition.kind == ExpKind::VNIL {
+            condition.kind = ExpKind::VFALSE;
+        }
+        check(fs, LuaTokenKind::TkThen)?;
+        fs.lexer.bump();
+        code::goiftrue(fs, &mut condition);
+        condition.f
+    };
 
     // lparser.c:1759: block(ls); /* 'then' part */
     block(fs)?;

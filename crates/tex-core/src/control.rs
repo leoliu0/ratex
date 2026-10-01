@@ -1804,23 +1804,58 @@ impl Engine {
         self.push_group_level(crate::eqtb::LevelType::SemiSimple);
     }
     pub fn end_semi_simple(&mut self) {
-        match self.eqtb.cur_group_type() {
-            Some(crate::eqtb::LevelType::SemiSimple) => {
-                self.ss_trace.pop();
-                let _ = self.pop_group();
+        if self.eqtb.cur_group_code() == crate::eqtb::group_code::SEMI_SIMPLE {
+            self.ss_trace.pop();
+            let _ = self.pop_group();
+        } else {
+            self.off_save(self.cur_tok);
+        }
+    }
+
+    /// tex.web §1064 off_save: `token` closes a group that is not open (an
+    /// `\endgroup`, `$`, `\right` or a vertical command in restricted
+    /// horizontal mode). At the bottom level the token is dropped with an
+    /// "Extra" error; otherwise it is read again after the closer the
+    /// current group needs (`\endgroup`, `$`, `\right.` or `}`).
+    pub(crate) fn off_save(&mut self, token: Token) {
+        use crate::eqtb::group_code;
+        let code = self.eqtb.cur_group_code();
+        if code == group_code::BOTTOM {
+            let name = self.tokens_to_string(&[token]);
+            self.error(&format!("Extra {}", name.trim_end()));
+            return;
+        }
+        // back_input, then ins_list: the closer is read before `token`
+        self.push_token(token);
+        let frozen = |engine: &mut Engine, name: &[u8]| {
+            let id = engine
+                .primitive_cs(name)
+                .or_else(|| engine.cs.lookup(name))
+                .expect("primitive control sequence");
+            Token::from_cs(id)
+        };
+        let shown = match code {
+            group_code::SEMI_SIMPLE => {
+                let endgroup = frozen(self, b"endgroup");
+                self.push_token(endgroup);
+                "\\endgroup"
             }
-            Some(crate::eqtb::LevelType::Simple) => {
-                self.error("Extra \\endgroup, or missing }");
+            group_code::MATH_SHIFT => {
+                self.push_token(Token::char(3, u32::from(b'$')));
+                "$"
+            }
+            group_code::MATH_LEFT => {
+                self.push_token(Token::other(b'.'));
+                let right = frozen(self, b"right");
+                self.push_token(right);
+                "\\right."
             }
             _ => {
-                if self.eqtb.save_stack.is_empty() {
-                    self.error("Too many \\endgroups");
-                } else {
-                    // mismatch: still pop to keep the save stack moving
-                    let _ = self.pop_group();
-                }
+                self.push_token(Token::char(2, u32::from(b'}')));
+                "}"
             }
-        }
+        };
+        self.error(&format!("Missing {shown} inserted"));
     }
 }
 

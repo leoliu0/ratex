@@ -40,6 +40,7 @@ pub mod pdfout;
 pub mod pdfrender;
 pub mod pdftex;
 pub mod prim;
+mod random;
 pub mod scaled;
 pub mod scan;
 pub mod scanner;

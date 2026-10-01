@@ -516,11 +516,11 @@ impl Engine {
                         break 'scan_loop;
                     }
                     Some(Prim::PdfRandomSeed) => {
-                        v = self.random_seed as i64;
+                        v = self.rng.seed as i64;
                         break 'scan_loop;
                     }
                     Some(Prim::PdfElapsedTime) => {
-                        v = 0;
+                        v = crate::random::microinterval(self.timer_start) as i64;
                         break 'scan_loop;
                     }
                     Some(Prim::PdfLastXPos) => {
@@ -2064,11 +2064,12 @@ impl Engine {
                 emit_the!(b"0");
             }
             Some(Prim::PdfRandomSeed) => {
-                let s = self.random_seed.to_string();
+                let s = self.rng.seed.to_string();
                 emit_the!(s.as_bytes());
             }
             Some(Prim::PdfElapsedTime) => {
-                emit_the!(b"0");
+                let s = crate::random::microinterval(self.timer_start).to_string();
+                emit_the!(s.as_bytes());
             }
             Some(Prim::Count | Prim::Attribute) => {
                 let idx = self.scan_reg_num();

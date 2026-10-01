@@ -416,8 +416,11 @@ impl Engine {
                 .record_page_size(page, width_sp as i64, height_sp as i64);
         }
         let mut ctx = self.new_ctx(height_sp as i64);
-        ctx.box_w_sp = width_sp as i64;
-        ctx.box_h_sp = height_sp as i64;
+        // ship_out's this_box is the shipped box: running rule dimensions
+        // at its top level take its width/height/depth (§624, §633)
+        if let Node::Box { w, h, d, .. } = page_box {
+            (ctx.box_w_sp, ctx.box_h_sp, ctx.box_d_sp) = (*w as i64, *h as i64, *d as i64);
+        }
         let x0 = ctx.eng.eqtb.dim_params[DimParam::PdfHOrigin.idx() as usize] as i64
             + ctx.eng.eqtb.dim_params[DimParam::HOffset.idx() as usize] as i64;
         let y0 = ctx.eng.eqtb.dim_params[DimParam::PdfVOrigin.idx() as usize] as i64
@@ -1900,7 +1903,8 @@ impl<'a> RenderCtx<'a> {
     /// pdfTeX `pdf_set_rule`: close the text object, then draw inside a
     /// `q..Q` scope with a temporary origin shift (hairlines stroke).
     fn emit_rect_sp(&mut self, x_sp: i64, v_down_sp: i64, w_sp: i64, h_sp: i64) {
-        if w_sp == 0 || h_sp == 0 {
+        // §624/§633: a rule is drawn only when rule_ht>0 and rule_wd>0
+        if w_sp <= 0 || h_sp <= 0 {
             return;
         }
         let x = sp_to_bp(x_sp);

@@ -930,14 +930,17 @@ impl Engine {
             self.fatal_alignment_eof("File ended after \\span");
             return;
         }
+        // tex.web §791 init_col: extra_info(cur_align) := cur_cmd for the
+        // NEWLY absorbed column, so its v-part is inserted at the cell end
+        // unless that column (not the first one) was \omit'ted
         let is_omit =
             t.is_cs() && matches!(self.eqtb.resolve(t.cs_id()), Some(Equiv::Prim(Prim::Omit)));
         if is_omit {
-            self.align_state = (self.align_state & PH_OMIT) | PH_CONTENT | PH_OMIT;
+            self.align_state = PH_CONTENT | PH_OMIT;
             self.align_brace_depth = 0;
             return;
         }
-        self.align_state = (self.align_state & PH_OMIT) | PH_U;
+        self.align_state = PH_U;
         // Re-queue the peeked token below the absorbed column's u-template.
         self.push_tokens_named(vec![t], PEEK_SRC);
         let u = self
@@ -946,7 +949,7 @@ impl Engine {
             .unwrap_or_default();
         if u.is_empty() {
             self.align_u_template_finished();
-            self.align_state = (self.align_state & PH_OMIT) | PH_CONTENT;
+            self.align_state = PH_CONTENT;
         } else {
             self.align_pushed_base = self.pushed.len();
             self.push_tokens_named(u, U_PART_SRC);
@@ -2719,5 +2722,19 @@ mod tests {
             "{}",
             e.diagnostic_output
         );
+    }
+
+    /// tex.web §791 init_col: after `\span\omit\span` the last absorbed
+    /// column was not \omit'ted, so its v-part `]` closes the cell. TeX
+    /// Live 2026 (cmr10): the row's natural width is 16.11116pt.
+    #[test]
+    fn span_takes_omit_status_of_the_absorbed_column() {
+        let e = run(
+            "\\font\\cmr=cmr10 \\cmr \
+             \\setbox1\\vbox{\\halign{#&&[#]\\cr a\\span\\omit\\span b\\cr}}\
+             \\setbox2\\vbox{\\unvbox1 \\setbox3\\lastbox\\global\\setbox4\\hbox{\\unhbox3}}\
+             \\ifdim\\wd4=16.11116pt\\else\\errmessage{wd \\the\\wd4}\\fi",
+        );
+        assert_eq!(e.error_count, 0, "{}", e.diagnostic_output);
     }
 }

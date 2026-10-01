@@ -8,7 +8,7 @@ use crate::fonts::FontResolver;
 use crate::prim::{DimParam, GlueParam, IntParam};
 use crate::scaled::{badness, EJECT_PENALTY, INF_BAD, INF_PENALTY};
 use crate::tfm::FontId;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::rc::Rc;
 
 /// fitness classes with tex.web's numbering (adj-demerits fires when the
@@ -287,7 +287,6 @@ impl Engine {
         bg_sh[params.left_skip.shrink_order as usize] += params.left_skip.shrink as i64;
         bg_sh[params.right_skip.shrink_order as usize] += params.right_skip.shrink as i64;
 
-        let hyphen_set = self.hyphenate_list(&mut list);
         // 0: pretolerance, no pattern-hyphen breaks
         // 1: tolerance, hyphen breaks, final_pass iff no emergency stretch
         // 2: tolerance + emergency stretch, final_pass (cannot fail)
@@ -298,6 +297,12 @@ impl Engine {
         };
         let mut second_pass = params.pretolerance < 0;
         let mut final_pass = params.pretolerance < 0 && params.emergency_stretch <= 0;
+        // tex.web §863/§866: words are hyphenated only by the second pass
+        // (at the glue before each word), so a paragraph the first pass
+        // sets keeps its original list
+        if second_pass {
+            self.hyphenate_list(&mut list);
+        }
         let mut extra_stretch = 0i32;
         let mut best: Option<Rc<ActiveNode>> = None;
         let mut final_ran = false;
@@ -308,9 +313,7 @@ impl Engine {
             match self.try_break(
                 &list,
                 &params,
-                &hyphen_set,
                 threshold,
-                second_pass,
                 final_pass,
                 extra_stretch,
                 bg_w,
@@ -331,6 +334,7 @@ impl Engine {
                     if !second_pass {
                         second_pass = true;
                         threshold = params.tolerance;
+                        self.hyphenate_list(&mut list);
                         final_pass = params.emergency_stretch <= 0;
                     } else {
                         extra_stretch = params.emergency_stretch;
@@ -397,10 +401,11 @@ impl Engine {
         (node, record)
     }
 
-    /// insert discretionary hyphens into words; returns the indices of the
-    /// inserted disc nodes (pattern-inserted, as opposed to explicit `\-`)
-    fn hyphenate_list(&mut self, list: &mut NodeList) -> HashSet<usize> {
-        let mut inserted = HashSet::new();
+    /// tex.web §891-§918 (second pass, "Try to hyphenate the following
+    /// word"): after every glue node outside math, find the word, insert
+    /// its discretionary hyphens and reconstitute ligatures and kerns
+    /// around them. Native-font words follow `hyphenate_native_words`.
+    fn hyphenate_list(&mut self, list: &mut NodeList) {
         let lang = self.eqtb.int_params[IntParam::Language.idx() as usize];
         let cur_lang = if lang <= 0 || lang > 255 {
             0
@@ -408,186 +413,314 @@ impl Engine {
             lang as u8
         };
         if cur_lang == 255 {
-            return inserted;
+            return;
         }
         let trie = match self.trie_for_language(cur_lang) {
             Some(t) if !t.is_empty() => t,
-            _ => return inserted,
+            _ => return,
         };
-        let language_codes = self.hyphen_codes.get(&cur_lang).map(Box::as_ref);
         // Formats and embedders can construct an Eqtb without going through
         // tex.web §21112 norm_min: \lefthyphenmin and \righthyphenmin are clamped to 1..=63.
         let lh = self.eqtb.int_params[IntParam::LeftHyphenMin.idx() as usize].clamp(1, 63) as usize;
         let rh =
             self.eqtb.int_params[IntParam::RightHyphenMin.idx() as usize].clamp(1, 63) as usize;
-        let minimum_letters = lh.saturating_add(rh);
         // TeX considers at most 63 letters while hyphenating. A larger
         // minimum sum therefore disables automatic hyphenation.
-        if minimum_letters > 63 {
-            return inserted;
+        if lh + rh > 63 {
+            return;
         }
-        let mut word: Vec<u8> = Vec::new();
-        // per letter: (node index, component slot) — slot 0 for Char, slot j
-        // for the j-th letter inside a ligature node
-        let mut word_positions: Vec<(usize, u8)> = Vec::new();
-        // tex.web §26160-26224: `hf`, the font of the word's first letter,
-        // owns the hyphen character — NOT the font current at paragraph end
-        // (a paragraph ending in \texttt/math still hyphenates roman words)
-        let mut word_font: u16 = 0;
-        let mut prev_ok = false;
-        let mut can_start_word = false;
-        // (insert position, disc); a disc whose no_break/replace_count cover
-        // a ligature splits that ligature at the break point
-        let mut edits: Vec<(usize, Node)> = Vec::new();
-        let n0 = list.len();
-        for i in 0..n0 {
-            // tex.web hyphenate (§920ff): implicit font kerns inside a word
-            // are transparent — they neither join the letter list nor close
-            // the word; explicit kerns (and everything else non-letter) do
-            if let Node::Kern(_) = &list[i] {
-                continue;
-            }
-            // letters contributed by this node: a Char is one letter; a
-            // ligature expands into its component letters (tex.web §937)
-            let mut node_letters: Vec<u8> = Vec::new();
-            let mut node_font: u16 = 0;
+        let ctx = HyphCtx {
+            trie,
+            codes: self.hyphen_codes.get(&cur_lang).map(Box::as_ref),
+            lc_code: &self.eqtb.lc_code,
+            lh,
+            rh,
+            uc_hyph: self.eqtb.int_params[IntParam::UcHyph.idx() as usize] > 0,
+        };
+        // (first replaced index, end index, replacement)
+        let mut edits: Vec<(usize, usize, NodeList)> = Vec::new();
+        let mut auto_breaking = true;
+        let mut i = 0;
+        while i < list.len() {
             match &list[i] {
-                Node::Char { c, font } => {
-                    let lc = language_codes.map_or_else(
-                        || self.eqtb.lc_code.get(*c as usize).copied().unwrap_or(0),
-                        |codes| codes[*c as usize],
-                    );
-                    if lc != 0 {
-                        node_letters.push(lc);
-                        node_font = *font;
+                // §866: math-off re-enables automatic breaking
+                Node::MathKern(_, kind @ (1 | 2)) => auto_breaking = *kind == 2,
+                Node::Glue(_) | Node::Leaders { .. } if auto_breaking => {
+                    if let Some(edit) = self.hyphenate_word_after(list, i, &ctx) {
+                        i = edit.1;
+                        edits.push(edit);
+                        continue;
                     }
                 }
+                _ => {}
+            }
+            i += 1;
+        }
+        for (start, end, nodes) in edits.into_iter().rev() {
+            list.splice(start..end, nodes);
+        }
+        if list.iter().any(|n| matches!(n, Node::NativeGlyphRun { .. })) {
+            self.hyphenate_native_words(list, &ctx);
+        }
+    }
+
+    /// tex.web §894-§903 for the word after the glue at `g`: returns the
+    /// replacement for `list[start..end]` when hyphens were found.
+    fn hyphenate_word_after(
+        &self,
+        list: &[Node],
+        g: usize,
+        ctx: &HyphCtx,
+    ) -> Option<(usize, usize, NodeList)> {
+        // §896: skip to node ha, the one just before the first letter
+        let mut ha = g;
+        let mut s = g + 1;
+        let hf = loop {
+            let (c, f) = match list.get(s)? {
+                Node::Char { c, font } => (*c, *font),
                 Node::Ligature {
                     letters,
                     n_letters,
                     font,
                     ..
-                } => {
-                    let mut ok = *n_letters > 0;
-                    let mut lcs = Vec::with_capacity(*n_letters as usize);
-                    for j in 0..*n_letters as usize {
-                        let lc = language_codes.map_or_else(
-                            || {
-                                self.eqtb
-                                    .lc_code
-                                    .get(letters[j] as usize)
-                                    .copied()
-                                    .unwrap_or(0)
-                            },
-                            |codes| codes[letters[j] as usize],
-                        );
+                } if *n_letters > 0 => (letters[0], *font),
+                Node::Ligature { .. } | Node::Kern(_) | Node::Whatsit(_) => {
+                    ha = s;
+                    s += 1;
+                    continue;
+                }
+                _ => return None,
+            };
+            let lc = ctx.lc(c);
+            if lc != 0 {
+                if lc == c || ctx.uc_hyph {
+                    break f;
+                }
+                return None;
+            }
+            ha = s;
+            s += 1;
+        };
+        let hyf_char = self.eqtb.hyphen_char.get(hf as usize).copied().unwrap_or(-1);
+        let hyf_char = u8::try_from(hyf_char).ok()?;
+        let font = self.eqtb.fonts.get(hf as usize)?.clone();
+        // §897-898: the letters hu[1..=hn] (hc lowercased) of nodes ..=hb
+        let mut hu = [NON_CHAR; 66];
+        let mut hc = [0u8; 66];
+        let mut hn = 0usize;
+        let mut hb = s;
+        let mut hyf_bchar: Option<u8> = None;
+        'word: loop {
+            match list.get(s) {
+                Some(Node::Char { c, font: f }) => {
+                    if *f != hf {
+                        break;
+                    }
+                    hyf_bchar = Some(*c);
+                    let lc = ctx.lc(*c);
+                    if lc == 0 || hn == 63 {
+                        break;
+                    }
+                    hb = s;
+                    hn += 1;
+                    hu[hn] = *c as u16;
+                    hc[hn] = lc;
+                    hyf_bchar = None;
+                }
+                Some(Node::Ligature {
+                    font: f,
+                    letters,
+                    n_letters,
+                    subtype,
+                    ..
+                }) => {
+                    if *f != hf {
+                        break;
+                    }
+                    let mut j = hn;
+                    if *n_letters > 0 {
+                        hyf_bchar = Some(letters[0]);
+                    }
+                    for &c in &letters[..*n_letters as usize] {
+                        let lc = ctx.lc(c);
+                        if lc == 0 || j == 63 {
+                            break 'word;
+                        }
+                        j += 1;
+                        hu[j] = c as u16;
+                        hc[j] = lc;
+                    }
+                    hb = s;
+                    hn = j;
+                    hyf_bchar = if subtype & 1 != 0 { font.bchar } else { None };
+                }
+                Some(Node::Kern(_)) => {
+                    hb = s;
+                    hyf_bchar = font.bchar;
+                }
+                _ => break,
+            }
+            s += 1;
+        }
+        // §899: the nodes after hb must permit hyphenation
+        if hn < ctx.lh + ctx.rh {
+            return None;
+        }
+        loop {
+            match list.get(s) {
+                Some(Node::Char { .. } | Node::Ligature { .. } | Node::Kern(_)) => s += 1,
+                None
+                | Some(
+                    Node::ExplicitKern(_)
+                    | Node::Whatsit(_)
+                    | Node::Glue(_)
+                    | Node::Leaders { .. }
+                    | Node::Penalty(_)
+                    | Node::Ins { .. }
+                    | Node::VAdjust(_)
+                    | Node::Mark { .. },
+                ) => break,
+                _ => return None,
+            }
+        }
+        // §923: hyphen positions; hyf[j] odd = a hyphen after letter j
+        let mut hyf = [0u8; 65];
+        for k in ctx.trie.hyphenate(&hc[1..=hn], ctx.lh, ctx.rh) {
+            if (ctx.lh..=hn - ctx.rh).contains(&k) {
+                hyf[k] = 1;
+            }
+        }
+        if !hyf.contains(&1) {
+            return None;
+        }
+        // §903: hu[0] is the punctuation char or ligature before the word
+        // (reconstituted along with it), or the left boundary
+        let mut rc = Reconstitute {
+            font: &font,
+            hf,
+            hu,
+            hyf,
+            init_list: [0; 3],
+            init_len: 0,
+            init_lig: false,
+            init_lft: false,
+            hyphen_passed: 0,
+            hold: Vec::new(),
+        };
+        let (start, j0) = match &list[ha] {
+            Node::Char { c, font: f } if *f == hf => {
+                rc.init_list[0] = *c;
+                rc.init_len = 1;
+                rc.hu[0] = *c as u16;
+                (ha, 0)
+            }
+            Node::Ligature {
+                c,
+                font: f,
+                letters,
+                n_letters,
+                subtype,
+                ..
+            } if *f == hf => {
+                rc.init_list = *letters;
+                rc.init_len = *n_letters as usize;
+                rc.init_lig = true;
+                rc.init_lft = *subtype > 1;
+                rc.hu[0] = *c as u16;
+                if rc.init_len == 0 && rc.init_lft {
+                    rc.hu[0] = NON_CHAR;
+                    rc.init_lig = false;
+                }
+                (ha, 0)
+            }
+            // found2: another font's character keeps its place; the word
+            // starts at the left boundary
+            Node::Char { .. } | Node::Ligature { .. } => (ha + 1, 0),
+            _ => match &list[ha + 1] {
+                Node::Ligature { subtype, .. } if *subtype > 1 => (ha + 1, 0),
+                _ => (ha + 1, 1),
+            },
+        };
+        let nodes = rc.hyphenated_word(j0, hn, hyf_bchar, hyf_char);
+        Some((start, hb + 1, nodes))
+    }
+
+    /// XeTeX native-font words: a hyphen point splits the glyph run, with
+    /// pre/post texts reshaped.
+    fn hyphenate_native_words(&self, list: &mut NodeList, ctx: &HyphCtx) {
+        let mut word: Vec<u8> = Vec::new();
+        // per letter: (node index, byte slot inside the run)
+        let mut word_positions: Vec<(usize, u8)> = Vec::new();
+        // tex.web §26160-26224: `hf`, the font of the word's first letter,
+        // owns the hyphen character — NOT the font current at paragraph end
+        let mut word_font: u16 = 0;
+        let mut prev_ok = false;
+        let mut can_start_word = false;
+        let mut edits: Vec<(usize, Node)> = Vec::new();
+        for i in 0..list.len() {
+            let mut node_letters: Vec<u8> = Vec::new();
+            let mut node_font: u16 = 0;
+            if let Node::NativeGlyphRun {
+                run, start, end, ..
+            } = &list[i]
+            {
+                let mut is_ascii_letters = true;
+                let mut letters = Vec::new();
+                for g in &run.glyphs[*start..*end] {
+                    let text_slice = &run.text[g.cluster_start as usize..g.cluster_end as usize];
+                    for b in text_slice.bytes() {
+                        let lc = if b.is_ascii_alphabetic() { ctx.lc(b) } else { 0 };
                         if lc == 0 {
-                            ok = false;
+                            is_ascii_letters = false;
                             break;
                         }
-                        lcs.push(lc);
+                        letters.push(lc);
                     }
-                    if ok {
-                        node_letters = lcs;
-                        node_font = *font;
-                    }
-                }
-                Node::NativeGlyphRun {
-                    run, start, end, ..
-                } => {
-                    let slice_glyphs = &run.glyphs[*start..*end];
-                    let mut is_ascii_letters = true;
-                    let mut letters = Vec::new();
-                    for g in slice_glyphs {
-                        let text_slice =
-                            &run.text[g.cluster_start as usize..g.cluster_end as usize];
-                        if text_slice.is_empty() {
-                            continue;
-                        }
-                        for b in text_slice.bytes() {
-                            if b.is_ascii_alphabetic() {
-                                let lc = language_codes.map_or_else(
-                                    || self.eqtb.lc_code.get(b as usize).copied().unwrap_or(0),
-                                    |codes| codes[b as usize],
-                                );
-                                if lc != 0 {
-                                    letters.push(lc);
-                                } else {
-                                    is_ascii_letters = false;
-                                    break;
-                                }
-                            } else {
-                                is_ascii_letters = false;
-                                break;
-                            }
-                        }
-                        if !is_ascii_letters {
-                            break;
-                        }
-                    }
-                    if is_ascii_letters && !letters.is_empty() {
-                        node_letters = letters;
-                        node_font = run.font;
+                    if !is_ascii_letters {
+                        break;
                     }
                 }
-                _ => {}
+                if is_ascii_letters && !letters.is_empty() {
+                    node_letters = letters;
+                    node_font = run.font;
+                }
             }
             if !node_letters.is_empty() {
                 if word.is_empty() {
                     word_font = node_font;
                     word_positions.clear();
                     // tex.web §894: only glue starts the lookahead for a
-                    // hyphenatable word; an initial indent box does not.
+                    // hyphenatable word
                     prev_ok = can_start_word;
                     can_start_word = false;
-                    // tex.web §897: a word starting with an uppercase letter
-                    // (lc_code(c) <> c) is hyphenated only when \uchyph > 0
-                    let first = match &list[i] {
-                        Node::Char { c, .. } => Some(*c),
-                        Node::Ligature { letters, .. } => Some(letters[0]),
-                        _ => None,
-                    };
-                    if first.is_some_and(|c| c != node_letters[0])
-                        && self.eqtb.int_params[IntParam::UcHyph.idx() as usize] <= 0
-                    {
-                        prev_ok = false;
-                    }
                 } else if node_font != word_font {
-                    // tex.web §26117-26118: a character whose font differs
-                    // from hf is treated as a nonletter — close the word
-                    // (hyphenating it under word_font) and start a fresh
-                    // word at this node with the new font
-                    self.flush_hyphen_word(
-                        trie,
+                    self.flush_native_word(
                         list,
                         i,
                         &word,
                         &word_positions,
                         prev_ok,
-                        lh,
-                        rh,
+                        ctx,
                         word_font,
                         &mut edits,
                     );
                     word.clear();
                     word_positions.clear();
                     word_font = node_font;
-                    prev_ok = false; // no glue before this node
+                    prev_ok = false;
                 }
                 for (j, lc) in node_letters.iter().enumerate() {
                     word.push(*lc);
                     word_positions.push((i, j as u8));
                 }
             } else if !word.is_empty() {
-                self.flush_hyphen_word(
-                    trie,
+                self.flush_native_word(
                     list,
                     i,
                     &word,
                     &word_positions,
                     prev_ok,
-                    lh,
-                    rh,
+                    ctx,
                     word_font,
                     &mut edits,
                 );
@@ -603,163 +736,86 @@ impl Engine {
         }
         edits.sort_by(|a, b| a.0.cmp(&b.0));
         for (offset, (pos, node)) in edits.into_iter().enumerate() {
-            let actual_pos = pos + offset;
-            list.insert(actual_pos, node);
-            inserted.insert(actual_pos);
+            list.insert(pos + offset, node);
         }
-        inserted
     }
 
-    /// hyphenate one completed word (tex.web `hyphenate`): the hyphen
-    /// character comes from the word's own font `wf` (§26222-26224); a font
-    /// without a usable hyphenchar simply does not hyphenate.
-    fn flush_hyphen_word(
+    /// hyphenate one completed native-font word: the hyphen character
+    /// comes from the word's own font `wf`
+    #[allow(clippy::too_many_arguments)]
+    fn flush_native_word(
         &self,
-        trie: &crate::hyphen::Trie,
         list: &[Node],
         end: usize,
         word: &[u8],
         word_positions: &[(usize, u8)],
         prev_ok: bool,
-        lh: usize,
-        rh: usize,
+        ctx: &HyphCtx,
         wf: u16,
         edits: &mut Vec<(usize, Node)>,
     ) {
-        let hyphen_c = self
+        let Some(hyphen_c) = self
             .eqtb
             .hyphen_char
             .get(wf as usize)
-            .copied()
-            .unwrap_or(-1);
-        if hyphen_c < 0 || !(0..=255).contains(&hyphen_c) {
-            return; // tex done1: goto without hyphenating
-        }
-        let hyphen_c = hyphen_c as u8;
-        // tex.web compound-word rule: a word terminated by the font's
-        // hyphen char (an explicit `-` in the text) gets NO internal
-        // points — "market-to-book" breaks only at its explicit hyphens
-        let closed_by_hyphen = matches!(
-            &list[end],
-            Node::Char { c, .. } if *c == hyphen_c
-        ) || matches!(&list[end], Node::Disc(_));
-        if closed_by_hyphen || !prev_ok || word.len() < lh.saturating_add(rh) {
+            .and_then(|&h| u8::try_from(h).ok())
+        else {
+            return;
+        };
+        // a word closed by an explicit hyphen gets no internal points
+        let closed_by_hyphen = matches!(&list[end], Node::Char { c, .. } if *c == hyphen_c)
+            || matches!(&list[end], Node::Disc(_));
+        if closed_by_hyphen || !prev_ok || word.len() < ctx.lh + ctx.rh {
             return;
         }
-        let points = trie.hyphenate(word, lh, rh);
+        let hyphen_str = (hyphen_c as char).to_string();
         let mut disc_at_node: Option<usize> = None;
-        for &k in &points {
+        for k in ctx.trie.hyphenate(word, ctx.lh, ctx.rh) {
             if k == 0 || k >= word_positions.len() {
                 continue;
             }
             // point k = break before letter k
-            let (mut pos, slot) = word_positions[k];
+            let (pos, slot) = word_positions[k];
             if disc_at_node == Some(pos) {
                 continue; // one disc per node
             }
-            let disc = match &list[pos] {
-                Node::NativeGlyphRun {
-                    run, start, end, ..
-                } if slot > 0 => {
-                    let hyphen_char_str = (hyphen_c as char).to_string();
-                    let slice_start_byte = run.glyphs[*start].cluster_start as usize;
-                    let slice_end_byte = run.glyphs[*end - 1].cluster_end as usize;
-                    let split_byte = slice_start_byte + slot as usize;
-                    if split_byte > slice_end_byte {
-                        continue;
-                    }
-                    let pre_slice = &run.text[slice_start_byte..split_byte];
-                    let post_slice = &run.text[split_byte..slice_end_byte];
-                    let pre_str = format!("{pre_slice}{hyphen_char_str}");
-                    let post_str = post_slice.to_string();
-
-                    let pre_break = match self.shape_native_slice(run.font, &pre_str) {
-                        Ok(nodes) => nodes,
-                        Err(_) => continue,
-                    };
-                    let post_break = match self.shape_native_slice(run.font, &post_str) {
-                        Ok(nodes) => nodes,
-                        Err(_) => continue,
-                    };
-                    disc_at_node = Some(pos);
-                    Node::Disc(crate::boxes::DiscNode {
-                        pre_break,
-                        post_break,
-                        no_break: vec![list[pos].clone()],
-                        replace_count: 1,
-                    })
+            let Node::NativeGlyphRun {
+                run, start, end, ..
+            } = &list[pos]
+            else {
+                continue;
+            };
+            let disc = if slot > 0 {
+                let slice_start_byte = run.glyphs[*start].cluster_start as usize;
+                let slice_end_byte = run.glyphs[*end - 1].cluster_end as usize;
+                let split_byte = slice_start_byte + slot as usize;
+                if split_byte > slice_end_byte {
+                    continue;
                 }
-                Node::Ligature {
-                    letters,
-                    n_letters,
-                    font,
-                    ..
-                } if slot > 0 => {
-                    // break inside a ligature: the disc replaces
-                    // the ligature node; pre = leading letters +
-                    // hyphen, post = trailing letters, no_break =
-                    // the intact ligature
-                    let font = *font;
-                    let j = slot as usize;
-                    let mut pre_break: NodeList = letters[..j]
-                        .iter()
-                        .map(|&c| Node::Char { c, font })
-                        .collect();
-                    pre_break.push(Node::Char { c: hyphen_c, font });
-                    let post_break: NodeList = letters[j..*n_letters as usize]
-                        .iter()
-                        .map(|&c| Node::Char { c, font })
-                        .collect();
-                    disc_at_node = Some(pos);
-                    Node::Disc(crate::boxes::DiscNode {
-                        pre_break,
-                        post_break,
-                        no_break: vec![list[pos].clone()],
-                        replace_count: 1,
-                    })
+                let pre_str = format!("{}{hyphen_str}", &run.text[slice_start_byte..split_byte]);
+                let post_str = &run.text[split_byte..slice_end_byte];
+                let (Ok(pre_break), Ok(post_break)) = (
+                    self.shape_native_slice(run.font, &pre_str),
+                    self.shape_native_slice(run.font, post_str),
+                ) else {
+                    continue;
+                };
+                crate::boxes::DiscNode {
+                    pre_break,
+                    post_break,
+                    no_break: vec![list[pos].clone()],
+                    replace_count: 1,
                 }
-                _ => {
-                    let (left_pos, _) = word_positions[k - 1];
-                    match &list[left_pos] {
-                        Node::Char { c, font } | Node::Ligature { c, font, .. } => {
-                            let (left, font) = (*c, *font);
-                            let kern = crate::boxes::get_kern(&self.eqtb, font, left, hyphen_c);
-                            let mut pre_break = Vec::with_capacity(if kern == 0 { 1 } else { 2 });
-                            if kern != 0 {
-                                pre_break.push(Node::Kern(kern));
-                            }
-                            pre_break.push(Node::Char { c: hyphen_c, font });
-                            let mut no_break = Vec::new();
-                            if pos > 0 && matches!(list[pos - 1], Node::Kern(_)) {
-                                pos -= 1;
-                                no_break.push(list[pos].clone());
-                            }
-                            disc_at_node = Some(word_positions[k].0);
-                            Node::Disc(crate::boxes::DiscNode {
-                                pre_break,
-                                post_break: Vec::new(),
-                                replace_count: no_break.len(),
-                                no_break,
-                            })
-                        }
-                        Node::NativeGlyphRun { run, .. } => {
-                            let hyphen_str = (hyphen_c as char).to_string();
-                            let pre_break = self
-                                .shape_native_slice(run.font, &hyphen_str)
-                                .unwrap_or_default();
-                            disc_at_node = Some(word_positions[k].0);
-                            Node::Disc(crate::boxes::DiscNode {
-                                pre_break,
-                                post_break: Vec::new(),
-                                replace_count: 0,
-                                no_break: Vec::new(),
-                            })
-                        }
-                        _ => unreachable!("hyphenation position is a letter"),
-                    }
+            } else {
+                crate::boxes::DiscNode {
+                    pre_break: self.shape_native_slice(run.font, &hyphen_str).unwrap_or_default(),
+                    post_break: Vec::new(),
+                    replace_count: 0,
+                    no_break: Vec::new(),
                 }
             };
-            edits.push((pos, disc));
+            disc_at_node = Some(pos);
+            edits.push((pos, Node::Disc(disc)));
         }
     }
 
@@ -769,9 +825,7 @@ impl Engine {
         &self,
         list: &[Node],
         params: &ParaParams,
-        hyphen_set: &HashSet<usize>,
         threshold: i32,
-        hyph_enabled: bool,
         final_pass: bool,
         extra_stretch: i32,
         bg_w: i64,
@@ -1410,15 +1464,13 @@ impl Engine {
                     }
                 }
                 Node::Disc(dc) => {
-                    if hyph_enabled || !hyphen_set.contains(&i) {
-                        let pen = if !dc.pre_break.is_empty() {
-                            params.hyphen_penalty
-                        } else {
-                            params.ex_hyphen_penalty
-                        };
-                        let endw = cum_w[i] + disc_list_width(&self.eqtb, &dc.pre_break);
-                        consider!(i, true, pen, BreakType::Hyphenated, false, endw);
-                    }
+                    let pen = if !dc.pre_break.is_empty() {
+                        params.hyphen_penalty
+                    } else {
+                        params.ex_hyphen_penalty
+                    };
+                    let endw = cum_w[i] + disc_list_width(&self.eqtb, &dc.pre_break);
+                    consider!(i, true, pen, BreakType::Hyphenated, false, endw);
                 }
                 _ => {}
             }
@@ -1849,6 +1901,324 @@ impl Engine {
         Some(r.node)
     }
 }
+
+/// hu value of an implicit boundary (tex.web non_char)
+const NON_CHAR: u16 = 256;
+
+/// hyphenation inputs shared by the words of one paragraph
+struct HyphCtx<'a> {
+    trie: &'a crate::hyphen::Trie,
+    /// the language's saved \lccode table (eTeX \savinghyphcodes)
+    codes: Option<&'a [u8; 256]>,
+    lc_code: &'a [u8],
+    lh: usize,
+    rh: usize,
+    uc_hyph: bool,
+}
+
+impl HyphCtx<'_> {
+    fn lc(&self, c: u8) -> u8 {
+        match self.codes {
+            Some(codes) => codes[c as usize],
+            None => self.lc_code.get(c as usize).copied().unwrap_or(0),
+        }
+    }
+}
+
+fn hu_char(v: u16) -> Option<u8> {
+    u8::try_from(v).ok()
+}
+
+/// tex.web §905-§918: the word hu[1..=hn] of font `hf` (hu[0] the
+/// character or ligature before it, or NON_CHAR for the left boundary),
+/// its hyphen positions `hyf`, and the translation `hold` that
+/// `reconstitute` produces one cut prefix at a time
+struct Reconstitute<'a> {
+    font: &'a crate::tfm::Font,
+    hf: FontId,
+    hu: [u16; 66],
+    hyf: [u8; 65],
+    /// components of hu[0] (`init_list`), a ligature if `init_lig`
+    init_list: [u8; 3],
+    init_len: usize,
+    init_lig: bool,
+    init_lft: bool,
+    hyphen_passed: usize,
+    hold: NodeList,
+}
+
+impl Reconstitute<'_> {
+    fn char_node(&self, c: u8) -> Node {
+        Node::Char { c, font: self.hf }
+    }
+
+    /// set_cur_r: (cur_r, cur_rh) for the cursor after position `j`
+    fn cur_r_at(&self, j: usize, n: usize, bchar: Option<u8>, hchar: Option<u8>) -> (Option<u8>, Option<u8>) {
+        let cur_r = if j < n { hu_char(self.hu[j + 1]) } else { bchar };
+        let cur_rh = if self.hyf[j] % 2 == 1 { hchar } else { None };
+        (cur_r, cur_rh)
+    }
+
+    /// wrap_lig: the characters after `cur_q` become ligature `c`
+    fn pack_lig(&mut self, cur_q: usize, c: u8, subtype: u8) {
+        let mut letters = [0u8; 3];
+        let mut n = 0;
+        for node in self.hold.drain(cur_q..) {
+            if let Node::Char { c, .. } = node {
+                if n < 3 {
+                    letters[n] = c;
+                    n += 1;
+                }
+            }
+        }
+        self.hold.push(Node::Ligature {
+            c,
+            font: self.hf,
+            lig_width: self.font.char_width(c),
+            lig_height: self.font.char_height(c),
+            lig_depth: self.font.char_depth(c),
+            letters,
+            n_letters: n as u8,
+            subtype,
+        });
+    }
+
+    /// §906 reconstitute(j, n, bchar, hchar): translate the cut prefix of
+    /// hu[j..=n] into `hold`; returns its last index and sets
+    /// `hyphen_passed` to the first hyphen position it ran across
+    fn run(&mut self, mut j: usize, n: usize, mut bchar: Option<u8>, mut hchar: Option<u8>) -> usize {
+        use crate::build::{lig_kern_step, LigKernOp};
+        self.hyphen_passed = 0;
+        self.hold.clear();
+        let mut w = 0;
+        // §908
+        let mut cur_l = hu_char(self.hu[j]);
+        let mut cur_q = 0;
+        let mut lig_present = false;
+        let mut lft_hit = false;
+        let mut rt_hit = false;
+        if j == 0 {
+            lig_present = self.init_lig;
+            if lig_present {
+                lft_hit = self.init_lft;
+            }
+            for k in 0..self.init_len {
+                let node = self.char_node(self.init_list[k]);
+                self.hold.push(node);
+            }
+        } else if let Some(c) = cur_l {
+            let node = self.char_node(c);
+            self.hold.push(node);
+        }
+        // lig_stack: (character, lig_ptr) with the top last
+        let mut stack: Vec<(u8, Option<u8>)> = Vec::new();
+        let (mut cur_r, mut cur_rh) = self.cur_r_at(j, n, bchar, hchar);
+        loop {
+            // §909: a lig/kern with the hyphen, then with cur_r
+            let mut done = true;
+            if let Some(h) = cur_rh.take() {
+                if lig_kern_step(self.font, cur_l, h).is_some() {
+                    self.hyphen_passed = j;
+                    hchar = None;
+                }
+            }
+            if let Some(step) = cur_r.and_then(|r| lig_kern_step(self.font, cur_l, r)) {
+                if hchar.is_some() && self.hyf[j] % 2 == 1 {
+                    self.hyphen_passed = j;
+                    hchar = None;
+                }
+                match step {
+                    LigKernOp::Kern(k) => w = k,
+                    // §911
+                    LigKernOp::Lig { op, ch } => {
+                        if cur_l.is_none() {
+                            lft_hit = true;
+                        }
+                        if j == n && stack.is_empty() {
+                            rt_hit = true;
+                        }
+                        done = op > 4 && op != 7;
+                        match op {
+                            1 | 5 => {
+                                cur_l = Some(ch);
+                                lig_present = true;
+                            }
+                            2 | 6 => {
+                                cur_r = Some(ch);
+                                if let Some(top) = stack.last_mut() {
+                                    top.0 = ch;
+                                } else if j == n {
+                                    stack.push((ch, None));
+                                    bchar = None;
+                                } else {
+                                    stack.push((ch, hu_char(self.hu[j + 1])));
+                                }
+                            }
+                            3 => {
+                                cur_r = Some(ch);
+                                stack.push((ch, None));
+                            }
+                            7 | 11 => {
+                                if lig_present {
+                                    let subtype = if std::mem::take(&mut lft_hit) { 2 } else { 0 };
+                                    self.pack_lig(cur_q, cur_l.unwrap_or(0), subtype);
+                                    lig_present = false;
+                                }
+                                cur_q = self.hold.len();
+                                cur_l = Some(ch);
+                                lig_present = true;
+                            }
+                            _ => {
+                                cur_l = Some(ch);
+                                lig_present = true;
+                                if let Some((_, orig)) = stack.pop() {
+                                    if let Some(o) = orig {
+                                        let node = self.char_node(o);
+                                        self.hold.push(node);
+                                        j += 1;
+                                    }
+                                    match stack.last() {
+                                        Some(&(c, _)) => cur_r = Some(c),
+                                        None => (cur_r, cur_rh) = self.cur_r_at(j, n, bchar, hchar),
+                                    }
+                                } else if j == n {
+                                    done = true;
+                                } else {
+                                    let node = self.char_node(cur_r.unwrap_or(0));
+                                    self.hold.push(node);
+                                    j += 1;
+                                    (cur_r, cur_rh) = self.cur_r_at(j, n, bchar, hchar);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if !done {
+                continue;
+            }
+            // §910: append the ligature and/or kern
+            if lig_present {
+                let mut subtype = if std::mem::take(&mut lft_hit) { 2 } else { 0 };
+                if rt_hit && stack.is_empty() {
+                    subtype += 1;
+                    rt_hit = false;
+                }
+                self.pack_lig(cur_q, cur_l.unwrap_or(0), subtype);
+                lig_present = false;
+            }
+            if w != 0 {
+                self.hold.push(Node::Kern(w));
+                w = 0;
+            }
+            let Some((c, orig)) = stack.pop() else {
+                return j;
+            };
+            cur_q = self.hold.len();
+            cur_l = Some(c);
+            lig_present = true;
+            if let Some(o) = orig {
+                let node = self.char_node(o);
+                self.hold.push(node);
+                j += 1;
+            }
+            match stack.last() {
+                Some(&(c, _)) => cur_r = Some(c),
+                None => (cur_r, cur_rh) = self.cur_r_at(j, n, bchar, hchar),
+            }
+        }
+    }
+
+    /// §913-§918: the reconstituted word hu[j..=hn] with its discretionary
+    /// hyphens
+    fn hyphenated_word(&mut self, mut j: usize, hn: usize, bchar: Option<u8>, hyf_char: u8) -> NodeList {
+        let mut out = NodeList::new();
+        let has_hyphen = self.font.char_present(hyf_char);
+        let font_bchar = self.font.bchar;
+        let left_boundary = crate::build::bchar_label(self.font).is_some();
+        loop {
+            let mut l = j;
+            j = self.run(j, hn, bchar, Some(hyf_char)) + 1;
+            if self.hyphen_passed == 0 {
+                out.append(&mut self.hold);
+                if self.hyf[j - 1] % 2 == 1 {
+                    l = j;
+                    self.hyphen_passed = j - 1;
+                }
+            }
+            while self.hyphen_passed > 0 {
+                // §914: the translation so far is the no-break text
+                let mut major = std::mem::take(&mut self.hold);
+                let mut i = self.hyphen_passed;
+                self.hyf[i] = 0;
+                // §915: hu[l..=i] and a hyphen into pre_break
+                let mut pre_break = NodeList::new();
+                let mut c = 0;
+                if has_hyphen {
+                    i += 1;
+                    c = self.hu[i];
+                    self.hu[i] = hyf_char as u16;
+                }
+                while l <= i {
+                    l = self.run(l, i, font_bchar, None) + 1;
+                    pre_break.append(&mut self.hold);
+                }
+                if has_hyphen {
+                    self.hu[i] = c;
+                    l = i;
+                    i -= 1;
+                }
+                let _ = i;
+                // §916: hu[i+1..] into post_break until both branches
+                // reach the same position
+                let mut post_break = NodeList::new();
+                let mut c_loc = 0;
+                if left_boundary {
+                    l -= 1;
+                    c = self.hu[l];
+                    c_loc = l;
+                    self.hu[l] = NON_CHAR;
+                }
+                while l < j {
+                    loop {
+                        l = self.run(l, hn, bchar, None) + 1;
+                        if c_loc > 0 {
+                            self.hu[c_loc] = c;
+                            c_loc = 0;
+                        }
+                        post_break.append(&mut self.hold);
+                        if l >= j {
+                            break;
+                        }
+                    }
+                    // §917
+                    while l > j {
+                        j = self.run(j, hn, bchar, None) + 1;
+                        major.append(&mut self.hold);
+                    }
+                }
+                // §918: a discretionary may replace at most 127 nodes
+                if major.len() <= 127 {
+                    out.push(Node::Disc(crate::boxes::DiscNode {
+                        pre_break,
+                        post_break,
+                        no_break: major.clone(),
+                        replace_count: major.len(),
+                    }));
+                }
+                out.append(&mut major);
+                self.hyphen_passed = j - 1;
+                self.hold.clear();
+                if self.hyf[j - 1] % 2 == 0 {
+                    break;
+                }
+            }
+            if j > hn {
+                return out;
+            }
+        }
+    }
+}
 /// nodes tex removes at the start of the next line after a non-disc break
 fn is_prunable(n: &Node) -> bool {
     matches!(
@@ -2106,7 +2476,7 @@ mod plural_penalty_tests {
         engine.eqtb.int_params[IntParam::UcHyph.idx() as usize] = 1;
         engine.eqtb.int_params[IntParam::LeftHyphenMin.idx() as usize] = 1;
         engine.eqtb.int_params[IntParam::RightHyphenMin.idx() as usize] = 1;
-        engine.eqtb.hyphen_char.push(b'-' as i32);
+        engine.add_nullfont();
         engine.eqtb.lc_code[b'X' as usize] = b'x';
         engine.eqtb.lc_code[b'b' as usize] = b'b';
         engine.trie_for_language_mut(7).add_pattern_bytes(b"a1b");
@@ -2146,7 +2516,7 @@ mod plural_penalty_tests {
         engine.eqtb.int_params[IntParam::Language.idx() as usize] = 0;
         engine.eqtb.int_params[IntParam::LeftHyphenMin.idx() as usize] = 1;
         engine.eqtb.int_params[IntParam::RightHyphenMin.idx() as usize] = 1;
-        engine.eqtb.hyphen_char.push(b'-' as i32);
+        engine.add_nullfont();
         engine.eqtb.lc_code[b'A' as usize] = b'a';
         engine.eqtb.lc_code[b'a' as usize] = b'a';
         engine.eqtb.lc_code[b'b' as usize] = b'b';
@@ -2169,5 +2539,48 @@ mod plural_penalty_tests {
         assert!(!hyphenated(&mut engine, b'A'));
         engine.eqtb.int_params[IntParam::UcHyph.idx() as usize] = 1;
         assert!(hyphenated(&mut engine, b'A'));
+    }
+
+    /// tex.web §903-§918, measured with TeX Live 2026 pdftex -ini (cmr10,
+    /// \patterns{f1f f1l}): the natural widths of each line, last first.
+    /// Ligatures re-form around the hyphen ("of-" / "fice" with the fi
+    /// ligature, "baf-" / "fling"); explicit discretionaries end the word;
+    /// only the second pass reconstitutes, so `shelf{}ful` gains the ff
+    /// ligature there but keeps its split f's when the first pass succeeds.
+    #[test]
+    fn hyphenation_reconstitutes_ligatures_like_tex_live() {
+        let cases = [
+            (
+                r"\hsize=1pt \pretolerance=-1 \hskip0pt office baffling",
+                "18.88895pt 16.94449pt 14.44446pt 11.38892pt 0pt",
+            ),
+            (
+                r"\hsize=1pt \pretolerance=-1 \hskip0pt
+                  ef\discretionary{-}{}{}fi\discretionary{-}{}{}cient difficult",
+                "22.22227pt 14.72226pt 20.83336pt 8.8889pt 10.83334pt 0pt",
+            ),
+            (r"\hsize=1pt \pretolerance=-1 \hskip0pt shelf{}ful", "11.38893pt 23.11115pt 0pt"),
+            (r"\hsize=100pt \pretolerance=-1 \hskip0pt shelf{}ful baffling", "66.44461pt"),
+            (r"\hsize=100pt \pretolerance=10000 \hskip0pt shelf{}ful baffling", "66.7224pt"),
+        ];
+        for (text, widths) in cases {
+            let checks: String = widths.split(' ').map(|w| format!(r"\check{w} ")).collect();
+            let mut engine = Engine::new(true);
+            engine.init_primitives();
+            engine.add_nullfont();
+            let src = format!(
+                "\\catcode`\\{{=1 \\catcode`\\}}=2 \\catcode`\\#=6 \
+                 \\font\\cmr=cmr10 \\cmr \\hyphenchar\\cmr=45 \\lefthyphenmin=1 \\righthyphenmin=1 \
+                 \\parindent=0pt \\overfullrule=0pt \\hbadness=10000 \\tolerance=10000 \
+                 \\parfillskip=0pt plus 1fil \\patterns{{f1f f1l}}\
+                 \\def\\check#1 {{\\setbox2\\lastbox \\setbox3\\hbox{{\\unhcopy2}}\
+                 \\ifdim\\wd3=#1\\else\\errmessage{{got \\the\\wd3}}\\fi\\unskip\\unpenalty}}\
+                 \\setbox1\\vbox{{{text}\\par {checks}\
+                 \\setbox2\\lastbox \\ifvoid2 \\else\\errmessage{{extra line}}\\fi}}\n"
+            );
+            engine.input.push_file("hyph.tex".into(), src.into_bytes());
+            engine.run();
+            assert_eq!(engine.error_count, 0, "{text}:\n{}", engine.diagnostic_output);
+        }
     }
 }

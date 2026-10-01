@@ -370,7 +370,9 @@ pub enum Node {
         depth: i32,
     },
     /// `letters` = the component letters that formed the glyph (hyphenation
-    /// needs them: a break point may fall inside the ligature)
+    /// needs them: a break point may fall inside the ligature); `subtype`
+    /// is tex.web's ligature subtype (§143): +2 when the left boundary
+    /// took part, +1 when the right boundary did.
     Ligature {
         c: u8,
         font: FontId,
@@ -379,6 +381,7 @@ pub enum Node {
         lig_depth: i32,
         letters: [u8; 3],
         n_letters: u8,
+        subtype: u8,
     },
     Glue(Glue),
     Kern(i32),
@@ -908,18 +911,11 @@ pub fn vpack_add_md(
     eqtb: &crate::eqtb::Eqtb,
     max_depth: i32,
 ) -> PackResult {
+    // tex.web vpackage §668-669: a rule with running (null) width does not
+    // compete for the box width and STAYS running; ship_out resolves it to
+    // the enclosing box's width (§633), so `\unvcopy` of the list into a
+    // wider box draws it wider.
     let (w, nat_h, nat_d) = vlist_dims(&list, eqtb);
-    // tex.web vpackage §13468: rules with running (null) width take the
-    // packed box's width — e.g. \hrule inside a tabular \noalign block must
-    // span the alignment's natural width, not \hsize.
-    let mut list = list;
-    for n in list.iter_mut() {
-        if let Node::Rule { width, .. } = n {
-            if *width == crate::build::RULE_FILL {
-                *width = w;
-            }
-        }
-    }
     let (mut x, mut d) = (nat_h as i64, nat_d as i64);
     let (stretch, shrink) = glue_sums(&list);
     if d > max_depth as i64 {

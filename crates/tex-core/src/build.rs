@@ -4,12 +4,134 @@
 use crate::boxes::{self, Glue, Node, NodeList};
 use crate::engine::{Engine, Mode};
 use crate::eqtb::LevelType;
-use crate::fontiface::LigKernStep;
+use crate::tfm::Font;
 use crate::prim::{DimParam, GlueParam, IntParam, Prim};
 use crate::scaled::ONE;
 use crate::token::{CsId, Token};
 
 pub const RULE_FILL: i32 = i32::MIN; // sentinel: rule dimension from context
+/// box_kinds marker for a \discretionary part group (tex.web disc_group)
+const DISC_GROUP_KIND: u8 = 10;
+
+/// a matching lig/kern program instruction (tex.web §545)
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum LigKernOp {
+    Kern(i32),
+    /// ligature: the op byte (`=:`=0, `=:|`=1, `|=:`=2, `|=:|`=3, `=:|>`=5,
+    /// `|=:>`=6, `|=:|>`=7, `|=:|>>`=11) and the ligature character
+    Lig { op: u8, ch: u8 },
+}
+
+/// tex.web §1039/§909: the instruction of `cur_l`'s lig/kern program (None:
+/// the font's left boundary program) whose next char is `cur_r`.
+pub(crate) fn lig_kern_step(font: &Font, cur_l: Option<u8>, cur_r: u8) -> Option<LigKernOp> {
+    let prog = &font.lig_kern;
+    let mut k = match cur_l {
+        None => bchar_label(font)?,
+        Some(c) => {
+            let ci = font.chars.get(c as usize).filter(|_| font.exists_char(c))?;
+            if ci.tag != crate::tfm::TAG_LIG {
+                return None;
+            }
+            let k = ci.remainder as usize;
+            let first = prog.get(k)?;
+            // lig_kern_restart: a first instruction with skip_byte > 128
+            // points to the real program
+            if first.skip > 128 {
+                256 * first.op as usize + first.rem as usize
+            } else {
+                k
+            }
+        }
+    };
+    loop {
+        let q = prog.get(k)?;
+        if q.next_char == cur_r && q.skip <= 128 {
+            return Some(if q.op >= 128 {
+                let idx = 256 * (q.op as usize - 128) + q.rem as usize;
+                LigKernOp::Kern(font.kerns.get(idx).copied().unwrap_or(0))
+            } else {
+                LigKernOp::Lig { op: q.op, ch: q.rem }
+            });
+        }
+        if q.skip >= 128 {
+            return None;
+        }
+        k += q.skip as usize + 1;
+    }
+}
+
+/// tex.web §573/§576 bchar_label: when the LAST lig/kern instruction has
+/// skip_byte 255, the left boundary program starts at 256*op+rem.
+pub(crate) fn bchar_label(font: &Font) -> Option<usize> {
+    let last = font.lig_kern.last()?;
+    let k = 256 * last.op as usize + last.rem as usize;
+    (last.skip == 255 && k < font.lig_kern.len()).then_some(k)
+}
+
+/// tex.web font_false_bchar: the right boundary char when no character of
+/// that code exists (an input character equal to it forms nothing)
+fn false_bchar(font: &Font) -> Option<u8> {
+    font.bchar.filter(|&b| !font.char_present(b))
+}
+
+/// an entry of tex.web's lig_stack (§1034): a character to the right of
+/// the cursor — the input character (`is_char`) or a pseudo-ligature
+/// whose `orig` is the input character it replaced (`lig_ptr`)
+#[derive(Clone, Copy)]
+struct LigItem {
+    ch: u8,
+    is_char: bool,
+    orig: Option<u8>,
+}
+
+/// lig_stack holding at most the input character without allocating;
+/// only `|=:|` insertions push pseudo-ligatures above it
+#[derive(Default)]
+struct LigStack {
+    bottom: Option<LigItem>,
+    above: Vec<LigItem>,
+}
+
+impl LigStack {
+    fn one(item: LigItem) -> Self {
+        Self {
+            bottom: Some(item),
+            above: Vec::new(),
+        }
+    }
+    fn is_empty(&self) -> bool {
+        self.bottom.is_none()
+    }
+    fn last(&self) -> Option<&LigItem> {
+        self.above.last().or(self.bottom.as_ref())
+    }
+    fn last_mut(&mut self) -> Option<&mut LigItem> {
+        match self.above.last_mut() {
+            Some(top) => Some(top),
+            None => self.bottom.as_mut(),
+        }
+    }
+    fn push(&mut self, item: LigItem) {
+        if self.bottom.is_none() {
+            self.bottom = Some(item);
+        } else {
+            self.above.push(item);
+        }
+    }
+    fn pop(&mut self) -> Option<LigItem> {
+        self.above.pop().or_else(|| self.bottom.take())
+    }
+}
+
+/// the main loop's cursor state (tex.web cur_l, ligature_present,
+/// lft_hit, rt_hit); `cur_l` None is the left boundary
+struct LigCursor {
+    cur_l: Option<u8>,
+    lig_present: bool,
+    lft_pending: bool,
+    rt_hit: bool,
+}
 
 impl Engine {
     pub fn font_resolver(&self) -> &dyn crate::fonts::FontResolver {
@@ -498,12 +620,15 @@ impl Engine {
                     })
                     .flatten();
             let _ = self.font_has_character_or_warn(f, c, source);
+            // tex.web §1036 main_loop_move+2: a missing character leaves
+            // the main loop (goto big_switch) without meeting the right
+            // boundary; the next character starts a fresh chain
+            if self.native_text.lig_chain == Some(f) {
+                self.native_text.lig_chain = None;
+                self.lig_kern_loop(f, LigStack::default(), None);
+            }
             return;
         }
-        // tex.web main_loop wrapup: a null discretionary rides AFTER an
-        // output hyphen char — but only once the next token is known not to
-        // ligature with it ("--" forms the en-dash first). flush points:
-        // here (next char), glue/space appends, and end_paragraph.
         // Record the source when text enters the paragraph, not during
         // shipout: by then the input scanner is usually at \end{document}.
         // A marker at each word gives inverse search a local hit without
@@ -513,7 +638,6 @@ impl Engine {
             Some(Node::Char { font: pf, .. } | Node::Ligature { font: pf, .. }) if *pf == f
         );
         if !tail_charish {
-            self.flush_hyphen_disc(f);
             if self.synctex_enabled {
                 if let Some((path, line)) = self.input.current_file_position() {
                     if !path.is_empty() && line > 0 {
@@ -529,11 +653,10 @@ impl Engine {
         self.append_char_lig(c, f);
     }
 
-    /// tex.web wrapup: when the last output char is the font's hyphen char
-    /// (possibly inside a just-formed ligature like the en-dash), a null
-    /// discretionary follows it — the legal break after an explicit hyphen.
-    /// The disc is appended only when the hyphen settles (next token does
-    /// not extend the ligature chain).
+    /// tex.web wrapup (§1035): when the last character consumed is the
+    /// font's hyphen char (possibly inside a just-formed ligature like the
+    /// en-dash), a null discretionary follows it — the legal break after an
+    /// explicit hyphen — but only in unrestricted horizontal mode.
     fn tail_ends_hyphen(&self, f: u16) -> bool {
         let hc = self.eqtb.hyphen_char.get(f as usize).copied().unwrap_or(-1);
         if !(0..=255).contains(&hc) {
@@ -551,8 +674,290 @@ impl Engine {
         }
     }
 
-    pub(crate) fn flush_hyphen_disc(&mut self, f: u16) {
-        if self.tail_ends_hyphen(f) {
+    /// \noboundary: inside a character chain it ends the chain without the
+    /// right boundary (tex.web `bchar:=non_char`); a character that follows
+    /// starts without the left boundary (`cancel_boundary`). Any other
+    /// command in between clears that again (see `end_char_chain`).
+    pub fn no_boundary(&mut self) {
+        self.flush_native_text();
+        if let Some(f) = self.native_text.lig_chain.take() {
+            self.lig_kern_loop(f, LigStack::default(), None);
+        }
+        self.native_text.suppress_left_boundary = true;
+    }
+
+    /// tex.web main loop when the character chain ends (any command other
+    /// than a character, `\char` or `\noboundary`): the cursor meets the
+    /// font's right boundary character (§1038 `cur_r:=bchar`).
+    pub(crate) fn end_char_chain(&mut self) {
+        self.native_text.suppress_left_boundary = false;
+        let Some(f) = self.native_text.lig_chain.take() else {
+            return;
+        };
+        let bchar = self.eqtb.fonts.get(f as usize).and_then(|font| font.bchar);
+        self.lig_kern_loop(f, LigStack::default(), bchar);
+    }
+
+    /// tex.web main loop (§1034-1040) for character `c` of font `f`: the
+    /// cursor sits after the chain's last character (the tail), or after
+    /// the left boundary when `c` starts a chain.
+    fn append_char_lig(&mut self, c: u8, f: u16) {
+        let suppress_lb = std::mem::take(&mut self.native_text.suppress_left_boundary);
+        let chained = self.native_text.lig_chain == Some(f)
+            && matches!(
+                self.cur_list.last(),
+                Some(Node::Char { font: pf, .. } | Node::Ligature { font: pf, .. }) if *pf == f
+            );
+        self.native_text.lig_chain = Some(f);
+        let item = LigItem {
+            ch: c,
+            is_char: true,
+            orig: None,
+        };
+        if chained {
+            // §1038 main_loop_lookahead+1: a character equal to a
+            // nonexistent boundary char forms nothing
+            let false_bchar = self.eqtb.fonts.get(f as usize).and_then(|font| false_bchar(font));
+            let cur_r = if false_bchar == Some(c) { None } else { Some(c) };
+            self.lig_kern_loop(f, LigStack::one(item), cur_r);
+            return;
+        }
+        // §1034: begin with the cursor after the left boundary, unless
+        // \noboundary cancelled it or the font has no boundary program
+        let has_lb = self
+            .eqtb
+            .fonts
+            .get(f as usize)
+            .is_some_and(|font| bchar_label(font).is_some());
+        if has_lb && !suppress_lb {
+            let mut cur = LigCursor {
+                cur_l: None,
+                lig_present: false,
+                lft_pending: false,
+                rt_hit: false,
+            };
+            self.lig_kern_run(f, &mut cur, LigStack::one(item), Some(c), None);
+        } else {
+            self.cur_list.push(Node::Char { c, font: f });
+        }
+    }
+
+    /// Run the main loop with the cursor after the chain's tail (cur_l),
+    /// `stack` the characters to its right and `cur_r` the next character
+    /// (None: non_char). An empty stack means the chain is ending and the
+    /// right boundary is `cur_r`.
+    fn lig_kern_loop(&mut self, f: u16, stack: LigStack, cur_r: Option<u8>) {
+        let (cur_l, lig_present) = match self.cur_list.last() {
+            Some(Node::Char { c, font }) if *font == f => (*c, false),
+            Some(Node::Ligature { c, font, .. }) if *font == f => (*c, true),
+            _ => return,
+        };
+        let mut cur = LigCursor {
+            cur_l: Some(cur_l),
+            lig_present,
+            lft_pending: false,
+            rt_hit: false,
+        };
+        let bchar = if stack.is_empty() {
+            cur_r
+        } else {
+            self.eqtb.fonts.get(f as usize).and_then(|font| font.bchar)
+        };
+        self.lig_kern_run(f, &mut cur, stack, cur_r, bchar);
+    }
+
+    /// tex.web §1036-1040 main_lig_loop, materializing as it goes: the
+    /// tail of `cur_list` is cur_l (an open ligature node while
+    /// `ligature_present`). Returns when the cursor reaches the stack's
+    /// last input character (main_loop_lookahead) or the boundary.
+    fn lig_kern_run(
+        &mut self,
+        f: u16,
+        cur: &mut LigCursor,
+        mut stack: LigStack,
+        mut cur_r: Option<u8>,
+        mut bchar: Option<u8>,
+    ) {
+        let Some(font) = self.eqtb.fonts.get(f as usize).cloned() else {
+            return;
+        };
+        loop {
+            let step = cur_r.and_then(|r| lig_kern_step(&font, cur.cur_l, r));
+            let wrap_then_move = match step {
+                None => true,
+                Some(LigKernOp::Kern(w)) => {
+                    self.lig_wrapup(f, cur, stack.is_empty(), true);
+                    self.cur_list.push(Node::Kern(w));
+                    false
+                }
+                Some(LigKernOp::Lig { op, ch }) => {
+                    if cur.cur_l.is_none() {
+                        cur.lft_pending = true;
+                    } else if stack.is_empty() {
+                        cur.rt_hit = true;
+                    }
+                    match op {
+                        // =:| and =:|> — the left character becomes the ligature
+                        1 | 5 => self.lig_set_left(f, cur, ch, None),
+                        // |=: and |=:> — the right character becomes the ligature
+                        2 | 6 => {
+                            cur_r = Some(ch);
+                            match stack.last_mut() {
+                                None => {
+                                    stack.push(LigItem {
+                                        ch,
+                                        is_char: false,
+                                        orig: None,
+                                    });
+                                    bchar = None;
+                                }
+                                Some(top) if top.is_char => {
+                                    *top = LigItem {
+                                        ch,
+                                        is_char: false,
+                                        orig: Some(top.ch),
+                                    }
+                                }
+                                Some(top) => top.ch = ch,
+                            }
+                        }
+                        // |=:| — insert the ligature between them
+                        3 => {
+                            cur_r = Some(ch);
+                            stack.push(LigItem {
+                                ch,
+                                is_char: false,
+                                orig: None,
+                            });
+                        }
+                        // |=:|> and |=:|>> — pass over the left character
+                        7 | 11 => {
+                            self.lig_wrapup(f, cur, stack.is_empty(), false);
+                            cur.cur_l = None;
+                            cur.lig_present = false;
+                            self.lig_set_left(f, cur, ch, None);
+                        }
+                        // =: — both characters become the ligature
+                        _ => {
+                            if stack.is_empty() {
+                                self.lig_set_left(f, cur, ch, None);
+                                self.lig_wrapup(f, cur, true, true);
+                                return;
+                            }
+                            let top = stack.pop().unwrap();
+                            if top.is_char {
+                                // main_loop_move+2: the character joins the
+                                // ligature's components; look ahead
+                                self.lig_set_left(f, cur, ch, Some(top.ch));
+                                return;
+                            }
+                            self.lig_set_left(f, cur, ch, top.orig);
+                            match stack.last() {
+                                Some(next) => cur_r = Some(next.ch),
+                                None if top.orig.is_some() => return,
+                                None => cur_r = bchar,
+                            }
+                            continue;
+                        }
+                    }
+                    if op > 4 && op != 7 {
+                        true
+                    } else {
+                        continue;
+                    }
+                }
+            };
+            if wrap_then_move {
+                self.lig_wrapup(f, cur, stack.is_empty(), true);
+            }
+            // main_loop_move: the cursor passes cur_l
+            let Some(top) = stack.pop() else {
+                return;
+            };
+            if top.is_char {
+                self.cur_list.push(Node::Char { c: top.ch, font: f });
+                return;
+            }
+            // main_loop_move_lig: a pseudo-ligature becomes cur_l
+            cur.cur_l = None;
+            cur.lig_present = false;
+            self.lig_set_left(f, cur, top.ch, top.orig);
+            match stack.last() {
+                Some(next) => cur_r = Some(next.ch),
+                None if top.orig.is_some() => return,
+                None => cur_r = bchar,
+            }
+        }
+    }
+
+    /// cur_l := `ch` with ligature_present: the open ligature at the tail
+    /// takes over cur_l's components (none at the left boundary), plus
+    /// `consumed` when a character is absorbed.
+    fn lig_set_left(&mut self, f: u16, cur: &mut LigCursor, ch: u8, consumed: Option<u8>) {
+        let mut letters = [0u8; 3];
+        let mut n = 0usize;
+        let mut subtype = 0u8;
+        if cur.cur_l.is_some() {
+            match self.cur_list.pop() {
+                Some(Node::Char { c, .. }) => {
+                    letters[0] = c;
+                    n = 1;
+                }
+                Some(Node::Ligature {
+                    letters: l,
+                    n_letters,
+                    subtype: s,
+                    ..
+                }) => {
+                    letters = l;
+                    n = n_letters as usize;
+                    subtype = s;
+                }
+                Some(other) => self.cur_list.push(other),
+                None => {}
+            }
+        }
+        if let Some(c) = consumed {
+            if n < 3 {
+                letters[n] = c;
+                n += 1;
+            }
+        }
+        // pack_lig: a ligature formed with the left boundary gets subtype 2
+        if std::mem::take(&mut cur.lft_pending) {
+            subtype = 2;
+        }
+        let (lig_width, lig_height, lig_depth) = self.char_dims(f, ch);
+        self.cur_list.push(Node::Ligature {
+            c: ch,
+            font: f,
+            lig_width,
+            lig_height,
+            lig_depth,
+            letters,
+            n_letters: n as u8,
+            subtype,
+        });
+        cur.cur_l = Some(ch);
+        cur.lig_present = true;
+    }
+
+    /// tex.web wrapup (§1035): close cur_l's ligature (marking a right
+    /// boundary hit) and settle a trailing hyphen into a null discretionary.
+    fn lig_wrapup(&mut self, f: u16, cur: &mut LigCursor, stack_empty: bool, rt: bool) {
+        if cur.cur_l.is_none() {
+            return;
+        }
+        if cur.lig_present {
+            if rt && cur.rt_hit && stack_empty {
+                if let Some(Node::Ligature { subtype, .. }) = self.cur_list.last_mut() {
+                    *subtype += 1;
+                }
+                cur.rt_hit = false;
+            }
+            cur.lig_present = false;
+        }
+        if self.mode == Mode::Horizontal && self.tail_ends_hyphen(f) {
             self.cur_list.push(Node::Disc(crate::boxes::DiscNode {
                 pre_break: Vec::new(),
                 post_break: Vec::new(),
@@ -562,217 +967,6 @@ impl Engine {
         }
     }
 
-    /// \noboundary: inside a character chain it ends the chain without the
-    /// right boundary (tex.web `bchar:=non_char`); a character that follows
-    /// starts without the left boundary (`cancel_boundary`). Any other
-    /// command in between clears that again (see `end_char_chain`).
-    pub fn no_boundary(&mut self) {
-        self.flush_native_text();
-        if let Some(f) = self.native_text.lig_chain.take() {
-            if self.mode == Mode::Horizontal {
-                self.flush_hyphen_disc(f);
-            }
-        }
-        self.native_text.suppress_left_boundary = true;
-    }
-
-    /// tex.web main loop wrapup when the character chain ends (any command
-    /// other than a character, `\char` or `\noboundary`): a trailing hyphen
-    /// char settles into a null discretionary in unrestricted horizontal
-    /// mode, then the font's right boundary ligature/kern applies.
-    pub(crate) fn end_char_chain(&mut self) {
-        self.native_text.suppress_left_boundary = false;
-        let Some(f) = self.native_text.lig_chain.take() else {
-            return;
-        };
-        if self.mode == Mode::Horizontal {
-            self.flush_hyphen_disc(f);
-        }
-        self.flush_right_boundary_kern(f);
-    }
-
-    pub(crate) fn find_left_boundary_step(&self, f: u16, next: u8) -> Option<LigKernStep> {
-        let font = self.eqtb.fonts.get(f as usize)?;
-        let first = font.lig_kern.first()?;
-        if first.skip != 255 {
-            return None;
-        }
-        let mut k = 256 * (first.op as usize) + (first.rem as usize);
-        if k >= font.lig_kern.len() {
-            return None;
-        }
-        let mut jumps = 0;
-        loop {
-            if k >= font.lig_kern.len() || jumps > 128 {
-                return None;
-            }
-            let step = &font.lig_kern[k];
-            if step.next_char == next {
-                if step.op >= 128 {
-                    let idx = ((step.op as usize) - 128) * 256 + step.rem as usize;
-                    let amt = font.kerns.get(idx).copied().unwrap_or(0);
-                    return Some(LigKernStep {
-                        is_kern: true,
-                        kern_amount: amt,
-                        lig_char: 0,
-                        keep_left: false,
-                        keep_right: false,
-                        iterate: false,
-                    });
-                } else {
-                    let lig = step.rem;
-                    let keep_left = (step.op & 1) != 0;
-                    let keep_right = (step.op & 2) != 0;
-                    let iterate = (step.op & 4) != 0;
-                    return Some(LigKernStep {
-                        is_kern: false,
-                        kern_amount: 0,
-                        lig_char: lig,
-                        keep_left,
-                        keep_right,
-                        iterate,
-                    });
-                }
-            }
-            if step.stop {
-                return None;
-            }
-            k += (step.skip as usize) + 1;
-            jumps += 1;
-        }
-    }
-
-    /// tex.web §20237–§20238: when leaving the character loop, TeX checks
-    /// if the last character/ligature has a lig/kern step with the font's
-    /// right boundary character (font_bchar), and if so appends the kern or ligature.
-    fn flush_right_boundary_kern(&mut self, f: u16) {
-        let Some(font) = self.eqtb.fonts.get(f as usize) else {
-            return;
-        };
-        let Some(bchar) = font.bchar else {
-            return;
-        };
-        let last_char = match self.cur_list.last() {
-            Some(Node::Char { c, font: pf }) if *pf == f => Some(*c),
-            Some(Node::Ligature { c, font: pf, .. }) if *pf == f => Some(*c),
-            _ => None,
-        };
-        if let Some(c) = last_char {
-            if let Some(step) = self.find_lig_kern(f, c, bchar) {
-                if step.is_kern {
-                    if step.kern_amount != 0 {
-                        self.cur_list.push(Node::Kern(step.kern_amount));
-                    }
-                } else {
-                    let _ = self.cur_list.pop();
-                    let lc = step.lig_char;
-                    self.cur_list.push(Node::Char { c: lc, font: f });
-                    if let Some(step2) = self.find_lig_kern(f, lc, bchar) {
-                        if step2.is_kern && step2.kern_amount != 0 {
-                            self.cur_list.push(Node::Kern(step2.kern_amount));
-                        }
-                    }
-                }
-            }
-        }
-    }
-    fn append_char_lig(&mut self, c: u8, f: u16) {
-        let suppress_lb = std::mem::take(&mut self.native_text.suppress_left_boundary);
-
-        // ligature & kern with the previous char (either Char or an
-        // already-formed Ligature) of the same uninterrupted chain
-        let prev: Option<(u8, [u8; 3], u8)> = if self.native_text.lig_chain == Some(f) {
-            match self.cur_list.last() {
-                Some(Node::Char { c: pc, font: pf }) if *pf == f => Some((*pc, [0; 3], 0)),
-                Some(Node::Ligature {
-                    c: lc,
-                    font: pf,
-                    letters,
-                    n_letters,
-                    ..
-                }) if *pf == f => Some((*lc, *letters, *n_letters)),
-                _ => None,
-            }
-        } else {
-            None
-        };
-        self.native_text.lig_chain = Some(f);
-
-        if prev.is_none() && !suppress_lb {
-            if let Some(step) = self.find_left_boundary_step(f, c) {
-                if step.is_kern {
-                    if step.kern_amount != 0 {
-                        self.cur_list.push(Node::Kern(step.kern_amount));
-                    }
-                } else {
-                    let lc = step.lig_char;
-                    if step.keep_right {
-                        self.cur_list.push(Node::Char { c: lc, font: f });
-                        self.append_char_lig(c, f);
-                    } else if step.iterate {
-                        self.append_char_lig(lc, f);
-                    } else {
-                        self.cur_list.push(Node::Char { c: lc, font: f });
-                    }
-                    return;
-                }
-            }
-        }
-
-        if let Some((pc, pletters, pn)) = prev {
-            if let Some(step) = self.find_lig_kern(f, pc, c) {
-                if step.is_kern {
-                    if self.tail_ends_hyphen(f) {
-                        self.flush_hyphen_disc(f);
-                    }
-                    self.cur_list.push(Node::Kern(step.kern_amount));
-                    self.cur_list.push(Node::Char { c, font: f });
-                    return;
-                } else {
-                    // ligature: replace previous char/ligature, recording the
-                    // component letters (fi + l -> ffi keeps [f, i, l])
-                    let ends_hyphen = self.tail_ends_hyphen(f);
-                    let _ = self.cur_list.pop();
-                    let lc = step.lig_char;
-                    let dims = self.char_dims(f, lc);
-                    let mut letters = [0u8; 3];
-                    let base: &[u8] = if pn > 0 {
-                        &pletters[..pn as usize]
-                    } else {
-                        &[pc]
-                    };
-                    let n = (base.len() + 1).min(3);
-                    letters[..base.len().min(3)].copy_from_slice(&base[..base.len().min(3)]);
-                    if base.len() < 3 {
-                        letters[base.len()] = c;
-                    }
-                    self.cur_list.push(Node::Ligature {
-                        c: lc,
-                        font: f,
-                        lig_width: dims.0,
-                        lig_height: dims.1,
-                        lig_depth: dims.2,
-                        letters,
-                        n_letters: n as u8,
-                    });
-                    let _ = ends_hyphen;
-                    if step.keep_right {
-                        if step.iterate {
-                            self.append_char_lig(c, f);
-                        } else {
-                            self.cur_list.push(Node::Char { c, font: f });
-                        }
-                    } else if step.iterate {
-                        self.append_char_lig(c, f);
-                    }
-                    return;
-                }
-            }
-        }
-        self.flush_hyphen_disc(f);
-        self.cur_list.push(Node::Char { c, font: f });
-    }
-
     pub fn char_dims(&self, f: u16, c: u8) -> (i32, i32, i32) {
         match self.eqtb.fonts.get(f as usize) {
             Some(font) => (font.char_width(c), font.char_height(c), font.char_depth(c)),
@@ -780,64 +974,6 @@ impl Engine {
         }
     }
 
-    /// find the lig/kern step for (prev, next); None if none
-    fn find_lig_kern(&self, f: u16, prev: u8, next: u8) -> Option<LigKernStep> {
-        let font = self.eqtb.fonts.get(f as usize)?;
-        if !font.exists_char(prev) {
-            return None;
-        }
-        let ci = &font.chars[prev as usize];
-        if ci.tag != crate::tfm::TAG_LIG {
-            return None;
-        }
-        let mut k = ci.remainder as usize;
-        let mut jumps = 0;
-        // tex.web §10618: if the very first instruction of a character's
-        // lig/kern program has skip_byte > 128, the program actually begins
-        // at 256*op_byte + rem_byte (large-program indirection).
-        if let Some(first) = font.lig_kern.get(k) {
-            if first.skip > 128 {
-                k = 256 * first.op as usize + first.rem as usize;
-            }
-        }
-        loop {
-            if k >= font.lig_kern.len() || jumps > 128 {
-                return None;
-            }
-            let step = &font.lig_kern[k];
-            if step.next_char == 0xFF && false {
-                // boundary char handling omitted
-            }
-            if step.next_char == next {
-                if step.op >= 128 {
-                    let idx = ((step.op as usize) - 128) * 256 + step.rem as usize;
-                    let amt = font.kerns.get(idx).copied().unwrap_or(0);
-                    return Some(LigKernStep {
-                        is_kern: true,
-                        kern_amount: amt,
-                        lig_char: 0,
-                        keep_left: false,
-                        keep_right: false,
-                        iterate: false,
-                    });
-                } else {
-                    return Some(LigKernStep {
-                        is_kern: false,
-                        kern_amount: 0,
-                        lig_char: step.rem,
-                        keep_left: step.op & 2 != 0,
-                        keep_right: step.op & 1 != 0,
-                        iterate: step.op & 4 != 0,
-                    });
-                }
-            }
-            if step.stop {
-                return None;
-            }
-            k += 1 + (step.skip as usize);
-            jumps += 1;
-        }
-    }
 
     // ---------- rules ----------
 
@@ -1090,6 +1226,11 @@ impl Engine {
             } else {
                 self.cur_list.push(Node::VAdjust(inner));
             }
+            return;
+        }
+        if kind == DISC_GROUP_KIND {
+            self.cur_list = outer_list;
+            self.build_discretionary(shift, inner, outer_mode);
             return;
         }
         // tex.web package(): vboxes are packed against the value of
@@ -1831,33 +1972,85 @@ impl Engine {
         0
     }
 
+    /// tex.web §1117 append_discretionary: a disc node joins the list and
+    /// its three parts are typeset as restricted-horizontal groups.
     pub fn do_discretionary(&mut self) {
-        let f = self.eqtb.cur_font_val;
-        let toks_to_nodes = |toks: Vec<Token>| -> Vec<Node> {
-            toks.into_iter()
-                .filter_map(|t| {
-                    if t.is_char() {
-                        Some(Node::Char {
-                            c: t.chr() as u8,
-                            font: f,
-                        })
-                    } else {
-                        None
-                    }
-                })
-                .collect()
-        };
-        let pre = toks_to_nodes(self.scan_general_text());
-        let post = toks_to_nodes(self.scan_general_text());
-        let rep = toks_to_nodes(self.scan_general_text());
-        let d = Node::Disc(crate::boxes::DiscNode {
-            pre_break: pre,
-            post_break: post,
-            no_break: rep,
-            // Explicit replacements live here, not in following source nodes.
+        self.flush_native_text();
+        self.cur_list.push(Node::Disc(crate::boxes::DiscNode {
+            pre_break: Vec::new(),
+            post_break: Vec::new(),
+            no_break: Vec::new(),
             replace_count: 0,
-        });
-        self.cur_list.push(d);
+        }));
+        self.begin_disc_part(0);
+    }
+
+    /// `new_save_level(disc_group); scan_left_brace; push_nest;
+    /// mode:=-hmode; space_factor:=1000` for part `part` (0 pre-break,
+    /// 1 post-break, 2 no-break); the part index rides in box_shifts.
+    fn begin_disc_part(&mut self, part: i32) {
+        self.skip_spaces_relax();
+        let t = self.get_x_raw();
+        if !self.token_is_left_brace(t) {
+            self.error("Missing { inserted");
+            self.push_token(t);
+        }
+        self.saved_lists.push((
+            self.mode,
+            std::mem::take(&mut self.cur_list),
+            self.prev_depth,
+            self.space_factor,
+            self.prev_graf,
+        ));
+        self.push_group_level(LevelType::Box);
+        self.box_targets.push(None);
+        self.box_shifts.push(part);
+        self.box_kinds.push(DISC_GROUP_KIND);
+        self.mode = Mode::RestrictedHorizontal;
+        self.space_factor = 1000;
+    }
+
+    /// tex.web §1119-1121 build_discretionary: keep only characters,
+    /// ligatures, boxes, rules and kerns ("Improper discretionary list"
+    /// flushes the rest), store the part in the disc node at the tail and
+    /// open the next part; a nonempty no-break part is illegal in math.
+    fn build_discretionary(&mut self, part: i32, mut list: NodeList, outer_mode: Mode) {
+        // ratex's SyncTeX points are invisible bookkeeping, not list items
+        list.retain(|n| !matches!(n, Node::Whatsit(crate::boxes::WhatIt::SyncPoint { .. })));
+        if let Some(bad) = list.iter().position(|n| {
+            !matches!(
+                n,
+                Node::Char { .. }
+                    | Node::Ligature { .. }
+                    | Node::NativeGlyphRun { .. }
+                    | Node::Box { .. }
+                    | Node::Rule { .. }
+                    | Node::Kern(_)
+                    | Node::ExplicitKern(_)
+            )
+        }) {
+            self.error("Improper discretionary list");
+            list.truncate(bad);
+        }
+        if part == 2 && outer_mode.is_m() && !list.is_empty() {
+            self.error("Illegal math \\discretionary");
+            list.clear();
+        }
+        let Some(Node::Disc(dc)) = self.cur_list.last_mut() else {
+            return;
+        };
+        match part {
+            0 => dc.pre_break = list,
+            1 => dc.post_break = list,
+            _ => dc.no_break = list,
+        }
+        if part < 2 {
+            self.begin_disc_part(part + 1);
+        } else if outer_mode.is_m() {
+            if let Some(disc) = self.cur_list.pop() {
+                self.append_mlist_node(disc);
+            }
+        }
     }
 
     pub fn take_last_box(&mut self) -> Option<Node> {
@@ -2250,12 +2443,10 @@ impl Engine {
                 // no \parindent box, no \everypar
                 let resume = std::mem::take(&mut self.resume_after_display);
                 if !resume {
-                    // tex.web new_graf (§21128): in outer vmode \parskip glue is
-                    // appended unconditionally; if nest_ptr=1, build_page puts
-                    // \parskip glue on the current page and evaluates legal breaks.
+                    // tex.web new_graf (§1091): in outer vmode \parskip glue
+                    // is appended unconditionally
                     let ps = self.eqtb.glue_params[GlueParam::ParSkip.idx() as usize].clone();
                     self.page_list.push(Node::Glue(ps));
-                    self.build_page();
                 }
                 // (tex.web: a paragraph is not a group; no eqtb level)
                 // In outer vmode, the global contribution list (page_list)
@@ -2289,6 +2480,10 @@ impl Engine {
                     self.cur_list.push(r.node);
                 }
                 self.run_everypar();
+                // §1091: `if nest_ptr=1 then build_page` comes last, so an
+                // output routine it fires is read BEFORE the \everypar
+                // tokens (which then run in the paragraph, not the routine)
+                self.build_page();
             }
             Mode::InternalVertical => {
                 self.par_interrupted = false;
@@ -2382,22 +2577,16 @@ impl Engine {
         // flag is only consumed/cleared
         self.resume_after_display = false;
 
-        // tex.web end_graf ignores a paragraph only when the hlist is
-        // STRUCTURALLY empty (`if head=tail then pop_nest`). A list holding
-        // only a `\vadjust` — LaTeX's `\end@float` in-text path plants
-        // `\vadjust{\penalty-\@Miv \vbox{}\penalty\@floatpenalty}` with no
-        // further text — is NOT empty: real TeX breaks the (zero-width)
-        // line and post_line_break migrates the adjustment into the
-        // vertical list. Treating it as an abandoned paragraph destroyed
-        // the float markers, stranding the box in `\@currlist` and ending
-        // in `Float(s) lost` at the next clearpage.
-        let has_content = self.cur_list.iter().any(|n| match n {
-            Node::Glue(_) | Node::Kern(_) | Node::ExplicitKern(_) | Node::Penalty(_) => false,
-            _ => true,
-        });
-
-        if !has_content {
-            self.cur_list.clear();
+        // tex.web §1096 end_graf ignores a paragraph only when the hlist is
+        // STRUCTURALLY empty (`if head=tail then pop_nest`). Anything else
+        // makes lines: glue alone (`\noindent\hskip5pt\par`) becomes one
+        // empty line, and a list holding only a `\vadjust` — LaTeX's
+        // `\end@float` in-text path plants `\vadjust{\penalty-\@Miv
+        // \vbox{}\penalty\@floatpenalty}` with no further text — breaks into
+        // a zero-width line whose adjustment post_line_break migrates into
+        // the vertical list (treating it as abandoned stranded the float
+        // box in `\@currlist`: `Float(s) lost`).
+        if self.cur_list.is_empty() {
             // tex.web: \parshape/\looseness/\hangafter/\hangindent are reset
             // only in normal_paragraph (§1079) after a real line break — an
             // ABANDONED (empty) paragraph leaves them intact. LaTeX's list
@@ -2792,6 +2981,158 @@ mod structural_state_tests {
              \\ifdim\\wd1=5pt\\else\\errmessage{a \\the\\wd1}\\fi\
              \\setbox1\\hbox{$\\mathsurround=3pt \\kern1pt$}\
              \\ifdim\\wd1=7pt\\else\\errmessage{b \\the\\wd1}\\fi",
+        );
+        assert_eq!(engine.error_count, 0, "{}", engine.diagnostic_output);
+    }
+
+    /// tex.web §1117-1121: \discretionary parts are typeset (so \char and
+    /// \hyphenchar work, as in LaTeX's \-), and anything but characters,
+    /// boxes, rules and kerns is an "Improper discretionary list".
+    #[test]
+    fn discretionary_parts_are_typeset_lists() {
+        let mut engine = Engine::new(true);
+        run_in(
+            &mut engine,
+            "\\font\\cmr=cmr10 \\cmr \\hyphenchar\\cmr=45 \
+             \\setbox1\\hbox{a\\discretionary{\\char\\hyphenchar\\font}{}{x}b}\
+             \\ifdim\\wd1=15.83339pt\\else\\errmessage{wd \\the\\wd1}\\fi",
+        );
+        assert_eq!(engine.error_count, 0, "{}", engine.diagnostic_output);
+        let Some(crate::boxes::Node::Box { list, .. }) = engine.eqtb.boxed[1].as_ref() else {
+            panic!("box 1");
+        };
+        let disc = list
+            .iter()
+            .find_map(|n| match n {
+                crate::boxes::Node::Disc(dc) => Some(dc),
+                _ => None,
+            })
+            .expect("disc node");
+        assert!(matches!(disc.pre_break[..], [crate::boxes::Node::Char { c: 45, .. }]));
+        assert!(disc.post_break.is_empty());
+        assert!(matches!(disc.no_break[..], [crate::boxes::Node::Char { c: b'x', .. }]));
+
+        let mut engine = Engine::new(true);
+        run_in(
+            &mut engine,
+            "\\setbox1\\hbox{\\discretionary{\\hskip1pt}{}{}}\
+             \\ifdim\\wd1=0pt\\else\\errmessage{wd \\the\\wd1}\\fi",
+        );
+        assert_eq!(engine.error_count, 1, "{}", engine.diagnostic_output);
+        assert!(engine.diagnostic_output.contains("Improper discretionary list"));
+    }
+
+    /// tex.web §1096 end_graf: only a structurally empty list (`head=tail`)
+    /// is ignored; TeX Live 2026 sets one empty line for each of these.
+    #[test]
+    fn paragraph_of_only_glue_kern_or_penalty_makes_a_line() {
+        for (text, wd, lines) in [
+            (r"\noindent", "0pt", 0),
+            (r"\noindent\hskip5pt", "100pt", 1),
+            (r"\noindent\penalty0", "100pt", 1),
+            (r"\noindent\kern2pt", "100pt", 1),
+            (r"\noindent\vadjust{}", "100pt", 1),
+        ] {
+            let mut engine = Engine::new(true);
+            run_in(
+                &mut engine,
+                &format!(
+                    "\\hsize=100pt \\parfillskip=0pt plus 1fil \
+                     \\setbox1\\vbox{{{text}\\par\\xdef\\pg{{\\the\\prevgraf}}}}\
+                     \\ifdim\\wd1={wd}\\else\\errmessage{{wd \\the\\wd1}}\\fi\
+                     \\ifnum\\pg={lines} \\else\\errmessage{{prevgraf \\pg}}\\fi"
+                ),
+            );
+            assert_eq!(engine.error_count, 0, "{text}:\n{}", engine.diagnostic_output);
+        }
+    }
+
+    /// tex.web §1034-1040 boundary ligatures and every ligature op, on
+    /// tests/fixtures/bndlig.tfm (pltotf of bndlig.pl: left boundary
+    /// program, right boundary char `Z` that is not a character, widths
+    /// a=1 b=2 c=4 d=8 x=16 y=32pt). Widths measured with TeX Live 2026
+    /// pdftex -ini.
+    #[test]
+    fn boundary_ligatures_and_ligature_ops_match_tex_live() {
+        let tfm = include_bytes!("../tests/fixtures/bndlig.tfm");
+        let font = crate::tfm::parse_tfm(tfm, "bndlig", 0).expect("bndlig.tfm");
+        for (text, wd) in [
+            ("a", "22pt"),
+            ("b", "31.99998pt"),
+            ("c", "21.99997pt"),
+            ("d", "31.99998pt"),
+            ("ab", "39.99997pt"),
+            ("ba", "40.99998pt"),
+            ("ac", "35.99998pt"),
+            ("ca", "59.99995pt"),
+            ("dd", "39.99998pt"),
+            ("bab", "58.99995pt"),
+            ("cab", "77.99992pt"),
+            (r"\noboundary b", "17.99998pt"),
+            (r"b\noboundary", "31.99998pt"),
+            (r"a\noboundary", "17pt"),
+            ("aZ", "17pt"),
+            ("xc", "21.99997pt"),
+        ] {
+            let mut engine = Engine::new(true);
+            engine.init_primitives();
+            engine.add_nullfont();
+            let cs = engine.cs.intern(b"bnd");
+            let id = engine.push_engine_font(std::rc::Rc::new(font.clone()), cs);
+            engine.eqtb.assign(cs, crate::eqtb::Equiv::FontRef(id), true);
+            let input = format!(
+                "\\catcode`\\{{=1 \\catcode`\\}}=2 \\bnd \\setbox1\\hbox{{{text}}}\
+                 \\ifdim\\wd1={wd}\\else\\errmessage{{wd \\the\\wd1}}\\fi\n"
+            );
+            engine.input.push_file("bndlig.tex".into(), input.into_bytes());
+            engine.run();
+            assert_eq!(engine.error_count, 0, "{text}:\n{}", engine.diagnostic_output);
+        }
+    }
+
+    /// tex.web §668/§633: a running \hrule width stays running through
+    /// vpack and takes the enclosing box's width at shipout. TeX Live 2026
+    /// draws a 99.626bp (100pt) rule after \unvcopy into a 100pt-wide box
+    /// and a 9.963bp one after \wd0=10pt.
+    #[test]
+    fn running_rule_width_resolves_at_shipout() {
+        let mut engine = Engine::new(true);
+        run_in(
+            &mut engine,
+            "\\setbox0\\vbox{\\hrule}\\setbox1\\vbox{\\unvcopy0 \\hbox to100pt{}}\
+             \\ifdim\\wd0=0pt\\else\\errmessage{wd0 \\the\\wd0}\\fi\\shipout\\box1 \
+             \\setbox0\\vbox{\\hrule height 2pt}\\wd0=10pt \\shipout\\box0 \\end",
+        );
+        assert_eq!(engine.error_count, 0, "{}", engine.diagnostic_output);
+        let widths: Vec<f64> = engine
+            .pdf_doc
+            .pages
+            .iter()
+            .flat_map(|page| page.display_list.as_ref().expect("display list").items.iter())
+            .filter_map(|item| match item {
+                crate::boxes::DisplayItem::Rule { width_bp, .. } => Some(*width_bp),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(widths.len(), 2, "{widths:?}");
+        assert!((widths[0] - 99.626).abs() < 0.001, "{widths:?}");
+        assert!((widths[1] - 9.963).abs() < 0.001, "{widths:?}");
+    }
+
+    /// tex.web §1091 new_graf: build_page runs after \everypar is queued,
+    /// so an output routine fired by the new paragraph's \parskip runs
+    /// BEFORE the \everypar tokens. TeX Live 2026 records `EEOE`.
+    #[test]
+    fn output_fired_by_new_paragraph_precedes_everypar() {
+        let mut engine = Engine::new(true);
+        run_in(
+            &mut engine,
+            "\\font\\cmr=cmr10 \\cmr \\hsize=100pt \\vsize=20pt \\baselineskip=12pt \
+             \\parindent=0pt \\parfillskip=0pt plus 1fil \\maxdepth=2pt \\topskip=10pt \
+             \\def\\seq{} \\everypar{\\xdef\\seq{\\seq E}}\
+             \\output{\\xdef\\seq{\\seq O}\\setbox0\\box255 \\deadcycles=0 }\
+             a\\par b\\par c\\par \\def\\want{EEOE}\
+             \\ifx\\seq\\want\\else\\errmessage{order \\seq}\\fi",
         );
         assert_eq!(engine.error_count, 0, "{}", engine.diagnostic_output);
     }

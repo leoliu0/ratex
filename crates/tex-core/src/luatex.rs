@@ -384,6 +384,7 @@ impl Engine {
             }
         }
         self.install_lua_primitive_table(table, backend);
+        self.initialize_math_spacing();
         let ints = &mut self.eqtb.int_params;
         for (p, v) in [
             (IntParam::PdfOutput, 0),

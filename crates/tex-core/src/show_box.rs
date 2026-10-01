@@ -495,6 +495,11 @@ impl<'a> BoxDisplay<'a> {
                 self.out.push(b' ');
                 self.print_scaled(*k);
             }
+            Node::ItalicKern(k) => {
+                self.print_esc("kern");
+                self.print_scaled(*k);
+                self.print(" (italic)");
+            }
             Node::AccentKern(k) => {
                 self.print_esc("kern");
                 self.out.push(b' ');

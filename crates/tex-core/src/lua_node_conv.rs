@@ -388,6 +388,11 @@ impl Engine {
                 self.lua_nodes.node_mut(n).f[0] = *k;
                 n
             }
+            Node::ItalicKern(k) => {
+                let n = self.lua_new_node(KERN, ITALIC_KERN);
+                self.lua_nodes.node_mut(n).f[0] = *k;
+                n
+            }
             Node::ExplicitKern(k) => {
                 let n = self.lua_new_node(KERN, EXPLICIT_KERN);
                 self.lua_nodes.node_mut(n).f[0] = *k;
@@ -603,7 +608,11 @@ impl Engine {
             }
             KERN => {
                 let k = f[0];
-                out.push(if sub == EXPLICIT_KERN { Node::ExplicitKern(k) } else { Node::Kern(k) });
+                out.push(match sub {
+                    EXPLICIT_KERN => Node::ExplicitKern(k),
+                    ITALIC_KERN => Node::ItalicKern(k),
+                    _ => Node::Kern(k),
+                });
             }
             MARGIN_KERN => {
                 let g = f[sl::M_GLYPH] as u32;

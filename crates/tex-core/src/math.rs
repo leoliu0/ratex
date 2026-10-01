@@ -356,6 +356,10 @@ fn is_lr_close(n: &Node) -> bool {
 /// spacing. The choice node itself becomes a style node; a fam-255 marker
 /// keeps that separating, output-free role (no cramped-style loss).
 /// `None` when the list holds no choice.
+pub(crate) fn splice_choices_pub(list: &[Node], start: GStyle) -> Option<NodeList> {
+    splice_choices(list, start)
+}
+
 fn splice_choices(list: &[Node], start: GStyle) -> Option<NodeList> {
     if !list.iter().any(|n| matches!(n, Node::Choice)) {
         return None;
@@ -615,6 +619,9 @@ impl Engine {
     /// tex.web §1195: pdfTeX typesets no formula unless families 2 and 3
     /// have at least 22 and 13 \fontdimen parameters in all three sizes.
     fn insufficient_math_fonts(&self) -> Option<&'static str> {
+        if self.is_luamath() {
+            return None;
+        }
         if self.engine_kind != crate::engine_mode::EngineKind::PdfTeX {
             return None;
         }
@@ -1926,7 +1933,17 @@ impl Engine {
         let t = self.get_token();
         let token_source = self.current_token_source_mark();
         let code = if t.is_char() && matches!(t.cc(), 11 | 12) {
-            self.eqtb.delimiter_code_for(t.chr())
+            if self.is_luamath() {
+                // luatex `\delcode` (get_del_code): -1 = undefined
+                let (sf, sc, lf, lc) = self.eqtb.lua_del_code(t.chr());
+                if sf < 0 {
+                    -1
+                } else {
+                    (i64::from(sf & 0xF) << 20) | (i64::from(sc & 0xFF) << 12) | (i64::from(lf & 0xF) << 8) | i64::from(lc & 0xFF)
+                }
+            } else {
+                self.eqtb.delimiter_code_for(t.chr())
+            }
         } else if t.is_cs()
             && matches!(self.eqtb.resolve(t.cs_id()), Some(Equiv::Prim(Prim::Delimiter)))
         {
@@ -2209,56 +2226,6 @@ impl Engine {
         }
         let value = self.eqtb.math_param(param, style);
         (value != crate::eqtb::UNDEFINED_MATH_PARAMETER).then_some(value)
-    }
-
-    /// luatex mlist.c `fixup_math_parameters` for the traditional (TFM)
-    /// math families: assigning family font `fid` of `size` (0 text, 1
-    /// script, 2 scriptscript) defines the `\Umath` parameters that derive
-    /// from its `\fontdimen`s, at the current group level.
-    pub(crate) fn fixup_math_parameters(&mut self, fam: usize, size: usize, fid: u16, global: bool) {
-        use crate::luatex::*;
-        if self.engine_kind != crate::engine::EngineKind::LuaTeX {
-            return;
-        }
-        let Some(font) = self.eqtb.fonts.get(fid as usize).cloned() else {
-            return;
-        };
-        let have = self.eqtb.font_params.get(fid as usize).map_or(0, Vec::len).max(font.params.len());
-        let param = |e: &Self, i: usize| -> i32 {
-            e.eqtb
-                .font_params
-                .get(fid as usize)
-                .and_then(|v| v.get(i - 1).copied())
-                .unwrap_or_else(|| font.param(i))
-        };
-        let values: Vec<(u32, i32, i32)> = match fam {
-            // (parameter, text-style value, display-style value)
-            2 if have >= 22 => vec![
-                (MATH_PARAM_STACK_NUM_UP, param(self, 10), param(self, 8)),
-                (MATH_PARAM_STACK_DENOM_DOWN, param(self, 12), param(self, 11)),
-                (MATH_PARAM_FRACTION_DEL_SIZE, param(self, 21), param(self, 20)),
-            ],
-            3 if have >= 13 => {
-                let rule = param(self, 8);
-                vec![(MATH_PARAM_STACK_VGAP, 3 * rule, 7 * rule)]
-            }
-            _ => return,
-        };
-        let styles: &[u8] = match size {
-            0 => &[2, 3],
-            1 => &[4, 5],
-            _ => &[6, 7],
-        };
-        for (id, text, display) in values {
-            for &style in styles {
-                self.eqtb.assign_math_param(id, style, text, global);
-            }
-            if size == 0 {
-                for style in [0u8, 1] {
-                    self.eqtb.assign_math_param(id, style, display, global);
-                }
-            }
-        }
     }
 
     /// \mathchoice{D}{T}{S}{SS}: scan the four style groups immediately and
@@ -2552,7 +2519,11 @@ impl Engine {
         }
         self.math_diagnostic_depth += 1;
         let saved_pen = self.math_penalties.replace(pen);
-        let out = self.mlist_to_hlist_inner(list, start, lr_body);
+        let out = if self.is_luamath() {
+            self.lm_mlist_to_hlist(list, start, pen)
+        } else {
+            self.mlist_to_hlist_inner(list, start, lr_body)
+        };
         self.math_penalties.set(saved_pen);
         self.math_diagnostic_depth -= 1;
         out
@@ -2938,7 +2909,7 @@ impl Engine {
         self.dispatch(t);
     }
 
-    fn convert_atom(&mut self, n: &Node, style: GStyle, math_text_char: bool) -> NodeList {
+    pub(crate) fn convert_atom(&mut self, n: &Node, style: GStyle, math_text_char: bool) -> NodeList {
         match n {
             Node::MathChar {
                 fam,
@@ -4018,7 +3989,7 @@ impl Engine {
                         .and_then(|ci| ff.ext.get(ci.remainder as usize).cloned())
                 });
                 match ext_rec {
-                    Some(rec) => vec![self.make_extensible(sz, fam, rec, v, style)],
+                    Some(rec) => vec![self.make_extensible_tex82(sz, fam, rec, v, style)],
                     None => vec![self.delim_char_box(sz, fam, c, style)],
                 }
             }
@@ -4034,7 +4005,7 @@ impl Engine {
     /// tex.web make_extensible: stack top / n x rep / mid / n x rep / bottom
     /// with n grown until the total extent reaches `v` (in pairs when a mid
     /// part exists). Height = top part's height, depth = w - height.
-    fn make_extensible(
+    fn make_extensible_tex82(
         &self,
         size_idx: usize,
         fam: u8,

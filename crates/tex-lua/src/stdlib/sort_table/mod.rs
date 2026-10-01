@@ -8,7 +8,18 @@ use crate::{LuaResult, LuaValue, lua_vm::LuaState};
 /// 2. Default `<` on integers, strings or non-NaN numbers: Rust's sort (a total order)
 /// 3. Otherwise: ltablib's quicksort, comparison for comparison
 /// 4. Write the elements back
+///
+/// The buffer lives outside the Lua stack while comparators and metamethods
+/// run Lua code (which may clear the table and collect garbage), so every
+/// extracted element is also registered as a GC root until the sort ends.
 pub fn table_sort(l: &mut LuaState) -> LuaResult<usize> {
+    let roots_base = l.global_state().rust_roots.len();
+    let result = table_sort_rooted(l);
+    l.global_state_mut().rust_roots.truncate(roots_base);
+    result
+}
+
+fn table_sort_rooted(l: &mut LuaState) -> LuaResult<usize> {
     let table_val = l
         .get_arg(1)
         .ok_or_else(|| crate::stdlib::lauxlib::typeerror(l, 1, "table"))?;
@@ -49,7 +60,9 @@ pub fn table_sort(l: &mut LuaState) -> LuaResult<usize> {
     let mut buf: Vec<LuaValue> = Vec::with_capacity(n);
     if has_meta {
         for i in 1..=n {
+            // Root each element before the next __index call can collect it.
             let val = l.table_geti(&table_val, i as i64)?;
+            l.global_state_mut().rust_roots.push(val);
             buf.push(val);
         }
     } else {
@@ -58,6 +71,7 @@ pub fn table_sort(l: &mut LuaState) -> LuaResult<usize> {
             let val = table.raw_geti(i as i64).unwrap_or(LuaValue::nil());
             buf.push(val);
         }
+        l.global_state_mut().rust_roots.extend_from_slice(&buf);
     }
 
     // Block yields during sort — sort is a non-continuable C call boundary

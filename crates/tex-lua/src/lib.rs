@@ -31,28 +31,30 @@ mod stdlib;
 
 pub use compiler::LuaLanguageLevel;
 
-// Re-export userdata trait types at crate root for convenience
-pub use lua_value::LuaUserdata;
-pub use lua_value::UserDataBuilder;
-pub use lua_value::userdata_trait::{OpaqueUserData, UdValue, UserDataTrait};
+// The public surface is the safe, handle-based API: every Lua value the host
+// can keep is rooted in the registry (`Value`, `LuaTable`, `LuaFunction`,
+// `LuaString`, `UserDataRef`). The raw VM layer (`LuaValue`, `LuaState`,
+// `GlobalState`, C functions) holds unrooted GC pointers and stays crate-private.
+pub use lua_value::userdata_trait::{LuaCFunction, OpaqueUserData, UdValue, UserDataTrait};
 
-pub use lib_registry::{LibraryModule, LibraryRegistry, LuaLibrary, PreloadModule};
+pub use lib_registry::LuaLibrary;
 pub use lua_api::*;
-pub use lua_value::RustCallback;
+pub use lua_value::LuaValueKind;
 pub use lua_value::lua_convert::{FromLua, FromLuaMulti, IntoLua};
-pub use lua_value::{
-    LuaProto, LuaRawFunction, LuaRawTable, LuaValue, LuaValueKind, chunk_serializer::*,
-};
 pub use lua_vm::SafeOption;
 #[cfg(feature = "sandbox")]
 pub use lua_vm::SandboxConfig;
-pub use lua_vm::async_thread::{
-    AsyncCallHandle, AsyncFuture, AsyncReturnValue, AsyncThread, IntoAsyncLua,
-};
+pub use lua_vm::async_thread::{AsyncFuture, AsyncReturnValue, IntoAsyncLua};
 pub use lua_vm::lua_error::{LuaError, LuaFullError};
-pub use lua_vm::{
-    CFunction, CallInfo, DebugInfo, GlobalState, Instruction, LuaAnyRef, LuaFunctionRef, LuaResult,
-    LuaState, LuaStringRef, LuaTableRef, OpCode, UserDataRef,
-};
-pub use lua_vm::{LUA_MASKCALL, LUA_MASKCOUNT, LUA_MASKLINE, LUA_MASKRET};
+pub use lua_vm::{Borrowed, LuaResult, UserDataBorrow, UserDataBorrowMut, UserDataRef};
 pub use stdlib::Stdlib;
+
+pub(crate) use lib_registry::{LibraryModule, LibraryRegistry, PreloadModule};
+pub(crate) use lua_value::userdata_trait::LuaValueVisitor;
+pub(crate) use lua_value::{LuaProto, LuaRawFunction, LuaRawTable, LuaUserdata, LuaValue};
+pub(crate) use lua_value::{RustCallback, UserDataBuilder};
+pub(crate) use lua_vm::{
+    CFunction, CallInfo, DebugInfo, GlobalState, Instruction, LuaAnyRef, LuaFunctionRef,
+    LuaState, LuaStringRef, LuaTableRef, OpCode,
+};
+pub(crate) use lua_vm::{LUA_MASKCALL, LUA_MASKCOUNT, LUA_MASKLINE, LUA_MASKRET};

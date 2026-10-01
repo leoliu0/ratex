@@ -143,10 +143,20 @@ impl<T: FromLua> FromLuaMulti for T {
     }
 }
 
-impl FromLuaMulti for Vec<LuaValue> {
+impl<T: FromLua> FromLuaMulti for Vec<T> {
     #[inline]
-    fn from_lua_multi(values: Vec<LuaValue>, _state: &mut LuaState) -> Result<Self, String> {
-        Ok(values)
+    fn from_lua_multi(values: Vec<LuaValue>, state: &mut LuaState) -> Result<Self, String> {
+        values
+            .into_iter()
+            .map(|value| T::from_lua(value, state))
+            .collect()
+    }
+}
+
+impl<T: FromLua> FromLuaMulti for crate::Variadic<T> {
+    #[inline]
+    fn from_lua_multi(values: Vec<LuaValue>, state: &mut LuaState) -> Result<Self, String> {
+        Vec::from_lua_multi(values, state).map(crate::Variadic)
     }
 }
 

@@ -56,6 +56,9 @@ fn test_preamble_format_fast_boot() {
 
     let mut eng2 = Engine::new(false);
     tex_core::format::load_format_into(fmt_path, &mut eng2).expect("load preamble");
+    // a real job always has a name; `\jobname.aux` must not be the dotfile `.aux`
+    eng2.job_name = "b".to_string();
+    eng2.out_dir = std::env::temp_dir().to_string_lossy().into_owned();
     eng2.input.push_file(
         "b.tex".to_string(),
         br"\begin{document} Math: $\begin{pmatrix} a & b \\ c & d \end{pmatrix}$ \end{document}"
@@ -63,6 +66,6 @@ fn test_preamble_format_fast_boot() {
     );
     eng2.run();
     let _ = std::fs::remove_file(fmt_path);
-    assert_eq!(eng2.error_count, 0);
+    assert_eq!(eng2.error_count, 0, "{}", eng2.term);
     assert_eq!(eng2.pdf_doc.pages.len(), 1);
 }

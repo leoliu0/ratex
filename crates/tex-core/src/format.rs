@@ -25,14 +25,14 @@ use std::rc::Rc;
 
 use crate::boxes::Glue;
 use crate::engine::Engine;
-use crate::eqtb::{Equiv, Macro, NUM_REGISTERS};
+use crate::eqtb::{Equiv, Macro};
 use crate::hyphen::Trie;
-use crate::prim::{Prim, NUM_DIM_PARAMS, NUM_GLUE_PARAMS, NUM_INT_PARAMS, NUM_TOKS_PARAMS};
+use crate::prim::Prim;
 use crate::tfm::{CharInfo, ExtRecipe, Font, LigStep};
 use crate::token::{CsTable, Token};
 
 const MAGIC: &[u8; 8] = b"RUSTEXFM";
-const VERSION: u16 = 14;
+const VERSION: u16 = 15;
 /// A production format is currently about 8 MiB decoded. Keep corrupt or
 /// unrelated external files from turning format probing into an unbounded
 /// allocation while leaving ample room for future format growth.
@@ -93,6 +93,37 @@ impl W {
     fn bytes(&mut self, b: &[u8]) {
         self.u32(b.len() as u32);
         self.buf.extend_from_slice(b);
+    }
+    /// LEB128 unsigned integer
+    fn varint(&mut self, mut v: u32) {
+        while v >= 0x80 {
+            self.buf.push(v as u8 | 0x80);
+            v >>= 7;
+        }
+        self.buf.push(v as u8);
+    }
+    /// A table whose tail repeats its last element (e.g. a font parameter
+    /// array grown by a large `\fontdimen` index): total length, the fill
+    /// element, then only the prefix before the run of fill elements.
+    fn padded<T: PartialEq + Copy + Default>(&mut self, values: &[T], write: impl Fn(&mut W, &T)) {
+        let fill = values.last().copied().unwrap_or_default();
+        let explicit = values.iter().rposition(|v| *v != fill).map_or(0, |i| i + 1);
+        self.u32(values.len() as u32);
+        write(self, &fill);
+        self.u32(explicit as u32);
+        for v in &values[..explicit] {
+            write(self, v);
+        }
+    }
+    fn i32s(&mut self, values: &[i32]) {
+        for v in values {
+            self.i32(*v);
+        }
+    }
+    fn u16s(&mut self, values: &[u16]) {
+        for v in values {
+            self.u16(*v);
+        }
     }
     fn str(&mut self, s: &str) {
         self.bytes(s.as_bytes());
@@ -167,9 +198,36 @@ impl<'a> R<'a> {
         }
         Ok(n)
     }
+    /// LEB128 unsigned integer (at most five bytes)
+    #[inline]
+    fn varint(&mut self) -> io::Result<u32> {
+        if let Some(&byte) = self.b.get(self.p) {
+            if byte < 0x80 {
+                self.p += 1;
+                return Ok(u32::from(byte));
+            }
+        }
+        let mut v = 0u32;
+        for shift in (0..35).step_by(7) {
+            let byte = self.u8()?;
+            let part = u32::from(byte & 0x7f);
+            if shift == 28 && part > 0x0f {
+                break;
+            }
+            v |= part << shift;
+            if byte & 0x80 == 0 {
+                return Ok(v);
+            }
+        }
+        Err(bad("varint out of range"))
+    }
+    /// a length-prefixed byte string, borrowed from the format buffer
+    fn byte_slice(&mut self) -> io::Result<&'a [u8]> {
+        let n = self.count()?;
+        self.take(n)
+    }
     fn bytes(&mut self) -> io::Result<Vec<u8>> {
-        let cnt = self.count()?;
-        Ok(self.take(cnt)?.to_vec())
+        Ok(self.byte_slice()?.to_vec())
     }
     fn str(&mut self) -> io::Result<String> {
         let b = self.bytes()?;
@@ -184,52 +242,69 @@ impl<'a> R<'a> {
         }
     }
     fn glue(&mut self) -> io::Result<Glue> {
+        let b = self.take(14)?;
+        let int = |i: usize| i32::from_le_bytes(b[i..i + 4].try_into().unwrap());
         Ok(Glue {
-            width: self.i32()?,
-            stretch: self.i32()?,
-            shrink: self.i32()?,
-            stretch_order: self.u8()?,
-            shrink_order: self.u8()?,
+            width: int(0),
+            stretch: int(4),
+            shrink: int(8),
+            stretch_order: b[12],
+            shrink_order: b[13],
         })
     }
     fn toks(&mut self) -> io::Result<Vec<Token>> {
         let n = self.count()?;
-        let mut v = Vec::with_capacity(n);
-        for _ in 0..n {
-            v.push(Token(self.u32()?));
-        }
-        Ok(v)
+        Ok(self.take_words(n)?.map(Token).collect())
     }
-    /// exactly `n` raw i32s (fixed-size tables carry no length prefix)
-    fn raw_i32(&mut self, n: usize) -> io::Result<Vec<i32>> {
-        let mut v = Vec::with_capacity(n);
-        for _ in 0..n {
-            v.push(self.i32()?);
-        }
-        Ok(v)
+    /// `n` little-endian u32 words as one bounds check
+    fn take_words(&mut self, n: usize) -> io::Result<impl Iterator<Item = u32> + 'a> {
+        let bytes = self.take(n.checked_mul(4).ok_or_else(|| bad("corrupt length"))?)?;
+        Ok(bytes
+            .chunks_exact(4)
+            .map(|c| u32::from_le_bytes(c.try_into().unwrap())))
     }
-    /// exactly `n` raw u16s
-    fn raw_u16(&mut self, n: usize) -> io::Result<Vec<u16>> {
-        let mut v = Vec::with_capacity(n);
-        for _ in 0..n {
-            v.push(self.u16()?);
+    /// exactly `out.len()` raw i32s (fixed-size tables carry no length prefix)
+    fn fill_i32(&mut self, out: &mut [i32]) -> io::Result<()> {
+        let words = self.take_words(out.len())?;
+        for (slot, word) in out.iter_mut().zip(words) {
+            *slot = word as i32;
         }
-        Ok(v)
+        Ok(())
+    }
+    /// exactly `out.len()` raw u16s
+    fn fill_u16(&mut self, out: &mut [u16]) -> io::Result<()> {
+        let bytes = self.take(out.len() * 2)?;
+        for (slot, c) in out.iter_mut().zip(bytes.chunks_exact(2)) {
+            *slot = u16::from_le_bytes([c[0], c[1]]);
+        }
+        Ok(())
+    }
+    /// Inverse of `W::padded`.
+    fn padded<T: Copy>(&mut self, read: impl Fn(&mut R<'a>) -> io::Result<T>) -> io::Result<Vec<T>> {
+        const MAX_PADDED: usize = 1 << 20;
+        let len = self.u32()? as usize;
+        let fill = read(self)?;
+        let explicit = self.count()?;
+        if len > MAX_PADDED || explicit > len {
+            return Err(bad("table length out of range"));
+        }
+        let mut values = Vec::with_capacity(len);
+        for _ in 0..explicit {
+            values.push(read(self)?);
+        }
+        values.resize(len, fill);
+        Ok(values)
     }
     fn vec_i32(&mut self) -> io::Result<Vec<i32>> {
         let n = self.count()?;
-        self.raw_i32(n)
+        Ok(self.take_words(n)?.map(|w| w as i32).collect())
     }
     fn vec_u16(&mut self) -> io::Result<Vec<u16>> {
         let n = self.count()?;
-        self.raw_u16(n)
+        let mut v = vec![0; n];
+        self.fill_u16(&mut v)?;
+        Ok(v)
     }
-}
-
-fn fixed<const N: usize>(r: &mut R) -> io::Result<[u8; N]> {
-    let mut a = [0u8; N];
-    a.copy_from_slice(r.take(N)?);
-    Ok(a)
 }
 
 // ---------------------------------------------------------------------------
@@ -365,7 +440,9 @@ pub fn save_format_with_encoding(
     // control-sequence names (id = position)
     w.u32(eng.cs.len() as u32);
     for id in eng.cs.all_ids() {
-        w.bytes(eng.cs.name(id));
+        let name = eng.cs.name(id);
+        w.varint(name.len() as u32);
+        w.buf.extend_from_slice(name);
     }
 
     // equivalents
@@ -434,99 +511,44 @@ pub fn save_format_with_encoding(
     }
     w.u16(eng.eqtb.cur_level);
 
-    // named parameter tables
-    for v in &eng.eqtb.int_params {
-        w.i32(*v);
-    }
-    for v in &eng.eqtb.int_levels {
-        w.u16(*v);
-    }
-    for v in &eng.eqtb.dim_params {
-        w.i32(*v);
-    }
-    for v in &eng.eqtb.dim_levels {
-        w.u16(*v);
-    }
-    for g in &eng.eqtb.glue_params {
+    // named parameter tables (fixed sizes: the version pins them)
+    let q = &eng.eqtb;
+    w.i32s(&q.int_params);
+    w.u16s(&q.int_levels);
+    w.i32s(&q.dim_params);
+    w.u16s(&q.dim_levels);
+    for g in &q.glue_params {
         w.glue(g);
     }
-    for v in &eng.eqtb.glue_levels {
-        w.u16(*v);
-    }
-    for t in &eng.eqtb.tok_params {
+    w.u16s(&q.glue_levels);
+    for t in &q.tok_params {
         w.toks(t);
     }
-    for v in &eng.eqtb.tok_levels {
-        w.u16(*v);
-    }
+    w.u16s(&q.tok_levels);
 
-    // registers
-    for v in &eng.eqtb.count {
-        w.i32(*v);
-    }
-    for v in &eng.eqtb.count_levels {
-        w.u16(*v);
-    }
-    for v in &eng.eqtb.dimen {
-        w.i32(*v);
-    }
-    for v in &eng.eqtb.dimen_levels {
-        w.u16(*v);
-    }
-    for g in &eng.eqtb.skip {
-        w.glue(g);
-    }
-    for v in &eng.eqtb.skip_levels {
-        w.u16(*v);
-    }
-    for g in &eng.eqtb.muskip {
-        w.glue(g);
-    }
-    for v in &eng.eqtb.muskip_levels {
-        w.u16(*v);
-    }
-    for t in &eng.eqtb.toks {
-        w.toks(t);
-    }
-    for v in &eng.eqtb.toks_levels {
-        w.u16(*v);
-    }
+    // registers: only the entries that differ from a fresh engine's
+    // (zero/empty value at level one); nearly all 32768 are untouched
+    write_sparse(&mut w, &q.count, &q.count_levels, |v| *v == 0, |w, v| w.i32(*v));
+    write_sparse(&mut w, &q.dimen, &q.dimen_levels, |v| *v == 0, |w, v| w.i32(*v));
+    write_sparse(&mut w, &q.skip, &q.skip_levels, is_zero_glue, |w, g| w.glue(g));
+    write_sparse(&mut w, &q.muskip, &q.muskip_levels, is_zero_glue, |w, g| w.glue(g));
+    write_sparse(&mut w, &q.toks, &q.toks_levels, |t| t.is_empty(), |w, t| w.toks(t));
     // box registers: dumpability guarantees all void
-    for v in &eng.eqtb.box_levels {
-        w.u16(*v);
-    }
+    write_sparse(&mut w, &q.box_levels, &q.box_levels, |_| true, |_, _| {});
 
     // code tables
-    w.buf.extend_from_slice(&eng.eqtb.cat);
-    for v in &eng.eqtb.cat_levels {
-        w.u16(*v);
-    }
-    for v in &eng.eqtb.math_code {
-        w.u16(*v);
-    }
-    for v in &eng.eqtb.math_levels {
-        w.u16(*v);
-    }
-    for v in &eng.eqtb.del_code {
-        w.i32(*v);
-    }
-    for v in &eng.eqtb.del_levels {
-        w.u16(*v);
-    }
-    w.buf.extend_from_slice(&eng.eqtb.lc_code);
-    for v in &eng.eqtb.lc_levels {
-        w.u16(*v);
-    }
-    for v in &eng.eqtb.sf_code {
-        w.u16(*v);
-    }
-    for v in &eng.eqtb.sf_levels {
-        w.u16(*v);
-    }
-    w.buf.extend_from_slice(&eng.eqtb.uc_code);
-    for v in &eng.eqtb.uc_levels {
-        w.u16(*v);
-    }
+    w.buf.extend_from_slice(&q.cat);
+    w.u16s(&q.cat_levels);
+    w.u16s(&q.math_code);
+    w.u16s(&q.math_levels);
+    w.i32s(&q.del_code);
+    w.u16s(&q.del_levels);
+    w.buf.extend_from_slice(&q.lc_code);
+    w.u16s(&q.lc_levels);
+    w.u16s(&q.sf_code);
+    w.u16s(&q.sf_levels);
+    w.buf.extend_from_slice(&q.uc_code);
+    w.u16s(&q.uc_levels);
 
     // style fonts
     for style in &eng.eqtb.style_fonts {
@@ -554,20 +576,14 @@ pub fn save_format_with_encoding(
             .get(i)
             .map(|v| v.as_slice())
             .unwrap_or(&[]);
-        w.u32(fp.len() as u32);
-        for p in fp {
-            w.i32(*p);
-        }
+        w.padded(fp, |w, v| w.i32(*v));
         let fpl = eng
             .eqtb
             .font_param_levels
             .get(i)
             .map(|v| v.as_slice())
             .unwrap_or(&[]);
-        w.u32(fpl.len() as u32);
-        for l in fpl {
-            w.u16(*l);
-        }
+        w.padded(fpl, |w, v| w.u16(*v));
         w.i32(eng.eqtb.hyphen_char.get(i).copied().unwrap_or(b'-' as i32));
         w.u16(eng.eqtb.hyphen_char_levels.get(i).copied().unwrap_or(0));
         w.i32(eng.eqtb.skew_char.get(i).copied().unwrap_or(-1));
@@ -828,32 +844,64 @@ fn write_font(w: &mut W, f: &Font) {
     }
 }
 
+/// Trie nodes in index order. Links are written as positive distances:
+/// a child is always created after its parent and a sibling (the previous
+/// head of the child chain) before the node, so `child - i` and
+/// `i - sibling` are small; 0 means "no link".
 fn write_trie(w: &mut W, t: &Trie) {
-    w.u32(t.trans.len() as u32);
-    for (i, node) in t.trans.iter().enumerate() {
-        let mut edges: Vec<(u8, usize)> = node.iter().map(|(&b, &n)| (b, n)).collect();
-        edges.sort_unstable();
-        w.u32(edges.len() as u32);
-        for (b, n) in edges {
-            w.u8(b);
-            w.u32(n as u32);
+    use crate::hyphen::NO_LINK;
+    w.u32(t.nodes.len() as u32);
+    for (i, node) in t.nodes.iter().enumerate() {
+        let i = i as u32;
+        w.u8(node.byte);
+        w.varint(if node.child == NO_LINK { 0 } else { node.child - i });
+        w.varint(if node.sibling == NO_LINK { 0 } else { i - node.sibling });
+        let mut chain = Vec::new();
+        let mut link = node.value;
+        while link != NO_LINK {
+            chain.push(t.values[link as usize]);
+            link = t.values[link as usize].next;
         }
-        let vals = t.values.get(i).map(|v| v.as_slice()).unwrap_or(&[]);
-        w.u32(vals.len() as u32);
-        for (pos, v) in vals {
-            w.u64(*pos as u64);
-            w.u8(*v);
+        w.varint(chain.len() as u32);
+        for value in chain {
+            w.varint(value.pos);
+            w.u8(value.value);
         }
     }
     let mut excs: Vec<(&Vec<u8>, &Vec<usize>)> = t.exceptions.iter().collect();
     excs.sort_unstable_by(|a, b| a.0.cmp(b.0));
     w.u32(excs.len() as u32);
     for (k, pts) in excs {
-        w.bytes(k);
-        w.u32(pts.len() as u32);
+        w.varint(k.len() as u32);
+        w.buf.extend_from_slice(k);
+        w.varint(pts.len() as u32);
         for &p in pts {
-            w.u64(p as u64);
+            w.varint(p as u32);
         }
+    }
+}
+
+fn is_zero_glue(g: &Glue) -> bool {
+    g.width == 0 && g.stretch == 0 && g.shrink == 0 && g.stretch_order == 0 && g.shrink_order == 0
+}
+
+/// Write the entries of a register table that differ from a fresh engine
+/// (`is_default` value at level one) as `(index, value, level)` triples.
+fn write_sparse<T>(
+    w: &mut W,
+    values: &[T],
+    levels: &[u16],
+    is_default: impl Fn(&T) -> bool,
+    write: impl Fn(&mut W, &T),
+) {
+    let changed: Vec<usize> = (0..values.len())
+        .filter(|&i| !is_default(&values[i]) || levels[i] != crate::eqtb::LEVEL_ONE)
+        .collect();
+    w.u32(changed.len() as u32);
+    for i in changed {
+        w.u16(i as u16);
+        write(w, &values[i]);
+        w.u16(levels[i]);
     }
 }
 
@@ -883,23 +931,22 @@ fn read_format_file(path: &Path) -> Result<Vec<u8>, String> {
     tex_kpse::fs::read(path).map_err(|e| format!("cannot read {}: {e}", path.display()))
 }
 
-/// Validate the header and return the wire version plus a reader positioned
-/// at the first payload byte. Version 8 is accepted so the embedded format
-/// from the preceding release can acquire newly registered primitives during
-/// the loader's alias-repair pass; its missing penalty arrays default empty.
-fn parse_header(data: &[u8]) -> Result<(R<'_>, u16), String> {
+/// Validate the header and return a reader positioned at the first payload
+/// byte. Only the current wire version is accepted: the embedded formats
+/// are regenerated with the engine, and an external `.fmt` from another
+/// release is rejected so the caller falls back to the embedded one.
+fn parse_header(data: &[u8]) -> Result<R<'_>, String> {
     if data.len() < MAGIC.len() + 4 || &data[..MAGIC.len()] != MAGIC {
         return Err("not a rustex format file".to_string());
     }
     let mut r = R::new(&data[MAGIC.len()..]);
-    let version = r.u16().map_err(io_err)?;
-    if !(8..=VERSION).contains(&version) {
+    if r.u16().map_err(io_err)? != VERSION {
         return Err("format version mismatch".to_string());
     }
     if r.u16().map_err(io_err)? != SEMANTICS {
         return Err("format semantics mismatch (engine updated; delete the .fmt file)".to_string());
     }
-    Ok((r, version))
+    Ok(r)
 }
 
 const ZSTD_MAGIC: [u8; 4] = [0x28, 0xb5, 0x2f, 0xfd];
@@ -941,7 +988,7 @@ pub fn load_format_from(data: &[u8]) -> Result<Engine, String> {
 }
 
 fn load_format_uncompressed(data: &[u8]) -> Result<Engine, String> {
-    let (mut r, version) = parse_header(data)?;
+    let mut r = parse_header(data)?;
     let mut eng = Engine::new(false);
     eng.init_primitives();
     // Capture immutable primitive identities before replacing the format
@@ -953,7 +1000,7 @@ fn load_format_uncompressed(data: &[u8]) -> Result<Engine, String> {
             _ => None,
         })
         .collect();
-    load_state(&mut r, &mut eng, version).map_err(io_err)?;
+    load_state(&mut r, &mut eng).map_err(io_err)?;
     // Repair primitive aliases while preserving LaTeX macro redefinitions.
     for (name, p) in primitives {
         let did = eng.cs.lookup(&name).unwrap_or_else(|| eng.cs.intern(&name));
@@ -983,9 +1030,7 @@ fn load_format_uncompressed(data: &[u8]) -> Result<Engine, String> {
         }
     }
 
-    // Engine identity is not format state. Older dumps serialized the
-    // assignable backing slot before e-TeX mode was enabled, which made
-    // packages select their non-e-TeX compatibility paths after loading.
+    // \eTeXversion is engine identity, not format state.
     eng.eqtb.int_params[crate::prim::IntParam::EtxVersion.idx() as usize] = 2;
 
     Ok(eng)
@@ -1036,23 +1081,20 @@ fn io_err(e: io::Error) -> String {
     format!("format load: {}", e)
 }
 
-fn load_state(r: &mut R, eng: &mut Engine, version: u16) -> io::Result<()> {
+fn load_state(r: &mut R, eng: &mut Engine) -> io::Result<()> {
     eng.eqtb.cur_font_val = r.u16()?;
-    if version >= 14 {
-        let kind_byte = r.u8()?;
-        eng.engine_kind = match kind_byte {
-            0 => crate::engine::EngineKind::PdfTeX,
-            1 => crate::engine::EngineKind::XeTeX,
-            2 => crate::engine::EngineKind::LuaTeX,
-            _ => return Err(bad("invalid format engine kind")),
-        };
-    }
+    eng.engine_kind = match r.u8()? {
+        0 => crate::engine::EngineKind::PdfTeX,
+        1 => crate::engine::EngineKind::XeTeX,
+        2 => crate::engine::EngineKind::LuaTeX,
+        _ => return Err(bad("invalid format engine kind")),
+    };
 
     let n = r.count()?;
     let mut cs = CsTable::new();
     for _ in 0..n {
-        let name = r.bytes()?;
-        cs.intern(&name);
+        let len = r.varint()? as usize;
+        cs.intern(r.take(len)?);
     }
     if cs.name(eng.ids.par) != b"par" {
         return Err(io::Error::new(
@@ -1085,125 +1127,76 @@ fn load_state(r: &mut R, eng: &mut Engine, version: u16) -> io::Result<()> {
                 let code = r.u16()?;
                 match Prim::from_code(code) {
                     Some(p) => Some(Equiv::Prim(p)),
-                    None => {
-                        return Err(io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            "format has unknown primitive code",
-                        ));
-                    }
+                    None => return Err(bad("has unknown primitive code")),
                 }
             }
             TAG_MACRO => Some(Equiv::Macro(Rc::new(read_macro(r)?))),
-            _ => {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "format has unknown equivalent tag",
-                ))
-            }
+            _ => return Err(bad("has unknown equivalent tag")),
         };
         eng.eqtb.restore_eq(id, equiv, level);
     }
     eng.eqtb.cur_level = r.u16()?;
 
-    // named parameter tables (fresh-engine tables are pre-filled to the
-    // engine's fixed sizes: validate lengths and replace, never append)
-    fn expect_len<T>(v: Vec<T>, want: usize, what: &str) -> io::Result<Vec<T>> {
-        if v.len() != want {
-            return Err(bad(&format!("{} length {} != {}", what, v.len(), want)));
-        }
-        Ok(v)
+    // named parameter tables, read in place over the fresh engine's tables
+    // (their sizes are fixed by the engine and pinned by VERSION)
+    let q = &mut eng.eqtb;
+    r.fill_i32(&mut q.int_params)?;
+    r.fill_u16(&mut q.int_levels)?;
+    r.fill_i32(&mut q.dim_params)?;
+    r.fill_u16(&mut q.dim_levels)?;
+    for g in q.glue_params.iter_mut() {
+        *g = r.glue()?;
     }
-    if version == 8 {
-        // Version 8 predates \pdfsuppresswarningpagegroup.
-        const V8_INT_PARAMS: usize = 95;
-        let values = r.raw_i32(V8_INT_PARAMS)?;
-        let levels = r.raw_u16(V8_INT_PARAMS)?;
-        eng.eqtb.int_params[..V8_INT_PARAMS].copy_from_slice(&values);
-        eng.eqtb.int_levels[..V8_INT_PARAMS].copy_from_slice(&levels);
-    } else if version == 9 {
-        // Version 9 predates \pdfadjustinterwordglue, \pdfprependkern, \pdfappendkern.
-        const V9_INT_PARAMS: usize = 96;
-        let values = r.raw_i32(V9_INT_PARAMS)?;
-        let levels = r.raw_u16(V9_INT_PARAMS)?;
-        eng.eqtb.int_params[..V9_INT_PARAMS].copy_from_slice(&values);
-        eng.eqtb.int_levels[..V9_INT_PARAMS].copy_from_slice(&levels);
-    } else {
-        eng.eqtb.int_params = r.raw_i32(NUM_INT_PARAMS)?;
-        eng.eqtb.int_levels = r.raw_u16(NUM_INT_PARAMS)?;
+    r.fill_u16(&mut q.glue_levels)?;
+    for t in q.tok_params.iter_mut() {
+        *t = Rc::new(r.toks()?);
     }
-    eng.eqtb.dim_params = r.raw_i32(NUM_DIM_PARAMS)?;
-    eng.eqtb.dim_levels = r.raw_u16(NUM_DIM_PARAMS)?;
-    eng.eqtb.glue_params.clear();
-    for _ in 0..NUM_GLUE_PARAMS {
-        eng.eqtb.glue_params.push(r.glue()?);
-    }
-    eng.eqtb.glue_levels = r.raw_u16(NUM_GLUE_PARAMS)?;
-    eng.eqtb.tok_params.clear();
-    for _ in 0..NUM_TOKS_PARAMS {
-        eng.eqtb.tok_params.push(Rc::new(r.toks()?));
-    }
-    eng.eqtb.tok_levels = r.raw_u16(NUM_TOKS_PARAMS)?;
+    r.fill_u16(&mut q.tok_levels)?;
 
-    // registers
-    eng.eqtb.count = r.raw_i32(NUM_REGISTERS)?;
-    eng.eqtb.count_levels = r.raw_u16(NUM_REGISTERS)?;
-    eng.eqtb.dimen = r.raw_i32(NUM_REGISTERS)?;
-    eng.eqtb.dimen_levels = r.raw_u16(NUM_REGISTERS)?;
-    eng.eqtb.skip.clear();
-    for _ in 0..NUM_REGISTERS {
-        eng.eqtb.skip.push(r.glue()?);
-    }
-    eng.eqtb.skip_levels = r.raw_u16(NUM_REGISTERS)?;
-    eng.eqtb.muskip.clear();
-    for _ in 0..NUM_REGISTERS {
-        eng.eqtb.muskip.push(r.glue()?);
-    }
-    eng.eqtb.muskip_levels = r.raw_u16(NUM_REGISTERS)?;
-    eng.eqtb.toks.clear();
-    for _ in 0..NUM_REGISTERS {
-        eng.eqtb.toks.push(Rc::new(r.toks()?));
-    }
-    eng.eqtb.toks_levels = r.raw_u16(NUM_REGISTERS)?;
-    eng.eqtb.box_levels = r.raw_u16(NUM_REGISTERS)?;
+    // registers: the fresh engine holds the defaults; apply the changes
+    read_sparse(r, &mut q.count, &mut q.count_levels, |r| r.i32())?;
+    read_sparse(r, &mut q.dimen, &mut q.dimen_levels, |r| r.i32())?;
+    read_sparse(r, &mut q.skip, &mut q.skip_levels, |r| r.glue())?;
+    read_sparse(r, &mut q.muskip, &mut q.muskip_levels, |r| r.glue())?;
+    read_sparse(r, &mut q.toks, &mut q.toks_levels, |r| Ok(Rc::new(r.toks()?)))?;
+    let mut box_levels = std::mem::take(&mut q.box_levels);
+    read_sparse(r, &mut vec![(); box_levels.len()], &mut box_levels, |_| Ok(()))?;
+    q.box_levels = box_levels;
 
     // code tables
-    eng.eqtb.cat = fixed::<NUM_CODES>(r)?.to_vec();
-    eng.eqtb.cat_levels = r.raw_u16(NUM_CODES)?;
-    eng.eqtb.math_code = r.raw_u16(NUM_CODES)?;
-    eng.eqtb.math_levels = r.raw_u16(NUM_CODES)?;
-    eng.eqtb.del_code = r.raw_i32(NUM_CODES)?;
-    eng.eqtb.del_levels = r.raw_u16(NUM_CODES)?;
-    eng.eqtb.lc_code = fixed::<NUM_CODES>(r)?.to_vec();
-    eng.eqtb.lc_levels = r.raw_u16(NUM_CODES)?;
-    eng.eqtb.sf_code = r.raw_u16(NUM_CODES)?;
-    eng.eqtb.sf_levels = r.raw_u16(NUM_CODES)?;
-    eng.eqtb.uc_code = fixed::<NUM_CODES>(r)?.to_vec();
-    eng.eqtb.uc_levels = r.raw_u16(NUM_CODES)?;
+    q.cat.copy_from_slice(r.take(NUM_CODES)?);
+    r.fill_u16(&mut q.cat_levels)?;
+    r.fill_u16(&mut q.math_code)?;
+    r.fill_u16(&mut q.math_levels)?;
+    r.fill_i32(&mut q.del_code)?;
+    r.fill_u16(&mut q.del_levels)?;
+    q.lc_code.copy_from_slice(r.take(NUM_CODES)?);
+    r.fill_u16(&mut q.lc_levels)?;
+    r.fill_u16(&mut q.sf_code)?;
+    r.fill_u16(&mut q.sf_levels)?;
+    q.uc_code.copy_from_slice(r.take(NUM_CODES)?);
+    r.fill_u16(&mut q.uc_levels)?;
     // style fonts
-    for style in eng.eqtb.style_fonts.iter_mut() {
-        for f in style.iter_mut() {
-            *f = r.u16()?;
-        }
+    for style in q.style_fonts.iter_mut() {
+        r.fill_u16(style)?;
     }
-    for style in eng.eqtb.style_font_levels.iter_mut() {
-        for f in style.iter_mut() {
-            *f = r.u16()?;
-        }
+    for style in q.style_font_levels.iter_mut() {
+        r.fill_u16(style)?;
     }
 
     // fonts
     let n = r.count()?;
     let mut expand_pool: Vec<Option<CodeTable>> = Vec::new();
     for _ in 0..n {
-        eng.eqtb.fonts.push(Rc::new(read_font(r)?));
-        eng.eqtb.font_params.push(r.vec_i32()?);
-        eng.eqtb.font_param_levels.push(r.vec_u16()?);
-        eng.eqtb.hyphen_char.push(r.i32()?);
-        eng.eqtb.hyphen_char_levels.push(r.u16()?);
-        eng.eqtb.skew_char.push(r.i32()?);
-        eng.eqtb.skew_char_levels.push(r.u16()?);
-        eng.eqtb.font_cs.push(r.u32()?);
-        eng.eqtb.expand.push(read_font_expand(r, &mut expand_pool)?);
+        q.fonts.push(Rc::new(read_font(r)?));
+        q.font_params.push(r.padded(|r| r.i32())?);
+        q.font_param_levels.push(r.padded(|r| r.u16())?);
+        q.hyphen_char.push(r.i32()?);
+        q.hyphen_char_levels.push(r.u16()?);
+        q.skew_char.push(r.i32()?);
+        q.skew_char_levels.push(r.u16()?);
+        q.font_cs.push(r.u32()?);
+        q.expand.push(read_font_expand(r, &mut expand_pool)?);
     }
 
     // hyphenation
@@ -1221,73 +1214,84 @@ fn load_state(r: &mut R, eng: &mut Engine, version: u16) -> io::Result<()> {
         let b = r.i32()?;
         eng.par_shape.push((a, b));
     }
-    if version >= 9 {
-        for shape in &mut eng.penalty_shapes {
-            let n = r.count()?;
-            let mut values = Vec::with_capacity(n);
-            for _ in 0..n {
-                values.push(r.i32()?);
-            }
-            *shape = Rc::from(values);
+    for shape in &mut eng.penalty_shapes {
+        *shape = Rc::from(r.vec_i32()?);
+    }
+    let count = r.count()?;
+    for _ in 0..count {
+        let uppercase = match r.u8()? {
+            0 => false,
+            1 => true,
+            _ => return Err(bad("invalid Unicode case table selector")),
+        };
+        let character = r.u32()?;
+        let value = r.u32()?;
+        let level = r.u16()?;
+        if char::from_u32(character).is_none()
+            || char::from_u32(value).is_none()
+            || level != crate::eqtb::LEVEL_ONE
+            || eng
+                .eqtb
+                .unicode_case_codes
+                .insert((uppercase, character), (value, level))
+                .is_some()
+        {
+            return Err(bad("invalid Unicode case table entry"));
         }
     }
-    if version >= 11 {
-        let count = r.count()?;
-        for _ in 0..count {
-            let uppercase = match r.u8()? {
-                0 => false,
-                1 => true,
-                _ => return Err(bad("invalid Unicode case table selector")),
-            };
-            let character = r.u32()?;
-            let value = r.u32()?;
-            let level = r.u16()?;
-            if char::from_u32(character).is_none()
-                || char::from_u32(value).is_none()
-                || level != crate::eqtb::LEVEL_ONE
-                || eng
-                    .eqtb
-                    .unicode_case_codes
-                    .insert((uppercase, character), (value, level))
-                    .is_some()
-            {
-                return Err(bad("invalid Unicode case table entry"));
-            }
+    let n_tries = r.count()?;
+    if n_tries > 255 {
+        return Err(bad("too many hyphenation languages"));
+    }
+    for _ in 0..n_tries {
+        let lang = r.u8()?;
+        let trie = read_trie(r)?;
+        if lang == 0 || eng.hyphen_tries.insert(lang, trie).is_some() {
+            return Err(bad("duplicate hyphenation language"));
         }
     }
-    if version >= 12 {
-        let n_tries = r.count()?;
-        if n_tries > 255 {
-            return Err(bad("too many hyphenation languages"));
-        }
-        for _ in 0..n_tries {
-            let lang = r.u8()?;
-            let trie = read_trie(r)?;
-            if lang == 0 || eng.hyphen_tries.insert(lang, trie).is_some() {
-                return Err(bad("duplicate hyphenation language"));
-            }
+    let n_codes = r.count()?;
+    if n_codes > 256 {
+        return Err(bad("too many hyphenation code tables"));
+    }
+    for _ in 0..n_codes {
+        let language = r.u8()?;
+        let codes: [u8; 256] = r
+            .byte_slice()?
+            .try_into()
+            .map_err(|_| bad("invalid hyphenation code table"))?;
+        if eng.hyphen_codes.insert(language, Box::new(codes)).is_some() {
+            return Err(bad("duplicate hyphenation code language"));
         }
     }
-    if version >= 13 {
-        let n_codes = r.count()?;
-        if n_codes > 256 {
-            return Err(bad("too many hyphenation code tables"));
-        }
-        for _ in 0..n_codes {
-            let language = r.u8()?;
-            let raw = r.bytes()?;
-            let codes: [u8; 256] = raw
-                .try_into()
-                .map_err(|_| bad("invalid hyphenation code table"))?;
-            if eng.hyphen_codes.insert(language, Box::new(codes)).is_some() {
-                return Err(bad("duplicate hyphenation code language"));
-            }
-        }
+    if r.p != r.b.len() {
+        return Err(bad("has trailing data"));
     }
 
     // boot-completed production state
     eng.format_done = true;
     eng.ini_mode = false;
+    Ok(())
+}
+
+/// Inverse of `write_sparse`: overwrite the listed register entries.
+fn read_sparse<T>(
+    r: &mut R,
+    values: &mut [T],
+    levels: &mut [u16],
+    read: impl Fn(&mut R) -> io::Result<T>,
+) -> io::Result<()> {
+    let n = r.count()?;
+    for _ in 0..n {
+        let i = r.u16()? as usize;
+        let value = read(r)?;
+        let level = r.u16()?;
+        if i >= values.len() {
+            return Err(bad("register index out of range"));
+        }
+        values[i] = value;
+        levels[i] = level;
+    }
     Ok(())
 }
 
@@ -1304,11 +1308,8 @@ fn read_macro(r: &mut R) -> io::Result<Macro> {
     for _ in 0..n {
         params.push(r.toks()?);
     }
-    let body: Vec<_> = r
-        .toks()?
-        .into_iter()
-        .map(crate::token::Token::unfreeze)
-        .collect();
+    let n = r.count()?;
+    let body: Vec<Token> = r.take_words(n)?.map(|w| Token(w).unfreeze()).collect();
 
     let has_param_refs = (flags & 8 != 0)
         || (num_params > 0 && body.iter().any(|t| t.0 >= 0x4000_0000 && t.0 < 0x8000_0000));
@@ -1355,6 +1356,9 @@ fn read_font(r: &mut R) -> io::Result<Font> {
             stop: r.u8()? != 0,
         });
     }
+    // parse_tfm: a first lig/kern step with skip 255 names the right
+    // boundary character
+    let bchar = lig_kern.first().filter(|step| step.skip == 255).map(|step| step.next_char);
     let kerns = r.vec_i32()?;
     let n = r.count()?;
     let mut ext = Vec::with_capacity(n);
@@ -1396,7 +1400,7 @@ fn read_font(r: &mut R) -> io::Result<Font> {
         params,
         hyphen_char,
         skew_char,
-        bchar: None,
+        bchar,
         type1_path,
         enc_name,
         map_fontname,
@@ -1404,41 +1408,53 @@ fn read_font(r: &mut R) -> io::Result<Font> {
     })
 }
 
+/// Inverse of `write_trie`.
 fn read_trie(r: &mut R) -> io::Result<Trie> {
+    use crate::hyphen::{TrieNode, TrieValue, NO_LINK};
     let n = r.count()?;
-    let mut trans = Vec::with_capacity(n);
-    let mut values = Vec::with_capacity(n);
-    for _ in 0..n {
-        let ne = r.count()?;
-        let mut m = crate::FxHashMap::with_capacity_and_hasher(ne, Default::default());
-        for _ in 0..ne {
-            let b = r.u8()?;
-            m.insert(b, r.u32()? as usize);
+    if n == 0 {
+        return Err(bad("trie has no root"));
+    }
+    let mut nodes = Vec::with_capacity(n);
+    let mut values = Vec::new();
+    for i in 0..n as u32 {
+        let byte = r.u8()?;
+        let child = match r.varint()? {
+            0 => NO_LINK,
+            d => i.checked_add(d).filter(|&c| (c as usize) < n).ok_or_else(|| bad("trie link"))?,
+        };
+        let sibling = match r.varint()? {
+            0 => NO_LINK,
+            d => i.checked_sub(d).ok_or_else(|| bad("trie link"))?,
+        };
+        let k = r.varint()?;
+        let value = if k == 0 { NO_LINK } else { values.len() as u32 };
+        for j in 0..k {
+            let pos = r.varint()?;
+            let v = r.u8()?;
+            let next = if j + 1 == k { NO_LINK } else { values.len() as u32 + 1 };
+            values.push(TrieValue { pos, value: v, next });
         }
-        trans.push(m);
-        let nv = r.count()?;
-        let mut vals = Vec::with_capacity(nv);
-        for _ in 0..nv {
-            vals.push((r.u64()? as usize, r.u8()?));
-        }
-        values.push(vals);
+        nodes.push(TrieNode {
+            byte,
+            child,
+            sibling,
+            value,
+        });
     }
     let mut exceptions = crate::FxHashMap::default();
     let n = r.count()?;
     for _ in 0..n {
-        let k = r.bytes()?;
-        let np = r.count()?;
-        let mut pts = Vec::with_capacity(np);
+        let len = r.varint()? as usize;
+        let k = r.take(len)?.to_vec();
+        let np = r.varint()?;
+        let mut pts = Vec::new();
         for _ in 0..np {
-            pts.push(r.u64()? as usize);
+            pts.push(r.varint()? as usize);
         }
         exceptions.insert(k, pts);
     }
-    Ok(Trie {
-        trans,
-        values,
-        exceptions,
-    })
+    Ok(Trie::from_parts(nodes, values, exceptions))
 }
 
 // ---------------------------------------------------------------------------
@@ -1448,10 +1464,7 @@ fn read_trie(r: &mut R) -> io::Result<Trie> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::prim::{
-        DimParam, GlueParam, IntParam, ToksParam, NUM_DIM_PARAMS, NUM_GLUE_PARAMS, NUM_INT_PARAMS,
-        NUM_TOKS_PARAMS,
-    };
+    use crate::prim::{DimParam, GlueParam, IntParam, ToksParam};
 
     fn build_booted_engine() -> Engine {
         let mut eng = Engine::new(true);
@@ -1663,12 +1676,6 @@ mod tests {
             "fparams={:?}\nflv={:?}\nhyc={:?}\nskwc={:?}\nfcs={:?}\n",
             q.font_params, q.font_param_levels, q.hyphen_char, q.skew_char, q.font_cs
         ));
-        let mut trans_sorted = Vec::new();
-        for node in &eng.hyphen_trie.trans {
-            let mut edges: Vec<_> = node.iter().map(|(&b, &n)| (b, n)).collect();
-            edges.sort_unstable();
-            trans_sorted.push(edges);
-        }
         let mut tries_sorted: Vec<_> = eng.hyphen_tries.keys().copied().collect();
         tries_sorted.sort_unstable();
         let mut codes_sorted: Vec<_> = eng
@@ -1679,13 +1686,59 @@ mod tests {
         codes_sorted.sort_unstable_by_key(|(language, _)| *language);
         s.push_str(&format!(
             "trie_trans={:?}\ntrie_vals={:?}\nhyphen_tries={:?}\nhyphen_codes={:?}\n",
-            trans_sorted, eng.hyphen_trie.values, tries_sorted, codes_sorted
+            trie_shape(&eng.hyphen_trie), "", tries_sorted, codes_sorted
         ));
         s.push_str(&format!(
             "hyexc={:?}\nparshape={:?}\npenaltyshapes={:?}\n",
             eng.hyphen_exceptions, eng.par_shape, eng.penalty_shapes
         ));
         s
+    }
+
+    /// Node links plus each node's value chain (value-pool indices are an
+    /// implementation detail of insertion order).
+    fn trie_shape(t: &Trie) -> Vec<(u8, u32, u32, Vec<(u32, u8)>)> {
+        t.nodes
+            .iter()
+            .map(|n| {
+                let mut chain = Vec::new();
+                let mut link = n.value;
+                while link != crate::hyphen::NO_LINK {
+                    let v = t.values[link as usize];
+                    chain.push((v.pos, v.value));
+                    link = v.next;
+                }
+                (n.byte, n.child, n.sibling, chain)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn preloaded_font_keeps_its_boundary_character() {
+        let mut eng = build_sample_engine();
+        let index = eng.eqtb.fonts.len() - 1;
+        let mut font = (*eng.eqtb.fonts[index]).clone();
+        // tfm.rs: a first lig/kern step with skip 255 declares bchar
+        font.lig_kern.insert(
+            0,
+            LigStep {
+                skip: 255,
+                next_char: 0x2A,
+                op: 0,
+                rem: 0,
+                stop: false,
+            },
+        );
+        font.bchar = Some(0x2A);
+        eng.eqtb.fonts[index] = Rc::new(font);
+        let dir = std::env::temp_dir().join(format!("rustex-fmt-bchar-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("pdflatex.fmt");
+        save_format(&eng, &path).expect("save");
+        let back = load_format(&path).expect("load");
+        std::fs::remove_dir_all(&dir).ok();
+        assert_eq!(back.eqtb.fonts[index].bchar, Some(0x2A));
+        assert_eq!(back.eqtb.fonts[0].bchar, eng.eqtb.fonts[0].bchar);
     }
 
     #[test]
@@ -1842,182 +1895,24 @@ mod tests {
         assert!(load_format_from(b"").is_err());
         assert!(load_format_from(b"not a format at all").is_err());
         let eng = build_sample_engine();
-        let data = {
-            let mut w = W::new();
-            w.buf.extend_from_slice(MAGIC);
-            w.u16(VERSION);
-            w.u16(SEMANTICS);
-            w.u16(0); // cur_font: no font selected
-            w.u8(0); // engine_kind: PdfTeX
-            w.u32(eng.cs.len() as u32);
-            for id in eng.cs.all_ids() {
-                w.bytes(eng.cs.name(id));
-            }
-            w.u32(0); // zero equivalents is still valid
-            w.u16(1);
-            for _ in 0..NUM_INT_PARAMS {
-                w.i32(0);
-            }
-            for _ in 0..NUM_INT_PARAMS {
-                w.u16(1);
-            }
-            for _ in 0..NUM_DIM_PARAMS {
-                w.i32(0);
-            }
-            for _ in 0..NUM_DIM_PARAMS {
-                w.u16(1);
-            }
-            for _ in 0..NUM_GLUE_PARAMS {
-                w.glue(&Glue::zero());
-            }
-            for _ in 0..NUM_GLUE_PARAMS {
-                w.u16(1);
-            }
-            for _ in 0..NUM_TOKS_PARAMS {
-                w.toks(&[]);
-            }
-            for _ in 0..NUM_TOKS_PARAMS {
-                w.u16(1);
-            }
-            // registers, codes, style fonts, fonts, trie, exceptions, parshape
-            for _ in 0..NUM_REGISTERS {
-                w.i32(0);
-            }
-            for _ in 0..NUM_REGISTERS {
-                w.u16(1);
-            }
-            for _ in 0..NUM_REGISTERS {
-                w.i32(0);
-            }
-            for _ in 0..NUM_REGISTERS {
-                w.u16(1);
-            }
-            for _ in 0..NUM_REGISTERS {
-                w.glue(&Glue::zero());
-            }
-            for _ in 0..NUM_REGISTERS {
-                w.u16(1);
-            }
-            for _ in 0..NUM_REGISTERS {
-                w.glue(&Glue::zero());
-            }
-            for _ in 0..NUM_REGISTERS {
-                w.u16(1);
-            }
-            for _ in 0..NUM_REGISTERS {
-                w.toks(&[]);
-            }
-            for _ in 0..NUM_REGISTERS {
-                w.u16(1);
-            }
-            for _ in 0..NUM_REGISTERS {
-                w.u16(1);
-            }
-            w.buf.extend_from_slice(&[0u8; NUM_CODES]);
-            for _ in 0..NUM_CODES {
-                w.u16(1);
-            }
-            for _ in 0..NUM_CODES {
-                w.u16(7u16 << 8);
-            }
-            for _ in 0..NUM_CODES {
-                w.u16(1);
-            }
-            for _ in 0..NUM_CODES {
-                w.i32(-1);
-            }
-            for _ in 0..NUM_CODES {
-                w.u16(1);
-            }
-            w.buf.extend_from_slice(&[0u8; NUM_CODES]);
-            for _ in 0..NUM_CODES {
-                w.u16(1);
-            }
-            for _ in 0..NUM_CODES {
-                w.u16(1000);
-            }
-            for _ in 0..NUM_CODES {
-                w.u16(1);
-            }
-            w.buf.extend_from_slice(&[0u8; NUM_CODES]);
-            for _ in 0..NUM_CODES {
-                w.u16(1);
-            }
-            for _ in 0..(3 * 256) {
-                w.u16(0);
-            }
-            for _ in 0..(3 * 256) {
-                w.u16(1);
-            }
-            w.u32(0); // no fonts
-            w.u32(1);
-            w.u8(0);
-            w.u32(0);
-            w.u32(0);
-            w.u32(0);
-            w.u32(0); // trie: 0 nodes; then 0 exceptions
-            w.u32(0);
-            w.u32(0); // no paragraph-shape entries
-            for _ in 0..4 {
-                w.u32(0); // no e-TeX penalty-array entries
-            }
-            w.u32(0); // no Unicode case-code overrides
-            w.u32(0); // no additional hyphenation languages
-            w.buf
-        };
-        // truncated blob must not panic
-        for cut in [0, 5, 40, 120, data.len() / 2] {
-            assert!(
-                load_format_from(&data[..cut.min(data.len())]).is_err(),
-                "cut={}",
-                cut
-            );
+        let dir = std::env::temp_dir().join(format!("rustex-fmt-corrupt-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("pdflatex.fmt");
+        save_format(&eng, &path).expect("save");
+        let data = std::fs::read(&path).unwrap();
+        std::fs::remove_dir_all(&dir).ok();
+        assert!(load_format_from(&data).expect("complete format loads").format_done);
+        // every truncation is an error, never a panic
+        for cut in (0..data.len()).step_by(97).chain([data.len() - 1]) {
+            assert!(load_format_from(&data[..cut]).is_err(), "cut={cut}");
         }
-        // complete minimal blob loads
-        let eng2 = load_format_from(&data).expect("minimal format loads");
-        assert!(eng2.format_done);
-        // Version 8 ended immediately after the paragraph-shape payload.
-        // Keep accepting that exact layout so the bundled format from the
-        // preceding release remains usable while version 9 adds the four
-        // e-TeX penalty arrays.
-        let mut prefix = R::new(&data[MAGIC.len() + 4..]);
-        prefix.u16().unwrap(); // current font
-        prefix.u8().unwrap(); // engine kind
-        let cs_count = prefix.count().unwrap();
-        for _ in 0..cs_count {
-            prefix.bytes().unwrap();
-        }
-        assert_eq!(prefix.count().unwrap(), 0); // equivalents
-        prefix.u16().unwrap(); // current group level
-        let int_params_offset = MAGIC.len() + 4 + prefix.p;
-
-        let mut legacy = data.clone();
-        legacy.remove(MAGIC.len() + 4 + 2);
-        let int_params_offset = int_params_offset - 1;
-        const V8_INT_PARAMS: usize = 95;
-        let delta = NUM_INT_PARAMS - V8_INT_PARAMS;
-        let new_value_offset = int_params_offset + V8_INT_PARAMS * std::mem::size_of::<i32>();
-        legacy.drain(new_value_offset..new_value_offset + delta * std::mem::size_of::<i32>());
-        let new_level_offset = int_params_offset
-            + V8_INT_PARAMS * std::mem::size_of::<i32>()
-            + V8_INT_PARAMS * std::mem::size_of::<u16>();
-        legacy.drain(new_level_offset..new_level_offset + delta * std::mem::size_of::<u16>());
-        legacy.truncate(legacy.len() - 6 * std::mem::size_of::<u32>());
-        legacy[MAGIC.len()..MAGIC.len() + 2].copy_from_slice(&8u16.to_le_bytes());
-        let legacy_eng = load_format_from(&legacy).expect("version 8 format loads");
-        assert!(legacy_eng.format_done);
-        assert_eq!(
-            legacy_eng.eqtb.int_params[IntParam::PdfSuppressWarningPageGroup.idx() as usize],
-            0
-        );
-        assert!(legacy_eng
-            .penalty_shapes
-            .iter()
-            .all(|shape| shape.is_empty()));
-        // flipped version byte is invalid
-        let mut bad = data.clone();
-        bad[MAGIC.len()] = 0xFF;
-        assert!(load_format_from(&bad).is_err());
+        let mut trailing = data.clone();
+        trailing.push(0);
+        assert!(load_format_from(&trailing).is_err());
+        // a format from an older wire version is refused, not misread
+        let mut older = data.clone();
+        older[MAGIC.len()..MAGIC.len() + 2].copy_from_slice(&(VERSION - 1).to_le_bytes());
+        assert_eq!(load_format_from(&older).err().unwrap(), "format version mismatch");
     }
 
     #[test]

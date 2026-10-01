@@ -6,55 +6,141 @@
 
 use crate::FxHashMap;
 
+/// Absent child, sibling or value link.
+pub(crate) const NO_LINK: u32 = u32::MAX;
+
+/// One trie node. Children form a singly linked sibling chain (newest
+/// first), so building and loading a trie never allocates per node.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct TrieNode {
+    pub(crate) byte: u8,
+    pub(crate) child: u32,
+    pub(crate) sibling: u32,
+    /// head of this node's pattern-value chain in `Trie::values`
+    pub(crate) value: u32,
+}
+
+/// A pattern value: it applies to the gap `pos` characters after the
+/// position where the walk started.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct TrieValue {
+    pub(crate) pos: u32,
+    pub(crate) value: u8,
+    pub(crate) next: u32,
+}
+
 #[derive(Debug)]
 pub struct Trie {
-    /// node transitions: node_id -> (byte -> node_id)
-    pub trans: Vec<FxHashMap<u8, usize>>,
-    /// pattern values per node: (position, value); the value applies to the
-    /// gap `position` chars after the position where the walk started
-    pub values: Vec<Vec<(usize, u8)>>,
+    /// node 0 is the root
+    pub(crate) nodes: Vec<TrieNode>,
+    pub(crate) values: Vec<TrieValue>,
+    /// the root's children indexed by byte (the hot first step of every walk)
+    root: Box<[u32; 256]>,
     /// exception words: lowercased letters -> sorted break points, where a
     /// point `k` means "between letter k-1 and letter k" (k letters precede)
-    pub exceptions: FxHashMap<Vec<u8>, Vec<usize>>,
+    pub(crate) exceptions: FxHashMap<Vec<u8>, Vec<usize>>,
 }
 
 impl Trie {
     pub fn new() -> Self {
+        Self::from_parts(
+            vec![TrieNode {
+                byte: 0,
+                child: NO_LINK,
+                sibling: NO_LINK,
+                value: NO_LINK,
+            }],
+            Vec::new(),
+            FxHashMap::default(),
+        )
+    }
+
+    /// Assemble a trie from already-linked nodes (format load). The caller
+    /// guarantees every link is in range.
+    pub(crate) fn from_parts(
+        nodes: Vec<TrieNode>,
+        values: Vec<TrieValue>,
+        exceptions: FxHashMap<Vec<u8>, Vec<usize>>,
+    ) -> Self {
+        let mut root = Box::new([NO_LINK; 256]);
+        let mut child = nodes[0].child;
+        while child != NO_LINK {
+            let node = nodes[child as usize];
+            if root[node.byte as usize] == NO_LINK {
+                root[node.byte as usize] = child;
+            }
+            child = node.sibling;
+        }
         Trie {
-            trans: vec![FxHashMap::default()],
-            values: vec![Vec::new()],
-            exceptions: FxHashMap::default(),
+            nodes,
+            values,
+            root,
+            exceptions,
         }
     }
 
     pub fn is_empty(&self) -> bool {
-        self.trans.len() <= 1 && self.exceptions.is_empty()
+        self.nodes.len() <= 1 && self.exceptions.is_empty()
+    }
+
+    #[inline]
+    fn child(&self, node: u32, byte: u8) -> Option<u32> {
+        if node == 0 {
+            let child = self.root[byte as usize];
+            return (child != NO_LINK).then_some(child);
+        }
+        let mut child = self.nodes[node as usize].child;
+        while child != NO_LINK {
+            let candidate = &self.nodes[child as usize];
+            if candidate.byte == byte {
+                return Some(child);
+            }
+            child = candidate.sibling;
+        }
+        None
     }
 
     /// insert a compiled pattern: key bytes (letters and '.' marks) with
     /// inter-letter digit values
     pub fn insert(&mut self, key: &[u8], values: &[(usize, u8)]) {
-        let mut node = 0usize;
+        let mut node = 0u32;
         for &b in key {
-            if let Some(&next) = self.trans[node].get(&b) {
-                node = next;
-            } else {
-                let next = self.trans.len();
-                self.trans[node].insert(b, next);
-                self.trans.push(FxHashMap::default());
-                self.values.push(Vec::new());
-                node = next;
-            }
-        }
-        let slot = &mut self.values[node];
-        for &(pos, v) in values {
-            match slot.iter_mut().find(|x| x.0 == pos) {
-                Some(e) => {
-                    if v > e.1 {
-                        e.1 = v;
+            node = match self.child(node, b) {
+                Some(next) => next,
+                None => {
+                    let next = self.nodes.len() as u32;
+                    let parent = &mut self.nodes[node as usize];
+                    let sibling = std::mem::replace(&mut parent.child, next);
+                    self.nodes.push(TrieNode {
+                        byte: b,
+                        child: NO_LINK,
+                        sibling,
+                        value: NO_LINK,
+                    });
+                    if node == 0 {
+                        self.root[b as usize] = next;
                     }
+                    next
                 }
-                None => slot.push((pos, v)),
+            };
+        }
+        for &(pos, v) in values {
+            let pos = pos as u32;
+            let mut link = self.nodes[node as usize].value;
+            while link != NO_LINK && self.values[link as usize].pos != pos {
+                link = self.values[link as usize].next;
+            }
+            if link != NO_LINK {
+                let entry = &mut self.values[link as usize];
+                entry.value = entry.value.max(v);
+            } else {
+                let head = &mut self.nodes[node as usize].value;
+                self.values.push(TrieValue {
+                    pos,
+                    value: v,
+                    next: *head,
+                });
+                *head = self.values.len() as u32 - 1;
             }
         }
     }
@@ -171,21 +257,19 @@ impl Trie {
         let m = text.len();
         let mut vals = vec![0u8; m + 1];
         for start in 0..m {
-            let mut node = 0usize;
-            let mut i = start;
-            while i < m {
-                match self.trans[node].get(&text[i]) {
-                    Some(&next) => {
-                        node = next;
-                        i += 1;
-                        for &(pos, v) in &self.values[node] {
-                            let slot = start + pos;
-                            if v > vals[slot] {
-                                vals[slot] = v;
-                            }
-                        }
+            let mut node = 0u32;
+            for &byte in &text[start..] {
+                let Some(next) = self.child(node, byte) else {
+                    break;
+                };
+                node = next;
+                let mut link = self.nodes[node as usize].value;
+                while link != NO_LINK {
+                    let entry = self.values[link as usize];
+                    if let Some(slot) = vals.get_mut(start + entry.pos as usize) {
+                        *slot = (*slot).max(entry.value);
                     }
-                    None => break,
+                    link = entry.next;
                 }
             }
         }

@@ -195,9 +195,9 @@ def validate_format_file(explicit: str) -> Path:
         int(re.search(rf"(?:pub )?const {key}: u16 = (\d+);", format_source).group(1))
         for key in ("VERSION", "SEMANTICS")
     )
-    # Keep this in step with tex_core::format::parse_header, which accepts the
-    # preceding v8 wire layout and fills its newly added fields with defaults.
-    accepted_versions = set(range(8, expected[0] + 1))
+    # Keep this in step with tex_core::format::parse_header, which accepts
+    # only the current wire version.
+    accepted_versions = {expected[0]}
 
     def compatible(path: Path) -> bool:
         if not path.is_file():

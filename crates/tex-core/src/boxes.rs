@@ -143,8 +143,19 @@ pub enum ColorStackCmd {
     Current,
 }
 
+/// LuaTeX boundary node subtypes (texnodes.h `boundary_subtypes`).
+pub const BOUNDARY_USER: u8 = 1;
+pub const BOUNDARY_PROTRUSION: u8 = 2;
+pub const BOUNDARY_WORD: u8 = 3;
+
 #[derive(Clone, Debug)]
 pub enum WhatIt {
+    /// LuaTeX boundary node (`\boundary`, `\wordboundary`,
+    /// `\protrusionboundary`): no output, separates characters.
+    Boundary {
+        kind: u8,
+        value: i32,
+    },
     PdfLiteral {
         origin: u8,
         data: String,

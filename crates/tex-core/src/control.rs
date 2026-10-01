@@ -520,6 +520,16 @@ impl Engine {
                 self.do_let(false);
                 true
             }
+            GLet => {
+                // LuaTeX `\glet`: `\global\let` unless `\globaldefs<0`.
+                self.global_flag = true;
+                self.do_let(false);
+                true
+            }
+            LetCharCode => {
+                self.do_letcharcode();
+                true
+            }
             FutureLet => {
                 self.do_let(true);
                 true
@@ -1616,30 +1626,37 @@ impl Engine {
                 self.push_token(tb);
             }
         } else {
-            self.skip_raw_spaces();
-            let eq = self.raw_token();
-            if eq.is_char() && eq.chr() == b'=' as u32 && eq.cc() == 12 {
-                let sp = self.raw_token();
-                if !(sp.is_char() && sp.cc() == 10) {
-                    self.push_token(sp);
-                }
-            } else {
-                self.push_token(eq);
+            self.let_target(target, global);
+            return;
+        }
+        self.clear_prefixes();
+    }
+
+    /// The `<optional equals><token>` part of `\let`, assigning `target`.
+    pub(crate) fn let_target(&mut self, target: CsId, global: bool) {
+        self.skip_raw_spaces();
+        let eq = self.raw_token();
+        if eq.is_char() && eq.chr() == b'=' as u32 && eq.cc() == 12 {
+            let sp = self.raw_token();
+            if !(sp.is_char() && sp.cc() == 10) {
+                self.push_token(sp);
             }
-            let t = self.raw_token();
-            if t.is_cs() {
-                self.copy_meaning(target, t.cs_id(), global);
-            } else if t.is_char() && t.cc() == 13 {
-                let id = self.active_cs_id(t.chr());
-                self.copy_meaning(target, id, global);
-            } else if t.0 >= crate::expand::PAR_REF_FLAG
-                && t.0 < 0xFFFF_0000
-                && t.0 != crate::input::PAR_END.0
-            {
-                self.error("Missing control sequence after \\let");
-            } else {
-                self.eqtb.assign(target, Equiv::CharTok(t.0), global);
-            }
+        } else {
+            self.push_token(eq);
+        }
+        let t = self.raw_token();
+        if t.is_cs() {
+            self.copy_meaning(target, t.cs_id(), global);
+        } else if t.is_char() && t.cc() == 13 {
+            let id = self.active_cs_id(t.chr());
+            self.copy_meaning(target, id, global);
+        } else if t.0 >= crate::expand::PAR_REF_FLAG
+            && t.0 < 0xFFFF_0000
+            && t.0 != crate::input::PAR_END.0
+        {
+            self.error("Missing control sequence after \\let");
+        } else {
+            self.eqtb.assign(target, Equiv::CharTok(t.0), global);
         }
         self.clear_prefixes();
     }

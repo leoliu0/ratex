@@ -1096,6 +1096,18 @@ pub enum Prim {
     FormatName,
     /// LuaTeX `\luaescapestring {<text>}`.
     LuaEscapeString,
+    /// LuaTeX `\deferred`: the next extension command acts at shipout.
+    Deferred,
+    /// LuaTeX `\boundary <n>`: a user boundary node.
+    Boundary,
+    /// LuaTeX `\wordboundary`: a word boundary node.
+    WordBoundary,
+    /// LuaTeX `\protrusionboundary <n>`.
+    ProtrusionBoundary,
+    /// LuaTeX `\Uleft`/`\Umiddle`/`\Uright`: `\left`/`\middle`/`\right`.
+    ULeft,
+    UMiddle,
+    URight,
 }
 
 /// Stable wire codes for the format dump (`crate::format`). Unit variants
@@ -1104,6 +1116,17 @@ pub enum Prim {
 /// codes keep their values. The four parameter families occupy dedicated
 /// high ranges that carry the parameter index directly.
 impl Prim {
+    /// The TeX82 box command a LuaTeX `\hpack`/`\vpack`/`\tpack` stands
+    /// for (they only skip the packaging callbacks); other commands as is.
+    pub fn box_spec(self) -> Prim {
+        match self {
+            Prim::HPack => Prim::HBox,
+            Prim::VPack => Prim::VBox,
+            Prim::TPack => Prim::VTop,
+            p => p,
+        }
+    }
+
     #[allow(non_upper_case_globals)]
     pub const LetterspaceFont: Prim = Prim::Letterspacefont;
     #[inline]
@@ -1570,6 +1593,13 @@ impl Prim {
             Prim::LetCharCode => 645,
             Prim::FormatName => 646,
             Prim::LuaEscapeString => 647,
+            Prim::Deferred => 648,
+            Prim::Boundary => 649,
+            Prim::WordBoundary => 650,
+            Prim::ProtrusionBoundary => 651,
+            Prim::ULeft => 652,
+            Prim::UMiddle => 653,
+            Prim::URight => 654,
             Prim::ScriptScriptStyle => 284,
             Prim::Patterns => 287,
             Prim::Hyphenation => 288,
@@ -2033,6 +2063,13 @@ impl Prim {
             645 => Some(Prim::LetCharCode),
             646 => Some(Prim::FormatName),
             647 => Some(Prim::LuaEscapeString),
+            648 => Some(Prim::Deferred),
+            649 => Some(Prim::Boundary),
+            650 => Some(Prim::WordBoundary),
+            651 => Some(Prim::ProtrusionBoundary),
+            652 => Some(Prim::ULeft),
+            653 => Some(Prim::UMiddle),
+            654 => Some(Prim::URight),
             0x1000..=0x1fff => {
                 let i = c & 0x0fff;
                 Some(Prim::IntP(IntParam::from_idx(i)?))

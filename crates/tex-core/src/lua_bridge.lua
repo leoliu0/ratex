@@ -301,6 +301,40 @@ function tex.getcatcode(a, b)
 end
 
 function tex.error(msg, help) B.tex_error(tostring(msg)) end
+
+-- ltexlib.c tex_enableprimitives / tex_extraprimitives / tex_primitives
+local primitive_groups = { tex = 1, core = 2, etex = 4, luatex = 8 }
+function tex.enableprimitives(...)
+  if select("#", ...) ~= 2 then error("wrong number of arguments", 2) end
+  local prefix, names = ...
+  if type(prefix) ~= "string" and type(prefix) ~= "number" then
+    error("bad argument #1 to 'enableprimitives' (string expected, got " .. type(prefix) .. ")", 2)
+  end
+  if type(names) ~= "table" then error("Expected an array of names as second argument", 2) end
+  local list, i = {}, 1
+  while type(rawget(names, i)) == "string" do
+    list[i] = rawget(names, i)
+    i = i + 1
+  end
+  B.enable_primitives(tostring(prefix), list)
+end
+function tex.extraprimitives(...)
+  local n, mask = select("#", ...), 0
+  if n == 0 then
+    mask = primitive_groups.etex + primitive_groups.luatex
+  else
+    local seen = {}
+    for i = 1, n do
+      local group = select(i, ...)
+      if type(group) == "string" and primitive_groups[group] and not seen[group] then
+        seen[group] = true
+        mask = mask + primitive_groups[group]
+      end
+    end
+  end
+  return { B.primitive_names(mask) }
+end
+function tex.primitives() return { B.primitive_names(15) } end
 function tex.runtoks(f, ...)
   if type(f) == "function" then
     B.runtoks_begin()

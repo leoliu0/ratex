@@ -11,6 +11,7 @@
 use crate::engine::{Engine, EngineKind};
 use crate::eqtb::Equiv;
 use crate::prim::{DimParam, IntParam, Prim};
+use crate::token::Token;
 
 /// `tex.extraprimitives` group bits (ltexlib.c `tex_command` ...).
 pub(crate) const TEX: u8 = 1;
@@ -77,6 +78,13 @@ static LUATEX_ONLY: &[(&[u8], Prim)] = &[
     (b"letcharcode", Prim::LetCharCode),
     (b"formatname", Prim::FormatName),
     (b"luaescapestring", Prim::LuaEscapeString),
+    (b"deferred", Prim::Deferred),
+    (b"boundary", Prim::Boundary),
+    (b"wordboundary", Prim::WordBoundary),
+    (b"protrusionboundary", Prim::ProtrusionBoundary),
+    (b"Uleft", Prim::ULeft),
+    (b"Umiddle", Prim::UMiddle),
+    (b"Uright", Prim::URight),
     (b"outputmode", Prim::IntP(IntParam::PdfOutput)),
     (b"exhyphenchar", Prim::IntP(IntParam::ExHyphenChar)),
     (b"firstvalidlanguage", Prim::IntP(IntParam::FirstValidLanguage)),
@@ -334,9 +342,13 @@ impl Engine {
             let id = self.cs.intern(&name);
             self.eqtb.assign(id, equiv, true);
         }
+        // `\primitive` (`prim_lookup`) knows every LuaTeX primitive,
+        // enabled or not.
+        self.primitive_table.clear();
         for entry in &table {
             if let Equiv::Prim(p) = entry.equiv {
                 self.primitive_names.insert(p.code(), entry.name);
+                self.primitive_table.insert(entry.name.into(), p);
             }
         }
         self.lua_primitives = table;
@@ -385,6 +397,240 @@ impl Engine {
         let mut hidden = BACKEND_PREFIX.to_vec();
         hidden.extend_from_slice(target);
         self.cs.lookup(&hidden)
+    }
+}
+
+impl Engine {
+    fn output_mode(&self) -> i32 {
+        self.eqtb.int_params[IntParam::PdfOutput.idx() as usize]
+    }
+
+    fn backend_warning(&mut self, backend: &str, what: &str) {
+        self.warning_at(&format!("({backend} backend): unexpected use of \\{what}"), None);
+    }
+
+    /// `\pdfvariable <key>` (textoken.c `do_variable_pdf`): insert the
+    /// backend parameter so it can be read or assigned; an unknown key
+    /// warns and leaves the input alone.
+    pub(crate) fn expand_pdf_variable(&mut self) {
+        for &(key, target) in PDF_VARIABLES {
+            if self.scan_keyword(key) {
+                if let Some(id) = self.backend_cs(target) {
+                    self.push_token(Token::from_cs(id));
+                }
+                return;
+            }
+        }
+        self.backend_warning("pdf", "pdfvariable");
+    }
+
+    /// `\pdffeedback <key>` (textoken.c `do_feedback`): only in PDF mode.
+    pub(crate) fn expand_pdf_feedback(&mut self) {
+        if self.output_mode() <= 0 {
+            self.error("unexpected use of \\pdffeedback");
+            return;
+        }
+        if self.scan_keyword(b"version") {
+            self.exp_string(b"140");
+            return;
+        }
+        if self.scan_keyword(b"revision") {
+            self.exp_string(b"0");
+            return;
+        }
+        for &(key, target, integer) in PDF_FEEDBACKS {
+            if self.scan_keyword(key) {
+                let mut toks = Vec::with_capacity(2);
+                if integer {
+                    toks.extend(self.backend_cs(b"number").map(Token::from_cs));
+                }
+                toks.extend(self.backend_cs(target).map(Token::from_cs));
+                self.push_tokens(toks);
+                return;
+            }
+        }
+        self.backend_warning("pdf", "pdffeedback");
+    }
+
+    /// `\dvifeedback`: LuaTeX has no DVI feedback keys.
+    pub(crate) fn expand_dvi_feedback(&mut self) {
+        if self.output_mode() == 0 {
+            self.backend_warning("dvi", "dvifeedback");
+        } else {
+            self.error("unexpected use of \\dvifeedback");
+        }
+    }
+
+    /// `\pdfextension <key> ...` (extensions.c `do_extension_pdf`): the
+    /// pdfTeX command for the key reads the rest; nothing happens outside
+    /// PDF mode.
+    pub(crate) fn do_pdf_extension(&mut self) {
+        if self.output_mode() <= 0 {
+            return;
+        }
+        for &(key, target, keyword) in PDF_EXTENSIONS {
+            if self.scan_keyword(key) {
+                let deferred = std::mem::take(&mut self.lua_deferred);
+                let mut toks: Vec<Token> = self.backend_cs(target).map(Token::from_cs).into_iter().collect();
+                if key == b"literal" && deferred && !self.scan_keyword(b"shipout") {
+                    toks.extend(b"shipout ".iter().map(|&c| Token::char(if c == b' ' { 10 } else { 11 }, u32::from(c))));
+                }
+                toks.extend(keyword.iter().map(|&c| Token::char(11, u32::from(c))));
+                if !keyword.is_empty() {
+                    toks.push(Token::char(10, u32::from(b' ')));
+                }
+                self.push_tokens(toks);
+                return;
+            }
+        }
+        self.lua_deferred = false;
+        self.error("unexpected use of \\pdfextension");
+    }
+
+    /// `\dviextension` (extensions.c `do_extension_dvi`): `literal` and
+    /// `lateliteral` are `\special`s, in DVI mode only.
+    pub(crate) fn do_dvi_extension(&mut self) {
+        self.lua_deferred = false;
+        if self.output_mode() != 0 {
+            return;
+        }
+        if self.scan_keyword(b"literal") {
+            let _ = self.scan_keyword(b"shipout");
+        } else if !self.scan_keyword(b"lateliteral") {
+            self.error("unexpected use of \\dviextension");
+            return;
+        }
+        if let Some(id) = self.backend_cs(b"special") {
+            self.push_token(Token::from_cs(id));
+        }
+    }
+
+    /// LuaTeX `\deferred`: the next extension command is a shipout-time one
+    /// (writes, opens and closes already are).
+    pub(crate) fn do_deferred(&mut self) {
+        let t = self.get_x_raw();
+        if t.is_cs() {
+            if let Some(Equiv::Prim(Prim::PdfExtension | Prim::DviExtension)) = self.eqtb.resolve(t.cs_id()) {
+                self.lua_deferred = true;
+            }
+        }
+        self.push_token(t);
+    }
+
+    /// LuaTeX `\csstring`: `\string` without the escape character.
+    pub(crate) fn expand_csstring(&mut self, id: crate::token::CsId) {
+        let idx = IntParam::EscapeChar.idx() as usize;
+        let escape = std::mem::replace(&mut self.eqtb.int_params[idx], -1);
+        let _ = self.expand_prim(Prim::String, id);
+        self.eqtb.int_params[idx] = escape;
+    }
+
+    /// LuaTeX `\luaescapestring {<text>}` (lua_str_toks): the expanded text
+    /// with `\`, `"` and `'` escaped by a backslash and LF/CR written as
+    /// `\n`/`\r`.
+    pub(crate) fn expand_lua_escape_string(&mut self) {
+        let toks = self.scan_general_text_expanded();
+        let text = self.print_tokens_to_string(&toks);
+        let mut out = Vec::with_capacity(text.len());
+        for &b in text.as_bytes() {
+            match b {
+                b'\\' | b'"' | b'\'' => out.extend_from_slice(&[b'\\', b]),
+                b'\n' => out.extend_from_slice(b"\\n"),
+                b'\r' => out.extend_from_slice(b"\\r"),
+                _ => out.push(b),
+            }
+        }
+        self.exp_string(&out);
+    }
+
+    /// LuaTeX `\toksapp` & co. (textoken.c `combine_the_toks`): append or
+    /// prepend a braced text (expanded for the `e`/`x` forms) or another
+    /// register to a token register; the `g`/`x` forms assign globally
+    /// unless the register was set at the current group level, which is
+    /// updated in place.
+    pub(crate) fn combine_the_toks(&mut self, p: Prim) {
+        use Prim::*;
+        let append = matches!(p, ToksApp | EToksApp | GToksApp | XToksApp);
+        let expand = matches!(p, EToksApp | EToksPre | XToksApp | XToksPre);
+        let global = matches!(p, GToksApp | GToksPre | XToksApp | XToksPre);
+        let target = self.scan_toks_register();
+        let source: Vec<Token> = loop {
+            let t = self.get_x_raw();
+            if t.is_char() && t.cc() == 10 {
+                continue;
+            }
+            if self.token_is_left_brace(t) {
+                self.push_token(t);
+                break if expand {
+                    self.scan_general_text_expanded()
+                } else {
+                    self.scan_general_text()
+                };
+            }
+            self.push_token(t);
+            let n = self.scan_toks_register();
+            break self.eqtb.toks[n as usize].as_ref().clone();
+        };
+        if source.is_empty() {
+            return;
+        }
+        let old = &self.eqtb.toks[target as usize];
+        let mut combined = Vec::with_capacity(old.len() + source.len());
+        if append {
+            combined.extend_from_slice(old);
+            combined.extend_from_slice(&source);
+        } else {
+            combined.extend_from_slice(&source);
+            combined.extend_from_slice(old);
+        }
+        let in_place = self.eqtb.toks_levels[target as usize] == self.eqtb.cur_level;
+        self.eqtb.assign_toks_reg(target, std::rc::Rc::new(combined), global && !in_place);
+    }
+
+    /// A token register: a `\toksdef` token or a register number.
+    fn scan_toks_register(&mut self) -> u16 {
+        let t = self.get_x_raw();
+        if t.is_cs() {
+            if let Some(&Equiv::ToksReg(n)) = self.eqtb.resolve(t.cs_id()) {
+                return n;
+            }
+        }
+        self.push_token(t);
+        self.scan_reg_num()
+    }
+
+    /// LuaTeX `\boundary`, `\wordboundary`, `\protrusionboundary`
+    /// (maincontrol.c `append_boundary`): a boundary node in any mode.
+    pub(crate) fn append_boundary(&mut self, p: Prim) {
+        let (kind, value) = match p {
+            Prim::Boundary => (crate::boxes::BOUNDARY_USER, self.scan_int()),
+            Prim::ProtrusionBoundary => (crate::boxes::BOUNDARY_PROTRUSION, self.scan_int()),
+            _ => (crate::boxes::BOUNDARY_WORD, 0),
+        };
+        self.flush_native_text();
+        self.cur_list.push(crate::boxes::Node::Whatsit(crate::boxes::WhatIt::Boundary { kind, value }));
+    }
+
+    /// LuaTeX `\letcharcode <number> <token>`: `\let` the active character.
+    pub(crate) fn do_letcharcode(&mut self) {
+        let global = self.take_global();
+        let n = self.scan_int();
+        match u32::try_from(n).ok().filter(|&c| c > 0 && char::from_u32(c).is_some()) {
+            Some(c) => {
+                let target = self.active_cs_id(c);
+                self.let_target(target, global);
+            }
+            None => {
+                self.error("invalid number for \\letcharcode");
+                self.clear_prefixes();
+            }
+        }
+    }
+
+    /// LuaTeX `\formatname`: the name of the loaded format.
+    pub(crate) fn expand_format_name(&mut self) {
+        let name = self.format_name.clone();
+        self.exp_string(name.as_bytes());
     }
 }
 

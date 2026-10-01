@@ -42,12 +42,12 @@ pub struct NativeTextState {
     pub last_was_cjk: Option<bool>,
     /// Tracks if last appended character was RTL
     pub last_was_rtl: Option<bool>,
-    /// \noboundary flag: suppress next left boundary ligature/kern
+    /// \noboundary before a character: suppress its left boundary
+    /// ligature/kern (tex.web `cancel_boundary`)
     pub suppress_left_boundary: bool,
-    /// \noboundary flag: suppress right boundary ligature/kern
-    pub suppress_right_boundary: bool,
-    /// \noboundary flag: do not form ligature with previous character
-    pub no_lig_prev: bool,
+    /// font of the open TFM character chain (tex.web main loop): ligatures
+    /// and kerns only form between characters of one uninterrupted chain
+    pub lig_chain: Option<FontId>,
 }
 
 impl NativeTextState {
@@ -65,8 +65,7 @@ impl NativeTextState {
         self.last_was_cjk = None;
         self.last_was_rtl = None;
         self.suppress_left_boundary = false;
-        self.suppress_right_boundary = false;
-        self.no_lig_prev = false;
+        self.lig_chain = None;
     }
 }
 

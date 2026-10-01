@@ -20,13 +20,7 @@ impl Engine {
 
     pub fn hspace_token(&mut self) {
         self.flush_native_text();
-        let f = self.eqtb.cur_font_val;
-        if f != 0 && matches!(self.mode, Mode::Horizontal | Mode::RestrictedHorizontal) {
-            if self.mode == Mode::Horizontal {
-                self.flush_hyphen_disc(f);
-            }
-            self.flush_right_boundary_kern(f);
-        }
+        self.end_char_chain();
         match self.mode {
             Mode::Horizontal | Mode::RestrictedHorizontal => {
                 let g = self.interword_glue();
@@ -87,13 +81,7 @@ impl Engine {
     /// \fontdimen7 extra space. \spacefactor is left unchanged.
     pub fn ex_space(&mut self) {
         self.flush_native_text();
-        let f = self.eqtb.cur_font_val;
-        if f != 0 && matches!(self.mode, Mode::Horizontal | Mode::RestrictedHorizontal) {
-            if self.mode == Mode::Horizontal {
-                self.flush_hyphen_disc(f);
-            }
-            self.flush_right_boundary_kern(f);
-        }
+        self.end_char_chain();
         match self.mode {
             Mode::Horizontal | Mode::RestrictedHorizontal => {
                 let ss = self.eqtb.glue_params[GlueParam::SpaceSkip.idx() as usize].clone();
@@ -574,13 +562,33 @@ impl Engine {
         }
     }
 
-    /// Implement \noboundary primitive logic:
-    /// skips current right boundary and suppresses next implicit left boundary / starts new ligature chain.
+    /// \noboundary: inside a character chain it ends the chain without the
+    /// right boundary (tex.web `bchar:=non_char`); a character that follows
+    /// starts without the left boundary (`cancel_boundary`). Any other
+    /// command in between clears that again (see `end_char_chain`).
     pub fn no_boundary(&mut self) {
         self.flush_native_text();
-        self.native_text.suppress_right_boundary = true;
+        if let Some(f) = self.native_text.lig_chain.take() {
+            if self.mode == Mode::Horizontal {
+                self.flush_hyphen_disc(f);
+            }
+        }
         self.native_text.suppress_left_boundary = true;
-        self.native_text.no_lig_prev = true;
+    }
+
+    /// tex.web main loop wrapup when the character chain ends (any command
+    /// other than a character, `\char` or `\noboundary`): a trailing hyphen
+    /// char settles into a null discretionary in unrestricted horizontal
+    /// mode, then the font's right boundary ligature/kern applies.
+    pub(crate) fn end_char_chain(&mut self) {
+        self.native_text.suppress_left_boundary = false;
+        let Some(f) = self.native_text.lig_chain.take() else {
+            return;
+        };
+        if self.mode == Mode::Horizontal {
+            self.flush_hyphen_disc(f);
+        }
+        self.flush_right_boundary_kern(f);
     }
 
     pub(crate) fn find_left_boundary_step(&self, f: u16, next: u8) -> Option<LigKernStep> {
@@ -637,13 +645,7 @@ impl Engine {
     /// tex.web §20237–§20238: when leaving the character loop, TeX checks
     /// if the last character/ligature has a lig/kern step with the font's
     /// right boundary character (font_bchar), and if so appends the kern or ligature.
-    pub(crate) fn flush_right_boundary_kern(&mut self, f: u16) {
-        if self.native_text.suppress_right_boundary {
-            self.native_text.suppress_right_boundary = false;
-            self.native_text.suppress_left_boundary = false;
-            self.native_text.no_lig_prev = false;
-            return;
-        }
+    fn flush_right_boundary_kern(&mut self, f: u16) {
         let Some(font) = self.eqtb.fonts.get(f as usize) else {
             return;
         };
@@ -675,29 +677,26 @@ impl Engine {
         }
     }
     fn append_char_lig(&mut self, c: u8, f: u16) {
-        let suppress_lb = self.native_text.suppress_left_boundary;
-        self.native_text.suppress_left_boundary = false;
-        let no_lig = self.native_text.no_lig_prev;
-        self.native_text.no_lig_prev = false;
+        let suppress_lb = std::mem::take(&mut self.native_text.suppress_left_boundary);
 
-        if no_lig {
-            self.flush_hyphen_disc(f);
-            self.cur_list.push(Node::Char { c, font: f });
-            return;
-        }
-
-        // ligature & kern with previous char (either Char or an already-formed Ligature)
-        let prev: Option<(u8, [u8; 3], u8)> = match self.cur_list.last() {
-            Some(Node::Char { c: pc, font: pf }) if *pf == f => Some((*pc, [0; 3], 0)),
-            Some(Node::Ligature {
-                c: lc,
-                font: pf,
-                letters,
-                n_letters,
-                ..
-            }) if *pf == f => Some((*lc, *letters, *n_letters)),
-            _ => None,
+        // ligature & kern with the previous char (either Char or an
+        // already-formed Ligature) of the same uninterrupted chain
+        let prev: Option<(u8, [u8; 3], u8)> = if self.native_text.lig_chain == Some(f) {
+            match self.cur_list.last() {
+                Some(Node::Char { c: pc, font: pf }) if *pf == f => Some((*pc, [0; 3], 0)),
+                Some(Node::Ligature {
+                    c: lc,
+                    font: pf,
+                    letters,
+                    n_letters,
+                    ..
+                }) if *pf == f => Some((*lc, *letters, *n_letters)),
+                _ => None,
+            }
+        } else {
+            None
         };
+        self.native_text.lig_chain = Some(f);
 
         if prev.is_none() && !suppress_lb {
             if let Some(step) = self.find_left_boundary_step(f, c) {
@@ -1113,6 +1112,11 @@ impl Engine {
             }
         };
 
+        if kind == 7 {
+            self.cur_list = outer_list;
+            self.finish_halign();
+            return;
+        }
         let res = pack(inner, target, kind);
         self.last_badness = res.badness;
         match kind {
@@ -1127,11 +1131,6 @@ impl Engine {
             node = Node::VCenter {
                 box_node: Box::new(node),
             };
-        }
-        if kind == 7 {
-            self.cur_list = outer_list;
-            self.finish_halign();
-            return;
         }
         // plain groups in vmode: restore the page list
         if kind == 5 {
@@ -1247,9 +1246,10 @@ impl Engine {
                                     ..bs
                                 }
                             };
-                            if glue.width != 0 || glue.stretch != 0 || glue.shrink != 0 {
-                                self.cur_list.push(Node::Glue(glue));
-                            }
+                            // tex.web append_to_vlist: the glue node is
+                            // appended even when it is zero (a legal
+                            // \vsplit breakpoint)
+                            self.cur_list.push(Node::Glue(glue));
                         }
                         self.prev_depth = *d;
                     }
@@ -1498,7 +1498,7 @@ impl Engine {
         self.report_pack_warnings_at(res, source);
     }
 
-    fn report_pack_warnings_at(
+    pub(crate) fn report_pack_warnings_at(
         &mut self,
         res: &boxes::PackResult,
         source: Option<crate::input::SourceMark>,
@@ -2425,11 +2425,7 @@ impl Engine {
             return;
         }
 
-        let fnt = self.eqtb.cur_font_val;
-        if fnt != 0 {
-            self.flush_hyphen_disc(fnt);
-            self.flush_right_boundary_kern(fnt);
-        }
+        self.end_char_chain();
         let pfs = self.eqtb.glue_params[GlueParam::ParFillSkip.idx() as usize].clone();
         // tex.web §16074: a trailing glue node is REPLACED by the infinite
         // penalty ("removing a space if it was there, since spaces usually
@@ -2733,5 +2729,70 @@ mod structural_state_tests {
         assert_eq!(engine.diagnostics.len(), 2);
         assert!(engine.diagnostics[1].message.contains("font `holes`"));
         assert!(engine.cur_list.is_empty());
+    }
+
+    /// Widths measured with TeX Live 2026 pdflatex (cmr10): ligatures and
+    /// kerns form only inside one uninterrupted character chain; `{}`,
+    /// `\relax` or an assignment end it, macro expansion does not.
+    #[test]
+    fn ligatures_and_kerns_stop_at_non_character_commands() {
+        let cases = [
+            (r"bc", "10.2778pt"),
+            (r"b\relax c", "10.00002pt"),
+            (r"b{}c", "10.00002pt"),
+            (r"b\x c", "10.2778pt"),
+            (r"f{}i", "5.83336pt"),
+            (r"fi", "5.55557pt"),
+            (r"b\count255=1 c", "10.00002pt"),
+            (r"A\relax V", "15.00003pt"),
+            (r"b\noboundary c", "10.00002pt"),
+            (r"b\char`c", "10.2778pt"),
+        ];
+        for (text, wd) in cases {
+            let mut engine = Engine::new(true);
+            run_in(
+                &mut engine,
+                &format!(
+                    "\\font\\cmr=cmr10 \\cmr \\def\\x{{}}\\setbox1\\hbox{{{text}}}\
+                     \\ifdim\\wd1={wd}\\else\\errmessage{{\\the\\wd1}}\\fi"
+                ),
+            );
+            assert_eq!(engine.error_count, 0, "{text}:\n{}", engine.diagnostic_output);
+        }
+    }
+
+    /// tex.web make_accent: a \chardef'd base character (LaTeX's \i) is
+    /// accented, and do_assignments runs font selections first.
+    #[test]
+    fn accent_takes_chardef_base_after_assignments() {
+        let mut engine = Engine::new(true);
+        run_in(
+            &mut engine,
+            "\\font\\cmr=cmr10 \\font\\big=cmr10 at 20pt \\cmr \\chardef\\i=16 \
+             \\setbox1\\hbox{\\accent19 \\i}\
+             \\ifdim\\wd1=2.77779pt\\else\\errmessage{a \\the\\wd1}\\fi\
+             \\setbox1\\hbox{\\accent19 \\big\\relax\\i}\
+             \\ifdim\\wd1=5.55557pt\\else\\errmessage{b \\the\\wd1}\\fi",
+        );
+        assert_eq!(engine.error_count, 0, "{}", engine.diagnostic_output);
+    }
+
+    /// TeX Live 2026: tex.web §108 badness rounds r³/2¹⁸ to nearest
+    /// (+2¹⁷), and math-on/off nodes are \mathsurround wide, taking the
+    /// value current inside the formula.
+    #[test]
+    fn pack_badness_and_math_surround_match_tex_live() {
+        let mut engine = Engine::new(true);
+        run_in(
+            &mut engine,
+            "\\catcode`\\$=3 \\hbadness=10000 \
+             \\setbox1\\hbox to 5pt{\\hskip0pt plus 10pt}\
+             \\ifnum\\badness=12 \\else\\errmessage{badness \\the\\badness}\\fi\
+             \\mathsurround=2pt \\setbox1\\hbox{$\\kern1pt$}\
+             \\ifdim\\wd1=5pt\\else\\errmessage{a \\the\\wd1}\\fi\
+             \\setbox1\\hbox{$\\mathsurround=3pt \\kern1pt$}\
+             \\ifdim\\wd1=7pt\\else\\errmessage{b \\the\\wd1}\\fi",
+        );
+        assert_eq!(engine.error_count, 0, "{}", engine.diagnostic_output);
     }
 }

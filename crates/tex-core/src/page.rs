@@ -1387,14 +1387,13 @@ impl Engine {
         }
 
         let md = self.max_depth().min(i32::MAX as i64) as i32;
-        // NOTE: tex.web §19905 says `vpack(q, natural)`, but real pdfTeX
-        // packs \box255 to \pagegoal when the page has finite shrink/
-        // stretch to absorb (oracle: BOX: 30.0pt = goal, not 25 = natural).
-        // The exact-goal pack below matches the empirical contract that
-        // LaTeX/ltxgrid rely on (\ht\box255 == \pagegoal at \output).
+        // tex.web §1017: box255 := vpackage(page list, best_size, exactly,
+        // page_max_depth); the pack's badness is \badness inside \output
+        // (its under/overfull reports are suppressed: vbadness := inf_bad).
         let exact = (pack_goal < 0x3FFF_FFFF)
             .then_some(pack_goal.clamp(i32::MIN as i64, i32::MAX as i64) as i32);
         let r = crate::boxes::vpack_add_md(page_mat, exact, false, VBOX, &self.eqtb, md);
+        self.last_badness = r.badness;
         self.eqtb.assign_box(255, Some(r.node), true);
 
         // tex.web §28435-28439: with no routine (or once the dead-cycle
@@ -1656,5 +1655,52 @@ mod tests {
             ));
             assert_eq!(e.error_count, errors, "ignore mask {mask}: {}", e.term);
         }
+    }
+
+    fn page_items(e: &Engine, page: usize) -> &[crate::boxes::DisplayItem] {
+        &e.pdf_doc.pages[page]
+            .display_list
+            .as_ref()
+            .expect("display list")
+            .items
+    }
+
+    /// pdftex pdf_ship_out: `cur_v := height(p)` for every shipped box, so an
+    /// hbox's baseline sits exactly where the same box's baseline sits when
+    /// it is the first item of a shipped vbox.
+    #[test]
+    fn shipped_hbox_baseline_sits_one_height_below_origin() {
+        let e = run("\\font\\cmr=cmr10 \\cmr \\shipout\\hbox{b}\\shipout\\vbox{\\hbox{b}}");
+        assert_eq!(e.error_count, 0, "{}", e.diagnostic_output);
+        let y = |page| {
+            page_items(&e, page)
+                .iter()
+                .find_map(|item| match item {
+                    crate::boxes::DisplayItem::GlyphRun { y_bp, .. } => Some(*y_bp),
+                    _ => None,
+                })
+                .expect("glyph run")
+        };
+        assert!((y(0) - y(1)).abs() < 1e-6, "hbox {} vs vbox {}", y(0), y(1));
+    }
+
+    /// tex.web §666: the \overfullrule marker has running height and depth,
+    /// so it is drawn over the full height of the overfull line.
+    #[test]
+    fn overfull_rule_spans_the_box_height() {
+        let e = run("\\font\\cmr=cmr10 \\cmr \\overfullrule=5pt \\shipout\\hbox{\\hbox to 1pt{gb}}");
+        let rule_h = page_items(&e, 0)
+            .iter()
+            .find_map(|item| match item {
+                crate::boxes::DisplayItem::Rule { height_bp, width_bp, .. } => {
+                    Some((*width_bp, *height_bp))
+                }
+                _ => None,
+            })
+            .expect("overfull rule drawn");
+        // 5pt wide; height(b) + depth(g) = 6.94444pt + 1.94444pt
+        let bp = |pt: f64| pt * 72.0 / 72.27;
+        assert!((rule_h.0 - bp(5.0)).abs() < 1e-3, "{rule_h:?}");
+        assert!((rule_h.1 - bp(8.88888)).abs() < 1e-3, "{rule_h:?}");
     }
 }

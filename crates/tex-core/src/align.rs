@@ -25,22 +25,16 @@
 //!   starts the next row.
 //! * `\span` in a row widens the current cell's span and plays the absorbed
 //!   column's u part (again with a one-token \omit peek). `\noalign{...}`
-//!   typesets its text in internal vertical mode and stores the resulting
-//!   vbox as a row entry marked with span NOALIGN_SPAN.
+//!   typesets its text in the alignment's own mode and stores the raw list
+//!   as a row entry marked with span NOALIGN_SPAN.
 //! * When the alignment group's `}` arrives (build.rs end_box, kind 7),
-//!   `finish_halign` computes the column widths (max natural width per
-//!   column; spanning cells distribute any deficit over the covered
-//!   columns), re-packs every cell to its final width (the "unset box"
-//!   pass: \hfil etc. stretch), wraps each row in boundary tabskips
-//!   (T_0 before column 0, T_n after the last column) with tabskip glue
-//!   between grid columns and baselineskip/lineskip glue between rows,
-//!   packs the vbox and appends it like a box result (or assigns it to
-//!   \setbox target).
+//!   `finish_halign` follows tex.web fin_align: column widths (with span
+//!   merging and nullified empty columns), the preamble packed to the
+//!   requested size, and every row/cell set from the preamble's glue.
+//!   \halign rows get interline glue and join the enclosing vertical list;
+//!   \valign rows join the enclosing horizontal list.
 //!
 //! Known simplifications versus tex.web:
-//! * unset-box glue is implemented by re-packing the cell list to the final
-//!   width, so finite glue stretches along with fil glue (TeX freezes
-//!   finite glue in unset boxes);
 //! * \everycr plays at row start, before the next row's u part;
 //! * nested \halign is supported through an engine-owned state stack (the
 //!   outer preamble/rows survive an inner \halign used e.g. inside a
@@ -883,8 +877,6 @@ impl Engine {
         self.align_brace_depth = 0;
     }
 
-    /// \span in a row: the current cell absorbs the next grid column; the
-    /// absorbed column's u part plays next (skipped when \omit follows).
     /// \span in a row: ends the current column's content by playing its v-template
     /// via the close stream, then absorbs the next grid column.
     pub fn align_span(&mut self) {
@@ -901,6 +893,19 @@ impl Engine {
         }
         if self.align_phase() == PH_U {
             self.align_discard_u_part();
+        }
+        // tex.web fin_col §791: a \span after the last column (with no
+        // periodic preamble to extend) becomes \cr, exactly like an extra &
+        let col = self.align_cur_col as usize;
+        let cur_span = self
+            .align_cur_row
+            .get(col)
+            .map(|c| c.span as usize)
+            .unwrap_or(0);
+        if self.get_col_spec(col + 1 + cur_span).is_none() {
+            self.error("Extra alignment tab has been changed to \\cr");
+            self.align_push_close(AlignCloseReason::EndRow);
+            return;
         }
         self.align_push_close(AlignCloseReason::Span);
     }
@@ -1009,7 +1014,15 @@ impl Engine {
         }
         self.align_in_noalign = true;
         let outer_pd = self.prev_depth;
-        self.align_push_cell_group(Mode::InternalVertical);
+        // tex.web no_align: the material joins the alignment's own list, in
+        // internal vertical mode for \halign and restricted horizontal mode
+        // for \valign
+        if self.align_is_valign {
+            self.align_push_cell_group(Mode::RestrictedHorizontal);
+            self.space_factor = 1000;
+        } else {
+            self.align_push_cell_group(Mode::InternalVertical);
+        }
         // tex.web §15514: \noalign runs in internal vertical mode inheriting the
         // preceding row's depth (or ignore_depth if at the alignment start).
         self.prev_depth = self
@@ -1022,12 +1035,11 @@ impl Engine {
                         _ => None,
                     }
                 } else {
-                    r.iter()
-                        .filter_map(|c| match &c.packed {
-                            Some(Node::Box { d, .. }) => Some(*d),
-                            _ => None,
-                        })
-                        .max()
+                    // fin_row's natural hpack starts from depth 0
+                    Some(r.iter().fold(0, |d, c| match &c.packed {
+                        Some(Node::Box { d: cd, .. }) => d.max(*cd),
+                        _ => d,
+                    }))
                 }
             })
             .unwrap_or(outer_pd);
@@ -1067,7 +1079,9 @@ impl Engine {
         let col = self.align_cur_col as usize;
         let span = self.align_cur_row.get(col).map(|c| c.span).unwrap_or(0);
         let packed = if self.align_is_valign {
-            crate::boxes::vpack(inner, None, crate::boxes::VBOX, &self.eqtb).node
+            // tex.web fin_col: `vpackage(link(head),natural,0)` moves the
+            // whole depth into the cell's height
+            crate::boxes::vpack_add_md(inner, None, false, crate::boxes::VBOX, &self.eqtb, 0).node
         } else {
             crate::boxes::hpack(inner, None, crate::boxes::HBOX, &self.eqtb).node
         };
@@ -1096,10 +1110,10 @@ impl Engine {
         }
     }
 
-    /// capture the open \noalign text as a RAW (unpacked) vbox node; tex.web
-    /// splices noalign material into the alignment's vlist as-is, and the
-    /// enclosing pack resolves any running-width rules (\toprule's \hrule)
-    /// to the alignment width. Packing here would freeze them at \hsize.
+    /// capture the open \noalign text as a raw list (carried in a Box node
+    /// whose `shift` holds the prev_depth at the group's end); tex.web
+    /// splices noalign material into the alignment's list as-is, and
+    /// finish_halign extends running rules to the alignment's size.
     pub(crate) fn align_finish_noalign_now(&mut self) {
         // tex.web §21663 (no_align_group handle_right_brace): `end_graf; unsave; align_peek;`
         // Closing \noalign while a paragraph is running forces \par first,
@@ -1112,13 +1126,14 @@ impl Engine {
         };
         self.align_in_noalign = false;
         self.align_state = PH_IDLE;
-        if !inner.is_empty() {
-            let (w, h, d) = crate::boxes::vlist_dims(&inner, &self.eqtb);
+        // an empty \noalign still matters when it reset \prevdepth
+        // (\noalign{\nointerlineskip})
+        if !inner.is_empty() || (!self.align_is_valign && end_pd <= -1000 * 65536) {
             let node = Node::Box {
                 kind: crate::boxes::VBOX,
-                w,
-                h,
-                d,
+                w: 0,
+                h: 0,
+                d: 0,
                 shift: end_pd,
                 list: inner,
                 glue_sign: 0,
@@ -1248,341 +1263,269 @@ impl Engine {
     // final packaging (build.rs end_box, kind 7)
     // ------------------------------------------------------------------
 
+    /// tex.web fin_align (§800-§812) for \halign and \valign: compute the
+    /// column widths (§801-§803, including span merging and nullified empty
+    /// columns), pack the preamble to the requested size, then set every
+    /// row and cell from the preamble's glue (§804-§810). Rows of a \valign
+    /// are the transposed case: "width" is measured vertically.
     pub fn finish_halign(&mut self) {
+        let valign = self.align_is_valign;
         let rows_in = std::mem::take(&mut self.align_rows);
+        let row_adj = std::mem::take(&mut self.align_row_adjust);
         let max_row_cols = rows_in.iter().map(|r| r.len()).max().unwrap_or(0);
         let ncols = self.align_preamble.len().max(max_row_cols);
-        let mut widths = vec![0i32; ncols];
-        let col_tabskip = |align_preamble: &[ColSpec],
-                           loop_start: Option<usize>,
-                           t0: &Glue,
-                           col: usize|
-         -> Glue {
-            if align_preamble.is_empty() {
-                return t0.clone();
-            }
-            if col < align_preamble.len() {
-                return align_preamble[col].tabskip.clone();
-            }
-            if let Some(ls) = loop_start {
-                let loop_len = align_preamble.len().saturating_sub(ls);
-                if loop_len > 0 {
-                    let offset = (col - ls) % loop_len;
-                    return align_preamble[ls + offset].tabskip.clone();
+        let t0 = self.align_t0;
+        // tabskip glue following each column
+        let mut tabs: Vec<Glue> = (0..ncols)
+            .map(|col| {
+                let pre = &self.align_preamble;
+                if pre.is_empty() {
+                    return t0;
+                }
+                if col < pre.len() {
+                    return pre[col].tabskip;
+                }
+                match self.align_loop_start {
+                    Some(ls) if pre.len() > ls => pre[ls + (col - ls) % (pre.len() - ls)].tabskip,
+                    _ => t0,
+                }
+            })
+            .collect();
+        let size = |n: &Node| match n {
+            Node::Box { w, h, .. } => {
+                if valign {
+                    *h
+                } else {
+                    *w
                 }
             }
-            t0.clone()
+            _ => 0,
         };
-        if self.align_is_valign {
-            let mut cols: NodeList = Vec::new();
-            cols.push(Node::Glue(self.align_t0.clone()));
-            for (c, col) in rows_in.into_iter().enumerate() {
-                let mut col_items: NodeList = Vec::new();
-                for cell in col {
-                    if let Some(box_node) = cell.packed {
-                        col_items.push(box_node);
-                    }
-                }
-                let col_vbox =
-                    crate::boxes::vpack(col_items, None, crate::boxes::VBOX, &self.eqtb).node;
-                cols.push(col_vbox);
-                let t = col_tabskip(
-                    &self.align_preamble,
-                    self.align_loop_start,
-                    &self.align_t0,
-                    c,
-                );
-                cols.push(Node::Glue(t));
-            }
-            let hbox = crate::boxes::hpack(
-                cols,
-                self.align_to.map(|(d, _)| d),
-                crate::boxes::HBOX,
-                &self.eqtb,
-            )
-            .node;
-            self.align_preamble.clear();
-            self.align_rows.clear();
-            self.align_cur_row.clear();
-            self.align_adjust.clear();
-            self.align_row_adjust.clear();
-            self.align_done = false;
-            self.align_in_noalign = false;
-            self.align_everycr_done = false;
-            let nested = self.align_has_save();
-            self.align_nested_restore();
-            if !nested {
-                self.scanner_status = ScannerStatus::Normal;
-                self.align_to = None;
-                self.align_brace_depth = 0;
-                self.align_is_valign = false;
-            }
-            if self.setbox_target.is_some() && self.setbox_depth == self.box_kinds.len() {
-                let idx = self.setbox_target.take().unwrap();
-                let g = self.setbox_global;
-                self.unpark_setbox();
-                self.eqtb.assign_box(idx, Some(hbox), g);
-            } else {
-                self.append_box_node(Some(hbox));
-            }
-            return;
-        }
-        for row in &rows_in {
-            for (c, cell) in row.iter().enumerate() {
-                if cell.span == NOALIGN_SPAN || cell.packed.is_none() {
-                    continue;
-                }
-                let w = match &cell.packed {
-                    Some(Node::Box { w, .. }) => *w,
-                    _ => 0,
-                };
-                if cell.span == 0 {
-                    if c < ncols {
-                        widths[c] = widths[c].max(w);
-                    }
-                }
-            }
-        }
 
+        // §801: width(q) starts at null_flag; every single-column entry and
+        // every span ending in q raises it. Span requirements ending in
+        // column j are merged once all earlier widths are final.
+        let mut widths: Vec<Option<i32>> = vec![None; ncols];
         let mut spans: Vec<(usize, usize, i32)> = Vec::new();
         for row in &rows_in {
+            if row.len() == 1 && row[0].span == NOALIGN_SPAN {
+                continue;
+            }
             for (c, cell) in row.iter().enumerate() {
-                if cell.span != NOALIGN_SPAN && cell.span > 0 && cell.packed.is_some() {
-                    let w = match &cell.packed {
-                        Some(Node::Box { w, .. }) => *w,
-                        _ => 0,
-                    };
-                    spans.push((c, cell.span as usize, w));
+                let Some(packed) = &cell.packed else { continue };
+                let w = size(packed);
+                if cell.span == 0 {
+                    widths[c] = Some(widths[c].map_or(w, |x| x.max(w)));
+                } else {
+                    let end = (c + cell.span as usize).min(ncols - 1);
+                    spans.push((c, end, w));
                 }
             }
         }
         for j in 0..ncols {
-            let mut w = widths[j] as i64;
-            for &(c, s, nat) in &spans {
-                let end = (c + s).min(ncols.saturating_sub(1));
+            for &(c, end, w) in &spans {
                 if end != j {
                     continue;
                 }
                 let pre: i64 = (c..j)
-                    .map(|k| {
-                        widths[k] as i64
-                            + col_tabskip(
-                                &self.align_preamble,
-                                self.align_loop_start,
-                                &self.align_t0,
-                                k,
-                            )
-                            .width as i64
-                    })
+                    .map(|k| widths[k].unwrap_or(0) as i64 + tabs[k].width as i64)
                     .sum();
-                w = w.max(nat as i64 - pre);
+                let need = (w as i64 - pre) as i32;
+                widths[j] = Some(widths[j].map_or(need, |x| x.max(need)));
             }
-            widths[j] = w.max(0) as i32;
+            if widths[j].is_none() {
+                // §802: nullify width(q) and the tabskip glue following it
+                widths[j] = Some(0);
+                tabs[j] = Glue::zero();
+            }
         }
+        let widths: Vec<i32> = widths.into_iter().map(|w| w.unwrap_or(0)).collect();
+        self.align_col_widths.clone_from(&widths);
 
-        self.align_col_widths = widths.clone();
+        // §804: package the preamble (unset columns of the final widths
+        // separated by tabskip glue) to find the alignment's glue setting;
+        // \overfullrule is suppressed for this pack.
+        let column = |w: i32| Node::Box {
+            kind: if valign { crate::boxes::VBOX } else { crate::boxes::HBOX },
+            w: if valign { 0 } else { w },
+            h: if valign { w } else { 0 },
+            d: 0,
+            shift: 0,
+            list: Vec::new(),
+            glue_sign: 0,
+            glue_order: 0,
+            glue_set: 0.0,
+            font: None,
+        };
+        let mut preamble: NodeList = Vec::with_capacity(2 * ncols + 1);
+        preamble.push(Node::Glue(t0));
+        for j in 0..ncols {
+            preamble.push(column(widths[j]));
+            preamble.push(Node::Glue(tabs[j]));
+        }
+        let preamble_len = preamble.len();
+        let (dim, spread) = match self.align_to {
+            Some((d, sp)) => (Some(d), sp),
+            None => (None, false),
+        };
+        let mut res = if valign {
+            crate::boxes::vpack_add_md(
+                preamble,
+                dim,
+                spread,
+                crate::boxes::VBOX,
+                &self.eqtb,
+                i32::MAX,
+            )
+        } else {
+            crate::boxes::hpack_add(preamble, dim, spread, crate::boxes::HBOX, &self.eqtb)
+        };
+        if let Node::Box { list, .. } = &mut res.node {
+            list.truncate(preamble_len);
+        }
+        self.last_badness = res.badness;
+        let origin = self.align_origin.clone();
+        self.report_pack_warnings_at(&res, origin);
+        let (p_size, p_sign, p_order, p_set) = match &res.node {
+            Node::Box {
+                w,
+                h,
+                glue_sign,
+                glue_order,
+                glue_set,
+                ..
+            } => (if valign { *h } else { *w }, *glue_sign, *glue_order, *glue_set),
+            _ => (0, 0, 0, 0.0),
+        };
+        // the amount a tabskip glue contributes under the preamble setting
+        let tab_amount = |g: &Glue| -> i64 {
+            let mut t = g.width as i64;
+            if p_sign == 1 && g.stretch_order == p_order {
+                t += (p_set * g.stretch as f64).round() as i64;
+            } else if p_sign == 2 && g.shrink_order == p_order {
+                t -= (p_set * g.shrink as f64).round() as i64;
+            }
+            t
+        };
+
         let mut rows: NodeList = Vec::new();
-        let bs = self.eqtb.glue_params[GlueParam::BaselineSkip.idx() as usize].clone();
-        let ls = self.eqtb.glue_params[GlueParam::LineSkip.idx() as usize].clone();
+        let bs = self.eqtb.glue_params[GlueParam::BaselineSkip.idx() as usize];
+        let ls = self.eqtb.glue_params[GlueParam::LineSkip.idx() as usize];
         let lsl = self.eqtb.dim_params[DimParam::LineSkipLimit.idx() as usize];
-        // tex.web init_align (§115349) inside $$: the align level's
-        // prev_depth inherits the enclosing display vlist's prev_depth
-        // (push_nest copies the aux record), so append_to_vlist computes
-        // interline glue even before the FIRST row — unless the outer
-        // prev_depth is the ignore sentinel (no glue). Seed `prev` from
-        // self.prev_depth (restored by end_box to the outer value).
-        let mut prev: Option<(i32, i32)> =
-            if self.mode == Mode::DisplayMath && self.prev_depth > -1000 * 65536 {
-                Some((0, self.prev_depth))
-            } else {
-                None
-            };
-        // fin_row splices each row's adjustment drain into the vlist raw,
-        // directly after the row box and WITHOUT interline glue
-        // (append_to_vlist never sees it; prev_depth keeps the row's depth).
-        let row_adj = std::mem::take(&mut self.align_row_adjust);
+        let to_setbox = self.setbox_target.is_some() && self.setbox_depth == self.box_kinds.len();
+        // tex.web init_align: push_nest keeps the enclosing aux, so in a
+        // vertical list the first row's interline glue is computed against
+        // the enclosing prev_depth (a display uses the depth of the list
+        // around the paragraph, already in self.prev_depth here).
+        let mut prev: Option<i32> = if !valign
+            && !to_setbox
+            && matches!(
+                self.mode,
+                Mode::Vertical | Mode::InternalVertical | Mode::DisplayMath
+            )
+            && self.prev_depth > -1000 * 65536
+        {
+            Some(self.prev_depth)
+        } else {
+            None
+        };
         for (row, adj) in rows_in.into_iter().zip(row_adj) {
             if row.len() == 1 && row[0].span == NOALIGN_SPAN {
-                if let Some(node) = row.into_iter().next().and_then(|c| c.packed) {
-                    let (items, end_pd) = match node {
-                        Node::Box { list, shift, .. } => (list, shift),
-                        other => (vec![other], 0),
-                    };
-                    if end_pd <= -1000 * 65536 {
-                        prev = None;
-                    } else {
-                        let mut last_h = 0;
-                        for item in &items {
-                            if let Node::Box { h, .. } = item {
-                                last_h = *h;
+                if let Some(Node::Box { list, shift: end_pd, .. }) =
+                    row.into_iter().next().and_then(|c| c.packed)
+                {
+                    if !valign {
+                        prev = (end_pd > -1000 * 65536).then_some(end_pd);
+                    }
+                    // §811: running dimensions of top-level rules extend to
+                    // the alignment's boundaries
+                    rows.extend(list.into_iter().map(|mut n| {
+                        if let Node::Rule { width, height, depth } = &mut n {
+                            if valign {
+                                if *height == crate::build::RULE_FILL {
+                                    *height = p_size;
+                                }
+                                if *depth == crate::build::RULE_FILL {
+                                    *depth = 0;
+                                }
+                            } else if *width == crate::build::RULE_FILL {
+                                *width = p_size;
                             }
                         }
-                        prev = Some((last_h, end_pd));
-                    }
-                    rows.extend(items);
+                        n
+                    }));
                 }
                 continue;
             }
-            let mut line: NodeList = Vec::new();
-            line.push(Node::Glue(self.align_t0.clone()));
-            let mut g = 0usize;
+            // the unset row's other dimensions: fin_row's natural pack
+            let (row_a, row_b) = row.iter().fold((0, 0), |(a, b), c| match &c.packed {
+                Some(Node::Box { w, h, d, .. }) => {
+                    if valign {
+                        (a.max(*w), 0)
+                    } else {
+                        (a.max(*h), b.max(*d))
+                    }
+                }
+                _ => (a, b),
+            });
+            let mut line: NodeList = Vec::with_capacity(2 * row.len() + 1);
+            line.push(Node::Glue(t0));
             for (c, cell) in row.into_iter().enumerate() {
-                // grid slots covered by an earlier spanning cell exist only
-                // as unpacked placeholders; they contribute no box and no
-                // tabskip of their own (the span's target already includes
-                // the covered columns and their tabskips)
-                if cell.packed.is_none() {
-                    g = g.max(c + 1);
-                    continue;
+                // grid slots covered by an earlier spanning cell
+                let Some(mut cell_box) = cell.packed else { continue };
+                let end = (c + cell.span as usize).min(ncols - 1);
+                let w = widths[c];
+                let mut t = w as i64;
+                let mut covered: NodeList = Vec::new();
+                // §809: tabskip glue and an empty box for every covered column
+                for k in c + 1..=end {
+                    let g = tabs[k - 1];
+                    t += tab_amount(&g) + widths[k] as i64;
+                    covered.push(Node::Glue(g));
+                    covered.push(column(widths[k]));
                 }
-                while g < c {
-                    if g > 0 {
-                        let t = col_tabskip(
-                            &self.align_preamble,
-                            self.align_loop_start,
-                            &self.align_t0,
-                            g - 1,
-                        );
-                        line.push(Node::Glue(t));
-                    }
-                    g += 1;
-                }
-                if c > 0 {
-                    let t = col_tabskip(
-                        &self.align_preamble,
-                        self.align_loop_start,
-                        &self.align_t0,
-                        c - 1,
-                    );
-                    line.push(Node::Glue(t));
-                }
-                let s = cell.span as usize;
-                let target: i64 = if ncols == 0 {
-                    0
-                } else {
-                    let lo = c;
-                    let hi = (c + s).min(ncols - 1);
-                    let mut sum = (lo..=hi).map(|i| widths[i] as i64).sum::<i64>();
-                    for i in lo..hi {
-                        sum += col_tabskip(
-                            &self.align_preamble,
-                            self.align_loop_start,
-                            &self.align_t0,
-                            i,
-                        )
-                        .width as i64;
-                    }
-                    sum
-                };
-                let mut inner = match cell.packed {
-                    Some(Node::Box { list, .. }) => list,
-                    Some(other) => vec![other],
-                    None => Vec::new(),
-                };
-                let (mut s_ord, mut h_ord) = (0u8, 0u8);
-                for node in &inner {
-                    if let Node::Glue(g) = node {
-                        if g.stretch != 0 {
-                            s_ord = s_ord.max(g.stretch_order);
-                        }
-                        if g.shrink != 0 {
-                            h_ord = h_ord.max(g.shrink_order);
-                        }
-                    }
-                }
-                if s_ord > 0 || h_ord > 0 {
-                    for node in &mut inner {
-                        if let Node::Glue(g) = node {
-                            if s_ord > 0 && g.stretch_order == 0 {
-                                g.stretch = 0;
-                            }
-                            if h_ord > 0 && g.shrink_order == 0 {
-                                g.shrink = 0;
-                            }
-                        }
-                    }
-                }
-                line.push(
-                    crate::boxes::hpack(inner, Some(target as i32), crate::boxes::HBOX, &self.eqtb)
-                        .node,
-                );
-                g = c + s + 1;
+                set_unset_cell(&mut cell_box, w, t, valign, row_a, row_b);
+                line.push(cell_box);
+                line.extend(covered);
+                line.push(Node::Glue(tabs[end]));
             }
-            while g < ncols {
-                if g > 0 {
-                    let t = col_tabskip(
-                        &self.align_preamble,
-                        self.align_loop_start,
-                        &self.align_t0,
-                        g - 1,
-                    );
-                    line.push(Node::Glue(t));
-                }
-                g += 1;
-            }
-            let last_t = if ncols > 0 {
-                col_tabskip(
-                    &self.align_preamble,
-                    self.align_loop_start,
-                    &self.align_t0,
-                    ncols - 1,
-                )
-            } else {
-                self.align_t0.clone()
+            let row_box = Node::Box {
+                kind: if valign { crate::boxes::VBOX } else { crate::boxes::HBOX },
+                w: if valign { row_a } else { p_size },
+                h: if valign { p_size } else { row_a },
+                d: if valign { 0 } else { row_b },
+                shift: 0,
+                list: line,
+                glue_sign: p_sign,
+                glue_order: p_order,
+                glue_set: p_set,
+                font: None,
             };
-            line.push(Node::Glue(last_t));
-            let mut rowbox = match self.align_to {
-                None => crate::boxes::hpack(line, None, crate::boxes::HBOX, &self.eqtb).node,
-                Some((d, false)) => {
-                    crate::boxes::hpack(line, Some(d), crate::boxes::HBOX, &self.eqtb).node
-                }
-                Some((d, true)) => {
-                    let nat = crate::boxes::hpack(line, None, crate::boxes::HBOX, &self.eqtb).node;
-                    let w = match &nat {
-                        Node::Box { w, .. } => *w,
-                        _ => 0,
-                    };
-                    let list = match nat {
-                        Node::Box { list, .. } => list,
-                        other => vec![other],
-                    };
-                    crate::boxes::hpack(
-                        list,
-                        Some(w.saturating_add(d)),
-                        crate::boxes::HBOX,
-                        &self.eqtb,
-                    )
-                    .node
-                }
-            };
-            let (h, d) = match &mut rowbox {
-                Node::Box { h, d, list, .. } => {
-                    // tex.web §15938: height(r) := height(q); depth(r) := depth(q)
-                    // every cell box r in row q inherits the row's height and depth
-                    for node in list {
-                        if let Node::Box { h: ch, d: cd, .. } = node {
-                            *ch = *h;
-                            *cd = *d;
+            if !valign {
+                // tex.web append_to_vlist at fin_row time
+                if let Some(pd) = prev {
+                    let gap = bs.width as i64 - pd as i64 - row_a as i64;
+                    rows.push(Node::Glue(if gap < lsl as i64 {
+                        ls
+                    } else {
+                        Glue {
+                            width: gap as i32,
+                            ..bs
                         }
-                    }
-                    (*h, *d)
+                    }));
                 }
-                _ => (0, 0),
-            };
-            align_interline(&mut rows, &mut prev, h, d, &bs, &ls, lsl);
-            rows.push(rowbox);
-            // tex.web fin_row §15724-5: the row's migrated \\vadjust
+                prev = Some(row_b);
+            }
+            rows.push(row_box);
+            // tex.web fin_row §15724-5: the row's migrated \vadjust
             // material follows the row box raw (no interline glue before
-            // it; `prev` already holds the row box's height/depth).
-            if !adj.is_empty() {
-                rows.extend(adj);
-            }
+            // it; prev_depth keeps the row box's depth).
+            rows.extend(adj);
         }
+
         self.align_preamble.clear();
-        self.align_rows.clear();
         self.align_cur_row.clear();
         self.align_adjust.clear();
-        self.align_row_adjust.clear();
         self.align_done = false;
         self.align_in_noalign = false;
         self.align_everycr_done = false;
@@ -1592,59 +1535,120 @@ impl Engine {
             self.scanner_status = ScannerStatus::Normal;
             self.align_to = None;
             self.align_brace_depth = 0;
+            self.align_is_valign = false;
         }
-        if self.setbox_target.is_some() && self.setbox_depth == self.box_kinds.len() {
-            let vbox = crate::boxes::vpack(rows, None, crate::boxes::VBOX, &self.eqtb).node;
+        if to_setbox {
+            let packed = if valign {
+                crate::boxes::hpack(rows, None, crate::boxes::HBOX, &self.eqtb).node
+            } else {
+                crate::boxes::vpack(rows, None, crate::boxes::VBOX, &self.eqtb).node
+            };
             let idx = self.setbox_target.take().unwrap();
             let g = self.setbox_global;
             self.unpark_setbox();
-            self.eqtb.assign_box(idx, Some(vbox), g);
-        } else if self.mode == Mode::InternalVertical {
-            // Inside \vbox (e.g. longtable chunks) or \vcenter: append rows
-            // directly so \lastbox in \LT@echunk retrieves the last row's hbox
-            // and the enclosing vbox packs the rest.
-            if let Some((_, d)) = prev {
-                self.prev_depth = d;
+            self.eqtb.assign_box(idx, Some(packed), g);
+            return;
+        }
+        if valign {
+            // fin_row: each \valign row joins the horizontal list directly
+            if self.mode.is_h() {
+                self.cur_list.extend(rows);
+                self.space_factor = 1000;
+            } else {
+                let hbox = crate::boxes::hpack(rows, None, crate::boxes::HBOX, &self.eqtb).node;
+                self.append_box_node(Some(hbox));
             }
-            self.cur_list.extend(rows);
-        } else if self.mode == Mode::DisplayMath {
-            // tex.web §16078: the alignment rows (already carrying their
-            // interline glue, including the leading glue seeded from the
-            // outer vlist's prev_depth) plus \noalign material join the
-            // display vlist raw. prev_depth := the align level's final
-            // prev_depth (last row's depth), tracked by `prev`.
-            let final_pd = prev.map(|(_, d)| d).unwrap_or(self.prev_depth);
-            self.prev_depth = final_pd;
-            self.display_halign = Some((rows, final_pd));
-        } else {
-            let vbox = crate::boxes::vpack(rows, None, crate::boxes::VBOX, &self.eqtb).node;
-            self.append_box_node(Some(vbox));
+            return;
+        }
+        match self.mode {
+            Mode::Vertical => {
+                // tex.web fin_align: the rows join the contribution list
+                // individually and the page builder runs
+                if let Some(d) = prev {
+                    self.prev_depth = d;
+                } else if !rows.is_empty() {
+                    self.prev_depth = -1000 * 65536;
+                }
+                self.page_list.extend(rows);
+                self.build_page();
+            }
+            Mode::InternalVertical => {
+                if let Some(d) = prev {
+                    self.prev_depth = d;
+                } else if !rows.is_empty() {
+                    self.prev_depth = -1000 * 65536;
+                }
+                self.cur_list.extend(rows);
+            }
+            Mode::DisplayMath => {
+                // tex.web §16078: the alignment rows (already carrying their
+                // interline glue, including the leading glue seeded from the
+                // outer vlist's prev_depth) plus \noalign material join the
+                // display vlist raw. prev_depth := the align level's final
+                // prev_depth (last row's depth), tracked by `prev`.
+                let final_pd = prev.unwrap_or(self.prev_depth);
+                self.prev_depth = final_pd;
+                self.display_halign = Some((rows, final_pd));
+            }
+            _ => {
+                let vbox = crate::boxes::vpack(rows, None, crate::boxes::VBOX, &self.eqtb).node;
+                self.append_box_node(Some(vbox));
+            }
         }
     }
 }
 
-/// tex.web app_to_vlist: baselineskip glue between rows, lineskip when the
-/// gap falls below \lineskiplimit
-fn align_interline(
-    rows: &mut NodeList,
-    prev: &mut Option<(i32, i32)>,
-    h: i32,
-    d: i32,
-    bs: &Glue,
-    ls: &Glue,
-    lsl: i32,
-) {
-    if let Some((_, pd)) = *prev {
-        let gap = bs.width - pd - h;
-        if gap < lsl {
-            rows.push(Node::Glue(ls.clone()));
+/// tex.web §810: turn a natural-size cell into its final box: size `w`
+/// along the alignment axis, glue set as if that size were `t` (the cell
+/// plus any spanned columns), other dimensions taken from the row.
+fn set_unset_cell(cell: &mut Node, w: i32, t: i64, valign: bool, row_a: i32, row_b: i32) {
+    let Node::Box {
+        w: bw,
+        h: bh,
+        d: bd,
+        list,
+        glue_sign,
+        glue_order,
+        glue_set,
+        ..
+    } = cell
+    else {
+        return;
+    };
+    let nat = if valign { *bh } else { *bw } as i64;
+    let (stretch, shrink) = crate::boxes::glue_sums(list);
+    let top = |v: &[i64; 4]| (0..4).rev().find(|&o| v[o] != 0).unwrap_or(0);
+    if t == nat {
+        (*glue_sign, *glue_order, *glue_set) = (0, 0, 0.0);
+    } else if t > nat {
+        let o = top(&stretch);
+        *glue_sign = 1;
+        *glue_order = o as u8;
+        *glue_set = if stretch[o] == 0 {
+            0.0
         } else {
-            let mut g = bs.clone();
-            g.width = gap;
-            rows.push(Node::Glue(g));
-        }
+            (t - nat) as f64 / stretch[o] as f64
+        };
+    } else {
+        let o = top(&shrink);
+        *glue_sign = 2;
+        *glue_order = o as u8;
+        *glue_set = if shrink[o] == 0 {
+            0.0
+        } else if o == 0 && nat - t > shrink[0] {
+            1.0
+        } else {
+            (nat - t) as f64 / shrink[o] as f64
+        };
     }
-    *prev = Some((h, d));
+    if valign {
+        *bw = row_a;
+        *bh = w;
+    } else {
+        *bh = row_a;
+        *bd = row_b;
+        *bw = w;
+    }
 }
 
 #[cfg(test)]
@@ -1672,16 +1676,28 @@ mod tests {
         e
     }
 
-    fn vbox_of(e: &Engine) -> (i32, &NodeList) {
-        let n = e
+    /// (alignment width, alignment list): the enclosing \vbox's list, or —
+    /// for an outer-vertical \halign, whose rows go straight to the page —
+    /// the page list after the page builder's \topskip glue
+    fn vbox_of(e: &Engine) -> (i32, &[Node]) {
+        let start = e
             .page_list
             .iter()
-            .find(|n| matches!(n, Node::Box { kind, .. } if *kind == crate::boxes::VBOX))
-            .expect("alignment vbox on page list");
-        match n {
-            Node::Box { w, list, .. } => (*w, list),
-            _ => unreachable!(),
+            .position(|n| !matches!(n, Node::Glue(_)))
+            .expect("alignment material on page list");
+        if let Node::Box { kind, w, list, .. } = &e.page_list[start] {
+            if *kind == crate::boxes::VBOX {
+                return (*w, list);
+            }
         }
+        let w = e.page_list[start..]
+            .iter()
+            .find_map(|n| match n {
+                Node::Box { kind, w, .. } if *kind == crate::boxes::HBOX => Some(*w),
+                _ => None,
+            })
+            .expect("alignment rows on page list");
+        (w, &e.page_list[start..])
     }
 
     fn row_of(n: &Node) -> &NodeList {
@@ -1863,8 +1879,11 @@ mod tests {
         assert_eq!(w1, 0, "col 1 stays 0: {:?}", e.align_col_widths);
         assert_eq!(w2, wb * 2, "col 2 gets span: {:?}", e.align_col_widths);
         let r = row_of(&list[0]);
-        assert_eq!(r.len(), 5, "T_0, cell, tabskip, span cell, T_n: {:?}", r);
-        assert_eq!(box_w(&r[3]), w1 + w2);
+        // tex.web §809: the spanned cell is a box of its first column's
+        // width, followed by tabskip glue and an empty box per covered column
+        assert_eq!(r.len(), 7, "T_0, cell, tabskip, span cell, tabskip, empty, T_n: {:?}", r);
+        assert_eq!(box_w(&r[3]), w1);
+        assert_eq!(box_w(&r[5]), w2);
         assert_eq!(w, box_w(&r[1]) + w1 + w2);
     }
 
@@ -2612,13 +2631,10 @@ mod tests {
         let Node::Box { list, .. } = b else {
             panic!("expected hbox");
         };
-        let valign_box = list.iter().find(|n| matches!(n, Node::Box { .. })).unwrap();
-        let Node::Box { list: vcols, .. } = valign_box else {
-            panic!("expected valign hbox");
-        };
-        let vboxes: Vec<_> = vcols
+        // tex.web fin_align: each \valign row joins the enclosing hlist
+        let vboxes: Vec<_> = list
             .iter()
-            .filter(|n| matches!(n, Node::Box { .. }))
+            .filter(|n| matches!(n, Node::Box { kind, .. } if *kind == crate::boxes::VBOX))
             .collect();
         assert_eq!(vboxes.len(), 2, "expected 2 column vboxes");
     }
@@ -2643,5 +2659,65 @@ mod tests {
             .filter(|n| matches!(n, Node::Box { .. }))
             .collect();
         assert_eq!(hboxes.len(), 1, "expected 1 row box");
+    }
+
+    /// Box dimensions measured with TeX Live 2026 pdflatex for the same
+    /// input: fin_align's span merging, nullified empty columns, the
+    /// \valign transpose, interline glue against the enclosing list and a
+    /// trailing \span that becomes \cr.
+    #[test]
+    fn alignment_dimensions_match_tex_live() {
+        let cases: &[(&str, &str, &str, &str)] = &[
+            (
+                r"\vbox{\hbox{x}\halign{#\cr a\cr g\cr}\hbox{y}}",
+                "5.2778pt",
+                "40.30554pt",
+                "1.94444pt",
+            ),
+            (r"\vbox to 60pt{\halign{#\cr a\cr}\vfil\hbox{y}}", "5.2778pt", "60.0pt", "1.94444pt"),
+            (r"\vbox{\tabskip=5pt\halign{#&#&#&#\cr a&b\span c&d\cr}}", "40.5556pt", "6.94444pt", "0pt"),
+            (r"\vbox{\tabskip=5pt\halign{#&#&#\cr a\cr}}", "15.00002pt", "4.30554pt", "0pt"),
+            (
+                r"\vbox{\tabskip=1pt\halign{#&#&#\cr aaaa\cr x\span y\span\cr a&\omit\span\omit wwwwwwwwww\cr}}",
+                "95.22235pt",
+                "28.30554pt",
+                "0pt",
+            ),
+            (
+                r"\hbox{\valign{#\vfil\tabskip=2pt&\hbox{#}\cr \hbox{a}&b\cr \noalign{\kern 3pt}\hbox{c}\hbox{d}&e\cr}}",
+                "14.11115pt",
+                "27.24998pt",
+                "0pt",
+            ),
+            (
+                r"\hbox{x\valign to 40pt{\hbox{#}\vfil\tabskip 0pt plus 1fil&\hbox{#}\cr a&b\cr c\span d\cr g\cr}y}",
+                "26.66676pt",
+                "40.0pt",
+                "1.94444pt",
+            ),
+        ];
+        for (body, wd, ht, dp) in cases {
+            let e = run(&format!(
+                "\\font\\cmr=cmr10 \\cmr \\lineskip=1pt \\lineskiplimit=0pt \\boxmaxdepth=16383.99999pt \\setbox1={body}\
+                 \\ifdim\\wd1={wd}\\else\\errmessage{{wd \\the\\wd1}}\\fi\
+                 \\ifdim\\ht1={ht}\\else\\errmessage{{ht \\the\\ht1}}\\fi\
+                 \\ifdim\\dp1={dp}\\else\\errmessage{{dp \\the\\dp1}}\\fi"
+            ));
+            assert_eq!(e.error_count, 0, "{body}:\n{}", e.diagnostic_output);
+        }
+
+        // a \span after the last column is "Extra alignment tab": the rest
+        // of the row starts a new one
+        let e = run(
+            "\\font\\cmr=cmr10 \\cmr \\setbox1=\\vbox{\\halign{#&#\\cr a&b\\span c\\cr}}\
+             \\ifdim\\wd1=10.55559pt\\else\\errmessage{wd \\the\\wd1}\\fi\
+             \\ifdim\\ht1=18.94444pt\\else\\errmessage{ht \\the\\ht1}\\fi",
+        );
+        assert_eq!(e.error_count, 1, "{}", e.diagnostic_output);
+        assert!(
+            e.diagnostic_output.contains("Extra alignment tab"),
+            "{}",
+            e.diagnostic_output
+        );
     }
 }

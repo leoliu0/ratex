@@ -540,6 +540,18 @@ impl Engine {
                     // hyphenatable word; an initial indent box does not.
                     prev_ok = can_start_word;
                     can_start_word = false;
+                    // tex.web §897: a word starting with an uppercase letter
+                    // (lc_code(c) <> c) is hyphenated only when \uchyph > 0
+                    let first = match &list[i] {
+                        Node::Char { c, .. } => Some(*c),
+                        Node::Ligature { letters, .. } => Some(letters[0]),
+                        _ => None,
+                    };
+                    if first.is_some_and(|c| c != node_letters[0])
+                        && self.eqtb.int_params[IntParam::UcHyph.idx() as usize] <= 0
+                    {
+                        prev_ok = false;
+                    }
                 } else if node_font != word_font {
                     // tex.web §26117-26118: a character whose font differs
                     // from hf is treated as a nonletter — close the word
@@ -899,6 +911,8 @@ impl Engine {
                     Node::Box { w, .. } => (*w as i64, [0; 4], [0; 4], 0, 0),
                     Node::Rule { width: w, .. } => (*w as i64, [0; 4], [0; 4], 0, 0),
                     Node::NativeGlyphRun { width, .. } => (*width as i64, [0; 4], [0; 4], 0, 0),
+                    // math-on/off nodes carry \mathsurround
+                    Node::MathKern(k, 1 | 2) => (*k as i64, [0; 4], [0; 4], 0, 0),
                     _ => (0, [0; 4], [0; 4], 0, 0),
                 };
                 cum_w[i + 1] = cum_w[i] + w;
@@ -1359,10 +1373,10 @@ impl Engine {
             match &list[i] {
                 Node::MathKern(_, kind) => {
                     auto_breaking = *kind != 1;
-                    // tex.web §17079: math_node does kern_break — a math
-                    // node followed by glue is a legal breakpoint (the glue
-                    // is discarded at the break)
-                    if i + 1 < n && matches!(list[i + 1], Node::Glue(_)) {
+                    // tex.web §866: math_node does kern_break after setting
+                    // auto_breaking, so only a math-off node followed by
+                    // glue is a legal breakpoint (the glue is discarded)
+                    if auto_breaking && i + 1 < n && matches!(list[i + 1], Node::Glue(_)) {
                         consider!(i, false, 0, BreakType::Unhyphenated, false, cum_w[i]);
                     }
                 }
@@ -1862,6 +1876,7 @@ fn push_dims(eqtb: &crate::eqtb::Eqtb, n: Node, seg: &mut NodeList, w: &mut i64)
         Node::Box { w: bw, .. } => *bw,
         Node::Rule { width, .. } => *width,
         Node::NativeGlyphRun { width, .. } => *width,
+        Node::MathKern(k, 1 | 2) => *k,
         _ => 0,
     };
     *w += wd as i64;
@@ -2088,6 +2103,7 @@ mod plural_penalty_tests {
     fn saved_language_codes_drive_runtime_hyphenation() {
         let mut engine = Engine::new(true);
         engine.eqtb.int_params[IntParam::Language.idx() as usize] = 7;
+        engine.eqtb.int_params[IntParam::UcHyph.idx() as usize] = 1;
         engine.eqtb.int_params[IntParam::LeftHyphenMin.idx() as usize] = 1;
         engine.eqtb.int_params[IntParam::RightHyphenMin.idx() as usize] = 1;
         engine.eqtb.hyphen_char.push(b'-' as i32);
@@ -2120,5 +2136,38 @@ mod plural_penalty_tests {
         assert!(!with_current_codes
             .iter()
             .any(|node| matches!(node, Node::Disc(_))));
+    }
+
+    /// tex.web §897: with \uchyph<=0 a word whose first letter is not its
+    /// own lc_code (a capital) is left unhyphenated.
+    #[test]
+    fn uchyph_zero_skips_capitalized_words() {
+        let mut engine = Engine::new(true);
+        engine.eqtb.int_params[IntParam::Language.idx() as usize] = 0;
+        engine.eqtb.int_params[IntParam::LeftHyphenMin.idx() as usize] = 1;
+        engine.eqtb.int_params[IntParam::RightHyphenMin.idx() as usize] = 1;
+        engine.eqtb.hyphen_char.push(b'-' as i32);
+        engine.eqtb.lc_code[b'A' as usize] = b'a';
+        engine.eqtb.lc_code[b'a' as usize] = b'a';
+        engine.eqtb.lc_code[b'b' as usize] = b'b';
+        engine.trie_for_language_mut(0).add_pattern_bytes(b"a1b");
+        let word = |first: u8| {
+            vec![
+                Node::Glue(Glue::zero()),
+                Node::Char { font: 0, c: first },
+                Node::Char { font: 0, c: b'b' },
+                Node::Penalty(10_000),
+            ]
+        };
+        let hyphenated = |engine: &mut Engine, first: u8| {
+            let mut list = word(first);
+            engine.hyphenate_list(&mut list);
+            list.iter().any(|node| matches!(node, Node::Disc(_)))
+        };
+        engine.eqtb.int_params[IntParam::UcHyph.idx() as usize] = 0;
+        assert!(hyphenated(&mut engine, b'a'));
+        assert!(!hyphenated(&mut engine, b'A'));
+        engine.eqtb.int_params[IntParam::UcHyph.idx() as usize] = 1;
+        assert!(hyphenated(&mut engine, b'A'));
     }
 }

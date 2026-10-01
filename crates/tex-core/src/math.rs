@@ -526,6 +526,8 @@ impl Engine {
         } else {
             None
         };
+        // tex.web §1196: the math nodes take \mathsurround before unsave
+        let ms = self.eqtb.dim_params[DimParam::MathSurround.idx() as usize];
         self.pop_group();
         let (outer_mode, outer_list, pd, sf, pg) = self.saved_lists.pop().unwrap_or((
             self.mode,
@@ -564,7 +566,6 @@ impl Engine {
             return;
         }
         let hlist = inline_hlist.unwrap();
-        let ms = self.eqtb.dim_params[DimParam::MathSurround.idx() as usize];
         match self.mode {
             // tex.web §22461 (finish math in text): the converted nodes are
             // SPLICED into the current hlist between math-on/math-off nodes

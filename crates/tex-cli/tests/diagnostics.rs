@@ -738,7 +738,7 @@ fn runaway_definition_in_an_include_points_to_the_child_and_names_the_parent() {
     assert!(!output.status.success(), "{}", failure_output(&output));
     let stderr = text(&output.stderr);
     assert!(
-        stderr.contains("File ended while scanning the definition of \\broken"),
+        stderr.contains("File ended while scanning definition of \\broken"),
         "{stderr}"
     );
     assert!(stderr.contains("child.tex:1:1"), "{stderr}");
@@ -782,7 +782,7 @@ fn alignment_preamble_eof_in_an_include_points_to_the_halign() {
     assert!(!output.status.success(), "{}", failure_output(&output));
     let stderr = text(&output.stderr);
     assert!(
-        stderr.contains("File ended while scanning an alignment preamble"),
+        stderr.contains("File ended while scanning preamble of \\halign"),
         "{stderr}"
     );
     assert!(stderr.contains("child.tex:1:1"), "{stderr}");
@@ -817,7 +817,7 @@ fn expanded_text_eof_in_an_include_points_to_the_opening_brace() {
     let output = job.compile(&["-plain", "-interaction=nonstopmode"]);
     assert!(!output.status.success(), "{}", failure_output(&output));
     let stderr = text(&output.stderr);
-    assert!(stderr.contains("Missing } in expanded text"), "{stderr}");
+    assert!(stderr.contains("File ended while scanning text of \\message"), "{stderr}");
     assert!(stderr.contains("child.tex:1:9"), "{stderr}");
     assert!(stderr.contains("1 | \\message{unfinished"), "{stderr}");
     assert!(stderr.contains("= included from main.tex:1:1"), "{stderr}");
@@ -833,7 +833,10 @@ fn balanced_text_eof_in_an_include_points_to_the_opening_brace() {
     let output = job.compile(&["-plain", "-interaction=nonstopmode"]);
     assert!(!output.status.success(), "{}", failure_output(&output));
     let stderr = text(&output.stderr);
-    assert!(stderr.contains("Runaway argument / missing }"), "{stderr}");
+    assert!(
+        stderr.contains("File ended while scanning text of \\toks"),
+        "{stderr}"
+    );
     assert!(stderr.contains("child.tex:1:8"), "{stderr}");
     assert!(stderr.contains("1 | \\toks0={unfinished"), "{stderr}");
     assert!(stderr.contains("= included from main.tex:1:1"), "{stderr}");
@@ -848,7 +851,10 @@ fn runaway_macro_argument_keeps_its_call_trace_and_include_site() {
     let output = job.compile(&["-plain", "-interaction=nonstopmode"]);
     assert!(!output.status.success(), "{}", failure_output(&output));
     let stderr = text(&output.stderr);
-    assert!(stderr.contains("Runaway argument / missing }"), "{stderr}");
+    assert!(
+        stderr.contains("File ended while scanning use of \\take"),
+        "{stderr}"
+    );
     assert!(stderr.contains("child.tex:1:1"), "{stderr}");
     assert!(stderr.contains("1 | \\take{unterminated"), "{stderr}");
     let caret = line_after(&stderr, "1 | \\take{unterminated").expect("caret after call");
@@ -930,7 +936,7 @@ fn macro_generated_runaway_definition_keeps_the_generating_macro() {
     assert!(!output.status.success(), "{}", failure_output(&output));
     let stderr = text(&output.stderr);
     assert!(
-        stderr.contains("File ended while scanning the definition of \\broken"),
+        stderr.contains("File ended while scanning definition of \\broken"),
         "{stderr}"
     );
     assert!(stderr.contains("main.tex:2:1"), "{stderr}");

@@ -410,8 +410,14 @@ pub(crate) fn install(lua: &mut Lua) -> Result<(), String> {
             "lc" => i64::from(e.eqtb.case_code(c, false)),
             "uc" => i64::from(e.eqtb.case_code(c, true)),
             "sf" => i64::from(e.eqtb.space_factor_code(c)),
-            "math" => i64::from(e.eqtb.math_code_for(c)),
-            _ => e.eqtb.delimiter_code_for(c),
+            "math" => {
+                let (class, family, slot) = e.eqtb.lua_math_code(c);
+                i64::from(class) | (i64::from(family) << 4) | (i64::from(slot) << 12)
+            }
+            _ => {
+                let (sf, sc, lf, lc) = e.eqtb.lua_del_code(c);
+                i64::from(sf + 1) | (i64::from(sc) << 9) | (i64::from(lf) << 30) | (i64::from(lc) << 38)
+            }
         })
     });
     reg!(lua, t, "code_set", |kind: String, c: i64, v: i64, global: bool, what: String| -> Result<(), String> {
@@ -422,8 +428,19 @@ pub(crate) fn install(lua: &mut Lua) -> Result<(), String> {
                 "lc" => e.eqtb.assign_case_code(c, v as u32, false, g),
                 "uc" => e.eqtb.assign_case_code(c, v as u32, true, g),
                 "sf" => e.eqtb.assign_space_factor_code(c, v as u16, g),
-                "math" => e.eqtb.assign_math_code_for(c, v as u32, g),
-                _ => e.eqtb.assign_delimiter_code_for(c, v, g),
+                "math" => {
+                    let class = (v & 0xF) as i32;
+                    let family = ((v >> 4) & 0xFF) as i32;
+                    let slot = ((v >> 12) & 0x1F_FFFF) as i32;
+                    e.eqtb.assign_lua_math_code(c, class, family, slot, g);
+                }
+                _ => {
+                    let sf = (v & 0x1FF) as i32 - 1;
+                    let sc = ((v >> 9) & 0x1F_FFFF) as i32;
+                    let lf = ((v >> 30) & 0xFF) as i32;
+                    let lc = ((v >> 38) & 0x1F_FFFF) as i32;
+                    e.eqtb.assign_lua_del_code(c, sf, sc, lf, lc, g);
+                }
             }
         })
     });

@@ -384,6 +384,26 @@ impl Engine {
                 }
                 Ok(Token::from_cs(id))
             }
+            84 => {
+                let value = i32::try_from(chr).map_err(|_| format!("invalid value {chr}"))?;
+                let name = [ANON_PREFIX, b"xmath_given:", value.to_string().as_bytes()].concat();
+                let id = self.cs.intern(&name);
+                if self.eqtb.get(id).is_none() {
+                    self.eqtb.assign(id, Equiv::UMathCharDef(value), true);
+                }
+                Ok(Token::from_cs(id))
+            }
+            c if c == i64::from(CMD_LUA_CALL) || c == i64::from(CMD_LUA_EXPANDABLE_CALL) => {
+                let slot = u32::try_from(chr).map_err(|_| format!("invalid value {chr}"))?;
+                let protected = c == i64::from(CMD_LUA_CALL);
+                let kind: &[u8] = if protected { b"lua_call:" } else { b"lua_expandable_call:" };
+                let name = [ANON_PREFIX, kind, slot.to_string().as_bytes()].concat();
+                let id = self.cs.intern(&name);
+                if self.eqtb.get(id).is_none() {
+                    self.eqtb.assign(id, Equiv::LuaCall { slot, protected }, true);
+                }
+                Ok(Token::from_cs(id))
+            }
             _ => Err(format!(
                 "token.new: command {} is not supported by this engine",
                 crate::lua_cmds::COMMAND_NAMES.get(cmd as usize).copied().unwrap_or("?")

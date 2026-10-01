@@ -734,11 +734,17 @@ impl Engine {
             }
             UPrim::UMathCharClass | UPrim::UMathCharFam | UPrim::UMathCharSlot => {
                 let c = self.scan_int();
-                let (class, family, slot) = self.eqtb.lua_math_code(c as u32);
+                // the tree is indexed by the low 21 bits; a default code
+                // keeps the full number as its character
+                let key = (c as u32) & 0x1F_FFFF;
+                let (class, family, mut slot) = self.eqtb.lua_math_code(key);
+                if (class, family, slot) == (0, 0, key) && key > 255 {
+                    slot = c as u32;
+                }
                 let v = match u {
-                    UPrim::UMathCharClass => class,
-                    UPrim::UMathCharFam => family,
-                    _ => slot,
+                    UPrim::UMathCharClass => class as i32,
+                    UPrim::UMathCharFam => family as i32,
+                    _ => slot as i32,
                 };
                 self.exp_number(v.to_string());
             }

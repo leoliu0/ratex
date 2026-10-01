@@ -1360,6 +1360,9 @@ impl Engine {
                         );
                         return None;
                     }
+                    if self.take_csname_run(&mut name) {
+                        continue;
+                    }
                     let t = self.get_x_raw();
                     if t == EOF_MARKER {
                         self.csname_depth = self.csname_depth.saturating_sub(1);
@@ -3214,6 +3217,38 @@ impl Engine {
         self.align_brace_depth = self.align_brace_depth.saturating_add(after - *depth);
         *depth = after;
         Some(after == 0)
+    }
+
+    /// Append the run of character tokens at the front of the current token
+    /// list that `\csname` takes one by one through `get_x_raw` (characters
+    /// that are neither active, braces, alignment tabs nor ignored) to
+    /// `name`, leaving the current token as the last of them would. Stops
+    /// once the name exceeds the length `\csname` checks before each token.
+    fn take_csname_run(&mut self, name: &mut Vec<u8>) -> bool {
+        let Some((segment, trace_depth)) = self.token_list_front() else {
+            return false;
+        };
+        let mut last = None;
+        let mut length = 0;
+        for &t in segment {
+            if !matches!(t.0 >> 24, 0 | 3 | 5..=8 | 10..=12) || name.len() > 2000 {
+                break;
+            }
+            if t.is_unicode_char() {
+                t.append_character_bytes(name);
+            } else {
+                name.push(t.chr() as u8);
+            }
+            last = Some(t);
+            length += 1;
+        }
+        let Some(last) = last else {
+            return false;
+        };
+        self.consume_token_list_front(length, trace_depth);
+        self.unexpanded_parameter = false;
+        self.set_cur_char(last);
+        true
     }
 
     /// The undelivered tokens of the current token list (or of the current

@@ -38,6 +38,7 @@ pub fn serialize_chunk_with_pool(chunk: &LuaProto, strip: bool) -> Result<Vec<u8
     Ok(buf)
 }
 
+#[cfg(test)]
 /// Serialize a Chunk to binary format (with string deduplication but no VM strings)
 pub fn serialize_chunk(chunk: &LuaProto, strip: bool) -> Result<Vec<u8>, String> {
     let mut buf = Vec::new();

@@ -8,7 +8,7 @@ use flate2::Compression;
 use std::io::Write;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
-use tex_core::pdf_images::{embed_png_with_options, PngEmbedOptions};
+use tex_core::pdf_images::{embed_png_with_options, PngEmbedOptions, RasterSettings};
 
 fn legacy_rgba_size(input: &[u8]) -> Result<(usize, usize), String> {
     let mut decoder = png::Decoder::new(std::io::Cursor::new(input));
@@ -112,7 +112,8 @@ fn main() -> Result<(), String> {
         let start = Instant::now();
         if let Some(options) = options {
             let mut next_object = 2;
-            let objects = embed_png_with_options(&input, 1, &mut next_object, options)
+            let settings = RasterSettings::default();
+            let objects = embed_png_with_options(&input, 1, &mut next_object, options, &settings)
                 .ok_or_else(|| format!("cannot embed {}", path.display()))?;
             output_bytes = objects.iter().map(|object| object.bytes.len()).sum();
             object_count = objects.len();

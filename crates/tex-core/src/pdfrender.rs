@@ -28,7 +28,7 @@ const ONE_HUNDRED_BP_SP: i64 = 6_578_176;
 pub(crate) const SP_PER_BP: f64 = 72.27 * 65536.0 / 72.0;
 /// pdfTeX's `divide_scaled`: return the rounded decimal value and the
 /// corresponding displacement on TeX's scaled-point raster.
-fn divide_scaled(mut s: i64, mut m: i64, decimal_digits: u32) -> (i64, i64) {
+pub(crate) fn divide_scaled(mut s: i64, mut m: i64, decimal_digits: u32) -> (i64, i64) {
     if m == 0 {
         return (0, 0);
     }
@@ -97,8 +97,13 @@ pub(crate) fn pdf_width_tenths(width: i32, at_size: i32) -> i32 {
     if at_size == 0 {
         return 0;
     }
-    let (_, pdf_font_size) = divide_scaled(at_size as i64, ONE_HUNDRED_BP_SP, 6);
-    divide_scaled(width as i64, pdf_font_size, 4).0 as i32
+    divide_scaled(width as i64, pdf_font_size(at_size), 4).0 as i32
+}
+
+/// pdfTeX `pdf_font_size[f]` (`pdf_use_font`): the at size snapped to 6
+/// decimals of bp.
+pub(crate) fn pdf_font_size(at_size: i32) -> i64 {
+    divide_scaled(at_size as i64, ONE_HUNDRED_BP_SP, 6).1
 }
 
 /// pdfTeX `round_xn_over_d` in i128-safe form: round `x * n / d` half-up on
@@ -121,6 +126,66 @@ pub(crate) fn round_xn_over_d(x: i64, n: i64, d: i64) -> i64 {
     } else {
         q as i64
     }
+}
+
+/// pdfTeX `ext_xn_over_d` (utils.c): `x*n/d` in double precision, rounded
+/// half away from zero and truncated to an integer.
+pub(crate) fn ext_xn_over_d(x: i64, n: i64, d: i64) -> i32 {
+    let mut r = (x as f64 * n as f64) / d as f64;
+    if r > f64::EPSILON {
+        r += 0.5;
+    } else {
+        r -= 0.5;
+    }
+    r as i32
+}
+
+/// pdfTeX `max_dimen`.
+const MAX_DIMEN: i64 = 0x3FFF_FFFF;
+
+/// pdfTeX `gap_amount`: the move from `cur_pos` to the nearest point of the
+/// \pdfsnapy grid through `refpos` that the snap glue's stretch (forward)
+/// or shrink (backward) can reach; 0 when neither can.
+fn gap_amount(glue: &crate::boxes::Glue, cur_pos: i64, refpos: i64) -> i64 {
+    let unit = glue.width as i64;
+    if unit == 0 {
+        return 0;
+    }
+    let stretch = if glue.stretch_order > 0 { MAX_DIMEN } else { glue.stretch as i64 };
+    let shrink = if glue.shrink_order > 0 { MAX_DIMEN } else { glue.shrink as i64 };
+    let last = refpos + unit * ((cur_pos - refpos) / unit);
+    let next = last + unit;
+    let back = if cur_pos - last < shrink { cur_pos - last } else { MAX_DIMEN };
+    let forward = if next - cur_pos < stretch { next - cur_pos } else { MAX_DIMEN };
+    if back == MAX_DIMEN && forward == MAX_DIMEN {
+        0
+    } else if forward <= back {
+        forward
+    } else {
+        -back
+    }
+}
+
+/// pdfTeX `get_vpos`: the vertical position reached after `nodes` starting
+/// at `cur_v`, moving like `vlist_out` with a fresh glue rounding state.
+fn get_vpos(nodes: &[Node], cur_v: i64, sign: u8, order: u8, set: f64) -> i64 {
+    let mut v = cur_v;
+    let mut glue_state = GlueState::default();
+    for node in nodes {
+        v += match node {
+            Node::Box { h, d, .. } => (*h + *d) as i64,
+            Node::Rule { height, depth, .. } => (*height + *depth) as i64,
+            Node::NativeGlyphRun { height, depth, .. } => (*height + *depth) as i64,
+            Node::Whatsit(
+                crate::boxes::WhatIt::PdfRefXImage { h, d, .. }
+                | crate::boxes::WhatIt::PdfRefXForm { h, d, .. },
+            ) => (*h + *d) as i64,
+            Node::Glue(g) | Node::Leaders { glue: g, .. } => glue_state.advance(g, sign, order, set),
+            Node::Kern(k) | Node::ExplicitKern(k) => *k as i64,
+            _ => 0,
+        };
+    }
+    v
 }
 
 /// pdfTeX `pdf_print_bp` for a bp coordinate: quantize to sp, then print
@@ -172,7 +237,8 @@ fn do_round(x: f64) -> i64 {
 /// must yield exactly 4 numbers). Stricter than pdfTeX, which then echoes the
 /// raw token string (an input with more than four numbers therefore silently
 /// corrupts the content stream there); we require exactly four finite numbers
-/// and emit them canonicalized, so a malformed matrix can never reach the PDF.
+/// and echo the string only when it is plain PDF number syntax, so a
+/// malformed matrix can never reach the PDF.
 fn parse_matrix(s: &str) -> Option<[f64; 4]> {
     let mut it = s.split_ascii_whitespace();
     let mut v = [0.0f64; 4];
@@ -189,10 +255,25 @@ fn parse_matrix(s: &str) -> Option<[f64; 4]> {
     }
     Some(v)
 }
-/// Print a parsed `\pdfsetmatrix` component. Matrix entries are
-/// dimensionless numbers (not bp dimensions), so they are never re-quantized
-/// through the sp raster: integral values print bare, others use Rust's
-/// shortest round-tripping decimal form.
+/// PDF real/integer syntax (ISO 32000 §7.3.3): optional sign, digits with at
+/// most one `.`, at least one digit; no exponent.
+fn is_pdf_number(t: &str) -> bool {
+    let t = t.strip_prefix(['+', '-']).unwrap_or(t);
+    let mut digits = 0;
+    let mut dots = 0;
+    for b in t.bytes() {
+        match b {
+            b'0'..=b'9' => digits += 1,
+            b'.' => dots += 1,
+            _ => return false,
+        }
+    }
+    digits > 0 && dots <= 1
+}
+/// Print a parsed `\pdfsetmatrix` component that is not plain PDF number
+/// syntax. Matrix entries are dimensionless numbers (not bp dimensions), so
+/// they are never re-quantized through the sp raster: integral values print
+/// bare, others use Rust's shortest round-tripping decimal form.
 fn push_matrix_num(buf: &mut String, v: f64) {
     use std::fmt::Write;
     if v.fract() == 0.0 && v.abs() < (i64::MAX as f64) {
@@ -288,6 +369,20 @@ pub struct RenderCtx<'a> {
     cjk_text: Option<char>,
     /// Virtual font of each VF-backed engine font used on this page.
     vf_fonts: crate::FxHashMap<u16, Option<std::rc::Rc<crate::fontload::VfFont>>>,
+    /// pdfTeX `pdf_ximage_list`: images painted here, in first-use order.
+    pub ximage_list: Vec<i32>,
+    /// pdfTeX `pdf_xform_list`: forms painted here, in first-use order.
+    pub xform_list: Vec<i32>,
+}
+
+/// A shipped \pdfxform box: its content stream and resources.
+pub struct RenderedForm {
+    pub content: Vec<u8>,
+    pub fonts: Vec<(usize, u16)>,
+    /// pdfTeX `pdf_image_procset` of the form
+    pub image_procset: u8,
+    /// pdfTeX `pdf_ximage_list` of the form
+    pub ximages: Vec<i32>,
 }
 
 #[inline]
@@ -313,22 +408,17 @@ fn push_i64(s: &mut String, mut v: i64) {
     }
 }
 
+/// pdfTeX `pdf_print_char`: bytes <= 32, `(`, `)`, `\` and bytes > 127 are
+/// written as three-digit octal escapes (`pdf_print_octal`), all others raw.
 #[inline]
 fn push_pdf_char(s: &mut String, b: u8) {
-    match b {
-        b'(' | b')' | b'\\' => {
-            s.push('\\');
-            s.push(b as char);
-        }
-        32..=126 => s.push(b as char),
-        _ => {
-            // Three octal digits keep a following ASCII digit from becoming
-            // part of the escape. Never encode font bytes as UTF-8 characters.
-            s.push('\\');
-            s.push((b'0' + (b >> 6)) as char);
-            s.push((b'0' + ((b >> 3) & 7)) as char);
-            s.push((b'0' + (b & 7)) as char);
-        }
+    if b <= 32 || b == b'(' || b == b')' || b == b'\\' || b > 127 {
+        s.push('\\');
+        s.push((b'0' + (b >> 6)) as char);
+        s.push((b'0' + ((b >> 3) & 7)) as char);
+        s.push((b'0' + (b & 7)) as char);
+    } else {
+        s.push(b as char);
     }
 }
 
@@ -353,6 +443,16 @@ mod text_encoding_tests {
         assert_eq!(operands[2].as_str().unwrap(), b"A");
         assert_eq!(operands[3].as_i64().unwrap(), 30);
         assert_eq!(operands[4].as_str().unwrap(), b"B");
+    }
+
+    /// pdflatex writes `(`, `)`, `\`, space and high bytes as octal, DEL raw.
+    #[test]
+    fn literal_text_escapes_like_pdf_print_char() {
+        let mut text = String::new();
+        for byte in [b'(', b')', b'\\', b' ', b'!', 127, 200, 12] {
+            push_pdf_char(&mut text, byte);
+        }
+        assert_eq!(text, "\\050\\051\\134\\040!\x7f\\310\\014");
     }
 
     /// /Widths divide by pdfTeX's snapped `pdf_font_size`, not the raw at
@@ -426,6 +526,8 @@ impl Engine {
             display_list: crate::boxes::DisplayList::new(),
             cjk_text: None,
             vf_fonts: crate::FxHashMap::default(),
+            ximage_list: Vec::new(),
+            xform_list: Vec::new(),
         }
     }
 
@@ -478,6 +580,7 @@ impl Engine {
                 .record_page_size(page, width_sp as i64, height_sp as i64);
         }
         let mag = self.prepare_mag();
+        self.pdf_page_group_val = 0;
         let mut ctx = self.new_ctx(height_sp as i64);
         // pdfTeX "Adjust transformation matrix for the magnification ratio":
         // the page stream opens with `m 0 0 m 0 0 cm`, m = mag/1000
@@ -547,6 +650,13 @@ impl Engine {
         }
         // engine-level results
         ctx.eng.pdf_doc.pages_attr = ctx.eng.pdf_pages_attr.clone().into_bytes();
+        // "Write out page object" takes the page group before the pending
+        // images are written (a PDF page's group object resets it).
+        let group = ctx.eng.pdf_page_group_val;
+        ctx.write_pending_images();
+        let image_procset = ctx.image_procset();
+        let omit_procset =
+            ctx.eng.eqtb.int_params[crate::prim::IntParam::PdfOmitProcset.idx() as usize];
         PdfPage {
             content: {
                 ctx.end_text();
@@ -562,21 +672,19 @@ impl Engine {
             attr_extra: ctx.eng.pdf_page_attr.as_bytes().to_vec(),
             resources_extra: ctx.eng.pdf_page_resources.clone(),
             display_list: Some(std::mem::take(&mut ctx.display_list)),
-            // "Generate ProcSet if desired" (PDF 1.x: unless \pdfomitprocset > 0)
-            procset: ctx.eng.eqtb.int_params
-                [crate::prim::IntParam::PdfOmitProcset.idx() as usize]
-                <= 0,
+            // "Generate ProcSet if desired": forced by \pdfomitprocset < 0,
+            // omitted by > 0, by default only for PDF 1.x
+            procset: omit_procset < 0 || (omit_procset == 0 && ctx.eng.pdf_doc.major_version < 2),
+            image_procset,
+            ximages: std::mem::take(&mut ctx.ximage_list),
+            group,
         }
     }
 
-    pub fn render_form_box(
-        &mut self,
-        node: &Node,
-        w: i32,
-        h: i32,
-        d: i32,
-    ) -> (Vec<u8>, Vec<(usize, u16)>) {
+    pub fn render_form_box(&mut self, node: &Node, w: i32, h: i32, d: i32) -> RenderedForm {
         // Form coordinates are baseline-relative: the dictionary spans [-d, h].
+        // pdf_ship_out resets the page group for forms too.
+        self.pdf_page_group_val = 0;
         let mut ctx = self.new_ctx(h as i64);
         // pdfTeX `pdfshipoutbegin(false)` for forms: matrix/annotation
         // tracking is page-shipout only, and color stacks restart from
@@ -603,7 +711,93 @@ impl Engine {
                     .map(crate::input::SourceMark::to_context),
             );
         }
-        (ctx.content.into_bytes(), ctx.page_fonts)
+        ctx.write_pending_images();
+        RenderedForm {
+            image_procset: ctx.image_procset(),
+            content: ctx.content.into_bytes(),
+            fonts: ctx.page_fonts,
+            ximages: ctx.ximage_list,
+        }
+    }
+}
+
+impl Engine {
+    /// pdfTeX `pdf_write_image` for an image not yet written: an included
+    /// PDF page's form (its /Group refers to the page-group object, written
+    /// here once per page, or is copied inline), or the transparency group
+    /// shared by PNGs with alpha. Raster samples are embedded at the end.
+    pub(crate) fn write_ximage(&mut self, obj: i32) {
+        use crate::engine::ImageKind;
+        let Some(image) = self.pdf_images.get_mut(&obj) else {
+            return;
+        };
+        if image.written {
+            return;
+        }
+        image.written = true;
+        image.used = true;
+        match image.kind {
+            ImageKind::Pdf => {
+                let Some(form) = image.pdf_form.take() else {
+                    return;
+                };
+                let attr = image.attr.take();
+                let path = image.path.clone();
+                let group = match form.group_dict() {
+                    Some(_) if self.pdf_page_group_val == 0 => {
+                        let suppress = self.eqtb.int_params
+                            [crate::prim::IntParam::PdfSuppressWarningPageGroup.idx() as usize];
+                        if suppress == 0 {
+                            self.warning_at(
+                                &format!("pdfTeX warning (file {path}): PDF inclusion: multiple pdfs with page group included in a single page"),
+                                None,
+                            );
+                        }
+                        None
+                    }
+                    Some(dict) => {
+                        let group = std::mem::take(&mut self.pdf_page_group_val);
+                        self.pdf_doc.objects.push((group, dict.to_vec()));
+                        Some(group)
+                    }
+                    None => None,
+                };
+                let bytes = form.write(attr.as_deref(), group);
+                self.pdf_doc.objects.push((obj, bytes));
+            }
+            // writepng.c `write_additional_png_objects`
+            ImageKind::Png
+                if image.group_ref > 0
+                    && self.transparent_page_group > 0
+                    && !self.transparent_page_group_written =>
+            {
+                self.transparent_page_group_written = true;
+                self.pdf_doc.objects.push((
+                    self.transparent_page_group,
+                    b"<</Type/Group /S/Transparency /CS/DeviceRGB /I true>>".to_vec(),
+                ));
+            }
+            _ => {}
+        }
+    }
+
+    /// A \pdfxform's /ProcSet depends on \pdfomitprocset when pdfTeX writes
+    /// the form (with the first page using it, or at \immediate): insert it
+    /// into the form's resources then.
+    pub(crate) fn write_form_procset(&mut self, obj: i32) {
+        let Some(pending) = self.pdf_form_procsets.remove(&obj) else {
+            return;
+        };
+        let omit = self.eqtb.int_params[crate::prim::IntParam::PdfOmitProcset.idx() as usize];
+        if !(omit < 0 || (omit == 0 && self.pdf_doc.major_version < 2)) {
+            return;
+        }
+        let entry = crate::pdffile::procset_entry(pending.text, pending.images);
+        if let Some((_, bytes)) = self.pdf_doc.objects.iter_mut().rev().find(|(n, _)| *n == obj) {
+            if pending.offset <= bytes.len() {
+                bytes.splice(pending.offset..pending.offset, entry.into_bytes());
+            }
+        }
     }
 }
 
@@ -899,7 +1093,9 @@ impl<'a> RenderCtx<'a> {
         let rtl = self.cur_dir == 1;
         let mut cur_y = y;
         let mut glue_state = GlueState::default();
-        for n in list {
+        // pdfTeX `final_skip` of \pdfsnapy nodes set by \pdfsnapycomp
+        let mut final_skips: Vec<(usize, i64)> = Vec::new();
+        for (index, n) in list.iter().enumerate() {
             match n {
                 Node::Box {
                     h,
@@ -1025,6 +1221,33 @@ impl<'a> RenderCtx<'a> {
                     cur_y += *h as i64;
                     self.emit_whatsit_sp(w, x, cur_y);
                     cur_y += *d as i64;
+                }
+                Node::Whatsit(crate::boxes::WhatIt::PdfSnapYComp(ratio)) => {
+                    // pdfTeX `do_snapy_comp`: move by `ratio`/1000 of the gap
+                    // the next \pdfsnapy will meet; it makes up the rest
+                    let next_snap = list[index + 1..].iter().position(|n| {
+                        matches!(n, Node::Whatsit(crate::boxes::WhatIt::PdfSnapY(_)))
+                    });
+                    if let Some(offset) = next_snap {
+                        let q = index + 1 + offset;
+                        let Node::Whatsit(crate::boxes::WhatIt::PdfSnapY(glue)) = &list[q] else {
+                            unreachable!()
+                        };
+                        let tmp_v = get_vpos(&list[index..q], cur_y, sign, order, set);
+                        let g = gap_amount(glue, tmp_v, self.eng.pdf_snap_refpos.1);
+                        let g2 = round_xn_over_d(g, i64::from(*ratio), 1000);
+                        cur_y += g2;
+                        // 1sp records that the compensation has been done
+                        let rest = if g == g2 { 1 } else { g - g2 };
+                        final_skips.push((q, rest));
+                    }
+                }
+                Node::Whatsit(crate::boxes::WhatIt::PdfSnapY(glue)) => {
+                    // pdfTeX `do_snapy`
+                    cur_y += match final_skips.iter().find(|(at, _)| *at == index) {
+                        Some((_, skip)) => *skip,
+                        None => gap_amount(glue, cur_y, self.eng.pdf_snap_refpos.1),
+                    };
                 }
                 Node::Whatsit(w) => {
                     self.emit_whatsit_sp(w, x, cur_y);
@@ -2213,16 +2436,22 @@ impl<'a> RenderCtx<'a> {
         });
         self.end_text();
         self.content.push_str("q\n");
+        // pdftex.web `pdf_set_rule`: `(h + 1)/2` is Pascal real division and
+        // the real argument reaches the scaled parameter truncated toward
+        // zero, so an even 0.4pt hairline is centered 13108sp (not 13107sp)
+        // above its bottom edge.
         const ONE_BP: i64 = 65782;
         if h_sp <= ONE_BP {
-            self.set_origin_temp(x_sp, v_down_sp - (h_sp + 1) / 2);
+            let y = (v_down_sp as f64 - (h_sp + 1) as f64 / 2.0) as i64;
+            self.set_origin_temp(x_sp, y);
             self.content.push_str("[]0 d 0 J ");
             self.push_bp(h_sp);
             self.content.push_str(" w 0 0 m ");
             self.push_bp(w_sp);
             self.content.push_str(" 0 l S\n");
         } else if w_sp <= ONE_BP {
-            self.set_origin_temp(x_sp + (w_sp + 1) / 2, v_down_sp);
+            let x = (x_sp as f64 + (w_sp + 1) as f64 / 2.0) as i64;
+            self.set_origin_temp(x, v_down_sp);
             self.content.push_str("[]0 d 0 J ");
             self.push_bp(w_sp);
             self.content.push_str(" w 0 0 m 0 ");
@@ -2238,6 +2467,89 @@ impl<'a> RenderCtx<'a> {
         }
         self.content.push_str("Q\n");
     }
+    /// pdfTeX `out_image`: paint image `obj` (`width` by `height`, total
+    /// height plus depth) with its lower left corner at (`cur_h`, `cur_v`).
+    /// Raster images scale a unit square (4 decimals of bp); included PDF
+    /// pages scale their own /BBox (6 decimals) and shift by its origin.
+    fn out_image(&mut self, obj: i32, width: i32, height: i32, cur_h: i64, cur_v: i64) {
+        use crate::engine::ImageKind;
+        let Some(image) = self.eng.pdf_images.get_mut(&obj) else {
+            return;
+        };
+        image.used = true;
+        let (img_w, img_h) = if image.rotate == 90 || image.rotate == 270 {
+            (image.image_height as i64, image.image_width as i64)
+        } else {
+            (image.image_width as i64, image.image_height as i64)
+        };
+        let (kind, group_ref, orig_x, orig_y) =
+            (image.kind, image.group_ref, image.orig_x as i64, image.orig_y as i64);
+        self.end_text();
+        self.content.push_str("q\n");
+        if !self.ximage_list.contains(&obj) {
+            self.ximage_list.push(obj);
+        }
+        let (width, height) = (width as i64, height as i64);
+        if kind != ImageKind::Pdf {
+            if kind == ImageKind::Png && group_ref > 0 && self.eng.pdf_page_group_val == 0 {
+                self.eng.pdf_page_group_val = group_ref;
+            }
+            let sx = ext_xn_over_d(width, 1_000_000, ONE_HUNDRED_BP_SP);
+            let sy = ext_xn_over_d(height, 1_000_000, ONE_HUNDRED_BP_SP);
+            self.push_real(sx as i64, 4);
+            self.content.push_str(" 0 0 ");
+            self.push_real(sy as i64, 4);
+            self.content.push(' ');
+            self.push_bp(cur_h - self.origin_h);
+            self.content.push(' ');
+            self.push_bp(self.origin_v - cur_v);
+        } else {
+            // the page group object of a PDF page is numbered on first use
+            if group_ref != 0 && self.eng.pdf_page_group_val == 0 {
+                self.eng.pdf_page_group_val = if group_ref == -1 {
+                    let group = self.eng.alloc_pdf_obj();
+                    if let Some(image) = self.eng.pdf_images.get_mut(&obj) {
+                        image.group_ref = group;
+                    }
+                    group
+                } else {
+                    group_ref
+                };
+            }
+            let sx = ext_xn_over_d(width, 1_000_000, img_w);
+            let sy = ext_xn_over_d(height, 1_000_000, img_h);
+            self.push_real(sx as i64, 6);
+            self.content.push_str(" 0 0 ");
+            self.push_real(sy as i64, 6);
+            self.content.push(' ');
+            self.push_bp(cur_h - self.origin_h - ext_xn_over_d(width, orig_x, img_w) as i64);
+            self.content.push(' ');
+            self.push_bp(self.origin_v - cur_v - ext_xn_over_d(height, orig_y, img_h) as i64);
+        }
+        self.content.push_str(&format!(" cm\n/Im{obj} Do\nQ\n"));
+    }
+
+    /// pdfTeX "Write out pending images" and "Write out pending forms":
+    /// images and forms first painted by this page or form.
+    fn write_pending_images(&mut self) {
+        for index in 0..self.ximage_list.len() {
+            let obj = self.ximage_list[index];
+            self.eng.write_ximage(obj);
+        }
+        for index in 0..self.xform_list.len() {
+            let obj = self.xform_list[index];
+            self.eng.write_form_procset(obj);
+        }
+    }
+
+    /// pdfTeX `pdf_image_procset` of the images painted here.
+    fn image_procset(&self) -> u8 {
+        self.ximage_list
+            .iter()
+            .filter_map(|obj| self.eng.pdf_images.get(obj))
+            .fold(0, |procset, image| procset | image.color)
+    }
+
     fn emit_whatsit_sp(&mut self, w: &crate::boxes::WhatIt, cur_h: i64, cur_v: i64) {
         use crate::boxes::WhatIt::*;
         use crate::boxes::ColorStackCmd;
@@ -2295,24 +2607,12 @@ impl<'a> RenderCtx<'a> {
                     self.colorstack_literal(&out, mode, cur_h, cur_v);
                 }
             }
-            PdfRefXImage { obj, w, h, d } => {
-                if let Some(image) = self.eng.pdf_images.get_mut(obj) {
-                    image.used = true;
-                }
-                self.end_text();
-                let v_sp = cur_v;
-                let w_sp = *w as i64;
-                let hd_sp = (*h + *d) as i64;
-                self.content.push_str("q\n");
-                let sx = pdfnum(sp_to_bp(w_sp), self.decimal_digits);
-                let sy = pdfnum(sp_to_bp(hd_sp), self.decimal_digits);
-                self.content.push_str(&format!("{sx} 0 0 {sy} "));
-                self.push_bp(cur_h - self.origin_h);
-                self.content.push(' ');
-                self.push_bp(self.origin_v - (v_sp + *d as i64));
-                self.content.push_str(&format!(" cm /Im{obj} Do\nQ\n"));
-            }
+            PdfRefXImage { obj, w, h, d } => self.out_image(*obj, *w, *h + *d, cur_h, cur_v + *d as i64),
+            PdfSnapRefPoint => self.eng.pdf_snap_refpos = (cur_h, cur_v),
             PdfRefXForm { obj, .. } => {
+                if !self.xform_list.contains(obj) {
+                    self.xform_list.push(*obj);
+                }
                 self.end_text();
                 self.content.push_str("q\n1 0 0 1 ");
                 self.push_bp(cur_h - self.origin_h);
@@ -2327,9 +2627,11 @@ impl<'a> RenderCtx<'a> {
                 // the current pen and the supplied matrix concatenates at
                 // that origin. Malformed input emits no content at all
                 // (canonical `\pdfsetmatrix` "Unrecognized format." error).
-                // pdfTeX echoes the raw token string on success; we
-                // canonicalize the parsed numbers instead, so a malformed
-                // stream can never slip through a token-level parse.
+                // pdfTeX echoes the raw token string on success. We echo it
+                // too when every entry is plain PDF number syntax, and
+                // otherwise (`1e3`, `inf`, ...) emit the parsed numbers
+                // canonicalized, so a malformed stream can never slip
+                // through a token-level parse.
                 let Some([a, b, c, d]) = parse_matrix(matrix) else {
                     self.end_text();
                     let message = format!(
@@ -2365,14 +2667,18 @@ impl<'a> RenderCtx<'a> {
                 }
                 self.end_text();
                 self.set_origin(cur_h, cur_v);
-                let mut buf = String::new();
-                for v in [a, b, c, d] {
-                    if !buf.is_empty() {
-                        buf.push(' ');
+                if matrix.split_ascii_whitespace().all(is_pdf_number) {
+                    self.content.push_str(matrix);
+                } else {
+                    let mut buf = String::new();
+                    for v in [a, b, c, d] {
+                        if !buf.is_empty() {
+                            buf.push(' ');
+                        }
+                        push_matrix_num(&mut buf, v);
                     }
-                    push_matrix_num(&mut buf, v);
+                    self.content.push_str(&buf);
                 }
-                self.content.push_str(&buf);
                 self.content.push_str(" 0 0 cm\n");
             }
             PdfSave { source } => {
@@ -2429,8 +2735,17 @@ impl<'a> RenderCtx<'a> {
                 }
             }
             PdfDest { id, kind, params } => {
-                // first definition of an identifier wins
-                if !self.dests.iter().any(|d| &d.id == id) {
+                // pdftex.web `do_dest`: the first shipped definition of an
+                // identifier wins; later ones warn and are ignored
+                let duplicate = if self.page_mode {
+                    !self.eng.pdf_doc.shipped_dests.insert(id.clone())
+                } else {
+                    self.dests.iter().any(|d| &d.id == id)
+                };
+                if duplicate && self.page_mode {
+                    self.eng.warn_dest_dup(id);
+                }
+                if !duplicate {
                     // explicit coordinates are page-absolute sp from the
                     // bottom-left corner; the sentinel -32768 keeps the
                     // anchor position

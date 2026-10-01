@@ -15,6 +15,19 @@ use std::fmt;
 use crate::lua_vm::CFunction;
 use crate::{LuaResult, LuaState, LuaUserdata, LuaValue};
 
+/// A crate-provided native function usable as a userdata method or `__call`.
+///
+/// Opaque on purpose: native functions operate on raw, unrooted VM values and
+/// can only be written inside this crate.
+#[derive(Clone, Copy)]
+pub struct LuaCFunction(pub(crate) CFunction);
+
+/// Collector callback handed to [`UserDataTrait::trace_lua_values`].
+///
+/// Only crate-internal userdata types own Lua values; the type is opaque so
+/// that host code cannot obtain or forge raw VM values through it.
+pub struct LuaValueVisitor<'a>(pub(crate) &'a mut dyn FnMut(LuaValue));
+
 /// Intermediate value type for userdata field/method returns.
 ///
 /// Since `LuaValue` requires GC-allocated strings, trait methods return `UdValue`
@@ -27,7 +40,7 @@ pub enum UdValue {
     /// A Rust string — will be interned by the VM when converting to LuaValue
     Str(String),
     /// A light C function — used for returning methods from `get_field`
-    Function(CFunction),
+    Function(LuaCFunction),
     /// Owned userdata value (as return from arithmetic trait methods).
     /// The VM allocates this as a new GC-managed userdata.
     UserdataOwned(Box<dyn UserDataTrait>),
@@ -108,7 +121,7 @@ pub trait UserDataTrait: 'static {
     /// Returns the type name displayed in error messages and `type()` calls.
     fn type_name(&self) -> &'static str;
     /// Visit embedded Lua values so the collector can retain userdata-owned references.
-    fn trace_lua_values(&self, _visit: &mut dyn FnMut(LuaValue)) {}
+    fn trace_lua_values(&self, _visit: &mut LuaValueVisitor<'_>) {}
 
     // ==================== Field Access ====================
 
@@ -241,20 +254,7 @@ pub trait UserDataTrait: 'static {
     /// the caller's arguments.
     ///
     /// This is checked before the metatable `__call` fallback.
-    ///
-    /// # Example
-    /// ```ignore
-    /// fn lua_call(&self) -> Option<CFunction> {
-    ///     fn call_impl(l: &mut LuaState) -> LuaResult<usize> {
-    ///         let ud = l.get_arg(1).unwrap();
-    ///         let x = l.get_arg(2).and_then(|v| v.as_integer()).unwrap_or(0);
-    ///         l.push_value(LuaValue::integer(x * 2))?;
-    ///         Ok(1)
-    ///     }
-    ///     Some(call_impl)
-    /// }
-    /// ```
-    fn lua_call(&self) -> Option<CFunction> {
+    fn lua_call(&self) -> Option<LuaCFunction> {
         None
     }
 
@@ -439,7 +439,7 @@ pub fn udvalue_to_lua_value(lua_state: &mut LuaState, udv: UdValue) -> LuaResult
         UdValue::Integer(i) => Ok(LuaValue::integer(i)),
         UdValue::Number(n) => Ok(LuaValue::float(n)),
         UdValue::Str(s) => lua_state.create_string(&s),
-        UdValue::Function(f) => Ok(LuaValue::cfunction(f)),
+        UdValue::Function(f) => Ok(LuaValue::cfunction(f.0)),
         UdValue::UserdataOwned(ud) => {
             let userdata = LuaUserdata::from_boxed(ud);
             lua_state.create_userdata(userdata)

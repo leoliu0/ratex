@@ -192,9 +192,30 @@ pub enum IntParam {
     PdfOmitProcset,
     /// `\pdfptexuseunderscore`: write `PTEX_` instead of `PTEX.` keys.
     PdfPtexUseUnderscore,
+    /// LuaTeX `\exhyphenchar`: the character that makes an explicit hyphen
+    /// (`-` in the text) a discretionary.
+    ExHyphenChar,
+    /// LuaTeX `\firstvalidlanguage`: the lowest `\language` that hyphenates.
+    FirstValidLanguage,
+    /// LuaTeX `\showstream`: a `\write` stream that receives `\show` output.
+    ShowStream,
+    /// LuaTeX `\pdfvariable ignoreunknownimages`.
+    PdfIgnoreUnknownImages,
+    /// LuaTeX `\pdfvariable imageaddfilename`.
+    PdfImageAddFilename,
+    /// LuaTeX `\pdfvariable pkfixeddpi`.
+    PdfPkFixedDpi,
+    /// LuaTeX `\pdfvariable omitcidset`.
+    PdfOmitCidSet,
+    /// LuaTeX `\pdfvariable recompress`.
+    PdfRecompress,
+    /// LuaTeX `\pdfvariable omitmediabox`: pages get no /MediaBox.
+    PdfOmitMediaBox,
+    /// LuaTeX `\pdfvariable linking`.
+    PdfLinking,
 }
 
-pub const NUM_INT_PARAMS: usize = 130;
+pub const NUM_INT_PARAMS: usize = 140;
 
 impl IntParam {
     #[inline]
@@ -333,6 +354,16 @@ impl IntParam {
         IntParam::PdfOmitInfoDict,
         IntParam::PdfOmitProcset,
         IntParam::PdfPtexUseUnderscore,
+        IntParam::ExHyphenChar,
+        IntParam::FirstValidLanguage,
+        IntParam::ShowStream,
+        IntParam::PdfIgnoreUnknownImages,
+        IntParam::PdfImageAddFilename,
+        IntParam::PdfPkFixedDpi,
+        IntParam::PdfOmitCidSet,
+        IntParam::PdfRecompress,
+        IntParam::PdfOmitMediaBox,
+        IntParam::PdfLinking,
     ];
 
     pub fn from_idx(i: u16) -> Option<Self> {
@@ -398,9 +429,11 @@ pub enum DimParam {
     /// pdfTeX `\pdfignoreddimen`: the `\prevdepth` value meaning "ignore"
     /// and the "unset" marker of the four line dimensions above.
     PdfIgnoredDimen,
+    /// LuaTeX `\pdfvariable xformmargin`.
+    PdfXFormMargin,
 }
 
-pub const NUM_DIM_PARAMS: usize = 44;
+pub const NUM_DIM_PARAMS: usize = 45;
 
 impl DimParam {
     #[inline]
@@ -453,6 +486,7 @@ impl DimParam {
         DimParam::PdfEachLineHeight,
         DimParam::PdfEachLineDepth,
         DimParam::PdfIgnoredDimen,
+        DimParam::PdfXFormMargin,
     ];
 
     pub fn from_idx(i: u16) -> Option<Self> {
@@ -514,9 +548,13 @@ pub enum ToksParam {
     PdfTrailerId,
     /// pdfTeX `\pdfpkmode`: METAFONT mode for generated PK fonts.
     PdfPkMode,
+    /// LuaTeX `\pdfvariable xformattr`: extra form XObject dictionary keys.
+    PdfXFormAttr,
+    /// LuaTeX `\pdfvariable xformresources`: extra form resources.
+    PdfXFormResources,
 }
 
-pub const NUM_TOKS_PARAMS: usize = 12;
+pub const NUM_TOKS_PARAMS: usize = 14;
 
 impl ToksParam {
     #[inline]
@@ -940,7 +978,6 @@ pub enum Prim {
     LuaTeXVersion,
     LuaTeXRevision,
     LuaTeXBanner,
-    OutputMode,
     XeTeXDashBreakState,
     CatCodeTable,
     InitCatCodeTable,
@@ -977,6 +1014,8 @@ pub enum Prim {
     /// front of a name whose primitive meaning is unexpandable (pdfTeX
     /// `frozen_primitive`).
     PdfPrimitiveExec,
+    /// TeX82 `\-` (tex.web §1114 `discretionary` chr 1).
+    HyphenDisc,
     /// e-TeX TeXXeT text-direction primitives (`valign` with a nonzero
     /// modifier in etex.ch)
     BeginL,
@@ -1012,6 +1051,51 @@ pub enum Prim {
     LuaBytecode,
     /// `\luabytecodecall n`: the same run as a command.
     LuaBytecodeCall,
+    // LuaTeX primitives (wire codes 620-699).
+    /// LuaTeX `\pdfvariable <key>`: expands to the backend parameter.
+    PdfVariable,
+    /// LuaTeX `\pdffeedback <key>`: expands to backend state.
+    PdfFeedback,
+    /// LuaTeX `\pdfextension <key> ...`: the pdfTeX backend commands.
+    PdfExtension,
+    DviVariable,
+    DviFeedback,
+    DviExtension,
+    /// LuaTeX `\glet`: `\global\let`.
+    GLet,
+    /// LuaTeX `\hpack`/`\vpack`/`\tpack`: `\hbox`/`\vbox`/`\vtop` without
+    /// the packaging callbacks.
+    HPack,
+    VPack,
+    TPack,
+    /// e-TeX `\eTeXminorversion` (read-only integer).
+    EtxMinorVersion,
+    /// LuaTeX `\eTeXVersion` (expandable version string).
+    EtxVersionString,
+    /// LuaTeX `\gluestretchorder`/`\glueshrinkorder`: orders counted with
+    /// LuaTeX's `fi` level (fil = 2); `\eTeXglue*order` keep e-TeX's.
+    LuaGlueStretchOrder,
+    LuaGlueShrinkOrder,
+    /// LuaTeX token-list register appending/prepending
+    /// (`\toksapp`, `\tokspre`, the `e` expanding and `g`/`x` global forms).
+    ToksApp,
+    ToksPre,
+    EToksApp,
+    EToksPre,
+    GToksApp,
+    GToksPre,
+    XToksApp,
+    XToksPre,
+    /// LuaTeX `\csstring`: `\string` without the escape character.
+    CsString,
+    /// LuaTeX `\begincsname`: `\csname` that does not define `\relax`.
+    BeginCsName,
+    /// LuaTeX `\letcharcode <char> <token>`: `\let` the active character.
+    LetCharCode,
+    /// LuaTeX `\formatname`.
+    FormatName,
+    /// LuaTeX `\luaescapestring {<text>}`.
+    LuaEscapeString,
 }
 
 /// Stable wire codes for the format dump (`crate::format`). Unit variants
@@ -1404,7 +1488,6 @@ impl Prim {
             Prim::LuaTeXVersion => 367,
             Prim::LuaTeXRevision => 368,
             Prim::LuaTeXBanner => 369,
-            Prim::OutputMode => 370,
             Prim::XeTeXDashBreakState => 371,
             Prim::CatCodeTable => 372,
             Prim::InitCatCodeTable => 373,
@@ -1433,6 +1516,7 @@ impl Prim {
             Prim::PdfRetval => 411,
             Prim::PdfInsertHt => 412,
             Prim::PdfPrimitiveExec => 413,
+            Prim::HyphenDisc => 414,
             Prim::BeginL => 600,
             Prim::EndL => 601,
             Prim::BeginR => 602,
@@ -1459,6 +1543,33 @@ impl Prim {
             Prim::LuaDef => 782,
             Prim::LuaBytecode => 783,
             Prim::LuaBytecodeCall => 784,
+            Prim::PdfVariable => 620,
+            Prim::PdfFeedback => 621,
+            Prim::PdfExtension => 622,
+            Prim::DviVariable => 623,
+            Prim::DviFeedback => 624,
+            Prim::DviExtension => 625,
+            Prim::GLet => 627,
+            Prim::HPack => 628,
+            Prim::VPack => 629,
+            Prim::TPack => 630,
+            Prim::EtxMinorVersion => 631,
+            Prim::EtxVersionString => 632,
+            Prim::LuaGlueStretchOrder => 633,
+            Prim::LuaGlueShrinkOrder => 634,
+            Prim::ToksApp => 635,
+            Prim::ToksPre => 636,
+            Prim::EToksApp => 637,
+            Prim::EToksPre => 638,
+            Prim::GToksApp => 639,
+            Prim::GToksPre => 640,
+            Prim::XToksApp => 641,
+            Prim::XToksPre => 642,
+            Prim::CsString => 643,
+            Prim::BeginCsName => 644,
+            Prim::LetCharCode => 645,
+            Prim::FormatName => 646,
+            Prim::LuaEscapeString => 647,
             Prim::ScriptScriptStyle => 284,
             Prim::Patterns => 287,
             Prim::Hyphenation => 288,
@@ -1840,7 +1951,6 @@ impl Prim {
             367 => Some(Prim::LuaTeXVersion),
             368 => Some(Prim::LuaTeXRevision),
             369 => Some(Prim::LuaTeXBanner),
-            370 => Some(Prim::OutputMode),
             371 => Some(Prim::XeTeXDashBreakState),
             372 => Some(Prim::CatCodeTable),
             373 => Some(Prim::InitCatCodeTable),
@@ -1869,6 +1979,7 @@ impl Prim {
             411 => Some(Prim::PdfRetval),
             412 => Some(Prim::PdfInsertHt),
             413 => Some(Prim::PdfPrimitiveExec),
+            414 => Some(Prim::HyphenDisc),
             600 => Some(Prim::BeginL),
             601 => Some(Prim::EndL),
             602 => Some(Prim::BeginR),
@@ -1895,6 +2006,33 @@ impl Prim {
             782 => Some(Prim::LuaDef),
             783 => Some(Prim::LuaBytecode),
             784 => Some(Prim::LuaBytecodeCall),
+            620 => Some(Prim::PdfVariable),
+            621 => Some(Prim::PdfFeedback),
+            622 => Some(Prim::PdfExtension),
+            623 => Some(Prim::DviVariable),
+            624 => Some(Prim::DviFeedback),
+            625 => Some(Prim::DviExtension),
+            627 => Some(Prim::GLet),
+            628 => Some(Prim::HPack),
+            629 => Some(Prim::VPack),
+            630 => Some(Prim::TPack),
+            631 => Some(Prim::EtxMinorVersion),
+            632 => Some(Prim::EtxVersionString),
+            633 => Some(Prim::LuaGlueStretchOrder),
+            634 => Some(Prim::LuaGlueShrinkOrder),
+            635 => Some(Prim::ToksApp),
+            636 => Some(Prim::ToksPre),
+            637 => Some(Prim::EToksApp),
+            638 => Some(Prim::EToksPre),
+            639 => Some(Prim::GToksApp),
+            640 => Some(Prim::GToksPre),
+            641 => Some(Prim::XToksApp),
+            642 => Some(Prim::XToksPre),
+            643 => Some(Prim::CsString),
+            644 => Some(Prim::BeginCsName),
+            645 => Some(Prim::LetCharCode),
+            646 => Some(Prim::FormatName),
+            647 => Some(Prim::LuaEscapeString),
             0x1000..=0x1fff => {
                 let i = c & 0x0fff;
                 Some(Prim::IntP(IntParam::from_idx(i)?))
@@ -1947,6 +2085,8 @@ impl Prim {
                     9 => ToksParam::ErrHelp,
                     10 => ToksParam::PdfTrailerId,
                     11 => ToksParam::PdfPkMode,
+                    12 => ToksParam::PdfXFormAttr,
+                    13 => ToksParam::PdfXFormResources,
                     _ => return None,
                 }))
             }

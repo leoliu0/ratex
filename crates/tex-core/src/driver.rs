@@ -31,29 +31,30 @@ pub fn finalize_format_load(eng: &mut Engine) {
             true,
         );
     }
-    for name in [
-        b"pdfrandomseed" as &[u8],
-        b"randomseed",
-        b"tex_randomseed:D",
-    ] {
-        let id = eng.cs.intern(name);
-        eng.eqtb.assign(
-            id,
-            crate::eqtb::Equiv::Prim(crate::prim::Prim::PdfRandomSeed),
-            true,
-        );
-    }
-    for name in [
-        b"pdfsetrandomseed" as &[u8],
-        b"setrandomseed",
-        b"tex_setrandomseed:D",
-    ] {
-        let id = eng.cs.intern(name);
-        eng.eqtb.assign(
-            id,
-            crate::eqtb::Equiv::Prim(crate::prim::Prim::PdfSetRandomSeed),
-            true,
-        );
+    // pdfTeX formats dumped before the random-number primitives existed.
+    if eng.engine_kind == crate::engine::EngineKind::PdfTeX {
+        for name in [
+            b"pdfrandomseed" as &[u8],
+            b"tex_randomseed:D",
+        ] {
+            let id = eng.cs.intern(name);
+            eng.eqtb.assign(
+                id,
+                crate::eqtb::Equiv::Prim(crate::prim::Prim::PdfRandomSeed),
+                true,
+            );
+        }
+        for name in [
+            b"pdfsetrandomseed" as &[u8],
+            b"tex_setrandomseed:D",
+        ] {
+            let id = eng.cs.intern(name);
+            eng.eqtb.assign(
+                id,
+                crate::eqtb::Equiv::Prim(crate::prim::Prim::PdfSetRandomSeed),
+                true,
+            );
+        }
     }
     // Compat shim for formats dumped before the
     // active-char namespace split: their boot wrote the
@@ -254,6 +255,12 @@ pub fn insert_everyjob(eng: &mut Engine) {
 }
 
 pub fn finish_pdf(eng: &mut Engine, optimize_pdf_size: bool) -> Result<Vec<u8>, String> {
+    // forms no page painted are still written, with the final /ProcSet
+    let mut forms: Vec<i32> = eng.pdf_form_procsets.keys().copied().collect();
+    forms.sort_unstable();
+    for form in forms {
+        eng.write_form_procset(form);
+    }
     eng.embed_used_fonts()?;
     // embed image XObjects
     struct ImageJob<'a> {
@@ -261,6 +268,7 @@ pub fn finish_pdf(eng: &mut Engine, optimize_pdf_size: bool) -> Result<Vec<u8>, 
         mask: i32,
         bytes: std::borrow::Cow<'a, [u8]>,
         path: &'a str,
+        settings: crate::pdf_images::RasterSettings<'a>,
     }
     fn embed_chunk(
         jobs: &[ImageJob<'_>],
@@ -270,18 +278,19 @@ pub fn finish_pdf(eng: &mut Engine, optimize_pdf_size: bool) -> Result<Vec<u8>, 
         for job in jobs {
             let mut next = job.mask;
             let embedded = if job.bytes.starts_with(&[0xff, 0xd8]) {
-                crate::pdf_images::embed_jpeg(&job.bytes, job.object).map(|image| vec![image])
+                crate::pdf_images::embed_jpeg(&job.bytes, job.object, &job.settings)
+                    .map(|image| vec![image])
             } else if crate::pdf_svg::is_svg(&job.bytes) {
                 if let Some(png_bytes) = crate::pdf_svg::svg_to_png(&job.bytes) {
                     crate::pdf_images::embed_png_with_options(
-                        &png_bytes, job.object, &mut next, options,
+                        &png_bytes, job.object, &mut next, options, &job.settings,
                     )
                 } else {
                     None
                 }
             } else {
                 crate::pdf_images::embed_png_with_options(
-                    &job.bytes, job.object, &mut next, options,
+                    &job.bytes, job.object, &mut next, options, &job.settings,
                 )
             }
             .ok_or_else(|| format!("Unsupported or invalid image: {}", job.path))?;
@@ -292,20 +301,29 @@ pub fn finish_pdf(eng: &mut Engine, optimize_pdf_size: bool) -> Result<Vec<u8>, 
     let mut used_images: Vec<_> = eng
         .pdf_images
         .iter()
-        .filter(|(_, image)| image.used)
+        .filter(|(_, image)| image.used && image.kind != crate::engine::ImageKind::Pdf)
         .map(|(object, image)| (*object, image.clone()))
         .collect();
     used_images.sort_unstable_by_key(|(object, _)| *object);
     let compression_level =
         eng.eqtb.int_params[IntParam::PdfCompressLevel.idx() as usize].clamp(0, 9) as u32;
     let png_options = png_embed_options(optimize_pdf_size, compression_level);
+    // writepng.c reads the PDF version and image parameters fixed at the
+    // first output.
+    let fixed = eng.pdf_fixed;
+    let (major, minor) = fixed.map_or((1, 4), |f| (f.major_version, f.minor_version));
+    let base_settings = crate::pdf_images::RasterSettings {
+        attr: None,
+        colorspace: 0,
+        alpha: major > 1 || minor >= 4,
+        hicolor: fixed.is_none_or(|f| f.image_hicolor) && (major > 1 || minor >= 5),
+        gamma: fixed
+            .filter(|f| f.image_apply_gamma)
+            .map(|f| (f.gamma, f.image_gamma)),
+    };
     let mut next_obj = eng.pdf_next_obj;
     let mut jobs = Vec::with_capacity(used_images.len());
     for (object, image) in &used_images {
-        // PDF page resources were imported while scanning \pdfximage.
-        if image.embedded {
-            continue;
-        }
         let bytes = if let Some(bytes) = &image.resource_bytes {
             std::borrow::Cow::Borrowed(bytes.as_slice())
         } else {
@@ -314,8 +332,13 @@ pub fn finish_pdf(eng: &mut Engine, optimize_pdf_size: bool) -> Result<Vec<u8>, 
             eng.record_loaded_bytes(std::path::Path::new(&image.path), &bytes);
             std::borrow::Cow::Owned(bytes)
         };
+        let settings = crate::pdf_images::RasterSettings {
+            attr: image.attr.as_deref(),
+            colorspace: image.colorspace,
+            ..base_settings
+        };
         let mask = next_obj;
-        if crate::pdf_images::png_needs_soft_mask(&bytes) {
+        if crate::pdf_images::png_needs_soft_mask(&bytes, &settings) {
             next_obj = match next_obj.checked_add(1) {
                 Some(value) => value,
                 None => return Err("PDF image object number overflow".into()),
@@ -326,6 +349,7 @@ pub fn finish_pdf(eng: &mut Engine, optimize_pdf_size: bool) -> Result<Vec<u8>, 
             mask,
             bytes,
             path: &image.path,
+            settings,
         });
     }
     #[cfg(target_arch = "wasm32")]

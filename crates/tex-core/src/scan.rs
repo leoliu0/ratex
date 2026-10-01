@@ -161,6 +161,36 @@ impl Engine {
         }
     }
 
+    /// e-TeX `\parshapelength`, `\parshapeindent`, `\parshapedimen` n
+    /// (etex.ch <Fetch the \parshape size>).
+    fn scan_parshape_item(&mut self, p: Prim) -> i32 {
+        let n = self.scan_int();
+        if self.par_shape.is_empty() || n <= 0 {
+            return 0;
+        }
+        let (n, indent) = match p {
+            Prim::ParShapeLength => (n, false),
+            Prim::ParShapeIndent => (n, true),
+            _ => (n / 2 + n % 2, n % 2 == 1),
+        };
+        let (i, w) = self.par_shape[(n as usize).min(self.par_shape.len()) - 1];
+        if indent {
+            i
+        } else {
+            w
+        }
+    }
+
+    /// e-TeX `\gluetomu` (`to_mu`) / `\mutoglue`: the converted glue. A
+    /// result of the wrong level for the scan is TeX's mu_error.
+    fn scan_glue_conversion(&mut self, to_mu: bool, want_mu: bool) -> Glue {
+        let g = self.scan_glue(!to_mu);
+        if to_mu != want_mu {
+            self.error("Incompatible glue units");
+        }
+        g
+    }
+
     /// 0=stretch, 1=shrink, 2=stretch_order, 3=shrink_order
     fn scan_etex_glue_field(&mut self, field: u8) -> i32 {
         let g = self.scan_glue(false);
@@ -173,10 +203,18 @@ impl Engine {
         }
     }
 
+    /// LuaTeX `\gluestretchorder`/`\glueshrinkorder`: LuaTeX counts a
+    /// `fi` order below `fil`, so every infinite order is one higher than
+    /// e-TeX's.
+    fn scan_lua_glue_order(&mut self, p: Prim) -> i32 {
+        let order = self.scan_etex_glue_field(if p == Prim::LuaGlueStretchOrder { 2 } else { 3 });
+        if order > 0 { order + 1 } else { 0 }
+    }
+
     /// tex.web @<Scan an optional space@>: one expanding fetch; consume a
     /// space, otherwise back it up. After an alphabetic constant this is
     /// what drives expl3 f-expansion (`\romannumeral`^^@\foo` expands `\foo`).
-    fn scan_optional_space(&mut self) {
+    pub(crate) fn scan_optional_space(&mut self) {
         let t = self.get_x_raw_keep_cond();
         if !t.is_space() {
             self.push_token(t);
@@ -525,6 +563,18 @@ impl Engine {
                         v = self.scan_expr_num() as i64;
                         break 'scan_loop;
                     }
+                    Some(p @ (Prim::GlueToMu | Prim::MuToGlue)) => {
+                        v = self.scan_glue_conversion(p == Prim::GlueToMu, false).width as i64;
+                        break 'scan_loop;
+                    }
+                    Some(p @ (Prim::ParShapeLength | Prim::ParShapeIndent | Prim::ParShapeDimen)) => {
+                        v = self.scan_parshape_item(p) as i64;
+                        break 'scan_loop;
+                    }
+                    Some(Prim::PdfRetval) => {
+                        v = self.pdf_retval as i64;
+                        break 'scan_loop;
+                    }
                     Some(Prim::GlueStretch) => {
                         v = self.scan_etex_glue_field(0) as i64;
                         break 'scan_loop;
@@ -539,6 +589,14 @@ impl Engine {
                     }
                     Some(Prim::GlueShrinkOrder) => {
                         v = self.scan_etex_glue_field(3) as i64;
+                        break 'scan_loop;
+                    }
+                    Some(p @ (Prim::LuaGlueStretchOrder | Prim::LuaGlueShrinkOrder)) => {
+                        v = self.scan_lua_glue_order(p) as i64;
+                        break 'scan_loop;
+                    }
+                    Some(Prim::EtxMinorVersion) => {
+                        v = 2;
                         break 'scan_loop;
                     }
                     Some(Prim::DimExpr) => {
@@ -683,10 +741,6 @@ impl Engine {
                     }
                     Some(Prim::LuaTeXVersion) => {
                         v = 124;
-                        break 'scan_loop;
-                    }
-                    Some(Prim::OutputMode) => {
-                        v = 1;
                         break 'scan_loop;
                     }
                     Some(Prim::CatCodeTable) => {
@@ -1266,6 +1320,21 @@ impl Engine {
                     frac_f = 0;
                     direct = None;
                 }
+                Some(p @ (Prim::GlueToMu | Prim::MuToGlue)) => {
+                    int_part = 1;
+                    frac_f = 0;
+                    direct = Some(self.scan_glue_conversion(p == Prim::GlueToMu, mu).width);
+                }
+                Some(p @ (Prim::ParShapeLength | Prim::ParShapeIndent | Prim::ParShapeDimen)) => {
+                    int_part = 1;
+                    frac_f = 0;
+                    direct = Some(self.scan_parshape_item(p));
+                }
+                Some(Prim::PdfRetval) => {
+                    int_part = self.pdf_retval as i64;
+                    frac_f = 0;
+                    direct = None;
+                }
                 Some(Prim::GlueStretch) => {
                     int_part = 1;
                     frac_f = 0;
@@ -1645,6 +1714,16 @@ impl Engine {
             }
             t = self.get_x_raw();
         }
+        if t.is_cs() && matches!(self.cur_prim, Some(Prim::GlueToMu | Prim::MuToGlue)) {
+            let mut g = self.scan_glue_conversion(self.cur_prim == Some(Prim::GlueToMu), mu);
+            if negate {
+                g.width = -g.width;
+                g.stretch = -g.stretch;
+                g.shrink = -g.shrink;
+            }
+            self.in_expanded_scan = prev;
+            return g;
+        }
         if t.is_cs() && matches!(self.cur_prim, Some(Prim::GlueExpr) | Some(Prim::MuExpr)) {
             let mut g = self.scan_expr_glue(mu);
             if negate {
@@ -1971,7 +2050,19 @@ impl Engine {
             }};
         }
         self.skip_spaces();
-        let t = self.get_token();
+        let mut t = self.get_token();
+        if t.is_cs()
+            && matches!(
+                self.eqtb.resolve(t.cs_id()),
+                Some(Equiv::Prim(Prim::PdfPrimitiveExec))
+            )
+        {
+            // pdftex.web scan_something_internal traps the frozen
+            // \pdfprimitive marker (even inside an expanded text)
+            let target = self.pdf_primitive_target();
+            self.push_token(target);
+            t = self.get_token();
+        }
         if !t.is_cs() {
             self.push_token(t);
             self.error("You can't use `\\the' after ");
@@ -2262,9 +2353,6 @@ impl Engine {
             Some(Prim::LuaTeXBanner) => {
                 emit_the!(b"This is LuaTeX, Version 1.24.0");
             }
-            Some(Prim::OutputMode) => {
-                emit_the!(b"1");
-            }
             Some(Prim::CatCodeTable) => {
                 emit_the!(self.eqtb.cat_table.to_string().as_bytes());
             }
@@ -2338,6 +2426,13 @@ impl Engine {
                 let v = self.scan_etex_glue_field(3);
                 emit_the!(v.to_string().as_bytes());
             }
+            Some(p @ (Prim::LuaGlueStretchOrder | Prim::LuaGlueShrinkOrder)) => {
+                let v = self.scan_lua_glue_order(p);
+                emit_the!(v.to_string().as_bytes());
+            }
+            Some(Prim::EtxMinorVersion) => {
+                emit_the!(b"2");
+            }
             Some(Prim::Ht) => {
                 let n = self.scan_reg_num();
                 let s = self.scaled_to_string(self.box_reg_dimen(n, 1));
@@ -2351,6 +2446,24 @@ impl Engine {
             Some(Prim::ParShape) => {
                 let s = self.par_shape.len().to_string();
                 emit_the!(s.as_bytes());
+            }
+            Some(p @ (Prim::ParShapeLength | Prim::ParShapeIndent | Prim::ParShapeDimen)) => {
+                let v = self.scan_parshape_item(p);
+                let s = self.scaled_to_string(v);
+                emit_the!(s.as_bytes());
+            }
+            Some(Prim::GlueToMu) => {
+                let g = self.scan_glue(false);
+                let s = self.mu_glue_to_string(&g);
+                emit_the!(s.as_bytes());
+            }
+            Some(Prim::MuToGlue) => {
+                let g = self.scan_glue(true);
+                let s = self.glue_to_string(&g);
+                emit_the!(s.as_bytes());
+            }
+            Some(Prim::PdfRetval) => {
+                emit_the!(self.pdf_retval.to_string().as_bytes());
             }
             Some(
                 p @ (Prim::InterLinePenalties

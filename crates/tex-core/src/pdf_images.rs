@@ -16,90 +16,183 @@ pub struct JpegInfo {
     pub height: u16,
     pub components: u8,
     pub bits: u8,
-    pub dpi_x: f64,
-    pub dpi_y: f64,
-    pub adobe: bool,
+    /// pdfTeX `img_xres`/`img_yres` from JFIF or Exif (0 = unknown).
+    pub x_res: i32,
+    pub y_res: i32,
+    /// SOF2 (progressive DCT).
+    pub progressive: bool,
 }
 
-pub fn jpeg_info(bytes: &[u8]) -> Option<JpegInfo> {
-    if !bytes.starts_with(&[0xff, 0xd8]) {
-        return None;
+/// writejpg.c `read_APP1_Exif`: X/YResolution and ResolutionUnit of the
+/// first IFD; (0, 0) when the TIFF header is malformed.
+fn exif_resolution(data: &[u8]) -> (i32, i32) {
+    fn read(data: &[u8], at: usize, len: usize, big: bool) -> Option<i64> {
+        let bytes = data.get(at..at.checked_add(len)?)?;
+        Some(if big {
+            bytes.iter().fold(0i64, |v, &b| (v << 8) | i64::from(b))
+        } else {
+            bytes.iter().rev().fold(0i64, |v, &b| (v << 8) | i64::from(b))
+        })
     }
-    let mut result = JpegInfo {
-        width: 0,
-        height: 0,
-        components: 0,
-        bits: 8,
-        dpi_x: 72.0,
-        dpi_y: 72.0,
-        adobe: false,
-    };
-    let mut pos = 2;
-    while pos + 1 < bytes.len() {
-        if bytes[pos] != 0xff {
+    let parse = || -> Option<(i32, i32)> {
+        let tiff = data.iter().position(|&b| b != 0)?;
+        let big = match data.get(tiff..tiff + 2)? {
+            b"MM" => true,
+            b"II" => false,
+            _ => return None,
+        };
+        if read(data, tiff + 2, 2, big)? != 42 {
             return None;
         }
-        while bytes.get(pos) == Some(&0xff) {
-            pos += 1;
-        }
-        let marker = *bytes.get(pos)?;
-        pos += 1;
-        if marker == 0xda || marker == 0xd9 {
-            break;
-        }
-        if marker == 0x01 || (0xd0..=0xd7).contains(&marker) {
-            continue;
-        }
-        let length = u16::from_be_bytes(bytes.get(pos..pos + 2)?.try_into().ok()?) as usize;
-        if length < 2 {
-            return None;
-        }
-        let data = bytes.get(pos + 2..pos.checked_add(length)?)?;
-        match marker {
-            0xc0..=0xc3 | 0xc5..=0xc7 | 0xc9..=0xcb | 0xcd..=0xcf => {
-                result.bits = *data.first()?;
-                result.height = u16::from_be_bytes(data.get(1..3)?.try_into().ok()?);
-                result.width = u16::from_be_bytes(data.get(3..5)?.try_into().ok()?);
-                result.components = *data.get(5)?;
+        let mut p = tiff + read(data, tiff + 4, 4, big)? as usize;
+        let mut fields = read(data, p, 2, big)?;
+        p += 2;
+        let (mut xres, mut yres, mut unit) = (72.0f64, 72.0f64, 1.0f64);
+        let (mut value, mut num, mut den) = (0i64, 0i64, 0i64);
+        while fields > 0 {
+            fields -= 1;
+            let tag = read(data, p, 2, big)?;
+            let kind = read(data, p + 2, 2, big)?;
+            p += 8;
+            match kind {
+                1 | 7 => value = i64::from(*data.get(p)?),
+                3 => value = read(data, p, 2, big)?,
+                4 | 9 => value = read(data, p, 4, big)? as i32 as i64,
+                5 | 10 => {
+                    value = read(data, p, 4, big)?;
+                    let rp = tiff + value as usize;
+                    num = read(data, rp, 4, big)? as i32 as i64;
+                    den = read(data, rp + 4, 4, big)? as i32 as i64;
+                }
+                _ => {}
             }
-            0xe0 if data.starts_with(b"JFIF\0") && data.len() >= 12 => {
-                let x = u16::from_be_bytes([data[8], data[9]]) as f64;
-                let y = u16::from_be_bytes([data[10], data[11]]) as f64;
-                let scale = match data[7] {
-                    1 => 1.0,
-                    2 => 2.54,
-                    _ => 0.0,
-                };
-                if scale > 0.0 && x > 0.0 && y > 0.0 {
-                    result.dpi_x = x * scale;
-                    result.dpi_y = y * scale;
+            p += 4;
+            match tag {
+                // C integer division, as in writejpg.c
+                282 if den != 0 => xres = (num / den) as f64,
+                283 if den != 0 => yres = (num / den) as f64,
+                296 => match value {
+                    2 => unit = 1.0,
+                    3 => unit = 2.54,
+                    _ => {}
+                },
+                _ => {}
+            }
+        }
+        Some(((xres * unit) as i32, (yres * unit) as i32))
+    };
+    parse().unwrap_or((0, 0))
+}
+
+/// writejpg.c `read_jpg_info`: the resolution comes from a JFIF APP0 or an
+/// Exif APP1 marker that immediately follows SOI; the frame header gives
+/// the size and components. Errors are pdfTeX's fatal messages.
+pub fn jpeg_info(bytes: &[u8]) -> Result<JpegInfo, String> {
+    let u16_at = |at: usize| -> Result<usize, String> {
+        bytes
+            .get(at..at + 2)
+            .map(|b| usize::from(u16::from_be_bytes([b[0], b[1]])))
+            .ok_or_else(|| "reading JPEG image failed (premature file end)".to_string())
+    };
+    if !bytes.starts_with(&[0xff, 0xd8]) {
+        return Err("reading JPEG image failed (no JPEG header found)".into());
+    }
+    let (mut x_res, mut y_res) = (0i32, 0i32);
+    match u16_at(2)? {
+        0xffe0 => {
+            if bytes.get(6..11) == Some(b"JFIF\0") {
+                let units = *bytes.get(13).unwrap_or(&0);
+                x_res = u16_at(14)? as i32;
+                y_res = u16_at(16)? as i32;
+                match units {
+                    1 => {}
+                    2 => {
+                        x_res = (f64::from(x_res) * 2.54) as i32;
+                        y_res = (f64::from(y_res) * 2.54) as i32;
+                    }
+                    _ => (x_res, y_res) = (0, 0),
                 }
             }
-            0xee if data.starts_with(b"Adobe") => result.adobe = true,
-            _ => {}
+            if x_res == 0 && y_res != 0 {
+                x_res = y_res;
+            }
+            if y_res == 0 && x_res != 0 {
+                y_res = x_res;
+            }
         }
-        pos += length;
+        0xffe1 => {
+            let length = u16_at(4)?.wrapping_sub(2) as u16 as usize;
+            if length > 5 && bytes.get(6..11) == Some(b"Exif\0") {
+                let end = (11 + length - 5).min(bytes.len());
+                (x_res, y_res) = exif_resolution(&bytes[11..end]);
+            }
+        }
+        _ => {}
     }
-    (result.width > 0 && result.height > 0 && matches!(result.components, 1 | 3 | 4))
-        .then_some(result)
+    let mut at = 0usize;
+    loop {
+        if at >= bytes.len() {
+            return Err("reading JPEG image failed (premature file end)".into());
+        }
+        if bytes[at] != 0xff {
+            return Err("reading JPEG image failed (no marker found)".into());
+        }
+        let marker = *bytes
+            .get(at + 1)
+            .ok_or("reading JPEG image failed (premature file end)")?;
+        match marker {
+            0xc5..=0xc7 | 0xc9..=0xcb | 0xcd..=0xcf => {
+                return Err("unsupported type of compression".into())
+            }
+            0xc0..=0xc3 => {
+                let frame = bytes
+                    .get(at + 4..at + 10)
+                    .ok_or("reading JPEG image failed (premature file end)")?;
+                let components = frame[5];
+                if !matches!(components, 1 | 3 | 4) {
+                    return Err(format!("Unsupported color space {components}"));
+                }
+                return Ok(JpegInfo {
+                    bits: frame[0],
+                    height: u16::from_be_bytes([frame[1], frame[2]]),
+                    width: u16::from_be_bytes([frame[3], frame[4]]),
+                    components,
+                    x_res,
+                    y_res,
+                    progressive: marker == 0xc2,
+                });
+            }
+            // markers without parameters
+            0xd8 | 0xd9 | 0x01 | 0xd0..=0xd7 => at += 2,
+            _ => at += 2 + u16_at(at + 2)?,
+        }
+    }
 }
 
-pub fn embed_jpeg(bytes: &[u8], object: i32) -> Option<EmbeddedImage> {
-    let info = jpeg_info(bytes)?;
+/// writejpg.c `write_jpg`: the file is the DCT stream; CMYK always gets the
+/// inverted /Decode array.
+pub fn embed_jpeg(bytes: &[u8], object: i32, settings: &RasterSettings<'_>) -> Option<EmbeddedImage> {
+    let info = jpeg_info(bytes).ok()?;
     let space = match info.components {
-        1 => "DeviceGray",
-        3 => "DeviceRGB",
-        _ => "DeviceCMYK",
+        1 => "/DeviceGray",
+        3 => "/DeviceRGB",
+        _ => "/DeviceCMYK /Decode [1 0 1 0 1 0 1 0]",
     };
-    let decode = if info.components == 4 && info.adobe {
-        " /Decode [1 0 1 0 1 0 1 0]"
+    let space = if settings.colorspace != 0 {
+        format!("{} 0 R", settings.colorspace)
     } else {
-        ""
+        space.to_owned()
     };
     let mut body = format!(
-        "<< /Type /XObject /Subtype /Image /Width {} /Height {} /BitsPerComponent {} /ColorSpace /{} /Filter /DCTDecode{} /Length {} >>\nstream\n",
-        info.width, info.height, info.bits, space, decode, bytes.len(),
-    ).into_bytes();
+        "{} /Width {} /Height {} /BitsPerComponent {} /Length {} /ColorSpace {} /Filter /DCTDecode >>\nstream\n",
+        settings.dict_start(),
+        info.width,
+        info.height,
+        info.bits,
+        bytes.len(),
+        space,
+    )
+    .into_bytes();
     body.extend_from_slice(bytes);
     body.extend_from_slice(b"\nendstream");
     Some(EmbeddedImage {
@@ -471,88 +564,198 @@ fn embed_imported_base14_font(
     Some(descriptor_object)
 }
 
-/// Import one PDF page without resolving replacement programs for unembedded
-/// standard PDF fonts.
-pub fn import_pdf_page(
-    bytes: &[u8],
-    page: u32,
-    page_box: &[u8],
-    object: i32,
-    next_object: &mut i32,
-) -> Result<(f64, f64, [f64; 4], Vec<EmbeddedImage>, usize), String> {
-    let mut cache = std::collections::BTreeMap::new();
-    let mut no_type1_font = |_: &str| None;
-    import_pdf_page_with_base14(
-        bytes,
-        page,
-        page_box,
-        object,
-        next_object,
-        &mut cache,
-        &mut no_type1_font,
-    )
+/// pdfTeX page-box specifications (`pdf_box_spec_media` .. `pdf_box_spec_art`).
+pub const PDF_BOX_SPEC_MEDIA: i32 = 1;
+pub const PDF_BOX_SPEC_CROP: i32 = 2;
+pub const PDF_BOX_SPEC_BLEED: i32 = 3;
+pub const PDF_BOX_SPEC_TRIM: i32 = 4;
+pub const PDF_BOX_SPEC_ART: i32 = 5;
+
+/// `\pdfsuppressptexinfo` bits honored by `write_epdf` (pdftoepdf.cc).
+const SUPPRESS_PTEX_FILENAME: i32 = 0x02;
+const SUPPRESS_PTEX_PAGENUMBER: i32 = 0x04;
+const SUPPRESS_PTEX_INFODICT: i32 = 0x08;
+
+/// Page selection of `\pdfximage`: `page <n>` or `named {<destination>}`.
+#[derive(Clone, Copy, Debug)]
+pub enum PdfPageSelector<'a> {
+    Number(i32),
+    Named(&'a [u8]),
 }
 
-pub(crate) fn import_pdf_page_with_base14(
-    bytes: &[u8],
-    page: u32,
-    page_box: &[u8],
-    object: i32,
-    next_object: &mut i32,
-    imported_base14_fonts: &mut std::collections::BTreeMap<Vec<u8>, i32>,
-    resolve_type1: &mut dyn FnMut(&str) -> Option<Vec<u8>>,
-) -> Result<(f64, f64, [f64; 4], Vec<EmbeddedImage>, usize), String> {
-    let mut working_base14_fonts = imported_base14_fonts.clone();
-    use lopdf::{Dictionary, Document, Object, ObjectId};
-    fn inherited<'a>(doc: &'a Document, mut id: ObjectId, key: &[u8]) -> Option<&'a Object> {
-        let mut seen = std::collections::HashSet::new();
-        while seen.insert(id) {
-            let dict = doc.get_dictionary(id).ok()?;
-            if let Ok(value) = dict.get(key) {
-                return doc.dereference(value).ok().map(|(_, value)| value);
-            }
-            id = dict.get(b"Parent").ok()?.as_reference().ok()?;
-        }
-        None
+/// Inclusion settings (`read_pdf_info` / `write_epdf` arguments).
+pub struct PdfIncludeOptions<'a> {
+    pub page: PdfPageSelector<'a>,
+    /// One of the `PDF_BOX_SPEC_*` values; anything else is fatal.
+    pub page_box: i32,
+    /// The kpathsea file name, written as `/PTEX.FileName`.
+    pub file_name: &'a str,
+    pub suppress_ptex_info: i32,
+    /// `\pdfptexuseunderscore`: `PTEX_` instead of `PTEX.` key prefixes.
+    pub ptex_underscore: bool,
+}
+
+/// One included PDF page: pdfTeX's `read_pdf_info` results plus the copied
+/// page objects. The form XObject itself is written when the image is first
+/// shipped (`write_epdf`), because its /Group depends on that page.
+pub struct PdfInclusion {
+    /// Header version (`PDFDoc::getPDFVersion`).
+    pub version: f64,
+    pub page: i32,
+    pub total_pages: i32,
+    /// `epdf_width`, `epdf_height`, `epdf_orig_x`, `epdf_orig_y`: single
+    /// precision in pdfTeX (writeimg.c).
+    pub width: f32,
+    pub height: f32,
+    pub orig_x: f32,
+    pub orig_y: f32,
+    pub rotate: i32,
+    /// Resources and other indirect objects the form refers to.
+    pub objects: Vec<EmbeddedImage>,
+    pub form: PdfForm,
+    /// pdfTeX warnings issued while reading the page.
+    pub warnings: Vec<String>,
+}
+
+/// The pieces of the form XObject `write_epdf` emits for an included page.
+#[derive(Clone, Debug)]
+pub struct PdfForm {
+    head: Vec<u8>,
+    /// The page /Group: copied as given (possibly a reference) and as the
+    /// dereferenced dictionary used for a separate page-group object.
+    group: Option<(Vec<u8>, Vec<u8>)>,
+    tail: Vec<u8>,
+}
+
+impl PdfForm {
+    pub fn has_group(&self) -> bool {
+        self.group.is_some()
     }
-    fn copy_object(
-        value: &Object,
-        doc: &Document,
-        ids: &mut std::collections::BTreeMap<ObjectId, i32>,
-        objects: &mut Vec<EmbeddedImage>,
-        next: &mut i32,
-        base14_fonts: &mut std::collections::BTreeMap<Vec<u8>, i32>,
-        resolve_type1: &mut dyn FnMut(&str) -> Option<Vec<u8>>,
-        depth: usize,
-    ) -> Result<Object, String> {
+
+    /// The page's /Group dictionary, written as the separate page-group
+    /// object when this form supplies the page group.
+    pub fn group_dict(&self) -> Option<&[u8]> {
+        self.group.as_ref().map(|(_, dict)| dict.as_slice())
+    }
+
+    /// `pdf_write_image` + `write_epdf`: the `attr` tokens first, then the
+    /// form keys. The page /Group refers to `group_object` when this image
+    /// supplies the page group, else it is copied inline.
+    pub fn write(&self, attr: Option<&str>, group_object: Option<i32>) -> Vec<u8> {
+        let mut out = Vec::with_capacity(self.head.len() + self.tail.len() + 96);
+        out.extend_from_slice(b"<<");
+        if let Some(attr) = attr {
+            out.push(b' ');
+            out.extend_from_slice(attr.as_bytes());
+        }
+        out.extend_from_slice(b" /Type /XObject /Subtype /Form /FormType 1");
+        out.extend_from_slice(&self.head);
+        if let Some((inline, _)) = &self.group {
+            match group_object {
+                Some(object) => write!(out, " /Group {object} 0 R").unwrap(),
+                None => {
+                    out.extend_from_slice(b" /Group ");
+                    out.extend_from_slice(inline);
+                }
+            }
+        }
+        out.extend_from_slice(&self.tail);
+        out
+    }
+}
+
+/// pdftoepdf `sprintf("%.8f")` + `stripzeros`.
+fn push_real8(out: &mut Vec<u8>, value: f64) {
+    let text = format!("{value:.8}");
+    let text = text.trim_end_matches('0');
+    out.extend_from_slice(text.strip_suffix('.').unwrap_or(text).as_bytes());
+}
+
+/// xpdf `convertStringToPDFString`: octal for non-printables, escaped
+/// parentheses and backslashes.
+fn push_pdf_string(out: &mut Vec<u8>, text: &[u8]) {
+    out.push(b'(');
+    for &c in text {
+        match c {
+            b'(' | b')' | b'\\' => out.extend_from_slice(&[b'\\', c]),
+            b'!'..=b'~' => out.push(c),
+            _ => write!(out, "\\{c:03o}").unwrap(),
+        }
+    }
+    out.push(b')');
+}
+
+/// A PDF number as xpdf reads it (double precision). lopdf stores reals in
+/// single precision; their shortest decimal form recovers the source digits.
+fn pdf_number(doc: &lopdf::Document, value: &lopdf::Object) -> Option<f64> {
+    match doc.dereference(value).ok()?.1 {
+        lopdf::Object::Integer(v) => Some(*v as f64),
+        lopdf::Object::Real(v) => format!("{v}").parse().ok(),
+        _ => None,
+    }
+}
+
+/// xpdf `PageAttrs::readBox`: four numbers, clamped and normalized.
+fn read_box(doc: &lopdf::Document, dict: &lopdf::Dictionary, key: &[u8]) -> Option<[f64; 4]> {
+    let values = doc.dereference(dict.get(key).ok()?).ok()?.1.as_array().ok()?;
+    if values.len() != 4 {
+        return None;
+    }
+    let mut b = [0.0; 4];
+    for (slot, value) in b.iter_mut().zip(values) {
+        *slot = pdf_number(doc, value)?.clamp(-1e9, 1e9);
+    }
+    if b[0] > b[2] {
+        b.swap(0, 2);
+    }
+    if b[1] > b[3] {
+        b.swap(1, 3);
+    }
+    Some(b)
+}
+
+/// xpdf `PDFRectangle::clipTo`.
+fn clip_box(b: &mut [f64; 4], to: &[f64; 4]) {
+    b[0] = b[0].clamp(to[0], to[2]);
+    b[2] = b[2].clamp(to[0], to[2]);
+    b[1] = b[1].clamp(to[1], to[3]);
+    b[3] = b[3].clamp(to[1], to[3]);
+}
+
+/// Copies objects of an included PDF into the output, renumbering every
+/// indirect object it reaches (pdftoepdf `copyObject`/`addOther`).
+struct PdfCopier<'a> {
+    doc: &'a lopdf::Document,
+    ids: std::collections::BTreeMap<lopdf::ObjectId, i32>,
+    objects: Vec<EmbeddedImage>,
+    next: &'a mut i32,
+    base14_fonts: std::collections::BTreeMap<Vec<u8>, i32>,
+    resolve_type1: &'a mut dyn FnMut(&str) -> Option<Vec<u8>>,
+}
+
+impl PdfCopier<'_> {
+    fn copy(&mut self, value: &lopdf::Object, depth: usize) -> Result<lopdf::Object, String> {
+        use lopdf::{Dictionary, Object};
         if depth > 256 {
             return Err("PDF resource nesting too deep".into());
         }
         Ok(match value {
             Object::Reference(id) => {
-                let new_id = if let Some(mapped) = ids.get(id) {
+                let new_id = if let Some(mapped) = self.ids.get(id) {
                     *mapped
                 } else {
-                    let mapped = *next;
-                    *next = next.checked_add(1).ok_or("PDF object number overflow")?;
-                    ids.insert(*id, mapped);
+                    let mapped = *self.next;
+                    *self.next = self.next.checked_add(1).ok_or("PDF object number overflow")?;
+                    self.ids.insert(*id, mapped);
+                    let doc = self.doc;
                     let original = doc
                         .objects
                         .get(id)
-                        .ok_or_else(|| format!("Missing PDF resource {id:?}"))?;
-                    let copied = copy_object(
-                        original,
-                        doc,
-                        ids,
-                        objects,
-                        next,
-                        base14_fonts,
-                        resolve_type1,
-                        depth + 1,
-                    )?;
+                        .ok_or("PDF inclusion: reference to invalid object (is the included pdf broken?)")?;
+                    let copied = self.copy(original, depth + 1)?;
                     let mut bytes = Vec::new();
                     serialize_pdf_object(&copied, &mut bytes);
-                    objects.push(EmbeddedImage {
+                    self.objects.push(EmbeddedImage {
                         obj_num: mapped,
                         bytes,
                     });
@@ -563,36 +766,13 @@ pub(crate) fn import_pdf_page_with_base14(
             Object::Array(values) => Object::Array(
                 values
                     .iter()
-                    .map(|value| {
-                        copy_object(
-                            value,
-                            doc,
-                            ids,
-                            objects,
-                            next,
-                            base14_fonts,
-                            resolve_type1,
-                            depth + 1,
-                        )
-                    })
+                    .map(|value| self.copy(value, depth + 1))
                     .collect::<Result<_, _>>()?,
             ),
             Object::Dictionary(dict) => {
                 let mut copy = Dictionary::new();
                 for (key, value) in dict {
-                    copy.set(
-                        key.clone(),
-                        copy_object(
-                            value,
-                            doc,
-                            ids,
-                            objects,
-                            next,
-                            base14_fonts,
-                            resolve_type1,
-                            depth + 1,
-                        )?,
-                    );
+                    copy.set(key.clone(), self.copy(value, depth + 1)?);
                 }
                 if copy
                     .get(b"Type")
@@ -638,10 +818,10 @@ pub(crate) fn import_pdf_page_with_base14(
                 if let Some(base_font) = base_font {
                     if let Some(descriptor) = embed_imported_base14_font(
                         &base_font,
-                        base14_fonts,
-                        objects,
-                        next,
-                        resolve_type1,
+                        &mut self.base14_fonts,
+                        &mut self.objects,
+                        self.next,
+                        self.resolve_type1,
                     ) {
                         copy.set(b"FontDescriptor", Object::Reference((descriptor as u32, 0)));
                     }
@@ -652,19 +832,7 @@ pub(crate) fn import_pdf_page_with_base14(
                 let mut dict = Dictionary::new();
                 for (key, value) in &stream.dict {
                     if key != b"Length" {
-                        dict.set(
-                            key.clone(),
-                            copy_object(
-                                value,
-                                doc,
-                                ids,
-                                objects,
-                                next,
-                                base14_fonts,
-                                resolve_type1,
-                                depth + 1,
-                            )?,
-                        );
+                        dict.set(key.clone(), self.copy(value, depth + 1)?);
                     }
                 }
                 let content = if matches!(
@@ -673,7 +841,6 @@ pub(crate) fn import_pdf_page_with_base14(
                 ) {
                     let mut decoder = flate2::read::ZlibDecoder::new(&stream.content[..]);
                     let mut decompressed = Vec::new();
-                    use std::io::Read;
                     let _ = decoder.read_to_end(&mut decompressed);
                     if !decompressed.is_empty() {
                         crate::pdffile::flate(&decompressed)
@@ -689,130 +856,437 @@ pub(crate) fn import_pdf_page_with_base14(
             _ => value.clone(),
         })
     }
-    let doc = match Document::load_mem(bytes) {
-        Ok(doc) => doc,
+
+    fn copy_into(&mut self, value: &lopdf::Object, out: &mut Vec<u8>) -> Result<(), String> {
+        let copied = self.copy(value, 0)?;
+        serialize_pdf_object(&copied, out);
+        Ok(())
+    }
+}
+
+fn load_pdf_document(bytes: &[u8]) -> Result<lopdf::Document, String> {
+    use lopdf::Document;
+    match Document::load_mem(bytes) {
+        Ok(doc) => Ok(doc),
         Err(e) => {
             if let Some(repaired) =
                 repair_xref_empty_section(bytes).and_then(|r| Document::load_mem(&r).ok())
             {
-                repaired
+                Ok(repaired)
             } else if let Some(repaired) =
                 repair_xref_single_newline(bytes).and_then(|r| Document::load_mem(&r).ok())
             {
-                repaired
+                Ok(repaired)
             } else if let Some(rebuilt) =
                 repair_pdf_xref_rebuild(bytes).and_then(|r| Document::load_mem(&r).ok())
             {
-                rebuilt
+                Ok(rebuilt)
             } else {
-                return Err(e.to_string());
+                Err(e.to_string())
             }
         }
+    }
+}
+
+/// xpdf `Object::getTypeName`, for pdfTeX's inclusion diagnostics.
+fn xpdf_type_name(value: &lopdf::Object) -> &'static str {
+    use lopdf::Object;
+    match value {
+        Object::Null => "null",
+        Object::Boolean(_) => "boolean",
+        Object::Integer(_) => "integer",
+        Object::Real(_) => "real",
+        Object::Name(_) => "name",
+        Object::String(..) => "string",
+        Object::Array(_) => "array",
+        Object::Dictionary(_) => "dictionary",
+        Object::Stream(_) => "stream",
+        Object::Reference(_) => "ref",
+    }
+}
+
+/// xpdf `PDFDoc::findDest`: a named destination from the catalog's /Dests
+/// dictionary or the /Names /Dests name tree, resolved to its page object.
+fn find_dest_page(doc: &lopdf::Document, name: &[u8]) -> Option<lopdf::ObjectId> {
+    use lopdf::Object;
+    fn deref<'a>(doc: &'a lopdf::Document, value: &'a Object) -> Option<&'a Object> {
+        doc.dereference(value).ok().map(|(_, value)| value)
+    }
+    fn name_tree<'a>(
+        doc: &'a lopdf::Document,
+        node: &'a lopdf::Dictionary,
+        name: &[u8],
+        depth: usize,
+    ) -> Option<&'a Object> {
+        if depth > 64 {
+            return None;
+        }
+        if let Some(names) = node.get(b"Names").ok().and_then(|v| deref(doc, v)?.as_array().ok()) {
+            for pair in names.chunks_exact(2) {
+                if deref(doc, &pair[0])?.as_str().ok() == Some(name) {
+                    return deref(doc, &pair[1]);
+                }
+            }
+        }
+        let kids = node.get(b"Kids").ok().and_then(|v| deref(doc, v)?.as_array().ok())?;
+        kids.iter().find_map(|kid| {
+            let kid = deref(doc, kid)?.as_dict().ok()?;
+            name_tree(doc, kid, name, depth + 1)
+        })
+    }
+    let catalog = doc.catalog().ok()?;
+    let dest = catalog
+        .get(b"Dests")
+        .ok()
+        .and_then(|dests| deref(doc, dests)?.as_dict().ok())
+        .and_then(|dests| deref(doc, dests.get(name).ok()?))
+        .or_else(|| {
+            let names = deref(doc, catalog.get(b"Names").ok()?)?.as_dict().ok()?;
+            let tree = deref(doc, names.get(b"Dests").ok()?)?.as_dict().ok()?;
+            name_tree(doc, tree, name, 0)
+        })?;
+    let array = match dest {
+        Object::Array(array) => array,
+        Object::Dictionary(dict) => deref(doc, dict.get(b"D").ok()?)?.as_array().ok()?,
+        _ => return None,
     };
+    array.first()?.as_reference().ok()
+}
+
+/// Include one page of a PDF file the way pdfTeX's `read_pdf_info` and
+/// `write_epdf` do (pdftoepdf.cc): xpdf page attributes (inherited
+/// MediaBox/CropBox/Rotate, merged Resources, boxes clipped to the media
+/// box), the requested page box as the form's /BBox, a /Matrix only for
+/// rotated pages, the PTEX.* keys and the page's own content stream.
+pub fn include_pdf_page(
+    bytes: &[u8],
+    options: &PdfIncludeOptions<'_>,
+    next_object: &mut i32,
+    imported_base14_fonts: &mut std::collections::BTreeMap<Vec<u8>, i32>,
+    resolve_type1: &mut dyn FnMut(&str) -> Option<Vec<u8>>,
+) -> Result<PdfInclusion, String> {
+    use lopdf::{Dictionary, Object};
+    let doc = load_pdf_document(bytes)?;
+    let version = doc.version.trim().parse::<f64>().unwrap_or(0.0);
     let pages = doc.get_pages();
-    let total_pages = pages.len();
-    let page_id = *pages
-        .get(&page)
-        .ok_or_else(|| format!("PDF page {page} does not exist"))?;
-    let bounds = inherited(&doc, page_id, page_box)
-        .or_else(|| inherited(&doc, page_id, b"CropBox"))
-        .or_else(|| inherited(&doc, page_id, b"MediaBox"))
-        .ok_or("PDF page has no page box")?
-        .as_array()
-        .map_err(|e| e.to_string())?;
-    if bounds.len() != 4 {
-        return Err("Invalid PDF page box".into());
+    let total_pages = pages.len() as i32;
+    let page_num = match options.page {
+        PdfPageSelector::Named(name) => {
+            let shown = String::from_utf8_lossy(name);
+            let page_id = find_dest_page(&doc, name)
+                .ok_or_else(|| format!("PDF inclusion: invalid destination <{shown}>"))?;
+            pages
+                .iter()
+                .find_map(|(&number, &id)| (id == page_id).then_some(number as i32))
+                .ok_or_else(|| format!("PDF inclusion: destination is not a page <{shown}>"))?
+        }
+        PdfPageSelector::Number(page) => {
+            if page <= 0 || page > total_pages {
+                return Err(format!(
+                    "PDF inclusion: required page does not exist <{total_pages}>"
+                ));
+            }
+            page
+        }
+    };
+    let page_id = pages[&(page_num as u32)];
+
+    // xpdf PageAttrs, from the page tree root down to the page.
+    let mut chain = vec![page_id];
+    while let Some(parent) = doc
+        .get_dictionary(*chain.last().unwrap())
+        .ok()
+        .and_then(|dict| dict.get(b"Parent").ok()?.as_reference().ok())
+    {
+        if chain.contains(&parent) || chain.len() > 256 {
+            break;
+        }
+        chain.push(parent);
     }
-    let mut b = [0.0f64; 4];
-    for (i, v) in bounds.iter().enumerate() {
-        b[i] = doc
-            .dereference(v)
-            .map_err(|e| e.to_string())?
-            .1
-            .as_float()
-            .map_err(|e| e.to_string())? as f64;
+    let mut media_box = [0.0, 0.0, 612.0, 792.0];
+    let mut crop_box = [0.0; 4];
+    let mut have_crop_box = false;
+    let mut rotate = 0i64;
+    let mut resources: Option<Dictionary> = None;
+    for &id in chain.iter().rev() {
+        let Ok(dict) = doc.get_dictionary(id) else {
+            continue;
+        };
+        if let Some(b) = read_box(&doc, dict, b"MediaBox") {
+            media_box = b;
+        }
+        if let Some(b) = read_box(&doc, dict, b"CropBox") {
+            crop_box = b;
+            have_crop_box = true;
+        }
+        if let Some(Object::Integer(value)) = dict
+            .get(b"Rotate")
+            .ok()
+            .and_then(|value| doc.dereference(value).ok())
+            .map(|(_, value)| value)
+        {
+            rotate = *value;
+        }
+        let child = dict
+            .get(b"Resources")
+            .ok()
+            .and_then(|value| doc.dereference(value).ok())
+            .and_then(|(_, value)| value.as_dict().ok());
+        resources = match (resources, child) {
+            // Some files expect the node's resources merged into the
+            // parent's; only dictionary-valued categories survive.
+            (Some(parent), Some(child)) => {
+                let mut merged = Dictionary::new();
+                for (key, value) in parent.iter() {
+                    if let Ok(sub) = doc.dereference(value).and_then(|(_, v)| v.as_dict()) {
+                        merged.set(key.clone(), Object::Dictionary(sub.clone()));
+                    }
+                }
+                for (key, value) in child.iter() {
+                    let Ok(sub) = doc.dereference(value).and_then(|(_, v)| v.as_dict()) else {
+                        continue;
+                    };
+                    match merged.get_mut(key) {
+                        Ok(Object::Dictionary(existing)) => {
+                            for (name, entry) in sub.iter() {
+                                existing.set(name.clone(), entry.clone());
+                            }
+                        }
+                        _ => merged.set(key.clone(), Object::Dictionary(sub.clone())),
+                    }
+                }
+                Some(merged)
+            }
+            (parent, None) => parent,
+            (None, Some(child)) => Some(child.clone()),
+        };
     }
-    // ISO 32000-1 §7.9.5: normalize rectangle coordinates by taking min/max
-    let x0 = b[0].min(b[2]);
-    let x1 = b[0].max(b[2]);
-    let y0 = b[1].min(b[3]);
-    let y1 = b[1].max(b[3]);
-    let (w, h) = (x1 - x0, y1 - y0);
-    if !w.is_finite() || !h.is_finite() || w <= 0.0 || h <= 0.0 {
-        return Err("Empty or invalid PDF page box".into());
+    let rotate = rotate.rem_euclid(360) as i32;
+    if !have_crop_box {
+        crop_box = media_box;
     }
-    let rotate = inherited(&doc, page_id, b"Rotate")
-        .and_then(|v| v.as_i64().ok())
-        .unwrap_or(0)
-        .rem_euclid(360);
+    let page_dict = doc.get_dictionary(page_id).map_err(|e| e.to_string())?;
+    let other_box = |key: &[u8]| {
+        let mut b = read_box(&doc, page_dict, key).unwrap_or(crop_box);
+        clip_box(&mut b, &media_box);
+        b
+    };
+    let bleed_box = other_box(b"BleedBox");
+    let trim_box = other_box(b"TrimBox");
+    let art_box = other_box(b"ArtBox");
+    clip_box(&mut crop_box, &media_box);
+    let page_box = match options.page_box {
+        PDF_BOX_SPEC_MEDIA => media_box,
+        PDF_BOX_SPEC_CROP => crop_box,
+        PDF_BOX_SPEC_BLEED => bleed_box,
+        PDF_BOX_SPEC_TRIM => trim_box,
+        PDF_BOX_SPEC_ART => art_box,
+        other => {
+            return Err(format!(
+                "PDF inclusion: unknown value of pagebox spec ({other})"
+            ))
+        }
+    };
+    let [x1, y1, x2, y2] = page_box;
+
+    let mut copier = PdfCopier {
+        doc: &doc,
+        ids: std::collections::BTreeMap::new(),
+        objects: Vec::new(),
+        next: next_object,
+        base14_fonts: imported_base14_fonts.clone(),
+        resolve_type1,
+    };
+    let mut warnings = Vec::new();
+    let key_prefix: &[u8] = if options.ptex_underscore { b"PTEX_" } else { b"PTEX." };
+    let mut head = Vec::new();
+    if options.suppress_ptex_info & SUPPRESS_PTEX_FILENAME == 0 {
+        head.extend_from_slice(b" /");
+        head.extend_from_slice(key_prefix);
+        head.extend_from_slice(b"FileName ");
+        push_pdf_string(&mut head, options.file_name.as_bytes());
+    }
+    if options.suppress_ptex_info & SUPPRESS_PTEX_PAGENUMBER == 0 {
+        head.extend_from_slice(b" /");
+        head.extend_from_slice(key_prefix);
+        write!(head, "PageNumber {page_num}").unwrap();
+    }
+    if options.suppress_ptex_info & SUPPRESS_PTEX_INFODICT == 0 {
+        // the info dictionary must be indirect (PDF Reference p. 61)
+        if let Ok(info @ Object::Reference(_)) = doc.trailer.get(b"Info") {
+            head.extend_from_slice(b" /");
+            head.extend_from_slice(key_prefix);
+            head.extend_from_slice(b"InfoDict ");
+            copier.copy_into(info, &mut head)?;
+        }
+    }
+    // Only rotated pages get a /Matrix; the page turns about its box.
     let matrix = match rotate {
-        0 => [1.0 / w, 0.0, 0.0, 1.0 / h, -x0 / w, -y0 / h],
-        90 => [0.0, -1.0 / w, 1.0 / h, 0.0, -y0 / h, x1 / w],
-        180 => [-1.0 / w, 0.0, 0.0, -1.0 / h, x1 / w, y1 / h],
-        270 => [0.0, 1.0 / w, -1.0 / h, 0.0, y1 / h, -x0 / w],
-        _ => return Err("PDF page rotation is not a multiple of 90".into()),
+        90 => Some([0.0, -1.0, 1.0, 0.0, x1 - y1, y1 + x2]),
+        180 => Some([-1.0, 0.0, 0.0, -1.0, x1 + x2, y1 + y2]),
+        270 => Some([0.0, 1.0, -1.0, 0.0, x1 + y2, y1 - x1]),
+        _ => None,
     };
-    let mut objects = Vec::new();
-    let mut ids = std::collections::BTreeMap::new();
-    let resources = match inherited(&doc, page_id, b"Resources") {
-        Some(value) => copy_object(
-            value,
-            &doc,
-            &mut ids,
-            &mut objects,
-            next_object,
-            &mut working_base14_fonts,
-            resolve_type1,
-            0,
-        )?,
-        None => Object::Dictionary(Dictionary::new()),
+    if let Some(matrix) = matrix {
+        head.extend_from_slice(b" /Matrix [");
+        for (i, value) in matrix.into_iter().enumerate() {
+            if i > 0 {
+                head.push(b' ');
+            }
+            push_real8(&mut head, value);
+        }
+        head.push(b']');
+    }
+    head.extend_from_slice(b" /BBox [");
+    for (i, value) in page_box.into_iter().enumerate() {
+        if i > 0 {
+            head.push(b' ');
+        }
+        push_real8(&mut head, value);
+    }
+    head.push(b']');
+    if matches!(page_dict.get(b"Metadata"), Ok(value) if !matches!(value, Object::Reference(_))) {
+        warnings.push("PDF inclusion: /Metadata must be indirect object".to_string());
+    }
+    for key in [&b"LastModified"[..], b"Metadata", b"PieceInfo", b"SeparationInfo"] {
+        if let Ok(value) = page_dict.get(key) {
+            head.push(b' ');
+            serialize_pdf_name(key, &mut head);
+            head.push(b' ');
+            copier.copy_into(value, &mut head)?;
+        }
+    }
+    let group = match page_dict.get(b"Group") {
+        Ok(value) => {
+            let mut inline = Vec::new();
+            copier.copy_into(value, &mut inline)?;
+            let dict = doc
+                .dereference(value)
+                .ok()
+                .and_then(|(_, value)| value.as_dict().ok())
+                .ok_or("PDF inclusion: /Group dict missing")?;
+            let mut separate = Vec::new();
+            copier.copy_into(&Object::Dictionary(dict.clone()), &mut separate)?;
+            Some((inline, separate))
+        }
+        Err(_) => None,
     };
-    let content = doc
-        .get_page_content_with_limit(page_id, 256 * 1024 * 1024)
-        .map_err(|e| e.to_string())?;
-    let content = crate::pdffile::flate(&content);
-    let mut bytes = format!(
-        "<< /Type /XObject /Subtype /Form /FormType 1 /BBox [{x0} {y0} {x1} {y1}] /Matrix [{} {} {} {} {} {}] /Resources ",
-        matrix[0], matrix[1], matrix[2], matrix[3], matrix[4], matrix[5],
-    ).into_bytes();
-    serialize_pdf_object(&resources, &mut bytes);
-    if let Ok(group) = doc.get_dictionary(page_id).and_then(|d| d.get(b"Group")) {
-        let group = copy_object(
-            group,
-            &doc,
-            &mut ids,
-            &mut objects,
-            next_object,
-            &mut working_base14_fonts,
-            resolve_type1,
-            0,
-        )?;
-        bytes.extend_from_slice(b" /Group ");
-        serialize_pdf_object(&group, &mut bytes);
+
+    let mut tail = Vec::new();
+    match &resources {
+        None => warnings.push(
+            "PDF inclusion: /Resources missing. 'This practice is not recommended' (PDF Ref)"
+                .to_string(),
+        ),
+        Some(resources) => {
+            tail.extend_from_slice(b" /Resources <<");
+            for (key, value) in resources.iter() {
+                let value = doc.dereference(value).map_err(|e| e.to_string())?.1;
+                let valid = match key.as_slice() {
+                    b"Font" => value.as_dict().is_ok(),
+                    b"ProcSet" => value.as_array().is_ok(),
+                    b"Subtype" => {
+                        if !matches!(value, Object::Name(_)) {
+                            warnings.push(format!(
+                                "PDF inclusion: Subtype in Resources dict is not a name (key 'Subtype', type <{}>); ignored.",
+                                xpdf_type_name(value)
+                            ));
+                            continue;
+                        }
+                        true
+                    }
+                    _ => {
+                        if value.as_dict().is_err() {
+                            warnings.push(format!(
+                                "PDF inclusion: invalid other resource which is no dict (key '{}', type <{}>); ignored.",
+                                String::from_utf8_lossy(key),
+                                xpdf_type_name(value)
+                            ));
+                            continue;
+                        }
+                        true
+                    }
+                };
+                if !valid {
+                    return Err(format!(
+                        "PDF inclusion: invalid {} type <{}>",
+                        if key == b"ProcSet" { "ProcSet array" } else { "font resources dict" },
+                        xpdf_type_name(value)
+                    ));
+                }
+                tail.push(b' ');
+                serialize_pdf_name(key, &mut tail);
+                tail.push(b' ');
+                copier.copy_into(value, &mut tail)?;
+            }
+            tail.extend_from_slice(b" >>");
+        }
     }
-    bytes.extend_from_slice(
-        format!(
-            " /Filter /FlateDecode /Length {} >>\nstream\n",
-            content.len()
-        )
-        .as_bytes(),
-    );
-    bytes.extend_from_slice(&content);
-    bytes.extend_from_slice(b"\nendstream");
-    objects.push(EmbeddedImage {
-        obj_num: object,
-        bytes,
-    });
-    let unit = inherited(&doc, page_id, b"UserUnit")
-        .and_then(|v| v.as_float().ok())
-        .unwrap_or(1.0) as f64;
-    if !unit.is_finite() || unit <= 0.0 {
-        return Err("Invalid PDF UserUnit".into());
-    }
-    let (w, h) = if rotate % 180 == 0 { (w, h) } else { (h, w) };
-    let bbox = [x0 * unit, y0 * unit, x1 * unit, y1 * unit];
-    *imported_base14_fonts = working_base14_fonts;
-    Ok((w * unit, h * unit, bbox, objects, total_pages))
+    // Variant B of write_epdf: a single content stream is copied without
+    // recompression, with its own /Filter and /DecodeParms.
+    let contents = page_dict
+        .get(b"Contents")
+        .ok()
+        .and_then(|value| doc.dereference(value).ok())
+        .map(|(_, value)| value);
+    let (data, filter) = match contents {
+        Some(Object::Stream(stream)) => {
+            if stream.dict.get(b"F").is_ok() {
+                return Err("PDF inclusion: Unsupported external stream".into());
+            }
+            let mut filter = Vec::new();
+            for key in [&b"Filter"[..], b"DecodeParms"] {
+                if key == b"DecodeParms" && filter.is_empty() {
+                    break;
+                }
+                if let Some((_, value)) = stream.dict.get(key).ok().and_then(|v| doc.dereference(v).ok()) {
+                    filter.push(b' ');
+                    serialize_pdf_name(key, &mut filter);
+                    filter.push(b' ');
+                    copier.copy_into(value, &mut filter)?;
+                }
+            }
+            (stream.content.clone(), filter)
+        }
+        Some(Object::Array(parts)) => {
+            let mut data = Vec::new();
+            for (i, part) in parts.iter().enumerate() {
+                if let Ok((_, Object::Stream(stream))) = doc.dereference(part) {
+                    data.extend_from_slice(
+                        &stream
+                            .decompressed_content_with_limit(256 * 1024 * 1024)
+                            .unwrap_or_else(|_| stream.content.clone()),
+                    );
+                }
+                if i + 1 < parts.len() {
+                    data.push(b'\n');
+                }
+            }
+            (crate::pdffile::flate(&data), b" /Filter /FlateDecode".to_vec())
+        }
+        _ => (crate::pdffile::flate(&[]), b" /Filter /FlateDecode".to_vec()),
+    };
+    write!(tail, " /Length {}", data.len()).unwrap();
+    tail.extend_from_slice(&filter);
+    tail.extend_from_slice(b" >>\nstream\n");
+    tail.extend_from_slice(&data);
+    tail.extend_from_slice(b"\nendstream");
+
+    let objects = std::mem::take(&mut copier.objects);
+    *imported_base14_fonts = std::mem::take(&mut copier.base14_fonts);
+    Ok(PdfInclusion {
+        version,
+        page: page_num,
+        total_pages,
+        width: (x2 - x1) as f32,
+        height: (y2 - y1) as f32,
+        orig_x: x1 as f32,
+        orig_y: y1 as f32,
+        rotate,
+        objects,
+        form: PdfForm { head, group, tail },
+        warnings,
+    })
 }
 
 fn serialize_pdf_object(value: &lopdf::Object, out: &mut Vec<u8>) {
@@ -942,6 +1416,8 @@ struct ParsedPng<'a> {
     idat: Vec<&'a [u8]>,
     palette: Option<&'a [u8]>,
     transparency: Option<&'a [u8]>,
+    /// libpng's file gamma (fixed point): gAMA, or sRGB's 45455.
+    gamma: Option<u32>,
 }
 
 fn valid_png_bit_depth(color_type: u8, bit_depth: u8) -> bool {
@@ -972,6 +1448,8 @@ fn parse_png_impl(bytes: &[u8], verify_crc: bool) -> Option<ParsedPng<'_>> {
     let mut idat = Vec::new();
     let mut palette = None;
     let mut transparency = None;
+    let mut gamma = None;
+    let mut srgb = false;
 
     while pos < bytes.len() {
         let header = bytes.get(pos..pos.checked_add(8)?)?;
@@ -1036,6 +1514,10 @@ fn parse_png_impl(bytes: &[u8], verify_crc: bool) -> Option<ParsedPng<'_>> {
                 }
                 transparency = Some(data);
             }
+            b"gAMA" if data.len() == 4 => {
+                gamma = Some(u32::from_be_bytes(data.try_into().ok()?));
+            }
+            b"sRGB" => srgb = true,
             b"IDAT" => {
                 if !saw_header || ended_idat {
                     return None;
@@ -1095,6 +1577,7 @@ fn parse_png_impl(bytes: &[u8], verify_crc: bool) -> Option<ParsedPng<'_>> {
         idat,
         palette,
         transparency,
+        gamma: if srgb { Some(45455) } else { gamma },
     })
 }
 
@@ -1209,22 +1692,134 @@ fn indexed_transparency(bytes: Option<&[u8]>) -> IndexedTransparency {
     }
 }
 
+/// pdfTeX image settings: the PDF version and `\pdfimage*` parameters
+/// fixed at the first output, plus the per-image `attr` and `colorspace`
+/// keywords of `\pdfximage`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RasterSettings<'a> {
+    /// `attr {...}`: written first in the image dictionary.
+    pub attr: Option<&'a str>,
+    /// `colorspace <n>`: object number replacing the image's color space.
+    pub colorspace: i32,
+    /// PDF 1.4 or newer: alpha becomes a soft mask; older PDFs drop it.
+    pub alpha: bool,
+    /// `fixed_image_hicolor` with PDF 1.5 or newer: 16-bit samples stay.
+    pub hicolor: bool,
+    /// `\pdfimageapplygamma`: (`\pdfgamma`, `\pdfimagegamma`), thousandths.
+    pub gamma: Option<(i32, i32)>,
+}
+
+impl Default for RasterSettings<'_> {
+    fn default() -> Self {
+        Self {
+            attr: None,
+            colorspace: 0,
+            alpha: true,
+            hicolor: true,
+            gamma: None,
+        }
+    }
+}
+
+impl RasterSettings<'_> {
+    fn dict_start(&self) -> String {
+        match self.attr {
+            Some(attr) => format!("<< {attr} /Type /XObject /Subtype /Image"),
+            None => SMASK_START.to_owned(),
+        }
+    }
+
+    fn color_space(&self, natural: &str) -> String {
+        if self.colorspace != 0 {
+            format!("{} 0 R", self.colorspace)
+        } else {
+            natural.to_owned()
+        }
+    }
+}
+
+/// Soft masks carry no user attributes.
+const SMASK_START: &str = "<< /Type /XObject /Subtype /Image";
+
+/// pdfTeX's writepng.c copies the PNG stream only when no sample needs
+/// changing; everything else goes through libpng's transformations.
+fn png_needs_decoding(parsed: &ParsedPng<'_>, settings: &RasterSettings<'_>) -> bool {
+    let transparency = matches!(parsed.color_type, 4 | 6) || parsed.transparency.is_some();
+    parsed.interlace != 0
+        || settings.gamma.is_some()
+        || (transparency && !settings.alpha)
+        || (parsed.bit_depth == 16 && (!settings.hicolor || matches!(parsed.color_type, 4 | 6)))
+}
+
 /// Returns whether the caller must reserve one additional PDF object for a
 /// possible alpha soft mask. PNG color-key transparency is represented inline
 /// and does not consume an object. Gray-alpha/RGBA images always get a soft
 /// mask (pdfTeX writepng.c), even when every alpha sample is opaque.
-pub fn png_needs_soft_mask(bytes: &[u8]) -> bool {
+pub fn png_needs_soft_mask(bytes: &[u8], settings: &RasterSettings<'_>) -> bool {
     // This is only an object-number reservation prepass. The embed pass below
     // performs the CRC and compressed-raster validation once, avoiding a
     // second full read of every IDAT payload on the common path.
     let Some(parsed) = parse_png_impl(bytes, false) else {
         return false;
     };
+    if !settings.alpha {
+        return false;
+    }
+    if png_needs_decoding(&parsed, settings) {
+        // libpng's tRNS-to-alpha expansion always yields an alpha channel.
+        return matches!(parsed.color_type, 4 | 6) || parsed.transparency.is_some();
+    }
     match parsed.color_type {
         4 | 6 => true,
         3 => indexed_transparency(parsed.transparency) == IndexedTransparency::SoftMask,
         _ => false,
     }
+}
+
+/// What pdfTeX learns from a PNG header (`read_png_info`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PngInfo {
+    pub width: u32,
+    pub height: u32,
+    pub bit_depth: u8,
+    pub color_type: u8,
+    /// `img_xres`/`img_yres`: pHYs pixels per meter as dpi (0 = unknown).
+    pub x_res: i32,
+    pub y_res: i32,
+}
+
+pub fn png_info(bytes: &[u8]) -> Option<PngInfo> {
+    if bytes.len() < 33 || !bytes.starts_with(b"\x89PNG\r\n\x1a\n") || &bytes[12..16] != b"IHDR" {
+        return None;
+    }
+    let mut info = PngInfo {
+        width: u32::from_be_bytes(bytes[16..20].try_into().ok()?),
+        height: u32::from_be_bytes(bytes[20..24].try_into().ok()?),
+        bit_depth: bytes[24],
+        color_type: bytes[25],
+        x_res: 0,
+        y_res: 0,
+    };
+    let mut at = 8usize;
+    while let Some(header) = bytes.get(at..at.checked_add(8)?) {
+        let length = u32::from_be_bytes(header[..4].try_into().ok()?) as usize;
+        let data = at + 8;
+        match &header[4..8] {
+            // libpng reports pixels per meter only for the meter unit
+            b"pHYs" if length >= 9 => {
+                let phys = bytes.get(data..data + 9)?;
+                if phys[8] == 1 {
+                    let ppm = |b: &[u8]| u32::from_be_bytes(b.try_into().unwrap()) as f64;
+                    info.x_res = (0.0254 * ppm(&phys[0..4])).round() as i32;
+                    info.y_res = (0.0254 * ppm(&phys[4..8])).round() as i32;
+                }
+            }
+            b"IDAT" | b"IEND" => break,
+            _ => {}
+        }
+        at = data.checked_add(length)?.checked_add(4)?;
+    }
+    Some(info)
 }
 
 fn checked_raster_layout(width: u32, height: u32, components: usize) -> Option<(usize, usize)> {
@@ -1375,63 +1970,40 @@ impl RasterEncoder {
     }
 }
 
+/// Deflate an unfiltered raster with per-row PNG predictors. `bpp` is the
+/// predictor's bytes per pixel (components times bytes per sample).
 fn encode_flat_raster(
     pixels: &[u8],
     width: u32,
     height: u32,
-    components: usize,
+    bpp: usize,
     options: PngEmbedOptions,
 ) -> Option<Vec<u8>> {
-    let (row_bytes, _) = checked_raster_layout(width, height, components)?;
+    let (row_bytes, _) = checked_raster_layout(width, height, bpp)?;
     let rows = usize::try_from(height).ok()?;
     if pixels.len() != row_bytes.checked_mul(rows)? {
         return None;
     }
-    let mut encoder = RasterEncoder::new(row_bytes, components, options);
+    let mut encoder = RasterEncoder::new(row_bytes, bpp, options);
     for row in pixels.chunks_exact(row_bytes) {
         encoder.write_row(row)?;
     }
     encoder.finish()
 }
 
-fn raster_object(
-    object: i32,
-    width: u32,
-    height: u32,
-    colors: usize,
-    pixels: &[u8],
-    extra: &str,
-    options: PngEmbedOptions,
-) -> Option<EmbeddedImage> {
-    let compressed = encode_flat_raster(pixels, width, height, colors, options)?;
-    Some(compressed_raster_object(
-        object,
-        width,
-        height,
-        8,
-        if colors == 1 {
-            "/DeviceGray".to_owned()
-        } else {
-            "/DeviceRGB".to_owned()
-        },
-        colors,
-        compressed,
-        extra,
-    ))
-}
-
 fn compressed_raster_object(
+    start: &str,
     object: i32,
     width: u32,
     height: u32,
     bit_depth: u8,
-    color_space: String,
+    color_space: &str,
     colors: usize,
     compressed: Vec<u8>,
     extra: &str,
 ) -> EmbeddedImage {
     let mut bytes = format!(
-        "<< /Type /XObject /Subtype /Image /Width {width} /Height {height} /BitsPerComponent {bit_depth} /ColorSpace {color_space} /Filter /FlateDecode /DecodeParms << /Predictor 15 /Columns {width} /Colors {colors} /BitsPerComponent {bit_depth} >>{extra} /Length {} >>\nstream\n",
+        "{start} /Width {width} /Height {height} /BitsPerComponent {bit_depth} /ColorSpace {color_space} /Filter /FlateDecode /DecodeParms << /Predictor 15 /Columns {width} /Colors {colors} /BitsPerComponent {bit_depth} >>{extra} /Length {} >>\nstream\n",
         compressed.len(),
     )
     .into_bytes();
@@ -1443,14 +2015,123 @@ fn compressed_raster_object(
     }
 }
 
+/// libpng `convert_gamma_value`: a gamma passed as a double becomes fixed
+/// point (values below 128 are scaled by 100000).
+fn png_fixed_gamma(value: f64) -> Option<i64> {
+    let value = if value > 0.0 && value < 128.0 {
+        value * 100000.0
+    } else {
+        value
+    };
+    let fixed = (value + 0.5).floor();
+    (fixed > 0.0 && fixed <= i32::MAX as f64).then_some(fixed as i64)
+}
+
+/// libpng `png_gamma_significant`.
+fn png_gamma_significant(gamma: i64) -> bool {
+    !(95000..=105000).contains(&gamma)
+}
+
+/// The libpng gamma correction pdfTeX requests with
+/// `png_set_gamma(png, \pdfgamma/1000, file_gamma)`.
+struct PngGamma {
+    /// `png_reciprocal2(file, screen)`: the correction exponent (fixed).
+    exponent: i64,
+    /// `png_product2(file, screen)`: its inverse, for 16-to-8 tables.
+    inverse: i64,
+}
+
+impl PngGamma {
+    /// None when libpng leaves the samples alone (product within 5% of 1).
+    fn new(screen_milli: i32, image_gamma_milli: i32, file_gamma: Option<u32>) -> Result<Option<Self>, String> {
+        let screen = png_fixed_gamma(screen_milli as f64 / 1000.0);
+        let file = match file_gamma {
+            Some(fixed) => png_fixed_gamma(fixed as f64 * 0.00001),
+            None => png_fixed_gamma(1000.0 / image_gamma_milli as f64),
+        };
+        let (Some(screen), Some(file)) = (screen, file) else {
+            return Err("libpng: internal error".into());
+        };
+        let product = ((file as f64 * screen as f64) / 100000.0 + 0.5).floor() as i64;
+        if !png_gamma_significant(product) {
+            return Ok(None);
+        }
+        Ok(Some(Self {
+            exponent: ((1e15 / file as f64) / screen as f64 + 0.5).floor() as i64,
+            inverse: product,
+        }))
+    }
+
+    /// `png_build_8bit_table`.
+    fn table8(&self) -> [u8; 256] {
+        let mut table = [0u8; 256];
+        let significant = png_gamma_significant(self.exponent);
+        for (i, slot) in table.iter_mut().enumerate() {
+            *slot = if significant && i > 0 && i < 255 {
+                (255.0 * (i as f64 / 255.0).powf(self.exponent as f64 * 0.00001) + 0.5).floor() as u8
+            } else {
+                i as u8
+            };
+        }
+        table
+    }
+
+    /// `png_build_16bit_table` (no sBIT shift).
+    fn correct16(&self, value: u16) -> u16 {
+        if !png_gamma_significant(self.exponent) {
+            return value;
+        }
+        let x = value as f64 / 65535.0;
+        (65535.0 * x.powf(self.exponent as f64 * 0.00001) + 0.5).floor() as u16
+    }
+
+    /// `png_build_16to8_table` (shift 5) followed by the chop to 8 bits,
+    /// indexed by the top 11 bits of a 16-bit sample.
+    fn table16to8(&self) -> Vec<u8> {
+        const SHIFT: u32 = 5;
+        let max = (1u32 << (16 - SHIFT)) - 1;
+        let mut table = vec![255u8; 1 << (16 - SHIFT)];
+        let mut last = 0usize;
+        for i in 0..255u32 {
+            let out = i * 257 + 128;
+            let corrected = (65535.0
+                * (out as f64 / 65535.0).powf(self.inverse as f64 * 0.00001)
+                + 0.5)
+                .floor() as u32;
+            let bound = ((corrected * max + 32768) / 65535 + 1) as usize;
+            while last < bound.min(table.len()) {
+                table[last] = i as u8;
+                last += 1;
+            }
+        }
+        table
+    }
+}
+
+/// The libpng path of writepng.c: expand palettes and transparency, keep or
+/// strip 16-bit samples (`\pdfimagehicolor`), drop alpha before PDF 1.4,
+/// apply `\pdfimageapplygamma`, and split alpha into an 8-bit soft mask.
 fn embed_decoded_png(
     bytes: &[u8],
+    parsed: &ParsedPng<'_>,
     object: i32,
     next: &mut i32,
     options: PngEmbedOptions,
+    settings: &RasterSettings<'_>,
 ) -> Option<Vec<EmbeddedImage>> {
+    let gamma = match settings.gamma {
+        Some((screen, image)) => PngGamma::new(screen, image, parsed.gamma).ok()?,
+        None => None,
+    };
+    let keep16 = parsed.bit_depth == 16 && settings.hicolor;
     let mut decoder = png::Decoder::new(std::io::Cursor::new(bytes));
-    decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
+    // 16-bit samples are decoded in full when gamma correction must see them.
+    let strip_in_decoder = parsed.bit_depth == 16 && !keep16 && gamma.is_none();
+    decoder.set_transformations(if strip_in_decoder {
+        png::Transformations::EXPAND | png::Transformations::STRIP_16
+    } else {
+        png::Transformations::EXPAND
+    });
     let mut reader = decoder.read_info().ok()?;
     let output_size = reader.output_buffer_size()?;
     if output_size > MAX_DECODED_RASTER_BYTES {
@@ -1459,58 +2140,110 @@ fn embed_decoded_png(
     let mut pixels = vec![0; output_size];
     let info = reader.next_frame(&mut pixels).ok()?;
     pixels.truncate(info.buffer_size());
-    let (colors, alpha) = match info.color_type {
+    let (colors, has_alpha) = match info.color_type {
         png::ColorType::Grayscale => (1, false),
         png::ColorType::GrayscaleAlpha => (1, true),
         png::ColorType::Rgb => (3, false),
         png::ColorType::Rgba => (3, true),
         _ => return None,
     };
+    let sample_bytes = if info.bit_depth == png::BitDepth::Sixteen { 2 } else { 1 };
+    let channels = colors + usize::from(has_alpha);
     let pixel_count = usize::try_from(info.width)
         .ok()?
         .checked_mul(usize::try_from(info.height).ok()?)?;
-    let channels = colors + usize::from(alpha);
-    if pixels.len() != pixel_count.checked_mul(channels)? {
+    if pixels.len() != pixel_count.checked_mul(channels * sample_bytes)? {
         return None;
     }
-    let mut objects = Vec::with_capacity(if alpha { 2 } else { 1 });
-    let mut mask = String::new();
-    let mut following_object = None;
-    if alpha {
-        let count = pixels.len() / (colors + 1);
-        let mut alpha_pixels = Vec::with_capacity(count);
-        for i in 0..count {
-            let start = i * (colors + 1);
-            alpha_pixels.push(pixels[start + colors]);
-            pixels.copy_within(start..start + colors, i * colors);
+    let out_bytes = if keep16 { 2 } else { 1 };
+    let mut main = Vec::with_capacity(pixel_count * colors * out_bytes);
+    let mut alpha = Vec::with_capacity(if has_alpha { pixel_count } else { 0 });
+    if sample_bytes == 2 {
+        let table16to8 = gamma.as_ref().filter(|_| !keep16).map(PngGamma::table16to8);
+        for pixel in pixels.chunks_exact(channels * 2) {
+            for sample in pixel[..colors * 2].chunks_exact(2) {
+                let value = u16::from_be_bytes([sample[0], sample[1]]);
+                if keep16 {
+                    let value = gamma.as_ref().map_or(value, |g| g.correct16(value));
+                    main.extend_from_slice(&value.to_be_bytes());
+                } else {
+                    main.push(match &table16to8 {
+                        Some(table) => table[usize::from(value >> 5)],
+                        None => sample[0],
+                    });
+                }
+            }
+            if has_alpha {
+                // writepng.c keeps the high byte of 16-bit alpha samples
+                alpha.push(pixel[colors * 2]);
+            }
         }
-        pixels.truncate(count * colors);
-        let mask_object = *next;
-        let following = next.checked_add(1)?;
-        objects.push(raster_object(
+    } else {
+        let table = gamma.as_ref().map(PngGamma::table8);
+        // libpng corrects 2- and 4-bit gray on the replicated 8-bit value and
+        // keeps the top bits of the result.
+        let low_gray_bits = (parsed.color_type == 0 && parsed.bit_depth < 8)
+            .then_some(parsed.bit_depth)
+            .filter(|_| parsed.transparency.is_none());
+        for pixel in pixels.chunks_exact(channels) {
+            for &value in &pixel[..colors] {
+                main.push(match (&table, low_gray_bits) {
+                    (None, _) | (Some(_), Some(1)) => value,
+                    (Some(table), Some(bits)) => {
+                        let top = table[usize::from(value)] >> (8 - bits);
+                        (u16::from(top) * 255 / ((1u16 << bits) - 1)) as u8
+                    }
+                    (Some(table), None) => table[usize::from(value)],
+                });
+            }
+            if has_alpha {
+                alpha.push(pixel[colors]);
+            }
+        }
+    }
+    let natural = if colors == 1 { "/DeviceGray" } else { "/DeviceRGB" };
+    let compressed = encode_flat_raster(&main, info.width, info.height, colors * out_bytes, options)?;
+    if !(has_alpha && settings.alpha) {
+        return Some(vec![compressed_raster_object(
+            &settings.dict_start(),
+            object,
+            info.width,
+            info.height,
+            8 * out_bytes as u8,
+            &settings.color_space(natural),
+            colors,
+            compressed,
+            "",
+        )]);
+    }
+    let mask_object = *next;
+    let following = next.checked_add(1)?;
+    let mask = encode_flat_raster(&alpha, info.width, info.height, 1, options)?;
+    let objects = vec![
+        compressed_raster_object(
+            SMASK_START,
             mask_object,
             info.width,
             info.height,
+            8,
+            "/DeviceGray",
             1,
-            &alpha_pixels,
+            mask,
             "",
-            options,
-        )?);
-        mask = format!(" /SMask {mask_object} 0 R");
-        following_object = Some(following);
-    }
-    objects.push(raster_object(
-        object,
-        info.width,
-        info.height,
-        colors,
-        &pixels,
-        &mask,
-        options,
-    )?);
-    if let Some(following) = following_object {
-        *next = following;
-    }
+        ),
+        compressed_raster_object(
+            &settings.dict_start(),
+            object,
+            info.width,
+            info.height,
+            8 * out_bytes as u8,
+            &settings.color_space(natural),
+            colors,
+            compressed,
+            &format!(" /SMask {mask_object} 0 R"),
+        ),
+    ];
+    *next = following;
     Some(objects)
 }
 
@@ -1548,9 +2281,10 @@ fn embed_split_alpha(
     next_obj: &mut i32,
     components: usize,
     options: PngEmbedOptions,
+    settings: &RasterSettings<'_>,
 ) -> Option<Vec<EmbeddedImage>> {
     if options.optimization == PngOptimization::Speed {
-        return embed_split_alpha_fast(parsed, img_obj, next_obj, components, options);
+        return embed_split_alpha_fast(parsed, img_obj, next_obj, components, options, settings);
     }
     let channels = components.checked_add(1)?;
     let (source_row_bytes, _) = checked_raster_layout(parsed.width, parsed.height, channels)?;
@@ -1598,25 +2332,23 @@ fn embed_split_alpha(
     let smask_obj = *next_obj;
     let following = next_obj.checked_add(1)?;
     let smask = compressed_raster_object(
+        SMASK_START,
         smask_obj,
         parsed.width,
         parsed.height,
         8,
-        "/DeviceGray".to_owned(),
+        "/DeviceGray",
         1,
         alpha,
         "",
     );
     let image = compressed_raster_object(
+        &settings.dict_start(),
         img_obj,
         parsed.width,
         parsed.height,
         8,
-        if components == 1 {
-            "/DeviceGray".to_owned()
-        } else {
-            "/DeviceRGB".to_owned()
-        },
+        &settings.color_space(if components == 1 { "/DeviceGray" } else { "/DeviceRGB" }),
         components,
         main,
         &format!(" /SMask {smask_obj} 0 R"),
@@ -1637,6 +2369,7 @@ fn embed_split_alpha_fast(
     next_obj: &mut i32,
     components: usize,
     options: PngEmbedOptions,
+    settings: &RasterSettings<'_>,
 ) -> Option<Vec<EmbeddedImage>> {
     let channels = components.checked_add(1)?;
     let (source_row_bytes, _) = checked_raster_layout(parsed.width, parsed.height, channels)?;
@@ -1696,25 +2429,23 @@ fn embed_split_alpha_fast(
     let smask_obj = *next_obj;
     let following = next_obj.checked_add(1)?;
     let smask = compressed_raster_object(
+        SMASK_START,
         smask_obj,
         parsed.width,
         parsed.height,
         8,
-        "/DeviceGray".to_owned(),
+        "/DeviceGray",
         1,
         alpha,
         "",
     );
     let image = compressed_raster_object(
+        &settings.dict_start(),
         img_obj,
         parsed.width,
         parsed.height,
         8,
-        if components == 1 {
-            "/DeviceGray".to_owned()
-        } else {
-            "/DeviceRGB".to_owned()
-        },
+        &settings.color_space(if components == 1 { "/DeviceGray" } else { "/DeviceRGB" }),
         components,
         main,
         &format!(" /SMask {smask_obj} 0 R"),
@@ -1880,36 +2611,40 @@ fn color_key(parsed: &ParsedPng<'_>) -> Option<String> {
 fn embed_passthrough(
     parsed: &ParsedPng<'_>,
     object: i32,
-    color_space: String,
+    color_space: &str,
     colors: usize,
     extra: &str,
+    settings: &RasterSettings<'_>,
 ) -> Option<EmbeddedImage> {
     if !validate_passthrough_idat(parsed) {
         return None;
     }
     Some(compressed_raster_object(
+        &settings.dict_start(),
         object,
         parsed.width,
         parsed.height,
         parsed.bit_depth,
-        color_space,
+        &settings.color_space(color_space),
         colors,
         concatenate_idat(parsed)?,
         extra,
     ))
 }
 
-/// Embed a PNG using explicit compression settings for paths that require
-/// pixel conversion. Compatible PNG IDAT streams are copied byte-for-byte.
+/// Embed a PNG as pdfTeX's writepng.c does under `settings`. Compatible
+/// PNG IDAT streams are copied byte-for-byte; `options` control the
+/// compression of rasters that need re-encoding.
 pub fn embed_png_with_options(
     png_bytes: &[u8],
     img_obj: i32,
     next_obj: &mut i32,
     options: PngEmbedOptions,
+    settings: &RasterSettings<'_>,
 ) -> Option<Vec<EmbeddedImage>> {
     let parsed = parse_png(png_bytes)?;
-    if parsed.interlace != 0 {
-        return embed_decoded_png(png_bytes, img_obj, next_obj, options);
+    if png_needs_decoding(&parsed, settings) {
+        return embed_decoded_png(png_bytes, &parsed, img_obj, next_obj, options, settings);
     }
 
     match parsed.color_type {
@@ -1926,37 +2661,35 @@ pub fn embed_png_with_options(
                 "/DeviceRGB"
             };
             Some(vec![embed_passthrough(
-                &parsed,
-                img_obj,
-                space.to_owned(),
-                colors,
-                &extra,
+                &parsed, img_obj, space, colors, &extra, settings,
             )?])
         }
         3 => {
             let palette = parsed.palette?;
             let space = palette_color_space(palette);
             match indexed_transparency(parsed.transparency) {
-                IndexedTransparency::Opaque => {
-                    Some(vec![embed_passthrough(&parsed, img_obj, space, 1, "")?])
-                }
+                IndexedTransparency::Opaque => Some(vec![embed_passthrough(
+                    &parsed, img_obj, &space, 1, "", settings,
+                )?]),
                 IndexedTransparency::ColorKey(first, last) => Some(vec![embed_passthrough(
                     &parsed,
                     img_obj,
-                    space,
+                    &space,
                     1,
                     &format!(" /Mask [{first} {last}]"),
+                    settings,
                 )?]),
                 IndexedTransparency::SoftMask => {
                     let alpha = indexed_alpha_stream(&parsed, parsed.transparency?, options)?;
                     let smask_obj = *next_obj;
                     let following = next_obj.checked_add(1)?;
                     let smask = compressed_raster_object(
+                        SMASK_START,
                         smask_obj,
                         parsed.width,
                         parsed.height,
                         8,
-                        "/DeviceGray".to_owned(),
+                        "/DeviceGray",
                         1,
                         alpha,
                         "",
@@ -1964,24 +2697,31 @@ pub fn embed_png_with_options(
                     let image = embed_passthrough(
                         &parsed,
                         img_obj,
-                        space,
+                        &space,
                         1,
                         &format!(" /SMask {smask_obj} 0 R"),
+                        settings,
                     )?;
                     *next_obj = following;
                     Some(vec![smask, image])
                 }
             }
         }
-        4 if parsed.bit_depth == 8 => embed_split_alpha(&parsed, img_obj, next_obj, 1, options),
-        6 if parsed.bit_depth == 8 => embed_split_alpha(&parsed, img_obj, next_obj, 3, options),
-        _ => embed_decoded_png(png_bytes, img_obj, next_obj, options),
+        4 => embed_split_alpha(&parsed, img_obj, next_obj, 1, options, settings),
+        6 => embed_split_alpha(&parsed, img_obj, next_obj, 3, options, settings),
+        _ => None,
     }
 }
 
 /// Embed a PNG with the default speed-oriented settings.
 pub fn embed_png(png_bytes: &[u8], img_obj: i32, next_obj: &mut i32) -> Option<Vec<EmbeddedImage>> {
-    embed_png_with_options(png_bytes, img_obj, next_obj, PngEmbedOptions::default())
+    embed_png_with_options(
+        png_bytes,
+        img_obj,
+        next_obj,
+        PngEmbedOptions::default(),
+        &RasterSettings::default(),
+    )
 }
 
 #[cfg(test)]
@@ -2454,7 +3194,7 @@ mod tests {
         // Indices 1 and 2 are a contiguous, fully-transparent range.
         let transparency = [255, 0, 0];
         let image = png_with_metadata(3, 2, 4, 1, Some(&palette), Some(&transparency), &[&idat]);
-        assert!(!png_needs_soft_mask(&image));
+        assert!(!png_needs_soft_mask(&image, &RasterSettings::default()));
         let mut next = 40;
         let objects = embed_png(&image, 7, &mut next).unwrap();
         assert_eq!(objects.len(), 1);
@@ -2469,7 +3209,7 @@ mod tests {
         let palette = [255, 0, 0, 0, 255, 0, 0, 0, 255];
         let transparency = [0, 128]; // index 2 and later default to opaque
         let image = png_with_metadata(3, 2, 4, 1, Some(&palette), Some(&transparency), &[&idat]);
-        assert!(png_needs_soft_mask(&image));
+        assert!(png_needs_soft_mask(&image, &RasterSettings::default()));
         let mut next = 40;
         let objects = embed_png(&image, 7, &mut next).unwrap();
         assert_eq!(objects.len(), 2);
@@ -2486,7 +3226,7 @@ mod tests {
         let idat = deflate(&[0, 17, 18]);
         let transparent = 17u16.to_be_bytes();
         let image = png_with_metadata(0, 8, 2, 1, None, Some(&transparent), &[&idat]);
-        assert!(!png_needs_soft_mask(&image));
+        assert!(!png_needs_soft_mask(&image, &RasterSettings::default()));
         let mut next = 9;
         let objects = embed_png(&image, 3, &mut next).unwrap();
         assert_eq!(next, 9);
@@ -2542,7 +3282,14 @@ mod tests {
 
         let mut next = 20;
         let fast =
-            embed_png_with_options(&image, 10, &mut next, PngEmbedOptions::speed(1)).unwrap();
+            embed_png_with_options(
+                &image,
+                10,
+                &mut next,
+                PngEmbedOptions::speed(1),
+                &RasterSettings::default(),
+            )
+            .unwrap();
         let fast_bytes: usize = fast
             .iter()
             .map(|object| compressed_stream(object).len())
@@ -2569,14 +3316,28 @@ mod tests {
 
         let mut next = 20;
         let uncompressed =
-            embed_png_with_options(&image, 10, &mut next, PngEmbedOptions::speed(0)).unwrap();
+            embed_png_with_options(
+                &image,
+                10,
+                &mut next,
+                PngEmbedOptions::speed(0),
+                &RasterSettings::default(),
+            )
+            .unwrap();
         let uncompressed_bytes: usize = uncompressed
             .iter()
             .map(|object| compressed_stream(object).len())
             .sum();
         let mut next = 20;
         let compact =
-            embed_png_with_options(&image, 10, &mut next, PngEmbedOptions::size(9)).unwrap();
+            embed_png_with_options(
+                &image,
+                10,
+                &mut next,
+                PngEmbedOptions::size(9),
+                &RasterSettings::default(),
+            )
+            .unwrap();
         let compact_bytes: usize = compact
             .iter()
             .map(|object| compressed_stream(object).len())
@@ -2608,6 +3369,25 @@ mod tests {
         assert!(checked_raster_layout(24899, 7534, 4).is_some());
     }
 
+    fn include_first_page(bytes: &[u8], page_box: i32) -> Result<PdfInclusion, String> {
+        let mut next = 10;
+        let mut fonts = std::collections::BTreeMap::new();
+        let mut no_type1_font = |_: &str| None;
+        include_pdf_page(
+            bytes,
+            &PdfIncludeOptions {
+                page: PdfPageSelector::Number(1),
+                page_box,
+                file_name: "./t.pdf",
+                suppress_ptex_info: 0,
+                ptex_underscore: false,
+            },
+            &mut next,
+            &mut fonts,
+            &mut no_type1_font,
+        )
+    }
+
     #[test]
     fn pdf_page_box_with_inverted_coordinates_is_normalized() {
         let pdf_data = b"%PDF-1.4\n\
@@ -2620,17 +3400,10 @@ xref\n0 4\n0000000000 65535 f \n\
 0000000115 00000 n \n\
 trailer\n<< /Size 4 /Root 1 0 R >>\n\
 startxref\n220\n%%EOF\n";
-        let mut next = 10;
-        let res = import_pdf_page(pdf_data, 1, b"CropBox", 5, &mut next);
-        assert!(
-            res.is_ok(),
-            "inverted CropBox should be normalized: {:?}",
-            res.err()
-        );
-        let (w, h, bbox, _, _) = res.unwrap();
-        assert_eq!(w, 200.0);
-        assert_eq!(h, 200.0);
-        assert_eq!(bbox, [100.0, 200.0, 300.0, 400.0]);
+        let page = include_first_page(pdf_data, PDF_BOX_SPEC_CROP)
+            .expect("inverted CropBox should be normalized");
+        assert_eq!((page.width, page.height), (200.0, 200.0));
+        assert_eq!((page.orig_x, page.orig_y), (100.0, 200.0));
     }
 
     #[test]
@@ -2649,8 +3422,7 @@ startxref\n220\n%%EOF\n";
 trailer\n<< /Size 4 /Root 1 0 R >>\n\
 startxref\n99999\n%%EOF\n";
         let rebuilt = repair_pdf_xref_rebuild(pdf_data).expect("xref should be rebuilt");
-        let mut next = 10;
-        let res = import_pdf_page(&rebuilt, 1, b"MediaBox", 5, &mut next);
+        let res = include_first_page(&rebuilt, PDF_BOX_SPEC_MEDIA);
         assert!(res.is_ok(), "rebuilt PDF should import: {:?}", res.err());
     }
 }

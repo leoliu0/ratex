@@ -654,52 +654,6 @@ pub fn varinfo_for_reg(l: &LuaState, reg: u32) -> String {
     }
 }
 
-/// Resolve the source variable for an operand passed to a string arithmetic
-/// metamethod. The current frame is the C metamethod; its caller owns MMBIN.
-pub fn caller_arith_varinfo(l: &LuaState, blame_first: bool) -> String {
-    let depth = l.call_depth();
-    if depth < 2 {
-        return String::new();
-    }
-    let caller_idx = depth - 2;
-    let Some(ci) = l.get_frame(caller_idx) else {
-        return String::new();
-    };
-    if !ci.is_lua() {
-        return String::new();
-    }
-    let Some(function) = l.get_frame_func(caller_idx) else {
-        return String::new();
-    };
-    let Some(function) = function.as_lua_function() else {
-        return String::new();
-    };
-    let chunk = function.chunk();
-    let currentpc = ci.pc.saturating_sub(1) as usize;
-    let Some(instruction) = chunk.code.get(currentpc).copied() else {
-        return String::new();
-    };
-    let reg = match instruction.get_opcode() {
-        OpCode::MmBin => Some(if blame_first {
-            instruction.get_a()
-        } else {
-            instruction.get_b()
-        }),
-        OpCode::MmBinI | OpCode::MmBinK => {
-            let register_is_first = !instruction.get_k();
-            (blame_first == register_is_first).then(|| instruction.get_a())
-        }
-        _ => None,
-    };
-    if let Some(reg) = reg
-        && let Some((kind, name)) = getobjname(chunk, currentpc, reg)
-    {
-        format!(" ({} '{}')", kind, name)
-    } else {
-        String::new()
-    }
-}
-
 /// Generate an arithmetic/bitwise type error (mirrors luaG_opinterror).
 /// Determines which operand is the "bad" one and generates a type error.
 pub fn opinterror(

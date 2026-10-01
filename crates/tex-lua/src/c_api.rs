@@ -1685,21 +1685,34 @@ pub unsafe extern "C" fn lua_setuservalue(state: *mut lua_State, index: c_int) {
         .stack_get(top.saturating_sub(1))
         .unwrap_or_default();
     let _ = state_vm.set_top(top.saturating_sub(1));
-    let changed = if let Some(userdata) = target
+    set_userdata_uservalue(state_vm, &target, uservalue);
+}
+
+/// The user value of a userdata created by `lua_newuserdata`; `None` for
+/// other userdata, which have no user value slot.
+pub(crate) fn userdata_uservalue(target: &LuaValue) -> Option<LuaValue> {
+    target
         .as_userdata_mut()
         .and_then(|userdata| userdata.downcast_mut::<CUserdata>())
-    {
-        userdata.uservalue = uservalue;
-        true
-    } else {
-        false
+        .map(|userdata| userdata.uservalue)
+}
+
+/// Set the user value of a userdata created by `lua_newuserdata`; returns
+/// false for other userdata.
+pub(crate) fn set_userdata_uservalue(state: &mut LuaState, target: &LuaValue, uservalue: LuaValue) -> bool {
+    let Some(userdata) = target
+        .as_userdata_mut()
+        .and_then(|userdata| userdata.downcast_mut::<CUserdata>())
+    else {
+        return false;
     };
-    if changed
-        && uservalue.is_collectable()
+    userdata.uservalue = uservalue;
+    if uservalue.is_collectable()
         && let Some(owner) = target.as_gc_ptr()
     {
-        state_vm.gc_barrier_back(owner);
+        state.gc_barrier_back(owner);
     }
+    true
 }
 
 #[unsafe(no_mangle)]

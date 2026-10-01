@@ -113,3 +113,72 @@ fn test_debug_traceback_in_hook_reports_hook_frame() {
 
     assert!(result.is_ok(), "Test failed: {:?}", result);
 }
+
+fn run_debug_level(level: crate::LuaLanguageLevel, code: &str) {
+    let mut vm = GlobalState::new_with_language(SafeOption::default(), level);
+    vm.open_stdlib(crate::stdlib::Stdlib::All).unwrap();
+    let result = vm.main_state().execute(code);
+    assert!(result.is_ok(), "{level}: {result:?}");
+}
+
+#[test]
+fn test_debug_library_matches_ldblib_53() {
+    // Expected values from texlua (Lua 5.3.6).
+    run_debug_level(
+        crate::LuaLanguageLevel::Lua53,
+        r#"
+        local function up() return print end
+        local function e(...) return select(2, pcall(...)) end
+        assert(e(debug.getlocal) == "bad argument #2 to 'debug.getlocal' (number expected, got no value)")
+        assert(e(debug.getlocal, 50, 1) == "bad argument #1 to 'debug.getlocal' (level out of range)")
+        assert(select('#', debug.getlocal(up, 1)) == 1 and debug.getlocal(up, 1) == nil)
+        assert(e(debug.setlocal, 1, 1) == "bad argument #3 to 'debug.setlocal' (value expected)")
+        assert(e(debug.getupvalue, 1, 1) == "bad argument #1 to 'debug.getupvalue' (function expected, got number)")
+        assert(e(debug.upvalueid, up, 2) == "bad argument #2 to 'debug.upvalueid' (invalid upvalue index)")
+        assert(e(debug.upvaluejoin, print, 1, up, 1) == "bad argument #2 to 'debug.upvaluejoin' (invalid upvalue index)")
+        assert(e(debug.setmetatable, 1, 2) == "bad argument #2 to 'debug.setmetatable' (nil or table expected)")
+        assert(e(debug.sethook, print) == "bad argument #2 to 'debug.sethook' (string expected, got no value)")
+        local h, mask, count = debug.gethook()
+        assert(h == nil and mask == "" and count == 0)
+        debug.sethook(print, "", 0)
+        assert(debug.gethook() == nil)
+        assert(e(debug.getinfo, 1, "r") == "bad argument #2 to 'debug.getinfo' (invalid option)")
+        assert(debug.getinfo(100) == nil and select('#', debug.getinfo(100)) == 1)
+        local info = debug.getinfo(1)
+        assert(info.ntransfer == nil and info.ftransfer == nil and info.extraargs == nil)
+        assert(debug.traceback(12):find("^12\nstack traceback:\n\t"), debug.traceback(12))
+        assert(type(debug.debug) == "function")
+        local ok, m = pcall(function() return "abc" + {} end)
+        assert(m:find("attempt to perform arithmetic on a string value$"), m)
+        local t = setmetatable({}, {__index = function() return debug.traceback("mm", 1) end})
+        assert(t.x:find("in metamethod '__index'", 1, true), t.x)
+        local co = coroutine.wrap(function() local w = coroutine.wrap(function() error("deep") end) w() end)
+        local ok, m = pcall(co)
+        assert(m:find('^[^\n]-:%d+: [^\n]-:%d+: deep$'), m)
+        assert(e(coroutine.resume, 1) == "bad argument #1 to 'coroutine.resume' (thread expected)")
+        assert(e(coroutine.wrap, 1) == "bad argument #1 to 'coroutine.wrap' (function expected, got number)")
+        "#,
+    );
+}
+
+#[test]
+fn test_debug_library_matches_ldblib_55() {
+    // Expected values from lua 5.5.1.
+    run_debug_level(
+        crate::LuaLanguageLevel::Lua55,
+        r#"
+        local function up() return print end
+        local function e(...) return select(2, pcall(...)) end
+        assert(select('#', debug.gethook()) == 1)
+        assert(select('#', debug.upvalueid(up, 2)) == 1 and debug.upvalueid(up, 2) == nil)
+        assert(e(debug.setmetatable, 1, 2) == "bad argument #2 to 'debug.setmetatable' (nil or table expected, got number)")
+        assert(e(debug.getinfo, 1, ">") == "bad argument #2 to 'debug.getinfo' (invalid option '>')")
+        local t = setmetatable({}, {__index = function() return debug.traceback("mm", 1) end})
+        assert(t.x:find("in metamethod 'index'", 1, true), t.x)
+        assert(debug.getuservalue(io.stdout) == nil)
+        assert(e(coroutine.resume, 1) == "bad argument #1 to 'coroutine.resume' (thread expected, got number)")
+        local function deep(n) if n == 0 then return debug.traceback("m") end return (deep(n - 1)) end
+        assert(deep(30):find("\n\t...\t(skipping ", 1, true), deep(30))
+        "#,
+    );
+}

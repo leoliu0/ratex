@@ -781,7 +781,7 @@ fn lua_collectgarbage(l: &mut LuaState) -> LuaResult<usize> {
         Some(v) if v.is_nil() => "collect".to_string(),
         Some(v) => match v.as_str() {
             Some(s) => s.to_string(),
-            None => return Err(crate::stdlib::debug::arg_typeerror(l, 1, "string", v)),
+            None => return Err(crate::stdlib::lauxlib::typeerror(l, 1, "string")),
         },
         None => "collect".to_string(),
     };
@@ -1127,7 +1127,7 @@ fn lua_load(l: &mut LuaState) -> LuaResult<usize> {
 
     // Validate mode string - must contain only 'b' and/or 't'
     if mode.is_empty() || mode.chars().any(|c| c != 'b' && c != 't') {
-        return Err(crate::stdlib::debug::argerror(l, 3, "invalid mode"));
+        return Err(crate::stdlib::lauxlib::argerror(l, 3, "invalid mode"));
     }
 
     // Check if mode allows this chunk type

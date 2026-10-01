@@ -11,13 +11,11 @@ use crate::{LuaResult, LuaValue, lua_vm::LuaState};
 pub fn table_sort(l: &mut LuaState) -> LuaResult<usize> {
     let table_val = l
         .get_arg(1)
-        .ok_or_else(|| crate::stdlib::debug::argerror(l, 1, "table expected"))?;
+        .ok_or_else(|| crate::stdlib::lauxlib::typeerror(l, 1, "table"))?;
     let comp = l.get_arg(2);
 
     if !table_val.is_table() {
-        return Err(crate::stdlib::debug::arg_typeerror(
-            l, 1, "table", &table_val,
-        ));
+        return Err(crate::stdlib::lauxlib::typeerror(l, 1, "table"));
     }
 
     // Use obj_len to respect __len metamethod (like C Lua's aux_getn / luaL_len)
@@ -35,9 +33,7 @@ pub fn table_sort(l: &mut LuaState) -> LuaResult<usize> {
     let comp_func = comp.unwrap_or_default();
     let has_comp = !comp_func.is_nil();
     if has_comp && !comp_func.is_function() {
-        return Err(crate::stdlib::debug::arg_typeerror(
-            l, 2, "function", &comp_func,
-        ));
+        return Err(crate::stdlib::lauxlib::typeerror(l, 2, "function"));
     }
 
     let n = len as usize;

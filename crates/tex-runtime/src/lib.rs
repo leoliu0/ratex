@@ -1,4 +1,4 @@
-//! In-process, self-contained pdfLaTeX + BibTeX document builds.
+//! In-process, self-contained LaTeX (pdfTeX, XeTeX or LuaTeX) + BibTeX document builds.
 use std::collections::BTreeMap;
 use std::path::{Component, Path, PathBuf};
 use tex_core::{
@@ -7,18 +7,18 @@ use tex_core::{
 };
 use tex_kpse::fs::{self, MemoryFs, ResourceContext};
 
-pub mod convergence;
 pub mod engine_selection;
 
 const FORMAT_PDFLATEX: &[u8] = include_bytes!("../../tex-cli/assets/default.fmt.zst");
-const FORMAT_XELATEX: &[u8] = include_bytes!("../../tex-cli/assets/xelatex.fmt.zst");
 const FORMAT_LUALATEX: &[u8] = include_bytes!("../../tex-cli/assets/lualatex.fmt.zst");
 
-pub fn format_for_engine(kind: EngineKind) -> &'static [u8] {
+/// The embedded format for an engine the library can run. XeTeX has none:
+/// `ratex xelatex` is a pdfTeX compatibility invocation, not XeTeX.
+fn format_for_engine(kind: EngineKind) -> Option<&'static [u8]> {
     match kind {
-        EngineKind::PdfTeX => FORMAT_PDFLATEX,
-        EngineKind::XeTeX => FORMAT_XELATEX,
-        EngineKind::LuaTeX => FORMAT_LUALATEX,
+        EngineKind::PdfTeX => Some(FORMAT_PDFLATEX),
+        EngineKind::XeTeX => None,
+        EngineKind::LuaTeX => Some(FORMAT_LUALATEX),
     }
 }
 
@@ -45,17 +45,6 @@ pub enum PassPolicy {
     Auto,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub enum ResourcePolicy {
-    #[default]
-    Isolated,
-    ScopedDisk {
-        project_root: PathBuf,
-        allowed_input_roots: Vec<PathBuf>,
-        allow_embedded: bool,
-    },
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CompileRequest {
     pub entry: String,
@@ -66,7 +55,6 @@ pub struct CompileRequest {
     pub halt_on_error: bool,
     pub output_root: Option<String>,
     pub aux_root: Option<String>,
-    pub resources: ResourcePolicy,
     pub timestamp: Option<u64>,
     pub synctex: bool,
     pub optimize_pdf: bool,
@@ -83,7 +71,6 @@ impl CompileRequest {
             halt_on_error: true,
             output_root: None,
             aux_root: None,
-            resources: ResourcePolicy::Isolated,
             timestamp: None,
             synctex: false,
             optimize_pdf: false,
@@ -91,16 +78,31 @@ impl CompileRequest {
     }
 }
 
-pub struct PassOutcome {
-    pub selected_engine: EngineKind,
-    pub status: Status,
-    pub log: String,
-    pub diagnostics: String,
-    pub artifacts: BTreeMap<String, Vec<u8>>,
-    pub auxiliary_observations: BTreeMap<String, Vec<u8>>,
-    pub bibliography_inputs: BTreeMap<String, Vec<u8>>,
-    pub bibliography_required: bool,
+struct PassOutcome {
+    status: Status,
+    log: String,
+    diagnostics: String,
+    has_bcf: bool,
+    auxiliary_observations: BTreeMap<String, Vec<u8>>,
+    /// The `.aux` records BibTeX reads; BibTeX reruns only when they change.
+    bibliography_inputs: BTreeMap<String, Vec<String>>,
+    bibliography_required: bool,
     final_engine: Option<Engine>,
+}
+
+impl PassOutcome {
+    fn failed(status: Status, diagnostics: String) -> Self {
+        Self {
+            status,
+            log: String::new(),
+            diagnostics,
+            has_bcf: false,
+            auxiliary_observations: BTreeMap::new(),
+            bibliography_inputs: BTreeMap::new(),
+            bibliography_required: false,
+            final_engine: None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -215,15 +217,6 @@ impl Session {
     }
 
     pub fn compile_request(&self, request: CompileRequest) -> Compilation {
-        let (project_root, allowed_input_roots, allow_embedded, is_disk) = match &request.resources {
-            ResourcePolicy::Isolated => (PathBuf::from("/project"), Vec::new(), true, false),
-            ResourcePolicy::ScopedDisk {
-                project_root,
-                allowed_input_roots,
-                allow_embedded,
-            } => (project_root.clone(), allowed_input_roots.clone(), *allow_embedded, true),
-        };
-
         let timestamp = self.epoch.or(request.timestamp).unwrap_or_else(host_epoch);
         if timestamp > 253_402_300_799 {
             return Compilation::error_for(
@@ -234,7 +227,7 @@ impl Session {
         }
 
         let entry = match project_path(&request.entry) {
-            Ok(entry) if !is_disk && !self.inputs.contains_key(&entry) => {
+            Ok(entry) if !self.inputs.contains_key(&entry) => {
                 return Compilation::error_for(
                     request.engine.selected(),
                     Status::InvalidInput,
@@ -247,11 +240,7 @@ impl Session {
             }
         };
 
-        let path = if is_disk {
-            project_root.join(&entry)
-        } else {
-            Path::new("/project").join(&entry)
-        };
+        let path = Path::new("/project").join(&entry);
         let cwd = path.parent().unwrap();
         let default_job = match path.file_stem().and_then(|name| name.to_str()) {
             Some(job) if !job.is_empty() => job,
@@ -300,34 +289,14 @@ impl Session {
             }
         }
 
-        let context = if is_disk {
-            match ResourceContext::disk(
-                cwd,
-                &allowed_input_roots,
-                &output_dir,
-                &aux_dir,
-                allow_embedded,
-                Some(timestamp),
-            ) {
-                Ok(context) => context,
-                Err(error) => {
-                    return Compilation::error_for(
-                        request.engine.selected(),
-                        Status::InvalidInput,
-                        error.to_string(),
-                    )
-                }
-            }
-        } else {
-            match ResourceContext::memory(memory.clone(), &output_dir, &aux_dir, allow_embedded) {
-                Ok(context) => context,
-                Err(error) => {
-                    return Compilation::error_for(
-                        request.engine.selected(),
-                        Status::InvalidInput,
-                        error.to_string(),
-                    )
-                }
+        let context = match ResourceContext::memory(memory.clone(), &output_dir, &aux_dir, true) {
+            Ok(context) => context,
+            Err(error) => {
+                return Compilation::error_for(
+                    request.engine.selected(),
+                    Status::InvalidInput,
+                    error.to_string(),
+                )
             }
         };
 
@@ -342,21 +311,15 @@ impl Session {
             }
         }
 
-        // Automatic engine selection
-        let initial_engine = match request.engine {
+        // Automatic engine selection; see `engine_selection` for how it relates to texmk.
+        let mut selected_engine = match request.engine {
             EngineChoice::Explicit(kind) => kind,
             EngineChoice::Auto => {
-                let source_str = if is_disk {
-                    std::fs::read_to_string(&path).unwrap_or_default()
-                } else {
-                    self.inputs.get(&entry).and_then(|b| std::str::from_utf8(b).ok()).unwrap_or_default().to_string()
-                };
-                engine_selection::detect_required_engine_from_source(&source_str).unwrap_or(EngineKind::PdfTeX)
+                let source = String::from_utf8_lossy(&self.inputs[&entry]);
+                engine_selection::detect_required_engine_from_source(&source).unwrap_or(EngineKind::PdfTeX)
             }
         };
-
-        let mut selected_engine = initial_engine;
-        if selected_engine == EngineKind::XeTeX {
+        if format_for_engine(selected_engine).is_none() {
             return Compilation::error_for(
                 selected_engine,
                 Status::UnsupportedEngine,
@@ -368,9 +331,11 @@ impl Session {
         let mut previous = BTreeMap::new();
         let mut bibliography = None;
         let mut final_engine = None;
-        let max_passes = MAX_PASSES;
-        for pass in 1..=max_passes {
-            result.passes = pass;
+        // Passes of the current engine; `result.passes` counts every TeX pass.
+        let mut pass = 0;
+        while pass < MAX_PASSES {
+            pass += 1;
+            result.passes += 1;
             let mut outcome = self.run_pass(
                 selected_engine,
                 &request,
@@ -381,11 +346,12 @@ impl Session {
                 &output_dir,
                 job,
             );
-            result
-                .log
-                .push_str(&format!("--- TeX pass {pass} ---\n{}", outcome.log));
+            result.log.push_str(&format!(
+                "--- {} pass {pass} ---\n{}",
+                selected_engine.command_name(),
+                outcome.log
+            ));
             result.diagnostics.push_str(&outcome.diagnostics);
-            result.files = outcome.artifacts.clone();
             if outcome.status != Status::Success {
                 if request.engine == EngineChoice::Auto {
                     if let Some(next_engine) = engine_selection::detect_engine_switch_need(
@@ -394,12 +360,15 @@ impl Session {
                         &outcome.diagnostics,
                     ) {
                         if !attempted_engines.contains(&next_engine) {
+                            // Start over with the other engine and a full pass budget.
                             attempted_engines.push(next_engine);
                             selected_engine = next_engine;
-                            result = Compilation::error_for(selected_engine, Status::NoConvergence, "");
+                            result.selected_engine = next_engine;
+                            result.diagnostics.clear();
                             previous.clear();
                             bibliography = None;
                             final_engine = None;
+                            pass = 0;
                             continue;
                         }
                     }
@@ -407,7 +376,7 @@ impl Session {
                 result.status = outcome.status;
                 break;
             }
-            if outcome.artifacts.keys().any(|name| name.ends_with(".bcf")) {
+            if outcome.has_bcf {
                 result.status = Status::CompilationError;
                 result.diagnostics.push_str(
                     "Biber is not available in the in-process library; use a BibTeX bibliography.\n",
@@ -416,7 +385,6 @@ impl Session {
             }
             final_engine = outcome.final_engine.take();
 
-            let has_bib_inputs = !outcome.bibliography_inputs.is_empty();
             let mut ran_bibtex = false;
             if outcome.bibliography_required
                 && bibliography.as_ref() != Some(&outcome.bibliography_inputs)
@@ -437,14 +405,10 @@ impl Session {
                 bibliography = Some(outcome.bibliography_inputs);
                 ran_bibtex = true;
             }
-            let sound_one_pass = pass == 1
-                && convergence::ConvergenceState::is_sound_single_pass(
-                    &fs::read_to_string(aux_dir.join(format!("{job}.aux"))).unwrap_or_default(),
-                    &outcome.log,
-                    has_bib_inputs,
-                    outcome.bibliography_required,
-                );
-            let stable = sound_one_pass || (outcome.auxiliary_observations == previous && !ran_bibtex);
+            let stable = !ran_bibtex
+                && (outcome.auxiliary_observations == previous
+                    || (pass == 1
+                        && first_pass_converged(&outcome.auxiliary_observations, &outcome.log, job)));
             previous = outcome.auxiliary_observations;
             if stable {
                 result.status = Status::Success;
@@ -453,7 +417,7 @@ impl Session {
         }
         if result.status == Status::NoConvergence {
             result.diagnostics.push_str(&format!(
-                "auxiliary files did not converge after {max_passes} TeX passes\n"
+                "auxiliary files did not converge after {MAX_PASSES} TeX passes\n"
             ));
         }
         if result.status == Status::Success {
@@ -494,39 +458,27 @@ impl Session {
         output_dir: &Path,
         job: &str,
     ) -> PassOutcome {
-        let format_bytes = format_for_engine(selected_engine);
+        let Some(format_bytes) = format_for_engine(selected_engine) else {
+            return PassOutcome::failed(
+                Status::UnsupportedEngine,
+                format!("{} semantics are not implemented", selected_engine.command_name()),
+            );
+        };
         let mut engine = match tex_core::format::load_format_from(format_bytes) {
             Ok(engine) => engine,
             Err(error) => {
-                return PassOutcome {
-                    selected_engine,
-                    status: Status::InternalError,
-                    log: String::new(),
-                    diagnostics: format!("embedded LaTeX format: {error}"),
-                    artifacts: memory.outputs(),
-                    auxiliary_observations: BTreeMap::new(),
-                    bibliography_inputs: BTreeMap::new(),
-                    bibliography_required: false,
-                    final_engine: None,
-                }
+                return PassOutcome::failed(Status::InternalError, format!("embedded LaTeX format: {error}"))
             }
         };
         if engine.engine_kind != selected_engine {
-            return PassOutcome {
-                selected_engine,
-                status: Status::InternalError,
-                log: String::new(),
-                diagnostics: format!(
+            return PassOutcome::failed(
+                Status::InternalError,
+                format!(
                     "embedded {} format cannot execute {} semantics",
                     engine.engine_kind.command_name(),
                     selected_engine.command_name()
                 ),
-                artifacts: memory.outputs(),
-                auxiliary_observations: BTreeMap::new(),
-                bibliography_inputs: BTreeMap::new(),
-                bibliography_required: false,
-                final_engine: None,
-            };
+            );
         }
         driver::finalize_format_load(&mut engine);
         driver::prepare_latex_job(&mut engine);
@@ -556,24 +508,17 @@ impl Session {
             Status::Success
         };
         let artifacts = memory.outputs();
-        let bibliography_inputs: BTreeMap<_, _> = artifacts
-            .iter()
-            .filter(|(name, _)| name.ends_with(".aux"))
-            .map(|(name, bytes)| (name.clone(), bytes.clone()))
-            .collect();
-        let main_aux = fs::read_to_string(aux_dir.join(format!("{job}.aux"))).unwrap_or_default();
-        let bibliography_required = main_aux.contains("\\bibdata{")
-            || bibliography_inputs
-                .values()
-                .any(|bytes| String::from_utf8_lossy(bytes).contains("\\bibdata{"));
-        let auxiliary_observations = auxiliary_state(&artifacts);
+        let bibliography_inputs = bibtex_inputs(&artifacts);
+        let bibliography_required = bibliography_inputs
+            .values()
+            .flatten()
+            .any(|line| line.starts_with("\\bibdata{"));
         PassOutcome {
-            selected_engine,
             status,
             log: engine.log.clone(),
             diagnostics,
-            artifacts,
-            auxiliary_observations,
+            has_bcf: artifacts.keys().any(|name| name.ends_with(".bcf")),
+            auxiliary_observations: auxiliary_state(artifacts),
             bibliography_inputs,
             bibliography_required,
             final_engine: Some(engine),
@@ -603,16 +548,67 @@ fn request_directory(value: Option<&str>, default: &Path) -> Result<PathBuf, Str
     }
 }
 
-fn auxiliary_state(files: &BTreeMap<String, Vec<u8>>) -> BTreeMap<String, Vec<u8>> {
+/// texmk's rule for skipping the second pass: the log asks for no rerun and
+/// every auxiliary file is an `.aux` holding only records that cannot change
+/// the next pass's output.
+fn first_pass_converged(observations: &BTreeMap<String, Vec<u8>>, log: &str, job: &str) -> bool {
+    let bbl = format!("{job}.bbl");
+    let log_wants_rerun = log.contains("Rerun to get")
+        || log.contains("Label(s) may have changed")
+        || log.contains("There were undefined references")
+        || log.contains("There were undefined citations")
+        || log.lines().any(|line| {
+            (line.contains("Citation") && line.contains("undefined"))
+                || (line.contains("No file ") && line.contains(&bbl))
+        });
+    !log_wants_rerun
+        && observations.iter().all(|(name, bytes)| {
+            name.ends_with(".aux")
+                && String::from_utf8_lossy(bytes).lines().all(|line| {
+                    let line = line.trim();
+                    line.is_empty()
+                        || line.starts_with('%')
+                        || line == "\\relax"
+                        || [
+                            "\\gdef \\@abspage@last{",
+                            "\\gdef\\@abspage@last{",
+                            "\\providecommand\\color",
+                            "\\providecommand\\transparent",
+                            "\\providecommand\\HyperFirstAtBeginDocument",
+                        ]
+                        .iter()
+                        .any(|record| line.starts_with(record))
+                })
+        })
+}
+
+fn auxiliary_state(mut files: BTreeMap<String, Vec<u8>>) -> BTreeMap<String, Vec<u8>> {
+    files.retain(|name, _| {
+        !matches!(
+            Path::new(name).extension().and_then(|s| s.to_str()),
+            Some("pdf" | "log" | "blg" | "synctex" | "gz")
+        )
+    });
+    files
+}
+
+/// The lines of every `.aux` file that BibTeX reads.
+fn bibtex_inputs(files: &BTreeMap<String, Vec<u8>>) -> BTreeMap<String, Vec<String>> {
     files
         .iter()
-        .filter(|(name, _)| {
-            !matches!(
-                Path::new(name).extension().and_then(|s| s.to_str()),
-                Some("pdf" | "log" | "blg" | "synctex" | "gz")
-            )
+        .filter(|(name, _)| name.ends_with(".aux"))
+        .map(|(name, bytes)| {
+            let lines = String::from_utf8_lossy(bytes)
+                .lines()
+                .filter(|line| {
+                    ["\\citation{", "\\bibdata{", "\\bibstyle{", "\\@input{"]
+                        .iter()
+                        .any(|cmd| line.starts_with(cmd))
+                })
+                .map(str::to_owned)
+                .collect();
+            (name.clone(), lines)
         })
-        .map(|(name, bytes)| (name.clone(), bytes.clone()))
         .collect()
 }
 

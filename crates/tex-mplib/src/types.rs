@@ -40,24 +40,6 @@ impl Pair {
             y: r * rad.sin(),
         }
     }
-
-    #[inline]
-    pub fn normalized(self) -> Self {
-        let l = self.len();
-        if l > 1e-12 {
-            Self {
-                x: self.x / l,
-                y: self.y / l,
-            }
-        } else {
-            Self::ZERO
-        }
-    }
-
-    #[inline]
-    pub fn dot(self, other: Self) -> f64 {
-        self.x * other.x + self.y * other.y
-    }
 }
 
 impl std::ops::Add for Pair {
@@ -192,15 +174,6 @@ pub struct Transform {
 }
 
 impl Transform {
-    pub const IDENTITY: Self = Self {
-        xx: 1.0,
-        yx: 0.0,
-        xy: 0.0,
-        yy: 1.0,
-        x0: 0.0,
-        y0: 0.0,
-    };
-
     pub fn shifted(dx: f64, dy: f64) -> Self {
         Self {
             xx: 1.0,
@@ -276,17 +249,6 @@ impl Transform {
             y: p.x * self.yx + p.y * self.yy + self.y0,
         }
     }
-
-    pub fn compose(&self, other: &Self) -> Self {
-        Self {
-            xx: self.xx * other.xx + self.yx * other.xy,
-            yx: self.xx * other.yx + self.yx * other.yy,
-            xy: self.xy * other.xx + self.yy * other.xy,
-            yy: self.xy * other.yx + self.yy * other.yy,
-            x0: self.x0 * other.xx + self.y0 * other.xy + other.x0,
-            y0: self.x0 * other.yx + self.y0 * other.yy + other.y0,
-        }
-    }
 }
 
 /// A knot in a cubic Bézier path.
@@ -323,20 +285,6 @@ pub struct Path {
 }
 
 impl Path {
-    pub fn empty() -> Self {
-        Self {
-            knots: Vec::new(),
-            closed: false,
-        }
-    }
-
-    pub fn line(start: Pair, end: Pair) -> Self {
-        Self {
-            knots: vec![Knot::new(start), Knot::new(end)],
-            closed: false,
-        }
-    }
-
     pub fn rectangle(ll: Pair, ur: Pair) -> Self {
         let lr = Pair::new(ur.x, ll.y);
         let ul = Pair::new(ll.x, ur.y);
@@ -802,7 +750,7 @@ impl MpFigure {
                         pt.y,
                         scale * 10.0,
                         color.to_svg_str(),
-                        text
+                        escape_xml(text)
                     );
                 }
                 MpObject::StartClip { .. } => {}
@@ -834,7 +782,7 @@ fn write_path_ps(ps: &mut String, path: &Path) {
         let p2 = path.knots[next_idx].left_control;
         let p3 = path.knots[next_idx].p;
 
-        if (p1 == path.knots[i].p) && (p2 == p3) {
+        if is_straight(path.knots[i].p, p1, p2, p3) {
             let _ = writeln!(ps, "{:.4} {:.4} lineto", p3.x, p3.y);
         } else {
             let _ = writeln!(
@@ -868,7 +816,7 @@ fn path_to_svg_d(path: &Path) -> String {
         let p2 = path.knots[next_idx].left_control;
         let p3 = path.knots[next_idx].p;
 
-        if (p1 == path.knots[i].p) && (p2 == p3) {
+        if is_straight(path.knots[i].p, p1, p2, p3) {
             let _ = write!(d, " L {:.4},{:.4}", p3.x, p3.y);
         } else {
             let _ = write!(
@@ -882,6 +830,36 @@ fn path_to_svg_d(path: &Path) -> String {
         d.push_str(" Z");
     }
     d
+}
+
+/// Whether the cubic `p0 p1 p2 p3` is written as a line, like MetaPost's
+/// PostScript output: control points at the endpoints, or equally spaced
+/// along the chord within `bend_tolerance` (131/65536 bp).
+fn is_straight(p0: Pair, p1: Pair, p2: Pair, p3: Pair) -> bool {
+    const BEND_TOLERANCE: f64 = 131.0 / 65536.0;
+    if p1 == p0 && p2 == p3 {
+        return true;
+    }
+    let d = p2 - p1;
+    (p1.x - p0.x - d.x).abs() <= BEND_TOLERANCE
+        && (p3.x - p2.x - d.x).abs() <= BEND_TOLERANCE
+        && (p1.y - p0.y - d.y).abs() <= BEND_TOLERANCE
+        && (p3.y - p2.y - d.y).abs() <= BEND_TOLERANCE
+}
+
+fn escape_xml(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '&' => out.push_str("&amp;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&apos;"),
+            _ => out.push(c),
+        }
+    }
+    out
 }
 
 fn escape_ps_string(s: &str) -> String {

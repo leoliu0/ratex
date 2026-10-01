@@ -2,6 +2,17 @@
 
 use std::collections::HashMap;
 
+/// Formats a number like MetaPost's `print_number` (at most 5 decimals).
+pub(crate) fn fmt_number(x: f64) -> String {
+    let s = format!("{x:.5}");
+    let s = s.trim_end_matches('0').trim_end_matches('.');
+    if s == "-0" {
+        "0".into()
+    } else {
+        s.into()
+    }
+}
+
 /// A linear expression: c + sum_i (a_i * x_i)
 #[derive(Clone, Debug, PartialEq)]
 pub struct LinearExpr {
@@ -63,7 +74,7 @@ impl LinearExpr {
     }
 
     pub fn mul_scalar(&self, s: f64) -> Self {
-        if s.abs() < 1e-12 {
+        if s == 0.0 {
             return Self::constant(0.0);
         }
         let terms = self
@@ -139,35 +150,30 @@ impl LinearSolver {
     }
 
     /// Asserts that `e1 = e2`.
-    /// Returns Ok(()) if consistent, Err(message) if inconsistent.
+    /// Returns Ok(()) if consistent (or redundant), Err(message) if inconsistent.
     pub fn equate(&mut self, e1: &LinearExpr, e2: &LinearExpr) -> Result<(), String> {
         let resolved_e1 = self.resolve(e1);
         let resolved_e2 = self.resolve(e2);
         let diff = resolved_e1.sub(&resolved_e2);
 
         if diff.terms.is_empty() {
-            if diff.constant.abs() < 1e-6 {
-                // Redundant equation, consistent
+            // MetaPost (scaled) treats differences up to 64/65536 as redundant.
+            if diff.constant.abs() <= 64.0 / 65536.0 {
                 return Ok(());
-            } else {
-                return Err(format!(
-                    "Inconsistent equation: difference is {:.6} != 0",
-                    diff.constant
-                ));
             }
+            return Err(format!(
+                "Inconsistent equation (off by {})",
+                fmt_number(-diff.constant)
+            ));
         }
 
-        // Choose pivot with largest absolute coefficient
-        let mut best_var = None;
-        let mut max_coeff = 0.0_f64;
-        for (&var, &coeff) in &diff.terms {
-            if coeff.abs() > max_coeff {
-                max_coeff = coeff.abs();
-                best_var = Some((var, coeff));
-            }
-        }
-
-        let (pivot_var, pivot_coeff) = best_var.unwrap();
+        // Choose pivot with largest absolute coefficient (lowest id on ties).
+        let (pivot_var, pivot_coeff) = diff
+            .terms
+            .iter()
+            .map(|(&var, &coeff)| (var, coeff))
+            .max_by(|a, b| a.1.abs().total_cmp(&b.1.abs()).then(b.0.cmp(&a.0)))
+            .expect("non-empty terms");
 
         // Solve for pivot_var:
         // pivot_coeff * pivot_var + other_terms + c = 0

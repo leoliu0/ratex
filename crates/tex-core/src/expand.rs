@@ -2180,10 +2180,8 @@ impl Engine {
                 None
             }
             PdfColorStackInit => {
-                let _ = self.scan_keyword(b"page");
-                let _ = self.scan_keyword(b"direct");
-                let _ = self.scan_general_text_expanded();
-                self.exp_string(b"0");
+                let stack = self.pdf_colorstack_init();
+                self.exp_string(stack.to_string().as_bytes());
                 None
             }
             PdfUniformDeviate | PdfNormalDeviate => {

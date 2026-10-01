@@ -1211,9 +1211,8 @@ fn indexed_transparency(bytes: Option<&[u8]>) -> IndexedTransparency {
 
 /// Returns whether the caller must reserve one additional PDF object for a
 /// possible alpha soft mask. PNG color-key transparency is represented inline
-/// and does not consume an object. An RGBA image is conservatively reserved a
-/// slot; the streaming embedder may discover that every alpha sample is opaque
-/// and leave that slot free.
+/// and does not consume an object. Gray-alpha/RGBA images always get a soft
+/// mask (pdfTeX writepng.c), even when every alpha sample is opaque.
 pub fn png_needs_soft_mask(bytes: &[u8]) -> bool {
     // This is only an object-number reservation prepass. The embed pass below
     // performs the CRC and compressed-raster validation once, avoiding a
@@ -1648,9 +1647,6 @@ fn embed_split_alpha_fast(
     let mut source = vec![0; source_row_bytes + 1];
     let mut main = vec![0; main_row_bytes + 1];
     let mut alpha = vec![0; alpha_row_bytes + 1];
-    let mut current_alpha = vec![0; alpha_row_bytes];
-    let mut previous_alpha = vec![0; alpha_row_bytes];
-    let mut all_opaque = true;
     let compression = Compression::new(options.compression_level.min(9));
     let mut main_encoder = ZlibEncoder::new(Vec::new(), compression);
     let mut alpha_encoder = ZlibEncoder::new(Vec::new(), compression);
@@ -1688,17 +1684,6 @@ fn embed_split_alpha_fast(
                 alpha[pixel + 1] = source[source_at + components];
             }
         }
-        if !unfilter_row(
-            output_filter,
-            &alpha[1..],
-            &mut current_alpha,
-            &previous_alpha,
-            1,
-        ) {
-            return None;
-        }
-        all_opaque &= current_alpha.iter().all(|&sample| sample == u8::MAX);
-        std::mem::swap(&mut current_alpha, &mut previous_alpha);
         main_encoder.write_all(&main).ok()?;
         alpha_encoder.write_all(&alpha).ok()?;
     }
@@ -1710,26 +1695,6 @@ fn embed_split_alpha_fast(
     let alpha = alpha_encoder.finish().ok()?;
     let smask_obj = *next_obj;
     let following = next_obj.checked_add(1)?;
-    if all_opaque {
-        let image = compressed_raster_object(
-            img_obj,
-            parsed.width,
-            parsed.height,
-            8,
-            if components == 1 {
-                "/DeviceGray".to_owned()
-            } else {
-                "/DeviceRGB".to_owned()
-            },
-            components,
-            main,
-            "",
-        );
-        // Keep the caller's conservative reservation so independently
-        // embedded images can still be assigned object numbers in parallel.
-        *next_obj = following;
-        return Some(vec![image]);
-    }
     let smask = compressed_raster_object(
         smask_obj,
         parsed.width,
@@ -2258,8 +2223,11 @@ mod tests {
         assert_eq!(decoded_stream(&out[0]), decoded_stream(&out2[0]));
     }
 
+    /// pdfTeX writepng.c `write_png_rgb_alpha`: an RGBA PNG always gets an
+    /// /SMask, even when every alpha sample is opaque (viewers composite it
+    /// in a transparency group, so dropping it changes the rendering)
     #[test]
-    fn opaque_rgba_drops_the_unneeded_soft_mask() {
+    fn opaque_rgba_keeps_its_soft_mask_like_pdftex() {
         let (width, height) = (5usize, 4usize);
         let mut rgba = test_pixels(width, height);
         for alpha in rgba.iter_mut().skip(3).step_by(4) {
@@ -2269,11 +2237,11 @@ mod tests {
         let image = png(6, width as u32, height as u32, &[&deflate(&rows)]);
         let mut next = 30;
         let objects = embed_png(&image, 9, &mut next).expect("valid opaque RGBA PNG");
-        assert_eq!(objects.len(), 1);
-        assert_eq!(objects[0].obj_num, 9);
-        assert_eq!(next, 31, "the parallel caller's mask slot stays reserved");
-        assert!(!String::from_utf8_lossy(&objects[0].bytes).contains("/SMask"));
-        let rgb = predictor_pixels(&objects[0], width, height, 3);
+        assert_eq!(objects.len(), 2);
+        assert_eq!((objects[0].obj_num, objects[1].obj_num), (30, 9));
+        assert_eq!(next, 31);
+        assert!(String::from_utf8_lossy(&objects[1].bytes).contains("/SMask 30 0 R"));
+        let rgb = predictor_pixels(&objects[1], width, height, 3);
         for (actual, source) in rgb.chunks_exact(3).zip(rgba.chunks_exact(4)) {
             assert_eq!(actual, &source[..3]);
         }

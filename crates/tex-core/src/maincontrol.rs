@@ -987,50 +987,45 @@ impl Engine {
                 self.pdf_page_resources_toks = toks;
             }
             PdfColorStackInit => {
-                let _ = self.scan_keyword(b"page");
-                let _ = self.scan_keyword(b"direct");
-                let _ = self.scan_pdf_string();
+                let _ = self.pdf_colorstack_init();
             }
             PdfColorStack => {
-                let _stack = self.scan_int();
-                // action keyword, unbraced (pdfTeX: push|pop|set|current,
-                // plus `default`; hyperref writes e.g. `\pdfcolorstack0 pop\relax`)
-                let op = if self.scan_keyword(b"push") {
-                    "push"
+                // pdfTeX "Implement \pdfcolorstack"
+                let mut stack = self.scan_int();
+                if stack as usize >= self.color_stacks.len() && stack >= 0 {
+                    self.error(&format!(
+                        "Unknown color stack number {stack}; allocate it with \\pdfcolorstackinit (using stack 0)"
+                    ));
+                    stack = 0;
+                } else if stack < 0 {
+                    self.error("Invalid negative color stack number (using stack 0)");
+                    stack = 0;
+                }
+                use crate::boxes::ColorStackCmd;
+                let cmd = if self.scan_keyword(b"set") {
+                    Some(ColorStackCmd::Set)
+                } else if self.scan_keyword(b"push") {
+                    Some(ColorStackCmd::Push)
                 } else if self.scan_keyword(b"pop") {
-                    "pop"
-                } else if self.scan_keyword(b"set") {
-                    "set"
+                    Some(ColorStackCmd::Pop)
                 } else if self.scan_keyword(b"current") {
-                    "current"
-                } else if self.scan_keyword(b"default") {
-                    "default"
+                    Some(ColorStackCmd::Current)
                 } else {
-                    ""
+                    None
                 };
-                match op {
-                    "push" => {
-                        let color = self.scan_pdf_string();
-                        self.append_whatsit(Node::Whatsit(crate::boxes::WhatIt::PdfColorPush(
-                            color,
-                        )));
+                match cmd {
+                    Some(cmd) => {
+                        let data = match cmd {
+                            ColorStackCmd::Set | ColorStackCmd::Push => self.scan_pdf_string(),
+                            ColorStackCmd::Pop | ColorStackCmd::Current => std::string::String::new(),
+                        };
+                        self.append_whatsit(Node::Whatsit(
+                            crate::boxes::WhatIt::PdfColorStack { stack, cmd, data },
+                        ));
                     }
-                    "set" => {
-                        let color = self.scan_pdf_string();
-                        self.append_whatsit(Node::Whatsit(crate::boxes::WhatIt::PdfColorSet(
-                            color,
-                        )));
-                    }
-                    "pop" => {
-                        self.append_whatsit(Node::Whatsit(crate::boxes::WhatIt::PdfColorPop));
-                    }
-                    // `current`/`default` need no material here
-                    "current" | "default" => {}
-                    _ => {
-                        self.error(
-                            "Missing \\pdfcolorstack operation; expected push, pop, set, current, or default",
-                        );
-                    }
+                    None => self.error(
+                        "Color stack action is missing; expected set, push, pop, or current",
+                    ),
                 }
             }
             PdfColorStackPrim => {}
@@ -1631,6 +1626,27 @@ impl Engine {
         body.extend_from_slice(&data);
         body.extend_from_slice(b"\nendstream");
         self.pdf_doc.objects.push((obj, body));
+    }
+
+    /// pdfTeX `\pdfcolorstackinit [page] [direct|page] {init}`
+    /// (`newcolorstack`): allocate a color stack and return its number.
+    pub fn pdf_colorstack_init(&mut self) -> i32 {
+        let page_start = self.scan_keyword(b"page");
+        let mode = if self.scan_keyword(b"direct") {
+            crate::pdfrender::LITERAL_DIRECT_ALWAYS
+        } else if self.scan_keyword(b"page") {
+            crate::pdfrender::LITERAL_DIRECT_PAGE
+        } else {
+            crate::pdfrender::LITERAL_SET_ORIGIN
+        };
+        let init = self.scan_pdf_string();
+        match self.color_stacks.new_stack(init, mode, page_start) {
+            Some(stack) => stack,
+            None => {
+                self.error("Too many color stacks");
+                0
+            }
+        }
     }
 
     /// \pdfximage [attr{..}] [page <n>] [interpolate|nointerpolate]
@@ -2317,9 +2333,7 @@ fn whatsit_kind_name(whatsit: &crate::boxes::WhatIt) -> &'static str {
     use crate::boxes::WhatIt;
     match whatsit {
         WhatIt::PdfLiteral { .. } => "PDF literal",
-        WhatIt::PdfColorPush(_) => "PDF color push",
-        WhatIt::PdfColorPop => "PDF color pop",
-        WhatIt::PdfColorSet(_) => "PDF color set",
+        WhatIt::PdfColorStack { .. } => "PDF color stack",
         WhatIt::PdfRefXImage { .. } => "PDF image reference",
         WhatIt::PdfRefXForm { .. } => "PDF form reference",
         WhatIt::PdfSave { .. } => "PDF save",

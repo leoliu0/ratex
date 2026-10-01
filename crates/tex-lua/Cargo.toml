@@ -10,7 +10,6 @@ publish = false
 
 [lib]
 doctest = false
-crate-type = ["rlib", "cdylib", "staticlib"]
 
 [features]
 default = []

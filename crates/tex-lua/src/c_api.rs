@@ -1788,10 +1788,7 @@ pub unsafe extern "C" fn tex_lua_pcallk_impl(
     let result = if let Some(handler_index) = handler_index {
         state_vm.xpcall_stack_based_status(function_index, nargs, handler_index)
     } else {
-        state_vm.pcall_stack_based(function_index, nargs).map(|(ok, count)| {
-            let status = if ok { ProtectedCallStatus::Ok } else { ProtectedCallStatus::Error };
-            (status, count)
-        })
+        state_vm.pcall_stack_based_status(function_index, nargs)
     };
     if nonyieldable {
         state_vm.nny -= 1;
@@ -2358,15 +2355,13 @@ pub unsafe extern "C" fn luaL_loadfilex(
         (bytes, "=stdin".to_string())
     } else {
         let path = CStr::from_ptr(filename).to_string_lossy();
-        match std::fs::read(path.as_ref()) {
+        let Some(state_vm) = vm(state) else {
+            return LUA_ERRFILE;
+        };
+        match state_vm.global_state().read_chunk_file(path.as_ref()) {
             Ok(bytes) => (bytes, format!("@{path}")),
             Err(error) => {
-                if let Some(state_vm) = vm(state)
-                    && let Ok(message) = state_vm.create_string(&format!(
-                        "cannot open {path}: {}",
-                        crate::stdlib::io::file::error_message(&error)
-                    ))
-                {
+                if let Ok(message) = state_vm.create_string(&error) {
                     let _ = state_vm.push_value(message);
                 }
                 return LUA_ERRFILE;
@@ -3867,5 +3862,31 @@ mod tests {
             lua_close(state);
             assert_eq!(CLOSE_FINALIZER_COUNT.load(Ordering::Relaxed), 1);
         }
+    }
+
+    /// `cpcall(f)`: status and error of `lua_pcall(f)` without a message handler.
+    unsafe extern "C" fn c_pcall_status(state: *mut lua_State) -> c_int {
+        lua_settop(state, 1);
+        let status = lua_pcallk(state, 0, 0, 0, 0, None);
+        lua_pushinteger(state, status as lua_Integer);
+        lua_rotate(state, -2, 1);
+        2
+    }
+
+    #[test]
+    fn pcall_without_handler_reports_errerr_on_overflow_inside_the_stack_error_zone() {
+        // Expected statuses: the same calls through liblua5.3 (5.3.6), where a second
+        // overflow while the first is handled is LUA_ERRERR (6).
+        let source = cr#"
+            local function deep() return deep() + 1 end
+            local s, m = cpcall(deep)
+            assert(s == 2 and m:find('stack overflow$'), m)
+            local ok, e = xpcall(deep, function(e) s, m = cpcall(deep) return e end)
+            assert(not ok and e:find('stack overflow$'), e)
+            assert(s == 6 and m == 'error in error handling', m)
+            s, m = cpcall(deep)     -- the zone closed with the handled error
+            assert(s == 2 and m:find('stack overflow$'), m)
+        "#;
+        unsafe { run_with_c_functions(&[(c"cpcall", c_pcall_status)], source) }.unwrap();
     }
 }

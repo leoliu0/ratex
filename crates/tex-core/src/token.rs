@@ -153,8 +153,9 @@ pub struct CsTable {
     capacity_exceeded: bool,
     /// Ids of the 8-bit active characters, filled on first use.
     active_ids: Box<[CsId; 256]>,
-    /// pre-created ids for names needed internally
-    pub prim_ids: crate::FxHashMap<&'static str, CsId>,
+    /// One bit per id: the name is an active-character placeholder. Token
+    /// list scanners test this per control-sequence token.
+    active_names: Vec<u64>,
 }
 
 impl CsTable {
@@ -164,7 +165,7 @@ impl CsTable {
             map: Default::default(),
             capacity_exceeded: false,
             active_ids: Box::new([NO_ACTIVE_ID; 256]),
-            prim_ids: crate::FxHashMap::default(),
+            active_names: Vec::new(),
         }
     }
 
@@ -199,9 +200,24 @@ impl CsTable {
             self.capacity_exceeded = true;
         }
         let id = self.names.len() as CsId;
+        if crate::engine::Engine::active_cs_scalar(name).is_some() {
+            let word = id as usize / 64;
+            if self.active_names.len() <= word {
+                self.active_names.resize(word + 1, 0);
+            }
+            self.active_names[word] |= 1 << (id % 64);
+        }
         self.names.push(name.to_vec());
         self.map.insert(name.to_vec(), id);
         id
+    }
+
+    /// True when `id` names an active character.
+    #[inline]
+    pub(crate) fn is_active(&self, id: CsId) -> bool {
+        self.active_names
+            .get(id as usize / 64)
+            .is_some_and(|word| word & (1 << (id % 64)) != 0)
     }
 
     /// The table deliberately accepts the first entry beyond TeX's logical
@@ -233,6 +249,20 @@ impl CsTable {
 
     pub fn all_ids(&self) -> impl Iterator<Item = CsId> {
         0..self.names.len() as CsId
+    }
+}
+
+/// tex.web §49/§59 printing as pdfTeX does with TeX Live's cp227.tcx (the
+/// pdflatex format's translation file): bytes 128-255, tab, line feed and
+/// vertical tab print as themselves; the other control bytes print in `^^`
+/// notation (`^^A`, `^^?`).
+pub(crate) fn push_printable(out: &mut Vec<u8>, bytes: &[u8]) {
+    for &byte in bytes {
+        match byte {
+            0x00..=0x08 | 0x0c..=0x1f => out.extend_from_slice(&[b'^', b'^', byte + 0x40]),
+            0x7f => out.extend_from_slice(b"^^?"),
+            _ => out.push(byte),
+        }
     }
 }
 

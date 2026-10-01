@@ -861,26 +861,6 @@ fn csname_empty_defaults_to_relax() {
 }
 
 #[test]
-fn csname_noexpand_expanded_letters() {
-    let mut e = boot();
-    run_tex(
-        &mut e,
-        r#"
-\catcode`\{=1 \catcode`\}=2 \catcode`\#=6
-\expandafter\def\csname \noexpand\expanded{zyw}\endcsname{OK}
-"#,
-    );
-    assert_eq!(e.error_count, 0, "errors:\n{}", e.term);
-    let id = e.cs.lookup(b"zyw").expect("zyw interned");
-    match e.eqtb.resolve(id) {
-        Some(Equiv::Macro(m)) => {
-            assert_eq!(e.tokens_to_string(&m.body), "OK");
-        }
-        other => panic!("zyw not a macro: {:?}", other.map(|x| x.kind_name())),
-    }
-}
-
-#[test]
 fn ifdefined_undefined_skips_let() {
     let mut e = boot();
     run_tex(

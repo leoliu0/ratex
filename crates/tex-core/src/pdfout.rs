@@ -1,4 +1,5 @@
 use crate::boxes::{Node, WhatIt};
+use crate::build::RULE_FILL;
 use crate::engine::Engine;
 pub use crate::pdffile::PdfEncryptConfig;
 use crate::token::Token;
@@ -135,6 +136,29 @@ pub struct PdfDoc {
     pub minor_version: Option<i32>,
     pub native_bindings: std::collections::BTreeMap<usize, Vec<NativeBindingInfo>>,
     pub legacy_bindings: std::collections::BTreeMap<usize, Vec<LegacyBindingInfo>>,
+    /// pdfTeX `mag_set`: the magnification frozen by the first page output
+    /// (0 = not yet used). Page geometry prints through `pdf_print_mag_bp`.
+    pub mag: i32,
+    /// pdfTeX `pdf_link_stack`: open \pdfstartlink regions, which persist
+    /// across boxes and pages until \pdfendlink.
+    pub(crate) link_stack: Vec<OpenLink>,
+    /// pdfTeX `gen_running_link` (\pdfrunninglinkoff/on)
+    pub(crate) gen_running_link: bool,
+}
+
+/// One `pdf_link_stack` record: the link's box nesting level, its width,
+/// height and depth spec (`RULE_FILL` = running) and action, plus its
+/// current annotation on the page being shipped and that annotation's raw
+/// DVI-space rectangle (for `matrixrecalculate`).
+#[derive(Clone, Debug)]
+pub(crate) struct OpenLink {
+    pub nesting: i32,
+    pub dims: (i32, i32, i32),
+    pub uri: Option<String>,
+    pub dest: Option<String>,
+    pub attr: String,
+    pub annot: Option<usize>,
+    pub raw: [i64; 4],
 }
 
 impl PdfDoc {
@@ -288,6 +312,9 @@ impl PdfDoc {
             minor_version: None,
             native_bindings: std::collections::BTreeMap::new(),
             legacy_bindings: std::collections::BTreeMap::new(),
+            mag: 0,
+            link_stack: Vec::new(),
+            gen_running_link: true,
         }
     }
 
@@ -585,13 +612,19 @@ impl Engine {
         let mut attr = String::new();
         let mut uri: Option<String> = None;
         let mut dest: Option<String> = None;
+        // pdfTeX `scan_alt_rule`: unspecified dimensions stay running
+        let (mut wd, mut ht, mut dp) = (RULE_FILL, RULE_FILL, RULE_FILL);
         loop {
             match self.peek_letters().as_str() {
-                "width" | "height" | "depth" => {
-                    let kw = self.peek_letters();
+                kw @ ("width" | "height" | "depth") => {
                     self.take_keyword(kw.as_bytes());
                     self.scan_optional_equals();
-                    let _ = self.scan_dimen(false, false);
+                    let value = self.scan_dimen(false, false);
+                    match kw {
+                        "width" => wd = value,
+                        "height" => ht = value,
+                        _ => dp = value,
+                    }
                 }
                 "attr" => {
                     self.take_keyword(b"attr");
@@ -640,6 +673,9 @@ impl Engine {
             attr,
             uri,
             name: dest,
+            wd,
+            ht,
+            dp,
         }));
     }
 
@@ -702,9 +738,8 @@ impl Engine {
     /// \pdfannot [width <d>|height <d>|depth <d>] {<dict body>}: a generic
     /// annotation over the given box at the current point.
     pub fn do_pdfannot(&mut self) {
-        let mut wd = 0;
-        let mut ht = 0;
-        let mut dp = 0;
+        // pdfTeX `scan_alt_rule`: unspecified dimensions stay running
+        let (mut wd, mut ht, mut dp) = (RULE_FILL, RULE_FILL, RULE_FILL);
         loop {
             match self.peek_letters().as_str() {
                 "width" => {

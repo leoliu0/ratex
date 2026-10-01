@@ -1589,19 +1589,29 @@ impl Engine {
         }
     }
 
+    /// tex.web print_cs: the escape character, then the name printed with
+    /// `^^` notation for control bytes (`\^^A`).
     pub(crate) fn display_cs(&self, id: u32) -> String {
         let name = self.cs.name(id);
         if let Some(active) = active_character(name) {
             return match active {
                 value if value == u32::from(b' ') => "␠".to_string(),
                 value if value == u32::from(b'\t') => "⇥".to_string(),
+                value if value < 0x20 || value == 0x7f => {
+                    let mut shown = Vec::with_capacity(3);
+                    crate::token::push_printable(&mut shown, &[value as u8]);
+                    String::from_utf8_lossy(&shown).into_owned()
+                }
                 value => char::from_u32(value)
                     .unwrap_or(char::REPLACEMENT_CHARACTER)
                     .to_string(),
             };
         }
         let shown = &name[..name.len().min(MAX_CONTROL_SEQUENCE_BYTES)];
-        let mut result = format!("\\{}", String::from_utf8_lossy(shown));
+        let mut bytes = Vec::with_capacity(shown.len() + 1);
+        bytes.push(b'\\');
+        crate::token::push_printable(&mut bytes, shown);
+        let mut result = String::from_utf8_lossy(&bytes).into_owned();
         if shown.len() < name.len() {
             result.push('…');
         }
@@ -1674,7 +1684,9 @@ impl Engine {
                 break;
             }
         }
-        let mut result = String::from_utf8_lossy(&bytes).into_owned();
+        let mut printed = Vec::with_capacity(bytes.len());
+        crate::token::push_printable(&mut printed, &bytes);
+        let mut result = String::from_utf8_lossy(&printed).into_owned();
         if truncated {
             result.push('…');
         }

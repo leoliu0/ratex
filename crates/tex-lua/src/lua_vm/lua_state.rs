@@ -15,7 +15,9 @@ use crate::lua_vm::call_info::call_status::{
 use crate::lua_vm::error_msg::ErrorMsg;
 use crate::lua_vm::execute::call::{call_c_function, resolve_call_chain};
 use crate::lua_vm::execute::{self, lua_execute};
-use crate::lua_vm::lua_limits::{BASIC_STACK_SIZE, CSTACKERR, EXTRA_STACK, LUAI_MAXCSTACK};
+use crate::lua_vm::lua_limits::{
+    BASIC_STACK_SIZE, CSTACKERR, EXTRA_STACK, LUAI_MAXCSTACK, STACK_ERROR_ZONE,
+};
 use crate::lua_vm::safe_option::{LuaSafeState, SafeOption};
 #[cfg(feature = "sandbox")]
 use crate::lua_vm::sandbox::{SANDBOX_TIMEOUT_CHECK_INTERVAL, SandboxConfig, SandboxRuntimeLimits};
@@ -98,7 +100,8 @@ pub(crate) struct CApiStackParking {
 pub(crate) enum ProtectedCallStatus {
     Ok,
     Error,
-    /// The message handler itself failed ("error in error handling").
+    /// Error handling itself failed ("error in error handling"): the message handler
+    /// failed, or the stack overflowed again while an overflow was being handled.
     ErrorInHandler,
 }
 
@@ -377,12 +380,7 @@ impl LuaState {
     ) -> LuaResult<()> {
         // Fast path: check Lua call-stack depth
         if self.call_depth >= self.safe_state.max_call_depth {
-            // If max_call_depth was elevated for error handling, produce
-            // ErrorInErrorHandling (like C Lua's stackerror).
-            if self.safe_state.max_call_depth > self.safe_state.base_call_depth {
-                return Err(LuaError::ErrorInErrorHandling);
-            }
-            return Err(self.error("stack overflow".to_string()));
+            return Err(self.stack_overflow_error());
         }
 
         // Cache lua_function extraction (avoid repeated enum matching)
@@ -640,12 +638,7 @@ impl LuaState {
     #[cold]
     #[inline(never)]
     fn push_lua_frame_overflow(&mut self) -> LuaResult<()> {
-        // If max_call_depth was elevated for error handling, produce
-        // ErrorInErrorHandling (like C Lua's stackerror).
-        if self.safe_state.max_call_depth > self.safe_state.base_call_depth {
-            return Err(LuaError::ErrorInErrorHandling);
-        }
-        Err(self.error("stack overflow".to_string()))
+        Err(self.stack_overflow_error())
     }
 
     /// Slow path for push_lua_frame — handles nil filling, resize, new slot allocation
@@ -724,7 +717,7 @@ impl LuaState {
     ) -> LuaResult<()> {
         // Check Lua call-stack depth
         if self.call_depth >= self.safe_state.max_call_depth {
-            return Err(self.error("stack overflow".to_string()));
+            return Err(self.stack_overflow_error());
         }
 
         // For C functions: maxstacksize = nargs, numparams = nargs (no nil filling needed)
@@ -891,12 +884,34 @@ impl LuaState {
         Ok(())
     }
 
-    /// Lua stack exhausted (C Lua's `luaD_growstack` "stack overflow").
+    /// Lua stack exhausted (C Lua's `luaD_growstack`; the call-depth guard counts as stack):
+    /// the first overflow raises "stack overflow" and opens an error zone of
+    /// `STACK_ERROR_ZONE` slots and frames so the error can be handled; overflowing the
+    /// zone is "error in error handling" (`LUA_ERRERR`).
     #[cold]
     #[inline(never)]
     fn stack_overflow_error(&mut self) -> LuaError {
+        if self.safe_state.max_stack_size > self.safe_state.base_stack_size {
+            return LuaError::ErrorInErrorHandling;
+        }
+        self.safe_state.max_stack_size = self.safe_state.base_stack_size + STACK_ERROR_ZONE;
+        self.safe_state.max_call_depth = self.safe_state.base_call_depth + STACK_ERROR_ZONE;
         self.error("stack overflow".to_string());
         LuaError::StackOverflow
+    }
+
+    /// The error-zone part of `luaD_shrinkstack`: leave the zone once the stack in use
+    /// (`top`, the current frame's top and the frames) fits the limits again.
+    pub(crate) fn shrink_stack_error_zone(&mut self, top: usize) {
+        if self.safe_state.max_stack_size > self.safe_state.base_stack_size {
+            let frame_top = self.current_frame().map_or(0, |ci| ci.top as usize);
+            if top.max(frame_top) + EXTRA_STACK <= self.safe_state.base_stack_size
+                && self.call_depth < self.safe_state.base_call_depth
+            {
+                self.safe_state.max_stack_size = self.safe_state.base_stack_size;
+                self.safe_state.max_call_depth = self.safe_state.base_call_depth;
+            }
+        }
     }
 
     #[cold]
@@ -1135,17 +1150,15 @@ impl LuaState {
         handler: LuaValue,
         err: LuaValue,
     ) -> LuaResult<Option<LuaValue>> {
-        // C Lua lets the handler run in an extra zone above the stack limits
-        // (CSTACKERR), so it can run after a stack overflow.
+        // C Lua lets the handler run in an extra zone above the C stack limit
+        // (CSTACKERR), so it can run after a C stack overflow; a Lua stack overflow
+        // opens its own zone (`stack_overflow_error`).
         let saved_max_c_depth = self.safe_state.max_c_stack_depth;
-        let saved_max_call_depth = self.safe_state.max_call_depth;
         self.safe_state.max_c_stack_depth = saved_max_c_depth + CSTACKERR;
-        self.safe_state.max_call_depth = saved_max_call_depth + CSTACKERR;
         self.nny += 1;
         let result = self.message_handler_loop(handler, err);
         self.nny -= 1;
         self.safe_state.max_c_stack_depth = saved_max_c_depth;
-        self.safe_state.max_call_depth = saved_max_call_depth;
         match result? {
             Some(value) => self.errormsg_object(value).map(Some),
             None => Ok(None),
@@ -2710,6 +2723,17 @@ impl LuaState {
             .map_err(|msg| self.error(msg))
     }
 
+    /// `load_proto_from_file` for contents already read with `read_chunk_file`.
+    pub(crate) fn load_proto_from_file_bytes(
+        &mut self,
+        path: &str,
+        file_bytes: Vec<u8>,
+    ) -> LuaResult<ProtoPtr> {
+        self.global_state_mut()
+            .load_proto_from_file_bytes(path, file_bytes)
+            .map_err(|msg| self.error(msg))
+    }
+
     pub fn get_error_message(&mut self, e: LuaError) -> String {
         self.get_error_msg(e)
     }
@@ -3427,6 +3451,8 @@ impl LuaState {
             }
             Err(_) => err = self.take_error_object(),
         }
+        // luaD_pcall: the error object goes at `level`, then luaD_shrinkstack
+        self.shrink_stack_error_zone(level + 1);
         Ok((err, error_in_handler))
     }
 
@@ -3485,6 +3511,17 @@ impl LuaState {
         func_idx: usize,
         arg_count: usize,
     ) -> LuaResult<(bool, usize)> {
+        let (status, count) = self.pcall_stack_based_status(func_idx, arg_count)?;
+        Ok((status == ProtectedCallStatus::Ok, count))
+    }
+
+    /// `pcall_stack_based`, telling a plain error apart from a failure of error handling
+    /// itself (`LUA_ERRERR`: the stack overflowed inside its error zone).
+    pub(crate) fn pcall_stack_based_status(
+        &mut self,
+        func_idx: usize,
+        arg_count: usize,
+    ) -> LuaResult<(ProtectedCallStatus, usize)> {
         // Save current call stack depth
         let initial_depth = self.call_depth();
 
@@ -3498,7 +3535,7 @@ impl LuaState {
                 let err_str = self.create_string(&error_msg)?;
                 self.stack_set(func_idx, err_str)?;
                 self.set_top(func_idx + 1)?;
-                return Ok((false, 1));
+                return Ok((ProtectedCallStatus::Error, 1));
             }
         };
 
@@ -3542,7 +3579,7 @@ impl LuaState {
                 // Success - count results from func_idx to logical stack top
                 let stack_top = self.get_top();
                 let result_count = stack_top.saturating_sub(func_idx);
-                Ok((true, result_count))
+                Ok((ProtectedCallStatus::Ok, result_count))
             }
             Err(LuaError::Yield) => {
                 // Mark pcall's own C frame with CIST_YPCALL so that
@@ -3563,10 +3600,16 @@ impl LuaState {
                 Err(LuaError::CloseThread)
             }
             Err(e) => {
-                let (result_err, _) = self.recover_protected_call(e, initial_depth, func_idx, None)?;
+                let (result_err, error_in_handler) =
+                    self.recover_protected_call(e, initial_depth, func_idx, None)?;
                 self.stack_set(func_idx, result_err)?;
                 self.set_top(func_idx + 1)?;
-                Ok((false, 1))
+                let status = if error_in_handler {
+                    ProtectedCallStatus::ErrorInHandler
+                } else {
+                    ProtectedCallStatus::Error
+                };
+                Ok((status, 1))
             }
         }
     }

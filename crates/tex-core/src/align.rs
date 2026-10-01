@@ -490,6 +490,13 @@ impl Engine {
         let mut cur = ColSpec::default();
         let mut in_u = true;
         let mut depth = 0i32;
+        // tex.web §777: scanner_status:=aligning, warning_index:=\halign.
+        let owner = self
+            .cs
+            .lookup(if self.align_is_valign { b"valign" } else { b"halign" });
+        let saved_outer_scan = self
+            .outer_scan
+            .replace((crate::expand::OuterScan::Preamble, owner));
         loop {
             // tex.web scan_template uses get_token (NON-expanding): u/v part
             // tokens are stored literally and expanded at cell time. Expanding
@@ -500,9 +507,15 @@ impl Engine {
             // original token.
             let t = self.raw_token();
             if t == crate::input::EOF_MARKER {
+                self.outer_scan = saved_outer_scan;
                 self.fatal_alignment_eof("File ended while scanning an alignment preamble");
                 return false;
             }
+            let t = if self.is_outer_macro_token(t) {
+                self.forbidden_outer(t)
+            } else {
+                t
+            };
             let t = if t == crate::input::PAR_END {
                 Token::from_cs(self.partoken_id())
             } else {
@@ -604,6 +617,7 @@ impl Engine {
         cur.tabskip = self.eqtb.glue_params[GlueParam::TabSkip.idx() as usize].clone();
         entries.push(cur);
         self.align_preamble = entries;
+        self.outer_scan = saved_outer_scan;
 
         true
     }

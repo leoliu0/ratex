@@ -1954,8 +1954,17 @@ impl GC {
         let func_body = &gc_func.data;
         let upvalues = func_body.upvalues();
         count += upvalues.len();
-        // Mark upvalues
+        // Mark upvalues; Lua 5.3's traverseLclosure also touches open ones outside the
+        // atomic phase (see `remark_upvalues`)
+        let touch = self.gc_state != GcState::Atomic
+            && l.global_state().language() == crate::LuaLanguageLevel::Lua53;
         for upval_ptr in upvalues {
+            if touch {
+                let upval = upval_ptr.as_ref();
+                if upval.data.is_open() {
+                    upval.header.set_touched(true);
+                }
+            }
             self.mark_object(l, (*upval_ptr).into());
         }
 
@@ -2096,7 +2105,10 @@ impl GC {
         if self.gc_state == GcState::Atomic {
             if !self.gc_emergency {
                 // luaD_shrinkstack(th); /* do not change stack in emergency cycle */
-                // TODO: implement stack shrinking if needed
+                // Only its error-zone exit: the stack keeps its allocation.
+                let state = &mut gc_thread.data;
+                let top = state.get_top();
+                state.shrink_stack_error_zone(top);
             }
 
             // Clear dead stack slice above top, matching C Lua 5.5's
@@ -2427,7 +2439,12 @@ impl GC {
     /// reached later in the atomic phase (through `grayagain`), and its
     /// traversal then links it into `twups` again.  Dead threads are only
     /// identified (and their upvalues closed) once marking is complete.
+    ///
+    /// Lua 5.3 has no upvalue objects: its remarkupvals marks the values of the
+    /// `touched` open upvalues (touched since creation or by a closure traversal) and
+    /// clears the flag, so an unreachable thread keeps them alive for one more cycle.
     fn remark_upvalues(&mut self, l: &mut LuaState) {
+        let lua53 = l.global_state().language() == crate::LuaLanguageLevel::Lua53;
         let mut i = 0;
         while i < self.twups.len() {
             let thread_ptr = self.twups[i];
@@ -2453,7 +2470,11 @@ impl GC {
                     upval.header.age() <= thread.header.age(),
                     "Upvalue should not be older than its thread"
                 );
-                if !upval.header.is_white() {
+                let touched = lua53 && upval.header.is_touched();
+                if touched {
+                    upval.header.set_touched(false);
+                }
+                if touched || !upval.header.is_white() {
                     let value = upval.data.get_value();
                     self.mark_value(l, &value);
                 }

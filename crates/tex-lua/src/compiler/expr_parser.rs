@@ -867,24 +867,24 @@ pub fn body(fs: &mut FuncState, v: &mut ExpDesc, is_method: bool) -> Result<(), 
             } else if fs.lexer.current_token() == LuaTokenKind::TkDots {
                 fs.lexer.bump();
                 is_vararg = true;
-                if fs.lexer.current_token() == LuaTokenKind::TkName {
-                    if fs.lexer.level != LuaLanguageLevel::Lua55 {
-                        return Err(fs.sem_error("named varargs are not supported in Lua 5.3"));
+                // Lua 5.3's parlist ends at '...' and declares no vararg parameter (no
+                // local, no register); a following name is then a "')' expected" error.
+                if fs.lexer.level == LuaLanguageLevel::Lua55 {
+                    if fs.lexer.current_token() == LuaTokenKind::TkName {
+                        let source_text = fs.lexer.origin_text();
+                        let vararg_name_range = fs.lexer.current_token_range();
+                        fs.lexer.bump();
+                        let vararg_name = &source_text
+                            [vararg_name_range.start_offset..vararg_name_range.end_offset()];
+                        params.push(vararg_name.to_string());
+                    } else {
+                        params.push("(vararg table)".to_string());
                     }
-                    let source_text = fs.lexer.origin_text();
-                    let vararg_name_range = fs.lexer.current_token_range();
-                    fs.lexer.bump();
-                    let vararg_name = &source_text
-                        [vararg_name_range.start_offset..vararg_name_range.end_offset()];
-                    params.push(vararg_name.to_string());
-                    param_kinds.push(VarKind::RDKVAVAR);
-                } else {
-                    params.push("(vararg table)".to_string());
                     param_kinds.push(VarKind::RDKVAVAR);
                 }
                 break;
             } else {
-                return Err("expected parameter".to_string());
+                return Err(fs.token_error("<name> or '...' expected"));
             }
 
             if fs.lexer.current_token() != LuaTokenKind::TkComma {
@@ -949,6 +949,10 @@ pub fn body(fs: &mut FuncState, v: &mut ExpDesc, is_method: bool) -> Result<(), 
         // lparser.c:1060: By default, use hidden vararg arguments (PF_VAHID)
         // This will be cleared in finish() if vararg table is actually used (PF_VATAB)
         child_fs.chunk.use_hidden_vararg = true;
+        // lparser.c setvararg: VARARGPREP is the first instruction and precedes the vararg
+        // parameter's scope (adjustlocalvars after setvararg), so its startpc is 1 and
+        // lua_getlocal(L, NULL, n) does not report it as a parameter.
+        code::code_abc(&mut child_fs, OpCode::VarargPrep, 0, 0, 0);
         // Register the vararg parameter variable (after numparams is set)
         if params.len() > nparams {
             // Named or anonymous vararg parameter
@@ -968,13 +972,6 @@ pub fn body(fs: &mut FuncState, v: &mut ExpDesc, is_method: bool) -> Result<(), 
     // Reserve registers for parameters
     let nactvar = child_fs.nactvar;
     code::reserve_regs(&mut child_fs, nactvar as u8);
-
-    // Lua 5.5: Generate VARARGPREP after registering parameters but before statlist
-    // This must be the first instruction in the function
-    // Note: In Lua 5.5, VARARGPREP parameter is 0 (not the number of fixed params)
-    if is_vararg {
-        code::code_abc(&mut child_fs, OpCode::VarargPrep, 0, 0, 0);
-    }
 
     // lparser.c:1002: Parse function body statements
     // statlist(ls);
@@ -1050,6 +1047,6 @@ fn expect(fs: &mut FuncState, tk: LuaTokenKind) -> Result<(), String> {
         fs.lexer.bump();
         Ok(())
     } else {
-        Err(fs.token_error(&format!("expected '{:?}'", tk)))
+        Err(fs.token_error(&format!("'{}' expected", tk)))
     }
 }

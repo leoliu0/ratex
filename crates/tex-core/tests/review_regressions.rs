@@ -298,7 +298,8 @@ fn malformed_macro_calls_abort_like_tex() {
 }
 
 /// pdflatex: an \outer macro may not appear in an argument or in skipped
-/// conditional text; the call is aborted and the macro is read again.
+/// conditional text; the call is aborted and the macro is read again, here
+/// inside the \message text, which it ends too.
 #[test]
 fn outer_macros_end_arguments_and_skipped_text() {
     let e = run_lenient(
@@ -307,13 +308,144 @@ fn outer_macros_end_arguments_and_skipped_text() {
 \iffalse \o \fi
 \end",
     );
-    assert!(e.term.contains("1:O"), "{}", e.term);
-    assert!(e.diagnostics.iter().any(|d| d.message
-        == "Forbidden control sequence found while scanning use of \\c"));
-    assert!(e
+    assert!(e.term.contains("1: "), "{}", e.term);
+    let messages: Vec<&str> = e.diagnostics.iter().map(|d| d.message.as_str()).collect();
+    assert!(
+        messages.contains(&"Forbidden control sequence found while scanning use of \\c"),
+        "{messages:?}"
+    );
+    assert!(
+        messages.contains(&"Forbidden control sequence found while scanning text of \\message"),
+        "{messages:?}"
+    );
+    assert!(
+        messages.iter().any(|m| m.starts_with("Incomplete \\iffalse")),
+        "{messages:?}"
+    );
+}
+
+/// pdflatex: definitions, general text (\message, \toks, \write) and
+/// expanded text report an \outer macro reached directly, through an active
+/// character or through expansion; TeX reads a space in its place, inserts
+/// `}` and reads the macro again afterwards. A balanced macro argument taken
+/// from a token list is checked as well.
+#[test]
+fn outer_macros_end_definitions_and_general_text() {
+    let e = run_lenient(
+        r"\outer\def\o{\message{[O]}}
+\edef\b{\noexpand\o}
+\edef\c{x\b y}\message{C=[\meaning\c]}
+\message{1:\b z}
+\toks0{a\o b}\message{T=[\the\toks0]}
+\immediate\write16{2:\b w}
+\message{3:\expanded{p\b q}}
+\catcode`\~=13 \outer\def~{\message{[T]}}
+\message{4:x~y}
+\def\c#1{[#1]}\edef\x{\noexpand\c{\noexpand\o}}
+\message{5:\x}
+\end",
+    );
+    let forbidden: Vec<&str> = e
         .diagnostics
         .iter()
-        .any(|d| d.message.starts_with("Incomplete \\iffalse")));
+        .filter_map(|d| d.message.strip_prefix("Forbidden control sequence found while scanning "))
+        .collect();
+    assert_eq!(
+        forbidden,
+        [
+            "definition of \\c",
+            "text of \\message",
+            "text of \\toks",
+            "text of \\write",
+            "text of \\expanded",
+            "text of \\message",
+            "text of \\message",
+            "use of \\c",
+            "text of \\message",
+        ],
+        "{}",
+        e.term
+    );
+    assert!(e.term.contains("C=[macro:->x ]"), "{}", e.term);
+    assert!(e.term.contains("T=[a ]"), "{}", e.term);
+    assert!(e.term.contains("3:p  "), "{}", e.term);
+    assert!(e.term.contains("4:x [T]"), "{}", e.term);
+}
+
+/// pdflatex: an \outer macro ends an alignment preamble (`\cr}` inserted)
+/// and runs after the alignment.
+#[test]
+fn outer_macro_ends_alignment_preamble() {
+    let e = run_lenient(
+        r"\outer\def\o{\message{[O]}}
+\halign{#\o\cr}
+\end",
+    );
+    assert!(
+        e.diagnostics.iter().any(|d| d.message
+            == "Forbidden control sequence found while scanning preamble of \\halign"),
+        "{}",
+        e.term
+    );
+    assert!(e.term.contains("[O]"), "{}", e.term);
+}
+
+/// pdflatex: inside \csname, a \noexpand-marked token means \relax, which
+/// ends the name with "Missing \endcsname inserted"; it is read again.
+#[test]
+fn noexpand_marked_token_ends_csname() {
+    let e = run_lenient(
+        r"\message{7:\csname a\noexpand\expanded{b}\endcsname}
+\end",
+    );
+    assert!(
+        e.diagnostics.iter().any(|d| d.message == "Missing \\endcsname inserted"),
+        "{}",
+        e.term
+    );
+    assert!(e.term.contains("7:\\a b\\endcsname"), "{}", e.term);
+}
+
+/// pdflatex: an undefined l3-style `\exp_args:N...` name is an undefined
+/// control sequence like any other; nothing is synthesized for it.
+#[test]
+fn undefined_exp_args_names_are_undefined() {
+    let e = run_lenient(
+        r"\catcode`\:=11 \catcode`\_=11
+\def\::N{}\def\:::{}
+\exp_args:NN \message{[\meaning\exp_args:NN]}
+\end",
+    );
+    assert!(
+        e.diagnostics
+            .iter()
+            .any(|d| d.message == "Undefined control sequence \\exp_args:NN"),
+        "{}",
+        e.term
+    );
+    assert!(e.term.contains("[undefined]"), "{}", e.term);
+}
+
+/// pdflatex (tex.web print_cs/print with cp227.tcx): control bytes in
+/// control-sequence names and printed text use `^^` notation.
+#[test]
+fn control_bytes_print_in_caret_notation() {
+    let e = run_lenient(
+        r"\def\y{\^^A ^^Bb}\show\y
+\message{8:[\string\^^A][^^A]}
+\^^A
+\end",
+    );
+    let messages: Vec<&str> = e.diagnostics.iter().map(|d| d.message.as_str()).collect();
+    assert!(
+        messages.contains(&"Undefined control sequence \\^^A"),
+        "{messages:?}"
+    );
+    assert!(
+        messages.iter().any(|m| m.contains("\\y = macro: -> \\^^A ^^Bb")),
+        "{messages:?}"
+    );
+    assert!(e.term.contains("8:[\\^^A][^^A]"), "{}", e.term);
 }
 
 /// pdflatex: \write text is expanded as `{text}\endwrite`, so an argument

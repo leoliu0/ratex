@@ -1,19 +1,10 @@
 //! Engine implementation of FontResolver plus small dispatch shims and
-//! ligature step types.
+//! shaped-glyph types.
 
 use crate::engine::Engine;
 use crate::fonts::FontResolver;
 use crate::prim::Prim;
 use crate::tfm::FontId;
-
-pub struct LigKernStep {
-    pub is_kern: bool,
-    pub kern_amount: i32,
-    pub lig_char: u8,
-    pub keep_left: bool,
-    pub keep_right: bool,
-    pub iterate: bool,
-}
 
 /// A shaped glyph produced by HarfBuzz/rustybuzz OpenType shaping.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

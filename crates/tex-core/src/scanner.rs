@@ -107,14 +107,14 @@ impl Engine {
                 // and \tl_set_rescan rely on this to supply closing delimiters).
                 // LuaTeX's `tex.print` input ends with force_eof instead.
                 let lua = lua_lines.is_some();
+                let reader = *lua_reader;
+                let real_file = !name.starts_with('<') || name.starts_with("<embedded:");
                 if matches!(
                     self.input.stack.get(si),
                     Some(Source::File { tracked: true, .. })
                 ) {
                     self.finish_tracked_file();
                 }
-                let reader = *lua_reader;
-                let real_file = !name.starts_with('<') || name.starts_with("<embedded:");
                 self.input.finish_file(si);
                 if lua {
                     return None;

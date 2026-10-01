@@ -3,7 +3,7 @@
 use crate::boxes::Node;
 use crate::engine::Engine;
 use crate::engine::{Mode, ScannerStatus};
-use crate::eqtb::{Equiv, LevelType, SaveItem};
+use crate::eqtb::Equiv;
 use crate::prim::*;
 use crate::token::{CsId, Token};
 use std::fmt::Write;
@@ -52,6 +52,10 @@ impl InspectionText {
 impl Engine {
     pub fn main_dispatch(&mut self, p: Prim, id: CsId) {
         use Prim::*;
+        if !self.mode.is_m() && Self::is_math_only(p) {
+            self.insert_dollar_sign(Token::from_cs(id));
+            return;
+        }
         match p {
             Relax | EndCsName => {}
             BeginGroup => self.begin_semi_simple(),
@@ -102,6 +106,9 @@ impl Engine {
                     Mode::Math | Mode::DisplayMath => {
                         self.insert_dollar_sign(Token::from_cs(id));
                     }
+                    // tex.web head_for_vmode: restricted horizontal mode
+                    // cannot end a paragraph, so the group is closed
+                    Mode::RestrictedHorizontal => self.off_save(Token::from_cs(id)),
                     _ => {
                         let g = self.scan_vskip_kind(p);
                         self.append_v_glue(g);
@@ -111,18 +118,12 @@ impl Engine {
             NonScript => {
                 if self.mode.is_m() {
                     self.append_mlist_node(Node::NonScript);
-                } else {
-                    self.error("\\nonscript is only valid in math mode");
                 }
             }
             MSkip => {
                 let g = self.scan_glue(true);
                 if self.mode.is_m() {
                     self.append_mlist_node(Node::MuGlue(g));
-                } else {
-                    self.error(
-                        "\\mskip is only valid in math mode; use \\hskip or \\vskip for text spacing",
-                    );
                 }
             }
             Kern => {
@@ -140,8 +141,6 @@ impl Engine {
                 let d = self.scan_dimen(true, false);
                 if self.mode.is_m() {
                     self.append_mlist_node(Node::MathKern(d, 0));
-                } else {
-                    self.error("\\mkern is only valid in math mode; use \\kern for text spacing");
                 }
             }
             // etex.ch `hmode+valign` with cur_chr>0; vmode+valign starts a
@@ -197,6 +196,12 @@ impl Engine {
                 if self.mode == Mode::Horizontal {
                     self.push_token(Token::from_cs(id));
                     self.push_token(Token::from_cs(self.ids.par));
+                    return;
+                }
+                if self.mode == Mode::RestrictedHorizontal {
+                    // tex.web head_for_vmode: only leaders may hold a rule
+                    // in restricted horizontal mode
+                    self.error("You can't use `\\hrule' here except with leaders");
                     return;
                 }
                 self.make_rule(true);
@@ -308,20 +313,13 @@ impl Engine {
                 let b = self.take_last_box();
                 self.append_take_node_opt(b);
             }
-            LastKern => {
-                let v = self.last_kern_value();
-                self.append_take_node(Node::Kern(v));
-            }
-            LastPenalty => {
-                let v = self.last_penalty_value();
-                self.append_take_node(Node::Penalty(v));
-            }
-            LastSkip => {
-                let g = self.last_skip_value();
-                self.append_take_node(Node::Glue(g));
-            }
+            // tex.web 1045 any_mode(last_item): reading the last node is
+            // not a command
+            LastKern | LastPenalty | LastSkip => self.report_illegal_case(id),
             VSplit => self.do_vsplit(),
             Insert => self.do_insert(),
+            // tex.web §1098: vmode+vadjust is a forbidden case
+            VAdjust if self.mode.is_v() => self.report_illegal_case(id),
             VAdjust => self.append_vadjust(),
             MarkPrim | MarksClass => {
                 let class = if p == MarksClass {
@@ -481,6 +479,22 @@ impl Engine {
             Patterns | Hyphenation => self.do_hyphenation_words(p == Patterns),
             ScanTokens => {
                 let _ = self.expand_prim(ScanTokens, id);
+            }
+            // tex.web mmode+stop: insert_dollar_sign
+            Dump | End if self.mode.is_m() => self.insert_dollar_sign(Token::from_cs(id)),
+            Dump | End if self.mode == Mode::InternalVertical => {
+                // tex.web `privileged`: \end and \dump belong to the
+                // outer vertical mode
+                self.report_illegal_case(id);
+            }
+            // tex.web head_for_vmode (hmode+stop): a restricted box cannot
+            // end the job, so its group is closed first
+            Dump | End if self.mode == Mode::RestrictedHorizontal => {
+                self.off_save(Token::from_cs(id))
+            }
+            Dump if self.mode == Mode::Horizontal => {
+                self.push_token(Token::from_cs(id));
+                self.par_primitive(Token::from_cs(self.ids.par));
             }
             Dump => {
                 if !self.ini_mode {
@@ -667,8 +681,10 @@ impl Engine {
             }
             ShowGroups => {
                 let source = self.current_token_source_mark();
-                let detail = self.show_groups_description();
-                self.report_inspection("\\showgroups", detail, source);
+                // e-TeX: begin_diagnostic; show_save_groups
+                let display = self.show_save_groups();
+                self.emit_box_diagnostic(display);
+                self.report_logged_inspection("\\showgroups", source);
             }
             ShowTokens => {
                 let source = self.current_token_source_mark();
@@ -691,8 +707,9 @@ impl Engine {
             }
             ShowIfs => {
                 let source = self.current_token_source_mark();
-                let detail = self.show_ifs_description();
-                self.report_inspection("\\showifs", detail, source);
+                let display = self.show_ifs();
+                self.emit_box_diagnostic(display);
+                self.report_logged_inspection("\\showifs", source);
             }
             Char | RatexLiteralChar => {
                 if p == RatexLiteralChar && self.mode.is_v() {
@@ -809,8 +826,6 @@ impl Engine {
                 };
                 if self.mode.is_m() {
                     self.append_mathchar_at(v, command_source);
-                } else {
-                    self.error("You can't use `\\mathchar' here");
                 }
             }
             MathAccent => {
@@ -829,8 +844,6 @@ impl Engine {
                 };
                 if self.mode.is_m() {
                     self.do_math_accent_at(v, command_source);
-                } else {
-                    self.error("You can't use `\\mathaccent' here");
                 }
             }
             Radical => {
@@ -849,14 +862,21 @@ impl Engine {
                 };
                 if self.mode.is_m() {
                     self.do_radical_at(v, command_source);
-                } else {
-                    self.error("You can't use `\\radical' here");
                 }
             }
             EqNo | LeqNo => {
-                // tex.web §21734: mmode+eq_no is legal only in display math
-                if self.mode == Mode::DisplayMath {
-                    self.start_eq_no(matches!(p, Prim::LeqNo));
+                // tex.web §1140 mmode+eq_no: legal only in display math
+                // (`privileged`), where an open inner group is closed first;
+                // the tag itself is typeset in -mmode, where it is illegal
+                if self.display_math_is_privileged() {
+                    if self.eqtb.cur_group_code() == crate::eqtb::group_code::MATH_SHIFT {
+                        self.start_eq_no(matches!(p, Prim::LeqNo));
+                    } else {
+                        self.off_save(Token::from_cs(id));
+                    }
+                } else if self.mode.is_m() {
+                    let name = self.prim_name(p);
+                    self.error(&format!("You can't use `\\{name}' in math mode"));
                 } else {
                     self.error("You can't use \\eqno here");
                 }
@@ -864,15 +884,11 @@ impl Engine {
             Overline => {
                 if self.mode.is_m() {
                     self.do_overline(false);
-                } else {
-                    self.error("You can't use `\\overline' here");
                 }
             }
             Underline => {
                 if self.mode.is_m() {
                     self.do_overline(true);
-                } else {
-                    self.error("You can't use `\\underline' here");
                 }
             }
             Delimiter => {
@@ -887,8 +903,6 @@ impl Engine {
             Above | Over | Atop | OverWithDelims | AtopWithDelims | AboveWithDelims => {
                 if self.mode.is_m() {
                     self.do_fraction(p);
-                } else {
-                    self.error("You can't use a fraction here");
                 }
             }
             TextFont | ScriptFont | ScriptScriptFont => {
@@ -917,23 +931,19 @@ impl Engine {
                     let command_source = self.current_token_source_mark();
                     let v = self.scan_delim_int();
                     self.push_math_group_at(v, command_source);
-                } else {
-                    self.error("Missing $ inserted (\\left)");
                 }
             }
             Right => {
-                if self.mode.is_m() {
+                if self.mode.is_m() && !self.mismatched_right_or_middle(Token::from_cs(id), false) {
                     let command_source = self.current_token_source_mark();
                     let v = self.scan_delim_int();
                     self.right_delim = Some(v);
                     // ends the \left...\right group
                     self.pop_math_group_delimited_at(v, command_source);
-                } else {
-                    self.error("Missing $ inserted (\\right)");
                 }
             }
             Middle => {
-                if self.mode.is_m() {
+                if self.mode.is_m() && !self.mismatched_right_or_middle(Token::from_cs(id), true) {
                     let command_source = self.current_token_source_mark();
                     let v = self.scan_delim_int();
                     let origin = self.math_diagnostic_origin_at(command_source);
@@ -944,6 +954,7 @@ impl Engine {
                         size: 3,
                         origin,
                     });
+                    self.restart_math_left_group();
                 }
             }
             NoLimits | Limits | DisplayLimits => {
@@ -953,8 +964,6 @@ impl Engine {
                         Limits => Some(1),
                         _ => Some(2),
                     };
-                } else {
-                    self.error("You can't use \\limits here");
                 }
             }
             MathChoice => {
@@ -962,8 +971,6 @@ impl Engine {
                     // tex.web scans the four style groups immediately; each
                     // body is scanned as a math list and attached as ChoiceAlt
                     self.begin_mathchoice();
-                } else {
-                    self.error("You can't use \\mathchoice here");
                 }
             }
             DisplayStyle | TextStyle | ScriptStyle | ScriptScriptStyle => {
@@ -1015,6 +1022,24 @@ impl Engine {
                 if self.mode == Mode::Horizontal {
                     self.push_token(Token::from_cs(id));
                     self.push_token(Token::from_cs(self.ids.par));
+                    return;
+                }
+                if self.mode == Mode::RestrictedHorizontal {
+                    self.off_save(Token::from_cs(id));
+                    return;
+                }
+                if self.mode.is_m() {
+                    // tex.web mmode+halign: `privileged` (display math, not
+                    // the tag of \eqno) and then the display's own group
+                    if self.display_math_is_privileged() {
+                        if self.eqtb.cur_group_code() == crate::eqtb::group_code::MATH_SHIFT {
+                            self.begin_halign();
+                        } else {
+                            self.off_save(Token::from_cs(id));
+                        }
+                    } else {
+                        self.error("You can't use `\\halign' in math mode");
+                    }
                     return;
                 }
                 self.begin_halign();
@@ -2345,129 +2370,7 @@ impl Engine {
             source.as_ref().map(crate::input::SourceMark::to_context),
         );
     }
-
-    fn show_groups_description(&self) -> String {
-        let total = self
-            .eqtb
-            .save_stack
-            .iter()
-            .filter(|item| matches!(item, SaveItem::Level(_, _)))
-            .count();
-        let mut out = InspectionText::new();
-        if total == 0 {
-            out.push(format_args!(
-                "no groups are open; current level is the bottom level"
-            ));
-            return out.finish();
-        }
-        out.push(format_args!("{total} group(s) open, innermost first:\n"));
-        for item in self
-            .eqtb
-            .save_stack
-            .iter()
-            .rev()
-            .filter(|item| matches!(item, SaveItem::Level(_, _)))
-            .take(MAX_INSPECTION_FRAMES)
-        {
-            let SaveItem::Level(level, kind) = item else {
-                continue;
-            };
-            out.push(format_args!("  level {level}: {}", group_kind_name(*kind)));
-            if let Some((_, mark)) = self
-                .diagnostic_group_openings
-                .iter()
-                .rev()
-                .find(|(opening_level, _)| opening_level == level)
-            {
-                let context = mark.to_context();
-                out.push(format_args!(
-                    " (opened at {}:{}:{})",
-                    context.name, context.line, context.column
-                ));
-            }
-            out.push(format_args!("\n"));
-        }
-        if total > MAX_INSPECTION_FRAMES {
-            out.push(format_args!(
-                "  … {} outer group(s) omitted\n",
-                total - MAX_INSPECTION_FRAMES
-            ));
-        }
-        out.push(format_args!("  bottom level"));
-        out.finish()
-    }
-
-    fn show_ifs_description(&self) -> String {
-        let total = self.if_stack.len();
-        let mut out = InspectionText::new();
-        if total == 0 {
-            out.push(format_args!("no conditionals are open"));
-            return out.finish();
-        }
-        out.push(format_args!(
-            "{total} conditional(s) open, innermost first:\n"
-        ));
-        for (index, state) in self
-            .if_stack
-            .iter()
-            .rev()
-            .take(MAX_INSPECTION_FRAMES)
-            .enumerate()
-        {
-            let command = if (state.loc_cs as usize) < self.cs.len() {
-                self.display_cs(state.loc_cs)
-            } else {
-                "\\if?".to_string()
-            };
-            let status = if state.if_case >= 0 {
-                format!("case {} remaining", state.if_case)
-            } else if state.accepting {
-                "taking current branch".to_string()
-            } else if state.matched {
-                "a previous branch matched".to_string()
-            } else {
-                "skipping current branch".to_string()
-            };
-            out.push(format_args!("  {}. {command}: {status}", index + 1));
-            if let Some(mark) = &state.loc {
-                let context = mark.to_context();
-                out.push(format_args!(
-                    " (opened at {}:{}:{})",
-                    context.name, context.line, context.column
-                ));
-            } else if !state.loc_file.is_empty() && state.loc_line != 0 {
-                out.push(format_args!(
-                    " (opened at {}:{})",
-                    state.loc_file, state.loc_line
-                ));
-            }
-            out.push(format_args!("\n"));
-        }
-        if total > MAX_INSPECTION_FRAMES {
-            out.push(format_args!(
-                "  … {} outer conditional(s) omitted",
-                total - MAX_INSPECTION_FRAMES
-            ));
-        }
-        out.finish()
-    }
 }
-
-fn group_kind_name(kind: LevelType) -> &'static str {
-    match kind {
-        LevelType::Group => "group",
-        LevelType::Simple => "brace group",
-        LevelType::SemiSimple => "\\begingroup group",
-        LevelType::Box => "box group",
-        LevelType::MacroCall => "macro-call group",
-        LevelType::NoLine => "no-line group",
-        LevelType::Balanced => "balanced-text group",
-        LevelType::MathShift => "math shift group",
-        LevelType::MathLeft => "math left group",
-        LevelType::MathGroup => "math group",
-    }
-}
-
 
 fn id_cs_is(e: &Engine, id: CsId, name: &[u8]) -> bool {
     e.cs.lookup(name) == Some(id)
@@ -2550,16 +2453,20 @@ mod tests {
         );
 
         assert_eq!(engine.diagnostics.len(), 3, "{}", engine.diagnostic_output);
-        assert!(engine.diagnostics[0].message.contains("1 group(s) open"));
-        assert!(engine.diagnostics[0].message.contains("show.tex:1:"));
+        // e-TeX show_save_groups / show_ifs transcripts
+        assert!(
+            engine.log.contains(
+                "### semi simple group (level 1) entered at line 1 (\\begingroup)\n### bottom level"
+            ),
+            "{}",
+            engine.log
+        );
         assert!(engine.diagnostics[1].message.contains("tokens: A \\relax"));
-        assert!(engine.diagnostics[2]
-            .message
-            .contains("1 conditional(s) open"));
-        assert!(engine.diagnostics[2].message.contains("\\iftrue"));
-        assert!(engine.diagnostics[2]
-            .message
-            .contains("taking current branch"));
+        assert!(
+            engine.log.contains("### level 1: \\iftrue entered on line 1"),
+            "{}",
+            engine.log
+        );
     }
 
     #[test]

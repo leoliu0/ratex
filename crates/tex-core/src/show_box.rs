@@ -24,8 +24,6 @@ const UNSET_KIND: u8 = 0xFF;
 const MAX_DEPTH_THRESHOLD: i64 = 10_000;
 /// `print_mark` shows at most `max_print_line-10` characters.
 const MARK_LIMIT: usize = 69;
-/// tex.web `ignore_depth` (pdfTeX `pdf_ignored_dimen`).
-const IGNORE_DEPTH: i32 = -65_536_000;
 /// tex.web `default_code` for a fraction rule thickness.
 const DEFAULT_CODE: i32 = 0x4000_0000;
 
@@ -36,6 +34,8 @@ pub(crate) struct BoxDisplay<'a> {
     prefix: Vec<u8>,
     depth_threshold: i64,
     breadth_max: i64,
+    /// `\escapechar` for the control sequence names this display prints
+    escape: i32,
     /// tex.web `font_in_short_display` (`null_font` is font 0)
     font_in_short_display: Option<FontId>,
 }
@@ -59,7 +59,24 @@ impl<'a> BoxDisplay<'a> {
             prefix: Vec::new(),
             depth_threshold: int(IntParam::ShowBoxDepth).min(MAX_DEPTH_THRESHOLD),
             breadth_max: if breadth <= 0 { 5 } else { breadth },
+            escape: int(IntParam::EscapeChar) as i32,
             font_in_short_display: Some(0),
+        }
+    }
+
+    /// A display with explicit `depth_threshold` and `breadth_max`, as
+    /// show_eqtb sets them for a box register.
+    pub(crate) fn with_limits(
+        e: &'a Engine,
+        depth_threshold: i64,
+        breadth_max: i64,
+        escape: i32,
+    ) -> Self {
+        BoxDisplay {
+            depth_threshold,
+            breadth_max,
+            escape,
+            ..Self::new(e)
         }
     }
 
@@ -88,7 +105,7 @@ impl<'a> BoxDisplay<'a> {
     }
 
     pub(crate) fn print_esc(&mut self, s: &str) {
-        let esc = self.e.eqtb.int_params[IntParam::EscapeChar.idx() as usize];
+        let esc = self.escape;
         if (0..256).contains(&esc) {
             push_printable(&self.e.xprn, &mut self.out, &[esc as u8]);
         }
@@ -144,7 +161,7 @@ impl<'a> BoxDisplay<'a> {
         let blink = eqtb.expand.get(f as usize).map_or(0, |x| x.blink);
         let shown = if blink == 0 { f } else { blink };
         let cs = eqtb.font_cs.get(shown as usize).copied().unwrap_or(0);
-        let esc = eqtb.int_params[IntParam::EscapeChar.idx() as usize];
+        let esc = self.escape;
         if (0..256).contains(&esc) {
             push_printable(&self.e.xprn, &mut self.out, &[esc as u8]);
         }
@@ -238,11 +255,12 @@ impl<'a> BoxDisplay<'a> {
                 | Node::Ins { .. }
                 | Node::Mark { .. }
                 | Node::Adj(_)
-                | Node::VAdjust(_) => self.print("[]"),
+                | Node::VAdjust(_)
+                | Node::PreAdjust(_) => self.print("[]"),
                 Node::Whatsit(_) if !invisible(n) => self.print("[]"),
                 Node::Rule { .. } => self.out.push(b'|'),
                 Node::Glue(g) | Node::Leaders { glue: g, .. } => {
-                    if !g.zero_glue {
+                    if !g.is_zero_glue() {
                         self.out.push(b' ');
                     }
                 }
@@ -296,7 +314,7 @@ impl<'a> BoxDisplay<'a> {
         self.prefix.pop();
     }
 
-    fn show_node_list(&mut self, list: &[Node]) {
+    pub(crate) fn show_node_list(&mut self, list: &[Node]) {
         if self.prefix.len() as i64 > self.depth_threshold {
             if list.iter().any(|n| !invisible(n)) {
                 self.print(" []");
@@ -304,7 +322,16 @@ impl<'a> BoxDisplay<'a> {
             return;
         }
         let mut n = 0i64;
-        for node in list.iter().filter(|n| !invisible(n)) {
+        // A scanned \discretionary keeps its replacement text inside the
+        // node; TeX stores it as the `replace_count` nodes that follow.
+        let flat = list.iter().flat_map(|n| {
+            let embedded: &[Node] = match n {
+                Node::Disc(d) if d.replace_count == 0 => &d.no_break,
+                _ => &[],
+            };
+            std::iter::once(n).chain(embedded)
+        });
+        for node in flat.filter(|n| !invisible(n)) {
             self.print_ln();
             self.out.extend_from_slice(&self.prefix);
             n += 1;
@@ -376,17 +403,18 @@ impl<'a> BoxDisplay<'a> {
                 depth,
                 cost,
                 split_top_skip,
+                split_max_depth,
                 box_node,
                 ..
             } => {
                 self.print_esc("insert");
                 self.print_int(*num as i64);
                 self.print(", natural size ");
-                self.print_scaled(*height);
+                self.print_scaled(height.wrapping_add(*depth));
                 self.print("; split(");
                 self.print_spec(split_top_skip, "");
                 self.out.push(b',');
-                self.print_scaled(*depth);
+                self.print_scaled(*split_max_depth);
                 self.print("); float cost ");
                 self.print_int(*cost as i64);
                 match &**box_node {
@@ -510,9 +538,14 @@ impl<'a> BoxDisplay<'a> {
             }
             Node::Disc(d) => {
                 self.print_esc("discretionary");
-                if d.replace_count > 0 {
+                let replaced = if d.replace_count > 0 {
+                    d.replace_count
+                } else {
+                    d.no_break.len()
+                };
+                if replaced > 0 {
                     self.print(" replacing ");
-                    self.print_int(d.replace_count as i64);
+                    self.print_int(replaced as i64);
                 }
                 self.node_list_display(&d.pre_break);
                 self.prefix.push(b'|');
@@ -530,6 +563,12 @@ impl<'a> BoxDisplay<'a> {
             Node::Adj(_) => self.print_esc("vadjust"),
             Node::VAdjust(list) => {
                 self.print_esc("vadjust");
+                self.node_list_display(list);
+            }
+            // pdftex.web: `print_esc("vadjust"); if adjust_pre(p)<>0 then print(" pre ")`
+            Node::PreAdjust(list) => {
+                self.print_esc("vadjust");
+                self.print(" pre ");
                 self.node_list_display(list);
             }
             Node::NativeGlyphRun { run, .. } => {
@@ -774,6 +813,16 @@ impl Engine {
         self.saved_lists.last().map_or(0, |frame| frame.5)
     }
 
+    /// Append `text` (one trace line, without its line end) to the transcript
+    /// and, when `to_term`, to the terminal, starting it on a fresh line of
+    /// each (tex.web `print_nl`) and ending the line as `end_diagnostic(false)`.
+    pub(crate) fn print_nl_diagnostic(&mut self, text: &str, to_term: bool) {
+        self.flush_trace_events();
+        self.tex_print_nl(to_term, true);
+        self.tex_print_printed(to_term, true, text.trim_end_matches('\n').as_bytes());
+        self.tex_print_nl(to_term, true);
+    }
+
     /// tex.web end_diagnostic(true): `print_nl(""); print_ln`.
     fn end_diagnostic(&mut self, term: bool) {
         self.tex_print_nl(term, true);
@@ -784,6 +833,16 @@ impl Engine {
     /// `\tracingonline>0`.
     pub(crate) fn diagnostic_to_term(&self) -> bool {
         self.eqtb.int_params[IntParam::TracingOnline.idx() as usize] > 0
+    }
+
+    /// tex.web §1121: after "Improper discretionary list", the deleted
+    /// part of the sublist is displayed.
+    pub(crate) fn show_deleted_disc_list(&mut self, deleted: &[Node]) {
+        let mut d = BoxDisplay::new(self);
+        d.print("The following discretionary sublist has been deleted:");
+        d.show_box(deleted);
+        let out = d.out;
+        self.emit_box_diagnostic(out);
     }
 
     /// `begin_diagnostic; <display>; end_diagnostic(true)` for a display
@@ -970,7 +1029,7 @@ impl Engine {
             match level.mode {
                 Mode::Vertical | Mode::InternalVertical => {
                     d.print_nl("prevdepth ");
-                    if level.prev_depth <= IGNORE_DEPTH {
+                    if level.prev_depth <= self.ignore_depth() {
                         d.print("ignored");
                     } else {
                         d.print_scaled(level.prev_depth);
@@ -997,6 +1056,233 @@ impl Engine {
                         d.print("this will begin denominator of:");
                         d.show_items_box(std::slice::from_ref(frac));
                     }
+                }
+            }
+        }
+        d.out
+    }
+
+    /// e-TeX show_save_groups (`\showgroups`).
+    pub(crate) fn show_save_groups(&self) -> Vec<u8> {
+        use crate::eqtb::{
+            group_code as gc, group_description, BOX_FLAG, GLOBAL_BOX_FLAG, LEADER_FLAG,
+            SHIP_OUT_FLAG,
+        };
+        const VMODE: i32 = 1;
+        const HMODE: i32 = 102;
+        const MMODE: i32 = 203;
+        let mut d = BoxDisplay::new(self);
+        // print_nl(""); print_ln
+        d.print_ln();
+        let levels = self.nest_levels();
+        let mode_of = |index: usize| -> i32 {
+            match levels[index].mode {
+                Mode::Vertical => VMODE,
+                Mode::InternalVertical => -VMODE,
+                Mode::Horizontal => HMODE,
+                Mode::RestrictedHorizontal => -HMODE,
+                Mode::DisplayMath => MMODE,
+                Mode::Math => -MMODE,
+            }
+        };
+        let groups = &self.eqtb.groups;
+        let mut p = levels.len() - 1;
+        let mut a: i32 = 1;
+        let mut remaining = groups.len();
+        loop {
+            d.print_nl("### ");
+            if remaining == 0 {
+                d.print("bottom level");
+                break;
+            }
+            let group = groups[remaining - 1];
+            let meta = group.meta;
+            d.print(&group_description(meta.code, remaining as u16, group.line, true));
+            let mut m;
+            loop {
+                m = mode_of(p);
+                if p > 0 {
+                    p -= 1;
+                } else {
+                    m = VMODE;
+                }
+                if m != HMODE {
+                    break;
+                }
+            }
+            d.print(" (");
+            // where the arms below continue: the box context, `found1`
+            // (name and packaging), `found2` (the brace) and `found` (the
+            // closing parenthesis)
+            enum Next {
+                Context(&'static str),
+                Found1(&'static str),
+                Found2,
+                Found,
+            }
+            let next = match meta.code {
+                gc::SIMPLE => {
+                    p += 1;
+                    Next::Found2
+                }
+                gc::HBOX | gc::ADJUSTED_HBOX => Next::Context("hbox"),
+                gc::VBOX => Next::Context("vbox"),
+                gc::VTOP => Next::Context("vtop"),
+                gc::ALIGN => {
+                    if a == 0 {
+                        a = 1;
+                        Next::Found1(if m == -VMODE { "halign" } else { "valign" })
+                    } else {
+                        if a == 1 {
+                            d.print("align entry");
+                        } else {
+                            d.print_esc("cr");
+                        }
+                        // tex.web: the entry's row level is not a group
+                        // of its own (`if p>=a then p:=p-a`).
+                        if let Some(q) = p.checked_add_signed(-(a as isize)) {
+                            p = q;
+                        }
+                        a = 0;
+                        Next::Found
+                    }
+                }
+                gc::NO_ALIGN => {
+                    p += 1;
+                    a = -1;
+                    d.print_esc("noalign");
+                    Next::Found2
+                }
+                gc::OUTPUT => {
+                    d.print_esc("output");
+                    Next::Found
+                }
+                gc::MATH => Next::Found2,
+                gc::DISC | gc::MATH_CHOICE => {
+                    d.print_esc(if meta.code == gc::DISC {
+                        "discretionary"
+                    } else {
+                        "mathchoice"
+                    });
+                    for i in 1..=3 {
+                        if i <= meta.spec {
+                            d.print("{}");
+                        }
+                    }
+                    Next::Found2
+                }
+                gc::INSERT => {
+                    // pdftex.web's begin_insert_or_adjust keeps the class in
+                    // saved(0) and the `\vadjust pre` flag in saved(1), so
+                    // show_save_groups' saved(-2) is that flag: `\insert1`
+                    // for `\vadjust pre`, `\insert0` for every other insert
+                    // group (the meta's spec holds the flag).
+                    d.print_esc("insert");
+                    d.print_int(i64::from(meta.spec));
+                    Next::Found2
+                }
+                gc::VCENTER => Next::Found1("vcenter"),
+                gc::SEMI_SIMPLE => {
+                    p += 1;
+                    d.print_esc("begingroup");
+                    Next::Found
+                }
+                gc::MATH_SHIFT => {
+                    if m == MMODE {
+                        d.print("$");
+                        d.print("$");
+                        Next::Found
+                    } else if mode_of(p) == MMODE {
+                        d.print_esc(if meta.spec == 1 { "leqno" } else { "eqno" });
+                        Next::Found
+                    } else {
+                        d.print("$");
+                        Next::Found
+                    }
+                }
+                _ => {
+                    d.print_esc(if meta.spec == 1 { "middle" } else { "left" });
+                    Next::Found
+                }
+            };
+            let (name, show_context) = match next {
+                Next::Context(name) => (Some(name), true),
+                Next::Found1(name) => (Some(name), false),
+                Next::Found2 => (None, false),
+                Next::Found => {
+                    d.print(")");
+                    remaining -= 1;
+                    continue;
+                }
+            };
+            if show_context && meta.context != 0 {
+                let i = meta.context;
+                if i < BOX_FLAG {
+                    let horizontal = mode_of(p).abs() == VMODE;
+                    d.print_esc(match (horizontal, i > 0) {
+                        (true, true) => "moveright",
+                        (true, false) => "moveleft",
+                        (false, true) => "lower",
+                        (false, false) => "raise",
+                    });
+                    d.print_scaled(i.abs());
+                    d.print("pt");
+                } else if i < SHIP_OUT_FLAG {
+                    let mut register = i;
+                    if i >= GLOBAL_BOX_FLAG {
+                        d.print_esc("global");
+                        register -= GLOBAL_BOX_FLAG - BOX_FLAG;
+                    }
+                    d.print_esc("setbox");
+                    d.print_int((register - BOX_FLAG) as i64);
+                    d.print("=");
+                } else {
+                    d.print_esc(match i - LEADER_FLAG {
+                        -1 => "shipout",
+                        0 => "leaders",
+                        1 => "cleaders",
+                        _ => "xleaders",
+                    });
+                }
+            }
+            if let Some(name) = name {
+                d.print_esc(name);
+                if meta.spec != 0 {
+                    d.print(" ");
+                    d.print(if meta.exactly { "to" } else { "spread" });
+                    d.print_scaled(meta.spec);
+                    d.print("pt");
+                }
+            }
+            d.print("{)");
+            remaining -= 1;
+        }
+        d.out
+    }
+
+    /// e-TeX's `\showifs` display.
+    pub(crate) fn show_ifs(&self) -> Vec<u8> {
+        let mut d = BoxDisplay::new(self);
+        // print_nl(""); print_ln
+        d.print_ln();
+        if self.if_stack.is_empty() {
+            d.print_nl("### ");
+            d.print("no active conditionals");
+        } else {
+            for (index, state) in self.if_stack.iter().enumerate().rev() {
+                d.print_nl("### level ");
+                d.print_int((index + 1) as i64);
+                d.print(": ");
+                if state.unless {
+                    d.print_esc("unless");
+                }
+                d.print_esc(crate::trace::if_name(state.kind));
+                if state.in_else {
+                    d.print_esc("else");
+                }
+                if state.loc_line != 0 {
+                    d.print(" entered on line ");
+                    d.print_int(state.loc_line as i64);
                 }
             }
         }

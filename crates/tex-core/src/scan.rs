@@ -109,28 +109,30 @@ impl Engine {
         }
     }
 
-    fn token_is_fi_or_else(&self, t: Token) -> bool {
+    fn token_is_fi_or_else(&self, t: Token) -> Option<Prim> {
         if !t.is_cs() {
-            return false;
+            return None;
         }
-        matches!(
-            self.eqtb.resolve(t.cs_id()),
+        match self.eqtb.resolve(t.cs_id()) {
             Some(Equiv::Prim(
-                Prim::Else | Prim::Or | Prim::Fi | Prim::ElIf | Prim::ElIfX
-            ))
-        )
+                p @ (Prim::Else | Prim::Or | Prim::Fi | Prim::ElIf | Prim::ElIfX),
+            )) => Some(*p),
+            _ => None,
+        }
     }
 
     /// A delimiter terminates an unfinished conditional's numeric operand;
     /// delimiters of already selected branches still expand normally.
     fn get_x_raw_keep_cond(&mut self) -> Token {
         let t = self.raw_token();
-        if self.token_is_fi_or_else(t)
-            && self
+        if let Some(p) = self.token_is_fi_or_else(t) {
+            if self
                 .pending_if_depth
                 .is_some_and(|depth| self.if_stack.len() <= depth)
-        {
-            return t;
+            {
+                self.show_operand_ending_delimiter(p);
+                return t;
+            }
         }
         // Expanding the fetched token directly equals backing it up and
         // fetching it again, except while an alignment holds back older
@@ -826,39 +828,25 @@ impl Engine {
     pub fn int_param_value(&self, p: IntParam) -> i32 {
         match p {
             IntParam::CurrentGroupLevel => (self.eqtb.cur_level.saturating_sub(1)) as i32,
-            IntParam::CurrentGroupType => {
-                if self.scanner_status == crate::engine::ScannerStatus::Aligning {
-                    if self.align_in_noalign {
-                        return 7; // no_align_group
-                    }
-                    if self.align_phase() == crate::align::PH_IDLE {
-                        return 6; // align_group
-                    }
-                }
-                let ty = self.eqtb.cur_group_type();
-                let v = match ty {
-                    None => 0,
-                    Some(crate::eqtb::LevelType::Simple) => 1,
-                    Some(crate::eqtb::LevelType::SemiSimple) => 14,
-                    Some(crate::eqtb::LevelType::MathShift) => 15,
-                    Some(crate::eqtb::LevelType::MathLeft) => 16,
-                    Some(crate::eqtb::LevelType::MathGroup) => 9,
-                    Some(crate::eqtb::LevelType::Group) => 9,
-                    Some(crate::eqtb::LevelType::Box) => match self.box_kinds.last().copied() {
-                        Some(0) => 2,
-                        Some(1) => 4,
-                        Some(2) => 5,
-                        Some(3) => 12,
-                        Some(7) => 6,
-                        _ => 2,
-                    },
-                    _ => 1,
-                };
-                v
-            }
+            IntParam::CurrentGroupType => i32::from(self.eqtb.cur_group_code()),
             IntParam::CurrentIfLevel => self.if_stack.len() as i32,
-            IntParam::CurrentIfType => 0,
-            IntParam::CurrentIfBranch => 0,
+            // e-TeX: cur_if+1, negated for `\unless`
+            IntParam::CurrentIfType => self.if_stack.last().map_or(0, |state| {
+                let kind = i32::from(state.kind) + 1;
+                if state.unless {
+                    -kind
+                } else {
+                    kind
+                }
+            }),
+            // 1 in the first branch (if_limit is else_code or or_code), -1
+            // after \else (fi_code), 0 while the condition is evaluated
+            IntParam::CurrentIfBranch => match self.if_stack.last() {
+                Some(state) if state.in_else => -1,
+                Some(state) if state.evaluating => 0,
+                Some(_) => 1,
+                None => 0,
+            },
             IntParam::LastNodeType => self.last_node_type_value(),
             IntParam::Badness => self.last_badness,
             IntParam::InputLineNo => self.current_diagnostic_line() as i32,
@@ -1653,7 +1641,18 @@ impl Engine {
         Some(i64::from(sp))
     }
 
+    /// tex.web scan_glue: the spec read is a new one (it gets its own
+    /// identity) unless it is an internal glue value, which is the shared
+    /// spec it names.
     pub fn scan_glue(&mut self, mu: bool) -> Glue {
+        let mut g = self.scan_glue_spec(mu);
+        if g.spec == Glue::NO_SPEC {
+            g.spec = self.eqtb.new_spec();
+        }
+        g
+    }
+
+    fn scan_glue_spec(&mut self, mu: bool) -> Glue {
         let prev = self.in_expanded_scan;
         self.in_expanded_scan = false;
         // tex.web scan_glue: optional signs are consumed here and negate the
@@ -1672,6 +1671,7 @@ impl Engine {
         if t.is_cs() && matches!(self.cur_prim, Some(Prim::GlueToMu | Prim::MuToGlue)) {
             let mut g = self.scan_glue_conversion(self.cur_prim == Some(Prim::GlueToMu), mu);
             if negate {
+                g = g.fresh();
                 g.width = -g.width;
                 g.stretch = -g.stretch;
                 g.shrink = -g.shrink;
@@ -1680,8 +1680,9 @@ impl Engine {
             return g;
         }
         if t.is_cs() && matches!(self.cur_prim, Some(Prim::GlueExpr) | Some(Prim::MuExpr)) {
-            let mut g = self.scan_expr_glue(mu).fresh();
+            let mut g = self.scan_expr_glue(mu);
             if negate {
+                g = g.fresh();
                 g.width = -g.width;
                 g.stretch = -g.stretch;
                 g.shrink = -g.shrink;

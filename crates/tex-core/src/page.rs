@@ -392,15 +392,11 @@ impl Engine {
         self.page_goal
     }
 
-    /// goal derived from `\vsize` alone (max_dimen when `\vsize <= 0`);
-    /// tex.web re-derives `page_goal := \vsize` at each page start
+    /// goal derived from `\vsize` alone; tex.web re-derives
+    /// `page_goal := \vsize` at each page start (a non-positive `\vsize`
+    /// gives a page that every box overfills)
     fn vsize_goal(&self) -> i64 {
-        let vs = self.eqtb.dim_params[DimParam::VSize.idx() as usize] as i64;
-        if vs <= 0 {
-            0x3FFF_FFFF // max_dimen: 16383.99998 pt
-        } else {
-            vs
-        }
+        self.eqtb.dim_params[DimParam::VSize.idx() as usize] as i64
     }
     fn max_depth(&self) -> i64 {
         self.eqtb.dim_params[DimParam::MaxDepth.idx() as usize] as i64
@@ -1035,7 +1031,9 @@ impl Engine {
             }
             _ => (cut, INF_PENALTY),
         };
-        self.eqtb.int_params[IntParam::OutputPenalty.idx() as usize] = penalty;
+        // tex.web §1013 geq_word_define(output_penalty_code, ...)
+        self.eqtb
+            .assign_int_param(IntParam::OutputPenalty, penalty, true);
 
         // marks: `\topmark` becomes the old `\botmark`; per-page marks reset
         self.marks[0] = self.marks[2].clone();
@@ -1202,7 +1200,7 @@ impl Engine {
                     let q = std::mem::take(queue);
                     queues.remove(&num);
                     let r = vpack(q, None, VBOX, &self.eqtb);
-                    self.eqtb.assign_box(num, Some(r.node), true);
+                    self.eqtb.set_box_untraced(num, Some(r.node));
                     if let Some(rest) = remainder {
                         // §19857-19860: height(p) := extents of the packed
                         // pruned remainder; node p itself carries it
@@ -1233,7 +1231,7 @@ impl Engine {
         for (num, q) in queues {
             if !q.is_empty() {
                 let r = vpack(q, None, VBOX, &self.eqtb);
-                self.eqtb.assign_box(num, Some(r.node), true);
+                self.eqtb.set_box_untraced(num, Some(r.node));
             }
         }
         // §19860 <Delete the page-insertion nodes>
@@ -1430,7 +1428,7 @@ impl Engine {
             .then_some(pack_goal.clamp(i32::MIN as i64, i32::MAX as i64) as i32);
         let r = crate::boxes::vpack_add_md(page_mat, exact, false, VBOX, &self.eqtb, md);
         self.last_badness = r.badness;
-        self.eqtb.assign_box(255, Some(r.node), true);
+        self.eqtb.set_box_untraced(255, Some(r.node));
 
         // tex.web §28435-28439: with no routine (or once the dead-cycle
         // limit is reached, after explaining the loop) fall through to
@@ -1461,7 +1459,10 @@ impl Engine {
         // (output_group) — its local assignments (\@restorepar's \def\par,
         // \@specials, mark state) roll back at <endoutput> instead of
         // clobbering the enclosing list's eqtb state
-        self.push_group_level(crate::eqtb::LevelType::Simple);
+        self.push_group_level_coded(
+            crate::eqtb::LevelType::Simple,
+            crate::eqtb::GroupMeta::new(crate::eqtb::group_code::OUTPUT),
+        );
         // tex.web: the output routine preempts in-flight input. With
         // begin_token_list semantics, macro/hook replays live as nested
         // TokList sources BELOW the routine pushed here, so they resume
@@ -1589,7 +1590,7 @@ impl Engine {
                 }
             }
             Node::Ins { box_node, .. } => self.fire_page_writes(box_node),
-            Node::VAdjust(v) => {
+            Node::VAdjust(v) | Node::PreAdjust(v) => {
                 for m in v {
                     self.fire_page_writes(m);
                 }

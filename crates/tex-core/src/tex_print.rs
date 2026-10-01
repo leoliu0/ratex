@@ -93,6 +93,8 @@ impl Engine {
     /// append what it printed. `term` is ignored in batch mode (tex.web
     /// selector `log_only`).
     pub(crate) fn print_to(&mut self, term: bool, log: bool, body: &dyn Fn(&mut Lane)) {
+        // queued trace lines come first and move the columns read below
+        self.flush_trace_events();
         if term && self.interaction_mode != InteractionMode::Batch {
             let mut lane = Lane::new(self.term_offset);
             body(&mut lane);
@@ -112,6 +114,7 @@ impl Engine {
     /// tex.web print_nl(""): start a fresh line on every selected stream
     /// unless all of them are at the start of one.
     pub(crate) fn tex_print_nl(&mut self, term: bool, log: bool) {
+        self.flush_trace_events();
         let term_active = term && self.interaction_mode != InteractionMode::Batch;
         if (term_active && self.term_offset > 0) || (log && self.file_offset > 0) {
             self.print_to(term, log, &|lane| lane.ln());
@@ -146,6 +149,7 @@ impl Engine {
     /// `^^` notation (only the new-line character stays itself) when its
     /// length is compared with the line width.
     pub(crate) fn tex_message(&mut self, raw: &[u8]) {
+        self.flush_trace_events();
         let nl = self.new_line_char();
         let mut s = Vec::with_capacity(raw.len());
         for &byte in raw {
@@ -179,6 +183,7 @@ impl Engine {
     /// line break. Ratex keeps the space after the name pending until more
     /// text follows, so that a following `print_nl` does not leave it dangling.
     pub(crate) fn print_file_open(&mut self, name: &[u8]) {
+        self.flush_trace_events();
         let term_offset = if self.interaction_mode == InteractionMode::Batch {
             0
         } else {

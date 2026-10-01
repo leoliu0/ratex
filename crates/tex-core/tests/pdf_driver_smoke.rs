@@ -241,7 +241,7 @@ fn display_list_captures_rules_and_glyphs() {
     let source = r#"\catcode`\{=1 \catcode`\}=2
 \pdfpagewidth=100pt \pdfpageheight=100pt
 \pdfhorigin=0pt \pdfvorigin=0pt
-\setbox0=\hbox{\hrule width 50pt height 5pt depth 0pt}
+\setbox0=\hbox{\vrule width 50pt height 5pt depth 0pt}
 \shipout\box0
 \end"#;
     let mut e = Engine::new(true);
@@ -271,7 +271,7 @@ fn tagged_pdf_emits_markinfo_and_struct_tree_root() {
     let source = r#"\catcode`\{=1 \catcode`\}=2
 \pdfpagewidth=100pt \pdfpageheight=100pt
 \pdfhorigin=0pt \pdfvorigin=0pt
-\setbox0=\hbox{\hrule width 50pt height 5pt depth 0pt}
+\setbox0=\hbox{\vrule width 50pt height 5pt depth 0pt}
 \shipout\box0
 \end"#;
     let mut e = Engine::new(true);
@@ -325,7 +325,7 @@ fn synctex_parameter_controls_recording_like_pdftex() {
             "\\catcode`\\{{=1 \\catcode`\\}}=2 \\synctex={setting}
 \\pdfpagewidth=100pt \\pdfpageheight=100pt
 \\pdfhorigin=0pt \\pdfvorigin=0pt
-\\setbox0=\\hbox{{\\hrule width 50pt height 5pt depth 0pt}}
+\\setbox0=\\hbox{{\\vrule width 50pt height 5pt depth 0pt}}
 \\shipout\\box0
 \\end"
         );
@@ -345,7 +345,7 @@ fn encrypted_pdf_emits_encrypt_dict_and_trailer_id() {
     let source = r#"\catcode`\{=1 \catcode`\}=2
 \pdfpagewidth=100pt \pdfpageheight=100pt
 \pdfhorigin=0pt \pdfvorigin=0pt
-\setbox0=\hbox{\hrule width 50pt height 5pt depth 0pt}
+\setbox0=\hbox{\vrule width 50pt height 5pt depth 0pt}
 \shipout\box0
 \end"#;
     let mut e = Engine::new(true);
@@ -448,7 +448,7 @@ fn pdfa_emits_output_intents_with_srgb() {
 \pdfhorigin=0pt \pdfvorigin=0pt
 \pdfminorversion=4
 \pdfcatalog{/GTS_PDFA1 (PDF/A-1b)}
-\setbox0=\hbox{\hrule width 50pt height 5pt depth 0pt}
+\setbox0=\hbox{\vrule width 50pt height 5pt depth 0pt}
 \shipout\box0
 \end"#;
     let mut e = Engine::new(true);

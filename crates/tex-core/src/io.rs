@@ -376,6 +376,7 @@ impl Engine {
                 }
             }
             self.input.push_file_from(key, data, included_from);
+            self.mark_file_nesting();
             return true;
         }
         match path {
@@ -428,6 +429,7 @@ impl Engine {
                 }
                 let data = self.from_external(data);
                 self.input.push_file_from(key, data, included_from);
+                self.mark_file_nesting();
                 true
             }
             None => {
@@ -449,6 +451,7 @@ impl Engine {
                         }
                     }
                     self.input.push_file_from(key, data, included_from);
+                    self.mark_file_nesting();
                     return true;
                 }
                 // Fall back to embedded Virtual TDS package repository
@@ -470,6 +473,7 @@ impl Engine {
                         }
                     }
                     self.input.push_file_from(key, data, included_from);
+                    self.mark_file_nesting();
                     return true;
                 }
                 self.fatal_error_at(
@@ -1896,7 +1900,7 @@ impl Engine {
                 }
             }
             QuantityLoc::Glue(p) => {
-                let mut cur = self.eqtb.glue_params[p.idx() as usize].clone();
+                let mut cur = self.eqtb.glue_params[p.idx() as usize].fresh();
                 let Some((width, stretch, shrink)) = self.checked_glue_arith(
                     cur.width,
                     cur.stretch,
@@ -1913,7 +1917,7 @@ impl Engine {
                 self.eqtb.assign_glue_param(p, cur, global);
             }
             QuantityLoc::Skip(i) => {
-                let mut cur = self.eqtb.skip[i as usize].clone();
+                let mut cur = self.eqtb.skip[i as usize].fresh();
                 let Some((width, stretch, shrink)) = self.checked_glue_arith(
                     cur.width,
                     cur.stretch,
@@ -1930,7 +1934,7 @@ impl Engine {
                 self.eqtb.assign_skip(i, cur, global);
             }
             QuantityLoc::MuSkip(i) => {
-                let mut cur = self.eqtb.muskip[i as usize];
+                let mut cur = self.eqtb.muskip[i as usize].fresh();
                 let Some((width, stretch, shrink)) = self.checked_glue_arith(
                     cur.width,
                     cur.stretch,
@@ -1968,7 +1972,7 @@ impl Engine {
         _origin: Option<&crate::input::SourceMark>,
     ) -> Option<crate::boxes::Glue> {
         // tex.web §23143-23156: \advance on glue specs uses wrapping addition without overflow checks.
-        let mut value = current.clone();
+        let mut value = current.fresh();
         value.width = value.width.wrapping_add(increment.width);
         if increment.stretch != 0 {
             if value.stretch_order == increment.stretch_order {
@@ -2661,7 +2665,7 @@ mod tests {
              {\\global\\copy2\\count12=1}\n\
              {\\global\\box2\\count13=1}\n\
              \\chardef\\letter=65 {\\global\\letter\\count14=1}\n\
-             \\mathchardef\\symbol=42 {\\global\\symbol\\count15=1}\n\
+             \\catcode`\\$=3 \\mathchardef\\symbol=42 ${\\global\\symbol\\count15=1}$\n\
              {\\global\\partokenname A\\count16=1}\n\
              {\\global\\setbox3=Q\\count17=1}\n\
              \\end\n"

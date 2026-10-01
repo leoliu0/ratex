@@ -101,6 +101,12 @@ impl Engine {
                 // e-TeX semantics: \everyeof fires every time scanning
                 // reaches EOF of an input file or pseudo-file (expl3 \file_get
                 // and \tl_set_rescan rely on this to supply closing delimiters).
+                if matches!(
+                    self.input.stack.get(si),
+                    Some(Source::File { tracked: true, .. })
+                ) {
+                    self.finish_tracked_file();
+                }
                 self.input.finish_file(si);
                 let eof_toks = (*self.eqtb.tok_params
                     [crate::prim::ToksParam::EveryEOF.idx() as usize])

@@ -378,16 +378,33 @@ impl Engine {
         self.lua_pack_filter(cb, "vpack filter", group, size, exactly, Some(max_depth), list)
     }
 
-    /// Whether `list` holds anything a Lua font glyph could live in.
-    pub(crate) fn lua_list_has_glyphs(list: &[Node]) -> bool {
-        list.iter().any(|n| match n {
-            Node::LuaGlyph(_) | Node::Char { .. } | Node::Ligature { .. } => true,
-            Node::Disc(d) => {
-                Self::lua_list_has_glyphs(&d.pre_break)
-                    || Self::lua_list_has_glyphs(&d.post_break)
-                    || Self::lua_list_has_glyphs(&d.no_break)
-            }
-            _ => false,
-        })
+    /// LuaTeX `package()` for the box kinds `\hbox` (0), `\vbox` (1) and
+    /// `\vtop` (2): the text passes and `hpack_filter` for horizontal boxes,
+    /// `vpack_filter` for vertical ones. `target` is the `to`/`spread`
+    /// specification. An empty list is packed as it is.
+    pub(crate) fn lua_pack_inner(
+        &mut self,
+        kind: u8,
+        inner: NodeList,
+        target: Option<(i32, bool)>,
+        box_max_depth: i32,
+        adjusted: bool,
+    ) -> NodeList {
+        if inner.is_empty() {
+            return inner;
+        }
+        let (size, exactly) = match target {
+            Some((d, false)) => (d, true),
+            Some((d, true)) => (d, false),
+            None => (0, false),
+        };
+        if kind == 0 {
+            let list = self.lua_text_passes(inner);
+            let group = if adjusted { GROUP_ADJUSTED_HBOX } else { GROUP_HBOX };
+            self.lua_hpack_filter(group, size, exactly, list)
+        } else {
+            let group = if kind == 2 { GROUP_VTOP } else { GROUP_VBOX };
+            self.lua_vpack_filter(group, size, exactly, box_max_depth, inner)
+        }
     }
 }

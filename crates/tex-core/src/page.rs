@@ -1572,6 +1572,17 @@ impl Engine {
                 let toks = tokens.clone();
                 self.fire_write(*stream, &toks, source.as_ref());
             }
+            Node::Whatsit(crate::boxes::WhatIt::LateLua { code, func }) => {
+                if *func > 0 {
+                    let f = *func;
+                    self.call_lua_function(f);
+                } else {
+                    let code = code.clone();
+                    if let Err(err) = self.execute_directlua(&code) {
+                        self.error(&format!("LuaTeX error: {err}"));
+                    }
+                }
+            }
             Node::Whatsit(crate::boxes::WhatIt::OpenOut {
                 stream,
                 names,

@@ -252,14 +252,13 @@ tex.uccode = view(tex.getuccode, tex.setuccode)
 tex.sfcode = view(tex.getsfcode, tex.setsfcode)
 tex.catcode = view(tex.getcatcode, function(c, v) return tex.setcatcode(c, v) end)
 
--- math codes are the classic 15-bit "class fam char" packs; delimiter codes
--- the 24-bit "small fam/char, large fam/char" packs.
-local function math_unpack(v)
-  if v == 0x8000 then return 8, 0, 0 end
-  return (v >> 12) & 7, (v >> 8) & 15, v & 255
-end
+-- math codes are (class, family, character) with a 21 bit character; the
+-- natives pass them packed as class | family << 4 | char << 12. Delimiter
+-- codes are (small fam, small char, large fam, large char) packed as
+-- (smallfam + 1) | smallchar << 9 | largefam << 30 | largechar << 38.
 function tex.getmathcodes(c)
-  return math_unpack(T.code_get("math", lua_int(c), "getmathcodes"))
+  local v = T.code_get("math", lua_int(c), "getmathcodes")
+  return v & 15, (v >> 4) & 255, v >> 12
 end
 function tex.getmathcode(c)
   local class, fam, char = tex.getmathcodes(c)
@@ -267,19 +266,17 @@ function tex.getmathcode(c)
 end
 function tex.setmathcode(...)
   local global, c, class, fam, char = scoped(...)
-  local v
-  if fam == nil then
-    v = lua_int(class)
-  else
-    class, fam, char = lua_int(class), lua_int(fam), lua_int(char)
-    if class == 8 then v = 0x8000 else v = (class << 12) | (fam << 8) | char end
+  if type(class) == "table" then
+    class, fam, char = class[1], class[2], class[3]
   end
-  T.code_set("math", lua_int(c), v, global, "setmathcode")
+  class, fam, char = lua_int(class), lua_int(fam), lua_int(char)
+  T.code_set("math", lua_int(c), (class & 15) | ((fam & 255) << 4) | (char << 12), global, "setmathcode")
 end
 function tex.getdelcodes(c)
   local v = T.code_get("del", lua_int(c), "getdelcodes")
-  if v < 0 then return -1, 0, 0, 0 end
-  return (v >> 20) & 15, (v >> 12) & 255, (v >> 8) & 15, v & 255
+  local sf = (v & 0x1FF) - 1
+  if sf < 0 then return -1, 0, 0, 0 end
+  return sf, (v >> 9) & 0x1FFFFF, (v >> 30) & 255, (v >> 38) & 0x1FFFFF
 end
 function tex.getdelcode(c)
   local a, b, cc, d = tex.getdelcodes(c)
@@ -287,13 +284,11 @@ function tex.getdelcode(c)
 end
 function tex.setdelcode(...)
   local global, c, sf, sc, lf, lc = scoped(...)
-  local v
-  if sc == nil then
-    v = lua_int(sf)
-  else
-    v = (lua_int(sf) << 20) | (lua_int(sc) << 12) | (lua_int(lf) << 8) | lua_int(lc)
+  if type(sf) == "table" then
+    sf, sc, lf, lc = sf[1], sf[2], sf[3], sf[4]
   end
-  T.code_set("del", lua_int(c), v, global, "setdelcode")
+  sf, sc, lf, lc = lua_int(sf), lua_int(sc), lua_int(lf or 0), lua_int(lc or 0)
+  T.code_set("del", lua_int(c), ((sf + 1) & 0x1FF) | (sc << 9) | ((lf & 255) << 30) | (lc << 38), global, "setdelcode")
 end
 tex.mathcode = setmetatable({}, {
   __index = function(_, c) return tex.getmathcode(c) end,

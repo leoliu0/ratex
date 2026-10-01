@@ -92,6 +92,10 @@ pub enum MathStyle {
     Text,
     Script,
     ScriptScript,
+    CrampedDisplay,
+    CrampedText,
+    CrampedScript,
+    CrampedScriptScript,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -241,6 +245,18 @@ pub enum WhatIt {
     Boundary {
         kind: u8,
         value: i32,
+    },
+    /// LuaTeX `\latelua{...}` (`func` 0) / `\lateluafunction n`: Lua that
+    /// runs when the page is shipped out.
+    LateLua {
+        code: Vec<u8>,
+        func: i32,
+    },
+    /// LuaTeX dir node (`\textdir`): `cancel` ends the direction `dir`.
+    Dir {
+        dir: u8,
+        cancel: bool,
+        level: u16,
     },
     PdfLiteral {
         origin: u8,

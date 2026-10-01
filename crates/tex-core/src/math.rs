@@ -36,6 +36,24 @@ pub fn gstyle_of(m: MathStyle) -> GStyle {
         MathStyle::Text => 2,
         MathStyle::Script => 4,
         MathStyle::ScriptScript => 6,
+        MathStyle::CrampedDisplay => 1,
+        MathStyle::CrampedText => 3,
+        MathStyle::CrampedScript => 5,
+        MathStyle::CrampedScriptScript => 7,
+    }
+}
+
+/// Inverse of [`gstyle_of`].
+pub(crate) fn math_style_of(g: GStyle) -> MathStyle {
+    match g {
+        0 => MathStyle::Display,
+        1 => MathStyle::CrampedDisplay,
+        2 => MathStyle::Text,
+        3 => MathStyle::CrampedText,
+        4 => MathStyle::Script,
+        5 => MathStyle::CrampedScript,
+        6 => MathStyle::ScriptScript,
+        _ => MathStyle::CrampedScriptScript,
     }
 }
 /// tex.web `half(x)`: round x/2, .5 up (odd positives toward +inf, odd
@@ -77,7 +95,7 @@ fn den_style(g: GStyle) -> GStyle {
 
 /// superscript style
 #[inline]
-fn sup_style(g: GStyle) -> GStyle {
+pub(crate) fn sup_style(g: GStyle) -> GStyle {
     match g >> 1 {
         0 | 1 => 4 + (g & 1),
         _ => 6 + (g & 1),
@@ -86,7 +104,7 @@ fn sup_style(g: GStyle) -> GStyle {
 
 /// subscript style: always cramped at the next level
 #[inline]
-fn sub_style(g: GStyle) -> GStyle {
+pub(crate) fn sub_style(g: GStyle) -> GStyle {
     match g >> 1 {
         0 | 1 => 5,
         _ => 7,
@@ -2250,9 +2268,12 @@ impl Engine {
     /// the branch matching the current style.
     pub fn begin_mathchoice(&mut self) {
         self.append_mlist_node(Node::Choice);
-        for _ in 0..4 {
+        for branch in 0..4u8 {
             self.show.scan_owner = Some(ScanKind::Choice);
+            // each branch is scanned in its own style (`\mathstyle`)
+            self.math_style_stack.push(math_style_of(branch * 2));
             let body = self.scan_math_group_or_token();
+            self.math_style_stack.pop();
             self.append_mlist_node(Node::ChoiceAlt { body });
         }
     }
@@ -2269,7 +2290,10 @@ impl Engine {
             self.error("Missing { inserted");
             self.push_token(t);
         }
+        let g = gstyle_of(self.cur_math_style());
+        self.math_style_stack.push(math_style_of(num_style(g)));
         let inner = self.scan_math_group_braced(ScanKind::Brace);
+        self.math_style_stack.pop();
         let mut nucleus = Vec::with_capacity(inner.len() + 1);
         nucleus.push(Node::MathChar {
             fam: 255,

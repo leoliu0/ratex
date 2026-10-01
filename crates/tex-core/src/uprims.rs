@@ -472,6 +472,10 @@ impl Engine {
             _ => IntParam::TextDirection,
         };
         self.eqtb.assign_int_param(param, value, global);
+        if matches!(u, UPrim::TextDir | UPrim::LineDir) && self.mode.is_h() {
+            let level = self.eqtb.cur_level;
+            self.cur_list.push(Node::Whatsit(crate::boxes::WhatIt::Dir { dir: value as u8, cancel: false, level }));
+        }
     }
 
     /// LuaTeX-only primitives that main control executes (neither
@@ -493,6 +497,125 @@ impl Engine {
             }
             UPrim::UMathChar => self.math_char_num_command(MathExt::U, id),
             UPrim::UMathCharNum => self.math_char_num_command(MathExt::UNum, id),
+            UPrim::UDelimiter => {
+                if self.mode.is_v() {
+                    self.push_token(Token::from_cs(id));
+                    self.start_paragraph(true);
+                } else if !self.insert_dollar_unless_math(id) {
+                    let source = self.current_token_source_mark();
+                    let (class, family, character, _, _) = self.scan_delcode_lua(MathExt::U, true);
+                    self.set_math_char_lua(class as u32, family as u32, character as u32, 0, source);
+                }
+            }
+            UPrim::URadical => {
+                if !self.insert_dollar_unless_math(id) {
+                    let (_, family, character, _, _) = self.scan_delcode_lua(MathExt::U, false);
+                    if family > 15 || character > 255 {
+                        self.error("\\Uradical: delimiters beyond family 15 / character 255 need OpenType variants, which the engine's math layout does not implement");
+                    } else {
+                        let code = ((family << 20) | (character << 12)) ;
+                        self.do_radical(code);
+                    }
+                }
+            }
+            UPrim::UMathAccent => {
+                if !self.insert_dollar_unless_math(id) {
+                    let mut bottom_or_overlay = false;
+                    if self.scan_keyword(b"fixed") {
+                    } else if self.scan_keyword(b"both") || self.scan_keyword(b"bottom") || self.scan_keyword(b"overlay") {
+                        bottom_or_overlay = true;
+                    } else {
+                        self.scan_keyword(b"top");
+                        self.scan_keyword(b"fixed");
+                    }
+                    let (class, family, character) = self.scan_mathchar_lua(MathExt::U);
+                    if self.scan_keyword(b"fraction") {
+                        self.scan_int();
+                    }
+                    if bottom_or_overlay || family > 15 || character > 255 {
+                        self.error("\\Umathaccent: bottom/overlay accents and characters beyond family 15 / slot 255 are not supported by the engine's math layout");
+                    } else {
+                        self.do_math_accent(((class << 12) | (family << 8) | character) as u16);
+                    }
+                }
+            }
+            UPrim::CrampedDisplayStyle
+            | UPrim::CrampedTextStyle
+            | UPrim::CrampedScriptStyle
+            | UPrim::CrampedScriptScriptStyle => {
+                if !self.insert_dollar_unless_math(id) {
+                    let style = match u {
+                        UPrim::CrampedDisplayStyle => crate::boxes::MathStyle::CrampedDisplay,
+                        UPrim::CrampedTextStyle => crate::boxes::MathStyle::CrampedText,
+                        UPrim::CrampedScriptStyle => crate::boxes::MathStyle::CrampedScript,
+                        _ => crate::boxes::MathStyle::CrampedScriptScript,
+                    };
+                    if let Some(s) = self.math_style_stack.last_mut() {
+                        *s = style;
+                    }
+                    self.append_mlist_node(Node::Style(style));
+                }
+            }
+            UPrim::USubscript | UPrim::USuperscript => {
+                if !self.insert_dollar_unless_math(id) {
+                    self.append_script(u == UPrim::USuperscript, 0);
+                }
+            }
+            UPrim::UNoSubscript | UPrim::UNoSuperscript => {
+                if !self.insert_dollar_unless_math(id) {
+                    // an empty script suppresses the following one
+                    self.push_token(Token::char(2, u32::from(b'}')));
+                    self.push_token(Token::char(1, u32::from(b'{')));
+                    self.append_script(u == UPrim::UNoSuperscript, 0);
+                }
+            }
+            UPrim::LateLua => {
+                let toks = self.scan_general_text_expanded();
+                let code = self.tokens_to_string(&toks).into_bytes();
+                self.append_whatsit(Node::Whatsit(crate::boxes::WhatIt::LateLua { code, func: 0 }));
+            }
+            UPrim::LateLuaFunction => {
+                let n = self.scan_int();
+                if n <= 0 {
+                    self.error("LuaTeX error (lateluafunction: invalid number)");
+                } else {
+                    self.append_whatsit(Node::Whatsit(crate::boxes::WhatIt::LateLua { code: Vec::new(), func: n }));
+                }
+            }
+            UPrim::ClearMarks => {
+                let class = self.scan_int();
+                let node = Node::Mark { class, tokens: Vec::new() };
+                match self.mode {
+                    Mode::Vertical | Mode::InternalVertical => self.vlist_append(node),
+                    Mode::Math | Mode::DisplayMath => self.append_mlist_node(node),
+                    _ => self.cur_list.push(node),
+                }
+            }
+            UPrim::AutomaticDiscretionary => self.main_dispatch(Prim::HyphenDisc, id),
+            UPrim::EndLocalControl => self.error("LuaTeX error (endlocalcontrol: no local control is active)"),
+            UPrim::GLeaders
+            | UPrim::LeftGhost
+            | UPrim::RightGhost
+            | UPrim::LocalLeftBox
+            | UPrim::LocalRightBox
+            | UPrim::NoHRule
+            | UPrim::NoVRule
+            | UPrim::URoot
+            | UPrim::UDelimiterOver
+            | UPrim::UDelimiterUnder
+            | UPrim::UOverDelimiter
+            | UPrim::UUnderDelimiter
+            | UPrim::UHExtensible
+            | UPrim::UVExtensible
+            | UPrim::USkewed
+            | UPrim::USkewedWithDelims => {
+                let name = String::from_utf8_lossy(self.cs.name(id)).into_owned();
+                self.error(&format!("\\{name} is not supported: the engine's node model has no counterpart (see the LuaTeX-only primitive notes)"));
+            }
+            UPrim::UStartDisplayMath | UPrim::UStopDisplayMath => {
+                self.push_token(Token::char(3, u32::from(b'$')));
+                self.push_token(Token::char(3, u32::from(b'$')));
+            }
             UPrim::MathOption => self.error("LuaTeX error (mathoption: obsolete command)"),
             _ => {
                 let name = String::from_utf8_lossy(self.cs.name(id)).into_owned();
@@ -592,5 +715,132 @@ impl Engine {
         } else {
             self.math_char_in_text(class, family, character, 0);
         }
+    }
+}
+
+impl Engine {
+    fn exp_number(&mut self, text: String) {
+        self.exp_string(text.as_bytes());
+    }
+
+    /// Expandable LuaTeX-only primitives (`convert_cmd`, `if_test_cmd`,
+    /// `input_cmd`).
+    pub(crate) fn uprim_expand(&mut self, u: UPrim) -> Option<Token> {
+        match u {
+            UPrim::UChar => {
+                let c = self.scan_char_num_lua();
+                let t = if c == 32 { Token::space() } else { Token::unicode_char(12, c as u32) };
+                self.push_token(t);
+            }
+            UPrim::UMathCharClass | UPrim::UMathCharFam | UPrim::UMathCharSlot => {
+                let c = self.scan_int();
+                // the tree is indexed by the low 21 bits; a default code
+                // keeps the full number as its character
+                let key = (c as u32) & 0x1F_FFFF;
+                let (class, family, mut slot) = self.eqtb.lua_math_code(key);
+                if (class, family, slot) == (0, 0, key) && key > 255 {
+                    slot = c as u32;
+                }
+                let v = match u {
+                    UPrim::UMathCharClass => class as i32,
+                    UPrim::UMathCharFam => family as i32,
+                    _ => slot as i32,
+                };
+                self.exp_number(v.to_string());
+            }
+            UPrim::MathStyleValue => {
+                let v = if self.mode.is_m() { i32::from(self.current_style_number()) } else { -1 };
+                self.exp_number(v.to_string());
+            }
+            UPrim::IfCondition => {}
+            UPrim::ScanTextokens => {
+                let toks = self.scan_general_text();
+                let text = self.tokens_to_bytes(&toks);
+                if self.ensure_input_stack_room(1) {
+                    self.input.push_file("<scantextokens>".to_string(), text);
+                }
+            }
+            UPrim::ImmediateAssignment | UPrim::ImmediateAssigned => {
+                // textoken.c: skip spaces and \relax, then run assignments
+                let mut t;
+                loop {
+                    t = self.get_x_raw();
+                    if !(t.is_space() || self.is_relax_token(t)) {
+                        break;
+                    }
+                }
+                if u == UPrim::ImmediateAssignment {
+                    self.immediate_assignment(t);
+                } else if t.is_char() && t.cc() == 1 {
+                    loop {
+                        let mut t;
+                        loop {
+                            t = self.get_x_raw();
+                            if !(t.is_space() || self.is_relax_token(t)) {
+                                break;
+                            }
+                        }
+                        if t.is_char() && t.cc() == 2 {
+                            break;
+                        }
+                        self.immediate_assignment(t);
+                    }
+                } else {
+                    self.push_token(t);
+                }
+            }
+            _ => {}
+        }
+        None
+    }
+
+    fn is_relax_token(&self, t: Token) -> bool {
+        t.is_cs() && matches!(self.eqtb.resolve(t.cs_id()), Some(Equiv::Prim(Prim::Relax)))
+    }
+
+    /// Run `t` if it starts an assignment, otherwise put it back.
+    fn immediate_assignment(&mut self, t: Token) {
+        if t.is_cs() {
+            let id = t.cs_id();
+            if let Some(Equiv::Prim(p)) = self.eqtb.resolve(id).cloned() {
+                if self.try_assignment(p, id) {
+                    return;
+                }
+            } else if matches!(
+                self.eqtb.resolve(id),
+                Some(
+                    Equiv::CountReg(_)
+                        | Equiv::DimenReg(_)
+                        | Equiv::SkipReg(_)
+                        | Equiv::MuSkipReg(_)
+                        | Equiv::ToksReg(_)
+                        | Equiv::AttributeReg(_)
+                )
+            ) {
+                self.cs_assign(id);
+                return;
+            }
+        }
+        self.push_token(t);
+    }
+
+    /// LuaTeX `print_math_style` value inside math (without cramped
+    /// information: the engine tracks only the four base styles at scan time).
+    fn current_style_number(&self) -> u8 {
+        crate::math::gstyle_of(self.cur_math_style())
+    }
+}
+
+impl Engine {
+    /// maincontrol.c `non_math(..., insert_dollar_sign)`: outside math the
+    /// command is read again after an inserted `$`. True when that happened.
+    fn insert_dollar_unless_math(&mut self, id: CsId) -> bool {
+        if self.mode.is_m() {
+            return false;
+        }
+        self.push_token(Token::from_cs(id));
+        self.push_token(Token::char(3, u32::from(b'$')));
+        self.error("Missing $ inserted");
+        true
     }
 }

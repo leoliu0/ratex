@@ -398,6 +398,7 @@ impl NodeStore {
                 }
                 UNSET => node.f[0] = NULL_FLAG,
                 FRACTION => node.f[6] = -1,
+                NOAD => node.f[3] = -1,
                 WHATSIT => {
                     let ext = Ext {
                         strs: match subtype {
@@ -832,6 +833,11 @@ impl NodeStore {
         if id == UNSET && name == "span" {
             return Val::Nil;
         }
+        if id == INS {
+            if let Some(slot) = ins_glue_slot(name) {
+                return Val::Int(i64::from(node.f[slot]));
+            }
+        }
         if id == GLYPH {
             match name {
                 "width" | "height" | "depth" => {
@@ -1004,6 +1010,14 @@ impl NodeStore {
         if (id == INS && name == "spec") || (id == UNSET && name == "span") {
             return Err(cant());
         }
+        if id == INS {
+            if let Some(slot) = ins_glue_slot(name) {
+                let dim = matches!(name, "width" | "stretch" | "shrink");
+                let val = if dim { v.to_round() } else { v.to_int() & 0xFFFF };
+                self.nodes[n as usize].f[slot] = val as i32;
+                return Ok(());
+            }
+        }
         if id == GLYPH && matches!(name, "lang" | "left" | "right" | "uchyph") {
             let f = &mut self.nodes[n as usize].f;
             let (lang, left, right, uchyph) = split_lang_data(f[GLYPH_LANG_DATA]);
@@ -1044,6 +1058,8 @@ impl NodeStore {
                             Some(t) => (false, t),
                             None => match text.strip_prefix('-') {
                                 Some(t) => (true, t),
+                                // a dir node's text must carry the sign
+                                None if id == DIR => return Err(format!("Bad direction specifier {text}")),
                                 None => (false, text.as_str()),
                             },
                         };
@@ -1112,6 +1128,22 @@ pub fn split_lang_data(ld: i32) -> (i32, i32, i32, i32) {
 /// Slot of a glyph holding the packed `lang_data` (the separate fields are
 /// views of it).
 pub const GLYPH_LANG_DATA: usize = 9;
+
+/// An insert keeps the glue fields of the memory its `width(n)` & co. alias
+/// (they are readable and writable although `node.fields` does not list
+/// them): slots of width, stretch, shrink, stretch_order, shrink_order.
+pub const INS_GLUE: usize = 5;
+
+fn ins_glue_slot(name: &str) -> Option<usize> {
+    Some(INS_GLUE + match name {
+        "width" => 0,
+        "stretch" => 1,
+        "shrink" => 2,
+        "stretch_order" => 3,
+        "shrink_order" => 4,
+        _ => return None,
+    })
+}
 
 /// fields LuaTeX stores in a 16 bit quarterword
 fn is_quarterword_field(id: u8, name: &str) -> bool {

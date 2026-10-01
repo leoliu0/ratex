@@ -113,27 +113,13 @@ local passthrough = {
   "check_discretionary", "protect_glyph", "protect_glyphs", "unprotect_glyph", "unprotect_glyphs",
   "protrusion_skippable", "effective_glue", "dimensions", "rangedimensions", "usedlist",
   "uses_font", "tostring", "fix_node_lists", "set_properties_mode",
+  "getchar", "setchar", "getlang", "setlang", "getexpansion", "setexpansion", "getpenalty",
+  "setpenalty", "getnucleus", "setnucleus", "getsub", "setsub", "getsup", "setsup", "getshift",
+  "setshift", "getleader", "setleader", "getcomponents", "setcomponents",
 }
 for _, name in pairs(passthrough) do
   if N[name] then direct[name] = N[name] end
 end
-
--- field accessors that luatex implements one by one but that read and write
--- a single named field of a few node types
-local function accessor(get, set, field)
-  direct[get] = function(n) return getfield(n, field) end
-  direct[set] = function(n, v) return setfield(n, field, v) end
-end
-accessor("getchar", "setchar", "char")
-accessor("getshift", "setshift", "shift")
-accessor("getpenalty", "setpenalty", "penalty")
-accessor("getnucleus", "setnucleus", "nucleus")
-accessor("getsub", "setsub", "sub")
-accessor("getsup", "setsup", "sup")
-accessor("getexpansion", "setexpansion", "expansion_factor")
-accessor("getlang", "setlang", "lang")
-accessor("getcomponents", "setcomponents", "components")
-accessor("getleader", "setleader", "leader")
 
 function direct.todirect(n)
   if type(n) == "userdata" then return todirect_ud(n) end

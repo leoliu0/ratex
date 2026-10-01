@@ -997,7 +997,9 @@ fn install_accessors(lua: &mut Lua, n: &LuaTable) -> Result<(), String> {
 
     // kern
     nat!(lua, n, "getkern", |h: Option<i64>, exp: Option<Value>| -> Result<Variadic<UdValue>, String> {
-        let want_exp = is_truthy(exp.as_ref());
+        // the C code tests `lua_toboolean(L, 2)` after pushing its result, so
+        // without a second argument it sees the pushed number: always true
+        let want_exp = exp.as_ref().map_or(true, |v| is_truthy(Some(v)));
         with_engine(|e| {
             let h = handle32(h);
             if !e.lua_nodes.valid(h) {
@@ -1006,7 +1008,7 @@ fn install_accessors(lua: &mut Lua, n: &LuaTable) -> Result<(), String> {
             let node = e.lua_nodes.node(h);
             match node.id {
                 KERN => {
-                    let mut v = vec![UdValue::Integer(i64::from(node.f[0]))];
+                    let mut v = vec![UdValue::Number(f64::from(node.f[0]))];
                     if want_exp {
                         v.push(UdValue::Integer(i64::from(node.f[1])));
                     }
@@ -1014,7 +1016,7 @@ fn install_accessors(lua: &mut Lua, n: &LuaTable) -> Result<(), String> {
                 }
                 MARGIN_KERN => Variadic(vec![UdValue::Integer(i64::from(node.f[0]))]),
                 MATH => Variadic(vec![UdValue::Integer(i64::from(node.f[0]))]),
-                _ => Variadic(vec![]),
+                _ => Variadic(vec![UdValue::Nil]),
             }
         })
     });
@@ -1040,7 +1042,7 @@ fn install_accessors(lua: &mut Lua, n: &LuaTable) -> Result<(), String> {
 
     // width / height / depth
     nat!(lua, n, "getwidth", |h: Option<i64>, exp: Option<Value>| -> Result<Variadic<UdValue>, String> {
-        let want_exp = is_truthy(exp.as_ref());
+        let want_exp = exp.as_ref().map_or(true, |v| is_truthy(Some(v)));
         with_engine(|e| {
             let h = handle32(h);
             if !e.lua_nodes.valid(h) {
@@ -1059,7 +1061,8 @@ fn install_accessors(lua: &mut Lua, n: &LuaTable) -> Result<(), String> {
                 }
                 GLUE => Variadic(vec![UdValue::Integer(i64::from(node.f[1]))]),
                 MATH => Variadic(vec![UdValue::Integer(i64::from(node.f[1]))]),
-                GLUE_SPEC | INS => Variadic(vec![UdValue::Integer(i64::from(node.f[0]))]),
+                GLUE_SPEC => Variadic(vec![UdValue::Integer(i64::from(node.f[0]))]),
+                INS => Variadic(vec![UdValue::Integer(i64::from(node.f[INS_GLUE]))]),
                 KERN => {
                     let mut v = vec![UdValue::Integer(i64::from(node.f[0]))];
                     if want_exp {
@@ -1081,6 +1084,7 @@ fn install_accessors(lua: &mut Lua, n: &LuaTable) -> Result<(), String> {
             let nd = e.lua_nodes.node_mut(h);
             let slot = match nd.id {
                 HLIST | VLIST | RULE | UNSET | GLUE_SPEC | MARGIN_KERN | FRACTION => 0,
+                INS => INS_GLUE,
                 GLUE | MATH => 1,
                 KERN => 0,
                 RADICAL => 5,
@@ -1229,16 +1233,12 @@ fn install_accessors(lua: &mut Lua, n: &LuaTable) -> Result<(), String> {
                 return Variadic(vec![]);
             }
             let t = e.lua_nodes.node(h);
-            let off = match t.id {
-                GLUE | MATH => 1,
-                GLUE_SPEC | INS => if t.id == INS { 0 } else { 0 },
-                _ => usize::MAX,
-            };
             match t.id {
+                // an insert's glue fields are not backed by data (zeros)
+                INS => Variadic((INS_GLUE..INS_GLUE + 5).map(|i| UdValue::Integer(i64::from(t.f[i]))).collect()),
                 GLUE | MATH => Variadic((1..=5).map(|i| UdValue::Integer(i64::from(t.f[i]))).collect()),
                 GLUE_SPEC => Variadic((0..5).map(|i| UdValue::Integer(i64::from(t.f[i]))).collect()),
                 HLIST | VLIST => {
-                    let _ = off;
                     Variadic(vec![
                         UdValue::Number(t.fl),
                         UdValue::Integer(i64::from(t.f[5])),
@@ -1290,9 +1290,10 @@ fn install_accessors(lua: &mut Lua, n: &LuaTable) -> Result<(), String> {
             let t = e.lua_nodes.node(h);
             match t.id {
                 GLUE | MATH => Variadic(vec![UdValue::Boolean(t.f[1] == 0 && t.f[2] == 0 && t.f[3] == 0)]),
-                GLUE_SPEC | INS => Variadic(vec![UdValue::Boolean(t.f[0] == 0 && t.f[1] == 0 && t.f[2] == 0)]),
+                GLUE_SPEC => Variadic(vec![UdValue::Boolean(t.f[0] == 0 && t.f[1] == 0 && t.f[2] == 0)]),
+                INS => Variadic(vec![UdValue::Boolean(t.f[INS_GLUE] == 0 && t.f[INS_GLUE + 1] == 0 && t.f[INS_GLUE + 2] == 0)]),
                 HLIST | VLIST => Variadic(vec![UdValue::Boolean(t.fl == 0.0 && t.f[5] == 0 && t.f[6] == 0)]),
-                _ => Variadic(vec![UdValue::Nil]),
+                _ => Variadic(vec![]),
             }
         })
     });
@@ -1366,14 +1367,19 @@ fn install_accessors(lua: &mut Lua, n: &LuaTable) -> Result<(), String> {
             }
         })?
     });
-    nat!(lua, n, "setdirection", |h: Option<i64>, v: Option<i64>, cancel: Option<Value>| -> Result<(), String> {
+    nat!(lua, n, "setdirection", |h: Option<i64>, v: Option<Value>, cancel: Option<Value>| -> Result<(), String> {
         let cancel = cancel.as_ref().and_then(|c| c.as_boolean());
         with_engine(|e| {
             let h = handle32(h);
             if !e.lua_nodes.valid(h) {
                 return Ok(());
             }
-            let Some(v) = v else { return Err("Direction specifiers have to be numbers".to_string()) };
+            if !matches!(e.lua_nodes.id(h), DIR | HLIST | VLIST | RULE | LOCAL_PAR) {
+                return Ok(());
+            }
+            let Some(v) = v.as_ref().and_then(|v| v.as_integer()) else {
+                return Err("Direction specifiers have to be numbers".to_string());
+            };
             if !(0..4).contains(&v) {
                 return Err(format!("Invalid direction value {v}"));
             }

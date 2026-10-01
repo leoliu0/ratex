@@ -1,7 +1,7 @@
 //! Main control: dispatch of unexpandable tokens; assignments (def/let/
 //! registers/parameters); box and list building; paragraph triggers.
 
-use crate::engine::{Engine, Mode, ScannerStatus};
+use crate::engine::{Engine, Mode};
 use crate::eqtb::{Equiv, LevelType, Macro};
 use crate::expand::PAR_REF_FLAG;
 use crate::prim::*;
@@ -65,6 +65,9 @@ impl Engine {
                 return;
             }
         }
+        // events queued by the last command (a group closed by `\end`)
+        // belong to the transcript like any other output
+        self.flush_trace_events();
     }
     pub fn dispatch(&mut self, t: Token) {
         if self.output_pending {
@@ -268,7 +271,11 @@ impl Engine {
                     }
                     Some(Equiv::MathCharDef(v)) => {
                         self.reject_assignment_prefixes(&format!("\\mathchar\"{v:X}"));
-                        self.append_mathchar(v as u16);
+                        if self.mode.is_m() {
+                            self.append_mathchar(v as u16);
+                        } else {
+                            self.insert_dollar_sign(Token::from_cs(id));
+                        }
                     }
                     Some(Equiv::CharTok(v)) => {
                         self.dispatch(Token(v));
@@ -306,8 +313,16 @@ impl Engine {
                         // tex.web §1197 / §21691 push_math: a subformula group in
                         // math mode enters -mmode (inner math mode, so \ifinner is true).
                         self.mode = Mode::Math;
+                        // tex.web math_group: the group is a plain brace
+                        // group to the ending logic and `math group` (9)
+                        // to \currentgrouptype and the group traces
+                        self.push_group_level_coded(
+                            LevelType::Simple,
+                            crate::eqtb::GroupMeta::new(crate::eqtb::group_code::MATH),
+                        );
+                    } else {
+                        self.begin_group(true);
                     }
-                    self.begin_group(true);
                 }
                 2 => {
                     if self.mode.is_m() {
@@ -344,7 +359,9 @@ impl Engine {
                 13 => self.active_char(scalar),
                 11 | 12 => self.text_character_token(t),
                 5 | 7 | 8 => {
-                    if cc == 7 {
+                    if (cc == 7 || cc == 8) && !self.mode.is_m() {
+                        self.insert_dollar_sign(t);
+                    } else if cc == 7 {
                         self.super_token(c);
                     } else if cc == 8 {
                         self.sub_token(c);
@@ -515,6 +532,19 @@ impl Engine {
             &format!("You can't use a prefix with `{command}'."),
             source.map(|mark| mark.to_context()),
         );
+    }
+
+    /// tex.web alter_aux: `\prevdepth` belongs to vertical modes and
+    /// `\spacefactor` to horizontal ones; anywhere else the command is an
+    /// illegal case and its value is not read.
+    fn alter_aux_illegal(&mut self, id: CsId, vertical: bool) -> bool {
+        let legal = if vertical { self.mode.is_v() } else { self.mode.is_h() };
+        if legal {
+            return false;
+        }
+        self.report_illegal_case(id);
+        self.clear_prefixes();
+        true
     }
 
     /// Handle assignment-prefix primitives; returns true if consumed.
@@ -734,9 +764,11 @@ impl Engine {
             }
             CharDef => {
                 let t = self.scan_definable_cs();
+                let g = self.take_global();
+                // tex.web §1224: the target is made \relax before the value is scanned
+                self.eqtb.assign(t, Equiv::Prim(Prim::Relax), g);
                 self.scan_optional_equals();
                 let (v, value_source) = self.scan_int_with_source();
-                let g = self.take_global();
                 if u32::try_from(v).ok().and_then(char::from_u32).is_none() {
                     self.error_at(
                         &format!("Invalid Unicode scalar {v} for \\chardef; used 0"),
@@ -751,9 +783,10 @@ impl Engine {
             }
             MathCharDef => {
                 let t = self.scan_definable_cs();
+                let g = self.take_global();
+                self.eqtb.assign(t, Equiv::Prim(Prim::Relax), g);
                 self.scan_optional_equals();
                 let (v, value_source) = self.scan_int_with_source();
-                let g = self.take_global();
                 if !(0..=32767).contains(&v) {
                     self.error_at(
                         &format!(
@@ -873,6 +906,13 @@ impl Engine {
                 self.clear_prefixes();
                 true
             }
+            IntP(ip) if ip.is_last_item() => {
+                // last_item is not an assignment: report_illegal_case
+                // consumes only the primitive, `=3` typesets
+                self.reject_assignment_prefixes(&format!("\\{}", self.prim_name(p)));
+                self.report_illegal_case(id);
+                true
+            }
             IntP(ip) => {
                 if let Some(mode) = match ip {
                     crate::prim::IntParam::ErrorStopMode => {
@@ -889,6 +929,9 @@ impl Engine {
                 } {
                     self.set_interaction_mode(mode);
                     self.clear_prefixes();
+                    return true;
+                }
+                if ip == IntParam::SpaceFactor && self.alter_aux_illegal(id, false) {
                     return true;
                 }
                 self.scan_optional_equals();
@@ -929,6 +972,9 @@ impl Engine {
                 true
             }
             DimP(dp) => {
+                if dp == DimParam::PrevDepth && self.alter_aux_illegal(id, true) {
+                    return true;
+                }
                 self.scan_optional_equals();
                 let v = self.scan_dimen(false, false);
                 let g = self.take_global();
@@ -938,8 +984,6 @@ impl Engine {
                     if dp == DimParam::PageGoal {
                         self.page_goal = v as i64;
                         self.page_goal_set = true;
-                    } else if dp == DimParam::VSize && !self.page_box_seen {
-                        self.page_goal = if v <= 0 { 0x3FFF_FFFF } else { v as i64 };
                     }
                     self.eqtb.assign_dim_param(dp, v, g);
                 }
@@ -1012,6 +1056,14 @@ impl Engine {
     pub(crate) fn cs_assign(&mut self, id: CsId) -> bool {
         match self.eqtb.resolve(id).cloned() {
             Some(Equiv::Prim(Prim::IntP(ip))) => {
+                if ip.is_last_item() {
+                    self.report_illegal_case(id);
+                    self.clear_prefixes();
+                    return true;
+                }
+                if ip == IntParam::SpaceFactor && self.alter_aux_illegal(id, false) {
+                    return true;
+                }
                 self.scan_optional_equals();
                 let capture_value_source = matches!(ip, IntParam::HangAfter);
                 let (v, value_source) = if capture_value_source {
@@ -1034,6 +1086,9 @@ impl Engine {
                 true
             }
             Some(Equiv::Prim(Prim::DimP(dp))) => {
+                if dp == DimParam::PrevDepth && self.alter_aux_illegal(id, true) {
+                    return true;
+                }
                 self.scan_optional_equals();
                 let v = self.scan_dimen(false, false);
                 let g = self.take_global();
@@ -1043,8 +1098,6 @@ impl Engine {
                     if dp == DimParam::PageGoal {
                         self.page_goal = v as i64;
                         self.page_goal_set = true;
-                    } else if dp == DimParam::VSize && !self.page_box_seen {
-                        self.page_goal = if v <= 0 { 0x3FFF_FFFF } else { v as i64 };
                     }
                     self.eqtb.assign_dim_param(dp, v, g);
                 }
@@ -1874,9 +1927,11 @@ impl Engine {
         let id = self.cs.intern(&name);
         self.last_named_cs = Some(id);
         if self.eqtb.get(id).is_none() {
+            // tex.web §372: eq_define(cur_cs,relax,256) — local, so a group
+            // that coins the name makes it undefined again at its end
             let relax = self.cs.lookup(b"relax").unwrap();
             if let Some(r) = self.eqtb.get(relax).cloned() {
-                self.eqtb.assign(id, r, true);
+                self.eqtb.assign(id, r, false);
             }
         }
         id
@@ -1891,6 +1946,10 @@ impl Engine {
     }
 
     pub fn end_group(&mut self) {
+        // tex.web 1132: the `}` closing a \noalign body ends the no-align.
+        if self.align_close_noalign_brace() {
+            return;
+        }
         match self.eqtb.cur_group_type() {
             Some(LevelType::Box) => self.end_box(),
             Some(LevelType::Simple) => {
@@ -1899,15 +1958,6 @@ impl Engine {
                     return;
                 }
                 let _ = self.pop_group();
-                // tex.web 1136-1140: the `}` closing a \noalign body group
-                // ends the no-align. Depth returned to the watermark set by
-                // align_noalign means the body's brace group just closed.
-                if self.scanner_status == ScannerStatus::Aligning
-                    && self.align_in_noalign
-                    && self.eqtb.save_stack.len() == self.align_noalign_save_base
-                {
-                    self.align_finish_noalign_now();
-                }
             }
             Some(LevelType::Group | LevelType::MathGroup) => {
                 // math/legacy groups: pack if a box context is open
@@ -1939,7 +1989,7 @@ impl Engine {
         self.push_group_level(crate::eqtb::LevelType::SemiSimple);
     }
     pub fn end_semi_simple(&mut self) {
-        if self.eqtb.cur_group_type() == Some(LevelType::SemiSimple) {
+        if self.eqtb.cur_group_code() == crate::eqtb::group_code::SEMI_SIMPLE {
             self.ss_trace.pop();
             let _ = self.pop_group();
         } else {
@@ -1947,38 +1997,87 @@ impl Engine {
         }
     }
 
-    /// tex.web §1064 off_save: replay the original token only after the
-    /// current group's closer. At bottom level, discard the extra token.
+    /// tex.web §1046 `non_math(...)`: the commands that only make sense in
+    /// math mode (vertical and horizontal modes insert a `$` before them).
+    pub(crate) fn is_math_only(p: Prim) -> bool {
+        use Prim::*;
+        matches!(
+            p,
+            MathChar
+                | MathAccent
+                | Radical
+                | Overline
+                | Underline
+                | MathOrd
+                | MathOp
+                | MathBin
+                | MathRel
+                | MathOpen
+                | MathClose
+                | MathPunct
+                | MathInner
+                | Delimiter
+                | Above
+                | Over
+                | Atop
+                | OverWithDelims
+                | AtopWithDelims
+                | AboveWithDelims
+                | Left
+                | Right
+                | Middle
+                | NoLimits
+                | Limits
+                | DisplayLimits
+                | MathChoice
+                | DisplayStyle
+                | TextStyle
+                | ScriptStyle
+                | ScriptScriptStyle
+                | VCenter
+                | NonScript
+                | MSkip
+                | MKern
+        )
+    }
+
+    /// tex.web §1064 off_save: `token` closes a group that is not open (an
+    /// `\endgroup`, `$`, `\right` or a vertical command in restricted
+    /// horizontal mode). At the bottom level the token is dropped with an
+    /// "Extra" error; otherwise it is read again after the closer the
+    /// current group needs (`\endgroup`, `$`, `\right.` or `}`).
     pub(crate) fn off_save(&mut self, token: Token) {
-        let Some(group) = self.eqtb.cur_group_type() else {
-            if token.is_cs()
-                && matches!(
-                    self.eqtb.resolve(token.cs_id()),
-                    Some(Equiv::Prim(crate::prim::Prim::EndGroup))
-                )
-            {
-                self.error("Extra \\endgroup");
-            } else {
-                let name = self.tokens_to_string(&[token]);
-                self.error(&format!("Extra {}", name.trim_end()));
-            }
+        use crate::eqtb::group_code;
+        let code = self.eqtb.cur_group_code();
+        if code == group_code::BOTTOM {
+            // print_cmd_chr of the token's meaning (`\let\e=\endgroup\e`
+            // reports `\endgroup`, not `\e`)
+            let meaning = self.meaning_of(token);
+            self.error(&format!("Extra {}", meaning.trim_end()));
             return;
-        };
+        }
+        // back_input, then ins_list: the closer is read before `token`
         self.push_token(token);
-        let shown = match group {
-            LevelType::SemiSimple => {
-                let id = self.primitive_cs(b"endgroup").expect("endgroup primitive");
-                self.push_token(Token::from_cs(id));
+        let frozen = |engine: &mut Engine, name: &[u8]| {
+            let id = engine
+                .primitive_cs(name)
+                .expect("endgroup and right are primitives");
+            Token::from_cs(id)
+        };
+        let shown = match code {
+            group_code::SEMI_SIMPLE => {
+                let endgroup = frozen(self, b"endgroup");
+                self.push_token(endgroup);
                 "\\endgroup"
             }
-            LevelType::MathShift => {
+            group_code::MATH_SHIFT => {
                 self.push_token(Token::char(3, u32::from(b'$')));
                 "$"
             }
-            LevelType::MathLeft => {
+            group_code::MATH_LEFT => {
                 self.push_token(Token::other(b'.'));
-                let id = self.primitive_cs(b"right").expect("right primitive");
-                self.push_token(Token::from_cs(id));
+                let right = frozen(self, b"right");
+                self.push_token(right);
                 "\\right."
             }
             _ => {

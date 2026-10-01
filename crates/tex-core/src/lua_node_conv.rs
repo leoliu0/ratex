@@ -209,7 +209,7 @@ impl Engine {
         node.f[sl::G_SHRINK] = g.shrink;
         node.f[sl::G_SORDER] = crate::lua_node_pack::lua_order_of(g.stretch_order);
         node.f[sl::G_HORDER] = crate::lua_node_pack::lua_order_of(g.shrink_order);
-        node.f[sl::G_ZERO] = i32::from(g.zero_glue);
+        node.f[sl::G_ZERO] = i32::from(g.is_zero_glue());
         n
     }
 
@@ -543,7 +543,7 @@ impl Engine {
             stretch_order: crate::lua_node_pack::engine_order(f[sl::G_SORDER]),
             shrink_order: crate::lua_node_pack::engine_order(f[sl::G_HORDER]),
             subtype,
-            zero_glue,
+            spec: if zero_glue { Glue::ZERO_SPEC } else { Glue::NO_SPEC },
         }
     }
 

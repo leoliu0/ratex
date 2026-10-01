@@ -12,6 +12,8 @@ use crate::token::{CsId, Token};
 pub const RULE_FILL: i32 = i32::MIN; // sentinel: rule dimension from context
 /// box_kinds marker for a \discretionary part group (tex.web disc_group)
 const DISC_GROUP_KIND: u8 = 10;
+/// box_kinds marker for a `\vadjust pre` group (kind 9 is plain `\vadjust`)
+const VADJUST_PRE_KIND: u8 = 11;
 
 /// a matching lig/kern program instruction (tex.web §545)
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -374,20 +376,14 @@ impl Engine {
         self.expand_prim_pub(p, id)
     }
 
+    /// `^` in math mode (outside math the dispatcher inserts a `$`).
     pub fn super_token(&mut self, c: u8) {
-        if self.mode.is_m() {
-            self.append_script(true, c);
-        } else {
-            self.error("Missing $ inserted (superscript)");
-        }
+        self.append_script(true, c);
     }
 
+    /// `_` in math mode (outside math the dispatcher inserts a `$`).
     pub fn sub_token(&mut self, c: u8) {
-        if self.mode.is_m() {
-            self.append_script(false, c);
-        } else {
-            self.error("Missing $ inserted (subscript)");
-        }
+        self.append_script(false, c);
     }
 
     // ---------- glue / kern / penalty appends ----------
@@ -1192,6 +1188,31 @@ impl Engine {
         false
     }
 
+    /// tex.web `box_context` of the box about to open: a shift, `\setbox`,
+    /// `\shipout` or a leaders kind (see `eqtb::BOX_FLAG`).
+    fn group_box_context(&self, shift: i32) -> i32 {
+        use crate::eqtb::{BOX_FLAG, GLOBAL_BOX_FLAG, LEADER_FLAG, SHIP_OUT_FLAG};
+        let depth = self.box_kinds.len();
+        if self.shipout_depth == depth {
+            SHIP_OUT_FLAG
+        } else if let (Some(register), true) = (self.setbox_target, self.setbox_depth == depth) {
+            let flag = if self.setbox_global {
+                GLOBAL_BOX_FLAG
+            } else {
+                BOX_FLAG
+            };
+            flag + i32::from(register)
+        } else if let Some(&(kind, leader_depth)) = self.leader_stack.last() {
+            if leader_depth == depth {
+                LEADER_FLAG + i32::from(kind)
+            } else {
+                shift
+            }
+        } else {
+            shift
+        }
+    }
+
     /// \hbox to 10pt{...} etc: scan spec, push group context
     pub fn begin_box(&mut self, kind: u8) {
         self.flush_native_text();
@@ -1234,7 +1255,32 @@ impl Engine {
             self.nest_line(),
         ));
         self.prev_graf = 0;
-        self.push_group_level(LevelType::Box);
+        let context = self.group_box_context(shift);
+        let meta = {
+            use crate::eqtb::{group_code as gc, GroupMeta, BOX_FLAG};
+            let code = match kind {
+                0 if context < BOX_FLAG && self.saved_lists.last().is_some_and(|f| f.0.is_v()) => {
+                    gc::ADJUSTED_HBOX
+                }
+                1 => gc::VBOX,
+                2 => gc::VTOP,
+                3 => gc::VCENTER,
+                9 | VADJUST_PRE_KIND => gc::INSERT,
+                _ => gc::HBOX,
+            };
+            GroupMeta {
+                code,
+                context,
+                spec: match (kind, target) {
+                    (9, _) => 0,
+                    (VADJUST_PRE_KIND, _) => 1,
+                    (_, Some((d, _))) => d,
+                    _ => 0,
+                },
+                exactly: target.map_or(true, |(_, spread)| !spread),
+            }
+        };
+        self.push_group_level_coded(LevelType::Box, meta);
 
         self.box_targets.push(target);
         self.box_shifts.push(shift);
@@ -1263,7 +1309,7 @@ impl Engine {
                     self.push_tokens_named(toks, "<everyvbox>");
                 }
             }
-            9 => {
+            9 | VADJUST_PRE_KIND => {
                 self.mode = Mode::InternalVertical;
                 self.prev_depth = self.ignore_depth();
             }
@@ -1288,7 +1334,7 @@ impl Engine {
         let kind = self.box_kinds.pop().unwrap_or(0);
         // packed lines join the vbox instead of being vpack-discarded
 
-        if matches!(kind, 1 | 2 | 3 | 8 | 9) && self.mode == Mode::Horizontal {
+        if matches!(kind, 1 | 2 | 3 | 8 | 9 | VADJUST_PRE_KIND) && self.mode == Mode::Horizontal {
             // line_break_context: the group the paragraph is closed by
             let saved = std::mem::replace(
                 &mut self.lua_par_group,
@@ -1345,17 +1391,21 @@ impl Engine {
             self.cur_list = outer_list;
             return;
         }
-        // \vadjust (kind 9): no packing — capture the material as an
-        // adjustment attached to the enclosing hlist; the line breaker
-        // migrates it into the vertical list after the line containing it.
-        if kind == 9 {
+        // \vadjust (kind 9) and \vadjust pre (kind VADJUST_PRE_KIND): no
+        // packing — capture the material as an adjustment attached to the
+        // enclosing hlist; the line breaker migrates it into the vertical
+        // list after (before, for `pre`) the line containing it.
+        if kind == 9 || kind == VADJUST_PRE_KIND {
             self.cur_list = outer_list;
-            if outer_mode.is_v() {
-                self.cur_list.extend(inner);
-            } else if outer_mode.is_m() {
-                self.append_mlist_node(Node::VAdjust(inner));
+            let adjust = if kind == 9 {
+                Node::VAdjust(inner)
             } else {
-                self.cur_list.push(Node::VAdjust(inner));
+                Node::PreAdjust(inner)
+            };
+            if outer_mode.is_m() {
+                self.append_mlist_node(adjust);
+            } else {
+                self.cur_list.push(adjust);
             }
             return;
         }
@@ -2142,7 +2192,7 @@ impl Engine {
             Some(Node::Rule { .. }) => 3,
             Some(Node::Ins { .. }) => 4,
             Some(Node::Mark { .. }) => 5,
-            Some(Node::Adj(_)) | Some(Node::VAdjust(_)) => 6,
+            Some(Node::Adj(_)) | Some(Node::VAdjust(_)) | Some(Node::PreAdjust(_)) => 6,
             Some(Node::Ligature { .. }) => 7,
             Some(Node::Disc(_)) => 8,
             Some(Node::Whatsit(_)) => 9,
@@ -2241,7 +2291,12 @@ impl Engine {
             disc.subtype = 1;
             disc.penalty = self.eqtb.int_params[IntParam::ExHyphenPenalty.idx() as usize];
         }
-        self.cur_list.push(Node::Disc(disc));
+        let disc = Node::Disc(disc);
+        if self.mode.is_m() {
+            self.append_mlist_node(disc);
+        } else {
+            self.cur_list.push(disc);
+        }
     }
 
     /// `new_save_level(disc_group); scan_left_brace; push_nest;
@@ -2262,7 +2317,13 @@ impl Engine {
             self.prev_graf,
             self.nest_line(),
         ));
-        self.push_group_level(LevelType::Box);
+        self.push_group_level_coded(
+            LevelType::Box,
+            crate::eqtb::GroupMeta {
+                spec: part,
+                ..crate::eqtb::GroupMeta::new(crate::eqtb::group_code::DISC)
+            },
+        );
         self.box_targets.push(None);
         self.box_shifts.push(part);
         self.box_kinds.push(DISC_GROUP_KIND);
@@ -2292,6 +2353,7 @@ impl Engine {
             )
         }) {
             self.error("Improper discretionary list");
+            self.show_deleted_disc_list(&list[bad..]);
             list.truncate(bad);
         }
         if part == 2 && outer_mode.is_m() && !list.is_empty() {
@@ -2478,7 +2540,13 @@ impl Engine {
             self.nest_line(),
         ));
         self.prev_graf = 0;
-        self.push_group_level(LevelType::Box);
+        self.push_group_level_coded(
+            LevelType::Box,
+            crate::eqtb::GroupMeta {
+                exactly: target.map_or(true, |(_, spread)| !spread),
+                ..crate::eqtb::GroupMeta::new(crate::eqtb::group_code::INSERT)
+            },
+        );
 
         self.box_targets.push(target);
         self.box_shifts.push(0);
@@ -2501,10 +2569,11 @@ impl Engine {
     /// mode and NOT packed — the resulting vlist migrates into the enclosing
     /// vertical list right after the line containing the adjustment (tex.web
     /// post_line_break). Modeled as a box group (kind 9) that end_box
-    /// captures. [pre] is treated as post (latex.ltx never uses pre).
+    /// captures; `pre` (pdftex.web begin_insert_or_adjust) selects the
+    /// group that migrates in front of the line instead.
     pub fn append_vadjust(&mut self) {
-        let _pre = self.scan_keyword(b"pre");
-        self.begin_box(9);
+        let pre = self.scan_keyword(b"pre");
+        self.begin_box(if pre { VADJUST_PRE_KIND } else { 9 });
     }
 
     pub fn append_mark(&mut self, class: i32, toks: Vec<Token>) {
@@ -2709,13 +2778,22 @@ impl Engine {
     /// tex.web §1079: paragraph-shape controls are reset locally when a
     /// paragraph ends or an internal vertical-list context begins.
     fn normal_paragraph(&mut self) {
-        self.assign_par_shape(Vec::new(), false);
-        self.eqtb
-            .assign_int_param(crate::prim::IntParam::Looseness, 0, false);
-        self.eqtb
-            .assign_int_param(crate::prim::IntParam::HangAfter, 1, false);
-        self.eqtb
-            .assign_dim_param(crate::prim::DimParam::HangIndent, 0, false);
+        use crate::prim::{DimParam, IntParam};
+        if self.eqtb.int_params[IntParam::Looseness.idx() as usize] != 0 {
+            self.eqtb.assign_int_param(IntParam::Looseness, 0, false);
+        }
+        if self.eqtb.dim_params[DimParam::HangIndent.idx() as usize] != 0 {
+            self.eqtb.assign_dim_param(DimParam::HangIndent, 0, false);
+        }
+        if self.eqtb.int_params[IntParam::HangAfter.idx() as usize] != 1 {
+            self.eqtb.assign_int_param(IntParam::HangAfter, 1, false);
+        }
+        if !self.par_shape.is_empty() {
+            self.assign_par_shape(Vec::new(), false);
+        }
+        if !self.penalty_shapes[0].is_empty() {
+            self.assign_penalty_shape(Prim::InterLinePenalties, Vec::new(), false);
+        }
     }
 
     pub fn start_paragraph(&mut self, indent: bool) {
@@ -2866,8 +2944,11 @@ impl Engine {
         }
     }
 
-    /// Charge the display's three lines before resuming paragraph line numbering.
+    /// tex.web §1200 resume_after_display: the new paragraph level takes the
+    /// current language, and the display's three lines are charged before
+    /// resuming paragraph line numbering.
     pub(crate) fn resume_after_display(&mut self) {
+        self.begin_paragraph_language();
         *self.prev_graf_mut() += 3;
     }
 

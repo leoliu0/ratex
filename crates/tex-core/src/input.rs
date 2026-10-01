@@ -104,6 +104,10 @@ pub enum Source {
         /// -1 the current table, -2 "string" catcodes, >= 0 a catcode table,
         /// <= -0xFF the fixed catcode `-regime - 0xFF`.
         cat_regime: i32,
+        /// True for a real input file (or `\scantokens` pseudo-file) whose
+        /// group and conditional nesting at open is on the engine's
+        /// `file_nests` stack (e-TeX's `grp_stack`/`if_stack`).
+        tracked: bool,
     },
     TokList {
         toks: TokTokens,
@@ -772,6 +776,7 @@ impl InputStack {
             line_pos: 0,
             lua_lines: None,
             cat_regime: -1,
+            tracked: false,
         });
     }
 
@@ -796,6 +801,7 @@ impl InputStack {
             line_pos: 0,
             lua_lines: Some(Box::new(lines)),
             cat_regime: -1,
+            tracked: false,
         });
         self.top_file.set(self.stack.len() - 1);
     }
@@ -948,6 +954,7 @@ mod tests {
             line_pos: b"needle".len(),
             lua_lines: None,
             cat_regime: -1,
+            tracked: false,
         });
 
         let context = input

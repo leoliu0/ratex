@@ -1272,7 +1272,7 @@ impl<'a> RenderCtx<'a> {
                         self.ship_vlist(inner, x, cur_y, 0, 0, 0.0);
                     }
                 }
-                Node::VAdjust(items) => {
+                Node::VAdjust(items) | Node::PreAdjust(items) => {
                     self.ship_vlist(items, x, cur_y, 0, 0, 0.0);
                 }
                 _ => {}

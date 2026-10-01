@@ -1904,7 +1904,7 @@ fn use_initex_parameters(engine: &mut Engine) {
         GlueParam::MedMuSkip,
         GlueParam::ThickMuSkip,
     ] {
-        eqtb.glue_params[param.idx() as usize] = tex_core::boxes::Glue::zero();
+        eqtb.set_initial_glue_param(param, tex_core::boxes::Glue::zero());
     }
     for param in [
         IntParam::Pretolerance,

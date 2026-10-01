@@ -664,8 +664,20 @@ impl Engine {
         kind: crate::eqtb::LevelType,
         source: Option<SourceMark>,
     ) {
+        self.push_group_level_meta(kind, crate::eqtb::GroupMeta::of(kind), source);
+    }
+
+    /// tex.web new_save_level: open a group of TeX group code `meta.code`
+    /// at the current input line.
+    pub(crate) fn push_group_level_meta(
+        &mut self,
+        kind: crate::eqtb::LevelType,
+        meta: crate::eqtb::GroupMeta,
+        source: Option<SourceMark>,
+    ) {
         let prev_level = self.eqtb.cur_level;
-        self.eqtb.push_level(kind);
+        let line = self.input.current_file_line() as i32;
+        self.eqtb.push_level_with(kind, meta, line);
         if self.eqtb.cur_level > prev_level {
             if let Some(mark) = source {
                 self.diagnostic_group_openings
@@ -677,6 +689,17 @@ impl Engine {
     pub(crate) fn push_group_level(&mut self, kind: crate::eqtb::LevelType) {
         let mark = self.current_token_source_mark();
         self.push_group_level_at(kind, mark);
+    }
+
+    /// `push_group_level` for a group whose TeX group code is not the one
+    /// its level kind implies.
+    pub(crate) fn push_group_level_coded(
+        &mut self,
+        kind: crate::eqtb::LevelType,
+        meta: crate::eqtb::GroupMeta,
+    ) {
+        let mark = self.current_token_source_mark();
+        self.push_group_level_meta(kind, meta, mark);
     }
 
     pub(crate) fn group_origin(&self, kind: crate::eqtb::LevelType) -> Option<(u16, &SourceMark)> {
@@ -1314,6 +1337,7 @@ impl Engine {
     }
 
     pub(crate) fn emit_diagnostic(&mut self, diagnostic: &Diagnostic, terminal_visible: bool) {
+        self.flush_trace_events();
         let transcript = diagnostic.render_transcript();
         if !self.log.is_empty() && !self.log.ends_with('\n') {
             self.append_log("\n");
@@ -1445,6 +1469,7 @@ impl Engine {
 
     fn finish_job_diagnostics_inner(&mut self) {
         self.diagnostics_finished = true;
+        self.flush_trace_events();
         self.flush_diagnostic_repeats();
         if self.stopped_on_error || (self.ini_mode && self.format_done) {
             return;

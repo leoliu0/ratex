@@ -84,6 +84,7 @@ mod show_state;
 pub mod synctex;
 pub mod tfm;
 mod texxet;
+mod trace;
 pub mod tex_bytes;
 mod tex_print;
 pub mod token;

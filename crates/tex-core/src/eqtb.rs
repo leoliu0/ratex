@@ -130,6 +130,44 @@ impl Equiv {
             Equiv::LuaCall { .. } => "LuaCall",
         }
     }
+
+    /// e-TeX eq_define's `eq_type(p)=t and equiv(p)=e`: the same meaning
+    /// object (a macro's token list by identity, everything else by value).
+    pub(crate) fn same(a: Option<&Equiv>, b: Option<&Equiv>) -> bool {
+        match (a, b) {
+            (None, None) => true,
+            (Some(Equiv::Macro(p)), Some(Equiv::Macro(q))) => Rc::ptr_eq(p, q),
+            (Some(Equiv::Prim(p)), Some(Equiv::Prim(q))) => p == q,
+            (Some(Equiv::CountReg(p)), Some(Equiv::CountReg(q)))
+            | (Some(Equiv::DimenReg(p)), Some(Equiv::DimenReg(q)))
+            | (Some(Equiv::SkipReg(p)), Some(Equiv::SkipReg(q)))
+            | (Some(Equiv::MuSkipReg(p)), Some(Equiv::MuSkipReg(q)))
+            | (Some(Equiv::ToksReg(p)), Some(Equiv::ToksReg(q)))
+            | (Some(Equiv::BoxReg(p)), Some(Equiv::BoxReg(q)))
+            | (Some(Equiv::MathCharDef(p)), Some(Equiv::MathCharDef(q)))
+            | (Some(Equiv::FontRef(p)), Some(Equiv::FontRef(q))) => p == q,
+            (Some(Equiv::CharDef(p)), Some(Equiv::CharDef(q)))
+            | (Some(Equiv::CharTok(p)), Some(Equiv::CharTok(q)))
+            | (Some(Equiv::Alias(p)), Some(Equiv::Alias(q))) => p == q,
+            _ => false,
+        }
+    }
+}
+
+/// e-TeX's reassignment test for glue: the eqtb pointer comparison
+/// `equiv(p)=e`. TeX shares one spec between copies of a value, so two
+/// glues are the same only when they carry the same spec identity (every
+/// all-zero value is the shared `zero_glue`); equal values of separately
+/// scanned specs are different.
+#[inline]
+fn same_glue(a: &Glue, b: &Glue) -> bool {
+    a.spec != Glue::NO_SPEC && a.spec == b.spec
+}
+
+/// e-TeX's reassignment test for token lists: the same list, or both empty.
+#[inline]
+fn same_toks(a: &Rc<Vec<Token>>, b: &Rc<Vec<Token>>) -> bool {
+    Rc::ptr_eq(a, b) || (a.is_empty() && b.is_empty())
 }
 
 #[derive(Clone, Debug)]
@@ -217,6 +255,115 @@ pub enum LevelType {
     MathGroup,
 }
 
+/// tex.web box_context encodings (`box_flag` and friends): a context below
+/// `BOX_FLAG` is a shift, above it a `\setbox`, `\shipout` or leaders box.
+pub const BOX_FLAG: i32 = 1 << 30;
+pub const GLOBAL_BOX_FLAG: i32 = BOX_FLAG + 32768;
+pub const SHIP_OUT_FLAG: i32 = BOX_FLAG + 65536;
+pub const LEADER_FLAG: i32 = SHIP_OUT_FLAG + 1;
+
+/// tex.web's `cur_group` codes, as `\currentgrouptype` reports them.
+pub mod group_code {
+    pub const BOTTOM: u8 = 0;
+    pub const SIMPLE: u8 = 1;
+    pub const HBOX: u8 = 2;
+    pub const ADJUSTED_HBOX: u8 = 3;
+    pub const VBOX: u8 = 4;
+    pub const VTOP: u8 = 5;
+    pub const ALIGN: u8 = 6;
+    pub const NO_ALIGN: u8 = 7;
+    pub const OUTPUT: u8 = 8;
+    pub const MATH: u8 = 9;
+    pub const DISC: u8 = 10;
+    pub const INSERT: u8 = 11;
+    pub const VCENTER: u8 = 12;
+    pub const MATH_CHOICE: u8 = 13;
+    pub const SEMI_SIMPLE: u8 = 14;
+    pub const MATH_SHIFT: u8 = 15;
+    pub const MATH_LEFT: u8 = 16;
+}
+
+/// What e-TeX keeps in the save stack next to a level boundary (`saved(-2)`
+/// to `saved(-4)`): the group code and the box information `\showgroups`
+/// reads back.
+#[derive(Clone, Copy, Debug)]
+pub struct GroupMeta {
+    pub code: u8,
+    /// tex.web `box_context` (`saved(-4)`): 0, a shift, `box_flag + n`, ...
+    pub context: i32,
+    /// `saved(-2)`: the box dimension, the insertion class or the number of
+    /// discretionary/\mathchoice parts already finished.
+    pub spec: i32,
+    /// `saved(-3)`: true for `exactly`, false for `additional`.
+    pub exactly: bool,
+}
+
+impl GroupMeta {
+    pub const fn new(code: u8) -> Self {
+        GroupMeta {
+            code,
+            context: 0,
+            spec: 0,
+            exactly: true,
+        }
+    }
+
+    /// The group a plain level kind opens.
+    pub const fn of(kind: LevelType) -> Self {
+        Self::new(match kind {
+            LevelType::SemiSimple => group_code::SEMI_SIMPLE,
+            LevelType::MathShift => group_code::MATH_SHIFT,
+            LevelType::MathLeft => group_code::MATH_LEFT,
+            LevelType::MathGroup => group_code::MATH,
+            LevelType::Box => group_code::HBOX,
+            _ => group_code::SIMPLE,
+        })
+    }
+}
+
+/// One open group: its metadata, the input line it began on (`saved(-1)`)
+/// and the save-stack position of its boundary (`cur_boundary`).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct GroupRec {
+    pub meta: GroupMeta,
+    pub line: i32,
+    pub boundary: usize,
+}
+
+/// tex.web print_group's description of a group (without a leading
+/// `entering`/`leaving`).
+pub(crate) fn group_description(code: u8, level: u16, line: i32, entered: bool) -> String {
+    let name = match code {
+        group_code::BOTTOM => return "bottom level".to_string(),
+        group_code::SIMPLE => "simple",
+        group_code::SEMI_SIMPLE => "semi simple",
+        group_code::HBOX => "hbox",
+        group_code::ADJUSTED_HBOX => "adjusted hbox",
+        group_code::VBOX => "vbox",
+        group_code::VTOP => "vtop",
+        group_code::ALIGN => "align",
+        group_code::NO_ALIGN => "no align",
+        group_code::OUTPUT => "output",
+        group_code::DISC => "disc",
+        group_code::INSERT => "insert",
+        group_code::VCENTER => "vcenter",
+        group_code::MATH => "math",
+        group_code::MATH_CHOICE => "math choice",
+        group_code::MATH_SHIFT => "math shift",
+        _ => "math left",
+    };
+    let mut text = format!("{name} group (level {level})");
+    if line != 0 {
+        text.push_str(if entered {
+            " entered at line "
+        } else {
+            " at line "
+        });
+        text.push_str(&line.to_string());
+    }
+    text
+}
+
 #[derive(Clone, Debug)]
 pub enum SaveItem {
     Level(u16, LevelType),
@@ -259,21 +406,77 @@ pub enum SaveItem {
     FontParam(u16, usize, i32, u16), // font, param index (0-based), old, level
     HyphenChar(u16, i32, u16),
     SkewChar(u16, i32, u16),
-    /// previous current font (tex.web cur_font_loc is an eqtb entry, so a
-    /// font selection inside a group is restored at \endgroup)
-    CurFont(u16),
+    /// previous current font and its level (tex.web cur_font_loc is an eqtb
+    /// entry, so a font selection inside a group is restored at \endgroup)
+    CurFont(u16, u16),
     /// engine-side \parshape value before a local assignment/clear
     /// (tex.web level-tracks par_shape_ptr through eq_define)
     ParShape(Vec<(i32, i32)>, u16),
     /// Previous e-TeX penalty-array value before a local assignment.
     PenaltyShape(u8, Rc<[i32]>, u16),
-    /// pdfTeX stores \pdfpageattr / \pdfpagesattr / \pdfpageresources as
-    /// eqtb token-list variables: a local assignment pushes the previous
-    /// tokens + level here and \endgroup rolls it back (otherwise a
-    /// landscape \pdfpageattr{/Rotate 90} leaks to every later page).
-    /// kind: 0 = pageattr, 1 = pagesattr, 2 = pageresources.
-    PdfPageVar(u8, Rc<Vec<Token>>, u16),
     AfterGroup(Token),
+}
+
+/// An eqtb location named by e-TeX's assignment and restore tracing
+/// (tex.web show_eqtb regions; e-TeX show_sa for registers above 255).
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum TraceSlot {
+    Eq(CsId),
+    IntParam(u16),
+    DimParam(u16),
+    GlueParam(u16),
+    ToksParam(u16),
+    Count(u16),
+    Dimen(u16),
+    Skip(u16),
+    MuSkip(u16),
+    Toks(u16),
+    Box(u16),
+    Cat(u32),
+    MathCode(u32),
+    DelCode(u32),
+    LcCode(u32),
+    UcCode(u32),
+    SfCode(u32),
+    CurFont,
+    /// (style 0=text 1=script 2=scriptscript, family)
+    StyleFont(u8, u16),
+    ParShape,
+    /// e-TeX penalty array index (Prim::penalty_shape_index)
+    PenaltyShape(u8),
+}
+
+/// The value of a [`TraceSlot`] when the event happened.
+#[derive(Clone, Debug)]
+pub(crate) enum TraceValue {
+    Int(i64),
+    Glue(Glue),
+    Toks(Rc<Vec<Token>>),
+    /// A box register's value (show_eqtb and show_sa both display it with
+    /// `depth_threshold=0`, `breadth_max=1`).
+    Box(Option<Node>),
+    Eq(Option<Equiv>),
+    Font(u16),
+    /// Entry count and the first two values of a shape array.
+    Shape(i32, i32, i32),
+}
+
+/// One transcript line queued by the table and printed by the engine before
+/// its next transcript output, so lines keep their order relative to every
+/// other message.
+#[derive(Clone, Debug)]
+pub(crate) enum TraceEvent {
+    /// `{<verb> <eqtb entry>}` (e-TeX restore_trace / show_sa).
+    Eqtb {
+        verb: &'static str,
+        slot: TraceSlot,
+        value: TraceValue,
+        /// `\escapechar` at the time of the event.
+        escape: i32,
+        online: bool,
+    },
+    /// A rendered `{...}` line (group tracing).
+    Text { text: String, online: bool },
 }
 
 #[derive(Clone)]
@@ -295,6 +498,15 @@ pub struct Eqtb {
 
     /// tex.web cur_font_loc: current font, group-scoped via SaveItem::CurFont
     pub cur_font_val: u16,
+    cur_font_level: u16,
+    /// Pending `\tracingassigns`/`\tracingrestores` lines, drained by the
+    /// engine in order before any other transcript output.
+    pub(crate) trace_events: Vec<TraceEvent>,
+    /// The next glue spec identity [`Eqtb::new_spec`] hands out.
+    pub(crate) next_spec: u32,
+    /// The open groups, innermost last (e-TeX's group stack in the save
+    /// stack).
+    pub(crate) groups: Vec<GroupRec>,
 
     pub int_params: Vec<i32>,
     pub int_levels: Vec<u16>,
@@ -607,11 +819,15 @@ impl Eqtb {
             outer_macros: false,
             pending_interaction_mode: None,
             cur_font_val: 0,
+            cur_font_level: LEVEL_ONE,
+            trace_events: Vec::new(),
+            next_spec: Glue::FIRST_SPEC,
+            groups: Vec::new(),
             int_params,
             int_levels: vec![LEVEL_ONE; crate::prim::NUM_INT_PARAMS],
             dim_params: vec![0; crate::prim::NUM_DIM_PARAMS],
             dim_levels: vec![LEVEL_ONE; crate::prim::NUM_DIM_PARAMS],
-            glue_params: vec![Glue::zero(); crate::prim::NUM_GLUE_PARAMS],
+            glue_params: vec![Glue::ZERO_GLUE; crate::prim::NUM_GLUE_PARAMS],
             glue_levels: vec![LEVEL_ONE; crate::prim::NUM_GLUE_PARAMS],
             tok_params: vec![Rc::new(Vec::new()); crate::prim::NUM_TOKS_PARAMS],
             tok_levels: vec![LEVEL_ONE; crate::prim::NUM_TOKS_PARAMS],
@@ -619,9 +835,9 @@ impl Eqtb {
             count_levels: vec![LEVEL_ONE; NUM_REGISTERS],
             dimen: vec![0; NUM_REGISTERS],
             dimen_levels: vec![LEVEL_ONE; NUM_REGISTERS],
-            skip: vec![Glue::zero(); NUM_REGISTERS],
+            skip: vec![Glue::ZERO_GLUE; NUM_REGISTERS],
             skip_levels: vec![LEVEL_ONE; NUM_REGISTERS],
-            muskip: vec![Glue::zero(); NUM_REGISTERS],
+            muskip: vec![Glue::ZERO_GLUE; NUM_REGISTERS],
             muskip_levels: vec![LEVEL_ONE; NUM_REGISTERS],
             toks: vec![Rc::new(Vec::new()); NUM_REGISTERS],
             toks_levels: vec![LEVEL_ONE; NUM_REGISTERS],
@@ -736,32 +952,20 @@ impl Eqtb {
     }
 
     pub fn assign(&mut self, id: CsId, equiv: Equiv, global: bool) {
-        let idx = id as usize;
-        let cur_level = self.cur_level;
-        if idx >= self.entries.len() {
-            self.entries.resize(
-                idx + 1,
-                EqEntry {
-                    equiv: None,
-                    level: LEVEL_ONE,
-                },
-            );
-        }
-        if !global && self.entries[idx].level < cur_level {
-            let old = self.entries[idx].equiv.clone();
-            let ol = self.entries[idx].level;
-            self.push_save(SaveItem::Eq(id, old, ol));
-        }
         if matches!(&equiv, Equiv::Macro(m) if m.outer) {
             self.outer_macros = true;
         }
-        self.entries[idx].equiv = Some(equiv);
-        self.entries[idx].level = if global { LEVEL_ONE } else { cur_level };
+        self.define_eq(id, Some(equiv), global);
     }
 
     pub fn undefine(&mut self, id: CsId, global: bool) {
-        let cur_level = self.cur_level;
+        self.define_eq(id, None, global);
+    }
+
+    /// tex.web eq_define / geq_define for a control sequence.
+    fn define_eq(&mut self, id: CsId, equiv: Option<Equiv>, global: bool) {
         let idx = id as usize;
+        let cur_level = self.cur_level;
         if idx >= self.entries.len() {
             self.entries.resize(
                 idx + 1,
@@ -771,13 +975,138 @@ impl Eqtb {
                 },
             );
         }
-        if !global && self.entries[idx].level < cur_level {
-            let old = self.entries[idx].equiv.clone();
-            let ol = self.entries[idx].level;
-            self.push_save(SaveItem::Eq(id, old, ol));
+        let same = Equiv::same(self.entries[idx].equiv.as_ref(), equiv.as_ref());
+        if !self.begin_assign(global, same, TraceSlot::Eq(id)) {
+            return;
         }
-        self.entries[idx].equiv = None;
-        self.entries[idx].level = if global { LEVEL_ONE } else { cur_level };
+        let entry = &mut self.entries[idx];
+        if !global && entry.level < cur_level {
+            let old = std::mem::replace(&mut entry.equiv, equiv);
+            let ol = entry.level;
+            entry.level = cur_level;
+            self.push_save(SaveItem::Eq(id, old, ol));
+        } else {
+            entry.equiv = equiv;
+            entry.level = if global { LEVEL_ONE } else { cur_level };
+        }
+        self.end_assign(TraceSlot::Eq(id));
+    }
+
+    // ---------- e-TeX assignment tracing ----------
+
+    /// The start of e-TeX's eq_define/eq_word_define (local) or
+    /// geq_define/geq_word_define (global). A local assignment of the value
+    /// the slot already holds is a reassignment that changes nothing (not
+    /// even the save stack); returns false then.
+    #[inline]
+    fn begin_assign(&mut self, global: bool, same: bool, slot: TraceSlot) -> bool {
+        let reassign = same && !global;
+        if self.int_params[IntParam::TracingAssigns as usize] > 0 {
+            let verb = if reassign {
+                "reassigning"
+            } else if global {
+                "globally changing"
+            } else {
+                "changing"
+            };
+            self.trace(verb, slot);
+        }
+        !reassign
+    }
+
+    #[inline]
+    fn end_assign(&mut self, slot: TraceSlot) {
+        if self.int_params[IntParam::TracingAssigns as usize] > 0 {
+            self.trace("into", slot);
+        }
+    }
+
+    #[inline]
+    fn tracing_restores(&self) -> bool {
+        self.int_params[IntParam::TracingRestores as usize] > 0
+    }
+
+    /// Queue `{verb slot=value}` with the slot's current value.
+    #[cold]
+    pub(crate) fn trace(&mut self, verb: &'static str, slot: TraceSlot) {
+        let value = self.trace_value(slot);
+        self.trace_with(verb, slot, value);
+    }
+
+    #[cold]
+    pub(crate) fn trace_with(&mut self, verb: &'static str, slot: TraceSlot, value: TraceValue) {
+        let escape = self.int_params[IntParam::EscapeChar as usize];
+        let online = self.int_params[IntParam::TracingOnline as usize] > 0;
+        self.trace_events.push(TraceEvent::Eqtb {
+            verb,
+            slot,
+            value,
+            escape,
+            online,
+        });
+    }
+
+    /// Queue a rendered `{...}` line.
+    #[cold]
+    pub(crate) fn trace_text(&mut self, text: String) {
+        let online = self.int_params[IntParam::TracingOnline as usize] > 0;
+        self.trace_events.push(TraceEvent::Text { text, online });
+    }
+
+    /// `group_trace`: `{entering ...}` or `{leaving ...}`.
+    #[cold]
+    fn trace_group(&mut self, leaving: bool, code: u8, level: u16, line: i32) {
+        let text = format!(
+            "{{{} {}}}",
+            if leaving { "leaving" } else { "entering" },
+            group_description(code, level, line, leaving)
+        );
+        self.trace_text(text);
+    }
+
+    /// Whether the sparse-table entry for `character` was assigned in a
+    /// group (so unsave restores it rather than retaining a global value).
+    fn sparse_is_local<T>(values: &crate::FxHashMap<u32, (T, u16)>, character: u32) -> bool {
+        values
+            .get(&character)
+            .is_some_and(|value| value.1 > LEVEL_ONE)
+    }
+
+    fn trace_value(&self, slot: TraceSlot) -> TraceValue {
+        match slot {
+            TraceSlot::Eq(id) => TraceValue::Eq(self.get(id).cloned()),
+            TraceSlot::IntParam(i) => TraceValue::Int(self.int_params[i as usize].into()),
+            TraceSlot::DimParam(i) => TraceValue::Int(self.dim_params[i as usize].into()),
+            TraceSlot::GlueParam(i) => TraceValue::Glue(self.glue_params[i as usize]),
+            TraceSlot::ToksParam(i) => TraceValue::Toks(self.tok_params[i as usize].clone()),
+            TraceSlot::Count(i) => TraceValue::Int(self.count[i as usize].into()),
+            TraceSlot::Dimen(i) => TraceValue::Int(self.dimen[i as usize].into()),
+            TraceSlot::Skip(i) => TraceValue::Glue(self.skip[i as usize]),
+            TraceSlot::MuSkip(i) => TraceValue::Glue(self.muskip[i as usize]),
+            TraceSlot::Toks(i) => TraceValue::Toks(self.toks[i as usize].clone()),
+            TraceSlot::Box(i) => TraceValue::Box(self.boxed[i as usize].clone()),
+            TraceSlot::Cat(c) => TraceValue::Int(self.cat_code(c).into()),
+            TraceSlot::MathCode(c) => TraceValue::Int(self.math_code_for(c).into()),
+            TraceSlot::DelCode(c) => TraceValue::Int(self.delimiter_code_for(c)),
+            TraceSlot::LcCode(c) => TraceValue::Int(self.case_code(c, false).into()),
+            TraceSlot::UcCode(c) => TraceValue::Int(self.case_code(c, true).into()),
+            TraceSlot::SfCode(c) => TraceValue::Int(self.space_factor_code(c).into()),
+            TraceSlot::CurFont => TraceValue::Font(self.cur_font_val),
+            TraceSlot::StyleFont(s, f) => {
+                TraceValue::Font(self.style_fonts[s as usize][f as usize])
+            }
+            // Shapes live on the engine, which passes their values itself.
+            TraceSlot::ParShape | TraceSlot::PenaltyShape(_) => TraceValue::Shape(0, 0, 0),
+        }
+    }
+
+    /// e-TeX restore_trace after unsave restored (`restored`) or kept the
+    /// global value of `slot`.
+    #[inline]
+    fn trace_restore(&mut self, restored: bool, slot: TraceSlot) {
+        if self.tracing_restores() {
+            self.trace(if restored { "restoring" } else { "retaining" }, slot);
+        }
     }
 
     // ---------- generic level-aware slots ----------
@@ -853,6 +1182,14 @@ impl Eqtb {
         // e-TeX changes interaction mode immediately and globally, even in a
         // group and even when \globaldefs is negative.
         let global = global || p == IntParam::InteractionMode;
+        // Pseudo-parameters outside eqtb (\spacefactor, \interactionmode,
+        // \prevgraf, ...) are neither reassignments nor traced.
+        let slot = p.in_eqtb().then_some(TraceSlot::IntParam(p.idx()));
+        if let Some(slot) = slot {
+            if !self.begin_assign(global, self.int_params[i] == v, slot) {
+                return;
+            }
+        }
         Self::slot(
             &mut self.int_params,
             &mut self.int_levels,
@@ -863,9 +1200,18 @@ impl Eqtb {
             &mut self.save_stack,
             |old, ol| SaveItem::IntParam(p.idx(), old, ol),
         );
+        if let Some(slot) = slot {
+            self.end_assign(slot);
+        }
     }
     pub fn assign_dim_param(&mut self, p: DimParam, v: i32, global: bool) {
         let i = p.idx() as usize;
+        let slot = p.in_eqtb().then_some(TraceSlot::DimParam(p.idx()));
+        if let Some(slot) = slot {
+            if !self.begin_assign(global, self.dim_params[i] == v, slot) {
+                return;
+            }
+        }
         Self::slot(
             &mut self.dim_params,
             &mut self.dim_levels,
@@ -876,9 +1222,53 @@ impl Eqtb {
             &mut self.save_stack,
             |old, ol| SaveItem::DimParam(p.idx(), old, ol),
         );
+        if let Some(slot) = slot {
+            self.end_assign(slot);
+        }
+    }
+    /// A fresh spec identity (tex.web new_spec's new pointer).
+    #[inline]
+    pub(crate) fn new_spec(&mut self) -> u32 {
+        let id = self.next_spec;
+        self.next_spec = id.checked_add(1).unwrap_or(Glue::FIRST_SPEC);
+        id
+    }
+    /// tex.web trap_zero_glue before a glue definition: a spec whose width,
+    /// stretch and shrink are all zero is replaced by the shared
+    /// `zero_glue` (orders included); any other spec not yet shared gets
+    /// its pointer.
+    #[inline]
+    fn define_glue(&mut self, mut v: Glue) -> Glue {
+        if v.is_zero() {
+            return Glue::ZERO_GLUE;
+        }
+        if v.spec == Glue::NO_SPEC {
+            v.spec = self.new_spec();
+        }
+        v
+    }
+    /// Set a glue parameter's initial value (no grouping, no tracing).
+    pub fn set_initial_glue_param(&mut self, p: GlueParam, v: Glue) {
+        self.glue_params[p.idx() as usize] = self.define_glue(v);
     }
     pub fn assign_glue_param(&mut self, p: GlueParam, v: Glue, global: bool) {
+        let v = self.define_glue(v);
+        self.assign_glue_spec(p, v, global);
+    }
+    /// tex.web §777: a `\tabskip` assignment in an alignment preamble is not
+    /// trapped, so an all-zero value is a spec of its own, not `zero_glue`.
+    pub fn assign_preamble_tabskip(&mut self, mut v: Glue, global: bool) {
+        if v.spec == Glue::NO_SPEC {
+            v.spec = self.new_spec();
+        }
+        self.assign_glue_spec(GlueParam::TabSkip, v, global);
+    }
+    fn assign_glue_spec(&mut self, p: GlueParam, v: Glue, global: bool) {
         let i = p.idx() as usize;
+        let slot = TraceSlot::GlueParam(p.idx());
+        if !self.begin_assign(global, same_glue(&self.glue_params[i], &v), slot) {
+            return;
+        }
         Self::slot(
             &mut self.glue_params,
             &mut self.glue_levels,
@@ -889,9 +1279,14 @@ impl Eqtb {
             &mut self.save_stack,
             |old, ol| SaveItem::GlueParam(p.idx(), old, ol),
         );
+        self.end_assign(slot);
     }
     pub fn assign_toks_param(&mut self, p: ToksParam, v: Rc<Vec<Token>>, global: bool) {
         let i = p.idx() as usize;
+        let slot = TraceSlot::ToksParam(p.idx());
+        if !self.begin_assign(global, same_toks(&self.tok_params[i], &v), slot) {
+            return;
+        }
         Self::slot(
             &mut self.tok_params,
             &mut self.tok_levels,
@@ -902,9 +1297,13 @@ impl Eqtb {
             &mut self.save_stack,
             |old, ol| SaveItem::ToksParam(p.idx(), old, ol),
         );
+        self.end_assign(slot);
     }
     pub fn assign_count(&mut self, idx: u16, v: i32, global: bool) {
         let i = idx as usize;
+        if !self.begin_assign(global, self.count[i] == v, TraceSlot::Count(idx)) {
+            return;
+        }
         Self::slot(
             &mut self.count,
             &mut self.count_levels,
@@ -915,9 +1314,13 @@ impl Eqtb {
             &mut self.save_stack,
             |old, ol| SaveItem::Count(idx, old, ol),
         );
+        self.end_assign(TraceSlot::Count(idx));
     }
     pub fn assign_dimen(&mut self, idx: u16, v: i32, global: bool) {
         let i = idx as usize;
+        if !self.begin_assign(global, self.dimen[i] == v, TraceSlot::Dimen(idx)) {
+            return;
+        }
         Self::slot(
             &mut self.dimen,
             &mut self.dimen_levels,
@@ -928,9 +1331,14 @@ impl Eqtb {
             &mut self.save_stack,
             |old, ol| SaveItem::Dimen(idx, old, ol),
         );
+        self.end_assign(TraceSlot::Dimen(idx));
     }
     pub fn assign_skip(&mut self, idx: u16, v: Glue, global: bool) {
+        let v = self.define_glue(v);
         let i = idx as usize;
+        if !self.begin_assign(global, same_glue(&self.skip[i], &v), TraceSlot::Skip(idx)) {
+            return;
+        }
         Self::slot(
             &mut self.skip,
             &mut self.skip_levels,
@@ -941,9 +1349,14 @@ impl Eqtb {
             &mut self.save_stack,
             |old, ol| SaveItem::Skip(idx, old, ol),
         );
+        self.end_assign(TraceSlot::Skip(idx));
     }
     pub fn assign_muskip(&mut self, idx: u16, v: Glue, global: bool) {
+        let v = self.define_glue(v);
         let i = idx as usize;
+        if !self.begin_assign(global, same_glue(&self.muskip[i], &v), TraceSlot::MuSkip(idx)) {
+            return;
+        }
         Self::slot(
             &mut self.muskip,
             &mut self.muskip_levels,
@@ -954,9 +1367,13 @@ impl Eqtb {
             &mut self.save_stack,
             |old, ol| SaveItem::MuSkip(idx, old, ol),
         );
+        self.end_assign(TraceSlot::MuSkip(idx));
     }
     pub fn assign_toks_reg(&mut self, idx: u16, v: Rc<Vec<Token>>, global: bool) {
         let i = idx as usize;
+        if !self.begin_assign(global, same_toks(&self.toks[i], &v), TraceSlot::Toks(idx)) {
+            return;
+        }
         Self::slot(
             &mut self.toks,
             &mut self.toks_levels,
@@ -967,9 +1384,15 @@ impl Eqtb {
             &mut self.save_stack,
             |old, ol| SaveItem::Toks(idx, old, ol),
         );
+        self.end_assign(TraceSlot::Toks(idx));
     }
     pub fn assign_box(&mut self, idx: u16, v: Option<Node>, global: bool) {
         let i = idx as usize;
+        // a box is a fresh node list, so only void replaces void unchanged
+        let same = self.boxed[i].is_none() && v.is_none();
+        if !self.begin_assign(global, same, TraceSlot::Box(idx)) {
+            return;
+        }
         Self::slot(
             &mut self.boxed,
             &mut self.box_levels,
@@ -980,6 +1403,7 @@ impl Eqtb {
             &mut self.save_stack,
             |old, ol| SaveItem::Box(idx, old, ol),
         );
+        self.end_assign(TraceSlot::Box(idx));
     }
     /// Replace a box register's value without changing its assignment level.
     /// TeX uses this for consuming boxes and for storing a \vsplit remainder.
@@ -992,8 +1416,19 @@ impl Eqtb {
         // locally assigned inner box is consumed.
         self.replace_box_value(idx, None)
     }
+    /// tex.web's `box(n):=p` for boxes the page builder stores directly
+    /// (insertions, `\box255`): a global store that is not an `eq_define`,
+    /// so `\tracingassigns` does not report it.
+    pub(crate) fn set_box_untraced(&mut self, idx: u16, v: Option<Node>) {
+        self.boxed[idx as usize] = v;
+        self.box_levels[idx as usize] = LEVEL_ONE;
+    }
     pub fn assign_cat(&mut self, c: u8, v: u8, global: bool) {
         let table = self.cat_table;
+        let slot = TraceSlot::Cat(c.into());
+        if !self.begin_assign(global, self.cat[c as usize] == v, slot) {
+            return;
+        }
         Self::slot(
             &mut self.cat,
             &mut self.cat_levels,
@@ -1004,8 +1439,13 @@ impl Eqtb {
             &mut self.save_stack,
             |old, ol| SaveItem::Cat(table, c, old, ol),
         );
+        self.end_assign(slot);
     }
     pub fn assign_math_code(&mut self, c: u8, v: u16, global: bool) {
+        let slot = TraceSlot::MathCode(c.into());
+        if !self.begin_assign(global, self.math_code[c as usize] == v, slot) {
+            return;
+        }
         Self::slot(
             &mut self.math_code,
             &mut self.math_levels,
@@ -1016,8 +1456,13 @@ impl Eqtb {
             &mut self.save_stack,
             |old, ol| SaveItem::MathCode(c, old, ol),
         );
+        self.end_assign(slot);
     }
     pub fn assign_del_code(&mut self, c: u8, v: i32, global: bool) {
+        let slot = TraceSlot::DelCode(c.into());
+        if !self.begin_assign(global, self.del_code[c as usize] == v, slot) {
+            return;
+        }
         Self::slot(
             &mut self.del_code,
             &mut self.del_levels,
@@ -1028,8 +1473,13 @@ impl Eqtb {
             &mut self.save_stack,
             |old, ol| SaveItem::DelCode(c, old, ol),
         );
+        self.end_assign(slot);
     }
     pub fn assign_lc_code(&mut self, c: u8, v: u8, global: bool) {
+        let slot = TraceSlot::LcCode(c.into());
+        if !self.begin_assign(global, self.lc_code[c as usize] == v, slot) {
+            return;
+        }
         Self::slot(
             &mut self.lc_code,
             &mut self.lc_levels,
@@ -1040,8 +1490,13 @@ impl Eqtb {
             &mut self.save_stack,
             |old, ol| SaveItem::LcCode(c, old, ol),
         );
+        self.end_assign(slot);
     }
     pub fn assign_sf_code(&mut self, c: u8, v: u16, global: bool) {
+        let slot = TraceSlot::SfCode(c.into());
+        if !self.begin_assign(global, self.sf_code[c as usize] == v, slot) {
+            return;
+        }
         Self::slot(
             &mut self.sf_code,
             &mut self.sf_levels,
@@ -1052,8 +1507,13 @@ impl Eqtb {
             &mut self.save_stack,
             |old, ol| SaveItem::SfCode(c, old, ol),
         );
+        self.end_assign(slot);
     }
     pub fn assign_uc_code(&mut self, c: u8, v: u8, global: bool) {
+        let slot = TraceSlot::UcCode(c.into());
+        if !self.begin_assign(global, self.uc_code[c as usize] == v, slot) {
+            return;
+        }
         Self::slot(
             &mut self.uc_code,
             &mut self.uc_levels,
@@ -1064,6 +1524,7 @@ impl Eqtb {
             &mut self.save_stack,
             |old, ol| SaveItem::UcCode(c, old, ol),
         );
+        self.end_assign(slot);
     }
 
     pub fn cat_code(&self, character: u32) -> u8 {
@@ -1080,6 +1541,10 @@ impl Eqtb {
             return;
         }
         let table = self.cat_table;
+        let slot = TraceSlot::Cat(character);
+        if !self.begin_assign(global, self.cat_code(character) == value, slot) {
+            return;
+        }
         Self::sparse_slot(
             &mut self.unicode_cat_codes,
             character,
@@ -1089,6 +1554,7 @@ impl Eqtb {
             &mut self.save_stack,
             |old| SaveItem::UnicodeCat(table, character, old),
         );
+        self.end_assign(slot);
     }
 
     // ---------- LuaTeX catcode tables (textcodes.c) ----------
@@ -1377,6 +1843,10 @@ impl Eqtb {
                 return;
             }
         }
+        let slot = TraceSlot::MathCode(character);
+        if !self.begin_assign(global, self.math_code_for(character) == value, slot) {
+            return;
+        }
         Self::sparse_slot(
             &mut self.unicode_math_codes,
             character,
@@ -1386,6 +1856,7 @@ impl Eqtb {
             &mut self.save_stack,
             |old| SaveItem::UnicodeMath(character, old),
         );
+        self.end_assign(slot);
     }
 
     pub fn delimiter_code_for(&self, character: u32) -> i64 {
@@ -1408,6 +1879,10 @@ impl Eqtb {
                 return;
             }
         }
+        let slot = TraceSlot::DelCode(character);
+        if !self.begin_assign(global, self.delimiter_code_for(character) == value, slot) {
+            return;
+        }
         Self::sparse_slot(
             &mut self.unicode_del_codes,
             character,
@@ -1417,6 +1892,7 @@ impl Eqtb {
             &mut self.save_stack,
             |old| SaveItem::UnicodeDel(character, old),
         );
+        self.end_assign(slot);
     }
 
     pub fn space_factor_code(&self, character: u32) -> u16 {
@@ -1432,6 +1908,10 @@ impl Eqtb {
             self.assign_sf_code(character, value, global);
             return;
         }
+        let slot = TraceSlot::SfCode(character);
+        if !self.begin_assign(global, self.space_factor_code(character) == value, slot) {
+            return;
+        }
         Self::sparse_slot(
             &mut self.unicode_sf_codes,
             character,
@@ -1441,6 +1921,7 @@ impl Eqtb {
             &mut self.save_stack,
             |old| SaveItem::UnicodeSf(character, old),
         );
+        self.end_assign(slot);
     }
 
     pub fn case_code(&self, character: u32, uppercase: bool) -> u32 {
@@ -1495,24 +1976,34 @@ impl Eqtb {
                 global = true;
             }
         }
-        if !global && self.cur_level > 1 {
+        if !self.begin_assign(global, self.cur_font_val == f, TraceSlot::CurFont) {
+            return;
+        }
+        if !global && self.cur_font_level < self.cur_level {
             // tex.web cur_font_loc: the save happens only when the entry is
             // group-scoped — a top-level selection must not leave a pending
             // save item (it would block \dump forever).
-            self.push_save(SaveItem::CurFont(self.cur_font_val));
+            self.push_save(SaveItem::CurFont(self.cur_font_val, self.cur_font_level));
         }
         self.cur_font_val = f;
+        self.cur_font_level = if global { LEVEL_ONE } else { self.cur_level };
+        self.end_assign(TraceSlot::CurFont);
     }
 
     pub fn assign_style_font(&mut self, style: u8, fam: u16, fid: u16, global: bool) {
-        let old = self.style_fonts[style as usize][fam as usize];
-        let ol = self.style_font_levels[style as usize][fam as usize];
+        let (s, fm) = (style as usize, fam as usize);
+        let slot = TraceSlot::StyleFont(style, fam);
+        if !self.begin_assign(global, self.style_fonts[s][fm] == fid, slot) {
+            return;
+        }
+        let old = self.style_fonts[s][fm];
+        let ol = self.style_font_levels[s][fm];
         if !global && ol < self.cur_level {
             self.push_save(SaveItem::StyleFont(style, fam, old, ol));
         }
-        self.style_fonts[style as usize][fam as usize] = fid;
-        self.style_font_levels[style as usize][fam as usize] =
-            if global { LEVEL_ONE } else { self.cur_level };
+        self.style_fonts[s][fm] = fid;
+        self.style_font_levels[s][fm] = if global { LEVEL_ONE } else { self.cur_level };
+        self.end_assign(slot);
     }
     pub fn assign_font_param(&mut self, font: u16, idx: usize, v: i32, global: bool) {
         if self.font_params[font as usize].len() <= idx {
@@ -1556,10 +2047,24 @@ impl Eqtb {
     // ---------- groups ----------
 
     pub fn push_level(&mut self, ty: LevelType) {
+        self.push_level_with(ty, GroupMeta::of(ty), 0);
+    }
+
+    /// tex.web new_save_level with e-TeX's line number and group
+    /// information; `line` is the current input line.
+    pub fn push_level_with(&mut self, ty: LevelType, meta: GroupMeta, line: i32) {
         let Some(next_level) = self.cur_level.checked_add(1) else {
             self.group_level_capacity_exceeded = true;
             return;
         };
+        if self.int_params[IntParam::TracingGroups as usize] > 0 {
+            self.trace_group(false, meta.code, self.cur_level, line);
+        }
+        self.groups.push(GroupRec {
+            meta,
+            line,
+            boundary: self.save_stack.len(),
+        });
         self.cur_level = next_level;
 
         self.push_save(SaveItem::Level(self.cur_level, ty));
@@ -1572,8 +2077,38 @@ impl Eqtb {
         }
         None
     }
+
+    /// tex.web `cur_group`.
+    pub(crate) fn cur_group_code(&self) -> u8 {
+        self.groups.last().map_or(group_code::BOTTOM, |g| g.meta.code)
+    }
+
+    /// tex.web `cur_boundary` of the innermost group; 0 is the bottom level.
+    pub(crate) fn cur_boundary(&self) -> usize {
+        self.groups.last().map_or(0, |g| g.boundary + 1)
+    }
+
+    /// The boundary of the group enclosing the innermost one
+    /// (`save_index(cur_boundary)`).
+    pub(crate) fn outer_boundary(&self) -> usize {
+        match self.groups.len() {
+            0 | 1 => 0,
+            n => self.groups[n - 2].boundary + 1,
+        }
+    }
+
     pub fn pop_level(&mut self, after_group: &mut Vec<Token>) -> LevelType {
         self.pop_level_full(after_group, &mut None, &mut Vec::new())
+    }
+
+    /// Queue `{restoring|retaining ...}` for an engine-side shape (`\parshape`
+    /// or an e-TeX penalty array); the engine decides which verb applies and
+    /// supplies the value.
+    #[inline]
+    fn trace_shape(&mut self, slot: TraceSlot) {
+        if self.tracing_restores() {
+            self.trace_with("", slot, TraceValue::Shape(0, 0, 0));
+        }
     }
 
     /// Pop one group and return restorations for state stored on `Engine`.
@@ -1590,89 +2125,122 @@ impl Eqtb {
                 SaveItem::AfterGroup(tok) => {
                     after_group.push(tok);
                 }
-                SaveItem::CurFont(old) => {
-                    self.cur_font_val = old;
+                SaveItem::CurFont(old, ol) => {
+                    let restored = self.cur_font_level > LEVEL_ONE;
+                    if restored {
+                        self.cur_font_val = old;
+                        self.cur_font_level = ol;
+                    }
+                    self.trace_restore(restored, TraceSlot::CurFont);
                 }
                 SaveItem::ParShape(old, lvl) => {
                     // engine decides whether to restore (it tracks the
                     // level field; a later global assign suppresses it,
                     // same as the param arms' `> LEVEL_ONE` check)
                     *par_shape_sink = Some((old, lvl));
+                    self.trace_shape(TraceSlot::ParShape);
                 }
                 SaveItem::PenaltyShape(kind, old, level) => {
                     penalty_shape_sink.push((kind, old, level));
-                }
-                SaveItem::PdfPageVar(_kind, _old, _lvl) => {
-                    // pdfpageattr / pdfpagesattr / pdfpageresources restoration
+                    self.trace_shape(TraceSlot::PenaltyShape(kind));
                 }
                 SaveItem::Level(lvl, t) => {
                     self.cur_level = lvl - 1;
                     ty = t;
+                    if let Some(group) = self.groups.pop() {
+                        if self.int_params[IntParam::TracingGroups as usize] > 0 {
+                            self.trace_group(true, group.meta.code, lvl - 1, group.line);
+                        }
+                    }
                     break;
                 }
                 SaveItem::Eq(id, old, ol) => {
                     let e = self.ensure_entry(id);
-                    if e.level > LEVEL_ONE {
+                    let restored = e.level > LEVEL_ONE;
+                    if restored {
                         e.equiv = old;
                         e.level = ol;
                     }
+                    self.trace_restore(restored, TraceSlot::Eq(id));
                 }
                 SaveItem::IntParam(i, v, l) => {
-                    if self.int_levels[i as usize] > LEVEL_ONE {
+                    let restored = self.int_levels[i as usize] > LEVEL_ONE;
+                    if restored {
                         self.int_params[i as usize] = v;
                         self.int_levels[i as usize] = l;
                         if i == IntParam::InteractionMode.idx() {
                             self.pending_interaction_mode = Some(v);
                         }
                     }
+                    if IntParam::from_idx(i).is_some_and(IntParam::in_eqtb) {
+                        self.trace_restore(restored, TraceSlot::IntParam(i));
+                    }
                 }
                 SaveItem::DimParam(i, v, l) => {
-                    if self.dim_levels[i as usize] > LEVEL_ONE {
+                    let restored = self.dim_levels[i as usize] > LEVEL_ONE;
+                    if restored {
                         self.dim_params[i as usize] = v;
                         self.dim_levels[i as usize] = l;
                     }
+                    if DimParam::from_idx(i).is_some_and(DimParam::in_eqtb) {
+                        self.trace_restore(restored, TraceSlot::DimParam(i));
+                    }
                 }
                 SaveItem::GlueParam(i, v, l) => {
-                    if self.glue_levels[i as usize] > LEVEL_ONE {
+                    let restored = self.glue_levels[i as usize] > LEVEL_ONE;
+                    if restored {
                         self.glue_params[i as usize] = v;
                         self.glue_levels[i as usize] = l;
                     }
+                    self.trace_restore(restored, TraceSlot::GlueParam(i));
                 }
                 SaveItem::ToksParam(i, v, l) => {
-                    if self.tok_levels[i as usize] > LEVEL_ONE {
+                    let restored = self.tok_levels[i as usize] > LEVEL_ONE;
+                    if restored {
                         self.tok_params[i as usize] = v;
                         self.tok_levels[i as usize] = l;
                     }
+                    self.trace_restore(restored, TraceSlot::ToksParam(i));
                 }
                 SaveItem::Count(i, v, l) => {
-                    if self.count_levels[i as usize] > LEVEL_ONE {
+                    let restored = self.count_levels[i as usize] > LEVEL_ONE;
+                    if restored {
                         self.count[i as usize] = v;
                         self.count_levels[i as usize] = l;
                     }
+                    self.trace_restore(restored, TraceSlot::Count(i));
                 }
                 SaveItem::Dimen(i, v, l) => {
-                    if self.dimen_levels[i as usize] > LEVEL_ONE {
+                    let restored = self.dimen_levels[i as usize] > LEVEL_ONE;
+                    if restored {
                         self.dimen[i as usize] = v;
                         self.dimen_levels[i as usize] = l;
                     }
+                    self.trace_restore(restored, TraceSlot::Dimen(i));
                 }
                 SaveItem::Skip(i, v, l) => {
-                    if self.skip_levels[i as usize] > LEVEL_ONE {
+                    let restored = self.skip_levels[i as usize] > LEVEL_ONE;
+                    if restored {
                         self.skip[i as usize] = v;
                         self.skip_levels[i as usize] = l;
                     }
+                    self.trace_restore(restored, TraceSlot::Skip(i));
                 }
                 SaveItem::MuSkip(i, v, l) => {
-                    if self.muskip_levels[i as usize] > LEVEL_ONE {
+                    let restored = self.muskip_levels[i as usize] > LEVEL_ONE;
+                    if restored {
                         self.muskip[i as usize] = v;
                         self.muskip_levels[i as usize] = l;
                     }
+                    self.trace_restore(restored, TraceSlot::MuSkip(i));
                 }
                 SaveItem::Toks(i, v, l) => {
-                    if self.toks_levels[i as usize] > LEVEL_ONE {
+                    let restored = self.toks_levels[i as usize] > LEVEL_ONE;
+                    if restored {
                         self.toks[i as usize] = v;
                         self.toks_levels[i as usize] = l;
                     }
+                    self.trace_restore(restored, TraceSlot::Toks(i));
                 }
                 SaveItem::Box(i, v, l) => {
                     // tex.web §6076-6092 ("unless eqtb[p] holds a global
@@ -1680,10 +2248,12 @@ impl Eqtb {
                     // \global\setbox survives the group; restoring
                     // unconditionally clobbered it with the pre-group
                     // value, voiding microtype's \MT@tempbox lastbox.
-                    if self.box_levels[i as usize] > LEVEL_ONE {
+                    let restored = self.box_levels[i as usize] > LEVEL_ONE;
+                    if restored {
                         self.boxed[i as usize] = v;
                         self.box_levels[i as usize] = l;
                     }
+                    self.trace_restore(restored, TraceSlot::Box(i));
                 }
                 SaveItem::Cat(table, c, v, l) => {
                     let (cat, levels) = if table == self.cat_table {
@@ -1693,58 +2263,80 @@ impl Eqtb {
                     } else {
                         continue;
                     };
-                    if levels[c as usize] > LEVEL_ONE {
+                    let restored = levels[c as usize] > LEVEL_ONE;
+                    if restored {
                         cat[c as usize] = v;
                         levels[c as usize] = l;
                     }
+                    self.trace_restore(restored, TraceSlot::Cat(c.into()));
                 }
                 SaveItem::MathCode(c, v, l) => {
-                    if self.math_levels[c as usize] > LEVEL_ONE {
+                    let restored = self.math_levels[c as usize] > LEVEL_ONE;
+                    if restored {
                         self.math_code[c as usize] = v;
                         self.math_levels[c as usize] = l;
                     }
+                    self.trace_restore(restored, TraceSlot::MathCode(c.into()));
                 }
                 SaveItem::DelCode(c, v, l) => {
-                    if self.del_levels[c as usize] > LEVEL_ONE {
+                    let restored = self.del_levels[c as usize] > LEVEL_ONE;
+                    if restored {
                         self.del_code[c as usize] = v;
                         self.del_levels[c as usize] = l;
                     }
+                    self.trace_restore(restored, TraceSlot::DelCode(c.into()));
                 }
                 SaveItem::LcCode(c, v, l) => {
-                    if self.lc_levels[c as usize] > LEVEL_ONE {
+                    let restored = self.lc_levels[c as usize] > LEVEL_ONE;
+                    if restored {
                         self.lc_code[c as usize] = v;
                         self.lc_levels[c as usize] = l;
                     }
+                    self.trace_restore(restored, TraceSlot::LcCode(c.into()));
                 }
                 SaveItem::SfCode(c, v, l) => {
-                    if self.sf_levels[c as usize] > LEVEL_ONE {
+                    let restored = self.sf_levels[c as usize] > LEVEL_ONE;
+                    if restored {
                         self.sf_code[c as usize] = v;
                         self.sf_levels[c as usize] = l;
                     }
+                    self.trace_restore(restored, TraceSlot::SfCode(c.into()));
                 }
                 SaveItem::UcCode(c, v, l) => {
-                    if self.uc_levels[c as usize] > LEVEL_ONE {
+                    let restored = self.uc_levels[c as usize] > LEVEL_ONE;
+                    if restored {
                         self.uc_code[c as usize] = v;
                         self.uc_levels[c as usize] = l;
                     }
+                    self.trace_restore(restored, TraceSlot::UcCode(c.into()));
                 }
                 SaveItem::UnicodeCase(uppercase, character, old) => {
                     let key = (uppercase, character);
-                    if self
+                    let restored = self
                         .unicode_case_codes
                         .get(&key)
-                        .is_some_and(|&(_, level)| level > LEVEL_ONE)
-                    {
+                        .is_some_and(|&(_, level)| level > LEVEL_ONE);
+                    if restored {
                         if let Some(value) = old {
                             self.unicode_case_codes.insert(key, value);
                         } else {
                             self.unicode_case_codes.remove(&key);
                         }
                     }
+                    self.trace_restore(
+                        restored,
+                        if uppercase {
+                            TraceSlot::UcCode(character)
+                        } else {
+                            TraceSlot::LcCode(character)
+                        },
+                    );
                 }
                 SaveItem::UnicodeCat(table, character, old) => {
                     if table == self.cat_table {
+                        let restored = Self::sparse_is_local(&self.unicode_cat_codes, character);
                         Self::restore_sparse(&mut self.unicode_cat_codes, character, old);
+                        self.trace_restore(restored, TraceSlot::Cat(character));
                     } else if let Some(t) = self.cat_tables.get_mut(&table) {
                         Self::restore_sparse(&mut t.unicode, character, old);
                     }
@@ -1771,17 +2363,28 @@ impl Eqtb {
                     }
                 }
                 SaveItem::UnicodeMath(character, old) => {
+                    let restored = Self::sparse_is_local(&self.unicode_math_codes, character);
                     Self::restore_sparse(&mut self.unicode_math_codes, character, old);
+                    self.trace_restore(restored, TraceSlot::MathCode(character));
                 }
                 SaveItem::UnicodeDel(character, old) => {
+                    let restored = Self::sparse_is_local(&self.unicode_del_codes, character);
                     Self::restore_sparse(&mut self.unicode_del_codes, character, old);
+                    self.trace_restore(restored, TraceSlot::DelCode(character));
                 }
                 SaveItem::UnicodeSf(character, old) => {
+                    let restored = Self::sparse_is_local(&self.unicode_sf_codes, character);
                     Self::restore_sparse(&mut self.unicode_sf_codes, character, old);
+                    self.trace_restore(restored, TraceSlot::SfCode(character));
                 }
                 SaveItem::StyleFont(style, fam, v, l) => {
-                    self.style_fonts[style as usize][fam as usize] = v;
-                    self.style_font_levels[style as usize][fam as usize] = l;
+                    let (s, f) = (style as usize, fam as usize);
+                    let restored = self.style_font_levels[s][f] > LEVEL_ONE;
+                    if restored {
+                        self.style_fonts[s][f] = v;
+                        self.style_font_levels[s][f] = l;
+                    }
+                    self.trace_restore(restored, TraceSlot::StyleFont(style, fam));
                 }
                 SaveItem::FontParam(f, i, v, l) => {
                     self.font_params[f as usize][i] = v;

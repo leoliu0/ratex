@@ -591,10 +591,6 @@ def _project_failure_reasons(res: dict, cfg: dict) -> list[str]:
             reasons.append("geometry-mismatch")
         if compare.get("raster_warnings"):
             reasons.append("raster-warning")
-        prod_rust = compare.get("producer_rust")
-        prod_ref = compare.get("producer_ref")
-        if prod_rust != "tex-rs" and (not prod_ref or prod_rust != prod_ref):
-            reasons.append("wrong-rust-producer")
         if compare.get("page_failures"):
             reasons.append("page-parity")
         parity = compare.get("document_exact_parity")
@@ -2017,9 +2013,6 @@ def campaign_gate(selected: list[dict], results: dict[str, dict],
         if c.get("raster_warnings"):
             failures.append({"kind": "raster-warnings", "id": aid,
                              "count": len(c["raster_warnings"])})
-        if c.get("producer_rust") != "tex-rs":
-            failures.append({"kind": "producer", "id": aid,
-                             "producer": c.get("producer_rust")})
         for pf in c.get("page_failures") or []:
             failures.append({"kind": "render", "subkind": "page-parity", "id": aid, **pf,
                              "min_pct": cfg["page_min"]})
@@ -2075,10 +2068,6 @@ def qualification_ledger(selected: list[dict], results: dict[str, dict],
                     reasons.append("geometry-mismatch")
                 if compare.get("raster_warnings"):
                     reasons.append("raster-warning")
-                prod_rust = compare.get("producer_rust")
-                prod_ref = compare.get("producer_ref")
-                if prod_rust != "tex-rs" and (not prod_ref or prod_rust != prod_ref):
-                    reasons.append("wrong-rust-producer")
                 if (
                     compare.get("font_embedding_failure")
                     and not any(r.endswith("-font-embedding") for r in reasons)
@@ -2106,7 +2095,6 @@ def qualification_ledger(selected: list[dict], results: dict[str, dict],
             "both_pdfs_font_embedding_valid": True,
             "page_count_and_geometry_match": True,
             "no_raster_warnings": True,
-            "rust_pdf_producer": "tex-rs",
         },
         "selected": len(selected),
         "completed": len(results),

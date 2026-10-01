@@ -77,6 +77,20 @@ pub const NOALIGN_SPAN: u16 = u16::MAX;
 /// box_kinds marker for an open alignment cell or \noalign group
 const CELL_GROUP_KIND: u8 = 8;
 
+/// A row's collected adjustment list holds its `\vadjust` material flat and
+/// its `\vadjust pre` material as `PreAdjust` nodes; return (pre, post).
+fn split_pre_adjust(adj: NodeList) -> (NodeList, NodeList) {
+    let mut pre = NodeList::new();
+    let mut post = NodeList::with_capacity(adj.len());
+    for n in adj {
+        match n {
+            Node::PreAdjust(items) => pre.extend(items),
+            other => post.push(other),
+        }
+    }
+    (pre, post)
+}
+
 /// align_state phase encoding (align_state is free for use inside rows:
 /// the dispatcher only tests `align_state > 0` for \span placement, which
 /// matches "a cell is open").
@@ -116,7 +130,6 @@ pub(crate) struct AlignSave {
     delimiter_balance_base: i32,
     cell_level: u16,
     brace_depth: i32,
-    noalign_save_base: usize,
     t0: Glue,
     everycr_done: bool,
     origin: Option<crate::input::SourceMark>,
@@ -274,7 +287,6 @@ impl Engine {
                 everycr_done: self.align_everycr_done,
                 adjust: std::mem::take(&mut self.align_adjust),
                 row_adjust: std::mem::take(&mut self.align_row_adjust),
-                noalign_save_base: self.align_noalign_save_base,
                 t0: self.align_t0.clone(),
                 origin: self.align_origin.take(),
                 is_valign: self.align_is_valign,
@@ -311,7 +323,11 @@ impl Engine {
             let d = self.scan_dimen(false, false);
             self.align_to = Some((d, true));
         }
+        // tex.web scan_spec(align_group,false) opens the group before the
+        // preamble is scanned, so a preamble `\tabskip` is local to it.
+        self.push_align_group();
         if !self.scan_align_preamble() {
+            let _ = self.pop_group();
             let nested = self.align_has_save();
             self.align_nested_restore();
             if !nested {
@@ -323,6 +339,7 @@ impl Engine {
         }
         // enter the alignment group (build.rs end_box pops this for kind 7
         // and calls finish_halign)
+        self.push_align_row_group();
         self.saved_lists.push((
             self.mode,
             std::mem::take(&mut self.cur_list),
@@ -331,7 +348,6 @@ impl Engine {
             self.prev_graf,
             self.nest_line(),
         ));
-        self.push_group_level(LevelType::Box);
         self.box_targets.push(None);
         self.box_shifts.push(0);
         self.box_kinds.push(7);
@@ -387,7 +403,6 @@ impl Engine {
                 everycr_done: self.align_everycr_done,
                 adjust: std::mem::take(&mut self.align_adjust),
                 row_adjust: std::mem::take(&mut self.align_row_adjust),
-                noalign_save_base: self.align_noalign_save_base,
                 t0: self.align_t0.clone(),
                 origin: self.align_origin.take(),
                 is_valign: self.align_is_valign,
@@ -409,7 +424,9 @@ impl Engine {
             let d = self.scan_dimen(false, false);
             self.align_to = Some((d, true));
         }
+        self.push_align_group();
         if !self.scan_align_preamble() {
+            let _ = self.pop_group();
             let nested = self.align_has_save();
             self.align_nested_restore();
             if !nested {
@@ -420,6 +437,7 @@ impl Engine {
             }
             return;
         }
+        self.push_align_row_group();
         self.saved_lists.push((
             self.mode,
             std::mem::take(&mut self.cur_list),
@@ -428,7 +446,6 @@ impl Engine {
             self.prev_graf,
             self.nest_line(),
         ));
-        self.push_group_level(LevelType::Box);
         self.box_targets.push(None);
         self.box_shifts.push(0);
         self.box_kinds.push(7);
@@ -475,7 +492,6 @@ impl Engine {
             self.align_scanning_cell = sv.scanning_cell;
             self.align_close_reason = sv.close_reason;
             self.align_in_noalign = sv.in_noalign;
-            self.align_noalign_save_base = sv.noalign_save_base;
             self.align_t0 = sv.t0;
             self.align_adjust = sv.adjust;
             self.align_row_adjust = sv.row_adjust;
@@ -592,8 +608,9 @@ impl Engine {
                 Some(Prim::GlueP(crate::prim::GlueParam::TabSkip)) => {
                     self.scan_optional_equals();
                     let g = self.scan_glue(false);
-                    self.eqtb
-                        .assign_glue_param(crate::prim::GlueParam::TabSkip, g, false);
+                    let global =
+                        self.eqtb.int_params[crate::prim::IntParam::GlobalDefs.idx() as usize] > 0;
+                    self.eqtb.assign_preamble_tabskip(g, global);
                     continue;
                 }
                 _ => {}
@@ -674,10 +691,39 @@ impl Engine {
     // cells
     // ------------------------------------------------------------------
 
-    /// push the group context for a cell or \noalign group. The group is
-    /// popped by finish_cell_typeset (a stray `}` mid-cell pops it via
-    /// end_box instead, degrading gracefully without corrupting the stack).
-    fn align_push_cell_group(&mut self, mode: Mode) {
+    /// The alignment's own group (tex.web scan_spec(align_group,false)):
+    /// `\halign to <dimen>` shows its specification in `\showgroups`.
+    fn push_align_group(&mut self) {
+        let (spec, exactly) = match self.align_to {
+            Some((d, spread)) => (d, !spread),
+            None => (0, true),
+        };
+        self.push_group_level_coded(
+            LevelType::Box,
+            crate::eqtb::GroupMeta {
+                spec,
+                exactly,
+                ..crate::eqtb::GroupMeta::new(crate::eqtb::group_code::ALIGN)
+            },
+        );
+    }
+    /// tex.web init_align's `new_save_level(align_group)` after the preamble:
+    /// the group of the current alignment entry. fin_col replaces it by
+    /// `unsave; new_save_level(align_group)` at the end of every entry, and
+    /// fin_align unsaves it before the group of the whole alignment.
+    fn push_align_row_group(&mut self) {
+        self.push_group_level_coded(
+            LevelType::Box,
+            crate::eqtb::GroupMeta::new(crate::eqtb::group_code::ALIGN),
+        );
+    }
+
+    /// push the nest context for a cell or \noalign group. A cell lives in
+    /// the alignment's entry group (see push_align_row_group); a \noalign
+    /// body opens its own no_align_group. The cell is popped by
+    /// finish_cell_typeset (a stray `}` mid-cell pops it via end_box
+    /// instead, degrading gracefully without corrupting the stack).
+    fn align_push_cell_group(&mut self, mode: Mode, code: u8) {
         self.saved_lists.push((
             self.mode,
             std::mem::take(&mut self.cur_list),
@@ -687,7 +733,9 @@ impl Engine {
             self.nest_line(),
         ));
         self.prev_graf = 0;
-        self.push_group_level(LevelType::Box);
+        if code != crate::eqtb::group_code::ALIGN {
+            self.push_group_level_coded(LevelType::Box, crate::eqtb::GroupMeta::new(code));
+        }
 
         self.box_targets.push(None);
         self.box_shifts.push(0);
@@ -732,7 +780,7 @@ impl Engine {
         } else {
             Mode::RestrictedHorizontal
         };
-        self.align_push_cell_group(cell_mode);
+        self.align_push_cell_group(cell_mode, crate::eqtb::group_code::ALIGN);
         if self.align_is_valign {
             self.prev_depth = self.ignore_depth();
         }
@@ -1039,7 +1087,22 @@ impl Engine {
         self.align_finish_cell_now();
     }
 
+    /// The end of an alignment entry or of a \noalign body: tex.web fin_col
+    /// does `unsave; new_save_level(align_group)` for an entry, the
+    /// no_align_group's `}` a plain unsave.
     fn align_pop_cell_group(&mut self) -> Option<(NodeList, i32)> {
+        let noalign = self.align_in_noalign;
+        let popped = self.align_pop_cell_nest(true);
+        if popped.is_some() && !noalign {
+            self.push_align_row_group();
+        }
+        popped
+    }
+
+    /// Pop the nest context of a cell or \noalign body; `unsave` also closes
+    /// the save-stack group of a \noalign body or the entry group (a
+    /// phantom cell, opened before a \noalign was seen, has made none).
+    fn align_pop_cell_nest(&mut self, unsave: bool) -> Option<(NodeList, i32)> {
         if self.box_kinds.last() != Some(&CELL_GROUP_KIND) || self.saved_lists.is_empty() {
             return None;
         }
@@ -1048,7 +1111,9 @@ impl Engine {
         let _ = self.box_targets.pop().flatten();
         let _ = self.box_shifts.pop().unwrap_or(0);
         let _ = self.box_kinds.pop();
-        self.pop_group();
+        if unsave {
+            self.pop_group();
+        }
         let (om, ol, pd, sf, pg, _) = self.saved_lists.pop().unwrap();
         self.prev_graf = pg;
         self.cur_list = ol;
@@ -1073,7 +1138,7 @@ impl Engine {
             return;
         }
         if phantom {
-            let _ = self.align_pop_cell_group();
+            let _ = self.align_pop_cell_nest(false);
             self.align_state = PH_IDLE;
         }
         // tex.web 1124-1131: \noalign consumes only the opening brace; the
@@ -1094,10 +1159,10 @@ impl Engine {
         // internal vertical mode for \halign and restricted horizontal mode
         // for \valign
         if self.align_is_valign {
-            self.align_push_cell_group(Mode::RestrictedHorizontal);
+            self.align_push_cell_group(Mode::RestrictedHorizontal, crate::eqtb::group_code::NO_ALIGN);
             self.space_factor = 1000;
         } else {
-            self.align_push_cell_group(Mode::InternalVertical);
+            self.align_push_cell_group(Mode::InternalVertical, crate::eqtb::group_code::NO_ALIGN);
         }
         // tex.web §15514: \noalign runs in internal vertical mode inheriting the
         // preceding row's depth (or ignore_depth if at the alignment start).
@@ -1119,11 +1184,23 @@ impl Engine {
                 }
             })
             .unwrap_or(outer_pd);
-        // group pushed above is LevelType::Box — without an explicit
-        // Simple level for the consumed `{`, the body's `}` would close
-        self.align_noalign_save_base = self.eqtb.save_stack.len();
         self.align_pushed_base = self.pushed.len();
-        self.push_group_level(LevelType::Simple);
+        // The consumed `{` is the no_align_group itself: its `}` is routed
+        // to align_finish_noalign_now by align_close_noalign_brace.
+    }
+
+    /// tex.web §1132 handle_right_brace for no_align_group: `}` ends the
+    /// \noalign body when that group is the innermost one. Returns false
+    /// for any other `}`.
+    pub(crate) fn align_close_noalign_brace(&mut self) -> bool {
+        if self.align_in_noalign
+            && self.eqtb.cur_group_code() == crate::eqtb::group_code::NO_ALIGN
+            && self.box_kinds.last() == Some(&CELL_GROUP_KIND)
+        {
+            self.align_finish_noalign_now();
+            return true;
+        }
+        false
     }
 
     /// tex.web hpack @12956, 13006-13016: the natural-width pack of an
@@ -1134,13 +1211,15 @@ impl Engine {
     fn align_collect_adjustments(&mut self, list: &mut NodeList) {
         let mut i = 0;
         while i < list.len() {
-            if matches!(list[i], Node::VAdjust(_)) {
-                match list.remove(i) {
+            match list[i] {
+                Node::VAdjust(_) => match list.remove(i) {
                     Node::VAdjust(items) => self.align_adjust.extend(items),
                     _ => unreachable!(),
-                }
-            } else {
-                i += 1;
+                },
+                // pdftex.web cur_pre_tail: kept apart from the post material
+                // (split again by `split_pre_adjust` when the row is built)
+                Node::PreAdjust(_) => self.align_adjust.push(list.remove(i)),
+                _ => i += 1,
             }
         }
     }
@@ -1352,6 +1431,10 @@ impl Engine {
     /// row and cell from the preamble's glue (§804-§810). Rows of a \valign
     /// are the transposed case: "width" is measured vertically.
     pub fn finish_halign(&mut self) {
+        // tex.web fin_align unsaves twice: end_box has closed the group of
+        // the last entry; this is the group of the whole alignment, which
+        // also restores preamble assignments such as \tabskip.
+        let _ = self.pop_group();
         let valign = self.align_is_valign;
         let rows_in = std::mem::take(&mut self.align_rows);
         let row_adj = std::mem::take(&mut self.align_row_adjust);
@@ -1615,6 +1698,10 @@ impl Engine {
                 lr: if display { crate::boxes::BOX_LR_DLIST } else { 0 },
                 dir: 0,
             };
+            // pdftex.web fin_row: the row's `\vadjust pre` material joins
+            // the vertical list in front of the row (and its interline glue)
+            let (pre_adj, adj) = split_pre_adjust(adj);
+            rows.extend(pre_adj);
             if !valign {
                 // tex.web append_to_vlist at fin_row time
                 if let Some(pd) = prev {
@@ -2060,34 +2147,37 @@ mod tests {
     }
 
     #[test]
-    fn tabular_style_halign_in_hbox() {
-        // LaTeX tabular wraps its \halign in \hbox: the alignment must be
-        // legal in restricted horizontal mode and land as a box in the
-        // surrounding \hbox
+    fn tabular_style_halign_in_vbox() {
+        // LaTeX tabular puts its \halign in a \vbox (an \halign directly in
+        // restricted horizontal mode is an error in TeX): the rows land in
+        // the surrounding box
         let e = run(concat!(
             "\\font\\cmr=cmr10 \\cmr\n",
-            "\\hbox{\\halign{#\\hfil& #\\hfil\\cr a&bb\\cr ccc&d\\cr}}\n",
+            "\\vbox{\\halign{#\\hfil& #\\hfil\\cr a&bb\\cr ccc&d\\cr}}\n",
         ));
         assert_eq!(e.error_count, 0, "errors:\n{}", e.term);
-        // the page list holds the outer hbox
-        let outer = e
-            .page_list
+        let (w, list) = vbox_of(&e);
+        let (w0, w1) = (e.align_col_widths[0], e.align_col_widths[1]);
+        assert!(w0 > 0 && w1 > 0);
+        assert_eq!(w, w0 + w1);
+        let rows = list
             .iter()
-            .find(|n| matches!(n, Node::Box { kind, .. } if *kind == crate::boxes::HBOX))
-            .expect("outer hbox on page list");
-        let inner = match outer {
-            Node::Box { list, .. } => list,
-            _ => unreachable!(),
-        };
-        assert_eq!(inner.len(), 1, "alignment vbox inside hbox: {:?}", inner);
-        match &inner[0] {
-            Node::Box { w, .. } => {
-                let (w0, w1) = (e.align_col_widths[0], e.align_col_widths[1]);
-                assert!(w0 > 0 && w1 > 0);
-                assert_eq!(*w, w0 + w1);
-            }
-            other => panic!("expected alignment vbox: {:?}", other),
-        }
+            .filter(|n| matches!(n, Node::Box { .. }))
+            .count();
+        assert_eq!(rows, 2, "rows: {:?}", list);
+    }
+
+    #[test]
+    fn halign_in_restricted_horizontal_mode_closes_the_box() {
+        // tex.web head_for_vmode: \halign cannot start in an \hbox, so the
+        // box is closed first ("Missing } inserted") and the alignment
+        // follows it in the enclosing vertical mode
+        let e = run(concat!(
+            "\\font\\cmr=cmr10 \\cmr\n",
+            "\\hbox{a\\halign{#\\cr b\\cr}}\n",
+        ));
+        let messages: Vec<&str> = e.diagnostics.iter().map(|d| d.message.as_str()).collect();
+        assert_eq!(messages, ["Missing } inserted"], "{}", e.term);
     }
 
     #[test]
@@ -2215,14 +2305,14 @@ mod tests {
 
     #[test]
     fn booktabs_style_table_skeleton() {
-        // a LaTeX-tabular-shaped alignment inside \hbox: \toprule-like
+        // a LaTeX-tabular-shaped alignment inside \vbox: \toprule-like
         // \noalign rule before the first row, a \multicolumn header
         // (\span\omit), body rows, \midrule, and a \bottomrule followed by
         // \crcr before the closing brace (like \endtabular)
         let e = run(concat!(
             "\\font\\cmr=cmr10 \\cmr\n",
             "\\def\\br{\\noalign{\\hrule}}\n",
-            "\\hbox{\\halign{\\hfil#& \\hfil#\\hfil& #\\hfil\\cr\n",
+            "\\vbox{\\halign{\\hfil#& \\hfil#\\hfil& #\\hfil\\cr\n",
             "\\br\n",
             "\\span\\omit \\hfil Header\\hfil\\cr\n",
             "\\br\n",
@@ -2232,19 +2322,8 @@ mod tests {
             "\\crcr}}\n",
         ));
         assert_eq!(e.error_count, 0, "errors:\n{}", e.term);
-        // alignment vbox sits inside the hbox
-        let outer = e
-            .page_list
-            .iter()
-            .find(|n| matches!(n, Node::Box { kind, .. } if *kind == crate::boxes::HBOX))
-            .expect("outer hbox on page list");
-        let align_box = match outer {
-            Node::Box { list, .. } => match &list[0] {
-                Node::Box { list, .. } => list,
-                other => panic!("expected alignment vbox: {:?}", other),
-            },
-            _ => unreachable!(),
-        };
+        // the rows and rules sit directly in the vbox
+        let (_, align_box) = vbox_of(&e);
         // 3 rules + 3 rows, interleaved with glue; tex.web splices noalign
         // material raw, so the rules sit directly in the alignment vlist
         // with their running width resolved to the alignment width

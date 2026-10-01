@@ -32,7 +32,7 @@ use crate::tfm::{CharInfo, ExtRecipe, Font, LigStep};
 use crate::token::{CsTable, Token};
 
 const MAGIC: &[u8; 8] = b"RUSTEXFM";
-const VERSION: u16 = 20;
+const VERSION: u16 = 21;
 /// A production format is currently about 8 MiB decoded. Keep corrupt or
 /// unrelated external files from turning format probing into an unbounded
 /// allocation while leaving ample room for future format growth.
@@ -148,6 +148,7 @@ impl W {
         self.i32(g.shrink);
         self.u8(g.stretch_order);
         self.u8(g.shrink_order);
+        self.u32(g.spec);
     }
     fn toks(&mut self, t: &[Token]) {
         self.u32(t.len() as u32);
@@ -247,9 +248,11 @@ impl<'a> R<'a> {
         }
     }
     fn glue(&mut self) -> io::Result<Glue> {
-        let b = self.take(14)?;
+        let b = self.take(18)?;
         let int = |i: usize| i32::from_le_bytes(b[i..i + 4].try_into().unwrap());
-        Ok(Glue::spec(int(0), int(4), b[12], int(8), b[13]))
+        let mut glue = Glue::spec(int(0), int(4), b[12], int(8), b[13]);
+        glue.spec = u32::from_le_bytes(b[14..18].try_into().unwrap());
+        Ok(glue)
     }
     fn toks(&mut self) -> io::Result<Vec<Token>> {
         let n = self.count()?;
@@ -547,6 +550,7 @@ pub fn save_format_with_encoding(
         w.toks(t);
     }
     w.u16s(&q.tok_levels);
+    w.u32(q.next_spec);
 
     // registers: only the entries that differ from a fresh engine's
     // (zero/empty value at level one); nearly all 32768 are untouched
@@ -1306,6 +1310,7 @@ fn load_state(r: &mut R, eng: &mut Engine) -> io::Result<()> {
         *t = Rc::new(r.toks()?);
     }
     r.fill_u16(&mut q.tok_levels)?;
+    q.next_spec = r.u32()?.max(Glue::FIRST_SPEC);
 
     // registers: the fresh engine holds the defaults; apply the changes
     read_sparse(r, &mut q.count, &mut q.count_levels, |r| r.i32())?;
@@ -2097,7 +2102,8 @@ mod tests {
         let mut eng = build_booted_engine();
         eng.eqtb.assign_cat(b'~', 10, false); // non-global at level 1: no save
         eng.eqtb.cur_level = 2;
-        eng.eqtb.assign_cat(b'~', 10, false); // pushes a save item
+        // a different value: reassigning the held value saves nothing in e-TeX
+        eng.eqtb.assign_cat(b'~', 11, false); // pushes a save item
         let tmp = std::env::temp_dir().join(format!("never-{}.fmt", std::process::id()));
         assert!(save_format(&eng, &tmp).is_err());
 

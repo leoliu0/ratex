@@ -20,6 +20,7 @@ Typesetting algorithms are documented in the module comments of
 | `page.rs` | page builder (`build_page`), inserts, `\output` |
 | `math.rs` | math lists to horizontal lists (TeX82 Appendix G) |
 | `align.rs` | `\halign`/`\valign`: preamble, cells, spans, `\noalign` |
+| `eqtb.rs`, `trace.rs` | eqtb and save stack; e-TeX `\tracingassigns`/`\tracingrestores`/`\tracinggroups`/`\tracingifs` events (queued, then written in order with the escape character of the moment) |
 | `format.rs` | `.fmt` dump/load wire format |
 | `node_arena.rs` | generation-checked node storage |
 | `pdffile.rs`, `pdf_fonts.rs` | PDF serialization, Type 1 parsing and embedding |
@@ -131,6 +132,9 @@ The embedded packages and their pinned versions are listed in
 
 ## Test harnesses
 
+- `crates/tex-core/tests/etex_tracing.rs`: e-TeX trace transcripts
+  (`\tracingassigns`, `\tracingrestores`, `\tracinggroups`, `\tracingifs`)
+  checked against `pdftex -ini -etex` output.
 - `crates/tex-core/tests/oracle_probe.rs`: differential micro-probes that run
   small INITEX files through `/usr/bin/pdflatex -ini -etex` and the Rust
   engine and compare what each writes with `\immediate\write`.
@@ -145,6 +149,21 @@ The embedded packages and their pinned versions are listed in
   parity, `--mode single-pass` is a diagnostic only.
 - `scripts/bench_cold.py`: fresh-process timing harness; see
   [PERFORMANCE.md](../PERFORMANCE.md).
+
+Glue values carry a spec identity (`Glue::spec`: `NO_SPEC`, the shared
+`ZERO_SPEC`, or an id minted by `Eqtb::new_spec`). Copies keep it, glue read
+by `scan_glue` and arithmetic results get a new one, and eqtb assignment
+applies tex.web's `trap_zero_glue`. e-TeX's `reassigning` test compares
+these identities, as TeX compares spec pointers. The format dump stores each
+glue's identity and the next free id.
+
+Group types follow tex.web's `cur_group` codes so `\tracinggroups` and
+`\showgroups` agree with pdfTeX: `\eqno`/`\leqno` push their own math
+shift group, `\middle` ends the `\left` group and begins another (shown as
+`\middle`), `\mathchoice` parts are math choice groups opened before their
+`{` is read, and `\vadjust pre` is a separate adjustment node
+(`Node::PreAdjust`) whose group `\showgroups` prints as `\insert1`; its
+material precedes the line, display or alignment row that holds it.
 
 Tests that run the built binaries must stay correct when `cargo test` runs in
 parallel or several times at once, which share the temp directory and the

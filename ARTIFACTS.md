@@ -154,6 +154,12 @@ are test inputs, not evidence of successful compilation or embedded-font
 coverage. Standalone checks must exercise the packaged binary without
 external TEXMF resources; a reference TeX Live environment stays separate.
 
+Corpus qualification checks clean, converged builds, PDF/font validity,
+page counts and geometry, raster warnings, and measured pixel parity.
+Producer metadata is recorded, not used to identify the engine or gate
+parity: documents can override it, and engine personalities use TeX-compatible
+values.
+
 ### Generated evidence retention
 
 `scripts/test_corpus.py` and `scripts/bench_cold.py` retain compact failure

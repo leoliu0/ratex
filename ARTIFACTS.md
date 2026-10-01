@@ -1,10 +1,12 @@
 # Build artifacts and caches
 
-`texmk document.tex` keeps the project directory clean by default. The final
+`ratex document.tex` keeps the project directory clean by default. The final
 PDF and its `document.synctex.gz` editor-navigation sidecar are written beside
 the source (or together in the selected output directory). Auxiliary files and
-the complete TeX transcript live in a persistent per-job cache. The cache
-makes later builds fast and preserves the log needed for diagnostics.
+the complete TeX transcript live in a persistent per-job cache
+(`<cache root>/texmk/jobs/<16 hex digits>/`). The cache makes later builds fast
+and preserves the log needed for diagnostics; on failure `ratex` prints the
+transcript's path.
 
 The default cache root follows the platform convention:
 
@@ -12,13 +14,14 @@ The default cache root follows the platform convention:
 - macOS: `~/Library/Caches/tex-rs`
 - Windows: `%LOCALAPPDATA%\tex-rs\cache`
 
-Set `TEX_RS_CACHE_DIR` or pass `texmk --cache-directory DIR` to choose another
-root. At most once per hour, `texmk` removes inactive entries older than 30
+Set `TEX_RS_CACHE_DIR` or pass `ratex --cache-directory DIR` to choose another
+root. At most once per hour, `ratex` removes inactive entries older than 30
 days and evicts the oldest inactive jobs until managed caches target 512 MiB.
-The active job is never collected, so a single unusually large build may
-temporarily exceed that target. Foreign directory names are ignored; corrupt
-directories with a managed job name are discarded. Collection never removes
-project sources or project output.
+The active job and jobs locked by a running build are never collected, so a
+single unusually large build may temporarily exceed that target. Foreign
+directory names are ignored; directories with a managed job name but no valid
+manifest are discarded. Collection never removes project sources or project
+output.
 
 Cache hits are content-validated. The record is tied to the complete engine
 invocation and checks the source, format override, relevant search environment,
@@ -31,51 +34,57 @@ A newly created or changed auxiliary file always triggers a real convergence
 pass before caching. Even apparently empty LaTeX boilerplate can change a later
 pass through file-existence checks, redefined input hooks, or page-count state;
 the cache is written only after the complete auxiliary snapshot is unchanged.
-Texmk rejects symlinks and special files inside an auxiliary-state tree, and
+`ratex` rejects symlinks and special files inside an auxiliary-state tree, and
 aborts if that tree cannot be read or changes while it is being hashed. This
 keeps convergence checks complete and prevents preexisting state links from
 redirecting a managed build outside the selected auxiliary directory.
 
-Use `texmk --keep-logs document.tex` to copy the transcript beside the PDF,
-or `texmk --keep-intermediates document.tex` (short form `-k`) to copy all
-auxiliary files. `texmk -c document.tex` removes the matching private cache
-and exported files that have not been modified. `texmk -C document.tex` also
-removes unchanged PDF and SyncTeX outputs that `texmk` originally created.
+Use `ratex --keep-logs document.tex` to copy the transcript beside the PDF,
+or `ratex --keep-intermediates document.tex` (short form `-k`) to copy all
+auxiliary files. `ratex -c document.tex` removes the matching private cache
+and exported files that have not been modified. `ratex -C document.tex` also
+removes unchanged PDF and SyncTeX outputs that `ratex` originally created.
 It preserves preexisting or subsequently modified outputs.
 
-`pdflatex` keeps the traditional direct-engine behavior: without directory
+A direct engine pass (the executable invoked through a link named `pdflatex`,
+`xelatex`, or `lualatex`) keeps the traditional behavior: without directory
 options it writes the PDF, SyncTeX sidecar, transcript, and auxiliary files
 beside the source. Use `-output-directory DIR` for the PDF and SyncTeX sidecar,
-and `-aux-directory DIR` for the transcript and auxiliary files. Its dependency
-cache is private; override its location with `--cache-directory DIR`.
+and `-aux-directory DIR` for the transcript and auxiliary files. Its result
+cache is private; override its location with `--cache-directory DIR` or
+`TEX_RS_CACHE_DIR`.
 
 PNG conversion uses the normal speed setting by default. Pass
-`--optimize-pdf-size` to `pdflatex` or `texmk` to spend more CPU selecting
-smaller lossless image streams. JPEG data, compatible PNG streams, and
-imported PDF pages remain pass-through data.
+`--optimize-pdf-size` to a direct engine pass or to `ratex` to spend more CPU
+selecting smaller lossless image streams.
 
 ## Distribution footprint
 
-Release archives contain one full executable, `texmk`. It embeds the TeX
-engine, BibTeX, the production LaTeX format, packages, fonts, and maps. On
-Linux and macOS every public command is a relative symlink to `texmk`; Windows
-uses small launchers because zip archives do not preserve symlinks portably.
-The archive does not carry a second raw `pdflatex.fmt` unless a distributor
-explicitly supplies `scripts/package_dist.py --fmt FILE`.
+Release archives (`tex-suite-v<version>-<platform>-<arch>.tar.gz`, or `.zip`
+on Windows) contain one executable, `bin/ratex`, plus installer scripts, `README.txt`,
+license files, `manifest.json`, and `share/tex-suite/texmf/doc/fonts/` with
+font licenses, notices, and corresponding sources. The
+executable embeds the TeX engine, BibTeX, the LaTeX formats, packages, fonts,
+and maps. No command aliases are shipped; the executable dispatches on the name
+it is invoked as (`pdflatex`, `xelatex`, `lualatex`, `bibtex`, `latexmk`,
+`latexdiff`), so users may create such links themselves. The archive does not
+carry a raw `pdflatex.fmt` unless a distributor explicitly supplies
+`scripts/package_dist.py --fmt FILE`.
 
-Resolution is strictly self-contained: project inputs remain ordinary
-files, while TeX support files come from ratex's bundled installation assets.
-Ratex operates in pure hermetic mode with zero external TeX Live dependencies.
-Here, self-contained refers to the TeX toolchain and its runtime data. A
-document's own `.tex`, image, bibliography, and local style files remain its
-inputs. Platform executables also use the operating system ABI; for example,
-the Linux build dynamically links glibc and libgcc while requiring no TeX Live
-installation or companion data files.
+Resolution is self-contained: project inputs remain ordinary files, while TeX
+support files come from the embedded archive (and from
+`$TEX_SUITE_DATA/texmf` or `$RATEX_DATA_DIR/texmf` when either variable is
+set). `TEXINPUTS`, `TEXMFHOME`, and system TeX trees are ignored. Here,
+self-contained refers to the TeX toolchain and its runtime data. A document's
+own `.tex`, image, bibliography, and local style files remain its inputs.
+Platform executables also use the operating system ABI; for example, the Linux
+build dynamically links glibc (`libc`, `libm`) and `libgcc_s` while requiring
+no TeX Live installation or companion data files.
 
-`manifest.json` records regular-file hashes separately from symlink targets,
-and packaging verifies the completed archive before returning success. The
-installers keep an ownership manifest and remove or replace only paths created
-by an earlier tex-suite install.
+`manifest.json` in each archive records regular-file SHA-256 hashes separately
+from symlink targets, and packaging verifies the completed archive before
+returning success. The installers keep an ownership manifest and remove or
+replace only paths created by an earlier tex-suite install.
 
 ### Release publication
 
@@ -90,25 +99,25 @@ tools before running PDF verification.
 The regression suite verifies self-containment through observable behavior:
 
 - `one_copied_texmk_builds_with_embedded_latex_and_bibtex_resources` copies
-  only `texmk` into a fresh directory, clears its environment, poisons the
-  standard TeX tree variables, and builds a document that needs LaTeX,
-  extensionless generic inputs, T1 and TS1 fonts, NewTX, and BibTeX's
+  only the driver executable into a fresh directory, clears its environment,
+  poisons the standard TeX tree variables, and builds a document that needs
+  LaTeX, extensionless generic inputs, T1 and TS1 fonts, NewTX, and BibTeX's
   `plain.bst`. It verifies the PDF and the embedded-resource paths recorded in
   the TeX and BibTeX logs.
-- `copied_texmk_ignores_external_tex_trees` creates
-  packages available only through `TEXINPUTS` and `TEXMFHOME`.
-  Every build in hermetic mode fails with a useful missing-file diagnostic,
-  proving external system TeX installations cannot silently contaminate builds.
+- `copied_texmk_ignores_external_tex_trees_until_explicitly_enabled` creates
+  packages available only through `TEXINPUTS`, `TEXMFHOME`, and an adjacent
+  tree. Every build fails with a useful missing-file diagnostic, the
+  `--allow-system-texmf` option is rejected, and a later build does not reuse
+  state, proving external TeX installations cannot contaminate builds.
 - `copied_texmk_symlink_personalities_need_no_sibling_executables` creates one
-  physical executable and the shipped relative aliases. It checks dispatch by
-  version banner, compiles through the `pdflatex` alias, and runs the `bibtex`
-  alias with the embedded style database.
-- `scripts/test_package_dist.py` verifies the archive representation: Unix
-  aliases are relative symlinks, Windows aliases contain only the small
-  launcher, regular files and links are disjoint in the manifest, and stale
-  full-engine Windows aliases are rejected.
-- The `tex-kpse` unit tests compare every indexed embedded file byte-for-byte
-  with the source archive and exercise default-extension lookup. This catches
+  physical executable plus relative links to it. It checks dispatch by
+  version banner, compiles through the `pdflatex` link, and runs the `bibtex`
+  link with the embedded style database.
+- `scripts/test_package_dist.py` checks the archive and installer contract:
+  manifest categories, Windows staging, zip compression, format validation,
+  and installer ownership/upgrade/uninstall behavior.
+- The `tex-kpse` unit test `indexed_packages_match_archive_bytes` compares
+  indexed embedded files byte-for-byte with the source archive. This catches
   a complete or well-formed index that points at the wrong payload.
 
 Run the focused checks with:
@@ -118,10 +127,9 @@ cargo test -p tex-cli --test driver copied_texmk_
 python3 scripts/test_package_dist.py
 ```
 
-The full workspace suite includes the archive-index checks. Native CI should
-also execute an extracted archive on each supported operating system. A
-Windows runner is required to exercise process forwarding by the small `.exe`
-launcher.
+The full workspace suite includes the archive-index checks. The release
+workflow also executes an extracted archive and the native installers on each
+supported operating system.
 
 ## Corpus and benchmark artifacts
 

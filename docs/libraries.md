@@ -102,6 +102,19 @@ Wasm instance rather than attempting to reuse it.
 | 2 | Invalid entry path, missing entry, or invalid project |
 | 3 | Auxiliary files did not converge within five passes |
 | 4 | Internal runtime error |
+| 5 | The entry file requests XeTeX, which the library does not run |
+
+`tex.h`'s `enum tex_status` names statuses 0–4; status 5 is returned as the
+plain value.
+
+The library chooses the engine from the entry file before the first pass: a
+`% !TeX program = …`, `% !TeX TS-program = …`, or `%&…` directive in the leading
+comment lines selects pdfTeX, XeTeX, or LuaTeX; otherwise loading `luatexja`,
+`luacode`, `luatextra`, or `unicode-math`, or using `\directlua`, in the
+preamble selects the LuaTeX-compatible mode; anything else uses pdfTeX. If a
+pass fails with a log message stating that another engine is required, the
+compilation restarts with that engine; each engine is tried at most once, and
+all attempts share the five-pass limit.
 
 Projects use relative paths with `/` separators. The entry file's parent is the
 working directory; includes resolve with ordinary TeX project semantics. Inputs

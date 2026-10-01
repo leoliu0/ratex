@@ -1763,9 +1763,14 @@ impl Engine {
         self.eqtb
             .font_param_levels
             .push(vec![1; self.eqtb.font_params[id as usize].len()]);
-        self.eqtb.hyphen_char.push(b'-' as i32);
+        // tex.web §560: a new font takes \defaulthyphenchar and \defaultskewchar
+        self.eqtb
+            .hyphen_char
+            .push(self.eqtb.int_params[crate::prim::IntParam::Defaulthyphenchar.idx() as usize]);
         self.eqtb.hyphen_char_levels.push(1);
-        self.eqtb.skew_char.push(-1);
+        self.eqtb
+            .skew_char
+            .push(self.eqtb.int_params[crate::prim::IntParam::Defaultskewchar.idx() as usize]);
         self.eqtb.skew_char_levels.push(1);
         self.eqtb.font_cs.push(cs);
         self.eqtb.expand.push(Default::default());

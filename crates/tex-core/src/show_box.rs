@@ -16,8 +16,6 @@ use crate::token::{push_printable, Token};
 const MAX_DEPTH_THRESHOLD: i64 = 10_000;
 /// `print_mark` shows at most `max_print_line-10` characters.
 const MARK_LIMIT: usize = 69;
-/// tex.web `ignore_depth` (pdfTeX `pdf_ignored_dimen`).
-const IGNORE_DEPTH: i32 = -65_536_000;
 /// tex.web `default_code` for a fraction rule thickness.
 const DEFAULT_CODE: i32 = 0x4000_0000;
 
@@ -312,7 +310,16 @@ impl<'a> BoxDisplay<'a> {
         }
         let mut n = 0i64;
         let mut choice_part = 0usize;
-        for node in list.iter().filter(|n| !invisible(n)) {
+        // A scanned \discretionary keeps its replacement text inside the
+        // node; TeX stores it as the `replace_count` nodes that follow.
+        let flat = list.iter().flat_map(|n| {
+            let embedded: &[Node] = match n {
+                Node::Disc(d) if d.replace_count == 0 => &d.no_break,
+                _ => &[],
+            };
+            std::iter::once(n).chain(embedded)
+        });
+        for node in flat.filter(|n| !invisible(n)) {
             self.print_ln();
             self.out.extend_from_slice(&self.prefix);
             n += 1;
@@ -391,17 +398,18 @@ impl<'a> BoxDisplay<'a> {
                 depth,
                 cost,
                 split_top_skip,
+                split_max_depth,
                 box_node,
                 ..
             } => {
                 self.print_esc("insert");
                 self.print_int(*num as i64);
                 self.print(", natural size ");
-                self.print_scaled(*height);
+                self.print_scaled(height.wrapping_add(*depth));
                 self.print("; split(");
                 self.print_spec(split_top_skip, "");
                 self.out.push(b',');
-                self.print_scaled(*depth);
+                self.print_scaled(*split_max_depth);
                 self.print("); float cost ");
                 self.print_int(*cost as i64);
                 match &**box_node {
@@ -519,9 +527,14 @@ impl<'a> BoxDisplay<'a> {
             }
             Node::Disc(d) => {
                 self.print_esc("discretionary");
-                if d.replace_count > 0 {
+                let replaced = if d.replace_count > 0 {
+                    d.replace_count
+                } else {
+                    d.no_break.len()
+                };
+                if replaced > 0 {
                     self.print(" replacing ");
-                    self.print_int(d.replace_count as i64);
+                    self.print_int(replaced as i64);
                 }
                 self.node_list_display(&d.pre_break);
                 self.prefix.push(b'|');
@@ -1020,28 +1033,30 @@ impl Engine {
         let mut math_index = self.math_lists.len();
         let mut par_index = self.par_page_lists.len();
         let mut above_is_paragraph = false;
-        let top = levels.len() - 1;
+        // ordinal of each paragraph level among the open paragraphs
+        let mut paragraph_ord = vec![0usize; levels.len()];
+        for p in 1..levels.len() {
+            paragraph_ord[p] =
+                paragraph_ord[p - 1] + usize::from(levels[p - 1].mode == Mode::Horizontal);
+        }
         for (p, level) in levels.iter().enumerate().rev() {
             d.print_nl("### ");
             print_mode(&mut d, level.mode);
             d.print(" entered at line ");
             d.print_int(level.line.unsigned_abs() as i64);
-            if level.mode == Mode::Horizontal {
-                let int = |param: IntParam| self.eqtb.int_params[param.idx() as usize];
-                let norm = |v: i32| v.clamp(1, 63);
-                let lang = int(IntParam::Language);
-                let lang = if (0..=255).contains(&lang) { lang } else { 0 };
-                let (lhm, rhm) = (
-                    norm(int(IntParam::LeftHyphenMin)),
-                    norm(int(IntParam::RightHyphenMin)),
-                );
-                if (lhm, rhm, lang) != (2, 3, 0) {
+            // tex.web §218: a paragraph level shows the language state it
+            // started with (`pg_field`) and, below, its current `clang`
+            let language = (level.mode == Mode::Horizontal)
+                .then(|| self.paragraph_language_at(paragraph_ord[p]))
+                .flatten();
+            if let Some((start, _)) = language {
+                if (start.lhm, start.rhm, start.lang) != (2, 3, 0) {
                     d.print(" (language");
-                    d.print_int(lang as i64);
+                    d.print_int(start.lang as i64);
                     d.print(":hyphenmin");
-                    d.print_int(lhm as i64);
+                    d.print_int(start.lhm as i64);
                     d.out.push(b',');
-                    d.print_int(rhm as i64);
+                    d.print_int(start.rhm as i64);
                     d.out.push(b')');
                 }
             }
@@ -1078,7 +1093,7 @@ impl Engine {
             match level.mode {
                 Mode::Vertical | Mode::InternalVertical => {
                     d.print_nl("prevdepth ");
-                    if level.prev_depth <= IGNORE_DEPTH {
+                    if level.prev_depth <= self.ignore_depth() {
                         d.print("ignored");
                     } else {
                         d.print_scaled(level.prev_depth);
@@ -1095,11 +1110,10 @@ impl Engine {
                 Mode::Horizontal | Mode::RestrictedHorizontal => {
                     d.print_nl("spacefactor ");
                     d.print_int(level.space_factor as i64);
-                    if level.mode == Mode::Horizontal && p == top {
-                        let lang = self.eqtb.int_params[IntParam::Language.idx() as usize];
-                        if (1..=255).contains(&lang) {
+                    if let Some((_, clang)) = language.filter(|_| level.mode == Mode::Horizontal) {
+                        if clang > 0 {
                             d.print(", current language ");
-                            d.print_int(lang as i64);
+                            d.print_int(clang as i64);
                         }
                     }
                 }

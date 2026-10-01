@@ -73,6 +73,18 @@ impl Engine {
         }
     }
 
+    /// The start state and current `clang` of the `ord`-th open paragraph
+    /// (outermost first), as show_activities prints them: `clang` of a
+    /// paragraph that has an inner paragraph open is the value saved then.
+    pub(crate) fn paragraph_language_at(&self, ord: usize) -> Option<(LangState, u8)> {
+        let p = self.par_langs.get(ord)?;
+        let clang = self
+            .par_langs
+            .get(ord + 1)
+            .map_or(self.clang, |inner| inner.outer_clang);
+        Some((p.start, clang))
+    }
+
     /// tex.web §1376 fix_language, run before a character starts a chain in
     /// unrestricted horizontal mode.
     #[inline]

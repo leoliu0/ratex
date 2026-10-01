@@ -2076,12 +2076,17 @@ impl Engine {
                 pre_break.push(Node::Char { c, font: f });
             }
         }
-        self.cur_list.push(Node::Disc(crate::boxes::DiscNode {
+        let disc = Node::Disc(crate::boxes::DiscNode {
             pre_break,
             post_break: Vec::new(),
             no_break: Vec::new(),
             replace_count: 0,
-        }));
+        });
+        if self.mode.is_m() {
+            self.append_mlist_node(disc);
+        } else {
+            self.cur_list.push(disc);
+        }
     }
 
     /// `new_save_level(disc_group); scan_left_brace; push_nest;
@@ -2713,8 +2718,11 @@ impl Engine {
         }
     }
 
-    /// Charge the display's three lines before resuming paragraph line numbering.
+    /// tex.web §1200 resume_after_display: the new paragraph level takes the
+    /// current language, and the display's three lines are charged before
+    /// resuming paragraph line numbering.
     pub(crate) fn resume_after_display(&mut self) {
+        self.begin_paragraph_language();
         *self.prev_graf_mut() += 3;
     }
 

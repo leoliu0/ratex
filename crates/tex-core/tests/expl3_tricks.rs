@@ -1152,15 +1152,17 @@ fn expanded_detokenize_letters() {
 
 #[test]
 fn use_e_detokenize_then_delimited() {
-    // \str_if_in:nn skeleton: \use:e { ... \detokenize ... } then \tl_if_in
+    // \str_if_in:nn skeleton: \use:e { ... \detokenize ... } then \tl_if_in.
+    // The defined names need \noexpand: an undefined control sequence
+    // inside \expanded is an error in TeX (tex.web §370).
     let mut e = boot();
     run_tex(
         &mut e,
         r#"
 \catcode`\{=1 \catcode`\}=2 \catcode`\#=6
 \def\usee#1{\expanded{#1}}
-\usee{\def\hay{\detokenize{NnpcofeVvx}}}
-\usee{\def\ndl{\detokenize{o}}}
+\usee{\def\noexpand\hay{\detokenize{NnpcofeVvx}}}
+\usee{\def\noexpand\ndl{\detokenize{o}}}
 \edef\out{\hay}
 "#,
     );

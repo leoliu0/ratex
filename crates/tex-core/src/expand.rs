@@ -221,7 +221,6 @@ impl Engine {
                 }
             }
             loop {
-                let traced = !self.align_macro_arg && self.diagnostic_trace_hold == 0;
                 match self.input.stack.last_mut() {
                     Some(crate::input::Source::TokList {
                         toks,
@@ -229,23 +228,21 @@ impl Engine {
                         trace_depth,
                         ..
                     }) => {
-                        if traced {
-                            self.diagnostic_macro_trace.truncate(*trace_depth as usize);
-                        }
+                        let depth = *trace_depth;
                         if let Some(&tok) = toks.get(*pos) {
                             *pos += 1;
-                            self.note_token_list_fetch();
+                            self.note_token_list_fetch(depth);
                             break 'fetch tok;
                         }
+                        self.unwind_macro_trace(depth);
                     }
                     Some(crate::input::Source::MacroFrame(frame)) => {
-                        if traced {
-                            self.diagnostic_macro_trace.truncate(frame.trace_depth as usize);
-                        }
+                        let depth = frame.trace_depth;
                         if let Some(tok) = frame.next_token() {
-                            self.note_token_list_fetch();
+                            self.note_token_list_fetch(depth);
                             break 'fetch tok;
                         }
+                        self.unwind_macro_trace(depth);
                     }
                     _ => break 'fetch self.get_next_raw(),
                 }
@@ -300,18 +297,44 @@ impl Engine {
         t
     }
 
-    /// A token from a token list has no physical spelling of its own.
+    /// A token from a token list has no physical spelling of its own, and the
+    /// macro trace returns to the list's ancestry. In the steady state (no
+    /// recorded source, trace no deeper than the list) this only compares.
     #[inline(always)]
-    fn note_token_list_fetch(&mut self) {
-        self.diagnostic_token_from_file = false;
+    fn note_token_list_fetch(&mut self, depth: u8) {
+        if self.diagnostic_sources_live {
+            self.clear_diagnostic_sources();
+        }
+        self.unwind_macro_trace(depth);
+    }
+
+    /// Drop macro-trace entries that do not belong to a token list with
+    /// `depth` ancestry entries, unless a macro argument or a held
+    /// definition is being scanned.
+    #[inline(always)]
+    pub(crate) fn unwind_macro_trace(&mut self, depth: u8) {
+        if self.diagnostic_macro_trace.len() > usize::from(depth)
+            && !self.align_macro_arg
+            && self.diagnostic_trace_hold == 0
+        {
+            self.diagnostic_macro_trace.truncate(usize::from(depth));
+        }
+    }
+
+    #[inline(never)]
+    pub(crate) fn clear_diagnostic_sources(&mut self) {
         self.diagnostic_synthetic_source = None;
         self.diagnostic_physical_source = None;
+        self.diagnostic_sources_live = false;
     }
 
     /// A pushed-back token keeps the source locations recorded for it, and
     /// only for it.
     #[inline]
     fn retain_diagnostic_sources_for(&mut self, t: Token) {
+        if !self.diagnostic_sources_live {
+            return;
+        }
         if self
             .diagnostic_synthetic_source
             .as_ref()
@@ -387,6 +410,15 @@ impl Engine {
             if first.0 >= UNEXPANDED_PARAMETER_FLAG && first.0 < 0x2000_0000 {
                 self.unexpanded_parameter = true;
                 return first.unfreeze();
+            }
+            if first.0 >= NOEXP_FLAG && first.0 < UNEXPANDED_CS_FLAG {
+                // tex.web §358: a \noexpand-marked token means \relax.
+                let tok = Token::from_cs(first.0 & 0x3FFF_FFFF);
+                self.no_expand_tok = Some(tok);
+                self.cur_tok = tok;
+                self.cur_cs = Some(tok.cs_id());
+                self.cur_prim = Some(Prim::Relax);
+                return tok;
             }
             if first.0 >= crate::page::WRITE_END_TOKEN.0 && first != PAR_END {
                 self.cur_prim = None;
@@ -504,6 +536,10 @@ impl Engine {
                         self.set_cur_cs(t);
                         return t;
                     }
+                }
+                None => {
+                    self.undefined_cs_error(t);
+                    first = self.raw_token();
                 }
                 _ => {
                     self.set_cur_cs(t);
@@ -665,6 +701,15 @@ impl Engine {
         let depth = self.trace_depth();
         self.input.push_toks_owned(toks, name, owner, depth);
         true
+    }
+    /// tex.web §370: expanding an undefined control sequence is an error;
+    /// TeX then forgets the token and reads on.
+    #[cold]
+    #[inline(never)]
+    fn undefined_cs_error(&mut self, t: Token) {
+        self.set_cur_cs(t);
+        let message = format!("Undefined control sequence {}", self.display_cs(t.cs_id()));
+        self.error(&message);
     }
     fn set_cur_cs(&mut self, t: Token) {
         self.diagnostic_source_cs = Some(t.cs_id());
@@ -929,10 +974,14 @@ impl Engine {
                                 return t;
                             }
                         }
-                        _ => {
+                        None => {
                             if self.synth_exp_args_if_match(id) {
                                 break 'expand;
                             }
+                            self.undefined_cs_error(t);
+                            break 'expand;
+                        }
+                        _ => {
                             self.set_cur_cs(t);
                             return t;
                         }
@@ -1251,7 +1300,8 @@ impl Engine {
                             }
                         }
                     } else {
-                        self.push_token(t2);
+                        // tex.web §368: expand the undefined token (§370).
+                        self.undefined_cs_error(Token::from_cs(id2));
                     }
                 } else {
                     self.push_token(t2);
@@ -1270,11 +1320,12 @@ impl Engine {
                     None
                 };
                 if let Some(id) = id {
-                    // tex.web \noexpand: the one-shot no-expansion flag
-                    // applies to any expandable control sequence, including
-                    // active-character control sequences.
+                    // tex.web §367: \noexpand marks every control sequence,
+                    // active characters included, with frozen_dont_expand.
+                    // An undefined one then reads as \relax (§358) instead
+                    // of raising "Undefined control sequence" when expanded.
                     let needs_freeze = match self.eqtb.resolve(id) {
-                        Some(Equiv::Macro(_)) => true,
+                        None | Some(Equiv::Macro(_)) => true,
                         Some(Equiv::Prim(p2)) => self.is_expandable(*p2),
                         _ => false,
                     };
@@ -1384,6 +1435,7 @@ impl Engine {
                 }
                 if let Some(mark) = csname_origin {
                     self.diagnostic_synthetic_source = Some((id, mark, csname_span.max(1)));
+                    self.diagnostic_sources_live = true;
                 }
                 Some(Token::from_cs(id))
             }
@@ -2337,7 +2389,10 @@ impl Engine {
                 {
                     let is_peek = *name == crate::align::PEEK_SRC;
                     let s = &toks[..];
-                    while *pos < s.len() && s[*pos].0 < 0x8000_0000 {
+                    while *pos < s.len()
+                        && s[*pos].0 < 0x8000_0000
+                        && s[*pos].cc() != CAT_ACTIVE
+                    {
                         let tok = s[*pos];
                         if !is_peek && !tok.is_cs() {
                             let cc = (tok.0 >> 24) as u8;
@@ -2361,10 +2416,21 @@ impl Engine {
                 break 'skip None;
             }
             // A \noexpand-guarded token means \relax here (tex.web §358).
-            if !t.is_cs() || t.0 >= NOEXP_FLAG {
+            // Active characters carry meanings like control sequences.
+            let id = if t.is_cs() {
+                if t.0 >= NOEXP_FLAG {
+                    continue;
+                }
+                t.cs_id()
+            } else if t.is_char() && t.cc() == CAT_ACTIVE {
+                match self.active_cs_lookup(t.chr()) {
+                    Some(id) => id,
+                    None => continue,
+                }
+            } else {
                 continue;
-            }
-            let is = match self.eqtb.resolve(t.cs_id()) {
+            };
+            let is = match self.eqtb.resolve(id) {
                 Some(Equiv::Prim(p)) => *p,
                 Some(Equiv::Macro(m)) if m.outer => {
                     self.incomplete_conditional(t);
@@ -2732,7 +2798,7 @@ impl Engine {
         if self.is_partoken(t) && !long {
             return Err(self.abort_paragraph(id, stored, origin));
         }
-        if self.is_outer_token(stored) {
+        if self.is_outer_token(raw) {
             return Err(self.abort_outer(id, stored, origin));
         }
         if t.is_char() && t.cc() == 2 {
@@ -2796,18 +2862,29 @@ impl Engine {
         ArgAbort
     }
 
-    /// True for a control sequence whose meaning is an \outer macro, and for
-    /// the end-of-\write and end-of-output sentinels, which stand for TeX's
-    /// frozen outer `\endwrite`. Tokens guarded by \noexpand are exempt
-    /// (tex.web §358). Active characters are not checked: the lookup would
-    /// cost an allocation per argument token.
+    /// True for a control sequence or active character whose meaning is an
+    /// \outer macro, and for the end-of-\write and end-of-output sentinels,
+    /// which stand for TeX's frozen outer `\endwrite`. Takes the token as
+    /// fetched: tokens guarded by \noexpand are exempt (tex.web §358).
+    #[inline(always)]
     fn is_outer_token(&self, t: Token) -> bool {
         if t.is_cs() {
-            t.0 < NOEXP_FLAG
-                && matches!(self.eqtb.resolve(t.cs_id()), Some(Equiv::Macro(m)) if m.outer)
+            t.0 < NOEXP_FLAG && self.is_outer_cs(t.cs_id())
+        } else if t.0 < 0x8000_0000 {
+            t.cc() == CAT_ACTIVE && self.is_outer_active(t.chr())
         } else {
             t.0 >= crate::page::WRITE_END_TOKEN.0 && t != EOF_MARKER && t != PAR_END
         }
+    }
+
+    #[inline(always)]
+    fn is_outer_cs(&self, id: CsId) -> bool {
+        matches!(self.eqtb.resolve(id), Some(Equiv::Macro(m)) if m.outer)
+    }
+
+    #[inline(never)]
+    fn is_outer_active(&self, c: u32) -> bool {
+        self.active_cs_lookup(c).is_some_and(|id| self.is_outer_cs(id))
     }
     pub fn skip_raw_spaces(&mut self) {
         if self.pushed.is_empty() {
@@ -2928,11 +3005,10 @@ impl Engine {
                 );
                 return Err(Unbalanced::Fatal);
             }
-            if t.is_char() {
-                let cc = t.cc();
-                if cc == 1 {
+            if t.is_char() && matches!(t.cc(), 1 | 2) {
+                if t.cc() == 1 {
                     depth += 1;
-                } else if cc == 2 {
+                } else {
                     depth -= 1;
                     if depth == 0 {
                         return Ok(());
@@ -2940,7 +3016,7 @@ impl Engine {
                 }
             } else if !long && self.is_partoken(t) {
                 return Err(Unbalanced::Paragraph(stored));
-            } else if macro_arg && self.is_outer_token(stored) {
+            } else if macro_arg && self.is_outer_token(raw) {
                 return Err(Unbalanced::Outer(stored));
             }
             // Check after recognizing the outer closing brace: a list of
@@ -3032,7 +3108,7 @@ impl Engine {
                 out.pop();
                 return Err(self.abort_paragraph(id, stored, origin));
             }
-            if self.is_outer_token(stored) {
+            if self.is_outer_token(raw) {
                 out.pop();
                 return Err(self.abort_outer(id, stored, origin));
             }

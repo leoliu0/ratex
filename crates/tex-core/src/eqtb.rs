@@ -1121,9 +1121,9 @@ impl Eqtb {
             if global { LEVEL_ONE } else { self.cur_level };
     }
     pub fn assign_font_param(&mut self, font: u16, idx: usize, v: i32, global: bool) {
-        while self.font_params[font as usize].len() <= idx {
-            self.font_params[font as usize].push(0);
-            self.font_param_levels[font as usize].push(LEVEL_ONE);
+        if self.font_params[font as usize].len() <= idx {
+            self.font_params[font as usize].resize(idx + 1, 0);
+            self.font_param_levels[font as usize].resize(idx + 1, LEVEL_ONE);
         }
         if !global && self.font_param_levels[font as usize][idx] < self.cur_level {
             let old = self.font_params[font as usize][idx];

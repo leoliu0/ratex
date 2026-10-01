@@ -1471,6 +1471,9 @@ impl Engine {
         let global = self.take_global();
         self.clear_prefixes();
         let cs = self.scan_definable_cs();
+        // tex.web §1257: the identifier means \nullfont while the file name
+        // and size are scanned (they may expand it).
+        self.eqtb.assign(cs, Equiv::FontRef(0), global);
         self.scan_optional_equals();
         let Some(name) = self.scan_font_name(declaration_source.as_ref()) else {
             return;

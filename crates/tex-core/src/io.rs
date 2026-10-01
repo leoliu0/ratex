@@ -78,7 +78,6 @@ fn out_name_ok(rel: &str, absolute: bool, choice: &str) -> bool {
 struct ScannerDiagnosticState {
     macro_trace: Vec<crate::token::CsId>,
     macro_trace_truncated: bool,
-    token_from_file: bool,
     trace_hold: u16,
     source_cs: Option<crate::token::CsId>,
     physical_source: Option<crate::engine::PhysicalTokenSource>,
@@ -276,7 +275,6 @@ impl Engine {
         ScannerDiagnosticState {
             macro_trace: self.diagnostic_macro_trace.clone(),
             macro_trace_truncated: self.diagnostic_macro_trace_truncated,
-            token_from_file: self.diagnostic_token_from_file,
             trace_hold: self.diagnostic_trace_hold,
             source_cs: self.diagnostic_source_cs,
             physical_source: self.diagnostic_physical_source,
@@ -289,13 +287,14 @@ impl Engine {
     fn restore_scanner_diagnostic_state(&mut self, state: ScannerDiagnosticState) {
         self.diagnostic_macro_trace = state.macro_trace;
         self.diagnostic_macro_trace_truncated = state.macro_trace_truncated;
-        self.diagnostic_token_from_file = state.token_from_file;
         self.diagnostic_trace_hold = state.trace_hold;
         self.diagnostic_source_cs = state.source_cs;
         self.diagnostic_physical_source = state.physical_source;
         self.diagnostic_macro_call_site = state.macro_call_site;
         self.diagnostic_macro_call_span = state.macro_call_span;
         self.diagnostic_synthetic_source = state.synthetic_source;
+        self.diagnostic_sources_live = self.diagnostic_physical_source.is_some()
+            || self.diagnostic_synthetic_source.is_some();
     }
 
     pub fn do_input(&mut self) {
@@ -918,20 +917,21 @@ impl Engine {
         let errors_before = self.error_count;
         let saved_source = std::mem::replace(&mut self.diagnostic_source_override, source.cloned());
 
-        // The sentinel bounds the expansion: without it, a list whose final
-        // token expands away would let get_token continue into the OUTER
-        // stream and leak its tokens into the write string.
-        let mut body = toks.to_vec();
+        // tex.web §1371-§1372: the text is expanded as `{` text `}` \endwrite,
+        // so a macro argument cannot run past the text; the sentinel stands
+        // for the frozen outer \endwrite. An expansion yielding an extra `}`
+        // ends the text early (the rest is dropped with "Unbalanced write
+        // command"); an extra `{` runs into \endwrite, which is fatal.
+        let mut body = Vec::with_capacity(toks.len() + 3);
+        body.push(Token::char(1, u32::from(b'{')));
+        body.extend_from_slice(toks);
+        body.push(Token::char(2, u32::from(b'}')));
         body.push(crate::page::WRITE_END_TOKEN);
         self.push_tokens_named(body, "<write>");
         let prev = self.in_expanded_scan;
         self.in_expanded_scan = true;
         let mut out: Vec<Token> = Vec::new();
-        // tex.web §1371-§1372: the text is scanned as `{<text>}\endwrite`, so
-        // an expansion yielding an extra `}` ends it early (the remainder is
-        // dropped with "Unbalanced write command") and an extra `{` runs into
-        // `\endwrite`, which is fatal.
-        let mut depth = 0u32;
+        let mut depth = 0usize;
         loop {
             let t = self.get_token();
             if t == crate::page::WRITE_END_TOKEN || t == crate::input::EOF_MARKER {
@@ -940,20 +940,29 @@ impl Engine {
                 }
                 break;
             }
-            if t.is_char() && t.cc() == 1 {
+            if t.is_left_brace() {
                 depth += 1;
-            } else if t.is_char() && t.cc() == 2 {
+                if depth == 1 {
+                    continue;
+                }
+            } else if t.is_right_brace() && depth > 0 {
+                depth -= 1;
                 if depth == 0 {
-                    self.error_at("Unbalanced write command", source.cloned());
-                    loop {
-                        let rest = self.raw_token();
-                        if rest == crate::page::WRITE_END_TOKEN || rest == crate::input::EOF_MARKER {
-                            break;
+                    // §1372: the balanced text must be followed by \endwrite.
+                    let next = self.get_token();
+                    if next != crate::page::WRITE_END_TOKEN && next != crate::input::EOF_MARKER {
+                        self.error("Unbalanced write command");
+                        loop {
+                            let skipped = self.get_token();
+                            if skipped == crate::page::WRITE_END_TOKEN
+                                || skipped == crate::input::EOF_MARKER
+                            {
+                                break;
+                            }
                         }
                     }
                     break;
                 }
-                depth -= 1;
             }
             if out.len() >= crate::input::MAX_TOKEN_LIST_TOKENS {
                 self.fatal_error_at(

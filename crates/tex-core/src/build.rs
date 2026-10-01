@@ -2403,15 +2403,22 @@ impl Engine {
     }
 
     pub fn active_cs_id(&mut self, c: u32) -> CsId {
+        if let Some(id) = self.cs.cached_active(c) {
+            return id;
+        }
         let name = Self::active_cs_name(c);
-        match self.cs.lookup(&name) {
+        let id = match self.cs.lookup(&name) {
             Some(id) => id,
             None => self.cs.intern(&name),
-        }
+        };
+        self.cs.cache_active(c, id);
+        id
     }
 
     pub fn active_cs_lookup(&self, c: u32) -> Option<CsId> {
-        self.cs.lookup(&Self::active_cs_name(c))
+        self.cs
+            .cached_active(c)
+            .or_else(|| self.cs.lookup(&Self::active_cs_name(c)))
     }
 
     /// tex.web §1079: paragraph-shape controls are reset locally when a

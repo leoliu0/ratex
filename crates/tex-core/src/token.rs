@@ -111,11 +111,48 @@ pub type CsId = u32;
 
 pub const MAX_HASH_NAMES: usize = 2_097_152;
 
+/// FxHash over whole words. Control-sequence names are hashed on every
+/// tokenized control word and `\csname`; the generic byte-at-a-time hasher
+/// spends a multiply per byte and mixes poorly.
+#[derive(Default)]
+pub struct NameHasher(u64);
+
+impl std::hash::Hasher for NameHasher {
+    #[inline]
+    fn finish(&self) -> u64 {
+        self.0
+    }
+    #[inline]
+    fn write(&mut self, bytes: &[u8]) {
+        const K: u64 = 0x517c_c1b7_2722_0a95;
+        let mut chunks = bytes.chunks_exact(8);
+        for chunk in &mut chunks {
+            let word = u64::from_le_bytes(chunk.try_into().expect("eight bytes"));
+            self.0 = (self.0.rotate_left(5) ^ word).wrapping_mul(K);
+        }
+        let rest = chunks.remainder();
+        if !rest.is_empty() {
+            let mut word = [0u8; 8];
+            word[..rest.len()].copy_from_slice(rest);
+            self.0 = (self.0.rotate_left(5) ^ u64::from_le_bytes(word)).wrapping_mul(K);
+        }
+    }
+    #[inline]
+    fn write_usize(&mut self, i: usize) {
+        self.0 = (self.0.rotate_left(5) ^ i as u64).wrapping_mul(0x517c_c1b7_2722_0a95);
+    }
+}
+
+/// No id has been cached for this active character.
+const NO_ACTIVE_ID: CsId = CsId::MAX;
+
 /// Interning table for control sequence names (byte strings).
 pub struct CsTable {
     names: Vec<Vec<u8>>,
-    map: crate::FxHashMap<Vec<u8>, CsId>,
+    map: std::collections::HashMap<Vec<u8>, CsId, std::hash::BuildHasherDefault<NameHasher>>,
     capacity_exceeded: bool,
+    /// Ids of the 8-bit active characters, filled on first use.
+    active_ids: Box<[CsId; 256]>,
     /// pre-created ids for names needed internally
     pub prim_ids: crate::FxHashMap<&'static str, CsId>,
 }
@@ -124,9 +161,23 @@ impl CsTable {
     pub fn new() -> Self {
         CsTable {
             names: Vec::new(),
-            map: crate::FxHashMap::default(),
+            map: Default::default(),
             capacity_exceeded: false,
+            active_ids: Box::new([NO_ACTIVE_ID; 256]),
             prim_ids: crate::FxHashMap::default(),
+        }
+    }
+
+    /// The cached id of 8-bit active character `c`, if known.
+    #[inline]
+    pub(crate) fn cached_active(&self, c: u32) -> Option<CsId> {
+        let id = *self.active_ids.get(c as usize)?;
+        (id != NO_ACTIVE_ID).then_some(id)
+    }
+
+    pub(crate) fn cache_active(&mut self, c: u32, id: CsId) {
+        if let Some(slot) = self.active_ids.get_mut(c as usize) {
+            *slot = id;
         }
     }
 

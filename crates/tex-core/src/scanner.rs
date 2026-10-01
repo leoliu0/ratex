@@ -14,8 +14,9 @@ use crate::token::*;
 impl Engine {
     /// Fetch the next raw token from the input stack (no expansion).
     pub fn get_next_raw(&mut self) -> Token {
-        self.diagnostic_synthetic_source = None;
-        self.diagnostic_physical_source = None;
+        if self.diagnostic_sources_live {
+            self.clear_diagnostic_sources();
+        }
         loop {
             if self.input.stack.is_empty() {
                 return EOF_MARKER;
@@ -24,15 +25,11 @@ impl Engine {
             match self.input.stack[si] {
                 Source::TokList { .. } | Source::MacroFrame(_) => {
                     if let Some(t) = self.toklist_next(si) {
-                        self.diagnostic_token_from_file = false;
                         return t;
                     }
                     continue; // list popped; retry
                 }
                 Source::File { .. } => {
-                    // Set the origin before tokenization because an invalid
-                    // character reports from inside `file_next_token`.
-                    self.diagnostic_token_from_file = true;
                     if !self.align_macro_arg && self.diagnostic_trace_hold == 0 {
                         self.diagnostic_macro_trace.clear();
                         self.diagnostic_macro_trace_truncated = false;
@@ -50,13 +47,11 @@ impl Engine {
 
     pub(crate) fn toklist_next(&mut self, si: usize) -> Option<Token> {
         let trace_depth = match &self.input.stack[si] {
-            Source::TokList { trace_depth, .. } => *trace_depth as usize,
-            Source::MacroFrame(frame) => frame.trace_depth as usize,
+            Source::TokList { trace_depth, .. } => *trace_depth,
+            Source::MacroFrame(frame) => frame.trace_depth,
             _ => unreachable!(),
         };
-        if !self.align_macro_arg && self.diagnostic_trace_hold == 0 {
-            self.diagnostic_macro_trace.truncate(trace_depth);
-        }
+        self.unwind_macro_trace(trace_depth);
         match &mut self.input.stack[si] {
             Source::TokList { toks, pos, .. } => {
                 if *pos < toks.len() {
@@ -471,6 +466,7 @@ impl Engine {
         } else {
             None
         };
+        self.diagnostic_sources_live = true;
         self.diagnostic_physical_source = Some(PhysicalTokenSource {
             token,
             semantic_cs,

@@ -528,7 +528,7 @@ impl Engine {
         self.pending_terminal_error_source = None;
         self.diagnostic_macro_trace.clear();
         self.diagnostic_macro_trace_truncated = false;
-        self.diagnostic_token_from_file = false;
+        self.diagnostic_sources_live = false;
         self.diagnostic_trace_hold = 0;
         self.diagnostic_source_cs = None;
         self.diagnostic_physical_source = None;
@@ -552,34 +552,28 @@ impl Engine {
         invocation: crate::token::CsId,
     ) {
         const MAX_TRACE: usize = 20;
-        let synthetic = self
-            .diagnostic_synthetic_source
-            .take()
-            .filter(|(token, _, _)| *token == invocation);
-        let physical = self.physical_source_for_cs(invocation);
+        let (synthetic, physical) = if self.diagnostic_sources_live {
+            let synthetic = self
+                .diagnostic_synthetic_source
+                .take()
+                .filter(|(token, _, _)| *token == invocation);
+            (synthetic, self.physical_source_for_cs(invocation))
+        } else {
+            (None, None)
+        };
         // Reset the outer call only for a token whose exact physical spelling
         // matches this invocation. Scanning a macro's physical argument can
-        // leave `diagnostic_token_from_file` set while an internal wrapper is
-        // expanded; treating that wrapper as a new source call shifted carets
-        // into `\hspace{...}` and discarded the useful `\hspace` frame.
-        if synthetic.is_some() || physical.is_some() {
+        // leave a physical source set while an internal wrapper is expanded;
+        // treating that wrapper as a new source call shifted carets into
+        // `\hspace{...}` and discarded the useful `\hspace` frame.
+        if let Some((mark, span)) = synthetic
+            .map(|(_, mark, span)| (mark, span))
+            .or(physical)
+        {
             self.diagnostic_macro_trace.clear();
             self.diagnostic_macro_trace_truncated = false;
-            if let Some((_, mark, span)) = synthetic {
-                self.diagnostic_macro_call_site = Some(mark);
-                self.diagnostic_macro_call_span = span.max(1);
-            } else if let Some((mark, span)) = physical {
-                self.diagnostic_macro_call_site = Some(mark);
-                self.diagnostic_macro_call_span = span.max(1);
-            } else if self.diagnostic_macro_trace.is_empty() {
-                let mut call_site = self.input.current_source_mark();
-                let span = self.diagnostic_cs_source_width(invocation);
-                if let Some(mark) = &mut call_site {
-                    mark.rewind(span);
-                }
-                self.diagnostic_macro_call_site = call_site;
-                self.diagnostic_macro_call_span = span.max(1);
-            }
+            self.diagnostic_macro_call_site = Some(mark);
+            self.diagnostic_macro_call_span = span.max(1);
         }
         for id in [invocation, owner] {
             if self.diagnostic_macro_trace.last() != Some(&id) {
@@ -593,7 +587,6 @@ impl Engine {
                 self.diagnostic_macro_trace.push(id);
             }
         }
-        self.diagnostic_token_from_file = false;
     }
 
     fn physical_source_for_cs(&self, id: crate::token::CsId) -> Option<(SourceMark, usize)> {

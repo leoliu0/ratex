@@ -13,7 +13,13 @@ use crate::eqtb::{Equiv, TraceEvent, TraceSlot, TraceValue};
 use crate::input::Source;
 use crate::prim::{GlueParam, IntParam, Prim};
 use crate::show_box::BoxDisplay;
-use crate::token::{push_printable, Token};
+use crate::token::Token;
+
+/// tex.web print of `bytes` for a trace line: printable ASCII as itself,
+/// other bytes in `^^` notation.
+fn push_printable(out: &mut Vec<u8>, bytes: &[u8]) {
+    crate::tex_bytes::push_printable(&crate::tex_bytes::default_xprn(), out, bytes);
+}
 
 /// `show_token_list(p,null,32)`: at most this many characters are printed
 /// before `\ETC.`.
@@ -69,7 +75,7 @@ impl Engine {
     pub(crate) fn print_trace_events(&mut self) {
         let events = std::mem::take(&mut self.eqtb.trace_events);
         for event in events {
-            let (mut line, online) = match event {
+            let (line, online) = match event {
                 TraceEvent::Text { text, online } => (text, online),
                 TraceEvent::Eqtb {
                     verb,
@@ -79,11 +85,11 @@ impl Engine {
                     online,
                 } => (self.render_eqtb_event(verb, slot, &value, escape), online),
             };
-            line.push('\n');
-            self.append_log(&line);
-            if online {
-                self.append_term(&line);
-            }
+            // print_char("{") ... print_char("}") then print_nl(""): the
+            // line starts wherever the transcript is, ends the line, and
+            // keeps `file_offset`/`term_offset` for the next `\message`.
+            self.tex_print_printed(online, true, line.as_bytes());
+            self.tex_print_nl(online, true);
         }
     }
 

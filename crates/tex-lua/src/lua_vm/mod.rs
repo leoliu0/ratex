@@ -302,6 +302,12 @@ pub struct GlobalState {
     /// Replaces the old per-LuaState `c_call_depth`.
     pub(crate) n_ccalls: usize,
 
+    /// The thread that is executing Lua code: the innermost coroutine being
+    /// resumed, or the thread of the innermost `LuaState::call`. Null while
+    /// the host is the only caller. Errors that a host callback raises from
+    /// a call on another thread continue into the pcall of this one.
+    pub(crate) executing: *const LuaState,
+
     pub(crate) version: LuaLanguageLevel,
 
     /// Lua 5.3's weak per-prototype closure cache.
@@ -369,6 +375,7 @@ impl GlobalState {
             thread_mt: None,
             safe_option: option.clone(),
             n_ccalls: 0,
+            executing: std::ptr::null(),
             version,
             closure_cache53: PtrMap::default(),
             // Initialize RNG with a deterministic seed for reproducibility
@@ -738,11 +745,13 @@ impl GlobalState {
         Ok(chunk)
     }
 
+    /// Compile a chunk of bytes; the error text is bytes because it quotes
+    /// names and tokens of the chunk.
     pub fn compile_bytes_with_name(
         &mut self,
         source: &[u8],
         chunk_name: &str,
-    ) -> Result<LuaProto, String> {
+    ) -> Result<LuaProto, Vec<u8>> {
         self.gc.disable_memory_check();
         let chunk = match compile_code_bytes_with_name(source, self, chunk_name) {
             Ok(chunk) => chunk,
@@ -754,7 +763,7 @@ impl GlobalState {
         self.gc.enable_memory_check();
         self.gc
             .check_memory()
-            .map_err(|_| self.gc.get_error_message())?;
+            .map_err(|_| self.gc.get_error_message().into_bytes())?;
         Ok(chunk)
     }
 
@@ -776,17 +785,18 @@ impl GlobalState {
         Ok(bytes)
     }
 
-    pub(crate) fn load_proto_from_file(&mut self, path: &str) -> Result<ProtoPtr, String> {
-        let file_bytes = self.read_chunk_file(path)?;
+    pub(crate) fn load_proto_from_file(&mut self, path: &str) -> Result<ProtoPtr, Vec<u8>> {
+        let file_bytes = self.read_chunk_file(path).map_err(String::into_bytes)?;
         self.load_proto_from_file_bytes(path, file_bytes)
     }
 
-    /// Load the contents `file_bytes` of the chunk file `path`.
+    /// Load the contents `file_bytes` of the chunk file `path`. The error
+    /// text is bytes because a syntax error quotes names and tokens of the chunk.
     pub(crate) fn load_proto_from_file_bytes(
         &mut self,
         path: &str,
         file_bytes: Vec<u8>,
-    ) -> Result<ProtoPtr, String> {
+    ) -> Result<ProtoPtr, Vec<u8>> {
         use crate::lua_value::chunk_serializer;
 
         // The shared cache identifies the file by its canonical path.
@@ -794,13 +804,13 @@ impl GlobalState {
         let resolved_path = std::path::PathBuf::from(path);
         #[cfg(all(feature = "shared-proto", not(miri)))]
         let resolved_path =
-            std::fs::canonicalize(path).map_err(|e| format!("cannot open {}: {}", path, e))?;
+            std::fs::canonicalize(path).map_err(|e| format!("cannot open {}: {}", path, e).into_bytes())?;
 
         let layout = inspect_file_chunk_layout(&file_bytes);
 
         if layout.is_binary && !self.safe_option.allow_load_bytecode {
             return Err(
-                "attempt to load a binary chunk (bytecode loading is disabled)".to_string(),
+                "attempt to load a binary chunk (bytecode loading is disabled)".as_bytes().to_vec(),
             );
         }
 
@@ -813,7 +823,7 @@ impl GlobalState {
             use crate::lua_vm::shared_proto::SHARED_FILE_PROTO_CACHE;
 
             let metadata = std::fs::metadata(&resolved_path)
-                .map_err(|e| format!("cannot open {}: {}", path, e))?;
+                .map_err(|e| format!("cannot open {}: {}", path, e).into_bytes())?;
             let len = metadata.len();
             let modified = metadata.modified().ok();
             let version = self.version;
@@ -835,19 +845,20 @@ impl GlobalState {
             let bytes = &file_bytes[layout.skip_offset..];
             if self.version == LuaLanguageLevel::Lua53 {
                 if bytes.get(4) != Some(&0x53) {
-                    return Err("binary chunk is not standard Lua 5.3".to_string());
+                    return Err("binary chunk is not standard Lua 5.3".as_bytes().to_vec());
                 }
                 crate::lua_value::chunk53::load(bytes, self)
-                    .map_err(|error| format!("binary load error: {error}"))?
+                    .map_err(|error| format!("binary load error: {error}").into_bytes())?
             } else {
                 if bytes.get(4) == Some(&0x53) {
                     return Err(format!(
                         "standard Lua 5.3 binary chunks are incompatible with {} mode",
                         self.version
-                    ));
+                    )
+                    .into_bytes());
                 }
                 chunk_serializer::deserialize_chunk_with_strings_vm(bytes, self)
-                    .map_err(|error| format!("binary load error: {error}"))?
+                    .map_err(|error| format!("binary load error: {error}").into_bytes())?
             }
         } else {
             let text = &file_bytes[layout.text_start..];
@@ -875,14 +886,14 @@ impl GlobalState {
 
         let proto = self
             .prepare_loaded_chunk(chunk)
-            .map_err(|_| self.gc.get_error_message())?;
+            .map_err(|_| self.gc.get_error_message().into_bytes())?;
 
         #[cfg(feature = "shared-proto")]
         {
             use crate::lua_vm::shared_proto::SHARED_FILE_PROTO_CACHE;
 
             let metadata = std::fs::metadata(&resolved_path)
-                .map_err(|e| format!("cannot open {}: {}", path, e))?;
+                .map_err(|e| format!("cannot open {}: {}", path, e).into_bytes())?;
             SHARED_FILE_PROTO_CACHE.with(|cache| {
                 use crate::lua_vm::shared_proto::SharedFileProtoEntry;
 

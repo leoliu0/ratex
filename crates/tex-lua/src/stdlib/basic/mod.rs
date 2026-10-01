@@ -1130,10 +1130,10 @@ fn lua_load(l: &mut LuaState) -> LuaResult<usize> {
         } else {
             chunk_serializer::deserialize_chunk_with_strings_vm(&code_bytes, vm)
         };
-        result.map_err(|error| format!("binary load error: {error}"))
+        result.map_err(|error| format!("binary load error: {error}").into_bytes())
     } else if let Some(source) = text_source {
         l.compile_chunk_with_name(source, &chunkname)
-            .map_err(|e| l.get_error_msg(e))
+            .map_err(|e| l.take_error_bytes(e))
     } else {
         l.global_state_mut().compile_bytes_with_name(&code_bytes, &chunkname)
     };
@@ -1172,7 +1172,7 @@ fn lua_load(l: &mut LuaState) -> LuaResult<usize> {
         }
         Err(e) => {
             // Return nil and error message
-            let err_msg = l.create_string(&e)?;
+            let err_msg = l.create_bytes(&e)?;
             l.push_value(LuaValue::nil())?;
             l.push_value(err_msg)?;
             Ok(2)
@@ -1284,8 +1284,8 @@ fn lua_loadfile(l: &mut LuaState) -> LuaResult<usize> {
             Ok(1)
         }
         Err(error) => {
-            let message = l.get_error_message(error);
-            let err_msg = l.create_string(&message)?;
+            let message = l.take_error_bytes(error);
+            let err_msg = l.create_bytes(&message)?;
             l.push_value(LuaValue::nil())?;
             l.push_value(err_msg)?;
             Ok(2)

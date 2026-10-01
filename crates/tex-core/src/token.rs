@@ -280,20 +280,6 @@ impl CsTable {
     }
 }
 
-/// tex.web §49/§59 printing as pdfTeX does with TeX Live's cp227.tcx (the
-/// pdflatex format's translation file): bytes 128-255, tab, line feed and
-/// vertical tab print as themselves; the other control bytes print in `^^`
-/// notation (`^^A`, `^^?`).
-pub(crate) fn push_printable(out: &mut Vec<u8>, bytes: &[u8]) {
-    for &byte in bytes {
-        match byte {
-            0x00..=0x08 | 0x0c..=0x1f => out.extend_from_slice(&[b'^', b'^', byte + 0x40]),
-            0x7f => out.extend_from_slice(b"^^?"),
-            _ => out.push(byte),
-        }
-    }
-}
-
 #[cfg(test)]
 mod capacity_tests {
     use super::CsTable;

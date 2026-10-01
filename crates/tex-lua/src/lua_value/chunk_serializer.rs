@@ -74,7 +74,7 @@ fn write_chunk_with_dedup(
     buf: &mut Vec<u8>,
     chunk: &LuaProto,
     strip: bool,
-    string_table: &mut HashMap<String, u32>,
+    string_table: &mut HashMap<Vec<u8>, u32>,
 ) -> Result<(), String> {
     // Write code
     write_u32(buf, chunk.code.len() as u32);
@@ -101,7 +101,7 @@ fn write_chunk_with_dedup(
     write_u32(buf, chunk.upvalue_descs.len() as u32);
     for desc in &chunk.upvalue_descs {
         if strip {
-            write_string_with_dedup(buf, "", string_table)?; // strip upvalue names
+            write_string_with_dedup(buf, b"", string_table)?; // strip upvalue names
         } else {
             write_string_with_dedup(buf, &desc.name, string_table)?;
         }
@@ -123,7 +123,7 @@ fn write_chunk_with_dedup(
         write_u32(buf, 0); // no line info
     } else {
         if let Some(ref name) = chunk.source_name {
-            write_string_with_dedup(buf, name.as_ref(), string_table)?; // Use dedup for source name
+            write_string_with_dedup(buf, name.as_bytes(), string_table)?; // Use dedup for source name
         } else {
             write_u32(buf, 0); // len = 0
             write_u32(buf, 0); // index = 0 means None
@@ -159,7 +159,7 @@ const TAG_BINARY: u8 = 0x24; // legacy luars tag for non-UTF-8 byte-string const
 fn write_constant_with_dedup(
     buf: &mut Vec<u8>,
     value: &LuaValue,
-    string_table: &mut HashMap<String, u32>,
+    string_table: &mut HashMap<Vec<u8>, u32>,
 ) -> Result<(), String> {
     if value.is_nil() {
         buf.push(TAG_NIL);
@@ -183,7 +183,7 @@ fn write_constant_with_dedup(
             } else {
                 buf.push(TAG_LONG_STRING);
             }
-            write_string_with_dedup(buf, lua_string, string_table)?;
+            write_string_with_dedup(buf, lua_string.as_bytes(), string_table)?;
         } else {
             return Err(
                 "byte-string constant is missing both UTF-8 and raw-byte views".to_string(),
@@ -197,8 +197,8 @@ fn write_constant_with_dedup(
 
 fn write_string_with_dedup(
     buf: &mut Vec<u8>,
-    s: &str,
-    string_table: &mut HashMap<String, u32>,
+    s: &[u8],
+    string_table: &mut HashMap<Vec<u8>, u32>,
 ) -> Result<(), String> {
     // Check if string was already written
     if let Some(&index) = string_table.get(s) {
@@ -208,7 +208,7 @@ fn write_string_with_dedup(
     } else {
         // New string: assign it an index and write it
         let new_index = string_table.len() as u32 + 1; // 1-based indexing
-        string_table.insert(s.to_string(), new_index);
+        string_table.insert(s.to_vec(), new_index);
 
         // Write the actual string
         if s.is_empty() {
@@ -226,7 +226,7 @@ fn write_string_with_dedup(
 fn read_chunk_with_vm_dedup(
     cursor: &mut Cursor<&[u8]>,
     vm: &mut GlobalState,
-    string_table: &mut Vec<String>,
+    string_table: &mut Vec<Vec<u8>>,
 ) -> Result<LuaProto, String> {
     // Read code
     let code_len = read_u32(cursor)? as usize;
@@ -255,7 +255,7 @@ fn read_chunk_with_vm_dedup(
     let desc_len = read_u32(cursor)? as usize;
     let mut upvalue_descs = Vec::with_capacity(desc_len);
     for _ in 0..desc_len {
-        let name = read_string_with_dedup(cursor, string_table)?;
+        let name = read_string_with_dedup(cursor, string_table)?.into_boxed_slice();
         let is_local = read_u8(cursor)? != 0;
         let index = read_u32(cursor)?;
         upvalue_descs.push(UpvalueDesc {
@@ -274,12 +274,15 @@ fn read_chunk_with_vm_dedup(
     }
 
     // Read debug info with deduplication
-    let source_name = read_optional_string_with_dedup(cursor, string_table)?.map(Arc::<str>::from);
+    let source_name = read_optional_string_with_dedup(cursor, string_table)?
+        .map(|name| String::from_utf8(name).map_err(|e| format!("invalid utf8: {}", e)))
+        .transpose()?
+        .map(Arc::<str>::from);
 
     let locals_len = read_u32(cursor)? as usize;
     let mut locals = Vec::with_capacity(locals_len);
     for _ in 0..locals_len {
-        let name = read_string_with_dedup(cursor, string_table)?;
+        let name = read_string_with_dedup(cursor, string_table)?.into_boxed_slice();
         let startpc = read_u32(cursor)?;
         let endpc = read_u32(cursor)?;
         locals.push(LocVar {
@@ -320,7 +323,7 @@ fn read_chunk_with_vm_dedup(
 fn read_constant_with_vm_dedup(
     cursor: &mut Cursor<&[u8]>,
     vm: &mut GlobalState,
-    string_table: &mut Vec<String>,
+    string_table: &mut Vec<Vec<u8>>,
 ) -> Result<LuaValue, String> {
     let tag = read_u8(cursor)?;
     match tag {
@@ -331,7 +334,7 @@ fn read_constant_with_vm_dedup(
         TAG_FLOAT => Ok(LuaValue::number(read_f64(cursor)?)),
         TAG_SHORT_STRING | TAG_LONG_STRING => {
             let s = read_string_with_dedup(cursor, string_table)?;
-            vm.create_bytes(s.as_bytes())
+            vm.create_bytes(&s)
                 .map_err(|e| format!("failed to create string: {}", e))
         }
         TAG_BINARY => {
@@ -361,8 +364,7 @@ fn write_f64(buf: &mut Vec<u8>, value: f64) {
     buf.extend_from_slice(&value.to_le_bytes());
 }
 
-fn write_string(buf: &mut Vec<u8>, s: &str) {
-    let bytes = s.as_bytes();
+fn write_string(buf: &mut Vec<u8>, bytes: &[u8]) {
     write_u32(buf, bytes.len() as u32);
     buf.extend_from_slice(bytes);
 }
@@ -401,8 +403,8 @@ fn read_f64(cursor: &mut Cursor<&[u8]>) -> Result<f64, String> {
 
 fn read_string_with_dedup(
     cursor: &mut Cursor<&[u8]>,
-    string_table: &mut Vec<String>,
-) -> Result<String, String> {
+    string_table: &mut Vec<Vec<u8>>,
+) -> Result<Vec<u8>, String> {
     let len = read_u32(cursor)? as usize;
 
     if len == 0 {
@@ -411,7 +413,7 @@ fn read_string_with_dedup(
 
         if index == 0 {
             // Empty string (new)
-            let s = String::new();
+            let s = Vec::new();
             string_table.push(s.clone());
             return Ok(s);
         }
@@ -428,7 +430,7 @@ fn read_string_with_dedup(
                 eprintln!(
                     "  [{}]: {:?}",
                     i + 1,
-                    if s.len() > 50 { &s[..50] } else { s }
+                    String::from_utf8_lossy(&s[..s.len().min(50)])
                 );
             }
             return Err(format!("invalid string reference index: {}", index));
@@ -440,7 +442,7 @@ fn read_string_with_dedup(
         cursor
             .read_exact(&mut buf)
             .map_err(|e| format!("read error: {}", e))?;
-        let s = String::from_utf8(buf).map_err(|e| format!("invalid utf8: {}", e))?;
+        let s = buf;
 
         // Add to string table for future references
         string_table.push(s.clone());
@@ -450,8 +452,8 @@ fn read_string_with_dedup(
 
 fn read_optional_string_with_dedup(
     cursor: &mut Cursor<&[u8]>,
-    string_table: &mut Vec<String>,
-) -> Result<Option<String>, String> {
+    string_table: &mut Vec<Vec<u8>>,
+) -> Result<Option<Vec<u8>>, String> {
     let len = read_u32(cursor)? as usize;
 
     if len == 0 {
@@ -480,7 +482,7 @@ fn read_optional_string_with_dedup(
     cursor
         .read_exact(&mut buf)
         .map_err(|e| format!("read error: {}", e))?;
-    let s = String::from_utf8(buf).map_err(|e| format!("invalid utf8: {}", e))?;
+    let s = buf;
 
     // Add to string table
     string_table.push(s.clone());

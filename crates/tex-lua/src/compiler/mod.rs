@@ -75,19 +75,33 @@ pub fn compile_code_with_name(
 }
 
 /// Compile a chunk of arbitrary bytes, as C Lua does: bytes that are not valid UTF-8
-/// reach the lexer as marker characters and are restored inside string literals.
+/// reach the lexer as marker characters and are restored inside string literals,
+/// names and the text of syntax errors (which is therefore bytes, too).
 pub fn compile_code_bytes_with_name(
     source: &[u8],
     vm: &mut GlobalState,
     chunk_name: &str,
-) -> Result<LuaProto, String> {
+) -> Result<LuaProto, Vec<u8>> {
     if let Ok(text) = std::str::from_utf8(source)
         && !text.contains(BYTE_SOURCE_MARKER)
     {
-        return compile_code_with_name_mode(text, vm, chunk_name, false);
+        return compile_code_with_name_mode(text, vm, chunk_name, false)
+            .map_err(String::into_bytes);
     }
     let encoded = encode_byte_source(source);
-    compile_code_with_name_mode(&encoded, vm, chunk_name, true)
+    compile_code_with_name_mode(&encoded, vm, chunk_name, true).map_err(|message| {
+        // Every message starts with the chunk id, which is not made of the
+        // chunk's bytes; the rest quotes names and tokens of the chunk.
+        let id = func_state::format_source(chunk_name);
+        match message.strip_prefix(&id) {
+            Some(rest) => {
+                let mut bytes = id.into_bytes();
+                bytes.extend(parse_literal::decode_byte_source_markers(rest.as_bytes().to_vec()));
+                bytes
+            }
+            None => parse_literal::decode_byte_source_markers(message.into_bytes()),
+        }
+    })
 }
 
 fn compile_code_with_name_mode(
@@ -201,7 +215,7 @@ fn compile_code_with_name_mode(
     // Set upvalue descriptors for main chunk (same as child functions in expr_parser.rs)
     for upval in &fs.upvalues {
         fs.chunk.upvalue_descs.push(UpvalueDesc {
-            name: upval.name.clone(),
+            name: name_bytes(&upval.name, fs.lexer.has_byte_markers()),
             is_local: upval.in_stack,
             index: upval.idx as u32,
         });

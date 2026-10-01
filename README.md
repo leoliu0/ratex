@@ -143,13 +143,20 @@ the output directory and `-fmt=NAME`, `&NAME`, a `%&NAME` first line, or
 `-progname=NAME` load such a Ratex dump (`NAME` equal to the program selects
 the built-in format). `-cnf-line=VAR=VALUE` sets a search or policy variable
 such as `TEXINPUTS` or `openout_any`; `-kpathsea-debug=N` (nonzero) traces
-file lookups in the transcript. Deliberate differences: e-TeX is always on
-(also under `-ini` without `-etex`), every character prints as-is (`-8bit`
-behavior), missing files are never generated (`-mktex`), and
-`-output-format=dvi`, `-translate-file`, `-enc`, `-mltex`, `-ipc` are
+file lookups in the transcript. `-translate-file=TCXNAME`, `-8bit` and a
+`%&-translate-file=` first line select which bytes 128-255 print as
+themselves rather than as `^^xx`: `pdflatex` and the built-in format use
+TeX Live's `cp227.tcx` table, `-ini` without a table prints `^^` notation,
+and the transcript and terminal carry the exact bytes TeX Live writes
+(`max_print_line` counts printed bytes). Deliberate differences: e-TeX is
+always on (also under `-ini` without `-etex`), missing files are never
+generated (`-mktex`), and `-output-format=dvi`, `-enc`, `-mltex`, `-ipc` are
 rejected. As in TeX's nonstop mode, a primitive `\input` of a missing file or
 an `\openout` that cannot be opened stops the job, since no other name can be
-supplied. `\pdffilemoddate` reports a file's modification time like pdfTeX;
+supplied, and so does a terminal `\read`. `\pdffilesize`, `\pdfmdfivesum
+file`, `\pdffilemoddate` and `\pdffiledump` search the TeX input path only
+(kpse_find_tex), so a TFM, encoding or map file is not found by them.
+`\pdffilemoddate` reports a file's modification time like pdfTeX;
 files served from the embedded package archive have no timestamp and report
 `D:19700101000000Z`.
 
@@ -294,7 +301,14 @@ functions from the host executable, which the workspace links with
 `--export-dynamic` (`.cargo/config.toml`); a host that embeds `tex-lua` must
 link the same way. Host Rust code that needs to allocate inside a native
 callback uses `Lua::create_callback`, whose `CallbackLua` is only borrowed for
-the duration of the call.
+the duration of the call. In Lua 5.3 mode (LuaTeX's dialect) every byte >= 0x80
+is a letter in a name, so the names `LuaFunction::get_upvalue` and
+`set_upvalue` return are the bytes of the source text (`Vec<u8>`), and error
+messages, `debug.getlocal`/`getupvalue` and `string.dump` keep them. An error
+raised by a function handle that a callback calls while a coroutine (an async
+script, or one resumed from Lua) runs reaches that coroutine's `pcall` as the
+same Lua value; only a call made by the host alone, with no Lua code running,
+returns the message with its stack traceback.
 
 ---
 

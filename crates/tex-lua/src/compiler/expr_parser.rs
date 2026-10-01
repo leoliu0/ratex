@@ -523,7 +523,7 @@ fn singlevaraux(fs: &mut FuncState, name: &str, var: &mut ExpDesc, base: bool) {
                     };
                     fs.actvar.push(shadow);
                     fs.chunk.locals.push(LocVar {
-                        name: name.clone(),
+                        name: fs.name_bytes(&name),
                         startpc: fs.chunk.code.len() as u32,
                         endpc: 0,
                     });
@@ -1007,13 +1007,14 @@ pub fn body(fs: &mut FuncState, v: &mut ExpDesc, is_method: bool) -> Result<(), 
     child_chunk.lastlinedefined = lastlinedefined;
     child_chunk.source_name = Some(child_fs.source_name.clone());
     let child_upvalues = child_fs.upvalues;
+    let byte_markers = child_fs.lexer.has_byte_markers();
 
     // Port of lparser.c:722-726 (codeclosure)
     // In Lua 5.5, upvalue information is stored in Proto.upvalues[], NOT as pseudo-instructions
     // This is different from Lua 5.1 which used pseudo-instructions after OP_CLOSURE
     for upval in &child_upvalues {
         child_chunk.upvalue_descs.push(UpvalueDesc {
-            name: upval.name.clone(), // upvalue name
+            name: crate::compiler::name_bytes(&upval.name, byte_markers), // upvalue name
             is_local: upval.in_stack, // true if captures parent local
             index: upval.idx as u32,  // index in parent's register or upvalue array
         });

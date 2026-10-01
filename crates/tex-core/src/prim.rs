@@ -339,6 +339,25 @@ impl IntParam {
         Self::ALL.get(i as usize).copied()
     }
 
+    /// tex.web's `last_item` quantities Ratex stores as integer
+    /// parameters: they can be read (`\the`, scanned numbers) but the
+    /// command itself is illegal (tex.web 1045 `any_mode(last_item)`).
+    pub fn is_last_item(self) -> bool {
+        matches!(
+            self,
+            IntParam::InputLineNo
+                | IntParam::Badness
+                | IntParam::EtxVersion
+                | IntParam::PdfTexVersion
+                | IntParam::CurrentGroupLevel
+                | IntParam::CurrentGroupType
+                | IntParam::CurrentIfLevel
+                | IntParam::CurrentIfType
+                | IntParam::CurrentIfBranch
+                | IntParam::LastNodeType
+        )
+    }
+
     /// Whether tex.web keeps this parameter in `eqtb` (so `\tracingassigns`
     /// and `\tracingrestores` report it). The rest are read-only quantities
     /// or pseudo-parameters such as `\spacefactor` and `\interactionmode`.

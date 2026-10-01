@@ -60,6 +60,8 @@ const TAG_FONT_REF: u8 = 10;
 const TAG_ALIAS: u8 = 11;
 const TAG_PRIM: u8 = 12;
 const TAG_MACRO: u8 = 13;
+/// Marks the trailing translation tables (xprn, xord, xchr).
+const TCX_TRAILER: u8 = 0xC7;
 
 // ---------------------------------------------------------------------------
 // writer / reader primitives
@@ -658,6 +660,21 @@ pub fn save_format_with_encoding(
         }
     }
 
+    // web2c dumps the TCX tables (xord, xchr, xprn) into the format. Older
+    // dumps end before this trailer and were all built with cp227.tcx.
+    w.u8(TCX_TRAILER);
+    for bits in eng.xprn.chunks(8) {
+        w.u8(bits.iter().enumerate().fold(0u8, |acc, (i, &on)| acc | (u8::from(on) << i)));
+    }
+    match &eng.tcx {
+        None => w.u8(0),
+        Some(tcx) => {
+            w.u8(1);
+            w.buf.extend_from_slice(&tcx.xord);
+            w.buf.extend_from_slice(&tcx.xchr);
+        }
+    }
+
     let payload = match encoding {
         FormatEncoding::Raw => w.buf,
         FormatEncoding::Zstd(_level) => ruzstd::encoding::compress_to_vec(
@@ -1091,6 +1108,8 @@ pub fn load_format_bytes_into(data: &[u8], eng: &mut Engine) -> Result<(), Strin
     eng.hyphen_tries = scratch.hyphen_tries;
     eng.hyphen_codes = scratch.hyphen_codes;
     eng.pdf_backend.glyph_unicode = scratch.pdf_backend.glyph_unicode;
+    eng.xprn = scratch.xprn;
+    eng.tcx = scratch.tcx;
     eng.hyphen_exceptions = scratch.hyphen_exceptions;
     eng.par_shape = scratch.par_shape;
     eng.penalty_shapes = scratch.penalty_shapes;
@@ -1311,6 +1330,33 @@ fn load_state(r: &mut R, eng: &mut Engine) -> io::Result<()> {
             _ => return Err(bad("invalid glyph-to-unicode entry")),
         };
         eng.pdf_backend.glyph_unicode.insert(glyph, value);
+    }
+    // translation tables: the trailer, or cp227 for dumps without one
+    if r.p == r.b.len() {
+        eng.xprn = crate::tex_bytes::cp227_xprn();
+        eng.tcx = None;
+    } else {
+        if r.u8()? != TCX_TRAILER {
+            return Err(bad("has trailing data"));
+        }
+        let mut xprn = [false; 256];
+        for (i, &byte) in r.take(32)?.iter().enumerate() {
+            for bit in 0..8 {
+                xprn[i * 8 + bit] = byte >> bit & 1 == 1;
+            }
+        }
+        eng.xprn = xprn;
+        eng.tcx = match r.u8()? {
+            0 => None,
+            1 => {
+                let mut tcx = crate::tex_bytes::Tcx::identity();
+                tcx.xord.copy_from_slice(r.take(256)?);
+                tcx.xchr.copy_from_slice(r.take(256)?);
+                tcx.xprn = xprn;
+                Some(Box::new(tcx))
+            }
+            _ => return Err(bad("invalid translation table flag")),
+        };
     }
     if r.p != r.b.len() {
         return Err(bad("has trailing data"));
@@ -1945,8 +1991,12 @@ mod tests {
         let data = std::fs::read(&path).unwrap();
         std::fs::remove_dir_all(&dir).ok();
         assert!(load_format_from(&data).expect("complete format loads").format_done);
-        // every truncation is an error, never a panic
+        // every truncation is an error, never a panic; a dump cut exactly
+        // before the translation-table trailer (34 bytes) is a valid older dump
         for cut in (0..data.len()).step_by(97).chain([data.len() - 1]) {
+            if cut == data.len() - 34 {
+                continue;
+            }
             assert!(load_format_from(&data[..cut]).is_err(), "cut={cut}");
         }
         let mut trailing = data.clone();
@@ -1956,6 +2006,23 @@ mod tests {
         let mut older = data.clone();
         older[MAGIC.len()..MAGIC.len() + 2].copy_from_slice(&(VERSION - 1).to_le_bytes());
         assert_eq!(load_format_from(&older).err().unwrap(), "format version mismatch");
+    }
+
+    #[test]
+    fn character_tables_survive_a_dump_and_older_dumps_load_as_cp227() {
+        let mut eng = build_sample_engine();
+        eng.set_tcx(crate::tex_bytes::Tcx::builtin("cp8bit.tcx").unwrap());
+        let dir = std::env::temp_dir().join(format!("rustex-fmt-tcx-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("x.fmt");
+        save_format(&eng, &path).expect("save");
+        let data = std::fs::read(&path).unwrap();
+        std::fs::remove_dir_all(&dir).ok();
+        let loaded = load_format_from(&data).unwrap();
+        assert_eq!(loaded.xprn, crate::tex_bytes::Tcx::builtin("cp8bit.tcx").unwrap().xprn);
+        // without the trailer, as written before the tables were dumped
+        let legacy = load_format_from(&data[..data.len() - 34]).unwrap();
+        assert_eq!(legacy.xprn, crate::tex_bytes::cp227_xprn());
     }
 
     #[test]

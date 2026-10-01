@@ -43,6 +43,18 @@ conditional, group, math formula, box, or alignment opened. Numeric scanners
 identify the offending operand, state the legal range, and say whether TeX
 ignored the assignment, substituted zero, or left the old value unchanged.
 Arithmetic errors name the operation and preserve the destination value.
+`\advance`, `\multiply` and `\divide` accept only registers and integer,
+dimen, glue and muglue parameters; any other target (`\spacefactor`,
+`\prevgraf`, `\wd`, ...) is reported as ``You can't use `x' after \advance``
+and nothing changes. A formula typeset without enough `\fontdimen`
+parameters in families 2 and 3 is deleted with ``Math formula deleted:
+Insufficient symbol fonts`` (or `extension fonts`). A terminal `\read` in
+nonstop or batch mode ends the job. A forbidden `\outer` macro in an
+alignment preamble, a macro's parameter text or a `\def` body is reported
+with TeX's recovery (the rest of the template is read again in the
+surrounding mode). `\showbox` and `\showlists` print math noads, unset
+nodes, accent kerns (`(for accent)`), the language and hyphen minima in
+force at paragraph start, and `\openout` file names as TeX does.
 
 Recoverable math errors preserve the following input: an invalid delimiter
 becomes `.` and its offending token is read again; a display closed with only

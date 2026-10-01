@@ -193,7 +193,7 @@ impl Diagnostic {
     }
 
     pub fn render_styled(&self, color: bool) -> String {
-        self.render_internal(color, false)
+        crate::tex_bytes::text_to_display(&self.render_internal(color, false)).into_owned()
     }
 
     pub(crate) fn render_transcript(&self) -> String {
@@ -1625,10 +1625,10 @@ impl Engine {
             return match active {
                 value if value == u32::from(b' ') => "␠".to_string(),
                 value if value == u32::from(b'\t') => "⇥".to_string(),
-                value if value < 0x20 || value == 0x7f => {
-                    let mut shown = Vec::with_capacity(3);
-                    crate::token::push_printable(&mut shown, &[value as u8]);
-                    String::from_utf8_lossy(&shown).into_owned()
+                value if value < 0x100 => {
+                    let mut shown = Vec::with_capacity(4);
+                    crate::tex_bytes::push_printable(&self.xprn, &mut shown, &[value as u8]);
+                    crate::tex_bytes::bytes_to_text(&shown)
                 }
                 value => char::from_u32(value)
                     .unwrap_or(char::REPLACEMENT_CHARACTER)
@@ -1638,8 +1638,8 @@ impl Engine {
         let shown = &name[..name.len().min(MAX_CONTROL_SEQUENCE_BYTES)];
         let mut bytes = Vec::with_capacity(shown.len() + 1);
         bytes.push(b'\\');
-        crate::token::push_printable(&mut bytes, shown);
-        let mut result = String::from_utf8_lossy(&bytes).into_owned();
+        crate::tex_bytes::push_printable(&self.xprn, &mut bytes, shown);
+        let mut result = crate::tex_bytes::bytes_to_text(&bytes);
         if shown.len() < name.len() {
             result.push('…');
         }
@@ -1713,8 +1713,8 @@ impl Engine {
             }
         }
         let mut printed = Vec::with_capacity(bytes.len());
-        crate::token::push_printable(&mut printed, &bytes);
-        let mut result = String::from_utf8_lossy(&printed).into_owned();
+        crate::tex_bytes::push_printable(&self.xprn, &mut printed, &bytes);
+        let mut result = crate::tex_bytes::bytes_to_text(&printed);
         if truncated {
             result.push('…');
         }
@@ -2025,7 +2025,9 @@ fn default_help(message: &str) -> Option<String> {
         Some("fix the first reported error and compile again")
     } else if message.starts_with("Bad input stream number") {
         Some("TeX input streams are numbered from 0 through 15")
-    } else if message.starts_with("Terminal input is unavailable") {
+    } else if message.starts_with("Terminal input is unavailable")
+        || message.starts_with("Emergency stop: cannot \\read from terminal")
+    {
         Some("read from a file-backed stream instead of requesting interactive terminal input")
     } else if message.starts_with("Input stream ") && message.contains(" is not open for \\read") {
         Some("open this stream with `\\openin` before reading it, and check `\\ifeof` before each read")
@@ -2059,6 +2061,8 @@ fn default_help(message: &str) -> Option<String> {
         || message.starts_with("Improper \\prevdepth")
     {
         Some("`\\spacefactor` is meaningful only in horizontal mode and `\\prevdepth` only in vertical mode, and neither inside `\\write`; zero was used instead")
+    } else if message.starts_with("Improper \\setbox") {
+        Some("`\\setbox` is not allowed between `\\accent` and the accented character, or after `\\halign` in a display")
     } else if message.starts_with("You can't use") || message.contains(" outside alignment") {
         Some("move this command into the TeX mode or environment where it is valid")
     } else if message.starts_with("Text line contains an invalid character") {

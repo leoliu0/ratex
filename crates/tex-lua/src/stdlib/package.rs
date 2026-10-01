@@ -210,22 +210,24 @@ fn searcher_lua(l: &mut LuaState) -> LuaResult<usize> {
             l.push_value(filename)?;
             Ok(2)
         }
-        Err(message) => Err(lauxlib::lual_error(
-            l,
-            format!("error loading module '{name}' from file '{filename}':\n\t{message}"),
-        )),
+        Err(message) => {
+            let mut text = format!("error loading module '{name}' from file '{filename}':\n\t")
+                .into_bytes();
+            text.extend_from_slice(&message);
+            Err(lauxlib::lual_error_bytes(l, &text))
+        }
     }
 }
 
-/// `luaL_loadfile` with the global environment.
-fn load_lua_file(l: &mut LuaState, filename: &str) -> Result<LuaValue, String> {
-    let proto = l.load_proto_from_file(filename).map_err(|error| l.get_error_message(error))?;
+/// `luaL_loadfile` with the global environment; the error is the message bytes.
+fn load_lua_file(l: &mut LuaState, filename: &str) -> Result<LuaValue, Vec<u8>> {
+    let proto = l.load_proto_from_file(filename).map_err(|error| l.take_error_bytes(error))?;
     let global = l.global_state().global;
     let function = l.create_upvalue_closed(global).and_then(|env| {
         l.global_state_mut()
             .create_function(proto, UpvalueStore::from_single(env))
     });
-    function.map_err(|error| l.get_error_message(error))
+    function.map_err(|error| l.take_error_bytes(error))
 }
 
 /// `luaL_pushmodule` (LUA_COMPAT_MODULE): LOADED[modname], or the global

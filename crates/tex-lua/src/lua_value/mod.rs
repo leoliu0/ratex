@@ -142,7 +142,9 @@ impl LuaUpvalue {
 /// Upvalue descriptor
 #[derive(Debug, Clone)]
 pub struct UpvalueDesc {
-    pub name: String,   // upvalue name
+    /// Upvalue name as the bytes of the source text (Lua 5.3 names may hold any
+    /// byte >= 0x80); empty when stripped.
+    pub name: Box<[u8]>,
     pub is_local: bool, // true if captures parent local, false if captures parent upvalue
     pub index: u32,     // index in parent's register or upvalue array
 }
@@ -150,7 +152,8 @@ pub struct UpvalueDesc {
 /// Local variable debug info (mirrors Lua 5.5's LocVar)
 #[derive(Debug, Clone)]
 pub struct LocVar {
-    pub name: String, // variable name
+    /// Variable name as the bytes of the source text.
+    pub name: Box<[u8]>,
     pub startpc: u32, // first point where variable is active
     pub endpc: u32,   // first point where variable is dead
 }

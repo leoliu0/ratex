@@ -287,8 +287,12 @@ fn tryconcattm(lua_state: &mut LuaState, top: usize) -> LuaResult<()> {
             Some(ci) if ci.is_lua() && bad_slot >= ci.base => {
                 varinfo_for_reg(lua_state, (bad_slot - ci.base) as u32)
             }
-            _ => String::new(),
+            _ => Vec::new(),
         };
-        Err(lua_state.error(format!("attempt to concatenate a {} value{}", tname, info)))
+        Err(crate::stdlib::debug::error_with_info(
+            lua_state,
+            format!("attempt to concatenate a {} value", tname),
+            &info,
+        ))
     }
 }

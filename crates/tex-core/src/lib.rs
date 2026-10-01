@@ -45,10 +45,13 @@ pub mod scaled;
 pub mod scan;
 pub mod scanner;
 mod show_box;
+mod show_state;
 pub mod synctex;
 pub mod tfm;
 mod texxet;
 mod trace;
+pub mod tex_bytes;
+mod tex_print;
 pub mod token;
 
 pub use engine::Engine;

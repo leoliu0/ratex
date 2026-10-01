@@ -2302,16 +2302,20 @@ mod tests {
         );
 
         assert_eq!(engine.diagnostics.len(), 3, "{}", engine.diagnostic_output);
-        assert!(engine.diagnostics[0].message.contains("1 group(s) open"));
-        assert!(engine.diagnostics[0].message.contains("show.tex:1:"));
+        // e-TeX show_save_groups / show_ifs transcripts
+        assert!(
+            engine.log.contains(
+                "### semi simple group (level 1) entered at line 1 (\\begingroup)\n### bottom level"
+            ),
+            "{}",
+            engine.log
+        );
         assert!(engine.diagnostics[1].message.contains("tokens: A \\relax"));
-        assert!(engine.diagnostics[2]
-            .message
-            .contains("1 conditional(s) open"));
-        assert!(engine.diagnostics[2].message.contains("\\iftrue"));
-        assert!(engine.diagnostics[2]
-            .message
-            .contains("taking current branch"));
+        assert!(
+            engine.log.contains("### level 1: \\iftrue entered on line 1"),
+            "{}",
+            engine.log
+        );
     }
 
     #[test]

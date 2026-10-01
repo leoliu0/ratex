@@ -1894,7 +1894,8 @@ mod tests {
         let mut eng = build_booted_engine();
         eng.eqtb.assign_cat(b'~', 10, false); // non-global at level 1: no save
         eng.eqtb.cur_level = 2;
-        eng.eqtb.assign_cat(b'~', 10, false); // pushes a save item
+        // a different value: reassigning the held value saves nothing in e-TeX
+        eng.eqtb.assign_cat(b'~', 11, false); // pushes a save item
         let tmp = std::env::temp_dir().join(format!("never-{}.fmt", std::process::id()));
         assert!(save_format(&eng, &tmp).is_err());
 

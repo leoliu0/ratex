@@ -31,7 +31,7 @@ fn glue_assignments_reassign_only_the_same_spec() {
         "\\skip4=1pt plus 1fil\n",
         "\\skip6=0pt plus 0fil \\skip6=0pt \\skip7=\\skip4 \\advance\\skip7 by 0pt ",
         "\\skip7=\\skip7 \\skip7=-\\skip7\n",
-        "\\end\n"
+        "\\message{.}\\end\n"
     ));
     let lines = trace_lines(&e.log);
     let expected = [
@@ -137,7 +137,7 @@ fn endgroup_in_a_simple_group_inserts_a_brace() {
 fn box_assignment_trace_uses_the_escape_character_of_the_event() {
     let e = run(concat!(
         "\\tracingassigns=1 \\tracingonline=1 \\setbox3\\hbox{} \\setbox300\\hbox{}\n",
-        "\\escapechar=`! \\end\n"
+        "\\escapechar=`! \\message{.}\\end\n"
     ));
     let lines: Vec<&str> = e.log.lines().collect();
     assert!(lines.contains(&"\\hbox(0.0+0.0)x0.0}"), "{}", e.log);

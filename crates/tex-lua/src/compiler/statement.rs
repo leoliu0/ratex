@@ -212,23 +212,25 @@ pub fn enterblock(fs: &mut FuncState, bl_id: BlockCntId, isloop: u8) {
 // Port of leaveblock from lparser.c:672-692
 // Port of closegoto from lparser.c:597-621
 // Solves the goto at index 'g' to given 'label' and removes it from the list
-// varnames: mapping from nactvar index -> variable name, for error messages
+// varnames: names of the active variables, indexed by nactvar, for error messages
 fn solvegoto(
     fs: &mut FuncState,
     g: usize,
     label: &LabelDesc,
     bl_upval: bool,
-    varnames: &std::collections::HashMap<u16, String>,
+    varnames: &[String],
 ) -> Result<(), String> {
     let gt = &fs.pending_gotos[g].clone(); // Clone to avoid borrow issues
 
     // lparser.c:603-605: Check if goto jumps into the scope of a local variable
     if gt.nactvar < label.nactvar {
         // The goto jumps over a variable declaration
-        let varname = varnames.get(&gt.nactvar).map(|s| s.as_str()).unwrap_or("?");
+        let varname = varnames.get(gt.nactvar as usize).map_or("?", |s| s.as_str());
+        // Lua 5.5 dropped "local" from jumpscopeerror's message.
+        let kind = if fs.lexer.level == LuaLanguageLevel::Lua53 { "local " } else { "" };
         return Err(fs.sem_error(&format!(
-            "<goto {}> at line {} jumps into the scope of local '{}'",
-            gt.name, gt.line, varname
+            "<goto {}> at line {} jumps into the scope of {}'{}'",
+            gt.name, gt.line, kind, varname
         )));
     }
 
@@ -320,7 +322,7 @@ fn solvegotos_on_leaveblock(
     bl: &BlockCnt,
     outlevel: u8,
     goto_levels: &[(usize, u8)],
-    varnames: &std::collections::HashMap<u16, String>,
+    varnames: &[String],
 ) -> Result<(), String> {
     let mut igt = bl.first_goto; // first goto in the finishing block
     let mut level_idx = 0;
@@ -396,14 +398,17 @@ pub fn leaveblock(fs: &mut FuncState) -> Result<(), String> {
             goto_levels.push((i, gt_level));
         }
 
-        // Pre-compute variable names for goto scope checking
-        // We need these before remove_vars truncates actvar
-        let mut varnames = std::collections::HashMap::new();
-        for i in 0..fs.nactvar {
-            if let Some(vd) = fs.actvar.get(i as usize) {
-                varnames.insert(i, vd.name.clone());
-            }
-        }
+        // Variable names for the "jumps into the scope of local" error, taken
+        // before remove_vars truncates actvar. Only blocks with pending gotos
+        // (including breaks) can raise it, so skip the copy everywhere else.
+        let varnames: Vec<String> = if goto_levels.is_empty() {
+            Vec::new()
+        } else {
+            fs.actvar[..(fs.nactvar as usize).min(fs.actvar.len())]
+                .iter()
+                .map(|vd| vd.name.clone())
+                .collect()
+        };
 
         // lparser.c:749-750: need a 'close'?
         if has_previous && upval {
@@ -704,7 +709,7 @@ fn cond(fs: &mut FuncState) -> Result<isize, String> {
 fn whilestat(fs: &mut FuncState, line: usize) -> Result<(), String> {
     // whilestat -> WHILE cond DO block END
     fs.lexer.bump(); // skip WHILE
-    let whileinit = code::getlabel(fs);
+    let whileinit = code::get_label(fs);
     let condexit = cond(fs)?;
 
     let bl_id = fs.compiler_state.alloc_blockcnt(BlockCnt {
@@ -733,7 +738,7 @@ fn whilestat(fs: &mut FuncState, line: usize) -> Result<(), String> {
 // Port of repeatstat from lparser.c:1486-1507
 fn repeatstat(fs: &mut FuncState, line: usize) -> Result<(), String> {
     // repeatstat -> REPEAT block UNTIL cond
-    let repeat_init = code::getlabel(fs);
+    let repeat_init = code::get_label(fs);
 
     // lparser.c:1491-1492: enterblock(fs, &bl1, 1); enterblock(fs, &bl2, 0);
     let bl1_id = fs.compiler_state.alloc_blockcnt(BlockCnt {

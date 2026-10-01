@@ -13,6 +13,7 @@ use crate::lua_value::{
 };
 use crate::lua_vm::{LuaError, LuaResult, LuaState, get_metatable};
 use crate::stdlib::basic::parse_number::parse_lua_number;
+use crate::stdlib::lauxlib;
 use require::lua_require;
 
 pub fn create_basic_lib() -> LibraryModule {
@@ -50,26 +51,32 @@ pub fn create_basic_lib() -> LibraryModule {
 
 /// print(...) - Print values to stdout
 fn lua_print(l: &mut LuaState) -> LuaResult<usize> {
-    let args = l.get_args().to_vec();
-    let arg_count = args.len();
-    let tostring = l.get_global_value("tostring")?.unwrap_or_default();
+    let arg_count = l.arg_count();
+    // Lua 5.3 converts through the global `tostring`; Lua 5.4+ uses luaL_tolstring.
+    let tostring = if l.global_state().language() == crate::LuaLanguageLevel::Lua53 {
+        Some(l.get_global_value("tostring")?.unwrap_or_default())
+    } else {
+        None
+    };
     let mut output = Vec::new();
-
-    for (index, arg) in args.into_iter().enumerate() {
-        let results = l.call(tostring, vec![arg])?;
-        let value = results.first().copied().unwrap_or_default();
-        if let Some(bytes) = value.as_bytes() {
-            output.extend_from_slice(bytes);
-        } else if let Some(integer) = value.as_integer_strict() {
-            output.extend_from_slice(integer.to_string().as_bytes());
-        } else if let Some(number) = value.as_float() {
-            output.extend_from_slice(lua_float_to_string(number).as_bytes());
-        } else {
-            return Err(l.error("'tostring' must return a string to 'print'".to_string()));
-        }
-        if index + 1 < arg_count {
+    for index in 1..=arg_count {
+        let arg = l.get_arg(index).unwrap_or_default();
+        if index > 1 {
             output.push(b'\t');
         }
+        let text = match tostring {
+            Some(tostring) => {
+                let value = l.call(tostring, vec![arg])?.first().copied().unwrap_or_default();
+                match lauxlib::to_lstr(l, &value) {
+                    Some(text) => text,
+                    None => {
+                        return Err(lauxlib::lual_error(l, "'tostring' must return a string to 'print'"));
+                    }
+                }
+            }
+            None => lauxlib::tolstring(l, &arg)?,
+        };
+        output.extend_from_slice(&text);
     }
     output.push(b'\n');
     std::io::Write::write_all(&mut std::io::stdout().lock(), &output)
@@ -107,315 +114,105 @@ fn lua_type(l: &mut LuaState) -> LuaResult<usize> {
 
 /// assert(v [, message]) - Raise error if v is false or nil
 fn lua_assert(l: &mut LuaState) -> LuaResult<usize> {
-    let arg_count = l.arg_count();
-
-    // assert() without arguments: error "value expected"
-    if arg_count == 0 {
-        return Err(l.error("bad argument #1 to 'assert' (value expected)".to_string()));
+    let condition = lauxlib::check_any(l, 1)?;
+    if condition.is_truthy() {
+        return Ok(l.arg_count());
     }
-
-    // Get first argument without consuming it
-    let condition = l.get_arg(1).unwrap_or_default();
-
-    if !condition.is_truthy() {
-        // Check if second argument is present and what type
-        let msg_arg = l.get_arg(2);
-
-        if let Some(msg) = msg_arg {
-            if msg.is_nil() {
-                return Err(l.error_with_object(msg));
-            } else if msg.is_string() {
-                // String message: add source:line prefix like error() does
-                let message = l.to_string(&msg)?;
-                let where_prefix = lua_where(l, 1);
-                let formatted = format!("{}{}", where_prefix, message);
-                let err_str = l.create_string(&formatted)?;
-                return Err(l.error_with_object(err_str));
-            } else {
-                // Non-string: raise as error object (like error(obj, 0))
-                return Err(l.error_with_object(msg));
-            }
-        }
-
-        // No second argument: default "assertion failed!" with source prefix
-        let where_prefix = lua_where(l, 1);
-        let formatted = format!("{}assertion failed!", where_prefix);
-        let err_str = l.create_string(&formatted)?;
-        return Err(l.error_with_object(err_str));
+    // Like luaB_assert: the message (default "assertion failed!") goes
+    // through 'error' with level 1.
+    let message = match l.get_arg(2) {
+        Some(message) => message,
+        None => l.create_string("assertion failed!")?,
+    };
+    if let Some(text) = message.as_bytes() {
+        let mut full = lauxlib::lual_where(l, 1).into_bytes();
+        full.extend_from_slice(text);
+        let error = l.create_bytes(&full)?;
+        return Err(l.error_with_object(error));
     }
-
-    // Return all arguments - they are already on stack
-    // Just return the count
-    Ok(arg_count)
+    Err(l.error_with_object(message))
 }
 
-/// Helper: compute "source:line: " prefix at the given call level (like luaL_where)
-/// Counts ALL frames (C and Lua) for the level, but only returns info for Lua frames.
-fn lua_where(l: &LuaState, level: usize) -> String {
-    let depth = l.call_depth();
-    let mut lvl = level;
-    // Start from the frame BELOW the current one (skip the current C frame itself)
-    if depth >= 2 {
-        let mut i = depth - 2;
-        loop {
-            // Count ALL frames (C and Lua)
-            lvl -= 1;
-            if lvl == 0 {
-                let ci = l.get_call_info(i);
-                // Only extract info from Lua frames
-                if ci.is_lua() && !ci.chunk_ptr.is_null() {
-                    let chunk = unsafe { &*ci.chunk_ptr };
-                    let source = chunk
-                        .source_name
-                        .as_deref()
-                        .map(|name| name.strip_prefix('@').unwrap_or(name))
-                        .unwrap_or("[string]");
-                    let line = if ci.pc > 0 && (ci.pc as usize - 1) < chunk.line_info.len() {
-                        chunk.line_info[ci.pc as usize - 1] as usize
-                    } else if !chunk.line_info.is_empty() {
-                        chunk.line_info[0] as usize
-                    } else {
-                        0
-                    };
-                    return if line > 0 {
-                        format!("{}:{}: ", source, line)
-                    } else {
-                        format!("{}: ", source)
-                    };
-                }
-                // C frame at target level: no line info available
-                break;
-            }
-            if i == 0 {
-                break;
-            }
-            i -= 1;
-        }
-    }
-    String::new()
-}
-
-/// error(message) - Raise an error
+/// error(message [, level]) - Raise an error
 fn lua_error(l: &mut LuaState) -> LuaResult<usize> {
+    let level = lauxlib::opt_integer(l, 2, 1)?;
     let arg = l.get_arg(1).unwrap_or_default();
-
-    let level = l.get_arg(2).and_then(|v| v.as_integer()).unwrap_or(1);
-
-    if arg.is_string() && level > 0 {
-        // Add position info to string error message (like luaL_where)
-        let message = l.to_string(&arg)?;
-        let where_prefix = lua_where(l, level as usize);
-
-        let formatted_msg = format!("{}{}", where_prefix, message);
-        let err_str = l.create_string(&formatted_msg)?;
-        Err(l.error_with_object(err_str))
-    } else {
-        // Non-string error object or level 0: raise as-is
-        // Preserve the original error value
-        Err(l.error_with_object(arg))
+    if level > 0
+        && let Some(message) = arg.as_bytes()
+    {
+        let mut text = lauxlib::lual_where(l, level as usize).into_bytes();
+        text.extend_from_slice(message);
+        let error = l.create_bytes(&text)?;
+        return Err(l.error_with_object(error));
     }
+    Err(l.error_with_object(arg))
+}
+
+/// `l_str2int` with an explicit base (tonumber(s, base)).
+fn str_to_int_base(text: &[u8], base: u32) -> Option<i64> {
+    let is_space = |b: &u8| matches!(b, b' ' | b'\t' | b'\n' | b'\r' | 0x0b | 0x0c);
+    let mut rest = &text[text.iter().take_while(|b| is_space(b)).count()..];
+    let negative = rest.first() == Some(&b'-');
+    if negative || rest.first() == Some(&b'+') {
+        rest = &rest[1..];
+    }
+    let digits = rest.iter().take_while(|b| b.is_ascii_alphanumeric()).count();
+    if digits == 0 || rest[digits..].iter().any(|b| !is_space(b)) {
+        return None;
+    }
+    let mut n: u64 = 0;
+    for &b in &rest[..digits] {
+        let digit = char::from(b).to_digit(36)?;
+        if digit >= base {
+            return None;
+        }
+        n = n.wrapping_mul(u64::from(base)).wrapping_add(u64::from(digit));
+    }
+    Some(if negative { 0u64.wrapping_sub(n) } else { n } as i64)
 }
 
 /// tonumber(e [, base]) - Convert to number
 fn lua_tonumber(l: &mut LuaState) -> LuaResult<usize> {
-    let value = l
-        .get_arg(1)
-        .ok_or_else(|| l.error("tonumber() requires argument 1".to_string()))?;
-    let has_base = l.get_arg(2).is_some();
-    let base = l.get_arg(2).and_then(|v| v.as_integer()).unwrap_or(10);
-
-    if has_base && !(2..=36).contains(&base) {
-        return Err(l.error("bad argument #2 to 'tonumber' (base out of range)".to_string()));
-    }
-
-    let result = match value.kind() {
-        LuaValueKind::Integer if !has_base => value,
-        LuaValueKind::Float if !has_base => value,
-        LuaValueKind::String => {
-            if let Some(s) = value.as_str() {
-                let s_str = s.trim();
-                if has_base {
-                    // Explicit base: parse as base-N integer.
-                    // Leading/trailing spaces are allowed; 0x prefix is NOT.
-                    // Handle optional leading sign.
-                    let (neg, digits) = if let Some(rest) = s_str.strip_prefix('-') {
-                        (true, rest.trim_start())
-                    } else if let Some(rest) = s_str.strip_prefix('+') {
-                        (false, rest.trim_start())
-                    } else {
-                        (false, s_str)
-                    };
-                    // Reject empty, strings with embedded whitespace, or null bytes
-                    if digits.is_empty() || digits.contains('\0') {
-                        LuaValue::nil()
-                    } else {
-                        // u64 to handle full unsigned range, then cast to i64 (wrapping)
-                        let mut result: u64 = 0;
-                        let mut valid = true;
-                        let mut has_any = false;
-                        for ch in digits.chars() {
-                            if let Some(d) = ch.to_digit(base as u32) {
-                                result = result.wrapping_mul(base as u64).wrapping_add(d as u64);
-                                has_any = true;
-                            } else {
-                                valid = false;
-                                break;
-                            }
-                        }
-                        if valid && has_any {
-                            let i = result as i64;
-                            LuaValue::integer(if neg { i.wrapping_neg() } else { i })
-                        } else {
-                            LuaValue::nil()
-                        }
-                    }
-                } else {
-                    parse_lua_number(s_str)
-                }
-            } else {
-                LuaValue::nil()
-            }
+    let has_base = l.get_arg(2).is_some_and(|base| !base.is_nil());
+    let result = if !has_base {
+        match l.get_arg(1) {
+            Some(value) if value.is_number() => value,
+            Some(value) => match value.as_bytes() {
+                Some(text) => std::str::from_utf8(text)
+                    .map(parse_lua_number)
+                    .unwrap_or_default(),
+                None => LuaValue::nil(),
+            },
+            // LuaTeX's Lua 5.3 answers nil; Lua 5.5 requires an argument.
+            None if l.global_state().language() == crate::LuaLanguageLevel::Lua53 => LuaValue::nil(),
+            None => return Err(lauxlib::argerror(l, 1, "value expected")),
         }
-        _ => {
-            if has_base {
-                return Err(l.error(
-                    "bad argument #1 to 'tonumber' (string expected, got number)".to_string(),
-                ));
-            }
-            LuaValue::nil()
+    } else {
+        let base = lauxlib::check_integer(l, 2)?;
+        let text = match l.get_arg(1) {
+            Some(value) if value.is_string() => value,
+            _ => return Err(lauxlib::typeerror(l, 1, "string")),
+        };
+        if !(2..=36).contains(&base) {
+            return Err(lauxlib::argerror(l, 2, "base out of range"));
+        }
+        match str_to_int_base(text.as_bytes().unwrap_or_default(), base as u32) {
+            Some(n) => LuaValue::integer(n),
+            None => LuaValue::nil(),
         }
     };
-
     l.push_value(result)?;
     Ok(1)
 }
 
-/// Format a float value matching Lua 5.5's tostringbuffFloat behavior:
-/// First try %.15g (max digits preserving tostring(tonumber(x)) == x),
-/// then %.17g if roundtrip fails, and append ".0" if result looks integer-like.
-pub(crate) fn lua_float_to_string(n: f64) -> String {
-    if n.is_nan() {
-        return "-nan".to_string();
-    }
-    if n.is_infinite() {
-        return if n > 0.0 { "inf" } else { "-inf" }.to_string();
-    }
-
-    // First try: format with roughly 15 significant digits (%.15g equivalent)
-    let s = format_g(n, 15);
-
-    // Check if it roundtrips
-    let mut result = if s.parse::<f64>().ok() == Some(n) {
-        s
-    } else {
-        // Second try: format with 17 significant digits (%.17g equivalent)
-        format_g(n, 17)
-    };
-
-    // If result looks like an integer (no '.', 'e', 'E', 'n', 'i'), add ".0"
-    if !result.contains('.')
-        && !result.contains('e')
-        && !result.contains('E')
-        && !result.contains('n')
-        && !result.contains('i')
-    {
-        result.push_str(".0");
-    }
-
-    result
-}
-
-/// Format a float with %.<prec>g semantics (C-style %g formatting)
-fn format_g(n: f64, prec: usize) -> String {
-    if n == 0.0 {
-        return if n.is_sign_negative() { "-0" } else { "0" }.to_string();
-    }
-
-    let abs_n = n.abs();
-    // Determine the base-10 exponent
-    let exp = abs_n.log10().floor() as i32;
-
-    let formatted = if exp >= -4 && exp < prec as i32 {
-        // Fixed-point notation: precision = prec - (exp + 1) decimal places
-        let decimal_places = (prec as i32 - exp - 1).max(0) as usize;
-        format!("{:.prec$}", n, prec = decimal_places)
-    } else {
-        // Scientific notation: precision = prec - 1 decimal places
-        format!("{:.prec$e}", n, prec = prec - 1)
-    };
-
-    // Strip trailing zeros after decimal point (matching %g behavior)
-    strip_trailing_zeros(&formatted)
-}
-
-/// Strip trailing zeros from a formatted number string (matching C's %g behavior)
-fn strip_trailing_zeros(s: &str) -> String {
-    if let Some(e_pos) = s.find('e').or_else(|| s.find('E')) {
-        // Scientific notation: strip zeros between decimal and 'e'
-        let (mantissa, exponent) = s.split_at(e_pos);
-        let stripped = strip_decimal_zeros(mantissa);
-        format!("{}{}", stripped, exponent)
-    } else if s.contains('.') {
-        strip_decimal_zeros(s)
-    } else {
-        s.to_string()
-    }
-}
-
-/// Strip trailing zeros after decimal point, remove point if no digits follow
-fn strip_decimal_zeros(s: &str) -> String {
-    let trimmed = s.trim_end_matches('0');
-    trimmed.strip_suffix('.').unwrap_or(trimmed).to_string()
-}
-
 /// tostring(v) - Convert to string
 fn lua_tostring(l: &mut LuaState) -> LuaResult<usize> {
-    let value = l
-        .get_arg(1)
-        .ok_or_else(|| l.error("tostring() requires argument 1".to_string()))?;
-
-    // Fast path: already a string, return it directly
-    if value.is_string() {
-        l.push_value(value)?;
-        return Ok(1);
-    }
-
-    // Fast path: raw integer type — use itoa
-    if value.is_integer() {
-        let n = value.as_integer_strict().unwrap();
-        let mut buf = itoa::Buffer::new();
-        let s = buf.format(n);
-        let result_value = l.create_string(s)?;
-        l.push_value(result_value)?;
-        return Ok(1);
-    }
-
-    // Fast path: raw float type — use Lua-compatible formatting
-    if value.is_float() {
-        let n = value.as_number().unwrap();
-        let s = lua_float_to_string(n);
-        let result_value = l.create_string(&s)?;
-        l.push_value(result_value)?;
-        return Ok(1);
-    }
-
-    // Fast path: nil / bool — pre-interned strings
-    if value.is_nil() {
-        let result_value = l.global_state_mut().const_strings.str_nil;
-        l.push_value(result_value)?;
-        return Ok(1);
-    }
-    if let Some(b) = value.as_boolean() {
-        let cs = &l.global_state_mut().const_strings;
-        let result_value = if b { cs.str_true } else { cs.str_false };
-        l.push_value(result_value)?;
-        return Ok(1);
-    }
-
-    // General path: metamethods, functions, tables, etc.
-    let result = l.to_string(&value)?;
-    let result_value = l.create_string(&result)?;
-    l.push_value(result_value)?;
+    let value = lauxlib::check_any(l, 1)?;
+    let result = match lauxlib::tolstring(l, &value)? {
+        lauxlib::LStr::Value(result) => result,
+        lauxlib::LStr::Number(text) => l.create_bytes(text.as_bytes())?,
+    };
+    l.push_value(result)?;
     Ok(1)
 }
 

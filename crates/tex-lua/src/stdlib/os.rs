@@ -1,17 +1,16 @@
-// OS library (stub implementation)
+// OS library: a port of loslib.c (Lua 5.3 and 5.5 behaviour).
 // Implements: clock, date, difftime, execute, exit, getenv, remove, rename,
 // setlocale, time, tmpname
 
+use crate::LuaLanguageLevel;
 use crate::lib_registry::LibraryModule;
 use crate::lua_value::LuaValue;
 use crate::lua_vm::{LuaResult, LuaState};
-use crate::platform_time;
-use chrono::{DateTime, Datelike, Local, TimeZone, Timelike, Utc};
+use crate::stdlib::lauxlib;
 
 pub fn create_os_lib() -> LibraryModule {
     crate::lib_module!("os", {
         "clock" => os_clock,
-        "time" => os_time,
         "date" => os_date,
         "difftime" => os_difftime,
         "execute" => os_execute,
@@ -20,684 +19,586 @@ pub fn create_os_lib() -> LibraryModule {
         "remove" => os_remove,
         "rename" => os_rename,
         "setlocale" => os_setlocale,
+        "time" => os_time,
         "tmpname" => os_tmpname,
     })
 }
 
-fn os_clock(l: &mut LuaState) -> LuaResult<usize> {
-    // Use VM's start_time for consistent measurements
-    let elapsed = l.global_state_mut().start_time.elapsed_secs_f64();
-    l.push_value(LuaValue::float(elapsed))?;
-    Ok(1)
+#[inline]
+fn is_lua53(l: &LuaState) -> bool {
+    l.global_state().language() == LuaLanguageLevel::Lua53
 }
 
-fn os_time(l: &mut LuaState) -> LuaResult<usize> {
-    let arg = l.get_arg(1);
+/// Broken-down time (`struct tm` with C's field conventions).
+#[derive(Clone, Copy, Default)]
+struct Tm {
+    sec: i32,
+    min: i32,
+    hour: i32,
+    mday: i32,
+    /// Months since January (0-11).
+    mon: i32,
+    /// Years since 1900.
+    year: i32,
+    /// Days since Sunday (0-6).
+    wday: i32,
+    /// Days since January 1 (0-365).
+    yday: i32,
+    /// Positive, zero, or negative (unknown) like `tm_isdst`.
+    isdst: i32,
+}
 
-    if let Some(table_val) = arg {
-        if table_val.is_nil() {
-            // os.time() with nil = current time
-            let timestamp = platform_time::unix_secs();
-            l.push_value(LuaValue::integer(timestamp as i64))?;
-            return Ok(1);
+#[cfg(unix)]
+mod sys {
+    use super::Tm;
+
+    fn to_libc(tm: &Tm) -> libc::tm {
+        // SAFETY: libc::tm is plain data; all-zero is a valid value.
+        let mut out: libc::tm = unsafe { std::mem::zeroed() };
+        out.tm_sec = tm.sec;
+        out.tm_min = tm.min;
+        out.tm_hour = tm.hour;
+        out.tm_mday = tm.mday;
+        out.tm_mon = tm.mon;
+        out.tm_year = tm.year;
+        out.tm_wday = tm.wday;
+        out.tm_yday = tm.yday;
+        out.tm_isdst = tm.isdst;
+        out
+    }
+
+    fn from_libc(tm: &libc::tm) -> Tm {
+        Tm {
+            sec: tm.tm_sec,
+            min: tm.tm_min,
+            hour: tm.tm_hour,
+            mday: tm.tm_mday,
+            mon: tm.tm_mon,
+            year: tm.tm_year,
+            wday: tm.tm_wday,
+            yday: tm.tm_yday,
+            isdst: tm.tm_isdst,
         }
-        // os.time(table) - convert table to timestamp
-        if let Some(_tbl) = table_val.as_table() {
-            let get_field = |l: &mut LuaState, name: &str| -> Result<Option<i64>, String> {
-                let key = l.create_string(name).unwrap();
-                let val = table_val.as_table().unwrap().raw_get(&key);
-                match val {
-                    Some(v) => {
-                        if let Some(n) = v.as_integer() {
-                            Ok(Some(n))
-                        } else if let Some(n) = v.as_number() {
-                            if n.fract() != 0.0 {
-                                Err("not an integer".to_string())
-                            } else {
-                                Ok(Some(n as i64))
-                            }
-                        } else {
-                            Err("not an integer".to_string())
-                        }
-                    }
-                    None => Ok(None),
-                }
-            };
+    }
 
-            let year = get_field(l, "year")
-                .map_err(|e| l.error(format!("field 'year' is {}", e)))?
-                .ok_or_else(|| l.error("field 'year' missing in date table".to_string()))?;
-            let month = get_field(l, "month")
-                .map_err(|e| l.error(format!("field 'month' is {}", e)))?
-                .ok_or_else(|| l.error("field 'month' missing in date table".to_string()))?;
-            let day = get_field(l, "day")
-                .map_err(|e| l.error(format!("field 'day' is {}", e)))?
-                .ok_or_else(|| l.error("field 'day' missing in date table".to_string()))?;
-            let hour = match get_field(l, "hour") {
-                Ok(Some(v)) => v,
-                Ok(None) => 12,
-                Err(e) => return Err(l.error(format!("field 'hour' is {}", e))),
-            };
-            let min = match get_field(l, "min") {
-                Ok(Some(v)) => v,
-                Ok(None) => 0,
-                Err(e) => return Err(l.error(format!("field 'min' is {}", e))),
-            };
-            let sec = match get_field(l, "sec") {
-                Ok(Some(v)) => v,
-                Ok(None) => 0,
-                Err(e) => return Err(l.error(format!("field 'sec' is {}", e))),
-            };
-
-            // Validate year range for 32-bit time_t compatibility
-            // Lua checks if year fits in an int after subtracting 1900
-            let year_offset = match year.checked_sub(1900) {
-                Some(value) => value,
-                None => return Err(l.error("field 'year' is out-of-bound".to_string())),
-            };
-            if year_offset < i32::MIN as i64 || year_offset > i32::MAX as i64 {
-                return Err(l.error("field 'year' is out-of-bound".to_string()));
-            }
-
-            // Validate other fields fit in int
-            if month < i32::MIN as i64 || month > i32::MAX as i64 {
-                return Err(l.error("field 'month' is out-of-bound".to_string()));
-            }
-            if day < i32::MIN as i64 || day > i32::MAX as i64 {
-                return Err(l.error("field 'day' is out-of-bound".to_string()));
-            }
-            if hour < i32::MIN as i64 || hour > i32::MAX as i64 {
-                return Err(l.error("field 'hour' is out-of-bound".to_string()));
-            }
-            if min < i32::MIN as i64 || min > i32::MAX as i64 {
-                return Err(l.error("field 'min' is out-of-bound".to_string()));
-            }
-            if sec < i32::MIN as i64 || sec > i32::MAX as i64 {
-                return Err(l.error("field 'sec' is out-of-bound".to_string()));
-            }
-
-            // Use chrono to build a NaiveDateTime, then convert to local time
-            // chrono handles month/day normalization naturally
-            use chrono::NaiveDate;
-
-            // Handle out-of-range months by adjusting year
-            let mut adj_year = year;
-            let mut adj_month = month;
-            if !(1..=12).contains(&adj_month) {
-                // Normalize: month 0 = December of previous year, month 13 = January of next year, etc.
-                adj_year += (adj_month - 1).div_euclid(12);
-                adj_month = (adj_month - 1).rem_euclid(12) + 1;
-            }
-
-            // Try building the date - handle day overflow via duration addition
-            // For years that fit in i32, use chrono. For larger years, compute directly.
-            if adj_year >= i32::MIN as i64 && adj_year <= i32::MAX as i64 {
-                use chrono::NaiveTime;
-                let base_date = NaiveDate::from_ymd_opt(adj_year as i32, adj_month as u32, 1);
-                let base_time = NaiveTime::from_hms_opt(0, 0, 0).unwrap();
-                if let Some(base) = base_date {
-                    let base_dt = base.and_time(base_time);
-                    let dt = base_dt
-                        + chrono::Duration::days(day - 1)
-                        + chrono::Duration::hours(hour)
-                        + chrono::Duration::minutes(min)
-                        + chrono::Duration::seconds(sec);
-
-                    // Convert to local timezone timestamp
-                    let local_result = Local.from_local_datetime(&dt);
-                    if let Some(local_dt) = local_result.single().or_else(|| local_result.latest())
-                    {
-                        let timestamp = local_dt.timestamp();
-
-                        // Normalize the input table (like C's mktime)
-                        normalize_time_table(l, &table_val, &local_dt)?;
-
-                        l.push_value(LuaValue::integer(timestamp))?;
-                        return Ok(1);
-                    }
-                }
+    /// `localtime_r` / `gmtime_r`; the libc tm is kept for `strftime`.
+    pub(super) fn broken_down(t: i64, utc: bool) -> Option<(Tm, libc::tm)> {
+        let time = libc::time_t::try_from(t).ok()?;
+        // SAFETY: plain data, filled in by the call below.
+        let mut out: libc::tm = unsafe { std::mem::zeroed() };
+        let result = unsafe {
+            if utc {
+                libc::gmtime_r(&time, &mut out)
             } else {
-                // Year too large for chrono - compute timestamp directly (UTC approximation)
-                // This handles extreme years like (1<<31) + 1899
-                let ts = mktime_approx(adj_year, adj_month, day, hour, min, sec);
-                if let Some(t) = ts {
-                    // Check that the normalized result has a year that fits in
-                    // C's int (year - 1900 must fit in i32)
-                    let result_year = year_from_timestamp(t);
-                    let result_year_offset = result_year - 1900;
-                    if result_year_offset < i32::MIN as i64 || result_year_offset > i32::MAX as i64
-                    {
-                        return Err(l.error(
-                            "time result cannot be represented in this installation".to_string(),
-                        ));
-                    }
-                    l.push_value(LuaValue::integer(t))?;
-                    return Ok(1);
-                }
+                libc::localtime_r(&time, &mut out)
             }
+        };
+        (!result.is_null()).then(|| (from_libc(&out), out))
+    }
 
-            return Err(
-                l.error("time result cannot be represented in this installation".to_string())
-            );
-        } else {
-            return Err(l.error("table expected".to_string()));
+    /// `mktime`: normalizes `tm` in place.
+    pub(super) fn mktime(tm: &mut Tm) -> Option<i64> {
+        let mut raw = to_libc(tm);
+        let t = unsafe { libc::mktime(&mut raw) };
+        *tm = from_libc(&raw);
+        (t != -1).then_some(t as i64)
+    }
+
+    /// `strftime` of one conversion (`spec` includes the '%').
+    pub(super) fn strftime(spec: &[u8], tm: &libc::tm, out: &mut Vec<u8>) {
+        let mut format = spec.to_vec();
+        format.push(0);
+        let mut buf = [0u8; 250];
+        let n = unsafe {
+            libc::strftime(
+                buf.as_mut_ptr().cast(),
+                buf.len(),
+                format.as_ptr().cast(),
+                tm,
+            )
+        };
+        out.extend_from_slice(&buf[..n]);
+    }
+
+    /// `clock()`: processor time used by the process (glibc reads the
+    /// same clock).
+    pub(super) fn clock() -> f64 {
+        // SAFETY: plain data, filled in by the call.
+        let mut ts: libc::timespec = unsafe { std::mem::zeroed() };
+        if unsafe { libc::clock_gettime(libc::CLOCK_PROCESS_CPUTIME_ID, &mut ts) } != 0 {
+            return -1.0;
+        }
+        ts.tv_sec as f64 + ts.tv_nsec as f64 / 1e9
+    }
+}
+
+#[cfg(not(unix))]
+mod sys {
+    use super::Tm;
+    use chrono::{DateTime, Datelike, Local, NaiveDate, TimeZone, Timelike, Utc};
+
+    pub(super) type Raw = DateTime<chrono::FixedOffset>;
+
+    fn from_datetime(dt: &Raw) -> Tm {
+        Tm {
+            sec: dt.second() as i32,
+            min: dt.minute() as i32,
+            hour: dt.hour() as i32,
+            mday: dt.day() as i32,
+            mon: dt.month0() as i32,
+            year: dt.year() - 1900,
+            wday: dt.weekday().num_days_from_sunday() as i32,
+            yday: dt.ordinal0() as i32,
+            isdst: 0,
         }
     }
 
-    // No argument: return current time
-    let timestamp = platform_time::unix_secs();
+    pub(super) fn broken_down(t: i64, utc: bool) -> Option<(Tm, Raw)> {
+        let utc_time = Utc.timestamp_opt(t, 0).single()?;
+        let dt: Raw = if utc {
+            utc_time.fixed_offset()
+        } else {
+            utc_time.with_timezone(&Local).fixed_offset()
+        };
+        Some((from_datetime(&dt), dt))
+    }
 
-    l.push_value(LuaValue::integer(timestamp as i64))?;
+    pub(super) fn mktime(tm: &mut Tm) -> Option<i64> {
+        let year = tm.year as i64 + 1900 + (tm.mon as i64).div_euclid(12);
+        let month = (tm.mon as i64).rem_euclid(12) as u32 + 1;
+        let base = NaiveDate::from_ymd_opt(i32::try_from(year).ok()?, month, 1)?.and_hms_opt(0, 0, 0)?;
+        let naive = base
+            + chrono::Duration::days(tm.mday as i64 - 1)
+            + chrono::Duration::hours(tm.hour as i64)
+            + chrono::Duration::minutes(tm.min as i64)
+            + chrono::Duration::seconds(tm.sec as i64);
+        let local = Local.from_local_datetime(&naive);
+        let dt = local.single().or_else(|| local.latest())?;
+        *tm = from_datetime(&dt.fixed_offset());
+        Some(dt.timestamp())
+    }
+
+    pub(super) fn strftime(spec: &[u8], dt: &Raw, out: &mut Vec<u8>) {
+        let spec = std::str::from_utf8(spec).unwrap_or("");
+        out.extend_from_slice(dt.format(spec).to_string().as_bytes());
+    }
+}
+
+fn os_clock(l: &mut LuaState) -> LuaResult<usize> {
+    #[cfg(unix)]
+    let seconds = sys::clock();
+    #[cfg(not(unix))]
+    let seconds = l.global_state_mut().start_time.elapsed_secs_f64();
+    l.push_value(LuaValue::float(seconds))?;
     Ok(1)
 }
 
-/// Approximate mktime for years outside chrono's i32 range
-/// Computes seconds since epoch assuming UTC (no timezone offset)
-fn mktime_approx(year: i64, month: i64, day: i64, hour: i64, min: i64, sec: i64) -> Option<i64> {
-    // Days from year 0 to year Y (approximate, handling leap years)
-    fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
-        // Algorithm from Howard Hinnant's date library
-        let y = if m <= 2 { y - 1 } else { y };
-        let era = if y >= 0 { y } else { y - 399 } / 400;
-        let yoe = (y - era * 400) as u64;
-        let m = m as u64;
-        let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d as u64 - 1;
-        let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-        era * 146097 + doe as i64 - 719468 // days since 1970-01-01
+/// Conversions accepted by `os.date` (LUA_STRFTIMEOPTIONS for C99):
+/// one-char options, then two-char `E`/`O` modified ones.
+const STRFTIME_OPTIONS_1: &[u8] = b"aAbBcCdDeFgGhHIjmMnprRStTuUVwWxXyYzZ%";
+const STRFTIME_OPTIONS_2: [&[u8]; 19] = [
+    b"Ec", b"EC", b"Ex", b"EX", b"Ey", b"EY", b"Od", b"Oe", b"OH", b"OI", b"Om", b"OM", b"OS",
+    b"Ou", b"OU", b"OV", b"Ow", b"OW", b"Oy",
+];
+
+/// `checkoption`: length of the valid conversion at the start of `conv`.
+fn conversion_length(conv: &[u8]) -> Option<usize> {
+    if conv.first().is_some_and(|c| STRFTIME_OPTIONS_1.contains(c)) {
+        return Some(1);
     }
-
-    let days = days_from_civil(year, month, day);
-    let ts = days
-        .checked_mul(86400)?
-        .checked_add(hour * 3600)?
-        .checked_add(min * 60)?
-        .checked_add(sec)?;
-    Some(ts)
+    STRFTIME_OPTIONS_2
+        .iter()
+        .any(|option| conv.starts_with(option))
+        .then_some(2)
 }
 
-/// Extract the year from a Unix timestamp (UTC)
-fn year_from_timestamp(ts: i64) -> i64 {
-    // Inverse of days_from_civil: convert days since epoch to year
-    let days = ts.div_euclid(86400);
-    let z = days + 719468;
-    let era = if z >= 0 { z } else { z - 146096 } / 146097;
-    let doe = (z - era * 146097) as u64;
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
-    let y = yoe as i64 + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    if m <= 2 { y + 1 } else { y }
-}
-
-/// Normalize the time table fields after computing the timestamp (like C's mktime)
-fn normalize_time_table(
-    l: &mut LuaState,
-    table_val: &LuaValue,
-    dt: &DateTime<Local>,
-) -> LuaResult<()> {
-    let year_key = l.create_string("year")?;
-    l.raw_set(table_val, year_key, LuaValue::integer(dt.year() as i64));
-    let month_key = l.create_string("month")?;
-    l.raw_set(table_val, month_key, LuaValue::integer(dt.month() as i64));
-    let day_key = l.create_string("day")?;
-    l.raw_set(table_val, day_key, LuaValue::integer(dt.day() as i64));
-    let hour_key = l.create_string("hour")?;
-    l.raw_set(table_val, hour_key, LuaValue::integer(dt.hour() as i64));
-    let min_key = l.create_string("min")?;
-    l.raw_set(table_val, min_key, LuaValue::integer(dt.minute() as i64));
-    let sec_key = l.create_string("sec")?;
-    l.raw_set(table_val, sec_key, LuaValue::integer(dt.second() as i64));
-    let wday_key = l.create_string("wday")?;
-    l.raw_set(
-        table_val,
-        wday_key,
-        LuaValue::integer(dt.weekday().number_from_sunday() as i64),
-    );
-    let yday_key = l.create_string("yday")?;
-    l.raw_set(table_val, yday_key, LuaValue::integer(dt.ordinal() as i64));
-
+/// `setallfields`: store a broken-down time in the table `table`.
+fn set_all_fields(l: &mut LuaState, table: &LuaValue, tm: &Tm) -> LuaResult<()> {
+    let fields = [
+        ("year", tm.year as i64 + 1900),
+        ("month", tm.mon as i64 + 1),
+        ("day", tm.mday as i64),
+        ("hour", tm.hour as i64),
+        ("min", tm.min as i64),
+        ("sec", tm.sec as i64),
+        ("yday", tm.yday as i64 + 1),
+        ("wday", tm.wday as i64 + 1),
+    ];
+    for (name, value) in fields {
+        let key = l.create_string(name)?;
+        l.raw_set(table, key, LuaValue::integer(value));
+    }
+    // A negative isdst means "unknown": the field is left nil.
+    if tm.isdst >= 0 {
+        let key = l.create_string("isdst")?;
+        l.raw_set(table, key, LuaValue::boolean(tm.isdst != 0));
+    }
     Ok(())
 }
 
-// os.date([format [, time]])
-// format: optional string specifying format (default "*t")
-// time: optional timestamp (default current time)
+/// `l_checktime` for an optional argument.
+fn opt_time(l: &mut LuaState, narg: usize) -> LuaResult<i64> {
+    match l.get_arg(narg) {
+        Some(value) if !value.is_nil() => lauxlib::check_integer(l, narg),
+        _ => Ok(crate::platform_time::unix_secs() as i64),
+    }
+}
+
 fn os_date(l: &mut LuaState) -> LuaResult<usize> {
-    let format_arg = l.get_arg(1);
-    let time_arg = l.get_arg(2);
-
-    // Get timestamp (default to current time)
-    let timestamp = if let Some(t) = time_arg {
-        if let Some(n) = t.as_number() {
-            n as i64
-        } else {
-            return Err(l.error("bad argument #2 to 'date' (number expected)".to_string()));
-        }
-    } else {
-        platform_time::unix_secs() as i64
+    let format = lauxlib::opt_lstring(l, 1)?;
+    let format: &[u8] = format.as_deref().unwrap_or(b"%c");
+    let t = opt_time(l, 2)?;
+    let (utc, mut s) = match format.strip_prefix(b"!") {
+        Some(rest) => (true, rest),
+        None => (false, format),
     };
-
-    // Parse format string (default is "%c" which gives a readable date/time)
-    let format_str = if let Some(f) = format_arg {
-        if let Some(s) = f.as_str() {
-            s.to_string()
-        } else {
-            return Err(l.error("bad argument #1 to 'date' (string expected)".to_string()));
-        }
-    } else {
-        "%c".to_string() // Default to standard date/time format
+    let Some((tm, raw)) = sys::broken_down(t, utc) else {
+        let what = if is_lua53(l) { "time" } else { "date" };
+        return Err(lauxlib::lual_error(
+            l,
+            format!("{what} result cannot be represented in this installation"),
+        ));
     };
-
-    // Check if UTC (starts with '!') or local time
-    let (use_utc, actual_format) = if let Some(rest) = format_str.strip_prefix('!') {
-        (true, rest)
-    } else {
-        (false, format_str.as_str())
-    };
-
-    // Get DateTime object
-    let dt: DateTime<Local> = if use_utc {
-        Utc.timestamp_opt(timestamp, 0)
-            .single()
-            .ok_or_else(|| {
-                l.error("time result cannot be represented in this installation".to_string())
-            })?
-            .with_timezone(&Local)
-    } else {
-        Local.timestamp_opt(timestamp, 0).single().ok_or_else(|| {
-            l.error("time result cannot be represented in this installation".to_string())
-        })?
-    };
-
-    // Handle special formats
-    match actual_format {
-        "*t" => {
-            // Return table with date components
-            let table = l.create_table(0, 9)?;
-
-            let year_key = l.create_string("year")?;
-            l.raw_set(&table, year_key, LuaValue::integer(dt.year() as i64));
-
-            let month_key = l.create_string("month")?;
-            l.raw_set(&table, month_key, LuaValue::integer(dt.month() as i64));
-
-            let day_key = l.create_string("day")?;
-            l.raw_set(&table, day_key, LuaValue::integer(dt.day() as i64));
-
-            let hour_key = l.create_string("hour")?;
-            l.raw_set(&table, hour_key, LuaValue::integer(dt.hour() as i64));
-
-            let min_key = l.create_string("min")?;
-            l.raw_set(&table, min_key, LuaValue::integer(dt.minute() as i64));
-
-            let sec_key = l.create_string("sec")?;
-            l.raw_set(&table, sec_key, LuaValue::integer(dt.second() as i64));
-
-            // wday: weekday (Sunday is 1)
-            let wday_key = l.create_string("wday")?;
-            let wday = dt.weekday().number_from_sunday();
-            l.raw_set(&table, wday_key, LuaValue::integer(wday as i64));
-
-            // yday: day of year (1-366)
-            let yday_key = l.create_string("yday")?;
-            let yday = dt.ordinal();
-            l.raw_set(&table, yday_key, LuaValue::integer(yday as i64));
-
-            // isdst: daylight saving time flag (TODO: implement properly)
-            let isdst_key = l.create_string("isdst")?;
-            l.raw_set(&table, isdst_key, LuaValue::boolean(false));
-
-            l.push_value(table)?;
-            Ok(1)
-        }
-        _ => {
-            // Use strftime-style format string
-            let date_str = format_date_string(dt, actual_format).map_err(|e| l.error(e))?;
-            let result = l.create_string(&date_str)?;
-            l.push_value(result)?;
-            Ok(1)
-        }
+    // strcmp(s, "*t"): the comparison stops at an embedded zero.
+    if s.split(|&c| c == 0).next() == Some(b"*t".as_slice()) {
+        let table = l.create_table(0, 9)?;
+        set_all_fields(l, &table, &tm)?;
+        l.push_value(table)?;
+        return Ok(1);
     }
-}
-
-// Helper function to format date with Lua-style format codes
-fn format_date_string(dt: DateTime<Local>, format: &str) -> Result<String, String> {
-    // Valid Lua date format specifiers (from C strftime)
-    // Lua uses %a, %A, %b, %B, %c, %d, %H, %I, %j, %m, %M, %p, %S, %U, %w, %W, %x, %X, %y, %Y, %z, %Z, %%
-    let mut result = String::new();
-    let mut chars = format.chars().peekable();
-
-    while let Some(ch) = chars.next() {
-        if ch == '%' {
-            if let Some(&next_ch) = chars.peek() {
-                chars.next(); // consume the format character
-                let formatted = match next_ch {
-                    'a' => dt.format("%a").to_string(),
-                    'A' => dt.format("%A").to_string(),
-                    'b' | 'h' => dt.format("%b").to_string(),
-                    'B' => dt.format("%B").to_string(),
-                    'c' => dt.format("%a %b %d %H:%M:%S %Y").to_string(),
-                    'd' => dt.format("%d").to_string(),
-                    'D' => dt.format("%m/%d/%y").to_string(),
-                    'e' => dt.format("%e").to_string(),
-                    'F' => dt.format("%Y-%m-%d").to_string(),
-                    'g' => dt.format("%g").to_string(),
-                    'G' => dt.format("%G").to_string(),
-                    'H' => dt.format("%H").to_string(),
-                    'I' => dt.format("%I").to_string(),
-                    'j' => dt.format("%j").to_string(),
-                    'm' => dt.format("%m").to_string(),
-                    'M' => dt.format("%M").to_string(),
-                    'n' => "\n".to_string(),
-                    'p' => dt.format("%p").to_string(),
-                    'r' => dt.format("%I:%M:%S %p").to_string(),
-                    'R' => dt.format("%H:%M").to_string(),
-                    'S' => dt.format("%S").to_string(),
-                    't' => "\t".to_string(),
-                    'T' => dt.format("%H:%M:%S").to_string(),
-                    'u' => {
-                        let d = dt.weekday().number_from_monday();
-                        d.to_string()
-                    }
-                    'U' => dt.format("%U").to_string(),
-                    'V' => dt.format("%V").to_string(),
-                    'w' => dt.weekday().num_days_from_sunday().to_string(),
-                    'W' => dt.format("%W").to_string(),
-                    'x' => dt.format("%m/%d/%y").to_string(),
-                    'X' => dt.format("%H:%M:%S").to_string(),
-                    'y' => dt.format("%y").to_string(),
-                    'Y' => dt.format("%Y").to_string(),
-                    'z' => dt.format("%z").to_string(),
-                    'Z' => dt.format("%Z").to_string(),
-                    '%' => "%".to_string(),
-                    // POSIX extensions: %E and %O are modifier prefixes
-                    // %Ec, %EC, %Ex, %EX, %Ey, %EY = alternative era-based representations
-                    // %Od, %Oe, %OH, %OI, %Om, %OM, %OS, %Ou, %OU, %OV, %Ow, %OW, %Oy = alternative numeric
-                    'E' => {
-                        if let Some(&mod_ch) = chars.peek() {
-                            match mod_ch {
-                                'c' | 'C' | 'x' | 'X' | 'y' | 'Y' => {
-                                    chars.next();
-                                    let formatted = match mod_ch {
-                                        'c' => dt.format("%a %b %d %H:%M:%S %Y").to_string(),
-                                        'C' => dt.format("%C").to_string(),
-                                        'x' => dt.format("%m/%d/%y").to_string(),
-                                        'X' => dt.format("%H:%M:%S").to_string(),
-                                        'y' => dt.format("%y").to_string(),
-                                        'Y' => dt.format("%Y").to_string(),
-                                        _ => unreachable!(),
-                                    };
-                                    result.push_str(&formatted);
-                                    continue;
-                                }
-                                _ => {
-                                    return Err(format!(
-                                        "invalid conversion specifier '%E{}'",
-                                        mod_ch
-                                    ));
-                                }
-                            }
-                        } else {
-                            return Err("invalid conversion specifier '%E'".to_string());
-                        }
-                    }
-                    'O' => {
-                        if let Some(&mod_ch) = chars.peek() {
-                            match mod_ch {
-                                'd' | 'e' | 'H' | 'I' | 'm' | 'M' | 'S' | 'u' | 'U' | 'V' | 'w'
-                                | 'W' | 'y' => {
-                                    chars.next();
-                                    let formatted = match mod_ch {
-                                        'd' => dt.format("%d").to_string(),
-                                        'e' => dt.format("%e").to_string(),
-                                        'H' => dt.format("%H").to_string(),
-                                        'I' => dt.format("%I").to_string(),
-                                        'm' => dt.format("%m").to_string(),
-                                        'M' => dt.format("%M").to_string(),
-                                        'S' => dt.format("%S").to_string(),
-                                        'u' => dt.weekday().number_from_monday().to_string(),
-                                        'U' => dt.format("%U").to_string(),
-                                        'V' => dt.format("%V").to_string(),
-                                        'w' => dt.weekday().num_days_from_sunday().to_string(),
-                                        'W' => dt.format("%W").to_string(),
-                                        'y' => dt.format("%y").to_string(),
-                                        _ => unreachable!(),
-                                    };
-                                    result.push_str(&formatted);
-                                    continue;
-                                }
-                                _ => {
-                                    return Err(format!(
-                                        "invalid conversion specifier '%O{}'",
-                                        mod_ch
-                                    ));
-                                }
-                            }
-                        } else {
-                            return Err("invalid conversion specifier '%O'".to_string());
-                        }
-                    }
-                    _ => {
-                        return Err(format!("invalid conversion specifier '%{}'", next_ch));
-                    }
-                };
-                result.push_str(&formatted);
-            } else {
-                // Trailing % with no specifier
-                return Err("invalid conversion specifier '%'".to_string());
-            }
-        } else {
-            result.push(ch);
+    let mut out = Vec::with_capacity(s.len() + 16);
+    while let Some((&c, rest)) = s.split_first() {
+        if c != b'%' {
+            out.push(c);
+            s = rest;
+            continue;
         }
+        let Some(len) = conversion_length(rest) else {
+            // The message shows the rest of the format (C's '%s' of 'conv').
+            let conv = rest.split(|&c| c == 0).next().unwrap_or(&[]);
+            let message = format!(
+                "invalid conversion specifier '%{}'",
+                String::from_utf8_lossy(conv)
+            );
+            return Err(lauxlib::argerror(l, 1, &message));
+        };
+        sys::strftime(&s[..=len], &raw, &mut out);
+        s = &rest[len..];
     }
-
-    Ok(result)
-}
-
-fn os_exit(_l: &mut LuaState) -> LuaResult<usize> {
-    std::process::exit(0);
-}
-
-fn os_difftime(l: &mut LuaState) -> LuaResult<usize> {
-    let t2 = l
-        .get_arg(1)
-        .and_then(|v| v.as_integer())
-        .ok_or_else(|| l.error("difftime: argument 1 must be a number".to_string()))?;
-    let t1 = l
-        .get_arg(2)
-        .and_then(|v| v.as_integer())
-        .ok_or_else(|| l.error("difftime: argument 2 must be a number".to_string()))?;
-
-    let diff = t2 - t1;
-    l.push_value(LuaValue::integer(diff))?;
+    let result = l.create_bytes(&out)?;
+    l.push_value(result)?;
     Ok(1)
 }
 
-fn os_execute(l: &mut LuaState) -> LuaResult<usize> {
-    use std::process::Command;
-
-    let cmd_opt = l.get_arg(1).and_then(|v| {
-        if v.is_nil() {
-            None
-        } else {
-            v.as_str().map(|s| s.to_string())
+/// `getfield`: an integer date field, `delta` subtracted (C field origin).
+fn get_field(
+    l: &mut LuaState,
+    table: &LuaValue,
+    key: &str,
+    default: Option<i32>,
+    delta: i64,
+) -> LuaResult<i32> {
+    let key_value = l.create_string(key)?;
+    let value = l.table_get(table, &key_value)?.unwrap_or_default();
+    let Some(n) = lauxlib::tointeger(&value) else {
+        if !value.is_nil() {
+            return Err(lauxlib::lual_error(l, format!("field '{key}' is not an integer")));
         }
-    });
-
-    // If no command given, check if shell is available
-    let Some(cmd) = cmd_opt else {
-        // Return true to indicate shell is available
-        l.push_value(LuaValue::boolean(true))?;
-        return Ok(1);
+        return match default {
+            Some(default) => Ok(default),
+            None => Err(lauxlib::lual_error(l, format!("field '{key}' missing in date table"))),
+        };
     };
+    let in_range = if is_lua53(l) {
+        // L_MAXDATEFIELD = INT_MAX / 2
+        let max = (i32::MAX / 2) as i64;
+        (-max..=max).contains(&n)
+    } else if n >= 0 {
+        n - delta <= i32::MAX as i64
+    } else {
+        i32::MIN as i64 + delta <= n
+    };
+    if !in_range {
+        return Err(lauxlib::lual_error(l, format!("field '{key}' is out-of-bound")));
+    }
+    Ok((n - delta) as i32)
+}
 
-    // Platform-specific command execution
-    #[cfg(target_os = "windows")]
-    let output = Command::new("cmd").args(["/C", &cmd]).output();
-
-    #[cfg(not(target_os = "windows"))]
-    let output = Command::new("sh").arg("-c").arg(&cmd).output();
-
-    match output {
-        Ok(result) => {
-            #[cfg(unix)]
-            {
-                use std::os::unix::process::ExitStatusExt;
-
-                if let Some(signal) = result.status.signal() {
-                    l.push_value(LuaValue::nil())?;
-                    let signal_str = l.create_string("signal")?;
-                    l.push_value(signal_str)?;
-                    l.push_value(LuaValue::integer(signal as i64))?;
-                    return Ok(3);
+fn os_time(l: &mut LuaState) -> LuaResult<usize> {
+    let t = match l.get_arg(1) {
+        None => crate::platform_time::unix_secs() as i64,
+        Some(value) if value.is_nil() => crate::platform_time::unix_secs() as i64,
+        Some(table) => {
+            if !table.is_table() {
+                return Err(lauxlib::typeerror(l, 1, "table"));
+            }
+            let mut tm = Tm::default();
+            // The two versions read (and so report errors for) the fields
+            // in opposite orders.
+            let fields: [(&str, Option<i32>, i64); 6] = [
+                ("year", None, 1900),
+                ("month", None, 1),
+                ("day", None, 0),
+                ("hour", Some(12), 0),
+                ("min", Some(0), 0),
+                ("sec", Some(0), 0),
+            ];
+            let mut values = [0i32; 6];
+            let order: [usize; 6] = if is_lua53(l) { [5, 4, 3, 2, 1, 0] } else { [0, 1, 2, 3, 4, 5] };
+            for i in order {
+                let (key, default, delta) = fields[i];
+                values[i] = get_field(l, &table, key, default, delta)?;
+            }
+            [tm.year, tm.mon, tm.mday, tm.hour, tm.min, tm.sec] = values;
+            let isdst_key = l.create_string("isdst")?;
+            let isdst = l.table_get(&table, &isdst_key)?.unwrap_or_default();
+            tm.isdst = if isdst.is_nil() { -1 } else { i32::from(isdst.is_truthy()) };
+            let result = sys::mktime(&mut tm);
+            set_all_fields(l, &table, &tm)?;
+            match result {
+                Some(t) => t,
+                None => {
+                    return Err(lauxlib::lual_error(
+                        l,
+                        "time result cannot be represented in this installation",
+                    ));
                 }
             }
-
-            let exit_code = result.status.code().unwrap_or(-1);
-            if result.status.success() {
-                l.push_value(LuaValue::boolean(true))?;
-            } else {
-                l.push_value(LuaValue::nil())?;
-            }
-            let exit_str = l.create_string("exit")?;
-            l.push_value(exit_str)?;
-            l.push_value(LuaValue::integer(exit_code as i64))?;
-            Ok(3)
         }
-        Err(error) => {
-            let msg = l.create_string(&error.to_string())?;
-            l.push_value(LuaValue::nil())?;
-            l.push_value(msg)?;
-            l.push_value(LuaValue::integer(error.raw_os_error().unwrap_or(0) as i64))?;
-            Ok(3)
+    };
+    l.push_value(LuaValue::integer(t))?;
+    Ok(1)
+}
+
+fn os_difftime(l: &mut LuaState) -> LuaResult<usize> {
+    let t1 = lauxlib::check_integer(l, 1)?;
+    let t2 = lauxlib::check_integer(l, 2)?;
+    l.push_value(LuaValue::float(t1 as f64 - t2 as f64))?;
+    Ok(1)
+}
+
+/// `luaL_execresult` for a finished child process.
+#[cfg(not(target_arch = "wasm32"))]
+fn push_exec_result(l: &mut LuaState, status: std::process::ExitStatus) -> LuaResult<usize> {
+    #[cfg(unix)]
+    let (what, code) = {
+        use std::os::unix::process::ExitStatusExt;
+        match status.signal() {
+            Some(signal) => ("signal", signal),
+            None => ("exit", status.code().unwrap_or(-1)),
+        }
+    };
+    #[cfg(not(unix))]
+    let (what, code) = ("exit", status.code().unwrap_or(-1));
+    let success = what == "exit" && code == 0;
+    l.push_value(if success { LuaValue::boolean(true) } else { LuaValue::nil() })?;
+    let what = l.create_string(what)?;
+    l.push_value(what)?;
+    l.push_value(LuaValue::integer(code as i64))?;
+    Ok(3)
+}
+
+/// luaL_fileresult(L, 0, fname).
+fn push_os_error(l: &mut LuaState, error: &std::io::Error, filename: Option<&[u8]>) -> LuaResult<usize> {
+    let message = crate::stdlib::io::error_message(error);
+    let message = match filename {
+        Some(name) => format!("{}: {message}", String::from_utf8_lossy(name)),
+        None => message,
+    };
+    l.push_value(LuaValue::nil())?;
+    let message = l.create_string(&message)?;
+    l.push_value(message)?;
+    l.push_value(LuaValue::integer(error.raw_os_error().unwrap_or(0) as i64))?;
+    Ok(3)
+}
+
+fn os_execute(l: &mut LuaState) -> LuaResult<usize> {
+    let command = lauxlib::opt_lstring(l, 1)?;
+    let Some(command) = command else {
+        // system(NULL): is a shell available?
+        l.push_value(LuaValue::boolean(cfg!(not(target_arch = "wasm32"))))?;
+        return Ok(1);
+    };
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = command;
+        push_os_error(l, &std::io::Error::other("'execute' not supported"), None)
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        use std::io::Write;
+        let command = String::from_utf8_lossy(&command).into_owned();
+        let _ = std::io::stdout().flush();
+        #[cfg(windows)]
+        let status = std::process::Command::new("cmd").args(["/C", &command]).status();
+        #[cfg(not(windows))]
+        let status = std::process::Command::new("/bin/sh").arg("-c").arg(&command).status();
+        match status {
+            Ok(status) => push_exec_result(l, status),
+            Err(error) => push_os_error(l, &error, None),
         }
     }
+}
+
+fn os_exit(l: &mut LuaState) -> LuaResult<usize> {
+    let status = match l.get_arg(1) {
+        Some(value) if value.as_boolean().is_some() => {
+            if value.is_truthy() { 0 } else { 1 }
+        }
+        _ => lauxlib::opt_integer(l, 1, 0)? as i32,
+    };
+    if l.get_arg(2).is_some_and(|value| value.is_truthy()) {
+        l.global_state_mut().close();
+    }
+    // C's exit() flushes every stdio stream.
+    crate::stdlib::io::flush_all(l);
+    std::process::exit(status);
 }
 
 fn os_getenv(l: &mut LuaState) -> LuaResult<usize> {
-    let varname = l
-        .get_arg(1)
-        .and_then(|v| v.as_str().map(|s| s.to_string()))
-        .ok_or_else(|| l.error("getenv: argument 1 must be a string".to_string()))?;
+    let name = lauxlib::check_lstring(l, 1)?;
+    #[cfg(unix)]
+    let value = {
+        use std::os::unix::ffi::{OsStrExt, OsStringExt};
+        std::env::var_os(std::ffi::OsStr::from_bytes(&name)).map(OsStringExt::into_vec)
+    };
+    #[cfg(not(unix))]
+    let value = std::env::var_os(String::from_utf8_lossy(&name).as_ref())
+        .map(|v| v.to_string_lossy().into_owned().into_bytes());
+    let result = match value {
+        Some(bytes) => l.create_bytes(&bytes)?,
+        None => LuaValue::nil(),
+    };
+    l.push_value(result)?;
+    Ok(1)
+}
 
-    match std::env::var(&varname) {
-        Ok(value) => {
-            let result = l.create_string(&value)?;
-            l.push_value(result)?;
-            Ok(1)
-        }
-        Err(_) => {
-            l.push_value(LuaValue::nil())?;
-            Ok(1)
-        }
-    }
+#[cfg(unix)]
+fn c_path(bytes: &[u8]) -> std::io::Result<std::ffi::CString> {
+    std::ffi::CString::new(bytes).map_err(|_| std::io::Error::from_raw_os_error(libc::ENOENT))
 }
 
 fn os_remove(l: &mut LuaState) -> LuaResult<usize> {
-    let filename = l
-        .get_arg(1)
-        .and_then(|v| v.as_str().map(|s| s.to_string()))
-        .ok_or_else(|| l.error("remove: argument 1 must be a string".to_string()))?;
-
-    match std::fs::remove_file(&filename) {
-        Ok(_) => {
+    let filename = lauxlib::check_lstring(l, 1)?;
+    // remove(3) deletes files and empty directories.
+    #[cfg(unix)]
+    let result = c_path(&filename).and_then(|path| {
+        if unsafe { libc::remove(path.as_ptr()) } == 0 {
+            Ok(())
+        } else {
+            Err(std::io::Error::last_os_error())
+        }
+    });
+    #[cfg(not(unix))]
+    let result = {
+        let path = String::from_utf8_lossy(&filename).into_owned();
+        std::fs::remove_file(&path).or_else(|error| std::fs::remove_dir(&path).map_err(|_| error))
+    };
+    match result {
+        Ok(()) => {
             l.push_value(LuaValue::boolean(true))?;
             Ok(1)
         }
-        Err(e) => {
-            let err_msg = l.create_string(&format!("{}", e))?;
-            l.push_value(LuaValue::nil())?;
-            l.push_value(err_msg)?;
-            Ok(2)
-        }
+        Err(error) => push_os_error(l, &error, Some(&filename)),
     }
 }
 
 fn os_rename(l: &mut LuaState) -> LuaResult<usize> {
-    let oldname = l
-        .get_arg(1)
-        .and_then(|v| v.as_str().map(|s| s.to_string()))
-        .ok_or_else(|| l.error("rename: argument 1 must be a string".to_string()))?;
-    let newname = l
-        .get_arg(2)
-        .and_then(|v| v.as_str().map(|s| s.to_string()))
-        .ok_or_else(|| l.error("rename: argument 2 must be a string".to_string()))?;
-
-    match std::fs::rename(&oldname, &newname) {
-        Ok(_) => {
+    let from = lauxlib::check_lstring(l, 1)?;
+    let to = lauxlib::check_lstring(l, 2)?;
+    #[cfg(unix)]
+    let result = {
+        use std::os::unix::ffi::OsStrExt;
+        std::fs::rename(std::ffi::OsStr::from_bytes(&from), std::ffi::OsStr::from_bytes(&to))
+    };
+    #[cfg(not(unix))]
+    let result = std::fs::rename(
+        String::from_utf8_lossy(&from).as_ref(),
+        String::from_utf8_lossy(&to).as_ref(),
+    );
+    match result {
+        Ok(()) => {
             l.push_value(LuaValue::boolean(true))?;
             Ok(1)
         }
-        Err(e) => {
-            let err_msg = l.create_string(&format!("{}", e))?;
-            l.push_value(LuaValue::nil())?;
-            l.push_value(err_msg)?;
-            Ok(2)
-        }
+        Err(error) => push_os_error(l, &error, None),
     }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 fn os_setlocale(l: &mut LuaState) -> LuaResult<usize> {
-    let locale = match l.get_arg(1) {
-        None => None,
-        Some(value) if value.is_nil() => None,
-        Some(value) => {
-            let bytes = value.as_bytes().ok_or_else(|| {
-                l.error("bad argument #1 to 'setlocale' (string expected)".to_string())
-            })?;
-            Some(std::ffi::CString::new(bytes).map_err(|_| {
-                l.error("bad argument #1 to 'setlocale' (string contains zeros)".to_string())
-            })?)
-        }
-    };
-    let category_name = match l.get_arg(2) {
-        None => "all".to_string(),
-        Some(value) if value.is_nil() => "all".to_string(),
-        Some(value) => value.as_str().map(str::to_owned).ok_or_else(|| {
-            l.error("bad argument #2 to 'setlocale' (string expected)".to_string())
-        })?,
-    };
-    let category = match category_name.as_str() {
-        "all" => libc::LC_ALL,
-        "collate" => libc::LC_COLLATE,
-        "ctype" => libc::LC_CTYPE,
-        "monetary" => libc::LC_MONETARY,
-        "numeric" => libc::LC_NUMERIC,
-        "time" => libc::LC_TIME,
-        _ => {
-            return Err(l.error(format!(
-                "bad argument #2 to 'setlocale' (invalid option '{category_name}')"
-            )));
-        }
-    };
-    let locale_ptr = locale
-        .as_ref()
-        .map_or(std::ptr::null(), |value| value.as_ptr());
+    let locale = lauxlib::opt_lstring(l, 1)?;
+    let category = lauxlib::check_option(
+        l,
+        2,
+        Some("all"),
+        &["all", "collate", "ctype", "monetary", "numeric", "time"],
+    )?;
+    let category = [
+        libc::LC_ALL,
+        libc::LC_COLLATE,
+        libc::LC_CTYPE,
+        libc::LC_MONETARY,
+        libc::LC_NUMERIC,
+        libc::LC_TIME,
+    ][category];
+    // A name with an embedded zero is cut there, as C sees it.
+    let locale = locale.map(|name| {
+        let name = name.split(|&c| c == 0).next().unwrap_or(&[]);
+        std::ffi::CString::new(name).expect("no interior zero")
+    });
+    let locale_ptr = locale.as_ref().map_or(std::ptr::null(), |name| name.as_ptr());
     let result = unsafe { libc::setlocale(category, locale_ptr) };
-    if result.is_null() {
-        l.push_value(LuaValue::nil())?;
+    let value = if result.is_null() {
+        LuaValue::nil()
     } else {
-        let bytes = unsafe { std::ffi::CStr::from_ptr(result) }.to_bytes();
-        let value = l.create_bytes(bytes)?;
-        l.push_value(value)?;
-    }
+        l.create_bytes(unsafe { std::ffi::CStr::from_ptr(result) }.to_bytes())?
+    };
+    l.push_value(value)?;
     Ok(1)
 }
 
 #[cfg(target_arch = "wasm32")]
 fn os_setlocale(l: &mut LuaState) -> LuaResult<usize> {
-    let c_str = l.create_string("C")?;
-    l.push_value(c_str)?;
+    let locale = lauxlib::opt_lstring(l, 1)?;
+    lauxlib::check_option(
+        l,
+        2,
+        Some("all"),
+        &["all", "collate", "ctype", "monetary", "numeric", "time"],
+    )?;
+    // Only the "C" locale exists.
+    let accepted = locale.as_deref().is_none_or(|name| matches!(name, b"" | b"C" | b"POSIX"));
+    let value = if accepted { l.create_string("C")? } else { LuaValue::nil() };
+    l.push_value(value)?;
     Ok(1)
 }
 
 fn os_tmpname(l: &mut LuaState) -> LuaResult<usize> {
-    let timestamp = platform_time::unix_nanos();
-
-    let tmpname = format!("/tmp/lua_tmp_{}", timestamp);
-    let result = l.create_string(&tmpname)?;
-    l.push_value(result)?;
+    // POSIX Lua: mkstemp("/tmp/lua_XXXXXX"), leaving the file created.
+    #[cfg(unix)]
+    let name = {
+        let mut template = *b"/tmp/lua_XXXXXX\0";
+        let fd = unsafe { libc::mkstemp(template.as_mut_ptr().cast()) };
+        if fd == -1 {
+            None
+        } else {
+            unsafe { libc::close(fd) };
+            Some(template[..template.len() - 1].to_vec())
+        }
+    };
+    #[cfg(not(unix))]
+    let name = Some(
+        std::env::temp_dir()
+            .join(format!("lua_{}", crate::platform_time::unix_nanos()))
+            .to_string_lossy()
+            .into_owned()
+            .into_bytes(),
+    );
+    let Some(name) = name else {
+        return Err(lauxlib::lual_error(l, "unable to generate a unique filename"));
+    };
+    let name = l.create_bytes(&name)?;
+    l.push_value(name)?;
     Ok(1)
 }

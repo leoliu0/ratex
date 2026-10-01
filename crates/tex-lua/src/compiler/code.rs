@@ -285,12 +285,24 @@ pub fn jumpto(fs: &mut FuncState, target: usize) {
     patchlist(fs, jmp as isize, target as isize);
 }
 
-// Port of luaK_getlabel from lcode.c:234-237
-// int luaK_getlabel (FuncState *fs)
-// Port of lcode.c:233-236
+// Port of luaK_getlabel from lcode.c:233-236
+// Marks current position as a jump target and returns the current pc.
+// This updates lasttarget which prevents instruction merging/optimization
+// at jump targets (e.g., loop entry points should not merge with previous LOADNIL).
 pub fn get_label(fs: &mut FuncState) -> usize {
     fs.last_target = fs.pc;
     fs.pc
+}
+
+// Port of previousinstruction from lcode.c: the previous instruction, unless
+// the current position is a jump target (then nothing may be merged into it).
+fn previous_instruction(fs: &FuncState) -> Option<(usize, Instruction)> {
+    if fs.pc > fs.last_target && fs.pc > 0 {
+        let pc = fs.pc - 1;
+        Some((pc, fs.chunk.code[pc]))
+    } else {
+        None
+    }
 }
 
 // Port of luaK_patchtohere from lcode.c:312-315
@@ -317,16 +329,6 @@ pub fn concat(fs: &mut FuncState, l1: &mut isize, l2: isize) {
         }
         fix_jump(fs, list as usize, l2 as usize);
     }
-}
-
-// Port of luaK_getlabel from lcode.c:233-236
-// int luaK_getlabel (FuncState *fs)
-// Marks current position as a jump target and returns the current pc.
-// This updates lasttarget which prevents instruction merging/optimization
-// at jump targets (e.g., loop entry points should not merge with previous LOADNIL).
-pub fn getlabel(fs: &mut FuncState) -> usize {
-    fs.last_target = fs.pc;
-    fs.pc
 }
 
 // Port of luaK_patchlist from lcode.c:307-310
@@ -806,15 +808,9 @@ pub fn nil(fs: &mut FuncState, from: u8, n: u8) {
         return;
     }
 
-    let pc = fs.pc;
-
     // Optimization: merge with previous LOADNIL if registers are contiguous
     // Port of lcode.c:136-151 optimization logic
-    // Check if previous instruction exists and is not a jump target (lcode.c:117-123)
-    if pc > 0 && pc > fs.last_target {
-        let prev_pc = pc - 1;
-        let prev_instr = fs.chunk.code[prev_pc];
-
+    if let Some((prev_pc, prev_instr)) = previous_instruction(fs) {
         if Instruction::get_opcode(prev_instr) == OpCode::LoadNil {
             let pfrom = Instruction::get_a(prev_instr) as u8;
             let pl = pfrom + Instruction::get_b(prev_instr) as u8; // Last register in previous LOADNIL
@@ -1316,10 +1312,8 @@ fn swapexps(e1: &mut ExpDesc, e2: &mut ExpDesc) {
 // Port of codeconcat from lcode.c:1686-1698
 // Create code for '(e1 .. e2)'
 fn codeconcat(fs: &mut FuncState, e1: &mut ExpDesc, e2: &mut ExpDesc, line: usize) {
-    // Check if previous instruction is CONCAT to merge multiple concatenations
-    if fs.pc > 0 {
-        let prev_pc = fs.pc - 1;
-        let prev_instr = fs.chunk.code[prev_pc];
+    // Merge with a directly preceding CONCAT (that is not a jump target)
+    if let Some((prev_pc, prev_instr)) = previous_instruction(fs) {
         if Instruction::get_opcode(prev_instr) == OpCode::Concat {
             let n = Instruction::get_b(prev_instr);
             let a = Instruction::get_a(prev_instr);
@@ -1750,10 +1744,8 @@ pub fn posfix(
             if e2.kind == ExpKind::VKSTR
                 && e1.kind == ExpKind::VNONRELOC
                 && !e1.has_jumps()
-                && fs.pc > 0
+                && let Some((_, prev_instr)) = previous_instruction(fs)
             {
-                let prev_pc = fs.pc - 1;
-                let prev_instr = fs.chunk.code[prev_pc];
                 if Instruction::get_opcode(prev_instr) == OpCode::LoadK {
                     let reg_a = Instruction::get_a(prev_instr) as i32;
                     let k_idx = Instruction::get_bx(prev_instr) as usize;

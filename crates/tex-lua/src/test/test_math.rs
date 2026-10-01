@@ -244,3 +244,29 @@ fn test_math_ult() {
 
     assert!(result.is_ok());
 }
+
+#[test]
+fn test_math_coerces_strings_and_matches_lmathlib() {
+    for level in [LuaLanguageLevel::Lua53, LuaLanguageLevel::Lua55] {
+        let mut vm = GlobalState::new_with_language(SafeOption::default(), level);
+        vm.open_stdlib(crate::stdlib::Stdlib::All).unwrap();
+        let result = vm.main_state().execute(
+            r#"
+            -- math.max/min compare with `<` and never coerce (lmathlib uses lua_compare)
+            assert(math.max("a", "b") == "b" and math.min("b", "a", "c") == "a")
+            local ok, err = pcall(math.max, 1, "2")
+            assert(not ok and err:find("attempt to compare number with string"), err)
+            -- numeric strings are accepted where luaL_checknumber is used
+            assert(math.abs("-3") == 3.0 and math.type(math.abs("-3")) == "float")
+            assert(math.floor("3.7") == 3 and math.tointeger(" 8 ") == 8)
+            assert(math.log(27, 3) == 3.0 and math.log(2^60, 2) == 60.0)
+            assert(math.type(math.modf(3.7)) == "integer" or math.type(math.modf(3.7)) == "float")
+            assert(math.fmod(math.mininteger, -1) == 0 and math.fmod(-6, 4) == -2)
+            local ok2, err2 = pcall(math.fmod, 1, 0)
+            assert(not ok2 and err2:find("bad argument #2 to 'math.fmod' (zero)", 1, true), err2)
+            assert(math.ldexp(1, -1074) == 2^-1074 and math.ldexp(0.75, 1025) == 0.75 * 2^1025)
+            "#,
+        );
+        assert!(result.is_ok(), "{level}: {result:?}");
+    }
+}

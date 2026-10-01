@@ -36,6 +36,24 @@ pub fn gstyle_of(m: MathStyle) -> GStyle {
         MathStyle::Text => 2,
         MathStyle::Script => 4,
         MathStyle::ScriptScript => 6,
+        MathStyle::CrampedDisplay => 1,
+        MathStyle::CrampedText => 3,
+        MathStyle::CrampedScript => 5,
+        MathStyle::CrampedScriptScript => 7,
+    }
+}
+
+/// Inverse of [`gstyle_of`].
+pub(crate) fn math_style_of(g: GStyle) -> MathStyle {
+    match g {
+        0 => MathStyle::Display,
+        1 => MathStyle::CrampedDisplay,
+        2 => MathStyle::Text,
+        3 => MathStyle::CrampedText,
+        4 => MathStyle::Script,
+        5 => MathStyle::CrampedScript,
+        6 => MathStyle::ScriptScript,
+        _ => MathStyle::CrampedScriptScript,
     }
 }
 /// tex.web `half(x)`: round x/2, .5 up (odd positives toward +inf, odd
@@ -77,7 +95,7 @@ fn den_style(g: GStyle) -> GStyle {
 
 /// superscript style
 #[inline]
-fn sup_style(g: GStyle) -> GStyle {
+pub(crate) fn sup_style(g: GStyle) -> GStyle {
     match g >> 1 {
         0 | 1 => 4 + (g & 1),
         _ => 6 + (g & 1),
@@ -86,7 +104,7 @@ fn sup_style(g: GStyle) -> GStyle {
 
 /// subscript style: always cramped at the next level
 #[inline]
-fn sub_style(g: GStyle) -> GStyle {
+pub(crate) fn sub_style(g: GStyle) -> GStyle {
     match g >> 1 {
         0 | 1 => 5,
         _ => 7,

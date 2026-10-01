@@ -1189,7 +1189,7 @@ impl Engine {
                 | BeginCsName
                 | FormatName
                 | LuaEscapeString
-        )
+        ) || matches!(p, Prim::U(u) if u.is_expandable())
     }
 
     /// Execute an expandable primitive; None = keep expanding,
@@ -2391,6 +2391,7 @@ impl Engine {
                 self.expand_lua_escape_string();
                 None
             }
+            U(u) => self.uprim_expand(u),
             _ => None,
         }
     }

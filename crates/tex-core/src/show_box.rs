@@ -814,6 +814,10 @@ impl<'a> BoxDisplay<'a> {
             MathStyle::Text => "textstyle",
             MathStyle::Script => "scriptstyle",
             MathStyle::ScriptScript => "scriptscriptstyle",
+            MathStyle::CrampedDisplay => "crampeddisplaystyle",
+            MathStyle::CrampedText => "crampedtextstyle",
+            MathStyle::CrampedScript => "crampedscriptstyle",
+            MathStyle::CrampedScriptScript => "crampedscriptscriptstyle",
         });
     }
 

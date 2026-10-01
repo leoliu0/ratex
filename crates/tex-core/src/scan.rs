@@ -1175,6 +1175,10 @@ impl Engine {
                     Prim::TextStyle => return 2,
                     Prim::ScriptStyle => return 4,
                     Prim::ScriptScriptStyle => return 6,
+                    Prim::U(crate::uprim::UPrim::CrampedDisplayStyle) => return 1,
+                    Prim::U(crate::uprim::UPrim::CrampedTextStyle) => return 3,
+                    Prim::U(crate::uprim::UPrim::CrampedScriptStyle) => return 5,
+                    Prim::U(crate::uprim::UPrim::CrampedScriptScriptStyle) => return 7,
                     _ => {}
                 }
             }

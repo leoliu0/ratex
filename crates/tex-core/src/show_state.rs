@@ -76,12 +76,25 @@ impl crate::engine::Engine {
         let index = self.math_lists.len();
         self.math_lists.push(NodeList::new());
         let line = self.nest_line();
+        // the style the sub-list is scanned in (`\mathstyle`)
+        let g = crate::math::gstyle_of(self.cur_math_style());
+        let style = match &kind {
+            ScanKind::Script { sup: true, .. } => crate::math::sup_style(g),
+            ScanKind::Script { sup: false, .. } => crate::math::sub_style(g),
+            ScanKind::Accent { .. }
+            | ScanKind::Radical { .. }
+            | ScanKind::Over
+            | ScanKind::Denominator(_) => g | 1,
+            _ => g,
+        };
+        self.math_style_stack.push(crate::math::math_style_of(style));
         self.show.math_scans.push(MathScan { index, kind, line });
     }
 
     /// Close the entry opened by [`Self::begin_math_scan`].
     pub(crate) fn end_math_scan(&mut self) -> NodeList {
         self.show.math_scans.pop();
+        self.math_style_stack.pop();
         self.math_lists.pop().unwrap_or_default()
     }
 
@@ -104,7 +117,10 @@ impl crate::engine::Engine {
             Some(MathScan {
                 kind: ScanKind::Denominator(p),
                 ..
-            }) => p.num,
+            }) => {
+                self.math_style_stack.pop();
+                p.num
+            }
             _ => NodeList::new(),
         }
     }

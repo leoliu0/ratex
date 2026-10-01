@@ -36,6 +36,74 @@ fn forced_epoch(force: Option<&std::ffi::OsStr>, epoch: Option<&str>) -> Option<
     epoch?.trim().parse().ok()
 }
 
+/// web2c `makepdftime`: `D:YYYYmmddHHMMSS` in local time followed by the
+/// zone offset as `+HH'MM'` (or `Z` for UTC). `utc_zone` formats in UTC, as
+/// pdfTeX does for SOURCE_DATE_EPOCH-derived dates. Like pdfTeX, the hour
+/// part of the offset truncates toward zero and carries the sign, so
+/// -00:30 prints as `+00'30'`.
+pub(crate) fn pdf_date(epoch: i64, utc_zone: bool) -> String {
+    use std::fmt::Write;
+
+    let offset = if utc_zone { 0 } else { local_offset_minutes(epoch) };
+    let local = epoch + offset * 60;
+    let (year, month, day, minutes) = utc(local);
+    let mut date = format!(
+        "D:{year:04}{month:02}{day:02}{:02}{:02}{:02}",
+        minutes / 60,
+        minutes % 60,
+        local.rem_euclid(60)
+    );
+    if offset == 0 {
+        date.push('Z');
+    } else {
+        let hours = offset / 60;
+        let _ = write!(date, "{hours:+03}'{:02}'", (offset - hours * 60).abs());
+    }
+    date
+}
+
+/// The local UTC offset in minutes at `epoch`.
+#[cfg(unix)]
+fn local_offset_minutes(epoch: i64) -> i64 {
+    let time = epoch as libc::time_t;
+    // SAFETY: `localtime_r` reads `time` and writes only to `tm`.
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    if unsafe { libc::localtime_r(&time, &mut tm) }.is_null() {
+        return 0;
+    }
+    tm.tm_gmtoff as i64 / 60
+}
+
+/// Without a portable zone database the offset is UTC.
+#[cfg(not(unix))]
+fn local_offset_minutes(_epoch: i64) -> i64 {
+    0
+}
+
+/// Seconds since the Unix epoch now; the sandboxed web build has no clock
+/// and, like `\time`, uses the epoch itself.
+pub(crate) fn now() -> i64 {
+    #[cfg(target_arch = "wasm32")]
+    {
+        0
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        system_time_epoch(std::time::SystemTime::now())
+    }
+}
+
+/// A file-system timestamp as `time_t` seconds (floored before 1970).
+pub(crate) fn system_time_epoch(time: std::time::SystemTime) -> i64 {
+    match time.duration_since(std::time::UNIX_EPOCH) {
+        Ok(elapsed) => elapsed.as_secs() as i64,
+        Err(before) => {
+            let before = before.duration();
+            -(before.as_secs() as i64) - i64::from(before.subsec_nanos() > 0)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::ffi::OsStr;

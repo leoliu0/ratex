@@ -168,6 +168,14 @@ fn read_line_bounded(
     Ok((read_any, overflow))
 }
 
+/// A file located by `Engine::find_input_file`.
+pub(crate) enum FoundInputFile {
+    Path(std::path::PathBuf),
+    /// Contents of a compatibility input or embedded-archive member; these
+    /// have no file-system timestamp.
+    Bytes(Vec<u8>),
+}
+
 /// Engine-owned package adapters and small bootstrap inputs.
 /// They are immutable virtual files: keeping them in `InputStack`'s byte
 /// cache avoids fixed names and repeated writes in the process temp folder.
@@ -376,7 +384,10 @@ impl Engine {
                         }
                     }
                     Err(e) => {
-                        self.error_at(
+                        // tex.web §537 start_input: an input that cannot be
+                        // opened goes to prompt_file_name, which is fatal
+                        // without a terminal to supply another name.
+                        self.fatal_error_at(
                             &format!("Cannot read {}: {}", name, e),
                             included_from
                                 .as_ref()
@@ -448,7 +459,7 @@ impl Engine {
                     self.input.push_file_from(key, data, included_from);
                     return true;
                 }
-                self.error_at(
+                self.fatal_error_at(
                     &format!("File `{}` not found", name),
                     included_from
                         .as_ref()
@@ -583,6 +594,25 @@ impl Engine {
             self.append_log(&msg);
         }
         resolved
+    }
+
+    /// web2c `find_input_file` for \pdffilesize, \pdffilemoddate,
+    /// \pdfmdfivesum file and \pdffiledump: the name loses every `"` (and
+    /// nothing else, so surrounding spaces stay significant), then is found
+    /// exactly as `\openin` finds it: the output directory and TeX input
+    /// path, the built-in compatibility inputs, and the embedded archive.
+    pub(crate) fn find_input_file(&mut self, name: &str) -> Option<FoundInputFile> {
+        let name = name.replace('"', "");
+        if name.is_empty() {
+            return None;
+        }
+        if let Some(path) = self.resolve_input_path(&name) {
+            return Some(FoundInputFile::Path(path));
+        }
+        if let Some(data) = compatibility_input(&name) {
+            return Some(FoundInputFile::Bytes(data.to_vec()));
+        }
+        tex_kpse::get_embedded_tex_input(&name).map(|(_, data)| FoundInputFile::Bytes(data))
     }
 
     pub fn do_endinput(&mut self) {
@@ -799,7 +829,7 @@ impl Engine {
                 .unwrap_or_else(|| std::path::Path::new(""));
             if !parent.as_os_str().is_empty() {
                 if let Err(error) = tex_kpse::fs::create_dir_all(parent) {
-                    self.error_at(
+                    self.fatal_error_at(
                         &format!(
                             "Cannot create output directory `{}` for \\openout{stream}: {error}",
                             parent.display()
@@ -817,7 +847,9 @@ impl Engine {
                 self.write_stream_paths[idx] = Some(full.to_string());
                 self.written_files.push(std::path::PathBuf::from(full));
             }
-            Err(error) => self.error_at(
+            // tex.web §1374: a stream that cannot be opened goes to
+            // prompt_file_name, which is fatal without a terminal.
+            Err(error) => self.fatal_error_at(
                 &format!("Cannot open output file `{full}` for \\openout{stream}: {error}"),
                 source.cloned(),
             ),
@@ -930,6 +962,7 @@ impl Engine {
         self.push_tokens_named(body, "<write>");
         let prev = self.in_expanded_scan;
         self.in_expanded_scan = true;
+        let saved_mode_zero = std::mem::replace(&mut self.write_mode_zero, true);
         let mut out: Vec<Token> = Vec::new();
         let mut depth = 0usize;
         loop {
@@ -977,6 +1010,7 @@ impl Engine {
             out.push(t);
         }
         self.in_expanded_scan = prev;
+        self.write_mode_zero = saved_mode_zero;
         self.input.stack = saved_input;
         self.restore_scanner_diagnostic_state(saved_diagnostic_state);
         self.end_occurred =
@@ -1428,6 +1462,20 @@ impl Engine {
         }
     }
 
+    /// web2c's scan_file_name ends a file name at a space read from a file
+    /// line that is exhausted (`state<>token_list` and `loc>limit`): the
+    /// end-of-line space stops even a quoted name, so `\input "foo` at the
+    /// end of a line looks for `foo`.
+    pub(crate) fn file_name_line_ended(&self, token: Token) -> bool {
+        token.is_char()
+            && token.chr() == u32::from(b' ')
+            && matches!(
+                self.input.stack.last(),
+                Some(crate::input::Source::File { line_buf, line_pos, .. })
+                    if line_buf.as_ref().is_none_or(|line| *line_pos >= line.len())
+            )
+    }
+
     pub fn scan_file_name(&mut self) -> String {
         const MAX_FILE_NAME_BYTES: usize = 4096;
         let mut origin = (self.input.current_file_line() != 0)
@@ -1504,6 +1552,9 @@ impl Engine {
         let mut cur = t;
         loop {
             if cur == crate::input::EOF_MARKER {
+                break;
+            }
+            if self.file_name_line_ended(cur) {
                 break;
             }
             if cur.is_char() && cur.chr() == u32::from(b'"') {

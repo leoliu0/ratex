@@ -426,10 +426,10 @@ fn ini_mode_does_not_write_a_format_after_a_recoverable_error() {
     let stderr = text(&output.stderr);
     assert!(stderr.contains("FORMAT BUILD SENTINEL"), "{stderr}");
     assert!(
-        stderr.contains("format build reported 1 error; pdflatex.fmt was not written"),
+        stderr.contains("format build reported 1 error; main.fmt was not written"),
         "{stderr}"
     );
-    assert!(!job.dir.join("pdflatex.fmt").exists());
+    assert!(!job.dir.join("main.fmt").exists());
     assert!(job.log().contains("FORMAT BUILD SENTINEL"));
 
     let batch = Job::new("errored-format-build-batch");
@@ -454,7 +454,7 @@ fn ini_mode_does_not_write_a_format_after_a_recoverable_error() {
         "{}",
         failure_output(&batch_output)
     );
-    assert!(!batch.dir.join("pdflatex.fmt").exists());
+    assert!(!batch.dir.join("main.fmt").exists());
     assert!(
         batch.log().contains("BATCH FORMAT BUILD SENTINEL"),
         "{}",
@@ -467,17 +467,17 @@ fn ini_format_write_failure_is_structured_logged_and_batch_aware() {
     for mode in ["nonstopmode", "batchmode"] {
         let job = Job::new(&format!("format-write-{mode}"));
         job.write("main.tex", "\\catcode123=1\n\\catcode125=2\n\\dump\n");
-        std::fs::create_dir(job.dir.join("pdflatex.fmt")).unwrap();
+        std::fs::create_dir(job.dir.join("main.fmt")).unwrap();
 
         let output = job.compile(&["-ini", &format!("-interaction={mode}")]);
         assert_eq!(output.status.code(), Some(1), "{}", failure_output(&output));
         let log = job.log();
         assert!(
-            log.contains("! Cannot write format `pdflatex.fmt`"),
+            log.contains("! Cannot write format `main.fmt`"),
             "{log}"
         );
         assert!(
-            log.contains("check that the working directory is writable"),
+            log.contains("check that the output directory is writable"),
             "{log}"
         );
         if mode == "batchmode" {
@@ -485,7 +485,7 @@ fn ini_format_write_failure_is_structured_logged_and_batch_aware() {
             assert!(output.stderr.is_empty(), "{}", failure_output(&output));
         } else {
             assert!(
-                text(&output.stderr).contains("Cannot write format `pdflatex.fmt`"),
+                text(&output.stderr).contains("Cannot write format `main.fmt`"),
                 "{}",
                 failure_output(&output)
             );
@@ -1737,10 +1737,12 @@ fn eof_syntax_and_terminal_read_errors_state_the_required_fix() {
             "close the file name with `}`",
         ),
         (
+            // web2c ends the quoted name at the end of the line; TeX Live
+            // then reports `I can't find file `unfinished'` and stops.
             "quoted-file-name-eof",
             "\\input \"unfinished\n",
-            "File ended while scanning a quoted file name; add the closing quote",
-            "close the file name with a matching double quote",
+            "File `unfinished` not found",
+            "the job stops here because no other file name can be supplied",
         ),
         (
             "show-target-eof",
@@ -2176,7 +2178,7 @@ fn max_errors_also_bounds_ini_mode_recovery() {
         "{stderr}"
     );
     assert!(!stderr.contains("undefinedMustNotRun"), "{stderr}");
-    assert!(!job.dir.join("pdflatex.fmt").exists());
+    assert!(!job.dir.join("main.fmt").exists());
 }
 
 #[test]
@@ -2561,4 +2563,196 @@ printf '%%PDF-1.4 /Type /Pages /Count 1 /Type /Page ' > "$out/main.pdf""#,
     let warning = "texmk: warning: unresolved references and citations remain";
     assert_eq!(occurrences(&stderr, warning), 1, "{stderr}");
     assert!(stderr.contains("main.log"), "{stderr}");
+}
+
+fn run_pdflatex(job: &Job, args: &[&str], env: &[(&str, &str)]) -> Output {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_pdflatex"));
+    command
+        .args(args)
+        .current_dir(&job.dir)
+        .env("TEX_RS_CACHE_DIR", job.dir.join("cache"))
+        .env_remove("SOURCE_DATE_EPOCH")
+        .env_remove("FORCE_SOURCE_DATE")
+        .env_remove("TEXINPUTS")
+        .env_remove("PHASE_TIMING")
+        .env_remove("TEXDEBUG");
+    for (key, value) in env {
+        command.env(key, value);
+    }
+    command.output().unwrap()
+}
+
+/// pdftex -ini: a missing primitive `\input` (and an `\openout` that cannot
+/// be opened) goes to prompt_file_name, fatal in nonstop/batch mode ("*** (job
+/// aborted, file error in nonstop mode)"); a missing `\openin` or `\font`
+/// is not fatal.
+#[test]
+fn missing_input_and_unopenable_openout_stop_the_job() {
+    for mode in ["nonstopmode", "batchmode"] {
+        let job = Job::new(&format!("missing-input-fatal-{mode}"));
+        job.write(
+            "main.tex",
+            "\\catcode`\\{=1 \\catcode`\\}=2\n\\openin1=nosuchopenin \\ifeof1 \\message{OPENIN-EOF}\\fi\n\\font\\x=nosuchfontzz \\message{AFTER-FONT}\n\\def\\y{Y}\\input nosuchinputzz \\message{AFTER-\\y}\n\\end\n",
+        );
+        let output = job.compile(&["-ini", &format!("-interaction={mode}")]);
+        assert_eq!(output.status.code(), Some(1), "{}", failure_output(&output));
+        let log = job.log();
+        for expected in ["OPENIN-EOF", "AFTER-FONT", "File `nosuchinputzz` not found"] {
+            assert!(log.contains(expected), "{expected}: {log}");
+        }
+        assert!(!log.contains("AFTER-Y"), "{log}");
+        assert!(!log.contains("no legal \\end"), "{log}");
+
+        let openout = Job::new(&format!("openout-fatal-{mode}"));
+        openout.write(
+            "main.tex",
+            "\\catcode`\\{=1 \\catcode`\\}=2 \\def\\y{Y}\n\\immediate\\openout3=nodir/x.out \\message{AFTER-\\y}\\end\n",
+        );
+        let output = openout.compile(&["-ini", &format!("-interaction={mode}")]);
+        assert_eq!(output.status.code(), Some(1), "{}", failure_output(&output));
+        assert!(!openout.log().contains("AFTER-Y"), "{}", openout.log());
+    }
+}
+
+/// pdftex -ini: web2c ends `\input "sub` at the end of the line, so the
+/// next line is ordinary input (`(./sub.tex SUB) NEXT`).
+#[test]
+fn quoted_input_name_ends_at_the_end_of_the_line() {
+    let job = Job::new("quoted-input-eol");
+    job.write("sub.tex", "\\message{SUB}");
+    job.write(
+        "main.tex",
+        "\\catcode`\\{=1 \\catcode`\\}=2\n\\input \"sub\n{\\message{NEXT}}\\end\n",
+    );
+    let output = job.compile(&["-ini", "-interaction=nonstopmode"]);
+    assert!(output.status.success(), "{}", failure_output(&output));
+    let stdout = text(&output.stdout);
+    assert!(stdout.contains("SUB") && stdout.contains("NEXT"), "{stdout}");
+}
+
+/// pdftex `\pdffilemoddate` (web2c getfilemoddate): local time with the
+/// zone offset, UTC with FORCE_SOURCE_DATE=1 and SOURCE_DATE_EPOCH, and
+/// nothing for a missing file; the name loses its quotes but not spaces.
+/// Built-in inputs without a timestamp report the Unix epoch.
+#[test]
+fn pdffilemoddate_formats_the_file_mtime_like_pdftex() {
+    let job = Job::new("pdffilemoddate");
+    job.write("here.txt", "hello\n");
+    let mtime = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_709_618_828);
+    std::fs::File::options()
+        .write(true)
+        .open(job.dir.join("here.txt"))
+        .unwrap()
+        .set_modified(mtime)
+        .unwrap();
+    job.write(
+        "main.tex",
+        "\\catcode`\\{=1 \\catcode`\\}=2\n\\message{A[\\pdffilemoddate{here.txt}][\\pdffilemoddate{\"here.txt\"}][\\pdffilemoddate{ here.txt}][\\pdffilemoddate{nosuch.txt}][\\pdffilesize{\"here.txt\"}]}\n\\message{B[\\pdffilemoddate{pdflatex.ini}]}\\end\n",
+    );
+    for (env, expected) in [
+        (
+            &[("TZ", "Asia/Shanghai")][..],
+            "A[D:20240305140708+08'00'][D:20240305140708+08'00'][][][6]",
+        ),
+        (
+            &[("TZ", "America/St_Johns")],
+            "A[D:20240305023708-03'30'][D:20240305023708-03'30'][][][6]",
+        ),
+        (
+            &[("TZ", "Asia/Shanghai"), ("FORCE_SOURCE_DATE", "1"), ("SOURCE_DATE_EPOCH", "0")],
+            "A[D:20240305060708Z][D:20240305060708Z][][][6]",
+        ),
+    ] {
+        let output = run_pdflatex(&job, &["-ini", "-interaction=nonstopmode", "main.tex"], env);
+        let stdout = text(&output.stdout);
+        assert!(stdout.contains(expected), "{env:?}: {}", failure_output(&output));
+        assert!(stdout.contains("B[D:19700101000000Z]"), "{}", failure_output(&output));
+    }
+}
+
+/// pdflatex options from `pdflatex --help` are accepted with their pdfTeX
+/// meaning; DVI-, TCX-, encTeX- and MLTeX-only options fail clearly.
+#[test]
+fn web2c_command_line_options_are_accepted_or_clearly_rejected() {
+    let job = Job::new("web2c-options");
+    job.write("main.tex", "\\catcode`\\{=1 \\catcode`\\}=2 \\message{RAN}\\end\n");
+    let output = run_pdflatex(
+        &job,
+        &[
+            "-ini", "-etex", "-8bit", "-no-file-line-error", "-progname=pdflatex",
+            "-kpathsea-debug=0", "-output-format=pdf", "-output-comment", "x",
+            "-src-specials=cr,par", "-no-mktex=tfm", "-interaction=nonstopmode", "main.tex",
+        ],
+        &[],
+    );
+    assert!(output.status.success(), "{}", failure_output(&output));
+    assert!(text(&output.stdout).contains("RAN"));
+    for (option, message) in [
+        ("-output-format=dvi", "Ratex writes PDF only"),
+        ("-translate-file=cp227.tcx", "-translate-file is not supported"),
+        ("-enc", "-enc is not supported"),
+        ("-mltex", "-mltex is not supported"),
+    ] {
+        let output = run_pdflatex(&job, &["-ini", option, "main.tex"], &[]);
+        assert_eq!(output.status.code(), Some(2), "{option}: {}", failure_output(&output));
+        assert!(text(&output.stderr).contains(message), "{}", failure_output(&output));
+    }
+}
+
+/// web2c formats: `-ini` + `\dump` writes JOBNAME.fmt; `-fmt=NAME`, `&NAME`
+/// and a `%&NAME` first line load it (`-no-parse-first-line` ignores the
+/// line); a missing format ends the run.
+#[test]
+fn dumped_formats_are_selected_by_fmt_and_first_line() {
+    let job = Job::new("format-selection");
+    job.write(
+        "myfmt.tex",
+        "\\catcode`\\{=1 \\catcode`\\}=2 \\catcode`\\#=6 \\def\\hello{HELLO-FROM-MYFMT}\\dump\n",
+    );
+    let output = run_pdflatex(&job, &["-ini", "-interaction=nonstopmode", "myfmt.tex"], &[]);
+    assert!(output.status.success(), "{}", failure_output(&output));
+    assert!(job.dir.join("myfmt.fmt").is_file());
+    job.write("use.tex", "\\message{[\\hello]}\\end\n");
+    job.write("first.tex", "%&myfmt\n\\message{[\\hello]}\\end\n");
+    for args in [
+        &["-fmt=myfmt", "use.tex"][..],
+        &["&myfmt", "use.tex"],
+        &["first.tex"],
+    ] {
+        let mut full = vec!["-interaction=nonstopmode"];
+        full.extend_from_slice(args);
+        let output = run_pdflatex(&job, &full, &[]);
+        assert!(
+            text(&output.stdout).contains("[HELLO-FROM-MYFMT]"),
+            "{args:?}: {}",
+            failure_output(&output)
+        );
+    }
+    let output = run_pdflatex(
+        &job,
+        &["-no-parse-first-line", "-interaction=nonstopmode", "first.tex"],
+        &[],
+    );
+    assert!(!text(&output.stdout).contains("HELLO-FROM-MYFMT"), "{}", failure_output(&output));
+    let output = run_pdflatex(&job, &["-fmt=nosuch", "use.tex"], &[]);
+    assert_eq!(output.status.code(), Some(1), "{}", failure_output(&output));
+    assert!(text(&output.stderr).contains("I can't find the format file `nosuch.fmt'!"));
+}
+
+/// kpathsea `-cnf-line=VAR=VALUE` sets VAR, overriding the environment
+/// (pdftex: `TEXINPUTS=.: pdftex -cnf-line=TEXINPUTS=./lib: ...` finds
+/// ./lib/libfile.tex).
+#[test]
+fn cnf_line_sets_search_variables() {
+    let job = Job::new("cnf-line");
+    std::fs::create_dir(job.dir.join("lib")).unwrap();
+    job.write("lib/libfile.tex", "\\catcode`\\{=1 \\catcode`\\}=2 \\message{LIBFILE}");
+    job.write("main.tex", "\\input libfile \\end\n");
+    let output = run_pdflatex(
+        &job,
+        &["-ini", "-interaction=nonstopmode", "-cnf-line=TEXINPUTS=./lib:", "main.tex"],
+        &[("TEXINPUTS", ".:")],
+    );
+    assert!(output.status.success(), "{}", failure_output(&output));
+    assert!(text(&output.stdout).contains("LIBFILE"), "{}", failure_output(&output));
 }

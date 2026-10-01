@@ -1691,16 +1691,13 @@ impl Engine {
                 }
                 self.finish_if(save, eq)
             }
-            IfVMode => self.do_if(self.mode.is_v(), id),
-            IfHMode => self.do_if(self.mode.is_h(), id),
-            IfMMode => self.do_if(self.mode.is_m(), id),
+            // tex.web §501 with §1370's `mode=0`: no mode test holds while a
+            // `\write` text expands.
+            IfVMode => self.do_if(!self.write_mode_zero && self.mode.is_v(), id),
+            IfHMode => self.do_if(!self.write_mode_zero && self.mode.is_h(), id),
+            IfMMode => self.do_if(!self.write_mode_zero && self.mode.is_m(), id),
             IfInner => {
-                let ok = matches!(
-                    self.mode,
-                    crate::engine::Mode::InternalVertical
-                        | crate::engine::Mode::RestrictedHorizontal
-                        | crate::engine::Mode::Math
-                );
+                let ok = !self.write_mode_zero && self.mode.is_inner();
                 self.do_if(ok, id)
             }
             IfDef => {
@@ -1920,35 +1917,30 @@ impl Engine {
                     let t = self.scan_general_text_expanded();
                     self.tokens_to_string(&t)
                 };
-                let name = name.trim();
                 let loaded_files_before_lookup = self.loaded_files.len();
                 let font_files_before_lookup = self.font_loader.dependency_files.len();
-                let resolved = self
-                    .resolve_input_path(name)
-                    .or_else(|| self.font_loader.kpse.find_any(name));
+                let found = self.find_input_file(&name);
                 // Resolving an input normally records a content dependency.
                 // This primitive observes only metadata, so keep its cheaper,
                 // size-specific dependency unless another operation consumes
                 // the same file independently.
                 self.loaded_files.truncate(loaded_files_before_lookup);
-                if let Some(path) = resolved.as_deref() {
-                    self.font_loader
-                        .discard_file_dependency_since(font_files_before_lookup, path);
-                }
-                let sz = resolved
-                    .and_then(|path| {
-                        let metadata = tex_kpse::fs::metadata(&path).ok()?;
-                        if !metadata.is_file() {
-                            return None;
-                        }
-                        let size = metadata.len();
-                        self.loaded_file_sizes.push((path, size));
-                        Some(size)
-                    })
-                    .or_else(|| {
-                        tex_kpse::get_embedded_tex_input(name)
-                            .map(|(_resolved_name, data)| data.len() as u64)
-                    });
+                let sz = match found {
+                    Some(crate::io::FoundInputFile::Path(path)) => {
+                        self.font_loader
+                            .discard_file_dependency_since(font_files_before_lookup, &path);
+                        tex_kpse::fs::metadata(&path)
+                            .ok()
+                            .filter(|metadata| metadata.is_file())
+                            .map(|metadata| {
+                                let size = metadata.len();
+                                self.loaded_file_sizes.push((path, size));
+                                size
+                            })
+                    }
+                    Some(crate::io::FoundInputFile::Bytes(data)) => Some(data.len() as u64),
+                    None => None,
+                };
                 if let Some(n) = sz {
                     self.exp_string(n.to_string().as_bytes());
                 }
@@ -2064,25 +2056,17 @@ impl Engine {
                 let bytes = self.tokens_to_bytes(&toks);
                 let digest = if file {
                     let name = std::string::String::from_utf8_lossy(&bytes);
-                    let data = if let Some(path) = self
-                        .resolve_input_path(name.trim())
-                        .or_else(|| self.font_loader.kpse.find_any(name.trim()))
-                    {
-                        let Ok(data) = tex_kpse::fs::read(&path) else {
-                            return None;
-                        };
-                        self.record_loaded_bytes(&path, &data);
-                        self.loaded_files.push(path);
-                        data
-                    } else {
-                        let clean = std::path::Path::new(name.trim())
-                            .file_name()
-                            .and_then(|s| s.to_str())
-                            .unwrap_or(name.trim());
-                        let Some(pkg_data) = tex_kpse::get_embedded_package(clean) else {
-                            return None;
-                        };
-                        pkg_data
+                    let data = match self.find_input_file(&name) {
+                        Some(crate::io::FoundInputFile::Path(path)) => {
+                            let Ok(data) = tex_kpse::fs::read(&path) else {
+                                return None;
+                            };
+                            self.record_loaded_bytes(&path, &data);
+                            self.loaded_files.push(path);
+                            data
+                        }
+                        Some(crate::io::FoundInputFile::Bytes(data)) => data,
+                        None => return None,
                     };
                     md5::compute(&data)
                 } else {
@@ -2092,8 +2076,29 @@ impl Engine {
                 None
             }
             PdfFileModDate => {
-                let _ = self.scan_general_text_expanded();
-                self.exp_string(b"D:20260101000000Z");
+                let name = {
+                    let t = self.scan_general_text_expanded();
+                    self.tokens_to_string(&t)
+                };
+                let date = match self.find_input_file(&name) {
+                    Some(crate::io::FoundInputFile::Path(path)) => {
+                        // The result cache tracks contents and sizes, not
+                        // timestamps or the host time zone.
+                        self.font_loader.dependency_tracking_complete = false;
+                        tex_kpse::fs::metadata(&path)
+                            .ok()
+                            .filter(|metadata| metadata.is_file())
+                            .and_then(|metadata| metadata.modified().ok())
+                            .map(|modified| {
+                                pdf_file_mod_date(Some(crate::clock::system_time_epoch(modified)))
+                            })
+                    }
+                    Some(crate::io::FoundInputFile::Bytes(_)) => Some(pdf_file_mod_date(None)),
+                    None => None,
+                };
+                if let Some(date) = date {
+                    self.exp_string(date.as_bytes());
+                }
                 None
             }
             PdfCreationDate => {
@@ -2124,44 +2129,40 @@ impl Engine {
                     self.error("Negative offset or length in \\pdffiledump");
                     return None;
                 }
-                let bytes = if let Some(path) = self
-                    .resolve_input_path(name.trim())
-                    .or_else(|| self.font_loader.kpse.find_any(name.trim()))
-                {
-                    // Only the requested range affects this expansion. Reading
-                    // the whole input here makes a one-byte dump allocate the
-                    // size of an arbitrarily large file. Until the dependency
-                    // cache can represent byte-range reads, fail closed rather
-                    // than publishing a cache entry sampled after the pass.
-                    self.font_loader.dependency_tracking_complete = false;
-                    let Ok(mut input) = tex_kpse::fs::File::open(&path) else {
-                        return None;
-                    };
-                    if input.seek(SeekFrom::Start(offset as u64)).is_err() {
-                        return None;
+                let bytes = match self.find_input_file(&name) {
+                    Some(crate::io::FoundInputFile::Path(path)) => {
+                        // Only the requested range affects this expansion.
+                        // Reading the whole input here makes a one-byte dump
+                        // allocate the size of an arbitrarily large file.
+                        // Until the dependency cache can represent byte-range
+                        // reads, fail closed rather than publishing a cache
+                        // entry sampled after the pass.
+                        self.font_loader.dependency_tracking_complete = false;
+                        let Ok(mut input) = tex_kpse::fs::File::open(&path) else {
+                            return None;
+                        };
+                        if input.seek(SeekFrom::Start(offset as u64)).is_err() {
+                            return None;
+                        }
+                        let mut data = Vec::new();
+                        // Read one byte beyond the largest representable hex
+                        // token list. This distinguishes an oversized result
+                        // without allocating the full user-supplied length,
+                        // while a huge request near EOF can still return a
+                        // small legal tail.
+                        let read_limit = (length as u64).min(max_dump_bytes as u64 + 1);
+                        if input.take(read_limit).read_to_end(&mut data).is_err() {
+                            return None;
+                        }
+                        self.loaded_files.push(path);
+                        data
                     }
-                    let mut data = Vec::new();
-                    // Read one byte beyond the largest representable hex token
-                    // list. This distinguishes an oversized result without
-                    // allocating the full user-supplied length, while a huge
-                    // request near EOF can still return a small legal tail.
-                    let read_limit = (length as u64).min(max_dump_bytes as u64 + 1);
-                    if input.take(read_limit).read_to_end(&mut data).is_err() {
-                        return None;
+                    Some(crate::io::FoundInputFile::Bytes(data)) => {
+                        let start = (offset as usize).min(data.len());
+                        let end = start.saturating_add(length as usize).min(data.len());
+                        data[start..end].to_vec()
                     }
-                    self.loaded_files.push(path);
-                    data
-                } else {
-                    let clean = std::path::Path::new(name.trim())
-                        .file_name()
-                        .and_then(|s| s.to_str())
-                        .unwrap_or(name.trim());
-                    let Some(pkg_data) = tex_kpse::get_embedded_package(clean) else {
-                        return None;
-                    };
-                    let start = (offset as usize).min(pkg_data.len());
-                    let end = start.saturating_add(length as usize).min(pkg_data.len());
-                    pkg_data[start..end].to_vec()
+                    None => return None,
                 };
                 if !self.ensure_token_list_room(bytes.len().saturating_mul(2)) {
                     return None;
@@ -3317,9 +3318,9 @@ impl Engine {
     }
 }
 
-/// pdfTeX's `\pdfcreationdate`: `D:YYYYMMDDHHmmSS` followed by the UTC
-/// offset. SOURCE_DATE_EPOCH (or the sandbox epoch) selects that instant in
-/// UTC, written with `Z`; otherwise the local time is used.
+/// pdfTeX's `\pdfcreationdate` (web2c `initstarttime`): SOURCE_DATE_EPOCH
+/// (or the sandbox epoch) selects that instant in UTC, written with `Z`;
+/// otherwise the local time is used.
 fn pdf_creation_date() -> String {
     let epoch = tex_kpse::fs::epoch()
         .and_then(|epoch| i64::try_from(epoch).ok())
@@ -3328,52 +3329,27 @@ fn pdf_creation_date() -> String {
                 .ok()
                 .and_then(|value| value.trim().parse().ok())
         });
-    let (epoch, offset_minutes) = match epoch {
-        Some(epoch) => (epoch, 0),
-        None => local_epoch_and_offset(),
-    };
-    let local = epoch + offset_minutes * 60;
-    let (year, month, day, minutes) = crate::clock::utc(local);
-    let seconds = local.rem_euclid(60);
-    let zone = if offset_minutes == 0 {
-        "Z".to_string()
-    } else {
-        let sign = if offset_minutes < 0 { '-' } else { '+' };
-        let offset = offset_minutes.abs();
-        format!("{sign}{:02}'{:02}'", offset / 60, offset % 60)
-    };
-    format!(
-        "D:{year:04}{month:02}{day:02}{:02}{:02}{seconds:02}{zone}",
-        minutes / 60,
-        minutes % 60
-    )
-}
-
-/// The current time and the local UTC offset in minutes.
-#[cfg(unix)]
-fn local_epoch_and_offset() -> (i64, i64) {
-    let mut now: libc::time_t = 0;
-    // SAFETY: `time` and `localtime_r` write only to the provided locals.
-    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
-    unsafe {
-        libc::time(&mut now);
-        libc::localtime_r(&now, &mut tm);
+    match epoch {
+        Some(epoch) => crate::clock::pdf_date(epoch, true),
+        None => crate::clock::pdf_date(crate::clock::now(), false),
     }
-    (now as i64, tm.tm_gmtoff as i64 / 60)
 }
 
-#[cfg(all(not(unix), not(target_arch = "wasm32")))]
-fn local_epoch_and_offset() -> (i64, i64) {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.as_secs() as i64);
-    (now, 0)
-}
-
-/// The sandboxed web build has no clock; like `\time`, it uses the epoch.
-#[cfg(target_arch = "wasm32")]
-fn local_epoch_and_offset() -> (i64, i64) {
-    (0, 0)
+/// pdfTeX's `\pdffilemoddate` (web2c `getfilemoddate`): the file's mtime in
+/// local time, or in UTC when FORCE_SOURCE_DATE=1 pins TeX's clock to
+/// SOURCE_DATE_EPOCH (and in the sandbox, whose clock is its epoch). Inputs
+/// without a file-system timestamp (the embedded package archive and
+/// built-in compatibility inputs) report the Unix epoch in UTC,
+/// `D:19700101000000Z`, so date comparisons treat them as older than any
+/// user file and the answer never varies with the host.
+fn pdf_file_mod_date(modified: Option<i64>) -> String {
+    match modified {
+        Some(epoch) => crate::clock::pdf_date(
+            epoch,
+            tex_kpse::fs::epoch().is_some() || crate::clock::forced_source_date_epoch().is_some(),
+        ),
+        None => crate::clock::pdf_date(0, true),
+    }
 }
 
 fn posix_regex_error_detail(error: &posix_regex::compile::Error) -> String {

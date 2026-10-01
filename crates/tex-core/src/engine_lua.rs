@@ -515,55 +515,6 @@ impl LuaEngine {
             zip = {
                 open = function() return nil end,
             }
-            lpeg = {}
-            local pat_meta = {}
-            pat_meta.__index = pat_meta
-            function pat_meta:match(s) return s end
-            function pat_meta.__mul(a, b) return setmetatable({}, pat_meta) end
-            function pat_meta.__add(a, b) return setmetatable({}, pat_meta) end
-            function pat_meta.__sub(a, b) return setmetatable({}, pat_meta) end
-            function pat_meta.__div(a, b) return setmetatable({}, pat_meta) end
-            function pat_meta.__pow(a, b) return setmetatable({}, pat_meta) end
-            function pat_meta.__mod(a, b) return setmetatable({}, pat_meta) end
-            function pat_meta.__unm() return setmetatable({}, pat_meta) end
-            function pat_meta.__len() return setmetatable({}, pat_meta) end
-            local function new_pat() return setmetatable({}, pat_meta) end
-
-            local num_meta = debug.getmetatable(0) or {}
-            num_meta.__mul = function(a, b) return new_pat() end
-            num_meta.__add = function(a, b) return new_pat() end
-            num_meta.__sub = function(a, b) return new_pat() end
-            num_meta.__div = function(a, b) return new_pat() end
-            num_meta.__pow = function(a, b) return new_pat() end
-            num_meta.__mod = function(a, b) return new_pat() end
-            debug.setmetatable(0, num_meta)
-
-            local str_meta = debug.getmetatable("") or {}
-            str_meta.__mul = function(a, b) return new_pat() end
-            str_meta.__add = function(a, b) return new_pat() end
-            str_meta.__sub = function(a, b) return new_pat() end
-            str_meta.__div = function(a, b) return new_pat() end
-            str_meta.__pow = function(a, b) return new_pat() end
-            str_meta.__mod = function(a, b) return new_pat() end
-            debug.setmetatable("", str_meta)
-
-            lpeg.P = function(x) return new_pat() end
-            lpeg.S = function(x) return new_pat() end
-            lpeg.R = function(...) return new_pat() end
-            lpeg.C = function(x) return new_pat() end
-            lpeg.Cc = function(...) return new_pat() end
-            lpeg.Cs = function(x) return new_pat() end
-            lpeg.Cg = function(x) return new_pat() end
-            lpeg.Ct = function(x) return new_pat() end
-            lpeg.Cp = function() return new_pat() end
-            lpeg.Cf = function(x, op) return new_pat() end
-            lpeg.Carg = function(n) return new_pat() end
-            lpeg.Cmt = function(patt, fn) return new_pat() end
-            lpeg.V = function(x) return new_pat() end
-            lpeg.B = function(x) return new_pat() end
-            lpeg.type = function(v) if getmetatable(v) == pat_meta then return "pattern" end return nil end
-            lpeg.match = function(pat, s, ...) return {} end
-            package.loaded["lpeg"] = lpeg
             sio = {
                 readinteger1 = function(s, pos) return (string.unpack(">i1", s, pos or 1)) end,
                 readinteger2 = function(s, pos) return (string.unpack(">i2", s, pos or 1)) end,
@@ -578,6 +529,7 @@ impl LuaEngine {
             package.loaded["sio"] = sio
             package.loaded["fio"] = fio
         "#).map_err(|e| format!("failed to initialize runtime modules: {e:?}"))?;
+        crate::lua_lpeg::install(&mut self.lua)?;
         crate::lua_bridge::install(&mut self.lua)?;
         static PRELOAD_ZST: &[u8] = include_bytes!("../assets/lua_uni_data_preload.lua.zst");
         if let Ok(mut decoder) = ruzstd::decoding::StreamingDecoder::new(PRELOAD_ZST) {

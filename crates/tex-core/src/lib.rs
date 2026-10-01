@@ -29,6 +29,7 @@ pub mod linebreak;
 pub mod luatex;
 mod lua_bridge;
 mod lua_cmds;
+mod lua_lpeg;
 pub mod maincontrol;
 pub mod math;
 pub mod native_font;

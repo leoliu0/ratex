@@ -1816,8 +1816,10 @@ impl Engine {
         use crate::eqtb::group_code;
         let code = self.eqtb.cur_group_code();
         if code == group_code::BOTTOM {
-            let name = self.tokens_to_string(&[token]);
-            self.error(&format!("Extra {}", name.trim_end()));
+            // print_cmd_chr of the token's meaning (`\let\e=\endgroup\e`
+            // reports `\endgroup`, not `\e`)
+            let meaning = self.meaning_of(token);
+            self.error(&format!("Extra {}", meaning.trim_end()));
             return;
         }
         // back_input, then ins_list: the closer is read before `token`
@@ -1825,8 +1827,7 @@ impl Engine {
         let frozen = |engine: &mut Engine, name: &[u8]| {
             let id = engine
                 .primitive_cs(name)
-                .or_else(|| engine.cs.lookup(name))
-                .expect("primitive control sequence");
+                .expect("endgroup and right are primitives");
             Token::from_cs(id)
         };
         let shown = match code {

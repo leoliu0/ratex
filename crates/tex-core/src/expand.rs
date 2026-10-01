@@ -1694,18 +1694,22 @@ impl Engine {
                 } else {
                     None
                 };
-                self.push_token(t);
                 match target {
-                    Some(p) if Self::is_if_test(p) && p != IfCase => self.unless_next = true,
+                    // tex.web `goto reswitch` with the unless flag: the
+                    // conditional is expanded in this very step (so an
+                    // `\expandafter` over `\unless` sees its result).
+                    Some(p) if Self::is_if_test(p) && p != IfCase => {
+                        self.unless_next = true;
+                        self.expand_prim(p, t.cs_id())
+                    }
                     _ => {
+                        self.push_token(t);
                         let meaning = self.meaning_of(t);
                         let name = meaning.split(':').next().unwrap_or("");
-                        self.error(&format!(
-                            "You can't use `\\unless' before `{name}'"
-                        ));
+                        self.error(&format!("You can't use `\\unless' before `{name}'"));
+                        None
                     }
                 }
-                None
             }
             IfTrue => self.do_if(true, id),
             IfFalse => self.do_if(false, id),

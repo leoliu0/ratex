@@ -135,8 +135,8 @@ fn directlua_callback_interface_registers_and_finds() {
         &mut e,
         r#"
 \directlua{
-    callback.register("test_cb", function(x) return x end)
-    local found = callback.find("test_cb")
+    callback.register("hpack_filter", function(x) return x end)
+    local found = callback.find("hpack_filter")
     assert(type(found) == "function")
     tex.print("CALLBACK_OK")
 }

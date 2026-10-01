@@ -203,6 +203,7 @@ fn color_stacks_carry_across_pages_like_pdftex() {
 \shipout\hbox{\pdfcolorstack0 push{1 0 0 rg}\pdfcolorstack\count1 set{0.5 g}}
 \shipout\hbox{\pdfcolorstack0 pop\pdfcolorstack0 current}
 \setbox2\hbox{\pdfcolorstack0 current}\pdfxform2
+\shipout\hbox{\pdfrefxform\pdflastxform}
 \end"#;
     let mut e = Engine::new(true);
     e.init_primitives();
@@ -217,7 +218,14 @@ fn color_stacks_carry_across_pages_like_pdftex() {
         .iter()
         .map(|p| String::from_utf8(p.content.clone()).unwrap())
         .collect();
-    assert_eq!(pages, ["0 g\n1 0 0 rg\n0.5 g\n", "1 0 0 rg\n0.5 g\n0 g 0 G\n0 g 0 G\n"]);
+    assert_eq!(
+        pages,
+        [
+            "0 g\n1 0 0 rg\n0.5 g\n",
+            "1 0 0 rg\n0.5 g\n0 g 0 G\n0 g 0 G\n",
+            "0.5 g\nq\n1 0 0 1 72 72 cm\n/Fm1 Do\nQ\n"
+        ]
+    );
     let bytes = tex_core::pdffile::write_pdf(&e.pdf_doc).expect("valid PDF");
     let pdf = lopdf::Document::load_mem(&bytes).unwrap();
     let form = pdf

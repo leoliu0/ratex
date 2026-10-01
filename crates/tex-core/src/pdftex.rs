@@ -565,7 +565,17 @@ impl Engine {
                             }
 
                             let embedded = crate::pdfout::EmbedFont {
-                                obj_font: 0,
+                                // `pdf_create_obj(obj_type_font, ..)` at pdf_init_font
+                                obj_font: if raw {
+                                    self.pdf_backend
+                                        .font_ff
+                                        .get(&fid)
+                                        .and_then(|ff| self.pdf_backend.font_objs.get(ff))
+                                        .copied()
+                                        .unwrap_or(0)
+                                } else {
+                                    0
+                                },
                                 base_font: base_font.clone(),
                                 font_file: prog.data.clone(),
                                 length1: prog.data.len(),
@@ -705,6 +715,31 @@ impl PdfBackend {
     }
 }
 
+/// utils.c `getresnameprefix`: the CRC-32 of the job id as six base-62
+/// digits, least significant first.
+fn resname_prefix(job_id: &str) -> String {
+    let mut crc = u64::from(crc32fast::hash(job_id.as_bytes()));
+    let digits = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+    let mut prefix = String::with_capacity(6);
+    for _ in 0..6 {
+        prefix.push(char::from(digits[(crc % 62) as usize]));
+        crc /= 62;
+    }
+    prefix
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The prefix TeX Live 2026 `pdftex -ini` writes for job `uq` started
+    /// 2023/11/14 22:13 (`/F22MNNM4`, probe `uq` with \pdfuniqueresname=1).
+    #[test]
+    fn resname_prefix_matches_texlive_job_id() {
+        let job_id = format!("2023/11/14 22:13 uq  (INITEX) {PDFTEX_BANNER}");
+        assert_eq!(resname_prefix(&job_id), "2MNNM4");
+    }
+}
 impl Engine {
     fn pdf_int(&self, p: crate::prim::IntParam) -> i32 {
         self.eqtb.int_params[p.idx() as usize]
@@ -726,25 +761,18 @@ impl Engine {
             return;
         }
         use crate::prim::IntParam;
-        let time = self.pdf_int(IntParam::Time);
+        let time = self.int_param_value(IntParam::Time);
         let job_id = format!(
             "{:04}/{:02}/{:02} {:02}:{:02} {} {} {PDFTEX_BANNER}",
-            self.pdf_int(IntParam::Year),
-            self.pdf_int(IntParam::Month),
-            self.pdf_int(IntParam::Day),
+            self.int_param_value(IntParam::Year),
+            self.int_param_value(IntParam::Month),
+            self.int_param_value(IntParam::Day),
             time / 60,
             time % 60,
             self.job_name,
             self.format_ident,
         );
-        let mut crc = u64::from(crc32fast::hash(job_id.as_bytes()));
-        let digits = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
-        let mut prefix = String::with_capacity(6);
-        for _ in 0..6 {
-            prefix.push(char::from(digits[(crc % 62) as usize]));
-            crc /= 62;
-        }
-        self.pdf_doc.resname_prefix = prefix;
+        self.pdf_doc.resname_prefix = resname_prefix(&job_id);
     }
 
     /// writefont.c `preset_fontmetrics`: FontDescriptor values from the TFM
@@ -841,6 +869,10 @@ impl Engine {
         };
         if ff == f {
             self.pdf_backend.font_reps.push(f);
+            // `pdf_create_obj(obj_type_font, f)`: the dictionary's number is
+            // taken now, in creation order, whether or not it is queried
+            let obj = self.alloc_pdf_obj();
+            self.pdf_backend.font_objs.insert(f, obj);
         }
         self.pdf_backend.font_ff.insert(f, ff);
         if let Some(font) = self.eqtb.fonts.get(f as usize) {
@@ -888,12 +920,7 @@ impl Engine {
     pub(crate) fn pdf_font_objnum(&mut self) -> Option<i32> {
         let f = self.scan_pdf_font("\\pdffontobjnum")?;
         let ff = self.pdf_init_font(f);
-        if let Some(&obj) = self.pdf_backend.font_objs.get(&ff) {
-            return Some(obj);
-        }
-        let obj = self.alloc_pdf_obj();
-        self.pdf_backend.font_objs.insert(ff, obj);
-        Some(obj)
+        self.pdf_backend.font_objs.get(&ff).copied()
     }
 
     /// `\pdfpageref <page>`: the page object number (`get_obj(obj_type_page)`),

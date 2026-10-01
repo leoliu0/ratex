@@ -2565,6 +2565,7 @@ impl<'a> RenderCtx<'a> {
         }
         for index in 0..self.xform_list.len() {
             let obj = self.xform_list[index];
+            self.eng.ship_pdf_form(obj);
             self.eng.write_form_procset(obj);
         }
     }
@@ -2636,7 +2637,7 @@ impl<'a> RenderCtx<'a> {
             }
             PdfRefXImage { obj, w, h, d } => self.out_image(*obj, *w, *h + *d, cur_h, cur_v + *d as i64),
             PdfSnapRefPoint => self.eng.pdf_snap_refpos = (cur_h, cur_v),
-            PdfRefXForm { obj, .. } => {
+            PdfRefXForm { obj, d, .. } => {
                 if !self.xform_list.contains(obj) {
                     self.xform_list.push(*obj);
                 }
@@ -2644,10 +2645,11 @@ impl<'a> RenderCtx<'a> {
                 self.content.push_str("q\n1 0 0 1 ");
                 self.push_bp(cur_h - self.origin_h);
                 self.content.push(' ');
-                self.push_bp(self.origin_v - cur_v);
+                // pdftex.web out_form: `cur_v := cur_v + obj_xform_depth`
+                self.push_bp(self.origin_v - cur_v - i64::from(*d));
                 let name = self.eng.pdf_doc.form_names.get(obj).copied().unwrap_or(*obj);
                 let prefix = &self.eng.pdf_doc.resname_prefix;
-                self.content.push_str(&format!(" cm /Fm{name}{prefix} Do\nQ\n"));
+                self.content.push_str(&format!(" cm\n/Fm{name}{prefix} Do\nQ\n"));
             }
             PdfSetMatrix { matrix, source } => {
                 // pdfTeX `pdf_out_setmatrix` + `pdfsetmatrix` (utils.c §1406):

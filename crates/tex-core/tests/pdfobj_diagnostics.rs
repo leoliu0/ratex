@@ -41,7 +41,7 @@ fn useobjnum_rejects_invalid_unreserved_and_duplicate_numbers_without_emitting_o
     );
     assert_eq!(
         engine.diagnostics[3].message,
-        "PDF object number 5 has already been defined; each reserved object number can be used only once; object omitted"
+        "PDF object number 1 has already been defined; each reserved object number can be used only once; object omitted"
     );
 
     for (diagnostic, line_index, operand) in [
@@ -61,9 +61,9 @@ fn useobjnum_rejects_invalid_unreserved_and_duplicate_numbers_without_emitting_o
     }
 
     assert_eq!(engine.pdf_doc.objects.len(), 2);
-    assert_eq!(engine.pdf_doc.objects[0].0, 5);
-    assert_eq!(engine.pdf_doc.objects[1].0, 6);
-    assert_eq!(engine.pdf_last_obj, 6);
+    assert_eq!(engine.pdf_doc.objects[0].0, 1);
+    assert_eq!(engine.pdf_doc.objects[1].0, 2);
+    assert_eq!(engine.pdf_last_obj, 2);
     let objects = engine
         .pdf_doc
         .objects
@@ -73,8 +73,8 @@ fn useobjnum_rejects_invalid_unreserved_and_duplicate_numbers_without_emitting_o
     let objects = String::from_utf8_lossy(&objects);
     assert!(objects.contains("ValidReserved"), "{objects}");
     assert!(objects.contains("ValidFresh"), "{objects}");
-    assert!(objects.contains("/Self 5"), "{objects}");
-    assert!(objects.contains("/Self 6"), "{objects}");
+    assert!(objects.contains("/Self 1"), "{objects}");
+    assert!(objects.contains("/Self 2"), "{objects}");
     assert!(!objects.contains("InvalidZero"), "{objects}");
     assert!(!objects.contains("InvalidNegative"), "{objects}");
     assert!(!objects.contains("InvalidUnreserved"), "{objects}");

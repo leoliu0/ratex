@@ -490,7 +490,7 @@ impl Engine {
                     match crate::format::check_dumpable(self) {
                         Ok(()) => {
                             // tex.web §1328 `format_ident`
-                            let int = |p: crate::prim::IntParam| self.eqtb.int_params[p.idx() as usize];
+                            let int = |p: crate::prim::IntParam| self.int_param_value(p);
                             self.format_ident = format!(
                                 " (preloaded format={} {}.{}.{})",
                                 self.job_name,
@@ -579,7 +579,7 @@ impl Engine {
                             // pdfTeX writes an \immediate form or image
                             // object at once
                             Prim::PdfXForm => {
-                                self.do_pdfxform();
+                                self.do_pdfxform(true);
                                 let form = self.pdf_last_xform;
                                 self.write_form_procset(form);
                                 return;
@@ -1123,7 +1123,7 @@ impl Engine {
                 ));
             }
             PdfObj => self.do_pdfobj(),
-            PdfXForm => self.do_pdfxform(),
+            PdfXForm => self.do_pdfxform(false),
             PdfMapFile => self.do_pdfmapfile(),
             PdfMapLine => self.do_pdfmapline(),
             PdfGlyphToUnicode => self.do_pdfglyphtounicode(),
@@ -1714,7 +1714,7 @@ impl Engine {
 
     /// \pdfxform [attr{..}] [resources{..}] <box register number>: freeze a
     /// box register into an XForm XObject; \pdflastxform reports the number.
-    pub fn do_pdfxform(&mut self) {
+    pub fn do_pdfxform(&mut self, immediate: bool) {
         let mut attr = String::new();
         let mut resources = String::new();
         loop {
@@ -1733,11 +1733,28 @@ impl Engine {
         self.pdf_xform_count += 1;
         self.pdf_doc.form_names.insert(obj, self.pdf_xform_count);
         let b = self.eqtb.boxed.get(box_reg as usize).cloned().flatten();
-        let (w, h, d) = match &b {
+        let size = match &b {
             Some(Node::Box { w, h, d, .. }) => (*w, *h, *d),
             _ => (0, 0, 0),
         };
-        self.pdf_xforms.insert(obj, (w, h, d));
+        self.pdf_xforms.insert(obj, size);
+        self.pdf_pending_forms.insert(
+            obj,
+            crate::engine::PendingForm { node: b, size, attr, resources },
+        );
+        if immediate {
+            self.ship_pdf_form(obj);
+        }
+    }
+
+    /// pdftex.web `pdf_ship_out(obj_xform_box, false)`: write a declared
+    /// `\pdfxform`. A form that was already shipped is left alone.
+    pub(crate) fn ship_pdf_form(&mut self, obj: i32) {
+        let Some(crate::engine::PendingForm { node: b, size: (w, h, d), attr, resources }) =
+            self.pdf_pending_forms.remove(&obj)
+        else {
+            return;
+        };
         let w_bp = crate::pdfrender::sp_to_bp(w as i64);
         let h_bp = crate::pdfrender::sp_to_bp(h as i64);
         let d_bp = crate::pdfrender::sp_to_bp(d as i64);

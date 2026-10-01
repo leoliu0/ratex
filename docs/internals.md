@@ -23,6 +23,7 @@ Typesetting algorithms are documented in the module comments of
 | `format.rs` | `.fmt` dump/load wire format |
 | `node_arena.rs` | generation-checked node storage |
 | `pdffile.rs`, `pdf_fonts.rs` | PDF serialization, Type 1 parsing and embedding |
+| `pdftex.rs`, `pdfrender.rs` | pdfTeX backend state: resource names (`/F`, `/Fm`, `/Im` and the `\pdfuniqueresname` tag), form shipping on first paint, query primitives, Info/trailer inputs |
 | `diagnostics.rs` | structured diagnostics and their output bounds |
 
 ## Executables and dispatch

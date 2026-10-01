@@ -395,6 +395,8 @@ pub struct Engine {
     /// pdfTeX `pdf_snapx_refpos`/`pdf_snapy_refpos` (\pdfsnaprefpoint).
     pub pdf_snap_refpos: (i64, i64),
     pub pdf_xforms: crate::FxHashMap<i32, (i32, i32, i32)>,
+    /// `\pdfxform` boxes waiting to be shipped (see `PendingForm`).
+    pub(crate) pdf_pending_forms: crate::FxHashMap<i32, PendingForm>,
     /// pdfTeX color stacks (\pdfcolorstack, \pdfcolorstackinit)
     pub color_stacks: crate::pdfrender::ColorStacks,
     pub shipout_pending: bool,
@@ -667,8 +669,8 @@ pub struct Engine {
     pub pdf_last_ximage_pages: i32,
     pub pdf_last_link: i32,
     pub pdf_last_annot: i32,
-    /// next free object number for \pdfobj-style reservations (pdfTeX
-    /// reserves 1..4 for Catalog/Pages/Info/Outlines).
+    /// next free object number (pdfTeX numbers objects in creation order
+    /// from 1; the writer's own objects follow the last reserved number).
     pub pdf_next_obj: i32,
     /// Object numbers allocated specifically by `\pdfobj reserveobjnum` and
     /// still available for one `\pdfobj useobjnum` definition.
@@ -1031,6 +1033,7 @@ impl Engine {
             pdf_form_procsets: crate::FxHashMap::default(),
             pdf_snap_refpos: (0, 0),
             pdf_xforms: crate::FxHashMap::default(),
+            pdf_pending_forms: crate::FxHashMap::default(),
             color_stacks: crate::pdfrender::ColorStacks::default(),
             prev_graf: 0,
             after_token: false,
@@ -1130,7 +1133,7 @@ impl Engine {
             pdf_xform_count: 0,
             pdf_ximage_count: 0,
             pdf_last_ximage_pages: 0,
-            pdf_next_obj: 5,
+            pdf_next_obj: 1,
             pdf_reserved_objnums: crate::FxHashSet::default(),
             pdf_backend: Default::default(),
             pdf_last_link: 0,
@@ -2314,6 +2317,16 @@ pub struct FormProcset {
     pub offset: usize,
     pub text: bool,
     pub images: u8,
+}
+
+/// A `\pdfxform` not shipped yet: pdfTeX keeps the box (`obj_xform_box`)
+/// and ships it when a shipped page or form first paints it, or at once
+/// under `\immediate`; a form nobody paints is never written.
+pub struct PendingForm {
+    pub node: Option<crate::boxes::Node>,
+    pub size: (i32, i32, i32),
+    pub attr: String,
+    pub resources: String,
 }
 
 /// Image file types pdfTeX distinguishes (`img_type`); SVG is rasterized.

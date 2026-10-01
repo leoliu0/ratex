@@ -208,7 +208,26 @@ fn one_copied_texmk_builds_with_embedded_latex_and_bibtex_resources() {
     .unwrap();
     assert!(log.contains("(<embedded:xkeyval.tex>"));
     assert!(log.contains("(<embedded:binhex.tex>"));
-    assert!(log.contains("ts1-qtmr"));
+    // \textcopyright under newtx comes from the TS1 companion font ts1-qtmr,
+    // mapped to TeX Gyre Termes (not newtx's TermesX) with q-ts1.enc; the
+    // embedded TFM, map entry, encoding and outline must all resolve.
+    let pdf = lopdf::Document::load(project.join("main.pdf")).unwrap();
+    let ts1_font = pdf.objects.values().filter_map(|object| object.as_dict().ok()).find(|dict| {
+        dict.get(b"BaseFont")
+            .and_then(lopdf::Object::as_name)
+            .is_ok_and(|name| name.ends_with(b"+TeXGyreTermes-Regular"))
+            && dict.has(b"FontDescriptor")
+    });
+    let ts1_font = ts1_font.expect("TS1 text-companion font embedded as TeXGyreTermes-Regular");
+    let encoding = match ts1_font.get(b"Encoding").unwrap() {
+        lopdf::Object::Reference(id) => pdf.get_dictionary(*id).unwrap(),
+        object => object.as_dict().unwrap(),
+    };
+    let differences = encoding.get(b"Differences").unwrap().as_array().unwrap();
+    assert!(
+        differences.iter().any(|item| item.as_name().ok() == Some(&b"copyright"[..])),
+        "{differences:?}"
+    );
     assert_eq!(std::fs::read_dir(&bin).unwrap().count(), 1);
 }
 

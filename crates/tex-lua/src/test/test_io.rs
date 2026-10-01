@@ -526,3 +526,228 @@ fn test_io_popen_write_mode() {
 
     assert!(result.is_ok(), "Error: {:?}", result);
 }
+
+/// Run `code` in a fresh state of the given language level with `PATH`
+/// bound to a scratch file path (a Lua string literal).
+#[cfg(not(target_arch = "wasm32"))]
+fn run_io_script(level: LuaLanguageLevel, name: &str, code: &str) {
+    let path = std::env::temp_dir().join(format!("tex_lua_io_{}_{name}", std::process::id()));
+    let mut vm = GlobalState::new_with_language(SafeOption::default(), level);
+    vm.open_stdlib(crate::stdlib::Stdlib::All).unwrap();
+    let script = format!("local PATH = {:?}\n{code}", path.to_string_lossy());
+    let result = vm.main_state().execute(&script);
+    let _ = std::fs::remove_file(&path);
+    assert!(result.is_ok(), "{level:?}: {:?}", result);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn run_io_script_all(name: &str, code: &str) {
+    run_io_script(LuaLanguageLevel::Lua53, name, code);
+    run_io_script(LuaLanguageLevel::Lua55, name, code);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn test_io_lines_keep_carriage_returns() {
+    run_io_script_all(
+        "crlf",
+        r##"
+        local f = assert(io.open(PATH, "wb")) f:write("a\r\nb\r\n\r\nc") f:close()
+        local got = {}
+        for line in io.lines(PATH) do got[#got + 1] = line end
+        assert(#got == 4 and got[1] == "a\r" and got[2] == "b\r" and got[3] == "\r" and got[4] == "c")
+        f = io.open(PATH, "rb")
+        assert(f:read("l") == "a\r" and f:read("L") == "b\r\n")
+        f:close()
+        "##,
+    );
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn test_io_read_write_share_one_position() {
+    run_io_script_all(
+        "rw",
+        r##"
+        local f = assert(io.open(PATH, "w+"))
+        f:write("abcdef")
+        assert(f:seek("set", 2) == 2)
+        assert(f:read(2) == "cd")
+        f:write("XY")
+        assert(f:seek() == 6)
+        f:seek("set")
+        assert(f:read("a") == "abcdXY")
+        f:close()
+        f = assert(io.open(PATH, "a+"))
+        assert(f:read("a") == "abcdXY")
+        f:write("Z")
+        f:seek("set")
+        assert(f:read("a") == "abcdXYZ")
+        f:close()
+        "##,
+    );
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn test_io_closed_file_errors() {
+    run_io_script_all(
+        "closed",
+        r##"
+        local f = assert(io.open(PATH, "w")) f:close()
+        for _, op in ipairs{"read", "write", "lines", "seek", "flush", "close", "setvbuf"} do
+          local ok, err = pcall(f[op], f, "no")
+          assert(not ok and err:find("attempt to use a closed file", 1, true), op)
+        end
+        assert(io.type(f) == "closed file" and tostring(f) == "file (closed)")
+        local g = assert(io.open(PATH))
+        local it = g:lines() g:close()
+        local ok, err = pcall(it)
+        assert(not ok and err:find("file is already closed", 1, true))
+        "##,
+    );
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn test_io_read_argument_errors() {
+    run_io_script_all(
+        "readargs",
+        r##"
+        local f = assert(io.open(PATH, "w")) f:write("abc\ndef") f:close()
+        f = assert(io.open(PATH))
+        for _, fmt in ipairs{"", "x", "*x", 1.5} do
+          assert(not pcall(f.read, f, fmt), tostring(fmt))
+        end
+        local ok, err = pcall(f.read, f, -1)
+        assert(not ok and type(err) == "string")
+        assert(f:read(0) == "" and f:read("a") == "abc\ndef")
+        assert(f:read(0) == nil and f:read("a") == "" and f:read("l") == nil and f:read(1) == nil)
+        f:close()
+        "##,
+    );
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn test_io_read_number_then_line() {
+    run_io_script_all(
+        "numbers",
+        r##"
+        local f = assert(io.open(PATH, "w"))
+        f:write("12 0x1F -3.5e2 .5 0x 1e5x\nrest\n", ("1"):rep(201))
+        f:close()
+        f = assert(io.open(PATH))
+        local a, b, c, d = f:read("n", "n", "n", "n")
+        assert(a == 12 and math.type(a) == "integer" and b == 31 and c == -350.0 and d == 0.5)
+        assert(f:read("n") == nil)
+        assert(f:read("n") == 1e5 and f:read("l") == "x")
+        assert(f:read("l") == "rest")
+        assert(f:read("n") == nil)
+        f:close()
+        "##,
+    );
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn test_io_write_errors_and_results() {
+    run_io_script_all(
+        "write",
+        r##"
+        local f = assert(io.open(PATH, "w"))
+        assert(f:write("a", 1, "b") == f)
+        assert(not pcall(f.write, f, {}))
+        f:close()
+        f = assert(io.open(PATH, "r"))
+        local r, msg, code = f:write("x")
+        assert(r == nil and msg == "Bad file descriptor" and code == 9)
+        local data, msg2 = f:read("a")
+        assert(data == "a1b")
+        f:close()
+        f = assert(io.open(PATH, "w"))
+        assert(f:read("a") == nil)
+        f:close()
+        assert(io.flush() == true)
+        local nf, err, errno = io.open("/nonexistent-dir-tex-lua/x")
+        assert(nf == nil and err == "/nonexistent-dir-tex-lua/x: No such file or directory" and errno == 2)
+        assert(not pcall(io.open, PATH, "rw"))
+        assert(not pcall(io.open, PATH, "r+x"))
+        assert(io.open(PATH, "r+b")):close()
+        "##,
+    );
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn test_io_seek_and_setvbuf_options() {
+    run_io_script_all(
+        "seek",
+        r##"
+        local f = assert(io.open(PATH, "w")) f:write("0123456789") f:close()
+        f = assert(io.open(PATH))
+        assert(f:read(3) == "012" and f:seek("cur", -1) == 2 and f:read(1) == "2")
+        local r, msg, code = f:seek("set", -5)
+        assert(r == nil and msg == "Invalid argument" and code == 22)
+        assert(not pcall(f.seek, f, "bad"))
+        assert(not pcall(f.seek, f, "set", 1.5))
+        assert(f:setvbuf("no") == true and f:setvbuf("line") == true)
+        assert(not pcall(f.setvbuf, f, "bad"))
+        f:close()
+        "##,
+    );
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn test_io_default_files() {
+    run_io_script_all(
+        "defaults",
+        r##"
+        assert(getmetatable(io.stdout) == getmetatable(io.stderr))
+        local ok, msg = io.close()
+        assert(ok == nil and msg == "cannot close standard file")
+        local old = io.output()
+        io.output(PATH)
+        io.write("q")
+        assert(io.close() == true)
+        assert(not pcall(io.write, "x"))
+        io.output(old)
+        io.input(PATH)
+        assert(io.read("a") == "q")
+        io.input():close()
+        local ok2, err = pcall(io.read)
+        assert(not ok2 and err:find("input file is closed", 1, true))
+        assert(not pcall(io.output, "/nonexistent-dir-tex-lua/sub/x"))
+        "##,
+    );
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn test_io_lines_results() {
+    run_io_script(
+        LuaLanguageLevel::Lua53,
+        "lines53",
+        r##"
+        local f = assert(io.open(PATH, "w")) f:write("ab\ncd") f:close()
+        assert(select("#", io.lines(PATH)) == 1)
+        local it = io.lines(PATH, 1, "l")
+        local a, b = it()
+        assert(a == "a" and b == "b")
+        assert(select("#", it()) == 2)
+        assert(select("#", it()) == 0)
+        assert(not pcall(it))
+        "##,
+    );
+    run_io_script(
+        LuaLanguageLevel::Lua55,
+        "lines55",
+        r##"
+        local f = assert(io.open(PATH, "w")) f:write("x") f:close()
+        local it, s, c, closer = io.lines(PATH)
+        assert(s == nil and c == nil and io.type(closer) == "file")
+        assert(it() == "x" and select("#", it()) == 0 and io.type(closer) == "closed file")
+        "##,
+    );
+}

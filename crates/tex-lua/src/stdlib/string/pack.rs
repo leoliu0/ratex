@@ -1,1689 +1,445 @@
-// String pack/unpack functions
-// Implements: string.pack, string.unpack, string.packsize
-//
-// Supports Lua 5.5+ binary data packing:
-// - b/B: signed/unsigned byte (1 byte)
-// - h/H: signed/unsigned short (2 bytes)
-// - i/I: signed/unsigned int (4 bytes)
-// - l/L: signed/unsigned long (4 bytes, same as i/I)
-// - j: lua_Integer (8 bytes, i64)
-// - T: size_t (8 bytes on 64-bit platforms)
-// - f: float (4 bytes)
-// - d: double (8 bytes)
-// - n: lua_Number (8 bytes, f64)
-// - z: zero-terminated string
-// - cn: fixed-length string of n bytes
-// All formats use little-endian byte order by default
+// string.pack, string.packsize and string.unpack: a port of the
+// PACK/UNPACK section of lstrlib.c (Lua 5.3 and 5.5 behaviour).
 
+use crate::LuaLanguageLevel;
 use crate::LuaValue;
 use crate::lua_vm::{LuaResult, LuaState};
+use crate::stdlib::lauxlib;
 
-/// Endianness for pack/unpack operations
-#[derive(Debug, Clone, Copy, PartialEq)]
-enum Endianness {
-    Little,
-    Big,
-    Native,
+/// Maximum size for the binary representation of an integer.
+const MAXINTSIZE: usize = 16;
+/// Size of a lua_Integer.
+const SZINT: usize = 8;
+/// Native alignment of the platform (offsetof(struct cD, u)).
+const NATIVE_ALIGN: usize = 8;
+const NATIVE_LITTLE: bool = cfg!(target_endian = "little");
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum KOption {
+    Int,
+    Uint,
+    /// C float.
+    Float,
+    /// lua_Number or C double (same representation here).
+    Double,
+    Char,
+    String,
+    Zstr,
+    Padding,
+    PaddAlign,
+    Nop,
 }
 
-impl Endianness {
-    /// Convert bytes based on endianness
-    fn to_bytes<T: ToBytes>(self, value: T) -> Vec<u8> {
-        match self {
-            Endianness::Little => value.to_le_bytes(),
-            Endianness::Big => value.to_be_bytes(),
-            Endianness::Native => value.to_ne_bytes(),
-        }
+struct Header {
+    lua53: bool,
+    little: bool,
+    maxalign: usize,
+}
+
+/// Format cursor; the format ends at its first zero byte, as C sees it.
+struct Format<'a> {
+    bytes: &'a [u8],
+    pos: usize,
+}
+
+impl Format<'_> {
+    #[inline]
+    fn peek(&self) -> u8 {
+        self.bytes.get(self.pos).copied().unwrap_or(0)
     }
 
-    /// Convert from bytes based on endianness
-    fn read_bytes<T: FromBytes>(self, bytes: &[u8]) -> T {
-        match self {
-            Endianness::Little => T::from_le_bytes(bytes),
-            Endianness::Big => T::from_be_bytes(bytes),
-            Endianness::Native => T::from_ne_bytes(bytes),
+    #[inline]
+    fn at_end(&self) -> bool {
+        self.peek() == 0
+    }
+
+    /// `getnum`: read a numeral, or return `default` if there is none.
+    fn number(&mut self, lua53: bool, default: usize) -> usize {
+        if !self.peek().is_ascii_digit() {
+            return default;
+        }
+        // 5.3 limits sizes to int (MAXSIZE = INT_MAX); 5.4+ to lua_Integer.
+        let limit = if lua53 {
+            (i32::MAX as usize - 9) / 10
+        } else {
+            (i64::MAX as usize - 9) / 10
+        };
+        let mut a: usize = 0;
+        loop {
+            a = a * 10 + usize::from(self.peek() - b'0');
+            self.pos += 1;
+            if !self.peek().is_ascii_digit() || a > limit {
+                return a;
+            }
         }
     }
 }
 
-/// Trait for types that can be converted to bytes with different endianness
-trait ToBytes {
-    fn to_le_bytes(self) -> Vec<u8>;
-    fn to_be_bytes(self) -> Vec<u8>;
-    fn to_ne_bytes(self) -> Vec<u8>;
-}
+impl Header {
+    /// `getnumlimit`: a size in [1, MAXINTSIZE].
+    fn number_limit(&self, l: &mut LuaState, fmt: &mut Format, default: usize) -> LuaResult<usize> {
+        let size = fmt.number(self.lua53, default);
+        if size == 0 || size > MAXINTSIZE {
+            // C prints the size with %d (an int).
+            let shown = if self.lua53 { size as i32 } else { size as u32 as i32 };
+            return Err(lauxlib::lual_error(
+                l,
+                format!("integral size ({shown}) out of limits [1,{MAXINTSIZE}]"),
+            ));
+        }
+        Ok(size)
+    }
 
-/// Trait for types that can be converted from bytes with different endianness
-trait FromBytes: Sized {
-    fn from_le_bytes(bytes: &[u8]) -> Self;
-    fn from_be_bytes(bytes: &[u8]) -> Self;
-    fn from_ne_bytes(bytes: &[u8]) -> Self;
-}
-
-// Implement ToBytes for integer types
-macro_rules! impl_to_bytes {
-    ($($t:ty),*) => {
-        $(
-            impl ToBytes for $t {
-                fn to_le_bytes(self) -> Vec<u8> {
-                    <$t>::to_le_bytes(self).to_vec()
+    /// `getoption`: read and classify the next option and its size.
+    fn option(&mut self, l: &mut LuaState, fmt: &mut Format) -> LuaResult<(KOption, usize)> {
+        let opt = fmt.peek();
+        fmt.pos += 1;
+        Ok(match opt {
+            b'b' => (KOption::Int, 1),
+            b'B' => (KOption::Uint, 1),
+            b'h' => (KOption::Int, 2),
+            b'H' => (KOption::Uint, 2),
+            b'l' | b'j' => (KOption::Int, 8),
+            b'L' | b'J' | b'T' => (KOption::Uint, 8),
+            b'f' => (KOption::Float, 4),
+            b'n' | b'd' => (KOption::Double, 8),
+            b'i' => (KOption::Int, self.number_limit(l, fmt, 4)?),
+            b'I' => (KOption::Uint, self.number_limit(l, fmt, 4)?),
+            b's' => (KOption::String, self.number_limit(l, fmt, 8)?),
+            b'c' => {
+                let size = fmt.number(self.lua53, usize::MAX);
+                if size == usize::MAX {
+                    return Err(lauxlib::lual_error(l, "missing size for format option 'c'"));
                 }
-                fn to_be_bytes(self) -> Vec<u8> {
-                    <$t>::to_be_bytes(self).to_vec()
-                }
-                fn to_ne_bytes(self) -> Vec<u8> {
-                    <$t>::to_ne_bytes(self).to_vec()
-                }
+                (KOption::Char, size)
             }
-        )*
-    };
-}
-
-impl_to_bytes!(i16, u16, i32, u32, i64, u64, f32, f64);
-
-// Implement FromBytes for integer types
-macro_rules! impl_from_bytes {
-    ($($t:ty, $size:expr),*) => {
-        $(
-            impl FromBytes for $t {
-                fn from_le_bytes(bytes: &[u8]) -> Self {
-                    let mut arr = [0u8; $size];
-                    arr.copy_from_slice(&bytes[..$size]);
-                    <$t>::from_le_bytes(arr)
-                }
-                fn from_be_bytes(bytes: &[u8]) -> Self {
-                    let mut arr = [0u8; $size];
-                    arr.copy_from_slice(&bytes[..$size]);
-                    <$t>::from_be_bytes(arr)
-                }
-                fn from_ne_bytes(bytes: &[u8]) -> Self {
-                    let mut arr = [0u8; $size];
-                    arr.copy_from_slice(&bytes[..$size]);
-                    <$t>::from_ne_bytes(arr)
-                }
+            b'z' => (KOption::Zstr, 0),
+            b'x' => (KOption::Padding, 1),
+            b'X' => (KOption::PaddAlign, 0),
+            b' ' => (KOption::Nop, 0),
+            b'<' => {
+                self.little = true;
+                (KOption::Nop, 0)
             }
-        )*
-    };
+            b'>' => {
+                self.little = false;
+                (KOption::Nop, 0)
+            }
+            b'=' => {
+                self.little = NATIVE_LITTLE;
+                (KOption::Nop, 0)
+            }
+            b'!' => {
+                self.maxalign = self.number_limit(l, fmt, NATIVE_ALIGN)?;
+                (KOption::Nop, 0)
+            }
+            _ => {
+                let shown = String::from_utf8_lossy(&[opt]).into_owned();
+                return Err(lauxlib::lual_error(l, format!("invalid format option '{shown}'")));
+            }
+        })
+    }
+
+    /// `getdetails`: the next option, its size and the padding needed to
+    /// align it at offset `total`.
+    fn details(
+        &mut self,
+        l: &mut LuaState,
+        fmt: &mut Format,
+        total: usize,
+    ) -> LuaResult<(KOption, usize, usize)> {
+        let (opt, size) = self.option(l, fmt)?;
+        let mut align = size;
+        if opt == KOption::PaddAlign {
+            // 'X' takes its alignment from the following option, which is
+            // otherwise ignored.
+            let next = if fmt.at_end() { None } else { Some(self.option(l, fmt)?) };
+            match next {
+                Some((next, next_size)) if next != KOption::Char && next_size != 0 => {
+                    align = next_size;
+                }
+                _ => return Err(lauxlib::argerror(l, 1, "invalid next option for option 'X'")),
+            }
+        }
+        if align <= 1 || opt == KOption::Char {
+            return Ok((opt, size, 0));
+        }
+        let align = align.min(self.maxalign);
+        if !align.is_power_of_two() {
+            return Err(lauxlib::argerror(l, 1, "format asks for alignment not power of 2"));
+        }
+        Ok((opt, size, (align - (total & (align - 1))) & (align - 1)))
+    }
 }
 
-impl_from_bytes!(
-    i16, 2, u16, 2, i32, 4, u32, 4, i64, 8, u64, 8, f32, 4, f64, 8
-);
+fn header(l: &LuaState) -> Header {
+    Header {
+        lua53: l.global_state().language() == LuaLanguageLevel::Lua53,
+        little: NATIVE_LITTLE,
+        maxalign: 1,
+    }
+}
 
-// Helper function to check alignment requirements
-fn check_alignment(size: usize, max_alignment: usize) -> Result<(), String> {
-    // Alignment is min(size, max_alignment)
-    let align = size.min(max_alignment);
-    // Check if alignment is power of 2 (and > 1)
-    if align > 1 && (align & (align - 1)) != 0 {
-        return Err("format asks for alignment not power of 2".to_string());
+/// The format string, cut at its first zero byte.
+fn format_arg(l: &mut LuaState) -> LuaResult<Vec<u8>> {
+    let fmt = lauxlib::check_lstring(l, 1)?;
+    Ok(fmt.split(|&c| c == 0).next().unwrap_or_default().to_vec())
+}
+
+/// `packint`: `size` bytes of `n`, sign-extended past 8 bytes if negative.
+fn pack_int(out: &mut Vec<u8>, n: u64, little: bool, size: usize, negative: bool) {
+    let start = out.len();
+    out.extend((0..size).map(|i| {
+        if i < SZINT {
+            (n >> (8 * i)) as u8
+        } else if negative {
+            0xff
+        } else {
+            0
+        }
+    }));
+    if !little {
+        out[start..].reverse();
+    }
+}
+
+fn push_endian(out: &mut Vec<u8>, bytes: &[u8], little: bool) {
+    if little {
+        out.extend_from_slice(bytes);
+    } else {
+        out.extend(bytes.iter().rev());
+    }
+}
+
+/// C's str_pack pushes a nil after its arguments, so a missing value is
+/// reported as "got nil" rather than "got no value".
+fn check_present(l: &mut LuaState, arg: usize, expected: &str) -> LuaResult<()> {
+    if arg > l.arg_count() {
+        return Err(lauxlib::argerror(l, arg, &format!("{expected} expected, got nil")));
     }
     Ok(())
 }
 
-// Helper function to add alignment padding to buffer
-fn add_alignment_padding(buffer: &mut Vec<u8>, size: usize, max_alignment: usize) {
-    if max_alignment > 1 {
-        let align = size.min(max_alignment);
-        if align > 1 {
-            let padding = (align - (buffer.len() % align)) % align;
-            for _ in 0..padding {
-                buffer.push(0);
-            }
-        }
-    }
-}
-
-// Helper function to skip alignment padding in unpack
-fn skip_alignment_padding(idx: &mut usize, size: usize, max_alignment: usize) {
-    if max_alignment > 1 {
-        let align = size.min(max_alignment);
-        if align > 1 {
-            let padding = (align - (*idx % align)) % align;
-            *idx += padding;
-        }
-    }
-}
-
-// Helper function to calculate alignment padding for size calculation
-fn get_alignment_padding(current_size: usize, size: usize, max_alignment: usize) -> usize {
-    if max_alignment > 1 {
-        let align = size.min(max_alignment);
-        if align > 1 {
-            return (align - (current_size % align)) % align;
-        }
-    }
-    0
-}
-
-// Helper function to check size overflow (for packsize)
-fn checked_add_size(current: usize, add: usize) -> Result<usize, String> {
-    const MAX_SIZE: usize = i32::MAX as usize;
-    if current > MAX_SIZE - add {
-        return Err("format result too large".to_string());
-    }
-    Ok(current + add)
-}
-
-/// string.pack(fmt, v1, v2, ...) - Pack values into binary string
 pub fn string_pack(l: &mut LuaState) -> LuaResult<usize> {
-    let fmt_value = l
-        .get_arg(1)
-        .ok_or_else(|| l.error("bad argument #1 to 'pack' (string expected)".to_string()))?;
-
-    let Some(fmt_str) = fmt_value.as_str() else {
-        return Err(l.error("bad argument #1 to 'pack' (string expected)".to_string()));
-    };
-    let fmt_str = fmt_str.to_string();
-
-    let argc = l.arg_count();
-    let mut result = Vec::new();
-    let mut value_idx = 2; // Start from argument 2 (after format string)
-    let mut chars = fmt_str.chars().peekable();
-    let mut endianness = Endianness::Native; // Default to native endianness
-    let mut max_alignment: usize = 1; // Default max alignment
-
-    while let Some(ch) = chars.next() {
-        match ch {
-            ' ' | '\t' | '\n' | '\r' => continue, // Skip whitespace
-
-            'b' => {
-                // signed byte
-                if value_idx > argc {
-                    return Err(l.error("bad argument to 'pack' (not enough values)".to_string()));
-                }
-                let n = l
-                    .get_arg(value_idx)
-                    .and_then(|v| v.as_integer())
-                    .ok_or_else(|| {
-                        l.error("bad argument to 'pack' (number expected)".to_string())
-                    })?;
-                result.push((n & 0xFF) as u8);
-                value_idx += 1;
+    let fmt_bytes = format_arg(l)?;
+    let mut fmt = Format { bytes: &fmt_bytes, pos: 0 };
+    let mut h = header(l);
+    let mut out = Vec::new();
+    let mut arg = 1;
+    while !fmt.at_end() {
+        let (opt, size, ntoalign) = h.details(l, &mut fmt, out.len())?;
+        if !h.lua53 && size.checked_add(ntoalign).is_none_or(|n| n > i64::MAX as usize - out.len()) {
+            return Err(lauxlib::argerror(l, arg, "result too long"));
+        }
+        out.resize(out.len() + ntoalign, 0);
+        arg += 1;
+        match opt {
+            KOption::Int | KOption::Uint | KOption::Float | KOption::Double => {
+                check_present(l, arg, "number")?
             }
-
-            'B' => {
-                // unsigned byte
-                if value_idx > argc {
-                    return Err(l.error("bad argument to 'pack' (not enough values)".to_string()));
+            KOption::Char | KOption::String | KOption::Zstr => check_present(l, arg, "string")?,
+            _ => {}
+        }
+        match opt {
+            KOption::Int => {
+                let n = lauxlib::check_integer(l, arg)?;
+                if size < SZINT {
+                    let limit = 1i64 << (size * 8 - 1);
+                    if !(-limit..limit).contains(&n) {
+                        return Err(lauxlib::argerror(l, arg, "integer overflow"));
+                    }
                 }
-                let n = l
-                    .get_arg(value_idx)
-                    .and_then(|v| v.as_integer())
-                    .ok_or_else(|| {
-                        l.error("bad argument to 'pack' (number expected)".to_string())
-                    })?;
-                result.push((n & 0xFF) as u8);
-                value_idx += 1;
+                pack_int(&mut out, n as u64, h.little, size, n < 0);
             }
-
-            'h' => {
-                // signed short (2 bytes)
-                add_alignment_padding(&mut result, 2, max_alignment);
-                if value_idx > argc {
-                    return Err(l.error("bad argument to 'pack' (not enough values)".to_string()));
+            KOption::Uint => {
+                let n = lauxlib::check_integer(l, arg)?;
+                if size < SZINT && (n as u64) >= 1u64 << (size * 8) {
+                    return Err(lauxlib::argerror(l, arg, "unsigned overflow"));
                 }
-                let n = l
-                    .get_arg(value_idx)
-                    .and_then(|v| v.as_integer())
-                    .ok_or_else(|| {
-                        l.error("bad argument to 'pack' (number expected)".to_string())
-                    })? as i16;
-                result.extend_from_slice(&endianness.to_bytes(n));
-                value_idx += 1;
+                pack_int(&mut out, n as u64, h.little, size, false);
             }
-
-            'H' => {
-                // unsigned short (2 bytes)
-                add_alignment_padding(&mut result, 2, max_alignment);
-                if value_idx > argc {
-                    return Err(l.error("bad argument to 'pack' (not enough values)".to_string()));
-                }
-                let n = l
-                    .get_arg(value_idx)
-                    .and_then(|v| v.as_integer())
-                    .ok_or_else(|| {
-                        l.error("bad argument to 'pack' (number expected)".to_string())
-                    })? as u16;
-                result.extend_from_slice(&endianness.to_bytes(n));
-                value_idx += 1;
+            KOption::Float => {
+                let n = lauxlib::check_number(l, arg)? as f32;
+                push_endian(&mut out, &n.to_le_bytes(), h.little);
             }
-
-            'i' | 'l' => {
-                // signed int - check for size suffix (i[n] where n is 1-16)
-                let mut size_str = String::new();
-                while let Some(&digit) = chars.peek() {
-                    if digit.is_ascii_digit() {
-                        size_str.push(chars.next().unwrap());
-                    } else {
-                        break;
-                    }
-                }
-
-                let size = if size_str.is_empty() {
-                    4 // default int size
-                } else {
-                    let n: usize = size_str.parse().map_err(|_| {
-                        l.error("bad argument to 'pack' (invalid size)".to_string())
-                    })?;
-                    if !(1..=16).contains(&n) {
-                        return Err(l.error(format!("({}) out of limits [1,16]", n)));
-                    }
-                    n
-                };
-
-                // Check alignment requirements
-                check_alignment(size, max_alignment).map_err(|e| l.error(e))?;
-                // Add alignment padding
-                add_alignment_padding(&mut result, size, max_alignment);
-
-                if value_idx > argc {
-                    return Err(l.error("bad argument to 'pack' (not enough values)".to_string()));
-                }
-                let val = l
-                    .get_arg(value_idx)
-                    .and_then(|v| v.as_integer())
-                    .ok_or_else(|| {
-                        l.error("bad argument to 'pack' (number expected)".to_string())
-                    })?;
-
-                // For size < 8, check if value fits in the specified number of bytes
-                if size < 8 {
-                    let max_val = (1i64 << (size * 8 - 1)) - 1;
-                    let min_val = -(1i64 << (size * 8 - 1));
-                    if val > max_val || val < min_val {
-                        return Err(l.error("integer overflow".to_string()));
-                    }
-                }
-
-                // Pack the value as signed integer with specified size
-                let bytes = match endianness {
-                    Endianness::Little => {
-                        let mut bytes = Vec::new();
-                        let mut v = val;
-                        for _ in 0..size {
-                            bytes.push((v & 0xFF) as u8);
-                            v >>= 8;
-                        }
-                        bytes
-                    }
-                    Endianness::Big => {
-                        let mut bytes = Vec::new();
-                        let mut v = val;
-                        for _ in 0..size {
-                            bytes.push((v & 0xFF) as u8);
-                            v >>= 8;
-                        }
-                        bytes.reverse();
-                        bytes
-                    }
-                    Endianness::Native => {
-                        let mut bytes = Vec::new();
-                        let mut v = val;
-                        for _ in 0..size {
-                            bytes.push((v & 0xFF) as u8);
-                            v >>= 8;
-                        }
-                        #[cfg(target_endian = "big")]
-                        bytes.reverse();
-                        bytes
-                    }
-                };
-                result.extend_from_slice(&bytes);
-                value_idx += 1;
+            KOption::Double => {
+                let n = lauxlib::check_number(l, arg)?;
+                push_endian(&mut out, &n.to_le_bytes(), h.little);
             }
-
-            'I' | 'L' => {
-                // unsigned int - check for size suffix (I[n] where n is 1-16)
-                let mut size_str = String::new();
-                while let Some(&digit) = chars.peek() {
-                    if digit.is_ascii_digit() {
-                        size_str.push(chars.next().unwrap());
-                    } else {
-                        break;
-                    }
+            KOption::Char => {
+                let s = lauxlib::check_lstring(l, arg)?;
+                if s.len() > size {
+                    return Err(lauxlib::argerror(l, arg, "string longer than given size"));
                 }
-
-                let size = if size_str.is_empty() {
-                    4 // default int size
-                } else {
-                    let n: usize = size_str.parse().map_err(|_| {
-                        l.error("bad argument to 'pack' (invalid size)".to_string())
-                    })?;
-                    if !(1..=16).contains(&n) {
-                        return Err(l.error(format!("({}) out of limits [1,16]", n)));
-                    }
-                    n
-                };
-
-                // Check alignment requirements
-                check_alignment(size, max_alignment).map_err(|e| l.error(e))?;
-                // Add alignment padding
-                add_alignment_padding(&mut result, size, max_alignment);
-
-                if value_idx > argc {
-                    return Err(l.error("bad argument to 'pack' (not enough values)".to_string()));
-                }
-                let val_i64 = l
-                    .get_arg(value_idx)
-                    .and_then(|v| v.as_integer())
-                    .ok_or_else(|| {
-                        l.error("bad argument to 'pack' (number expected)".to_string())
-                    })?;
-
-                // Check for negative values in unsigned format
-                if val_i64 < 0 {
-                    return Err(l.error("unsigned overflow".to_string()));
-                }
-
-                let val = val_i64 as u64;
-
-                // For size < 8, check if value fits in the specified number of bytes
-                if size < 8 {
-                    let max_val = (1u64 << (size * 8)) - 1;
-                    if val > max_val {
-                        return Err(l.error("unsigned overflow".to_string()));
-                    }
-                }
-
-                // Pack the value as unsigned integer with specified size
-                let bytes = match endianness {
-                    Endianness::Little => {
-                        let mut bytes = Vec::new();
-                        let mut v = val;
-                        for _ in 0..size {
-                            bytes.push((v & 0xFF) as u8);
-                            v >>= 8;
-                        }
-                        bytes
-                    }
-                    Endianness::Big => {
-                        let mut bytes = Vec::new();
-                        let mut v = val;
-                        for _ in 0..size {
-                            bytes.push((v & 0xFF) as u8);
-                            v >>= 8;
-                        }
-                        bytes.reverse();
-                        bytes
-                    }
-                    Endianness::Native => {
-                        let mut bytes = Vec::new();
-                        let mut v = val;
-                        for _ in 0..size {
-                            bytes.push((v & 0xFF) as u8);
-                            v >>= 8;
-                        }
-                        #[cfg(target_endian = "big")]
-                        bytes.reverse();
-                        bytes
-                    }
-                };
-                result.extend_from_slice(&bytes);
-                value_idx += 1;
+                out.extend_from_slice(&s);
+                out.resize(out.len() + (size - s.len()), 0);
             }
-
-            'f' => {
-                // float (4 bytes)
-                add_alignment_padding(&mut result, 4, max_alignment);
-                if value_idx > argc {
-                    return Err(l.error("bad argument to 'pack' (not enough values)".to_string()));
+            KOption::String => {
+                let s = lauxlib::check_lstring(l, arg)?;
+                if size < 8 && (s.len() as u64) >= 1u64 << (size * 8) {
+                    return Err(lauxlib::argerror(
+                        l,
+                        arg,
+                        "string length does not fit in given size",
+                    ));
                 }
-                let n = l
-                    .get_arg(value_idx)
-                    .and_then(|v| v.as_number())
-                    .ok_or_else(|| {
-                        l.error("bad argument to 'pack' (number expected)".to_string())
-                    })? as f32;
-                result.extend_from_slice(&endianness.to_bytes(n));
-                value_idx += 1;
+                pack_int(&mut out, s.len() as u64, h.little, size, false);
+                out.extend_from_slice(&s);
             }
-
-            'd' => {
-                // double (8 bytes)
-                add_alignment_padding(&mut result, 8, max_alignment);
-                if value_idx > argc {
-                    return Err(l.error("bad argument to 'pack' (not enough values)".to_string()));
+            KOption::Zstr => {
+                let s = lauxlib::check_lstring(l, arg)?;
+                if s.contains(&0) {
+                    return Err(lauxlib::argerror(l, arg, "string contains zeros"));
                 }
-                let n = l
-                    .get_arg(value_idx)
-                    .and_then(|v| v.as_number())
-                    .ok_or_else(|| {
-                        l.error("bad argument to 'pack' (number expected)".to_string())
-                    })?;
-                result.extend_from_slice(&endianness.to_bytes(n));
-                value_idx += 1;
+                out.extend_from_slice(&s);
+                out.push(0);
             }
-
-            'j' => {
-                // lua_Integer (8 bytes, i64)
-                add_alignment_padding(&mut result, 8, max_alignment);
-                if value_idx > argc {
-                    return Err(l.error("bad argument to 'pack' (not enough values)".to_string()));
-                }
-                let value = l.get_arg(value_idx).ok_or_else(|| {
-                    l.error("bad argument to 'pack' (number expected)".to_string())
-                })?;
-                let n = if let Some(i) = value.as_integer() {
-                    i
-                } else if let Some(f) = value.as_number() {
-                    // For float input that doesn't fit in i64, preserve as IEEE754 bit pattern
-                    // This allows pack/unpack round-trip to maintain equality for large floats
-                    f.to_bits() as i64
-                } else {
-                    return Err(l.error("bad argument to 'pack' (number expected)".to_string()));
-                };
-                result.extend_from_slice(&endianness.to_bytes(n));
-                value_idx += 1;
+            KOption::Padding => {
+                out.push(0);
+                arg -= 1;
             }
-
-            'J' => {
-                // unsigned lua_Integer (8 bytes, u64)
-                add_alignment_padding(&mut result, 8, max_alignment);
-                if value_idx > argc {
-                    return Err(l.error("bad argument to 'pack' (not enough values)".to_string()));
-                }
-                let value = l.get_arg(value_idx).ok_or_else(|| {
-                    l.error("bad argument to 'pack' (number expected)".to_string())
-                })?;
-                let n = if let Some(i) = value.as_integer() {
-                    // Check for negative values
-                    if i < 0 {
-                        return Err(l.error("unsigned overflow".to_string()));
-                    }
-                    i as u64
-                } else if let Some(f) = value.as_number() {
-                    f.to_bits()
-                } else {
-                    return Err(l.error("bad argument to 'pack' (number expected)".to_string()));
-                };
-                result.extend_from_slice(&endianness.to_bytes(n));
-                value_idx += 1;
-            }
-
-            'T' => {
-                // size_t (8 bytes on 64-bit)
-                if value_idx > argc {
-                    return Err(l.error("bad argument to 'pack' (not enough values)".to_string()));
-                }
-                let value = l.get_arg(value_idx).ok_or_else(|| {
-                    l.error("bad argument to 'pack' (number expected)".to_string())
-                })?;
-                let n = if let Some(i) = value.as_integer() {
-                    i as u64
-                } else if let Some(f) = value.as_number() {
-                    // For float input: apply modulo 2^64 then cast to u64
-                    const TWO_POW_64: f64 = 18446744073709551616.0; // 2^64
-                    let mut reduced = f % TWO_POW_64;
-                    if reduced < 0.0 {
-                        reduced += TWO_POW_64;
-                    }
-                    reduced as u64
-                } else {
-                    return Err(l.error("bad argument to 'pack' (number expected)".to_string()));
-                };
-                result.extend_from_slice(&endianness.to_bytes(n));
-                value_idx += 1;
-            }
-
-            'n' => {
-                // lua_Number (8 bytes, f64) - same as 'd'
-                if value_idx > argc {
-                    return Err(l.error("bad argument to 'pack' (not enough values)".to_string()));
-                }
-                let n = l
-                    .get_arg(value_idx)
-                    .and_then(|v| v.as_number())
-                    .ok_or_else(|| {
-                        l.error("bad argument to 'pack' (number expected)".to_string())
-                    })?;
-                result.extend_from_slice(&endianness.to_bytes(n));
-                value_idx += 1;
-            }
-
-            'z' => {
-                // zero-terminated string
-                if value_idx > argc {
-                    return Err(l.error("bad argument to 'pack' (not enough values)".to_string()));
-                }
-                let s_value = l.get_arg(value_idx).ok_or_else(|| {
-                    l.error("bad argument to 'pack' (string expected)".to_string())
-                })?;
-                let Some(bytes) = s_value.as_bytes() else {
-                    return Err(l.error("bad argument to 'pack' (string expected)".to_string()));
-                };
-                // Check for embedded null characters
-                if bytes.contains(&0) {
-                    return Err(l.error("string contains zeros".to_string()));
-                }
-                result.extend_from_slice(bytes);
-                result.push(0); // null terminator
-                value_idx += 1;
-            }
-
-            'c' => {
-                // fixed-length string - read size
-                let mut size_str = String::new();
-                while let Some(&digit) = chars.peek() {
-                    if digit.is_ascii_digit() {
-                        size_str.push(chars.next().unwrap());
-                    } else {
-                        break;
-                    }
-                }
-                if size_str.is_empty() {
-                    return Err(l.error("bad argument to 'pack' (missing size)".to_string()));
-                }
-                let size: usize = size_str
-                    .parse()
-                    .map_err(|_| l.error("bad argument to 'pack' (invalid size)".to_string()))?;
-
-                // Check if adding this size would overflow
-                checked_add_size(result.len(), size)
-                    .map_err(|_| l.error("pack result too long".to_string()))?;
-
-                if value_idx > argc {
-                    return Err(l.error("bad argument to 'pack' (not enough values)".to_string()));
-                }
-                let s_value = l.get_arg(value_idx).ok_or_else(|| {
-                    l.error("bad argument to 'pack' (string expected)".to_string())
-                })?;
-                let Some(bytes) = s_value.as_bytes() else {
-                    return Err(l.error("bad argument to 'pack' (string expected)".to_string()));
-                };
-
-                // Check if string is too long for the specified size
-                if bytes.len() > size {
-                    return Err(l.error("string longer than given size".to_string()));
-                }
-
-                result.extend_from_slice(bytes);
-                // Pad with zeros if needed
-                result.extend(std::iter::repeat_n(0, size - bytes.len()));
-                value_idx += 1;
-            }
-
-            's' => {
-                // variable-length string with size prefix
-                let mut size_str = String::new();
-                while let Some(&digit) = chars.peek() {
-                    if digit.is_ascii_digit() {
-                        size_str.push(chars.next().unwrap());
-                    } else {
-                        break;
-                    }
-                }
-
-                let size_bytes = if size_str.is_empty() {
-                    8 // default size_t (8 bytes on 64-bit)
-                } else {
-                    let n: usize = size_str.parse().map_err(|_| {
-                        l.error("bad argument to 'pack' (invalid size)".to_string())
-                    })?;
-                    if !(1..=16).contains(&n) {
-                        return Err(l.error(format!("({}) out of limits [1,16]", n)));
-                    }
-                    n
-                };
-
-                if value_idx > argc {
-                    return Err(l.error("bad argument to 'pack' (not enough values)".to_string()));
-                }
-                let s_value = l.get_arg(value_idx).ok_or_else(|| {
-                    l.error("bad argument to 'pack' (string expected)".to_string())
-                })?;
-                let Some(bytes) = s_value.as_bytes() else {
-                    return Err(l.error("bad argument to 'pack' (string expected)".to_string()));
-                };
-                let str_len = bytes.len();
-
-                // Check if string length fits in the specified size
-                if size_bytes < 8 {
-                    let max_len = (1usize << (size_bytes * 8)) - 1;
-                    if str_len > max_len {
-                        return Err(l.error("string length does not fit".to_string()));
-                    }
-                }
-
-                // Pack the string length first
-                let len_bytes = match endianness {
-                    Endianness::Little => {
-                        let mut bytes = Vec::new();
-                        let mut v = str_len;
-                        for _ in 0..size_bytes {
-                            bytes.push((v & 0xFF) as u8);
-                            v >>= 8;
-                        }
-                        bytes
-                    }
-                    Endianness::Big => {
-                        let mut bytes = Vec::new();
-                        let mut v = str_len;
-                        for _ in 0..size_bytes {
-                            bytes.push((v & 0xFF) as u8);
-                            v >>= 8;
-                        }
-                        bytes.reverse();
-                        bytes
-                    }
-                    Endianness::Native => {
-                        let mut bytes = Vec::new();
-                        let mut v = str_len;
-                        for _ in 0..size_bytes {
-                            bytes.push((v & 0xFF) as u8);
-                            v >>= 8;
-                        }
-                        #[cfg(target_endian = "big")]
-                        bytes.reverse();
-                        bytes
-                    }
-                };
-
-                // Check overflow before adding
-                checked_add_size(result.len(), size_bytes)
-                    .map_err(|_| l.error("pack result too long".to_string()))?;
-                checked_add_size(result.len() + size_bytes, str_len)
-                    .map_err(|_| l.error("pack result too long".to_string()))?;
-
-                result.extend_from_slice(&len_bytes);
-                result.extend_from_slice(bytes);
-                value_idx += 1;
-            }
-
-            'x' => {
-                // padding byte (zero)
-                result.push(0);
-            }
-
-            'X' => {
-                // Alignment padding - peek at next format option to determine alignment
-                let next_ch = chars.peek().copied();
-                if next_ch.is_none() {
-                    return Err(l.error("invalid next option for option 'X'".to_string()));
-                }
-                let next_ch = next_ch.unwrap();
-
-                // Determine alignment size based on next format option
-                let natural_align = match next_ch {
-                    'b' | 'B' => {
-                        chars.next(); // consume the next format char
-                        1
-                    }
-                    'h' | 'H' => {
-                        chars.next(); // consume the next format char
-                        2
-                    }
-                    'i' | 'I' | 'l' | 'L' | 'f' => {
-                        // Check for size suffix on integers
-                        chars.next(); // consume the next format char
-                        let mut size_str = String::new();
-                        while let Some(&digit) = chars.peek() {
-                            if digit.is_ascii_digit() {
-                                size_str.push(chars.next().unwrap());
-                            } else {
-                                break;
-                            }
-                        }
-                        if !size_str.is_empty()
-                            && (next_ch == 'i'
-                                || next_ch == 'I'
-                                || next_ch == 'l'
-                                || next_ch == 'L')
-                        {
-                            let n = size_str.parse::<usize>().unwrap_or(4);
-                            if !(1..=16).contains(&n) {
-                                return Err(l.error(format!("({}) out of limits [1,16]", n)));
-                            }
-                            n
-                        } else {
-                            4 // default int size
-                        }
-                    }
-                    'd' | 'n' | 'j' | 'J' | 'T' => {
-                        chars.next(); // consume the next format char
-                        8
-                    }
-                    ' ' | '\t' | '\n' | '\r' | 'X' | '<' | '>' | '=' | '!' | 'c' | 's' | 'z'
-                    | 'x' => {
-                        // Invalid options for X alignment
-                        return Err(l.error("invalid next option for option 'X'".to_string()));
-                    }
-                    _ => {
-                        chars.next(); // consume the next format char
-                        1 // For other options, use minimal alignment
-                    }
-                };
-                // Apply max_alignment constraint
-                let align = natural_align.min(max_alignment);
-                // Add padding bytes to align to boundary
-                if align > 1 {
-                    let padding = (align - (result.len() % align)) % align;
-                    result.extend(std::iter::repeat_n(0, padding));
-                }
-            }
-
-            '<' | '>' | '=' => {
-                // Update endianness based on modifier
-                match ch {
-                    '<' => endianness = Endianness::Little,
-                    '>' => endianness = Endianness::Big,
-                    '=' => endianness = Endianness::Native,
-                    _ => {}
-                }
-            }
-
-            '!' => {
-                // '!' sets max alignment - consume the alignment size
-                let mut align_str = String::new();
-                while let Some(&digit) = chars.peek() {
-                    if digit.is_ascii_digit() {
-                        align_str.push(chars.next().unwrap());
-                    } else {
-                        break;
-                    }
-                }
-
-                max_alignment = if align_str.is_empty() {
-                    // No number specified, use default max alignment (8 for double)
-                    8
-                } else {
-                    let n: usize = align_str.parse().map_err(|_| {
-                        l.error("bad argument to 'pack' (invalid alignment)".to_string())
-                    })?;
-                    if !(1..=16).contains(&n) {
-                        return Err(l.error("alignment out of limits [1,16]".to_string()));
-                    }
-                    // Check if n is a power of 2
-                    if n & (n - 1) != 0 {
-                        return Err(l.error("alignment is not a power of 2".to_string()));
-                    }
-                    n
-                };
-            }
-
-            _ => {
-                return Err(l.error(format!(
-                    "bad argument to 'pack' (invalid format option '{}')",
-                    ch
-                )));
-            }
+            KOption::PaddAlign | KOption::Nop => arg -= 1,
         }
     }
-
-    // Create a binary value from bytes - Lua strings can contain arbitrary binary data
-    let packed_val = l.create_binary(result)?;
-    l.push_value(packed_val)?;
+    let result = l.create_bytes(&out)?;
+    l.push_value(result)?;
     Ok(1)
 }
 
-/// string.packsize(fmt) - Return size of packed data
 pub fn string_packsize(l: &mut LuaState) -> LuaResult<usize> {
-    let fmt_value = l
-        .get_arg(1)
-        .ok_or_else(|| l.error("bad argument #1 to 'packsize' (string expected)".to_string()))?;
-
-    let Some(fmt_str) = fmt_value.as_str() else {
-        return Err(l.error("bad argument #1 to 'packsize' (string expected)".to_string()));
-    };
-    let fmt_str = fmt_str.to_string();
-
-    let mut size = 0usize;
-    let mut max_alignment: usize = 1; // Default max alignment
-    let mut chars = fmt_str.chars().peekable();
-
-    while let Some(ch) = chars.next() {
-        match ch {
-            ' ' | '\t' | '\n' | '\r' => continue,
-            'b' | 'B' => size = checked_add_size(size, 1).map_err(|e| l.error(e))?,
-            'h' | 'H' => {
-                // Add alignment padding
-                let padding = get_alignment_padding(size, 2, max_alignment);
-                size = checked_add_size(size, padding).map_err(|e| l.error(e))?;
-                // Add actual size
-                size = checked_add_size(size, 2).map_err(|e| l.error(e))?;
-            }
-
-            'i' | 'I' | 'l' | 'L' => {
-                // Check for size suffix (i[n] or I[n] where n is 1-16)
-                let mut size_str = String::new();
-                while let Some(&digit) = chars.peek() {
-                    if digit.is_ascii_digit() {
-                        size_str.push(chars.next().unwrap());
-                    } else {
-                        break;
-                    }
-                }
-
-                let item_size = if size_str.is_empty() {
-                    4 // default int size
-                } else {
-                    let n: usize = size_str.parse().map_err(|_| {
-                        l.error("bad argument to 'packsize' (invalid size)".to_string())
-                    })?;
-                    if !(1..=16).contains(&n) {
-                        return Err(l.error(format!("({}) out of limits [1,16]", n)));
-                    }
-                    n
-                };
-                // Add alignment padding
-                let padding = get_alignment_padding(size, item_size, max_alignment);
-                size = checked_add_size(size, padding).map_err(|e| l.error(e))?;
-                // Add actual size
-                size = checked_add_size(size, item_size).map_err(|e| l.error(e))?;
-            }
-
-            'f' => {
-                let padding = get_alignment_padding(size, 4, max_alignment);
-                size = checked_add_size(size, padding).map_err(|e| l.error(e))?;
-                size = checked_add_size(size, 4).map_err(|e| l.error(e))?;
-            }
-            'd' => {
-                let padding = get_alignment_padding(size, 8, max_alignment);
-                size = checked_add_size(size, padding).map_err(|e| l.error(e))?;
-                size = checked_add_size(size, 8).map_err(|e| l.error(e))?;
-            }
-            'j' | 'J' | 'n' | 'T' => {
-                // j: lua_Integer (8 bytes, i64)
-                // J: unsigned lua_Integer (8 bytes, u64)
-                // n: lua_Number (8 bytes, f64)
-                // T: size_t (8 bytes on 64-bit platforms)
-                let padding = get_alignment_padding(size, 8, max_alignment);
-                size = checked_add_size(size, padding).map_err(|e| l.error(e))?;
-                size = checked_add_size(size, 8).map_err(|e| l.error(e))?;
-            }
-            'x' => size = checked_add_size(size, 1).map_err(|e| l.error(e))?,
-
-            'X' => {
-                // Alignment padding - peek at next format option to determine alignment
-                let next_ch = chars.peek().copied();
-                if next_ch.is_none() {
-                    return Err(l.error("invalid next option for option 'X'".to_string()));
-                }
-                let next_ch = next_ch.unwrap();
-
-                // Determine alignment size based on next format option
-                let natural_align = match next_ch {
-                    'b' | 'B' => {
-                        chars.next(); // consume the next format char
-                        1
-                    }
-                    'h' | 'H' => {
-                        chars.next(); // consume the next format char
-                        2
-                    }
-                    'i' | 'I' | 'l' | 'L' | 'f' => {
-                        // Check for size suffix on integers
-                        chars.next(); // consume the next format char
-                        let mut size_str = String::new();
-                        while let Some(&digit) = chars.peek() {
-                            if digit.is_ascii_digit() {
-                                size_str.push(chars.next().unwrap());
-                            } else {
-                                break;
-                            }
-                        }
-                        if !size_str.is_empty()
-                            && (next_ch == 'i'
-                                || next_ch == 'I'
-                                || next_ch == 'l'
-                                || next_ch == 'L')
-                        {
-                            let n = size_str.parse::<usize>().unwrap_or(4);
-                            if !(1..=16).contains(&n) {
-                                return Err(l.error(format!("({}) out of limits [1,16]", n)));
-                            }
-                            n
-                        } else {
-                            4 // default int size
-                        }
-                    }
-                    'd' | 'n' | 'j' | 'J' | 'T' => {
-                        chars.next(); // consume the next format char
-                        8
-                    }
-                    ' ' | '\t' | '\n' | '\r' | 'X' | '<' | '>' | '=' | '!' | 'c' | 's' | 'z'
-                    | 'x' => {
-                        // Invalid options for X alignment
-                        return Err(l.error("invalid next option for option 'X'".to_string()));
-                    }
-                    _ => {
-                        chars.next(); // consume the next format char
-                        1 // For other options, use minimal alignment
-                    }
-                };
-                // Apply max_alignment constraint
-                let align = natural_align.min(max_alignment);
-                // Add padding to align to boundary
-                if align > 1 {
-                    let padding = (align - (size % align)) % align;
-                    size = checked_add_size(size, padding).map_err(|e| l.error(e))?;
-                }
-            }
-
-            'c' => {
-                // fixed-length string - read size
-                let mut size_str = String::new();
-                while let Some(&digit) = chars.peek() {
-                    if digit.is_ascii_digit() {
-                        size_str.push(chars.next().unwrap());
-                    } else {
-                        break;
-                    }
-                }
-                if size_str.is_empty() {
-                    return Err(l.error("bad argument to 'packsize' (missing size)".to_string()));
-                }
-                let n: usize = size_str.parse().map_err(|_| {
-                    l.error("bad argument to 'packsize' (invalid format)".to_string())
-                })?;
-                size = checked_add_size(size, n).map_err(|e| l.error(e))?;
-            }
-
-            'z' | 's' => {
-                return Err(l.error("variable-length format in 'packsize'".to_string()));
-            }
-
-            '<' | '>' | '=' => {
-                // endianness modifiers - ignore
-            }
-
-            '!' => {
-                // '!' sets max alignment - consume and validate the alignment size
-                let mut align_str = String::new();
-                while let Some(&digit) = chars.peek() {
-                    if digit.is_ascii_digit() {
-                        align_str.push(chars.next().unwrap());
-                    } else {
-                        break;
-                    }
-                }
-
-                if !align_str.is_empty() {
-                    let n: usize = align_str.parse().map_err(|_| {
-                        l.error("bad argument to 'packsize' (invalid alignment)".to_string())
-                    })?;
-                    if !(1..=16).contains(&n) {
-                        return Err(l.error("alignment out of limits [1,16]".to_string()));
-                    }
-                    // Check if n is a power of 2
-                    if n & (n - 1) != 0 {
-                        return Err(l.error("alignment is not a power of 2".to_string()));
-                    }
-                    max_alignment = n;
-                } else {
-                    // If no number specified, use default max alignment (8)
-                    max_alignment = 8;
-                }
-            }
-
-            _ => {
-                return Err(l.error(format!(
-                    "bad argument to 'packsize' (invalid format option '{}')",
-                    ch
-                )));
-            }
+    let fmt_bytes = format_arg(l)?;
+    let mut fmt = Format { bytes: &fmt_bytes, pos: 0 };
+    let mut h = header(l);
+    let max_size = if h.lua53 { i32::MAX as usize } else { i64::MAX as usize };
+    let mut total: usize = 0;
+    while !fmt.at_end() {
+        let (opt, size, ntoalign) = h.details(l, &mut fmt, total)?;
+        let variable = matches!(opt, KOption::String | KOption::Zstr);
+        // 5.4+ rejects variable-length options before the size check.
+        if variable && !h.lua53 {
+            return Err(lauxlib::argerror(l, 1, "variable-length format"));
+        }
+        let size = size + ntoalign;
+        if size > max_size || total > max_size - size {
+            return Err(lauxlib::argerror(l, 1, "format result too large"));
+        }
+        total += size;
+        if variable {
+            return Err(lauxlib::argerror(l, 1, "variable-length format"));
         }
     }
-
-    l.push_value(LuaValue::integer(size as i64))?;
+    l.push_value(LuaValue::integer(total as i64))?;
     Ok(1)
 }
 
-/// string.unpack(fmt, s [, pos]) - Unpack binary string
+/// `unpackint`: read a `size`-byte integer, checking that bytes beyond the
+/// eighth are only sign extension.
+fn unpack_int(l: &mut LuaState, bytes: &[u8], little: bool, signed: bool) -> LuaResult<i64> {
+    let size = bytes.len();
+    let byte = |i: usize| if little { bytes[i] } else { bytes[size - 1 - i] };
+    let limit = size.min(SZINT);
+    let mut res: u64 = 0;
+    for i in (0..limit).rev() {
+        res = (res << 8) | u64::from(byte(i));
+    }
+    if size < SZINT {
+        if signed {
+            let mask = 1u64 << (size * 8 - 1);
+            res = (res ^ mask).wrapping_sub(mask);
+        }
+    } else if size > SZINT {
+        let mask = if !signed || (res as i64) >= 0 { 0 } else { 0xff };
+        if (limit..size).any(|i| byte(i) != mask) {
+            return Err(lauxlib::lual_error(
+                l,
+                format!("{size}-byte integer does not fit into Lua Integer"),
+            ));
+        }
+    }
+    Ok(res as i64)
+}
+
 pub fn string_unpack(l: &mut LuaState) -> LuaResult<usize> {
-    let fmt_value = l
-        .get_arg(1)
-        .ok_or_else(|| l.error("bad argument #1 to 'unpack' (string expected)".to_string()))?;
-
-    let Some(fmt_str) = fmt_value.as_str() else {
-        return Err(l.error("bad argument #1 to 'unpack' (string expected)".to_string()));
-    };
-
-    let s_value = l
-        .get_arg(2)
-        .ok_or_else(|| l.error("bad argument #2 to 'unpack' (string expected)".to_string()))?;
-
-    let Some(bytes) = s_value.as_bytes() else {
-        return Err(l.error("bad argument #2 to 'unpack' (string expected)".to_string()));
-    };
-
-    let pos_arg = l.get_arg(3).and_then(|v| v.as_integer()).unwrap_or(1);
-
-    // Handle negative indices (count from end)
-    let pos = if pos_arg < 0 {
-        let len = bytes.len() as i64;
-        let adjusted = len + pos_arg + 1;
-        if adjusted < 1 {
-            return Err(l.error("initial position out of string".to_string()));
-        }
-        adjusted
-    } else if pos_arg == 0 {
-        return Err(l.error("initial position out of string".to_string()));
+    let fmt_bytes = format_arg(l)?;
+    let mut fmt = Format { bytes: &fmt_bytes, pos: 0 };
+    let data_arg = lauxlib::check_lstring(l, 2)?;
+    let data: &[u8] = &data_arg;
+    let ld = data.len();
+    let mut h = header(l);
+    let init = lauxlib::opt_integer(l, 3, 1)?;
+    // 5.3 posrelat (0 and too-negative give 0, i.e. an invalid position);
+    // 5.4+ posrelatI (clips those to 1).
+    let pos1 = if init > 0 {
+        init as u64
+    } else if init == 0 || init.unsigned_abs() > ld as u64 {
+        u64::from(!h.lua53)
     } else {
-        pos_arg
+        (ld as i64 + init + 1) as u64
     };
-
-    // Check if initial position is within string bounds
-    let pos_usize = pos as usize;
-    if pos_usize > bytes.len() + 1 {
-        return Err(l.error("initial position out of string".to_string()));
+    if pos1 == 0 || pos1 - 1 > ld as u64 {
+        return Err(lauxlib::argerror(l, 3, "initial position out of string"));
     }
-
-    // Convert to usize
-    let pos_usize = pos as usize;
-
-    let mut idx = pos_usize - 1; // Convert to 0-based
-    let mut results = Vec::new();
-    let mut chars = fmt_str.chars().peekable();
-    let mut endianness = Endianness::Native; // Default to native endianness
-    let mut max_alignment: usize = 1; // Default max alignment
-
-    while let Some(ch) = chars.next() {
-        match ch {
-            ' ' | '\t' | '\n' | '\r' => continue,
-
-            'b' => {
-                if idx >= bytes.len() {
-                    return Err(l.error("data string too short".to_string()));
-                }
-                results.push(LuaValue::integer(bytes[idx] as i8 as i64));
-                idx += 1;
-            }
-
-            'B' => {
-                if idx >= bytes.len() {
-                    return Err(l.error("data string too short".to_string()));
-                }
-                results.push(LuaValue::integer(bytes[idx] as i64));
-                idx += 1;
-            }
-
-            'h' => {
-                skip_alignment_padding(&mut idx, 2, max_alignment);
-                if idx + 2 > bytes.len() {
-                    return Err(l.error("data string too short".to_string()));
-                }
-                let val: i16 = endianness.read_bytes(&bytes[idx..idx + 2]);
-                results.push(LuaValue::integer(val as i64));
-                idx += 2;
-            }
-
-            'H' => {
-                skip_alignment_padding(&mut idx, 2, max_alignment);
-                if idx + 2 > bytes.len() {
-                    return Err(l.error("data string too short".to_string()));
-                }
-                let val: u16 = endianness.read_bytes(&bytes[idx..idx + 2]);
-                results.push(LuaValue::integer(val as i64));
-                idx += 2;
-            }
-
-            'i' | 'l' => {
-                // signed int - check for size suffix (i[n] where n is 1-16)
-                let mut size_str = String::new();
-                while let Some(&digit) = chars.peek() {
-                    if digit.is_ascii_digit() {
-                        size_str.push(chars.next().unwrap());
-                    } else {
-                        break;
-                    }
-                }
-
-                let size = if size_str.is_empty() {
-                    4 // default int size
-                } else {
-                    let n: usize = size_str.parse().map_err(|_| {
-                        l.error("bad argument to 'unpack' (invalid size)".to_string())
-                    })?;
-                    if !(1..=16).contains(&n) {
-                        return Err(l.error(format!("({}) out of limits [1,16]", n)));
-                    }
-                    n
-                };
-
-                skip_alignment_padding(&mut idx, size, max_alignment);
-
-                if idx + size > bytes.len() {
-                    return Err(l.error("data string too short".to_string()));
-                }
-
-                // Unpack signed integer with specified size
-                let val: i64 = match endianness {
-                    Endianness::Little => {
-                        let mut v: i64 = 0;
-                        for i in (0..size.min(8)).rev() {
-                            v = (v << 8) | (bytes[idx + i] as i64);
-                        }
-                        // Sign extend if the highest bit is set
-                        if size < 8 && (bytes[idx + size - 1] & 0x80) != 0 {
-                            v |= !0i64 << (size * 8);
-                        }
-                        // For size > 8, check that extra bytes are sign extension
-                        if size > 8 {
-                            let sign_byte = if (bytes[idx + 7] & 0x80) != 0 {
-                                0xFF
-                            } else {
-                                0x00
-                            };
-                            for i in 8..size {
-                                if bytes[idx + i] != sign_byte {
-                                    return Err(l.error(format!(
-                                        "{}-byte integer does not fit into Lua Integer",
-                                        size
-                                    )));
-                                }
-                            }
-                        }
-                        v
-                    }
-                    Endianness::Big => {
-                        // For big endian, high bytes come first
-                        // Check sign extension bytes first (indices 0..size-8)
-                        if size > 8 {
-                            let sign_byte = if (bytes[idx] & 0x80) != 0 { 0xFF } else { 0x00 };
-                            for i in 0..(size - 8) {
-                                if bytes[idx + i] != sign_byte {
-                                    return Err(l.error(format!(
-                                        "{}-byte integer does not fit into Lua Integer",
-                                        size
-                                    )));
-                                }
-                            }
-                        }
-                        let mut v: i64 = 0;
-                        let start = size.saturating_sub(8);
-                        for i in start..size {
-                            v = (v << 8) | (bytes[idx + i] as i64);
-                        }
-                        // Sign extend if needed
-                        if size < 8 && (bytes[idx] & 0x80) != 0 {
-                            v |= !0i64 << (size * 8);
-                        }
-                        v
-                    }
-                    Endianness::Native => {
-                        #[cfg(target_endian = "little")]
-                        {
-                            let mut v: i64 = 0;
-                            for i in (0..size.min(8)).rev() {
-                                v = (v << 8) | (bytes[idx + i] as i64);
-                            }
-                            if size < 8 && (bytes[idx + size - 1] & 0x80) != 0 {
-                                v |= !0i64 << (size * 8);
-                            }
-                            if size > 8 {
-                                let sign_byte = if (bytes[idx + 7] & 0x80) != 0 {
-                                    0xFF
-                                } else {
-                                    0x00
-                                };
-                                for i in 8..size {
-                                    if bytes[idx + i] != sign_byte {
-                                        return Err(l.error(format!(
-                                            "{}-byte integer does not fit into Lua Integer",
-                                            size
-                                        )));
-                                    }
-                                }
-                            }
-                            v
-                        }
-                        #[cfg(target_endian = "big")]
-                        {
-                            if size > 8 {
-                                let sign_byte = if (bytes[idx] & 0x80) != 0 { 0xFF } else { 0x00 };
-                                for i in 0..(size - 8) {
-                                    if bytes[idx + i] != sign_byte {
-                                        return Err(l.error(format!(
-                                            "{}-byte integer does not fit into Lua Integer",
-                                            size
-                                        )));
-                                    }
-                                }
-                            }
-                            let mut v: i64 = 0;
-                            let start = if size > 8 { size - 8 } else { 0 };
-                            for i in start..size {
-                                v = (v << 8) | (bytes[idx + i] as i64);
-                            }
-                            if size < 8 && (bytes[idx] & 0x80) != 0 {
-                                v |= !0i64 << (size * 8);
-                            }
-                            v
-                        }
-                    }
-                };
-                results.push(LuaValue::integer(val));
-                idx += size;
-            }
-
-            'I' | 'L' => {
-                // unsigned int - check for size suffix (I[n] where n is 1-16)
-                let mut size_str = String::new();
-                while let Some(&digit) = chars.peek() {
-                    if digit.is_ascii_digit() {
-                        size_str.push(chars.next().unwrap());
-                    } else {
-                        break;
-                    }
-                }
-
-                let size = if size_str.is_empty() {
-                    4 // default int size
-                } else {
-                    let n: usize = size_str.parse().map_err(|_| {
-                        l.error("bad argument to 'unpack' (invalid size)".to_string())
-                    })?;
-                    if !(1..=16).contains(&n) {
-                        return Err(l.error(format!("({}) out of limits [1,16]", n)));
-                    }
-                    n
-                };
-
-                skip_alignment_padding(&mut idx, size, max_alignment);
-
-                if idx + size > bytes.len() {
-                    return Err(l.error("data string too short".to_string()));
-                }
-
-                // Unpack unsigned integer with specified size
-                let val: u64 = match endianness {
-                    Endianness::Little => {
-                        let mut v: u64 = 0;
-                        for i in (0..size.min(8)).rev() {
-                            v = (v << 8) | (bytes[idx + i] as u64);
-                        }
-                        // For size > 8, check that extra bytes are all zeros
-                        if size > 8 {
-                            for i in 8..size {
-                                if bytes[idx + i] != 0 {
-                                    return Err(l.error(format!(
-                                        "{}-byte integer does not fit into Lua Integer",
-                                        size
-                                    )));
-                                }
-                            }
-                        }
-                        v
-                    }
-                    Endianness::Big => {
-                        // For big endian, high bytes come first
-                        // Check that high bytes are all zeros
-                        if size > 8 {
-                            for i in 0..(size - 8) {
-                                if bytes[idx + i] != 0 {
-                                    return Err(l.error(format!(
-                                        "{}-byte integer does not fit into Lua Integer",
-                                        size
-                                    )));
-                                }
-                            }
-                        }
-                        let mut v: u64 = 0;
-                        let start = size.saturating_sub(8);
-                        for i in start..size {
-                            v = (v << 8) | (bytes[idx + i] as u64);
-                        }
-                        v
-                    }
-                    Endianness::Native => {
-                        #[cfg(target_endian = "little")]
-                        {
-                            let mut v: u64 = 0;
-                            for i in (0..size.min(8)).rev() {
-                                v = (v << 8) | (bytes[idx + i] as u64);
-                            }
-                            if size > 8 {
-                                for i in 8..size {
-                                    if bytes[idx + i] != 0 {
-                                        return Err(l.error(format!(
-                                            "{}-byte integer does not fit into Lua Integer",
-                                            size
-                                        )));
-                                    }
-                                }
-                            }
-                            v
-                        }
-                        #[cfg(target_endian = "big")]
-                        {
-                            if size > 8 {
-                                for i in 0..(size - 8) {
-                                    if bytes[idx + i] != 0 {
-                                        return Err(l.error(format!(
-                                            "{}-byte integer does not fit into Lua Integer",
-                                            size
-                                        )));
-                                    }
-                                }
-                            }
-                            let mut v: u64 = 0;
-                            let start = if size > 8 { size - 8 } else { 0 };
-                            for i in start..size {
-                                v = (v << 8) | (bytes[idx + i] as u64);
-                            }
-                            v
-                        }
-                    }
-                };
-                results.push(LuaValue::integer(val as i64));
-                idx += size;
-            }
-
-            'f' => {
-                skip_alignment_padding(&mut idx, 4, max_alignment);
-                if idx + 4 > bytes.len() {
-                    return Err(l.error("data string too short".to_string()));
-                }
-                let val: f32 = endianness.read_bytes(&bytes[idx..idx + 4]);
-                results.push(LuaValue::number(val as f64));
-                idx += 4;
-            }
-
-            'd' => {
-                skip_alignment_padding(&mut idx, 8, max_alignment);
-                if idx + 8 > bytes.len() {
-                    return Err(l.error("data string too short".to_string()));
-                }
-                let val: f64 = endianness.read_bytes(&bytes[idx..idx + 8]);
-                results.push(LuaValue::number(val));
-                idx += 8;
-            }
-
-            'j' => {
-                // lua_Integer (8 bytes, i64)
-                skip_alignment_padding(&mut idx, 8, max_alignment);
-                if idx + 8 > bytes.len() {
-                    return Err(l.error("data string too short".to_string()));
-                }
-                let val: i64 = endianness.read_bytes(&bytes[idx..idx + 8]);
-                results.push(LuaValue::integer(val));
-                idx += 8;
-            }
-
-            'J' => {
-                // unsigned lua_Integer (8 bytes, u64)
-                skip_alignment_padding(&mut idx, 8, max_alignment);
-                if idx + 8 > bytes.len() {
-                    return Err(l.error("data string too short".to_string()));
-                }
-                let val: u64 = endianness.read_bytes(&bytes[idx..idx + 8]);
-                results.push(LuaValue::integer(val as i64));
-                idx += 8;
-            }
-
-            'T' => {
-                // size_t (8 bytes on 64-bit)
-                skip_alignment_padding(&mut idx, 8, max_alignment);
-                if idx + 8 > bytes.len() {
-                    return Err(l.error("data string too short".to_string()));
-                }
-                let val: u64 = endianness.read_bytes(&bytes[idx..idx + 8]);
-                results.push(LuaValue::integer(val as i64));
-                idx += 8;
-            }
-
-            'n' => {
-                // lua_Number (8 bytes, f64) - same as 'd'
-                skip_alignment_padding(&mut idx, 8, max_alignment);
-                if idx + 8 > bytes.len() {
-                    return Err(l.error("data string too short".to_string()));
-                }
-                let val: f64 = endianness.read_bytes(&bytes[idx..idx + 8]);
-                results.push(LuaValue::number(val));
-                idx += 8;
-            }
-
-            'z' => {
-                // zero-terminated string
-                let start = idx;
-                while idx < bytes.len() && bytes[idx] != 0 {
-                    idx += 1;
-                }
-                if idx >= bytes.len() {
-                    return Err(l.error("unfinished string for format 'z'".to_string()));
-                }
-                let str_bytes = &bytes[start..idx];
-                let val = l.create_bytes(str_bytes)?;
-                results.push(val);
-                idx += 1; // Skip null terminator
-            }
-
-            'c' => {
-                // fixed-length string - read size
-                let mut size_str = String::new();
-                while let Some(&digit) = chars.peek() {
-                    if digit.is_ascii_digit() {
-                        size_str.push(chars.next().unwrap());
-                    } else {
-                        break;
-                    }
-                }
-                if size_str.is_empty() {
-                    return Err(l.error("bad argument to 'unpack' (missing size)".to_string()));
-                }
-                let size: usize = size_str
-                    .parse()
-                    .map_err(|_| l.error("bad argument to 'unpack' (invalid size)".to_string()))?;
-
-                if idx + size > bytes.len() {
-                    return Err(l.error("data string too short".to_string()));
-                }
-                let str_bytes = &bytes[idx..idx + size];
-                let val = l.create_bytes(str_bytes)?;
-                results.push(val);
-                idx += size;
-            }
-
-            's' => {
-                // variable-length string with size prefix
-                let mut size_str = String::new();
-                while let Some(&digit) = chars.peek() {
-                    if digit.is_ascii_digit() {
-                        size_str.push(chars.next().unwrap());
-                    } else {
-                        break;
-                    }
-                }
-
-                let size_bytes = if size_str.is_empty() {
-                    8 // default size_t (8 bytes on 64-bit)
-                } else {
-                    let n: usize = size_str.parse().map_err(|_| {
-                        l.error("bad argument to 'unpack' (invalid size)".to_string())
-                    })?;
-                    if !(1..=16).contains(&n) {
-                        return Err(l.error(format!("({}) out of limits [1,16]", n)));
-                    }
-                    n
-                };
-
-                // Read the string length
-                if idx + size_bytes > bytes.len() {
-                    return Err(l.error("data string too short".to_string()));
-                }
-
-                let str_len: usize = match endianness {
-                    Endianness::Little => {
-                        let mut v: usize = 0;
-                        for i in 0..size_bytes.min(std::mem::size_of::<usize>()) {
-                            v |= (bytes[idx + i] as usize) << (i * 8);
-                        }
-                        v
-                    }
-                    Endianness::Big => {
-                        let mut v: usize = 0;
-                        let start = if size_bytes > std::mem::size_of::<usize>() {
-                            size_bytes - std::mem::size_of::<usize>()
-                        } else {
-                            0
-                        };
-                        for i in start..size_bytes {
-                            v = (v << 8) | (bytes[idx + i] as usize);
-                        }
-                        v
-                    }
-                    Endianness::Native => {
-                        let mut v: usize = 0;
-                        #[cfg(target_endian = "little")]
-                        for i in 0..size_bytes.min(std::mem::size_of::<usize>()) {
-                            v |= (bytes[idx + i] as usize) << (i * 8);
-                        }
-                        #[cfg(target_endian = "big")]
-                        {
-                            let start = if size_bytes > std::mem::size_of::<usize>() {
-                                size_bytes - std::mem::size_of::<usize>()
-                            } else {
-                                0
-                            };
-                            for i in start..size_bytes {
-                                v = (v << 8) | (bytes[idx + i] as usize);
-                            }
-                        }
-                        v
-                    }
-                };
-
-                idx += size_bytes;
-
-                // Read the string data
-                if idx + str_len > bytes.len() {
-                    return Err(l.error("data string too short".to_string()));
-                }
-
-                let str_bytes = &bytes[idx..idx + str_len];
-                let val = l.create_bytes(str_bytes)?;
-                results.push(val);
-                idx += str_len;
-            }
-
-            'x' => {
-                // padding byte - skip
-                if idx >= bytes.len() {
-                    return Err(l.error("data string too short".to_string()));
-                }
-                idx += 1;
-            }
-
-            'X' => {
-                // Alignment padding - peek at next format option to determine alignment
-                let next_ch = chars.peek().copied();
-                if next_ch.is_none() {
-                    return Err(l.error("invalid next option for option 'X'".to_string()));
-                }
-                let next_ch = next_ch.unwrap();
-
-                // Determine alignment size based on next format option
-                let natural_align = match next_ch {
-                    'b' | 'B' => {
-                        chars.next(); // consume the next format char
-                        1
-                    }
-                    'h' | 'H' => {
-                        chars.next(); // consume the next format char
-                        2
-                    }
-                    'i' | 'I' | 'l' | 'L' | 'f' => {
-                        // Check for size suffix on integers
-                        chars.next(); // consume the next format char
-                        let mut size_str = String::new();
-                        while let Some(&digit) = chars.peek() {
-                            if digit.is_ascii_digit() {
-                                size_str.push(chars.next().unwrap());
-                            } else {
-                                break;
-                            }
-                        }
-                        if !size_str.is_empty()
-                            && (next_ch == 'i'
-                                || next_ch == 'I'
-                                || next_ch == 'l'
-                                || next_ch == 'L')
-                        {
-                            size_str.parse::<usize>().unwrap_or(4)
-                        } else {
-                            4 // default int size
-                        }
-                    }
-                    'd' | 'n' | 'j' | 'J' | 'T' => {
-                        chars.next(); // consume the next format char
-                        8
-                    }
-                    ' ' | '\t' | '\n' | '\r' | 'X' | '<' | '>' | '=' | '!' | 'c' | 's' | 'z'
-                    | 'x' => {
-                        // Invalid options for X alignment
-                        return Err(l.error("invalid next option for option 'X'".to_string()));
-                    }
-                    _ => {
-                        chars.next(); // consume the next format char
-                        1
-                    }
-                };
-                // Apply max_alignment constraint
-                let align = natural_align.min(max_alignment);
-                // Skip padding bytes to align to boundary
-                if align > 1 {
-                    let padding = (align - (idx % align)) % align;
-                    idx += padding;
-                }
-            }
-
-            '<' | '>' | '=' => {
-                // Update endianness based on modifier
-                match ch {
-                    '<' => endianness = Endianness::Little,
-                    '>' => endianness = Endianness::Big,
-                    '=' => endianness = Endianness::Native,
-                    _ => {}
-                }
-            }
-
-            '!' => {
-                // '!' sets max alignment - consume and validate the alignment size
-                let mut align_str = String::new();
-                while let Some(&digit) = chars.peek() {
-                    if digit.is_ascii_digit() {
-                        align_str.push(chars.next().unwrap());
-                    } else {
-                        break;
-                    }
-                }
-
-                max_alignment = if align_str.is_empty() {
-                    // No number specified, use default max alignment (8 for double)
-                    8
-                } else {
-                    let n: usize = align_str.parse().map_err(|_| {
-                        l.error("bad argument to 'unpack' (invalid alignment)".to_string())
-                    })?;
-                    if !(1..=16).contains(&n) {
-                        return Err(l.error("alignment out of limits [1,16]".to_string()));
-                    }
-                    // Check if n is a power of 2
-                    if n & (n - 1) != 0 {
-                        return Err(l.error("alignment is not a power of 2".to_string()));
-                    }
-                    n
-                };
-            }
-
-            _ => {
-                return Err(l.error(format!(
-                    "bad argument to 'unpack' (invalid format option '{}')",
-                    ch
-                )));
-            }
+    let mut pos = (pos1 - 1) as usize;
+    let mut n = 0;
+    while !fmt.at_end() {
+        let (opt, size, ntoalign) = h.details(l, &mut fmt, pos)?;
+        if ntoalign.checked_add(size).is_none_or(|need| need > ld.saturating_sub(pos)) || pos > ld {
+            return Err(lauxlib::argerror(l, 2, "data string too short"));
         }
+        pos += ntoalign;
+        let value = match opt {
+            KOption::Int | KOption::Uint => {
+                LuaValue::integer(unpack_int(l, &data[pos..pos + size], h.little, opt == KOption::Int)?)
+            }
+            KOption::Float => {
+                let mut raw = [0u8; 4];
+                raw.copy_from_slice(&data[pos..pos + 4]);
+                if !h.little {
+                    raw.reverse();
+                }
+                LuaValue::float(f64::from(f32::from_le_bytes(raw)))
+            }
+            KOption::Double => {
+                let mut raw = [0u8; 8];
+                raw.copy_from_slice(&data[pos..pos + 8]);
+                if !h.little {
+                    raw.reverse();
+                }
+                LuaValue::float(f64::from_le_bytes(raw))
+            }
+            KOption::Char => l.create_bytes(&data[pos..pos + size])?,
+            KOption::String => {
+                let len = unpack_int(l, &data[pos..pos + size], h.little, false)? as u64;
+                if len > (ld - pos - size) as u64 {
+                    return Err(lauxlib::argerror(l, 2, "data string too short"));
+                }
+                let start = pos + size;
+                pos += len as usize;
+                l.create_bytes(&data[start..start + len as usize])?
+            }
+            KOption::Zstr => {
+                let rest = &data[pos..];
+                let len = match rest.iter().position(|&c| c == 0) {
+                    Some(len) => len,
+                    // 5.3 reads up to the terminating zero C strings have.
+                    None if h.lua53 => rest.len(),
+                    None => {
+                        return Err(lauxlib::argerror(l, 2, "unfinished string for format 'z'"));
+                    }
+                };
+                let value = l.create_bytes(&rest[..len])?;
+                pos += len + 1;
+                value
+            }
+            KOption::PaddAlign | KOption::Padding | KOption::Nop => {
+                pos += size;
+                continue;
+            }
+        };
+        l.push_value(value)?;
+        n += 1;
+        pos += size;
     }
-
-    // Push all results
-    let result_count = results.len();
-    for result in results {
-        l.push_value(result)?;
-    }
-
-    // Also push the next position
-    l.push_value(LuaValue::integer(idx as i64 + 1))?; // Convert back to 1-based
-
-    Ok(result_count + 1) // Return number of results + position
+    l.push_value(LuaValue::integer(pos as i64 + 1))?;
+    Ok(n + 1)
 }

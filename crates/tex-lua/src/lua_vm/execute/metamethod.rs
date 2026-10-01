@@ -223,6 +223,13 @@ pub fn try_bin_tm(
             }
             _ => "perform arithmetic on",
         };
+        // Lua 5.3's luaG_opinterror blames the second operand unless the first
+        // fails `tonumber`, which converts numeric strings ("2" * nil blames nil).
+        if lua_state.global_state().language() == crate::LuaLanguageLevel::Lua53
+            && crate::lua_vm::tonumber53(&p1).is_some()
+        {
+            return Err(debug::opinterror(lua_state, p2_reg, p2_reg, &p2, &p2, msg));
+        }
         Err(debug::opinterror(lua_state, p1_reg, p2_reg, &p1, &p2, msg))
     }
 }

@@ -296,8 +296,13 @@ pub struct GC {
     /// Fully weak tables (both keys and values are weak)
     allweak: Vec<TablePtr>,
 
-    /// Threads with open upvalues
+    /// Threads with open upvalues (C Lua's `g->twups`).  Membership is
+    /// tracked by `LuaState::in_twups` so linking is O(1).
     twups: Vec<ThreadPtr>,
+
+    /// Threads that were unmarked during `remark_upvalues` while holding open
+    /// upvalues; those still dead after the atomic phase get them closed.
+    unmarked_twups: Vec<ThreadPtr>,
 
     /// Finalizers called during GC
     finobj: Vec<GcObjectPtr>,
@@ -365,6 +370,7 @@ impl GC {
             ephemeron: Vec::new(),
             allweak: Vec::new(),
             twups: Vec::new(),
+            unmarked_twups: Vec::new(),
             finobj: Vec::new(),
             sweepgc: SweepGc::AllGc(0),
             stats: GcStats::default(),
@@ -2120,32 +2126,29 @@ impl GC {
                 }
             }
 
-            if !self.is_in_twups(thread_ptr) && !gc_thread.data.open_upvalues().is_empty() {
-                self.twups.push(thread_ptr);
+            if !gc_thread.data.open_upvalues().is_empty() {
+                self.link_thread_with_open_upvalues(thread_ptr);
             }
-        } else {
-            let state = &gc_thread.data;
-            if !self.is_in_twups(thread_ptr) && !state.open_upvalues().is_empty() {
-                self.twups.push(thread_ptr);
-            }
+        } else if !gc_thread.data.open_upvalues().is_empty() {
+            self.link_thread_with_open_upvalues(thread_ptr);
         }
 
         count as usize // Estimate of work done
     }
 
-    fn is_in_twups(&self, thread_ptr: ThreadPtr) -> bool {
-        // Check if the thread is in the twups list
-        self.twups.contains(&thread_ptr)
-    }
-
-    /// Link a thread as soon as it gains its first open upvalue.
-    ///
-    /// The list is weak: it lets the atomic phase preserve values from an
-    /// unreachable thread for one cycle before closing its upvalues.
-    pub(crate) fn link_thread_with_open_upvalues(&mut self, thread_ptr: ThreadPtr) {
-        if !self.is_in_twups(thread_ptr) {
+    /// Link a thread into `twups` (C Lua: on its first open upvalue, and again
+    /// whenever an atomic traversal finds it with open upvalues).
+    fn link_thread_with_open_upvalues(&mut self, thread_ptr: ThreadPtr) {
+        let state = &mut thread_ptr.as_mut_ref().data;
+        if !state.in_twups {
+            state.in_twups = true;
             self.twups.push(thread_ptr);
         }
+    }
+
+    /// Append a thread whose `in_twups` flag the caller has just set.
+    pub(crate) fn push_twups(&mut self, thread_ptr: ThreadPtr) {
+        self.twups.push(thread_ptr);
     }
 
     /// Check if an object is white
@@ -2364,36 +2367,32 @@ impl GC {
         }
     }
 
-    fn process_list(list: &mut GcList, other_white: u8) {
-        for obj in list.iter_mut() {
-            if let GcObjectOwner::Thread(thread_box) = obj {
-                let thread = thread_box.as_mut();
-                if thread.header.is_dead(other_white) && !thread.data.open_upvalues().is_empty() {
-                    let stack = thread.data.stack();
-                    for upval_ptr in thread.data.open_upvalues() {
-                        Self::close_upvalue_proper(*upval_ptr, stack);
-                    }
-                    thread.data.open_upvalues_mut().clear();
-                }
-            }
-        }
-    }
-
     /// Close open upvalues on dead threads to prevent dangling stack pointers.
     ///
     /// Called during atomic phase after white flip. At this point:
-    /// - Dead threads are identifiable (have other_white color); marking is
-    ///   complete, so a thread that was still white during `remark_upvalues`
-    ///   but was reached later (e.g. through `grayagain`) is not dead
+    /// - marking is complete, so a thread that was still white during
+    ///   `remark_upvalues` but was reached later (e.g. through `grayagain`)
+    ///   is not dead, and was linked into `twups` again by its traversal
     /// - ALL objects are still in memory (sweep hasn't started)
     /// - Upvalue objects are safely accessible
     ///
-    /// Only the young lists can hold dead objects: incremental cycles keep
-    /// every object in `allgc`, and minor collections never free old ones.
+    /// Every thread with open upvalues is in `twups` from its first upvalue,
+    /// or from the atomic traversal of the cycle it last survived, until
+    /// `remark_upvalues` finds it unmarked; so `unmarked_twups` covers every
+    /// thread that dies with open upvalues.
     fn close_dead_threads_upvalues(&mut self) {
         let other_white = GcHeader::otherwhite(self.current_white);
-        Self::process_list(&mut self.allgc, other_white);
-        Self::process_list(&mut self.survival, other_white);
+        for thread_ptr in std::mem::take(&mut self.unmarked_twups) {
+            let thread = thread_ptr.as_mut_ref();
+            if !thread.header.is_dead(other_white) {
+                continue;
+            }
+            let stack = thread.data.stack();
+            for upval_ptr in thread.data.open_upvalues() {
+                Self::close_upvalue_proper(*upval_ptr, stack);
+            }
+            thread.data.open_upvalues_mut().clear();
+        }
     }
 
     fn propagate_all(&mut self, l: &mut LuaState) {
@@ -2432,14 +2431,22 @@ impl GC {
         let mut i = 0;
         while i < self.twups.len() {
             let thread_ptr = self.twups[i];
-            let thread = thread_ptr.as_ref();
-            if !thread.header.is_white() && !thread.data.open_upvalues().is_empty() {
+            let (marked, has_upvalues) = {
+                let thread = thread_ptr.as_ref();
+                (!thread.header.is_white(), !thread.data.open_upvalues().is_empty())
+            };
+            if marked && has_upvalues {
                 i += 1;
                 continue;
             }
 
             // note: swap_remove moves last element to index i
             self.twups.swap_remove(i);
+            thread_ptr.as_mut_ref().data.in_twups = false;
+            if !marked && has_upvalues {
+                self.unmarked_twups.push(thread_ptr);
+            }
+            let thread = thread_ptr.as_ref();
             for upval_ptr in thread.data.open_upvalues() {
                 let upval = upval_ptr.as_ref();
                 debug_assert!(

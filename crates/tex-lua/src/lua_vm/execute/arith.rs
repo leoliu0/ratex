@@ -380,6 +380,14 @@ pub fn lua_fmod(a: f64, b: f64) -> f64 {
     m
 }
 
+/// Lua 5.3's `luai_nummod`: `m = fmod(a,b); if (m*b < 0) m += b;`
+/// (differs from 5.5 when `m*b` underflows to zero).
+#[inline(always)]
+pub fn lua_fmod53(a: f64, b: f64) -> f64 {
+    let m = a % b;
+    if m * b < 0.0 { m + b } else { m }
+}
+
 /// luai_numpow - Power operation matching Lua 5.4/5.5's luai_numpow macro:
 ///   #define luai_numpow(L,a,b)  ((b)==2 ? (a)*(a) : pow(a,b))
 /// Uses libm `pow` exactly like C Lua (repeated squaring would accumulate

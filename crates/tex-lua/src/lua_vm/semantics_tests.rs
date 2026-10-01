@@ -224,3 +224,36 @@ fn gc_collects_values_held_only_by_dead_threads_open_upvalues() {
         "#,
     );
 }
+
+#[test]
+fn lua53_float_modulo_uses_the_5_3_sign_correction() {
+    // 5.3 corrects fmod's result only when m*b < 0, which is false when the
+    // product underflows; 5.5 compares signs.
+    run(
+        LuaLanguageLevel::Lua53,
+        r#"
+        local a, b = 1, -1e-300
+        local m = a % b
+        assert(m > 0 and m == math.fmod(a, b))
+        assert(5.5 % -2 == -0.5 and -5.5 % 2 == 0.5)
+        "#,
+    );
+    run(
+        LuaLanguageLevel::Lua55,
+        r#"
+        local a, b = 1, -1e-300
+        assert(a % b < 0)
+        "#,
+    );
+}
+
+#[test]
+fn lua53_arithmetic_error_blames_the_non_numeric_operand() {
+    run(
+        LuaLanguageLevel::Lua53,
+        r#"
+        local ok, msg = pcall(load("aaa = '2'; b = nil; x = aaa * b"))
+        assert(not ok and msg:find("global 'b'", 1, true), msg)
+        "#,
+    );
+}

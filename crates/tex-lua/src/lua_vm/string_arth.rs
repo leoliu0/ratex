@@ -13,7 +13,7 @@ use crate::{
     LuaResult, LuaState, LuaValue,
     lua_vm::{
         TmKind, execute,
-        execute::arith::{lua_fmod, lua_idiv, lua_imod, luai_numpow, luai_numpow53},
+        execute::arith::{lua_fmod, lua_fmod53, lua_idiv, lua_imod, luai_numpow, luai_numpow53},
         execute::helper::{error_div_by_zero, error_mod_by_zero},
     },
     stdlib::basic::parse_number::parse_lua_number,
@@ -50,12 +50,13 @@ pub(crate) fn arith_float(tm: TmKind, a: f64, b: f64) -> f64 {
     }
 }
 
-/// Lua 5.3 float arithmetic: as `arith_float`, but '^' is plain `pow`.
+/// Lua 5.3 float arithmetic: as `arith_float`, but with 5.3's '^' (plain
+/// `pow`) and '%' (`m*b < 0` correction).
 pub(crate) fn arith_float53(tm: TmKind, a: f64, b: f64) -> f64 {
-    if tm == TmKind::Pow {
-        luai_numpow53(a, b)
-    } else {
-        arith_float(tm, a, b)
+    match tm {
+        TmKind::Pow => luai_numpow53(a, b),
+        TmKind::Mod => lua_fmod53(a, b),
+        _ => arith_float(tm, a, b),
     }
 }
 

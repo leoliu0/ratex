@@ -1550,8 +1550,9 @@ impl GlobalStateHandle {
             .barrier(unsafe { &mut *state }, owner_ptr, value_gc_ptr);
     }
 
-    pub(crate) fn link_thread_with_open_upvalues(self, thread_ptr: ThreadPtr) {
-        self.as_mut().gc.link_thread_with_open_upvalues(thread_ptr);
+    /// Append a thread whose `in_twups` flag the caller has just set.
+    pub(crate) fn push_twups(self, thread_ptr: ThreadPtr) {
+        self.as_mut().gc.push_twups(thread_ptr);
     }
 
     pub(crate) fn check_gc(self, state: *mut LuaState) -> bool {

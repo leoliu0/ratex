@@ -1095,6 +1095,8 @@ impl Engine {
                 | IfInCsName
                 | IfX
                 | IfFontChar
+                | IfPdfAbsNum
+                | IfPdfAbsDim
                 | IfCase
                 | Or
                 | Else
@@ -1176,6 +1178,8 @@ impl Engine {
                 | Prim::IfDim
                 | Prim::IfVoid
                 | Prim::IfFontChar
+                | Prim::IfPdfAbsNum
+                | Prim::IfPdfAbsDim
                 | Prim::IfHBox
                 | Prim::IfVBox
                 | Prim::IfEOF
@@ -1187,18 +1191,25 @@ impl Engine {
             let previous = self.pending_if_depth.replace(self.if_stack.len());
             let value = match p {
                 Prim::IfOdd => self.scan_int() % 2 != 0,
-                Prim::IfNum | Prim::IfDim => {
-                    let a = if p == Prim::IfNum {
-                        self.scan_int()
-                    } else {
-                        self.scan_dimen(false, false)
+                Prim::IfNum | Prim::IfDim | Prim::IfPdfAbsNum | Prim::IfPdfAbsDim => {
+                    let numeric = matches!(p, Prim::IfNum | Prim::IfPdfAbsNum);
+                    // pdfTeX \ifpdfabsnum/\ifpdfabsdim compare magnitudes
+                    let absolute = matches!(p, Prim::IfPdfAbsNum | Prim::IfPdfAbsDim);
+                    let operand = |e: &mut Self| {
+                        let v = if numeric {
+                            e.scan_int()
+                        } else {
+                            e.scan_dimen(false, false)
+                        };
+                        if absolute {
+                            v.wrapping_abs()
+                        } else {
+                            v
+                        }
                     };
+                    let a = operand(self);
                     let rel = self.scan_relational();
-                    let b = if p == Prim::IfNum {
-                        self.scan_int()
-                    } else {
-                        self.scan_dimen(false, false)
-                    };
+                    let b = operand(self);
                     compare(a, rel, b)
                 }
                 Prim::IfVoid | Prim::IfHBox | Prim::IfVBox => {
@@ -2373,6 +2384,8 @@ impl Engine {
                 | Prim::IfX
                 | Prim::IfCase
                 | Prim::IfFontChar
+                | Prim::IfPdfAbsNum
+                | Prim::IfPdfAbsDim
         )
     }
 

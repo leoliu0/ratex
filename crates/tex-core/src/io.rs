@@ -10,6 +10,39 @@ use tex_kpse::fs::PathExt;
 
 const MAX_TEX_INPUT_STREAM: i32 = 15;
 
+/// pdfTeX's `\pdfescapestring`, `\pdfescapename` and `\pdfescapehex`
+/// (utils.c escapestring/escapename/escapehex).
+pub(crate) fn pdf_escape(primitive: Prim, bytes: &[u8]) -> Vec<u8> {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let mut out = Vec::with_capacity(bytes.len() * 2);
+    for &b in bytes {
+        match primitive {
+            Prim::PdfEscapeString => {
+                if !(b'!'..=b'~').contains(&b) {
+                    out.extend_from_slice(format!("\\{b:03o}").as_bytes());
+                } else {
+                    if matches!(b, b'(' | b')' | b'\\') {
+                        out.push(b'\\');
+                    }
+                    out.push(b);
+                }
+            }
+            Prim::PdfEscapeName => {
+                if b == 0 {
+                    continue;
+                }
+                if !(b'!'..=b'~').contains(&b) || b"#%()/<>[]{}".contains(&b) {
+                    out.extend_from_slice(&[b'#', HEX[(b >> 4) as usize], HEX[(b & 15) as usize]]);
+                } else {
+                    out.push(b);
+                }
+            }
+            _ => out.extend_from_slice(&[HEX[(b >> 4) as usize], HEX[(b & 15) as usize]]),
+        }
+    }
+    out
+}
+
 /// kpathsea's `kpathsea_name_ok` for writing (TeX Live 2026, non-extended,
 /// Unix rules): `openout_any` `a` allows everything; `r` refuses dotfiles
 /// (`.rhosts`, `dir/.ssh`, `..x`) and `p` (the default) also refuses
@@ -141,7 +174,15 @@ fn read_line_bounded(
 /// cache avoids fixed names and repeated writes in the process temp folder.
 fn compatibility_input(name: &str) -> Option<&'static [u8]> {
     Some(match name {
-        "pdflatex.ini" => br"\input pdftexconfig.tex
+        // pdftexconfig.tex without the \pdfdecimaldigits/\pdfpkresolution
+        // settings this engine does not implement (those stay undefined)
+        "pdflatex.ini" => br"\pdfoutput=1
+\pdfpageheight=297 true mm
+\pdfpagewidth=210 true mm
+\pdfminorversion=7
+\pdfobjcompresslevel=2
+\pdfhorigin=1 true in
+\pdfvorigin=1 true in
 \pdfcompresslevel=3
 \input latex.ltx
 \endinput
@@ -170,7 +211,14 @@ fn compatibility_input(name: &str) -> Option<&'static [u8]> {
   \catcode`\}=2
   \catcode`\#=6
   \globaldefs=1
-  \input{pdftexconfig}
+  \pdfoutput=1
+  \pdfpageheight=297 true mm
+  \pdfpagewidth=210 true mm
+  \pdfminorversion=7
+  \pdfobjcompresslevel=2
+  \pdfhorigin=1 true in
+  \pdfvorigin=1 true in
+  \pdfcompresslevel=9
   \globaldefs=0
 \endgroup
 \endinput
@@ -837,7 +885,9 @@ impl Engine {
             return;
         }
         let text = self.expand_write_list(&toks, source.as_ref());
-        self.write_out(if n < 0 { -1 } else { n.min(16) }, &text, source.as_ref());
+        if !self.stopped_on_error {
+            self.write_out(if n < 0 { -1 } else { n.min(16) }, &text, source.as_ref());
+        }
     }
     /// tex.web §1395 out_what: a Write whatsit fires at ship time, expanding
     pub fn fire_write(
@@ -847,6 +897,9 @@ impl Engine {
         source: Option<&crate::input::SourceContext>,
     ) {
         let text = self.expand_write_list(tokens, source);
+        if self.stopped_on_error {
+            return;
+        }
         self.write_out(if stream == 17 { -1 } else { stream as i32 }, &text, source);
     }
     /// Expand a raw `\write` token list to its emitted string. The write gets
@@ -873,10 +926,33 @@ impl Engine {
         let prev = self.in_expanded_scan;
         self.in_expanded_scan = true;
         let mut out: Vec<Token> = Vec::new();
+        // tex.web §1371-§1372: the text is scanned as `{<text>}\endwrite`, so
+        // an expansion yielding an extra `}` ends it early (the remainder is
+        // dropped with "Unbalanced write command") and an extra `{` runs into
+        // `\endwrite`, which is fatal.
+        let mut depth = 0u32;
         loop {
             let t = self.get_token();
             if t == crate::page::WRITE_END_TOKEN || t == crate::input::EOF_MARKER {
+                if depth > 0 {
+                    self.fatal_error_at("Unbalanced write command", source.cloned());
+                }
                 break;
+            }
+            if t.is_char() && t.cc() == 1 {
+                depth += 1;
+            } else if t.is_char() && t.cc() == 2 {
+                if depth == 0 {
+                    self.error_at("Unbalanced write command", source.cloned());
+                    loop {
+                        let rest = self.raw_token();
+                        if rest == crate::page::WRITE_END_TOKEN || rest == crate::input::EOF_MARKER {
+                            break;
+                        }
+                    }
+                    break;
+                }
+                depth -= 1;
             }
             if out.len() >= crate::input::MAX_TOKEN_LIST_TOKENS {
                 self.fatal_error_at(
@@ -901,6 +977,12 @@ impl Engine {
     }
 
     pub fn write_tokens_to_string(&self, toks: &[Token]) -> String {
+        String::from_utf8_lossy(&self.token_list_bytes(toks)).into_owned()
+    }
+
+    /// The bytes TeX's `show_token_list` would produce for an expanded
+    /// token list (one byte per 8-bit character).
+    pub(crate) fn token_list_bytes(&self, toks: &[Token]) -> Vec<u8> {
         let mut out = Vec::new();
         for t in toks {
             if t.is_cs() {
@@ -921,10 +1003,14 @@ impl Engine {
                     }
                 }
             } else {
+                // tex.web show_token_list: a mac_param character is doubled
+                if t.cc() == 6 {
+                    t.append_character_bytes(&mut out);
+                }
                 t.append_character_bytes(&mut out);
             }
         }
-        String::from_utf8_lossy(&out).into_owned()
+        out
     }
 
     pub fn write_out(&mut self, n: i32, text: &str, source: Option<&crate::input::SourceContext>) {
@@ -1322,6 +1408,16 @@ impl Engine {
         self.clear_prefixes();
     }
 
+    /// `\jobname` as web2c prints it: quoted when it contains a space, so
+    /// `\jobname.aux` scans back as one file name.
+    pub(crate) fn quoted_job_name(&self) -> String {
+        if self.job_name.contains(' ') {
+            format!("\"{}\"", self.job_name)
+        } else {
+            self.job_name.clone()
+        }
+    }
+
     pub fn scan_file_name(&mut self) -> String {
         const MAX_FILE_NAME_BYTES: usize = 4096;
         let mut origin = (self.input.current_file_line() != 0)
@@ -1386,67 +1482,26 @@ impl Engine {
             }
             return String::from_utf8_lossy(&name).trim().to_string();
         }
-        if t.is_char() && t.chr() == b'"' as u32 {
-            // pdfTeX quoted filename: "name with spaces.tex"
-            loop {
-                let t2 = self.get_x_raw();
-                if t2 == crate::input::EOF_MARKER {
-                    self.fatal_error_at(
-                        "File ended while scanning a quoted file name; add the closing quote",
-                        origin.as_ref().map(crate::input::SourceMark::to_context),
-                    );
-                    return String::new();
-                }
-                if t2.is_char() && t2.chr() == b'"' as u32 {
-                    // tex.web start_input: the one space following the closing
-                    // quote terminates the filename scan and is consumed.
-                    // (@filef@und = \"name\" + space; leaking it typesets a
-                    // stray interword space in the using box.)
-                    let t3 = self.get_x_raw();
-                    if !(t3.is_char() && t3.cc() == 10) && t3 != crate::input::EOF_MARKER {
-                        self.push_token(t3);
-                    }
-                    break;
-                }
-                if t2.is_char() {
-                    let additional = if t2.is_unicode_char() {
-                        char::from_u32(t2.chr()).map_or(0, char::len_utf8)
-                    } else {
-                        1
-                    };
-                    if additional > MAX_FILE_NAME_BYTES.saturating_sub(name.len()) {
-                        self.fatal_error_at(
-                            "TeX capacity exceeded, sorry [file name exceeds 4096 bytes]",
-                            origin.as_ref().map(crate::input::SourceMark::to_context),
-                        );
-                        return String::new();
-                    }
-                    t2.append_character_bytes(&mut name);
-                } else if t2.is_cs() {
-                    let additional = self.cs.name(t2.cs_id()).len();
-                    if additional > MAX_FILE_NAME_BYTES.saturating_sub(name.len()) {
-                        self.fatal_error_at(
-                            "TeX capacity exceeded, sorry [file name exceeds 4096 bytes]",
-                            origin.as_ref().map(crate::input::SourceMark::to_context),
-                        );
-                        return String::new();
-                    }
-                    name.extend_from_slice(self.cs.name(t2.cs_id()));
-                }
-            }
-            return String::from_utf8_lossy(&name).trim().to_string();
-        }
         // standard TeX \input filename.tex (unquoted). Real TeX expands
         // macros while scanning a filename (TeXbook ch.8: \openin0=pre\foo.tex
         // finds preprobe.tex); an UNEXPANDABLE cs terminates the scan and is
         // re-read. Without expansion, \input pgflibrary\pgf@temp.code.tex
         // opens "pgflibrary" and leaks "\pgf@temp.code.tex" into the text.
+        // web2c more_name: a `"` toggles quoting and is not part of the
+        // name; a space ends the name only outside quotes, so
+        // `\input "main file".aux` reads `main file.aux`.
+        let mut quoted = false;
         let mut cur = t;
         loop {
             if cur == crate::input::EOF_MARKER {
                 break;
             }
-            if cur.is_space() || (cur.is_char() && cur.cc() == 10) {
+            if cur.is_char() && cur.chr() == u32::from(b'"') {
+                quoted = !quoted;
+                cur = self.get_x_raw();
+                continue;
+            }
+            if !quoted && (cur.is_space() || (cur.is_char() && cur.cc() == 10)) {
                 break;
             }
             if cur.is_cs() {
@@ -1455,7 +1510,7 @@ impl Engine {
             }
             if cur.is_char() {
                 let c = cur.chr();
-                if matches!(c, 32 | 9 | 13 | 10) {
+                if !quoted && matches!(c, 32 | 9 | 13 | 10) {
                     break;
                 }
                 let additional = if cur.is_unicode_char() {
@@ -2437,5 +2492,70 @@ mod tests {
                 engine.term
             );
         }
+    }
+
+    /// Expected output from `pdftex -ini` (TeX Live 2026): the text is read
+    /// as `{<text>}\endwrite`, so an extra `}` from expansion ends it.
+    #[test]
+    fn write_with_an_extra_close_brace_stops_like_tex() {
+        let engine = run("\\def\\x{\\iffalse{\\fi}}\\immediate\\write16{A:a\\x d}\\end\n".into());
+        assert!(engine.term.contains("A:a\n"), "{}", engine.term);
+        assert!(!engine.term.contains("A:a}"), "{}", engine.term);
+        assert_eq!(engine.error_count, 1, "{}", engine.term);
+    }
+
+    #[test]
+    fn write_with_an_extra_open_brace_is_fatal() {
+        let engine = run("\\def\\y{c{\\iffalse}\\fi}\\immediate\\write16{B:a\\y d}\\end\n".into());
+        assert!(engine.stopped_on_error, "{}", engine.term);
+        assert!(!engine.term.contains("B:a"), "{}", engine.term);
+    }
+
+    /// pdftex: `\edef\z{a\c}` gives `macro:->a ` and `\def\w{q{r\c}` gives
+    /// `macro:->q{r } `, each forbidden `\outer` occurrence storing a space.
+    #[test]
+    fn outer_macros_end_definitions_like_tex() {
+        let engine = run("\\outer\\def\\c{}\\edef\\z{a\\c}\\message{[\\meaning\\z]}\
+                          \\def\\w{q{r\\c}\\message{[\\meaning\\w]}\\end\n"
+            .into());
+        assert!(engine.term.contains("[macro:->a ]"), "{}", engine.term);
+        assert!(engine.term.contains("[macro:->q{r } ]"), "{}", engine.term);
+        let forbidden = engine
+            .diagnostics
+            .iter()
+            .filter(|d| d.message.starts_with("Forbidden control sequence found while scanning definition"))
+            .count();
+        assert_eq!(forbidden, 3, "{}", engine.term);
+    }
+
+    #[test]
+    fn jobname_with_a_space_expands_quoted() {
+        let mut engine = crate::engine::Engine::new(true);
+        engine.init_primitives();
+        engine.add_nullfont();
+        engine.eqtb.cat[b'{' as usize] = 1;
+        engine.eqtb.cat[b'}' as usize] = 2;
+        engine.set_interaction_mode(InteractionMode::Nonstop);
+        engine.job_name = "main file".to_string();
+        engine.input.push_file(
+            "j.tex".to_string(),
+            b"\\message{[\\jobname]}\\end\n".to_vec(),
+        );
+        engine.run();
+        assert!(engine.term.contains("[\"main file\"]"), "{}", engine.term);
+        assert_eq!(engine.job_name, "main file");
+    }
+
+    /// Byte-for-byte pdfTeX `\pdfescapestring`, `\pdfescapename` and
+    /// `\pdfescapehex` results (TeX Live 2026).
+    #[test]
+    fn pdf_escapes_match_pdftex() {
+        use crate::prim::Prim;
+        assert_eq!(super::pdf_escape(Prim::PdfEscapeString, b"a b(c)\\"), b"a\\040b\\(c\\)\\\\");
+        assert_eq!(
+            super::pdf_escape(Prim::PdfEscapeName, b"a b#/()<>[]{}%\xe9\x00"),
+            b"a#20b#23#2F#28#29#3C#3E#5B#5D#7B#7D#25#E9"
+        );
+        assert_eq!(super::pdf_escape(Prim::PdfEscapeHex, b"AZ\n"), b"415A0A");
     }
 }

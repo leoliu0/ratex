@@ -1358,11 +1358,14 @@ impl Engine {
             (b"hoffset", DimParam::HOffset),
             (b"voffset", DimParam::VOffset),
             (b"prevdepth", DimParam::PrevDepth),
+            (b"pdfpxdimen", DimParam::PdfPxDimen),
         ];
         for (n, p) in dimnames {
             let id = eng.cs.intern(n);
             eng.eqtb.assign(id, Equiv::Prim(Prim::DimP(*p)), true);
         }
+        // pdftex.web: pdf_px_dimen starts at one_bp
+        eng.eqtb.dim_params[DimParam::PdfPxDimen.idx() as usize] = 65782;
         let gluenames: &[(&[u8], GlueParam)] = &[
             (b"lineskip", GlueParam::LineSkip),
             (b"baselineskip", GlueParam::BaselineSkip),

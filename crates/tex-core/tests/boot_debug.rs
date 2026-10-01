@@ -69,3 +69,29 @@ fn test_preamble_format_fast_boot() {
     assert_eq!(eng2.error_count, 0, "{}", eng2.term);
     assert_eq!(eng2.pdf_doc.pages.len(), 1);
 }
+
+/// Primitives added for pdfTeX/e-TeX parity work through the shipped format:
+/// `px` follows `\pdfpxdimen` (initially 1bp), `\eTeXrevision` expands, and
+/// the fake count-register stand-ins for unimplemented pdfTeX parameters
+/// stay undefined so packages take their "primitive absent" branch rather
+/// than a defined-but-inert one. The dimensions and revision match TeX Live
+/// 2026 `pdflatex` (where `\pdfdecimaldigits` is a real primitive).
+#[test]
+fn shipped_format_has_pdftex_px_unit_and_etex_revision() {
+    let mut eng = Engine::new(false);
+    let fmt_bytes = include_bytes!("../../tex-cli/assets/default.fmt.zst");
+    tex_core::format::load_format_bytes_into(fmt_bytes, &mut eng).unwrap();
+    tex_core::driver::finalize_format_load(&mut eng);
+    eng.job_name = "px".to_string();
+    eng.out_dir = std::env::temp_dir().to_string_lossy().into_owned();
+    eng.input.push_file(
+        "px.tex".to_string(),
+        br"\documentclass{article}\begin{document}
+\dimen0=2px \pdfpxdimen=2pt \dimen2=3px
+\typeout{[\the\dimen0|\the\dimen2|\eTeXrevision|\ifdefined\pdfdecimaldigits D\else U\fi]}
+\end{document}"
+            .to_vec(),
+    );
+    eng.run();
+    assert!(eng.term.contains("[2.0075pt|6.0pt|.6|U]"), "{}", eng.term);
+}

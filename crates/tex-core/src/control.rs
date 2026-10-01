@@ -1433,9 +1433,18 @@ impl Engine {
                         continue;
                     }
                 }
-                self.get_token_from(raw)
+                if self.forbid_outer_in_definition(raw, target) {
+                    Token::char(10, u32::from(b' '))
+                } else {
+                    self.get_token_from(raw)
+                }
             } else {
-                self.raw_token()
+                let raw = self.raw_token();
+                if self.forbid_outer_in_definition(raw, target) {
+                    Token::char(10, u32::from(b' '))
+                } else {
+                    raw
+                }
             };
             let from_unexp = expanded && self.unexp_protect > 0;
             if from_unexp {
@@ -1582,6 +1591,30 @@ impl Engine {
             let t = self.unfreeze_input_token(t);
             out.push(t);
         }
+    }
+
+    /// tex.web §336-§339 `check_outer_validity` while defining: an `\outer`
+    /// macro may not appear in a definition body. TeX reports it, backs the
+    /// control sequence up behind an inserted `}`, and stores a space in its
+    /// place, so the definition ends and the macro runs afterwards.
+    fn forbid_outer_in_definition(&mut self, raw: Token, target: CsId) -> bool {
+        let id = if raw.is_cs() && raw.0 < crate::expand::NOEXP_FLAG {
+            raw.cs_id()
+        } else if raw.is_char() && raw.cc() == 13 {
+            self.active_cs_id(raw.chr())
+        } else {
+            return false;
+        };
+        if !matches!(self.eqtb.resolve(id), Some(Equiv::Macro(m)) if m.outer) {
+            return false;
+        }
+        self.error(&format!(
+            "Forbidden control sequence found while scanning definition of {}",
+            self.display_cs(target)
+        ));
+        self.push_token(raw);
+        self.push_token(Token::char(2, u32::from(b'}')));
+        true
     }
 
     /// \let (and \futurelet)

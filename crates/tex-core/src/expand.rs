@@ -1128,6 +1128,7 @@ impl Engine {
                 | PdfEscapeHex
                 | PdfUnescapeHex
                 | PdfTexRevision
+                | EtxRevision
                 | PdfColorStackInit
                 | PdfBanner
                 | PdfFontSize
@@ -1612,7 +1613,7 @@ impl Engine {
                 None
             }
             Prim::JobName => {
-                let text = self.job_name.clone();
+                let text = self.quoted_job_name();
                 self.exp_string(text.as_bytes());
                 None
             }
@@ -1859,6 +1860,10 @@ impl Engine {
             }
             PdfTexRevision => {
                 self.exp_string(b"29");
+                None
+            }
+            EtxRevision => {
+                self.exp_string(b".6");
                 None
             }
             RatexUnicodeVersion => {
@@ -2197,24 +2202,10 @@ impl Engine {
                 self.exp_string(b"0");
                 None
             }
-            PdfEscapeString | PdfEscapeName => {
-                let s = {
-                    let t = self.scan_general_text_expanded();
-                    self.tokens_to_string(&t)
-                };
-                self.exp_string(s.as_bytes());
-                None
-            }
-            PdfEscapeHex => {
+            PdfEscapeString | PdfEscapeName | PdfEscapeHex => {
                 let toks = self.scan_general_text_expanded();
-                let s = self.tokens_to_string(&toks);
-                const HEX: &[u8; 16] = b"0123456789ABCDEF";
-                let mut encoded = Vec::with_capacity(s.len() * 2);
-                for b in s.bytes() {
-                    encoded.push(HEX[(b >> 4) as usize]);
-                    encoded.push(HEX[(b & 0x0f) as usize]);
-                }
-                self.exp_string(&encoded);
+                let bytes = self.token_list_bytes(&toks);
+                self.exp_string(&crate::io::pdf_escape(p, &bytes));
                 None
             }
             PdfUnescapeHex => {

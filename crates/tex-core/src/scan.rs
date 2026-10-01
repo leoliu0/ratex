@@ -7,14 +7,6 @@ use crate::eqtb::Equiv;
 use crate::input::{SourceContext, SourceMark};
 use crate::prim::{DimParam, IntParam, Prim};
 
-#[derive(Clone, Copy, Debug)]
-enum UnitKind {
-    Ratio(i64, i64),
-    InternalSp(i64),
-    FontRelativeSp(i64),
-    Sp,
-}
-
 /// A scanner location that is cheap to retain while valid input is parsed.
 /// Physical tokens keep only coordinates; macro-generated tokens need the
 /// already-captured call-site bookmark so a later unit scan cannot erase it.
@@ -209,7 +201,7 @@ impl Engine {
 
     /// scan optional `=` with spaces/relax skipped
     pub fn scan_optional_equals(&mut self) {
-        self.skip_spaces_relax();
+        self.skip_spaces();
         let t = self.get_token();
         if !(t.is_char() && t.chr() == b'=' as u32) {
             self.push_token(t);
@@ -242,13 +234,15 @@ impl Engine {
                 self.push_token(t);
                 break;
             }
+            // tex.web §445: digits are other_char tokens; hex letters A-F
+            // (upper case only) may be letters or other characters
             let c = t.chr();
             let d = match () {
-                _ if (b'0' as u32..=b'9' as u32).contains(&c) => c - b'0' as u32,
-                _ if allow_letters && (b'a' as u32..=b'f' as u32).contains(&c) => {
-                    c - b'a' as u32 + 10
-                }
-                _ if allow_letters && (b'A' as u32..=b'F' as u32).contains(&c) => {
+                _ if t.cc() == 12 && (b'0' as u32..=b'9' as u32).contains(&c) => c - b'0' as u32,
+                _ if allow_letters
+                    && matches!(t.cc(), 11 | 12)
+                    && (b'A' as u32..=b'F' as u32).contains(&c) =>
+                {
                     c - b'A' as u32 + 10
                 }
                 _ => {
@@ -296,8 +290,10 @@ impl Engine {
         let mut negate = false;
         let mut v: i64;
         'scan_loop: loop {
-            self.skip_spaces_relax();
             let t = self.get_x_raw();
+            if t.is_space() {
+                continue;
+            }
             if t.is_char() && t.chr() == b'+' as u32 {
                 continue;
             }
@@ -391,14 +387,26 @@ impl Engine {
                     }
                 } else if t2.is_cs() {
                     let name = self.cs.name(t2.cs_id());
-                    v = if self.engine_kind == EngineKind::PdfTeX {
-                        name.first().copied().unwrap_or(0) as i64
+                    let single = if self.engine_kind == EngineKind::PdfTeX {
+                        (name.len() == 1).then(|| i64::from(name[0]))
                     } else {
-                        std::str::from_utf8(name)
-                            .ok()
-                            .and_then(|name| name.chars().next())
-                            .map_or(0, |character| character as i64)
+                        std::str::from_utf8(name).ok().and_then(|name| {
+                            let mut chars = name.chars();
+                            let first = chars.next()?;
+                            chars.next().is_none().then_some(first as i64)
+                        })
                     };
+                    match single {
+                        Some(code) => v = code,
+                        None => {
+                            // tex.web §442: a multi-letter (or null) control
+                            // sequence: error, value "0", token backed up
+                            self.push_token(t2);
+                            self.error("Improper alphabetic constant");
+                            v = i64::from(b'0');
+                            break;
+                        }
+                    }
                 } else {
                     self.error("Missing character after `");
                     v = 0;
@@ -530,6 +538,14 @@ impl Engine {
                     }
                     Some(Prim::DimExpr) => {
                         v = self.scan_expr_dim() as i64;
+                        break 'scan_loop;
+                    }
+                    Some(Prim::GlueExpr) => {
+                        v = self.scan_expr_glue(false).width as i64;
+                        break 'scan_loop;
+                    }
+                    Some(Prim::MuExpr) => {
+                        v = self.scan_expr_glue(true).width as i64;
                         break 'scan_loop;
                     }
                     Some(Prim::HyphenChar) => {
@@ -735,7 +751,8 @@ impl Engine {
         }
         let r = v as i32;
         if negate {
-            -r
+            // a register may hold -2^31; web2c negation wraps
+            r.wrapping_neg()
         } else {
             r
         }
@@ -802,13 +819,11 @@ impl Engine {
             IntParam::PrevGraf => self.prev_graf(),
             IntParam::Time | IntParam::Day | IntParam::Month | IntParam::Year => {
                 // TeX Live / Web2C §241: \time, \day, \month, \year are initialized
-                // from system local time (or SOURCE_DATE_EPOCH in UTC when set).
+                // from system local time; SOURCE_DATE_EPOCH (in UTC) replaces it
+                // only together with FORCE_SOURCE_DATE=1.
                 let (year, month, day, time_mins) = if let Some(epoch) = tex_kpse::fs::epoch() {
                     crate::clock::utc(epoch as i64)
-                } else if let Some(epoch) = std::env::var("SOURCE_DATE_EPOCH")
-                    .ok()
-                    .and_then(|s| s.trim().parse().ok())
-                {
+                } else if let Some(epoch) = crate::clock::forced_source_date_epoch() {
                     crate::clock::utc(epoch)
                 } else {
                     #[cfg(not(target_arch = "wasm32"))]
@@ -910,7 +925,7 @@ impl Engine {
     /// Scan a character/integer operand and retain the first source token,
     /// before numeric lookahead advances to the following delimiter.
     pub(crate) fn scan_int_with_source(&mut self) -> (i32, Option<SourceContext>) {
-        self.skip_spaces_relax();
+        self.skip_spaces();
         let origin = self.numeric_origin();
         let value = self.scan_int();
         let source = origin.and_then(|origin| self.numeric_origin_context(origin));
@@ -989,7 +1004,8 @@ impl Engine {
     pub fn scan_dimen(&mut self, mu: bool, trail: bool) -> i32 {
         let prev = self.in_expanded_scan;
         self.in_expanded_scan = false;
-        let r = self.scan_dimen_inner(mu, trail);
+        let _ = trail;
+        let r = self.scan_dimen_inner(mu, false);
         self.in_expanded_scan = prev;
         r
     }
@@ -1003,12 +1019,16 @@ impl Engine {
         }
     }
 
-    fn scan_dimen_inner(&mut self, mu: bool, _trail: bool) -> i32 {
-        // signs
+    /// `inf`: fil/fill/filll units are allowed (glue stretch and shrink).
+    fn scan_dimen_inner(&mut self, mu: bool, inf: bool) -> i32 {
+        // tex.web §441: get the next non-blank non-sign token (blanks are
+        // skipped, \relax is not)
         let mut negate = false;
         loop {
-            self.skip_spaces_relax();
             let t = self.get_x_raw();
+            if t.is_space() {
+                continue;
+            }
             if t.is_char() && t.chr() == b'+' as u32 {
                 continue;
             }
@@ -1027,7 +1047,6 @@ impl Engine {
         let int_part: i64;
         let frac_f: i64;
         let direct: Option<i32>;
-        self.skip_spaces_relax();
         let t = self.get_x_raw();
         let factor_origin = self.numeric_origin();
         if Self::is_digit_token(t)
@@ -1090,23 +1109,11 @@ impl Engine {
             int_part = ip;
             frac_f = (a + 1) / 2;
             direct = None;
-        } else if t.is_char() && t.chr() == b'`' as u32 {
-            let t2 = self.raw_token();
-            if t2.is_char() {
-                int_part = t2.chr() as i64;
-                // tex.web §442: undo raw_token's brace-depth adjustment
-                if t2.cc() == 2 {
-                    self.align_brace_depth = self.align_brace_depth.saturating_add(1);
-                } else if t2.cc() == 1 {
-                    self.align_brace_depth = self.align_brace_depth.saturating_sub(1);
-                }
-            } else if t2.is_cs() {
-                let name = self.cs.name(t2.cs_id());
-                int_part = name.first().copied().unwrap_or(0) as i64;
-            } else {
-                self.error("Missing character after `");
-                int_part = 0;
-            }
+        } else if t.is_char() && matches!(t.chr(), 0x27 | 0x22 | 0x60) {
+            // tex.web §448: a radix or alphabetic constant is an integer
+            // factor (scan_int); only a decimal one takes a fraction
+            self.push_token(t);
+            int_part = self.scan_int_inner() as i64;
             frac_f = 0;
             direct = None;
         } else if t.is_cs() {
@@ -1319,27 +1326,89 @@ impl Engine {
         if let Some(d) = direct {
             return if negate { -d } else { d };
         }
-        // unit (tex.web §453): standard units scale with (num, denom)
-        // while internal dimensions multiply directly
-        let unit = self.scan_unit(mu);
-        // tex.web §8868: goto attach_sign if the units are internal (no optional space)
-        if !matches!(unit, UnitKind::InternalSp(_)) {
+        let (mut cur_val, mut f) = (int_part, frac_f);
+        let v: i64 = 'attach_sign: {
+            // tex.web §453-458: units
+            if inf && self.scan_unit_keyword(b"fil") {
+                let mut order = 1u8;
+                while self.scan_unit_keyword(b"l") {
+                    if order == 3 {
+                        self.error("Illegal unit of measure (replaced by filll)");
+                    } else {
+                        order += 1;
+                    }
+                }
+                self.cur_fill_order = order;
+                break 'attach_sign Self::attach_fraction(cur_val, f);
+            }
+            if let Some(unit_sp) = self.scan_internal_unit() {
+                // internal dimension: no optional space (attach_sign)
+                break 'attach_sign Self::nx_plus_y_fraction(cur_val, f, unit_sp);
+            }
+            if !mu {
+                let font_unit = if self.scan_unit_keyword(b"em") {
+                    Some(self.cur_quad() as i64)
+                } else if self.scan_unit_keyword(b"ex") {
+                    Some(self.cur_x_height() as i64)
+                } else if self.scan_unit_keyword(b"px") {
+                    Some(self.dim_param_value(DimParam::PdfPxDimen) as i64)
+                } else {
+                    None
+                };
+                if let Some(unit_sp) = font_unit {
+                    self.scan_optional_space();
+                    break 'attach_sign Self::nx_plus_y_fraction(cur_val, f, unit_sp);
+                }
+            }
+            if mu {
+                if !self.scan_unit_keyword(b"mu") {
+                    self.error("Illegal unit of measure (mu inserted)");
+                }
+            } else {
+                if self.scan_unit_keyword(b"true") {
+                    // tex.web §457: adjust for the magnification ratio
+                    let mag = self.int_param_value(IntParam::Mag);
+                    if mag != 1000 && (1..=32768).contains(&mag) {
+                        let mag = i64::from(mag);
+                        let num = cur_val * 1000;
+                        let remainder = num % mag;
+                        cur_val = num / mag;
+                        f = (1000 * f + 65536 * remainder) / mag;
+                        cur_val += f / 65536;
+                        f %= 65536;
+                    }
+                }
+                if !self.scan_unit_keyword(b"pt") {
+                    // tex.web §458 (+ pdfTeX px handled above, nd/nc)
+                    let conversion = [
+                        (&b"in"[..], 7227, 100),
+                        (b"pc", 12, 1),
+                        (b"cm", 7227, 254),
+                        (b"mm", 7227, 2540),
+                        (b"bp", 7227, 7200),
+                        (b"dd", 1238, 1157),
+                        (b"cc", 14856, 1157),
+                        (b"nd", 685, 642),
+                        (b"nc", 1370, 107),
+                    ]
+                    .into_iter()
+                    .find(|(keyword, _, _)| self.scan_unit_keyword(keyword));
+                    if let Some((_, num, denom)) = conversion {
+                        let product = cur_val * num;
+                        cur_val = product / denom;
+                        f = (num * f + 65536 * (product % denom)) / denom;
+                        cur_val += f / 65536;
+                        f %= 65536;
+                    } else if self.scan_unit_keyword(b"sp") {
+                        self.scan_optional_space();
+                        break 'attach_sign cur_val;
+                    } else {
+                        self.error("Illegal unit of measure (pt inserted)");
+                    }
+                }
+            }
             self.scan_optional_space();
-        }
-        let v: i64 = match unit {
-            UnitKind::Ratio(num, denom) => {
-                let quotient = (int_part * num) / denom;
-                let remainder = (int_part * num) % denom;
-                let f_new = (num * frac_f as i64 + 65536 * remainder) / denom;
-                let cur_val = quotient + (f_new / 65536);
-                let f_final = f_new % 65536;
-                cur_val * 65536 + f_final
-            }
-            UnitKind::InternalSp(unit_sp) | UnitKind::FontRelativeSp(unit_sp) => {
-                let v = int_part as i128 * 65536 + frac_f as i128;
-                ((v * unit_sp as i128) / 65536) as i64
-            }
-            UnitKind::Sp => int_part,
+            Self::attach_fraction(cur_val, f)
         };
         const MAX_DIMEN: i64 = 0x3FFF_FFFF;
         let v = if (-MAX_DIMEN..=MAX_DIMEN).contains(&v) {
@@ -1347,7 +1416,7 @@ impl Engine {
         } else {
             let source = factor_origin.and_then(|origin| self.numeric_origin_context(origin));
             self.error_at("Dimension too large", source);
-            v.clamp(-MAX_DIMEN, MAX_DIMEN)
+            MAX_DIMEN
         } as i32;
         if negate {
             -v
@@ -1356,234 +1425,133 @@ impl Engine {
         }
     }
 
-    /// scan glue: width [plus stretch] [minus shrink]
-    /// tex.web scan_dimen unit fetch: `<optional spaces> <unit>` where the
-    /// unit may be a letter pair, a dimen parameter/register, or a macro
-    /// that EXPANDS to one of those (`\p@` -> pt).
-    fn scan_unit_sp(&mut self, mu: bool) -> i64 {
-        match self.scan_unit(mu) {
-            UnitKind::Ratio(n, d) => (n * 65536) / d,
-            UnitKind::InternalSp(sp) | UnitKind::FontRelativeSp(sp) => sp,
-            UnitKind::Sp => 1,
-        }
-    }
-
-    fn scan_unit(&mut self, mu: bool) -> UnitKind {
-        self.scan_unit_d(mu, 0)
-    }
-
-    fn scan_unit_d(&mut self, mu: bool, depth: u32) -> UnitKind {
-        if depth > 32 {
-            self.error("Illegal unit of measure (pt inserted).");
-            return UnitKind::Ratio(1, 1);
-        }
-        self.skip_spaces_relax();
-        let t = self.get_token();
-        if t.is_cs() {
-            let equiv = self.eqtb.resolve(t.cs_id()).cloned();
-            if let Some(value) = equiv.as_ref().and_then(|equiv| self.eqtb.int_of(equiv)) {
-                // tex.web scan_dimen: every internal integer accepted here
-                // denotes that many scaled points. This includes chardef and
-                // mathchardef constants as well as count-register aliases.
-                return UnitKind::InternalSp(i64::from(value));
-            }
-            match equiv {
-                Some(Equiv::Prim(Prim::GlueP(p))) => {
-                    return UnitKind::InternalSp(
-                        self.eqtb.glue_params[p.idx() as usize].width as i64,
-                    );
-                }
-                Some(Equiv::Prim(Prim::Skip)) => {
-                    let i = self.scan_reg_num();
-                    return UnitKind::InternalSp(self.eqtb.skip[i as usize].width as i64);
-                }
-                Some(Equiv::Prim(Prim::MuSkip)) => {
-                    let i = self.scan_reg_num();
-                    return UnitKind::InternalSp(self.eqtb.muskip[i as usize].width as i64);
-                }
-                Some(Equiv::Prim(Prim::LastSkip)) => {
-                    return UnitKind::InternalSp(self.last_skip_value().width as i64);
-                }
-                Some(Equiv::SkipReg(i)) => {
-                    return UnitKind::InternalSp(self.eqtb.skip[i as usize].width as i64);
-                }
-                Some(Equiv::MuSkipReg(i)) => {
-                    return UnitKind::InternalSp(self.eqtb.muskip[i as usize].width as i64);
-                }
-                Some(Equiv::Prim(Prim::DimExpr)) => {
-                    return UnitKind::InternalSp(self.scan_expr_dim() as i64);
-                }
-                Some(Equiv::Prim(Prim::DimP(p))) => {
-                    return UnitKind::InternalSp(self.dim_param_value(p) as i64);
-                }
-                Some(Equiv::Prim(Prim::Wd)) => {
-                    let n = self.scan_reg_num();
-                    return UnitKind::InternalSp(self.box_reg_dimen(n, 0) as i64);
-                }
-                Some(Equiv::Prim(Prim::Ht)) => {
-                    let n = self.scan_reg_num();
-                    return UnitKind::InternalSp(self.box_reg_dimen(n, 1) as i64);
-                }
-                Some(Equiv::Prim(Prim::Dp)) => {
-                    let n = self.scan_reg_num();
-                    return UnitKind::InternalSp(self.box_reg_dimen(n, 2) as i64);
-                }
-                Some(Equiv::Prim(
-                    p @ (Prim::FontCharWd | Prim::FontCharHt | Prim::FontCharDp | Prim::FontCharIc),
-                )) => {
-                    return UnitKind::InternalSp(self.scan_font_char_dimen(p) as i64);
-                }
-                Some(Equiv::Prim(Prim::FontDimen)) => {
-                    let idx = self.scan_int();
-                    let f = self.scan_font_id();
-                    let i = if idx > 0 { idx as usize - 1 } else { 0 };
-                    let sp = self
-                        .eqtb
-                        .font_params
-                        .get(f as usize)
-                        .and_then(|fp| fp.get(i))
-                        .copied()
-                        .unwrap_or(0);
-                    return UnitKind::InternalSp(sp as i64);
-                }
-                Some(Equiv::Prim(Prim::PdfXImageBBox)) => {
-                    return UnitKind::InternalSp(self.scan_pdf_ximage_bbox() as i64);
-                }
-                Some(Equiv::Prim(Prim::Dimen)) => {
-                    let i = self.scan_reg_num();
-                    return UnitKind::InternalSp(self.eqtb.dimen[i as usize] as i64);
-                }
-                Some(Equiv::DimenReg(i)) => {
-                    return UnitKind::InternalSp(self.eqtb.dimen[i as usize] as i64);
-                }
-                Some(Equiv::Prim(Prim::Count | Prim::Attribute)) => {
-                    let i = self.scan_reg_num();
-                    UnitKind::InternalSp(self.eqtb.count[i as usize] as i64)
-                }
-                Some(Equiv::CountReg(i)) => {
-                    // tex.web scan_dimen: an internal integer in unit
-                    // position denotes that many scaled points. Xy-pic
-                    // relies on `\dimen@=-3\K@` with \K@ a count register.
-                    UnitKind::InternalSp(self.eqtb.count[i as usize] as i64)
-                }
-                Some(Equiv::Macro(m)) if !m.protected => {
-                    self.expand_macro(t.cs_id(), &m, t.cs_id());
-                    return self.scan_unit_d(mu, depth + 1);
-                }
-                _ => {
-                    self.push_token(t);
-                    self.error("Illegal unit of measure (pt inserted).");
-                    return UnitKind::Ratio(1, 1);
-                }
-            }
-        } else if t.is_char() {
-            if ascii_character(t).is_some_and(|c| c.eq_ignore_ascii_case(&b't')) {
-                let t2 = self.get_token();
-                if ascii_character(t2).is_some_and(|c| c.eq_ignore_ascii_case(&b'r')) {
-                    let t3 = self.get_token();
-                    if ascii_character(t3).is_some_and(|c| c.eq_ignore_ascii_case(&b'u')) {
-                        let t4 = self.get_token();
-                        if ascii_character(t4).is_some_and(|c| c.eq_ignore_ascii_case(&b'e')) {
-                            self.skip_spaces();
-                            return self.scan_unit_d(mu, depth + 1);
-                        } else {
-                            self.push_token(t4);
-                            self.push_token(t3);
-                            self.push_token(t2);
-                        }
-                    } else {
-                        self.push_token(t3);
-                        self.push_token(t2);
-                    }
-                } else {
-                    self.push_token(t2);
-                }
-            }
-            // read unit keyword letters, only while they can extend a valid unit
-            const UNITS: [&str; 16] = [
-                "pt", "in", "pc", "cm", "mm", "bp", "dd", "cc", "sp", "em", "ex", "px", "mu",
-                "fil", "fill", "filll",
-            ];
-            let Some(first) = ascii_character(t) else {
-                self.push_token(t);
-                self.error("Illegal unit of measure (pt inserted).");
-                return UnitKind::Ratio(1, 1);
-            };
-            let mut kw: Vec<u8> = vec![first];
-            let mut cur = String::new();
-            cur.push(first.to_ascii_lowercase() as char);
-            if kw[0].is_ascii_alphabetic() {
-                while kw.len() < 5 {
-                    let can_extend = UNITS
-                        .iter()
-                        .any(|u| u.len() > kw.len() && u.starts_with(&cur));
-                    if !can_extend {
-                        break;
-                    }
-                    let t2 = self.get_token();
-                    if let Some(character) = ascii_character(t2).filter(u8::is_ascii_alphabetic) {
-                        kw.push(character);
-                        cur.push(character.to_ascii_lowercase() as char);
-                    } else {
-                        self.push_token(t2);
-                        break;
-                    }
-                }
-            }
-            let mut s: String = kw.iter().map(|&b| b.to_ascii_lowercase() as char).collect();
-            // trim over-read letters back to the longest valid unit keyword
-            if !UNITS.contains(&s.as_str()) {
-                let mut excess: Vec<Token> = Vec::new();
-                while kw.len() > 1 && !UNITS.contains(&s.as_str()) {
-                    let last = kw.pop().unwrap();
-                    excess.push(Token::char(self.eqtb.cat[last as usize], last as u32));
-                    s.pop();
-                }
-                for t in excess.into_iter().rev() {
-                    self.push_token(t)
-                }
-                let s2: String = kw.iter().map(|&b| b.to_ascii_lowercase() as char).collect();
-                s = s2;
-            }
-            self.cur_fill_order = 0;
-            match s.as_str() {
-                "fil" | "fill" | "filll" => {
-                    self.cur_fill_order = match s.as_str() {
-                        "fil" => 1,
-                        "fill" => 2,
-                        _ => 3,
-                    };
-                    UnitKind::Ratio(1, 1)
-                }
-                "pt" | "p" => UnitKind::Ratio(1, 1),
-                "in" => UnitKind::Ratio(7227, 100),
-                "pc" => UnitKind::Ratio(12, 1),
-                "cm" => UnitKind::Ratio(7227, 254),
-                "mm" => UnitKind::Ratio(7227, 2540),
-                "bp" => UnitKind::Ratio(7227, 7200),
-                "dd" => UnitKind::Ratio(1238, 1157),
-                "cc" => UnitKind::Ratio(14856, 1157),
-                "sp" => UnitKind::Sp,
-                "em" => UnitKind::FontRelativeSp(self.cur_quad() as i64),
-                "ex" => UnitKind::FontRelativeSp(self.cur_x_height() as i64),
-                "px" => UnitKind::Ratio(7227, 7200),
-                "mu" if mu => UnitKind::Ratio(1, 1),
-                _ => {
-                    self.error("Illegal unit of measure (pt inserted).");
-                    UnitKind::Ratio(1, 1)
-                }
-            }
+    /// tex.web attach_fraction: `cur_val` whole points plus `f` (2^-16 units)
+    fn attach_fraction(cur_val: i64, f: i64) -> i64 {
+        if cur_val >= 0x4000 {
+            i64::MAX
         } else {
-            self.push_token(t);
-            self.error("Illegal unit of measure (pt inserted).");
-            UnitKind::Ratio(1, 1)
+            cur_val * 65536 + f
         }
+    }
+
+    /// tex.web §455 found: nx_plus_y(cur_val, v, xn_over_d(v, f, 2^16))
+    fn nx_plus_y_fraction(cur_val: i64, f: i64, unit_sp: i64) -> i64 {
+        let fraction = (unit_sp.abs() * f / 65536) * unit_sp.signum();
+        cur_val * unit_sp + fraction
+    }
+
+    /// tex.web scan_keyword: expanding fetch; letters match in lower or
+    /// upper case whatever their catcode; blanks are skipped only before
+    /// the first letter; a partial match is backed up.
+    fn scan_unit_keyword(&mut self, keyword: &[u8]) -> bool {
+        let mut matched = [Token(0); 8];
+        let mut k = 0;
+        while k < keyword.len() {
+            let t = self.get_x_raw();
+            let expected = keyword[k];
+            if t.is_char()
+                && t.cc() != 13
+                && (t.chr() == u32::from(expected)
+                    || t.chr() == u32::from(expected.to_ascii_uppercase()))
+            {
+                matched[k] = t;
+                k += 1;
+            } else if !t.is_space() || k > 0 {
+                self.push_token(t);
+                for &back in matched[..k].iter().rev() {
+                    self.push_token(back);
+                }
+                return false;
+            }
+        }
+        true
+    }
+
+    /// tex.web §455: the next non-blank non-call token, when it is an
+    /// internal quantity, is the unit (its value in sp); otherwise it is
+    /// backed up.
+    fn scan_internal_unit(&mut self) -> Option<i64> {
+        let t = loop {
+            let t = self.get_x_raw();
+            if !t.is_space() {
+                break t;
+            }
+        };
+        if !t.is_cs() {
+            self.push_token(t);
+            return None;
+        }
+        let equiv = self.eqtb.resolve(t.cs_id()).cloned();
+        if let Some(value) = equiv.as_ref().and_then(|equiv| self.eqtb.int_of(equiv)) {
+            // every internal integer denotes that many scaled points
+            return Some(i64::from(value));
+        }
+        let sp = match equiv {
+            Some(Equiv::Prim(Prim::GlueP(p))) => self.eqtb.glue_params[p.idx() as usize].width,
+            Some(Equiv::Prim(Prim::Skip)) => {
+                let i = self.scan_reg_num();
+                self.eqtb.skip[i as usize].width
+            }
+            Some(Equiv::Prim(Prim::MuSkip)) => {
+                let i = self.scan_reg_num();
+                self.eqtb.muskip[i as usize].width
+            }
+            Some(Equiv::Prim(Prim::LastSkip)) => self.last_skip_value().width,
+            Some(Equiv::SkipReg(i)) => self.eqtb.skip[i as usize].width,
+            Some(Equiv::MuSkipReg(i)) => self.eqtb.muskip[i as usize].width,
+            Some(Equiv::Prim(Prim::DimExpr)) => self.scan_expr_dim(),
+            Some(Equiv::Prim(Prim::NumExpr)) => self.scan_expr_num(),
+            Some(Equiv::Prim(Prim::GlueExpr)) => self.scan_expr_glue(false).width,
+            Some(Equiv::Prim(Prim::MuExpr)) => self.scan_expr_glue(true).width,
+            Some(Equiv::Prim(Prim::DimP(p))) => self.dim_param_value(p),
+            Some(Equiv::Prim(Prim::Wd)) => {
+                let n = self.scan_reg_num();
+                self.box_reg_dimen(n, 0)
+            }
+            Some(Equiv::Prim(Prim::Ht)) => {
+                let n = self.scan_reg_num();
+                self.box_reg_dimen(n, 1)
+            }
+            Some(Equiv::Prim(Prim::Dp)) => {
+                let n = self.scan_reg_num();
+                self.box_reg_dimen(n, 2)
+            }
+            Some(Equiv::Prim(
+                p @ (Prim::FontCharWd | Prim::FontCharHt | Prim::FontCharDp | Prim::FontCharIc),
+            )) => self.scan_font_char_dimen(p),
+            Some(Equiv::Prim(Prim::FontDimen)) => {
+                let idx = self.scan_int();
+                let f = self.scan_font_id();
+                let i = if idx > 0 { idx as usize - 1 } else { 0 };
+                self.eqtb
+                    .font_params
+                    .get(f as usize)
+                    .and_then(|fp| fp.get(i))
+                    .copied()
+                    .unwrap_or(0)
+            }
+            Some(Equiv::Prim(Prim::PdfXImageBBox)) => self.scan_pdf_ximage_bbox(),
+            Some(Equiv::Prim(Prim::Dimen)) => {
+                let i = self.scan_reg_num();
+                self.eqtb.dimen[i as usize]
+            }
+            Some(Equiv::DimenReg(i)) => self.eqtb.dimen[i as usize],
+            Some(Equiv::Prim(Prim::Count | Prim::Attribute)) => {
+                let i = self.scan_reg_num();
+                self.eqtb.count[i as usize]
+            }
+            Some(Equiv::CountReg(i)) => self.eqtb.count[i as usize],
+            _ => {
+                self.push_token(t);
+                return None;
+            }
+        };
+        Some(i64::from(sp))
     }
 
     pub fn scan_glue(&mut self, mu: bool) -> Glue {
         let prev = self.in_expanded_scan;
         self.in_expanded_scan = false;
-        self.skip_spaces_relax();
         // tex.web scan_glue: optional signs are consumed here and negate the
         // WHOLE glue spec (width, stretch, shrink) — not just the width.
         // `\skip0=-\skip1` must yield -w plus -s minus -k; dropping the
@@ -1591,11 +1559,10 @@ impl Engine {
         // stretch/shrink (`\@tempskipa -\@tempskipa`).
         let mut negate = false;
         let mut t = self.get_x_raw();
-        while t.is_char() && (t.chr() == 43 || t.chr() == 45) {
-            if t.chr() == 45 {
+        while t.is_space() || (t.is_char() && (t.chr() == 43 || t.chr() == 45)) {
+            if t.chr() == 45 && !t.is_space() {
                 negate = !negate;
             }
-            self.skip_spaces_relax();
             t = self.get_x_raw();
         }
         if t.is_cs() && matches!(self.cur_prim, Some(Prim::GlueExpr) | Some(Prim::MuExpr)) {
@@ -1619,79 +1586,27 @@ impl Engine {
         }
         self.push_token(t);
         let mut g = Glue::zero();
-        self.cur_fill_order = 0;
-        g.width = self.scan_dimen(mu, false);
+        g.width = self.scan_dimen_inner(mu, false);
         if negate {
             g.width = -g.width;
         }
-        for &(kw, is_stretch) in &[(&b"plus"[..], true), (&b"minus"[..], false)] {
-            loop {
-                let t0 = self.get_token();
-                if t0.is_space() {
-                    continue;
-                }
-                self.push_token(t0);
-                break;
-            }
-            let t = self.get_token();
-            let mut matched = false;
-            if let Some(c) = ascii_character(t).map(|c| c.to_ascii_lowercase()) {
-                if c == kw[0] {
-                    let mut kt: Vec<Token> = Vec::new();
-                    let mut all = true;
-                    for &k in &kw[1..] {
-                        let tx = self.get_token();
-                        kt.push(tx);
-                        if !ascii_character(tx).is_some_and(|c| c.to_ascii_lowercase() == k) {
-                            all = false;
-                            break;
-                        }
-                    }
-                    if all {
-                        matched = true;
-                        if is_stretch {
-                            g.stretch_order = self.cur_fill_order;
-                            g.stretch = self.scan_dimen(mu, false);
-                            if self.cur_fill_order > 0 {
-                                g.stretch_order = self.cur_fill_order;
-                            }
-                        } else {
-                            g.shrink_order = self.cur_fill_order;
-                            g.shrink = self.scan_dimen(mu, false);
-                            if self.cur_fill_order > 0 {
-                                g.shrink_order = self.cur_fill_order;
-                            }
-                        }
-                    } else {
-                        for tx in kt.into_iter().rev() {
-                            self.push_token(tx);
-                        }
-                    }
-                }
-            }
-            if !matched {
-                self.push_token(t);
-            }
+        if self.scan_unit_keyword(b"plus") {
             self.cur_fill_order = 0;
+            g.stretch = self.scan_dimen_inner(mu, true);
+            g.stretch_order = self.cur_fill_order;
         }
+        if self.scan_unit_keyword(b"minus") {
+            self.cur_fill_order = 0;
+            g.shrink = self.scan_dimen_inner(mu, true);
+            g.shrink_order = self.cur_fill_order;
+        }
+        self.cur_fill_order = 0;
+        self.in_expanded_scan = prev;
         g
-    }
-    /// after "fil" keyword letters: count extra 'l's for fil/fill/filll
-    fn scan_fil_order(&mut self) -> u8 {
-        let mut order = 1u8;
-        loop {
-            let t = self.get_token();
-            if ascii_character(t) == Some(b'l') && order < 3 {
-                order += 1;
-            } else {
-                self.push_token(t);
-                return order;
-            }
-        }
     }
 
     pub fn scan_relational(&mut self) -> u8 {
-        self.skip_spaces_relax();
+        self.skip_spaces();
         let t = self.get_x_raw_keep_cond();
         if let Some(c) = ascii_character(t) {
             if matches!(c, b'<' | b'=' | b'>') {
@@ -2175,7 +2090,7 @@ impl Engine {
                 emit_the_toks!(self.mark_tokens_class(4, class));
             }
             Some(Prim::JobName) => {
-                let s = self.job_name.clone();
+                let s = self.quoted_job_name();
                 emit_the!(s.as_bytes());
             }
             Some(Prim::NumExpr) => {
@@ -2725,7 +2640,7 @@ impl Engine {
     // ---------- font id scan ----------
 
     pub fn scan_font_id(&mut self) -> u16 {
-        self.skip_spaces_relax();
+        self.skip_spaces();
         let t = self.get_x_raw();
         if !t.is_cs() {
             self.push_token(t);
@@ -2950,14 +2865,6 @@ impl Engine {
             }
             return v;
         }
-        if kind != ExprKind::Glue && t.is_char() && t.chr() == b'-' as u32 {
-            let v = self.expr_factor(kind, mu, arithmetic);
-            return match v {
-                ExprVal::Int(x) => ExprVal::Int(arithmetic.negate(x, MAX_EXPR_INT)),
-                ExprVal::Dim(x) => ExprVal::Dim(arithmetic.negate(x, MAX_EXPR_DIMEN)),
-                ExprVal::Glue(_) => unreachable!(),
-            };
-        }
         self.push_token(t);
         match kind {
             ExprKind::Int => {
@@ -3081,13 +2988,10 @@ impl ExprArithmetic {
                 right as i64
             };
             (left as i64 + right, left_order)
-        } else if left_order < right_order {
-            let value = if subtract {
-                -(right as i64)
-            } else {
-                right as i64
-            };
-            (value, right_order)
+        } else if left_order < right_order && right != 0 {
+            // e-TeX add_or_sub quirk: the higher-order component of the
+            // right operand is copied without applying the subtraction
+            (right as i64, right_order)
         } else {
             (left as i64, left_order)
         }
@@ -3831,5 +3735,55 @@ mod showthe_mark_tests {
             0,
             "lastnodetype for character node should be 0"
         );
+    }
+}
+
+#[cfg(test)]
+mod tex_live_scanning_tests {
+    use crate::engine::{Engine, InteractionMode};
+
+    fn messages(source: &str) -> (String, i32) {
+        let mut engine = Engine::new(true);
+        engine.init_primitives();
+        engine.add_nullfont();
+        engine.eqtb.cat[b'{' as usize] = 1;
+        engine.eqtb.cat[b'}' as usize] = 2;
+        engine.set_interaction_mode(InteractionMode::Nonstop);
+        engine
+            .input
+            .push_file("scan.tex".to_string(), source.as_bytes().to_vec());
+        engine.run();
+        (engine.term.clone(), engine.error_count)
+    }
+
+    /// Expected values come from `pdftex -ini -etex` (TeX Live 2026).
+    #[test]
+    fn units_and_radix_constants_match_pdftex() {
+        let (term, errors) = messages(
+            "\\dimen0=3nd \\dimen1=1.5nc \\dimen2=2px \\pdfpxdimen=2pt \\dimen3=3px \
+             \\dimen4=12.5 true pt \\count2='777 \\count3=`\\a \\dimen5=1.5\\dimen4 \
+             \\skip0=1pt plus 2fil minus 3filll\n\
+             \\message{[\\the\\dimen0|\\the\\dimen1|\\the\\dimen2|\\the\\dimen3|\
+             \\the\\dimen4|\\the\\count2|\\the\\count3|\\the\\dimen5|\\the\\skip0]}\\end\n",
+        );
+        assert_eq!(errors, 0, "{term}");
+        assert!(
+            term.contains(
+                "[3.20093pt|19.2056pt|2.0075pt|6.0pt|12.5pt|511|97|18.75pt|\
+                 1.0pt plus 2.0fil minus 3.0filll]"
+            ),
+            "{term}"
+        );
+    }
+
+    #[test]
+    fn true_units_divide_by_mag_and_hex_digits_are_uppercase_only() {
+        let (term, errors) = messages(
+            "\\mag=2000 \\dimen7=10 true pt \\count4=\"1a \\count5=`\\ab \
+             \\message{[\\the\\dimen7|\\the\\count4|\\the\\count5]}\\end\n",
+        );
+        assert!(term.contains("[5.0pt|1|48]"), "{term}");
+        // "Improper alphabetic constant" and the then-undefined \ab
+        assert_eq!(errors, 2, "{term}");
     }
 }

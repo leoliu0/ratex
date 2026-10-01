@@ -15,28 +15,7 @@ pub fn png_embed_options(
     }
 }
 
-pub fn install_pdftex_config_registers(engine: &mut Engine) {
-    for (name, register) in [
-        (b"pdfdecimaldigits" as &[u8], 250),
-        (b"pdfpkresolution" as &[u8], 251),
-        (b"synctex" as &[u8], 252),
-        (b"pdftracingfonts" as &[u8], 256),
-        (b"pdfdraftmode" as &[u8], 257),
-    ] {
-        let id = engine.cs.intern(name);
-        if matches!(
-            engine.eqtb.get(id),
-            None | Some(crate::eqtb::Equiv::Prim(crate::prim::Prim::Relax))
-        ) {
-            engine
-                .eqtb
-                .assign(id, crate::eqtb::Equiv::CountReg(register), true);
-        }
-    }
-}
-
 pub fn finalize_format_load(eng: &mut Engine) {
-    install_pdftex_config_registers(eng);
     // Real LaTeX starts each document with \baselineskip=0pt (tex.web §224);
     // font sizes (\normalsize, etc.) set it when the document class is loaded.
     eng.eqtb.glue_params[crate::prim::GlueParam::BaselineSkip.idx() as usize] =
@@ -223,7 +202,6 @@ pub fn prepare_latex_job(eng: &mut Engine) {
             true,
         );
     }
-    install_pdftex_config_registers(eng);
 }
 
 pub fn insert_everyjob(eng: &mut Engine) {

@@ -8,7 +8,7 @@ static GLOBAL: allocator::EngineAllocator = allocator::EngineAllocator;
 #[cfg(test)]
 use tex_core::driver::png_embed_options;
 /// Precompiled format containing standard LaTeX packages baked directly into the binary.
-use tex_core::driver::{finalize_format_load, install_pdftex_config_registers};
+use tex_core::driver::finalize_format_load;
 
 static EMBEDDED_DEFAULT_FMT: &[u8] = include_bytes!("../../assets/default.fmt.zst");
 static EMBEDDED_XELATEX_FMT: &[u8] = include_bytes!("../../assets/xelatex.fmt.zst");
@@ -373,7 +373,18 @@ fn effective_clock_identity() -> String {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |duration| duration.as_secs());
-    effective_clock_identity_at(std::env::var_os("SOURCE_DATE_EPOCH").as_deref(), now)
+    let epoch = std::env::var_os("SOURCE_DATE_EPOCH");
+    // \time/\day/\month/\year follow SOURCE_DATE_EPOCH only with
+    // FORCE_SOURCE_DATE=1; otherwise they read the live clock while the
+    // epoch still fixes PDF dates, so both belong in the identity.
+    if std::env::var_os("FORCE_SOURCE_DATE").is_some_and(|v| v == "1") {
+        return effective_clock_identity_at(epoch.as_deref(), now);
+    }
+    let live = effective_clock_identity_at(None, now);
+    match epoch {
+        Some(epoch) => format!("{live};source-date-epoch={}", epoch.to_string_lossy()),
+        None => live,
+    }
 }
 
 fn effective_clock_identity_at(source_date_epoch: Option<&std::ffi::OsStr>, now: u64) -> String {
@@ -2122,7 +2133,6 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
             // Match fmtutil's pdfLaTeX bootstrap: pdflatex.ini applies
             // pdftexconfig.tex (paper size and driver settings) before
             // latex.ltx builds and dumps the format.
-            install_pdftex_config_registers(&mut eng);
             eng.add_nullfont();
             let ini_file = match program.as_str() {
                 "lualatex" => "lualatex.ini",
@@ -2202,7 +2212,6 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
         eng.eqtb.int_params[IntParam::ClubPenalty.idx() as usize] = 150;
         eng.eqtb.int_params[IntParam::WidowPenalty.idx() as usize] = 150;
         eng.add_nullfont();
-        install_pdftex_config_registers(&mut eng);
     }
     let engine_banner = match program.as_str() {
         "xelatex" => format!(
@@ -2419,7 +2428,7 @@ mod startup_tests {
         authenticated_depcache_body, backtrace_requested, check_depcache, decode_record_path,
         dependency_fingerprint, dependency_name_may_match, directory_prefix,
         effective_clock_identity_at, encode_record_path, finalize_format_load, format_boot_failure,
-        install_pdftex_config_registers, png_embed_options, published_names_in_directory,
+        png_embed_options, published_names_in_directory,
         seal_depcache_record, write_depcache, DepcacheInputs, FormatBootFailure,
         TexmkPublishedOutputs, DEPCACHE_RECORD_MAX_BYTES, EMBEDDED_DEFAULT_FMT,
     };

@@ -282,9 +282,11 @@ pub enum DimParam {
     /// tex.web dimen param: width of the paragraph's last line before a
     /// display (drives short-skip selection; amsmath also reads it)
     PreDisplaySize,
+    /// pdfTeX `\pdfpxdimen`: the size of the `px` unit
+    PdfPxDimen,
 }
 
-pub const NUM_DIM_PARAMS: usize = 38;
+pub const NUM_DIM_PARAMS: usize = 39;
 
 impl DimParam {
     #[inline]
@@ -331,6 +333,7 @@ impl DimParam {
         DimParam::VOffset,
         DimParam::PrevDepth,
         DimParam::PreDisplaySize,
+        DimParam::PdfPxDimen,
     ];
 
     pub fn from_idx(i: u16) -> Option<Self> {

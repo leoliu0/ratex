@@ -243,7 +243,8 @@ fn test_coroutine_no_message_error_does_not_reuse_stale_message() {
 
         local ok2, err2 = coroutine.resume(co2)
         assert(ok2 == false)
-        assert(err2 == nil, tostring(err2))
+        -- Lua 5.5 reports an error without an object as "<no error object>".
+        assert(err2 == "<no error object>", tostring(err2))
     "#,
     );
 

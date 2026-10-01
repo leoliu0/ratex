@@ -257,3 +257,173 @@ fn lua53_arithmetic_error_blames_the_non_numeric_operand() {
         "#,
     );
 }
+
+#[test]
+fn lua55_nil_error_object_becomes_no_error_object_after_the_handler() {
+    run(
+        LuaLanguageLevel::Lua55,
+        r#"
+        local ok, e = pcall(error); assert(not ok and e == "<no error object>", e)
+        ok, e = xpcall(error, function(m) return type(m) end); assert(e == "nil")
+        ok, e = xpcall(error, function(m) return m end); assert(e == "<no error object>")
+        ok, e = coroutine.resume(coroutine.create(function() error() end))
+        assert(e == "<no error object>")
+        local seen
+        ok, e = pcall(function()
+            local x <close> = setmetatable({}, {__close = function(_, err) seen = err end})
+            error()
+        end)
+        assert(seen == "<no error object>" and e == "<no error object>", tostring(seen))
+        "#,
+    );
+    run(LuaLanguageLevel::Lua53, "local ok, e = pcall(error); assert(not ok and e == nil)");
+}
+
+#[test]
+fn close_errors_reach_the_message_handler_before_unwinding() {
+    run(
+        LuaLanguageLevel::Lua55,
+        r#"
+        local function close(f) return setmetatable({}, {__close = f}) end
+        -- the handler sees the frames of the failing __close
+        local function foo() local x <close> = close(function() error("@x") end) end
+        local ok, msg = xpcall(foo, debug.traceback)
+        assert(msg:find("^[^\n]*@x") and msg:find("in metamethod"), msg)
+        -- while unwinding, each close gets the handled error and its own
+        -- error goes through the handler again
+        local log = {}
+        local function bar()
+            local a <close> = close(function(_, e) log[#log + 1] = "a:" .. e end)
+            local b <close> = close(function(_, e) log[#log + 1] = "b:" .. e; error("@b", 0) end)
+            error("orig", 0)
+        end
+        ok, msg = xpcall(bar, function(m) return "H:" .. m end)
+        assert(msg == "H:@b" and table.concat(log, ",") == "b:H:orig,a:H:@b", table.concat(log, ","))
+        -- an error in a __close on normal exit stops there; pcall closes the rest
+        log = {}
+        local function baz()
+            local a <close> = close(function(_, e) log[#log + 1] = "a:" .. tostring(e) end)
+            local b <close> = close(function(_, e)
+                log[#log + 1] = "b:" .. tostring(e)
+                error("@b", 0)
+            end)
+        end
+        ok, msg = pcall(baz)
+        assert(msg == "@b" and table.concat(log, ",") == "b:nil,a:@b", table.concat(log, ","))
+        "#,
+    );
+}
+
+#[test]
+fn c_stack_overflow_names_the_calling_line() {
+    // 200 nested metamethod calls need more native stack than a test thread
+    // has in debug builds.
+    std::thread::Builder::new()
+        .stack_size(256 << 20)
+        .spawn(|| {
+            run_both(
+                r#"
+                local mt = {}
+                mt.__index = function(t, k) if k == 0 then return 0 end return t[k - 1] + 1 end
+                local t = setmetatable({}, mt)
+                local ok, msg = pcall(function() return t[100000] end)
+                assert(not ok and msg:find(":%d+: C stack overflow$"), msg)
+                "#,
+            )
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+#[test]
+fn concat_error_names_the_operand_that_is_not_a_string() {
+    run_both(
+        r#"
+        local function msg(f) local ok, m = pcall(f) assert(not ok) return m end
+        local m = msg(function() local a = "x" local b = {} return a .. b end)
+        assert(m:find("table value (local 'b')", 1, true), m)
+        m = msg(function() local a = "x" local t = {} return a .. t.f .. "y" end)
+        assert(m:find("nil value (field 'f')", 1, true), m)
+        m = msg(function() local t = {} return "a" .. t.x .. "b" end)
+        assert(m:find("nil value (field 'x')", 1, true), m)
+        m = msg(function() return "abc" .. {} end)
+        assert(m:find("concatenate a table value$"), m)
+        "#,
+    );
+}
+
+#[test]
+fn xpcall_keeps_its_frame_and_survives_yields() {
+    run_both(
+        r#"
+        local _, tb = xpcall(function() error("x") end, debug.traceback)
+        assert(tb:find("'xpcall'") and not tb:find("traceback'"), tb)
+        local co = coroutine.wrap(function()
+            return xpcall(function(a) local b = coroutine.yield(a) return b, "z" end,
+                debug.traceback, "y")
+        end)
+        assert(co() == "y")
+        local ok, b, z = co("w")
+        assert(ok == true and b == "w" and z == "z")
+        co = coroutine.wrap(function()
+            return xpcall(function() coroutine.yield(1) error("e", 0) end,
+                function(m) return "H" .. m end)
+        end)
+        co()
+        local ok2, m = co()
+        assert(ok2 == false and m == "He", tostring(m))
+        "#,
+    );
+}
+
+#[test]
+fn resuming_after_a_yield_fires_the_return_hook_of_yield() {
+    run_both(
+        r#"
+        local co = coroutine.create(function()
+            coroutine.yield(10)
+            return 20
+        end)
+        local trace = {}
+        debug.sethook(co, function(e) trace[#trace + 1] = e end, "clr")
+        repeat until not coroutine.resume(co)
+        local got = table.concat(trace, " ")
+        assert(got == "call line call return line return", got)
+        "#,
+    );
+}
+
+#[test]
+fn functions_called_from_library_code_cannot_yield() {
+    run_both(
+        r#"
+        local co = coroutine.wrap(function()
+            local inside
+            string.gsub("a", ".", function() inside = coroutine.isyieldable() end)
+            return inside
+        end)
+        assert(co() == false)
+        "#,
+    );
+}
+
+#[test]
+fn loadfile_names_the_chunk_by_the_path_as_given() {
+    let dir = std::env::temp_dir();
+    let file = dir.join(format!("tex_lua_chunkname_{}.lua", std::process::id()));
+    std::fs::write(&file, "error('boom')").unwrap();
+    // A path with a "." component differs from its canonical form.
+    let given = format!("{}/./{}", dir.display(), file.file_name().unwrap().to_string_lossy());
+    let source = format!(
+        r#"
+        local path = {given:?}
+        local f = assert(loadfile(path))
+        assert(debug.getinfo(f, "S").source == "@" .. path, debug.getinfo(f, "S").source)
+        local ok, msg = pcall(f)
+        assert(msg == path .. ":1: boom", msg)
+        "#
+    );
+    run_both(&source);
+    std::fs::remove_file(&file).unwrap();
+}

@@ -37,9 +37,10 @@ pub mod call_status {
     /// that must be handled in the startfunc loop before dispatching.
     pub const CIST_PENDING_FINISH: u32 = 1 << 27;
 
-    /// xpcall: this C frame is for an xpcall call.
-    /// The error handler is stored at func_pos (base - func_offset),
-    /// and the actual body starts at func_pos + 1.
+    /// xpcall: this C frame is for an xpcall call. The stdlib xpcall keeps
+    /// f at func_pos + 1 and the handler at func_pos + 2; the protected call
+    /// runs on a copy of f at func_pos + 3 (C API frames record their slots
+    /// in `c_k_*`).
     pub const CIST_XPCALL: u32 = 1 << 28;
 
     /// Yieldable unprotected call (dofile body yielded)
@@ -157,6 +158,9 @@ pub struct CallInfo {
     pub c_k_state: usize,
     pub c_k_func_index: u32,
     pub c_k_error_func_index: u32,
+    /// Results wanted by the `lua_callk`/`lua_pcallk` that yielded
+    /// (`LUA_MULTRET` for `lua_yieldk`); applied before the continuation runs.
+    pub c_k_nresults: i32,
 }
 
 #[derive(Clone, Copy)]
@@ -221,6 +225,7 @@ impl CallInfo {
             c_k_state: 0,
             c_k_func_index: 0,
             c_k_error_func_index: u32::MAX,
+            c_k_nresults: -1,
         }
     }
 
@@ -244,6 +249,7 @@ impl CallInfo {
             c_k_state: 0,
             c_k_func_index: 0,
             c_k_error_func_index: u32::MAX,
+            c_k_nresults: -1,
         }
     }
 
@@ -332,6 +338,7 @@ impl Default for CallInfo {
             c_k_state: 0,
             c_k_func_index: 0,
             c_k_error_func_index: u32::MAX,
+            c_k_nresults: -1,
         }
     }
 }

@@ -111,12 +111,15 @@ fn string_arith(l: &mut LuaState, tm: TmKind) -> LuaResult<usize> {
 
     // "__add" -> "add", as C Lua's `mtname + 2`.
     let op_name = &tm.name()[2..];
-    Err(l.caller_error(format!(
-        "attempt to {} a '{}' with a '{}'",
-        op_name,
-        v1.type_name(),
-        v2.type_name()
-    )))
+    Err(crate::stdlib::lauxlib::lual_error(
+        l,
+        format!(
+            "attempt to {} a '{}' with a '{}'",
+            op_name,
+            v1.type_name(),
+            v2.type_name()
+        ),
+    ))
 }
 
 pub fn string_arith_add(l: &mut LuaState) -> LuaResult<usize> {

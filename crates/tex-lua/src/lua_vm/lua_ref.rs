@@ -21,46 +21,6 @@ pub type RefId = i32;
 pub const LUA_REFNIL: RefId = -1; // Reference to nil (no storage needed)
 pub const LUA_NOREF: RefId = -2; // Invalid reference
 
-/// Internal state for managing references in the registry
-pub(crate) struct RefManager {
-    /// Next available reference ID
-    next_ref_id: RefId,
-
-    /// Free list of released reference IDs (for reuse)
-    free_list: Vec<RefId>,
-}
-
-impl RefManager {
-    pub fn new() -> Self {
-        RefManager {
-            next_ref_id: 1, // Start from 1, reserve negatives for special values
-            free_list: Vec::new(),
-        }
-    }
-
-    /// Allocate a new reference ID
-    pub fn alloc_ref_id(&mut self) -> RefId {
-        if let Some(ref_id) = self.free_list.pop() {
-            ref_id
-        } else {
-            let ref_id = self.next_ref_id;
-            self.next_ref_id = self.next_ref_id.wrapping_add(1);
-            if self.next_ref_id < 0 {
-                // Wrapped around, skip special values
-                self.next_ref_id = 1;
-            }
-            ref_id
-        }
-    }
-
-    /// Free a reference ID (add to free list for reuse)
-    pub fn free_ref_id(&mut self, ref_id: RefId) {
-        if ref_id > 0 && !self.free_list.contains(&ref_id) {
-            self.free_list.push(ref_id);
-        }
-    }
-}
-
 /// A reference to a Lua value stored in the VM's registry.
 ///
 /// This is similar to Lua's C API luaL_ref mechanism:
@@ -240,9 +200,7 @@ fn collect_single_value<T: IntoLua>(
 
 /// Store a LuaValue in the VM registry and return its RefId.
 pub(crate) fn store_in_registry(global_state: &mut GlobalState, value: LuaValue) -> RefId {
-    let ref_id = global_state.ref_manager.alloc_ref_id();
-    global_state.registry_seti(ref_id as i64, value);
-    ref_id
+    global_state.registry_ref(value)
 }
 
 // ============================================================================

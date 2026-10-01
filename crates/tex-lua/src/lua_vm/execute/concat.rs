@@ -18,9 +18,14 @@ use crate::{
             metamethod::{TmKind, call_tm_res},
         },
     },
-    stdlib::{basic::lua_float_to_string, debug::typeerror},
+    stdlib::{
+        debug::{objtypename, varinfo_for_reg},
+        numfmt::tostring_float,
+    },
 };
 
+/// Length of a string or integer piece; floats (whose text depends on the
+/// dialect) take the general path through `tostring_inplace`.
 #[inline]
 fn utf8_piece_len(v: &LuaValue) -> Option<usize> {
     if let Some(s) = v.as_str() {
@@ -28,8 +33,6 @@ fn utf8_piece_len(v: &LuaValue) -> Option<usize> {
     } else if v.ttisinteger() {
         let mut buf = itoa::Buffer::new();
         Some(buf.format(v.ivalue()).len())
-    } else if v.ttisfloat() {
-        Some(lua_float_to_string(v.fltvalue()).len())
     } else {
         None
     }
@@ -38,11 +41,9 @@ fn utf8_piece_len(v: &LuaValue) -> Option<usize> {
 fn append_utf8_piece_to_string(output: &mut String, v: &LuaValue) {
     if let Some(s) = v.as_str() {
         output.push_str(s);
-    } else if v.ttisinteger() {
+    } else {
         let mut buf = itoa::Buffer::new();
         output.push_str(buf.format(v.ivalue()));
-    } else {
-        output.push_str(&lua_float_to_string(v.fltvalue()));
     }
 }
 
@@ -51,14 +52,9 @@ fn append_utf8_piece_to_bytes(output: &mut [u8], offset: &mut usize, v: &LuaValu
         let end = *offset + s.len();
         output[*offset..end].copy_from_slice(s.as_bytes());
         *offset = end;
-    } else if v.ttisinteger() {
+    } else {
         let mut buf = itoa::Buffer::new();
         let s = buf.format(v.ivalue());
-        let end = *offset + s.len();
-        output[*offset..end].copy_from_slice(s.as_bytes());
-        *offset = end;
-    } else {
-        let s = lua_float_to_string(v.fltvalue());
         let end = *offset + s.len();
         output[*offset..end].copy_from_slice(s.as_bytes());
         *offset = end;
@@ -160,8 +156,8 @@ fn tostring_inplace(lua_state: &mut LuaState, idx: usize) -> LuaResult<bool> {
         return Ok(true);
     }
     if v.ttisfloat() {
-        let s = lua_float_to_string(v.fltvalue());
-        let sv = lua_state.create_string(&s)?;
+        let s = tostring_float(v.fltvalue(), lua_state.global_state().language());
+        let sv = lua_state.create_string(s.as_str())?;
         lua_state.stack_mut()[idx] = sv;
         return Ok(true);
     }
@@ -280,12 +276,17 @@ fn tryconcattm(lua_state: &mut LuaState, top: usize) -> LuaResult<()> {
         lua_state.stack_mut()[top - 2] = result;
         Ok(())
     } else {
-        // No metamethod found — generate error
-        let bad = if p1.ttisstring() || cvt2str(&p1) {
-            &p2
-        } else {
-            &p1
+        // No metamethod found: luaG_concaterror blames the operand that is
+        // not a string, named by its own stack slot (varinfo).
+        let bad_slot = if p1.ttisstring() || cvt2str(&p1) { top - 1 } else { top - 2 };
+        let bad = lua_state.stack()[bad_slot];
+        let tname = objtypename(lua_state, &bad);
+        let info = match lua_state.current_frame() {
+            Some(ci) if ci.is_lua() && bad_slot >= ci.base => {
+                varinfo_for_reg(lua_state, (bad_slot - ci.base) as u32)
+            }
+            _ => String::new(),
         };
-        Err(typeerror(lua_state, bad, "concatenate"))
+        Err(lua_state.error(format!("attempt to concatenate a {} value{}", tname, info)))
     }
 }

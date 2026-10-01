@@ -28,6 +28,8 @@ pub mod language;
 pub mod linebreak;
 pub mod luatex;
 pub mod lua_font;
+mod lua_font_lib;
+mod lua_font_vf;
 mod lua_bridge;
 mod lua_cmds;
 pub mod maincontrol;

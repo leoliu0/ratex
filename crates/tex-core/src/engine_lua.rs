@@ -300,25 +300,8 @@ impl LuaEngine {
                 os.gettimeofday = function() return os.time() end
             end
         "#).unwrap();
-        // 9. font table
-        self.lua.execute(r#"
-            local __font_store = {}
-            font = {
-                define = function(n, tbl)
-                    __font_store[n] = tbl
-                    return n
-                end,
-                getfont = function(n)
-                    return __font_store[n]
-                end,
-                setfont = function(n, tbl)
-                    __font_store[n] = tbl
-                end,
-                id = function(name)
-                    return 0
-                end,
-            }
-        "#).unwrap();
+        // 9. font library (luatex lfontlib.c)
+        crate::lua_font_lib::install(&mut self.lua)?;
 
         // 10. Native fontloader and luaharfbuzz modules via Lua script
         self.lua.execute(r#"

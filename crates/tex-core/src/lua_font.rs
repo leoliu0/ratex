@@ -203,7 +203,7 @@ pub struct LuaFont {
     pub bc: i32,
     pub ec: i32,
     pub name: Vec<u8>,
-    pub area: Vec<u8>,
+    pub area: Option<Vec<u8>>,
     pub filename: Option<Vec<u8>>,
     pub fullname: Option<Vec<u8>>,
     pub psname: Option<Vec<u8>>,
@@ -311,5 +311,448 @@ impl Engine {
     #[inline]
     pub fn lua_char(&self, font: FontId, code: u32) -> Option<&LuaCharInfo> {
         self.eqtb.fonts.get(usize::from(font))?.lua_char(code)
+    }
+}
+
+/// luatex `literal_mode` values used by virtual-font `pdf` commands.
+pub const PDF_SET_ORIGIN: u8 = 0;
+pub const PDF_DIRECT_PAGE: u8 = 1;
+pub const PDF_DIRECT_ALWAYS: u8 = 2;
+pub const PDF_DIRECT_TEXT: u8 = 3;
+pub const PDF_DIRECT_FONT: u8 = 4;
+pub const PDF_DIRECT_RAW: u8 = 5;
+pub const PDF_SCAN_SPECIAL: u8 = 6;
+
+/// Engine-side bookkeeping of Lua font ids.
+#[derive(Default)]
+pub struct LuaFontState {
+    /// Deleted font ids (luatex reuses the first free slot).
+    pub holes: Vec<FontId>,
+    /// luatex `font_touched`: the font identifier was scanned by TeX.
+    pub touched: crate::FxHashSet<FontId>,
+    /// luatex `font_used`: a character of the font reached the PDF.
+    pub used: crate::FxHashSet<FontId>,
+    /// The control sequence naming fonts without a `\font` identifier.
+    pub anonymous_cs: Option<crate::token::CsId>,
+}
+
+impl Engine {
+    /// luatex `is_valid_font`.
+    pub(crate) fn lua_font_valid(&self, id: i64) -> bool {
+        id >= 0
+            && (id as usize) < self.eqtb.fonts.len()
+            && !self.lua_fonts.holes.contains(&(id as FontId))
+    }
+
+    /// luatex `max_font_id`.
+    pub(crate) fn lua_font_max(&self) -> i64 {
+        self.eqtb.fonts.len() as i64 - 1
+    }
+
+    fn lua_placeholder_font() -> crate::tfm::Font {
+        crate::tfm::Font {
+            name: String::new(),
+            tfm_name: String::new(),
+            at_size: 0,
+            dsize: 0,
+            chars: Vec::new(),
+            bc: 1,
+            ec: 0,
+            lig_kern: Vec::new(),
+            kerns: Vec::new(),
+            ext: Vec::new(),
+            params: vec![0; 7],
+            hyphen_char: b'-' as i32,
+            skew_char: -1,
+            bchar: None,
+            type1_path: None,
+            enc_name: None,
+            map_fontname: None,
+            encoding: None,
+            lua: Some(Rc::new(LuaFont::default())),
+        }
+    }
+
+    /// The id luatex `new_font` would allocate next.
+    pub(crate) fn lua_next_font_id(&self) -> FontId {
+        self.lua_fonts
+            .holes
+            .iter()
+            .copied()
+            .min()
+            .unwrap_or(self.eqtb.fonts.len() as FontId)
+    }
+
+    /// luatex `new_font`: allocate a blank font slot.
+    pub(crate) fn lua_new_font(&mut self) -> FontId {
+        let cs = match self.lua_fonts.anonymous_cs {
+            Some(cs) => cs,
+            None => {
+                let cs = self.cs.intern(b"FONT");
+                self.lua_fonts.anonymous_cs = Some(cs);
+                cs
+            }
+        };
+        if let Some(&hole) = self.lua_fonts.holes.iter().min() {
+            self.lua_fonts.holes.retain(|&h| h != hole);
+            self.lua_reset_font_slot(hole, Self::lua_placeholder_font(), cs);
+            return hole;
+        }
+        self.push_engine_font(Rc::new(Self::lua_placeholder_font()), cs)
+    }
+
+    fn lua_reset_font_slot(&mut self, f: FontId, font: crate::tfm::Font, cs: crate::token::CsId) {
+        let i = usize::from(f);
+        let params = font.params.clone();
+        self.eqtb.font_param_levels[i] = vec![1; params.len()];
+        self.eqtb.font_params[i] = params;
+        self.eqtb.hyphen_char[i] = font.hyphen_char;
+        self.eqtb.hyphen_char_levels[i] = 1;
+        self.eqtb.skew_char[i] = font.skew_char;
+        self.eqtb.skew_char_levels[i] = 1;
+        self.eqtb.font_cs[i] = cs;
+        self.eqtb.expand[i] = Default::default();
+        self.eqtb.fonts[i] = Rc::new(font);
+    }
+
+    /// luatex `delete_font`.
+    pub(crate) fn lua_delete_font(&mut self, f: FontId) {
+        let i = usize::from(f);
+        if i == 0 || i >= self.eqtb.fonts.len() {
+            return;
+        }
+        self.lua_fonts.touched.remove(&f);
+        self.lua_fonts.used.remove(&f);
+        if i + 1 == self.eqtb.fonts.len() {
+            self.eqtb.fonts.pop();
+            self.eqtb.font_params.pop();
+            self.eqtb.font_param_levels.pop();
+            self.eqtb.hyphen_char.pop();
+            self.eqtb.hyphen_char_levels.pop();
+            self.eqtb.skew_char.pop();
+            self.eqtb.skew_char_levels.pop();
+            self.eqtb.font_cs.pop();
+            self.eqtb.expand.pop();
+            // trailing holes disappear with it
+            while let Some(last) = self.eqtb.fonts.len().checked_sub(1) {
+                let last = last as FontId;
+                if self.lua_fonts.holes.contains(&last) {
+                    self.lua_fonts.holes.retain(|&h| h != last);
+                    self.lua_delete_font_tail();
+                } else {
+                    break;
+                }
+            }
+        } else if !self.lua_fonts.holes.contains(&f) {
+            let cs = self.eqtb.font_cs[i];
+            self.lua_reset_font_slot(f, Self::lua_placeholder_font(), cs);
+            self.lua_fonts.holes.push(f);
+        }
+    }
+
+    fn lua_delete_font_tail(&mut self) {
+        self.eqtb.fonts.pop();
+        self.eqtb.font_params.pop();
+        self.eqtb.font_param_levels.pop();
+        self.eqtb.hyphen_char.pop();
+        self.eqtb.hyphen_char_levels.pop();
+        self.eqtb.skew_char.pop();
+        self.eqtb.skew_char_levels.pop();
+        self.eqtb.font_cs.pop();
+        self.eqtb.expand.pop();
+    }
+
+    /// Store a font read by `font_from_lua` in slot `f`.
+    pub(crate) fn lua_install_font(&mut self, f: FontId, parsed: crate::lua_font_lib::ParsedFont) {
+        let crate::lua_font_lib::ParsedFont { lua, params, hyphen_char, skew_char, warnings } = parsed;
+        for message in warnings {
+            self.warning_at(&format!("luatex warning (font): {message}"), None);
+        }
+        let name = String::from_utf8_lossy(&lua.name).into_owned();
+        if lua.used {
+            self.lua_fonts.used.insert(f);
+        }
+        let font = crate::tfm::Font {
+            name: name.clone(),
+            tfm_name: name,
+            at_size: lua.size,
+            dsize: lua.designsize,
+            chars: Vec::new(),
+            bc: 1,
+            ec: 0,
+            lig_kern: Vec::new(),
+            kerns: Vec::new(),
+            ext: Vec::new(),
+            params,
+            hyphen_char,
+            skew_char,
+            bchar: None,
+            type1_path: None,
+            enc_name: None,
+            map_fontname: lua.psname.as_ref().map(|p| String::from_utf8_lossy(p).into_owned()),
+            encoding: None,
+            lua: Some(Rc::new(lua)),
+        };
+        let cs = self.eqtb.font_cs[usize::from(f)];
+        self.lua_reset_font_slot(f, font, cs);
+    }
+
+    /// luatex `find_font_id`: load a font through `\font` machinery without
+    /// binding a control sequence (local fonts of virtual fonts).
+    pub(crate) fn lua_find_font_id(&mut self, name: &[u8], size: i32) -> FontId {
+        let f = self.lua_new_font();
+        match self.lua_do_define_font(f, name, size) {
+            Some(id) => id,
+            None => 0,
+        }
+    }
+
+    /// luatex `do_define_font` for the blank slot `f`: the `define_font`
+    /// callback when registered, the TFM loader otherwise. Returns the font
+    /// id to use (an existing font when the callback returned a number) or
+    /// `None`; the slot is released on failure.
+    pub(crate) fn lua_do_define_font(&mut self, f: FontId, name: &[u8], s: i32) -> Option<FontId> {
+        let has_callback = self.lua.as_mut().is_some_and(|lua| lua.has_callback("define_font"));
+        if has_callback {
+            let name_owned = name.to_vec();
+            let result = self.lua_run(|lua| lua.call_define_font(&name_owned, s, f));
+            let value = match result {
+                Ok(v) => v,
+                Err(err) => {
+                    self.error(&format!("LuaTeX error {err}"));
+                    None
+                }
+            };
+            return match value {
+                Some(v) => {
+                    if let Some(t) = v.as_table() {
+                        match crate::lua_font_lib::font_from_lua(self, f, &t) {
+                            Ok(parsed) => {
+                                let cache = crate::lua_font_lib::cache_allowed(&t);
+                                self.lua_install_font(f, parsed);
+                                if cache {
+                                    self.lua_cache_font_table(f, &t);
+                                }
+                                Some(f)
+                            }
+                            Err(msg) => {
+                                self.error(&format!("LuaTeX error {msg}"));
+                                self.lua_delete_font(f);
+                                None
+                            }
+                        }
+                    } else if let Some(n) = v.as_number().map(|n| (n + 0.5).floor() as i64) {
+                        self.lua_delete_font(f);
+                        if self.lua_font_valid(n) && n > 0 {
+                            Some(n as FontId)
+                        } else {
+                            None
+                        }
+                    } else {
+                        self.lua_delete_font(f);
+                        None
+                    }
+                }
+                None => {
+                    self.lua_delete_font(f);
+                    None
+                }
+            };
+        }
+        let base = String::from_utf8_lossy(name).into_owned();
+        let loaded = if s >= 0 || s == -1000 {
+            self.font_loader.load_tfm(&base, if s >= 0 { s } else { 0 })
+        } else {
+            let dsize = self.font_loader.load_tfm(&base, 0).map(|font| font.dsize);
+            dsize.and_then(|d| self.font_loader.load_tfm(&base, crate::scaled::xn_over_d(d, -s, 1000)))
+        };
+        let Some(font) = loaded else {
+            self.lua_delete_font(f);
+            return None;
+        };
+        // The slot was only a reservation: TFM fonts go through the
+        // classic registration (virtual font bases, expansion tables).
+        self.lua_delete_font(f);
+        let cs = self.lua_fonts.anonymous_cs.unwrap_or(0);
+        Some(self.push_engine_font(font, cs))
+    }
+
+    /// Remember `t` as the table `font.getfont(f)` returns.
+    pub(crate) fn lua_cache_font_table(&mut self, f: FontId, t: &tex_lua::LuaTable) {
+        if let Some(lua) = self.lua.as_mut() {
+            lua.set_font_cache(f, t);
+        }
+    }
+}
+
+impl crate::engine_lua::LuaEngine {
+    /// Call the `define_font` callback with `(name, size, id)`; `None` when
+    /// it returned nothing/false.
+    pub(crate) fn call_define_font(
+        &mut self,
+        name: &[u8],
+        size: i32,
+        id: FontId,
+    ) -> Result<Option<tex_lua::Value>, String> {
+        use tex_lua::{LuaApi, LuaBytes, LuaFunction, Value};
+        let f: Option<LuaFunction> = self
+            .lua
+            .load("return __ratex_callback(...)")
+            .call("define_font")
+            .map_err(|e| self.lua.get_error_message(e).message().to_string())?;
+        let Some(f) = f else {
+            return Ok(None);
+        };
+        let result: Option<Value> = f
+            .call((LuaBytes(name.to_vec()), i64::from(size), i64::from(id)))
+            .map_err(|e| self.lua.get_error_message(e).message().to_string())?;
+        Ok(result.filter(|v| !v.is_nil() && v.as_boolean() != Some(false)))
+    }
+
+    /// Store `t` in the hidden cache consulted by `font.getfont`.
+    pub(crate) fn set_font_cache(&mut self, f: FontId, t: &tex_lua::LuaTable) {
+        use tex_lua::LuaApi;
+        if let Ok(Some(cache)) = self.lua.get_global::<tex_lua::LuaTable>("__ratex_font_cache") {
+            let _ = cache.raw_seti(i64::from(f), t);
+        }
+    }
+}
+
+impl Engine {
+    /// Mutable access to the Lua part of font `f` (copy-on-write: only fonts
+    /// shared with other holders are copied).
+    pub(crate) fn lua_font_mut(&mut self, f: FontId) -> Option<&mut LuaFont> {
+        let font = Rc::make_mut(self.eqtb.fonts.get_mut(usize::from(f))?);
+        Some(Rc::make_mut(font.lua.as_mut()?))
+    }
+
+    /// The checksum word of a TFM file.
+    pub(crate) fn tfm_checksum(&mut self, name: &str) -> Option<u32> {
+        let stem = name.strip_suffix(".tfm").unwrap_or(name);
+        let data = self
+            .font_loader
+            .read_dependency(stem, tex_kpse::Format::Tfm)
+            .or_else(|| self.font_loader.read_dependency(name, tex_kpse::Format::Tfm))?;
+        let b = data.get(24..28)?;
+        Some(u32::from_be_bytes([b[0], b[1], b[2], b[3]]))
+    }
+
+    /// `font.read_tfm`: luatex `read_tfm_info` as a [`LuaFont`] plus the
+    /// `\fontdimen` list.
+    pub(crate) fn lua_read_tfm(&mut self, name: &[u8], size: i32) -> Option<(LuaFont, Vec<i32>)> {
+        let given = String::from_utf8_lossy(name).into_owned();
+        let base = {
+            let b = given.rsplit('/').next().unwrap_or(&given);
+            b.strip_suffix(".tfm").or_else(|| b.strip_suffix(".ofm")).unwrap_or(b).to_string()
+        };
+        let load = |loader: &mut crate::fontload::FontLoader, n: &str, at: i32| loader.load_tfm(n, at);
+        let mut try_name = given.as_str();
+        let mut loaded = if size >= 0 || size == -1000 {
+            load(&mut self.font_loader, try_name, size.max(0))
+        } else {
+            None
+        };
+        if loaded.is_none() && base != given {
+            try_name = &base;
+            loaded = if size >= 0 || size == -1000 {
+                load(&mut self.font_loader, try_name, size.max(0))
+            } else {
+                None
+            };
+        }
+        if size < -1000 || (size < 0 && size != -1000) {
+            let d = load(&mut self.font_loader, &base, 0)?.dsize;
+            loaded = load(&mut self.font_loader, &base, crate::scaled::xn_over_d(d, -size, 1000));
+        }
+        let font = loaded?;
+        let mut lf = crate::lua_font_lib::lua_font_from_tfm(&font, base.as_bytes());
+        lf.checksum = self.tfm_checksum(&font.tfm_name).unwrap_or(0);
+        Some((lf, font.params.clone()))
+    }
+
+    /// The bytes of the virtual font `name`.
+    pub(crate) fn lua_read_vf_bytes(&mut self, name: &[u8]) -> Option<Vec<u8>> {
+        let given = String::from_utf8_lossy(name).into_owned();
+        let stem = given.strip_suffix(".vf").unwrap_or(&given).to_string();
+        self.font_loader.read_dependency(&stem, tex_kpse::Format::Vf)
+    }
+
+    /// `font.settounicode`.
+    pub(crate) fn lua_set_tounicode(&mut self, f: FontId, code: i64, value: Option<Vec<u8>>) {
+        let Ok(code) = u32::try_from(code) else { return };
+        if let Some(lf) = self.lua_font_mut(f) {
+            if let Some(ci) = lf.chars.get_mut(&code) {
+                ci.tounicode = value;
+                lf.tounicode = 1;
+            }
+        }
+    }
+
+    /// `font.setexpansion`: luatex `set_expand_params`.
+    pub(crate) fn lua_set_expansion(&mut self, f: FontId, stretch: i32, shrink: i32, step: i32) {
+        if let Some(lf) = self.lua_font_mut(f) {
+            lf.stretch = stretch;
+            lf.shrink = shrink;
+            lf.step = step;
+        }
+    }
+}
+
+/// C's `%g` for a size in points.
+fn format_g(v: f64) -> String {
+    let s = format!("{v:.5}");
+    let s = s.trim_end_matches('0').trim_end_matches('.').to_string();
+    if s.is_empty() { "0".to_string() } else { s }
+}
+
+impl Engine {
+    /// luatex `tex_def_font` after the font name was scanned: the optional
+    /// `at`/`scaled` clause, `read_font_info` (through the `define_font`
+    /// callback when registered) and binding of the identifier. Unlike
+    /// tex.web a font is never shared between two `\font` commands.
+    pub(crate) fn lua_font_definition(
+        &mut self,
+        name: &str,
+        cs: crate::token::CsId,
+        declaration_source: Option<crate::input::SourceContext>,
+        global: bool,
+    ) {
+        let mut s = -1000i32;
+        if self.scan_keyword(b"at") {
+            s = self.scan_dimen(false, false);
+            if s <= 0 || s >= 0o1_000_000_000 {
+                self.error(&format!(
+                    "Improper `at' size ({}pt), replaced by 10pt",
+                    format_g(f64::from(s) / 65536.0)
+                ));
+                s = 10 * 65536;
+            }
+        } else if self.scan_keyword(b"scaled") {
+            let n = self.scan_int();
+            s = -n;
+            if n <= 0 || n > 32768 {
+                self.error(&format!("Illegal magnification has been changed to 1000 ({n})"));
+                s = -1000;
+            }
+        }
+        let slot = self.lua_new_font();
+        match self.lua_do_define_font(slot, name.as_bytes(), s) {
+            Some(id) => {
+                self.eqtb.font_cs[usize::from(id)] = cs;
+                self.eqtb.assign(cs, crate::eqtb::Equiv::FontRef(id), global);
+            }
+            None => {
+                let extra = "metric data not found or bad";
+                let cs_name = String::from_utf8_lossy(self.cs.name(cs)).into_owned();
+                let message = if s >= 0 {
+                    format!("Font \\{cs_name}={name} at {}pt not loadable: {extra}", format_g(f64::from(s) / 65536.0))
+                } else if s != -1000 {
+                    format!("Font \\{cs_name}={name} scaled {} not loadable: {extra}", -s)
+                } else {
+                    format!("Font \\{cs_name}={name} not loadable: {extra}")
+                };
+                self.error_at(&message, declaration_source);
+            }
+        }
     }
 }

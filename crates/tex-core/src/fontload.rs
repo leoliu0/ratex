@@ -210,7 +210,7 @@ impl FontLoader {
         }
     }
 
-    fn read_dependency(&mut self, name: &str, format: tex_kpse::Format) -> Option<Vec<u8>> {
+    pub(crate) fn read_dependency(&mut self, name: &str, format: tex_kpse::Format) -> Option<Vec<u8>> {
         let resolved = self.kpse.find(name, format);
         self.record_lookup_dependency(name, format, resolved.as_deref());
         if let Some(path) = resolved {
@@ -1496,6 +1496,10 @@ impl Engine {
         let Some(name) = self.scan_font_name(declaration_source.as_ref()) else {
             return;
         };
+        if self.engine_kind == crate::engine::EngineKind::LuaTeX {
+            self.lua_font_definition(&name, cs, declaration_source, global);
+            return;
+        }
         let mut at = 0i32;
         if self.scan_keyword(b"at") {
             at = self.scan_dimen(false, false);
@@ -1523,6 +1527,13 @@ impl Engine {
         let first = self.get_x_raw();
         if first == crate::input::EOF_MARKER {
             return Some(String::new());
+        }
+        if self.engine_kind == crate::engine::EngineKind::LuaTeX && first.is_char() && first.cc() == 1 {
+            // luatex `tex_def_font`: `\font\x={name with spaces}`
+            self.push_token(first);
+            let toks = self.scan_general_text();
+            let bytes = self.tokens_to_bytes(&toks);
+            return Some(String::from_utf8_lossy(&bytes).into_owned());
         }
         if first.is_char() && first.chr() == b'"' as u32 {
             // Quoted font name: \font\f="[FontFile.otf]:features" or "Font Name"

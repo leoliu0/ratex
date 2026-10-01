@@ -34,7 +34,7 @@ impl Drop for ActiveGuard {
 }
 
 /// Run `f` on the engine whose Lua call is in progress.
-fn with_engine<R>(f: impl FnOnce(&mut Engine) -> R) -> Result<R, String> {
+pub(crate) fn with_engine<R>(f: impl FnOnce(&mut Engine) -> R) -> Result<R, String> {
     let engine = ACTIVE.with(Cell::get);
     if engine.is_null() {
         return Err("the TeX engine is not available here".to_string());

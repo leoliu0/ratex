@@ -80,7 +80,7 @@ fn push_decimal(buf: &mut String, mut value: i64, decimal_digits: u32) {
 /// trimmed) and return the corresponding displacement on the sp raster
 /// (`scaled_out`), exactly as `divide_scaled(s, one_hundred_bp, 5)` does.
 #[inline]
-fn push_bp_sp(buf: &mut String, sp: i64) -> i64 {
+pub(crate) fn push_bp_sp(buf: &mut String, sp: i64) -> i64 {
     let (value, out) = divide_scaled(sp, ONE_HUNDRED_BP_SP, 5);
     push_decimal(buf, value, 3);
     out
@@ -474,8 +474,8 @@ impl Engine {
             },
             width: w_bp.round() as i32,
             height: h_bp.round() as i32,
-            width_bp: w_bp,
-            height_bp: h_bp,
+            width_sp: width_sp as i64,
+            height_sp: height_sp as i64,
             annots: std::mem::take(&mut ctx.annots),
             fonts: std::mem::take(&mut ctx.page_fonts),
             dests: std::mem::take(&mut ctx.dests),

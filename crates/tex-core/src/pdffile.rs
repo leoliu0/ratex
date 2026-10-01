@@ -2286,13 +2286,22 @@ pub fn write_pdf(doc: &PdfDoc) -> Result<Vec<u8>, String> {
         } else {
             format!(" /XObject << {} >>", xobj_entries.join(" "))
         };
+        // pdfTeX "Write out page object": pdf_print_mag_bp of the page size
+        // in sp, omitted when \pdfpageattr supplies its own /MediaBox.
+        let mut media_box = String::new();
+        if !page_attr.contains("/MediaBox") {
+            media_box.push_str(" /MediaBox [0 0 ");
+            crate::pdfrender::push_bp_sp(&mut media_box, page.width_sp);
+            media_box.push(' ');
+            crate::pdfrender::push_bp_sp(&mut media_box, page.height_sp);
+            media_box.push(']');
+        }
         b.set(
             *page_obj,
             format!(
-                "<< /Type /Page /Parent {} 0 R /MediaBox [0 0 {} {}] /Contents {} 0 R /Resources << /Font << {} >> /ProcSet [/PDF /Text]{}{} >>{}{} >>",
+                "<< /Type /Page /Parent {} 0 R{} /Contents {} 0 R /Resources << /Font << {} >> /ProcSet [/PDF /Text]{}{} >>{}{} >>",
                 pages_obj,
-                num(page.width_bp),
-                num(page.height_bp),
+                media_box,
                 content_obj,
                 fonts_res,
                 xobj_str,

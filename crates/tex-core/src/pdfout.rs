@@ -85,8 +85,9 @@ pub struct PdfPage {
     pub content: Vec<u8>,
     pub width: i32,
     pub height: i32,
-    pub width_bp: f64,
-    pub height_bp: f64,
+    /// page size in sp, printed as pdfTeX `pdf_print_mag_bp` does
+    pub width_sp: i64,
+    pub height_sp: i64,
     pub annots: Vec<Annot>,
     /// (doc font index, resource number) — resolved by `embed_used_fonts`
     pub fonts: Vec<(usize, u16)>,
@@ -97,24 +98,6 @@ pub struct PdfPage {
     /// raw dict entries contributed by \pdfpageresources (copied at shipout)
     pub resources_extra: Vec<u8>,
     pub display_list: Option<crate::boxes::DisplayList>,
-}
-
-impl PdfPage {
-    pub fn new(width: i32, height: i32) -> Self {
-        PdfPage {
-            content: Vec::new(),
-            width,
-            height,
-            width_bp: width as f64,
-            height_bp: height as f64,
-            annots: Vec::new(),
-            fonts: Vec::new(),
-            dests: Vec::new(),
-            attr_extra: Vec::new(),
-            resources_extra: Vec::new(),
-            display_list: None,
-        }
-    }
 }
 
 pub struct PdfDoc {

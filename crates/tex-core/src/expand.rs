@@ -3360,6 +3360,7 @@ impl Engine {
                 (Equiv::MathCharDef(v1), Equiv::MathCharDef(v2)) => v1 == v2,
                 (Equiv::FontRef(v1), Equiv::FontRef(v2)) => v1 == v2,
                 (Equiv::CountReg(v1), Equiv::CountReg(v2)) => v1 == v2,
+                (Equiv::AttributeReg(v1), Equiv::AttributeReg(v2)) => v1 == v2,
                 (Equiv::DimenReg(v1), Equiv::DimenReg(v2)) => v1 == v2,
                 (Equiv::SkipReg(v1), Equiv::SkipReg(v2)) => v1 == v2,
                 (Equiv::ToksReg(v1), Equiv::ToksReg(v2)) => v1 == v2,

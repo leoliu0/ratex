@@ -1649,7 +1649,9 @@ impl Engine {
         let loc = self.scan_quantity("\\advance");
         self.scan_keyword(b"by");
         let v = match loc {
-            QuantityLoc::Int(_) | QuantityLoc::Count(_) => Value::Int(self.scan_int()),
+            QuantityLoc::Int(_) | QuantityLoc::Count(_) | QuantityLoc::Attribute(_) => {
+                Value::Int(self.scan_int())
+            }
             QuantityLoc::Dim(_) | QuantityLoc::Dimen(_) => Value::Dim(self.scan_dimen(false, true)),
             QuantityLoc::Glue(p) if p.is_mu() => Value::Glue(self.scan_glue(true)),
             QuantityLoc::Glue(_) | QuantityLoc::Skip(_) => Value::Glue(self.scan_glue(false)),
@@ -1677,6 +1679,12 @@ impl Engine {
                 let cur = self.eqtb.count[i as usize];
                 if let Some(value) = self.checked_advance(cur, v.as_int(), false, origin.as_ref()) {
                     self.eqtb.assign_count(i, value, global);
+                }
+            }
+            QuantityLoc::Attribute(n) => {
+                let cur = self.eqtb.attribute(n);
+                if let Some(value) = self.checked_advance(cur, v.as_int(), false, origin.as_ref()) {
+                    self.eqtb.assign_attribute(n, value, global);
                 }
             }
             QuantityLoc::Dim(p) => {
@@ -1754,6 +1762,12 @@ impl Engine {
                 let cur = self.eqtb.count[i as usize];
                 if let Some(value) = self.checked_arith(cur, n, op, false, origin.as_ref()) {
                     self.eqtb.assign_count(i, value, global);
+                }
+            }
+            QuantityLoc::Attribute(i) => {
+                let cur = self.eqtb.attribute(i);
+                if let Some(value) = self.checked_arith(cur, n, op, false, origin.as_ref()) {
+                    self.eqtb.assign_attribute(i, value, global);
                 }
             }
             QuantityLoc::Dim(p) => {
@@ -2043,6 +2057,10 @@ impl Engine {
                 let i = self.scan_reg_num();
                 return QuantityLoc::Count(i);
             }
+            Some(Prim::Attribute) => {
+                let n = self.scan_attribute_num();
+                return QuantityLoc::Attribute(n);
+            }
             Some(Prim::Dimen) => {
                 let i = self.scan_reg_num();
                 return QuantityLoc::Dimen(i);
@@ -2059,6 +2077,7 @@ impl Engine {
         }
         match self.eqtb.resolve(id).cloned() {
             Some(Equiv::CountReg(i)) => QuantityLoc::Count(i),
+            Some(Equiv::AttributeReg(n)) => QuantityLoc::Attribute(u32::from(n)),
             Some(Equiv::DimenReg(i)) => QuantityLoc::Dimen(i),
             Some(Equiv::SkipReg(i)) => QuantityLoc::Skip(i),
             Some(Equiv::MuSkipReg(i)) => QuantityLoc::MuSkip(i),
@@ -2169,6 +2188,8 @@ impl Engine {
 
 pub enum QuantityLoc {
     Int(crate::prim::IntParam),
+    /// LuaTeX `\attribute n`
+    Attribute(u32),
     Dim(crate::prim::DimParam),
     Glue(crate::prim::GlueParam),
     Count(u16),

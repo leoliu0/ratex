@@ -138,6 +138,7 @@ impl Engine {
             // register alias assignment target (\countdef'd cs etc.)
             match self.eqtb.resolve(id) {
                 Some(Equiv::CountReg(_))
+                | Some(Equiv::AttributeReg(_))
                 | Some(Equiv::DimenReg(_))
                 | Some(Equiv::SkipReg(_))
                 | Some(Equiv::MuSkipReg(_))
@@ -463,7 +464,7 @@ impl Engine {
 
     /// Reject every pending prefix before a command that is not an
     /// assignment. The command still executes after the diagnostic.
-    fn reject_assignment_prefixes(&mut self, command: &str) {
+    pub(crate) fn reject_assignment_prefixes(&mut self, command: &str) {
         if !(self.global_flag || self.long_flag || self.outer_flag || self.protected_flag) {
             return;
         }
@@ -563,12 +564,21 @@ impl Engine {
                 self.do_setbox();
                 true
             }
-            Count | Attribute => {
+            Count => {
                 let idx = self.scan_reg_num();
                 self.scan_optional_equals();
                 let v = self.scan_int();
                 let g = self.take_global();
                 self.eqtb.assign_count(idx, v, g);
+                self.clear_prefixes();
+                true
+            }
+            Attribute => {
+                let n = self.scan_attribute_num();
+                self.scan_optional_equals();
+                let v = self.scan_int();
+                let g = self.take_global();
+                self.eqtb.assign_attribute(n, v, g);
                 self.clear_prefixes();
                 true
             }
@@ -635,8 +645,12 @@ impl Engine {
                 self.append_box_node(b);
                 true
             }
-            CountDef | AttributeDef => {
+            CountDef => {
                 self.do_def_register(|_engine, idx| Equiv::CountReg(idx));
+                true
+            }
+            AttributeDef => {
+                self.do_def_attribute();
                 true
             }
             DimenDef => {
@@ -998,6 +1012,14 @@ impl Engine {
                 self.clear_prefixes();
                 true
             }
+            Some(Equiv::AttributeReg(n)) => {
+                self.scan_optional_equals();
+                let v = self.scan_int();
+                let g = self.take_global();
+                self.eqtb.assign_attribute(u32::from(n), v, g);
+                self.clear_prefixes();
+                true
+            }
             Some(Equiv::DimenReg(i)) => {
                 self.scan_optional_equals();
                 let v = self.scan_dimen(false, false);
@@ -1087,6 +1109,16 @@ impl Engine {
         let idx = self.scan_reg_num();
         let value = mk(self, idx);
         self.eqtb.assign(target, value, global);
+        self.clear_prefixes();
+    }
+    /// LuaTeX `\attributedef` (registers 0..=65535).
+    fn do_def_attribute(&mut self) {
+        let target = self.scan_definable_cs();
+        let global = self.take_global();
+        self.eqtb.assign(target, Equiv::Prim(Prim::Relax), global);
+        self.scan_optional_equals();
+        let n = self.scan_attribute_num() as u16;
+        self.eqtb.assign(target, Equiv::AttributeReg(n), global);
         self.clear_prefixes();
     }
     /// \def/\gdef/\edef/\xdef

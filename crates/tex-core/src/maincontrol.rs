@@ -1279,37 +1279,32 @@ impl Engine {
             CatCodeTable => {
                 let g = self.take_assignment_prefixes("\\catcodetable");
                 self.scan_optional_equals();
-                let table_idx = self.scan_int();
-                if !g && self.eqtb.cur_level > crate::eqtb::LEVEL_ONE {
-                    self.saved_catcode_tables.push((
-                        self.eqtb.cur_level,
-                        self.cur_catcode_table,
-                        self.eqtb.cat.clone(),
-                        self.eqtb.unicode_cat_codes.clone(),
-                    ));
+                let table = self.scan_int();
+                // luatex maincontrol.c assign_internal_value
+                if self.eqtb.cat_table_valid(table) {
+                    self.eqtb.assign_cat_table(table, g);
+                } else {
+                    self.error("Invalid \\catcode table");
                 }
-                if let Some((cat, ucat)) = self.catcode_tables.get(&table_idx) {
-                    self.eqtb.cat = cat.clone();
-                    self.eqtb.cat_levels.fill(crate::eqtb::LEVEL_ONE);
-                    self.eqtb.unicode_cat_codes = ucat.clone();
+            }
+            InitCatCodeTable | SaveCatCodeTable => {
+                // luatex maincontrol.c run_normal: both are global and
+                // never replace the current table.
+                self.reject_assignment_prefixes(if p == InitCatCodeTable {
+                    "\\initcatcodetable"
+                } else {
+                    "\\savecatcodetable"
+                });
+                let table = self.scan_int();
+                if !(0..=crate::eqtb::MAX_CAT_TABLE).contains(&table)
+                    || table == self.eqtb.cat_table
+                {
+                    self.error("Invalid \\catcode table");
+                } else if p == InitCatCodeTable {
+                    self.eqtb.init_cat_table(table);
+                } else {
+                    self.eqtb.save_cat_table(table);
                 }
-                self.cur_catcode_table = table_idx;
-            }
-            InitCatCodeTable => {
-                let _ = self.take_assignment_prefixes("\\initcatcodetable");
-                self.scan_optional_equals();
-                let table_idx = self.scan_int();
-                let default_cat = crate::token::CatTable::initex().0;
-                self.catcode_tables.insert(table_idx, (default_cat.to_vec(), crate::FxHashMap::default()));
-            }
-            SaveCatCodeTable => {
-                let _ = self.take_assignment_prefixes("\\savecatcodetable");
-                self.scan_optional_equals();
-                let table_idx = self.scan_int();
-                self.catcode_tables.insert(
-                    table_idx,
-                    (self.eqtb.cat.clone(), self.eqtb.unicode_cat_codes.clone()),
-                );
             }
             XeTeXPicFile | XeTeXPdfFile => {
                 self.do_pdfximage();

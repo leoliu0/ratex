@@ -92,6 +92,8 @@ impl Engine {
                 line_buf,
                 line_pos,
                 state,
+                cat_regime,
+                lua_lines,
                 ..
             } = &self.input.stack[si]
             else {
@@ -101,7 +103,12 @@ impl Engine {
                 // e-TeX semantics: \everyeof fires every time scanning
                 // reaches EOF of an input file or pseudo-file (expl3 \file_get
                 // and \tl_set_rescan rely on this to supply closing delimiters).
+                // LuaTeX's `tex.print` input ends with force_eof instead.
+                let lua = lua_lines.is_some();
                 self.input.finish_file(si);
+                if lua {
+                    return None;
+                }
                 let eof_toks = (*self.eqtb.tok_params
                     [crate::prim::ToksParam::EveryEOF.idx() as usize])
                     .clone();
@@ -119,6 +126,7 @@ impl Engine {
             };
             let start = *line_pos;
             let state = *state;
+            let regime = *cat_regime;
             let Some((character, width)) = self.decode_scalar(buf, start) else {
                 // tex.web §360: an exhausted line moves to the next one in
                 // state new_line.
@@ -126,7 +134,7 @@ impl Engine {
                 continue;
             };
             self.file_line_advance_by(si, width);
-            if let Some(token) = self.tokenize_char(character, si, state, start) {
+            if let Some(token) = self.tokenize_char(character, si, state, start, regime) {
                 if token != PAR_END && !self.file_line_is_none(si) {
                     self.record_physical_token(si, start, token);
                 }
@@ -194,6 +202,18 @@ impl Engine {
             self.eqtb.int_params[crate::prim::IntParam::EndLineChar.idx() as usize];
         let unicode = self.engine_kind != EngineKind::PdfTeX;
         let mut buf = std::mem::take(&mut self.spare_line_buf);
+        if let Some(Source::File {
+            lua_lines: Some(lines),
+            ..
+        }) = self.input.stack.get_mut(si)
+        {
+            let Some(line) = lines.lines.pop_front() else {
+                self.spare_line_buf = buf;
+                return false;
+            };
+            let last = lines.lines.is_empty();
+            return self.load_lua_line(si, buf, line, last, end_line_char);
+        }
         let Source::File {
             data,
             pos,
@@ -239,6 +259,70 @@ impl Engine {
         true
     }
 
+    /// luatex textoken.c next_line for a `tex.print` line: full lines lose
+    /// trailing spaces and restart in state new_line; partial (`sprint`)
+    /// lines keep both and the scanner state. The end-of-line character is
+    /// appended only to full lines that are not the last queued line and
+    /// are not read with "string" catcodes.
+    fn load_lua_line(
+        &mut self,
+        si: usize,
+        mut buf: Vec<u8>,
+        line: crate::engine_lua::LuaLine,
+        last: bool,
+        end_line_char: i32,
+    ) -> bool {
+        let unicode = self.engine_kind != EngineKind::PdfTeX;
+        buf.clear();
+        buf.extend_from_slice(&line.text);
+        if !line.partial {
+            while buf.last() == Some(&b' ') {
+                buf.pop();
+            }
+        }
+        let before = buf.len();
+        if !(last || line.partial || line.cattable == crate::engine_lua::NO_CAT_TABLE) {
+            if let Ok(character) = u8::try_from(end_line_char) {
+                if unicode && !character.is_ascii() {
+                    buf.extend_from_slice(char::from(character).encode_utf8(&mut [0u8; 4]).as_bytes());
+                } else {
+                    buf.push(character);
+                }
+            }
+        }
+        let Source::File {
+            line_buf,
+            line_end_len,
+            line_pos,
+            line_no,
+            state,
+            cat_regime,
+            ..
+        } = &mut self.input.stack[si]
+        else {
+            return false;
+        };
+        *line_end_len = (buf.len() - before) as u8;
+        *line_buf = Some(buf);
+        *line_pos = 0;
+        *line_no += 1;
+        if !line.partial {
+            *state = 0;
+        }
+        *cat_regime = line.cattable;
+        true
+    }
+
+    /// luatex textoken.c `do_get_cat_code` for the current line's regime.
+    #[inline]
+    fn regime_cat_code(&self, regime: i32, character: u32) -> u8 {
+        if regime == crate::engine_lua::DEFAULT_CAT_TABLE {
+            self.eqtb.cat_code(character)
+        } else {
+            self.lua_line_cat_code(regime, character)
+        }
+    }
+
     fn source_character_token(&self, cat: u8, character: u32) -> Token {
         if self.engine_kind != EngineKind::PdfTeX && character > 127 {
             Token::unicode_char(cat, character)
@@ -255,9 +339,10 @@ impl Engine {
         si: usize,
         state: u8,
         start: usize,
+        regime: i32,
     ) -> Option<Token> {
         loop {
-            let cat = self.eqtb.cat_code(character);
+            let cat = self.regime_cat_code(regime, character);
             let token = match cat {
                 CAT_ESCAPE => return Some(self.scan_control_sequence(si)),
                 CAT_IGNORED => return None,
@@ -308,25 +393,27 @@ impl Engine {
             let Source::File {
                 line_buf: Some(buf),
                 line_pos,
+                cat_regime,
                 ..
             } = &self.input.stack[si]
             else {
                 unreachable!()
             };
+            let regime = *cat_regime;
             let loc = *line_pos;
             let Some((first, first_width)) = self.decode_scalar(buf, loc) else {
                 // The escape character ended the buffer: the null control
                 // sequence (the state is irrelevant; the line is finished).
                 return Token::from_cs(self.cs.intern(b""));
             };
-            let first_cat = self.eqtb.cat_code(first);
+            let first_cat = self.regime_cat_code(regime, first);
             let mut k = loc + first_width;
             let mut end = loc + first_width;
             let reduce_at = if first_cat == CAT_LETTER && k < buf.len() {
                 let (mut character, mut width, mut cat);
                 loop {
                     (character, width) = self.decode_scalar(buf, k).expect("k is inside the buffer");
-                    cat = self.eqtb.cat_code(character);
+                    cat = self.regime_cat_code(regime, character);
                     k += width;
                     if cat != CAT_LETTER || k >= buf.len() {
                         break;

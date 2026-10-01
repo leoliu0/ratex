@@ -61,6 +61,7 @@ const TAG_ALIAS: u8 = 11;
 const TAG_PRIM: u8 = 12;
 const TAG_MACRO: u8 = 13;
 const TAG_LUA_CALL: u8 = 14;
+const TAG_ATTRIBUTE_REG: u8 = 15;
 
 // ---------------------------------------------------------------------------
 // writer / reader primitives
@@ -460,6 +461,10 @@ pub fn save_format_with_encoding(
                 w.u8(TAG_COUNT_REG);
                 w.u16(*v);
             }
+            Some(Equiv::AttributeReg(v)) => {
+                w.u8(TAG_ATTRIBUTE_REG);
+                w.u16(*v);
+            }
             Some(Equiv::DimenReg(v)) => {
                 w.u8(TAG_DIMEN_REG);
                 w.u16(*v);
@@ -650,6 +655,24 @@ pub fn save_format_with_encoding(
     for (slot, name) in &eng.lua_names {
         w.u16(*slot);
         w.bytes(name.as_bytes());
+    }
+    // Sparse Unicode code tables, LuaTeX attributes and catcode tables
+    // (luatex textcodes.c dumpcatcodes & co.). A dump happens at level one,
+    // so no saved levels are written.
+    write_code_map(&mut w, &q.unicode_cat_codes, |w, v| w.u8(v));
+    write_code_map(&mut w, &q.unicode_math_codes, |w, v| w.u32(v));
+    write_code_map(&mut w, &q.unicode_del_codes, |w, v| w.u64(v as u64));
+    write_code_map(&mut w, &q.unicode_sf_codes, |w, v| w.u16(v));
+    write_code_map(&mut w, &q.attributes, |w, v| w.i32(v));
+    w.i32(q.cat_table);
+    let mut tables: Vec<_> = q.cat_tables.iter().collect();
+    tables.sort_unstable_by_key(|(id, _)| **id);
+    w.u32(tables.len() as u32);
+    for (id, t) in tables {
+        w.i32(*id);
+        w.u8(u8::from(t.valid));
+        w.buf.extend_from_slice(&t.cat);
+        write_code_map(&mut w, &t.unicode, |w, v| w.u8(v));
     }
 
     let payload = match encoding {
@@ -903,6 +926,37 @@ fn is_zero_glue(g: &Glue) -> bool {
     g.width == 0 && g.stretch == 0 && g.shrink == 0 && g.stretch_order == 0 && g.shrink_order == 0
 }
 
+/// A sparse `character -> (value, level)` table, sorted for a stable dump.
+fn write_code_map<T: Copy>(
+    w: &mut W,
+    map: &crate::FxHashMap<u32, (T, u16)>,
+    write: impl Fn(&mut W, T),
+) {
+    let mut entries: Vec<_> = map.iter().collect();
+    entries.sort_unstable_by_key(|(key, _)| **key);
+    w.u32(entries.len() as u32);
+    for (&key, &(value, _)) in entries {
+        w.u32(key);
+        write(w, value);
+    }
+}
+
+fn read_code_map<T>(
+    r: &mut R,
+    read: impl Fn(&mut R) -> io::Result<T>,
+) -> io::Result<crate::FxHashMap<u32, (T, u16)>> {
+    let n = r.count()?;
+    let mut map = crate::FxHashMap::default();
+    for _ in 0..n {
+        let key = r.u32()?;
+        let value = read(r)?;
+        if map.insert(key, (value, crate::eqtb::LEVEL_ONE)).is_some() {
+            return Err(bad("duplicate sparse code table entry"));
+        }
+    }
+    Ok(map)
+}
+
 /// Write the entries of a register table that differ from a fresh engine
 /// (`is_default` value at level one) as `(index, value, level)` triples.
 fn write_sparse<T>(
@@ -1133,6 +1187,7 @@ fn load_state(r: &mut R, eng: &mut Engine) -> io::Result<()> {
         let equiv = match tag {
             TAG_NONE => None,
             TAG_COUNT_REG => Some(Equiv::CountReg(r.u16()?)),
+            TAG_ATTRIBUTE_REG => Some(Equiv::AttributeReg(r.u16()?)),
             TAG_DIMEN_REG => Some(Equiv::DimenReg(r.u16()?)),
             TAG_SKIP_REG => Some(Equiv::SkipReg(r.u16()?)),
             TAG_MUSKIP_REG => Some(Equiv::MuSkipReg(r.u16()?)),
@@ -1307,6 +1362,36 @@ fn load_state(r: &mut R, eng: &mut Engine) -> io::Result<()> {
         let name = String::from_utf8(r.bytes()?).map_err(|_| bad("invalid lua chunk name"))?;
         if eng.lua_names.insert(slot, name).is_some() {
             return Err(bad("duplicate lua chunk name"));
+        }
+    }
+    let q = &mut eng.eqtb;
+    q.unicode_cat_codes = read_code_map(r, |r| r.u8())?;
+    q.unicode_math_codes = read_code_map(r, |r| r.u32())?;
+    q.unicode_del_codes = read_code_map(r, |r| Ok(r.u64()? as i64))?;
+    q.unicode_sf_codes = read_code_map(r, |r| r.u16())?;
+    q.attributes = read_code_map(r, |r| r.i32())?;
+    q.cat_table = r.i32()?;
+    let n_tables = r.count()?;
+    for _ in 0..n_tables {
+        let id = r.i32()?;
+        let valid = match r.u8()? {
+            0 => false,
+            1 => true,
+            _ => return Err(bad("invalid catcode table")),
+        };
+        let cat = r.take(NUM_CODES)?.to_vec();
+        let unicode = read_code_map(r, |r| r.u8())?;
+        let table = crate::eqtb::CatCodeTable {
+            cat,
+            levels: vec![crate::eqtb::LEVEL_ONE; NUM_CODES],
+            unicode,
+            valid,
+        };
+        if !(0..=crate::eqtb::MAX_CAT_TABLE).contains(&id)
+            || id == q.cat_table
+            || q.cat_tables.insert(id, table).is_some()
+        {
+            return Err(bad("invalid catcode table"));
         }
     }
     if r.p != r.b.len() {

@@ -394,9 +394,6 @@ pub struct Engine {
     pub xetex_input_normalization: i32,
     pub xetex_dash_break_state: i32,
     pub asset_fingerprint: u64,
-    pub cur_catcode_table: i32,
-    pub catcode_tables: crate::FxHashMap<i32, (Vec<u8>, crate::FxHashMap<u32, (u8, u16)>)>,
-    pub saved_catcode_tables: Vec<(u16, i32, Vec<u8>, crate::FxHashMap<u32, (u8, u16)>)>,
     pub job_ended_by_end: bool,
     pub align_preamble: Vec<crate::align::ColSpec>,
     pub align_tabskip_0: crate::boxes::Glue,
@@ -1019,9 +1016,6 @@ impl Engine {
             xetex_input_normalization: 0,
             xetex_dash_break_state: 0,
             asset_fingerprint: 0,
-            cur_catcode_table: 0,
-            catcode_tables: crate::FxHashMap::default(),
-            saved_catcode_tables: Vec::new(),
             align_preamble: Vec::new(),
             align_tabskip_0: crate::boxes::Glue::zero(),
             align_loop_start: None,
@@ -1893,17 +1887,6 @@ impl Engine {
         }
         for t in ag {
             self.push_token(t);
-        }
-        while let Some(&(lvl, _, _, _)) = self.saved_catcode_tables.last() {
-            if lvl >= closing_level {
-                let (_, table, cat, ucat) = self.saved_catcode_tables.pop().unwrap();
-                self.cur_catcode_table = table;
-                self.eqtb.cat = cat;
-                self.eqtb.cat_levels.fill(crate::eqtb::LEVEL_ONE);
-                self.eqtb.unicode_cat_codes = ucat;
-            } else {
-                break;
-            }
         }
         self.forget_group_opening(closing_level);
         ty

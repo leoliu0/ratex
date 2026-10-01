@@ -17,11 +17,70 @@ pub const LEVEL_ONE: u16 = 1;
 pub const MAX_GROUP_LEVEL: u16 = u16::MAX;
 pub const NUM_REGISTERS: usize = 32768;
 pub const MAX_SAVE_STACK: usize = 100_000;
+/// LuaTeX's value of an attribute that is not set (`UNUSED_ATTRIBUTE`).
+pub const UNUSED_ATTRIBUTE: i32 = -0x7FFF_FFFF;
+/// LuaTeX attribute registers are numbered 0..=65535.
+pub const MAX_ATTRIBUTE: i32 = 0xFFFF;
+/// LuaTeX catcode table ids are 0..=0x7FFF (textcodes.c `CATCODE_MAX`).
+pub const MAX_CAT_TABLE: i32 = 0x7FFF;
+
+/// A LuaTeX catcode table that is not the current one. The current table
+/// lives in `Eqtb::cat`/`cat_levels`/`unicode_cat_codes`; switching tables
+/// swaps the storage, so each table keeps its own live values and levels.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CatCodeTable {
+    pub cat: Vec<u8>,
+    pub levels: Vec<u16>,
+    pub unicode: crate::FxHashMap<u32, (u8, u16)>,
+    /// False for a table only touched through Lua (`tex.setcatcode`):
+    /// LuaTeX creates it but `\catcodetable` still refuses to switch to it.
+    pub valid: bool,
+}
+
+impl CatCodeTable {
+    /// textcodes.c `initex_cat_codes`.
+    pub fn initex() -> Self {
+        let mut cat = vec![CAT_OTHER; 256];
+        cat[b'\r' as usize] = crate::token::CAT_EOL;
+        cat[b' ' as usize] = crate::token::CAT_SPACE;
+        cat[b'\\' as usize] = crate::token::CAT_ESCAPE;
+        cat[b'%' as usize] = crate::token::CAT_COMMENT;
+        cat[0x7F] = crate::token::CAT_INVALID;
+        cat[0] = crate::token::CAT_IGNORED;
+        for c in b'a'..=b'z' {
+            cat[c as usize] = crate::token::CAT_LETTER;
+            cat[c.to_ascii_uppercase() as usize] = crate::token::CAT_LETTER;
+        }
+        let mut unicode = crate::FxHashMap::default();
+        unicode.insert(0xFEFF, (crate::token::CAT_IGNORED, LEVEL_ONE));
+        CatCodeTable { cat, levels: vec![LEVEL_ONE; 256], unicode, valid: true }
+    }
+
+    /// A table created on first use (textcodes.c `CATCODEDEFAULT`).
+    fn blank() -> Self {
+        CatCodeTable {
+            cat: vec![CAT_OTHER; 256],
+            levels: vec![LEVEL_ONE; 256],
+            unicode: crate::FxHashMap::default(),
+            valid: false,
+        }
+    }
+
+    fn code(&self, character: u32) -> u8 {
+        self.unicode
+            .get(&character)
+            .map(|&(value, _)| value)
+            .or_else(|| self.cat.get(character as usize).copied())
+            .unwrap_or(CAT_OTHER)
+    }
+}
 
 /// What a control sequence can mean.
 #[derive(Clone, Debug)]
 pub enum Equiv {
     CountReg(u16),
+    /// LuaTeX `\attributedef`: attribute register `n`.
+    AttributeReg(u16),
     DimenReg(u16),
     SkipReg(u16),
     MuSkipReg(u16),
@@ -47,6 +106,7 @@ impl Equiv {
     pub fn kind_name(&self) -> &'static str {
         match self {
             Equiv::CountReg(_) => "CountReg",
+            Equiv::AttributeReg(_) => "AttributeReg",
             Equiv::DimenReg(_) => "DimenReg",
             Equiv::SkipReg(_) => "SkipReg",
             Equiv::MuSkipReg(_) => "MuSkipReg",
@@ -162,17 +222,22 @@ pub enum SaveItem {
     MuSkip(u16, Glue, u16),
     Toks(u16, Rc<Vec<Token>>, u16),
     Box(u16, Option<Node>, u16),
-    Cat(u8, u8, u16),
+    /// (catcode table, character, old value, old level)
+    Cat(i32, u8, u8, u16),
     MathCode(u8, u16, u16),
     DelCode(u8, i32, u16),
     LcCode(u8, u8, u16),
     SfCode(u8, u16, u16),
     UcCode(u8, u8, u16),
     UnicodeCase(bool, u32, Option<(u32, u16)>),
-    UnicodeCat(u32, Option<(u8, u16)>),
+    UnicodeCat(i32, u32, Option<(u8, u16)>),
     UnicodeMath(u32, Option<(u32, u16)>),
     UnicodeDel(u32, Option<(i64, u16)>),
     UnicodeSf(u32, Option<(u16, u16)>),
+    /// LuaTeX `\attribute n` before a local assignment.
+    Attribute(u32, Option<(i32, u16)>),
+    /// LuaTeX `\catcodetable` before a local assignment: (table, level).
+    CatCodeTable(i32, u16),
     StyleFont(u8, u16, u16, u16), // (0=textfont,1=scriptfont,2=ssfont, fam, fontid, level)
     FontParam(u16, usize, i32, u16), // font, param index (0-based), old, level
     HyphenChar(u16, i32, u16),
@@ -254,6 +319,13 @@ pub struct Eqtb {
     pub unicode_del_codes: crate::FxHashMap<u32, (i64, u16)>,
     pub unicode_sf_codes: crate::FxHashMap<u32, (u16, u16)>,
     pub unicode_case_codes: crate::FxHashMap<(bool, u32), (u32, u16)>,
+    /// LuaTeX: id of the current catcode table and its assignment level.
+    pub cat_table: i32,
+    cat_table_level: u16,
+    /// LuaTeX: every other catcode table, by id.
+    pub cat_tables: crate::FxHashMap<i32, CatCodeTable>,
+    /// LuaTeX attribute registers that hold a value (others are unset).
+    pub attributes: crate::FxHashMap<u32, (i32, u16)>,
 
     /// style_fonts[style][fam] -> font id (0 = none); style: 0=text 1=script 2=ss
     pub style_fonts: [[u16; 256]; 3],
@@ -539,6 +611,10 @@ impl Eqtb {
             unicode_math_codes: crate::FxHashMap::default(),
             unicode_del_codes: crate::FxHashMap::default(),
             unicode_sf_codes: crate::FxHashMap::default(),
+            cat_table: 0,
+            cat_table_level: LEVEL_ONE,
+            cat_tables: crate::FxHashMap::default(),
+            attributes: crate::FxHashMap::default(),
             style_fonts: [[0; 256]; 3],
             style_font_levels: [[LEVEL_ONE; 256]; 3],
             fonts: Vec::new(),
@@ -880,6 +956,7 @@ impl Eqtb {
         self.replace_box_value(idx, None)
     }
     pub fn assign_cat(&mut self, c: u8, v: u8, global: bool) {
+        let table = self.cat_table;
         Self::slot(
             &mut self.cat,
             &mut self.cat_levels,
@@ -888,7 +965,7 @@ impl Eqtb {
             global,
             self.cur_level,
             &mut self.save_stack,
-            |old, ol| SaveItem::Cat(c, old, ol),
+            |old, ol| SaveItem::Cat(table, c, old, ol),
         );
     }
     pub fn assign_math_code(&mut self, c: u8, v: u16, global: bool) {
@@ -965,6 +1042,7 @@ impl Eqtb {
             self.assign_cat(character, value, global);
             return;
         }
+        let table = self.cat_table;
         Self::sparse_slot(
             &mut self.unicode_cat_codes,
             character,
@@ -972,7 +1050,132 @@ impl Eqtb {
             global,
             self.cur_level,
             &mut self.save_stack,
-            |old| SaveItem::UnicodeCat(character, old),
+            |old| SaveItem::UnicodeCat(table, character, old),
+        );
+    }
+
+    // ---------- LuaTeX catcode tables (textcodes.c) ----------
+
+    /// Whether `\catcodetable` may switch to `table` (luatex
+    /// `valid_catcode_table`).
+    pub fn cat_table_valid(&self, table: i32) -> bool {
+        table == self.cat_table || self.cat_tables.get(&table).is_some_and(|t| t.valid)
+    }
+
+    /// luatex `get_cat_code(table, character)`; a table that was never
+    /// created reads as all "other".
+    pub fn cat_code_in(&self, table: i32, character: u32) -> u8 {
+        if table == self.cat_table {
+            return self.cat_code(character);
+        }
+        self.cat_tables.get(&table).map_or(CAT_OTHER, |t| t.code(character))
+    }
+
+    /// luatex `set_cat_code(table, character, value, level)`; creates the
+    /// table (without making it valid) when it does not exist.
+    pub fn assign_cat_code_in(&mut self, table: i32, character: u32, value: u8, global: bool) {
+        if table == self.cat_table {
+            self.assign_cat_code(character, value, global);
+            return;
+        }
+        let cur_level = self.cur_level;
+        let t = self.cat_tables.entry(table).or_insert_with(CatCodeTable::blank);
+        if let Ok(c) = u8::try_from(character) {
+            Self::slot(
+                &mut t.cat,
+                &mut t.levels,
+                c as usize,
+                value,
+                global,
+                cur_level,
+                &mut self.save_stack,
+                |old, ol| SaveItem::Cat(table, c, old, ol),
+            );
+        } else {
+            Self::sparse_slot(
+                &mut t.unicode,
+                character,
+                value,
+                global,
+                cur_level,
+                &mut self.save_stack,
+                |old| SaveItem::UnicodeCat(table, character, old),
+            );
+        }
+    }
+
+    /// Make `table` current, parking the current one under its id. The
+    /// caller checks validity.
+    fn switch_cat_table(&mut self, table: i32) {
+        if table == self.cat_table {
+            return;
+        }
+        let next = self.cat_tables.remove(&table).unwrap_or_else(CatCodeTable::blank);
+        let parked = CatCodeTable {
+            cat: std::mem::replace(&mut self.cat, next.cat),
+            levels: std::mem::replace(&mut self.cat_levels, next.levels),
+            unicode: std::mem::replace(&mut self.unicode_cat_codes, next.unicode),
+            valid: true,
+        };
+        self.cat_tables.insert(self.cat_table, parked);
+        self.cat_table = table;
+    }
+
+    /// `\catcodetable=n` (luatex `assign_internal_value`): a grouped
+    /// integer assignment; switching to the current table changes nothing.
+    pub fn assign_cat_table(&mut self, table: i32, global: bool) {
+        if table == self.cat_table {
+            return;
+        }
+        if !global && self.cat_table_level < self.cur_level {
+            self.push_save(SaveItem::CatCodeTable(self.cat_table, self.cat_table_level));
+        }
+        self.switch_cat_table(table);
+        self.cat_table_level = if global { LEVEL_ONE } else { self.cur_level };
+    }
+
+    /// `\initcatcodetable n` (always global; never the current table).
+    pub fn init_cat_table(&mut self, table: i32) {
+        debug_assert_ne!(table, self.cat_table);
+        self.cat_tables.insert(table, CatCodeTable::initex());
+    }
+
+    /// `\savecatcodetable n`: a global copy of the current table's values
+    /// (luatex `copy_cat_codes`; the copy starts without saved levels).
+    pub fn save_cat_table(&mut self, table: i32) {
+        debug_assert_ne!(table, self.cat_table);
+        let unicode = self
+            .unicode_cat_codes
+            .iter()
+            .map(|(&c, &(value, _))| (c, (value, LEVEL_ONE)))
+            .collect();
+        self.cat_tables.insert(
+            table,
+            CatCodeTable {
+                cat: self.cat.clone(),
+                levels: vec![LEVEL_ONE; self.cat.len()],
+                unicode,
+                valid: true,
+            },
+        );
+    }
+
+    // ---------- LuaTeX attributes ----------
+
+    /// `\attribute n`; unset registers read as [`UNUSED_ATTRIBUTE`].
+    pub fn attribute(&self, n: u32) -> i32 {
+        self.attributes.get(&n).map_or(UNUSED_ATTRIBUTE, |&(value, _)| value)
+    }
+
+    pub fn assign_attribute(&mut self, n: u32, value: i32, global: bool) {
+        Self::sparse_slot(
+            &mut self.attributes,
+            n,
+            value,
+            global,
+            self.cur_level,
+            &mut self.save_stack,
+            |old| SaveItem::Attribute(n, old),
         );
     }
 
@@ -1304,10 +1507,17 @@ impl Eqtb {
                         self.box_levels[i as usize] = l;
                     }
                 }
-                SaveItem::Cat(c, v, l) => {
-                    if self.cat_levels[c as usize] > LEVEL_ONE {
-                        self.cat[c as usize] = v;
-                        self.cat_levels[c as usize] = l;
+                SaveItem::Cat(table, c, v, l) => {
+                    let (cat, levels) = if table == self.cat_table {
+                        (&mut self.cat, &mut self.cat_levels)
+                    } else if let Some(t) = self.cat_tables.get_mut(&table) {
+                        (&mut t.cat, &mut t.levels)
+                    } else {
+                        continue;
+                    };
+                    if levels[c as usize] > LEVEL_ONE {
+                        cat[c as usize] = v;
+                        levels[c as usize] = l;
                     }
                 }
                 SaveItem::MathCode(c, v, l) => {
@@ -1354,8 +1564,21 @@ impl Eqtb {
                         }
                     }
                 }
-                SaveItem::UnicodeCat(character, old) => {
-                    Self::restore_sparse(&mut self.unicode_cat_codes, character, old);
+                SaveItem::UnicodeCat(table, character, old) => {
+                    if table == self.cat_table {
+                        Self::restore_sparse(&mut self.unicode_cat_codes, character, old);
+                    } else if let Some(t) = self.cat_tables.get_mut(&table) {
+                        Self::restore_sparse(&mut t.unicode, character, old);
+                    }
+                }
+                SaveItem::Attribute(n, old) => {
+                    Self::restore_sparse(&mut self.attributes, n, old);
+                }
+                SaveItem::CatCodeTable(table, level) => {
+                    if self.cat_table_level > LEVEL_ONE {
+                        self.switch_cat_table(table);
+                        self.cat_table_level = level;
+                    }
                 }
                 SaveItem::UnicodeMath(character, old) => {
                     Self::restore_sparse(&mut self.unicode_math_codes, character, old);
@@ -1392,6 +1615,7 @@ impl Eqtb {
     pub fn int_of(&self, e: &Equiv) -> Option<i32> {
         match e {
             Equiv::CountReg(i) => Some(self.count[*i as usize]),
+            Equiv::AttributeReg(i) => Some(self.attribute(u32::from(*i))),
             Equiv::CharDef(v) => Some(*v as i32),
             Equiv::MathCharDef(v) => Some(*v as i32),
             _ => None,

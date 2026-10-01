@@ -248,6 +248,7 @@ impl Engine {
         match self.eqtb.get(id) {
             None => (CMD_UNDEFINED_CS, 0),
             Some(Equiv::CountReg(i)) => (CMD_ASSIGN_INT, COUNT_BASE + i64::from(*i)),
+            Some(Equiv::AttributeReg(i)) => (CMD_ASSIGN_ATTR, ATTRIBUTE_BASE + i64::from(*i)),
             Some(Equiv::DimenReg(i)) => (CMD_ASSIGN_DIMEN, DIMEN_BASE + i64::from(*i)),
             Some(Equiv::SkipReg(i)) => (CMD_ASSIGN_GLUE, SKIP_BASE + i64::from(*i)),
             Some(Equiv::MuSkipReg(i)) => (CMD_ASSIGN_MU_GLUE, MU_SKIP_BASE + i64::from(*i)),
@@ -382,18 +383,12 @@ impl Engine {
     }
 
     /// Catcode of `c` in catcode table `table` (the current regime when the
-    /// table is not defined).
+    /// table is not valid; lnewtokenlib.c `set_macro`).
     fn lua_catcode_in(&self, table: Option<i32>, c: u32) -> u8 {
-        if let Some((cat, ucat)) = table
-            .filter(|t| *t != self.cur_catcode_table)
-            .and_then(|t| self.catcode_tables.get(&t))
-        {
-            if let Some(v) = cat.get(c as usize) {
-                return *v;
-            }
-            return ucat.get(&c).map_or(12, |(cc, _)| *cc);
+        match table.filter(|t| self.eqtb.cat_table_valid(*t)) {
+            Some(t) => self.eqtb.cat_code_in(t, c),
+            None => self.eqtb.cat_code(c),
         }
-        self.eqtb.cat_code(c)
     }
 
     /// lnewtokenlib.c `set_macro`: tokenize `body` under catcode table
@@ -1092,6 +1087,29 @@ pub(crate) fn install(lua: &mut Lua) -> Result<(), String> {
             Ok(())
         })?
     });
+    reg!(lua, b, "attribute_get", |idx: Option<i64>, name: Option<LuaString>| -> Result<i64, String> {
+        let name = name.as_ref().map(bytes_of);
+        with_engine(|e| {
+            let n = match name {
+                Some(n) => e.lua_register_index(&n, CMD_ASSIGN_ATTR, "attribute")?,
+                None => register_number(idx, "attribute")?,
+            };
+            Ok(i64::from(e.eqtb.attribute(u32::from(n))))
+        })?
+    });
+    reg!(lua, b, "attribute_set", |idx: Option<i64>, name: Option<LuaString>, value: i64, global: bool| -> Result<(), String> {
+        let name = name.as_ref().map(bytes_of);
+        let v = i32::try_from(value).map_err(|_| "incorrect attribute value".to_string())?;
+        with_engine(|e| {
+            let global = e.lua_global(global);
+            let n = match name {
+                Some(n) => e.lua_register_index(&n, CMD_ASSIGN_ATTR, "attribute")?,
+                None => register_number(idx, "attribute")?,
+            };
+            e.eqtb.assign_attribute(u32::from(n), v, global);
+            Ok(())
+        })?
+    });
     reg!(lua, b, "dimen_get", |idx: Option<i64>, name: Option<LuaString>| -> Result<i64, String> {
         let name = name.as_ref().map(bytes_of);
         with_engine(|e| {
@@ -1151,26 +1169,27 @@ pub(crate) fn install(lua: &mut Lua) -> Result<(), String> {
         let c = u32::try_from(c).ok().filter(|c| *c <= 0x10_FFFF).ok_or("incorrect character value")?;
         let v = u8::try_from(value).ok().filter(|v| *v < 16).ok_or("incorrect catcode value")?;
         with_engine(|e| {
-            let table = table.and_then(|t| i32::try_from(t).ok());
-            match table.filter(|t| *t != e.cur_catcode_table) {
+            let global = e.lua_global(global);
+            match table {
                 Some(t) => {
-                    let (cat, ucat) = e.catcode_tables.entry(t).or_insert_with(|| {
-                        (crate::token::CatTable::initex().0.to_vec(), Default::default())
-                    });
-                    match cat.get_mut(c as usize) {
-                        Some(slot) => *slot = v,
-                        None => {
-                            ucat.insert(c, (v, 0));
-                        }
-                    }
+                    let t = i32::try_from(t)
+                        .ok()
+                        .filter(|t| (0..=crate::eqtb::MAX_CAT_TABLE).contains(t))
+                        .ok_or("invalid catcode table")?;
+                    e.eqtb.assign_cat_code_in(t, c, v, global);
                 }
                 None => e.eqtb.assign_cat_code(c, v, global),
             }
-        })
+            Ok::<(), String>(())
+        })?
     });
+    // ltexlib.c `getcatcode`: luatex `get_cat_code(table, c)`.
     reg!(lua, b, "catcode_get", |table: Option<i64>, c: i64| -> Result<i64, String> {
         let c = u32::try_from(c).map_err(|_| "incorrect character value".to_string())?;
-        with_engine(|e| i64::from(e.lua_catcode_in(table.and_then(|t| i32::try_from(t).ok()), c)))
+        with_engine(|e| match table.and_then(|t| i32::try_from(t).ok()) {
+            Some(t) => i64::from(e.eqtb.cat_code_in(t, c)),
+            None => i64::from(e.eqtb.cat_code(c)),
+        })
     });
     reg!(lua, b, "inputlineno", || -> Result<i64, String> {
         with_engine(|e| i64::from(e.input.current_file_line()))

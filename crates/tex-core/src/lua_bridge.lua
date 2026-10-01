@@ -191,6 +191,8 @@ end
 tex.setcount, tex.getcount, tex.count = make_register(B.count_get, B.count_set)
 tex.setdimen, tex.getdimen, tex.dimen = make_register(B.dimen_get, B.dimen_set, to_sp)
 tex.settoks, tex.gettoks, tex.toks = make_register(B.toks_get, B.toks_set, tostring)
+tex.setattribute, tex.getattribute, tex.attribute = make_register(B.attribute_get, B.attribute_set)
+function tex.isattribute(k) return pcall(tex.getattribute, k) end
 function tex.iscount(k) return pcall(tex.getcount, k) end
 
 function tex.setcatcode(...)

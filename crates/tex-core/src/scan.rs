@@ -425,9 +425,14 @@ impl Engine {
             }
             if t.is_cs() {
                 match self.cur_prim {
-                    Some(Prim::Count | Prim::Attribute) => {
+                    Some(Prim::Count) => {
                         let idx = self.scan_reg_num();
                         v = self.eqtb.count[idx as usize] as i64;
+                        break 'scan_loop;
+                    }
+                    Some(Prim::Attribute) => {
+                        let n = self.scan_attribute_num();
+                        v = i64::from(self.eqtb.attribute(n));
                         break 'scan_loop;
                     }
                     // tex.web §413: `\parshape` used as an integer is the
@@ -685,7 +690,7 @@ impl Engine {
                         break 'scan_loop;
                     }
                     Some(Prim::CatCodeTable) => {
-                        v = self.cur_catcode_table as i64;
+                        v = self.eqtb.cat_table as i64;
                         break 'scan_loop;
                     }
                     Some(Prim::Skip) => {
@@ -700,6 +705,10 @@ impl Engine {
                     _ => match self.eqtb.resolve(t.cs_id()).cloned() {
                         Some(Equiv::CountReg(i)) => {
                             v = self.eqtb.count[i as usize] as i64;
+                            break 'scan_loop;
+                        }
+                        Some(Equiv::AttributeReg(n)) => {
+                            v = i64::from(self.eqtb.attribute(u32::from(n)));
                             break 'scan_loop;
                         }
                         Some(Equiv::CharDef(c)) => {
@@ -944,6 +953,22 @@ impl Engine {
             Prim::PdfLastAnnot => self.pdf_last_annot,
             _ => 0,
         }
+    }
+
+    /// LuaTeX attribute register number (0..=65535).
+    pub(crate) fn scan_attribute_num(&mut self) -> u32 {
+        let (n, source) = self.scan_int_with_source();
+        let max = crate::eqtb::MAX_ATTRIBUTE;
+        if !(0..=max).contains(&n) {
+            self.error_at(
+                &format!(
+                    "Register number {n} is out of range; expected a number from 0 through {max}"
+                ),
+                source,
+            );
+            return 0;
+        }
+        n as u32
     }
 
     pub fn scan_reg_num(&mut self) -> u16 {
@@ -1294,10 +1319,16 @@ impl Engine {
                     frac_f = 0;
                     direct = Some(2 * 65536);
                 }
-                Some(Prim::Count | Prim::Attribute) => {
+                Some(Prim::Count) => {
                     // internal integer coerced to dimen (sp), tex.web scan_something_internal
                     let i = self.scan_reg_num();
                     int_part = self.eqtb.count[i as usize] as i64;
+                    frac_f = 0;
+                    direct = None;
+                }
+                Some(Prim::Attribute) => {
+                    let n = self.scan_attribute_num();
+                    int_part = i64::from(self.eqtb.attribute(n));
                     frac_f = 0;
                     direct = None;
                 }
@@ -1325,6 +1356,11 @@ impl Engine {
                     }
                     Some(Equiv::CountReg(i)) => {
                         int_part = self.eqtb.count[i as usize] as i64;
+                        frac_f = 0;
+                        direct = None;
+                    }
+                    Some(Equiv::AttributeReg(n)) => {
+                        int_part = i64::from(self.eqtb.attribute(u32::from(n)));
                         frac_f = 0;
                         direct = None;
                     }
@@ -1575,11 +1611,16 @@ impl Engine {
                 self.eqtb.dimen[i as usize]
             }
             Some(Equiv::DimenReg(i)) => self.eqtb.dimen[i as usize],
-            Some(Equiv::Prim(Prim::Count | Prim::Attribute)) => {
+            Some(Equiv::Prim(Prim::Count)) => {
                 let i = self.scan_reg_num();
                 self.eqtb.count[i as usize]
             }
             Some(Equiv::CountReg(i)) => self.eqtb.count[i as usize],
+            Some(Equiv::Prim(Prim::Attribute)) => {
+                let n = self.scan_attribute_num();
+                self.eqtb.attribute(n)
+            }
+            Some(Equiv::AttributeReg(n)) => self.eqtb.attribute(u32::from(n)),
             _ => {
                 self.push_token(t);
                 return None;
@@ -1952,6 +1993,10 @@ impl Engine {
                 emit_the!(self.eqtb.count[i as usize].to_string().as_bytes());
                 return;
             }
+            Some(Equiv::AttributeReg(n)) => {
+                emit_the!(self.eqtb.attribute(u32::from(n)).to_string().as_bytes());
+                return;
+            }
             Some(Equiv::DimenReg(i)) => {
                 let s = self.scaled_to_string(self.eqtb.dimen[i as usize]);
                 emit_the!(s.as_bytes());
@@ -1992,9 +2037,13 @@ impl Engine {
                 let s = crate::random::microinterval(self.timer_start).to_string();
                 emit_the!(s.as_bytes());
             }
-            Some(Prim::Count | Prim::Attribute) => {
+            Some(Prim::Count) => {
                 let idx = self.scan_reg_num();
                 emit_the!(self.eqtb.count[idx as usize].to_string().as_bytes());
+            }
+            Some(Prim::Attribute) => {
+                let n = self.scan_attribute_num();
+                emit_the!(self.eqtb.attribute(n).to_string().as_bytes());
             }
             Some(Prim::DimP(p)) => {
                 // An improper \prevdepth yields the integer 0 (tex.web §418:
@@ -2217,7 +2266,7 @@ impl Engine {
                 emit_the!(b"1");
             }
             Some(Prim::CatCodeTable) => {
-                emit_the!(self.cur_catcode_table.to_string().as_bytes());
+                emit_the!(self.eqtb.cat_table.to_string().as_bytes());
             }
             Some(Prim::XeTeXCharClass) => {
                 let v = self.scan_xetex_charclass_val();
@@ -2355,6 +2404,9 @@ impl Engine {
             _ => match self.eqtb.resolve(id).cloned() {
                 Some(Equiv::CountReg(i)) => {
                     emit_the!(self.eqtb.count[i as usize].to_string().as_bytes());
+                }
+                Some(Equiv::AttributeReg(n)) => {
+                    emit_the!(self.eqtb.attribute(u32::from(n)).to_string().as_bytes());
                 }
                 Some(Equiv::CharDef(c)) => {
                     emit_the!((c as i32).to_string().as_bytes());
@@ -2499,6 +2551,7 @@ impl Engine {
             Some(Equiv::MathCharDef(c)) => format!("{}mathchar\"{:X}", esc_str, c),
             Some(Equiv::FontRef(f)) => format!("select font {}", self.font_display_name(f)),
             Some(Equiv::CountReg(i)) => format!("{}count{}", esc_str, i),
+            Some(Equiv::AttributeReg(i)) => format!("{}attribute{}", esc_str, i),
             Some(Equiv::DimenReg(i)) => format!("{}dimen{}", esc_str, i),
             Some(Equiv::SkipReg(i)) => format!("{}skip{}", esc_str, i),
             Some(Equiv::MuSkipReg(i)) => format!("{}muskip{}", esc_str, i),

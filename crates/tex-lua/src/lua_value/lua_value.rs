@@ -672,11 +672,6 @@ impl LuaValue {
     }
 
     #[inline(always)]
-    pub fn is_binary(&self) -> bool {
-        self.ttisstring() && self.as_str().is_none()
-    }
-
-    #[inline(always)]
     pub fn is_table(&self) -> bool {
         self.ttistable()
     }
@@ -727,11 +722,6 @@ impl LuaValue {
     }
 
     #[inline(always)]
-    pub fn is_callable(&self) -> bool {
-        self.ttisfunction()
-    }
-
-    #[inline(always)]
     pub fn as_boolean(&self) -> Option<bool> {
         if self.ttisboolean() {
             Some(self.bvalue())
@@ -759,16 +749,8 @@ impl LuaValue {
         if self.ttisinteger() {
             Some(self.ivalue())
         } else if self.ttisfloat() {
-            // Lua 5.5+ semantics: floats with zero fraction are integers
-            // Use proper range check matching C Lua's lua_numbertointeger:
-            // f must be in [i64::MIN, -(i64::MIN as f64)) since i64::MAX as f64
-            // rounds up to 2^63 which is NOT representable as i64.
-            let f = self.fltvalue();
-            if f >= (i64::MIN as f64) && f < -(i64::MIN as f64) && f == (f as i64 as f64) {
-                Some(f as i64)
-            } else {
-                None
-            }
+            // Floats with an exact integer value are integers.
+            float_exact_integer(self.fltvalue())
         } else {
             None
         }
@@ -803,15 +785,6 @@ impl LuaValue {
         }
     }
 
-    #[inline(always)]
-    pub fn as_binary(&self) -> Option<&[u8]> {
-        if self.ttisstring() && self.as_str().is_none() {
-            Some(self.gc_string().data.as_bytes())
-        } else {
-            None
-        }
-    }
-
     /// Get raw bytes from either a string or binary value.
     /// Returns `None` for non-string types.
     /// In Lua, all strings are byte sequences — this method provides
@@ -824,11 +797,6 @@ impl LuaValue {
         } else {
             None
         }
-    }
-
-    #[inline(always)]
-    pub fn as_str_bytes(&self) -> Option<&[u8]> {
-        self.as_bytes()
     }
 
     #[inline(always)]
@@ -1152,15 +1120,21 @@ impl LuaValue {
             return self.raw_i64() as u64;
         }
 
-        // For floats, use proper bit mixing to avoid catastrophic hash collisions.
-        // The raw f64 bit pattern has poor distribution in the low bits for
-        // values like n*(1+2^-52) (perturbed float keys used by the compiler's
-        // constant deduplication) and for half-integers (1.5, 2.5, etc.),
-        // causing O(n²) hash chain buildup.
+        // A float equal to an integer is the same key as that integer
+        // (including -0.0 and 0), so it must hash like the integer.
+        // Other floats need proper bit mixing to avoid catastrophic hash
+        // collisions: the raw f64 bit pattern has poor distribution in the
+        // low bits for values like n*(1+2^-52) (perturbed float keys used by
+        // the compiler's constant deduplication) and for half-integers
+        // (1.5, 2.5, etc.), causing O(n²) hash chain buildup.
         // We apply a splitmix64 finalizer to the raw bits to ensure
         // all output bits depend on all input bits.
         if tt == LUA_VNUMFLT {
-            let mut h = self.raw_f64().to_bits();
+            let f = self.raw_f64();
+            if let Some(i) = float_exact_integer(f) {
+                return i as u64;
+            }
+            let mut h = f.to_bits();
             // splitmix64 finalizer — bijective, excellent avalanche
             h ^= h >> 30;
             h = h.wrapping_mul(0xbf58476d1ce4e5b9);
@@ -1175,22 +1149,26 @@ impl LuaValue {
     }
 }
 
+/// The integer a float equals exactly, if any (C Lua's `luaV_flttointns` with
+/// `F2Ieq`): the float must be integral and inside `[-2^63, 2^63)`. `-0.0`
+/// yields 0. Table keys, numeric equality and hashing all go through this
+/// so they agree.
+#[inline(always)]
+pub fn float_exact_integer(f: f64) -> Option<i64> {
+    // `i64::MIN as f64` is exactly -2^63; `-(i64::MIN as f64)` is exactly 2^63.
+    if f >= (i64::MIN as f64) && f < -(i64::MIN as f64) {
+        let i = f as i64;
+        if i as f64 == f {
+            return Some(i);
+        }
+    }
+    None
+}
+
 /// Check if a float value exactly equals an integer value.
-/// Returns false if the float can't precisely represent the integer.
 #[inline(always)]
 fn lua_float_eq_int(f: f64, i: i64) -> bool {
-    if !f.is_finite() {
-        return false;
-    }
-    // Check if float is integral and round-trips through i64
-    if f != f.floor() {
-        return false;
-    }
-    // Check range (i64::MIN is exactly representable as f64, i64::MAX is not)
-    if f < i64::MIN as f64 || f >= (i64::MAX as f64) + 1.0 {
-        return false;
-    }
-    (f as i64) == i
+    float_exact_integer(f) == Some(i)
 }
 
 impl PartialEq for LuaValue {
@@ -1400,19 +1378,19 @@ impl std::hash::Hash for LuaValue {
             return;
         }
 
-        // Special handling for numbers to maintain equality invariant
-        // (integer 1 == float 1.0, so they must hash the same)
+        // Numbers equal under `==` must hash alike: an integer, a float with
+        // that exact integer value (including -0.0 for 0), and nothing else.
         if tt == LUA_VNUMINT || tt == LUA_VNUMFLT {
-            // Always hash numbers as floats to maintain hash consistency
-            // when integer equals float
-            let n = if tt == LUA_VNUMINT {
-                self.raw_i64() as f64
-            } else {
-                self.raw_f64()
-            };
-            // Use a stable representation for hashing
             LUA_TNUMBER.hash(state);
-            n.to_bits().hash(state);
+            let exact = if tt == LUA_VNUMINT {
+                Some(self.raw_i64())
+            } else {
+                float_exact_integer(self.raw_f64())
+            };
+            match exact {
+                Some(i) => (0u8, i).hash(state),
+                None => (1u8, self.raw_f64().to_bits()).hash(state),
+            }
         } else if tt <= LUA_VFALSE {
             // nil or boolean - hash type tag only
             tt.hash(state);

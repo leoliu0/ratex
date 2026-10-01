@@ -9,10 +9,12 @@ use crate::stdlib::debug::{current_func_name_with_kind, find_global_func_name, o
 use crate::stdlib::numfmt::{NumBuf, tostring_float};
 
 /// A string argument: a Lua string, or a number converted as `lua_tolstring`
-/// would (without writing the conversion back to the stack).
+/// would (without writing the conversion back to the stack), or the bytes of
+/// a `__tostring` result (owned: that result is not on the stack).
 pub(crate) enum LStr {
     Value(LuaValue),
     Number(NumBuf),
+    Bytes(Vec<u8>),
 }
 
 impl std::ops::Deref for LStr {
@@ -23,6 +25,20 @@ impl std::ops::Deref for LStr {
         match self {
             LStr::Value(value) => value.as_bytes().unwrap_or_default(),
             LStr::Number(buf) => buf.as_bytes(),
+            LStr::Bytes(bytes) => bytes,
+        }
+    }
+}
+
+impl LStr {
+    /// The string as a Lua value: the string itself, or a new string for a
+    /// converted number (`luaL_checkstring` converts a number in place). The
+    /// result is unrooted.
+    pub(crate) fn into_value(self, l: &mut LuaState) -> LuaResult<LuaValue> {
+        match self {
+            LStr::Value(value) => Ok(value),
+            LStr::Number(buf) => l.create_bytes(buf.as_bytes()),
+            LStr::Bytes(bytes) => l.create_bytes(&bytes),
         }
     }
 }
@@ -230,8 +246,10 @@ pub(crate) fn check_option(
 pub(crate) fn tolstring(l: &mut LuaState, value: &LuaValue) -> LuaResult<LStr> {
     if let Some(metamethod) = get_metamethod_event(l, value, TmKind::ToString) {
         let result = crate::lua_vm::execute::call_tm_res1(l, metamethod, *value)?;
+        // The result lies above the stack top now; the caller keeps the
+        // bytes, not the unrooted string.
         return match to_lstr(l, &result) {
-            Some(text) => Ok(text),
+            Some(text) => Ok(LStr::Bytes(text.to_vec())),
             None => Err(lual_error(l, "'__tostring' must return a string")),
         };
     }

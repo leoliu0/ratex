@@ -511,7 +511,9 @@ async fn test_async_return_mixed_userdata_and_values() {
 async fn test_async_typed_userdata_ref_arg() {
     let mut vm = new_vm();
 
-    let counter = vm.create_any(AsyncCounter { count: 5 }).unwrap();
+    let counter = vm
+        .create_userdata(crate::LuaUserdata::new(crate::OpaqueUserData::new(AsyncCounter { count: 5 })))
+        .unwrap();
     vm.set_global("counter", counter).unwrap();
 
     vm.main_state()

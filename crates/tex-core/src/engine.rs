@@ -344,6 +344,8 @@ pub struct Engine {
     /// Disk paths whose absence affected a file lookup. Dependency caches
     /// must invalidate when one of these paths later appears.
     pub missing_files: Vec<std::path::PathBuf>,
+    /// Files this run created through `\openout`, for `-recorder` output.
+    pub written_files: Vec<std::path::PathBuf>,
     pub out_dir: String,
     /// Optional directory for TeX-generated state (for example `.aux`,
     /// `.toc`, and files opened through `\\openout`).  When unset, output
@@ -979,6 +981,7 @@ impl Engine {
             loaded_file_digests: Vec::new(),
             loaded_file_sizes: Vec::new(),
             missing_files: Vec::new(),
+            written_files: Vec::new(),
             out_dir: String::new(),
             aux_dir: None,
             allow_missing_main_aux: false,

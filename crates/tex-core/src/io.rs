@@ -698,6 +698,7 @@ impl Engine {
                 self.input.invalidate_disk_files();
                 self.write_streams[idx] = Some(f);
                 self.write_stream_paths[idx] = Some(full.to_string());
+                self.written_files.push(std::path::PathBuf::from(full));
             }
             Err(error) => self.error_at(
                 &format!("Cannot open output file `{full}` for \\openout{stream}: {error}"),

@@ -6,8 +6,8 @@
 //! `pdflatex`, `xelatex`, `lualatex`, `bibtex`, or `latexdiff` (symlinks), it
 //! runs that tool directly instead.
 //!
-//! Exit codes: 0 = converged, 1 = engine/bibtex failure or no convergence,
-//! 2 = usage error.
+//! Exit codes: 0 = converged, 1 = engine/bibtex failure, TeX errors (even
+//! when a nonstop-mode PDF was published), or no convergence, 2 = usage error.
 //!
 //! TeX support files always come from the archive embedded in the executable;
 //! project inputs remain ordinary files.
@@ -915,7 +915,7 @@ fn same_file(_left: &Path, _right: &Path) -> bool {
 fn ignored_state_file(path: &Path) -> bool {
     matches!(
         path.extension().and_then(OsStr::to_str),
-        Some("log" | "blg" | "depcache" | "pdf")
+        Some("log" | "blg" | "depcache" | "pdf" | "fls")
     ) || path
         .file_name()
         .and_then(OsStr::to_str)
@@ -1299,29 +1299,33 @@ fn trusted_aux_ownership(
     trusted
 }
 
+/// Aux-directory files this build may export: everything in a private
+/// managed directory; in an explicit (possibly shared) directory only files
+/// the engine or BibTeX reported writing, or that texmk already owns.
 fn generated_artifacts(
     final_snapshot: &BTreeMap<PathBuf, (u64, u64, Option<SystemTime>)>,
-    initial_snapshot: &BTreeMap<PathBuf, (u64, u64, Option<SystemTime>)>,
+    recorded: &BTreeSet<PathBuf>,
     trusted_owned: &BTreeSet<PathBuf>,
     managed_aux: bool,
 ) -> BTreeSet<PathBuf> {
     final_snapshot
-        .iter()
-        .filter(|(relative, _)| exportable_artifact(relative))
-        .filter(|(relative, digest)| {
-            managed_aux
-                || trusted_owned.contains(*relative)
-                || initial_snapshot.get(*relative) != Some(*digest)
+        .keys()
+        .filter(|relative| exportable_artifact(relative))
+        .filter(|relative| {
+            managed_aux || trusted_owned.contains(*relative) || recorded.contains(*relative)
         })
-        .map(|(relative, _)| relative.clone())
+        .cloned()
         .collect()
 }
 
+/// Ownership (what `-c` may delete) comes only from files texmk, the engine
+/// (`-recorder` OUTPUT lines) or BibTeX wrote. A directory diff would also
+/// claim files a user created in a shared directory during the build.
 fn update_aux_ownership(
     manifest: &mut Manifest,
     aux_dir: &Path,
     pdf_path: &Path,
-    initial_snapshot: &BTreeMap<PathBuf, (u64, u64, Option<SystemTime>)>,
+    recorded: &BTreeSet<PathBuf>,
     final_snapshot: &BTreeMap<PathBuf, (u64, u64, Option<SystemTime>)>,
     trusted_owned: &BTreeSet<PathBuf>,
 ) {
@@ -1331,8 +1335,26 @@ fn update_aux_ownership(
         if path == pdf_path || !exportable_artifact(relative) {
             continue;
         }
-        if trusted_owned.contains(relative) || !initial_snapshot.contains_key(relative) {
+        if trusted_owned.contains(relative) || recorded.contains(relative) {
             manifest.aux_files.insert(path, *hash);
+        }
+    }
+}
+
+/// Add the aux-directory OUTPUT entries of an engine `-recorder` file.
+fn record_engine_outputs(fls: &Path, aux_dir: &Path, cwd: &Path, recorded: &mut BTreeSet<PathBuf>) {
+    let Ok(Some(text)) = read_to_string_bounded(fls, MANIFEST_MAX_BYTES) else {
+        return;
+    };
+    for line in text.lines() {
+        let Some(path) = line.strip_prefix("OUTPUT ") else {
+            continue;
+        };
+        let path = cwd.join(path);
+        if let Ok(relative) = path.strip_prefix(aux_dir) {
+            if !relative.as_os_str().is_empty() {
+                recorded.insert(relative.to_path_buf());
+            }
         }
     }
 }
@@ -1419,16 +1441,17 @@ struct RetentionContext<'a> {
     keep_intermediates: bool,
     keep_logs: bool,
     managed_aux: bool,
-    initial_snapshot: &'a BTreeMap<PathBuf, (u64, u64, Option<SystemTime>)>,
+    recorded_outputs: &'a std::cell::RefCell<BTreeSet<PathBuf>>,
     trusted_owned: &'a BTreeSet<PathBuf>,
     manifest_path: &'a Path,
 }
 
 fn retain_requested(context: &RetentionContext<'_>, manifest: &mut Manifest) {
     let final_snapshot = artifact_snapshot(context.aux_dir);
+    let recorded = context.recorded_outputs.borrow();
     let generated = generated_artifacts(
         &final_snapshot,
-        context.initial_snapshot,
+        &recorded,
         context.trusted_owned,
         context.managed_aux,
     );
@@ -1437,7 +1460,7 @@ fn retain_requested(context: &RetentionContext<'_>, manifest: &mut Manifest) {
         manifest,
         context.aux_dir,
         &pdf_path,
-        context.initial_snapshot,
+        &recorded,
         &final_snapshot,
         context.trusted_owned,
     );
@@ -3232,7 +3255,7 @@ fn real_main() -> i32 {
             OsString::from(if force_color { "1" } else { "0" }),
         ),
     ];
-    let initial_aux_snapshot = artifact_snapshot(&aux_dir);
+    let recorded_outputs = std::cell::RefCell::new(BTreeSet::new());
     let trusted_aux_owned = trusted_aux_ownership(&mut manifest, &aux_dir, &pdf_path);
     prepare_owned_exports(
         &mut manifest,
@@ -3255,7 +3278,7 @@ fn real_main() -> i32 {
         keep_intermediates: opt.keep_intermediates,
         keep_logs: opt.keep_logs,
         managed_aux,
-        initial_snapshot: &initial_aux_snapshot,
+        recorded_outputs: &recorded_outputs,
         trusted_owned: &trusted_aux_owned,
         manifest_path: &manifest_path,
     };
@@ -3347,6 +3370,10 @@ fn real_main() -> i32 {
                 };
                 bibtex_done = true;
                 bibtex_runs += 1;
+                recorded_outputs.borrow_mut().extend([
+                    PathBuf::from(format!("{job}.bbl")),
+                    PathBuf::from(format!("{job}.blg")),
+                ]);
                 manifest.bibliography_signature = Some(signature);
                 manifest.bibliography_output_hash = Some(output_hash);
             }
@@ -3374,6 +3401,7 @@ fn real_main() -> i32 {
 
         let mut args: Vec<String> = vec![
             "-interaction=nonstopmode".to_string(),
+            "-recorder".to_string(),
             "-output-directory".to_string(),
             stage_dir.to_string_lossy().into_owned(),
             "-aux-directory".to_string(),
@@ -3400,6 +3428,14 @@ fn real_main() -> i32 {
             }
         };
         let engine_cache_hit = take_cache_hit_marker(&cache_hit_marker);
+        if !engine_cache_hit {
+            record_engine_outputs(
+                &artifact_path(&aux_dir, &job, ".fls"),
+                &aux_dir,
+                &source_dir,
+                &mut recorded_outputs.borrow_mut(),
+            );
+        }
         let pass_failed = !output.success;
         if pass_failed {
             let allow_recovery = opt.passthrough.iter().any(|a| {
@@ -3549,6 +3585,10 @@ fn real_main() -> i32 {
                 };
                 bibtex_done = true;
                 bibtex_runs += 1;
+                recorded_outputs.borrow_mut().extend([
+                    PathBuf::from(format!("{job}.bbl")),
+                    PathBuf::from(format!("{job}.blg")),
+                ]);
                 manifest.bibliography_signature = bibliography_signature;
                 manifest.bibliography_output_hash = Some(output_hash);
                 if !opt.silent {
@@ -3676,9 +3716,9 @@ fn real_main() -> i32 {
     } else {
         String::new()
     };
-    // A PDF produced despite TeX errors (recovered in an explicitly requested
-    // nonstop/batch mode) is published; the errors are shown and named in the
-    // status line, and the exit status stays 0 as before.
+    // As latexmk does, a PDF produced despite TeX errors (recovered in an
+    // explicitly requested nonstop/batch mode) is published, but the build
+    // still fails.
     eprint!("{recovered_diagnostics}");
     let status = if last_pass_failed {
         "finished with TeX errors"
@@ -3733,8 +3773,11 @@ fn real_main() -> i32 {
         retain_requested(&retention, &mut manifest);
     }
     drop(lock);
-    if last_pass_failed && log_path.is_file() {
-        eprintln!("texmk: transcript retained at {}", log_path.display());
+    if last_pass_failed {
+        if log_path.is_file() {
+            eprintln!("texmk: transcript retained at {}", log_path.display());
+        }
+        return 1;
     }
     0
 }

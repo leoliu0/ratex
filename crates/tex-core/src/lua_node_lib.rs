@@ -1782,11 +1782,14 @@ fn install_lists(lua: &mut Lua, n: &LuaTable) -> Result<(), String> {
             (h != 0).then_some(i64::from(h))
         }))
     });
-    nat!(lua, n, "is_node", |v: Option<Value>| -> Result<Option<i64>, String> {
-        Ok(v.and_then(|v| {
-            let h = node_of(&v);
-            (h != 0).then_some(i64::from(h))
-        }))
+    nat!(lua, n, "is_node_ud", |v: Option<Value>| -> Result<bool, String> {
+        Ok(v.is_some_and(|v| node_of(&v) != 0))
+    });
+    nat!(lua, n, "is_protected", |h: Option<i64>| -> Result<bool, String> {
+        with_engine(|e| {
+            let h = handle32(h);
+            e.lua_nodes.valid(h) && e.lua_nodes.node(h).subtype & 0xFF00 != 0
+        })
     });
     nat!(lua, n, "tonode", |h: Option<i64>| -> Result<UdValue, String> { Ok(node_ud(handle32(h))) });
     nat!(lua, n, "fix_node_lists", |v: Option<Value>| -> Result<(), String> {
@@ -1814,6 +1817,49 @@ fn install_lists(lua: &mut Lua, n: &LuaTable) -> Result<(), String> {
     nat!(lua, n, "set_properties_table", |t: LuaTable| -> Result<(), String> {
         with_engine(|e| e.lua_nodes.props = Some(t))
     });
+    nat!(lua, n, "family_font", |fam: i64, size: Option<i64>| -> Result<i64, String> {
+        with_engine(|e| e.lua_family_font(fam as i32, size.unwrap_or(0) as i32))
+    });
+    nat!(lua, n, "last_node", || -> Result<i64, String> {
+        with_engine(|e| match e.cur_list.pop() {
+            Some(node) => e.lua_nodes_from_engine(vec![node]),
+            None => 0,
+        })
+    });
+    nat!(lua, n, "write", |h: Option<i64>| -> Result<(), String> {
+        with_engine(|e| {
+            let nodes = e.lua_nodes_to_engine(i64::from(handle32(h)));
+            e.cur_list.extend(nodes);
+        })
+    });
+    nat!(lua, n, "prepend_prevdepth", |h: Option<i64>, prev: Option<i64>, ud: bool| -> Result<Variadic<UdValue>, String> {
+        with_engine(|e| e.lua_prepend_prevdepth(handle32(h), prev.unwrap_or(0) as i32, ud))
+    });
+    nat!(lua, n, "set_synctex_fields", |h: Option<i64>, tag: Option<i64>, line: Option<i64>| -> Result<(), String> {
+        with_engine(|e| {
+            let h = handle32(h);
+            if e.lua_nodes.valid(h) && has_synctex(e.lua_nodes.id(h)) {
+                let f = &mut e.lua_nodes.node_mut(h).f;
+                if let Some(t) = tag.filter(|t| *t != 0) {
+                    f[NF - 2] = t as i32;
+                }
+                if let Some(l) = line.filter(|l| *l != 0) {
+                    f[NF - 1] = l as i32;
+                }
+            }
+        })
+    });
+    nat!(lua, n, "get_synctex_fields", |h: Option<i64>| -> Result<Variadic<UdValue>, String> {
+        with_engine(|e| {
+            let h = handle32(h);
+            if e.lua_nodes.valid(h) && has_synctex(e.lua_nodes.id(h)) {
+                let f = &e.lua_nodes.node(h).f;
+                Variadic(vec![UdValue::Integer(i64::from(f[NF - 2])), UdValue::Integer(i64::from(f[NF - 1]))])
+            } else {
+                Variadic(vec![])
+            }
+        })
+    });
     nat!(lua, n, "wrap_hpack", |args: Variadic<Value>| -> Result<Variadic<UdValue>, String> {
         crate::lua_node_pack::lua_pack(&args, true)
     });
@@ -1830,3 +1876,67 @@ fn install_lists(lua: &mut Lua, n: &LuaTable) -> Result<(), String> {
 }
 
 
+
+/// Install the global `node` table: the natives of [`install`] under the
+/// public names of `lua_node.lua`.
+pub(crate) fn install_library(lua: &mut Lua) -> Result<(), String> {
+    let natives = install(lua)?;
+    let data: LuaTable = lua
+        .load(include_str!("lua_node_data.lua"))
+        .set_name("=[ratex node data]")
+        .eval()
+        .map_err(|e| format!("node data: {}", lua.get_error_message(e).message()))?;
+    lua.set_global("__ratex_nodelib", natives).map_err(|e| format!("{e:?}"))?;
+    lua.set_global("__ratex_nodedata", data).map_err(|e| format!("{e:?}"))?;
+    let node: LuaTable = lua
+        .load(include_str!("lua_node.lua"))
+        .set_name("=[ratex node]")
+        .eval()
+        .map_err(|e| format!("node library: {}", lua.get_error_message(e).message()))?;
+    lua.set_global("node", node).map_err(|e| format!("{e:?}"))
+}
+
+/// Node types that carry synctex tag and line.
+fn has_synctex(id: u8) -> bool {
+    matches!(id, GLYPH | GLUE | KERN | HLIST | VLIST | UNSET | RULE | MATH)
+}
+
+impl Engine {
+    /// `node.prepend_prevdepth` (`ud`) / `node.direct.prepend_prevdepth`:
+    /// the interline glue that goes in front of box `n`. The direct form
+    /// keeps LuaTeX's inverted box test.
+    fn lua_prepend_prevdepth(&mut self, n: u32, prev: i32, ud: bool) -> Variadic<UdValue> {
+        use crate::prim::{DimParam, GlueParam};
+        if !self.lua_nodes.valid(n) {
+            return Variadic(vec![UdValue::Nil]);
+        }
+        let id = self.lua_nodes.id(n);
+        let is_box = id == HLIST || id == VLIST;
+        if is_box != ud {
+            return Variadic(vec![UdValue::Nil]);
+        }
+        let f = self.lua_nodes.node(n).f;
+        let mirrored = id == HLIST && matches!(f[sl::B_DIR], 1 | 3);
+        let (height, depth) = if is_box { (f[sl::B_HEIGHT], f[sl::B_DEPTH]) } else { (0, 0) };
+        let result = if prev > self.ignore_depth() {
+            let bs = self.eqtb.glue_params[GlueParam::BaselineSkip.idx() as usize];
+            let ls = self.eqtb.glue_params[GlueParam::LineSkip.idx() as usize];
+            let limit = self.eqtb.dim_params[DimParam::LineSkipLimit.idx() as usize];
+            let d = if mirrored { bs.width - prev - depth } else { bs.width - prev - height };
+            let p = if d < limit {
+                self.import_glue(&ls, 1)
+            } else {
+                let g = crate::boxes::Glue { width: d, ..bs.fresh() };
+                self.import_glue(&g, 2)
+            };
+            self.lua_nodes.node_mut(p).next = n;
+            self.lua_nodes.node_mut(n).prev = p;
+            p
+        } else {
+            n
+        };
+        let new_prev = if mirrored { height } else { depth };
+        let first = if ud { node_ud(result) } else { UdValue::Integer(i64::from(result)) };
+        Variadic(vec![first, UdValue::Integer(i64::from(new_prev))])
+    }
+}

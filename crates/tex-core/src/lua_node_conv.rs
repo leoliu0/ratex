@@ -200,7 +200,7 @@ impl Engine {
         n
     }
 
-    fn import_glue(&mut self, g: &Glue, subtype: u16) -> u32 {
+    pub(crate) fn import_glue(&mut self, g: &Glue, subtype: u16) -> u32 {
         let n = self.lua_new_node(GLUE, subtype);
         let node = self.lua_nodes.node_mut(n);
         node.f[sl::G_WIDTH] = g.width;

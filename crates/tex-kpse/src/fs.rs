@@ -44,8 +44,6 @@ pub struct ResourceContext {
     cwd: PathBuf,
     input_roots: Vec<PathBuf>,
     write_roots: Vec<PathBuf>,
-    output_root: PathBuf,
-    aux_root: PathBuf,
     epoch: Option<u64>,
     allow_embedded: bool,
 }
@@ -63,9 +61,7 @@ impl ResourceContext {
             cwd: fs.cwd.clone(),
             backend: Backend::Memory(fs),
             input_roots: vec![PathBuf::from("/project")],
-            write_roots: dedup_roots(vec![output_root.clone(), aux_root.clone()]),
-            output_root,
-            aux_root,
+            write_roots: dedup_roots(vec![output_root, aux_root]),
             epoch: None,
             allow_embedded,
         })
@@ -97,9 +93,7 @@ impl ResourceContext {
             backend: Backend::Disk,
             cwd,
             input_roots: dedup_roots(input_roots),
-            write_roots: dedup_roots(vec![output_root.clone(), aux_root.clone()]),
-            output_root,
-            aux_root,
+            write_roots: dedup_roots(vec![output_root, aux_root]),
             epoch,
             allow_embedded,
         })
@@ -107,22 +101,6 @@ impl ResourceContext {
 
     pub fn enter(&self) -> Scope {
         Scope(ACTIVE.with(|slot| slot.replace(Some(self.clone()))))
-    }
-
-    pub fn cwd(&self) -> &Path {
-        &self.cwd
-    }
-
-    pub fn output_root(&self) -> &Path {
-        &self.output_root
-    }
-
-    pub fn aux_root(&self) -> &Path {
-        &self.aux_root
-    }
-
-    pub fn allows_embedded(&self) -> bool {
-        self.allow_embedded
     }
 
     fn resolve_read(&self, path: &Path) -> io::Result<PathBuf> {
@@ -204,9 +182,12 @@ fn normalize_native(path: &Path, cwd: &Path) -> io::Result<PathBuf> {
     Ok(result)
 }
 
+/// The deepest ancestor that exists as a directory entry. A dangling symlink
+/// counts: treating it as absent would validate its parent and then let the
+/// write follow the link outside the permitted roots.
 fn existing_ancestor(path: &Path) -> io::Result<&Path> {
     path.ancestors()
-        .find(|candidate| candidate.exists())
+        .find(|candidate| candidate.symlink_metadata().is_ok())
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no existing path ancestor"))
 }
 
@@ -593,12 +574,6 @@ impl File {
             None => std::fs::File::create(path).map(Self::Native),
         }
     }
-    pub fn sync_all(&self) -> io::Result<()> {
-        match self {
-            Self::Native(f) => f.sync_all(),
-            Self::Memory { .. } => Ok(()),
-        }
-    }
 }
 impl Read for File {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
@@ -888,6 +863,26 @@ mod tests {
             b"pdf"
         );
         assert_eq!(std::fs::read(aux.join("main.aux")).unwrap(), b"aux");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn disk_writes_do_not_follow_dangling_symlinks_out_of_the_roots() {
+        let root = temp_root("dangling");
+        let project = root.join("project");
+        let output = root.join("output");
+        let outside = root.join("outside.pdf");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::create_dir_all(&output).unwrap();
+        std::os::unix::fs::symlink(&outside, output.join("main.pdf")).unwrap();
+        let context = ResourceContext::disk(&project, &[], &output, &output, false, None).unwrap();
+        {
+            let _scope = context.enter();
+            assert!(File::create(output.join("main.pdf")).is_err());
+            assert!(write(output.join("main.pdf"), b"pdf").is_err());
+        }
+        assert!(!outside.exists());
         std::fs::remove_dir_all(root).unwrap();
     }
 }

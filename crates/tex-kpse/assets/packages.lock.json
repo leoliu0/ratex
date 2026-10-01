@@ -33236,5 +33236,1554 @@
     "inter_package_collisions": 0,
     "conflicting_basenames_rejected": 0,
     "identical_baseline_overlays": 11741
+  },
+  "supplement_archive": {
+    "name": "packages-supplement.tar.zst",
+    "sha256": "f68e40ebfa089031500bb533924b6f4768d56ef612483e4124ffce8e8370f193",
+    "size_bytes": 5139203,
+    "total_members": 120,
+    "precedence": "read before the main archive; its members shadow same-named main members",
+    "packages": {
+      "beamer": {
+        "version": "3.78",
+        "revision": 80053,
+        "license": "LPPL-1.3c / GPL-2.0-or-later / FDL",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/beamer.tar.xz",
+        "upstream_sha256": "a46dedb272225d226bc4ba085351ad38634889d0de6c52e30960dec83bb34168",
+        "upstream_size_bytes": 168604,
+        "map_files": [],
+        "file_count": 6,
+        "files": {
+          "tex/latex/beamer/beamericonarticle.20.pdf": "6382a61b014ac95385b2a329e7486aada95df3dee61691c838a11d4fe135713e",
+          "tex/latex/beamer/beamericonarticle.pdf": "559a97289e2141b27c642e5738a3e92a15b30d17e0d7b8dc9600b9fe5d245145",
+          "tex/latex/beamer/beamericonbook.20.pdf": "374d9720b7a9a01e89f741e69e6c9da75d7a6b0ce92bdb4a679c030ad1422f49",
+          "tex/latex/beamer/beamericonbook.pdf": "f433b8072d03da8a91d653b03a0fcebbebf81d76435bd56be836a2c74a793c4a",
+          "tex/latex/beamer/beamericononline.20.pdf": "2df190881c7c603c277c735306f2de5226bbc64f2239f04fafa012c6fb6d0e7b",
+          "tex/latex/beamer/beamericononline.pdf": "9a2187f1ee0b53f4308781db6d240b2c625b4598b8c459c96b5d6be9398c1628"
+        }
+      },
+      "mwe": {
+        "version": "0.5",
+        "revision": 77682,
+        "license": "LPPL-1.3",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/mwe.tar.xz",
+        "upstream_sha256": "24c9ac357c80f501f5ffcc5ebd22f81495ef97965bbf82672df39e67b9da32a3",
+        "upstream_size_bytes": 807100,
+        "map_files": [],
+        "file_count": 51,
+        "files": {
+          "tex/latex/mwe/example-grid-100x100bp.jpg": "80a1ca11480e9ecd0b5853646bf5a4bf022897878f702f2f725207b6b5ea99da",
+          "tex/latex/mwe/example-grid-100x100bp.pdf": "039f28757b7a354786e04c1aedb0f15bed005e2029e67c8a1a1e03dc53d6f159",
+          "tex/latex/mwe/example-grid-100x100bp.png": "d01648c54e90b1f685d24b1bf289e823914d418c80f53bcce8ce657ce8161d3a",
+          "tex/latex/mwe/example-grid-100x100pt.jpg": "fd11b55df51bd28da80a7da3204b379558873a9584792c380f8755c1d12bb126",
+          "tex/latex/mwe/example-grid-100x100pt.pdf": "3f15ff982a194d2831d5616134fb5be9cc6abb860ea11a0d775532e10ed7b275",
+          "tex/latex/mwe/example-grid-100x100pt.png": "596e328f9fd9c66cd015192a04a9e4e2f65997cbed0102b7a1976a9aa42cfe7a",
+          "tex/latex/mwe/example-image-10x16.jpg": "f06676fa697aa58548156a15cfd45cfa9108b6ac510882d69b5a560310293613",
+          "tex/latex/mwe/example-image-10x16.pdf": "5f0740da815d6e25339d2367647084a0905d00a5678e2f65b5acac2b2ee8f0d9",
+          "tex/latex/mwe/example-image-10x16.png": "e048b3bda37e7d548e8867edec3e3d6433915bb2a757a78b36067cb119eb1964",
+          "tex/latex/mwe/example-image-16x10.jpg": "5b9f55b350fcaf4e10488e8b1481da82de7301b1e5ebc4f5deed0a77ab14c355",
+          "tex/latex/mwe/example-image-16x10.pdf": "5d328b8d29ce8bc3b37a4a53091efae730acd03f25582b4f9be9d9ad7b3cdf7c",
+          "tex/latex/mwe/example-image-16x10.png": "3c3199d8f9db43e5eaef738d48bdb670b4609e0b4434e2b75c1e1144df97468b",
+          "tex/latex/mwe/example-image-16x9.jpg": "659790343be55833644c22d5a1f6e04720c33e1652be8225ad4084d6e02c5103",
+          "tex/latex/mwe/example-image-16x9.pdf": "f975203ae0dd4f24135139545ff1562d78464c58d6efb6f47358e448c9282757",
+          "tex/latex/mwe/example-image-16x9.png": "001eae45e205c2f6933a3956d966f965b93ff1044aa56e96047c937bc9e438a9",
+          "tex/latex/mwe/example-image-1x1.jpg": "0bce4829bda9607b97f3920b84c6abdb985cc67adc3b818f87bb6c86a94dec9f",
+          "tex/latex/mwe/example-image-1x1.pdf": "028037012a8582fa030a586c1fea4e845b75928f232be31a9cf13d76631d3495",
+          "tex/latex/mwe/example-image-1x1.png": "99048b0f529c80cfb2a011dfa1258377e7c3b1e36c946aa4cfa3f3fdaa1ca968",
+          "tex/latex/mwe/example-image-4x3.jpg": "0ca0d01c86a68c2733dfa27faa5ac86bab0a4ba9a0a01b32ea584824912ca75e",
+          "tex/latex/mwe/example-image-4x3.pdf": "41c3001c0c7dd7b3d4b11e8600bcbe49f6b67fc1ea409bc3d4d8e2d87298ab0a",
+          "tex/latex/mwe/example-image-4x3.png": "d96874e8ee047d89769652ad0a540750c220a079f4605aa567e3d6a6562eff83",
+          "tex/latex/mwe/example-image-9x16.jpg": "4e7a87034dcf86e75a8a48974dd1f645d1d0acccefb575c1ad6ac98f76e06d6b",
+          "tex/latex/mwe/example-image-9x16.pdf": "c19b4e0ab88fba355f7d0400214a7f5298aafe126406bd0acdb5333669a423bb",
+          "tex/latex/mwe/example-image-9x16.png": "d632c09ef517524895283342112899f204865ef15d03c167fc056e65e8b021db",
+          "tex/latex/mwe/example-image-a.jpg": "7165149e8b53f04a3f4d4564523513d37229544d9732db61de0e2399b17adb19",
+          "tex/latex/mwe/example-image-a.pdf": "613c2745667cf07dd1140234f2efb4147f3c7b3f8d6c6bd574f4668f371bb96c",
+          "tex/latex/mwe/example-image-a.png": "dd9d86984ad46180bd3a42f548b58282279f0d0d8f5f1da2ce410f2a0abf8e34",
+          "tex/latex/mwe/example-image-a3-landscape.pdf": "31d74e69edf32bbf01da104c99e79e487a04003bd874251383f129986b31fcb9",
+          "tex/latex/mwe/example-image-a3.pdf": "72d5677e63b59708436c5e2150197ac3d18ee3a046ae8c219228525f0534fe44",
+          "tex/latex/mwe/example-image-a4-landscape.pdf": "60906b1683fb12d13b914bfa8eee870e4dfd23f581acb1702096a6df7a71ad9e",
+          "tex/latex/mwe/example-image-a4-numbered.pdf": "3d541ae832d0ba0a26cc6fdb9c0491fcec9e351717b315ca21bdb3476d886be5",
+          "tex/latex/mwe/example-image-a4.pdf": "9ae03a1e332d5896eaa51dd180245990d279660552e02c84ba024c00e09a71c7",
+          "tex/latex/mwe/example-image-a5-landscape.pdf": "70f1b7484e2991f0e019301ed77ff526e56df38d3084f243d05b43e5a0547575",
+          "tex/latex/mwe/example-image-a5.pdf": "7642825ac37b08b06b8fbb3c654d83281b7b3c64747181bd822335285b932998",
+          "tex/latex/mwe/example-image-b.jpg": "774675570472bc5f8d621050782a0836cf0b79b020ed34b3b549ab0ac3c04e0c",
+          "tex/latex/mwe/example-image-b.pdf": "25b85f1e8a6c530ebf98cfd83e91e4225037b8dbc29aef7316a7d77008088ff5",
+          "tex/latex/mwe/example-image-b.png": "8c3557885aa9c8deafb2f25c67e057db49c4f86a928800d6785f570120db4b7f",
+          "tex/latex/mwe/example-image-c.jpg": "880f87eec65a2dff2661a24f75973b78ed11eeb89f7d4e3b8a52528cdc0ab279",
+          "tex/latex/mwe/example-image-c.pdf": "4511c3d1523e058df1b11a17108c1c27ee3da3ab24e27ce1f44f7f1bca6795c7",
+          "tex/latex/mwe/example-image-c.png": "f41d7f02b8358b10372ed729c42da4be768a1bda3ba023b976ab746d04120c2c",
+          "tex/latex/mwe/example-image-empty.pdf": "b03cdc51fd0af4b1105f184cd4486217ae12c2bd759d030ee93de8ba7d254a23",
+          "tex/latex/mwe/example-image-golden-upright.pdf": "4f35042afb2fea0aeca401e0e1bc6d0988286b11f9907785304c9eaa230b9d81",
+          "tex/latex/mwe/example-image-golden.pdf": "652cfa3ff165e40629abca5e9feb71a566d8e463e1f8da39d1b14d6020c4d467",
+          "tex/latex/mwe/example-image-letter-landscape.pdf": "a938c22ec05fe6a7b5bbbcc407bd07e63fc5f1c9ca637edb2c374b0573c78ebb",
+          "tex/latex/mwe/example-image-letter-numbered.pdf": "b3abd7bace9f0d55579223edbfea5e6ddaf740bb49ab5d42b2cea4fed59245c9",
+          "tex/latex/mwe/example-image-letter.pdf": "ce27196ae00ea0885e97ab04d858cce2722539943800a40b6728a0ad768af20f",
+          "tex/latex/mwe/example-image-plain.pdf": "3f9e5710b8611fbdcf6f91b60e972974e2161a0ad24062e25d5336ff274b7e3c",
+          "tex/latex/mwe/example-image.jpg": "b4d649b0aba8001ab9798bdf41c8cba61a6ec5ce31ea407b08e932d0083b0445",
+          "tex/latex/mwe/example-image.pdf": "48ca9c55da91e39786dd8e72883163a23d478019ace9dc4850083112c3e6c24a",
+          "tex/latex/mwe/example-image.png": "0af9a37674297e343b25475886fd0ceb8a7ae6c1a2b61b1656fd8c04e2ea6d2c",
+          "tex/latex/mwe/example-movie.pdf": "27b781c9a90511488dfcb8180002adc9cbdd3c22d7699172f7ba1d40aa449003"
+        }
+      },
+      "tcolorbox": {
+        "version": "6.10.0",
+        "revision": 79191,
+        "license": "LPPL-1.3",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/tcolorbox.tar.xz",
+        "upstream_sha256": "fbf38b44bccead42f1e99dfaa38c28272406c7e7fb87799fb7239fe116071306",
+        "upstream_size_bytes": 236636,
+        "map_files": [],
+        "file_count": 4,
+        "files": {
+          "tex/latex/tcolorbox/blueshade.png": "b2cc5459f9eb4570f611bf2a0683472c0ac817c9085cd82c0772ee9f891e5f80",
+          "tex/latex/tcolorbox/crinklepaper.png": "c9408e60f166015329d685ecba166f9bd0638742044498803ac2288cf77a6118",
+          "tex/latex/tcolorbox/goldshade.png": "34d01285b9e56e7e03348cbe6038c4721b5de68d5502c1b0d7b65a964bafbc5f",
+          "tex/latex/tcolorbox/pink_marble.png": "eefc804eb5fccbe54289151a9cda5c6e8aa2d46db400ada052a1fa8ecbee1a22"
+        }
+      },
+      "newpx": {
+        "version": "1.551",
+        "revision": 79618,
+        "license": "LPPL-1.3 / GUST-FONT-LICENSE",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/newpx.tar.xz",
+        "upstream_sha256": "086ed91b5987062753e9a30c81a6ac1e57d7dad97af67be081379a33c4e7233f",
+        "upstream_size_bytes": 4776612,
+        "map_files": [
+          "fonts/map/dvips/newpx/newpx.map"
+        ],
+        "file_count": 58,
+        "files": {
+          "fonts/opentype/public/newpx/TeXGyrePagellaX-Bold.otf": "824327ff1ffa8134a20ac7cdc212854aa69851af24ca3107c6ca7c73a7ae91af",
+          "fonts/opentype/public/newpx/TeXGyrePagellaX-BoldItalic.otf": "edb659487607638919866d51b226efc07816f8916ba4898d746ef0b4c8c89601",
+          "fonts/opentype/public/newpx/TeXGyrePagellaX-BoldSlanted.otf": "3153f793df2954d1410927895225aca6749c29c4515bec113c6ba596023ae39b",
+          "fonts/opentype/public/newpx/TeXGyrePagellaX-Italic.otf": "9cb8432910882fa9e417795597806d289f5b50322e5f2c3395f8325cccf47e8d",
+          "fonts/opentype/public/newpx/TeXGyrePagellaX-Regular.otf": "3c1857b64342b89a585c6c065c0ba4a5c608d42c88b87bd5255b623d0128ef2d",
+          "fonts/opentype/public/newpx/TeXGyrePagellaX-Slanted.otf": "395b22103ff6c59b03e61a390f05116ab8172b3f375c2022cf643becd492e9c6",
+          "fonts/opentype/public/newpx/npxsups-Bold.otf": "fa53b35abe72cabc89e4b1213580f031681ab085d8010806c3ddb6165513cb99",
+          "fonts/opentype/public/newpx/npxsups-BoldItalic.otf": "ce7ab130053871444ab5cc414369100036f83e586b4bbb2f0b5ee8366354c23e",
+          "fonts/opentype/public/newpx/npxsups-BoldSlanted.otf": "123e6d796458f95a25b2c7e21b74d8b9e430ab985d49644b138b13f45169e47b",
+          "fonts/opentype/public/newpx/npxsups-Italic.otf": "48b303dcb081fbfc3981dc49ab400ab5267003a01c54b007599a665e8117cb95",
+          "fonts/opentype/public/newpx/npxsups-Regular.otf": "a693a77f51f643bcd59f3771d048fc2f35b8405e4ec19b9cc4e4bb7153295a38",
+          "fonts/opentype/public/newpx/npxsups-Slanted.otf": "6fb50a76e0b4f1beef7ac313c6d037e9514f72315847ee4135c2d5f9dc632724",
+          "fonts/type1/public/newpx/NewPXBBMI.pfb": "469533cd6e11c20fe58b089ec9a0278c4bfe1fdfbc33b519116d2e538e971ec2",
+          "fonts/type1/public/newpx/NewPXBMI.pfb": "73b7a31db630fee99097adc6dea3858c4a7fdcbcad90b98cf61c8172928230d7",
+          "fonts/type1/public/newpx/NewPXBMI_gnu.pfb": "752874e1f51cba97d58e751cafef355c8b5b55f696884583754443844737a375",
+          "fonts/type1/public/newpx/NewPXMI.pfb": "61d9bc7f5043b55535e7bb4b35d9fc77c3af5490b41fdf9bae2c0c3c69edb998",
+          "fonts/type1/public/newpx/NewPXMI_gnu.pfb": "55ab3ed831ecba56f6877f86d904d8b3cd578fc869c3aa3b5e859eca7cf4bc14",
+          "fonts/type1/public/newpx/TeXGyrePagellaX-Bold.pfb": "7116d7a42c77722f322debe5062cd8b89d993136b3ffbcd39b03854aa810f494",
+          "fonts/type1/public/newpx/TeXGyrePagellaX-BoldItalic.pfb": "9c5d16d4a72cc4762e5c8586ed2652a747cf3e72c0b04cba20c5cc644e4960a0",
+          "fonts/type1/public/newpx/TeXGyrePagellaX-BoldSlanted.pfb": "17ec7dec4ce722c68e50535328787cadc41d53fcb87584dec9b4bcf1dd105ff7",
+          "fonts/type1/public/newpx/TeXGyrePagellaX-Italic.pfb": "0179304e4ce8620d9f53618da421234bacbcbd181305439945e11067007dd440",
+          "fonts/type1/public/newpx/TeXGyrePagellaX-Regular.pfb": "26998d4d1d887ccfceaab2ab2cb5d5a34d4d8579e6f45cee17c2120b9bf7ad88",
+          "fonts/type1/public/newpx/TeXGyrePagellaX-Slanted.pfb": "75f683c9458d95391e80e5a9d570edb58ec400c5e9ad511da70885299dd25da2",
+          "fonts/type1/public/newpx/npxsups-Bold.pfb": "c4beeca687fbf1fb7e2798d8526bcd93fe4fd9ed30a430986e1a7116ff0913c3",
+          "fonts/type1/public/newpx/npxsups-BoldItalic.pfb": "319602f119629196f5932b17c70d1ba2cf282f261285f1181f1a8c4e8cd1e288",
+          "fonts/type1/public/newpx/npxsups-BoldSlanted.pfb": "714a808746efc40ab869e36d9b85d3e04808ee6b97986848ef28c154e8ade729",
+          "fonts/type1/public/newpx/npxsups-Italic.pfb": "3a431b37ddb11cae8b0753d19c7f0303978f15cf0f6e2b857d1f2f37f5bf112f",
+          "fonts/type1/public/newpx/npxsups-Regular.pfb": "4f33cc0cad9536baa72c85958db5cfbca598afb23512fa1bad5b578656307c92",
+          "fonts/type1/public/newpx/npxsups-Slanted.pfb": "3199e76939193ee8307e1b408f4e9a0c2e1ae7942cda7dbf899573ca1b218e97",
+          "fonts/type1/public/newpx/pxbmiaX.pfb": "9520e2f34d90e70a9fae745e3ccf9ace2727f13f6153e8789e3e0fdbd1711037",
+          "fonts/type1/public/newpx/pxbsys.pfb": "9b4a8239eaa233143ca0ed6cb8670db72ee78ae6ffb9fe99e5bdfec634aeff7f",
+          "fonts/type1/public/newpx/pxmiaX.pfb": "9c5536b5fe65d342b65cf4197a232205c83dbed3371130ade882288f9a2cb416",
+          "fonts/type1/public/newpx/pxsys.pfb": "2d86fd63b57e7476fb6ecba9fcd60853209b31b73c5d7ae64d66a3d5a489dfbf",
+          "fonts/type1/public/newpx/zplb.pfb": "316b1fda08938a56b0c4e719a4d02136d52bf39f5c59e6959712d3f410d843c7",
+          "fonts/type1/public/newpx/zplbi.pfb": "d056a350ef10ae6337dbc566c1abac7fa8d68894290c411835cf645612cca7be",
+          "fonts/type1/public/newpx/zplbsl.pfb": "271a3b827b81db9fb22e333d03c6114737f9f738323c5751701b01cc82cf0777",
+          "fonts/type1/public/newpx/zplr.pfb": "a1ac9a6c7de4f108e108efb6bb2549576e784011e10e52ca6fb262907a28d647",
+          "fonts/type1/public/newpx/zplri.pfb": "aa35641494c72347328c78c394fa3fca07d69b2200cc0a87232771511889e87c",
+          "fonts/type1/public/newpx/zplrsl.pfb": "3a87c4662087dc75ba28441dd33de795fd8e7254ed14e3eefe765d08e83adddf",
+          "fonts/type1/public/newpx/zplx-bold.pfb": "9200ecc681431127570020f4614f4097bc5c1cff5b95602f52c6a124a225625c",
+          "fonts/type1/public/newpx/zplx-regular.pfb": "a9ce90c04bf3844fd1369650e13b9a5d87607571b941e6837d12ccda9d0fd243",
+          "fonts/vf/public/newpx/zplbbmi.vf": "70d7235272a0408c88d1b4feb28b7c3b59d90eb490ffcef8f7543abe4032acaf",
+          "fonts/vf/public/newpx/zplbbmi1.vf": "bd1e710715378be0f04f479f90a05ad5d975c618cc8aa74528f450e096d23c82",
+          "fonts/vf/public/newpx/zplbexa.vf": "36af58a4c4ddefef5ef22ad3fcab172dcefe0e7d1b3938b088e5410a4cbf3513",
+          "fonts/vf/public/newpx/zplbexx.vf": "ecbfd5e10c79e69c51e72f65b9013ac2c486c61f2355287a8d41fd99dd8eed82",
+          "fonts/vf/public/newpx/zplbmi.vf": "cf8a5fbf5ff7d9d5c926f1226474307bbd20db222866f92c9af0416d7f18f974",
+          "fonts/vf/public/newpx/zplbmi0.vf": "3c0a4e46812e3053e8bde2cbbf028c2404eb732593d2d271c78aa3b4061dd696",
+          "fonts/vf/public/newpx/zplbmi1.vf": "745753406c18d012a06d17476e73a91e25ee2492014f7e306dd5450c20772277",
+          "fonts/vf/public/newpx/zplbmia.vf": "5da889a5e5e45dd7c4a6158aec8fbd6aafef7832ac4479775885e631f7ea66f4",
+          "fonts/vf/public/newpx/zplbsyc.vf": "c5e068b8fa62ac43b9bb51994e410ac69cb45e38937e48ae36c88e3a1ced9b6b",
+          "fonts/vf/public/newpx/zplbsym.vf": "8ad0d75b80b77de6251767bf2c1fdefa2886151157f2af38724cf602f50ac082",
+          "fonts/vf/public/newpx/zplexa.vf": "bb6ac6d451b385d5086b0356548da168c7a6eca88d49aec702c5fdce8295fa35",
+          "fonts/vf/public/newpx/zplexx.vf": "ce2b0363588b4e97a9e06d4bd041a89d0a8dd9137038b6c5c449f2559bba32c2",
+          "fonts/vf/public/newpx/zplmi.vf": "fee8bf05c2a713e81ca1e4e246f10c7507c56a8ff5eb615bab8ccfd28e4d9f58",
+          "fonts/vf/public/newpx/zplmi1.vf": "b1fd4bf5fe8c3e67094af3e46204f6e17e3debaf133b7945d3480d930e86f53f",
+          "fonts/vf/public/newpx/zplmia.vf": "f818c694c2ef2a925a59a9e3c2735d8b833642f1ba9de8e25f44517f7b81f5de",
+          "fonts/vf/public/newpx/zplsyc.vf": "94b0cd39f2f17310660f63a560e540aeba20987e88e1112a38299bbb8ab1cec5",
+          "fonts/vf/public/newpx/zplsym.vf": "61c997ec7b009b10aa23ba9b57975206fcb39d23b948fe9a20f6c330efe273ec"
+        }
+      }
+    },
+    "map_roots": {
+      "output_map": "fonts/map/pdftex/updmap/pdftex.map",
+      "total_entries": 12104,
+      "roots": {
+        "fonts/map/dvips/avantgar/uag.map": {
+          "sha256": "103e344e86ff4dbd87416479421e06601b04bd3e1b2a5740fc0fe0e4b5dd5586",
+          "added_entries": 4,
+          "unavailable_entries": 12
+        },
+        "fonts/map/dvips/ebgaramond-maths/EBGaramond-Maths.map": {
+          "sha256": "3f86f816c9c17e5619466e94fcd600b78e0842136b5852adad2b91f660608401",
+          "added_entries": 5,
+          "unavailable_entries": 0
+        },
+        "fonts/map/dvips/fourier/fourier.map": {
+          "sha256": "d89cd51dbbdf6452da8989ff28d66ad1524119b56c26913f44ad5e79f145818f",
+          "added_entries": 6,
+          "unavailable_entries": 21
+        },
+        "fonts/map/dvips/gfsneohellenic/gfsneohellenic.map": {
+          "sha256": "10e892feb8b785ff8a8d8b9b4cc85dcb843babd6962c8f4027a0ab1f8c46cc35",
+          "added_entries": 1,
+          "unavailable_entries": 28
+        },
+        "fonts/map/dvips/libertinegc/libertinegc.map": {
+          "sha256": "cee1a7e5d7ac90354635f073aef5b159fe3de5a7cf4c23c9fdad49fbd9702890",
+          "added_entries": 54,
+          "unavailable_entries": 0
+        },
+        "fonts/map/dvips/mathdesign/mdbch.map": {
+          "sha256": "0f605af9508bd6d7a521e177dab9a8cea1dc7de0c83cfa2a0dc9b62df064b1f1",
+          "added_entries": 6,
+          "unavailable_entries": 4
+        },
+        "fonts/map/dvips/mathdesign/mdici.map": {
+          "sha256": "ef0bff368c36086258723bcc52d0c70668ff3ee5c94ce9b60cd463f3f8fb3b00",
+          "added_entries": 24,
+          "unavailable_entries": 30
+        },
+        "fonts/map/dvips/mathdesign/mdpgd.map": {
+          "sha256": "28eb93e15f9e74195c56f52573a858bbba1a170e04a39df9d364b2f9c3bb277a",
+          "added_entries": 24,
+          "unavailable_entries": 30
+        },
+        "fonts/map/dvips/mathdesign/mdpus.map": {
+          "sha256": "a846aa80c64eb61355104a6fea0360fd626227b9570742306bfa6a5fb342a992",
+          "added_entries": 24,
+          "unavailable_entries": 30
+        },
+        "fonts/map/dvips/mathdesign/mdput.map": {
+          "sha256": "4eca78dde22a0948622e1b90d52629e7c7260c87ced6ed16e9fa8f6399b10e18",
+          "added_entries": 6,
+          "unavailable_entries": 0
+        },
+        "fonts/map/dvips/mathdesign/mdugm.map": {
+          "sha256": "344043f4b3651a8c31643e443e8022a33fb60ddc230e84d040f27b886c7c0b7a",
+          "added_entries": 6,
+          "unavailable_entries": 6
+        },
+        "fonts/map/dvips/psnfss/fpls.map": {
+          "sha256": "1a038c474098e8718d3cd40bdb9eb7bb4c0f459c402c941bf00f3bd89d99e4a1",
+          "added_entries": 4,
+          "unavailable_entries": 0
+        },
+        "fonts/map/dvips/rsfso/rsfso.map": {
+          "sha256": "907d746c45972b0ec1436ce4b6327d96c247ef4955de5cfd5bc777daec49b033",
+          "added_entries": 3,
+          "unavailable_entries": 0
+        },
+        "fonts/map/dvips/srbtiks/srbtiks.map": {
+          "sha256": "832dd6567446cb2b65ec9200803bbd87364198d8b0904ec33f3acc014fcf5167",
+          "added_entries": 6,
+          "unavailable_entries": 0
+        },
+        "fonts/map/dvips/newpx/newpx.map": {
+          "sha256": "ac061231a5e7d0b1d184def4da4da47d164f4ecbe21fafc53d7b39a7690d0d45",
+          "added_entries": 333,
+          "unavailable_entries": 0
+        }
+      },
+      "unavailable_entries": [
+        {
+          "tfm": "uagr8r",
+          "map": "fonts/map/dvips/avantgar/uag.map",
+          "line": "uagr8r URWGothicL-Book \"TeXBase1Encoding ReEncodeFont\" <8r.enc <uagr8a.pfb",
+          "missing": [
+            "uagr8a.pfb"
+          ]
+        },
+        {
+          "tfm": "uagri8r",
+          "map": "fonts/map/dvips/avantgar/uag.map",
+          "line": "uagri8r URWGothicL-BookObli \"TeXBase1Encoding ReEncodeFont\" <8r.enc <uagri8a.pfb",
+          "missing": [
+            "uagri8a.pfb"
+          ]
+        },
+        {
+          "tfm": "uagb8r",
+          "map": "fonts/map/dvips/avantgar/uag.map",
+          "line": "uagb8r URWGothicL-Demi \"TeXBase1Encoding ReEncodeFont\" <8r.enc <uagb8a.pfb",
+          "missing": [
+            "uagb8a.pfb"
+          ]
+        },
+        {
+          "tfm": "uagbi8r",
+          "map": "fonts/map/dvips/avantgar/uag.map",
+          "line": "uagbi8r URWGothicL-DemiObli \"TeXBase1Encoding ReEncodeFont\" <8r.enc <uagbi8a.pfb",
+          "missing": [
+            "uagbi8a.pfb"
+          ]
+        },
+        {
+          "tfm": "uagro8r",
+          "map": "fonts/map/dvips/avantgar/uag.map",
+          "line": "uagro8r URWGothicL-Book \".167 SlantFont TeXBase1Encoding ReEncodeFont\" <8r.enc <uagr8a.pfb",
+          "missing": [
+            "uagr8a.pfb"
+          ]
+        },
+        {
+          "tfm": "uagbo8r",
+          "map": "fonts/map/dvips/avantgar/uag.map",
+          "line": "uagbo8r URWGothicL-Demi \".167 SlantFont TeXBase1Encoding ReEncodeFont\" <8r.enc <uagb8a.pfb",
+          "missing": [
+            "uagb8a.pfb"
+          ]
+        },
+        {
+          "tfm": "uagr8r",
+          "map": "fonts/map/dvips/avantgar/uag.map",
+          "line": "uagr8r URWGothicL-Book \"TeXBase1Encoding ReEncodeFont\" <8r.enc <uagr8a.pfb",
+          "missing": [
+            "uagr8a.pfb"
+          ]
+        },
+        {
+          "tfm": "uagri8r",
+          "map": "fonts/map/dvips/avantgar/uag.map",
+          "line": "uagri8r URWGothicL-BookObli \"TeXBase1Encoding ReEncodeFont\" <8r.enc <uagri8a.pfb",
+          "missing": [
+            "uagri8a.pfb"
+          ]
+        },
+        {
+          "tfm": "uagb8r",
+          "map": "fonts/map/dvips/avantgar/uag.map",
+          "line": "uagb8r URWGothicL-Demi \"TeXBase1Encoding ReEncodeFont\" <8r.enc <uagb8a.pfb",
+          "missing": [
+            "uagb8a.pfb"
+          ]
+        },
+        {
+          "tfm": "uagbi8r",
+          "map": "fonts/map/dvips/avantgar/uag.map",
+          "line": "uagbi8r URWGothicL-DemiObli \"TeXBase1Encoding ReEncodeFont\" <8r.enc <uagbi8a.pfb",
+          "missing": [
+            "uagbi8a.pfb"
+          ]
+        },
+        {
+          "tfm": "uagro8r",
+          "map": "fonts/map/dvips/avantgar/uag.map",
+          "line": "uagro8r URWGothicL-Book \".167 SlantFont TeXBase1Encoding ReEncodeFont\" <8r.enc <uagr8a.pfb",
+          "missing": [
+            "uagr8a.pfb"
+          ]
+        },
+        {
+          "tfm": "uagbo8r",
+          "map": "fonts/map/dvips/avantgar/uag.map",
+          "line": "uagbo8r URWGothicL-Demi \".167 SlantFont TeXBase1Encoding ReEncodeFont\" <8r.enc <uagb8a.pfb",
+          "missing": [
+            "uagb8a.pfb"
+          ]
+        },
+        {
+          "tfm": "fourier-ligs-it",
+          "map": "fonts/map/dvips/fourier/fourier.map",
+          "line": "fourier-ligs-it fourier-ligs-it <fourier-ligs-it.pfb",
+          "missing": [
+            "fourier-ligs-it.pfb"
+          ]
+        },
+        {
+          "tfm": "fourier-ligs",
+          "map": "fonts/map/dvips/fourier/fourier.map",
+          "line": "fourier-ligs fourier-ligs <fourier-ligs.pfb",
+          "missing": [
+            "fourier-ligs.pfb"
+          ]
+        },
+        {
+          "tfm": "fourier-orns",
+          "map": "fonts/map/dvips/fourier/fourier.map",
+          "line": "fourier-orns fourier-orns <fourier-orns.pfb",
+          "missing": [
+            "fourier-orns.pfb"
+          ]
+        },
+        {
+          "tfm": "fourier-alt",
+          "map": "fonts/map/dvips/fourier/fourier.map",
+          "line": "fourier-alt Fourier-Alternate-Roman <fourier-alt.pfb",
+          "missing": [
+            "fourier-alt.pfb"
+          ]
+        },
+        {
+          "tfm": "fourier-alt-semi",
+          "map": "fonts/map/dvips/fourier/fourier.map",
+          "line": "fourier-alt-semi Fourier-Alternate-SemiBold <fourier-alt-semi.pfb",
+          "missing": [
+            "fourier-alt-semi.pfb"
+          ]
+        },
+        {
+          "tfm": "fourier-alt-bold",
+          "map": "fonts/map/dvips/fourier/fourier.map",
+          "line": "fourier-alt-bold Fourier-Alternate-Bold <fourier-alt-bold.pfb",
+          "missing": [
+            "fourier-alt-bold.pfb"
+          ]
+        },
+        {
+          "tfm": "fourier-alt-black",
+          "map": "fonts/map/dvips/fourier/fourier.map",
+          "line": "fourier-alt-black Fourier-Alternate-Black <fourier-alt-black.pfb",
+          "missing": [
+            "fourier-alt-black.pfb"
+          ]
+        },
+        {
+          "tfm": "fourier-alt-ita",
+          "map": "fonts/map/dvips/fourier/fourier.map",
+          "line": "fourier-alt-ita Fourier-Alternate-Italic <fourier-alt-ita.pfb",
+          "missing": [
+            "fourier-alt-ita.pfb"
+          ]
+        },
+        {
+          "tfm": "fourier-alt-semiita",
+          "map": "fonts/map/dvips/fourier/fourier.map",
+          "line": "fourier-alt-semiita Fourier-Alternate-SemItalic <fourier-alt-semiita.pfb",
+          "missing": [
+            "fourier-alt-semiita.pfb"
+          ]
+        },
+        {
+          "tfm": "fourier-alt-boldita",
+          "map": "fonts/map/dvips/fourier/fourier.map",
+          "line": "fourier-alt-boldita Fourier-Alternate-BoldItalic <fourier-alt-boldita.pfb",
+          "missing": [
+            "fourier-alt-boldita.pfb"
+          ]
+        },
+        {
+          "tfm": "fourier-alt-sl",
+          "map": "fonts/map/dvips/fourier/fourier.map",
+          "line": "fourier-alt-sl Fourier-Alternate-Roman \".167 SlantFont\" <fourier-alt.pfb",
+          "missing": [
+            "fourier-alt.pfb"
+          ]
+        },
+        {
+          "tfm": "fourier-alt-semi-sl",
+          "map": "fonts/map/dvips/fourier/fourier.map",
+          "line": "fourier-alt-semi-sl Fourier-Alternate-SemiBold \".167 SlantFont\" <fourier-alt-semi.pfb",
+          "missing": [
+            "fourier-alt-semi.pfb"
+          ]
+        },
+        {
+          "tfm": "fourier-alt-bold-sl",
+          "map": "fonts/map/dvips/fourier/fourier.map",
+          "line": "fourier-alt-bold-sl Fourier-Alternate-Bold \".167 SlantFont\" <fourier-alt-bold.pfb",
+          "missing": [
+            "fourier-alt-bold.pfb"
+          ]
+        },
+        {
+          "tfm": "fourier-bb",
+          "map": "fonts/map/dvips/fourier/fourier.map",
+          "line": "fourier-bb Fourier-Math-BlackBoard <fourier-bb.pfb",
+          "missing": [
+            "fourier-bb.pfb"
+          ]
+        },
+        {
+          "tfm": "fourier-mcl",
+          "map": "fonts/map/dvips/fourier/fourier.map",
+          "line": "fourier-mcl Fourier-Math-Cal <fourier-mcl.pfb",
+          "missing": [
+            "fourier-mcl.pfb"
+          ]
+        },
+        {
+          "tfm": "fourier-mex",
+          "map": "fonts/map/dvips/fourier/fourier.map",
+          "line": "fourier-mex Fourier-Math-Extension <fourier-mex.pfb",
+          "missing": [
+            "fourier-mex.pfb"
+          ]
+        },
+        {
+          "tfm": "fourier-ml",
+          "map": "fonts/map/dvips/fourier/fourier.map",
+          "line": "fourier-ml Fourier-Math-Letters <fourier-ml.pfb",
+          "missing": [
+            "fourier-ml.pfb"
+          ]
+        },
+        {
+          "tfm": "fourier-mlit",
+          "map": "fonts/map/dvips/fourier/fourier.map",
+          "line": "fourier-mlit Fourier-Math-Letters-Italic <fourier-mlit.pfb",
+          "missing": [
+            "fourier-mlit.pfb"
+          ]
+        },
+        {
+          "tfm": "fourier-mlb",
+          "map": "fonts/map/dvips/fourier/fourier.map",
+          "line": "fourier-mlb Fourier-Math-Letters-Bold <fourier-mlb.pfb",
+          "missing": [
+            "fourier-mlb.pfb"
+          ]
+        },
+        {
+          "tfm": "fourier-mlitb",
+          "map": "fonts/map/dvips/fourier/fourier.map",
+          "line": "fourier-mlitb Fourier-Math-Letters-Bold-Italic <fourier-mlitb.pfb",
+          "missing": [
+            "fourier-mlitb.pfb"
+          ]
+        },
+        {
+          "tfm": "fourier-ms",
+          "map": "fonts/map/dvips/fourier/fourier.map",
+          "line": "fourier-ms Fourier-Math-Symbols <fourier-ms.pfb",
+          "missing": [
+            "fourier-ms.pfb"
+          ]
+        },
+        {
+          "tfm": "neohellenicrg9r",
+          "map": "fonts/map/dvips/gfsneohellenic/gfsneohellenic.map",
+          "line": "neohellenicrg9r GFSNeohellenic-Regular \"neohellenicec ReEncodeFont\" <neohellenicec.enc <GFSNeohellenic-Regular.pfb",
+          "missing": [
+            "GFSNeohellenic-Regular.pfb"
+          ]
+        },
+        {
+          "tfm": "neohellenicrg8r",
+          "map": "fonts/map/dvips/gfsneohellenic/gfsneohellenic.map",
+          "line": "neohellenicrg8r GFSNeohellenic-Regular \"neohellenic ReEncodeFont\" <neohellenic.enc <GFSNeohellenic-Regular.pfb",
+          "missing": [
+            "GFSNeohellenic-Regular.pfb"
+          ]
+        },
+        {
+          "tfm": "neohellenico9r",
+          "map": "fonts/map/dvips/gfsneohellenic/gfsneohellenic.map",
+          "line": "neohellenico9r GFSNeohellenic-Regular \"0.168 SlantFont neohellenicec ReEncodeFont\" <neohellenicec.enc <GFSNeohellenic-Regular.pfb",
+          "missing": [
+            "GFSNeohellenic-Regular.pfb"
+          ]
+        },
+        {
+          "tfm": "neohellenico8r",
+          "map": "fonts/map/dvips/gfsneohellenic/gfsneohellenic.map",
+          "line": "neohellenico8r GFSNeohellenic-Regular \"0.168 SlantFont neohellenic ReEncodeFont\" <neohellenic.enc <GFSNeohellenic-Regular.pfb",
+          "missing": [
+            "GFSNeohellenic-Regular.pfb"
+          ]
+        },
+        {
+          "tfm": "neohellenicb9r",
+          "map": "fonts/map/dvips/gfsneohellenic/gfsneohellenic.map",
+          "line": "neohellenicb9r GFSNeohellenic-Bold \"neohellenicec ReEncodeFont\" <neohellenicec.enc <GFSNeohellenic-Bold.pfb",
+          "missing": [
+            "GFSNeohellenic-Bold.pfb"
+          ]
+        },
+        {
+          "tfm": "neohellenicb8r",
+          "map": "fonts/map/dvips/gfsneohellenic/gfsneohellenic.map",
+          "line": "neohellenicb8r GFSNeohellenic-Bold \"neohellenic ReEncodeFont\" <neohellenic.enc <GFSNeohellenic-Bold.pfb",
+          "missing": [
+            "GFSNeohellenic-Bold.pfb"
+          ]
+        },
+        {
+          "tfm": "neohellenicbo9r",
+          "map": "fonts/map/dvips/gfsneohellenic/gfsneohellenic.map",
+          "line": "neohellenicbo9r GFSNeohellenic-Bold \"0.168 SlantFont neohellenicec ReEncodeFont\" <neohellenicec.enc <GFSNeohellenic-Bold.pfb",
+          "missing": [
+            "GFSNeohellenic-Bold.pfb"
+          ]
+        },
+        {
+          "tfm": "neohellenicbo8r",
+          "map": "fonts/map/dvips/gfsneohellenic/gfsneohellenic.map",
+          "line": "neohellenicbo8r GFSNeohellenic-Bold \"0.168 SlantFont neohellenic ReEncodeFont\" <neohellenic.enc <GFSNeohellenic-Bold.pfb",
+          "missing": [
+            "GFSNeohellenic-Bold.pfb"
+          ]
+        },
+        {
+          "tfm": "neohellenici9r",
+          "map": "fonts/map/dvips/gfsneohellenic/gfsneohellenic.map",
+          "line": "neohellenici9r GFSNeohellenic-Italic \"neohellenicec ReEncodeFont\" <neohellenicec.enc <GFSNeohellenic-Italic.pfb",
+          "missing": [
+            "GFSNeohellenic-Italic.pfb"
+          ]
+        },
+        {
+          "tfm": "neohellenici8r",
+          "map": "fonts/map/dvips/gfsneohellenic/gfsneohellenic.map",
+          "line": "neohellenici8r GFSNeohellenic-Italic \"neohellenic ReEncodeFont\" <neohellenic.enc <GFSNeohellenic-Italic.pfb",
+          "missing": [
+            "GFSNeohellenic-Italic.pfb"
+          ]
+        },
+        {
+          "tfm": "neohellenicbi9r",
+          "map": "fonts/map/dvips/gfsneohellenic/gfsneohellenic.map",
+          "line": "neohellenicbi9r GFSNeohellenic-BoldItalic \"neohellenicec ReEncodeFont\" <neohellenicec.enc <GFSNeohellenic-BoldItalic.pfb",
+          "missing": [
+            "GFSNeohellenic-BoldItalic.pfb"
+          ]
+        },
+        {
+          "tfm": "neohellenicbi8r",
+          "map": "fonts/map/dvips/gfsneohellenic/gfsneohellenic.map",
+          "line": "neohellenicbi8r GFSNeohellenic-BoldItalic \"neohellenic ReEncodeFont\" <neohellenic.enc <GFSNeohellenic-BoldItalic.pfb",
+          "missing": [
+            "GFSNeohellenic-BoldItalic.pfb"
+          ]
+        },
+        {
+          "tfm": "neohellenicsc8r",
+          "map": "fonts/map/dvips/gfsneohellenic/gfsneohellenic.map",
+          "line": "neohellenicsc8r GFSNeohellenic-Regular \"neohellenicsc ReEncodeFont\" <neohellenicsc.enc <GFSNeohellenic-Regular.pfb",
+          "missing": [
+            "GFSNeohellenic-Regular.pfb"
+          ]
+        },
+        {
+          "tfm": "neohellenicsc9r",
+          "map": "fonts/map/dvips/gfsneohellenic/gfsneohellenic.map",
+          "line": "neohellenicsc9r GFSNeohellenic-Regular \"neohellenicecsc ReEncodeFont\" <neohellenicecsc.enc <GFSNeohellenic-Regular.pfb",
+          "missing": [
+            "GFSNeohellenic-Regular.pfb"
+          ]
+        },
+        {
+          "tfm": "neohellenicsco8r",
+          "map": "fonts/map/dvips/gfsneohellenic/gfsneohellenic.map",
+          "line": "neohellenicsco8r GFSNeohellenic-Regular \"0.168 SlantFont neohellenicsc ReEncodeFont\" <neohellenicsc.enc <GFSNeohellenic-Regular.pfb",
+          "missing": [
+            "GFSNeohellenic-Regular.pfb"
+          ]
+        },
+        {
+          "tfm": "neohellenicsco9r",
+          "map": "fonts/map/dvips/gfsneohellenic/gfsneohellenic.map",
+          "line": "neohellenicsco9r GFSNeohellenic-Regular \"0.168 SlantFont neohellenicecsc ReEncodeFont\" <neohellenicecsc.enc <GFSNeohellenic-Regular.pfb",
+          "missing": [
+            "GFSNeohellenic-Regular.pfb"
+          ]
+        },
+        {
+          "tfm": "neohellenictabnums8r",
+          "map": "fonts/map/dvips/gfsneohellenic/gfsneohellenic.map",
+          "line": "neohellenictabnums8r GFSNeohellenic-Regular \"neohellenictabnums ReEncodeFont\" <neohellenictabnums.enc <GFSNeohellenic-Regular.pfb",
+          "missing": [
+            "GFSNeohellenic-Regular.pfb"
+          ]
+        },
+        {
+          "tfm": "neohellenicnumnums8r",
+          "map": "fonts/map/dvips/gfsneohellenic/gfsneohellenic.map",
+          "line": "neohellenicnumnums8r GFSNeohellenic-Regular \"neohellenicnumnums ReEncodeFont\" <neohellenicnumnums.enc <GFSNeohellenic-Regular.pfb",
+          "missing": [
+            "GFSNeohellenic-Regular.pfb"
+          ]
+        },
+        {
+          "tfm": "neohellenicdenomnums8r",
+          "map": "fonts/map/dvips/gfsneohellenic/gfsneohellenic.map",
+          "line": "neohellenicdenomnums8r GFSNeohellenic-Regular \"neohellenicdenomnums ReEncodeFont\" <neohellenicdenomnums.enc <GFSNeohellenic-Regular.pfb",
+          "missing": [
+            "GFSNeohellenic-Regular.pfb"
+          ]
+        },
+        {
+          "tfm": "gneohellenicrg6r",
+          "map": "fonts/map/dvips/gfsneohellenic/gfsneohellenic.map",
+          "line": "gneohellenicrg6r GFSNeohellenic-Regular \"neohellenicel ReEncodeFont\" <neohellenicel.enc <GFSNeohellenic-Regular.pfb",
+          "missing": [
+            "GFSNeohellenic-Regular.pfb"
+          ]
+        },
+        {
+          "tfm": "gneohellenicb6r",
+          "map": "fonts/map/dvips/gfsneohellenic/gfsneohellenic.map",
+          "line": "gneohellenicb6r GFSNeohellenic-Bold \"neohellenicel ReEncodeFont\" <neohellenicel.enc <GFSNeohellenic-Bold.pfb",
+          "missing": [
+            "GFSNeohellenic-Bold.pfb"
+          ]
+        },
+        {
+          "tfm": "gneohellenicbi6r",
+          "map": "fonts/map/dvips/gfsneohellenic/gfsneohellenic.map",
+          "line": "gneohellenicbi6r GFSNeohellenic-BoldItalic \"neohellenicel ReEncodeFont\" <neohellenicel.enc <GFSNeohellenic-BoldItalic.pfb",
+          "missing": [
+            "GFSNeohellenic-BoldItalic.pfb"
+          ]
+        },
+        {
+          "tfm": "gneohellenici6r",
+          "map": "fonts/map/dvips/gfsneohellenic/gfsneohellenic.map",
+          "line": "gneohellenici6r GFSNeohellenic-Italic \"neohellenicel ReEncodeFont\" <neohellenicel.enc <GFSNeohellenic-Italic.pfb",
+          "missing": [
+            "GFSNeohellenic-Italic.pfb"
+          ]
+        },
+        {
+          "tfm": "gneohellenico6r",
+          "map": "fonts/map/dvips/gfsneohellenic/gfsneohellenic.map",
+          "line": "gneohellenico6r GFSNeohellenic-Regular \"0.168 SlantFont neohellenicel ReEncodeFont\" <neohellenicel.enc <GFSNeohellenic-Regular.pfb",
+          "missing": [
+            "GFSNeohellenic-Regular.pfb"
+          ]
+        },
+        {
+          "tfm": "gneohellenicbo6r",
+          "map": "fonts/map/dvips/gfsneohellenic/gfsneohellenic.map",
+          "line": "gneohellenicbo6r GFSNeohellenic-Bold \"0.168 SlantFont neohellenicel ReEncodeFont\" <neohellenicel.enc <GFSNeohellenic-Bold.pfb",
+          "missing": [
+            "GFSNeohellenic-Bold.pfb"
+          ]
+        },
+        {
+          "tfm": "gneohellenicsc6r",
+          "map": "fonts/map/dvips/gfsneohellenic/gfsneohellenic.map",
+          "line": "gneohellenicsc6r GFSNeohellenic-Regular \"neohellenicelsc ReEncodeFont\" <neohellenicelsc.enc <GFSNeohellenic-Regular.pfb",
+          "missing": [
+            "GFSNeohellenic-Regular.pfb"
+          ]
+        },
+        {
+          "tfm": "gneohellenicsco6r",
+          "map": "fonts/map/dvips/gfsneohellenic/gfsneohellenic.map",
+          "line": "gneohellenicsco6r GFSNeohellenic-Regular \"0.168 SlantFont neohellenicelsc ReEncodeFont\" <neohellenicelsc.enc <GFSNeohellenic-Regular.pfb",
+          "missing": [
+            "GFSNeohellenic-Regular.pfb"
+          ]
+        },
+        {
+          "tfm": "gfsneohellenicmath8r",
+          "map": "fonts/map/dvips/gfsneohellenic/gfsneohellenic.map",
+          "line": "gfsneohellenicmath8r GFSNeohellenic-Italic \"neohellenicmath ReEncodeFont\" <neohellenicmath.enc <GFSNeohellenic-Italic.pfb",
+          "missing": [
+            "GFSNeohellenic-Italic.pfb"
+          ]
+        },
+        {
+          "tfm": "md-chrc8y",
+          "map": "fonts/map/dvips/mathdesign/mdbch.map",
+          "line": "md-chrc8y CharterBT-SmallCap \"TeXnANSIEncoding ReEncodeFont\" <texnansi.enc <bchrc8a.pfb",
+          "missing": [
+            "bchrc8a.pfb"
+          ]
+        },
+        {
+          "tfm": "md-chroc8y",
+          "map": "fonts/map/dvips/mathdesign/mdbch.map",
+          "line": "md-chroc8y  CharterBT-SmallCap \"0.194 SlantFont TeXnANSIEncoding ReEncodeFont\" <texnansi.enc <bchrc8a.pfb",
+          "missing": [
+            "bchrc8a.pfb"
+          ]
+        },
+        {
+          "tfm": "md-chbc8y",
+          "map": "fonts/map/dvips/mathdesign/mdbch.map",
+          "line": "md-chbc8y CharterBT-BoldSmallCap \"TeXnANSIEncoding ReEncodeFont\" <texnansi.enc <bchbc8a.pfb",
+          "missing": [
+            "bchbc8a.pfb"
+          ]
+        },
+        {
+          "tfm": "md-chboc8y",
+          "map": "fonts/map/dvips/mathdesign/mdbch.map",
+          "line": "md-chboc8y  CharterBT-BoldSmallCap \"0.194 SlantFont TeXnANSIEncoding ReEncodeFont\" <texnansi.enc <bchbc8a.pfb",
+          "missing": [
+            "bchbc8a.pfb"
+          ]
+        },
+        {
+          "tfm": "mdxcir7t",
+          "map": "fonts/map/dvips/mathdesign/mdici.map",
+          "line": "mdxcir7t CharterITCStd-Regular \"AutoEnc_e65dz637o7cqwvyygpiptkfqoc ReEncodeFont\" <[a_e65dz6.enc <<CharterITCStd-Regular.otf",
+          "missing": [
+            "CharterITCStd-Regular.otf"
+          ]
+        },
+        {
+          "tfm": "mdxciri7t",
+          "map": "fonts/map/dvips/mathdesign/mdici.map",
+          "line": "mdxciri7t CharterITCStd-Italic \"AutoEnc_e65dz637o7cqwvyygpiptkfqoc ReEncodeFont\" <[a_e65dz6.enc <<CharterITCStd-Italic.otf",
+          "missing": [
+            "CharterITCStd-Italic.otf"
+          ]
+        },
+        {
+          "tfm": "mdxcic7t",
+          "map": "fonts/map/dvips/mathdesign/mdici.map",
+          "line": "mdxcic7t CharterITCStd-Black \"AutoEnc_e65dz637o7cqwvyygpiptkfqoc ReEncodeFont\" <[a_e65dz6.enc <<CharterITCStd-Black.otf",
+          "missing": [
+            "CharterITCStd-Black.otf"
+          ]
+        },
+        {
+          "tfm": "mdxcici7t",
+          "map": "fonts/map/dvips/mathdesign/mdici.map",
+          "line": "mdxcici7t CharterITCStd-BlackItalic \"AutoEnc_e65dz637o7cqwvyygpiptkfqoc ReEncodeFont\" <[a_e65dz6.enc <<CharterITCStd-BlackItalic.otf",
+          "missing": [
+            "CharterITCStd-BlackItalic.otf"
+          ]
+        },
+        {
+          "tfm": "mdxcib7t",
+          "map": "fonts/map/dvips/mathdesign/mdici.map",
+          "line": "mdxcib7t CharterITCStd-Bold \"AutoEnc_e65dz637o7cqwvyygpiptkfqoc ReEncodeFont\" <[a_e65dz6.enc <<CharterITCStd-Bold.otf",
+          "missing": [
+            "CharterITCStd-Bold.otf"
+          ]
+        },
+        {
+          "tfm": "mdxcibi7t",
+          "map": "fonts/map/dvips/mathdesign/mdici.map",
+          "line": "mdxcibi7t CharterITCStd-BoldItalic \"AutoEnc_e65dz637o7cqwvyygpiptkfqoc ReEncodeFont\" <[a_e65dz6.enc <<CharterITCStd-BoldItalic.otf",
+          "missing": [
+            "CharterITCStd-BoldItalic.otf"
+          ]
+        },
+        {
+          "tfm": "mdwcir8t",
+          "map": "fonts/map/dvips/mathdesign/mdici.map",
+          "line": "mdwcir8t CharterITCStd-Regular \"AutoEnc_yezm6gkiomk6g4ibrgjtv7r5nb ReEncodeFont\" <[a_yezm6g.enc <<CharterITCStd-Regular.otf",
+          "missing": [
+            "CharterITCStd-Regular.otf"
+          ]
+        },
+        {
+          "tfm": "mdwciri8t",
+          "map": "fonts/map/dvips/mathdesign/mdici.map",
+          "line": "mdwciri8t CharterITCStd-Italic \"AutoEnc_yezm6gkiomk6g4ibrgjtv7r5nb ReEncodeFont\" <[a_yezm6g.enc <<CharterITCStd-Italic.otf",
+          "missing": [
+            "CharterITCStd-Italic.otf"
+          ]
+        },
+        {
+          "tfm": "mdwcic8t",
+          "map": "fonts/map/dvips/mathdesign/mdici.map",
+          "line": "mdwcic8t CharterITCStd-Black \"AutoEnc_yezm6gkiomk6g4ibrgjtv7r5nb ReEncodeFont\" <[a_yezm6g.enc <<CharterITCStd-Black.otf",
+          "missing": [
+            "CharterITCStd-Black.otf"
+          ]
+        },
+        {
+          "tfm": "mdwcici8t",
+          "map": "fonts/map/dvips/mathdesign/mdici.map",
+          "line": "mdwcici8t CharterITCStd-BlackItalic \"AutoEnc_yezm6gkiomk6g4ibrgjtv7r5nb ReEncodeFont\" <[a_yezm6g.enc <<CharterITCStd-BlackItalic.otf",
+          "missing": [
+            "CharterITCStd-BlackItalic.otf"
+          ]
+        },
+        {
+          "tfm": "mdwcib8t",
+          "map": "fonts/map/dvips/mathdesign/mdici.map",
+          "line": "mdwcib8t CharterITCStd-Bold \"AutoEnc_yezm6gkiomk6g4ibrgjtv7r5nb ReEncodeFont\" <[a_yezm6g.enc <<CharterITCStd-Bold.otf",
+          "missing": [
+            "CharterITCStd-Bold.otf"
+          ]
+        },
+        {
+          "tfm": "mdwcibi8t",
+          "map": "fonts/map/dvips/mathdesign/mdici.map",
+          "line": "mdwcibi8t CharterITCStd-BoldItalic \"AutoEnc_yezm6gkiomk6g4ibrgjtv7r5nb ReEncodeFont\" <[a_yezm6g.enc <<CharterITCStd-BoldItalic.otf",
+          "missing": [
+            "CharterITCStd-BoldItalic.otf"
+          ]
+        },
+        {
+          "tfm": "mdwcirc8t",
+          "map": "fonts/map/dvips/mathdesign/mdici.map",
+          "line": "mdwcirc8t CharterITCStd-Regular \"AutoEnc_mdpn2kkihc7m3orgc2u6d6djmf ReEncodeFont\" <[a_mdpn2k.enc <<CharterITCStd-Regular.otf",
+          "missing": [
+            "CharterITCStd-Regular.otf"
+          ]
+        },
+        {
+          "tfm": "mdwciric8t",
+          "map": "fonts/map/dvips/mathdesign/mdici.map",
+          "line": "mdwciric8t CharterITCStd-Italic \"AutoEnc_g47ck75qhccfvn2qnetc7njwfe ReEncodeFont\" <[a_g47ck7.enc <<CharterITCStd-Italic.otf",
+          "missing": [
+            "CharterITCStd-Italic.otf"
+          ]
+        },
+        {
+          "tfm": "mdwcicc8t",
+          "map": "fonts/map/dvips/mathdesign/mdici.map",
+          "line": "mdwcicc8t CharterITCStd-Black \"AutoEnc_g47ck75qhccfvn2qnetc7njwfe ReEncodeFont\" <[a_g47ck7.enc <<CharterITCStd-Black.otf",
+          "missing": [
+            "CharterITCStd-Black.otf"
+          ]
+        },
+        {
+          "tfm": "mdwcicic8t",
+          "map": "fonts/map/dvips/mathdesign/mdici.map",
+          "line": "mdwcicic8t CharterITCStd-BlackItalic \"AutoEnc_g47ck75qhccfvn2qnetc7njwfe ReEncodeFont\" <[a_g47ck7.enc <<CharterITCStd-BlackItalic.otf",
+          "missing": [
+            "CharterITCStd-BlackItalic.otf"
+          ]
+        },
+        {
+          "tfm": "mdwcibc8t",
+          "map": "fonts/map/dvips/mathdesign/mdici.map",
+          "line": "mdwcibc8t CharterITCStd-Bold \"AutoEnc_mdpn2kkihc7m3orgc2u6d6djmf ReEncodeFont\" <[a_mdpn2k.enc <<CharterITCStd-Bold.otf",
+          "missing": [
+            "CharterITCStd-Bold.otf"
+          ]
+        },
+        {
+          "tfm": "mdwcibic8t",
+          "map": "fonts/map/dvips/mathdesign/mdici.map",
+          "line": "mdwcibic8t CharterITCStd-BoldItalic \"AutoEnc_g47ck75qhccfvn2qnetc7njwfe ReEncodeFont\" <[a_g47ck7.enc <<CharterITCStd-BoldItalic.otf",
+          "missing": [
+            "CharterITCStd-BoldItalic.otf"
+          ]
+        },
+        {
+          "tfm": "mdwcir7m",
+          "map": "fonts/map/dvips/mathdesign/mdici.map",
+          "line": "mdwcir7m CharterITCStd-Regular \"AutoEnc_57soyvhaplkw2znwmcja6yvwjb ReEncodeFont\" <[a_57soyv.enc <<CharterITCStd-Regular.otf",
+          "missing": [
+            "CharterITCStd-Regular.otf"
+          ]
+        },
+        {
+          "tfm": "mdwciri7m",
+          "map": "fonts/map/dvips/mathdesign/mdici.map",
+          "line": "mdwciri7m CharterITCStd-Italic \"AutoEnc_57soyvhaplkw2znwmcja6yvwjb ReEncodeFont\" <[a_57soyv.enc <<CharterITCStd-Italic.otf",
+          "missing": [
+            "CharterITCStd-Italic.otf"
+          ]
+        },
+        {
+          "tfm": "mdwcic7m",
+          "map": "fonts/map/dvips/mathdesign/mdici.map",
+          "line": "mdwcic7m CharterITCStd-Black \"AutoEnc_57soyvhaplkw2znwmcja6yvwjb ReEncodeFont\" <[a_57soyv.enc <<CharterITCStd-Black.otf",
+          "missing": [
+            "CharterITCStd-Black.otf"
+          ]
+        },
+        {
+          "tfm": "mdwcici7m",
+          "map": "fonts/map/dvips/mathdesign/mdici.map",
+          "line": "mdwcici7m CharterITCStd-BlackItalic \"AutoEnc_57soyvhaplkw2znwmcja6yvwjb ReEncodeFont\" <[a_57soyv.enc <<CharterITCStd-BlackItalic.otf",
+          "missing": [
+            "CharterITCStd-BlackItalic.otf"
+          ]
+        },
+        {
+          "tfm": "mdwcib7m",
+          "map": "fonts/map/dvips/mathdesign/mdici.map",
+          "line": "mdwcib7m CharterITCStd-Bold \"AutoEnc_57soyvhaplkw2znwmcja6yvwjb ReEncodeFont\" <[a_57soyv.enc <<CharterITCStd-Bold.otf",
+          "missing": [
+            "CharterITCStd-Bold.otf"
+          ]
+        },
+        {
+          "tfm": "mdwcibi7m",
+          "map": "fonts/map/dvips/mathdesign/mdici.map",
+          "line": "mdwcibi7m CharterITCStd-BoldItalic \"AutoEnc_57soyvhaplkw2znwmcja6yvwjb ReEncodeFont\" <[a_57soyv.enc <<CharterITCStd-BoldItalic.otf",
+          "missing": [
+            "CharterITCStd-BoldItalic.otf"
+          ]
+        },
+        {
+          "tfm": "mdwcir7y",
+          "map": "fonts/map/dvips/mathdesign/mdici.map",
+          "line": "mdwcir7y CharterITCStd-Regular \"AutoEnc_2dncezzlgsotmj25c5upfsfdih ReEncodeFont\" <[a_2dncez.enc <<CharterITCStd-Regular.otf",
+          "missing": [
+            "CharterITCStd-Regular.otf"
+          ]
+        },
+        {
+          "tfm": "mdwciri7y",
+          "map": "fonts/map/dvips/mathdesign/mdici.map",
+          "line": "mdwciri7y CharterITCStd-Italic \"AutoEnc_2dncezzlgsotmj25c5upfsfdih ReEncodeFont\" <[a_2dncez.enc <<CharterITCStd-Italic.otf",
+          "missing": [
+            "CharterITCStd-Italic.otf"
+          ]
+        },
+        {
+          "tfm": "mdwcic7y",
+          "map": "fonts/map/dvips/mathdesign/mdici.map",
+          "line": "mdwcic7y CharterITCStd-Black \"AutoEnc_2dncezzlgsotmj25c5upfsfdih ReEncodeFont\" <[a_2dncez.enc <<CharterITCStd-Black.otf",
+          "missing": [
+            "CharterITCStd-Black.otf"
+          ]
+        },
+        {
+          "tfm": "mdwcici7y",
+          "map": "fonts/map/dvips/mathdesign/mdici.map",
+          "line": "mdwcici7y CharterITCStd-BlackItalic \"AutoEnc_2dncezzlgsotmj25c5upfsfdih ReEncodeFont\" <[a_2dncez.enc <<CharterITCStd-BlackItalic.otf",
+          "missing": [
+            "CharterITCStd-BlackItalic.otf"
+          ]
+        },
+        {
+          "tfm": "mdwcib7y",
+          "map": "fonts/map/dvips/mathdesign/mdici.map",
+          "line": "mdwcib7y CharterITCStd-Bold \"AutoEnc_2dncezzlgsotmj25c5upfsfdih ReEncodeFont\" <[a_2dncez.enc <<CharterITCStd-Bold.otf",
+          "missing": [
+            "CharterITCStd-Bold.otf"
+          ]
+        },
+        {
+          "tfm": "mdwcibi7y",
+          "map": "fonts/map/dvips/mathdesign/mdici.map",
+          "line": "mdwcibi7y CharterITCStd-BoldItalic \"AutoEnc_2dncezzlgsotmj25c5upfsfdih ReEncodeFont\" <[a_2dncez.enc <<CharterITCStd-BoldItalic.otf",
+          "missing": [
+            "CharterITCStd-BoldItalic.otf"
+          ]
+        },
+        {
+          "tfm": "mdxgdr7t",
+          "map": "fonts/map/dvips/mathdesign/mdpgd.map",
+          "line": "mdxgdr7t AGaramondPro-Regular \"AutoEnc_qnfjtts5fbw4m7yoepdborzg7h ReEncodeFont\" <[a_qnfjtt.enc <<AGaramondPro-Regular.otf",
+          "missing": [
+            "AGaramondPro-Regular.otf"
+          ]
+        },
+        {
+          "tfm": "mdxgdri7t",
+          "map": "fonts/map/dvips/mathdesign/mdpgd.map",
+          "line": "mdxgdri7t AGaramondPro-Italic \"AutoEnc_qnfjtts5fbw4m7yoepdborzg7h ReEncodeFont\" <[a_qnfjtt.enc <<AGaramondPro-Italic.otf",
+          "missing": [
+            "AGaramondPro-Italic.otf"
+          ]
+        },
+        {
+          "tfm": "mdxgds7t",
+          "map": "fonts/map/dvips/mathdesign/mdpgd.map",
+          "line": "mdxgds7t AGaramondPro-Semibold \"AutoEnc_qnfjtts5fbw4m7yoepdborzg7h ReEncodeFont\" <[a_qnfjtt.enc <<AGaramondPro-Semibold.otf",
+          "missing": [
+            "AGaramondPro-Semibold.otf"
+          ]
+        },
+        {
+          "tfm": "mdxgdsi7t",
+          "map": "fonts/map/dvips/mathdesign/mdpgd.map",
+          "line": "mdxgdsi7t AGaramondPro-SemiboldItalic \"AutoEnc_qnfjtts5fbw4m7yoepdborzg7h ReEncodeFont\" <[a_qnfjtt.enc <<AGaramondPro-SemiboldItalic.otf",
+          "missing": [
+            "AGaramondPro-SemiboldItalic.otf"
+          ]
+        },
+        {
+          "tfm": "mdxgdb7t",
+          "map": "fonts/map/dvips/mathdesign/mdpgd.map",
+          "line": "mdxgdb7t AGaramondPro-Bold \"AutoEnc_qnfjtts5fbw4m7yoepdborzg7h ReEncodeFont\" <[a_qnfjtt.enc <<AGaramondPro-Bold.otf",
+          "missing": [
+            "AGaramondPro-Bold.otf"
+          ]
+        },
+        {
+          "tfm": "mdxgdbi7t",
+          "map": "fonts/map/dvips/mathdesign/mdpgd.map",
+          "line": "mdxgdbi7t AGaramondPro-BoldItalic \"AutoEnc_qnfjtts5fbw4m7yoepdborzg7h ReEncodeFont\" <[a_qnfjtt.enc <<AGaramondPro-BoldItalic.otf",
+          "missing": [
+            "AGaramondPro-BoldItalic.otf"
+          ]
+        },
+        {
+          "tfm": "mdwgdr8t",
+          "map": "fonts/map/dvips/mathdesign/mdpgd.map",
+          "line": "mdwgdr8t AGaramondPro-Regular \"AutoEnc_csqf633h5kovjwhnfrdbqmo3bg ReEncodeFont\" <[a_csqf63.enc <<AGaramondPro-Regular.otf",
+          "missing": [
+            "AGaramondPro-Regular.otf"
+          ]
+        },
+        {
+          "tfm": "mdwgdri8t",
+          "map": "fonts/map/dvips/mathdesign/mdpgd.map",
+          "line": "mdwgdri8t AGaramondPro-Italic \"AutoEnc_csqf633h5kovjwhnfrdbqmo3bg ReEncodeFont\" <[a_csqf63.enc <<AGaramondPro-Italic.otf",
+          "missing": [
+            "AGaramondPro-Italic.otf"
+          ]
+        },
+        {
+          "tfm": "mdwgds8t",
+          "map": "fonts/map/dvips/mathdesign/mdpgd.map",
+          "line": "mdwgds8t AGaramondPro-Semibold \"AutoEnc_csqf633h5kovjwhnfrdbqmo3bg ReEncodeFont\" <[a_csqf63.enc <<AGaramondPro-Semibold.otf",
+          "missing": [
+            "AGaramondPro-Semibold.otf"
+          ]
+        },
+        {
+          "tfm": "mdwgdsi8t",
+          "map": "fonts/map/dvips/mathdesign/mdpgd.map",
+          "line": "mdwgdsi8t AGaramondPro-SemiboldItalic \"AutoEnc_csqf633h5kovjwhnfrdbqmo3bg ReEncodeFont\" <[a_csqf63.enc <<AGaramondPro-SemiboldItalic.otf",
+          "missing": [
+            "AGaramondPro-SemiboldItalic.otf"
+          ]
+        },
+        {
+          "tfm": "mdwgdb8t",
+          "map": "fonts/map/dvips/mathdesign/mdpgd.map",
+          "line": "mdwgdb8t AGaramondPro-Bold \"AutoEnc_csqf633h5kovjwhnfrdbqmo3bg ReEncodeFont\" <[a_csqf63.enc <<AGaramondPro-Bold.otf",
+          "missing": [
+            "AGaramondPro-Bold.otf"
+          ]
+        },
+        {
+          "tfm": "mdwgdbi8t",
+          "map": "fonts/map/dvips/mathdesign/mdpgd.map",
+          "line": "mdwgdbi8t AGaramondPro-BoldItalic \"AutoEnc_csqf633h5kovjwhnfrdbqmo3bg ReEncodeFont\" <[a_csqf63.enc <<AGaramondPro-BoldItalic.otf",
+          "missing": [
+            "AGaramondPro-BoldItalic.otf"
+          ]
+        },
+        {
+          "tfm": "mdwgdrc8t",
+          "map": "fonts/map/dvips/mathdesign/mdpgd.map",
+          "line": "mdwgdrc8t AGaramondPro-Regular \"AutoEnc_uwwzqdnqkoasp2zz5ydy6ddh4e ReEncodeFont\" <[a_uwwzqd.enc <<AGaramondPro-Regular.otf",
+          "missing": [
+            "AGaramondPro-Regular.otf"
+          ]
+        },
+        {
+          "tfm": "mdwgdric8t",
+          "map": "fonts/map/dvips/mathdesign/mdpgd.map",
+          "line": "mdwgdric8t AGaramondPro-Italic \"AutoEnc_r2nxhwr6crlkteus6sk7hrwhmc ReEncodeFont\" <[a_r2nxhw.enc <<AGaramondPro-Italic.otf",
+          "missing": [
+            "AGaramondPro-Italic.otf"
+          ]
+        },
+        {
+          "tfm": "mdwgdsc8t",
+          "map": "fonts/map/dvips/mathdesign/mdpgd.map",
+          "line": "mdwgdsc8t AGaramondPro-Semibold \"AutoEnc_uwwzqdnqkoasp2zz5ydy6ddh4e ReEncodeFont\" <[a_uwwzqd.enc <<AGaramondPro-Semibold.otf",
+          "missing": [
+            "AGaramondPro-Semibold.otf"
+          ]
+        },
+        {
+          "tfm": "mdwgdsic8t",
+          "map": "fonts/map/dvips/mathdesign/mdpgd.map",
+          "line": "mdwgdsic8t AGaramondPro-SemiboldItalic \"AutoEnc_r2nxhwr6crlkteus6sk7hrwhmc ReEncodeFont\" <[a_r2nxhw.enc <<AGaramondPro-SemiboldItalic.otf",
+          "missing": [
+            "AGaramondPro-SemiboldItalic.otf"
+          ]
+        },
+        {
+          "tfm": "mdwgdbc8t",
+          "map": "fonts/map/dvips/mathdesign/mdpgd.map",
+          "line": "mdwgdbc8t AGaramondPro-Bold \"AutoEnc_r2nxhwr6crlkteus6sk7hrwhmc ReEncodeFont\" <[a_r2nxhw.enc <<AGaramondPro-Bold.otf",
+          "missing": [
+            "AGaramondPro-Bold.otf"
+          ]
+        },
+        {
+          "tfm": "mdwgdbic8t",
+          "map": "fonts/map/dvips/mathdesign/mdpgd.map",
+          "line": "mdwgdbic8t AGaramondPro-BoldItalic \"AutoEnc_r2nxhwr6crlkteus6sk7hrwhmc ReEncodeFont\" <[a_r2nxhw.enc <<AGaramondPro-BoldItalic.otf",
+          "missing": [
+            "AGaramondPro-BoldItalic.otf"
+          ]
+        },
+        {
+          "tfm": "mdwgdr7m",
+          "map": "fonts/map/dvips/mathdesign/mdpgd.map",
+          "line": "mdwgdr7m AGaramondPro-Regular \"AutoEnc_rxz3gakradgzhwy6noqjqtqq2g ReEncodeFont\" <[a_rxz3ga.enc <<AGaramondPro-Regular.otf",
+          "missing": [
+            "AGaramondPro-Regular.otf"
+          ]
+        },
+        {
+          "tfm": "mdwgdri7m",
+          "map": "fonts/map/dvips/mathdesign/mdpgd.map",
+          "line": "mdwgdri7m AGaramondPro-Italic \"AutoEnc_rxz3gakradgzhwy6noqjqtqq2g ReEncodeFont\" <[a_rxz3ga.enc <<AGaramondPro-Italic.otf",
+          "missing": [
+            "AGaramondPro-Italic.otf"
+          ]
+        },
+        {
+          "tfm": "mdwgds7m",
+          "map": "fonts/map/dvips/mathdesign/mdpgd.map",
+          "line": "mdwgds7m AGaramondPro-Semibold \"AutoEnc_rxz3gakradgzhwy6noqjqtqq2g ReEncodeFont\" <[a_rxz3ga.enc <<AGaramondPro-Semibold.otf",
+          "missing": [
+            "AGaramondPro-Semibold.otf"
+          ]
+        },
+        {
+          "tfm": "mdwgdsi7m",
+          "map": "fonts/map/dvips/mathdesign/mdpgd.map",
+          "line": "mdwgdsi7m AGaramondPro-SemiboldItalic \"AutoEnc_rxz3gakradgzhwy6noqjqtqq2g ReEncodeFont\" <[a_rxz3ga.enc <<AGaramondPro-SemiboldItalic.otf",
+          "missing": [
+            "AGaramondPro-SemiboldItalic.otf"
+          ]
+        },
+        {
+          "tfm": "mdwgdb7m",
+          "map": "fonts/map/dvips/mathdesign/mdpgd.map",
+          "line": "mdwgdb7m AGaramondPro-Bold \"AutoEnc_rxz3gakradgzhwy6noqjqtqq2g ReEncodeFont\" <[a_rxz3ga.enc <<AGaramondPro-Bold.otf",
+          "missing": [
+            "AGaramondPro-Bold.otf"
+          ]
+        },
+        {
+          "tfm": "mdwgdbi7m",
+          "map": "fonts/map/dvips/mathdesign/mdpgd.map",
+          "line": "mdwgdbi7m AGaramondPro-BoldItalic \"AutoEnc_rxz3gakradgzhwy6noqjqtqq2g ReEncodeFont\" <[a_rxz3ga.enc <<AGaramondPro-BoldItalic.otf",
+          "missing": [
+            "AGaramondPro-BoldItalic.otf"
+          ]
+        },
+        {
+          "tfm": "mdwgdr7y",
+          "map": "fonts/map/dvips/mathdesign/mdpgd.map",
+          "line": "mdwgdr7y AGaramondPro-Regular \"AutoEnc_n2elajvmo4s2erswmiyylyonvb ReEncodeFont\" <[a_n2elaj.enc <<AGaramondPro-Regular.otf",
+          "missing": [
+            "AGaramondPro-Regular.otf"
+          ]
+        },
+        {
+          "tfm": "mdwgdri7y",
+          "map": "fonts/map/dvips/mathdesign/mdpgd.map",
+          "line": "mdwgdri7y AGaramondPro-Italic \"AutoEnc_n2elajvmo4s2erswmiyylyonvb ReEncodeFont\" <[a_n2elaj.enc <<AGaramondPro-Italic.otf",
+          "missing": [
+            "AGaramondPro-Italic.otf"
+          ]
+        },
+        {
+          "tfm": "mdwgds7y",
+          "map": "fonts/map/dvips/mathdesign/mdpgd.map",
+          "line": "mdwgds7y AGaramondPro-Semibold \"AutoEnc_n2elajvmo4s2erswmiyylyonvb ReEncodeFont\" <[a_n2elaj.enc <<AGaramondPro-Semibold.otf",
+          "missing": [
+            "AGaramondPro-Semibold.otf"
+          ]
+        },
+        {
+          "tfm": "mdwgdsi7y",
+          "map": "fonts/map/dvips/mathdesign/mdpgd.map",
+          "line": "mdwgdsi7y AGaramondPro-SemiboldItalic \"AutoEnc_n2elajvmo4s2erswmiyylyonvb ReEncodeFont\" <[a_n2elaj.enc <<AGaramondPro-SemiboldItalic.otf",
+          "missing": [
+            "AGaramondPro-SemiboldItalic.otf"
+          ]
+        },
+        {
+          "tfm": "mdwgdb7y",
+          "map": "fonts/map/dvips/mathdesign/mdpgd.map",
+          "line": "mdwgdb7y AGaramondPro-Bold \"AutoEnc_n2elajvmo4s2erswmiyylyonvb ReEncodeFont\" <[a_n2elaj.enc <<AGaramondPro-Bold.otf",
+          "missing": [
+            "AGaramondPro-Bold.otf"
+          ]
+        },
+        {
+          "tfm": "mdwgdbi7y",
+          "map": "fonts/map/dvips/mathdesign/mdpgd.map",
+          "line": "mdwgdbi7y AGaramondPro-BoldItalic \"AutoEnc_n2elajvmo4s2erswmiyylyonvb ReEncodeFont\" <[a_n2elaj.enc <<AGaramondPro-BoldItalic.otf",
+          "missing": [
+            "AGaramondPro-BoldItalic.otf"
+          ]
+        },
+        {
+          "tfm": "mdxusr7t",
+          "map": "fonts/map/dvips/mathdesign/mdpus.map",
+          "line": "mdxusr7t UtopiaStd-Regular \"AutoEnc_ipzj2offlew6ufwnzemqj6eetc ReEncodeFont\" <[a_ipzj2o.enc <<UtopiaStd-Regular.otf",
+          "missing": [
+            "UtopiaStd-Regular.otf"
+          ]
+        },
+        {
+          "tfm": "mdxusri7t",
+          "map": "fonts/map/dvips/mathdesign/mdpus.map",
+          "line": "mdxusri7t UtopiaStd-Italic \"AutoEnc_ipzj2offlew6ufwnzemqj6eetc ReEncodeFont\" <[a_ipzj2o.enc <<UtopiaStd-Italic.otf",
+          "missing": [
+            "UtopiaStd-Italic.otf"
+          ]
+        },
+        {
+          "tfm": "mdxuss7t",
+          "map": "fonts/map/dvips/mathdesign/mdpus.map",
+          "line": "mdxuss7t UtopiaStd-Semibold \"AutoEnc_ipzj2offlew6ufwnzemqj6eetc ReEncodeFont\" <[a_ipzj2o.enc <<UtopiaStd-Semibold.otf",
+          "missing": [
+            "UtopiaStd-Semibold.otf"
+          ]
+        },
+        {
+          "tfm": "mdxussi7t",
+          "map": "fonts/map/dvips/mathdesign/mdpus.map",
+          "line": "mdxussi7t UtopiaStd-SemiboldIt \"AutoEnc_ipzj2offlew6ufwnzemqj6eetc ReEncodeFont\" <[a_ipzj2o.enc <<UtopiaStd-SemiboldIt.otf",
+          "missing": [
+            "UtopiaStd-SemiboldIt.otf"
+          ]
+        },
+        {
+          "tfm": "mdxusb7t",
+          "map": "fonts/map/dvips/mathdesign/mdpus.map",
+          "line": "mdxusb7t UtopiaStd-Bold \"AutoEnc_ipzj2offlew6ufwnzemqj6eetc ReEncodeFont\" <[a_ipzj2o.enc <<UtopiaStd-Bold.otf",
+          "missing": [
+            "UtopiaStd-Bold.otf"
+          ]
+        },
+        {
+          "tfm": "mdxusbi7t",
+          "map": "fonts/map/dvips/mathdesign/mdpus.map",
+          "line": "mdxusbi7t UtopiaStd-BoldIt \"AutoEnc_ipzj2offlew6ufwnzemqj6eetc ReEncodeFont\" <[a_ipzj2o.enc <<UtopiaStd-BoldIt.otf",
+          "missing": [
+            "UtopiaStd-BoldIt.otf"
+          ]
+        },
+        {
+          "tfm": "mdwusr8t",
+          "map": "fonts/map/dvips/mathdesign/mdpus.map",
+          "line": "mdwusr8t UtopiaStd-Regular \"AutoEnc_oxfbe4c33hn7rj7vjro7v5uwef ReEncodeFont\" <[a_oxfbe4.enc <<UtopiaStd-Regular.otf",
+          "missing": [
+            "UtopiaStd-Regular.otf"
+          ]
+        },
+        {
+          "tfm": "mdwusri8t",
+          "map": "fonts/map/dvips/mathdesign/mdpus.map",
+          "line": "mdwusri8t UtopiaStd-Italic \"AutoEnc_oxfbe4c33hn7rj7vjro7v5uwef ReEncodeFont\" <[a_oxfbe4.enc <<UtopiaStd-Italic.otf",
+          "missing": [
+            "UtopiaStd-Italic.otf"
+          ]
+        },
+        {
+          "tfm": "mdwuss8t",
+          "map": "fonts/map/dvips/mathdesign/mdpus.map",
+          "line": "mdwuss8t UtopiaStd-Semibold \"AutoEnc_oxfbe4c33hn7rj7vjro7v5uwef ReEncodeFont\" <[a_oxfbe4.enc <<UtopiaStd-Semibold.otf",
+          "missing": [
+            "UtopiaStd-Semibold.otf"
+          ]
+        },
+        {
+          "tfm": "mdwussi8t",
+          "map": "fonts/map/dvips/mathdesign/mdpus.map",
+          "line": "mdwussi8t UtopiaStd-SemiboldIt \"AutoEnc_oxfbe4c33hn7rj7vjro7v5uwef ReEncodeFont\" <[a_oxfbe4.enc <<UtopiaStd-SemiboldIt.otf",
+          "missing": [
+            "UtopiaStd-SemiboldIt.otf"
+          ]
+        },
+        {
+          "tfm": "mdwusb8t",
+          "map": "fonts/map/dvips/mathdesign/mdpus.map",
+          "line": "mdwusb8t UtopiaStd-Bold \"AutoEnc_oxfbe4c33hn7rj7vjro7v5uwef ReEncodeFont\" <[a_oxfbe4.enc <<UtopiaStd-Bold.otf",
+          "missing": [
+            "UtopiaStd-Bold.otf"
+          ]
+        },
+        {
+          "tfm": "mdwusbi8t",
+          "map": "fonts/map/dvips/mathdesign/mdpus.map",
+          "line": "mdwusbi8t UtopiaStd-BoldIt \"AutoEnc_oxfbe4c33hn7rj7vjro7v5uwef ReEncodeFont\" <[a_oxfbe4.enc <<UtopiaStd-BoldIt.otf",
+          "missing": [
+            "UtopiaStd-BoldIt.otf"
+          ]
+        },
+        {
+          "tfm": "mdwusrc8t",
+          "map": "fonts/map/dvips/mathdesign/mdpus.map",
+          "line": "mdwusrc8t UtopiaStd-Regular \"AutoEnc_qzg4u4adnazr355qa24brtovfd ReEncodeFont\" <[a_qzg4u4.enc <<UtopiaStd-Regular.otf",
+          "missing": [
+            "UtopiaStd-Regular.otf"
+          ]
+        },
+        {
+          "tfm": "mdwusric8t",
+          "map": "fonts/map/dvips/mathdesign/mdpus.map",
+          "line": "mdwusric8t UtopiaStd-Italic \"AutoEnc_42s2zle7mgn5uliy5jk7iepled ReEncodeFont\" <[a_42s2zl.enc <<UtopiaStd-Italic.otf",
+          "missing": [
+            "UtopiaStd-Italic.otf"
+          ]
+        },
+        {
+          "tfm": "mdwussc8t",
+          "map": "fonts/map/dvips/mathdesign/mdpus.map",
+          "line": "mdwussc8t UtopiaStd-Semibold \"AutoEnc_qzg4u4adnazr355qa24brtovfd ReEncodeFont\" <[a_qzg4u4.enc <<UtopiaStd-Semibold.otf",
+          "missing": [
+            "UtopiaStd-Semibold.otf"
+          ]
+        },
+        {
+          "tfm": "mdwussic8t",
+          "map": "fonts/map/dvips/mathdesign/mdpus.map",
+          "line": "mdwussic8t UtopiaStd-SemiboldIt \"AutoEnc_42s2zle7mgn5uliy5jk7iepled ReEncodeFont\" <[a_42s2zl.enc <<UtopiaStd-SemiboldIt.otf",
+          "missing": [
+            "UtopiaStd-SemiboldIt.otf"
+          ]
+        },
+        {
+          "tfm": "mdwusbc8t",
+          "map": "fonts/map/dvips/mathdesign/mdpus.map",
+          "line": "mdwusbc8t UtopiaStd-Bold \"AutoEnc_qzg4u4adnazr355qa24brtovfd ReEncodeFont\" <[a_qzg4u4.enc <<UtopiaStd-Bold.otf",
+          "missing": [
+            "UtopiaStd-Bold.otf"
+          ]
+        },
+        {
+          "tfm": "mdwusbic8t",
+          "map": "fonts/map/dvips/mathdesign/mdpus.map",
+          "line": "mdwusbic8t UtopiaStd-BoldIt \"AutoEnc_42s2zle7mgn5uliy5jk7iepled ReEncodeFont\" <[a_42s2zl.enc <<UtopiaStd-BoldIt.otf",
+          "missing": [
+            "UtopiaStd-BoldIt.otf"
+          ]
+        },
+        {
+          "tfm": "mdwusr7m",
+          "map": "fonts/map/dvips/mathdesign/mdpus.map",
+          "line": "mdwusr7m UtopiaStd-Regular \"AutoEnc_telfo7jl555iin3g2ql7wd4cne ReEncodeFont\" <[a_telfo7.enc <<UtopiaStd-Regular.otf",
+          "missing": [
+            "UtopiaStd-Regular.otf"
+          ]
+        },
+        {
+          "tfm": "mdwusri7m",
+          "map": "fonts/map/dvips/mathdesign/mdpus.map",
+          "line": "mdwusri7m UtopiaStd-Italic \"AutoEnc_telfo7jl555iin3g2ql7wd4cne ReEncodeFont\" <[a_telfo7.enc <<UtopiaStd-Italic.otf",
+          "missing": [
+            "UtopiaStd-Italic.otf"
+          ]
+        },
+        {
+          "tfm": "mdwuss7m",
+          "map": "fonts/map/dvips/mathdesign/mdpus.map",
+          "line": "mdwuss7m UtopiaStd-Semibold \"AutoEnc_telfo7jl555iin3g2ql7wd4cne ReEncodeFont\" <[a_telfo7.enc <<UtopiaStd-Semibold.otf",
+          "missing": [
+            "UtopiaStd-Semibold.otf"
+          ]
+        },
+        {
+          "tfm": "mdwussi7m",
+          "map": "fonts/map/dvips/mathdesign/mdpus.map",
+          "line": "mdwussi7m UtopiaStd-SemiboldIt \"AutoEnc_telfo7jl555iin3g2ql7wd4cne ReEncodeFont\" <[a_telfo7.enc <<UtopiaStd-SemiboldIt.otf",
+          "missing": [
+            "UtopiaStd-SemiboldIt.otf"
+          ]
+        },
+        {
+          "tfm": "mdwusb7m",
+          "map": "fonts/map/dvips/mathdesign/mdpus.map",
+          "line": "mdwusb7m UtopiaStd-Bold \"AutoEnc_telfo7jl555iin3g2ql7wd4cne ReEncodeFont\" <[a_telfo7.enc <<UtopiaStd-Bold.otf",
+          "missing": [
+            "UtopiaStd-Bold.otf"
+          ]
+        },
+        {
+          "tfm": "mdwusbi7m",
+          "map": "fonts/map/dvips/mathdesign/mdpus.map",
+          "line": "mdwusbi7m UtopiaStd-BoldIt \"AutoEnc_telfo7jl555iin3g2ql7wd4cne ReEncodeFont\" <[a_telfo7.enc <<UtopiaStd-BoldIt.otf",
+          "missing": [
+            "UtopiaStd-BoldIt.otf"
+          ]
+        },
+        {
+          "tfm": "mdwusr7y",
+          "map": "fonts/map/dvips/mathdesign/mdpus.map",
+          "line": "mdwusr7y UtopiaStd-Regular \"AutoEnc_kld4ucx3yr56c6eryjqjbbimbb ReEncodeFont\" <[a_kld4uc.enc <<UtopiaStd-Regular.otf",
+          "missing": [
+            "UtopiaStd-Regular.otf"
+          ]
+        },
+        {
+          "tfm": "mdwusri7y",
+          "map": "fonts/map/dvips/mathdesign/mdpus.map",
+          "line": "mdwusri7y UtopiaStd-Italic \"AutoEnc_kld4ucx3yr56c6eryjqjbbimbb ReEncodeFont\" <[a_kld4uc.enc <<UtopiaStd-Italic.otf",
+          "missing": [
+            "UtopiaStd-Italic.otf"
+          ]
+        },
+        {
+          "tfm": "mdwuss7y",
+          "map": "fonts/map/dvips/mathdesign/mdpus.map",
+          "line": "mdwuss7y UtopiaStd-Semibold \"AutoEnc_kld4ucx3yr56c6eryjqjbbimbb ReEncodeFont\" <[a_kld4uc.enc <<UtopiaStd-Semibold.otf",
+          "missing": [
+            "UtopiaStd-Semibold.otf"
+          ]
+        },
+        {
+          "tfm": "mdwussi7y",
+          "map": "fonts/map/dvips/mathdesign/mdpus.map",
+          "line": "mdwussi7y UtopiaStd-SemiboldIt \"AutoEnc_kld4ucx3yr56c6eryjqjbbimbb ReEncodeFont\" <[a_kld4uc.enc <<UtopiaStd-SemiboldIt.otf",
+          "missing": [
+            "UtopiaStd-SemiboldIt.otf"
+          ]
+        },
+        {
+          "tfm": "mdwusb7y",
+          "map": "fonts/map/dvips/mathdesign/mdpus.map",
+          "line": "mdwusb7y UtopiaStd-Bold \"AutoEnc_kld4ucx3yr56c6eryjqjbbimbb ReEncodeFont\" <[a_kld4uc.enc <<UtopiaStd-Bold.otf",
+          "missing": [
+            "UtopiaStd-Bold.otf"
+          ]
+        },
+        {
+          "tfm": "mdwusbi7y",
+          "map": "fonts/map/dvips/mathdesign/mdpus.map",
+          "line": "mdwusbi7y UtopiaStd-BoldIt \"AutoEnc_kld4ucx3yr56c6eryjqjbbimbb ReEncodeFont\" <[a_kld4uc.enc <<UtopiaStd-BoldIt.otf",
+          "missing": [
+            "UtopiaStd-BoldIt.otf"
+          ]
+        },
+        {
+          "tfm": "md-gmr8y",
+          "map": "fonts/map/dvips/mathdesign/mdugm.map",
+          "line": "md-gmr8y GaramondNo8-Reg \"TeXnANSIEncoding ReEncodeFont\" <texnansi.enc <ugmr8a.pfb",
+          "missing": [
+            "ugmr8a.pfb"
+          ]
+        },
+        {
+          "tfm": "md-gmro8y",
+          "map": "fonts/map/dvips/mathdesign/mdugm.map",
+          "line": "md-gmro8y  GaramondNo8-Reg \"0.287 SlantFont TeXnANSIEncoding ReEncodeFont\" <texnansi.enc <ugmr8a.pfb",
+          "missing": [
+            "ugmr8a.pfb"
+          ]
+        },
+        {
+          "tfm": "md-gmmi8y",
+          "map": "fonts/map/dvips/mathdesign/mdugm.map",
+          "line": "md-gmmi8y GaramondNo8-MedIta \"TeXnANSIEncoding ReEncodeFont\" <texnansi.enc <ugmmi8a.pfb",
+          "missing": [
+            "ugmmi8a.pfb"
+          ]
+        },
+        {
+          "tfm": "md-gmri8y",
+          "map": "fonts/map/dvips/mathdesign/mdugm.map",
+          "line": "md-gmri8y GaramondNo8-Ita \"TeXnANSIEncoding ReEncodeFont\" <texnansi.enc <ugmri8a.pfb",
+          "missing": [
+            "ugmri8a.pfb"
+          ]
+        },
+        {
+          "tfm": "md-gmm8y",
+          "map": "fonts/map/dvips/mathdesign/mdugm.map",
+          "line": "md-gmm8y GaramondNo8-Med \"TeXnANSIEncoding ReEncodeFont\" <texnansi.enc <ugmm8a.pfb",
+          "missing": [
+            "ugmm8a.pfb"
+          ]
+        },
+        {
+          "tfm": "md-gmmo8y",
+          "map": "fonts/map/dvips/mathdesign/mdugm.map",
+          "line": "md-gmmo8y  GaramondNo8-Med \"0.287 SlantFont TeXnANSIEncoding ReEncodeFont\" <texnansi.enc <ugmm8a.pfb",
+          "missing": [
+            "ugmm8a.pfb"
+          ]
+        }
+      ]
+    }
   }
 }

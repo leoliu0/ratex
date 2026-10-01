@@ -5,7 +5,6 @@
 
 pub mod fs;
 use fs::PathExt;
-use std::io::Read;
 
 /// Metadata for an embedded OpenType or TrueType font face discovered at build time.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -72,32 +71,79 @@ impl<const FIELDS: usize> PackedTable<FIELDS> {
     }
 }
 
-const CHUNK_CACHE_CAPACITY: usize = 4;
-type CachedChunk = (usize, std::sync::Arc<[u8]>);
-static CHUNK_CACHE: std::sync::OnceLock<std::sync::Mutex<std::collections::VecDeque<CachedChunk>>> =
-    std::sync::OnceLock::new();
+/// Byte budget of the decoded-chunk cache. Package reads cluster in a few
+/// directories (a font family's tfm/vf/fd files, a bundle of related .sty
+/// files) and the engine rereads members (every TFM size load), so a small
+/// LRU of the 128 KiB build-time chunks absorbs nearly all repeat decoding.
+const CHUNK_CACHE_BYTES: usize = 8 * 1024 * 1024;
+/// Chunks above the target size hold one large member (an outline font,
+/// pdftex.map). They are decoded straight into the caller's buffer instead of
+/// evicting the shared working set.
+const MAX_CACHED_CHUNK_BYTES: usize = CHUNK_CACHE_BYTES / 4;
+
+#[derive(Default)]
+struct ChunkCache {
+    /// Least recently used first.
+    entries: std::collections::VecDeque<(usize, std::sync::Arc<[u8]>)>,
+    bytes: usize,
+}
+
+impl ChunkCache {
+    fn get(&mut self, chunk_index: usize) -> Option<std::sync::Arc<[u8]>> {
+        let position = self.entries.iter().position(|(index, _)| *index == chunk_index)?;
+        let entry = self.entries.remove(position)?;
+        let bytes = entry.1.clone();
+        self.entries.push_back(entry);
+        Some(bytes)
+    }
+
+    fn insert(&mut self, chunk_index: usize, bytes: std::sync::Arc<[u8]>) {
+        // Another thread may have decoded the same chunk concurrently.
+        if self.entries.iter().any(|(index, _)| *index == chunk_index) {
+            return;
+        }
+        while self.bytes + bytes.len() > CHUNK_CACHE_BYTES {
+            let Some((_, evicted)) = self.entries.pop_front() else {
+                break;
+            };
+            self.bytes -= evicted.len();
+        }
+        self.bytes += bytes.len();
+        self.entries.push_back((chunk_index, bytes));
+    }
+}
+
+static CHUNK_CACHE: std::sync::Mutex<Option<ChunkCache>> = std::sync::Mutex::new(None);
 const MAX_PACKAGE_CHUNK_BYTES: usize = 128 * 1024 * 1024;
 
 fn decode_package_chunk(compressed: &[u8], expected_len: usize) -> Option<Vec<u8>> {
     if expected_len > MAX_PACKAGE_CHUNK_BYTES {
         return None;
     }
-    let window = u64::try_from(expected_len.max(1)).ok()?;
-    let decoder =
-        ruzstd::decoding::StreamingDecoder::new_with_max_window_size(compressed, window).ok()?;
-    let mut decoded = Vec::with_capacity(expected_len);
-    decoder
-        .take(u64::try_from(expected_len).ok()?.saturating_add(1))
-        .read_to_end(&mut decoded)
-        .ok()?;
-    (decoded.len() == expected_len).then_some(decoded)
+    let mut decoder = ruzstd::decoding::FrameDecoder::new();
+    // The build-time encoder declares its fixed match window (128 KiB), which
+    // can exceed a short chunk's length; the output itself is bounded below.
+    decoder.set_max_window_size(MAX_PACKAGE_CHUNK_BYTES as u64);
+    let mut decoded = vec![0; expected_len];
+    // Fails with `TargetTooSmall` when the frame holds more than expected.
+    let written = decoder.decode_all(compressed, &mut decoded).ok()?;
+    (written == expected_len).then_some(decoded)
+}
+
+/// kpathsea never searches its path for absolute or explicitly relative
+/// (`./`, `../`) names: they denote exactly one file, never a bundled one.
+fn is_explicit_path(name: &str) -> bool {
+    matches!(
+        Path::new(name).components().next(),
+        Some(Component::RootDir | Component::Prefix(_) | Component::CurDir | Component::ParentDir)
+    )
 }
 
 fn package_entry(filename: &str) -> Option<usize> {
-    let name = std::path::Path::new(filename)
-        .file_name()
-        .and_then(|s| s.to_str())
-        .unwrap_or(filename);
+    if is_explicit_path(filename) {
+        return None;
+    }
+    let name = Path::new(filename).file_name().and_then(|s| s.to_str()).unwrap_or(filename);
     PACKAGE_INDEX
         .binary_search_by(|entry| package_name(entry).cmp(name.as_bytes()))
         .or_else(|| {
@@ -134,41 +180,41 @@ pub fn get_embedded_package(filename: &str) -> Option<Vec<u8>> {
     let [_, _, chunk_index, member_offset, member_length] = PACKAGE_INDEX.get(index)?;
     let chunk_index = chunk_index as usize;
     let member_offset = member_offset as usize;
-    let member_length = member_length as usize;
-    let cache = CHUNK_CACHE.get_or_init(Default::default);
-    let chunk = {
-        let mut cache = cache.lock().ok()?;
-        let position = cache.iter().position(|(index, _)| *index == chunk_index);
-        position.and_then(|position| {
-            let entry = cache.remove(position)?;
-            let bytes = entry.1.clone();
-            cache.push_back(entry);
-            Some(bytes)
-        })
+    let member = member_offset..member_offset.checked_add(member_length as usize)?;
+    let [offset, length, decoded_length] = PACKAGE_CHUNKS.get(chunk_index)?;
+    let decoded_length = decoded_length as usize;
+    let compressed = || {
+        let offset = offset as usize;
+        PACKAGES.get(offset..offset.checked_add(length as usize)?)
     };
-    let chunk = match chunk {
+    if decoded_length > MAX_CACHED_CHUNK_BYTES {
+        let bytes = decode_package_chunk(compressed()?, decoded_length)?;
+        if member == (0..decoded_length) {
+            return Some(bytes);
+        }
+        return Some(bytes.get(member)?.to_vec());
+    }
+    let cached = CHUNK_CACHE
+        .lock()
+        .ok()?
+        .get_or_insert_with(Default::default)
+        .get(chunk_index);
+    let chunk = match cached {
         Some(bytes) => bytes,
         None => {
-            let [offset, length, decoded_length] = PACKAGE_CHUNKS.get(chunk_index)?;
-            let offset = offset as usize;
-            let length = length as usize;
-            let end = offset.checked_add(length)?;
-            let compressed = PACKAGES.get(offset..end)?;
+            // Decode outside the lock so concurrent readers of other chunks
+            // do not serialize behind this one.
             let bytes: std::sync::Arc<[u8]> =
-                decode_package_chunk(compressed, decoded_length as usize)?.into();
-            let mut cache = cache.lock().ok()?;
-            if let Some(position) = cache.iter().position(|(index, _)| *index == chunk_index) {
-                cache.remove(position);
-            }
-            while cache.len() >= CHUNK_CACHE_CAPACITY {
-                cache.pop_front();
-            }
-            cache.push_back((chunk_index, bytes.clone()));
+                decode_package_chunk(compressed()?, decoded_length)?.into();
+            CHUNK_CACHE
+                .lock()
+                .ok()?
+                .get_or_insert_with(Default::default)
+                .insert(chunk_index, bytes.clone());
             bytes
         }
     };
-    let end = member_offset.checked_add(member_length)?;
-    Some(chunk.get(member_offset..end)?.to_vec())
+    Some(chunk.get(member)?.to_vec())
 }
 
 /// Resolve an input from the embedded TeX tree using TeX's default-extension
@@ -176,20 +222,11 @@ pub fn get_embedded_package(filename: &str) -> Option<Vec<u8>> {
 /// unrelated `foo.sty` can shadow the generic implementation that a package
 /// intended to load.
 pub fn get_embedded_tex_input(name: &str) -> Option<(String, Vec<u8>)> {
-    let clean = std::path::Path::new(name)
-        .file_name()
-        .and_then(|value| value.to_str())
-        .unwrap_or(name);
-    let candidates = if clean.ends_with(".tex") || clean.ends_with(".ltx") {
-        vec![clean.to_string()]
-    } else {
-        vec![
-            format!("{clean}.tex"),
-            format!("{clean}.ltx"),
-            clean.to_string(),
-        ]
-    };
-    candidates
+    if is_explicit_path(name) {
+        return None;
+    }
+    let clean = Path::new(name).file_name().and_then(|value| value.to_str()).unwrap_or(name);
+    Kpse::candidates(clean, Format::Tex)
         .into_iter()
         .find_map(|candidate| get_embedded_package(&candidate).map(|data| (candidate, data)))
 }
@@ -209,17 +246,13 @@ pub enum Format {
     Tex, // .tex .ltx .cls .sty .clo .fd .dfu .cfg .def .ldf
     Tfm, // .tfm
     Vf,  // .vf (virtual font: char packets mapping into base fonts)
-    Ofm,
     Type1, // .pfb .pfa
     Truetype,
     Enc, // .enc (glyph encoding files)
     Map, // .map (pdftex map files)
     Bst,
     Bib,
-    Cmap,
-    Sfd,
     Otf,
-    Fontmap,
 }
 
 impl Format {
@@ -231,17 +264,13 @@ impl Format {
             ],
             Format::Tfm => &[".tfm"],
             Format::Vf => &[".vf"],
-            Format::Ofm => &[".ofm"],
             Format::Type1 => &[".pfb", ".pfa"],
             Format::Truetype => &[".ttf", ".ttc", ".otf"],
             Format::Enc => &[".enc"],
             Format::Map => &[".map"],
             Format::Bst => &[".bst"],
             Format::Bib => &[".bib"],
-            Format::Cmap => &[".cmap"],
-            Format::Sfd => &[".sfd"],
             Format::Otf => &[".otf"],
-            Format::Fontmap => &[".map"],
         }
     }
 
@@ -254,16 +283,13 @@ impl Format {
             Format::Tex => &["tex/latex//", "tex/generic//", "tex/plain//", "tex//"],
             Format::Tfm => &["fonts/tfm//"],
             Format::Vf => &["fonts/vf//"],
-            Format::Ofm => &["fonts/ofm//"],
             Format::Type1 => &["fonts/type1//"],
             Format::Truetype => &["fonts/truetype//"],
             Format::Otf => &["fonts/opentype//"],
             Format::Enc => &["fonts/enc//"],
-            Format::Map | Format::Fontmap => &["fonts/map//"],
+            Format::Map => &["fonts/map//"],
             Format::Bst => &["bibtex/bst//"],
             Format::Bib => &["bibtex/bib//"],
-            Format::Cmap => &["fonts/cmap//"],
-            Format::Sfd => &["fonts/sfd//"],
         }
     }
 }
@@ -397,12 +423,14 @@ impl LsR {
 pub struct Kpse {
     roots: Vec<PathBuf>,
     dbs: Vec<RefCell<Option<LsR>>>,
-    /// extra paths from environment (e.g. TEXINPUTS), ':'-separated, may contain '//' suffix
-    extra_paths: HashMap<Format, Vec<PathBuf>>,
-    /// Directory with the highest lookup precedence (normally the process cwd).
+    /// Path-variable elements (TEXINPUTS & co.) searched before every other
+    /// source, as kpathsea does; `true` marks a recursive `dir//` element.
+    extra_paths: HashMap<Format, Vec<(PathBuf, bool)>>,
+    /// Project directory, searched right after the path-variable elements.
     cwd: PathBuf,
-    /// Results of recursive subtree walks, cached per (root, format, name).
-    walk_cache: RefCell<HashMap<(usize, Format, String), Option<PathBuf>>>,
+    /// Results of recursive walks, cached per (start, TDS format or `None`
+    /// for a recursive path element, name).
+    walk_cache: RefCell<HashMap<(PathBuf, Option<Format>, String), Option<PathBuf>>>,
     /// High-level find cache: (name, format) -> Option<PathBuf>.
     find_cache: RefCell<HashMap<(String, Format), Option<PathBuf>>>,
     /// Stable listings shared by local case-insensitive resolution and its
@@ -699,38 +727,41 @@ impl Kpse {
         })
     }
 
-    fn parse_extra_paths() -> HashMap<Format, Vec<PathBuf>> {
+    fn parse_extra_paths() -> HashMap<Format, Vec<(PathBuf, bool)>> {
+        Self::extra_paths_from(|variable| std::env::var_os(variable))
+    }
+
+    fn extra_paths_from(
+        variable: impl Fn(&str) -> Option<OsString>,
+    ) -> HashMap<Format, Vec<(PathBuf, bool)>> {
         let mut m = HashMap::new();
-        let add = |m: &mut HashMap<Format, Vec<PathBuf>>, fmts: &[Format], var: &str| {
-            if let Ok(v) = std::env::var(var) {
-                for p in v.split(':') {
-                    if p.is_empty() {
-                        continue;
-                    }
-                    for f in fmts {
-                        m.entry(*f).or_default().push(PathBuf::from(p));
-                    }
+        for (name, formats) in [
+            ("TEXINPUTS", &[Format::Tex][..]),
+            ("TFMFONTS", &[Format::Tfm]),
+            ("VFFONTS", &[Format::Vf]),
+            ("T1FONTS", &[Format::Type1]),
+            ("TTFONTS", &[Format::Truetype]),
+            ("OPENTYPEFONTS", &[Format::Truetype, Format::Otf]),
+            ("ENCFONTS", &[Format::Enc]),
+            ("TEXFONTMAPS", &[Format::Map]),
+            ("BSTINPUTS", &[Format::Bst]),
+            ("BIBINPUTS", &[Format::Bib]),
+        ] {
+            let Some(value) = variable(name) else {
+                continue;
+            };
+            // kpathsea's ENV_SEP: ':' on Unix, ';' on Windows. An empty
+            // element stands for the default path, which is always searched.
+            for element in std::env::split_paths(&value) {
+                if element.as_os_str().is_empty() {
+                    continue;
+                }
+                let element = search_element(element);
+                for format in formats {
+                    m.entry(*format).or_insert_with(Vec::new).push(element.clone());
                 }
             }
-        };
-        add(&mut m, &[Format::Tex], "TEXINPUTS");
-        add(&mut m, &[Format::Tfm], "TFMFONTS");
-        add(&mut m, &[Format::Vf], "VFFONTS");
-        add(
-            &mut m,
-            &[Format::Type1, Format::Truetype, Format::Otf],
-            "TTFONTS",
-        );
-        add(&mut m, &[Format::Type1], "T1FONTS");
-        add(
-            &mut m,
-            &[Format::Type1, Format::Truetype, Format::Otf],
-            "OPENTYPEFONTS",
-        );
-        add(&mut m, &[Format::Enc], "ENCFONTS");
-        add(&mut m, &[Format::Map, Format::Fontmap], "TEXFONTMAPS");
-        add(&mut m, &[Format::Bst], "BSTINPUTS");
-        add(&mut m, &[Format::Bib], "BIBINPUTS");
+        }
         m
     }
 
@@ -829,7 +860,63 @@ impl Kpse {
             );
         }
 
-        // 1. The invocation directory, including its case-insensitive fallback.
+        // 1. Path-variable elements (TEXINPUTS & co.) precede everything,
+        // the invocation directory included, as in kpathsea.
+        if let Some(paths) = self.extra_paths.get(&fmt) {
+            for (base, recursive) in paths {
+                if *recursive && !base.tex_is_dir() {
+                    missing_directories.push(base.clone());
+                    continue;
+                }
+                for candidate in &candidates {
+                    let hit = if *recursive {
+                        let (hit, directories, walk_complete) =
+                            walk_find_traced(&[(base.clone(), true)], candidate);
+                        present_directories.extend(directories);
+                        if !walk_complete {
+                            return finish(
+                                present,
+                                present_directories,
+                                present_content,
+                                missing_files,
+                                missing_directories,
+                                false,
+                            );
+                        }
+                        hit
+                    } else {
+                        Some(base.join(candidate))
+                    };
+                    let Some(path) = hit else {
+                        continue;
+                    };
+                    if record_file(path.clone(), &mut present, &mut missing_files) {
+                        let complete = selected_matches(&path);
+                        return finish(
+                            present,
+                            present_directories,
+                            present_content,
+                            missing_files,
+                            missing_directories,
+                            complete,
+                        );
+                    }
+                    if *recursive {
+                        // The walk saw a file that is gone now.
+                        return finish(
+                            present,
+                            present_directories,
+                            present_content,
+                            missing_files,
+                            missing_directories,
+                            false,
+                        );
+                    }
+                }
+            }
+        }
+
+        // 2. The invocation directory, including its case-insensitive fallback.
         for candidate in &candidates {
             let exact = self.cwd.join(candidate);
             let (hit, directories, trace_complete) = self.find_local_traced(candidate);
@@ -871,7 +958,7 @@ impl Kpse {
             record_file(exact, &mut present, &mut missing_files);
         }
 
-        // 2. Names containing a directory component are probed directly
+        // 3. Names containing a directory component are probed directly
         // beneath each root; extension candidates and TDS walks do not apply.
         if name.contains('/') {
             for root in &self.roots {
@@ -896,26 +983,6 @@ impl Kpse {
                 missing_directories,
                 selected.is_none(),
             );
-        }
-
-        // 3. Explicit format paths precede all TDS roots.
-        if let Some(paths) = self.extra_paths.get(&fmt) {
-            for base in paths {
-                for candidate in &candidates {
-                    let path = base.join(candidate);
-                    if record_file(path.clone(), &mut present, &mut missing_files) {
-                        let complete = selected_matches(&path);
-                        return finish(
-                            present,
-                            present_directories,
-                            present_content,
-                            missing_files,
-                            missing_directories,
-                            complete,
-                        );
-                    }
-                }
-            }
         }
 
         // 4. Each TDS root uses the first existing ls-R/ls-R.lua database.
@@ -994,18 +1061,17 @@ impl Kpse {
                 continue;
             }
 
-            // Match walk_find's candidate-major order. Directory snapshots
+            // Match find_uncached's candidate-major order. Directory snapshots
             // make an unindexed recursive walk finite and cacheable: adding a
             // candidate file or subtree changes one of the visited parents.
+            let starts = tds_walk_starts(root, fmt);
             for candidate in &candidates {
-                for spec in fmt.tds_paths() {
-                    let subtree = spec.strip_suffix("//").unwrap_or(spec);
-                    let start = root.join(subtree);
+                for (start, _) in &starts {
                     if !start.tex_is_dir() {
-                        missing_directories.push(start);
+                        missing_directories.push(start.clone());
                     }
                 }
-                let (hit, directories, walk_complete) = walk_find_traced(root, fmt, candidate);
+                let (hit, directories, walk_complete) = walk_find_traced(&starts, candidate);
                 present_directories.extend(directories);
                 if !walk_complete {
                     return finish(
@@ -1199,8 +1265,14 @@ impl Kpse {
 
     /// Find a file of the given format. `name` may already carry an extension.
     pub fn find(&self, name: &str, fmt: Format) -> Option<PathBuf> {
-        for candidate in Self::candidates(name, fmt) {
-            if let Some(local) = self.find_local(&candidate) {
+        let candidates = Self::candidates(name, fmt);
+        if !Path::new(name).is_absolute() {
+            if let Some(hit) = self.find_in_extra_paths(fmt, &candidates) {
+                return Some(hit);
+            }
+        }
+        for candidate in &candidates {
+            if let Some(local) = self.find_local(candidate) {
                 return Some(local);
             }
         }
@@ -1229,8 +1301,18 @@ impl Kpse {
                 searched_roots: 0,
             };
         }
-        for candidate in Self::candidates(name, fmt) {
-            if let Some(local) = self.find_local(&candidate) {
+        let candidates = Self::candidates(name, fmt);
+        if let Some(resolved) = self.find_in_extra_paths(fmt, &candidates) {
+            return LookupExplanation {
+                name: name.to_string(),
+                format: fmt,
+                resolved: Some(resolved),
+                source_kind: Some(LookupSourceKind::EnvironmentPath),
+                searched_roots: 0,
+            };
+        }
+        for candidate in &candidates {
+            if let Some(local) = self.find_local(candidate) {
                 return LookupExplanation {
                     name: name.to_string(),
                     format: fmt,
@@ -1261,23 +1343,6 @@ impl Kpse {
                 searched_roots: self.roots.len(),
             };
         }
-        let candidates = Self::candidates(name, fmt);
-        if let Some(paths) = self.extra_paths.get(&fmt) {
-            for base in paths {
-                for cand in &candidates {
-                    let p = base.join(cand);
-                    if p.tex_is_file() {
-                        return LookupExplanation {
-                            name: name.to_string(),
-                            format: fmt,
-                            resolved: Some(p),
-                            source_kind: Some(LookupSourceKind::EnvironmentPath),
-                            searched_roots: 0,
-                        };
-                    }
-                }
-            }
-        }
         for i in 0..self.roots.len() {
             let db = self.db_of(i);
             for cand in &candidates {
@@ -1302,7 +1367,7 @@ impl Kpse {
                 .map_or_else(|| db.db.is_empty(), |p| p.is_empty())
             {
                 for cand in &candidates {
-                    if let Some(hit) = self.walk_cached(i, fmt, cand) {
+                    if let Some(hit) = self.walk_cached(&self.roots[i], Some(fmt), cand) {
                         return LookupExplanation {
                             name: name.to_string(),
                             format: fmt,
@@ -1333,7 +1398,7 @@ impl Kpse {
             };
         }
         let candidates = Self::candidates(name, fmt);
-        // 2. a name with a directory part is only probed against the roots
+        // A name with a directory part is only probed against the roots.
         if name.contains('/') {
             for root in &self.roots {
                 let full = root.join(name);
@@ -1343,19 +1408,8 @@ impl Kpse {
             }
             return None;
         }
-        // 3. extra env paths (TEXINPUTS & co)
-        if let Some(paths) = self.extra_paths.get(&fmt) {
-            for base in paths {
-                for cand in &candidates {
-                    let p = base.join(cand);
-                    if p.tex_is_file() {
-                        return Some(p);
-                    }
-                }
-            }
-        }
-        // 4. TDS roots: ls-R database (exact, then case-insensitive), then a
-        //    recursive walk of the format's subtrees (`tex/latex//` style)
+        // TDS roots: ls-R database (exact, then case-insensitive), then a
+        // recursive walk of the format's subtrees (`tex/latex//` style)
         for i in 0..self.roots.len() {
             let db = self.db_of(i);
             for cand in &candidates {
@@ -1376,7 +1430,7 @@ impl Kpse {
                 .map_or_else(|| db.db.is_empty(), |p| p.is_empty())
             {
                 for cand in &candidates {
-                    if let Some(hit) = self.walk_cached(i, fmt, cand) {
+                    if let Some(hit) = self.walk_cached(&self.roots[i], Some(fmt), cand) {
                         return Some(hit);
                     }
                 }
@@ -1426,41 +1480,52 @@ impl Kpse {
         None
     }
 
-    /// Resolve a font definition file, e.g. `find_fd("t1", "cmr")` for
-    /// `t1cmr.fd`. Case-insensitive on the stored filename.
-    pub fn find_fd(&self, encoding: &str, family: &str) -> Option<PathBuf> {
-        self.find(&format!("{encoding}{family}.fd"), Format::Tex)
+    /// The first path-variable element holding a candidate.
+    fn find_in_extra_paths(&self, fmt: Format, candidates: &[String]) -> Option<PathBuf> {
+        for (base, recursive) in self.extra_paths.get(&fmt)? {
+            for candidate in candidates {
+                if *recursive {
+                    if let Some(hit) = self.walk_cached(base, None, candidate) {
+                        return Some(hit);
+                    }
+                } else {
+                    let path = base.join(candidate);
+                    if path.tex_is_file() {
+                        return Some(path);
+                    }
+                }
+            }
+        }
+        None
     }
+
     pub fn read(&self, name: &str, fmt: Format) -> Option<Vec<u8>> {
         if let Some(p) = self.find(name, fmt) {
             if let Ok(d) = crate::fs::read(p) {
                 return Some(d);
             }
         }
-        let clean = Path::new(name)
-            .file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or(name);
-        if let Some(d) = get_embedded_package(clean) {
-            return Some(d);
-        }
-        for ext in fmt.extensions() {
-            let with_ext = format!("{clean}{ext}");
-            if let Some(d) = get_embedded_package(&with_ext) {
-                return Some(d);
-            }
-        }
-        None
+        // The archive is indexed by basename; keep the search's candidate
+        // order (format extensions before the bare name).
+        Self::candidates(name, fmt)
+            .iter()
+            .find_map(|candidate| get_embedded_package(candidate))
     }
 
-    fn walk_cached(&self, root_idx: usize, fmt: Format, cand: &str) -> Option<PathBuf> {
-        let key = (root_idx, fmt, cand.to_string());
+    /// Cached recursive walk: of the TDS subtrees of `fmt` below `start`, or
+    /// with `fmt == None` of the whole tree below a `dir//` path element.
+    fn walk_cached(&self, start: &Path, fmt: Option<Format>, cand: &str) -> Option<PathBuf> {
+        let key = (start.to_path_buf(), fmt, cand.to_string());
         if let Some(Some(hit)) = self.walk_cache.borrow().get(&key) {
             if hit.tex_is_file() {
                 return Some(hit.clone());
             }
         }
-        let hit = walk_find(&self.roots[root_idx], fmt, cand);
+        let starts = match fmt {
+            Some(fmt) => tds_walk_starts(start, fmt),
+            None => vec![(start.to_path_buf(), true)],
+        };
+        let hit = walk_find_impl(&starts, cand, WALK_BUDGET, |_, _| {}).0;
         if hit.is_some() {
             self.walk_cache.borrow_mut().insert(key, hit.clone());
         }
@@ -1468,22 +1533,36 @@ impl Kpse {
     }
 }
 
-/// Recursive fallback search for `cand` under `root`'s TDS subtrees for
-/// `fmt`, honoring the `//` recursive markers of [`Format::tds_paths`].
-/// Prefers an exact filename match; otherwise returns the first
-/// case-insensitive match.
-fn walk_find(root: &Path, fmt: Format, cand: &str) -> Option<PathBuf> {
-    walk_find_impl(root, fmt, cand, |_, _| {}).0
+/// Directories searched for `fmt` below a TDS root, each flagged recursive
+/// when its [`Format::tds_paths`] spec carries the `//` marker.
+fn tds_walk_starts(root: &Path, fmt: Format) -> Vec<(PathBuf, bool)> {
+    fmt.tds_paths()
+        .iter()
+        .map(|spec| match spec.strip_suffix("//") {
+            Some(sub) => (root.join(sub), true),
+            None => (root.join(spec), false),
+        })
+        .collect()
+}
+
+/// A path-variable element; kpathsea's trailing `//` searches its subtree.
+fn search_element(element: PathBuf) -> (PathBuf, bool) {
+    match element.to_str().and_then(|text| text.strip_suffix("//")) {
+        Some(base) => {
+            let base = base.trim_end_matches('/');
+            (PathBuf::from(if base.is_empty() { "/" } else { base }), true)
+        }
+        None => (element, false),
+    }
 }
 
 fn walk_find_traced(
-    root: &Path,
-    fmt: Format,
+    starts: &[(PathBuf, bool)],
     cand: &str,
 ) -> (Option<PathBuf>, Vec<(PathBuf, u64)>, bool) {
     let mut directories = Vec::new();
     let mut trace_complete = true;
-    let (hit, complete) = walk_find_impl(root, fmt, cand, |path, entries| {
+    let (hit, complete) = walk_find_impl(starts, cand, WALK_BUDGET, |path, entries| {
         let fingerprint = entries
             .map(directory_entries_fingerprint)
             .or_else(|| directory_fingerprint(path));
@@ -1496,38 +1575,44 @@ fn walk_find_traced(
     (hit, directories, complete && trace_complete)
 }
 
+/// Recursive fallback search: `starts` in order, a recursive start covering
+/// its whole subtree and following directory symlinks like kpathsea (cycles
+/// are cut by canonical path). Prefers an exact filename match, otherwise
+/// the first case-insensitive one. `cand` may carry directory components,
+/// which must then end the path of the match. The second result is false
+/// when a directory could not be read or `budget` directories did not
+/// suffice, so that a miss is not taken as proof of absence.
 fn walk_find_impl(
-    root: &Path,
-    fmt: Format,
+    starts: &[(PathBuf, bool)],
     cand: &str,
+    mut budget: usize,
     mut visited_directory: impl FnMut(&Path, Option<&[(crate::fs::DirEntry, crate::fs::FileType)]>),
 ) -> (Option<PathBuf>, bool) {
-    let cand_lower = cand.to_lowercase();
+    let wanted = Path::new(cand);
+    let Some(file_name) = wanted.file_name().and_then(|name| name.to_str()) else {
+        return (None, true);
+    };
+    let nested = wanted.components().count() > 1;
+    let cand_lower = file_name.to_lowercase();
     let mut ci_hit: Option<PathBuf> = None;
-    let mut budget = WALK_BUDGET;
     let mut visited: HashSet<PathBuf> = HashSet::new();
     let mut complete = true;
-    for spec in fmt.tds_paths() {
-        let (sub, recursive) = match spec.strip_suffix("//") {
-            Some(sub) => (sub, true),
-            None => (*spec, false),
-        };
-        let start = root.join(sub);
+    for (start, recursive) in starts {
         if !start.tex_is_dir() {
             continue;
         }
         if !recursive {
-            visited_directory(&start, None);
+            visited_directory(start, None);
             let hit = start.join(cand);
             if hit.tex_is_file() {
                 return (Some(hit), complete);
             }
             continue;
         }
-        let mut stack = vec![start];
+        let mut stack = vec![start.clone()];
         while let Some(dir) = stack.pop() {
             if budget == 0 {
-                return (ci_hit, complete);
+                return (ci_hit, false);
             }
             budget -= 1;
             // Canonicalize to break symlink cycles.
@@ -1566,14 +1651,22 @@ fn walk_find_impl(
                     continue;
                 }
                 let path = entry.path();
-                if ft.is_dir() {
+                let (is_dir, is_file) = if ft.is_symlink() {
+                    (path.tex_is_dir(), path.tex_is_file())
+                } else {
+                    (ft.is_dir(), ft.is_file())
+                };
+                if is_dir {
                     stack.push(path);
                     continue;
                 }
-                if name == cand {
+                if !is_file {
+                    continue;
+                }
+                if name == file_name && (!nested || path.ends_with(wanted)) {
                     return (Some(path), complete);
                 }
-                if ci_hit.is_none() && name.to_lowercase() == cand_lower {
+                if !nested && ci_hit.is_none() && name.to_lowercase() == cand_lower {
                     ci_hit = Some(path);
                 }
             }
@@ -1737,59 +1830,55 @@ mod tests {
     #[test]
     fn indexed_packages_match_archive_bytes() {
         use std::io::Read;
-        let mut part_paths = Vec::new();
-        if let Ok(entries) = std::fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/assets")) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if let Some(name) = path.file_name().and_then(|s| s.to_str()) {
-                    if name.starts_with("packages.tar.zst.") {
-                        part_paths.push(path);
-                    }
-                }
-            }
-        }
+        let assets = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/assets"));
+        let mut part_paths: Vec<_> = std::fs::read_dir(assets)
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|s| s.to_str())
+                    .is_some_and(|name| name.starts_with("packages.tar.zst."))
+            })
+            .collect();
         part_paths.sort();
-        if part_paths.is_empty() {
-            let single = std::path::PathBuf::from(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/assets/packages.tar.zst"
-            ));
-            if single.exists() {
-                part_paths.push(single);
-            }
-        }
-        if part_paths.is_empty() {
-            return;
+        assert!(!part_paths.is_empty());
+        // Same precedence as build.rs: overlay members shadow main members.
+        let mut readers: Vec<(Box<dyn Read>, usize)> = Vec::new();
+        let supplement = assets.join("packages-supplement.tar.zst");
+        if supplement.exists() {
+            readers.push((Box::new(std::fs::File::open(supplement).unwrap()), usize::MAX));
         }
         let mut chained: Box<dyn Read> = Box::new(std::io::empty());
         for p in part_paths {
             chained = Box::new(chained.chain(std::fs::File::open(p).unwrap()));
         }
-        let decoder = ruzstd::decoding::StreamingDecoder::new_with_max_window_size(
-            chained,
-            512 * 1024 * 1024,
-        )
-        .unwrap();
-        let mut archive = tar::Archive::new(decoder);
+        readers.push((chained, 200));
         let mut seen = HashSet::new();
-        let mut checked = 0;
-        for entry in archive.entries().unwrap() {
-            let mut entry = entry.unwrap();
-            if !entry.header().entry_type().is_file() {
-                continue;
-            }
-            let path = entry.path().unwrap().into_owned();
-            let name = path.file_name().unwrap().to_str().unwrap();
-            if !seen.insert(name.to_owned()) {
-                continue;
-            }
-            let actual = get_embedded_package(name).expect("indexed package");
-            let mut expected = Vec::new();
-            entry.read_to_end(&mut expected).unwrap();
-            assert_eq!(actual, expected, "{name}");
-            checked += 1;
-            if checked >= 200 {
-                break;
+        for (reader, limit) in readers {
+            let decoder =
+                ruzstd::decoding::StreamingDecoder::new_with_max_window_size(reader, 512 << 20)
+                    .unwrap();
+            let mut archive = tar::Archive::new(decoder);
+            let mut checked = 0;
+            for entry in archive.entries().unwrap() {
+                let mut entry = entry.unwrap();
+                if !entry.header().entry_type().is_file() {
+                    continue;
+                }
+                let path = entry.path().unwrap().into_owned();
+                let name = path.file_name().unwrap().to_str().unwrap();
+                if !seen.insert(name.to_owned()) {
+                    continue;
+                }
+                let actual = get_embedded_package(name).expect("indexed package");
+                let mut expected = Vec::new();
+                entry.read_to_end(&mut expected).unwrap();
+                assert_eq!(actual, expected, "{name}");
+                checked += 1;
+                if checked >= limit {
+                    break;
+                }
             }
         }
         assert!(seen.len() >= 200);
@@ -1797,6 +1886,19 @@ mod tests {
             get_embedded_package("ARTICLE.CLS"),
             get_embedded_package("article.cls")
         );
+    }
+
+    #[test]
+    fn supplement_completes_beamer_icons_and_newpx_outlines() {
+        let icon = get_embedded_package("beamericonbook.pdf").expect("beamer icon");
+        assert!(icon.starts_with(b"%PDF"));
+        assert!(get_embedded_package("example-image-a.pdf").is_some());
+        assert!(has_embedded_package("zplb.pfb") && has_embedded_package("zplmi.vf"));
+        let map = String::from_utf8(get_embedded_package("pdftex.map").unwrap()).unwrap();
+        let record = map.lines().find(|line| line.starts_with("zpl-Bold-tlf-t1 ")).unwrap();
+        assert!(record.ends_with("<zplb.pfb"), "{record}");
+        // The consolidated map keeps the main archive's records.
+        assert!(map.lines().any(|line| line.starts_with("cmr10 ")));
     }
 
     #[test]
@@ -1860,11 +1962,115 @@ mod tests {
         }
         assert_eq!(next_offset as usize, PACKAGES.len());
         // Both ends of the embedded archive decode, so it is neither
-        // truncated nor shifted relative to the chunk table.
-        for [offset, length, decoded] in [chunks[0], chunks[chunks.len() - 1]] {
+        // truncated nor shifted relative to the chunk table. The shortest
+        // chunk is smaller than the window its frame header declares.
+        let shortest = *chunks.iter().min_by_key(|[_, _, decoded]| *decoded).unwrap();
+        for [offset, length, decoded] in [chunks[0], chunks[chunks.len() - 1], shortest] {
             let compressed = &PACKAGES[offset as usize..(offset + length) as usize];
             assert!(decode_package_chunk(compressed, decoded as usize).is_some());
         }
+    }
+
+    #[test]
+    fn chunk_cache_stays_within_its_byte_budget() {
+        let mut cache = ChunkCache::default();
+        let chunk = |len: usize| std::sync::Arc::<[u8]>::from(vec![0; len]);
+        for index in 0..64 {
+            cache.insert(index, chunk(MAX_CACHED_CHUNK_BYTES / 3));
+            assert!(cache.bytes <= CHUNK_CACHE_BYTES);
+            assert_eq!(cache.bytes, cache.entries.iter().map(|(_, c)| c.len()).sum::<usize>());
+        }
+        // Least recently used goes first; a lookup refreshes an entry.
+        let oldest = cache.entries.front().unwrap().0;
+        assert!(cache.get(oldest).is_some());
+        cache.insert(1000, chunk(MAX_CACHED_CHUNK_BYTES));
+        assert!(cache.get(oldest).is_some());
+        assert!(cache.get(0).is_none());
+    }
+
+    #[test]
+    fn explicit_paths_never_resolve_to_bundled_files() {
+        assert!(get_embedded_package("article.cls").is_some());
+        assert!(get_embedded_package("base/article.cls").is_some());
+        for name in ["./article.cls", "../article.cls", "/no/such/dir/article.cls"] {
+            assert!(!has_embedded_package(name), "{name}");
+            assert!(get_embedded_package(name).is_none(), "{name}");
+        }
+        assert!(get_embedded_tex_input("xkeyval").is_some());
+        assert!(get_embedded_tex_input("./xkeyval").is_none());
+        assert!(get_embedded_tex_input("../xkeyval.tex").is_none());
+        let kpse = Kpse::explicit(Path::new("/nonexistent-project"), Vec::new());
+        assert!(kpse.read("cmr10", Format::Tfm).is_some());
+        assert!(kpse.read("../cmr10", Format::Tfm).is_none());
+    }
+
+    #[test]
+    fn path_variables_map_to_their_kpathsea_formats() {
+        let paths = Kpse::extra_paths_from(|variable| match variable {
+            "T1FONTS" => Some("/t1".into()),
+            "TTFONTS" => Some("/tt".into()),
+            "TEXINPUTS" => Some(std::env::join_paths(["/a//", "", "/b"]).unwrap()),
+            _ => None,
+        });
+        assert_eq!(paths[&Format::Type1], [(PathBuf::from("/t1"), false)]);
+        assert_eq!(paths[&Format::Truetype], [(PathBuf::from("/tt"), false)]);
+        assert_eq!(
+            paths[&Format::Tex],
+            [(PathBuf::from("/a"), true), (PathBuf::from("/b"), false)]
+        );
+    }
+
+    #[test]
+    fn recursive_path_variables_precede_the_project_directory() {
+        let tmp = TempDir::new("texinputs-recursive");
+        let cwd = tmp.path().join("project");
+        let styles = tmp.path().join("styles");
+        tmp.write("project/shared.sty", "% project copy");
+        let selected = tmp.write("styles/deep/er/shared.sty", "% styles copy");
+        let mut kpse = Kpse::explicit(&cwd, Vec::new());
+        kpse.extra_paths.insert(Format::Tex, vec![(styles.clone(), true)]);
+
+        assert_eq!(kpse.find("shared.sty", Format::Tex), Some(selected.clone()));
+        assert_eq!(
+            kpse.explain_lookup("shared.sty", Format::Tex).source_kind,
+            Some(LookupSourceKind::EnvironmentPath)
+        );
+        assert_eq!(kpse.read("shared.sty", Format::Tex).unwrap(), b"% styles copy");
+        let (present, directories, _, _, _, complete) =
+            kpse.lookup_dependencies("shared.sty", Format::Tex, Some(&selected));
+        assert!(complete);
+        assert!(present.contains(&selected));
+        assert!(directories.iter().any(|(path, _)| path == &styles.join("deep")));
+        // A nested name matches by path suffix within the subtree.
+        assert_eq!(kpse.find("er/shared.sty", Format::Tex), Some(selected));
+    }
+
+    #[test]
+    fn an_exhausted_walk_budget_is_not_proof_of_absence() {
+        let tmp = TempDir::new("walk-budget");
+        tmp.write("tree/a/b/c/other.sty", "");
+        let starts = [(tmp.path().join("tree"), true)];
+        assert_eq!(walk_find_impl(&starts, "absent.sty", 2, |_, _| {}), (None, false));
+        assert_eq!(walk_find_impl(&starts, "absent.sty", 100, |_, _| {}), (None, true));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unindexed_walks_follow_directory_symlinks() {
+        let tmp = TempDir::new("walk-symlink");
+        let want = tmp.write("elsewhere/linked.fd", "% fd");
+        std::fs::create_dir_all(tmp.path().join("tree/tex/latex")).unwrap();
+        std::os::unix::fs::symlink(
+            tmp.path().join("elsewhere"),
+            tmp.path().join("tree/tex/latex/pkg"),
+        )
+        .unwrap();
+        let kpse = Kpse::explicit(tmp.path(), vec![tmp.path().join("tree")]);
+        assert_eq!(
+            kpse.find("linked.fd", Format::Tex),
+            Some(tmp.path().join("tree/tex/latex/pkg/linked.fd"))
+        );
+        assert!(want.is_file());
     }
 
     /// Fresh unique directory under the system temp dir, removed on drop.
@@ -1981,10 +2187,9 @@ mod tests {
         // newtx math metrics fd resolves as-is.
         let mi = kpse.find("omlntxmi.fd", Format::Tex).expect("omlntxmi.fd");
         assert!(mi.is_file());
-        // find_fd convenience for encoding + family pairs.
         let tlf = kpse
-            .find_fd("t1", "ntxtlf")
-            .expect("t1ntxtlf.fd via find_fd");
+            .find("t1ntxtlf.fd", Format::Tex)
+            .expect("t1ntxtlf.fd");
         assert!(tlf.is_file());
     }
 
@@ -2161,7 +2366,7 @@ mod tests {
         std::fs::create_dir_all(lower.join("tex/latex/unindexed")).unwrap();
         let selected = tmp.write("extra/article.cls", "% explicit class");
         let mut kpse = Kpse::explicit(&cwd, vec![lower.clone()]);
-        kpse.extra_paths.insert(Format::Tex, vec![extra]);
+        kpse.extra_paths.insert(Format::Tex, vec![(extra, false)]);
 
         assert_eq!(
             kpse.find("article.cls", Format::Tex),

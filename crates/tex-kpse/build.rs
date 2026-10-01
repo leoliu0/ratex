@@ -3,9 +3,11 @@ use std::io::{Read, Write};
 use std::path::PathBuf;
 
 // Independently compressing every small .sty/.fd file throws away almost all
-// cross-file redundancy. Four MiB chunks preserve random access while getting
-// close to the compression ratio of the original solid archive.
-const CHUNK_TARGET: usize = 4 * 1024 * 1024;
+// cross-file redundancy, while every embedded read decodes its whole chunk.
+// 128 KiB chunks keep the compressed size within 0.5% of 4 MiB chunks (the
+// fast encoder's matches are short-range anyway) and make a read decode
+// ~30x less data.
+const CHUNK_TARGET: usize = 128 * 1024;
 const MAX_ARCHIVE_WINDOW_BYTES: u64 = 512 * 1024 * 1024;
 
 fn main() {
@@ -50,22 +52,42 @@ fn main() {
         !part_names.is_empty(),
         "No packages.tar.zst.* parts declared in assets/packages.lock.json"
     );
+    // Append-only overlay written by `bundle_packages.py --supplement`.
+    let supplement_name = lock_text
+        .split_once("\"supplement_archive\":")
+        .and_then(|(_, rest)| rest.split_once("\"name\":"))
+        .and_then(|(_, rest)| rest.split('"').nth(1))
+        .map(str::to_owned);
 
     let assets_dir = std::path::Path::new("assets");
+    let open = |name: &str| {
+        let p = assets_dir.join(name);
+        println!("cargo:rerun-if-changed={}", p.display());
+        std::fs::File::open(&p)
+            .unwrap_or_else(|e| panic!("failed to open locked asset {}: {e}", p.display()))
+    };
+    // The overlay is read first, so its members shadow same-named members of
+    // the main parts (first basename wins), e.g. its consolidated pdftex.map.
+    let mut readers: Vec<Box<dyn Read>> = Vec::new();
+    if let Some(name) = &supplement_name {
+        readers.push(Box::new(open(name)));
+    }
     let mut chained_reader: Box<dyn Read> = Box::new(std::io::empty());
     for part_name in &part_names {
-        let p = assets_dir.join(part_name);
-        println!("cargo:rerun-if-changed={}", p.display());
-        let file = std::fs::File::open(&p)
-            .unwrap_or_else(|e| panic!("failed to open locked part {}: {e}", p.display()));
-        chained_reader = Box::new(chained_reader.chain(file));
+        chained_reader = Box::new(chained_reader.chain(open(part_name)));
     }
-    let decoder = ruzstd::decoding::StreamingDecoder::new_with_max_window_size(
-        chained_reader,
-        MAX_ARCHIVE_WINDOW_BYTES,
-    )
-    .expect("locked package archive must be a valid bounded zstd frame");
-    let mut archive = tar::Archive::new(decoder);
+    readers.push(chained_reader);
+    let mut archives: Vec<_> = readers
+        .into_iter()
+        .map(|reader| {
+            let decoder = ruzstd::decoding::StreamingDecoder::new_with_max_window_size(
+                reader,
+                MAX_ARCHIVE_WINDOW_BYTES,
+            )
+            .expect("locked package archive must be a valid bounded zstd frame");
+            tar::Archive::new(decoder)
+        })
+        .collect();
     let blob_path = out.join("packages.bin");
     let mut blob = BlobWriter {
         file: std::io::BufWriter::new(std::fs::File::create(&blob_path).unwrap()),
@@ -76,7 +98,7 @@ fn main() {
     let mut chunks: Vec<(usize, usize, usize)> = Vec::new();
     let mut chunk = Vec::with_capacity(CHUNK_TARGET);
     let mut font_faces = Vec::new();
-    for entry in archive.entries().unwrap() {
+    for entry in archives.iter_mut().flat_map(|archive| archive.entries().unwrap()) {
         let mut entry = entry.unwrap();
         if !entry.header().entry_type().is_file() {
             continue;

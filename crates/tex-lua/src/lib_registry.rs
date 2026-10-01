@@ -203,22 +203,6 @@ fn load_library_module(vm: &mut GlobalState, module: &LibraryModule) -> LuaResul
     if module.name == "bit32" && language != LuaLanguageLevel::Lua53 {
         return Ok(());
     }
-    // Create a table for the library
-    let lib_table = vm.create_table(0, 0)?;
-
-    // Register all entries in the table
-    for (name, entry) in &module.entries {
-        if !entry_supported(language, &module.name, name) {
-            continue;
-        }
-        let value = match entry {
-            LibraryEntry::Function(func) => LuaValue::cfunction(*func),
-            LibraryEntry::Value(value_init) => value_init(vm)?,
-        };
-        let name_key = vm.create_string(name)?;
-        vm.raw_set(&lib_table, name_key, value);
-    }
-
     // Set the library table as a global
     if module.name == "_G" {
         // For global functions, register them directly
@@ -249,6 +233,21 @@ fn load_library_module(vm: &mut GlobalState, module: &LibraryModule) -> LuaResul
             }
         }
     } else {
+        // Create a table for the library
+        let lib_table = vm.create_table(0, 0)?;
+
+        // Register all entries in the table
+        for (name, entry) in &module.entries {
+            if !entry_supported(language, &module.name, name) {
+                continue;
+            }
+            let value = match entry {
+                LibraryEntry::Function(func) => LuaValue::cfunction(*func),
+                LibraryEntry::Value(value_init) => value_init(vm)?,
+            };
+            let name_key = vm.create_string(name)?;
+            vm.raw_set(&lib_table, name_key, value);
+        }
         // For module libraries, set the table as global
         vm.set_global(&module.name, lib_table)?;
 

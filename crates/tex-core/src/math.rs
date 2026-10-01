@@ -1031,10 +1031,8 @@ impl Engine {
                 self.cur_list = Vec::new();
                 self.space_factor = 1000;
             }
-            // tex.web finish_display does NOT run build_page: the display
-            // nodes stay on the vlist (visible to \lastskip — LaTeX's
-            // theorem \addpenalty/\@xaddvskip dances read them) until the
-            // next box append or paragraph end
+            // resume_after_display transfers these display nodes to the page
+            // builder after consuming the optional following space (§1200).
         }
         // tex.web resume_after_display (§1194): any text following the
         // display resumes hmode directly — start_paragraph must not treat

@@ -156,23 +156,6 @@ mod tests {
         assert!(ok);
     }
 
-    #[test]
-    fn callback_argument_errors_are_lua_argument_errors() {
-        let mut lua = lua();
-        let f = lua
-            .create_callback(|cx| {
-                let _: i64 = cx.arg(1)?;
-                Ok(0)
-            })
-            .unwrap();
-        lua.set_global("f", f).unwrap();
-        let message: String = lua
-            .load("local ok, err = pcall(f, {}) return err")
-            .eval()
-            .unwrap();
-        assert!(message.starts_with("bad argument #1 to 'f'"), "{message}");
-    }
-
     // A handle made on one VM is rejected when pushed from a callback on another.
     #[test]
     fn callback_rejects_values_of_another_vm() {

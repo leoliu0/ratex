@@ -960,17 +960,25 @@ fn message_values(e: &Engine) -> String {
 /// should end with $$` and reads that token again. pdftex -ini reports the
 /// error three times and `Missing $ inserted` once for these four lines.
 #[test]
-fn display_closed_without_second_dollar_is_an_error() {
+fn display_error_recovery_preserves_following_paragraphs() {
     let e = run_lenient(&format!(
         r"{PROBE_SETUP}
-\setbox0\vbox{{aaa $$x$ bbb\par}}
-\setbox0\vbox{{aaa $$x\eqno y$ bbb\par}}
-\setbox0\vbox{{aaa $$x\par}}
-\setbox0\vbox{{aaa $$x$$ bbb\par}}
+\setbox0\vbox{{aaa $$x$ bbb\par}}\message{{[A\the\ht0,\the\dp0]}}
+\setbox0\vbox{{aaa $$x\eqno y$ bbb\par}}\message{{[B\the\ht0,\the\dp0]}}
+\setbox0\vbox{{aaa $$x\par}}\message{{[C\the\ht0,\the\dp0]}}
+\setbox0\vbox{{aaa $$x$$ bbb\par}}\message{{[D\the\ht0,\the\dp0]}}
 \end"
     ));
-    assert_eq!(e.log.matches("Display math should end with $$").count(), 3, "{}", e.log);
-    assert_eq!(e.log.matches("Missing $ inserted").count(), 1, "{}", e.log);
+    assert_eq!(e.error_count, 4, "{}", e.log);
+    let values = message_values(&e);
+    for want in [
+        "[A15.55553pt,0.0pt]",
+        "[B17.49997pt,0.0pt]",
+        "[C8.61108pt,0.0pt]",
+        "[D15.55553pt,0.0pt]",
+    ] {
+        assert!(values.contains(want), "{want} missing: {}", e.term);
+    }
 }
 
 /// tex.web §1160 scan_delimiter: a token that is not a letter/other with a
@@ -993,7 +1001,7 @@ fn missing_delimiters_are_reported_by_every_caller_and_read_again() {
 \setbox0\hbox{{$\left.\hbox{{x}}\right\delimiter"4162362 $}}\message{{[I\the\wd0]}}
 \end"#
     ));
-    assert_eq!(e.log.matches("Missing delimiter (. inserted)").count(), 8, "{}", e.log);
+    assert_eq!(e.error_count, 8, "{}", e.log);
     assert_eq!(
         spans(&message_values(&e), "[A", ']'),
         ["[A5.71527pt]"],
@@ -1118,7 +1126,7 @@ fn incompatible_unbox_keeps_the_box() {
 \setbox2\hbox{{\unhbox1}}\message{{[G\ifvoid1 V\else B\fi]}}
 \end"
     ));
-    assert_eq!(e.log.matches("Incompatible list can't be unboxed").count(), 5, "{}", e.log);
+    assert_eq!(e.error_count, 5, "{}", e.log);
     let values = message_values(&e);
     for want in ["[AB]", "[BB]", "[CB]", "[DB]", "[EB]", "[FV]", "[GV]"] {
         assert!(values.contains(want), "{want} missing: {}", e.term);

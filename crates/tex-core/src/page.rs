@@ -1035,7 +1035,9 @@ impl Engine {
             }
             _ => (cut, INF_PENALTY),
         };
-        self.eqtb.int_params[IntParam::OutputPenalty.idx() as usize] = penalty;
+        // tex.web §1013 geq_word_define(output_penalty_code, ...)
+        self.eqtb
+            .assign_int_param(IntParam::OutputPenalty, penalty, true);
 
         // marks: `\topmark` becomes the old `\botmark`; per-page marks reset
         self.marks[0] = self.marks[2].clone();

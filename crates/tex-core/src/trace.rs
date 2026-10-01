@@ -317,14 +317,10 @@ impl Engine {
                 self.print_register(out, escape, b"box", i);
                 out.push(b'=');
                 match value {
-                    TraceValue::Box(None, ..) => out.extend_from_slice(b"void"),
-                    TraceValue::Box(Some(node), depth, breadth, as_box) => {
-                        let mut d = BoxDisplay::with_limits(self, *depth, *breadth);
-                        if *as_box {
-                            d.show_box(std::slice::from_ref(node));
-                        } else {
-                            d.show_node_list(std::slice::from_ref(node));
-                        }
+                    TraceValue::Box(None) => out.extend_from_slice(b"void"),
+                    TraceValue::Box(Some(node)) => {
+                        let mut d = BoxDisplay::with_limits(self, 0, 1, escape);
+                        d.show_node_list(std::slice::from_ref(node));
                         out.extend_from_slice(&d.out);
                     }
                     _ => {}

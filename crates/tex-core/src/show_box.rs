@@ -28,6 +28,8 @@ pub(crate) struct BoxDisplay<'a> {
     prefix: Vec<u8>,
     depth_threshold: i64,
     breadth_max: i64,
+    /// `\escapechar` for the control sequence names this display prints
+    escape: i32,
     /// tex.web `font_in_short_display` (`null_font` is font 0)
     font_in_short_display: Option<FontId>,
 }
@@ -51,16 +53,23 @@ impl<'a> BoxDisplay<'a> {
             prefix: Vec::new(),
             depth_threshold: int(IntParam::ShowBoxDepth).min(MAX_DEPTH_THRESHOLD),
             breadth_max: if breadth <= 0 { 5 } else { breadth },
+            escape: int(IntParam::EscapeChar) as i32,
             font_in_short_display: Some(0),
         }
     }
 
     /// A display with explicit `depth_threshold` and `breadth_max`, as
     /// show_eqtb sets them for a box register.
-    pub(crate) fn with_limits(e: &'a Engine, depth_threshold: i64, breadth_max: i64) -> Self {
+    pub(crate) fn with_limits(
+        e: &'a Engine,
+        depth_threshold: i64,
+        breadth_max: i64,
+        escape: i32,
+    ) -> Self {
         BoxDisplay {
             depth_threshold,
             breadth_max,
+            escape,
             ..Self::new(e)
         }
     }
@@ -90,7 +99,7 @@ impl<'a> BoxDisplay<'a> {
     }
 
     pub(crate) fn print_esc(&mut self, s: &str) {
-        let esc = self.e.eqtb.int_params[IntParam::EscapeChar.idx() as usize];
+        let esc = self.escape;
         if (0..256).contains(&esc) {
             push_printable(&mut self.out, &[esc as u8]);
         }
@@ -142,7 +151,7 @@ impl<'a> BoxDisplay<'a> {
         let blink = eqtb.expand.get(f as usize).map_or(0, |x| x.blink);
         let shown = if blink == 0 { f } else { blink };
         let cs = eqtb.font_cs.get(shown as usize).copied().unwrap_or(0);
-        let esc = eqtb.int_params[IntParam::EscapeChar.idx() as usize];
+        let esc = self.escape;
         if (0..256).contains(&esc) {
             push_printable(&mut self.out, &[esc as u8]);
         }
@@ -240,7 +249,7 @@ impl<'a> BoxDisplay<'a> {
                 Node::Whatsit(_) if !invisible(n) => self.print("[]"),
                 Node::Rule { .. } => self.out.push(b'|'),
                 Node::Glue(g) | Node::Leaders { glue: g, .. } => {
-                    if !g.zero_glue {
+                    if !g.is_zero_glue() {
                         self.out.push(b' ');
                     }
                 }
@@ -1176,9 +1185,8 @@ impl Engine {
                         } else {
                             d.print_esc("cr");
                         }
-                        if p >= a as usize {
-                            p -= a as usize;
-                        }
+                        // tex.web skips the entry's row level here
+                        // (`p:=p-a`); the nest keeps no separate row level.
                         a = 0;
                         Next::Found
                     }
@@ -1208,12 +1216,12 @@ impl Engine {
                     Next::Found2
                 }
                 gc::INSERT => {
-                    if meta.spec == 255 {
-                        d.print_esc("vadjust");
-                    } else {
-                        d.print_esc("insert");
-                        d.print_int(meta.spec as i64);
-                    }
+                    // pdftex.web's begin_insert_or_adjust keeps the class in
+                    // saved(0) and the `\vadjust pre` flag in saved(1), so
+                    // show_save_groups' saved(-2) is that flag (0: `pre` is
+                    // not modelled): `\insert0` for every insert group.
+                    d.print_esc("insert");
+                    d.print_int(0);
                     Next::Found2
                 }
                 gc::VCENTER => Next::Found1("vcenter"),

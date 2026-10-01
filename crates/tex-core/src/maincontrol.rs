@@ -3,7 +3,7 @@
 use crate::boxes::Node;
 use crate::engine::Engine;
 use crate::engine::{Mode, ScannerStatus};
-use crate::eqtb::{Equiv, LevelType, SaveItem};
+use crate::eqtb::Equiv;
 use crate::prim::*;
 use crate::token::{CsId, Token};
 use std::fmt::Write;

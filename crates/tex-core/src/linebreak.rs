@@ -460,7 +460,7 @@ impl Engine {
         let Some(end) = best else {
             let mut inner: NodeList = Vec::with_capacity(list.len() + 2);
             // tex.web §887: \leftskip glue only when it is not zero_glue
-            if !params.left_skip.zero_glue {
+            if !params.left_skip.is_zero_glue() {
                 inner.push(Node::Glue(params.left_skip));
             }
             let mut post_adj: NodeList = Vec::new();
@@ -1915,7 +1915,7 @@ impl Engine {
             }
             let mut inner: NodeList = Vec::with_capacity(seg.len() + 2);
             // tex.web §887: \leftskip glue only when it is not zero_glue
-            if !params.left_skip.zero_glue {
+            if !params.left_skip.is_zero_glue() {
                 inner.push(Node::Glue(params.left_skip));
             }
             inner.extend(seg);

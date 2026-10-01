@@ -109,28 +109,30 @@ impl Engine {
         }
     }
 
-    fn token_is_fi_or_else(&self, t: Token) -> bool {
+    fn token_is_fi_or_else(&self, t: Token) -> Option<Prim> {
         if !t.is_cs() {
-            return false;
+            return None;
         }
-        matches!(
-            self.eqtb.resolve(t.cs_id()),
+        match self.eqtb.resolve(t.cs_id()) {
             Some(Equiv::Prim(
-                Prim::Else | Prim::Or | Prim::Fi | Prim::ElIf | Prim::ElIfX
-            ))
-        )
+                p @ (Prim::Else | Prim::Or | Prim::Fi | Prim::ElIf | Prim::ElIfX),
+            )) => Some(*p),
+            _ => None,
+        }
     }
 
     /// A delimiter terminates an unfinished conditional's numeric operand;
     /// delimiters of already selected branches still expand normally.
     fn get_x_raw_keep_cond(&mut self) -> Token {
         let t = self.raw_token();
-        if self.token_is_fi_or_else(t)
-            && self
+        if let Some(p) = self.token_is_fi_or_else(t) {
+            if self
                 .pending_if_depth
                 .is_some_and(|depth| self.if_stack.len() <= depth)
-        {
-            return t;
+            {
+                self.show_operand_ending_delimiter(p);
+                return t;
+            }
         }
         // Expanding the fetched token directly equals backing it up and
         // fetching it again, except while an alignment holds back older
@@ -1649,7 +1651,18 @@ impl Engine {
         Some(i64::from(sp))
     }
 
+    /// tex.web scan_glue: the spec read is a new one (it gets its own
+    /// identity) unless it is an internal glue value, which is the shared
+    /// spec it names.
     pub fn scan_glue(&mut self, mu: bool) -> Glue {
+        let mut g = self.scan_glue_spec(mu);
+        if g.spec == Glue::NO_SPEC {
+            g.spec = self.eqtb.new_spec();
+        }
+        g
+    }
+
+    fn scan_glue_spec(&mut self, mu: bool) -> Glue {
         let prev = self.in_expanded_scan;
         self.in_expanded_scan = false;
         // tex.web scan_glue: optional signs are consumed here and negate the
@@ -1668,6 +1681,7 @@ impl Engine {
         if t.is_cs() && matches!(self.cur_prim, Some(Prim::GlueToMu | Prim::MuToGlue)) {
             let mut g = self.scan_glue_conversion(self.cur_prim == Some(Prim::GlueToMu), mu);
             if negate {
+                g = g.fresh();
                 g.width = -g.width;
                 g.stretch = -g.stretch;
                 g.shrink = -g.shrink;
@@ -1676,8 +1690,9 @@ impl Engine {
             return g;
         }
         if t.is_cs() && matches!(self.cur_prim, Some(Prim::GlueExpr) | Some(Prim::MuExpr)) {
-            let mut g = self.scan_expr_glue(mu).fresh();
+            let mut g = self.scan_expr_glue(mu);
             if negate {
+                g = g.fresh();
                 g.width = -g.width;
                 g.stretch = -g.stretch;
                 g.shrink = -g.shrink;

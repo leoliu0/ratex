@@ -81,12 +81,14 @@ impl Equiv {
     }
 }
 
-/// e-TeX's reassignment test for glue: TeX shares one spec between copies,
-/// and every all-zero value is the shared `zero_glue` (trap_zero_glue), so
-/// only zero glue is reliably the same spec.
+/// e-TeX's reassignment test for glue: the eqtb pointer comparison
+/// `equiv(p)=e`. TeX shares one spec between copies of a value, so two
+/// glues are the same only when they carry the same spec identity (every
+/// all-zero value is the shared `zero_glue`); equal values of separately
+/// scanned specs are different.
 #[inline]
 fn same_glue(a: &Glue, b: &Glue) -> bool {
-    a.is_zero() && b.is_zero()
+    a.spec != Glue::NO_SPEC && a.spec == b.spec
 }
 
 /// e-TeX's reassignment test for token lists: the same list, or both empty.
@@ -364,10 +366,9 @@ pub(crate) enum TraceValue {
     Int(i64),
     Glue(Glue),
     Toks(Rc<Vec<Token>>),
-    /// A box register's value and the `depth_threshold`/`breadth_max` its
-    /// display uses; `true` when it is shown with show_box (a register above
-    /// 255 lives in an e-TeX sparse array) rather than as an eqtb entry.
-    Box(Option<Node>, i64, i64, bool),
+    /// A box register's value (show_eqtb and show_sa both display it with
+    /// `depth_threshold=0`, `breadth_max=1`).
+    Box(Option<Node>),
     Eq(Option<Equiv>),
     Font(u16),
     /// Entry count and the first two values of a shape array.
@@ -415,6 +416,8 @@ pub struct Eqtb {
     /// Pending `\tracingassigns`/`\tracingrestores` lines, drained by the
     /// engine in order before any other transcript output.
     pub(crate) trace_events: Vec<TraceEvent>,
+    /// The next glue spec identity [`Eqtb::new_spec`] hands out.
+    pub(crate) next_spec: u32,
     /// The open groups, innermost last (e-TeX's group stack in the save
     /// stack).
     pub(crate) groups: Vec<GroupRec>,
@@ -714,12 +717,13 @@ impl Eqtb {
             cur_font_val: 0,
             cur_font_level: LEVEL_ONE,
             trace_events: Vec::new(),
+            next_spec: Glue::FIRST_SPEC,
             groups: Vec::new(),
             int_params,
             int_levels: vec![LEVEL_ONE; crate::prim::NUM_INT_PARAMS],
             dim_params: vec![0; crate::prim::NUM_DIM_PARAMS],
             dim_levels: vec![LEVEL_ONE; crate::prim::NUM_DIM_PARAMS],
-            glue_params: vec![Glue::zero(); crate::prim::NUM_GLUE_PARAMS],
+            glue_params: vec![Glue::ZERO_GLUE; crate::prim::NUM_GLUE_PARAMS],
             glue_levels: vec![LEVEL_ONE; crate::prim::NUM_GLUE_PARAMS],
             tok_params: vec![Rc::new(Vec::new()); crate::prim::NUM_TOKS_PARAMS],
             tok_levels: vec![LEVEL_ONE; crate::prim::NUM_TOKS_PARAMS],
@@ -727,9 +731,9 @@ impl Eqtb {
             count_levels: vec![LEVEL_ONE; NUM_REGISTERS],
             dimen: vec![0; NUM_REGISTERS],
             dimen_levels: vec![LEVEL_ONE; NUM_REGISTERS],
-            skip: vec![Glue::zero(); NUM_REGISTERS],
+            skip: vec![Glue::ZERO_GLUE; NUM_REGISTERS],
             skip_levels: vec![LEVEL_ONE; NUM_REGISTERS],
-            muskip: vec![Glue::zero(); NUM_REGISTERS],
+            muskip: vec![Glue::ZERO_GLUE; NUM_REGISTERS],
             muskip_levels: vec![LEVEL_ONE; NUM_REGISTERS],
             toks: vec![Rc::new(Vec::new()); NUM_REGISTERS],
             toks_levels: vec![LEVEL_ONE; NUM_REGISTERS],
@@ -968,20 +972,7 @@ impl Eqtb {
             TraceSlot::Skip(i) => TraceValue::Glue(self.skip[i as usize]),
             TraceSlot::MuSkip(i) => TraceValue::Glue(self.muskip[i as usize]),
             TraceSlot::Toks(i) => TraceValue::Toks(self.toks[i as usize].clone()),
-            TraceSlot::Box(i) => {
-                let value = self.boxed[i as usize].clone();
-                if i < 256 {
-                    TraceValue::Box(value, 0, 1, false)
-                } else {
-                    let breadth = self.int_params[IntParam::ShowBoxBreadth as usize] as i64;
-                    TraceValue::Box(
-                        value,
-                        (self.int_params[IntParam::ShowBoxDepth as usize] as i64).min(10_000),
-                        if breadth <= 0 { 5 } else { breadth },
-                        true,
-                    )
-                }
-            }
+            TraceSlot::Box(i) => TraceValue::Box(self.boxed[i as usize].clone()),
             TraceSlot::Cat(c) => TraceValue::Int(self.cat_code(c).into()),
             TraceSlot::MathCode(c) => TraceValue::Int(self.math_code_for(c).into()),
             TraceSlot::DelCode(c) => TraceValue::Int(self.delimiter_code_for(c)),
@@ -1123,7 +1114,44 @@ impl Eqtb {
             self.end_assign(slot);
         }
     }
+    /// A fresh spec identity (tex.web new_spec's new pointer).
+    #[inline]
+    pub(crate) fn new_spec(&mut self) -> u32 {
+        let id = self.next_spec;
+        self.next_spec = id.checked_add(1).unwrap_or(Glue::FIRST_SPEC);
+        id
+    }
+    /// tex.web trap_zero_glue before a glue definition: a spec whose width,
+    /// stretch and shrink are all zero is replaced by the shared
+    /// `zero_glue` (orders included); any other spec not yet shared gets
+    /// its pointer.
+    #[inline]
+    fn define_glue(&mut self, mut v: Glue) -> Glue {
+        if v.is_zero() {
+            return Glue::ZERO_GLUE;
+        }
+        if v.spec == Glue::NO_SPEC {
+            v.spec = self.new_spec();
+        }
+        v
+    }
+    /// Set a glue parameter's initial value (no grouping, no tracing).
+    pub fn set_initial_glue_param(&mut self, p: GlueParam, v: Glue) {
+        self.glue_params[p.idx() as usize] = self.define_glue(v);
+    }
     pub fn assign_glue_param(&mut self, p: GlueParam, v: Glue, global: bool) {
+        let v = self.define_glue(v);
+        self.assign_glue_spec(p, v, global);
+    }
+    /// tex.web §777: a `\tabskip` assignment in an alignment preamble is not
+    /// trapped, so an all-zero value is a spec of its own, not `zero_glue`.
+    pub fn assign_preamble_tabskip(&mut self, mut v: Glue, global: bool) {
+        if v.spec == Glue::NO_SPEC {
+            v.spec = self.new_spec();
+        }
+        self.assign_glue_spec(GlueParam::TabSkip, v, global);
+    }
+    fn assign_glue_spec(&mut self, p: GlueParam, v: Glue, global: bool) {
         let i = p.idx() as usize;
         let slot = TraceSlot::GlueParam(p.idx());
         if !self.begin_assign(global, same_glue(&self.glue_params[i], &v), slot) {
@@ -1194,6 +1222,7 @@ impl Eqtb {
         self.end_assign(TraceSlot::Dimen(idx));
     }
     pub fn assign_skip(&mut self, idx: u16, v: Glue, global: bool) {
+        let v = self.define_glue(v);
         let i = idx as usize;
         if !self.begin_assign(global, same_glue(&self.skip[i], &v), TraceSlot::Skip(idx)) {
             return;
@@ -1211,6 +1240,7 @@ impl Eqtb {
         self.end_assign(TraceSlot::Skip(idx));
     }
     pub fn assign_muskip(&mut self, idx: u16, v: Glue, global: bool) {
+        let v = self.define_glue(v);
         let i = idx as usize;
         if !self.begin_assign(global, same_glue(&self.muskip[i], &v), TraceSlot::MuSkip(idx)) {
             return;

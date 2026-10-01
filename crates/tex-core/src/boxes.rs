@@ -105,10 +105,12 @@ pub struct Glue {
     /// taken from glue parameter `n` (see [`glue_subtype`]); box displays
     /// print it as `\glue(\baselineskip)`. Meaningless for eqtb values.
     pub subtype: u8,
-    /// The spec is TeX's shared `zero_glue`: every all-zero glue parameter
-    /// or register is (`trap_zero_glue`), so glue copied from one is too.
-    /// `short_display` prints no space for such glue.
-    pub zero_glue: bool,
+    /// Identity of the glue specification TeX shares between copies
+    /// ([`Glue::NO_SPEC`], [`Glue::ZERO_SPEC`] or an id the engine minted for
+    /// a scanned or registered spec). Copies of a value keep it, which is
+    /// what e-TeX's `\tracingassigns` pointer comparison sees: assigning a
+    /// spec to the register that already holds it is a reassignment.
+    pub spec: u32,
 }
 
 /// tex.web glue-node subtypes: `skip_param_code + 1`.
@@ -159,6 +161,23 @@ impl Glue {
     pub fn zero() -> Glue {
         Glue::new(0)
     }
+    /// A spec nobody else shares: never the same spec as any other value.
+    pub const NO_SPEC: u32 = 0;
+    /// TeX's shared `zero_glue`: every all-zero glue parameter or register
+    /// is (`trap_zero_glue`), so glue copied from one is too. `short_display`
+    /// prints no space for such glue.
+    pub const ZERO_SPEC: u32 = 1;
+    /// The first id the engine mints for a shared spec.
+    pub const FIRST_SPEC: u32 = 2;
+    pub const ZERO_GLUE: Glue = Glue {
+        width: 0,
+        stretch: 0,
+        shrink: 0,
+        stretch_order: 0,
+        shrink_order: 0,
+        subtype: glue_subtype::NORMAL,
+        spec: Glue::ZERO_SPEC,
+    };
     pub fn new(w: i32) -> Glue {
         Glue {
             width: w,
@@ -167,7 +186,7 @@ impl Glue {
             stretch_order: 0,
             shrink_order: 0,
             subtype: glue_subtype::NORMAL,
-            zero_glue: false,
+            spec: Glue::NO_SPEC,
         }
     }
     pub fn fil(order: u8, w: i32) -> Glue {
@@ -191,21 +210,22 @@ impl Glue {
     pub fn is_zero(&self) -> bool {
         self.width == 0 && self.stretch == 0 && self.shrink == 0
     }
+    /// The spec is TeX's shared `zero_glue`.
+    #[inline]
+    pub fn is_zero_glue(&self) -> bool {
+        self.spec == Glue::ZERO_SPEC
+    }
     /// tex.web new_param_glue: this eqtb glue value as the node of glue
-    /// parameter `subtype` (an all-zero parameter is TeX's `zero_glue`).
+    /// parameter `subtype`; the node shares the parameter's spec.
     pub fn param(self, subtype: u8) -> Glue {
-        Glue {
-            subtype,
-            zero_glue: self.is_zero(),
-            ..self
-        }
+        Glue { subtype, ..self }
     }
     /// A value read from a glue register or parameter: TeX shares the eqtb
-    /// spec, which is `zero_glue` whenever it is all zero.
+    /// spec (eqtb values are interned at assignment, so an all-zero one is
+    /// `zero_glue`).
     pub fn eqtb_value(self) -> Glue {
         Glue {
             subtype: glue_subtype::NORMAL,
-            zero_glue: self.is_zero(),
             ..self
         }
     }
@@ -213,7 +233,7 @@ impl Glue {
     pub fn fresh(self) -> Glue {
         Glue {
             subtype: glue_subtype::NORMAL,
-            zero_glue: false,
+            spec: Glue::NO_SPEC,
             ..self
         }
     }

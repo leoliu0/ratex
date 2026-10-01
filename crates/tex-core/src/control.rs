@@ -1,7 +1,7 @@
 //! Main control: dispatch of unexpandable tokens; assignments (def/let/
 //! registers/parameters); box and list building; paragraph triggers.
 
-use crate::engine::{Engine, Mode, ScannerStatus};
+use crate::engine::{Engine, Mode};
 use crate::eqtb::{Equiv, LevelType, Macro};
 use crate::expand::PAR_REF_FLAG;
 use crate::prim::*;
@@ -1756,6 +1756,10 @@ impl Engine {
     }
 
     pub fn end_group(&mut self) {
+        // tex.web 1132: the `}` closing a \noalign body ends the no-align.
+        if self.align_close_noalign_brace() {
+            return;
+        }
         match self.eqtb.cur_group_type() {
             Some(LevelType::Box) => self.end_box(),
             Some(LevelType::Simple) => {
@@ -1764,15 +1768,6 @@ impl Engine {
                     return;
                 }
                 let _ = self.pop_group();
-                // tex.web 1136-1140: the `}` closing a \noalign body group
-                // ends the no-align. Depth returned to the watermark set by
-                // align_noalign means the body's brace group just closed.
-                if self.scanner_status == ScannerStatus::Aligning
-                    && self.align_in_noalign
-                    && self.eqtb.save_stack.len() == self.align_noalign_save_base
-                {
-                    self.align_finish_noalign_now();
-                }
             }
             Some(LevelType::Group | LevelType::MathGroup) => {
                 // math/legacy groups: pack if a box context is open

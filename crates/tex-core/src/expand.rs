@@ -543,6 +543,7 @@ impl Engine {
                         .pending_if_depth
                         .is_some_and(|depth| self.if_stack.len() <= depth)
                     {
+                        self.show_operand_ending_delimiter(p);
                         self.set_cur_cs(t);
                         return t;
                     }
@@ -1003,6 +1004,7 @@ impl Engine {
                                 .pending_if_depth
                                 .is_some_and(|depth| self.if_stack.len() <= depth)
                             {
+                                self.show_operand_ending_delimiter(p);
                                 let tok = Token::from_cs(id);
                                 self.set_cur_cs(tok);
                                 return tok;
@@ -2456,6 +2458,25 @@ impl Engine {
         }
     }
 
+    /// tex.web expand §510 for a `\fi`, `\else` or `\or` that meets a
+    /// conditional still evaluating its operand: TeX shows it, then inserts
+    /// `\relax` and reads the delimiter again when it skips or selects a
+    /// branch (where it is shown a second time). Ratex ends the operand with
+    /// the delimiter itself, so the first showing happens here, once.
+    pub(crate) fn show_operand_ending_delimiter(&mut self, p: Prim) {
+        if matches!(p, Prim::Fi | Prim::Else | Prim::Or)
+            && self.eqtb.int_params[crate::prim::IntParam::TracingIfs as usize] > 0
+        {
+            if let Some(state) = self.if_stack.last_mut() {
+                if state.delimiter_shown {
+                    return;
+                }
+                state.delimiter_shown = true;
+            }
+            self.show_if_delimiter(p);
+        }
+    }
+
     /// tex.web "Push the condition stack" (the conditional's operands are
     /// scanned with it already on top).
     fn push_if(&mut self, id: CsId, unless: bool) -> usize {
@@ -2470,6 +2491,7 @@ impl Engine {
             matched: false,
             if_case: -1,
             evaluating: true,
+            delimiter_shown: false,
             kind,
             unless,
             in_else: false,

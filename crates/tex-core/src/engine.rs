@@ -19,6 +19,9 @@ pub struct IfState {
     pub matched: bool,    // some branch was taken already
     pub if_case: i32,     // >=0: \ifcase with this many cases left
     pub evaluating: bool, // tex.web if_limit == if_code: condition still being evaluated
+    /// A `\fi`, `\else` or `\or` that ended the unfinished condition was
+    /// already traced (tex.web expands it once, then reads it again).
+    pub delimiter_shown: bool,
     /// e-TeX `cur_if`: the conditional's `if_*_code` (0 for `\if` ...
     /// 23 for `\ifpdfabsdim`)
     pub kind: u8,
@@ -468,10 +471,6 @@ pub struct Engine {
     pub(crate) align_delimiter_balance_base: i32,
     /// eqtb group level after the current alignment u-template completes.
     pub(crate) align_cell_level: u16,
-    /// Save-stack depth immediately before the simple group that executes a
-    /// `\noalign` body. The body's closing brace ends the no-align row only
-    /// when the stack returns to this exact depth.
-    pub(crate) align_noalign_save_base: usize,
     /// tex.web align_state (tex.web @6745): net brace depth relative to the
     /// current alignment entry. A row delimiter ends the entry only at 0.
     /// Maintained cumulatively at token fetch (tex.web @7335/@7492); reset
@@ -1154,7 +1153,6 @@ impl Engine {
             align_pushed_base: 0,
             align_delimiter_balance_base: 0,
             align_cell_level: 0,
-            align_noalign_save_base: 0,
             align_brace_depth: 0,
             middle_delimiter_size: 0,
             align_is_valign: false,
@@ -1890,20 +1888,26 @@ impl Engine {
             }
         }
         // TeX82 defaults (tex.web §25 / plain.tex)
-        eng.eqtb.glue_params[GlueParam::ParFillSkip.idx() as usize] =
-            crate::boxes::Glue::fil(crate::boxes::GLUE_FIL, 0);
-        eng.eqtb.glue_params[GlueParam::BaselineSkip.idx() as usize] =
-            crate::boxes::Glue::new(12 * 65536);
-        eng.eqtb.glue_params[GlueParam::LineSkip.idx() as usize] = crate::boxes::Glue::new(65536);
-        // plain.tex / fontmath.ltx: \thinmuskip=3mu, \medmuskip=4mu plus 2mu
-        // minus 4mu, \thickmuskip=5mu plus 5mu — stored mu-denominated
-        // (tex.web §431); math_glue converts with the current em at use.
-        eng.eqtb.glue_params[GlueParam::ThinMuSkip.idx() as usize] =
-            crate::boxes::Glue::new(3 * 65536);
-        eng.eqtb.glue_params[GlueParam::MedMuSkip.idx() as usize] =
-            crate::boxes::Glue::spec(4 * 65536, 2 * 65536, 0, 4 * 65536, 0);
-        eng.eqtb.glue_params[GlueParam::ThickMuSkip.idx() as usize] =
-            crate::boxes::Glue::spec(5 * 65536, 5 * 65536, 0, 0, 0);
+        for (param, glue) in [
+            (GlueParam::ParFillSkip, crate::boxes::Glue::fil(crate::boxes::GLUE_FIL, 0)),
+            (GlueParam::BaselineSkip, crate::boxes::Glue::new(12 * 65536)),
+            (GlueParam::LineSkip, crate::boxes::Glue::new(65536)),
+            // plain.tex / fontmath.ltx: \thinmuskip=3mu, \medmuskip=4mu plus
+            // 2mu minus 4mu, \thickmuskip=5mu plus 5mu — stored
+            // mu-denominated (tex.web §431); math_glue converts with the
+            // current em at use.
+            (GlueParam::ThinMuSkip, crate::boxes::Glue::new(3 * 65536)),
+            (
+                GlueParam::MedMuSkip,
+                crate::boxes::Glue::spec(4 * 65536, 2 * 65536, 0, 4 * 65536, 0),
+            ),
+            (
+                GlueParam::ThickMuSkip,
+                crate::boxes::Glue::spec(5 * 65536, 5 * 65536, 0, 0, 0),
+            ),
+        ] {
+            eng.eqtb.set_initial_glue_param(param, glue);
+        }
         eng.eqtb.int_params[IntParam::EndLineChar.idx() as usize] = 13;
         eng.eqtb.int_params[IntParam::EscapeChar.idx() as usize] = 92;
         eng.eqtb.int_params[IntParam::NewLineChar.idx() as usize] = -1;

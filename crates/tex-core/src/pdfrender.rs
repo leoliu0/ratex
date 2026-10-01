@@ -311,10 +311,10 @@ fn matrix_transform_rect(m: &Matrix, llx: f64, lly: f64, urx: f64, ury: f64) -> 
 pub struct RenderCtx<'a> {
     pub eng: &'a mut Engine,
     pub content: String,
-    pub used_fonts: Vec<(usize, u16)>, // (engine font/binding key, PDF resource number)
+    pub used_fonts: Vec<(usize, u32)>, // (engine font/binding key, PDF resource number)
     pub page_height_bp: f64,
     pub cur_font: usize,
-    pub cur_pdf_font: u16,
+    pub cur_pdf_font: u32,
     /// pdfTeX `fixed_decimal_digits` and the derived `min_bp_val`.
     decimal_digits: u32,
     min_bp_val: i64,
@@ -325,7 +325,7 @@ pub struct RenderCtx<'a> {
     base_line_sp: i64,
     pub annots: Vec<Annot>,
     pub dests: Vec<crate::pdfout::Dest>,
-    pub page_fonts: Vec<(usize, u16)>, // (engine font/binding key, resource number)
+    pub page_fonts: Vec<(usize, u32)>, // (engine font/binding key, resource number)
     // containing-box context for leaders grids and null-rule sentinels (sp)
     pub left_edge_sp: i64,
     pub box_w_sp: i64,
@@ -347,7 +347,7 @@ pub struct RenderCtx<'a> {
     font_programs: std::collections::HashMap<u16, std::rc::Rc<crate::font_program::FontProgram>>,
     cur_tm_a: i32,
     pdf_f: u16,
-    last_f: u16,
+    last_f: u32,
     last_f_size: i64,
     pdf_h: i64,
     pdf_v: i64,
@@ -378,9 +378,11 @@ pub struct RenderCtx<'a> {
 /// A shipped \pdfxform box: its content stream and resources.
 pub struct RenderedForm {
     pub content: Vec<u8>,
-    pub fonts: Vec<(usize, u16)>,
+    pub fonts: Vec<(usize, u32)>,
     /// pdfTeX `pdf_image_procset` of the form
     pub image_procset: u8,
+    /// pdfTeX `pdf_xform_list` of the form
+    pub xforms: Vec<i32>,
     /// pdfTeX `pdf_ximage_list` of the form
     pub ximages: Vec<i32>,
 }
@@ -557,6 +559,8 @@ impl Engine {
     /// \pdfsavepos results (\pdflastxpos/\pdflastypos) from the last
     /// SavePos node on the page.
     pub fn render_page(&mut self, page_box: &Node) -> PdfPage {
+        // pdf_ship_out initializes the PDF output on the first page or form.
+        self.init_pdf_output();
         // pdfTeX "Calculate page dimensions and margins": a zero
         // \pdfpagewidth/\pdfpageheight means box size plus twice the offset
         let dim = |p: DimParam| self.eqtb.dim_params[p.idx() as usize];
@@ -676,12 +680,15 @@ impl Engine {
             // omitted by > 0, by default only for PDF 1.x
             procset: omit_procset < 0 || (omit_procset == 0 && ctx.eng.pdf_doc.major_version < 2),
             image_procset,
+            xforms: std::mem::take(&mut ctx.xform_list),
             ximages: std::mem::take(&mut ctx.ximage_list),
             group,
         }
     }
 
     pub fn render_form_box(&mut self, node: &Node, w: i32, h: i32, d: i32) -> RenderedForm {
+        // pdf_ship_out initializes the PDF output on the first page or form.
+        self.init_pdf_output();
         // Form coordinates are baseline-relative: the dictionary spans [-d, h].
         // pdf_ship_out resets the page group for forms too.
         self.pdf_page_group_val = 0;
@@ -716,6 +723,7 @@ impl Engine {
             image_procset: ctx.image_procset(),
             content: ctx.content.into_bytes(),
             fonts: ctx.page_fonts,
+            xforms: ctx.xform_list,
             ximages: ctx.ximage_list,
         }
     }
@@ -1599,26 +1607,36 @@ impl<'a> RenderCtx<'a> {
         }
     }
 
-    fn ensure_font(&mut self, f: u16, binding: crate::pdfout::FontBinding) -> u16 {
+    /// pdfTeX `pdf_set_font` resource lookup: the number `n` of the font's
+    /// `/F<n>` resource. A raw font is named after the font `ff` that owns
+    /// its dictionary (`set_ff`), so sizes of one TFM share a name; this
+    /// engine's semantic remaps of a font's code space have no pdfTeX
+    /// counterpart and take their own number above every font number.
+    fn ensure_font(&mut self, f: u16, binding: crate::pdfout::FontBinding) -> u32 {
         // pdf_set_font: `if not font_used[f] then pdf_init_font(f)`
-        self.eng.pdf_init_font(f);
-        let f = binding.resource_key(f);
-        if self.cur_font == f && self.cur_pdf_font != 0 {
+        let ff = self.eng.pdf_init_font(f);
+        let key = binding.resource_key(f);
+        if self.cur_font == key && self.cur_pdf_font != 0 {
             return self.cur_pdf_font;
         }
-        if let Some((_, num)) = self.used_fonts.iter().find(|(id, _)| *id == f) {
-            self.cur_font = f;
+        if let Some((_, num)) = self.used_fonts.iter().find(|(id, _)| *id == key) {
+            self.cur_font = key;
             self.cur_pdf_font = *num;
             return *num;
         }
-        let Ok(num) = u16::try_from(self.used_fonts.len() + 1) else {
+        let num = if binding == crate::pdfout::FontBinding::RAW {
+            Ok(u32::from(ff))
+        } else {
+            u32::try_from(key)
+        };
+        let Ok(num) = num else {
             self.eng
                 .error("PDF page exceeds the supported font resource count");
             return 0;
         };
-        self.used_fonts.push((f, num));
-        self.page_fonts.push((f, num));
-        self.cur_font = f;
+        self.used_fonts.push((key, num));
+        self.page_fonts.push((key, num));
+        self.cur_font = key;
         self.cur_pdf_font = num;
         num
     }
@@ -1743,7 +1761,8 @@ impl<'a> RenderCtx<'a> {
         }
         let (font_size_pdf, _) = divide_scaled(at_size_sp, ONE_HUNDRED_BP_SP, 6);
         self.content.push_str("/F");
-        push_i64(&mut self.content, num as i64);
+        push_i64(&mut self.content, i64::from(num));
+        self.content.push_str(&self.eng.pdf_doc.resname_prefix);
         self.content.push(' ');
         self.push_real(font_size_pdf, 4);
         self.content.push_str(" Tf");
@@ -2067,6 +2086,8 @@ impl<'a> RenderCtx<'a> {
         // fonts (kerns included as offsets). The VF font itself is never
         // registered as a page resource. Offsets advance on the exact sp
         // raster, as pdfTeX's do_vf_packet does.
+        // pdftex.web `output_one_char`: `do_vf` on the first character
+        self.eng.ensure_vf_bases(f);
         if self.eng.font_loader.vf_bases.contains_key(&f) {
             let font_name = |ctx: &Self| {
                 ctx.eng.eqtb.fonts.get(f as usize).map(|ff| ff.tfm_name.clone()).unwrap_or_default()
@@ -2530,7 +2551,9 @@ impl<'a> RenderCtx<'a> {
             self.content.push(' ');
             self.push_bp(self.origin_v - cur_v - ext_xn_over_d(height, orig_y, img_h) as i64);
         }
-        self.content.push_str(&format!(" cm\n/Im{obj} Do\nQ\n"));
+        let name = self.eng.pdf_doc.image_names.get(&obj).copied().unwrap_or(obj);
+        let prefix = &self.eng.pdf_doc.resname_prefix;
+        self.content.push_str(&format!(" cm\n/Im{name}{prefix} Do\nQ\n"));
     }
 
     /// pdfTeX "Write out pending images" and "Write out pending forms":
@@ -2542,6 +2565,7 @@ impl<'a> RenderCtx<'a> {
         }
         for index in 0..self.xform_list.len() {
             let obj = self.xform_list[index];
+            self.eng.ship_pdf_form(obj);
             self.eng.write_form_procset(obj);
         }
     }
@@ -2613,7 +2637,7 @@ impl<'a> RenderCtx<'a> {
             }
             PdfRefXImage { obj, w, h, d } => self.out_image(*obj, *w, *h + *d, cur_h, cur_v + *d as i64),
             PdfSnapRefPoint => self.eng.pdf_snap_refpos = (cur_h, cur_v),
-            PdfRefXForm { obj, .. } => {
+            PdfRefXForm { obj, d, .. } => {
                 if !self.xform_list.contains(obj) {
                     self.xform_list.push(*obj);
                 }
@@ -2621,8 +2645,11 @@ impl<'a> RenderCtx<'a> {
                 self.content.push_str("q\n1 0 0 1 ");
                 self.push_bp(cur_h - self.origin_h);
                 self.content.push(' ');
-                self.push_bp(self.origin_v - cur_v);
-                self.content.push_str(&format!(" cm /Fm{obj} Do\nQ\n"));
+                // pdftex.web out_form: `cur_v := cur_v + obj_xform_depth`
+                self.push_bp(self.origin_v - cur_v - i64::from(*d));
+                let name = self.eng.pdf_doc.form_names.get(obj).copied().unwrap_or(*obj);
+                let prefix = &self.eng.pdf_doc.resname_prefix;
+                self.content.push_str(&format!(" cm\n/Fm{name}{prefix} Do\nQ\n"));
             }
             PdfSetMatrix { matrix, source } => {
                 // pdfTeX `pdf_out_setmatrix` + `pdfsetmatrix` (utils.c §1406):

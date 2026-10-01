@@ -59,10 +59,10 @@ mod tests {
         Ok(1)
     }
 
-    fn test_temp_dir() -> PathBuf {
-        let dir = std::env::temp_dir().join("luars_api_tests");
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
+    /// Per process: concurrent test runs share the temp directory and would
+    /// rewrite or delete each other's fixed-name scripts.
+    fn temp_script(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("luars_api_{name}_{}.lua", std::process::id()))
     }
 
     #[test]
@@ -303,8 +303,7 @@ mod tests {
 
     #[test]
     fn lua_api_extra_space_and_dofile_work() {
-        let dir = test_temp_dir();
-        let path = dir.join("lua_api_dofile.lua");
+        let path = temp_script("lua_api_dofile");
         {
             let mut file = std::fs::File::create(&path).unwrap();
             writeln!(file, "return 40 + 2").unwrap();
@@ -397,8 +396,7 @@ mod tests {
 
     #[test]
     fn lua_state_lua_api_supports_extra_space_and_dofile() {
-        let dir = test_temp_dir();
-        let path = dir.join("lua_state_api_dofile.lua");
+        let path = temp_script("lua_state_api_dofile");
         {
             let mut file = std::fs::File::create(&path).unwrap();
             writeln!(file, "return 6 * 7").unwrap();

@@ -13,8 +13,28 @@ pub struct MapEntry {
     /// resolved as `<name>.enc` through kpathsea when no explicit file is given
     pub enc_name: Option<String>,
     pub pfb: Option<String>,
+    /// `<<file.pfb`: the whole program is downloaded instead of a subset.
+    pub full_download: bool,
     pub slant: f64,
     pub extend: f64,
+}
+
+impl MapEntry {
+    /// mapfile.c `fm->slant`: `SlantFont` in thousandths, rounded.
+    pub fn slant_millis(&self) -> i32 {
+        let d = self.slant * 1000.0;
+        (if d > 0.0 { d + 0.5 } else { d - 0.5 }) as i32
+    }
+
+    /// mapfile.c `fm->extend`: `ExtendFont` in thousandths, rounded; a
+    /// factor of exactly 1 is stored as 0.
+    pub fn extend_millis(&self) -> i32 {
+        let d = self.extend * 1000.0;
+        match (if d > 0.0 { d + 0.5 } else { d - 0.5 }) as i32 {
+            1000 => 0,
+            other => other,
+        }
+    }
 }
 
 /// One base font declared by a virtual font's `fnt_def`.
@@ -1085,12 +1105,14 @@ pub fn parse_map_line(line: &str) -> Option<MapEntry> {
     let mut enc_file: Option<String> = None;
     let mut enc_name: Option<String> = None;
     let mut pfb: Option<String> = None;
+    let mut full_download = false;
     let mut slant = 0.0;
     let mut extend = 1.0;
     while let Some(mut tok) = it.next() {
         if !tok.starts_with('<') {
             continue;
         }
+        let full = tok.starts_with("<<");
         loop {
             // Download markers can be separated from their filename by
             // whitespace, including the `<<` and `<[` forms.
@@ -1107,6 +1129,7 @@ pub fn parse_map_line(line: &str) -> Option<MapEntry> {
                 }
             } else if pfb.is_none() {
                 pfb = Some(basename(rest).to_string());
+                full_download = full;
             }
             break;
         }
@@ -1158,6 +1181,7 @@ pub fn parse_map_line(line: &str) -> Option<MapEntry> {
         enc_file,
         enc_name,
         pfb,
+        full_download,
         slant,
         extend,
     })
@@ -1752,11 +1776,6 @@ impl Engine {
     /// the record and replaces only its own id's slot.
     pub fn push_engine_font(&mut self, font: Rc<Font>, cs: crate::token::CsId) -> u16 {
         let id = self.eqtb.fonts.len() as u16;
-        let virtual_font = self
-            .font_loader
-            .vf_fonts
-            .get(&(font.tfm_name.clone(), font.at_size))
-            .cloned();
         let params = font.params.clone();
         self.eqtb.fonts.push(font);
         self.eqtb.font_params.push(params);
@@ -1774,24 +1793,47 @@ impl Engine {
         self.eqtb.skew_char_levels.push(1);
         self.eqtb.font_cs.push(cs);
         self.eqtb.expand.push(Default::default());
-        if let Some(vf) = virtual_font {
-            let mut bases = Vec::with_capacity(vf.bases.len());
-            for base in &vf.bases {
-                let existing = self.eqtb.fonts.iter().position(|font| {
-                    font.tfm_name == base.tfm_name && font.at_size == base.at_size
-                });
-                let base_id = if let Some(existing) = existing {
-                    existing as u16
-                } else if let Some(font) = self.font_loader.load_tfm(&base.tfm_name, base.at_size) {
-                    self.push_engine_font(font, 0)
-                } else {
-                    u16::MAX
-                };
-                bases.push(base_id);
-            }
-            self.font_loader.vf_bases.insert(id, bases);
-        }
         id
+    }
+
+    /// pdftex.web `do_vf`: a virtual font's local fonts get their internal
+    /// font numbers when the font is first used (a character shipped or a
+    /// font query), not when it is loaded, so the numbers of fonts loaded
+    /// later - and the `/F<n>` names built from them - agree with pdfTeX.
+    pub fn ensure_vf_bases(&mut self, f: u16) {
+        if self.font_loader.vf_bases.contains_key(&f) {
+            return;
+        }
+        let Some(font) = self.eqtb.fonts.get(f as usize) else {
+            return;
+        };
+        let Some(vf) = self
+            .font_loader
+            .vf_fonts
+            .get(&(font.tfm_name.clone(), font.at_size))
+            .cloned()
+        else {
+            return;
+        };
+        let mut bases = Vec::with_capacity(vf.bases.len());
+        for base in &vf.bases {
+            let existing = self.eqtb.fonts.iter().position(|font| {
+                font.tfm_name == base.tfm_name && font.at_size == base.at_size
+            });
+            let base_id = if let Some(existing) = existing {
+                existing as u16
+            } else if let Some(font) = self.font_loader.load_tfm(&base.tfm_name, base.at_size) {
+                self.push_engine_font(font, 0)
+            } else {
+                u16::MAX
+            };
+            bases.push(base_id);
+        }
+        self.font_loader.vf_bases.insert(f, bases);
+        // a font expanded before its local fonts exist passes that on
+        if self.eqtb.expand[f as usize].step != 0 {
+            self.vf_expand_local_fonts(f);
+        }
     }
 
     pub fn scan_pdf_origin(&mut self) -> u8 {
@@ -1854,6 +1896,7 @@ impl Engine {
         }
         let k = self.push_engine_font(Rc::new(nf), 0);
         self.copy_expand_params(k, f, e);
+        self.ensure_vf_bases(f);
         if let Some(bases) = self.font_loader.vf_bases.get(&f).cloned() {
             let mut expanded = Vec::with_capacity(bases.len());
             for &lf in &bases {

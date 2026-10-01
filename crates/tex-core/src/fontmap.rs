@@ -81,6 +81,26 @@ pub struct LayerReport {
 pub struct FontMap {
     entries: RefCell<crate::FxHashMap<Box<str>, Option<MapEntry>>>,
     layers: Vec<Layer>,
+    /// Type 1 entries with a font file by (PostScript name, slant, extend):
+    /// mapfile.c `ps_tree`, built on the first replacement lookup.
+    ps_index: OnceCell<crate::FxHashMap<(Box<str>, i32, i32), MapEntry>>,
+}
+
+/// C `strtol(s, &end, 10)`: the value and the offset after its digits.
+fn parse_c_long(s: &str) -> Option<(i32, usize)> {
+    let bytes = s.as_bytes();
+    let mut at = bytes.iter().take_while(|b| b.is_ascii_whitespace()).count();
+    let start = at;
+    if matches!(bytes.get(at), Some(b'+' | b'-')) {
+        at += 1;
+    }
+    let digits = bytes[at..].iter().take_while(|b| b.is_ascii_digit()).count();
+    if digits == 0 {
+        return None;
+    }
+    at += digits;
+    let value = s[start..at].parse::<i64>().unwrap_or(i64::MAX);
+    Some((value.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32, at))
 }
 
 impl FontMap {
@@ -97,6 +117,83 @@ impl FontMap {
 
     pub fn contains_key(&self, name: &str) -> bool {
         self.get(name).is_some()
+    }
+
+    /// mapfile.c `lookup_fontmap`: the Type 1 map entry with a font file
+    /// that replaces an included PDF's font named `ps_name` (subset tag
+    /// and `-Slant_n`/`-Extend_n` suffixes understood). The entry is the
+    /// first one in map order for its PostScript name, slant and extension.
+    pub fn replacement_for(&self, ps_name: &str) -> Option<MapEntry> {
+        let mut name = ps_name;
+        if ps_name.len() > 7 {
+            let tag = ps_name.as_bytes();
+            if tag[..6].iter().all(u8::is_ascii_uppercase) && tag[6] == b'+' {
+                name = &ps_name[7..];
+            }
+        }
+        let (mut slant, mut extend) = (0, 0);
+        let mut base = name;
+        if let Some(at) = name.find("-Slant_") {
+            let value = &name[at + "-Slant_".len()..];
+            if let Some((sl, end)) = parse_c_long(value) {
+                if end == value.len() {
+                    slant = sl;
+                    base = &name[..at];
+                } else if let Some(c) = value[end..].find("-Extend_") {
+                    let value = &value[end + c + "-Extend_".len()..];
+                    if let Some((ex, end)) = parse_c_long(value) {
+                        if end == value.len() {
+                            slant = sl;
+                            extend = ex;
+                            base = &name[..at];
+                        }
+                    }
+                }
+            }
+        } else if let Some(at) = name.find("-Extend_") {
+            let value = &name[at + "-Extend_".len()..];
+            if let Some((ex, end)) = parse_c_long(value) {
+                if end == value.len() {
+                    extend = ex;
+                    base = &name[..at];
+                }
+            }
+        }
+        let index = self.ps_index.get_or_init(|| self.build_ps_index());
+        index.get(&(Box::from(base), slant, extend)).cloned()
+    }
+
+    /// mapfile.c `ps_tree`: every Type 1 entry that names a font file, the
+    /// first (`+`) or latest (`=`) one per (PostScript name, slant, extend).
+    fn build_ps_index(&self) -> crate::FxHashMap<(Box<str>, i32, i32), MapEntry> {
+        let mut index = crate::FxHashMap::default();
+        for layer in &self.layers {
+            if layer.mode == MapMode::Delete {
+                continue;
+            }
+            for line in layer.text.lines().map(str::trim) {
+                if line.is_empty() || line.starts_with(['%', '*', '#', ';']) {
+                    continue;
+                }
+                let Some(entry) = parse_map_line(line) else {
+                    continue;
+                };
+                let is_type1 = entry.pfb.as_deref().is_some_and(|file| {
+                    let lower = file.to_ascii_lowercase();
+                    ![".ttf", ".ttc", ".otf", ".vf"].iter().any(|ext| lower.ends_with(ext))
+                });
+                if entry.fontname.is_empty() || !is_type1 {
+                    continue;
+                }
+                let key = (Box::from(entry.fontname.as_str()), entry.slant_millis(), entry.extend_millis());
+                if layer.mode == MapMode::Replace {
+                    index.insert(key, entry);
+                } else {
+                    index.entry(key).or_insert(entry);
+                }
+            }
+        }
+        index
     }
 
     /// Replay the layers in order for one TFM name.
@@ -175,6 +272,7 @@ impl FontMap {
             }
         }
         self.entries.borrow_mut().clear();
+        self.ps_index = OnceCell::new();
         self.layers.push(Layer {
             text: text.into(),
             mode,

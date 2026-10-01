@@ -577,12 +577,11 @@ pub enum ToksParam {
     EveryEOF,
     Output,
     ErrHelp,
-    PdfTrailerId,
     /// pdfTeX `\pdfpkmode`: METAFONT mode for generated PK fonts.
     PdfPkMode,
 }
 
-pub const NUM_TOKS_PARAMS: usize = 12;
+pub const NUM_TOKS_PARAMS: usize = 11;
 
 impl ToksParam {
     #[inline]
@@ -1058,6 +1057,8 @@ pub enum Prim {
     PdfXFormName,
     PdfLastXImageColorDepth,
     PdfTrailer,
+    /// `\pdftrailerid {<text>}`: appends to the custom trailer /ID source.
+    PdfTrailerId,
     PdfIncludeChars,
     PdfCopyFont,
     PdfSpaceFont,
@@ -1501,6 +1502,7 @@ impl Prim {
             Prim::PdfXFormName => 503,
             Prim::PdfLastXImageColorDepth => 504,
             Prim::PdfTrailer => 505,
+            Prim::PdfTrailerId => 780,
             Prim::PdfIncludeChars => 506,
             Prim::PdfCopyFont => 507,
             Prim::PdfSpaceFont => 508,
@@ -1933,6 +1935,7 @@ impl Prim {
             503 => Some(Prim::PdfXFormName),
             504 => Some(Prim::PdfLastXImageColorDepth),
             505 => Some(Prim::PdfTrailer),
+            780 => Some(Prim::PdfTrailerId),
             506 => Some(Prim::PdfIncludeChars),
             507 => Some(Prim::PdfCopyFont),
             508 => Some(Prim::PdfSpaceFont),
@@ -1994,8 +1997,7 @@ impl Prim {
                     7 => ToksParam::EveryEOF,
                     8 => ToksParam::Output,
                     9 => ToksParam::ErrHelp,
-                    10 => ToksParam::PdfTrailerId,
-                    11 => ToksParam::PdfPkMode,
+                    10 => ToksParam::PdfPkMode,
                     _ => return None,
                 }))
             }

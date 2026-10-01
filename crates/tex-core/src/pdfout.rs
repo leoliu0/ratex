@@ -90,8 +90,10 @@ pub struct PdfPage {
     pub width_sp: i64,
     pub height_sp: i64,
     pub annots: Vec<Annot>,
-    /// (doc font index, resource number) — resolved by `embed_used_fonts`
-    pub fonts: Vec<(usize, u16)>,
+    /// (doc font index, resource number `n` of `/F<n>`) — resolved by
+    /// `embed_used_fonts`. pdfTeX names a font resource after the internal
+    /// number of the font that owns its dictionary.
+    pub fonts: Vec<(usize, u32)>,
     /// named destinations anchored on this page
     pub dests: Vec<Dest>,
     /// raw dict body contributed by \pdfpageattr (copied at shipout)
@@ -103,6 +105,8 @@ pub struct PdfPage {
     pub procset: bool,
     /// pdfTeX `pdf_image_procset`: IMAGE_COLOR_* bits of the page's images
     pub image_procset: u8,
+    /// pdfTeX `pdf_xform_list`: form objects painted, in first-use order
+    pub xforms: Vec<i32>,
     /// pdfTeX `pdf_ximage_list`: image objects painted, in first-use order
     pub ximages: Vec<i32>,
     /// pdfTeX `pdf_page_group_val`: the page's /Group object (0 = none)
@@ -117,7 +121,7 @@ pub struct PdfDoc {
     pub objects: Vec<(i32, Vec<u8>)>,
     /// Reserved font dictionaries for forms, with the same font-index
     /// remapping as pages. Each form has its own resource namespace.
-    pub form_fonts: Vec<(i32, Vec<(usize, u16)>)>,
+    pub form_fonts: Vec<(i32, Vec<(usize, u32)>)>,
     /// Shared descriptors for standard PDF fonts embedded while importing pages.
     pub(crate) imported_base14_fonts: std::collections::BTreeMap<Vec<u8>, i32>,
     pub info: Vec<u8>,
@@ -157,8 +161,15 @@ pub struct PdfDoc {
     pub(crate) link_stack: Vec<OpenLink>,
     /// pdfTeX `gen_running_link` (\pdfrunninglinkoff/on), persistent across pages.
     pub(crate) gen_running_link: bool,
-    /// pdfTeX resource names: form XObject number → `n` of `/Fm<n>`.
+    /// pdfTeX resource names: form XObject number → `n` of `/Fm<n>`
+    /// (`pdf_xform_count` when the form was created).
     pub(crate) form_names: std::collections::BTreeMap<i32, i32>,
+    /// pdfTeX resource names: image XObject number → `n` of `/Im<n>`
+    /// (`pdf_ximage_count` when the image was read).
+    pub(crate) image_names: std::collections::BTreeMap<i32, i32>,
+    /// pdfTeX `pdf_resname_prefix` (`\pdfuniqueresname`): appended to every
+    /// font, form and image resource name.
+    pub(crate) resname_prefix: String,
     /// Destinations already shipped (`obj_dest_ptr` set): later ones with
     /// the same identifier are duplicates.
     pub(crate) shipped_dests: std::collections::HashSet<DestId>,
@@ -166,6 +177,20 @@ pub struct PdfDoc {
     pub(crate) trailer_extra: Vec<u8>,
     /// `\pdfomitinfodict`: no document information dictionary.
     pub(crate) omit_info_dict: bool,
+    /// pdfTeX `start_time_str`: the job start as a PDF date. It is the
+    /// /CreationDate and /ModDate of the Info dictionary and, with the output
+    /// file name, the source of the default trailer /ID. Empty = unknown.
+    pub(crate) start_time: String,
+    /// `\pdfinfoomitdate`: no /CreationDate and /ModDate.
+    pub(crate) info_omit_date: bool,
+    /// The `/PTEX.Fullbanner` key as `\pdfsuppressptexinfo` and
+    /// `\pdfptexuseunderscore` leave it; `None` when bit 1 suppresses it.
+    pub(crate) ptex_banner_key: Option<&'static str>,
+    /// Output file name (`output_file_name`), the second part of the /ID.
+    pub(crate) output_name: String,
+    /// `\pdftrailerid` text (`pdf_trailer_id_toks`): its MD5 replaces the
+    /// default /ID; empty text writes no /ID. `None` = no such command.
+    pub(crate) trailer_id_text: Option<Vec<u8>>,
     /// `\pdfomitcharset`: no /CharSet in Type 1 font descriptors.
     pub(crate) omit_charset: bool,
     /// `\pdfpageref`: object numbers fixed for pages (0-based index).
@@ -173,6 +198,16 @@ pub struct PdfDoc {
     /// Highest object number the engine reserved; the writer numbers its
     /// own objects after it.
     pub(crate) reserved_objects: i32,
+    /// epdf.c's font descriptors for fonts of included PDF files that the
+    /// `\pdfinclusioncopyfonts` = 0 replacement took over.
+    pub imported_fonts: Vec<ImportedFont>,
+    /// pdftoepdf.cc `pdfDocuments`: every included PDF file once, with the
+    /// objects already copied from it, by file name.
+    pub pdf_sources: std::collections::HashMap<String, crate::pdf_images::PdfSource>,
+    /// Parsed Type 1 programs of replacement fonts by file name (None when
+    /// the file does not exist).
+    pub(crate) imported_programs:
+        std::collections::HashMap<String, Option<std::rc::Rc<crate::pdffile::Type1Source>>>,
 }
 
 /// One `pdf_link_stack` record: the link's box nesting level, its width,
@@ -341,6 +376,37 @@ pub struct PdfTexFont {
     pub tounicode: Option<std::rc::Rc<str>>,
 }
 
+/// writefont.c `fd_entry` of a font that epdf's `copyFont` replaced: the
+/// map entry's Type 1 program, written for the glyphs the included font's
+/// /CharSet names. Fonts of one program, slant and extension share it.
+pub struct ImportedFont {
+    /// `fm->ff_name`: the program's file name.
+    pub ff_name: String,
+    /// `fm_slant` and `fm_extend` of the map entry.
+    pub slant: i32,
+    pub extend: i32,
+    pub program: std::rc::Rc<crate::pdffile::Type1Source>,
+    /// `fm->ps_name`.
+    pub base_font: String,
+    /// `is_subsetted(fm)`: the map entry downloads a partial font.
+    pub subsettable: bool,
+    /// `fd->gl_tree`: glyph names of the /CharSet strings so far.
+    pub glyphs: std::collections::BTreeSet<String>,
+    /// `fd->all_glyphs` (`embed_whole_font`): a font without /CharSet.
+    pub all_glyphs: bool,
+    /// `/StemV` of the first included font, rounded.
+    pub stem_v: i32,
+    /// `fd_objnum`, reserved when the descriptor was created.
+    pub desc_obj: i32,
+    /// `fn_objnum` (0 until a font dictionary needs it): the object that
+    /// holds the tagged /BaseFont name.
+    pub name_obj: i32,
+    /// Number of document fonts already initialized when the font was first
+    /// included: it created the shared descriptor, so those initialized
+    /// later find it and preset nothing from their TFM.
+    pub init_order: usize,
+}
+
 impl PdfDoc {
     pub fn new() -> Self {
         PdfDoc {
@@ -368,12 +434,22 @@ impl PdfDoc {
             mag: 0,
             link_stack: Vec::new(),
             form_names: std::collections::BTreeMap::new(),
+            image_names: std::collections::BTreeMap::new(),
+            resname_prefix: String::new(),
             shipped_dests: std::collections::HashSet::new(),
             trailer_extra: Vec::new(),
             omit_info_dict: false,
+            start_time: String::new(),
+            info_omit_date: false,
+            ptex_banner_key: Some("PTEX.Fullbanner"),
+            output_name: String::new(),
+            trailer_id_text: None,
             omit_charset: false,
             page_objnums: std::collections::BTreeMap::new(),
             reserved_objects: 0,
+            imported_fonts: Vec::new(),
+            pdf_sources: std::collections::HashMap::new(),
+            imported_programs: std::collections::HashMap::new(),
             gen_running_link: true,
         }
     }

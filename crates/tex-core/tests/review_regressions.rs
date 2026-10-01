@@ -1049,3 +1049,95 @@ fn pdf_file_queries_search_the_tex_input_path_only() {
         e.term
     );
 }
+
+/// tex.web §1125 make_accent: the kerns around the accent are `acc_kern`
+/// kerns, shown as `\kern <x> (for accent)` (TeX Live pdftex output).
+#[test]
+fn accent_kerns_are_shown_for_accent() {
+    let e = run_lenient(
+        r"\font\tenrm=cmr10 \tenrm \showboxbreadth=100 \showboxdepth=100
+\setbox0\hbox{\accent18 e\accent94 A}\showbox0
+\end",
+    );
+    assert!(
+        e.log.contains(
+            "\\hbox(9.47221+0.0)x11.94446
+.\\kern -0.27779 (for accent)
+.\\tenrm ^^R
+.\\kern -4.72223 (for accent)
+.\\tenrm e
+.\\kern 1.25 (for accent)
+.\\hbox(6.94444+0.0)x5.00002, shifted -2.52777
+..\\tenrm ^
+.\\kern -6.25002 (for accent)
+.\\tenrm A
+"
+        ),
+        "{}",
+        e.log
+    );
+}
+
+/// tex.web §879/§881: only explicit kerns are discarded after a break, so
+/// a line starting with an accented letter keeps its accent kerns; with
+/// \pdfprotrudechars=2 pdftex then finds that nonzero kern (not the accent
+/// character) at the left margin and protrudes nothing.
+#[test]
+fn accent_kerns_survive_at_line_start() {
+    let e = run_lenient(
+        r"\font\tenrm=cmr10 \tenrm \showboxbreadth=100 \showboxdepth=100
+\hsize=16pt \parindent=0pt \tolerance=10000 \hbadness=10000 \hfuzz=16000pt
+\setbox1\vbox{aaa \accent19 e bbb\par}\showbox1
+\pdfprotrudechars=2 \lpcode\tenrm 19=500 \lpcode\tenrm`e=500
+\setbox1\vbox{aaa \accent19 e bbb\par}\showbox1
+\end",
+    );
+    let line = "\\hbox(6.94444+0.0)x16.0
+..\\kern -0.27779 (for accent)
+..\\tenrm ^^S
+..\\kern -4.72223 (for accent)
+..\\tenrm e
+..\\glue(\\rightskip) 0.0
+";
+    assert_eq!(e.log.matches(line).count(), 2, "{}", e.log);
+    assert!(!e.log.contains("(left margin)"), "{}", e.log);
+}
+
+/// tex.web §1123 do_assignments: font definitions and selections between
+/// \accent and the base character are performed; \afterassignment and
+/// \setbox are not accepted there (§1241 set_box_allowed). Expected boxes
+/// are TeX Live pdftex's.
+#[test]
+fn accent_assignments_follow_do_assignments() {
+    let e = run_lenient(
+        r"\font\tenrm=cmr10 \tenrm \showboxbreadth=100 \showboxdepth=100
+\font\sevenrm=cmr7
+\setbox0\hbox{\accent18 \font\fivrm=cmr5 \fivrm e}\showbox0
+\setbox0\hbox{\accent18 \afterassignment\relax \sevenrm e}\showbox0
+\setbox0\hbox{\accent18 \setbox3\hbox{}\sevenrm e}\showbox0
+\end",
+    );
+    assert!(
+        e.log.contains(
+            "\\hbox(4.79167+2.15277)x3.05559
+.\\kern -0.97221 (for accent)
+.\\hbox(6.94444+0.0)x5.00002, shifted 2.15277
+..\\tenrm ^^R
+.\\kern -4.0278 (for accent)
+.\\fivrm e
+"
+        ),
+        "{}",
+        e.log
+    );
+    let plain = "\\hbox(6.94444+0.0)x8.55559
+.\\tenrm ^^R
+";
+    assert!(e.log.contains(&format!("{plain}.\\sevenrm e\n")), "{}", e.log);
+    assert!(
+        e.log.contains(&format!("{plain}.\\hbox(0.0+0.0)x0.0\n.\\sevenrm e\n")),
+        "{}",
+        e.log
+    );
+    assert!(e.log.contains("Improper \\setbox"), "{}", e.log);
+}

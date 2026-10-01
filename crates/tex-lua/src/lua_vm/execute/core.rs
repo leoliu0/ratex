@@ -27,7 +27,7 @@ use crate::{
         call_info::call_status::{CIST_C, CIST_CLSRET, CIST_PENDING_FINISH},
         execute::{
             arith::{
-                self, lua_fmod, lua_idiv, lua_imod, lua_shiftl, lua_shiftr, luai_numpow,
+                self, lua_fmod, lua_fmod53, lua_idiv, lua_imod, lua_shiftl, lua_shiftr, luai_numpow,
                 luai_numpow53,
             },
             call::{insert_table_call_mm, poscall, precall, pretailcall},
@@ -466,7 +466,7 @@ pub fn lua_execute(lua_state: &mut LuaState, target_depth: usize) -> LuaResult<(
                         &mut pc,
                         instr,
                         lua_imod,
-                        lua_fmod,
+                        |a, b| if lua53 { lua_fmod53(a, b) } else { lua_fmod(a, b) },
                         error_mod_by_zero,
                     )?;
                 }
@@ -516,7 +516,7 @@ pub fn lua_execute(lua_state: &mut LuaState, target_depth: usize) -> LuaResult<(
                         instr,
                         constants,
                         lua_imod,
-                        lua_fmod,
+                        |a, b| if lua53 { lua_fmod53(a, b) } else { lua_fmod(a, b) },
                         error_mod_by_zero,
                     )?;
                 }

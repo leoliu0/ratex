@@ -133,6 +133,10 @@ pub struct LuaState {
     /// no hashing overhead and better cache locality. Matches C Lua's sorted list design.
     open_upvalues_list: Vec<UpvaluePtr>,
 
+    /// Whether this thread is linked in the collector's `twups` list
+    /// (C Lua's `L->twups != L`).
+    pub(crate) in_twups: bool,
+
     /// Yield values storage (for coroutine yield)
     yield_values: Vec<LuaValue>,
 
@@ -240,6 +244,7 @@ impl LuaState {
             call_depth: 0,
             current_ci: std::ptr::null_mut(),
             open_upvalues_list: Vec::new(),
+            in_twups: false,
             yield_values: Vec::new(),
             allow_hook: true,
             hook: LuaValue::nil(),
@@ -1727,8 +1732,10 @@ impl LuaState {
         };
 
         self.open_upvalues_list.insert(insert_pos, upval_ptr);
-        self.global_state
-            .link_thread_with_open_upvalues(self.thread);
+        if !self.in_twups {
+            self.in_twups = true;
+            self.global_state.push_twups(self.thread);
+        }
 
         Ok(upval_ptr)
     }

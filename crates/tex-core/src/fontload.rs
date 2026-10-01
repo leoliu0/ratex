@@ -1752,11 +1752,6 @@ impl Engine {
     /// the record and replaces only its own id's slot.
     pub fn push_engine_font(&mut self, font: Rc<Font>, cs: crate::token::CsId) -> u16 {
         let id = self.eqtb.fonts.len() as u16;
-        let virtual_font = self
-            .font_loader
-            .vf_fonts
-            .get(&(font.tfm_name.clone(), font.at_size))
-            .cloned();
         let params = font.params.clone();
         self.eqtb.fonts.push(font);
         self.eqtb.font_params.push(params);
@@ -1769,24 +1764,47 @@ impl Engine {
         self.eqtb.skew_char_levels.push(1);
         self.eqtb.font_cs.push(cs);
         self.eqtb.expand.push(Default::default());
-        if let Some(vf) = virtual_font {
-            let mut bases = Vec::with_capacity(vf.bases.len());
-            for base in &vf.bases {
-                let existing = self.eqtb.fonts.iter().position(|font| {
-                    font.tfm_name == base.tfm_name && font.at_size == base.at_size
-                });
-                let base_id = if let Some(existing) = existing {
-                    existing as u16
-                } else if let Some(font) = self.font_loader.load_tfm(&base.tfm_name, base.at_size) {
-                    self.push_engine_font(font, 0)
-                } else {
-                    u16::MAX
-                };
-                bases.push(base_id);
-            }
-            self.font_loader.vf_bases.insert(id, bases);
-        }
         id
+    }
+
+    /// pdftex.web `do_vf`: a virtual font's local fonts get their internal
+    /// font numbers when the font is first used (a character shipped or a
+    /// font query), not when it is loaded, so the numbers of fonts loaded
+    /// later - and the `/F<n>` names built from them - agree with pdfTeX.
+    pub fn ensure_vf_bases(&mut self, f: u16) {
+        if self.font_loader.vf_bases.contains_key(&f) {
+            return;
+        }
+        let Some(font) = self.eqtb.fonts.get(f as usize) else {
+            return;
+        };
+        let Some(vf) = self
+            .font_loader
+            .vf_fonts
+            .get(&(font.tfm_name.clone(), font.at_size))
+            .cloned()
+        else {
+            return;
+        };
+        let mut bases = Vec::with_capacity(vf.bases.len());
+        for base in &vf.bases {
+            let existing = self.eqtb.fonts.iter().position(|font| {
+                font.tfm_name == base.tfm_name && font.at_size == base.at_size
+            });
+            let base_id = if let Some(existing) = existing {
+                existing as u16
+            } else if let Some(font) = self.font_loader.load_tfm(&base.tfm_name, base.at_size) {
+                self.push_engine_font(font, 0)
+            } else {
+                u16::MAX
+            };
+            bases.push(base_id);
+        }
+        self.font_loader.vf_bases.insert(f, bases);
+        // a font expanded before its local fonts exist passes that on
+        if self.eqtb.expand[f as usize].step != 0 {
+            self.vf_expand_local_fonts(f);
+        }
     }
 
     pub fn scan_pdf_origin(&mut self) -> u8 {
@@ -1849,6 +1867,7 @@ impl Engine {
         }
         let k = self.push_engine_font(Rc::new(nf), 0);
         self.copy_expand_params(k, f, e);
+        self.ensure_vf_bases(f);
         if let Some(bases) = self.font_loader.vf_bases.get(&f).cloned() {
             let mut expanded = Vec::with_capacity(bases.len());
             for &lf in &bases {

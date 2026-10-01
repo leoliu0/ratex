@@ -2086,6 +2086,8 @@ impl<'a> RenderCtx<'a> {
         // fonts (kerns included as offsets). The VF font itself is never
         // registered as a page resource. Offsets advance on the exact sp
         // raster, as pdfTeX's do_vf_packet does.
+        // pdftex.web `output_one_char`: `do_vf` on the first character
+        self.eng.ensure_vf_bases(f);
         if self.eng.font_loader.vf_bases.contains_key(&f) {
             let font_name = |ctx: &Self| {
                 ctx.eng.eqtb.fonts.get(f as usize).map(|ff| ff.tfm_name.clone()).unwrap_or_default()

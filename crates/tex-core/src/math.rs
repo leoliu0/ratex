@@ -592,17 +592,57 @@ impl Engine {
         }
     }
 
+    /// tex.web §1195: pdfTeX typesets no formula unless families 2 and 3
+    /// have at least 22 and 13 \fontdimen parameters in all three sizes.
+    fn insufficient_math_fonts(&self) -> Option<&'static str> {
+        if self.engine_kind != crate::engine_mode::EngineKind::PdfTeX {
+            return None;
+        }
+        // font_params[f] is at least 7 in TeX (the null font has 7)
+        let params = |size: usize, fam: usize| {
+            let fid = self.eqtb.style_fonts[size][fam] as usize;
+            self.eqtb.font_params.get(fid).map_or(0, Vec::len).max(7)
+        };
+        if (0..3).any(|size| params(size, 2) < 22) {
+            Some("Math formula deleted: Insufficient symbol fonts")
+        } else if (0..3).any(|size| params(size, 3) < 13) {
+            Some("Math formula deleted: Insufficient extension fonts")
+        } else {
+            None
+        }
+    }
+
     pub fn exit_math(&mut self) {
         let was_display = self.mode == Mode::DisplayMath;
+        // a directive at the very end of the formula (`$\sum_0^1\limits$`)
+        // still switches the tail op noad before conversion
+        self.flush_math_limits();
+        // tex.web after_math: the font check (flush_math, danger:=true)
+        // precedes the second `$` of a display
+        let mut danger = false;
+        if let Some(message) = self.insufficient_math_fonts() {
+            self.error(message);
+            if let Some(list) = self.math_lists.last_mut() {
+                list.clear();
+            }
+            danger = true;
+        }
         if was_display {
             let t = self.get_token();
             if !(t.is_char() && t.cc() == 3) && t != crate::input::EOF_MARKER {
                 self.push_token(t);
             }
+            // with \eqno the popped list is the tag; TeX checks again for the
+            // formula itself after unsaving the tag's group
+            if self.eqno_leqno.is_some() {
+                danger = false;
+                if let Some(message) = self.insufficient_math_fonts() {
+                    self.error(message);
+                    self.pending_display_formula = Some(NodeList::new());
+                    danger = true;
+                }
+            }
         }
-        // a directive at the very end of the formula (`$\sum_0^1\limits$`)
-        // still switches the tail op noad before conversion
-        self.flush_math_limits();
         let mlist = self.math_lists.pop().unwrap_or_default();
         // tex.web after_math reads the display registers BEFORE unsave:
         // assignments made inside the display (setspace's \everydisplay
@@ -677,7 +717,7 @@ impl Engine {
             } else {
                 (mlist, None)
             };
-            self.finish_display_math(formula, tag, disp_regs.unwrap(), outer_mode);
+            self.finish_display_math(formula, tag, danger, disp_regs.unwrap(), outer_mode);
             // tex.web resume_after_display (§1200) ends with <Scan an
             // optional space>, after unsave has inserted any \aftergroup
             // tokens.
@@ -712,6 +752,7 @@ impl Engine {
         &mut self,
         formula: NodeList,
         tag: Option<(NodeList, bool)>,
+        danger: bool,
         regs: (
             crate::boxes::Glue,
             crate::boxes::Glue,
@@ -827,6 +868,11 @@ impl Engine {
                     .map(|(_, f)| f.quad() as i64)
                     .unwrap_or(0);
                 q = e + mq;
+                // tex.web §1199: `if (a=null) or danger then e:=0; q:=0`
+                if danger {
+                    e = 0;
+                    q = 0;
+                }
                 a = Some(ab);
             }
             // §22537 squeeze: if the formula + tag overflow the line, re-pack

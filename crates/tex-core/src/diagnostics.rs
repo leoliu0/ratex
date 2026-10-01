@@ -1998,7 +1998,9 @@ fn default_help(message: &str) -> Option<String> {
         Some("fix the first reported error and compile again")
     } else if message.starts_with("Bad input stream number") {
         Some("TeX input streams are numbered from 0 through 15")
-    } else if message.starts_with("Terminal input is unavailable") {
+    } else if message.starts_with("Terminal input is unavailable")
+        || message.starts_with("Emergency stop: cannot \\read from terminal")
+    {
         Some("read from a file-backed stream instead of requesting interactive terminal input")
     } else if message.starts_with("Input stream ") && message.contains(" is not open for \\read") {
         Some("open this stream with `\\openin` before reading it, and check `\\ifeof` before each read")

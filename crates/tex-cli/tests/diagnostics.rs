@@ -1792,16 +1792,18 @@ fn eof_syntax_and_terminal_read_errors_state_the_required_fix() {
             "place the token or control sequence to inspect immediately after `\\show`",
         ),
         (
+            // tex.web §484: a terminal \read is fatal in nonstop mode
             "terminal-read-unavailable",
             "\\read-1 to \\answer\n\\end\n",
-            "Terminal input is unavailable for \\read-1",
+            "Emergency stop: cannot \\read from terminal in nonstop modes",
             "file-backed stream",
         ),
         (
+            // a closed stream reads from the terminal, too
             "unopened-read-stream",
             "\\read0 to \\answer\n\\end\n",
-            "Input stream 0 is not open for \\read",
-            "open this stream with `\\openin`",
+            "Emergency stop: cannot \\read from terminal in nonstop modes",
+            "file-backed stream",
         ),
     ] {
         let job = Job::new(label);

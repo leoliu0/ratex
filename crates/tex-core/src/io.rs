@@ -9,6 +9,9 @@ use crate::token::{Token, CAT_LETTER};
 use tex_kpse::fs::PathExt;
 
 const MAX_TEX_INPUT_STREAM: i32 = 15;
+/// tex.web §484 fatal_error text (TeX prints it as the help of `Emergency stop`).
+const TERMINAL_READ_IN_NONSTOP_MODE: &str =
+    "Emergency stop: cannot \\read from terminal in nonstop modes";
 
 /// pdfTeX's `\pdfescapestring`, `\pdfescapename` and `\pdfescapehex`
 /// (utils.c escapestring/escapename/escapehex).
@@ -1240,6 +1243,14 @@ impl Engine {
         self.read_eof[n] = true;
     }
 
+    /// tex.web §484: in batch and nonstop modes a terminal \read is fatal.
+    fn terminal_read_forbidden(&self) -> bool {
+        matches!(
+            self.interaction_mode,
+            crate::engine::InteractionMode::Batch | crate::engine::InteractionMode::Nonstop
+        )
+    }
+
     pub fn do_read(&mut self, line_mode: bool) {
         let origin = self.current_token_source_mark();
         let global = self.take_assignment_prefixes("\\read");
@@ -1280,8 +1291,13 @@ impl Engine {
                 self.fatal_error_at(&message, source);
                 self.diagnostic_trace_override = saved_trace;
             } else {
+                let message = if self.terminal_read_forbidden() {
+                    TERMINAL_READ_IN_NONSTOP_MODE.to_string()
+                } else {
+                    format!("Terminal input is unavailable for \\read{stream}")
+                };
                 self.fatal_error_at(
-                    &format!("Terminal input is unavailable for \\read{stream}"),
+                    &message,
                     origin.as_ref().map(crate::input::SourceMark::to_context),
                 );
             }
@@ -1306,8 +1322,14 @@ impl Engine {
                 None
             };
             let Some(read) = read else {
+                // tex.web §484: a closed stream reads from the terminal
+                let message = if self.terminal_read_forbidden() {
+                    TERMINAL_READ_IN_NONSTOP_MODE.to_string()
+                } else {
+                    format!("Input stream {stream} is not open for \\read")
+                };
                 self.fatal_error_at(
-                    &format!("Input stream {stream} is not open for \\read"),
+                    &message,
                     origin.as_ref().map(crate::input::SourceMark::to_context),
                 );
                 // A failed read must not replace the requested control
@@ -1690,6 +1712,9 @@ impl Engine {
         let origin = self.current_token_source_mark();
         let global = self.take_assignment_prefixes("\\advance");
         let loc = self.scan_quantity("\\advance");
+        if matches!(loc, QuantityLoc::None) {
+            return;
+        }
         self.scan_keyword(b"by");
         let v = match loc {
             QuantityLoc::Int(_) | QuantityLoc::Count(_) => Value::Int(self.scan_int()),
@@ -1710,11 +1735,7 @@ impl Engine {
                     nv,
                     origin.as_ref().map(crate::input::SourceMark::to_context),
                 );
-                if p == crate::prim::IntParam::SpaceFactor {
-                    self.space_factor = nv;
-                } else {
-                    self.eqtb.assign_int_param(p, nv, global);
-                }
+                self.eqtb.assign_int_param(p, nv, global);
             }
             QuantityLoc::Count(i) => {
                 let cur = self.eqtb.count[i as usize];
@@ -1727,11 +1748,7 @@ impl Engine {
                 let Some(nv) = self.checked_advance(cur, v.as_dim(), true, origin.as_ref()) else {
                     return;
                 };
-                if p == crate::prim::DimParam::PrevDepth {
-                    self.prev_depth = nv;
-                } else {
-                    self.eqtb.assign_dim_param(p, nv, global);
-                }
+                self.eqtb.assign_dim_param(p, nv, global);
             }
             QuantityLoc::Dimen(i) => {
                 let cur = self.eqtb.dimen[i as usize];
@@ -1770,13 +1787,11 @@ impl Engine {
         let operation = if op == 1 { "\\multiply" } else { "\\divide" };
         let global = self.take_assignment_prefixes(operation);
         let loc = self.scan_quantity(operation);
+        if matches!(loc, QuantityLoc::None) {
+            return;
+        }
         self.scan_keyword(b"by");
-        let v = match loc {
-            QuantityLoc::Int(_) | QuantityLoc::Count(_) => Value::Int(self.scan_int()),
-            QuantityLoc::Dim(_) | QuantityLoc::Dimen(_) => Value::Int(self.scan_int()),
-            _ => Value::Int(self.scan_int()),
-        };
-        let n = v.as_int();
+        let n = self.scan_int();
         match loc {
             QuantityLoc::Int(p) => {
                 let cur = self.int_param_value(p);
@@ -1786,11 +1801,7 @@ impl Engine {
                         nv,
                         origin.as_ref().map(crate::input::SourceMark::to_context),
                     );
-                    if p == crate::prim::IntParam::SpaceFactor {
-                        self.space_factor = nv;
-                    } else {
-                        self.eqtb.assign_int_param(p, nv, global);
-                    }
+                    self.eqtb.assign_int_param(p, nv, global);
                 }
             }
             QuantityLoc::Count(i) => {
@@ -1802,11 +1813,7 @@ impl Engine {
             QuantityLoc::Dim(p) => {
                 let cur = self.dim_param_value(p);
                 if let Some(nv) = self.checked_arith(cur, n, op, true, origin.as_ref()) {
-                    if p == crate::prim::DimParam::PrevDepth {
-                        self.prev_depth = nv;
-                    } else {
-                        self.eqtb.assign_dim_param(p, nv, global);
-                    }
+                    self.eqtb.assign_dim_param(p, nv, global);
                 }
             }
             QuantityLoc::Dimen(i) => {
@@ -2066,56 +2073,86 @@ impl Engine {
         }
     }
 
-    /// scan the target of \advance/\multiply: an int/dim/glue quantity
+    /// tex.web §1237: the target of \advance/\multiply/\divide is the next
+    /// expanded token; only assign_int/dimen/glue/mu_glue and register
+    /// commands qualify. Anything else is consumed with "You can't use `x'
+    /// after \advance" and nothing changes.
     fn scan_quantity(&mut self, operation: &str) -> QuantityLoc {
-        self.skip_spaces_relax();
-        let t = self.get_token();
-        if !t.is_cs() {
-            self.push_token(t);
-            self.error(&format!(
-                "{operation} needs a count, dimension, or glue quantity to modify"
-            ));
-            return QuantityLoc::None;
+        use crate::prim::{DimParam, IntParam};
+        let t = self.get_x_raw();
+        let loc = match self.cur_prim {
+            Some(Prim::IntP(p)) => match p {
+                // set_aux, set_prev_graf, set_page_int, set_interaction and
+                // last_item commands that Ratex stores as integer parameters
+                IntParam::SpaceFactor
+                | IntParam::PrevGraf
+                | IntParam::DeadCycles
+                | IntParam::InsertPenalties
+                | IntParam::InteractionMode
+                | IntParam::ErrorStopMode
+                | IntParam::ScrollMode
+                | IntParam::NonStopMode
+                | IntParam::BatchMode
+                | IntParam::InputLineNo
+                | IntParam::Badness
+                | IntParam::EtxVersion
+                | IntParam::PdfTexVersion
+                | IntParam::PdfPageCount
+                | IntParam::CurrentGroupLevel
+                | IntParam::CurrentGroupType
+                | IntParam::CurrentIfLevel
+                | IntParam::CurrentIfType
+                | IntParam::CurrentIfBranch
+                | IntParam::LastNodeType
+                | IntParam::PartokenNameCs => QuantityLoc::None,
+                _ => QuantityLoc::Int(p),
+            },
+            Some(Prim::DimP(p)) => match p {
+                // set_aux and set_page_dimen commands
+                DimParam::PrevDepth
+                | DimParam::PageGoal
+                | DimParam::PageTotal
+                | DimParam::PageDepth
+                | DimParam::PageStretch
+                | DimParam::PageFilStretch
+                | DimParam::PageFillStretch
+                | DimParam::PageFilllStretch
+                | DimParam::PageShrink => QuantityLoc::None,
+                _ => QuantityLoc::Dim(p),
+            },
+            Some(Prim::GlueP(p)) => QuantityLoc::Glue(p),
+            Some(Prim::Count) => QuantityLoc::Count(self.scan_reg_num()),
+            Some(Prim::Dimen) => QuantityLoc::Dimen(self.scan_reg_num()),
+            Some(Prim::Skip) => QuantityLoc::Skip(self.scan_reg_num()),
+            Some(Prim::MuSkip) => QuantityLoc::MuSkip(self.scan_reg_num()),
+            Some(_) => QuantityLoc::None,
+            None if t.is_cs() => {
+                match self.eqtb.resolve(t.cs_id()) {
+                    Some(Equiv::CountReg(i)) => QuantityLoc::Count(*i),
+                    Some(Equiv::DimenReg(i)) => QuantityLoc::Dimen(*i),
+                    Some(Equiv::SkipReg(i)) => QuantityLoc::Skip(*i),
+                    Some(Equiv::MuSkipReg(i)) => QuantityLoc::MuSkip(*i),
+                    _ => QuantityLoc::None,
+                }
+            }
+            None => QuantityLoc::None,
+        };
+        if matches!(loc, QuantityLoc::None) {
+            // print_cmd_chr: a \noexpand-marked token is relax/no_expand_flag
+            let what = if t.is_cs() && self.no_expand_tok == Some(t) {
+                let esc = self.eqtb.int_params[crate::prim::IntParam::EscapeChar.idx() as usize];
+                let mut s = String::new();
+                if (0..=255).contains(&esc) {
+                    s.push(char::from(esc as u8));
+                }
+                s.push_str("relax");
+                s
+            } else {
+                self.meaning_of(t)
+            };
+            self.error(&format!("You can't use `{what}' after {operation}"));
         }
-        let id = t.cs_id();
-        match self.cur_prim {
-            Some(Prim::IntP(p)) => return QuantityLoc::Int(p),
-            Some(Prim::DimP(p)) => return QuantityLoc::Dim(p),
-            Some(Prim::GlueP(p)) => return QuantityLoc::Glue(p),
-            Some(Prim::Count) => {
-                let i = self.scan_reg_num();
-                return QuantityLoc::Count(i);
-            }
-            Some(Prim::Dimen) => {
-                let i = self.scan_reg_num();
-                return QuantityLoc::Dimen(i);
-            }
-            Some(Prim::Skip) => {
-                let i = self.scan_reg_num();
-                return QuantityLoc::Skip(i);
-            }
-            Some(Prim::MuSkip) => {
-                let i = self.scan_reg_num();
-                return QuantityLoc::MuSkip(i);
-            }
-            _ => {}
-        }
-        match self.eqtb.resolve(id).cloned() {
-            Some(Equiv::CountReg(i)) => QuantityLoc::Count(i),
-            Some(Equiv::DimenReg(i)) => QuantityLoc::Dimen(i),
-            Some(Equiv::SkipReg(i)) => QuantityLoc::Skip(i),
-            Some(Equiv::MuSkipReg(i)) => QuantityLoc::MuSkip(i),
-            Some(Equiv::Prim(Prim::IntP(p))) => QuantityLoc::Int(p),
-            Some(Equiv::Prim(Prim::DimP(p))) => QuantityLoc::Dim(p),
-            Some(Equiv::Prim(Prim::GlueP(p))) => QuantityLoc::Glue(p),
-            _ => {
-                self.error(&format!(
-                    "{operation} cannot modify {}; expected a count, dimension, or glue quantity",
-                    self.display_cs(id)
-                ));
-                QuantityLoc::None
-            }
-        }
+        loc
     }
 
     pub fn box_to_string(&self, b: &Node) -> String {

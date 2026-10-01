@@ -266,7 +266,9 @@ impl Engine {
                         Node::Ligature { lig_width, .. } => (*lig_width as i64, true),
                         Node::Box { w, .. } => (*w as i64, true),
                         Node::Rule { width, .. } => (*width as i64, true),
-                        Node::Kern(k) | Node::ExplicitKern(k) => (*k as i64, false),
+                        Node::Kern(k) | Node::ExplicitKern(k) | Node::AccentKern(k) => {
+                            (*k as i64, false)
+                        }
                         Node::MarginKern { width, .. } => (*width as i64, false),
                         Node::Whatsit(crate::boxes::WhatIt::PdfRefXImage { w, .. })
                         | Node::Whatsit(crate::boxes::WhatIt::PdfRefXForm { w, .. }) => {
@@ -459,6 +461,7 @@ fn just_copied(n: &Node) -> bool {
             | Node::Rule { .. }
             | Node::Kern(_)
             | Node::ExplicitKern(_)
+            | Node::AccentKern(_)
             | Node::MathKern(..)
             | Node::Glue(_)
             | Node::Leaders { .. }

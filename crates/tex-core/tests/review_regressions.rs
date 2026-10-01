@@ -49,7 +49,8 @@ fn selectors_forward_large_arguments_without_changing_expansion() {
 \message{{RESULT=\result}}
 \end"
     ));
-    assert!(e.term.contains(&format!("RESULT={argument}")), "{}", e.term);
+    let flat = e.term.replace('\n', ""); // TeX breaks terminal lines at 79 bytes
+    assert!(flat.contains(&format!("RESULT={argument}")), "{}", e.term);
 }
 
 #[test]
@@ -427,7 +428,8 @@ fn outer_macros_end_definitions_and_general_text() {
     assert!(e.term.contains("C=[macro:->x ]"), "{}", e.term);
     assert!(e.term.contains("T=[a ]"), "{}", e.term);
     assert!(e.term.contains("3:p  "), "{}", e.term);
-    assert!(e.term.contains("4:x [T]"), "{}", e.term);
+    // consecutive \message texts are separated by a space, as in TeX
+    assert!(e.term.contains("4:x  [T]"), "{}", e.term);
 }
 
 /// pdflatex: an \outer macro ends an alignment preamble (`\cr}` inserted)
@@ -446,6 +448,185 @@ fn outer_macro_ends_alignment_preamble() {
         e.term
     );
     assert!(e.term.contains("[O]"), "{}", e.term);
+}
+
+fn messages(e: &Engine) -> Vec<&str> {
+    e.diagnostics
+        .iter()
+        .map(|d| d.message.as_str())
+        .map(|m| {
+            if m.starts_with("Parameters must be numbered consecutively") {
+                "Parameters must be numbered consecutively"
+            } else if m.starts_with("Emergency stop") {
+                "Emergency stop"
+            } else {
+                m
+            }
+        })
+        .collect()
+}
+
+/// pdflatex (TeX Live 2026): after the forbidden \outer macro the preamble
+/// ends with `\cr}`, the empty alignment is finished, the macro runs, and
+/// the rest of the template is typeset: `#` is an illegal command.
+#[test]
+fn outer_macro_in_alignment_template_leaves_the_rest_to_the_page() {
+    let e = run_lenient(
+        r"\catcode`\&=4 \outer\def\o{\message{[O]}}
+\halign{#\o&#\cr x&y\cr}
+\end",
+    );
+    assert_eq!(
+        messages(&e),
+        [
+            "Forbidden control sequence found while scanning preamble of \\halign",
+            "Misplaced alignment tab character &",
+            "You can't use `macro parameter character #' in vertical mode",
+            "Misplaced \\cr",
+            "Misplaced alignment tab character &",
+            "Misplaced \\cr",
+            "Too many }'s",
+        ],
+        "{}",
+        e.term
+    );
+    assert!(e.term.contains("[O]"), "{}", e.term);
+}
+
+/// pdflatex: an \outer macro before the `#` leaves the u part without one
+/// ("Missing # inserted"); `\span` expands its token once, so the macro in
+/// the expansion is forbidden as well.
+#[test]
+fn outer_macro_before_the_sharp_of_a_template() {
+    let e = run_lenient(
+        r"\catcode`\&=4 \outer\def\o{\message{[O]}}
+\halign{\o#&#\cr x&y\cr}
+\end",
+    );
+    assert_eq!(
+        messages(&e),
+        [
+            "Forbidden control sequence found while scanning preamble of \\halign",
+            "Missing # inserted in alignment preamble",
+            "You can't use `macro parameter character #' in vertical mode",
+            "Misplaced alignment tab character &",
+            "You can't use `macro parameter character #' in vertical mode",
+            "Misplaced \\cr",
+            "Misplaced alignment tab character &",
+            "Misplaced \\cr",
+            "Too many }'s",
+        ],
+        "{}",
+        e.term
+    );
+    let e = run_lenient(
+        r"\catcode`\&=4 \outer\def\o{\message{[O]}}
+\def\pre{##\o&##\cr}\halign{\span\pre x&y\cr}
+\end",
+    );
+    assert_eq!(
+        messages(&e)[..2],
+        [
+            "Forbidden control sequence found while scanning definition of \\pre",
+            "Misplaced alignment tab character &",
+        ],
+        "{}",
+        e.term
+    );
+}
+
+/// pdflatex: an \outer macro in the parameter text of \def ends the
+/// definition (`}` inserted: "Missing { inserted"); the macro runs next.
+#[test]
+fn outer_macro_in_parameter_text_ends_the_definition() {
+    let e = run_lenient(
+        r"\outer\def\o{\message{[O]}}
+\def\a#1\o{x}\message{[\meaning\a]}
+\def\b#\o{x}\message{[\meaning\b]}
+\end",
+    );
+    assert_eq!(
+        messages(&e),
+        [
+            "Forbidden control sequence found while scanning definition of \\a",
+            "Missing { inserted",
+            "Forbidden control sequence found while scanning definition of \\b",
+            "Parameters must be numbered consecutively",
+            "Missing { inserted",
+        ],
+        "{}",
+        e.term
+    );
+    assert_eq!(e.term.matches("[macro:#1 ->]").count(), 2, "{}", e.term);
+    assert_eq!(e.term.matches("[O]").count(), 2, "{}", e.term);
+}
+
+/// pdflatex: \expandafter reads both tokens with get_token, so it reports
+/// an \outer macro inside an \edef; \ifx and \noexpand read with
+/// scanner_status normal and accept it.
+#[test]
+fn outer_macro_operands_of_expandafter_ifx_and_noexpand() {
+    let e = run_lenient(
+        r"\outer\def\o{\message{[O]}}
+\edef\x{\expandafter\noexpand\o}\message{[\meaning\x]}
+\end",
+    );
+    assert_eq!(
+        messages(&e),
+        [
+            "Forbidden control sequence found while scanning definition of \\x",
+            "Too many }'s",
+        ],
+        "{}",
+        e.term
+    );
+    assert!(e.term.contains("[O]"), "{}", e.term);
+    assert!(e.term.contains("[macro:-> ]"), "{}", e.term);
+    let e = engine(
+        r"\outer\def\o{\message{[O]}}\let\p\o
+\edef\x{\ifx\o\p a\else b\fi\noexpand\o}\message{[\meaning\x]}
+\end",
+    );
+    assert!(e.term.contains("[macro:->a\\o ]"), "{}", e.term);
+}
+
+/// pdflatex: a delimited argument sees an \outer macro as a space followed
+/// by the inserted \par, which ends the call unless the delimiter is \par.
+#[test]
+fn outer_macro_in_delimited_argument_matches_the_inserted_par() {
+    let e = run_lenient(
+        r"\outer\def\o{\message{[O]}}
+\def\a#1\par{[#1]}\edef\x{\a\o\par}\message{[\meaning\x]}
+\end",
+    );
+    assert_eq!(
+        messages(&e),
+        [
+            "Forbidden control sequence found while scanning use of \\a",
+            "Forbidden control sequence found while scanning definition of \\x",
+            "Too many }'s",
+        ],
+        "{}",
+        e.term
+    );
+    assert!(e.term.contains("[macro:->[ ] ]"), "{}", e.term);
+}
+
+/// pdflatex: the end of the input inside an absorbing scan is reported like
+/// an \outer macro (once), then the job stops.
+#[test]
+fn end_of_input_inside_absorbing_scans() {
+    for (source, expected) in [
+        (r"\def\a{x", "File ended while scanning definition of \\a"),
+        (r"\message{x", "File ended while scanning text of \\message"),
+        (r"\halign{#", "File ended while scanning preamble of \\halign"),
+        (r"\def\a#1.{}\a x", "File ended while scanning use of \\a"),
+        (r"\iffalse x", "Incomplete \\iffalse; all text was ignored after line 2"),
+    ] {
+        let e = run_lenient(source);
+        let found = messages(&e);
+        assert_eq!(found.first().copied(), Some(expected), "{source}: {found:?}");
+    }
 }
 
 /// pdflatex: inside \csname, a \noexpand-marked token means \relax, which
@@ -937,6 +1118,211 @@ fn pdf_random_deviates_follow_the_seeded_generator() {
     );
 }
 
+/// pdftex -ini (tex.web §1237): \advance, \multiply and \divide accept only
+/// registers and the integer, dimen, glue and muglue parameters; every other
+/// next token (set_aux, set_prev_graf, set_page_dimen, last_item, ...) is
+/// consumed with "You can't use `x' after \advance" and nothing changes.
+#[test]
+fn arithmetic_rejects_quantities_that_are_not_register_like() {
+    let e = run_lenient(
+        r"\countdef\cc=5 \cc=3
+\advance\cc by 2 \message{[\the\cc]}
+\hbox{\spacefactor=1000 \advance\spacefactor by 5 \message{[\the\spacefactor]}%
+\multiply\spacefactor 2 \divide\spacefactor 2 \message{[\the\spacefactor]}}
+\advance\prevgraf by 1 \message{[\the\prevgraf]}
+\advance\prevdepth by 1pt
+\advance\deadcycles 1
+\advance\pagegoal 1pt
+\advance\wd0 1pt
+\advance\catcode`a 1
+\advance 5 \message{after5}
+\advance\relax\count1 by 3 \message{[\the\count1]}
+\def\m{\count2 }\advance\m by 7 \message{[\the\count2]}
+\advance\lastpenalty 1
+\multiply\interactionmode 2
+\divide\hyphenchar\nullfont 2
+\global\advance\dimen3 by 1pt \message{[\the\dimen3]}
+\end",
+    );
+    let messages: Vec<&str> = e.diagnostics.iter().map(|d| d.message.as_str()).collect();
+    assert_eq!(
+        messages,
+        [
+            "You can't use `\\spacefactor' after \\advance",
+            "You can't use `\\spacefactor' after \\multiply",
+            "You can't use `\\spacefactor' after \\divide",
+            "You can't use `\\prevgraf' after \\advance",
+            "You can't use `\\prevdepth' after \\advance",
+            "You can't use `\\deadcycles' after \\advance",
+            "You can't use `\\pagegoal' after \\advance",
+            "You can't use `\\wd' after \\advance",
+            "You can't use `\\catcode' after \\advance",
+            "You can't use `the character 5' after \\advance",
+            "You can't use `\\relax' after \\advance",
+            "Missing number, treated as zero",
+            "You can't use `\\lastpenalty' after \\advance",
+            "You can't use `\\interactionmode' after \\multiply",
+            "You can't use `\\hyphenchar' after \\divide",
+        ],
+        "{}",
+        e.term
+    );
+    let term: String = e.term.split_whitespace().collect();
+    assert!(
+        term.contains("[5][1000][1000][0]after5[0][7][1.0pt]"),
+        "{}",
+        e.term
+    );
+}
+
+/// pdftex -ini (tex.web §1195): a formula is deleted, and mlist_to_hlist
+/// skipped, unless families 2 and 3 have at least 22 and 13 \fontdimen
+/// parameters in all three sizes; a display is deleted the same way.
+#[test]
+fn formulas_without_enough_math_font_parameters_are_deleted() {
+    let e = run_lenient(
+        r"\catcode`\$=3 \font\tenrm=cmr10 \tenrm
+\message{a}
+$x$
+\textfont2=\tenrm \scriptfont2=\tenrm \scriptscriptfont2=\tenrm
+$x^2$
+\font\tensy=cmsy10 \textfont2=\tensy \scriptfont2=\tensy \scriptscriptfont2=\tensy
+$x$
+$$x$$
+\end",
+    );
+    let messages: Vec<&str> = e.diagnostics.iter().map(|d| d.message.as_str()).collect();
+    assert_eq!(
+        messages,
+        [
+            "Math formula deleted: Insufficient symbol fonts",
+            "Math formula deleted: Insufficient symbol fonts",
+            "Math formula deleted: Insufficient extension fonts",
+            "Math formula deleted: Insufficient extension fonts",
+        ],
+        "{}",
+        e.term
+    );
+}
+
+/// pdftex -ini: \pdffilesize and its siblings look names up like
+/// kpse_find_tex, along TEXINPUTS only. TFM, Type 1, encoding and map files
+/// of the same TeX tree are not found (the primitives expand to nothing),
+/// while a TeX input is, with or without its default extension.
+#[test]
+fn pdf_file_queries_search_the_tex_input_path_only() {
+    let e = run_lenient(
+        r"\def\empty{}\def\q#1{\edef\r{\pdffilesize{#1}}\message{[#1=\ifx\r\empty-\else+\fi]}}
+\q{cmr10.tfm}\q{cmr10.pfb}\q{lm-ec.enc}\q{pdftex.map}\q{8r.enc}\q{cmr10}
+\q{plain.tex}\q{plain}\q{article.cls}\q{latex.ltx}
+\edef\r{\pdfmdfivesum file{cmr10.tfm}}\message{[md5=\r]}
+\edef\r{\pdffilemoddate{cmr10.tfm}}\message{[date=\r]}
+\edef\r{\pdffiledump length 4{cmr10.tfm}}\message{[dump=\r]}
+\end",
+    );
+    let term: String = e.term.split_whitespace().collect();
+    assert!(
+        term.contains(
+            "[cmr10.tfm=-][cmr10.pfb=-][lm-ec.enc=-][pdftex.map=-][8r.enc=-][cmr10=-]\
+             [plain.tex=+][plain=+][article.cls=+][latex.ltx=+][md5=][date=][dump=]"
+        ),
+        "{}",
+        e.term
+    );
+}
+
+/// tex.web §1125 make_accent: the kerns around the accent are `acc_kern`
+/// kerns, shown as `\kern <x> (for accent)` (TeX Live pdftex output).
+#[test]
+fn accent_kerns_are_shown_for_accent() {
+    let e = run_lenient(
+        r"\font\tenrm=cmr10 \tenrm \showboxbreadth=100 \showboxdepth=100
+\setbox0\hbox{\accent18 e\accent94 A}\showbox0
+\end",
+    );
+    assert!(
+        e.log.contains(
+            "\\hbox(9.47221+0.0)x11.94446
+.\\kern -0.27779 (for accent)
+.\\tenrm ^^R
+.\\kern -4.72223 (for accent)
+.\\tenrm e
+.\\kern 1.25 (for accent)
+.\\hbox(6.94444+0.0)x5.00002, shifted -2.52777
+..\\tenrm ^
+.\\kern -6.25002 (for accent)
+.\\tenrm A
+"
+        ),
+        "{}",
+        e.log
+    );
+}
+
+/// tex.web §879/§881: only explicit kerns are discarded after a break, so
+/// a line starting with an accented letter keeps its accent kerns; with
+/// \pdfprotrudechars=2 pdftex then finds that nonzero kern (not the accent
+/// character) at the left margin and protrudes nothing.
+#[test]
+fn accent_kerns_survive_at_line_start() {
+    let e = run_lenient(
+        r"\font\tenrm=cmr10 \tenrm \showboxbreadth=100 \showboxdepth=100
+\hsize=16pt \parindent=0pt \tolerance=10000 \hbadness=10000 \hfuzz=16000pt
+\setbox1\vbox{aaa \accent19 e bbb\par}\showbox1
+\pdfprotrudechars=2 \lpcode\tenrm 19=500 \lpcode\tenrm`e=500
+\setbox1\vbox{aaa \accent19 e bbb\par}\showbox1
+\end",
+    );
+    let line = "\\hbox(6.94444+0.0)x16.0
+..\\kern -0.27779 (for accent)
+..\\tenrm ^^S
+..\\kern -4.72223 (for accent)
+..\\tenrm e
+..\\glue(\\rightskip) 0.0
+";
+    assert_eq!(e.log.matches(line).count(), 2, "{}", e.log);
+    assert!(!e.log.contains("(left margin)"), "{}", e.log);
+}
+
+/// tex.web §1123 do_assignments: font definitions and selections between
+/// \accent and the base character are performed; \afterassignment and
+/// \setbox are not accepted there (§1241 set_box_allowed). Expected boxes
+/// are TeX Live pdftex's.
+#[test]
+fn accent_assignments_follow_do_assignments() {
+    let e = run_lenient(
+        r"\font\tenrm=cmr10 \tenrm \showboxbreadth=100 \showboxdepth=100
+\font\sevenrm=cmr7
+\setbox0\hbox{\accent18 \font\fivrm=cmr5 \fivrm e}\showbox0
+\setbox0\hbox{\accent18 \afterassignment\relax \sevenrm e}\showbox0
+\setbox0\hbox{\accent18 \setbox3\hbox{}\sevenrm e}\showbox0
+\end",
+    );
+    assert!(
+        e.log.contains(
+            "\\hbox(4.79167+2.15277)x3.05559
+.\\kern -0.97221 (for accent)
+.\\hbox(6.94444+0.0)x5.00002, shifted 2.15277
+..\\tenrm ^^R
+.\\kern -4.0278 (for accent)
+.\\fivrm e
+"
+        ),
+        "{}",
+        e.log
+    );
+    let plain = "\\hbox(6.94444+0.0)x8.55559
+.\\tenrm ^^R
+";
+    assert!(e.log.contains(&format!("{plain}.\\sevenrm e\n")), "{}", e.log);
+    assert!(
+        e.log.contains(&format!("{plain}.\\hbox(0.0+0.0)x0.0\n.\\sevenrm e\n")),
+        "{}",
+        e.log
+    );
+    assert!(e.log.contains("Improper \\setbox"), "{}", e.log);
+}
+
 /// Fonts and IniTeX parameters of the TeX Live 2026 `pdftex -ini` runs the
 /// core-fix expectations below were taken from.
 const PROBE_SETUP: &str = r"\catcode`\$=3 \catcode`\_=8 \catcode`\&=4
@@ -1131,4 +1517,60 @@ fn incompatible_unbox_keeps_the_box() {
     for want in ["[AB]", "[BB]", "[CB]", "[DB]", "[EB]", "[FV]", "[GV]"] {
         assert!(values.contains(want), "{want} missing: {}", e.term);
     }
+}
+
+fn run_bytes(source: &[u8], tcx: Option<&str>) -> Engine {
+    let mut engine = Engine::new(true);
+    engine.init_primitives();
+    engine.add_nullfont();
+    engine.set_interaction_mode(tex_core::engine::InteractionMode::Nonstop);
+    if let Some(name) = tcx {
+        engine.set_tcx(tex_core::tex_bytes::Tcx::builtin(name).unwrap());
+    }
+    let mut text = b"\\catcode`\\{=1 \\catcode`\\}=2 \\catcode`\\#=6 \\catcode`\\^=7 \\catcode9=12\n".to_vec();
+    text.extend_from_slice(source);
+    engine.input.push_file("review.tex".into(), text);
+    engine.run();
+    engine
+}
+
+/// pdftex -ini -etex (TeX Live 2026) without a TCX file prints bytes
+/// 128-255 and control characters in `^^` notation, counts the printed bytes
+/// against `max_print_line` (79), and breaks lines inside a `^^xx` group;
+/// with cp227.tcx 128-255 and tab print as themselves.
+#[test]
+fn eight_bit_characters_print_and_wrap_like_pdftex() {
+    let mut source = b"\\immediate\\write16{".to_vec();
+    source.extend(std::iter::repeat(0xe9u8).take(40));
+    source.extend_from_slice(b"}\\message{A\xe9\x01\t\\string\\caf\xe9}\\end\n");
+    let e = run_bytes(&source, None);
+    let mut expected = "^^e9".repeat(19).into_bytes();
+    expected.extend_from_slice(b"^^e\n9");
+    expected.extend_from_slice("^^e9".repeat(19).as_bytes());
+    expected.extend_from_slice(b"^^\ne9\nA^^e9^^A^^I\\caf^^e9");
+    assert_eq!(e.term_bytes().as_ref(), &expected[..]);
+    assert_eq!(e.log_bytes().as_ref(), &expected[..]);
+
+    let e = run_bytes(b"\\message{A\xe9\x01\t\\string\\caf\xe9}\\end\n", Some("cp227.tcx"));
+    assert_eq!(e.term_bytes().as_ref(), b"A\xe9^^A\t\\caf\xe9" as &[u8]);
+}
+
+/// pdftex: pushback that predates \halign (TikZ's `\expandafter\halign
+/// \expandafter{\header ...}`) is still part of the preamble.
+#[test]
+fn alignment_preamble_reads_pushback_from_before_halign() {
+    let e = engine(
+        r"\font\tenrm=cmr10 \tenrm
+\def\hdr{\hfil##\hfil\cr}
+\setbox1=\hbox{a}
+\setbox0=\vbox{\expandafter\expandafter\expandafter\halign\expandafter\expandafter\expandafter{\hdr
+  \box1\cr
+  \noalign{\vskip 1pt}%
+  b\cr}}
+\setbox1=\hbox{a}
+\setbox2=\vbox{\halign{\hfil#\hfil\cr \box1\cr \noalign{\vskip 1pt}b\cr}}
+\ifdim\ht0=\ht2 \message{[SAME]}\else\message{[DIFF \the\ht0 \the\ht2]}\fi
+\end",
+    );
+    assert!(e.term.contains("[SAME]"), "{}", e.term);
 }

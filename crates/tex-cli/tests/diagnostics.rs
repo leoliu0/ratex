@@ -738,7 +738,7 @@ fn runaway_definition_in_an_include_points_to_the_child_and_names_the_parent() {
     assert!(!output.status.success(), "{}", failure_output(&output));
     let stderr = text(&output.stderr);
     assert!(
-        stderr.contains("File ended while scanning the definition of \\broken"),
+        stderr.contains("File ended while scanning definition of \\broken"),
         "{stderr}"
     );
     assert!(stderr.contains("child.tex:1:1"), "{stderr}");
@@ -782,7 +782,7 @@ fn alignment_preamble_eof_in_an_include_points_to_the_halign() {
     assert!(!output.status.success(), "{}", failure_output(&output));
     let stderr = text(&output.stderr);
     assert!(
-        stderr.contains("File ended while scanning an alignment preamble"),
+        stderr.contains("File ended while scanning preamble of \\halign"),
         "{stderr}"
     );
     assert!(stderr.contains("child.tex:1:1"), "{stderr}");
@@ -817,7 +817,7 @@ fn expanded_text_eof_in_an_include_points_to_the_opening_brace() {
     let output = job.compile(&["-plain", "-interaction=nonstopmode"]);
     assert!(!output.status.success(), "{}", failure_output(&output));
     let stderr = text(&output.stderr);
-    assert!(stderr.contains("Missing } in expanded text"), "{stderr}");
+    assert!(stderr.contains("File ended while scanning text of \\message"), "{stderr}");
     assert!(stderr.contains("child.tex:1:9"), "{stderr}");
     assert!(stderr.contains("1 | \\message{unfinished"), "{stderr}");
     assert!(stderr.contains("= included from main.tex:1:1"), "{stderr}");
@@ -833,7 +833,10 @@ fn balanced_text_eof_in_an_include_points_to_the_opening_brace() {
     let output = job.compile(&["-plain", "-interaction=nonstopmode"]);
     assert!(!output.status.success(), "{}", failure_output(&output));
     let stderr = text(&output.stderr);
-    assert!(stderr.contains("Runaway argument / missing }"), "{stderr}");
+    assert!(
+        stderr.contains("File ended while scanning text of \\toks"),
+        "{stderr}"
+    );
     assert!(stderr.contains("child.tex:1:8"), "{stderr}");
     assert!(stderr.contains("1 | \\toks0={unfinished"), "{stderr}");
     assert!(stderr.contains("= included from main.tex:1:1"), "{stderr}");
@@ -848,7 +851,10 @@ fn runaway_macro_argument_keeps_its_call_trace_and_include_site() {
     let output = job.compile(&["-plain", "-interaction=nonstopmode"]);
     assert!(!output.status.success(), "{}", failure_output(&output));
     let stderr = text(&output.stderr);
-    assert!(stderr.contains("Runaway argument / missing }"), "{stderr}");
+    assert!(
+        stderr.contains("File ended while scanning use of \\take"),
+        "{stderr}"
+    );
     assert!(stderr.contains("child.tex:1:1"), "{stderr}");
     assert!(stderr.contains("1 | \\take{unterminated"), "{stderr}");
     let caret = line_after(&stderr, "1 | \\take{unterminated").expect("caret after call");
@@ -930,7 +936,7 @@ fn macro_generated_runaway_definition_keeps_the_generating_macro() {
     assert!(!output.status.success(), "{}", failure_output(&output));
     let stderr = text(&output.stderr);
     assert!(
-        stderr.contains("File ended while scanning the definition of \\broken"),
+        stderr.contains("File ended while scanning definition of \\broken"),
         "{stderr}"
     );
     assert!(stderr.contains("main.tex:2:1"), "{stderr}");
@@ -1661,7 +1667,7 @@ fn missing_math_characters_name_the_selected_font_and_keep_their_origin() {
     ] {
         let job = Job::new(label);
         let source = format!(
-            "\\tracinglostchars=1\\font\\mathtext=cmmi10\n\\font\\mathscript=cmmi7\n\\textfont1=\\mathtext\n\\scriptfont1=\\mathscript\n\\scriptscriptfont1=\\mathscript\n{source}"
+            "\\tracinglostchars=1 \\font\\mathsy=cmsy10 \\font\\mathex=cmex10 \\textfont2=\\mathsy \\scriptfont2=\\mathsy \\scriptscriptfont2=\\mathsy \\textfont3=\\mathex \\scriptfont3=\\mathex \\scriptscriptfont3=\\mathex \\font\\mathtext=cmmi10\n\\font\\mathscript=cmmi7\n\\textfont1=\\mathtext\n\\scriptfont1=\\mathscript\n\\scriptscriptfont1=\\mathscript\n{source}"
         );
         job.write("main.tex", &source);
         let output = job.compile(&["-plain", "-interaction=nonstopmode"]);
@@ -1689,7 +1695,7 @@ fn missing_scripted_accent_nucleus_warns_once_and_tracing_can_disable_it() {
     let warned = Job::new("missing-scripted-accent-nucleus");
     warned.write(
         "main.tex",
-        "\\tracinglostchars=1\\font\\mathtext=cmmi10\n\\font\\mathscript=cmmi7\n\\textfont1=\\mathtext\n\\scriptfont1=\\mathscript\n\\scriptscriptfont1=\\mathscript\n$\\mathaccent\"015E \\mathchar\"0180^2$\n\\end\n",
+        "\\tracinglostchars=1 \\font\\mathsy=cmsy10 \\font\\mathex=cmex10 \\textfont2=\\mathsy \\scriptfont2=\\mathsy \\scriptscriptfont2=\\mathsy \\textfont3=\\mathex \\scriptfont3=\\mathex \\scriptscriptfont3=\\mathex \\font\\mathtext=cmmi10\n\\font\\mathscript=cmmi7\n\\textfont1=\\mathtext\n\\scriptfont1=\\mathscript\n\\scriptscriptfont1=\\mathscript\n$\\mathaccent\"015E \\mathchar\"0180^2$\n\\end\n",
     );
     let output = warned.compile(&["-plain", "-interaction=nonstopmode"]);
     assert!(output.status.success(), "{}", failure_output(&output));
@@ -1700,7 +1706,7 @@ fn missing_scripted_accent_nucleus_warns_once_and_tracing_can_disable_it() {
     let quiet = Job::new("missing-math-character-disabled");
     quiet.write(
         "main.tex",
-        "\\font\\mathtext=cmmi10\n\\textfont1=\\mathtext\n\\tracinglostchars=0\n$\\mathchar\"0180$\n\\end\n",
+        "\\font\\mathsy=cmsy10 \\font\\mathex=cmex10 \\textfont2=\\mathsy \\scriptfont2=\\mathsy \\scriptscriptfont2=\\mathsy \\textfont3=\\mathex \\scriptfont3=\\mathex \\scriptscriptfont3=\\mathex \\font\\mathtext=cmmi10\n\\textfont1=\\mathtext\n\\tracinglostchars=0\n$\\mathchar\"0180$\n\\end\n",
     );
     let output = quiet.compile(&["-plain", "-interaction=nonstopmode"]);
     assert!(output.status.success(), "{}", failure_output(&output));
@@ -1792,16 +1798,18 @@ fn eof_syntax_and_terminal_read_errors_state_the_required_fix() {
             "place the token or control sequence to inspect immediately after `\\show`",
         ),
         (
+            // tex.web §484: a terminal \read is fatal in nonstop mode
             "terminal-read-unavailable",
             "\\read-1 to \\answer\n\\end\n",
-            "Terminal input is unavailable for \\read-1",
+            "Emergency stop: cannot \\read from terminal in nonstop modes",
             "file-backed stream",
         ),
         (
+            // a closed stream reads from the terminal, too
             "unopened-read-stream",
             "\\read0 to \\answer\n\\end\n",
-            "Input stream 0 is not open for \\read",
-            "open this stream with `\\openin`",
+            "Emergency stop: cannot \\read from terminal in nonstop modes",
+            "file-backed stream",
         ),
     ] {
         let job = Job::new(label);
@@ -2712,7 +2720,7 @@ fn pdffilemoddate_formats_the_file_mtime_like_pdftex() {
 }
 
 /// pdflatex options from `pdflatex --help` are accepted with their pdfTeX
-/// meaning; DVI-, TCX-, encTeX- and MLTeX-only options fail clearly.
+/// meaning; DVI-, encTeX- and MLTeX-only options fail clearly.
 #[test]
 fn web2c_command_line_options_are_accepted_or_clearly_rejected() {
     let job = Job::new("web2c-options");
@@ -2730,13 +2738,50 @@ fn web2c_command_line_options_are_accepted_or_clearly_rejected() {
     assert!(text(&output.stdout).contains("RAN"));
     for (option, message) in [
         ("-output-format=dvi", "Ratex writes PDF only"),
-        ("-translate-file=cp227.tcx", "-translate-file is not supported"),
         ("-enc", "-enc is not supported"),
         ("-mltex", "-mltex is not supported"),
     ] {
         let output = run_pdflatex(&job, &["-ini", option, "main.tex"], &[]);
         assert_eq!(output.status.code(), Some(2), "{option}: {}", failure_output(&output));
         assert!(text(&output.stderr).contains(message), "{}", failure_output(&output));
+    }
+}
+
+/// 8-bit input prints byte for byte as `pdftex -ini -etex` does (TeX Live
+/// 2026): `^^` notation without a TCX file, raw bytes with `-8bit`, and
+/// cp227.tcx's printable set (bytes 128-255 and tab, not form feed) with
+/// `-translate-file`. The terminal and the transcript agree.
+#[test]
+fn eight_bit_text_prints_like_tex_live_on_terminal_and_in_the_log() {
+    let job = Job::new("eight-bit-output");
+    std::fs::write(
+        job.dir.join("main.tex"),
+        b"\\catcode`\\{=1 \\catcode`\\}=2 \\catcode`\\#=6 \\catcode9=12\n\\message{A\xe9\x01\x0c\t}\n\\message{\\string\\caf\xe9}\n\\end\n",
+    )
+    .unwrap();
+    let cases: [(&[&str], &[u8]); 4] = [
+        (&[], b"(main.tex A^^e9^^A^^L^^I \\caf^^e9"),
+        (&["-translate-file=cp227.tcx"], b"(main.tex A\xe9^^A^^L\t \\caf\xe9"),
+        (&["-translate-file=cp8bit.tcx"], b"(main.tex A\xe9^^A^^L^^I \\caf\xe9"),
+        (&["-8bit"], b"(main.tex A\xe9\x01\x0c\t \\caf\xe9"),
+    ];
+    for (options, expected) in cases {
+        let mut args = vec!["-ini", "-interaction=nonstopmode"];
+        args.extend_from_slice(options);
+        args.push("main.tex");
+        let output = run_pdflatex(&job, &args, &[]);
+        assert!(output.status.success(), "{options:?}: {}", failure_output(&output));
+        assert!(
+            output.stdout.windows(expected.len()).any(|w| w == expected),
+            "{options:?}: {:?}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        let log = std::fs::read(job.dir.join("main.log")).unwrap();
+        assert!(
+            log.windows(expected.len()).any(|w| w == expected),
+            "{options:?}: {:?}",
+            String::from_utf8_lossy(&log)
+        );
     }
 }
 

@@ -764,19 +764,23 @@ impl Engine {
                     self.error("You can't use `\\/' in vertical mode");
                 }
                 Mode::Horizontal | Mode::RestrictedHorizontal => {
+                    // tex.web §1113: a kern follows a character or ligature
+                    // even when its italic correction is zero
                     let correction = match self.cur_list.last() {
-                        Some(Node::Char { c, font } | Node::Ligature { c, font, .. }) => self
-                            .eqtb
-                            .fonts
-                            .get(*font as usize)
-                            .map_or(0, |font| font.char_italic(*c)),
-                        _ => 0,
+                        Some(Node::Char { c, font } | Node::Ligature { c, font, .. }) => Some(
+                            self.eqtb
+                                .fonts
+                                .get(*font as usize)
+                                .map_or(0, |font| font.char_italic(*c)),
+                        ),
+                        _ => None,
                     };
-                    if correction != 0 {
+                    if let Some(correction) = correction {
                         self.cur_list.push(Node::ExplicitKern(correction));
                     }
                 }
-                Mode::Math | Mode::DisplayMath => self.append_mlist_node(Node::MathKern(0, 0)),
+                // tex.web §1112: `mmode+ital_corr: tail_append(new_kern(0))`
+                Mode::Math | Mode::DisplayMath => self.append_mlist_node(Node::Kern(0)),
             },
             // math
             MathChar => {
@@ -1396,14 +1400,54 @@ impl Engine {
                     let g = self.take_global();
                     self.eqtb.define_cur_font(font, g);
                     self.clear_prefixes();
+                    self.trigger_after_assignment();
+                }
+                // \afterassignment, \aftergroup, \box and \copy are not
+                // prefixed commands: they end do_assignments
+                Some(Equiv::Prim(
+                    Prim::AfterAssignment | Prim::AfterGroup | Prim::Box | Prim::Copy,
+                )) => break t,
+                // tex.web §1241: set_box_allowed is false inside do_assignments
+                Some(Equiv::Prim(Prim::SetBox)) => {
+                    let _ = self.take_assignment_prefixes("\\setbox");
+                    self.scan_reg_num();
+                    self.scan_optional_equals();
+                    self.error("Improper \\setbox");
+                    self.trigger_after_assignment();
                 }
                 Some(Equiv::Prim(p)) if p != Prim::Relax && self.try_assignment(p, id) => {
-                    if !matches!(
-                        p,
-                        Prim::Global | Prim::Long | Prim::Outer | Prim::Protected | Prim::AfterAssignment
-                    ) {
+                    if !matches!(p, Prim::Global | Prim::Long | Prim::Outer | Prim::Protected) {
                         self.trigger_after_assignment();
                     }
+                }
+                // assignments that main control runs through main_dispatch
+                // (\font, \catcode, \textfont, ...) and register aliases
+                Some(Equiv::Prim(
+                    p @ (Prim::Font
+                    | Prim::CatCode
+                    | Prim::MathCode
+                    | Prim::DelCode
+                    | Prim::LcCodeP
+                    | Prim::UcCodeP
+                    | Prim::SfCodeP
+                    | Prim::TextFont
+                    | Prim::ScriptFont
+                    | Prim::ScriptScriptFont
+                    | Prim::Hyphenation
+                    | Prim::Patterns),
+                )) => {
+                    self.main_dispatch(p, id);
+                    self.trigger_after_assignment();
+                }
+                Some(
+                    Equiv::CountReg(_)
+                    | Equiv::DimenReg(_)
+                    | Equiv::SkipReg(_)
+                    | Equiv::MuSkipReg(_)
+                    | Equiv::ToksReg(_),
+                ) => {
+                    self.cs_assign(id);
+                    self.trigger_after_assignment();
                 }
                 _ => break t,
             }
@@ -1485,9 +1529,9 @@ impl Engine {
             }
         };
         let delta = ((w - a) as f64 / 2.0 + h as f64 * t_sl - x as f64 * s).round() as i32;
-        self.cur_list.push(Node::ExplicitKern(delta));
+        self.cur_list.push(Node::AccentKern(delta));
         self.cur_list.push(accent_part);
-        self.cur_list.push(Node::ExplicitKern(-a - delta));
+        self.cur_list.push(Node::AccentKern(-a - delta));
         self.cur_list.push(Node::Char {
             c: bc,
             font: f_base,

@@ -284,6 +284,7 @@ impl Engine {
                             self.math_lists.last().map(|l| l.len()).unwrap_or(0),
                             saved_mode,
                         ));
+                        self.show.brace_lines.push(self.nest_line());
                         // tex.web §1197 / §21691 push_math: a subformula group in
                         // math mode enters -mmode (inner math mode, so \ifinner is true).
                         self.mode = Mode::Math;
@@ -293,6 +294,7 @@ impl Engine {
                 2 => {
                     if self.mode.is_m() {
                         if let Some((depth, start_mark, saved_mode)) = self.math_group_marks.pop() {
+                            self.show.brace_lines.pop();
                             self.mode = saved_mode;
                             if depth == self.math_lists.len() {
                                 if let Some(l) = self.math_lists.last_mut() {
@@ -333,8 +335,23 @@ impl Engine {
                         self.hspace_token();
                     }
                 }
-                0 | 6 | 9 | 14 | 15 => {
-                    // escape/param/ignored/comment/invalid should not appear raw
+                6 => {
+                    // tex.web §1045 any_mode(mac_param): report_illegal_case.
+                    let mut shown = Vec::new();
+                    match u8::try_from(scalar) {
+                        Ok(byte) => {
+                            crate::tex_bytes::push_printable(&self.xprn, &mut shown, &[byte])
+                        }
+                        Err(_) => t.append_character_bytes(&mut shown),
+                    }
+                    self.error(&format!(
+                        "You can't use `macro parameter character {}' in {}",
+                        String::from_utf8_lossy(&shown),
+                        self.mode.name()
+                    ));
+                }
+                0 | 9 | 14 | 15 => {
+                    // escape/ignored/comment/invalid should not appear raw
                 }
                 _ => {}
             }
@@ -921,7 +938,7 @@ impl Engine {
 
     /// cs-bound value/parameter assignment: \foo=... where foo is a register
     /// alias or a parameter primitive
-    fn cs_assign(&mut self, id: CsId) -> bool {
+    pub(crate) fn cs_assign(&mut self, id: CsId) -> bool {
         match self.eqtb.resolve(id).cloned() {
             Some(Equiv::Prim(Prim::IntP(ip))) => {
                 self.scan_optional_equals();
@@ -1079,7 +1096,16 @@ impl Engine {
         self.clear_prefixes();
     }
     /// \def/\gdef/\edef/\xdef
-    fn do_def(&mut self, p: Prim, _id: CsId) {
+    fn do_def(&mut self, p: Prim, id: CsId) {
+        let saved_outer_scan = self.outer_scan;
+        self.do_def_scanning(p, id);
+        self.outer_scan = saved_outer_scan;
+    }
+
+    /// tex.web §473 scan_toks(true, ...): scanner_status is `defining`, with
+    /// the control sequence being defined as warning_index, from the
+    /// parameter text on.
+    fn do_def_scanning(&mut self, p: Prim, _id: CsId) {
         let definition_start = self.current_token_source_mark();
         let preserve_trace = !self.diagnostic_macro_trace.is_empty();
         if preserve_trace {
@@ -1089,6 +1115,8 @@ impl Engine {
         let global = self.take_global();
         let expanded = p == Prim::EDef || p == Prim::XDef;
         let target = self.scan_definable_cs();
+        self.outer_scan = Some((crate::expand::OuterScan::Definition, Some(target)));
+        let mut missing_brace = false;
         let mut params: Vec<Vec<Token>> = Vec::new();
         let mut num_params = 0u8;
         let mut hash_brace: Option<Token> = None; // tex.web §473 #{ append
@@ -1096,19 +1124,27 @@ impl Engine {
         self.def_prefix.clear();
         loop {
             // tex.web scans the parameter text with get_token (NON-expanding)
-            let t = self.raw_token();
+            let mut t = self.raw_token();
+            if self.is_outer_macro_token(t) {
+                t = self.forbidden_outer(t);
+            }
             if t == crate::input::EOF_MARKER {
-                self.fatal_error_at(
-                    "File ended in definition",
-                    definition_start.as_ref().map(|mark| mark.to_context()),
-                );
-                if preserve_trace {
-                    self.diagnostic_trace_hold -= 1;
-                }
-                return;
+                // tex.web §336: the inserted `}` is reported by §475 as a
+                // missing left brace.
+                self.outer_scan_file_ended(definition_start.as_ref());
+                self.error("Missing { inserted");
+                missing_brace = true;
+                break;
             }
             if t.is_char() && t.cc() == 1 {
                 self.push_token(t);
+                break;
+            }
+            if t.is_char() && t.cc() == 2 {
+                // tex.web §475: `\def\a}` is read as `\def\a{}`.
+                self.align_brace_depth = self.align_brace_depth.saturating_add(1);
+                self.error("Missing { inserted");
+                missing_brace = true;
                 break;
             }
             // A parameter reference spliced from an outer macro body arrives
@@ -1136,8 +1172,12 @@ impl Engine {
             if self.is_macro_param(t) {
                 // #n or #{
                 let mut t2 = self.raw_token();
-                while t2.is_char() && (t2.cc() == 10 || t2.cc() == 0) {
-                    t2 = self.raw_token();
+                if self.is_outer_macro_token(t2) {
+                    t2 = self.forbidden_outer(t2);
+                }
+                if t2 == crate::input::EOF_MARKER {
+                    self.outer_scan_file_ended(definition_start.as_ref());
+                    t2 = Token::char(2, b'}' as u32);
                 }
                 if self.is_macro_param(t2) {
                     if !self.scanned_token_list_has_room(
@@ -1187,13 +1227,17 @@ impl Engine {
                     hash_brace = Some(t2);
                     break;
                 }
-                let n = t2.chr();
+                let n = if t2.is_char() { t2.chr() } else { u32::MAX };
                 let parameter_source = self.current_token_source_mark();
                 num_params += 1;
                 params.push(Vec::new());
                 let expected = u32::from(b'0') + u32::from(num_params.min(9));
                 if num_params > 9 || n != expected {
-                    let found = char::from_u32(n).unwrap_or('�');
+                    let found = if t2.is_char() {
+                        char::from_u32(n).unwrap_or('�').to_string()
+                    } else {
+                        self.display_cs(t2.cs_id())
+                    };
                     self.error_at(
                         &format!(
                             "Parameters must be numbered consecutively in the definition of {}; expected #{} but found #{}",
@@ -1203,6 +1247,11 @@ impl Engine {
                         ),
                         parameter_source.as_ref().map(|mark| mark.to_context()),
                     );
+                    if num_params <= 9 {
+                        // tex.web §476: the token is read again, as part of
+                        // the parameter text.
+                        self.push_token(t2);
+                    }
                     num_params = num_params.min(9);
                 }
                 continue;
@@ -1225,10 +1274,11 @@ impl Engine {
             }
         }
         let has_brace = hash_brace.is_some();
-        let scan = crate::expand::OuterScan::Definition;
-        let mut body = self.with_outer_scan(scan, Some(target), |e| {
-            e.collect_def_body(target, num_params, expanded, has_brace, definition_start.clone())
-        });
+        let mut body = if missing_brace {
+            Vec::new()
+        } else {
+            self.collect_def_body(target, num_params, expanded, has_brace, definition_start.clone())
+        };
         if preserve_trace {
             self.diagnostic_trace_hold -= 1;
         }
@@ -1414,13 +1464,8 @@ impl Engine {
                 self.unexp_protect -= 1;
             }
             if t == crate::input::EOF_MARKER {
-                self.fatal_error_at(
-                    &format!(
-                        "File ended while scanning the definition of {}; add the missing }}",
-                        self.display_cs(target)
-                    ),
-                    definition_start.as_ref().map(|mark| mark.to_context()),
-                );
+                // tex.web §336: the inserted `}` ends the body.
+                self.outer_scan_file_ended(definition_start.as_ref());
                 self.in_expanded_scan = prev_expanded_scan;
                 return out;
             }
@@ -1474,16 +1519,13 @@ impl Engine {
                     });
                     continue;
                 }
-                let t2 = self.raw_token();
+                let mut t2 = self.raw_token();
+                if !expanded && self.is_outer_macro_token(t2) {
+                    t2 = self.forbidden_outer(t2);
+                }
                 let parameter_source = self.current_token_source_mark();
                 if t2 == crate::input::EOF_MARKER {
-                    self.fatal_error_at(
-                        &format!(
-                            "File ended after # in the definition of {}; add a parameter number, another #, and the missing }}",
-                            self.display_cs(target)
-                        ),
-                        definition_start.as_ref().map(|mark| mark.to_context()),
-                    );
+                    self.outer_scan_file_ended(definition_start.as_ref());
                     self.in_expanded_scan = prev_expanded_scan;
                     return out;
                 }
@@ -1510,7 +1552,8 @@ impl Engine {
                             ),
                             parameter_source.as_ref().map(|mark| mark.to_context()),
                         );
-                        out.push(Token::other(b'?'));
+                        out.push(Token::char(6, b'#' as u32));
+                        self.push_token(t2);
                     }
                     continue;
                 }
@@ -1527,7 +1570,8 @@ impl Engine {
                     ),
                     parameter_source.as_ref().map(|mark| mark.to_context()),
                 );
-                out.push(Token::other(b'?'));
+                out.push(Token::char(6, b'#' as u32));
+                self.push_token(t2);
                 continue;
             }
             if t.is_char() {

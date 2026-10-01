@@ -1800,9 +1800,16 @@ struct SignalScanner {
     line_undefined: bool,
     line_no_file: bool,
     line_bbl: bool,
+    /// Bytes of the physical line read so far. TeX breaks a transcript
+    /// line after `max_print_line` (79) bytes; such a piece continues on
+    /// the next line, so a phrase may straddle the break.
+    physical_len: usize,
 }
 
 const SIGNAL_LINE_CAPTURE_BYTES: usize = 4096;
+
+/// TeX's `max_print_line`: transcript lines are broken after this many bytes.
+const TRANSCRIPT_LINE_WIDTH: usize = 79;
 
 impl SignalScanner {
     fn new(job: &str) -> Self {
@@ -1831,9 +1838,11 @@ impl SignalScanner {
             line_undefined: false,
             line_no_file: false,
             line_bbl: false,
+            physical_len: 0,
         }
     }
     fn scan_fragment(&mut self, fragment: &[u8]) {
+        self.physical_len += fragment.len();
         let room = SIGNAL_LINE_CAPTURE_BYTES.saturating_sub(self.current_line_bytes.len());
         self.current_line_bytes
             .extend_from_slice(&fragment[..room.min(fragment.len())]);
@@ -1864,6 +1873,10 @@ impl SignalScanner {
     }
 
     fn finish_line(&mut self) {
+        let wrapped = std::mem::take(&mut self.physical_len) == TRANSCRIPT_LINE_WIDTH;
+        if wrapped {
+            return;
+        }
         self.signals.undef_cites |= self.line_citation && self.line_undefined;
         self.signals.bbl_missing |= self.line_no_file && self.line_bbl;
 
@@ -1907,6 +1920,7 @@ impl SignalScanner {
     }
 
     fn finish(mut self) -> Signals {
+        self.physical_len = 0;
         self.finish_line();
         self.signals
     }

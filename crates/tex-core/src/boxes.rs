@@ -275,7 +275,11 @@ pub enum WhatIt {
     /// whatsit and takes effect in list order at shipout (`out_what` @1414)
     OpenOut {
         stream: u16,
-        path: String,
+        /// (path, shown): the resolved output path, and tex.web
+        /// `print_file_name(open_name,open_area,open_ext)`: the name as
+        /// scanned (no `.tex` appended), quoted when it has spaces. Boxed to
+        /// keep the hot `Node` enum compact.
+        names: Box<(String, String)>,
         /// Managed auxiliary directories mirror nested `\\include` paths.
         /// Traditional and absolute `\\openout` paths do not create parents.
         create_parent: bool,
@@ -546,6 +550,11 @@ pub enum Node {
     Glue(Glue),
     Kern(i32),
     ExplicitKern(i32),
+    /// tex.web `acc_kern` (subtype 2): the two kerns `\accent` puts around
+    /// the accent. Unlike a normal kern it ends a hyphenation word and is
+    /// never stretched by font expansion; unlike an explicit kern it is not
+    /// a legal breakpoint and is not discarded at a line break.
+    AccentKern(i32),
     /// pdfTeX `margin_kern_node`: a kern of width `-w` placed at the very
     /// start (or just before the trailing `\rightskip`) of a line box to let
     /// the marginal character `c` protrude `w` into the margin when
@@ -659,6 +668,9 @@ pub enum Node {
     Overline {
         body: NodeList,
         under: bool,
+        /// the already-packed bar-and-body box the conversion yields; `body`
+        /// is the original field, kept for `\showlists` (tex.web §692)
+        packed: Box<Node>,
     },
     VCenter {
         box_node: Box<Node>,
@@ -685,7 +697,7 @@ fn single_dims(n: &Node, eqtb: &crate::eqtb::Eqtb) -> (i32, i32, i32) {
             ..
         } => (*lig_width, *lig_height, *lig_depth),
         Node::Glue(g) => (g.width, 0, 0),
-        Node::Kern(k) | Node::ExplicitKern(k) => (*k, 0, 0),
+        Node::Kern(k) | Node::ExplicitKern(k) | Node::AccentKern(k) => (*k, 0, 0),
         // tex.web math_node: width = \mathsurround (math-on 1 / math-off 2);
         // an unconverted \mkern (kind 0) has no width yet
         Node::MathKern(k, MATH_ON..) => (*k, 0, 0),
@@ -708,7 +720,8 @@ fn single_dims(n: &Node, eqtb: &crate::eqtb::Eqtb) -> (i32, i32, i32) {
             let (wd, hd, _) = hlist_dims(den, eqtb);
             (wn.max(wd), hn + hd, 0)
         }
-        Node::Radical { body, .. } | Node::Overline { body, .. } => hlist_dims(body, eqtb),
+        Node::Radical { body, .. } => hlist_dims(body, eqtb),
+        Node::Overline { packed, .. } => single_dims(packed, eqtb),
         Node::OpLimits { op, .. } => hlist_dims(op, eqtb),
         Node::VCenter { box_node } => single_dims(box_node, eqtb),
         Node::Whatsit(WhatIt::PdfRefXImage { w, h, d, .. })
@@ -805,7 +818,7 @@ pub fn vlist_dims(list: &[Node], eqtb: &crate::eqtb::Eqtb) -> (i32, i32, i32) {
                 x += d + *width as i64;
                 d = 0;
             }
-            Node::Kern(k) | Node::ExplicitKern(k) => {
+            Node::Kern(k) | Node::ExplicitKern(k) | Node::AccentKern(k) => {
                 x += d + *k as i64;
                 d = 0;
             }
@@ -1648,7 +1661,7 @@ pub fn split_vlist(list: &[Node], target: i64) -> (NodeList, NodeList) {
                 height += depth + w;
                 depth = 0;
             }
-            Node::Kern(k) | Node::ExplicitKern(k) => {
+            Node::Kern(k) | Node::ExplicitKern(k) | Node::AccentKern(k) => {
                 let w = *k as i64;
                 if seen_box && height + depth + w > target {
                     split_at = Some(i);

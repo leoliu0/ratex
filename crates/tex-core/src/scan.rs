@@ -413,7 +413,7 @@ impl Engine {
             if t.is_char() && t.chr() == b'`' as u32 {
                 // char constant: next token RAW (no expansion; tex.web get_token
                 // does not expand); a cs contributes its name's first char
-                let t2 = self.raw_token();
+                let t2 = self.raw_token_outer();
                 if t2.is_char() {
                     v = t2.chr() as i64;
                     // tex.web §442: undo raw_token's brace-depth adjustment for
@@ -1810,10 +1810,15 @@ impl Engine {
         loop {
             let raw = self.raw_token();
             if raw == crate::input::EOF_MARKER {
-                self.fatal_error_at(
-                    "Missing } in expanded text",
-                    origin.as_ref().map(crate::input::SourceMark::to_context),
-                );
+                if self.outer_scan.is_some() {
+                    // tex.web §336: the inserted `}` ends the text.
+                    self.outer_scan_file_ended(origin.as_ref());
+                } else {
+                    self.fatal_error_at(
+                        "Missing } in expanded text",
+                        origin.as_ref().map(crate::input::SourceMark::to_context),
+                    );
+                }
                 self.in_expanded_scan = prev_expanded_scan;
                 self.csname_depth = prev_csname_depth;
                 return out;
@@ -2563,17 +2568,21 @@ impl Engine {
                 15 => "invalid character ",
                 _ => "character ",
             };
-            let ch = ((c as u8) as char).to_string();
+            let ch = if c < 256 {
+                crate::tex_bytes::bytes_to_text(&[c as u8])
+            } else {
+                char::from_u32(c).map(String::from).unwrap_or_default()
+            };
             return format!("{}{}", word, ch);
         }
         let esc = self.eqtb.int_params[crate::prim::IntParam::EscapeChar.idx() as usize];
-        let esc_byte = [esc as u8];
-        let esc_str = if (0..=255).contains(&esc) {
-            std::str::from_utf8(&esc_byte).unwrap_or("\\")
+        let esc_text = if (0..=255).contains(&esc) {
+            crate::tex_bytes::bytes_to_text(&[esc as u8])
         } else {
-            ""
+            String::new()
         };
-        let name = String::from_utf8_lossy(self.cs.name(t.cs_id())).into_owned();
+        let esc_str = esc_text.as_str();
+        let name = crate::tex_bytes::bytes_to_text(self.cs.name(t.cs_id()));
         match self.eqtb.resolve(t.cs_id()).cloned() {
             None => "undefined".to_string(),
             Some(Equiv::CharTok(v)) => self.meaning_of(Token(v)),
@@ -2597,16 +2606,16 @@ impl Engine {
                     s.push_str("macro:");
                 }
                 if !m.prefix.is_empty() {
-                    s.push_str(&self.tokens_to_string(&m.prefix));
+                    s.push_str(&self.tokens_to_text(&m.prefix));
                 }
                 for (i, d) in m.params.iter().enumerate() {
                     s.push_str(&format!("#{}", i + 1));
                     if !d.is_empty() {
-                        s.push_str(&self.tokens_to_string(d));
+                        s.push_str(&self.tokens_to_text(d));
                     }
                 }
                 s.push_str("->");
-                s.push_str(&self.tokens_to_string(&m.body));
+                s.push_str(&self.tokens_to_text(&m.body));
                 s
             }
             Some(Equiv::Prim(p)) => format!("{}{}", esc_str, self.prim_name(p)),
@@ -3940,6 +3949,8 @@ mod tex_live_scanning_tests {
              \\the\\dimen4|\\the\\count2|\\the\\count3|\\the\\dimen5|\\the\\skip0]}\\end\n",
         );
         assert_eq!(errors, 0, "{term}");
+        // the 87-byte message wraps at max_print_line like TeX's
+        let term = term.replace('\n', "");
         assert!(
             term.contains(
                 "[3.20093pt|19.2056pt|2.0075pt|6.0pt|12.5pt|511|97|18.75pt|\

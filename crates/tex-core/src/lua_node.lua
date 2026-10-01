@@ -132,6 +132,8 @@ end
 function direct.is_direct(n) if type(n) == "number" then return n end return false end
 
 -- ------------------------------------------------ engine state natives ----
+direct.getbox = N.getbox
+direct.setbox = N.setbox
 direct.last_node = N.last_node
 direct.write = N.write
 direct.set_synctex_fields = N.set_synctex_fields
@@ -319,6 +321,9 @@ end
 function node.hyphenating(h, t)
   local a, b, ok = N.hyphenating(todirect_ud(h), todirect_ud(t), true)
   return tonode(a), tonode(b), ok
+end
+function node.mlist_to_hlist(n, style, penalties)
+  return tonode(N.mlist_to_hlist(todirect_ud(n), style, penalties))
 end
 node.hpack = lenient_pack(N.wrap_hpack, "hpack")
 node.vpack = lenient_pack(N.wrap_vpack, "vpack")

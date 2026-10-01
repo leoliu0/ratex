@@ -1900,6 +1900,65 @@ fn install_lists(lua: &mut Lua, n: &LuaTable) -> Result<(), String> {
             ])
         })
     });
+    nat!(lua, n, "mlist_to_hlist", |h: Option<i64>, style: Option<Value>, pen: Option<Value>| -> Result<Option<i64>, String> {
+        // assign_math_style: numbers as they are, names by the math style list
+        let style = match &style {
+            Some(v) if v.as_integer().is_some() => value_int(v) as u8,
+            Some(v) => match value_bytes(v) {
+                Some(b) => math_style_from_name(&b).map_or(2, |s| s as u8),
+                None => 0,
+            },
+            None => 0,
+        };
+        let pen = is_truthy(pen.as_ref());
+        with_engine(|e| {
+            let list = e.lua_nodes_to_engine(i64::from(handle32(h)));
+            let out = e.lua_mlist_to_hlist(&list, style, pen);
+            let head = e.lua_nodes_from_engine(out);
+            (head != 0).then_some(head)
+        })
+    });
+    // direct.getbox / direct.setbox: a box register as a node. The register
+    // and the node are separate copies: `getbox` hands out a copy, `setbox`
+    // moves the node into the register.
+    nat!(lua, n, "getbox", |k: Value| -> Result<Option<i64>, String> {
+        let k = box_register(&k, "getbox")?;
+        with_engine(|e| {
+            let b = e.eqtb.boxed[k as usize].clone()?;
+            let h = e.lua_nodes_from_engine(vec![b]);
+            (h != 0).then_some(h)
+        })
+    });
+    nat!(lua, n, "setbox", |args: Variadic<Value>| -> Result<(), String> {
+        let top = args.len();
+        if top < 2 {
+            return Err("argument must be a string or a number".to_string());
+        }
+        let global = top == 3 && value_bytes(&args[0]).as_deref() == Some(b"global");
+        let value = &args[top - 1];
+        let k = box_register(&args[top - 2], "setbox")?;
+        if let Some(b) = value.as_boolean() {
+            if b {
+                return Ok(());
+            }
+            return with_engine(|e| e.eqtb.assign_box(k, None, global));
+        }
+        if value.is_nil() {
+            return with_engine(|e| e.eqtb.assign_box(k, None, global));
+        }
+        let h = handle32(value.as_integer());
+        with_engine(|e| {
+            if h != 0 && e.lua_nodes.valid(h) && !matches!(e.lua_nodes.id(h), HLIST | VLIST) {
+                let id = e.lua_nodes.id(h);
+                let name = type_info(id).map_or("unknown", |t| t.name);
+                return Err(format!("setbox: incompatible node type ({name})\n"));
+            }
+            let mut list = e.lua_nodes_to_engine(i64::from(h));
+            let node = if list.is_empty() { None } else { Some(list.remove(0)) };
+            e.eqtb.assign_box(k, node, global);
+            Ok(())
+        })?
+    });
     nat!(lua, n, "wrap_hpack", |args: Variadic<Value>| -> Result<Variadic<UdValue>, String> {
         crate::lua_node_pack::lua_pack(&args, true)
     });
@@ -2019,4 +2078,12 @@ impl Engine {
             UdValue::Boolean(true),
         ])
     }
+}
+
+/// `direct_get_box_id` + `direct_check_index_range`: a box register number.
+fn box_register(v: &Value, what: &str) -> Result<u16, String> {
+    let Some(k) = v.as_integer() else {
+        return Err("argument must be a string or a number".to_string());
+    };
+    u16::try_from(k).map_err(|_| format!("incorrect index in {what}"))
 }

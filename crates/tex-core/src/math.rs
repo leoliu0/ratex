@@ -2300,6 +2300,11 @@ impl Engine {
         self.mlist_to_hlist_full(list, start, pen, false)
     }
 
+    /// `node.mlist_to_hlist` (Lua): convert the math nodes of `list`.
+    pub(crate) fn lua_mlist_to_hlist(&mut self, list: &[Node], style: GStyle, pen: bool) -> NodeList {
+        self.mlist_to_hlist_pen(list, style, pen)
+    }
+
     /// `lr_body`: the list is the inside of a `\left...\right` group, so a
     /// close noad (the right delimiter) follows it for spacing purposes
     fn mlist_to_hlist_full(

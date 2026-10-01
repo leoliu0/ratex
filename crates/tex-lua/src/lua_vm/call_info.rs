@@ -37,9 +37,10 @@ pub mod call_status {
     /// that must be handled in the startfunc loop before dispatching.
     pub const CIST_PENDING_FINISH: u32 = 1 << 27;
 
-    /// xpcall: this C frame is for an xpcall call.
-    /// The error handler is stored at func_pos (base - func_offset),
-    /// and the actual body starts at func_pos + 1.
+    /// xpcall: this C frame is for an xpcall call. The stdlib xpcall keeps
+    /// f at func_pos + 1 and the handler at func_pos + 2; the protected call
+    /// runs on a copy of f at func_pos + 3 (C API frames record their slots
+    /// in `c_k_*`).
     pub const CIST_XPCALL: u32 = 1 << 28;
 
     /// Yieldable unprotected call (dofile body yielded)

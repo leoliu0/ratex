@@ -3886,7 +3886,8 @@ impl LuaState {
                             if has_c_continuation && pcall_ci.c_k_error_func_index != u32::MAX {
                                 pcall_ci.c_k_error_func_index as usize
                             } else {
-                                pcall_func_pos
+                                // stdlib xpcall keeps the handler at its second argument
+                                pcall_func_pos + 2
                             };
                         self.stack_get(handler_pos).unwrap_or_default()
                     } else {

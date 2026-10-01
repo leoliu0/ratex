@@ -524,37 +524,22 @@ fn lua_xpcall(l: &mut LuaState) -> LuaResult<usize> {
         .current_frame()
         .map(|f| f.base)
         .ok_or(LuaError::RuntimeError)?;
-    let xpcall_func_pos = l
-        .current_frame()
-        .map(|f| f.base - f.func_offset as usize)
-        .ok_or(LuaError::RuntimeError)?;
 
-    // Rearrange stack for xpcall_stack_based:
-    // We want [handler, f, arg1, arg2, ...] starting at xpcall_func_pos.
-    //   xpcall_func_pos = handler (was xpcall function itself, overwrite)
-    //   xpcall_func_pos+1 = f (the function to protect)
-    //   xpcall_func_pos+2.. = args
-    //
-    // Currently: xpcall_func_pos=xpcall, base+0=f, base+1=msgh, base+2..=args
-    // We need: xpcall_func_pos=msgh, xpcall_func_pos+1=f, xpcall_func_pos+2..=args
-    let msgh = l.stack_get(base + 1).unwrap_or_default();
-    let f = l.stack_get(base).unwrap_or_default();
-
-    // Store handler at xpcall_func_pos
-    l.stack_set(xpcall_func_pos, msgh)?;
-
-    // Store function at xpcall_func_pos+1
-    l.stack_set(xpcall_func_pos + 1, f)?;
-
-    // Shift args to xpcall_func_pos+2..
+    // Like luaB_xpcall, leave the frame's own slots alone (a traceback then
+    // names this frame 'xpcall'): the handler stays at base+1 and a copy of f
+    // followed by the arguments goes at base+2.. (finish_c_frame and the
+    // coroutine recovery path rely on this layout).
     let call_arg_count = arg_count - 2;
-    for i in 0..call_arg_count {
-        let val = l.stack_get(base + 2 + i).unwrap_or_default();
-        l.stack_set(xpcall_func_pos + 2 + i, val)?;
-    }
-    let func_idx = xpcall_func_pos + 1;
-    let handler_idx = xpcall_func_pos;
+    let func_idx = base + 2;
+    let handler_idx = base + 1;
     l.set_top(func_idx + 1 + call_arg_count)?;
+    {
+        let stack = l.stack_mut();
+        for i in (0..call_arg_count).rev() {
+            stack[func_idx + 1 + i] = stack[func_idx + i];
+        }
+        stack[func_idx] = stack[base];
+    }
 
     // Mark current (xpcall's) C frame with CIST_XPCALL
     // so finish_c_frame knows to apply the error handler on error recovery.
@@ -569,15 +554,8 @@ fn lua_xpcall(l: &mut LuaState) -> LuaResult<usize> {
     let (success, result_count) = l.xpcall_stack_based(func_idx, call_arg_count, handler_idx)?;
 
     if success {
-        // Results at func_idx..func_idx+result_count — shift right by 1 for boolean
-        l.push_value(LuaValue::nil())?; // extend stack by 1
-        {
-            let stack = l.stack_mut();
-            for i in (0..result_count).rev() {
-                stack[func_idx + 1 + i] = stack[func_idx + i];
-            }
-            stack[func_idx] = LuaValue::boolean(true);
-        }
+        // Results at func_idx..func_idx+result_count; true goes just below.
+        l.stack_mut()[func_idx - 1] = LuaValue::boolean(true);
         Ok(result_count + 1)
     } else {
         // Error — handler already called by xpcall_stack_based, result is at func_idx

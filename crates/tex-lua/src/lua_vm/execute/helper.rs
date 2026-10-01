@@ -666,7 +666,8 @@ fn finish_c_frame(lua_state: &mut LuaState, ci: &mut CallInfo) -> LuaResult<()> 
                 let handler_pos = if ci.c_k_function != 0 && ci.c_k_error_func_index != u32::MAX {
                     ci.c_k_error_func_index as usize
                 } else {
-                    pcall_func_pos
+                    // stdlib xpcall keeps the handler at its second argument
+                    pcall_func_pos + 2
                 };
                 lua_state.stack_get(handler_pos).unwrap_or_default()
             } else {
@@ -747,14 +748,19 @@ fn finish_c_frame(lua_state: &mut LuaState, ci: &mut CallInfo) -> LuaResult<()> 
                 }
             }
         } else {
-            // pcall body completed successfully after yield.
-            // Body's return values are at pcall_func_pos + 1 … top-1.
+            // pcall body completed successfully after yield. The body's
+            // results start at the protected function's slot: pcall_func_pos
+            // + 1 for pcall, + 3 for xpcall (f, msgh, then the copy of f).
             // We need: [true, res1, res2, ...] starting at pcall_func_pos.
             let stack_top = lua_state.get_top();
-            let body_results_start = pcall_func_pos + 1;
+            let body_results_start = pcall_func_pos + if is_xpcall { 3 } else { 1 };
             let body_nres = stack_top.saturating_sub(body_results_start);
-
-            // Place true at pcall_func_pos (body results already at +1)
+            if body_results_start != pcall_func_pos + 1 {
+                lua_state.stack_mut().copy_within(
+                    body_results_start..body_results_start + body_nres,
+                    pcall_func_pos + 1,
+                );
+            }
             lua_state.stack_set(pcall_func_pos, LuaValue::boolean(true))?;
 
             let n = 1 + body_nres; // total results: true + body results

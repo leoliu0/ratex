@@ -354,6 +354,30 @@ fn concat_error_names_the_operand_that_is_not_a_string() {
 }
 
 #[test]
+fn xpcall_keeps_its_frame_and_survives_yields() {
+    run_both(
+        r#"
+        local _, tb = xpcall(function() error("x") end, debug.traceback)
+        assert(tb:find("'xpcall'") and not tb:find("traceback'"), tb)
+        local co = coroutine.wrap(function()
+            return xpcall(function(a) local b = coroutine.yield(a) return b, "z" end,
+                debug.traceback, "y")
+        end)
+        assert(co() == "y")
+        local ok, b, z = co("w")
+        assert(ok == true and b == "w" and z == "z")
+        co = coroutine.wrap(function()
+            return xpcall(function() coroutine.yield(1) error("e", 0) end,
+                function(m) return "H" .. m end)
+        end)
+        co()
+        local ok2, m = co()
+        assert(ok2 == false and m == "He", tostring(m))
+        "#,
+    );
+}
+
+#[test]
 fn functions_called_from_library_code_cannot_yield() {
     run_both(
         r#"

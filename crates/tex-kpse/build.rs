@@ -180,7 +180,7 @@ fn main() {
 
     // Every directory of the archive (with all ancestors), sorted, and the
     // directory of each member in index order: the virtual TDS tree that
-    // `<embedded>/…` paths expose.
+    // `/<embedded>/…` paths expose.
     let mut directories: BTreeMap<String, usize> = BTreeMap::new();
     directories.insert(String::new(), 0);
     for directory in member_dirs.values() {

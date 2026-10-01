@@ -813,8 +813,8 @@ pub(crate) fn bytes_of(s: &LuaString) -> Vec<u8> {
 
 impl Engine {
     /// `kpse.find_file(name, format)`: a disk path from the TeX search
-    /// path, else the archive member name of an embedded file (readable by
-    /// `io.open` through the embedded-file layer installed in Lua).
+    /// path, else the path of an embedded file in the archive's virtual
+    /// tree (readable by `io.open`, see `lua_sys_embedded.lua`).
     fn lua_kpse_find(&mut self, name: &str, format: tex_kpse::Format) -> Option<String> {
         if let Some(path) = self.font_loader.kpse.find(name, format) {
             return Some(path.to_string_lossy().into_owned());
@@ -822,19 +822,16 @@ impl Engine {
         tex_kpse::Kpse::candidates(name, format)
             .into_iter()
             .find(|candidate| tex_kpse::has_embedded_package(candidate))
-            .map(|member| format!("{EMBEDDED_PATH_PREFIX}{member}"))
+            .and_then(|member| tex_kpse::embedded_tree::member_path(&member))
     }
 }
 
-/// Path prefix under which `kpse.find_file` reports embedded archive
-/// members; the Lua `io` layer reads such paths from the archive.
-const EMBEDDED_PATH_PREFIX: &str = "<embedded>/";
-
 /// Read a file that `kpse.find_file` reported.
 fn read_found_file(path: &str) -> Option<Vec<u8>> {
-    match path.strip_prefix(EMBEDDED_PATH_PREFIX) {
-        Some(member) => tex_kpse::get_embedded_package(member),
-        None => tex_kpse::fs::read(path).ok(),
+    if tex_kpse::embedded_tree::is_embedded_path(path) {
+        tex_kpse::embedded_tree::read(path)
+    } else {
+        tex_kpse::fs::read(path).ok()
     }
 }
 

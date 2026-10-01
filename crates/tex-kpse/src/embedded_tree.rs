@@ -1,17 +1,20 @@
 //! The embedded package archive as a read-only virtual TDS tree.
 //!
 //! The archive is looked up by basename, but every member also remembers its
-//! directory below the TDS root. Paths below [`ROOT`] (`<embedded>/fonts/
+//! directory below the TDS root. Paths below [`ROOT`] (`/<embedded>/fonts/
 //! opentype/public/lm/lmroman10-regular.otf`, …) address that tree: it can be
 //! statted, read and listed like a directory hierarchy, so programs that scan
 //! font directories (luaotfload's names database) or open a file reported by
-//! `kpse.find_file` need not know the files live inside the executable.
+//! `kpse.find_file` need not know the files live inside the executable. The
+//! root is an absolute path (no directory of that name exists on any real
+//! system) so that code resolving relative names against the working
+//! directory never mistakes it for one.
 
 use super::*;
 use std::sync::LazyLock;
 
 /// Root of the virtual tree.
-pub const ROOT: &str = "<embedded>";
+pub const ROOT: &str = "/<embedded>";
 
 /// Modification time (seconds since the epoch) every embedded entry reports:
 /// the archive's pinned `generated_at` stamp, so that anything derived from

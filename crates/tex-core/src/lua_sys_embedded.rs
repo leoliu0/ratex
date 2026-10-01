@@ -1,4 +1,4 @@
-//! Reading the embedded archive's virtual tree (`<embedded>/…`, see
+//! Reading the embedded archive's virtual tree (`/<embedded>/…`, see
 //! `tex_kpse::embedded_tree`) from Lua: the natives behind the `io.open`,
 //! `io.lines`, `loadfile` and `dofile` wrappers of `lua_sys_embedded.lua`.
 

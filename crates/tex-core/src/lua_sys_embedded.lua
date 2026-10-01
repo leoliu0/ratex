@@ -1,5 +1,5 @@
 -- Reading files of the embedded archive through the standard `io` and
--- `loadfile` functions. Paths below `<embedded>/` (what `kpse.find_file`
+-- `loadfile` functions. Paths below `/<embedded>/` (what `kpse.find_file`
 -- reports for bundled files) denote a read-only virtual TDS tree; the
 -- handles returned for them behave like read-only `io.open` handles of
 -- an ordinary file (so `fio`, `lfs.lock`, ... accept them).

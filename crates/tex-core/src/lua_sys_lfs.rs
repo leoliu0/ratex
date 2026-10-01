@@ -23,7 +23,7 @@ struct DirState {
     entries: Box<dyn Iterator<Item = Vec<u8>>>,
 }
 
-/// The embedded archive's virtual tree (`<embedded>/…`), if `bytes` names a
+/// The embedded archive's virtual tree (`/<embedded>/…`), if `bytes` names a
 /// path in it.
 fn embedded_path(bytes: &[u8]) -> Option<&str> {
     std::str::from_utf8(bytes).ok().filter(|text| tex_kpse::embedded_tree::is_embedded_path(text))

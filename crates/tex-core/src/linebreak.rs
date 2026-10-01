@@ -465,17 +465,19 @@ impl Engine {
             if !params.left_skip.is_zero_glue() {
                 inner.push(Node::Glue(params.left_skip));
             }
+            let mut pre_adj: NodeList = Vec::new();
             let mut post_adj: NodeList = Vec::new();
             for n in list.into_iter() {
-                if let Node::VAdjust(items) = n {
-                    post_adj.extend(items);
-                } else {
-                    inner.push(n);
+                match n {
+                    Node::VAdjust(items) => post_adj.extend(items),
+                    Node::PreAdjust(items) => pre_adj.extend(items),
+                    n => inner.push(n),
                 }
             }
             inner.push(Node::Glue(params.right_skip.clone()));
             let line = crate::boxes::hpack(inner, None, crate::boxes::HBOX, &self.eqtb).node;
-            let mut vlines = vec![line];
+            let mut vlines = pre_adj;
+            vlines.push(line);
             vlines.extend(post_adj);
             let node = crate::boxes::vpack(vlines, None, crate::boxes::VBOX, &self.eqtb).node;
             let record = ParagraphLayoutRecord {
@@ -740,6 +742,7 @@ impl Engine {
                     | Node::Penalty(_)
                     | Node::Ins { .. }
                     | Node::VAdjust(_)
+                    | Node::PreAdjust(_)
                     | Node::Mark { .. },
                 ) => break,
                 // etex.ch: `math_node: if subtype(s)>=L_code then goto done4`
@@ -1747,6 +1750,7 @@ impl Engine {
             }
             // gather live nodes strictly before the breakpoint node
             let mut post_adj: NodeList = Vec::new();
+            let mut pre_adj: NodeList = Vec::new();
             while i < j {
                 if i < dead_until {
                     i += 1;
@@ -1756,6 +1760,12 @@ impl Engine {
                     // tex.web §866 post_line_break: adjustment material joins the
                     // vertical list right after the line box containing it
                     post_adj.append(items);
+                    i += 1;
+                    continue;
+                }
+                if let Node::PreAdjust(items) = &mut list[i] {
+                    // pdftex.web: `\vadjust pre` material goes in front of the line
+                    pre_adj.append(items);
                     i += 1;
                     continue;
                 }
@@ -1981,6 +1991,12 @@ impl Engine {
             // spacing between line boxes)
             if !lines.is_empty() {
                 lines.push(Node::Glue(Glue::zero()));
+            }
+            // pdftex.web <Append the new box to the current vertical list>:
+            // the `\vadjust pre` material precedes the box (and its interline
+            // glue, which is measured against the previous line)
+            if !pre_adj.is_empty() {
+                lines.push(Node::VAdjust(pre_adj));
             }
             lines.push(r.node);
             if !post_adj.is_empty() {

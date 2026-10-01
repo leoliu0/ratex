@@ -264,3 +264,268 @@ fn improper_discretionary_lists_show_the_deleted_sublist() {
         e.log
     );
 }
+
+/// Every `{entering ...}` / `{leaving ...}` event of a transcript, also when
+/// it follows other text on its line.
+fn group_events(log: &str) -> Vec<&str> {
+    let mut events = Vec::new();
+    let mut rest = log;
+    while let Some(i) = rest.find("{entering ").into_iter().chain(rest.find("{leaving ")).min() {
+        let tail = &rest[i..];
+        let end = tail.find('}').map_or(tail.len(), |e| e + 1);
+        events.push(&tail[..end]);
+        rest = &tail[end..];
+    }
+    events
+}
+
+/// tex.web §1192 math_left_right: `\right` and `\middle` outside a
+/// `\left...\right` group are "Extra" commands that leave the math shift
+/// group open; inside a `{...}` group they close that group first
+/// (off_save), and nothing closes the formula.
+#[test]
+fn stray_right_and_middle_are_extra_and_keep_the_formula_open() {
+    let e = run(concat!(
+        "\\scrollmode\\catcode`\\$=3 \\tracinggroups=1 \\tracingonline=1\n",
+        "\\setbox1\\hbox{$x\\right)\\middle(y$}\n",
+        "\\setbox1\\hbox{${\\right)}$}\n",
+        "\\message{[\\the\\currentgrouplevel]}\n",
+        "\\end\n"
+    ));
+    let expected = [
+        "{entering hbox group (level 1) at line 3}",
+        "{entering math shift group (level 2) at line 3}",
+        "{leaving math shift group (level 2) entered at line 3}",
+        "{leaving hbox group (level 1) entered at line 3}",
+        "{entering hbox group (level 1) at line 4}",
+        "{entering math shift group (level 2) at line 4}",
+        "{entering math group (level 3) at line 4}",
+        "{leaving math group (level 3) entered at line 4}",
+        "{leaving math shift group (level 2) entered at line 4}",
+        "{leaving hbox group (level 1) entered at line 4}",
+    ];
+    assert_eq!(group_events(&e.log), expected, "{}", e.log);
+    assert_eq!(e.log.matches("Extra \\right").count(), 2, "{}", e.log);
+    assert!(e.log.contains("Extra \\middle"), "{}", e.log);
+    assert!(e.log.contains("Missing } inserted"), "{}", e.log);
+    assert!(e.log.contains("[0]"), "{}", e.log);
+}
+
+/// tex.web build_choices: every `\mathchoice` part is a math choice group
+/// pushed before `scan_left_brace` reads its `{`, so a part whose brace is
+/// on the next line is entered on the line of the previous part. A part that
+/// does not start with `{` gets "Missing { inserted" and still opens its
+/// group, and an `\endgroup` inside a part closes that part first.
+#[test]
+fn mathchoice_parts_open_their_group_before_reading_the_brace() {
+    let e = run(concat!(
+        "\\scrollmode\\catcode`\\$=3 \\tracinggroups=1 \\tracingonline=1\n",
+        "\\setbox1\\hbox{$\\mathchoice{a}{b}{c}\n",
+        "{d}$}\n",
+        "\\setbox1\\hbox{$\\mathchoice{a}{b}{c}\\relax\n",
+        "d}$}\n",
+        "\\message{[\\the\\currentgrouplevel]}\n",
+        "\\end\n"
+    ));
+    let mut expected = vec![
+        "{entering hbox group (level 1) at line 3}".to_string(),
+        "{entering math shift group (level 2) at line 3}".to_string(),
+    ];
+    for _ in 0..4 {
+        expected.push("{entering math choice group (level 3) at line 3}".into());
+        expected.push("{leaving math choice group (level 3) entered at line 3}".into());
+    }
+    expected.push("{leaving math shift group (level 2) entered at line 3}".into());
+    expected.push("{leaving hbox group (level 1) entered at line 3}".into());
+    expected.push("{entering hbox group (level 1) at line 5}".into());
+    expected.push("{entering math shift group (level 2) at line 5}".into());
+    for _ in 0..4 {
+        expected.push("{entering math choice group (level 3) at line 5}".into());
+        expected.push("{leaving math choice group (level 3) entered at line 5}".into());
+    }
+    expected.push("{leaving math shift group (level 2) entered at line 5}".into());
+    expected.push("{leaving hbox group (level 1) entered at line 5}".into());
+    assert_eq!(group_events(&e.log), expected, "{}", e.log);
+    assert_eq!(e.log.matches("Missing { inserted").count(), 1, "{}", e.log);
+
+    let e = run(concat!(
+        "\\scrollmode\\catcode`\\$=3 \\tracinggroups=1 \\tracingonline=1\n",
+        "\\setbox1\\hbox{$\\mathchoice{a}{b\\endgroup}{c}{d}$}\n",
+        "\\end\n"
+    ));
+    let events = group_events(&e.log);
+    assert_eq!(
+        &events[..12],
+        [
+            "{entering hbox group (level 1) at line 3}",
+            "{entering math shift group (level 2) at line 3}",
+            "{entering math choice group (level 3) at line 3}",
+            "{leaving math choice group (level 3) entered at line 3}",
+            "{entering math choice group (level 3) at line 3}",
+            "{leaving math choice group (level 3) entered at line 3}",
+            "{entering math choice group (level 3) at line 3}",
+            "{leaving math choice group (level 3) entered at line 3}",
+            "{entering math choice group (level 3) at line 3}",
+            "{leaving math choice group (level 3) entered at line 3}",
+            "{leaving math shift group (level 2) entered at line 3}",
+            "{leaving hbox group (level 1) entered at line 3}",
+        ],
+        "{}",
+        e.log
+    );
+    assert!(e.log.contains("Extra \\endgroup"), "{}", e.log);
+}
+
+/// tex.web start_eq_no and math_left_right: the tag of `\eqno` is typeset in
+/// a math shift group of its own (nested in the display's, undoing its
+/// assignments), `\middle` ends the `\left` group and begins another, and
+/// neither `\eqno` nor `\halign` is legal inside the tag or a brace group.
+#[test]
+fn eqno_and_middle_have_their_own_groups() {
+    let e = run(concat!(
+        "\\scrollmode\\catcode`\\$=3 \\tracinggroups=1 \\tracingonline=1\n",
+        "\\count1=1 \\hsize=100pt\n",
+        "\\setbox1\\vbox{\\noindent$$ x\\eqno \\count1=2 \\showgroups y $$ \\par}\n",
+        "\\message{[\\the\\count1]}\n",
+        "\\setbox1\\hbox{$\\left. \\count1=5 x\\middle. \\showgroups y\\middle. \\message{[\\the\\count1]} \\right.$}\n",
+        "\\message{[\\the\\count1]}\n",
+        "\\setbox1\\vbox{\\noindent$$ x\\eqno a\\eqno b $$\\par}\n",
+        "\\setbox1\\vbox{\\noindent$$ x\\leqno a\\halign{#\\cr}$$\\par}\n",
+        "\\setbox1\\vbox{\\noindent$$ x{\\eqno a}$$\\par}\n",
+        "\\end\n"
+    ));
+    let expected = [
+        "{entering vbox group (level 1) at line 4}",
+        "{entering math shift group (level 2) at line 4}",
+        "{entering math shift group (level 3) at line 4}",
+        "{leaving math shift group (level 3) entered at line 4}",
+        "{leaving math shift group (level 2) entered at line 4}",
+        "{leaving vbox group (level 1) entered at line 4}",
+        "{entering hbox group (level 1) at line 6}",
+        "{entering math shift group (level 2) at line 6}",
+        "{entering math left group (level 3) at line 6}",
+        "{leaving math left group (level 3) entered at line 6}",
+        "{entering math left group (level 3) at line 6}",
+        "{leaving math left group (level 3) entered at line 6}",
+        "{entering math left group (level 3) at line 6}",
+        "{leaving math left group (level 3) entered at line 6}",
+        "{leaving math shift group (level 2) entered at line 6}",
+        "{leaving hbox group (level 1) entered at line 6}",
+        "{entering vbox group (level 1) at line 8}",
+        "{entering math shift group (level 2) at line 8}",
+        "{entering math shift group (level 3) at line 8}",
+        "{leaving math shift group (level 3) entered at line 8}",
+        "{leaving math shift group (level 2) entered at line 8}",
+        "{leaving vbox group (level 1) entered at line 8}",
+        "{entering vbox group (level 1) at line 9}",
+        "{entering math shift group (level 2) at line 9}",
+        "{entering math shift group (level 3) at line 9}",
+        "{entering math group (level 4) at line 9}",
+        "{leaving math group (level 4) entered at line 9}",
+        "{leaving math shift group (level 3) entered at line 9}",
+        "{leaving math shift group (level 2) entered at line 9}",
+        "{leaving vbox group (level 1) entered at line 9}",
+        "{entering vbox group (level 1) at line 10}",
+        "{entering math shift group (level 2) at line 10}",
+        "{entering math group (level 3) at line 10}",
+        "{leaving math group (level 3) entered at line 10}",
+        "{leaving math shift group (level 2) entered at line 10}",
+        "{leaving vbox group (level 1) entered at line 10}",
+    ];
+    assert_eq!(group_events(&e.log), expected, "{}", e.log);
+    // \showgroups: the tag is the \eqno group of the display, the second
+    // segment of the \left group is the \middle one
+    assert!(
+        e.log.contains(concat!(
+            "### math shift group (level 3) entered at line 4 (\\eqno)\n",
+            "### math shift group (level 2) entered at line 4 ($$)\n",
+            "### vbox group (level 1) entered at line 4 (\\setbox1=\\vbox{)\n"
+        )),
+        "{}",
+        e.log
+    );
+    assert!(
+        e.log.contains("### math left group (level 3) entered at line 6 (\\middle)\n"),
+        "{}",
+        e.log
+    );
+    // the tag's and the \left segments' assignments are local to them
+    assert_eq!(e.log.matches("[1]").count(), 3, "{}", e.log);
+    assert!(!e.log.contains("[2]") && !e.log.contains("[5]"), "{}", e.log);
+    assert_eq!(e.log.matches("You can't use `\\eqno' in math mode").count(), 2, "{}", e.log);
+    assert!(e.log.contains("You can't use `\\halign' in math mode"), "{}", e.log);
+}
+
+/// tex.web head_for_vmode (hmode+stop): `\end` and `\dump` inside an `\hbox`
+/// close the box ("Missing } inserted") before the job ends.
+#[test]
+fn end_inside_a_box_closes_the_box_first() {
+    let e = run(concat!(
+        "\\scrollmode\\tracinggroups=1 \\tracingonline=1\n",
+        "\\setbox1\\hbox{a\\end}\n",
+        "\\message{[\\the\\currentgrouplevel]}\n",
+        "\\end\n"
+    ));
+    assert_eq!(
+        group_events(&e.log),
+        [
+            "{entering hbox group (level 1) at line 3}",
+            "{leaving hbox group (level 1) entered at line 3}",
+        ],
+        "{}",
+        e.log
+    );
+    assert!(e.log.contains("Missing } inserted"), "{}", e.log);
+}
+
+/// pdftex.web `\vadjust pre`: the material goes in front of the line (or
+/// display, or alignment row) that holds it, `\vadjust` stays after it; the
+/// group is printed as `\insert1`, the node as `\vadjust pre`, and `\vadjust`
+/// is illegal in vertical modes.
+#[test]
+fn vadjust_pre_migrates_in_front_of_its_line() {
+    let e = run(concat!(
+        "\\scrollmode\\tracinggroups=1 \\tracingonline=1\n",
+        "\\hsize=100pt \\parindent=0pt \\baselineskip=12pt \\parfillskip=0pt \\showboxbreadth=100 \\showboxdepth=100\n",
+        "\\setbox1\\vbox{\\noindent\\vrule width 1pt height 1pt\\vadjust pre{\\kern1pt}",
+        "\\vrule width 2pt height 2pt\\vadjust{\\kern2pt}",
+        "\\vrule width 3pt height 3pt\\vadjust pre{\\kern3pt}\\par}\n",
+        "\\showbox1\n",
+        "\\setbox2\\hbox{\\vrule\\vadjust pre{\\showgroups}\\vrule\\vadjust{\\showgroups}\\showlists}\n",
+        "\\showbox2\n",
+        "\\setbox4\\vbox{\\halign{#\\vadjust pre{\\kern5pt}\\cr \\vrule width 1pt height 1pt\\cr",
+        "\\vrule width 2pt height 2pt\\vadjust{\\kern6pt}\\cr}}\n",
+        "\\showbox4\n",
+        "\\setbox3\\vbox{\\vadjust pre{\\kern1pt}}\n",
+        "\\end\n"
+    ));
+    let log = &e.log;
+    // the paragraph: both pre kerns (in source order) precede the line
+    assert!(
+        log.contains(concat!(
+            "> \\box1=\n\\vbox(9.0+0.0)x100.0\n.\\kern 1.0\n.\\kern 3.0\n.\\hbox(3.0+0.0)x100.0\n",
+            "..\\rule(1.0+*)x1.0\n..\\rule(2.0+*)x2.0\n..\\rule(3.0+*)x3.0\n..\\penalty 10000\n",
+            "..\\glue(\\parfillskip) 0.0\n..\\glue(\\rightskip) 0.0\n.\\kern 2.0\n"
+        )),
+        "{log}"
+    );
+    // inside an hbox the nodes stay, and the group shows the pre flag
+    assert!(log.contains("### insert group (level 2) entered at line 6 (\\insert1{)"), "{log}");
+    assert!(log.contains("### insert group (level 2) entered at line 6 (\\insert0{)"), "{log}");
+    assert!(
+        log.contains("\\rule(*+*)x0.4\n\\vadjust pre \n\\rule(*+*)x0.4\n\\vadjust\nspacefactor 1000"),
+        "{log}"
+    );
+    // each alignment row gets its pre material in front of its interline glue
+    assert!(
+        log.contains(concat!(
+            "> \\box4=\n\\vbox(29.0+0.0)x2.0\n.\\kern 5.0\n.\\hbox(1.0+0.0)x2.0\n",
+            "..\\glue(\\tabskip) 0.0\n..\\hbox(1.0+0.0)x2.0\n...\\rule(1.0+*)x1.0\n",
+            "..\\glue(\\tabskip) 0.0\n.\\kern 5.0\n.\\glue(\\baselineskip) 10.0\n",
+            ".\\hbox(2.0+0.0)x2.0\n..\\glue(\\tabskip) 0.0\n..\\hbox(2.0+0.0)x2.0\n",
+            "...\\rule(2.0+*)x2.0\n..\\glue(\\tabskip) 0.0\n.\\kern 6.0\n"
+        )),
+        "{log}"
+    );
+    assert!(log.contains("You can't use `\\vadjust' in internal vertical mode"), "{log}");
+}

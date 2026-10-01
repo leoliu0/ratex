@@ -65,6 +65,9 @@ impl Engine {
                 return;
             }
         }
+        // events queued by the last command (a group closed by `\end`)
+        // belong to the transcript like any other output
+        self.flush_trace_events();
     }
     pub fn dispatch(&mut self, t: Token) {
         if self.output_pending {

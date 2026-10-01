@@ -12,6 +12,8 @@ use crate::token::{CsId, Token};
 pub const RULE_FILL: i32 = i32::MIN; // sentinel: rule dimension from context
 /// box_kinds marker for a \discretionary part group (tex.web disc_group)
 const DISC_GROUP_KIND: u8 = 10;
+/// box_kinds marker for a `\vadjust pre` group (kind 9 is plain `\vadjust`)
+const VADJUST_PRE_KIND: u8 = 11;
 
 /// a matching lig/kern program instruction (tex.web §545)
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1140,14 +1142,15 @@ impl Engine {
                 1 => gc::VBOX,
                 2 => gc::VTOP,
                 3 => gc::VCENTER,
-                9 => gc::INSERT,
+                9 | VADJUST_PRE_KIND => gc::INSERT,
                 _ => gc::HBOX,
             };
             GroupMeta {
                 code,
                 context,
                 spec: match (kind, target) {
-                    (9, _) => 255,
+                    (9, _) => 0,
+                    (VADJUST_PRE_KIND, _) => 1,
                     (_, Some((d, _))) => d,
                     _ => 0,
                 },
@@ -1183,7 +1186,7 @@ impl Engine {
                     self.push_tokens_named(toks, "<everyvbox>");
                 }
             }
-            9 => {
+            9 | VADJUST_PRE_KIND => {
                 self.mode = Mode::InternalVertical;
                 self.prev_depth = self.ignore_depth();
             }
@@ -1208,7 +1211,7 @@ impl Engine {
         let kind = self.box_kinds.pop().unwrap_or(0);
         // packed lines join the vbox instead of being vpack-discarded
 
-        if matches!(kind, 1 | 2 | 3 | 8 | 9) && self.mode == Mode::Horizontal {
+        if matches!(kind, 1 | 2 | 3 | 8 | 9 | VADJUST_PRE_KIND) && self.mode == Mode::Horizontal {
             self.par_primitive(Token::from_cs(self.ids.par));
         }
         let target = self.box_targets.pop().flatten();
@@ -1254,17 +1257,21 @@ impl Engine {
             self.cur_list = outer_list;
             return;
         }
-        // \vadjust (kind 9): no packing — capture the material as an
-        // adjustment attached to the enclosing hlist; the line breaker
-        // migrates it into the vertical list after the line containing it.
-        if kind == 9 {
+        // \vadjust (kind 9) and \vadjust pre (kind VADJUST_PRE_KIND): no
+        // packing — capture the material as an adjustment attached to the
+        // enclosing hlist; the line breaker migrates it into the vertical
+        // list after (before, for `pre`) the line containing it.
+        if kind == 9 || kind == VADJUST_PRE_KIND {
             self.cur_list = outer_list;
-            if outer_mode.is_v() {
-                self.cur_list.extend(inner);
-            } else if outer_mode.is_m() {
-                self.append_mlist_node(Node::VAdjust(inner));
+            let adjust = if kind == 9 {
+                Node::VAdjust(inner)
             } else {
-                self.cur_list.push(Node::VAdjust(inner));
+                Node::PreAdjust(inner)
+            };
+            if outer_mode.is_m() {
+                self.append_mlist_node(adjust);
+            } else {
+                self.cur_list.push(adjust);
             }
             return;
         }
@@ -2002,7 +2009,7 @@ impl Engine {
             Some(Node::Rule { .. }) => 3,
             Some(Node::Ins { .. }) => 4,
             Some(Node::Mark { .. }) => 5,
-            Some(Node::Adj(_)) | Some(Node::VAdjust(_)) => 6,
+            Some(Node::Adj(_)) | Some(Node::VAdjust(_)) | Some(Node::PreAdjust(_)) => 6,
             Some(Node::Ligature { .. }) => 7,
             Some(Node::Disc(_)) => 8,
             Some(Node::Whatsit(_)) => 9,
@@ -2335,7 +2342,6 @@ impl Engine {
         self.push_group_level_coded(
             LevelType::Box,
             crate::eqtb::GroupMeta {
-                spec: i32::from(n),
                 exactly: target.map_or(true, |(_, spread)| !spread),
                 ..crate::eqtb::GroupMeta::new(crate::eqtb::group_code::INSERT)
             },
@@ -2362,10 +2368,11 @@ impl Engine {
     /// mode and NOT packed — the resulting vlist migrates into the enclosing
     /// vertical list right after the line containing the adjustment (tex.web
     /// post_line_break). Modeled as a box group (kind 9) that end_box
-    /// captures. [pre] is treated as post (latex.ltx never uses pre).
+    /// captures; `pre` (pdftex.web begin_insert_or_adjust) selects the
+    /// group that migrates in front of the line instead.
     pub fn append_vadjust(&mut self) {
-        let _pre = self.scan_keyword(b"pre");
-        self.begin_box(9);
+        let pre = self.scan_keyword(b"pre");
+        self.begin_box(if pre { VADJUST_PRE_KIND } else { 9 });
     }
 
     pub fn append_mark(&mut self, class: i32, toks: Vec<Token>) {

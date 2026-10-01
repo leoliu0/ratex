@@ -318,6 +318,8 @@ impl Engine {
             LastKern | LastPenalty | LastSkip => self.report_illegal_case(id),
             VSplit => self.do_vsplit(),
             Insert => self.do_insert(),
+            // tex.web §1098: vmode+vadjust is a forbidden case
+            VAdjust if self.mode.is_v() => self.report_illegal_case(id),
             VAdjust => self.append_vadjust(),
             MarkPrim | MarksClass => {
                 let class = if p == MarksClass {
@@ -484,6 +486,15 @@ impl Engine {
                 // tex.web `privileged`: \end and \dump belong to the
                 // outer vertical mode
                 self.report_illegal_case(id);
+            }
+            // tex.web head_for_vmode (hmode+stop): a restricted box cannot
+            // end the job, so its group is closed first
+            Dump | End if self.mode == Mode::RestrictedHorizontal => {
+                self.off_save(Token::from_cs(id))
+            }
+            Dump if self.mode == Mode::Horizontal => {
+                self.push_token(Token::from_cs(id));
+                self.par_primitive(Token::from_cs(self.ids.par));
             }
             Dump => {
                 if !self.ini_mode {
@@ -854,9 +865,18 @@ impl Engine {
                 }
             }
             EqNo | LeqNo => {
-                // tex.web §21734: mmode+eq_no is legal only in display math
-                if self.mode == Mode::DisplayMath {
-                    self.start_eq_no(matches!(p, Prim::LeqNo));
+                // tex.web §1140 mmode+eq_no: legal only in display math
+                // (`privileged`), where an open inner group is closed first;
+                // the tag itself is typeset in -mmode, where it is illegal
+                if self.display_math_is_privileged() {
+                    if self.eqtb.cur_group_code() == crate::eqtb::group_code::MATH_SHIFT {
+                        self.start_eq_no(matches!(p, Prim::LeqNo));
+                    } else {
+                        self.off_save(Token::from_cs(id));
+                    }
+                } else if self.mode.is_m() {
+                    let name = self.prim_name(p);
+                    self.error(&format!("You can't use `\\{name}' in math mode"));
                 } else {
                     self.error("You can't use \\eqno here");
                 }
@@ -914,7 +934,7 @@ impl Engine {
                 }
             }
             Right => {
-                if self.mode.is_m() {
+                if self.mode.is_m() && !self.mismatched_right_or_middle(Token::from_cs(id), false) {
                     let command_source = self.current_token_source_mark();
                     let v = self.scan_delim_int();
                     self.right_delim = Some(v);
@@ -923,7 +943,7 @@ impl Engine {
                 }
             }
             Middle => {
-                if self.mode.is_m() {
+                if self.mode.is_m() && !self.mismatched_right_or_middle(Token::from_cs(id), true) {
                     let command_source = self.current_token_source_mark();
                     let v = self.scan_delim_int();
                     let origin = self.math_diagnostic_origin_at(command_source);
@@ -934,6 +954,7 @@ impl Engine {
                         size: 3,
                         origin,
                     });
+                    self.restart_math_left_group();
                 }
             }
             NoLimits | Limits | DisplayLimits => {
@@ -1005,6 +1026,20 @@ impl Engine {
                 }
                 if self.mode == Mode::RestrictedHorizontal {
                     self.off_save(Token::from_cs(id));
+                    return;
+                }
+                if self.mode.is_m() {
+                    // tex.web mmode+halign: `privileged` (display math, not
+                    // the tag of \eqno) and then the display's own group
+                    if self.display_math_is_privileged() {
+                        if self.eqtb.cur_group_code() == crate::eqtb::group_code::MATH_SHIFT {
+                            self.begin_halign();
+                        } else {
+                            self.off_save(Token::from_cs(id));
+                        }
+                    } else {
+                        self.error("You can't use `\\halign' in math mode");
+                    }
                     return;
                 }
                 self.begin_halign();

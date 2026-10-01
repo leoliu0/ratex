@@ -496,6 +496,16 @@ impl Engine {
 
             self.push_group_level_at(crate::eqtb::LevelType::MathShift, math_entry_mark.clone());
             self.display_lr_boxes.push(lr_box);
+            // tex.web init_math order: push_math's \fam, then
+            // \predisplaysize, \predisplaydirection, \displaywidth and
+            // \displayindent (the order \tracingassigns shows)
+            self.eqtb
+                .assign_int_param(crate::prim::IntParam::CurFam, -1, false);
+            self.eqtb.assign_dim_param(
+                crate::prim::DimParam::PreDisplaySize,
+                self.pre_display_size as i32,
+                false,
+            );
             self.eqtb
                 .assign_int_param(IntParam::PreDisplayDirection, lr_direction, false);
             self.eqtb.assign_dim_param(
@@ -508,16 +518,6 @@ impl Engine {
                 self.pre_display_s as i32,
                 false,
             );
-            self.eqtb.assign_dim_param(
-                crate::prim::DimParam::PreDisplaySize,
-                self.pre_display_size as i32,
-                false,
-            );
-
-            // tex.web push_math: eq_word_define(cur_fam_code,-1) — \\fam is
-            // -1 inside every math group, restored at group end
-            self.eqtb
-                .assign_int_param(crate::prim::IntParam::CurFam, -1, false);
             let outer_mode = self.mode;
             self.saved_lists.push((
                 outer_mode,
@@ -576,9 +576,22 @@ impl Engine {
 
     /// tex.web start_eq_no (§21741): \eqno/\leqno in display math parks the
     /// current mlist as the formula; the tag collects into a fresh list
-    /// until the closing display shift
+    /// until the closing display shift. The tag is typeset in its own math
+    /// shift group (`saved(0)` is 1 for \leqno), nested in the display's.
     pub fn start_eq_no(&mut self, leqno: bool) {
         self.flush_math_limits();
+        self.push_group_level_coded(
+            crate::eqtb::LevelType::MathShift,
+            crate::eqtb::GroupMeta {
+                spec: i32::from(leqno),
+                ..crate::eqtb::GroupMeta::new(crate::eqtb::group_code::MATH_SHIFT)
+            },
+        );
+        // tex.web <Go into ordinary math mode>: \fam is -1 in the tag's
+        // group and \everymath runs
+        self.eqtb
+            .assign_int_param(crate::prim::IntParam::CurFam, -1, false);
+        self.run_everymath();
         let formula = self.math_lists.pop().unwrap_or_default();
         self.pending_display_formula = Some(formula);
         self.math_lists.push(crate::boxes::NodeList::new());
@@ -657,6 +670,9 @@ impl Engine {
             // with \eqno the popped list is the tag; TeX checks again for the
             // formula itself after unsaving the tag's group
             if self.eqno_leqno.is_some() {
+                // tex.web after_math: the tag's group ends before the
+                // formula's fonts are checked again
+                self.pop_group();
                 danger = false;
                 if let Some(message) = self.insufficient_math_fonts() {
                     self.error(message);
@@ -1300,6 +1316,55 @@ impl Engine {
         self.math_lists.push(vec![delim_marker(left, 0, origin)]);
     }
 
+    /// tex.web §1192 "Try to recover from mismatched \right": `\right` or
+    /// `\middle` outside a `\left` group. In the math shift group the
+    /// delimiter is scanned and the command ignored; in any other group the
+    /// command closes that group first (off_save). Returns whether the
+    /// command was consumed here.
+    pub(crate) fn mismatched_right_or_middle(&mut self, token: Token, middle: bool) -> bool {
+        use crate::eqtb::group_code;
+        match self.eqtb.cur_group_code() {
+            group_code::MATH_LEFT => false,
+            group_code::MATH_SHIFT => {
+                self.scan_delim_int();
+                self.error(if middle { "Extra \\middle" } else { "Extra \\right" });
+                true
+            }
+            _ => {
+                self.off_save(token);
+                true
+            }
+        }
+    }
+
+    /// tex.web `privileged` for mmode commands (`\eqno`, `\halign`): the
+    /// innermost math list is the display itself. A `{...}` group, a
+    /// `\mathchoice` part, a `\left` group and the tag of `\eqno` each push
+    /// a -mmode list in tex.web; Ratex keeps `Mode::DisplayMath` for them.
+    pub(crate) fn display_math_is_privileged(&self) -> bool {
+        use crate::eqtb::group_code;
+        self.mode == Mode::DisplayMath
+            && self.eqno_leqno.is_none()
+            && !matches!(
+                self.eqtb.cur_group_code(),
+                group_code::MATH | group_code::MATH_CHOICE | group_code::MATH_LEFT
+            )
+    }
+
+    /// tex.web math_left_right for `\middle`: the `\left` group ends (its
+    /// local assignments are undone) and a new math left group begins at
+    /// once; show_save_groups tells the two apart by `spec` 1.
+    pub(crate) fn restart_math_left_group(&mut self) {
+        self.pop_group();
+        self.push_group_level_coded(
+            crate::eqtb::LevelType::MathLeft,
+            crate::eqtb::GroupMeta {
+                spec: 1,
+                ..crate::eqtb::GroupMeta::new(crate::eqtb::group_code::MATH_LEFT)
+            },
+        );
+    }
+
     /// `\right` end of a `\left...\right` group: the inner *raw* math list is
     /// spliced into the enclosing math list, bracketed by boundary markers.
     /// Conversion (including delimiter sizing) happens in one pass later.
@@ -1687,8 +1752,14 @@ impl Engine {
 
     /// Execute tokens up to the matching `}` as a nested math list.
     fn scan_math_group_braced(&mut self, kind: ScanKind) -> NodeList {
-        // tex.web build_choices pushes math_choice_group (13), every other
-        // braced subformula is a math_group (9)
+        let my_level = self.open_math_group(kind);
+        self.scan_math_group_body(my_level)
+    }
+
+    /// Push the group of a braced subformula whose `{` is read. tex.web
+    /// build_choices pushes math_choice_group (13), every other braced
+    /// subformula is a math_group (9).
+    fn open_math_group(&mut self, kind: ScanKind) -> u16 {
         let code = if matches!(kind, ScanKind::Choice) {
             crate::eqtb::group_code::MATH_CHOICE
         } else {
@@ -1699,7 +1770,11 @@ impl Engine {
             crate::eqtb::LevelType::MathGroup,
             crate::eqtb::GroupMeta::new(code),
         );
-        let my_level = self.eqtb.cur_level;
+        self.eqtb.cur_level
+    }
+
+    /// The tokens of the group opened at `my_level`, up to its `}`.
+    fn scan_math_group_body(&mut self, my_level: u16) -> NodeList {
         loop {
             let t = self.get_token();
 
@@ -2194,12 +2269,24 @@ impl Engine {
 
     /// \mathchoice{D}{T}{S}{SS}: scan the four style groups immediately and
     /// attach them as ChoiceAlt bodies of a Choice atom; mlist_to_hlist picks
-    /// the branch matching the current style.
+    /// the branch matching the current style. tex.web build_choices opens
+    /// each part with scan_left_brace, so a part that does not start with
+    /// `{` reports "Missing { inserted" and still opens its group.
     pub fn begin_mathchoice(&mut self) {
         self.append_mlist_node(Node::Choice);
         for _ in 0..4 {
-            self.show.scan_owner = Some(ScanKind::Choice);
-            let body = self.scan_math_group_or_token();
+            self.flush_math_limits();
+            // tex.web build_choices: push_math(math_choice_group) comes
+            // before scan_left_brace, so the group is entered (and traced)
+            // before the next token is read
+            let my_level = self.open_math_group(ScanKind::Choice);
+            self.skip_spaces_relax();
+            let t = self.get_x_raw();
+            if !self.token_is_left_brace(t) {
+                self.error("Missing { inserted");
+                self.push_token(t);
+            }
+            let body = self.scan_math_group_body(my_level);
             self.append_mlist_node(Node::ChoiceAlt { body });
         }
     }

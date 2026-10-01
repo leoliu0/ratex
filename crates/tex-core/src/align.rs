@@ -77,6 +77,20 @@ pub const NOALIGN_SPAN: u16 = u16::MAX;
 /// box_kinds marker for an open alignment cell or \noalign group
 const CELL_GROUP_KIND: u8 = 8;
 
+/// A row's collected adjustment list holds its `\vadjust` material flat and
+/// its `\vadjust pre` material as `PreAdjust` nodes; return (pre, post).
+fn split_pre_adjust(adj: NodeList) -> (NodeList, NodeList) {
+    let mut pre = NodeList::new();
+    let mut post = NodeList::with_capacity(adj.len());
+    for n in adj {
+        match n {
+            Node::PreAdjust(items) => pre.extend(items),
+            other => post.push(other),
+        }
+    }
+    (pre, post)
+}
+
 /// align_state phase encoding (align_state is free for use inside rows:
 /// the dispatcher only tests `align_state > 0` for \span placement, which
 /// matches "a cell is open").
@@ -1197,13 +1211,15 @@ impl Engine {
     fn align_collect_adjustments(&mut self, list: &mut NodeList) {
         let mut i = 0;
         while i < list.len() {
-            if matches!(list[i], Node::VAdjust(_)) {
-                match list.remove(i) {
+            match list[i] {
+                Node::VAdjust(_) => match list.remove(i) {
                     Node::VAdjust(items) => self.align_adjust.extend(items),
                     _ => unreachable!(),
-                }
-            } else {
-                i += 1;
+                },
+                // pdftex.web cur_pre_tail: kept apart from the post material
+                // (split again by `split_pre_adjust` when the row is built)
+                Node::PreAdjust(_) => self.align_adjust.push(list.remove(i)),
+                _ => i += 1,
             }
         }
     }
@@ -1677,6 +1693,10 @@ impl Engine {
                 glue_set: p_set,
                 lr: if display { crate::boxes::BOX_LR_DLIST } else { 0 },
             };
+            // pdftex.web fin_row: the row's `\vadjust pre` material joins
+            // the vertical list in front of the row (and its interline glue)
+            let (pre_adj, adj) = split_pre_adjust(adj);
+            rows.extend(pre_adj);
             if !valign {
                 // tex.web append_to_vlist at fin_row time
                 if let Some(pd) = prev {

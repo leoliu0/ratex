@@ -1590,7 +1590,7 @@ impl Engine {
                 }
             }
             Node::Ins { box_node, .. } => self.fire_page_writes(box_node),
-            Node::VAdjust(v) => {
+            Node::VAdjust(v) | Node::PreAdjust(v) => {
                 for m in v {
                     self.fire_page_writes(m);
                 }

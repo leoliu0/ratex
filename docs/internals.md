@@ -157,6 +157,14 @@ applies tex.web's `trap_zero_glue`. e-TeX's `reassigning` test compares
 these identities, as TeX compares spec pointers. The format dump stores each
 glue's identity and the next free id.
 
+Group types follow tex.web's `cur_group` codes so `\tracinggroups` and
+`\showgroups` agree with pdfTeX: `\eqno`/`\leqno` push their own math
+shift group, `\middle` ends the `\left` group and begins another (shown as
+`\middle`), `\mathchoice` parts are math choice groups opened before their
+`{` is read, and `\vadjust pre` is a separate adjustment node
+(`Node::PreAdjust`) whose group `\showgroups` prints as `\insert1`; its
+material precedes the line, display or alignment row that holds it.
+
 Tests that run the built binaries must stay correct when `cargo test` runs in
 parallel or several times at once, which share the temp directory and the
 user's `HOME`:

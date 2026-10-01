@@ -255,7 +255,8 @@ impl<'a> BoxDisplay<'a> {
                 | Node::Ins { .. }
                 | Node::Mark { .. }
                 | Node::Adj(_)
-                | Node::VAdjust(_) => self.print("[]"),
+                | Node::VAdjust(_)
+                | Node::PreAdjust(_) => self.print("[]"),
                 Node::Whatsit(_) if !invisible(n) => self.print("[]"),
                 Node::Rule { .. } => self.out.push(b'|'),
                 Node::Glue(g) | Node::Leaders { glue: g, .. } => {
@@ -562,6 +563,12 @@ impl<'a> BoxDisplay<'a> {
             Node::Adj(_) => self.print_esc("vadjust"),
             Node::VAdjust(list) => {
                 self.print_esc("vadjust");
+                self.node_list_display(list);
+            }
+            // pdftex.web: `print_esc("vadjust"); if adjust_pre(p)<>0 then print(" pre ")`
+            Node::PreAdjust(list) => {
+                self.print_esc("vadjust");
+                self.print(" pre ");
                 self.node_list_display(list);
             }
             Node::NativeGlyphRun { run, .. } => {
@@ -1167,10 +1174,11 @@ impl Engine {
                 gc::INSERT => {
                     // pdftex.web's begin_insert_or_adjust keeps the class in
                     // saved(0) and the `\vadjust pre` flag in saved(1), so
-                    // show_save_groups' saved(-2) is that flag (0: `pre` is
-                    // not modelled): `\insert0` for every insert group.
+                    // show_save_groups' saved(-2) is that flag: `\insert1`
+                    // for `\vadjust pre`, `\insert0` for every other insert
+                    // group (the meta's spec holds the flag).
                     d.print_esc("insert");
-                    d.print_int(0);
+                    d.print_int(i64::from(meta.spec));
                     Next::Found2
                 }
                 gc::VCENTER => Next::Found1("vcenter"),
@@ -1193,7 +1201,7 @@ impl Engine {
                     }
                 }
                 _ => {
-                    d.print_esc("left");
+                    d.print_esc(if meta.spec == 1 { "middle" } else { "left" });
                     Next::Found
                 }
             };

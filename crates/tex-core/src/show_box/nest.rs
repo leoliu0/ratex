@@ -277,6 +277,13 @@ impl Engine {
                 }
                 cells.push(Item::Glue(tab));
             }
+            // fin_row: the `\vadjust pre` material precedes the row and its
+            // interline glue, the other adjustments follow the row
+            for n in adj {
+                if let Node::PreAdjust(pre) = n {
+                    items.extend(plain_items(pre));
+                }
+            }
             if !valign {
                 if let Some(p) = prev {
                     let gap = i64::from(bs.width) - i64::from(p) - i64::from(ra);
@@ -302,7 +309,11 @@ impl Engine {
                 shrink: None,
                 list: cells,
             })));
-            items.extend(plain_items(adj));
+            for n in adj {
+                if !matches!(n, Node::PreAdjust(_)) {
+                    items.extend(plain_items(std::slice::from_ref(n)));
+                }
+            }
         }
         (items, pd)
     }

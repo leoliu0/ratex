@@ -698,6 +698,9 @@ pub enum Node {
     InsDisc,
     Empty,
     VAdjust(NodeList),
+    /// pdfTeX `\vadjust pre{...}`: material that migrates to the vertical
+    /// list in front of the line (row, display) containing it
+    PreAdjust(NodeList),
 }
 
 pub type NodeList = Vec<Node>;
@@ -753,6 +756,7 @@ fn single_dims(n: &Node, eqtb: &crate::eqtb::Eqtb) -> (i32, i32, i32) {
         | Node::Disc(_)
         | Node::MathChar { .. } => (0, 0, 0),
         Node::VAdjust(_)
+        | Node::PreAdjust(_)
         | Node::InsDisc
         | Node::Empty
         | Node::MathKern(_, _)
@@ -1087,7 +1091,9 @@ pub fn hpack(list: NodeList, w: Option<i32>, kind: u8, eqtb: &crate::eqtb::Eqtb)
 /// returned migration list, and every `VAdjust` node is replaced in place by
 /// the contents of its vlist (canonical `adjust_ptr` splice, §13008-13012).
 /// Callers splice the migrated nodes into the enclosing vertical list right
-/// after the box (tex.web §22611, §20897-20902).
+/// after the box (tex.web §22611, §20897-20902); the material of
+/// `\vadjust pre` (pdftex.web `pre_adjust_tail`) follows all the rest, as
+/// pdftex.web <Append the glue or equation number following the display>.
 pub fn hpack_migrate(
     list: NodeList,
     w: Option<i32>,
@@ -1095,6 +1101,7 @@ pub fn hpack_migrate(
     eqtb: &crate::eqtb::Eqtb,
 ) -> (PackResult, NodeList) {
     let mut migrated: NodeList = Vec::new();
+    let mut pre: NodeList = Vec::new();
     let mut kept: NodeList = Vec::with_capacity(list.len());
     for n in list {
         match n {
@@ -1102,9 +1109,11 @@ pub fn hpack_migrate(
             // §13008-13012: an adjust_node's own vlist joins the adjustment
             // list and the node is freed — it never stays in the hlist
             Node::VAdjust(inner) => migrated.extend(inner),
+            Node::PreAdjust(inner) => pre.extend(inner),
             other => kept.push(other),
         }
     }
+    migrated.append(&mut pre);
     (hpack(kept, w, kind, eqtb), migrated)
 }
 

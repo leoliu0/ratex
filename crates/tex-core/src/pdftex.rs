@@ -115,6 +115,17 @@ impl Engine {
         self.pdf_doc.omit_info_dict = self.pdf_int(IntParam::PdfOmitInfoDict) != 0;
         // writefont.c prints /CharSet only while `getpdfomitcharset() == 0`
         self.pdf_doc.omit_charset = self.pdf_int(IntParam::PdfOmitCharset) != 0;
+        // pdftex.web `pdf_print_info` and the trailer /ID
+        self.pdf_doc.info_omit_date = self.pdf_int(IntParam::PdfInfoOmitDate) != 0;
+        let underscore = self.pdf_int(IntParam::PdfPtexUseUnderscore) > 0
+            || self.pdf_doc.major_version >= 2;
+        self.pdf_doc.ptex_banner_key = (self.pdf_int(IntParam::PdfSuppressPtexInfo) % 2 == 0)
+            .then_some(if underscore { "PTEX_Fullbanner" } else { "PTEX.Fullbanner" });
+        self.pdf_doc.start_time = self
+            .pdf_creation_date
+            .get_or_insert_with(crate::expand::pdf_creation_date)
+            .clone();
+        self.pdf_doc.output_name = format!("{}.pdf", self.job_name);
         self.pdf_doc.reserved_objects = self.pdf_next_obj - 1;
         self.pdf_doc.page_objnums = self
             .pdf_backend
@@ -477,12 +488,26 @@ impl Engine {
                         // original byte encoding and through one or more
                         // semantic remaps. Each code space needs its own PDF
                         // dictionary even though the font program is shared.
-                        let recorded_chars = self
+                        // pdf_init_font: sizes of one TFM share the dictionary
+                        // (and `/F<ff>` resource) of the font shipped first,
+                        // which carries the characters of every size.
+                        let own_chars = self
                             .pdf_doc
                             .font_chars
                             .get(&(fid as usize))
                             .copied()
                             .unwrap_or([0; 4]);
+                        let own_used = own_chars.iter().any(|&word| word != 0);
+                        let group = raw_groups.get(&font.tfm_name).copied();
+                        let raw_member = own_used && group.is_some_and(|(owner, _)| owner != fid);
+                        if raw_member {
+                            raw_group_members.push((fid, font.tfm_name.clone()));
+                        }
+                        let recorded_chars = if raw_member || !own_used {
+                            [0; 4]
+                        } else {
+                            group.map_or(own_chars, |(_, chars)| chars)
+                        };
                         let face = prog.face()?;
                         let bindings = self
                             .pdf_doc
@@ -588,6 +613,9 @@ impl Engine {
                             };
                             let document_index = self.pdf_doc.fonts.len();
                             self.pdf_doc.fonts.push(embedded);
+                            if raw {
+                                raw_group_index.insert(font.tfm_name.clone(), document_index);
+                            }
                             remap.insert(resource_binding.resource_key(fid), document_index);
                         }
                     }
@@ -619,10 +647,21 @@ impl Engine {
 /// pdfTeX's default `\pdfspacefont` (pdftex.web `pdf_space_font_name`).
 const DEFAULT_SPACE_FONT: &str = "pdftexspace";
 
+/// `\pdftexbanner` and `/PTEX.Fullbanner` (utils.c `makepdftexbanner`:
+/// `ptexbanner`, web2c's version string and kpathsea's).
+pub(crate) const PDFTEX_BANNER: &str = "This is pdfTeX, Version 3.141592653-2.6-1.40.29 (TeX Live 2026/Arch Linux) kpathsea version 6.4.2";
+
+/// pdftex.web "Print the Producer key": `pdfTeX-` and the version/revision
+/// that `\pdftexversion` and `\pdftexrevision` report.
+pub(crate) const PDFTEX_PRODUCER: &str = "pdfTeX-1.40.29";
+
 /// Backend bookkeeping behind the PDF-object primitives. Object numbers are
 /// drawn from the engine's `pdf_next_obj`, like `\pdfobj`, and the writer
 /// places the page or font dictionary at the reserved number.
 pub(crate) struct PdfBackend {
+    /// pdftex.web `init_pdf_output`: the first page or form shipped ran
+    /// "Initialize variables for PDF output".
+    pub(crate) output_initialized: bool,
     /// `\pdfpageref`: object numbers fixed for (1-based) pages.
     pub(crate) page_objs: crate::FxHashMap<i32, i32>,
     /// `pdf_init_font`: each initialized font and the font `ff` whose PDF
@@ -646,6 +685,7 @@ pub(crate) struct PdfBackend {
 impl Default for PdfBackend {
     fn default() -> Self {
         PdfBackend {
+            output_initialized: false,
             page_objs: Default::default(),
             font_ff: Default::default(),
             font_reps: Vec::new(),
@@ -668,6 +708,43 @@ impl PdfBackend {
 impl Engine {
     fn pdf_int(&self, p: crate::prim::IntParam) -> i32 {
         self.eqtb.int_params[p.idx() as usize]
+    }
+
+    /// pdftex.web "Initialize variables for PDF output", run by the first
+    /// page or form shipped: `\pdfuniqueresname > 0` then fixes the prefix
+    /// of every resource name for the whole job (utils.c `setjobid` and
+    /// `getresnameprefix`). The job id is the date, `\jobname`, the format
+    /// identification and the pdfTeX banner; its CRC-32 is written as six
+    /// base-62 digits, least significant first.
+    pub(crate) fn init_pdf_output(&mut self) {
+        if std::mem::replace(&mut self.pdf_backend.output_initialized, true) {
+            return;
+        }
+        if self.pdf_int(crate::prim::IntParam::PdfUniqueResname) <= 0
+            || !self.pdf_doc.resname_prefix.is_empty()
+        {
+            return;
+        }
+        use crate::prim::IntParam;
+        let time = self.pdf_int(IntParam::Time);
+        let job_id = format!(
+            "{:04}/{:02}/{:02} {:02}:{:02} {} {} {PDFTEX_BANNER}",
+            self.pdf_int(IntParam::Year),
+            self.pdf_int(IntParam::Month),
+            self.pdf_int(IntParam::Day),
+            time / 60,
+            time % 60,
+            self.job_name,
+            self.format_ident,
+        );
+        let mut crc = u64::from(crc32fast::hash(job_id.as_bytes()));
+        let digits = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+        let mut prefix = String::with_capacity(6);
+        for _ in 0..6 {
+            prefix.push(char::from(digits[(crc % 62) as usize]));
+            crc /= 62;
+        }
+        self.pdf_doc.resname_prefix = prefix;
     }
 
     /// writefont.c `preset_fontmetrics`: FontDescriptor values from the TFM
@@ -847,6 +924,24 @@ impl Engine {
         }
     }
 
+    /// `\pdfximagebbox <image> <1..4>` (a convert command): the llx, lly,
+    /// urx or ury of an included PDF page's box, `0pt` for other images.
+    pub(crate) fn pdf_ximage_bbox(&mut self) -> Option<i32> {
+        let (obj, source) = self.scan_int_with_source();
+        let Some(bbox) = self.pdf_images.get(&obj).map(|image| image.bbox) else {
+            self.fatal_error_at("pdfTeX error (ext1): cannot find referenced object", source);
+            return None;
+        };
+        let (corner, source) = self.scan_int_with_source();
+        match usize::try_from(i64::from(corner) - 1).ok().and_then(|index| bbox.get(index)) {
+            Some(&value) => Some(value),
+            None => {
+                self.fatal_error_at("pdfTeX error (pdfximagebbox): invalid parameter", source);
+                None
+            }
+        }
+    }
+
     /// `\pdfincludechars <font> {<chars>}`: subset these characters into
     /// the font even when no page shows them.
     pub(crate) fn do_pdfincludechars(&mut self) {
@@ -866,6 +961,19 @@ impl Engine {
         let text = self.tokens_to_bytes(&toks);
         if self.pdf_int(crate::prim::IntParam::PdfOutput) > 0 {
             self.pdf_doc.trailer_extra.extend_from_slice(&text);
+        }
+    }
+
+    /// `\pdftrailerid {<text>}`: the trailer /ID becomes the MD5 of the
+    /// text of all such commands (pdftex.web `pdf_trailer_id_toks`).
+    pub(crate) fn do_pdftrailerid(&mut self) {
+        let toks = self.scan_general_text_expanded();
+        let text = self.tokens_to_bytes(&toks);
+        if self.pdf_int(crate::prim::IntParam::PdfOutput) > 0 {
+            self.pdf_doc
+                .trailer_id_text
+                .get_or_insert_with(Vec::new)
+                .extend_from_slice(&text);
         }
     }
 

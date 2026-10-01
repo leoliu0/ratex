@@ -202,7 +202,10 @@ pub struct Engine {
     pub engine_kind: EngineKind,
     pub(crate) lua: Option<Box<crate::engine_lua::LuaEngine>>,
     pub ini_mode: bool, // -ini: format-building mode
-    pub format_name: String,
+    /// tex.web `format_ident`: ` (INITEX)` until a `\dump` builds a format,
+    /// ` (preloaded format=<job> <year>.<month>.<day>)` in a loaded one. It
+    /// seeds pdfTeX's job id and so the `\pdfuniqueresname` prefix.
+    pub format_ident: String,
     pub job_name: String,
     pub halt_on_error: bool,
     pub interaction_mode: InteractionMode,
@@ -657,6 +660,10 @@ pub struct Engine {
     pub pdf_last_obj: i32,
     pub pdf_last_xform: i32,
     pub pdf_last_ximage: i32,
+    /// pdfTeX `pdf_xform_count` / `pdf_ximage_count`: the `n` of the
+    /// `/Fm<n>` and `/Im<n>` resource names, counted per document.
+    pub(crate) pdf_xform_count: i32,
+    pub(crate) pdf_ximage_count: i32,
     pub pdf_last_ximage_pages: i32,
     pub pdf_last_link: i32,
     pub pdf_last_annot: i32,
@@ -1031,7 +1038,7 @@ impl Engine {
             engine_kind,
             lua: None,
             ini_mode,
-            format_name: String::new(),
+            format_ident: " (INITEX)".to_string(),
             job_name: String::new(),
             halt_on_error: false,
             interaction_mode: InteractionMode::ErrorStop,
@@ -1120,6 +1127,8 @@ impl Engine {
             pdf_last_obj: 0,
             pdf_last_xform: 0,
             pdf_last_ximage: 0,
+            pdf_xform_count: 0,
+            pdf_ximage_count: 0,
             pdf_last_ximage_pages: 0,
             pdf_next_obj: 5,
             pdf_reserved_objnums: crate::FxHashSet::default(),
@@ -1542,9 +1551,16 @@ impl Engine {
             let id = eng.cs.intern(n);
             eng.eqtb.assign(id, Equiv::Prim(Prim::IntP(*p)), true);
         }
+        // pdftex.web "Initialize table entries": `\pdfminorversion=4` and
+        // `\pdfcompresslevel=9` (pdfTeX's -ini values; pdftexconfig.tex then
+        // sets 7 and 9 in a format). pdfTeX also starts with `\pdfoutput=0`
+        // (DVI); this engine has no DVI writer and every shipout is a PDF
+        // page, so `\pdfoutput` stays 1 and packages that test it (ifpdf,
+        // iftex, graphics drivers) see the output mode that really happens.
         eng.eqtb.int_params[IntParam::PdfOutput.idx() as usize] = 1;
         eng.eqtb.int_params[IntParam::PdfTexVersion.idx() as usize] = 140;
-        eng.eqtb.int_params[IntParam::PdfMinorVersion.idx() as usize] = 7;
+        eng.eqtb.int_params[IntParam::PdfMinorVersion.idx() as usize] = 4;
+        eng.eqtb.int_params[IntParam::PdfCompressLevel.idx() as usize] = 9;
         eng.eqtb.int_params[IntParam::EtxVersion.idx() as usize] = 2;
         eng.eqtb.int_params[IntParam::PaperQuality.idx() as usize] = 1;
         // pdftex.web §[32a] "Initialize table entries": IniTeX defaults.
@@ -1635,7 +1651,6 @@ impl Engine {
             (b"everyeof", ToksParam::EveryEOF),
             (b"output", ToksParam::Output),
             (b"errhelp", ToksParam::ErrHelp),
-            (b"pdftrailerid", ToksParam::PdfTrailerId),
             (b"pdfpkmode", ToksParam::PdfPkMode),
         ];
         for (n, p) in toksnames {
@@ -1877,6 +1892,7 @@ impl Engine {
         d!(eng, b"pdfxformname", PdfXFormName);
         d!(eng, b"pdflastximagecolordepth", PdfLastXImageColorDepth);
         d!(eng, b"pdftrailer", PdfTrailer);
+        d!(eng, b"pdftrailerid", PdfTrailerId);
         d!(eng, b"pdfincludechars", PdfIncludeChars);
         d!(eng, b"pdfcopyfont", PdfCopyFont);
         d!(eng, b"pdfspacefont", PdfSpaceFont);
@@ -1970,9 +1986,6 @@ impl Engine {
         eng.eqtb.int_params[IntParam::DelimiterFactor.idx() as usize] = 901;
         eng.eqtb.int_params[IntParam::ShowBoxBreadth.idx() as usize] = 5;
         eng.eqtb.int_params[IntParam::ShowBoxDepth.idx() as usize] = 3;
-        eng.eqtb.int_params[IntParam::PdfOutput.idx() as usize] = 1;
-        eng.eqtb.int_params[IntParam::EtxVersion.idx() as usize] = 2;
-        eng.eqtb.int_params[IntParam::PdfMinorVersion.idx() as usize] = 7;
         eng.eqtb.int_params[IntParam::PartokenNameCs.idx() as usize] = eng.ids.par as i32;
         // eTeX extended-mode identity (pgf/pgfkeys probe \eTeXrevision).
         // NOTE: XeTeX primitives are deliberately NOT registered: packages

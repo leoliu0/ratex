@@ -478,7 +478,6 @@ impl Engine {
                 self.push_tokens(toks);
             }
             Input => self.do_input(),
-            EndInput => self.do_endinput(),
             Patterns | Hyphenation => self.do_hyphenation_words(p == Patterns),
             ScanTokens => {
                 let _ = self.expand_prim(ScanTokens, id);
@@ -490,6 +489,15 @@ impl Engine {
                 } else {
                     match crate::format::check_dumpable(self) {
                         Ok(()) => {
+                            // tex.web §1328 `format_ident`
+                            let int = |p: crate::prim::IntParam| self.eqtb.int_params[p.idx() as usize];
+                            self.format_ident = format!(
+                                " (preloaded format={} {}.{}.{})",
+                                self.job_name,
+                                int(crate::prim::IntParam::Year),
+                                int(crate::prim::IntParam::Month),
+                                int(crate::prim::IntParam::Day)
+                            );
                             self.format_done = true;
                             self.end_occurred = true;
                         }
@@ -1120,9 +1128,6 @@ impl Engine {
             PdfMapLine => self.do_pdfmapline(),
             PdfGlyphToUnicode => self.do_pdfglyphtounicode(),
             PdfXImage => self.do_pdfximage(),
-            PdfXImageBBox => {
-                let _ = self.scan_pdf_ximage_bbox();
-            }
             PdfLastObj | PdfLastXForm | PdfLastXImage | PdfLastXImagePages | PdfLastLink
             | PdfLastAnnot => {}
             // object references take an object number (typically
@@ -1193,6 +1198,7 @@ impl Engine {
             }
             PdfResetTimer => self.timer_start = crate::clock::now_micros(),
             PdfTrailer => self.do_pdftrailer(),
+            PdfTrailerId => self.do_pdftrailerid(),
             PdfIncludeChars => self.do_pdfincludechars(),
             PdfCopyFont => self.do_pdfcopyfont(),
             PdfSpaceFont => self.do_pdfspacefont(),
@@ -1723,8 +1729,9 @@ impl Engine {
         let box_reg = self.scan_reg_num();
         let obj = self.alloc_pdf_obj();
         self.pdf_last_xform = obj;
-        // \pdfxformname: forms are painted as `/Fm<object number> Do`
-        self.pdf_doc.form_names.insert(obj, obj);
+        // \pdfxformname: forms are painted as `/Fm<n> Do`, n = pdf_xform_count
+        self.pdf_xform_count += 1;
+        self.pdf_doc.form_names.insert(obj, self.pdf_xform_count);
         let b = self.eqtb.boxed.get(box_reg as usize).cloned().flatten();
         let (w, h, d) = match &b {
             Some(Node::Box { w, h, d, .. }) => (*w, *h, *d),
@@ -1739,25 +1746,28 @@ impl Engine {
         } else {
             format!(" {}", attr.trim())
         };
-        let (content, fonts, image_procset, ximages) = match &b {
+        let (content, fonts, image_procset, xforms, ximages) = match &b {
             Some(node) => {
                 let form = self.render_form_box(node, w, h, d);
-                (form.content, form.fonts, form.image_procset, form.ximages)
+                (form.content, form.fonts, form.image_procset, form.xforms, form.ximages)
             }
-            None => (Vec::new(), Vec::new(), 0, Vec::new()),
+            None => (Vec::new(), Vec::new(), 0, Vec::new(), Vec::new()),
         };
         let text = !fonts.is_empty();
         let font_object = self.alloc_pdf_obj();
         self.pdf_doc.objects.push((font_object, b"<< >>".to_vec()));
         self.pdf_doc.form_fonts.push((font_object, fonts));
+        // pdftex.web "Generate XObject resources": the forms, then the
+        // images, this form painted
+        let prefix = &self.pdf_doc.resname_prefix;
         let mut xobj_entries = Vec::new();
-        for (obj_num, bytes) in &self.pdf_doc.objects {
-            if bytes.starts_with(b"<< /Type /XObject /Subtype /Form") {
-                xobj_entries.push(format!("/Fm{} {} 0 R", obj_num, obj_num));
-            }
+        for obj_num in &xforms {
+            let name = self.pdf_doc.form_names.get(obj_num).copied().unwrap_or(*obj_num);
+            xobj_entries.push(format!("/Fm{name}{prefix} {obj_num} 0 R"));
         }
         for obj_num in &ximages {
-            xobj_entries.push(format!("/Im{} {} 0 R", obj_num, obj_num));
+            let name = self.pdf_doc.image_names.get(obj_num).copied().unwrap_or(*obj_num);
+            xobj_entries.push(format!("/Im{name}{prefix} {obj_num} 0 R"));
         }
         let xobj_res = if xobj_entries.is_empty() || resources.contains("/XObject") {
             String::new()
@@ -1938,6 +1948,9 @@ impl Engine {
             || bytes.starts_with(b"%!")
             || bytes.starts_with(&[0xC5, 0xD0, 0xD3, 0xC6]);
         let obj = self.alloc_pdf_obj();
+        // \pdfximage: `/Im<n>` takes n = pdf_ximage_count
+        self.pdf_ximage_count += 1;
+        self.pdf_doc.image_names.insert(obj, self.pdf_ximage_count);
         self.pdf_backend.last_ximage_colordepth = crate::pdftex::image_color_depth(&bytes);
         let mut info = crate::engine::PdfImageInfo {
             path: path.to_string_lossy().into_owned(),

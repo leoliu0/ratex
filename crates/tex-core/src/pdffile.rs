@@ -2034,10 +2034,11 @@ pub fn write_pdf(doc: &PdfDoc) -> Result<Vec<u8>, String> {
         .collect();
     for (object, fonts) in &doc.form_fonts {
         let mut dict = String::from("<<");
-        for (index, number) in fonts {
-            if let Some(font) = font_objs.get(*index) {
-                dict.push_str(&format!(" /F{number} {} 0 R", font.font));
-            }
+        for entry in font_resource_entries(fonts, &doc.resname_prefix, |index| {
+            font_objs.get(index).map(|font| font.font)
+        }) {
+            dict.push(' ');
+            dict.push_str(&entry);
         }
         dict.push_str(" >>");
         b.set(*object as usize, dict);
@@ -2412,12 +2413,12 @@ pub fn write_pdf(doc: &PdfDoc) -> Result<Vec<u8>, String> {
         } else {
             b.set_stream(*content_obj, "", &page.content, true);
         }
-        let mut fonts_res = String::new();
-        for (fidx, fnum) in &page.fonts {
-            if let Some(fo) = font_objs.get(*fidx) {
-                fonts_res.push_str(&format!("/F{} {} 0 R ", fnum, fo.font));
-            }
-        }
+        let fonts_res: String = font_resource_entries(&page.fonts, &doc.resname_prefix, |index| {
+            font_objs.get(index).map(|fo| fo.font)
+        })
+        .iter()
+        .map(|entry| format!("{entry} "))
+        .collect();
         let mut annots_res = String::new();
         for (a, aobj) in page.annots.iter().zip(annot_objs) {
             emit_annot(&mut b, *aobj, a, (doc.mag, doc.decimal_digits));
@@ -2435,17 +2436,7 @@ pub fn write_pdf(doc: &PdfDoc) -> Result<Vec<u8>, String> {
         } else {
             format!(" {}", res_extra.trim())
         };
-        let (forms, images) = painted_xobjects(&page.content);
-        let mut xobj_entries = Vec::new();
-        // image dictionaries may open with their `attr` entries
-        for (obj_num, _) in &doc.objects {
-            if forms.contains(obj_num) {
-                xobj_entries.push(format!("/Fm{} {} 0 R", obj_num, obj_num));
-            }
-            if images.contains(obj_num) {
-                xobj_entries.push(format!("/Im{} {} 0 R", obj_num, obj_num));
-            }
-        }
+        let xobj_entries = xobject_resource_entries(doc, &page.xforms, &page.ximages);
         let xobj_str = if xobj_entries.is_empty() {
             String::new()
         } else {
@@ -2601,17 +2592,8 @@ pub fn write_pdf(doc: &PdfDoc) -> Result<Vec<u8>, String> {
     }
 
     // ---- emit info
-    let info_str = String::from_utf8_lossy(&doc.info);
-    let mut info_body = format!("<< {}", info_str);
-    if !info_str.contains("/Producer") {
-        info_body.push_str(" /Producer (tex-rs)");
-    }
-    if !info_str.contains("/Creator") {
-        info_body.push_str(" /Creator (tex-rs)");
-    }
-    info_body.push_str(" >>");
     if let Some(info_obj) = info_obj {
-        b.set(info_obj, info_body);
+        b.set(info_obj, info_dictionary(doc));
     }
     // ---- emit catalog
     let mut cat = format!("<< /Type /Catalog /Pages {} 0 R", pages_obj);
@@ -2687,7 +2669,7 @@ pub fn write_pdf(doc: &PdfDoc) -> Result<Vec<u8>, String> {
         b.set_bytes(enc_obj, dict_str.into_bytes());
         (Some(enc_obj), Some(fid))
     } else {
-        (None, None)
+        (None, trailer_id(doc))
     };
 
     // Raw extension objects can contain duplicate keys, uncompressed streams
@@ -2739,30 +2721,92 @@ pub fn write_pdf(doc: &PdfDoc) -> Result<Vec<u8>, String> {
     })
 }
 
-/// Object numbers a content stream paints as `/Fm<n> Do` (forms) and
-/// `/Im<n> Do` (images), found in one pass over the stream.
-fn painted_xobjects(content: &[u8]) -> (BTreeSet<i32>, BTreeSet<i32>) {
-    let mut forms = BTreeSet::new();
-    let mut images = BTreeSet::new();
-    let mut at = 0;
-    while let Some(offset) = content[at..].iter().position(|&byte| byte == b'/') {
-        at += offset + 1;
-        let set = match content.get(at..at + 2) {
-            Some(b"Fm") => &mut forms,
-            Some(b"Im") => &mut images,
-            _ => continue,
-        };
-        let digits = &content[at + 2..];
-        let len = digits.iter().take_while(|byte| byte.is_ascii_digit()).count();
-        // `/Fm<n> Do` names use the decimal object number without padding.
-        if len == 0 || (len > 1 && digits[0] == b'0') || !digits[len..].starts_with(b" Do") {
+/// pdfTeX "Generate font resources": `/F<ff><prefix> <obj> 0 R` per distinct
+/// resource name, in first-use order. Fonts sharing a name (one TFM at
+/// several sizes) share the dictionary, so only the first entry is kept.
+fn font_resource_entries(
+    fonts: &[(usize, u32)],
+    prefix: &str,
+    font_object: impl Fn(usize) -> Option<usize>,
+) -> Vec<String> {
+    let mut names: Vec<u32> = Vec::new();
+    let mut entries = Vec::new();
+    for &(index, number) in fonts {
+        if names.contains(&number) {
             continue;
         }
-        if let Some(number) = std::str::from_utf8(&digits[..len]).ok().and_then(|n| n.parse().ok()) {
-            set.insert(number);
+        if let Some(object) = font_object(index) {
+            names.push(number);
+            entries.push(format!("/F{number}{prefix} {object} 0 R"));
         }
     }
-    (forms, images)
+    entries
+}
+
+/// pdfTeX "Generate XObject resources": the forms painted (`/Fm<n>`), then
+/// the images (`/Im<n>`), each named by its creation count.
+fn xobject_resource_entries(doc: &PdfDoc, xforms: &[i32], ximages: &[i32]) -> Vec<String> {
+    let prefix = &doc.resname_prefix;
+    let forms = xforms.iter().map(|&object| {
+        let name = doc.form_names.get(&object).copied().unwrap_or(object);
+        format!("/Fm{name}{prefix} {object} 0 R")
+    });
+    let images = ximages.iter().map(|&object| {
+        let name = doc.image_names.get(&object).copied().unwrap_or(object);
+        format!("/Im{name}{prefix} {object} 0 R")
+    });
+    forms.chain(images).collect()
+}
+
+/// pdftex.web `pdf_print_info`: /Producer unless the user's `\pdfinfo` gives
+/// one, that text, then /Creator, /CreationDate, /ModDate and /Trapped
+/// (each only when not given), and /PTEX.Fullbanner.
+fn info_dictionary(doc: &PdfDoc) -> String {
+    let user = String::from_utf8_lossy(&doc.info);
+    let given = |key: &str| user.contains(key);
+    let mut dict = String::from("<<\n");
+    if !given("/Producer") {
+        dict.push_str(&format!("/Producer ({})\n", crate::pdftex::PDFTEX_PRODUCER));
+    }
+    if !user.is_empty() {
+        dict.push_str(&user);
+        dict.push('\n');
+    }
+    if !given("/Creator") {
+        dict.push_str("/Creator (TeX)\n");
+    }
+    if !doc.info_omit_date && !doc.start_time.is_empty() {
+        for key in ["CreationDate", "ModDate"] {
+            if !given(&format!("/{key}")) {
+                dict.push_str(&format!("/{key} ({})\n", doc.start_time));
+            }
+        }
+    }
+    if !given("/Trapped") {
+        dict.push_str("/Trapped /False\n");
+    }
+    if let Some(key) = doc.ptex_banner_key {
+        dict.push_str(&format!("/{key} ({})\n", escape_string(crate::pdftex::PDFTEX_BANNER)));
+    }
+    dict.push_str(">>");
+    dict
+}
+
+/// pdftex.web "Output the trailer": `print_ID_alt` (the MD5 of the
+/// `\pdftrailerid` text, nothing for empty text) or `print_ID` (the MD5 of the
+/// start time and the output file name).
+fn trailer_id(doc: &PdfDoc) -> Option<[u8; 16]> {
+    match &doc.trailer_id_text {
+        Some(text) if text.is_empty() => None,
+        Some(text) => Some(md5::compute(text).0),
+        None if doc.start_time.is_empty() => None,
+        None => {
+            let mut ctx = md5::Context::new();
+            ctx.consume(doc.start_time.as_bytes());
+            ctx.consume(doc.output_name.as_bytes());
+            Some(ctx.finalize().0)
+        }
+    }
 }
 
 /// pdfTeX "Generate ProcSet if desired": /Text with fonts, /ImageB, /ImageC

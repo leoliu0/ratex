@@ -184,14 +184,14 @@ pub(crate) enum FoundInputFile {
 /// cache avoids fixed names and repeated writes in the process temp folder.
 fn compatibility_input(name: &str) -> Option<&'static [u8]> {
     Some(match name {
-        // pdftexconfig.tex (TeX Live keeps \pdfcompresslevel=9; this engine
-        // trades a little size for speed)
+        // pdftexconfig.tex of TeX Live (PNG recompression is capped by the
+        // speed/size option, not by this value)
         "pdflatex.ini" => br"\pdfoutput=1
 \pdfpageheight=297 true mm
 \pdfpagewidth=210 true mm
 \pdfminorversion=7
 \pdfobjcompresslevel=2
-\pdfcompresslevel=3
+\pdfcompresslevel=9
 \pdfdecimaldigits=3
 \pdfpkresolution=600
 \pdfhorigin=1 true in

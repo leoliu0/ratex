@@ -698,10 +698,6 @@ impl Engine {
                             .unwrap_or(0) as i64;
                         break 'scan_loop;
                     }
-                    Some(Prim::PdfXImageBBox) => {
-                        v = self.scan_pdf_ximage_bbox() as i64;
-                        break 'scan_loop;
-                    }
                     Some(Prim::XeTeXCharClass) => {
                         v = self.scan_xetex_charclass_val() as i64;
                         break 'scan_loop;
@@ -1346,11 +1342,6 @@ impl Engine {
                             .unwrap_or(0),
                     );
                 }
-                Some(Prim::PdfXImageBBox) => {
-                    int_part = 1;
-                    frac_f = 0;
-                    direct = Some(self.scan_pdf_ximage_bbox());
-                }
                 Some(Prim::Umathfractiondelsize) => {
                     self.scan_math_style_param();
                     int_part = 1;
@@ -1644,7 +1635,6 @@ impl Engine {
                     .copied()
                     .unwrap_or(0)
             }
-            Some(Equiv::Prim(Prim::PdfXImageBBox)) => self.scan_pdf_ximage_bbox(),
             Some(Equiv::Prim(Prim::Dimen)) => {
                 let i = self.scan_reg_num();
                 self.eqtb.dimen[i as usize]
@@ -2166,10 +2156,6 @@ impl Engine {
                     .unwrap_or(0);
                 let s = self.scaled_to_string(v);
                 emit_the!(s.as_bytes());
-            }
-            Some(Prim::PdfXImageBBox) => {
-                let value = self.scan_pdf_ximage_bbox();
-                emit_the!(self.scaled_to_string(value).as_bytes());
             }
             Some(Prim::HyphenChar) => {
                 let f = self.scan_font_id() as usize;
@@ -2800,26 +2786,6 @@ impl Engine {
             Prim::FontCharDp => font.char_depth(c),
             Prim::FontCharIc => font.char_italic(c),
             _ => unreachable!(),
-        }
-    }
-
-    pub fn scan_pdf_ximage_bbox(&mut self) -> i32 {
-        let obj = self.scan_int();
-        let coord = self.scan_int();
-        if let Some(info) = self.pdf_images.get(&obj) {
-            match coord {
-                1 => info.bbox[0],
-                2 => info.bbox[1],
-                3 => info.bbox[2],
-                4 => info.bbox[3],
-                _ => {
-                    self.error("pdfTeX error (pdfximagebbox): invalid parameter");
-                    0
-                }
-            }
-        } else {
-            self.error("pdfTeX error (ext1): cannot find referenced object");
-            0
         }
     }
 

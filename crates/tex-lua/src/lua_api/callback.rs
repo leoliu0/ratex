@@ -111,6 +111,9 @@ mod tests {
         fn type_name(&self) -> &'static str {
             "counter"
         }
+        fn lua_tostring(&self) -> Option<String> {
+            Some(format!("counter {}", self.0))
+        }
         fn as_any(&self) -> &dyn std::any::Any {
             self
         }

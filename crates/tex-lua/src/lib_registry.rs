@@ -9,11 +9,9 @@ use crate::lua_vm::{CFunction, GlobalState, LuaResult};
 use crate::stdlib::{self, Stdlib};
 // use crate::stdlib;
 
-/// Unified installation interface for libraries provided by luars or external crates.
+/// Unified installation interface for libraries provided by external crates.
 ///
-/// A library can expose itself either as a plain [`LibraryModule`], a preload-only
-/// module such as [`PreloadModule`], or a custom builder type that performs extra
-/// setup before registering itself into the high-level [`crate::Lua`] API.
+/// A library installs itself into the high-level [`crate::Lua`] API.
 pub trait LuaLibrary {
     /// Install this library into the high-level [`crate::Lua`] API.
     fn install(&self, lua: &mut lua_api::Lua) -> LuaResult<()>;
@@ -31,29 +29,6 @@ pub enum LibraryEntry {
     Value(ValueInitializer),
 }
 
-/// A simple `require()`-loadable preload module.
-pub struct PreloadModule {
-    pub name: String,
-    pub loader: CFunction,
-}
-
-impl PreloadModule {
-    /// Create a new preload module descriptor.
-    pub fn new(name: impl Into<String>, loader: CFunction) -> Self {
-        Self {
-            name: name.into(),
-            loader,
-        }
-    }
-}
-
-impl LuaLibrary for PreloadModule {
-    fn install(&self, lua: &mut lua_api::Lua) -> LuaResult<()> {
-        let vm = lua.global_state_mut();
-        vm.register_preload(&self.name, self.loader)
-    }
-}
-
 /// A library module containing multiple functions and values
 pub struct LibraryModule {
     pub name: String,
@@ -69,12 +44,6 @@ impl LibraryModule {
             entries: Vec::new(),
             initializer: None,
         }
-    }
-
-    /// Add a function to this library
-    pub fn with_function(mut self, name: &'static str, func: CFunction) -> Self {
-        self.entries.push((name, LibraryEntry::Function(func)));
-        self
     }
 
     /// Add a value to this library
@@ -112,44 +81,6 @@ macro_rules! lib_module {
     }};
 }
 
-/// Public builder macro for simple Lua module registration.
-///
-/// Supports function entries by default, optional `value` entries, and a final
-/// `init` hook for extra setup.
-#[macro_export]
-macro_rules! lua_module {
-    ($name:expr, { $($items:tt)* }) => {{
-        let mut module = $crate::LibraryModule::new($name);
-        $crate::__lua_module_items!(module, $($items)*);
-        module
-    }};
-}
-
-#[doc(hidden)]
-#[macro_export]
-macro_rules! __lua_module_items {
-    ($module:ident,) => {};
-    ($module:ident) => {};
-    ($module:ident, init => $init:expr $(, $($rest:tt)*)?) => {{
-        $module = $module.with_initializer($init);
-        $crate::__lua_module_items!($module $(, $($rest)*)?);
-    }};
-    ($module:ident, value $name:expr => $value:expr $(, $($rest:tt)*)?) => {{
-        $module = $module.with_value($name, $value);
-        $crate::__lua_module_items!($module $(, $($rest)*)?);
-    }};
-    ($module:ident, $name:expr => $func:expr $(, $($rest:tt)*)?) => {{
-        $module = $module.with_function($name, $func);
-        $crate::__lua_module_items!($module $(, $($rest)*)?);
-    }};
-}
-
-/// Public helper macro for simple preload-module registration.
-#[macro_export]
-macro_rules! lua_preload_module {
-    ($name:expr => $loader:expr) => {{ $crate::PreloadModule::new($name, $loader) }};
-}
-
 /// Registry for all Lua standard libraries
 pub struct LibraryRegistry {
     modules: Vec<LibraryModule>, // Use Vec to preserve insertion order
@@ -179,11 +110,6 @@ impl LibraryRegistry {
     /// Load a specific module into the VM
     pub fn load_module(&self, vm: &mut GlobalState, module: &LibraryModule) -> LuaResult<()> {
         load_library_module(vm, module)
-    }
-
-    /// Get a module by name
-    pub fn get_module(&self, name: &str) -> Option<&LibraryModule> {
-        self.modules.iter().find(|m| m.name == name)
     }
 }
 

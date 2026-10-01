@@ -306,10 +306,7 @@ fn utf8_codes(l: &mut LuaState) -> LuaResult<usize> {
         return Err(argerror(l, 1, MSG_INVALID));
     }
     // luaL_checkstring converts a number argument in place
-    let subject = match s {
-        crate::stdlib::lauxlib::LStr::Value(value) => value,
-        crate::stdlib::lauxlib::LStr::Number(ref buf) => l.create_bytes(buf.as_bytes())?,
-    };
+    let subject = s.into_value(l)?;
     let iterator: fn(&mut LuaState) -> LuaResult<usize> = match (lua53, lax) {
         (true, _) => iter_aux53,
         (false, false) => iter_aux_strict,

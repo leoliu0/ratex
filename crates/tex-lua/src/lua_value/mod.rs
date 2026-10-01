@@ -1,5 +1,6 @@
 // Lua 5.5 compatible value representation
 // 16 bytes, no pointer caching, all GC objects accessed via ID
+pub(crate) mod block_userdata;
 pub mod chunk53;
 pub mod chunk_serializer;
 pub mod lua_convert;
@@ -8,7 +9,6 @@ mod lua_table;
 #[allow(clippy::module_inception)]
 mod lua_value;
 mod userdata;
-pub mod userdata_builder;
 pub mod userdata_trait;
 
 use self::lua_value::Value;
@@ -16,7 +16,6 @@ use std::sync::Arc;
 
 pub use lua_string::*;
 pub use userdata::LuaUserdata;
-pub use userdata_builder::UserDataBuilder;
 pub use userdata_trait::{lua_value_to_udvalue, udvalue_to_lua_value};
 
 // Re-export the optimized LuaValue and type enum for pattern matching
@@ -137,14 +136,6 @@ impl LuaUpvalue {
     #[inline(always)]
     pub fn set_value_parts(&mut self, value: Value, tt: u8) {
         self.v.write_parts(tt, value);
-    }
-
-    pub fn get_closed_value(&self) -> Option<&LuaValue> {
-        if !self.is_open() {
-            Some(&self.closed_value)
-        } else {
-            None
-        }
     }
 }
 

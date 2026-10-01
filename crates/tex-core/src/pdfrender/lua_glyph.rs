@@ -38,6 +38,7 @@ impl RenderCtx<'_> {
             return 0;
         };
         let Some(ci) = lf.chars.get(&c) else {
+            self.eng.lua_glyph_not_found(f, c);
             return 0;
         };
         let mut width = ci.width;

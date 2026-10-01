@@ -1940,7 +1940,7 @@ impl Engine {
             let source = self.current_token_source_mark();
             let begin_line = self.mode_line();
             let saved_begin = std::mem::replace(&mut self.pack_begin_line, begin_line);
-            self.report_pack_warnings_at(&r, source);
+            self.report_pack_warnings_at(&mut r, source);
             self.pack_begin_line = saved_begin;
             if indent != 0 {
                 if let Node::Box { shift, .. } = &mut r.node {

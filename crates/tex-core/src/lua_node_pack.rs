@@ -132,12 +132,12 @@ impl Engine {
     pub(crate) fn lua_pack_list(&mut self, head: u32, size: i32, additional: bool, horizontal: bool) -> (u32, i32) {
         let list = self.lua_clone_to_engine(head);
         let orig_len = list.len();
-        let res = if horizontal {
+        let mut res = if horizontal {
             boxes::hpack_add(list, Some(size), additional, boxes::HBOX, &self.eqtb)
         } else {
             boxes::vpack_add_md(list, Some(size), additional, boxes::VBOX, &self.eqtb, MAX_DIMEN)
         };
-        self.report_pack_warnings(&res);
+        self.report_pack_warnings(&mut res);
         let Node::Box { w, h, d, glue_sign, glue_order, glue_set, list, .. } = &res.node else {
             return (0, 0);
         };

@@ -567,6 +567,7 @@ impl Engine {
                         0,
                     )));
                     self.page_append(Node::Penalty(-0x4000_0000));
+                    self.lua_page_filter(crate::lua_callbacks::page_info::END, false);
                     self.build_page();
                     return;
                 }

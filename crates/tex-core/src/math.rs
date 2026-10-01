@@ -558,6 +558,7 @@ impl Engine {
             // builder before the display material exists. This online ordering
             // can fire a page that would otherwise absorb the later display.
             if outer_mode == Mode::Vertical {
+                self.lua_page_filter(crate::lua_callbacks::page_info::BEFORE_DISPLAY, true);
                 self.build_page();
             }
             // TeX's page/contribution list is global, not part of the semantic
@@ -763,6 +764,7 @@ impl Engine {
             // tokens, then `if nest_ptr=1 then build_page`.
             self.scan_optional_space();
             if outer_mode == Mode::Vertical {
+                self.lua_page_filter(crate::lua_callbacks::page_info::AFTER_DISPLAY, false);
                 self.build_page();
             }
             return;

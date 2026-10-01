@@ -1431,6 +1431,19 @@ impl Engine {
         if self.diagnostics_finished {
             return;
         }
+        self.finish_job_diagnostics_inner();
+        // luatex close_files_and_terminate: finish_pdffile (the PDF is being
+        // closed), stop_run, wrapup_run
+        if self.engine_kind == crate::engine::EngineKind::LuaTeX && !self.stopped_on_error && !(self.ini_mode && self.format_done) {
+            if !self.pdf_doc.pages.is_empty() {
+                self.lua_simple_callback(crate::lua_callbacks::Cb::FinishPdffile);
+            }
+            self.lua_simple_callback(crate::lua_callbacks::Cb::StopRun);
+            self.lua_simple_callback(crate::lua_callbacks::Cb::WrapupRun);
+        }
+    }
+
+    fn finish_job_diagnostics_inner(&mut self) {
         self.diagnostics_finished = true;
         self.flush_diagnostic_repeats();
         if self.stopped_on_error || (self.ini_mode && self.format_done) {

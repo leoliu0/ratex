@@ -35,13 +35,10 @@ pub(crate) fn lua_order_of(o: u8) -> i32 {
     lua_order(o)
 }
 
-/// glyph_height / glyph_depth of luatex: the character's extent shifted by
-/// the vertical offset.
+/// glyph_width / glyph_height / glyph_depth of luatex.
 fn glyph_whd(e: &Engine, n: u32) -> (i32, i32, i32) {
     let f = e.lua_nodes.node(n).f;
-    let (w, h, d) = crate::lua_node_lib::glyph_dimensions(&e.eqtb.fonts, f[sl::C_FONT], f[sl::C_CHAR]);
-    let y = f[sl::C_YOFF];
-    ((w), (h + y).max(0), (d - y).max(0))
+    boxes::lua_glyph_whd(&e.eqtb.fonts, f[sl::C_FONT], f[sl::C_CHAR], f[sl::C_YOFF])
 }
 
 impl Engine {

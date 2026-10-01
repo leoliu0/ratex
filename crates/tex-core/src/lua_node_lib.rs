@@ -1877,6 +1877,29 @@ fn install_lists(lua: &mut Lua, n: &LuaTable) -> Result<(), String> {
             }
         })
     });
+    nat!(lua, n, "ligaturing", |h: Option<i64>, t: Option<i64>| -> Result<Variadic<UdValue>, String> {
+        with_engine(|e| e.lua_ligkern_native(LigKern::Ligaturing, h, t))
+    });
+    nat!(lua, n, "kerning", |h: Option<i64>, t: Option<i64>| -> Result<Variadic<UdValue>, String> {
+        with_engine(|e| e.lua_ligkern_native(LigKern::Kerning, h, t))
+    });
+    nat!(lua, n, "hyphenating", |h: Option<i64>, t: Option<i64>, ud: bool| -> Result<Variadic<UdValue>, String> {
+        with_engine(|e| {
+            let h = handle32(h);
+            // lang_tex_direct_hyphenating always walks to the tail; the
+            // userdata form honours a given one
+            let t = match handle32(t) {
+                t if ud && t != 0 => t,
+                _ => e.lua_nodes.tail_of(h),
+            };
+            e.lk_hyphenation(h, t);
+            Variadic(vec![
+                UdValue::Integer(i64::from(h)),
+                UdValue::Integer(i64::from(t)),
+                UdValue::Boolean(true),
+            ])
+        })
+    });
     nat!(lua, n, "wrap_hpack", |args: Variadic<Value>| -> Result<Variadic<UdValue>, String> {
         crate::lua_node_pack::lua_pack(&args, true)
     });
@@ -1955,5 +1978,45 @@ impl Engine {
         let new_prev = if mirrored { height } else { depth };
         let first = if ud { node_ud(result) } else { UdValue::Integer(i64::from(result)) };
         Variadic(vec![first, UdValue::Integer(i64::from(new_prev))])
+    }
+}
+
+#[derive(Clone, Copy)]
+enum LigKern {
+    Ligaturing,
+    Kerning,
+}
+
+impl Engine {
+    /// `font_tex_direct_ligaturing` / `font_tex_direct_kerning`: run the
+    /// pass on the range `h`..`t` (the whole list from `h` when `t` is
+    /// absent) behind a temporary head.
+    fn lua_ligkern_native(&mut self, kind: LigKern, h: Option<i64>, t: Option<i64>) -> Variadic<UdValue> {
+        let h = handle32(h);
+        if !self.lua_nodes.valid(h) {
+            return Variadic(vec![UdValue::Nil, UdValue::Boolean(false)]);
+        }
+        let t = handle32(t);
+        let tmp = self.lua_new_node(TEMP, 1);
+        let p = self.lua_nodes.prev(h);
+        self.lua_nodes.couple(tmp, h);
+        let t = match kind {
+            LigKern::Ligaturing => self.lk_handle_ligaturing(tmp, t),
+            LigKern::Kerning => self.lk_handle_kerning(tmp, t),
+        };
+        let first = self.lua_nodes.next(tmp);
+        if p != 0 {
+            self.lua_nodes.node_mut(p).next = first;
+        }
+        if first != 0 {
+            self.lua_nodes.node_mut(first).prev = p;
+        }
+        self.lua_nodes.node_mut(tmp).next = 0;
+        self.lua_nodes.flush_node(tmp);
+        Variadic(vec![
+            UdValue::Integer(i64::from(first)),
+            if t == 0 { UdValue::Nil } else { UdValue::Integer(i64::from(t)) },
+            UdValue::Boolean(true),
+        ])
     }
 }

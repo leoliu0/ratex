@@ -377,6 +377,64 @@ fn hex_val(b: u8) -> Option<u8> {
     }
 }
 
+impl Trie {
+    /// Pattern values of a word of (hjcoded) Unicode scalars; patterns hold
+    /// UTF-8. Entry `k` (`0 <= k <= word.len()`) is the value of the gap
+    /// before letter `k`; a hyphen may follow letter `k` (1-based) when
+    /// entry `k` is odd.
+    pub(crate) fn gap_values(&self, word: &[u32]) -> Vec<u8> {
+        let mut text: Vec<u8> = Vec::with_capacity(word.len() * 2 + 2);
+        let mut starts: Vec<usize> = Vec::with_capacity(word.len() + 1);
+        text.push(b'.');
+        for &c in word {
+            starts.push(text.len());
+            let ch = char::from_u32(c).unwrap_or(char::REPLACEMENT_CHARACTER);
+            let mut buf = [0u8; 4];
+            text.extend_from_slice(ch.encode_utf8(&mut buf).as_bytes());
+        }
+        starts.push(text.len());
+        text.push(b'.');
+        let m = text.len();
+        let mut vals = vec![0u8; m + 1];
+        for start in 0..m {
+            let mut node = 0u32;
+            for &byte in &text[start..] {
+                let Some(next) = self.child(node, byte) else {
+                    break;
+                };
+                node = next;
+                let mut link = self.nodes[node as usize].value;
+                while link != NO_LINK {
+                    let entry = self.values[link as usize];
+                    if let Some(slot) = vals.get_mut(start + entry.pos as usize) {
+                        *slot = (*slot).max(entry.value);
+                    }
+                    link = entry.next;
+                }
+            }
+        }
+        starts.iter().map(|&s| vals[s]).collect()
+    }
+
+    /// The break points (in letters preceding the break) of an exception
+    /// word, when `word` is one.
+    pub(crate) fn exception_points(&self, word: &[u32]) -> Option<Vec<usize>> {
+        let mut key: Vec<u8> = Vec::with_capacity(word.len());
+        for &c in word {
+            let ch = char::from_u32(c).unwrap_or(char::REPLACEMENT_CHARACTER);
+            let mut buf = [0u8; 4];
+            key.extend_from_slice(ch.encode_utf8(&mut buf).as_bytes());
+        }
+        let points = self.exceptions.get(&key)?;
+        Some(
+            points
+                .iter()
+                .map(|&k| key[..k.min(key.len())].iter().filter(|&&b| (b & 0xC0) != 0x80).count())
+                .collect(),
+        )
+    }
+}
+
 use crate::engine::Engine;
 
 impl Engine {

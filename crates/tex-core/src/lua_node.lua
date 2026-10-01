@@ -112,7 +112,7 @@ local passthrough = {
   "is_zero_glue", "first_glyph", "has_glyph", "flatten_discretionaries", "check_discretionaries",
   "check_discretionary", "protect_glyph", "protect_glyphs", "unprotect_glyph", "unprotect_glyphs",
   "protrusion_skippable", "effective_glue", "dimensions", "rangedimensions", "usedlist",
-  "uses_font", "tostring", "fix_node_lists", "set_properties_mode",
+  "uses_font", "tostring", "fix_node_lists", "set_properties_mode", "ligaturing", "kerning", "hyphenating",
   "getchar", "setchar", "getlang", "setlang", "getexpansion", "setexpansion", "getpenalty",
   "setpenalty", "getnucleus", "setnucleus", "getsub", "setsub", "getsup", "setsup", "getshift",
   "setshift", "getleader", "setleader", "getcomponents", "setcomponents",
@@ -210,6 +210,7 @@ function direct.traverse_list(n)
 end
 
 -- ------------------------------------------------- hpack, vpack, ... ----
+function direct.hyphenating(h, t) return N.hyphenating(h, t, false) end
 direct.hpack = N.wrap_hpack
 direct.vpack = N.wrap_vpack
 
@@ -279,6 +280,7 @@ local ud_specs = {
   getleader = "n", getdisc = "nnn", new = "n", current_attr = "n", hpack = "n", vpack = "n",
   last_node = "n", free = "n", getnucleus = "n", getsub = "n", getsup = "n", getcomponents = "n",
   check_discretionaries = "", check_discretionary = "", mlist_to_hlist = "n",
+  ligaturing = "nnx", kerning = "nnx", hyphenating = "nnx",
   protect_glyphs = "", unprotect_glyphs = "", protect_glyph = "", unprotect_glyph = "",
   setnext = "", setprev = "", setboth = "", setlink = "", setsplit = "",
   setlist = "", setdisc = "", setleader = "", setsub = "", setsup = "", setnucleus = "",
@@ -313,6 +315,10 @@ local function lenient_pack(f, what)
     local b, badness = f(todirect_ud(n), w, mode, dir)
     return tonode(b), badness
   end
+end
+function node.hyphenating(h, t)
+  local a, b, ok = N.hyphenating(todirect_ud(h), todirect_ud(t), true)
+  return tonode(a), tonode(b), ok
 end
 node.hpack = lenient_pack(N.wrap_hpack, "hpack")
 node.vpack = lenient_pack(N.wrap_vpack, "vpack")

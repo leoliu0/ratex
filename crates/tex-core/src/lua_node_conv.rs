@@ -415,15 +415,23 @@ impl Engine {
                 n
             }
             Node::Disc(dc) => {
-                let n = self.lua_new_node(DISC, 0);
+                let n = self.lua_new_node(DISC, u16::from(dc.subtype));
                 let mut c = *ctx;
                 let pre = self.import_sub(&dc.pre_break, &mut c);
                 let post = self.import_sub(&dc.post_break, &mut c);
                 let rep = self.import_sub(&dc.no_break, &mut c);
+                let penalty = if dc.penalty != boxes::DISC_PENALTY_TEX {
+                    dc.penalty
+                } else if dc.pre_break.is_empty() {
+                    self.eqtb.int_params[IntParam::ExHyphenPenalty.idx() as usize]
+                } else {
+                    self.eqtb.int_params[IntParam::HyphenPenalty.idx() as usize]
+                };
                 let f = &mut self.lua_nodes.node_mut(n).f;
                 f[sl::D_PRE] = pre as i32;
                 f[sl::D_POST] = post as i32;
                 f[sl::D_REPLACE] = rep as i32;
+                f[sl::D_PENALTY] = penalty;
                 n
             }
             Node::Box { .. } => self.import_box(node, ctx),
@@ -630,7 +638,14 @@ impl Engine {
                 let pre_break = self.export_sub(f[sl::D_PRE]);
                 let post_break = self.export_sub(f[sl::D_POST]);
                 let no_break = self.export_sub(f[sl::D_REPLACE]);
-                out.push(Node::Disc(DiscNode { pre_break, post_break, no_break, replace_count: 0 }));
+                out.push(Node::Disc(DiscNode {
+                    pre_break,
+                    post_break,
+                    no_break,
+                    replace_count: 0,
+                    subtype: sub as u8,
+                    penalty: f[sl::D_PENALTY],
+                }));
                 let nd = self.lua_nodes.node_mut(n);
                 nd.f[sl::D_PRE] = 0;
                 nd.f[sl::D_POST] = 0;

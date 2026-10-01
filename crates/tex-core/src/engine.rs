@@ -192,6 +192,9 @@ pub struct Engine {
     /// The LuaTeX node store behind `node.*` / `node.direct.*` (see
     /// `lua_node`).
     pub(crate) lua_nodes: crate::lua_node::NodeStore,
+    /// LuaTeX `callback_set`: per callback `0` (none), `1` (a function is
+    /// registered) or `-1` (registered as `false`); see `lua_callbacks`.
+    pub(crate) lua_cb: [i8; crate::lua_callbacks::N_CALLBACKS],
     pub prev_depth: i32, // special marker: -1000pt means unset
     pub space_factor: i32,
     pub prev_graf: i32,
@@ -938,6 +941,7 @@ impl Engine {
             mode_level: 0,
             cur_list: Vec::new(),
             lua_nodes: crate::lua_node::NodeStore::new(),
+            lua_cb: [0; crate::lua_callbacks::N_CALLBACKS],
             prev_depth: -1000 * 65536,
             space_factor: 1000,
             pdf_images: crate::FxHashMap::default(),

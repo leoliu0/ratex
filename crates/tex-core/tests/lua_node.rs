@@ -98,6 +98,11 @@ fn node_misc_functions() {
 }
 
 #[test]
+fn node_ligaturing_and_kerning() {
+    check_case("ligkern");
+}
+
+#[test]
 fn probe_from_env() {
     let Ok(file) = std::env::var("LUA_PROBE") else { return };
     let code = std::fs::read_to_string(file).unwrap();

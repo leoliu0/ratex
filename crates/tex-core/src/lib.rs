@@ -31,6 +31,8 @@ pub mod lua_font;
 mod lua_font_hb;
 mod lua_font_lib;
 mod lua_font_vf;
+mod lua_callbacks;
+mod lua_ligkern;
 mod lua_bridge;
 mod lua_cmds;
 pub mod lua_node;

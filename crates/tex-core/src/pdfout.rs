@@ -98,6 +98,8 @@ pub struct PdfPage {
     /// raw dict entries contributed by \pdfpageresources (copied at shipout)
     pub resources_extra: Vec<u8>,
     pub display_list: Option<crate::boxes::DisplayList>,
+    /// pdfTeX "Generate ProcSet if desired" (`\pdfomitprocset` at shipout)
+    pub procset: bool,
 }
 
 pub struct PdfDoc {
@@ -135,6 +137,28 @@ pub struct PdfDoc {
     pub minor_version: Option<i32>,
     pub native_bindings: std::collections::BTreeMap<usize, Vec<NativeBindingInfo>>,
     pub legacy_bindings: std::collections::BTreeMap<usize, Vec<LegacyBindingInfo>>,
+    /// pdfTeX resource names: form XObject number → `n` of `/Fm<n>`.
+    pub(crate) form_names: std::collections::BTreeMap<i32, i32>,
+    /// pdfTeX resource names: image XObject number → `n` of `/Im<n>`.
+    pub(crate) image_names: std::collections::BTreeMap<i32, i32>,
+    /// ProcSet image bits of each image XObject (writeimg.c `img_color`:
+    /// 1 /ImageB, 2 /ImageC, 4 /ImageI).
+    pub(crate) image_procsets: std::collections::BTreeMap<i32, u8>,
+    /// `\pdfuniqueresname` prefix appended to every resource name.
+    pub(crate) resname_prefix: String,
+    /// `\pdftrailer` entries for the trailer dictionary.
+    pub(crate) trailer_extra: Vec<u8>,
+    /// `\pdfomitinfodict`: no document information dictionary.
+    pub(crate) omit_info_dict: bool,
+    /// `\pdfomitcharset`: no /CharSet in Type 1 font descriptors.
+    pub(crate) omit_charset: bool,
+    /// `\pdfpageref`: object numbers fixed for pages (0-based index).
+    pub(crate) page_objnums: std::collections::BTreeMap<usize, i32>,
+    /// Highest object number the engine reserved; the writer numbers its
+    /// own objects after it.
+    pub(crate) reserved_objects: i32,
+    /// pdfTeX `gen_running_link` (\pdfrunninglinkon/off), persistent across pages.
+    pub(crate) gen_running_link: bool,
 }
 
 impl PdfDoc {
@@ -288,6 +312,16 @@ impl PdfDoc {
             minor_version: None,
             native_bindings: std::collections::BTreeMap::new(),
             legacy_bindings: std::collections::BTreeMap::new(),
+            form_names: std::collections::BTreeMap::new(),
+            image_names: std::collections::BTreeMap::new(),
+            image_procsets: std::collections::BTreeMap::new(),
+            resname_prefix: String::new(),
+            trailer_extra: Vec::new(),
+            omit_info_dict: false,
+            omit_charset: false,
+            page_objnums: std::collections::BTreeMap::new(),
+            reserved_objects: 0,
+            gen_running_link: true,
         }
     }
 

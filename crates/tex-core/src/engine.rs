@@ -567,6 +567,9 @@ pub struct Engine {
     /// Object numbers allocated specifically by `\pdfobj reserveobjnum` and
     /// still available for one `\pdfobj useobjnum` definition.
     pub(crate) pdf_reserved_objnums: crate::FxHashSet<i32>,
+    /// pdfTeX backend state for \pdfpageref, \pdffontname, \pdffontobjnum,
+    /// \pdfspacefont and friends (`crate::pdftex`).
+    pub(crate) pdf_backend: crate::pdftex::PdfBackend,
     pub pdf_match_subject: Vec<u8>,
     pub pdf_match_ranges: Vec<Option<(usize, usize)>>,
     pub marks: [Vec<Vec<Token>>; 5], // top, first, bot, splitfirst, splitbot (class-indexed)
@@ -953,6 +956,7 @@ impl Engine {
             pdf_last_ximage_pages: 0,
             pdf_next_obj: 5,
             pdf_reserved_objnums: crate::FxHashSet::default(),
+            pdf_backend: Default::default(),
             pdf_last_link: 0,
             pdf_last_annot: 0,
             right_delim: None,
@@ -1312,6 +1316,25 @@ impl Engine {
             (b"pdfadjustinterwordglue", IntParam::PdfAdjustInterwordGlue),
             (b"pdfprependkern", IntParam::PdfPrependKern),
             (b"pdfappendkern", IntParam::PdfAppendKern),
+            (b"pdfmovechars", IntParam::PdfMoveChars),
+            (b"pdfimageresolution", IntParam::PdfImageResolution),
+            (b"pdfuniqueresname", IntParam::PdfUniqueResname),
+            (b"pdfoptionalwaysusepdfpagebox", IntParam::PdfOptionAlwaysUsePdfPagebox),
+            (b"pdfoptionpdfinclusionerrorlevel", IntParam::PdfOptionPdfInclusionErrorlevel),
+            (b"pdfforcepagebox", IntParam::PdfForcePagebox),
+            (b"pdfpagebox", IntParam::PdfPagebox),
+            (b"pdfinclusionerrorlevel", IntParam::PdfInclusionErrorlevel),
+            (b"pdfgamma", IntParam::PdfGamma),
+            (b"pdfimagegamma", IntParam::PdfImageGamma),
+            (b"pdfimagehicolor", IntParam::PdfImageHicolor),
+            (b"pdfimageapplygamma", IntParam::PdfImageApplyGamma),
+            (b"pdfinclusioncopyfonts", IntParam::PdfInclusionCopyFonts),
+            (b"pdfsuppresswarningdupdest", IntParam::PdfSuppressWarningDupDest),
+            (b"pdfsuppresswarningdupmap", IntParam::PdfSuppressWarningDupMap),
+            (b"pdfomitcharset", IntParam::PdfOmitCharset),
+            (b"pdfomitinfodict", IntParam::PdfOmitInfoDict),
+            (b"pdfomitprocset", IntParam::PdfOmitProcset),
+            (b"pdfptexuseunderscore", IntParam::PdfPtexUseUnderscore),
         ];
         for (n, p) in intnames {
             let id = eng.cs.intern(n);
@@ -1322,6 +1345,11 @@ impl Engine {
         eng.eqtb.int_params[IntParam::PdfMinorVersion.idx() as usize] = 7;
         eng.eqtb.int_params[IntParam::EtxVersion.idx() as usize] = 2;
         eng.eqtb.int_params[IntParam::PaperQuality.idx() as usize] = 1;
+        // pdftex.web §[32a] "Initialize table entries": IniTeX defaults.
+        eng.eqtb.int_params[IntParam::PdfImageResolution.idx() as usize] = 72;
+        eng.eqtb.int_params[IntParam::PdfGamma.idx() as usize] = 1000;
+        eng.eqtb.int_params[IntParam::PdfImageGamma.idx() as usize] = 2200;
+        eng.eqtb.int_params[IntParam::PdfImageHicolor.idx() as usize] = 1;
         let dimnames: &[(&[u8], DimParam)] = &[
             (b"parindent", DimParam::ParIndent),
             (b"mathsurround", DimParam::MathSurround),
@@ -1406,6 +1434,7 @@ impl Engine {
             (b"output", ToksParam::Output),
             (b"errhelp", ToksParam::ErrHelp),
             (b"pdftrailerid", ToksParam::PdfTrailerId),
+            (b"pdfpkmode", ToksParam::PdfPkMode),
         ];
         for (n, p) in toksnames {
             let id = eng.cs.intern(n);
@@ -1615,7 +1644,6 @@ impl Engine {
         d!(eng, b"pdfrefobj", PdfRefObj);
         d!(eng, b"pdfuncompress", PdfUncompress);
         d!(eng, b"pdftolerance", PdfTolerance);
-        d!(eng, b"pdfpagebox", PdfPageBox);
         d!(eng, b"pdfthread", PdfThread);
         d!(eng, b"pdfstartthread", PdfStartThread);
         d!(eng, b"pdfendthread", PdfEndThread);
@@ -1641,6 +1669,23 @@ impl Engine {
         d!(eng, b"pdfsetrandomseed", PdfSetRandomSeed);
         d!(eng, b"randomseed", PdfRandomSeed);
         d!(eng, b"setrandomseed", PdfSetRandomSeed);
+        d!(eng, b"pdfpageref", PdfPageRef);
+        d!(eng, b"pdffontname", PdfFontName);
+        d!(eng, b"pdffontobjnum", PdfFontObjNum);
+        d!(eng, b"pdfxformname", PdfXFormName);
+        d!(eng, b"pdflastximagecolordepth", PdfLastXImageColorDepth);
+        d!(eng, b"pdftrailer", PdfTrailer);
+        d!(eng, b"pdfincludechars", PdfIncludeChars);
+        d!(eng, b"pdfcopyfont", PdfCopyFont);
+        d!(eng, b"pdfspacefont", PdfSpaceFont);
+        d!(eng, b"pdffakespace", PdfFakeSpace);
+        d!(eng, b"pdfinterwordspaceon", PdfInterwordSpaceOn);
+        d!(eng, b"pdfinterwordspaceoff", PdfInterwordSpaceOff);
+        d!(eng, b"pdfrunninglinkon", PdfRunningLinkOn);
+        d!(eng, b"pdfrunninglinkoff", PdfRunningLinkOff);
+        d!(eng, b"pdfsnaprefpoint", PdfSnapRefPoint);
+        d!(eng, b"pdfsnapy", PdfSnapY);
+        d!(eng, b"pdfsnapycomp", PdfSnapYComp);
         d!(eng, b"pdfescapestring", PdfEscapeString);
         d!(eng, b"pdfescapename", PdfEscapeName);
         d!(eng, b"pdfescapehex", PdfEscapeHex);

@@ -121,9 +121,51 @@ pub enum IntParam {
     PdfPrependKern,
     /// pdfTeX switch for appending kerns (microtype kerning feature).
     PdfAppendKern,
+    // pdfTeX backend parameters (pdftex.web pdf_int_pars).
+    /// `\pdfmovechars`: obsolete; warns once when a font is first used.
+    PdfMoveChars,
+    /// `\pdfimageresolution`: dpi for images without resolution info.
+    PdfImageResolution,
+    /// `\pdfuniqueresname`: prefix resource names with a job-derived tag.
+    PdfUniqueResname,
+    /// `\pdfoptionalwaysusepdfpagebox`: obsolete alias of `\pdfforcepagebox`.
+    PdfOptionAlwaysUsePdfPagebox,
+    /// `\pdfoptionpdfinclusionerrorlevel`: obsolete alias of
+    /// `\pdfinclusionerrorlevel`.
+    PdfOptionPdfInclusionErrorlevel,
+    /// `\pdfforcepagebox`: page box used for every PDF inclusion.
+    PdfForcePagebox,
+    /// `\pdfpagebox`: default page box for PDF inclusion.
+    PdfPagebox,
+    /// `\pdfinclusionerrorlevel`: newer included PDF versions are an error
+    /// (> 0), a warning (0) or ignored (< 0).
+    PdfInclusionErrorlevel,
+    /// `\pdfgamma` (thousandths): output device gamma.
+    PdfGamma,
+    /// `\pdfimagegamma` (thousandths): gamma of PNGs without a gAMA chunk.
+    PdfImageGamma,
+    /// `\pdfimagehicolor`: keep 16-bit PNG samples (PDF 1.5+).
+    PdfImageHicolor,
+    /// `\pdfimageapplygamma`: gamma-correct PNG samples.
+    PdfImageApplyGamma,
+    /// `\pdfinclusioncopyfonts`: copy fonts of included PDFs even when
+    /// mapped to the same embedded program.
+    PdfInclusionCopyFonts,
+    /// `\pdfsuppresswarningdupdest`: no duplicate-destination warning.
+    PdfSuppressWarningDupDest,
+    /// `\pdfsuppresswarningdupmap`: no duplicate-map-entry warning.
+    PdfSuppressWarningDupMap,
+    /// `\pdfomitcharset`: omit /CharSet from Type 1 font descriptors.
+    PdfOmitCharset,
+    /// `\pdfomitinfodict`: omit the document /Info dictionary.
+    PdfOmitInfoDict,
+    /// `\pdfomitprocset`: omit (> 0) or force (< 0) resource /ProcSet.
+    PdfOmitProcset,
+    /// `\pdfptexuseunderscore`: write `PTEX_` instead of `PTEX.` keys.
+    PdfPtexUseUnderscore,
 }
 
-pub const NUM_INT_PARAMS: usize = 99;
+pub const NUM_INT_PARAMS: usize = 118;
 
 impl IntParam {
     #[inline]
@@ -231,6 +273,25 @@ impl IntParam {
         IntParam::PdfAdjustInterwordGlue,
         IntParam::PdfPrependKern,
         IntParam::PdfAppendKern,
+        IntParam::PdfMoveChars,
+        IntParam::PdfImageResolution,
+        IntParam::PdfUniqueResname,
+        IntParam::PdfOptionAlwaysUsePdfPagebox,
+        IntParam::PdfOptionPdfInclusionErrorlevel,
+        IntParam::PdfForcePagebox,
+        IntParam::PdfPagebox,
+        IntParam::PdfInclusionErrorlevel,
+        IntParam::PdfGamma,
+        IntParam::PdfImageGamma,
+        IntParam::PdfImageHicolor,
+        IntParam::PdfImageApplyGamma,
+        IntParam::PdfInclusionCopyFonts,
+        IntParam::PdfSuppressWarningDupDest,
+        IntParam::PdfSuppressWarningDupMap,
+        IntParam::PdfOmitCharset,
+        IntParam::PdfOmitInfoDict,
+        IntParam::PdfOmitProcset,
+        IntParam::PdfPtexUseUnderscore,
     ];
 
     pub fn from_idx(i: u16) -> Option<Self> {
@@ -393,9 +454,11 @@ pub enum ToksParam {
     Output,
     ErrHelp,
     PdfTrailerId,
+    /// pdfTeX `\pdfpkmode`: METAFONT mode for generated PK fonts.
+    PdfPkMode,
 }
 
-pub const NUM_TOKS_PARAMS: usize = 11;
+pub const NUM_TOKS_PARAMS: usize = 12;
 
 impl ToksParam {
     #[inline]
@@ -658,7 +721,6 @@ pub enum Prim {
     PdfVOrigin,
     PdfPageWidth,
     PdfPageHeight,
-    PdfPageBox,
     PdfThread,
     PdfStartThread,
     PdfEndThread,
@@ -835,6 +897,24 @@ pub enum Prim {
     Ustartmath,
     Ustopmath,
     PdfNoBuiltinToUnicode,
+    // pdfTeX backend commands (wire codes 500-599).
+    PdfPageRef,
+    PdfFontName,
+    PdfFontObjNum,
+    PdfXFormName,
+    PdfLastXImageColorDepth,
+    PdfTrailer,
+    PdfIncludeChars,
+    PdfCopyFont,
+    PdfSpaceFont,
+    PdfFakeSpace,
+    PdfInterwordSpaceOn,
+    PdfInterwordSpaceOff,
+    PdfRunningLinkOn,
+    PdfRunningLinkOff,
+    PdfSnapRefPoint,
+    PdfSnapY,
+    PdfSnapYComp,
 }
 
 /// Stable wire codes for the format dump (`crate::format`). Unit variants
@@ -1086,7 +1166,6 @@ impl Prim {
             Prim::PdfVOrigin => 223,
             Prim::PdfPageWidth => 224,
             Prim::PdfPageHeight => 225,
-            Prim::PdfPageBox => 226,
             Prim::PdfThread => 227,
             Prim::PdfStartThread => 228,
             Prim::PdfEndThread => 229,
@@ -1243,6 +1322,23 @@ impl Prim {
             Prim::Ustartmath => 382,
             Prim::Ustopmath => 383,
             Prim::PdfNoBuiltinToUnicode => 384,
+            Prim::PdfPageRef => 500,
+            Prim::PdfFontName => 501,
+            Prim::PdfFontObjNum => 502,
+            Prim::PdfXFormName => 503,
+            Prim::PdfLastXImageColorDepth => 504,
+            Prim::PdfTrailer => 505,
+            Prim::PdfIncludeChars => 506,
+            Prim::PdfCopyFont => 507,
+            Prim::PdfSpaceFont => 508,
+            Prim::PdfFakeSpace => 509,
+            Prim::PdfInterwordSpaceOn => 510,
+            Prim::PdfInterwordSpaceOff => 511,
+            Prim::PdfRunningLinkOn => 512,
+            Prim::PdfRunningLinkOff => 513,
+            Prim::PdfSnapRefPoint => 514,
+            Prim::PdfSnapY => 515,
+            Prim::PdfSnapYComp => 516,
             Prim::ScriptScriptStyle => 284,
             Prim::Patterns => 287,
             Prim::Hyphenation => 288,
@@ -1483,7 +1579,6 @@ impl Prim {
             223 => Some(Prim::PdfVOrigin),
             224 => Some(Prim::PdfPageWidth),
             225 => Some(Prim::PdfPageHeight),
-            226 => Some(Prim::PdfPageBox),
             227 => Some(Prim::PdfThread),
             228 => Some(Prim::PdfStartThread),
             229 => Some(Prim::PdfEndThread),
@@ -1640,6 +1735,23 @@ impl Prim {
             382 => Some(Prim::Ustartmath),
             383 => Some(Prim::Ustopmath),
             384 => Some(Prim::PdfNoBuiltinToUnicode),
+            500 => Some(Prim::PdfPageRef),
+            501 => Some(Prim::PdfFontName),
+            502 => Some(Prim::PdfFontObjNum),
+            503 => Some(Prim::PdfXFormName),
+            504 => Some(Prim::PdfLastXImageColorDepth),
+            505 => Some(Prim::PdfTrailer),
+            506 => Some(Prim::PdfIncludeChars),
+            507 => Some(Prim::PdfCopyFont),
+            508 => Some(Prim::PdfSpaceFont),
+            509 => Some(Prim::PdfFakeSpace),
+            510 => Some(Prim::PdfInterwordSpaceOn),
+            511 => Some(Prim::PdfInterwordSpaceOff),
+            512 => Some(Prim::PdfRunningLinkOn),
+            513 => Some(Prim::PdfRunningLinkOff),
+            514 => Some(Prim::PdfSnapRefPoint),
+            515 => Some(Prim::PdfSnapY),
+            516 => Some(Prim::PdfSnapYComp),
             0x1000..=0x1fff => {
                 let i = c & 0x0fff;
                 Some(Prim::IntP(IntParam::from_idx(i)?))
@@ -1691,6 +1803,7 @@ impl Prim {
                     8 => ToksParam::Output,
                     9 => ToksParam::ErrHelp,
                     10 => ToksParam::PdfTrailerId,
+                    11 => ToksParam::PdfPkMode,
                     _ => return None,
                 }))
             }

@@ -1608,6 +1608,13 @@ pub fn write_pdf(doc: &PdfDoc) -> Result<Vec<u8>, String> {
     for (obj_num, obj_body) in &doc.objects {
         b.set_bytes(*obj_num as usize, obj_body.clone());
     }
+    // Engine-reserved numbers (\pdfpageref pages, \pdffontobjnum fonts,
+    // unused reservations) stay below the writer's own objects.
+    let reserved = usize::try_from(doc.reserved_objects).unwrap_or(0);
+    if reserved > b.objs.len() && reserved <= crate::engine::MAX_PAGE_LIST {
+        b.objs.resize(reserved, None);
+        b.packable.resize(reserved, false);
+    }
     let catalog_obj = b.alloc(); // after user objects
     let pages_obj = b.alloc();
 
@@ -1908,7 +1915,11 @@ pub fn write_pdf(doc: &PdfDoc) -> Result<Vec<u8>, String> {
         .iter()
         .zip(&font_keys)
         .map(|(f, &key)| {
-            let font = b.alloc();
+            let font = if f.obj_font > 0 {
+                f.obj_font as usize
+            } else {
+                b.alloc()
+            };
             let desc = b.alloc();
             let sfnt = is_sfnt(f);
             let cidfont = if sfnt { Some(b.alloc()) } else { None };
@@ -1986,9 +1997,13 @@ pub fn write_pdf(doc: &PdfDoc) -> Result<Vec<u8>, String> {
     let page_objs: Vec<(usize, usize, Vec<usize>)> = doc
         .pages
         .iter()
-        .map(|p| {
+        .enumerate()
+        .map(|(index, p)| {
             let content = b.alloc();
-            let page = b.alloc();
+            let page = match doc.page_objnums.get(&index) {
+                Some(&reserved) => reserved as usize,
+                None => b.alloc(),
+            };
             let annots = (0..p.annots.len()).map(|_| b.alloc()).collect();
             (content, page, annots)
         })
@@ -2020,7 +2035,7 @@ pub fn write_pdf(doc: &PdfDoc) -> Result<Vec<u8>, String> {
         Some((root, entries))
     };
 
-    let info_obj = b.alloc();
+    let info_obj = (!doc.omit_info_dict).then(|| b.alloc());
     // ---- emit fonts
     let mut emitted_files: std::collections::HashSet<usize> = std::collections::HashSet::new();
     let mut emitted_tounicode: std::collections::HashSet<usize> = std::collections::HashSet::new();
@@ -2299,11 +2314,12 @@ pub fn write_pdf(doc: &PdfDoc) -> Result<Vec<u8>, String> {
         b.set(
             *page_obj,
             format!(
-                "<< /Type /Page /Parent {} 0 R{} /Contents {} 0 R /Resources << /Font << {} >> /ProcSet [/PDF /Text]{}{} >>{}{} >>",
+                "<< /Type /Page /Parent {} 0 R{} /Contents {} 0 R /Resources << /Font << {} >>{}{}{} >>{}{} >>",
                 pages_obj,
                 media_box,
                 content_obj,
                 fonts_res,
+                if page.procset { " /ProcSet [/PDF /Text]" } else { "" },
                 xobj_str,
                 res_extra_str,
                 annots,
@@ -2428,7 +2444,9 @@ pub fn write_pdf(doc: &PdfDoc) -> Result<Vec<u8>, String> {
         info_body.push_str(" /Creator (tex-rs)");
     }
     info_body.push_str(" >>");
-    b.set(info_obj, info_body);
+    if let Some(info_obj) = info_obj {
+        b.set(info_obj, info_body);
+    }
     // ---- emit catalog
     let mut cat = format!("<< /Type /Catalog /Pages {} 0 R", pages_obj);
     if names_obj != 0 {
@@ -2536,6 +2554,7 @@ pub fn write_pdf(doc: &PdfDoc) -> Result<Vec<u8>, String> {
             &b.objs,
             catalog_obj,
             info_obj,
+            &doc.trailer_extra,
             encrypt_obj,
             file_id,
             doc.minor_version,
@@ -2546,6 +2565,7 @@ pub fn write_pdf(doc: &PdfDoc) -> Result<Vec<u8>, String> {
             &b.packable,
             catalog_obj,
             info_obj,
+            &doc.trailer_extra,
             encrypt_obj,
             file_id,
             doc.minor_version,

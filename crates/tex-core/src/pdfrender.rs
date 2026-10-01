@@ -399,9 +399,9 @@ impl Engine {
         }
     }
 
-    /// Render a shipped page box into a PdfPage. Also copies the outline
-    /// list into the document and records \pdfsavepos results
-    /// (\pdflastxpos/\pdflastypos) from the last SavePos node on the page.
+    /// Render a shipped page box into a PdfPage. Also records
+    /// \pdfsavepos results (\pdflastxpos/\pdflastypos) from the last
+    /// SavePos node on the page.
     pub fn render_page(&mut self, page_box: &Node) -> PdfPage {
         let width_sp = self.eqtb.dim_params[DimParam::PdfPageWidth.idx() as usize];
         let height_sp = self.eqtb.dim_params[DimParam::PdfPageHeight.idx() as usize];
@@ -458,7 +458,6 @@ impl Engine {
             );
         }
         // engine-level results
-        ctx.eng.pdf_doc.outlines = ctx.eng.pdf_outlines.clone();
         ctx.eng.pdf_doc.pages_attr = ctx.eng.pdf_pages_attr.clone().into_bytes();
         PdfPage {
             content: {
@@ -2204,9 +2203,9 @@ impl<'a> RenderCtx<'a> {
                     self.eng.synctex.record_point(page, *file_id, *line, cur_h, cur_v);
                 }
             }
-            PdfDest { name, kind, params } => {
-                // first definition of a name wins
-                if !self.dests.iter().any(|d| &d.name == name) {
+            PdfDest { id, kind, params } => {
+                // first definition of an identifier wins
+                if !self.dests.iter().any(|d| &d.id == id) {
                     // explicit coordinates are page-absolute sp from the
                     // bottom-left corner; the sentinel -32768 keeps the
                     // anchor position
@@ -2251,7 +2250,7 @@ impl<'a> RenderCtx<'a> {
                         None
                     };
                     self.dests.push(crate::pdfout::Dest {
-                        name: name.clone(),
+                        id: id.clone(),
                         x: px,
                         y: py,
                         kind: *kind,

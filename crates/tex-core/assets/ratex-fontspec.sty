@@ -15,6 +15,22 @@
 \tl_new:N \l_ratex_font_selector_tl
 \tl_new:N \l_ratex_font_options_tl
 \tl_new:N \l_ratex_font_extra_tl
+\tl_new:N \l_ratex_font_basename_tl
+% fontspec replaces `*` in face names with the family name minus its file
+% extension. Expand it here: NFSS reads `*` in a shape entry as a size function.
+\cs_new_protected:Npn \ratex_font_expand_wildcard:
+  {
+    \tl_set_eq:NN \l_ratex_font_basename_tl \l_ratex_font_selector_tl
+    \clist_map_inline:nn {.otf,.ttf,.OTF,.TTF,.ttc,.TTC,.dfont}
+      {
+        \tl_if_in:NnT \l_ratex_font_basename_tl {##1}
+          {
+            \tl_remove_once:Nn \l_ratex_font_basename_tl {##1}
+            \clist_map_break:
+          }
+      }
+    \exp_args:NNnV \tl_replace_all:Nnn \l_ratex_font_options_tl {*} \l_ratex_font_basename_tl
+  }
 \cs_new_protected:Npn \ratex_font_shape:nnn #1#2#3
   {
     \use:x
@@ -34,6 +50,7 @@
     \prop_get:NVNT \g_ratex_font_defaults_prop \l_ratex_font_selector_tl \l_ratex_font_extra_tl
       {\tl_put_right:Nx \l_ratex_font_options_tl {,\exp_not:V \l_ratex_font_extra_tl}}
     \tl_put_right:Nx \l_ratex_font_options_tl {,#2}
+    \ratex_font_expand_wildcard:
     \prop_gput:NVV \g_ratex_font_selectors_prop \l_ratex_font_family_tl \l_ratex_font_selector_tl
     \prop_gput:NVV \g_ratex_font_options_prop \l_ratex_font_family_tl \l_ratex_font_options_tl
     \DeclareFontFamily{TU}{\l_ratex_font_family_tl}{}
@@ -69,6 +86,7 @@
     \prop_get:NVNT \g_ratex_font_defaults_prop \l_ratex_font_selector_tl \l_ratex_font_extra_tl
       {\tl_put_right:Nx \l_ratex_font_options_tl {,\exp_not:V \l_ratex_font_extra_tl}}
     \tl_put_right:Nx \l_ratex_font_options_tl {,#2}
+    \ratex_font_expand_wildcard:
     \prop_gput:NVV \g_ratex_font_selectors_prop \l_ratex_font_family_tl \l_ratex_font_selector_tl
     \prop_gput:NVV \g_ratex_font_options_prop \l_ratex_font_family_tl \l_ratex_font_options_tl
     \DeclareFontFamily{TU}{\l_ratex_font_family_tl}{}
@@ -178,9 +196,10 @@
   {\ifnum\RatexNativeTextMode>0~\RatexUTFviii{#1#2#3}\else\ratex_utf_three:nnn{#1}{#2}{#3}\fi}
 \cs_set:Npn \UTFviii@four@octets@combine #1#2#3#4
   {\ifnum\RatexNativeTextMode>0~\RatexUTFviii{#1#2#3#4}\else\ratex_utf_four:nnnn{#1}{#2}{#3}{#4}\fi}
-\setsansfont{Latin~Modern~Sans}
-\setmonofont{Latin~Modern~Mono}
-\setmainfont{Latin~Modern~Roman}
+% Match the slanted shapes of LaTeX's default TU Latin Modern families.
+\setsansfont{Latin~Modern~Sans}[SlantedFont=LMSans10-Oblique,BoldSlantedFont=LMSans10-BoldOblique]
+\setmonofont{Latin~Modern~Mono}[SlantedFont=LMMonoSlant10-Regular]
+\setmainfont{Latin~Modern~Roman}[SlantedFont=LMRomanSlant10-Regular,BoldSlantedFont=LMRomanSlant10-Bold]
 \DeclareFontSubstitution{TU}{\rmdefault}{m}{n}
 \ExplSyntaxOff
 \RequirePackage[TU]{fontenc}

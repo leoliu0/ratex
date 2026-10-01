@@ -26,6 +26,7 @@ pub struct NativeFontOptions {
     pub italic_font: Option<String>,
     pub bold_italic_font: Option<String>,
     pub slanted_font: Option<String>,
+    pub bold_slanted_font: Option<String>,
     pub small_caps_font: Option<String>,
     pub upright_features: Vec<rustybuzz::Feature>,
     pub bold_features: Vec<rustybuzz::Feature>,
@@ -56,6 +57,7 @@ impl Default for NativeFontOptions {
             italic_font: None,
             bold_italic_font: None,
             slanted_font: None,
+            bold_slanted_font: None,
             small_caps_font: None,
             upright_features: Vec::new(),
             bold_features: Vec::new(),
@@ -104,6 +106,91 @@ impl NativeFontOptions {
             opts.features.extend(opts.small_caps_features.clone());
         }
         opts
+    }
+}
+
+/// Slope axis of an NFSS shape requested from a native font family.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FaceSlope {
+    Upright,
+    Italic,
+    Slanted,
+}
+
+/// NFSS series/shape pair requested from a native font family.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FaceShape {
+    pub weight: u16,
+    pub slope: FaceSlope,
+}
+
+impl FaceShape {
+    pub const REGULAR: FaceShape = FaceShape {
+        weight: 400,
+        slope: FaceSlope::Upright,
+    };
+
+    /// Shape named by the resolved `Style`/`Weight`/`Italic` options.
+    pub fn requested(options: &NativeFontOptions) -> Self {
+        let slanted = options.style.as_deref().is_some_and(|s| {
+            s.eq_ignore_ascii_case("slanted") || s.eq_ignore_ascii_case("boldslanted")
+        });
+        let slope = if slanted {
+            FaceSlope::Slanted
+        } else if options.italic == Some(true) {
+            FaceSlope::Italic
+        } else {
+            FaceSlope::Upright
+        };
+        FaceShape {
+            weight: options.weight.unwrap_or(400),
+            slope,
+        }
+    }
+
+    /// The shape NFSS tries next when this one is undeclared: `sl` falls back
+    /// to `it`, `it` to the upright shape, and a non-medium series to medium.
+    pub fn nfss_fallback(self) -> Self {
+        match self.slope {
+            FaceSlope::Slanted => FaceShape {
+                slope: FaceSlope::Italic,
+                ..self
+            },
+            FaceSlope::Italic => FaceShape {
+                slope: FaceSlope::Upright,
+                ..self
+            },
+            FaceSlope::Upright => FaceShape::REGULAR,
+        }
+    }
+}
+
+impl std::fmt::Display for FaceShape {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let weight = match self.weight {
+            400 => "",
+            100 => "Thin",
+            200 => "ExtraLight",
+            300 => "Light",
+            500 => "Medium",
+            600 => "SemiBold",
+            700 => "Bold",
+            800 => "ExtraBold",
+            900 => "Black",
+            other => return write!(f, "Weight{other}{}", slope_name(self.slope)),
+        };
+        match (weight, self.slope) {
+            ("", FaceSlope::Upright) => f.write_str("Regular"),
+            (weight, slope) => write!(f, "{weight}{}", slope_name(slope)),
+        }
+    }
+}
+
+fn slope_name(slope: FaceSlope) -> &'static str {
+    match slope {
+        FaceSlope::Upright => "",
+        FaceSlope::Italic => "Italic",
+        FaceSlope::Slanted => "Slanted",
     }
 }
 
@@ -294,6 +381,7 @@ pub fn parse_fontspec_options(input: &str) -> Result<NativeFontOptions, String> 
                 "italicfont" => options.italic_font = Some(val.to_owned()),
                 "bolditalicfont" => options.bold_italic_font = Some(val.to_owned()),
                 "slantedfont" => options.slanted_font = Some(val.to_owned()),
+                "boldslantedfont" => options.bold_slanted_font = Some(val.to_owned()),
                 "italic" => match val.to_ascii_lowercase().as_str() {
                     "true" | "yes" | "on" => options.italic = Some(true),
                     "false" | "no" | "off" => options.italic = Some(false),
@@ -766,13 +854,13 @@ pub fn face_supports_feature(face: &ttf_parser::Face<'_>, tag: ttf_parser::Tag) 
     false
 }
 
-/// Validate that requested active features and explicit styles are supported by the face.
-pub fn validate_face_features_and_style(
+/// Validate that requested active OpenType features are supported by the face.
+/// Face styles are chosen during resolution, where fontspec substitutes missing shapes.
+pub fn validate_face_features(
     face: &ttf_parser::Face<'_>,
     selector: &str,
     options: &NativeFontOptions,
 ) -> Result<(), String> {
-    // Validate requested active OpenType features
     for feat in &options.features {
         if feat.value > 0 && !face_supports_feature(face, feat.tag) {
             return Err(format!(
@@ -781,49 +869,5 @@ pub fn validate_face_features_and_style(
             ));
         }
     }
-
-    // Validate requested explicit styles
-    if let Some(style) = &options.style {
-        let s = style.to_ascii_lowercase();
-        match s.as_str() {
-            "bold" => {
-                if !face.is_bold() && face.weight().to_number() < 600 {
-                    return Err(format!(
-                        "Requested style `Bold` is not available in font file `{selector}`"
-                    ));
-                }
-            }
-            "italic" | "oblique" => {
-                let has_italic =
-                    face.is_italic() || face.italic_angle().map(|a| a != 0.0).unwrap_or(false);
-                if !has_italic {
-                    return Err(format!(
-                        "Requested style `Italic` is not available in font file `{selector}`"
-                    ));
-                }
-            }
-            "bolditalic" | "bold italic" | "boldoblique" | "bold oblique" => {
-                let bold = face.is_bold() || face.weight().to_number() >= 600;
-                let italic =
-                    face.is_italic() || face.italic_angle().map(|a| a != 0.0).unwrap_or(false);
-                if !bold || !italic {
-                    return Err(format!(
-                        "Requested style `BoldItalic` is not available in font file `{selector}`"
-                    ));
-                }
-            }
-            "slanted" | "boldslanted" => {
-                let has_slant =
-                    face.is_italic() || face.italic_angle().map(|a| a != 0.0).unwrap_or(false);
-                if !has_slant {
-                    return Err(format!(
-                        "Requested style `Slanted` is not available in font file `{selector}`"
-                    ));
-                }
-            }
-            _ => {}
-        }
-    }
-
     Ok(())
 }

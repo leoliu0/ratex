@@ -1447,6 +1447,7 @@ impl Engine {
         if self.stopped_on_error || (self.ini_mode && self.format_done) {
             return;
         }
+        self.warn_unresolved_outline_targets();
         let open_groups = self
             .eqtb
             .save_stack

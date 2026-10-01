@@ -159,7 +159,7 @@ pub enum WhatIt {
         line: u32,
     },
     PdfDest {
-        name: String,
+        id: crate::pdfout::DestId,
         kind: u8,
         params: [i32; 4],
     },

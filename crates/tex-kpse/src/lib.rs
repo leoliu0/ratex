@@ -31,8 +31,46 @@ pub fn embedded_font_faces() -> &'static [EmbeddedFontFace] {
 // Independently compressed chunks and a sorted member index are generated
 // once at build time. Runtime lookup inflates only the containing chunk, while
 // related small files still share enough context for effective compression.
-static PACKAGES: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/packages.bin"));
 include!(concat!(env!("OUT_DIR"), "/packages_index.rs"));
+
+/// Build-time table of `FIELDS`-wide records of little-endian `u32`s.
+#[derive(Clone, Copy)]
+struct PackedTable<const FIELDS: usize>(&'static [u8]);
+
+impl<const FIELDS: usize> PackedTable<FIELDS> {
+    const RECORD_BYTES: usize = FIELDS * 4;
+
+    fn len(self) -> usize {
+        self.0.len() / Self::RECORD_BYTES
+    }
+
+    fn get(self, index: usize) -> Option<[u32; FIELDS]> {
+        let start = index.checked_mul(Self::RECORD_BYTES)?;
+        let record = self.0.get(start..start.checked_add(Self::RECORD_BYTES)?)?;
+        let mut fields = [0; FIELDS];
+        for (field, bytes) in fields.iter_mut().zip(record.chunks_exact(4)) {
+            *field = u32::from_le_bytes(bytes.try_into().ok()?);
+        }
+        Some(fields)
+    }
+
+    /// Like `slice::binary_search_by` over the records.
+    fn binary_search_by(
+        self,
+        mut compare: impl FnMut([u32; FIELDS]) -> std::cmp::Ordering,
+    ) -> Option<usize> {
+        let (mut low, mut high) = (0, self.len());
+        while low < high {
+            let middle = low + (high - low) / 2;
+            match compare(self.get(middle)?) {
+                std::cmp::Ordering::Less => low = middle + 1,
+                std::cmp::Ordering::Greater => high = middle,
+                std::cmp::Ordering::Equal => return Some(middle),
+            }
+        }
+        None
+    }
+}
 
 const CHUNK_CACHE_CAPACITY: usize = 4;
 type CachedChunk = (usize, std::sync::Arc<[u8]>);
@@ -61,21 +99,18 @@ fn package_entry(filename: &str) -> Option<usize> {
         .and_then(|s| s.to_str())
         .unwrap_or(filename);
     PACKAGE_INDEX
-        .binary_search_by(|entry| package_name(entry.0, entry.1).cmp(name.as_bytes()))
-        .ok()
+        .binary_search_by(|entry| package_name(entry).cmp(name.as_bytes()))
         .or_else(|| {
-            PACKAGE_FOLDED
-                .binary_search_by(|&index| {
-                    let entry = PACKAGE_INDEX[index as usize];
-                    ascii_folded_cmp(package_name(entry.0, entry.1), name.as_bytes())
-                })
-                .ok()
-                .map(|index| PACKAGE_FOLDED[index] as usize)
+            let position = PACKAGE_FOLDED.binary_search_by(|[index]| {
+                let entry = PACKAGE_INDEX.get(index as usize).unwrap_or_default();
+                ascii_folded_cmp(package_name(entry), name.as_bytes())
+            })?;
+            Some(PACKAGE_FOLDED.get(position)?[0] as usize)
         })
 }
 
 #[inline]
-fn package_name(offset: u32, length: u32) -> &'static [u8] {
+fn package_name([offset, length, ..]: [u32; 5]) -> &'static [u8] {
     let start = offset as usize;
     &PACKAGE_NAMES[start..start + length as usize]
 }
@@ -96,7 +131,7 @@ pub fn get_embedded_package(filename: &str) -> Option<Vec<u8>> {
         return None;
     }
     let index = package_entry(filename)?;
-    let (_, _, chunk_index, member_offset, member_length) = PACKAGE_INDEX[index];
+    let [_, _, chunk_index, member_offset, member_length] = PACKAGE_INDEX.get(index)?;
     let chunk_index = chunk_index as usize;
     let member_offset = member_offset as usize;
     let member_length = member_length as usize;
@@ -114,7 +149,7 @@ pub fn get_embedded_package(filename: &str) -> Option<Vec<u8>> {
     let chunk = match chunk {
         Some(bytes) => bytes,
         None => {
-            let (offset, length, decoded_length) = *PACKAGE_CHUNKS.get(chunk_index)?;
+            let [offset, length, decoded_length] = PACKAGE_CHUNKS.get(chunk_index)?;
             let offset = offset as usize;
             let length = length as usize;
             let end = offset.checked_add(length)?;
@@ -1790,31 +1825,45 @@ mod tests {
 
     #[test]
     fn packed_package_index_is_sorted_and_self_consistent() {
-        assert!(PACKAGE_INDEX.windows(2).all(|entries| {
-            package_name(entries[0].0, entries[0].1) < package_name(entries[1].0, entries[1].1)
-        }));
-        assert!(PACKAGE_FOLDED.windows(2).all(|positions| {
-            let left = PACKAGE_INDEX[positions[0] as usize];
-            let right = PACKAGE_INDEX[positions[1] as usize];
-            ascii_folded_cmp(package_name(left.0, left.1), package_name(right.0, right.1))
-                == std::cmp::Ordering::Less
+        fn records<const N: usize>(table: PackedTable<N>) -> Vec<[u32; N]> {
+            assert_eq!(table.0.len() % (N * 4), 0, "table holds whole records");
+            (0..table.len()).map(|i| table.get(i).unwrap()).collect()
+        }
+        let index = records(PACKAGE_INDEX);
+        let folded: Vec<u32> = records(PACKAGE_FOLDED).into_iter().map(|[i]| i).collect();
+        let chunks = records(PACKAGE_CHUNKS);
+        assert!(!index.is_empty() && !chunks.is_empty());
+        assert!(index
+            .windows(2)
+            .all(|entries| package_name(entries[0]) < package_name(entries[1])));
+        assert!(folded.windows(2).all(|positions| {
+            let left = index[positions[0] as usize];
+            let right = index[positions[1] as usize];
+            ascii_folded_cmp(package_name(left), package_name(right)) == std::cmp::Ordering::Less
         }));
         let mut expected = std::collections::BTreeMap::new();
-        for (position, package) in PACKAGE_INDEX.iter().enumerate() {
-            let name = std::str::from_utf8(package_name(package.0, package.1))
-                .expect("archive filenames are UTF-8");
+        for (position, &package) in index.iter().enumerate() {
+            let name =
+                std::str::from_utf8(package_name(package)).expect("archive filenames are UTF-8");
             expected
                 .entry(name.to_ascii_lowercase())
                 .or_insert(position as u32);
+            let [_, _, chunk, offset, length] = package;
+            let [_, _, decoded] = chunks[chunk as usize];
+            assert!(offset + length <= decoded, "{name} lies inside its chunk");
         }
-        assert_eq!(
-            PACKAGE_FOLDED,
-            expected.values().copied().collect::<Vec<_>>()
-        );
-        for &package_index in PACKAGE_FOLDED {
-            PACKAGE_INDEX
-                .get(package_index as usize)
-                .expect("folded entry points into the exact index");
+        assert_eq!(folded, expected.values().copied().collect::<Vec<_>>());
+        let mut next_offset = 0;
+        for &[offset, length, _] in &chunks {
+            assert_eq!(offset, next_offset, "chunks are contiguous");
+            next_offset += length;
+        }
+        assert_eq!(next_offset as usize, PACKAGES.len());
+        // Both ends of the embedded archive decode, so it is neither
+        // truncated nor shifted relative to the chunk table.
+        for [offset, length, decoded] in [chunks[0], chunks[chunks.len() - 1]] {
+            let compressed = &PACKAGES[offset as usize..(offset + length) as usize];
+            assert!(decode_package_chunk(compressed, decoded as usize).is_some());
         }
     }
 

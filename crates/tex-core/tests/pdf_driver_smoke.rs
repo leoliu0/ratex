@@ -861,26 +861,15 @@ fn assert_clickable_text_rect(rect: [f64; 4]) {
     );
 }
 
-#[test]
-fn hyperref_internal_links_resolve_across_pages_with_clickable_rectangles() {
-    const SOURCE: &[u8] = br"\documentclass{article}
-\usepackage{hyperref}
-\begin{document}
-\tableofcontents
-\section{Anchor}\label{sec:anchor}
-Visible text on anchor page.
-\newpage
-\section{Links}
-Jump to \hyperref[sec:anchor]{Anchor}.
-\end{document}
-";
-
+/// Compile `source` with the embedded LaTeX format twice in a fresh temp
+/// directory, so state written on the first pass (.aux, hyperref's .out)
+/// is read back, and return the finished second-pass engine.
+fn compile_latex_twice(job: &str, source: &'static [u8]) -> Engine {
     let nonce = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let dir =
-        std::env::temp_dir().join(format!("ratex-hyperref-{}-{nonce}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("ratex-{job}-{}-{nonce}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
 
     let run_pass = || {
@@ -895,13 +884,13 @@ Jump to \hyperref[sec:anchor]{Anchor}.
         engine.set_interaction_mode(tex_core::engine::InteractionMode::Nonstop);
         engine.halt_on_error = true;
         engine.allow_missing_main_aux = true;
-        engine.job_name = "hyperlinks".to_string();
+        engine.job_name = job.to_string();
         engine.main_dir = Some(dir.clone());
         engine.aux_dir = Some(dir.clone());
         engine.out_dir = format!("{}/", dir.display());
         engine
             .input
-            .push_file("hyperlinks.tex".to_string(), SOURCE.to_vec());
+            .push_file(format!("{job}.tex"), source.to_vec());
         tex_core::driver::insert_everyjob(&mut engine);
         engine.run();
         for stream in &mut engine.write_streams {
@@ -909,14 +898,33 @@ Jump to \hyperref[sec:anchor]{Anchor}.
         }
         assert_eq!(
             engine.error_count, 0,
-            "hyperref compilation failed:\n{}",
+            "{job} compilation failed:\n{}",
             engine.term
         );
         engine
     };
 
     drop(run_pass());
-    let mut engine = run_pass();
+    let engine = run_pass();
+    std::fs::remove_dir_all(dir).unwrap();
+    engine
+}
+
+#[test]
+fn hyperref_internal_links_resolve_across_pages_with_clickable_rectangles() {
+    const SOURCE: &[u8] = br"\documentclass{article}
+\usepackage{hyperref}
+\begin{document}
+\tableofcontents
+\section{Anchor}\label{sec:anchor}
+Visible text on anchor page.
+\newpage
+\section{Links}
+Jump to \hyperref[sec:anchor]{Anchor}.
+\end{document}
+";
+
+    let mut engine = compile_latex_twice("hyperlinks", SOURCE);
     assert_eq!(engine.pdf_doc.pages.len(), 2, "expected cross-page fixture");
     let bytes = tex_core::driver::finish_pdf(&mut engine, false).expect("finish PDF");
     let pdf = lopdf::Document::load_mem(&bytes).expect("hyperref output must be a valid PDF");
@@ -940,6 +948,132 @@ Jump to \hyperref[sec:anchor]{Anchor}.
     // most of the page and intercepting unrelated clicks.
     assert_clickable_text_rect(goto_link_rect(&pdf, first_page, b"section.2"));
     assert_clickable_text_rect(goto_link_rect(&pdf, second_page, b"section.1"));
+}
 
-    std::fs::remove_dir_all(dir).unwrap();
+#[derive(Debug, PartialEq)]
+struct Bookmark {
+    title: String,
+    count: Option<i64>,
+    dest: String,
+    children: Vec<Bookmark>,
+}
+
+impl Bookmark {
+    fn new(title: &str, count: Option<i64>, dest: &str, children: Vec<Bookmark>) -> Self {
+        Bookmark {
+            title: title.to_string(),
+            count,
+            dest: dest.to_string(),
+            children,
+        }
+    }
+}
+
+/// Children of an outline node, checking the /Parent, /Prev, /Next and
+/// /First, /Last links that viewers walk.
+fn outline_children(
+    pdf: &lopdf::Document,
+    parent: lopdf::ObjectId,
+    node: &lopdf::Dictionary,
+) -> Vec<Bookmark> {
+    let reference = |dict: &lopdf::Dictionary, key: &[u8]| {
+        dict.get(key)
+            .ok()
+            .map(|object| object.as_reference().expect("outline link reference"))
+    };
+    let mut items = Vec::new();
+    let mut prev = None;
+    let mut next = reference(node, b"First");
+    while let Some(id) = next {
+        let item = pdf.get_dictionary(id).expect("outline item");
+        assert_eq!(
+            reference(item, b"Parent"),
+            Some(parent),
+            "/Parent of {id:?}"
+        );
+        assert_eq!(reference(item, b"Prev"), prev, "/Prev of {id:?}");
+        // a named target, either as /Dest or through a /GoTo action
+        let dest = match item.get(b"A") {
+            Ok(action) => {
+                let (_, action) = pdf.dereference(action).expect("resolve outline action");
+                let action = action.as_dict().expect("outline action dictionary");
+                assert_eq!(action.get(b"S").unwrap().as_name().unwrap(), b"GoTo");
+                action.get(b"D").expect("GoTo /D")
+            }
+            Err(_) => item.get(b"Dest").expect("outline /A or /Dest"),
+        };
+        items.push(Bookmark {
+            title: lopdf::decode_text_string(item.get(b"Title").expect("outline title"))
+                .expect("decodable outline title"),
+            count: item.get(b"Count").ok().map(|c| c.as_i64().unwrap()),
+            dest: String::from_utf8_lossy(dest.as_str().expect("named target")).into_owned(),
+            children: outline_children(pdf, id, item),
+        });
+        prev = Some(id);
+        next = reference(item, b"Next");
+    }
+    assert_eq!(reference(node, b"Last"), prev, "/Last of {parent:?}");
+    items
+}
+
+#[test]
+fn hyperref_bookmarks_nest_by_level_with_decoded_titles_and_counts() {
+    // Level 2 opens sections and closes subsections; the subsubsection
+    // lands on the next page, so the outline spans shipouts.
+    const SOURCE: &[u8] = "\\documentclass{article}
+\\usepackage[bookmarksopen,bookmarksopenlevel=2]{hyperref}
+\\begin{document}
+\\section{Section 1}
+\\section{Section (2)}
+\\subsection{Section 2.1}
+\\newpage
+\\subsubsection{Section 2.1.1}
+\\section{Ünïcødé}
+\\end{document}
+"
+    .as_bytes();
+
+    let mut engine = compile_latex_twice("bookmarks", SOURCE);
+    assert_eq!(engine.pdf_doc.pages.len(), 2, "expected cross-page fixture");
+    let bytes = tex_core::driver::finish_pdf(&mut engine, false).expect("finish PDF");
+    let pdf = lopdf::Document::load_mem(&bytes).expect("valid PDF");
+    let root_id = pdf
+        .catalog()
+        .unwrap()
+        .get(b"Outlines")
+        .unwrap()
+        .as_reference()
+        .unwrap();
+    let root = pdf.get_dictionary(root_id).unwrap();
+
+    // pdfTeX: open items count visible descendants, closed ones are
+    // negated, the root counts all visible items.
+    assert_eq!(
+        outline_children(&pdf, root_id, root),
+        [
+            Bookmark::new("Section 1", None, "section.1", vec![]),
+            Bookmark::new(
+                "Section (2)",
+                Some(1),
+                "section.2",
+                vec![Bookmark::new(
+                    "Section 2.1",
+                    Some(-1),
+                    "subsection.2.1",
+                    vec![Bookmark::new(
+                        "Section 2.1.1",
+                        None,
+                        "subsubsection.2.1.1",
+                        vec![]
+                    )]
+                )]
+            ),
+            Bookmark::new("Ünïcødé", None, "section.3", vec![]),
+        ]
+    );
+    assert_eq!(root.get(b"Count").unwrap().as_i64().unwrap(), 4);
+    assert_eq!(
+        named_destination_page(&pdf, b"subsubsection.2.1.1"),
+        pdf.get_pages()[&2]
+    );
 }

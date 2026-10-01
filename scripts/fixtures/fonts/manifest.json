@@ -31,6 +31,28 @@
     "min_ink_pixels": 500
   },
   {
+    "name": "issue_4_cjkutf8_latin",
+    "description": "Issue #4 follow-up: Latin text, digits, list labels, equation number, TOC and page numbers inside a CJKutf8 environment share one consistently encoded CMR10 subset",
+    "dir": "issue_4_cjkutf8_latin",
+    "main_tex": "main.tex",
+    "engine": "pdflatex",
+    "reference_engine": "pdflatex",
+    "required_fonts": [
+      "CMR10"
+    ],
+    "expected_text": [
+      "Latin Inside CJK",
+      "日本語 ratex です。Version 2026 build 0123456789.",
+      "Digits 42 and 7",
+      "bullet two",
+      "Second Page",
+      "page two text."
+    ],
+    "check_type": "cjk_embedded",
+    "min_ink_pixels": 1000,
+    "min_iou": 0.85
+  },
+  {
     "name": "issue_5_stmaryrd",
     "description": "Issue #5: stmaryrd delimiter and symbol fonts closure across math sizes",
     "dir": "issue_5_stmaryrd",

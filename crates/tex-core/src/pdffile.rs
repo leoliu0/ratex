@@ -3,10 +3,12 @@
 //! annotations, named destinations, and outlines.
 
 use crate::pdf_fonts::{parse_metrics, parse_type1, Type1Program};
-use crate::pdfout::{Annot, EmbedFont, EmbedFontSubtype, PdfDoc};
+use crate::pdfout::{
+    Annot, Dest, DestId, EmbedFont, EmbedFontSubtype, GotoTarget, Outline, PdfAction, PdfDoc,
+};
 use flate2::write::ZlibEncoder;
 use flate2::Compression;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::Write;
 
 pub(crate) fn flate(data: &[u8]) -> Vec<u8> {
@@ -1077,16 +1079,287 @@ fn escape_pdf_name(s: &str) -> String {
         .collect()
 }
 
-/// PDF text string: ASCII as literal, otherwise UTF-16BE hex.
-fn pdf_text_string(s: &str) -> String {
-    if s.is_ascii() {
-        return format!("({})", escape_string(s));
+/// Whether `body` can sit between `(` and `)` as one literal string:
+/// unescaped parentheses balance and no lone backslash ends it.
+fn literal_body_is_closed(body: &[u8]) -> bool {
+    let mut depth = 0usize;
+    let mut i = 0;
+    while i < body.len() {
+        match body[i] {
+            b'\\' if i + 1 == body.len() => return false,
+            b'\\' => i += 1,
+            b'(' => depth += 1,
+            b')' if depth == 0 => return false,
+            b')' => depth -= 1,
+            _ => {}
+        }
+        i += 1;
     }
-    let mut hex = String::from("FEFF");
-    for u in s.encode_utf16() {
+    depth == 0
+}
+
+/// Escape the parentheses of `body` that have no partner and a trailing
+/// lone backslash; everything else, escapes included, stays as written.
+fn close_literal_body(body: &str) -> String {
+    let b = body.as_bytes();
+    let mut out = Vec::with_capacity(b.len() + 2);
+    let mut open = Vec::new();
+    let mut i = 0;
+    while i < b.len() {
+        match b[i] {
+            b'\\' if i + 1 == b.len() => out.extend_from_slice(b"\\\\"),
+            b'\\' => {
+                out.extend_from_slice(&b[i..i + 2]);
+                i += 1;
+            }
+            b'(' => {
+                open.push(out.len());
+                out.push(b'(');
+            }
+            b')' if open.pop().is_some() => out.push(b')'),
+            b')' => out.extend_from_slice(b"\\)"),
+            c => out.push(c),
+        }
+        i += 1;
+    }
+    for at in open.into_iter().rev() {
+        out.insert(at, b'\\');
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// Decode a literal string body: escapes yield bytes (read as Latin-1,
+/// close to PDFDocEncoding), other characters stand for themselves.
+fn decode_literal_body(body: &str) -> String {
+    let mut out = String::with_capacity(body.len());
+    let mut chars = body.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        let Some(e) = chars.next() else { break };
+        let byte = match e {
+            'n' => b'\n',
+            'r' => b'\r',
+            't' => b'\t',
+            'b' => 0x08,
+            'f' => 0x0c,
+            '0'..='7' => {
+                let mut v = e as u32 - '0' as u32;
+                for _ in 0..2 {
+                    match chars.peek() {
+                        Some(&d @ '0'..='7') => {
+                            v = v * 8 + (d as u32 - '0' as u32);
+                            chars.next();
+                        }
+                        _ => break,
+                    }
+                }
+                v as u8
+            }
+            '\r' => {
+                chars.next_if_eq(&'\n');
+                continue;
+            }
+            '\n' => continue,
+            other => {
+                out.push(other);
+                continue;
+            }
+        };
+        out.push(char::from(byte));
+    }
+    out
+}
+
+/// PDF string as pdfTeX's `pdf_print_str` writes it: a string already in
+/// `(...)` or even-length `<hex>` form is kept, anything else becomes the
+/// body of a literal string as is, so escapes in the text (hyperref's
+/// `\376\377\000S...` bookmark titles) keep their PDF meaning. Where
+/// pdfTeX would corrupt the file, unpartnered parentheses and a trailing
+/// lone backslash are escaped. Non-ASCII characters (a token list can hold
+/// Unicode, unlike pdfTeX's byte strings) turn the decoded text into a
+/// UTF-16BE text string.
+fn pdftex_string(s: &str) -> String {
+    let b = s.as_bytes();
+    if let [b'<', hex @ .., b'>'] = b {
+        if b.len().is_multiple_of(2) && hex.iter().all(u8::is_ascii_hexdigit) {
+            return s.to_owned();
+        }
+    }
+    let body = match b {
+        [b'(', inner @ .., b')'] if literal_body_is_closed(inner) => &s[1..s.len() - 1],
+        _ => s,
+    };
+    if s.is_ascii() {
+        return if body.len() < s.len() {
+            s.to_owned()
+        } else {
+            format!("({})", close_literal_body(body))
+        };
+    }
+    let mut hex = String::from("<FEFF");
+    for u in decode_literal_body(body).encode_utf16() {
         hex += &format!("{:04X}", u);
     }
-    format!("<{}>", hex)
+    hex.push('>');
+    hex
+}
+
+/// Explicit destination array for a page object.
+fn dest_array(page_ref: usize, d: &Dest) -> String {
+    let (x, y) = (num(d.x), num(d.y));
+    let view = match d.kind {
+        1 => "/Fit".to_string(),
+        2 => format!("/FitH {y}"),
+        3 => format!("/FitV {x}"),
+        4 => "/FitB".to_string(),
+        5 => format!("/FitBH {y}"),
+        6 => format!("/FitBV {x}"),
+        7 => format!("/FitR {x} {y} {x} {y}"),
+        _ => format!(
+            "/XYZ {x} {y} {}",
+            d.zoom.map(num).unwrap_or_else(|| "null".to_string())
+        ),
+    };
+    format!("[{page_ref} 0 R {view}]")
+}
+
+/// pdfTeX `write_action` as an inline dictionary (user actions verbatim).
+/// `page_obj` maps a 0-based page index to its object. `None` when the
+/// target has no object in this file: a missing page, or a local thread.
+fn pdf_action(
+    action: &PdfAction,
+    page_obj: impl Fn(usize) -> Option<usize>,
+    num_dests: &BTreeMap<i32, usize>,
+) -> Option<String> {
+    let (file, new_window, body) = match action {
+        PdfAction::User(dict) => return Some(dict.clone()),
+        PdfAction::Goto {
+            file,
+            new_window,
+            target,
+        } => {
+            let body = match (target, file) {
+                (GotoTarget::Page(page, view), None) => {
+                    format!("/S /GoTo /D [{} 0 R {view}]", page_obj(*page as usize - 1)?)
+                }
+                (GotoTarget::Page(page, view), Some(_)) => {
+                    format!("/S /GoToR /D [{} {view}]", page - 1)
+                }
+                (GotoTarget::Dest(DestId::Name(name)), None) => {
+                    format!("/S /GoTo /D ({})", escape_string(name))
+                }
+                (GotoTarget::Dest(DestId::Name(name)), Some(_)) => {
+                    format!("/S /GoToR /D ({})", escape_string(name))
+                }
+                (GotoTarget::Dest(DestId::Num(n)), None) => {
+                    format!("/S /GoTo /D {} 0 R", num_dests.get(n)?)
+                }
+                // rejected while scanning, as in pdfTeX
+                (GotoTarget::Dest(DestId::Num(_)), Some(_)) => return None,
+            };
+            (file, *new_window, body)
+        }
+        PdfAction::Thread { file, id } => {
+            let d = match (id, file) {
+                (DestId::Name(name), _) => format!("({})", escape_string(name)),
+                (DestId::Num(n), Some(_)) => n.to_string(),
+                (DestId::Num(_), None) => return None,
+            };
+            (file, None, format!("/S /Thread /D {d}"))
+        }
+    };
+    let mut out = String::from("<< ");
+    if let Some(file) = file {
+        out.push_str(&format!("/F {} ", pdftex_string(file)));
+        if let Some(new_window) = new_window {
+            out.push_str(&format!("/NewWindow {new_window} "));
+        }
+    }
+    out.push_str(&body);
+    out.push_str(" >>");
+    Some(out)
+}
+
+#[derive(Clone, Default)]
+struct OutlineNode {
+    parent: Option<usize>,
+    prev: Option<usize>,
+    next: Option<usize>,
+    first: Option<usize>,
+    last: Option<usize>,
+    /// /Count: visible descendants when open, negated when closed
+    count: i32,
+}
+
+/// \pdfoutline items linked into the PDF outline tree.
+struct OutlineTree {
+    nodes: Vec<OutlineNode>,
+    /// top-level items in order
+    top: Vec<usize>,
+    /// root /Count: number of visible items
+    root_count: i32,
+}
+
+impl OutlineTree {
+    /// pdfTeX's linking: an item with `count n` (n != 0) adopts the next |n|
+    /// items as children, recursively. Counts follow `open_subentries`: an
+    /// item's magnitude is its child count plus the descendants of its
+    /// open children; the sign of `n` marks it open (+) or closed (-).
+    fn build(items: &[Outline]) -> Self {
+        let mut nodes = vec![OutlineNode::default(); items.len()];
+        let mut top = Vec::new();
+        // open parents with the number of children still to adopt
+        let mut stack: Vec<(usize, u32)> = Vec::new();
+        for (i, item) in items.iter().enumerate() {
+            let parent = stack.last().map(|&(p, _)| p);
+            let prev = match parent {
+                Some(p) => nodes[p].last,
+                None => top.last().copied(),
+            };
+            nodes[i].parent = parent;
+            nodes[i].prev = prev;
+            if let Some(prev) = prev {
+                nodes[prev].next = Some(i);
+            }
+            match parent {
+                Some(p) => {
+                    nodes[p].first.get_or_insert(i);
+                    nodes[p].last = Some(i);
+                }
+                None => top.push(i),
+            }
+            if let Some((_, left)) = stack.last_mut() {
+                *left -= 1;
+            }
+            if item.count != 0 {
+                stack.push((i, item.count.unsigned_abs()));
+            }
+            while stack.last().is_some_and(|&(_, left)| left == 0) {
+                stack.pop();
+            }
+        }
+        // children follow their parent, so a reverse pass sees every
+        // subtree complete before its parent
+        let mut entries = vec![0i32; items.len()];
+        let mut root_count = 0;
+        for i in (0..items.len()).rev() {
+            let open = items[i].count > 0;
+            nodes[i].count = if open { entries[i] } else { -entries[i] };
+            let visible = 1 + if open { entries[i] } else { 0 };
+            match nodes[i].parent {
+                Some(p) => entries[p] += visible,
+                None => root_count += visible,
+            }
+        }
+        OutlineTree {
+            nodes,
+            top,
+            root_count,
+        }
+    }
 }
 
 type FontFileKey = (usize, usize, usize, [u8; 16]);
@@ -1303,13 +1576,22 @@ pub fn write_pdf(doc: &PdfDoc) -> Result<Vec<u8>, String> {
     let catalog_obj = b.alloc(); // after user objects
     let pages_obj = b.alloc();
 
-    // Collect named destinations first (first definition wins, sorted),
-    // so the names object is only allocated when needed.
-    let mut named: Vec<(String, usize, f64, f64, u8, Option<f64>)> = Vec::new();
+    // Collect destinations first (first definition wins): named ones go to
+    // the sorted /Dests tree, numbered ones become standalone objects
+    // referenced by `goto num` actions.
+    let mut named: Vec<(&str, usize, &Dest)> = Vec::new();
+    let mut numbered: BTreeMap<i32, (usize, &Dest)> = BTreeMap::new();
     for (pi, page) in doc.pages.iter().enumerate() {
         for dest in &page.dests {
-            if !named.iter().any(|(n, ..)| n == &dest.name) {
-                named.push((dest.name.clone(), pi, dest.x, dest.y, dest.kind, dest.zoom));
+            match &dest.id {
+                DestId::Name(name) => {
+                    if !named.iter().any(|(n, ..)| n == name) {
+                        named.push((name, pi, dest));
+                    }
+                }
+                DestId::Num(n) => {
+                    numbered.entry(*n).or_insert((pi, dest));
+                }
             }
         }
     }
@@ -1665,8 +1947,25 @@ pub fn write_pdf(doc: &PdfDoc) -> Result<Vec<u8>, String> {
         })
         .collect();
 
-    // Outlines: root + one entry per \pdfoutline (flat, linked as siblings).
-    let outlines: Option<(usize, Vec<usize>)> = if doc.outlines.is_empty() {
+    // Numbered destinations, plus a fixed stand-in for every `goto num`
+    // target that no \pdfdest defines (only possible with a page to point at).
+    let mut num_dest_objs: BTreeMap<i32, usize> =
+        numbered.keys().map(|&n| (n, b.alloc())).collect();
+    if !page_objs.is_empty() {
+        for item in &doc.outlines {
+            if let Some(PdfAction::Goto {
+                file: None,
+                target: GotoTarget::Dest(DestId::Num(n)),
+                ..
+            }) = item.action
+            {
+                num_dest_objs.entry(n).or_insert_with(|| b.alloc());
+            }
+        }
+    }
+
+    // Outlines: root + one item per \pdfoutline.
+    let outline_objs: Option<(usize, Vec<usize>)> = if doc.outlines.is_empty() {
         None
     } else {
         let root = b.alloc();
@@ -1988,33 +2287,26 @@ pub fn write_pdf(doc: &PdfDoc) -> Result<Vec<u8>, String> {
         ),
     );
 
-    // ---- emit named destination tree
+    // ---- emit destinations
+    for (n, (pi, dest)) in &numbered {
+        b.set(num_dest_objs[n], dest_array(page_objs[*pi].1, dest));
+    }
+    for (n, obj) in &num_dest_objs {
+        if !numbered.contains_key(n) {
+            // pdfTeX replaces a referenced but undefined `num` destination
+            // by a fixed one on the first page
+            b.set(*obj, format!("[{} 0 R /Fit]", page_objs[0].1));
+        }
+    }
     if names_obj != 0 {
         let mut body = String::from("<< ");
         if !named.is_empty() {
             body.push_str("/Names [ ");
-            for (name, pi, x, y, kind, zoom) in &named {
-                let page_ref = page_objs[*pi].1;
-                let term = match kind {
-                    1 => "/Fit".to_string(),
-                    2 => format!("/FitH {}", num(*y)),
-                    3 => format!("/FitV {}", num(*x)),
-                    4 => "/FitB".to_string(),
-                    5 => format!("/FitBH {}", num(*y)),
-                    6 => format!("/FitBV {}", num(*x)),
-                    7 => format!("/FitR {} {} {} {}", num(*x), num(*y), num(*x), num(*y)),
-                    _ => format!(
-                        "/XYZ {} {} {}",
-                        num(*x),
-                        num(*y),
-                        zoom.map(|z| num(z)).unwrap_or_else(|| "null".to_string())
-                    ),
-                };
+            for (name, pi, dest) in &named {
                 body.push_str(&format!(
-                    "({}) [{} 0 R {}] ",
+                    "({}) {} ",
                     escape_string(name),
-                    page_ref,
-                    term
+                    dest_array(page_objs[*pi].1, dest)
                 ));
             }
             body.push_str(" ] ");
@@ -2026,32 +2318,53 @@ pub fn write_pdf(doc: &PdfDoc) -> Result<Vec<u8>, String> {
     }
 
     // ---- emit outlines
-    if let Some((root, entries)) = &outlines {
-        let n = entries.len();
-        for (k, ((title, dest, count), eobj)) in doc.outlines.iter().zip(entries).enumerate() {
-            let mut body = format!("<< /Title {} /Parent {} 0 R", pdf_text_string(title), root);
-            if k > 0 {
-                body.push_str(&format!(" /Prev {} 0 R", entries[k - 1]));
+    if let Some((root, entries)) = &outline_objs {
+        let tree = OutlineTree::build(&doc.outlines);
+        let obj = |i: Option<usize>| i.map_or(*root, |i| entries[i]);
+        for (i, (item, eobj)) in doc.outlines.iter().zip(entries).enumerate() {
+            let node = &tree.nodes[i];
+            let mut body = format!(
+                "<< /Title {} /Parent {} 0 R",
+                pdftex_string(&item.title),
+                obj(node.parent)
+            );
+            if let Some(prev) = node.prev {
+                body.push_str(&format!(" /Prev {} 0 R", entries[prev]));
             }
-            if k + 1 < n {
-                body.push_str(&format!(" /Next {} 0 R", entries[k + 1]));
+            if let Some(next) = node.next {
+                body.push_str(&format!(" /Next {} 0 R", entries[next]));
             }
-            if !dest.is_empty() {
-                body.push_str(&format!(" /Dest ({})", escape_string(dest)));
+            if let (Some(first), Some(last)) = (node.first, node.last) {
+                body.push_str(&format!(
+                    " /First {} 0 R /Last {} 0 R",
+                    entries[first], entries[last]
+                ));
             }
-            if *count != 0 {
-                body.push_str(&format!(" /Count {}", count));
+            if node.count != 0 {
+                body.push_str(&format!(" /Count {}", node.count));
+            }
+            if let Some(action) = item.action.as_ref().and_then(|action| {
+                pdf_action(
+                    action,
+                    |page| page_objs.get(page).map(|p| p.1),
+                    &num_dest_objs,
+                )
+            }) {
+                body.push_str(&format!(" /A {}", action));
+            }
+            if !item.attr.is_empty() {
+                body.push(' ');
+                body.push_str(&item.attr);
             }
             body.push_str(" >>");
             b.set(*eobj, body);
         }
+        let (first, last) = (tree.top[0], tree.top[tree.top.len() - 1]);
         b.set(
             *root,
             format!(
                 "<< /Type /Outlines /First {} 0 R /Last {} 0 R /Count {} >>",
-                entries[0],
-                entries[n - 1],
-                n
+                entries[first], entries[last], tree.root_count
             ),
         );
     }
@@ -2087,7 +2400,7 @@ pub fn write_pdf(doc: &PdfDoc) -> Result<Vec<u8>, String> {
             cat.push_str(&format!(" /OpenAction [{} 0 R {}]", page_obj, view_pdf));
         }
     }
-    if let Some((root, _)) = &outlines {
+    if let Some((root, _)) = &outline_objs {
         cat.push_str(&format!(" /Outlines {} 0 R", root));
     }
     let has_tagged_pdf = doc.pages.iter().any(|p| {
@@ -2304,6 +2617,28 @@ mod tests {
         entry.extend_from_slice(&encrypted);
         entry.extend_from_slice(suffix.as_bytes());
         entry
+    }
+
+    #[test]
+    fn pdftex_strings_keep_escapes_and_stay_valid() {
+        for (text, pdf) in [
+            // hyperref's escaped UTF-16 titles are written verbatim
+            (r"\376\377\000A\000\050", r"(\376\377\000A\000\050)"),
+            ("(literal)", "(literal)"),
+            ("<FEFF0041>", "<FEFF0041>"),
+            ("<xyz>", "(<xyz>)"),
+            ("", "()"),
+            // unpartnered parentheses and a final backslash would end or
+            // swallow the string: escape just those
+            (r"a(b", r"(a\(b)"),
+            (r"c)d\", r"(c\)d\\)"),
+            ("(a) (b)", "((a) (b))"),
+            (r"(x\)", r"(\(x\))"),
+            // non-ASCII text: decoded escapes plus Unicode as UTF-16BE
+            (r"Ü\101\(", "<FEFF00DC00410028>"),
+        ] {
+            assert_eq!(pdftex_string(text), pdf, "{text:?}");
+        }
     }
 
     #[test]

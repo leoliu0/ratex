@@ -314,6 +314,83 @@ Should fail because custom.otf is not in this session.
     assert!(r2.pdf.is_empty());
 }
 
+fn embedded_font_names(pdf: &lopdf::Document) -> Vec<String> {
+    pdf.objects
+        .values()
+        .filter_map(|o| o.as_dict().ok())
+        .filter(|d| d.has_type(b"FontDescriptor"))
+        .filter_map(|d| d.get(b"FontName").and_then(lopdf::Object::as_name).ok())
+        .map(|name| {
+            let name = String::from_utf8_lossy(name);
+            // Drop the six-letter subset tag.
+            name.split_once('+')
+                .map_or(name.to_string(), |(_, base)| base.to_string())
+        })
+        .collect()
+}
+
+#[test]
+fn missing_native_shapes_fall_back_like_fontspec_under_xetex() {
+    // IPAex fonts have only an upright regular face.
+    let s = session(
+        r"\documentclass{article}
+\usepackage{fontspec}
+\usepackage{xeCJK}
+\setCJKmainfont{IPAexMincho}
+\setCJKsansfont{IPAexGothic}[BoldFont=IPAexGothic]
+\begin{document}
+\section{\sffamily 日本語の見出し}
+\textit{日本語の斜体}
+\end{document}",
+    );
+    let r = s.compile("main.tex");
+    assert_eq!(r.status, Status::Success, "{}\n{}", r.diagnostics, r.log);
+    assert!(
+        r.log.contains(
+            "Font shape `Italic` is not available for native font `IPAexMincho`; using `Regular` instead"
+        ),
+        "{}",
+        r.log
+    );
+    // BoldFont= declares the bold sans shape, so it is not a substitution.
+    assert!(!r.log.contains("native font `IPAexGothic`"), "{}", r.log);
+    let mut pdf = lopdf::Document::load_mem(&r.pdf).unwrap();
+    let fonts = embedded_font_names(&pdf);
+    assert!(fonts.iter().any(|f| f == "IPAexGothic"), "{fonts:?}");
+    assert!(fonts.iter().any(|f| f == "IPAexMincho"), "{fonts:?}");
+    let text = native_text(&mut pdf);
+    assert!(text.contains("日本語の見出し"), "{text}");
+    assert!(text.contains("日本語の斜体"), "{text}");
+}
+
+#[test]
+fn explicit_face_options_select_the_named_faces() {
+    let s = session(
+        r"\documentclass{article}
+\usepackage{fontspec}
+\usepackage{xeCJK}
+\setmainfont{Latin Modern Roman}[BoldFont=*]
+\setCJKmainfont{IPAexMincho}[BoldFont=HaranoAjiGothic-Bold]
+\begin{document}
+\textbf{Bold 太字} regular 本文
+\end{document}",
+    );
+    let r = s.compile("main.tex");
+    assert_eq!(r.status, Status::Success, "{}\n{}", r.diagnostics, r.log);
+    let mut pdf = lopdf::Document::load_mem(&r.pdf).unwrap();
+    let fonts = embedded_font_names(&pdf);
+    assert!(
+        fonts.iter().any(|f| f == "HaranoAjiGothic-Bold"),
+        "{fonts:?}"
+    );
+    assert!(fonts.iter().any(|f| f == "IPAexMincho"), "{fonts:?}");
+    // `*` names the family itself, so bold Latin text uses its regular face.
+    assert!(!fonts.iter().any(|f| f == "LMRoman10-Bold"), "{fonts:?}");
+    let text = native_text(&mut pdf);
+    assert!(text.contains("太字"), "{text}");
+    assert!(text.contains("本文"), "{text}");
+}
+
 #[test]
 fn compile_request_records_engine_and_honors_output_roots() {
     let s = session(HELLO);

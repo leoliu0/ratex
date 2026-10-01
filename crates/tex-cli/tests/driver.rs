@@ -450,6 +450,264 @@ fn copied_texmk_symlink_personalities_need_no_sibling_executables() {
         .contains("The style file: <embedded:plain.bst>"));
 }
 
+fn output_retrying_text_busy(cmd: &mut Command) -> std::process::Output {
+    // A freshly copied executable can briefly report ETXTBSY while another
+    // test thread still holds its write descriptor across fork.
+    for _ in 0..20 {
+        match cmd.output() {
+            Err(e) if e.raw_os_error() == Some(26) => {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            result => return result.unwrap(),
+        }
+    }
+    cmd.output().unwrap()
+}
+
+fn synctex_input_paths(synctex_gz: &std::path::Path) -> Vec<String> {
+    use std::io::Read as _;
+    let mut text = String::new();
+    flate2::read::GzDecoder::new(std::fs::File::open(synctex_gz).unwrap())
+        .read_to_string(&mut text)
+        .unwrap();
+    text.lines()
+        .filter_map(|line| line.strip_prefix("Input:"))
+        .filter_map(|record| record.split_once(':').map(|(_, path)| path.to_string()))
+        .collect()
+}
+
+#[test]
+fn texstudio_absolute_command_builds_beside_a_spaced_unicode_source() {
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let fixture = Fixture(std::env::temp_dir().join(format!(
+        "texmk-texstudio-{}-{nonce}",
+        std::process::id()
+    )));
+    let prefix_bin = fixture.0.join("Homebrew Prefix/bin");
+    let alias_bin = fixture.0.join("ratex editor é/bin");
+    let project = fixture.0.join("My Thesis é");
+    let gui_cwd = fixture.0.join("gui-cwd");
+    let gui_path = fixture.0.join("gui-path");
+    for directory in [&prefix_bin, &alias_bin, &project, &gui_cwd, &gui_path] {
+        std::fs::create_dir_all(directory).unwrap();
+    }
+    let ratex = prefix_bin.join("ratex");
+    std::fs::copy(env!("CARGO_BIN_EXE_ratex"), &ratex).unwrap();
+    std::fs::set_permissions(&ratex, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let latexmk = alias_bin.join("latexmk");
+    std::os::unix::fs::symlink(&ratex, &latexmk).unwrap();
+
+    let source = project.join("main file.tex");
+    std::fs::write(
+        &source,
+        "\\documentclass{article}\n\\begin{document}\nForward search target.\n\\end{document}\n",
+    )
+    .unwrap();
+    let pdf = project.join("main file.pdf");
+    let synctex = project.join("main file.synctex.gz");
+
+    for (personality, executable) in [("ratex", &ratex), ("latexmk", &latexmk)] {
+        let _ = std::fs::remove_file(&pdf);
+        let _ = std::fs::remove_file(&synctex);
+        // TeXstudio passes these exact arguments, launches from its own cwd,
+        // and a macOS GUI app does not inherit the Terminal PATH. An empty
+        // PATH directory (rather than an unset PATH, which execvp replaces
+        // with /bin:/usr/bin) keeps an installed Ratex out of reach.
+        let output = output_retrying_text_busy(
+            Command::new(executable)
+                .args(["-pdf", "-interaction=nonstopmode"])
+                .arg(&source)
+                .current_dir(&gui_cwd)
+                .env_clear()
+                .env("PATH", &gui_path)
+                .env("HOME", fixture.0.join(format!("home-{personality}"))),
+        );
+        assert!(
+            output.status.success(),
+            "{personality} failed:\n{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let launch_dir: Vec<_> = std::fs::read_dir(&gui_cwd)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert!(
+            launch_dir.is_empty(),
+            "{personality} wrote into the launching directory: {launch_dir:?}"
+        );
+        assert!(
+            std::fs::read(&pdf).is_ok_and(|bytes| bytes.starts_with(b"%PDF-")),
+            "{personality} did not write the PDF beside the source"
+        );
+        assert!(
+            synctex.is_file(),
+            "{personality} did not write SyncTeX beside the PDF"
+        );
+        let inputs = synctex_input_paths(&synctex);
+        assert!(
+            inputs
+                .iter()
+                .any(|path| std::path::Path::new(path) == source),
+            "{personality} SyncTeX does not reference {}: {inputs:?}",
+            source.display()
+        );
+    }
+}
+
+#[test]
+fn eps_figures_and_bibliographies_build_without_any_external_program() {
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let fixture = Fixture(std::env::temp_dir().join(format!(
+        "texmk-no-external-programs-{}-{nonce}",
+        std::process::id()
+    )));
+    let project = fixture.0.join("project");
+    let trap_bin = fixture.0.join("trap-bin");
+    let spawned = fixture.0.join("spawned-external-programs");
+    std::fs::create_dir_all(&project).unwrap();
+    std::fs::create_dir_all(&trap_bin).unwrap();
+    // Every program a TeX toolchain could plausibly delegate to records its
+    // invocation and fails, so a PATH lookup is both observed and useless.
+    for program in [
+        "epstopdf",
+        "repstopdf",
+        "ps2pdf",
+        "gs",
+        "rungs",
+        "bibtex",
+        "bibtex8",
+        "biber",
+        "pdflatex",
+        "xelatex",
+        "lualatex",
+        "latex",
+        "latexmk",
+        "kpsewhich",
+        "mktextfm",
+        "mktexpk",
+        "mktexfmt",
+        "makeindex",
+        "mpost",
+        "inkscape",
+        "rsvg-convert",
+        "convert",
+        "magick",
+    ] {
+        let stub = trap_bin.join(program);
+        std::fs::write(
+            &stub,
+            format!(
+                "#!/bin/sh\necho \"{program} $*\" >> '{}'\nexit 1\n",
+                spawned.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    std::fs::write(
+        project.join("figure.eps"),
+        concat!(
+            "%!PS-Adobe-3.0 EPSF-3.0\n",
+            "%%BoundingBox: 0 0 144 72\n",
+            "%%EndComments\n",
+            "0.2 0.4 0.8 setrgbcolor\n",
+            "newpath 0 0 moveto 144 0 lineto 144 72 lineto 0 72 lineto closepath fill\n",
+            "showpage\n",
+            "%%EOF\n"
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        project.join("refs.bib"),
+        "@book{knuth, author={Donald Knuth}, title={Computers and Typesetting}, publisher={Addison-Wesley}, year={1986}}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        project.join("main.tex"),
+        concat!(
+            "\\documentclass{article}\n",
+            "\\usepackage{graphicx}\n",
+            "\\begin{document}\n",
+            "\\includegraphics{figure.eps}\n\n",
+            "As shown by~\\cite{knuth}.\n",
+            "\\bibliographystyle{plain}\n",
+            "\\bibliography{refs}\n",
+            "\\end{document}\n"
+        ),
+    )
+    .unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_ratex"))
+        .arg("main.tex")
+        .current_dir(&project)
+        .env_clear()
+        .env("PATH", &trap_bin)
+        .env("HOME", fixture.0.join("home"))
+        .env("SOURCE_DATE_EPOCH", "1700000000")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        !spawned.exists(),
+        "compilation spawned external programs:\n{}",
+        std::fs::read_to_string(&spawned).unwrap_or_default()
+    );
+
+    let pdf = lopdf::Document::load(project.join("main.pdf")).unwrap();
+    let pages = pdf.get_pages();
+    let figure_boxes: Vec<Vec<f32>> = pages
+        .values()
+        .flat_map(|&page| {
+            let (resources, _) = pdf.get_page_resources(page).unwrap();
+            let xobjects = resources
+                .and_then(|resources| resources.get_deref(b"XObject", &pdf).ok())
+                .and_then(|xobjects| xobjects.as_dict().ok())
+                .cloned()
+                .unwrap_or_default();
+            xobjects
+                .iter()
+                .filter_map(|(_, object)| {
+                    let stream = pdf.dereference(object).ok()?.1.as_stream().ok()?;
+                    (stream.dict.get(b"Subtype").ok()?.as_name().ok()? == b"Form").then(|| {
+                        stream
+                            .dict
+                            .get(b"BBox")
+                            .and_then(lopdf::Object::as_array)
+                            .map(|values| {
+                                values.iter().filter_map(|v| v.as_float().ok()).collect()
+                            })
+                            .unwrap_or_default()
+                    })
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    assert!(
+        figure_boxes
+            .iter()
+            .any(|bbox| bbox.len() == 4 && bbox[2] - bbox[0] == 144.0 && bbox[3] - bbox[1] == 72.0),
+        "the EPS figure is not placed as a 144x72 form XObject: {figure_boxes:?}"
+    );
+    let page_numbers: Vec<u32> = pages.keys().copied().collect();
+    let text = pdf.extract_text(&page_numbers).unwrap();
+    assert!(
+        text.contains("[1]") && text.contains("Computers and Typesetting"),
+        "citation or bibliography entry missing from the PDF text:\n{text}"
+    );
+}
+
 #[test]
 fn publishing_outputs_does_not_defer_the_first_engine_cache_hit() {
     let nonce = std::time::SystemTime::now()

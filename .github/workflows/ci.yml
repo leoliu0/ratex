@@ -58,6 +58,20 @@ jobs:
             target/wasm/web/
             target/wasm/nodejs/
             target/wasm/fonts/
+  memory-bounded-build:
+    # Issue #16: `cargo install` (Homebrew on Linux) must fit an 8 GiB machine.
+    # No cache on purpose: tex-kpse (embedded archive) and the ThinLTO link of
+    # ratex are the compiles under test.
+    name: Memory-bounded arm64 release build
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 120
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: cargo install ratex under a 6 GiB no-swap ceiling, then smoke it
+        run: scripts/memory_bounded_build.sh
+
   test:
     name: Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -162,6 +176,7 @@ jobs:
             --case cjkutf8_korean \
             --case issue_3_mapped_truetype \
             --case issue_4_cjkutf8_ja \
+            --case issue_4_cjkutf8_latin \
             --case issue_5_stmaryrd \
             --case issue_6_bbding \
             --case issue_8_latin_modern \
@@ -202,6 +217,7 @@ jobs:
             --case cjkutf8_korean `
             --case issue_3_mapped_truetype `
             --case issue_4_cjkutf8_ja `
+            --case issue_4_cjkutf8_latin `
             --case issue_5_stmaryrd `
             --case issue_6_bbding `
             --case issue_8_latin_modern `

@@ -1,0 +1,34 @@
+\documentclass{article}
+\usepackage{CJKutf8}
+% The harness runs the reference engine once; a fixed .toc keeps both
+% engines' contents page identical from the first pass.
+\begin{filecontents*}[overwrite]{\jobname.toc}
+\contentsline {section}{\numberline {1}Latin Inside CJK}{1}{}%
+\contentsline {section}{\numberline {2}Second Page}{2}{}%
+\end{filecontents*}
+\begin{document}
+\begin{CJK}{UTF8}{min}
+\tableofcontents
+
+\section{Latin Inside CJK}
+日本語 ratex です。Version 2026 build 0123456789.
+
+\begin{enumerate}
+  \item 日本語 ratex です。
+  \item Digits 42 and 7 はここです。
+\end{enumerate}
+
+\begin{itemize}
+  \item 箇条書き bullet one
+  \item 箇条書き bullet two
+\end{itemize}
+
+\begin{equation}
+  a^2 + b^2 = c^2
+\end{equation}
+
+\newpage
+\section{Second Page}
+二ページ目 page two text.
+\end{CJK}
+\end{document}

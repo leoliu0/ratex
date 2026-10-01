@@ -16,6 +16,26 @@ if HAS_PYPDF:
         NameObject, NumberObject,
     )
 
+if HAS_FONTTOOLS:
+    from fontTools.misc import eexec
+
+
+def type1_program(builtin: dict[int, str], glyphs: list[str]) -> tuple[bytes, int]:
+    """Build a minimal eexec-encrypted Type 1 program; returns (data, /Length1)."""
+    clear = (
+        b"%!PS-AdobeFont-1.0: Test 001\n/Encoding 256 array\n"
+        b"0 1 255 {1 index exch /.notdef put} for\n"
+        + b"".join(b"dup %d /%s put\n" % (code, name.encode()) for code, name in builtin.items())
+        + b"readonly def\ncurrentdict end\ncurrentfile eexec\n"
+    )
+    # CharString bodies contain whitespace and "ND" so the parser must skip them by length.
+    private = (
+        b"dup /Private 2 dict dup begin\n/CharStrings %d dict dup begin\n" % len(glyphs)
+        + b"".join(b"/%s 5 RD \r\n/ND ND\n" % name.encode() for name in glyphs)
+        + b"end\nend\nmark currentfile closefile\n"
+    )
+    return clear + eexec.encrypt(b"\0\0\0\0" + private, 55665)[0], len(clear)
+
 
 @unittest.skipUnless(HAS_PYPDF, "pypdf is required")
 class ContentFontStateTests(unittest.TestCase):
@@ -121,6 +141,70 @@ class FontResourceTests(unittest.TestCase):
             contents.set_data(b"BT /F1 12 Tf ET /Form1 Do")
             writer.write(pdf)
             self.assertEqual(validate_pdf_font_embedding(pdf, {}), [])
+
+    def test_type1_codes_must_select_embedded_glyphs_through_font_encoding(self):
+        # Issue #4: CJKutf8 list labels re-encoded the shared CMR10 subset as
+        # /Differences [1 /one 2 /period] while body text kept drawing ASCII
+        # codes against that same font, so letters vanished or overlapped.
+        program_data, length1 = type1_program(
+            {ord("r"): "r", ord("1"): "one", ord("."): "period"}, [".notdef", "one", "period"],
+        )
+        program = DecodedStreamObject()
+        program.set_data(program_data)
+        program[NameObject("/Length1")] = NumberObject(length1)
+        font = DictionaryObject({
+            NameObject("/Type"): NameObject("/Font"),
+            NameObject("/Subtype"): NameObject("/Type1"),
+            NameObject("/BaseFont"): NameObject("/AAAAAA+CMR10"),
+            NameObject("/FirstChar"): NumberObject(1),
+            NameObject("/LastChar"): NumberObject(2),
+            NameObject("/Widths"): ArrayObject([NumberObject(500), NumberObject(278)]),
+            NameObject("/Encoding"): DictionaryObject({
+                NameObject("/Differences"): ArrayObject(
+                    [NumberObject(1), NameObject("/one"), NameObject("/period")]
+                ),
+            }),
+            NameObject("/FontDescriptor"): DictionaryObject({
+                NameObject("/Type"): NameObject("/FontDescriptor"),
+                NameObject("/FontName"): NameObject("/AAAAAA+CMR10"),
+                NameObject("/FontFile"): program,
+            }),
+        })
+        writer = PdfWriter()
+        page = writer.add_blank_page(width=200, height=200)
+        page[NameObject("/Resources")] = DictionaryObject({
+            NameObject("/Font"): DictionaryObject({NameObject("/F1"): font}),
+        })
+        contents = DecodedStreamObject()
+        page[NameObject("/Contents")] = contents
+        with tempfile.TemporaryDirectory() as temp:
+            pdf = Path(temp) / "type1.pdf"
+            contents.set_data(b"BT /F1 10 Tf 20 50 Td <0102> Tj ET")
+            writer.write(pdf)
+            self.assertEqual(validate_pdf_font_embedding(pdf, {}), [])
+
+            contents.set_data(b"BT /F1 10 Tf 20 50 Td <0102> Tj (r) Tj ET")
+            writer.write(pdf)
+            errors = validate_pdf_font_embedding(pdf, {})
+            self.assertEqual(len(errors), 1, errors)
+            self.assertIn("code 114", errors[0])
+            self.assertIn("/r, absent from the embedded program", errors[0])
+            self.assertIn("outside /FirstChar 1 /LastChar 2", errors[0])
+
+            # Without /Encoding the program's built-in encoding applies, as in
+            # consistent pdfTeX output: built-in /one at code 49 is valid.
+            del font["/Encoding"]
+            font[NameObject("/FirstChar")] = NumberObject(46)
+            font[NameObject("/LastChar")] = NumberObject(49)
+            font[NameObject("/Widths")] = ArrayObject([NumberObject(278)] + [NumberObject(500)] * 3)
+            contents.set_data(b"BT /F1 10 Tf 20 50 Td (1.) Tj ET")
+            writer.write(pdf)
+            self.assertEqual(validate_pdf_font_embedding(pdf, {}), [])
+            contents.set_data(b"BT /F1 10 Tf 20 50 Td (1/) Tj ET")
+            writer.write(pdf)
+            errors = validate_pdf_font_embedding(pdf, {})
+            self.assertEqual(len(errors), 1, errors)
+            self.assertIn("code 47 encodes .notdef", errors[0])
 
 
 if __name__ == "__main__":

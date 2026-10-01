@@ -37,3 +37,7 @@ tex-core = { path = "../tex-core" }
 tex-kpse = { path = "../tex-kpse" }
 tex-bibtex = { path = "../tex-bibtex" }
 tex-ps = { path = "../tex-ps" }
+
+[dev-dependencies]
+flate2 = { workspace = true }
+lopdf = { version = "0.44.0", default-features = false }

@@ -416,6 +416,104 @@ def compare_renders(
     }, errors
 
 
+_PS_NAME = rb"/([^\s/\[\]{}()<>%]+)"
+
+
+def named_simple_encoding(name: str) -> list[str] | None:
+    """Return the 256-entry glyph-name table of a predefined PDF simple-font encoding."""
+    from fontTools.agl import UV2AGL
+    from fontTools.encodings.MacRoman import MacRoman
+    from fontTools.encodings.StandardEncoding import StandardEncoding
+
+    if name == "StandardEncoding":
+        return list(StandardEncoding)
+    if name == "MacRomanEncoding":
+        return list(MacRoman)
+    if name == "WinAnsiEncoding":
+        table = []
+        for code in range(256):
+            try:
+                ch = bytes([code]).decode("cp1252")
+            except UnicodeDecodeError:
+                table.append(".notdef")
+                continue
+            table.append(UV2AGL.get(ord(ch), ".notdef") if code >= 32 else ".notdef")
+        return table
+    return None
+
+
+def parse_type1_program(data: bytes, length1: int | None = None) -> tuple[set[str], list[str]]:
+    """Return the CharStrings glyph names and built-in encoding of a Type 1 (/FontFile) program."""
+    from fontTools.misc import eexec
+    from fontTools.t1Lib import deHexString
+
+    if length1 is None or not 0 < length1 < len(data):
+        marker = re.search(rb"currentfile\s+eexec(?:\r\n|\r|\n| )", data)
+        if not marker:
+            raise ValueError("Type 1 program has no eexec section")
+        length1 = marker.end()
+    clear, encrypted = data[:length1], data[length1:]
+
+    builtin = [".notdef"] * 256
+    enc_pos = clear.find(b"/Encoding")
+    if enc_pos < 0:
+        raise ValueError("Type 1 program has no /Encoding")
+    if re.match(rb"/Encoding\s+StandardEncoding\s+def", clear[enc_pos:]):
+        builtin = named_simple_encoding("StandardEncoding") or builtin
+    else:
+        for code, name in re.findall(rb"dup\s+(\d+)\s*" + _PS_NAME + rb"\s+put", clear[enc_pos:]):
+            if int(code) < 256:
+                builtin[int(code)] = name.decode("latin1")
+
+    stripped = encrypted.lstrip()
+    if stripped[:4] and all(c in b"0123456789abcdefABCDEF" for c in stripped[:4]):
+        encrypted = deHexString(re.sub(rb"\s+", b"", stripped))
+    decrypted = eexec.decrypt(encrypted, 55665)[0][4:]
+
+    cs_pos = decrypted.find(b"/CharStrings")
+    begin = re.compile(rb"/CharStrings\s+\d+\s+dict\s+dup\s+begin").match(decrypted, cs_pos)
+    if cs_pos < 0 or not begin:
+        raise ValueError("Type 1 program has no /CharStrings dictionary")
+    entry = re.compile(rb"\s*" + _PS_NAME + rb"\s+(\d+)\s+\S+\s")
+    terminator = re.compile(rb"\s*(?:ND|\|-|noaccess\s+def|def)")
+    glyphs: set[str] = set()
+    pos = begin.end()
+    while (m := entry.match(decrypted, pos)) is not None:
+        glyphs.add(m.group(1).decode("latin1"))
+        end = terminator.match(decrypted, m.end() + int(m.group(2)))
+        if end is None:
+            raise ValueError(f"Type 1 CharString /{m.group(1).decode('latin1')} is truncated")
+        pos = end.end()
+    return glyphs, builtin
+
+
+def resolve_simple_encoding(encoding: Any, builtin: list[str]) -> list[str]:
+    """Apply a simple font's /Encoding (name or /BaseEncoding + /Differences) over its built-in table."""
+    if hasattr(encoding, "get_object"):
+        encoding = encoding.get_object()
+    if encoding is None:
+        return list(builtin)
+    if not isinstance(encoding, dict):
+        table = named_simple_encoding(str(encoding).lstrip("/"))
+        if table is None:
+            raise ValueError(f"unknown /Encoding {encoding}")
+        return table
+    base = encoding.get("/BaseEncoding")
+    table = list(builtin) if base is None else named_simple_encoding(str(base).lstrip("/"))
+    if table is None:
+        raise ValueError(f"unknown /BaseEncoding {base}")
+    code = 0
+    for item in encoding.get("/Differences", []):
+        item = item.get_object() if hasattr(item, "get_object") else item
+        if isinstance(item, int):
+            code = int(item)
+        else:
+            if 0 <= code < 256:
+                table[code] = str(item).lstrip("/")
+            code += 1
+    return table
+
+
 def parse_encoding_cmap(cmap_str: str) -> tuple[int, dict[int, int]]:
     """Parse a PDF /Encoding CMap stream into (code_width, code_to_cid)."""
     code_to_cid: dict[int, int] = {}
@@ -741,6 +839,11 @@ def validate_pdf_font_embedding(pdf_path: Path, case: dict[str, Any]) -> list[st
                         info["font_file_id"] = obj_id_num
                         info["font_data"] = stream_data
                         info["font_format"] = "Type1"
+                        info["font_file_kind"] = stream_key
+                        length1 = stream_obj.get_object().get("/Length1")
+                        if hasattr(length1, "get_object"):
+                            length1 = length1.get_object()
+                        info["length1"] = int(length1) if length1 is not None else None
                         embedded_streams.append({"type": "Type1", "base": base_font, "data": stream_data, "id": obj_id_num})
                         font_stream_obj_ids.setdefault(base_font, set()).add(obj_id_num)
                     except Exception as e:
@@ -748,6 +851,52 @@ def validate_pdf_font_embedding(pdf_path: Path, case: dict[str, Any]) -> list[st
 
         all_fonts.append(info)
         return info
+
+    type1_programs: dict[Any, tuple[set[str], list[str]] | None] = {}
+    simple_code_problems: dict[tuple[str, str], dict[int, str]] = {}
+
+    def validate_simple_type1_codes(finfo: dict[str, Any], raw_bytes: bytes, container_label: str) -> None:
+        """Each code drawn with an embedded Type 1 font must have a /Widths entry and select,
+        through the font dictionary's /Encoding, a glyph present in the embedded program."""
+        if finfo.get("font_file_kind") != "/FontFile":
+            return
+        base_font = finfo["base_font"]
+        prog_key = finfo["font_file_id"] if finfo["font_file_id"] is not None else id(finfo["font_data"])
+        if prog_key not in type1_programs:
+            try:
+                type1_programs[prog_key] = parse_type1_program(finfo["font_data"], finfo.get("length1"))
+            except Exception as e:
+                errors.append(f"Type1 font {base_font} embedded program could not be parsed: {e}")
+                type1_programs[prog_key] = None
+        program = type1_programs[prog_key]
+        if program is None:
+            return
+        glyphs, builtin = program
+        if "encoding_table" not in finfo:
+            try:
+                finfo["encoding_table"] = resolve_simple_encoding(finfo["encoding"], builtin)
+            except ValueError as e:
+                errors.append(f"Type1 font {base_font}: {e}")
+                finfo["encoding_table"] = None
+        table = finfo["encoding_table"]
+        if table is None:
+            return
+        fobj = finfo["fobj"]
+        first, last = fobj.get("/FirstChar"), fobj.get("/LastChar")
+        problems = simple_code_problems.setdefault((base_font, container_label), {})
+        for code in raw_bytes:
+            if code in problems:
+                continue
+            found: list[str] = []
+            if first is None or last is None or not int(first) <= code <= int(last):
+                found.append(f"outside /FirstChar {first} /LastChar {last} (no /Widths advance)")
+            name = table[code]
+            if name == ".notdef":
+                found.append("encodes .notdef")
+            elif name not in glyphs:
+                found.append(f"selects /{name}, absent from the embedded program")
+            if found:
+                problems[code] = " and ".join(found)
 
     def parse_and_validate_stream(
         content_bytes: bytes,
@@ -908,6 +1057,9 @@ def validate_pdf_font_embedding(pdf_path: Path, case: dict[str, Any]) -> list[st
                         except Exception as e:
                             errors.append(f"CIDFontType0 CFF validation error for {base_font}: {e}")
 
+                elif subtype == "/Type1" and font_data:
+                    validate_simple_type1_codes(finfo, raw_bytes, container_label)
+
             elif op_type == "DO":
                 xname = args[0]
                 xobj = scoped_xobjects.get(xname)
@@ -979,6 +1131,15 @@ def validate_pdf_font_embedding(pdf_path: Path, case: dict[str, Any]) -> list[st
                         cdata_list.append(part.get_data())
             for cdata in cdata_list:
                 parse_and_validate_stream(cdata, page_fonts, page_xobjs, page_label, set())
+
+    for (base_font, container_label), problems in simple_code_problems.items():
+        if problems:
+            detail = "; ".join(f"code {code} {problems[code]}" for code in sorted(problems)[:6])
+            more = f" (+{len(problems) - 6} more)" if len(problems) > 6 else ""
+            errors.append(
+                f"Font {base_font} in {container_label}: {len(problems)} used code(s) do not resolve to "
+                f"embedded glyphs through the font's /Encoding: {detail}{more}"
+            )
 
     # 2. Check unioned_subsets: exactly one shared stream indirect object identity
     if check_type == "unioned_subsets":

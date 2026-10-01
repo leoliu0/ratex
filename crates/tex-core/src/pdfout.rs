@@ -21,10 +21,18 @@ pub struct Annot {
     pub subtype: Option<String>,
 }
 
-/// A named destination anchored at a page point.
+/// Identifier of a `\pdfdest`: `name {<string>}` entries go to the /Dests
+/// name tree, `num <n>` entries become standalone destination objects.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DestId {
+    Name(String),
+    Num(i32),
+}
+
+/// A destination anchored at a page point.
 #[derive(Clone, Debug)]
 pub struct Dest {
-    pub name: String,
+    pub id: DestId,
     /// anchor / explicit position in bp, bottom-origin
     pub x: f64,
     pub y: f64,
@@ -33,6 +41,43 @@ pub struct Dest {
     pub kind: u8,
     /// /XYZ zoom factor (None = null)
     pub zoom: Option<f64>,
+}
+
+/// Target of a pdfTeX `goto` action.
+#[derive(Clone, Debug)]
+pub enum GotoTarget {
+    /// `page <n> {<view>}`: 1-based page number and raw view tokens
+    Page(i32, String),
+    Dest(DestId),
+}
+
+/// pdfTeX action specification (`scan_action`).
+#[derive(Clone, Debug)]
+pub enum PdfAction {
+    /// `user {<action dict>}`, written verbatim
+    User(String),
+    /// `goto [file {<file>}] page|name|num ... [newwindow|nonewwindow]`
+    Goto {
+        file: Option<String>,
+        new_window: Option<bool>,
+        target: GotoTarget,
+    },
+    /// `thread [file {<file>}] name {..}|num <n>`
+    Thread { file: Option<String>, id: DestId },
+}
+
+/// One `\pdfoutline [attr {..}] <action> [count <n>] {<title>}` entry, in
+/// source order. A nonzero count makes the next |n| entries (recursively)
+/// its children; a negative count shows the item closed.
+#[derive(Clone, Debug)]
+pub struct Outline {
+    pub attr: String,
+    pub action: Option<PdfAction>,
+    pub count: i32,
+    /// raw title tokens: a PDF string body, possibly with escapes
+    pub title: String,
+    /// where the item was declared, for end-of-job diagnostics
+    pub source: Option<crate::input::SourceMark>,
 }
 
 /// A compiled PDF page awaiting serialization.
@@ -90,8 +135,8 @@ pub struct PdfDoc {
     pub names_extra: Vec<u8>,
     /// raw dict body contributed by \pdfpagesattr (written to the page tree)
     pub pages_attr: Vec<u8>,
-    /// (title, dest name, count) from \pdfoutline
-    pub outlines: Vec<(String, String, i32)>,
+    /// \pdfoutline entries in source order (tree built at serialization)
+    pub outlines: Vec<Outline>,
     /// loaded embedded fonts
     /// open action: (1-based page number, view name) from \pdfcatalog's
     /// keyword form `openaction goto page <n> {view}` (hyperref PDF@SetupDoc)
@@ -575,46 +620,59 @@ impl Engine {
         }));
     }
 
-    /// \pdfdest name{<name>} <type> [<params>] — <type> is one of
+    /// Destination identifier: `name {<string>}` or `num <n>` (pdfTeX
+    /// requires a positive number). Leaves the input untouched when
+    /// neither keyword follows.
+    fn scan_dest_id(&mut self) -> Option<DestId> {
+        match self.peek_letters().as_str() {
+            kw @ ("name" | "fld") => {
+                self.take_keyword(kw.as_bytes());
+                Some(DestId::Name(self.scan_pdf_string()))
+            }
+            "num" => {
+                self.take_keyword(b"num");
+                let n = self.scan_int();
+                if n <= 0 {
+                    self.error("pdfTeX error (ext1): num identifier must be positive");
+                    return None;
+                }
+                Some(DestId::Num(n))
+            }
+            _ => None,
+        }
+    }
+
+    /// \pdfdest name{<name>}|num <n> <type> [<params>] — <type> is one of
     /// xyz fit fith fitv fitb fitbh fitbv fitr (case-insensitive), each
     /// optionally followed by integers (sp; `null` keeps the anchor) and
     /// ended by `\relax` or the next non-parameter token.
     pub fn do_pdfdest(&mut self) {
-        match self.peek_letters().as_str() {
-            "name" | "fld" => {
-                let kw = self.peek_letters();
-                self.take_keyword(kw.as_bytes());
-                let name = self.scan_pdf_string();
-                let type_kw = self.peek_letters();
-                let kind = dest_kind(type_kw.as_bytes()).unwrap_or(0);
-                if !type_kw.is_empty() {
-                    self.take_keyword(type_kw.as_bytes());
-                }
-                let mut vals = [PDF_POS_CURRENT; 4];
-                for slot in vals.iter_mut().take(dest_param_count(kind)) {
-                    match self.next_dest_param() {
-                        DestParam::Number => *slot = self.scan_int(),
-                        DestParam::Null => {}
-                        DestParam::End => break,
-                    }
-                }
-                let node = Node::Whatsit(WhatIt::PdfDest {
-                    name,
-                    kind,
-                    params: vals,
-                });
-                match self.mode {
-                    crate::engine::Mode::Vertical | crate::engine::Mode::InternalVertical => {
-                        self.vlist_append(node)
-                    }
-                    _ => self.cur_list.push(node),
-                }
+        let Some(id) = self.scan_dest_id() else {
+            return;
+        };
+        let type_kw = self.peek_letters();
+        let kind = dest_kind(type_kw.as_bytes()).unwrap_or(0);
+        if !type_kw.is_empty() {
+            self.take_keyword(type_kw.as_bytes());
+        }
+        let mut vals = [PDF_POS_CURRENT; 4];
+        for slot in vals.iter_mut().take(dest_param_count(kind)) {
+            match self.next_dest_param() {
+                DestParam::Number => *slot = self.scan_int(),
+                DestParam::Null => {}
+                DestParam::End => break,
             }
-            "num" => {
-                self.take_keyword(b"num");
-                let _ = self.scan_int();
+        }
+        let node = Node::Whatsit(WhatIt::PdfDest {
+            id,
+            kind,
+            params: vals,
+        });
+        match self.mode {
+            crate::engine::Mode::Vertical | crate::engine::Mode::InternalVertical => {
+                self.vlist_append(node)
             }
-            _ => {}
+            _ => self.cur_list.push(node),
         }
     }
 
@@ -648,41 +706,162 @@ impl Engine {
         self.append_whatsit(Node::Whatsit(WhatIt::PdfAnnot { attr, wd, ht, dp }));
     }
 
-    /// \pdfoutline [goto name{..}|user{..}] [count <n>] {<title>}
-    pub fn do_pdfoutline(&mut self) {
-        let mut dest = String::new();
-        match self.peek_letters().as_str() {
-            "goto" => {
-                self.take_keyword(b"goto");
-                match self.peek_letters().as_str() {
-                    "name" | "fld" => {
-                        let sub = self.peek_letters();
-                        self.take_keyword(sub.as_bytes());
-                        dest = self.scan_pdf_string();
-                    }
-                    "num" => {
-                        self.take_keyword(b"num");
-                        let _ = self.scan_int();
-                    }
-                    _ => {}
-                }
-            }
+    /// pdfTeX `scan_action`: `user {<dict>}` or
+    /// `goto|thread [file {<file>}] page <n> {<view>}|name {..}|num <n>
+    /// [newwindow|nonewwindow]` (`page` only with `goto`).
+    fn scan_pdf_action(&mut self) -> Option<PdfAction> {
+        let kind = self.peek_letters();
+        match kind.as_str() {
             "user" => {
                 self.take_keyword(b"user");
-                let _ = self.scan_pdf_string();
+                return Some(PdfAction::User(self.scan_pdf_string()));
             }
-            _ => {}
+            "goto" | "thread" => {
+                self.take_keyword(kind.as_bytes());
+            }
+            _ => {
+                self.error("pdfTeX error (ext1): action type missing");
+                return None;
+            }
         }
+        let goto = kind == "goto";
+        let file = if self.peek_letters() == "file" {
+            self.take_keyword(b"file");
+            Some(self.scan_pdf_string())
+        } else {
+            None
+        };
+        let target = if self.peek_letters() == "page" {
+            self.take_keyword(b"page");
+            let page = self.scan_int();
+            let view = self.scan_pdf_string();
+            if !goto {
+                self.error("pdfTeX error (ext1): only GoTo action can be used with `page'");
+                return None;
+            }
+            if page <= 0 {
+                self.error("pdfTeX error (ext1): invalid page number");
+                return None;
+            }
+            GotoTarget::Page(page, view)
+        } else {
+            match self.scan_dest_id() {
+                Some(DestId::Num(_)) if goto && file.is_some() => {
+                    self.error(
+                        "pdfTeX error (ext1): `goto' option cannot be used with both `file' and `num'",
+                    );
+                    return None;
+                }
+                Some(id) => GotoTarget::Dest(id),
+                None => {
+                    self.error("pdfTeX error (ext1): identifier type missing");
+                    return None;
+                }
+            }
+        };
+        let new_window = match self.peek_letters().as_str() {
+            "newwindow" => {
+                self.take_keyword(b"newwindow");
+                Some(true)
+            }
+            "nonewwindow" => {
+                self.take_keyword(b"nonewwindow");
+                Some(false)
+            }
+            _ => None,
+        };
+        if new_window.is_some() && (!goto || file.is_none()) {
+            self.error(
+                "pdfTeX error (ext1): `newwindow'/`nonewwindow' must be used with `goto' and `file' option",
+            );
+        }
+        Some(if goto {
+            PdfAction::Goto {
+                file,
+                new_window,
+                target,
+            }
+        } else {
+            let GotoTarget::Dest(id) = target else {
+                unreachable!("`page' is rejected for thread actions")
+            };
+            PdfAction::Thread { file, id }
+        })
+    }
+
+    /// \pdfoutline [attr {<dict>}] <action> [count <n>] {<title>}
+    pub fn do_pdfoutline(&mut self) {
+        let attr = if self.peek_letters() == "attr" {
+            self.take_keyword(b"attr");
+            self.scan_pdf_string()
+        } else {
+            String::new()
+        };
+        let action = self.scan_pdf_action();
         let mut count = 0i32;
         if self.peek_letters() == "count" {
             self.take_keyword(b"count");
             count = self.scan_int();
         }
         let title = self.scan_pdf_string();
-        self.pdf_outlines.push((title, dest, count));
-        // a trailing \pdfoutline after the last shipout must survive:
-        // render_page only mirrors at page build time
-        self.pdf_doc.outlines = self.pdf_outlines.clone();
+        let source = self.input.current_source_mark();
+        self.pdf_doc.outlines.push(Outline {
+            attr,
+            action,
+            count,
+            title,
+            source,
+        });
+    }
+
+    /// pdfTeX's end-of-file checks for outline targets that the PDF cannot
+    /// point at: a `goto num` without a matching `\pdfdest num` is replaced
+    /// by a fixed destination on the first page; a `goto page` past the
+    /// last page and a local `thread num` (no `\pdfthread` support) leave
+    /// the item without an action.
+    pub(crate) fn warn_unresolved_outline_targets(&mut self) {
+        let doc = &self.pdf_doc;
+        if doc.pages.is_empty() {
+            return;
+        }
+        let defined = |n: i32| {
+            doc.pages
+                .iter()
+                .flat_map(|page| &page.dests)
+                .any(|dest| dest.id == DestId::Num(n))
+        };
+        let mut warnings: Vec<(String, Option<crate::input::SourceContext>)> = Vec::new();
+        for item in &doc.outlines {
+            let message = match &item.action {
+                Some(PdfAction::Goto {
+                    file: None,
+                    target: GotoTarget::Dest(DestId::Num(n)),
+                    ..
+                }) if !defined(*n) => format!(
+                    "\\pdfoutline destination num {n} has been referenced but does not exist, replaced by a fixed one"
+                ),
+                Some(PdfAction::Goto {
+                    file: None,
+                    target: GotoTarget::Page(page, _),
+                    ..
+                }) if *page as usize > doc.pages.len() => format!(
+                    "\\pdfoutline page {page} has been referenced but does not exist; the item has no action"
+                ),
+                Some(PdfAction::Thread {
+                    file: None,
+                    id: DestId::Num(n),
+                }) => format!(
+                    "\\pdfoutline thread num {n} needs \\pdfthread, which is not supported; the item has no action"
+                ),
+                _ => continue,
+            };
+            if !warnings.iter().any(|(seen, _)| *seen == message) {
+                warnings.push((message, item.source.as_ref().map(|s| s.to_context())));
+            }
+        }
+        for (message, source) in warnings {
+            self.warning_at(&message, source);
+        }
     }
 
     /// \pdfcatalog {<dict body>} [use {<dict body>}]
@@ -772,24 +951,6 @@ mod tests {
         );
         // no URI action: None, raw spec keeps flowing through as attr
         assert_eq!(extract_uri("/Subtype/Link/A<</S/Named/N/NextPage>>"), None);
-    }
-
-    #[test]
-    fn dest_doc_model_defaults() {
-        let doc = PdfDoc::new();
-        assert!(doc.names_extra.is_empty());
-        assert!(doc.pages_attr.is_empty());
-        let page = PdfPage::new(612, 792);
-        assert!(page.dests.is_empty());
-        assert!(page.attr_extra.is_empty());
-        let d = Dest {
-            name: "a".into(),
-            x: 1.0,
-            y: 2.0,
-            kind: 0,
-            zoom: None,
-        };
-        assert_eq!((d.name.as_str(), d.kind), ("a", 0));
     }
     #[test]
     fn font_binding_shards_do_not_alias_raw_or_each_other() {

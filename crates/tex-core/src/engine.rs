@@ -241,7 +241,6 @@ pub struct Engine {
     pub native_text: crate::native_layout::NativeTextState,
     pub(crate) native_utf8_bytes: [u8; 4],
     pub(crate) native_utf8_len: usize,
-    pub pdf_outlines: Vec<(String, String, i32)>,
 
     pub job_running: bool,
     pub end_occurred: bool,
@@ -904,7 +903,6 @@ impl Engine {
             native_text: crate::native_layout::NativeTextState::default(),
             native_utf8_bytes: [0; 4],
             native_utf8_len: 0,
-            pdf_outlines: Vec::new(),
             job_running: true,
             end_occurred: false,
             explicit_end_seen: false,

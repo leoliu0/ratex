@@ -27,14 +27,16 @@ link" cleanly.
 - `crates/tex-core/src/pdffile.rs`: full serializer rewrite. Dynamic
   object allocator (no numbering gaps; xref always consistent), /Pages
   tree, per-annot objects (/Subtype /Link + /A /URI or /Dest), sorted
-  /Names /D name tree, flat /Outlines tree with Prev/Next chain (title as
-  UTF-16BE hex for non-ASCII), /Info = Producer/Creator + raw \pdfinfo
+  /Names /D name tree, nested /Outlines tree linked from \pdfoutline
+  `count` values as in pdfTeX (titles written verbatim, as pdfTeX does),
+  /Info = Producer/Creator + raw \pdfinfo
   body, /Catalog + raw \pdfcatalog body, flate content streams, FontFile
   stream with real Length1/Length2/Length3 (uncompressed, per PDF spec).
   `make_embed_font` signature unchanged (tex-cli compatible).
 - `crates/tex-core/src/pdfrender.rs`: `render_page(&mut self)` (was
   &self): records \pdfsavepos into `eng.pdf_last_x/pdf_last_y` (sp, from
-  page edges; bp_to_sp helper added), copies pdf_outlines into the doc.
+  page edges; bp_to_sp helper added). \pdfoutline items are stored in
+  `pdf_doc.outlines` and linked into the outline tree at serialization.
   Link stack with real bbox tracking (char extents approximate
   asc/desc 0.75/-0.25 em; rects from emit_rect corners); unclosed links
   closed at page end. \pdfdest recorded per page (no more junk text in

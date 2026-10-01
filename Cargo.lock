@@ -914,7 +914,9 @@ name = "tex-cli"
 version = "0.4.5"
 dependencies = [
  "dlmalloc",
+ "flate2",
  "libc",
+ "lopdf",
  "tex-bibtex",
  "tex-core",
  "tex-kpse",

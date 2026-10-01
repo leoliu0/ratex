@@ -31,12 +31,12 @@ See [PERFORMANCE.md](PERFORMANCE.md) for benchmark scope and measurements.
 
 - **Validated incremental builds**: Dependency and auxiliary-state checks reuse unchanged results without re-running the typesetting engine. Per-job locks protect active compilations from cache cleanup, including concurrent startup.
 - **Self-contained typesetting**: The source build embeds the LaTeX format, package resources, and the pinned Latin, Cyrillic, Greek, and CJK font families described below. Compilation needs neither TeX Live nor runtime font downloads.
-- **All-in-One Engine & Toolchain**: Combines the TeX engine, package resolver, BibTeX interpreter, and build convergence into a single unified `ratex` command.
+- **All-in-One Engine & Toolchain**: Combines the TeX engine, package resolver, BibTeX interpreter, and build convergence into a single unified `ratex` command. The `ratex` command runs each TeX and BibTeX pass in a child process of the same executable, which isolates crashes and memory use between passes. Compilation calls no external programs; EPS conversion is built in.
 - **SyncTeX by Default**: A PDF-adjacent `.synctex.gz` maps rendered text to source lines for forward/inverse search in VS Code, TeXstudio, VimTeX, and AUCTeX.
 - **Compiler-Grade Diagnostics**: Beautiful rustc-style error reporting with physical source line excerpts, underlines, and actionable fix suggestions streamed directly to the terminal.
 - **Native SVG & Vector Graphics**: First-class support for `.svg` via pure-Rust in-memory rasterization directly in `\includegraphics`—no Inkscape or external shell execution required.
 - **Built-in `latexdiff`**: Integrated visual document diffing with `ratex latexdiff old.tex new.tex` computing word/token LCS differences and injecting standard revision markup.
-- **Embedded C API (`libtex`) & WebAssembly (`tex.wasm`)**: Compile complete LaTeX documents in-memory from C/C++, Node.js, or client-side browser runtimes without spawning subprocesses or touching disk.
+- **Embedded C API (`libtex`) & WebAssembly (`tex.wasm`)**: Compile complete LaTeX documents in-memory from C/C++, Node.js, or client-side browser runtimes. These libraries run every TeX and BibTeX pass inside the calling process, without spawning subprocesses or touching disk. Rust programs can call the same pipeline through the `tex-runtime` crate. See [docs/libraries.md](docs/libraries.md).
 - **Memory-Safe Pure Rust**: Written with strict bounds checks, eliminating buffer overflows, segfaults, and memory corruption bugs common in legacy C TeX engines.
 ---
 
@@ -226,8 +226,13 @@ Supported commands include `\setmainfont`, `\setsansfont`, `\setmonofont`,
 family/style/size switching. Selection options include `Path`, `Extension`,
 explicit style files, `FontIndex`, numeric `Scale`, `Script`, `Language`,
 ligatures, kerning, number features, `RawFeature`, and variation coordinates.
-The selected face must actually provide the requested style, feature, and glyphs;
-missing resources and forbidden embedding are errors, not font substitutions.
+Face options (`UprightFont`, `BoldFont`, `ItalicFont`, `BoldItalicFont`,
+`SlantedFont`, `BoldSlantedFont`, `SmallCapsFont`, including the `*` shorthand)
+select faces as in fontspec. When a family has no face for a requested shape
+(IPAex fonts, for example, have no bold or italic), Ratex follows fontspec under
+XeTeX: it uses the nearest available shape and prints a font-shape warning.
+Missing font files or families, unsupported features, missing glyphs, and
+forbidden embedding remain errors.
 Use project-local font files or bundled names; Ratex does not search OS font stores.
 
 Mapped TrueType, CFF OpenType, and collection faces are embedded as CID fonts

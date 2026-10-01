@@ -1930,7 +1930,7 @@ impl Engine {
             return;
         }
         let prim = match self.eqtb.resolve(t.cs_id()) {
-            Some(Equiv::Prim(p)) => Some(*p),
+            Some(Equiv::Prim(p)) => Some(p.box_spec()),
             _ => None,
         };
         if let Some(prim) = prim {

@@ -1457,6 +1457,7 @@ impl Engine {
             return None;
         }
         if let Some(crate::eqtb::Equiv::Prim(p)) = self.eqtb.resolve(t.cs_id()) {
+            let p = &p.box_spec();
             if matches!(
                 p,
                 Prim::HBox
@@ -2310,6 +2311,7 @@ impl Engine {
         }
         if t.is_cs() {
             if let Some(crate::eqtb::Equiv::Prim(prim)) = self.eqtb.resolve(t.cs_id()).cloned() {
+                let prim = prim.box_spec();
                 match prim {
                     crate::prim::Prim::HBox
                     | crate::prim::Prim::VBox

@@ -1016,6 +1016,22 @@ pub(crate) fn install(lua: &mut Lua) -> Result<(), String> {
     });
     reg!(lua, b, "expand", || -> Result<(), String> { with_engine(Engine::lua_expand) });
 
+    // ---- primitives (ltexlib.c) ----
+    reg!(lua, b, "enable_primitives", |prefix: LuaString, names: LuaTable| -> Result<(), String> {
+        let prefix = bytes_of(&prefix);
+        let names: Vec<LuaString> = names.sequence_values().map_err(|e| format!("{e:?}"))?;
+        let names: Vec<Vec<u8>> = names.iter().map(bytes_of).collect();
+        with_engine(|e| e.lua_enable_primitives(&prefix, &names))
+    });
+    reg!(lua, b, "primitive_names", |mask: i64| -> Result<Vec<LuaBytes>, String> {
+        with_engine(|e| {
+            e.lua_primitive_names(mask as u8)
+                .into_iter()
+                .map(|name| LuaBytes(name.to_vec()))
+                .collect()
+        })
+    });
+
     // ---- macros and definitions ----
     reg!(lua, b, "get_macro", |name: LuaString, params: bool| -> Result<Option<String>, String> {
         let name = bytes_of(&name);

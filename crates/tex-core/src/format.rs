@@ -1040,9 +1040,12 @@ fn load_format_uncompressed(data: &[u8]) -> Result<Engine, String> {
             _ => None,
         })
         .collect();
+    let (lua_table, lua_backend) = eng.resolve_lua_primitives();
     load_state(&mut r, &mut eng).map_err(io_err)?;
+    let lua = eng.engine_kind == crate::engine::EngineKind::LuaTeX;
     // Repair primitive aliases while preserving LaTeX macro redefinitions.
-    for (name, p) in primitives {
+    // A LuaTeX format defines exactly the primitives it enabled.
+    for (name, p) in primitives.into_iter().filter(|_| !lua) {
         let did = eng.cs.lookup(&name).unwrap_or_else(|| eng.cs.intern(&name));
         let force = name.as_slice() == b"protected";
         match eng.eqtb.get(did) {
@@ -1062,8 +1065,8 @@ fn load_format_uncompressed(data: &[u8]) -> Result<Engine, String> {
     }
     if eng.engine_kind == crate::engine::EngineKind::XeTeX {
         eng.init_xetex_primitives();
-    } else if eng.engine_kind == crate::engine::EngineKind::LuaTeX {
-        eng.init_luatex_primitives();
+    } else if lua {
+        eng.install_lua_primitive_table(lua_table, lua_backend);
         if eng.lua.is_none() {
             let lua_eng = crate::engine_lua::LuaEngine::new().map_err(|e| e)?;
             eng.lua = Some(Box::new(lua_eng));
@@ -1111,6 +1114,7 @@ pub fn load_format_bytes_into(data: &[u8], eng: &mut Engine) -> Result<(), Strin
     eng.par_shape = scratch.par_shape;
     eng.penalty_shapes = scratch.penalty_shapes;
     eng.primitive_table = scratch.primitive_table;
+    eng.lua_primitives = scratch.lua_primitives;
     eng.penalty_shape_levels = scratch.penalty_shape_levels;
     eng.format_done = scratch.format_done;
     eng.ini_mode = scratch.ini_mode;

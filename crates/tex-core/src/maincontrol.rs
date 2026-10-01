@@ -189,14 +189,21 @@ impl Engine {
                 let neg = id_cs_is(self, id, b"raise");
                 self.box_move(d, neg, false);
             }
-            HBox | VBox | VTop | VCenter => {
-                let kind = match p {
+            HBox | VBox | VTop | VCenter | HPack | VPack | TPack => {
+                let kind = match p.box_spec() {
                     HBox => 0u8,
                     VBox => 1,
                     VTop => 2,
                     _ => 3,
                 };
                 self.begin_box(kind);
+            }
+            PdfExtension => self.do_pdf_extension(),
+            DviExtension => self.do_dvi_extension(),
+            Deferred => self.do_deferred(),
+            Boundary | WordBoundary | ProtrusionBoundary => self.append_boundary(p),
+            ToksApp | ToksPre | EToksApp | EToksPre | GToksApp | GToksPre | XToksApp | XToksPre => {
+                self.combine_the_toks(p)
             }
             HRule => {
                 if self.mode == Mode::Horizontal {
@@ -910,7 +917,7 @@ impl Engine {
                 let f = self.scan_font_id();
                 self.eqtb.assign_style_font(style, fam as u16, f, global);
             }
-            Left => {
+            Left | ULeft => {
                 if self.mode.is_m() {
                     let command_source = self.current_token_source_mark();
                     let v = self.scan_delim_int();
@@ -919,7 +926,7 @@ impl Engine {
                     self.error("Missing $ inserted (\\left)");
                 }
             }
-            Right => {
+            Right | URight => {
                 if self.mode.is_m() {
                     let command_source = self.current_token_source_mark();
                     let v = self.scan_delim_int();
@@ -930,7 +937,7 @@ impl Engine {
                     self.error("Missing $ inserted (\\right)");
                 }
             }
-            Middle => {
+            Middle | UMiddle => {
                 if self.mode.is_m() {
                     let command_source = self.current_token_source_mark();
                     let v = self.scan_delim_int();
@@ -2688,6 +2695,7 @@ fn group_kind_name(kind: LevelType) -> &'static str {
 fn whatsit_kind_name(whatsit: &crate::boxes::WhatIt) -> &'static str {
     use crate::boxes::WhatIt;
     match whatsit {
+        WhatIt::Boundary { .. } => "boundary",
         WhatIt::PdfLiteral { .. } => "PDF literal",
         WhatIt::PdfColorStack { .. } => "PDF color stack",
         WhatIt::PdfRefXImage { .. } => "PDF image reference",

@@ -1150,6 +1150,15 @@ impl Engine {
                 | Prim::XeTeXVariationName
                 | Prim::LuaTeXRevision
                 | Prim::LuaTeXBanner
+                | PdfVariable
+                | PdfFeedback
+                | DviVariable
+                | DviFeedback
+                | EtxVersionString
+                | CsString
+                | BeginCsName
+                | FormatName
+                | LuaEscapeString
         )
     }
 
@@ -1363,7 +1372,7 @@ impl Engine {
                 // extra \endcsname outside \csname: TeX errors then continues
                 None
             }
-            CsName => {
+            CsName | BeginCsName => {
                 let csname_origin = self.current_token_source_mark();
                 let csname_span = if self.diagnostic_macro_trace.is_empty() {
                     self.diagnostic_cs_source_width(self.diagnostic_source_cs.unwrap_or(id))
@@ -1421,6 +1430,11 @@ impl Engine {
                 }
                 self.csname_depth = self.csname_depth.saturating_sub(1);
                 let id = self.cs.intern(&name);
+                if p == BeginCsName && self.eqtb.get(id).is_none() {
+                    // LuaTeX `\begincsname`: an undefined name expands to
+                    // nothing and stays undefined.
+                    return None;
+                }
                 self.last_named_cs = Some(id);
                 if self.eqtb.get(id).is_none() {
                     // tex.web §372: a new name means \relax (locally).
@@ -2310,6 +2324,38 @@ impl Engine {
             }
             Prim::LuaTeXBanner => {
                 self.exp_string(b"This is LuaTeX, Version 1.24.0");
+                None
+            }
+            PdfVariable => {
+                self.expand_pdf_variable();
+                None
+            }
+            PdfFeedback => {
+                self.expand_pdf_feedback();
+                None
+            }
+            DviVariable => {
+                self.warning_at("(dvi backend): unexpected use of \\dvivariable", None);
+                None
+            }
+            DviFeedback => {
+                self.expand_dvi_feedback();
+                None
+            }
+            EtxVersionString => {
+                self.exp_string(b"2.2");
+                None
+            }
+            CsString => {
+                self.expand_csstring(id);
+                None
+            }
+            FormatName => {
+                self.expand_format_name();
+                None
+            }
+            LuaEscapeString => {
+                self.expand_lua_escape_string();
                 None
             }
             _ => None,

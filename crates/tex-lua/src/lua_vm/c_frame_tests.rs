@@ -157,3 +157,44 @@ fn pcallk_reports_a_failing_message_handler_as_errerr() {
         lua_close(state);
     }
 }
+
+unsafe extern "C" fn c_ref(state: *mut lua_State) -> c_int {
+    lua_pushvalue(state, 1);
+    let reference = luaL_ref(state, LUA_REGISTRYINDEX);
+    lua_pushinteger(state, reference as lua_Integer);
+    1
+}
+
+unsafe extern "C" fn c_registry_get(state: *mut lua_State) -> c_int {
+    let key = lua_tointegerx(state, 1, ptr::null_mut());
+    lua_rawgeti(state, LUA_REGISTRYINDEX, key);
+    1
+}
+
+#[test]
+fn rust_and_c_references_share_the_registry_key_space() {
+    use crate::{LuaApi, LuaLanguageLevel, SafeOption, Stdlib};
+    let mut lua = crate::Lua::new_with_language(SafeOption::default(), LuaLanguageLevel::Lua53);
+    lua.open_stdlib(Stdlib::All).unwrap();
+    let global = lua.global_state_mut();
+    for (name, function) in [("c_ref", c_ref as *mut std::ffi::c_void), ("c_get", c_registry_get as _)]
+    {
+        let value = external_c_function(global.main_state(), function).unwrap();
+        global.set_global(name, value).unwrap();
+    }
+    // registry[LUA_RIDX_MAINTHREAD] and [LUA_RIDX_GLOBALS], as init_registry sets them
+    lua.execute("assert(type(c_get(1)) == 'thread' and c_get(2) == _G)").unwrap();
+    lua.execute("c_value = {}; c_id = c_ref(c_value)").unwrap();
+    let global = lua.global_state_mut();
+    let rust_value = global.create_table(0, 0).unwrap();
+    let rust_ref = global.create_ref(rust_value);
+    global.set_global("rust_value", rust_value).unwrap();
+    let id = crate::lua_value::LuaValue::integer(rust_ref.ref_id() as i64);
+    global.set_global("rust_id", id).unwrap();
+    lua.execute(
+        "assert(c_id > 2 and rust_id ~= c_id, tostring(rust_id))
+         assert(c_get(c_id) == c_value and c_get(rust_id) == rust_value)
+         assert(c_get(2) == _G)",
+    )
+    .unwrap();
+}

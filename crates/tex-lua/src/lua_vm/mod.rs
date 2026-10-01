@@ -46,7 +46,6 @@ pub use crate::lua_vm::debug_info::DebugInfo;
 pub(crate) use crate::lua_vm::error_msg::ErrorMsg;
 use crate::lua_vm::file_layout::inspect_file_chunk_layout;
 pub use crate::lua_vm::lua_error::LuaError;
-use crate::lua_vm::lua_ref::RefManager;
 use crate::lua_vm::lua_ref::store_in_registry;
 pub use crate::lua_vm::lua_ref::{
     LUA_REFNIL, LuaAnyRef, LuaFunctionRef, LuaRefValue, LuaStringRef, LuaTableRef, RefId,
@@ -220,9 +219,6 @@ pub struct GlobalState {
     /// Registry table (like Lua's LUA_REGISTRYINDEX)
     pub(crate) registry: LuaValue,
 
-    /// Reference manager for luaL_ref/luaL_unref mechanism
-    pub(crate) ref_manager: RefManager,
-
     /// Object pool for unified object management
     pub(crate) object_allocator: ObjectAllocator,
 
@@ -305,7 +301,6 @@ impl GlobalState {
         let mut inner = Box::pin(GlobalState {
             global: LuaValue::nil(),
             registry: LuaValue::nil(),
-            ref_manager: RefManager::new(),
             object_allocator,
             gc,
             main_state: ThreadPtr::null(), //,
@@ -356,6 +351,9 @@ impl GlobalState {
         // Set _G to point to the global table itself
         let globals_value = inner.create_table(0, 20).unwrap();
         inner.global = globals_value;
+        // init_registry: registry[LUA_RIDX_MAINTHREAD] and [LUA_RIDX_GLOBALS]
+        inner.registry_seti(1, thread_value);
+        inner.registry_seti(2, globals_value);
         inner.set_global("_G", globals_value).unwrap();
         inner.set_global("_ENV", globals_value).unwrap();
 
@@ -454,9 +452,38 @@ impl GlobalState {
     ///
     /// You must call release_ref() when done to free registry entries.
     pub fn create_ref(&mut self, value: LuaValue) -> LuaRefValue {
-        let ref_id = self.ref_manager.alloc_ref_id();
-        self.registry_seti(ref_id as i64, value);
-        LuaRefValue::new_registry(ref_id)
+        LuaRefValue::new_registry(self.registry_ref(value))
+    }
+
+    /// `luaL_ref` on the registry, so Rust and C references share one key
+    /// space: reuse the head of the free list kept in `registry[0]`, else
+    /// take `#registry + 1`. A nil value gets `LUA_REFNIL` and no slot.
+    pub(crate) fn registry_ref(&mut self, value: LuaValue) -> RefId {
+        if value.is_nil() {
+            return LUA_REFNIL;
+        }
+        let registry = self.registry;
+        let free = self.raw_geti(&registry, 0).and_then(|v| v.as_integer()).unwrap_or(0);
+        let ref_id = if free > 0 {
+            let next = self.raw_geti(&registry, free).unwrap_or_default();
+            self.raw_seti(&registry, 0, next);
+            free
+        } else {
+            registry.as_table().map_or(0, |table| table.len() as i64) + 1
+        };
+        self.raw_seti(&registry, ref_id, value);
+        ref_id as RefId
+    }
+
+    /// `luaL_unref` on the registry: push `ref_id` onto the free list.
+    pub(crate) fn registry_unref(&mut self, ref_id: RefId) {
+        if ref_id <= 0 {
+            return;
+        }
+        let registry = self.registry;
+        let free = self.raw_geti(&registry, 0).unwrap_or_default();
+        self.raw_seti(&registry, ref_id as i64, free);
+        self.raw_seti(&registry, 0, LuaValue::integer(ref_id as i64));
     }
 
     /// Get the value from a reference
@@ -469,21 +496,12 @@ impl GlobalState {
     /// This frees the registry entry and allows the value to be garbage collected.
     /// After calling this, the LuaRefValue should not be used.
     pub fn release_ref(&mut self, lua_ref: LuaRefValue) {
-        let ref_id = lua_ref.ref_id();
-        if ref_id > 0 {
-            // Remove from registry
-            self.registry_seti(ref_id as i64, LuaValue::nil());
-            // Return ref_id to free list
-            self.ref_manager.free_ref_id(ref_id);
-        }
+        self.registry_unref(lua_ref.ref_id());
     }
 
     /// Release a reference by raw ID (for C API compatibility)
     pub fn release_ref_id(&mut self, ref_id: RefId) {
-        if ref_id > 0 {
-            self.registry_seti(ref_id as i64, LuaValue::nil());
-            self.ref_manager.free_ref_id(ref_id);
-        }
+        self.registry_unref(ref_id);
     }
 
     /// Get value from registry by raw ref ID (for C API compatibility)

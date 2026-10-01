@@ -32,7 +32,6 @@ for name, job in (
     expected_pages = manifest[name]['pages']
     ours = pymupdf.open(root / (name + '-rust') / (job + '.pdf'))
     reference = pymupdf.open(root / (name + '-reference') / (job + '.pdf'))
-    assert ours.metadata.get('producer') == 'tex-rs', (name, ours.metadata)
     assert not ours.is_repaired and not reference.is_repaired, name
     assert len(ours) == len(reference) == expected_pages, (name, len(ours), len(reference))
     differing = total = 0

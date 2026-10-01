@@ -1286,6 +1286,13 @@ pub(crate) fn install(lua: &mut Lua) -> Result<(), String> {
     reg!(lua, b, "name_get", |slot: i64| -> Result<Option<String>, String> {
         with_engine(|e| u16::try_from(slot).ok().and_then(|k| e.lua_names.get(&k).cloned()))
     });
+    reg!(lua, b, "callback_set", |index: i64, state: i64| -> Result<(), String> {
+        with_engine(|e| {
+            if let Some(slot) = usize::try_from(index).ok().and_then(|i| e.lua_cb.get_mut(i)) {
+                *slot = state.clamp(-1, 1) as i8;
+            }
+        })
+    });
 
     // ---- kpathsea ----
     reg!(lua, b, "kpse_find", |name: String, format: Option<String>| -> Result<Option<String>, String> {

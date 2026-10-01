@@ -392,6 +392,21 @@ pub struct DiscNode {
     pub post_break: NodeList,
     pub no_break: NodeList,
     pub replace_count: usize,
+    /// LuaTeX disc subtype (`discretionary` 0, `explicit` 1, `automatic` 2,
+    /// `regular` 3, `first` 4, `second` 5)
+    pub subtype: u8,
+    /// LuaTeX `penalty` field; [`DISC_PENALTY_TEX`] applies tex.web's rule
+    /// (`\hyphenpenalty` with a pre-break text, `\exhyphenpenalty` without)
+    pub penalty: i32,
+}
+
+/// [`DiscNode::penalty`] of a discretionary that follows tex.web's rule.
+pub const DISC_PENALTY_TEX: i32 = i32::MIN;
+
+impl DiscNode {
+    pub fn new(pre_break: NodeList, post_break: NodeList, no_break: NodeList, replace_count: usize) -> Self {
+        DiscNode { pre_break, post_break, no_break, replace_count, subtype: 0, penalty: DISC_PENALTY_TEX }
+    }
 }
 
 /// Stable identity for a math atom that may need to report a missing glyph
@@ -706,13 +721,32 @@ pub enum Node {
 
 pub type NodeList = Vec<Node>;
 
-/// (width, height, depth) of a glyph of a Lua font: the metrics of its
-/// character record (zero when the font lacks the character).
+/// (width, height, depth) of a glyph of a Lua font as hpack counts them
+/// (texnodes.c `glyph_width`, `glyph_height`, `glyph_depth` with
+/// `\glyphdimensionsmode` 0): the character record's metrics, the height
+/// raised and the depth lowered by the vertical offset `y`. Zero when the
+/// font lacks the character.
+pub fn lua_glyph_whd(fonts: &[std::rc::Rc<crate::tfm::Font>], font: i32, c: i32, y: i32) -> (i32, i32, i32) {
+    let Some(f) = usize::try_from(font).ok().and_then(|f| fonts.get(f)) else {
+        return (0, 0, 0);
+    };
+    let (w, h, d) = if f.lua.is_some() {
+        match u32::try_from(c).ok().and_then(|c| f.lua_char(c)) {
+            Some(ci) => (ci.width, ci.height, ci.depth),
+            None => return (0, 0, 0),
+        }
+    } else if (0..256).contains(&c) {
+        let c = c as u8;
+        (f.char_width(c), f.char_height(c), f.char_depth(c))
+    } else {
+        return (0, 0, 0);
+    };
+    (w, (h + y).max(0), if y > 0 { d - y } else { d }.max(0))
+}
+
+/// [`lua_glyph_whd`] of a glyph node.
 pub fn lua_glyph_dims(eqtb: &crate::eqtb::Eqtb, g: &LuaGlyph) -> (i32, i32, i32) {
-    eqtb.fonts
-        .get(usize::from(g.font))
-        .and_then(|f| f.lua_char(g.c))
-        .map_or((0, 0, 0), |c| (c.width, c.height, c.depth))
+    lua_glyph_whd(&eqtb.fonts, i32::from(g.font), g.c as i32, g.yoffset)
 }
 
 /// dimensions of a single node in a horizontal list

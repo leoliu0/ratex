@@ -85,3 +85,14 @@ fn endlocalcontrol_ends_runtoks_and_complains_when_redundant() {
         ]
     );
 }
+
+#[test]
+fn moveleft_raise_and_their_aliases_keep_their_direction() {
+    let out = run(
+        "\\let\\x\\moveright \\let\\y\\raise \\let\\z\\moveleft \\let\\w\\lower\n\
+\\setbox1\\vbox{\\x 5pt\\hbox{}\\z 5pt\\hbox{}}\\setbox2\\hbox{\\y 5pt\\hbox{}\\w 5pt\\hbox{}}\n\
+\\u{\\the\\wd1,\\the\\ht2,\\the\\dp2}\n\
+\\u{\\meaning\\x \\meaning\\z \\meaning\\y \\meaning\\w \\meaning\\moveright \\meaning\\raise}",
+    );
+    assert_eq!(out, ["[5.0pt,5.0pt,5.0pt]", "[\\moveright\\moveleft\\raise\\lower\\moveright\\raise]"]);
+}

@@ -1717,9 +1717,9 @@ impl Engine {
         d!(eng, b"kern", Kern);
         d!(eng, b"/", ItalicCorrection);
         d!(eng, b"mkern", MKern);
-        d!(eng, b"moveleft", HMove);
+        d!(eng, b"moveleft", HMoveLeft);
         d!(eng, b"moveright", HMove);
-        d!(eng, b"raise", VMove);
+        d!(eng, b"raise", VRaise);
         d!(eng, b"lower", VMove);
         d!(eng, b"hbox", HBox);
         d!(eng, b"vbox", VBox);

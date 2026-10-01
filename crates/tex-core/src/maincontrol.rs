@@ -173,15 +173,13 @@ impl Engine {
                     }
                 }
             },
-            HMove => {
+            HMove | HMoveLeft => {
                 let d = self.scan_dimen(false, false);
-                let neg = id_cs_is(self, id, b"moveleft");
-                self.box_move(d, neg, true);
+                self.box_move(d, p == HMoveLeft, true);
             }
-            VMove => {
+            VMove | VRaise => {
                 let d = self.scan_dimen(false, false);
-                let neg = id_cs_is(self, id, b"raise");
-                self.box_move(d, neg, false);
+                self.box_move(d, p == VRaise, false);
             }
             HBox | VBox | VTop | VCenter | HPack | VPack | TPack => {
                 let kind = match p.box_spec() {
@@ -2459,10 +2457,6 @@ impl Engine {
     }
 }
 
-
-fn id_cs_is(e: &Engine, id: CsId, name: &[u8]) -> bool {
-    e.cs.lookup(name) == Some(id)
-}
 
 /// The font map and font programs an included PDF's fonts are looked up
 /// in (`\pdfinclusioncopyfonts` = 0 replaces them by the map's programs).

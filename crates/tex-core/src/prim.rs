@@ -873,6 +873,10 @@ pub enum Prim {
     MKern,
     HMove,
     VMove,
+    /// `\moveleft`: `HMove` is `\moveright`
+    HMoveLeft,
+    /// `\raise`: `VMove` is `\lower`
+    VRaise,
     HBox,
     VBox,
     VTop,
@@ -1438,6 +1442,8 @@ impl Prim {
             Prim::MKern => 106,
             Prim::HMove => 107,
             Prim::VMove => 108,
+            Prim::HMoveLeft => 786,
+            Prim::VRaise => 787,
             Prim::HBox => 109,
             Prim::VBox => 110,
             Prim::VTop => 111,
@@ -1907,6 +1913,8 @@ impl Prim {
             106 => Some(Prim::MKern),
             107 => Some(Prim::HMove),
             108 => Some(Prim::VMove),
+            786 => Some(Prim::HMoveLeft),
+            787 => Some(Prim::VRaise),
             109 => Some(Prim::HBox),
             110 => Some(Prim::VBox),
             111 => Some(Prim::VTop),

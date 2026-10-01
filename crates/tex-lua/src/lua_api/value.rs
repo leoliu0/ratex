@@ -128,7 +128,7 @@ impl Value {
             .unwrap_or_else(|| self.type_name().to_owned())
     }
 
-    pub(crate) fn to_value(&self) -> luars::LuaValue {
+    pub(crate) fn to_value(&self) -> crate::LuaValue {
         self.inner.to_value()
     }
 }
@@ -152,7 +152,7 @@ impl IntoLua for &Value {
 }
 
 impl FromLua for Value {
-    fn from_lua(value: luars::LuaValue, state: &mut LuaState) -> Result<Self, String> {
+    fn from_lua(value: crate::LuaValue, state: &mut LuaState) -> Result<Self, String> {
         Ok(Value::new(state.to_any_ref(value)))
     }
 }

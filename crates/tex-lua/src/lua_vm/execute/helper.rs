@@ -4,7 +4,7 @@ use crate::stdlib::debug::{objtypename, ordererror, typeerror};
 use crate::{
     Instruction, LuaProto, LuaResult, LuaValue, OpCode,
     gc::TablePtr,
-    lua_value::{lua_value_to_udvalue, udvalue_to_lua_value, udvalue_to_lua_value_with_token},
+    lua_value::{lua_value_to_udvalue, udvalue_to_lua_value},
     lua_vm::{
         LuaError, LuaState, StkId, TmKind,
         call_info::{
@@ -280,12 +280,11 @@ fn finishget_core(
             if t.ttisfulluserdata()
                 && let Some(ud) = t.as_userdata_mut()
             {
-                let token = ud.sub_guard_token();
-                let trait_obj = ud.get_trait()?;
+                let trait_obj = ud.get_trait();
                 if let Some(key_str) = key.as_str()
                     && let Some(udv) = trait_obj.get_field(key_str)
                 {
-                    let result = udvalue_to_lua_value_with_token(lua_state, udv, token)?;
+                    let result = udvalue_to_lua_value(lua_state, udv)?;
                     dest_stk_id.write(&result);
                     return Ok(true);
                 }
@@ -505,7 +504,7 @@ pub(crate) fn finishset(
             {
                 let udv = lua_value_to_udvalue(&value);
                 {
-                    let trait_obj = ud.get_trait_mut()?;
+                    let trait_obj = ud.get_trait_mut();
                     match trait_obj.set_field(key_str, udv) {
                         Some(Ok(())) => return Ok(true),
                         Some(Err(msg)) => {
@@ -1041,7 +1040,7 @@ pub fn objlen(
         if value.ttisfulluserdata()
             && let Some(ud) = value.as_userdata_mut()
         {
-            let trait_obj = ud.get_trait()?;
+            let trait_obj = ud.get_trait();
             if let Some(udv) = trait_obj.lua_len() {
                 let result = udvalue_to_lua_value(l, udv)?;
                 dest_stk_id.set_integer(result.as_integer().unwrap_or(0));
@@ -1091,8 +1090,8 @@ pub fn equalobj(lua_state: &mut LuaState, t1: LuaValue, t2: LuaValue) -> LuaResu
         if let Some(ud1) = t1.as_userdata_mut()
             && let Some(ud2) = t2.as_userdata_mut()
             && let Some(result) = {
-                let t1 = ud1.get_trait()?;
-                let t2 = ud2.get_trait()?;
+                let t1 = ud1.get_trait();
+                let t2 = ud2.get_trait();
                 t1.lua_eq(t2)
             }
         {

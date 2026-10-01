@@ -10,11 +10,6 @@
 //! - `LuaValue` (identity — zero-cost passthrough)
 //! - `T` where `T: UserDataTrait + Clone + 'static` (owned clone from Lua userdata)
 //!
-//! # Usage in derive macros
-//! The `#[lua_methods]` macro generates calls to `FromLua::from_lua` for each
-//! parameter and `IntoLua::into_lua` for the return value, keeping the codegen
-//! type-agnostic and user-extensible.
-//!
 //! For multi-value Lua function calls, [`FromLuaMulti`] converts Lua return
 //! lists into Rust values. Single-value returns are covered automatically via
 //! the existing [`FromLua`] impls, while tuples map to multiple return values.

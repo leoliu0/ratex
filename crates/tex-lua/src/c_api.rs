@@ -592,10 +592,7 @@ fn status_for(error: LuaError) -> c_int {
 /// rendering of it) and returns the matching status code.
 fn push_error(state: &mut LuaState, error: LuaError) -> c_int {
     let status = status_for(error);
-    let value = if error.static_message().is_none()
-        && !matches!(error, LuaError::OutOfMemory)
-        && state.has_error_object()
-    {
+    let value = if !matches!(error, LuaError::OutOfMemory) && state.has_error_object() {
         state.take_error_object()
     } else {
         let message = state.get_error_message(error);

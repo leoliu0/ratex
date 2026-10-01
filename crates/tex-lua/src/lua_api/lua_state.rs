@@ -3,9 +3,8 @@ use std::ffi::c_void;
 use crate::lua_api::{Chunk, LuaApi, LuaFunction, LuaString, LuaTable, Value};
 use crate::lua_vm::{LuaTypedAsyncCallback, LuaTypedCallback};
 use crate::{
-    FromLua, FromLuaMulti, IntoLua, LuaEnum, LuaError, LuaFullError, LuaRegistrable, LuaResult,
-    LuaState, LuaUserdata, LuaValue, LuaValueKind, RefAliveToken, StackValueApi, Stdlib,
-    UserDataRef, UserDataTrait,
+    FromLua, FromLuaMulti, IntoLua, LuaError, LuaFullError, LuaResult, LuaState, LuaUserdata,
+    LuaValue, LuaValueKind, StackValueApi, Stdlib, UserDataRef, UserDataTrait,
 };
 
 impl LuaApi for LuaState {
@@ -103,24 +102,6 @@ impl LuaApi for LuaState {
         LuaState::register_async_typed(self, name, f)
     }
 
-    fn register_type_of<T: LuaRegistrable>(&mut self, name: &str) -> LuaResult<()> {
-        self.global_state_mut().register_type_of::<T>(name)
-    }
-
-    fn create_type_register_table<T: LuaRegistrable>(&mut self, name: &str) -> LuaResult<LuaTable> {
-        self.register_type_of::<T>(name)?;
-        <Self as LuaApi>::get_global::<LuaTable>(self, name)?.ok_or_else(|| {
-            self.error(format!(
-                "registered type '{}' did not produce a table",
-                name
-            ))
-        })
-    }
-
-    fn register_enum_of<T: LuaEnum>(&mut self, name: &str) -> LuaResult<()> {
-        self.global_state_mut().register_enum_of::<T>(name)
-    }
-
     fn load<'lua>(&'lua mut self, source: &str) -> Chunk<'lua, Self>
     where
         Self: Sized,
@@ -162,16 +143,6 @@ impl LuaApi for LuaState {
         data: T,
     ) -> LuaResult<UserDataRef<T>> {
         let value = LuaState::create_userdata(self, LuaUserdata::new(data))?;
-        self.to_userdata_ref(value)
-            .ok_or_else(|| self.error("value is not the expected userdata type".to_string()))
-    }
-
-    fn create_userdata_ref<T: UserDataTrait + 'static>(
-        &mut self,
-        reference: &mut T,
-        alive_token: RefAliveToken,
-    ) -> LuaResult<UserDataRef<T>> {
-        let value = LuaState::create_userdata_ref_value(self, reference, alive_token)?;
         self.to_userdata_ref(value)
             .ok_or_else(|| self.error("value is not the expected userdata type".to_string()))
     }

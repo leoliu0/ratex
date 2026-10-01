@@ -1,13 +1,13 @@
 //! Builder-pattern wrapper for creating userdata from third-party types.
 //!
 //! [`UserDataBuilder`] lets you expose fields, methods, and metamethods for
-//! types you don't control (no derive macro available).
+//! types you don't control (where implementing `UserDataTrait` is not possible).
 //!
 //! # Example
 //!
 //! ```text
 //! use std::net::SocketAddr;
-//! use luars::UserDataBuilder;
+//! use tex_lua::UserDataBuilder;
 //!
 //! let addr: SocketAddr = "127.0.0.1:8080".parse().unwrap();
 //! let ud = UserDataBuilder::new(addr)

@@ -244,8 +244,7 @@ pub(crate) fn tolstring(l: &mut LuaState, value: &LuaValue) -> LuaResult<LStr> {
         _ => {
             if value.ttisfulluserdata()
                 && let Some(ud) = value.as_userdata_mut()
-                && let Ok(trait_obj) = ud.get_trait()
-                && let Some(text) = trait_obj.lua_tostring()
+                && let Some(text) = ud.get_trait().lua_tostring()
             {
                 text
             } else {

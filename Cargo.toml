@@ -9,7 +9,6 @@ members = [
     "crates/libtex",
     "crates/tex-wasm",
     "crates/tex-lua",
-    "crates/tex-lua-derive",
     "crates/tex-mplib",
     "crates/tex-ps",
 ]

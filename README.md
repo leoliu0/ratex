@@ -310,7 +310,6 @@ ratex/
 │   ├── tex-bibtex/      # BibTeX implementation
 │   ├── tex-cli/         # `ratex` executable: build driver, engine/BibTeX personalities, latexdiff
 │   ├── tex-lua/         # Lua VM used by the LuaTeX-compatible mode
-│   ├── tex-lua-derive/  # derive macros for tex-lua userdata
 │   ├── tex-mplib/       # MetaPost engine (mplib)
 │   ├── tex-ps/          # PostScript/EPS interpreter and PDF renderer
 │   ├── tex-runtime/     # in-process, in-memory compilation API

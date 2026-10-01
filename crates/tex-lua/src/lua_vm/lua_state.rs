@@ -33,7 +33,7 @@ use crate::platform_time::unix_nanos;
 use crate::stdlib::debug::{objtypename, ordererror, pub_getfuncname};
 use crate::{
     AsyncReturnValue, DebugInfo, FromLua, IntoLua, LuaAnyRef, LuaFullError, LuaFunctionRef,
-    LuaProto, LuaRegistrable, LuaStringRef, LuaTableRef, RefAliveToken, UserDataRef,
+    LuaProto, LuaStringRef, LuaTableRef, UserDataRef,
 };
 
 /// Internal description of a call frame to be pushed.
@@ -1500,9 +1500,7 @@ impl LuaState {
                     .get_mut(tbc_idx)
                     .and_then(|v| v.as_userdata_mut())
             {
-                if let Ok(trait_obj) = ud_mut.get_trait_mut() {
-                    trait_obj.lua_close();
-                }
+                ud_mut.get_trait_mut().lua_close();
                 continue;
             }
 
@@ -1591,9 +1589,7 @@ impl LuaState {
                     .get_mut(tbc_idx)
                     .and_then(|v| v.as_userdata_mut())
             {
-                if let Ok(trait_obj) = ud_mut.get_trait_mut() {
-                    trait_obj.lua_close();
-                }
+                ud_mut.get_trait_mut().lua_close();
                 continue;
             }
 
@@ -2368,36 +2364,6 @@ impl LuaState {
         Ok(self.to_userdata_ref(value).unwrap())
     }
 
-    /// Create a GC-managed userdata that **borrows** an external Rust object.
-    ///
-    /// The object stays on the Rust side; Lua gets a full userdata with field access,
-    /// method calls, and metamethods — all forwarded through a raw pointer.
-    ///
-    /// # Safety
-    /// The referenced object **must** outlive all Lua accesses to this userdata.
-    /// Typical safe patterns:
-    /// - Set the global, run Lua code, then clear/overwrite the global before the
-    ///   Rust object is dropped.
-    /// - Use scoped execution: create → execute → drop the Lua state / global.
-    ///
-    /// # Example
-    /// ```ignore
-    /// let mut player = Player::new("Alice", 100);
-    /// let ud = state.create_userdata_ref(&mut player)?;
-    /// state.set_global("player", ud)?;
-    /// state.execute_string(r#"player:take_damage(10)"#)?;
-    /// assert_eq!(player.hp, 90); // Lua mutations visible in Rust
-    /// ```
-    #[inline]
-    pub fn create_userdata_ref_value<T: UserDataTrait>(
-        &mut self,
-        reference: &mut T,
-        alive_token: RefAliveToken,
-    ) -> CreateResult {
-        let ud = LuaUserdata::from_ref(reference, alive_token);
-        self.global_state_mut().create_userdata(ud)
-    }
-
     /// Create a raw RClosure value.
     ///
     /// The returned LuaValue is not rooted by the API itself. Callers must root
@@ -2852,60 +2818,6 @@ impl LuaState {
         self.create_async_call_handle(func)
     }
 
-    // ===== Type Registration =====
-
-    /// Register a UserData type as a Lua global table with its static methods.
-    ///
-    /// Creates a table (e.g. `Point`) and populates it with all associated
-    /// functions defined in the type's `#[lua_methods]` block (functions
-    /// without `self`, such as constructors).
-    ///
-    /// After registration, Lua code can call e.g. `Point.new(3, 4)`.
-    ///
-    /// # Usage
-    /// ```text
-    /// // In Rust:
-    /// state.register_type("Point", Point::__lua_static_methods())?;
-    ///
-    /// // In Lua:
-    /// local p = Point.new(3, 4)
-    /// print(p.x, p.y)      -- 3.0  4.0
-    /// print(p:distance())   -- 5.0
-    /// ```
-    pub(crate) fn register_type(
-        &mut self,
-        name: &str,
-        static_methods: &[(&str, super::CFunction)],
-    ) -> LuaResult<()> {
-        let class_table = self.create_table(0, static_methods.len())?;
-
-        for &(method_name, func) in static_methods {
-            let key = self.create_string(method_name)?;
-            let value = LuaValue::cfunction(func);
-            self.raw_set(&class_table, key, value);
-        }
-
-        self.set_global_value(name, class_table)
-    }
-
-    /// Register a UserData type by its generic type parameter.
-    ///
-    /// Equivalent to `register_type(name, T::__lua_static_methods())` but more
-    /// concise and type-safe. Uses the `LuaStaticMethodProvider` trait (auto-
-    /// implemented by `#[lua_methods]`) to discover static methods.
-    ///
-    /// # Usage
-    /// ```ignore
-    /// // Instead of:
-    /// state.register_type("Point", Point::__lua_static_methods())?;
-    ///
-    /// // Write:
-    /// state.register_type_of::<Point>("Point")?;
-    /// ```
-    pub fn register_type_of<T: LuaRegistrable>(&mut self, name: &str) -> LuaResult<()> {
-        self.register_type(name, T::lua_static_methods())
-    }
-
     // ===== Table Operations =====
 
     /// Get value from table (raw, no metamethods)
@@ -3015,9 +2927,6 @@ impl LuaState {
     }
 
     pub fn get_error_msg(&mut self, e: LuaError) -> String {
-        if let Some(msg) = e.static_message() {
-            return msg.to_string();
-        }
         match e {
             LuaError::OutOfMemory => {
                 format!(
@@ -4326,8 +4235,7 @@ impl LuaState {
                 // Check for trait-based __tostring on userdata
                 if value.ttisfulluserdata()
                     && let Some(ud) = value.as_userdata_mut()
-                    && let Ok(trait_obj) = ud.get_trait()
-                    && let Some(s) = trait_obj.lua_tostring()
+                    && let Some(s) = ud.get_trait().lua_tostring()
                 {
                     return Ok(s);
                 }

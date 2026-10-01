@@ -6,16 +6,14 @@
 //!
 //! # Example
 //! ```ignore
-//! use luars::{Lua, LuaApi, SafeOption};
+//! use tex_lua::{Lua, LuaApi, SafeOption};
 //!
 //! let mut lua = Lua::new(SafeOption::default());
 //! let value: i64 = lua.load("return 40 + 2").eval()?;
 //! assert_eq!(value, 42);
-//! # Ok::<(), luars::LuaError>(())
+//! # Ok::<(), tex_lua::LuaError>(())
 //! ```
 
-// Allow the derive macro to use `luars::...` paths even inside this crate
-extern crate self as luars;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod c_api;
 
@@ -31,19 +29,12 @@ mod lua_vm;
 mod platform_time;
 mod stdlib;
 
-// Re-export the derive macros so users can `use luars::LuaUserData;`
 pub use compiler::LuaLanguageLevel;
-pub use luars_derive::LuaUserData;
-pub use luars_derive::lua_methods;
 
 // Re-export userdata trait types at crate root for convenience
 pub use lua_value::LuaUserdata;
 pub use lua_value::UserDataBuilder;
-pub use lua_value::alive_ref::RefAliveToken;
-pub use lua_value::userdata_trait::{
-    LuaEnum, LuaMethodProvider, LuaRegistrable, LuaStaticMethodProvider, OpaqueUserData, UdValue,
-    UserDataTrait,
-};
+pub use lua_value::userdata_trait::{OpaqueUserData, UdValue, UserDataTrait};
 
 pub use lib_registry::{LibraryModule, LibraryRegistry, LuaLibrary, PreloadModule};
 pub use lua_api::*;

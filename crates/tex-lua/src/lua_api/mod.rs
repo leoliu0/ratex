@@ -21,8 +21,8 @@ pub use value::Value;
 #[cfg(feature = "sandbox")]
 use crate::SandboxConfig;
 use crate::{
-    FromLua, FromLuaMulti, IntoLua, LuaEnum, LuaError, LuaFullError, LuaRegistrable, LuaResult,
-    LuaValue, LuaValueKind, RefAliveToken, Stdlib, UserDataRef, UserDataTrait,
+    FromLua, FromLuaMulti, IntoLua, LuaError, LuaFullError, LuaResult, LuaValue, LuaValueKind,
+    Stdlib, UserDataRef, UserDataTrait,
     lua_vm::{LuaTypedAsyncCallback, LuaTypedCallback},
 };
 
@@ -52,9 +52,6 @@ pub trait LuaApi {
     fn register_async_function<F, Args, R>(&mut self, name: &str, f: F) -> LuaResult<()>
     where
         F: LuaTypedAsyncCallback<Args, R>;
-    fn register_type_of<T: LuaRegistrable>(&mut self, name: &str) -> LuaResult<()>;
-    fn register_enum_of<T: LuaEnum>(&mut self, name: &str) -> LuaResult<()>;
-    fn create_type_register_table<T: LuaRegistrable>(&mut self, name: &str) -> LuaResult<LuaTable>;
     fn load<'lua>(&'lua mut self, source: &str) -> Chunk<'lua, Self>
     where
         Self: Sized + chunk::ChunkHost;
@@ -64,12 +61,6 @@ pub trait LuaApi {
     fn create_table_with_capacity(&mut self, narr: usize, nrec: usize) -> LuaResult<LuaTable>;
     fn create_userdata<T: UserDataTrait + 'static>(&mut self, data: T)
     -> LuaResult<UserDataRef<T>>;
-
-    fn create_userdata_ref<T: UserDataTrait + 'static>(
-        &mut self,
-        reference: &mut T,
-        alive_token: RefAliveToken,
-    ) -> LuaResult<UserDataRef<T>>;
     fn create_table_from<K, V, I>(&mut self, iter: I) -> LuaResult<LuaTable>
     where
         K: IntoLua,

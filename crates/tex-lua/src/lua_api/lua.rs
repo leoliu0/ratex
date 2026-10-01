@@ -2,18 +2,18 @@ use std::ffi::c_void;
 use std::pin::Pin;
 
 #[cfg(feature = "sandbox")]
-use luars::SandboxConfig;
-use luars::lua_vm::SafeOption;
-use luars::lua_vm::{LuaTypedAsyncCallback, LuaTypedCallback};
-use luars::{
-    FromLua, FromLuaMulti, GlobalState, IntoLua, LuaEnum, LuaLanguageLevel, LuaLibrary,
-    LuaRegistrable, LuaResult, LuaUserdata, LuaValueKind, Stdlib, UserDataRef, UserDataTrait,
+use crate::SandboxConfig;
+use crate::lua_vm::SafeOption;
+use crate::lua_vm::{LuaTypedAsyncCallback, LuaTypedCallback};
+use crate::{
+    FromLua, FromLuaMulti, GlobalState, IntoLua, LuaLanguageLevel, LuaLibrary, LuaResult,
+    LuaUserdata, LuaValueKind, Stdlib, UserDataRef, UserDataTrait,
 };
 
 #[cfg(feature = "sandbox")]
 use crate::LuaSandboxApi;
 use crate::lua_api::{Chunk, LuaFunction, LuaString, LuaTable, Scope, Value};
-use crate::{LuaApi, LuaAsyncApi, LuaError, LuaFullError, RefAliveToken, StackValueApi};
+use crate::{LuaApi, LuaAsyncApi, LuaError, LuaFullError, StackValueApi};
 
 /// Safe, embedding-oriented Lua runtime.
 ///
@@ -54,7 +54,7 @@ impl Lua {
         library.install(self)
     }
 
-    pub(crate) fn load_value(&mut self, source: &str) -> LuaResult<luars::LuaValue> {
+    pub(crate) fn load_value(&mut self, source: &str) -> LuaResult<crate::LuaValue> {
         self.global_state_owner.main_state().load(source)
     }
 
@@ -62,13 +62,13 @@ impl Lua {
         &mut self,
         source: &str,
         chunk_name: &str,
-    ) -> LuaResult<luars::LuaValue> {
+    ) -> LuaResult<crate::LuaValue> {
         self.global_state_owner
             .main_state()
             .load_with_name(source, chunk_name)
     }
 
-    pub(crate) fn value_to_function(&mut self, value: luars::LuaValue) -> LuaResult<LuaFunction> {
+    pub(crate) fn value_to_function(&mut self, value: crate::LuaValue) -> LuaResult<LuaFunction> {
         let function = self
             .global_state_owner
             .to_function_ref(value)
@@ -80,7 +80,7 @@ impl Lua {
         Ok(LuaFunction::new(function))
     }
 
-    pub(crate) fn value_to_string(&mut self, value: luars::LuaValue) -> LuaResult<LuaString> {
+    pub(crate) fn value_to_string(&mut self, value: crate::LuaValue) -> LuaResult<LuaString> {
         let string = self
             .global_state_owner
             .to_string_ref(value)
@@ -94,7 +94,7 @@ impl Lua {
 
     pub(crate) fn value_to_userdata<T: 'static>(
         &mut self,
-        value: luars::LuaValue,
+        value: crate::LuaValue,
     ) -> LuaResult<UserDataRef<T>> {
         self.global_state_owner
             .to_userdata_ref(value)
@@ -107,16 +107,16 @@ impl Lua {
 
     pub(crate) fn call_function_value(
         &mut self,
-        func: luars::LuaValue,
-    ) -> LuaResult<Vec<luars::LuaValue>> {
+        func: crate::LuaValue,
+    ) -> LuaResult<Vec<crate::LuaValue>> {
         self.global_state_owner.main_state().call(func, vec![])
     }
 
     pub(crate) async fn call_function_value_async(
         &mut self,
-        func: luars::LuaValue,
-        args: Vec<luars::LuaValue>,
-    ) -> LuaResult<Vec<luars::LuaValue>> {
+        func: crate::LuaValue,
+        args: Vec<crate::LuaValue>,
+    ) -> LuaResult<Vec<crate::LuaValue>> {
         self.global_state_owner
             .main_state()
             .call_async(func, args)
@@ -127,7 +127,7 @@ impl Lua {
         &mut self,
         value: T,
         api_name: &str,
-    ) -> LuaResult<Vec<luars::LuaValue>> {
+    ) -> LuaResult<Vec<crate::LuaValue>> {
         self.global_state_owner
             .main_state()
             .collect_values(value, api_name)
@@ -138,7 +138,7 @@ impl Lua {
         &mut self,
         source: &str,
         config: &SandboxConfig,
-    ) -> LuaResult<luars::LuaValue> {
+    ) -> LuaResult<crate::LuaValue> {
         self.global_state_owner
             .main_state()
             .load_sandboxed(source, config)
@@ -150,7 +150,7 @@ impl Lua {
         source: &str,
         chunk_name: &str,
         config: &SandboxConfig,
-    ) -> LuaResult<luars::LuaValue> {
+    ) -> LuaResult<crate::LuaValue> {
         self.global_state_owner
             .main_state()
             .load_with_name_sandboxed(source, chunk_name, config)
@@ -158,7 +158,7 @@ impl Lua {
 
     pub(crate) fn unpack_multi_values<R: FromLuaMulti>(
         &mut self,
-        values: Vec<luars::LuaValue>,
+        values: Vec<crate::LuaValue>,
         api_name: &str,
     ) -> LuaResult<R> {
         R::from_lua_multi(values, self.global_state_owner.main_state()).map_err(|msg| {
@@ -170,7 +170,7 @@ impl Lua {
 
     pub(crate) fn unpack_value<T: FromLua>(
         &mut self,
-        value: luars::LuaValue,
+        value: crate::LuaValue,
         api_name: &str,
     ) -> LuaResult<T> {
         self.global_state_owner
@@ -178,7 +178,7 @@ impl Lua {
             .from_value(value, api_name)
     }
 
-    /// Run a lexical scope that can create non-`'static` Lua callbacks and borrowed userdata.
+    /// Run a lexical scope that can create Lua callbacks borrowing non-`'static` Rust data.
     pub fn scope<'lua, R>(
         &'lua mut self,
         f: impl for<'scope> FnOnce(&mut Scope<'scope, 'lua>) -> LuaResult<R>,
@@ -189,7 +189,7 @@ impl Lua {
 
     pub(crate) fn create_raw_function<F>(&mut self, f: F) -> LuaResult<LuaFunction>
     where
-        F: Fn(&mut luars::LuaState) -> LuaResult<usize> + 'static,
+        F: Fn(&mut crate::LuaState) -> LuaResult<usize> + 'static,
     {
         let value = self.global_state_owner.create_closure(f)?;
         self.value_to_function(value)
@@ -246,7 +246,7 @@ impl LuaApi for Lua {
         let value = values
             .into_iter()
             .next()
-            .unwrap_or_else(luars::LuaValue::nil);
+            .unwrap_or_else(crate::LuaValue::nil);
         self.global_state_owner
             .main_state()
             .from_value(value, "eval")
@@ -303,7 +303,7 @@ impl LuaApi for Lua {
         let value = values
             .into_iter()
             .next()
-            .unwrap_or_else(luars::LuaValue::nil);
+            .unwrap_or_else(crate::LuaValue::nil);
         self.unpack_value(value, "call_global1")
     }
 
@@ -331,27 +331,6 @@ impl LuaApi for Lua {
         F: LuaTypedAsyncCallback<Args, R>,
     {
         self.global_state_owner.register_async_typed(name, f)
-    }
-
-    #[inline]
-    fn register_type_of<T: LuaRegistrable>(&mut self, name: &str) -> LuaResult<()> {
-        self.global_state_owner.register_type_of::<T>(name)
-    }
-
-    #[inline]
-    fn create_type_register_table<T: LuaRegistrable>(&mut self, name: &str) -> LuaResult<LuaTable> {
-        self.global_state_owner.register_type_of::<T>(name)?;
-        self.get_global::<LuaTable>(name)?.ok_or_else(|| {
-            self.global_state_owner.error(format!(
-                "registered type '{}' did not produce a table",
-                name
-            ))
-        })
-    }
-
-    #[inline]
-    fn register_enum_of<T: LuaEnum>(&mut self, name: &str) -> LuaResult<()> {
-        self.global_state_owner.register_enum_of::<T>(name)
     }
 
     #[inline]
@@ -390,17 +369,6 @@ impl LuaApi for Lua {
         let value = self
             .global_state_owner
             .create_userdata(LuaUserdata::new(data))?;
-        self.value_to_userdata(value)
-    }
-
-    #[inline]
-    fn create_userdata_ref<T: UserDataTrait + 'static>(
-        &mut self,
-        reference: &mut T,
-        alive_token: RefAliveToken,
-    ) -> LuaResult<UserDataRef<T>> {
-        let ud = LuaUserdata::from_ref(reference, alive_token);
-        let value = self.global_state_owner.create_userdata(ud)?;
         self.value_to_userdata(value)
     }
 
@@ -468,7 +436,7 @@ impl LuaApi for Lua {
     fn create_lightuserdata(&mut self, pointer: *mut c_void) -> Value {
         Value::new(
             self.global_state_owner
-                .to_ref(luars::LuaValue::lightuserdata(pointer)),
+                .to_ref(crate::LuaValue::lightuserdata(pointer)),
         )
     }
 
@@ -584,7 +552,7 @@ impl LuaAsyncApi for Lua {
             .await?
             .into_iter()
             .next()
-            .unwrap_or_else(luars::LuaValue::nil);
+            .unwrap_or_else(crate::LuaValue::nil);
         self.unpack_value(value, "call_async1")
     }
 
@@ -639,7 +607,7 @@ impl LuaSandboxApi for Lua {
             .execute_sandboxed(source, config)?
             .into_iter()
             .next()
-            .unwrap_or_else(luars::LuaValue::nil);
+            .unwrap_or_else(crate::LuaValue::nil);
         self.unpack_value(value, "eval_sandboxed")
     }
 

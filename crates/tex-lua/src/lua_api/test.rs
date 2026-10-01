@@ -6,28 +6,57 @@ mod tests {
     use std::path::PathBuf;
 
     use crate::{
-        GlobalState, LuaApi, LuaAsyncApi, LuaUserData, LuaValueKind, RefAliveToken, SafeOption,
-        Stdlib,
+        GlobalState, LuaApi, LuaAsyncApi, LuaValueKind, SafeOption, Stdlib, UdValue,
+        UserDataTrait,
         lua_api::{Lua, LuaFunction, LuaTable},
-        lua_methods,
     };
     #[cfg(feature = "sandbox")]
     use crate::{LuaSandboxApi, SandboxConfig};
 
-    #[derive(LuaUserData)]
     struct ApiCounter {
-        pub count: i64,
+        count: i64,
     }
 
-    #[lua_methods]
-    impl ApiCounter {
-        pub fn inc(&mut self, delta: i64) {
-            self.count += delta;
+    impl UserDataTrait for ApiCounter {
+        fn type_name(&self) -> &'static str {
+            "ApiCounter"
         }
 
-        pub fn get(&self) -> i64 {
-            self.count
+        fn get_field(&self, key: &str) -> Option<UdValue> {
+            match key {
+                "count" => Some(UdValue::Integer(self.count)),
+                "inc" => Some(UdValue::Function(api_counter_inc)),
+                "get" => Some(UdValue::Function(api_counter_get)),
+                _ => None,
+            }
         }
+
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+
+        fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+            self
+        }
+    }
+
+    fn api_counter_inc(l: &mut crate::LuaState) -> crate::LuaResult<usize> {
+        let delta = l.get_arg(2).and_then(|v| v.as_integer()).unwrap_or(0);
+        let ud = l.get_arg(1).unwrap_or_default();
+        if let Some(counter) = ud.as_userdata_mut().and_then(|ud| ud.downcast_mut::<ApiCounter>()) {
+            counter.count += delta;
+        }
+        Ok(0)
+    }
+
+    fn api_counter_get(l: &mut crate::LuaState) -> crate::LuaResult<usize> {
+        let ud = l.get_arg(1).unwrap_or_default();
+        let count = ud
+            .as_userdata_mut()
+            .and_then(|ud| ud.downcast_ref::<ApiCounter>())
+            .map_or(0, |counter| counter.count);
+        l.push_value(crate::LuaValue::integer(count))?;
+        Ok(1)
     }
 
     fn test_temp_dir() -> PathBuf {
@@ -343,11 +372,6 @@ mod tests {
         let mut lua = Lua::new(SafeOption::default());
         lua.open_stdlib(Stdlib::All).unwrap();
 
-        let type_table = lua
-            .create_type_register_table::<ApiCounter>("Counter")
-            .unwrap();
-        assert!(type_table.raw_len().is_ok());
-
         let counter = lua.create_userdata(ApiCounter { count: 1 }).unwrap();
         lua.globals().set("counter", counter.clone()).unwrap();
         lua.load("counter:inc(41)").exec().unwrap();
@@ -393,21 +417,6 @@ mod tests {
     }
 
     #[test]
-    fn borrowed_userdata_api_works() {
-        let mut lua = Lua::new(SafeOption::default());
-        lua.open_stdlib(Stdlib::All).unwrap();
-
-        let mut counter = ApiCounter { count: 2 };
-        let alive = RefAliveToken::default();
-        let borrowed = lua.create_userdata_ref(&mut counter, alive).unwrap();
-        lua.globals().set("borrowed", borrowed.clone()).unwrap();
-        lua.load("borrowed:inc(40)").exec().unwrap();
-
-        assert_eq!(counter.count, 42);
-        assert_eq!(borrowed.get().unwrap().count, 42);
-    }
-
-    #[test]
     fn scope_supports_non_static_functions() {
         let mut lua = Lua::new(SafeOption::default());
         lua.open_stdlib(Stdlib::All).unwrap();
@@ -424,46 +433,6 @@ mod tests {
         .unwrap();
 
         assert!(lua.load("return add_base(1)").eval::<i64>().is_err());
-    }
-
-    #[test]
-    fn scope_supports_borrowed_userdata() {
-        let mut lua = Lua::new(SafeOption::default());
-        lua.open_stdlib(Stdlib::All).unwrap();
-
-        let mut counter = ApiCounter { count: 1 };
-        lua.scope(|scope| {
-            let mut borrowed = scope.create_userdata_ref(&mut counter)?;
-            scope.globals().set("borrowed", &borrowed)?;
-
-            let count: i64 = scope.load("return borrowed.count").eval()?;
-            assert_eq!(count, 1);
-            let called: i64 = scope
-                .load("borrowed:inc(41); return borrowed:get()")
-                .eval()?;
-            assert_eq!(called, 42);
-            let reassigned: i64 = scope
-                .load("borrowed.count = borrowed.count + 1; return borrowed.count")
-                .eval()?;
-            assert_eq!(reassigned, 43);
-
-            // Lua access is blocked while Rust holds the borrow.
-            let blocked = borrowed.with_mut(|counter| {
-                counter.inc(41);
-                scope.load("borrowed.count = 0").exec().is_err()
-            })?;
-            assert!(blocked);
-            assert_eq!(borrowed.with(|counter| counter.count)?, 84);
-            let after: i64 = scope.load("return borrowed:get()").eval()?;
-            assert_eq!(after, 84);
-            Ok(())
-        })
-        .unwrap();
-
-        assert_eq!(counter.count, 84);
-
-        assert!(lua.load("return borrowed:get()").eval::<i64>().is_err());
-        assert!(lua.load("borrowed.count = 1").exec().is_err());
     }
 
     #[test]
@@ -772,55 +741,23 @@ mod tests {
 
     #[test]
     fn test_userdata() {
-        #[derive(Clone, Debug, LuaUserData)]
+        #[derive(Clone, Debug)]
         struct RustStruct {
             a: i32,
             b: i32,
         }
-
-        #[lua_methods]
-        impl RustStruct {}
+        crate::impl_simple_userdata!(RustStruct, "RustStruct");
 
         let mut l = Lua::new(SafeOption::default());
         let t = l.create_table().unwrap();
-        t.set(1, RustStruct { a: 1, b: 2 }).unwrap();
+        let value = l.create_userdata(RustStruct { a: 1, b: 2 }).unwrap();
+        t.set(1, value).unwrap();
         let seq = t.sequence_values::<RustStruct>().unwrap();
         assert_eq!(seq.len(), 1);
         assert_eq!(seq[0].a, 1);
         assert_eq!(seq[0].b, 2);
     }
 
-    #[test]
-    fn test_userdata_life_time() {
-        struct LifeTime<'a> {
-            value: &'a str,
-        }
-
-        #[derive(Clone, Debug, LuaUserData)]
-        struct LifeTimeUserdata {
-            ptr: *mut LifeTime<'static>,
-        }
-
-        #[lua_methods]
-        impl LifeTimeUserdata {
-            pub fn get_str(&self) -> String {
-                unsafe { (*self.ptr).value.to_string() }
-            }
-        }
-
-        let mut l = Lua::new(SafeOption::default());
-        let t = l.create_table().unwrap();
-        let s = "hello";
-        let lf = LifeTime { value: s };
-        let lfu = LifeTimeUserdata {
-            ptr: &lf as *const LifeTime as *mut LifeTime,
-        };
-
-        t.set(1, lfu).unwrap();
-        let seq = t.sequence_values::<LifeTimeUserdata>().unwrap();
-        assert_eq!(seq.len(), 1);
-        assert_eq!(seq[0].get_str(), "hello");
-    }
     #[test]
     fn lua53_contract_rejects_newer_syntax_and_exposes_53_libraries() {
         let mut lua = Lua::new_lua53(SafeOption::default());

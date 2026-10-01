@@ -2222,9 +2222,10 @@ impl GC {
                 // Mark metatable if exists (it's a LuaValue, could be table)
                 self.mark_value(l, &metatable);
             }
-            if let Ok(userdata) = gc_ud.data.get_trait() {
-                userdata.trace_lua_values(&mut |value| self.mark_value(l, &value));
-            }
+            gc_ud
+                .data
+                .get_trait()
+                .trace_lua_values(&mut |value| self.mark_value(l, &value));
 
             self.gen_link(gc_ptr);
 
@@ -3962,9 +3963,9 @@ impl GC {
             if let Some(metatable) = ud.data.get_metatable() {
                 self.mark_object(l, metatable.as_gc_ptr().unwrap());
             }
-            if let Ok(userdata) = ud.data.get_trait() {
-                userdata.trace_lua_values(&mut |value| self.mark_value(l, &value));
-            }
+            ud.data
+                .get_trait()
+                .trace_lua_values(&mut |value| self.mark_value(l, &value));
         } else {
             let header = gc_ptr.header_mut().unwrap();
             //  Only add to gray list if not already gray

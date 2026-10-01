@@ -335,11 +335,9 @@ async fn test_create_async_thread_directly() {
 // ============ Async UserData return tests ============
 
 /// Test struct returned from async functions
-#[derive(LuaUserData)]
-#[lua_impl(Display)]
 struct AsyncPoint {
-    pub x: f64,
-    pub y: f64,
+    x: f64,
+    y: f64,
 }
 
 impl fmt::Display for AsyncPoint {
@@ -348,16 +346,45 @@ impl fmt::Display for AsyncPoint {
     }
 }
 
-#[lua_methods]
-impl AsyncPoint {
-    pub fn sum(&self) -> f64 {
-        self.x + self.y
+impl UserDataTrait for AsyncPoint {
+    fn type_name(&self) -> &'static str {
+        "AsyncPoint"
+    }
+
+    fn get_field(&self, key: &str) -> Option<UdValue> {
+        match key {
+            "x" => Some(UdValue::Number(self.x)),
+            "y" => Some(UdValue::Number(self.y)),
+            "sum" => Some(UdValue::Function(async_point_sum)),
+            _ => None,
+        }
+    }
+
+    fn lua_tostring(&self) -> Option<String> {
+        Some(self.to_string())
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
     }
 }
 
-#[derive(LuaUserData)]
+fn async_point_sum(l: &mut LuaState) -> LuaResult<usize> {
+    let this = l.get_arg(1).unwrap_or_default();
+    let sum = this
+        .as_userdata_mut()
+        .and_then(|ud| ud.downcast_ref::<AsyncPoint>())
+        .map_or(0.0, |p| p.x + p.y);
+    l.push_value(LuaValue::float(sum))?;
+    Ok(1)
+}
+
 struct AsyncCounter {
-    pub count: i64,
+    count: i64,
 }
 
 #[tokio::test]

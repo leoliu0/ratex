@@ -924,17 +924,7 @@ dependencies = [
  "js-sys",
  "libc",
  "libloading",
- "tex-lua-derive",
  "tokio",
-]
-
-[[package]]
-name = "tex-lua-derive"
-version = "0.4.6"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.119",
 ]
 
 [[package]]

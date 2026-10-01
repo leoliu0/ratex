@@ -64,7 +64,7 @@ impl LuaFunction {
 
 impl IntoLua for LuaFunction {
     #[inline]
-    fn into_lua(self, state: &mut luars::LuaState) -> Result<usize, String> {
+    fn into_lua(self, state: &mut crate::LuaState) -> Result<usize, String> {
         state
             .push_value(self.inner.to_value())
             .map_err(|e| format!("{:?}", e))?;
@@ -74,7 +74,7 @@ impl IntoLua for LuaFunction {
 
 impl IntoLua for &LuaFunction {
     #[inline]
-    fn into_lua(self, state: &mut luars::LuaState) -> Result<usize, String> {
+    fn into_lua(self, state: &mut crate::LuaState) -> Result<usize, String> {
         state
             .push_value(self.inner.to_value())
             .map_err(|e| format!("{:?}", e))?;
@@ -83,7 +83,7 @@ impl IntoLua for &LuaFunction {
 }
 
 impl FromLua for LuaFunction {
-    fn from_lua(value: LuaValue, state: &mut luars::LuaState) -> Result<Self, String> {
+    fn from_lua(value: LuaValue, state: &mut crate::LuaState) -> Result<Self, String> {
         let actual = value.type_name();
         let function = state
             .to_function_ref(value)

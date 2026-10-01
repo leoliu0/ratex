@@ -21,7 +21,7 @@ impl LuaTable {
     pub fn get_path<T: FromLua>(&self, path: &[&str]) -> LuaResult<T> {
         let mut current = self.clone();
         let Some((last, prefix)) = path.split_last() else {
-            return Err(luars::LuaError::RuntimeError);
+            return Err(crate::LuaError::RuntimeError);
         };
 
         for key in prefix {
@@ -144,7 +144,7 @@ impl LuaTable {
         self.inner.push_typed(value)
     }
 
-    pub(crate) fn value(&self) -> luars::LuaValue {
+    pub(crate) fn value(&self) -> crate::LuaValue {
         self.inner.to_value()
     }
 
@@ -157,7 +157,7 @@ impl LuaTable {
 
 impl IntoLua for LuaTable {
     #[inline]
-    fn into_lua(self, state: &mut luars::LuaState) -> Result<usize, String> {
+    fn into_lua(self, state: &mut crate::LuaState) -> Result<usize, String> {
         state
             .push_value(self.inner.to_value())
             .map_err(|e| format!("{:?}", e))?;
@@ -167,7 +167,7 @@ impl IntoLua for LuaTable {
 
 impl IntoLua for &LuaTable {
     #[inline]
-    fn into_lua(self, state: &mut luars::LuaState) -> Result<usize, String> {
+    fn into_lua(self, state: &mut crate::LuaState) -> Result<usize, String> {
         state
             .push_value(self.inner.to_value())
             .map_err(|e| format!("{:?}", e))?;
@@ -176,7 +176,7 @@ impl IntoLua for &LuaTable {
 }
 
 impl FromLua for LuaTable {
-    fn from_lua(value: LuaValue, state: &mut luars::LuaState) -> Result<Self, String> {
+    fn from_lua(value: LuaValue, state: &mut crate::LuaState) -> Result<Self, String> {
         let actual = value.type_name();
         let table = state
             .to_table_ref(value)

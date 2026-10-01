@@ -63,7 +63,7 @@ pub use crate::lua_vm::sandbox::SandboxConfig;
 use crate::platform_time::PlatformInstant;
 use crate::platform_time::unix_nanos;
 use crate::stdlib::Stdlib;
-use crate::{LuaEnum, LuaRegistrable, OpaqueUserData, RustCallback, lib_registry};
+use crate::{OpaqueUserData, RustCallback, lib_registry};
 pub(crate) use execute::arith::{lua_shiftl, luai_numpow};
 pub use execute::{get_metamethod_event, get_metatable};
 pub use lua_rng::LuaRng;
@@ -520,7 +520,7 @@ impl GlobalState {
     /// # Example
     ///
     /// ```ignore
-    /// use luars::Stdlib;
+    /// use tex_lua::Stdlib;
     /// vm.open_stdlibs(&[Stdlib::Math, Stdlib::String, Stdlib::Table])?;
     /// ```
     pub fn open_stdlibs(&mut self, libs: &[Stdlib]) -> LuaResult<()> {
@@ -615,19 +615,6 @@ impl GlobalState {
 
         let closure_val = self.create_closure(wrapper)?;
         self.set_global(name, closure_val)
-    }
-
-    /// Register a UserData type as a Lua global with its static methods.
-    pub fn register_type_of<T: LuaRegistrable>(&mut self, name: &str) -> LuaResult<()> {
-        let static_methods = T::lua_static_methods();
-        let class_table = self.create_table(0, static_methods.len())?;
-
-        for &(method_name, func) in static_methods {
-            let key = self.create_string(method_name)?;
-            self.raw_set(&class_table, key, LuaValue::cfunction(func));
-        }
-
-        self.set_global(name, class_table)
     }
 
     /// Create a table and immediately wrap it in a managed `LuaTableRef`.
@@ -1153,55 +1140,6 @@ impl GlobalState {
     pub fn table_length(&self, table_value: &LuaValue) -> LuaResult<usize> {
         let table = table_value.as_table().ok_or(LuaError::RuntimeError)?;
         Ok(table.len())
-    }
-
-    // ============ Async Support ============
-
-    /// Register an async function as a Lua global.
-    ///
-    /// The async function factory `f` receives the Lua arguments as `Vec<LuaValue>`
-    /// and returns a `Future` that produces `LuaResult<Vec<LuaValue>>`.
-    ///
-    /// From Lua code, the function looks and behaves like a normal synchronous
-    /// function. The async yield/resume is driven transparently by `AsyncThread`.
-    ///
-    /// **Important**: The function MUST be called from within an `AsyncThread`
-    /// (i.e., the coroutine must be yieldable). Use `create_async_thread()` or
-    /// `execute_async()` to run Lua code that calls async functions.
-    ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// vm.register_async("sleep", |args| async move {
-    ///     let secs = args[0].as_number().unwrap_or(1.0);
-    ///     tokio::time::sleep(Duration::from_secs_f64(secs)).await;
-    ///     Ok(vec![LuaValue::boolean(true)])
-    /// })?;
-    /// ```
-    /// Register a Rust enum as a Lua global table of integer constants.
-    ///
-    /// Each variant becomes a key in the table with its discriminant as value.
-    /// The enum must implement `LuaEnum` (auto-derived by `#[derive(LuaUserData)]`
-    /// on C-like enums).
-    ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// #[derive(LuaUserData)]
-    /// enum Color { Red, Green, Blue }
-    ///
-    /// vm.register_enum::<Color>("Color")?;
-    /// // Lua: Color.Red == 0, Color.Green == 1, Color.Blue == 2
-    /// ```
-    pub fn register_enum_of<T: LuaEnum>(&mut self, name: &str) -> LuaResult<()> {
-        let variants = T::variants();
-        let table = self.create_table(0, variants.len())?;
-        for &(vname, value) in variants {
-            let key = self.create_string(vname)?;
-            let val = LuaValue::integer(value);
-            self.raw_set(&table, key, val);
-        }
-        self.set_global(name, table)
     }
 
     #[inline(always)]

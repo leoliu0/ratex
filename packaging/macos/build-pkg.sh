@@ -1,10 +1,13 @@
 #!/bin/bash
 set -euo pipefail
 
-# Build native macOS .pkg installer for ratex
-BUNDLE_DIR="${1:-dist/tex-suite-macos-aarch64}"
-ARCH="${2:-arm64}"
-VERSION="${3:-0.4.6}"
+# Build native macOS .pkg installer for ratex.
+# Usage: build-pkg.sh BUNDLE_DIR ARCH VERSION [OUTPUT_DIR]
+# (stale defaults for the version or architecture would mislabel the package)
+usage="usage: $0 BUNDLE_DIR ARCH VERSION [OUTPUT_DIR]"
+BUNDLE_DIR="${1:?$usage}"
+ARCH="${2:?$usage}"
+VERSION="${3:?$usage}"
 OUTPUT_DIR="${4:-dist}"
 
 mkdir -p "$OUTPUT_DIR"

@@ -5,7 +5,6 @@
 #endif
 #define MyAppPublisher "Leo Liu"
 #define MyAppURL "https://github.com/leoliu0/ratex"
-#define MyAppExeName "texmk.exe"
 
 [Setup]
 AppId={{D82496E3-4E86-4F58-A81E-2B60773E92B1}
@@ -61,4 +60,30 @@ begin
     exit;
   end;
   Result := Pos(';' + Param + ';', ';' + OrigPath + ';') = 0;
+end;
+
+// Undo the [Registry] PATH entry above; Inno Setup cannot remove part of a value.
+procedure RemovePath(Dir: string);
+var
+  Value: string;
+  P: Integer;
+begin
+  if not RegQueryStringValue(HKEY_CURRENT_USER, 'Environment', 'Path', Value) then
+    exit;
+  Value := ';' + Value + ';';
+  P := Pos(';' + Dir + ';', Value);
+  if P = 0 then
+    exit;
+  Delete(Value, P, Length(Dir) + 1);
+  Value := Copy(Value, 2, Length(Value) - 2);
+  if Value = '' then
+    RegDeleteValue(HKEY_CURRENT_USER, 'Environment', 'Path')
+  else
+    RegWriteExpandStringValue(HKEY_CURRENT_USER, 'Environment', 'Path', Value);
+end;
+
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+begin
+  if CurUninstallStep = usPostUninstall then
+    RemovePath(ExpandConstant('{app}\bin'));
 end;

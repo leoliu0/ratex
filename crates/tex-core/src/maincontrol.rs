@@ -1162,7 +1162,43 @@ impl Engine {
             PdfSetRandomSeed => {
                 self.random_seed = self.scan_int();
             }
-            PdfUncompress | PdfTolerance | PdfPageBox | PdfThread | PdfStartThread
+            PdfTrailer => self.do_pdftrailer(),
+            PdfIncludeChars => self.do_pdfincludechars(),
+            PdfCopyFont => self.do_pdfcopyfont(),
+            PdfSpaceFont => self.do_pdfspacefont(),
+            PdfLastXImageColorDepth => {}
+            PdfInterwordSpaceOn | PdfInterwordSpaceOff => self.append_whatsit(Node::Whatsit(
+                crate::boxes::WhatIt::PdfInterwordSpace(p == PdfInterwordSpaceOn),
+            )),
+            PdfFakeSpace => {
+                self.append_whatsit(Node::Whatsit(crate::boxes::WhatIt::PdfFakeSpace))
+            }
+            PdfRunningLinkOn | PdfRunningLinkOff => self.append_whatsit(Node::Whatsit(
+                crate::boxes::WhatIt::PdfRunningLink(p == PdfRunningLinkOn),
+            )),
+            PdfSnapRefPoint => {
+                self.append_whatsit(Node::Whatsit(crate::boxes::WhatIt::PdfSnapRefPoint))
+            }
+            PdfSnapY => {
+                // pdftex.web new_snap_node: negative snap glue is an error
+                let (glue, source) = {
+                    let source = self.current_token_source_mark();
+                    (self.scan_glue(false), source)
+                };
+                if glue.width < 0 {
+                    self.fatal_error_at(
+                        "pdfTeX error (ext1): negative snap glue",
+                        source.as_ref().map(crate::input::SourceMark::to_context),
+                    );
+                    return;
+                }
+                self.append_whatsit(Node::Whatsit(crate::boxes::WhatIt::PdfSnapY(glue)));
+            }
+            PdfSnapYComp => {
+                let ratio = self.scan_int().clamp(0, 1000);
+                self.append_whatsit(Node::Whatsit(crate::boxes::WhatIt::PdfSnapYComp(ratio)));
+            }
+            PdfUncompress | PdfTolerance | PdfThread | PdfStartThread
             | PdfEndThread | PdfResetTimer => {
                 // consume the argument syntactically: most take balanced text
                 self.skip_spaces_relax();
@@ -1462,10 +1498,10 @@ impl Engine {
 
     // ---------- \pdfobj / \pdfxform / \pdfximage: object-number allocation
 
-    /// Reserve the next PDF object number and report it via \pdflastobj.
-    /// (Serialization renumbers objects at write time; these reservations
-    /// keep `\pdflastobj` self-consistent for `\pdfrefobj`.)
-    fn alloc_pdf_obj(&mut self) -> i32 {
+    /// Reserve the next PDF object number. The writer places each reserved
+    /// object (\pdfobj, forms, images, \pdfpageref pages, \pdffontobjnum
+    /// fonts) at its number; other objects are numbered after them.
+    pub(crate) fn alloc_pdf_obj(&mut self) -> i32 {
         let n = self.pdf_next_obj;
         self.pdf_next_obj += 1;
         n
@@ -1605,6 +1641,8 @@ impl Engine {
         let box_reg = self.scan_reg_num();
         let obj = self.alloc_pdf_obj();
         self.pdf_last_xform = obj;
+        // \pdfxformname: forms are painted as `/Fm<object number> Do`
+        self.pdf_doc.form_names.insert(obj, obj);
         let b = self.eqtb.boxed.get(box_reg as usize).cloned().flatten();
         let (w, h, d) = match &b {
             Some(Node::Box { w, h, d, .. }) => (*w, *h, *d),
@@ -1750,6 +1788,7 @@ impl Engine {
             return;
         };
         let obj = self.alloc_pdf_obj();
+        self.pdf_backend.last_ximage_colordepth = crate::pdftex::image_color_depth(&bytes);
         let mut image_pages = 1;
         let is_eps = bytes.starts_with(b"%!PS")
             || bytes.starts_with(b"%!ps")
@@ -2412,6 +2451,14 @@ fn whatsit_kind_name(whatsit: &crate::boxes::WhatIt) -> &'static str {
         WhatIt::SavePos { .. } => "position save",
         WhatIt::CjkText(_) => "CJK source text",
         WhatIt::User(_) => "user whatsit",
+        WhatIt::PdfInterwordSpace(true) => "PDF interword space on",
+        WhatIt::PdfInterwordSpace(false) => "PDF interword space off",
+        WhatIt::PdfFakeSpace => "PDF fake space",
+        WhatIt::PdfRunningLink(true) => "PDF running link on",
+        WhatIt::PdfRunningLink(false) => "PDF running link off",
+        WhatIt::PdfSnapRefPoint => "PDF snap reference point",
+        WhatIt::PdfSnapY(_) => "PDF snap y",
+        WhatIt::PdfSnapYComp(_) => "PDF snap y compensation",
     }
 }
 

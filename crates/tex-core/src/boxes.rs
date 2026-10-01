@@ -235,6 +235,18 @@ pub enum WhatIt {
     },
     User(i32),
     CjkText(Option<char>),
+    /// `\pdfinterwordspaceon` (true) / `\pdfinterwordspaceoff` (false).
+    PdfInterwordSpace(bool),
+    /// `\pdffakespace`: a space glyph from `\pdfspacefont` at shipout.
+    PdfFakeSpace,
+    /// `\pdfrunninglinkon` (true) / `\pdfrunninglinkoff` (false).
+    PdfRunningLink(bool),
+    /// `\pdfsnaprefpoint`: the reference point for `\pdfsnapy`.
+    PdfSnapRefPoint,
+    /// `\pdfsnapy <glue>`: snap the vertical position to a grid.
+    PdfSnapY(crate::boxes::Glue),
+    /// `\pdfsnapycomp <ratio>`: compensate the next `\pdfsnapy` (0..1000).
+    PdfSnapYComp(i32),
 }
 
 /// leader kinds (tex.web subtypes a_leaders/c_leaders/x_leaders)

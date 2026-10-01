@@ -1,88 +1,174 @@
-//! A map file is scanned on demand; only requested fonts undergo line parsing.
+//! pdfTeX's font map database (mapfile.c): an ordered list of map-file and
+//! map-line layers, each applied with its `+`/`=`/`-` mode. Layers are
+//! scanned on demand; only requested fonts undergo line parsing.
 use crate::fontload::{parse_map_line, MapEntry};
 use std::cell::RefCell;
 use std::rc::Rc;
 
+/// How a map item treats entries for TFM names that are already mapped
+/// (mapfile.c `FM_DUPIGNORE` / `FM_REPLACE` / `FM_DELETE`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MapMode {
+    /// `+` and unprefixed items: insert unless the TFM is already mapped;
+    /// within one item the first entry wins.
+    DupIgnore,
+    /// `=`: replace an earlier entry unless its font is already in use;
+    /// within one item the last entry wins.
+    Replace,
+    /// `-`: delete an earlier entry unless its font is already in use.
+    Delete,
+}
+
+struct Layer {
+    text: Rc<str>,
+    mode: MapMode,
+    /// TFM names whose entries were in use when this replace/delete layer
+    /// was added: mapfile.c `avl_do_entry` leaves them untouched.
+    frozen: crate::FxHashSet<Box<str>>,
+}
+
+/// pdfTeX diagnostics owed for one added layer, in entry order.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct LayerReport {
+    /// `fontmap entry for `x' already exists, duplicates ignored`
+    pub duplicates: Vec<String>,
+    /// `fontmap entry for `x' has been used, replace/delete not allowed`
+    pub in_use: Vec<String>,
+}
+
 #[derive(Default)]
 pub struct FontMap {
     entries: RefCell<crate::FxHashMap<Box<str>, Option<MapEntry>>>,
-    removed: RefCell<crate::FxHashSet<Box<str>>>,
-    files: Vec<Rc<str>>,
+    layers: Vec<Layer>,
 }
 
 impl FontMap {
     pub fn get(&self, name: &str) -> Option<MapEntry> {
-        if self.removed.borrow().contains(name) {
-            return None;
-        }
         if let Some(cached) = self.entries.borrow().get(name) {
             return cached.clone();
         }
-        // Scan raw files in reverse order (most recently added file wins)
-        for file in self.files.iter().rev() {
-            if let Some(entry) = find_map_entry_in_text(file, name) {
-                self.entries
-                    .borrow_mut()
-                    .insert(name.into(), Some(entry.clone()));
-                return Some(entry);
-            }
-        }
-        self.entries.borrow_mut().insert(name.into(), None);
-        None
+        let entry = self.resolve(name);
+        self.entries
+            .borrow_mut()
+            .insert(name.into(), entry.clone());
+        entry
     }
 
     pub fn contains_key(&self, name: &str) -> bool {
         self.get(name).is_some()
     }
 
-    pub fn clear(&mut self) {
-        self.entries.borrow_mut().clear();
-        self.removed.borrow_mut().clear();
-        self.files.clear();
-    }
-
-    pub fn remove(&mut self, name: &str) {
-        self.entries.borrow_mut().remove(name);
-        self.removed.borrow_mut().insert(name.into());
-    }
-
-    pub fn insert(&mut self, name: String, entry: MapEntry) {
-        self.removed.borrow_mut().remove(name.as_str());
-        self.entries
-            .borrow_mut()
-            .insert(name.into_boxed_str(), Some(entry));
-    }
-    pub fn extend_file(&mut self, text: String) {
-        self.entries.borrow_mut().clear();
-        self.files.push(text.into());
-    }
-}
-
-fn find_map_entry_in_text(text: &str, name: &str) -> Option<MapEntry> {
-    let mut last_match = None;
-    for raw in text.split_inclusive('\n') {
-        let line = raw.trim();
-        if line.is_empty() || line.starts_with(['%', '*']) {
-            continue;
-        }
-        if line.starts_with(name) {
-            let after = &line[name.len()..];
-            if after.is_empty() || after.starts_with([' ', '\t', '"']) {
-                if let Some(entry) = parse_map_line(line) {
-                    if entry.tfm == name {
-                        last_match = Some(entry);
+    /// Replay the layers in order for one TFM name.
+    fn resolve(&self, name: &str) -> Option<MapEntry> {
+        let mut entry = None;
+        for layer in &self.layers {
+            match layer.mode {
+                MapMode::DupIgnore => {
+                    if entry.is_none() {
+                        entry = find_map_entry_in_text(&layer.text, name, true);
+                    }
+                }
+                MapMode::Replace => {
+                    if !layer.frozen.contains(name) {
+                        if let Some(found) = find_map_entry_in_text(&layer.text, name, false) {
+                            entry = Some(found);
+                        }
+                    }
+                }
+                MapMode::Delete => {
+                    if !layer.frozen.contains(name) && map_text_names(&layer.text).any(|n| n == name)
+                    {
+                        entry = None;
                     }
                 }
             }
-        } else if line.contains(name) {
-            if let Some(entry) = parse_map_line(line) {
-                if entry.tfm == name {
-                    last_match = Some(entry);
+        }
+        entry
+    }
+
+    /// Append a map file or map line. `check` enables pdfTeX's per-entry
+    /// duplicate diagnostics (the default `pdftex.map` is written
+    /// duplicate-free by updmap, so it is added without the full parse).
+    pub fn add_layer(
+        &mut self,
+        text: String,
+        mode: MapMode,
+        in_use: &dyn Fn(&str) -> bool,
+        check: bool,
+    ) -> LayerReport {
+        let mut report = LayerReport::default();
+        let mut frozen = crate::FxHashSet::default();
+        if check || mode != MapMode::DupIgnore {
+            let mut seen = crate::FxHashSet::default();
+            for line in text.lines().map(str::trim) {
+                if line.is_empty() || line.starts_with(['%', '*', '#', ';']) {
+                    continue;
+                }
+                // a deletion only needs the TFM name (`\pdfmapline{-cmr10}`)
+                let tfm = if mode == MapMode::Delete {
+                    match line.split_whitespace().next() {
+                        Some(name) => name.to_string(),
+                        None => continue,
+                    }
+                } else {
+                    match parse_map_line(line) {
+                        Some(entry) => entry.tfm,
+                        None => continue,
+                    }
+                };
+                let earlier = seen.contains(tfm.as_str()) || self.get(&tfm).is_some();
+                match mode {
+                    MapMode::DupIgnore => {
+                        if earlier {
+                            report.duplicates.push(tfm.clone());
+                        }
+                    }
+                    MapMode::Replace | MapMode::Delete => {
+                        if earlier && in_use(&tfm) {
+                            report.in_use.push(tfm.clone());
+                            frozen.insert(tfm.clone().into_boxed_str());
+                        }
+                    }
+                }
+                seen.insert(tfm);
+            }
+        }
+        self.entries.borrow_mut().clear();
+        self.layers.push(Layer {
+            text: text.into(),
+            mode,
+            frozen,
+        });
+        report
+    }
+}
+
+/// TFM names (first items) of the entry lines of a map text.
+fn map_text_names(text: &str) -> impl Iterator<Item = &str> {
+    text.lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with(['%', '*', '#', ';']))
+        .filter_map(|line| line.split_whitespace().next())
+}
+
+/// The first (`first`) or last entry for `name` in one map text.
+fn find_map_entry_in_text(text: &str, name: &str, first: bool) -> Option<MapEntry> {
+    let mut found = None;
+    for raw in text.split_inclusive('\n') {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with(['%', '*', '#', ';']) || !line.contains(name) {
+            continue;
+        }
+        if let Some(entry) = parse_map_line(line) {
+            if entry.tfm == name {
+                found = Some(entry);
+                if first {
+                    break;
                 }
             }
         }
     }
-    last_match
+    found
 }
 
 #[cfg(test)]
@@ -110,28 +196,38 @@ mod tests {
                 }
             }
         }
+        // mapfile.c inserts in FM_DUPIGNORE mode: the first entry wins.
         let mut eager = crate::FxHashMap::default();
         for line in text.lines().map(str::trim) {
             if line.starts_with(['%', '*']) {
                 continue;
             }
             if let Some(e) = parse_map_line(line) {
-                eager.insert(e.tfm.clone(), e);
+                eager.entry(e.tfm.clone()).or_insert(e);
             }
         }
+        let never_used = |_: &str| false;
         let mut lazy = FontMap::default();
-        lazy.extend_file(text);
+        lazy.add_layer(text, MapMode::DupIgnore, &never_used, false);
         for (key, value) in eager {
             assert_eq!(lazy.get(&key).as_ref(), Some(&value));
         }
-        lazy.extend_file("valid Replacement <new.pfb\n".into());
+        let report = lazy.add_layer(
+            "valid Ignored <new.pfb\nfresh Fresh <fresh.pfb\nfresh Again <again.pfb\n".into(),
+            MapMode::DupIgnore,
+            &never_used,
+            true,
+        );
+        assert_eq!(report.duplicates, ["valid", "fresh"]);
+        assert_eq!(lazy.get("valid").unwrap().fontname, "Font");
+        assert_eq!(lazy.get("fresh").unwrap().fontname, "Fresh");
+        lazy.add_layer("valid Replacement <new.pfb\n".into(), MapMode::Replace, &never_used, true);
         assert_eq!(lazy.get("valid").unwrap().fontname, "Replacement");
-        lazy.remove("valid");
+        lazy.add_layer("valid\n".into(), MapMode::Delete, &never_used, true);
         assert!(lazy.get("valid").is_none());
-        let entry = parse_map_line("valid Explicit <explicit.pfb").unwrap();
-        lazy.insert(entry.tfm.clone(), entry);
-        assert_eq!(lazy.get("valid").unwrap().fontname, "Explicit");
-        lazy.clear();
-        assert!(lazy.get("valid").is_none());
+        let used = |name: &str| name == "fresh";
+        let report = lazy.add_layer("fresh Other <o.pfb\n".into(), MapMode::Replace, &used, true);
+        assert_eq!(report.in_use, ["fresh"]);
+        assert_eq!(lazy.get("fresh").unwrap().fontname, "Fresh");
     }
 }

@@ -5,7 +5,8 @@ pub(crate) fn serialize(
     objects: &[Option<Vec<u8>>],
     packable: &[bool],
     catalog: usize,
-    info: usize,
+    info: Option<usize>,
+    trailer_extra: &[u8],
     encrypt: Option<usize>,
     file_id: Option<[u8; 16]>,
     (major_version, minor_version): (i32, i32),
@@ -70,9 +71,10 @@ pub(crate) fn serialize(
     }
     let compressed = crate::pdffile::flate(&entries);
     let mut xref_dict = format!(
-        "{xref_id} 0 obj\n<< /Type /XRef /Size {} /W [1 8 2] /Root {catalog} 0 R /Info {info} 0 R",
+        "{xref_id} 0 obj\n<< /Type /XRef /Size {} /W [1 8 2] /Root {catalog} 0 R",
         xref_id + 1
     );
+    push_trailer_entries(&mut xref_dict, info, trailer_extra);
     if let Some(enc) = encrypt {
         xref_dict.push_str(&format!(" /Encrypt {enc} 0 R"));
     }
@@ -88,6 +90,18 @@ pub(crate) fn serialize(
     out.extend_from_slice(&compressed);
     write!(out, "\nendstream\nendobj\nstartxref\n{startxref}\n%%EOF\n").unwrap();
     out
+}
+
+/// pdfTeX trailer order: /Info (unless `\pdfomitinfodict`), then the
+/// `\pdftrailer` entries.
+fn push_trailer_entries(dict: &mut String, info: Option<usize>, trailer_extra: &[u8]) {
+    if let Some(info) = info {
+        dict.push_str(&format!(" /Info {info} 0 R"));
+    }
+    if !trailer_extra.is_empty() {
+        dict.push(' ');
+        dict.push_str(&String::from_utf8_lossy(trailer_extra));
+    }
 }
 
 #[cfg(test)]
@@ -106,7 +120,7 @@ mod tests {
         objects[206] = Some(b"<< /Length 3 >>\nstream\nabc\nendstream".to_vec());
         let mut packable = vec![true; objects.len()];
         packable[206] = false;
-        let bytes = serialize(&objects, &packable, 1, 5, None, None, (1, 5));
+        let bytes = serialize(&objects, &packable, 1, Some(5), &[], None, None, (1, 5));
         let doc = lopdf::Document::load_mem(&bytes).unwrap();
         assert_eq!(
             doc.catalog()
@@ -139,7 +153,8 @@ mod tests {
 pub(crate) fn serialize_compatible(
     objects: &[Option<Vec<u8>>],
     catalog: usize,
-    info: usize,
+    info: Option<usize>,
+    trailer_extra: &[u8],
     encrypt: Option<usize>,
     file_id: Option<[u8; 16]>,
     (major_version, minor_version): (i32, i32),
@@ -166,12 +181,8 @@ pub(crate) fn serialize_compatible(
             buf.extend_from_slice(format!("{:010} 00000 n \n", off).as_bytes());
         }
     }
-    let mut trailer = format!(
-        "trailer\n<< /Size {} /Root {} 0 R /Info {} 0 R",
-        n + 1,
-        catalog,
-        info
-    );
+    let mut trailer = format!("trailer\n<< /Size {} /Root {} 0 R", n + 1, catalog);
+    push_trailer_entries(&mut trailer, info, trailer_extra);
     if let Some(enc) = encrypt {
         trailer.push_str(&format!(" /Encrypt {enc} 0 R"));
     }

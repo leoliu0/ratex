@@ -245,13 +245,24 @@ impl FontLoader {
         self.map_loaded = true;
     }
 
+    /// Add the default map file (`pdftex.map`) as the first map layer.
     pub fn load_map(&mut self, name: &str) {
         self.map_loaded = true;
         let Some(data) = self.read_dependency(name, tex_kpse::Format::Map) else {
             return;
         };
-        self.map
-            .extend_file(String::from_utf8_lossy(&data).into_owned());
+        self.map.add_layer(
+            String::from_utf8_lossy(&data).into_owned(),
+            crate::fontmap::MapMode::DupIgnore,
+            &|_| false,
+            false,
+        );
+    }
+
+    /// Read a map file named by `\pdfmapfile` (recorded as a dependency).
+    pub fn read_map_file(&mut self, name: &str) -> Option<String> {
+        self.read_dependency(name, tex_kpse::Format::Map)
+            .map(|data| String::from_utf8_lossy(&data).into_owned())
     }
 
     pub fn load_tfm(&mut self, name: &str, at: i32) -> Option<Rc<Font>> {
@@ -281,7 +292,7 @@ impl FontLoader {
         let mut font = parse_tfm(&data, resolved_name, at).ok()?;
         let map_entry = self.map.get(resolved_name);
         if let Some(me) = &map_entry {
-            font.map_fontname = Some(me.fontname.clone());
+            font.map_fontname = (!me.fontname.is_empty()).then(|| me.fontname.clone());
             if let Some(enc) = &me.enc_file {
                 font.enc_name = Some(enc.clone());
                 font.encoding = self.load_enc(enc);
@@ -1062,9 +1073,15 @@ fn basename(p: &str) -> &str {
 /// (num may also be fused: `.167SlantFont`).
 pub fn parse_map_line(line: &str) -> Option<MapEntry> {
     let (bare, quoted) = split_map_tokens(line);
-    let mut it = bare.into_iter();
+    let mut it = bare.into_iter().peekable();
     let tfm = it.next()?.into_owned();
-    let fontname = it.next()?.into_owned();
+    // mapfile.c fm_scan_line: the PostScript name is optional; a `<` item
+    // in second position is already the encoding or font file.
+    let fontname = if it.peek()?.starts_with('<') {
+        String::new()
+    } else {
+        it.next()?.into_owned()
+    };
     let mut enc_file: Option<String> = None;
     let mut enc_name: Option<String> = None;
     let mut pfb: Option<String> = None;

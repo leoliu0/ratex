@@ -622,6 +622,7 @@ impl Engine {
                         | Prim::PdfLastXForm
                         | Prim::PdfLastXImage
                         | Prim::PdfLastXImagePages
+                        | Prim::PdfLastXImageColorDepth
                         | Prim::PdfLastLink
                         | Prim::PdfLastAnnot),
                     ) => {
@@ -938,6 +939,7 @@ impl Engine {
             Prim::PdfLastXForm => self.pdf_last_xform,
             Prim::PdfLastXImage => self.pdf_last_ximage,
             Prim::PdfLastXImagePages => self.pdf_last_ximage_pages,
+            Prim::PdfLastXImageColorDepth => self.pdf_backend.last_ximage_colordepth,
             Prim::PdfLastLink => self.pdf_last_link,
             Prim::PdfLastAnnot => self.pdf_last_annot,
             _ => 0,
@@ -2179,6 +2181,7 @@ impl Engine {
                 | Prim::PdfLastXForm
                 | Prim::PdfLastXImage
                 | Prim::PdfLastXImagePages
+                | Prim::PdfLastXImageColorDepth
                 | Prim::PdfLastLink
                 | Prim::PdfLastAnnot),
             ) => {

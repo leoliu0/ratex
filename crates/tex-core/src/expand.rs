@@ -1072,6 +1072,10 @@ impl Engine {
                 | PdfColorStackInit
                 | PdfBanner
                 | PdfFontSize
+                | PdfPageRef
+                | PdfFontName
+                | PdfFontObjNum
+                | PdfXFormName
                 | LeftMarginKern
                 | RightMarginKern
                 | UcharCat
@@ -1564,6 +1568,18 @@ impl Engine {
                     .unwrap_or(0);
                 let text = self.scaled_to_string(size);
                 self.exp_string(text.as_bytes());
+                None
+            }
+            Prim::PdfPageRef | Prim::PdfFontName | Prim::PdfFontObjNum | Prim::PdfXFormName => {
+                let value = match p {
+                    Prim::PdfPageRef => self.pdf_page_ref(),
+                    Prim::PdfFontName => self.pdf_font_name(),
+                    Prim::PdfFontObjNum => self.pdf_font_objnum(),
+                    _ => self.pdf_xform_name(),
+                };
+                if let Some(value) = value {
+                    self.exp_string(value.to_string().as_bytes());
+                }
                 None
             }
             Prim::PdfBanner => {

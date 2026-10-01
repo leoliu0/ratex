@@ -1,67 +1,93 @@
 //! pdfTeX extension surface beyond primitive dispatch: map-file loading
 //! (\pdfmapfile, \pdfmapline), position query accessors
-//! (\pdflastxpos/\pdflastypos), and end-of-job font embedding.
+//! (\pdflastxpos/\pdflastypos), end-of-job font embedding, and the backend
+//! state behind the PDF-object primitives (\pdfpageref, \pdffontname,
+//! \pdffontobjnum, \pdfxformname, \pdfincludechars, \pdftrailer, ...).
 //!
 //! Dispatch arms (maincontrol): `PdfMapFile => self.do_pdfmapfile()`,
 //! `PdfMapLine => self.do_pdfmapline()`.
 
 use crate::engine::Engine;
-use crate::fontload::parse_map_line;
+use crate::fontmap::MapMode;
 
 impl Engine {
-    /// \pdfmapfile {+name|-name|=name|name}: load (add), or with `=`
-    /// replace the whole map database. `-name` (remove a specific file's
-    /// entries) is accepted and ignored: entry provenance is not tracked.
+    /// \pdfmapfile {[+|=|-]<file>}: read a map file into the font map.
     pub fn do_pdfmapfile(&mut self) {
         self.skip_spaces_relax();
         let arg = self.scan_pdf_string();
-        let arg = arg.trim().to_string();
-        if arg.is_empty() {
-            return;
-        }
-        let (replace, name) = match arg.as_bytes()[0] {
-            b'+' => (false, arg[1..].trim().to_string()),
-            b'-' => {
-                self.font_loader.ensure_map();
-                let _ = &arg[1..]; // removal unsupported; entry provenance untracked
-                return;
-            }
-            b'=' => (true, arg[1..].trim().to_string()),
-            _ => (false, arg.clone()),
-        };
-        if name.is_empty() {
-            return;
-        }
-        if replace {
-            // `=` replaces the whole database: the deferred default map
-            // must not be re-added on top of it afterwards
-            self.font_loader.map.clear();
-            self.font_loader.mark_map_loaded();
-        } else {
-            // `+`/plain adds layer on top of the default database
-            self.font_loader.ensure_map();
-        }
-        self.font_loader.load_map(&name);
+        self.process_map_item(&arg, true);
     }
 
-    /// \pdfmapline {<map line>}: install one map entry; `-tfm` removes.
+    /// \pdfmapline {[+|=|-]<map line>}: add, replace or delete one entry.
     pub fn do_pdfmapline(&mut self) {
         self.skip_spaces_relax();
         let line = self.scan_pdf_string();
-        let line = line.trim();
-        if line.is_empty() {
-            return;
-        }
-        if line.as_bytes()[0] == b'-' {
+        self.process_map_item(&line, false);
+    }
+
+    /// mapfile.c `process_map_item`: `+` inserts unless the TFM is mapped
+    /// (duplicates ignored with a warning unless \pdfsuppresswarningdupmap),
+    /// `=` replaces and `-` deletes unless the font is already in use; an
+    /// unprefixed item inserts like `+` but first drops the default map file
+    /// if it has not been read yet.
+    fn process_map_item(&mut self, item: &str, is_file: bool) {
+        let item = item.strip_prefix(' ').unwrap_or(item);
+        let (mode, rest, flush_default) = match item.as_bytes().first() {
+            Some(b'+') => (MapMode::DupIgnore, &item[1..], false),
+            Some(b'=') => (MapMode::Replace, &item[1..], false),
+            Some(b'-') => (MapMode::Delete, &item[1..], false),
+            _ => (MapMode::DupIgnore, item, true),
+        };
+        let rest = rest.strip_prefix(' ').unwrap_or(rest);
+        // a file name ends at the first blank; a map line may keep its tail
+        let rest = if is_file {
+            rest.split(' ').next().unwrap_or_default()
+        } else {
+            rest
+        };
+        if flush_default {
+            self.font_loader.mark_map_loaded();
+        } else {
             self.font_loader.ensure_map();
-            if let Some(tfm) = line[1..].split_whitespace().next() {
-                self.font_loader.map.remove(tfm);
-            }
+        }
+        if rest.is_empty() {
             return;
         }
-        self.font_loader.ensure_map();
-        if let Some(e) = parse_map_line(line) {
-            self.font_loader.map.insert(e.tfm.clone(), e);
+        let text = if is_file {
+            match self.font_loader.read_map_file(rest) {
+                Some(text) => text,
+                None => {
+                    self.warning_at(
+                        &format!("(file {rest}): cannot open font map file"),
+                        None,
+                    );
+                    return;
+                }
+            }
+        } else {
+            rest.to_string()
+        };
+        let used = &self.pdf_backend.mapped_in_use;
+        let report = self
+            .font_loader
+            .map
+            .add_layer(text, mode, &|name| used.contains(name), true);
+        let suppress = self.eqtb.int_params
+            [crate::prim::IntParam::PdfSuppressWarningDupMap.idx() as usize]
+            > 0;
+        if !suppress {
+            for name in &report.duplicates {
+                self.warning_at(
+                    &format!("fontmap entry for `{name}' already exists, duplicates ignored"),
+                    None,
+                );
+            }
+        }
+        for name in &report.in_use {
+            self.warning_at(
+                &format!("fontmap entry for `{name}' has been used, replace/delete not allowed"),
+                None,
+            );
         }
     }
 
@@ -84,6 +110,17 @@ impl Engine {
         if self.pdf_fixed.is_none() {
             self.fix_pdf_output_params();
         }
+        // End-of-job backend parameters and object-number reservations.
+        use crate::prim::IntParam;
+        self.pdf_doc.omit_info_dict = self.pdf_int(IntParam::PdfOmitInfoDict) != 0;
+        self.pdf_doc.omit_charset = self.pdf_int(IntParam::PdfOmitCharset) > 0;
+        self.pdf_doc.reserved_objects = self.pdf_next_obj - 1;
+        self.pdf_doc.page_objnums = self
+            .pdf_backend
+            .page_objs
+            .iter()
+            .map(|(&page, &obj)| (page as usize - 1, obj))
+            .collect();
         use std::collections::BTreeSet;
         let gen_tounicode =
             self.eqtb.int_params[crate::prim::IntParam::PdfGenToUnicode.idx() as usize];
@@ -110,6 +147,46 @@ impl Engine {
                             *word |= used_word;
                         }
                     }
+                }
+            }
+        }
+        // \pdfincludechars initializes fonts that no page or form shows;
+        // pdfTeX writes every font with marked characters.
+        let mut included: Vec<u16> = self
+            .pdf_backend
+            .font_ff
+            .keys()
+            .copied()
+            .filter(|fid| {
+                !used.contains(fid)
+                    && self
+                        .pdf_doc
+                        .font_chars
+                        .get(&(*fid as usize))
+                        .is_some_and(|chars| chars.iter().any(|&word| word != 0))
+            })
+            .collect();
+        included.sort_unstable();
+        for fid in included {
+            used.insert(fid);
+            let chars = self.pdf_doc.font_chars[&(fid as usize)];
+            if let Some(font) = self.eqtb.fonts.get(fid as usize) {
+                let group = raw_groups.entry(font.tfm_name.clone()).or_insert((fid, [0; 4]));
+                for (word, used_word) in group.1.iter_mut().zip(chars) {
+                    *word |= used_word;
+                }
+            }
+        }
+        // pdf_init_font: the font initialized first owns the dictionary.
+        for (owner, _) in raw_groups.values_mut() {
+            if let Some(&ff) = self.pdf_backend.font_ff.get(owner) {
+                let ff_has_chars = self
+                    .pdf_doc
+                    .font_chars
+                    .get(&(ff as usize))
+                    .is_some_and(|chars| chars.iter().any(|&word| word != 0));
+                if used.contains(&ff) && ff_has_chars {
+                    *owner = ff;
                 }
             }
         }
@@ -268,6 +345,10 @@ impl Engine {
                             embedded.to_unicode.clear();
                         }
                         embedded.font_attr = font_attr.clone();
+                        // \pdffontobjnum fixed the dictionary's number
+                        let ff = self.pdf_backend.font_ff.get(&fid).copied().unwrap_or(fid);
+                        embedded.obj_font =
+                            self.pdf_backend.font_objs.get(&ff).copied().unwrap_or(0);
                         embedded.ascent = ascent;
                         embedded.cap_height = cap_height;
                         embedded.descent = descent;
@@ -493,4 +574,244 @@ impl Engine {
         }
         Ok(())
     }
+}
+
+/// pdfTeX's default `\pdfspacefont` (pdftex.web `pdf_space_font_name`).
+const DEFAULT_SPACE_FONT: &str = "pdftexspace";
+
+/// Backend bookkeeping behind the PDF-object primitives. Object numbers are
+/// drawn from the engine's `pdf_next_obj`, like `\pdfobj`, and the writer
+/// places the page or font dictionary at the reserved number.
+pub(crate) struct PdfBackend {
+    /// `\pdfpageref`: object numbers fixed for (1-based) pages.
+    pub(crate) page_objs: crate::FxHashMap<i32, i32>,
+    /// `pdf_init_font`: each initialized font and the font `ff` whose PDF
+    /// font dictionary and `/F<ff>` resource it shares (same TFM).
+    pub(crate) font_ff: crate::FxHashMap<u16, u16>,
+    /// Fonts owning a dictionary, in initialization order.
+    font_reps: Vec<u16>,
+    /// TFM names of initialized fonts: their map entries are in use.
+    pub(crate) mapped_in_use: crate::FxHashSet<String>,
+    /// `\pdffontobjnum`: dictionary object numbers keyed by owner font.
+    pub(crate) font_objs: crate::FxHashMap<u16, i32>,
+    /// `\pdflastximagecolordepth`.
+    pub(crate) last_ximage_colordepth: i32,
+    /// `\pdfspacefont`: TFM of the font for faked interword spaces.
+    pub(crate) space_font_name: String,
+}
+
+impl Default for PdfBackend {
+    fn default() -> Self {
+        PdfBackend {
+            page_objs: Default::default(),
+            font_ff: Default::default(),
+            font_reps: Vec::new(),
+            mapped_in_use: Default::default(),
+            font_objs: Default::default(),
+            last_ximage_colordepth: 0,
+            space_font_name: DEFAULT_SPACE_FONT.to_string(),
+        }
+    }
+}
+
+impl Engine {
+    fn pdf_int(&self, p: crate::prim::IntParam) -> i32 {
+        self.eqtb.int_params[p.idx() as usize]
+    }
+
+    /// pdftex.web `pdf_init_font` / `pdf_use_font`: give font `f` its PDF
+    /// font resource, shared with an earlier initialized font of the same
+    /// TFM (or of its expansion base), and return that owner `ff`.
+    pub(crate) fn pdf_init_font(&mut self, f: u16) -> u16 {
+        if let Some(&ff) = self.pdf_backend.font_ff.get(&f) {
+            return ff;
+        }
+        let blink = self
+            .eqtb
+            .expand
+            .get(f as usize)
+            .filter(|x| x.auto_expand)
+            .map_or(0, |x| x.blink);
+        let ff = if blink != 0 {
+            self.pdf_init_font(blink)
+        } else {
+            let name = self.eqtb.fonts.get(f as usize).map(|font| font.tfm_name.clone());
+            let fonts = &self.eqtb.fonts;
+            self.pdf_backend
+                .font_reps
+                .iter()
+                .copied()
+                .find(|&k| fonts.get(k as usize).map(|font| &font.tfm_name) == name.as_ref())
+                .unwrap_or(f)
+        };
+        if ff == f {
+            self.pdf_backend.font_reps.push(f);
+        }
+        self.pdf_backend.font_ff.insert(f, ff);
+        if let Some(font) = self.eqtb.fonts.get(f as usize) {
+            self.pdf_backend.mapped_in_use.insert(font.tfm_name.clone());
+        }
+        let move_chars = crate::prim::IntParam::PdfMoveChars.idx() as usize;
+        if self.eqtb.int_params[move_chars] > 0 {
+            self.warning_at("Primitive \\pdfmovechars is obsolete.", None);
+            self.eqtb.int_params[move_chars] = 0; // warn only once
+        }
+        ff
+    }
+
+    /// `scan_font_ident` + the font checks of `\pdffontname`,
+    /// `\pdffontobjnum` and `\pdfincludechars` (pdf_error is fatal).
+    fn scan_pdf_font(&mut self, command: &str) -> Option<u16> {
+        let source = self.current_token_source_mark();
+        let f = self.scan_font_id();
+        let fatal = |eng: &mut Engine, message: &str| {
+            eng.fatal_error_at(message, source.as_ref().map(crate::input::SourceMark::to_context));
+        };
+        if f == 0 {
+            fatal(self, &format!("pdfTeX error (font): invalid font identifier for {command}"));
+            return None;
+        }
+        let font = &self.eqtb.fonts[f as usize];
+        if self
+            .font_loader
+            .vf_fonts
+            .contains_key(&(font.tfm_name.clone(), font.at_size))
+        {
+            fatal(self, &format!("pdfTeX error (font): {command} cannot be used with virtual font"));
+            return None;
+        }
+        Some(f)
+    }
+
+    /// `\pdffontname <font>`: the number `n` of the font's `/F<n>` resource.
+    pub(crate) fn pdf_font_name(&mut self) -> Option<i32> {
+        let f = self.scan_pdf_font("\\pdffontname")?;
+        Some(i32::from(self.pdf_init_font(f)))
+    }
+
+    /// `\pdffontobjnum <font>`: the object number of the font dictionary.
+    pub(crate) fn pdf_font_objnum(&mut self) -> Option<i32> {
+        let f = self.scan_pdf_font("\\pdffontobjnum")?;
+        let ff = self.pdf_init_font(f);
+        if let Some(&obj) = self.pdf_backend.font_objs.get(&ff) {
+            return Some(obj);
+        }
+        let obj = self.alloc_pdf_obj();
+        self.pdf_backend.font_objs.insert(ff, obj);
+        Some(obj)
+    }
+
+    /// `\pdfpageref <page>`: the page object number (`get_obj(obj_type_page)`),
+    /// fixed now even when the page has not been shipped yet.
+    pub(crate) fn pdf_page_ref(&mut self) -> Option<i32> {
+        let (page, source) = self.scan_int_with_source();
+        if page <= 0 {
+            self.fatal_error_at("pdfTeX error (pageref): invalid page number", source);
+            return None;
+        }
+        if let Some(&obj) = self.pdf_backend.page_objs.get(&page) {
+            return Some(obj);
+        }
+        let obj = self.alloc_pdf_obj();
+        self.pdf_backend.page_objs.insert(page, obj);
+        Some(obj)
+    }
+
+    /// `\pdfxformname <object>`: the `n` of the form's `/Fm<n>` resource.
+    pub(crate) fn pdf_xform_name(&mut self) -> Option<i32> {
+        let (obj, source) = self.scan_int_with_source();
+        match self.pdf_doc.form_names.get(&obj) {
+            Some(&name) => Some(name),
+            None => {
+                self.fatal_error_at("pdfTeX error (ext1): cannot find referenced object", source);
+                None
+            }
+        }
+    }
+
+    /// `\pdfincludechars <font> {<chars>}`: subset these characters into
+    /// the font even when no page shows them.
+    pub(crate) fn do_pdfincludechars(&mut self) {
+        let Some(f) = self.scan_pdf_font("\\pdfincludechars") else {
+            return;
+        };
+        self.pdf_init_font(f);
+        let toks = self.scan_general_text_expanded();
+        for byte in self.tokens_to_bytes(&toks) {
+            self.pdf_doc.record_font_char(f as usize, byte);
+        }
+    }
+
+    /// `\pdftrailer {<keys>}`: extra trailer dictionary entries.
+    pub(crate) fn do_pdftrailer(&mut self) {
+        let toks = self.scan_general_text_expanded();
+        let text = self.tokens_to_bytes(&toks);
+        if self.pdf_int(crate::prim::IntParam::PdfOutput) > 0 {
+            self.pdf_doc.trailer_extra.extend_from_slice(&text);
+        }
+    }
+
+    /// `\pdfspacefont {<tfm>}`: the font for faked interword spaces.
+    pub(crate) fn do_pdfspacefont(&mut self) {
+        let toks = self.scan_general_text_expanded();
+        let name = self.tokens_to_bytes(&toks);
+        self.pdf_backend.space_font_name = String::from_utf8_lossy(&name).into_owned();
+    }
+
+    /// pdftex.web `make_font_copy`: `\pdfcopyfont <cs> = <font>` defines a
+    /// new internal font with the TFM data, current parameters and hyphen
+    /// and skew characters of `<font>` (for a separate `\pdffontexpand`).
+    pub(crate) fn do_pdfcopyfont(&mut self) {
+        let global = self.take_global();
+        self.clear_prefixes();
+        let u = self.scan_definable_cs();
+        self.eqtb.assign(u, crate::eqtb::Equiv::FontRef(0), global);
+        self.scan_optional_equals();
+        let source = self.current_token_source_mark();
+        let f = self.scan_font_id();
+        let x = &self.eqtb.expand[f as usize];
+        if x.ratio != 0 || x.step != 0 {
+            self.fatal_error_at(
+                "pdfTeX error (\\pdfcopyfont): cannot copy an expanded font",
+                source.as_ref().map(crate::input::SourceMark::to_context),
+            );
+            return;
+        }
+        if self.font_loader.is_tracked_font(f) {
+            self.fatal_error_at(
+                "pdfTeX error (\\pdfcopyfont): cannot copy a letterspaced font",
+                source.as_ref().map(crate::input::SourceMark::to_context),
+            );
+            return;
+        }
+        let font = self.eqtb.fonts[f as usize].clone();
+        let k = self.push_engine_font(font, u);
+        let k = k as usize;
+        let f = f as usize;
+        self.eqtb.font_params[k] = self.eqtb.font_params[f].clone();
+        self.eqtb.font_param_levels[k] = vec![1; self.eqtb.font_params[k].len()];
+        self.eqtb.hyphen_char[k] = self.eqtb.hyphen_char[f];
+        self.eqtb.skew_char[k] = self.eqtb.skew_char[f];
+        self.eqtb.assign(u, crate::eqtb::Equiv::FontRef(k as u16), global);
+    }
+}
+
+/// writeimg.c `image_colordepth` for `\pdflastximagecolordepth`: the PNG
+/// bit depth or JPEG sample precision; 0 for PDF (and other) inclusions.
+pub(crate) fn image_color_depth(bytes: &[u8]) -> i32 {
+    if bytes.len() > 24 && bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        return i32::from(bytes[24]);
+    }
+    if bytes.starts_with(&[0xff, 0xd8]) {
+        let mut at = 2;
+        while at + 4 < bytes.len() && bytes[at] == 0xff {
+            let marker = bytes[at + 1];
+            let len = usize::from(u16::from_be_bytes([bytes[at + 2], bytes[at + 3]]));
+            if (0xc0..=0xcf).contains(&marker) && !matches!(marker, 0xc4 | 0xc8 | 0xcc) {
+                return bytes.get(at + 4).map_or(0, |&p| i32::from(p));
+            }
+            at += 2 + len;
+        }
+    }
+    0
 }

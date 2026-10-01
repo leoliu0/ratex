@@ -1415,3 +1415,77 @@ fn link_rectangles_follow_pdftex_running_links() {
     );
     assert_eq!(borders, 3);
 }
+
+/// pdfTeX backend primitives against `pdftex -ini` (TeX Live 2026) on the
+/// same source: `\pdffontname` follows pdf_init_font sharing (first
+/// initialized font of a TFM owns the resource; `\pdfcopyfont` copies share
+/// it), `\pdfpageref` names the page object of that page, `\pdftrailer`
+/// extends the trailer, `\pdfomitinfodict`/`\pdfomitprocset` drop /Info and
+/// /ProcSet, `\pdfincludechars` writes the font with those glyphs, a `+`
+/// map line for an already mapped TFM warns once (then suppressed by
+/// `\pdfsuppresswarningdupmap`), and IniTeX parameter defaults.
+#[test]
+fn pdftex_backend_primitives_match_pdftex() {
+    let dir_buf = std::env::temp_dir().join(format!("pdf_backend_{}", std::process::id()));
+    std::fs::create_dir_all(&dir_buf).unwrap();
+    let dir = dir_buf.to_string_lossy().replace('\\', "/");
+    let image = dir_buf.join("px.png");
+    write_one_pixel_png(&image);
+    let source = r#"\catcode`\{=1 \catcode`\}=2 \pdfoutput=1
+\immediate\openout15=backend.out
+\font\a=cmr10 \font\b=cmr10 at 12pt \font\c=cmbx10 \hyphenchar\c=7 \pdfmovechars=1
+\immediate\write15{N:\pdffontname\b,\pdffontname\a,\pdffontname\c}
+\pdfcopyfont\d=\c \hyphenchar\d=1
+\immediate\write15{C:\fontname\d,\ifx\c\d same\else diff\fi,\the\hyphenchar\c,\the\hyphenchar\d,\pdffontname\d}
+\pdfximage{IMAGE}\immediate\write15{D:\the\pdflastximagecolordepth}
+\immediate\write15{V:\the\pdfimageresolution,\the\pdfgamma,\the\pdfimagegamma,\the\pdfimagehicolor,\the\pdfpagebox}
+\pdftrailer{/RatexProbe (yes)}\pdfomitinfodict=1 \pdfomitprocset=1
+\pdfincludechars\c{AB}
+\pdfmapline{+cmr10 CMR10 <cmr10.pfb}\pdfsuppresswarningdupmap=1 \pdfmapline{+cmr10 CMR10 <cmr10.pfb}
+\immediate\write15{P:\pdfpageref2}
+\shipout\hbox{\a A}\shipout\hbox{\b B}
+\immediate\write15{M:\the\pdfmovechars}
+\immediate\closeout15
+\end"#
+        .replace("IMAGE", &image.to_string_lossy().replace('\\', "/"));
+    let mut e = Engine::new(true);
+    e.init_primitives();
+    e.add_nullfont();
+    e.out_dir = format!("{dir}/");
+    e.input.push_file("backend.tex".to_string(), source.into_bytes());
+    e.run();
+    assert_eq!(e.error_count, 0, "{}", e.term);
+    let out = std::fs::read_to_string(dir_buf.join("backend.out")).expect("backend.out");
+    let lines: Vec<&str> = out.lines().map(str::trim).collect();
+    // pdfTeX prints P:5; object numbering differs, so the number is checked
+    // against the written page tree below instead.
+    assert!(lines.len() == 6 && lines[4].starts_with("P:"), "{lines:?}");
+    assert_eq!(
+        [lines[0], lines[1], lines[2], lines[3], lines[5]],
+        ["N:2,2,3", "C:cmbx10,diff,7,1,3", "D:8", "V:72,1000,2200,1,0", "M:0"]
+    );
+    assert_eq!(e.log.matches("already exists, duplicates ignored").count(), 1, "{}", e.log);
+    assert_eq!(e.log.matches("Primitive \\pdfmovechars is obsolete.").count(), 1);
+
+    let bytes = tex_core::driver::finish_pdf(&mut e, false).expect("PDF finalization");
+    let pdf = lopdf::Document::load_mem(&bytes).expect("valid PDF");
+    // \pdfpageref 2 is the object number of the second page
+    let page_ref: u32 = lines[4].strip_prefix("P:").unwrap().parse().unwrap();
+    let pages: Vec<_> = pdf.get_pages().into_values().collect();
+    assert_eq!(pages[1], (page_ref, 0));
+    assert_eq!(
+        pdf.trailer.get(b"RatexProbe").and_then(lopdf::Object::as_str).ok(),
+        Some(&b"yes"[..])
+    );
+    assert!(pdf.trailer.get(b"Info").is_err(), "\\pdfomitinfodict keeps /Info");
+    assert!(!bytes.windows(8).any(|w| w == b"/ProcSet"));
+    let base_fonts: std::collections::BTreeSet<String> = pdf
+        .objects
+        .values()
+        .filter_map(|object| object.as_dict().ok())
+        .filter_map(|dict| dict.get(b"BaseFont").ok()?.as_name().ok())
+        .map(|name| String::from_utf8_lossy(name).split('+').last().unwrap().to_string())
+        .collect();
+    assert_eq!(base_fonts, ["CMBX10".to_string(), "CMR10".to_string()].into());
+    std::fs::remove_dir_all(dir_buf).unwrap();
+}

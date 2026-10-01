@@ -562,6 +562,10 @@ impl Engine {
             attr_extra: ctx.eng.pdf_page_attr.as_bytes().to_vec(),
             resources_extra: ctx.eng.pdf_page_resources.clone(),
             display_list: Some(std::mem::take(&mut ctx.display_list)),
+            // "Generate ProcSet if desired" (PDF 1.x: unless \pdfomitprocset > 0)
+            procset: ctx.eng.eqtb.int_params
+                [crate::prim::IntParam::PdfOmitProcset.idx() as usize]
+                <= 0,
         }
     }
 
@@ -1369,6 +1373,8 @@ impl<'a> RenderCtx<'a> {
     }
 
     fn ensure_font(&mut self, f: u16, binding: crate::pdfout::FontBinding) -> u16 {
+        // pdf_set_font: `if not font_used[f] then pdf_init_font(f)`
+        self.eng.pdf_init_font(f);
         let f = binding.resource_key(f);
         if self.cur_font == f && self.cur_pdf_font != 0 {
             return self.cur_pdf_font;
@@ -2544,6 +2550,10 @@ impl<'a> RenderCtx<'a> {
             }
             CjkText(text) => {
                 self.cjk_text = *text;
+            }
+            // pdftex.web hlist/vlist out: `gen_running_link := on`
+            PdfRunningLink(on) => {
+                self.eng.pdf_doc.gen_running_link = *on;
             }
             _ => {}
         }

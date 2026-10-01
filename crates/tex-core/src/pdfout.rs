@@ -99,6 +99,8 @@ pub struct PdfPage {
     /// raw dict entries contributed by \pdfpageresources (copied at shipout)
     pub resources_extra: Vec<u8>,
     pub display_list: Option<crate::boxes::DisplayList>,
+    /// pdfTeX "Generate ProcSet if desired" (`\pdfomitprocset` at shipout)
+    pub procset: bool,
 }
 
 pub struct PdfDoc {
@@ -147,8 +149,21 @@ pub struct PdfDoc {
     /// pdfTeX `pdf_link_stack`: open \pdfstartlink regions, which persist
     /// across boxes and pages until \pdfendlink.
     pub(crate) link_stack: Vec<OpenLink>,
-    /// pdfTeX `gen_running_link` (\pdfrunninglinkoff/on)
+    /// pdfTeX `gen_running_link` (\pdfrunninglinkoff/on), persistent across pages.
     pub(crate) gen_running_link: bool,
+    /// pdfTeX resource names: form XObject number → `n` of `/Fm<n>`.
+    pub(crate) form_names: std::collections::BTreeMap<i32, i32>,
+    /// `\pdftrailer` entries for the trailer dictionary.
+    pub(crate) trailer_extra: Vec<u8>,
+    /// `\pdfomitinfodict`: no document information dictionary.
+    pub(crate) omit_info_dict: bool,
+    /// `\pdfomitcharset`: no /CharSet in Type 1 font descriptors.
+    pub(crate) omit_charset: bool,
+    /// `\pdfpageref`: object numbers fixed for pages (0-based index).
+    pub(crate) page_objnums: std::collections::BTreeMap<usize, i32>,
+    /// Highest object number the engine reserved; the writer numbers its
+    /// own objects after it.
+    pub(crate) reserved_objects: i32,
 }
 
 /// One `pdf_link_stack` record: the link's box nesting level, its width,
@@ -321,6 +336,12 @@ impl PdfDoc {
             legacy_bindings: std::collections::BTreeMap::new(),
             mag: 0,
             link_stack: Vec::new(),
+            form_names: std::collections::BTreeMap::new(),
+            trailer_extra: Vec::new(),
+            omit_info_dict: false,
+            omit_charset: false,
+            page_objnums: std::collections::BTreeMap::new(),
+            reserved_objects: 0,
             gen_running_link: true,
         }
     }

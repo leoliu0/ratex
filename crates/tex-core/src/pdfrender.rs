@@ -6,7 +6,7 @@ use crate::boxes::{leader_dims, LeaderBody, Node, NodeList, HBOX};
 use crate::build::RULE_FILL;
 use crate::engine::Engine;
 use crate::pdfout::{Annot, PdfPage};
-use crate::prim::DimParam;
+use crate::prim::{DimParam, IntParam};
 
 /// TeX sp to PDF bp
 #[inline]
@@ -23,7 +23,7 @@ pub fn bp_to_sp(bp: f64) -> i32 {
 const ONE_HUNDRED_BP_SP: i64 = 6_578_176;
 
 /// scaled points per bp (`sp_per_bp`): 72.27 * 65536 / 72.
-const SP_PER_BP: f64 = 72.27 * 65536.0 / 72.0;
+pub(crate) const SP_PER_BP: f64 = 72.27 * 65536.0 / 72.0;
 /// pdfTeX's `divide_scaled`: return the rounded decimal value and the
 /// corresponding displacement on TeX's scaled-point raster.
 fn divide_scaled(mut s: i64, mut m: i64, decimal_digits: u32) -> (i64, i64) {
@@ -86,10 +86,22 @@ pub(crate) fn push_bp_sp(buf: &mut String, sp: i64) -> i64 {
     out
 }
 
+/// pdfTeX /Widths entry in tenths of a glyph-space unit: `divide_scaled(w,
+/// pdf_font_size[f], 4)` (writefont.c `create_charwidth_array`), where
+/// `pdf_font_size` is the at size snapped to 6 decimals of bp
+/// (`pdf_use_font`). Dividing by the raw at size rounds some widths off.
+pub(crate) fn pdf_width_tenths(width: i32, at_size: i32) -> i32 {
+    if at_size == 0 {
+        return 0;
+    }
+    let (_, pdf_font_size) = divide_scaled(at_size as i64, ONE_HUNDRED_BP_SP, 6);
+    divide_scaled(width as i64, pdf_font_size, 4).0 as i32
+}
+
 /// pdfTeX `round_xn_over_d` in i128-safe form: round `x * n / d` half-up on
 /// the magnitude, sign restored.
 #[inline]
-fn round_xn_over_d(x: i64, n: i64, d: i64) -> i64 {
+pub(crate) fn round_xn_over_d(x: i64, n: i64, d: i64) -> i64 {
     let neg = (x < 0) ^ (n < 0);
     let mut a = x as i128 * n as i128;
     if a < 0 {
@@ -341,6 +353,16 @@ mod text_encoding_tests {
         assert_eq!(operands[3].as_i64().unwrap(), 30);
         assert_eq!(operands[4].as_str().unwrap(), b"B");
     }
+
+    /// /Widths divide by pdfTeX's snapped `pdf_font_size`, not the raw at
+    /// size: cmmi10 `G` (515276sp at 10pt) is 786.3 in pdflatex output,
+    /// while 515276/655360 alone rounds to 786.2; SFTI1000 `M` likewise.
+    #[test]
+    fn widths_use_pdftex_snapped_font_size() {
+        assert_eq!(super::pdf_width_tenths(515_276, 655_360), 7863);
+        assert_eq!(super::pdf_width_tenths(327_680, 655_360), 5000);
+        assert_eq!(super::pdf_width_tenths(1, 0), 0);
+    }
 }
 /// pdfTeX `pdf_print_bp` for a bp value: quantize to sp, then print with
 /// `divide_scaled(s, one_hundred_bp, digits+2)` / `pdf_print_real(..., 3)`
@@ -402,6 +424,28 @@ impl Engine {
         }
     }
 
+    /// tex.web `prepare_mag` (§288): the first use freezes \mag for the
+    /// job; a later different value is an error and reverts (globally) to
+    /// the frozen one, an out-of-range value is replaced by 1000.
+    pub fn prepare_mag(&mut self) -> i32 {
+        let mut mag = self.eqtb.int_params[IntParam::Mag.idx() as usize];
+        let mag_set = self.pdf_doc.mag;
+        if mag_set > 0 && mag != mag_set {
+            self.error(&format!(
+                "Incompatible magnification ({mag}); the previous value will be retained ({mag_set})"
+            ));
+            mag = mag_set;
+            self.eqtb.assign_int_param(IntParam::Mag, mag, true);
+        }
+        if !(1..=32768).contains(&mag) {
+            self.error(&format!("Illegal magnification has been changed to 1000 ({mag})"));
+            mag = 1000;
+            self.eqtb.assign_int_param(IntParam::Mag, mag, true);
+        }
+        self.pdf_doc.mag = mag;
+        mag
+    }
+
     /// Render a shipped page box into a PdfPage. Also records
     /// \pdfsavepos results (\pdflastxpos/\pdflastypos) from the last
     /// SavePos node on the page.
@@ -415,7 +459,16 @@ impl Engine {
             self.synctex
                 .record_page_size(page, width_sp as i64, height_sp as i64);
         }
+        let mag = self.prepare_mag();
         let mut ctx = self.new_ctx(height_sp as i64);
+        // pdfTeX "Adjust transformation matrix for the magnification ratio":
+        // the page stream opens with `m 0 0 m 0 0 cm`, m = mag/1000
+        if mag != 1000 {
+            push_decimal(&mut ctx.content, mag as i64, 3);
+            ctx.content.push_str(" 0 0 ");
+            push_decimal(&mut ctx.content, mag as i64, 3);
+            ctx.content.push_str(" 0 0 cm\n");
+        }
         // ship_out's this_box is the shipped box: running rule dimensions
         // at its top level take its width/height/depth (§624, §633)
         if let Node::Box { w, h, d, .. } = page_box {

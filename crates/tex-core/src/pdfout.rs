@@ -135,6 +135,9 @@ pub struct PdfDoc {
     pub minor_version: Option<i32>,
     pub native_bindings: std::collections::BTreeMap<usize, Vec<NativeBindingInfo>>,
     pub legacy_bindings: std::collections::BTreeMap<usize, Vec<LegacyBindingInfo>>,
+    /// pdfTeX `mag_set`: the magnification frozen by the first page output
+    /// (0 = not yet used). Page geometry prints through `pdf_print_mag_bp`.
+    pub mag: i32,
 }
 
 impl PdfDoc {
@@ -288,6 +291,7 @@ impl PdfDoc {
             minor_version: None,
             native_bindings: std::collections::BTreeMap::new(),
             legacy_bindings: std::collections::BTreeMap::new(),
+            mag: 0,
         }
     }
 

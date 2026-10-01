@@ -1280,3 +1280,47 @@ fn mediabox_prints_page_size_like_pdftex() {
     }).collect();
     assert_eq!(boxes, ["/MediaBox [0 0 596.126 279.083]", "/MediaBox [0 0 10 10]"]);
 }
+
+/// pdfTeX applies \mag to page output: the page stream starts with a
+/// `m 0 0 m 0 0 cm` scaling, and the MediaBox, annotation rects and
+/// destinations print through `pdf_print_mag_bp`. A later different \mag is
+/// "Incompatible magnification" and keeps the first. Expected numbers are
+/// /usr/bin/pdftex output for the same input.
+#[test]
+fn magnification_scales_page_geometry_like_pdftex() {
+    for (mag, scale, media, rect, xyz) in [
+        (2000, "2", "0 0 398.506 598.755", "150.575 450.77 170.501 456.946", "160.538 452.762"),
+        (1095, "1.095", "0 0 218.182 327.818", "82.44 246.796 93.349 250.178", "87.895 247.887"),
+    ] {
+        let mut engine = Engine::new(true);
+        engine.init_primitives();
+        engine.add_nullfont();
+        engine.input.push_file(
+            "mag.tex".into(),
+            format!(
+                "\\catcode`\\{{=1 \\catcode`\\}}=2 \\mag={mag}\n\
+                 \\pdfpagewidth=200pt \\pdfpageheight=300.5pt \\pdfhorigin=1in \\pdfvorigin=1in\n\
+                 \\shipout\\vbox{{\\hbox{{\\kern3.3pt\\pdfannot width 10pt height 2.1pt depth 1pt \
+                 {{/Subtype /Text}}\\kern5pt\\pdfdest name{{d}} xyz\\vrule width 2pt height 1pt}}}}\n\
+                 \\mag=1000 \\shipout\\hbox{{}}\n\\end"
+            )
+            .into_bytes(),
+        );
+        engine.run();
+        assert_eq!(engine.error_count, 1);
+        assert_eq!(
+            engine.diagnostics[0].message,
+            format!("Incompatible magnification (1000); the previous value will be retained ({mag})")
+        );
+        let bytes = tex_core::pdffile::write_pdf(&engine.pdf_doc).expect("PDF serialization");
+        let text = String::from_utf8_lossy(&bytes);
+        assert_eq!(text.matches(&format!("/MediaBox [{media}]")).count(), 2, "{mag}");
+        assert!(text.contains(&format!("/Rect [{rect}]")), "{mag}: {text}");
+        assert!(text.contains(&format!("/XYZ {xyz} null")), "{mag}: {text}");
+        let pdf = lopdf::Document::load_mem(&bytes).expect("valid PDF");
+        for page in pdf.get_pages().into_values() {
+            let content = String::from_utf8(pdf.get_page_content(page)).unwrap();
+            assert!(content.starts_with(&format!("{scale} 0 0 {scale} 0 0 cm\n")), "{content}");
+        }
+    }
+}

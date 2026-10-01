@@ -10,6 +10,8 @@ use crate::scaled::ONE;
 use crate::token::{CsId, Token};
 
 pub const RULE_FILL: i32 = i32::MIN; // sentinel: rule dimension from context
+/// box_kinds marker for a \discretionary part group (tex.web disc_group)
+const DISC_GROUP_KIND: u8 = 10;
 
 impl Engine {
     pub fn font_resolver(&self) -> &dyn crate::fonts::FontResolver {
@@ -1092,6 +1094,11 @@ impl Engine {
             }
             return;
         }
+        if kind == DISC_GROUP_KIND {
+            self.cur_list = outer_list;
+            self.build_discretionary(shift, inner, outer_mode);
+            return;
+        }
         // tex.web package(): vboxes are packed against the value of
         let pack = |list: Vec<Node>, target: Option<(i32, bool)>, k: u8| -> boxes::PackResult {
             let (dim, spread) = match target {
@@ -1831,33 +1838,85 @@ impl Engine {
         0
     }
 
+    /// tex.web §1117 append_discretionary: a disc node joins the list and
+    /// its three parts are typeset as restricted-horizontal groups.
     pub fn do_discretionary(&mut self) {
-        let f = self.eqtb.cur_font_val;
-        let toks_to_nodes = |toks: Vec<Token>| -> Vec<Node> {
-            toks.into_iter()
-                .filter_map(|t| {
-                    if t.is_char() {
-                        Some(Node::Char {
-                            c: t.chr() as u8,
-                            font: f,
-                        })
-                    } else {
-                        None
-                    }
-                })
-                .collect()
-        };
-        let pre = toks_to_nodes(self.scan_general_text());
-        let post = toks_to_nodes(self.scan_general_text());
-        let rep = toks_to_nodes(self.scan_general_text());
-        let d = Node::Disc(crate::boxes::DiscNode {
-            pre_break: pre,
-            post_break: post,
-            no_break: rep,
-            // Explicit replacements live here, not in following source nodes.
+        self.flush_native_text();
+        self.cur_list.push(Node::Disc(crate::boxes::DiscNode {
+            pre_break: Vec::new(),
+            post_break: Vec::new(),
+            no_break: Vec::new(),
             replace_count: 0,
-        });
-        self.cur_list.push(d);
+        }));
+        self.begin_disc_part(0);
+    }
+
+    /// `new_save_level(disc_group); scan_left_brace; push_nest;
+    /// mode:=-hmode; space_factor:=1000` for part `part` (0 pre-break,
+    /// 1 post-break, 2 no-break); the part index rides in box_shifts.
+    fn begin_disc_part(&mut self, part: i32) {
+        self.skip_spaces_relax();
+        let t = self.get_x_raw();
+        if !self.token_is_left_brace(t) {
+            self.error("Missing { inserted");
+            self.push_token(t);
+        }
+        self.saved_lists.push((
+            self.mode,
+            std::mem::take(&mut self.cur_list),
+            self.prev_depth,
+            self.space_factor,
+            self.prev_graf,
+        ));
+        self.push_group_level(LevelType::Box);
+        self.box_targets.push(None);
+        self.box_shifts.push(part);
+        self.box_kinds.push(DISC_GROUP_KIND);
+        self.mode = Mode::RestrictedHorizontal;
+        self.space_factor = 1000;
+    }
+
+    /// tex.web §1119-1121 build_discretionary: keep only characters,
+    /// ligatures, boxes, rules and kerns ("Improper discretionary list"
+    /// flushes the rest), store the part in the disc node at the tail and
+    /// open the next part; a nonempty no-break part is illegal in math.
+    fn build_discretionary(&mut self, part: i32, mut list: NodeList, outer_mode: Mode) {
+        // ratex's SyncTeX points are invisible bookkeeping, not list items
+        list.retain(|n| !matches!(n, Node::Whatsit(crate::boxes::WhatIt::SyncPoint { .. })));
+        if let Some(bad) = list.iter().position(|n| {
+            !matches!(
+                n,
+                Node::Char { .. }
+                    | Node::Ligature { .. }
+                    | Node::NativeGlyphRun { .. }
+                    | Node::Box { .. }
+                    | Node::Rule { .. }
+                    | Node::Kern(_)
+                    | Node::ExplicitKern(_)
+            )
+        }) {
+            self.error("Improper discretionary list");
+            list.truncate(bad);
+        }
+        if part == 2 && outer_mode.is_m() && !list.is_empty() {
+            self.error("Illegal math \\discretionary");
+            list.clear();
+        }
+        let Some(Node::Disc(dc)) = self.cur_list.last_mut() else {
+            return;
+        };
+        match part {
+            0 => dc.pre_break = list,
+            1 => dc.post_break = list,
+            _ => dc.no_break = list,
+        }
+        if part < 2 {
+            self.begin_disc_part(part + 1);
+        } else if outer_mode.is_m() {
+            if let Some(disc) = self.cur_list.pop() {
+                self.append_mlist_node(disc);
+            }
+        }
     }
 
     pub fn take_last_box(&mut self) -> Option<Node> {
@@ -2794,5 +2853,42 @@ mod structural_state_tests {
              \\ifdim\\wd1=7pt\\else\\errmessage{b \\the\\wd1}\\fi",
         );
         assert_eq!(engine.error_count, 0, "{}", engine.diagnostic_output);
+    }
+
+    /// tex.web §1117-1121: \discretionary parts are typeset (so \char and
+    /// \hyphenchar work, as in LaTeX's \-), and anything but characters,
+    /// boxes, rules and kerns is an "Improper discretionary list".
+    #[test]
+    fn discretionary_parts_are_typeset_lists() {
+        let mut engine = Engine::new(true);
+        run_in(
+            &mut engine,
+            "\\font\\cmr=cmr10 \\cmr \\hyphenchar\\cmr=45 \
+             \\setbox1\\hbox{a\\discretionary{\\char\\hyphenchar\\font}{}{x}b}\
+             \\ifdim\\wd1=15.83339pt\\else\\errmessage{wd \\the\\wd1}\\fi",
+        );
+        assert_eq!(engine.error_count, 0, "{}", engine.diagnostic_output);
+        let Some(crate::boxes::Node::Box { list, .. }) = engine.eqtb.boxed[1].as_ref() else {
+            panic!("box 1");
+        };
+        let disc = list
+            .iter()
+            .find_map(|n| match n {
+                crate::boxes::Node::Disc(dc) => Some(dc),
+                _ => None,
+            })
+            .expect("disc node");
+        assert!(matches!(disc.pre_break[..], [crate::boxes::Node::Char { c: 45, .. }]));
+        assert!(disc.post_break.is_empty());
+        assert!(matches!(disc.no_break[..], [crate::boxes::Node::Char { c: b'x', .. }]));
+
+        let mut engine = Engine::new(true);
+        run_in(
+            &mut engine,
+            "\\setbox1\\hbox{\\discretionary{\\hskip1pt}{}{}}\
+             \\ifdim\\wd1=0pt\\else\\errmessage{wd \\the\\wd1}\\fi",
+        );
+        assert_eq!(engine.error_count, 1, "{}", engine.diagnostic_output);
+        assert!(engine.diagnostic_output.contains("Improper discretionary list"));
     }
 }

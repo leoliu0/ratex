@@ -173,6 +173,16 @@ pub struct PdfDoc {
     /// Highest object number the engine reserved; the writer numbers its
     /// own objects after it.
     pub(crate) reserved_objects: i32,
+    /// epdf.c's font descriptors for fonts of included PDF files that the
+    /// `\pdfinclusioncopyfonts` = 0 replacement took over.
+    pub imported_fonts: Vec<ImportedFont>,
+    /// pdftoepdf.cc `pdfDocuments`: every included PDF file once, with the
+    /// objects already copied from it, by file name.
+    pub pdf_sources: std::collections::HashMap<String, crate::pdf_images::PdfSource>,
+    /// Parsed Type 1 programs of replacement fonts by file name (None when
+    /// the file does not exist).
+    pub(crate) imported_programs:
+        std::collections::HashMap<String, Option<std::rc::Rc<crate::pdffile::Type1Source>>>,
 }
 
 /// One `pdf_link_stack` record: the link's box nesting level, its width,
@@ -341,6 +351,37 @@ pub struct PdfTexFont {
     pub tounicode: Option<std::rc::Rc<str>>,
 }
 
+/// writefont.c `fd_entry` of a font that epdf's `copyFont` replaced: the
+/// map entry's Type 1 program, written for the glyphs the included font's
+/// /CharSet names. Fonts of one program, slant and extension share it.
+pub struct ImportedFont {
+    /// `fm->ff_name`: the program's file name.
+    pub ff_name: String,
+    /// `fm_slant` and `fm_extend` of the map entry.
+    pub slant: i32,
+    pub extend: i32,
+    pub program: std::rc::Rc<crate::pdffile::Type1Source>,
+    /// `fm->ps_name`.
+    pub base_font: String,
+    /// `is_subsetted(fm)`: the map entry downloads a partial font.
+    pub subsettable: bool,
+    /// `fd->gl_tree`: glyph names of the /CharSet strings so far.
+    pub glyphs: std::collections::BTreeSet<String>,
+    /// `fd->all_glyphs` (`embed_whole_font`): a font without /CharSet.
+    pub all_glyphs: bool,
+    /// `/StemV` of the first included font, rounded.
+    pub stem_v: i32,
+    /// `fd_objnum`, reserved when the descriptor was created.
+    pub desc_obj: i32,
+    /// `fn_objnum` (0 until a font dictionary needs it): the object that
+    /// holds the tagged /BaseFont name.
+    pub name_obj: i32,
+    /// Number of document fonts already initialized when the font was first
+    /// included: it created the shared descriptor, so those initialized
+    /// later find it and preset nothing from their TFM.
+    pub init_order: usize,
+}
+
 impl PdfDoc {
     pub fn new() -> Self {
         PdfDoc {
@@ -374,6 +415,9 @@ impl PdfDoc {
             omit_charset: false,
             page_objnums: std::collections::BTreeMap::new(),
             reserved_objects: 0,
+            imported_fonts: Vec::new(),
+            pdf_sources: std::collections::HashMap::new(),
+            imported_programs: std::collections::HashMap::new(),
             gen_running_link: true,
         }
     }

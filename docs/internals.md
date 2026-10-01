@@ -23,6 +23,8 @@ Typesetting algorithms are documented in the module comments of
 | `format.rs` | `.fmt` dump/load wire format |
 | `node_arena.rs` | generation-checked node storage |
 | `pdffile.rs`, `pdf_fonts.rs` | PDF serialization, Type 1 parsing and embedding |
+| `writet1.rs` | writet1.c port: Type 1 FontFile cleartext/`/Encoding`/eexec/Subrs rewrite, `/Length1-3` |
+| `pdf_images.rs`, `pdf_encodings.rs` | pdftoepdf port: one shared `PdfSource` per included file; with `\pdfinclusioncopyfonts=0` Type 1/Type1C fonts the font map knows are replaced by the map's program (xpdf base-encoding tables) |
 | `diagnostics.rs` | structured diagnostics and their output bounds |
 
 ## Executables and dispatch

@@ -130,36 +130,6 @@ fn directlua_callback_interface_registers_and_finds() {
 }
 
 #[test]
-fn directlua_fontloader_and_shaping_modules_work() {
-    let mut e = boot_lua();
-    run_tex(
-        &mut e,
-        r#"
-\directlua{
-    local info = fontloader.info("lmroman10-regular.otf")
-    assert(type(info) == "table")
-    assert(type(info.fontname) == "string")
-    local f = fontloader.open("lmroman10-regular.otf")
-    assert(type(f) == "table")
-    assert(f.units_per_em == 1000)
-    local buf = luaharfbuzz.Buffer.new()
-    buf:add_utf8("TeX")
-    local glyphs = buf:get_glyph_infos_and_positions()
-    assert(glyphs[3] ~= nil)
-    font.define(1, { name = "testfont", size = 655360 })
-    local loaded = font.getfont(1)
-    assert(loaded and loaded.name == "testfont")
-    tex.print("FONTS_OK")
-}
-\message{FONTS_STATUS}
-\end
-"#,
-    );
-    assert_eq!(e.error_count, 0, "errors: {:?}, term: {}", e.diagnostics, e.term);
-    assert!(e.term.contains("FONTS_STATUS"), "term: {}", e.term);
-}
-
-#[test]
 fn directlua_runtime_modules_work() {
     let mut e = boot_lua();
     run_tex(

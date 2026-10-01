@@ -1,12 +1,13 @@
+use std::cmp::Ordering;
+
 use crate::{LuaResult, LuaValue, lua_vm::LuaState};
 
 /// table.sort(list [, comp]) - Sort table in place
 ///
-/// Optimization strategy:
-/// 1. Extract elements to Vec using raw array access (O(n) instead of O(n log n) table lookups)
-/// 2. For default comparison with homogeneous types: use Rust's built-in pdqsort (sort_unstable_by)
-/// 3. For custom comparators or mixed types: fallible introsort (quicksort + insertion sort + heapsort)
-/// 4. Write back to table using raw array access
+/// 1. Extract elements to a Vec (raw access unless the table has a metatable)
+/// 2. Default `<` on integers, strings or non-NaN numbers: Rust's sort (a total order)
+/// 3. Otherwise: ltablib's quicksort, comparison for comparison
+/// 4. Write the elements back
 pub fn table_sort(l: &mut LuaState) -> LuaResult<usize> {
     let table_val = l
         .get_arg(1)
@@ -31,12 +32,13 @@ pub fn table_sort(l: &mut LuaState) -> LuaResult<usize> {
         return Ok(0);
     }
 
-    let has_comp = comp.is_some() && !comp.as_ref().map(|v| v.is_nil()).unwrap_or(true);
-    let comp_func = if has_comp {
-        comp.unwrap()
-    } else {
-        LuaValue::nil()
-    };
+    let comp_func = comp.unwrap_or_default();
+    let has_comp = !comp_func.is_nil();
+    if has_comp && !comp_func.is_function() {
+        return Err(crate::stdlib::debug::arg_typeerror(
+            l, 2, "function", &comp_func,
+        ));
+    }
 
     let n = len as usize;
 
@@ -105,66 +107,65 @@ fn sort_buffer(
         return Ok(());
     }
 
-    // === Fast paths for default comparison with homogeneous types ===
-    // These use Rust's built-in pdqsort (sort_unstable_by) which is O(n) for
-    // sorted/reverse-sorted data and highly optimized with branch-free partitioning.
+    // === Fast paths for the default `<` on numbers and strings ===
+    // `sort_unstable_by` needs a total order (Rust >= 1.81 may panic otherwise), so
+    // these paths are taken only when the comparison is exact and total: no NaN.
     if !has_comp {
-        let first_tt = buf[0].tt();
-
-        if buf.iter().all(|v| v.tt() == first_tt) {
-            // All integers — most common case
-            if buf[0].is_integer() {
-                buf.sort_unstable_by(|a, b| {
-                    let ia = a.ivalue();
-                    let ib = b.ivalue();
-                    ia.cmp(&ib)
-                });
-                return Ok(());
-            }
-
-            // All floats
-            if buf[0].is_float() {
-                buf.sort_unstable_by(|a, b| {
-                    let fa = a.fltvalue();
-                    let fb = b.fltvalue();
-                    fa.partial_cmp(&fb).unwrap_or(std::cmp::Ordering::Equal)
-                });
-                return Ok(());
-            }
-
-            // All strings
-            if buf[0].is_string() {
-                buf.sort_unstable_by(|a, b| {
-                    let sa = a.as_bytes().unwrap_or(&[]);
-                    let sb = b.as_bytes().unwrap_or(&[]);
-                    sa.cmp(sb)
-                });
-                return Ok(());
-            }
+        if buf.iter().all(|v| v.is_integer()) {
+            buf.sort_unstable_by_key(|v| v.ivalue());
+            return Ok(());
         }
-
-        // Mixed numeric types (int + float)
-        if buf.iter().all(|v| v.is_integer() || v.is_float()) {
+        if buf.iter().all(|v| v.is_string()) {
             buf.sort_unstable_by(|a, b| {
-                let na = a.as_number().unwrap_or(0.0);
-                let nb = b.as_number().unwrap_or(0.0);
-                na.partial_cmp(&nb).unwrap_or(std::cmp::Ordering::Equal)
+                a.as_bytes().unwrap_or(&[]).cmp(b.as_bytes().unwrap_or(&[]))
             });
+            return Ok(());
+        }
+        if buf
+            .iter()
+            .all(|v| v.is_integer() || (v.is_float() && !v.fltvalue().is_nan()))
+        {
+            buf.sort_unstable_by(num_cmp);
             return Ok(());
         }
     }
 
-    // === General case: fallible introsort ===
-    // Used for custom comparators or mixed/incomparable types
-    let max_depth = (usize::BITS - n.leading_zeros()) as usize * 2; // ~2 * log2(n)
-    introsort(l, buf, 0, n - 1, max_depth, comp_func, has_comp)
+    // === General case: ltablib's quicksort ===
+    auxsort(l, buf, 0, n - 1, 0, comp_func, has_comp)
+}
+
+/// Exact total order on non-NaN Lua numbers (mixed integers and floats).
+fn num_cmp(a: &LuaValue, b: &LuaValue) -> Ordering {
+    match (a.is_integer(), b.is_integer()) {
+        (true, true) => a.ivalue().cmp(&b.ivalue()),
+        (false, false) => a.fltvalue().partial_cmp(&b.fltvalue()).unwrap_or(Ordering::Equal),
+        (true, false) => int_float_cmp(a.ivalue(), b.fltvalue()),
+        (false, true) => int_float_cmp(b.ivalue(), a.fltvalue()).reverse(),
+    }
+}
+
+/// Compare an integer with a non-NaN float without rounding the integer.
+fn int_float_cmp(i: i64, f: f64) -> Ordering {
+    // 2^63 is exactly representable; every i64 is below it and >= -2^63.
+    if f >= 9223372036854775808.0 {
+        return Ordering::Less;
+    }
+    if f < -9223372036854775808.0 {
+        return Ordering::Greater;
+    }
+    let fl = f.floor();
+    match i.cmp(&(fl as i64)) {
+        Ordering::Equal if f > fl => Ordering::Less,
+        o => o,
+    }
 }
 
 // ============================================================
-// Fallible Introsort Implementation
-// Quicksort + Heapsort fallback
-// Matches C Lua 5.5's sort semantics (invalid order detection)
-// All comparisons return Result to propagate Lua errors
+// Port of ltablib.c's quicksort (auxsort/partition/choosePivot).
+// The comparison sequence matches C Lua, so comparators that are not strict
+// weak orders behave the same way: either some permutation or the error
+// "invalid order function for sorting". No comparator can cause a panic:
+// every index stays within [lo, up].
 // ============================================================
 
 /// Compare two values: returns Ok(true) if a < b.
@@ -183,215 +184,118 @@ fn sort_compare(
     }
 }
 
-/// Sort 3 elements at positions lo, mid, hi (median-of-3 for pivot selection).
-/// Also handles n<=2 and n<=3 base cases.
-#[inline]
-fn sort3(
-    l: &mut LuaState,
-    buf: &mut [LuaValue],
-    lo: usize,
-    mid: usize,
-    hi: usize,
-    comp_func: &LuaValue,
-    has_comp: bool,
-) -> LuaResult<()> {
-    if sort_compare(l, buf[mid], buf[lo], comp_func, has_comp)? {
-        buf.swap(lo, mid);
-    }
-    if sort_compare(l, buf[hi], buf[mid], comp_func, has_comp)? {
-        buf.swap(mid, hi);
-        if sort_compare(l, buf[mid], buf[lo], comp_func, has_comp)? {
-            buf.swap(lo, mid);
-        }
-    }
-    Ok(())
+/// Partitions above this size choose a randomized pivot (C: RANLIMIT).
+const RANLIMIT: usize = 100;
+
+/// C: choosePivot. `rnd` is 0 until an unbalanced partition is seen.
+fn choose_pivot(lo: usize, up: usize, rnd: usize) -> usize {
+    let r4 = (up - lo) / 4;
+    rnd % (r4 * 2) + (lo + r4)
 }
 
-/// Hoare-style partition with median-of-3 pivot.
-/// Matches C Lua 5.5's partition() from ltablib.c.
-/// Precondition: buf[lo] <= buf[mid] <= buf[hi] (from sort3).
-/// Returns the final pivot position.
+/// C: l_randomizePivot (clock() + time() mixed). Any value works; it only
+/// defends against adversarial inputs.
+fn randomize_pivot() -> usize {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as usize)
+        .unwrap_or(0);
+    nanos ^ (nanos >> 17)
+}
+
+/// C: partition. Precondition: a[lo] <= P == a[up - 1] <= a[up].
 fn partition(
     l: &mut LuaState,
     buf: &mut [LuaValue],
     lo: usize,
-    hi: usize,
+    up: usize,
     comp_func: &LuaValue,
     has_comp: bool,
 ) -> LuaResult<usize> {
-    let mid = lo + (hi - lo) / 2;
-
-    // Sort lo, mid, hi — median goes to mid position
-    sort3(l, buf, lo, mid, hi, comp_func, has_comp)?;
-
-    if hi - lo <= 2 {
-        return Ok(mid);
-    }
-
-    let pivot = buf[mid];
-    // Move pivot to hi-1 (out of the way)
-    buf.swap(mid, hi - 1);
-
-    // Match C Lua's partition exactly:
-    // i starts at lo (will be pre-incremented), j starts at hi-1 (will be pre-decremented)
     let mut i = lo;
-    let mut j = hi - 1;
-
+    let mut j = up - 1;
+    let pivot = buf[up - 1];
     loop {
-        // Left scan: increment then compare, find buf[i] >= pivot
+        // next loop: repeat ++i while a[i] < P
         loop {
             i += 1;
             if !sort_compare(l, buf[i], pivot, comp_func, has_comp)? {
                 break;
             }
-            // buf[i] < pivot, but if i reached the pivot position, that means
-            // pivot < pivot which is an invalid ordering
-            if i == hi - 1 {
+            if i == up - 1 {
                 return Err(l.error("invalid order function for sorting".to_string()));
             }
         }
-        // Right scan: decrement then compare, find buf[j] <= pivot
+        // after the loop, a[i] >= P and a[lo .. i - 1] < P
+        // next loop: repeat --j while P < a[j]
         loop {
             j -= 1;
             if !sort_compare(l, pivot, buf[j], comp_func, has_comp)? {
                 break;
             }
-            // pivot < buf[j], but j went past i which contradicts left scan result
+            // j < i but a[j] > P: also, j reaching lo means a[lo] > P
             if j < i {
                 return Err(l.error("invalid order function for sorting".to_string()));
             }
         }
-
+        // after the loop, a[j] <= P and a[j + 1 .. up] >= P
         if j < i {
-            break;
+            // no elements to be exchanged: swap pivot (a[up - 1]) with a[i]
+            buf.swap(up - 1, i);
+            return Ok(i);
         }
         buf.swap(i, j);
     }
-
-    // Move pivot to its final position
-    buf.swap(i, hi - 1);
-    Ok(i)
 }
 
-/// Heapsort fallback — guarantees O(n log n) worst case.
-/// Used when quicksort recursion depth exceeds the limit.
-fn heapsort(
-    l: &mut LuaState,
-    buf: &mut [LuaValue],
-    lo: usize,
-    hi: usize,
-    comp_func: &LuaValue,
-    has_comp: bool,
-) -> LuaResult<()> {
-    let n = hi - lo + 1;
-    if n <= 1 {
-        return Ok(());
-    }
-
-    // Build max-heap (sift down from n/2 to 0)
-    for i in (0..n / 2).rev() {
-        sift_down(l, buf, lo, i, n, comp_func, has_comp)?;
-    }
-
-    // Extract elements from heap
-    for end in (1..n).rev() {
-        buf.swap(lo, lo + end);
-        sift_down(l, buf, lo, 0, end, comp_func, has_comp)?;
-    }
-    Ok(())
-}
-
-/// Sift down element at position `pos` in the heap rooted at `lo` with `n` elements.
-fn sift_down(
-    l: &mut LuaState,
-    buf: &mut [LuaValue],
-    lo: usize,
-    mut pos: usize,
-    n: usize,
-    comp_func: &LuaValue,
-    has_comp: bool,
-) -> LuaResult<()> {
-    loop {
-        let left = 2 * pos + 1;
-        if left >= n {
-            break;
-        }
-        let right = left + 1;
-        let mut largest = pos;
-
-        if sort_compare(l, buf[lo + largest], buf[lo + left], comp_func, has_comp)? {
-            largest = left;
-        }
-        if right < n && sort_compare(l, buf[lo + largest], buf[lo + right], comp_func, has_comp)? {
-            largest = right;
-        }
-        if largest == pos {
-            break;
-        }
-        buf.swap(lo + pos, lo + largest);
-        pos = largest;
-    }
-    Ok(())
-}
-
-/// Introsort: quicksort with depth limit.
-/// Matches C Lua 5.5's auxsort behavior:
-/// - n <= 1: nothing
-/// - n == 2: compare and swap
-/// - n == 3: sort3
-/// - n >= 4: sort3 + partition + recurse (invalid order detected here)
-///   Falls back to heapsort when recursion is too deep (O(n log n) guaranteed).
-fn introsort(
+/// C: auxsort.
+fn auxsort(
     l: &mut LuaState,
     buf: &mut [LuaValue],
     mut lo: usize,
-    mut hi: usize,
-    mut depth_limit: usize,
+    mut up: usize,
+    mut rnd: usize,
     comp_func: &LuaValue,
     has_comp: bool,
 ) -> LuaResult<()> {
-    while lo < hi {
-        let n = hi - lo + 1;
-
-        // n == 2: compare and swap
-        if n == 2 {
-            if sort_compare(l, buf[hi], buf[lo], comp_func, has_comp)? {
-                buf.swap(lo, hi);
-            }
-            return Ok(());
+    while lo < up {
+        // sort elements 'lo', 'p', and 'up'
+        if sort_compare(l, buf[up], buf[lo], comp_func, has_comp)? {
+            buf.swap(lo, up);
         }
-
-        // n == 3: sort3
-        if n == 3 {
-            let mid = lo + 1;
-            sort3(l, buf, lo, mid, hi, comp_func, has_comp)?;
-            return Ok(());
+        if up - lo == 1 {
+            break; // only 2 elements
         }
-
-        // n >= 4: use partition (which detects invalid order functions)
-        // Depth limit exceeded: fall back to heapsort (O(n log n) guaranteed)
-        if depth_limit == 0 {
-            return heapsort(l, buf, lo, hi, comp_func, has_comp);
+        let p = if up - lo < RANLIMIT || rnd == 0 {
+            (lo + up) / 2
+        } else {
+            choose_pivot(lo, up, rnd)
+        };
+        if sort_compare(l, buf[p], buf[lo], comp_func, has_comp)? {
+            buf.swap(p, lo);
+        } else if sort_compare(l, buf[up], buf[p], comp_func, has_comp)? {
+            buf.swap(p, up);
         }
-        depth_limit -= 1;
-
-        // Partition
-        let p = partition(l, buf, lo, hi, comp_func, has_comp)?;
-
-        // Recurse on smaller partition, tail-call on larger (stack depth = O(log n))
-        if p.saturating_sub(lo) < hi.saturating_sub(p) {
-            if p > lo {
-                introsort(l, buf, lo, p - 1, depth_limit, comp_func, has_comp)?;
-            }
+        if up - lo == 2 {
+            break; // only 3 elements
+        }
+        // swap pivot (a[p]) with a[up - 1]
+        buf.swap(p, up - 1);
+        let p = partition(l, buf, lo, up, comp_func, has_comp)?;
+        // a[lo .. p - 1] <= a[p] == P <= a[p + 1 .. up]
+        let n;
+        if p - lo < up - p {
+            auxsort(l, buf, lo, p - 1, rnd, comp_func, has_comp)?;
+            n = p - lo;
             lo = p + 1;
         } else {
-            if p < hi {
-                introsort(l, buf, p + 1, hi, depth_limit, comp_func, has_comp)?;
-            }
-            if p == 0 {
-                break;
-            }
-            hi = p - 1;
+            auxsort(l, buf, p + 1, up, rnd, comp_func, has_comp)?;
+            n = up - p;
+            up = p - 1;
+        }
+        if (up - lo) / 128 > n {
+            // partition too imbalanced: try a random pivot
+            rnd = randomize_pivot();
         }
     }
     Ok(())

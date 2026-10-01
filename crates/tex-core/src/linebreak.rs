@@ -1801,6 +1801,14 @@ impl Engine {
                                 replace_count: 0,
                             },
                         );
+                        // tex.web §882: the (now empty) disc node stays in the
+                        // line, followed by the transplanted pre-break list
+                        seg.push(Node::Disc(crate::boxes::DiscNode {
+                            pre_break: Vec::new(),
+                            post_break: Vec::new(),
+                            no_break: Vec::new(),
+                            replace_count: 0,
+                        }));
                         for nn in std::mem::take(&mut dc.pre_break) {
                             push_dims(&self.eqtb, nn, &mut seg, &mut nat_w);
                         }
@@ -1824,15 +1832,21 @@ impl Engine {
                     | Node::Penalty(_)
                     | Node::ExplicitKern(_)
                     | Node::MathKern(..) => {
-                        // glue/penalty break node dropped (glue becomes
-                        // \rightskip at packing; explicit-kern break is
-                        // zeroed by tex), a math node is kept with width 0;
-                        // prune discardables at the start of the next line
-                        if let Node::MathKern(_, kind @ 1..) = list[j] {
-                            if texxet {
-                                crate::texxet::lr_adjust(&mut lr, kind);
+                        // glue becomes \rightskip at packing; tex.web §881
+                        // keeps a penalty node as is and a kern or math node
+                        // with width 0 (a math node also adjusts the LR
+                        // stack); discardables at the start of the next line
+                        // are pruned
+                        match &list[j] {
+                            Node::Penalty(p) => break_math = Some(Node::Penalty(*p)),
+                            Node::ExplicitKern(_) => break_math = Some(Node::ExplicitKern(0)),
+                            Node::MathKern(_, kind @ 1..) => {
+                                if texxet {
+                                    crate::texxet::lr_adjust(&mut lr, *kind);
+                                }
+                                break_math = Some(Node::MathKern(0, *kind));
                             }
-                            break_math = Some(Node::MathKern(0, kind));
+                            _ => {}
                         }
                         i = j + 1;
                         while i < list.len() && is_prunable(&list[i]) {

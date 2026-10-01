@@ -48,6 +48,8 @@ mod show_box;
 pub mod synctex;
 pub mod tfm;
 mod texxet;
+pub mod tex_bytes;
+mod tex_print;
 pub mod token;
 
 pub use engine::Engine;

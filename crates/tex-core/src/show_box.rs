@@ -9,7 +9,8 @@ use crate::build::RULE_FILL;
 use crate::engine::{Engine, Mode};
 use crate::prim::IntParam;
 use crate::tfm::FontId;
-use crate::token::{push_printable, Token};
+use crate::tex_bytes::push_printable;
+use crate::token::Token;
 
 /// tex.web keeps the nesting prefix in the string pool and bounds
 /// `depth_threshold` by the pool space left; this is that bound.
@@ -82,13 +83,17 @@ impl<'a> BoxDisplay<'a> {
     pub(crate) fn print_esc(&mut self, s: &str) {
         let esc = self.e.eqtb.int_params[IntParam::EscapeChar.idx() as usize];
         if (0..256).contains(&esc) {
-            push_printable(&mut self.out, &[esc as u8]);
+            push_printable(&self.e.xprn, &mut self.out, &[esc as u8]);
         }
         self.print(s);
     }
 
     fn print_ascii(&mut self, c: u8) {
-        push_printable(&mut self.out, &[c]);
+        if i32::from(c) == self.e.new_line_char() {
+            self.out.push(b'\n');
+        } else {
+            push_printable(&self.e.xprn, &mut self.out, &[c]);
+        }
     }
 
     fn print_rule_dimen(&mut self, d: i32) {
@@ -134,9 +139,9 @@ impl<'a> BoxDisplay<'a> {
         let cs = eqtb.font_cs.get(shown as usize).copied().unwrap_or(0);
         let esc = eqtb.int_params[IntParam::EscapeChar.idx() as usize];
         if (0..256).contains(&esc) {
-            push_printable(&mut self.out, &[esc as u8]);
+            push_printable(&self.e.xprn, &mut self.out, &[esc as u8]);
         }
-        self.out.extend_from_slice(self.e.cs.name(cs));
+        push_printable(&self.e.xprn, &mut self.out, self.e.cs.name(cs));
         let font = eqtb.fonts.get(f as usize);
         if eqtb.int_params[IntParam::PdfTracingFonts.idx() as usize] > 0 {
             self.print(" (");
@@ -182,7 +187,7 @@ impl<'a> BoxDisplay<'a> {
                 break;
             }
             let bytes = self.e.tokens_to_bytes(std::slice::from_ref(t));
-            push_printable(&mut self.out, &bytes);
+            push_printable(&self.e.xprn, &mut self.out, &bytes);
         }
         self.out.push(b'}');
     }
@@ -190,7 +195,7 @@ impl<'a> BoxDisplay<'a> {
     /// print_mark for data Ratex keeps as text rather than tokens.
     fn print_text_mark(&mut self, text: &str) {
         self.out.push(b'{');
-        let bytes = text.as_bytes();
+        let bytes = &*crate::tex_bytes::text_to_bytes(text);
         let start = self.out.len();
         for (i, &b) in bytes.iter().enumerate() {
             if self.out.len() - start >= MARK_LIMIT {
@@ -199,7 +204,7 @@ impl<'a> BoxDisplay<'a> {
                 }
                 break;
             }
-            push_printable(&mut self.out, &[b]);
+            push_printable(&self.e.xprn, &mut self.out, &[b]);
         }
         self.out.push(b'}');
     }
@@ -877,19 +882,10 @@ impl Engine {
         self.saved_lists.last().map_or(0, |frame| frame.5)
     }
 
-    /// Append `text` to the transcript and, when `to_term`, to the terminal,
-    /// starting it on a fresh line of each (tex.web `print_nl`).
-    pub(crate) fn print_nl_diagnostic(&mut self, text: &str, to_term: bool) {
-        if !self.log.is_empty() && !self.log.ends_with('\n') {
-            self.append_log("\n");
-        }
-        self.append_log(text);
-        if to_term {
-            if !self.term.is_empty() && !self.term.ends_with('\n') {
-                self.append_term("\n");
-            }
-            self.append_term(text);
-        }
+    /// tex.web end_diagnostic(true): `print_nl(""); print_ln`.
+    fn end_diagnostic(&mut self, term: bool) {
+        self.tex_print_nl(term, true);
+        self.tex_print_ln(term, true);
     }
 
     /// tex.web begin_diagnostic: the terminal sees diagnostics only when
@@ -901,14 +897,10 @@ impl Engine {
     /// `begin_diagnostic; <display>; end_diagnostic(true)` for a display
     /// built by `body` (which starts with tex.web print_nl semantics).
     pub(crate) fn emit_box_diagnostic(&mut self, display: Vec<u8>) {
-        let mut text = String::from_utf8_lossy(&display).into_owned();
-        // end_diagnostic(true): print_nl(""); print_ln
-        if !text.is_empty() && !text.ends_with('\n') {
-            text.push('\n');
-        }
-        text.push('\n');
-        let to_term = self.diagnostic_to_term();
-        self.print_nl_diagnostic(&text, to_term);
+        let term = self.diagnostic_to_term();
+        self.tex_print_nl(term, true);
+        self.tex_print_printed(term, true, &display);
+        self.end_diagnostic(term);
     }
 
     /// tex.web §1296 `\showbox`: `> \box<n>=` and the box display.
@@ -929,11 +921,15 @@ impl Engine {
     /// tex.web §638 `\tracingoutput`: the shipped box, after the
     /// `Completed box being shipped out [<counts>]` line.
     pub(crate) fn show_shipped_box(&mut self, b: &Node) {
-        let mut head = String::from("\nCompleted box being shipped out [");
+        // print_nl(""); print_ln; print("Completed box being shipped out")
+        self.tex_print_nl(true, true);
+        self.tex_print_ln(true, true);
+        self.tex_print_str(true, true, "Completed box being shipped out");
         let mut j = 9;
         while j > 0 && self.eqtb.count[j] == 0 {
             j -= 1;
         }
+        let mut head = String::new();
         for k in 0..=j {
             head.push_str(&self.eqtb.count[k].to_string());
             if k < j {
@@ -941,7 +937,14 @@ impl Engine {
             }
         }
         head.push(']');
-        self.print_nl_diagnostic(&head, true);
+        let near_edge = self.term_offset > crate::tex_print::MAX_PRINT_LINE - 9;
+        if near_edge {
+            self.tex_print_ln(true, true);
+        } else if self.term_offset > 0 || self.file_offset > 0 {
+            self.tex_print_str(true, true, " ");
+        }
+        self.tex_print_str(true, true, "[");
+        self.tex_print_str(true, true, &head);
         let mut d = BoxDisplay::new(self);
         d.show_box(std::slice::from_ref(b));
         let out = d.out;
@@ -969,26 +972,19 @@ impl Engine {
         let head = std::mem::take(&mut d.out);
         d.show_box(std::slice::from_ref(r));
         let display = d.out;
-        let mut text = String::from("\n");
-        text.push_str(&String::from_utf8_lossy(&head));
-        // the header goes to the transcript; the terminal follows Ratex's
-        // structured-warning policy for box reports
-        self.append_log(&text);
+        // print_ln; the header goes to the transcript; the terminal follows
+        // Ratex's structured-warning policy for box reports
+        self.tex_print_ln(false, true);
+        self.tex_print_printed(false, true, &head);
         self.emit_box_diagnostic_inline(display);
     }
 
     /// `begin_diagnostic; show_box; end_diagnostic(true)` continuing the
     /// current transcript line (no print_nl).
     fn emit_box_diagnostic_inline(&mut self, display: Vec<u8>) {
-        let mut text = String::from_utf8_lossy(&display).into_owned();
-        if !text.ends_with('\n') {
-            text.push('\n');
-        }
-        text.push('\n');
-        self.append_log(&text);
-        if self.diagnostic_to_term() {
-            self.append_term(&text);
-        }
+        let term = self.diagnostic_to_term();
+        self.tex_print_printed(term, true, &display);
+        self.end_diagnostic(term);
     }
 
     /// tex.web §218 show_activities (for `\showlists`).

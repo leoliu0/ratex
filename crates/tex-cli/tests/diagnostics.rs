@@ -2714,7 +2714,7 @@ fn pdffilemoddate_formats_the_file_mtime_like_pdftex() {
 }
 
 /// pdflatex options from `pdflatex --help` are accepted with their pdfTeX
-/// meaning; DVI-, TCX-, encTeX- and MLTeX-only options fail clearly.
+/// meaning; DVI-, encTeX- and MLTeX-only options fail clearly.
 #[test]
 fn web2c_command_line_options_are_accepted_or_clearly_rejected() {
     let job = Job::new("web2c-options");
@@ -2732,13 +2732,50 @@ fn web2c_command_line_options_are_accepted_or_clearly_rejected() {
     assert!(text(&output.stdout).contains("RAN"));
     for (option, message) in [
         ("-output-format=dvi", "Ratex writes PDF only"),
-        ("-translate-file=cp227.tcx", "-translate-file is not supported"),
         ("-enc", "-enc is not supported"),
         ("-mltex", "-mltex is not supported"),
     ] {
         let output = run_pdflatex(&job, &["-ini", option, "main.tex"], &[]);
         assert_eq!(output.status.code(), Some(2), "{option}: {}", failure_output(&output));
         assert!(text(&output.stderr).contains(message), "{}", failure_output(&output));
+    }
+}
+
+/// 8-bit input prints byte for byte as `pdftex -ini -etex` does (TeX Live
+/// 2026): `^^` notation without a TCX file, raw bytes with `-8bit`, and
+/// cp227.tcx's printable set (bytes 128-255 and tab, not form feed) with
+/// `-translate-file`. The terminal and the transcript agree.
+#[test]
+fn eight_bit_text_prints_like_tex_live_on_terminal_and_in_the_log() {
+    let job = Job::new("eight-bit-output");
+    std::fs::write(
+        job.dir.join("main.tex"),
+        b"\\catcode`\\{=1 \\catcode`\\}=2 \\catcode`\\#=6 \\catcode9=12\n\\message{A\xe9\x01\x0c\t}\n\\message{\\string\\caf\xe9}\n\\end\n",
+    )
+    .unwrap();
+    let cases: [(&[&str], &[u8]); 4] = [
+        (&[], b"(main.tex A^^e9^^A^^L^^I \\caf^^e9"),
+        (&["-translate-file=cp227.tcx"], b"(main.tex A\xe9^^A^^L\t \\caf\xe9"),
+        (&["-translate-file=cp8bit.tcx"], b"(main.tex A\xe9^^A^^L^^I \\caf\xe9"),
+        (&["-8bit"], b"(main.tex A\xe9\x01\x0c\t \\caf\xe9"),
+    ];
+    for (options, expected) in cases {
+        let mut args = vec!["-ini", "-interaction=nonstopmode"];
+        args.extend_from_slice(options);
+        args.push("main.tex");
+        let output = run_pdflatex(&job, &args, &[]);
+        assert!(output.status.success(), "{options:?}: {}", failure_output(&output));
+        assert!(
+            output.stdout.windows(expected.len()).any(|w| w == expected),
+            "{options:?}: {:?}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        let log = std::fs::read(job.dir.join("main.log")).unwrap();
+        assert!(
+            log.windows(expected.len()).any(|w| w == expected),
+            "{options:?}: {:?}",
+            String::from_utf8_lossy(&log)
+        );
     }
 }
 

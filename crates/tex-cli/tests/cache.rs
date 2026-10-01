@@ -470,11 +470,15 @@ fn directory_at_an_extensionless_probe_does_not_block_cache_hits() {
 
 #[test]
 fn replacing_terminal_probe_directory_with_casefold_file_invalidates() {
+    // The lower-priority copy lives in a TDS tree: path variables such as
+    // TEXINPUTS precede the working directory in kpathsea, so only a tree
+    // searched after it lets the casefold local file take over (as
+    // `kpsewhich shadow.tex` and /usr/bin/pdflatex do with TEXMFHOME).
     let job = Job::new();
     let lower = job.0.join("lower");
-    std::fs::create_dir(&lower).unwrap();
+    std::fs::create_dir_all(lower.join("tex/latex/test")).unwrap();
     std::fs::create_dir(job.0.join("shadow.tex")).unwrap();
-    std::fs::write(lower.join("shadow.tex"), "Lower priority text.").unwrap();
+    std::fs::write(lower.join("tex/latex/test/shadow.tex"), "Lower priority text.").unwrap();
     std::fs::write(
         job.0.join("main.tex"),
         "\\documentclass{article}\\nofiles\\begin{document}\\input{shadow}\\end{document}\n",
@@ -486,7 +490,7 @@ fn replacing_terminal_probe_directory_with_casefold_file_invalidates() {
             .current_dir(&job.0)
             .env("SOURCE_DATE_EPOCH", "1700000000")
             .env("TEX_RS_CACHE_DIR", job.0.join("cache"))
-            .env("TEXINPUTS", &lower)
+            .env("TEXMFHOME", &lower)
             .output()
             .unwrap()
     };
@@ -1145,13 +1149,16 @@ fn index_rewritten_during_pass_cannot_seed_cache() {
         r"\errmessage{indexed override selected}\endinput",
     )
     .unwrap();
-    std::fs::write(texmf_home.join("ls-R"), "./tex/latex/local:\ndummy.sty\n").unwrap();
+    // `\openout` appends `.tex` to an extensionless name (TeX Live writes
+    // `ls-R.tex` for `ls-R`), so the document rewrites the root's other
+    // index spelling, `ls-R.lua`, which keeps its extension.
+    std::fs::write(texmf_home.join("ls-R.lua"), "./tex/latex/local:\ndummy.sty\n").unwrap();
     std::fs::write(
         job.0.join("main.tex"),
         r"\documentclass{article}
 \nofiles
 \newwrite\indexfile
-\immediate\openout\indexfile=texmf-home/ls-R
+\immediate\openout\indexfile=texmf-home/ls-R.lua
 \immediate\write\indexfile{./tex/latex/local:}
 \immediate\write\indexfile{article.cls}
 \immediate\closeout\indexfile

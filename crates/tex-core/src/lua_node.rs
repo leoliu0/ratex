@@ -857,6 +857,7 @@ impl NodeStore {
         let Some(f) = resolve(id, sub, name) else { return Val::Nil };
         let fv = node.f[f.slot];
         match f.kind {
+            K::I if id == PAGE_INSERT || id == SPLIT_INSERT => Val::Nil,
             K::I => {
                 if id == WHATSIT
                     && ((sub == ws::PDF_COLORSTACK && name == "cmd")
@@ -869,6 +870,9 @@ impl NodeStore {
             }
             K::F => Val::Num(node.fl),
             K::N => node_val(fv as u32),
+            K::D if name == "direction" => {
+                if (0..4).contains(&fv) { Val::Int(i64::from(fv)) } else { Val::Nil }
+            }
             K::D => {
                 if (0..4).contains(&fv) {
                     if id == DIR {
@@ -884,7 +888,7 @@ impl NodeStore {
                 }
             }
             K::S => {
-                if id == MARK {
+                if id == MARK || (id == WHATSIT && sub == ws::WRITE && name == "data") {
                     return Val::Toks;
                 }
                 let text = self.ext_str(n, name);
@@ -1049,6 +1053,14 @@ impl NodeStore {
             K::N => {
                 let x = v.to_node();
                 self.nodes[n as usize].f[f.slot] = x as i32;
+            }
+            K::D if name == "direction" => {
+                let d = match &v {
+                    SetVal::Int(i) if (0..4).contains(i) => *i,
+                    SetVal::Int(i) => return Err(format!("Invalid direction value {i}")),
+                    _ => return Err("Direction specifiers have to be numbers".to_string()),
+                };
+                self.nodes[n as usize].f[f.slot] = d as i32;
             }
             K::D => {
                 let val = match &v {

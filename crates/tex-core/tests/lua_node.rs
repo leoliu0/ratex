@@ -39,7 +39,10 @@ pub fn run_lua(code: &str) -> Vec<String> {
         // the first line of the first error message
         let text = format!("{:?}", e.diagnostics);
         let msg = text.split("message: \"").nth(1).and_then(|m| m.split("\", original").next()).unwrap_or("?");
-        result.push(format!("! {}", msg.split("\\n").next().unwrap_or("")));
+        let first = msg.split("\\n").next().unwrap_or("");
+        if first.starts_with("LuaTeX error") {
+            result.push(format!("! {first}"));
+        }
     }
     let _ = std::fs::remove_dir_all(&dir);
     result

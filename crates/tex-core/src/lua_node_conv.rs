@@ -716,7 +716,7 @@ impl Engine {
                 out.push(Node::VAdjust(list));
             }
             MATH => {
-                out.push(Node::MathKern(f[1], (sub as u8).min(1) + 1));
+                out.push(Node::MathKern(f[0], (sub as u8).min(1) + 1));
             }
             BOUNDARY => out.push(Node::Whatsit(WhatIt::Boundary { kind: sub as u8, value: f[0] })),
             WHATSIT => self.export_whatsit(n, out),

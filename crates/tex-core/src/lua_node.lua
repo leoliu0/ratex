@@ -213,6 +213,7 @@ end
 direct.hpack = N.wrap_hpack
 direct.vpack = N.wrap_vpack
 
+
 -- ------------------------------------------------------- properties ----
 local properties = {}
 -- the engine learns the table when Lua first touches properties (the
@@ -270,6 +271,7 @@ local function wrap(f, rets)
 end
 
 local ud_specs = {
+  find_attribute = "xn",
   usedlist = "n",
   copy = "n", copy_list = "n", remove = "nn", insert_before = "nn", insert_after = "nn",
   slide = "n", tail = "n", end_of_math = "n", first_glyph = "n", has_glyph = "n",
@@ -295,6 +297,25 @@ for name, f in pairs(direct) do
 end
 
 function node.is_node(n) return N.is_node_ud(n) or false end
+-- node.hpack and node.vpack are lenient about the mode (an unknown name means
+-- `additional`) and check numbers
+local function lenient_pack(f, what)
+  return function(n, w, mode, dir)
+    if mode ~= nil then
+      if type(mode) == "string" then
+        if mode ~= "exactly" and mode ~= "additional" and mode ~= "cal_expand_ratio" and mode ~= "subst_ex_font" then
+          mode = "additional"
+        end
+      elseif type(mode) == "number" and (mode < 0 or mode > 3) then
+        error("wrong mode in " .. what, 0)
+      end
+    end
+    local b, badness = f(todirect_ud(n), w, mode, dir)
+    return tonode(b), badness
+  end
+end
+node.hpack = lenient_pack(N.wrap_hpack, "hpack")
+node.vpack = lenient_pack(N.wrap_vpack, "vpack")
 node.tostring = N.tostring_node
 function node.is_zero_glue(n)
   local r = N.is_zero_glue(todirect_ud(n))

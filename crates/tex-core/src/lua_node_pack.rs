@@ -194,8 +194,26 @@ pub(crate) fn lua_pack(args: &[Value], horizontal: bool) -> Result<Variadic<UdVa
             }
         }
     }
+    let mut dir = -1i32;
+    if let Some(a) = args.get(3) {
+        if let Some(i) = a.as_integer() {
+            if !(0..4).contains(&i) {
+                return Err(format!("Invalid direction value {i}"));
+            }
+            dir = i as i32;
+        } else if let Some(b) = crate::lua_node_lib::value_bytes(a) {
+            let text = String::from_utf8_lossy(&b).into_owned();
+            match DIR_NAMES.iter().position(|d| *d == text) {
+                Some(d) => dir = d as i32,
+                None => return Err(format!("Bad direction specifier {text}")),
+            }
+        }
+    }
     with_engine(|e| {
         let (b, bad) = e.lua_pack_list(head, w as i32, mode != 0, horizontal);
+        if dir >= 0 && b != 0 {
+            e.lua_nodes.node_mut(b).f[sl::B_DIR] = dir;
+        }
         Variadic(vec![UdValue::Integer(i64::from(b)), UdValue::Integer(i64::from(bad))])
     })
 }

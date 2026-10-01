@@ -174,3 +174,53 @@ fn arithmetic_on_expired_userdata_raises_instead_of_keeping_stale_register() {
         .unwrap();
     assert!(!ok, "arithmetic on an expired userdata reference must raise");
 }
+
+#[test]
+fn gc_keeps_open_upvalues_of_threads_reached_late_in_atomic() {
+    // Generational minor collections reach the main thread only through
+    // `grayagain`, after `remark_upvalues`; the coroutine must not be treated
+    // as dead there (its open upvalue was closed early, losing `x = {123}`).
+    run(
+        LuaLanguageLevel::Lua55,
+        r#"
+        collectgarbage("generational")
+        local co = coroutine.create(function ()
+          local x = nil
+          local f = function () return x[1] end
+          x = coroutine.yield(f)
+          coroutine.yield()
+        end)
+        local _, f = coroutine.resume(co)
+        collectgarbage("step")
+        coroutine.resume(co, {123})
+        co = nil
+        collectgarbage("step")
+        assert(f() == 123)
+        collectgarbage("incremental")
+        "#,
+    );
+}
+
+#[test]
+fn gc_collects_values_held_only_by_dead_threads_open_upvalues() {
+    // Lua 5.5 semantics (lua-5.5.0-tests gc.lua); 5.3 keeps them one more cycle.
+    run(
+        LuaLanguageLevel::Lua55,
+        r#"
+        local collected = false
+        collectgarbage(); collectgarbage("stop")
+        do
+          local co = coroutine.create(function (param)
+            ;(function ()
+              param = setmetatable({}, {__gc = function () collected = true end})
+              coroutine.yield(100)
+            end)()
+          end)
+          assert(coroutine.resume(co, 1))
+        end
+        collectgarbage()
+        assert(collected)
+        collectgarbage("restart")
+        "#,
+    );
+}

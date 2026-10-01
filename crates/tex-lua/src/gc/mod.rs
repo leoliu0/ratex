@@ -299,10 +299,6 @@ pub struct GC {
     /// Threads with open upvalues
     twups: Vec<ThreadPtr>,
 
-    /// Dead threads with open upvalues, collected during remark_upvalues
-    /// for efficient close_dead_threads_upvalues processing
-    dead_threads_with_upvalues: Vec<ThreadPtr>,
-
     /// Finalizers called during GC
     finobj: Vec<GcObjectPtr>,
 
@@ -369,7 +365,6 @@ impl GC {
             ephemeron: Vec::new(),
             allweak: Vec::new(),
             twups: Vec::new(),
-            dead_threads_with_upvalues: Vec::new(),
             finobj: Vec::new(),
             sweepgc: SweepGc::AllGc(0),
             stats: GcStats::default(),
@@ -2387,23 +2382,16 @@ impl GC {
     /// Close open upvalues on dead threads to prevent dangling stack pointers.
     ///
     /// Called during atomic phase after white flip. At this point:
-    /// - Dead threads are identifiable (have other_white color)
+    /// - Dead threads are identifiable (have other_white color); marking is
+    ///   complete, so a thread that was still white during `remark_upvalues`
+    ///   but was reached later (e.g. through `grayagain`) is not dead
     /// - ALL objects are still in memory (sweep hasn't started)
     /// - Upvalue objects are safely accessible
+    ///
+    /// Only the young lists can hold dead objects: incremental cycles keep
+    /// every object in `allgc`, and minor collections never free old ones.
     fn close_dead_threads_upvalues(&mut self) {
         let other_white = GcHeader::otherwhite(self.current_white);
-
-        // Process dead threads with open upvalues collected during remark_upvalues
-        for thread_ptr in std::mem::take(&mut self.dead_threads_with_upvalues) {
-            let gc_thread = thread_ptr.as_mut_ref();
-            let stack = gc_thread.data.stack();
-            for upval_ptr in gc_thread.data.open_upvalues() {
-                Self::close_upvalue_proper(*upval_ptr, stack);
-            }
-            gc_thread.data.open_upvalues_mut().clear();
-        }
-
-        // Scan young lists for dead threads with open upvalues
         Self::process_list(&mut self.allgc, other_white);
         Self::process_list(&mut self.survival, other_white);
     }
@@ -2421,72 +2409,44 @@ impl GC {
     ///   lua_State *thread;
     ///   lua_State **p = &g->twups;
     ///   while ((thread = *p) != NULL) {
-    ///     lua_assert(!iswhite(thread));  /* threads are never white */
-    ///     if (isgray(thread) && thread->openupval != NULL)
+    ///     if (!iswhite(thread) && thread->openupval != NULL)
     ///       p = &thread->twups;  /* keep marked thread with upvalues in the list */
-    ///     else {  /* thread is black or has no upvalues */
+    ///     else {  /* thread is not marked or without upvalues */
     ///       UpVal *uv;
     ///       *p = thread->twups;  /* remove thread from the list */
     ///       thread->twups = thread;  /* mark that it is out of list */
     ///       for (uv = thread->openupval; uv != NULL; uv = uv->u.open.next) {
-    ///         lua_assert(getage(uv) <= getage(thread));
-    ///         if (!iswhite(uv))
-    ///           markvalue(g, uv->v.p);  /* remark upvalue's value */
+    ///         if (!iswhite(uv))  /* upvalue already visited? */
+    ///           markvalue(g, uv->v.p);  /* mark its value */
     ///       }
     ///     }
     ///   }
     /// }
     /// ```
+    ///
+    /// A thread that is still white here is not necessarily dead: it may be
+    /// reached later in the atomic phase (through `grayagain`), and its
+    /// traversal then links it into `twups` again.  Dead threads are only
+    /// identified (and their upvalues closed) once marking is complete.
     fn remark_upvalues(&mut self, l: &mut LuaState) {
         let mut i = 0;
         while i < self.twups.len() {
             let thread_ptr = self.twups[i];
             let thread = thread_ptr.as_ref();
-
-            // White thread = dead (unreachable). Remove from list.
-            // Gray thread with open upvalues = keep in list for later remarking.
-            // Otherwise (black or no upvalues) = remove and remark its upvalues.
-            if thread.header.is_white() {
-                // Thread is dead (white), remove from twups list.
-                // But FIRST: re-mark open upvalue values so that objects
-                // only reachable through this thread's open upvalues are
-                // kept alive. This is needed because sweep_gen makes
-                // surviving objects white (unlike C Lua's nw2black), so
-                // a dead-white thread might still have live closures
-                // referencing its open upvalues.
-                if !thread.data.open_upvalues().is_empty() {
-                    for upval_ptr in thread.data.open_upvalues() {
-                        let value = upval_ptr.as_ref().data.get_value();
-                        self.mark_value(l, &value);
-                    }
-                    self.dead_threads_with_upvalues.push(thread_ptr);
-                }
-                self.twups.swap_remove(i);
-                continue;
-            }
-
-            // if so, just move to the next thread
-            if thread.header.is_gray() && !thread.data.open_upvalues().is_empty() {
+            if !thread.header.is_white() && !thread.data.open_upvalues().is_empty() {
                 i += 1;
                 continue;
             }
 
-            // else, thread is black or has no upvalues
             // note: swap_remove moves last element to index i
             self.twups.swap_remove(i);
-
-            // remark upvalues
             for upval_ptr in thread.data.open_upvalues() {
                 let upval = upval_ptr.as_ref();
-
-                // Upvalue age should not be older than its thread
                 debug_assert!(
                     upval.header.age() <= thread.header.age(),
                     "Upvalue should not be older than its thread"
                 );
-
                 if !upval.header.is_white() {
-                    // get value from upvalue and mark it
                     let value = upval.data.get_value();
                     self.mark_value(l, &value);
                 }

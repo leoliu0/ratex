@@ -42,6 +42,32 @@ pub fn embedded_font_faces() -> &'static [EmbeddedFontFace] {
 // related small files still share enough context for effective compression.
 include!(concat!(env!("OUT_DIR"), "/packages_index.rs"));
 
+pub mod embedded_tree;
+
+/// The per-user cache root: `TEX_RS_CACHE_DIR`, else the platform's user
+/// cache directory. Dependency records, and the Lua font loader's name
+/// database, live below it.
+pub fn platform_cache_dir() -> PathBuf {
+    if let Some(dir) = std::env::var_os("TEX_RS_CACHE_DIR").filter(|value| !value.is_empty()) {
+        return PathBuf::from(dir);
+    }
+    #[cfg(target_os = "windows")]
+    if let Some(dir) = std::env::var_os("LOCALAPPDATA").filter(|value| !value.is_empty()) {
+        return PathBuf::from(dir).join("tex-rs").join("cache");
+    }
+    #[cfg(target_os = "macos")]
+    if let Some(home) = std::env::var_os("HOME").filter(|value| !value.is_empty()) {
+        return PathBuf::from(home).join("Library").join("Caches").join("tex-rs");
+    }
+    if let Some(dir) = std::env::var_os("XDG_CACHE_HOME").filter(|value| !value.is_empty()) {
+        return PathBuf::from(dir).join("tex-rs");
+    }
+    if let Some(home) = std::env::var_os("HOME").filter(|value| !value.is_empty()) {
+        return PathBuf::from(home).join(".cache").join("tex-rs");
+    }
+    std::env::temp_dir().join("tex-rs-cache")
+}
+
 /// Build-time table of `FIELDS`-wide records of little-endian `u32`s.
 #[derive(Clone, Copy)]
 struct PackedTable<const FIELDS: usize>(&'static [u8]);

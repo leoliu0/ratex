@@ -29,6 +29,8 @@ pub mod linebreak;
 pub mod luatex;
 mod lua_bridge;
 mod lua_sys;
+pub use lua_sys::set_cache_dir;
+mod lua_sys_embedded;
 mod lua_sys_fio;
 mod lua_sys_hash;
 mod lua_sys_kpse;

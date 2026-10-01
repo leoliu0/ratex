@@ -96,6 +96,21 @@ pub enum ShellEscape {
 thread_local! {
     static SHELL: std::cell::Cell<ShellEscape> = const { std::cell::Cell::new(ShellEscape::Disabled) };
     static SAFER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static CACHE_DIR: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Use `dir` as the per-user cache root (`-cache-directory`) instead of
+/// `$TEX_RS_CACHE_DIR` or the platform's user cache directory. The Lua
+/// font loader keeps its name database and font caches below it
+/// (`$TEXMFVAR` is `<root>/texmf-var`).
+pub fn set_cache_dir(dir: PathBuf) {
+    CACHE_DIR.with(|d| *d.borrow_mut() = Some(dir));
+}
+
+pub(crate) fn cache_dir() -> PathBuf {
+    CACHE_DIR
+        .with(|d| d.borrow().clone())
+        .unwrap_or_else(tex_kpse::platform_cache_dir)
 }
 
 /// Set the shell-escape policy of Lua's `os.execute`/`os.exec`/`os.spawn`/
@@ -121,6 +136,7 @@ pub(crate) fn safer_option() -> bool {
 /// and TeX bridge are open.
 pub(crate) fn install(lua: &mut Lua) -> Result<(), String> {
     let sys: LuaTable = lua.create_table().map_err(|e| format!("{e:?}"))?;
+    crate::lua_sys_embedded::register(lua, &sys)?;
     crate::lua_sys_lfs::register(lua, &sys)?;
     crate::lua_sys_hash::register(lua, &sys)?;
     crate::lua_sys_zlib::register(lua, &sys)?;
@@ -131,6 +147,7 @@ pub(crate) fn install(lua: &mut Lua) -> Result<(), String> {
     crate::lua_sys_os::register(lua, &sys)?;
     lua.set_global("__ratex_sys", sys).map_err(|e| format!("{e:?}"))?;
     for (name, code) in [
+        ("embedded", crate::lua_sys_embedded::PRELUDE),
         ("lfs", crate::lua_sys_lfs::PRELUDE),
         ("fio", crate::lua_sys_fio::PRELUDE),
         ("hash", crate::lua_sys_hash::PRELUDE),

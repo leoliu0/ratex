@@ -8,7 +8,7 @@ use std::io;
 
 use tex_lua::{Lua, LuaApi, LuaBytes, LuaFile, LuaString, Value};
 
-use crate::lua_sys::{bytes_of, errno_of, os_bytes, path_bytes, path_of, strerror, sys_reg};
+use crate::lua_sys::{bytes_of, errno_of, os_bytes, path_bytes, path_of, strerror, strerror_no, sys_reg};
 
 pub(crate) const PRELUDE: &str = include_str!("lua_sys_lfs.lua");
 
@@ -20,7 +20,25 @@ thread_local! {
 struct DirState {
     /// `.` and `..` come first as `readdir` reports them; then the entries.
     dots: u8,
-    entries: fs::ReadDir,
+    entries: Box<dyn Iterator<Item = Vec<u8>>>,
+}
+
+/// The embedded archive's virtual tree (`<embedded>/…`), if `bytes` names a
+/// path in it.
+fn embedded_path(bytes: &[u8]) -> Option<&str> {
+    std::str::from_utf8(bytes).ok().filter(|text| tex_kpse::embedded_tree::is_embedded_path(text))
+}
+
+/// `lfs.attributes` of an embedded path: read-only, with the archive's
+/// pinned modification time.
+fn embedded_stat(path: &str) -> Option<(&'static str, &'static str, Vec<i64>)> {
+    use tex_kpse::embedded_tree::{stat, EmbeddedKind, MTIME};
+    let (mode, permissions, size) = match stat(path)? {
+        EmbeddedKind::File { size } => ("file", "r--r--r--", size as i64),
+        EmbeddedKind::Directory => ("directory", "r-xr-xr-x", 0),
+    };
+    let nlink = if mode == "directory" { 2 } else { 1 };
+    Some((mode, permissions, vec![0, 0, nlink, 0, 0, 0, MTIME, MTIME, MTIME, size, (size + 511) / 512, 4096]))
 }
 
 type Tri<T> = (Option<T>, Option<LuaBytes>, Option<i64>);
@@ -155,6 +173,19 @@ pub(crate) fn register(lua: &mut Lua, s: &tex_lua::LuaTable) -> Result<(), Strin
     sys_reg!(lua, s, "lfs_stat", |path: LuaString, follow: bool| -> (Option<LuaBytes>, LuaBytes, Vec<i64>) {
         let bytes = bytes_of(&path);
         let p = path_of(&bytes);
+        if let Some(text) = embedded_path(&bytes) {
+            return match embedded_stat(text) {
+                Some((mode, permissions, numbers)) => {
+                    (Some(LuaBytes(mode.as_bytes().to_vec())), LuaBytes(permissions.as_bytes().to_vec()), numbers)
+                }
+                None => {
+                    let mut message = b"cannot obtain information from file '".to_vec();
+                    message.extend_from_slice(&bytes);
+                    message.extend_from_slice(format!("': {}", strerror_no(libc::ENOENT)).as_bytes());
+                    (None, LuaBytes(message), vec![i64::from(libc::ENOENT)])
+                }
+            };
+        }
         let meta = if follow { fs::metadata(&p) } else { fs::symlink_metadata(&p) };
         match meta {
             Ok(meta) => (
@@ -177,7 +208,11 @@ pub(crate) fn register(lua: &mut Lua, s: &tex_lua::LuaTable) -> Result<(), Strin
         }
     });
     sys_reg!(lua, s, "lfs_mkdir", |path: LuaString| -> Tri<bool> {
-        let p = path_of(&bytes_of(&path));
+        let bytes = bytes_of(&path);
+        if embedded_path(&bytes).is_some() {
+            return failure(&io::Error::from_raw_os_error(libc::EROFS), None);
+        }
+        let p = path_of(&bytes);
         #[cfg(unix)]
         let result = {
             use std::os::unix::fs::DirBuilderExt;
@@ -247,10 +282,22 @@ pub(crate) fn register(lua: &mut Lua, s: &tex_lua::LuaTable) -> Result<(), Strin
     });
     sys_reg!(lua, s, "lfs_dir_open", |path: LuaString| -> Result<i64, String> {
         let bytes = bytes_of(&path);
+        if let Some(text) = embedded_path(&bytes) {
+            return match tex_kpse::embedded_tree::read_dir(text) {
+                Some(entries) => Ok(DIRS.with(|d| {
+                    let mut d = d.borrow_mut();
+                    let entries = entries.into_iter().map(|(name, _)| name.into_bytes());
+                    d.push(Some(DirState { dots: 0, entries: Box::new(entries) }));
+                    d.len() as i64 - 1
+                })),
+                None => Err(format!("cannot open {}: {}", text, strerror_no(libc::ENOENT))),
+            };
+        }
         match fs::read_dir(path_of(&bytes)) {
             Ok(entries) => Ok(DIRS.with(|d| {
                 let mut d = d.borrow_mut();
-                d.push(Some(DirState { dots: 0, entries }));
+                let entries = entries.flatten().map(|entry| os_bytes(&entry.file_name()));
+                d.push(Some(DirState { dots: 0, entries: Box::new(entries) }));
                 d.len() as i64 - 1
             })),
             Err(e) => Err(format!("cannot open {}: {}", String::from_utf8_lossy(&bytes), strerror(&e))),
@@ -268,10 +315,8 @@ pub(crate) fn register(lua: &mut Lua, s: &tex_lua::LuaTable) -> Result<(), Strin
                 state.dots += 1;
                 return Ok(Some(LuaBytes(if state.dots == 1 { b".".to_vec() } else { b"..".to_vec() })));
             }
-            for entry in state.entries.by_ref() {
-                if let Ok(entry) = entry {
-                    return Ok(Some(LuaBytes(os_bytes(&entry.file_name()))));
-                }
+            if let Some(name) = state.entries.next() {
+                return Ok(Some(LuaBytes(name)));
             }
             *slot = None;
             Ok(None)

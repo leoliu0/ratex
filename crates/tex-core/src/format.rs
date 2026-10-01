@@ -246,13 +246,7 @@ impl<'a> R<'a> {
     fn glue(&mut self) -> io::Result<Glue> {
         let b = self.take(14)?;
         let int = |i: usize| i32::from_le_bytes(b[i..i + 4].try_into().unwrap());
-        Ok(Glue {
-            width: int(0),
-            stretch: int(4),
-            shrink: int(8),
-            stretch_order: b[12],
-            shrink_order: b[13],
-        })
+        Ok(Glue::spec(int(0), int(4), b[12], int(8), b[13]))
     }
     fn toks(&mut self) -> io::Result<Vec<Token>> {
         let n = self.count()?;
@@ -356,7 +350,11 @@ pub fn check_dumpable(eng: &Engine) -> Result<(), String> {
                 n_ag,
                 n_other,
                 eng.eqtb.cur_level,
-                eng.ss_trace.join(" | "),
+                eng.ss_trace
+                    .iter()
+                    .map(|(file, line)| format!("{}:{line}", file.split('/').last().unwrap_or("?")))
+                    .collect::<Vec<_>>()
+                    .join(" | "),
                 types.join(",")
             ));
         }
@@ -1698,13 +1696,7 @@ mod tests {
         eng.eqtb.assign_dimen(3, 65536 * 12, true);
         eng.eqtb.assign_skip(
             5,
-            Glue {
-                width: 10,
-                stretch: -3,
-                shrink: 7,
-                stretch_order: 2,
-                shrink_order: 1,
-            },
+            Glue::spec(10, -3, 2, 7, 1),
             true,
         );
         eng.eqtb.assign_muskip(1, Glue::fil(3, 5), true);

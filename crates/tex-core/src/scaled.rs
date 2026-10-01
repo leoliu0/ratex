@@ -59,7 +59,7 @@ pub fn x_over_y(x: i32, y: i32) -> i32 {
 /// remainder is dropped, not rounded), e.g. the space-factor scaling of
 /// interword stretch/shrink and `\font ... scaled`.
 pub fn xn_over_d(x: i32, n: i32, d: i32) -> i32 {
-    if d == 0 {
+    if d <= 0 {
         return i32::MAX;
     }
     saturate(x as i128 * n as i128 / d as i128)

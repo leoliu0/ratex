@@ -6,6 +6,16 @@
 pub mod fs;
 use fs::PathExt;
 
+/// Case-insensitive (ASCII) match of a directory entry against a wanted
+/// path component, comparing their lossy UTF-8 spellings. ASCII names skip
+/// the lossy conversion: bytes equal up to ASCII case have equal lossy forms.
+fn local_name_matches(name: &std::ffi::OsStr, wanted: &std::ffi::OsStr) -> bool {
+    let (name_bytes, wanted_bytes) = (name.as_encoded_bytes(), wanted.as_encoded_bytes());
+    name_bytes.eq_ignore_ascii_case(wanted_bytes)
+        || (!(name_bytes.is_ascii() && wanted_bytes.is_ascii())
+            && name.to_string_lossy().eq_ignore_ascii_case(&wanted.to_string_lossy()))
+}
+
 /// Metadata for an embedded OpenType or TrueType font face discovered at build time.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EmbeddedFontFace {
@@ -1178,12 +1188,11 @@ impl Kpse {
                         path = exact;
                         continue;
                     }
-                    let wanted = wanted.to_string_lossy();
                     let snapshot = self.local_directory_snapshot(&path)?;
                     let entry = snapshot
                         .entries
                         .iter()
-                        .find(|entry| entry.name.to_string_lossy().eq_ignore_ascii_case(&wanted))?;
+                        .find(|entry| local_name_matches(&entry.name, wanted))?;
                     path.push(&entry.name);
                 }
                 Component::RootDir | Component::Prefix(_) => return None,
@@ -1229,7 +1238,6 @@ impl Kpse {
                         path = exact;
                         continue;
                     }
-                    let wanted = wanted.to_string_lossy();
                     let Some(snapshot) = self.local_directory_snapshot(&path) else {
                         return (None, directories, false);
                     };
@@ -1242,7 +1250,7 @@ impl Kpse {
                     let Some(entry) = snapshot
                         .entries
                         .iter()
-                        .find(|entry| entry.name.to_string_lossy().eq_ignore_ascii_case(&wanted))
+                        .find(|entry| local_name_matches(&entry.name, wanted))
                     else {
                         return (None, directories, complete);
                     };

@@ -1,8 +1,9 @@
 //! pdfTeX's font map database (mapfile.c): an ordered list of map-file and
-//! map-line layers, each applied with its `+`/`=`/`-` mode. Layers are
-//! scanned on demand; only requested fonts undergo line parsing.
+//! map-line layers, each applied with its `+`/`=`/`-` mode. Each layer
+//! indexes its entry lines by TFM name on first use; only requested fonts
+//! undergo line parsing.
 use crate::fontload::{parse_map_line, MapEntry};
-use std::cell::RefCell;
+use std::cell::{OnceCell, RefCell};
 use std::rc::Rc;
 
 /// How a map item treats entries for TFM names that are already mapped
@@ -25,6 +26,46 @@ struct Layer {
     /// TFM names whose entries were in use when this replace/delete layer
     /// was added: mapfile.c `avl_do_entry` leaves them untouched.
     frozen: crate::FxHashSet<Box<str>>,
+    index: OnceCell<LayerIndex>,
+}
+
+/// Byte offsets of the entry lines of a layer's text, in text order.
+#[derive(Default)]
+struct LayerIndex {
+    /// Lines whose TFM name is their first word, by that name.
+    by_name: crate::FxHashMap<Box<str>, smallvec::SmallVec<[u32; 1]>>,
+    /// Lines whose TFM name only a full parse reveals (a quote precedes or
+    /// adjoins the first word).
+    other: Vec<u32>,
+}
+
+impl LayerIndex {
+    fn build(text: &str) -> Self {
+        let mut index = LayerIndex::default();
+        let mut offset = 0;
+        for raw in text.split_inclusive('\n') {
+            let start = offset as u32;
+            offset += raw.len();
+            let line = raw.trim();
+            if line.is_empty() || line.starts_with(['%', '*', '#', ';']) {
+                continue;
+            }
+            match plain_map_tfm(line) {
+                Some(tfm) => index.by_name.entry(tfm.into()).or_default().push(start),
+                None => index.other.push(start),
+            }
+        }
+        index
+    }
+}
+
+/// The TFM name `parse_map_line` takes from `line` when it is the first
+/// word and no quote precedes or adjoins it.
+fn plain_map_tfm(line: &str) -> Option<&str> {
+    let head = line.split('"').next().unwrap_or(line);
+    let tfm = head.split_whitespace().next()?;
+    let end = tfm.as_ptr() as usize - head.as_ptr() as usize + tfm.len();
+    (end < head.len() || head.len() == line.len()).then_some(tfm)
 }
 
 /// pdfTeX diagnostics owed for one added layer, in entry order.
@@ -65,12 +106,12 @@ impl FontMap {
             match layer.mode {
                 MapMode::DupIgnore => {
                     if entry.is_none() {
-                        entry = find_map_entry_in_text(&layer.text, name, true);
+                        entry = layer.find_entry(name, true);
                     }
                 }
                 MapMode::Replace => {
                     if !layer.frozen.contains(name) {
-                        if let Some(found) = find_map_entry_in_text(&layer.text, name, false) {
+                        if let Some(found) = layer.find_entry(name, false) {
                             entry = Some(found);
                         }
                     }
@@ -138,6 +179,7 @@ impl FontMap {
             text: text.into(),
             mode,
             frozen,
+            index: OnceCell::new(),
         });
         report
     }
@@ -151,24 +193,39 @@ fn map_text_names(text: &str) -> impl Iterator<Item = &str> {
         .filter_map(|line| line.split_whitespace().next())
 }
 
-/// The first (`first`) or last entry for `name` in one map text.
-fn find_map_entry_in_text(text: &str, name: &str, first: bool) -> Option<MapEntry> {
-    let mut found = None;
-    for raw in text.split_inclusive('\n') {
-        let line = raw.trim();
-        if line.is_empty() || line.starts_with(['%', '*', '#', ';']) || !line.contains(name) {
-            continue;
-        }
-        if let Some(entry) = parse_map_line(line) {
-            if entry.tfm == name {
-                found = Some(entry);
-                if first {
-                    break;
+impl Layer {
+    /// The first (`first`) or last entry for `name` in this layer.
+    fn find_entry(&self, name: &str, first: bool) -> Option<MapEntry> {
+        let index = self.index.get_or_init(|| LayerIndex::build(&self.text));
+        let named = index.by_name.get(name).map_or(&[][..], |lines| &lines[..]);
+        let (mut named, mut other) = (named.iter().peekable(), index.other.iter().peekable());
+        let mut found = None;
+        loop {
+            // Visit both line lists in text order.
+            let start = match (named.peek(), other.peek()) {
+                (Some(&&a), Some(&&b)) if a < b => named.next(),
+                (Some(_), None) => named.next(),
+                _ => other.next(),
+            };
+            let Some(&start) = start else {
+                break;
+            };
+            let rest = &self.text[start as usize..];
+            let line = rest[..rest.find('\n').map_or(rest.len(), |end| end + 1)].trim();
+            if !line.contains(name) {
+                continue;
+            }
+            if let Some(entry) = parse_map_line(line) {
+                if entry.tfm == name {
+                    found = Some(entry);
+                    if first {
+                        break;
+                    }
                 }
             }
         }
+        found
     }
-    found
 }
 
 #[cfg(test)]
@@ -187,6 +244,8 @@ mod tests {
             ".167SlantFont",
             "\t",
             "\u{2003}",
+            "a\"b\"",
+            "\"q\"z",
         ];
         let mut text = String::from("% comment\n* comment\nvalid Font <valid.pfb\nvalid\n");
         for a in chunks {
@@ -205,6 +264,21 @@ mod tests {
             if let Some(e) = parse_map_line(line) {
                 eager.entry(e.tfm.clone()).or_insert(e);
             }
+        }
+        // An `=` layer of the same text: the last entry wins.
+        let mut last = crate::FxHashMap::default();
+        for line in text.lines().map(str::trim) {
+            if line.starts_with(['%', '*']) {
+                continue;
+            }
+            if let Some(e) = parse_map_line(line) {
+                last.insert(e.tfm.clone(), e);
+            }
+        }
+        let mut replaced = FontMap::default();
+        replaced.add_layer(text.clone(), MapMode::Replace, &|_: &str| false, false);
+        for (key, value) in last {
+            assert_eq!(replaced.get(&key).as_ref(), Some(&value));
         }
         let never_used = |_: &str| false;
         let mut lazy = FontMap::default();

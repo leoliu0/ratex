@@ -19,7 +19,7 @@ pub struct IfState {
     pub matched: bool,    // some branch was taken already
     pub if_case: i32,     // >=0: \ifcase with this many cases left
     pub evaluating: bool, // tex.web if_limit == if_code: condition still being evaluated
-    pub loc_file: String,
+    pub loc_file: std::rc::Rc<str>,
     pub loc_line: u32,
     pub loc_cs: u32,
     pub(crate) loc: Option<crate::input::SourceMark>,
@@ -348,7 +348,8 @@ pub struct Engine {
     pub align_state: i32, // & nesting balance for runaway detection
     /// A macro parameter scanner is reading at alignment brace depth zero.
     pub align_macro_arg: bool,
-    pub ss_trace: Vec<String>,
+    /// File and line of each open \begingroup, for dump diagnostics.
+    pub ss_trace: Vec<(std::rc::Rc<str>, u32)>,
     pub format_done: bool,
     pub trace_ltx: u32,
     /// \pdfpageattr / \pdfpagesattr dict bodies (global in pdfTeX)
@@ -614,8 +615,16 @@ pub struct Engine {
     /// (definition, general text, alignment preamble): an \outer macro read
     /// while it is set is reported by `forbidden_outer` (§336-§339).
     pub(crate) outer_scan: Option<(crate::expand::OuterScan, Option<CsId>)>,
-    /// Semantic nest frames: mode, list, previous depth, space factor, paragraph lines.
-    pub saved_lists: Vec<(Mode, Vec<crate::boxes::Node>, i32, i32, i32)>,
+    /// Semantic nest frames: mode, list, previous depth, space factor,
+    /// paragraph lines of the enclosing level, and the input line at which
+    /// the level pushed above it was entered (tex.web `mode_line`).
+    pub saved_lists: Vec<(Mode, Vec<crate::boxes::Node>, i32, i32, i32, i32)>,
+    /// While `output_tail` is set: `saved_lists.len()` when the output
+    /// routine's nest level began, and its tex.web `mode_line` (`-line`).
+    pub(crate) output_nest_mark: (usize, i32),
+    /// tex.web `pack_begin_line`: the paragraph (> 0) or alignment (< 0)
+    /// whose lines/rows hpack/vpack are packing, for their box reports.
+    pub(crate) pack_begin_line: i32,
     /// saved state pushed by paragraph start (pops with \par, not with groups)
     pub par_saves: usize,
     /// set when a display just ended: text resumes hmode directly
@@ -1161,6 +1170,8 @@ impl Engine {
             scanner_status: ScannerStatus::Normal,
             outer_scan: None,
             saved_lists: Vec::new(),
+            output_nest_mark: (0, 0),
+            pack_begin_line: 0,
             unless_next: false,
             last_badness: 0,
             pdf_last_x: 0,
@@ -1846,20 +1857,10 @@ impl Engine {
         // (tex.web §431); math_glue converts with the current em at use.
         eng.eqtb.glue_params[GlueParam::ThinMuSkip.idx() as usize] =
             crate::boxes::Glue::new(3 * 65536);
-        eng.eqtb.glue_params[GlueParam::MedMuSkip.idx() as usize] = crate::boxes::Glue {
-            width: 4 * 65536,
-            stretch: 2 * 65536,
-            shrink: 4 * 65536,
-            stretch_order: 0,
-            shrink_order: 0,
-        };
-        eng.eqtb.glue_params[GlueParam::ThickMuSkip.idx() as usize] = crate::boxes::Glue {
-            width: 5 * 65536,
-            stretch: 5 * 65536,
-            shrink: 0,
-            stretch_order: 0,
-            shrink_order: 0,
-        };
+        eng.eqtb.glue_params[GlueParam::MedMuSkip.idx() as usize] =
+            crate::boxes::Glue::spec(4 * 65536, 2 * 65536, 0, 4 * 65536, 0);
+        eng.eqtb.glue_params[GlueParam::ThickMuSkip.idx() as usize] =
+            crate::boxes::Glue::spec(5 * 65536, 5 * 65536, 0, 0, 0);
         eng.eqtb.int_params[IntParam::EndLineChar.idx() as usize] = 13;
         eng.eqtb.int_params[IntParam::EscapeChar.idx() as usize] = 92;
         eng.eqtb.int_params[IntParam::NewLineChar.idx() as usize] = -1;

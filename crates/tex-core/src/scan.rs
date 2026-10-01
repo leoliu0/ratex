@@ -132,8 +132,16 @@ impl Engine {
         {
             return t;
         }
-        self.push_token(t);
-        self.get_x_raw()
+        // Expanding the fetched token directly equals backing it up and
+        // fetching it again, except while an alignment holds back older
+        // pushback (raw_token() then reads the backed-up token only above
+        // `align_pushed_base`).
+        if self.scanner_status == crate::engine::ScannerStatus::Aligning {
+            self.push_token(t);
+            return self.get_x_raw();
+        }
+        self.unexpanded_parameter = false;
+        self.get_x_raw_from(t)
     }
 
     /// Glue parameter, `\\skip n`, or skipdef'd CS. Knuth copies these as a
@@ -144,19 +152,19 @@ impl Engine {
         }
         match self.eqtb.resolve(t.cs_id()).cloned() {
             Some(Equiv::Prim(Prim::GlueP(p))) => {
-                Some(self.eqtb.glue_params[p.idx() as usize].clone())
+                Some(self.eqtb.glue_params[p.idx() as usize].eqtb_value())
             }
             Some(Equiv::Prim(Prim::Skip)) => {
                 let i = self.scan_reg_num();
-                Some(self.eqtb.skip[i as usize].clone())
+                Some(self.eqtb.skip[i as usize].eqtb_value())
             }
             Some(Equiv::Prim(Prim::MuSkip)) => {
                 let i = self.scan_reg_num();
-                Some(self.eqtb.muskip[i as usize].clone())
+                Some(self.eqtb.muskip[i as usize].eqtb_value())
             }
             Some(Equiv::Prim(Prim::LastSkip)) => Some(self.last_skip_value()),
-            Some(Equiv::SkipReg(i)) => Some(self.eqtb.skip[i as usize].clone()),
-            Some(Equiv::MuSkipReg(i)) => Some(self.eqtb.muskip[i as usize].clone()),
+            Some(Equiv::SkipReg(i)) => Some(self.eqtb.skip[i as usize].eqtb_value()),
+            Some(Equiv::MuSkipReg(i)) => Some(self.eqtb.muskip[i as usize].eqtb_value()),
             _ => None,
         }
     }
@@ -1026,9 +1034,10 @@ impl Engine {
     }
 
     pub fn scan_reg_num(&mut self) -> u16 {
-        let (n, source) = self.scan_int_with_source();
+        let (n, origin) = self.scan_int_with_origin();
         let max = self.eqtb.count.len() as i32 - 1;
         if n < 0 || n > max {
+            let source = origin.and_then(|origin| self.numeric_origin_context(origin));
             self.error_at(
                 &format!(
                     "Register number {n} is out of range; expected a number from 0 through {max}"
@@ -1043,21 +1052,28 @@ impl Engine {
     /// Scan a character/integer operand and retain the first source token,
     /// before numeric lookahead advances to the following delimiter.
     pub(crate) fn scan_int_with_source(&mut self) -> (i32, Option<SourceContext>) {
-        self.skip_spaces();
-        let origin = self.numeric_origin();
-        let value = self.scan_int();
+        let (value, origin) = self.scan_int_with_origin();
         let source = origin.and_then(|origin| self.numeric_origin_context(origin));
         (value, source)
+    }
+
+    /// `scan_int_with_source` for callers that report a bad value at once:
+    /// the source excerpt is materialized only for the error.
+    fn scan_int_with_origin(&mut self) -> (i32, Option<NumericOrigin>) {
+        self.skip_spaces();
+        let origin = self.numeric_origin();
+        (self.scan_int(), origin)
     }
 
     /// Scan an operand used to index one of TeX's 256-entry character tables.
     /// Invalid input recovers with character zero instead of reaching an
     /// unchecked slice index.
     pub(crate) fn scan_character_code(&mut self, command: &str) -> u8 {
-        let (character, source) = self.scan_int_with_source();
+        let (character, origin) = self.scan_int_with_origin();
         if (0..=255).contains(&character) {
             character as u8
         } else {
+            let source = origin.and_then(|origin| self.numeric_origin_context(origin));
             self.error_at(
                 &format!(
                     "Character code {character} is out of range for {command}; expected 0 through 255 and used character 0"
@@ -1069,7 +1085,7 @@ impl Engine {
     }
 
     pub(crate) fn scan_unicode_character_code(&mut self, command: &str) -> u32 {
-        let (character, source) = self.scan_int_with_source();
+        let (character, origin) = self.scan_int_with_origin();
         if u32::try_from(character)
             .ok()
             .and_then(char::from_u32)
@@ -1077,6 +1093,7 @@ impl Engine {
         {
             character as u32
         } else {
+            let source = origin.and_then(|origin| self.numeric_origin_context(origin));
             self.error_at(
                 &format!("Invalid Unicode scalar {character} for {command}; used character 0"),
                 source,
@@ -1103,10 +1120,11 @@ impl Engine {
     }
 
     pub(crate) fn scan_math_family(&mut self, command: &str) -> usize {
-        let (family, source) = self.scan_int_with_source();
+        let (family, origin) = self.scan_int_with_origin();
         if (0..=15).contains(&family) {
             family as usize
         } else {
+            let source = origin.and_then(|origin| self.numeric_origin_context(origin));
             self.error_at(
                 &format!(
                     "Font family {family} is out of range for {command}; expected 0 through 15 and used family 0"
@@ -1725,7 +1743,7 @@ impl Engine {
             return g;
         }
         if t.is_cs() && matches!(self.cur_prim, Some(Prim::GlueExpr) | Some(Prim::MuExpr)) {
-            let mut g = self.scan_expr_glue(mu);
+            let mut g = self.scan_expr_glue(mu).fresh();
             if negate {
                 g.width = -g.width;
                 g.stretch = -g.stretch;
@@ -1736,6 +1754,8 @@ impl Engine {
         }
         if let Some(mut g) = self.glue_from_cur_cs(t) {
             if negate {
+                // tex.web §461: a negated value is a new spec
+                g = g.fresh();
                 g.width = -g.width;
                 g.stretch = -g.stretch;
                 g.shrink = -g.shrink;
@@ -3251,13 +3271,9 @@ impl ExprArithmetic {
         let stretch = self.checked(stretch, MAX_EXPR_DIMEN);
         let shrink = self.checked(shrink, MAX_EXPR_DIMEN);
         match (width, stretch, shrink) {
-            (Some(width), Some(stretch), Some(shrink)) => Glue {
-                width,
-                stretch,
-                shrink,
-                stretch_order,
-                shrink_order,
-            },
+            (Some(width), Some(stretch), Some(shrink)) => {
+                Glue::spec(width, stretch, stretch_order, shrink, shrink_order)
+            }
             _ => Glue::zero(),
         }
     }

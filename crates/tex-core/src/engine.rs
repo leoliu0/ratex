@@ -137,6 +137,8 @@ pub struct Engine {
     /// Original control-sequence name of each primitive. Unlike an eqtb
     /// reverse lookup, this survives formats redefining (for example) \input.
     pub(crate) primitive_names: crate::FxHashMap<u16, &'static [u8]>,
+    /// LuaTeX's primitive table (`crate::luatex`); empty for other engines.
+    pub(crate) lua_primitives: Vec<crate::luatex::LuaPrimitive>,
     pub input: InputStack,
     pub ids: Ids,
 
@@ -854,6 +856,7 @@ impl Engine {
             cs,
             eqtb: Eqtb::new(ini_mode),
             primitive_names: crate::FxHashMap::default(),
+            lua_primitives: Vec::new(),
             input: InputStack::new(),
             par_saves: 0,
             resume_after_display: false,
@@ -1689,8 +1692,6 @@ impl Engine {
         d!(eng, b"pdfnormaldeviate", PdfNormalDeviate);
         d!(eng, b"pdfrandomseed", PdfRandomSeed);
         d!(eng, b"pdfsetrandomseed", PdfSetRandomSeed);
-        d!(eng, b"randomseed", PdfRandomSeed);
-        d!(eng, b"setrandomseed", PdfSetRandomSeed);
         d!(eng, b"pdfpageref", PdfPageRef);
         d!(eng, b"pdffontname", PdfFontName);
         d!(eng, b"pdffontobjnum", PdfFontObjNum);
@@ -1837,7 +1838,6 @@ impl Engine {
         eng.eqtb.dim_params[DimParam::PdfPageWidth.idx() as usize] = 0;
         eng.eqtb.dim_params[DimParam::PdfPageHeight.idx() as usize] = 0;
         eng.init_xetex_primitives();
-        eng.init_luatex_primitives();
         // pdfTeX / e-TeX engine primitives (prim codes 400-413). Only the
         // ones with implemented semantics are registered.
         d!(eng, b"ifpdfabsnum", IfPdfAbsNum);
@@ -1860,6 +1860,7 @@ impl Engine {
             def(name, IntP(p), eng);
             eng.eqtb.int_params[p.idx() as usize] = value;
         }
+        eng.init_luatex_primitives();
     }
     /// SyncTeX records are taken while `\synctex` is nonzero (synctex.c
     /// `SYNCTEX_VALUE`).

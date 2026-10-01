@@ -173,6 +173,14 @@ impl Engine {
         }
     }
 
+    /// LuaTeX `\gluestretchorder`/`\glueshrinkorder`: LuaTeX counts a
+    /// `fi` order below `fil`, so every infinite order is one higher than
+    /// e-TeX's.
+    fn scan_lua_glue_order(&mut self, p: Prim) -> i32 {
+        let order = self.scan_etex_glue_field(if p == Prim::LuaGlueStretchOrder { 2 } else { 3 });
+        if order > 0 { order + 1 } else { 0 }
+    }
+
     /// tex.web @<Scan an optional space@>: one expanding fetch; consume a
     /// space, otherwise back it up. After an alphabetic constant this is
     /// what drives expl3 f-expansion (`\romannumeral`^^@\foo` expands `\foo`).
@@ -536,6 +544,14 @@ impl Engine {
                         v = self.scan_etex_glue_field(3) as i64;
                         break 'scan_loop;
                     }
+                    Some(p @ (Prim::LuaGlueStretchOrder | Prim::LuaGlueShrinkOrder)) => {
+                        v = self.scan_lua_glue_order(p) as i64;
+                        break 'scan_loop;
+                    }
+                    Some(Prim::EtxMinorVersion) => {
+                        v = 2;
+                        break 'scan_loop;
+                    }
                     Some(Prim::DimExpr) => {
                         v = self.scan_expr_dim() as i64;
                         break 'scan_loop;
@@ -678,10 +694,6 @@ impl Engine {
                     }
                     Some(Prim::LuaTeXVersion) => {
                         v = 124;
-                        break 'scan_loop;
-                    }
-                    Some(Prim::OutputMode) => {
-                        v = 1;
                         break 'scan_loop;
                     }
                     Some(Prim::CatCodeTable) => {
@@ -2213,9 +2225,6 @@ impl Engine {
             Some(Prim::LuaTeXBanner) => {
                 emit_the!(b"This is LuaTeX, Version 1.24.0");
             }
-            Some(Prim::OutputMode) => {
-                emit_the!(b"1");
-            }
             Some(Prim::CatCodeTable) => {
                 emit_the!(self.cur_catcode_table.to_string().as_bytes());
             }
@@ -2288,6 +2297,13 @@ impl Engine {
             Some(Prim::GlueShrinkOrder) => {
                 let v = self.scan_etex_glue_field(3);
                 emit_the!(v.to_string().as_bytes());
+            }
+            Some(p @ (Prim::LuaGlueStretchOrder | Prim::LuaGlueShrinkOrder)) => {
+                let v = self.scan_lua_glue_order(p);
+                emit_the!(v.to_string().as_bytes());
+            }
+            Some(Prim::EtxMinorVersion) => {
+                emit_the!(b"2");
             }
             Some(Prim::Ht) => {
                 let n = self.scan_reg_num();

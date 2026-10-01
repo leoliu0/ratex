@@ -23,7 +23,6 @@ pub struct LuaOutputItem {
 pub struct LuaBridgeState {
     pub output_queue: Vec<LuaOutputItem>,
     pub term_log: String,
-    pub requested_primitives: Vec<(String, Vec<String>)>,
 }
 
 impl LuaBridgeState {
@@ -31,7 +30,6 @@ impl LuaBridgeState {
         Self {
             output_queue: Vec::new(),
             term_log: String::new(),
-            requested_primitives: Vec::new(),
         }
     }
 }
@@ -177,26 +175,6 @@ impl LuaEngine {
             .unwrap();
         tex_tbl.set("write", write_fn).unwrap();
 
-        // tex.enableprimitives
-        let bridge_clone = self.bridge.clone();
-        let enable_fn = self
-            .lua
-            .create_function(move |prefix: String, table: LuaValue| -> LuaResult<()> {
-                let mut prims = Vec::new();
-                if let Some(tbl) = table.as_table() {
-                    for i in 1..=tbl.len() {
-                        if let Some(val) = tbl.raw_geti(i as i64) {
-                            if let Some(s) = val.as_str() {
-                                prims.push(s.to_string());
-                            }
-                        }
-                    }
-                }
-                bridge_clone.borrow_mut().requested_primitives.push((prefix, prims));
-                Ok(())
-            })
-            .unwrap();
-        tex_tbl.set("enableprimitives", enable_fn).unwrap();
 
         // tex.sp
         let sp_fn = self
@@ -828,30 +806,6 @@ impl Engine {
             return;
         };
         let items: Vec<LuaOutputItem> = lua.bridge.borrow_mut().output_queue.drain(..).collect();
-        let requested = std::mem::take(&mut lua.bridge.borrow_mut().requested_primitives);
-        for (prefix, prims) in requested {
-            if prims.is_empty() {
-                for id in self.cs.all_ids() {
-                    let name = self.cs.name(id).to_vec();
-                    if let Some(equiv) = self.eqtb.get(id).cloned() {
-                        let mut new_name = prefix.as_bytes().to_vec();
-                        new_name.extend_from_slice(&name);
-                        let new_id = self.cs.intern(&new_name);
-                        self.eqtb.assign(new_id, equiv, true);
-                    }
-                }
-            } else {
-                for prim_name in prims {
-                    let orig_id = self.cs.lookup(prim_name.as_bytes()).unwrap_or_else(|| self.cs.intern(prim_name.as_bytes()));
-                    if let Some(equiv) = self.eqtb.get(orig_id).cloned() {
-                        let mut new_name = prefix.as_bytes().to_vec();
-                        new_name.extend_from_slice(prim_name.as_bytes());
-                        let new_id = self.cs.intern(&new_name);
-                        self.eqtb.assign(new_id, equiv, true);
-                    }
-                }
-            }
-        }
         if !items.is_empty() {
             let mut combined = String::new();
             for item in items {
@@ -864,43 +818,5 @@ impl Engine {
                 self.input.push_file("<directlua>".to_string(), combined.into_bytes());
             }
         }
-    }
-}
-impl Engine {
-    /// Registers all LuaTeX primitives when `engine_kind == EngineKind::LuaTeX`.
-    pub fn init_luatex_primitives(&mut self) {
-        if self.engine_kind != crate::engine::EngineKind::LuaTeX {
-            return;
-        }
-
-        let def = |name: &'static [u8], p: crate::prim::Prim, e: &mut Engine| {
-            let id = e.cs.intern(name);
-            e.eqtb.assign(id, crate::eqtb::Equiv::Prim(p), false);
-        };
-
-        def(b"luatexversion", crate::prim::Prim::LuaTeXVersion, self);
-        def(b"luatexrevision", crate::prim::Prim::LuaTeXRevision, self);
-        def(b"luatexbanner", crate::prim::Prim::LuaTeXBanner, self);
-        def(b"outputmode", crate::prim::Prim::OutputMode, self);
-        def(b"directlua", crate::prim::Prim::DirectLua, self);
-        def(b"luafunction", crate::prim::Prim::LuaFunction, self);
-        def(b"luafunctioncall", crate::prim::Prim::LuaFunctionCall, self);
-        def(b"luadef", crate::prim::Prim::LuaDef, self);
-        def(b"luabytecode", crate::prim::Prim::LuaBytecode, self);
-        def(b"luabytecodecall", crate::prim::Prim::LuaBytecodeCall, self);
-        def(b"tex_luatexversion:D", crate::prim::Prim::LuaTeXVersion, self);
-        def(b"tex_directlua:D", crate::prim::Prim::DirectLua, self);
-        def(b"catcodetable", crate::prim::Prim::CatCodeTable, self);
-        def(b"initcatcodetable", crate::prim::Prim::InitCatCodeTable, self);
-        def(b"savecatcodetable", crate::prim::Prim::SaveCatCodeTable, self);
-        def(b"attribute", crate::prim::Prim::Attribute, self);
-        def(b"attributedef", crate::prim::Prim::AttributeDef, self);
-        def(b"Ustack", crate::prim::Prim::Ustack, self);
-        def(b"Umathfractiondelsize", crate::prim::Prim::Umathfractiondelsize, self);
-        def(b"Umathstacknumup", crate::prim::Prim::Umathstacknumup, self);
-        def(b"Umathstackdenomdown", crate::prim::Prim::Umathstackdenomdown, self);
-        def(b"Umathstackvgap", crate::prim::Prim::Umathstackvgap, self);
-        def(b"Ustartmath", crate::prim::Prim::Ustartmath, self);
-        def(b"Ustopmath", crate::prim::Prim::Ustopmath, self);
     }
 }

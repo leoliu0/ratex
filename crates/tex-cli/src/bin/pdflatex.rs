@@ -2457,9 +2457,6 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
     };
     let mut eng = Engine::new_with_kind(engine_kind, ini || !plain);
     eng.init_primitives();
-    if engine_kind == tex_core::engine::EngineKind::LuaTeX {
-        eng.init_luatex_primitives();
-    }
     eng.allow_missing_main_aux = !plain && !ini;
     configure_engine(&mut eng, halt_on_error, interaction_mode, max_errors);
     phase_timer.mark("startup");
@@ -2506,9 +2503,6 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
                             );
                             eng = Engine::new_with_kind(engine_kind, ini || !plain);
                             eng.init_primitives();
-                            if engine_kind == tex_core::engine::EngineKind::LuaTeX {
-                                eng.init_luatex_primitives();
-                            }
                             configure_engine(&mut eng, halt_on_error, interaction_mode, max_errors);
                             eng.out_dir = out_dir.clone();
                             eng.aux_dir = requested_aux_dir.clone();

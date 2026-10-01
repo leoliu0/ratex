@@ -31,29 +31,30 @@ pub fn finalize_format_load(eng: &mut Engine) {
             true,
         );
     }
-    for name in [
-        b"pdfrandomseed" as &[u8],
-        b"randomseed",
-        b"tex_randomseed:D",
-    ] {
-        let id = eng.cs.intern(name);
-        eng.eqtb.assign(
-            id,
-            crate::eqtb::Equiv::Prim(crate::prim::Prim::PdfRandomSeed),
-            true,
-        );
-    }
-    for name in [
-        b"pdfsetrandomseed" as &[u8],
-        b"setrandomseed",
-        b"tex_setrandomseed:D",
-    ] {
-        let id = eng.cs.intern(name);
-        eng.eqtb.assign(
-            id,
-            crate::eqtb::Equiv::Prim(crate::prim::Prim::PdfSetRandomSeed),
-            true,
-        );
+    // pdfTeX formats dumped before the random-number primitives existed.
+    if eng.engine_kind == crate::engine::EngineKind::PdfTeX {
+        for name in [
+            b"pdfrandomseed" as &[u8],
+            b"tex_randomseed:D",
+        ] {
+            let id = eng.cs.intern(name);
+            eng.eqtb.assign(
+                id,
+                crate::eqtb::Equiv::Prim(crate::prim::Prim::PdfRandomSeed),
+                true,
+            );
+        }
+        for name in [
+            b"pdfsetrandomseed" as &[u8],
+            b"tex_setrandomseed:D",
+        ] {
+            let id = eng.cs.intern(name);
+            eng.eqtb.assign(
+                id,
+                crate::eqtb::Equiv::Prim(crate::prim::Prim::PdfSetRandomSeed),
+                true,
+            );
+        }
     }
     // Compat shim for formats dumped before the
     // active-char namespace split: their boot wrote the

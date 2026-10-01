@@ -1835,7 +1835,8 @@ impl Engine {
                 None
             }
             EtxRevision => {
-                self.exp_string(b".6");
+                // LuaTeX implements e-TeX 2.2; pdfTeX 1.40 e-TeX 2.6.
+                self.exp_string(if self.engine_kind == crate::engine::EngineKind::LuaTeX { b".2" } else { b".6" });
                 None
             }
             RatexUnicodeVersion => {

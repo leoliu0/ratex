@@ -48,13 +48,13 @@ pub use lua_vm::async_thread::{AsyncFuture, AsyncReturnValue, IntoAsyncLua};
 pub use lua_vm::lua_error::{LuaError, LuaFullError};
 pub use lua_vm::{Borrowed, LuaResult, UserDataBorrow, UserDataBorrowMut, UserDataRef};
 pub use stdlib::Stdlib;
+pub use stdlib::io::file::LuaFile;
 
-pub(crate) use lib_registry::{LibraryModule, LibraryRegistry, PreloadModule};
 pub(crate) use lua_value::userdata_trait::LuaValueVisitor;
 pub(crate) use lua_value::{LuaProto, LuaRawFunction, LuaRawTable, LuaUserdata, LuaValue};
-pub(crate) use lua_value::{RustCallback, UserDataBuilder};
+pub(crate) use lua_value::RustCallback;
 pub(crate) use lua_vm::{
-    CFunction, CallInfo, DebugInfo, GlobalState, Instruction, LuaAnyRef, LuaFunctionRef,
-    LuaState, LuaStringRef, LuaTableRef, OpCode,
+    CallInfo, DebugInfo, GlobalState, Instruction, LuaAnyRef, LuaFunctionRef, LuaState,
+    LuaStringRef, LuaTableRef, OpCode,
 };
 pub(crate) use lua_vm::{LUA_MASKCALL, LUA_MASKCOUNT, LUA_MASKLINE, LUA_MASKRET};

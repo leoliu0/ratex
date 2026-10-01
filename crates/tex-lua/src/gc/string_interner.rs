@@ -2,7 +2,7 @@ use crate::LuaValue;
 #[cfg(feature = "shared-proto")]
 use crate::gc::Pooled;
 use crate::gc::{CreateResult, GC, GcObjectOwner, GcString, PagedPool, StringPtr};
-use crate::lua_value::{InlineShortString, LuaStrRepr, LuaString};
+use crate::lua_value::{InlineShortString, LuaStrRepr, LuaString, Utf8State};
 use crate::lua_vm::lua_limits::LUAI_MAXSHORTLEN;
 
 #[cfg(feature = "shared-proto")]
@@ -176,7 +176,7 @@ impl StringInterner {
         gc: &mut GC,
         string_pool: &mut PagedPool<GcString>,
     ) -> CreateResult {
-        self.intern_bytes(s.as_bytes(), gc, string_pool)
+        self.intern_with(s.as_bytes(), true, gc, string_pool)
     }
 
     #[inline]
@@ -186,7 +186,7 @@ impl StringInterner {
         gc: &mut GC,
         string_pool: &mut PagedPool<GcString>,
     ) -> CreateResult {
-        self.intern_bytes_owned(s.into_bytes(), gc, string_pool)
+        self.intern_owned_with(s.into_bytes(), true, gc, string_pool)
     }
 
     #[inline]
@@ -196,12 +196,33 @@ impl StringInterner {
         gc: &mut GC,
         string_pool: &mut PagedPool<GcString>,
     ) -> CreateResult {
+        self.intern_with(bytes, false, gc, string_pool)
+    }
+
+    /// A string object for `bytes`; the UTF-8 state is only validated when
+    /// `utf8_known` is false.
+    fn lua_string(repr: LuaStrRepr, hash: u64, utf8_known: bool) -> LuaString {
+        if utf8_known {
+            LuaString::new(repr, hash, Utf8State::Valid)
+        } else {
+            LuaString::from_bytes(repr, hash)
+        }
+    }
+
+    fn intern_with(
+        &mut self,
+        bytes: &[u8],
+        utf8_known: bool,
+        gc: &mut GC,
+        string_pool: &mut PagedPool<GcString>,
+    ) -> CreateResult {
         let current_white = gc.current_white;
         let slen = bytes.len();
 
         if slen > Self::SHORT_STRING_LIMIT {
             let size = Self::long_string_size(slen);
-            let lua_string = LuaString::from_bytes(LuaStrRepr::Heap(Box::<[u8]>::from(bytes)), 0);
+            let lua_string =
+                Self::lua_string(LuaStrRepr::Heap(Box::<[u8]>::from(bytes)), 0, utf8_known);
             let gc_string = Self::alloc_string_owner(current_white, lua_string, size, string_pool);
             let ptr = gc_string.as_str_ptr().unwrap();
             gc.trace_object(gc_string)?;
@@ -243,6 +264,7 @@ impl StringInterner {
         let value = self.create_short_string(
             Self::make_short_string_repr(bytes),
             hash,
+            utf8_known,
             current_white,
             gc,
             string_pool,
@@ -260,12 +282,23 @@ impl StringInterner {
         gc: &mut GC,
         string_pool: &mut PagedPool<GcString>,
     ) -> CreateResult {
+        self.intern_owned_with(bytes, false, gc, string_pool)
+    }
+
+    fn intern_owned_with(
+        &mut self,
+        bytes: Vec<u8>,
+        utf8_known: bool,
+        gc: &mut GC,
+        string_pool: &mut PagedPool<GcString>,
+    ) -> CreateResult {
         let current_white = gc.current_white;
         let slen = bytes.len();
 
         if slen > Self::SHORT_STRING_LIMIT {
             let size = Self::long_string_size(slen);
-            let lua_string = LuaString::from_bytes(LuaStrRepr::Heap(bytes.into_boxed_slice()), 0);
+            let lua_string =
+                Self::lua_string(LuaStrRepr::Heap(bytes.into_boxed_slice()), 0, utf8_known);
             let gc_string = Self::alloc_string_owner(current_white, lua_string, size, string_pool);
             let ptr = gc_string.as_str_ptr().unwrap();
             gc.trace_object(gc_string)?;
@@ -290,23 +323,27 @@ impl StringInterner {
         self.create_short_string(
             Self::make_short_string_repr(&bytes),
             hash,
+            utf8_known,
             current_white,
             gc,
             string_pool,
         )
     }
 
+    /// `utf8_known`: the caller holds a `str`/`String`, so the bytes are valid
+    /// UTF-8 and need not be validated again.
     #[inline]
     fn create_short_string(
         &mut self,
         s: LuaStrRepr,
         hash: u64,
+        utf8_known: bool,
         current_white: u8,
         gc: &mut GC,
         string_pool: &mut PagedPool<GcString>,
     ) -> CreateResult {
         let size = Self::short_string_size();
-        let lua_string = LuaString::from_bytes(s, hash);
+        let lua_string = Self::lua_string(s, hash, utf8_known);
         let gc_string = Self::alloc_string_owner(current_white, lua_string, size, string_pool);
         let ptr = gc_string.as_str_ptr().unwrap();
 

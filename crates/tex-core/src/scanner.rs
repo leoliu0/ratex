@@ -504,6 +504,7 @@ impl Engine {
     /// begins `^^` notation, replace the notation by the character it
     /// denotes and close the gap. Returns false if no expanded code is there.
     fn reduce_expanded_code(&mut self, si: usize, k: usize, sup: u32) -> bool {
+        let unicode = self.engine_kind != EngineKind::PdfTeX;
         let Some(Source::File {
             line_buf: Some(buf),
             ..
@@ -514,6 +515,14 @@ impl Engine {
         let Some((value, width)) = sup_notation(buf, k, sup) else {
             return false;
         };
+        if unicode && value >= 0x80 {
+            // The denoted scalar is spelled in UTF-8 so the line still
+            // decodes (luatex stores `^^ad` as U+00AD, not a raw byte).
+            let mut encoded = [0u8; 4];
+            let bytes = char::from(value).encode_utf8(&mut encoded).as_bytes();
+            buf.splice(k - 1..k + width, bytes.iter().copied());
+            return true;
+        }
         buf[k - 1] = value;
         buf.drain(k..k + width);
         true

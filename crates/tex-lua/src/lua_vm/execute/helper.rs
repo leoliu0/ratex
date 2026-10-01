@@ -183,6 +183,19 @@ fn tointeger_mode(v: &LuaValue, mode: i32) -> Option<i64> {
     }
 }
 
+/// `luaG_typeerror(L, t, "index")`: once `t` is an `__index`/`__newindex` value
+/// (`chained`) it is no stack slot or upvalue, so varinfo names nothing.
+#[cold]
+#[inline(never)]
+fn index_error(lua_state: &mut LuaState, t: &LuaValue, chained: bool) -> LuaError {
+    if chained {
+        let tname = objtypename(lua_state, t);
+        lua_state.error(format!("attempt to index a {tname} value"))
+    } else {
+        typeerror(lua_state, t, "index")
+    }
+}
+
 /// Lookup value from object's metatable __index
 /// Returns Ok(Some(value)) if found, Ok(None) if not found in table chain,
 /// or Err if attempting to index a non-table value without __index metamethod.
@@ -206,7 +219,7 @@ fn finishget_core(
     let mut t = *obj;
     let mut skip_raw_lookup = skip_first_raw_lookup;
 
-    for _ in 0..MAXTAGLOOP {
+    for chained in (0..MAXTAGLOOP).map(|i| i > 0) {
         let tm = if let Some(table) = t.as_table_mut() {
             // Try raw_get first — handles key types the caller's fast paths didn't cover
             // (float→int normalization, long strings, etc.)
@@ -281,7 +294,7 @@ fn finishget_core(
             match get_metamethod_event(lua_state, &t, TmKind::Index) {
                 Some(tm) => tm,
                 None => {
-                    return Err(typeerror(lua_state, &t, "index"));
+                    return Err(index_error(lua_state, &t, chained));
                 }
             }
         };
@@ -441,7 +454,7 @@ pub(crate) fn finishset(
     let mut t = *obj;
     let mut skip_existing = skip_existing_check;
 
-    for _ in 0..MAXTAGLOOP {
+    for chained in (0..MAXTAGLOOP).map(|i| i > 0) {
         // Check if t is a table — use inline fasttm for __newindex
         if let Some(table) = t.as_table_mut() {
             let tm_val =
@@ -516,7 +529,7 @@ pub(crate) fn finishset(
             }
 
             // No metamethod found for non-table
-            return Err(typeerror(lua_state, &t, "index"));
+            return Err(index_error(lua_state, &t, chained));
         }
     }
 
@@ -750,12 +763,13 @@ fn finish_c_frame(lua_state: &mut LuaState, ci: &mut CallInfo) -> LuaResult<()> 
         } else {
             // pcall body completed successfully after yield. The body's
             // results start at the protected function's slot: pcall_func_pos
-            // + 1 for pcall, + 3 for xpcall (f, msgh, then the copy of f).
+            // + 2 for pcall (after its `true`), + 3 for xpcall (f, msgh, then
+            // the copy of f).
             // We need: [true, res1, res2, ...] starting at pcall_func_pos.
             let stack_top = lua_state.get_top();
-            let body_results_start = pcall_func_pos + if is_xpcall { 3 } else { 1 };
+            let body_results_start = pcall_func_pos + if is_xpcall { 3 } else { 2 };
             let body_nres = stack_top.saturating_sub(body_results_start);
-            if body_results_start != pcall_func_pos + 1 {
+            {
                 lua_state.stack_mut().copy_within(
                     body_results_start..body_results_start + body_nres,
                     pcall_func_pos + 1,

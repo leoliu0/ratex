@@ -182,3 +182,113 @@ fn test_debug_library_matches_ldblib_55() {
         "#,
     );
 }
+
+#[test]
+fn test_lua53_contract_matches_texlua() {
+    // Expected values from texlua (Lua 5.3.6).
+    run_debug_level(
+        crate::LuaLanguageLevel::Lua53,
+        r#"
+        -- 5.3's parlist declares no vararg parameter: no local, no register
+        local function foo(a, b, ...) local d = 1 return (debug.getlocal(1, 3)) end
+        assert(debug.getlocal(foo, 3) == nil and foo(1, 2, 3) == 'd')
+        local ok, m = load("function f(...t) end")
+        assert(not ok and m:find("')' expected near 't'", 1, true), m)
+        -- luaB_pcall keeps its `true` below the function: a C temporary
+        local function lv2() return debug.getlocal(2, 1) end
+        local _, n, v = pcall(lv2)
+        assert(n == '(*temporary)' and v == true, n)
+        -- 5.3 call errors: no metamethod names; a bad __call blames the object
+        local t = setmetatable({}, {__add = 34, __call = 34, __index = 34})
+        assert(select(2, pcall(function() return t + 1 end)):find('attempt to call a number value$'))
+        assert(select(2, pcall(function() return t() end)):find("call a table value (upvalue 't')", 1, true))
+        assert(select(2, pcall(function() return t.x end)):find('attempt to index a number value$'))
+        -- a trivial handler still runs after a stack overflow (error zone)
+        local function deep() return deep() + 1 end
+        assert(select(2, xpcall(deep, function() return 1 end)) == 1)
+        local s, e = xpcall(deep, function(m) return select(2, pcall(deep)) end)
+        assert(e == 'error in error handling', e)
+        -- luaL_loadfilex errors
+        assert(select(2, loadfile('/nonexistent/x.lua')) == 'cannot open /nonexistent/x.lua: No such file or directory')
+        assert(select(2, loadfile('/')) == 'cannot read /: Is a directory')
+        -- a load reader cannot yield
+        local co = coroutine.wrap(function() return load(function() coroutine.yield(1) end) end)
+        local f, m = co()
+        assert(f == nil and m == 'attempt to yield across a C-call boundary', tostring(m))
+        "#,
+    );
+}
+
+#[test]
+fn test_lua55_contract_matches_lua() {
+    // Expected values from lua 5.5.1.
+    run_debug_level(
+        crate::LuaLanguageLevel::Lua55,
+        r#"
+        local function foo(a, b, ...) local d = 1 return (debug.getlocal(1, 3)) end
+        assert(debug.getlocal(foo, 3) == nil and foo(1, 2, 3) == '(vararg table)')
+        local function lv2() return debug.getlocal(2, 1) end
+        local _, n, v = pcall(lv2)
+        assert(n == '(C temporary)' and v == true, n)
+        local t = setmetatable({}, {__add = 34})
+        assert(select(2, pcall(function() return t + 1 end)):find("(metamethod 'add')", 1, true))
+        local ok, m = pcall(load("for x in 1 do end"))
+        assert(m:find("(for iterator 'for iterator')", 1, true), m)
+        assert(select(2, loadfile('/')) == 'cannot read /')
+        local p = select(2, package.searchpath('x', 'a?;;b?'))
+        assert(p == "no file 'ax'\n\tno file ''\n\tno file 'bx'", p)
+        -- 'then' gets no line event of its own
+        local lines = {}
+        local src = "if\nmath.sin(1)\nthen\n  a=1\nelse\n  a=2\nend\n"
+        debug.sethook(function(_, l) if debug.getinfo(2, 'S').source == src then lines[#lines + 1] = l end end, 'l')
+        load(src)()
+        debug.sethook()
+        assert(table.concat(lines, ',') == '2,4,7', table.concat(lines, ','))
+        "#,
+    );
+}
+
+#[test]
+fn test_lua53_then_line_event() {
+    // Expected values from texlua (Lua 5.3.6): 5.3 emits the jump on the THEN line.
+    run_debug_level(
+        crate::LuaLanguageLevel::Lua53,
+        r#"
+        local lines = {}
+        local src = "if\nmath.sin(1)\nthen\n  a=1\nelse\n  a=2\nend\n"
+        debug.sethook(function(_, l) if debug.getinfo(2, 'S').source == src then lines[#lines + 1] = l end end, 'l')
+        load(src)()
+        debug.sethook()
+        assert(table.concat(lines, ',') == '2,3,4,7', table.concat(lines, ','))
+        "#,
+    );
+}
+
+#[test]
+fn test_lua53_thread_cycle_survives_one_collection() {
+    // lua-5.3.4-tests/gc.lua:480: touched open upvalues of an unreachable thread are
+    // remarked once, so the cycle needs two collections (texlua agrees).
+    run_debug_level(
+        crate::LuaLanguageLevel::Lua53,
+        r#"
+        local collected = false
+        collectgarbage(); collectgarbage("stop")
+        do
+          local function f(param)
+            ;(function()
+              param = {param, f}
+              setmetatable(param, {__gc = function() collected = true end})
+              coroutine.yield(100)
+            end)()
+          end
+          local co = coroutine.create(f)
+          assert(coroutine.resume(co, co))
+        end
+        collectgarbage()
+        assert(not collected)
+        collectgarbage()
+        assert(collected)
+        collectgarbage("restart")
+        "#,
+    );
+}

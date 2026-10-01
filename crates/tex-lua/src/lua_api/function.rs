@@ -54,31 +54,19 @@ impl LuaFunction {
     pub fn call1<A: IntoLua, R: FromLua>(&self, args: A) -> LuaResult<R> {
         self.inner.call1(args)
     }
-
-    /// # Safety
-    /// The returned `LuaValue` must not be used after the `LuaFunction` is
-    pub unsafe fn to_value(&self) -> LuaValue {
-        self.inner.to_value()
-    }
 }
 
 impl IntoLua for LuaFunction {
     #[inline]
     fn into_lua(self, state: &mut crate::LuaState) -> Result<usize, String> {
-        state
-            .push_value(self.inner.to_value())
-            .map_err(|e| format!("{:?}", e))?;
-        Ok(1)
+        self.inner.push_into(state)
     }
 }
 
 impl IntoLua for &LuaFunction {
     #[inline]
     fn into_lua(self, state: &mut crate::LuaState) -> Result<usize, String> {
-        state
-            .push_value(self.inner.to_value())
-            .map_err(|e| format!("{:?}", e))?;
-        Ok(1)
+        self.inner.push_into(state)
     }
 }
 

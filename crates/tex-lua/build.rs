@@ -1,4 +1,7 @@
 fn main() {
+    // `--cfg tex_lua_boxed_pool` (set via RUSTFLAGS for sanitizer runs) allocates
+    // every GC object in its own Box so AddressSanitizer sees use-after-free.
+    println!("cargo::rustc-check-cfg=cfg(tex_lua_boxed_pool)");
     println!("cargo:rerun-if-changed=src/c_api_shim.c");
     if std::env::var("CARGO_CFG_TARGET_ARCH").as_deref() != Ok("wasm32") {
         cc::Build::new()

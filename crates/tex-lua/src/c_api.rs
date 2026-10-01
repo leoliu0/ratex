@@ -267,9 +267,9 @@ impl crate::lua_value::userdata_trait::UserDataTrait for WrapperOwner {
         "userdata"
     }
 
-    fn trace_lua_values(&self, visit: &mut dyn FnMut(LuaValue)) {
+    fn trace_lua_values(&self, visit: &mut crate::LuaValueVisitor<'_>) {
         for value in unsafe { &(*self.0).parked_roots } {
-            visit(*value);
+            (visit.0)(*value);
         }
     }
 
@@ -377,8 +377,8 @@ impl crate::lua_value::userdata_trait::UserDataTrait for CUserdata {
         "userdata"
     }
 
-    fn trace_lua_values(&self, visit: &mut dyn FnMut(LuaValue)) {
-        visit(self.uservalue);
+    fn trace_lua_values(&self, visit: &mut crate::LuaValueVisitor<'_>) {
+        (visit.0)(self.uservalue);
     }
 
     fn as_any(&self) -> &dyn std::any::Any {

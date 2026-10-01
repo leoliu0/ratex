@@ -189,27 +189,37 @@ jobs:
         if: matrix.platform == 'linux'
         run: python3 scripts/test_package_dist.py
 
+      - name: Install TeX Live 2026 reference
+        if: matrix.platform == 'linux'
+        uses: TeX-Live/setup-texlive-action@v3
+        with:
+          version: 2026
+          packages: |
+            scheme-basic
+            collection-latexrecommended
+            collection-latexextra
+            collection-fontsrecommended
+            collection-fontsextra
+            collection-xetex
+            collection-mathscience
+            collection-langcjk
+            collection-langchinese
+            collection-langjapanese
+            collection-langkorean
+            collection-langcyrillic
+            collection-langgreek
+
       - name: Linux full independent-viewer font verification gate
         if: matrix.platform == 'linux'
-        # Ubuntu 22.04 ships TeX Live 2021, whose CJK package sets headings and
-        # bullets differently from current TeX Live. CI compares this case
-        # against the current reference; here it keeps every non-reference check.
         run: |
-          version_sensitive=issue_4_cjkutf8_latin
-          mapfile -t cases < <(python3 -c 'import json,sys; [print(c["name"]) for c in json.load(open("scripts/fixtures/fonts/manifest.json")) if c["name"] != sys.argv[1]]' "$version_sensitive")
           python3 scripts/test_fonts.py \
             --ratex target/release/ratex \
             --output /tmp/font-evidence-full \
             --require-isolation \
             --require-pdfjs \
-            "${cases[@]/#/--case=}"
-          python3 scripts/test_fonts.py \
-            --ratex target/release/ratex \
-            --output /tmp/font-evidence-version-sensitive \
-            --require-isolation \
-            --require-pdfjs \
-            --skip-reference \
-            --case "$version_sensitive"
+            --reference-pdflatex "$(command -v pdflatex)" \
+            --reference-xelatex "$(command -v xelatex)" \
+            --reference-texlive 2026
 
       - name: Package distribution (unix)
         if: matrix.platform != 'windows'

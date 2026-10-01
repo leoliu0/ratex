@@ -1257,6 +1257,8 @@ class FontTestHarness:
         self.ratex_version: str = ""
         self.ref_fonts_conf: Path | None = None
         self.extra_tds_roots: list[str] = []
+        self.reference_info: dict[str, Any] = {}
+        self.reference_roots: list[str] = []
 
     def setup_ref_env(self) -> None:
         """Prepare reference-only fontconfig and TeX search paths."""
@@ -1307,6 +1309,7 @@ class FontTestHarness:
         # Acquire missing XeLaTeX CJK macro dependencies into reference_root/tex if needed
         self.acquire_reference_cjk_dependencies(reference_root)
         self.extra_tds_roots = [str(reference_root)]
+        self.inspect_reference_engines()
 
         # 1. Reference-only fontconfig file
         self.ref_fonts_conf = ref_env_dir / "fonts.conf"
@@ -1323,6 +1326,39 @@ class FontTestHarness:
 </fontconfig>
 """
         self.ref_fonts_conf.write_text(fc_xml, encoding="utf-8")
+
+
+    def inspect_reference_engines(self) -> None:
+        """Record reference engine versions and their TeX trees for masking."""
+        for engine in ("pdflatex", "xelatex"):
+            binary = self.resolve_ref_binary(engine)
+            if not binary or not os.path.isfile(binary):
+                self.reference_info[engine] = {"path": None, "version": None}
+                continue
+            proc = subprocess.run(
+                [binary, "--version"], capture_output=True, encoding="utf-8", errors="replace", timeout=30, check=False
+            )
+            lines = (proc.stdout.strip() or proc.stderr.strip()).splitlines()
+            self.reference_info[engine] = {"path": binary, "version": lines[0] if lines else ""}
+            kpsewhich = Path(binary).resolve().parent / "kpsewhich"
+            if kpsewhich.is_file():
+                root = subprocess.run(
+                    [str(kpsewhich), "-var-value=TEXMFROOT"], capture_output=True, encoding="utf-8", timeout=30, check=False
+                ).stdout.strip()
+                # System trees under /usr are already masked piecewise; never mask /usr itself.
+                if root and os.path.isdir(root) and not root.startswith("/usr") and root not in self.reference_roots:
+                    self.reference_roots.append(root)
+
+    def reference_year_error(self, selected_cases: list[dict[str, Any]]) -> str | None:
+        year = self.args.reference_texlive
+        if not year or self.args.skip_reference:
+            return None
+        engines = {c.get("reference_engine", c.get("engine", "pdflatex")) for c in selected_cases}
+        for engine in sorted(engines):
+            version = (self.reference_info.get(engine) or {}).get("version") or ""
+            if f"TeX Live {year}" not in version:
+                return f"reference {engine} must be TeX Live {year}, found: {version or 'missing'}"
+        return None
 
 
     def acquire_reference_cjk_dependencies(self, reference_root: Path) -> None:
@@ -1486,7 +1522,7 @@ class FontTestHarness:
                             candidates.append(full)
             except Exception:
                 pass
-        return [p for p in candidates if os.path.exists(p)]
+        return [p for p in candidates + self.reference_roots if os.path.exists(p)]
 
     def verify_isolation_sentinel(self) -> dict[str, Any]:
         """Prove that external host font trees and a sentinel file are inaccessible inside bwrap."""
@@ -2139,6 +2175,11 @@ class FontTestHarness:
                 print(f"Error: Unknown cases: {sorted(missing)}", file=sys.stderr)
                 return 1
 
+        year_error = self.reference_year_error(selected_cases)
+        if year_error:
+            print(f"ERROR: {year_error}", file=sys.stderr)
+            return 1
+
         isolation_info = self.get_isolation_info()
 
         if self.args.require_isolation and (
@@ -2244,6 +2285,7 @@ class FontTestHarness:
             },
             "isolation": isolation_info,
             "pdfjs": self.pdfjs_info,
+            "reference": self.reference_info,
             "summary": {
                 "total": len(selected_cases),
                 "passed": passed_count,
@@ -2275,6 +2317,7 @@ def main() -> int:
     parser.add_argument("--require-isolation", action="store_true", help="Require Linux bwrap sandbox isolation")
     parser.add_argument("--require-pdfjs", action="store_true", help="Require pdf.js rendering and extraction")
     parser.add_argument("--skip-reference", action="store_true", help="Skip reference engine comparison")
+    parser.add_argument("--reference-texlive", metavar="YEAR", help="Fail unless reference engines report this TeX Live year")
     parser.add_argument("--jobs", type=int, default=4, help="Concurrent workers (default: 4)")
     parser.add_argument("--timeout", type=float, default=60.0, help="Per-case timeout (default: 60s)")
     parser.add_argument("--manifest", type=Path, help="Path to manifest.json")

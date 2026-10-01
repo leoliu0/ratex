@@ -151,6 +151,26 @@ jobs:
       - name: PDF font validator regressions
         run: python scripts/test_font_validation.py
 
+      - name: Install TeX Live 2026 reference
+        if: runner.os == 'Linux'
+        uses: TeX-Live/setup-texlive-action@v3
+        with:
+          version: 2026
+          packages: |
+            scheme-basic
+            collection-latexrecommended
+            collection-latexextra
+            collection-fontsrecommended
+            collection-fontsextra
+            collection-xetex
+            collection-mathscience
+            collection-langcjk
+            collection-langchinese
+            collection-langjapanese
+            collection-langkorean
+            collection-langcyrillic
+            collection-langgreek
+
       - name: Linux full independent-viewer font verification gate
         if: runner.os == 'Linux'
         run: |
@@ -158,7 +178,10 @@ jobs:
             --ratex target/release/ratex \
             --output target/font-evidence-full \
             --require-isolation \
-            --require-pdfjs
+            --require-pdfjs \
+            --reference-pdflatex "$(command -v pdflatex)" \
+            --reference-xelatex "$(command -v xelatex)" \
+            --reference-texlive 2026
 
       - name: Artifact font smoke (macos)
         if: runner.os == 'macOS'

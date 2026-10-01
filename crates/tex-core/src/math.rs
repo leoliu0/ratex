@@ -595,8 +595,11 @@ impl Engine {
     pub fn exit_math(&mut self) {
         let was_display = self.mode == Mode::DisplayMath;
         if was_display {
+            // tex.web §1197 <Check that another $ follows>: get_x_token; a
+            // non-math-shift token is an error and is read again (back_error)
             let t = self.get_token();
-            if !(t.is_char() && t.cc() == 3) && t != crate::input::EOF_MARKER {
+            if t != crate::input::EOF_MARKER && !(t.is_char() && t.cc() == 3) {
+                self.error("Display math should end with $$");
                 self.push_token(t);
             }
         }
@@ -680,8 +683,11 @@ impl Engine {
             self.finish_display_math(formula, tag, disp_regs.unwrap(), outer_mode);
             // tex.web resume_after_display (§1200) ends with <Scan an
             // optional space>, after unsave has inserted any \aftergroup
-            // tokens.
+            // tokens, then `if nest_ptr=1 then build_page`.
             self.scan_optional_space();
+            if outer_mode == Mode::Vertical {
+                self.build_page();
+            }
             return;
         }
         let hlist = inline_hlist.unwrap();
@@ -1797,44 +1803,38 @@ impl Engine {
         self.append_mlist_node(vb);
     }
 
-    /// tex.web scan_delimiter: a character token with a `\delcode` uses it;
-    /// `\delimiter` scans its 27-bit code; anything else backs up and scans
-    /// an integer.
+    /// tex.web scan_delimiter (§1160, r=false): after the next non-blank
+    /// non-relax non-call token, a letter or other character uses its
+    /// `\delcode` and `\delimiter` scans a 27-bit code; any other token (and
+    /// a negative `\delcode`) is `Missing delimiter (. inserted)`, backed up
+    /// so it is read again, and the null delimiter is used.
     pub fn scan_delim_int(&mut self) -> i32 {
         self.skip_spaces_relax();
         let t = self.get_token();
         let token_source = self.current_token_source_mark();
-        if t == crate::input::EOF_MARKER {
-            self.error_at(
-                "Missing delimiter (. inserted)",
-                token_source.map(|mark| mark.to_context()),
-            );
-            return 0;
-        }
-        if t.is_char() {
-            let character = t.chr();
-            // tex.web §240: period is the null delimiter (code 0).
-            if character == u32::from(b'.') {
-                return 0;
-            }
-            let delimiter = self.eqtb.delimiter_code_for(character);
-            if let Ok(delimiter) = i32::try_from(delimiter) {
-                if delimiter >= 0 {
-                    return delimiter;
-                }
-            }
-            self.error_at(
-                "Missing delimiter (. inserted)",
-                token_source.map(|mark| mark.to_context()),
-            );
-            return 0;
-        }
-        if let Some(Equiv::Prim(Prim::Delimiter)) = self.eqtb.resolve(t.cs_id()).cloned() {
+        let code = if t.is_char() && matches!(t.cc(), 11 | 12) {
+            self.eqtb.delimiter_code_for(t.chr())
+        } else if t.is_cs()
+            && matches!(self.eqtb.resolve(t.cs_id()), Some(Equiv::Prim(Prim::Delimiter)))
+        {
             return self.scan_delimiter_code("\\delimiter");
+        } else {
+            -1
+        };
+        if let Ok(code) = i32::try_from(code) {
+            if code >= 0 {
+                return code;
+            }
         }
-        // tex.web: back_input, then scan a 27-bit integer constant
-        self.push_token(t);
-        self.scan_delimiter_code("delimiter")
+        self.error_at(
+            "Missing delimiter (. inserted)",
+            token_source.map(|mark| mark.to_context()),
+        );
+        // back_error: the offending token is read again
+        if t != crate::input::EOF_MARKER {
+            self.push_token(t);
+        }
+        0
     }
 
     pub(crate) fn scan_delimiter_code(&mut self, command: &str) -> i32 {

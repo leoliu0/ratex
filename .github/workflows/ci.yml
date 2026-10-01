@@ -60,9 +60,9 @@ jobs:
             target/wasm/nodejs/
             target/wasm/fonts/
   memory-bounded-build:
-    # Issue #16: `cargo install` (Homebrew on Linux) must fit an 8 GiB machine.
-    # No cache on purpose: tex-kpse (embedded archive) and the ThinLTO link of
-    # ratex are the compiles under test.
+    # Issue #16: `cargo install` (Homebrew on Linux, AUR) must fit a 1 GiB
+    # machine at one build job. No cache on purpose: tex-kpse (embedded
+    # archive) and the ThinLTO link of ratex are the compiles under test.
     name: Memory-bounded arm64 release build
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 120
@@ -70,8 +70,11 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: cargo install ratex under a 6 GiB no-swap ceiling, then smoke it
+      - name: cargo install ratex under a 1 GiB no-swap ceiling at -j1, then smoke it
         run: scripts/memory_bounded_build.sh
+        env:
+          RATEX_MEMORY_LIMIT: 1g
+          RATEX_BUILD_JOBS: 1
 
   test:
     name: Test (${{ matrix.os }})

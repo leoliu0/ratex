@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 #[path = "../allocator.rs"]
 mod allocator;
 #[global_allocator]
@@ -7,11 +5,10 @@ static GLOBAL: allocator::EngineAllocator = allocator::EngineAllocator;
 
 #[cfg(test)]
 use tex_core::driver::png_embed_options;
-/// Precompiled format containing standard LaTeX packages baked directly into the binary.
 use tex_core::driver::{finalize_format_load, install_pdftex_config_registers};
 
+/// Precompiled formats containing standard LaTeX packages, baked into the binary.
 static EMBEDDED_DEFAULT_FMT: &[u8] = include_bytes!("../../assets/default.fmt.zst");
-static EMBEDDED_XELATEX_FMT: &[u8] = include_bytes!("../../assets/xelatex.fmt.zst");
 static EMBEDDED_LUALATEX_FMT: &[u8] = include_bytes!("../../assets/lualatex.fmt.zst");
 const DEPCACHE_MAX_BYTES: u64 = 512 * 1024 * 1024;
 const DEPCACHE_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(30 * 24 * 60 * 60);
@@ -82,7 +79,10 @@ struct TexmkPublishedOutputs {
 /// proves that this process was launched with the requested private cache.
 /// Canonicalizing the existing parent gives directory dependency paths the
 /// same spelling even while either output does not exist yet.
-fn texmk_published_outputs(cache_root: &std::path::Path) -> Option<TexmkPublishedOutputs> {
+fn texmk_published_outputs(
+    cache_root: &std::path::Path,
+    synctex_extension: &str,
+) -> Option<TexmkPublishedOutputs> {
     let marker = std::env::var_os(TEXMK_CACHE_HIT_MARKER_ENV)
         .filter(|value| !value.is_empty())
         .map(std::path::PathBuf::from)?;
@@ -100,7 +100,7 @@ fn texmk_published_outputs(cache_root: &std::path::Path) -> Option<TexmkPublishe
     let name = output.file_name()?.to_owned();
     let parent = std::fs::canonicalize(output.parent()?).ok()?;
     let pdf = parent.join(name);
-    let synctex = pdf.with_extension("synctex.gz");
+    let synctex = pdf.with_extension(synctex_extension);
     Some(TexmkPublishedOutputs { pdf, synctex })
 }
 
@@ -291,7 +291,7 @@ fn depcache_path(
     out_dir: &str,
     aux_dir: &str,
     optimize_pdf_size: bool,
-    synctex_enabled: bool,
+    synctex_mode: SynctexMode,
 ) -> std::path::PathBuf {
     // Keep the spelling used by this invocation: relative inputs are resolved
     // from that spelling's parent, so two symlinks to one source are not
@@ -331,10 +331,10 @@ fn depcache_path(
         } else {
             b"speed" as &[u8]
         },
-        if synctex_enabled {
-            b"synctex" as &[u8]
-        } else {
-            b"no-synctex" as &[u8]
+        match synctex_mode {
+            SynctexMode::Compressed => b"synctex" as &[u8],
+            SynctexMode::Uncompressed => b"synctex-uncompressed" as &[u8],
+            SynctexMode::Off => b"no-synctex" as &[u8],
         },
     ]);
     cache_root
@@ -781,7 +781,8 @@ fn read_depcache_record(path: &std::path::Path) -> Option<(std::fs::Metadata, St
 }
 
 /// Dependency-cache hit: if no tracked input changed since the last
-/// successful compile, the output PDF is already current.
+/// successful compile, the output PDF is already current. Returns the PDF
+/// size and, for records that store it, the page count.
 fn check_depcache(
     cache_path: &std::path::Path,
     primary_file: &str,
@@ -789,7 +790,7 @@ fn check_depcache(
     expected_log: &std::path::Path,
     expected_synctex: Option<&std::path::Path>,
     published_outputs: Option<&TexmkPublishedOutputs>,
-) -> Option<usize> {
+) -> Option<(usize, Option<usize>)> {
     let (cache_meta, content) = read_depcache_record(cache_path)?;
     let mut lines = authenticated_depcache_body(&content)?.lines();
     if lines.next()? != cache_identity()?.as_str() {
@@ -828,8 +829,13 @@ fn check_depcache(
     if std::fs::metadata(primary_file).is_err() || !expected_log.is_file() {
         return None;
     }
+    let mut pages = None;
     for line in lines {
         if line.is_empty() {
+            continue;
+        }
+        if let Some(count) = line.strip_prefix("PAGES\t") {
+            pages = Some(count.parse().ok()?);
             continue;
         }
         if let Some(path) = line.strip_prefix("DIRMISS\t") {
@@ -899,7 +905,7 @@ fn check_depcache(
             return None;
         }
     }
-    Some(pdf_size)
+    Some((pdf_size, pages))
 }
 
 /// Derived-state files (aux/toc/out): the engine both READS (previous pass)
@@ -1054,6 +1060,7 @@ struct DepcacheInputs<'a> {
     primary_file: &'a str,
     pdf_path: &'a str,
     pdf_size: usize,
+    pages: usize,
     synctex_path: Option<&'a std::path::Path>,
     deps: &'a [std::path::PathBuf],
     directories: &'a [(std::path::PathBuf, u64)],
@@ -1068,6 +1075,7 @@ struct DepcacheInputs<'a> {
 
 fn write_depcache(cache_path: &std::path::Path, inputs: DepcacheInputs<'_>) {
     use std::collections::{btree_map::Entry, BTreeSet};
+    use std::fmt::Write;
     let Some(identity) = cache_identity() else {
         return;
     };
@@ -1098,6 +1106,7 @@ fn write_depcache(cache_path: &std::path::Path, inputs: DepcacheInputs<'_>) {
     } else {
         out.push_str("SYNCTEX\t-\n");
     }
+    let _ = writeln!(out, "PAGES\t{}", inputs.pages);
     if out.len() as u64 > DEPCACHE_RECORD_MAX_BYTES {
         return;
     }
@@ -1153,7 +1162,6 @@ fn write_depcache(cache_path: &std::path::Path, inputs: DepcacheInputs<'_>) {
         {
             return;
         }
-        use std::fmt::Write;
         let _ = writeln!(out, "SIZE\t{}\t{size}", encode_record_path(path));
         if out.len() as u64 > DEPCACHE_RECORD_MAX_BYTES {
             return;
@@ -1626,6 +1634,47 @@ fn parse_interaction(program: &str, value: &str) -> InteractionMode {
     }
 }
 
+/// The parenthesized part of pdfTeX's `Output written on FILE (N pages, M
+/// bytes).` summary; texmk reads the page count from it.
+fn output_summary(pages: Option<usize>, bytes: usize) -> String {
+    match pages {
+        Some(1) => format!("1 page, {bytes} bytes"),
+        Some(pages) => format!("{pages} pages, {bytes} bytes"),
+        None => format!("{bytes} bytes"),
+    }
+}
+
+/// `-synctex=N` as in pdfTeX: 0 disables SyncTeX, a negative value writes an
+/// uncompressed `.synctex`, and a positive value writes `.synctex.gz`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SynctexMode {
+    Off,
+    Compressed,
+    Uncompressed,
+}
+
+impl SynctexMode {
+    fn parse(value: &str) -> Self {
+        match value.trim() {
+            "off" | "false" => Self::Off,
+            value => match value.parse::<i64>() {
+                Ok(0) => Self::Off,
+                Ok(number) if number < 0 => Self::Uncompressed,
+                _ => Self::Compressed,
+            },
+        }
+    }
+
+    /// Output extension; `Off` reports the default so texmk's published
+    /// SyncTeX name is still excluded from directory fingerprints.
+    fn extension(self) -> &'static str {
+        match self {
+            Self::Uncompressed => "synctex",
+            Self::Compressed | Self::Off => "synctex.gz",
+        }
+    }
+}
+
 fn configure_engine(
     engine: &mut Engine,
     halt_on_error: bool,
@@ -1769,105 +1818,106 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
     let mut halt_on_error = false;
     let mut interaction_mode = InteractionMode::ErrorStop;
     let mut max_errors = DEFAULT_MAX_ERRORS;
-    let mut synctex_enabled = true; // Enabled by default
+    // Ratex writes SyncTeX by default; `-synctex=0` disables it.
+    let mut synctex_mode = SynctexMode::Compressed;
     let mut i = 1;
     while i < args.len() {
-        if args[i] == "--" {
+        // Like web2c's getopt_long_only, every long option may be spelled
+        // with one or two leading dashes.
+        let opt = match args[i].strip_prefix("--") {
+            Some(rest) if !rest.is_empty() => &args[i][1..],
+            _ => args[i].as_str(),
+        };
+        if opt == "--" {
             i += 1;
             if file.is_some() || i >= args.len() || i + 1 != args.len() {
                 usage_error(&program, "exactly one input file is required");
             }
             file = Some(args[i].clone());
-        } else if matches!(args[i].as_str(), "-h" | "-help" | "--help") {
+        } else if matches!(opt, "-h" | "-help") {
             usage(&program);
             return;
-        } else if args[i] == "-output-directory" {
+        } else if opt == "-output-directory" {
             i += 1;
             let Some(dir) = args.get(i).filter(|dir| !dir.is_empty()) else {
                 usage_error(&program, "-output-directory requires a non-empty directory");
             };
             out_dir = directory_prefix(dir);
-        } else if let Some(dir) = args[i].strip_prefix("-output-directory=") {
+        } else if let Some(dir) = opt.strip_prefix("-output-directory=") {
             if dir.is_empty() {
                 usage_error(&program, "-output-directory requires a non-empty directory");
             }
             out_dir = directory_prefix(dir);
-        } else if matches!(
-            args[i].as_str(),
-            "-aux-directory" | "-auxdir" | "--aux-directory"
-        ) {
+        } else if matches!(opt, "-aux-directory" | "-auxdir") {
             i += 1;
             let Some(dir) = args.get(i).filter(|dir| !dir.is_empty()) else {
                 usage_error(&program, "-aux-directory requires a non-empty directory");
             };
             requested_aux_dir = Some(std::path::PathBuf::from(dir));
-        } else if let Some(dir) = args[i]
+        } else if let Some(dir) = opt
             .strip_prefix("-aux-directory=")
-            .or_else(|| args[i].strip_prefix("-auxdir="))
-            .or_else(|| args[i].strip_prefix("--aux-directory="))
+            .or_else(|| opt.strip_prefix("-auxdir="))
         {
             if dir.is_empty() {
                 usage_error(&program, "-aux-directory requires a non-empty directory");
             }
             requested_aux_dir = Some(std::path::PathBuf::from(dir));
-        } else if matches!(args[i].as_str(), "-cache-directory" | "--cache-directory") {
+        } else if opt == "-cache-directory" {
             i += 1;
             let Some(dir) = args.get(i).filter(|dir| !dir.is_empty()) else {
                 usage_error(&program, "--cache-directory requires a non-empty directory");
             };
             requested_cache_dir = Some(std::path::PathBuf::from(dir));
-        } else if let Some(dir) = args[i]
-            .strip_prefix("-cache-directory=")
-            .or_else(|| args[i].strip_prefix("--cache-directory="))
-        {
+        } else if let Some(dir) = opt.strip_prefix("-cache-directory=") {
             if dir.is_empty() {
                 usage_error(&program, "--cache-directory requires a non-empty directory");
             }
             requested_cache_dir = Some(std::path::PathBuf::from(dir));
-        } else if args[i] == "-jobname" {
-            i += 1;
-            let Some(name) = args.get(i).filter(|name| !name.is_empty()) else {
-                usage_error(&program, "-jobname requires a non-empty name");
+        } else if opt == "-jobname" || opt.starts_with("-jobname=") {
+            let name = match opt.strip_prefix("-jobname=") {
+                Some(name) => name,
+                None => {
+                    i += 1;
+                    args.get(i).map_or("", String::as_str)
+                }
             };
+            if name.is_empty() {
+                usage_error(&program, "-jobname requires a non-empty name");
+            }
             if !valid_jobname(name) {
                 usage_error(
                     &program,
                     "-jobname must be one filename component without '/' or '\\'",
                 );
             }
-            jobname = Some(name.clone());
-        } else if let Some(jn) = args[i].strip_prefix("-jobname=") {
-            if !valid_jobname(jn) {
-                usage_error(
-                    &program,
-                    "-jobname must be one filename component without '/' or '\\'",
-                );
-            }
-            jobname = Some(jn.to_string());
-        } else if args[i] == "-ini" {
+            jobname = Some(name.to_string());
+        } else if opt == "-ini" {
             ini = true;
-        } else if args[i] == "-plain" {
+        } else if opt == "-plain" {
             plain = true;
-        } else if args[i] == "--optimize-pdf-size" || args[i] == "--optimize=size" {
+        } else if opt == "-optimize-pdf-size" || opt == "-optimize=size" {
             optimize_pdf_size = true;
-        } else if args[i] == "--optimize=speed" {
+        } else if opt == "-optimize=speed" {
             optimize_pdf_size = false;
-        } else if args[i].starts_with("--optimize=") {
+        } else if opt.starts_with("-optimize=") {
             usage_error(&program, "--optimize expects 'speed' or 'size'");
-        } else if args[i] == "-halt-on-error" {
+        } else if opt == "-halt-on-error" {
             halt_on_error = true;
-        } else if args[i] == "-interaction" {
+        } else if opt == "-interaction" {
             i += 1;
             let Some(mode) = args.get(i) else {
                 usage_error(&program, "-interaction requires a mode");
             };
             interaction_mode = parse_interaction(&program, mode);
-        } else if let Some(mode) = args[i].strip_prefix("-interaction=") {
+        } else if let Some(mode) = opt.strip_prefix("-interaction=") {
             interaction_mode = parse_interaction(&program, mode);
-        } else if matches!(args[i].as_str(), "--max-errors" | "-max-errors") {
-            i += 1;
-            let Some(value) = args.get(i) else {
-                usage_error(&program, "--max-errors requires a positive integer");
+        } else if opt == "-max-errors" || opt.starts_with("-max-errors=") {
+            let value = match opt.strip_prefix("-max-errors=") {
+                Some(value) => value,
+                None => {
+                    i += 1;
+                    args.get(i).map_or("", String::as_str)
+                }
             };
             max_errors = value
                 .parse::<usize>()
@@ -1876,35 +1926,50 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
                 .unwrap_or_else(|| {
                     usage_error(&program, "--max-errors requires a positive integer")
                 });
-        } else if let Some(value) = args[i]
-            .strip_prefix("--max-errors=")
-            .or_else(|| args[i].strip_prefix("-max-errors="))
-        {
-            max_errors = value
-                .parse::<usize>()
-                .ok()
-                .filter(|value| *value > 0)
-                .unwrap_or_else(|| {
-                    usage_error(&program, "--max-errors requires a positive integer")
-                });
-        } else if matches!(args[i].as_str(), "-synctex" | "--synctex") {
+        } else if opt == "-synctex" {
             i += 1;
             let Some(value) = args.get(i) else {
-                usage_error(&program, "-synctex requires a value (1 or 0)");
+                usage_error(&program, "-synctex requires a value (1, -1, or 0)");
             };
-            synctex_enabled = value != "0" && value != "off" && value != "false";
-        } else if let Some(val) = args[i]
-            .strip_prefix("-synctex=")
-            .or_else(|| args[i].strip_prefix("--synctex="))
-        {
-            synctex_enabled = val != "0" && val != "off" && val != "false";
+            synctex_mode = SynctexMode::parse(value);
+        } else if let Some(value) = opt.strip_prefix("-synctex=") {
+            synctex_mode = SynctexMode::parse(value);
         } else if matches!(
-            args[i].as_str(),
-            "-file-line-error" | "-file-line-error-style" | "-no-shell-escape"
+            opt,
+            "-file-line-error"
+                | "-file-line-error-style"
+                | "-no-shell-escape"
+                | "-disable-write18"
         ) {
             // Rich file/line diagnostics are always enabled; shell execution
             // is never enabled.
-        } else if matches!(args[i].as_str(), "-v" | "-version" | "--version") {
+        } else if matches!(opt, "-shell-escape" | "-enable-write18" | "-shell-restricted") {
+            // Editors commonly pass this by default. Ratex never runs shell
+            // commands, so the run proceeds as with \write18 disabled.
+            emit_cli_message(
+                interaction_mode,
+                format_args!(
+                    "{program}: warning: {} is not supported; \\write18 shell commands will not run",
+                    args[i]
+                ),
+            );
+        } else if opt == "-fmt" || opt.starts_with("-fmt=") || args[i].starts_with('&') {
+            let name = match opt.strip_prefix("-fmt=").or_else(|| args[i].strip_prefix('&')) {
+                Some(name) => name,
+                None => {
+                    i += 1;
+                    args.get(i).map_or("", String::as_str)
+                }
+            };
+            // Formats are Ratex dumps, not web2c ones: only the built-in
+            // format for this program can be selected.
+            if name != program && name != "pdflatex" {
+                usage_error(
+                    &program,
+                    &format!("format '{name}' is not available; Ratex provides only the built-in {program} format"),
+                );
+            }
+        } else if matches!(opt, "-v" | "-version") {
             let version = env!("CARGO_PKG_VERSION");
             if program == "xelatex" {
                 println!("Ratex {version} (xelatex compatibility mode; pdfTeX-2h 1.40.29-rs)");
@@ -1959,7 +2024,7 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
     });
     let aux_start = snapshot_aux_state(&job, &aux_dir);
     let cache_root = requested_cache_dir.unwrap_or_else(platform_cache_dir);
-    let published_outputs = texmk_published_outputs(&cache_root);
+    let published_outputs = texmk_published_outputs(&cache_root, synctex_mode.extension());
     let private_cache = depcache_path(
         &cache_root,
         &file,
@@ -1967,12 +2032,13 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
         &out_dir,
         &aux_dir,
         optimize_pdf_size,
-        synctex_enabled,
+        synctex_mode,
     );
     let expected_pdf = std::path::PathBuf::from(format!("{}{}.pdf", out_dir, job));
     let expected_log = std::path::PathBuf::from(format!("{}{}.log", aux_dir, job));
-    let expected_synctex =
-        synctex_enabled.then(|| std::path::PathBuf::from(format!("{}{}.synctex.gz", out_dir, job)));
+    let expected_synctex = (synctex_mode != SynctexMode::Off).then(|| {
+        std::path::PathBuf::from(format!("{}{}.{}", out_dir, job, synctex_mode.extension()))
+    });
     let outputs_missing_at_start: Vec<_> = [
         Some(expected_pdf.clone()),
         Some(expected_log.clone()),
@@ -1983,7 +2049,7 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
     .filter(|path| !path.is_file())
     .collect();
     if !plain && !ini {
-        if let Some(pdf_size) = check_depcache(
+        if let Some((pdf_size, pages)) = check_depcache(
             &private_cache,
             &file,
             &expected_pdf,
@@ -1998,7 +2064,11 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
             }
             let out = format!("{}{}.pdf", out_dir, job);
             if interaction_mode != InteractionMode::Batch {
-                println!("\nOutput written on {} ({} bytes).", out, pdf_size);
+                println!(
+                    "\nOutput written on {} ({}).",
+                    out,
+                    output_summary(pages, pdf_size)
+                );
             }
             std::process::exit(0);
         }
@@ -2020,7 +2090,7 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
         eng.init_luatex_primitives();
     }
     eng.allow_missing_main_aux = !plain && !ini;
-    eng.synctex_enabled = synctex_enabled;
+    eng.synctex_enabled = synctex_mode != SynctexMode::Off;
     configure_engine(&mut eng, halt_on_error, interaction_mode, max_errors);
     phase_timer.mark("startup");
     eng.out_dir = out_dir.clone();
@@ -2309,6 +2379,7 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
         }
     }
     if !eng.pdf_doc.pages.is_empty() {
+        let pages = eng.pdf_doc.pages.len();
         let pdf = match tex_core::driver::finish_pdf(&mut eng, optimize_pdf_size) {
             Ok(pdf) => pdf,
             Err(error) => {
@@ -2325,6 +2396,40 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
         if !eng.out_dir.is_empty() {
             let _ = std::fs::create_dir_all(&eng.out_dir);
         }
+        // Publish SyncTeX before the PDF: viewers reload on a PDF change and
+        // read the SyncTeX file at that moment, so it must already match.
+        if let Some(synctex_out) = expected_synctex.as_deref() {
+            let bytes = match synctex_mode {
+                SynctexMode::Uncompressed => Ok(eng.synctex.serialize_text().into_bytes()),
+                _ => eng.synctex.to_synctex_gz(),
+            };
+            let bytes = match bytes {
+                Ok(bytes) => bytes,
+                Err(error) => fail_after_transcript(
+                    &mut eng,
+                    &log_path,
+                    &format!(
+                        "Cannot compress SyncTeX data for `{}`: {error}",
+                        synctex_out.display()
+                    ),
+                    "check that sufficient memory is available",
+                ),
+            };
+            if let Err(error) = atomic_write_file(synctex_out, &bytes) {
+                fail_after_transcript(
+                    &mut eng,
+                    &log_path,
+                    &format!("Cannot write SyncTeX file `{}`: {error}", synctex_out.display()),
+                    "check that the output directory exists, has free space, and is writable",
+                );
+            }
+            if synctex_mode == SynctexMode::Compressed {
+                // As pdfTeX does: SyncTeX readers open `<job>.synctex` before
+                // `<job>.synctex.gz`, so an uncompressed file left by an
+                // earlier build would shadow this one.
+                let _ = std::fs::remove_file(synctex_out.with_extension(""));
+            }
+        }
         if let Err(error) = atomic_write_file(std::path::Path::new(&out), &pdf) {
             fail_after_transcript(
                 &mut eng,
@@ -2332,28 +2437,6 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
                 &format!("Cannot write PDF `{out}`: {error}"),
                 "check that the output directory exists, has free space, and is writable",
             );
-        }
-        if eng.synctex_enabled {
-            let synctex_out = format!("{}{}.synctex.gz", eng.out_dir, job);
-            let gz_bytes = match eng.synctex.to_synctex_gz() {
-                Ok(bytes) => bytes,
-                Err(error) => fail_after_transcript(
-                    &mut eng,
-                    &log_path,
-                    &format!("Cannot compress SyncTeX data for `{synctex_out}`: {error}"),
-                    "check that sufficient memory is available",
-                ),
-            };
-            if let Err(error) =
-                atomic_write_file(std::path::Path::new(&synctex_out), &gz_bytes)
-            {
-                fail_after_transcript(
-                    &mut eng,
-                    &log_path,
-                    &format!("Cannot write SyncTeX file `{synctex_out}`: {error}"),
-                    "check that the output directory exists, has free space, and is writable",
-                );
-            }
         }
         phase_timer.mark("pdf_write");
         let pdf_len = std::fs::metadata(&out)
@@ -2377,6 +2460,7 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
                     primary_file: &file,
                     pdf_path: &out,
                     pdf_size: pdf_len,
+                    pages,
                     synctex_path: expected_synctex.as_deref(),
                     deps: &eng.loaded_files,
                     directories: &eng.font_loader.dependency_directories,
@@ -2391,16 +2475,15 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
             );
         }
         if eng.interaction_mode != InteractionMode::Batch {
+            let summary = output_summary(Some(pages), pdf_len);
             if compilation_had_errors {
                 println!(
-                    "\nOutput written on {} ({} bytes; {} error{}).",
-                    out,
-                    pdf_len,
+                    "\nOutput written on {out} ({summary}; {} error{}).",
                     eng.error_count,
                     if eng.error_count == 1 { "" } else { "s" }
                 );
             } else {
-                println!("\nOutput written on {} ({} bytes).", out, pdf_len);
+                println!("\nOutput written on {out} ({summary}).");
             }
         }
         phase_timer.mark("finish");
@@ -2418,10 +2501,9 @@ mod startup_tests {
     use super::{
         authenticated_depcache_body, backtrace_requested, check_depcache, decode_record_path,
         dependency_fingerprint, dependency_name_may_match, directory_prefix,
-        effective_clock_identity_at, encode_record_path, finalize_format_load, format_boot_failure,
-        install_pdftex_config_registers, png_embed_options, published_names_in_directory,
-        seal_depcache_record, write_depcache, DepcacheInputs, FormatBootFailure,
-        TexmkPublishedOutputs, DEPCACHE_RECORD_MAX_BYTES, EMBEDDED_DEFAULT_FMT,
+        effective_clock_identity_at, encode_record_path, format_boot_failure, png_embed_options,
+        published_names_in_directory, seal_depcache_record, write_depcache, DepcacheInputs,
+        FormatBootFailure, TexmkPublishedOutputs, DEPCACHE_RECORD_MAX_BYTES,
     };
     use std::ffi::OsStr;
     use tex_core::engine::Engine;
@@ -2539,6 +2621,7 @@ mod startup_tests {
         assert_eq!(format_boot_failure(&engine), None);
     }
 
+    #[test]
     fn backtrace_zero_and_empty_disable_panic_backtraces() {
         assert!(!backtrace_requested(None));
         assert!(!backtrace_requested(Some(OsStr::new(""))));
@@ -2661,6 +2744,7 @@ mod startup_tests {
                 primary_file: &primary_text,
                 pdf_path: &pdf_text,
                 pdf_size: 3,
+                pages: 1,
                 synctex_path: None,
                 deps: &[],
                 directories: &[],
@@ -2682,6 +2766,7 @@ mod startup_tests {
                 primary_file: &primary_text,
                 pdf_path: &pdf_text,
                 pdf_size: 3,
+                pages: 1,
                 synctex_path: None,
                 deps: &[],
                 directories: &[],
@@ -2703,7 +2788,7 @@ mod startup_tests {
         );
         assert_eq!(
             check_depcache(&cache, &primary_text, &pdf, &log, None, None),
-            Some(3)
+            Some((3, Some(1)))
         );
 
         std::fs::write(&observed, b"changed size").unwrap();

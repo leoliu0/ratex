@@ -30,8 +30,13 @@ impl Project {
     }
 
     fn texmk(&self) -> Output {
+        self.texmk_with(&[])
+    }
+
+    fn texmk_with(&self, options: &[&str]) -> Output {
         let tool_dir = Path::new(env!("CARGO_BIN_EXE_pdflatex")).parent().unwrap();
         Command::new(env!("CARGO_BIN_EXE_texmk"))
+            .args(options)
             .arg("-output-directory")
             .arg("published output")
             .arg("main.tex")
@@ -235,4 +240,91 @@ fn texmk_does_not_publish_synctex_from_a_failed_build() {
         !output_dir.join("main.synctex.gz").exists(),
         "a failed private build leaked its SyncTeX sidecar"
     );
+}
+
+fn gunzip_text(path: &Path) -> String {
+    use std::io::Read;
+    let mut text = String::new();
+    flate2::read::GzDecoder::new(std::fs::File::open(path).unwrap())
+        .read_to_string(&mut text)
+        .unwrap();
+    text
+}
+
+/// SyncTeX records are `<kind><input>,<line>:...`; collect the line numbers.
+fn synctex_lines(text: &str) -> Vec<u32> {
+    text.lines()
+        .filter(|record| record.starts_with(['(', '[', 'h', 'v', 'x', 'k', 'g', '$']))
+        .filter_map(|record| record.split_once(',')?.1.split_once(':')?.0.parse().ok())
+        .collect()
+}
+
+/// GitHub issue #15: after an edit-rebuild cycle the viewer kept using stale
+/// SyncTeX data. SyncTeX readers open `<job>.synctex` before
+/// `<job>.synctex.gz`; pdfTeX deletes a leftover uncompressed file when it
+/// writes the compressed one, so a file from an earlier `-synctex=-1` build
+/// must not survive and shadow every later Ratex build.
+#[test]
+fn edit_rebuild_cycles_replace_every_synctex_file_a_viewer_reads() {
+    let project = Project::new();
+    let output_dir = project.0.join("published output");
+    std::fs::create_dir(&output_dir).unwrap();
+    let editor = ["-synctex=1", "-interaction=nonstopmode", "-file-line-error"];
+    let body = "\\documentclass{article}\n\\begin{document}\nAlpha marker.\n\\end{document}\n";
+    std::fs::write(project.0.join("main.tex"), body).unwrap();
+
+    // Uncompressed SyncTeX from an earlier build (e.g. `-synctex=-1`).
+    assert_success(&project.texmk_with(&["-synctex=-1"]));
+    let plain = output_dir.join("main.synctex");
+    let text = std::fs::read_to_string(&plain).expect("-synctex=-1 writes uncompressed SyncTeX");
+    assert!(synctex_lines(&text).contains(&3), "{text}");
+
+    assert_success(&project.texmk_with(&editor));
+    assert!(
+        !plain.exists(),
+        "a leftover {} shadows the new main.synctex.gz",
+        plain.display()
+    );
+    let gz = output_dir.join("main.synctex.gz");
+    assert!(synctex_lines(&gunzip_text(&gz)).contains(&3));
+
+    // Shift the paragraph down three lines without changing the PDF.
+    std::fs::write(
+        project.0.join("main.tex"),
+        body.replace("\\begin{document}\n", "\\begin{document}\n%a\n%b\n%c\n"),
+    )
+    .unwrap();
+    assert_success(&project.texmk_with(&editor));
+    let lines = synctex_lines(&gunzip_text(&gz));
+    assert!(
+        lines.contains(&6) && !lines.contains(&3),
+        "SyncTeX was not updated by the rebuild: {lines:?}"
+    );
+    let pdf_modified = std::fs::metadata(output_dir.join("main.pdf")).unwrap().modified().unwrap();
+    let synctex_modified = std::fs::metadata(&gz).unwrap().modified().unwrap();
+    assert!(
+        synctex_modified <= pdf_modified,
+        "SyncTeX must be in place before the PDF a viewer reloads"
+    );
+}
+
+#[test]
+fn direct_engine_run_removes_a_shadowing_uncompressed_synctex() {
+    let project = Project::new();
+    std::fs::write(
+        project.0.join("main.tex"),
+        "\\documentclass{article}\n\\begin{document}\nAlpha marker.\n\\end{document}\n",
+    )
+    .unwrap();
+    std::fs::write(project.0.join("main.synctex"), "stale\n").unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_pdflatex"))
+        .args(["-synctex=1", "-interaction=nonstopmode", "main.tex"])
+        .current_dir(&project.0)
+        .env("TEX_RS_CACHE_DIR", project.0.join("cache"))
+        .env("SOURCE_DATE_EPOCH", "1700000000")
+        .output()
+        .unwrap();
+    assert_success(&output);
+    assert!(!project.0.join("main.synctex").exists());
+    assert!(synctex_lines(&gunzip_text(&project.0.join("main.synctex.gz"))).contains(&3));
 }

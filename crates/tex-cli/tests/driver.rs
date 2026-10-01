@@ -708,6 +708,150 @@ fn eps_figures_and_bibliographies_build_without_any_external_program() {
     );
 }
 
+fn form_xobject_widths(pdf_path: &std::path::Path) -> Vec<f32> {
+    let pdf = lopdf::Document::load(pdf_path).unwrap();
+    let mut widths = Vec::new();
+    for page in pdf.get_pages().into_values() {
+        let (resources, _) = pdf.get_page_resources(page).unwrap();
+        let Some(xobjects) = resources
+            .and_then(|resources| resources.get_deref(b"XObject", &pdf).ok())
+            .and_then(|xobjects| xobjects.as_dict().ok())
+        else {
+            continue;
+        };
+        for (_, object) in xobjects.iter() {
+            let Ok(stream) = pdf.dereference(object).and_then(|(_, o)| o.as_stream()) else {
+                continue;
+            };
+            if let Ok(bbox) = stream.dict.get(b"BBox").and_then(lopdf::Object::as_array) {
+                let values: Vec<f32> = bbox.iter().filter_map(|v| v.as_float().ok()).collect();
+                if values.len() == 4 {
+                    widths.push(values[2] - values[0]);
+                }
+            }
+        }
+    }
+    widths
+}
+
+#[cfg(unix)]
+#[test]
+fn edited_eps_figures_are_reconverted_and_symlink_cycles_terminate() {
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let fixture = Fixture(std::env::temp_dir().join(format!(
+        "texmk-eps-refresh-{}-{nonce}",
+        std::process::id()
+    )));
+    let project = fixture.0.join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    // Two links to an ancestor made the old walk branch without bound.
+    std::os::unix::fs::symlink("..", project.join("up")).unwrap();
+    std::os::unix::fs::symlink(".", project.join("here")).unwrap();
+    let eps = |width: u32| {
+        format!(
+            "%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: 0 0 {width} 72\n%%EndComments\n\
+             0 0 0 setrgbcolor newpath 0 0 moveto {width} 0 lineto {width} 72 lineto \
+             0 72 lineto closepath fill\nshowpage\n%%EOF\n"
+        )
+    };
+    std::fs::write(project.join("figure.eps"), eps(144)).unwrap();
+    std::fs::write(
+        project.join("main.tex"),
+        "\\documentclass{article}\n\\usepackage{graphicx}\n\\begin{document}\n\\includegraphics{figure}\n\\end{document}\n",
+    )
+    .unwrap();
+    let build = || {
+        let output = Command::new(env!("CARGO_BIN_EXE_ratex"))
+            .arg("main.tex")
+            .current_dir(&project)
+            .env("TEX_RS_CACHE_DIR", fixture.0.join("cache"))
+            .env("SOURCE_DATE_EPOCH", "1700000000")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    };
+    build();
+    assert!(form_xobject_widths(&project.join("main.pdf")).contains(&144.0));
+
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    std::fs::write(project.join("figure.eps"), eps(96)).unwrap();
+    build();
+    let widths = form_xobject_widths(&project.join("main.pdf"));
+    assert!(
+        widths.contains(&96.0) && !widths.contains(&144.0),
+        "the edited EPS figure kept its stale conversion: {widths:?}"
+    );
+
+    // A user's own figure.pdf is never replaced.
+    std::fs::write(project.join("figure.pdf"), b"user file").unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    std::fs::write(project.join("figure.eps"), eps(48)).unwrap();
+    let _ = Command::new(env!("CARGO_BIN_EXE_ratex"))
+        .arg("main.tex")
+        .current_dir(&project)
+        .env("TEX_RS_CACHE_DIR", fixture.0.join("cache"))
+        .output()
+        .unwrap();
+    assert_eq!(std::fs::read(project.join("figure.pdf")).unwrap(), b"user file");
+}
+
+/// TeX Live BibTeX reports a repeated entry as an error (exit status 2) but
+/// still writes a complete .bbl; latexmk keeps going, and so must texmk.
+#[test]
+fn bibtex_error_messages_with_a_complete_bbl_do_not_fail_the_build() {
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let fixture = Fixture(std::env::temp_dir().join(format!(
+        "texmk-bibtex-repeated-{}-{nonce}",
+        std::process::id()
+    )));
+    let project = fixture.0.join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    std::fs::write(
+        project.join("refs.bib"),
+        concat!(
+            "@book{knuth, author={Donald Knuth}, title={Computers and Typesetting}, publisher={AW}, year={1986}}\n",
+            "@book{knuth, author={Donald Knuth}, title={Duplicate Entry}, publisher={AW}, year={1987}}\n"
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        project.join("main.tex"),
+        "\\documentclass{article}\n\\begin{document}\nSee~\\cite{knuth}.\n\\bibliographystyle{plain}\n\\bibliography{refs}\n\\end{document}\n",
+    )
+    .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_ratex"))
+        .arg("main.tex")
+        .current_dir(&project)
+        .env("TEX_RS_CACHE_DIR", fixture.0.join("cache"))
+        .env("SOURCE_DATE_EPOCH", "1700000000")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let pdf = lopdf::Document::load(project.join("main.pdf")).unwrap();
+    let pages: Vec<u32> = pdf.get_pages().keys().copied().collect();
+    let text = pdf.extract_text(&pages).unwrap();
+    assert!(
+        text.contains("[1]") && text.contains("Computers and Typesetting"),
+        "{text}"
+    );
+}
+
 #[test]
 fn publishing_outputs_does_not_defer_the_first_engine_cache_hit() {
     let nonce = std::time::SystemTime::now()

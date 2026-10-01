@@ -1,17 +1,16 @@
 //! texmk — latexmk-style driver for the Rust TeX engine.
 //!
-//! The only physical executable in a distribution. It runs its embedded TeX
-//! engine and BibTeX implementation in isolated child processes until
-//! cross-references and bibliography output stabilize. Public command aliases
-//! (`pdflatex`, `xelatex`, `lualatex`, `bibtex`, and `latexmk`) dispatch back
-//! into this executable based on their invoked name.
+//! The only physical executable in a distribution (`ratex`). It runs its
+//! embedded TeX engine and BibTeX implementation in isolated child processes
+//! until cross-references and bibliography output stabilize. Invoked as
+//! `pdflatex`, `xelatex`, `lualatex`, `bibtex`, or `latexdiff` (symlinks), it
+//! runs that tool directly instead.
 //!
 //! Exit codes: 0 = converged, 1 = engine/bibtex failure or no convergence,
 //! 2 = usage error.
 //!
-//! TeX support files are resolved from the executable by default. Project
-//! inputs remain ordinary files; `--allow-system-texmf` opts into external TeX
-//! trees for packages which are not embedded.
+//! TeX support files always come from the archive embedded in the executable;
+//! project inputs remain ordinary files.
 
 #[path = "../bibtex/mod.rs"]
 mod embedded_bibtex;
@@ -44,7 +43,6 @@ const AUX_GRAPH_MAX_INCLUDES: usize = 1024;
 const AUX_GRAPH_MAX_BYTES: u64 = 8 * 1024 * 1024;
 const AUX_GRAPH_MAX_PATH_BYTES: usize = 4096;
 const MANIFEST_MAX_BYTES: u64 = 4 * 1024 * 1024;
-const LOCK_FILE_MAX_BYTES: u64 = 256;
 // Tool output must always be drained to avoid blocking a child, but retaining
 // an untrusted transcript without a limit lets a noisy tool exhaust memory.
 // Keep the diagnostic-heavy beginning and the final summary from each stream.
@@ -84,12 +82,99 @@ struct Options {
     passthrough: Vec<String>,
 }
 
-/// Documents default to Ratex's native engine (pdflatex compatibility).
-/// Native fontspec and xeCJK are supported directly; unsupported Lua or
-/// OpenType MATH requests receive core diagnostics rather than claiming
-/// successful alternate engine execution.
-fn detect_engine(_src_path: &Path) -> &'static str {
-    "pdflatex"
+/// Packages and classes which TeX Live compiles only with a Unicode engine
+/// (XeTeX or LuaTeX); pdfLaTeX rejects them or lacks their fonts.
+const UNICODE_ENGINE_PACKAGES: &[&str] = &["ctex", "xeCJK", "fontspec", "unicode-math", "polyglossia"];
+const UNICODE_ENGINE_CLASSES: &[&str] = &["ctexart", "ctexbook", "ctexrep", "ctexbeamer"];
+
+/// Without an explicit engine option, documents whose preamble requires a
+/// Unicode engine run as xelatex; everything else runs as pdflatex.
+fn detect_engine(src_path: &Path) -> &'static str {
+    match std::fs::read(src_path) {
+        Ok(source) if preamble_requires_unicode_engine(&String::from_utf8_lossy(&source)) => {
+            "xelatex"
+        }
+        _ => "pdflatex",
+    }
+}
+
+/// Strip a `%` comment, honoring `\%` (an odd run of backslashes escapes it).
+fn strip_tex_comment(line: &str) -> &str {
+    let bytes = line.as_bytes();
+    let mut backslashes = 0;
+    for (index, &byte) in bytes.iter().enumerate() {
+        match byte {
+            b'\\' => backslashes += 1,
+            b'%' if backslashes % 2 == 0 => return &line[..index],
+            _ => backslashes = 0,
+        }
+    }
+    line
+}
+
+fn preamble_requires_unicode_engine(source: &str) -> bool {
+    let mut preamble = String::new();
+    for line in source.lines() {
+        let line = strip_tex_comment(line);
+        if let Some(end) = line.find("\\begin{document}") {
+            preamble.push_str(&line[..end]);
+            break;
+        }
+        preamble.push_str(line);
+        preamble.push('\n');
+    }
+    for (command, names) in [
+        ("\\documentclass", UNICODE_ENGINE_CLASSES),
+        ("\\usepackage", UNICODE_ENGINE_PACKAGES),
+        ("\\RequirePackage", UNICODE_ENGINE_PACKAGES),
+    ] {
+        let mut rest = preamble.as_str();
+        while let Some(start) = rest.find(command) {
+            rest = &rest[start + command.len()..];
+            if rest.starts_with(|c: char| c.is_ascii_alphabetic() || c == '@') {
+                continue;
+            }
+            let mut argument = rest.trim_start();
+            if let Some(options) = argument.strip_prefix('[') {
+                let Some(close) = options.find(']') else {
+                    break;
+                };
+                argument = options[close + 1..].trim_start();
+            }
+            let Some(list) = argument.strip_prefix('{') else {
+                continue;
+            };
+            let Some(close) = list.find('}') else {
+                break;
+            };
+            if list[..close]
+                .split(',')
+                .any(|name| names.contains(&name.trim()))
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// SyncTeX file extension selected by the engine options, as in pdfTeX:
+/// `-synctex=0` disables it and a negative value writes an uncompressed file.
+/// Ratex writes compressed SyncTeX by default.
+fn synctex_extension(passthrough: &[String]) -> Option<&'static str> {
+    let value = passthrough
+        .iter()
+        .rev()
+        .find_map(|argument| argument.strip_prefix("-synctex="));
+    match value.map(str::trim) {
+        None => Some(".synctex.gz"),
+        Some("off" | "false") => None,
+        Some(value) => match value.parse::<i64>() {
+            Ok(0) => None,
+            Ok(number) if number < 0 => Some(".synctex"),
+            _ => Some(".synctex.gz"),
+        },
+    }
 }
 
 fn usage() {
@@ -174,12 +259,17 @@ fn parse_args(argv: &[String]) -> Result<Options, String> {
             "--keep-logs" | "-keep-logs" => keep_logs = true,
             "-c" => clean = CleanMode::Aux,
             "-C" => clean = CleanMode::All,
-            "-interaction" => {
+            "-interaction" | "--interaction" => {
                 let mode = take_value(&mut i, &inline_val)
                     .ok_or_else(|| "-interaction needs a value".to_string())?;
                 passthrough.push(format!("-interaction={mode}"));
             }
-            "-halt-on-error" => passthrough.push(a.clone()),
+            "-halt-on-error" | "--halt-on-error" => passthrough.push("-halt-on-error".to_string()),
+            "-synctex" | "--synctex" => {
+                let value = take_value(&mut i, &inline_val)
+                    .ok_or_else(|| "-synctex needs a value".to_string())?;
+                passthrough.push(format!("-synctex={value}"));
+            }
             "-pdf" | "--pdf" => engine = Some("pdflatex".to_string()),
             "-pdfxe" | "-xelatex" | "--xelatex" => engine = Some("xelatex".to_string()),
             "-pdflua" | "-lualatex" | "--lualatex" => engine = Some("lualatex".to_string()),
@@ -620,110 +710,108 @@ fn write_manifest(path: &Path, manifest: &Manifest) -> std::io::Result<()> {
     result
 }
 
+/// Exclusive advisory lock (`flock`/`LockFileEx`) on a lock file. The OS
+/// releases it when every holder exits, so a crashed or killed build never
+/// leaves a stale lock behind and no process-ID heuristics are needed.
 struct CacheLock {
     path: PathBuf,
-    token: String,
-}
-
-#[cfg(unix)]
-fn process_is_running(pid: u32) -> bool {
-    let result = unsafe { libc::kill(pid as libc::pid_t, 0) };
-    result == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
-}
-
-#[cfg(windows)]
-fn process_is_running(pid: u32) -> bool {
-    type Handle = *mut std::ffi::c_void;
-    #[link(name = "kernel32")]
-    extern "system" {
-        fn OpenProcess(access: u32, inherit: i32, process_id: u32) -> Handle;
-        fn GetExitCodeProcess(process: Handle, exit_code: *mut u32) -> i32;
-        fn CloseHandle(object: Handle) -> i32;
-    }
-    const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
-    const STILL_ACTIVE: u32 = 259;
-    unsafe {
-        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
-        if handle.is_null() {
-            return false;
-        }
-        let mut exit_code = 0;
-        let running = GetExitCodeProcess(handle, &mut exit_code) != 0 && exit_code == STILL_ACTIVE;
-        let _ = CloseHandle(handle);
-        running
-    }
-}
-
-#[cfg(not(any(unix, windows)))]
-fn process_is_running(_pid: u32) -> bool {
-    true
-}
-
-fn lock_is_stale(path: &Path) -> bool {
-    let pid = read_to_string_bounded(path, LOCK_FILE_MAX_BYTES)
-        .ok()
-        .flatten()
-        .and_then(|text| text.split('-').next()?.trim().parse::<u32>().ok());
-    if let Some(pid) = pid {
-        return !process_is_running(pid);
-    }
-    std::fs::metadata(path)
-        .and_then(|meta| meta.modified())
-        .ok()
-        .and_then(|time| SystemTime::now().duration_since(time).ok())
-        .is_some_and(|age| age > Duration::from_secs(60))
+    file: std::fs::File,
 }
 
 impl CacheLock {
-    fn try_acquire(path: &Path) -> Result<Self, std::io::Error> {
-        let nonce = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .map_or(0, |duration| duration.as_nanos());
-        let token = format!("{}-{nonce}", std::process::id());
-        let mut file = OpenOptions::new().write(true).create_new(true).open(path)?;
-        if let Err(error) = file.write_all(token.as_bytes()) {
-            drop(file);
-            let _ = std::fs::remove_file(path);
-            return Err(error);
-        }
-        Ok(Self {
-            path: path.to_path_buf(),
-            token,
-        })
-    }
-
-    fn acquire(path: &Path) -> Result<Self, String> {
-        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    /// The lock, or `None` while another process holds it.
+    fn try_acquire(path: &Path) -> std::io::Result<Option<Self>> {
         loop {
-            match Self::try_acquire(path) {
-                Ok(lock) => return Ok(lock),
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                    if lock_is_stale(path) {
-                        let _ = std::fs::remove_file(path);
-                        continue;
-                    }
-                    if std::time::Instant::now() >= deadline {
-                        return Err(format!(
-                            "timed out waiting for concurrent build lock {}",
-                            path.display()
-                        ));
-                    }
-                    std::thread::sleep(Duration::from_millis(25));
-                }
-                Err(error) => {
-                    return Err(format!(
-                        "cannot create build lock {}: {error}",
-                        path.display()
-                    ))
-                }
+            let file = Self::open(path)?;
+            match file.try_lock() {
+                Ok(()) => {}
+                Err(std::fs::TryLockError::WouldBlock) => return Ok(None),
+                Err(std::fs::TryLockError::Error(error)) => return Err(error),
+            }
+            if Self::still_linked(&file, path) {
+                return Ok(Some(Self {
+                    path: path.to_path_buf(),
+                    file,
+                }));
             }
         }
     }
+
+    /// Wait for concurrent builds of the same job (including an engine
+    /// still running after its texmk was killed) to finish.
+    fn acquire(path: &Path) -> Result<Self, String> {
+        let failure = |error: std::io::Error| format!("cannot lock {}: {error}", path.display());
+        if let Some(lock) = Self::try_acquire(path).map_err(failure)? {
+            return Ok(lock);
+        }
+        eprintln!("texmk: waiting for another build of this document to finish");
+        loop {
+            let file = Self::open(path).map_err(failure)?;
+            file.lock().map_err(failure)?;
+            if Self::still_linked(&file, path) {
+                return Ok(Self {
+                    path: path.to_path_buf(),
+                    file,
+                });
+            }
+        }
+    }
+
+    fn open(path: &Path) -> std::io::Result<std::fs::File> {
+        OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(path)
+    }
+
+    /// A previous holder unlinks the lock file when it finishes. A waiter
+    /// that then locks the orphaned inode must retry with the current file.
+    #[cfg(unix)]
+    fn still_linked(file: &std::fs::File, path: &Path) -> bool {
+        use std::os::unix::fs::MetadataExt;
+        match (file.metadata(), std::fs::symlink_metadata(path)) {
+            (Ok(locked), Ok(current)) => {
+                current.file_type().is_file()
+                    && locked.dev() == current.dev()
+                    && locked.ino() == current.ino()
+            }
+            _ => false,
+        }
+    }
+
+    /// Lock files are never unlinked off Unix, so the opened file is current.
+    #[cfg(not(unix))]
+    fn still_linked(_file: &std::fs::File, _path: &Path) -> bool {
+        true
+    }
+
+    /// Let child processes inherit the locked descriptor. If texmk itself is
+    /// killed, an engine it started keeps the job locked until it exits, so
+    /// the next build cannot interleave with its writes to the private
+    /// staging and auxiliary directories.
+    #[cfg(unix)]
+    fn share_with_children(&self) {
+        use std::os::fd::AsRawFd;
+        let fd = self.file.as_raw_fd();
+        unsafe {
+            let flags = libc::fcntl(fd, libc::F_GETFD);
+            if flags >= 0 {
+                libc::fcntl(fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC);
+            }
+        }
+    }
+
+    #[cfg(not(unix))]
+    fn share_with_children(&self) {}
 }
 
 impl Drop for CacheLock {
     fn drop(&mut self) {
-        if file_equals(&self.path, self.token.as_bytes()) {
+        // Unlink while still holding the lock; waiters notice and retry.
+        #[cfg(unix)]
+        if Self::still_linked(&self.file, &self.path) {
             let _ = std::fs::remove_file(&self.path);
         }
     }
@@ -775,6 +863,28 @@ fn file_hash(p: &Path) -> (bool, u64) {
     }
 }
 
+/// Identity of a staged engine output. The engine replaces outputs by
+/// renaming a new file into place, so on Unix the inode and timestamps
+/// identify a rewrite without rereading large PDF and SyncTeX files twice
+/// per pass.
+#[cfg(unix)]
+fn file_identity(path: &Path) -> Option<(u64, u64, u64, i64, i64, i64, i64)> {
+    use std::os::unix::fs::MetadataExt;
+    let metadata = std::fs::metadata(path).ok()?;
+    metadata.is_file().then(|| {
+        (
+            metadata.dev(),
+            metadata.ino(),
+            metadata.len(),
+            metadata.mtime(),
+            metadata.mtime_nsec(),
+            metadata.ctime(),
+            metadata.ctime_nsec(),
+        )
+    })
+}
+
+#[cfg(not(unix))]
 fn file_identity(path: &Path) -> Option<(u64, u64, Option<SystemTime>)> {
     let metadata = std::fs::metadata(path).ok()?;
     metadata
@@ -813,6 +923,7 @@ fn ignored_state_file(path: &Path) -> bool {
             name == ".lock"
                 || name == "manifest"
                 || name.ends_with(".synctex.gz")
+                || name.ends_with(".synctex")
                 || name.contains(".tmp-")
                 || name.ends_with(".tmp")
         })
@@ -1432,15 +1543,7 @@ fn gc_cache(jobs_dir: &Path, current: &Path) {
             continue;
         };
         let lock_path = path.with_extension("lock");
-        if lock_path.exists() {
-            if !lock_is_stale(&lock_path) {
-                continue;
-            }
-            if std::fs::remove_file(&lock_path).is_err() {
-                continue;
-            }
-        }
-        let Ok(lock) = CacheLock::try_acquire(&lock_path) else {
+        let Ok(Some(lock)) = CacheLock::try_acquire(&lock_path) else {
             continue;
         };
         let valid_manifest = read_manifest(&path.join("manifest")).is_some_and(|manifest| {
@@ -1499,18 +1602,8 @@ fn maybe_gc_cache(jobs_dir: &Path, current: &Path) {
         return;
     }
     let lock_path = root.join(".gc-lock");
-    let lock = match CacheLock::try_acquire(&lock_path) {
-        Ok(lock) => lock,
-        Err(error)
-            if error.kind() == std::io::ErrorKind::AlreadyExists && lock_is_stale(&lock_path) =>
-        {
-            let _ = std::fs::remove_file(&lock_path);
-            let Ok(lock) = CacheLock::try_acquire(&lock_path) else {
-                return;
-            };
-            lock
-        }
-        Err(_) => return,
+    let Ok(Some(lock)) = CacheLock::try_acquire(&lock_path) else {
+        return;
     };
     if recent() {
         return;
@@ -1673,9 +1766,12 @@ fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {
 /// an I/O boundary, even when a tool emits an arbitrarily long line.
 struct SignalScanner {
     signals: Signals,
-    bbl_marker: Vec<u8>,
+    bbl_marker: String,
     overlap: Vec<u8>,
+    window: Vec<u8>,
     max_pattern_len: usize,
+    /// The start of the current line, for the warning summary. Reported
+    /// warnings are short; the cap bounds memory for pathological lines.
     current_line_bytes: Vec<u8>,
     line_citation: bool,
     line_undefined: bool,
@@ -1683,17 +1779,19 @@ struct SignalScanner {
     line_bbl: bool,
 }
 
+const SIGNAL_LINE_CAPTURE_BYTES: usize = 4096;
+
 impl SignalScanner {
     fn new(job: &str) -> Self {
-        let bbl_marker = format!("{job}.bbl").into_bytes();
+        let bbl_marker = format!("{job}.bbl");
         let max_pattern_len = [
-            b"Rerun to get".len(),
-            b"Label(s) may have changed".len(),
-            b"There were undefined references".len(),
-            b"There were undefined citations".len(),
-            b"Citation".len(),
-            b"undefined".len(),
-            b"No file ".len(),
+            "Rerun to get".len(),
+            "Label(s) may have changed".len(),
+            "There were undefined references".len(),
+            "There were undefined citations".len(),
+            "Citation".len(),
+            "undefined".len(),
+            "No file ".len(),
             bbl_marker.len(),
         ]
         .into_iter()
@@ -1703,6 +1801,7 @@ impl SignalScanner {
             signals: Signals::default(),
             bbl_marker,
             overlap: Vec::with_capacity(max_pattern_len.saturating_sub(1)),
+            window: Vec::new(),
             max_pattern_len,
             current_line_bytes: Vec::new(),
             line_citation: false,
@@ -1712,43 +1811,54 @@ impl SignalScanner {
         }
     }
     fn scan_fragment(&mut self, fragment: &[u8]) {
-        self.current_line_bytes.extend_from_slice(fragment);
-        let mut window = Vec::with_capacity(self.overlap.len() + fragment.len());
+        let room = SIGNAL_LINE_CAPTURE_BYTES.saturating_sub(self.current_line_bytes.len());
+        self.current_line_bytes
+            .extend_from_slice(&fragment[..room.min(fragment.len())]);
+        let mut window = std::mem::take(&mut self.window);
+        window.clear();
         window.extend_from_slice(&self.overlap);
         window.extend_from_slice(fragment);
-        self.signals.rerun |= contains_bytes(&window, b"Rerun to get")
-            || contains_bytes(&window, b"Label(s) may have changed");
-        self.signals.undef_refs |= contains_bytes(&window, b"There were undefined references");
-        self.signals.undef_cites |= contains_bytes(&window, b"There were undefined citations");
-        self.line_citation |= contains_bytes(&window, b"Citation");
-        self.line_undefined |= contains_bytes(&window, b"undefined");
-        self.line_no_file |= contains_bytes(&window, b"No file ");
-        self.line_bbl |= contains_bytes(&window, &self.bbl_marker);
+        // Transcripts are almost always UTF-8: search them as text, which
+        // is much faster than comparing every byte window.
+        let text = std::str::from_utf8(&window);
+        let contains = |needle: &str| match text {
+            Ok(text) => text.contains(needle),
+            Err(_) => contains_bytes(&window, needle.as_bytes()),
+        };
+        self.signals.rerun |= contains("Rerun to get") || contains("Label(s) may have changed");
+        self.signals.undef_refs |= contains("There were undefined references");
+        self.signals.undef_cites |= contains("There were undefined citations");
+        self.line_citation |= contains("Citation");
+        self.line_undefined |= contains("undefined");
+        self.line_no_file |= contains("No file ");
+        self.line_bbl |= contains(&self.bbl_marker);
 
         let retain = window.len().min(self.max_pattern_len.saturating_sub(1));
         self.overlap.clear();
         self.overlap
             .extend_from_slice(&window[window.len().saturating_sub(retain)..]);
+        self.window = window;
     }
 
     fn finish_line(&mut self) {
         self.signals.undef_cites |= self.line_citation && self.line_undefined;
         self.signals.bbl_missing |= self.line_no_file && self.line_bbl;
 
-        let line_str = String::from_utf8_lossy(&self.current_line_bytes);
+        let line_str = String::from_utf8_lossy(self.current_line_bytes.trim_ascii());
+        // The engine's terminal diagnostics already carry a `warning: `
+        // severity; texmk adds its own, and the transcript spells the same
+        // box warning without it, so store one canonical message.
         let trimmed = line_str.trim();
-        if trimmed.starts_with("LaTeX Warning: Reference")
-            || trimmed.starts_with("LaTeX Warning: Citation")
-            || trimmed.starts_with("LaTeX Warning: There were undefined")
-            || trimmed.starts_with("warning: Overfull \\hbox")
-            || trimmed.starts_with("warning: Underfull \\hbox")
-            || trimmed.starts_with("warning: Overfull \\vbox")
-            || trimmed.starts_with("Overfull \\hbox")
-            || trimmed.starts_with("Underfull \\hbox")
-            || trimmed.starts_with("Overfull \\vbox")
+        let message = trimmed.strip_prefix("warning: ").unwrap_or(trimmed);
+        if message.starts_with("LaTeX Warning: Reference")
+            || message.starts_with("LaTeX Warning: Citation")
+            || message.starts_with("LaTeX Warning: There were undefined")
+            || message.starts_with("Overfull \\hbox")
+            || message.starts_with("Underfull \\hbox")
+            || message.starts_with("Overfull \\vbox")
         {
-            if !self.signals.user_warnings.contains(&trimmed.to_string()) {
-                self.signals.user_warnings.push(trimmed.to_string());
+            if !self.signals.user_warnings.iter().any(|known| known == message) {
+                self.signals.user_warnings.push(message.to_string());
             }
         }
         self.current_line_bytes.clear();
@@ -2346,19 +2456,22 @@ fn source_bibliography_is_current(
             }
         }
     }
+    // Substring search over text (Two-Way, SIMD-accelerated) rather than
+    // comparing every byte window: this runs on every warm build, once per
+    // citation key over the .bbl and each database.
+    let source_text = String::from_utf8_lossy(&source_bytes);
+    let databases: Vec<_> = bibliography_sources
+        .iter()
+        .map(|database| String::from_utf8_lossy(database))
+        .collect();
     for key in aux_citations(aux) {
         if key == "*" {
             continue;
         }
-        let needle = format!("{{{key}}}");
-        let covered = source_bytes
-            .windows(needle.len())
-            .any(|window| window == needle.as_bytes());
-        let exists_in_database = bibliography_sources.iter().any(|database| {
-            database
-                .windows(key.len())
-                .any(|window| window == key.as_bytes())
-        });
+        let covered = source_text.contains(&format!("{{{key}}}"));
+        let exists_in_database = databases
+            .iter()
+            .any(|database| database.contains(key.as_str()));
         if exists_in_database && !covered {
             return false;
         }
@@ -2476,6 +2589,7 @@ fn bibliography_signature(aux: &str, aux_dir: &Path, source_dir: &Path) -> u64 {
 
 struct ToolOutput {
     success: bool,
+    code: Option<i32>,
     stdout: String,
     stderr: String,
 }
@@ -2611,14 +2725,33 @@ fn run_tool(
     cwd: &Path,
     env: &[(OsString, OsString)],
 ) -> std::io::Result<ToolOutput> {
-    let mut child = Command::new(bin)
+    let mut command = Command::new(bin);
+    command
         .args(args)
         .current_dir(cwd)
         .envs(env.iter().cloned())
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()?;
+        .stderr(Stdio::piped());
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::process::CommandExt;
+        let parent = std::process::id();
+        // An editor that kills texmk to start a newer build must not leave
+        // the old engine running and writing into the shared job state.
+        unsafe {
+            command.pre_exec(move || {
+                if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                if libc::getppid() as u32 != parent {
+                    return Err(std::io::Error::other("texmk exited before its tool started"));
+                }
+                Ok(())
+            });
+        }
+    }
+    let mut child = command.spawn()?;
     let stdout = child
         .stdout
         .take()
@@ -2646,8 +2779,10 @@ fn run_tool(
     let status = child.wait();
     let stdout = join_capture(stdout_reader);
     let stderr = join_capture(stderr_reader);
+    let status = status?;
     let captured = ToolOutput {
-        success: status?.success(),
+        success: status.success(),
+        code: status.code(),
         stdout: stdout?,
         stderr: stderr?,
     };
@@ -2676,8 +2811,21 @@ fn run_bibtex(aux_stem: &Path, source_dir: &Path, silent: bool) -> i32 {
         OsString::from(TEXMK_INTERNAL_MODE_ENV),
         OsString::from("bibtex"),
     )];
+    let mut bbl = aux_stem.as_os_str().to_os_string();
+    bbl.push(".bbl");
     match run_tool(&bibtex, &[arg], silent, source_dir, &env) {
         Ok(out) if out.success => 0,
+        // TeX Live BibTeX exits 2 after error messages (duplicate entries,
+        // bad cross-references) that still produce a complete .bbl.
+        Ok(out) if out.code == Some(2) && Path::new(&bbl).is_file() => {
+            let mut blg = aux_stem.as_os_str().to_os_string();
+            blg.push(".blg");
+            eprintln!(
+                "texmk: warning: BibTeX reported errors; see {}",
+                Path::new(&blg).display()
+            );
+            0
+        }
         Ok(out) => {
             if silent {
                 out.replay();
@@ -2691,41 +2839,68 @@ fn run_bibtex(aux_stem: &Path, source_dir: &Path, silent: bool) -> i32 {
         }
     }
 }
+
+/// Convert EPS figures for pdfTeX's graphics rules (epstopdf's
+/// `-eps-converted-to.pdf` name, plus `<name>.pdf` when that does not exist).
+/// A conversion older than its EPS is redone; `<name>.pdf` is refreshed only
+/// while it is still a copy of the previous conversion, never a user file.
 fn convert_eps_figures(source_dir: &Path) {
+    let mut visited = HashSet::new();
     let mut dirs_to_visit = vec![source_dir.to_path_buf()];
     while let Some(dir) = dirs_to_visit.pop() {
+        // Symlinked directories are followed once: a link to an ancestor
+        // would otherwise make this walk endless.
+        if !visited.insert(std::fs::canonicalize(&dir).unwrap_or_else(|_| dir.clone())) {
+            continue;
+        }
         let Ok(entries) = std::fs::read_dir(&dir) else {
             continue;
         };
         for entry in entries.flatten() {
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
             let path = entry.path();
-            if path.is_dir() {
-                if !path
-                    .file_name()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .starts_with('.')
-                {
+            if kind.is_dir() || (kind.is_symlink() && path.is_dir()) {
+                if !entry.file_name().to_string_lossy().starts_with('.') {
                     dirs_to_visit.push(path);
                 }
-            } else if path.is_file() {
-                if let Some(ext) = path.extension().and_then(|s| s.to_str()) {
-                    if ext.eq_ignore_ascii_case("eps") || ext.eq_ignore_ascii_case("epsi") {
-                        let stem = path.file_stem().unwrap_or_default().to_string_lossy();
-                        let converted = path.with_file_name(format!("{stem}-eps-converted-to.pdf"));
-                        let direct_pdf = path.with_extension("pdf");
-                        if !converted.exists() || !direct_pdf.exists() {
-                            if let Ok(bytes) = std::fs::read(&path) {
-                                if let Ok(out) = tex_ps::eps_to_pdf(&bytes) {
-                                    let _ = std::fs::write(&converted, &out.pdf_bytes);
-                                    if !direct_pdf.exists() {
-                                        let _ = std::fs::write(&direct_pdf, &out.pdf_bytes);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
+                continue;
+            }
+            let is_eps = path
+                .extension()
+                .and_then(OsStr::to_str)
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("eps") || ext.eq_ignore_ascii_case("epsi"));
+            if !is_eps {
+                continue;
+            }
+            let Ok(eps_modified) = std::fs::metadata(&path).and_then(|meta| meta.modified()) else {
+                continue;
+            };
+            let stem = path.file_stem().unwrap_or_default().to_string_lossy();
+            let converted = path.with_file_name(format!("{stem}-eps-converted-to.pdf"));
+            let direct_pdf = path.with_extension("pdf");
+            let converted_current = std::fs::metadata(&converted)
+                .and_then(|meta| meta.modified())
+                .is_ok_and(|modified| modified >= eps_modified);
+            let direct_exists = direct_pdf.exists();
+            if converted_current && direct_exists {
+                continue;
+            }
+            let direct_is_previous_conversion = !direct_exists
+                || matches!(
+                    (std::fs::read(&direct_pdf), std::fs::read(&converted)),
+                    (Ok(direct), Ok(previous)) if direct == previous
+                );
+            let Ok(bytes) = std::fs::read(&path) else {
+                continue;
+            };
+            let Ok(out) = tex_ps::eps_to_pdf(&bytes) else {
+                continue;
+            };
+            let _ = std::fs::write(&converted, &out.pdf_bytes);
+            if direct_is_previous_conversion {
+                let _ = std::fs::write(&direct_pdf, &out.pdf_bytes);
             }
         }
     }
@@ -2742,11 +2917,20 @@ fn real_main() -> i32 {
         }
     };
     std::env::set_var(HERMETIC_ENV, "1");
-    if !opt.file.is_file() {
+    // Like latexmk (and editors such as LaTeX Workshop, whose %DOC% omits the
+    // extension), accept the main file's name without `.tex`.
+    let file = if !opt.file.is_file() && opt.file.extension() != Some(OsStr::new("tex")) {
+        let mut with_extension = opt.file.clone().into_os_string();
+        with_extension.push(".tex");
+        PathBuf::from(with_extension)
+    } else {
+        opt.file.clone()
+    };
+    if !file.is_file() {
         eprintln!("texmk: no such file: {}", opt.file.display());
         return 1;
     }
-    let source = std::fs::canonicalize(&opt.file).unwrap_or_else(|_| make_absolute(&opt.file));
+    let source = std::fs::canonicalize(&file).unwrap_or_else(|_| make_absolute(&file));
     let source_dir = source
         .parent()
         .unwrap_or_else(|| Path::new("."))
@@ -2763,7 +2947,7 @@ fn real_main() -> i32 {
     } else {
         target_engine
     };
-    if using_embedded_engine && target_engine == "xelatex" {
+    if using_embedded_engine && target_engine == "xelatex" && (opt.engine.is_some() || !opt.silent) {
         eprintln!(
             "texmk: {target_engine} compatibility mode uses Ratex, not the XeTeX runtime."
         );
@@ -2858,6 +3042,7 @@ fn real_main() -> i32 {
             return 1;
         }
     };
+    lock.share_with_children();
     if let Err(error) = std::fs::create_dir_all(&requested_job_dir) {
         eprintln!(
             "texmk: cannot create job cache {}: {error}",
@@ -2874,7 +3059,8 @@ fn real_main() -> i32 {
     };
     maybe_gc_cache(&jobs_dir, &job_dir);
     let pdf_path = artifact_path(&output_dir, &job, ".pdf");
-    let synctex_path = artifact_path(&output_dir, &job, ".synctex.gz");
+    let synctex_extension = synctex_extension(&opt.passthrough);
+    let synctex_path = artifact_path(&output_dir, &job, synctex_extension.unwrap_or(".synctex.gz"));
     let mut aux_dir = explicit_aux_dir.unwrap_or_else(|| job_dir.join("aux"));
     if aux_dir.exists() {
         aux_dir = if managed_aux {
@@ -2997,7 +3183,8 @@ fn real_main() -> i32 {
         }
     };
     let staged_pdf_path = artifact_path(&stage_dir, &job, ".pdf");
-    let staged_synctex_path = artifact_path(&stage_dir, &job, ".synctex.gz");
+    let staged_synctex_path =
+        artifact_path(&stage_dir, &job, synctex_extension.unwrap_or(".synctex.gz"));
     let engine_cache_dir = job_dir.join("engine-cache");
     if let Err(error) = std::fs::create_dir_all(&engine_cache_dir) {
         eprintln!(
@@ -3096,6 +3283,8 @@ fn real_main() -> i32 {
     let mut staged_pdf_written_this_run = false;
     let mut staged_synctex_written_this_run = false;
     let mut child_cache_hit = false;
+    let mut last_pass_failed = false;
+    let mut recovered_diagnostics = String::new();
 
     // bibtex depends on .aux, not on a PDF. Refresh .bbl from a previous
     // aux so the first typeset can consume it.
@@ -3211,16 +3400,14 @@ fn real_main() -> i32 {
             }
         };
         let engine_cache_hit = take_cache_hit_marker(&cache_hit_marker);
-        if !output.success {
-            let user_fatal_error = output.stdout.contains("published PDF became visible")
-                || output.stderr.contains("published PDF became visible");
+        let pass_failed = !output.success;
+        if pass_failed {
             let allow_recovery = opt.passthrough.iter().any(|a| {
                 a.starts_with("-interaction=nonstopmode") || a.starts_with("-interaction=batchmode")
             });
-            let produced_pdf = !user_fatal_error
-                && allow_recovery
-                && staged_pdf_path.is_file()
-                && std::fs::metadata(&staged_pdf_path).map_or(0, |m| m.len()) > 1000;
+            let produced_pdf = allow_recovery
+                && std::fs::metadata(&staged_pdf_path).is_ok_and(|m| m.is_file() && m.len() > 1000)
+                && file_identity(&staged_pdf_path) != pdf_before;
             if !produced_pdf {
                 if opt.silent {
                     if using_embedded_engine && !output.stderr.is_empty() {
@@ -3237,6 +3424,12 @@ fn real_main() -> i32 {
                 return 1;
             }
         }
+        last_pass_failed = pass_failed;
+        recovered_diagnostics = if pass_failed && opt.silent {
+            output.stderr.clone()
+        } else {
+            String::new()
+        };
 
         let mut signals = output.signals(&job);
         let output = output.combined();
@@ -3427,14 +3620,20 @@ fn real_main() -> i32 {
                 );
                 return 1;
             }
+            manifest.synctex_hash = regular_file_hash(&synctex_path);
+            if manifest.synctex_hash.is_none() {
+                eprintln!(
+                    "texmk: build FAILED: SyncTeX output {} is not a readable regular file",
+                    synctex_path.display()
+                );
+                return 1;
+            }
         }
-        manifest.synctex_hash = regular_file_hash(&synctex_path);
-        if manifest.synctex_hash.is_none() {
-            eprintln!(
-                "texmk: build FAILED: SyncTeX output {} is not a readable regular file",
-                synctex_path.display()
-            );
-            return 1;
+        if synctex_extension == Some(".synctex.gz") {
+            // pdfTeX removes an uncompressed SyncTeX file from an earlier
+            // build when it writes `.synctex.gz`. SyncTeX readers open
+            // `<job>.synctex` first, so leaving it would shadow this build.
+            let _ = std::fs::remove_file(artifact_path(&output_dir, &job, ".synctex"));
         }
     } else {
         if manifest.synctex == synctex_path
@@ -3477,15 +3676,24 @@ fn real_main() -> i32 {
     } else {
         String::new()
     };
+    // A PDF produced despite TeX errors (recovered in an explicitly requested
+    // nonstop/batch mode) is published; the errors are shown and named in the
+    // status line, and the exit status stays 0 as before.
+    eprint!("{recovered_diagnostics}");
+    let status = if last_pass_failed {
+        "finished with TeX errors"
+    } else {
+        "OK"
+    };
     match pages {
         Some(n) => eprintln!(
-            "texmk: build OK: {} ({} page{}, {passes} {executed_engine} pass(es){bib_note})",
+            "texmk: build {status}: {} ({} page{}, {passes} {executed_engine} pass(es){bib_note})",
             pdf_path.display(),
             n,
             if n == 1 { "" } else { "s" }
         ),
         None if pdf_path.is_file() => eprintln!(
-            "texmk: build OK: {} (page count unknown, {passes} {executed_engine} pass(es){bib_note})",
+            "texmk: build {status}: {} (page count unknown, {passes} {executed_engine} pass(es){bib_note})",
             pdf_path.display()
         ),
         None => {
@@ -3525,6 +3733,9 @@ fn real_main() -> i32 {
         retain_requested(&retention, &mut manifest);
     }
     drop(lock);
+    if last_pass_failed && log_path.is_file() {
+        eprintln!("texmk: transcript retained at {}", log_path.display());
+    }
     0
 }
 
@@ -3625,7 +3836,9 @@ mod io_safety_tests {
         std::fs::create_dir(&root.0).unwrap();
         let pending = root.0.join("0123456789abcdef");
         let current = root.0.join("fedcba9876543210");
-        let lock = CacheLock::try_acquire(&pending.with_extension("lock")).unwrap();
+        let lock = CacheLock::try_acquire(&pending.with_extension("lock"))
+            .unwrap()
+            .unwrap();
         std::fs::create_dir(&pending).unwrap();
         std::fs::write(pending.join("main.aux"), b"pending compilation").unwrap();
 
@@ -3650,16 +3863,38 @@ mod io_safety_tests {
     #[test]
     fn live_build_lock_does_not_expire_during_long_compile() {
         let path = TempFile::new("live-build-lock");
-        let lock = CacheLock::try_acquire(&path.0).unwrap();
+        let lock = CacheLock::try_acquire(&path.0).unwrap().unwrap();
         OpenOptions::new()
             .write(true)
             .open(&path.0)
             .unwrap()
-            .set_modified(SystemTime::now() - Duration::from_secs(120))
+            .set_modified(SystemTime::now() - Duration::from_secs(24 * 60 * 60))
             .unwrap();
 
-        assert!(!lock_is_stale(&path.0));
+        assert!(CacheLock::try_acquire(&path.0).unwrap().is_none());
         drop(lock);
+        assert!(CacheLock::try_acquire(&path.0).unwrap().is_some());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn waiter_on_a_released_lock_file_locks_the_current_file() {
+        use std::os::unix::fs::MetadataExt;
+        let path = TempFile::new("relinked-lock");
+        let first = CacheLock::try_acquire(&path.0).unwrap().unwrap();
+        let waiter = std::thread::spawn({
+            let path = path.0.clone();
+            move || CacheLock::acquire(&path).unwrap()
+        });
+        std::thread::sleep(Duration::from_millis(100));
+        // The first holder unlinks its file on release; a waiter blocked on
+        // that inode must not treat the orphan as the job lock.
+        drop(first);
+        let second = waiter.join().unwrap();
+        let current = std::fs::metadata(&path.0).unwrap();
+        let locked = second.file.metadata().unwrap();
+        assert_eq!((locked.dev(), locked.ino()), (current.dev(), current.ino()));
+        assert!(CacheLock::try_acquire(&path.0).unwrap().is_none());
     }
 
     #[test]
@@ -3694,6 +3929,43 @@ mod io_safety_tests {
         assert!(signals.bbl_missing);
         assert!(signals.undef_cites);
         assert!(signals.rerun);
+    }
+
+    #[test]
+    fn preambles_requiring_a_unicode_engine_select_xelatex() {
+        for source in [
+            "\\documentclass{ctexart}\n\\begin{document}x\\end{document}\n",
+            "\\documentclass[UTF8, fontset=fandol]{ctexbeamer}\n",
+            "\\documentclass{article}\n\\usepackage{amsmath,amsfonts,ctex,enumitem}\n",
+            "\\documentclass{article}\n\\usepackage[\n  no-math\n]{fontspec}\n",
+            "\\documentclass{article}\\RequirePackage{unicode-math}\n",
+            "\\documentclass{article}\n\\usepackage { xeCJK }\n",
+            "\\documentclass{article}\n\\usepackage{polyglossia} % \\usepackage{x}\n",
+        ] {
+            assert!(preamble_requires_unicode_engine(source), "{source}");
+        }
+        for source in [
+            "\\documentclass{article}\n% \\usepackage{fontspec}\n\\begin{document}\n",
+            "\\documentclass{article}\n\\begin{document}\n\\usepackage{fontspec}\n",
+            "\\documentclass{article}\\begin{document}\\usepackage{ctex}\n",
+            "\\documentclass{article}\n\\usepackage{fontspecx,ctex-xecjk}\n",
+            "\\documentclass{article}\n\\usepackagex{fontspec}\n",
+            "\\documentclass{article}\n\\newcommand\\x{100\\% fontspec}\n",
+            "\\documentclass{ctexartx}\n\\usepackage[ctex]{foo}\n",
+        ] {
+            assert!(!preamble_requires_unicode_engine(source), "{source}");
+        }
+        assert!(preamble_requires_unicode_engine(
+            "\\documentclass{article}\n\\def\\p{100\\%}\\usepackage{fontspec}\n"
+        ));
+    }
+
+    #[test]
+    fn engine_and_transcript_box_warnings_print_once_with_one_severity() {
+        let message = "Overfull \\hbox (12.0pt too wide) in paragraph at lines 3--4";
+        let mut signals = scan_signals(&format!("warning: {message}\n"), "main");
+        signals.merge(scan_signals(&format!("{message}\n"), "main"));
+        assert_eq!(signals.user_warnings, [message]);
     }
 
     #[test]

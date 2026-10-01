@@ -950,6 +950,40 @@ Jump to \hyperref[sec:anchor]{Anchor}.
     assert_clickable_text_rect(goto_link_rect(&pdf, second_page, b"section.1"));
 }
 
+#[test]
+fn referenced_but_undefined_names_fall_back_to_the_first_page_like_pdftex() {
+    // setspace loaded after hyperref replaces hyperref's footnote text, so the
+    // footnote marks link to Hfootnote.N names that are never defined. pdfTeX
+    // warns and points each at the first page; a dangling name is unclickable.
+    const SOURCE: &[u8] = br"\documentclass{article}
+\usepackage{hyperref}
+\usepackage{setspace}
+\begin{document}
+First page.
+\newpage
+Text\footnote{A note.}
+\end{document}
+";
+
+    let mut engine = compile_latex_twice("missingdest", SOURCE);
+    engine.finish_job_diagnostics();
+    assert!(
+        engine.diagnostics.iter().any(|d| d.message
+            == "name{Hfootnote.1} has been referenced but does not exist, replaced by a fixed one"),
+        "missing destination must be reported:\n{}",
+        engine.diagnostic_output
+    );
+    let bytes = tex_core::driver::finish_pdf(&mut engine, false).expect("finish PDF");
+    let pdf = lopdf::Document::load_mem(&bytes).expect("valid PDF");
+    let pages = pdf.get_pages();
+    goto_link_rect(&pdf, pages[&2], b"Hfootnote.1");
+    assert_eq!(
+        named_destination_page(&pdf, b"Hfootnote.1"),
+        pages[&1],
+        "the stand-in destination must target the first page"
+    );
+}
+
 #[derive(Debug, PartialEq)]
 struct Bookmark {
     title: String,

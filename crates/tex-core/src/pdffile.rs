@@ -1595,6 +1595,18 @@ pub fn write_pdf(doc: &PdfDoc) -> Result<Vec<u8>, String> {
             }
         }
     }
+    // pdfTeX replaces a referenced but undefined name by a fixed destination
+    // on the first page, so the link still works.
+    let fixed = Dest {
+        id: DestId::Num(0),
+        x: 0.0,
+        y: 0.0,
+        kind: 1,
+        zoom: None,
+    };
+    for name in doc.unresolved_dest_names() {
+        named.push((name, 0, &fixed));
+    }
     named.sort_by(|a, b| a.0.as_bytes().cmp(b.0.as_bytes()));
     let names_obj = if named.is_empty() && doc.names_extra.is_empty() {
         0

@@ -154,6 +154,44 @@ pub struct PdfDoc {
     pub legacy_bindings: std::collections::BTreeMap<usize, Vec<LegacyBindingInfo>>,
 }
 
+impl PdfDoc {
+    /// Local `goto name` targets (link annotations and outline items) that no
+    /// `\pdfdest name` defines, in first-reference order. pdfTeX replaces each
+    /// with a fixed destination on the first page.
+    pub(crate) fn unresolved_dest_names(&self) -> Vec<&str> {
+        if self.pages.is_empty() {
+            return Vec::new();
+        }
+        let defined: std::collections::HashSet<&str> = self
+            .pages
+            .iter()
+            .flat_map(|page| &page.dests)
+            .filter_map(|dest| match &dest.id {
+                DestId::Name(name) => Some(name.as_str()),
+                DestId::Num(_) => None,
+            })
+            .collect();
+        let links = self
+            .pages
+            .iter()
+            .flat_map(|page| &page.annots)
+            .filter_map(|annot| annot.dest.as_deref());
+        let outlines = self.outlines.iter().filter_map(|item| match &item.action {
+            Some(PdfAction::Goto {
+                file: None,
+                target: GotoTarget::Dest(DestId::Name(name)),
+                ..
+            }) => Some(name.as_str()),
+            _ => None,
+        });
+        let mut seen = std::collections::HashSet::new();
+        links
+            .chain(outlines)
+            .filter(|name| !defined.contains(name) && seen.insert(*name))
+            .collect()
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum EmbedFontSubtype {
     Type1,
@@ -861,6 +899,22 @@ impl Engine {
         }
         for (message, source) in warnings {
             self.warning_at(&message, source);
+        }
+    }
+
+    /// pdfTeX's end-of-file check for named destinations that links or
+    /// outline items reference but no `\pdfdest name` defines.
+    pub(crate) fn warn_unresolved_dest_names(&mut self) {
+        let messages: Vec<String> = self
+            .pdf_doc
+            .unresolved_dest_names()
+            .into_iter()
+            .map(|name| {
+                format!("name{{{name}}} has been referenced but does not exist, replaced by a fixed one")
+            })
+            .collect();
+        for message in messages {
+            self.warning_at(&message, None);
         }
     }
 

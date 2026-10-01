@@ -1448,6 +1448,7 @@ impl Engine {
             return;
         }
         self.warn_unresolved_outline_targets();
+        self.warn_unresolved_dest_names();
         let open_groups = self
             .eqtb
             .save_stack

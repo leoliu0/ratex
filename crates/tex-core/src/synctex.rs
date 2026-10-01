@@ -58,6 +58,12 @@ impl SyncTexData {
         self.page_sizes.insert(page, (width_sp, height_sp));
     }
 
+    /// Whether a page was shipped while `\synctex` was nonzero, i.e. whether
+    /// pdfTeX would have opened the SyncTeX file.
+    pub fn is_open(&self) -> bool {
+        !self.page_sizes.is_empty()
+    }
+
     /// Record a synchronization point on a given 1-based page.
     pub fn record_point(&mut self, page: u32, file_id: u32, line: u32, x_sp: i64, y_sp: i64) {
         self.pages.entry(page).or_default().push(SyncRecord {

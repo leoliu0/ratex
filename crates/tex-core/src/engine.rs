@@ -119,6 +119,18 @@ pub struct Ids {
     pub cs_escape: u8,
 }
 
+/// pdfTeX output parameters that the first shipout freezes
+/// (`check_pdfversion`, `fix_pdf_draftmode`, `fixed_decimal_digits`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PdfFixedParams {
+    pub major_version: i32,
+    pub minor_version: i32,
+    /// `\pdfdraftmode` clamped to 0..1 (pdfTeX `fixed_pdf_draftmode`).
+    pub draftmode: i32,
+    /// `\pdfdecimaldigits` clamped to 0..4.
+    pub decimal_digits: u32,
+}
+
 pub struct Engine {
     pub cs: CsTable,
     pub eqtb: Eqtb,
@@ -236,7 +248,9 @@ pub struct Engine {
     // output
     pub pdf_doc: crate::pdfout::PdfDoc,
     pub synctex: crate::synctex::SyncTexData,
-    pub synctex_enabled: bool,
+    /// pdfTeX output parameters frozen by the first shipout (pdfTeX
+    /// `check_pdfversion`/`fix_pdf_draftmode`).
+    pub pdf_fixed: Option<PdfFixedParams>,
     pub out_file: Option<tex_kpse::fs::File>,
     pub font_loader: crate::fontload::FontLoader,
     pub native_text: crate::native_layout::NativeTextState,
@@ -905,7 +919,7 @@ impl Engine {
             penalty_shape_levels: [crate::eqtb::LEVEL_ONE; 4],
             pdf_doc: crate::pdfout::PdfDoc::new(),
             synctex: crate::synctex::SyncTexData::new(),
-            synctex_enabled: true,
+            pdf_fixed: None,
             out_file: None,
             font_loader: crate::fontload::FontLoader::new(),
             native_text: crate::native_layout::NativeTextState::default(),
@@ -1768,7 +1782,36 @@ impl Engine {
         eng.eqtb.dim_params[DimParam::PdfPageHeight.idx() as usize] = 0;
         eng.init_xetex_primitives();
         eng.init_luatex_primitives();
+        // pdfTeX / e-TeX engine primitives (prim codes 400-413). Only the
+        // ones with implemented semantics are registered.
+        d!(eng, b"ifpdfabsnum", IfPdfAbsNum);
+        d!(eng, b"ifpdfabsdim", IfPdfAbsDim);
+        let engine_ints: [(&'static [u8], IntParam, i32); 10] = [
+            (b"synctex", IntParam::Synctex, 0),
+            (b"pdfdecimaldigits", IntParam::PdfDecimalDigits, 3),
+            (b"pdfdraftmode", IntParam::PdfDraftMode, 0),
+            (b"pdfpkresolution", IntParam::PdfPkResolution, 0),
+            (b"pdftracingfonts", IntParam::PdfTracingFonts, 0),
+            (b"pdfmajorversion", IntParam::PdfMajorVersion, 1),
+            // e-TeX tracing switches the LaTeX kernel assigns (their
+            // tracing output is not implemented yet)
+            (b"tracingassigns", IntParam::TracingAssigns, 0),
+            (b"tracinggroups", IntParam::TracingGroups, 0),
+            (b"tracingifs", IntParam::TracingIfs, 0),
+            (b"tracingscantokens", IntParam::TracingScanTokens, 0),
+        ];
+        for (name, p, value) in engine_ints {
+            def(name, IntP(p), eng);
+            eng.eqtb.int_params[p.idx() as usize] = value;
+        }
     }
+    /// SyncTeX records are taken while `\synctex` is nonzero (synctex.c
+    /// `SYNCTEX_VALUE`).
+    #[inline]
+    pub fn synctex_active(&self) -> bool {
+        self.eqtb.int_params[IntParam::Synctex.idx() as usize] != 0
+    }
+
     pub fn pop_group(&mut self) -> crate::eqtb::LevelType {
         let closing_level = self.eqtb.cur_level;
         let mut ag = Vec::new();

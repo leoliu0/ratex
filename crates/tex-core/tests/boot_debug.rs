@@ -72,10 +72,8 @@ fn test_preamble_format_fast_boot() {
 
 /// Primitives added for pdfTeX/e-TeX parity work through the shipped format:
 /// `px` follows `\pdfpxdimen` (initially 1bp), `\eTeXrevision` expands, and
-/// the fake count-register stand-ins for unimplemented pdfTeX parameters
-/// stay undefined so packages take their "primitive absent" branch rather
-/// than a defined-but-inert one. The dimensions and revision match TeX Live
-/// 2026 `pdflatex` (where `\pdfdecimaldigits` is a real primitive).
+/// pdftexconfig.tex's `\pdfdecimaldigits=3`/`\pdfpkresolution=600` reach the
+/// dumped integer parameters. The values match TeX Live 2026 `pdflatex`.
 #[test]
 fn shipped_format_has_pdftex_px_unit_and_etex_revision() {
     let mut eng = Engine::new(false);
@@ -88,10 +86,10 @@ fn shipped_format_has_pdftex_px_unit_and_etex_revision() {
         "px.tex".to_string(),
         br"\documentclass{article}\begin{document}
 \dimen0=2px \pdfpxdimen=2pt \dimen2=3px
-\typeout{[\the\dimen0|\the\dimen2|\eTeXrevision|\ifdefined\pdfdecimaldigits D\else U\fi]}
+\typeout{[\the\dimen0|\the\dimen2|\eTeXrevision|\the\pdfdecimaldigits|\the\pdfpkresolution]}
 \end{document}"
             .to_vec(),
     );
     eng.run();
-    assert!(eng.term.contains("[2.0075pt|6.0pt|.6|U]"), "{}", eng.term);
+    assert!(eng.term.contains("[2.0075pt|6.0pt|.6|3|600]"), "{}", eng.term);
 }

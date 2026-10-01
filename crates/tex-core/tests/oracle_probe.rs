@@ -905,3 +905,18 @@ $$a\insert10{\vbox{\hbox{\vrule height4pt width50pt}}}b$$\par
 "#,
     );
 }
+
+/// pdfTeX `\ifpdfabsnum`/`\ifpdfabsdim` compare absolute values (and accept
+/// `\unless`); `\pdfdecimaldigits`/`\pdfmajorversion` are real parameters.
+#[test]
+fn probe_pdf_absolute_conditionals_and_output_parameters() {
+    same(
+        "pdf-abs-conditionals",
+        r#"\count1=-7
+\immediate\write15{A:[\ifpdfabsnum\count1=7 Y\else N\fi\ifpdfabsnum-3<2 Y\else N\fi
+\ifpdfabsdim-2pt>1.5pt Y\else N\fi\unless\ifpdfabsdim 1pt=-1pt Y\else N\fi]}
+\pdfdecimaldigits=2 \pdfmajorversion=2
+\immediate\write15{B:[\the\pdfdecimaldigits|\the\pdfmajorversion|\the\pdfdraftmode]}
+"#,
+    );
+}

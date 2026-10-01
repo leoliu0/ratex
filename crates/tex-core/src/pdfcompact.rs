@@ -8,7 +8,7 @@ pub(crate) fn serialize(
     info: usize,
     encrypt: Option<usize>,
     file_id: Option<[u8; 16]>,
-    minor_version: Option<i32>,
+    (major_version, minor_version): (i32, i32),
 ) -> Vec<u8> {
     let packed: Vec<_> = objects
         .iter()
@@ -20,8 +20,7 @@ pub(crate) fn serialize(
     let xref_id = objects.len() + streams + 1;
     // type, byte offset or object-stream number, generation or stream index
     let mut xref = vec![(0u8, 0u64, 65535u16); xref_id + 1];
-    let mv = minor_version.unwrap_or(5);
-    let mut out = format!("%PDF-1.{mv}\n%").into_bytes();
+    let mut out = format!("%PDF-{major_version}.{minor_version}\n%").into_bytes();
     out.extend_from_slice(b"\xe2\xe3\xcf\xd3\n");
     let write_object =
         |out: &mut Vec<u8>, xref: &mut Vec<(u8, u64, u16)>, id: usize, body: &[u8]| {
@@ -107,7 +106,7 @@ mod tests {
         objects[206] = Some(b"<< /Length 3 >>\nstream\nabc\nendstream".to_vec());
         let mut packable = vec![true; objects.len()];
         packable[206] = false;
-        let bytes = serialize(&objects, &packable, 1, 5, None, None, None);
+        let bytes = serialize(&objects, &packable, 1, 5, None, None, (1, 5));
         let doc = lopdf::Document::load_mem(&bytes).unwrap();
         assert_eq!(
             doc.catalog()
@@ -143,11 +142,10 @@ pub(crate) fn serialize_compatible(
     info: usize,
     encrypt: Option<usize>,
     file_id: Option<[u8; 16]>,
-    minor_version: Option<i32>,
+    (major_version, minor_version): (i32, i32),
 ) -> Vec<u8> {
     // ---- assemble file
-    let mv = minor_version.unwrap_or(5);
-    let mut buf = format!("%PDF-1.{mv}\n%").into_bytes();
+    let mut buf = format!("%PDF-{major_version}.{minor_version}\n%").into_bytes();
     buf.extend_from_slice(b"\xe2\xe3\xcf\xd3\n");
     let mut offsets = vec![0usize; objects.len() + 1];
     for (i, obj) in objects.iter().enumerate() {

@@ -273,32 +273,30 @@ fn tagged_pdf_emits_markinfo_and_struct_tree_root() {
     );
 }
 
+/// pdfTeX opens the SyncTeX file at a shipout while `\synctex` is nonzero:
+/// `\synctex=1` in the document enables it without a command-line option,
+/// and `\synctex=0` before the first page leaves no SyncTeX output.
 #[test]
-fn synctex_records_generated_for_rendered_page() {
-    let source = r#"\catcode`\{=1 \catcode`\}=2
-\pdfpagewidth=100pt \pdfpageheight=100pt
-\pdfhorigin=0pt \pdfvorigin=0pt
-\setbox0=\hbox{\hrule width 50pt height 5pt depth 0pt}
-\shipout\box0
-\end"#;
-    let mut e = Engine::new(true);
-    e.init_primitives();
-    e.add_nullfont();
-    e.synctex_enabled = true;
-    e.input
-        .push_file("synctex_doc.tex".into(), source.as_bytes().to_vec());
-    e.run();
-    assert_eq!(e.error_count, 0, "{}", e.term);
-    assert_eq!(e.pdf_doc.pages.len(), 1);
-    // Verify synctex state exists and can serialize to gz
-    assert!(e.synctex_enabled);
-    let file_id = e.synctex.get_or_register_file("synctex_doc.tex");
-    assert_eq!(file_id, 1);
-    e.synctex
-        .record_point(1, file_id, 4, 65536 * 10, 65536 * 20);
-    let gz = e.synctex.to_synctex_gz().expect("valid synctex gz");
-    assert!(!gz.is_empty());
-    assert_eq!(&gz[..2], &[0x1f, 0x8b]);
+fn synctex_parameter_controls_recording_like_pdftex() {
+    for (setting, recorded) in [(1, true), (0, false)] {
+        let source = format!(
+            "\\catcode`\\{{=1 \\catcode`\\}}=2 \\synctex={setting}
+\\pdfpagewidth=100pt \\pdfpageheight=100pt
+\\pdfhorigin=0pt \\pdfvorigin=0pt
+\\setbox0=\\hbox{{\\hrule width 50pt height 5pt depth 0pt}}
+\\shipout\\box0
+\\end"
+        );
+        let mut e = Engine::new(true);
+        e.init_primitives();
+        e.add_nullfont();
+        e.input
+            .push_file("synctex_doc.tex".into(), source.into_bytes());
+        e.run();
+        assert_eq!(e.error_count, 0, "{}", e.term);
+        assert_eq!(e.pdf_doc.pages.len(), 1);
+        assert_eq!(e.synctex.is_open(), recorded, "\\synctex={setting}");
+    }
 }
 #[test]
 fn encrypted_pdf_emits_encrypt_dict_and_trailer_id() {

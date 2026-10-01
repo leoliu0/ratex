@@ -79,8 +79,11 @@ impl Engine {
     /// End-of-job: embed every engine font referenced by a shipped page
     /// and rewrite page/form font-binding references to document font indices.
     pub fn embed_used_fonts(&mut self) -> Result<(), String> {
-        self.pdf_doc.minor_version =
-            Some(self.eqtb.int_params[crate::prim::IntParam::PdfMinorVersion.idx() as usize]);
+        // Writing the first PDF object freezes the version (pdfTeX
+        // `check_pdfversion`); a shipout normally did that already.
+        if self.pdf_fixed.is_none() {
+            self.fix_pdf_output_params();
+        }
         use std::collections::BTreeSet;
         let gen_tounicode =
             self.eqtb.int_params[crate::prim::IntParam::PdfGenToUnicode.idx() as usize];

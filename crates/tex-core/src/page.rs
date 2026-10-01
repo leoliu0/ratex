@@ -1566,6 +1566,10 @@ impl Engine {
     pub fn ship_box(&mut self, b: Option<Node>) {
         self.dead_cycles = 0;
         let Some(boxn) = b else { return };
+        self.fix_pdf_output_params();
+        if self.stopped_on_error {
+            return;
+        }
 
         // tex.web §1395 / out_what: deferred \write/\openout/\closeout whatsits
         // fire during render_page in list order so \pdflastxpos/\pdflastypos
@@ -1594,6 +1598,60 @@ impl Engine {
         let _ = (width, height);
         let page = self.render_page(&boxn);
         self.pdf_doc.push_page(page);
+    }
+
+    /// pdfTeX `fix_pdfoutput` + `check_pdfversion`: the first page (or the
+    /// first PDF object) freezes `\pdfmajorversion`, `\pdfminorversion`,
+    /// `\pdfdraftmode` and `\pdfdecimaldigits`; a later change of the
+    /// version or draft mode is a fatal setup error.
+    pub(crate) fn fix_pdf_output_params(&mut self) {
+        let int = |e: &Self, p: IntParam| e.eqtb.int_params[p.idx() as usize];
+        if let Some(fixed) = self.pdf_fixed {
+            if int(self, IntParam::PdfDraftMode) != fixed.draftmode {
+                self.fatal_error(
+                    "pdfTeX error (setup): \\pdfdraftmode can only be changed before anything is written to the output",
+                );
+            } else if int(self, IntParam::PdfMajorVersion) != fixed.major_version
+                || int(self, IntParam::PdfMinorVersion) != fixed.minor_version
+            {
+                self.fatal_error(
+                    "pdfTeX error (setup): PDF version cannot be changed after data is written to the PDF file",
+                );
+            }
+            return;
+        }
+        let mut major_version = int(self, IntParam::PdfMajorVersion);
+        if major_version < 1 {
+            self.error(&format!(
+                "pdfTeX error (invalid pdfmajorversion) ({major_version})"
+            ));
+            major_version = 1;
+            self.eqtb.int_params[IntParam::PdfMajorVersion.idx() as usize] = 1;
+        }
+        let mut minor_version = int(self, IntParam::PdfMinorVersion);
+        if !(0..=9).contains(&minor_version) {
+            self.error(&format!(
+                "pdfTeX error (invalid pdfminorversion) ({minor_version})"
+            ));
+            minor_version = 4;
+            self.eqtb.int_params[IntParam::PdfMinorVersion.idx() as usize] = 4;
+        }
+        let fixed = crate::engine::PdfFixedParams {
+            major_version,
+            minor_version,
+            draftmode: int(self, IntParam::PdfDraftMode).clamp(0, 1),
+            decimal_digits: int(self, IntParam::PdfDecimalDigits).clamp(0, 4) as u32,
+        };
+        self.pdf_fixed = Some(fixed);
+        self.pdf_doc.major_version = major_version;
+        self.pdf_doc.minor_version = Some(minor_version);
+        self.pdf_doc.decimal_digits = fixed.decimal_digits;
+    }
+
+    /// `\pdfdraftmode` was positive when the output was fixed: no PDF file
+    /// is written.
+    pub fn pdf_draft_mode(&self) -> bool {
+        self.pdf_fixed.is_some_and(|fixed| fixed.draftmode > 0)
     }
 }
 

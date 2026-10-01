@@ -507,7 +507,7 @@ impl Engine {
             self.native_text.current_font = Some(target_font);
         }
 
-        if self.synctex_enabled {
+        if self.synctex_active() {
             if let Some((path, line)) = self.input.current_file_position() {
                 if !path.is_empty() && line > 0 {
                     let changed = self.native_text.source.is_none_or(|(file_id, previous_line)| {
@@ -579,7 +579,7 @@ impl Engine {
                     Ok(face) => calculate_slice_dims(&run.glyphs, &face, at_size, upem),
                     Err(_) => (0, 0, 0),
                 };
-                if self.synctex_enabled {
+                if self.synctex_active() {
                     if let Some((path, line)) = self.input.current_file_position() {
                         if !path.is_empty() && line > 0 {
                             let file_id = self.synctex.get_or_register_file(path);

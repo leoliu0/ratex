@@ -1243,23 +1243,24 @@ fn pdftex_string(s: &str) -> String {
 }
 
 /// pdfTeX `pdf_print_mag_bp`: a page coordinate (bp, on the sp raster)
-/// scaled by \mag and printed with `pdf_print_bp`'s three decimals.
-fn mag_bp(v: f64, mag: i32) -> String {
-    mag_bp_sp((v * crate::pdfrender::SP_PER_BP).round() as i64, mag)
+/// scaled by \mag and printed by `pdf_print_bp` with `fixed_decimal_digits`.
+/// `scale` is `(\mag, fixed_decimal_digits)`.
+fn mag_bp(v: f64, scale: (i32, u32)) -> String {
+    mag_bp_sp((v * crate::pdfrender::SP_PER_BP).round() as i64, scale)
 }
 
-fn mag_bp_sp(mut sp: i64, mag: i32) -> String {
+fn mag_bp_sp(mut sp: i64, (mag, digits): (i32, u32)) -> String {
     if mag > 0 && mag != 1000 {
         sp = crate::pdfrender::round_xn_over_d(sp, mag as i64, 1000);
     }
     let mut out = String::new();
-    crate::pdfrender::push_bp_sp(&mut out, sp);
+    crate::pdfrender::push_bp_sp(&mut out, sp, digits);
     out
 }
 
 /// Explicit destination array for a page object.
-fn dest_array(page_ref: usize, d: &Dest, mag: i32) -> String {
-    let (x, y) = (mag_bp(d.x, mag), mag_bp(d.y, mag));
+fn dest_array(page_ref: usize, d: &Dest, scale: (i32, u32)) -> String {
+    let (x, y) = (mag_bp(d.x, scale), mag_bp(d.y, scale));
     let view = match d.kind {
         1 => "/Fit".to_string(),
         2 => format!("/FitH {y}"),
@@ -2269,7 +2270,7 @@ pub fn write_pdf(doc: &PdfDoc) -> Result<Vec<u8>, String> {
         }
         let mut annots_res = String::new();
         for (a, aobj) in page.annots.iter().zip(annot_objs) {
-            emit_annot(&mut b, *aobj, a, doc.mag);
+            emit_annot(&mut b, *aobj, a, (doc.mag, doc.decimal_digits));
             annots_res.push_str(&format!("{} 0 R ", aobj));
         }
         let annots = if annots_res.is_empty() {
@@ -2306,9 +2307,9 @@ pub fn write_pdf(doc: &PdfDoc) -> Result<Vec<u8>, String> {
         let mut media_box = String::new();
         if !page_attr.contains("/MediaBox") {
             media_box.push_str(" /MediaBox [0 0 ");
-            media_box.push_str(&mag_bp_sp(page.width_sp, doc.mag));
+            media_box.push_str(&mag_bp_sp(page.width_sp, (doc.mag, doc.decimal_digits)));
             media_box.push(' ');
-            media_box.push_str(&mag_bp_sp(page.height_sp, doc.mag));
+            media_box.push_str(&mag_bp_sp(page.height_sp, (doc.mag, doc.decimal_digits)));
             media_box.push(']');
         }
         b.set(
@@ -2353,7 +2354,10 @@ pub fn write_pdf(doc: &PdfDoc) -> Result<Vec<u8>, String> {
 
     // ---- emit destinations
     for (n, (pi, dest)) in &numbered {
-        b.set(num_dest_objs[n], dest_array(page_objs[*pi].1, dest, doc.mag));
+        b.set(
+            num_dest_objs[n],
+            dest_array(page_objs[*pi].1, dest, (doc.mag, doc.decimal_digits)),
+        );
     }
     for (n, obj) in &num_dest_objs {
         if !numbered.contains_key(n) {
@@ -2370,7 +2374,7 @@ pub fn write_pdf(doc: &PdfDoc) -> Result<Vec<u8>, String> {
                 body.push_str(&format!(
                     "({}) {} ",
                     escape_string(name),
-                    dest_array(page_objs[*pi].1, dest, doc.mag)
+                    dest_array(page_objs[*pi].1, dest, (doc.mag, doc.decimal_digits))
                 ));
             }
             body.push_str(" ] ");
@@ -2553,7 +2557,7 @@ pub fn write_pdf(doc: &PdfDoc) -> Result<Vec<u8>, String> {
             info_obj,
             encrypt_obj,
             file_id,
-            doc.minor_version,
+            (doc.major_version, doc.minor_version.unwrap_or(5)),
         )
     } else {
         crate::pdfcompact::serialize(
@@ -2563,7 +2567,7 @@ pub fn write_pdf(doc: &PdfDoc) -> Result<Vec<u8>, String> {
             info_obj,
             encrypt_obj,
             file_id,
-            doc.minor_version,
+            (doc.major_version, doc.minor_version.unwrap_or(5)),
         )
     })
 }
@@ -2605,7 +2609,7 @@ fn font_attr_entry(attr: &str) -> String {
     }
 }
 
-fn emit_annot(b: &mut PdfBuilder, obj: usize, a: &Annot, mag: i32) {
+fn emit_annot(b: &mut PdfBuilder, obj: usize, a: &Annot, scale: (i32, u32)) {
     let [x0, y0, x1, y1] = a.rect;
     // pdfTeX writes only /Type /Annot (plus /Subtype /Link for links), the
     // rectangle and the user's attributes: no default /Border, and a
@@ -2617,10 +2621,10 @@ fn emit_annot(b: &mut PdfBuilder, obj: usize, a: &Annot, mag: i32) {
     }
     body.push_str(&format!(
         " /Rect [{} {} {} {}]",
-        mag_bp(x0, mag),
-        mag_bp(y0, mag),
-        mag_bp(x1, mag),
-        mag_bp(y1, mag)
+        mag_bp(x0, scale),
+        mag_bp(y0, scale),
+        mag_bp(x1, scale),
+        mag_bp(y1, scale)
     ));
     if let Some(uri) = &a.uri {
         body.push_str(&format!(" /A << /S /URI /URI ({}) >>", escape_string(uri)));

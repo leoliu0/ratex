@@ -53,6 +53,7 @@ mod lua_img;
 mod lua_lang;
 mod lua_pdf;
 mod lua_tex;
+mod lua_texnodes;
 mod lua_ud;
 mod lua_lpeg;
 pub mod lua_node;

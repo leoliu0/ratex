@@ -162,12 +162,28 @@ impl Engine {
         let mut head = 0u32;
         let mut tail = 0u32;
         let mut i = 0;
+        // language whatsits: LuaTeX has none (the language lives in the
+        // glyphs); they ride along with the node that follows them
+        let mut pending: Vec<Node> = Vec::new();
         while i < list.len() {
             let node = &list[i];
             i += 1;
+            if let Node::Whatsit(w @ (WhatIt::Language { .. } | WhatIt::SyncPoint { .. })) = node {
+                if let WhatIt::Language { lang, lhm, rhm } = w {
+                    ctx.lang = u16::from(*lang);
+                    ctx.left = *lhm;
+                    ctx.right = *rhm;
+                }
+                pending.push(node.clone());
+                continue;
+            }
             let n = self.import_node(node, ctx);
             if n == 0 {
                 continue;
+            }
+            if !pending.is_empty() {
+                let ext = self.lua_nodes.node_mut(n).ext.get_or_insert_with(Default::default);
+                ext.pre = std::mem::take(&mut pending);
             }
             if let Node::Disc(dc) = node {
                 // the nodes following the discretionary that replace_count
@@ -180,6 +196,19 @@ impl Engine {
                 self.lua_nodes.couple(tail, n);
             }
             tail = n;
+        }
+        if !pending.is_empty() {
+            if tail != 0 {
+                let ext = self.lua_nodes.node_mut(tail).ext.get_or_insert_with(Default::default);
+                ext.post = pending;
+            } else {
+                // nothing but language whatsits: keep them as an opaque node
+                let first = pending.remove(0);
+                let n = self.import_opaque(&first);
+                self.lua_nodes.node_mut(n).ext.get_or_insert_with(Default::default).post = pending;
+                head = n;
+                tail = n;
+            }
         }
         (head, tail)
     }
@@ -320,7 +349,7 @@ impl Engine {
 
     fn import_node(&mut self, node: &Node, ctx: &mut LangCtx) -> u32 {
         match node {
-            Node::Char { c, font } => self.import_glyph_node(u32::from(*c), *font, ctx, GLYPH_CHARACTER),
+            Node::Char { c, font } => self.import_glyph_node(u32::from(*c), *font, ctx, 0),
             Node::LuaGlyph(g) => {
                 let n = self.lua_new_node(GLYPH, u16::from(g.subtype));
                 let comps = if g.components.is_empty() {
@@ -521,7 +550,13 @@ impl Engine {
         let mut n = head;
         while self.lua_nodes.valid(n) {
             let next = self.lua_nodes.next(n);
+            let (pre, post) = match self.lua_nodes.node_mut(n).ext.as_mut() {
+                Some(e) => (std::mem::take(&mut e.pre), std::mem::take(&mut e.post)),
+                None => (Vec::new(), Vec::new()),
+            };
+            out.extend(pre);
             self.export_node(n, out);
+            out.extend(post);
             self.lua_nodes.flush_node(n);
             n = next;
         }

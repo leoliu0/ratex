@@ -90,7 +90,7 @@ const BIGGEST_CHAR: i64 = 0x10_FFFF;
 /// Saved `cur_cmd`/`cur_chr`/`cur_cs`/`cur_tok` (lnewtokenlib.c
 /// `save_tex_scanner`): a Lua scanner must not disturb the command TeX is
 /// executing.
-struct ScannerState {
+pub(crate) struct ScannerState {
     tok: Token,
     cs: Option<CsId>,
     prim: Option<Prim>,
@@ -98,7 +98,7 @@ struct ScannerState {
 }
 
 impl Engine {
-    fn save_scanner(&self) -> ScannerState {
+    pub(crate) fn save_scanner(&self) -> ScannerState {
         ScannerState {
             tok: self.cur_tok,
             cs: self.cur_cs,
@@ -107,7 +107,7 @@ impl Engine {
         }
     }
 
-    fn restore_scanner(&mut self, s: ScannerState) {
+    pub(crate) fn restore_scanner(&mut self, s: ScannerState) {
         self.cur_tok = s.tok;
         self.cur_cs = s.cs;
         self.cur_prim = s.prim;
@@ -129,7 +129,11 @@ impl Engine {
         // SAFETY: the boxed Lua state lives in `self.lua` for the whole
         // call; Lua callbacks reach the engine only through the pointer
         // installed above and never drop or replace `self.lua`.
-        f(unsafe { &mut *lua })
+        let result = f(unsafe { &mut *lua });
+        // lists Lua took from the engine (`tex.getbox`, `tex.nest`, ...) go
+        // back to it; they stay tied while an enclosing Lua call runs
+        self.lua_sync_links(DEPTH.with(Cell::get) <= 1);
+        result
     }
 
     /// Run Lua and feed what it printed back to TeX (luatex
@@ -220,6 +224,8 @@ impl Engine {
     /// marker below what Lua put into the input, execute commands in
     /// restricted horizontal mode until the marker is read.
     pub(crate) fn lua_local_control(&mut self) {
+        // TeX runs: lists tied to the engine must be current and are dropped
+        self.lua_sync_links(true);
         let sentinel = self.lua_end_local_control();
         let saved = self.save_scanner();
         let mode = std::mem::replace(&mut self.mode, crate::engine::Mode::RestrictedHorizontal);

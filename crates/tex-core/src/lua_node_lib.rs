@@ -1918,15 +1918,14 @@ fn install_lists(lua: &mut Lua, n: &LuaTable) -> Result<(), String> {
             (head != 0).then_some(head)
         })
     });
-    // direct.getbox / direct.setbox: a box register as a node. The register
-    // and the node are separate copies: `getbox` hands out a copy, `setbox`
-    // moves the node into the register.
+    // direct.getbox / direct.setbox: a box register as a node. The node is
+    // tied to the register (see `lua_texnodes`): edits reach the register
+    // when the Lua call ends.
     nat!(lua, n, "getbox", |k: Value| -> Result<Option<i64>, String> {
         let k = box_register(&k, "getbox")?;
         with_engine(|e| {
-            let b = e.eqtb.boxed[k as usize].clone()?;
-            let h = e.lua_nodes_from_engine(vec![b]);
-            (h != 0).then_some(h)
+            let h = e.lua_box_handle(k);
+            (h != 0).then_some(i64::from(h))
         })
     });
     nat!(lua, n, "setbox", |args: Variadic<Value>| -> Result<(), String> {
@@ -1941,10 +1940,10 @@ fn install_lists(lua: &mut Lua, n: &LuaTable) -> Result<(), String> {
             if b {
                 return Ok(());
             }
-            return with_engine(|e| e.eqtb.assign_box(k, None, global));
+            return with_engine(|e| e.lua_set_box(k, 0, global));
         }
         if value.is_nil() {
-            return with_engine(|e| e.eqtb.assign_box(k, None, global));
+            return with_engine(|e| e.lua_set_box(k, 0, global));
         }
         let h = handle32(value.as_integer());
         with_engine(|e| {
@@ -1953,9 +1952,7 @@ fn install_lists(lua: &mut Lua, n: &LuaTable) -> Result<(), String> {
                 let name = type_info(id).map_or("unknown", |t| t.name);
                 return Err(format!("setbox: incompatible node type ({name})\n"));
             }
-            let mut list = e.lua_nodes_to_engine(i64::from(h));
-            let node = if list.is_empty() { None } else { Some(list.remove(0)) };
-            e.eqtb.assign_box(k, node, global);
+            e.lua_set_box(k, h, global);
             Ok(())
         })?
     });
@@ -2082,7 +2079,20 @@ impl Engine {
 
 /// `direct_get_box_id` + `direct_check_index_range`: a box register number.
 fn box_register(v: &Value, what: &str) -> Result<u16, String> {
-    let Some(k) = v.as_integer() else {
+    let k = if let Some(k) = v.as_integer() {
+        k
+    } else if let Some(name) = value_bytes(v) {
+        with_engine(|e| {
+            let id = e.cs.lookup(&name)?;
+            match e.eqtb.resolve(id)? {
+                crate::eqtb::Equiv::BoxReg(i) => Some(i64::from(*i)),
+                crate::eqtb::Equiv::CharDef(c) => Some(i64::from(*c)),
+                crate::eqtb::Equiv::MathCharDef(c) => Some(i64::from(*c)),
+                _ => None,
+            }
+        })?
+        .unwrap_or(-1)
+    } else {
         return Err("argument must be a string or a number".to_string());
     };
     u16::try_from(k).map_err(|_| format!("incorrect index in {what}"))

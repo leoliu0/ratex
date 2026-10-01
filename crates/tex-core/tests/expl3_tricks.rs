@@ -1603,7 +1603,7 @@ fn usex_via_expargs_macro() {
 
 #[test]
 fn input_from_macro_runs_file_before_rest() {
-    let path = std::env::temp_dir().join("tex_input_order.tex");
+    let path = std::env::temp_dir().join(format!("tex_input_order_{}.tex", std::process::id()));
     std::fs::write(&path, r"\def\z{file}").unwrap();
     let path_str = path.to_string_lossy().replace('\\', "/");
     let mut e = boot();
@@ -1611,6 +1611,7 @@ fn input_from_macro_runs_file_before_rest() {
         "\\catcode`\\{{=1 \\catcode`\\}}=2 \\catcode`\\#=6\n\\def\\x{{\\input {path_str} \\def\\z{{after}}}}\n\\x\n"
     );
     run_tex(&mut e, &src);
+    let _ = std::fs::remove_file(&path);
     assert_eq!(e.error_count, 0, "errors:\n{}", e.term);
     assert_eq!(
         show_body(&e, b"z"),

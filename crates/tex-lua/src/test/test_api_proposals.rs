@@ -298,7 +298,8 @@ fn test_shared_proto_survives_vm_drop() {
 fn test_shared_proto_reuses_same_file_across_vms() {
     use std::io::Write;
 
-    let path = test_temp_dir().join("lua_rs_shared_proto_cache.lua");
+    let path =
+        test_temp_dir().join(format!("lua_rs_shared_proto_cache_{}.lua", std::process::id()));
     {
         let mut file = std::fs::File::create(&path).unwrap();
         writeln!(file, "return 'shared-proto-cache'").unwrap();
@@ -330,7 +331,8 @@ fn test_shared_proto_reuses_same_file_across_vms() {
 fn test_shared_proto_reloads_when_file_changes() {
     use std::io::Write;
 
-    let path = test_temp_dir().join("lua_rs_shared_proto_reload.lua");
+    let path =
+        test_temp_dir().join(format!("lua_rs_shared_proto_reload_{}.lua", std::process::id()));
     {
         let mut file = std::fs::File::create(&path).unwrap();
         writeln!(file, "return 1").unwrap();
@@ -507,7 +509,7 @@ fn test_dofile() {
     use std::io::Write;
 
     let dir = test_temp_dir();
-    let path = dir.join("lua_rs_test_dofile.lua");
+    let path = dir.join(format!("lua_rs_test_dofile_{}.lua", std::process::id()));
     {
         let mut f = std::fs::File::create(&path).unwrap();
         writeln!(f, "return 1 + 2").unwrap();

@@ -305,12 +305,16 @@ impl Format {
         }
     }
 
-    /// Whether a root-relative path lies below one of this format's TDS
-    /// subtrees.
+    /// Whether a root-relative path (an `ls-R` entry may spell it `./tex/...`)
+    /// lies below one of this format's TDS subtrees.
     fn tds_tree_contains(&self, rel: &Path) -> bool {
+        let normal: PathBuf = rel
+            .components()
+            .filter(|component| matches!(component, Component::Normal(_)))
+            .collect();
         self.tds_paths()
             .iter()
-            .any(|spec| rel.starts_with(spec.trim_end_matches('/')))
+            .any(|spec| normal.starts_with(spec.trim_end_matches('/')))
     }
 
     /// TDS search specs for this format in kpathsea `texmf.cnf` style: a

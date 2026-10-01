@@ -2286,6 +2286,8 @@ mod tests {
         let e = run(concat!(
             "\\catcode`\\$=3\n",
             "\\font\\cmr=cmr10 \\cmr\n",
+            "\\font\\tsy=cmsy10 \\font\\tex=cmex10 \\textfont2=\\tsy \\scriptfont2=\\tsy \\scriptscriptfont2=\\tsy ",
+            "\\textfont3=\\tex \\scriptfont3=\\tex \\scriptscriptfont3=\\tex\n",
             "\\halign{$$$#$\\cr a\\over b\\cr}\n",
         ));
         assert_eq!(e.error_count, 0, "errors:\n{}", e.term);
@@ -2585,6 +2587,8 @@ mod tests {
         let e = run(concat!(
             "\\catcode`\\$=3\n",
             "\\font\\cmr=cmr10 \\cmr\n",
+            "\\font\\tsy=cmsy10 \\font\\tex=cmex10 \\textfont2=\\tsy \\scriptfont2=\\tsy \\scriptscriptfont2=\\tsy ",
+            "\\textfont3=\\tex \\scriptfont3=\\tex \\scriptscriptfont3=\\tex\n",
             "\\halign{#\\hfil&#\\hfil\\cr\n",
             "  ${1\\over 2}$ & 2\\cr\n",
             "  3 & 4\\cr}\n"

@@ -2903,6 +2903,9 @@ fn alignment_double_tab_starts_periodic_preamble_after_first_column() {
         r#"
 \catcode`\#=6 \catcode`\$=3 \catcode`\&=4
 \catcode`\{=1 \catcode`\}=2
+\font\tsy=cmsy10 \font\tex=cmex10
+\textfont2=\tsy \scriptfont2=\tsy \scriptscriptfont2=\tsy
+\textfont3=\tex \scriptfont3=\tex \scriptscriptfont3=\tex
 \setbox0=\vbox{\halign{#&&$#$\cr A&\mathchoice{1}{2}{3}{4}\cr}}
 "#,
     );

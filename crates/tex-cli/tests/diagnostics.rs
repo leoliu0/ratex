@@ -1667,7 +1667,7 @@ fn missing_math_characters_name_the_selected_font_and_keep_their_origin() {
     ] {
         let job = Job::new(label);
         let source = format!(
-            "\\tracinglostchars=1\\font\\mathtext=cmmi10\n\\font\\mathscript=cmmi7\n\\textfont1=\\mathtext\n\\scriptfont1=\\mathscript\n\\scriptscriptfont1=\\mathscript\n{source}"
+            "\\tracinglostchars=1 \\font\\mathsy=cmsy10 \\font\\mathex=cmex10 \\textfont2=\\mathsy \\scriptfont2=\\mathsy \\scriptscriptfont2=\\mathsy \\textfont3=\\mathex \\scriptfont3=\\mathex \\scriptscriptfont3=\\mathex \\font\\mathtext=cmmi10\n\\font\\mathscript=cmmi7\n\\textfont1=\\mathtext\n\\scriptfont1=\\mathscript\n\\scriptscriptfont1=\\mathscript\n{source}"
         );
         job.write("main.tex", &source);
         let output = job.compile(&["-plain", "-interaction=nonstopmode"]);
@@ -1695,7 +1695,7 @@ fn missing_scripted_accent_nucleus_warns_once_and_tracing_can_disable_it() {
     let warned = Job::new("missing-scripted-accent-nucleus");
     warned.write(
         "main.tex",
-        "\\tracinglostchars=1\\font\\mathtext=cmmi10\n\\font\\mathscript=cmmi7\n\\textfont1=\\mathtext\n\\scriptfont1=\\mathscript\n\\scriptscriptfont1=\\mathscript\n$\\mathaccent\"015E \\mathchar\"0180^2$\n\\end\n",
+        "\\tracinglostchars=1 \\font\\mathsy=cmsy10 \\font\\mathex=cmex10 \\textfont2=\\mathsy \\scriptfont2=\\mathsy \\scriptscriptfont2=\\mathsy \\textfont3=\\mathex \\scriptfont3=\\mathex \\scriptscriptfont3=\\mathex \\font\\mathtext=cmmi10\n\\font\\mathscript=cmmi7\n\\textfont1=\\mathtext\n\\scriptfont1=\\mathscript\n\\scriptscriptfont1=\\mathscript\n$\\mathaccent\"015E \\mathchar\"0180^2$\n\\end\n",
     );
     let output = warned.compile(&["-plain", "-interaction=nonstopmode"]);
     assert!(output.status.success(), "{}", failure_output(&output));
@@ -1706,7 +1706,7 @@ fn missing_scripted_accent_nucleus_warns_once_and_tracing_can_disable_it() {
     let quiet = Job::new("missing-math-character-disabled");
     quiet.write(
         "main.tex",
-        "\\font\\mathtext=cmmi10\n\\textfont1=\\mathtext\n\\tracinglostchars=0\n$\\mathchar\"0180$\n\\end\n",
+        "\\font\\mathsy=cmsy10 \\font\\mathex=cmex10 \\textfont2=\\mathsy \\scriptfont2=\\mathsy \\scriptscriptfont2=\\mathsy \\textfont3=\\mathex \\scriptfont3=\\mathex \\scriptscriptfont3=\\mathex \\font\\mathtext=cmmi10\n\\textfont1=\\mathtext\n\\tracinglostchars=0\n$\\mathchar\"0180$\n\\end\n",
     );
     let output = quiet.compile(&["-plain", "-interaction=nonstopmode"]);
     assert!(output.status.success(), "{}", failure_output(&output));

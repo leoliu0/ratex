@@ -558,6 +558,11 @@ impl Engine {
                         return t;
                     }
                 }
+                Some(Equiv::LuaCall { slot, protected: false }) => {
+                    self.call_lua_function(slot as i32);
+                    first = self.raw_token();
+                    continue;
+                }
                 None => {
                     self.undefined_cs_error(t);
                     first = self.raw_token();
@@ -837,6 +842,7 @@ impl Engine {
                     let is_expansion = match self.eqtb.get(id) {
                         Some(Equiv::Macro(_)) => true,
                         Some(Equiv::Prim(p)) => self.is_expandable(*p),
+                        Some(Equiv::LuaCall { protected, .. }) => !protected,
                         _ => false,
                     };
                     if is_expansion {
@@ -984,6 +990,10 @@ impl Engine {
                                 return t;
                             }
                         }
+                        Some(&Equiv::LuaCall { slot, protected: false }) => {
+                            self.call_lua_function(slot as i32);
+                            break 'expand;
+                        }
                         None => {
                             self.undefined_cs_error(t);
                             break 'expand;
@@ -1019,6 +1029,8 @@ impl Engine {
                 | Detokenize
                 | ScanTokens
                 | DirectLua
+                | LuaFunction
+                | LuaBytecode
                 | Input
                 | Expanded
                 | UnExpanded
@@ -1262,6 +1274,9 @@ impl Engine {
                                     self.push_token(tt);
                                 }
                             }
+                            &Equiv::LuaCall { slot, protected: false } => {
+                                self.call_lua_function(slot as i32);
+                            }
                             _ => {
                                 self.push_token(t2);
                             }
@@ -1294,6 +1309,7 @@ impl Engine {
                     let needs_freeze = match self.eqtb.resolve(id) {
                         None | Some(Equiv::Macro(_)) => true,
                         Some(Equiv::Prim(p2)) => self.is_expandable(*p2),
+                        Some(Equiv::LuaCall { protected, .. }) => !protected,
                         _ => false,
                     };
                     if needs_freeze {
@@ -1508,9 +1524,19 @@ impl Engine {
                 }
                 let toks = self.scan_general_text_expanded();
                 let code = self.tokens_to_string(&toks);
-                if let Err(err) = self.execute_directlua(&code) {
+                if let Err(err) = self.execute_directlua(code.as_bytes()) {
                     self.error(&format!("LuaTeX error: {err}"));
                 }
+                None
+            }
+            LuaFunction => {
+                let slot = self.scan_int();
+                self.call_lua_function(slot);
+                None
+            }
+            LuaBytecode => {
+                let slot = self.scan_int();
+                self.call_lua_bytecode(slot);
                 None
             }
             Input => {
@@ -1547,7 +1573,15 @@ impl Engine {
                 None
             }
             Prim::JobName => {
-                let text = self.quoted_job_name();
+                // LuaTeX does not quote the job name itself; its
+                // process_jobname callback may (textoken.c print_job_name).
+                let text = if self.engine_kind == crate::engine::EngineKind::LuaTeX {
+                    let name = self.job_name.clone();
+                    self.run_lua_string_callback("process_jobname", &name)
+                        .unwrap_or(name)
+                } else {
+                    self.quoted_job_name()
+                };
                 self.exp_string(text.as_bytes());
                 None
             }

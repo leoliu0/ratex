@@ -350,6 +350,12 @@ impl LuaApi for Lua {
     }
 
     #[inline]
+    fn create_bytes(&mut self, bytes: &[u8]) -> LuaResult<LuaString> {
+        let value = self.global_state_owner.create_bytes(bytes)?;
+        self.value_to_string(value)
+    }
+
+    #[inline]
     fn create_table(&mut self) -> LuaResult<LuaTable> {
         self.create_table_with_capacity(0, 0)
     }

@@ -253,6 +253,8 @@ pub enum Format {
     Bst,
     Bib,
     Otf,
+    /// kpathsea `lua` format (LUAINPUTS): Lua modules for `require`.
+    Lua,
 }
 
 impl Format {
@@ -271,6 +273,7 @@ impl Format {
             Format::Bst => &[".bst"],
             Format::Bib => &[".bib"],
             Format::Otf => &[".otf"],
+            Format::Lua => &[".luc", ".luctex", ".texluc", ".lua", ".luatex", ".texlua"],
         }
     }
 
@@ -290,6 +293,16 @@ impl Format {
             Format::Map => &["fonts/map//"],
             Format::Bst => &["bibtex/bst//"],
             Format::Bib => &["bibtex/bib//"],
+            // texmf.cnf LUAINPUTS: scripts/{$progname,$engine,}/{lua,}//
+            // then tex/{luatex,plain,generic,latex,}//
+            Format::Lua => &[
+                "scripts//",
+                "tex/luatex//",
+                "tex/plain//",
+                "tex/generic//",
+                "tex/latex//",
+                "tex//",
+            ],
         }
     }
 }
@@ -746,6 +759,7 @@ impl Kpse {
             ("TEXFONTMAPS", &[Format::Map]),
             ("BSTINPUTS", &[Format::Bst]),
             ("BIBINPUTS", &[Format::Bib]),
+            ("LUAINPUTS", &[Format::Lua]),
         ] {
             let Some(value) = variable(name) else {
                 continue;
@@ -1242,7 +1256,7 @@ impl Kpse {
         (path.tex_is_file().then_some(path), directories, complete)
     }
 
-    fn candidates(name: &str, fmt: Format) -> Vec<String> {
+    pub fn candidates(name: &str, fmt: Format) -> Vec<String> {
         // Candidate names: when the name carries none of the format's
         // extensions, the extension-appended spellings are tried before the
         // bare name so that unrelated files sharing the bare name (e.g.

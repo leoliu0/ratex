@@ -1729,7 +1729,11 @@ UPSTREAM_PACKAGES = {
 # TeX sources and metrics but dropped runtime files that classes and fonts
 # load implicitly: beamer's navigation icons (`\pgfdeclareimage` of
 # beamericonbook etc.), mwe's example images, tcolorbox's skin textures, and
-# the outline and virtual fonts of families whose metrics it kept (newpx).
+# the outline and virtual fonts of families whose metrics it kept (newpx),
+# and the LuaTeX Lua modules and support packages that LuaLaTeX loads (the
+# kernel requires luaotfload-main at format time, which pulls in lualibs, and
+# expl3.lua requires lua-uni-data). Only runtime files are taken: luaotfload's
+# scripts/luaotfload-tool.lua is the standalone database CLI, not loaded by TeX.
 # pdfTeX cannot read EPS, so only the graphics formats it embeds are taken.
 # Only files absent from the main archive are added; a basename that the main
 # archive already uses for another path is rejected, because lookup is by
@@ -1784,6 +1788,66 @@ SUPPLEMENT_PACKAGES = {
         ],
         # tlpobj: `execute addMap newpx.map`
         "map_files": ["fonts/map/dvips/newpx/newpx.map"],
+    },
+    "lua-uni-algos": {
+        "version": "0.5",
+        "revision": 76195,
+        "license": "LPPL-1.3",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/lua-uni-algos.tar.xz",
+        "upstream_sha256": "a7f9a14f2cb5dedd3d67997d9db3de9cfdef7003a797b33892fa8728578dfb95",
+        "upstream_size_bytes": 12332,
+        "select": [("tex/luatex/lua-uni-algos", None)],
+        "map_files": [],
+    },
+    "lualibs": {
+        "version": "2.76",
+        "revision": 78415,
+        "license": "GPL-2.0",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/lualibs.tar.xz",
+        "upstream_sha256": "578bc9507b0d3e2e039296d87a5f419cef9461c1baedd83277f8fa43af5fb364",
+        "upstream_size_bytes": 133324,
+        "select": [("tex/luatex/lualibs", None)],
+        "map_files": [],
+    },
+    "luaotfload": {
+        "version": "3.29",
+        "revision": 74324,
+        "license": "GPL-2.0",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/luaotfload.tar.xz",
+        "upstream_sha256": "90cee617e8cdb170c64c9acf340ad125fb1d10ab296991086e77f5efde236a9c",
+        "upstream_size_bytes": 623572,
+        "select": [("tex/luatex/luaotfload", None)],
+        "map_files": [],
+    },
+    "ctablestack": {
+        "version": "1.0",
+        "revision": 78101,
+        "license": "LPPL-1.3",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/ctablestack.tar.xz",
+        "upstream_sha256": "acf569fb4652f87c01068d6cc29f7d57989a3e00afe0bc1d1f641bd50599713d",
+        "upstream_size_bytes": 1112,
+        "select": [("tex/luatex/ctablestack", None)],
+        "map_files": [],
+    },
+    "luatexbase": {
+        "version": "1.3",
+        "revision": 77682,
+        "license": "LPPL-1.3",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/luatexbase.tar.xz",
+        "upstream_sha256": "1a497d3bd314884a07f4eb60d22d4c3d3496233f6d8e1e89da16fb3ffb86cb65",
+        "upstream_size_bytes": 3496,
+        "select": [("tex/luatex/luatexbase", None)],
+        "map_files": [],
+    },
+    "luacode": {
+        "version": "1.2a",
+        "revision": 78415,
+        "license": "LPPL-1.3",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/luacode.tar.xz",
+        "upstream_sha256": "f8ce2e985588f4b0f708f6e3b13cff8e4f67c5930a8ee9abf6fa888fb81682d1",
+        "upstream_size_bytes": 2176,
+        "select": [("tex/lualatex/luacode", None)],
+        "map_files": [],
     },
 }
 # Map files that TeX Live's updmap enables and whose fonts the main archive

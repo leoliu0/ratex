@@ -259,6 +259,12 @@ impl Engine {
                     Some(Equiv::CharTok(v)) => {
                         self.dispatch(Token(v));
                     }
+                    // maincontrol.c run_lua_call. An expandable lua call
+                    // reaches main control only \noexpand-frozen (\relax).
+                    Some(Equiv::LuaCall { slot, protected: true }) => {
+                        self.reject_assignment_prefixes("\\luacall");
+                        self.call_lua_function(slot as i32);
+                    }
                     _ => {}
                 }
             }
@@ -526,6 +532,19 @@ impl Engine {
             }
             Protected => {
                 self.protected_flag = true;
+                true
+            }
+            LuaDef => {
+                // maincontrol.c def_lua_call: \protected makes a lua_call,
+                // \long/\outer are accepted and ignored.
+                let protected = self.protected_flag;
+                let t = self.scan_definable_cs();
+                self.scan_optional_equals();
+                let slot = self.scan_int();
+                let g = self.take_global();
+                self.clear_prefixes();
+                let slot = u32::try_from(slot).unwrap_or(0);
+                self.eqtb.assign(t, Equiv::LuaCall { slot, protected }, g);
                 true
             }
             Advance => {

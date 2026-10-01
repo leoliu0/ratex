@@ -2493,6 +2493,8 @@ impl Engine {
                 s
             }
             Some(Equiv::Prim(p)) => format!("{}{}", esc_str, self.prim_name(p)),
+            Some(Equiv::LuaCall { slot, protected: false }) => format!("expandable luacall {slot}"),
+            Some(Equiv::LuaCall { slot, protected: true }) => format!("luacall {slot}"),
             Some(Equiv::CharDef(c)) => format!("{}char\"{:X}", esc_str, c),
             Some(Equiv::MathCharDef(c)) => format!("{}mathchar\"{:X}", esc_str, c),
             Some(Equiv::FontRef(f)) => format!("select font {}", self.font_display_name(f)),

@@ -17,7 +17,7 @@ use crate::lua_node_lib::NodeUd;
 
 macro_rules! callbacks {
     ($($variant:ident = $name:literal,)*) => {
-        /// The callbacks of `callback.listidx()`, in luatex's order (Lua's
+        /// The callbacks in luatex's order (Lua's
         /// id is the index plus one).
         #[derive(Clone, Copy, Debug, PartialEq, Eq)]
         #[repr(u8)]
@@ -104,7 +104,6 @@ callbacks! {
     ProcessPdfImageContent = "process_pdf_image_content",
     ProvideCharprocData = "provide_charproc_data",
     InputLevelString = "input_level_string",
-    DviOutput = "dvi_output",
 }
 
 /// Number of callbacks.
@@ -158,7 +157,7 @@ pub(crate) enum CbRet {
 }
 
 impl CbRet {
-    fn from_value(v: &Value) -> CbRet {
+    pub(crate) fn from_value(v: &Value) -> CbRet {
         if v.is_nil() {
             CbRet::Nil
         } else if let Some(b) = v.as_boolean() {
@@ -325,6 +324,7 @@ impl Engine {
         size: i32,
         exactly: bool,
         max_depth: Option<i32>,
+        dir: Option<&str>,
         list: NodeList,
     ) -> NodeList {
         if list.is_empty() || !self.cb_defined(cb) {
@@ -340,7 +340,7 @@ impl Engine {
         if let Some(d) = max_depth {
             args.push(CbArg::Int(i64::from(d)));
         }
-        args.push(CbArg::str("TLT"));
+        args.push(dir.map_or(CbArg::Nil, CbArg::str));
         args.push(CbArg::Nil);
         let rets = self.lua_cb_call(cb, what, args);
         match rets.as_deref().and_then(|r| r.first()) {
@@ -362,7 +362,7 @@ impl Engine {
 
     /// `lua_hpack_filter` for the group `group`.
     pub(crate) fn lua_hpack_filter(&mut self, group: &str, size: i32, exactly: bool, list: NodeList) -> NodeList {
-        self.lua_pack_filter(Cb::HpackFilter, "hpack filter", group, size, exactly, None, list)
+        self.lua_pack_filter(Cb::HpackFilter, "hpack filter", group, size, exactly, None, Some("TLT"), list)
     }
 
     /// `lua_vpack_filter`; the output box goes to `pre_output_filter`.
@@ -375,7 +375,7 @@ impl Engine {
         list: NodeList,
     ) -> NodeList {
         let cb = if group == GROUP_OUTPUT { Cb::PreOutputFilter } else { Cb::VpackFilter };
-        self.lua_pack_filter(cb, "vpack filter", group, size, exactly, Some(max_depth), list)
+        self.lua_pack_filter(cb, "vpack filter", group, size, exactly, Some(max_depth), Some("TLT"), list)
     }
 
     /// LuaTeX `package()` for the box kinds `\hbox` (0), `\vbox` (1) and
@@ -495,6 +495,93 @@ impl Engine {
         }
         let group = self.lua_line_break_group();
         self.lua_node_filter(Cb::PostLinebreakFilter, group, lines)
+    }
+}
+
+/// One `hpack_quality` event of a paragraph line, held back until the line
+/// is appended to the vertical list: luatex packs and appends line by line,
+/// so the callbacks of line `k` come between those of lines `k - 1` and
+/// `k + 1`.
+pub(crate) struct DeferredQuality {
+    ordinal: usize,
+    what: String,
+    value: i32,
+    snapshot: Node,
+    begin: i32,
+    line: i32,
+}
+
+/// State of the lines of the paragraph `build_lines` is making.
+#[derive(Default)]
+pub(crate) struct ParLineState {
+    /// `hpack_quality` calls are held back
+    pub(crate) defer: bool,
+    /// `end_paragraph` appends the lines itself and fires the held calls
+    pub(crate) hold: bool,
+    /// index of the line being packed
+    pub(crate) ordinal: usize,
+    pub(crate) quality: Vec<DeferredQuality>,
+}
+
+impl Engine {
+    /// Hold back the `hpack_quality` call of the line being packed.
+    pub(crate) fn lua_defer_pack_quality(&mut self, what: &str, value: i32, snapshot: Node, begin: i32, line: i32) {
+        let ordinal = self.lua_par_lines.ordinal;
+        self.lua_par_lines.quality.push(DeferredQuality { ordinal, what: what.to_string(), value, snapshot, begin, line });
+    }
+
+    /// Run the held `hpack_quality` calls of line `ordinal`; the rules they
+    /// return are appended to the line box `b`.
+    pub(crate) fn lua_fire_pack_quality(&mut self, ordinal: usize, b: &mut Node) {
+        if self.lua_par_lines.quality.is_empty() {
+            return;
+        }
+        let (mine, rest): (Vec<_>, Vec<_>) =
+            std::mem::take(&mut self.lua_par_lines.quality).into_iter().partition(|q| q.ordinal == ordinal);
+        self.lua_par_lines.quality = rest;
+        for q in mine {
+            if let Some(rules) = self.lua_pack_quality(true, &q.what, q.value, &q.snapshot, q.begin, q.line) {
+                if let Node::Box { list, .. } = b {
+                    list.extend(rules);
+                }
+            }
+        }
+    }
+
+    /// Fire the held `hpack_quality` calls that no line append consumed
+    /// (their rules are dropped with the box they belong to).
+    pub(crate) fn lua_flush_pack_quality(&mut self) {
+        let held = std::mem::take(&mut self.lua_par_lines.quality);
+        for q in held {
+            let _ = self.lua_pack_quality(true, &q.what, q.value, &q.snapshot, q.begin, q.line);
+        }
+    }
+
+    /// luatex `checked_break_filter`: `contribute_filter(info)` while the
+    /// lines of a paragraph are appended.
+    pub(crate) fn lua_contribute_filter(&mut self, info: &str) {
+        if self.cb_defined(Cb::ContributeFilter) {
+            self.lua_node_filter_s(Cb::ContributeFilter, info);
+        }
+    }
+
+    /// luatex `build_page_insert(n, i)`: the number of the `\skip` register
+    /// used for the first insertion of class `n` on a page; `i` is the
+    /// position of the class among the page's insertion classes.
+    pub(crate) fn lua_build_page_insert(&mut self, n: u16, i: usize) -> u16 {
+        if self.engine_kind != crate::engine::EngineKind::LuaTeX || !self.cb_defined(Cb::BuildPageInsert) {
+            return n;
+        }
+        let rets = self.lua_cb_call(Cb::BuildPageInsert, "build_page_insert", vec![CbArg::Int(i64::from(n)), CbArg::Int(i as i64)]);
+        match rets.as_deref().and_then(|r| r.first()) {
+            Some(CbRet::Int(v)) => u16::try_from(*v).unwrap_or(n),
+            Some(CbRet::Num(v)) => u16::try_from(*v as i64).unwrap_or(n),
+            Some(other) => {
+                eprintln!("callback should return a number, not: {}", other.type_name());
+                n
+            }
+            None => n,
+        }
     }
 }
 

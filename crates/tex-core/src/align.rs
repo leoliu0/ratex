@@ -1230,6 +1230,22 @@ impl Engine {
         // tex.web hpack @12956/13006-13016: the natural-width pack of a
         // cell transfers every \vadjust node out of its hlist onto the
         // alignment level's adjustment list (cur_tail), in source order.
+        // luatex fin_col: `filtered_hpack` runs the text passes and the
+        // `hpack_filter` (group `align_set`, no direction) on the cell
+        if self.engine_kind == crate::engine::EngineKind::LuaTeX && !self.align_is_valign {
+            let list = std::mem::take(&mut inner);
+            let list = self.lua_text_passes(list);
+            inner = self.lua_pack_filter(
+                crate::lua_callbacks::Cb::HpackFilter,
+                "hpack filter",
+                "align_set",
+                0,
+                false,
+                None,
+                None,
+                list,
+            );
+        }
         self.align_collect_adjustments(&mut inner);
         let col = self.align_cur_col as usize;
         let span = self.align_cur_row.get(col).map(|c| c.span).unwrap_or(0);

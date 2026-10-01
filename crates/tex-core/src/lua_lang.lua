@@ -51,6 +51,9 @@ function lang.clean(s)
   return L.clean(s)
 end
 
+-- llanglib.c do_lang_hyphenate: head, tail, true
+function lang.hyphenate(h, t) return node.hyphenating(h, t) end
+
 local function param(name, which)
   lang[name] = function(l, v)
     local id = id_of(l, name)

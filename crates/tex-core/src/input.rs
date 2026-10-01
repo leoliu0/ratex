@@ -100,6 +100,9 @@ pub enum Source {
         /// Lines queued by LuaTeX's `tex.print` family (luatex
         /// `luacstring_input`); None for every real file.
         lua_lines: Option<Box<crate::engine_lua::LuaLines>>,
+        /// The `open_read_file` object (see `lua_cb_files`) lines are read
+        /// from instead of `data`; 0 for a file read from memory.
+        lua_reader: u32,
         /// Catcode regime of the current line (luatex `line_catcode_table`):
         /// -1 the current table, -2 "string" catcodes, >= 0 a catcode table,
         /// <= -0xFF the fixed catcode `-regime - 0xFF`.
@@ -775,9 +778,18 @@ impl InputStack {
             line_end_len: 0,
             line_pos: 0,
             lua_lines: None,
+            lua_reader: 0,
             cat_regime: -1,
             tracked: false,
         });
+    }
+
+    /// Push a file whose lines come from an `open_read_file` object.
+    pub(crate) fn push_reader_file(&mut self, name: String, reader: u32, included_from: Option<SourceMark>) {
+        self.push_file_from(name, Vec::<u8>::new(), included_from);
+        if let Some(Source::File { lua_reader, .. }) = self.stack.last_mut() {
+            *lua_reader = reader;
+        }
     }
 
     /// Push LuaTeX `tex.print` output as a pseudo file. tex.web §328
@@ -800,6 +812,7 @@ impl InputStack {
             line_end_len: 0,
             line_pos: 0,
             lua_lines: Some(Box::new(lines)),
+            lua_reader: 0,
             cat_regime: -1,
             tracked: false,
         });
@@ -953,6 +966,7 @@ mod tests {
             line_end_len: 0,
             line_pos: b"needle".len(),
             lua_lines: None,
+            lua_reader: 0,
             cat_regime: -1,
             tracked: false,
         });

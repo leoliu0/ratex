@@ -851,7 +851,10 @@ impl Engine {
                 None => 0,
             };
             self.page_goal -= self.ins_scaled_height(num, height_raw);
-            if let Some(sk) = self.eqtb.skip.get(num as usize) {
+            // luatex `build_page_insert(n, i)` names the \skip register whose
+            // glue is charged (default: `n`)
+            let skip_reg = self.lua_build_page_insert(num, pos + 1);
+            if let Some(sk) = self.eqtb.skip.get(usize::from(skip_reg)) {
                 let sk = *sk;
                 self.page_goal -= sk.width as i64;
                 let so = (sk.stretch_order as usize).min(3);

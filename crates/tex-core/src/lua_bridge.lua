@@ -422,18 +422,24 @@ local callback_names = {
   "contribute_filter", "call_edit", "build_page_insert", "glyph_stream_provider",
   "font_descriptor_objnum_provider", "finish_synctex", "wrapup_run", "new_graf",
   "page_order_index", "make_extensible", "process_pdf_image_content",
-  "provide_charproc_data", "input_level_string", "dvi_output",
+  "provide_charproc_data", "input_level_string",
 }
 local callback_ids = {}
 for i, name in ipairs(callback_names) do callback_ids[name] = i end
 local callbacks = {}
 callback = {}
-function callback.register(name, f)
+-- lcallbacklib.c callback_register: a function, nil or any value that is
+-- not nil/false (it is merely stored) or a boolean; a boolean switches the
+-- built-in behaviour off, any other non-function value stores without
+-- defining the callback.
+function callback.register(...)
+  local n = select("#", ...)
+  local name, f = ...
   if type(name) ~= "string" then
     return nil, "Invalid arguments to callback.register, first argument must be string."
   end
-  local tf = type(f)
-  if tf ~= "function" and tf ~= "nil" and not (tf == "boolean" and f == false) then
+  local tf = n >= 2 and type(f) or "none"
+  if tf ~= "function" and tf ~= "nil" and tf ~= "boolean" and (tf == "none" or not f) then
     return nil, "Invalid arguments to callback.register."
   end
   local id = callback_ids[name]
@@ -450,12 +456,10 @@ function callback.find(name)
 end
 function callback.list()
   local t = {}
-  for i, name in ipairs(callback_names) do t[name] = type(callbacks[i]) == "function" end
-  return t
-end
-function callback.listidx()
-  local t = {}
-  for i, name in ipairs(callback_names) do t[i] = name end
+  for i, name in ipairs(callback_names) do
+    local f = callbacks[i]
+    t[name] = type(f) == "function" or type(f) == "boolean"
+  end
   return t
 end
 function __ratex_callback(name)
@@ -463,6 +467,29 @@ function __ratex_callback(name)
   if type(f) == "function" then return f end
   return nil
 end
+
+-- open_read_file objects (texfileio.c lua_a_open_in / run_saved_callback):
+-- whatever the callback returned is kept by number and its `reader` and
+-- `close` functions are called with it as their argument.
+local readers, next_reader = {}, 1
+function __ratex_reader_open(name)
+  local f = callbacks[callback_ids.open_read_file]
+  if type(f) ~= "function" then return nil end
+  local t = f(name)
+  if t == nil then return nil end
+  local id = next_reader
+  next_reader = id + 1
+  readers[id] = { t }
+  return id
+end
+function __ratex_reader_call(id, key)
+  local r = readers[id]
+  local t = r and r[1]
+  local f = type(t) == "table" and rawget(t, key)
+  if type(f) ~= "function" then return nil end
+  return f(t)
+end
+function __ratex_reader_free(id) readers[id] = nil end
 
 -- luainit.c: package.searchers = { preload, kpse lua searcher }.
 local function preload_searcher(name)

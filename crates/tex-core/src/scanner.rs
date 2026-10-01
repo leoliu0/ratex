@@ -94,6 +94,8 @@ impl Engine {
                 state,
                 cat_regime,
                 lua_lines,
+                lua_reader,
+                name,
                 ..
             } = &self.input.stack[si]
             else {
@@ -111,9 +113,20 @@ impl Engine {
                 ) {
                     self.finish_tracked_file();
                 }
+                let reader = *lua_reader;
+                let real_file = !name.starts_with('<') || name.starts_with("<embedded:");
                 self.input.finish_file(si);
                 if lua {
                     return None;
+                }
+                if self.engine_kind == EngineKind::LuaTeX {
+                    // textoken.c force_eof: `stop_file`, then the reader's close
+                    if real_file || reader != 0 {
+                        self.lua_report_stop_file(crate::lua_cb_files::filetype::TEX);
+                    }
+                    if reader != 0 {
+                        self.lua_reader_close(reader);
+                    }
                 }
                 let eof_toks = (*self.eqtb.tok_params
                     [crate::prim::ToksParam::EveryEOF.idx() as usize])
@@ -247,6 +260,13 @@ impl Engine {
             let last = lines.lines.is_empty();
             return self.load_lua_line(si, buf, line, last, end_line_char);
         }
+        if let Some(Source::File { lua_reader, .. }) = self.input.stack.get(si) {
+            let reader = *lua_reader;
+            if reader != 0 {
+                self.spare_line_buf = buf;
+                return self.load_reader_line(si, reader, end_line_char, unicode);
+            }
+        }
         let Source::File {
             data,
             pos,
@@ -299,6 +319,33 @@ impl Engine {
         *line_end_len = (buf.len() - before) as u8;
         *line_buf = Some(buf);
         *line_pos = 0;
+        true
+    }
+
+    /// A line of a file read through an `open_read_file` object: the line
+    /// the reader returns passes `process_input_buffer` and receives the
+    /// end-of-line character like a line of a real file.
+    fn load_reader_line(&mut self, si: usize, reader: u32, end_line_char: i32, unicode: bool) -> bool {
+        let Some(mut buf) = self.lua_reader_line(reader) else {
+            return false;
+        };
+        self.lua_process_input_line(&mut buf);
+        let before = buf.len();
+        if let Ok(character) = u8::try_from(end_line_char) {
+            if unicode && !character.is_ascii() {
+                buf.extend_from_slice(char::from(character).encode_utf8(&mut [0u8; 4]).as_bytes());
+            } else {
+                buf.push(character);
+            }
+        }
+        let Some(Source::File { line_buf, line_end_len, line_pos, line_no, state, .. }) = self.input.stack.get_mut(si) else {
+            return false;
+        };
+        *line_end_len = (buf.len() - before) as u8;
+        *line_buf = Some(buf);
+        *line_pos = 0;
+        *line_no += 1;
+        *state = 0;
         true
     }
 

@@ -212,6 +212,8 @@ pub struct Engine {
     /// The luatex group code (index into `lua_callbacks::GROUP_NAMES`) the
     /// paragraph being ended belongs to: what `line_break_context` carries.
     pub(crate) lua_par_group: u8,
+    /// `hpack_quality` calls of the lines of the paragraph being broken
+    pub(crate) lua_par_lines: crate::lua_callbacks::ParLineState,
     pub prev_depth: i32, // special marker: -1000pt means unset
     pub space_factor: i32,
     pub prev_graf: i32,
@@ -444,6 +446,8 @@ pub struct Engine {
     pub last_pack: Option<crate::boxes::PackRecord>,
     pub read_eof: Vec<bool>, // (amount, is_hmove)
     pub read_files: Vec<Option<Box<dyn std::io::BufRead>>>,
+    /// `open_read_file` objects of the `\openin` streams (0: none)
+    pub(crate) read_readers: Vec<u32>,
     pub loaded_files: Vec<std::path::PathBuf>,
     /// Content identities captured when TeX actually read a disk input.
     /// Unlike end-of-job metadata, these remain correct if TeX rewrites the
@@ -1050,6 +1054,7 @@ impl Engine {
             lua_nodes: crate::lua_node::NodeStore::new(),
             lua_cb: [0; crate::lua_callbacks::N_CALLBACKS],
             lua_par_group: 0,
+            lua_par_lines: Default::default(),
             prev_depth: -1000 * 65536,
             space_factor: 1000,
             pdf_images: crate::FxHashMap::default(),
@@ -1195,6 +1200,7 @@ impl Engine {
             last_pack: None,
             read_eof: Vec::new(),
             read_files: Vec::new(),
+            read_readers: Vec::new(),
             loaded_files: Vec::new(),
             loaded_file_digests: Vec::new(),
             loaded_file_sizes: Vec::new(),

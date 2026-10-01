@@ -355,7 +355,7 @@ impl UserDataTrait for AsyncPoint {
         match key {
             "x" => Some(UdValue::Number(self.x)),
             "y" => Some(UdValue::Number(self.y)),
-            "sum" => Some(UdValue::Function(async_point_sum)),
+            "sum" => Some(UdValue::Function(crate::LuaCFunction(async_point_sum))),
             _ => None,
         }
     }
@@ -517,9 +517,9 @@ async fn test_async_typed_userdata_ref_arg() {
     vm.main_state()
         .register_async_typed(
             "async_increment_counter",
-            |mut counter: UserDataRef<AsyncCounter>, delta: i64| async move {
+            |counter: UserDataRef<AsyncCounter>, delta: i64| async move {
                 tokio::time::sleep(std::time::Duration::from_millis(1)).await;
-                let counter_ref = counter.get_mut().unwrap();
+                let mut counter_ref = counter.borrow_mut().unwrap();
                 counter_ref.count += delta;
                 Ok(counter_ref.count)
             },
@@ -537,7 +537,7 @@ async fn test_async_typed_userdata_ref_arg() {
 
     let counter: UserDataRef<AsyncCounter> =
         vm.main_state().get_global_as("counter").unwrap().unwrap();
-    assert_eq!(counter.get().unwrap().count, 12);
+    assert_eq!(counter.borrow().unwrap().count, 12);
 }
 
 // ============ call_async tests ============

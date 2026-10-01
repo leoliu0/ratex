@@ -7,7 +7,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use tex_lua::{Lua, LuaApi, LuaResult, LuaValue, SafeOption, Stdlib};
+use tex_lua::{Lua, LuaApi, LuaResult, LuaValueKind, SafeOption, Stdlib, Value};
 
 use crate::engine::Engine;
 
@@ -197,14 +197,12 @@ impl LuaEngine {
         let bridge_clone = self.bridge.clone();
         let enable_fn = self
             .lua
-            .create_function(move |prefix: String, table: LuaValue| -> LuaResult<()> {
+            .create_function(move |prefix: String, table: Value| -> LuaResult<()> {
                 let mut prims = Vec::new();
                 if let Some(tbl) = table.as_table() {
-                    for i in 1..=tbl.len() {
-                        if let Some(val) = tbl.raw_geti(i as i64) {
-                            if let Some(s) = val.as_str() {
-                                prims.push(s.to_string());
-                            }
+                    for i in 1..=tbl.raw_len()? {
+                        if let Some(s) = tbl.raw_geti::<Value>(i as i64)?.as_string() {
+                            prims.push(s);
                         }
                     }
                 }
@@ -251,13 +249,13 @@ impl LuaEngine {
         let c_clone = bridge.clone();
         let count_index = self
             .lua
-            .create_function(move |_tbl: LuaValue, key: LuaValue| -> LuaResult<i64> {
+            .create_function(move |_tbl: Value, key: Value| -> LuaResult<i64> {
                 let b = c_clone.borrow();
                 if let Some(idx) = key.as_integer() {
                     let val = b.saved_counts.get(&(idx as i32)).copied().unwrap_or(0);
                     Ok(val as i64)
-                } else if let Some(s) = key.as_str() {
-                    let val = b.saved_named_counts.get(s).copied().unwrap_or(0);
+                } else if let Some(s) = key.as_string() {
+                    let val = b.saved_named_counts.get(&s).copied().unwrap_or(0);
                     Ok(val as i64)
                 } else {
                     Ok(0)
@@ -269,12 +267,12 @@ impl LuaEngine {
         let c_clone = bridge.clone();
         let count_newindex = self
             .lua
-            .create_function(move |_tbl: LuaValue, key: LuaValue, val: i64| -> LuaResult<()> {
+            .create_function(move |_tbl: Value, key: Value, val: i64| -> LuaResult<()> {
                 let mut b = c_clone.borrow_mut();
                 if let Some(idx) = key.as_integer() {
                     b.saved_counts.insert(idx as i32, val as i32);
-                } else if let Some(s) = key.as_str() {
-                    b.saved_named_counts.insert(s.to_string(), val as i32);
+                } else if let Some(s) = key.as_string() {
+                    b.saved_named_counts.insert(s, val as i32);
                 }
                 Ok(())
             })
@@ -288,7 +286,7 @@ impl LuaEngine {
         let d_clone = bridge.clone();
         let dimen_index = self
             .lua
-            .create_function(move |_tbl: LuaValue, idx: i64| -> LuaResult<i64> {
+            .create_function(move |_tbl: Value, idx: i64| -> LuaResult<i64> {
                 let b = d_clone.borrow();
                 let val = b.saved_dimens.get(&(idx as i32)).copied().unwrap_or(0);
                 Ok(val as i64)
@@ -299,7 +297,7 @@ impl LuaEngine {
         let d_clone = bridge.clone();
         let dimen_newindex = self
             .lua
-            .create_function(move |_tbl: LuaValue, idx: i64, val: i64| -> LuaResult<()> {
+            .create_function(move |_tbl: Value, idx: i64, val: i64| -> LuaResult<()> {
                 d_clone.borrow_mut().saved_dimens.insert(idx as i32, val as i32);
                 Ok(())
             })
@@ -313,7 +311,7 @@ impl LuaEngine {
         let t_clone = bridge.clone();
         let toks_index = self
             .lua
-            .create_function(move |_tbl: LuaValue, idx: i64| -> LuaResult<String> {
+            .create_function(move |_tbl: Value, idx: i64| -> LuaResult<String> {
                 let b = t_clone.borrow();
                 let val = b.saved_toks.get(&(idx as i32)).cloned().unwrap_or_default();
                 Ok(val)
@@ -324,7 +322,7 @@ impl LuaEngine {
         let t_clone = bridge.clone();
         let toks_newindex = self
             .lua
-            .create_function(move |_tbl: LuaValue, idx: i64, val: String| -> LuaResult<()> {
+            .create_function(move |_tbl: Value, idx: i64, val: String| -> LuaResult<()> {
                 t_clone.borrow_mut().saved_toks.insert(idx as i32, val);
                 Ok(())
             })
@@ -461,8 +459,8 @@ impl LuaEngine {
             .map_err(|e| format!("token table creation failed: {e:?}"))?;
         let is_token_fn = self
             .lua
-            .create_function(|val: LuaValue| -> LuaResult<bool> {
-                Ok(val.is_table() || val.is_userdata())
+            .create_function(|val: Value| -> LuaResult<bool> {
+                Ok(matches!(val.kind(), LuaValueKind::Table | LuaValueKind::Userdata))
             })
             .unwrap();
         token_tbl.set("is_token", is_token_fn).unwrap();
@@ -602,7 +600,7 @@ impl LuaEngine {
 
         let type_fn = self
             .lua
-            .create_function(|id_or_node: LuaValue| -> LuaResult<Option<String>> {
+            .create_function(|id_or_node: Value| -> LuaResult<Option<String>> {
                 let id = if let Some(i) = id_or_node.as_integer() {
                     i
                 } else {
@@ -632,7 +630,7 @@ impl LuaEngine {
         // node.has_attribute / set_attribute / get_attribute
         let has_attr_fn = self
             .lua
-            .create_function(|_node: LuaValue, _id: i64| -> LuaResult<Option<i64>> {
+            .create_function(|_node: Value, _id: i64| -> LuaResult<Option<i64>> {
                 Ok(None)
             })
             .unwrap();
@@ -643,7 +641,7 @@ impl LuaEngine {
 
         let set_attr_fn = self
             .lua
-            .create_function(|_node: LuaValue, _id: i64, _val: Option<i64>| -> LuaResult<()> {
+            .create_function(|_node: Value, _id: i64, _val: Option<i64>| -> LuaResult<()> {
                 Ok(())
             })
             .unwrap();
@@ -653,7 +651,7 @@ impl LuaEngine {
         // node.dimensions
         let dimensions_fn = self
             .lua
-            .create_function(|_node: LuaValue| -> LuaResult<(i64, i64, i64)> {
+            .create_function(|_node: Value| -> LuaResult<(i64, i64, i64)> {
                 Ok((0, 0, 0))
             })
             .unwrap();

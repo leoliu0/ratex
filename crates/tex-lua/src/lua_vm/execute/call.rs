@@ -5,7 +5,7 @@ use crate::{
     CallInfo, LUA_MASKCALL, LUA_MASKRET, LuaProto, LuaValue,
     gc::UpvaluePtr,
     lua_vm::{
-        CFunction, LUA_HOOKCALL, LUA_HOOKRET, LuaResult, LuaState, StkId, TmKind,
+        CFunction, LUA_HOOKCALL, LUA_HOOKRET, LuaError, LuaResult, LuaState, StkId, TmKind,
         call_info::call_status,
         execute::{
             helper::{get_metamethod_event, get_metamethod_from_meta_ptr},
@@ -119,7 +119,7 @@ pub fn resolve_call_chain(
                 lua_state,
                 func_idx,
                 current_arg_count,
-                LuaValue::cfunction(call_fn),
+                LuaValue::cfunction(call_fn.0),
                 func,
             )?;
             return Ok((current_arg_count, ccmt_depth));
@@ -158,6 +158,27 @@ pub fn resolve_call_chain(
 
 fn is_lua53(lua_state: &LuaState) -> bool {
     lua_state.global_state().language() == crate::LuaLanguageLevel::Lua53
+}
+
+/// Index of the first of the `n` results a native function reports. A count
+/// larger than what it pushed in its own frame is an error (C Lua's
+/// `api_checknelems`), not a read of the caller's slots or past the stack.
+#[inline]
+fn first_native_result(lua_state: &mut LuaState, call_base: usize, n: usize) -> LuaResult<usize> {
+    let stack_top = lua_state.get_top();
+    let pushed = stack_top.saturating_sub(call_base);
+    if n > pushed {
+        return Err(native_result_count_error(lua_state, n, pushed));
+    }
+    Ok(stack_top - n)
+}
+
+#[cold]
+#[inline(never)]
+fn native_result_count_error(lua_state: &mut LuaState, n: usize, pushed: usize) -> LuaError {
+    lua_state.error(format!(
+        "native function returned {n} results but pushed only {pushed}"
+    ))
 }
 
 /// Call a C function and handle results.
@@ -203,12 +224,7 @@ pub fn call_c_function(
     };
 
     // Results positions
-    let stack_top = lua_state.get_top();
-    let first_result = if stack_top >= n {
-        stack_top - n
-    } else {
-        call_base
-    };
+    let first_result = first_native_result(lua_state, call_base, n)?;
     // Return hook (cold)
     if lua_state.hook_mask & LUA_MASKRET != 0 && lua_state.allow_hook {
         let ftransfer = (first_result - call_base + 1) as i32;
@@ -394,12 +410,7 @@ fn call_c_function_tailcall(
     };
 
     // Get the position of results BEFORE popping frame
-    let stack_top = lua_state.get_top();
-    let first_result = if stack_top >= n {
-        stack_top - n
-    } else {
-        call_base
-    };
+    let first_result = first_native_result(lua_state, call_base, n)?;
 
     // Pop the frame (lean path)
     lua_state.pop_c_frame();

@@ -133,8 +133,8 @@ fn test_register_function_typed_userdata_ref() {
 
     vm.register_function_typed(
         "increment_typed",
-        |mut counter: UserDataRef<Counter>, delta: i64| {
-            let counter_ref = counter.get_mut().unwrap();
+        |counter: UserDataRef<Counter>, delta: i64| {
+            let mut counter_ref = counter.borrow_mut().unwrap();
             counter_ref.count += delta;
             counter_ref.count
         },
@@ -148,7 +148,7 @@ fn test_register_function_typed_userdata_ref() {
     assert_eq!(results[0].as_integer(), Some(10));
 
     let counter: UserDataRef<Counter> = vm.main_state().get_global_as("counter").unwrap().unwrap();
-    assert_eq!(counter.get().unwrap().count, 10);
+    assert_eq!(counter.borrow().unwrap().count, 10);
 }
 
 #[test]

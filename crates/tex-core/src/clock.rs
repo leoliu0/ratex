@@ -93,6 +93,23 @@ pub(crate) fn now() -> i64 {
     }
 }
 
+/// web2c `seconds_and_micros`: wall-clock seconds and microseconds since
+/// the Unix epoch (pdfTeX's random seed and `\pdfelapsedtime` timer). The
+/// sandboxed web build has no clock and reports the epoch itself.
+pub(crate) fn now_micros() -> (i64, i32) {
+    #[cfg(target_arch = "wasm32")]
+    {
+        (0, 0)
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+            Ok(elapsed) => (elapsed.as_secs() as i64, elapsed.subsec_micros() as i32),
+            Err(_) => (0, 0),
+        }
+    }
+}
+
 /// A file-system timestamp as `time_t` seconds (floored before 1970).
 pub(crate) fn system_time_epoch(time: std::time::SystemTime) -> i64 {
     match time.duration_since(std::time::UNIX_EPOCH) {

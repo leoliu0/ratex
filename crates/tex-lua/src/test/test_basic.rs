@@ -1,4 +1,5 @@
 // Tests for basic library functions
+use crate::lua_value::chunk_serializer::serialize_chunk;
 use crate::*;
 use std::time::{SystemTime, UNIX_EPOCH};
 

@@ -1873,6 +1873,61 @@ impl SynctexMode {
     }
 }
 
+/// `-ini` without `-plain` starts from IniTeX's table entries (tex.web §222,
+/// §232, §240, §250): every glue, integer and dimension parameter is zero
+/// except \tolerance=10000, \mag=1000, \hangafter=1, \maxdeadcycles=25,
+/// \escapechar and \endlinechar. `init_primitives` seeds plain-TeX values for
+/// these typesetting parameters; reset them so -ini files typeset as in
+/// `pdftex -ini`.
+fn use_initex_parameters(engine: &mut Engine) {
+    use tex_core::prim::GlueParam;
+    let eqtb = &mut engine.eqtb;
+    for param in [
+        GlueParam::ParFillSkip,
+        GlueParam::BaselineSkip,
+        GlueParam::LineSkip,
+        GlueParam::ThinMuSkip,
+        GlueParam::MedMuSkip,
+        GlueParam::ThickMuSkip,
+    ] {
+        eqtb.glue_params[param.idx() as usize] = tex_core::boxes::Glue::zero();
+    }
+    for param in [
+        IntParam::Pretolerance,
+        IntParam::LinePenalty,
+        IntParam::HyphenPenalty,
+        IntParam::ExHyphenPenalty,
+        IntParam::ClubPenalty,
+        IntParam::WidowPenalty,
+        IntParam::HBadness,
+        IntParam::VBadness,
+        IntParam::LeftHyphenMin,
+        IntParam::RightHyphenMin,
+        IntParam::Defaulthyphenchar,
+        IntParam::Defaultskewchar,
+        IntParam::DelimiterFactor,
+        IntParam::ErrorContextLines,
+        IntParam::NewLineChar,
+        IntParam::ShowBoxBreadth,
+        IntParam::ShowBoxDepth,
+    ] {
+        eqtb.int_params[param.idx() as usize] = 0;
+    }
+    eqtb.int_params[IntParam::Tolerance.idx() as usize] = 10_000;
+    for param in [
+        DimParam::HSize,
+        DimParam::VSize,
+        DimParam::MaxDepth,
+        DimParam::ParIndent,
+        DimParam::Hfuzz,
+        DimParam::Vfuzz,
+        DimParam::OverfullRule,
+        DimParam::BoxMaxDepth,
+    ] {
+        eqtb.dim_params[param.idx() as usize] = 0;
+    }
+}
+
 fn configure_engine(
     engine: &mut Engine,
     halt_on_error: bool,
@@ -2623,12 +2678,10 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
         }
         tex_core::driver::prepare_latex_job(&mut eng);
         configure_engine(&mut eng, halt_on_error, interaction_mode, max_errors);
-    } else {
-        if plain {
-            let _ = eng.hyphen_trie.load_hyphen_file(std::path::Path::new(
-                "/usr/share/texmf-dist/tex/generic/hyphen/hyphen.tex",
-            ));
-        }
+    } else if plain {
+        let _ = eng.hyphen_trie.load_hyphen_file(std::path::Path::new(
+            "/usr/share/texmf-dist/tex/generic/hyphen/hyphen.tex",
+        ));
         eng.eqtb.dim_params[DimParam::HSize.idx() as usize] = (6.25 * 72.27 * 65536.0) as i32;
         eng.eqtb.dim_params[DimParam::VSize.idx() as usize] = 0;
         eng.eqtb.dim_params[DimParam::MaxDepth.idx() as usize] = (4.0 * 65536.0) as i32;
@@ -2653,6 +2706,9 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
         eng.eqtb.int_params[IntParam::ExHyphenPenalty.idx() as usize] = 50;
         eng.eqtb.int_params[IntParam::ClubPenalty.idx() as usize] = 150;
         eng.eqtb.int_params[IntParam::WidowPenalty.idx() as usize] = 150;
+        eng.add_nullfont();
+    } else {
+        use_initex_parameters(&mut eng);
         eng.add_nullfont();
     }
     // pdfTeX applies -synctex and -draftmode after the format is loaded.

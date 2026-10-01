@@ -179,17 +179,14 @@ fn pdfrestore_keeps_following_image_in_the_restored_coordinate_system() {
     let pdf = lopdf::Document::load_mem(&bytes).unwrap();
     let page = *pdf.get_pages().values().next().expect("one output page");
     let stream = String::from_utf8(pdf.get_page_content(page)).unwrap();
+    // pdfTeX out_image: the image cm (4 decimals of bp) precedes `/Im Do`
     let image_ops: Vec<&str> = stream
         .lines()
-        .filter(|line| line.trim_end().ends_with(" Do"))
+        .filter(|line| line.starts_with("9.9626 "))
         .collect();
-    assert_eq!(image_ops.len(), 2, "{stream}");
-    assert!(
-        image_ops[0].starts_with("9.963 0 0 9.963 0 0 cm "),
-        "{stream}"
-    );
-    assert!(
-        image_ops[1].starts_with("9.963 0 0 9.963 9.962 0 cm "),
+    assert_eq!(
+        image_ops,
+        ["9.9626 0 0 9.9626 0 0 cm", "9.9626 0 0 9.9626 9.962 0 cm"],
         "{stream}"
     );
     std::fs::remove_dir_all(dir).unwrap();
@@ -1161,7 +1158,7 @@ fn font_attr_and_nobuiltin_tounicode_shape_font_dictionaries() {
 \pdfmapline{=cmr10 CMR10 <cmr10.pfb}
 \pdfmapline{=cmr12 CMR12 <cmr12.pfb}
 \font\plain=cmr12
-\pdfgentounicode=1
+\pdfgentounicode=1 \pdfglyphtounicode{fi}{0066 0069}
 \font\flagged=cmr10
 \font\shared=cmr10 at 12pt
 \pdfnobuiltintounicode\flagged
@@ -1184,7 +1181,9 @@ fn font_attr_and_nobuiltin_tounicode_shape_font_dictionaries() {
     let summary = |dict: &&lopdf::Dictionary| {
         let base = String::from_utf8_lossy(dict.get(b"BaseFont").unwrap().as_name().unwrap());
         let base = base.split('+').last().unwrap().to_string();
-        let width = dict.get(b"Widths").unwrap().as_array().unwrap()[0].as_float().unwrap();
+        // writefont.c: /Widths is an indirect array object
+        let widths = pdf.dereference(dict.get(b"Widths").unwrap()).unwrap().1;
+        let width = widths.as_array().unwrap()[0].as_float().unwrap();
         (
             base,
             width.round() as i64,
@@ -1256,7 +1255,7 @@ fn pdfgentounicode_gates_full_tounicode_cmaps() {
             "gen.tex".into(),
             format!(
                 "\\catcode`\\{{=1 \\catcode`\\}}=2\n\\pdfmapline{{=cmr10 CMR10 <cmr10.pfb}}\n\
-                 \\font\\f=cmr10 \\shipout\\hbox{{\\f A}}\\pdfgentounicode={gen}\n\\end"
+                 \\pdfglyphtounicode{{A}}{{0041}}\\font\\f=cmr10 \\shipout\\hbox{{\\f A}}\\pdfgentounicode={gen}\n\\end"
             )
             .into_bytes(),
         );

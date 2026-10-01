@@ -25,8 +25,8 @@ mod tests {
         fn get_field(&self, key: &str) -> Option<UdValue> {
             match key {
                 "count" => Some(UdValue::Integer(self.count)),
-                "inc" => Some(UdValue::Function(api_counter_inc)),
-                "get" => Some(UdValue::Function(api_counter_get)),
+                "inc" => Some(UdValue::Function(crate::LuaCFunction(api_counter_inc))),
+                "get" => Some(UdValue::Function(crate::LuaCFunction(api_counter_get))),
                 _ => None,
             }
         }
@@ -353,7 +353,7 @@ mod tests {
         assert_eq!(string_value.as_string().unwrap(), "hello");
         assert_eq!(string_value.to_string_lossy(), "hello");
         assert_eq!(
-            string_value.as_string_handle().unwrap().as_str(),
+            string_value.as_string_handle().unwrap().as_str().as_deref(),
             Some("hello")
         );
 
@@ -361,7 +361,7 @@ mod tests {
         assert_eq!(table.get::<i64>("answer").unwrap(), 42);
 
         let counter = userdata_value.as_userdata::<ApiCounter>().unwrap();
-        assert_eq!(counter.get().unwrap().count, 1);
+        assert_eq!(counter.borrow().unwrap().count, 1);
 
         let converted: String = string_value.get().unwrap();
         assert_eq!(converted, "hello");
@@ -376,7 +376,7 @@ mod tests {
         lua.globals().set("counter", counter.clone()).unwrap();
         lua.load("counter:inc(41)").exec().unwrap();
 
-        assert_eq!(counter.get().unwrap().count, 42);
+        assert_eq!(counter.borrow().unwrap().count, 42);
         assert_eq!(lua.load("return counter:get()").eval::<i64>().unwrap(), 42);
     }
 
@@ -844,5 +844,148 @@ mod tests {
         assert_eq!(values.get::<i64>("byte_length").unwrap(), 3);
         assert_eq!(values.get::<i64>("nul").unwrap(), 0);
         assert_eq!(values.get::<i64>("rotate").unwrap(), 0x8000_0000);
+    }
+
+    fn stdlib_lua() -> Lua {
+        let mut lua = Lua::new_lua53(SafeOption::default());
+        lua.open_stdlib(Stdlib::All).unwrap();
+        lua
+    }
+
+    #[test]
+    fn handles_become_inert_when_their_lua_is_dropped() {
+        let mut lua = stdlib_lua();
+        let table = lua.create_table().unwrap();
+        table.set("k", 1).unwrap();
+        let function = lua.load_function("return 1").unwrap();
+        let string = lua.create_string("a string long enough to be a long string").unwrap();
+        let value: crate::Value = lua.eval("return {}").unwrap();
+        let counter = lua.create_userdata(ApiCounter { count: 3 }).unwrap();
+        drop(lua);
+
+        assert_eq!(table.set("k", 2), Err(crate::LuaError::StateClosed));
+        assert_eq!(table.get::<i64>("k"), Err(crate::LuaError::StateClosed));
+        assert_eq!(function.call::<_, i64>(()), Err(crate::LuaError::StateClosed));
+        assert!(string.as_bytes().is_none());
+        assert!(value.is_nil());
+        assert!(counter.borrow().is_err());
+        let copy = table.clone();
+        drop((table, function, string, value, counter, copy));
+    }
+
+    #[test]
+    fn string_borrow_stays_valid_after_the_lua_is_dropped() {
+        let mut lua = stdlib_lua();
+        let text = "a string long enough to live in its own allocation";
+        let string = lua.create_string(text).unwrap();
+        let bytes = string.as_bytes().unwrap();
+        drop(lua);
+        assert_eq!(&*bytes, text.as_bytes());
+    }
+
+    #[test]
+    fn borrowed_string_is_rooted_even_if_its_registry_slot_is_cleared() {
+        let mut lua = stdlib_lua();
+        let string: crate::LuaString = lua
+            .eval("return string.rep('rooted ', 10)")
+            .unwrap();
+        let bytes = string.as_str().unwrap();
+        // Lua code can rewrite the registry through the debug library.
+        lua.execute(
+            "local r = debug.getregistry()
+             for k, v in pairs(r) do
+               if type(k) == 'number' and type(v) == 'string' then r[k] = nil end
+             end
+             collectgarbage()
+             local junk = {} for i = 1, 100 do junk[i] = string.rep('x', 70) .. i end",
+        )
+        .unwrap();
+        assert_eq!(&*bytes, "rooted ".repeat(10));
+    }
+
+    #[test]
+    fn userdata_borrows_are_shared_by_clones_and_checked_like_refcell() {
+        let mut lua = stdlib_lua();
+        let counter = lua.create_userdata(ApiCounter { count: 1 }).unwrap();
+        let alias = counter.clone();
+
+        let mut exclusive = counter.borrow_mut().unwrap();
+        assert!(alias.borrow().is_err(), "a clone must see the exclusive borrow");
+        assert!(alias.borrow_mut().is_err());
+        exclusive.count = 5;
+        drop(exclusive);
+
+        let shared = counter.borrow().unwrap();
+        let shared_too = alias.borrow().unwrap();
+        assert!(alias.borrow_mut().is_err());
+        assert_eq!(shared.count + shared_too.count, 10);
+        drop((shared, shared_too));
+        assert_eq!(alias.borrow_mut().unwrap().count, 5);
+    }
+
+    #[test]
+    fn lua_access_to_a_host_borrowed_userdata_panics_instead_of_aliasing() {
+        let mut lua = stdlib_lua();
+        let counter = lua.create_userdata(ApiCounter { count: 1 }).unwrap();
+        lua.set_global("counter", &counter).unwrap();
+
+        let shared = counter.borrow().unwrap();
+        // Reading through Lua is compatible with a shared host borrow ...
+        assert_eq!(lua.eval::<i64>("return counter.count").unwrap(), 1);
+        // ... mutation is not.
+        let mutate = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = lua.execute("counter:inc(1)");
+        }));
+        assert!(mutate.is_err());
+        assert_eq!(shared.count, 1);
+        drop(shared);
+
+        let exclusive = counter.borrow_mut().unwrap();
+        let read = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = lua.eval::<i64>("return counter.count");
+        }));
+        assert!(read.is_err());
+        drop(exclusive);
+    }
+
+    #[test]
+    fn values_from_another_state_are_rejected() {
+        let mut first = stdlib_lua();
+        let mut second = stdlib_lua();
+        let table = first.create_table().unwrap();
+        assert!(second.set_global("t", &table).is_err());
+        assert!(second.create_table().unwrap().set_metatable(Some(&table)).is_err());
+        assert!(second.set_type_metatable(LuaValueKind::String, Some(&table)).is_err());
+        assert!(second.eval::<bool>("return t == nil").unwrap());
+    }
+
+    #[test]
+    fn variadic_callback_arguments_and_results() {
+        let mut lua = stdlib_lua();
+        let f = lua
+            .create_function(|sep: String, rest: crate::Variadic<crate::Value>| {
+                let parts: Vec<String> = rest.iter().map(|v| v.to_string_lossy()).collect();
+                crate::Variadic(vec![parts.join(&sep), rest.len().to_string()])
+            })
+            .unwrap();
+        lua.set_global("join", f).unwrap();
+        let (joined, count): (String, String) =
+            lua.eval_multi("return join('-', 'a', 2, 'c')").unwrap();
+        assert_eq!((joined.as_str(), count.as_str()), ("a-2-c", "3"));
+        let none: (String, String) = lua.eval_multi("return join('-')").unwrap();
+        assert_eq!(none, (String::new(), "0".to_string()));
+    }
+
+    #[test]
+    fn lua_bytes_round_trip_arbitrary_bytes() {
+        let mut lua = stdlib_lua();
+        let raw = vec![0xff, 0x00, b'a', 0xe9];
+        lua.set_global("raw", crate::LuaBytes(raw.clone())).unwrap();
+        assert_eq!(lua.eval::<i64>("return #raw").unwrap(), 4);
+        let back: crate::LuaString = lua.eval("return raw").unwrap();
+        assert_eq!(back.to_bytes(), raw);
+        assert!(back.as_str().is_none());
+        let made = lua.create_bytes(&raw).unwrap();
+        assert_eq!(made.to_bytes(), raw);
     }
 }

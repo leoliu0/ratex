@@ -140,6 +140,64 @@ fn forms_embed_fonts_used_only_inside_forms() {
     );
 }
 
+/// pdfTeX (writefont.c, tounicode.c) font dictionaries, checked against
+/// `pdftex` output for the same input: descriptor metrics preset from the
+/// TFM and overridden by the program's keys, /CharSet, no /Encoding for a
+/// builtin-encoded font and the `\pdfglyphtounicode` CMap.
+#[test]
+fn type1_font_dictionaries_follow_pdftex() {
+    let mut e = engine(
+        r"\pdfgentounicode=1 \pdfglyphtounicode{A}{0041}\pdfglyphtounicode{B}{0042 0301}
+\font\x=cmr10 \shipout\hbox{\x AB}
+\end",
+    );
+    e.embed_used_fonts().unwrap();
+    let pdf = tex_core::pdffile::write_pdf(&e.pdf_doc).unwrap();
+    let parsed = lopdf::Document::load_mem(&pdf).unwrap();
+    let font = parsed
+        .objects
+        .values()
+        .find_map(|o| o.as_dict().ok().filter(|d| d.has_type(b"Font")))
+        .expect("font dictionary");
+    assert!(font.get(b"Encoding").is_err(), "builtin encoding stays implicit");
+    let descriptor = parsed.dereference(font.get(b"FontDescriptor").unwrap()).unwrap().1;
+    let descriptor = descriptor.as_dict().unwrap();
+    let int = |key: &[u8]| descriptor.get(key).unwrap().as_i64().unwrap();
+    assert_eq!(
+        [b"Ascent".as_slice(), b"CapHeight", b"Descent", b"ItalicAngle", b"StemV", b"XHeight"].map(int),
+        [694, 683, -194, 0, 69, 431]
+    );
+    let bbox: Vec<i64> = descriptor
+        .get(b"FontBBox")
+        .unwrap()
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_i64().unwrap())
+        .collect();
+    assert_eq!(bbox, [-40, -250, 1009, 750]);
+    assert_eq!(descriptor.get(b"CharSet").unwrap().as_str().unwrap(), b"/A/B");
+    let cmap = parsed.dereference(font.get(b"ToUnicode").unwrap()).unwrap().1;
+    let cmap = cmap.as_stream().unwrap().decompressed_content().unwrap();
+    let cmap = String::from_utf8(cmap).unwrap();
+    assert!(cmap.contains("/CMapName /TeX-cmr10-builtin-0 def"), "{cmap}");
+    assert!(cmap.contains("2 beginbfchar\n<41> <0041>\n<42> <00420301>\nendbfchar"), "{cmap}");
+}
+
+#[test]
+fn duplicate_destinations_warn_like_pdftex() {
+    let source = r"\pdfdest name{a} fit\pdfdest name{a} fit
+\shipout\hbox{A\pdfdest name{a} fit}\pdfdest name{a} fit
+\end";
+    // pdftex: once at the \pdfdest after the shipout, twice when \end
+    // ships the two early ones
+    let e = engine(source);
+    assert_eq!(e.log.matches("has been already used, duplicate ignored").count(), 3, "{}", e.log);
+    assert!(e.log.contains("destination with the same identifier (name{a})"));
+    let e = engine(&format!("\\pdfsuppresswarningdupdest=1 {source}"));
+    assert!(!e.log.contains("duplicate ignored"), "{}", e.log);
+}
+
 #[test]
 fn undefined_pdf_xobject_references_are_located_and_omitted() {
     use tex_core::engine::InteractionMode;
@@ -651,4 +709,230 @@ fn quoted_font_names_end_at_the_end_of_the_line() {
     let e = run_lenient("\\font\\x=\"cmr10\n\\message{[\\fontname\\x]}\\end");
     assert!(e.term.contains("[cmr10]"), "{}", e.term);
     assert_eq!(e.error_count, 0, "{}", e.term);
+}
+
+/// tex.web §107 `xn_over_d` truncates: space factor 1250 turns cmr10's
+/// 109226sp interword stretch into 136532sp, not 136533sp. The 1sp shifts
+/// the glue on this line enough to flip pdfTeX's TJ rounding; the expected
+/// array is `pdftex -ini` output for the same input.
+#[test]
+fn space_factor_glue_truncates_like_pdftex() {
+    let e = engine(
+        r"\pdfoutput=1 \hoffset=-1in \sfcode`\,=1250 \font\tenrm=cmr10
+\setbox0\hbox{\tenrm x, \global\skip1=\lastskip}\message{[\the\skip1]}
+\shipout\hbox to 2031622sp{\tenrm x, y z}
+\end",
+    );
+    assert!(e.term.contains("[3.33333pt plus 2.08331pt minus 0.88889pt]"), "{}", e.term);
+    let page = String::from_utf8_lossy(&e.pdf_doc.pages[0].content);
+    assert!(page.contains("[(x,)-697(y)-625(z)]TJ"), "{page}");
+}
+
+/// `\font ... scaled` sizes the font with the same truncating `xn_over_d`
+/// (tex.web §1258): cmr10 scaled 2074 is 1359216sp, identical to `at
+/// 1359216sp`, as in pdftex.
+#[test]
+fn font_scaled_size_truncates_like_pdftex() {
+    let e = engine(
+        r"\font\big=cmr10 scaled 2074 \font\bigb=cmr10 at 1359216sp
+\message{[\fontname\big][\ifx\big\bigb same\else diff\fi]}
+\end",
+    );
+    assert!(e.term.contains("[cmr10 at 20.73999pt][same]"), "{}", e.term);
+}
+
+/// pdftex -ini output for this page: `\pdfsetmatrix` echoes its plain
+/// numbers verbatim, and `pdf_print_char` writes `(`, `)`, space and `\` as
+/// octal escapes while DEL stays raw.
+#[test]
+fn setmatrix_and_string_bytes_print_like_pdftex() {
+    let e = engine(
+        r"\pdfoutput=1 \font\tenrm=cmr10
+\shipout\hbox{\pdfsave\pdfsetmatrix{.5 0 0 -.25}\tenrm(a)\char32\char127\char92\pdfrestore}
+\end",
+    );
+    let page = String::from_utf8_lossy(&e.pdf_doc.pages[0].content);
+    assert!(page.contains("\n.5 0 0 -.25 0 0 cm\n"), "{page}");
+    assert!(page.contains("[(\\050a\\051\\040\x7f\\134)]TJ"), "{page}");
+}
+
+/// pdftex.web `pdf_set_rule` centers a hairline at `y - (h + 1)/2` with
+/// Pascal real division, truncated when passed on as scaled: an even 0.4pt
+/// rule sits 13108sp above its bottom edge. `pdftex -ini` prints 25.907
+/// here; integer halving gives 25.906.
+#[test]
+fn hairline_rule_center_truncates_like_pdftex() {
+    let e = engine(
+        r"\pdfoutput=1 \pdfpagewidth=100pt \pdfpageheight=100pt
+\shipout\vbox{\kern100031sp\hrule height .4pt width 10pt}
+\end",
+    );
+    let page = String::from_utf8_lossy(&e.pdf_doc.pages[0].content);
+    assert!(page.contains("q\n1 0 0 1 72 25.907 cm\n[]0 d 0 J 0.398 w"), "{page}");
+}
+
+/// Fonts and the IniTeX parameter values the TeXXeT expectations below were
+/// taken under (`pdftex -ini -etex`, TeX Live 2026).
+const TEXXET_SETUP: &str = r"\catcode`\&=4
+\font\tenrm=cmr10 \font\teni=cmmi10 \font\tensy=cmsy10 \font\tenex=cmex10
+\textfont0=\tenrm \scriptfont0=\tenrm \scriptscriptfont0=\tenrm
+\textfont1=\teni \scriptfont1=\teni \scriptscriptfont1=\teni
+\textfont2=\tensy \scriptfont2=\tensy \scriptscriptfont2=\tensy
+\textfont3=\tenex \scriptfont3=\tenex \scriptscriptfont3=\tenex
+\tenrm \thinmuskip=0mu \medmuskip=0mu \thickmuskip=0mu
+\hsize=200pt \parindent=0pt \parfillskip=0pt plus 1fil \tolerance=10000
+\TeXXeTstate=1
+";
+
+/// Every `open ... close` span of `text`, in order.
+fn spans<'a>(text: &'a str, open: &str, close: char) -> Vec<&'a str> {
+    text.match_indices(open)
+        .map(|(at, _)| {
+            let rest = &text[at..];
+            &rest[..=rest.find(close).unwrap()]
+        })
+        .collect()
+}
+
+#[test]
+fn texxet_box_widths_and_lr_problems_match_etex() {
+    let e = engine(&format!(
+        r"{TEXXET_SETUP}
+\setbox0\hbox{{ab\beginR cd\endR ef}}\message{{[w0=\the\wd0]}}
+\setbox3\hbox spread 10pt{{AV\beginR AV fi ffl\hskip 3pt plus 1pt\endR VA}}\message{{[w3=\the\wd3]}}
+\setbox2\hbox{{\beginR a$x+y$b\endR}}\message{{[w2=\the\wd2]}}
+\setbox4\hbox{{a\endR b}}\setbox4\hbox{{\beginR ab}}\setbox4\hbox{{\beginL a\endR b\endL}}
+\setbox4\hbox{{\beginR\beginL a}}\message{{[w4=\the\wd4]}}\setbox4\hbox{{a\endL\endR\endR b}}
+\setbox5\hbox{{\beginR aaa bbb ccc\endR}}
+\setbox6\vbox{{\TeXXeTstate=0 \hsize=40pt \unhcopy5\par}}
+\shipout\copy6
+\end"
+    ));
+    for expected in [
+        "[w0=28.05562pt]",
+        "[w3=75.22229pt]",
+        "[w2=29.31026pt]",
+        "[w4=5.00002pt]",
+    ] {
+        assert!(e.term.contains(expected), "{expected}: {}", e.term);
+    }
+    // The last report comes from ship_out: the lines were broken with
+    // TeXXeT disabled, so they carry no LR boundary nodes.
+    assert_eq!(
+        spans(&e.log, "\\endL or \\endR problem (", ')'),
+        [
+            "\\endL or \\endR problem (0 missing, 1 extra)",
+            "\\endL or \\endR problem (1 missing, 0 extra)",
+            "\\endL or \\endR problem (0 missing, 1 extra)",
+            "\\endL or \\endR problem (2 missing, 0 extra)",
+            "\\endL or \\endR problem (0 missing, 3 extra)",
+            "\\endL or \\endR problem (1 missing, 1 extra)",
+        ],
+        "{}",
+        e.log
+    );
+}
+
+#[test]
+fn texxet_predisplay_direction_and_size_match_etex() {
+    let e = engine(&format!(
+        r"{TEXXET_SETUP}
+\everydisplay{{\message{{[\the\predisplaydirection/\the\predisplaysize]}}}}
+\setbox0\vbox{{\beginR aaa bbb ccc $$x+y\eqno(1)$$ ddd eee\endR\par}}
+\setbox1\vbox{{\leftskip=10pt \rightskip=5pt \beginR aaa bbb $$x=y\leqno(2)$$ ddd eee\endR\par}}
+\setbox2\vbox{{aaa \beginR bbb\endR\ ccc $$z$$ ddd\par}}
+\setbox4\vbox{{aaa\beginL bbb $$w\eqno(3)$$ ccc\endL\par}}
+\end"
+    ));
+    assert_eq!(
+        spans(&e.term, "[", ']'),
+        [
+            "[-1/16383.99998pt]",
+            "[-1/16383.99998pt]",
+            "[0/71.66678pt]",
+            "[1/51.6668pt]",
+        ],
+        "{}",
+        e.term
+    );
+}
+
+/// tex.web resume_after_display ends with <Scan an optional space>, after
+/// unsave has put the display group's \aftergroup tokens back.
+#[test]
+fn text_after_a_display_skips_one_optional_space() {
+    let e = engine(&format!(
+        r"{TEXXET_SETUP}
+\def\sp{{ }}
+\setbox0\vbox{{aaa $$ $$ \message{{[\the\lastnodetype]}}ddd\par}}
+\setbox0\vbox{{aaa $$\aftergroup\sp $$\message{{[\the\lastnodetype]}}ddd\par}}
+\setbox0\vbox{{aaa $$ $$x\message{{[\the\lastnodetype]}}\par}}
+\setbox0\vbox{{aaa $$\halign{{#\cr a\cr}}$$ \message{{[\the\lastnodetype]}}ddd\par}}
+\end"
+    ));
+    assert_eq!(spans(&e.term, "[", ']'), ["[-1]", "[-1]", "[0]", "[-1]"], "{}", e.term);
+}
+
+/// etex.ch §800: rows of an alignment in a display are dlist boxes, so
+/// ship_out sets them left to right even inside right-to-left text.
+#[test]
+fn display_alignment_rows_keep_left_to_right_order_inside_r_text() {
+    let e = engine(&format!(
+        r"{TEXXET_SETUP}
+\pdfcompresslevel=0
+\shipout\hbox{{\beginR x\vbox{{\hsize=120pt aa $$\halign{{#\hfil&\hskip10pt#\cr ab&cd\cr}}$$ bb\par}}y\endR}}
+\end"
+    ));
+    let content = String::from_utf8_lossy(&e.pdf_doc.pages[0].content);
+    assert!(content.contains("[(ab)-1000(cd)]TJ"), "{content}");
+}
+
+/// tex.web show_box: a nonpositive \showboxbreadth shows five items per
+/// level (IniTeX starts with \showboxbreadth=0).
+#[test]
+fn nonpositive_showboxbreadth_shows_five_items() {
+    let e = run_lenient(
+        r"\font\tenrm=cmr10 \tenrm \showboxbreadth=0 \showboxdepth=1
+\setbox0\hbox{aaaaaaa}\showbox0
+\end",
+    );
+    assert_eq!(e.log.matches("character 'a'").count(), 5, "{}", e.log);
+    assert!(e.log.contains("omitted by \\showboxbreadth"), "{}", e.log);
+}
+
+/// pdftex -ini: \delimiterfactor=0 is used as given, so with a large
+/// \delimitershortfall the smallest parenthesis (8.1778pt wide pair) is
+/// chosen.
+#[test]
+fn zero_delimiterfactor_is_not_replaced() {
+    let e = engine(&format!(
+        r#"{TEXXET_SETUP}
+\delcode`\(="028300 \delcode`\)="029301
+\delimiterfactor=0 \delimitershortfall=100pt
+\setbox1\hbox{{$\left(\vrule height 20pt depth 10pt\right)$}}\message{{[\the\wd1]}}
+\end"#
+    ));
+    assert!(e.term.contains("[8.1778pt]"), "{}", e.term);
+}
+
+/// pdftex (TeX Live 2026) after `\pdfsetrandomseed 12345`:
+/// [12345][709][377][-201][0][-113033] [7][50][-27960] [timer]
+/// [macro:->\pdfelapsedtime ]; a negative seed is made positive,
+/// and `\pdfelapsedtime` is an unexpandable internal integer.
+#[test]
+fn pdf_random_deviates_follow_the_seeded_generator() {
+    let e = engine(
+        r"\pdfsetrandomseed 12345
+\message{[\the\pdfrandomseed][\pdfuniformdeviate 1000][\pdfuniformdeviate 1000][\pdfuniformdeviate -1000][\pdfuniformdeviate 0][\pdfnormaldeviate]}
+\pdfsetrandomseed -7 \message{[\the\pdfrandomseed][\pdfuniformdeviate 100][\pdfnormaldeviate]}
+\pdfresettimer \ifnum\pdfelapsedtime<65536 \message{[timer]}\fi
+\edef\x{\noexpand\pdfelapsedtime}\message{[\meaning\x]}
+\end",
+    );
+    let term: String = e.term.split_whitespace().collect();
+    assert!(
+        term.contains("[12345][709][377][-201][0][-113033][7][50][-27960][timer][macro:->\\pdfelapsedtime]"),
+        "{}",
+        e.term
+    );
 }

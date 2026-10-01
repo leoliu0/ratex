@@ -91,8 +91,8 @@ impl UserDataTrait for Adder {
         }
     }
 
-    fn lua_call(&self) -> Option<crate::lua_vm::CFunction> {
-        Some(Adder::lua_call_impl)
+    fn lua_call(&self) -> Option<crate::LuaCFunction> {
+        Some(crate::LuaCFunction(Adder::lua_call_impl))
     }
 
     fn as_any(&self) -> &dyn std::any::Any {
@@ -178,8 +178,8 @@ impl UserDataTrait for Splitter {
         "Splitter"
     }
 
-    fn lua_call(&self) -> Option<crate::lua_vm::CFunction> {
-        Some(Splitter::lua_call_impl)
+    fn lua_call(&self) -> Option<crate::LuaCFunction> {
+        Some(crate::LuaCFunction(Splitter::lua_call_impl))
     }
 
     fn as_any(&self) -> &dyn std::any::Any {

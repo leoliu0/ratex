@@ -464,6 +464,7 @@ name = "libtex"
 version = "0.4.6"
 dependencies = [
  "dlmalloc",
+ "tex-kpse",
  "tex-runtime",
 ]
 

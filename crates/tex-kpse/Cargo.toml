@@ -16,3 +16,6 @@ tar = { workspace = true }
 [features]
 default = ["embed-packages"]
 embed-packages = []
+# Copy the embedded package library into the rlib so a `staticlib` built from
+# this crate contains it. Executables and cdylibs link it from OUT_DIR without.
+bundle-packages = ["embed-packages"]

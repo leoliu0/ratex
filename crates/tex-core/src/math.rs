@@ -2060,6 +2060,67 @@ impl Engine {
         }
     }
 
+    /// A `\Umath` parameter value a LuaTeX job has defined (luatex
+    /// `get_math_param`); other engines and undefined parameters read the
+    /// font parameters directly.
+    fn umath_param(&self, param: u32, style: GStyle) -> Option<i32> {
+        if self.engine_kind != crate::engine::EngineKind::LuaTeX {
+            return None;
+        }
+        let value = self.eqtb.math_param(param, style);
+        (value != crate::eqtb::UNDEFINED_MATH_PARAMETER).then_some(value)
+    }
+
+    /// luatex mlist.c `fixup_math_parameters` for the traditional (TFM)
+    /// math families: assigning family font `fid` of `size` (0 text, 1
+    /// script, 2 scriptscript) defines the `\Umath` parameters that derive
+    /// from its `\fontdimen`s, at the current group level.
+    pub(crate) fn fixup_math_parameters(&mut self, fam: usize, size: usize, fid: u16, global: bool) {
+        use crate::luatex::*;
+        if self.engine_kind != crate::engine::EngineKind::LuaTeX {
+            return;
+        }
+        let Some(font) = self.eqtb.fonts.get(fid as usize).cloned() else {
+            return;
+        };
+        let have = self.eqtb.font_params.get(fid as usize).map_or(0, Vec::len).max(font.params.len());
+        let param = |e: &Self, i: usize| -> i32 {
+            e.eqtb
+                .font_params
+                .get(fid as usize)
+                .and_then(|v| v.get(i - 1).copied())
+                .unwrap_or_else(|| font.param(i))
+        };
+        let values: Vec<(u32, i32, i32)> = match fam {
+            // (parameter, text-style value, display-style value)
+            2 if have >= 22 => vec![
+                (MATH_PARAM_STACK_NUM_UP, param(self, 10), param(self, 8)),
+                (MATH_PARAM_STACK_DENOM_DOWN, param(self, 12), param(self, 11)),
+                (MATH_PARAM_FRACTION_DEL_SIZE, param(self, 21), param(self, 20)),
+            ],
+            3 if have >= 13 => {
+                let rule = param(self, 8);
+                vec![(MATH_PARAM_STACK_VGAP, 3 * rule, 7 * rule)]
+            }
+            _ => return,
+        };
+        let styles: &[u8] = match size {
+            0 => &[2, 3],
+            1 => &[4, 5],
+            _ => &[6, 7],
+        };
+        for (id, text, display) in values {
+            for &style in styles {
+                self.eqtb.assign_math_param(id, style, text, global);
+            }
+            if size == 0 {
+                for style in [0u8, 1] {
+                    self.eqtb.assign_math_param(id, style, display, global);
+                }
+            }
+        }
+    }
+
     /// \mathchoice{D}{T}{S}{SS}: scan the four style groups immediately and
     /// attach them as ChoiceAlt bodies of a Choice atom; mlist_to_hlist picks
     /// the branch matching the current style.
@@ -2069,6 +2130,30 @@ impl Engine {
             let body = self.scan_math_group_or_token();
             self.append_mlist_node(Node::ChoiceAlt { body });
         }
+    }
+
+    /// LuaTeX `\Ustack {<mlist>}` (texmath.c `setup_math_style`): an Ord
+    /// noad whose nucleus is the braced subformula. Unlike plain braces the
+    /// group never reduces to a single character noad; luatex scans it in
+    /// the numerator style, which only `\mathstyle` could observe.
+    pub(crate) fn do_ustack(&mut self) {
+        self.flush_math_limits();
+        self.skip_spaces_relax();
+        let t = self.get_token();
+        if !(t.is_char() && t.cc() == 1) {
+            self.error("Missing { inserted");
+            self.push_token(t);
+        }
+        let inner = self.scan_math_group_braced();
+        let mut nucleus = Vec::with_capacity(inner.len() + 1);
+        nucleus.push(Node::MathChar {
+            fam: 255,
+            c: 0,
+            class: CL_ORD,
+            origin: MathDiagnosticOrigin::default(),
+        });
+        nucleus.extend(inner);
+        self.append_mlist_node(Node::Scripts { nucleus, sup: None, sub: None });
     }
 
     /// 1mu = quad of family 2 at the current math size / 18 (tex.web §767).
@@ -3350,8 +3435,17 @@ impl Engine {
         let vlist: NodeList;
         if r == 0 {
             // \atop: symmetric minimum clearance around the numerator/denominator
+            // (luatex stack_num_up, stack_denom_down, stack_vgap)
+            if let Some(v) = self.umath_param(crate::luatex::MATH_PARAM_STACK_NUM_UP, style) {
+                su = v;
+            }
+            if let Some(v) = self.umath_param(crate::luatex::MATH_PARAM_STACK_DENOM_DOWN, style) {
+                sd = v;
+            }
             let rt = self.default_rule_thickness(style);
-            let clr = if display { rt * 7 } else { rt * 3 };
+            let clr = self
+                .umath_param(crate::luatex::MATH_PARAM_STACK_VGAP, style)
+                .unwrap_or(if display { rt * 7 } else { rt * 3 });
             let delta = half_i(clr - ((su - nd) - (dh - sd)));
             if delta > 0 {
                 su += delta;
@@ -3396,10 +3490,10 @@ impl Engine {
             *shift = 0;
         }
         // \overwithdelims etc.: both delimiters sized to delim1/delim2
-        let dd_size = if display {
-            self.fparam(style, 2, 20)
-        } else {
-            self.fparam(style, 2, 21)
+        let dd_size = match self.umath_param(crate::luatex::MATH_PARAM_FRACTION_DEL_SIZE, style) {
+            Some(v) => v,
+            None if display => self.fparam(style, 2, 20),
+            None => self.fparam(style, 2, 21),
         };
         let mut out: NodeList = Vec::new();
         if let Some(l) = left {

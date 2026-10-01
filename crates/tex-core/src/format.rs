@@ -684,6 +684,7 @@ pub fn save_format_with_encoding(
     write_code_map(&mut w, &q.unicode_del_codes, |w, v| w.u64(v as u64));
     write_code_map(&mut w, &q.unicode_sf_codes, |w, v| w.u16(v));
     write_code_map(&mut w, &q.attributes, |w, v| w.i32(v));
+    write_code_map(&mut w, &q.math_params, |w, v| w.i32(v));
     w.i32(q.cat_table);
     let mut tables: Vec<_> = q.cat_tables.iter().collect();
     tables.sort_unstable_by_key(|(id, _)| **id);
@@ -1415,6 +1416,7 @@ fn load_state(r: &mut R, eng: &mut Engine) -> io::Result<()> {
     q.unicode_del_codes = read_code_map(r, |r| Ok(r.u64()? as i64))?;
     q.unicode_sf_codes = read_code_map(r, |r| r.u16())?;
     q.attributes = read_code_map(r, |r| r.i32())?;
+    q.math_params = read_code_map(r, |r| r.i32())?;
     q.cat_table = r.i32()?;
     let n_tables = r.count()?;
     for _ in 0..n_tables {

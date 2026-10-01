@@ -1146,13 +1146,24 @@ impl Engine {
         r
     }
 
-    fn scan_math_style_param(&mut self) {
-        self.skip_spaces_relax();
-        let tok = self.get_token();
-        if tok.is_char() && tok.chr() >= u32::from(b'0') && tok.chr() <= u32::from(b'9') {
-            self.push_token(tok);
-            let _ = self.scan_int();
+    /// luatex `set_math_param_cmd` operand: a math style token (`get_token`,
+    /// not expanded). Anything else is an error that reads as `\displaystyle`.
+    pub(crate) fn scan_math_style(&mut self) -> u8 {
+        let tok = self.raw_token();
+        if tok.is_cs() {
+            if let Some(Equiv::Prim(p)) = self.eqtb.resolve(tok.cs_id()) {
+                match p {
+                    Prim::DisplayStyle => return 0,
+                    Prim::TextStyle => return 2,
+                    Prim::ScriptStyle => return 4,
+                    Prim::ScriptScriptStyle => return 6,
+                    _ => {}
+                }
+            }
         }
+        self.error("Missing math style, treated as \\displaystyle");
+        self.push_token(tok);
+        0
     }
 
     /// `inf`: fil/fill/filll units are allowed (glue stretch and shrink).
@@ -1388,23 +1399,16 @@ impl Engine {
                     frac_f = 0;
                     direct = Some(self.scan_pdf_ximage_bbox());
                 }
-                Some(Prim::Umathfractiondelsize) => {
-                    self.scan_math_style_param();
+                Some(
+                    p @ (Prim::Umathfractiondelsize
+                    | Prim::Umathstacknumup
+                    | Prim::Umathstackdenomdown
+                    | Prim::Umathstackvgap),
+                ) => {
+                    let style = self.scan_math_style();
                     int_part = 1;
                     frac_f = 0;
-                    direct = Some(20 * 65536);
-                }
-                Some(Prim::Umathstacknumup | Prim::Umathstackdenomdown) => {
-                    self.scan_math_style_param();
-                    int_part = 1;
-                    frac_f = 0;
-                    direct = Some(6 * 65536);
-                }
-                Some(Prim::Umathstackvgap) => {
-                    self.scan_math_style_param();
-                    int_part = 1;
-                    frac_f = 0;
-                    direct = Some(2 * 65536);
+                    direct = Some(self.eqtb.math_param(crate::luatex::umath_param_id(p), style));
                 }
                 Some(Prim::Count) => {
                     // internal integer coerced to dimen (sp), tex.web scan_something_internal
@@ -2242,17 +2246,16 @@ impl Engine {
                 let v = self.test_no_ligatures(f as u16);
                 emit_the!(v.to_string().as_bytes());
             }
-            Some(Prim::Umathfractiondelsize) => {
-                self.scan_math_style_param();
-                emit_the!(b"20.0pt");
-            }
-            Some(Prim::Umathstacknumup | Prim::Umathstackdenomdown) => {
-                self.scan_math_style_param();
-                emit_the!(b"6.0pt");
-            }
-            Some(Prim::Umathstackvgap) => {
-                self.scan_math_style_param();
-                emit_the!(b"2.0pt");
+            Some(
+                p @ (Prim::Umathfractiondelsize
+                | Prim::Umathstacknumup
+                | Prim::Umathstackdenomdown
+                | Prim::Umathstackvgap),
+            ) => {
+                let style = self.scan_math_style();
+                let value = self.eqtb.math_param(crate::luatex::umath_param_id(p), style);
+                let s = self.scaled_to_string(value);
+                emit_the!(s.as_bytes());
             }
             Some(
                 p @ (Prim::EfCode

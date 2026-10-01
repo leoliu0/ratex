@@ -588,6 +588,21 @@ impl Engine {
                 self.clear_prefixes();
                 true
             }
+            Umathfractiondelsize | Umathstacknumup | Umathstackdenomdown | Umathstackvgap => {
+                // maincontrol.c set_math_param_cmd: <style> <equals> <dimen>
+                let name = match p {
+                    Umathfractiondelsize => "\\Umathfractiondelsize",
+                    Umathstacknumup => "\\Umathstacknumup",
+                    Umathstackdenomdown => "\\Umathstackdenomdown",
+                    _ => "\\Umathstackvgap",
+                };
+                let g = self.take_assignment_prefixes(name);
+                let style = self.scan_math_style();
+                self.scan_optional_equals();
+                let v = self.scan_dimen(false, false);
+                self.eqtb.assign_math_param(crate::luatex::umath_param_id(p), style, v, g);
+                true
+            }
             Attribute => {
                 let n = self.scan_attribute_num();
                 self.scan_optional_equals();

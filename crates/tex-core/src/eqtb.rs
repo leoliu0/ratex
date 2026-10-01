@@ -19,6 +19,10 @@ pub const NUM_REGISTERS: usize = 32768;
 pub const MAX_SAVE_STACK: usize = 100_000;
 /// LuaTeX's value of an attribute that is not set (`UNUSED_ATTRIBUTE`).
 pub const UNUSED_ATTRIBUTE: i32 = -0x7FFF_FFFF;
+
+/// LuaTeX's value of a `\Umath` parameter nothing has defined yet
+/// (`undefined_math_parameter`, `max_dimen`).
+pub const UNDEFINED_MATH_PARAMETER: i32 = 0x3FFF_FFFF;
 /// LuaTeX attribute registers are numbered 0..=65535.
 pub const MAX_ATTRIBUTE: i32 = 0xFFFF;
 /// LuaTeX catcode table ids are 0..=0x7FFF (textcodes.c `CATCODE_MAX`).
@@ -237,6 +241,8 @@ pub enum SaveItem {
     UnicodeSf(u32, Option<(u16, u16)>),
     /// LuaTeX `\attribute n` before a local assignment.
     Attribute(u32, Option<(i32, u16)>),
+    /// LuaTeX `\Umath` parameter (`param * 8 + style`) before a local assignment.
+    MathParam(u32, Option<(i32, u16)>),
     /// LuaTeX `\catcodetable` before a local assignment: (table, level).
     CatCodeTable(i32, u16),
     StyleFont(u8, u16, u16, u16), // (0=textfont,1=scriptfont,2=ssfont, fam, fontid, level)
@@ -327,6 +333,8 @@ pub struct Eqtb {
     pub cat_tables: crate::FxHashMap<i32, CatCodeTable>,
     /// LuaTeX attribute registers that hold a value (others are unset).
     pub attributes: crate::FxHashMap<u32, (i32, u16)>,
+    /// LuaTeX `\Umath` parameters that hold a value: key `param * 8 + style`.
+    pub math_params: crate::FxHashMap<u32, (i32, u16)>,
 
     /// style_fonts[style][fam] -> font id (0 = none); style: 0=text 1=script 2=ss
     pub style_fonts: [[u16; 256]; 3],
@@ -616,6 +624,7 @@ impl Eqtb {
             cat_table_level: LEVEL_ONE,
             cat_tables: crate::FxHashMap::default(),
             attributes: crate::FxHashMap::default(),
+            math_params: crate::FxHashMap::default(),
             style_fonts: [[0; 256]; 3],
             style_font_levels: [[LEVEL_ONE; 256]; 3],
             fonts: Vec::new(),
@@ -1180,6 +1189,27 @@ impl Eqtb {
         );
     }
 
+    /// `\Umath<param><style>` (LuaTeX `get_math_param`); [`UNDEFINED_MATH_PARAMETER`]
+    /// until a value or a family font defines it.
+    pub fn math_param(&self, param: u32, style: u8) -> i32 {
+        self.math_params
+            .get(&(param * 8 + u32::from(style)))
+            .map_or(UNDEFINED_MATH_PARAMETER, |&(value, _)| value)
+    }
+
+    pub fn assign_math_param(&mut self, param: u32, style: u8, value: i32, global: bool) {
+        let key = param * 8 + u32::from(style);
+        Self::sparse_slot(
+            &mut self.math_params,
+            key,
+            value,
+            global,
+            self.cur_level,
+            &mut self.save_stack,
+            |old| SaveItem::MathParam(key, old),
+        );
+    }
+
     pub fn math_code_for(&self, character: u32) -> u32 {
         self.unicode_math_codes
             .get(&character)
@@ -1574,6 +1604,9 @@ impl Eqtb {
                 }
                 SaveItem::Attribute(n, old) => {
                     Self::restore_sparse(&mut self.attributes, n, old);
+                }
+                SaveItem::MathParam(key, old) => {
+                    Self::restore_sparse(&mut self.math_params, key, old);
                 }
                 SaveItem::CatCodeTable(table, level) => {
                     if self.cat_table_level > LEVEL_ONE {

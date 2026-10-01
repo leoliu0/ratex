@@ -258,3 +258,82 @@ fn attributes_are_registers_of_their_own() {
     assert!(compact.contains(expected), "term: {}", e.term);
     assert_eq!(errors(&e).len(), 1, "errors: {:?}", errors(&e));
 }
+
+/// luatex --ini on the same input: `\Umath` stack and fraction delimiter
+/// parameters start undefined, are filled in by assigning the math family
+/// fonts, follow grouping and `\global`, and drive `\atop` and delimited
+/// fractions; `\Ustack{..}` typesets like a group.
+#[test]
+fn umath_stack_and_fraction_delimiter_parameters_follow_luatex() {
+    let mut e = luatex_ini();
+    run(
+        &mut e,
+        r#"\catcode`\$=3 \catcode`\^=7
+\def\show#1{\immediate\write16{[#1]}}
+\def\q{\show{\the\Umathstacknumup\displaystyle/\the\Umathstacknumup\textstyle/\the\Umathstackdenomdown\displaystyle/\the\Umathstackdenomdown\scriptstyle}\show{\the\Umathstackvgap\displaystyle/\the\Umathstackvgap\textstyle/\the\Umathfractiondelsize\displaystyle/\the\Umathfractiondelsize\scriptscriptstyle}}
+\q
+\font\ti=cmmi10 \font\sy=cmsy10 \font\ex=cmex10 \font\rm=cmr10 \font\sysev=cmsy7 \font\syfive=cmsy5
+\textfont0=\rm \scriptfont0=\rm \scriptscriptfont0=\rm
+\textfont1=\ti \scriptfont1=\ti \scriptscriptfont1=\ti
+\textfont2=\sy \scriptfont2=\sysev \scriptscriptfont2=\syfive
+\show{\the\Umathstacknumup\textstyle/\the\Umathstackvgap\textstyle}
+\textfont3=\ex \scriptfont3=\ex \scriptscriptfont3=\ex
+\q
+{\Umathstacknumup\textstyle=1pt \q}\q
+{\global\Umathstackdenomdown\scriptstyle=3pt }\q
+\Umathstackvgap\displaystyle=10pt \q
+\Umathfractiondelsize\textstyle=30pt \Umathfractiondelsize\scriptscriptstyle=1pt \q
+\delcode`(="028300 \delcode`)="029301
+\def\b#1#2{\setbox0\hbox{$#1#2$}\show{\the\ht0/\the\dp0}}
+\b\displaystyle{\Ustack{1\atop 2}}
+\b\displaystyle{{1\atop 2}}
+\b\displaystyle{{1\over 2}}
+\b\textstyle{\Ustack{1\atop 2}}
+\b\textstyle{{1\atop 2}}
+\b\textstyle{{1\atopwithdelims() 2}}
+\b\displaystyle{{1\atopwithdelims() 2}}
+\b{}{\Ustack{1\over 2}}
+\b{}{\Ustack{12}}
+\b{}{\Ustack{x}^2}
+\b{}{{x}^2}
+\Umathstacknumup\textstyle=0pt \Umathstackdenomdown\textstyle=0pt \Umathstackvgap\textstyle=0pt \q
+\b\textstyle{{1\atop 2}}
+\Umathstacknumup\bogus=2pt
+"#,
+    );
+    let expected = [
+        "[16383.99998pt/16383.99998pt/16383.99998pt/16383.99998pt]",
+        "[16383.99998pt/16383.99998pt/16383.99998pt/16383.99998pt]",
+        "[4.4373pt/16383.99998pt]",
+        "[6.76508pt/4.4373pt/6.85951pt/2.4095pt]",
+        "[2.79985pt/1.19994pt/23.9pt/7.09999pt]",
+        "[6.76508pt/1.0pt/6.85951pt/2.4095pt]",
+        "[2.79985pt/1.19994pt/23.9pt/7.09999pt]",
+        "[6.76508pt/4.4373pt/6.85951pt/2.4095pt]",
+        "[2.79985pt/1.19994pt/23.9pt/7.09999pt]",
+        "[6.76508pt/4.4373pt/6.85951pt/3.0pt]",
+        "[2.79985pt/1.19994pt/23.9pt/7.09999pt]",
+        "[6.76508pt/4.4373pt/6.85951pt/3.0pt]",
+        "[10.0pt/1.19994pt/23.9pt/7.09999pt]",
+        "[6.76508pt/4.4373pt/6.85951pt/3.0pt]",
+        "[10.0pt/1.19994pt/23.9pt/1.0pt]",
+        "[14.61945pt/8.26944pt]",
+        "[14.61945pt/8.26944pt]",
+        "[13.20952pt/6.85951pt]",
+        "[10.88174pt/3.44841pt]",
+        "[10.88174pt/3.44841pt]",
+        "[17.50014pt/12.50015pt]",
+        "[14.61945pt/9.50012pt]",
+        "[10.38176pt/4.54442pt]",
+        "[6.44444pt/0.0pt]",
+        "[10.07336pt/0.0pt]",
+        "[10.07336pt/0.0pt]",
+        "[6.76508pt/0.0pt/6.85951pt/3.0pt]",
+        "[10.0pt/0.0pt/23.9pt/1.0pt]",
+        "[9.66667pt/3.22223pt]",
+    ];
+    assert_eq!(shown(&e), expected, "term: {}", e.term);
+    let errors = errors(&e);
+    assert!(errors[0].starts_with("Missing math style, treated as \\displaystyle"), "{errors:?}");
+    assert_eq!(errors[1], "Undefined control sequence \\bogus");
+}

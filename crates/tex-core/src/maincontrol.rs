@@ -917,6 +917,7 @@ impl Engine {
                 self.scan_optional_equals();
                 let f = self.scan_font_id();
                 self.eqtb.assign_style_font(style, fam as u16, f, global);
+                self.fixup_math_parameters(fam, usize::from(style), f, global);
             }
             Left | ULeft => {
                 if self.mode.is_m() {
@@ -1337,7 +1338,16 @@ impl Engine {
             XeTeXPicFile | XeTeXPdfFile => {
                 self.do_pdfximage();
             }
-            Ustack => {}
+            Ustack => {
+                if self.mode.is_m() {
+                    self.do_ustack();
+                } else {
+                    // maincontrol.c non_math(math_choice_cmd, insert_dollar_sign)
+                    self.push_token(Token::from_cs(id));
+                    self.push_token(Token::char(3, u32::from(b'$')));
+                    self.error("Missing $ inserted");
+                }
+            }
             Ustartmath | Ustopmath => {
                 self.push_token(Token::char(3, b'$' as u32));
             }

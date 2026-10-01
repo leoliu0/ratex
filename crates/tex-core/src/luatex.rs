@@ -91,6 +91,23 @@ static LUATEX_ONLY: &[(&[u8], Prim)] = &[
     (b"showstream", Prim::IntP(IntParam::ShowStream)),
 ];
 
+/// LuaTeX `math_param_*` numbers (`set_math_param_cmd` chr values) of the
+/// `\Umath` parameters Ratex implements.
+pub(crate) const MATH_PARAM_STACK_VGAP: u32 = 15;
+pub(crate) const MATH_PARAM_STACK_NUM_UP: u32 = 16;
+pub(crate) const MATH_PARAM_STACK_DENOM_DOWN: u32 = 17;
+pub(crate) const MATH_PARAM_FRACTION_DEL_SIZE: u32 = 23;
+
+pub(crate) fn umath_param_id(p: Prim) -> u32 {
+    match p {
+        Prim::Umathstackvgap => MATH_PARAM_STACK_VGAP,
+        Prim::Umathstacknumup => MATH_PARAM_STACK_NUM_UP,
+        Prim::Umathstackdenomdown => MATH_PARAM_STACK_DENOM_DOWN,
+        Prim::Umathfractiondelsize => MATH_PARAM_FRACTION_DEL_SIZE,
+        _ => unreachable!("not a \\Umath parameter primitive"),
+    }
+}
+
 /// LuaTeX names of primitives ratex registers under their pdfTeX or e-TeX
 /// name (LuaTeX name, ratex name).
 static ALIASES: &[(&[u8], &[u8])] = &[

@@ -664,3 +664,33 @@ fn test_relational_comparison() {
     );
     assert!(result.is_ok());
 }
+
+fn run_in_both_dialects(source: &str) {
+    for level in [LuaLanguageLevel::Lua53, LuaLanguageLevel::Lua55] {
+        let mut vm = GlobalState::new_with_language(SafeOption::default(), level);
+        vm.open_stdlib(crate::stdlib::Stdlib::All).unwrap();
+        let state = vm.main_state();
+        if let Err(error) = state.execute(source) {
+            let message = state.get_error_msg(error);
+            panic!("{level}: {message}");
+        }
+    }
+}
+
+#[test]
+fn test_concat_is_not_merged_across_jump_targets() {
+    // The inner concatenation sits behind a jump of `ok and r or ...`; merging
+    // it into the outer CONCAT made the taken branch skip the whole concat.
+    run_in_both_dialects(
+        r#"
+        local name, r, ok = "add", "x", true
+        assert(name .. " " .. (ok and r or ("E" .. tostring(r))) == "add x")
+        ok = false
+        assert(name .. " " .. (ok and r or ("E" .. tostring(r))) == "add Ex")
+        local c = true
+        assert((c and "a" or "b") .. "c" == "ac")
+        c = false
+        assert((c and "a" or "b") .. "c" == "bc")
+    "#,
+    );
+}

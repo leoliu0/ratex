@@ -704,7 +704,7 @@ fn cond(fs: &mut FuncState) -> Result<isize, String> {
 fn whilestat(fs: &mut FuncState, line: usize) -> Result<(), String> {
     // whilestat -> WHILE cond DO block END
     fs.lexer.bump(); // skip WHILE
-    let whileinit = code::getlabel(fs);
+    let whileinit = code::get_label(fs);
     let condexit = cond(fs)?;
 
     let bl_id = fs.compiler_state.alloc_blockcnt(BlockCnt {
@@ -733,7 +733,7 @@ fn whilestat(fs: &mut FuncState, line: usize) -> Result<(), String> {
 // Port of repeatstat from lparser.c:1486-1507
 fn repeatstat(fs: &mut FuncState, line: usize) -> Result<(), String> {
     // repeatstat -> REPEAT block UNTIL cond
-    let repeat_init = code::getlabel(fs);
+    let repeat_init = code::get_label(fs);
 
     // lparser.c:1491-1492: enterblock(fs, &bl1, 1); enterblock(fs, &bl2, 0);
     let bl1_id = fs.compiler_state.alloc_blockcnt(BlockCnt {

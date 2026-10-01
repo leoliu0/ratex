@@ -332,8 +332,6 @@ pub struct LuaFontState {
     pub touched: crate::FxHashSet<FontId>,
     /// luatex `font_used`: a character of the font reached the PDF.
     pub used: crate::FxHashSet<FontId>,
-    /// The control sequence naming fonts without a `\font` identifier.
-    pub anonymous_cs: Option<crate::token::CsId>,
     /// Glyph indices found through the character map of the font program.
     pub cmap_cache: crate::FxHashMap<(FontId, u32), u16>,
 }
@@ -387,15 +385,11 @@ impl Engine {
 
     /// luatex `new_font`: allocate a blank font slot.
     pub(crate) fn lua_new_font(&mut self) -> FontId {
-        let cs = match self.lua_fonts.anonymous_cs {
-            Some(cs) => cs,
-            None => {
-                let cs = self.cs.intern(b"FONT");
-                self.lua_fonts.anonymous_cs = Some(cs);
-                cs
-            }
-        };
-        if let Some(&hole) = self.lua_fonts.holes.iter().min() {
+        // luatex names a font without a control sequence `FONT<id>`.
+        let hole = self.lua_fonts.holes.iter().min().copied();
+        let id = hole.map_or(self.eqtb.fonts.len(), usize::from);
+        let cs = self.cs.intern(format!("FONT{id}").as_bytes());
+        if let Some(hole) = hole {
             self.lua_fonts.holes.retain(|&h| h != hole);
             self.lua_reset_font_slot(hole, Self::lua_placeholder_font(), cs);
             return hole;
@@ -515,6 +509,70 @@ impl Engine {
                 };
             }
         }
+        // Ligature/kern programs between one-byte characters, in tfm form, so
+        // the main loop kerns and ligates Lua fonts as luatex does through
+        // the `kerns`/`ligatures` tables.
+        {
+            let mut codes: Vec<u32> = lua
+                .chars
+                .iter()
+                .filter(|(&c, ci)| c < 256 && (!ci.kerns.is_empty() || !ci.ligatures.is_empty()))
+                .map(|(&c, _)| c)
+                .collect();
+            codes.sort_unstable();
+            let mut restarts = Vec::new();
+            let mut programs: Vec<crate::tfm::LigStep> = Vec::new();
+            let mut jumps = Vec::new();
+            for &c in &codes {
+                let ci = &lua.chars[&c];
+                let mut nexts: Vec<i32> = ci
+                    .kerns
+                    .keys()
+                    .chain(ci.ligatures.keys())
+                    .copied()
+                    .filter(|n| (0..256).contains(n))
+                    .collect();
+                nexts.sort_unstable();
+                nexts.dedup();
+                let mut steps = Vec::new();
+                for n in nexts {
+                    if let Some(l) = ci.ligatures.get(&n).filter(|l| l.replacement < 256) {
+                        steps.push(crate::tfm::LigStep { skip: 0, next_char: n as u8, op: l.op, rem: l.replacement as u8, stop: false });
+                    } else if let Some(&k) = ci.kerns.get(&n) {
+                        let idx = font.kerns.iter().position(|&x| x == k).unwrap_or_else(|| {
+                            font.kerns.push(k);
+                            font.kerns.len() - 1
+                        });
+                        if idx >= 128 * 256 {
+                            continue;
+                        }
+                        steps.push(crate::tfm::LigStep { skip: 0, next_char: n as u8, op: 128 + (idx / 256) as u8, rem: (idx % 256) as u8, stop: false });
+                    }
+                }
+                if let Some(last) = steps.last_mut() {
+                    last.skip = 128;
+                    last.stop = true;
+                    jumps.push((c, restarts.len(), programs.len()));
+                    restarts.push(());
+                    programs.extend(steps);
+                }
+            }
+            if !restarts.is_empty() && restarts.len() < 256 {
+                let base = restarts.len();
+                let mut prog = Vec::with_capacity(base + programs.len());
+                for &(_, _, start) in &jumps {
+                    let at = base + start;
+                    prog.push(crate::tfm::LigStep { skip: 255, next_char: 0, op: (at / 256) as u8, rem: (at % 256) as u8, stop: false });
+                }
+                prog.extend(programs);
+                font.lig_kern = prog;
+                for &(c, r, _) in &jumps {
+                    let ci = &mut font.chars[c as usize];
+                    ci.tag = crate::tfm::TAG_LIG;
+                    ci.remainder = r as u8;
+                }
+            }
+        }
         if low <= high {
             font.bc = low as u8;
             font.ec = high as u8;
@@ -626,7 +684,7 @@ impl Engine {
         // The slot was only a reservation: TFM fonts go through the
         // classic registration (virtual font bases, expansion tables).
         self.lua_delete_font(f);
-        let cs = self.lua_fonts.anonymous_cs.unwrap_or(0);
+        let cs = self.cs.intern(format!("FONT{}", self.eqtb.fonts.len()).as_bytes());
         Some(self.push_engine_font(font, cs))
     }
 

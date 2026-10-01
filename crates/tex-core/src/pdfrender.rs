@@ -1316,6 +1316,11 @@ impl<'a> RenderCtx<'a> {
     ) -> i64 {
         {
             match n {
+                Node::Char { c, font } | Node::Ligature { c, font, .. }
+                    if self.eng.eqtb.fonts.get(usize::from(*font)).is_some_and(|f| f.lua.is_some()) =>
+                {
+                    cur_x += self.emit_lua_glyph(*font, u32::from(*c), cur_x, y, 0, 0, 0);
+                }
                 Node::Char { c, font } => {
                     let adv = self.font_char_advance_sp(*font, *c);
                     self.emit_char_sp(*font, *c, cur_x, y, 0);
@@ -1422,6 +1427,11 @@ impl<'a> RenderCtx<'a> {
                 Node::Disc(dc) => {
                     for nn in &dc.no_break {
                         match nn {
+                            Node::Char { c, font }
+                                if self.eng.eqtb.fonts.get(usize::from(*font)).is_some_and(|f| f.lua.is_some()) =>
+                            {
+                                cur_x += self.emit_lua_glyph(*font, u32::from(*c), cur_x, y, 0, 0, 0);
+                            }
                             Node::Char { c, font } => {
                                 let adv = self.font_char_advance_sp(*font, *c);
                                 self.emit_char_sp(*font, *c, cur_x, y, 0);

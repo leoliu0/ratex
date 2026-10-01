@@ -708,7 +708,7 @@ impl Engine {
                 // routine that ran while the display was being scanned.
                 page = std::mem::take(&mut self.page_list);
             }
-            if let Some((mut rows, final_pd)) = self.display_halign.take() {
+            if let Some((rows, final_pd)) = self.display_halign.take() {
                 // tex.web §16078 (finish_display_math with an alignment in
                 // |temp_head|): the alignment rows — already carrying their
                 // interline glue, including the glue before the first row
@@ -719,18 +719,12 @@ impl Engine {
                 // the NORMAL display skips; the short pair is a
                 // formula-display optimization (§22578) and never applies
                 // to alignment displays. No centering/tag dance: amsmath
-                // typesets tags inside the rows themselves.
+                // typesets tags inside the rows themselves; fin_align already
+                // shifted the rows by \displayindent (§800).
                 let (ads, bds, _, _, pre, post, ..) = regs;
                 page.push(Node::Penalty(pre));
                 page.push(Node::Glue(ads));
                 self.prev_depth = final_pd;
-                if self.pre_display_s != 0 {
-                    for r in &mut rows {
-                        if let Node::Box { shift, .. } = r {
-                            *shift += self.pre_display_s as i32;
-                        }
-                    }
-                }
                 page.extend(rows);
                 page.push(Node::Penalty(post));
                 page.push(Node::Glue(bds));
@@ -5252,5 +5246,28 @@ mod tests {
             })
             .collect();
         assert_eq!(pens, vec![500]);
+    }
+
+    #[test]
+    fn display_alignment_shifts_rows_and_noalign_rules_only() {
+        // TeX Live \showbox of the vbox: the paragraph line, row `a`, the
+        // \noalign rule (re-boxed as \hbox(0.4+0.0)x5.55557) and row `b` are
+        // shifted 30.0; the \noalign{\hbox{N}} box is not (tex.web §800)
+        let e = run_doc(
+            "\\tenrm \\hsize=200pt \\parskip=0pt \\setbox1=\\vbox{\\hangindent=30pt \\hangafter=0 \
+             \\noindent X $$\\halign{#\\cr a\\cr\\noalign{\\hbox{N}}\\noalign{\\hrule}b\\cr}$$\\par}",
+        );
+        let vbox = e.eqtb.boxed[1].clone().expect("box1");
+        let (list, ..) = box_of(&vbox);
+        let shifts: Vec<String> = list
+            .iter()
+            .filter(|n| matches!(n, Node::Box { .. }))
+            .map(|n| tex_pt(box_shift(n)))
+            .collect();
+        assert_eq!(shifts, ["30.0pt", "30.0pt", "0.0pt", "30.0pt", "30.0pt"]);
+        let rule_box = list.iter().filter(|n| matches!(n, Node::Box { .. })).nth(3).unwrap();
+        let (inner, w, h, ..) = box_of(rule_box);
+        assert!(matches!(inner.as_slice(), [Node::Rule { .. }]), "{inner:?}");
+        assert_eq!((tex_pt(w), tex_pt(h)), ("5.55557pt".to_string(), "0.4pt".to_string()));
     }
 }

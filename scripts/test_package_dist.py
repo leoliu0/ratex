@@ -109,11 +109,13 @@ class LinuxPackageOwnershipTests(unittest.TestCase):
 
 
 class FormatValidationTests(unittest.TestCase):
-    def test_raw_version_8_remains_accepted(self) -> None:
+    def test_older_wire_version_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / "legacy.fmt"
-            path.write_bytes(b"RUSTEXFM" + (8).to_bytes(2, "little") + (8).to_bytes(2, "little"))
-            self.assertEqual(package_dist.validate_format_file(str(path)), path)
+            path.write_bytes(b"RUSTEXFM" + (14).to_bytes(2, "little") + (8).to_bytes(2, "little"))
+            with contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit):
+                    package_dist.validate_format_file(str(path))
 
     @unittest.skipUnless(shutil.which("zstd"), "zstd command is unavailable")
     def test_embedded_compressed_format_is_accepted(self) -> None:

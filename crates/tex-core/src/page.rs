@@ -1387,14 +1387,13 @@ impl Engine {
         }
 
         let md = self.max_depth().min(i32::MAX as i64) as i32;
-        // NOTE: tex.web §19905 says `vpack(q, natural)`, but real pdfTeX
-        // packs \box255 to \pagegoal when the page has finite shrink/
-        // stretch to absorb (oracle: BOX: 30.0pt = goal, not 25 = natural).
-        // The exact-goal pack below matches the empirical contract that
-        // LaTeX/ltxgrid rely on (\ht\box255 == \pagegoal at \output).
+        // tex.web §1017: box255 := vpackage(page list, best_size, exactly,
+        // page_max_depth); the pack's badness is \badness inside \output
+        // (its under/overfull reports are suppressed: vbadness := inf_bad).
         let exact = (pack_goal < 0x3FFF_FFFF)
             .then_some(pack_goal.clamp(i32::MIN as i64, i32::MAX as i64) as i32);
         let r = crate::boxes::vpack_add_md(page_mat, exact, false, VBOX, &self.eqtb, md);
+        self.last_badness = r.badness;
         self.eqtb.assign_box(255, Some(r.node), true);
 
         // tex.web §28435-28439: with no routine (or once the dead-cycle

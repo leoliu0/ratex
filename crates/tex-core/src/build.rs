@@ -2776,4 +2776,23 @@ mod structural_state_tests {
         );
         assert_eq!(engine.error_count, 0, "{}", engine.diagnostic_output);
     }
+
+    /// TeX Live 2026: tex.web §108 badness rounds r³/2¹⁸ to nearest
+    /// (+2¹⁷), and math-on/off nodes are \mathsurround wide, taking the
+    /// value current inside the formula.
+    #[test]
+    fn pack_badness_and_math_surround_match_tex_live() {
+        let mut engine = Engine::new(true);
+        run_in(
+            &mut engine,
+            "\\catcode`\\$=3 \\hbadness=10000 \
+             \\setbox1\\hbox to 5pt{\\hskip0pt plus 10pt}\
+             \\ifnum\\badness=12 \\else\\errmessage{badness \\the\\badness}\\fi\
+             \\mathsurround=2pt \\setbox1\\hbox{$\\kern1pt$}\
+             \\ifdim\\wd1=5pt\\else\\errmessage{a \\the\\wd1}\\fi\
+             \\setbox1\\hbox{$\\mathsurround=3pt \\kern1pt$}\
+             \\ifdim\\wd1=7pt\\else\\errmessage{b \\the\\wd1}\\fi",
+        );
+        assert_eq!(engine.error_count, 0, "{}", engine.diagnostic_output);
+    }
 }

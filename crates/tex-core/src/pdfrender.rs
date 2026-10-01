@@ -858,7 +858,10 @@ impl<'a> RenderCtx<'a> {
                     );
                     cur_x += adv;
                 }
-                Node::Kern(k) | Node::ExplicitKern(k) | Node::MarginKern { width: k, .. } => {
+                Node::Kern(k)
+                | Node::ExplicitKern(k)
+                | Node::MarginKern { width: k, .. }
+                | Node::MathKern(k, 1 | 2) => {
                     cur_x += *k as i64;
                 }
                 Node::Penalty(_) => {}

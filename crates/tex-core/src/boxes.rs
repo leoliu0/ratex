@@ -519,6 +519,9 @@ fn single_dims(n: &Node, eqtb: &crate::eqtb::Eqtb) -> (i32, i32, i32) {
         } => (*lig_width, *lig_height, *lig_depth),
         Node::Glue(g) => (g.width, 0, 0),
         Node::Kern(k) | Node::ExplicitKern(k) => (*k, 0, 0),
+        // tex.web math_node: width = \mathsurround (math-on 1 / math-off 2);
+        // an unconverted \mkern (kind 0) has no width yet
+        Node::MathKern(k, 1 | 2) => (*k, 0, 0),
         Node::MarginKern { width, .. } => (*width, 0, 0),
         Node::Penalty(_) => (0, 0, 0),
         Node::Rule {
@@ -678,30 +681,8 @@ pub fn vlist_dims(list: &[Node], eqtb: &crate::eqtb::Eqtb) -> (i32, i32, i32) {
     (w as i32, x as i32, d as i32)
 }
 
-/// badness(t, s) exactly as tex.web §2337: r ≈ 297·t/s, badness = r³/2¹⁸
-/// rounded, capped at INF_BAD. (scaled::badness uses the exact cube; real
-/// TeX uses this approximation, so packers must too for byte compatibility.)
-pub fn tex_badness(t: i32, s: i32) -> i32 {
-    if t == 0 {
-        return 0;
-    }
-    if s <= 0 {
-        return scaled::INF_BAD;
-    }
-    let ti = t as i64;
-    let si = s as i64;
-    let r: i64 = if t <= 7230584 {
-        ti * 297 / si
-    } else if s >= 1663497 {
-        ti / (si / 297)
-    } else {
-        ti
-    };
-    if r > 1290 {
-        scaled::INF_BAD
-    } else {
-        ((r * r * r + 262144) / 262144) as i32
-    }
+fn clamp_i32(v: i64) -> i32 {
+    v.clamp(i32::MIN as i64, i32::MAX as i64) as i32
 }
 
 /// choose glue sign/order/ratio per tex.web hpack §649: check the highest
@@ -813,7 +794,7 @@ fn finish_glue(
     if x > 0 {
         // stretching: badness only meaningful in the normal order
         if order == 0 && nonempty {
-            bad = tex_badness(x as i32, stretch[0] as i32);
+            bad = scaled::badness(clamp_i32(x), clamp_i32(stretch[0]));
         }
     } else if x < 0 {
         if order == 0 {
@@ -836,7 +817,7 @@ fn finish_glue(
                     }
                 }
             } else if nonempty {
-                bad = tex_badness((-x) as i32, shrink[0] as i32);
+                bad = scaled::badness(clamp_i32(-x), clamp_i32(shrink[0]));
             }
         }
     }

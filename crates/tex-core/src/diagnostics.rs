@@ -2034,6 +2034,8 @@ fn default_help(message: &str) -> Option<String> {
         || message.starts_with("Improper \\prevdepth")
     {
         Some("`\\spacefactor` is meaningful only in horizontal mode and `\\prevdepth` only in vertical mode, and neither inside `\\write`; zero was used instead")
+    } else if message.starts_with("Improper \\setbox") {
+        Some("`\\setbox` is not allowed between `\\accent` and the accented character, or after `\\halign` in a display")
     } else if message.starts_with("You can't use") || message.contains(" outside alignment") {
         Some("move this command into the TeX mode or environment where it is valid")
     } else if message.starts_with("Text line contains an invalid character") {

@@ -1959,7 +1959,10 @@ impl Engine {
             | Some(Node::Overline { .. })
             | Some(Node::MathKern(..)) => 10,
             Some(Node::Glue(_)) | Some(Node::Leaders { .. }) => 11,
-            Some(Node::Kern(_)) | Some(Node::ExplicitKern(_)) | Some(Node::MarginKern { .. }) => 12,
+            Some(Node::Kern(_))
+            | Some(Node::ExplicitKern(_))
+            | Some(Node::AccentKern(_))
+            | Some(Node::MarginKern { .. }) => 12,
             Some(Node::Penalty(_)) => 13,
             Some(Node::InsDisc) | Some(Node::Empty) => 14,
             Some(Node::NonScript) | Some(Node::MuGlue(_)) => 11,
@@ -1979,7 +1982,11 @@ impl Engine {
         for node in nodes {
             match node {
                 Node::MarginKern { width, .. } => return *width,
-                Node::Glue(_) | Node::Kern(_) | Node::ExplicitKern(_) | Node::Penalty(_) => {
+                Node::Glue(_)
+                | Node::Kern(_)
+                | Node::ExplicitKern(_)
+                | Node::AccentKern(_)
+                | Node::Penalty(_) => {
                     continue
                 }
                 _ => break,
@@ -2064,6 +2071,7 @@ impl Engine {
                     | Node::Rule { .. }
                     | Node::Kern(_)
                     | Node::ExplicitKern(_)
+                    | Node::AccentKern(_)
             )
         }) {
             self.error("Improper discretionary list");
@@ -2103,7 +2111,7 @@ impl Engine {
             return 0;
         }
         match self.current_tail() {
-            Some(Node::Kern(k) | Node::ExplicitKern(k)) => *k,
+            Some(Node::Kern(k) | Node::ExplicitKern(k) | Node::AccentKern(k)) => *k,
             None if self.mode == Mode::Vertical => self.last_page_kern,
             _ => 0,
         }
@@ -2153,7 +2161,7 @@ impl Engine {
     pub fn un_kern(&mut self) {
         if matches!(
             self.current_tail(),
-            Some(Node::Kern(_) | Node::ExplicitKern(_))
+            Some(Node::Kern(_) | Node::ExplicitKern(_) | Node::AccentKern(_))
         ) {
             self.take_current_tail();
         }

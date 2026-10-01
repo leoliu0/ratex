@@ -2214,6 +2214,10 @@ impl Engine {
             // tex.web §4416: an explicit kern is shown with a space after
             // the escape (`\kern 1.0`), an implicit one without (`\kern1.0`)
             Node::ExplicitKern(k) => out.push_str(&format!("kern {}\n", self.scaled_to_string(*k))),
+            Node::AccentKern(k) => out.push_str(&format!(
+                "kern {} (for accent)\n",
+                self.scaled_to_string(*k)
+            )),
             // pdftex §4302 prints margin kerns with their side annotated
             Node::MarginKern { side, width, .. } => out.push_str(&format!(
                 "kern{} ({} margin)\n",

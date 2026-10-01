@@ -915,7 +915,7 @@ impl Engine {
 
     /// cs-bound value/parameter assignment: \foo=... where foo is a register
     /// alias or a parameter primitive
-    fn cs_assign(&mut self, id: CsId) -> bool {
+    pub(crate) fn cs_assign(&mut self, id: CsId) -> bool {
         match self.eqtb.resolve(id).cloned() {
             Some(Equiv::Prim(Prim::IntP(ip))) => {
                 self.scan_optional_equals();

@@ -448,6 +448,12 @@ impl<'a> BoxDisplay<'a> {
                 self.out.push(b' ');
                 self.print_scaled(*k);
             }
+            Node::AccentKern(k) => {
+                self.print_esc("kern");
+                self.out.push(b' ');
+                self.print_scaled(*k);
+                self.print(" (for accent)");
+            }
             Node::MathKern(k, 0) => {
                 self.print_esc("mkern");
                 self.print_scaled(*k);

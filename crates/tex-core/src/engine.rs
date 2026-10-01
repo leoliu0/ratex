@@ -375,6 +375,7 @@ pub struct Engine {
     pub align_tabskip_0: crate::boxes::Glue,
     pub align_loop_start: Option<usize>,
     pub align_rows: Vec<Vec<crate::align::Cell>>,
+    /// final column widths of the last finished alignment (tex.web fin_align)
     pub align_col_widths: Vec<i32>,
     pub align_cur_row: Vec<crate::align::Cell>,
     pub align_cur_col: i32,

@@ -103,10 +103,9 @@ impl Engine {
         if t.is_cs() && (t.cs_id() as usize) >= self.cs.len() {
             return;
         }
-        // tex.web main-loop wrapup: leaving the character/ligature loop in
-        // unrestricted horizontal mode settles a trailing explicit hyphen
-        // into a null discretionary. Character commands defer that decision
-        // to append_char_lig, after ligature/kern lookup.
+        // tex.web main-loop wrapup: any command other than a character,
+        // \char or \noboundary ends the character/ligature chain (settling a
+        // trailing explicit hyphen and the right boundary).
         if matches!(self.mode, Mode::Horizontal | Mode::RestrictedHorizontal) {
             let continues_character = if t.is_cs() {
                 match self.eqtb.resolve(t.cs_id()) {
@@ -120,13 +119,7 @@ impl Engine {
             if !continues_character {
                 self.finish_native_utf8();
                 self.flush_native_text();
-                let font = self.eqtb.cur_font_val;
-                if font != 0 {
-                    if self.mode == Mode::Horizontal {
-                        self.flush_hyphen_disc(font);
-                    }
-                    self.flush_right_boundary_kern(font);
-                }
+                self.end_char_chain();
             }
         }
 

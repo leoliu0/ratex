@@ -422,6 +422,7 @@ impl Engine {
         if let Node::Box {
             list,
             kind,
+            h,
             glue_sign,
             glue_order,
             glue_set,
@@ -429,8 +430,9 @@ impl Engine {
         } = page_box
         {
             if *kind == HBOX {
-                // shipped hbox: baseline sits at the top-left origin
-                ctx.ship_hlist(list, x0, y0, *glue_sign, *glue_order, *glue_set);
+                // pdftex pdf_ship_out: cur_v := height(p), so the shipped
+                // hbox's baseline sits one box height below the origin
+                ctx.ship_hlist(list, x0, y0 + *h as i64, *glue_sign, *glue_order, *glue_set);
             } else {
                 // vbox/vtop: the top of the page material sits at the origin
                 ctx.ship_vlist(list, x0, y0, *glue_sign, *glue_order, *glue_set);

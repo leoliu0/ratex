@@ -826,10 +826,12 @@ fn finish_glue(
                     let fuzz = eqtb.dim_params[DimParam::Hfuzz.idx() as usize] as i64;
                     let rule_w = eqtb.dim_params[DimParam::OverfullRule.idx() as usize] as i64;
                     if horizontal && rule_w > 0 && excess > fuzz {
+                        // tex.web §666: new_rule keeps running height and
+                        // depth, so the marker spans the whole line
                         list.push(Node::Rule {
                             width: rule_w as i32,
-                            height: 0,
-                            depth: 0,
+                            height: crate::build::RULE_FILL,
+                            depth: crate::build::RULE_FILL,
                         });
                     }
                 }

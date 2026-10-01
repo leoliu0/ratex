@@ -1305,20 +1305,52 @@ impl Engine {
         let a = af.char_width(acc);
         let x = af.x_height();
         let s = f64::from(af.param(1)) / 65536.0; // accent font slant
-                                                  // do_assignments: get_x_token skips blank spaces/\relax AND expands,
-                                                  // so `\accent 127 \i` typesets the dotless ı that \i expands to
-                                                  // (tex.web §1269 make_accent's `do_assignments;`).
-        self.skip_spaces_relax();
-        let t = self.get_x_raw();
+        // tex.web §1123 do_assignments: expand, skip blanks/\relax and
+        // perform assignments (font selections included) until a
+        // non-assignment command; `\accent 127 \i` then typesets the
+        // dotless ı that \i stands for.
+        let t = loop {
+            self.skip_spaces_relax();
+            let t = self.get_x_raw();
+            if !t.is_cs() {
+                break t;
+            }
+            let id = t.cs_id();
+            match self.eqtb.resolve(id).cloned() {
+                Some(Equiv::FontRef(font)) => {
+                    let g = self.take_global();
+                    self.eqtb.define_cur_font(font, g);
+                    self.clear_prefixes();
+                }
+                Some(Equiv::Prim(p)) if p != Prim::Relax && self.try_assignment(p, id) => {
+                    if !matches!(
+                        p,
+                        Prim::Global | Prim::Long | Prim::Outer | Prim::Protected | Prim::AfterAssignment
+                    ) {
+                        self.trigger_after_assignment();
+                    }
+                }
+                _ => break t,
+            }
+        };
+        // §1124: a letter, other char, \chardef'd char or \char is the base
         let base: Option<u8> = if t.is_char() && (t.cc() == 11 || t.cc() == 12) {
             u8::try_from(t.chr()).ok()
-        } else if t.is_cs() && matches!(self.eqtb.resolve(t.cs_id()), Some(Equiv::Prim(Prim::Char)))
-        {
-            Some(self.scan_character_code("\\char"))
+        } else if t.is_cs() {
+            match self.eqtb.resolve(t.cs_id()).cloned() {
+                Some(Equiv::Prim(Prim::Char)) => Some(self.scan_character_code("\\char")),
+                Some(Equiv::CharDef(v)) => u8::try_from(v).ok(),
+                Some(Equiv::CharTok(raw)) if matches!(Token(raw).cc(), 11 | 12) => {
+                    u8::try_from(Token(raw).chr()).ok()
+                }
+                _ => None,
+            }
         } else {
-            self.push_token(t);
             None
         };
+        if base.is_none() {
+            self.push_token(t);
+        }
         let Some(bc) = base else {
             // no usable base character: append the accent alone
             self.cur_list.push(Node::Char {

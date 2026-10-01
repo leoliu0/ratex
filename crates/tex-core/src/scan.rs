@@ -2899,7 +2899,10 @@ impl Engine {
             return 0;
         }
         match self.eqtb.resolve(t.cs_id()).cloned() {
-            Some(Equiv::FontRef(f)) => f,
+            Some(Equiv::FontRef(f)) => {
+                self.lua_touch_font(f);
+                f
+            }
             Some(Equiv::Prim(Prim::Font)) => {
                 // \font refers to current font
                 self.eqtb.cur_font_val
@@ -2918,7 +2921,9 @@ impl Engine {
                     Prim::ScriptFont => 1,
                     _ => 2,
                 };
-                self.eqtb.style_fonts[slot][fam]
+                let f = self.eqtb.style_fonts[slot][fam];
+                self.lua_touch_font(f);
+                f
             }
             _ => {
                 self.error(&format!(

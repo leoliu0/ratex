@@ -57,6 +57,9 @@ pub struct Font {
     pub map_fontname: Option<String>,
     /// parsed encoding file (glyph names by slot), shared with the enc cache
     pub encoding: Option<std::rc::Rc<[String]>>,
+    /// Set for fonts defined from Lua (`font.define`), which are indexed by
+    /// Unicode scalar values instead of the 8-bit `chars` table.
+    pub lua: Option<std::rc::Rc<crate::lua_font::LuaFont>>,
 }
 
 impl Font {
@@ -406,6 +409,7 @@ pub fn parse_tfm(data: &[u8], tfm_name: &str, at_size: i32) -> Result<Font, Stri
         enc_name: None,
         map_fontname: None,
         encoding: None,
+        lua: None,
     })
 }
 

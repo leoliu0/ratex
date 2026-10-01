@@ -226,111 +226,11 @@ impl LuaEngine {
             node.direct.write = function(n) end
             node.write = function(n) end
         "#).unwrap();
-        // 9. font table
-        self.lua.execute(r#"
-            local __font_store = {}
-            font = {
-                define = function(n, tbl)
-                    __font_store[n] = tbl
-                    return n
-                end,
-                getfont = function(n)
-                    return __font_store[n]
-                end,
-                setfont = function(n, tbl)
-                    __font_store[n] = tbl
-                end,
-                id = function(name)
-                    return 0
-                end,
-            }
-        "#).unwrap();
+        // 9. font library (luatex lfontlib.c)
+        crate::lua_font_lib::install(&mut self.lua)?;
 
-        // 10. Native fontloader and luaharfbuzz modules via Lua script
-        self.lua.execute(r#"
-            fontloader = {}
-            function fontloader.info(filename)
-                local resolved = kpse.find_file(filename) or filename
-                local name = filename:match("([^/]+)$") or filename
-                name = name:gsub("%.%a+$", "")
-                return {
-                    fontname = name,
-                    familyname = name,
-                    fullname = name,
-                    units_per_em = 1000,
-                    version = "1.0",
-                }
-            end
-            function fontloader.open(filename)
-                local info = fontloader.info(filename)
-                return {
-                    fontname = info.fontname,
-                    fullname = info.fullname,
-                    familyname = info.familyname,
-                    units_per_em = 1000,
-                    ascent = 800,
-                    descent = -200,
-                    glyphcnt = 256,
-                    glyphs = {},
-                }
-            end
-            function fontloader.close(font)
-                return true
-            end
-
-            luaharfbuzz = {
-                version = function() return "14.4.0" end
-            }
-            local Buffer = {}
-            Buffer.__index = Buffer
-            function Buffer.new()
-                return setmetatable({ text = "", glyphs = {} }, Buffer)
-            end
-            function Buffer:add_utf8(text)
-                self.text = self.text .. text
-            end
-            function Buffer:guess_segment_properties()
-            end
-            function Buffer:set_direction(dir)
-            end
-            function Buffer:set_script(script)
-            end
-            function Buffer:set_language(lang)
-            end
-            function Buffer:get_glyph_infos_and_positions()
-                local res = {}
-                for i = 1, #self.text do
-                    table.insert(res, {
-                        codepoint = string.byte(self.text, i),
-                        cluster = i - 1,
-                        x_advance = 655360,
-                        y_advance = 0,
-                        x_offset = 0,
-                        y_offset = 0,
-                    })
-                end
-                return res
-            end
-            luaharfbuzz.Buffer = Buffer
-
-            local Face = {}
-            Face.__index = Face
-            function Face.new(path)
-                return setmetatable({ path = path }, Face)
-            end
-            luaharfbuzz.Face = Face
-
-            local Font = {}
-            Font.__index = Font
-            function Font.new(face)
-                return setmetatable({ face = face }, Font)
-            end
-            function Font:shape(buffer)
-            end
-            luaharfbuzz.Font = Font
-            package.loaded["luaharfbuzz"] = luaharfbuzz
-            package.loaded["fontloader"] = fontloader
-        "#).map_err(|e| format!("failed to initialize fontloader/luaharfbuzz: {e:?}"))?;
+        // 10. fontloader and luaharfbuzz (lua_font_hb.rs)
+        crate::lua_font_hb::install(&mut self.lua)?;
         crate::lua_lpeg::install(&mut self.lua)?;
         crate::lua_bridge::install(&mut self.lua)?;
         crate::lua_sys::install(&mut self.lua)?;

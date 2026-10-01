@@ -9,6 +9,8 @@ use crate::pdfout::{Annot, PdfPage};
 use crate::prim::{DimParam, IntParam};
 
 mod lr;
+mod lua_glyph;
+pub(crate) use lua_glyph::with_vf_packet;
 
 /// TeX sp to PDF bp
 #[inline]
@@ -1314,6 +1316,11 @@ impl<'a> RenderCtx<'a> {
     ) -> i64 {
         {
             match n {
+                Node::Char { c, font } | Node::Ligature { c, font, .. }
+                    if self.eng.eqtb.fonts.get(usize::from(*font)).is_some_and(|f| f.lua.is_some()) =>
+                {
+                    cur_x += self.emit_lua_glyph(*font, u32::from(*c), cur_x, y, 0, 0, 0);
+                }
                 Node::Char { c, font } => {
                     let adv = self.font_char_advance_sp(*font, *c);
                     self.emit_char_sp(*font, *c, cur_x, y, 0);
@@ -1420,6 +1427,11 @@ impl<'a> RenderCtx<'a> {
                 Node::Disc(dc) => {
                     for nn in &dc.no_break {
                         match nn {
+                            Node::Char { c, font }
+                                if self.eng.eqtb.fonts.get(usize::from(*font)).is_some_and(|f| f.lua.is_some()) =>
+                            {
+                                cur_x += self.emit_lua_glyph(*font, u32::from(*c), cur_x, y, 0, 0, 0);
+                            }
                             Node::Char { c, font } => {
                                 let adv = self.font_char_advance_sp(*font, *c);
                                 self.emit_char_sp(*font, *c, cur_x, y, 0);
@@ -2279,8 +2291,15 @@ impl<'a> RenderCtx<'a> {
             .unwrap_or(0);
         let adv_sp = if at_size_sp <= 0 {
             0
-        } else if let Some(native) = self.eng.font_loader.native_fonts.get(&fid) {
-            if let Ok(face) = native.program.face() {
+        } else if let Some(program) = self
+            .eng
+            .font_loader
+            .native_fonts
+            .get(&fid)
+            .map(|native| native.program.clone())
+            .or_else(|| self.eng.lua_font_program(fid))
+        {
+            if let Ok(face) = program.face() {
                 let upem = face.units_per_em() as i64;
                 if upem > 0 {
                     let adv = face

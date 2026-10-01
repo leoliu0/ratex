@@ -298,6 +298,8 @@ pub struct Engine {
     pub pdf_fixed: Option<PdfFixedParams>,
     pub out_file: Option<tex_kpse::fs::File>,
     pub font_loader: crate::fontload::FontLoader,
+    /// Lua-defined fonts: free ids, touched/used flags.
+    pub lua_fonts: crate::lua_font::LuaFontState,
     pub native_text: crate::native_layout::NativeTextState,
     pub(crate) native_utf8_bytes: [u8; 4],
     pub(crate) native_utf8_len: usize,
@@ -998,6 +1000,7 @@ impl Engine {
             pdf_fixed: None,
             out_file: None,
             font_loader: crate::fontload::FontLoader::new(),
+            lua_fonts: Default::default(),
             native_text: crate::native_layout::NativeTextState::default(),
             native_utf8_bytes: [0; 4],
             native_utf8_len: 0,

@@ -606,7 +606,9 @@ impl Engine {
                 }
             }
             if in_u {
-                if cur.u_part.is_empty() && t.is_char() && t.cc() == 10 {
+                // tex.web §783: a spacer (implicit too) at the start of a
+                // u-template is dropped
+                if cur.u_part.is_empty() && eff.is_char() && eff.cc() == 10 {
                     continue;
                 }
                 cur.u_part.push(t);

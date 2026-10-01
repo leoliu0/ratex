@@ -936,3 +936,191 @@ fn pdf_random_deviates_follow_the_seeded_generator() {
         e.term
     );
 }
+
+/// Fonts and IniTeX parameters of the TeX Live 2026 `pdftex -ini` runs the
+/// core-fix expectations below were taken from.
+const PROBE_SETUP: &str = r"\catcode`\$=3 \catcode`\_=8 \catcode`\&=4
+\font\tenrm=cmr10 \font\teni=cmmi10 \font\tensy=cmsy10 \font\tenex=cmex10
+\textfont0=\tenrm \scriptfont0=\tenrm \scriptscriptfont0=\tenrm
+\textfont1=\teni \scriptfont1=\teni \scriptscriptfont1=\teni
+\textfont2=\tensy \scriptfont2=\tensy \scriptscriptfont2=\tensy
+\textfont3=\tenex \scriptfont3=\tenex \scriptscriptfont3=\tenex
+\tenrm \thinmuskip=0mu \medmuskip=0mu \thickmuskip=0mu
+\hsize=200pt \parindent=0pt \parfillskip=0pt plus 1fil \tolerance=10000
+\baselineskip=0pt \lineskip=0pt \delimiterfactor=0 \pretolerance=0
+";
+
+/// The `\message` values (with all blanks removed) of a finished run.
+fn message_values(e: &Engine) -> String {
+    e.term.split_whitespace().collect()
+}
+
+/// tex.web §1197: a display closed by one `$` (or by a token that is not
+/// `$`, e.g. the \par inserted-`$` recovery of §1047) reports `Display math
+/// should end with $$` and reads that token again. pdftex -ini reports the
+/// error three times and `Missing $ inserted` once for these four lines.
+#[test]
+fn display_closed_without_second_dollar_is_an_error() {
+    let e = run_lenient(&format!(
+        r"{PROBE_SETUP}
+\setbox0\vbox{{aaa $$x$ bbb\par}}
+\setbox0\vbox{{aaa $$x\eqno y$ bbb\par}}
+\setbox0\vbox{{aaa $$x\par}}
+\setbox0\vbox{{aaa $$x$$ bbb\par}}
+\end"
+    ));
+    assert_eq!(e.log.matches("Display math should end with $$").count(), 3, "{}", e.log);
+    assert_eq!(e.log.matches("Missing $ inserted").count(), 1, "{}", e.log);
+}
+
+/// tex.web §1160 scan_delimiter: a token that is not a letter/other with a
+/// nonnegative \delcode (or `\delimiter`) gives `Missing delimiter (. inserted)`
+/// and is read again, for \left, \middle, \right and every ...withdelims.
+/// pdftex -ini widths: [A5.71527pt][B13.49307pt][C15.97688pt][D13.8692pt]
+/// [E8.18056pt][F9.86925pt][G5.2778pt][I9.56946pt], 8 errors.
+#[test]
+fn missing_delimiters_are_reported_by_every_caller_and_read_again() {
+    let e = run_lenient(&format!(
+        r#"{PROBE_SETUP}
+\delcode`(="028300 \delcode`.=0
+\setbox0\hbox{{$\left x\right.$}}\message{{[A\the\wd0]}}
+\setbox0\hbox{{$\left(x\right)$}}\message{{[B\the\wd0]}}
+\setbox0\hbox{{$\left.x\middle/y\right.$}}\message{{[C\the\wd0]}}
+\setbox0\hbox{{$a\overwithdelims ab b$}}\message{{[D\the\wd0]}}
+\setbox0\hbox{{$a\atopwithdelims.) b$}}\message{{[E\the\wd0]}}
+\setbox0\hbox{{$a\abovewithdelims(\relax 1pt b$}}\message{{[F\the\wd0]}}
+\setbox0\hbox{{$\left\relax\hbox{{x}}\right.$}}\message{{[G\the\wd0]}}
+\setbox0\hbox{{$\left.\hbox{{x}}\right\delimiter"4162362 $}}\message{{[I\the\wd0]}}
+\end"#
+    ));
+    assert_eq!(e.log.matches("Missing delimiter (. inserted)").count(), 8, "{}", e.log);
+    assert_eq!(
+        spans(&message_values(&e), "[A", ']'),
+        ["[A5.71527pt]"],
+        "{}",
+        e.term
+    );
+    let values = message_values(&e);
+    for want in [
+        "[B13.49307pt]",
+        "[C15.97688pt]",
+        "[D13.8692pt]",
+        "[E8.18056pt]",
+        "[F9.86925pt]",
+        "[G5.2778pt]",
+        "[I9.56946pt]",
+    ] {
+        assert!(values.contains(want), "{want} missing: {}", e.term);
+    }
+}
+
+/// tex.web §887: post_line_break appends \rightskip to every line but
+/// \leftskip only when it is nonzero (pdftex -ini: no \leftskip in the first
+/// box, two in the second, four \rightskip glues overall).
+#[test]
+fn zero_leftskip_is_not_appended_to_lines() {
+    let e = run_lenient(&format!(
+        r"{PROBE_SETUP}
+\showboxbreadth=1000 \showboxdepth=1000 \hbadness=10000
+\setbox0\vbox{{\hsize=60pt aaa bbb ccc ddd eee fff\par}}\showbox0
+\setbox0\vbox{{\hsize=60pt \leftskip=1pt aaa bbb ccc ddd eee fff\par}}\showbox0
+\end"
+    ));
+    let (first, second) = e.log.split_at(e.log.rfind("> \\box0=").unwrap());
+    assert!(!first.contains("\\glue(\\leftskip)"), "{first}");
+    assert_eq!(second.matches("\\glue(\\leftskip) 1.0").count(), 2, "{second}");
+    assert_eq!(e.log.matches("\\glue(\\rightskip) 0.0").count(), 4, "{}", e.log);
+}
+
+/// tex.web: wherever TeX tests `cur_cmd=spacer` after expansion, a control
+/// sequence \let to a blank counts as a space (§1221 \let, §1211 prefixes,
+/// §783 u-templates, §1160 scan_delimiter, ignore_spaces, §1200).
+/// pdftex -ini: [A5.2778pt][B8.61113pt][C5.2778pt][D5.2778pt][E13.49307pt]
+/// [F5.2778pt][G5.2778pt][H8.61113pt][J6.2778pt][K200.0pt].
+#[test]
+fn implicit_spaces_are_spaces_where_tex_tests_cur_cmd() {
+    let e = run_lenient(&format!(
+        r#"{PROBE_SETUP}
+\delcode`(="028300 \delcode`)="029301
+\def\\{{\let\sp= }}\\ %
+\setbox0\hbox{{\let\a\sp\sp=x\a}}\message{{[A\the\wd0]}}
+\setbox0\hbox{{\let\a=\sp\sp x\a}}\message{{[B\the\wd0]}}
+\setbox0\hbox{{\global\sp\count1=1 x}}\message{{[C\the\wd0]}}
+\setbox0\vbox{{\halign{{\sp#\cr x\cr}}}}\message{{[D\the\wd0]}}
+\setbox0\hbox{{$\left\sp(x\right\sp)$}}\message{{[E\the\wd0]}}
+\setbox0\hbox{{\ignorespaces\sp\sp x}}\message{{[F\the\wd0]}}
+\setbox0\hbox{{\long\sp\outer\sp\def\b{{}}x}}\message{{[G\the\wd0]}}
+\setbox0\hbox{{\count1=5\sp\sp x}}\message{{[H\the\wd0]}}
+\setbox0\hbox{{\kern 1\sp pt x}}\message{{[J\the\wd0]}}
+\setbox0\vbox{{x$$y$$\sp z}}\message{{[K\the\wd0]}}
+\end"#
+    ));
+    assert_eq!(e.error_count, 0, "{}", e.log);
+    let values = message_values(&e);
+    for want in [
+        "[A5.2778pt]",
+        "[B8.61113pt]",
+        "[C5.2778pt]",
+        "[D5.2778pt]",
+        "[E13.49307pt]",
+        "[F5.2778pt]",
+        "[G5.2778pt]",
+        "[H8.61113pt]",
+        "[J6.2778pt]",
+        "[K200.0pt]",
+    ] {
+        assert!(values.contains(want), "{want} missing: {}", e.term);
+    }
+}
+
+/// tex.web §1200 resume_after_display ends with build_page: the display's
+/// glue/penalty/boxes move to the page at once, so \pagetotal includes them
+/// in the paragraph that follows and \lastskip/\lastpenalty of the vertical
+/// list come from the page. pdftex -ini: [A20.77777pt]
+/// [B2.0pt,0,35.02776pt][C3,0.0pt].
+#[test]
+fn display_end_builds_the_page() {
+    let e = run_lenient(&format!(
+        r"{PROBE_SETUP}
+\abovedisplayskip=3pt plus 1pt \belowdisplayskip=4pt plus 2pt
+\abovedisplayshortskip=1pt \belowdisplayshortskip=2pt
+\vsize=60pt \maxdepth=2pt \topskip=10pt \parskip=2pt plus 1pt
+\output={{\setbox0\box255 \deadcycles=0 }}
+aaa $$x+y$$ \message{{[A\the\pagetotal]}}
+bbb $$x\eqno z$$ \par \message{{[B\the\lastskip,\the\lastpenalty,\the\pagetotal]}}
+\vskip 7pt\penalty3 \message{{[C\the\lastpenalty,\the\lastskip]}}
+\end"
+    ));
+    let values = message_values(&e);
+    for want in [
+        "[A20.77777pt]",
+        "[B2.0pt,0,35.02776pt]",
+        "[C3,0.0pt]",
+    ] {
+        assert!(values.contains(want), "{want} missing: {}", e.term);
+    }
+}
+
+/// tex.web §1110 unpackage: `Incompatible list can't be unboxed` leaves the
+/// box register as it was (math mode never opens boxes). pdftex -ini: five
+/// errors; boxes 1 and 4 stay full until a compatible unbox consumes them.
+#[test]
+fn incompatible_unbox_keeps_the_box() {
+    let e = run_lenient(&format!(
+        r"{PROBE_SETUP}
+\setbox1\hbox{{x}}\setbox4\vbox{{\hrule height 3pt}}
+\setbox2\vbox{{\unvbox1}}\message{{[A\ifvoid1 V\else B\fi]}}
+\setbox2\hbox{{\unhbox4}}\message{{[B\ifvoid4 V\else B\fi]}}
+\setbox2\hbox{{$\unhbox1$}}\message{{[C\ifvoid1 V\else B\fi]}}
+\unvbox1 \message{{[D\ifvoid1 V\else B\fi]}}
+\setbox2\hbox{{\unhcopy4}}\message{{[E\ifvoid4 V\else B\fi]}}
+\setbox2\vbox{{\unvbox4}}\message{{[F\ifvoid4 V\else B\fi]}}
+\setbox2\hbox{{\unhbox1}}\message{{[G\ifvoid1 V\else B\fi]}}
+\end"
+    ));
+    assert_eq!(e.log.matches("Incompatible list can't be unboxed").count(), 5, "{}", e.log);
+    let values = message_values(&e);
+    for want in ["[AB]", "[BB]", "[CB]", "[DB]", "[EB]", "[FV]", "[GV]"] {
+        assert!(values.contains(want), "{want} missing: {}", e.term);
+    }
+}

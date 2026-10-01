@@ -3,9 +3,9 @@ mod allocator;
 #[global_allocator]
 static GLOBAL: allocator::EngineAllocator = allocator::EngineAllocator;
 
+use tex_core::driver::finalize_format_load;
 #[cfg(test)]
 use tex_core::driver::png_embed_options;
-use tex_core::driver::{finalize_format_load, install_pdftex_config_registers};
 
 /// Precompiled formats containing standard LaTeX packages, baked into the binary.
 static EMBEDDED_DEFAULT_FMT: &[u8] = include_bytes!("../../assets/default.fmt.zst");
@@ -373,7 +373,18 @@ fn effective_clock_identity() -> String {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |duration| duration.as_secs());
-    effective_clock_identity_at(std::env::var_os("SOURCE_DATE_EPOCH").as_deref(), now)
+    let epoch = std::env::var_os("SOURCE_DATE_EPOCH");
+    // \time/\day/\month/\year follow SOURCE_DATE_EPOCH only with
+    // FORCE_SOURCE_DATE=1; otherwise they read the live clock while the
+    // epoch still fixes PDF dates, so both belong in the identity.
+    if std::env::var_os("FORCE_SOURCE_DATE").is_some_and(|v| v == "1") {
+        return effective_clock_identity_at(epoch.as_deref(), now);
+    }
+    let live = effective_clock_identity_at(None, now);
+    match epoch {
+        Some(epoch) => format!("{live};source-date-epoch={}", epoch.to_string_lossy()),
+        None => live,
+    }
 }
 
 fn effective_clock_identity_at(source_date_epoch: Option<&std::ffi::OsStr>, now: u64) -> String {
@@ -815,8 +826,7 @@ fn check_depcache(
     let synctex_line = lines.next()?;
     match expected_synctex {
         Some(expected) => {
-            let (path, stamp, hash) =
-                parse_stamped_entry(synctex_line.strip_prefix("SYNCTEX\t")?)?;
+            let (path, stamp, hash) = parse_stamped_entry(synctex_line.strip_prefix("SYNCTEX\t")?)?;
             if absolute_path(&path) != absolute_path(expected)
                 || !dependency_identity_matches(&path, stamp, hash, &cache_meta)
             {
@@ -867,13 +877,7 @@ fn check_depcache(
         if let Some(rest) = line.strip_prefix("DIRX\t") {
             let (path, stamp, hash) = parse_stamped_entry(rest)?;
             let excluded_names = published_names_in_directory(&path, published_outputs)?;
-            if !directory_identity_matches(
-                &path,
-                stamp,
-                hash,
-                &cache_meta,
-                Some(&excluded_names),
-            ) {
+            if !directory_identity_matches(&path, stamp, hash, &cache_meta, Some(&excluded_names)) {
                 return None;
             }
             continue;
@@ -1241,8 +1245,8 @@ fn write_depcache(cache_path: &std::path::Path, inputs: DepcacheInputs<'_>) {
                 return;
             }
         }
-        let published_names =
-            published_names_in_directory(&directory, inputs.published_outputs).filter(|names| {
+        let published_names = published_names_in_directory(&directory, inputs.published_outputs)
+            .filter(|names| {
                 !names.iter().any(|name| {
                     missing
                         .iter()
@@ -1961,14 +1965,14 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
             synctex_mode = SynctexMode::parse(value);
         } else if matches!(
             opt,
-            "-file-line-error"
-                | "-file-line-error-style"
-                | "-no-shell-escape"
-                | "-disable-write18"
+            "-file-line-error" | "-file-line-error-style" | "-no-shell-escape" | "-disable-write18"
         ) {
             // Rich file/line diagnostics are always enabled; shell execution
             // is never enabled.
-        } else if matches!(opt, "-shell-escape" | "-enable-write18" | "-shell-restricted") {
+        } else if matches!(
+            opt,
+            "-shell-escape" | "-enable-write18" | "-shell-restricted"
+        ) {
             // Editors commonly pass this by default. Ratex never runs shell
             // commands, so the run proceeds as with \write18 disabled.
             emit_cli_message(
@@ -1979,7 +1983,10 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
                 ),
             );
         } else if opt == "-fmt" || opt.starts_with("-fmt=") || args[i].starts_with('&') {
-            let name = match opt.strip_prefix("-fmt=").or_else(|| args[i].strip_prefix('&')) {
+            let name = match opt
+                .strip_prefix("-fmt=")
+                .or_else(|| args[i].strip_prefix('&'))
+            {
                 Some(name) => name,
                 None => {
                     i += 1;
@@ -2217,7 +2224,6 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
             // Match fmtutil's pdfLaTeX bootstrap: pdflatex.ini applies
             // pdftexconfig.tex (paper size and driver settings) before
             // latex.ltx builds and dumps the format.
-            install_pdftex_config_registers(&mut eng);
             eng.add_nullfont();
             let ini_file = match program.as_str() {
                 "lualatex" => "lualatex.ini",
@@ -2297,7 +2303,6 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
         eng.eqtb.int_params[IntParam::ClubPenalty.idx() as usize] = 150;
         eng.eqtb.int_params[IntParam::WidowPenalty.idx() as usize] = 150;
         eng.add_nullfont();
-        install_pdftex_config_registers(&mut eng);
     }
     let engine_banner = match program.as_str() {
         "xelatex" => format!(
@@ -2447,7 +2452,10 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
                 fail_after_transcript(
                     &mut eng,
                     &log_path,
-                    &format!("Cannot write SyncTeX file `{}`: {error}", synctex_out.display()),
+                    &format!(
+                        "Cannot write SyncTeX file `{}`: {error}",
+                        synctex_out.display()
+                    ),
                     "check that the output directory exists, has free space, and is writable",
                 );
             }
@@ -2529,9 +2537,10 @@ mod startup_tests {
     use super::{
         authenticated_depcache_body, backtrace_requested, check_depcache, decode_record_path,
         dependency_fingerprint, dependency_name_may_match, directory_prefix,
-        effective_clock_identity_at, encode_record_path, format_boot_failure, png_embed_options,
-        published_names_in_directory, seal_depcache_record, write_depcache, DepcacheInputs,
-        FormatBootFailure, TexmkPublishedOutputs, DEPCACHE_RECORD_MAX_BYTES,
+        effective_clock_identity_at, encode_record_path, finalize_format_load, format_boot_failure,
+        png_embed_options, published_names_in_directory, seal_depcache_record, write_depcache,
+        DepcacheInputs, FormatBootFailure, TexmkPublishedOutputs, DEPCACHE_RECORD_MAX_BYTES,
+        EMBEDDED_DEFAULT_FMT,
     };
     use std::ffi::OsStr;
     use tex_core::engine::Engine;

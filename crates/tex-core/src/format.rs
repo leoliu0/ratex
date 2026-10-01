@@ -32,7 +32,7 @@ use crate::tfm::{CharInfo, ExtRecipe, Font, LigStep};
 use crate::token::{CsTable, Token};
 
 const MAGIC: &[u8; 8] = b"RUSTEXFM";
-const VERSION: u16 = 15;
+const VERSION: u16 = 16;
 /// A production format is currently about 8 MiB decoded. Keep corrupt or
 /// unrelated external files from turning format probing into an unbounded
 /// allocation while leaving ample room for future format growth.
@@ -1072,6 +1072,8 @@ pub fn load_format_bytes_into(data: &[u8], eng: &mut Engine) -> Result<(), Strin
     eng.penalty_shape_levels = scratch.penalty_shape_levels;
     eng.format_done = scratch.format_done;
     eng.ini_mode = scratch.ini_mode;
+    // \interactionmode reflects the caller's runtime mode, not the dump's
+    eng.eqtb.set_runtime_interaction_mode(eng.interaction_mode.number());
     eng.engine_kind = scratch.engine_kind;
     eng.lua = scratch.lua;
     Ok(())

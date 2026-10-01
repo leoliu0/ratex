@@ -19,3 +19,38 @@ pub(crate) fn utc(epoch: i64) -> (i32, i32, i32, i32) {
         (epoch.rem_euclid(86_400) / 60) as i32,
     )
 }
+
+/// `SOURCE_DATE_EPOCH` when `FORCE_SOURCE_DATE=1` asks TeX's date and time
+/// parameters to follow it (web2c `get_date_and_time`).
+pub(crate) fn forced_source_date_epoch() -> Option<i64> {
+    forced_epoch(
+        std::env::var_os("FORCE_SOURCE_DATE").as_deref(),
+        std::env::var("SOURCE_DATE_EPOCH").ok().as_deref(),
+    )
+}
+
+fn forced_epoch(force: Option<&std::ffi::OsStr>, epoch: Option<&str>) -> Option<i64> {
+    if force.is_none_or(|v| v != "1") {
+        return None;
+    }
+    epoch?.trim().parse().ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::ffi::OsStr;
+
+    #[test]
+    fn source_date_epoch_drives_the_clock_only_when_forced() {
+        assert_eq!(super::forced_epoch(None, Some("1700000000")), None);
+        assert_eq!(super::forced_epoch(Some(OsStr::new("0")), Some("1700000000")), None);
+        assert_eq!(
+            super::forced_epoch(Some(OsStr::new("1")), Some(" 1700000000 ")),
+            Some(1_700_000_000)
+        );
+        assert_eq!(super::forced_epoch(Some(OsStr::new("1")), None), None);
+        // pdftex with FORCE_SOURCE_DATE=1 SOURCE_DATE_EPOCH=1700000000:
+        // \year=2023 \month=11 \day=14 \time=1333
+        assert_eq!(super::utc(1_700_000_000), (2023, 11, 14, 1333));
+    }
+}

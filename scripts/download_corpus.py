@@ -136,6 +136,16 @@ def find_main_tex(project_dir: Path):
     return candidates[0].relative_to(project_dir).as_posix()
 
 
+def extract_safe_members(tar: tarfile.TarFile, target_dir: Path) -> None:
+    """Extract members, skipping any that the data filter rejects (absolute
+    paths, `..` escapes, links leaving target_dir, device files)."""
+    for member in tar.getmembers():
+        try:
+            tar.extract(member, path=target_dir, filter="data")
+        except tarfile.FilterError:
+            continue
+
+
 def download_project(aid: str, arch: str, out_dir: Path, max_bytes: int):
     global _source_request_at
     target_dir = out_dir / aid
@@ -187,10 +197,7 @@ def download_project(aid: str, arch: str, out_dir: Path, max_bytes: int):
         if head.startswith(b"\x1f\x8b"):
             try:
                 with tarfile.open(tmp_path, mode="r:gz") as tar:
-                    for member in tar.getmembers():
-                        if ".." in member.name or member.name.startswith("/"):
-                            continue
-                        tar.extract(member, path=target_dir)
+                    extract_safe_members(tar, target_dir)
                 is_extracted = True
             except Exception:
                 try:
@@ -204,10 +211,7 @@ def download_project(aid: str, arch: str, out_dir: Path, max_bytes: int):
         else:
             try:
                 with tarfile.open(tmp_path, mode="r:") as tar:
-                    for member in tar.getmembers():
-                        if ".." in member.name or member.name.startswith("/"):
-                            continue
-                        tar.extract(member, path=target_dir)
+                    extract_safe_members(tar, target_dir)
                 is_extracted = True
             except Exception:
                 with open(tmp_path, "rb") as f:

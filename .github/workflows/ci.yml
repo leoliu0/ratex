@@ -7,6 +7,14 @@ on:
     branches: [ main ]
   workflow_dispatch:
 
+permissions:
+  contents: read
+
+# A newer push to the same pull request supersedes the running checks.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   CARGO_TERM_COLOR: always
   CARGO_BUILD_JOBS: 2
@@ -31,7 +39,9 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y clang lld
-          cargo install wasm-bindgen-cli --version 0.2.122 --locked --root target/libtex-tools
+          # Must match Cargo.lock; installs into ~/.cargo/bin, which rust-cache keeps.
+          version=$(python3 -c 'import tomllib; print(next(p["version"] for p in tomllib.load(open("Cargo.lock", "rb"))["package"] if p["name"] == "wasm-bindgen"))')
+          cargo install wasm-bindgen-cli --version "$version" --locked
       - name: Build libraries
         run: ./scripts/build-libs.sh
       - name: Exercise shared and static C libraries
@@ -98,18 +108,14 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Run workspace tests
-        run: cargo test --workspace
+        run: cargo test --workspace --locked
 
       - name: Run packaging tests (linux only)
         if: runner.os == 'Linux'
         run: python3 scripts/test_package_dist.py
 
       - name: Build release ratex binary
-        run: cargo build --release --bin ratex
-
-      - name: Build Windows alias launcher
-        if: runner.os == 'Windows'
-        run: cargo build --release --bin xelatex
+        run: cargo build --release --locked --bin ratex
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -273,7 +279,7 @@ jobs:
         run: |
           mkdir -p /tmp/ci-archive-test
           tar -xzf dist/tex-suite-*.tar.gz -C /tmp/ci-archive-test
-          EXTRACTED_RATEX=$(ls -d /tmp/ci-archive-test/tex-suite-*/bin/ratex | head -n1)
+          EXTRACTED_RATEX=$(find /tmp/ci-archive-test -path '*/bin/ratex' -type f | head -n1)
           "$EXTRACTED_RATEX" --version
           python3 scripts/test_fonts.py \
             --ratex "$EXTRACTED_RATEX" \
@@ -304,7 +310,7 @@ jobs:
         run: |
           mkdir -p /tmp/ci-archive-test
           tar -xzf dist/tex-suite-*.tar.gz -C /tmp/ci-archive-test
-          EXTRACTED_RATEX=$(ls -d /tmp/ci-archive-test/tex-suite-*/bin/ratex | head -n1)
+          EXTRACTED_RATEX=$(find /tmp/ci-archive-test -path '*/bin/ratex' -type f | head -n1)
           "$EXTRACTED_RATEX" --version
           python3 scripts/test_fonts.py \
             --ratex "$EXTRACTED_RATEX" \
@@ -333,30 +339,11 @@ jobs:
             --skip-reference
           if ($LASTEXITCODE -ne 0) { throw "Archive font verification failed" }
           Remove-Item -Recurse -Force "$env:RUNNER_TEMP\font-smoke-archive" -ErrorAction SilentlyContinue
-      - name: Stage bundled assets
-        if: runner.os == 'Linux'
-        run: |
-          mkdir -p target/share/tex-suite/texmf
-          if [ -f crates/tex-kpse/assets/packages.tar.zst ]; then
-            tar --zstd -xf crates/tex-kpse/assets/packages.tar.zst -C target/share/tex-suite/texmf
-          else
-            cat crates/tex-kpse/assets/packages.tar.zst.* | tar --zstd -xf - -C target/share/tex-suite/texmf
-          fi
-          python3 -c '
-          import os
-          from pathlib import Path
-          root = Path("target/share/tex-suite/texmf")
-          lines = ["% ls-R", ""]
-          for dirpath, _, filenames in os.walk(root):
-              rel = Path(dirpath).relative_to(root).as_posix()
-              prefix = f"./{rel}" if rel != "." else "./"
-              lines.append(f"{prefix}:")
-              for f in sorted(filenames):
-                  if f != "ls-R": lines.append(f)
-              lines.append("")
-          (root / "ls-R").write_text("\n".join(lines))
-          '
 
+      # Shipped configuration: embedded archive only. TEX_RS_HERMETIC keeps the
+      # apt TeX Live trees installed above out of the search path.
       - name: Test 10 real-world arXiv papers (zero TeX Live)
         if: runner.os == 'Linux'
+        env:
+          TEX_RS_HERMETIC: "1"
         run: python3 scripts/test_arxiv_ci.py --ratex target/release/ratex

@@ -16,12 +16,11 @@ import package_dist
 REPO = Path(__file__).resolve().parent.parent
 
 
-def get_version() -> str:
-    cargo_toml = (REPO / "Cargo.toml").read_text()
-    for line in cargo_toml.splitlines():
-        if line.startswith("version = "):
-            return line.split('"')[1]
-    return "0.1.0"
+def root_owned(info: tarfile.TarInfo) -> tarfile.TarInfo:
+    """Record package payload as root-owned, like dpkg-deb --root-owner-group."""
+    info.uid = info.gid = 0
+    info.uname = info.gname = "root"
+    return info
 
 
 def build_deb(stage_root: Path, output_dir: Path, version: str, arch: str = "amd64") -> Path:
@@ -69,13 +68,13 @@ Provides: ratex
         control_tar = tmp / "control.tar.gz"
         with tarfile.open(control_tar, "w:gz", format=tarfile.GNU_FORMAT) as tar:
             for item in control_dir.iterdir():
-                tar.add(item, arcname=f"./{item.name}")
+                tar.add(item, arcname=f"./{item.name}", filter=root_owned)
 
         # 3. data.tar.xz
         data_tar = tmp / "data.tar.xz"
         with tarfile.open(data_tar, "w:xz", format=tarfile.GNU_FORMAT) as tar:
             for item in stage_root.iterdir():
-                tar.add(item, arcname=f"./{item.name}")
+                tar.add(item, arcname=f"./{item.name}", filter=root_owned)
 
         # 4. ar archive
         # debian-binary, control.tar.gz, data.tar.xz in exact order
@@ -119,8 +118,9 @@ provides = ratex
 """
         (pkgdir / ".PKGINFO").write_text(pkginfo)
 
-        # Pack into .pkg.tar.zst
-        cmd = ["tar", "-I", "zstd -15 -T0", "-cf", str(pkg_path), "."]
+        # Pack into .pkg.tar.zst; pacman installs the recorded owners verbatim.
+        cmd = ["tar", "-I", "zstd -15 -T0", "--owner=0", "--group=0", "--numeric-owner",
+               "-cf", str(pkg_path), "."]
         subprocess.run(cmd, cwd=pkgdir, check=True)
 
     return pkg_path
@@ -171,7 +171,7 @@ def main():
     parser.add_argument("--output-dir", default="dist", help="Output directory")
     args = parser.parse_args()
 
-    version = get_version()
+    version = package_dist.workspace_version()
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -185,15 +185,12 @@ def main():
 
         target_bin = REPO / "target" / "release" / "ratex"
         if not target_bin.exists():
-            target_bin = REPO / "target" / "release" / "texmk"
-        if not target_bin.exists():
-            print("Building release binaries...")
-            subprocess.run(["cargo", "build", "--release", "--workspace"], cwd=REPO, check=True)
-            target_bin = REPO / "target" / "release" / "ratex"
-            if not target_bin.exists():
-                target_bin = REPO / "target" / "release" / "texmk"
-
-        # Copy canonical binary
+            print("Building release ratex binary...")
+            subprocess.run(
+                ["cargo", "build", "--locked", "--release", "-p", "tex-cli", "--bin", "ratex"],
+                cwd=REPO,
+                check=True,
+            )
         shutil.copy2(target_bin, usr_bin / "ratex")
         package_dist.stage_font_redistribution(usr_share / "texmf" / "doc" / "fonts")
         shutil.copy2(REPO / "LICENSE", usr_share / "LICENSE")

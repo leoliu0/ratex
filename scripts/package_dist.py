@@ -8,7 +8,7 @@ platform installers, a README and a SHA256 manifest, then produces:
   Windows:     dist/tex-suite-v0.1.0-windows-x86_64.zip
 
 Bundle layout (inside the archive root tex-suite-<platform>-<arch>/):
-  bin/            texmk plus public command aliases
+  bin/            ratex
   share/tex-suite/texmf/doc/fonts/   licenses, lock and corresponding sources
   <installers>    install-*.sh / install*.ps1 / install*.bat at archive root
   README.txt
@@ -38,11 +38,6 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 
 BINARIES = ["ratex"]
-ALIASES = {}
-# xelatex/lualatex are themselves tiny instances of the generic launcher.
-# Reuse one of them to create every alias in a Windows zip.
-WINDOWS_LAUNCHER = "xelatex"
-WINDOWS_LAUNCHER_MARKER = b"tex-suite launcher: unsupported executable name"
 
 ZSTD_MAGIC = b"\x28\xb5\x2f\xfd"
 # A normal format expands to roughly 8 MiB. Keep explicit distribution
@@ -100,9 +95,9 @@ def sha256_file(path: Path) -> str:
 
 
 def run_cargo_build() -> None:
-    print("==> cargo build --release --workspace")
+    print("==> cargo build --locked --release -p tex-cli --bin ratex")
     subprocess.run(
-        ["cargo", "build", "--release", "--workspace"],
+        ["cargo", "build", "--locked", "--release", "-p", "tex-cli", "--bin", "ratex"],
         cwd=REPO,
         check=True,
     )
@@ -118,32 +113,12 @@ def collect_binaries(release_dir: Path, stage_bin: Path, is_windows: bool) -> li
     for b in BINARIES:
         src = release_dir / exe(b, is_windows)
         if not src.is_file():
-            die(f"binary {src} not found; run with --build or build the workspace first")
+            die(f"binary {src} not found; run with --build or build ratex first")
         dst = stage_bin / exe(b, is_windows)
         shutil.copy2(src, dst)
         if not is_windows:
             dst.chmod(dst.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
         copied.append(dst)
-    if is_windows:
-        # Zip archives do not portably preserve symlinks. Ship one tiny relay
-        # for every public alias instead of duplicating the PDF engine.
-        launcher = release_dir / exe(WINDOWS_LAUNCHER, True)
-        if not launcher.is_file():
-            die(f"launcher {launcher} not found; build the tex-cli workspace first")
-        if WINDOWS_LAUNCHER_MARKER not in launcher.read_bytes():
-            die(
-                f"{launcher} is not the generic tex-suite launcher; "
-                "rebuild the tex-cli workspace before packaging Windows"
-            )
-        for alias in ALIASES:
-            adst = stage_bin / exe(alias, True)
-            shutil.copy2(launcher, adst)
-            copied.append(adst)
-    else:
-        for alias, target in ALIASES.items():
-            adst = stage_bin / alias
-            adst.symlink_to(target)
-            copied.append(adst)
     return copied
 
 
@@ -222,10 +197,6 @@ def validate_format_file(explicit: str) -> Path:
     return path
 
 
-
-
-
-
 def stage_font_redistribution(destination: Path) -> dict:
     """Stage the locked licenses and actual corresponding font sources offline."""
     assets_dir = REPO / "crates" / "tex-kpse" / "assets"
@@ -296,9 +267,7 @@ def readme_text(version: str, platform_name: str, arch: str) -> str:
 =======================================================================
 
 Contents
-  bin/                texmk{suffix}, with pdflatex{suffix}, xelatex{suffix},
-                      lualatex{suffix}, tex-bibtex{suffix}, bibtex{suffix},
-                      and latexmk{suffix} command aliases
+  bin/                ratex{suffix}
   share/tex-suite/    optional compatibility assets
   manifest.json       file list with SHA256 checksums
   installer script    {installer}
@@ -307,17 +276,15 @@ Quickstart
   1. Extract this archive.
   2. Run the installer (see README output of `--help`): it copies bin/ to
      your PATH directory and share/tex-suite/ to the data directory.
-  3. Verify:  pdflatex --version   (or run `pdflatex file.tex`)
+  3. Verify:  ratex --version   (or run `ratex file.tex`)
 
 Without the installer
-  Run bin/texmk directly or add bin/ to PATH. No TeX installation or data
-  environment variables are required.
+  Run bin/ratex{suffix} directly or add bin/ to PATH. No TeX installation or
+  data environment variables are required.
 
 Notes
   * The production format, package archive, fonts, maps, TeX engine, and
-    BibTeX engine are embedded in texmk.
-  * Linux/macOS aliases are symlinks. Windows aliases are small launchers;
-    the full executable is stored only once.
+    BibTeX engine are embedded in ratex{suffix}.
   * Resolution is strictly self-contained using ratex's bundled installation
     assets. No external TeX Live installation or network access is required.
 """
@@ -375,7 +342,7 @@ def inventory_stage(stage_root: Path) -> tuple[dict, dict]:
     files = {}
     links = {}
     for path in sorted(stage_root.rglob("*")):
-        relative = str(path.relative_to(stage_root))
+        relative = path.relative_to(stage_root).as_posix()
         if path.is_symlink():
             links[relative] = os.readlink(path)
         elif path.is_file():
@@ -393,7 +360,7 @@ def main() -> None:
     ap.add_argument("--arch", choices=["x86_64", "aarch64"],
                     default=None, help="target arch (default: auto-detect host)")
     ap.add_argument("--build", action="store_true",
-                    help="run `cargo build --release --workspace` first")
+                    help="run `cargo build --locked --release -p tex-cli --bin ratex` first")
     ap.add_argument("--output-dir", default="dist",
                     help="directory to place distribution archives")
     ap.add_argument("--fmt", default=None,
@@ -438,7 +405,7 @@ def main() -> None:
             format_file = "share/tex-suite/pdflatex.fmt"
             print(f"    external fmt: {fmt}")
         else:
-            print("    fmt: compressed format embedded in texmk")
+            print("    fmt: compressed format embedded in ratex")
 
         assets = {
             f"doc/fonts/{name}": provenance
@@ -465,8 +432,7 @@ def main() -> None:
             "arch": arch,
             "build_date": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "bundle_root": root_name,
-            "binaries": [exe(b, is_windows) for b in BINARIES]
-            + [exe(a, is_windows) for a in ALIASES],
+            "binaries": [exe(b, is_windows) for b in BINARIES],
             "format_file": format_file,
             "assets": assets,
             "files": files,

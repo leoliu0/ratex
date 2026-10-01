@@ -4,40 +4,38 @@
 [![Release](https://github.com/leoliu0/ratex/actions/workflows/release.yml/badge.svg)](https://github.com/leoliu0/ratex/actions/workflows/release.yml)
 [![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue.svg)](LICENSE)
 
-**ratex** is an ultra-fast, self-contained, pure-Rust TeX engine and typesetting toolchain. Built from scratch with zero unsafe memory compromises, it provides a high-performance, all-in-one replacement for traditional TeX engines and build tools.
+**ratex** is a self-contained TeX toolchain written in Rust: a
+pdfTeX-compatible engine with XeTeX- and LuaTeX-style modes, a latexmk-style
+build driver, BibTeX, and an embedded TeX package archive, shipped as one
+executable named `ratex`.
 
+## Verification
 
-## Verification and Performance
-
-The Linux release gates run all 39 font and graphics fixtures through both
-the packaged standalone binary and an installed copy. Checks use filesystem
-isolation, disabled networking, pinned reference fonts, and Poppler/pdf.js
-rendering and text extraction. The workspace suite, C and WebAssembly
-interfaces, and Chromium browser module are also exercised.
-
-On the frozen 1,000-project corpus, Ratex compiles 942 projects from unchanged
-sources, up from 927. Genuine `latexmk` compiles 891: 883 with its default
-bibliography rules, plus eight using their existing shipped bibliographies.
-All 891 also compile with Ratex, and no previous Ratex successes were lost.
-The remaining 58 fail in both runs. This compares compilation coverage, not
-whole-document visual parity; the standalone fixture suite checks rendering
-and font embedding separately. Historical 3,000-project results did not establish
-the standalone font coverage above.
-See [PERFORMANCE.md](PERFORMANCE.md) for benchmark scope and measurements.
+The Linux release workflow runs the font and graphics fixtures listed in
+[`scripts/fixtures/fonts/manifest.json`](scripts/fixtures/fonts/manifest.json)
+through the built binary (`scripts/test_fonts.py`) with filesystem isolation,
+pdf.js and Poppler rendering/text extraction, and TeX Live 2026 as the
+reference. The extracted archive is run on every release platform, and the
+shell installer, `.deb`, macOS `.pkg`, and Windows installers are installed
+and exercised. The workspace test suite,
+the C and WebAssembly libraries, and the browser module are tested as well.
+See [PERFORMANCE.md](PERFORMANCE.md) for how speed is measured.
 
 ---
 
 ## Key Features
 
-- **Validated incremental builds**: Dependency and auxiliary-state checks reuse unchanged results without re-running the typesetting engine. Per-job locks protect active compilations from cache cleanup, including concurrent startup.
-- **Self-contained typesetting**: The source build embeds the LaTeX format, package resources, and the pinned Latin, Cyrillic, Greek, and CJK font families described below. Compilation needs neither TeX Live nor runtime font downloads.
-- **All-in-One Engine & Toolchain**: Combines the TeX engine, package resolver, BibTeX interpreter, and build convergence into a single unified `ratex` command. The `ratex` command runs each TeX and BibTeX pass in a child process of the same executable, which isolates crashes and memory use between passes. Compilation calls no external programs; EPS conversion is built in.
-- **SyncTeX by Default**: A PDF-adjacent `.synctex.gz` maps rendered text to source lines for forward/inverse search in VS Code, TeXstudio, VimTeX, and AUCTeX.
-- **Compiler-Grade Diagnostics**: Beautiful rustc-style error reporting with physical source line excerpts, underlines, and actionable fix suggestions streamed directly to the terminal.
-- **Native SVG & Vector Graphics**: First-class support for `.svg` via pure-Rust in-memory rasterization directly in `\includegraphics`—no Inkscape or external shell execution required.
-- **Built-in `latexdiff`**: Integrated visual document diffing with `ratex latexdiff old.tex new.tex` computing word/token LCS differences and injecting standard revision markup.
-- **Embedded C API (`libtex`) & WebAssembly (`tex.wasm`)**: Compile complete LaTeX documents in-memory from C/C++, Node.js, or client-side browser runtimes. These libraries run every TeX and BibTeX pass inside the calling process, without spawning subprocesses or touching disk. Rust programs can call the same pipeline through the `tex-runtime` crate. See [docs/libraries.md](docs/libraries.md).
-- **Memory-Safe Pure Rust**: Written with strict bounds checks, eliminating buffer overflows, segfaults, and memory corruption bugs common in legacy C TeX engines.
+- **Validated incremental builds**: Dependency and auxiliary-state checks reuse unchanged results without re-running the typesetting engine. Per-job locks protect active compilations from cache cleanup. See [ARTIFACTS.md](ARTIFACTS.md).
+- **Self-contained typesetting**: The executable embeds the LaTeX formats, package resources, and the font families described below. Compilation needs neither TeX Live nor runtime font downloads.
+- **One executable**: `ratex` contains the TeX engine, package resolver, BibTeX, and the build driver. It runs each TeX and BibTeX pass in a child process of the same executable, which isolates crashes and memory use between passes. EPS figures are converted by the built-in PostScript interpreter.
+- **Engine personalities**: invoked through a link named `pdflatex`, `xelatex`, or `lualatex`, the executable runs a single engine pass; named `bibtex` it runs BibTeX; named `latexmk` it behaves like `ratex`.
+- **SyncTeX by default**: A PDF-adjacent `.synctex.gz` maps rendered text to source lines for forward/inverse search in editors such as VS Code, TeXstudio, VimTeX, and AUCTeX.
+- **Structured diagnostics**: Errors show the physical source location, an excerpt with a caret, macro-expansion and include context, and a hint when one is known. See [DIAGNOSTICS.md](DIAGNOSTICS.md).
+- **SVG images**: `\includegraphics` accepts `.svg` files; they are rasterized in memory to PNG without calling Inkscape.
+- **`latexdiff`**: `ratex latexdiff old.tex new.tex` marks up token-level differences with `\DIFadd`/`\DIFdel`. If a system `latexdiff` is on `PATH` it is tried first; otherwise the built-in diff is used.
+- **Embedded C API (`libtex`) & WebAssembly (`tex.wasm`)**: Compile complete LaTeX documents in memory from C/C++, Node.js, or browsers. These libraries run every TeX and BibTeX pass inside the calling process, without subprocesses or disk access. Rust programs can call the same pipeline through the `tex-runtime` crate. See [docs/libraries.md](docs/libraries.md).
+- **Rust implementation**: `unsafe` code is limited to libc calls (file locks, resource limits, local time), an AVX2 token scan, the C ABI, and the embedded Lua VM.
+
 ---
 
 ## Installation
@@ -56,8 +54,8 @@ sudo dnf install ./ratex-0.4.6-1.x86_64.rpm
 yay -S ratex-bin
 yay -S ratex
 
-# Any Linux (Universal Tarball Installer)
-tar -xzf tex-suite-v0.4.6-linux-x86_64.tar.gz && sudo ./tex-suite-linux-x86_64/install.sh
+# Any Linux (archive with installer; installs to ~/.local by default)
+tar -xzf tex-suite-v0.4.6-linux-x86_64.tar.gz && ./tex-suite-linux-x86_64/install.sh
 ```
 
 ### macOS
@@ -70,7 +68,7 @@ brew install leoliu0/ratex/ratex
 
 This tap is independent of `homebrew/core`; `brew install ratex` uses core's separately reviewed version.
 
-Download and run the native installer package:
+Or download and run the native installer package:
 - [macOS Apple Silicon (.pkg)](https://github.com/leoliu0/ratex/releases/download/v0.4.6/ratex-v0.4.6-macos-aarch64.pkg)
 - [macOS Intel (.pkg)](https://github.com/leoliu0/ratex/releases/download/v0.4.6/ratex-v0.4.6-macos-x86_64.pkg)
 
@@ -113,18 +111,39 @@ just to change which executable your editor uses.
 ## Usage
 
 ### Single-Command Build
-`ratex` is an all-in-one compiler. It automatically tracks dependencies, resolves packages in memory, runs embedded BibTeX passes, and converges auxiliary state in milliseconds:
+`ratex` tracks dependencies, resolves packages from its embedded archive, runs BibTeX when the auxiliary state requires it, and repeats TeX passes (at most five) until the auxiliary files stop changing:
 
 ```bash
-# Compile document (automatically converges bibtex and cross-references)
+# Compile a document
 ratex paper.tex
 
-# Output PDF to a specific directory
+# Write the PDF and SyncTeX file to another directory
 ratex -output-directory=build paper.tex
 
-# Clean auxiliary build artifacts and cache
-ratex -c
+# Remove the document's cached state (keeps the PDF)
+ratex -c paper.tex
+
+# Also remove the PDF and SyncTeX file if ratex created them and they are unchanged
+ratex -C paper.tex
 ```
+
+Other options (`ratex --help` prints the full list): `-aux-directory DIR`,
+`--cache-directory DIR`, `-jobname NAME`, `--keep-intermediates`/`-k`,
+`--keep-logs`, `--optimize-pdf-size`, `-interaction=MODE` (default
+`nonstopmode`), `-halt-on-error`, `--verbose`/`-V`, and the engine selectors
+`-pdf`, `-xelatex`, `-lualatex`. Without a selector the pdfLaTeX-compatible
+mode is used. Other options starting with `-` are passed to the engine.
+
+Exit status: 0 when the build converged, 1 on an engine or BibTeX failure or
+no convergence, 2 on a usage error.
+
+Environment variables:
+- `TEX_RS_CACHE_DIR`: cache root (default: `$XDG_CACHE_HOME/tex-rs` or
+  `~/.cache/tex-rs` on Linux, `~/Library/Caches/tex-rs` on macOS,
+  `%LOCALAPPDATA%\tex-rs\cache` on Windows).
+- `SOURCE_DATE_EPOCH`: fixed UTC value for `\year`, `\month`, `\day`, and
+  `\time` (and therefore `\today`).
+- `NO_COLOR`, `CLICOLOR=0`, `CLICOLOR_FORCE=1`: control colored diagnostics.
 
 ### Editor Setup
 Configure your editor or build system to invoke `ratex`:
@@ -150,13 +169,13 @@ PATH. Quoting `"%.tex"` handles project paths containing spaces. Do not paste
 Keep the PDF and `.synctex.gz` together for the internal viewer's source navigation.
 See the [TeXstudio command documentation](https://texstudio-org.github.io/configuration.html#configuring-the-latex-related-commands).
 
-**Optional aliases:** the maintained Homebrew tap installs only `ratex`, so it
-does not replace TeX Live's `latexmk` or other compiler commands. To opt into a
+**Optional aliases:** the release packages install only `ratex`, so they do
+not replace TeX Live's `latexmk` or other compiler commands. To opt into a
 Ratex-backed `latexmk` command for your editor, create an isolated alias:
 
 ```bash
 mkdir -p "$HOME/.local/ratex-editor/bin"
-ln -s "$(brew --prefix)/bin/ratex" "$HOME/.local/ratex-editor/bin/latexmk"
+ln -s "$(command -v ratex)" "$HOME/.local/ratex-editor/bin/latexmk"
 ```
 
 Set TeXstudio's **Commands → Latexmk** executable to that alias's absolute
@@ -164,7 +183,8 @@ path, with `-pdf -interaction=nonstopmode "%.tex"` as its arguments.
 Do not add this directory to PATH unless you explicitly want other programs
 to select the alias too. To undo it, remove only that symlink and restore
 your previous TeXstudio command. `ln -s` deliberately refuses to overwrite
-an existing file.
+an existing file. Links named `pdflatex`, `xelatex`, `lualatex`, or `bibtex`
+work the same way and run a single engine or BibTeX pass.
 
 
 #### VS Code (LaTeX Workshop) Setup
@@ -190,14 +210,14 @@ entries resolve to clickable PDF destinations.
 
 ### Document Revision Diffing (`latexdiff`)
 ```bash
-# Compare two versions and write visual markup directly:
+# Compare two versions and write the marked-up source:
 ratex latexdiff old.tex new.tex diff.tex
 
-# Or compile diff directly to PDF:
+# Then compile the diff to PDF:
 ratex diff.tex
 ```
 
-### Fonts and Unicode in the source build
+### Fonts and Unicode
 
 The bundled font inventory includes Latin Modern text/math and native OTF faces,
 CM-Super with EC/LH metrics, LGR Greek, Wadalab Japanese, IPA/IPAex,
@@ -207,7 +227,8 @@ Harano Aji, Arphic Chinese, Korean UHC/Un-fonts and Nanum, `stmaryrd`, and
 Exact package versions, hashes, and resource paths are in
 [`packages.lock.json`](crates/tex-kpse/assets/packages.lock.json).
 
-Ratex's `fontspec` and `xeCJK` adapters select real native fonts:
+Ratex's `fontspec` and `xeCJK` support selects real native fonts, also in the
+default pdfLaTeX-compatible mode:
 
 ```latex
 \documentclass{article}
@@ -242,32 +263,36 @@ Font licenses, notices, and required corresponding sources ship under
 `share/tex-suite/texmf/doc/fonts`; the engine's MIT/Apache license does not
 replace those licenses.
 
-**Engine limits:** these adapters are not XeTeX or LuaTeX emulation.
-`-xelatex` and `-lualatex` are compatibility selectors for Ratex, not launches
-of those engines. OpenType MATH/`unicode-math`, Lua execution/`luatexja`,
-`ctex`, vertical Japanese layout, and full bidirectional paragraph layout
-are not supported. Use classic LaTeX mathematics and `CJKutf8` or the native
-font selectors above. Native Latin hyphenation uses the existing ASCII-word
-patterns; arbitrary Unicode hyphenation is not implied by shaping support.
-Native fonts must be selected after loading a format; dumping native font state
-is rejected rather than silently losing it.
+**Engine modes and limits:** `-xelatex` runs Ratex's XeTeX-compatible mode with
+the embedded XeLaTeX format; it is not the XeTeX program and says so on the
+terminal. `-lualatex` runs the LuaTeX-compatible mode with the embedded
+LuaLaTeX format and an in-tree Lua VM, so `\directlua` works. `unicode-math`
+(OpenType math), `luatexja`, and `ctex` font sets do not currently compile in
+any mode; use classic LaTeX mathematics and `CJKutf8` or the native font
+selectors above. Native fonts must be selected after loading a format; dumping
+native font state is rejected rather than silently losing it.
 
 ---
 
 ## Build from Source
 
-Requirements: Rust 1.80+ (`cargo`).
+Requirements: a current stable Rust toolchain (CI builds with `stable`; the
+code uses APIs stabilized in Rust 1.88).
 ```bash
 git clone https://github.com/leoliu0/ratex.git
 cd ratex
-cargo build --release
+cargo build --release --locked --bin ratex
 
-# Install locally into ~/.local/bin:
-./install.sh --prefix ~/.local
+# Install into ~/.local (builds the workspace first if needed):
+./install.sh --from-source
 
-# Or install system-wide into /usr/local/bin:
-sudo ./install.sh
+# Or install system-wide into /usr/local:
+sudo ./install.sh --from-source --system
 ```
+
+Developer notes (binary dispatch, driver algorithm, debugging variables,
+test harnesses) are in [docs/internals.md](docs/internals.md).
+
 ---
 
 ## Architecture
@@ -275,17 +300,24 @@ sudo ./install.sh
 For the native C API and browser/Node.js WebAssembly module, see
 [Building and using libtex](docs/libraries.md).
 
-The project is structured as a modular Cargo workspace:
+The project is a Cargo workspace:
 
 ```
 ratex/
 ├── crates/
-│   ├── tex-core/     # Pure-Rust TeX state machine, math layout, line breaking, and PDF generator
-│   ├── tex-kpse/     # In-memory package resolver, font loader, and kpathsea emulator
-│   ├── tex-bibtex/   # Native pure-Rust BibTeX interpreter
-│   └── tex-cli/      # Unified multi-pass driver, CLI aliases, and artifact cache
-├── packaging/        # Standalone cross-platform distribution installers (Linux, macOS, Windows)
-└── scripts/          # Corpus testing, benchmark suites, and packaging tools
+│   ├── tex-core/        # TeX engine: expansion, typesetting, math, alignment, pages, PDF output, SyncTeX
+│   ├── tex-kpse/        # kpathsea-style resolver and the embedded zstd-compressed package archive
+│   ├── tex-bibtex/      # BibTeX implementation
+│   ├── tex-cli/         # `ratex` executable: build driver, engine/BibTeX personalities, latexdiff
+│   ├── tex-lua/         # Lua VM used by the LuaTeX-compatible mode
+│   ├── tex-lua-derive/  # derive macros for tex-lua userdata
+│   ├── tex-mplib/       # MetaPost engine (mplib)
+│   ├── tex-ps/          # PostScript/EPS interpreter and PDF renderer
+│   ├── tex-runtime/     # in-process, in-memory compilation API
+│   ├── libtex/          # C ABI over tex-runtime
+│   └── tex-wasm/        # WebAssembly bindings over tex-runtime
+├── packaging/           # installers and native packages (Linux, macOS, Windows, AUR)
+└── scripts/             # packaging, font/corpus test harnesses, library builds
 ```
 
 ---

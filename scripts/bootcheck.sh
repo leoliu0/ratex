@@ -4,7 +4,7 @@
 # Prints: build status, error count, furthest file:line reached.
 set -u
 LABEL="${1:-unnamed}"
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/.." || exit 1
 if ! cargo build -p tex-cli --bin pdflatex --offline; then
   echo "BOOTCHECK[$LABEL]: BUILD FAILED" >&2
   exit 1

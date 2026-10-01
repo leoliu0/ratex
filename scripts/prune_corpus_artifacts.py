@@ -288,7 +288,9 @@ def validate_action(root: Path, item: dict) -> Path:
         fail(f"refusing to apply an action beneath trust_own: {rel}")
     path = root / rel_path
     try:
-        path.resolve(strict=False).relative_to(root)
+        # Resolve only the parent: a planned leaf symlink is unlinked itself,
+        # but a symlinked directory on the way must not redirect the action.
+        (path.parent.resolve(strict=False) / path.name).relative_to(root)
     except (OSError, ValueError):
         fail(f"path escapes the recorded root: {rel}")
     try:
@@ -315,7 +317,9 @@ def apply_plan(plan_path: Path) -> dict:
         plan = json.loads(plan_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         fail(f"invalid prune plan: {exc}")
-    if not isinstance(plan, dict) or plan.get("schema") != SCHEMA:
+    if not isinstance(plan, dict):
+        fail("unsupported prune plan schema: plan is not a JSON object")
+    if plan.get("schema") != SCHEMA:
         fail(f"unsupported prune plan schema: {plan.get('schema')!r}")
     root, report_path, _report = validated_root(Path(plan.get("root", "")))
     if sha256_file(report_path) != plan.get("report_sha256"):

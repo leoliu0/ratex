@@ -763,6 +763,30 @@ class PruneTests(unittest.TestCase):
             self.assertEqual(action["action"], "delete")
             self.assertNotIn("sha256", action)
 
+    def test_apply_unlinks_planned_symlink_without_touching_its_target(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            parent = Path(tmp)
+            root = self._fixture(parent)
+            link = root / "results" / "fail" / "rust.stdout.log"
+            target = parent / "outside.log"
+            target.write_bytes(b"outside evidence")
+            link.unlink()
+            link.symlink_to(target)
+            plan_path = parent / "symlink-apply-plan.json"
+            make_plan(root, plan_path, 1 << 20)
+
+            apply_plan(plan_path)
+
+            self.assertFalse(link.is_symlink())
+            self.assertEqual(target.read_bytes(), b"outside evidence")
+
+    def test_apply_rejects_a_plan_that_is_not_an_object(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            plan_path = Path(tmp) / "list-plan.json"
+            plan_path.write_text("[]")
+            with self.assertRaisesRegex(ValueError, "unsupported prune plan schema"):
+                apply_plan(plan_path)
+
 
 class CampaignOrchestrationTests(unittest.TestCase):
     def test_invalid_source_classified_distinctly(self) -> None:

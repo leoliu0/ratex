@@ -2,18 +2,30 @@
 
 The engine reports TeX errors with the physical source location, a bounded
 source excerpt, a caret, macro-expansion context, include ancestry, and a short
-recovery hint when one is known. For example:
+recovery hint when one is known. For example, with `\printtotl` undefined,
+`main.tex` line 4 reading `\input{chapters/results}`, and line 5 calling
+`\resultsrow` (defined as `\printtotl`), the terminal shows:
 
 ```text
-! Undefined control sequence \printtotl
-  --> chapters/results.tex:18:9
-   |
-18 | Result: \printtotl
-   |         ^^^^^^^^^^
-  = while expanding: \resultsrow -> \printtotl
-  = included from main.tex:42:1
+error: Undefined control sequence \printtotl
+  --> chapters/results.tex:1:9
+  |
+1 | Result: \printtotl
+  |         ^^^^^^^^^^
   = help: check the command spelling; if a package defines it, load that package before use
+  = included from main.tex:4:20
+error: Undefined control sequence \printtotl
+  --> main.tex:5:1
+  |
+5 | \resultsrow
+  | ^^^^^^^^^^^
+  = help: check the command spelling; if a package defines it, load that package before use
+  = while expanding: \resultsrow
 ```
+
+The transcript (`.log`) contains the same blocks with TeX's `!` prefix in place
+of `error:`. Colors are used on a terminal unless `NO_COLOR` is set or
+`CLICOLOR=0`; `CLICOLOR_FORCE=1` forces them.
 
 Locations refer to the bytes TeX actually read. The scanner records the start
 and physical width of each file token, so `^^` spellings, active characters,
@@ -52,13 +64,16 @@ progress remains on standard output. Interaction-mode changes apply when each
 message occurs, so a later mode change cannot retroactively hide or reveal
 earlier output. The command-line controls are:
 
-- `-interaction=errorstopmode` stops at the first error and is the default.
+- `-interaction=errorstopmode` stops at the first error and is the default for
+  a direct engine pass; the `ratex` driver passes `-interaction=nonstopmode`
+  unless another mode is given.
 - `-interaction=nonstopmode` and `-interaction=scrollmode` continue after
   recoverable errors, produce a PDF when possible, and still exit with status 1.
 - `-interaction=batchmode` has the same recovery policy without terminal output;
   diagnostics remain in the `.log` file.
 - `-halt-on-error` stops after the first error in every interaction mode.
-- `--max-errors=N` bounds recovery in the continuing modes.
+- `--max-errors=N` (or `--max-errors N`) bounds recovery in the continuing
+  modes; the default is 100.
 - `-file-line-error` is accepted for compatibility; rich file and line output is
   always enabled.
 
@@ -72,9 +87,11 @@ built-in guidance. Messages, help text, traces, control-sequence names, include
 depth, inspection output, and source windows all have fixed output bounds so
 malformed input cannot produce an unbounded diagnostic.
 
-Library users can inspect `Engine::diagnostics`; each `Diagnostic` contains its
+Library users can inspect `Engine::diagnostics` (a `DiagnosticStore` that
+dereferences to `[Diagnostic]`); each `Diagnostic` contains its
 `DiagnosticSeverity`, message, primary `SourceContext`, highlight width,
-expansion frames, include frames, and optional help. At most 128 diagnostics are
+optional label and related location, expansion frames, include frames, and
+optional help and note. At most 128 diagnostics are
 retained. If more occur, one warning marks the omitted entries and the newest
 event remains available; transcript output has its own byte bound. The list also
 records the terminal diagnostic that stops recovery at `--max-errors`.

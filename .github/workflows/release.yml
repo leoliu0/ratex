@@ -12,12 +12,18 @@ on:
         type: string
 
 permissions:
-  contents: write
+  contents: read
+
+# Two runs for the same tag (push + manual republish) must not publish concurrently.
+concurrency:
+  group: release-${{ inputs.release_tag || github.ref_name }}
+  cancel-in-progress: false
 
 env:
   CARGO_TERM_COLOR: always
   CARGO_BUILD_JOBS: 2
   PYTHONUTF8: "1"
+  RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
 
 jobs:
   validate:
@@ -27,14 +33,14 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          persist-credentials: false
       - name: Require matching version and engine source
         shell: bash
         run: |
           version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
-          tag="${{ inputs.release_tag || github.ref_name }}"
-          test "$tag" = "v$version"
-          git rev-parse --verify "refs/tags/$tag"
-          git diff --exit-code "$tag" HEAD -- Cargo.toml Cargo.lock crates
+          test "$RELEASE_TAG" = "v$version"
+          git rev-parse --verify "refs/tags/$RELEASE_TAG"
+          git diff --exit-code "$RELEASE_TAG" HEAD -- Cargo.toml Cargo.lock crates
 
   libraries:
     name: Native and WebAssembly libraries
@@ -56,7 +62,9 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y clang lld
-          cargo install wasm-bindgen-cli --version 0.2.122 --locked --root target/libtex-tools
+          # Must match Cargo.lock; installs into ~/.cargo/bin, which rust-cache keeps.
+          version=$(python3 -c 'import tomllib; print(next(p["version"] for p in tomllib.load(open("Cargo.lock", "rb"))["package"] if p["name"] == "wasm-bindgen"))')
+          cargo install wasm-bindgen-cli --version "$version" --locked
       - name: Build and test libraries
         run: |
           ./scripts/build-libs.sh
@@ -132,7 +140,7 @@ jobs:
         if: matrix.platform == 'linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends poppler-utils bubblewrap texlive-latex-base texlive-latex-extra texlive-xetex texlive-fonts-recommended texlive-fonts-extra texlive-science texlive-lang-cjk texlive-lang-chinese texlive-lang-japanese texlive-lang-korean texlive-lang-cyrillic texlive-lang-greek latex-cjk-all lmodern fonts-ipaexfont
+          sudo apt-get install -y --no-install-recommends poppler-utils bubblewrap rpm texlive-latex-base texlive-latex-extra texlive-xetex texlive-fonts-recommended texlive-fonts-extra texlive-science texlive-lang-cjk texlive-lang-chinese texlive-lang-japanese texlive-lang-korean texlive-lang-cyrillic texlive-lang-greek latex-cjk-all lmodern fonts-ipaexfont
           if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
             sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           fi
@@ -169,18 +177,18 @@ jobs:
         shell: pwsh
         run: python -m pip install --upgrade fonttools pillow numpy pypdf
 
-      - name: Cache cargo
-        uses: actions/cache@v4
+      - name: Cargo cache
+        uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ matrix.label }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ matrix.label }}-cargo-
+          key: ${{ matrix.label }}
+          # The macOS job deletes target/release/deps before packaging; saving
+          # that gutted tree would only evict useful caches.
+          save-if: ${{ matrix.platform != 'macos' }}
 
-      - name: Build release binaries
-        run: cargo build --release --workspace
+      # Only ratex ships (scripts/package_dist.py BINARIES); the tests below build
+      # the rest of the workspace in the test profile.
+      - name: Build release binary
+        run: cargo build --release --locked --bin ratex
 
       - name: Run workspace tests
         run: cargo test --workspace --locked
@@ -272,7 +280,7 @@ jobs:
         run: |
           mkdir -p /tmp/ci-archive-test
           tar -xzf dist/tex-suite-*.tar.gz -C /tmp/ci-archive-test
-          EXTRACTED_RATEX=$(ls -d /tmp/ci-archive-test/tex-suite-*/bin/ratex | head -n1)
+          EXTRACTED_RATEX=$(find /tmp/ci-archive-test -path '*/bin/ratex' -type f | head -n1)
           "$EXTRACTED_RATEX" --version
           python3 scripts/test_fonts.py \
             --ratex "$EXTRACTED_RATEX" \
@@ -318,7 +326,7 @@ jobs:
         if: matrix.platform == 'macos'
         shell: bash
         run: |
-          PKG_FILE=$(ls dist/ratex-*-macos-*.pkg | head -n1)
+          PKG_FILE=$(find dist -maxdepth 1 -name 'ratex-*-macos-*.pkg' | head -n1)
           echo "==> Installing $PKG_FILE..."
           sudo installer -pkg "$PKG_FILE" -target /
           echo "==> Verifying installed ratex binary..."
@@ -338,7 +346,7 @@ jobs:
         if: matrix.platform == 'linux'
         shell: bash
         run: |
-          DEB_FILE=$(ls dist/ratex_*.deb | head -n1)
+          DEB_FILE=$(find dist -maxdepth 1 -name 'ratex_*.deb' | head -n1)
           echo "==> Installing $DEB_FILE..."
           sudo dpkg -i "$DEB_FILE"
           echo "==> Verifying installed ratex binary..."
@@ -380,6 +388,10 @@ jobs:
           if (-not (Test-Path "$testPrefix\bin\ratex.exe")) {
             throw "Failed: ratex.exe not found in $testPrefix\bin"
           }
+          $installedBin = "$testPrefix\bin"
+          if (-not (([Environment]::GetEnvironmentVariable('Path', 'User') -split ';') -contains $installedBin)) {
+            throw "Installer did not add $installedBin to the user PATH"
+          }
           Write-Host "==> Verifying installed ratex.exe..."
           & "$testPrefix\bin\ratex.exe" --version
           python scripts/test_fonts.py `
@@ -391,16 +403,20 @@ jobs:
           Write-Host "==> Testing uninstaller..."
           $uninstaller = (Get-Item "$testPrefix\unins000.exe").FullName
           Start-Process -FilePath $uninstaller -ArgumentList "/VERYSILENT", "/NORESTART", "/SUPPRESSMSGBOXES" -Wait -NoNewWindow
-          Start-Sleep -Seconds 2
+          # The uninstaller relaunches itself from %TEMP%; it deletes unins000.exe last.
+          for ($i = 0; ($i -lt 60) -and (Test-Path $uninstaller); $i++) { Start-Sleep -Seconds 1 }
+          if (Test-Path "$testPrefix\bin\ratex.exe") { throw "Uninstaller left ratex.exe behind" }
+          if (([Environment]::GetEnvironmentVariable('Path', 'User') -split ';') -contains $installedBin) {
+            throw "Uninstaller left $installedBin in the user PATH"
+          }
           Remove-Item -Recurse -Force "$testPrefix" -ErrorAction SilentlyContinue
           Remove-Item -Recurse -Force "$env:RUNNER_TEMP\font-smoke-exe" -ErrorAction SilentlyContinue
       - name: Record checksums
-        id: sums
         shell: bash
         run: |
           cd dist
-          sha256sum * > SHA256SUMS-${{ matrix.label }}.txt
-          cat SHA256SUMS-${{ matrix.label }}.txt
+          sha256sum -- * > "SHA256SUMS-${{ matrix.label }}.txt"
+          cat "SHA256SUMS-${{ matrix.label }}.txt"
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -412,41 +428,52 @@ jobs:
 
   release:
     name: Publish GitHub Release
+    # Publish only when every platform and the libraries succeeded: a partial
+    # release would reach Homebrew/AUR users. After a flaky failure, use
+    # "Re-run failed jobs"; successful jobs keep their artifacts.
     needs: [validate, build, libraries]
-    # Publish verified artifacts even if a different platform's job failed.
-    # The final step still fails this job if any required artifact is absent.
-    if: ${{ always() && needs.validate.result == 'success' && (startsWith(github.ref, 'refs/tags/v') || inputs.release_tag != '') }}
+    if: startsWith(github.ref, 'refs/tags/v') || inputs.release_tag != ''
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
-      - name: Download successful build artifacts
+      - name: Download build artifacts
         uses: actions/download-artifact@v4
         with:
           path: artifacts
           merge-multiple: true
 
+      - name: Require every platform and library asset, verify checksums
+        shell: bash
+        working-directory: artifacts
+        run: |
+          version="${RELEASE_TAG#v}"
+          missing=0
+          for asset in \
+            "tex-suite-${RELEASE_TAG}-linux-x86_64.tar.gz" \
+            "tex-suite-${RELEASE_TAG}-macos-x86_64.tar.gz" \
+            "tex-suite-${RELEASE_TAG}-macos-aarch64.tar.gz" \
+            "tex-suite-${RELEASE_TAG}-windows-x86_64.zip" \
+            "ratex-${RELEASE_TAG}-macos-x86_64.pkg" \
+            "ratex-${RELEASE_TAG}-macos-aarch64.pkg" \
+            "ratex-setup-${RELEASE_TAG}-windows-x64.exe" \
+            "ratex_${version}_amd64.deb" \
+            "ratex-${version}-1-x86_64.pkg.tar.zst" \
+            "ratex-${version}-1.x86_64.rpm" \
+            "libtex-${RELEASE_TAG}-linux-x86_64.tar.gz" \
+            "libtex-${RELEASE_TAG}-wasm.tar.gz"; do
+            if [ ! -f "$asset" ]; then
+              echo "::error::Missing release asset: $asset"
+              missing=1
+            fi
+          done
+          test "$missing" = 0
+          sha256sum --strict -c SHA256SUMS-*.txt
+
       - name: Publish release assets
         uses: softprops/action-gh-release@v2
         with:
           files: artifacts/*
-          tag_name: ${{ inputs.release_tag || github.ref_name }}
+          fail_on_unmatched_files: true
+          tag_name: ${{ env.RELEASE_TAG }}
           generate_release_notes: true
-
-      - name: Require every platform and library asset
-        shell: bash
-        run: |
-          version="${{ inputs.release_tag || github.ref_name }}"
-          for asset in \
-            "tex-suite-${version}-linux-x86_64.tar.gz" \
-            "tex-suite-${version}-macos-x86_64.tar.gz" \
-            "tex-suite-${version}-macos-aarch64.tar.gz" \
-            "tex-suite-${version}-windows-x86_64.zip" \
-            "ratex-${version}-macos-x86_64.pkg" \
-            "ratex-${version}-macos-aarch64.pkg" \
-            "ratex-setup-${version}-windows-x64.exe" \
-            "libtex-${version}-linux-x86_64.tar.gz" \
-            "libtex-${version}-wasm.tar.gz"; do
-            if [ ! -f "artifacts/$asset" ]; then
-              echo "::error::Missing release asset from a successful build: $asset"
-              exit 1
-            fi
-          done

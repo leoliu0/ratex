@@ -8,15 +8,18 @@ set -euo pipefail
 
 TARGET="${1:-ratex-bin}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# One scratch root removed on every exit path; a RETURN trap would leak the
+# clone whenever `set -e` aborts the script inside publish_one.
+WORK_ROOT="$(mktemp -d -t aur-ratex-XXXXXX)"
+trap 'rm -rf "$WORK_ROOT"' EXIT
 
 publish_one() {
     local pkg="$1"
     local pkgbuild_src="$2"
 
     echo "==> Preparing $pkg for Arch AUR..."
-    local temp_dir
-    temp_dir="$(mktemp -d -t "aur-${pkg}-XXXXXX")"
-    trap 'rm -rf "$temp_dir"' RETURN
+    local temp_dir="$WORK_ROOT/$pkg"
+    mkdir -p "$temp_dir"
 
     # Generate .SRCINFO
     local srcinfo

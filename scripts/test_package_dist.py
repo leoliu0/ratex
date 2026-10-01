@@ -15,6 +15,7 @@ from unittest import mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import build_linux_packages  # noqa: E402
 import package_dist  # noqa: E402
 
 
@@ -23,65 +24,20 @@ class PackageLayoutTests(unittest.TestCase):
         for index, name in enumerate(package_dist.BINARIES):
             path = root / package_dist.exe(name, windows)
             path.write_bytes(f"canonical-{index}".encode())
-        if windows:
-            (root / package_dist.exe(package_dist.WINDOWS_LAUNCHER, True)).write_bytes(
-                b"small-launcher\0" + package_dist.WINDOWS_LAUNCHER_MARKER
-            )
 
-    def test_unix_aliases_are_relative_symlinks(self) -> None:
-        with tempfile.TemporaryDirectory() as temp:
-            root = Path(temp)
-            release, stage = root / "release", root / "stage"
-            release.mkdir()
-            self.make_release(release, False)
-            package_dist.collect_binaries(release, stage, False)
-
-            regular = {path.name for path in stage.iterdir() if not path.is_symlink()}
-            self.assertEqual(regular, set(package_dist.BINARIES))
-            for alias, target in package_dist.ALIASES.items():
-                path = stage / alias
-                self.assertTrue(path.is_symlink(), alias)
-                self.assertEqual(path.readlink(), Path(target))
-
-            archive = root / "bundle.tar.gz"
-            package_dist.make_tar_gz("bundle", stage, archive)
-            with tarfile.open(archive) as bundle:
-                for alias, target in package_dist.ALIASES.items():
-                    member = bundle.getmember(f"bundle/{alias}")
-                    self.assertTrue(member.issym(), alias)
-                    self.assertEqual(member.linkname, target)
-
-    def test_windows_aliases_use_the_small_launcher(self) -> None:
+    def test_windows_staging_needs_only_the_shipped_binaries(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             release, stage = root / "release", root / "stage"
             release.mkdir()
             self.make_release(release, True)
+
             package_dist.collect_binaries(release, stage, True)
 
-            for alias in package_dist.ALIASES:
-                path = stage / package_dist.exe(alias, True)
-                self.assertEqual(
-                    path.read_bytes(),
-                    b"small-launcher\0" + package_dist.WINDOWS_LAUNCHER_MARKER,
-                )
-
-    def test_windows_packaging_rejects_a_stale_full_engine(self) -> None:
-        with tempfile.TemporaryDirectory() as temp:
-            root = Path(temp)
-            release, stage = root / "release", root / "stage"
-            release.mkdir()
-            self.make_release(release, False)
-            # Give the synthetic Windows payload all canonical .exe names but
-            # an old engine in the slot now reserved for the generic launcher.
-            for index, name in enumerate(package_dist.BINARIES):
-                (release / package_dist.exe(name, True)).write_bytes(
-                    f"canonical-{index}".encode()
-                )
-            (release / "xelatex.exe").write_bytes(b"old full TeX engine")
-            with contextlib.redirect_stderr(io.StringIO()):
-                with self.assertRaises(SystemExit):
-                    package_dist.collect_binaries(release, stage, True)
+            self.assertEqual(
+                sorted(path.name for path in stage.iterdir()),
+                sorted(package_dist.exe(name, True) for name in package_dist.BINARIES),
+            )
 
     def test_zip_members_are_deflated(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -111,6 +67,45 @@ class PackageLayoutTests(unittest.TestCase):
             self.assertEqual(set(files), {"engine"})
             self.assertEqual(links, {"alias": "engine"})
             self.assertTrue(set(files).isdisjoint(links))
+
+
+class LinuxPackageOwnershipTests(unittest.TestCase):
+    def make_stage(self, root: Path) -> Path:
+        stage = root / "stage"
+        engine = stage / "usr" / "bin" / "ratex"
+        engine.parent.mkdir(parents=True)
+        engine.write_bytes(b"engine")
+        engine.chmod(0o755)
+        return stage
+
+    def assert_root_owned(self, members: list) -> None:
+        self.assertTrue(members)
+        for member in members:
+            self.assertEqual((member.uid, member.gid), (0, 0), member.name)
+
+    @unittest.skipUnless(shutil.which("zstd") and shutil.which("tar"), "zstd/tar unavailable")
+    def test_arch_package_payload_is_root_owned(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            package = build_linux_packages.build_arch_pkg(self.make_stage(root), root, "1.0")
+            payload = subprocess.run(
+                ["zstd", "-qdc", str(package)], capture_output=True, check=True
+            ).stdout
+            with tarfile.open(fileobj=io.BytesIO(payload)) as archive:
+                self.assert_root_owned(archive.getmembers())
+
+    @unittest.skipUnless(shutil.which("ar"), "ar unavailable")
+    def test_deb_built_without_dpkg_deb_is_root_owned(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            with mock.patch.object(build_linux_packages.shutil, "which", return_value=None):
+                package = build_linux_packages.build_deb(self.make_stage(root), root, "1.0")
+            for member in ("control.tar.gz", "data.tar.xz"):
+                payload = subprocess.run(
+                    ["ar", "p", str(package), member], capture_output=True, check=True
+                ).stdout
+                with tarfile.open(fileobj=io.BytesIO(payload)) as archive:
+                    self.assert_root_owned(archive.getmembers())
 
 
 class FormatValidationTests(unittest.TestCase):
@@ -161,28 +156,33 @@ class InstallerUpgradeTests(unittest.TestCase):
         asset = bundle_texmf / "tex" / "generic" / "hyphen" / "hyphen.tex"
         asset.parent.mkdir(parents=True)
         asset.write_text("% managed hyphen data\n")
-        engine = bundle_bin / "pdflatex"
-        engine.write_text("#!/bin/sh\nexit 0\n")
+        engine = bundle_bin / "ratex"
+        engine.write_text("#!/bin/sh\necho 'ratex 0.0 (test)'\n")
         engine.chmod(0o755)
         return bundle
+
+    def run_installer(
+        self, script: str, root: Path, *args: str, env: dict[str, str] | None = None
+    ) -> subprocess.CompletedProcess:
+        """Run a POSIX installer with HOME confined to ROOT/home."""
+        home = root / "home"
+        home.mkdir(exist_ok=True)
+        environment = {
+            key: value for key, value in os.environ.items() if key not in ("TEX_SUITE_DATA", "SUDO_USER")
+        }
+        environment["HOME"] = str(home)
+        environment.update(env or {})
+        command = ["sh", str(package_dist.REPO / "packaging" / script), *args]
+        return subprocess.run(command, capture_output=True, text=True, env=environment)
 
     def run_linux_installer(
         self, bundle: Path, prefix: Path, data: Path | None = None, *extra: str
     ) -> subprocess.CompletedProcess:
-        command = [
-            "sh",
-            str(package_dist.REPO / "packaging" / "install-linux.sh"),
-            "--bundle",
-            str(bundle),
-            "--prefix",
-            str(prefix),
-            "--no-path",
-            "--skip-verify",
-        ]
+        command = ["--bundle", str(bundle), "--prefix", str(prefix), "--no-path", "--skip-verify"]
         if data is not None:
             command.extend(("--data-dir", str(data)))
         command.extend(extra)
-        return subprocess.run(command, capture_output=True, text=True)
+        return self.run_installer("install-linux.sh", bundle.parent, *command)
 
     def test_linux_upgrade_removes_only_owned_legacy_format_paths(self) -> None:
         if os.name == "nt":
@@ -237,7 +237,7 @@ class InstallerUpgradeTests(unittest.TestCase):
             self.assertIn("refusing to overwrite unowned path", result.stderr)
             self.assertEqual(collision.read_text(), "user sentinel\n")
             self.assertEqual(unrelated.read_text(), "unrelated\n")
-            self.assertFalse((prefix / "bin" / "pdflatex").exists())
+            self.assertFalse((prefix / "bin" / "ratex").exists())
 
     def test_linux_uninstall_removes_manifest_files_and_preserves_unrelated(self) -> None:
         if os.name == "nt":
@@ -264,7 +264,7 @@ class InstallerUpgradeTests(unittest.TestCase):
 
             self.assertEqual(uninstall.returncode, 0, uninstall.stderr)
             self.assertFalse(managed.exists())
-            self.assertFalse((prefix / "bin" / "pdflatex").exists())
+            self.assertFalse((prefix / "bin" / "ratex").exists())
             self.assertEqual(unrelated.read_text(), "unrelated\n")
             self.assertEqual(nested_unrelated.read_text(), "user data\n")
             self.assertTrue(data.is_dir())
@@ -308,7 +308,175 @@ class InstallerUpgradeTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("unrecognized ownership manifest", result.stderr)
             self.assertEqual(marker.read_text(), "not an ownership manifest\n")
-            self.assertFalse((prefix / "bin" / "pdflatex").exists())
+            self.assertFalse((prefix / "bin" / "ratex").exists())
+
+    def test_linux_profile_block_keeps_prefix_literal(self) -> None:
+        if os.name == "nt":
+            self.skipTest("POSIX shell installer test")
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            bundle = self.make_unix_bundle(root)
+            marker = root / "executed"
+            prefix = root / f"it's a \"pre$(touch {marker})fix`touch {marker}`"
+            profile = root / "home" / ".profile"
+
+            install = self.run_installer(
+                "install-linux.sh", root, "--bundle", str(bundle), "--prefix", str(prefix), "--skip-verify"
+            )
+            self.assertEqual(install.returncode, 0, install.stderr)
+            sourced = subprocess.run(
+                ["sh", "-c", '. "$1" && printf "%s\\n%s" "$PATH" "$TEXMFLOCAL"', "sh", str(profile)],
+                capture_output=True,
+                text=True,
+                env={"PATH": "/usr/bin:/bin", "HOME": str(root / "home")},
+            )
+
+            self.assertEqual(sourced.returncode, 0, sourced.stderr)
+            path, texmflocal = sourced.stdout.split("\n")
+            self.assertEqual(path, f"{prefix}/bin:/usr/bin:/bin")
+            self.assertEqual(texmflocal, f"{prefix}/share/tex-suite/texmf")
+            self.assertFalse(marker.exists())
+
+    def test_linux_uninstall_removes_only_its_own_profile_block(self) -> None:
+        if os.name == "nt":
+            self.skipTest("POSIX shell installer test")
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            bundle = self.make_unix_bundle(root)
+            home = root / "home"
+            home.mkdir()
+            dotfile = home / "dotfiles-bashrc"
+            dotfile.write_text("user=1\n")
+            (home / ".bashrc").symlink_to(dotfile)
+            active, scratch = root / "active", root / "scratch"
+            for args in (
+                ("--bundle", str(bundle), "--prefix", str(active), "--skip-verify"),
+                ("--bundle", str(bundle), "--prefix", str(scratch), "--no-path", "--skip-verify"),
+                ("--uninstall", "--prefix", str(scratch)),
+            ):
+                result = self.run_installer("install-linux.sh", root, *args)
+                self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn(f"{active}/bin", dotfile.read_text())
+
+            result = self.run_installer("install-linux.sh", root, "--uninstall", "--prefix", str(active))
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue((home / ".bashrc").is_symlink())
+            self.assertEqual(dotfile.read_text(), "user=1\n")
+
+    def test_linux_uninstall_keeps_unterminated_foreign_block(self) -> None:
+        if os.name == "nt":
+            self.skipTest("POSIX shell installer test")
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            home = root / "home"
+            home.mkdir()
+            text = "a=1\n# >>> tex-suite >>>\nexport PATH=\"/elsewhere/bin:$PATH\"\nuser_line=2\n"
+            (home / ".profile").write_text(text)
+
+            result = self.run_installer("install-linux.sh", root, "--uninstall")
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual((home / ".profile").read_text(), text)
+
+    def test_linux_explicit_prefix_ignores_exported_data_dir(self) -> None:
+        if os.name == "nt":
+            self.skipTest("POSIX shell installer test")
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            bundle = self.make_unix_bundle(root)
+            first = self.run_linux_installer(bundle, root / "first")
+            self.assertEqual(first.returncode, 0, first.stderr)
+
+            second = self.run_installer(
+                "install-linux.sh", root, "--bundle", str(bundle), "--prefix", str(root / "second"),
+                "--no-path", "--skip-verify",
+                env={"TEX_SUITE_DATA": str(root / "first" / "share" / "tex-suite")},
+            )
+
+            self.assertEqual(second.returncode, 0, second.stderr)
+            self.assertTrue((root / "second" / "share" / "tex-suite" / "texmf").is_dir())
+
+    def test_linux_uninstall_removes_directories_it_created(self) -> None:
+        if os.name == "nt":
+            self.skipTest("POSIX shell installer test")
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            bundle = self.make_unix_bundle(root)
+            fresh = root / "fresh prefix"
+            existing = root / "existing"
+            (existing / "bin").mkdir(parents=True)
+            for prefix in (fresh, existing):
+                for _ in range(2):  # a reinstall must keep the created-directory records
+                    result = self.run_linux_installer(bundle, prefix)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                result = self.run_linux_installer(bundle, prefix, None, "--uninstall")
+                self.assertEqual(result.returncode, 0, result.stderr)
+
+            self.assertFalse(fresh.exists())
+            self.assertEqual(sorted(p.name for p in existing.iterdir()), ["bin"])
+
+    def test_linux_link_install_from_relative_bundle(self) -> None:
+        if os.name == "nt":
+            self.skipTest("POSIX shell installer test")
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            self.make_unix_bundle(root)
+            prefix = root / "prefix"
+            home = root / "home"
+            home.mkdir()
+
+            result = subprocess.run(
+                ["sh", str(package_dist.REPO / "packaging" / "install-linux.sh"), "--bundle", "bundle",
+                 "--prefix", str(prefix), "--no-path", "--link"],
+                capture_output=True, text=True, cwd=root, env={**os.environ, "HOME": str(home)},
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue((prefix / "bin" / "ratex").exists())
+
+    def test_linux_unsafe_payload_directory_fails_before_install(self) -> None:
+        if os.name == "nt":
+            self.skipTest("POSIX shell installer test")
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            bundle = self.make_unix_bundle(root)
+            (bundle / "share" / "tex-suite" / "texmf" / "bad\tdir").mkdir()
+            prefix = root / "prefix"
+
+            result = self.run_linux_installer(bundle, prefix)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("unsafe texmf payload directory", result.stderr)
+            self.assertFalse((prefix / "bin" / "ratex").exists())
+
+    def test_macos_uninstall_keeps_other_prefix_app_support_data(self) -> None:
+        if os.name == "nt":
+            self.skipTest("POSIX shell installer test")
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            bundle = self.make_unix_bundle(root)
+            stub = root / "stub"
+            stub.mkdir()
+            uname = stub / "uname"
+            uname.write_text('#!/bin/sh\ncase "$1" in -s) echo Darwin;; *) echo arm64;; esac\n')
+            uname.chmod(0o755)
+            env = {"PATH": f"{stub}{os.pathsep}{os.environ.get('PATH', '')}"}
+            app_support = root / "home" / "Library" / "Application Support" / "tex-suite"
+            install = self.run_installer(
+                "install-macos.sh", root, "--bundle", str(bundle), "--app-support",
+                "--prefix", str(root / "owner"), "--no-path", "--skip-verify", env=env,
+            )
+            self.assertEqual(install.returncode, 0, install.stderr)
+
+            other = self.run_installer("install-macos.sh", root, "--uninstall", "--prefix", str(root / "other"), env=env)
+
+            self.assertEqual(other.returncode, 0, other.stderr)
+            self.assertTrue((app_support / "texmf" / "tex" / "generic" / "hyphen" / "hyphen.tex").is_file())
+            own = self.run_installer("install-macos.sh", root, "--uninstall", "--prefix", str(root / "owner"), env=env)
+            self.assertEqual(own.returncode, 0, own.stderr)
+            self.assertFalse(app_support.exists())
+            self.assertFalse((root / "owner").exists())
 
 
 

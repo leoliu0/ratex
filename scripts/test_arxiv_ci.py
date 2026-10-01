@@ -2,6 +2,7 @@
 """CI regression test: download and compile 10 diverse arXiv papers with ratex."""
 
 import argparse
+import gzip
 import os
 import shutil
 import subprocess
@@ -55,13 +56,15 @@ def download_and_extract(paper_id: str, dest_dir: Path) -> Path:
             "-o", str(tmp_path)
         ]
         subprocess.run(cmd, check=True)
-        # Try extracting as tar
+        # Multi-file submissions are tarballs; single-file ones are a gzipped .tex.
         try:
             with tarfile.open(tmp_path) as tar:
-                tar.extractall(path=dest_dir)
-        except tarfile.TarError:
-            # Single tex file
-            (dest_dir / f"{paper_id}.tex").write_bytes(tmp_path.read_bytes())
+                tar.extractall(path=dest_dir, filter="data")
+        except tarfile.ReadError:
+            source = tmp_path.read_bytes()
+            if source.startswith(b"\x1f\x8b"):
+                source = gzip.decompress(source)
+            (dest_dir / f"{paper_id}.tex").write_bytes(source)
         return find_main_tex(dest_dir)
     finally:
         if tmp_path.exists():

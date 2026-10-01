@@ -210,18 +210,29 @@ fn undefined_pdf_xobject_references_are_located_and_omitted() {
 
 #[test]
 fn input_rereads_a_file_rewritten_by_tex() {
-    let path = std::env::temp_dir().join(format!("tex-reread-{}.tex", std::process::id()));
+    let name = format!("tex-reread-{}.tex", std::process::id());
+    let path = std::env::temp_dir().join(&name);
     std::fs::write(&path, b"\\def\\value{old}\n").unwrap();
     let path_text = path.to_string_lossy().replace('\\', "/");
-    let e = engine(&format!(
-        r"\input {path_text}\relax
-\immediate\openout0={path_text}\relax
+    // openout_any=p refuses absolute output names: write through the
+    // output directory instead, then read the same file back absolutely.
+    let mut e = Engine::new(true);
+    e.out_dir = std::env::temp_dir().to_string_lossy().into_owned();
+    e.init_primitives();
+    e.add_nullfont();
+    let source = format!(
+        r"\catcode`\{{=1 \catcode`\}}=2 \catcode`\#=6
+\input {path_text}\relax
+\immediate\openout0={name}\relax
 \immediate\write0{{\string\def\string\value{{new}}}}
 \immediate\closeout0
 \input {path_text}\relax
 \message{{RESULT=\value}}
 \end"
-    ));
+    );
+    e.input.push_file("review.tex".into(), source.into_bytes());
+    e.run();
+    assert_eq!(e.error_count, 0, "{}", e.term);
     assert!(e.term.contains("RESULT=new"), "{}", e.term);
     std::fs::remove_file(path).unwrap();
 }

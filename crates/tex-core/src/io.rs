@@ -10,6 +10,37 @@ use tex_kpse::fs::PathExt;
 
 const MAX_TEX_INPUT_STREAM: i32 = 15;
 
+/// kpathsea's `kpathsea_name_ok` for writing (TeX Live 2026, non-extended,
+/// Unix rules): `openout_any` `a` allows everything; `r` refuses dotfiles
+/// (`.rhosts`, `dir/.ssh`, `..x`) and `p` (the default) also refuses
+/// absolute names outside the output directories and every `../` step.
+/// `rel` is the document-requested part of the name; `absolute` tells
+/// whether it escapes every permitted output root.
+fn out_name_ok(rel: &str, absolute: bool, choice: &str) -> bool {
+    let first = choice.as_bytes().first().copied().unwrap_or(b'p');
+    if matches!(first, b'a' | b'y' | b'1') {
+        return true;
+    }
+    let b = rel.as_bytes();
+    for (i, &c) in b.iter().enumerate() {
+        if c != b'.' || (i > 0 && b[i - 1] != b'/') {
+            continue;
+        }
+        let next = b.get(i + 1).copied();
+        let dot_dot_dir = next == Some(b'.') && b.get(i + 2) == Some(&b'/');
+        if next != Some(b'/') && !dot_dot_dir {
+            return false;
+        }
+    }
+    if matches!(first, b'r' | b'n' | b'0') {
+        return true;
+    }
+    if absolute || rel.starts_with("../") {
+        return false;
+    }
+    !rel.contains("/../")
+}
+
 #[derive(Clone)]
 struct ScannerDiagnosticState {
     macro_trace: Vec<crate::token::CsId>,
@@ -623,6 +654,12 @@ impl Engine {
             self.error_at("\\openout needs an output file name", source);
             return;
         }
+        // tex.web §1374: `if cur_ext="" then cur_ext:=".tex"`. The
+        // extension starts at the last dot of the final path component.
+        let mut name = name;
+        if !name.rsplit('/').next().unwrap_or("").contains('.') {
+            name.push_str(".tex");
+        }
         // web2c open_output: the -output-directory prefix applies to
         // relative names only; absolute names bypass it. Path::join so a
         // missing trailing slash cannot fuse into "dirfile.ext".
@@ -656,6 +693,30 @@ impl Engine {
         self.exec_openout(stream, &full, create_parent, source.as_ref());
     }
 
+    /// Apply TeX Live's `openout_any` policy to a resolved `\openout` path.
+    /// The output directories (`-output-directory`/aux directory, plus
+    /// kpathsea's `TEXMF_OUTPUT_DIRECTORY` and `TEXMFOUTPUT`) are trusted
+    /// prefixes; only the document-requested remainder is checked, as
+    /// kpathsea checks the name before web2c prefixes the output directory.
+    fn openout_allowed(&self, full: &str) -> bool {
+        let choice = std::env::var("openout_any").unwrap_or_default();
+        let choice = if choice.is_empty() { "p" } else { choice.as_str() };
+        let env_roots = ["TEXMF_OUTPUT_DIRECTORY", "TEXMFOUTPUT"].map(|v| std::env::var(v).ok());
+        let aux = self.aux_dir.as_ref().map(|dir| dir.to_string_lossy().into_owned());
+        let roots = [aux.as_deref(), Some(self.out_dir.as_str())]
+            .into_iter()
+            .chain(env_roots.iter().map(Option::as_deref))
+            .flatten()
+            .map(|root| root.trim_end_matches('/'))
+            .filter(|root| !root.is_empty());
+        for root in roots {
+            if let Some(rest) = full.strip_prefix(root).and_then(|r| r.strip_prefix('/')) {
+                return out_name_ok(rest, false, choice);
+            }
+        }
+        out_name_ok(full, std::path::Path::new(full).is_absolute(), choice)
+    }
+
     /// the actual file open, shared by `\immediate\openout` and the
     /// shipout-time whatsit executor (`out_what` closes a previously open
     /// stream first, §1417)
@@ -669,6 +730,15 @@ impl Engine {
         // §1414: streams 16/17 (the >15 and negative aliases) are never
         // actually opened
         if stream >= 16 {
+            return;
+        }
+        if !self.openout_allowed(full) {
+            let choice = std::env::var("openout_any").ok().filter(|c| !c.is_empty());
+            let choice = choice.as_deref().unwrap_or("p");
+            let note = format!("\nNot writing to {full} (openout_any = {choice}).\n");
+            self.append_term(&note);
+            self.append_log(&note);
+            self.fatal_error_at(&format!("I can't write on file `{full}`"), source.cloned());
             return;
         }
         let idx = (stream as usize).min(self.write_streams.len() - 1);
@@ -2047,9 +2117,15 @@ mod tests {
     use crate::engine::{Engine, InteractionMode};
 
     fn run(source: String) -> Engine {
+        run_in("", source)
+    }
+
+    /// Run with `out_dir` as the `-output-directory` equivalent.
+    fn run_in(out_dir: &str, source: String) -> Engine {
         let mut engine = Engine::new(true);
         engine.init_primitives();
         engine.add_nullfont();
+        engine.out_dir = out_dir.to_string();
         engine.eqtb.cat[b'{' as usize] = 1;
         engine.eqtb.cat[b'}' as usize] = 2;
         engine.set_interaction_mode(InteractionMode::Nonstop);
@@ -2058,6 +2134,91 @@ mod tests {
             .push_file("output-error.tex".to_string(), source.into_bytes());
         engine.run();
         engine
+    }
+
+    fn scratch_dir(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("tex-core-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn openout_name_policy_matches_kpathsea_paranoid_mode() {
+        for (name, absolute, ok) in [
+            ("x.txt", false, true),
+            ("./y.txt", false, true),
+            ("sub/x..y.txt", false, true),
+            ("/etc/x.txt", true, false),
+            ("../x.txt", false, false),
+            ("sub/../x.txt", false, false),
+            ("sub/..", false, false),
+            (".bashrc", false, false),
+            (".tex", false, false),
+            ("sub/.ssh/config", false, false),
+            ("..x/z.txt", false, false),
+        ] {
+            assert_eq!(super::out_name_ok(name, absolute, "p"), ok, "{name}");
+        }
+        assert!(super::out_name_ok("../x.txt", false, "r"));
+        assert!(!super::out_name_ok(".profile", false, "r"));
+        assert!(super::out_name_ok("/etc/.profile", true, "a"));
+    }
+
+    #[test]
+    fn openout_refuses_paths_escaping_the_output_directory() {
+        let dir = scratch_dir("openout-policy");
+        let out = dir.join("out");
+        std::fs::create_dir_all(&out).unwrap();
+        let out_dir = out.to_string_lossy().replace('\\', "/");
+        let outside = dir.join("victim.txt").to_string_lossy().replace('\\', "/");
+        for name in [outside.as_str(), "../victim.txt", ".victimrc", "sub/../../victim.txt"] {
+            for deferred in [false, true] {
+                let source = if deferred {
+                    format!("\\setbox0=\\vbox{{\\openout4={name}\n}}\\shipout\\box0\n\\end\n")
+                } else {
+                    format!("\\immediate\\openout4={name}\n\\message{{after}}\\end\n")
+                };
+                let engine = run_in(&out_dir, source);
+                assert!(engine.stopped_on_error, "{name}: fatal like TeX's\n{}", engine.term);
+                assert!(
+                    engine
+                        .diagnostics
+                        .iter()
+                        .any(|d| d.message.starts_with("I can't write on file")),
+                    "{name}: {}",
+                    engine.term
+                );
+                assert!(engine.term.contains("(openout_any = p)"), "{}", engine.term);
+                assert!(!engine.term.contains("after"), "{}", engine.term);
+            }
+        }
+        assert!(!dir.join("victim.txt").exists());
+        assert!(!out.join(".victimrc").exists());
+        // Absolute names inside the output directory stay writable, as with
+        // TeX Live's TEXMF_OUTPUT_DIRECTORY.
+        let inside = format!("{out_dir}/inside.txt");
+        let engine = run_in(&out_dir, format!("\\immediate\\openout4={inside}\n\\end\n"));
+        assert!(!engine.stopped_on_error, "{}", engine.term);
+        assert!(out.join("inside.txt").exists());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn openout_without_extension_writes_a_tex_file() {
+        let dir = scratch_dir("openout-ext");
+        let out_dir = dir.to_string_lossy().replace('\\', "/");
+        let engine = run_in(
+            &out_dir,
+            "\\immediate\\openout4=plain\\immediate\\write4{x}\\immediate\\closeout4\n\
+             \\immediate\\openout5=x..y\\immediate\\closeout5\n\\end\n"
+                .to_string(),
+        );
+        assert!(!engine.stopped_on_error, "{}", engine.term);
+        assert_eq!(std::fs::read(dir.join("plain.tex")).unwrap(), b"x\n");
+        assert!(!dir.join("plain").exists());
+        assert!(dir.join("x..y").exists(), "an existing extension is kept");
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
@@ -2080,28 +2241,25 @@ mod tests {
 
     #[test]
     fn immediate_and_deferred_openout_failures_keep_the_command_source() {
-        let missing_parent = std::env::temp_dir().join(format!(
-            "tex-core-missing-openout-parent-{}",
-            std::process::id()
-        ));
-        let output = missing_parent.join("result.out");
-        assert!(!missing_parent.exists());
-        let output = output.to_string_lossy().replace('\\', "/");
+        let dir = scratch_dir("missing-openout-parent");
+        let out_dir = dir.to_string_lossy().replace('\\', "/");
+        let output = format!("{out_dir}/missing/result.out");
+        let relative = "missing/result.out";
         let cases = [
             (
-                format!("\\message{{before}}\n\\immediate\\openout4={output}\n\\end\n"),
+                format!("\\message{{before}}\n\\immediate\\openout4={relative}\n\\end\n"),
                 2,
                 11,
             ),
             (
-                format!("\\setbox0=\\vbox{{\n\\openout4={output}\n}}\n\\shipout\\box0\n\\end\n"),
+                format!("\\setbox0=\\vbox{{\n\\openout4={relative}\n}}\n\\shipout\\box0\n\\end\n"),
                 2,
                 1,
             ),
         ];
 
         for (input, expected_line, expected_column) in cases {
-            let engine = run(input);
+            let engine = run_in(&out_dir, input);
             let diagnostic = engine
                 .diagnostics
                 .iter()
@@ -2123,6 +2281,7 @@ mod tests {
                 Some("check the path and permissions for the file named in this error")
             );
         }
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[cfg(unix)]
@@ -2131,32 +2290,36 @@ mod tests {
         if !std::path::Path::new("/dev/full").exists() {
             return;
         }
+        // A symlink inside the output directory reaches the full device
+        // without naming an absolute path, which openout_any=p refuses.
+        let dir = scratch_dir("write-full");
+        std::os::unix::fs::symlink("/dev/full", dir.join("full.out")).unwrap();
+        let out_dir = dir.to_string_lossy().replace('\\', "/");
         let cases = [
             (
-                "\\immediate\\openout3=/dev/full\n\\immediate\\write3{payload}\n\\end\n"
+                "\\immediate\\openout3=full.out\n\\immediate\\write3{payload}\n\\end\n"
                     .to_string(),
                 2,
                 11,
             ),
             (
-                "\\immediate\\openout3=/dev/full\n\\setbox0=\\vbox{\n\\write3{payload}\n}\n\\shipout\\box0\n\\end\n"
+                "\\immediate\\openout3=full.out\n\\setbox0=\\vbox{\n\\write3{payload}\n}\n\\shipout\\box0\n\\end\n"
                     .to_string(),
                 3,
                 1,
             ),
         ];
+        let destination = format!("Cannot write output stream 3 (`{out_dir}/full.out`):");
 
         for (input, expected_line, expected_column) in cases {
-            let engine = run(input);
+            let engine = run_in(&out_dir, input);
             let diagnostic = engine
                 .diagnostics
                 .iter()
                 .find(|diagnostic| diagnostic.message.starts_with("Cannot write output stream"))
                 .expect("write diagnostic");
             assert!(
-                diagnostic
-                    .message
-                    .starts_with("Cannot write output stream 3 (`/dev/full`):"),
+                diagnostic.message.starts_with(&destination),
                 "{}",
                 diagnostic.message
             );
@@ -2172,6 +2335,7 @@ mod tests {
                 )
             );
         }
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

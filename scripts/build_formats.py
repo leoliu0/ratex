@@ -34,6 +34,11 @@ FORMATS = {
     "pdflatex": "default.fmt.zst",
     "lualatex": "lualatex.fmt.zst",
 }
+# extra `-ini` options per engine: pdfTeX formats carry TeX Live's cp227
+# character translation (printable 8-bit characters)
+EXTRA_ARGS = {
+    "pdflatex": ["-translate-file=cp227.tcx"],
+}
 DEFAULT_EPOCH = "1700000000"
 ZSTD_MAGIC = b"\x28\xb5\x2f\xfd"
 
@@ -65,7 +70,8 @@ def dump_format(binary: Path, engine: str, epoch: str, work: Path) -> bytes:
         "TEX_RS_CACHE_DIR": str(work / "cache"),
     })
     result = subprocess.run(
-        [str(program), "-ini", "-interaction=nonstopmode", f"{engine}.ini"],
+        [str(program), "-ini", "-interaction=nonstopmode",
+         *EXTRA_ARGS.get(engine, []), f"{engine}.ini"],
         cwd=work, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         text=True, timeout=1800)
     fmt = work / f"{engine}.fmt"

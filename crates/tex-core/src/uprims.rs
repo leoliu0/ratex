@@ -592,7 +592,7 @@ impl Engine {
                 }
             }
             UPrim::AutomaticDiscretionary => self.main_dispatch(Prim::HyphenDisc, id),
-            UPrim::EndLocalControl => self.error("LuaTeX error (endlocalcontrol: no local control is active)"),
+            UPrim::EndLocalControl => self.end_local_control(),
             UPrim::GLeaders
             | UPrim::LeftGhost
             | UPrim::RightGhost

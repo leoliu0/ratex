@@ -220,6 +220,8 @@ pub struct Engine {
     pub(crate) lua_print_queue: Vec<crate::engine_lua::LuaLine>,
     pub(crate) lua_bytecodes: std::collections::BTreeMap<u32, Vec<u8>>,
     pub(crate) lua_names: std::collections::BTreeMap<u16, String>,
+    /// luatex `local_level`: how many `local_control` loops are active
+    pub(crate) local_level: i32,
     pub ini_mode: bool, // -ini: format-building mode
     /// tex.web `format_ident`: ` (INITEX)` until a `\dump` builds a format,
     /// ` (preloaded format=<job> <year>.<month>.<day>)` in a loaded one. It
@@ -1041,6 +1043,7 @@ impl Engine {
             lua_print_queue: Vec::new(),
             lua_bytecodes: Default::default(),
             lua_names: Default::default(),
+            local_level: 0,
             ini_mode,
             format_ident: " (INITEX)".to_string(),
             format_name: String::new(),

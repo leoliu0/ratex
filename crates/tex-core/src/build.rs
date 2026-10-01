@@ -145,8 +145,15 @@ impl Engine {
         self.end_char_chain();
         match self.mode {
             Mode::Horizontal | Mode::RestrictedHorizontal => {
-                let g = self.interword_glue();
-                self.cur_list.push(Node::Glue(g));
+                // luatex run_app_space: \nospaces 1 appends nothing, 2 a zero glue
+                match self.eqtb.int_params[IntParam::NoSpaces.idx() as usize] {
+                    1 => {}
+                    2 => self.cur_list.push(Node::Glue(Glue::zero())),
+                    _ => {
+                        let g = self.interword_glue();
+                        self.cur_list.push(Node::Glue(g));
+                    }
+                }
             }
             Mode::Vertical | Mode::InternalVertical => {
                 // spaces are ignored in vertical mode
@@ -212,6 +219,16 @@ impl Engine {
     pub fn ex_space(&mut self) {
         self.flush_native_text();
         self.end_char_chain();
+        // luatex run_app_space: \nospaces 1 appends nothing, 2 a zero glue
+        let disable = self.eqtb.int_params[IntParam::NoSpaces.idx() as usize];
+        if disable == 1 || disable == 2 {
+            match self.mode {
+                Mode::Horizontal | Mode::RestrictedHorizontal if disable == 2 => self.cur_list.push(Node::Glue(Glue::zero())),
+                Mode::Math | Mode::DisplayMath if disable == 2 => self.append_mlist_node(Node::Glue(Glue::zero())),
+                _ => {}
+            }
+            return;
+        }
         match self.mode {
             Mode::Horizontal | Mode::RestrictedHorizontal => {
                 let ss = self.eqtb.glue_params[GlueParam::SpaceSkip.idx() as usize];
@@ -2590,7 +2607,12 @@ impl Engine {
             }
             // tex.web §1047: replay the actual par_end token after an inserted
             // math shift has closed any intervening math groups.
-            Mode::Math | Mode::DisplayMath => self.insert_dollar_sign(token),
+            Mode::Math | Mode::DisplayMath => {
+                // luatex insert_dollar_sign_par_end: \suppressmathparerror ignores the \par
+                if self.eqtb.int_params[IntParam::SuppressMathParError.idx() as usize] == 0 {
+                    self.insert_dollar_sign(token);
+                }
+            }
             // tex.web §21179 end_graf: `if mode = hmode` — in restricted hmode (-hmode),
             // \par does not end a paragraph; it is a no-op.
             Mode::RestrictedHorizontal => {}

@@ -210,8 +210,9 @@ impl Engine {
 
     fn lua_end_local_control(&mut self) -> Token {
         let end = self.cs.intern(&[ANON_PREFIX, b"end-local-control"].concat());
+        // luatex inserts `\endlocalcontrol` itself (extension_cmd end_local_code)
         if self.eqtb.get(end).is_none() {
-            self.eqtb.assign(end, Equiv::Prim(Prim::Relax), true);
+            self.eqtb.assign(end, Equiv::Prim(Prim::U(crate::uprim::UPrim::EndLocalControl)), true);
         }
         Token::from_cs(end)
     }
@@ -220,18 +221,35 @@ impl Engine {
     /// marker below what Lua put into the input, execute commands in
     /// restricted horizontal mode until the marker is read.
     pub(crate) fn lua_local_control(&mut self) {
-        let sentinel = self.lua_end_local_control();
         let saved = self.save_scanner();
         let mode = std::mem::replace(&mut self.mode, crate::engine::Mode::RestrictedHorizontal);
+        let ll = self.local_level;
+        self.local_level += 1;
         while !self.end_occurred {
             let t = self.get_token();
-            if t == sentinel || t == crate::input::EOF_MARKER {
+            if t == crate::input::EOF_MARKER {
                 break;
             }
             self.dispatch(t);
+            // `\endlocalcontrol` (or `tex.quittoks`) lowered the level
+            if self.local_level <= ll {
+                break;
+            }
         }
+        self.local_level = ll;
         self.mode = mode;
         self.restore_scanner(saved);
+    }
+
+    /// maincontrol.c `end_local_control`.
+    pub(crate) fn end_local_control(&mut self) {
+        if self.local_level > 0 {
+            self.local_level -= 1;
+        } else {
+            let msg = format!("local control level {}: redundant end local control", self.local_level);
+            self.tex_print_str(true, true, &msg);
+            self.tex_print_nl(true, true);
+        }
     }
 
     /// LuaTeX command code and `mode` of what `t` means now
@@ -1234,9 +1252,12 @@ pub(crate) fn install(lua: &mut Lua) -> Result<(), String> {
             };
             let toks = (*e.eqtb.toks.get(i as usize).cloned().unwrap_or_default()).clone();
             if !toks.is_empty() {
+                // ltexlib.c runtoks: the end marker sits below the register's tokens
+                let end = e.lua_end_local_control();
+                e.push_token(end);
                 e.push_tokens_named(toks, "<lua runtoks>");
+                e.lua_local_control();
             }
-            e.lua_local_control();
             Ok(())
         })?
     });

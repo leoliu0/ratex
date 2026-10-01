@@ -1422,6 +1422,12 @@ impl Engine {
             }
         }
 
+        // buildpage.c: <Ensure that box output_box is empty before output>
+        let out_box = self.output_box_register();
+        if self.engine_kind == crate::engine::EngineKind::LuaTeX && self.eqtb.boxed[out_box].is_some() {
+            self.error(&format!("\\box{out_box} is not void"));
+            self.eqtb.boxed[out_box] = None;
+        }
         let md = self.max_depth().min(i32::MAX as i64) as i32;
         // tex.web §1017: box255 := vpackage(page list, best_size, exactly,
         // page_max_depth); the pack's badness is \badness inside \output
@@ -1430,7 +1436,7 @@ impl Engine {
             .then_some(pack_goal.clamp(i32::MIN as i64, i32::MAX as i64) as i32);
         let r = crate::boxes::vpack_add_md(page_mat, exact, false, VBOX, &self.eqtb, md);
         self.last_badness = r.badness;
-        self.eqtb.assign_box(255, Some(r.node), true);
+        self.eqtb.assign_box(out_box as u16, Some(r.node), true);
 
         // tex.web §28435-28439: with no routine (or once the dead-cycle
         // limit is reached, after explaining the loop) fall through to
@@ -1444,7 +1450,7 @@ impl Engine {
                     self.dead_cycles
                 ));
             }
-            let b = self.eqtb.boxed[255].take();
+            let b = self.eqtb.boxed[out_box].take();
             self.ship_box(b);
             return;
         }
@@ -1490,6 +1496,18 @@ impl Engine {
     // superseded — canonical splits at contribute time against BOTH page
     // room and the class budget, and holds the broken node itself.)
 
+    /// The register the page goes into: LuaTeX's `\outputbox` (255 by
+    /// default), always 255 elsewhere.
+    fn output_box_register(&self) -> usize {
+        if self.engine_kind != crate::engine::EngineKind::LuaTeX {
+            return 255;
+        }
+        usize::try_from(self.eqtb.int_params[IntParam::OutputBox.idx() as usize])
+            .ok()
+            .filter(|&n| n < self.eqtb.boxed.len())
+            .unwrap_or(255)
+    }
+
     pub fn finish_output(&mut self) {
         // <Resume the page builder> (tex.web §28649-28663, exact order):
         // end_graf; unsave; output_active:=false; insert_penalties:=0;
@@ -1527,9 +1545,10 @@ impl Engine {
         self.eqtb.int_params[IntParam::InsertPenalties.idx() as usize] = 0;
         // tex.web <Ensure that box 255 is empty after output>: after unsave,
         // any surviving `\box255` material is reported and discarded.
-        if self.eqtb.boxed[255].is_some() {
-            self.error("Output routine didn't use all of \\box255");
-            self.eqtb.boxed[255] = None;
+        let out_box = self.output_box_register();
+        if self.eqtb.boxed[out_box].is_some() {
+            self.error(&format!("Output routine didn't use all of \\box{out_box}"));
+            self.eqtb.boxed[out_box] = None;
         }
         self.in_output = false;
         self.output_depth = self.output_depth.saturating_sub(1);

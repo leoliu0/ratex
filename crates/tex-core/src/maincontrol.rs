@@ -2024,8 +2024,8 @@ impl Engine {
                 let depth = self.eqtb.int_params[IntParam::ShowBoxDepth.idx() as usize]
                     .max(0)
                     .min(MAX_SAFE_SHOWBOX_DEPTH as i32) as usize;
-                let breadth = self.eqtb.int_params[IntParam::ShowBoxBreadth.idx() as usize]
-                    .max(0)
+                let breadth = self
+                    .show_box_breadth()
                     .min(MAX_SAFE_SHOWBOX_BREADTH as i32) as usize;
                 self.show_node_into(node, 0, depth, breadth, &mut out);
             }
@@ -2034,14 +2034,20 @@ impl Engine {
         out.finish()
     }
 
+    /// tex.web show_box (§236): a nonpositive \showboxbreadth means five.
+    pub(crate) fn show_box_breadth(&self) -> i32 {
+        match self.eqtb.int_params[IntParam::ShowBoxBreadth.idx() as usize] {
+            breadth if breadth <= 0 => 5,
+            breadth => breadth,
+        }
+    }
+
     fn show_lists_description(&self) -> String {
         let mut out = InspectionText::new();
         let depth = self.eqtb.int_params[IntParam::ShowBoxDepth.idx() as usize]
             .max(0)
             .min(MAX_SAFE_SHOWBOX_DEPTH as i32) as usize;
-        let breadth = self.eqtb.int_params[IntParam::ShowBoxBreadth.idx() as usize]
-            .max(0)
-            .min(MAX_SAFE_SHOWBOX_BREADTH as i32) as usize;
+        let breadth = self.show_box_breadth().min(MAX_SAFE_SHOWBOX_BREADTH as i32) as usize;
         out.push(format_args!(
             "mode: {:?}; page list: {} nodes; current list: {} nodes\n",
             self.mode,

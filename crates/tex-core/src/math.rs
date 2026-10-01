@@ -672,6 +672,10 @@ impl Engine {
                 (mlist, None)
             };
             self.finish_display_math(formula, tag, disp_regs.unwrap(), outer_mode);
+            // tex.web resume_after_display (§1200) ends with <Scan an
+            // optional space>, after unsave has inserted any \aftergroup
+            // tokens.
+            self.scan_optional_space();
             return;
         }
         let hlist = inline_hlist.unwrap();
@@ -2613,10 +2617,7 @@ impl Engine {
         if d2 > d1 {
             d1 = d2;
         }
-        let mut factor = self.eqtb.int_params[IntParam::DelimiterFactor.idx() as usize] as i64;
-        if factor <= 0 {
-            factor = 901;
-        }
+        let factor = self.eqtb.int_params[IntParam::DelimiterFactor.idx() as usize] as i64;
         let shortfall = self.eqtb.dim_params[DimParam::DelimiterShortfall.idx() as usize] as i64;
         let mut delta = (d1 as i64 / 500) * factor;
         let delta2 = 2 * d1 as i64 - shortfall;

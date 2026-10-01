@@ -1581,8 +1581,7 @@ impl Engine {
         }
         if self.eqtb.int_params[IntParam::TracingOutput.idx() as usize] > 0 {
             let depth = self.eqtb.int_params[IntParam::ShowBoxDepth.idx() as usize].max(0) as usize;
-            let breadth =
-                self.eqtb.int_params[IntParam::ShowBoxBreadth.idx() as usize].max(0) as usize;
+            let breadth = self.show_box_breadth() as usize;
             let mut out = crate::maincontrol::InspectionText::new();
             out.push(format_args!("\nCompleted box being shipped out\n"));
             self.show_node_into(&boxn, 0, depth, breadth, &mut out);

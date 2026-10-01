@@ -107,6 +107,8 @@ pub struct PdfPage {
     pub ximages: Vec<i32>,
     /// pdfTeX `pdf_page_group_val`: the page's /Group object (0 = none)
     pub group: i32,
+    /// LuaTeX `\pdfvariable omitmediabox` was zero at shipout.
+    pub media_box: bool,
 }
 
 pub struct PdfDoc {

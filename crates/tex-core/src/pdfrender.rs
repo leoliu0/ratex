@@ -678,6 +678,7 @@ impl Engine {
             image_procset,
             ximages: std::mem::take(&mut ctx.ximage_list),
             group,
+            media_box: ctx.eng.eqtb.int_params[crate::prim::IntParam::PdfOmitMediaBox.idx() as usize] == 0,
         }
     }
 

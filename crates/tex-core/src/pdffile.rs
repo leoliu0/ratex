@@ -2454,7 +2454,7 @@ pub fn write_pdf(doc: &PdfDoc) -> Result<Vec<u8>, String> {
         // pdfTeX "Write out page object": pdf_print_mag_bp of the page size
         // in sp, omitted when \pdfpageattr supplies its own /MediaBox.
         let mut media_box = String::new();
-        if !page_attr.contains("/MediaBox") {
+        if page.media_box && !page_attr.contains("/MediaBox") {
             media_box.push_str(" /MediaBox [0 0 ");
             media_box.push_str(&mag_bp_sp(page.width_sp, (doc.mag, doc.decimal_digits)));
             media_box.push(' ');

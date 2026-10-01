@@ -152,19 +152,19 @@ impl Engine {
         }
         match self.eqtb.resolve(t.cs_id()).cloned() {
             Some(Equiv::Prim(Prim::GlueP(p))) => {
-                Some(self.eqtb.glue_params[p.idx() as usize].clone())
+                Some(self.eqtb.glue_params[p.idx() as usize].eqtb_value())
             }
             Some(Equiv::Prim(Prim::Skip)) => {
                 let i = self.scan_reg_num();
-                Some(self.eqtb.skip[i as usize].clone())
+                Some(self.eqtb.skip[i as usize].eqtb_value())
             }
             Some(Equiv::Prim(Prim::MuSkip)) => {
                 let i = self.scan_reg_num();
-                Some(self.eqtb.muskip[i as usize].clone())
+                Some(self.eqtb.muskip[i as usize].eqtb_value())
             }
             Some(Equiv::Prim(Prim::LastSkip)) => Some(self.last_skip_value()),
-            Some(Equiv::SkipReg(i)) => Some(self.eqtb.skip[i as usize].clone()),
-            Some(Equiv::MuSkipReg(i)) => Some(self.eqtb.muskip[i as usize].clone()),
+            Some(Equiv::SkipReg(i)) => Some(self.eqtb.skip[i as usize].eqtb_value()),
+            Some(Equiv::MuSkipReg(i)) => Some(self.eqtb.muskip[i as usize].eqtb_value()),
             _ => None,
         }
     }
@@ -1690,7 +1690,7 @@ impl Engine {
             return g;
         }
         if t.is_cs() && matches!(self.cur_prim, Some(Prim::GlueExpr) | Some(Prim::MuExpr)) {
-            let mut g = self.scan_expr_glue(mu);
+            let mut g = self.scan_expr_glue(mu).fresh();
             if negate {
                 g.width = -g.width;
                 g.stretch = -g.stretch;
@@ -1701,6 +1701,8 @@ impl Engine {
         }
         if let Some(mut g) = self.glue_from_cur_cs(t) {
             if negate {
+                // tex.web §461: a negated value is a new spec
+                g = g.fresh();
                 g.width = -g.width;
                 g.stretch = -g.stretch;
                 g.shrink = -g.shrink;
@@ -3198,13 +3200,9 @@ impl ExprArithmetic {
         let stretch = self.checked(stretch, MAX_EXPR_DIMEN);
         let shrink = self.checked(shrink, MAX_EXPR_DIMEN);
         match (width, stretch, shrink) {
-            (Some(width), Some(stretch), Some(shrink)) => Glue {
-                width,
-                stretch,
-                shrink,
-                stretch_order,
-                shrink_order,
-            },
+            (Some(width), Some(stretch), Some(shrink)) => {
+                Glue::spec(width, stretch, stretch_order, shrink, shrink_order)
+            }
             _ => Glue::zero(),
         }
     }

@@ -10,8 +10,6 @@ use std::fmt::Write;
 
 const MAX_INSPECTION_BYTES: usize = 8 * 1024;
 const MAX_INSPECTION_FRAMES: usize = 32;
-const MAX_SAFE_SHOWBOX_DEPTH: usize = 16;
-const MAX_SAFE_SHOWBOX_BREADTH: usize = 128;
 const INSPECTION_TRUNCATED: &str = "\n… inspection output truncated";
 
 pub(crate) struct InspectionText {
@@ -130,9 +128,10 @@ impl Engine {
                 }
             }
             Kern => {
+                // tex.web §1061 append_kern: subtype explicit
                 let d = self.scan_dimen(false, false);
                 if self.mode.is_m() {
-                    self.append_mlist_node(Node::Kern(d));
+                    self.append_mlist_node(Node::ExplicitKern(d));
                 } else if self.mode.is_v() {
                     self.append_v_kern(d);
                 } else {
@@ -623,8 +622,8 @@ impl Engine {
                 let idx = self.scan_reg_num();
                 self.diagnostic_source_override = previous;
                 if self.error_count == errors_before {
-                    let detail = self.show_box_description(idx);
-                    self.report_inspection("\\showbox", detail, source);
+                    self.show_box_register(idx);
+                    self.report_logged_inspection("\\showbox", source);
                 }
             }
             ShowThe => {
@@ -651,8 +650,10 @@ impl Engine {
             }
             ShowLists => {
                 let source = self.current_token_source_mark();
-                let detail = self.show_lists_description();
-                self.report_inspection("\\showlists", detail, source);
+                // tex.web §1293: begin_diagnostic; show_activities
+                let display = self.show_activities();
+                self.emit_box_diagnostic(display);
+                self.report_logged_inspection("\\showlists", source);
             }
             ShowGroups => {
                 let source = self.current_token_source_mark();
@@ -2238,47 +2239,23 @@ impl Engine {
         );
     }
 
-    fn show_box_description(&self, register: u16) -> String {
-        let mut out = InspectionText::new();
-        match self.eqtb.boxed[register as usize].as_ref() {
-            Some(node) => {
-                out.push(format_args!("\\box{register}:\n"));
-                let depth = self.eqtb.int_params[IntParam::ShowBoxDepth.idx() as usize]
-                    .max(0)
-                    .min(MAX_SAFE_SHOWBOX_DEPTH as i32) as usize;
-                let breadth = self
-                    .show_box_breadth()
-                    .min(MAX_SAFE_SHOWBOX_BREADTH as i32) as usize;
-                self.show_node_into(node, 0, depth, breadth, &mut out);
-            }
-            None => out.push(format_args!("\\box{register} is void")),
-        }
-        out.finish()
-    }
-
-    /// tex.web show_box (§236): a nonpositive \showboxbreadth means five.
-    pub(crate) fn show_box_breadth(&self) -> i32 {
-        match self.eqtb.int_params[IntParam::ShowBoxBreadth.idx() as usize] {
-            breadth if breadth <= 0 => 5,
-            breadth => breadth,
-        }
-    }
-
-    fn show_lists_description(&self) -> String {
-        let mut out = InspectionText::new();
-        let depth = self.eqtb.int_params[IntParam::ShowBoxDepth.idx() as usize]
-            .max(0)
-            .min(MAX_SAFE_SHOWBOX_DEPTH as i32) as usize;
-        let breadth = self.show_box_breadth().min(MAX_SAFE_SHOWBOX_BREADTH as i32) as usize;
-        out.push(format_args!(
-            "mode: {:?}; page list: {} nodes; current list: {} nodes\n",
-            self.mode,
-            self.page_list.len(),
-            self.cur_list.len()
-        ));
-        self.show_node_list_into("page list", &self.page_list, 0, depth, breadth, &mut out);
-        self.show_node_list_into("current list", &self.cur_list, 0, depth, breadth, &mut out);
-        out.finish()
+    /// A box display already went to the transcript (and to the terminal
+    /// when `\tracingonline>0`); the structured report says where it is,
+    /// like tex.web's `OK (see the transcript file)`.
+    fn report_logged_inspection(
+        &mut self,
+        command: &str,
+        source: Option<crate::input::SourceMark>,
+    ) {
+        let message = if self.diagnostic_to_term() {
+            format!("Inspection requested by {command}")
+        } else {
+            format!("Inspection requested by {command} (see the transcript file)")
+        };
+        self.error_at(
+            &message,
+            source.as_ref().map(crate::input::SourceMark::to_context),
+        );
     }
 
     fn show_groups_description(&self) -> String {
@@ -2386,275 +2363,6 @@ impl Engine {
         }
         out.finish()
     }
-
-    fn show_node_list_into(
-        &self,
-        label: &str,
-        nodes: &[Node],
-        depth: usize,
-        max_depth: usize,
-        breadth: usize,
-        out: &mut InspectionText,
-    ) {
-        out.push(format_args!("{label}:\n"));
-        for node in nodes.iter().take(breadth) {
-            self.show_node_into(node, depth, max_depth, breadth, out);
-            if out.truncated {
-                return;
-            }
-        }
-        if nodes.len() > breadth {
-            out.push(format_args!(
-                "{}… {} node(s) omitted by \\showboxbreadth\n",
-                "  ".repeat(depth),
-                nodes.len() - breadth
-            ));
-        }
-    }
-
-    pub(crate) fn show_node_into(
-        &self,
-        node: &Node,
-        depth: usize,
-        max_depth: usize,
-        breadth: usize,
-        out: &mut InspectionText,
-    ) {
-        if out.truncated {
-            return;
-        }
-        let indent = "  ".repeat(depth.min(MAX_SAFE_SHOWBOX_DEPTH));
-        match node {
-            Node::NativeGlyphRun {
-                run,
-                start,
-                end,
-                width,
-                height,
-                depth: run_depth,
-            } => {
-                out.push(format_args!(
-                    "{indent}native glyph run (font {}): {} glyph(s), width {}, height {}, depth {}\n",
-                    run.font,
-                    end.saturating_sub(*start),
-                    self.scaled_to_string(*width),
-                    self.scaled_to_string(*height),
-                    self.scaled_to_string(*run_depth)
-                ));
-            }
-            Node::Box {
-                kind,
-                w,
-                h,
-                d,
-                shift,
-                list,
-                lr,
-                ..
-            } => {
-                let kind = match kind {
-                    0 => "hbox",
-                    1 => "vbox",
-                    2 => "vtop",
-                    _ => "vcenter",
-                };
-                // etex.ch "Display if this box is never to be reversed"
-                let display = if *lr == crate::boxes::BOX_LR_DLIST {
-                    ", display"
-                } else {
-                    ""
-                };
-                out.push(format_args!(
-                    "{indent}{kind}: width {}, height {}, depth {}, shift {}{display}; {} child node(s)\n",
-                    self.scaled_to_string(*w),
-                    self.scaled_to_string(*h),
-                    self.scaled_to_string(*d),
-                    self.scaled_to_string(*shift),
-                    list.len()
-                ));
-                if depth >= max_depth {
-                    if !list.is_empty() {
-                        out.push(format_args!(
-                            "{indent}  … children hidden by \\showboxdepth\n"
-                        ));
-                    }
-                    return;
-                }
-                for child in list.iter().take(breadth) {
-                    self.show_node_into(child, depth + 1, max_depth, breadth, out);
-                }
-                if list.len() > breadth {
-                    out.push(format_args!(
-                        "{indent}  … {} child node(s) omitted by \\showboxbreadth\n",
-                        list.len() - breadth
-                    ));
-                }
-            }
-            Node::Char { c, font } => out.push(format_args!(
-                "{indent}character {:?} (byte {c}, font {font})\n",
-                char::from(*c)
-            )),
-            Node::Ligature {
-                c, font, n_letters, ..
-            } => out.push(format_args!(
-                "{indent}ligature {:?} (byte {c}, font {font}, {n_letters} source character(s))\n",
-                char::from(*c)
-            )),
-            Node::Glue(glue) => {
-                out.push(format_args!("{indent}glue {}\n", self.glue_to_string(glue)))
-            }
-            Node::MuGlue(glue) => out.push(format_args!(
-                "{indent}math glue {}\n",
-                self.mu_glue_to_string(glue)
-            )),
-            Node::Kern(value) => out.push(format_args!(
-                "{indent}kern {}\n",
-                self.scaled_to_string(*value)
-            )),
-            Node::ExplicitKern(value) => out.push(format_args!(
-                "{indent}explicit kern {}\n",
-                self.scaled_to_string(*value)
-            )),
-            Node::MarginKern { side, width, c, .. } => out.push(format_args!(
-                "{indent}{} margin kern {} for {:?}\n",
-                if *side == 0 { "left" } else { "right" },
-                self.scaled_to_string(*width),
-                char::from(*c)
-            )),
-            Node::Penalty(value) => out.push(format_args!("{indent}penalty {value}\n")),
-            Node::Rule {
-                width,
-                height,
-                depth,
-            } => out.push(format_args!(
-                "{indent}rule: width {}, height {}, depth {}\n",
-                self.scaled_to_string(*width),
-                self.scaled_to_string(*height),
-                self.scaled_to_string(*depth)
-            )),
-            Node::Leaders { kind, glue, .. } => out.push(format_args!(
-                "{indent}leaders kind {kind} with glue {}\n",
-                self.glue_to_string(glue)
-            )),
-            Node::Disc(disc) => out.push(format_args!(
-                "{indent}discretionary: {} pre-break, {} post-break, {} no-break node(s)\n",
-                disc.pre_break.len(),
-                disc.post_break.len(),
-                disc.no_break.len()
-            )),
-            Node::Mark { class, tokens } => out.push(format_args!(
-                "{indent}mark class {class}: {}\n",
-                self.diagnostic_tokens_to_string(tokens, 256)
-            )),
-            Node::Ins {
-                num,
-                height,
-                depth: insert_depth,
-                cost,
-                box_node,
-                ..
-            } => {
-                out.push(format_args!(
-                    "{indent}insert {num}: height {}, depth {}, cost {cost}\n",
-                    self.scaled_to_string(*height),
-                    self.scaled_to_string(*insert_depth)
-                ));
-                if depth < max_depth {
-                    self.show_node_into(box_node, depth + 1, max_depth, breadth, out);
-                }
-            }
-            Node::Adj(value) => out.push(format_args!("{indent}adjustment {value}\n")),
-            Node::Whatsit(whatsit) => out.push(format_args!(
-                "{indent}whatsit: {}\n",
-                whatsit_kind_name(whatsit)
-            )),
-            Node::Style(style) => out.push(format_args!("{indent}math style {style:?}\n")),
-            Node::NonScript => out.push(format_args!("{indent}nonscript\n")),
-            Node::Choice => out.push(format_args!("{indent}math choice\n")),
-            Node::ChoiceAlt { body } => out.push(format_args!(
-                "{indent}math choice alternative: {} node(s)\n",
-                body.len()
-            )),
-            Node::MathChar { fam, c, class, .. } => out.push(format_args!(
-                "{indent}math character {c} (family {fam}, class {class})\n"
-            )),
-            Node::Frac { num, den, .. } => out.push(format_args!(
-                "{indent}fraction: {} numerator, {} denominator node(s)\n",
-                num.len(),
-                den.len()
-            )),
-            Node::Radical { body, .. } => out.push(format_args!(
-                "{indent}radical: {} body node(s)\n",
-                body.len()
-            )),
-            Node::Scripts {
-                nucleus, sup, sub, ..
-            } => out.push(format_args!(
-                "{indent}scripts: {} nucleus, {} superscript, {} subscript node(s)\n",
-                nucleus.len(),
-                sup.as_ref().map_or(0, Vec::len),
-                sub.as_ref().map_or(0, Vec::len)
-            )),
-            Node::DelimBox {
-                small, large, size, ..
-            } => out.push(format_args!(
-                "{indent}delimiter box: small {small:?}, large {large:?}, size {size}\n"
-            )),
-            Node::OpLimits { op, above, below } => out.push(format_args!(
-                "{indent}operator limits: {} operator, {} above, {} below node(s)\n",
-                op.len(),
-                above.as_ref().map_or(0, Vec::len),
-                below.as_ref().map_or(0, Vec::len)
-            )),
-            Node::MathKern(value, 0) => out.push(format_args!(
-                "{indent}math kern {}\n",
-                self.scaled_to_string(*value)
-            )),
-            // etex.ch "Display math node p"
-            Node::MathKern(value, kind) => {
-                use crate::boxes::{math_end_lr, BEGIN_L, BEGIN_R, MATH_OFF};
-                if *kind > MATH_OFF {
-                    let end = if math_end_lr(*kind) { "end" } else { "begin" };
-                    let dir = if *kind >= BEGIN_R {
-                        'R'
-                    } else if *kind >= BEGIN_L {
-                        'L'
-                    } else {
-                        'M'
-                    };
-                    out.push(format_args!("{indent}\\{end}{dir}\n"));
-                } else {
-                    let on = if *kind == MATH_OFF { "off" } else { "on" };
-                    out.push(format_args!("{indent}\\math{on}"));
-                    if *value != 0 {
-                        out.push(format_args!(", surrounded {}", self.scaled_to_string(*value)));
-                    }
-                    out.push(format_args!("\n"));
-                }
-            }
-            Node::Accent { fam, c, body, .. } => out.push(format_args!(
-                "{indent}math accent {c} (family {fam}); {} body node(s)\n",
-                body.len()
-            )),
-            Node::Overline { body, under } => out.push(format_args!(
-                "{indent}{}: {} body node(s)\n",
-                if *under { "underline" } else { "overline" },
-                body.len()
-            )),
-            Node::VCenter { box_node } => {
-                out.push(format_args!("{indent}vcenter\n"));
-                if depth < max_depth {
-                    self.show_node_into(box_node, depth + 1, max_depth, breadth, out);
-                }
-            }
-            Node::InsDisc => out.push(format_args!("{indent}insertion discretionary\n")),
-            Node::Empty => out.push(format_args!("{indent}empty node\n")),
-            Node::VAdjust(nodes) => out.push(format_args!(
-                "{indent}vertical adjustment: {} node(s)\n",
-                nodes.len()
-            )),
-        }
-    }
 }
 
 fn group_kind_name(kind: LevelType) -> &'static str {
@@ -2672,39 +2380,6 @@ fn group_kind_name(kind: LevelType) -> &'static str {
     }
 }
 
-fn whatsit_kind_name(whatsit: &crate::boxes::WhatIt) -> &'static str {
-    use crate::boxes::WhatIt;
-    match whatsit {
-        WhatIt::PdfLiteral { .. } => "PDF literal",
-        WhatIt::PdfColorStack { .. } => "PDF color stack",
-        WhatIt::PdfRefXImage { .. } => "PDF image reference",
-        WhatIt::PdfRefXForm { .. } => "PDF form reference",
-        WhatIt::PdfSave { .. } => "PDF save",
-        WhatIt::PdfRestore { .. } => "PDF restore",
-        WhatIt::PdfSetMatrix { .. } => "PDF matrix",
-        WhatIt::Write { .. } => "deferred write",
-        WhatIt::OpenOut { .. } => "deferred openout",
-        WhatIt::CloseOut { .. } => "deferred closeout",
-        WhatIt::SyncPoint { .. } => "SyncTeX source point",
-        WhatIt::PdfDest { .. } => "PDF destination",
-        WhatIt::PdfAnnot { .. } => "PDF annotation",
-        WhatIt::PdfStartLink { .. } => "PDF link start",
-        WhatIt::PdfEndLink => "PDF link end",
-        WhatIt::Language { .. } => "language",
-        WhatIt::Special(_) => "special",
-        WhatIt::SavePos { .. } => "position save",
-        WhatIt::CjkText(_) => "CJK source text",
-        WhatIt::User(_) => "user whatsit",
-        WhatIt::PdfInterwordSpace(true) => "PDF interword space on",
-        WhatIt::PdfInterwordSpace(false) => "PDF interword space off",
-        WhatIt::PdfFakeSpace => "PDF fake space",
-        WhatIt::PdfRunningLink(true) => "PDF running link on",
-        WhatIt::PdfRunningLink(false) => "PDF running link off",
-        WhatIt::PdfSnapRefPoint => "PDF snap reference point",
-        WhatIt::PdfSnapY(_) => "PDF snap y",
-        WhatIt::PdfSnapYComp(_) => "PDF snap y compensation",
-    }
-}
 
 fn id_cs_is(e: &Engine, id: CsId, name: &[u8]) -> bool {
     e.cs.lookup(name) == Some(id)
@@ -2759,28 +2434,24 @@ mod tests {
     }
 
     #[test]
-    fn showbox_output_obeys_a_hard_breadth_bound() {
-        let mut engine = Engine::new(false);
-        engine.eqtb.int_params[IntParam::ShowBoxBreadth.idx() as usize] = i32::MAX;
-        engine.eqtb.int_params[IntParam::ShowBoxDepth.idx() as usize] = i32::MAX;
-        engine.eqtb.boxed[0] = Some(Node::Box {
-            kind: crate::boxes::HBOX,
-            w: 10 * 65_536,
-            h: 2 * 65_536,
-            d: 0,
-            shift: 0,
-            list: vec![Node::Penalty(50); 10_000],
-            glue_sign: 0,
-            glue_order: 0,
-            glue_set: 0.0,
-            lr: 0,
-        });
-
-        let shown = engine.show_box_description(0);
-
-        assert!(shown.contains("hbox: width 10.0pt, height 2.0pt"));
-        assert!(shown.contains("9872 child node(s) omitted by \\showboxbreadth"));
-        assert!(shown.len() <= MAX_INSPECTION_BYTES);
+    fn showbox_prints_tex_box_display_with_depth_and_breadth_limits() {
+        // Expected transcript text from `pdftex -ini -etex` (TeX Live 2026)
+        let engine = run_inspections(concat!(
+            "\\catcode`\\{=1 \\catcode`\\}=2 \\showboxdepth=1 \\showboxbreadth=3\n",
+            "\\setbox0\\hbox to 10pt{\\vrule width 1pt\\kern2pt\\hskip 3pt plus 1fil minus 2pt",
+            "\\penalty5 \\hbox{\\kern1pt}}\\showbox0\n",
+            "\\setbox1\\vbox{\\hrule height 2pt\\vskip 1pt\\vbox to 5pt{}\\kern1pt}\\showbox1\n",
+            "\\showboxdepth=-1 \\showbox1\n\\end\n",
+        ));
+        let log = &engine.log;
+        for expected in [
+            "> \\box0=\n\\hbox(0.0+0.0)x10.0, glue set 3.0fil\n.\\rule(*+*)x1.0\n.\\kern 2.0\n.\\glue 3.0 plus 1.0fil minus 2.0\n.etc.\n\n",
+            "> \\box1=\n\\vbox(9.0+0.0)x0.0\n.\\rule(2.0+0.0)x*\n.\\glue 1.0\n.\\vbox(5.0+0.0)x0.0\n.etc.\n\n",
+            "> \\box1= []\n\n",
+        ] {
+            assert!(log.contains(expected), "{log}");
+        }
+        assert_eq!(engine.error_count, 3);
     }
 
     #[test]

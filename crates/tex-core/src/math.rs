@@ -524,6 +524,7 @@ impl Engine {
                 self.prev_depth,
                 self.space_factor,
                 self.prev_graf,
+                self.nest_line(),
             ));
             self.mode = Mode::DisplayMath;
             self.math_style_stack.push(MathStyle::Display);
@@ -553,6 +554,7 @@ impl Engine {
                 self.prev_depth,
                 self.space_factor,
                 self.prev_graf,
+                self.nest_line(),
             ));
             self.push_group_level_at(crate::eqtb::LevelType::MathShift, math_entry_mark);
             // tex.web push_math: eq_word_define(cur_fam_code,-1)
@@ -606,15 +608,18 @@ impl Engine {
         // assignments made inside the display (setspace's \everydisplay
         // scales the display skips group-locally) must still apply
         let disp_regs = if was_display {
-            let g = |p: crate::prim::GlueParam| self.eqtb.glue_params[p.idx() as usize].clone();
+            use crate::boxes::glue_subtype as gs;
+            let g = |p: crate::prim::GlueParam| self.eqtb.glue_params[p.idx() as usize];
             let i = |p: crate::prim::IntParam| self.eqtb.int_params[p.idx() as usize];
-            let ads = g(crate::prim::GlueParam::AboveDisplaySkip);
+            let ads = g(crate::prim::GlueParam::AboveDisplaySkip).param(gs::ABOVE_DISPLAY_SKIP);
 
             Some((
                 ads,
-                g(crate::prim::GlueParam::BelowDisplaySkip),
-                g(crate::prim::GlueParam::AboveDisplayShortSkip),
-                g(crate::prim::GlueParam::BelowDisplayShortSkip),
+                g(crate::prim::GlueParam::BelowDisplaySkip).param(gs::BELOW_DISPLAY_SKIP),
+                g(crate::prim::GlueParam::AboveDisplayShortSkip)
+                    .param(gs::ABOVE_DISPLAY_SHORT_SKIP),
+                g(crate::prim::GlueParam::BelowDisplayShortSkip)
+                    .param(gs::BELOW_DISPLAY_SHORT_SKIP),
                 i(crate::prim::IntParam::PreDisplayPenalty),
                 i(crate::prim::IntParam::PostDisplayPenalty),
                 g(crate::prim::GlueParam::BaselineSkip),
@@ -638,12 +643,13 @@ impl Engine {
         // tex.web §1196: the math nodes take \mathsurround before unsave
         let ms = self.eqtb.dim_params[DimParam::MathSurround.idx() as usize];
         self.pop_group();
-        let (outer_mode, outer_list, pd, sf, pg) = self.saved_lists.pop().unwrap_or((
+        let (outer_mode, outer_list, pd, sf, pg, _) = self.saved_lists.pop().unwrap_or((
             self.mode,
             std::mem::take(&mut self.cur_list),
             self.prev_depth,
             self.space_factor,
             self.prev_graf,
+            0,
         ));
         self.prev_graf = pg;
         self.math_style_stack.pop();
@@ -758,6 +764,7 @@ impl Engine {
                         self.prev_depth,
                         self.space_factor,
                         self.prev_graf,
+                        self.nest_line(),
                     ));
                     self.par_page_lists.push(Vec::new());
                     self.mode = Mode::Horizontal;
@@ -772,6 +779,7 @@ impl Engine {
                         self.prev_depth,
                         self.space_factor,
                         self.prev_graf,
+                        self.nest_line(),
                     ));
                     self.par_page_lists.push(outer);
                     self.mode = Mode::Horizontal;
@@ -889,11 +897,13 @@ impl Engine {
                 }
                 let d = bs.width as i64 - prev_depth as i64 - h;
                 if d < lsl {
-                    return Some(lsk);
+                    return Some(lsk.param(crate::boxes::glue_subtype::LINE_SKIP));
                 }
-                let mut g = bs;
-                g.width = d as i32;
-                Some(g)
+                Some(crate::boxes::Glue {
+                    width: d as i32,
+                    subtype: crate::boxes::glue_subtype::BASELINE_SKIP,
+                    ..bs.fresh()
+                })
             };
             let pre = regs.4;
             let post = regs.5;
@@ -993,6 +1003,7 @@ impl Engine {
                     self.prev_depth,
                     self.space_factor,
                     self.prev_graf,
+                    self.nest_line(),
                 ));
                 self.par_page_lists.push(Vec::new());
                 self.mode = Mode::Horizontal;
@@ -1007,6 +1018,7 @@ impl Engine {
                     self.prev_depth,
                     self.space_factor,
                     self.prev_graf,
+                    self.nest_line(),
                 ));
                 self.par_page_lists.push(outer);
                 self.mode = Mode::Horizontal;
@@ -1209,6 +1221,7 @@ impl Engine {
             self.prev_depth,
             self.space_factor,
             self.prev_graf,
+            self.nest_line(),
         ));
         self.mode = Mode::Math;
         self.push_group_level(crate::eqtb::LevelType::MathLeft);
@@ -1232,12 +1245,13 @@ impl Engine {
         self.flush_math_limits();
         let inner = self.math_lists.pop().unwrap_or_default();
         self.pop_group();
-        let (outer_mode, outer_list, pd, sf, pg) = self.saved_lists.pop().unwrap_or((
+        let (outer_mode, outer_list, pd, sf, pg, _) = self.saved_lists.pop().unwrap_or((
             self.mode,
             std::mem::take(&mut self.cur_list),
             self.prev_depth,
             self.space_factor,
             self.prev_graf,
+            0,
         ));
         self.prev_graf = pg;
         self.mode = outer_mode;
@@ -2563,13 +2577,13 @@ impl Engine {
                 Node::MuGlue(g) => {
                     let mu = self.mu_unit(style) as i64;
                     let conv = |v: i32| (v as i64 * mu / 65536) as i32;
-                    Node::Glue(Glue {
-                        width: conv(g.width),
-                        stretch: conv(g.stretch),
-                        shrink: conv(g.shrink),
-                        stretch_order: g.stretch_order,
-                        shrink_order: g.shrink_order,
-                    })
+                    Node::Glue(Glue::spec(
+                        conv(g.width),
+                        conv(g.stretch),
+                        g.stretch_order,
+                        conv(g.shrink),
+                        g.shrink_order,
+                    ))
                 }
                 Node::MathKern(k, 0) => {
                     Node::Kern((*k as i64 * self.mu_unit(style) as i64 / 65536) as i32)
@@ -2644,18 +2658,22 @@ impl Engine {
         // assignments by packages actually take effect.
         let mu = self.mu_unit(style);
         let conv = |sp_mu: i32| ((sp_mu as i64) * (mu as i64) / 65536) as i32;
-        let src = match kind {
-            1 | 2 => GlueParam::ThinMuSkip,
-            3 => GlueParam::MedMuSkip,
-            _ => GlueParam::ThickMuSkip,
+        let (src, subtype) = match kind {
+            1 | 2 => (GlueParam::ThinMuSkip, crate::boxes::glue_subtype::THIN_MU_SKIP),
+            3 => (GlueParam::MedMuSkip, crate::boxes::glue_subtype::MED_MU_SKIP),
+            _ => (GlueParam::ThickMuSkip, crate::boxes::glue_subtype::THICK_MU_SKIP),
         };
         let p = &self.eqtb.glue_params[src.idx() as usize];
+        // tex.web §766: `subtype(z):=x+1`, the spacing parameter's symbol
         let g = Glue {
-            width: conv(p.width),
-            stretch: conv(p.stretch),
-            shrink: conv(p.shrink),
-            stretch_order: p.stretch_order,
-            shrink_order: p.shrink_order,
+            subtype,
+            ..Glue::spec(
+                conv(p.width),
+                conv(p.stretch),
+                p.stretch_order,
+                conv(p.shrink),
+                p.shrink_order,
+            )
         };
         out.push(Node::Glue(g));
     }
@@ -3263,13 +3281,13 @@ impl Engine {
             return b;
         }
         let ss = || {
-            Node::Glue(Glue {
-                width: 0,
-                stretch: ONE,
-                shrink: ONE,
-                stretch_order: crate::boxes::GLUE_FIL,
-                shrink_order: crate::boxes::GLUE_FIL,
-            })
+            Node::Glue(Glue::spec(
+                0,
+                ONE,
+                crate::boxes::GLUE_FIL,
+                ONE,
+                crate::boxes::GLUE_FIL,
+            ))
         };
         hpack(vec![ss(), b, ss()], Some(w), HBOX, &self.eqtb).node
     }
@@ -4847,13 +4865,7 @@ mod tests {
                     glue_set: 0.0,
                     lr: 0,
                 },
-                Node::Glue(Glue {
-                    width: su(3.33333),
-                    stretch: su(1.66666),
-                    shrink: su(1.11111),
-                    stretch_order: 0,
-                    shrink_order: 0,
-                }),
+                Node::Glue(Glue::spec(su(3.33333), su(1.66666), 0, su(1.11111), 0)),
                 Node::Rule {
                     width: su(1.0),
                     height: su(0.4),
@@ -4894,24 +4906,12 @@ mod tests {
         };
         let stretched = mk(
             1,
-            Glue {
-                width: su(3.33333),
-                stretch: su(1.66666),
-                shrink: 0,
-                stretch_order: 0,
-                shrink_order: 0,
-            },
+            Glue::spec(su(3.33333), su(1.66666), 0, 0, 0),
         );
         assert_eq!(e.pre_display_size_of(&stretched, 0), 0x3FFF_FFFF);
         let shrunk = mk(
             2,
-            Glue {
-                width: su(3.33333),
-                stretch: 0,
-                shrink: su(1.11111),
-                stretch_order: 0,
-                shrink_order: 0,
-            },
+            Glue::spec(su(3.33333), 0, 0, su(1.11111), 0),
         );
         assert_eq!(e.pre_display_size_of(&shrunk, 0), 0x3FFF_FFFF);
         // a *fil* line (order 2) leaves normal-order glue untouched: natural
@@ -4922,13 +4922,7 @@ mod tests {
         let fil_line = line_box(
             vec![
                 Node::Char { c: b'A', font: cmr },
-                Node::Glue(Glue {
-                    width: su(3.33333),
-                    stretch: su(1.66666),
-                    shrink: 0,
-                    stretch_order: 0,
-                    shrink_order: 0,
-                }),
+                Node::Glue(Glue::spec(su(3.33333), su(1.66666), 0, 0, 0)),
                 Node::Char { c: b'B', font: cmr },
             ],
             1,
@@ -4955,13 +4949,7 @@ mod tests {
                     depth: 0,
                 },
                 Node::Leaders {
-                    glue: Glue {
-                        width: su(2.0),
-                        stretch: su(1.0),
-                        shrink: 0,
-                        stretch_order: 2,
-                        shrink_order: 0,
-                    },
+                    glue: Glue::spec(su(2.0), su(1.0), 2, 0, 0),
                     kind: 0,
                     body: crate::boxes::LeaderBody::Rule {
                         width: su(2.0),
@@ -4986,13 +4974,7 @@ mod tests {
                     depth: 0,
                 },
                 Node::Leaders {
-                    glue: Glue {
-                        width: su(2.0),
-                        stretch: su(1.0),
-                        shrink: 0,
-                        stretch_order: 2,
-                        shrink_order: 0,
-                    },
+                    glue: Glue::spec(su(2.0), su(1.0), 2, 0, 0),
                     kind: 0,
                     body: crate::boxes::LeaderBody::Rule {
                         width: su(2.0),

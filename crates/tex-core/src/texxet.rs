@@ -435,13 +435,13 @@ impl Engine {
 /// etex.ch `cancel_glue`: a glue that, together with `g`, amounts to a
 /// kern of `amount`.
 fn cancel_glue(g: &Glue, amount: i64) -> Glue {
-    Glue {
-        width: (amount - g.width as i64) as i32,
-        stretch: -g.stretch,
-        shrink: -g.shrink,
-        stretch_order: g.stretch_order,
-        shrink_order: g.shrink_order,
-    }
+    Glue::spec(
+        (amount - g.width as i64) as i32,
+        -g.stretch,
+        g.stretch_order,
+        -g.shrink,
+        g.shrink_order,
+    )
 }
 
 fn is_zero_glue(g: &Glue) -> bool {

@@ -608,6 +608,7 @@ pub(crate) fn install(lua: &mut Lua) -> Result<(), String> {
         .exec()
         .map_err(|e| format!("tex library: {}", lua.get_error_message(e).message()))?;
     crate::lua_pdf::install(lua)?;
+    crate::lua_pdfe::install(lua)?;
     crate::lua_lang::install(lua)
 }
 

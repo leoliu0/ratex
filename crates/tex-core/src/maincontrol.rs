@@ -1925,7 +1925,10 @@ impl Engine {
             page_box = PDF_BOX_SPEC_CROP;
         }
 
-        let (path, bytes, bundled) = if let Some(path) = self.resolve_input_path(&file) {
+        let (path, bytes, bundled) = if let Some(bytes) = self.pdfe_memstreams.get(&file).cloned() {
+            // registered by `pdfe.new(stream, length, id)`
+            (std::path::PathBuf::from(&file), bytes, true)
+        } else if let Some(path) = self.resolve_input_path(&file) {
             let bytes = match tex_kpse::fs::read(&path) {
                 Ok(bytes) => bytes,
                 Err(error) => {

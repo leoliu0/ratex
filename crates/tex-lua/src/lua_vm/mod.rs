@@ -91,10 +91,7 @@ pub trait LuaTypedAsyncCallback<Args, R>: 'static {
 
 fn typed_callback_arg<T: FromLua>(state: &mut LuaState, index: usize) -> LuaResult<T> {
     let value = state.get_arg(index).unwrap_or_default();
-    match T::from_lua(value, state) {
-        Ok(value) => Ok(value),
-        Err(msg) => Err(state.error(msg)),
-    }
+    T::from_lua(value, state).map_err(|msg| crate::stdlib::lauxlib::argerror(state, index, &msg))
 }
 
 impl<Func, R> LuaTypedCallback<(), R> for Func
@@ -103,10 +100,7 @@ where
     R: IntoLua,
 {
     fn invoke_typed(&self, state: &mut LuaState) -> LuaResult<usize> {
-        match (self)().into_lua(state) {
-            Ok(count) => Ok(count),
-            Err(msg) => Err(state.error(msg)),
-        }
+        (self)().push_callback_result(state)
     }
 }
 
@@ -124,10 +118,7 @@ macro_rules! impl_lua_typed_callback {
                         let $value = typed_callback_arg::<$ty>(state, $index)?;
                     )+
 
-                    match (self)($($value),+).into_lua(state) {
-                        Ok(count) => Ok(count),
-                        Err(msg) => Err(state.error(msg)),
-                    }
+                    (self)($($value),+).push_callback_result(state)
                 }
             }
         )*

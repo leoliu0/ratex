@@ -9,7 +9,7 @@ use crate::lua_api::{Lua, LuaApi};
 
 fn typed_scope_arg<T: FromLua>(state: &mut LuaState, index: usize) -> LuaResult<T> {
     let value = state.get_arg(index).unwrap_or_default();
-    T::from_lua(value, state).map_err(|msg| state.error(msg))
+    T::from_lua(value, state).map_err(|msg| crate::stdlib::lauxlib::argerror(state, index, &msg))
 }
 
 #[doc(hidden)]
@@ -59,10 +59,7 @@ where
     R: IntoLua,
 {
     fn invoke_typed(&self, state: &mut LuaState) -> LuaResult<usize> {
-        match (self)().into_lua(state) {
-            Ok(count) => Ok(count),
-            Err(msg) => Err(state.error(msg)),
-        }
+        (self)().push_callback_result(state)
     }
 }
 
@@ -72,10 +69,7 @@ where
     R: IntoLua,
 {
     fn invoke_typed_with(&self, data: &Data, state: &mut LuaState) -> LuaResult<usize> {
-        match (self)(data).into_lua(state) {
-            Ok(count) => Ok(count),
-            Err(msg) => Err(state.error(msg)),
-        }
+        (self)(data).push_callback_result(state)
     }
 }
 
@@ -85,10 +79,7 @@ where
     R: IntoLua,
 {
     fn invoke_typed_with_mut(&self, data: &mut Data, state: &mut LuaState) -> LuaResult<usize> {
-        match (self)(data).into_lua(state) {
-            Ok(count) => Ok(count),
-            Err(msg) => Err(state.error(msg)),
-        }
+        (self)(data).push_callback_result(state)
     }
 }
 
@@ -106,10 +97,7 @@ macro_rules! impl_scoped_lua_callback {
                         let $value = typed_scope_arg::<$ty>(state, $index)?;
                     )+
 
-                    match (self)($($value),+).into_lua(state) {
-                        Ok(count) => Ok(count),
-                        Err(msg) => Err(state.error(msg)),
-                    }
+                    (self)($($value),+).push_callback_result(state)
                 }
             }
         )*
@@ -141,10 +129,7 @@ macro_rules! impl_scoped_lua_callback_with {
                         let $value = typed_scope_arg::<$ty>(state, $index)?;
                     )+
 
-                    match (self)(data, $($value),+).into_lua(state) {
-                        Ok(count) => Ok(count),
-                        Err(msg) => Err(state.error(msg)),
-                    }
+                    (self)(data, $($value),+).push_callback_result(state)
                 }
             }
         )*
@@ -176,10 +161,7 @@ macro_rules! impl_scoped_lua_callback_mut_with {
                         let $value = typed_scope_arg::<$ty>(state, $index)?;
                     )+
 
-                    match (self)(data, $($value),+).into_lua(state) {
-                        Ok(count) => Ok(count),
-                        Err(msg) => Err(state.error(msg)),
-                    }
+                    (self)(data, $($value),+).push_callback_result(state)
                 }
             }
         )*
@@ -202,10 +184,17 @@ fn scoped_expired_error() -> &'static str {
 }
 
 /// Lexical scope for non-`'static` Lua values.
+///
+/// `'lua` is the borrow of the [`Lua`] runtime passed to [`Lua::scope`]; data
+/// lent to scoped callbacks or userdata must outlive it, so nothing Lua can
+/// still reach is freed while the scope is open. Everything created through
+/// the scope expires when it ends.
 pub struct Scope<'scope, 'lua> {
     lua: &'scope mut Lua,
     ref_token: RefAliveToken,
     callbacks: Vec<CallbackResource<'scope>>,
+    /// Per-userdata access tokens; expired together with `ref_token`.
+    userdata_tokens: Vec<RefAliveToken>,
     _lua: PhantomData<&'lua mut Lua>,
 }
 
@@ -215,6 +204,7 @@ impl<'scope, 'lua> Scope<'scope, 'lua> {
             lua,
             ref_token: RefAliveToken::default(),
             callbacks: Vec::new(),
+            userdata_tokens: Vec::new(),
             _lua: PhantomData,
         }
     }
@@ -259,12 +249,12 @@ impl<'scope, 'lua> Scope<'scope, 'lua> {
         Ok(ScopedFunction::new(function))
     }
 
-    /// Create a scoped Lua function that borrows Rust data from this lexical scope.
-    pub fn create_function_with<'data, Data, F, Args, R>(
+    /// Create a scoped Lua function that borrows Rust data for the whole scope.
+    pub fn create_function_with<Data, F, Args, R>(
         &mut self,
-        data: &'data Data,
+        data: &'lua Data,
         f: F,
-    ) -> LuaResult<ScopedFunction<'scope, 'data>>
+    ) -> LuaResult<ScopedFunction<'scope, 'lua>>
     where
         F: ScopedLuaCallbackWith<Data, Args, R> + 'static,
     {
@@ -287,12 +277,16 @@ impl<'scope, 'lua> Scope<'scope, 'lua> {
         Ok(ScopedFunction::new(function))
     }
 
-    /// Create a scoped Lua function that mutably borrows Rust data from this lexical scope.
-    pub fn create_function_mut_with<'data, Data, F, Args, R>(
+    /// Create a scoped Lua function that mutably borrows Rust data for the whole scope.
+    ///
+    /// Calling the function again while it is running (for example through a
+    /// Lua callback it invokes) raises a Lua error instead of creating a second
+    /// `&mut Data`.
+    pub fn create_function_mut_with<Data, F, Args, R>(
         &mut self,
-        data: &'data mut Data,
+        data: &'lua mut Data,
         f: F,
-    ) -> LuaResult<ScopedFunction<'scope, 'data>>
+    ) -> LuaResult<ScopedFunction<'scope, 'lua>>
     where
         F: ScopedLuaCallbackMutWith<Data, Args, R> + 'static,
     {
@@ -302,10 +296,21 @@ impl<'scope, 'lua> Scope<'scope, 'lua> {
         self.callbacks.push(callback);
 
         let active = self.ref_token.clone();
+        let running = std::cell::Cell::new(false);
         let function = self.lua.create_raw_function(move |state| {
             if !active.is_alive() {
                 return Err(state.error(scoped_expired_error().to_owned()));
             }
+            if running.replace(true) {
+                return Err(state.error("mutable scoped callback called recursively".to_owned()));
+            }
+            struct Reset<'a>(&'a std::cell::Cell<bool>);
+            impl Drop for Reset<'_> {
+                fn drop(&mut self) {
+                    self.0.set(false);
+                }
+            }
+            let _reset = Reset(&running);
 
             let callback = unsafe { &*(callback_ptr as *const F) };
             let data = unsafe { &mut *(data_ptr as *mut Data) };
@@ -317,25 +322,30 @@ impl<'scope, 'lua> Scope<'scope, 'lua> {
 
     /// Create borrowed userdata tied to this lexical scope.
     ///
-    /// Uses `LuaUserdata::from_ref` internally — the scope's liveness token
-    /// is shared with the userdata. When the scope drops, the token expires
-    /// and all accesses return errors.
+    /// Lua accesses go through `LuaUserdata::from_ref` with a liveness token
+    /// that expires when the scope ends. Rust-side access goes through
+    /// [`ScopedUserData::with`] / [`ScopedUserData::with_mut`], which block Lua
+    /// access for their duration so the two sides never alias.
     pub fn create_userdata_ref<T: UserDataTrait>(
         &mut self,
-        reference: &mut T,
+        reference: &'lua mut T,
     ) -> LuaResult<ScopedUserData<'scope, T>> {
-        let token = self.ref_token.clone();
+        let token = RefAliveToken::default();
+        self.userdata_tokens.push(token.clone());
         let ptr = reference as *mut T;
         let ud = LuaUserdata::from_ref(reference, token.clone());
         let value = self.lua.global_state_mut().create_userdata(ud)?;
         let userdata_value = Value::new(self.lua.global_state_mut().to_ref(value));
-        Ok(ScopedUserData::new(userdata_value, ptr, token))
+        Ok(ScopedUserData::new(userdata_value, ptr, token, self.ref_token.clone()))
     }
 }
 
 impl Drop for Scope<'_, '_> {
     fn drop(&mut self) {
         self.ref_token.set(false);
+        for token in &self.userdata_tokens {
+            token.set(false);
+        }
     }
 }
 
@@ -382,36 +392,63 @@ impl IntoLua for &ScopedFunction<'_, '_> {
 pub struct ScopedUserData<'scope, T: UserDataTrait> {
     inner: Value,
     ptr: *mut T,
-    alive_token: RefAliveToken,
+    /// Gates Lua-side access to this userdata.
+    lua_access: RefAliveToken,
+    /// The owning scope's token; false once the scope has ended.
+    scope_alive: RefAliveToken,
     _marker: PhantomData<&'scope mut T>,
 }
 
 impl<'scope, T: UserDataTrait> ScopedUserData<'scope, T> {
-    fn new(inner: Value, ptr: *mut T, alive_token: RefAliveToken) -> Self {
+    fn new(
+        inner: Value,
+        ptr: *mut T,
+        lua_access: RefAliveToken,
+        scope_alive: RefAliveToken,
+    ) -> Self {
         ScopedUserData {
             inner,
             ptr,
-            alive_token,
+            lua_access,
+            scope_alive,
             _marker: PhantomData,
         }
     }
 
-    pub fn get(&self) -> LuaResult<&T> {
-        if !self.alive_token.is_alive() {
-            return Err(LuaError::RuntimeError);
-        }
-        Ok(unsafe { &*self.ptr })
+    /// Run `f` with shared access to the borrowed value. Lua code that touches
+    /// this userdata while `f` runs gets an expired-reference error.
+    pub fn with<R>(&self, f: impl FnOnce(&T) -> R) -> LuaResult<R> {
+        let _guard = self.block_lua_access()?;
+        Ok(f(unsafe { &*self.ptr }))
     }
 
-    pub fn get_mut(&mut self) -> LuaResult<&mut T> {
-        if !self.alive_token.is_alive() {
-            return Err(LuaError::RuntimeError);
-        }
-        Ok(unsafe { &mut *self.ptr })
+    /// Run `f` with exclusive access to the borrowed value. Lua code that
+    /// touches this userdata while `f` runs gets an expired-reference error.
+    pub fn with_mut<R>(&mut self, f: impl FnOnce(&mut T) -> R) -> LuaResult<R> {
+        let ptr = self.ptr;
+        let _guard = self.block_lua_access()?;
+        Ok(f(unsafe { &mut *ptr }))
     }
 
     pub fn type_name(&self) -> LuaResult<&'static str> {
-        self.get().map(UserDataTrait::type_name)
+        self.with(UserDataTrait::type_name)
+    }
+
+    fn block_lua_access(&self) -> LuaResult<RestoreAccess<'_>> {
+        if !self.scope_alive.is_alive() || !self.lua_access.is_alive() {
+            return Err(LuaError::RuntimeError);
+        }
+        self.lua_access.set(false);
+        Ok(RestoreAccess(&self.lua_access))
+    }
+}
+
+/// Re-enables Lua access to a scoped userdata when a Rust borrow ends.
+struct RestoreAccess<'a>(&'a RefAliveToken);
+
+impl Drop for RestoreAccess<'_> {
+    fn drop(&mut self) {
+        self.0.set(true);
     }
 }
 

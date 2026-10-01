@@ -447,8 +447,15 @@ mod tests {
                 .eval()?;
             assert_eq!(reassigned, 43);
 
-            borrowed.get_mut()?.inc(41);
-            assert_eq!(borrowed.get()?.count, 84);
+            // Lua access is blocked while Rust holds the borrow.
+            let blocked = borrowed.with_mut(|counter| {
+                counter.inc(41);
+                scope.load("borrowed.count = 0").exec().is_err()
+            })?;
+            assert!(blocked);
+            assert_eq!(borrowed.with(|counter| counter.count)?, 84);
+            let after: i64 = scope.load("return borrowed:get()").eval()?;
+            assert_eq!(after, 84);
             Ok(())
         })
         .unwrap();
@@ -509,20 +516,117 @@ mod tests {
     }
 
     #[test]
-    fn scope_function_with_borrowed_reference_works() {
+    fn scope_mut_callback_rejects_reentrant_call() {
         let mut lua = Lua::new(SafeOption::default());
         lua.open_stdlib(Stdlib::All).unwrap();
 
-        let base = 40_i64;
-        lua.scope(|scope| {
-            let add_base = scope.create_function_with(&base, |base: &i64, x: i64| x + *base)?;
-            scope.globals().set("add_base", &add_base)?;
+        let mut calls = 0_i64;
+        let result = lua.scope(|scope| {
+            let bump = scope.create_function_mut_with(
+                &mut calls,
+                |calls: &mut i64, again: LuaFunction| -> crate::LuaResult<i64> {
+                    *calls += 1;
+                    again.call::<_, ()>(())?;
+                    Ok(*calls)
+                },
+            )?;
+            scope.globals().set("bump", &bump)?;
+            scope
+                .load("return bump(function() bump(function() end) end)")
+                .eval::<i64>()
+        });
 
-            let result: i64 = scope.load("return add_base(2)").eval()?;
-            assert_eq!(result, 42);
-            Ok(())
-        })
-        .unwrap();
+        let err = result.unwrap_err();
+        let message = lua.get_error_message(err).message;
+        assert!(message.contains("called recursively"), "{message}");
+        assert_eq!(calls, 1);
+    }
+
+    #[test]
+    fn callback_error_rethrows_original_lua_error_value() {
+        let mut lua = Lua::new(SafeOption::default());
+        lua.open_stdlib(Stdlib::All).unwrap();
+
+        let call = lua
+            .create_function(|f: LuaFunction| -> crate::LuaResult<()> { f.call::<_, ()>(()) })
+            .unwrap();
+        lua.set_global("call", call).unwrap();
+        let (code, message): (i64, String) = lua
+            .load(
+                r#"
+                local _, e1 = pcall(call, function() error({code = 7}) end)
+                local _, e2 = pcall(call, function() error("boom", 0) end)
+                return e1.code, e2
+                "#,
+            )
+            .eval_multi()
+            .unwrap();
+        assert_eq!(code, 7);
+        assert_eq!(message, "boom");
+    }
+
+    #[test]
+    fn typed_integer_args_follow_lua_checkinteger() {
+        let mut lua = Lua::new_lua53(SafeOption::default());
+        lua.open_stdlib(Stdlib::All).unwrap();
+        let id = lua.create_function(|n: i64| n).unwrap();
+        lua.set_global("id", id).unwrap();
+        let byte = lua.create_function(|n: u8| n).unwrap();
+        lua.set_global("byte", byte).unwrap();
+
+        let (a, b, c): (i64, i64, i64) = lua
+            .load("return id(3.0), id('10'), id(' 0x10 ')")
+            .eval_multi()
+            .unwrap();
+        assert_eq!((a, b, c), (3, 10, 16));
+        let (e1, e2, e3): (String, String, String) = lua
+            .load(
+                r#"
+                local _, e1 = pcall(id, 2.5)
+                local _, e2 = pcall(byte, 300)
+                local _, e3 = pcall(id, {})
+                return e1, e2, e3
+                "#,
+            )
+            .eval_multi()
+            .unwrap();
+        assert!(e1.contains("bad argument #1 to 'id' (number has no integer representation)"), "{e1}");
+        assert!(e2.contains("out of range"), "{e2}");
+        assert!(e3.contains("number expected, got table"), "{e3}");
+
+        assert!(lua.set_global("big", u64::MAX).is_err());
+    }
+
+    #[test]
+    fn typed_string_args_use_lua_number_format_and_reject_invalid_utf8() {
+        let mut lua = Lua::new_lua53(SafeOption::default());
+        lua.open_stdlib(Stdlib::All).unwrap();
+        let echo = lua.create_function(|s: String| s).unwrap();
+        lua.set_global("echo", echo).unwrap();
+
+        let (a, b, c): (String, String, String) = lua
+            .load("return echo(1.0), echo(1e100), echo(-0.0)")
+            .eval_multi()
+            .unwrap();
+        assert_eq!((a.as_str(), b.as_str(), c.as_str()), ("1.0", "1e+100", "-0.0"));
+        let err: String = lua
+            .load(r#"local _, e = pcall(echo, "\255") return e"#)
+            .eval()
+            .unwrap();
+        assert!(err.contains("string is not valid UTF-8"), "{err}");
+    }
+
+    #[test]
+    fn vec_return_counts_every_pushed_value() {
+        let mut lua = Lua::new(SafeOption::default());
+        lua.open_stdlib(Stdlib::All).unwrap();
+        let pairs = lua.create_function(|| vec![(1_i64, 2_i64), (3, 4)]).unwrap();
+        lua.set_global("pairs2", pairs).unwrap();
+        let joined: String = lua
+            .load("return table.concat({pairs2()}, ',')")
+            .eval()
+            .unwrap();
+        assert_eq!(joined, "1,2,3,4");
     }
 
     #[test]

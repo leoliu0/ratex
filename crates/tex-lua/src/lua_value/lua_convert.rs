@@ -31,7 +31,9 @@
 
 use crate::UserDataTrait;
 use crate::lua_value::LuaValue;
-use crate::lua_vm::LuaState;
+use crate::lua_vm::{LuaError, LuaResult, LuaState};
+use crate::stdlib::lauxlib::{tointeger, tonumber};
+use crate::stdlib::numfmt::lua_float_to_string;
 
 pub(crate) fn collect_into_lua_values<T: IntoLua>(
     state: &mut LuaState,
@@ -89,6 +91,20 @@ pub trait IntoLua {
     ///
     /// Returns the number of Lua values pushed.
     fn into_lua(self, state: &mut LuaState) -> Result<usize, String>;
+
+    /// Push this value as the result of a Rust callback.
+    ///
+    /// Same as [`IntoLua::into_lua`], except that a callback returning
+    /// `Err(LuaError)` (typically `?` on a nested Lua call) rethrows the
+    /// pending Lua error value unchanged instead of replacing it with the
+    /// error kind's name.
+    #[doc(hidden)]
+    fn push_callback_result(self, state: &mut LuaState) -> LuaResult<usize>
+    where
+        Self: Sized,
+    {
+        self.into_lua(state).map_err(|msg| state.error(msg))
+    }
 }
 
 // ==================== Identity: LuaValue ====================
@@ -194,23 +210,32 @@ macro_rules! impl_from_lua_int {
     ($($ty:ty),*) => {
         $(
             impl FromLua for $ty {
+                /// `luaL_checkinteger` semantics: integers, floats with an exact
+                /// integer value and strings convertible to such numbers.
                 #[inline]
                 fn from_lua(value: LuaValue, _state: &mut LuaState) -> Result<Self, String> {
-                    if let Some(i) = value.as_integer() {
-                        Ok(i as $ty)
-                    } else if let Some(f) = value.as_float() {
-                        Ok(f as $ty)
-                    } else {
-                        Err(format!("expected integer, got {}", value.type_name()))
-                    }
+                    let Some(i) = tointeger(&value) else {
+                        return Err(if tonumber(&value).is_some() {
+                            "number has no integer representation".to_owned()
+                        } else {
+                            format!("number expected, got {}", value.type_name())
+                        });
+                    };
+                    <$ty>::try_from(i).map_err(|_| {
+                        format!("integer {} out of range for {}", i, stringify!($ty))
+                    })
                 }
             }
 
             impl IntoLua for $ty {
                 #[inline]
+                #[allow(clippy::useless_conversion)]
                 fn into_lua(self, state: &mut LuaState) -> Result<usize, String> {
+                    let i = i64::try_from(self).map_err(|_| {
+                        format!("{} {} does not fit in a Lua integer", stringify!($ty), self)
+                    })?;
                     state
-                        .push_value(LuaValue::integer(self as i64))
+                        .push_value(LuaValue::integer(i))
                         .map_err(|e| format!("{:?}", e))?;
                     Ok(1)
                 }
@@ -229,13 +254,9 @@ macro_rules! impl_from_lua_float {
             impl FromLua for $ty {
                 #[inline]
                 fn from_lua(value: LuaValue, _state: &mut LuaState) -> Result<Self, String> {
-                    if let Some(n) = value.as_number() {
-                        Ok(n as $ty)
-                    } else if let Some(i) = value.as_integer() {
-                        Ok(i as $ty)
-                    } else {
-                        Err(format!("expected number, got {}", value.type_name()))
-                    }
+                    tonumber(&value)
+                        .map(|n| n as $ty)
+                        .ok_or_else(|| format!("number expected, got {}", value.type_name()))
                 }
             }
 
@@ -258,16 +279,18 @@ impl_from_lua_float!(f32, f64);
 
 impl FromLua for String {
     #[inline]
-    fn from_lua(value: LuaValue, _state: &mut LuaState) -> Result<Self, String> {
+    fn from_lua(value: LuaValue, state: &mut LuaState) -> Result<Self, String> {
         if let Some(s) = value.as_str() {
             Ok(s.to_owned())
-        } else if let Some(i) = value.as_integer() {
-            // Lua coerces numbers to strings
-            Ok(format!("{}", i))
-        } else if let Some(f) = value.as_float() {
-            Ok(format!("{}", f))
+        } else if value.is_string() {
+            Err("string is not valid UTF-8".to_owned())
+        } else if value.ttisinteger() {
+            // Lua coerces numbers to strings (lua_tolstring)
+            Ok(value.ivalue().to_string())
+        } else if value.ttisfloat() {
+            Ok(lua_float_to_string(value.fltvalue(), state.global_state().language()))
         } else {
-            Err(format!("expected string, got {}", value.type_name()))
+            Err(format!("string expected, got {}", value.type_name()))
         }
     }
 }
@@ -320,12 +343,22 @@ impl<T: IntoLua> IntoLua for Option<T> {
 
 // ==================== Result<T, E> ====================
 
-impl<T: IntoLua, E: std::fmt::Display> IntoLua for Result<T, E> {
+impl<T: IntoLua, E: std::fmt::Display + 'static> IntoLua for Result<T, E> {
     #[inline]
     fn into_lua(self, state: &mut LuaState) -> Result<usize, String> {
         match self {
             Ok(v) => v.into_lua(state),
             Err(e) => Err(format!("{}", e)),
+        }
+    }
+
+    fn push_callback_result(self, state: &mut LuaState) -> LuaResult<usize> {
+        match self {
+            Ok(v) => v.push_callback_result(state),
+            Err(e) => Err(match (&e as &dyn std::any::Any).downcast_ref::<LuaError>() {
+                Some(err) => *err,
+                None => state.error(e.to_string()),
+            }),
         }
     }
 }
@@ -335,11 +368,11 @@ impl<T: IntoLua, E: std::fmt::Display> IntoLua for Result<T, E> {
 impl<T: IntoLua> IntoLua for Vec<T> {
     #[inline]
     fn into_lua(self, state: &mut LuaState) -> Result<usize, String> {
-        let count = self.len();
+        let mut pushed = 0;
         for item in self {
-            item.into_lua(state)?;
+            pushed += item.into_lua(state)?;
         }
-        Ok(count)
+        Ok(pushed)
     }
 }
 

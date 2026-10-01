@@ -26,8 +26,12 @@ const OPNAMES: [&str; 24] = [
 ];
 
 fn emit(text: &str) {
+    emit_bytes(text.as_bytes());
+}
+
+fn emit_bytes(bytes: &[u8]) {
     let mut out = std::io::stdout().lock();
-    let _ = out.write_all(text.as_bytes());
+    let _ = out.write_all(bytes);
     let _ = out.flush();
 }
 
@@ -132,13 +136,18 @@ fn treetext(t: &[TTree], i: usize, ident: usize, out: &mut String) {
 }
 
 pub fn printpatt(code: &[u32]) {
+    let mut out: Vec<u8> = Vec::new();
     let mut s = String::new();
     let mut p = 0;
     while p < code.len() {
         let _ = write!(s, "{p:02}: {} ", OPNAMES[op(code, p) as usize]);
         match op(code, p) {
             ICHAR => {
-                let _ = write!(s, "'{}'", aux(code, p) as char);
+                s.push('\'');
+                out.extend_from_slice(s.as_bytes());
+                out.push(aux(code, p));
+                s.clear();
+                s.push('\'');
             }
             IFULLCAPTURE => {
                 let a = aux(code, p);
@@ -158,7 +167,11 @@ pub fn printpatt(code: &[u32]) {
                 let _ = write!(s, "-> {}", p as i64 + offset(code, p) as i64);
             }
             ITESTCHAR => {
-                let _ = write!(s, "'{}'-> {}", aux(code, p) as char, p as i64 + offset(code, p) as i64);
+                s.push('\'');
+                out.extend_from_slice(s.as_bytes());
+                out.push(aux(code, p));
+                s.clear();
+                let _ = write!(s, "'-> {}", p as i64 + offset(code, p) as i64);
             }
             ITESTANY | ICHOICE | IJMP | ICALL | ICOMMIT | IPARTIALCOMMIT | IBACKCOMMIT => {
                 let _ = write!(s, "-> {}", p as i64 + offset(code, p) as i64);
@@ -172,7 +185,9 @@ pub fn printpatt(code: &[u32]) {
             _ => {}
         }
         s.push('\n');
+        out.extend_from_slice(s.as_bytes());
+        s.clear();
         p += sizei(code, p);
     }
-    emit(&s);
+    emit_bytes(&out);
 }

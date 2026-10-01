@@ -309,7 +309,7 @@ fn coderuntime(cs: &mut Code, t: &mut [TTree], i: usize, tt: i32) {
     cs.add_inst_cap(ICLOSERUNTIME, CCLOSE, 0, 0);
 }
 
-fn coderep(cs: &mut Code, t: &mut [TTree], body: usize, fl: &Charset) {
+fn coderep(cs: &mut Code, t: &mut [TTree], body: usize, opt: bool, fl: &Charset) {
     let mut st = [0u8; CHARSETSIZE];
     if tocharset(t, body, &mut st) {
         cs.add(ISPAN, 0);
@@ -328,10 +328,21 @@ fn coderep(cs: &mut Code, t: &mut [TTree], body: usize, fl: &Charset) {
         // test(fail(p1)) -> L2 ; choice L2 ; L1: p ; partial_commit L1 ; L2:
         // (without the test when p can match the empty string)
         let test = codetestset(cs, &st, e1 != 0);
-        let pchoice = cs.add_offset_inst(ICHOICE);
+        let pchoice;
+        let l1;
+        if opt {
+            // an enclosing choice already stands for this loop's choice
+            let pc = cs.add_offset_inst(IPARTIALCOMMIT);
+            cs.jump_to_here(pc);
+            pchoice = NOINST;
+            l1 = cs.here();
+        } else {
+            pchoice = cs.add_offset_inst(ICHOICE);
+            l1 = pchoice + 2;
+        }
         codegen(cs, t, body, false, NOINST, &FULLSET);
         let pcommit = cs.add_offset_inst(IPARTIALCOMMIT);
-        cs.jump_to_there(pcommit, pchoice + 2);
+        cs.jump_to_there(pcommit, l1);
         cs.jump_to_here(pchoice);
         cs.jump_to_here(test);
     }
@@ -431,7 +442,7 @@ fn codegen(cs: &mut Code, t: &mut [TTree], mut i: usize, opt: bool, mut tt: i32,
                 let second = sib2(t, i);
                 codechoice(cs, t, i + 1, second, opt, fl);
             }
-            TREP => coderep(cs, t, i + 1, fl),
+            TREP => coderep(cs, t, i + 1, opt, fl),
             TBEHIND => codebehind(cs, t, i),
             TNOT => codenot(cs, t, i + 1),
             TAND => codeand(cs, t, i + 1, tt),

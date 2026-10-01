@@ -334,11 +334,13 @@ pub fn getfirst(t: &mut [TTree], mut i: usize, follow: &Charset, firstset: &mut 
                     cs_complement(firstset);
                     return 1;
                 }
-                *firstset = [0xFF; CHARSETSIZE];
-                return 1;
+                let mut tmp = [0u8; CHARSETSIZE];
+                let e = getfirst(t, i + 1, follow, &mut tmp);
+                *firstset = *follow;
+                return 1 | (e & 2);
             }
             TBEHIND => {
-                *firstset = [0xFF; CHARSETSIZE];
+                *firstset = *follow;
                 return 1;
             }
             tag => unreachable!("getfirst: tag {tag}"),

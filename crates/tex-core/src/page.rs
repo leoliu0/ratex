@@ -1675,7 +1675,12 @@ impl Engine {
             major_version,
             minor_version,
             draftmode: int(self, IntParam::PdfDraftMode).clamp(0, 1),
-            decimal_digits: int(self, IntParam::PdfDecimalDigits).clamp(0, 4) as u32,
+            // luatex pdfgen.c: `fix_int(pdf_decimal_digits, 3, 5)`
+            decimal_digits: if self.engine_kind == crate::engine::EngineKind::LuaTeX {
+                int(self, IntParam::PdfDecimalDigits).clamp(3, 4) as u32
+            } else {
+                int(self, IntParam::PdfDecimalDigits).clamp(0, 4) as u32
+            },
             gamma: int(self, IntParam::PdfGamma).clamp(0, 1_000_000),
             image_gamma: int(self, IntParam::PdfImageGamma).clamp(0, 1_000_000),
             image_hicolor: int(self, IntParam::PdfImageHicolor).clamp(0, 1) == 1,

@@ -246,9 +246,6 @@ impl Engine {
             pos,
             line_no,
             line_start,
-            line_buf,
-            line_end_len,
-            line_pos,
             state,
             ..
         } = &mut self.input.stack[si]
@@ -267,6 +264,14 @@ impl Engine {
         }
         buf.clear();
         buf.extend_from_slice(&data[start..content_end]);
+        *line_start = start;
+        *pos = next;
+        *line_no += 1;
+        *state = 0;
+        // luatex process_input_buffer: sees the line without \endlinechar
+        if self.engine_kind == EngineKind::LuaTeX {
+            self.lua_process_input_line(&mut buf);
+        }
         let before = buf.len();
         if let Ok(character) = u8::try_from(end_line_char) {
             if unicode && !character.is_ascii() {
@@ -276,13 +281,18 @@ impl Engine {
                 buf.push(character);
             }
         }
+        let Source::File {
+            line_buf,
+            line_end_len,
+            line_pos,
+            ..
+        } = &mut self.input.stack[si]
+        else {
+            return false;
+        };
         *line_end_len = (buf.len() - before) as u8;
         *line_buf = Some(buf);
         *line_pos = 0;
-        *line_start = start;
-        *pos = next;
-        *line_no += 1;
-        *state = 0;
         true
     }
 

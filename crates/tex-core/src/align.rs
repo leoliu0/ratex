@@ -1477,7 +1477,7 @@ impl Engine {
         // is packaged ("in alignment at lines a--b")
         let align_line = origin.as_ref().map_or(0, |mark| mark.to_context().line as i32);
         let saved_begin = std::mem::replace(&mut self.pack_begin_line, -align_line);
-        self.report_pack_warnings_at(&res, origin);
+        self.report_pack_warnings_at(&mut res, origin);
         self.pack_begin_line = saved_begin;
         let (p_size, p_sign, p_order, p_set) = match &res.node {
             Node::Box {
@@ -1686,6 +1686,7 @@ impl Engine {
                     self.prev_depth = self.ignore_depth();
                 }
                 self.page_list.extend(rows);
+                self.lua_page_filter(crate::lua_callbacks::page_info::ALIGNMENT, true);
                 self.build_page();
             }
             Mode::InternalVertical => {

@@ -1119,6 +1119,12 @@ impl Engine {
                 if self.write_streams[idx].is_some() {
                     // print(c) for a \write file: the new-line character
                     // ends the line, unprintable bytes use `^^` notation
+                    let replaced = if self.engine_kind == crate::engine::EngineKind::LuaTeX {
+                        self.lua_process_output_line(raw)
+                    } else {
+                        None
+                    };
+                    let raw: &[u8] = replaced.as_deref().unwrap_or(raw);
                     let nl = self.new_line_char();
                     let mut line = Vec::with_capacity(raw.len() + 1);
                     for &byte in raw {

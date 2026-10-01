@@ -1403,10 +1403,10 @@ impl Engine {
             self.finish_halign();
             return;
         }
-        let res = pack(inner, target, kind);
+        let mut res = pack(inner, target, kind);
         self.last_badness = res.badness;
         match kind {
-            0 | 1 | 2 | 8 => self.report_pack_warnings_at(&res, pack_warning_source),
+            0 | 1 | 2 | 8 => self.report_pack_warnings_at(&mut res, pack_warning_source),
             _ => {}
         }
         let mut node = res.node;
@@ -1779,14 +1779,14 @@ impl Engine {
     /// \hbadness|\vbadness exactly as in tex.web §653-§663.
     /// Report packing quality at the scanner's current position. Kept as the
     /// public one-argument entry point for library callers.
-    pub fn report_pack_warnings(&mut self, res: &boxes::PackResult) {
+    pub fn report_pack_warnings(&mut self, res: &mut boxes::PackResult) {
         let source = self.current_token_source_mark();
         self.report_pack_warnings_at(res, source);
     }
 
     pub(crate) fn report_pack_warnings_at(
         &mut self,
-        res: &boxes::PackResult,
+        res: &mut boxes::PackResult,
         source: Option<crate::input::SourceMark>,
     ) {
         self.last_pack = Some(res.record());
@@ -1812,6 +1812,8 @@ impl Engine {
         let obj = if hbox { "\\hbox" } else { "\\vbox" };
         let too = if hbox { "too wide" } else { "too high" };
         let mut msg: Option<String> = None;
+        // luatex hpack_quality/vpack_quality: what happened and the value
+        let mut quality: Option<(&str, i32)> = None;
         if x > 0 && res.order == 0 {
             // underfull / loose (includes badness 10000 when nothing stretches)
             if res.badness > bad_param {
@@ -1820,16 +1822,41 @@ impl Engine {
                 } else {
                     "Loose"
                 };
+                quality = Some((if res.badness > 100 { "underfull" } else { "loose" }, res.badness));
                 msg = Some(format!("{kw} {obj} (badness {}", res.badness));
             }
         } else if x < 0 && res.order == 0 {
             if -x > res.shrink[0] {
                 let excess = -x - res.shrink[0];
                 if excess > fuzz as i64 || bad_param < 100 {
+                    quality = Some(("overfull", excess as i32));
                     msg = Some(format!("Overfull {obj} ({}pt {too}", print_scaled(excess)));
                 }
             } else if res.badness > bad_param {
+                quality = Some(("tight", res.badness));
                 msg = Some(format!("Tight {obj} (badness {}", res.badness));
+            }
+        }
+        if let (Some((what, value)), true) = (quality, self.engine_kind == crate::engine::EngineKind::LuaTeX) {
+            let cb = if hbox { crate::lua_callbacks::Cb::HpackQuality } else { crate::lua_callbacks::Cb::VpackQuality };
+            if self.cb_defined(cb) {
+                // with a callback the default \overfullrule is the callback's business
+                if hbox && what == "overfull" {
+                    let rule_w = self.eqtb.dim_params[DimParam::OverfullRule.idx() as usize];
+                    if let Node::Box { list, .. } = &mut res.node {
+                        if matches!(list.last(), Some(Node::Rule { width, .. }) if *width == rule_w) {
+                            list.pop();
+                        }
+                    }
+                }
+                let (begin, line) = (self.pack_begin_line, self.nest_line());
+                let snapshot = res.node.clone();
+                if let Some(rules) = self.lua_pack_quality(hbox, what, value, &snapshot, begin, line) {
+                    if let Node::Box { list, .. } = &mut res.node {
+                        list.extend(rules);
+                    }
+                    msg = None;
+                }
             }
         }
         if let Some(mut m) = msg {
@@ -2745,6 +2772,9 @@ impl Engine {
                 if resume {
                     return;
                 }
+                if self.engine_kind == crate::engine::EngineKind::LuaTeX {
+                    self.lua_insert_local_par();
+                }
                 if indent {
                     let pi = self.eqtb.dim_params[DimParam::ParIndent.idx() as usize];
                     let r = boxes::hpack(Vec::new(), Some(pi), boxes::HBOX, &self.eqtb);
@@ -2767,6 +2797,11 @@ impl Engine {
                     let ps = self.eqtb.glue_params[GlueParam::ParSkip.idx() as usize];
                     self.cur_list.push(Node::Glue(ps.param(glue_subtype::PAR_SKIP)));
                 }
+                let indent = if self.engine_kind == crate::engine::EngineKind::LuaTeX && !resume {
+                    self.lua_new_graf(indent)
+                } else {
+                    indent
+                };
                 let page = std::mem::take(&mut self.cur_list);
                 self.saved_lists.push((
                     Mode::InternalVertical,
@@ -2786,6 +2821,9 @@ impl Engine {
                 }
                 if resume {
                     return;
+                }
+                if self.engine_kind == crate::engine::EngineKind::LuaTeX {
+                    self.lua_insert_local_par();
                 }
                 if indent {
                     let pi = self.eqtb.dim_params[DimParam::ParIndent.idx() as usize];
@@ -3082,7 +3120,8 @@ impl Engine {
     /// baselineskip/lineskip glue (tex.web append_to_vlist §17438-17440):
     /// used when a paragraph's lines land in an internal vlist, which the
     /// page builder never processes
-    fn fill_line_interline(&self, outer_prev_depth: i32, list: NodeList) -> (NodeList, i32) {
+    fn fill_line_interline(&mut self, outer_prev_depth: i32, list: NodeList) -> (NodeList, i32) {
+        let lua_mode = self.engine_kind == crate::engine::EngineKind::LuaTeX;
         let ignore_depth = self.ignore_depth();
         let bs = self.eqtb.glue_params[GlueParam::BaselineSkip.idx() as usize].clone();
         let ls = self.eqtb.glue_params[GlueParam::LineSkip.idx() as usize].clone();
@@ -3110,6 +3149,23 @@ impl Engine {
                 }
                 Node::Box { h, d, .. } => {
                     let (h, d) = (h, d);
+                    let mut node = n;
+                    // luatex append_to_vlist: the callback supplies the
+                    // nodes and the depth instead of the interline glue
+                    if lua_mode {
+                        match self.lua_append_to_vlist(node, "post_linebreak", prev_depth) {
+                            Ok((items, depth)) => {
+                                held_placeholder = false;
+                                out.extend(items);
+                                if let Some(depth) = depth {
+                                    prev_depth = depth;
+                                }
+                                continue;
+                            }
+                            Err(back) => node = back,
+                        }
+                    }
+                    let n = node;
                     if prev_depth > ignore_depth {
                         let b = bs.width as i64 - prev_depth as i64 - h as i64;
                         let glue = if b < lsl as i64 {

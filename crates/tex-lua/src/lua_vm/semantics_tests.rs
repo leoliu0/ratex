@@ -246,3 +246,14 @@ fn lua53_float_modulo_uses_the_5_3_sign_correction() {
         "#,
     );
 }
+
+#[test]
+fn lua53_arithmetic_error_blames_the_non_numeric_operand() {
+    run(
+        LuaLanguageLevel::Lua53,
+        r#"
+        local ok, msg = pcall(load("aaa = '2'; b = nil; x = aaa * b"))
+        assert(not ok and msg:find("global 'b'", 1, true), msg)
+        "#,
+    );
+}

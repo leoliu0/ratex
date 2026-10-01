@@ -33,6 +33,7 @@ mod lua_img;
 mod lua_lang;
 mod lua_pdf;
 mod lua_tex;
+mod lua_ud;
 pub mod maincontrol;
 pub mod math;
 pub mod native_font;

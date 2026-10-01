@@ -229,6 +229,7 @@ pub(crate) fn install(lua: &mut Lua) -> Result<(), String> {
             Some(LuaBytes(out))
         })
     });
+    crate::lua_ud::install_lang(lua, &t)?;
     lua.set_global("__ratex_langlib", t).map_err(|e| format!("{e:?}"))?;
     lua.load(include_str!("lua_lang.lua"))
         .set_name("=[ratex lang]")

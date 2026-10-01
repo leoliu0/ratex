@@ -9,20 +9,10 @@ local tointeger = math.tointeger
 local lang = {}
 _G.lang = lang
 
-local ids = setmetatable({}, { __mode = "k" })
 local next_id = 0
-local mt = {}
-mt.__tostring = function(self) return "luatex.lang: " .. tostring(ids[self]) end
-mt.__index = function() return nil end
-
-local function new_language(id)
-  local obj = setmetatable({}, mt)
-  ids[obj] = id
-  return obj
-end
 
 local function id_of(l, name)
-  local id = ids[l]
+  local id = L.lang_id(l)
   if not id then
     error("bad argument #1 to '" .. name .. "' (luatex.lang expected, got " .. type(l) .. ")", 3)
   end
@@ -37,7 +27,7 @@ function lang.new(id)
   end
   L.check(id)
   if id >= next_id then next_id = id + 1 end
-  return new_language(id)
+  return L.lang_new(id)
 end
 
 function lang.id(l) return id_of(l, "id") end

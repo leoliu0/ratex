@@ -9,39 +9,17 @@ local tex, lua = tex, lua
 
 token = token or {}
 local token = token
-local tok_mt = {}
-local function wrap(packed) return setmetatable({ packed }, tok_mt) end
+local wrap, unwrap, is_tok = B.tok_wrap, B.tok_unwrap, function(v) return B.tok_unwrap(v) ~= nil end
 local function packed(t)
-  if getmetatable(t) ~= tok_mt then
+  local p = unwrap(t)
+  if p == nil then
     error("lua <token> expected, not an object with type " .. type(t), 3)
   end
-  return rawget(t, 1)
+  return p
 end
-local fields = {
-  command    = B.tok_cmd,
-  mode       = B.tok_mode,
-  index      = B.tok_index,
-  cmdname    = B.tok_cmdname,
-  csname     = B.tok_csname,
-  active     = B.tok_active,
-  expandable = B.tok_expandable,
-  protected  = B.tok_protected,
-  tok        = B.tok_tok,
-  id         = function(p) return p end,
-}
-tok_mt.__index = function(t, key)
-  local f = fields[key]
-  if f then return f(rawget(t, 1)) end
-  return nil
-end
-tok_mt.__eq = function(a, b) return rawget(a, 1) == rawget(b, 1) end
-tok_mt.__tostring = function(t)
-  return "<lua token " .. rawget(t, 1) .. ": " .. B.tok_tok(rawget(t, 1)) .. ">"
-end
-token.__metatable_of_tokens = tok_mt
 
-function token.type(t) if getmetatable(t) == tok_mt then return "token" end return nil end
-function token.is_token(t) return getmetatable(t) == tok_mt end
+function token.type(t) if is_tok(t) then return "token" end return nil end
+function token.is_token(t) return is_tok(t) end
 function token.create(v, cmd)
   if type(v) == "number" then return wrap(B.create_char(v, cmd)) end
   return wrap(B.create_cs(tostring(v)))
@@ -95,7 +73,7 @@ function token.put_next(...)
   if n == 0 then return end
   local first = ...
   local list = {}
-  if type(first) == "table" and getmetatable(first) ~= tok_mt then
+  if type(first) == "table" then
     if n > 1 then error("only one table permitted in put_next") end
     for i = 1, #first do list[i] = packed(first[i]) end
   else
@@ -206,15 +184,15 @@ local function store(v, partial, cattable)
   local t = type(v)
   if t == "string" or t == "number" then
     B.print_text(partial, cattable, tostring(v))
-  elseif t == "table" and getmetatable(v) == tok_mt then
-    B.print_token(partial, cattable, rawget(v, 1))
+  elseif is_tok(v) then
+    B.print_token(partial, cattable, unwrap(v))
   else
     return false
   end
   return true
 end
 local function is_list(v)
-  return type(v) == "table" and getmetatable(v) ~= tok_mt
+  return type(v) == "table"
 end
 local function cprint(partial, cattable, ...)
   local n, start = select("#", ...), 1

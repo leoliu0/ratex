@@ -299,7 +299,7 @@ impl Engine {
         }
     }
 
-    fn lua_tok_csname(&self, t: Token) -> Option<String> {
+    pub(crate) fn lua_tok_csname(&self, t: Token) -> Option<String> {
         let t = t.unfreeze();
         if t.is_char() {
             if t.cc() == 13 {
@@ -314,7 +314,7 @@ impl Engine {
         Some(String::from_utf8_lossy(name).into_owned())
     }
 
-    fn lua_tok_is_protected(&self, t: Token) -> bool {
+    pub(crate) fn lua_tok_is_protected(&self, t: Token) -> bool {
         let t = t.unfreeze();
         if !t.is_cs() {
             return false;
@@ -872,19 +872,7 @@ pub(crate) fn install(lua: &mut Lua) -> Result<(), String> {
     });
     reg!(lua, b, "tok_index", |t: i64| -> Result<Option<i64>, String> {
         let t = token_arg(t)?;
-        with_engine(|e| {
-            let (cmd, mode) = e.lua_cmd_mode(t);
-            let index = match cmd {
-                CMD_ASSIGN_INT => mode - COUNT_BASE,
-                CMD_ASSIGN_ATTR => mode - ATTRIBUTE_BASE,
-                CMD_ASSIGN_DIMEN => mode - DIMEN_BASE,
-                CMD_ASSIGN_GLUE => mode - SKIP_BASE,
-                CMD_ASSIGN_MU_GLUE => mode - MU_SKIP_BASE,
-                CMD_ASSIGN_TOKS => mode - TOKS_BASE,
-                _ => mode,
-            };
-            (0..=65535).contains(&index).then_some(index)
-        })
+        with_engine(|e| e.lua_tok_index(t))
     });
     reg!(lua, b, "tok_cmdname", |t: i64| -> Result<String, String> {
         let t = token_arg(t)?;
@@ -1312,6 +1300,7 @@ pub(crate) fn install(lua: &mut Lua) -> Result<(), String> {
         })
     });
 
+    crate::lua_ud::install_tokens(lua, &b)?;
     lua.set_global("__ratex_bridge", b).map_err(|e| format!("{e:?}"))?;
     let names: LuaTable = lua.create_table().map_err(|e| format!("{e:?}"))?;
     for (code, name) in crate::lua_cmds::COMMAND_NAMES.iter().enumerate() {
@@ -1331,6 +1320,32 @@ fn register_number(idx: Option<i64>, what: &str) -> Result<u16, String> {
 }
 
 impl Engine {
+    /// lnewtokenlib.c `get_index`: the register or character a token is
+    /// about, `None` when it has no index.
+    pub(crate) fn lua_tok_index(&self, t: Token) -> Option<i64> {
+        let (cmd, mode) = self.lua_cmd_mode(t);
+        let index = match cmd {
+            CMD_ASSIGN_INT => mode - COUNT_BASE,
+            CMD_ASSIGN_ATTR => mode - ATTRIBUTE_BASE,
+            CMD_ASSIGN_DIMEN => mode - DIMEN_BASE,
+            CMD_ASSIGN_GLUE => mode - SKIP_BASE,
+            CMD_ASSIGN_MU_GLUE => mode - MU_SKIP_BASE,
+            CMD_ASSIGN_TOKS => mode - TOKS_BASE,
+            _ => mode,
+        };
+        (0..=65535).contains(&index).then_some(index)
+    }
+
+    /// `tok` of a token object: the engine-independent token value.
+    pub(crate) fn lua_tok_value(t: Token) -> i64 {
+        let t = t.unfreeze();
+        if t.is_cs() {
+            CS_TOKEN_FLAG + i64::from(t.cs_id())
+        } else {
+            i64::from(t.cc()) * (1 << 21) + i64::from(t.chr())
+        }
+    }
+
     fn lua_named_param(&self, name: &[u8]) -> Option<Prim> {
         let id = self.cs.lookup(name)?;
         match self.eqtb.resolve(id) {

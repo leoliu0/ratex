@@ -1,7 +1,7 @@
 // IO library: a port of liolib.c (Lua 5.3 and 5.5 behaviour).
 // Implements: close, flush, input, lines, open, output, popen, read,
 // tmpfile, type, write and the FILE* methods.
-mod file;
+pub(crate) mod file;
 
 use std::io::SeekFrom;
 

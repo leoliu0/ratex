@@ -605,103 +605,70 @@ fn push_error(state: &mut LuaState, error: LuaError) -> c_int {
     status
 }
 
-fn numeric_value(value: LuaValue) -> Option<LuaValue> {
-    if value.is_number() {
-        Some(value)
-    } else {
-        value
-            .as_str()
-            .map(crate::stdlib::basic::parse_number::parse_lua_number)
-            .filter(|value| value.is_number())
-    }
-}
-
-fn integer_value(value: LuaValue) -> Option<i64> {
-    numeric_value(value).and_then(|value| value.as_integer())
-}
-
-fn number_value(value: LuaValue) -> Option<f64> {
-    numeric_value(value).and_then(|value| value.as_number())
-}
-
-fn floor_integer_division(left: i64, right: i64) -> Option<i64> {
-    if right == 0 {
-        return None;
-    }
-    if left == i64::MIN && right == -1 {
-        return Some(i64::MIN);
-    }
-    let quotient = left / right;
-    let remainder = left % right;
-    Some(if remainder != 0 && (remainder < 0) != (right < 0) {
-        quotient - 1
-    } else {
-        quotient
-    })
-}
-
-fn direct_arithmetic(operation: c_int, left: LuaValue, right: LuaValue) -> Option<LuaValue> {
-    let left_integer = integer_value(left);
-    let right_integer = integer_value(right);
-    match operation {
-        LUA_OPADD => match left_integer.zip(right_integer) {
-            Some((left, right)) => Some(LuaValue::integer(left.wrapping_add(right))),
-            None => number_value(left)
-                .zip(number_value(right))
-                .map(|(left, right)| LuaValue::number(left + right)),
-        },
-        LUA_OPSUB => match left_integer.zip(right_integer) {
-            Some((left, right)) => Some(LuaValue::integer(left.wrapping_sub(right))),
-            None => number_value(left)
-                .zip(number_value(right))
-                .map(|(left, right)| LuaValue::number(left - right)),
-        },
-        LUA_OPMUL => match left_integer.zip(right_integer) {
-            Some((left, right)) => Some(LuaValue::integer(left.wrapping_mul(right))),
-            None => number_value(left)
-                .zip(number_value(right))
-                .map(|(left, right)| LuaValue::number(left * right)),
-        },
-        LUA_OPMOD => match left_integer.zip(right_integer) {
-            Some((left, right)) => floor_integer_division(left, right)
-                .map(|quotient| LuaValue::integer(left.wrapping_sub(quotient.wrapping_mul(right)))),
-            None => number_value(left)
-                .zip(number_value(right))
-                .map(|(left, right)| LuaValue::number(left - (left / right).floor() * right)),
-        },
-        LUA_OPPOW => number_value(left)
-            .zip(number_value(right))
-            .map(|(left, right)| LuaValue::number(left.powf(right))),
-        LUA_OPDIV => number_value(left)
-            .zip(number_value(right))
-            .map(|(left, right)| LuaValue::number(left / right)),
-        LUA_OPIDIV => match left_integer.zip(right_integer) {
-            Some((left, right)) => floor_integer_division(left, right).map(LuaValue::integer),
-            None => number_value(left)
-                .zip(number_value(right))
-                .map(|(left, right)| LuaValue::number((left / right).floor())),
-        },
-        LUA_OPBAND => left_integer
-            .zip(right_integer)
-            .map(|(left, right)| LuaValue::integer(left & right)),
-        LUA_OPBOR => left_integer
-            .zip(right_integer)
-            .map(|(left, right)| LuaValue::integer(left | right)),
-        LUA_OPBXOR => left_integer
-            .zip(right_integer)
-            .map(|(left, right)| LuaValue::integer(left ^ right)),
-        LUA_OPSHL => left_integer
-            .zip(right_integer)
-            .map(|(left, right)| LuaValue::integer(crate::lua_vm::lua_shiftl(left, right))),
-        LUA_OPSHR => left_integer
-            .zip(right_integer)
-            .map(|(left, right)| LuaValue::integer(crate::lua_vm::lua_shiftl(left, -right))),
-        LUA_OPUNM => left
-            .as_integer_strict()
-            .map(|value| LuaValue::integer(value.wrapping_neg()))
-            .or_else(|| number_value(left).map(|value| LuaValue::number(-value))),
-        LUA_OPBNOT => integer_value(left).map(|value| LuaValue::integer(!value)),
-        _ => None,
+/// `luaO_arith` (5.3) / `luaO_rawarith` (5.5) on values that need no
+/// metamethod. Returns `Ok(None)` when the operands need `luaT_trybinTM`.
+/// Lua 5.3 converts numeric strings here (to floats, except for bitwise
+/// operations); Lua 5.5 leaves strings to the string metatable.
+fn raw_arithmetic(
+    state: &mut LuaState,
+    kind: crate::lua_vm::TmKind,
+    left: LuaValue,
+    right: LuaValue,
+) -> LuaResult<Option<LuaValue>> {
+    use crate::lua_vm::TmKind;
+    use crate::lua_vm::execute::arith::{lua_idiv, lua_imod, lua_shiftl, ptointeger};
+    use crate::lua_vm::execute::helper::{error_div_by_zero, error_mod_by_zero};
+    let lua53 = state.global_state().language() == crate::LuaLanguageLevel::Lua53;
+    let to_float = |value: &LuaValue| {
+        if lua53 {
+            crate::lua_vm::tonumber53(value)
+        } else {
+            value.as_float()
+        }
+    };
+    let float_op = |a: f64, b: f64| {
+        if lua53 {
+            crate::lua_vm::arith_float53(kind, a, b)
+        } else {
+            crate::lua_vm::arith_float(kind, a, b)
+        }
+    };
+    match kind {
+        TmKind::Band | TmKind::Bor | TmKind::Bxor | TmKind::Shl | TmKind::Shr | TmKind::Bnot => {
+            let (mut a, mut b) = (0, 0);
+            if !(ptointeger(&left, &mut a, lua53) && ptointeger(&right, &mut b, lua53)) {
+                return Ok(None);
+            }
+            Ok(Some(LuaValue::integer(match kind {
+                TmKind::Band => a & b,
+                TmKind::Bor => a | b,
+                TmKind::Bxor => a ^ b,
+                TmKind::Shl => lua_shiftl(a, b),
+                TmKind::Shr => lua_shiftl(a, b.wrapping_neg()),
+                _ => !a,
+            })))
+        }
+        TmKind::Div | TmKind::Pow => Ok(to_float(&left)
+            .zip(to_float(&right))
+            .map(|(a, b)| LuaValue::float(float_op(a, b)))),
+        _ => {
+            if left.ttisinteger() && right.ttisinteger() {
+                let (a, b) = (left.ivalue(), right.ivalue());
+                return Ok(Some(LuaValue::integer(match kind {
+                    TmKind::Add => a.wrapping_add(b),
+                    TmKind::Sub => a.wrapping_sub(b),
+                    TmKind::Mul => a.wrapping_mul(b),
+                    TmKind::Mod if b == 0 => return Err(error_mod_by_zero(state)),
+                    TmKind::Mod => lua_imod(a, b),
+                    TmKind::IDiv if b == 0 => return Err(error_div_by_zero(state)),
+                    TmKind::IDiv => lua_idiv(a, b),
+                    _ => a.wrapping_neg(),
+                })));
+            }
+            Ok(to_float(&left)
+                .zip(to_float(&right))
+                .map(|(a, b)| LuaValue::float(float_op(a, b))))
+        }
     }
 }
 
@@ -1109,62 +1076,56 @@ pub unsafe extern "C" fn tex_lua_arith_impl(state: *mut lua_State, operation: c_
         let error = state_vm.error("not enough operands for arithmetic".to_string());
         return push_error(state_vm, error);
     }
-    let left = state_vm.stack_get(top - operand_count).unwrap_or_default();
-    let right = if unary {
-        left
-    } else {
-        state_vm.stack_get(top - 1).unwrap_or_default()
-    };
-    let _ = state_vm.set_top(top - operand_count);
-
-    let integer_zero_division = matches!(operation, LUA_OPMOD | LUA_OPIDIV)
-        && integer_value(left).is_some()
-        && integer_value(right) == Some(0);
-    state_vm.nny += 1;
-    let result = if integer_zero_division {
-        Err(state_vm.error("attempt to divide by zero".to_string()))
-    } else if let Some(value) = direct_arithmetic(operation, left, right) {
-        Ok(value)
-    } else {
-        let metamethod = match operation {
-            LUA_OPADD => Some(crate::lua_vm::TmKind::Add),
-            LUA_OPSUB => Some(crate::lua_vm::TmKind::Sub),
-            LUA_OPMUL => Some(crate::lua_vm::TmKind::Mul),
-            LUA_OPMOD => Some(crate::lua_vm::TmKind::Mod),
-            LUA_OPPOW => Some(crate::lua_vm::TmKind::Pow),
-            LUA_OPDIV => Some(crate::lua_vm::TmKind::Div),
-            LUA_OPIDIV => Some(crate::lua_vm::TmKind::IDiv),
-            LUA_OPBAND => Some(crate::lua_vm::TmKind::Band),
-            LUA_OPBOR => Some(crate::lua_vm::TmKind::Bor),
-            LUA_OPBXOR => Some(crate::lua_vm::TmKind::Bxor),
-            LUA_OPSHL => Some(crate::lua_vm::TmKind::Shl),
-            LUA_OPSHR => Some(crate::lua_vm::TmKind::Shr),
-            LUA_OPUNM => Some(crate::lua_vm::TmKind::Unm),
-            LUA_OPBNOT => Some(crate::lua_vm::TmKind::Bnot),
-            _ => None,
-        };
-        let method = metamethod.and_then(|kind| {
-            if unary {
-                crate::lua_vm::get_metamethod_event(state_vm, &left, kind)
-            } else {
-                crate::lua_vm::execute::helper::get_binop_metamethod(state_vm, &left, &right, kind)
-            }
-        });
-        if let Some(method) = method {
-            state_vm
-                .call(method, if unary { vec![left] } else { vec![left, right] })
-                .map(|values| values.into_iter().next().unwrap_or_default())
-        } else {
-            Err(state_vm.error("attempt to perform arithmetic on incompatible values".to_string()))
+    use crate::lua_vm::TmKind;
+    let kind = match operation {
+        LUA_OPADD => TmKind::Add,
+        LUA_OPSUB => TmKind::Sub,
+        LUA_OPMUL => TmKind::Mul,
+        LUA_OPMOD => TmKind::Mod,
+        LUA_OPPOW => TmKind::Pow,
+        LUA_OPDIV => TmKind::Div,
+        LUA_OPIDIV => TmKind::IDiv,
+        LUA_OPBAND => TmKind::Band,
+        LUA_OPBOR => TmKind::Bor,
+        LUA_OPBXOR => TmKind::Bxor,
+        LUA_OPSHL => TmKind::Shl,
+        LUA_OPSHR => TmKind::Shr,
+        LUA_OPUNM => TmKind::Unm,
+        LUA_OPBNOT => TmKind::Bnot,
+        _ => {
+            let error = state_vm.error(format!("invalid arithmetic operator {operation}"));
+            return push_error(state_vm, error);
         }
+    };
+    // Unary operations get a fake second operand, a copy of the first (lapi.c).
+    let base = top - operand_count;
+    let left = state_vm.stack_get(base).unwrap_or_default();
+    let right = state_vm.stack_get(top - 1).unwrap_or_default();
+
+    state_vm.nny += 1;
+    let result = match raw_arithmetic(state_vm, kind, left, right) {
+        Ok(Some(value)) => state_vm.stack_set(base, value),
+        Ok(None) => crate::lua_vm::execute::metamethod::try_bin_tm(
+            state_vm,
+            left,
+            right,
+            base as u32,
+            base as u32,
+            (top - 1) as u32,
+            kind,
+        ),
+        Err(error) => Err(error),
     };
     state_vm.nny -= 1;
     match result {
-        Ok(value) => {
-            let _ = state_vm.push_value(value);
+        Ok(()) => {
+            let _ = state_vm.set_top(base + 1);
             LUA_OK
         }
-        Err(error) => push_error(state_vm, error),
+        Err(error) => {
+            let _ = state_vm.set_top(base);
+            push_error(state_vm, error)
+        }
     }
 }
 
@@ -1846,9 +1807,13 @@ unsafe fn load_bytes(state: *mut lua_State, bytes: &[u8], name: &str, mode: Opti
         return LUA_ERRRUN;
     };
     let binary = bytes.first() == Some(&0x1b);
-    if mode.is_some_and(|mode| binary && !mode.contains('b') || !binary && !mode.contains('t')) {
+    // ldo.c checkmode
+    if let Some(mode) = mode
+        && !mode.contains(if binary { 'b' } else { 't' })
+    {
+        let kind = if binary { "binary" } else { "text" };
         let message = state_vm
-            .create_string("attempt to load a chunk with incompatible mode")
+            .create_string(&format!("attempt to load a {kind} chunk (mode is '{mode}')"))
             .unwrap_or_default();
         let _ = state_vm.push_value(message);
         return LUA_ERRSYNTAX;
@@ -1926,7 +1891,7 @@ pub unsafe extern "C" fn lua_load(
         }
     }
     let name = if chunk_name.is_null() {
-        "=(load)".into()
+        "?".into()
     } else {
         CStr::from_ptr(chunk_name).to_string_lossy()
     };
@@ -2081,8 +2046,12 @@ pub unsafe extern "C" fn lua_stringtonumber(state: *mut lua_State, string: *cons
     if string.is_null() {
         return 0;
     }
-    let text = CStr::from_ptr(string).to_string_lossy();
-    let value = crate::stdlib::basic::parse_number::parse_lua_number(&text);
+    // A numeral is ASCII; other bytes can never convert (and must not be
+    // replaced, which would change the returned size).
+    let Ok(text) = std::str::from_utf8(CStr::from_ptr(string).to_bytes()) else {
+        return 0;
+    };
+    let value = crate::stdlib::basic::parse_number::parse_lua_number(text);
     if value.is_nil() {
         return 0;
     }
@@ -2334,7 +2303,7 @@ pub unsafe extern "C" fn luaL_loadbufferx(
         slice::from_raw_parts(buffer.cast::<u8>(), size)
     };
     let name = if name.is_null() {
-        "=(load)".into()
+        "?".into()
     } else {
         CStr::from_ptr(name).to_string_lossy()
     };
@@ -2347,14 +2316,9 @@ pub unsafe extern "C" fn luaL_loadstring(state: *mut lua_State, source: *const c
     if source.is_null() {
         return LUA_ERRSYNTAX;
     }
-    let source = CStr::from_ptr(source);
-    luaL_loadbufferx(
-        state,
-        source.as_ptr(),
-        source.to_bytes().len(),
-        c"=(loadstring)".as_ptr(),
-        c"t".as_ptr(),
-    )
+    // lauxlib.c: the string is its own chunk name; any mode is allowed.
+    let length = CStr::from_ptr(source).to_bytes().len();
+    luaL_loadbufferx(state, source, length, source, ptr::null())
 }
 
 #[unsafe(no_mangle)]
@@ -2380,8 +2344,10 @@ pub unsafe extern "C" fn luaL_loadfilex(
             Ok(bytes) => (bytes, format!("@{path}")),
             Err(error) => {
                 if let Some(state_vm) = vm(state)
-                    && let Ok(message) =
-                        state_vm.create_string(&format!("cannot open {path}: {error}"))
+                    && let Ok(message) = state_vm.create_string(&format!(
+                        "cannot open {path}: {}",
+                        crate::stdlib::io::file::error_message(&error)
+                    ))
                 {
                     let _ = state_vm.push_value(message);
                 }
@@ -2574,27 +2540,6 @@ pub unsafe extern "C" fn luaL_where(state: *mut lua_State, level: c_int) {
     ));
     let location = format!("{source}:{}: ", record.currentline);
     lua_pushlstring(state, location.as_ptr().cast(), location.len());
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn luaL_traceback(
-    state: *mut lua_State,
-    source: *mut lua_State,
-    message: *const c_char,
-    level: c_int,
-) {
-    let source = if source.is_null() { state } else { source };
-    let trace = vm(source)
-        .map(|source| source.generate_traceback_from(level.max(0) as usize))
-        .unwrap_or_default();
-    let mut output = String::new();
-    if !message.is_null() {
-        output.push_str(&CStr::from_ptr(message).to_string_lossy());
-        output.push('\n');
-    }
-    output.push_str("stack traceback:\n");
-    output.push_str(&trace);
-    lua_pushlstring(state, output.as_ptr().cast(), output.len());
 }
 
 fn c_closure_user_offset(closure: &crate::lua_value::CClosureFunction) -> usize {
@@ -3445,6 +3390,263 @@ mod tests {
             context: lua_KContext,
             continuation: lua_KFunction,
         ) -> c_int;
+        fn lua_arith(state: *mut lua_State, operation: c_int);
+        fn lua_yieldk(
+            state: *mut lua_State,
+            nresults: c_int,
+            context: lua_KContext,
+            continuation: lua_KFunction,
+        ) -> c_int;
+        fn lua_pushfstring(state: *mut lua_State, format: *const c_char, ...) -> *const c_char;
+        fn luaL_checkinteger(state: *mut lua_State, argument: c_int) -> lua_Integer;
+        fn luaL_checkudata(state: *mut lua_State, argument: c_int, name: *const c_char) -> *mut c_void;
+        fn luaL_checkoption(
+            state: *mut lua_State,
+            argument: c_int,
+            default_value: *const c_char,
+            options: *const *const c_char,
+        ) -> c_int;
+        fn luaL_newmetatable(state: *mut lua_State, name: *const c_char) -> c_int;
+        fn luaL_tolstring(state: *mut lua_State, index: c_int, length: *mut usize) -> *const c_char;
+        fn luaL_traceback(
+            state: *mut lua_State,
+            source: *mut lua_State,
+            message: *const c_char,
+            level: c_int,
+        );
+    }
+
+    /// Run `source` in a fresh `luaL_newstate` with the given C functions as
+    /// globals; returns the error message if it fails.
+    unsafe fn run_with_c_functions(
+        functions: &[(&CStr, unsafe extern "C" fn(*mut lua_State) -> c_int)],
+        source: &CStr,
+    ) -> Result<(), String> {
+        let state = luaL_newstate();
+        luaL_openlibs(state);
+        for (name, function) in functions {
+            lua_pushcclosure(state, Some(*function), 0);
+            lua_setglobal(state, name.as_ptr());
+        }
+        let mut status = luaL_loadstring(state, source.as_ptr());
+        if status == LUA_OK {
+            status = lua_pcallk(state, 0, 0, 0, 0, None);
+        }
+        let result = if status == LUA_OK {
+            Ok(())
+        } else {
+            Err(CStr::from_ptr(lua_tolstring(state, -1, ptr::null_mut())).to_string_lossy().into_owned())
+        };
+        lua_close(state);
+        result
+    }
+
+    /// `carith(op, a [, b])`: lua_arith on the operands.
+    unsafe extern "C" fn c_arith(state: *mut lua_State) -> c_int {
+        let operation = lua_tointegerx(state, 1, ptr::null_mut()) as c_int;
+        lua_rotate(state, 1, -1);
+        lua_settop(state, -2);
+        if matches!(operation, LUA_OPUNM | LUA_OPBNOT) {
+            lua_settop(state, 1);
+        }
+        lua_arith(state, operation);
+        1
+    }
+
+    #[test]
+    fn lua_arith_follows_lua53_luao_arith() {
+        // Expected values: the same calls through liblua5.3 (5.3.6).
+        let source = cr#"
+            local ADD, SUB, MOD, POW, DIV, IDIV, BAND, UNM, BNOT = 0, 1, 3, 4, 5, 6, 7, 12, 13
+            local function same(got, want)
+              assert(got == want or (got ~= got and want ~= want), tostring(got))
+              assert(math.type(got) == math.type(want), math.type(got))
+            end
+            same(carith(ADD, 5, 2), 7)
+            same(carith(ADD, '10', 1), 11.0)          -- strings become floats
+            same(carith(ADD, 2.0, 3), 5.0)            -- integral floats stay floats
+            same(carith(MOD, 5, 0.0), 0/0)            -- float modulo by zero
+            same(carith(MOD, -5.5, 2), 0.5)
+            same(carith(MOD, 5.5, -2.0), -0.5)
+            same(carith(IDIV, 5.0, 0), math.huge)
+            same(carith(BAND, 3.0, 1), 1)
+            same(carith(BAND, '3', 1), 1)
+            same(carith(BNOT, 2.0), -3)
+            same(carith(UNM, '5'), -5.0)
+            same(carith(POW, '2', '3'), 8.0)
+            same(carith(SUB, ' 3 ', '1'), 2.0)
+            local function err(...) local ok, e = pcall(carith, ...) assert(not ok) return e end
+            assert(err(MOD, 5, 0) == "attempt to perform 'n%0'")
+            assert(err(IDIV, 5, 0) == 'attempt to divide by zero')
+            assert(err(BAND, 3.5, 1) == 'number has no integer representation')
+            assert(err(BAND, '3.5', 1) == 'number has no integer representation')
+            assert(err(BNOT, 2.5) == 'number has no integer representation')
+            assert(err(ADD, {}, 1) == 'attempt to perform arithmetic on a table value')
+            assert(err(BAND, {}, 1) == 'attempt to perform bitwise operation on a table value')
+            assert(err(SUB, 'x', 1) == 'attempt to perform arithmetic on a string value')
+            local mt = {__add = function(a, b) return 'added' end}
+            assert(carith(ADD, 1, setmetatable({}, mt)) == 'added')
+        "#;
+        unsafe { run_with_c_functions(&[(c"carith", c_arith)], source) }.unwrap();
+    }
+
+    unsafe extern "C" fn c_check_integer(state: *mut lua_State) -> c_int {
+        luaL_checkinteger(state, 1);
+        0
+    }
+
+    unsafe extern "C" fn c_check_udata(state: *mut lua_State) -> c_int {
+        luaL_newmetatable(state, c"MyType".as_ptr());
+        lua_settop(state, -2);
+        luaL_checkudata(state, 1, c"MyType".as_ptr());
+        0
+    }
+
+    unsafe extern "C" fn c_check_option(state: *mut lua_State) -> c_int {
+        let options = [c"a".as_ptr(), c"b".as_ptr(), ptr::null()];
+        lua_pushinteger(state, luaL_checkoption(state, 1, ptr::null(), options.as_ptr()) as lua_Integer);
+        1
+    }
+
+    unsafe extern "C" fn c_tolstring(state: *mut lua_State) -> c_int {
+        luaL_tolstring(state, 1, ptr::null_mut());
+        1
+    }
+
+    unsafe extern "C" fn c_traceback(state: *mut lua_State) -> c_int {
+        luaL_traceback(state, state, c"msg".as_ptr(), 1);
+        1
+    }
+
+    #[test]
+    fn lauxlib_checks_name_the_function_and_actual_type() {
+        // Expected messages: the same calls through liblua5.3 (5.3.6).
+        let source = cr#"
+            local function err(f, ...) local ok, e = pcall(f, ...) assert(not ok) return e end
+            local f = checkint
+            local ok, m = pcall(function() return f('x') end)
+            assert(m == [[[string "..."]:4: bad argument #1 to 'f' (number expected, got string)]], m)
+            ok, m = pcall(function() return f(1.5) end)
+            assert(m:find("bad argument #1 to 'f' (number has no integer representation)", 1, true), m)
+            ok, m = pcall(function() return f() end)
+            assert(m:find('(number expected, got no value)', 1, true), m)
+            ok, m = pcall(function() return f(setmetatable({}, {__name = 'MyName'})) end)
+            assert(m:find('(number expected, got MyName)', 1, true), m)
+            assert(err(checkint, 'q') == "bad argument #1 to 'checkint' (number expected, got string)")
+            local o = {chk = checkint}
+            ok, m = pcall(function() return o:chk('q') end)
+            assert(m:find("calling 'chk' on bad self (number expected, got table)", 1, true), m)
+            ok, m = pcall(function() return o.chk(o) end)
+            assert(m:find("bad argument #1 to 'chk' (number expected, got table)", 1, true), m)
+            ok, m = pcall(function() return checkudata(io.stdout) end)
+            assert(m:find('(MyType expected, got FILE*)', 1, true), m)
+            ok, m = pcall(function() return checkoption(nil) end)
+            assert(m:find('(string expected, got nil)', 1, true), m)
+            ok, m = pcall(function() return checkoption('z') end)
+            assert(m:find("(invalid option 'z')", 1, true), m)
+            assert(checkoption('b') == 1)
+            assert(tolstr(setmetatable({}, {__name = 'MyName'})):find('^MyName: '))
+            assert(tolstr(setmetatable({}, {__name = 7})):find('^table: '))
+            assert(tolstr(1.0) == '1.0' and tolstr(-0.0) == '-0.0' and tolstr(2^63) == '9.2233720368548e+18')
+            local function lvl() local tb = traceback() return tb end
+            local tb = lvl()
+            assert(tb:find('^msg\nstack traceback:\n\t%[string "..."%]:%d+: in local \'lvl\''), tb)
+        "#;
+        unsafe {
+            run_with_c_functions(
+                &[
+                    (c"checkint", c_check_integer),
+                    (c"checkudata", c_check_udata),
+                    (c"checkoption", c_check_option),
+                    (c"tolstr", c_tolstring),
+                    (c"traceback", c_traceback),
+                ],
+                source,
+            )
+        }
+        .unwrap();
+    }
+
+    unsafe extern "C" fn c_format(state: *mut lua_State) -> c_int {
+        lua_pushfstring(
+            state,
+            c"%f|%f|%f|%f|%U|%U|%U|%c|%c|%d|%I|%%|%s".as_ptr(),
+            1.5f64,
+            3.0f64,
+            1e100f64,
+            -0.0f64,
+            0x48 as std::ffi::c_long,
+            0x20AC as std::ffi::c_long,
+            0x10FFFF as std::ffi::c_long,
+            b'A' as c_int,
+            7 as c_int,
+            -3 as c_int,
+            (1 as lua_Integer) << 40,
+            c"s".as_ptr(),
+        );
+        1
+    }
+
+    unsafe extern "C" fn c_yield_outside_coroutine(state: *mut lua_State) -> c_int {
+        lua_yieldk(state, 0, 0, None);
+        lua_pushstring(state, c"yield returned".as_ptr());
+        1
+    }
+
+    #[test]
+    fn pushfstring_formats_like_luao_pushvfstring_and_bad_yields_raise() {
+        let source = cr#"
+            assert(fmt() == '1.5|3.0|1e+100|-0.0|H|\u{20AC}|\u{10FFFF}|A|<\\7>|-3|1099511627776|%|s', fmt())
+            local ok, m = pcall(yieldout)
+            assert(not ok and m == 'attempt to yield from outside a coroutine', tostring(m))
+        "#;
+        unsafe {
+            run_with_c_functions(
+                &[(c"fmt", c_format), (c"yieldout", c_yield_outside_coroutine)],
+                source,
+            )
+        }
+        .unwrap();
+    }
+
+    unsafe extern "C" fn read_once(
+        _state: *mut lua_State,
+        data: *mut c_void,
+        size: *mut usize,
+    ) -> *const c_char {
+        let source = &mut *data.cast::<Option<&CStr>>();
+        match source.take() {
+            Some(text) => {
+                *size = text.to_bytes().len();
+                text.as_ptr()
+            }
+            None => ptr::null(),
+        }
+    }
+
+    #[test]
+    fn load_reports_lua53_mode_errors_and_chunk_names() {
+        unsafe {
+            let state = luaL_newstate();
+            let message = |state| CStr::from_ptr(lua_tolstring(state, -1, ptr::null_mut())).to_owned();
+            let mut source = Some(c"return 1");
+            let status = lua_load(state, Some(read_once), (&raw mut source).cast(), c"=x".as_ptr(), c"b".as_ptr());
+            assert_eq!(status, LUA_ERRSYNTAX);
+            assert_eq!(message(state).to_bytes(), b"attempt to load a text chunk (mode is 'b')");
+            lua_settop(state, 0);
+            let binary = c"Lua";
+            let status = luaL_loadbufferx(state, binary.as_ptr(), 4, c"=x".as_ptr(), c"t".as_ptr());
+            assert_eq!(status, LUA_ERRSYNTAX);
+            assert_eq!(message(state).to_bytes(), b"attempt to load a binary chunk (mode is 't')");
+            lua_settop(state, 0);
+            let mut source = Some(c"x = = 1");
+            assert_eq!(lua_load(state, Some(read_once), (&raw mut source).cast(), ptr::null(), ptr::null()), LUA_ERRSYNTAX);
+            assert_eq!(message(state).to_bytes(), b"[string \"?\"]:1: unexpected symbol near '='");
+            lua_settop(state, 0);
+            assert_eq!(luaL_loadstring(state, c"x = = 1".as_ptr()), LUA_ERRSYNTAX);
+            assert_eq!(message(state).to_bytes(), b"[string \"x = = 1\"]:1: unexpected symbol near '='");
+            lua_close(state);
+        }
     }
 
     unsafe extern "C" fn add_integers(state: *mut lua_State) -> c_int {

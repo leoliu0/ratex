@@ -288,6 +288,14 @@ any mode; use classic LaTeX mathematics and `CJKutf8` or the native font
 selectors above. Native fonts must be selected after loading a format; dumping
 native font state is rejected rather than silently losing it.
 
+The Lua VM (`tex-lua`) is an ordinary Rust library (`rlib`). Native Lua C
+modules loaded with `require`/`package.loadlib` resolve the `lua_*`/`luaL_*`
+functions from the host executable, which the workspace links with
+`--export-dynamic` (`.cargo/config.toml`); a host that embeds `tex-lua` must
+link the same way. Host Rust code that needs to allocate inside a native
+callback uses `Lua::create_callback`, whose `CallbackLua` is only borrowed for
+the duration of the call.
+
 ---
 
 ## Build from Source

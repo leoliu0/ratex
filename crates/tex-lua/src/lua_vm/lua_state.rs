@@ -31,6 +31,7 @@ use crate::lua_vm::{
 #[cfg(feature = "sandbox")]
 use crate::platform_time::unix_nanos;
 use crate::stdlib::debug::{objtypename, ordererror, pub_getfuncname};
+use crate::stdlib::lauxlib;
 use crate::{
     AsyncReturnValue, DebugInfo, FromLua, IntoLua, LuaAnyRef, LuaFullError, LuaFunctionRef,
     LuaProto, LuaStringRef, LuaTableRef, UserDataRef,
@@ -89,6 +90,7 @@ impl FrameInit {
     }
 }
 
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub(crate) struct CApiStackParking {
     stack: Vec<LuaValue>,
     stack_top: usize,
@@ -225,6 +227,7 @@ pub struct LuaState {
     /// This is job-local and remains null until the state is exposed through
     /// that ABI. Keeping it on the thread avoids process-global lookup state
     /// when a metamethod enters a C closure from any API operation.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     pub(crate) c_api_wrapper: *mut (),
 
     /// Pending async future — set by async CFunction wrappers before yielding.
@@ -290,10 +293,12 @@ impl LuaState {
         self.thread = thread;
     }
 
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     pub(crate) fn set_c_api_wrapper(&mut self, wrapper: *mut ()) {
         self.c_api_wrapper = wrapper;
     }
 
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     pub(crate) fn c_api_wrapper(&self) -> *mut () {
         self.c_api_wrapper
     }
@@ -827,6 +832,7 @@ impl LuaState {
         self.stack_top = new_top;
     }
 
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     pub(crate) fn park_stack_for_c_api(&mut self, values: Vec<LuaValue>) -> CApiStackParking {
         let stack = std::mem::replace(&mut self.stack, values);
         let stack_top = std::mem::replace(&mut self.stack_top, self.stack.len());
@@ -847,6 +853,7 @@ impl LuaState {
         }
     }
 
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     pub(crate) fn restore_stack_from_c_api(&mut self, parking: CApiStackParking) -> Vec<LuaValue> {
         let external_top = self.stack_top.min(self.stack.len());
         let external = self.stack[..external_top].to_vec();
@@ -1108,11 +1115,11 @@ impl LuaState {
     pub fn take_error_object(&mut self) -> LuaValue {
         match self.global_state_mut().take_error() {
             ErrorMsg::Object(obj) => obj,
-            ErrorMsg::Msg(msg) => {
-                let _ = self.global_state_mut().error(msg);
+            ErrorMsg::None => LuaValue::nil(),
+            other => {
+                self.global_state_mut().error_msg = other;
                 LuaValue::nil()
             }
-            ErrorMsg::None => LuaValue::nil(),
         }
     }
 
@@ -1226,7 +1233,7 @@ impl LuaState {
     #[inline(always)]
     pub(crate) fn take_error_msg_raw(&mut self) -> String {
         match self.global_state_mut().take_error() {
-            ErrorMsg::Msg(msg) => msg,
+            ErrorMsg::Msg(msg) | ErrorMsg::Traced { message: msg, .. } => msg,
             ErrorMsg::Object(obj) => {
                 let _ = self.global_state_mut().error_with_object(obj);
                 String::new()
@@ -1258,67 +1265,6 @@ impl LuaState {
     #[inline(always)]
     pub fn clear_dead_error(&mut self) {
         self.dead_error = ErrorMsg::None;
-    }
-
-    /// Generate a Lua-style stack traceback
-    /// Similar to luaL_traceback in lauxlib.c
-    pub fn generate_traceback(&self) -> String {
-        self.generate_traceback_from(0)
-    }
-
-    pub fn generate_traceback_from(&self, start_level: usize) -> String {
-        let mut result = String::new();
-        let valid_frames = &self.call_stack[..self.call_depth];
-        for (level, ci) in valid_frames.iter().rev().skip(start_level).enumerate() {
-            if level >= 20 {
-                result.push_str("\t...\n");
-                break;
-            }
-
-            // Get function info
-            if ci.is_lua() {
-                // Lua function - get source and line info
-
-                if !ci.chunk_ptr.is_null() {
-                    let chunk = unsafe { &*ci.chunk_ptr };
-                    let source = chunk.source_name.as_deref().unwrap_or("[string]");
-
-                    // Format source name (strip @ prefix if present)
-                    let source_display = format_source(source);
-
-                    // Get current line number from PC
-                    let line = if ci.pc > 0 && (ci.pc as usize - 1) < chunk.line_info.len() {
-                        chunk.line_info[ci.pc as usize - 1] as usize
-                    } else if !chunk.line_info.is_empty() {
-                        chunk.line_info[0] as usize
-                    } else {
-                        0
-                    };
-
-                    // Determine function description
-                    // Main chunk has linedefined == 0
-                    let what = if chunk.linedefined == 0 {
-                        "main chunk".to_string()
-                    } else {
-                        format!("function <{}:{}>", source_display, chunk.linedefined)
-                    };
-
-                    if line > 0 {
-                        result.push_str(&format!("\t{}:{}: in {}\n", source_display, line, what));
-                    } else {
-                        result.push_str(&format!("\t{}: in {}\n", source_display, what));
-                    }
-                    continue;
-                }
-
-                result.push_str("\t[?]: in function\n");
-            } else if ci.is_c() {
-                // C function
-                result.push_str("\t[C]: in function\n");
-            }
-        }
-
-        result
     }
 
     /// Set yield values
@@ -2693,56 +2639,94 @@ impl LuaState {
         self.get_error_msg(e)
     }
 
+    /// The error message; for an error that escaped a top-level call, with
+    /// the stack traceback rendered when it was raised (`unwind_host_error`).
     pub fn get_full_error(&mut self, e: LuaError) -> LuaFullError {
-        let message = self.get_error_msg(e);
-        let message = match e {
-            LuaError::CompileError => message,
-            _ => self.render_error_message(&message),
+        let message = match self.global_state_mut().take_error() {
+            ErrorMsg::Traced { full, .. } => full,
+            other => {
+                self.global_state_mut().error_msg = other;
+                self.get_error_msg(e)
+            }
         };
         LuaFullError { kind: e, message }
     }
 
-    fn render_error_message(&mut self, error_msg: &str) -> String {
-        let result = (|| -> LuaResult<String> {
-            let debug_table = match self.get_global_value("debug")? {
-                Some(v) if v.is_table() => v,
-                _ => return Ok(String::new()),
-            };
-
-            let traceback_func = {
-                let traceback_key = self.create_string("traceback")?;
-                match self.raw_get(&debug_table, &traceback_key) {
-                    Some(v) if v.is_function() => v,
-                    _ => return Ok(String::new()),
-                }
-            };
-
-            let msg_val = self.create_string(error_msg)?;
-            let level_val = LuaValue::integer(1);
-            let (success, results) = self.pcall(traceback_func, vec![msg_val, level_val])?;
-
-            if success
-                && let Some(result) = results.first()
-                && let Some(s) = result.as_str()
-            {
-                return Ok(s.to_string());
+    /// The host side of a top-level call that failed (lua.c's `docall`):
+    /// run `host_message_handler` while the failing frames are still on the
+    /// stack, unwind them as `lua_pcall` does (closing upvalues and
+    /// to-be-closed variables from `func_idx`), and keep the rendered
+    /// message for `get_full_error`.
+    #[cold]
+    #[inline(never)]
+    fn unwind_host_error(&mut self, e: LuaError, func_idx: usize) -> LuaError {
+        if self.call_depth() == 0 {
+            // Failed before any frame existed (e.g. calling a non-function).
+            self.set_top_raw(func_idx);
+            return e;
+        }
+        let message = match &self.global_state().error_msg {
+            _ if matches!(e, LuaError::OutOfMemory) => None,
+            ErrorMsg::Msg(msg) => Some(msg.clone()),
+            ErrorMsg::Object(obj) => lauxlib::to_lstr(self, obj)
+                .map(|text| String::from_utf8_lossy(&text).into_owned()),
+            _ => None,
+        };
+        let handler = LuaValue::cfunction(Self::host_message_handler);
+        match self.recover_protected_call(e, 0, func_idx, Some(handler)) {
+            Ok((err, error_in_handler)) => {
+                let full = self.error_object_text(&err);
+                // A `__tostring` result or an error raised by a `__close`
+                // replaces the message: then there is no shorter form.
+                let message = message
+                    .filter(|message| full.starts_with(message.as_str()))
+                    .unwrap_or_else(|| full.clone());
+                self.set_top_raw(func_idx);
+                self.global_state_mut().error_msg = ErrorMsg::Traced { message, full };
+                if error_in_handler { LuaError::ErrorInErrorHandling } else { e }
             }
-
-            Ok(String::new())
-        })();
-
-        match result {
-            Ok(s) if !s.is_empty() => s,
-            _ => self.fallback_error_message(error_msg),
+            Err(error) => {
+                while self.call_depth() > 0 {
+                    self.pop_frame();
+                }
+                self.close_upvalues(func_idx);
+                self.tbc_list.retain(|&index| index < func_idx);
+                self.set_top_raw(func_idx);
+                error
+            }
         }
     }
 
-    fn fallback_error_message(&self, error_msg: &str) -> String {
-        let traceback = self.generate_traceback();
-        if !traceback.is_empty() {
-            format!("{}\nstack traceback:\n{}", error_msg, traceback)
-        } else {
-            error_msg.to_string()
+    /// lua.c's `msghandler`: a string or number message, else the result of
+    /// a `__tostring` metamethod (returned without a traceback), else
+    /// "(error object is a X value)"; then the stack traceback.
+    fn host_message_handler(l: &mut LuaState) -> LuaResult<usize> {
+        let err = l.get_arg(1).unwrap_or_default();
+        let msg = match lauxlib::to_lstr(l, &err) {
+            Some(text) => text.to_vec(),
+            None => {
+                if let Some(mm) = get_metamethod_event(l, &err, TmKind::ToString) {
+                    let text = execute::call_tm_res1(l, mm, err)?;
+                    if text.is_string() {
+                        l.push_value(text)?;
+                        return Ok(1);
+                    }
+                }
+                format!("(error object is a {} value)", err.type_name()).into_bytes()
+            }
+        };
+        let lua53 = l.global_state().language() == crate::LuaLanguageLevel::Lua53;
+        let text = crate::stdlib::debug::traceback_text(lua53, l, Some(&msg), 1);
+        let text = l.create_bytes(&text)?;
+        l.push_value(text)?;
+        Ok(1)
+    }
+
+    /// `lua_tostring` of an error object, or lua.c's description of it.
+    fn error_object_text(&self, err: &LuaValue) -> String {
+        match lauxlib::to_lstr(self, err) {
+            Some(text) => String::from_utf8_lossy(&text).into_owned(),
+            None => format!("(error object is a {} value)", err.type_name()),
         }
     }
 
@@ -2924,16 +2908,8 @@ impl LuaState {
                 )
             }
             _ => match self.global_state_mut().take_error() {
-                ErrorMsg::Msg(msg) => msg,
-                ErrorMsg::Object(obj) => {
-                    if let Some(s) = obj.as_str() {
-                        s.to_string()
-                    } else if obj.is_nil() {
-                        "<no error object>".to_string()
-                    } else {
-                        format!("{}", obj)
-                    }
-                }
+                ErrorMsg::Msg(msg) | ErrorMsg::Traced { message: msg, .. } => msg,
+                ErrorMsg::Object(obj) => self.error_object_text(&obj),
                 ErrorMsg::None => String::new(),
             },
         }
@@ -2944,7 +2920,9 @@ impl LuaState {
     /// Unprotected call - like C Lua's lua_call / lua_callk.
     /// Errors propagate as Err(LuaError) to the enclosing pcall boundary.
     /// Does NOT create an error recovery boundary, so __close handlers
-    /// see the correct error chain without an extra pcall frame.
+    /// see the correct error chain without an extra pcall frame. A top-level
+    /// call is the host's boundary: its error is rendered with a traceback
+    /// and its frames are unwound (`unwind_host_error`).
     pub fn call(&mut self, func: LuaValue, args: Vec<LuaValue>) -> LuaResult<Vec<LuaValue>> {
         let initial_depth = self.call_depth();
         // Use stack_top (logical top) instead of stack.len() (physical end).
@@ -2967,39 +2945,45 @@ impl LuaState {
         }
         self.stack_top = needed;
 
-        // Resolve __call metamethod chain if needed
-        let (actual_arg_count, ccmt_depth) = resolve_call_chain(self, func_idx, arg_count)?;
-
-        let func_val = self
-            .stack_get(func_idx)
-            .ok_or_else(|| self.error("call: function not found".to_string()))?;
-
         // A Rust caller has no continuation, so the callee may not yield
         // (C Lua's luaD_callnoyield).
         self.nny += 1;
-        let result = if func_val.is_c_callable() {
-            // C function - call directly via call_c_function (unprotected)
-            call_c_function(self, func_idx, actual_arg_count, -1).map(|_| ())
-        } else {
+        let result = 'call: {
+            // Resolve __call metamethod chain if needed
+            let (actual_arg_count, ccmt_depth) = match resolve_call_chain(self, func_idx, arg_count) {
+                Ok(resolved) => resolved,
+                Err(error) => break 'call Err(error),
+            };
+            let func_val = self.stack[func_idx];
+            if func_val.is_c_callable() {
+                // C function - call directly via call_c_function (unprotected)
+                break 'call call_c_function(self, func_idx, actual_arg_count, -1);
+            }
             // Lua function - push frame and execute
             let base = func_idx + 1;
-            match self.push_frame(&func_val, base, actual_arg_count, -1) {
-                Ok(()) => {
-                    if ccmt_depth > 0 {
-                        let frame_idx = self.call_depth - 1;
-                        if let Some(frame) = self.call_stack.get_mut(frame_idx) {
-                            frame.call_status =
-                                call_status::set_ccmt_count(frame.call_status, ccmt_depth);
-                        }
-                    }
-                    self.inc_n_ccalls().and_then(|()| {
-                        let r = lua_execute(self, initial_depth);
-                        self.dec_n_ccalls();
-                        r
-                    })
-                }
-                Err(error) => Err(error),
+            if let Err(error) = self.push_frame(&func_val, base, actual_arg_count, -1) {
+                break 'call Err(error);
             }
+            if ccmt_depth > 0 {
+                let frame_idx = self.call_depth - 1;
+                if let Some(frame) = self.call_stack.get_mut(frame_idx) {
+                    frame.call_status = call_status::set_ccmt_count(frame.call_status, ccmt_depth);
+                }
+            }
+            self.inc_n_ccalls().and_then(|()| {
+                let r = lua_execute(self, initial_depth);
+                self.dec_n_ccalls();
+                r
+            })
+        };
+        let result = match result {
+            Err(error)
+                if initial_depth == 0
+                    && !matches!(error, LuaError::Yield | LuaError::CloseThread) =>
+            {
+                Err(self.unwind_host_error(error, func_idx))
+            }
+            other => other,
         };
         self.nny -= 1;
         result?; // Propagate errors without catching

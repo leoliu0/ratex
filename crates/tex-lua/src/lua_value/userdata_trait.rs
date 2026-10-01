@@ -501,14 +501,14 @@ macro_rules! impl_simple_userdata {
 /// No fields, methods, or metamethods are exposed — the value is a "black box"
 /// in Lua. From Rust you can recover the original type via `downcast_ref::<T>()`.
 ///
-/// Use [`GlobalState::create_any`](crate::GlobalState::create_any) to create one conveniently.
+/// Create one with [`LuaApi::create_userdata`](crate::LuaApi::create_userdata).
 ///
 /// # Example
 ///
 /// ```ignore
 /// // Third-party type you don't control
 /// let client = reqwest::Client::new();
-/// let ud = vm.push_any(client)?;
+/// let ud = lua.create_userdata(OpaqueUserData::new(client))?;
 /// vm.set_global("http_client", ud)?;
 ///
 /// // Later, in a Rust callback:

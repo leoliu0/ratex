@@ -2314,7 +2314,7 @@ mod tests {
                 let source = if deferred {
                     format!("\\setbox0=\\vbox{{\\openout4={name}\n}}\\shipout\\box0\n\\end\n")
                 } else {
-                    format!("\\immediate\\openout4={name}\n\\message{{after}}\\end\n")
+                    format!("\\immediate\\openout4={name}\n\\message{{AFTER-OPENOUT-SENTINEL}}\\end\n")
                 };
                 let engine = run_in(&out_dir, source);
                 assert!(engine.stopped_on_error, "{name}: fatal like TeX's\n{}", engine.term);
@@ -2327,7 +2327,9 @@ mod tests {
                     engine.term
                 );
                 assert!(engine.term.contains("(openout_any = p)"), "{}", engine.term);
-                assert!(!engine.term.contains("after"), "{}", engine.term);
+                // The terminal output names the scratch directory, so the
+                // marker must be something no TMPDIR spells.
+                assert!(!engine.term.contains("AFTER-OPENOUT-SENTINEL"), "{}", engine.term);
             }
         }
         assert!(!dir.join("victim.txt").exists());

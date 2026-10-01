@@ -82,7 +82,14 @@ impl Engine {
         self.pdf_doc.minor_version =
             Some(self.eqtb.int_params[crate::prim::IntParam::PdfMinorVersion.idx() as usize]);
         use std::collections::BTreeSet;
+        let gen_tounicode =
+            self.eqtb.int_params[crate::prim::IntParam::PdfGenToUnicode.idx() as usize];
         let mut used: BTreeSet<u16> = BTreeSet::new();
+        // pdf_init_font: the first SHIPPED font of a TFM owns the PDF font
+        // dictionary; later fonts of that TFM (other sizes) mark their
+        // characters in it (pdftex.web "Output fonts definition").
+        let mut raw_groups: crate::FxHashMap<String, (u16, [u64; 4])> =
+            crate::FxHashMap::default();
         for fonts in self
             .pdf_doc
             .pages
@@ -90,14 +97,25 @@ impl Engine {
             .map(|p| &p.fonts)
             .chain(self.pdf_doc.form_fonts.iter().map(|(_, fonts)| fonts))
         {
-            for (fid, _) in fonts {
-                used.insert(*fid as u16);
+            for &(key, _) in fonts {
+                let fid = key as u16;
+                if used.insert(fid) {
+                    let chars = self.pdf_doc.font_chars.get(&(fid as usize));
+                    if let (Some(chars), Some(font)) = (chars, self.eqtb.fonts.get(fid as usize)) {
+                        let group = raw_groups.entry(font.tfm_name.clone()).or_insert((fid, [0; 4]));
+                        for (word, used_word) in group.1.iter_mut().zip(chars) {
+                            *word |= used_word;
+                        }
+                    }
+                }
             }
         }
         let mut remap: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
         // Sizes and expansion steps of one font share its decoded program.
         let mut type1_sources: crate::FxHashMap<[u8; 16], std::rc::Rc<crate::pdffile::Type1Source>> =
             crate::FxHashMap::default();
+        let mut raw_group_index: crate::FxHashMap<String, usize> = crate::FxHashMap::default();
+        let mut raw_group_members: Vec<(u16, String)> = Vec::new();
         for &fid in &used {
             let Some(font) = self.eqtb.fonts.get(fid as usize).cloned() else {
                 continue;
@@ -119,7 +137,10 @@ impl Engine {
                 })
                 .cloned()
                 .unwrap_or_default();
-            let nobuiltin_tounicode = self.font_loader.nobuiltin_tounicode.contains(&fid);
+            // writefont.c: the generated CMap needs \pdfgentounicode > 0 (its
+            // value at the end of the job) and no \pdfnobuiltintounicode.
+            let nobuiltin_tounicode = gen_tounicode <= 0
+                || self.font_loader.nobuiltin_tounicode.contains(&fid);
 
             let at_size = font.at_size;
             let to_units = |val: i32| -> f64 {
@@ -222,8 +243,15 @@ impl Engine {
                         .get(&(fid as usize))
                         .copied()
                         .unwrap_or([0; 4]);
-                    if raw_chars.iter().any(|&word| word != 0) {
+                    let group = raw_groups.get(&font.tfm_name).copied();
+                    if raw_chars.iter().any(|&word| word != 0)
+                        && group.is_some_and(|(owner, _)| owner != fid)
+                    {
+                        raw_group_members.push((fid, font.tfm_name.clone()));
+                    } else if raw_chars.iter().any(|&word| word != 0) {
+                        let raw_chars = group.map_or(raw_chars, |(_, chars)| chars);
                         let document_index = self.pdf_doc.fonts.len();
+                        raw_group_index.insert(font.tfm_name.clone(), document_index);
                         let widths = (0..=255u8)
                             .map(|character| {
                                 let width = font.char_width(character);
@@ -449,6 +477,11 @@ impl Engine {
                         }
                     }
                 }
+            }
+        }
+        for (fid, tfm_name) in raw_group_members {
+            if let Some(&document_index) = raw_group_index.get(&tfm_name) {
+                remap.insert(crate::pdfout::FontBinding::RAW.resource_key(fid), document_index);
             }
         }
         for fonts in self

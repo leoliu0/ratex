@@ -22,8 +22,8 @@ fn char_is_used(chars: &[u64; 4], character: u8) -> bool {
     chars[character as usize / 64] & (1_u64 << (character as usize % 64)) != 0
 }
 
-/// Attach observed character usage and trim the PDF widths/Unicode tables to
-/// the smallest required code interval. The full encoding vector remains
+/// Attach observed character usage and trim the PDF widths table to the
+/// smallest required code interval. The full encoding vector remains
 /// available to the Type 1 subsetter for code-to-glyph-name resolution.
 fn set_font_usage(font: &mut EmbedFont, used_chars: [u64; 4]) {
     let Some(first) = (0..=u8::MAX).find(|&c| char_is_used(&used_chars, c)) else {
@@ -44,8 +44,6 @@ fn set_font_usage(font: &mut EmbedFont, used_chars: [u64; 4]) {
         font.first_char = first;
         font.last_char = last;
     }
-    font.to_unicode
-        .retain(|(code, _)| char_is_used(&used_chars, *code));
     font.used_chars = used_chars;
 }
 
@@ -682,20 +680,16 @@ pub fn make_embed_font(
     // the cleartext declares one) so extractors see accurate glyph names
     let encoding_diff =
         encoding.or_else(|| source.and_then(|source| source.builtin_encoding.clone()));
-    // /ToUnicode: resolve every used encoded slot through the glyph list,
-    // keeping only non-identity mappings (ASCII slots extract natively)
+    // /ToUnicode (pdfTeX write_tounicode): every encoded slot with a known
+    // Unicode value, ASCII identities included, whether used or not
     let to_unicode = encoding_diff
         .iter()
         .flat_map(|d| d.iter().take(256).enumerate())
         .filter_map(|(slot, g)| {
-            if g.is_empty() || !char_is_used(&used_chars, slot as u8) {
+            if g.is_empty() {
                 return None;
             }
-            let uni = crate::pdf_fonts::glyph_to_unicode(g)?;
-            if slot < 0x80 && uni.len() == 1 && uni.as_bytes()[0] == slot as u8 {
-                return None;
-            }
-            Some((slot as u8, uni))
+            Some((slot as u8, crate::pdf_fonts::glyph_to_unicode(g)?))
         })
         .collect();
     let (font_file, length1, length2, length3, metrics, content_hash) = match source {
@@ -2725,22 +2719,22 @@ mod tests {
     }
 
     #[test]
-    fn font_usage_trims_widths_and_unicode() {
+    fn font_usage_trims_widths_but_maps_every_encoded_code() {
         let mut usage = [0_u64; 4];
         usage[1] = (1 << (70 - 64)) | (1 << (72 - 64));
         let font = make_embed_font(
             "Test".to_owned(),
             None,
-            Some((0..=255).map(|c| format!("uni{:04X}", 0x100 + c)).collect()),
+            Some((0..=255).map(|c| if c == 65 { "A".into() } else { format!("uni{:04X}", 0x100 + c) }).collect()),
             (0..=255).collect(),
             usage,
         );
         assert_eq!((font.first_char, font.last_char), (70, 72));
         assert_eq!(font.widths, vec![70, 71, 72]);
-        assert_eq!(
-            font.to_unicode,
-            vec![(70, "\u{146}".to_owned()), (72, "\u{148}".to_owned())]
-        );
+        // pdfTeX's ToUnicode covers all 256 codes, ASCII identities included
+        assert_eq!(font.to_unicode.len(), 256);
+        assert_eq!(font.to_unicode[65], (65, "A".to_owned()));
+        assert_eq!(font.to_unicode[70], (70, "\u{146}".to_owned()));
     }
 
     #[test]

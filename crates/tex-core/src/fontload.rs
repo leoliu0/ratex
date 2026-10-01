@@ -25,14 +25,16 @@ pub struct VfBase {
     pub at_size: i32,
 }
 
-/// One glyph-setting step of a VF character packet: draw `ch` from base
-/// font `base` at (dx, dy) offset from the virtual glyph's origin (sp).
+/// One step of a VF character packet at (dx, dy) from the virtual glyph's
+/// origin (sp): draw `ch` from base font `base`, or, when `rule` is set,
+/// a rule of (width, height) sp standing on that point.
 #[derive(Clone, Copy)]
 pub struct VfStep {
     pub base: u8,
     pub ch: u8,
     pub dx: i32,
     pub dy: i32,
+    pub rule: Option<(i32, i32)>,
 }
 
 /// Parsed virtual font. Packet movements follow DVI semantics with the
@@ -1210,9 +1212,8 @@ impl FontLoader {
                     }
                     let name = String::from_utf8_lossy(&data[pos..pos + l]).to_string();
                     pos += l;
-                    // 1 DVI unit of this VF = at / 2^20 sp
-                    let at_base = ((s as i64 * at as i64 + if s >= 0 { 0x80000 } else { -0x80000 })
-                        >> 20) as i32;
+                    // pdfTeX: fs := store_scaled_f(scaled size, font_size[f])
+                    let at_base = crate::tfm::Scaler::new(at).scale(s);
                     let loaded = if at_base > 0 {
                         self.load_tfm(&name, at_base)
                     } else {
@@ -1288,9 +1289,9 @@ impl FontLoader {
         mut font: u8,
         at: i32,
     ) -> Option<Vec<VfStep>> {
-        let scale = |raw: i32| -> i64 {
-            (raw as i64 * at as i64 + if raw >= 0 { 0x80000 } else { -0x80000 }) >> 20
-        };
+        // pdfTeX packet_scaled: store_scaled_f (truncating) with the VF size
+        let scaler = crate::tfm::Scaler::new(at);
+        let scale = |raw: i32| -> i64 { scaler.scale(raw) as i64 };
         let mut steps: Vec<VfStep> = Vec::new();
         let (mut x, mut y) = (0i64, 0i64);
         let (mut reg_w, mut reg_x, mut reg_y, mut reg_z) = (0i64, 0i64, 0i64, 0i64);
@@ -1315,13 +1316,29 @@ impl FontLoader {
                     Self::vf_step(&mut steps, base_idx, bases, font, c, x, y);
                     x += Self::vf_advance(base_idx, bases, font, c);
                 }
-                132 => cur.0 = (cur.0 + 8).min(cur.1), // set_rule: ignored
+                132 | 137 => {
+                    // set_rule/put_rule: height then width; drawn only when
+                    // both are positive, set_rule then advances by the width
+                    let ht = scale(vf_sint(data, &mut cur.0, 4)?);
+                    let wd = scale(vf_sint(data, &mut cur.0, 4)?);
+                    if wd > 0 && ht > 0 {
+                        steps.push(VfStep {
+                            base: 0,
+                            ch: 0,
+                            dx: x as i32,
+                            dy: y as i32,
+                            rule: Some((wd as i32, ht as i32)),
+                        });
+                        if op == 132 {
+                            x += wd;
+                        }
+                    }
+                }
                 133..=136 => {
                     let c = vf_uint(data, &mut cur.0, 1 + (op - 133) as usize)? as u8;
                     Self::vf_step(&mut steps, base_idx, bases, font, c, x, y); // put: no advance
                 }
-                137 => cur.0 = (cur.0 + 8).min(cur.1), // put_rule: ignored
-                138 => {}                              // nop
+                138 => {} // nop
                 141 => stack.push((x, y, reg_w, reg_x, reg_y, reg_z, font)),
                 142 => {
                     let s = stack.pop()?;
@@ -1382,6 +1399,7 @@ impl FontLoader {
                     ch,
                     dx: x as i32,
                     dy: y as i32,
+                    rule: None,
                 });
             }
         }
@@ -2289,6 +2307,7 @@ impl Engine {
                 ch: c,
                 dx: w,
                 dy: 0,
+                rule: None,
             }]));
         }
         let key = (self.eqtb.fonts[k as usize].tfm_name.clone(), at);
@@ -2662,9 +2681,13 @@ mod tests {
         assert_eq!(steps6.len(), 1);
         assert_eq!(steps6[0].dy as i64, 655360, "down4 moves the glyph down");
         let steps7 = vfv.chars[7].as_ref().unwrap();
-        assert_eq!(steps7.len(), 2);
-        // w1 raw 10486 -> 10486*655360/2^20 = 6553.9sp -> 6554
-        assert_eq!(steps7[1].dx as i64, 163840 + 6554);
+        assert_eq!(steps7.len(), 3);
+        // w2 raw 10486 -> store_scaled truncates 6553.75sp to 6553 (pdfTeX
+        // packet_scaled); the 16-unit (10sp) square set_rule is drawn and
+        // advances.
+        let rule = (steps7[1].dx as i64, steps7[1].rule);
+        assert_eq!(rule, (163840 + 6553, Some((10, 10))));
+        assert_eq!(steps7[2].dx as i64, 163840 + 6553 + 10);
         let steps200 = vfv.chars[200].as_ref().unwrap();
         assert_eq!(steps200.len(), 1);
         assert_eq!((steps200[0].ch, steps200[0].dx), (1, 0));

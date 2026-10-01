@@ -1547,7 +1547,14 @@ impl<'a> RenderCtx<'a> {
                 ));
                 return;
             };
+            let first_glyph = steps.iter().position(|st| st.rule.is_none());
             for (step_idx, st) in steps.iter().enumerate() {
+                if let Some((wd, ht)) = st.rule {
+                    // pdf_set_rule(cur_h, cur_v, wd, ht): stands on cur_v
+                    let (x, v) = (x_sp + st.dx as i64, v_sp + st.dy as i64);
+                    self.emit_rect_sp(x, v, wd as i64, ht as i64);
+                    continue;
+                }
                 let base = self.eng.font_loader.vf_bases.get(&f).and_then(|bases| bases.get(st.base as usize));
                 let bfid = match base {
                     Some(&bfid) if bfid != u16::MAX => bfid,
@@ -1562,7 +1569,7 @@ impl<'a> RenderCtx<'a> {
                         continue;
                     }
                 };
-                let text = logical_ch.map(|ch| if step_idx > 0 { '\u{00A0}' } else { ch });
+                let text = logical_ch.map(|ch| if Some(step_idx) != first_glyph { '\u{00A0}' } else { ch });
                 // A base can itself be virtual (notably Korean Hangul).
                 // Carry source semantics until reaching a real outline.
                 self.emit_char_sp_with_text(

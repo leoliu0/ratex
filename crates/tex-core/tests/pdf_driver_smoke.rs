@@ -1126,6 +1126,7 @@ fn font_attr_and_nobuiltin_tounicode_shape_font_dictionaries() {
 \pdfmapline{=cmr10 CMR10 <cmr10.pfb}
 \pdfmapline{=cmr12 CMR12 <cmr12.pfb}
 \font\plain=cmr12
+\pdfgentounicode=1
 \font\flagged=cmr10
 \font\shared=cmr10 at 12pt
 \pdfnobuiltintounicode\flagged
@@ -1158,13 +1159,13 @@ fn font_attr_and_nobuiltin_tounicode_shape_font_dictionaries() {
     };
     let mut fonts: Vec<_> = fonts.iter().map(summary).collect();
     fonts.sort();
-    // Both cmr10 sizes share the attribute (pdfTeX writes one font
-    // dictionary per TFM); only the flagged font loses its CMap.
+    // pdfTeX writes one font dictionary per TFM, owned by the first shipped
+    // font of it: both cmr10 sizes share the flagged font's dictionary
+    // (attribute, no CMap, design-size widths); cmr12 keeps its own CMap.
     assert_eq!(
         fonts,
         [
             ("CMR10".to_string(), 556, false, Some(7)),
-            ("CMR10".to_string(), 556, true, Some(7)),
             ("CMR12".to_string(), 544, true, None),
         ]
     );

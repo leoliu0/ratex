@@ -13,6 +13,7 @@ use crate::stdlib::lauxlib;
 use crate::LuaLanguageLevel;
 use file::{BufMode, CloseStatus};
 pub use file::LuaFile;
+pub(crate) use file::error_message;
 
 /// Registry key of the FILE* metatable (luaL_newmetatable(L, LUA_FILEHANDLE)).
 const FILEHANDLE: &str = "FILE*";

@@ -47,6 +47,15 @@ pub fn try_unary_tm(
         }
     }
 
+    // Lua 5.3 OP_UNM: a numeric string is negated as a float.
+    if tm_kind == TmKind::Unm
+        && lua_state.global_state().language() == crate::LuaLanguageLevel::Lua53
+        && let Some(n) = crate::lua_vm::tonumber53(&operand)
+    {
+        lua_state.stack_mut()[result_pos] = LuaValue::float(-n);
+        return Ok(());
+    }
+
     // Try to get metamethod from operand
     let metamethod = get_metamethod_event(lua_state, &operand, tm_kind);
     if let Some(mm) = metamethod {
@@ -99,8 +108,6 @@ pub fn try_unary_tm(
 ///   }
 /// }
 /// ```
-/// Try to convert a LuaValue to integer (NO string coercion).
-/// Returns Some(i64) if the value is an integer or an integral float.
 pub fn try_bin_tm(
     lua_state: &mut LuaState,
     p1: LuaValue,
@@ -110,15 +117,24 @@ pub fn try_bin_tm(
     p2_reg: u32,
     tm_kind: TmKind,
 ) -> LuaResult<()> {
+    // Lua 5.3 OP_ADD..OP_IDIV (lvm.c): when both operands convert with
+    // `tonumber` (numeric strings included), the result is a float.
+    if (TmKind::Add as u8..=TmKind::IDiv as u8).contains(&(tm_kind as u8))
+        && lua_state.global_state().language() == crate::LuaLanguageLevel::Lua53
+        && let (Some(a), Some(b)) = (
+            crate::lua_vm::tonumber53(&p1),
+            crate::lua_vm::tonumber53(&p2),
+        )
+    {
+        lua_state.stack_mut()[res as usize] =
+            LuaValue::float(crate::lua_vm::arith_float53(tm_kind, a, b));
+        return Ok(());
+    }
+
     // Try trait-based arithmetic for userdata
     if p1.ttisfulluserdata() || p2.ttisfulluserdata() {
         let trait_result = if let Some(ud) = p1.as_userdata_mut() {
-            let trait_obj = match ud.get_trait() {
-                Ok(t) => t,
-                Err(_) => {
-                    return Ok(()); /* expired */
-                }
-            };
+            let trait_obj = ud.get_trait()?;
             let other = lua_value_to_udvalue(&p2);
             Some(match tm_kind {
                 TmKind::Add => trait_obj.lua_add(&other),
@@ -143,12 +159,7 @@ pub fn try_bin_tm(
             return Ok(());
         }
         let trait_result2 = if let Some(ud) = p2.as_userdata_mut() {
-            let trait_obj = match ud.get_trait() {
-                Ok(t) => t,
-                Err(_) => {
-                    return Ok(());
-                }
-            };
+            let trait_obj = ud.get_trait()?;
             let other = lua_value_to_udvalue(&p1);
             Some(match tm_kind {
                 TmKind::Add => trait_obj.lua_add(&other),
@@ -204,7 +215,7 @@ pub fn try_bin_tm(
                     let blame_reg = if p1_is_integer { p2_reg } else { p1_reg };
                     let info = debug::varinfo_for_reg(lua_state, blame_reg);
                     return Err(
-                        lua_state.error(format!("number has no integer representation{}", info))
+                        lua_state.error(format!("number{} has no integer representation", info))
                     );
                 } else {
                     "perform bitwise operation on"
@@ -212,6 +223,13 @@ pub fn try_bin_tm(
             }
             _ => "perform arithmetic on",
         };
+        // Lua 5.3's luaG_opinterror blames the second operand unless the first
+        // fails `tonumber`, which converts numeric strings ("2" * nil blames nil).
+        if lua_state.global_state().language() == crate::LuaLanguageLevel::Lua53
+            && crate::lua_vm::tonumber53(&p1).is_some()
+        {
+            return Err(debug::opinterror(lua_state, p2_reg, p2_reg, &p2, &p2, msg));
+        }
         Err(debug::opinterror(lua_state, p1_reg, p2_reg, &p1, &p2, msg))
     }
 }

@@ -133,6 +133,10 @@ pub struct LuaState {
     /// no hashing overhead and better cache locality. Matches C Lua's sorted list design.
     open_upvalues_list: Vec<UpvaluePtr>,
 
+    /// Whether this thread is linked in the collector's `twups` list
+    /// (C Lua's `L->twups != L`).
+    pub(crate) in_twups: bool,
+
     /// Yield values storage (for coroutine yield)
     yield_values: Vec<LuaValue>,
 
@@ -240,6 +244,7 @@ impl LuaState {
             call_depth: 0,
             current_ci: std::ptr::null_mut(),
             open_upvalues_list: Vec::new(),
+            in_twups: false,
             yield_values: Vec::new(),
             allow_hook: true,
             hook: LuaValue::nil(),
@@ -368,10 +373,7 @@ impl LuaState {
             if self.safe_state.max_call_depth > self.safe_state.base_call_depth {
                 return Err(LuaError::ErrorInErrorHandling);
             }
-            return Err(self.error(format!(
-                "stack overflow (Lua stack depth: {})",
-                self.call_depth
-            )));
+            return Err(self.error("stack overflow".to_string()));
         }
 
         // Cache lua_function extraction (avoid repeated enum matching)
@@ -634,10 +636,7 @@ impl LuaState {
         if self.safe_state.max_call_depth > self.safe_state.base_call_depth {
             return Err(LuaError::ErrorInErrorHandling);
         }
-        Err(self.error(format!(
-            "stack overflow (Lua stack depth: {})",
-            self.call_depth
-        )))
+        Err(self.error("stack overflow".to_string()))
     }
 
     /// Slow path for push_lua_frame — handles nil filling, resize, new slot allocation
@@ -716,10 +715,7 @@ impl LuaState {
     ) -> LuaResult<()> {
         // Check Lua call-stack depth
         if self.call_depth >= self.safe_state.max_call_depth {
-            return Err(self.error(format!(
-                "stack overflow (Lua stack depth: {})",
-                self.call_depth
-            )));
+            return Err(self.error("stack overflow".to_string()));
         }
 
         // For C functions: maxstacksize = nargs, numparams = nargs (no nil filling needed)
@@ -877,11 +873,7 @@ impl LuaState {
     #[inline(always)]
     pub fn stack_set(&mut self, index: usize, value: LuaValue) -> LuaResult<()> {
         if index >= self.safe_state.max_stack_size {
-            self.error(format!(
-                "stack overflow: attempted to set index {} exceeding maximum {}",
-                index, self.safe_state.max_stack_size
-            ));
-            return Err(LuaError::StackOverflow);
+            return Err(self.stack_overflow_error());
         }
         if index >= self.stack.len() {
             self.resize(index + 1)?;
@@ -890,15 +882,19 @@ impl LuaState {
         Ok(())
     }
 
+    /// Lua stack exhausted (C Lua's `luaD_growstack` "stack overflow").
+    #[cold]
+    #[inline(never)]
+    fn stack_overflow_error(&mut self) -> LuaError {
+        self.error("stack overflow".to_string());
+        LuaError::StackOverflow
+    }
+
     #[cold]
     #[inline(never)]
     fn resize(&mut self, new_size: usize) -> LuaResult<()> {
         if new_size > self.safe_state.max_stack_size {
-            self.error(format!(
-                "stack overflow: attempted to resize to {} exceeding maximum {}",
-                new_size, self.safe_state.max_stack_size
-            ));
-            return Err(LuaError::StackOverflow);
+            return Err(self.stack_overflow_error());
         }
         let capacity = self.stack.capacity();
         self.stack.resize(new_size, LuaValue::nil());
@@ -1011,6 +1007,23 @@ impl LuaState {
     #[inline(never)]
     pub fn error(&mut self, msg: String) -> LuaError {
         let msg = self.add_runtime_error_info(msg);
+        self.global_state_mut().error(msg)
+    }
+
+    /// Raise an error from inside a C function with `luaL_error` semantics:
+    /// the message is prefixed with the position of the calling Lua function
+    /// (`luaL_where(L, 1)`), not of the C function itself.
+    #[cold]
+    #[inline(never)]
+    pub fn caller_error(&mut self, msg: String) -> LuaError {
+        let location = self
+            .call_depth
+            .checked_sub(2)
+            .and_then(|index| self.frame_error_location(self.get_call_info(index)));
+        let msg = match location {
+            Some(location) => location + &msg,
+            None => msg,
+        };
         self.global_state_mut().error(msg)
     }
 
@@ -1719,8 +1732,10 @@ impl LuaState {
         };
 
         self.open_upvalues_list.insert(insert_pos, upval_ptr);
-        self.global_state
-            .link_thread_with_open_upvalues(self.thread);
+        if !self.in_twups {
+            self.in_twups = true;
+            self.global_state.push_twups(self.thread);
+        }
 
         Ok(upval_ptr)
     }
@@ -1773,11 +1788,7 @@ impl LuaState {
     #[inline(never)]
     pub fn grow_stack(&mut self, needed: usize) -> LuaResult<()> {
         if needed > self.safe_state.max_stack_size {
-            self.error(format!(
-                "stack overflow: attempted to grow stack to {} exceeding maximum {}",
-                needed, self.safe_state.max_stack_size
-            ));
-            return Err(LuaError::StackOverflow);
+            return Err(self.stack_overflow_error());
         }
         if self.stack.len() < needed {
             self.resize(needed)?;
@@ -2215,11 +2226,7 @@ impl LuaState {
     pub fn push_value(&mut self, value: LuaValue) -> LuaResult<()> {
         // Check stack limit (Lua's luaD_checkstack equivalent)
         if self.stack_top >= self.safe_state.max_stack_size {
-            self.error(format!(
-                "stack overflow: attempted to push value exceeding maximum {}",
-                self.safe_state.max_stack_size
-            ));
-            return Err(LuaError::StackOverflow);
+            return Err(self.stack_overflow_error());
         }
 
         // Save current top before any borrows

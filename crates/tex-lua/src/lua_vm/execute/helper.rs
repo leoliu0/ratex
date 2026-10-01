@@ -438,17 +438,6 @@ pub(crate) fn finishset(
     value: LuaValue,
     skip_existing_check: bool,
 ) -> LuaResult<bool> {
-    // Check for invalid keys (nil or NaN)
-    if key.is_nil() {
-        return Err(lua_state.error("table index is nil".to_string()));
-    }
-    if key.ttisfloat()
-        && let Some(f) = key.as_float()
-        && f.is_nan()
-    {
-        return Err(lua_state.error("table index is NaN".to_string()));
-    }
-
     let mut t = *obj;
     let mut skip_existing = skip_existing_check;
 
@@ -459,7 +448,14 @@ pub(crate) fn finishset(
                 get_metamethod_from_meta_ptr(lua_state, table.meta_ptr(), TmKind::NewIndex);
 
             if tm_val.is_none() {
-                // No metamethod - set directly
+                // No metamethod - set directly.  Like luaH_newkey, nil and NaN
+                // keys are rejected only here, after __newindex had its chance.
+                if key.is_nil() {
+                    return Err(lua_state.error("table index is nil".to_string()));
+                }
+                if key.ttisfloat() && key.fltvalue().is_nan() {
+                    return Err(lua_state.error("table index is NaN".to_string()));
+                }
                 lua_state.raw_set(&t, *key, value);
                 return Ok(true);
             }
@@ -1275,6 +1271,26 @@ pub(crate) fn for_limit(
             }
             Ok((i64::MIN, false)) // truncate, caller checks init < limit
         }
+    }
+}
+
+/// Port of Lua 5.3's `forlimit` (lvm.c): convert the limit of an integer loop,
+/// clipping out-of-range floats.  Returns `(limit, stop_now)`, or `None` when
+/// the limit is not a number (the caller then takes the float loop path, which
+/// reports the error).
+pub(crate) fn for_limit53(r_limit: StkId, step: i64) -> Option<(i64, bool)> {
+    let mode = if step < 0 { 2 } else { 1 }; // 1=floor, 2=ceil
+    if let Some(lim) = tointeger_mode(r_limit.get_ref(), mode) {
+        return Some((lim, false));
+    }
+    let mut flimit = 0.0;
+    if !for_tonumber(r_limit, &mut flimit) {
+        return None;
+    }
+    if 0.0 < flimit {
+        Some((i64::MAX, step < 0))
+    } else {
+        Some((i64::MIN, step >= 0))
     }
 }
 

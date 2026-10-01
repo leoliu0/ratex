@@ -380,27 +380,25 @@ pub fn lua_fmod(a: f64, b: f64) -> f64 {
     m
 }
 
-/// luai_numpow - Power operation matching Lua 5.5's luai_numpow macro:
+/// Lua 5.3's `luai_nummod`: `m = fmod(a,b); if (m*b < 0) m += b;`
+/// (differs from 5.5 when `m*b` underflows to zero).
+#[inline(always)]
+pub fn lua_fmod53(a: f64, b: f64) -> f64 {
+    let m = a % b;
+    if m * b < 0.0 { m + b } else { m }
+}
+
+/// luai_numpow - Power operation matching Lua 5.4/5.5's luai_numpow macro:
 ///   #define luai_numpow(L,a,b)  ((b)==2 ? (a)*(a) : pow(a,b))
+/// Uses libm `pow` exactly like C Lua (repeated squaring would accumulate
+/// rounding error, e.g. `10^23 ~= 1e23`).
 #[inline(always)]
 pub fn luai_numpow(a: f64, b: f64) -> f64 {
-    if b == 2.0 {
-        a * a
-    } else if a.fract() == 0.0 && b.fract() == 0.0 && b >= 0.0 && b <= u64::MAX as f64 {
-        let mut base = a;
-        let mut exp = b as u64;
-        let mut result = 1.0;
-        while exp != 0 {
-            if exp & 1 == 1 {
-                result *= base;
-            }
-            exp >>= 1;
-            if exp != 0 {
-                base *= base;
-            }
-        }
-        result
-    } else {
-        a.powf(b)
-    }
+    if b == 2.0 { a * a } else { a.powf(b) }
+}
+
+/// Lua 5.3's luai_numpow: plain `pow(a,b)`, also for `b == 2`.
+#[inline(always)]
+pub fn luai_numpow53(a: f64, b: f64) -> f64 {
+    a.powf(b)
 }

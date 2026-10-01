@@ -4,7 +4,7 @@ use super::lua_limits::{LUAI_MAXCSTACK, LUAI_MAXSTACK, MAX_CALL_DEPTH};
 pub struct SafeOption {
     pub max_stack_size: usize,
     /// Maximum Lua call-stack depth (number of CallInfo frames).
-    /// A pure-Lua recursion guard.  Default: `MAX_CALL_DEPTH` (1024).
+    /// A pure-Lua recursion guard.  Default: `MAX_CALL_DEPTH` (bounded by the stack size).
     pub max_call_depth: usize,
     /// Maximum C-stack depth (Rust recursion depth, tracked by `n_ccalls`).
     /// Mirrors C Lua 5.5's `LUAI_MAXCSTACK`.  Default: 200.
@@ -31,7 +31,7 @@ impl Default for SafeOption {
 pub(crate) struct LuaSafeState {
     pub max_stack_size: usize,
     /// Maximum Lua call-stack depth (number of CallInfo frames).
-    /// A pure-Lua recursion guard.  Default: `MAX_CALL_DEPTH` (1024).
+    /// A pure-Lua recursion guard.  Default: `MAX_CALL_DEPTH` (bounded by the stack size).
     pub max_call_depth: usize,
     /// Maximum C-stack depth (Rust recursion depth, tracked by `n_ccalls`).
     /// Mirrors C Lua 5.5's `LUAI_MAXCSTACK`.  Default: 200.

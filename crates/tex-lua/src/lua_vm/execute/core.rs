@@ -26,13 +26,16 @@ use crate::{
         LuaError, StkId, TmKind,
         call_info::call_status::{CIST_C, CIST_CLSRET, CIST_PENDING_FINISH},
         execute::{
-            arith::{self, lua_fmod, lua_idiv, lua_imod, lua_shiftl, lua_shiftr, luai_numpow},
+            arith::{
+                self, lua_fmod, lua_fmod53, lua_idiv, lua_imod, lua_shiftl, lua_shiftr, luai_numpow,
+                luai_numpow53,
+            },
             call::{insert_table_call_mm, poscall, precall, pretailcall},
             closure::push_closure,
             concat::{concat, try_concat_pair_utf8},
             helper::{
                 bin_tm_fallback, eq_fallback, error_div_by_zero, error_global, error_mod_by_zero,
-                float_for_loop, for_limit, for_tonumber, forprep, handle_pending_ops, instr_at,
+                float_for_loop, for_limit53, for_tonumber, forprep, handle_pending_ops, instr_at,
                 ivalue, k_val, objlen, order_tm_fallback, pk_val, return0_with_hook,
                 return1_with_hook, tonumberns, ttisfloat, ttisinteger, ttisstring,
                 unary_tm_fallback,
@@ -104,8 +107,9 @@ pub fn lua_execute(lua_state: &mut LuaState, target_depth: usize) -> LuaResult<(
         let mut code: &[Instruction] = &chunk.code;
         let mut constants: &[LuaValue] = &chunk.constants;
         init_oldpc(lua_state, pc, chunk);
-        let coerce_bitwise_strings =
-            lua_state.global_state().language() == crate::LuaLanguageLevel::Lua53;
+        // Lua 5.3 contract: bitwise operators coerce numeric strings and '^'
+        // is plain pow() (5.5 squares for b == 2).
+        let lua53 = lua_state.global_state().language() == crate::LuaLanguageLevel::Lua53;
 
         // CALL HOOK: fire when entering a new Lua function (pc == 0)
         let mut trap = current_trap(lua_state);
@@ -462,12 +466,16 @@ pub fn lua_execute(lua_state: &mut LuaState, target_depth: usize) -> LuaResult<(
                         &mut pc,
                         instr,
                         lua_imod,
-                        lua_fmod,
+                        |a, b| if lua53 { lua_fmod53(a, b) } else { lua_fmod(a, b) },
                         error_mod_by_zero,
                     )?;
                 }
                 OpCode::Pow => {
-                    arith::op_arithf(base_stk, &mut pc, instr, luai_numpow);
+                    if lua53 {
+                        arith::op_arithf(base_stk, &mut pc, instr, luai_numpow53);
+                    } else {
+                        arith::op_arithf(base_stk, &mut pc, instr, luai_numpow);
+                    }
                 }
                 OpCode::AddK => {
                     arith::op_arith_k(
@@ -508,14 +516,16 @@ pub fn lua_execute(lua_state: &mut LuaState, target_depth: usize) -> LuaResult<(
                         instr,
                         constants,
                         lua_imod,
-                        lua_fmod,
+                        |a, b| if lua53 { lua_fmod53(a, b) } else { lua_fmod(a, b) },
                         error_mod_by_zero,
                     )?;
                 }
                 OpCode::PowK => {
-                    arith::op_arithf_k(base_stk, &mut pc, instr, constants, |n1, n2| {
-                        luai_numpow(n1, n2)
-                    });
+                    if lua53 {
+                        arith::op_arithf_k(base_stk, &mut pc, instr, constants, luai_numpow53);
+                    } else {
+                        arith::op_arithf_k(base_stk, &mut pc, instr, constants, luai_numpow);
+                    }
                 }
                 OpCode::DivK => {
                     arith::op_arithf_k(base_stk, &mut pc, instr, constants, |n1, n2| n1 / n2);
@@ -539,7 +549,7 @@ pub fn lua_execute(lua_state: &mut LuaState, target_depth: usize) -> LuaResult<(
                         &mut pc,
                         instr,
                         constants,
-                        coerce_bitwise_strings,
+                        lua53,
                         |i1, i2| i1 & i2,
                     );
                 }
@@ -549,7 +559,7 @@ pub fn lua_execute(lua_state: &mut LuaState, target_depth: usize) -> LuaResult<(
                         &mut pc,
                         instr,
                         constants,
-                        coerce_bitwise_strings,
+                        lua53,
                         |i1, i2| i1 | i2,
                     );
                 }
@@ -559,7 +569,7 @@ pub fn lua_execute(lua_state: &mut LuaState, target_depth: usize) -> LuaResult<(
                         &mut pc,
                         instr,
                         constants,
-                        coerce_bitwise_strings,
+                        lua53,
                         |i1, i2| i1 ^ i2,
                     );
                 }
@@ -568,7 +578,7 @@ pub fn lua_execute(lua_state: &mut LuaState, target_depth: usize) -> LuaResult<(
                         base_stk,
                         &mut pc,
                         instr,
-                        coerce_bitwise_strings,
+                        lua53,
                         |i1, i2| i1 & i2,
                     );
                 }
@@ -577,7 +587,7 @@ pub fn lua_execute(lua_state: &mut LuaState, target_depth: usize) -> LuaResult<(
                         base_stk,
                         &mut pc,
                         instr,
-                        coerce_bitwise_strings,
+                        lua53,
                         |i1, i2| i1 | i2,
                     );
                 }
@@ -586,15 +596,15 @@ pub fn lua_execute(lua_state: &mut LuaState, target_depth: usize) -> LuaResult<(
                         base_stk,
                         &mut pc,
                         instr,
-                        coerce_bitwise_strings,
+                        lua53,
                         |i1, i2| i1 ^ i2,
                     );
                 }
                 OpCode::Shl => {
-                    arith::op_bitwise(base_stk, &mut pc, instr, coerce_bitwise_strings, lua_shiftl);
+                    arith::op_bitwise(base_stk, &mut pc, instr, lua53, lua_shiftl);
                 }
                 OpCode::Shr => {
-                    arith::op_bitwise(base_stk, &mut pc, instr, coerce_bitwise_strings, lua_shiftr);
+                    arith::op_bitwise(base_stk, &mut pc, instr, lua53, lua_shiftr);
                 }
                 OpCode::ShlI => {
                     // R[A] := sC << R[B]
@@ -605,7 +615,7 @@ pub fn lua_execute(lua_state: &mut LuaState, target_depth: usize) -> LuaResult<(
                     let rb = base_stk.offset(b);
 
                     let mut ib = 0i64;
-                    if arith::ptointeger(rb.get_ref(), &mut ib, coerce_bitwise_strings) {
+                    if arith::ptointeger(rb.get_ref(), &mut ib, lua53) {
                         pc += 1;
                         base_stk.offset(a).set_integer(lua_shiftl(ic as i64, ib));
                     }
@@ -620,7 +630,7 @@ pub fn lua_execute(lua_state: &mut LuaState, target_depth: usize) -> LuaResult<(
                     let rb = base_stk.offset(b);
 
                     let mut ib = 0i64;
-                    if arith::ptointeger(rb.get_ref(), &mut ib, coerce_bitwise_strings) {
+                    if arith::ptointeger(rb.get_ref(), &mut ib, lua53) {
                         pc += 1;
                         base_stk.offset(a).set_integer(lua_shiftr(ib, ic as i64));
                     }
@@ -709,7 +719,7 @@ pub fn lua_execute(lua_state: &mut LuaState, target_depth: usize) -> LuaResult<(
                     let rb = base_stk.offset(b as usize).get();
 
                     let mut ib = 0i64;
-                    if arith::ptointeger(&rb, &mut ib, coerce_bitwise_strings) {
+                    if arith::ptointeger(&rb, &mut ib, lua53) {
                         base_stk.offset(a as usize).set_integer(!ib);
                     } else {
                         savestate!();
@@ -1424,16 +1434,17 @@ pub fn lua_execute(lua_state: &mut LuaState, target_depth: usize) -> LuaResult<(
                     let step_slot = initial_slot.offset(2);
                     savestate!();
 
-                    if initial_slot.is_integer() && step_slot.is_integer() {
-                        let initial = initial_slot.ivalue();
+                    // Lua 5.3 OP_FORPREP: an integer loop pre-subtracts the step
+                    // (wrapping) and lets FORLOOP decide whether to run at all.
+                    if initial_slot.is_integer()
+                        && step_slot.is_integer()
+                        && let Some((limit, stop_now)) =
+                            for_limit53(limit_slot, step_slot.ivalue())
+                    {
                         let step = step_slot.ivalue();
-                        let (limit, should_skip) = for_limit(lua_state, limit_slot, initial, step)?;
+                        let initial = if stop_now { 0 } else { initial_slot.ivalue() };
                         limit_slot.set_integer(limit);
-                        initial_slot.set_integer(if should_skip {
-                            initial
-                        } else {
-                            initial.wrapping_sub(step)
-                        });
+                        initial_slot.set_integer(initial.wrapping_sub(step));
                         pc += instr.get_bx() as usize;
                         continue;
                     }

@@ -22,6 +22,8 @@ mod safe_option;
 mod sandbox;
 #[cfg(feature = "shared-proto")]
 mod shared_proto;
+#[cfg(test)]
+mod semantics_tests;
 pub(crate) mod stk_id;
 mod string_arth;
 mod tm_kind;
@@ -1018,8 +1020,8 @@ impl GlobalState {
     /// Set the metatable for all strings
     /// This allows string methods to be called with : syntax (e.g., str:upper())
     pub fn set_string_metatable(&mut self, string_lib_table: LuaValue) -> LuaResult<()> {
-        // Create a metatable with __index + arithmetic metamethods
-        // This matches Lua 5.5's createmetatable() in lstrlib.c
+        // Create a metatable with __index (+ arithmetic metamethods in 5.5).
+        // This matches lstrlib.c's createmetatable().
         let mt_value = self.create_table(0, 10)?;
 
         // Set __index to point to the string library
@@ -1028,9 +1030,13 @@ impl GlobalState {
             .get_tm_value(crate::lua_vm::TmKind::Index);
         self.raw_set(&mt_value, index_key, string_lib_table);
 
-        // Add arithmetic metamethods for string-to-number coercion
-        // (Lua 5.5: strings auto-coerce to numbers for arithmetic)
+        // Lua 5.5 coerces strings in arithmetic through these metamethods.
+        // Lua 5.3 strings have none: the VM coerces them itself (in floats).
         use crate::lua_vm::TmKind;
+        if self.language() == LuaLanguageLevel::Lua53 {
+            self.string_mt = Some(mt_value);
+            return Ok(());
+        }
         let arith_metas: &[(TmKind, ArithMetaFn)] = &[
             (TmKind::Add, string_arith_add),
             (TmKind::Sub, string_arith_sub),
@@ -1544,8 +1550,9 @@ impl GlobalStateHandle {
             .barrier(unsafe { &mut *state }, owner_ptr, value_gc_ptr);
     }
 
-    pub(crate) fn link_thread_with_open_upvalues(self, thread_ptr: ThreadPtr) {
-        self.as_mut().gc.link_thread_with_open_upvalues(thread_ptr);
+    /// Append a thread whose `in_twups` flag the caller has just set.
+    pub(crate) fn push_twups(self, thread_ptr: ThreadPtr) {
+        self.as_mut().gc.push_twups(thread_ptr);
     }
 
     pub(crate) fn check_gc(self, state: *mut LuaState) -> bool {

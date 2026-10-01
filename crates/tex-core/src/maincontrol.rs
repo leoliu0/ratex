@@ -1869,8 +1869,7 @@ impl Engine {
             return;
         };
         let w_bp = crate::pdfrender::sp_to_bp(w as i64);
-        let h_bp = crate::pdfrender::sp_to_bp(h as i64);
-        let d_bp = crate::pdfrender::sp_to_bp(d as i64);
+        let hd_bp = crate::pdfrender::sp_to_bp(h as i64 + d as i64);
         let attr_str = if attr.trim().is_empty() {
             String::new()
         } else {
@@ -1910,8 +1909,8 @@ impl Engine {
             (Vec::new(), "")
         };
         let head = format!(
-            "<< /Type /XObject /Subtype /Form /FormType 1 /BBox [0 {:.4} {:.4} {:.4}] /Matrix [1 0 0 1 0 0]{} /Resources << /Font {font_object} 0 R {}",
-            -d_bp, w_bp, h_bp, attr_str, resources.trim()
+            "<< /Type /XObject /Subtype /Form /FormType 1 /BBox [0 0 {:.4} {:.4}] /Matrix [1 0 0 1 0 0]{} /Resources << /Font {font_object} 0 R {}",
+            w_bp, hd_bp, attr_str, resources.trim()
         );
         // "Generate ProcSet if desired" goes here once the form is written
         self.pdf_form_procsets.insert(

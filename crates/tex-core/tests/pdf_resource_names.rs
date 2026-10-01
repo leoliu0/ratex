@@ -159,11 +159,15 @@ fn unique_resource_names_carry_the_job_tag() {
     assert_eq!(resource_names(&pdf, 1, b"XObject"), [format!("Fm1{tag}")]);
 }
 
-/// pdftex.web `out_form` lowers the placement by the form's depth, in an
-/// hlist and a vlist alike (content from `pdftex -ini` for this input).
+/// pdftex.web `pdf_ship_out` writes a form from the bottom of its box
+/// (`cur_page_height` is height + depth): the /BBox is [0 0 w h+d] and the
+/// box's baseline sits at y = depth. `out_form` lowers the placement by the
+/// same depth, in an hlist and a vlist alike, so the form paints exactly
+/// where the box would (page and form content from `pdftex -ini` for this
+/// input).
 #[test]
 fn form_placement_includes_its_depth() {
-    let e = engine(
+    let mut e = engine(
         r"\pdfcompresslevel=0
 \setbox2\hbox{\vrule width 5pt height 3pt depth 4pt}\pdfxform2
 \shipout\hbox{\raise7pt\hbox{\pdfrefxform\pdflastxform}}
@@ -171,4 +175,27 @@ fn form_placement_includes_its_depth() {
     );
     let content = String::from_utf8_lossy(&e.pdf_doc.pages[0].content).into_owned();
     assert_eq!(content, "q\n1 0 0 1 72 74.989 cm\n/Fm1 Do\nQ\n");
+    let pdf = pdf_of(&mut e);
+    let form = pdf
+        .objects
+        .values()
+        .filter_map(|object| object.as_stream().ok())
+        .find(|stream| stream.dict.get(b"Subtype").and_then(lopdf::Object::as_name).ok() == Some(&b"Form"[..]))
+        .expect("form XObject");
+    let bbox: Vec<f64> = form
+        .dict
+        .get(b"BBox")
+        .and_then(lopdf::Object::as_array)
+        .unwrap()
+        .iter()
+        .map(|value| match value {
+            lopdf::Object::Integer(i) => *i as f64,
+            lopdf::Object::Real(r) => f64::from(*r),
+            other => panic!("non-numeric /BBox entry {other:?}"),
+        })
+        .collect();
+    let expected = [0.0, 0.0, 4.981, 6.974];
+    assert!(bbox.iter().zip(expected).all(|(got, want)| (got - want).abs() < 0.001), "{bbox:?}");
+    let drawn = String::from_utf8_lossy(&form.decompressed_content().unwrap()).into_owned();
+    assert!(drawn.contains("0 0 4.981 6.974 re f"), "{drawn}");
 }

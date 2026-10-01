@@ -936,3 +936,116 @@ fn pdf_random_deviates_follow_the_seeded_generator() {
         e.term
     );
 }
+
+/// pdftex -ini (tex.web §1237): \advance, \multiply and \divide accept only
+/// registers and the integer, dimen, glue and muglue parameters; every other
+/// next token (set_aux, set_prev_graf, set_page_dimen, last_item, ...) is
+/// consumed with "You can't use `x' after \advance" and nothing changes.
+#[test]
+fn arithmetic_rejects_quantities_that_are_not_register_like() {
+    let e = run_lenient(
+        r"\countdef\cc=5 \cc=3
+\advance\cc by 2 \message{[\the\cc]}
+\hbox{\spacefactor=1000 \advance\spacefactor by 5 \message{[\the\spacefactor]}%
+\multiply\spacefactor 2 \divide\spacefactor 2 \message{[\the\spacefactor]}}
+\advance\prevgraf by 1 \message{[\the\prevgraf]}
+\advance\prevdepth by 1pt
+\advance\deadcycles 1
+\advance\pagegoal 1pt
+\advance\wd0 1pt
+\advance\catcode`a 1
+\advance 5 \message{after5}
+\advance\relax\count1 by 3 \message{[\the\count1]}
+\def\m{\count2 }\advance\m by 7 \message{[\the\count2]}
+\advance\lastpenalty 1
+\multiply\interactionmode 2
+\divide\hyphenchar\nullfont 2
+\global\advance\dimen3 by 1pt \message{[\the\dimen3]}
+\end",
+    );
+    let messages: Vec<&str> = e.diagnostics.iter().map(|d| d.message.as_str()).collect();
+    assert_eq!(
+        messages,
+        [
+            "You can't use `\\spacefactor' after \\advance",
+            "You can't use `\\spacefactor' after \\multiply",
+            "You can't use `\\spacefactor' after \\divide",
+            "You can't use `\\prevgraf' after \\advance",
+            "You can't use `\\prevdepth' after \\advance",
+            "You can't use `\\deadcycles' after \\advance",
+            "You can't use `\\pagegoal' after \\advance",
+            "You can't use `\\wd' after \\advance",
+            "You can't use `\\catcode' after \\advance",
+            "You can't use `the character 5' after \\advance",
+            "You can't use `\\relax' after \\advance",
+            "Missing number, treated as zero",
+            "You can't use `\\lastpenalty' after \\advance",
+            "You can't use `\\interactionmode' after \\multiply",
+            "You can't use `\\hyphenchar' after \\divide",
+        ],
+        "{}",
+        e.term
+    );
+    let term: String = e.term.split_whitespace().collect();
+    assert!(
+        term.contains("[5][1000][1000][0]after5[0][7][1.0pt]"),
+        "{}",
+        e.term
+    );
+}
+
+/// pdftex -ini (tex.web §1195): a formula is deleted, and mlist_to_hlist
+/// skipped, unless families 2 and 3 have at least 22 and 13 \fontdimen
+/// parameters in all three sizes; a display is deleted the same way.
+#[test]
+fn formulas_without_enough_math_font_parameters_are_deleted() {
+    let e = run_lenient(
+        r"\catcode`\$=3 \font\tenrm=cmr10 \tenrm
+\message{a}
+$x$
+\textfont2=\tenrm \scriptfont2=\tenrm \scriptscriptfont2=\tenrm
+$x^2$
+\font\tensy=cmsy10 \textfont2=\tensy \scriptfont2=\tensy \scriptscriptfont2=\tensy
+$x$
+$$x$$
+\end",
+    );
+    let messages: Vec<&str> = e.diagnostics.iter().map(|d| d.message.as_str()).collect();
+    assert_eq!(
+        messages,
+        [
+            "Math formula deleted: Insufficient symbol fonts",
+            "Math formula deleted: Insufficient symbol fonts",
+            "Math formula deleted: Insufficient extension fonts",
+            "Math formula deleted: Insufficient extension fonts",
+        ],
+        "{}",
+        e.term
+    );
+}
+
+/// pdftex -ini: \pdffilesize and its siblings look names up like
+/// kpse_find_tex, along TEXINPUTS only. TFM, Type 1, encoding and map files
+/// of the same TeX tree are not found (the primitives expand to nothing),
+/// while a TeX input is, with or without its default extension.
+#[test]
+fn pdf_file_queries_search_the_tex_input_path_only() {
+    let e = run_lenient(
+        r"\def\empty{}\def\q#1{\edef\r{\pdffilesize{#1}}\message{[#1=\ifx\r\empty-\else+\fi]}}
+\q{cmr10.tfm}\q{cmr10.pfb}\q{lm-ec.enc}\q{pdftex.map}\q{8r.enc}\q{cmr10}
+\q{plain.tex}\q{plain}\q{article.cls}\q{latex.ltx}
+\edef\r{\pdfmdfivesum file{cmr10.tfm}}\message{[md5=\r]}
+\edef\r{\pdffilemoddate{cmr10.tfm}}\message{[date=\r]}
+\edef\r{\pdffiledump length 4{cmr10.tfm}}\message{[dump=\r]}
+\end",
+    );
+    let term: String = e.term.split_whitespace().collect();
+    assert!(
+        term.contains(
+            "[cmr10.tfm=-][cmr10.pfb=-][lm-ec.enc=-][pdftex.map=-][8r.enc=-][cmr10=-]\
+             [plain.tex=+][plain=+][article.cls=+][latex.ltx=+][md5=][date=][dump=]"
+        ),
+        "{}",
+        e.term
+    );
+}

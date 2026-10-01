@@ -480,6 +480,13 @@ impl Engine {
     /// first (kpathsea's TEXMF_OUTPUT_DIRECTORY behavior), then kpathsea's
     /// format search path (TDS, env paths, cwd, explicit paths).
     pub fn resolve_input_path(&mut self, name: &str) -> Option<std::path::PathBuf> {
+        self.resolve_input_path_in(name, true)
+    }
+
+    /// `lax` additionally accepts a file of that basename anywhere in the
+    /// TeX tree (fonts, maps, ...), which `\input` tolerates but
+    /// kpse_find_tex's TEXINPUTS search never does.
+    fn resolve_input_path_in(&mut self, name: &str, lax: bool) -> Option<std::path::PathBuf> {
         if name.is_empty() {
             return None;
         }
@@ -566,14 +573,15 @@ impl Engine {
         if compatibility_input(name).is_some() {
             return None;
         }
-        let resolved = self
-            .font_loader
-            .kpse
-            .find(name, tex_kpse::Format::Tex)
-            .or_else(|| {
+        let kpse = &self.font_loader.kpse;
+        let resolved = if lax {
+            kpse.find(name, tex_kpse::Format::Tex).or_else(|| {
                 let basename = std::path::Path::new(name).file_name()?.to_str()?;
-                self.font_loader.kpse.find_any(basename)
-            });
+                kpse.find_any(basename)
+            })
+        } else {
+            kpse.find_in_format_tree(name, tex_kpse::Format::Tex)
+        };
         // A lower-priority system or embedded TeX input remains valid only
         // while every earlier search-path candidate stays absent. Stop the
         // dependency trace at the selected path so irrelevant lower roots do
@@ -604,20 +612,22 @@ impl Engine {
     /// web2c `find_input_file` for \pdffilesize, \pdffilemoddate,
     /// \pdfmdfivesum file and \pdffiledump: the name loses every `"` (and
     /// nothing else, so surrounding spaces stay significant), then is found
-    /// exactly as `\openin` finds it: the output directory and TeX input
-    /// path, the built-in compatibility inputs, and the embedded archive.
+    /// as kpse_find_tex finds it: the output directory and TEXINPUTS path,
+    /// the built-in compatibility inputs, and the embedded TeX tree. Unlike
+    /// `\input`, a TFM, encoding or map file elsewhere in the TeX tree is
+    /// not found.
     pub(crate) fn find_input_file(&mut self, name: &str) -> Option<FoundInputFile> {
         let name = name.replace('"', "");
         if name.is_empty() {
             return None;
         }
-        if let Some(path) = self.resolve_input_path(&name) {
+        if let Some(path) = self.resolve_input_path_in(&name, false) {
             return Some(FoundInputFile::Path(path));
         }
         if let Some(data) = compatibility_input(&name) {
             return Some(FoundInputFile::Bytes(data.to_vec()));
         }
-        tex_kpse::get_embedded_tex_input(&name).map(|(_, data)| FoundInputFile::Bytes(data))
+        tex_kpse::get_embedded_tex_tree_input(&name).map(|(_, data)| FoundInputFile::Bytes(data))
     }
 
     pub fn do_endinput(&mut self) {

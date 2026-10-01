@@ -7,62 +7,9 @@ use crate::lib_registry::LibraryModule;
 use crate::lua_value::{LuaValue, LuaValueKind};
 use crate::lua_vm::LuaResult;
 use crate::lua_vm::LuaState;
-use crate::lua_vm::{LuaError, LuaRng};
+use crate::lua_vm::LuaRng;
+use crate::stdlib::lauxlib;
 use crate::platform_time;
-
-/// Check that argument at position `n` is a number, with proper error message.
-/// SAFETY: push_c_frame guarantees EXTRA_STACK (5) slots above frame_top,
-/// so arg slot `n` (1-based) is always readable.
-#[inline(always)]
-fn checknumber(l: &mut LuaState, n: usize, fname: &str) -> Result<f64, LuaError> {
-    let v = l.get_arg(n).unwrap_or_default();
-    if let Some(f) = v.as_number() {
-        return Ok(f);
-    }
-    let t = crate::stdlib::debug::objtypename(l, &v);
-    Err(l.error(format!(
-        "bad argument #{} to '{}' (number expected, got {})",
-        n, fname, t
-    )))
-}
-
-fn integer_value(value: LuaValue) -> Option<i64> {
-    if let Some(value) = value.as_integer() {
-        return Some(value);
-    }
-    let value = if value.as_number().is_some() {
-        value
-    } else if let Some(text) = value.as_str() {
-        crate::stdlib::basic::parse_number::parse_lua_number(text)
-    } else {
-        return None;
-    };
-    let number = value.as_number()?;
-    if number.is_finite()
-        && number.fract() == 0.0
-        && number >= i64::MIN as f64
-        && number < -(i64::MIN as f64)
-    {
-        Some(number as i64)
-    } else {
-        None
-    }
-}
-
-fn checkinteger(l: &mut LuaState, index: usize, function: &str) -> Result<i64, LuaError> {
-    let value = l.get_arg(index).ok_or_else(|| {
-        l.error(format!(
-            "bad argument #{} to '{}' (number expected, got no value)",
-            index, function
-        ))
-    })?;
-    integer_value(value).ok_or_else(|| {
-        l.error(format!(
-            "bad argument #{} to '{}' (number has no integer representation)",
-            index, function
-        ))
-    })
-}
 
 pub fn create_math_lib() -> LibraryModule {
     let mut module = crate::lib_module!("math", {
@@ -108,651 +55,318 @@ pub fn create_math_lib() -> LibraryModule {
     module
 }
 
-fn math_cosh(l: &mut LuaState) -> LuaResult<usize> {
-    let value = checknumber(l, 1, "cosh")?;
-    l.push_value(LuaValue::float(value.cosh()))?;
+fn push_float(l: &mut LuaState, n: f64) -> LuaResult<usize> {
+    l.push_value(LuaValue::float(n))?;
     Ok(1)
+}
+
+/// `pushnumint`: an integer if the float has an exact integer value.
+fn push_num_int(l: &mut LuaState, n: f64) -> LuaResult<usize> {
+    let value = match LuaValue::float(n).as_integer() {
+        Some(i) => LuaValue::integer(i),
+        None => LuaValue::float(n),
+    };
+    l.push_value(value)?;
+    Ok(1)
+}
+
+fn unary(l: &mut LuaState, f: fn(f64) -> f64) -> LuaResult<usize> {
+    let x = lauxlib::check_number(l, 1)?;
+    push_float(l, f(x))
+}
+
+fn math_cosh(l: &mut LuaState) -> LuaResult<usize> {
+    unary(l, f64::cosh)
 }
 
 fn math_sinh(l: &mut LuaState) -> LuaResult<usize> {
-    let value = checknumber(l, 1, "sinh")?;
-    l.push_value(LuaValue::float(value.sinh()))?;
-    Ok(1)
+    unary(l, f64::sinh)
 }
 
 fn math_tanh(l: &mut LuaState) -> LuaResult<usize> {
-    let value = checknumber(l, 1, "tanh")?;
-    l.push_value(LuaValue::float(value.tanh()))?;
-    Ok(1)
+    unary(l, f64::tanh)
 }
 
 fn math_log10(l: &mut LuaState) -> LuaResult<usize> {
-    let value = checknumber(l, 1, "log10")?;
-    l.push_value(LuaValue::float(value.log10()))?;
-    Ok(1)
-}
-
-fn math_pow(l: &mut LuaState) -> LuaResult<usize> {
-    let base = checknumber(l, 1, "pow")?;
-    let exponent = checknumber(l, 2, "pow")?;
-    l.push_value(LuaValue::float(base.powf(exponent)))?;
-    Ok(1)
-}
-
-fn math_abs(l: &mut LuaState) -> LuaResult<usize> {
-    let value = l.get_arg(1).unwrap_or_default();
-
-    // Fast path: preserve integer type
-    if let Some(i) = value.as_integer() {
-        l.push_value(LuaValue::integer(i.wrapping_abs()))?;
-        return Ok(1);
-    }
-
-    if let Some(f) = value.as_float() {
-        l.push_value(LuaValue::float(f.abs()))?;
-        return Ok(1);
-    }
-
-    Err(l.error("bad argument #1 to 'abs' (number expected)".to_string()))
+    unary(l, f64::log10)
 }
 
 fn math_acos(l: &mut LuaState) -> LuaResult<usize> {
-    let x = checknumber(l, 1, "acos")?;
-    l.push_value(LuaValue::float(x.acos()))?;
-    Ok(1)
+    unary(l, f64::acos)
 }
 
 fn math_asin(l: &mut LuaState) -> LuaResult<usize> {
-    let x = checknumber(l, 1, "asin")?;
-    l.push_value(LuaValue::float(x.asin()))?;
-    Ok(1)
-}
-
-fn math_atan(l: &mut LuaState) -> LuaResult<usize> {
-    let y = l
-        .get_arg(1)
-        .ok_or_else(|| l.error("bad argument #1 to 'atan' (number expected)".to_string()))?
-        .as_number()
-        .ok_or_else(|| l.error("bad argument #1 to 'atan' (number expected)".to_string()))?;
-    let x = l.get_arg(2).and_then(|v| v.as_number()).unwrap_or(1.0);
-    l.push_value(LuaValue::float(y.atan2(x)))?;
-    Ok(1)
-}
-
-fn math_ceil(l: &mut LuaState) -> LuaResult<usize> {
-    let value = l.get_arg(1).unwrap_or_default();
-
-    // Fast path: integers are already ceil'd
-    if let Some(i) = value.as_integer() {
-        l.push_value(LuaValue::integer(i))?;
-        return Ok(1);
-    }
-
-    if let Some(f) = value.as_float() {
-        let ceiled = f.ceil();
-        // Return integer if result fits, otherwise keep as float
-        if ceiled >= (i64::MIN as f64) && ceiled < -(i64::MIN as f64) {
-            l.push_value(LuaValue::integer(ceiled as i64))?;
-        } else {
-            l.push_value(LuaValue::float(ceiled))?;
-        }
-        return Ok(1);
-    }
-
-    Err(l.error("bad argument #1 to 'ceil' (number expected)".to_string()))
+    unary(l, f64::asin)
 }
 
 fn math_cos(l: &mut LuaState) -> LuaResult<usize> {
-    let x = checknumber(l, 1, "cos")?;
-    l.push_value(LuaValue::float(x.cos()))?;
-    Ok(1)
+    unary(l, f64::cos)
 }
 
 fn math_deg(l: &mut LuaState) -> LuaResult<usize> {
-    let x = checknumber(l, 1, "deg")?;
-    l.push_value(LuaValue::float(x.to_degrees()))?;
-    Ok(1)
-}
-
-fn math_exp(l: &mut LuaState) -> LuaResult<usize> {
-    let x = checknumber(l, 1, "exp")?;
-    l.push_value(LuaValue::float(x.exp()))?;
-    Ok(1)
-}
-
-fn math_floor(l: &mut LuaState) -> LuaResult<usize> {
-    let value = l.get_arg(1).unwrap_or_default();
-
-    // Fast path: integers are already floor'd
-    if let Some(i) = value.as_integer() {
-        l.push_value(LuaValue::integer(i))?;
-        return Ok(1);
-    }
-
-    if let Some(f) = value.as_float() {
-        let floored = f.floor();
-        // Return integer if result fits, otherwise keep as float
-        if floored >= (i64::MIN as f64) && floored < -(i64::MIN as f64) {
-            l.push_value(LuaValue::integer(floored as i64))?;
-        } else {
-            l.push_value(LuaValue::float(floored))?;
-        }
-        return Ok(1);
-    }
-
-    Err(l.error("bad argument #1 to 'floor' (number expected)".to_string()))
-}
-
-fn math_fmod(l: &mut LuaState) -> LuaResult<usize> {
-    let arg1 = l
-        .get_arg(1)
-        .ok_or_else(|| l.error("bad argument #1 to 'fmod' (number expected)".to_string()))?;
-    let arg2 = l
-        .get_arg(2)
-        .ok_or_else(|| l.error("bad argument #2 to 'fmod' (number expected)".to_string()))?;
-
-    // If both arguments are raw integers (not float-that-happens-to-be-integral), do integer fmod
-    if arg1.is_integer() && arg2.is_integer() {
-        let a = arg1.as_integer_strict().unwrap();
-        let b = arg2.as_integer_strict().unwrap();
-        if b == 0 {
-            return Err(l.error("bad argument #2 to 'fmod' (zero)".to_string()));
-        }
-        // C Lua uses luaV_mod for integers: a % b with sign adjustment
-        // But math.fmod for integers just uses C's fmod semantics (truncated division remainder)
-        // In C Lua, math_fmod calls luaV_modf which for integers does:
-        //   if b == -1: result = 0 (avoid overflow of minint % -1)
-        //   else: result = a % b (C remainder, truncated toward zero)
-        let result = if b == -1 { 0 } else { a % b };
-        l.push_value(LuaValue::integer(result))?;
-        return Ok(1);
-    }
-
-    let x = arg1
-        .as_number()
-        .ok_or_else(|| l.error("bad argument #1 to 'fmod' (number expected)".to_string()))?;
-    let y = arg2
-        .as_number()
-        .ok_or_else(|| l.error("bad argument #2 to 'fmod' (number expected)".to_string()))?;
-    if y == 0.0 {
-        return Err(l.error("bad argument #2 to 'fmod' (zero)".to_string()));
-    }
-    l.push_value(LuaValue::float(x % y))?;
-    Ok(1)
-}
-
-fn math_log(l: &mut LuaState) -> LuaResult<usize> {
-    let x = l
-        .get_arg(1)
-        .ok_or_else(|| l.error("bad argument #1 to 'log' (number expected)".to_string()))?
-        .as_number()
-        .ok_or_else(|| l.error("bad argument #1 to 'log' (number expected)".to_string()))?;
-    let base = l.get_arg(2).and_then(|v| v.as_number());
-
-    let result = if let Some(b) = base { x.log(b) } else { x.ln() };
-
-    l.push_value(LuaValue::float(result))?;
-    Ok(1)
-}
-
-/// Compare two numeric LuaValues properly without losing precision.
-/// Returns true if a < b.
-fn lua_num_lt(a: &LuaValue, b: &LuaValue) -> bool {
-    match (a.as_integer_strict(), b.as_integer_strict()) {
-        (Some(ai), Some(bi)) => ai < bi,
-        (Some(ai), None) => {
-            let bf = b.as_number().unwrap_or(f64::NAN);
-            // int < float: compare carefully
-            lua_int_lt_float(ai, bf)
-        }
-        (None, Some(bi)) => {
-            let af = a.as_number().unwrap_or(f64::NAN);
-            // float < int
-            lua_float_lt_int(af, bi)
-        }
-        (None, None) => {
-            let af = a.as_number().unwrap_or(f64::NAN);
-            let bf = b.as_number().unwrap_or(f64::NAN);
-            af < bf
-        }
-    }
-}
-
-/// int < float comparison (matching C Lua's LTintfloat)
-fn lua_int_lt_float(a: i64, b: f64) -> bool {
-    if b.is_nan() {
-        return false;
-    }
-    // If b is within i64 range, cast to i64 and compare; else compare as float
-    if b >= -(i64::MIN as f64) {
-        true // b >= 2^63, any i64 < b
-    } else if b < (i64::MIN as f64) {
-        false // b < -2^63, no i64 < b
-    } else {
-        let bi = b as i64;
-        if (bi as f64) == b {
-            a < bi // b is exactly representable
-        } else {
-            (a as f64) < b // compare as floats
-        }
-    }
-}
-
-/// float < int comparison (matching C Lua's LTfloatint)
-fn lua_float_lt_int(a: f64, b: i64) -> bool {
-    if a.is_nan() {
-        return false;
-    }
-    if a < (i64::MIN as f64) {
-        true // a < -2^63, a < any i64
-    } else if a >= -(i64::MIN as f64) {
-        false // a >= 2^63, no i64 > a
-    } else {
-        let ai = a as i64;
-        if (ai as f64) == a {
-            ai < b // a is exactly representable
-        } else {
-            a < (b as f64)
-        }
-    }
-}
-
-fn math_max(l: &mut LuaState) -> LuaResult<usize> {
-    let argc = l.arg_count();
-
-    if argc == 0 {
-        return Err(l.error("bad argument to 'max' (value expected)".to_string()));
-    }
-
-    // Fast path for common 2-arg case
-    if argc == 2 {
-        let a = l.get_arg(1).unwrap_or_default();
-        let b = l.get_arg(2).unwrap_or_default();
-        if a.as_number().is_none() {
-            return Err(l.error("bad argument #1 to 'max' (number expected)".to_string()));
-        }
-        if b.as_number().is_none() {
-            return Err(l.error("bad argument #2 to 'max' (number expected)".to_string()));
-        }
-        let result = if lua_num_lt(&a, &b) { b } else { a };
-        l.push_value(result)?;
-        return Ok(1);
-    }
-
-    // General path
-    let first = l.get_arg(1).unwrap_or_default();
-    let _ = first
-        .as_number()
-        .ok_or_else(|| l.error("bad argument #1 to 'max' (number expected)".to_string()))?;
-    let mut max_arg = first;
-
-    for i in 2..=argc {
-        let arg = l
-            .get_arg(i)
-            .ok_or_else(|| l.error(format!("bad argument #{} to 'max' (number expected)", i)))?;
-        let _ = arg
-            .as_number()
-            .ok_or_else(|| l.error(format!("bad argument #{} to 'max' (number expected)", i)))?;
-        if lua_num_lt(&max_arg, &arg) {
-            max_arg = arg;
-        }
-    }
-
-    l.push_value(max_arg)?;
-    Ok(1)
-}
-
-fn math_min(l: &mut LuaState) -> LuaResult<usize> {
-    let argc = l.arg_count();
-
-    if argc == 0 {
-        return Err(l.error("bad argument to 'min' (value expected)".to_string()));
-    }
-
-    // Fast path for common 2-arg case
-    if argc == 2 {
-        let a = l.get_arg(1).unwrap_or_default();
-        let b = l.get_arg(2).unwrap_or_default();
-        if a.as_number().is_none() {
-            return Err(l.error("bad argument #1 to 'min' (number expected)".to_string()));
-        }
-        if b.as_number().is_none() {
-            return Err(l.error("bad argument #2 to 'min' (number expected)".to_string()));
-        }
-        let result = if lua_num_lt(&b, &a) { b } else { a };
-        l.push_value(result)?;
-        return Ok(1);
-    }
-
-    // General path
-    let first = l.get_arg(1).unwrap_or_default();
-    let _ = first
-        .as_number()
-        .ok_or_else(|| l.error("bad argument #1 to 'min' (number expected)".to_string()))?;
-    let mut min_arg = first;
-
-    for i in 2..=argc {
-        let arg = l
-            .get_arg(i)
-            .ok_or_else(|| l.error(format!("bad argument #{} to 'min' (number expected)", i)))?;
-        let _ = arg
-            .as_number()
-            .ok_or_else(|| l.error(format!("bad argument #{} to 'min' (number expected)", i)))?;
-        if lua_num_lt(&arg, &min_arg) {
-            min_arg = arg;
-        }
-    }
-
-    l.push_value(min_arg)?;
-    Ok(1)
-}
-
-fn math_modf(l: &mut LuaState) -> LuaResult<usize> {
-    let x = l
-        .get_arg(1)
-        .ok_or_else(|| l.error("bad argument #1 to 'modf' (number expected)".to_string()))?
-        .as_number()
-        .ok_or_else(|| l.error("bad argument #1 to 'modf' (number expected)".to_string()))?;
-    let int_part = x.trunc();
-    let frac_part = if x.is_infinite() { 0.0 } else { x - int_part };
-
-    // Return integer part as integer if it fits
-    if !x.is_nan()
-        && !x.is_infinite()
-        && int_part >= i64::MIN as f64
-        && int_part < -(i64::MIN as f64)
-    {
-        l.push_value(LuaValue::integer(int_part as i64))?;
-    } else {
-        l.push_value(LuaValue::float(int_part))?;
-    }
-    l.push_value(LuaValue::float(frac_part))?;
-    Ok(2)
+    unary(l, |x| x * (180.0 / std::f64::consts::PI))
 }
 
 fn math_rad(l: &mut LuaState) -> LuaResult<usize> {
-    let x = checknumber(l, 1, "rad")?;
-    l.push_value(LuaValue::float(x.to_radians()))?;
+    unary(l, |x| x * (std::f64::consts::PI / 180.0))
+}
+
+fn math_exp(l: &mut LuaState) -> LuaResult<usize> {
+    unary(l, f64::exp)
+}
+
+fn math_sin(l: &mut LuaState) -> LuaResult<usize> {
+    unary(l, f64::sin)
+}
+
+fn math_sqrt(l: &mut LuaState) -> LuaResult<usize> {
+    unary(l, f64::sqrt)
+}
+
+fn math_tan(l: &mut LuaState) -> LuaResult<usize> {
+    unary(l, f64::tan)
+}
+
+fn math_pow(l: &mut LuaState) -> LuaResult<usize> {
+    let base = lauxlib::check_number(l, 1)?;
+    let exponent = lauxlib::check_number(l, 2)?;
+    push_float(l, base.powf(exponent))
+}
+
+fn math_abs(l: &mut LuaState) -> LuaResult<usize> {
+    match l.get_arg(1) {
+        Some(value) if value.ttisinteger() => {
+            l.push_value(LuaValue::integer(value.ivalue().wrapping_abs()))?;
+            Ok(1)
+        }
+        _ => unary(l, f64::abs),
+    }
+}
+
+fn math_atan(l: &mut LuaState) -> LuaResult<usize> {
+    let y = lauxlib::check_number(l, 1)?;
+    let x = lauxlib::opt_number(l, 2, 1.0)?;
+    push_float(l, y.atan2(x))
+}
+
+fn round_with(l: &mut LuaState, f: fn(f64) -> f64) -> LuaResult<usize> {
+    if let Some(value) = l.get_arg(1).filter(|v| v.ttisinteger()) {
+        l.push_value(value)?;
+        return Ok(1);
+    }
+    let x = lauxlib::check_number(l, 1)?;
+    push_num_int(l, f(x))
+}
+
+fn math_ceil(l: &mut LuaState) -> LuaResult<usize> {
+    round_with(l, f64::ceil)
+}
+
+fn math_floor(l: &mut LuaState) -> LuaResult<usize> {
+    round_with(l, f64::floor)
+}
+
+fn math_fmod(l: &mut LuaState) -> LuaResult<usize> {
+    let a = l.get_arg(1).unwrap_or_default();
+    let b = l.get_arg(2).unwrap_or_default();
+    if a.ttisinteger() && b.ttisinteger() {
+        let d = b.ivalue();
+        let result = match d {
+            0 => return Err(lauxlib::argerror(l, 2, "zero")),
+            // Avoid overflow of mininteger % -1.
+            -1 => 0,
+            _ => a.ivalue() % d,
+        };
+        l.push_value(LuaValue::integer(result))?;
+        return Ok(1);
+    }
+    let x = lauxlib::check_number(l, 1)?;
+    let y = lauxlib::check_number(l, 2)?;
+    push_float(l, x % y)
+}
+
+fn math_log(l: &mut LuaState) -> LuaResult<usize> {
+    let x = lauxlib::check_number(l, 1)?;
+    let result = if l.get_arg(2).is_none_or(|v| v.is_nil()) {
+        x.ln()
+    } else {
+        match lauxlib::check_number(l, 2)? {
+            2.0 => x.log2(),
+            10.0 => x.log10(),
+            base => x.ln() / base.ln(),
+        }
+    };
+    push_float(l, result)
+}
+
+/// math.max / math.min: `lua_compare` over all arguments (any comparable
+/// values, metamethods included).
+fn extremum(l: &mut LuaState, max: bool) -> LuaResult<usize> {
+    let n = l.arg_count();
+    if n == 0 {
+        let message = if l.global_state().language() == crate::LuaLanguageLevel::Lua53 {
+            "value expected"
+        } else {
+            "number expected, got no value"
+        };
+        return Err(lauxlib::argerror(l, 1, message));
+    }
+    let mut best = l.get_arg(1).unwrap_or_default();
+    for i in 2..=n {
+        let value = l.get_arg(i).unwrap_or_default();
+        let better = if max { l.obj_lt(&best, &value)? } else { l.obj_lt(&value, &best)? };
+        if better {
+            best = value;
+        }
+    }
+    l.push_value(best)?;
     Ok(1)
 }
 
-fn math_random(l: &mut LuaState) -> LuaResult<usize> {
-    let argc = l.arg_count();
-    let lua53 = l.global_state_mut().language() == crate::LuaLanguageLevel::Lua53;
+fn math_max(l: &mut LuaState) -> LuaResult<usize> {
+    extremum(l, true)
+}
 
-    if argc > 2 {
-        return Err(l.error("wrong number of arguments to 'random'".to_string()));
+fn math_min(l: &mut LuaState) -> LuaResult<usize> {
+    extremum(l, false)
+}
+
+fn math_modf(l: &mut LuaState) -> LuaResult<usize> {
+    if let Some(value) = l.get_arg(1).filter(|v| v.ttisinteger()) {
+        l.push_value(value)?;
+        l.push_value(LuaValue::float(0.0))?;
+        return Ok(2);
     }
+    let n = lauxlib::check_number(l, 1)?;
+    let ip = if n < 0.0 { n.ceil() } else { n.floor() };
+    push_num_int(l, ip)?;
+    push_float(l, if n == ip { 0.0 } else { n - ip })?;
+    Ok(2)
+}
 
-    match argc {
+fn math_random(l: &mut LuaState) -> LuaResult<usize> {
+    let lua53 = l.global_state().language() == crate::LuaLanguageLevel::Lua53;
+    let rv = l.global_state_mut().rng.next_rand();
+    let (low, up) = match l.arg_count() {
         0 => {
-            // No arguments: return float in [0, 1)
             let r = l.global_state_mut().rng.next_float();
-            l.push_value(LuaValue::float(r))?;
-            Ok(1)
+            return push_float(l, r);
         }
         1 => {
-            let rv = l.global_state_mut().rng.next_rand();
-            let up = checkinteger(l, 1, "random")?;
-            if up == 0 {
-                if lua53 {
-                    return Err(
-                        l.error("bad argument #1 to 'random' (interval is empty)".to_string())
-                    );
-                }
+            let up = lauxlib::check_integer(l, 1)?;
+            if up == 0 && !lua53 {
                 l.push_value(LuaValue::integer(rv as i64))?;
                 return Ok(1);
             }
-            // random(n): return random integer in [1, n]
-            if up < 1 {
-                return Err(l.error("bad argument #1 to 'random' (interval is empty)".to_string()));
-            }
-            let result = project(rv, 1, up as u64)?;
-            l.push_value(LuaValue::integer(result))?;
-            Ok(1)
+            (1, up)
         }
-        _ => {
-            let rv = l.global_state_mut().rng.next_rand();
-            let low = checkinteger(l, 1, "random")?;
-            let up = checkinteger(l, 2, "random")?;
-            if low > up {
-                return Err(l.error("bad argument #2 to 'random' (interval is empty)".to_string()));
-            }
-            if lua53 && up.checked_sub(low).is_none() {
-                return Err(
-                    l.error("bad argument #1 to 'random' (interval is too large)".to_string())
-                );
-            }
-            let result = project(rv, low as u64, up as u64)?;
-            l.push_value(LuaValue::integer(result))?;
-            Ok(1)
-        }
+        2 => (lauxlib::check_integer(l, 1)?, lauxlib::check_integer(l, 2)?),
+        _ => return Err(lauxlib::lual_error(l, "wrong number of arguments")),
+    };
+    if low > up {
+        return Err(lauxlib::argerror(l, 1, "interval is empty"));
     }
-}
-
-/// Project a random u64 into [low, up] range (matching C Lua's project)
-fn project(rv: u64, low: u64, up: u64) -> LuaResult<i64> {
-    // range = up - low + 1 (could overflow for full range)
-    let range = up.wrapping_sub(low).wrapping_add(1);
-    if range == 0 {
-        // Full u64 range
-        Ok(low.wrapping_add(rv) as i64)
-    } else {
-        // Compute rv % range using rejection sampling to avoid bias
-        // Simple version: just use modulo (C Lua does this too for the common case)
-        Ok(low.wrapping_add(rv % range) as i64)
+    if lua53 && !(low >= 0 || up <= i64::MAX + low) {
+        return Err(lauxlib::argerror(l, 1, "interval too large"));
     }
+    let range = (up as u64).wrapping_sub(low as u64).wrapping_add(1);
+    let offset = if range == 0 { rv } else { rv % range };
+    l.push_value(LuaValue::integer((low as u64).wrapping_add(offset) as i64))?;
+    Ok(1)
 }
 
 fn math_randomseed(l: &mut LuaState) -> LuaResult<usize> {
-    if l.global_state_mut().language() == crate::LuaLanguageLevel::Lua53 {
-        let seed = checkinteger(l, 1, "randomseed")?;
-        l.global_state_mut().rng = LuaRng::from_seed(seed, 0);
+    if l.global_state().language() == crate::LuaLanguageLevel::Lua53 {
+        // Like l_srand((unsigned int)(lua_Integer)luaL_checknumber(L, 1)).
+        let seed = lauxlib::check_number(l, 1)?;
+        l.global_state_mut().rng = LuaRng::from_seed(seed as i64, 0);
         return Ok(0);
     }
-    let argc = l.arg_count();
-
-    let (n1, n2) = if argc == 0 || (argc >= 1 && l.get_arg(1).is_none_or(|v| v.is_nil())) {
-        // No argument or nil: use time-based seed
-        let time = platform_time::unix_nanos();
-        (time as i64, 0i64)
+    let (n1, n2) = if l.get_arg(1).is_none_or(|v| v.is_nil()) {
+        (platform_time::unix_nanos() as i64, 0)
     } else {
-        let seed1 = l.get_arg(1).and_then(|v| v.as_integer()).ok_or_else(|| {
-            l.error("bad argument #1 to 'randomseed' (number expected)".to_string())
-        })?;
-        let seed2 = l.get_arg(2).and_then(|v| v.as_integer()).unwrap_or(0);
-        (seed1, seed2)
+        let n1 = lauxlib::check_integer(l, 1)?;
+        (n1, lauxlib::opt_integer(l, 2, 0)?)
     };
-
     l.global_state_mut().rng = LuaRng::from_seed(n1, n2);
-
-    // Return two seed values
     l.push_value(LuaValue::integer(n1))?;
     l.push_value(LuaValue::integer(n2))?;
     Ok(2)
 }
 
-fn math_sin(l: &mut LuaState) -> LuaResult<usize> {
-    let x = checknumber(l, 1, "sin")?;
-    l.push_value(LuaValue::float(x.sin()))?;
-    Ok(1)
-}
-
-fn math_sqrt(l: &mut LuaState) -> LuaResult<usize> {
-    let x = checknumber(l, 1, "sqrt")?;
-    l.push_value(LuaValue::float(x.sqrt()))?;
-    Ok(1)
-}
-
-fn math_tan(l: &mut LuaState) -> LuaResult<usize> {
-    let x = checknumber(l, 1, "tan")?;
-    l.push_value(LuaValue::float(x.tan()))?;
-    Ok(1)
-}
-
 fn math_tointeger(l: &mut LuaState) -> LuaResult<usize> {
-    let val = l
-        .get_arg(1)
-        .ok_or_else(|| l.error("bad argument #1 to 'tointeger' (value expected)".to_string()))?;
-
-    let result = if let Some(i) = val.as_integer() {
-        LuaValue::integer(i)
-    } else if let Some(f) = val.as_number() {
-        float_to_integer(f)
-    } else if let Some(s) = val.as_str() {
-        // Try to parse string as integer
-        let s_str = s.trim();
-        if let Ok(i) = s_str.parse::<i64>() {
-            LuaValue::integer(i)
-        } else if let Ok(f) = s_str.parse::<f64>() {
-            // String is a float, check if it's a whole number
-            float_to_integer(f)
-        } else {
-            LuaValue::nil()
-        }
-    } else {
-        LuaValue::nil()
+    let value = lauxlib::check_any(l, 1)?;
+    let result = match lauxlib::tointeger(&value) {
+        Some(i) => LuaValue::integer(i),
+        None => LuaValue::nil(),
     };
-
     l.push_value(result)?;
     Ok(1)
 }
 
-/// Convert a float to integer if it's an exact integer within i64 range
-/// Returns nil if the float is not an exact integer or out of range
-fn float_to_integer(f: f64) -> LuaValue {
-    // Check for non-finite values
-    if !f.is_finite() {
-        return LuaValue::nil();
-    }
-    // Check if it's a whole number
-    if f.fract() != 0.0 {
-        return LuaValue::nil();
-    }
-    // Check if it's within i64 range BEFORE conversion
-    // i64::MIN = -9223372036854775808 (can be exactly represented in f64)
-    // i64::MAX = 9223372036854775807 (cannot be exactly represented in f64)
-    // The closest f64 values are:
-    // - i64::MIN as f64 = -9223372036854775808.0 (exact)
-    // - i64::MAX as f64 = 9223372036854776000.0 (rounded up!)
-    //
-    // So we check: f >= i64::MIN as f64 AND f < (i64::MAX as f64 + 1.0)
-    // But since i64::MAX can't be exactly represented, we use a different check:
-    // f must be in the range where f as i64 doesn't overflow
-    const MIN_F: f64 = i64::MIN as f64; // -9223372036854775808.0
-    // i64::MAX + 1 = 9223372036854775808 which is exactly representable as f64
-    const MAX_PLUS_ONE: f64 = 9223372036854775808.0; // 2^63
-
-    if (MIN_F..MAX_PLUS_ONE).contains(&f) {
-        let i = f as i64;
-        // Verify the conversion is exact
-        if i as f64 == f {
-            LuaValue::integer(i)
-        } else {
-            LuaValue::nil()
-        }
-    } else {
-        LuaValue::nil()
-    }
-}
-
 fn math_type(l: &mut LuaState) -> LuaResult<usize> {
-    let val = l
-        .get_arg(1)
-        .ok_or_else(|| l.error("bad argument #1 to 'type' (value expected)".to_string()))?;
-
-    let cs = &l.global_state_mut().const_strings;
-    let result = match val.kind() {
-        LuaValueKind::Integer => cs.str_integer,
-        LuaValueKind::Float => cs.str_float,
-        _ => {
-            l.push_value(LuaValue::nil())?;
-            return Ok(1);
-        }
+    let value = lauxlib::check_any(l, 1)?;
+    let strings = &l.global_state().const_strings;
+    let result = match value.kind() {
+        LuaValueKind::Integer => strings.str_integer,
+        LuaValueKind::Float => strings.str_float,
+        _ => LuaValue::nil(),
     };
-
     l.push_value(result)?;
     Ok(1)
 }
 
 fn math_ult(l: &mut LuaState) -> LuaResult<usize> {
-    let m = checkinteger(l, 1, "ult")?;
-    let n = checkinteger(l, 2, "ult")?;
-    // Unsigned less than
-    let result = (m as u64) < (n as u64);
-    l.push_value(LuaValue::boolean(result))?;
+    let m = lauxlib::check_integer(l, 1)?;
+    let n = lauxlib::check_integer(l, 2)?;
+    l.push_value(LuaValue::boolean((m as u64) < (n as u64)))?;
     Ok(1)
 }
 
 /// math.frexp(x) -> m, e such that x = m * 2^e, 0.5 <= |m| < 1
 fn math_frexp(l: &mut LuaState) -> LuaResult<usize> {
-    let x = l
-        .get_arg(1)
-        .and_then(|v| v.as_float().or_else(|| v.as_integer().map(|i| i as f64)))
-        .ok_or_else(|| l.error("bad argument #1 to 'frexp' (number expected)".to_string()))?;
-
-    if x == 0.0 {
-        l.push_value(LuaValue::float(0.0))?;
+    let x = lauxlib::check_number(l, 1)?;
+    if x == 0.0 || !x.is_finite() {
+        push_float(l, x)?;
         l.push_value(LuaValue::integer(0))?;
         return Ok(2);
     }
-    if x.is_infinite() || x.is_nan() {
-        l.push_value(LuaValue::float(x))?;
-        l.push_value(LuaValue::integer(0))?;
-        return Ok(2);
-    }
-
-    // frexp: extract mantissa and exponent
-    let bits = x.to_bits();
-    let sign = if (bits >> 63) != 0 { -1.0 } else { 1.0 };
-    let abs_x = x.abs();
-    let mut exp = ((bits >> 52) & 0x7FF) as i64 - 1022;
-    let mut mantissa =
-        sign * f64::from_bits((abs_x.to_bits() & 0x000FFFFFFFFFFFFF) | 0x3FE0000000000000);
-
-    // Handle subnormals
-    if ((bits >> 52) & 0x7FF) == 0 {
-        // Subnormal: multiply by 2^53 to normalize, then adjust exponent
-        let norm = abs_x * (2.0f64.powi(53));
-        let norm_bits = norm.to_bits();
-        exp = ((norm_bits >> 52) & 0x7FF) as i64 - 1022 - 53;
-        mantissa = sign * f64::from_bits((norm_bits & 0x000FFFFFFFFFFFFF) | 0x3FE0000000000000);
-    }
-
-    l.push_value(LuaValue::float(mantissa))?;
+    // Normalize subnormals first, then read the exponent field.
+    let (scaled, shift) = if x.abs() < f64::MIN_POSITIVE { (x * 2f64.powi(64), -64) } else { (x, 0) };
+    let bits = scaled.to_bits();
+    let exp = ((bits >> 52) & 0x7ff) as i64 - 1022 + shift;
+    let mantissa = f64::from_bits((bits & !(0x7ff << 52)) | (1022 << 52));
+    push_float(l, mantissa)?;
     l.push_value(LuaValue::integer(exp))?;
     Ok(2)
 }
 
+/// `scalbn(x, n)` = x * 2^n with a single rounding (port of musl's scalbn).
+pub(crate) fn scalbn(mut x: f64, n: i64) -> f64 {
+    let two_1023 = f64::from_bits(0x7fe0_0000_0000_0000);
+    let two_minus_969 = f64::from_bits(0x0010_0000_0000_0000) * f64::from_bits(0x4340_0000_0000_0000);
+    let mut n = n.clamp(-3000, 3000) as i32;
+    if n > 1023 {
+        x *= two_1023;
+        n -= 1023;
+        if n > 1023 {
+            x *= two_1023;
+            n = (n - 1023).min(1023);
+        }
+    } else if n < -1022 {
+        x *= two_minus_969;
+        n += 1022 - 53;
+        if n < -1022 {
+            x *= two_minus_969;
+            n = (n + 1022 - 53).max(-1022);
+        }
+    }
+    x * f64::from_bits(((0x3ff + n) as u64) << 52)
+}
+
 /// math.ldexp(m, e) -> m * 2^e
 fn math_ldexp(l: &mut LuaState) -> LuaResult<usize> {
-    let m = l
-        .get_arg(1)
-        .and_then(|v| v.as_float().or_else(|| v.as_integer().map(|i| i as f64)))
-        .ok_or_else(|| l.error("bad argument #1 to 'ldexp' (number expected)".to_string()))?;
-    let e = checkinteger(l, 2, "ldexp")?;
-
-    // Use the ldexp helper from parse_number to handle large exponents
-    let mut result = m;
-    let mut exp = e;
-    while exp > 1023 {
-        result *= 2.0f64.powi(1023);
-        exp -= 1023;
-        if result.is_infinite() {
-            break;
-        }
-    }
-    while exp < -1074 {
-        result *= 2.0f64.powi(-1074);
-        exp += 1074;
-        if result == 0.0 {
-            break;
-        }
-    }
-    if !result.is_infinite() && result != 0.0 {
-        result *= 2.0f64.powi(exp as i32);
-    }
-
-    l.push_value(LuaValue::float(result))?;
-    Ok(1)
+    let m = lauxlib::check_number(l, 1)?;
+    let e = lauxlib::check_integer(l, 2)?;
+    push_float(l, scalbn(m, e))
 }

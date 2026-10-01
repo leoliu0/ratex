@@ -162,30 +162,6 @@ fn parse_hex_float(s: &str) -> Option<f64> {
     let total_exp = exp + exp_adjust;
     // Use ldexp-style multiplication; for very large/small exponents, f64 handles
     // overflow to inf and underflow to 0 naturally.
-    let result = ldexp(mantissa as f64, total_exp);
+    let result = crate::stdlib::math::scalbn(mantissa as f64, total_exp);
     Some(result)
-}
-
-/// Multiply a float by 2^exp (ldexp). Handles large exponents that exceed
-/// the range of a single multiplication by splitting into steps.
-fn ldexp(mut x: f64, mut exp: i64) -> f64 {
-    if x == 0.0 || exp == 0 {
-        return x;
-    }
-    // Apply exponent in steps of at most 1023 (max finite 2^n for f64)
-    while exp > 1023 {
-        x *= 2.0f64.powi(1023);
-        exp -= 1023;
-        if x.is_infinite() {
-            return x;
-        }
-    }
-    while exp < -1074 {
-        x *= 2.0f64.powi(-1074);
-        exp += 1074;
-        if x == 0.0 {
-            return x;
-        }
-    }
-    x * (2.0f64).powi(exp as i32)
 }

@@ -118,8 +118,16 @@ impl Engine {
                 return None;
             }
             let Some(buf) = line_buf else {
+                let ending = *ending;
+                // luatex next_line: a printed token object is read next
+                // (it is backed up and the pseudo file is resumed after it).
+                if !ending {
+                    if let Some(token) = self.take_lua_token(si) {
+                        return Some(token);
+                    }
+                }
                 // \endinput takes effect once the current line is finished.
-                if *ending || !self.file_load_line(si) {
+                if ending || !self.file_load_line(si) {
                     self.set_file_done(si);
                 }
                 continue;
@@ -127,13 +135,24 @@ impl Engine {
             let start = *line_pos;
             let state = *state;
             let regime = *cat_regime;
-            let Some((character, width)) = self.decode_scalar(buf, start) else {
+            let Some((mut character, mut width)) = self.decode_scalar(buf, start) else {
                 // tex.web §360: an exhausted line moves to the next one in
                 // state new_line.
                 self.file_line_clear(si);
                 continue;
             };
+            // luatex str2uni/do_buffer_to_unichar: an invalid UTF-8
+            // sequence reads as U+FFFD and skips utf8_size(0xFFFD) bytes.
+            let invalid =
+                self.engine_kind == EngineKind::LuaTeX && width == 1 && character >= 0x80;
+            if invalid {
+                character = 0xFFFD;
+                width = 3.min(buf.len() - start);
+            }
             self.file_line_advance_by(si, width);
+            if invalid {
+                self.error("String contains an invalid utf-8 sequence");
+            }
             if let Some(token) = self.tokenize_char(character, si, state, start, regime) {
                 if token != PAR_END && !self.file_line_is_none(si) {
                     self.record_physical_token(si, start, token);
@@ -147,6 +166,14 @@ impl Engine {
         if let Source::File { done, .. } = &mut self.input.stack[si] {
             *done = true;
         }
+    }
+
+    fn take_lua_token(&mut self, si: usize) -> Option<Token> {
+        let Some(Source::File { lua_lines: Some(lines), .. }) = self.input.stack.get_mut(si) else {
+            return None;
+        };
+        lines.lines.front()?.token?;
+        lines.lines.pop_front()?.token
     }
 
     fn set_file_state(&mut self, si: usize, value: u8) {

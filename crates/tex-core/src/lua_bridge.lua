@@ -195,6 +195,94 @@ tex.setattribute, tex.getattribute, tex.attribute = make_register(B.attribute_ge
 function tex.isattribute(k) return pcall(tex.getattribute, k) end
 function tex.iscount(k) return pcall(tex.getcount, k) end
 
+-- tex.print & co. (ltexlib.c do_luacprint / luac_store): strings and
+-- numbers become pseudo-file lines, token objects are read back as such.
+local DEFAULT_CAT, NO_CAT = -1, -2
+local tointeger, tonumber = math.tointeger, tonumber
+local function lua_int(v)
+  -- lua_tointeger: 0 for anything without an exact integer value
+  return tointeger(tonumber(v) or 0) or 0
+end
+local function store(v, partial, cattable)
+  local t = type(v)
+  if t == "string" or t == "number" then
+    B.print_text(partial, cattable, tostring(v))
+  elseif t == "table" and getmetatable(v) == tok_mt then
+    B.print_token(partial, cattable, rawget(v, 1))
+  else
+    return false
+  end
+  return true
+end
+local function is_list(v)
+  return type(v) == "table" and getmetatable(v) ~= tok_mt
+end
+local function cprint(partial, cattable, ...)
+  local n, start = select("#", ...), 1
+  if cattable ~= NO_CAT and type((...)) == "number" and n > 1 then
+    cattable, start = lua_int((...)), 2
+  end
+  local first = select(start, ...)
+  if is_list(first) then
+    local i = 1
+    while store(rawget(first, i), partial, cattable) do i = i + 1 end
+  else
+    for i = start, n do store((select(i, ...)), partial, cattable) end
+  end
+end
+function tex.print(...) cprint(false, DEFAULT_CAT, ...) end
+function tex.sprint(...) cprint(true, DEFAULT_CAT, ...) end
+function tex.write(...) cprint(false, NO_CAT, ...) end
+function tex.cprint(c, ...)
+  c = lua_int(c)
+  if c < 0 or c > 15 then c = 12 end
+  local cattable = -c - 0xFF
+  local first = ...
+  if is_list(first) then
+    local i = 1
+    while store(rawget(first, i), true, cattable) do i = i + 1 end
+  else
+    for i = 1, select("#", ...) do store((select(i, ...)), true, cattable) end
+  end
+end
+function tex.tprint(...)
+  for i = 1, select("#", ...) do
+    local t = select(i, ...)
+    if not is_list(t) then error("no string to print", 2) end
+    local cattable, j = DEFAULT_CAT, 1
+    if type(t[1]) == "number" then cattable, j = lua_int(t[1]), 2 end
+    while store(t[j], true, cattable) do j = j + 1 end
+  end
+end
+
+-- texio (ltexiolib.c): an optional first selector argument, then strings.
+local texio_targets = { ["term and log"] = 0, log = 1, term = 2 }
+local function texio_print(nl, ...)
+  local n = select("#", ...)
+  local last = select(n, ...)
+  if n == 0 or (type(last) ~= "string" and type(last) ~= "number") then
+    error("no string to print", 3)
+  end
+  local target, start = 0, 1
+  if n > 1 then
+    local s = ...
+    if type(s) == "string" then
+      target, start = texio_targets[s] or 0, 2
+    elseif type(s) == "number" then
+      start = 2
+    else
+      error("first argument is not 'term and log', 'term', 'log' or a number", 3)
+    end
+  end
+  for i = start, n do
+    local s = select(i, ...)
+    if type(s) ~= "string" and type(s) ~= "number" then error("argument is not a string", 3) end
+    B.texio_print(target, nl, tostring(s))
+  end
+end
+function texio.write(...) texio_print(false, ...) end
+function texio.write_nl(...) texio_print(true, ...) end
+
 function tex.setcatcode(...)
   local args = { ... }
   local i = 1

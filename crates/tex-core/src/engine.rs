@@ -169,6 +169,9 @@ pub struct Engine {
     pub(crate) lua: Option<Box<crate::engine_lua::LuaEngine>>,
     /// LuaTeX bytecode registers (`lua.bytecode[n]`, dumped functions) and
     /// chunk names (`lua.name[n]`); both are part of the format.
+    /// What the running Lua code printed with `tex.print` & co.; read as a
+    /// pseudo file when the Lua call returns.
+    pub(crate) lua_print_queue: Vec<crate::engine_lua::LuaLine>,
     pub(crate) lua_bytecodes: std::collections::BTreeMap<u32, Vec<u8>>,
     pub(crate) lua_names: std::collections::BTreeMap<u16, String>,
     pub ini_mode: bool, // -ini: format-building mode
@@ -875,6 +878,7 @@ impl Engine {
             definable_cs_recovery_count: 0,
             engine_kind,
             lua: None,
+            lua_print_queue: Vec::new(),
             lua_bytecodes: Default::default(),
             lua_names: Default::default(),
             ini_mode,

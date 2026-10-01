@@ -4,33 +4,51 @@
 //! `token`, `node`, `callback`, `status`, `lua`, `texio`, and `kpse` modules.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::VecDeque;
 use std::rc::Rc;
 
 use tex_lua::{Lua, LuaApi, LuaResult, LuaValue, SafeOption, Stdlib};
 
 use crate::engine::Engine;
+use crate::token::Token;
 
-/// Captured output emitted by `tex.print`, `tex.sprint`, and `tex.write`.
+/// `tex.print` & co. without a catcode table argument read their lines
+/// with the current catcode table (luatex `DEFAULT_CAT_TABLE`).
+pub const DEFAULT_CAT_TABLE: i32 = -1;
+/// `tex.write` lines are read with "string" catcodes: spaces are spacers,
+/// everything else is other (luatex `NO_CAT_TABLE`).
+pub const NO_CAT_TABLE: i32 = -2;
+
+/// One item printed by `tex.print`/`sprint`/`write`/`cprint`/`tprint`
+/// (luatex ltexlib.c `rope`).
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct LuaOutputItem {
-    pub catcode_table: Option<i32>,
-    pub text: String,
-    pub newline: bool,
+pub struct LuaLine {
+    /// The bytes of a printed string.
+    pub text: Vec<u8>,
+    /// A printed token object; `text` is empty then.
+    pub token: Option<Token>,
+    /// `sprint`-style partial line: no `\endlinechar`, trailing spaces and
+    /// the scanner state are kept.
+    pub partial: bool,
+    /// Catcode regime: [`DEFAULT_CAT_TABLE`], [`NO_CAT_TABLE`], a catcode
+    /// table id, or `-0xFF - c` for the fixed catcode `c` (`cprint`).
+    pub cattable: i32,
+}
+
+/// The lines of a Lua pseudo file still to be read.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct LuaLines {
+    pub lines: VecDeque<LuaLine>,
 }
 
 /// Shared host bridge accessible from Lua callbacks.
 pub struct LuaBridgeState {
-    pub output_queue: Vec<LuaOutputItem>,
-    pub term_log: String,
     pub requested_primitives: Vec<(String, Vec<String>)>,
 }
 
 impl LuaBridgeState {
     pub fn new() -> Self {
         Self {
-            output_queue: Vec::new(),
-            term_log: String::new(),
             requested_primitives: Vec::new(),
         }
     }
@@ -55,8 +73,6 @@ impl LuaEngine {
     }
 
     fn init_modules(&mut self) -> Result<(), String> {
-        let bridge = self.bridge.clone();
-
         // 1. status table
         let status = self
             .lua
@@ -94,88 +110,20 @@ impl LuaEngine {
             loadstring = load
         "#).unwrap();
 
-        // 3. texio table
+        // 3. texio table (filled by `lua_bridge`)
         let texio_tbl = self
             .lua
             .create_table()
             .map_err(|e| format!("texio table creation failed: {e:?}"))?;
-        let bridge_clone = bridge.clone();
-        let write_fn = self
-            .lua
-            .create_function(move |msg: String| -> LuaResult<()> {
-                bridge_clone.borrow_mut().term_log.push_str(&msg);
-                Ok(())
-            })
-            .unwrap();
-        texio_tbl.set("write", write_fn.clone()).unwrap();
-
-        let bridge_clone = bridge.clone();
-        let write_nl_fn = self
-            .lua
-            .create_function(move |msg: String| -> LuaResult<()> {
-                let mut b = bridge_clone.borrow_mut();
-                if !b.term_log.ends_with('\n') {
-                    b.term_log.push('\n');
-                }
-                b.term_log.push_str(&msg);
-                Ok(())
-            })
-            .unwrap();
-        texio_tbl.set("write_nl", write_nl_fn).unwrap();
         self.lua
             .set_global("texio", texio_tbl)
             .map_err(|e| format!("failed to set texio table: {e:?}"))?;
 
-        // 4. tex table
+        // 4. tex table; tex.print & co. are installed by `lua_bridge`.
         let tex_tbl = self
             .lua
             .create_table()
             .map_err(|e| format!("tex table creation failed: {e:?}"))?;
-
-        // tex.print
-        let bridge_clone = bridge.clone();
-        let print_fn = self
-            .lua
-            .create_function(move |val: String| -> LuaResult<()> {
-                bridge_clone.borrow_mut().output_queue.push(LuaOutputItem {
-                    catcode_table: None,
-                    text: val,
-                    newline: true,
-                });
-                Ok(())
-            })
-            .unwrap();
-        tex_tbl.set("print", print_fn).unwrap();
-
-        // tex.sprint
-        let bridge_clone = bridge.clone();
-        let sprint_fn = self
-            .lua
-            .create_function(move |val: String| -> LuaResult<()> {
-                bridge_clone.borrow_mut().output_queue.push(LuaOutputItem {
-                    catcode_table: None,
-                    text: val,
-                    newline: false,
-                });
-                Ok(())
-            })
-            .unwrap();
-        tex_tbl.set("sprint", sprint_fn).unwrap();
-
-        // tex.write
-        let bridge_clone = bridge.clone();
-        let write_fn = self
-            .lua
-            .create_function(move |val: String| -> LuaResult<()> {
-                bridge_clone.borrow_mut().output_queue.push(LuaOutputItem {
-                    catcode_table: None,
-                    text: val,
-                    newline: false,
-                });
-                Ok(())
-            })
-            .unwrap();
-        tex_tbl.set("write", write_fn).unwrap();
 
         // tex.enableprimitives
         let bridge_clone = self.bridge.clone();
@@ -233,49 +181,6 @@ impl LuaEngine {
             .set_global("tex", tex_tbl)
             .map_err(|e| format!("failed to set tex table: {e:?}"))?;
         self.lua.execute(r##"
-            local __raw_print = tex.print
-            local __raw_sprint = tex.sprint
-            local function flatten(v, out)
-                if type(v) == "table" then
-                    for _, item in ipairs(v) do
-                        flatten(item, out)
-                    end
-                elseif v ~= nil then
-                    table.insert(out, tostring(v))
-                end
-            end
-            tex.print = function(...)
-                local args = {...}
-                local n = select("#", ...)
-                if n == 0 then return end
-                local start = 1
-                if type(args[1]) == "number" and n > 1 then
-                    start = 2
-                end
-                for i = start, n do
-                    local out = {}
-                    flatten(args[i], out)
-                    for _, s in ipairs(out) do
-                        __raw_print(s)
-                    end
-                end
-            end
-            tex.sprint = function(...)
-                local args = {...}
-                local n = select("#", ...)
-                if n == 0 then return end
-                local start = 1
-                if type(args[1]) == "number" and n > 1 then
-                    start = 2
-                end
-                for i = start, n do
-                    local out = {}
-                    flatten(args[i], out)
-                    for _, s in ipairs(out) do
-                        __raw_sprint(s)
-                    end
-                end
-            end
             if os then
                 os.type = "unix"
                 os.name = "linux"
@@ -827,7 +732,6 @@ impl Engine {
         let Some(lua) = self.lua.as_ref() else {
             return;
         };
-        let items: Vec<LuaOutputItem> = lua.bridge.borrow_mut().output_queue.drain(..).collect();
         let requested = std::mem::take(&mut lua.bridge.borrow_mut().requested_primitives);
         for (prefix, prims) in requested {
             if prims.is_empty() {
@@ -852,17 +756,80 @@ impl Engine {
                 }
             }
         }
-        if !items.is_empty() {
-            let mut combined = String::new();
-            for item in items {
-                combined.push_str(&item.text);
-                if item.newline {
-                    combined.push('\n');
-                }
+        self.read_lua_print_output();
+    }
+
+    /// luatex `lua_string_start`: what Lua printed becomes a pseudo file
+    /// that is read before anything Lua put back with `token.put_next`.
+    fn read_lua_print_output(&mut self) {
+        if self.lua_print_queue.is_empty() {
+            return;
+        }
+        let lines = LuaLines { lines: std::mem::take(&mut self.lua_print_queue).into() };
+        if self.ensure_input_stack_room(1) {
+            self.input.push_lua_lines(lines);
+        }
+    }
+
+    /// ltexlib.c `luac_store` for a string: `cattable` is checked here as
+    /// `do_luacprint` does (an invalid table means the current one).
+    pub(crate) fn lua_print_text(&mut self, text: &[u8], partial: bool, cattable: i32) {
+        let cattable = self.lua_print_cattable(cattable);
+        self.lua_print_queue.push(LuaLine { text: text.to_vec(), token: None, partial, cattable });
+    }
+
+    /// ltexlib.c `luac_store` for a token object.
+    pub(crate) fn lua_print_token(&mut self, token: Token, partial: bool, cattable: i32) {
+        let cattable = self.lua_print_cattable(cattable);
+        self.lua_print_queue.push(LuaLine { text: Vec::new(), token: Some(token), partial, cattable });
+    }
+
+    fn lua_print_cattable(&self, cattable: i32) -> i32 {
+        if cattable >= 0 && !self.eqtb.cat_table_valid(cattable) {
+            DEFAULT_CAT_TABLE
+        } else {
+            cattable
+        }
+    }
+
+    /// luatex textoken.c `do_get_cat_code` for a Lua pseudo-file line read
+    /// with catcode regime `regime` (never [`DEFAULT_CAT_TABLE`]).
+    pub(crate) fn lua_line_cat_code(&self, regime: i32, character: u32) -> u8 {
+        if regime == NO_CAT_TABLE {
+            if character == u32::from(b' ') {
+                crate::token::CAT_SPACE
+            } else {
+                crate::token::CAT_OTHER
             }
-            if self.ensure_input_stack_room(1) {
-                self.input.push_file("<directlua>".to_string(), combined.into_bytes());
+        } else if regime >= 0 {
+            self.eqtb.cat_code_in(regime, character)
+        } else {
+            (-regime - 0xFF) as u8
+        }
+    }
+
+    /// ltexiolib.c `texio.write`/`write_nl` for one string: `target` 1 is
+    /// the log only, 2 the terminal only, anything else both. Bytes equal
+    /// to `\newlinechar` end the line; `nl` starts a new line first unless
+    /// the output is already at the start of one (`print_nlp`).
+    pub(crate) fn lua_texio_print(&mut self, target: i64, nl: bool, bytes: &[u8]) {
+        let newline = self.eqtb.int_params[crate::prim::IntParam::NewLineChar.idx() as usize];
+        let text: Vec<u8> = bytes
+            .iter()
+            .map(|&b| if i32::from(b) == newline { b'\n' } else { b })
+            .collect();
+        let text = String::from_utf8_lossy(&text);
+        if target != 1 {
+            if nl && !self.term.is_empty() && !self.term.ends_with('\n') {
+                self.append_term("\n");
             }
+            self.append_term(&text);
+        }
+        if target != 2 {
+            if nl && !self.log.is_empty() && !self.log.ends_with('\n') {
+                self.append_log("\n");
+            }
+            self.append_log(&text);
         }
     }
 }

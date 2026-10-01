@@ -129,16 +129,10 @@ impl Engine {
         &mut self,
         f: impl FnOnce(&mut LuaEngine) -> Result<(), String>,
     ) -> Result<(), String> {
-        let outer = self
-            .lua
-            .as_ref()
-            .map(|lua| std::mem::take(&mut lua.bridge.borrow_mut().output_queue))
-            .unwrap_or_default();
+        let outer = std::mem::take(&mut self.lua_print_queue);
         let result = self.lua_run(f);
         self.flush_lua_output();
-        if let Some(lua) = &self.lua {
-            lua.bridge.borrow_mut().output_queue = outer;
-        }
+        self.lua_print_queue = outer;
         result
     }
 
@@ -918,6 +912,22 @@ pub(crate) fn install(lua: &mut Lua) -> Result<(), String> {
         } else {
             Ok(i64::from(t.cc()) * (1 << 21) + i64::from(t.chr()))
         }
+    });
+
+    // ---- tex.print family and texio (ltexlib.c luac_store, ltexiolib.c) ----
+    reg!(lua, b, "print_text", |partial: bool, cattable: i64, text: LuaString| -> Result<(), String> {
+        let text = bytes_of(&text);
+        let cattable = i32::try_from(cattable).unwrap_or(crate::engine_lua::DEFAULT_CAT_TABLE);
+        with_engine(|e| e.lua_print_text(&text, partial, cattable))
+    });
+    reg!(lua, b, "print_token", |partial: bool, cattable: i64, t: i64| -> Result<(), String> {
+        let t = token_arg(t)?;
+        let cattable = i32::try_from(cattable).unwrap_or(crate::engine_lua::DEFAULT_CAT_TABLE);
+        with_engine(|e| e.lua_print_token(t, partial, cattable))
+    });
+    reg!(lua, b, "texio_print", |target: i64, nl: bool, text: LuaString| -> Result<(), String> {
+        let text = bytes_of(&text);
+        with_engine(|e| e.lua_texio_print(target, nl, &text))
     });
 
     // ---- token construction ----

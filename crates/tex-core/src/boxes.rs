@@ -49,6 +49,43 @@ pub const HBOX: u8 = 0;
 pub const VBOX: u8 = 1;
 pub const VTOP: u8 = 2;
 
+/// e-TeX `box_lr` values (etex.ch "reversed"/"dlist").
+pub const BOX_LR_REVERSED: u8 = 1;
+pub const BOX_LR_DLIST: u8 = 2;
+
+/// Math-node kinds of `Node::MathKern`: e-TeX's math-node subtype plus one
+/// (kind 0 is an unconverted `\mkern`). etex.ch: before=0, after=1,
+/// begin_M=2, end_M=3, begin_L=6, end_L=7, begin_R=10, end_R=11.
+pub const MATH_ON: u8 = 1;
+pub const MATH_OFF: u8 = 2;
+pub const BEGIN_M: u8 = 3;
+pub const END_M: u8 = 4;
+pub const BEGIN_L: u8 = 7;
+pub const END_L: u8 = 8;
+pub const BEGIN_R: u8 = 11;
+pub const END_R: u8 = 12;
+/// Math-node kinds at or above this are TeXXeT text-direction nodes
+/// (e-TeX `subtype>=L_code`).
+pub const LR_KIND_MIN: u8 = 5;
+
+/// etex.ch `end_LR`: an end node (`\mathoff`, `\endM`, `\endL`, `\endR`).
+#[inline]
+pub fn math_end_lr(kind: u8) -> bool {
+    kind & 1 == 0
+}
+
+/// etex.ch `end_LR_type`: the end-node kind matching node `kind`.
+#[inline]
+pub fn math_end_lr_type(kind: u8) -> u8 {
+    4 * ((kind - 1) / 4) + 4
+}
+
+/// etex.ch `LR_dir`: 0 left-to-right, 1 right-to-left.
+#[inline]
+pub fn math_lr_dir(kind: u8) -> u8 {
+    (kind - 1) / 8
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum MathStyle {
     Display,
@@ -422,7 +459,9 @@ pub enum Node {
         glue_sign: u8,
         glue_order: u8,
         glue_set: f64,
-        font: Option<FontId>,
+        /// e-TeX `box_lr` (the hlist subtype): 0, [`BOX_LR_REVERSED`] once
+        /// ship_out reversed the list, [`BOX_LR_DLIST`] for display math.
+        lr: u8,
     },
     Mark {
         class: i32,
@@ -489,6 +528,8 @@ pub enum Node {
         above: Option<NodeList>,
         below: Option<NodeList>,
     },
+    /// `\mkern` (kind 0, mlists only) or a math node (kind = e-TeX math
+    /// subtype + 1, see [`MATH_ON`]..[`END_R`]); the i32 is the width.
     MathKern(i32, u8),
     Accent {
         fam: u8,
@@ -528,7 +569,7 @@ fn single_dims(n: &Node, eqtb: &crate::eqtb::Eqtb) -> (i32, i32, i32) {
         Node::Kern(k) | Node::ExplicitKern(k) => (*k, 0, 0),
         // tex.web math_node: width = \mathsurround (math-on 1 / math-off 2);
         // an unconverted \mkern (kind 0) has no width yet
-        Node::MathKern(k, 1 | 2) => (*k, 0, 0),
+        Node::MathKern(k, MATH_ON..) => (*k, 0, 0),
         Node::MarginKern { width, .. } => (*width, 0, 0),
         Node::Penalty(_) => (0, 0, 0),
         Node::Rule {
@@ -743,6 +784,9 @@ pub struct PackResult {
     pub shrink: [i64; 4],
     pub sign: u8,
     pub order: u8,
+    /// etex.ch `LR_problems` found by hpack's TeXXeT check:
+    /// 10000 × missing end nodes + unmatched end nodes
+    pub lr_problems: i32,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PackRecord {
@@ -846,8 +890,16 @@ pub fn hpack_add(
     if additional {
         target = nat + target;
     }
-    let (list, sign, order, set, bad, delta) =
+    let (mut list, sign, order, set, bad, delta) =
         finish_glue(list, target, nat, stretch, shrink, true, eqtb);
+    // etex.ch: `exit: if TeXXeT_en then <Check for LR anomalies at the end
+    // of hpack>` — after the glue decision and any overfull rule
+    let lr_problems =
+        if eqtb.int_params[crate::prim::IntParam::TeXXeTEnabled.idx() as usize] > 0 {
+            crate::texxet::hpack_lr_check(&mut list)
+        } else {
+            0
+        };
     PackResult {
         node: Node::Box {
             kind,
@@ -859,7 +911,7 @@ pub fn hpack_add(
             glue_sign: sign,
             glue_order: order,
             glue_set: set,
-            font: None,
+            lr: 0,
         },
         badness: bad,
         delta,
@@ -867,6 +919,7 @@ pub fn hpack_add(
         shrink,
         sign,
         order,
+        lr_problems,
     }
 }
 
@@ -943,7 +996,7 @@ pub fn vpack_add_md(
             glue_sign: sign,
             glue_order: order,
             glue_set: set,
-            font: None,
+            lr: 0,
         },
         badness: bad,
         delta,
@@ -951,6 +1004,7 @@ pub fn vpack_add_md(
         shrink,
         sign,
         order,
+        lr_problems: 0,
     }
 }
 

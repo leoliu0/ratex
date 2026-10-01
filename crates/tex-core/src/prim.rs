@@ -147,9 +147,12 @@ pub enum IntParam {
     TracingIfs,
     /// e-TeX `\tracingscantokens`.
     TracingScanTokens,
+    /// e-TeX `\predisplaydirection`: text direction preceding a display
+    /// (set by init_math, read by after_math's app_display).
+    PreDisplayDirection,
 }
 
-pub const NUM_INT_PARAMS: usize = 110;
+pub const NUM_INT_PARAMS: usize = 111;
 
 impl IntParam {
     #[inline]
@@ -268,6 +271,7 @@ impl IntParam {
         IntParam::TracingGroups,
         IntParam::TracingIfs,
         IntParam::TracingScanTokens,
+        IntParam::PreDisplayDirection,
     ];
 
     pub fn from_idx(i: u16) -> Option<Self> {
@@ -911,6 +915,12 @@ pub enum Prim {
     /// front of a name whose primitive meaning is unexpandable (pdfTeX
     /// `frozen_primitive`).
     PdfPrimitiveExec,
+    /// e-TeX TeXXeT text-direction primitives (`valign` with a nonzero
+    /// modifier in etex.ch)
+    BeginL,
+    EndL,
+    BeginR,
+    EndR,
 }
 
 /// Stable wire codes for the format dump (`crate::format`). Unit variants
@@ -1333,6 +1343,10 @@ impl Prim {
             Prim::PdfRetval => 411,
             Prim::PdfInsertHt => 412,
             Prim::PdfPrimitiveExec => 413,
+            Prim::BeginL => 600,
+            Prim::EndL => 601,
+            Prim::BeginR => 602,
+            Prim::EndR => 603,
             Prim::ScriptScriptStyle => 284,
             Prim::Patterns => 287,
             Prim::Hyphenation => 288,
@@ -1744,6 +1758,10 @@ impl Prim {
             411 => Some(Prim::PdfRetval),
             412 => Some(Prim::PdfInsertHt),
             413 => Some(Prim::PdfPrimitiveExec),
+            600 => Some(Prim::BeginL),
+            601 => Some(Prim::EndL),
+            602 => Some(Prim::BeginR),
+            603 => Some(Prim::EndR),
             0x1000..=0x1fff => {
                 let i = c & 0x0fff;
                 Some(Prim::IntP(IntParam::from_idx(i)?))

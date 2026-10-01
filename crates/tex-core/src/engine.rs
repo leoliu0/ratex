@@ -534,6 +534,17 @@ pub struct Engine {
     /// becomes \displaywidowpenalty (tex.web §21764 line_break argument);
     /// set by enter_math, consumed by end_paragraph
     pub next_par_widow: Option<i32>,
+    /// etex.ch `LR_save` of each vertical nest level holding an interrupted
+    /// paragraph: (`saved_lists.len()` inside that paragraph, LR stack of
+    /// end-node kinds, bottom first). Set by post_line_break, consumed by
+    /// the next line_break / init_math, flushed by end_graf.
+    pub(crate) lr_save: Vec<(usize, Vec<u8>)>,
+    /// etex.ch `LR_box` of each open display: the prototype box of the
+    /// interrupted paragraph's last line (None after an empty paragraph).
+    pub(crate) display_lr_boxes: Vec<Option<crate::boxes::Node>>,
+    /// Set once any TeXXeT text-direction or `\beginM`/`\endM` node has been
+    /// created; ship_out then runs etex.ch's LR-aware hlist_out.
+    pub(crate) texxet_nodes: bool,
     /// \eqno/\leqno state: on the primitive the formula mlist is parked here
     /// and the tag collects into a fresh list (tex.web start_eq_no); the
     /// bool marks \leqno (tag on the left)
@@ -1087,6 +1098,9 @@ impl Engine {
             pre_display_l: 0,
             last_par_line: None,
             next_par_widow: None,
+            lr_save: Vec::new(),
+            display_lr_boxes: Vec::new(),
+            texxet_nodes: false,
             pending_display_formula: None,
             eqno_leqno: None,
             math_group_marks: Vec::new(),
@@ -1770,6 +1784,18 @@ impl Engine {
         d!(eng, b"widowpenalties", WidowPenalties);
         d!(eng, b"displaywidowpenalties", DisplayWidowPenalties);
         d!(eng, b"pdfpageresources", PdfPageResources);
+        // e-TeX TeXXeT (etex.ch "mixed direction typesetting")
+        for (n, p) in [
+            (b"TeXXeTstate" as &[u8], IntParam::TeXXeTEnabled),
+            (b"predisplaydirection", IntParam::PreDisplayDirection),
+        ] {
+            let id = eng.cs.intern(n);
+            eng.eqtb.assign(id, Equiv::Prim(Prim::IntP(p)), true);
+        }
+        d!(eng, b"beginL", BeginL);
+        d!(eng, b"endL", EndL);
+        d!(eng, b"beginR", BeginR);
+        d!(eng, b"endR", EndR);
         // plain.tex paper: keep the page builder from firing on every box
         let sp_in: i32 = 4736287;
         eng.eqtb.dim_params[DimParam::HSize.idx() as usize] = (sp_in as i64 * 13 / 2) as i32;

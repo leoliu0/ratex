@@ -416,7 +416,12 @@ impl Engine {
             if self.mode == Mode::Vertical {
                 self.start_paragraph(true);
             }
+            // etex.ch init_math: x = \predisplaydirection, j = LR_box
+            let mut lr_direction = 0;
+            let mut lr_box = None;
             if self.mode == Mode::Horizontal {
+                // the interrupted paragraph's LR_save is keyed by its depth
+                let lr_key = self.saved_lists.len();
                 // yet) gives \predisplaysize = -max_dimen; otherwise the
                 // interrupted paragraph is broken and its final line is
                 // measured — before the end-of-paragraph reset clears
@@ -437,6 +442,7 @@ impl Engine {
                 self.par_primitive();
 
                 self.in_display_init = false;
+                lr_direction = self.display_direction_before(lr_key);
                 let prev_graf = self.prev_graf() as i64;
                 let hsize = self.eqtb.dim_params[DimParam::HSize.idx() as usize] as i64;
                 // §1184: display width/indent from \parshape (1-based entry
@@ -464,7 +470,10 @@ impl Engine {
                     // list is unreliable: build_page may have consumed the
                     // lines already (yielding the always-short-skip bug).
                     match self.last_par_line.take() {
-                        Some(line) => self.pre_display_size_of(&line),
+                        Some(line) => {
+                            lr_box = self.display_prototype_box(&line);
+                            self.pre_display_size_of(&line, lr_direction)
+                        }
                         None => -0x3FFF_FFFF,
                     }
                 };
@@ -485,6 +494,9 @@ impl Engine {
             // \\endgroup pop it; dropping this push leaves one pop too many
 
             self.push_group_level_at(crate::eqtb::LevelType::MathShift, math_entry_mark.clone());
+            self.display_lr_boxes.push(lr_box);
+            self.eqtb
+                .assign_int_param(IntParam::PreDisplayDirection, lr_direction, false);
             self.eqtb.assign_dim_param(
                 crate::prim::DimParam::DisplayWidth,
                 self.pre_display_l as i32,
@@ -608,6 +620,7 @@ impl Engine {
                 g(crate::prim::GlueParam::BaselineSkip),
                 g(crate::prim::GlueParam::LineSkip),
                 self.eqtb.dim_params[crate::prim::DimParam::LineSkipLimit.idx() as usize],
+                i(crate::prim::IntParam::PreDisplayDirection),
             ))
         } else {
             None
@@ -699,9 +712,14 @@ impl Engine {
             crate::boxes::Glue,
             crate::boxes::Glue,
             i32,
+            i32,
         ),
         outer_mode: Mode,
     ) {
+        // etex.ch "Retrieve the prototype box" (LR_box) and
+        // \predisplaydirection (read before unsave)
+        let lr_box = self.display_lr_boxes.pop().flatten();
+        let x = regs.9;
         if let Some(mut page) = self.par_page_lists.pop() {
             if outer_mode == Mode::Vertical {
                 // Recover the live global contribution list after any output
@@ -786,7 +804,10 @@ impl Engine {
             if let Some((tl, lq)) = tag {
                 leqno = lq;
                 let th = self.mlist_to_hlist_pen(&tl, 2, false);
-                let ab = hpack(th, None, HBOX, &self.eqtb).node;
+                let mut ab = hpack(th, None, HBOX, &self.eqtb).node;
+                if let Node::Box { lr, .. } = &mut ab {
+                    *lr = crate::boxes::BOX_LR_DLIST;
+                }
                 e = self.box_w(&ab) as i64;
                 // q = e + math_quad(text_size): quad of the fam-2 symbols font
                 let mq = self
@@ -824,6 +845,9 @@ impl Engine {
             }
             // §22560: centering displacement; too close to the tag -> center
             // in the remaining space (or honor leading user glue)
+            if let Node::Box { lr, .. } = &mut r0.node {
+                *lr = crate::boxes::BOX_LR_DLIST;
+            }
             let mut d = half_sp(z - w);
             if e > 0 && d < 2 * e {
                 d = half_sp(z - w - e);
@@ -836,7 +860,9 @@ impl Engine {
             // or a display following a display, §1148) therefore selects the
             // SHORT skips — raw comparison reproduces this, exactly as the
             // oracle shows (t6: consecutive $$ get \abovedisplayshortskip).
-            let is_short = !leqno && (s + d > self.pre_display_size);
+            // etex.ch: `if pre_display_direction<0 then s:=-s-z`
+            let s_clear = if x < 0 { -s - z } else { s };
+            let is_short = !leqno && (s_clear + d > self.pre_display_size);
             let (above, below) = if is_short {
                 (regs.2.clone(), regs.3.clone())
             } else {
@@ -876,12 +902,10 @@ impl Engine {
                 // \leqno with the tag on its own line ABOVE the formula:
                 // tex.web append_to_vlist gives the tag box ordinary interline
                 // glue from prev_depth, then prev_depth := tag depth.
-                if let Some(mut ab) = a.take() {
-                    let (th, td) = match &mut ab {
-                        Node::Box { shift, h, d, .. } => {
-                            *shift = s as i32;
-                            (*h as i64, *d as i64)
-                        }
+                if let Some(ab) = a.take() {
+                    let ab = self.app_display(lr_box.as_ref(), ab, 0, z, s, x);
+                    let (th, td) = match &ab {
+                        Node::Box { h, d, .. } => (*h as i64, *d as i64),
                         _ => (0, 0),
                     };
                     if let Some(g) = ilg(self.prev_depth, th) {
@@ -908,9 +932,7 @@ impl Engine {
                 d = nd;
                 line = hpack(seq, None, HBOX, &self.eqtb).node;
             }
-            if let Node::Box { shift, .. } = &mut line {
-                *shift = (s + d) as i32;
-            }
+            let line = self.app_display(lr_box.as_ref(), line, d, z, s, x);
             // tex.web append_to_vlist: the display box joins the vlist with
             // ordinary interline glue (from the previous box's depth,
             // ignoring the display skips). Oracle shows
@@ -928,14 +950,12 @@ impl Engine {
             // §22598: a right tag on its own line follows the display, flush
             // right, after an infinite penalty; the below-skip is suppressed
             if e == 0 && !leqno {
-                if let Some(mut ab) = a.take() {
+                if let Some(ab) = a.take() {
                     let aw = self.box_w(&ab) as i64;
                     page.push(Node::Penalty(crate::scaled::INF_PENALTY));
-                    let (th, td) = match &mut ab {
-                        Node::Box { shift, h, d, .. } => {
-                            *shift = (s + z - aw) as i32;
-                            (*h as i64, *d as i64)
-                        }
+                    let ab = self.app_display(lr_box.as_ref(), ab, z - aw, z, s, x);
+                    let (th, td) = match &ab {
+                        Node::Box { h, d, .. } => (*h as i64, *d as i64),
                         _ => (0, 0),
                     };
                     // tex.web §22598 appends the tag box via append_to_vlist:
@@ -1012,85 +1032,17 @@ impl Engine {
     /// widths here — §1186 warns that glue_set rounding is
     /// system-dependent and "must not infiltrate parameters like
     /// |pre_display_size|" — which is exactly why the active-order glue
-    /// voids instead of being scaled.
-    fn pre_display_size_of(&self, line: &Node) -> i64 {
-        const MAX_DIM: i64 = 0x3FFF_FFFF;
-        let Node::Box {
-            list,
-            shift,
-            glue_sign,
-            glue_order,
-            ..
-        } = line
-        else {
-            return -MAX_DIM;
-        };
+    /// voids instead of being scaled. e-TeX (`display_line_size`) measures
+    /// mirrored for right-to-left text before the display (`x < 0`) and
+    /// reverses reflected TeXXeT segments.
+    fn pre_display_size_of(&self, line: &Node, x: i32) -> i64 {
         let quad = self
             .eqtb
             .fonts
             .get(self.eqtb.cur_font_val as usize)
             .map(|f| f.quad() as i64)
             .unwrap_or(0);
-        let mut v = *shift as i64;
-        let mut w: i64 = -MAX_DIM;
-        for node in list {
-            let (d, visible): (i64, bool) = match node {
-                Node::Char { c, font } => (
-                    self.eqtb
-                        .fonts
-                        .get(*font as usize)
-                        .map(|f| f.char_width(*c) as i64)
-                        .unwrap_or(0),
-                    true,
-                ),
-                Node::Ligature { lig_width, .. } => (*lig_width as i64, true),
-                // §1184: hlist_node,vlist_node,rule_node: d:=width(p); goto found
-                Node::Box { w, .. } => (*w as i64, true),
-                Node::Rule { width, .. } => (*width as i64, true),
-                // §1184: kern_node,math_node: d:=width(p) — invisible width
-                Node::Kern(k) | Node::ExplicitKern(k) => (*k as i64, false),
-                Node::MathKern(k, _) => (*k as i64, false),
-                // pdftex §30662: margin_kern_node: d:=width(p)
-                Node::MarginKern { width, .. } => (*width as i64, false),
-                // pdftex §36000: whatsit width only for pdf_ref{image,form}
-                Node::Whatsit(crate::boxes::WhatIt::PdfRefXImage { w, .. })
-                | Node::Whatsit(crate::boxes::WhatIt::PdfRefXForm { w, .. }) => (*w as i64, false),
-                Node::Glue(g) => {
-                    if (*glue_sign == 1 && g.stretch_order as u8 == *glue_order && g.stretch != 0)
-                        || (*glue_sign == 2 && g.shrink_order as u8 == *glue_order && g.shrink != 0)
-                    {
-                        v = MAX_DIM;
-                    }
-                    (g.width as i64, false)
-                }
-                Node::Leaders { glue, .. } => {
-                    // §1192: leaders take the same active-glue test, then
-                    // `goto found` (visible)
-                    if (*glue_sign == 1
-                        && glue.stretch_order as u8 == *glue_order
-                        && glue.stretch != 0)
-                        || (*glue_sign == 2
-                            && glue.shrink_order as u8 == *glue_order
-                            && glue.shrink != 0)
-                    {
-                        v = MAX_DIM;
-                    }
-                    (glue.width as i64, true)
-                }
-                _ => (0, false),
-            };
-            if visible {
-                if v >= MAX_DIM {
-                    w = MAX_DIM;
-                } else {
-                    v += d;
-                    w = v + 2 * quad;
-                }
-            } else if v < MAX_DIM {
-                v += d;
-            }
-        }
-        w
+        self.display_line_size(line, x, quad)
     }
 
     pub fn append_mlist_node(&mut self, n: Node) {
@@ -4834,7 +4786,7 @@ mod tests {
             glue_sign: sign,
             glue_order: order,
             glue_set: set,
-            font: None,
+            lr: 0,
         }
     }
 
@@ -4857,7 +4809,7 @@ mod tests {
                     glue_sign: 0,
                     glue_order: 0,
                     glue_set: 0.0,
-                    font: None,
+                    lr: 0,
                 },
                 Node::Glue(Glue {
                     width: su(3.33333),
@@ -4881,7 +4833,7 @@ mod tests {
         // last visible node is the 'A': 10 + 3.33333 + 1 + 0.5 + w(A) + 2quad
         let want =
             su(10.0) as i64 + su(3.33333) as i64 + su(1.0) as i64 + su(0.5) as i64 + wa + 2 * quad;
-        assert_eq!(e.pre_display_size_of(&line), want);
+        assert_eq!(e.pre_display_size_of(&line, 0), want);
     }
 
     #[test]
@@ -4914,7 +4866,7 @@ mod tests {
                 shrink_order: 0,
             },
         );
-        assert_eq!(e.pre_display_size_of(&stretched), 0x3FFF_FFFF);
+        assert_eq!(e.pre_display_size_of(&stretched, 0), 0x3FFF_FFFF);
         let shrunk = mk(
             2,
             Glue {
@@ -4925,7 +4877,7 @@ mod tests {
                 shrink_order: 0,
             },
         );
-        assert_eq!(e.pre_display_size_of(&shrunk), 0x3FFF_FFFF);
+        assert_eq!(e.pre_display_size_of(&shrunk, 0), 0x3FFF_FFFF);
         // a *fil* line (order 2) leaves normal-order glue untouched: natural
         // widths accumulate and the trailing 'B' is visible
         let quad = e.eqtb.fonts[cmr as usize].quad() as i64;
@@ -4948,7 +4900,7 @@ mod tests {
             0.5,
         );
         assert_eq!(
-            e.pre_display_size_of(&fil_line),
+            e.pre_display_size_of(&fil_line, 0),
             wa + su(3.33333) as i64 + wb + 2 * quad
         );
     }
@@ -4988,7 +4940,7 @@ mod tests {
         );
         // line stretches at order 2 (fil) and the leader's stretch_order is
         // 2 → active: v := max_dimen, then `goto found` → w = max_dimen
-        assert_eq!(e.pre_display_size_of(&line), 0x3FFF_FFFF);
+        assert_eq!(e.pre_display_size_of(&line, 0), 0x3FFF_FFFF);
         // with the line inactive (sign 0) the leader is visible at natural width
         let calm = line_box(
             vec![
@@ -5018,7 +4970,7 @@ mod tests {
             0.0,
         );
         assert_eq!(
-            e.pre_display_size_of(&calm),
+            e.pre_display_size_of(&calm, 0),
             su(1.0) as i64 + su(2.0) as i64 + 2 * quad
         );
     }

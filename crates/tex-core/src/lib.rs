@@ -44,6 +44,7 @@ pub mod scan;
 pub mod scanner;
 pub mod synctex;
 pub mod tfm;
+mod texxet;
 pub mod token;
 
 pub use engine::Engine;

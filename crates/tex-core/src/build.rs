@@ -1150,7 +1150,18 @@ impl Engine {
         // packed lines join the vbox instead of being vpack-discarded
 
         if matches!(kind, 1 | 2 | 3 | 8 | 9) && self.mode == Mode::Horizontal {
+            // line_break_context: the group the paragraph is closed by
+            let saved = std::mem::replace(
+                &mut self.lua_par_group,
+                match kind {
+                    1 => 4,
+                    2 => 5,
+                    3 => 12,
+                    _ => 11,
+                },
+            );
             self.par_primitive();
+            self.lua_par_group = saved;
         }
         let target = self.box_targets.pop().flatten();
         let shift = self.box_shifts.pop().unwrap_or(0);
@@ -2702,6 +2713,12 @@ impl Engine {
         }
 
         self.end_char_chain();
+        let lua_mode = self.engine_kind == crate::engine::EngineKind::LuaTeX;
+        if lua_mode {
+            // LuaTeX line_break(): hyphenate, ligature and kern first
+            let list = std::mem::take(&mut self.cur_list);
+            self.cur_list = self.lua_text_passes(list);
+        }
         let pfs = self.eqtb.glue_params[GlueParam::ParFillSkip.idx() as usize]
             .param(glue_subtype::PAR_FILL_SKIP);
         // tex.web §16074: a trailing glue node is REPLACED by the infinite
@@ -2722,7 +2739,18 @@ impl Engine {
             self.eqtb.int_params[crate::prim::IntParam::WidowPenalty.idx() as usize]
         });
 
-        let lines = self.break_paragraph(content, fw, display_widow);
+        // pre_linebreak_filter, then linebreak_filter: Lua may break the
+        // paragraph itself, in which case its lines already carry their
+        // interline glue
+        let (lines, lua_lines) = if lua_mode {
+            let content = self.lua_pre_linebreak(content);
+            match self.lua_linebreak_filter(content, self.in_display_init) {
+                Ok(list) => (boxes::vpack(list, None, boxes::VBOX, &self.eqtb).node, true),
+                Err(content) => (self.break_paragraph(content, fw, display_widow), false),
+            }
+        } else {
+            (self.break_paragraph(content, fw, display_widow), false)
+        };
         if !self.in_display_init {
             self.lr_save_take(lr_key);
         }
@@ -2784,7 +2812,7 @@ impl Engine {
                 // tex.web append_to_vlist: materialize interline glue NOW
                 // with the \baselineskip in force at paragraph end — the
                 // page builder's lazy interline would read post-group state
-                let (filled, last_d) = self.fill_line_interline(self.prev_depth, lines);
+                let (filled, last_d) = self.paragraph_vlist(lines, lua_lines);
                 self.page_list.extend(filled);
                 self.mode = Mode::Vertical;
                 self.cur_list = Vec::new();
@@ -2813,14 +2841,20 @@ impl Engine {
                     Node::Box { list, .. } => list,
                     other => vec![other],
                 };
-                let (filled, last_d) = self.fill_line_interline(self.prev_depth, taken);
+                let (filled, last_d) = self.paragraph_vlist(taken, lua_lines);
                 self.cur_list = inner;
                 self.mode = Mode::InternalVertical;
                 self.cur_list.extend(filled);
                 self.prev_depth = last_d;
             }
             (_, outer) => {
-                let node = lines_opt.take().unwrap();
+                let mut node = lines_opt.take().unwrap();
+                if lua_mode && self.cb_defined(crate::lua_callbacks::Cb::PostLinebreakFilter) {
+                    if let Node::Box { list, .. } = &mut node {
+                        let l = std::mem::take(list);
+                        *list = self.lua_post_linebreak(l);
+                    }
+                }
                 // tex.web: after line_break, prev_depth = the final line's
                 // depth — the lines wrapper box carries exactly that depth,
                 // so thread it instead of restoring the pre-paragraph value
@@ -2837,6 +2871,22 @@ impl Engine {
                 }
                 self.mode = saved_mode;
             }
+        }
+    }
+
+    /// The vertical list a broken paragraph appends: interline glue
+    /// materialized (unless Lua broke the paragraph and supplied it), then
+    /// LuaTeX's `post_linebreak_filter`.
+    fn paragraph_vlist(&mut self, lines: NodeList, lua_lines: bool) -> (NodeList, i32) {
+        let (filled, last_d) = if lua_lines {
+            (lines, self.prev_depth)
+        } else {
+            self.fill_line_interline(self.prev_depth, lines)
+        };
+        if self.engine_kind == crate::engine::EngineKind::LuaTeX {
+            (self.lua_post_linebreak(filled), last_d)
+        } else {
+            (filled, last_d)
         }
     }
 

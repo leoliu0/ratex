@@ -130,7 +130,7 @@ fn toks_combining_primitives() {
     );
     assert_eq!(e.error_count, 0, "{:?}", e.diagnostics);
     // A g-form updates a register set at the current level in place.
-    assert!(e.term.contains("[cab][cabx][cabxY][cabxYG][lG][]"), "{}", e.term);
+    assert!(e.term.contains("[cab] [cabx] [cabxY] [cabxYG] [lG] []"), "{}", e.term);
 }
 
 #[test]
@@ -145,7 +145,7 @@ fn let_variants_and_name_primitives() {
 \message{[\eTeXVersion][\the\eTeXminorversion][\eTeXrevision][\formatname]}"#,
     );
     assert_eq!(e.error_count, 0, "{:?}", e.diagnostics);
-    assert!(e.term.contains("[\\relax][undefined][\\relax]"), "{}", e.term);
+    assert!(e.term.contains("[\\relax] [undefined] [\\relax]"), "{}", e.term);
     assert!(e.term.contains("macro:->[relax][][\\relax ]"), "{}", e.term);
     assert!(e.term.contains("[n]"), "{}", e.term);
     assert!(e.term.contains(r#"macro:->a\"b\'c\\"#), "{}", e.term);
@@ -218,7 +218,7 @@ fn pdfextension_dispatches_in_pdf_mode_only() {
     );
     // luatex: in DVI mode the literal is skipped and `0 g` is typeset text.
     assert!(e.term.contains("[0.0pt]"), "{}", e.term);
-    assert!(e.term.contains("[1][0.0pt]"), "{}", e.term);
+    assert!(e.term.contains("[1] [0.0pt]"), "{}", e.term);
     assert_eq!(e.error_count, 1, "{:?}", e.diagnostics);
     assert!(format!("{:?}", e.diagnostics).contains("unexpected use of \\\\pdfextension"));
 }

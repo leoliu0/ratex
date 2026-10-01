@@ -334,6 +334,8 @@ pub struct LuaFontState {
     pub used: crate::FxHashSet<FontId>,
     /// The control sequence naming fonts without a `\font` identifier.
     pub anonymous_cs: Option<crate::token::CsId>,
+    /// Glyph indices found through the character map of the font program.
+    pub cmap_cache: crate::FxHashMap<(FontId, u32), u16>,
 }
 
 impl Engine {
@@ -472,9 +474,9 @@ impl Engine {
         if lua.used {
             self.lua_fonts.used.insert(f);
         }
-        let font = crate::tfm::Font {
+        let mut font = crate::tfm::Font {
             name: name.clone(),
-            tfm_name: name,
+            tfm_name: name.clone(),
             at_size: lua.size,
             dsize: lua.designsize,
             chars: Vec::new(),
@@ -491,8 +493,52 @@ impl Engine {
             enc_name: None,
             map_fontname: lua.psname.as_ref().map(|p| String::from_utf8_lossy(p).into_owned()),
             encoding: None,
-            lua: Some(Rc::new(lua)),
+            lua: None,
         };
+        // The one-byte view of the font: metrics for `\fontcharwd`, the
+        // `/Widths` of one-byte PDF fonts and the TeX character range.
+        let (mut low, mut high) = (256usize, 0usize);
+        for (&code, ci) in lua.chars.iter() {
+            if code < 256 {
+                low = low.min(code as usize);
+                high = high.max(code as usize);
+                if font.chars.len() <= code as usize {
+                    font.chars.resize(code as usize + 1, crate::tfm::CharInfo { width: 0, height: 0, depth: 0, italic: 0, tag: 0, remainder: 0 });
+                }
+                font.chars[code as usize] = crate::tfm::CharInfo {
+                    width: ci.width,
+                    height: ci.height,
+                    depth: ci.depth,
+                    italic: ci.italic,
+                    tag: 0,
+                    remainder: 0,
+                };
+            }
+        }
+        if low <= high {
+            font.bc = low as u8;
+            font.ec = high as u8;
+        }
+        if lua.pdf_kind() == LuaPdfKind::Legacy {
+            match &lua.filename {
+                None => {
+                    self.font_loader.apply_map_entry(&mut font, &name);
+                }
+                Some(file) => {
+                    font.type1_path = Some(String::from_utf8_lossy(file).into_owned());
+                    let mut names = vec![String::new(); 256];
+                    for (&code, ci) in lua.chars.iter() {
+                        if let (true, Some(glyph)) = (code < 256, &ci.name) {
+                            names[code as usize] = String::from_utf8_lossy(glyph).into_owned();
+                        }
+                    }
+                    if names.iter().any(|n| !n.is_empty()) {
+                        font.encoding = Some(names.into());
+                    }
+                }
+            }
+        }
+        font.lua = Some(Rc::new(lua));
         let cs = self.eqtb.font_cs[usize::from(f)];
         self.lua_reset_font_slot(f, font, cs);
     }
@@ -527,8 +573,15 @@ impl Engine {
                 Some(v) => {
                     if let Some(t) = v.as_table() {
                         match crate::lua_font_lib::font_from_lua(self, f, &t) {
-                            Ok(parsed) => {
+                            Ok(mut parsed) => {
                                 let cache = crate::lua_font_lib::cache_allowed(&t);
+                                // luatex `do_define_font`: `do_vf` + natural direction
+                                if parsed.lua.ftype != FontType::Virtual {
+                                    if parsed.lua.ftype == FontType::Unknown {
+                                        parsed.lua.ftype = FontType::Real;
+                                    }
+                                    parsed.lua.direction = -1;
+                                }
                                 self.lua_install_font(f, parsed);
                                 if cache {
                                     self.lua_cache_font_table(f, &t);
@@ -619,6 +672,14 @@ impl crate::engine_lua::LuaEngine {
 }
 
 impl Engine {
+    /// luatex `set_font_touched` (a font identifier was scanned by TeX).
+    #[inline]
+    pub(crate) fn lua_touch_font(&mut self, f: FontId) {
+        if self.engine_kind == crate::engine::EngineKind::LuaTeX {
+            self.lua_fonts.touched.insert(f);
+        }
+    }
+
     /// Mutable access to the Lua part of font `f` (copy-on-write: only fonts
     /// shared with other holders are copied).
     pub(crate) fn lua_font_mut(&mut self, f: FontId) -> Option<&mut LuaFont> {
@@ -667,7 +728,11 @@ impl Engine {
         let font = loaded?;
         let mut lf = crate::lua_font_lib::lua_font_from_tfm(&font, base.as_bytes());
         lf.checksum = self.tfm_checksum(&font.tfm_name).unwrap_or(0);
-        Some((lf, font.params.clone()))
+        let mut params = font.params.clone();
+        if params.len() < 7 {
+            params.resize(7, 0);
+        }
+        Some((lf, params))
     }
 
     /// The bytes of the virtual font `name`.
@@ -754,5 +819,76 @@ impl Engine {
                 self.error_at(&message, declaration_source);
             }
         }
+    }
+}
+
+/// How glyphs of a Lua font reach the PDF.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum LuaPdfKind {
+    /// Two-byte CID fonts: OpenType and TrueType programs.
+    Cid,
+    /// One-byte fonts: Type 1 programs and TFM-named fonts through the map.
+    Legacy,
+}
+
+impl LuaFont {
+    /// luatex decides on `format` (and, lacking one, the font file).
+    pub fn pdf_kind(&self) -> LuaPdfKind {
+        let sfnt_file = self.filename.as_ref().is_some_and(|name| {
+            let name = String::from_utf8_lossy(name).to_ascii_lowercase();
+            matches!(name.rsplit('.').next(), Some("otf" | "ttf" | "ttc" | "otc" | "dfont"))
+        });
+        match self.format {
+            FontFormat::OpenType | FontFormat::TrueType => LuaPdfKind::Cid,
+            FontFormat::Unknown if sfnt_file => LuaPdfKind::Cid,
+            _ => LuaPdfKind::Legacy,
+        }
+    }
+}
+
+impl crate::fontload::FontLoader {
+    /// The font program named by a Lua font's `filename`.
+    pub(crate) fn lua_font_program(&mut self, lf: &LuaFont) -> Result<Rc<crate::font_program::FontProgram>, String> {
+        let Some(filename) = &lf.filename else {
+            return Err(format!("Lua font `{}` has no font file", String::from_utf8_lossy(&lf.name)));
+        };
+        let name = String::from_utf8_lossy(filename).into_owned();
+        let data = self
+            .read_program_bytes(&name)
+            .or_else(|| {
+                let base = name.rsplit('/').next().unwrap_or(&name).to_string();
+                (base != name).then(|| self.read_program_bytes(&base)).flatten()
+            })
+            .ok_or_else(|| format!("Font program file `{name}` of font `{}` not found", String::from_utf8_lossy(&lf.name)))?;
+        let face_index = u32::try_from(lf.subfont.max(0)).unwrap_or(0);
+        self.load_program(data, face_index, Vec::new())
+    }
+}
+
+impl Engine {
+    /// The font program of Lua font `fid` (None for other fonts).
+    pub(crate) fn lua_font_program(&mut self, fid: FontId) -> Option<Rc<crate::font_program::FontProgram>> {
+        let font = self.eqtb.fonts.get(usize::from(fid))?.clone();
+        let lf = font.lua.as_ref()?;
+        self.font_loader.lua_font_program(lf).ok()
+    }
+
+    /// The glyph index drawn for `c`: the character's `index`, or the
+    /// program's character map when the table gave none.
+    pub(crate) fn lua_glyph_index(&mut self, fid: FontId, lf: &LuaFont, c: u32) -> Result<u16, String> {
+        let index = lf.chars.get(&c).map_or(0, |ci| ci.index);
+        if index != 0 {
+            return u16::try_from(index)
+                .map_err(|_| format!("Glyph index {index} of character {c:#x} is out of range in font {}", String::from_utf8_lossy(&lf.name)));
+        }
+        if let Some(&gid) = self.lua_fonts.cmap_cache.get(&(fid, c)) {
+            return Ok(gid);
+        }
+        let program = self.font_loader.lua_font_program(lf)?;
+        let gid = char::from_u32(c)
+            .and_then(|ch| program.face().ok().and_then(|face| face.glyph_index(ch)))
+            .map_or(0, |g| g.0);
+        self.lua_fonts.cmap_cache.insert((fid, c), gid);
+        Ok(gid)
     }
 }

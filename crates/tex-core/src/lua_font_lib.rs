@@ -394,6 +394,35 @@ fn pdf_literal_mode(v: Option<&Value>) -> u8 {
     }
 }
 
+/// luatex `set_charinfo_extensible`: an extensible recipe is stored as a list
+/// of vertical variants (`extender` 1 marks the repeated pieces).
+pub(crate) fn extensible_variants(e: &Extensible) -> Vec<MathVariant> {
+    let piece = |glyph: i32, extender: i32| MathVariant { glyph, extender, start: 0, end: 0, advance: 0 };
+    let (top, bot, mid, rep) = (e.top, e.bot, e.mid, e.rep);
+    let mut out = Vec::new();
+    if bot == 0 && top == 0 && mid == 0 && rep != 0 {
+        out.push(piece(rep, 0));
+        out.push(piece(rep, 1));
+        return out;
+    }
+    if bot != 0 {
+        out.push(piece(bot, 0));
+    }
+    if rep != 0 {
+        out.push(piece(rep, 1));
+    }
+    if mid != 0 {
+        out.push(piece(mid, 0));
+        if rep != 0 {
+            out.push(piece(rep, 1));
+        }
+    }
+    if top != 0 {
+        out.push(piece(top, 0));
+    }
+    out
+}
+
 /// luatex `font_char_from_lua`.
 fn char_from_lua(t: &LuaTable, code: i32, ctx: &mut ParseCtx<'_>) -> Result<LuaCharInfo, String> {
     let mut co = LuaCharInfo::default();
@@ -424,6 +453,7 @@ fn char_from_lua(t: &LuaTable, code: i32, ctx: &mut ParseCtx<'_>) -> Result<LuaC
                 rep: num_field(&ext, "rep", 0),
             };
             if e.top != 0 || e.bot != 0 || e.mid != 0 || e.rep != 0 {
+                co.vert_variants = extensible_variants(&e);
                 co.extensible = Some(e);
             } else {
                 ctx.warnings.push(format!(
@@ -437,6 +467,7 @@ fn char_from_lua(t: &LuaTable, code: i32, ctx: &mut ParseCtx<'_>) -> Result<LuaC
         }
         if let Some(v) = read_variants(t, "vert_variants") {
             co.vert_variants = v;
+            co.extensible = None;
         }
         if let Some(mk) = field(t, "mathkern").and_then(|v| v.as_table()) {
             co.math_kerns = MathKerns {
@@ -990,13 +1021,14 @@ fn char_to_lua(cx: &mut CallbackLua<'_>, lf: &LuaFont, co: &LuaCharInfo) -> Resu
     if let Some(u) = &co.tounicode {
         set_bytes(&t, "tounicode", u)?;
     }
-    if let Some(next) = co.next {
+    let has_ext = co.extensible.is_some() || !co.hor_variants.is_empty() || !co.vert_variants.is_empty();
+    if let Some(next) = co.next.filter(|_| !has_ext) {
         set_int(&t, "next", next as i32)?;
     }
     if co.used {
         set_bool(&t, "used", true)?;
     }
-    if co.next.is_some() || co.extensible.is_some() || !co.hor_variants.is_empty() || !co.vert_variants.is_empty() {
+    if has_ext {
         if !co.hor_variants.is_empty() {
             let v = variants_table(cx, &co.hor_variants)?;
             t.raw_set("horiz_variants", v).map_err(|e| format!("{e:?}"))?;
@@ -1253,12 +1285,14 @@ pub(crate) fn lua_font_from_tfm(font: &Font, name: &[u8]) -> LuaFont {
             TAG_LIST => co.next = Some(u32::from(ci.remainder)),
             TAG_EXT => {
                 if let Some(e) = font.ext.get(usize::from(ci.remainder)) {
-                    co.extensible = Some(Extensible {
+                    let e = Extensible {
                         top: i32::from(e.top),
                         bot: i32::from(e.bot),
                         mid: i32::from(e.mid),
                         rep: i32::from(e.rep),
-                    });
+                    };
+                    co.vert_variants = extensible_variants(&e);
+                    co.extensible = Some(e);
                 }
             }
             TAG_LIG => {
@@ -1335,13 +1369,21 @@ impl Engine {
         }
         let f = id as FontId;
         let font = self.eqtb.fonts[usize::from(f)].clone();
-        let params = self.eqtb.font_params[usize::from(f)].clone();
+        let mut params = self.eqtb.font_params[usize::from(f)].clone();
+        if params.len() < 7 {
+            params.resize(7, 0);
+        }
         let used = self.lua_fonts.used.contains(&f);
         let lua = match &font.lua {
             Some(lua) => lua.clone(),
             None => {
                 let mut lf = lua_font_from_tfm(&font, font.tfm_name.as_bytes());
                 lf.checksum = self.tfm_checksum(&font.tfm_name).unwrap_or(0);
+                // `\font` runs `do_vf`: real unless a virtual font exists
+                let virtual_font =
+                    self.font_loader.vf_fonts.contains_key(&(font.tfm_name.clone(), font.at_size));
+                lf.ftype = if virtual_font { FontType::Virtual } else { FontType::Real };
+                lf.direction = if virtual_font { 0 } else { -1 };
                 std::rc::Rc::new(lf)
             }
         };
@@ -1706,7 +1748,78 @@ pub(crate) fn install(lua: &mut Lua) -> Result<(), String> {
         cx.push(t)
     });
 
+    install_vf(lua)?;
     lua.set_global("__ratex_font_bridge", b).map_err(|e| format!("{e:?}"))?;
     lua.execute(FONT_PRELUDE).map_err(|e| format!("font library: {e:?}"))?;
     Ok(())
+}
+
+/// The `vf` library (luatex `lfontlib.c` `vflib`): helpers for the Lua
+/// functions of virtual fonts.
+fn install_vf(lua: &mut Lua) -> Result<(), String> {
+    use crate::pdfrender::with_vf_packet;
+    let vf: LuaTable = lua.create_table().map_err(|e| format!("{e:?}"))?;
+    macro_rules! vf_fn {
+        ($name:literal, |$cx:ident| $body:expr) => {
+            vf.set(
+                $name,
+                lua.create_callback(move |$cx| $body).map_err(|e| format!("{}: {e:?}", $name))?,
+            )
+            .map_err(|e| format!("{}: {e:?}", $name))?
+        };
+    }
+    vf_fn!("char", |cx| {
+        let k: i64 = cx.arg(1)?;
+        with_vf_packet("char", |ctx, st| ctx.vf_lib_char(st, k as u32)).map_err(|m| fail(cx, m))?;
+        Ok(0)
+    });
+    vf_fn!("down", |cx| {
+        let i: i64 = cx.arg(1)?;
+        with_vf_packet("down", |ctx, st| ctx.vf_lib_down(st, i as i32)).map_err(|m| fail(cx, m))?;
+        Ok(0)
+    });
+    vf_fn!("fontid", |cx| {
+        let i: i64 = cx.arg(1)?;
+        with_vf_packet("fontid", |_, st| st.set_font(i as FontId)).map_err(|m| fail(cx, m))?;
+        Ok(0)
+    });
+    vf_fn!("nop", |cx| {
+        with_vf_packet("nop", |_, _| ()).map_err(|m| fail(cx, m))?;
+        Ok(0)
+    });
+    vf_fn!("pop", |cx| {
+        with_vf_packet("pop", |ctx, st| ctx.vf_lib_pop(st))
+            .and_then(|r| r)
+            .map_err(|m| fail(cx, m))?;
+        Ok(0)
+    });
+    vf_fn!("push", |cx| {
+        with_vf_packet("push", |ctx, st| ctx.vf_lib_push(st)).map_err(|m| fail(cx, m))?;
+        Ok(0)
+    });
+    vf_fn!("right", |cx| {
+        let i: i64 = cx.arg(1)?;
+        with_vf_packet("right", |ctx, st| ctx.vf_lib_right(st, i as i32)).map_err(|m| fail(cx, m))?;
+        Ok(0)
+    });
+    vf_fn!("rule", |cx| {
+        let h: i64 = cx.arg(1)?;
+        let v: i64 = cx.arg(2)?;
+        with_vf_packet("rule", |ctx, st| ctx.vf_lib_rule(st, h as i32, v as i32)).map_err(|m| fail(cx, m))?;
+        Ok(0)
+    });
+    vf_fn!("special", |cx| {
+        let s: tex_lua::LuaString = cx.arg(1)?;
+        let data = s.to_bytes();
+        with_vf_packet("special", |ctx, st| ctx.vf_lib_special(st, &data)).map_err(|m| fail(cx, m))?;
+        Ok(0)
+    });
+    vf_fn!("pdf", |cx| {
+        let n = cx.arg_count();
+        let s: tex_lua::LuaString = cx.arg(n.max(1))?;
+        let data = s.to_bytes();
+        with_vf_packet("pdf", |ctx, st| ctx.vf_lib_pdf(st, &data)).map_err(|m| fail(cx, m))?;
+        Ok(0)
+    });
+    lua.set_global("vf", vf).map_err(|e| format!("{e:?}"))
 }

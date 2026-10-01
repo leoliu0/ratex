@@ -9,6 +9,8 @@ use crate::pdfout::{Annot, PdfPage};
 use crate::prim::{DimParam, IntParam};
 
 mod lr;
+mod lua_glyph;
+pub(crate) use lua_glyph::with_vf_packet;
 
 /// TeX sp to PDF bp
 #[inline]
@@ -2279,8 +2281,15 @@ impl<'a> RenderCtx<'a> {
             .unwrap_or(0);
         let adv_sp = if at_size_sp <= 0 {
             0
-        } else if let Some(native) = self.eng.font_loader.native_fonts.get(&fid) {
-            if let Ok(face) = native.program.face() {
+        } else if let Some(program) = self
+            .eng
+            .font_loader
+            .native_fonts
+            .get(&fid)
+            .map(|native| native.program.clone())
+            .or_else(|| self.eng.lua_font_program(fid))
+        {
+            if let Ok(face) = program.face() {
                 let upem = face.units_per_em() as i64;
                 if upem > 0 {
                     let adv = face

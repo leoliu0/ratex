@@ -33,6 +33,7 @@ impl Job {
             .arg("main.tex")
             .current_dir(&self.dir)
             .env("SOURCE_DATE_EPOCH", "1700000000")
+            .env("TEX_RS_CACHE_DIR", self.dir.join("cache"))
             .env_remove("PHASE_TIMING")
             .env_remove("TEXDEBUG")
             .output()

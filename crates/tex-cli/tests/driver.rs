@@ -104,6 +104,10 @@ fn hex_encode(text: &str) -> String {
     encoded
 }
 
+/// Runs texmk with the real engine. FORCE_SOURCE_DATE=1 makes
+/// SOURCE_DATE_EPOCH fix `\time` as well; otherwise the engine keys its
+/// dependency cache by the live minute, and a warm run that starts in the
+/// next minute cannot reuse the previous build.
 fn run_real_texmk(root: &std::path::Path, source: &str) -> std::process::Output {
     let tool_dir = std::path::Path::new(env!("CARGO_BIN_EXE_pdflatex"))
         .parent()
@@ -114,6 +118,7 @@ fn run_real_texmk(root: &std::path::Path, source: &str) -> std::process::Output 
         .env("TEXMK_LIB", tool_dir)
         .env("TEX_RS_CACHE_DIR", root.join("cache"))
         .env("SOURCE_DATE_EPOCH", "1700000000")
+        .env("FORCE_SOURCE_DATE", "1")
         .output()
         .unwrap()
 }
@@ -321,7 +326,8 @@ fn copied_texmk_ignores_external_tex_trees_until_explicitly_enabled() {
     let output = output_retrying_text_busy(
         Command::new(&standalone)
             .args(["--allow-system-texmf", "allowed.tex"])
-            .current_dir(&project),
+            .current_dir(&project)
+            .env("TEX_RS_CACHE_DIR", fixture.0.join("cache-rejected")),
     );
     assert!(
         !output.status.success(),

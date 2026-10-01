@@ -1161,7 +1161,7 @@ fn font_attr_and_nobuiltin_tounicode_shape_font_dictionaries() {
 \pdfmapline{=cmr10 CMR10 <cmr10.pfb}
 \pdfmapline{=cmr12 CMR12 <cmr12.pfb}
 \font\plain=cmr12
-\pdfgentounicode=1
+\pdfgentounicode=1 \pdfglyphtounicode{fi}{0066 0069}
 \font\flagged=cmr10
 \font\shared=cmr10 at 12pt
 \pdfnobuiltintounicode\flagged
@@ -1184,7 +1184,9 @@ fn font_attr_and_nobuiltin_tounicode_shape_font_dictionaries() {
     let summary = |dict: &&lopdf::Dictionary| {
         let base = String::from_utf8_lossy(dict.get(b"BaseFont").unwrap().as_name().unwrap());
         let base = base.split('+').last().unwrap().to_string();
-        let width = dict.get(b"Widths").unwrap().as_array().unwrap()[0].as_float().unwrap();
+        // writefont.c: /Widths is an indirect array object
+        let widths = pdf.dereference(dict.get(b"Widths").unwrap()).unwrap().1;
+        let width = widths.as_array().unwrap()[0].as_float().unwrap();
         (
             base,
             width.round() as i64,
@@ -1256,7 +1258,7 @@ fn pdfgentounicode_gates_full_tounicode_cmaps() {
             "gen.tex".into(),
             format!(
                 "\\catcode`\\{{=1 \\catcode`\\}}=2\n\\pdfmapline{{=cmr10 CMR10 <cmr10.pfb}}\n\
-                 \\font\\f=cmr10 \\shipout\\hbox{{\\f A}}\\pdfgentounicode={gen}\n\\end"
+                 \\pdfglyphtounicode{{A}}{{0041}}\\font\\f=cmr10 \\shipout\\hbox{{\\f A}}\\pdfgentounicode={gen}\n\\end"
             )
             .into_bytes(),
         );

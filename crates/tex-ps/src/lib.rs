@@ -1,42 +1,43 @@
-//! tex-ps: Pure-Rust PostScript and EPS interpreter and PDF renderer.
+//! tex-ps: pure-Rust PostScript interpreter that converts EPS figures to PDF.
 
-pub mod interp;
-pub mod lexer;
-pub mod pdf_writer;
-pub mod types;
+mod base14;
+mod files;
+mod fonts;
+mod graphics;
+mod images;
+mod interp;
+mod lexer;
+mod pdf_writer;
+mod types;
 
-pub use interp::{PsError, PsInterpreter};
+pub use interp::PsError;
 pub use lexer::{extract_bounding_box, extract_ps_payload};
-pub use pdf_writer::{generate_form_xobject, generate_pdf};
-pub use types::{EpsBoundingBox, GraphicsState, Matrix, PathOp, PsColor, PsValue};
+pub use types::EpsBoundingBox;
 
 /// Output of an EPS to PDF conversion.
 #[derive(Clone, Debug)]
 pub struct EpsPdfOutput {
+    /// A standalone one-page PDF whose MediaBox is the EPS bounding box.
     pub pdf_bytes: Vec<u8>,
+    /// The page's content stream (device space = EPS default user space).
     pub content_stream: Vec<u8>,
     pub bbox: EpsBoundingBox,
 }
 
-/// Converts raw EPS bytes into a valid PDF document and content stream.
+/// Converts raw EPS bytes (optionally with a DOS binary header) into PDF.
 pub fn eps_to_pdf(eps_bytes: &[u8]) -> Result<EpsPdfOutput, PsError> {
     let payload = extract_ps_payload(eps_bytes);
-    let bbox = extract_bounding_box(eps_bytes).unwrap_or(EpsBoundingBox {
+    let bbox = extract_bounding_box(payload).unwrap_or(EpsBoundingBox {
         llx: 0.0,
         lly: 0.0,
-        urx: 100.0,
-        ury: 100.0,
+        urx: 612.0,
+        ury: 792.0,
     });
 
-    let mut interp = PsInterpreter::new(bbox);
-    interp.execute(payload)?;
+    let mut interp = interp::Interp::new(bbox);
+    interp.run_program(payload)?;
+    graphics::finish(&mut interp);
 
-    let content_stream = interp.pdf_stream;
-    let pdf_bytes = generate_pdf(&bbox, &content_stream);
-
-    Ok(EpsPdfOutput {
-        pdf_bytes,
-        content_stream,
-        bbox,
-    })
+    let pdf_bytes = pdf_writer::generate_pdf(&bbox, &interp.out.content, &interp.out.fonts, &interp.out.images);
+    Ok(EpsPdfOutput { pdf_bytes, content_stream: interp.out.content, bbox })
 }

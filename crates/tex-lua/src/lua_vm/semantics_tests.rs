@@ -381,13 +381,20 @@ fn loadfile_names_the_chunk_by_the_path_as_given() {
     std::fs::write(&file, "error('boom')").unwrap();
     // A path with a "." component differs from its canonical form.
     let given = format!("{}/./{}", dir.display(), file.file_name().unwrap().to_string_lossy());
+    // luaO_chunkid: a file name longer than LUA_IDSIZE - 1 (59) bytes is
+    // shown as "..." and its last 56 bytes, so a long TMPDIR shortens it.
+    let shown = if given.len() <= 59 {
+        given.clone()
+    } else {
+        format!("...{}", &given[given.len() - 56..])
+    };
     let source = format!(
         r#"
         local path = {given:?}
         local f = assert(loadfile(path))
         assert(debug.getinfo(f, "S").source == "@" .. path, debug.getinfo(f, "S").source)
         local ok, msg = pcall(f)
-        assert(msg == path .. ":1: boom", msg)
+        assert(msg == {shown:?} .. ":1: boom", msg)
         "#
     );
     run_both(&source);

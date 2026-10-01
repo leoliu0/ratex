@@ -2075,19 +2075,19 @@ mod tests {
     #[test]
     fn taking_a_box_preserves_its_assignment_scope() {
         let mut eq = Eqtb::new(true);
-        eq.assign_box(255, Some(Node::Penalty(1)), true);
+        eq.assign_box(255, Some(Node::Penalty(1, crate::boxes::Attr::NONE)), true);
         eq.push_level(LevelType::Simple);
-        eq.assign_box(255, Some(Node::Penalty(2)), false);
+        eq.assign_box(255, Some(Node::Penalty(2, crate::boxes::Attr::NONE)), false);
 
-        assert!(matches!(eq.take_box(255), Some(Node::Penalty(2))));
+        assert!(matches!(eq.take_box(255), Some(Node::Penalty(2, _))));
         let mut after = Vec::new();
         eq.pop_level(&mut after);
 
-        assert!(matches!(eq.boxed[255].as_ref(), Some(Node::Penalty(1))));
+        assert!(matches!(eq.boxed[255].as_ref(), Some(Node::Penalty(1, _))));
         assert_eq!(eq.box_levels[255], LEVEL_ONE);
 
         eq.push_level(LevelType::Simple);
-        assert!(matches!(eq.take_box(255), Some(Node::Penalty(1))));
+        assert!(matches!(eq.take_box(255), Some(Node::Penalty(1, _))));
         eq.pop_level(&mut after);
 
         assert!(eq.boxed[255].is_none());

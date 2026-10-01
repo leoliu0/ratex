@@ -44,7 +44,7 @@ pub(crate) struct BoxDisplay<'a> {
 fn invisible(n: &Node) -> bool {
     matches!(
         n,
-        Node::Whatsit(WhatIt::SyncPoint { .. } | WhatIt::CjkText(_)) | Node::Empty | Node::InsDisc
+        Node::Whatsit(WhatIt::SyncPoint { .. } | WhatIt::CjkText(_), _) | Node::Empty | Node::InsDisc
     )
 }
 
@@ -237,7 +237,7 @@ impl<'a> BoxDisplay<'a> {
             let n = &list[i];
             i += 1;
             match n {
-                Node::Char { c, font } => self.short_char(*font, u32::from(*c)),
+                Node::Char { c, font, .. } => self.short_char(*font, u32::from(*c)),
                 Node::LuaGlyph(g) => {
                     if g.components.is_empty() {
                         self.short_char(g.font, g.c);
@@ -258,16 +258,16 @@ impl<'a> BoxDisplay<'a> {
                 Node::Box { .. }
                 | Node::Ins { .. }
                 | Node::Mark { .. }
-                | Node::Adj(_)
-                | Node::VAdjust(_) => self.print("[]"),
-                Node::Whatsit(_) if !invisible(n) => self.print("[]"),
+                | Node::Adj(_, _)
+                | Node::VAdjust(_, _) => self.print("[]"),
+                Node::Whatsit(_, _) if !invisible(n) => self.print("[]"),
                 Node::Rule { .. } => self.out.push(b'|'),
-                Node::Glue(g) | Node::Leaders { glue: g, .. } => {
+                Node::Glue(g, _) | Node::Leaders { glue: g, .. } => {
                     if !g.zero_glue {
                         self.out.push(b' ');
                     }
                 }
-                Node::MathKern(_, kind) if *kind >= crate::boxes::MATH_ON => {
+                Node::MathKern(_, kind, _) if *kind >= crate::boxes::MATH_ON => {
                     if *kind >= crate::boxes::BEGIN_L {
                         self.print("[]");
                     } else {
@@ -339,7 +339,7 @@ impl<'a> BoxDisplay<'a> {
 
     fn display_node(&mut self, node: &Node) {
         match node {
-            Node::Char { c, font } => self.print_font_and_char(*font, u32::from(*c)),
+            Node::Char { c, font, .. } => self.print_font_and_char(*font, u32::from(*c)),
             Node::LuaGlyph(g) => {
                 self.print_font_and_char(g.font, g.c);
                 if u16::from(g.subtype) & crate::lua_node::GLYPH_LIGATURE != 0 {
@@ -408,8 +408,7 @@ impl<'a> BoxDisplay<'a> {
             Node::Rule {
                 width,
                 height,
-                depth,
-            } => self.display_rule(*width, *height, *depth),
+                depth, .. } => self.display_rule(*width, *height, *depth),
             Node::Ins {
                 num,
                 height,
@@ -434,8 +433,8 @@ impl<'a> BoxDisplay<'a> {
                     other => self.node_list_display(std::slice::from_ref(other)),
                 }
             }
-            Node::Whatsit(w) => self.display_whatsit(w),
-            Node::Glue(g) => {
+            Node::Whatsit(w, _) => self.display_whatsit(w),
+            Node::Glue(g, _) => {
                 self.print_esc("glue");
                 if g.subtype != glue_subtype::NORMAL {
                     self.out.push(b'(');
@@ -449,7 +448,7 @@ impl<'a> BoxDisplay<'a> {
                 self.out.push(b' ');
                 self.print_spec(g, "");
             }
-            Node::Leaders { glue, kind, body } => {
+            Node::Leaders { glue, kind, body, .. } => {
                 self.print_esc("");
                 match *kind {
                     crate::boxes::LEADERS_C => self.out.push(b'c'),
@@ -468,7 +467,7 @@ impl<'a> BoxDisplay<'a> {
                         let rule = Node::Rule {
                             width: *width,
                             height: *height,
-                            depth: *depth,
+                            depth: *depth, attr: crate::boxes::Attr::NONE,
                         };
                         self.node_list_display(std::slice::from_ref(&rule));
                     }
@@ -483,30 +482,30 @@ impl<'a> BoxDisplay<'a> {
                     " (right margin)"
                 });
             }
-            Node::Kern(k) => {
+            Node::Kern(k, _) => {
                 self.print_esc("kern");
                 self.print_scaled(*k);
                 if self.e.engine_kind == crate::engine::EngineKind::LuaTeX {
                     self.print(" (font)");
                 }
             }
-            Node::ExplicitKern(k) => {
+            Node::ExplicitKern(k, _) => {
                 self.print_esc("kern");
                 self.out.push(b' ');
                 self.print_scaled(*k);
             }
-            Node::AccentKern(k) => {
+            Node::AccentKern(k, _) => {
                 self.print_esc("kern");
                 self.out.push(b' ');
                 self.print_scaled(*k);
                 self.print(" (for accent)");
             }
-            Node::MathKern(k, 0) => {
+            Node::MathKern(k, 0, _) => {
                 self.print_esc("mkern");
                 self.print_scaled(*k);
                 self.print("mu");
             }
-            Node::MathKern(k, kind) => {
+            Node::MathKern(k, kind, _) => {
                 use crate::boxes::{math_end_lr, BEGIN_L, BEGIN_R, MATH_OFF};
                 if *kind > MATH_OFF {
                     self.print_esc(if math_end_lr(*kind) { "end" } else { "begin" });
@@ -547,7 +546,7 @@ impl<'a> BoxDisplay<'a> {
                 }
                 self.out.push(b')');
             }
-            Node::Penalty(p) => {
+            Node::Penalty(p, _) => {
                 self.print_esc("penalty ");
                 self.print_int(*p as i64);
             }
@@ -585,7 +584,7 @@ impl<'a> BoxDisplay<'a> {
                 self.show_node_list(&d.post_break);
                 self.prefix.pop();
             }
-            Node::Mark { class, tokens } => {
+            Node::Mark { class, tokens, .. } => {
                 self.print_esc("mark");
                 if *class != 0 {
                     self.out.push(b's');
@@ -593,8 +592,8 @@ impl<'a> BoxDisplay<'a> {
                 }
                 self.print_token_list(tokens);
             }
-            Node::Adj(_) => self.print_esc("vadjust"),
-            Node::VAdjust(list) => {
+            Node::Adj(_, _) => self.print_esc("vadjust"),
+            Node::VAdjust(list, _) => {
                 self.print_esc("vadjust");
                 self.node_list_display(list);
             }
@@ -604,12 +603,12 @@ impl<'a> BoxDisplay<'a> {
                 self.print(&run.text);
             }
             // §690-§698: the cases of show_box that arise in mlists only
-            Node::Style(s) => self.print_style(*s),
+            Node::Style(s, _) => self.print_style(*s),
             Node::NonScript => {
                 self.print_esc("glue(");
                 self.print_esc("nonscript)");
             }
-            Node::MuGlue(g) => {
+            Node::MuGlue(g, _) => {
                 self.print_esc("glue(");
                 self.print_esc("mskip) ");
                 self.print_spec(g, "mu");

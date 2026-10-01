@@ -87,7 +87,7 @@ impl Engine {
         let (lhm, rhm) = self.hyphen_minima();
         self.clang = lang;
         self.cur_list
-            .push(Node::Whatsit(WhatIt::Language { lang, lhm, rhm }));
+            .push(Node::Whatsit(WhatIt::Language { lang, lhm, rhm }, crate::boxes::Attr::NONE));
     }
 
     /// tex.web §1377 <Implement \setlanguage>.

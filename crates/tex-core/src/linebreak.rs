@@ -175,16 +175,16 @@ fn find_protchar_left(slice: &[Node], eqtb: &crate::eqtb::Eqtb, protrude_chars: 
     }
     for n in slice {
         match n {
-            Node::Char { font, c } | Node::Ligature { font, c, .. } => {
+            Node::Char { font, c, .. } | Node::Ligature { font, c, .. } => {
                 return char_protrusion_width(eqtb, protrude_chars, *font, *c, true);
             }
-            Node::Glue(_)
-            | Node::Penalty(_)
-            | Node::Kern(_)
-            | Node::ExplicitKern(_)
+            Node::Glue(_, _)
+            | Node::Penalty(_, _)
+            | Node::Kern(_, _)
+            | Node::ExplicitKern(_, _)
             // pdftex cp_skipable: only a zero-width accent kern is skipped
-            | Node::AccentKern(0)
-            | Node::Whatsit(_) => {}
+            | Node::AccentKern(0, _)
+            | Node::Whatsit(_, _) => {}
             Node::Box {
                 w: 0,
                 h: 0,
@@ -215,13 +215,13 @@ where
     let mut shrink = 0i64;
     for (i, node) in nodes.iter().enumerate() {
         match node {
-            Node::Char { c, font } | Node::Ligature { c, font, .. } => {
+            Node::Char { c, font, .. } | Node::Ligature { c, font, .. } => {
                 record_expansion(*font);
                 stretch += crate::boxes::char_stretch(eqtb, *font, *c) as i64;
                 shrink += crate::boxes::char_shrink(eqtb, *font, *c) as i64;
                 prev = Some((*font, *c));
             }
-            Node::Kern(k) => {
+            Node::Kern(k, _) => {
                 let next = if i + 1 < nodes.len() {
                     nodes.get(i + 1)
                 } else {
@@ -384,7 +384,7 @@ impl Engine {
         let last_line_fit = {
             let fit = self.eqtb.int_params[IntParam::LastLineFit.idx() as usize];
             match list.last() {
-                Some(Node::Glue(q))
+                Some(Node::Glue(q, _))
                     if fit > 0
                         && q.stretch > 0
                         && q.stretch_order > 0
@@ -464,17 +464,17 @@ impl Engine {
             let mut inner: NodeList = Vec::with_capacity(list.len() + 2);
             // tex.web §887: \leftskip glue only when it is not zero_glue
             if !params.left_skip.zero_glue {
-                inner.push(Node::Glue(params.left_skip));
+                inner.push(Node::Glue(params.left_skip, crate::boxes::Attr::NONE));
             }
             let mut post_adj: NodeList = Vec::new();
             for n in list.into_iter() {
-                if let Node::VAdjust(items) = n {
+                if let Node::VAdjust(items, _) = n {
                     post_adj.extend(items);
                 } else {
                     inner.push(n);
                 }
             }
-            inner.push(Node::Glue(params.right_skip.clone()));
+            inner.push(Node::Glue(params.right_skip.clone(), crate::boxes::Attr::NONE));
             let line = crate::boxes::hpack(inner, None, crate::boxes::HBOX, &self.eqtb).node;
             let mut vlines = vec![line];
             vlines.extend(post_adj);
@@ -490,7 +490,7 @@ impl Engine {
         };
         // etex.ch <Adjust the final line of the paragraph>
         if last_line_fit.is_some() && end.short != 0 {
-            if let Some(Node::Glue(q)) = list.last_mut() {
+            if let Some(Node::Glue(q, _)) = list.last_mut() {
                 q.width += (end.short - end.glue) as i32;
                 q.stretch = 0;
             }
@@ -543,15 +543,15 @@ impl Engine {
             match &list[i] {
                 // §866: math-off re-enables automatic breaking (etex.ch:
                 // only math nodes below L_code, i.e. not \beginL..\endR)
-                Node::MathKern(_, kind @ 1..=4) => auto_breaking = crate::boxes::math_end_lr(*kind),
-                Node::Whatsit(WhatIt::Language { lang: l, lhm, rhm }) => {
+                Node::MathKern(_, kind @ 1..=4, _) => auto_breaking = crate::boxes::math_end_lr(*kind),
+                Node::Whatsit(WhatIt::Language { lang: l, lhm, rhm }, _) => {
                     lang = LangState {
                         lang: *l,
                         lhm: *lhm,
                         rhm: *rhm,
                     };
                 }
-                Node::Glue(_) | Node::Leaders { .. } if auto_breaking => {
+                Node::Glue(_, _) | Node::Leaders { .. } if auto_breaking => {
                     if let Some(edit) = self.hyphenate_word_after(list, i, &mut lang) {
                         i = edit.1;
                         edits.push(edit);
@@ -621,7 +621,7 @@ impl Engine {
         let mut s = g + 1;
         let hf = loop {
             let (c, f) = match list.get(s)? {
-                Node::Char { c, font } => (*c, *font),
+                Node::Char { c, font, .. } => (*c, *font),
                 Node::Ligature {
                     letters,
                     n_letters,
@@ -629,7 +629,7 @@ impl Engine {
                     ..
                 } if *n_letters > 0 => (letters[0], *font),
                 // §1363 adv_past in the pre-hyphenation loop
-                Node::Whatsit(WhatIt::Language { lang: l, lhm, rhm }) => {
+                Node::Whatsit(WhatIt::Language { lang: l, lhm, rhm }, _) => {
                     *lang = LangState {
                         lang: *l,
                         lhm: *lhm,
@@ -641,12 +641,12 @@ impl Engine {
                     continue;
                 }
                 // etex.ch: text-direction math nodes are skipped like kerns
-                Node::Ligature { .. } | Node::Kern(_) | Node::Whatsit(_) => {
+                Node::Ligature { .. } | Node::Kern(_, _) | Node::Whatsit(_, _) => {
                     ha = s;
                     s += 1;
                     continue;
                 }
-                Node::MathKern(_, kind) if *kind >= crate::boxes::LR_KIND_MIN => {
+                Node::MathKern(_, kind, _) if *kind >= crate::boxes::LR_KIND_MIN => {
                     ha = s;
                     s += 1;
                     continue;
@@ -676,7 +676,7 @@ impl Engine {
         let mut hyf_bchar: Option<u8> = None;
         'word: loop {
             match list.get(s) {
-                Some(Node::Char { c, font: f }) => {
+                Some(Node::Char { c, font: f, .. }) => {
                     if *f != hf {
                         break;
                     }
@@ -718,7 +718,7 @@ impl Engine {
                     hn = j;
                     hyf_bchar = if subtype & 1 != 0 { font.bchar } else { None };
                 }
-                Some(Node::Kern(_)) => {
+                Some(Node::Kern(_, _)) => {
                     hb = s;
                     hyf_bchar = font.bchar;
                 }
@@ -732,21 +732,21 @@ impl Engine {
         }
         loop {
             match list.get(s) {
-                Some(Node::Char { .. } | Node::Ligature { .. } | Node::Kern(_)) => s += 1,
+                Some(Node::Char { .. } | Node::Ligature { .. } | Node::Kern(_, _)) => s += 1,
                 None
                 | Some(
-                    Node::ExplicitKern(_)
-                    | Node::AccentKern(_)
-                    | Node::Whatsit(_)
-                    | Node::Glue(_)
+                    Node::ExplicitKern(_, _)
+                    | Node::AccentKern(_, _)
+                    | Node::Whatsit(_, _)
+                    | Node::Glue(_, _)
                     | Node::Leaders { .. }
-                    | Node::Penalty(_)
+                    | Node::Penalty(_, _)
                     | Node::Ins { .. }
-                    | Node::VAdjust(_)
+                    | Node::VAdjust(_, _)
                     | Node::Mark { .. },
                 ) => break,
                 // etex.ch: `math_node: if subtype(s)>=L_code then goto done4`
-                Some(Node::MathKern(_, kind)) if *kind >= crate::boxes::LR_KIND_MIN => break,
+                Some(Node::MathKern(_, kind, _)) if *kind >= crate::boxes::LR_KIND_MIN => break,
                 _ => return None,
             }
         }
@@ -775,7 +775,7 @@ impl Engine {
             hold: Vec::new(),
         };
         let (start, j0) = match &list[ha] {
-            Node::Char { c, font: f } if *f == hf => {
+            Node::Char { c, font: f, .. } if *f == hf => {
                 rc.init_list[0] = *c;
                 rc.init_len = 1;
                 rc.hu[0] = *c as u16;
@@ -895,8 +895,8 @@ impl Engine {
             }
             if word.is_empty() {
                 match &list[i] {
-                    Node::Glue(_) => can_start_word = true,
-                    Node::Char { .. } | Node::Ligature { .. } | Node::Whatsit(_) => {}
+                    Node::Glue(_, _) => can_start_word = true,
+                    Node::Char { .. } | Node::Ligature { .. } | Node::Whatsit(_, _) => {}
                     _ => can_start_word = false,
                 }
             }
@@ -1031,7 +1031,7 @@ impl Engine {
             let mut prev_exp_char: Option<(FontId, u8)> = None;
             while i < n {
                 let (w, st, sh, fst, fsh) = match &list[i] {
-                    Node::Char { c, font } => {
+                    Node::Char { c, font, .. } => {
                         record_expansion(*font);
                         prev_exp_char = Some((*font, *c));
                         let fst = if pdf_adjust >= 2 {
@@ -1067,16 +1067,16 @@ impl Engine {
                         };
                         (*lig_width as i64, [0; 4], [0; 4], fst, fsh)
                     }
-                    Node::Glue(g) => {
+                    Node::Glue(g, _) => {
                         let mut st = [0i64; 4];
                         let mut sh = [0i64; 4];
                         st[g.stretch_order as usize] = g.stretch as i64;
                         sh[g.shrink_order as usize] = g.shrink as i64;
                         (g.width as i64, st, sh, 0, 0)
                     }
-                    Node::Kern(k) => {
+                    Node::Kern(k, _) => {
                         let next = match list.get(i + 1) {
-                            Some(Node::Char { c, font } | Node::Ligature { c, font, .. }) => {
+                            Some(Node::Char { c, font, .. } | Node::Ligature { c, font, .. }) => {
                                 Some((*font, *c))
                             }
                             _ => None,
@@ -1096,7 +1096,7 @@ impl Engine {
                         };
                         (*k as i64, [0; 4], [0; 4], fst, fsh)
                     }
-                    Node::ExplicitKern(k) | Node::AccentKern(k) => {
+                    Node::ExplicitKern(k, _) | Node::AccentKern(k, _) => {
                         (*k as i64, [0; 4], [0; 4], 0, 0)
                     }
                     Node::Disc(dc) => {
@@ -1136,7 +1136,7 @@ impl Engine {
                     Node::Rule { width: w, .. } => (*w as i64, [0; 4], [0; 4], 0, 0),
                     Node::NativeGlyphRun { width, .. } => (*width as i64, [0; 4], [0; 4], 0, 0),
                     // math-on/off nodes carry \mathsurround
-                    Node::MathKern(k, 1..) => (*k as i64, [0; 4], [0; 4], 0, 0),
+                    Node::MathKern(k, 1.., _) => (*k as i64, [0; 4], [0; 4], 0, 0),
                     _ => (0, [0; 4], [0; 4], 0, 0),
                 };
                 cum_w[i + 1] = cum_w[i] + w;
@@ -1246,7 +1246,7 @@ impl Engine {
                                     .rev()
                                     .chain(list[..cand].iter().rev())
                                     .find_map(|n| match n {
-                                        Node::Char { font, c } | Node::Ligature { font, c, .. } => {
+                                        Node::Char { font, c, .. } | Node::Ligature { font, c, .. } => {
                                             Some(char_protrusion_width(
                                                 &self.eqtb,
                                                 protrude_chars,
@@ -1266,7 +1266,7 @@ impl Engine {
                                 .iter()
                                 .rev()
                                 .find_map(|n| match n {
-                                    Node::Char { font, c } | Node::Ligature { font, c, .. } => {
+                                    Node::Char { font, c, .. } | Node::Ligature { font, c, .. } => {
                                         Some(char_protrusion_width(
                                             &self.eqtb,
                                             protrude_chars,
@@ -1637,7 +1637,7 @@ impl Engine {
         let mut auto_breaking = true;
         while i < n {
             match &list[i] {
-                Node::MathKern(_, kind) => {
+                Node::MathKern(_, kind, _) => {
                     // etex.ch: `if subtype(cur_p)<L_code then
                     // auto_breaking:=odd(subtype(cur_p))` — text-direction
                     // nodes leave it alone
@@ -1647,35 +1647,35 @@ impl Engine {
                     // tex.web §866: math_node does kern_break after setting
                     // auto_breaking, so only a math node followed by glue
                     // (outside a formula) is a legal breakpoint
-                    if auto_breaking && i + 1 < n && matches!(list[i + 1], Node::Glue(_)) {
+                    if auto_breaking && i + 1 < n && matches!(list[i + 1], Node::Glue(_, _)) {
                         consider!(i, false, 0, BreakType::Unhyphenated, false, cum_w[i]);
                     }
                 }
-                Node::Penalty(p) => {
+                Node::Penalty(p, _) => {
                     if *p < INF_PENALTY {
                         let forced = *p <= EJECT_PENALTY;
 
                         consider!(i, false, *p, BreakType::Unhyphenated, forced, cum_w[i]);
                     }
                 }
-                Node::Glue(_) => {
+                Node::Glue(_, _) => {
                     let legal = auto_breaking
                         && i > 0
                         && !matches!(
                             list[i - 1],
-                            Node::Glue(_)
-                                | Node::Penalty(_)
-                                | Node::ExplicitKern(_)
+                            Node::Glue(_, _)
+                                | Node::Penalty(_, _)
+                                | Node::ExplicitKern(_, _)
                                 | Node::MathKern(..)
                         );
                     if legal {
                         consider!(i, false, 0, BreakType::Unhyphenated, false, cum_w[i]);
                     }
                 }
-                Node::ExplicitKern(k) => {
+                Node::ExplicitKern(k, _) => {
                     // tex's kern_break: explicit kern followed by glue; the
                     // kern itself is zeroed at the line end
-                    if auto_breaking && i + 1 < n && matches!(list[i + 1], Node::Glue(_)) {
+                    if auto_breaking && i + 1 < n && matches!(list[i + 1], Node::Glue(_, _)) {
                         consider!(i, false, 0, BreakType::Unhyphenated, false, cum_w[i]);
                         let _ = k;
                     }
@@ -1746,7 +1746,7 @@ impl Engine {
             let mut nat_w = 0i64;
             // "Insert LR nodes at the beginning of the current line"
             if texxet && !lr.is_empty() {
-                seg.extend(lr.iter().map(|k| Node::MathKern(0, k - 1)));
+                seg.extend(lr.iter().map(|k| Node::MathKern(0, k - 1, crate::boxes::Attr::NONE)));
                 self.texxet_nodes = true;
             }
             if let Some(dc) = pending_post.take() {
@@ -1761,7 +1761,7 @@ impl Engine {
                     i += 1;
                     continue;
                 }
-                if let Node::VAdjust(items) = &mut list[i] {
+                if let Node::VAdjust(items, _) = &mut list[i] {
                     // tex.web §866 post_line_break: adjustment material joins the
                     // vertical list right after the line box containing it
                     post_adj.append(items);
@@ -1770,12 +1770,12 @@ impl Engine {
                 }
                 if matches!(
                     &list[i],
-                    Node::Ins { .. } | Node::Mark { .. } | Node::Adj(_)
+                    Node::Ins { .. } | Node::Mark { .. } | Node::Adj(_, _)
                 ) {
                     // tex.web §866 post_line_break: ins, mark, and adjust nodes
                     // migrate from the line's hlist to the vertical list right
                     // after the line box containing them
-                    post_adj.push(std::mem::replace(&mut list[i], Node::Kern(0)));
+                    post_adj.push(std::mem::replace(&mut list[i], Node::Kern(0, crate::boxes::Attr::NONE)));
                     i += 1;
                     continue;
                 }
@@ -1785,8 +1785,8 @@ impl Engine {
                     Node::Disc(dc) => dc.replace_count,
                     _ => 0,
                 };
-                let node = std::mem::replace(&mut list[i], Node::Kern(0));
-                if let (true, Node::MathKern(_, kind @ 1..)) = (texxet, &node) {
+                let node = std::mem::replace(&mut list[i], Node::Kern(0, crate::boxes::Attr::NONE));
+                if let (true, Node::MathKern(_, kind @ 1.., _)) = (texxet, &node) {
                     crate::texxet::lr_adjust(&mut lr, *kind);
                 }
                 push_dims(&self.eqtb, node, &mut seg, &mut nat_w);
@@ -1817,7 +1817,7 @@ impl Engine {
                             // post_line_break prunes the next line start
                             i = j + 1 + dc.replace_count;
                             while i < list.len() && is_prunable(&list[i]) {
-                                if let Node::MathKern(_, kind @ 1..) = list[i] {
+                                if let Node::MathKern(_, kind @ 1.., _) = list[i] {
                                     pruned_lr.push(kind);
                                 }
                                 i += 1;
@@ -1829,23 +1829,23 @@ impl Engine {
                             break_disc = Some(dc);
                         }
                     }
-                    Node::Glue(_)
-                    | Node::Penalty(_)
-                    | Node::ExplicitKern(_)
+                    Node::Glue(_, _)
+                    | Node::Penalty(_, _)
+                    | Node::ExplicitKern(_, _)
                     | Node::MathKern(..) => {
                         // glue/penalty break node dropped (glue becomes
                         // \rightskip at packing; explicit-kern break is
                         // zeroed by tex), a math node is kept with width 0;
                         // prune discardables at the start of the next line
-                        if let Node::MathKern(_, kind @ 1..) = list[j] {
+                        if let Node::MathKern(_, kind @ 1.., _) = list[j] {
                             if texxet {
                                 crate::texxet::lr_adjust(&mut lr, kind);
                             }
-                            break_math = Some(Node::MathKern(0, kind));
+                            break_math = Some(Node::MathKern(0, kind, crate::boxes::Attr::NONE));
                         }
                         i = j + 1;
                         while i < list.len() && is_prunable(&list[i]) {
-                            if let Node::MathKern(_, kind @ 1..) = list[i] {
+                            if let Node::MathKern(_, kind @ 1.., _) = list[i] {
                                 pruned_lr.push(kind);
                             }
                             i += 1;
@@ -1862,16 +1862,16 @@ impl Engine {
                 self.eqtb.int_params[crate::prim::IntParam::PdfProtrudeChars.idx() as usize];
             if protrude_chars > 0 {
                 let left_cand = seg.iter().find_map(|n| match n {
-                    Node::Char { font, c } | Node::Ligature { font, c, .. } => Some((*font, *c)),
-                    Node::Glue(_)
-                    | Node::Penalty(_)
-                    | Node::Kern(_)
-                    | Node::ExplicitKern(_)
-                    | Node::AccentKern(0)
-                    | Node::Whatsit(_) => None,
+                    Node::Char { font, c, .. } | Node::Ligature { font, c, .. } => Some((*font, *c)),
+                    Node::Glue(_, _)
+                    | Node::Penalty(_, _)
+                    | Node::Kern(_, _)
+                    | Node::ExplicitKern(_, _)
+                    | Node::AccentKern(0, _)
+                    | Node::Whatsit(_, _) => None,
                     // pdftex cp_skipable: zero-width math nodes; only the
                     // TeXXeT \beginM..\endR kinds are skipped here
-                    Node::MathKern(0, crate::boxes::BEGIN_M..) => None,
+                    Node::MathKern(0, crate::boxes::BEGIN_M.., _) => None,
                     Node::Box {
                         w: 0,
                         h: 0,
@@ -1891,14 +1891,14 @@ impl Engine {
                                     side: 0,
                                     width: -pw,
                                     font: f,
-                                    c,
+                                    c, attr: crate::boxes::Attr::NONE,
                                 },
                             );
                         }
                     }
                 }
                 if let Some((f, c)) = seg.iter().rev().find_map(|n| match n {
-                    Node::Char { font, c } | Node::Ligature { font, c, .. } => Some((*font, *c)),
+                    Node::Char { font, c, .. } | Node::Ligature { font, c, .. } => Some((*font, *c)),
                     _ => None,
                 }) {
                     let pw = char_protrusion_width(&self.eqtb, protrude_chars, f, c, false);
@@ -1907,7 +1907,7 @@ impl Engine {
                             side: 1,
                             width: -pw,
                             font: f,
-                            c,
+                            c, attr: crate::boxes::Attr::NONE,
                         });
                     }
                 }
@@ -1915,7 +1915,7 @@ impl Engine {
             seg.extend(break_math);
             // "Insert LR nodes at the end of the current line"
             if texxet && !lr.is_empty() {
-                seg.extend(lr.iter().rev().map(|&k| Node::MathKern(0, k)));
+                seg.extend(lr.iter().rev().map(|&k| Node::MathKern(0, k, crate::boxes::Attr::NONE)));
                 self.texxet_nodes = true;
             }
             if texxet {
@@ -1926,10 +1926,10 @@ impl Engine {
             let mut inner: NodeList = Vec::with_capacity(seg.len() + 2);
             // tex.web §887: \leftskip glue only when it is not zero_glue
             if !params.left_skip.zero_glue {
-                inner.push(Node::Glue(params.left_skip));
+                inner.push(Node::Glue(params.left_skip, crate::boxes::Attr::NONE));
             }
             inner.extend(seg);
-            inner.push(Node::Glue(params.right_skip));
+            inner.push(Node::Glue(params.right_skip, crate::boxes::Attr::NONE));
             let mut r = crate::boxes::hpack_expand(self, inner, target, crate::boxes::HBOX);
             // tex.web §17436: the parshape indent is the line box's
             // shift_amount, never an in-line kern (a kern would overshoot
@@ -1970,11 +1970,11 @@ impl Engine {
             // interline glue placeholder (page builder owns real baseline
             // spacing between line boxes)
             if !lines.is_empty() {
-                lines.push(Node::Glue(Glue::zero()));
+                lines.push(Node::Glue(Glue::zero(), crate::boxes::Attr::NONE));
             }
             lines.push(r.node);
             if !post_adj.is_empty() {
-                lines.push(Node::VAdjust(post_adj));
+                lines.push(Node::VAdjust(post_adj, crate::boxes::Attr::NONE));
             }
             // tex.web §17438: interline penalty after every line but the
             // last — interlinepenalty, plus clubpenalty after line 1, plus
@@ -2003,7 +2003,7 @@ impl Engine {
                     pen += params.broken_penalty;
                 }
                 if pen != 0 {
-                    lines.push(Node::Penalty(pen));
+                    lines.push(Node::Penalty(pen, crate::boxes::Attr::NONE));
                 }
             }
             if let Some(dc) = break_disc {
@@ -2033,10 +2033,10 @@ impl Engine {
         for i in 0..=list.len() {
             let penalty = match list.get(i) {
                 None => Some(-10000),
-                Some(Node::Penalty(p)) => Some(*p),
-                Some(Node::Glue(_) | Node::Leaders { .. }) if prev_non_discardable => Some(0),
-                Some(Node::Kern(_) | Node::ExplicitKern(_) | Node::AccentKern(_))
-                    if matches!(list.get(i + 1), Some(Node::Glue(_) | Node::Leaders { .. })) =>
+                Some(Node::Penalty(p, _)) => Some(*p),
+                Some(Node::Glue(_, _) | Node::Leaders { .. }) if prev_non_discardable => Some(0),
+                Some(Node::Kern(_, _) | Node::ExplicitKern(_, _) | Node::AccentKern(_, _))
+                    if matches!(list.get(i + 1), Some(Node::Glue(_, _) | Node::Leaders { .. })) =>
                 {
                     Some(0)
                 }
@@ -2086,7 +2086,7 @@ impl Engine {
                     t += d + *h as i64;
                     d = *depth as i64;
                 }
-                Node::Glue(g) | Node::Leaders { glue: g, .. } => {
+                Node::Glue(g, _) | Node::Leaders { glue: g, .. } => {
                     stretch[(g.stretch_order as usize).min(3)] += g.stretch as i64;
                     shrink += g.shrink as i64;
                     if g.shrink_order != 0 && g.shrink != 0 {
@@ -2104,7 +2104,7 @@ impl Engine {
                     t += d + g.width as i64;
                     d = 0;
                 }
-                Node::Kern(k) | Node::ExplicitKern(k) | Node::AccentKern(k) => {
+                Node::Kern(k, _) | Node::ExplicitKern(k, _) | Node::AccentKern(k, _) => {
                     t += d + *k as i64;
                     d = 0;
                 }
@@ -2121,8 +2121,8 @@ impl Engine {
                     | Node::Rule { .. }
                     | Node::Ins { .. }
                     | Node::Mark { .. }
-                    | Node::Whatsit(_)
-                    | Node::Adj(_)
+                    | Node::Whatsit(_, _)
+                    | Node::Adj(_, _)
             );
         }
         let mut rest = list.split_off(best_split);
@@ -2140,15 +2140,15 @@ impl Engine {
                     seen_box = true;
                     true
                 }
-                Node::Glue(_)
+                Node::Glue(_, _)
                 | Node::Leaders { .. }
-                | Node::Penalty(_)
-                | Node::Kern(_)
-                | Node::ExplicitKern(_)
-                | Node::AccentKern(_) => false,
+                | Node::Penalty(_, _)
+                | Node::Kern(_, _)
+                | Node::ExplicitKern(_, _)
+                | Node::AccentKern(_, _) => false,
                 Node::Whatsit(
                     crate::boxes::WhatIt::PdfSnapY(_) | crate::boxes::WhatIt::PdfSnapYComp(_),
-                ) => {
+                _) => {
                     snaps += 1;
                     false
                 }
@@ -2168,11 +2168,11 @@ impl Engine {
                 .fresh();
             skip.subtype = crate::boxes::glue_subtype::SPLIT_TOP_SKIP;
             skip.width = (skip.width - height).max(0);
-            rest.insert(i, Node::Glue(skip));
+            rest.insert(i, Node::Glue(skip, crate::boxes::Attr::NONE));
         }
         let mut seen = std::collections::HashSet::new();
         for node in &top {
-            if let Node::Mark { class, tokens } = node {
+            if let Node::Mark { class, tokens, .. } = node {
                 let class = *class as usize;
                 if class < crate::eqtb::NUM_REGISTERS {
                     for marks in &mut self.marks[3..5] {
@@ -2252,7 +2252,7 @@ struct Reconstitute<'a> {
 
 impl Reconstitute<'_> {
     fn char_node(&self, c: u8) -> Node {
-        Node::Char { c, font: self.hf }
+        Node::Char { c, font: self.hf, attr: crate::boxes::Attr::NONE }
     }
 
     /// set_cur_r: (cur_r, cur_rh) for the cursor after position `j`
@@ -2282,7 +2282,7 @@ impl Reconstitute<'_> {
             lig_depth: self.font.char_depth(c),
             letters,
             n_letters: n as u8,
-            subtype,
+            subtype, attr: crate::boxes::Attr::NONE,
         });
     }
 
@@ -2411,7 +2411,7 @@ impl Reconstitute<'_> {
                 lig_present = false;
             }
             if w != 0 {
-                self.hold.push(Node::Kern(w));
+                self.hold.push(Node::Kern(w, crate::boxes::Attr::NONE));
                 w = 0;
             }
             let Some((c, orig)) = stack.pop() else {
@@ -2526,7 +2526,7 @@ impl Reconstitute<'_> {
 fn is_prunable(n: &Node) -> bool {
     matches!(
         n,
-        Node::Glue(_) | Node::Penalty(_) | Node::ExplicitKern(_) | Node::MathKern(..)
+        Node::Glue(_, _) | Node::Penalty(_, _) | Node::ExplicitKern(_, _) | Node::MathKern(..)
     )
 }
 
@@ -2542,15 +2542,15 @@ fn push_dims(eqtb: &crate::eqtb::Eqtb, n: Node, seg: &mut NodeList, w: &mut i64)
     }
     let fonts = crate::boxes::eqtb_fonts(eqtb);
     let wd = match &n {
-        Node::Char { c, font } => fonts.char_width(*font, *c),
+        Node::Char { c, font, .. } => fonts.char_width(*font, *c),
         Node::LuaGlyph(g) => crate::boxes::lua_glyph_dims(eqtb, g).0,
         Node::Ligature { lig_width, .. } => *lig_width,
-        Node::Glue(g) => g.width,
-        Node::Kern(k) | Node::ExplicitKern(k) | Node::AccentKern(k) => *k,
+        Node::Glue(g, _) => g.width,
+        Node::Kern(k, _) | Node::ExplicitKern(k, _) | Node::AccentKern(k, _) => *k,
         Node::Box { w: bw, .. } => *bw,
         Node::Rule { width, .. } => *width,
         Node::NativeGlyphRun { width, .. } => *width,
-        Node::MathKern(k, 1..) => *k,
+        Node::MathKern(k, 1.., _) => *k,
         _ => 0,
     };
     *w += wd as i64;
@@ -2561,10 +2561,10 @@ fn disc_list_width(eqtb: &crate::eqtb::Eqtb, l: &[Node]) -> i64 {
     let fonts = crate::boxes::eqtb_fonts(eqtb);
     l.iter()
         .map(|nn| match nn {
-            Node::Char { c, font } => fonts.char_width(*font, *c) as i64,
+            Node::Char { c, font, .. } => fonts.char_width(*font, *c) as i64,
             Node::LuaGlyph(g) => crate::boxes::lua_glyph_dims(eqtb, g).0 as i64,
             Node::Ligature { lig_width, .. } => *lig_width as i64,
-            Node::Kern(k) | Node::ExplicitKern(k) | Node::AccentKern(k) => *k as i64,
+            Node::Kern(k, _) | Node::ExplicitKern(k, _) | Node::AccentKern(k, _) => *k as i64,
             Node::Box { w, .. } | Node::Rule { width: w, .. } => *w as i64,
             Node::NativeGlyphRun { width, .. } => *width as i64,
             _ => 0,
@@ -2724,16 +2724,16 @@ mod plural_penalty_tests {
         let rule = || Node::Rule {
             width: 65_536,
             height: 0,
-            depth: 0,
+            depth: 0, attr: crate::boxes::Attr::NONE,
         };
         let list = vec![
             rule(),
-            Node::Glue(Glue::zero()),
+            Node::Glue(Glue::zero(), crate::boxes::Attr::NONE),
             rule(),
-            Node::Glue(Glue::zero()),
+            Node::Glue(Glue::zero(), crate::boxes::Attr::NONE),
             rule(),
-            Node::Penalty(10_000),
-            Node::Glue(Glue::fil(GLUE_FIL, 0)),
+            Node::Penalty(10_000, crate::boxes::Attr::NONE),
+            Node::Glue(Glue::fil(GLUE_FIL, 0), crate::boxes::Attr::NONE),
         ];
         let Node::Box { list, .. } = engine.break_paragraph(list, 0, false) else {
             panic!("paragraph breaker did not return a vbox");
@@ -2741,7 +2741,7 @@ mod plural_penalty_tests {
         let penalties: Vec<i32> = list
             .iter()
             .filter_map(|node| match node {
-                Node::Penalty(value) => Some(*value),
+                Node::Penalty(value, _) => Some(*value),
                 _ => None,
             })
             .collect();
@@ -2759,14 +2759,14 @@ mod plural_penalty_tests {
         let rule = || Node::Rule {
             width: 65_536,
             height: 0,
-            depth: 0,
+            depth: 0, attr: crate::boxes::Attr::NONE,
         };
         let list = vec![
             rule(),
-            Node::Glue(Glue::zero()),
+            Node::Glue(Glue::zero(), crate::boxes::Attr::NONE),
             rule(),
-            Node::Penalty(10_000),
-            Node::Glue(Glue::fil(GLUE_FIL, 0)),
+            Node::Penalty(10_000, crate::boxes::Attr::NONE),
+            Node::Glue(Glue::fil(GLUE_FIL, 0), crate::boxes::Attr::NONE),
         ];
         let (_node, record) = engine.break_paragraph_with_record(list, 0, false);
         assert_eq!(record.lines, 2);
@@ -2793,10 +2793,10 @@ mod plural_penalty_tests {
 
         let word = || {
             vec![
-                Node::Glue(Glue::zero()),
-                Node::Char { font: 0, c: b'X' },
-                Node::Char { font: 0, c: b'b' },
-                Node::Penalty(10_000),
+                Node::Glue(Glue::zero(), crate::boxes::Attr::NONE),
+                Node::Char { font: 0, c: b'X', attr: crate::boxes::Attr::NONE },
+                Node::Char { font: 0, c: b'b', attr: crate::boxes::Attr::NONE },
+                Node::Penalty(10_000, crate::boxes::Attr::NONE),
             ]
         };
         let mut with_saved_codes = word();
@@ -2828,10 +2828,10 @@ mod plural_penalty_tests {
         engine.trie_for_language_mut(0).add_pattern_bytes(b"a1b");
         let word = |first: u8| {
             vec![
-                Node::Glue(Glue::zero()),
-                Node::Char { font: 0, c: first },
-                Node::Char { font: 0, c: b'b' },
-                Node::Penalty(10_000),
+                Node::Glue(Glue::zero(), crate::boxes::Attr::NONE),
+                Node::Char { font: 0, c: first, attr: crate::boxes::Attr::NONE },
+                Node::Char { font: 0, c: b'b', attr: crate::boxes::Attr::NONE },
+                Node::Penalty(10_000, crate::boxes::Attr::NONE),
             ]
         };
         let hyphenated = |engine: &mut Engine, first: u8| {

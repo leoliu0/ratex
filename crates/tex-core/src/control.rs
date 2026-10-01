@@ -468,7 +468,7 @@ impl Engine {
                 fam: 0,
                 c: scalar,
                 class: 0,
-                origin,
+                origin, attr: crate::boxes::Attr::NONE,
             });
         } else {
             self.error(&format!(

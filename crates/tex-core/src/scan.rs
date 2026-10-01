@@ -4013,7 +4013,7 @@ mod showthe_mark_tests {
         engine.mode = crate::engine::Mode::RestrictedHorizontal;
         engine
             .cur_list
-            .push(crate::boxes::Node::Char { c: b'A', font: 0 });
+            .push(crate::boxes::Node::Char { c: b'A', font: 0, attr: crate::boxes::Attr::NONE });
         assert_eq!(
             engine.last_node_type_value(),
             0,

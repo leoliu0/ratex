@@ -268,7 +268,7 @@ impl Engine {
             WhatIt::Write { stream, .. } => {
                 let n = whatsit(self, ws::WRITE);
                 self.lua_nodes.node_mut(n).f[0] = i32::from(*stream);
-                self.keep_opaque(n, &Node::Whatsit(w.clone()));
+                self.keep_opaque(n, &Node::Whatsit(w.clone(), crate::boxes::Attr::NONE));
                 n
             }
             WhatIt::OpenOut { stream, names, .. } => {
@@ -276,16 +276,16 @@ impl Engine {
                 self.lua_nodes.node_mut(n).f[0] = i32::from(*stream);
                 self.lua_nodes.node_mut(n).ext.get_or_insert_with(Default::default).strs =
                     vec![names.0.clone().into_bytes(), Vec::new(), Vec::new()];
-                self.keep_opaque(n, &Node::Whatsit(w.clone()));
+                self.keep_opaque(n, &Node::Whatsit(w.clone(), crate::boxes::Attr::NONE));
                 n
             }
             WhatIt::CloseOut { stream, .. } => {
                 let n = whatsit(self, ws::CLOSE);
                 self.lua_nodes.node_mut(n).f[0] = i32::from(*stream);
-                self.keep_opaque(n, &Node::Whatsit(w.clone()));
+                self.keep_opaque(n, &Node::Whatsit(w.clone(), crate::boxes::Attr::NONE));
                 n
             }
-            other => self.import_opaque(&Node::Whatsit(other.clone())),
+            other => self.import_opaque(&Node::Whatsit(other.clone(), crate::boxes::Attr::NONE)),
         }
     }
 
@@ -294,7 +294,7 @@ impl Engine {
     }
 
     fn import_box(&mut self, node: &Node, ctx: &mut LangCtx) -> u32 {
-        let Node::Box { kind, w, h, d, shift, list, glue_sign, glue_order, glue_set, lr, dir } = node else {
+        let Node::Box { kind, w, h, d, shift, list, glue_sign, glue_order, glue_set, lr, dir, .. } = node else {
             unreachable!()
         };
         let id = if *kind == boxes::HBOX { HLIST } else { VLIST };
@@ -320,7 +320,7 @@ impl Engine {
 
     fn import_node(&mut self, node: &Node, ctx: &mut LangCtx) -> u32 {
         match node {
-            Node::Char { c, font } => self.import_glyph_node(u32::from(*c), *font, ctx, GLYPH_CHARACTER),
+            Node::Char { c, font, .. } => self.import_glyph_node(u32::from(*c), *font, ctx, GLYPH_CHARACTER),
             Node::LuaGlyph(g) => {
                 let n = self.lua_new_node(GLYPH, u16::from(g.subtype));
                 let comps = if g.components.is_empty() {
@@ -366,8 +366,8 @@ impl Engine {
                 self.lua_nodes.node_mut(n).f[sl::C_COMP] = head as i32;
                 n
             }
-            Node::Glue(g) => self.import_glue(g, glue_subtype_to_lua(g.subtype)),
-            Node::Leaders { glue, kind, body } => {
+            Node::Glue(g, _) => self.import_glue(g, glue_subtype_to_lua(g.subtype)),
+            Node::Leaders { glue, kind, body, .. } => {
                 let n = self.import_glue(glue, A_LEADERS + u16::from(*kind));
                 let leader = match body {
                     LeaderBody::Rule { width, height, depth } => {
@@ -383,17 +383,17 @@ impl Engine {
                 self.lua_nodes.node_mut(n).f[sl::G_LEADER] = leader as i32;
                 n
             }
-            Node::Kern(k) => {
+            Node::Kern(k, _) => {
                 let n = self.lua_new_node(KERN, FONT_KERN);
                 self.lua_nodes.node_mut(n).f[0] = *k;
                 n
             }
-            Node::ExplicitKern(k) => {
+            Node::ExplicitKern(k, _) => {
                 let n = self.lua_new_node(KERN, EXPLICIT_KERN);
                 self.lua_nodes.node_mut(n).f[0] = *k;
                 n
             }
-            Node::MarginKern { side, width, c, font } => {
+            Node::MarginKern { side, width, c, font, .. } => {
                 let n = self.lua_new_node(MARGIN_KERN, u16::from(*side));
                 let g = self.import_glyph_node(u32::from(*c), *font, ctx, GLYPH_CHARACTER);
                 let f = &mut self.lua_nodes.node_mut(n).f;
@@ -401,12 +401,12 @@ impl Engine {
                 f[sl::M_GLYPH] = g as i32;
                 n
             }
-            Node::Penalty(p) => {
+            Node::Penalty(p, _) => {
                 let n = self.lua_new_node(PENALTY, 0);
                 self.lua_nodes.node_mut(n).f[0] = *p;
                 n
             }
-            Node::Rule { width, height, depth } => {
+            Node::Rule { width, height, depth, .. } => {
                 let n = self.lua_new_node(RULE, 0);
                 let f = &mut self.lua_nodes.node_mut(n).f;
                 f[sl::R_WIDTH] = rule_to_lua(*width);
@@ -435,14 +435,14 @@ impl Engine {
                 n
             }
             Node::Box { .. } => self.import_box(node, ctx),
-            Node::Mark { class, tokens } => {
+            Node::Mark { class, tokens, .. } => {
                 let n = self.lua_new_node(MARK, 0);
                 let nd = self.lua_nodes.node_mut(n);
                 nd.f[0] = *class;
                 nd.ext = Some(Box::new(Ext { toks: tokens.clone(), ..Ext::default() }));
                 n
             }
-            Node::Ins { num, height, depth, cost, split_top_skip, split_max_depth, box_node } => {
+            Node::Ins { num, height, depth, cost, split_top_skip, split_max_depth, box_node, .. } => {
                 let n = self.lua_new_node(INS, *num);
                 let spec = {
                     let s = self.lua_nodes.new_node(GLUE_SPEC, 0, 0);
@@ -472,20 +472,20 @@ impl Engine {
                 nd.ext = Some(Box::new(Ext { opaque: Some(Box::new(template)), ..Ext::default() }));
                 n
             }
-            Node::VAdjust(list) => {
+            Node::VAdjust(list, _) => {
                 let n = self.lua_new_node(ADJUST, 0);
                 let head = self.import_sub(list, ctx);
                 self.lua_nodes.node_mut(n).f[0] = head as i32;
                 n
             }
-            Node::MathKern(k, kind @ (boxes::MATH_ON | boxes::MATH_OFF)) => {
+            Node::MathKern(k, kind @ (boxes::MATH_ON | boxes::MATH_OFF), _) => {
                 let n = self.lua_new_node(MATH, u16::from(*kind - 1));
                 let nd = self.lua_nodes.node_mut(n);
                 nd.f[0] = *k;
                 nd.f[1] = *k;
                 n
             }
-            Node::Whatsit(w) => {
+            Node::Whatsit(w, _) => {
                 if let WhatIt::Language { lang, lhm, rhm } = w {
                     ctx.lang = u16::from(*lang);
                     ctx.left = *lhm;
@@ -591,19 +591,19 @@ impl Engine {
                                 C_LEADERS => boxes::LEADERS_C,
                                 _ => boxes::LEADERS_X,
                             };
-                            out.push(Node::Leaders { glue, kind, body });
+                            out.push(Node::Leaders { glue, kind, body, attr: crate::boxes::Attr::NONE });
                         }
-                        None => out.push(Node::Glue(glue)),
+                        None => out.push(Node::Glue(glue, crate::boxes::Attr::NONE)),
                     }
                     self.lua_nodes.flush_node(leader);
                 } else {
                     let g = self.export_glue_params(n, glue_subtype_from_lua(sub));
-                    out.push(Node::Glue(g));
+                    out.push(Node::Glue(g, crate::boxes::Attr::NONE));
                 }
             }
             KERN => {
                 let k = f[0];
-                out.push(if sub == EXPLICIT_KERN { Node::ExplicitKern(k) } else { Node::Kern(k) });
+                out.push(if sub == EXPLICIT_KERN { Node::ExplicitKern(k, crate::boxes::Attr::NONE) } else { Node::Kern(k, crate::boxes::Attr::NONE) });
             }
             MARGIN_KERN => {
                 let g = f[sl::M_GLYPH] as u32;
@@ -613,9 +613,9 @@ impl Engine {
                 } else {
                     (0, 0)
                 };
-                out.push(Node::MarginKern { side: sub as u8, width: f[sl::M_WIDTH], c: c as u8, font });
+                out.push(Node::MarginKern { side: sub as u8, width: f[sl::M_WIDTH], c: c as u8, font, attr: crate::boxes::Attr::NONE });
             }
-            PENALTY => out.push(Node::Penalty(f[0])),
+            PENALTY => out.push(Node::Penalty(f[0], crate::boxes::Attr::NONE)),
             RULE => {
                 let (w, h, d) = (f[sl::R_WIDTH], f[sl::R_HEIGHT], f[sl::R_DEPTH]);
                 match sub {
@@ -625,12 +625,12 @@ impl Engine {
                             wh
                         } else {
                             WhatIt::PdfRefXForm { obj: f[sl::R_INDEX], w, h, d }
-                        }));
+                        }, crate::boxes::Attr::NONE));
                     }
                     _ => out.push(Node::Rule {
                         width: rule_from_lua(w),
                         height: rule_from_lua(h),
-                        depth: rule_from_lua(d),
+                        depth: rule_from_lua(d), attr: crate::boxes::Attr::NONE,
                     }),
                 }
             }
@@ -644,7 +644,7 @@ impl Engine {
                     no_break,
                     replace_count: 0,
                     subtype: sub as u8,
-                    penalty: f[sl::D_PENALTY],
+                    penalty: f[sl::D_PENALTY], attr: crate::boxes::Attr::NONE,
                 }));
                 let nd = self.lua_nodes.node_mut(n);
                 nd.f[sl::D_PRE] = 0;
@@ -671,12 +671,12 @@ impl Engine {
                     glue_sign: f[sl::B_SIGN] as u8,
                     glue_set: nd.fl,
                     lr: if nd.subtype == 6 { BOX_LR_DLIST } else { f[sl::B_LR] as u8 },
-                    dir: f[sl::B_DIR] as u8,
+                    dir: f[sl::B_DIR] as u8, attr: crate::boxes::Attr::NONE,
                 });
             }
             MARK => {
                 let toks = self.lua_nodes.node(n).ext.as_ref().map(|e| e.toks.clone()).unwrap_or_default();
-                out.push(Node::Mark { class: f[0], tokens: toks });
+                out.push(Node::Mark { class: f[0], tokens: toks, attr: crate::boxes::Attr::NONE });
             }
             INS => {
                 let list = self.export_sub(f[sl::I_HEAD]);
@@ -712,7 +712,7 @@ impl Engine {
                         glue_order: 0,
                         glue_set: 0.0,
                         lr: 0,
-                        dir: 0,
+                        dir: 0, attr: crate::boxes::Attr::NONE,
                     });
                 if let Node::Box { list: l, .. } = &mut box_node {
                     *l = list;
@@ -724,18 +724,18 @@ impl Engine {
                     cost: f[sl::I_COST],
                     split_top_skip: skip,
                     split_max_depth: f[sl::I_DEPTH],
-                    box_node: Box::new(box_node),
+                    box_node: Box::new(box_node), attr: crate::boxes::Attr::NONE,
                 });
             }
             ADJUST => {
                 let list = self.export_sub(f[0]);
                 self.lua_nodes.node_mut(n).f[0] = 0;
-                out.push(Node::VAdjust(list));
+                out.push(Node::VAdjust(list, crate::boxes::Attr::NONE));
             }
             MATH => {
-                out.push(Node::MathKern(f[0], (sub as u8).min(1) + 1));
+                out.push(Node::MathKern(f[0], (sub as u8).min(1) + 1, crate::boxes::Attr::NONE));
             }
-            BOUNDARY => out.push(Node::Whatsit(WhatIt::Boundary { kind: sub as u8, value: f[0] })),
+            BOUNDARY => out.push(Node::Whatsit(WhatIt::Boundary { kind: sub as u8, value: f[0] }, crate::boxes::Attr::NONE)),
             WHATSIT => self.export_whatsit(n, out),
             TEMP => {
                 if let Some(o) = self.lua_nodes.node(n).ext.as_ref().and_then(|e| e.opaque.as_deref().cloned()) {
@@ -764,7 +764,7 @@ impl Engine {
             && f[sl::C_EXPAN] == 0
             && f[sl::C_DATA] == 0;
         if plain && comp_head == 0 && sub & GLYPH_LIGATURE == 0 {
-            return Node::Char { c: c as u8, font };
+            return Node::Char { c: c as u8, font, attr: crate::boxes::Attr::NONE };
         }
         if plain && comp_head != 0 && self.lua_nodes.list_len(comp_head) <= 3 {
             let mut letters = [0u8; 3];
@@ -804,7 +804,7 @@ impl Engine {
                     lig_depth,
                     letters,
                     n_letters: cnt as u8,
-                    subtype: st,
+                    subtype: st, attr: crate::boxes::Attr::NONE,
                 };
             }
         }
@@ -827,7 +827,7 @@ impl Engine {
             expansion_factor: f[sl::C_EXPAN],
             data: f[sl::C_DATA],
             subtype: sub as u8,
-            components,
+            components, attr: crate::boxes::Attr::NONE,
         }))
     }
 
@@ -848,7 +848,7 @@ impl Engine {
             ws::PDF_LITERAL | ws::PDF_LATE_LITERAL => out.push(Node::Whatsit(WhatIt::PdfLiteral {
                 origin: literal_mode_from_lua(f[0]),
                 data: s(self, 0),
-            })),
+            }, crate::boxes::Attr::NONE)),
             ws::PDF_COLORSTACK => out.push(Node::Whatsit(WhatIt::PdfColorStack {
                 stack: f[0],
                 cmd: match f[1] {
@@ -858,21 +858,21 @@ impl Engine {
                     _ => ColorStackCmd::Set,
                 },
                 data: s(self, 0),
-            })),
-            ws::PDF_SAVE => out.push(Node::Whatsit(WhatIt::PdfSave { source: None })),
-            ws::PDF_RESTORE => out.push(Node::Whatsit(WhatIt::PdfRestore { source: None })),
-            ws::PDF_SETMATRIX => out.push(Node::Whatsit(WhatIt::PdfSetMatrix { matrix: s(self, 0), source: None })),
-            ws::SPECIAL | ws::LATE_SPECIAL => out.push(Node::Whatsit(WhatIt::Special(s(self, 0)))),
-            ws::SAVE_POS => out.push(Node::Whatsit(WhatIt::SavePos { obj: f[10] })),
+            }, crate::boxes::Attr::NONE)),
+            ws::PDF_SAVE => out.push(Node::Whatsit(WhatIt::PdfSave { source: None }, crate::boxes::Attr::NONE)),
+            ws::PDF_RESTORE => out.push(Node::Whatsit(WhatIt::PdfRestore { source: None }, crate::boxes::Attr::NONE)),
+            ws::PDF_SETMATRIX => out.push(Node::Whatsit(WhatIt::PdfSetMatrix { matrix: s(self, 0), source: None }, crate::boxes::Attr::NONE)),
+            ws::SPECIAL | ws::LATE_SPECIAL => out.push(Node::Whatsit(WhatIt::Special(s(self, 0)), crate::boxes::Attr::NONE)),
+            ws::SAVE_POS => out.push(Node::Whatsit(WhatIt::SavePos { obj: f[10] }, crate::boxes::Attr::NONE)),
             ws::WRITE | ws::CLOSE | ws::OPEN => {
-                if let Some(Node::Whatsit(mut w)) = opaque {
+                if let Some(Node::Whatsit(mut w, _)) = opaque {
                     match &mut w {
                         WhatIt::Write { stream, .. } | WhatIt::CloseOut { stream, .. } | WhatIt::OpenOut { stream, .. } => {
                             *stream = f[0] as u16;
                         }
                         _ => {}
                     }
-                    out.push(Node::Whatsit(w));
+                    out.push(Node::Whatsit(w, crate::boxes::Attr::NONE));
                 }
             }
             _ => {

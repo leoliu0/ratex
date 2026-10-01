@@ -24,7 +24,7 @@ pub(crate) fn hpack_lr_check(list: &mut NodeList) -> i32 {
     let mut stack: Vec<u8> = Vec::new();
     let mut problems = 0;
     for n in list.iter_mut() {
-        let Node::MathKern(w, kind) = *n else {
+        let Node::MathKern(w, kind, _) = *n else {
             continue;
         };
         if kind == 0 {
@@ -35,14 +35,14 @@ pub(crate) fn hpack_lr_check(list: &mut NodeList) -> i32 {
                 stack.pop();
             } else {
                 problems += 1;
-                *n = Node::ExplicitKern(w);
+                *n = Node::ExplicitKern(w, crate::boxes::Attr::NONE);
             }
         } else {
             stack.push(math_end_lr_type(kind));
         }
     }
     while let Some(kind) = stack.pop() {
-        list.push(Node::MathKern(0, kind));
+        list.push(Node::MathKern(0, kind, crate::boxes::Attr::NONE));
         problems += 10000;
     }
     problems
@@ -80,7 +80,7 @@ impl WItem<'_> {
     /// width and kind of a math node
     fn math(&self) -> Option<(i32, u8)> {
         match self.node() {
-            Some(&Node::MathKern(w, k)) if k != 0 => Some((w, k)),
+            Some(&Node::MathKern(w, k, _)) if k != 0 => Some((w, k)),
             _ => None,
         }
     }
@@ -155,9 +155,9 @@ impl Engine {
         let skip = |p: GlueParam| -> Node {
             let g = self.eqtb.glue_params[p.idx() as usize];
             if is_zero_glue(&g) {
-                Node::Kern(0)
+                Node::Kern(0, crate::boxes::Attr::NONE)
             } else {
-                Node::Glue(g)
+                Node::Glue(g, crate::boxes::Attr::NONE)
             }
         };
         Some(Node::Box {
@@ -171,7 +171,7 @@ impl Engine {
             glue_order: *glue_order,
             glue_set: *glue_set,
             lr: 0,
-            dir: 0,
+            dir: 0, attr: crate::boxes::Attr::NONE,
         })
     }
 
@@ -200,9 +200,9 @@ impl Engine {
             v = -v - *box_w as i64;
             cur_dir = 1;
             let mut l = Vec::with_capacity(list.len() + 2);
-            l.push(WItem::Own(Node::MathKern(0, BEGIN_L)));
+            l.push(WItem::Own(Node::MathKern(0, BEGIN_L, crate::boxes::Attr::NONE)));
             l.extend(list.iter().filter(|n| just_copied(n)).map(WItem::Ref));
-            l.push(WItem::Own(Node::MathKern(0, END_L)));
+            l.push(WItem::Own(Node::MathKern(0, END_L, crate::boxes::Attr::NONE)));
             l
         };
         v += 2 * quad;
@@ -257,7 +257,7 @@ impl Engine {
                         _ => (0, false),
                     },
                     Some(n) => match n {
-                        Node::Char { c, font } => (
+                        Node::Char { c, font, .. } => (
                             self.eqtb
                                 .fonts
                                 .get(*font as usize)
@@ -268,15 +268,15 @@ impl Engine {
                         Node::Ligature { lig_width, .. } => (*lig_width as i64, true),
                         Node::Box { w, .. } => (*w as i64, true),
                         Node::Rule { width, .. } => (*width as i64, true),
-                        Node::Kern(k) | Node::ExplicitKern(k) | Node::AccentKern(k) => {
+                        Node::Kern(k, _) | Node::ExplicitKern(k, _) | Node::AccentKern(k, _) => {
                             (*k as i64, false)
                         }
                         Node::MarginKern { width, .. } => (*width as i64, false),
-                        Node::Whatsit(crate::boxes::WhatIt::PdfRefXImage { w, .. })
-                        | Node::Whatsit(crate::boxes::WhatIt::PdfRefXForm { w, .. }) => {
+                        Node::Whatsit(crate::boxes::WhatIt::PdfRefXImage { w, .. }, _)
+                        | Node::Whatsit(crate::boxes::WhatIt::PdfRefXForm { w, .. }, _) => {
                             (*w as i64, false)
                         }
-                        Node::Glue(g) => {
+                        Node::Glue(g, _) => {
                             if active(g) {
                                 v = MAX_DIMEN;
                             }
@@ -375,30 +375,30 @@ impl Engine {
                 let r = list.pop().unwrap();
                 (list.pop().unwrap(), r)
             }
-            _ => (Node::Kern(0), Node::Kern(0)),
+            _ => (Node::Kern(0, crate::boxes::Attr::NONE), Node::Kern(0, crate::boxes::Attr::NONE)),
         };
         let mut out: NodeList = Vec::with_capacity(hlist.len() + 6);
         match left {
-            Node::Glue(g) => {
-                out.push(Node::Glue(g));
-                out.push(Node::MathKern(0, BEGIN_M));
-                out.push(Node::Glue(cancel_glue(&g, d)));
+            Node::Glue(g, _) => {
+                out.push(Node::Glue(g, crate::boxes::Attr::NONE));
+                out.push(Node::MathKern(0, BEGIN_M, crate::boxes::Attr::NONE));
+                out.push(Node::Glue(cancel_glue(&g, d), crate::boxes::Attr::NONE));
             }
             _ => {
-                out.push(Node::MathKern(0, BEGIN_M));
-                out.push(Node::Kern(d as i32));
+                out.push(Node::MathKern(0, BEGIN_M, crate::boxes::Attr::NONE));
+                out.push(Node::Kern(d as i32, crate::boxes::Attr::NONE));
             }
         }
         out.append(&mut hlist);
         match right {
-            Node::Glue(g) => {
-                out.push(Node::Glue(cancel_glue(&g, e)));
-                out.push(Node::MathKern(0, END_M));
-                out.push(Node::Glue(g));
+            Node::Glue(g, _) => {
+                out.push(Node::Glue(cancel_glue(&g, e), crate::boxes::Attr::NONE));
+                out.push(Node::MathKern(0, END_M, crate::boxes::Attr::NONE));
+                out.push(Node::Glue(g, crate::boxes::Attr::NONE));
             }
             _ => {
-                out.push(Node::Kern(e as i32));
-                out.push(Node::MathKern(0, END_M));
+                out.push(Node::Kern(e as i32, crate::boxes::Attr::NONE));
+                out.push(Node::MathKern(0, END_M, crate::boxes::Attr::NONE));
             }
         }
         match line {
@@ -425,7 +425,7 @@ impl Engine {
                 glue_order,
                 glue_set,
                 lr,
-                dir,
+                dir, attr: crate::boxes::Attr::NONE,
             },
             _ => {
                 let mut packed = crate::boxes::hpack(out, None, HBOX, &self.eqtb).node;
@@ -464,13 +464,13 @@ fn just_copied(n: &Node) -> bool {
             | Node::NativeGlyphRun { .. }
             | Node::Box { .. }
             | Node::Rule { .. }
-            | Node::Kern(_)
-            | Node::ExplicitKern(_)
-            | Node::AccentKern(_)
+            | Node::Kern(_, _)
+            | Node::ExplicitKern(_, _)
+            | Node::AccentKern(_, _)
             | Node::MathKern(..)
-            | Node::Glue(_)
+            | Node::Glue(_, _)
             | Node::Leaders { .. }
-            | Node::Whatsit(_)
+            | Node::Whatsit(_, _)
     )
 }
 
@@ -501,15 +501,15 @@ fn just_reverse<'a>(
         let node = if math_end_lr(kind) {
             if stack.last() != Some(&math_end_lr_type(kind)) {
                 *lr_problems += 1;
-                Node::Kern(width)
+                Node::Kern(width, crate::boxes::Attr::NONE)
             } else {
                 stack.pop();
                 if n > 0 {
                     n -= 1;
-                    Node::MathKern(width, kind - 1)
+                    Node::MathKern(width, kind - 1, crate::boxes::Attr::NONE)
                 } else if m > 0 {
                     m -= 1;
-                    Node::Kern(width)
+                    Node::Kern(width, crate::boxes::Attr::NONE)
                 } else {
                     // found: the segment's own end node
                     edge_width = width;
@@ -521,10 +521,10 @@ fn just_reverse<'a>(
             stack.push(math_end_lr_type(kind));
             if n > 0 || math_lr_dir(kind) != reflected {
                 n += 1;
-                Node::MathKern(width, kind + 1)
+                Node::MathKern(width, kind + 1, crate::boxes::Attr::NONE)
             } else {
                 m += 1;
-                Node::Kern(width)
+                Node::Kern(width, crate::boxes::Attr::NONE)
             }
         };
         consumed.push(WItem::Own(node));
@@ -543,14 +543,14 @@ mod tests {
     #[test]
     fn hpack_check_closes_open_segments_and_neutralizes_stray_ends() {
         let mut list = vec![
-            Node::MathKern(0, END_L),
-            Node::MathKern(0, BEGIN_R),
-            Node::MathKern(0, BEGIN_L),
+            Node::MathKern(0, END_L, crate::boxes::Attr::NONE),
+            Node::MathKern(0, BEGIN_R, crate::boxes::Attr::NONE),
+            Node::MathKern(0, BEGIN_L, crate::boxes::Attr::NONE),
         ];
         assert_eq!(hpack_lr_check(&mut list), 20001);
-        assert!(matches!(list[0], Node::ExplicitKern(0)));
+        assert!(matches!(list[0], Node::ExplicitKern(0, _)));
         // innermost first: \endL then \endR
-        assert!(matches!(list[3], Node::MathKern(0, END_L)));
-        assert!(matches!(list[4], Node::MathKern(0, END_R)));
+        assert!(matches!(list[3], Node::MathKern(0, END_L, _)));
+        assert!(matches!(list[4], Node::MathKern(0, END_R, _)));
     }
 }

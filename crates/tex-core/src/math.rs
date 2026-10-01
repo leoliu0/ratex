@@ -156,13 +156,13 @@ pub(crate) fn finish_math_group(mut inner: NodeList) -> Node {
         fam: 255,
         c: 0,
         class: CL_ORD,
-        origin: MathDiagnosticOrigin::default(),
+        origin: MathDiagnosticOrigin::default(), attr: crate::boxes::Attr::NONE,
     });
     nucleus.extend(inner);
     Node::Scripts {
         nucleus,
         sup: None,
-        sub: None,
+        sub: None, attr: crate::boxes::Attr::NONE,
     }
 }
 
@@ -269,7 +269,7 @@ fn set_limits_subtype(op: &mut NodeList, st: u8) {
                 fam: 255,
                 c: u32::from(st),
                 class: CL_OP,
-                origin: MathDiagnosticOrigin::default(),
+                origin: MathDiagnosticOrigin::default(), attr: crate::boxes::Attr::NONE,
             },
         );
     }
@@ -303,7 +303,7 @@ fn delim_marker(code: i32, size: u8, origin: MathDiagnosticOrigin) -> Node {
         small: (sf, sc),
         large: (lf, lc),
         size,
-        origin,
+        origin, attr: crate::boxes::Attr::NONE,
     }
 }
 
@@ -366,7 +366,7 @@ fn splice_choices(list: &[Node], start: GStyle) -> Option<NodeList> {
     let mut i = 0usize;
     while i < nodes.len() {
         match &nodes[i] {
-            Node::Style(s) => style = gstyle_of(*s),
+            Node::Style(s, _) => style = gstyle_of(*s),
             Node::DelimBox { size: 0, .. } => lr.push(style),
             Node::DelimBox { size: 3, .. } => style = lr.last().copied().unwrap_or(start),
             Node::Choice => {
@@ -375,14 +375,14 @@ fn splice_choices(list: &[Node], start: GStyle) -> Option<NodeList> {
                     .take_while(|n| matches!(n, Node::ChoiceAlt { .. }))
                     .count();
                 let chosen = match nodes.get(i + 1 + ((style >> 1) as usize).min(alts.max(1) - 1)) {
-                    Some(Node::ChoiceAlt { body }) if alts > 0 => body.clone(),
+                    Some(Node::ChoiceAlt { body, .. }) if alts > 0 => body.clone(),
                     _ => NodeList::new(),
                 };
                 let marker = Node::MathChar {
                     fam: 255,
                     c: 0,
                     class: CL_ORD,
-                    origin: MathDiagnosticOrigin::default(),
+                    origin: MathDiagnosticOrigin::default(), attr: crate::boxes::Attr::NONE,
                 };
                 nodes.splice(i..i + 1 + alts, std::iter::once(marker).chain(chosen));
             }
@@ -776,9 +776,9 @@ impl Engine {
             // carrying \mathsurround — justification stretches into the
             // formula and lines may break inside it (never inside a box)
             Mode::Horizontal => {
-                self.cur_list.push(Node::MathKern(ms, 1));
+                self.cur_list.push(Node::MathKern(ms, 1, crate::boxes::Attr::NONE));
                 self.cur_list.extend(hlist);
-                self.cur_list.push(Node::MathKern(ms, 2));
+                self.cur_list.push(Node::MathKern(ms, 2, crate::boxes::Attr::NONE));
                 self.space_factor = 1000;
             }
             Mode::Vertical | Mode::InternalVertical => {
@@ -786,9 +786,9 @@ impl Engine {
                 self.vlist_append(hbox);
             }
             _ => {
-                self.cur_list.push(Node::MathKern(ms, 1));
+                self.cur_list.push(Node::MathKern(ms, 1, crate::boxes::Attr::NONE));
                 self.cur_list.extend(hlist);
-                self.cur_list.push(Node::MathKern(ms, 2));
+                self.cur_list.push(Node::MathKern(ms, 2, crate::boxes::Attr::NONE));
             }
         }
     }
@@ -836,12 +836,12 @@ impl Engine {
                 // typesets tags inside the rows themselves; fin_align already
                 // shifted the rows by \displayindent (§800).
                 let (ads, bds, _, _, pre, post, ..) = regs;
-                page.push(Node::Penalty(pre));
-                page.push(Node::Glue(ads));
+                page.push(Node::Penalty(pre, crate::boxes::Attr::NONE));
+                page.push(Node::Glue(ads, crate::boxes::Attr::NONE));
                 self.prev_depth = final_pd;
                 page.extend(rows);
-                page.push(Node::Penalty(post));
-                page.push(Node::Glue(bds));
+                page.push(Node::Penalty(post, crate::boxes::Attr::NONE));
+                page.push(Node::Glue(bds, crate::boxes::Attr::NONE));
                 if outer_mode == Mode::Vertical {
                     self.page_list = page;
                     self.saved_lists.push((
@@ -890,7 +890,7 @@ impl Engine {
             let (mut r0, migrated) = crate::boxes::hpack_migrate(fh, None, HBOX, &self.eqtb);
             let first_is_glue = matches!(
                 &r0.node,
-                Node::Box { list, .. } if matches!(list.first(), Some(Node::Glue(_)))
+                Node::Box { list, .. } if matches!(list.first(), Some(Node::Glue(_, _)))
             );
             let mut w = self.box_w(&r0.node) as i64;
             // the tag (text style, natural width); e = its width, e=0 means
@@ -1002,7 +1002,7 @@ impl Engine {
             // user-set \belowdisplayskip=0pt still appends a (zero) glue
             // node — only the "tag on its own line" case clears g2.
             let mut g2 = Some(below);
-            page.push(Node::Penalty(pre));
+            page.push(Node::Penalty(pre, crate::boxes::Attr::NONE));
             if leqno && e == 0 {
                 // \leqno with the tag on its own line ABOVE the formula:
                 // tex.web append_to_vlist gives the tag box ordinary interline
@@ -1014,21 +1014,21 @@ impl Engine {
                         _ => (0, 0),
                     };
                     if let Some(g) = ilg(self.prev_depth, th) {
-                        page.push(Node::Glue(g));
+                        page.push(Node::Glue(g, crate::boxes::Attr::NONE));
                     }
                     page.push(ab);
                     self.prev_depth = td as i32;
-                    page.push(Node::Penalty(crate::scaled::INF_PENALTY));
+                    page.push(Node::Penalty(crate::scaled::INF_PENALTY, crate::boxes::Attr::NONE));
                 }
             } else {
-                page.push(Node::Glue(above));
+                page.push(Node::Glue(above, crate::boxes::Attr::NONE));
             }
             // the display line itself (§22592): with a tag, b becomes
             // [formula, kern z-w-e-d, tag] (or reversed for \leqno)
             let mut line = r0.node;
             if e != 0 {
                 let ab = a.take().unwrap();
-                let kern = Node::ExplicitKern((z - w - e - d) as i32);
+                let kern = Node::ExplicitKern((z - w - e - d) as i32, crate::boxes::Attr::NONE);
                 let (seq, nd) = if leqno {
                     (vec![ab, kern, line], 0i64)
                 } else {
@@ -1048,7 +1048,7 @@ impl Engine {
                 _ => (0, 0),
             };
             if let Some(g) = ilg(self.prev_depth, lh) {
-                page.push(Node::Glue(g));
+                page.push(Node::Glue(g, crate::boxes::Attr::NONE));
             }
             page.push(line);
             self.prev_depth = ld as i32;
@@ -1057,7 +1057,7 @@ impl Engine {
             if e == 0 && !leqno {
                 if let Some(ab) = a.take() {
                     let aw = self.box_w(&ab) as i64;
-                    page.push(Node::Penalty(crate::scaled::INF_PENALTY));
+                    page.push(Node::Penalty(crate::scaled::INF_PENALTY, crate::boxes::Attr::NONE));
                     let ab = self.app_display(lr_box.as_ref(), ab, z - aw, z, s, x);
                     let (th, td) = match &ab {
                         Node::Box { h, d, .. } => (*h as i64, *d as i64),
@@ -1067,7 +1067,7 @@ impl Engine {
                     // ordinary interline glue from the display's depth first,
                     // then prev_depth := tag box's depth.
                     if let Some(g) = ilg(self.prev_depth, th) {
-                        page.push(Node::Glue(g));
+                        page.push(Node::Glue(g, crate::boxes::Attr::NONE));
                     }
                     page.push(ab);
                     self.prev_depth = td as i32;
@@ -1082,9 +1082,9 @@ impl Engine {
             // \postdisplaypenalty. No interline glue, no prev_depth change:
             // these nodes are appended raw to the tail.
             page.extend(migrated);
-            page.push(Node::Penalty(post));
+            page.push(Node::Penalty(post, crate::boxes::Attr::NONE));
             if let Some(g) = g2 {
-                page.push(Node::Glue(g));
+                page.push(Node::Glue(g, crate::boxes::Attr::NONE));
             }
             if outer_mode == Mode::Vertical {
                 self.page_list = page;
@@ -1277,7 +1277,7 @@ impl Engine {
             fam,
             c: u32::from(c),
             class,
-            origin,
+            origin, attr: crate::boxes::Attr::NONE,
         });
     }
 
@@ -1377,7 +1377,7 @@ impl Engine {
             self.append_mlist_node(Node::Scripts {
                 nucleus: Vec::new(),
                 sup: None,
-                sub: None,
+                sub: None, attr: crate::boxes::Attr::NONE,
             });
         }
         self.show.scan_owner = Some(ScanKind::Script { sup, limits: limits_req });
@@ -1409,7 +1409,7 @@ impl Engine {
                 Some(Node::Scripts {
                     nucleus: choice_nodes,
                     sup: None,
-                    sub: None,
+                    sub: None, attr: crate::boxes::Attr::NONE,
                 })
             } else {
                 l.pop()
@@ -1423,15 +1423,14 @@ impl Engine {
             None => Node::Scripts {
                 nucleus: Vec::new(),
                 sup: None,
-                sub: None,
+                sub: None, attr: crate::boxes::Attr::NONE,
             },
         };
         match top {
             Node::Scripts {
                 mut nucleus,
                 sup: s,
-                sub: x,
-            } => {
+                sub: x, .. } => {
                 // a `\mathop{...}` group atom is stored as a null-MathChar-
                 // prefixed Scripts node. tex.web keeps the limits subtype ON
                 // THE NOAD, so a later second script must see the first
@@ -1491,7 +1490,7 @@ impl Engine {
                                 fam: 255,
                                 c: 1,
                                 class: CL_OP,
-                                origin: MathDiagnosticOrigin::default(),
+                                origin: MathDiagnosticOrigin::default(), attr: crate::boxes::Attr::NONE,
                             },
                         );
                     }
@@ -1503,7 +1502,7 @@ impl Engine {
                     self.append_mlist_node(Node::OpLimits {
                         op: nucleus,
                         above: na,
-                        below: nb,
+                        below: nb, attr: crate::boxes::Attr::NONE,
                     });
                 } else {
                     let (ns, nx) = if sup {
@@ -1514,15 +1513,14 @@ impl Engine {
                     self.append_mlist_node(Node::Scripts {
                         nucleus,
                         sup: ns,
-                        sub: nx,
+                        sub: nx, attr: crate::boxes::Attr::NONE,
                     });
                 }
             }
             Node::OpLimits {
                 mut op,
                 above,
-                below,
-            } => {
+                below, .. } => {
                 // tex.web math_limit_switch writes subtype(tail) whenever the
                 // tail noad is an op_noad — including between the noad's two
                 // scripts. Re-record the request on the noad's marker.
@@ -1537,7 +1535,7 @@ impl Engine {
                 self.append_mlist_node(Node::OpLimits {
                     op,
                     above: na,
-                    below: nb,
+                    below: nb, attr: crate::boxes::Attr::NONE,
                 });
             }
             atom => {
@@ -1567,20 +1565,20 @@ impl Engine {
                                 fam: 255,
                                 c: 1,
                                 class: CL_OP,
-                                origin: MathDiagnosticOrigin::default(),
+                                origin: MathDiagnosticOrigin::default(), attr: crate::boxes::Attr::NONE,
                             },
                         );
                     }
                     self.append_mlist_node(Node::OpLimits {
                         op,
                         above: sup_g,
-                        below: sub_g,
+                        below: sub_g, attr: crate::boxes::Attr::NONE,
                     });
                 } else {
                     self.append_mlist_node(Node::Scripts {
                         nucleus: vec![atom],
                         sup: sup_g,
-                        sub: sub_g,
+                        sub: sub_g, attr: crate::boxes::Attr::NONE,
                     });
                 }
             }
@@ -1611,11 +1609,10 @@ impl Engine {
             Node::Scripts {
                 mut nucleus,
                 sup,
-                sub,
-            } => {
+                sub, .. } => {
                 let head_op = matches!(nucleus.first(), Some(Node::MathChar { class: CL_OP, .. }));
                 if !head_op {
-                    *tail = Node::Scripts { nucleus, sup, sub };
+                    *tail = Node::Scripts { nucleus, sup, sub, attr: crate::boxes::Attr::NONE };
                     return;
                 }
                 if st == 2 {
@@ -1632,7 +1629,7 @@ impl Engine {
                     {
                         *c = 2;
                     }
-                    *tail = Node::Scripts { nucleus, sup, sub };
+                    *tail = Node::Scripts { nucleus, sup, sub, attr: crate::boxes::Attr::NONE };
                     return;
                 }
                 set_limits_subtype(&mut nucleus, st);
@@ -1640,19 +1637,18 @@ impl Engine {
                     *tail = Node::OpLimits {
                         op: nucleus,
                         above: sup,
-                        below: sub,
+                        below: sub, attr: crate::boxes::Attr::NONE,
                     };
                 } else {
-                    *tail = Node::Scripts { nucleus, sup, sub };
+                    *tail = Node::Scripts { nucleus, sup, sub, attr: crate::boxes::Attr::NONE };
                 }
             }
             Node::OpLimits {
                 mut op,
                 above,
-                below,
-            } => {
+                below, .. } => {
                 set_limits_subtype(&mut op, st);
-                *tail = Node::OpLimits { op, above, below };
+                *tail = Node::OpLimits { op, above, below, attr: crate::boxes::Attr::NONE };
             }
             // (removed stale duplicate comment)
             // a bare op char with no scripts: wrap it in the op-noad shape
@@ -1663,19 +1659,18 @@ impl Engine {
                 fam,
                 c,
                 class: CL_OP,
-                origin,
-            } => {
+                origin, .. } => {
                 let mut op = vec![Node::MathChar {
                     fam,
                     c,
                     class: CL_OP,
-                    origin,
+                    origin, attr: crate::boxes::Attr::NONE,
                 }];
                 set_limits_subtype(&mut op, st);
                 *tail = Node::OpLimits {
                     op,
                     above: None,
-                    below: None,
+                    below: None, attr: crate::boxes::Attr::NONE,
                 };
             }
             other => *tail = other,
@@ -1783,7 +1778,7 @@ impl Engine {
             fam,
             c,
             body: group,
-            origin,
+            origin, attr: crate::boxes::Attr::NONE,
         });
     }
 
@@ -1800,7 +1795,7 @@ impl Engine {
             body: group,
             left_delim: None,
             thickness: pack_radical_delim(delim),
-            origin,
+            origin, attr: crate::boxes::Attr::NONE,
         });
     }
     pub fn do_math_class(&mut self, class: u8) {
@@ -1811,7 +1806,7 @@ impl Engine {
                 fam: 255,
                 c: 0,
                 class,
-                origin: MathDiagnosticOrigin::default(),
+                origin: MathDiagnosticOrigin::default(), attr: crate::boxes::Attr::NONE,
             }
         } else if field.len() == 1 {
             match field.into_iter().next().unwrap() {
@@ -1819,12 +1814,11 @@ impl Engine {
                     fam,
                     c,
                     class: char_class,
-                    origin,
-                } if char_class == CL_ORD => Node::MathChar {
+                    origin, .. } if char_class == CL_ORD => Node::MathChar {
                     fam,
                     c,
                     class,
-                    origin,
+                    origin, attr: crate::boxes::Attr::NONE,
                 },
                 other => {
                     let nuc = vec![
@@ -1834,14 +1828,14 @@ impl Engine {
                             class,
                             // a group around one non-ord noad (`\mathop{\sum}`): its
                             // nucleus is a sub-mlist, not the noad's own character
-                            origin: MathDiagnosticOrigin { id: u64::MAX },
+                            origin: MathDiagnosticOrigin { id: u64::MAX }, attr: crate::boxes::Attr::NONE,
                         },
                         other,
                     ];
                     Node::Scripts {
                         nucleus: nuc,
                         sup: None,
-                        sub: None,
+                        sub: None, attr: crate::boxes::Attr::NONE,
                     }
                 }
             }
@@ -1859,13 +1853,13 @@ impl Engine {
                 fam: 255,
                 c: 0,
                 class,
-                origin: MathDiagnosticOrigin::default(),
+                origin: MathDiagnosticOrigin::default(), attr: crate::boxes::Attr::NONE,
             }];
             nuc.extend(field);
             Node::Scripts {
                 nucleus: nuc,
                 sup: None,
-                sub: None,
+                sub: None, attr: crate::boxes::Attr::NONE,
             }
         };
         self.append_mlist_node(node);
@@ -1887,18 +1881,18 @@ impl Engine {
         let rule = Node::Rule {
             width: w,
             height: rt,
-            depth: 0,
+            depth: 0, attr: crate::boxes::Attr::NONE,
         };
         let mut vlist = Vec::new();
         if under {
             vlist.push(packed);
-            vlist.push(Node::Kern(kern));
+            vlist.push(Node::Kern(kern, crate::boxes::Attr::NONE));
             vlist.push(rule);
         } else {
             // tex.web overbar: an extra rule-thickness kern above the rule.
-            vlist.push(Node::Kern(rt));
+            vlist.push(Node::Kern(rt, crate::boxes::Attr::NONE));
             vlist.push(rule);
-            vlist.push(Node::Kern(kern));
+            vlist.push(Node::Kern(kern, crate::boxes::Attr::NONE));
             vlist.push(packed);
         }
         let mut vb = vpack(vlist, None, VBOX, &self.eqtb).node;
@@ -1914,7 +1908,7 @@ impl Engine {
         self.append_mlist_node(Node::Overline {
             body: group,
             under,
-            packed: Box::new(vb),
+            packed: Box::new(vb), attr: crate::boxes::Attr::NONE,
         });
     }
 
@@ -2067,7 +2061,7 @@ impl Engine {
             thickness,
             left,
             right,
-            origin,
+            origin, attr: crate::boxes::Attr::NONE,
         });
     }
 
@@ -2274,7 +2268,7 @@ impl Engine {
             self.math_style_stack.push(math_style_of(branch * 2));
             let body = self.scan_math_group_or_token();
             self.math_style_stack.pop();
-            self.append_mlist_node(Node::ChoiceAlt { body });
+            self.append_mlist_node(Node::ChoiceAlt { body, attr: crate::boxes::Attr::NONE });
         }
     }
 
@@ -2299,10 +2293,10 @@ impl Engine {
             fam: 255,
             c: 0,
             class: CL_ORD,
-            origin: MathDiagnosticOrigin::default(),
+            origin: MathDiagnosticOrigin::default(), attr: crate::boxes::Attr::NONE,
         });
         nucleus.extend(inner);
-        self.append_mlist_node(Node::Scripts { nucleus, sup: None, sub: None });
+        self.append_mlist_node(Node::Scripts { nucleus, sup: None, sub: None, attr: crate::boxes::Attr::NONE });
     }
 
     /// 1mu = quad of family 2 at the current math size / 18 (tex.web §767).
@@ -2403,7 +2397,7 @@ impl Engine {
                 i += 1;
                 continue;
             }
-            if let Node::Style(s) = &nodes[i] {
+            if let Node::Style(s, _) = &nodes[i] {
                 style = gstyle_of(*s);
                 i += 1;
                 continue;
@@ -2484,7 +2478,7 @@ impl Engine {
                     break;
                 };
                 if let Some(kern) = kern {
-                    nodes.insert(i + 1, Node::Kern(kern));
+                    nodes.insert(i + 1, Node::Kern(kern, crate::boxes::Attr::NONE));
                     math_text.insert(i + 1, false);
                     break;
                 }
@@ -2499,7 +2493,7 @@ impl Engine {
                                 fam: q_fam,
                                 c: u32::from(replacement),
                                 class: CL_ORD,
-                                origin: MathDiagnosticOrigin::default(),
+                                origin: MathDiagnosticOrigin::default(), attr: crate::boxes::Attr::NONE,
                             },
                         );
                         math_text.insert(i + 1, op == 11);
@@ -2513,7 +2507,7 @@ impl Engine {
                                 Node::Scripts { nucleus, .. } => nucleus,
                                 q => vec![q],
                             };
-                            nodes[i] = Node::Scripts { nucleus, sup, sub };
+                            nodes[i] = Node::Scripts { nucleus, sup, sub, attr: crate::boxes::Attr::NONE };
                         }
                     }
                 }
@@ -2618,7 +2612,7 @@ impl Engine {
         let mut i = 0usize;
         while i < list.len() {
             let n = &list[i];
-            if let Node::Style(s) = n {
+            if let Node::Style(s, _) = n {
                 if let Some((_, _, buf)) = lr_open.as_mut() {
                     buf.push(n.clone());
                 } else {
@@ -2634,8 +2628,7 @@ impl Engine {
                     size: 0,
                     small,
                     large,
-                    origin,
-                } = n
+                    origin, .. } = n
                 {
                     if let Some((_, _, buf)) = lr_open.as_mut() {
                         buf.push(n.clone());
@@ -2655,15 +2648,13 @@ impl Engine {
                         size: 1,
                         small,
                         large,
-                        origin,
-                    } => Some((*small, *large, None, None, origin)),
-                    Node::Scripts { nucleus, sup, sub } => match nucleus.as_slice() {
+                        origin, .. } => Some((*small, *large, None, None, origin)),
+                    Node::Scripts { nucleus, sup, sub, .. } => match nucleus.as_slice() {
                         [Node::DelimBox {
                             size: 1,
                             small,
                             large,
-                            origin,
-                        }] => Some((
+                            origin, .. }] => Some((
                             *small,
                             *large,
                             Some((sup.as_deref(), sub.as_deref())),
@@ -2672,13 +2663,12 @@ impl Engine {
                         )),
                         _ => None,
                     },
-                    Node::OpLimits { op, above, below } => match op.as_slice() {
+                    Node::OpLimits { op, above, below, .. } => match op.as_slice() {
                         [Node::DelimBox {
                             size: 1,
                             small,
                             large,
-                            origin,
-                        }] => Some((
+                            origin, .. }] => Some((
                             *small,
                             *large,
                             None,
@@ -2764,11 +2754,11 @@ impl Engine {
                     if let Some(pv) = pval.filter(|&pv| pv < 10000) {
                         let suppress = match list.get(i + 1) {
                             None => true,
-                            Some(Node::Penalty(_)) => true,
+                            Some(Node::Penalty(_, _)) => true,
                             Some(nn) => self.atom_class(nn) == Some(CL_REL),
                         };
                         if !suppress {
-                            out.push(Node::Penalty(pv));
+                            out.push(Node::Penalty(pv, crate::boxes::Attr::NONE));
                         }
                     }
                 }
@@ -2798,11 +2788,11 @@ impl Engine {
                     && matches!(
                         list.get(i + 1),
                         Some(
-                            Node::Glue(_)
-                                | Node::MuGlue(_)
-                                | Node::Kern(_)
-                                | Node::ExplicitKern(_)
-                                | Node::MathKern(_, _)
+                            Node::Glue(_, _)
+                                | Node::MuGlue(_, _)
+                                | Node::Kern(_, _)
+                                | Node::ExplicitKern(_, _)
+                                | Node::MathKern(_, _, _)
                         )
                     )
                 {
@@ -2813,7 +2803,7 @@ impl Engine {
                 continue;
             }
             let converted = match n {
-                Node::MuGlue(g) => {
+                Node::MuGlue(g, _) => {
                     let mu = self.mu_unit(style) as i64;
                     let conv = |v: i32| (v as i64 * mu / 65536) as i32;
                     Node::Glue(Glue::spec(
@@ -2822,10 +2812,10 @@ impl Engine {
                         g.stretch_order,
                         conv(g.shrink),
                         g.shrink_order,
-                    ))
+                    ), crate::boxes::Attr::NONE)
                 }
-                Node::MathKern(k, 0) => {
-                    Node::Kern((*k as i64 * self.mu_unit(style) as i64 / 65536) as i32)
+                Node::MathKern(k, 0, _) => {
+                    Node::Kern((*k as i64 * self.mu_unit(style) as i64 / 65536) as i32, crate::boxes::Attr::NONE)
                 }
                 _ => n.clone(),
             };
@@ -2914,7 +2904,7 @@ impl Engine {
                 p.shrink_order,
             )
         };
-        out.push(Node::Glue(g));
+        out.push(Node::Glue(g, crate::boxes::Attr::NONE));
     }
 
     fn run_math_token(&mut self, t: Token) {
@@ -2946,8 +2936,7 @@ impl Engine {
                 fam,
                 c,
                 class,
-                origin,
-            } => {
+                origin, .. } => {
                 if *fam == 255 {
                     vec![]
                 } else if *class == CL_OP {
@@ -2967,17 +2956,17 @@ impl Engine {
                     if !self.math_font_has_character_or_warn(fid, byte, origin) {
                         return Vec::new();
                     }
-                    let mut out = vec![Node::Char { c: byte, font: fid }];
+                    let mut out = vec![Node::Char { c: byte, font: fid, attr: crate::boxes::Attr::NONE }];
                     if let Some(f) = self.eqtb.fonts.get(fid as usize) {
                         let ic = f.char_italic(byte);
                         if ic != 0 && !(math_text_char && f.space() != 0) {
-                            out.push(Node::Kern(ic));
+                            out.push(Node::Kern(ic, crate::boxes::Attr::NONE));
                         }
                     }
                     out
                 }
             }
-            Node::Scripts { nucleus, sup, sub } => {
+            Node::Scripts { nucleus, sup, sub, .. } => {
                 // TeX make_math_accent: scripts on a single-character accent
                 // attach to the character, not the taller accent box. Ordinary
                 // groups containing a lone accent preserve that noad identity.
@@ -2997,7 +2986,7 @@ impl Engine {
                 }
                 self.make_scripts(nucleus, sup.as_deref(), sub.as_deref(), style)
             }
-            Node::OpLimits { op, above, below } => {
+            Node::OpLimits { op, above, below, .. } => {
                 // fam-255 CL_OP marker = tex.web noad subtype (append_script):
                 // 1=limits forces the above/below construction in every
                 // style, 2=no_limits pins side scripts even in display,
@@ -3036,8 +3025,7 @@ impl Engine {
                 thickness,
                 left,
                 right,
-                origin,
-            } => self.make_fraction(num, den, *thickness, (*left, *right), style, origin),
+                origin, .. } => self.make_fraction(num, den, *thickness, (*left, *right), style, origin),
             Node::Radical {
                 body,
                 thickness,
@@ -3048,14 +3036,12 @@ impl Engine {
                 fam,
                 c,
                 body,
-                origin,
-            } => self.make_accent((*fam, *c), body, style, None, None, origin),
+                origin, .. } => self.make_accent((*fam, *c), body, style, None, None, origin),
             Node::DelimBox {
                 small,
                 large,
                 size,
-                origin,
-            } => {
+                origin, .. } => {
                 // plain delimiter atom (size 2); 3 is e-TeX \middle delimiter; 0/1 only reach here as strays
                 let code = delim_code_of(*small, *large);
                 let target_size = if *size == 3 {
@@ -3068,7 +3054,7 @@ impl Engine {
                 };
                 let mut out = self.var_delimiter(code, target_size, style, origin);
                 if out.is_empty() {
-                    out.push(Node::Kern(0));
+                    out.push(Node::Kern(0, crate::boxes::Attr::NONE));
                 }
                 out
             }
@@ -3110,10 +3096,10 @@ impl Engine {
     ) -> (Node, i32) {
         let fid = self.eqtb.style_fonts[font_size(style)][fam as usize];
         if !self.math_font_has_character_or_warn(fid, c, origin) {
-            return (Node::Kern(0), 0);
+            return (Node::Kern(0, crate::boxes::Attr::NONE), 0);
         }
         let Some(f) = self.eqtb.fonts.get(fid as usize).cloned() else {
-            return (Node::Kern(0), 0);
+            return (Node::Kern(0, crate::boxes::Attr::NONE), 0);
         };
         let mut c = c;
         if style < 2 {
@@ -3127,7 +3113,7 @@ impl Engine {
             }
         }
         let delta = f.char_italic(c);
-        let mut b = hpack(vec![Node::Char { c, font: fid }], None, HBOX, &self.eqtb).node;
+        let mut b = hpack(vec![Node::Char { c, font: fid, attr: crate::boxes::Attr::NONE }], None, HBOX, &self.eqtb).node;
         if let Node::Box { w, h, d, shift, .. } = &mut b {
             *w += delta;
             *shift = (*h - *d) / 2 - self.axis_height(style);
@@ -3147,8 +3133,7 @@ impl Engine {
                 fam,
                 c,
                 class,
-                origin,
-            }] if *class == CL_OP => {
+                origin, .. }] if *class == CL_OP => {
                 if *fam == 255 {
                     (hpack(Vec::new(), None, HBOX, &self.eqtb).node, 0)
                 } else {
@@ -3159,8 +3144,7 @@ impl Engine {
                 small,
                 large,
                 size: 2,
-                origin,
-            }] => {
+                origin, .. }] => {
                 let code = delim_code_of(*small, *large);
                 let mut out = self.var_delimiter(code, 0, style, origin);
                 if out.len() == 1 {
@@ -3191,7 +3175,7 @@ impl Engine {
             hpack(nodes, None, HBOX, &self.eqtb).node
         };
         if let Node::Box { list, .. } = &mut x {
-            if matches!(list.as_slice(), [Node::Char { .. }, Node::Kern(_)]) {
+            if matches!(list.as_slice(), [Node::Char { .. }, Node::Kern(_, _)]) {
                 list.pop();
             }
         }
@@ -3219,8 +3203,7 @@ impl Engine {
                 fam,
                 c,
                 class,
-                origin,
-            }] if *class != CL_OP => {
+                origin, .. }] if *class != CL_OP => {
                 if *fam == 255 {
                     // fam255 prefix marker: the nucleus is the REST of the
                     // list (a group). tex.web treats a brace-group nucleus as
@@ -3244,9 +3227,9 @@ impl Engine {
                     if self.math_font_has_character_or_warn(fid, byte, origin) {
                         let f = self.eqtb.fonts[fid as usize].clone();
                         let ic = f.char_italic(byte);
-                        let mut core: NodeList = vec![Node::Char { c: byte, font: fid }];
+                        let mut core: NodeList = vec![Node::Char { c: byte, font: fid, attr: crate::boxes::Attr::NONE }];
                         if sub.is_none() && ic != 0 {
-                            core.push(Node::Kern(ic));
+                            core.push(Node::Kern(ic, crate::boxes::Attr::NONE));
                             delta = 0;
                         } else {
                             delta = ic;
@@ -3270,9 +3253,9 @@ impl Engine {
                 if self.math_font_has_character_or_warn(fid, *c, origin) {
                     let f = self.eqtb.fonts[fid as usize].clone();
                     let ic = f.char_italic(*c);
-                    let mut core = vec![Node::Char { c: *c, font: fid }];
+                    let mut core = vec![Node::Char { c: *c, font: fid, attr: crate::boxes::Attr::NONE }];
                     if sub.is_none() && ic != 0 {
-                        core.push(Node::Kern(ic));
+                        core.push(Node::Kern(ic, crate::boxes::Attr::NONE));
                     } else {
                         delta = ic;
                     }
@@ -3286,8 +3269,7 @@ impl Engine {
                 fam,
                 c,
                 class,
-                origin,
-            }] if *class == CL_OP => {
+                origin, .. }] if *class == CL_OP => {
                 if *fam == 255 {
                     nuc = hpack(Vec::new(), None, HBOX, &self.eqtb).node;
                 } else {
@@ -3390,7 +3372,7 @@ impl Engine {
                     *shift = delta; // superscript offset (tex.web §746)
                 }
                 let mut vlist: NodeList = vec![sbs];
-                vlist.push(Node::Kern(k));
+                vlist.push(Node::Kern(k, crate::boxes::Attr::NONE));
                 vlist.push(bb);
                 let mut v = vpack(vlist, None, VBOX, &self.eqtb).node;
                 if let Node::Box { shift, .. } = &mut v {
@@ -3469,13 +3451,13 @@ impl Engine {
             if su < sp1 {
                 su = sp1;
             }
-            vlist.push(Node::Kern(sp5));
+            vlist.push(Node::Kern(sp5, crate::boxes::Attr::NONE));
             let mut bc = self.center_to_w(b.clone(), w);
             if let Node::Box { shift, .. } = &mut bc {
                 *shift = half_i(delta); // limits skewed by half the italic
             }
             vlist.push(bc);
-            vlist.push(Node::Kern(su));
+            vlist.push(Node::Kern(su, crate::boxes::Attr::NONE));
         }
         let op_centered = self.center_to_w(op_box, w);
         vlist.push(op_centered);
@@ -3485,13 +3467,13 @@ impl Engine {
             if sd < sp2 {
                 sd = sp2;
             }
-            vlist.push(Node::Kern(sd));
+            vlist.push(Node::Kern(sd, crate::boxes::Attr::NONE));
             let mut bc = self.center_to_w(b.clone(), w);
             if let Node::Box { shift, .. } = &mut bc {
                 *shift = -half_i(delta);
             }
             vlist.push(bc);
-            vlist.push(Node::Kern(sp5));
+            vlist.push(Node::Kern(sp5, crate::boxes::Attr::NONE));
         }
         let mut packed = vpack(vlist, None, VBOX, &self.eqtb).node;
         // declared dims (tex.web): the op's baseline is the box baseline
@@ -3535,22 +3517,22 @@ impl Engine {
                 crate::boxes::GLUE_FIL,
                 ONE,
                 crate::boxes::GLUE_FIL,
-            ))
+            ), crate::boxes::Attr::NONE)
         };
         hpack(vec![ss(), b, ss()], Some(w), HBOX, &self.eqtb).node
     }
     fn box_w(&self, n: &Node) -> i32 {
         match n {
             Node::Box { w, .. } => *w,
-            Node::Char { c, font } => self
+            Node::Char { c, font, .. } => self
                 .eqtb
                 .fonts
                 .get(*font as usize)
                 .map(|f| f.char_width(*c))
                 .unwrap_or(0),
             Node::Rule { width, .. } => *width,
-            Node::Kern(k) => *k,
-            Node::Glue(g) => g.width,
+            Node::Kern(k, _) => *k,
+            Node::Glue(g, _) => g.width,
             _ => 0,
         }
     }
@@ -3614,7 +3596,7 @@ impl Engine {
                 su += delta;
                 sd += delta;
             }
-            vlist = vec![num_c, Node::Kern((su - nd) - (dh - sd)), den_c];
+            vlist = vec![num_c, Node::Kern((su - nd) - (dh - sd), crate::boxes::Attr::NONE), den_c];
         } else {
             // tex.web §746: the clearance is measured from the axis with the
             // fraction's OWN rule thickness (3x in display style)
@@ -3630,13 +3612,13 @@ impl Engine {
             }
             vlist = vec![
                 num_c,
-                Node::Kern((su - nd) - (axis + dr)),
+                Node::Kern((su - nd) - (axis + dr), crate::boxes::Attr::NONE),
                 Node::Rule {
                     width: w,
                     height: r,
-                    depth: 0,
+                    depth: 0, attr: crate::boxes::Attr::NONE,
                 },
-                Node::Kern((axis - dr) - (dh - sd)),
+                Node::Kern((axis - dr) - (dh - sd), crate::boxes::Attr::NONE),
                 den_c,
             ];
         }
@@ -3713,13 +3695,13 @@ impl Engine {
         }
         // overbar(b, k=clr, t=surd height): [kern(t), rule(t), kern(clr), body]
         let vlist = vec![
-            Node::Kern(dh),
+            Node::Kern(dh, crate::boxes::Attr::NONE),
             Node::Rule {
                 width: xw,
                 height: dh,
-                depth: 0,
+                depth: 0, attr: crate::boxes::Attr::NONE,
             },
-            Node::Kern(clr),
+            Node::Kern(clr, crate::boxes::Attr::NONE),
             x,
         ];
         let v = vpack(vlist, None, VBOX, &self.eqtb).node;
@@ -3768,7 +3750,7 @@ impl Engine {
                     0
                 }
             }
-            [Node::Char { c, font }] => {
+            [Node::Char { c, font, .. }] => {
                 if let Some(f) = self.eqtb.fonts.get(*font as usize) {
                     let sk = self.skew_char_of(*font, f);
                     if sk >= 0 && sk <= 255 {
@@ -3829,7 +3811,7 @@ impl Engine {
             body_box
         };
         let mut acc_box = hpack(
-            vec![Node::Char { c: ac, font: afid }],
+            vec![Node::Char { c: ac, font: afid, attr: crate::boxes::Attr::NONE }],
             None,
             HBOX,
             &self.eqtb,
@@ -3842,7 +3824,7 @@ impl Engine {
             *shift = s + half_i(bw - (aw + af.char_italic(ac)));
         }
         let mut v = vpack(
-            vec![acc_box, Node::Kern(-delta), x_box],
+            vec![acc_box, Node::Kern(-delta, crate::boxes::Attr::NONE), x_box],
             None,
             VBOX,
             &self.eqtb,
@@ -3854,7 +3836,7 @@ impl Engine {
         let (_, vh, _) = box_dims(&v);
         if vh < bh {
             if let Node::Box { list, h, .. } = &mut v {
-                list.insert(0, Node::Kern(bh - vh));
+                list.insert(0, Node::Kern(bh - vh, crate::boxes::Attr::NONE));
                 *h = bh;
             }
         }
@@ -3925,7 +3907,7 @@ impl Engine {
             .get(fid as usize)
             .map(|f| f.char_italic(c))
             .unwrap_or(0);
-        let mut b = hpack(vec![Node::Char { c, font: fid }], None, HBOX, &self.eqtb).node;
+        let mut b = hpack(vec![Node::Char { c, font: fid, attr: crate::boxes::Attr::NONE }], None, HBOX, &self.eqtb).node;
         if let Node::Box { w, h, d, shift, .. } = &mut b {
             *w += it;
             *shift = (*h - *d) / 2 - self.axis_height(style);
@@ -4056,7 +4038,7 @@ impl Engine {
                 return None;
             }
             let n = hpack(
-                vec![Node::Char { c: ch, font: fid }],
+                vec![Node::Char { c: ch, font: fid, attr: crate::boxes::Attr::NONE }],
                 None,
                 HBOX,
                 &self.eqtb,
@@ -4174,8 +4156,7 @@ fn accent_noad_of(nucleus: &[Node]) -> Option<((u8, u8), &[Node], &MathDiagnosti
             fam,
             c,
             body,
-            origin,
-        } => Some(((*fam, *c), body, origin)),
+            origin, .. } => Some(((*fam, *c), body, origin)),
         _ => None,
     }
 }
@@ -4288,8 +4269,8 @@ mod tests {
             // MathKern]; repack minus the on/off markers so tests see the
             // formula box
             if *kind == HBOX
-                && matches!(list.first(), Some(Node::MathKern(_, 1)))
-                && matches!(list.last(), Some(Node::MathKern(_, 2)))
+                && matches!(list.first(), Some(Node::MathKern(_, 1, _)))
+                && matches!(list.last(), Some(Node::MathKern(_, 2, _)))
             {
                 let inner: NodeList = list[1..list.len() - 1].to_vec();
                 return hpack(inner, None, HBOX, &e.eqtb).node;
@@ -4385,7 +4366,7 @@ mod tests {
         let (vlist, _, _, _, _) = box_of(&list[1]);
         assert_eq!(vlist.len(), 3, "sup, kern, sub: {:?}", vlist);
         approx(-box_shift(&vlist[0]), 0.0, "sup shift = delta(italic x)=0");
-        if let Node::Kern(k) = &vlist[1] {
+        if let Node::Kern(k, _) = &vlist[1] {
             approx(*k, 1.59991, "stack kern");
         } else {
             panic!("expected kern, got {:?}", vlist[1]);
@@ -4429,7 +4410,7 @@ mod tests {
         approx(vd, DEN2 * 10.0, "vbox d = shift_down + d(den)");
         assert_eq!(vlist.len(), 5, "num, kern, rule, kern, den: {:?}", vlist);
         approx(vw, 4.33765, "common width");
-        if let (Node::Kern(k1), Node::Rule { height, width, .. }, Node::Kern(k2)) =
+        if let (Node::Kern(k1, _), Node::Rule { height, width, .. }, Node::Kern(k2, _)) =
             (&vlist[1], &vlist[2], &vlist[3])
         {
             approx(*k1, 1.23732, "num->rule kern");
@@ -4454,7 +4435,7 @@ mod tests {
         approx(vh, su + 4.30554, "vbox h = num1 + h(a)");
         approx(vd, sd, "vbox d = denom1");
         // rule top at axis + half(r): kern1 = (su - h(a)) - (axis + r/2)
-        if let (Node::Kern(k1), Node::Kern(k2)) = (&vlist[1], &vlist[3]) {
+        if let (Node::Kern(k1, _), Node::Kern(k2, _)) = (&vlist[1], &vlist[3]) {
             let r = RT * 10.0;
             let axis = AXIS * 10.0;
             approx(*k1, su - 0.0 - (axis + r / 2.0), "display kern1");
@@ -4475,7 +4456,7 @@ mod tests {
         approx(vh, NUM3 * 10.0 + 3.01389, "vbox h = num3 + h(p)");
         approx(vd, 1.3611 + DEN2 * 10.0, "vbox d = d(p) + denom2");
         assert_eq!(vlist.len(), 3, "no rule for atop: {:?}", vlist);
-        if let Node::Kern(k) = &vlist[1] {
+        if let Node::Kern(k, _) = &vlist[1] {
             approx(*k, 3.51073, "atop stack kern");
         } else {
             panic!("expected kern: {:?}", vlist);
@@ -4500,7 +4481,7 @@ mod tests {
         let (vlist, _, vh, _, _) = box_of(&list[1]);
         approx(vh, 8.00272, "bar vbox height = t + t + clr + h(x)");
         assert_eq!(vlist.len(), 4, "kern, rule, kern, body: {:?}", vlist);
-        if let (Node::Kern(t), Node::Rule { height, .. }, Node::Kern(clr)) =
+        if let (Node::Kern(t, _), Node::Rule { height, .. }, Node::Kern(clr, _)) =
             (&vlist[0], &vlist[1], &vlist[2])
         {
             approx(*t, 0.39998, "top kern = surd height");
@@ -4557,7 +4538,7 @@ mod tests {
         approx(-box_shift(&list[0]), 7.50006, "op axis shift");
         let (vlist, _, _, _, vshift) = box_of(&list[1]);
         approx(vshift, 3.00005, "scripts vbox shift");
-        if let Node::Kern(k) = &vlist[1] {
+        if let Node::Kern(k, _) = &vlist[1] {
             approx(*k, 3.39598, "scripts stack kern");
         } else {
             panic!("expected kern: {:?}", vlist);
@@ -4833,7 +4814,7 @@ mod tests {
         let (vlist, _, _, _, _) = box_of(&list[0]);
         assert_eq!(vlist.len(), 3, "accent, kern, body: {:?}", vlist);
         approx(box_shift(&vlist[0]), 0.35764, "accent skew shift");
-        if let Node::Kern(k) = &vlist[1] {
+        if let Node::Kern(k, _) = &vlist[1] {
             approx(*k, -4.30554, "kern = -h(x)");
         } else {
             panic!("expected kern: {:?}", vlist);
@@ -4919,7 +4900,7 @@ mod tests {
         let (list, _, _, _, _) = box_of(&b);
         assert_eq!(list.len(), 5, "x, glue, +, glue, a: {:?}", list);
         for i in [1usize, 3] {
-            if let Node::Glue(g) = &list[i] {
+            if let Node::Glue(g, _) = &list[i] {
                 approx(g.width, 4.0 * (10.0 / 18.0), "medmuskip width");
                 approx(g.stretch, 2.0 * (10.0 / 18.0), "medmuskip stretch");
                 approx(g.shrink, 4.0 * (10.0 / 18.0), "medmuskip shrink");
@@ -4937,7 +4918,7 @@ mod tests {
         let (list, _, _, _, _) = box_of(&b);
         let (sup, _, _, _, _) = box_of(&list[1]);
         // sup content: y + kern(?? no: [char y, glue? none, char z])
-        let glues = sup.iter().filter(|n| matches!(n, Node::Glue(_))).count();
+        let glues = sup.iter().filter(|n| matches!(n, Node::Glue(_, _))).count();
         assert_eq!(glues, 0, "no mu glue in script style: {:?}", sup);
         let chars = sup
             .iter()
@@ -4961,7 +4942,7 @@ mod tests {
     fn leading_bin_demoted_allows_following_bin() {
         let b = text_math("-+R");
         let (list, _, _, _, _) = box_of(&b);
-        let glues = list.iter().filter(|n| matches!(n, Node::Glue(_))).count();
+        let glues = list.iter().filter(|n| matches!(n, Node::Glue(_, _))).count();
         assert_eq!(glues, 2, "medmuskip on both sides of plus: {:?}", list);
     }
 
@@ -5048,7 +5029,7 @@ mod tests {
         let glues: Vec<_> = list
             .iter()
             .filter_map(|n| match n {
-                Node::Glue(g) => Some(g.width),
+                Node::Glue(g, _) => Some(g.width),
                 _ => None,
             })
             .collect();
@@ -5098,7 +5079,7 @@ mod tests {
             glue_order: order,
             glue_set: set,
             lr: 0,
-            dir: 0,
+            dir: 0, attr: crate::boxes::Attr::NONE,
         }
     }
 
@@ -5122,16 +5103,16 @@ mod tests {
                     glue_order: 0,
                     glue_set: 0.0,
                     lr: 0,
-                    dir: 0,
+                    dir: 0, attr: crate::boxes::Attr::NONE,
                 },
-                Node::Glue(Glue::spec(su(3.33333), su(1.66666), 0, su(1.11111), 0)),
+                Node::Glue(Glue::spec(su(3.33333), su(1.66666), 0, su(1.11111), 0), crate::boxes::Attr::NONE),
                 Node::Rule {
                     width: su(1.0),
                     height: su(0.4),
-                    depth: 0,
+                    depth: 0, attr: crate::boxes::Attr::NONE,
                 },
-                Node::Kern(su(0.5)),
-                Node::Char { c: b'A', font: cmr },
+                Node::Kern(su(0.5), crate::boxes::Attr::NONE),
+                Node::Char { c: b'A', font: cmr, attr: crate::boxes::Attr::NONE },
             ],
             0,
             0,
@@ -5154,9 +5135,9 @@ mod tests {
         let mk = |sign: u8, g: Glue| {
             line_box(
                 vec![
-                    Node::Char { c: b'A', font: cmr },
-                    Node::Glue(g),
-                    Node::Char { c: b'B', font: cmr },
+                    Node::Char { c: b'A', font: cmr, attr: crate::boxes::Attr::NONE },
+                    Node::Glue(g, crate::boxes::Attr::NONE),
+                    Node::Char { c: b'B', font: cmr, attr: crate::boxes::Attr::NONE },
                 ],
                 sign,
                 0,
@@ -5180,9 +5161,9 @@ mod tests {
         let wb = e.eqtb.fonts[cmr as usize].char_width(b'B') as i64;
         let fil_line = line_box(
             vec![
-                Node::Char { c: b'A', font: cmr },
-                Node::Glue(Glue::spec(su(3.33333), su(1.66666), 0, 0, 0)),
-                Node::Char { c: b'B', font: cmr },
+                Node::Char { c: b'A', font: cmr, attr: crate::boxes::Attr::NONE },
+                Node::Glue(Glue::spec(su(3.33333), su(1.66666), 0, 0, 0), crate::boxes::Attr::NONE),
+                Node::Char { c: b'B', font: cmr, attr: crate::boxes::Attr::NONE },
             ],
             1,
             2,
@@ -5205,7 +5186,7 @@ mod tests {
                 Node::Rule {
                     width: su(1.0),
                     height: 0,
-                    depth: 0,
+                    depth: 0, attr: crate::boxes::Attr::NONE,
                 },
                 Node::Leaders {
                     glue: Glue::spec(su(2.0), su(1.0), 2, 0, 0),
@@ -5214,7 +5195,7 @@ mod tests {
                         width: su(2.0),
                         height: 0,
                         depth: 0,
-                    },
+                    }, attr: crate::boxes::Attr::NONE,
                 },
             ],
             1,
@@ -5230,7 +5211,7 @@ mod tests {
                 Node::Rule {
                     width: su(1.0),
                     height: 0,
-                    depth: 0,
+                    depth: 0, attr: crate::boxes::Attr::NONE,
                 },
                 Node::Leaders {
                     glue: Glue::spec(su(2.0), su(1.0), 2, 0, 0),
@@ -5239,7 +5220,7 @@ mod tests {
                         width: su(2.0),
                         height: 0,
                         depth: 0,
-                    },
+                    }, attr: crate::boxes::Attr::NONE,
                 },
             ],
             0,
@@ -5258,7 +5239,7 @@ mod tests {
     fn has_glue_width(e: &Engine, w: i32) -> bool {
         fn walk(ns: &[Node], w: i32) -> bool {
             ns.iter().any(|n| match n {
-                Node::Glue(g) => g.width == w,
+                Node::Glue(g, _) => g.width == w,
                 Node::Box { list, .. } => walk(list, w),
                 _ => false,
             })
@@ -5465,12 +5446,12 @@ mod tests {
         let vbox = e.eqtb.boxed[1].clone().expect("box1");
         let (lines, ..) = box_of(&vbox);
         let (line, ..) = box_of(&lines[0]);
-        let on = line.iter().position(|n| matches!(n, Node::MathKern(_, 1))).unwrap();
-        let off = line.iter().position(|n| matches!(n, Node::MathKern(_, 2))).unwrap();
+        let on = line.iter().position(|n| matches!(n, Node::MathKern(_, 1, _))).unwrap();
+        let off = line.iter().position(|n| matches!(n, Node::MathKern(_, 2, _))).unwrap();
         let pens: Vec<i32> = line[on..off]
             .iter()
             .filter_map(|n| match n {
-                Node::Penalty(p) => Some(*p),
+                Node::Penalty(p, _) => Some(*p),
                 _ => None,
             })
             .collect();

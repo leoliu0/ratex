@@ -2547,7 +2547,7 @@ mod capacity_tests {
         let mut eng = Engine::new(true);
         eng.init_primitives();
         eng.page_list
-            .resize(MAX_PAGE_LIST + 1, crate::boxes::Node::Penalty(0));
+            .resize(MAX_PAGE_LIST + 1, crate::boxes::Node::Penalty(0, crate::boxes::Attr::NONE));
         assert!(eng.capacity_exceeded());
         assert!(eng.end_occurred);
     }

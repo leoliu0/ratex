@@ -2022,17 +2022,29 @@ impl Engine {
                 ptex_underscore: int(self, IntParam::PdfPtexUseUnderscore) != 0,
             };
             let included = {
-                let font_loader = &mut self.font_loader;
-                let base14_fonts = &mut self.pdf_doc.imported_base14_fonts;
-                let next_object = &mut self.pdf_next_obj;
-                let mut resolve_type1 = |name: &str| font_loader.read_type1_dependency(name);
-                crate::pdf_images::include_pdf_page(
-                    pdf_bytes,
-                    &options,
-                    next_object,
-                    base14_fonts,
-                    &mut resolve_type1,
-                )
+                // pdftoepdf.cc find_add_document: one source per file
+                let doc = &mut self.pdf_doc;
+                let mut fonts = EngineFontLookup {
+                    loader: &mut self.font_loader,
+                    programs: &mut doc.imported_programs,
+                    replace: !fixed.inclusion_copy_font,
+                };
+                let mut host = crate::pdf_images::PdfImportHost {
+                    next_object: &mut self.pdf_next_obj,
+                    base14_fonts: &mut doc.imported_base14_fonts,
+                    fonts: &mut fonts,
+                    imported_fonts: &mut doc.imported_fonts,
+                    font_init_order: self.pdf_backend.initialized_fonts(),
+                };
+                let source = match doc.pdf_sources.entry(path.to_string_lossy().into_owned()) {
+                    std::collections::hash_map::Entry::Occupied(entry) => Ok(entry.into_mut()),
+                    std::collections::hash_map::Entry::Vacant(entry) => {
+                        crate::pdf_images::PdfSource::open(pdf_bytes).map(|source| entry.insert(source))
+                    }
+                };
+                source.and_then(|source| {
+                    crate::pdf_images::include_pdf_page(source, &options, &mut host)
+                })
             };
             let included = match included {
                 Ok(included) => included,
@@ -2459,6 +2471,47 @@ fn group_kind_name(kind: LevelType) -> &'static str {
 
 fn id_cs_is(e: &Engine, id: CsId, name: &[u8]) -> bool {
     e.cs.lookup(name) == Some(id)
+}
+
+/// The font map and font programs an included PDF's fonts are looked up
+/// in (`\pdfinclusioncopyfonts` = 0 replaces them by the map's programs).
+struct EngineFontLookup<'a> {
+    loader: &'a mut crate::fontload::FontLoader,
+    /// Parsed replacement programs by file name (None: file not found).
+    programs: &'a mut std::collections::HashMap<String, Option<std::rc::Rc<crate::pdffile::Type1Source>>>,
+    replace: bool,
+}
+
+impl crate::pdf_images::FontLookup for EngineFontLookup<'_> {
+    fn replacement(&mut self, ps_name: &str) -> Option<crate::pdf_images::FontReplacement> {
+        if !self.replace {
+            return None;
+        }
+        self.loader.ensure_map();
+        let entry = self.loader.map.replacement_for(ps_name)?;
+        let ff_name = entry.pfb.clone()?;
+        if !self.programs.contains_key(&ff_name) {
+            let program = self
+                .loader
+                .read_program_bytes(&ff_name)
+                .map(|bytes| std::rc::Rc::new(crate::pdffile::Type1Source::new(&bytes)));
+            self.programs.insert(ff_name.clone(), program);
+        }
+        // mapfile.c fm_valid_for_font_replacement: the font file must exist
+        let program = self.programs[&ff_name].clone()?;
+        Some(crate::pdf_images::FontReplacement {
+            slant: entry.slant_millis(),
+            extend: entry.extend_millis(),
+            base_font: entry.fontname,
+            subsettable: !entry.full_download,
+            ff_name,
+            program,
+        })
+    }
+
+    fn type1_program(&mut self, file: &str) -> Option<Vec<u8>> {
+        self.loader.read_type1_dependency(file)
+    }
 }
 
 #[cfg(test)]

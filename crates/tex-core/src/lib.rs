@@ -32,6 +32,7 @@ pub mod native_font;
 pub mod native_layout;
 pub mod node_arena;
 pub mod page;
+mod pdf_encodings;
 pub mod pdf_fonts;
 pub mod pdf_images;
 pub mod pdf_svg;
@@ -52,6 +53,7 @@ mod texxet;
 pub mod tex_bytes;
 mod tex_print;
 pub mod token;
+mod writet1;
 
 pub use engine::Engine;
 pub use pdffile::PdfEncryptConfig;

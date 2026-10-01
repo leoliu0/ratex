@@ -1,3 +1,4 @@
+use crate::pdfout::ImportedFont;
 use flate2::read::ZlibDecoder;
 use flate2::write::ZlibEncoder;
 use flate2::Compression;
@@ -640,7 +641,8 @@ impl PdfForm {
 
     /// `pdf_write_image` + `write_epdf`: the `attr` tokens first, then the
     /// form keys. The page /Group refers to `group_object` when this image
-    /// supplies the page group, else it is copied inline.
+    /// supplies the page group, else it is copied inline. An `attr` that
+    /// defines /Group replaces the copied entry.
     pub fn write(&self, attr: Option<&str>, group_object: Option<i32>) -> Vec<u8> {
         let mut out = Vec::with_capacity(self.head.len() + self.tail.len() + 96);
         out.extend_from_slice(b"<<");
@@ -650,7 +652,8 @@ impl PdfForm {
         }
         out.extend_from_slice(b" /Type /XObject /Subtype /Form /FormType 1");
         out.extend_from_slice(&self.head);
-        if let Some((inline, _)) = &self.group {
+        let attr_group = attr.is_some_and(|attr| crate::pdffile::attr_defines_key(attr, "Group"));
+        if let Some((inline, _)) = self.group.as_ref().filter(|_| !attr_group) {
             match group_object {
                 Some(object) => write!(out, " /Group {object} 0 R").unwrap(),
                 None => {
@@ -722,18 +725,81 @@ fn clip_box(b: &mut [f64; 4], to: &[f64; 4]) {
     b[3] = b[3].clamp(to[1], to[3]);
 }
 
-/// Copies objects of an included PDF into the output, renumbering every
-/// indirect object it reaches (pdftoepdf `copyObject`/`addOther`).
-struct PdfCopier<'a> {
-    doc: &'a lopdf::Document,
+/// pdftoepdf.cc `PdfDocument`: an included PDF file, opened once, and the
+/// output object number of every indirect object copied from it so far
+/// (`inObjList`), which later inclusions of the same file share.
+pub struct PdfSource {
+    doc: lopdf::Document,
     ids: std::collections::BTreeMap<lopdf::ObjectId, i32>,
-    objects: Vec<EmbeddedImage>,
-    next: &'a mut i32,
-    base14_fonts: std::collections::BTreeMap<Vec<u8>, i32>,
-    resolve_type1: &'a mut dyn FnMut(&str) -> Option<Vec<u8>>,
 }
 
-impl PdfCopier<'_> {
+impl PdfSource {
+    /// `find_add_document`: parse the file, repairing a damaged xref table.
+    pub fn open(bytes: &[u8]) -> Result<Self, String> {
+        Ok(PdfSource { doc: load_pdf_document(bytes)?, ids: std::collections::BTreeMap::new() })
+    }
+}
+
+/// The map entry `lookup_fontmap` found for a font of an included PDF
+/// file: its Type 1 program replaces the included font.
+pub struct FontReplacement {
+    /// `fm->ff_name`.
+    pub ff_name: String,
+    /// `fm_slant`, `fm_extend`.
+    pub slant: i32,
+    pub extend: i32,
+    pub program: std::rc::Rc<crate::pdffile::Type1Source>,
+    /// `fm->ps_name`.
+    pub base_font: String,
+    /// `is_subsetable(fm)`.
+    pub subsettable: bool,
+}
+
+/// What an inclusion needs from the font machinery.
+pub trait FontLookup {
+    /// `lookup_fontmap` while `\pdfinclusioncopyfonts` is 0: the program that
+    /// replaces the included Type 1 font `ps_name`. None leaves it copied.
+    fn replacement(&mut self, ps_name: &str) -> Option<FontReplacement>;
+    /// A Type 1 program by file name (the standard fonts of a PDF that
+    /// does not embed them).
+    fn type1_program(&mut self, file: &str) -> Option<Vec<u8>>;
+}
+
+/// An inclusion that keeps every font as it is and embeds no standard font.
+pub struct NoFonts;
+
+impl FontLookup for NoFonts {
+    fn replacement(&mut self, _: &str) -> Option<FontReplacement> {
+        None
+    }
+    fn type1_program(&mut self, _: &str) -> Option<Vec<u8>> {
+        None
+    }
+}
+
+/// The output document's state an inclusion allocates objects from.
+pub struct PdfImportHost<'a> {
+    pub next_object: &'a mut i32,
+    /// Shared descriptors of the standard fonts embedded so far.
+    pub base14_fonts: &'a mut std::collections::BTreeMap<Vec<u8>, i32>,
+    pub fonts: &'a mut dyn FontLookup,
+    /// epdf.c's font descriptors, shared by every inclusion.
+    pub imported_fonts: &'a mut Vec<ImportedFont>,
+    /// Number of document fonts initialized so far.
+    pub font_init_order: usize,
+}
+
+/// Copies objects of an included PDF into the output, renumbering every
+/// indirect object it reaches (pdftoepdf `copyObject`/`addOther`).
+struct PdfCopier<'a, 'h> {
+    doc: &'a lopdf::Document,
+    ids: &'a mut std::collections::BTreeMap<lopdf::ObjectId, i32>,
+    /// The objects first copied by this inclusion.
+    objects: Vec<EmbeddedImage>,
+    host: &'a mut PdfImportHost<'h>,
+}
+
+impl PdfCopier<'_, '_> {
     fn copy(&mut self, value: &lopdf::Object, depth: usize) -> Result<lopdf::Object, String> {
         use lopdf::{Dictionary, Object};
         if depth > 256 {
@@ -744,8 +810,7 @@ impl PdfCopier<'_> {
                 let new_id = if let Some(mapped) = self.ids.get(id) {
                     *mapped
                 } else {
-                    let mapped = *self.next;
-                    *self.next = self.next.checked_add(1).ok_or("PDF object number overflow")?;
+                    let mapped = self.next_object()?;
                     self.ids.insert(*id, mapped);
                     let doc = self.doc;
                     let original = doc
@@ -816,12 +881,14 @@ impl PdfCopier<'_> {
                     .flatten()
                     .map(<[u8]>::to_vec);
                 if let Some(base_font) = base_font {
+                    let host = &mut *self.host;
+                    let fonts = &mut *host.fonts;
                     if let Some(descriptor) = embed_imported_base14_font(
                         &base_font,
-                        &mut self.base14_fonts,
+                        &mut *host.base14_fonts,
                         &mut self.objects,
-                        self.next,
-                        self.resolve_type1,
+                        &mut *host.next_object,
+                        &mut |name| fonts.type1_program(name),
                     ) {
                         copy.set(b"FontDescriptor", Object::Reference((descriptor as u32, 0)));
                     }
@@ -862,6 +929,404 @@ impl PdfCopier<'_> {
         serialize_pdf_object(&copied, out);
         Ok(())
     }
+
+    fn next_object(&mut self) -> Result<i32, String> {
+        let number = *self.host.next_object;
+        *self.host.next_object = number.checked_add(1).ok_or("PDF object number overflow")?;
+        Ok(number)
+    }
+
+    /// pdftoepdf `copyFontResources`: a page's /Font dictionary, each font
+    /// reference going through `copyFont`.
+    fn copy_font_resources(&mut self, fonts: &lopdf::Dictionary) -> Result<lopdf::Object, String> {
+        use lopdf::{Dictionary, Object};
+        let mut copy = Dictionary::new();
+        for (key, value) in fonts {
+            let font = match value {
+                Object::Reference(id) => self.copy_font(*id)?,
+                Object::Dictionary(_) => self.copy(value, 1)?,
+                other => {
+                    return Err(format!(
+                        "PDF inclusion: invalid font in reference type <{}>",
+                        xpdf_type_name(other)
+                    ))
+                }
+            };
+            copy.set(key.clone(), font);
+        }
+        Ok(Object::Dictionary(copy))
+    }
+
+    /// pdftoepdf `copyFont`: a Type 1 or Type1C font whose map entry
+    /// exists is replaced by the map's own program (fresh descriptor,
+    /// /BaseFont name object and /Encoding); any other font is copied.
+    fn copy_font(&mut self, id: lopdf::ObjectId) -> Result<lopdf::Object, String> {
+        if let Some(&mapped) = self.ids.get(&id) {
+            return Ok(lopdf::Object::Reference((mapped as u32, 0)));
+        }
+        if let Some(replaced) = self.replace_font(id)? {
+            return Ok(replaced);
+        }
+        self.copy(&lopdf::Object::Reference(id), 1)
+    }
+
+    fn replace_font(&mut self, id: lopdf::ObjectId) -> Result<Option<lopdf::Object>, String> {
+        use lopdf::{Dictionary, Object};
+        let doc = self.doc;
+        let Some(Object::Dictionary(font)) = doc.objects.get(&id) else {
+            return Ok(None);
+        };
+        if lookup(doc, font, b"Subtype").and_then(|value| value.as_name().ok()) != Some(&b"Type1"[..]) {
+            return Ok(None);
+        }
+        let Some(base_font) = lookup(doc, font, b"BaseFont").and_then(|value| value.as_name().ok())
+        else {
+            return Ok(None);
+        };
+        let Ok(&Object::Reference(desc_ref)) = font.get(b"FontDescriptor") else {
+            return Ok(None);
+        };
+        let Some(Object::Dictionary(desc)) = doc.objects.get(&desc_ref) else {
+            return Ok(None);
+        };
+        let file = match lookup(doc, desc, b"FontFile") {
+            Some(Object::Stream(stream)) => Some((stream, false)),
+            _ => match lookup(doc, desc, b"FontFile3") {
+                Some(Object::Stream(stream))
+                    if lookup(doc, &stream.dict, b"Subtype").and_then(|value| value.as_name().ok())
+                        == Some(&b"Type1C"[..]) =>
+                {
+                    Some((stream, true))
+                }
+                _ => None,
+            },
+        };
+        let Some((file, is_type1c)) = file else {
+            return Ok(None);
+        };
+        let Some(replacement) = self.host.fonts.replacement(&String::from_utf8_lossy(base_font)) else {
+            return Ok(None);
+        };
+
+        // epdf_create_fontdescriptor: one per program, slant and extension
+        let index = match self.host.imported_fonts.iter().position(|font| {
+            font.ff_name == replacement.ff_name
+                && font.slant == replacement.slant
+                && font.extend == replacement.extend
+        }) {
+            Some(index) => index,
+            None => {
+                let desc_obj = self.next_object()?;
+                let stem_v = lookup(doc, desc, b"StemV")
+                    .and_then(|value| pdf_number(doc, value))
+                    .map_or(0, zround);
+                self.host.imported_fonts.push(ImportedFont {
+                    ff_name: replacement.ff_name.clone(),
+                    slant: replacement.slant,
+                    extend: replacement.extend,
+                    program: replacement.program.clone(),
+                    base_font: replacement.base_font.clone(),
+                    subsettable: replacement.subsettable,
+                    glyphs: std::collections::BTreeSet::new(),
+                    all_glyphs: false,
+                    stem_v,
+                    desc_obj,
+                    name_obj: 0,
+                    init_order: self.host.font_init_order,
+                });
+                self.host.imported_fonts.len() - 1
+            }
+        };
+        // the glyphs the included font uses, or the whole program
+        let entry = &mut self.host.imported_fonts[index];
+        match lookup(doc, desc, b"CharSet") {
+            Some(Object::String(charset, _)) if replacement.subsettable => {
+                mark_charset_glyphs(&mut entry.glyphs, charset);
+            }
+            _ => entry.all_glyphs = true,
+        }
+        let desc_obj = entry.desc_obj;
+        self.ids.entry(desc_ref).or_insert(desc_obj);
+        let encoding_obj = self.next_object()?;
+        let font_obj = self.next_object()?;
+        self.ids.insert(id, font_obj);
+
+        // writeEncodings
+        let names = embedded_font_glyph_names(doc, font, file, is_type1c);
+        self.objects.push(EmbeddedImage { obj_num: encoding_obj, bytes: encoding_object(&names) });
+
+        // copyFontDict: everything but the descriptor, name and encoding
+        let mut copy = Dictionary::new();
+        for (key, value) in font {
+            if [&b"FontDescriptor"[..], b"BaseFont", b"Encoding"]
+                .iter()
+                .any(|prefix| key.starts_with(prefix))
+            {
+                continue;
+            }
+            copy.set(key.clone(), self.copy(value, 1)?);
+        }
+        if self.host.imported_fonts[index].name_obj == 0 {
+            let name_obj = self.next_object()?;
+            self.host.imported_fonts[index].name_obj = name_obj;
+        }
+        let name_obj = self.host.imported_fonts[index].name_obj;
+        copy.set(b"FontDescriptor", Object::Reference((desc_obj as u32, 0)));
+        copy.set(b"BaseFont", Object::Reference((name_obj as u32, 0)));
+        copy.set(b"Encoding", Object::Reference((encoding_obj as u32, 0)));
+        let mut bytes = Vec::new();
+        serialize_pdf_object(&Object::Dictionary(copy), &mut bytes);
+        self.objects.push(EmbeddedImage { obj_num: font_obj, bytes });
+        Ok(Some(Object::Reference((font_obj as u32, 0))))
+    }
+}
+
+/// xpdf `Dict::lookup`: the value of `key`, references resolved.
+fn lookup<'d>(
+    doc: &'d lopdf::Document,
+    dict: &'d lopdf::Dictionary,
+    key: &[u8],
+) -> Option<&'d lopdf::Object> {
+    doc.dereference(dict.get(key).ok()?).ok().map(|(_, value)| value)
+}
+
+/// pdfTeX `zround`: round half away from zero, clamped to C `integer`.
+fn zround(value: f64) -> i32 {
+    if value > 2_147_483_647.0 {
+        i32::MAX
+    } else if value < -2_147_483_647.0 {
+        -i32::MAX
+    } else if value >= 0.0 {
+        (value + 0.5) as i32
+    } else {
+        (value - 0.5) as i32
+    }
+}
+
+/// epdf.c `epdf_mark_glyphs`: the glyph names of a /CharSet string
+/// (`/a/b /c`, generic white space allowed between names).
+fn mark_charset_glyphs(glyphs: &mut std::collections::BTreeSet<String>, charset: &[u8]) {
+    let space = |byte: u8| matches!(byte, b' ' | b'\t' | b'\n' | b'\r' | 0x0c);
+    // C strings end at the first NUL
+    let charset = &charset[..charset.iter().position(|&b| b == 0).unwrap_or(charset.len())];
+    let first = charset.iter().take_while(|&&b| space(b)).count();
+    let mut s = first + 1;
+    while s < charset.len() {
+        let mut p = s;
+        while p < charset.len() && charset[p] != b'/' && !space(charset[p]) {
+            p += 1;
+        }
+        glyphs.insert(String::from_utf8_lossy(&charset[s..p]).into_owned());
+        if p < charset.len() && space(charset[p]) {
+            p += 1;
+            while p < charset.len() && space(charset[p]) {
+                p += 1;
+            }
+        }
+        s = p + 1;
+    }
+}
+
+/// xpdf `Gfx8BitFont`: the glyph name of each code of an included Type 1
+/// font. The base encoding comes from the font dictionary's /Encoding
+/// (`MacRoman`, `MacExpert`, `WinAnsi`), else from the embedded program,
+/// else it is `StandardEncoding`; /Differences are applied on top.
+fn embedded_font_glyph_names(
+    doc: &lopdf::Document,
+    font: &lopdf::Dictionary,
+    file: &lopdf::Stream,
+    is_type1c: bool,
+) -> Vec<Option<String>> {
+    use crate::pdf_encodings::{MAC_EXPERT, MAC_ROMAN, STANDARD, WIN_ANSI};
+    use lopdf::Object;
+    let encoding = lookup(doc, font, b"Encoding");
+    let base = match encoding {
+        Some(Object::Dictionary(dict)) => {
+            lookup(doc, dict, b"BaseEncoding").and_then(|value| value.as_name().ok())
+        }
+        Some(Object::Name(name)) => Some(name.as_slice()),
+        _ => None,
+    };
+    let table = |names: &[&str; 256]| -> Vec<Option<String>> {
+        names.iter().map(|name| (!name.is_empty()).then(|| (*name).to_owned())).collect()
+    };
+    let mut names = match base {
+        Some(b"MacRomanEncoding") => table(&MAC_ROMAN),
+        Some(b"MacExpertEncoding") => table(&MAC_EXPERT),
+        Some(b"WinAnsiEncoding") => table(&WIN_ANSI),
+        _ => {
+            let data = file
+                .decompressed_content_with_limit(256 * 1024 * 1024)
+                .unwrap_or_else(|_| file.content.clone());
+            let embedded = if is_type1c { cff_encoding(&data) } else { xpdf_type1_encoding(&data) };
+            embedded.unwrap_or_else(|| table(&STANDARD))
+        }
+    };
+    if let Some(Object::Dictionary(dict)) = encoding {
+        if let Some(Object::Array(differences)) = lookup(doc, dict, b"Differences") {
+            let mut code = 0_i64;
+            for item in differences {
+                match doc.dereference(item).map(|(_, value)| value) {
+                    Ok(Object::Integer(number)) => code = *number,
+                    Ok(Object::Name(name)) => {
+                        if (0..256).contains(&code) {
+                            names[code as usize] = Some(String::from_utf8_lossy(name).into_owned());
+                        }
+                        code += 1;
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    names
+}
+
+/// xpdf `FoFiType1C::getEncoding`.
+fn cff_encoding(data: &[u8]) -> Option<Vec<Option<String>>> {
+    let table = ttf_parser::cff::Table::parse(data)?;
+    Some(
+        (0..=255_u8)
+            .map(|code| {
+                table
+                    .glyph_index(code)
+                    .and_then(|glyph| table.glyph_name(glyph))
+                    .map(str::to_owned)
+            })
+            .collect(),
+    )
+}
+
+/// xpdf `FoFiType1::parse`/`getEncoding`: `/Encoding StandardEncoding def` or
+/// the `dup <code> /<name> put` entries of `/Encoding 256 array`, looked
+/// for in the first 100 lines.
+fn xpdf_type1_encoding(data: &[u8]) -> Option<Vec<Option<String>>> {
+    let next_line = |at: usize| {
+        let mut end = at;
+        while end < data.len() && data[end] != b'\n' && data[end] != b'\r' {
+            end += 1;
+        }
+        if end < data.len() && data[end] == b'\r' {
+            end += 1;
+        }
+        if end < data.len() && data[end] == b'\n' {
+            end += 1;
+        }
+        end
+    };
+    let mut line = 0;
+    for _ in 0..100 {
+        if line >= data.len() {
+            break;
+        }
+        let text = &data[line..];
+        if text.starts_with(b"/Encoding StandardEncoding def") {
+            return Some(
+                crate::pdf_encodings::STANDARD
+                    .iter()
+                    .map(|name| (!name.is_empty()).then(|| (*name).to_owned()))
+                    .collect(),
+            );
+        }
+        if !text.starts_with(b"/Encoding 256 array") {
+            line = next_line(line);
+            continue;
+        }
+        let mut names: Vec<Option<String>> = vec![None; 256];
+        line = next_line(line);
+        for _ in 0..300 {
+            if line >= data.len() {
+                break;
+            }
+            let following = next_line(line);
+            let entry = &data[line..following.min(line + 255)];
+            let mut p = entry.iter().take_while(|&&b| b == b' ' || b == b'\t').count();
+            if entry[p..].starts_with(b"dup") {
+                loop {
+                    p += 3;
+                    while matches!(entry.get(p), Some(b' ' | b'\t')) {
+                        p += 1;
+                    }
+                    let radix = if entry.get(p) == Some(&b'8') && entry.get(p + 1) == Some(&b'#') {
+                        p += 2;
+                        8
+                    } else if entry.get(p).is_some_and(u8::is_ascii_digit) {
+                        10
+                    } else {
+                        break;
+                    };
+                    let mut code = 0_u32;
+                    while let Some(digit) = entry.get(p).and_then(|&b| (b as char).to_digit(radix)) {
+                        code = code.saturating_mul(radix).saturating_add(digit);
+                        p += 1;
+                    }
+                    while matches!(entry.get(p), Some(b' ' | b'\t')) {
+                        p += 1;
+                    }
+                    if entry.get(p) != Some(&b'/') {
+                        break;
+                    }
+                    p += 1;
+                    let end = entry[p..]
+                        .iter()
+                        .position(|&b| matches!(b, b' ' | b'\t' | b'\n' | b'\r' | 0))
+                        .map_or(entry.len(), |at| p + at);
+                    if code < 256 {
+                        names[code as usize] = Some(String::from_utf8_lossy(&entry[p..end]).into_owned());
+                    }
+                    p = end;
+                    while matches!(entry.get(p), Some(b' ' | b'\t')) {
+                        p += 1;
+                    }
+                    if !entry[p.min(entry.len())..].starts_with(b"put") {
+                        break;
+                    }
+                    p += 3;
+                    while matches!(entry.get(p), Some(b' ' | b'\t')) {
+                        p += 1;
+                    }
+                    if !entry[p.min(entry.len())..].starts_with(b"dup") {
+                        break;
+                    }
+                }
+            } else {
+                let mut words = entry[p..].split(|&b| matches!(b, b' ' | b'\t')).filter(|word| !word.is_empty());
+                if words.next().is_some()
+                    && words.next().is_some_and(|word| {
+                        word.strip_suffix(b"\n").or(word.strip_suffix(b"\r")).unwrap_or(word) == b"def"
+                    })
+                {
+                    break;
+                }
+            }
+            line = following;
+        }
+        return Some(names);
+    }
+    None
+}
+
+/// epdf `epdf_write_enc`: an /Encoding object naming each code that has a
+/// glyph.
+fn encoding_object(names: &[Option<String>]) -> Vec<u8> {
+    let mut out = String::from("<< /Type /Encoding /Differences [");
+    let mut previous: i32 = -2;
+    for (code, name) in names.iter().enumerate() {
+        let Some(name) = name else {
+            continue;
+        };
+        let code = code as i32;
+        if code == previous + 1 {
+            out.push_str(&format!("/{name}"));
+        } else if previous == -2 {
+            out.push_str(&format!("{code}/{name}"));
+        } else {
+            out.push_str(&format!(" {code}/{name}"));
+        }
+        previous = code;
+    }
+    out.push_str("] >>");
+    out.into_bytes()
 }
 
 fn load_pdf_document(bytes: &[u8]) -> Result<lopdf::Document, String> {
@@ -959,14 +1424,13 @@ fn find_dest_page(doc: &lopdf::Document, name: &[u8]) -> Option<lopdf::ObjectId>
 /// box), the requested page box as the form's /BBox, a /Matrix only for
 /// rotated pages, the PTEX.* keys and the page's own content stream.
 pub fn include_pdf_page(
-    bytes: &[u8],
+    source: &mut PdfSource,
     options: &PdfIncludeOptions<'_>,
-    next_object: &mut i32,
-    imported_base14_fonts: &mut std::collections::BTreeMap<Vec<u8>, i32>,
-    resolve_type1: &mut dyn FnMut(&str) -> Option<Vec<u8>>,
+    host: &mut PdfImportHost<'_>,
 ) -> Result<PdfInclusion, String> {
     use lopdf::{Dictionary, Object};
-    let doc = load_pdf_document(bytes)?;
+    let PdfSource { doc, ids } = source;
+    let doc: &lopdf::Document = doc;
     let version = doc.version.trim().parse::<f64>().unwrap_or(0.0);
     let pages = doc.get_pages();
     let total_pages = pages.len() as i32;
@@ -1089,14 +1553,7 @@ pub fn include_pdf_page(
     };
     let [x1, y1, x2, y2] = page_box;
 
-    let mut copier = PdfCopier {
-        doc: &doc,
-        ids: std::collections::BTreeMap::new(),
-        objects: Vec::new(),
-        next: next_object,
-        base14_fonts: imported_base14_fonts.clone(),
-        resolve_type1,
-    };
+    let mut copier = PdfCopier { doc, ids, objects: Vec::new(), host };
     let mut warnings = Vec::new();
     let key_prefix: &[u8] = if options.ptex_underscore { b"PTEX_" } else { b"PTEX." };
     let mut head = Vec::new();
@@ -1217,7 +1674,13 @@ pub fn include_pdf_page(
                 tail.push(b' ');
                 serialize_pdf_name(key, &mut tail);
                 tail.push(b' ');
-                copier.copy_into(value, &mut tail)?;
+                match (key.as_slice(), value) {
+                    (b"Font", Object::Dictionary(fonts)) => {
+                        let fonts = copier.copy_font_resources(fonts)?;
+                        serialize_pdf_object(&fonts, &mut tail);
+                    }
+                    _ => copier.copy_into(value, &mut tail)?,
+                }
             }
             tail.extend_from_slice(b" >>");
         }
@@ -1273,7 +1736,7 @@ pub fn include_pdf_page(
     tail.extend_from_slice(b"\nendstream");
 
     let objects = std::mem::take(&mut copier.objects);
-    *imported_base14_fonts = std::mem::take(&mut copier.base14_fonts);
+
     Ok(PdfInclusion {
         version,
         page: page_num,
@@ -3371,10 +3834,10 @@ mod tests {
 
     fn include_first_page(bytes: &[u8], page_box: i32) -> Result<PdfInclusion, String> {
         let mut next = 10;
-        let mut fonts = std::collections::BTreeMap::new();
-        let mut no_type1_font = |_: &str| None;
+        let mut standard_fonts = std::collections::BTreeMap::new();
+        let mut imported_fonts = Vec::new();
         include_pdf_page(
-            bytes,
+            &mut PdfSource::open(bytes)?,
             &PdfIncludeOptions {
                 page: PdfPageSelector::Number(1),
                 page_box,
@@ -3382,9 +3845,13 @@ mod tests {
                 suppress_ptex_info: 0,
                 ptex_underscore: false,
             },
-            &mut next,
-            &mut fonts,
-            &mut no_type1_font,
+            &mut PdfImportHost {
+                next_object: &mut next,
+                base14_fonts: &mut standard_fonts,
+                fonts: &mut NoFonts,
+                imported_fonts: &mut imported_fonts,
+                font_init_order: 0,
+            },
         )
     }
 

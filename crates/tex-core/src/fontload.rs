@@ -13,8 +13,28 @@ pub struct MapEntry {
     /// resolved as `<name>.enc` through kpathsea when no explicit file is given
     pub enc_name: Option<String>,
     pub pfb: Option<String>,
+    /// `<<file.pfb`: the whole program is downloaded instead of a subset.
+    pub full_download: bool,
     pub slant: f64,
     pub extend: f64,
+}
+
+impl MapEntry {
+    /// mapfile.c `fm->slant`: `SlantFont` in thousandths, rounded.
+    pub fn slant_millis(&self) -> i32 {
+        let d = self.slant * 1000.0;
+        (if d > 0.0 { d + 0.5 } else { d - 0.5 }) as i32
+    }
+
+    /// mapfile.c `fm->extend`: `ExtendFont` in thousandths, rounded; a
+    /// factor of exactly 1 is stored as 0.
+    pub fn extend_millis(&self) -> i32 {
+        let d = self.extend * 1000.0;
+        match (if d > 0.0 { d + 0.5 } else { d - 0.5 }) as i32 {
+            1000 => 0,
+            other => other,
+        }
+    }
 }
 
 /// One base font declared by a virtual font's `fnt_def`.
@@ -1085,12 +1105,14 @@ pub fn parse_map_line(line: &str) -> Option<MapEntry> {
     let mut enc_file: Option<String> = None;
     let mut enc_name: Option<String> = None;
     let mut pfb: Option<String> = None;
+    let mut full_download = false;
     let mut slant = 0.0;
     let mut extend = 1.0;
     while let Some(mut tok) = it.next() {
         if !tok.starts_with('<') {
             continue;
         }
+        let full = tok.starts_with("<<");
         loop {
             // Download markers can be separated from their filename by
             // whitespace, including the `<<` and `<[` forms.
@@ -1107,6 +1129,7 @@ pub fn parse_map_line(line: &str) -> Option<MapEntry> {
                 }
             } else if pfb.is_none() {
                 pfb = Some(basename(rest).to_string());
+                full_download = full;
             }
             break;
         }
@@ -1158,6 +1181,7 @@ pub fn parse_map_line(line: &str) -> Option<MapEntry> {
         enc_file,
         enc_name,
         pfb,
+        full_download,
         slant,
         extend,
     })

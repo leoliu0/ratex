@@ -292,6 +292,7 @@ fn depcache_path(
     aux_dir: &str,
     optimize_pdf_size: bool,
     synctex_mode: SynctexMode,
+    format: &SelectedFormat,
 ) -> std::path::PathBuf {
     // Keep the spelling used by this invocation: relative inputs are resolved
     // from that spelling's parent, so two symlinks to one source are not
@@ -314,7 +315,7 @@ fn depcache_path(
     let program = program_name();
     let cwd = absolute_path(std::path::Path::new("."));
     let cwd = encode_record_path(&cwd);
-    let format_overrides = format_override_identity();
+    let format_overrides = format_override_identity(format);
     let clock = effective_clock_identity();
     let key = stable_hash(&[
         source.as_bytes(),
@@ -342,15 +343,23 @@ fn depcache_path(
         .join(format!("{key:016x}.depcache"))
 }
 
-fn format_override_identity() -> String {
-    let cwd = absolute_path(std::path::Path::new("pdflatex.fmt"));
-    let executable = std::env::current_exe()
-        .ok()
-        .and_then(|path| path.parent().map(|dir| dir.join("pdflatex.fmt")));
-    let mut candidates = vec![cwd];
-    if let Some(path) = executable {
-        candidates.push(path);
-    }
+/// Identity of the format files a job may load: the selected `-fmt` file,
+/// or the `pdflatex.fmt` overrides of the built-in format.
+fn format_override_identity(format: &SelectedFormat) -> String {
+    let mut candidates = match format {
+        SelectedFormat::File(path) => vec![path.clone()],
+        SelectedFormat::BuiltIn => {
+            let cwd = absolute_path(std::path::Path::new("pdflatex.fmt"));
+            let executable = std::env::current_exe()
+                .ok()
+                .and_then(|path| path.parent().map(|dir| dir.join("pdflatex.fmt")));
+            let mut candidates = vec![cwd];
+            if let Some(path) = executable {
+                candidates.push(path);
+            }
+            candidates
+        }
+    };
     candidates.sort();
     candidates.dedup();
     let mut identity = String::new();
@@ -601,6 +610,7 @@ fn compute_cache_identity() -> Option<String> {
         "BSTINPUTS",
         "BIBINPUTS",
         "TEX_RS_HERMETIC",
+        "TEXDEBUG",
         "SOURCE_DATE_EPOCH",
         "TZ",
         TEXMK_PUBLISHED_OUTPUT_ENV,
@@ -1600,8 +1610,11 @@ fn program_name() -> String {
 fn usage(program: &str) {
     eprintln!(
         "usage: {program} [options] file.tex
-  -ini                         build a format
+  -ini                         build a format; \\dump writes JOBNAME.fmt
   -plain                       run without the LaTeX format
+  -fmt=NAME, &NAME             use format NAME.fmt (a Ratex dump) instead of the built-in one
+  -progname=NAME               set the program name (and default format name)
+  -[no-]parse-first-line       disable/enable a %&NAME first line selecting the format
   -output-directory DIR        write output files in DIR
   -aux-directory DIR           write auxiliary files and the transcript in DIR
   --cache-directory DIR        store the private dependency cache in DIR
@@ -1610,11 +1623,162 @@ fn usage(program: &str) {
   -interaction MODE            errorstopmode, scrollmode, nonstopmode, or batchmode
   -halt-on-error               stop after the first TeX error
   --max-errors N               stop after N errors (default {DEFAULT_MAX_ERRORS})
-  -file-line-error             accepted; rich file/line diagnostics are always enabled
-  -no-shell-escape             accepted; shell execution is always disabled
+  -draftmode                   switch on draft mode (generates no output PDF)
+  -synctex=NUMBER              SyncTeX data per NUMBER (0 disables, <0 uncompressed; default 1)
+  -recorder                    write JOBNAME.fls listing the files read and written
+  -cnf-line=STRING             set a texmf.cnf variable (VAR[.prog]=VALUE), overriding the environment
+  -kpathsea-debug=NUMBER       nonzero: trace file lookups in the transcript
+  -output-format=pdf           accepted; PDF is the only output format
+  -etex, -8bit                 accepted; e-TeX is always on and all characters print as-is
+  -[no-]file-line-error        accepted; rich file/line diagnostics are always enabled
+  -[no-]shell-escape           accepted; shell execution is always disabled
+  -[no-]mktex=FMT              accepted; missing files are never generated
+  -src-specials[=WHERE], -output-comment=STRING
+                               accepted; they affect only DVI output
   -h, --help                   show this help
-  -v, --version                show version"
+  -v, --version                show version
+Not supported: -translate-file, -enc, -mltex, -ipc, -ipc-start, -output-format=dvi."
     );
+}
+
+/// The value of a web2c option with a required argument, written either
+/// `-name=value` or `-name value` (getopt_long_only).
+fn required_value<'a>(
+    args: &'a [String],
+    i: &mut usize,
+    opt: &'a str,
+    name: &str,
+) -> Option<&'a str> {
+    if let Some(value) = opt.strip_prefix(name).and_then(|rest| rest.strip_prefix('=')) {
+        return Some(value);
+    }
+    if opt != name {
+        return None;
+    }
+    *i += 1;
+    Some(args.get(*i).map_or("", String::as_str))
+}
+
+/// The format a job loads.
+enum SelectedFormat {
+    /// This program's built-in format (or its `pdflatex.fmt` override).
+    BuiltIn,
+    /// A Ratex format dump selected by name.
+    File(std::path::PathBuf),
+}
+
+/// web2c's format choice: `-fmt`/`&NAME`, else a `%&NAME` first line that
+/// names an available format, else `-progname`, else the program name.
+/// `Err` carries a requested name for which no `NAME.fmt` exists.
+fn select_format(
+    program: &str,
+    option: Option<&str>,
+    first_line_of: Option<&str>,
+    progname: Option<&str>,
+) -> Result<SelectedFormat, String> {
+    let resolve = |name: &str| {
+        if name == program || name == "pdflatex" {
+            Some(SelectedFormat::BuiltIn)
+        } else {
+            format_file(name).map(SelectedFormat::File)
+        }
+    };
+    if let Some(name) = option {
+        return resolve(name).ok_or_else(|| name.to_string());
+    }
+    if let Some(selected) = first_line_of
+        .and_then(first_line_format)
+        .and_then(|name| resolve(&name))
+    {
+        return Ok(selected);
+    }
+    match progname {
+        Some(name) => resolve(name).ok_or_else(|| name.to_string()),
+        None => Ok(SelectedFormat::BuiltIn),
+    }
+}
+
+/// `NAME.fmt` in the working directory, else beside the executable (where
+/// the built-in format's override is looked up too).
+fn format_file(name: &str) -> Option<std::path::PathBuf> {
+    let file_name = format!("{name}.fmt");
+    std::iter::once(std::path::PathBuf::from(&file_name))
+        .chain(
+            std::env::current_exe()
+                .ok()
+                .and_then(|exe| exe.parent().map(|dir| dir.join(&file_name))),
+        )
+        .find(|path| path.is_file())
+}
+
+/// The format named by a `%&NAME` first line of the input file (web2c
+/// parse_first_line); a `%&-option` line names no format.
+fn first_line_format(file: &str) -> Option<String> {
+    use std::io::{BufRead, Read};
+
+    let input = std::fs::File::open(file)
+        .or_else(|_| std::fs::File::open(format!("{file}.tex")))
+        .ok()?;
+    let mut line = Vec::new();
+    std::io::BufReader::new(input.take(4096))
+        .read_until(b'\n', &mut line)
+        .ok()?;
+    let rest = line.strip_prefix(b"%&")?;
+    let name: Vec<u8> = rest
+        .iter()
+        .copied()
+        .skip_while(|byte| matches!(byte, b' ' | b'\t'))
+        .take_while(|byte| !byte.is_ascii_whitespace())
+        .collect();
+    let name = String::from_utf8(name).ok()?;
+    (!name.is_empty() && !name.starts_with('-')).then_some(name)
+}
+
+/// kpathsea `-cnf-line` (kpathsea_cnf_line_env_progname): a texmf.cnf line
+/// `VAR[.prog] [=] VALUE` is put into the environment as VAR whatever the
+/// qualifier, overriding texmf.cnf and an inherited value; on Unix `;`
+/// separators become `:`. Ratex reads its search paths and policies
+/// (TEXINPUTS, openout_any, ...) from these variables.
+fn apply_cnf_line(line: &str) -> Result<(), &'static str> {
+    let line = line.trim_start();
+    if line.is_empty() || line.starts_with(['%', '#']) {
+        return Ok(());
+    }
+    // A `%` or `#` preceded by whitespace starts a trailing comment.
+    let end = line
+        .char_indices()
+        .find(|&(i, c)| matches!(c, '%' | '#') && line[..i].ends_with(char::is_whitespace))
+        .map_or(line.len(), |(i, _)| i);
+    let line = &line[..end];
+    let name_end = line
+        .find(|c: char| c.is_whitespace() || c == '=' || c == '.')
+        .unwrap_or(line.len());
+    let (variable, rest) = line.split_at(name_end);
+    if variable.is_empty() {
+        return Err("No cnf variable name");
+    }
+    let mut rest = rest.trim_start();
+    if let Some(qualified) = rest.strip_prefix('.') {
+        let qualified = qualified.trim_start();
+        let prog_end = qualified
+            .find(|c: char| c.is_whitespace() || c == '=')
+            .unwrap_or(qualified.len());
+        if prog_end == 0 {
+            return Err("Empty program name qualifier");
+        }
+        rest = qualified[prog_end..].trim_start();
+    }
+    let value = rest.strip_prefix('=').unwrap_or(rest).trim();
+    if value.is_empty() {
+        return Err("No cnf value");
+    }
+    let value = if cfg!(unix) {
+        value.replace(';', ":")
+    } else {
+        value.to_string()
+    };
+    std::env::set_var(variable, value);
+    Ok(())
 }
 
 fn usage_error(program: &str, message: &str) -> ! {
@@ -1847,6 +2011,13 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
     let mut max_errors = DEFAULT_MAX_ERRORS;
     // Ratex writes SyncTeX by default; `-synctex=0` disables it.
     let mut synctex_mode = SynctexMode::Compressed;
+    // web2c format selection: `-fmt`/`&FMT`, then a `%&FMT` first line
+    // (`-parse-first-line`, on by default for pdfTeX), then `-progname`.
+    let mut format_option: Option<String> = None;
+    let mut parse_first_line = true;
+    let mut progname: Option<String> = None;
+    let mut cnf_lines: Vec<String> = Vec::new();
+    let mut kpathsea_debug = 0u32;
     let mut i = 1;
     while i < args.len() {
         // Like web2c's getopt_long_only, every long option may be spelled
@@ -1924,6 +2095,83 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
             ini = true;
         } else if opt == "-plain" {
             plain = true;
+        } else if opt == "-etex" || opt == "-8bit" {
+            // e-TeX is always enabled, and terminal and transcript output
+            // print every character as-is, as `-8bit` requests.
+        } else if opt == "-no-file-line-error" {
+            // Diagnostics always carry their file and line.
+        } else if opt == "-parse-first-line" {
+            parse_first_line = true;
+        } else if opt == "-no-parse-first-line" {
+            parse_first_line = false;
+        } else if let Some(name) = required_value(&args, &mut i, opt, "-progname") {
+            if name.is_empty() {
+                usage_error(&program, "-progname requires a non-empty name");
+            }
+            progname = Some(name.to_string());
+        } else if let Some(line) = required_value(&args, &mut i, opt, "-cnf-line") {
+            cnf_lines.push(line.to_string());
+        } else if let Some(value) = required_value(&args, &mut i, opt, "-kpathsea-debug") {
+            kpathsea_debug = value.parse().unwrap_or_else(|_| {
+                usage_error(&program, "-kpathsea-debug requires a non-negative integer")
+            });
+        } else if let Some(format) = required_value(&args, &mut i, opt, "-output-format") {
+            if format != "pdf" {
+                usage_error(
+                    &program,
+                    &format!("output format '{format}' is not supported; Ratex writes PDF only"),
+                );
+            }
+        } else if required_value(&args, &mut i, opt, "-output-comment").is_some() {
+            // pdfTeX: the DVI comment has no effect on PDF output.
+        } else if opt == "-src-specials" || opt.starts_with("-src-specials=") {
+            // Source specials are DVI-only; pdfTeX ignores them in PDF.
+            let places = opt.strip_prefix("-src-specials=").unwrap_or("");
+            if let Some(place) = places.split(',').find(|place| {
+                !place.is_empty()
+                    && !matches!(
+                        *place,
+                        "cr" | "display" | "hbox" | "math" | "par" | "parend" | "vbox"
+                    )
+            }) {
+                usage_error(
+                    &program,
+                    &format!(
+                        "unknown source special place '{place}'; expected cr, display, hbox, math, par, parend, or vbox"
+                    ),
+                );
+            }
+        } else if let Some((enable, kind)) = required_value(&args, &mut i, opt, "-mktex")
+            .map(|kind| (true, kind))
+            .or_else(|| required_value(&args, &mut i, opt, "-no-mktex").map(|kind| (false, kind)))
+        {
+            // kpathsea's mktex formats (kpathsea_maketex_option).
+            if !matches!(kind, "tex" | "tfm" | "pk" | "mf" | "fmt" | "ofm" | "ocp") {
+                usage_error(
+                    &program,
+                    &format!("unknown mktex format '{kind}'; expected tex, tfm, pk, mf, fmt, ofm, or ocp"),
+                );
+            }
+            if enable {
+                emit_cli_message(
+                    interaction_mode,
+                    format_args!(
+                        "{program}: warning: -mktex={kind} is not supported; missing files are never generated by mktex{kind}"
+                    ),
+                );
+            }
+        } else if required_value(&args, &mut i, opt, "-translate-file").is_some() {
+            usage_error(
+                &program,
+                "-translate-file is not supported; Ratex has no TCX character translation and prints every character as-is (like -8bit)",
+            );
+        } else if matches!(opt, "-enc" | "-mltex" | "-ipc" | "-ipc-start") {
+            let feature = match opt {
+                "-enc" => "encTeX extensions (\\mubyte)",
+                "-mltex" => "MLTeX extensions (\\charsubdef)",
+                _ => "DVI output to a socket",
+            };
+            usage_error(&program, &format!("{opt} is not supported: Ratex has no {feature}"));
         } else if opt == "-optimize-pdf-size" || opt == "-optimize=size" {
             optimize_pdf_size = true;
         } else if opt == "-optimize=speed" {
@@ -1993,14 +2241,10 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
                     args.get(i).map_or("", String::as_str)
                 }
             };
-            // Formats are Ratex dumps, not web2c ones: only the built-in
-            // format for this program can be selected.
-            if name != program && name != "pdflatex" {
-                usage_error(
-                    &program,
-                    &format!("format '{name}' is not available; Ratex provides only the built-in {program} format"),
-                );
+            if name.is_empty() {
+                usage_error(&program, "-fmt requires a format name");
             }
+            format_option = Some(name.to_string());
         } else if matches!(opt, "-v" | "-version") {
             let version = env!("CARGO_PKG_VERSION");
             if program == "xelatex" {
@@ -2023,6 +2267,41 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
     }
     let Some(file) = file else {
         usage_error(&program, "no input file");
+    };
+    for line in &cnf_lines {
+        if let Err(message) = apply_cnf_line(line) {
+            emit_cli_message(
+                interaction_mode,
+                format_args!("warning: command line (kpathsea): {message} in argument: {line}"),
+            );
+        }
+    }
+    if kpathsea_debug != 0 {
+        let mut flags = std::env::var("TEXDEBUG").unwrap_or_default();
+        if !flags.split(',').any(|flag| flag.trim() == "lookups") {
+            if !flags.is_empty() {
+                flags.push(',');
+            }
+            flags.push_str("lookups");
+            std::env::set_var("TEXDEBUG", flags);
+        }
+    }
+    let format = if plain || ini {
+        SelectedFormat::BuiltIn
+    } else {
+        select_format(
+            &program,
+            format_option.as_deref(),
+            parse_first_line.then_some(file.as_str()),
+            progname.as_deref(),
+        )
+        .unwrap_or_else(|name| {
+            emit_cli_message(
+                interaction_mode,
+                format_args!("I can't find the format file `{name}.fmt'!"),
+            );
+            std::process::exit(1);
+        })
     };
 
     if !out_dir.is_empty() {
@@ -2065,6 +2344,7 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
         &aux_dir,
         optimize_pdf_size,
         synctex_mode,
+        &format,
     );
     let expected_pdf = std::path::PathBuf::from(format!("{}{}.pdf", out_dir, job));
     let expected_log = std::path::PathBuf::from(format!("{}{}.log", aux_dir, job));
@@ -2141,10 +2421,14 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
         let exe_fmt = std::env::current_exe()
             .ok()
             .and_then(|p| p.parent().map(|d| d.join(fmt_file_name)));
-        let cand_paths = [
-            Some(std::path::PathBuf::from(fmt_file_name)),
-            exe_fmt.clone(),
-        ];
+        let custom_format = match &format {
+            SelectedFormat::File(path) => Some(path.clone()),
+            SelectedFormat::BuiltIn => None,
+        };
+        let cand_paths = match &custom_format {
+            Some(path) => [Some(path.clone()), None],
+            None => [Some(std::path::PathBuf::from(fmt_file_name)), exe_fmt.clone()],
+        };
         let mut loaded = false;
         for cand in cand_paths.into_iter().flatten() {
             if cand.exists() {
@@ -2192,6 +2476,15 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
                     ),
                 }
             }
+        }
+        if let (false, Some(path)) = (loaded, &custom_format) {
+            // web2c: a selected format that cannot be loaded ends the run
+            // ("Fatal format file error"); only the built-in one falls back.
+            emit_cli_message(
+                interaction_mode,
+                format_args!("{program}: fatal format file error: cannot load {}", path.display()),
+            );
+            std::process::exit(1);
         }
         let embedded_fmt = match program.as_str() {
             "lualatex" => EMBEDDED_LUALATEX_FMT,
@@ -2333,8 +2626,10 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
     }
     phase_timer.mark("typeset");
     // -ini mode: the file ended in \dump — write the format and exit,
-    // like initex does.
+    // like initex does: tex.web §1328 names it after the job, and web2c
+    // writes it in the output directory.
     if ini && eng.format_done {
+        let format_path = format!("{out_dir}{job}.fmt");
         if eng.error_count > 0 {
             emit_transcript(&eng);
             let log_result = write_early_transcript(&eng, &aux_dir, &job);
@@ -2346,7 +2641,7 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
             emit_cli_message(
                 current_mode,
                 format_args!(
-                    "{program}: format build reported {} error{}; pdflatex.fmt was not written{transcript_note}",
+                    "{program}: format build reported {} error{}; {format_path} was not written{transcript_note}",
                     eng.error_count,
                     if eng.error_count == 1 { "" } else { "s" }
                 ),
@@ -2356,15 +2651,15 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
             }
             std::process::exit(1);
         }
-        match tex_core::format::save_format_compressed(&eng, std::path::Path::new("pdflatex.fmt")) {
+        match tex_core::format::save_format_compressed(&eng, std::path::Path::new(&format_path)) {
             Ok(n) => emit_cli_message(
                 eng.interaction_mode,
-                format_args!("Format written to pdflatex.fmt ({n} bytes)"),
+                format_args!("Format written to {format_path} ({n} bytes)"),
             ),
             Err(e) => {
                 eng.external_fatal_error(
-                    &format!("Cannot write format `pdflatex.fmt`: {e}"),
-                    Some("check that the working directory is writable and that `pdflatex.fmt` is not a directory"),
+                    &format!("Cannot write format `{format_path}`: {e}"),
+                    Some(format!("check that the output directory is writable and that `{format_path}` is not a directory").as_str()),
                 );
                 emit_transcript(&eng);
                 if let Err(error) = write_early_transcript(&eng, &aux_dir, &job) {

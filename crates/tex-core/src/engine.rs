@@ -272,6 +272,11 @@ pub struct Engine {
     /// looking for a number (`\romannumeral\protected...`).
     pub expand_protected: u32,
     pub in_expanded_scan: bool,
+    /// tex.web §1370 write_out sets `mode:=0` while it expands a `\write`
+    /// text: \prevgraf reads 0, \spacefactor/\prevdepth are improper,
+    /// \lastskip/\lastpenalty/\lastkern read 0, \lastnodetype reads -1 and
+    /// \ifvmode/\ifhmode/\ifmmode/\ifinner are all false.
+    pub write_mode_zero: bool,
     /// True when the last expanded token was a parameter character protected
     /// by \unexpanded; the definition scanner must store it literally.
     pub unexpanded_parameter: bool,
@@ -931,6 +936,7 @@ impl Engine {
             protected_flag: false,
             expand_protected: 0,
             in_expanded_scan: false,
+            write_mode_zero: false,
             unexpanded_parameter: false,
             csname_depth: 0,
             last_macros: std::collections::VecDeque::new(),

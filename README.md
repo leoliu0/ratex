@@ -137,6 +137,22 @@ mode is used. Other options starting with `-` are passed to the engine.
 Exit status: 0 when the build converged, 1 on an engine or BibTeX failure or
 no convergence, 2 on a usage error.
 
+The single-pass personalities (`pdflatex`, `lualatex`, `xelatex` links) take
+pdfTeX's web2c options (`pdflatex --help`). `-ini` dumps `JOBNAME.fmt` into
+the output directory and `-fmt=NAME`, `&NAME`, a `%&NAME` first line, or
+`-progname=NAME` load such a Ratex dump (`NAME` equal to the program selects
+the built-in format). `-cnf-line=VAR=VALUE` sets a search or policy variable
+such as `TEXINPUTS` or `openout_any`; `-kpathsea-debug=N` (nonzero) traces
+file lookups in the transcript. Deliberate differences: e-TeX is always on
+(also under `-ini` without `-etex`), every character prints as-is (`-8bit`
+behavior), missing files are never generated (`-mktex`), and
+`-output-format=dvi`, `-translate-file`, `-enc`, `-mltex`, `-ipc` are
+rejected. As in TeX's nonstop mode, a primitive `\input` of a missing file or
+an `\openout` that cannot be opened stops the job, since no other name can be
+supplied. `\pdffilemoddate` reports a file's modification time like pdfTeX;
+files served from the embedded package archive have no timestamp and report
+`D:19700101000000Z`.
+
 Environment variables:
 - `TEX_RS_CACHE_DIR`: cache root (default: `$XDG_CACHE_HOME/tex-rs` or
   `~/.cache/tex-rs` on Linux, `~/Library/Caches/tex-rs` on macOS,

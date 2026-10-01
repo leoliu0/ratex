@@ -1918,6 +1918,9 @@ impl Engine {
     }
 
     pub fn last_node_type_value(&self) -> i32 {
+        if self.write_mode_zero {
+            return -1;
+        }
         match self.current_tail() {
             None if self.mode == Mode::Vertical => self.last_page_node_type,
             None => -1,
@@ -2062,6 +2065,9 @@ impl Engine {
     }
 
     pub fn last_kern_value(&mut self) -> i32 {
+        if self.write_mode_zero {
+            return 0;
+        }
         match self.current_tail() {
             Some(Node::Kern(k) | Node::ExplicitKern(k)) => *k,
             None if self.mode == Mode::Vertical => self.last_page_kern,
@@ -2070,6 +2076,9 @@ impl Engine {
     }
 
     pub fn last_penalty_value(&mut self) -> i32 {
+        if self.write_mode_zero {
+            return 0;
+        }
         match self.current_tail() {
             Some(Node::Penalty(p)) => *p,
             None if self.mode == Mode::Vertical => self.last_page_penalty,
@@ -2078,6 +2087,9 @@ impl Engine {
     }
 
     pub fn last_skip_value(&mut self) -> Glue {
+        if self.write_mode_zero {
+            return Glue::zero();
+        }
         match self.current_tail() {
             Some(Node::Glue(g)) => g.clone(),
             Some(Node::Leaders { glue, .. }) => glue.clone(),
@@ -2531,9 +2543,12 @@ impl Engine {
         }
     }
 
-    /// \prevgraf belongs to the enclosing vertical nest, even in an hbox or math.
+    /// \prevgraf belongs to the enclosing vertical nest, even in an hbox or
+    /// math; it reads 0 while a `\write` expands (tex.web §422, mode 0).
     pub(crate) fn prev_graf(&self) -> i32 {
-        if self.mode.is_v() {
+        if self.write_mode_zero {
+            0
+        } else if self.mode.is_v() {
             self.prev_graf
         } else {
             self.saved_lists

@@ -1839,6 +1839,8 @@ fn default_help(message: &str) -> Option<String> {
         Some("this inspection command intentionally reports through TeX's error channel; remove it when debugging is complete")
     } else if message.starts_with("Undefined active character") {
         Some("define this active character before use, or restore its ordinary category code")
+    } else if message.starts_with("File `") && message.ends_with("` not found") {
+        Some("check the file name and path, and make sure the file is visible in the TeX search paths; as in TeX's nonstop mode, the job stops here because no other file name can be supplied")
     } else if message.contains("not found") || message.starts_with("Cannot read") {
         Some("check the file name and path, and make sure the file is visible in the TeX search paths")
     } else if message.starts_with("Cannot open") {
@@ -2023,6 +2025,10 @@ fn default_help(message: &str) -> Option<String> {
         || (message.starts_with("You can't use `\\long'") && message.contains(" with `"))
     {
         Some("remove the prefix; `\\long`, `\\outer`, and `\\protected` apply only to macro definitions, while `\\global` applies only to assignments")
+    } else if message.starts_with("Improper \\spacefactor")
+        || message.starts_with("Improper \\prevdepth")
+    {
+        Some("`\\spacefactor` is meaningful only in horizontal mode and `\\prevdepth` only in vertical mode, and neither inside `\\write`; zero was used instead")
     } else if message.starts_with("You can't use") || message.contains(" outside alignment") {
         Some("move this command into the TeX mode or environment where it is valid")
     } else if message.starts_with("Text line contains an invalid character") {

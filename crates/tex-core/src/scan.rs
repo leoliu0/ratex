@@ -477,7 +477,7 @@ impl Engine {
                         break 'scan_loop;
                     }
                     Some(Prim::IntP(p)) => {
-                        v = self.int_param_value(p) as i64;
+                        v = self.fetch_int_param(p) as i64;
                         break 'scan_loop;
                     }
                     Some(Prim::PdfShellEscape) => {
@@ -602,7 +602,7 @@ impl Engine {
                         break 'scan_loop;
                     }
                     Some(Prim::DimP(p)) => {
-                        v = self.dim_param_value(p) as i64;
+                        v = self.fetch_dim_param(p) as i64;
                         break 'scan_loop;
                     }
                     Some(Prim::LastPenalty) => {
@@ -726,11 +726,11 @@ impl Engine {
                             break 'scan_loop;
                         }
                         Some(Equiv::Prim(Prim::DimP(p))) => {
-                            v = self.dim_param_value(p) as i64;
+                            v = self.fetch_dim_param(p) as i64;
                             break 'scan_loop;
                         }
                         Some(Equiv::Prim(Prim::IntP(p))) => {
-                            v = self.int_param_value(p) as i64;
+                            v = self.fetch_int_param(p) as i64;
                             break 'scan_loop;
                         }
                         _ => {}
@@ -890,6 +890,43 @@ impl Engine {
             }
             _ => self.eqtb.dim_params[p.idx() as usize],
         }
+    }
+
+    /// tex.web §418: fetching \spacefactor outside horizontal mode or
+    /// \prevdepth outside vertical mode (and either inside a `\write`, where
+    /// mode is 0) is "Improper"; TeX recovers with zero. Returns `false`
+    /// after reporting that error.
+    fn aux_param_fetchable(&mut self, space_factor: bool) -> bool {
+        let proper = !self.write_mode_zero
+            && if space_factor {
+                self.mode.is_h()
+            } else {
+                self.mode.is_v()
+            };
+        if !proper {
+            self.error(if space_factor {
+                "Improper \\spacefactor"
+            } else {
+                "Improper \\prevdepth"
+            });
+        }
+        proper
+    }
+
+    /// An integer parameter as scanned by scan_something_internal.
+    pub(crate) fn fetch_int_param(&mut self, p: IntParam) -> i32 {
+        if p == IntParam::SpaceFactor && !self.aux_param_fetchable(true) {
+            return 0;
+        }
+        self.int_param_value(p)
+    }
+
+    /// A dimension parameter as scanned by scan_something_internal.
+    pub(crate) fn fetch_dim_param(&mut self, p: DimParam) -> i32 {
+        if p == DimParam::PrevDepth && !self.aux_param_fetchable(false) {
+            return 0;
+        }
+        self.dim_param_value(p)
     }
 
     /// \pdflastobj, \pdflastxform, \pdflastximage, \pdflastlink,
@@ -1134,7 +1171,7 @@ impl Engine {
                 Some(Prim::DimP(p)) => {
                     int_part = 1;
                     frac_f = 0;
-                    direct = Some(self.dim_param_value(p));
+                    direct = Some(self.fetch_dim_param(p));
                 }
                 Some(Prim::GlueP(p)) => {
                     int_part = 1;
@@ -1302,7 +1339,7 @@ impl Engine {
                         direct = None;
                     }
                     Some(Equiv::Prim(Prim::IntP(p))) => {
-                        int_part = self.int_param_value(p) as i64;
+                        int_part = self.fetch_int_param(p) as i64;
                         frac_f = 0;
                         direct = None;
                     }
@@ -1503,7 +1540,7 @@ impl Engine {
             Some(Equiv::Prim(Prim::NumExpr)) => self.scan_expr_num(),
             Some(Equiv::Prim(Prim::GlueExpr)) => self.scan_expr_glue(false).width,
             Some(Equiv::Prim(Prim::MuExpr)) => self.scan_expr_glue(true).width,
-            Some(Equiv::Prim(Prim::DimP(p))) => self.dim_param_value(p),
+            Some(Equiv::Prim(Prim::DimP(p))) => self.fetch_dim_param(p),
             Some(Equiv::Prim(Prim::Wd)) => {
                 let n = self.scan_reg_num();
                 self.box_reg_dimen(n, 0)
@@ -1939,7 +1976,7 @@ impl Engine {
         }
         match self.cur_prim {
             Some(Prim::IntP(p)) => {
-                let s = self.int_param_value(p).to_string();
+                let s = self.fetch_int_param(p).to_string();
                 emit_the!(s.as_bytes());
             }
             Some(Prim::PdfShellEscape) => {
@@ -1957,7 +1994,13 @@ impl Engine {
                 emit_the!(self.eqtb.count[idx as usize].to_string().as_bytes());
             }
             Some(Prim::DimP(p)) => {
-                let s = self.scaled_to_string(self.dim_param_value(p));
+                // An improper \prevdepth yields the integer 0 (tex.web §418:
+                // `level=tok_val` takes the int_val branch), printed as `0`.
+                let s = if p == DimParam::PrevDepth && !self.aux_param_fetchable(false) {
+                    "0".to_string()
+                } else {
+                    self.scaled_to_string(self.dim_param_value(p))
+                };
                 emit_the!(s.as_bytes());
             }
             Some(Prim::GlueP(p)) => {

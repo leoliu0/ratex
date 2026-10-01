@@ -1517,7 +1517,7 @@ impl Engine {
                     );
                     return None;
                 }
-                if t.is_char() && t.chr() == b'"' as u32 {
+                if t.is_char() && t.chr() == b'"' as u32 || self.file_name_line_ended(t) {
                     break;
                 }
                 if t.is_char() {
@@ -2393,10 +2393,13 @@ mod tests {
         assert!(!engine.protected_flag);
     }
 
+    /// web2c ends a quoted name at the end-of-line space; only without an
+    /// \endlinechar does the name run into the end of the file.
     #[test]
     fn unterminated_quoted_font_name_is_a_located_fatal_error() {
-        let engine =
-            run_font_error("\\relax\n\\font\\broken=\"unterminated font name\n".to_string());
+        let engine = run_font_error(
+            "\\endlinechar=-1 \\relax\n\\font\\broken=\"unterminated font name\n".to_string(),
+        );
         assert!(engine.stopped_on_error);
         assert_eq!(engine.diagnostics.len(), 1, "{}", engine.diagnostic_output);
         let diagnostic = &engine.diagnostics[0];
@@ -2419,7 +2422,8 @@ mod tests {
     #[test]
     fn unterminated_quoted_font_name_consumes_assignment_prefixes() {
         let engine = run_font_error(
-            "\\global\\long\\outer\\protected\\font\\broken=\"unterminated font name\n".to_string(),
+            "\\endlinechar=-1\n\\global\\long\\outer\\protected\\font\\broken=\"unterminated font name\n"
+                .to_string(),
         );
 
         assert!(engine.stopped_on_error);

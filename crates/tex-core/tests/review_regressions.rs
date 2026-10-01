@@ -573,3 +573,82 @@ fn outer_active_characters_and_active_fi_in_skipped_text() {
     );
     assert!(e.term.contains("3:after"), "{}", e.term);
 }
+
+/// pdftex -ini (tex.web §1370 write_out sets `mode:=0`): inside a `\write`
+/// text \prevgraf reads 0 (`[PG 0/3]`: the same \vbox counted 3 lines),
+/// \lastkern/\lastpenalty/\lastskip read 0, \lastnodetype reads -1, no mode
+/// conditional holds, and \prevdepth/\spacefactor are "Improper" (§418)
+/// with `\the` printing `0`. \message keeps the real mode (`[KM 3.0pt]`).
+#[test]
+fn write_texts_expand_in_mode_zero() {
+    let e = run_lenient(
+        r"\font\tenrm=cmr10 \tenrm
+\hsize=1pt \parfillskip=0pt plus 1fil \tolerance=10000 \pretolerance=-1
+\def\w{\immediate\write16}
+\setbox1\vbox{a b c\par \count255=\prevgraf \w{[PG \the\prevgraf/\the\count255]}}
+\setbox1\vbox{\kern3pt \w{[K \the\lastkern]}\message{[KM \the\lastkern]}%
+\penalty7 \w{[P \the\lastpenalty]}\vskip2pt \w{[S \the\lastskip]}%
+\w{[T \the\lastnodetype]}\w{[I \ifvmode V\fi\ifhmode H\fi\ifmmode M\fi\ifinner I\fi.]}%
+\w{[D \the\prevdepth]}}
+\setbox1\hbox{x\w{[F \the\spacefactor]}\w{[J \ifvmode V\fi\ifhmode H\fi\ifinner I\fi.]}}
+\end",
+    );
+    for expected in [
+        "[PG 0/3]", "[K 0.0pt]", "[KM 3.0pt]", "[P 0]", "[S 0.0pt]", "[T -1]", "[I .]", "[D 0]",
+        "[F 0]", "[J .]",
+    ] {
+        assert!(e.term.contains(expected), "{expected}: {}", e.term);
+    }
+    let improper: Vec<&str> = e
+        .diagnostics
+        .iter()
+        .map(|d| d.message.as_str())
+        .filter(|message| message.starts_with("Improper"))
+        .collect();
+    assert_eq!(improper, ["Improper \\prevdepth", "Improper \\spacefactor"], "{}", e.term);
+    assert_eq!(e.error_count, 2, "{}", e.term);
+}
+
+/// pdftex -ini (tex.web §418): \spacefactor is fetched only in horizontal
+/// and \prevdepth only in vertical mode; elsewhere TeX reports "Improper"
+/// and uses 0, which `\the` prints as `0` even for \prevdepth.
+#[test]
+fn space_factor_and_prev_depth_are_improper_outside_their_modes() {
+    let e = run_lenient(
+        r"\catcode`\$=3 \font\tenrm=cmr10 \tenrm
+\textfont0=\tenrm \scriptfont0=\tenrm \scriptscriptfont0=\tenrm
+\message{[VS \the\spacefactor][VD \the\prevdepth]}
+\setbox1\hbox{\message{[HS \the\spacefactor][HD \the\prevdepth]}}
+\setbox1\hbox{$\count1=\spacefactor \dimen1=\prevdepth \message{[M \the\count1/\the\dimen1]}$}
+\end",
+    );
+    for expected in ["[VS 0][VD -1000.0pt]", "[HS 1000][HD 0]", "[M 0/0.0pt]"] {
+        assert!(e.term.contains(expected), "{expected}: {}", e.term);
+    }
+    let improper: Vec<&str> = e
+        .diagnostics
+        .iter()
+        .map(|d| d.message.as_str())
+        .filter(|message| message.starts_with("Improper"))
+        .collect();
+    assert_eq!(
+        improper,
+        [
+            "Improper \\spacefactor",
+            "Improper \\prevdepth",
+            "Improper \\spacefactor",
+            "Improper \\prevdepth"
+        ],
+        "{}",
+        e.term
+    );
+}
+
+/// pdftex -ini: web2c ends a file name at the end-of-line space even inside
+/// an unterminated quote, so `\font\x="cmr10` loads cmr10.
+#[test]
+fn quoted_font_names_end_at_the_end_of_the_line() {
+    let e = run_lenient("\\font\\x=\"cmr10\n\\message{[\\fontname\\x]}\\end");
+    assert!(e.term.contains("[cmr10]"), "{}", e.term);
+    assert_eq!(e.error_count, 0, "{}", e.term);
+}

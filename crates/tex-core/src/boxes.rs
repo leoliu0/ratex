@@ -526,12 +526,37 @@ impl DisplayList {
     }
 }
 
+/// A Unicode glyph of a Lua-defined font (LuaTeX `glyph_node`). The engine's
+/// [`Node::Char`] stays an 8-bit TFM character; glyphs of fonts whose
+/// `Font::lua` is set (and everything Lua code builds with `node.new`) use
+/// this node. Metrics come from the font at use time, as in LuaTeX.
+#[derive(Clone, Debug)]
+pub struct LuaGlyph {
+    pub c: u32,
+    pub font: FontId,
+    /// hyphenation language and minimal left/right fragments
+    pub lang: u16,
+    pub left: u8,
+    pub right: u8,
+    pub uchyph: u8,
+    pub xoffset: i32,
+    pub yoffset: i32,
+    pub expansion_factor: i32,
+    pub data: i32,
+    /// LuaTeX glyph subtype (`GLYPH_CHARACTER`, `GLYPH_LIGATURE`, ...)
+    pub subtype: u8,
+    /// the components of a ligature
+    pub components: NodeList,
+}
+
 #[derive(Clone, Debug)]
 pub enum Node {
     Char {
         c: u8,
         font: FontId,
     },
+    /// a glyph of a Lua font (see [`LuaGlyph`])
+    LuaGlyph(Box<LuaGlyph>),
     NativeGlyphRun {
         run: std::rc::Rc<crate::native_layout::NativeRun>,
         start: usize,
@@ -681,6 +706,15 @@ pub enum Node {
 
 pub type NodeList = Vec<Node>;
 
+/// (width, height, depth) of a glyph of a Lua font: the metrics of its
+/// character record (zero when the font lacks the character).
+pub fn lua_glyph_dims(eqtb: &crate::eqtb::Eqtb, g: &LuaGlyph) -> (i32, i32, i32) {
+    eqtb.fonts
+        .get(usize::from(g.font))
+        .and_then(|f| f.lua_char(g.c))
+        .map_or((0, 0, 0), |c| (c.width, c.height, c.depth))
+}
+
 /// dimensions of a single node in a horizontal list
 fn single_dims(n: &Node, eqtb: &crate::eqtb::Eqtb) -> (i32, i32, i32) {
     match n {
@@ -689,6 +723,7 @@ fn single_dims(n: &Node, eqtb: &crate::eqtb::Eqtb) -> (i32, i32, i32) {
             eqtb_fonts(eqtb).char_height(*font, *c),
             eqtb_fonts(eqtb).char_depth(*font, *c),
         ),
+        Node::LuaGlyph(g) => lua_glyph_dims(eqtb, g),
         Node::Ligature {
             lig_width,
             lig_height,

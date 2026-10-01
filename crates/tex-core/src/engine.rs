@@ -189,9 +189,9 @@ pub struct Engine {
     pub mode: Mode,
     pub mode_level: u16, // nesting of box modes
     pub cur_list: Vec<crate::boxes::Node>,
-    /// Stable, generation-checked ownership for nodes exposed across
-    /// subsystem boundaries (notably the Lua node API).
-    pub node_arena: crate::node_arena::NodeArena,
+    /// The LuaTeX node store behind `node.*` / `node.direct.*` (see
+    /// `lua_node`).
+    pub(crate) lua_nodes: crate::lua_node::NodeStore,
     pub prev_depth: i32, // special marker: -1000pt means unset
     pub space_factor: i32,
     pub prev_graf: i32,
@@ -935,7 +935,7 @@ impl Engine {
             mode: Mode::Vertical,
             mode_level: 0,
             cur_list: Vec::new(),
-            node_arena: crate::node_arena::NodeArena::new(),
+            lua_nodes: crate::lua_node::NodeStore::new(),
             prev_depth: -1000 * 65536,
             space_factor: 1000,
             pdf_images: crate::FxHashMap::default(),

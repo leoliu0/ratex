@@ -91,6 +91,20 @@ impl<'a> BoxDisplay<'a> {
         push_printable(&mut self.out, &[c]);
     }
 
+    /// a character code of a Lua font: UTF-8 beyond the 8-bit range
+    fn print_unicode(&mut self, c: u32) {
+        match u8::try_from(c) {
+            Ok(b) => self.print_ascii(b),
+            Err(_) => {
+                let mut buf = [0u8; 4];
+                match char::from_u32(c) {
+                    Some(ch) => self.out.extend_from_slice(ch.encode_utf8(&mut buf).as_bytes()),
+                    None => self.print(&format!("[{c:X}]")),
+                }
+            }
+        }
+    }
+
     fn print_rule_dimen(&mut self, d: i32) {
         if d == RULE_FILL {
             self.out.push(b'*');
@@ -162,14 +176,14 @@ impl<'a> BoxDisplay<'a> {
         }
     }
 
-    fn print_font_and_char(&mut self, f: FontId, c: u8) {
+    fn print_font_and_char(&mut self, f: FontId, c: u32) {
         if (f as usize) < self.e.eqtb.fonts.len() {
             self.print_font_identifier(f);
         } else {
             self.out.push(b'*');
         }
         self.out.push(b' ');
-        self.print_ascii(c);
+        self.print_unicode(c);
     }
 
     fn print_token_list(&mut self, tokens: &[Token]) {
@@ -211,7 +225,14 @@ impl<'a> BoxDisplay<'a> {
             let n = &list[i];
             i += 1;
             match n {
-                Node::Char { c, font } => self.short_char(*font, *c),
+                Node::Char { c, font } => self.short_char(*font, u32::from(*c)),
+                Node::LuaGlyph(g) => {
+                    if g.components.is_empty() {
+                        self.short_char(g.font, g.c);
+                    } else {
+                        self.short_display(&g.components);
+                    }
+                }
                 Node::Ligature {
                     font,
                     letters,
@@ -219,7 +240,7 @@ impl<'a> BoxDisplay<'a> {
                     ..
                 } => {
                     for &c in &letters[..(*n_letters as usize).min(3)] {
-                        self.short_char(*font, c);
+                        self.short_char(*font, u32::from(c));
                     }
                 }
                 Node::Box { .. }
@@ -259,7 +280,7 @@ impl<'a> BoxDisplay<'a> {
         }
     }
 
-    fn short_char(&mut self, font: FontId, c: u8) {
+    fn short_char(&mut self, font: FontId, c: u32) {
         if self.font_in_short_display != Some(font) {
             if (font as usize) < self.e.eqtb.fonts.len() {
                 self.print_font_identifier(font);
@@ -269,7 +290,7 @@ impl<'a> BoxDisplay<'a> {
             self.out.push(b' ');
             self.font_in_short_display = Some(font);
         }
-        self.print_ascii(c);
+        self.print_unicode(c);
     }
 
     /// tex.web show_box: the list `p`, then print_ln.
@@ -318,7 +339,22 @@ impl<'a> BoxDisplay<'a> {
 
     fn display_node(&mut self, node: &Node) {
         match node {
-            Node::Char { c, font } => self.print_font_and_char(*font, *c),
+            Node::Char { c, font } => self.print_font_and_char(*font, u32::from(*c)),
+            Node::LuaGlyph(g) => {
+                self.print_font_and_char(g.font, g.c);
+                if u16::from(g.subtype) & crate::lua_node::GLYPH_LIGATURE != 0 {
+                    self.print(" (ligature ");
+                    if u16::from(g.subtype) & crate::lua_node::GLYPH_LEFT != 0 {
+                        self.out.push(b'|');
+                    }
+                    self.font_in_short_display = Some(g.font);
+                    self.short_display(&g.components);
+                    if u16::from(g.subtype) & crate::lua_node::GLYPH_RIGHT != 0 {
+                        self.out.push(b'|');
+                    }
+                    self.out.push(b')');
+                }
+            }
             Node::Box {
                 kind,
                 w,
@@ -480,14 +516,14 @@ impl<'a> BoxDisplay<'a> {
                 subtype,
                 ..
             } => {
-                self.print_font_and_char(*font, *c);
+                self.print_font_and_char(*font, u32::from(*c));
                 self.print(" (ligature ");
                 if *subtype > 1 {
                     self.out.push(b'|');
                 }
                 self.font_in_short_display = Some(*font);
                 for &l in &letters[..(*n_letters as usize).min(3)] {
-                    self.short_char(*font, l);
+                    self.short_char(*font, u32::from(l));
                 }
                 if subtype % 2 == 1 {
                     self.out.push(b'|');

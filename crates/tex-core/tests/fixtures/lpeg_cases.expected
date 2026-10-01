@@ -1,0 +1,2342 @@
+P string	ok	1:i4
+P number	ok	1:i3
+P negative	ok	1:i1
+P true/false	ok	2:i1 nil
+P function	ok	1:i2
+P identity	ok	4:true "pattern" nil "pattern"
+seq identity	ok	3:true true false
+string operand	ok	4:i3 i3 i3 i2
+operators keep string metatable clean	ok	2:nil nil
+userdata	ok	3:"userdata" "lpeg-pattern\58 PTR" i1
+pattern methods	ok	3:true i2 true
+S R sets	ok	4:i5 i5 i1 i1
+B behind	ok	2:"c" i1
+B errors	ok	2:false "bad argument \351 to \39lpeg\46B\39 (pattern may not have fixed length)"
+B captures	error	bad argument #1 to 'lpeg.B' (pattern have captures)
+B long	error	bad argument #1 to 'lpeg.B' (pattern too long to look behind)
+diff	ok	3:nil i4 nil
+and/not	ok	3:i2 nil i2
+rep counts	ok	5:i4 nil i3 i1 i1
+rep nullable	error	loop body may accept empty string
+rep nullable nested	error	loop body may accept empty string
+init	ok	6:"b" "c" "a" nil i4 i2
+init string	ok	1:"b"
+init float	error	bad argument #3 to 'match' (number has no integer representation)
+subject number	ok	1:"2345"
+subject table	error	bad argument #2 to 'match' (string expected, got table)
+pattern from string	ok	1:i3
+pattern nil	error	bad argument #1 to 'lpeg.match' (lpeg-pattern expected, got nil)
+empty captures	ok	6:i1 nil nil i1 nil i3
+simple	ok	3:"ab" "b" "c"
+position	ok	2:i1 i3
+Ct	ok	1:{i1="a",i2="b"}
+Ct named	ok	1:{"x"="a","y"="b",i1="c"}
+Cg anonymous	ok	3:"a" "b" "c"
+Cb	ok	2:"b" "a"
+Cb missing	error	back reference 'zz' not found
+Cb latest	ok	1:"b"
+Cs	ok	2:"bAnAnA" "bXnXnX"
+Cs nested	ok	1:"aBc"
+Cs errors	error	invalid replacement value (a table)
+Cs numbers	ok	1:"a2\465c"
+Cf	ok	1:"a\43b\43c\43d"
+Cf none	error	no initial value for fold capture
+Cf table	ok	1:"\123\34a\34\61\341\34\125"
+div function	ok	2:"b" "a"
+div function none	ok	1:i2
+div string	ok	2:"\60baab\37\62" "aa"
+div string errors	ok	2:false "lpeg\95cases\46lua\58160\58 invalid capture index (2)"
+div string trailing percent	ok	1:i2
+div table	ok	3:"A" i2 "qq"
+div number	ok	3:"b" i2 i2
+div number errors	ok	2:false "lpeg\95cases\46lua\58160\58 no capture \393\39"
+div bad value	error	bad argument #2 to '__div' (invalid replacement value)
+Carg	ok	2:"x" "y"
+Carg absent	error	reference to absent extra argument #2
+Carg bad	error	bad argument #1 to 'lpeg.Carg' (invalid argument index)
+Cmt basic	ok	1:"ABC"
+Cmt fail	ok	1:"a"
+Cmt true	ok	1:i2
+Cmt captures	ok	2:"y" "x"
+Cmt no capture gets match	ok	1:"ab"
+Cmt invalid position	error	invalid position returned by match-time capture
+Cmt backtrack	ok	2:"a" i1
+Cmt nested	ok	1:{i1="aa",i2="aa"}
+Cmt in Cs	ok	1:"\60dyn\62b"
+Cmt position beyond	ok	1:i3
+Cmt subject	ok	2:"abc" i3
+grammar	ok	1:i10
+grammar initial rule by name	ok	1:i3
+grammar initial rule as pattern	ok	1:i3
+grammar balanced	ok	2:i8 nil
+grammar captures	ok	1:"\123i1\61\34a\34,i2\61\123i1\61\123i1\61\34b\34,i2\61\34c\34\125\125,i3\61\34d\34\125"
+left recursion	error	rule 'a' may be left recursive
+left recursion mutual	error	rule 'a' may be left recursive
+left recursion nullable prefix	error	rule 'a' may be left recursive
+empty loop	error	empty loop in rule 'a'
+undefined rule	error	rule 'zz' undefined in given grammar
+V outside	error	rule 'a' used outside a grammar
+V outside nested	error	rule 'a' used outside a grammar
+V nil	error	bad argument #1 to 'lpeg.V' (non-nil value expected)
+grammar empty	error	grammar has no initial rule
+grammar initial not pattern	error	initial rule 'a' is not a pattern
+grammar rule not pattern	error	rule 'b' is not a pattern
+grammar unknown initial	error	grammar has no initial rule
+grammar rule calling itself	error	rule 'b' may be left recursive
+grammar nested	ok	1:i3
+grammar rules by number	ok	1:i3
+grammar deep	ok	1:i301
+stack overflow	error	backtrack stack overflow (current limit is 400)
+setmaxstack	ok	3:i501 false "lpeg\95cases\46lua\58160\58 backtrack stack overflow (current limit is 400)"
+setmaxstack range	error	bad argument #1 to 'lpeg.setmaxstack' (out of range)
+setmaxstack type	error	bad argument #1 to 'lpeg.setmaxstack' (number expected, got string)
+long subject	ok	3:i100000 i200000 i3000
+long repetition	ok	1:i200001
+binary	ok	2:"\255\0\200" "a\60NUL\62b\255"
+locale	ok	12:i4 i4 i7 i3 i3 i3 i3 i3 i3 i3 i5 nil
+locale into table	ok	2:true "pattern"
+locale bad	error	bad argument #1 to 'lpeg.locale' (table expected, got number)
+version	ok	1:"1\460\461"
+lpeg.type	ok	4:"pattern" nil nil nil
+global and loaded	ok	3:true true nil
+argument errors	ok	7:"bad argument \351 to \39lpeg\46P\39 (value expected)" "bad argument \351 to \39lpeg\46P\39 (lpeg-pattern expected, got nil)" "bad argument \351 to \39lpeg\46S\39 (string expected, got no value)" "bad argument \351 to \39lpeg\46R\39 (range must have two characters)" "bad argument \352 to \39lpeg\46Cf\39 (function expected, got number)" "bad argument \352 to \39lpeg\46match\39 (string expected, got no value)" "bad argument \352 to \39lpeg\46match\39 (string expected, got table)"
+operator errors	ok	4:"lpeg\95cases\46lua\58292\58 bad argument \352 to \39\95\95mul\39 (lpeg-pattern expected, got nil)" "lpeg\95cases\46lua\58292\58 bad argument \352 to \39\95\95pow\39 (number expected, got string)" "lpeg\95cases\46lua\58293\58 bad argument \352 to \39\95\95pow\39 (number has no integer representation)" "lpeg\95cases\46lua\58293\58 bad argument \352 to \39\95\95div\39 (invalid replacement value)"
+unsupported operators	ok	4:"lpeg\95cases\46lua\58296\58 attempt to concatenate a lpeg-pattern value" "lpeg\95cases\46lua\58296\58 attempt to compare two lpeg-pattern values" "lpeg\95cases\46lua\58297\58 attempt to call a lpeg-pattern value" "lpeg\95cases\46lua\58297\58 attempt to index a lpeg-pattern value (local \39p\39)"
+1	(#Cc("x",2))
+  "daaaa" 1	ok	1:i1
+  "ab22bc" 1	ok	1:i1
+  "db" 1	ok	1:i1
+  " b2  b1" 2	ok	1:i2
+  "b ca" 2	ok	1:i2
+  "cab" 2	ok	1:i2
+  "2a1 1" -2	ok	1:i4
+  "" -2	ok	1:i1
+  "ba2" -2	ok	1:i2
+2	((P(true) + P"b") / "a%0b")
+  "" 1	ok	1:"ab"
+  "1aaab" 1	ok	1:"ab"
+  "b2d2" 1	ok	1:"ab"
+  "" 2	ok	1:"ab"
+  "22" 2	ok	1:"ab"
+  "cd" 2	ok	1:"ab"
+  "2b" -2	ok	1:"ab"
+  "b 2  " -2	ok	1:"ab"
+  "bc 2dab" -2	ok	1:"ab"
+3	((P"c" + ((Cc("x",2) / cf7) / tab4)) / "a%0b")
+  "bb" 1	ok	1:"ab"
+  "" 1	ok	1:"ab"
+  "d " 1	ok	1:"ab"
+  "22aab" 2	ok	1:"ab"
+  "2 aca" 2	ok	1:"ab"
+  " 1a b  " 2	ok	1:"ab"
+  "1" -2	ok	1:"ab"
+  "c1" -2	ok	1:"acb"
+  "db" -2	ok	1:"ab"
+4	Cmt(P(1), cmt1)
+  " a" 1	ok	1:i2
+  "  b ba" 1	ok	1:i2
+  "1" 1	ok	1:i2
+  "1aab1b2" 2	ok	1:i3
+  "a2aad" 2	ok	1:i3
+  "abaa1a" 2	ok	1:i3
+  "bdbd" -2	ok	1:i4
+  "da11a" -2	ok	1:i5
+  "badcad1c" -2	ok	1:i8
+5	((Cg((P" " / cf2),nil) / "x") * ((P"ab" + C(S"ab")) * ((P"a" + P(0)) / "a%0b")))
+  "aabca" 1	ok	1:nil
+  "cc baaba" 1	ok	1:nil
+  "" 1	ok	1:nil
+  "aa " 2	ok	1:nil
+  "" 2	ok	1:nil
+  "bb1aaa2" 2	ok	1:nil
+  "b" -2	ok	1:nil
+  "22    a" -2	ok	3:"x" "a" "ab"
+  "2bd" -2	ok	1:nil
+6	Cf(Ct(P"b"), fold3)
+  "adbac" 1	ok	1:nil
+  "" 1	ok	1:nil
+  "baa2" 1	ok	1:{}
+  "2b aab" 2	ok	1:{}
+  "aa2caa" 2	ok	1:nil
+  "ada" 2	ok	1:nil
+  "1 cab2aa" -2	ok	1:nil
+  " daa" -2	ok	1:nil
+  " accccb" -2	ok	1:nil
+7	ERRGEN lpeg_cases.lua:108: loop body may accept empty string
+8	(P(-1) / cf8)
+  "b 222" 1	ok	1:nil
+  "acad" 1	ok	1:nil
+  "12" 1	ok	1:nil
+  "cbcb2" 2	ok	1:nil
+  "a bb bb" 2	ok	1:nil
+  "ac" 2	ok	1:nil
+  "abc" -2	ok	1:nil
+  "" -2	ok	1:{i1=""}
+  "" -2	ok	1:{i1=""}
+9	(P"c" + P"1"+P"2")
+  "c1 d22" 1	ok	1:i2
+  "1a" 1	ok	1:i2
+  " abd  ad" 1	ok	1:nil
+  " ac" 2	ok	1:nil
+  "aa " 2	ok	1:nil
+  " b1a " 2	ok	1:nil
+  "d" -2	ok	1:nil
+  "ab2" -2	ok	1:nil
+  "a21" -2	ok	1:i3
+10	(-P"c")
+  "c212" 1	ok	1:nil
+  "dbc1" 1	ok	1:i1
+  "b" 1	ok	1:i1
+  "" 2	ok	1:i1
+  "cb" 2	ok	1:i2
+  "a" 2	ok	1:i2
+  "" -2	ok	1:i1
+  "  bdaa2" -2	ok	1:i6
+  "1" -2	ok	1:i1
+11	P{S = Ct((P"a" * Cc(nil))); A = P"ab"; B = Cs(P"ab")}
+  "2bd2" 1	ok	1:nil
+  "ccaa1 a" 1	ok	1:nil
+  "1dbaa a1" 1	ok	1:nil
+  "cab2" 2	ok	1:{}
+  "c" 2	ok	1:nil
+  "1cadbaa" 2	ok	1:nil
+  "dd" -2	ok	1:nil
+  "" -2	ok	1:nil
+  "1d" -2	ok	1:nil
+12	((P(1) + R("az","12")) / tab4)
+  "c" 1	ok	1:i2
+  "b2a" 1	ok	1:false
+  "d2212" 1	ok	1:i2
+  "" 2	ok	1:nil
+  "" 2	ok	1:nil
+  "b1a" 2	ok	1:i3
+  " 1cca" -2	ok	1:i5
+  "ba2ca  " -2	ok	1:i7
+  "b" -2	ok	1:false
+13	ERRGEN lpeg_cases.lua:122: bad argument #1 to 'B' (pattern have captures)
+14	Cf((P" " ^ 3), fold2)
+  "b cdab" 1	ok	1:nil
+  "a111cbba" 1	ok	1:nil
+  "c" 1	ok	1:nil
+  "dabaaaaa" 2	ok	1:nil
+  "b ba" 2	ok	1:nil
+  "c" 2	ok	1:nil
+  "c" -2	ok	1:nil
+  "aba" -2	ok	1:nil
+  "1" -2	ok	1:nil
+15	(R"ad" * P"d")
+  "aa " 1	ok	1:nil
+  "" 1	ok	1:nil
+  "b" 1	ok	1:nil
+  "" 2	ok	1:nil
+  "dd" 2	ok	1:nil
+  "ab1a " 2	ok	1:nil
+  "" -2	ok	1:nil
+  "ba1a1da" -2	ok	1:nil
+  "d bc" -2	ok	1:nil
+16	((P(false) / 0) * C(S"ab"))
+  "bdba da" 1	ok	1:nil
+  "cbaa a" 1	ok	1:nil
+  "" 1	ok	1:nil
+  "dac1c " 2	ok	1:nil
+  "2" 2	ok	1:nil
+  "abad" 2	ok	1:nil
+  "cdac 22" -2	ok	1:nil
+  "1dc" -2	ok	1:nil
+  "bdca12" -2	ok	1:nil
+17	P{S = P"c"; A = ((P"d" * S"ab") + (P(true) * P"b"))}
+  "" 1	ok	1:nil
+  "b  aa" 1	ok	1:i2
+  "c" 1	ok	1:nil
+  "aa2" 2	ok	1:nil
+  "aba" 2	ok	1:i3
+  " " 2	ok	1:nil
+  "abb1c 2" -2	ok	1:nil
+  "bda1" -2	ok	1:nil
+  "2d222d " -2	ok	1:nil
+18	Cf(Cp(), fold2)
+  "c aa22" 1	ok	1:i1
+  "cc2a2ba" 1	ok	1:i1
+  "a1 abba" 1	ok	1:i1
+  "aca" 2	ok	1:i2
+  "c" 2	ok	1:i2
+  "abbaaa" 2	ok	1:i2
+  "aaa1a " -2	ok	1:i5
+  "ba " -2	ok	1:i2
+  "bcc" -2	ok	1:i2
+19	(Cg(R"ad",n) + (Cs(Cb"n") * (B(P"ab") * (R("az","12") * P(2)))))
+  "ca2d" 1	ok	1:i2
+  "aa" 1	ok	1:i2
+  "2bc2aab" 1	ok	1:nil
+  "ab21a" 2	ok	1:i3
+  "" 2	ok	1:nil
+  "2" 2	ok	1:nil
+  "1 ad" -2	ok	1:i4
+  "bccb" -2	ok	1:i4
+  "21a1d2" -2	ok	1:i6
+20	(P"b" * Cc(1))
+  "aaa acab" 1	ok	1:nil
+  "bbaababa" 1	ok	1:i1
+  "b2d2" 1	ok	1:i1
+  "1aaa" 2	ok	1:nil
+  "db12a" 2	ok	1:i1
+  "1a" 2	ok	1:nil
+  "a  abaab" -2	ok	1:nil
+  "adba" -2	ok	1:i1
+  "2acaa 2" -2	ok	1:nil
+21	Cg((Cg((Cb"n" + Cc(1)),nil) - ((P(2) + P(2)) / cf1)),nil)
+  " " 1	error	back reference 'n' not found
+  "a 2" 1	ok	1:nil
+  "1a" 1	ok	1:nil
+  "aabaca1 " 2	ok	1:nil
+  "a" 2	error	back reference 'n' not found
+  "c2b" 2	ok	1:nil
+  "a adc d" -2	ok	1:nil
+  "a12bd" -2	ok	1:nil
+  "211 c1" -2	ok	1:nil
+22	(P" " + P"d")
+  "aaa" 1	ok	1:nil
+  "" 1	ok	1:nil
+  "aa" 1	ok	1:nil
+  "b11b" 2	ok	1:nil
+  "d" 2	ok	1:nil
+  "ad" 2	ok	1:i3
+  "ab" -2	ok	1:nil
+  "2 a" -2	ok	1:i3
+  "adbc bd" -2	ok	1:nil
+23	P"d"
+  "b2cbd" 1	ok	1:nil
+  " a adbb" 1	ok	1:nil
+  "2baa" 1	ok	1:nil
+  "2aa2" 2	ok	1:nil
+  "1bb1aa" 2	ok	1:nil
+  "cac" 2	ok	1:nil
+  "aaa" -2	ok	1:nil
+  "ad1a1" -2	ok	1:nil
+  "aabb1" -2	ok	1:nil
+24	P{S = (#P"ab"); A = (P"d" / tab2)}
+  "abab" 1	ok	1:nil
+  "112b" 1	ok	1:nil
+  "dbbacad" 1	ok	1:i2
+  "da" 2	ok	1:nil
+  "aabbbca " 2	ok	1:nil
+  " 2d cba" 2	ok	1:nil
+  "ddbaa22b" -2	ok	1:nil
+  "11ab" -2	ok	1:nil
+  "b" -2	ok	1:nil
+25	Cs(R"ad")
+  "ad2" 1	ok	1:"a"
+  "2cbbab 2" 1	ok	1:nil
+  "2 c21ac" 1	ok	1:nil
+  "cdcb" 2	ok	1:"d"
+  "ab" 2	ok	1:"b"
+  "2ac " 2	ok	1:"a"
+  "2" -2	ok	1:nil
+  "a1 " -2	ok	1:nil
+  "1ad" -2	ok	1:"a"
+26	(Cmt(Cs(Cc(nil)), cmt7) / cf8)
+  "b112a" 1	error	invalid replacement value (a nil)
+  "b2a11 ba" 1	error	invalid replacement value (a nil)
+  "bac a" 1	error	invalid replacement value (a nil)
+  "a1ddaaa" 2	error	invalid replacement value (a nil)
+  "c22cb" 2	error	invalid replacement value (a nil)
+  "ca1a1" 2	error	invalid replacement value (a nil)
+  "dbb" -2	error	invalid replacement value (a nil)
+  "acd1ad1" -2	error	invalid replacement value (a nil)
+  "cbb" -2	error	invalid replacement value (a nil)
+27	GENERR	bad argument #1 to 'B' (pattern have captures)
+28	((P"b" * R("az","12")) - (P"b" / tab2))
+  "bcac2da1" 1	ok	1:nil
+  "bdcd" 1	ok	1:nil
+  "aa" 1	ok	1:nil
+  "1b1cbcda" 2	ok	1:nil
+  "da 21b" 2	ok	1:nil
+  "" 2	ok	1:nil
+  "d" -2	ok	1:nil
+  "aa1aab" -2	ok	1:nil
+  "a2" -2	ok	1:nil
+29	ERRGEN lpeg_cases.lua:108: loop body may accept empty string
+30	Cc(nil)
+  " ab1" 1	ok	1:nil
+  "dbda" 1	ok	1:nil
+  "a d " 1	ok	1:nil
+  "ac 22b" 2	ok	1:nil
+  "bccdadab" 2	ok	1:nil
+  "a bb  ab" 2	ok	1:nil
+  "a1" -2	ok	1:nil
+  "a12aab" -2	ok	1:nil
+  "ac2" -2	ok	1:nil
+31	(Cmt(((P(-1) * R"ad") - (Cc(nil) * P"ab")), cmt9) * (Ct((Cc(nil) - P(2))) / tab1))
+  "a" 1	ok	1:nil
+  "b d " 1	ok	1:nil
+  "" 1	ok	1:nil
+  "ac2a aab" 2	ok	1:nil
+  "22c" 2	ok	1:nil
+  "bac" 2	ok	1:nil
+  "1 " -2	ok	1:nil
+  "abddb1a" -2	ok	1:nil
+  " bac" -2	ok	1:nil
+32	P{S = ((-R"ad") * Ct(P(2))); A = Cs((#Carg(1)))}
+  "cb " 1	ok	1:""
+  "a" 1	ok	1:""
+  " aacb1" 1	ok	1:""
+  "caa21a" 2	ok	1:""
+  "ca1b d" 2	ok	1:""
+  "  " 2	ok	1:""
+  "" -2	ok	1:""
+  "a1b" -2	ok	1:""
+  "1aaca2" -2	ok	1:""
+33	Ct((P(true) * P(0)))
+  "" 1	ok	1:{}
+  "aac21" 1	ok	1:{}
+  "2cd1a" 1	ok	1:{}
+  "cac a" 2	ok	1:{}
+  "ba   dab" 2	ok	1:{}
+  "1dcb2 " 2	ok	1:{}
+  "" -2	ok	1:{}
+  "ab " -2	ok	1:{}
+  " " -2	ok	1:{}
+34	P{S = (-(P(-1) * Cc(nil)))}
+  "" 1	ok	1:nil
+  "11ac c1c" 1	ok	1:i1
+  "acdb21" 1	ok	1:i1
+  "cbb aa" 2	ok	1:i2
+  "ac1a" 2	ok	1:i2
+  "" 2	ok	1:nil
+  " adaa" -2	ok	1:i4
+  "acb a aa" -2	ok	1:i7
+  "ba2b" -2	ok	1:i3
+35	Carg(1)
+  "a2a2" 1	ok	1:"ARG"
+  "1ab a2" 1	ok	1:"ARG"
+  "abba2c" 1	ok	1:"ARG"
+  "ab" 2	ok	1:"ARG"
+  "abaaadbb" 2	ok	1:"ARG"
+  "baba1ba" 2	ok	1:"ARG"
+  "aca1b" -2	ok	1:"ARG"
+  "2cadb" -2	ok	1:"ARG"
+  "b 1" -2	ok	1:"ARG"
+36	(P"d" * P(false))
+  "b2 b" 1	ok	1:nil
+  "dbdbd " 1	ok	1:nil
+  "22112bb" 1	ok	1:nil
+  "ac2bac2" 2	ok	1:nil
+  "" 2	ok	1:nil
+  "2bcaaa 1" 2	ok	1:nil
+  "a2d2c" -2	ok	1:nil
+  "1aabcdaa" -2	ok	1:nil
+  "ad11a" -2	ok	1:nil
+37	Cg((-Cs(Cc(1))),nil)
+  "d ac" 1	ok	1:nil
+  "dba1a" 1	ok	1:nil
+  "a 2abb" 1	ok	1:nil
+  "b1aaba" 2	ok	1:nil
+  "2" 2	ok	1:nil
+  "bb a 1" 2	ok	1:nil
+  "adbdbc" -2	ok	1:nil
+  "b2baac" -2	ok	1:nil
+  "a 1d2c" -2	ok	1:nil
+38	P{S = (P(1) * ((Cc(1) + P"ab") / 3)); A = Cs(((R("az","12") * P"d") * (Cp() / "a%0b")))}
+  "d12 aa" 1	error	no capture '3'
+  "12" 1	error	no capture '3'
+  "bb" 1	error	no capture '3'
+  "112bac " 2	error	no capture '3'
+  "ac  dac" 2	error	no capture '3'
+  "2daa" 2	error	no capture '3'
+  "11bb 1db" -2	error	no capture '3'
+  "" -2	ok	1:nil
+  "b abdba" -2	error	no capture '3'
+39	(P(0) * P"c")
+  "2dad" 1	ok	1:nil
+  "bbbdaba" 1	ok	1:nil
+  "" 1	ok	1:nil
+  "1c" 2	ok	1:i3
+  "2a 12 a" 2	ok	1:nil
+  "b" 2	ok	1:nil
+  "ba122" -2	ok	1:nil
+  "a2a1babd" -2	ok	1:nil
+  "b  2a21c" -2	ok	1:nil
+40	(Cp() * Cs(R("az","12")))
+  "2a2a2" 1	ok	2:i1 "2"
+  "2a1ca " 1	ok	2:i1 "2"
+  " acbaa" 1	ok	1:nil
+  "bab2b22" 2	ok	2:i2 "a"
+  "aaaaa" 2	ok	2:i2 "a"
+  "c2a1" 2	ok	2:i2 "2"
+  "dacc" -2	ok	2:i3 "c"
+  "aa2aaad" -2	ok	2:i6 "a"
+  "cad " -2	ok	2:i3 "d"
+41	Cg(Cmt(Cc(nil), cmt8),nil)
+  "1c" 1	ok	1:nil
+  "c1" 1	ok	1:nil
+  "" 1	ok	1:nil
+  "1d " 2	ok	1:nil
+  "c21cab" 2	ok	1:nil
+  "bbaba" 2	ok	1:nil
+  "ba" -2	ok	1:nil
+  "adcd" -2	ok	1:nil
+  "d" -2	ok	1:nil
+42	(#((-(P"b" * Carg(1))) + (Cs(P(false)) - (P"d" / ""))))
+  "a aa2" 1	ok	1:i1
+  "da" 1	ok	1:i1
+  "2d" 1	ok	1:i1
+  "bbaa" 2	ok	1:nil
+  "b2cc cd" 2	ok	1:i2
+  "da2a" 2	ok	1:i2
+  "daad11b1" -2	ok	1:nil
+  "abbb1  a" -2	ok	1:i7
+  "b" -2	ok	1:nil
+43	Cmt(P"a", cmt8)
+  "ddad  " 1	ok	1:nil
+  "bab ad1" 1	ok	1:nil
+  "ad" 1	ok	1:nil
+  "a11bc1da" 2	ok	1:nil
+  "2 " 2	ok	1:nil
+  "2baca" 2	ok	1:nil
+  "baaa" -2	ok	1:nil
+  "abcb " -2	ok	1:nil
+  "ad" -2	ok	1:nil
+44	P"d"
+  "" 1	ok	1:nil
+  " " 1	ok	1:nil
+  "bbaa1b" 1	ok	1:nil
+  "cb" 2	ok	1:nil
+  "ba" 2	ok	1:nil
+  "" 2	ok	1:nil
+  "cc1 1baa" -2	ok	1:nil
+  "a1b2" -2	ok	1:nil
+  "a d1db" -2	ok	1:i6
+45	P"c"
+  "aad c1a" 1	ok	1:nil
+  "ba2" 1	ok	1:nil
+  "2 ac2b" 1	ok	1:nil
+  "ba bdb" 2	ok	1:nil
+  "bcacd" 2	ok	1:i3
+  "ddbd11c" 2	ok	1:nil
+  "2ad" -2	ok	1:nil
+  "bbd1  a" -2	ok	1:nil
+  "c abdb2b" -2	ok	1:nil
+46	(-P"ab")
+  "aa" 1	ok	1:i1
+  " b a112" 1	ok	1:i1
+  "dad2" 1	ok	1:i1
+  "baa1ca " 2	ok	1:i2
+  "ad1acc" 2	ok	1:i2
+  "ca" 2	ok	1:i2
+  "dda b21" -2	ok	1:i6
+  "acabadb" -2	ok	1:i6
+  "cad" -2	ok	1:i2
+47	P"c"
+  "aa2cbb" 1	ok	1:nil
+  "ba db2b" 1	ok	1:nil
+  "" 1	ok	1:nil
+  "a" 2	ok	1:nil
+  "2 2cbbab" 2	ok	1:nil
+  "a" 2	ok	1:nil
+  "a" -2	ok	1:nil
+  "c1a bb" -2	ok	1:nil
+  "d12 ca" -2	ok	1:i6
+48	P{S = (Carg(1) + P(2)); A = Cc("x",2)}
+  " bbab" 1	ok	2:"x" i2
+  " d b" 1	ok	2:"x" i2
+  "baaadca" 1	ok	2:"x" i2
+  " 1bbcaaa" 2	ok	2:"x" i2
+  "a2babddd" 2	ok	2:"x" i2
+  "bddca" 2	ok	2:"x" i2
+  "a1d" -2	ok	2:"x" i2
+  "bda22d" -2	ok	2:"x" i2
+  "" -2	ok	2:"x" i2
+49	P{S = ((-Cc()) / 1); A = C(P"d")}
+  "dbb c1" 1	ok	1:"d"
+  "abc2bdca" 1	ok	1:nil
+  "ba221db" 1	ok	1:nil
+  "b" 2	ok	1:nil
+  "b " 2	ok	1:nil
+  "cbac" 2	ok	1:nil
+  "ab1a ad" -2	ok	1:nil
+  "2  b" -2	ok	1:nil
+  "c111a2ba" -2	ok	1:nil
+50	Cs(Ct(Cc(1)))
+  "b" 1	error	invalid replacement value (a table)
+  "1aacca" 1	error	invalid replacement value (a table)
+  " 1bc 2" 1	error	invalid replacement value (a table)
+  "2c" 2	error	invalid replacement value (a table)
+  "b " 2	error	invalid replacement value (a table)
+  "bac1 a1" 2	error	invalid replacement value (a table)
+  "db" -2	error	invalid replacement value (a table)
+  "2a" -2	error	invalid replacement value (a table)
+  "" -2	error	invalid replacement value (a table)
+51	GENERR	bad argument #1 to 'B' (pattern have captures)
+52	((Cf(S"ab", fold2) / 3) - Cg((P(1) + P"1"+P"2"),nil))
+  "aaca" 1	ok	1:nil
+  "a2c cca" 1	ok	1:nil
+  " c" 1	ok	1:nil
+  " a" 2	ok	1:nil
+  "babd2a" 2	ok	1:nil
+  "a22b" 2	ok	1:nil
+  "cbbcd" -2	ok	1:nil
+  "" -2	ok	1:nil
+  "ada" -2	ok	1:nil
+53	(-((Cs(R"ad") / tab1) + (Ct(P"ab") * (Cc() + P(true)))))
+  "cad aabb" 1	ok	1:nil
+  "a" 1	ok	1:nil
+  "1a " 1	ok	1:i1
+  "" 2	ok	1:i1
+  "c2" 2	ok	1:i2
+  "2a" 2	ok	1:nil
+  "aa" -2	ok	1:nil
+  " dada2b" -2	ok	1:i6
+  "c" -2	ok	1:nil
+54	(((P"1"+P"2" * P"1"+P"2") * (P(false) * Cc(nil))) + C(Cg(P"1"+P"2",n)))
+  "2" 1	ok	1:"2"
+  "" 1	ok	1:nil
+  "c1adba" 1	ok	1:nil
+  "1" 2	ok	1:nil
+  "ad " 2	ok	1:nil
+  "2ac" 2	ok	1:nil
+  "c2 b" -2	ok	1:nil
+  "a2ad" -2	ok	1:nil
+  "bb" -2	ok	1:nil
+55	(P"d" - Carg(1))
+  "a" 1	ok	1:nil
+  "cbb1ac" 1	ok	1:nil
+  "da1 bbdd" 1	ok	1:nil
+  "2d2 " 2	ok	1:nil
+  " bba 1" 2	ok	1:nil
+  "a2ccda" 2	ok	1:nil
+  "1c" -2	ok	1:nil
+  "ba a bb" -2	ok	1:nil
+  "bca" -2	ok	1:nil
+56	Cp()
+  "1b" 1	ok	1:i1
+  "1bac" 1	ok	1:i1
+  "aaa" 1	ok	1:i1
+  "2" 2	ok	1:i2
+  " aaa" 2	ok	1:i2
+  "bddaa" 2	ok	1:i2
+  " " -2	ok	1:i1
+  "dabbc" -2	ok	1:i4
+  "2" -2	ok	1:i1
+57	B(P"a")
+  "aba " 1	ok	1:nil
+  "2a" 1	ok	1:nil
+  "a1c" 1	ok	1:nil
+  "baa2 " 2	ok	1:nil
+  "a1a2a" 2	ok	1:i2
+  "d2" 2	ok	1:nil
+  "dd1b2a" -2	ok	1:nil
+  "ccb1ab" -2	ok	1:nil
+  "1" -2	ok	1:nil
+58	((-C((P(true) + Cc(nil)))) - P(0))
+  "b" 1	ok	1:nil
+  "da" 1	ok	1:nil
+  "aab" 1	ok	1:nil
+  "1adad" 2	ok	1:nil
+  "adc" 2	ok	1:nil
+  "abcabaaa" 2	ok	1:nil
+  "c2ac" -2	ok	1:nil
+  " ca" -2	ok	1:nil
+  "a1ba" -2	ok	1:nil
+59	((P"a" / cf3) * (Cs((P(-1) - P" ")) * S"ab"))
+  " d" 1	ok	1:nil
+  " d1d d b" 1	ok	1:nil
+  "a" 1	ok	1:nil
+  "b1 ccc1a" 2	ok	1:nil
+  "" 2	ok	1:nil
+  "b2da " 2	ok	1:nil
+  "1a1" -2	ok	1:nil
+  "" -2	ok	1:nil
+  "a ac2ad" -2	ok	1:nil
+60	((#(Cg(P(2),nil) + (P(0) / tab3))) / cf9)
+  "d2ac1cd" 1	ok	1:false
+  "b2c" 1	ok	1:false
+  "" 1	ok	1:false
+  " daaa da" 2	ok	1:false
+  "ab2b" 2	ok	1:false
+  "2" 2	ok	1:false
+  "bda" -2	ok	1:false
+  "c a" -2	ok	1:false
+  "cbadca2" -2	ok	1:false
+61	(P"b" + P(2))
+  "d" 1	ok	1:nil
+  "ba" 1	ok	1:i2
+  "cb cdbd " 1	ok	1:i3
+  "1a" 2	ok	1:nil
+  "1aada b1" 2	ok	1:i4
+  "bbaa1a2d" 2	ok	1:i3
+  "" -2	ok	1:nil
+  "2a2a2ba" -2	ok	1:i7
+  "aabbbd" -2	ok	1:i6
+62	Cs(Cmt((Cb"n" * P(true)), cmt9))
+  "1 baba" 1	error	back reference 'n' not found
+  "cbdd" 1	error	back reference 'n' not found
+  "cacaacd2" 1	error	back reference 'n' not found
+  "aa2 aca" 2	error	back reference 'n' not found
+  "b" 2	error	back reference 'n' not found
+  "2 22d1" 2	error	back reference 'n' not found
+  "dbbaacb" -2	error	back reference 'n' not found
+  "2bccd" -2	error	back reference 'n' not found
+  "dab" -2	error	back reference 'n' not found
+63	((#Cf((Cc() / tab4), fold3)) / tab3)
+  "d" 1	ok	1:""
+  " b 1" 1	ok	1:""
+  "bcbaa21d" 1	ok	1:""
+  "2 b" 2	ok	1:""
+  "1a1d bcd" 2	ok	1:""
+  "a " 2	ok	1:""
+  "a" -2	ok	1:""
+  "" -2	ok	1:""
+  "a" -2	ok	1:""
+64	Cs(Cb"n")
+  "21" 1	error	back reference 'n' not found
+  "1b" 1	error	back reference 'n' not found
+  " d" 1	error	back reference 'n' not found
+  "22ac2" 2	error	back reference 'n' not found
+  " 21bad" 2	error	back reference 'n' not found
+  "" 2	error	back reference 'n' not found
+  "b2daa1ab" -2	error	back reference 'n' not found
+  "babbaa c" -2	error	back reference 'n' not found
+  "a1 " -2	error	back reference 'n' not found
+65	((Cc(1) / cf8) * ((C(P"1"+P"2") + (P"d" + P(2))) * ((Carg(1) * P(1)) + (P"a" + P(0)))))
+  "dd" 1	ok	2:{i1=i1} "ARG"
+  "11cbb11" 1	ok	3:{i1=i1} "1" "ARG"
+  "bdb2" 1	ok	2:{i1=i1} "ARG"
+  " d1 2" 2	ok	2:{i1=i1} "ARG"
+  "bacba" 2	ok	2:{i1=i1} "ARG"
+  "2dc2" 2	ok	2:{i1=i1} "ARG"
+  "abaac " -2	ok	1:{i1=i1}
+  "" -2	ok	1:nil
+  "c a a" -2	ok	1:{i1=i1}
+66	Cmt(Cp(), cmt3)
+  "ab c1aa" 1	ok	1:i2
+  " bdac" 1	ok	1:i2
+  "" 1	ok	1:nil
+  " bb1ca " 2	ok	1:i3
+  "a" 2	ok	1:nil
+  " bdaad" 2	ok	1:i3
+  "aa" -2	ok	1:i2
+  "ab" -2	ok	1:i2
+  " 1a" -2	ok	1:i3
+67	((P" " / cf2) * (Cf((P"d" / 0), fold2) + Cc(1)))
+  "ab1bba" 1	ok	1:nil
+  "2d1dbaa" 1	ok	1:nil
+  "" 1	ok	1:nil
+  "" 2	ok	1:nil
+  "a" 2	ok	1:nil
+  "a" 2	ok	1:nil
+  "a db" -2	ok	1:nil
+  "aaaaa" -2	ok	1:nil
+  "dbc" -2	ok	1:nil
+68	P{S = Cmt((P"1"+P"2" * P"1"+P"2"), cmt1)}
+  "aaabad" 1	ok	1:nil
+  "1ab1" 1	ok	1:nil
+  "aaaaaca" 1	ok	1:nil
+  "ba 2" 2	ok	1:nil
+  "" 2	ok	1:nil
+  "abdaa" 2	ok	1:nil
+  "2 c11ca2" -2	ok	1:nil
+  " daa cdc" -2	ok	1:nil
+  "db2" -2	ok	1:nil
+69	((P"d" * P"1"+P"2") / tab2)
+  "acb2b d" 1	ok	1:nil
+  "a2aa1 " 1	ok	1:nil
+  "c11ddaa" 1	ok	1:nil
+  "b" 2	ok	1:nil
+  "2a2bb" 2	ok	1:nil
+  "ab" 2	ok	1:nil
+  "" -2	ok	1:nil
+  "c" -2	ok	1:nil
+  "a2aa" -2	ok	1:nil
+70	P{S = P(-1); A = P(0)}
+  "db" 1	ok	1:nil
+  "1cd" 1	ok	1:nil
+  "bbb a2 " 1	ok	1:nil
+  " " 2	ok	1:i2
+  "2b21  " 2	ok	1:nil
+  "aada" 2	ok	1:nil
+  "b1" -2	ok	1:nil
+  "d2" -2	ok	1:nil
+  "cba" -2	ok	1:nil
+71	(P"d" * Cb"n")
+  "" 1	ok	1:nil
+  "" 1	ok	1:nil
+  "2d2a" 1	ok	1:nil
+  "aaaa11a" 2	ok	1:nil
+  "" 2	ok	1:nil
+  " ab2" 2	ok	1:nil
+  "c2a a" -2	ok	1:nil
+  "dabb" -2	ok	1:nil
+  "" -2	ok	1:nil
+72	Ct((Cg(R"ad",nil) * (P" " + P" ")))
+  "bbc " 1	ok	1:nil
+  "222ab b" 1	ok	1:nil
+  "bdaa" 1	ok	1:nil
+  "dd " 2	ok	1:{i1="d"}
+  "aab" 2	ok	1:nil
+  "a  2" 2	ok	1:nil
+  "b2bbabdd" -2	ok	1:nil
+  "baccb" -2	ok	1:nil
+  " 2b  b " -2	ok	1:{i1="b"}
+73	Cg(C(((Cc(1) + P"1"+P"2") - (R"ad" * Cc("x",2)))),nil)
+  "1a" 1	ok	2:"" i1
+  "cbabc" 1	ok	1:nil
+  "bbaaa2" 1	ok	1:nil
+  "c11" 2	ok	2:"" i1
+  "abba" 2	ok	1:nil
+  " " 2	ok	2:"" i1
+  "c2a" -2	ok	2:"" i1
+  "" -2	ok	2:"" i1
+  "a1 b" -2	ok	2:"" i1
+74	C((((S"ab" ^ 1) ^ 1) / tab2))
+  "b" 1	ok	1:"b"
+  "adabd2dd" 1	ok	1:"a"
+  "1bbb" 1	ok	1:nil
+  "c " 2	ok	1:nil
+  "bb" 2	ok	1:"b"
+  "ac " 2	ok	1:nil
+  "c1a1" -2	ok	1:"a"
+  "11da" -2	ok	1:nil
+  "2" -2	ok	1:nil
+75	((Cc() ^ -1) * (P"a" * S"ab"))
+  " " 1	ok	1:nil
+  " a" 1	ok	1:nil
+  "b" 1	ok	1:nil
+  "dd2b" 2	ok	1:nil
+  "dbd " 2	ok	1:nil
+  "b d" 2	ok	1:nil
+  "1cbadab" -2	ok	1:i8
+  "bc" -2	ok	1:nil
+  " aa2d " -2	ok	1:nil
+76	P"a"
+  "b1" 1	ok	1:nil
+  "" 1	ok	1:nil
+  "a1aba bd" 1	ok	1:i2
+  " ba2a ba" 2	ok	1:nil
+  " ca d11" 2	ok	1:nil
+  "bb2aba a" 2	ok	1:nil
+  "c" -2	ok	1:nil
+  "caabbdb" -2	ok	1:nil
+  "aa2abac" -2	ok	1:i7
+77	(#C((C(P(1)) - P"1"+P"2")))
+  "2a2ba1ab" 1	ok	1:nil
+  "bd" 1	ok	1:i1
+  "a1d" 1	ok	1:i1
+  "11baaa1b" 2	ok	1:nil
+  "c2" 2	ok	1:nil
+  "a" 2	ok	1:nil
+  "" -2	ok	1:nil
+  "" -2	ok	1:nil
+  "ad2" -2	ok	1:i2
+78	R"ad"
+  "a2 11bdb" 1	ok	1:i2
+  "" 1	ok	1:nil
+  "" 1	ok	1:nil
+  "a" 2	ok	1:nil
+  "bb1cc" 2	ok	1:i3
+  "bbac1aa" 2	ok	1:i3
+  "" -2	ok	1:nil
+  "cd" -2	ok	1:i2
+  "bba" -2	ok	1:i3
+79	GENERR	bad argument #1 to 'B' (pattern may not have fixed length)
+80	P{S = P(-1)}
+  "122aaa" 1	ok	1:nil
+  "b2a1a" 1	ok	1:nil
+  "ba1 " 1	ok	1:nil
+  "d b a" 2	ok	1:nil
+  "aac22aa" 2	ok	1:nil
+  "    " 2	ok	1:nil
+  "aa" -2	ok	1:nil
+  "aadaab1 " -2	ok	1:nil
+  "" -2	ok	1:i1
+81	S"ab"
+  "dd1 " 1	ok	1:nil
+  "baabad" 1	ok	1:i2
+  "ac" 1	ok	1:i2
+  "ad" 2	ok	1:nil
+  "bcb" 2	ok	1:nil
+  "c22 b22" 2	ok	1:nil
+  "b2 " -2	ok	1:nil
+  "2" -2	ok	1:nil
+  "bb1ba" -2	ok	1:i5
+82	(P"a" / 1)
+  "aa2a cca" 1	ok	1:"a"
+  "a" 1	ok	1:"a"
+  "b11" 1	ok	1:nil
+  "" 2	ok	1:nil
+  "bbabb" 2	ok	1:nil
+  "" 2	ok	1:nil
+  " 2ab" -2	ok	1:"a"
+  "aaadcd2" -2	ok	1:nil
+  "bcad11" -2	ok	1:nil
+83	Cc(1)
+  " " 1	ok	1:i1
+  " 1 a a 2" 1	ok	1:i1
+  " ad a " 1	ok	1:i1
+  "ab" 2	ok	1:i1
+  "a bad" 2	ok	1:i1
+  "d2ba1a2" 2	ok	1:i1
+  "ba" -2	ok	1:i1
+  "ab" -2	ok	1:i1
+  "bc a" -2	ok	1:i1
+84	((P(2) / tab1) * (Cb"n" * P"a"))
+  "dcb1aaa " 1	ok	1:nil
+  "dda " 1	error	back reference 'n' not found
+  "cabac" 1	ok	1:nil
+  "ddaaa" 2	error	back reference 'n' not found
+  "" 2	ok	1:nil
+  " ab2" 2	ok	1:nil
+  "2bdadcca" -2	ok	1:nil
+  "12ab" -2	ok	1:nil
+  "11d2bab" -2	ok	1:nil
+85	Cs(Cc(1))
+  " b" 1	ok	1:"1"
+  "cba" 1	ok	1:"1"
+  "2aaaaaa1" 1	ok	1:"1"
+  "" 2	ok	1:"1"
+  " a2b" 2	ok	1:"1"
+  "aaab1cb" 2	ok	1:"1"
+  "bda" -2	ok	1:"1"
+  "b1" -2	ok	1:"1"
+  " a1" -2	ok	1:"1"
+86	Cs((R("az","12") * P(false)))
+  "adbdb" 1	ok	1:nil
+  "a1abb" 1	ok	1:nil
+  "baa" 1	ok	1:nil
+  "d" 2	ok	1:nil
+  "ab b 2" 2	ok	1:nil
+  "aabbaac" 2	ok	1:nil
+  "2a2b" -2	ok	1:nil
+  "22b " -2	ok	1:nil
+  "b2a" -2	ok	1:nil
+87	(Cg(P" ",nil) * (P" " / cf4))
+  "" 1	ok	1:nil
+  "b11" 1	ok	1:nil
+  "abcbb1" 1	ok	1:nil
+  "cdd d" 2	ok	1:nil
+  "a2" 2	ok	1:nil
+  "dba1" 2	ok	1:nil
+  "dcdac1d" -2	ok	1:nil
+  "aaa a2 " -2	ok	1:nil
+  "a" -2	ok	1:nil
+88	(P(-1) * Cp())
+  "b" 1	ok	1:nil
+  "da" 1	ok	1:nil
+  "2bcabb" 1	ok	1:nil
+  "a" 2	ok	1:i2
+  "21baab" 2	ok	1:nil
+  "ad2d" 2	ok	1:nil
+  "11bb2a" -2	ok	1:nil
+  "d" -2	ok	1:nil
+  "aa" -2	ok	1:nil
+89	(S"ab" + P"1"+P"2")
+  "a" 1	ok	1:i2
+  "aab2abdc" 1	ok	1:i2
+  "1ca21" 1	ok	1:i2
+  " 2cbc" 2	ok	1:i3
+  "2acab" 2	ok	1:i3
+  "cc22 " 2	ok	1:nil
+  "bb" -2	ok	1:i2
+  "ad" -2	ok	1:i2
+  "abbb" -2	ok	1:i4
+90	Cb"n"
+  "ca" 1	error	back reference 'n' not found
+  " aa 1 11" 1	error	back reference 'n' not found
+  "a ba" 1	error	back reference 'n' not found
+  "cbbda" 2	error	back reference 'n' not found
+  "cad" 2	error	back reference 'n' not found
+  "1bd " 2	error	back reference 'n' not found
+  "" -2	error	back reference 'n' not found
+  "1b" -2	error	back reference 'n' not found
+  "2dcdc" -2	error	back reference 'n' not found
+91	((Cb"n" / 0) * Cmt(P"d", cmt3))
+  "aaa" 1	ok	1:nil
+  " bdbab21" 1	ok	1:nil
+  "a22d2" 1	ok	1:nil
+  "aac1b" 2	ok	1:nil
+  "aa a" 2	ok	1:nil
+  "" 2	ok	1:nil
+  "acadda2" -2	ok	1:nil
+  "ab1" -2	ok	1:nil
+  "acc bb" -2	ok	1:nil
+92	Cs(Cf(P"d", fold1))
+  "dda2a" 1	error	no initial value for fold capture
+  "" 1	ok	1:nil
+  "aabdab" 1	ok	1:nil
+  "ba" 2	ok	1:nil
+  "ad2aaa" 2	error	no initial value for fold capture
+  " ac" 2	ok	1:nil
+  "ac da" -2	error	no initial value for fold capture
+  "" -2	ok	1:nil
+  "" -2	ok	1:nil
+93	((((P(true) / "[%0]") + (P"c" * Cp())) - ((P(-1) / "[%0]") / cf9)) + (Ct(Ct(Cc(1))) * ((R("az","12") * Cc(1)) * (P(0) / "%%%1%2"))))
+  "d2a1ba1b" 1	ok	1:"\91\93"
+  "2d" 1	ok	1:"\91\93"
+  "daa1a" 1	ok	1:"\91\93"
+  "a" 2	ok	1:nil
+  "aaab21c" 2	ok	1:"\91\93"
+  "2ab d" 2	ok	1:"\91\93"
+  "2aaa" -2	ok	1:"\91\93"
+  "" -2	ok	1:nil
+  "ba 1abc" -2	ok	1:"\91\93"
+94	(#R"ad")
+  "b2cbb" 1	ok	1:i1
+  "aacba1" 1	ok	1:i1
+  "db1" 1	ok	1:i1
+  "22ab" 2	ok	1:nil
+  "1abb" 2	ok	1:i2
+  "b2" 2	ok	1:nil
+  "b2aaaaa" -2	ok	1:i6
+  "2aab" -2	ok	1:i3
+  "aac1bb" -2	ok	1:i5
+95	(#Ct(((-P"b") / tab2)))
+  "dcdbd" 1	ok	1:i1
+  "ac c a" 1	ok	1:i1
+  "a bacad" 1	ok	1:i1
+  "b" 2	ok	1:i2
+  "c2a" 2	ok	1:i2
+  " ca a" 2	ok	1:i2
+  "a1ca" -2	ok	1:i3
+  "c11bda" -2	ok	1:i5
+  "ab1cba" -2	ok	1:nil
+96	Ct((P"b" / cf9))
+  "a" 1	ok	1:nil
+  "a aaaaa2" 1	ok	1:nil
+  "" 1	ok	1:nil
+  "caa2c2ba" 2	ok	1:nil
+  "1" 2	ok	1:nil
+  "aabaa" 2	ok	1:nil
+  "a1" -2	ok	1:nil
+  "aacaa ab" -2	ok	1:nil
+  "2b 2bbdb" -2	ok	1:nil
+97	(R("az","12") * Cf(Ct(P"1"+P"2"), fold3))
+  "dda1a" 1	ok	1:nil
+  "cadb2aa" 1	ok	1:nil
+  "b a2aab" 1	ok	1:nil
+  "" 2	ok	1:nil
+  "dc1a 2c" 2	ok	1:{}
+  "bcaad a" 2	ok	1:nil
+  "" -2	ok	1:nil
+  "" -2	ok	1:nil
+  "baacdac " -2	ok	1:nil
+98	P{S = Cc(1)}
+  "" 1	ok	1:i1
+  "db" 1	ok	1:i1
+  "a" 1	ok	1:i1
+  " 11a11ab" 2	ok	1:i1
+  "ba1 " 2	ok	1:i1
+  "d" 2	ok	1:i1
+  "ad a b1" -2	ok	1:i1
+  "db b2db" -2	ok	1:i1
+  " ac" -2	ok	1:i1
+99	P{S = (-Cmt(P"c", cmt2))}
+  "1cb  " 1	ok	1:i1
+  "daaaac" 1	ok	1:i1
+  "b2" 1	ok	1:i1
+  "a " 2	ok	1:i2
+  "" 2	ok	1:i1
+  "" 2	ok	1:i1
+  "dad1" -2	ok	1:i3
+  "1c" -2	ok	1:i1
+  "bcbbb" -2	ok	1:i4
+100	GENERR	bad argument #1 to 'B' (pattern have captures)
+101	(P(1) / 3)
+  "ac2a 1" 1	error	no capture '3'
+  "adada dc" 1	error	no capture '3'
+  "aa" 1	error	no capture '3'
+  "da bb" 2	error	no capture '3'
+  "daba" 2	error	no capture '3'
+  "baddb12a" 2	error	no capture '3'
+  "  " -2	error	no capture '3'
+  "a21a" -2	error	no capture '3'
+  "1d2 db" -2	error	no capture '3'
+102	((P(0) + S"ab") * (R"ad" / cf8))
+  "1ac" 1	ok	1:nil
+  "2bca" 1	ok	1:nil
+  "da" 1	ok	1:{i1="d"}
+  "ac" 2	ok	1:{i1="c"}
+  "aaa1" 2	ok	1:{i1="a"}
+  " b d adb" 2	ok	1:{i1="b"}
+  "aa1c" -2	ok	1:nil
+  "baa1" -2	ok	1:{i1="a"}
+  " 2bdab" -2	ok	1:{i1="a"}
+103	(Cs(P"1"+P"2") / 2)
+  "" 1	ok	1:nil
+  "1a b ab" 1	error	no capture '2'
+  "cab" 1	ok	1:nil
+  "1" 2	ok	1:nil
+  "" 2	ok	1:nil
+  "aa1d2ac" 2	ok	1:nil
+  "ac" -2	ok	1:nil
+  "b" -2	ok	1:nil
+  "b2a 2" -2	ok	1:nil
+104	P{S = (R"ad" * P(true))}
+  "a" 1	ok	1:i2
+  "d cbd2dd" 1	ok	1:i2
+  " badaa" 1	ok	1:nil
+  "" 2	ok	1:nil
+  "c1 b" 2	ok	1:nil
+  "1a2abada" 2	ok	1:i3
+  "a " -2	ok	1:i2
+  "aa2aaa" -2	ok	1:i6
+  "cd" -2	ok	1:i2
+105	P{S = Cs((P"c" + Cp())); A = (P"1"+P"2" / tab1)}
+  "babab" 1	ok	1:"1"
+  " bbd1a1" 1	ok	1:"1"
+  "caa" 1	ok	1:"c"
+  "badba " 2	ok	1:"2"
+  "" 2	ok	1:"1"
+  "a1bcbda" 2	ok	1:"2"
+  "" -2	ok	1:"1"
+  "b2bad" -2	ok	1:"4"
+  "2ba" -2	ok	1:"2"
+106	ERRGEN lpeg_cases.lua:108: loop body may accept empty string
+107	Cmt(Cb"n", cmt6)
+  "aaa" 1	error	back reference 'n' not found
+  "" 1	error	back reference 'n' not found
+  "bdaaba" 1	error	back reference 'n' not found
+  "b 2b" 2	error	back reference 'n' not found
+  "aa 1b" 2	error	back reference 'n' not found
+  "a1bd" 2	error	back reference 'n' not found
+  "2" -2	error	back reference 'n' not found
+  "ab" -2	error	back reference 'n' not found
+  "b 1" -2	error	back reference 'n' not found
+108	P{S = Cf((Cc(nil) + Cb"n"), fold2); A = Cmt(Carg(1), cmt2)}
+  "b ab" 1	ok	1:nil
+  "bbb1" 1	ok	1:nil
+  "" 1	ok	1:nil
+  "" 2	ok	1:nil
+  "" 2	ok	1:nil
+  "ac2ba ba" 2	ok	1:nil
+  "1a" -2	ok	1:nil
+  " caddbad" -2	ok	1:nil
+  " " -2	ok	1:nil
+109	Cs(P(0))
+  "ac2a" 1	ok	1:""
+  "" 1	ok	1:""
+  "1" 1	ok	1:""
+  "1ad" 2	ok	1:""
+  "d12" 2	ok	1:""
+  " a" 2	ok	1:""
+  "acaad a" -2	ok	1:""
+  "" -2	ok	1:""
+  "ab " -2	ok	1:""
+110	(Cmt(Ct((P(0) + P(true))), cmt5) / tab3)
+  " 1d2 ab " 1	ok	1:"dyndyn"
+  "2" 1	ok	1:"dyndyn"
+  "21ba d" 1	ok	1:"dyndyn"
+  "a22aac2" 2	ok	1:"dyndyn"
+  "aa 1a" 2	ok	1:"dyndyn"
+  "" 2	ok	1:"dyndyn"
+  "aa" -2	ok	1:"dyndyn"
+  "" -2	ok	1:"dyndyn"
+  "ad" -2	ok	1:"dyndyn"
+111	(C(Cb"n") + Cs(P"d"))
+  "2bab1" 1	error	back reference 'n' not found
+  "baba" 1	error	back reference 'n' not found
+  "db c2aa" 1	error	back reference 'n' not found
+  "caaab" 2	error	back reference 'n' not found
+  "1 ad22 b" 2	error	back reference 'n' not found
+  "2cba2" 2	error	back reference 'n' not found
+  "a" -2	error	back reference 'n' not found
+  "" -2	error	back reference 'n' not found
+  "a1 ac " -2	error	back reference 'n' not found
+112	P{S = (Cb"n" - P" "); A = P(2)}
+  "" 1	error	back reference 'n' not found
+  "ac" 1	error	back reference 'n' not found
+  "c2d1ca " 1	error	back reference 'n' not found
+  "a" 2	error	back reference 'n' not found
+  "dd2ad" 2	error	back reference 'n' not found
+  "a1dadda2" 2	error	back reference 'n' not found
+  "1b " -2	error	back reference 'n' not found
+  "a2b1" -2	error	back reference 'n' not found
+  " b2babca" -2	error	back reference 'n' not found
+113	Cg(Cg((P"b" + P(1)),nil),nil)
+  " ba" 1	ok	1:" "
+  "b1a" 1	ok	1:"b"
+  "abca2" 1	ok	1:"a"
+  "baa2c" 2	ok	1:"a"
+  "ababca12" 2	ok	1:"b"
+  "aacab2ba" 2	ok	1:"a"
+  "aabab ca" -2	ok	1:"c"
+  "abaada" -2	ok	1:"d"
+  "2bc11bac" -2	ok	1:"a"
+114	Cc()
+  "aa21" 1	ok	1:i1
+  "bcc" 1	ok	1:i1
+  "ab" 1	ok	1:i1
+  "1dd ba" 2	ok	1:i2
+  "aac" 2	ok	1:i2
+  "dbbdb" 2	ok	1:i2
+  "" -2	ok	1:i1
+  "aaabbad" -2	ok	1:i6
+  "baa2" -2	ok	1:i3
+115	ERRGEN lpeg_cases.lua:122: bad argument #1 to 'B' (pattern have captures)
+116	P{S = Cmt(R("az","12"), cmt2)}
+  "" 1	ok	1:nil
+  " 1a2 a" 1	ok	1:nil
+  "b12bca" 1	ok	1:nil
+  "aaba" 2	ok	1:nil
+  "2" 2	ok	1:nil
+  "daa ba1" 2	ok	1:nil
+  "ad 12bb" -2	ok	1:nil
+  "" -2	ok	1:nil
+  "b21aad " -2	ok	1:nil
+117	P{S = P"a"; A = (Cc(1) / "")}
+  "2 2" 1	ok	1:nil
+  "aa1  ab" 1	ok	1:i2
+  "bbba a 2" 1	ok	1:nil
+  " a" 2	ok	1:i3
+  "11adb" 2	ok	1:nil
+  "aadaa1c" 2	ok	1:i3
+  "aa2ad" -2	ok	1:i5
+  "  2b b" -2	ok	1:nil
+  "a2d" -2	ok	1:nil
+118	Cf((((Cc(nil) / cf6) * (#Cc(nil))) / 2), fold2)
+  "aca1d 1 " 1	ok	1:nil
+  " aa2" 1	ok	1:nil
+  "2ba" 1	ok	1:nil
+  "bddd" 2	ok	1:nil
+  "2bb" 2	ok	1:nil
+  "adaccaa" 2	ok	1:nil
+  " " -2	ok	1:nil
+  "aa cb 21" -2	ok	1:nil
+  "ada2cc" -2	ok	1:nil
+119	P{S = ((Cc(1) + Cc()) * (R("az","12") / cf3)); A = ((#Cc("x",2)) + (P(true) / tab1))}
+  "b1ccd" 1	ok	2:i1 i1
+  "a11 bbb " 1	ok	2:i1 i1
+  "abc2 aa" 1	ok	2:i1 i1
+  "aaa" 2	ok	2:i1 i1
+  "cd21" 2	ok	2:i1 i1
+  "aa " 2	ok	2:i1 i1
+  "" -2	ok	1:nil
+  "b" -2	ok	2:i1 i1
+  "b bd " -2	ok	2:i1 i1
+120	Cc()
+  "bdadd" 1	ok	1:i1
+  "1a" 1	ok	1:i1
+  "b a" 1	ok	1:i1
+  "d1" 2	ok	1:i2
+  "baac c1" 2	ok	1:i2
+  "ccac bdc" 2	ok	1:i2
+  "bbdd" -2	ok	1:i3
+  "cdbccd1" -2	ok	1:i6
+  "ba1daa" -2	ok	1:i5
+1	(Ct(P(0)) / "x")
+  "dbab" 1	ok	1:"x"
+  "ba c" 1	ok	1:"x"
+  "b2b" 1	ok	1:"x"
+  "b" 2	ok	1:"x"
+  "2aadb" 2	ok	1:"x"
+  "a " 2	ok	1:"x"
+  "c" -2	ok	1:"x"
+  "aaa2d" -2	ok	1:"x"
+  "b1c b" -2	ok	1:"x"
+2	P{S = (B(P"d") / tab4); A = P(false)}
+  " a" 1	ok	1:nil
+  "" 1	ok	1:nil
+  "bad a" 1	ok	1:nil
+  "b" 2	ok	1:nil
+  "b2ab2" 2	ok	1:nil
+  " " 2	ok	1:nil
+  "" -2	ok	1:nil
+  "abbbada" -2	ok	1:nil
+  "" -2	ok	1:nil
+3	(((P(false) / 1) ^ 1) / tab2)
+  "1abc" 1	ok	1:nil
+  "a 1 a " 1	ok	1:nil
+  "a a2" 1	ok	1:nil
+  "aba1b" 2	ok	1:nil
+  " db 2 a" 2	ok	1:nil
+  "ab212 a" 2	ok	1:nil
+  "b" -2	ok	1:nil
+  "b a2aca1" -2	ok	1:nil
+  "aca" -2	ok	1:nil
+4	GENERR	bad argument #1 to 'B' (pattern have captures)
+5	C((P"d" + Cc("x",2)))
+  "ab  2a" 1	ok	3:"" "x" i2
+  "a" 1	ok	3:"" "x" i2
+  "b1a1" 1	ok	3:"" "x" i2
+  "a" 2	ok	3:"" "x" i2
+  "d aa" 2	ok	3:"" "x" i2
+  "c11 aa a" 2	ok	3:"" "x" i2
+  "aada2b" -2	ok	3:"" "x" i2
+  "1b " -2	ok	3:"" "x" i2
+  "bb" -2	ok	3:"" "x" i2
+6	(Carg(1) * P(0))
+  "a21" 1	ok	1:"ARG"
+  "22aca" 1	ok	1:"ARG"
+  "acabcd" 1	ok	1:"ARG"
+  "a" 2	ok	1:"ARG"
+  "122  caa" 2	ok	1:"ARG"
+  "a" 2	ok	1:"ARG"
+  " d" -2	ok	1:"ARG"
+  "2" -2	ok	1:"ARG"
+  "a b" -2	ok	1:"ARG"
+7	(((Ct(P"b") / 0) ^ 2) / 1)
+  " " 1	ok	1:nil
+  "" 1	ok	1:nil
+  "adcba" 1	ok	1:nil
+  "a1 a" 2	ok	1:nil
+  " db1a" 2	ok	1:nil
+  "2acca" 2	ok	1:nil
+  "acab" -2	ok	1:nil
+  "ba" -2	ok	1:nil
+  "2d" -2	ok	1:nil
+8	(-(Cg(P(-1),nil) / "%%%1%2"))
+  "b" 1	ok	1:i1
+  "bb" 1	ok	1:i1
+  "cbbb1" 1	ok	1:i1
+  "a " 2	ok	1:i2
+  "adba11aa" 2	ok	1:i2
+  "aabd" 2	ok	1:i2
+  "a" -2	ok	1:i1
+  "2db2b" -2	ok	1:i4
+  "" -2	ok	1:nil
+9	(Cf((Cg(P(-1),n) * (P"a" * P"c")), fold1) / tab2)
+  "" 1	ok	1:nil
+  "ba11adc2" 1	ok	1:nil
+  "" 1	ok	1:nil
+  "d aabd1" 2	ok	1:nil
+  "" 2	ok	1:nil
+  "1aba b" 2	ok	1:nil
+  "abbaca" -2	ok	1:nil
+  "2ab 2d" -2	ok	1:nil
+  "222c" -2	ok	1:nil
+10	P{S = (P"d" ^ 3); A = ((P(true) * (Carg(1) / 1)) * (#P(true)))}
+  "bdac2" 1	ok	1:nil
+  "2cc2b" 1	ok	1:nil
+  "daa21" 1	ok	1:nil
+  " aad2a22" 2	ok	1:nil
+  "2c11bab" 2	ok	1:nil
+  "abb da" 2	ok	1:nil
+  "ddc2" -2	ok	1:nil
+  "2a2" -2	ok	1:nil
+  "aba" -2	ok	1:nil
+11	P{S = ((Cc("x",2) * P"a") / 2); A = R("az","12")}
+  "a d 1" 1	ok	1:i2
+  "aa" 1	ok	1:i2
+  "2aa11d" 1	ok	1:nil
+  "1cabc a2" 2	ok	1:nil
+  "" 2	ok	1:nil
+  "ba a " 2	ok	1:i2
+  "1adc" -2	ok	1:nil
+  "aa2aaaa" -2	ok	1:i2
+  " ca" -2	ok	1:nil
+12	(P"1"+P"2" ^ -1)
+  " bb2 " 1	ok	1:i1
+  "bba2  " 1	ok	1:i1
+  "a" 1	ok	1:i1
+  "a2cca" 2	ok	1:i3
+  "b2bda1ab" 2	ok	1:i3
+  "ad  1a" 2	ok	1:i2
+  "dbab2d b" -2	ok	1:i7
+  "daaa1bd" -2	ok	1:i6
+  "a2a1aaa" -2	ok	1:i6
+13	P{S = Cmt(P"c", cmt6); A = P(0)}
+  "dabaa" 1	ok	1:nil
+  "d" 1	ok	1:nil
+  "cba" 1	ok	2:i1 "b"
+  "a" 2	ok	1:nil
+  "1" 2	ok	1:nil
+  "bbb " 2	ok	1:nil
+  "a" -2	ok	1:nil
+  "1a2a" -2	ok	1:nil
+  "1" -2	ok	1:nil
+14	(Cc(nil) / "")
+  "c" 1	ok	1:""
+  " 2" 1	ok	1:""
+  "a" 1	ok	1:""
+  "bcaaba" 2	ok	1:""
+  "a1a1a" 2	ok	1:""
+  "a" 2	ok	1:""
+  "" -2	ok	1:""
+  "b1da1a" -2	ok	1:""
+  " db" -2	ok	1:""
+15	(Cmt((P"ab" / 2), cmt2) * ((P(false) - P"d") * (Carg(1) * Cb"n")))
+  "2ba" 1	ok	1:nil
+  "" 1	ok	1:nil
+  "" 1	ok	1:nil
+  "bca2b b " 2	ok	1:nil
+  "" 2	ok	1:nil
+  "1c121dba" 2	ok	1:nil
+  "bb " -2	ok	1:nil
+  "ac22abab" -2	error	no capture '2'
+  "" -2	ok	1:nil
+16	(R("az","12") + P(1))
+  "adb a" 1	ok	1:i2
+  "b1ccaa1" 1	ok	1:i2
+  "" 1	ok	1:nil
+  "adb" 2	ok	1:i3
+  "cbc" 2	ok	1:i3
+  "a1cbaa" 2	ok	1:i3
+  " aab1ab" -2	ok	1:i7
+  "a 2b " -2	ok	1:i5
+  "2ad" -2	ok	1:i3
+17	Cs(P" ")
+  "  a dba" 1	ok	1:" "
+  "a db" 1	ok	1:nil
+  "" 1	ok	1:nil
+  "bbd1a" 2	ok	1:nil
+  "" 2	ok	1:nil
+  "baaadab1" 2	ok	1:nil
+  "ba" -2	ok	1:nil
+  "ad2a2" -2	ok	1:nil
+  "b2baadac" -2	ok	1:nil
+18	(-Cc(nil))
+  "c2bba2a" 1	ok	1:nil
+  "a" 1	ok	1:nil
+  "acbaa" 1	ok	1:nil
+  "2db  a2 " 2	ok	1:nil
+  "d" 2	ok	1:nil
+  "" 2	ok	1:nil
+  "c" -2	ok	1:nil
+  "" -2	ok	1:nil
+  "cb" -2	ok	1:nil
+19	((R("az","12") * Cc()) ^ -1)
+  "bbbc1 2" 1	ok	1:i2
+  "bb" 1	ok	1:i2
+  "cbb" 1	ok	1:i2
+  "a2a1a" 2	ok	1:i3
+  "" 2	ok	1:i1
+  "babd" 2	ok	1:i3
+  "d" -2	ok	1:i2
+  "d21dda2" -2	ok	1:i7
+  "d1 aac" -2	ok	1:i6
+20	((S"ab" / cf7) * (P(-1) / cf8))
+  " cb2d" 1	ok	1:nil
+  "bb2" 1	ok	1:nil
+  "2aaddb1b" 1	ok	1:nil
+  "db2" 2	ok	1:nil
+  "ac" 2	ok	1:nil
+  "a a2" 2	ok	1:nil
+  "21b2b" -2	ok	1:nil
+  "" -2	ok	1:nil
+  "caaabbd1" -2	ok	1:nil
+21	(((P(0) / tab3) * (P(false) + Cp())) / cf5)
+  "abaa" 1	ok	1:i0
+  " 1b c" 1	ok	1:i0
+  " bbb" 1	ok	1:i0
+  "" 2	ok	1:i0
+  "ba" 2	ok	1:i0
+  "a " 2	ok	1:i0
+  "db" -2	ok	1:i0
+  "" -2	ok	1:i0
+  "cbba" -2	ok	1:i0
+22	(P(0) * Cp())
+  "" 1	ok	1:i1
+  "  db2d" 1	ok	1:i1
+  "dcb2d" 1	ok	1:i1
+  "ba ba" 2	ok	1:i2
+  "a bb21a" 2	ok	1:i2
+  "1aa" 2	ok	1:i2
+  "b1bbd" -2	ok	1:i4
+  "" -2	ok	1:i1
+  "bcb" -2	ok	1:i2
+23	P{S = R("az","12")}
+  " abbab" 1	ok	1:nil
+  "bbac12ba" 1	ok	1:i2
+  "bb1aad" 1	ok	1:i2
+  "" 2	ok	1:nil
+  "" 2	ok	1:nil
+  "a ba" 2	ok	1:nil
+  "a b" -2	ok	1:nil
+  "bbcb" -2	ok	1:i4
+  "2" -2	ok	1:i2
+24	(((Cf(P(-1), fold2) * (#P" ")) / tab2) - (Ct((Cc("x",2) / tab1)) + (Cf(Cc(nil), fold3) * Cf(S"ab", fold2))))
+  "b" 1	ok	1:nil
+  "" 1	ok	1:nil
+  " aba 1" 1	ok	1:nil
+  "b" 2	ok	1:nil
+  "" 2	ok	1:nil
+  "c" 2	ok	1:nil
+  "b1babab" -2	ok	1:nil
+  "da ad1a" -2	ok	1:nil
+  " bdac " -2	ok	1:nil
+25	B(B(P(true)))
+  "b" 1	ok	1:i1
+  "2d" 1	ok	1:i1
+  "cbad11 " 1	ok	1:i1
+  "a  cca" 2	ok	1:i2
+  " c" 2	ok	1:i2
+  "dabad" 2	ok	1:i2
+  "da " -2	ok	1:i2
+  "d1aa1d2" -2	ok	1:i6
+  "a" -2	ok	1:i1
+26	Cc()
+  "d" 1	ok	1:i1
+  "aaaa  " 1	ok	1:i1
+  "1d" 1	ok	1:i1
+  "2 aba ab" 2	ok	1:i2
+  "ab1acb 1" 2	ok	1:i2
+  "adac2b " 2	ok	1:i2
+  "aba bc" -2	ok	1:i5
+  "d" -2	ok	1:i1
+  "daa2c1a" -2	ok	1:i6
+27	ERRGEN lpeg_cases.lua:122: bad argument #1 to 'B' (pattern have captures)
+28	P{S = (((-P(true)) + (Carg(1) / cf2)) / tab2); A = P(0); B = Cmt(B(P(true)), cmt9)}
+  "aa" 1	ok	1:i1
+  "2d " 1	ok	1:i1
+  "caba12ad" 1	ok	1:i1
+  "" 2	ok	1:i1
+  " dabb" 2	ok	1:i2
+  "b" 2	ok	1:i2
+  "adadbb12" -2	ok	1:i7
+  "aaa1a " -2	ok	1:i5
+  "b baba1d" -2	ok	1:i7
+29	(Ct(Ct((P"a" / cf9))) / "[%0]")
+  "" 1	ok	1:nil
+  "1bdcc" 1	ok	1:nil
+  "dcdadbab" 1	ok	1:nil
+  "aad1ba" 2	ok	1:"\91a\93"
+  "bbaab" 2	ok	1:nil
+  "" 2	ok	1:nil
+  "" -2	ok	1:nil
+  "d " -2	ok	1:nil
+  "abaaa" -2	ok	1:"\91a\93"
+30	ERRGEN lpeg_cases.lua:122: bad argument #1 to 'B' (pattern have captures)
+31	P{S = (P"1"+P"2" / tab2)}
+  "b bba" 1	ok	1:nil
+  "" 1	ok	1:nil
+  "cd22aa" 1	ok	1:nil
+  "bd1c" 2	ok	1:nil
+  "babb" 2	ok	1:nil
+  "bbba2a1a" 2	ok	1:nil
+  "cad" -2	ok	1:nil
+  "a" -2	ok	1:nil
+  "addd2c" -2	ok	1:i6
+32	(Cc() / 2)
+  "c" 1	error	no capture '2'
+  "d" 1	error	no capture '2'
+  "dca" 1	error	no capture '2'
+  "a2" 2	error	no capture '2'
+  "cbaabb" 2	error	no capture '2'
+  "db" 2	error	no capture '2'
+  "1bdbbb" -2	error	no capture '2'
+  "dd" -2	error	no capture '2'
+  "" -2	error	no capture '2'
+33	((C(P(-1)) / "[%0]") * R("az","12"))
+  "baaaba" 1	ok	1:nil
+  "a1b2a b" 1	ok	1:nil
+  "a22b2b" 1	ok	1:nil
+  "" 2	ok	1:nil
+  "bbcadab " 2	ok	1:nil
+  "1b  " 2	ok	1:nil
+  " " -2	ok	1:nil
+  "12a " -2	ok	1:nil
+  "2b22 " -2	ok	1:nil
+34	(-((Cb"n" * R"ad") / 2))
+  " c1" 1	ok	1:i1
+  "d22" 1	ok	1:nil
+  " a1 " 1	ok	1:i1
+  " bb" 2	ok	1:nil
+  "2 1bba2" 2	ok	1:i2
+  "a aa" 2	ok	1:i2
+  " aaba cb" -2	ok	1:nil
+  "22aabb" -2	ok	1:nil
+  "1" -2	ok	1:i1
+35	C(Cp())
+  "1" 1	ok	2:"" i1
+  "1db2" 1	ok	2:"" i1
+  "cbab2 1" 1	ok	2:"" i1
+  "" 2	ok	2:"" i1
+  "dba" 2	ok	2:"" i2
+  "" 2	ok	2:"" i1
+  "d ab " -2	ok	2:"" i4
+  "adaca" -2	ok	2:"" i4
+  "" -2	ok	2:"" i1
+36	C((Cs(P" ") / 3))
+  "aaa2" 1	ok	1:nil
+  "" 1	ok	1:nil
+  "" 1	ok	1:nil
+  "a" 2	ok	1:nil
+  "ddbbbbba" 2	ok	1:nil
+  "adaabca" 2	ok	1:nil
+  " dcd" -2	ok	1:nil
+  "" -2	ok	1:nil
+  "bd2a2a1" -2	ok	1:nil
+37	(Cc(nil) ^ -2)
+  "" 1	ok	2:nil nil
+  "c aaa1" 1	ok	2:nil nil
+  "abb1a" 1	ok	2:nil nil
+  "2daa a1" 2	ok	2:nil nil
+  "a12aa2c" 2	ok	2:nil nil
+  " b" 2	ok	2:nil nil
+  "1" -2	ok	2:nil nil
+  " 2b 2" -2	ok	2:nil nil
+  "2a" -2	ok	2:nil nil
+38	GENERR	loop body may accept empty string
+39	Cs(P"a")
+  "ba" 1	ok	1:nil
+  "a dacba" 1	ok	1:"a"
+  "" 1	ok	1:nil
+  "" 2	ok	1:nil
+  "abcd 2 b" 2	ok	1:nil
+  " a" 2	ok	1:"a"
+  "cdb2" -2	ok	1:nil
+  "" -2	ok	1:nil
+  "" -2	ok	1:nil
+40	(P"d" / "[%0]")
+  "1dbb2b 2" 1	ok	1:nil
+  "" 1	ok	1:nil
+  "" 1	ok	1:nil
+  "abca2a" 2	ok	1:nil
+  "b" 2	ok	1:nil
+  "abc" 2	ok	1:nil
+  "2aaca2 " -2	ok	1:nil
+  "2 ad1a" -2	ok	1:nil
+  "" -2	ok	1:nil
+41	(P"ab" - P"b")
+  "" 1	ok	1:nil
+  "ab21" 1	ok	1:i3
+  " " 1	ok	1:nil
+  "abab a" 2	ok	1:nil
+  "abb1 c1" 2	ok	1:nil
+  "d" 2	ok	1:nil
+  "2" -2	ok	1:nil
+  "" -2	ok	1:nil
+  "1 d12a2" -2	ok	1:nil
+42	(P"b" ^ 3)
+  "aad1 " 1	ok	1:nil
+  "c11dacc " 1	ok	1:nil
+  "b" 1	ok	1:nil
+  "aaca a" 2	ok	1:nil
+  "c" 2	ok	1:nil
+  "a 2aab" 2	ok	1:nil
+  "11a" -2	ok	1:nil
+  "cd2b" -2	ok	1:nil
+  "bcda1a" -2	ok	1:nil
+43	GENERR	bad argument #1 to 'B' (pattern have captures)
+44	(((#Cc()) * (Carg(1) / tab3)) / 0)
+  "2da" 1	ok	1:i1
+  "" 1	ok	1:i1
+  "ba" 1	ok	1:i1
+  "ac" 2	ok	1:i2
+  "b" 2	ok	1:i2
+  " " 2	ok	1:i2
+  "" -2	ok	1:i1
+  "ac22c" -2	ok	1:i4
+  "ca" -2	ok	1:i1
+45	P{S = (R("az","12") - Cc(nil)); A = ((P"ab" * Ct(Cc(nil))) / 2); B = C(P"a")}
+  "2a1ddbab" 1	ok	1:nil
+  " b " 1	ok	1:nil
+  "a2bbc2b" 1	ok	1:nil
+  " bd " 2	ok	1:nil
+  "baaaac " 2	ok	1:nil
+  "a" 2	ok	1:nil
+  "" -2	ok	1:nil
+  "a2  bc 2" -2	ok	1:nil
+  "b" -2	ok	1:nil
+46	P{S = (-(P"a" / ""))}
+  " bbb" 1	ok	1:i1
+  "b2" 1	ok	1:i1
+  "aaaa" 1	ok	1:nil
+  "aadabb" 2	ok	1:nil
+  "2ab" 2	ok	1:nil
+  "2aa ba1" 2	ok	1:nil
+  "a1" -2	ok	1:nil
+  "bd" -2	ok	1:i1
+  "1a" -2	ok	1:i1
+47	B(P(-1))
+  "" 1	ok	1:i1
+  "acaacd" 1	ok	1:nil
+  "1bb" 1	ok	1:nil
+  "ba2aa 2a" 2	ok	1:nil
+  "2aad " 2	ok	1:nil
+  "c121b" 2	ok	1:nil
+  " ba " -2	ok	1:nil
+  " a2 " -2	ok	1:nil
+  "aab" -2	ok	1:nil
+48	Cf((P"c" * Cb"n"), fold3)
+  "b caaa1" 1	ok	1:nil
+  "1abc1 " 1	ok	1:nil
+  "ba2ca" 1	ok	1:nil
+  "bcbaa2" 2	error	back reference 'n' not found
+  "dd1a" 2	ok	1:nil
+  "a" 2	ok	1:nil
+  "21a b" -2	ok	1:nil
+  "d1aaad" -2	ok	1:nil
+  " 2b" -2	ok	1:nil
+49	(R("az","12") * (Ct((#Cc("x",2))) + Ct((Cc(1) / tab2))))
+  "bcdaa1" 1	ok	1:{}
+  "" 1	ok	1:nil
+  " bbb dad" 1	ok	1:nil
+  "aa" 2	ok	1:{}
+  "" 2	ok	1:nil
+  "" 2	ok	1:nil
+  "a" -2	ok	1:{}
+  "" -2	ok	1:nil
+  "b" -2	ok	1:{}
+50	((#Cb"n") * ((P"d" * P(-1)) + (P"c" ^ -1)))
+  "a" 1	ok	1:i1
+  "cbcb2ad" 1	ok	1:i2
+  "1b" 1	ok	1:i1
+  "bbdaab" 2	ok	1:i2
+  "bad1" 2	ok	1:i2
+  " ada12dc" 2	ok	1:i2
+  "1bcbbab" -2	ok	1:i6
+  "" -2	ok	1:i1
+  "2abc a1" -2	ok	1:i6
+51	(-P"b")
+  "ad2daaba" 1	ok	1:i1
+  "abdaba 1" 1	ok	1:i1
+  "" 1	ok	1:i1
+  "a" 2	ok	1:i2
+  "2aab" 2	ok	1:i2
+  "11b c2cb" 2	ok	1:i2
+  "2" -2	ok	1:i1
+  "" -2	ok	1:i1
+  "" -2	ok	1:i1
+52	(Cb"n" * Cc())
+  "ca" 1	error	back reference 'n' not found
+  "" 1	error	back reference 'n' not found
+  "2aa" 1	error	back reference 'n' not found
+  "c2aaa" 2	error	back reference 'n' not found
+  "a11" 2	error	back reference 'n' not found
+  "ddb" 2	error	back reference 'n' not found
+  "a2bacbc" -2	error	back reference 'n' not found
+  "dca" -2	error	back reference 'n' not found
+  "" -2	error	back reference 'n' not found
+53	Cmt(((Cp() * P" ") * R("az","12")), cmt5)
+  "a dad" 1	ok	1:nil
+  "cd" 1	ok	1:nil
+  " " 1	ok	1:nil
+  "a   b" 2	ok	1:nil
+  "b12" 2	ok	1:nil
+  "" 2	ok	1:nil
+  "" -2	ok	1:nil
+  " c1ca1" -2	ok	1:nil
+  "ddaacab" -2	ok	1:nil
+54	((P"b" + P(false)) / 2)
+  "b2 2baaa" 1	error	no capture '2'
+  "b2b22" 1	error	no capture '2'
+  "ab 2bb" 1	ok	1:nil
+  "aa2" 2	ok	1:nil
+  "ba11aa" 2	ok	1:nil
+  " 1" 2	ok	1:nil
+  "aadc12 " -2	ok	1:nil
+  "a212b" -2	ok	1:nil
+  "" -2	ok	1:nil
+55	P{S = Cg(R"ad",nil)}
+  "aaa" 1	ok	1:"a"
+  "ddca1d" 1	ok	1:"d"
+  "a1" 1	ok	1:"a"
+  "2ba2" 2	ok	1:"b"
+  "add2bd" 2	ok	1:"d"
+  "caa" 2	ok	1:"a"
+  "cd  b" -2	ok	1:nil
+  "d1a2dd" -2	ok	1:"d"
+  " bdbab1" -2	ok	1:"b"
+56	S"ab"
+  "abc" 1	ok	1:i2
+  "" 1	ok	1:nil
+  "ac bb2d" 1	ok	1:i2
+  "cb c1a" 2	ok	1:i3
+  "1badbdba" 2	ok	1:i3
+  "ab2acc" 2	ok	1:i3
+  "bba1b" -2	ok	1:nil
+  "ba2b" -2	ok	1:nil
+  "d " -2	ok	1:nil
+57	P{S = C((Cp() - P"c")); A = C(Cc(nil))}
+  "db " 1	ok	2:"" i1
+  "a2a " 1	ok	2:"" i1
+  "b" 1	ok	2:"" i1
+  "1aba1aa" 2	ok	2:"" i2
+  "ba1ba2" 2	ok	2:"" i2
+  " 1b" 2	ok	2:"" i2
+  "a" -2	ok	2:"" i1
+  "c" -2	ok	1:nil
+  "a" -2	ok	2:"" i1
+58	(P(1) * Cc(1))
+  "2 dc2" 1	ok	1:i1
+  "ccac2c1" 1	ok	1:i1
+  "22" 1	ok	1:i1
+  "cab 22 b" 2	ok	1:i1
+  "b" 2	ok	1:nil
+  "cc1a" 2	ok	1:i1
+  "b" -2	ok	1:i1
+  "bc11a" -2	ok	1:i1
+  "a1 cb2  " -2	ok	1:i1
+59	Cs((R("az","12") / "%%%1%2"))
+  "ba2" 1	error	invalid capture index (1)
+  "bb2aaa" 1	error	invalid capture index (1)
+  "b" 1	error	invalid capture index (1)
+  "abb1bb a" 2	error	invalid capture index (1)
+  "b22caa21" 2	error	invalid capture index (1)
+  "" 2	ok	1:nil
+  "1bd" -2	error	invalid capture index (1)
+  "acbdb" -2	error	invalid capture index (1)
+  "a1aba" -2	error	invalid capture index (1)
+60	((S"ab" - P(0)) * Cs(P"ab"))
+  "ab2abc" 1	ok	1:nil
+  "a2a2a" 1	ok	1:nil
+  "aaad2b" 1	ok	1:nil
+  "addcbac" 2	ok	1:nil
+  "a" 2	ok	1:nil
+  "" 2	ok	1:nil
+  "ddbd dd " -2	ok	1:nil
+  "b" -2	ok	1:nil
+  "a" -2	ok	1:nil
+61	S"ab"
+  "aaa" 1	ok	1:i2
+  "dbcb1" 1	ok	1:nil
+  "bb" 1	ok	1:i2
+  "b" 2	ok	1:nil
+  "2a 2ab" 2	ok	1:i3
+  "b2" 2	ok	1:nil
+  "acbaaa" -2	ok	1:i6
+  "bab212aa" -2	ok	1:i8
+  "2ba" -2	ok	1:i3
+62	(P(true) + P"d")
+  "1a1aab" 1	ok	1:i1
+  "dc1aa ad" 1	ok	1:i1
+  "" 1	ok	1:i1
+  "abaabc1d" 2	ok	1:i2
+  "2dcb" 2	ok	1:i2
+  "aba2a" 2	ok	1:i2
+  "bbada" -2	ok	1:i4
+  "" -2	ok	1:i1
+  "bbb " -2	ok	1:i3
+63	P{S = (P"1"+P"2" / "x"); A = (((Cb"n" * S"ab") / cf4) * (Cf(Cc("x",2), fold2) + Cf(Cc(), fold3)))}
+  "b " 1	ok	1:nil
+  "badcadc2" 1	ok	1:nil
+  "a1da2" 1	ok	1:nil
+  "a1ab d" 2	ok	1:"x"
+  "" 2	ok	1:nil
+  "" 2	ok	1:nil
+  "ba" -2	ok	1:nil
+  "" -2	ok	1:nil
+  "ab2a" -2	ok	1:"x"
+64	(S"ab" * Cc(nil))
+  "adcaac1a" 1	ok	1:nil
+  "2a" 1	ok	1:nil
+  "b" 1	ok	1:nil
+  "cbbdbb " 2	ok	1:nil
+  "2" 2	ok	1:nil
+  "abb" 2	ok	1:nil
+  "b1aabc" -2	ok	1:nil
+  "ab1aaac1" -2	ok	1:nil
+  "a1" -2	ok	1:nil
+65	(C(P"b") - C(P(1)))
+  "c" 1	ok	1:nil
+  "c aabda" 1	ok	1:nil
+  "1aabab" 1	ok	1:nil
+  "22" 2	ok	1:nil
+  "ba2dbbd" 2	ok	1:nil
+  "12cb" 2	ok	1:nil
+  "a" -2	ok	1:nil
+  "abcaa" -2	ok	1:nil
+  "b" -2	ok	1:nil
+66	(Cf((P(0) + R"ad"), fold3) * Ct(Cg(P"d",nil)))
+  "caa1abca" 1	ok	1:nil
+  "bacd2" 1	ok	1:nil
+  "1" 1	ok	1:nil
+  "dbaad2ab" 2	ok	1:nil
+  "cdac" 2	error	no initial value for fold capture
+  "b2b  " 2	ok	1:nil
+  "bba2b" -2	ok	1:nil
+  "22babaca" -2	ok	1:nil
+  "aab aa" -2	ok	1:nil
+67	P{S = (S"ab" * Cc()); A = (Cg(Cs(R("az","12")),nil) * ((P"d" * P(-1)) ^ -2)); B = (P(false) / "%%%1%2")}
+  "aa2 a1bb" 1	ok	1:i2
+  "cbbdc" 1	ok	1:nil
+  "a2adbcb2" 1	ok	1:i2
+  "bbb" 2	ok	1:i3
+  "a" 2	ok	1:nil
+  "1" 2	ok	1:nil
+  " dbbc" -2	ok	1:i5
+  "" -2	ok	1:nil
+  "aa2dba" -2	ok	1:i6
+68	P(true)
+  "dabb" 1	ok	1:i1
+  "a" 1	ok	1:i1
+  "a" 1	ok	1:i1
+  "1a 2baba" 2	ok	1:i2
+  "aaa1dc" 2	ok	1:i2
+  "a" 2	ok	1:i2
+  "db" -2	ok	1:i1
+  " c" -2	ok	1:i1
+  "ba aac" -2	ok	1:i5
+69	Cmt((((P" " ^ 1) / tab3) ^ -1), cmt9)
+  "" 1	ok	1:nil
+  "b" 1	ok	1:nil
+  "aaaab d" 1	ok	1:nil
+  "aa" 2	ok	1:nil
+  "" 2	ok	1:nil
+  "2aa" 2	ok	1:nil
+  " 2dd" -2	ok	1:nil
+  "d" -2	ok	1:nil
+  "acab12 " -2	ok	1:nil
+70	P(false)
+  "aaaa12" 1	ok	1:nil
+  "" 1	ok	1:nil
+  "c2ac" 1	ok	1:nil
+  "dbbac2" 2	ok	1:nil
+  "2" 2	ok	1:nil
+  "" 2	ok	1:nil
+  "add" -2	ok	1:nil
+  "a1d 2a" -2	ok	1:nil
+  "bb2aaa" -2	ok	1:nil
+71	P"1"+P"2"
+  "b1adada" 1	ok	1:nil
+  " " 1	ok	1:nil
+  "2cca2  " 1	ok	1:i2
+  "bb a" 2	ok	1:nil
+  " " 2	ok	1:nil
+  "d bbb1a" 2	ok	1:nil
+  "bbaab" -2	ok	1:nil
+  "aabca a" -2	ok	1:nil
+  "" -2	ok	1:nil
+72	((P(1) * P(false)) / "a%0b")
+  " ad" 1	ok	1:nil
+  "" 1	ok	1:nil
+  "2a" 1	ok	1:nil
+  "accaaba" 2	ok	1:nil
+  "1a" 2	ok	1:nil
+  "ab22ba" 2	ok	1:nil
+  "ddbad" -2	ok	1:nil
+  " babab" -2	ok	1:nil
+  "d" -2	ok	1:nil
+73	P{S = ((Cp() + P"ab") * (Cp() * Cc("x",2))); A = P(-1); B = R"ad"}
+  "dba" 1	ok	4:i1 i1 "x" i2
+  "" 1	ok	4:i1 i1 "x" i2
+  " cc" 1	ok	4:i1 i1 "x" i2
+  "a" 2	ok	4:i2 i2 "x" i2
+  "a a2bad" 2	ok	4:i2 i2 "x" i2
+  "2b2aa" 2	ok	4:i2 i2 "x" i2
+  "baa bda" -2	ok	4:i6 i6 "x" i2
+  "" -2	ok	4:i1 i1 "x" i2
+  "bccb" -2	ok	4:i3 i3 "x" i2
+74	GENERR	loop body may accept empty string
+75	((P(-1) * (P" " ^ 3)) + (Cs(R"ad") * (Cc(nil) / cf3)))
+  "aaa" 1	ok	2:"a" i1
+  "dc2d" 1	ok	2:"d" i1
+  "" 1	ok	1:nil
+  "a ca" 2	ok	1:nil
+  "aa1c " 2	ok	2:"a" i1
+  "" 2	ok	1:nil
+  "bd" -2	ok	2:"b" i1
+  "" -2	ok	1:nil
+  "" -2	ok	1:nil
+76	P{S = ((Cmt(P" ", cmt8) * (P(false) / tab1)) * ((P(1) / tab1) ^ -2)); A = (#P"1"+P"2"); B = Cc(nil)}
+  "ddadbabc" 1	ok	1:nil
+  "aaaac" 1	ok	1:nil
+  "a" 1	ok	1:nil
+  "22acaa" 2	ok	1:nil
+  "a2b12ac" 2	ok	1:nil
+  "c2ab" 2	ok	1:nil
+  " 1bca" -2	ok	1:nil
+  "ccaab b" -2	ok	1:nil
+  "" -2	ok	1:nil
+77	P(2)
+  "1ba" 1	ok	1:i3
+  "cabcab" 1	ok	1:i3
+  "bcd" 1	ok	1:i3
+  "a  " 2	ok	1:i4
+  " ab2d" 2	ok	1:i4
+  "baab" 2	ok	1:i4
+  " abb2a" -2	ok	1:i7
+  "" -2	ok	1:nil
+  "ababc" -2	ok	1:i6
+78	(P"b" / 1)
+  "a" 1	ok	1:nil
+  "dbaa 2" 1	ok	1:nil
+  "ad1dd1b" 1	ok	1:nil
+  "bab" 2	ok	1:nil
+  "ab c" 2	ok	1:"b"
+  "b1dbaba" 2	ok	1:nil
+  "b" -2	ok	1:"b"
+  "b" -2	ok	1:"b"
+  "baa2adb" -2	ok	1:nil
+79	Cp()
+  "122dba" 1	ok	1:i1
+  "" 1	ok	1:i1
+  "b b1a2d" 1	ok	1:i1
+  "1da1abc1" 2	ok	1:i2
+  "a" 2	ok	1:i2
+  "b" 2	ok	1:i2
+  "" -2	ok	1:i1
+  "1bbcb" -2	ok	1:i4
+  "" -2	ok	1:i1
+80	((P(-1) ^ -1) * (P(true) + P"b"))
+  "db" 1	ok	1:i1
+  "dca" 1	ok	1:i1
+  "" 1	ok	1:i1
+  " b" 2	ok	1:i2
+  "a abba" 2	ok	1:i2
+  "1 cba 2a" 2	ok	1:i2
+  "bb" -2	ok	1:i1
+  "11a2 b" -2	ok	1:i5
+  "d2c2c" -2	ok	1:i4
+81	(Cc(1) + Cmt(P(false), cmt4))
+  "" 1	ok	1:i1
+  "b2" 1	ok	1:i1
+  "b" 1	ok	1:i1
+  "bb12ad" 2	ok	1:i1
+  "cabbaa2" 2	ok	1:i1
+  "cba1212b" 2	ok	1:i1
+  "d" -2	ok	1:i1
+  "bca21a" -2	ok	1:i1
+  "bab" -2	ok	1:i1
+82	P{S = (C(P"c") / cf4)}
+  "dad " 1	ok	1:nil
+  "b2" 1	ok	1:nil
+  "a b1 a" 1	ok	1:nil
+  "adaaddad" 2	ok	1:nil
+  "d " 2	ok	1:nil
+  "a" 2	ok	1:nil
+  "" -2	ok	1:nil
+  "da2c1" -2	ok	1:i5
+  "a11b" -2	ok	1:nil
+83	P{S = (P(0) + (Carg(1) + Cb"n")); A = (P(2) / 1); B = (P"c" - P"ab")}
+  "" 1	ok	1:i1
+  " b1ba 21" 1	ok	1:i1
+  "" 1	ok	1:i1
+  "babdaa1a" 2	ok	1:i2
+  "bba1" 2	ok	1:i2
+  "a c" 2	ok	1:i2
+  "1 1c" -2	ok	1:i3
+  "11a2b" -2	ok	1:i4
+  "a" -2	ok	1:i1
+84	P{S = Cmt((P"ab" * R("az","12")), cmt1)}
+  " 11a2a" 1	ok	1:nil
+  "1" 1	ok	1:nil
+  "bb" 1	ok	1:nil
+  "" 2	ok	1:nil
+  "" 2	ok	1:nil
+  "" 2	ok	1:nil
+  "" -2	ok	1:nil
+  "1bca " -2	ok	1:nil
+  "daa1b" -2	ok	1:nil
+85	(((#P(2)) * (P(2) / tab3)) * Cmt((P"b" * P"d"), cmt6))
+  "2bbba2" 1	ok	1:nil
+  "ba1" 1	ok	1:nil
+  "1aaa" 1	ok	1:nil
+  "a" 2	ok	1:nil
+  "" 2	ok	1:nil
+  "" 2	ok	1:nil
+  "aa1" -2	ok	1:nil
+  "2bbdb" -2	ok	1:nil
+  "1baad" -2	ok	1:nil
+86	GENERR	loop body may accept empty string
+87	P{S = Ct(R("az","12")); A = (#P" "); B = Cf(C(Cg(Cc("x",2),nil)), fold3)}
+  "" 1	ok	1:""
+  "baaadc " 1	ok	1:""
+  "" 1	ok	1:""
+  "aadbb" 2	ok	1:""
+  "a 1" 2	ok	1:""
+  "a1a b" 2	ok	1:""
+  "" -2	ok	1:""
+  "1abcaa" -2	ok	1:""
+  "1da21aa" -2	ok	1:""
+88	P{S = Carg(1); A = ((P"a" + P(1)) / 3)}
+  "" 1	ok	1:nil
+  "b" 1	error	no capture '3'
+  "21da2 d" 1	error	no capture '3'
+  "1abab" 2	error	no capture '3'
+  "21b abc" 2	error	no capture '3'
+  "a2caaaab" 2	error	no capture '3'
+  "" -2	ok	1:nil
+  "" -2	ok	1:nil
+  "bada1" -2	error	no capture '3'
+89	Cc(1)
+  "" 1	ok	1:i1
+  "" 1	ok	1:i1
+  "1db2a" 1	ok	1:i1
+  "aab c2" 2	ok	1:i1
+  "da" 2	ok	1:i1
+  "aab1a" 2	ok	1:i1
+  "1cab1ccb" -2	ok	1:i1
+  "" -2	ok	1:i1
+  "bca1c" -2	ok	1:i1
+90	P{S = (Cc() / tab2)}
+  "aa2aa" 1	ok	1:i1
+  "ac2a a" 1	ok	1:i1
+  "c21ccab" 1	ok	1:i1
+  " bcb" 2	ok	1:i2
+  "bdacab" 2	ok	1:i2
+  "a2cb adc" 2	ok	1:i2
+  "a 2" -2	ok	1:i2
+  "b bc" -2	ok	1:i3
+  "aaada " -2	ok	1:i5
+91	(Cp() - ((P(false) / tab4) / "[%0]"))
+  "b" 1	ok	1:i1
+  "a ac" 1	ok	1:i1
+  "d" 1	ok	1:i1
+  "a 1" 2	ok	1:i2
+  "1" 2	ok	1:i2
+  "bbc1" 2	ok	1:i2
+  "d ad2" -2	ok	1:i4
+  "2adaaba " -2	ok	1:i7
+  "ac " -2	ok	1:i2
+92	S"ab"
+  "b ba2b2" 1	ok	1:i2
+  " d 1b11" 1	ok	1:nil
+  "" 1	ok	1:nil
+  "dbacbb" 2	ok	1:i3
+  "aa" 2	ok	1:i3
+  "b" 2	ok	1:nil
+  "ccba1d" -2	ok	1:nil
+  "" -2	ok	1:nil
+  "b2aa" -2	ok	1:i4
+93	(((-P(-1)) + (P"b" * P"d")) / 0)
+  "a1ababbb" 1	ok	1:i1
+  "" 1	ok	1:nil
+  "a" 1	ok	1:i1
+  "a21 da" 2	ok	1:i2
+  "a2b1" 2	ok	1:i2
+  "b2da1cb" 2	ok	1:i2
+  " cb1aca" -2	ok	1:i6
+  "ddc" -2	ok	1:i2
+  "2bcba" -2	ok	1:i4
+94	P{S = Ct(((P"d" * Cc(nil)) / tab1)); A = S"ab"; B = C(Cs(Cp()))}
+  "1acabd  " 1	ok	1:nil
+  "2adc" 1	ok	1:nil
+  "cb" 1	ok	1:nil
+  "" 2	ok	1:nil
+  "adbbcb" 2	ok	1:{}
+  "a2b" 2	ok	1:nil
+  "dbb" -2	ok	1:nil
+  " a aa" -2	ok	1:nil
+  "21aacaba" -2	ok	1:nil
+95	(-Cc("x",2))
+  "ab1aa1" 1	ok	1:nil
+  "adb" 1	ok	1:nil
+  "cab1a" 1	ok	1:nil
+  "a2a2ddaa" 2	ok	1:nil
+  " abaaba1" 2	ok	1:nil
+  "d" 2	ok	1:nil
+  "d2a1bd" -2	ok	1:nil
+  "c aa2aba" -2	ok	1:nil
+  "aab1b" -2	ok	1:nil
+96	(P" " + Cc("x",2))
+  "2c2bbc" 1	ok	2:"x" i2
+  "ca2aaa1" 1	ok	2:"x" i2
+  "da1" 1	ok	2:"x" i2
+  "" 2	ok	2:"x" i2
+  " aa" 2	ok	2:"x" i2
+  "" 2	ok	2:"x" i2
+  " da1baa" -2	ok	2:"x" i2
+  "" -2	ok	2:"x" i2
+  "cd 2d" -2	ok	2:"x" i2
+97	(P"1"+P"2" / tab1)
+  "ad a1aa" 1	ok	1:nil
+  "bc" 1	ok	1:nil
+  "" 1	ok	1:nil
+  "caaadd" 2	ok	1:nil
+  "b" 2	ok	1:nil
+  "d2a " 2	ok	1:i3
+  "acaa " -2	ok	1:nil
+  "a" -2	ok	1:nil
+  "db" -2	ok	1:nil
+98	Cs(Cc("x",2))
+  "b" 1	ok	1:"x"
+  "" 1	ok	1:"x"
+  "" 1	ok	1:"x"
+  "d1b12b " 2	ok	1:"x"
+  " " 2	ok	1:"x"
+  "a1d  a " 2	ok	1:"x"
+  "c2b" -2	ok	1:"x"
+  "ba" -2	ok	1:"x"
+  "aab2b" -2	ok	1:"x"
+99	(#P" ")
+  "ababa" 1	ok	1:nil
+  "cbb 2a" 1	ok	1:nil
+  "bdaa ad" 1	ok	1:nil
+  "c" 2	ok	1:nil
+  "bd" 2	ok	1:nil
+  " a " 2	ok	1:nil
+  "a 21da1" -2	ok	1:nil
+  " ad" -2	ok	1:nil
+  "1a" -2	ok	1:nil
+100	ERRGEN lpeg_cases.lua:122: bad argument #1 to 'B' (pattern have captures)
+101	P{S = Cs((P"c" / 1))}
+  "1aa1" 1	ok	1:nil
+  " a" 1	ok	1:nil
+  "acaa a1" 1	ok	1:nil
+  "aa" 2	ok	1:nil
+  "dd" 2	ok	1:nil
+  " bbadcad" 2	ok	1:nil
+  "abbaaa" -2	ok	1:nil
+  "dc" -2	ok	1:nil
+  "1d1cbbdb" -2	ok	1:nil
+102	Ct(P(-1))
+  "b abab" 1	ok	1:nil
+  "b" 1	ok	1:nil
+  "abcb" 1	ok	1:nil
+  "a2aad" 2	ok	1:nil
+  "dca" 2	ok	1:nil
+  "dd2a" 2	ok	1:nil
+  "cbda1" -2	ok	1:nil
+  "a2bc 1a" -2	ok	1:nil
+  "ba21aa" -2	ok	1:nil
+103	(-((P(true) / tab3) / tab1))
+  "cbad" 1	ok	1:nil
+  "ac2cb" 1	ok	1:nil
+  "cb " 1	ok	1:nil
+  "dba  a" 2	ok	1:nil
+  "cdbbd" 2	ok	1:nil
+  "aca" 2	ok	1:nil
+  "daaaba" -2	ok	1:nil
+  "a" -2	ok	1:nil
+  "c2c1 bba" -2	ok	1:nil
+104	P(2)
+  "d" 1	ok	1:nil
+  "bba" 1	ok	1:i3
+  "aabc" 1	ok	1:i3
+  "ccba" 2	ok	1:i4
+  "b2a11ab" 2	ok	1:i4
+  "ba " 2	ok	1:i4
+  "adbda" -2	ok	1:i6
+  "" -2	ok	1:nil
+  " aa21aa " -2	ok	1:i9
+105	B(Cc())
+  "abcadcab" 1	ok	1:i1
+  "b2 1" 1	ok	1:i1
+  "daa" 1	ok	1:i1
+  "a" 2	ok	1:i2
+  "ac aa1" 2	ok	1:i2
+  "" 2	ok	1:i1
+  "a" -2	ok	1:i1
+  "cd" -2	ok	1:i1
+  "b" -2	ok	1:i1
+106	((Ct(P(2)) * (P(false) * R("az","12"))) ^ 1)
+  "bdb " 1	ok	1:nil
+  "d daa" 1	ok	1:nil
+  " cca1b1b" 1	ok	1:nil
+  "aac" 2	ok	1:nil
+  "2" 2	ok	1:nil
+  "ba" 2	ok	1:nil
+  "bb" -2	ok	1:nil
+  " c1112 2" -2	ok	1:nil
+  "bb2bac1c" -2	ok	1:nil
+107	Cmt((P"c" ^ 1), cmt1)
+  "aaba" 1	ok	1:nil
+  "cabaaab" 1	ok	1:i2
+  "a2" 1	ok	1:nil
+  "1acc2" 2	ok	1:nil
+  "cba" 2	ok	1:nil
+  "" 2	ok	1:nil
+  "aabbb" -2	ok	1:nil
+  "bdddba" -2	ok	1:nil
+  "" -2	ok	1:nil
+108	P{S = (#(S"ab" + (P"b" / cf6)))}
+  "c2cabab" 1	ok	1:nil
+  "2ccc2a" 1	ok	1:nil
+  "2" 1	ok	1:nil
+  "" 2	ok	1:nil
+  "dbcbb" 2	ok	1:i2
+  "c12b" 2	ok	1:nil
+  " a" -2	ok	1:nil
+  "da   abb" -2	ok	1:i7
+  "aa" -2	ok	1:i1
+109	P{S = (P"d" + ((#Cc()) * C(P"ab")))}
+  "a2d" 1	ok	1:nil
+  "b1d" 1	ok	1:nil
+  "baaa1aac" 1	ok	1:nil
+  "ad" 2	ok	1:i3
+  "111 " 2	ok	1:nil
+  " abbd " 2	ok	1:"ab"
+  "" -2	ok	1:nil
+  "a22b 2" -2	ok	1:nil
+  "c2b1cb2" -2	ok	1:nil
+110	Ct(Cc(nil))
+  "daa2bd" 1	ok	1:{}
+  "bcababb" 1	ok	1:{}
+  "cbadc" 1	ok	1:{}
+  "b1aaa" 2	ok	1:{}
+  "" 2	ok	1:{}
+  " 22 " 2	ok	1:{}
+  "1a " -2	ok	1:{}
+  "b" -2	ok	1:{}
+  "b a" -2	ok	1:{}
+111	((((-P"c") * B(P"a")) / 1) ^ -1)
+  "1abbb 1d" 1	ok	1:i1
+  "2b" 1	ok	1:i1
+  "c1acc" 1	ok	1:i1
+  "" 2	ok	1:i1
+  "d21 aadb" 2	ok	1:i2
+  "b" 2	ok	1:i2
+  "ba" -2	ok	1:i1
+  "" -2	ok	1:i1
+  "ba1ac" -2	ok	1:i4
+112	GENERR	loop body may accept empty string
+113	Cmt(Cf((Cc(1) ^ -1), fold3), cmt2)
+  "aaa2cba2" 1	ok	1:nil
+  "a2bd " 1	ok	1:nil
+  "b1bbbd" 1	ok	1:nil
+  "" 2	ok	1:nil
+  "b ab" 2	ok	1:nil
+  "" 2	ok	1:nil
+  "bc2 c " -2	ok	1:nil
+  "adacbcc" -2	ok	1:nil
+  "" -2	ok	1:nil
+114	P{S = (P"d" / "%1-%0"); A = (Cc() * Cc())}
+  "bb" 1	ok	1:i1
+  "" 1	ok	1:i1
+  "1abba" 1	ok	1:i1
+  "" 2	ok	1:i1
+  "" 2	ok	1:i1
+  "a 2babad" 2	ok	1:i2
+  "" -2	ok	1:i1
+  " 1" -2	ok	1:i1
+  "cb b2" -2	ok	1:i4
+115	P{S = (((P"d" + P"b") * P" ") / tab4); A = (-Cc(1))}
+  "" 1	ok	1:nil
+  "21" 1	ok	1:nil
+  "a2a" 1	ok	1:nil
+  "b2b2" 2	ok	1:nil
+  "bbad" 2	ok	1:nil
+  "" 2	ok	1:nil
+  "abaddb" -2	ok	1:nil
+  "acad 1" -2	ok	1:nil
+  "2adbddc" -2	ok	1:nil
+116	P(-1)
+  "1bda " 1	ok	1:nil
+  "d2ad" 1	ok	1:nil
+  "" 1	ok	1:i1
+  " aa" 2	ok	1:nil
+  "1 b2" 2	ok	1:nil
+  "1a2d" 2	ok	1:nil
+  "" -2	ok	1:i1
+  "b211b" -2	ok	1:nil
+  "  bdaa2" -2	ok	1:nil
+117	((B(P"d") * (-Cf(P(-1), fold2))) / "")
+  "a2d2aa 2" 1	ok	1:nil
+  "" 1	ok	1:nil
+  "ba" 1	ok	1:nil
+  "daadabba" 2	ok	1:""
+  "dd" 2	ok	1:""
+  "bbb1a " 2	ok	1:nil
+  "ad1" -2	ok	1:nil
+  "" -2	ok	1:nil
+  "" -2	ok	1:nil
+118	P{S = P(true)}
+  "dc2a" 1	ok	1:i1
+  "abbab" 1	ok	1:i1
+  "a abc2a1" 1	ok	1:i1
+  "bb ab1" 2	ok	1:i2
+  "1adaacb2" 2	ok	1:i2
+  "1  1" 2	ok	1:i2
+  "ba aaa" -2	ok	1:i5
+  "" -2	ok	1:i1
+  "1a2" -2	ok	1:i2
+119	((#Cp()) + R("az","12"))
+  "dab1db" 1	ok	1:i1
+  "2aac d " 1	ok	1:i1
+  "bbbb1c" 1	ok	1:i1
+  "2adcba" 2	ok	1:i2
+  "" 2	ok	1:i1
+  "a2aa" 2	ok	1:i2
+  "ac" -2	ok	1:i1
+  "b1b2ac" -2	ok	1:i5
+  "bba " -2	ok	1:i3
+120	P{S = (((P"d" / 0) * (P(-1) - Cc())) / tab4)}
+  "aabaa" 1	ok	1:nil
+  " b" 1	ok	1:nil
+  "b1a2" 1	ok	1:nil
+  "a2" 2	ok	1:nil
+  "ab" 2	ok	1:nil
+  "bb22c" 2	ok	1:nil
+  "" -2	ok	1:nil
+  "babac" -2	ok	1:nil
+  "21bc1a" -2	ok	1:nil

@@ -44,6 +44,7 @@ mod lua_lang;
 mod lua_pdf;
 mod lua_tex;
 mod lua_ud;
+mod lua_lpeg;
 pub mod maincontrol;
 pub mod math;
 pub mod native_font;

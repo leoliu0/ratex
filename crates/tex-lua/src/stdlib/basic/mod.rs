@@ -1137,17 +1137,8 @@ fn lua_load(l: &mut LuaState) -> LuaResult<usize> {
     } else if let Some(source) = text_source {
         l.compile_chunk_with_name(source, &chunkname)
             .map_err(|e| l.get_error_msg(e))
-    } else if l.global_state().language() == crate::LuaLanguageLevel::Lua53 {
-        l.global_state_mut()
-            .compile_bytes_with_name(&code_bytes, &chunkname)
-            .map_err(|message| message)
     } else {
-        let code_str = match String::from_utf8(code_bytes) {
-            Ok(source) => source,
-            Err(_) => return Err(l.error("source is not valid UTF-8".to_string())),
-        };
-        l.compile_chunk_with_name(&code_str, &chunkname)
-            .map_err(|error| l.get_error_msg(error))
+        l.global_state_mut().compile_bytes_with_name(&code_bytes, &chunkname)
     };
 
     match chunk_result {
@@ -1382,13 +1373,9 @@ fn lua_warn(l: &mut LuaState) -> LuaResult<usize> {
         }
     }
 
-    // Get current warn mode from registry ("off", "on", "store")
+    // Warn mode lives in the registry ("off", "on", "store")
     let registry = l.global_state_mut().registry;
     let mode_key = l.create_string("_WARN_MODE")?;
-    let current_mode = l
-        .raw_get(&registry, &mode_key)
-        .and_then(|v| v.as_str().map(|s| s.to_string()))
-        .unwrap_or_else(|| "off".to_string());
 
     // Check for control message: single argument starting with '@'
     if parts.len() == 1 && parts[0].starts_with('@') {
@@ -1418,21 +1405,23 @@ fn lua_warn(l: &mut LuaState) -> LuaResult<usize> {
     }
 
     // Regular message: concatenate all parts (no separator)
-    let message: String = parts.concat();
+    emit_warning(l, &parts.concat())?;
+    Ok(0)
+}
 
-    match current_mode.as_str() {
-        "on" => {
-            eprintln!("Lua warning: {}", message);
-        }
-        "store" => {
-            // Store in _WARN global
-            let warn_val = l.create_string(&message)?;
+/// `lua_warning` with a complete message: printed when warnings are on, kept in
+/// `_WARN` in store mode, dropped while off (the default).
+pub(crate) fn emit_warning(l: &mut LuaState, message: &str) -> LuaResult<()> {
+    let registry = l.global_state_mut().registry;
+    let mode_key = l.create_string("_WARN_MODE")?;
+    let mode = l.raw_get(&registry, &mode_key).unwrap_or_default();
+    match mode.as_str() {
+        Some("on") => eprintln!("Lua warning: {}", message),
+        Some("store") => {
+            let warn_val = l.create_string(message)?;
             l.global_state_mut().set_global("_WARN", warn_val)?;
         }
-        _ => {
-            // "off" - do nothing
-        }
+        _ => {}
     }
-
-    Ok(0)
+    Ok(())
 }

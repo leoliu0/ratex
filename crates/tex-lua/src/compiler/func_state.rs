@@ -3,8 +3,9 @@ use crate::compiler::{
     BYTE_SOURCE_BASE, BYTE_SOURCE_MARKER, ExpDesc, ExpKind, ExpUnion, statement,
 };
 use crate::lua_vm::GlobalState;
-use crate::lua_vm::lua_limits::{MAX_SRC_LEN, MAXCCALLS, MAXUPVAL, MAXVARS};
+use crate::lua_vm::lua_limits::{LUAI_MAXSHORTLEN, MAX_SRC_LEN, MAXCCALLS, MAXUPVAL, MAXVARS};
 use crate::{LuaValue, compiler::parser::LuaLexer};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 // Upvalue descriptor
@@ -54,6 +55,8 @@ pub struct CompilerState {
     pub block_cnt_pool: Vec<Option<BlockCnt>>,
     // pool of LhsAssign structures for assignment chain management
     pub lhs_assign_pool: Vec<Option<LhsAssign>>,
+    // long string literals of the chunk (the long-string part of llex's `ls->h`)
+    long_literals: HashMap<Box<[u8]>, LuaValue>,
 }
 
 impl Default for CompilerState {
@@ -67,6 +70,7 @@ impl CompilerState {
         CompilerState {
             block_cnt_pool: Vec::new(),
             lhs_assign_pool: Vec::new(),
+            long_literals: HashMap::new(),
         }
     }
 
@@ -223,6 +227,20 @@ impl<'a> FuncState<'a> {
             kcache: LuaValue::nil(),
             checklimit_error: None,
         }
+    }
+
+    /// String object for a literal (luaX_newstring): identical long literals of one
+    /// chunk share an object, as short strings do through interning.
+    pub fn new_string(&mut self, bytes: &[u8]) -> LuaValue {
+        if bytes.len() <= LUAI_MAXSHORTLEN {
+            return self.vm.create_bytes(bytes).unwrap();
+        }
+        if let Some(&string) = self.compiler_state.long_literals.get(bytes) {
+            return string;
+        }
+        let string = self.vm.create_bytes(bytes).unwrap();
+        self.compiler_state.long_literals.insert(bytes.into(), string);
+        string
     }
 
     // Unified error generation function (port of luaX_syntaxerror from llex.c)

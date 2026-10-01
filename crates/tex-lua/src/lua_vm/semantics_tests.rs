@@ -427,3 +427,192 @@ fn loadfile_names_the_chunk_by_the_path_as_given() {
     run_both(&source);
     std::fs::remove_file(&file).unwrap();
 }
+
+#[test]
+fn lua55_names_the_finalizer_itself_as_the_gc_metamethod() {
+    // No frame sits between the finalizer and the frame that triggered the collection.
+    run(
+        LuaLanguageLevel::Lua55,
+        r#"
+        local info
+        setmetatable({}, {__gc = function ()
+          info = {debug.getinfo(1, "n"), debug.getinfo(2, "n")}
+        end})
+        collectgarbage()
+        assert(info[1].namewhat == "metamethod" and info[1].name == "__gc", info[1].name)
+        assert(info[2].namewhat == "global" and info[2].name == "collectgarbage", info[2].name)
+        info = nil
+        local function loop()
+          setmetatable({}, {__gc = function ()
+            info = {debug.getinfo(1, "n"), debug.getinfo(2, "n")}
+          end})
+          repeat local t = {} until info
+        end
+        loop()
+        assert(info[1].namewhat == "metamethod" and info[1].name == "__gc", info[1].name)
+        assert(info[2].namewhat == "local" and info[2].name == "loop", info[2].name)
+        "#,
+    );
+}
+
+#[test]
+fn lua55_finalizer_errors_become_warnings() {
+    // luaE_warnerror: "error in __gc (<message>)", subject to the warning switch.
+    run(
+        LuaLanguageLevel::Lua55,
+        r#"
+        warn("@store")
+        setmetatable({}, {__gc = function () error("boom") end})
+        collectgarbage()
+        assert(_WARN and _WARN:find("^error in __gc %(.*boom%)$"), _WARN)
+        "#,
+    );
+}
+
+#[test]
+fn lua53_names_the_frame_running_a_finalizer_as_the_gc_metamethod() {
+    run(
+        LuaLanguageLevel::Lua53,
+        r#"
+        local info
+        setmetatable({}, {__gc = function ()
+          info = {debug.getinfo(1, "n"), debug.getinfo(2, "nS")}
+        end})
+        collectgarbage()
+        assert(info[1].namewhat == "" and info[1].name == nil, info[1].name)
+        assert(info[2].what == "C" and info[2].namewhat == "metamethod" and info[2].name == "__gc")
+        info = nil
+        local function loop()
+          setmetatable({}, {__gc = function ()
+            info = {debug.getinfo(1, "n"), debug.getinfo(2, "nS")}
+          end})
+          repeat local t = {} until info
+        end
+        loop()
+        assert(info[2].what == "Lua" and info[2].namewhat == "metamethod" and info[2].name == "__gc")
+        "#,
+    );
+}
+
+#[test]
+fn sources_need_not_be_valid_utf8() {
+    run_both(
+        r#"
+        local f = assert(load("return '\255\128', 1 -- \200"))
+        local a, b = f()
+        assert(a == "\255\128" and b == 1)
+        local g, msg = load("x = 1 \200")
+        -- LuaTeX's texlua takes bytes above 127 for identifier characters
+        assert(_VERSION == "Lua 5.3" or not g and msg:find("near '<\\200>'"), msg)
+        local name = os.tmpname()
+        local fh = assert(io.open(name, "wb"))
+        fh:write("return '\255', ...")
+        fh:close()
+        local ok, v = pcall(dofile, name)
+        os.remove(name)
+        assert(ok and v == "\255", v)
+        "#,
+    );
+}
+
+#[test]
+fn lua55_string_identity_follows_c_lua() {
+    run(
+        LuaLanguageLevel::Lua55,
+        r#"
+        local function addr(s) return string.format("%p", s) end
+        -- equal long literals of a chunk are one string; concatenation makes a new one
+        local s1 = "01234567890123456789012345678901234567890123456789"
+        local function f() return "01234567890123456789012345678901234567890123456789" end
+        assert(addr(s1) == addr(f()))
+        local sd = "0123456789" .. "0123456789012345678901234567890123456789"
+        assert(sd == s1 and addr(sd) ~= addr(s1))
+        -- gsub returns its subject when nothing was replaced
+        local s = string.rep("a", 100)
+        assert(addr(s) == addr((string.gsub(s, "b", "c"))))
+        assert(addr(s) == addr((string.gsub(s, ".", {x = "y"}))))
+        assert(addr(s) == addr((string.gsub(s, ".", function () return false end))))
+        assert(addr(s) ~= addr((string.gsub(s, "a", "a"))))
+        local ok, msg = pcall(string.format, "%" .. string.rep("0", 30) .. "d", 1)
+        assert(not ok and msg:find("invalid format (too long)", 1, true), msg)
+        "#,
+    );
+}
+
+#[test]
+fn to_be_closed_files_are_closed() {
+    run(
+        LuaLanguageLevel::Lua55,
+        r#"
+        local name = os.tmpname()
+        local F
+        do
+          local f <close> = assert(io.open(name, "w"))
+          F = f
+        end
+        assert(io.type(F) == "closed file" and tostring(F) == "file (closed)", tostring(F))
+        local ok = pcall(function ()
+          local f <close> = assert(io.open(name, "w"))
+          F = f
+          error("x")
+        end)
+        assert(not ok and io.type(F) == "closed file")
+        os.remove(name)
+        "#,
+    );
+}
+
+#[test]
+fn error_messages_follow_the_language_level() {
+    run_both(
+        r#"
+        local lua53 = _VERSION == "Lua 5.3"
+        for _, f in ipairs{math.max, math.min} do
+          local ok, msg = pcall(f)
+          assert(not ok and msg:find("(value expected)", 1, true), msg)
+        end
+        local x
+        local lud = debug.upvalueid(function () return x end, 1)
+        local ok, msg = pcall(debug.setuservalue, lud, {})
+        assert(not ok and msg:find("userdata expected, got light userdata", 1, true), msg)
+        -- 5.4+ see the labels of enclosing blocks
+        local f, msg = load("::l1:: do ::l1:: end")
+        if lua53 then
+          assert(f, msg)
+        else
+          assert(not f and msg:find("label 'l1' already defined on line 1", 1, true), msg)
+        end
+        -- a method name past the RK range: 5.3 still used OP_SELF
+        local t = {}
+        for i = 1, 300 do t[i] = "aaa = x" .. i end
+        local _, msg = pcall(load(table.concat(t, "; ") .. "; local t = {}; t:bbb()"))
+        assert(msg:find(lua53 and "(method 'bbb')" or "(field 'bbb')", 1, true), msg)
+        -- 5.4+ attribute a call to the line of its arguments
+        local _, msg = pcall(load("local a = {x = 13}\na\n.\nx\n(\n23\n)"))
+        assert(msg:find(lua53 and "]:2:" or "]:5:", 1, true), msg)
+        local _, msg = pcall(load("local a = {}\na\n:\nx\n'str'"))
+        assert(msg:find(lua53 and "]:2:" or "]:5:", 1, true), msg)
+        "#,
+    );
+}
+
+#[test]
+fn lua55_random_numbers_match_c_lua() {
+    run(
+        LuaLanguageLevel::Lua55,
+        r##"
+        math.randomseed(1007, 0)
+        assert(math.random() == (0x7a7040a5a323c9d6 >> 11) * 2.0^-53)
+        math.randomseed(42)
+        local t = {}
+        for i = 1, 12 do t[#t + 1] = math.random(1, 10) end
+        for i = 1, 4 do t[#t + 1] = math.random(1000) end
+        t[#t + 1] = math.random(-5, 2^40)
+        t[#t + 1] = math.random(math.mininteger, math.maxinteger)
+        local got = table.concat(t, " ")
+        assert(got == "6 2 6 6 7 2 9 3 8 8 1 1 831 872 225 126 860715225255 -6231897288346500571", got)
+        assert(select("#", math.randomseed()) == 2)
+        assert(not pcall(math.randomseed, nil))
+        "##,
+    );
+}

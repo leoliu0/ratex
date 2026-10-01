@@ -74,11 +74,18 @@ pub fn compile_code_with_name(
     compile_code_with_name_mode(source, vm, chunk_name, false)
 }
 
+/// Compile a chunk of arbitrary bytes, as C Lua does: bytes that are not valid UTF-8
+/// reach the lexer as marker characters and are restored inside string literals.
 pub fn compile_code_bytes_with_name(
     source: &[u8],
     vm: &mut GlobalState,
     chunk_name: &str,
 ) -> Result<LuaProto, String> {
+    if let Ok(text) = std::str::from_utf8(source)
+        && !text.contains(BYTE_SOURCE_MARKER)
+    {
+        return compile_code_with_name_mode(text, vm, chunk_name, false);
+    }
     let encoded = encode_byte_source(source);
     compile_code_with_name_mode(&encoded, vm, chunk_name, true)
 }

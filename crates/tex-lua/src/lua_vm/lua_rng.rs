@@ -38,11 +38,8 @@ impl LuaRng {
         res
     }
 
-    /// Convert random u64 to float in [0, 1)
-    /// Takes the top 53 bits (DBL_MANT_DIG) and scales to [0,1)
-    pub fn next_float(&mut self) -> f64 {
-        let rv = self.next_rand();
-        // Take top 53 bits
+    /// `I2d`: the float in [0, 1) of a drawn value, from its top 53 bits (DBL_MANT_DIG).
+    pub fn to_float(rv: u64) -> f64 {
         let mantissa = rv >> (64 - 53); // = rv >> 11
         (mantissa as f64) * f64::from_bits(0x3CA0000000000000) // 2^-53
     }

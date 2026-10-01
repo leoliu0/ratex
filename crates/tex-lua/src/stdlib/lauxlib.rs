@@ -126,7 +126,11 @@ pub(crate) fn argerror(l: &mut LuaState, narg: usize, extramsg: &str) -> LuaErro
 pub(crate) fn typeerror(l: &mut LuaState, narg: usize, expected: &str) -> LuaError {
     let actual = match l.get_arg(narg) {
         None => "no value".to_string(),
-        Some(value) => objtypename(l, &value),
+        Some(value) => match crate::stdlib::debug::metatable_name(l, &value) {
+            Some(name) => name,
+            None if value.ttislightuserdata() => "light userdata".to_string(),
+            None => value.type_name().to_string(),
+        },
     };
     argerror(l, narg, &format!("{expected} expected, got {actual}"))
 }

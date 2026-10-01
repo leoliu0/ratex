@@ -181,7 +181,7 @@ fn scan_format_55(l: &mut LuaState, fmt: &[u8], start: usize) -> LuaResult<usize
         .take_while(|&&b| FLAGS_F.contains(&b) || b.is_ascii_digit() || b == b'.')
         .count();
     if span + 1 >= MAX_FORMAT - 10 {
-        return Err(lauxlib::lual_error(l, "invalid format string to 'format'"));
+        return Err(lauxlib::lual_error(l, "invalid format (too long)"));
     }
     Ok(start + span)
 }

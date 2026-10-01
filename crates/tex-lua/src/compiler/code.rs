@@ -996,15 +996,6 @@ pub fn string_k(fs: &mut FuncState, s: &str) -> usize {
     add_constant(fs, string)
 }
 
-pub fn binary_k(fs: &mut FuncState, v: Vec<u8>) -> usize {
-    // Intern binary data to ObjectPool and get BinaryId
-    let binary = fs.vm.create_binary(v).unwrap();
-
-    // Add LuaValue with BinaryId to constants (check for duplicates)
-    // For binaries, key == value (binaries are deduplicated globally)
-    add_constant(fs, binary)
-}
-
 // Port of str2K from lcode.c:738-742
 // static void str2K (FuncState *fs, expdesc *e)
 // Convert a VKSTR to a VK
@@ -1735,42 +1726,8 @@ pub fn posfix(
             concat(fs, &mut e2.t, e1.t);
             *e1 = e2.clone();
         }
-        // lcode.c:1721-1724: OPR_CONCAT
+        // lcode.c:1721-1724: OPR_CONCAT (never folded: each evaluation creates a string)
         BinaryOperator::OpConcat => {
-            // Constant folding: if e2 is a string constant and e1 was loaded
-            // from a string constant via LOADK, fold them at compile time.
-            // This handles chains like "a" .. "b" .. "c" (right-associative),
-            // folding them into a single constant with zero runtime cost.
-            if e2.kind == ExpKind::VKSTR
-                && e1.kind == ExpKind::VNONRELOC
-                && !e1.has_jumps()
-                && let Some((_, prev_instr)) = previous_instruction(fs)
-            {
-                if Instruction::get_opcode(prev_instr) == OpCode::LoadK {
-                    let reg_a = Instruction::get_a(prev_instr) as i32;
-                    let k_idx = Instruction::get_bx(prev_instr) as usize;
-                    if reg_a == e1.u.info()
-                        && k_idx < fs.chunk.constants.len()
-                        && let Some(s1) = fs.chunk.constants[k_idx].as_str()
-                        && let Some(s2) = e2.u.str().as_str()
-                    {
-                        // Both are string constants — fold!
-                        let mut combined = String::with_capacity(s1.len() + s2.len());
-                        combined.push_str(s1);
-                        combined.push_str(s2);
-                        let combined_value = fs.vm.create_string(&combined).unwrap();
-                        // Remove the LOADK instruction
-                        fs.chunk.code.pop();
-                        fs.chunk.line_info.pop();
-                        fs.pc -= 1;
-                        // Free the register that was used by e1
-                        free_exp(fs, e1);
-                        // Set e1 to the folded constant
-                        *e1 = ExpDesc::new_vkstr(combined_value);
-                        return;
-                    }
-                }
-            }
             exp2nextreg(fs, e2);
             codeconcat(fs, e1, e2, line);
         }

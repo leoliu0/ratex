@@ -204,12 +204,7 @@ fn math_log(l: &mut LuaState) -> LuaResult<usize> {
 fn extremum(l: &mut LuaState, max: bool) -> LuaResult<usize> {
     let n = l.arg_count();
     if n == 0 {
-        let message = if l.global_state().language() == crate::LuaLanguageLevel::Lua53 {
-            "value expected"
-        } else {
-            "number expected, got no value"
-        };
-        return Err(lauxlib::argerror(l, 1, message));
+        return Err(lauxlib::argerror(l, 1, "value expected"));
     }
     let mut best = l.get_arg(1).unwrap_or_default();
     for i in 2..=n {
@@ -248,10 +243,7 @@ fn math_random(l: &mut LuaState) -> LuaResult<usize> {
     let lua53 = l.global_state().language() == crate::LuaLanguageLevel::Lua53;
     let rv = l.global_state_mut().rng.next_rand();
     let (low, up) = match l.arg_count() {
-        0 => {
-            let r = l.global_state_mut().rng.next_float();
-            return push_float(l, r);
-        }
+        0 => return push_float(l, LuaRng::to_float(rv)),
         1 => {
             let up = lauxlib::check_integer(l, 1)?;
             if up == 0 && !lua53 {
@@ -269,10 +261,33 @@ fn math_random(l: &mut LuaState) -> LuaResult<usize> {
     if lua53 && !(low >= 0 || up <= i64::MAX + low) {
         return Err(lauxlib::argerror(l, 1, "interval too large"));
     }
-    let range = (up as u64).wrapping_sub(low as u64).wrapping_add(1);
-    let offset = if range == 0 { rv } else { rv % range };
+    let n = (up as u64).wrapping_sub(low as u64);
+    let offset = if lua53 {
+        let range = n.wrapping_add(1);
+        if range == 0 { rv } else { rv % range }
+    } else {
+        project(l, rv, n)
+    };
     l.push_value(LuaValue::integer((low as u64).wrapping_add(offset) as i64))?;
     Ok(1)
+}
+
+/// Lua 5.5 `project`: `ran` masked to the smallest Mersenne number covering `n`,
+/// drawing again while it exceeds `n` (unbiased).
+fn project(l: &mut LuaState, mut ran: u64, n: u64) -> u64 {
+    let mut lim = n;
+    let mut sh = 1;
+    while lim & lim.wrapping_add(1) != 0 {
+        lim |= lim >> sh;
+        sh *= 2;
+    }
+    loop {
+        ran &= lim;
+        if ran <= n {
+            return ran;
+        }
+        ran = l.global_state_mut().rng.next_rand();
+    }
 }
 
 fn math_randomseed(l: &mut LuaState) -> LuaResult<usize> {
@@ -282,8 +297,9 @@ fn math_randomseed(l: &mut LuaState) -> LuaResult<usize> {
         l.global_state_mut().rng = LuaRng::from_seed(seed as i64, 0);
         return Ok(0);
     }
-    let (n1, n2) = if l.get_arg(1).is_none_or(|v| v.is_nil()) {
-        (platform_time::unix_nanos() as i64, 0)
+    let (n1, n2) = if l.arg_count() == 0 {
+        // A "random" seed, mixed with the current state in case it is not that random.
+        (platform_time::unix_nanos() as i64, l.global_state_mut().rng.next_rand() as i64)
     } else {
         let n1 = lauxlib::check_integer(l, 1)?;
         (n1, lauxlib::opt_integer(l, 2, 0)?)

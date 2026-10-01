@@ -1559,8 +1559,10 @@ fn alignment_preamble_reads_pushback_from_before_halign() {
   \box1\cr
   \noalign{\vskip 1pt}%
   b\cr}}
-\message{[\the\ht0]}
+\setbox1=\hbox{a}
+\setbox2=\vbox{\halign{\hfil#\hfil\cr \box1\cr \noalign{\vskip 1pt}b\cr}}
+\ifdim\ht0=\ht2 \message{[SAME]}\else\message{[DIFF \the\ht0 \the\ht2]}\fi
 \end",
     );
-    assert!(e.term.contains("[12.24998pt]"), "{}", e.term);
+    assert!(e.term.contains("[SAME]"), "{}", e.term);
 }

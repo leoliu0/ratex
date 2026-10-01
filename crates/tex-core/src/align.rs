@@ -156,7 +156,7 @@ impl Engine {
                         }
                     })
                 }
-                crate::input::Source::MacroFrame(frame) => sum + frame.delivered_brace_balance,
+                crate::input::Source::MacroFrame(frame) => sum + frame.delivered_brace_balance(),
                 _ => sum,
             })
     }

@@ -2,9 +2,10 @@
 //! scanning states, ^^ notation, comments, control-sequence scanning.
 //!
 //! Line model: each file source holds the raw bytes; the current line is
-//! materialized in `line_buf` (without its newline). "End of line" is
-//! `line_peek() == None`. State: 0 = new line (N), 1 = mid line (M),
-//! 2 = skip spaces (S).
+//! materialized in `line_buf` like TeX's `buffer`: without its newline and
+//! trailing spaces, followed by the `\endlinechar` current when it was read.
+//! The line ends when `line_pos` reaches its length. State: 0 = new line
+//! (N), 1 = mid line (M), 2 = skip blanks (S).
 
 use crate::engine::{Engine, EngineKind, PhysicalTokenSource};
 use crate::input::{physical_line_bounds, Source, EOF_MARKER, PAR_END};
@@ -83,66 +84,77 @@ impl Engine {
         None
     }
 
-    /// One token from the file source at `si`; None if the file is exhausted
-    /// (in which case the source is popped by the caller via get_next_raw? no:
-    /// file_finished pops here).
+    /// One token from the file source at `si`; None once the file has been
+    /// finished and popped.
+    ///
+    /// This follows tex.web §343-§357 on a line buffer that, like TeX's,
+    /// ends with the `\endlinechar` that was current when the line was read.
     fn file_next_token(&mut self, si: usize) -> Option<Token> {
-        let r = self.file_next_token_inner(si);
-        r
-    }
-
-    fn file_line_peek(&self, si: usize) -> Option<u8> {
-        match self.input.stack.get(si) {
-            Some(Source::File {
-                line_buf: Some(buf),
+        loop {
+            let Source::File {
+                done,
+                ending,
+                line_buf,
                 line_pos,
+                state,
                 ..
-            }) => buf.get(*line_pos).copied(),
-            _ => None,
+            } = &self.input.stack[si]
+            else {
+                unreachable!()
+            };
+            if *done {
+                // e-TeX semantics: \everyeof fires every time scanning
+                // reaches EOF of an input file or pseudo-file (expl3 \file_get
+                // and \tl_set_rescan rely on this to supply closing delimiters).
+                self.input.finish_file(si);
+                let eof_toks = (*self.eqtb.tok_params
+                    [crate::prim::ToksParam::EveryEOF.idx() as usize])
+                    .clone();
+                if !eof_toks.is_empty() {
+                    self.push_tokens(eof_toks);
+                }
+                return None;
+            }
+            let Some(buf) = line_buf else {
+                // \endinput takes effect once the current line is finished.
+                if *ending || !self.file_load_line(si) {
+                    self.set_file_done(si);
+                }
+                continue;
+            };
+            let start = *line_pos;
+            let state = *state;
+            let Some((character, width)) = self.decode_scalar(buf, start) else {
+                // tex.web §360: an exhausted line moves to the next one in
+                // state new_line.
+                self.file_line_clear(si);
+                continue;
+            };
+            self.file_line_advance_by(si, width);
+            if let Some(token) = self.tokenize_char(character, si, state, start) {
+                if token != PAR_END && !self.file_line_is_none(si) {
+                    self.record_physical_token(si, start, token);
+                }
+                return Some(token);
+            }
         }
     }
 
-    fn file_line_advance(&mut self, si: usize) {
-        if let Some(Source::File { line_pos, .. }) = self.input.stack.get_mut(si) {
-            *line_pos += 1;
+    fn set_file_done(&mut self, si: usize) {
+        if let Source::File { done, .. } = &mut self.input.stack[si] {
+            *done = true;
         }
     }
 
-    /// Decode one source character for Unicode engines while preserving
-    /// pdfTeX's byte-oriented input contract.
-    fn file_line_peek_scalar(&self, si: usize) -> Option<(u32, usize)> {
-        let Source::File {
-            line_buf: Some(buf),
-            line_pos,
-            ..
-        } = self.input.stack.get(si)?
-        else {
-            return None;
-        };
-        let first = *buf.get(*line_pos)?;
-        if self.engine_kind == EngineKind::PdfTeX || first.is_ascii() {
-            return Some((u32::from(first), 1));
+    fn set_file_state(&mut self, si: usize, value: u8) {
+        if let Source::File { state, .. } = &mut self.input.stack[si] {
+            *state = value;
         }
-        let width = match first {
-            0xC2..=0xDF => 2,
-            0xE0..=0xEF => 3,
-            0xF0..=0xF4 => 4,
-            _ => return Some((u32::from(first), 1)),
-        };
-        let Some(end) = line_pos.checked_add(width) else {
-            return Some((u32::from(first), 1));
-        };
-        let Some(bytes) = buf.get(*line_pos..end) else {
-            return Some((u32::from(first), 1));
-        };
-        let Ok(text) = std::str::from_utf8(bytes) else {
-            return Some((u32::from(first), 1));
-        };
-        let character = text
-            .chars()
-            .next()
-            .expect("a nonempty UTF-8 slice has one character");
-        Some((character as u32, width))
+    }
+
+    #[inline]
+    fn decode_scalar(&self, buf: &[u8], index: usize) -> Option<(u32, usize)> {
+        decode_scalar(buf, index, self.engine_kind != EngineKind::PdfTeX)
     }
 
     fn file_line_advance_by(&mut self, si: usize, width: usize) {
@@ -151,17 +163,17 @@ impl Engine {
         }
     }
 
+    /// Discard the rest of the current line (`loc:=limit+1`). The buffer is
+    /// kept for reuse by the next line.
     fn file_line_clear(&mut self, si: usize) {
         if let Some(Source::File {
-            line_buf,
-            line_pos,
-            line_reload,
-            ..
+            line_buf, line_pos, ..
         }) = self.input.stack.get_mut(si)
         {
-            *line_buf = None;
+            if let Some(buf) = line_buf.take() {
+                self.spare_line_buf = buf;
+            }
             *line_pos = 0;
-            *line_reload = true;
         }
     }
 
@@ -179,291 +191,57 @@ impl Engine {
         }
     }
 
-    fn file_next_token_inner(&mut self, si: usize) -> Option<Token> {
-        loop {
-            let (done, _at_eof) = match &self.input.stack[si] {
-                Source::File { done, at_eof, .. } => (*done, *at_eof),
-                _ => unreachable!(),
-            };
-            if done {
-                // e-TeX semantics: \everyeof fires every time scanning
-                // reaches EOF of an input file or pseudo-file (expl3 \file_get
-                // and \tl_set_rescan rely on this to supply closing delimiters).
-                self.input.finish_file(si);
-                let eof_toks = (*self.eqtb.tok_params
-                    [crate::prim::ToksParam::EveryEOF.idx() as usize])
-                    .clone();
-                if !eof_toks.is_empty() {
-                    self.push_tokens(eof_toks);
-                }
-                return None;
-            }
-            // honor \endinput: stop at end of the current line
-            if self.file_line_is_none(si) {
-                let ending = match &self.input.stack.get(si) {
-                    Some(crate::input::Source::File { ending, .. }) => *ending,
-                    _ => false,
-                };
-                if ending {
-                    let d = match &mut self.input.stack[si] {
-                        crate::input::Source::File { done, .. } => done,
-                        _ => unreachable!(),
-                    };
-                    *d = true;
-                    continue;
-                }
-            }
-            // ensure a line buffer
-            if self.file_line_is_none(si) {
-                if !self.file_load_line(si) {
-                    let d = match &mut self.input.stack[si] {
-                        Source::File { done, .. } => done,
-                        _ => unreachable!(),
-                    };
-                    *d = true;
-                    continue;
-                }
-            }
-            let st = match &self.input.stack[si] {
-                Source::File { state, .. } => *state,
-                _ => unreachable!(),
-            };
-            match st {
-                0 => {
-                    // new line state (tex.web 343): skip leading spaces and
-                    // ignored chars; if nothing remains, the virtual endline
-                    // char decides — cat 5 yields \par, anything else (e.g.
-                    // \nfss@catcodes sets ^^M to 9 for .fd files) yields no
-                    // token. Spaces-only lines count as blank.
-                    let mut any = false;
-                    while let Some((character, width)) = self.file_line_peek_scalar(si) {
-                        let cat = self.eqtb.cat_code(character);
-                        if cat == CAT_SPACE || cat == CAT_IGNORED {
-                            self.file_line_advance_by(si, width);
-                            continue;
-                        }
-                        any = true;
-                        break;
-                    }
-                    if !any && self.file_line_peek_scalar(si).is_none() {
-                        let el =
-                            self.eqtb.int_params[crate::prim::IntParam::EndLineChar.idx() as usize];
-                        self.file_line_clear(si);
-                        if !(0..=255).contains(&el) {
-                            continue;
-                        }
-                        let cat = self.eqtb.cat_code(el as u32);
-                        match cat {
-                            CAT_EOL => return Some(PAR_END),
-                            CAT_SPACE | CAT_COMMENT | CAT_IGNORED => continue,
-                            CAT_INVALID => {
-                                self.invalid_character_error(si, el as u32, usize::MAX);
-                                if self.stopped_on_error {
-                                    return Some(EOF_MARKER);
-                                }
-                                continue;
-                            }
-                            CAT_ACTIVE => return Some(Token::char(CAT_ACTIVE, el as u32)),
-                            _ => return Some(Token::char(cat, el as u32)),
-                        }
-                    }
-                    let (character, width) = self.file_line_peek_scalar(si).unwrap();
-                    let token_start = self.file_line_pos(si);
-                    self.file_line_advance_by(si, width);
-                    if let Some(t) = self.tokenize_char(character, si) {
-                        // ^^ notation is translated before TeX applies the
-                        // N/M/S state machine. A translated space at the start
-                        // of a line is therefore ignored, just like a literal
-                        // leading space.
-                        if t.is_char() && t.cc() == CAT_SPACE {
-                            continue;
-                        }
-                        if let Some(Source::File { state, .. }) = self.input.stack.get_mut(si) {
-                            if *state == 0 {
-                                *state = 1;
-                            }
-                        }
-                        self.record_physical_token(si, token_start, t);
-                        return Some(t);
-                    }
-                    // Comments reset the state themselves. Ignored characters,
-                    // including ^^ translations, leave new-line state intact.
-                    // comment or otherwise consumed rest of line: loop
-                }
-                1 => {
-                    let (character, width) = match self.file_line_peek_scalar(si) {
-                        Some(character) => character,
-                        None => {
-                            // end of line: endline char token (usually space)
-                            let el = self.eqtb.int_params
-                                [crate::prim::IntParam::EndLineChar.idx() as usize];
-                            let s = match &mut self.input.stack[si] {
-                                Source::File { state, .. } => state,
-                                _ => unreachable!(),
-                            };
-                            *s = 0;
-                            self.file_line_clear(si);
-                            if el < 0 {
-                                continue;
-                            }
-                            if el < 0 || el > 255 {
-                                // tex.web: endlinechar outside 0..255 injects
-                                // space_token (which \endlinechar=-1 makes
-                                // impossible: TeX uses the value directly as a
-                                // token; negative => no token at all)
-                                continue;
-                            }
-                            let cat = self.eqtb.cat_code(el as u32);
-
-                            if cat == CAT_EOL {
-                                return Some(Token::space());
-                            }
-                            if cat == CAT_IGNORED {
-                                continue;
-                            }
-                            if cat == CAT_INVALID {
-                                self.invalid_character_error(si, el as u32, usize::MAX);
-                                if self.stopped_on_error {
-                                    return Some(EOF_MARKER);
-                                }
-                                continue;
-                            }
-                            // tex.web §347: every spacer token has character code 32.
-                            // \\ProvidesFile sets \\catcode\\endlinechar=10; that
-                            // spacer must \\ifx-equal \\@sptoken (chr 32) so
-                            // \\@ifnextchar sees the optional '[' on the next line.
-                            if cat == CAT_SPACE {
-                                return Some(Token::space());
-                            }
-                            return Some(Token::char(cat, el as u32));
-                        }
-                    };
-                    let token_start = self.file_line_pos(si);
-                    self.file_line_advance_by(si, width);
-                    if let Some(t) = self.tokenize_char(character, si) {
-                        if t.is_char() && t.cc() == CAT_SPACE {
-                            // mid_line + spacer: state <- skip_blanks
-                            let s2 = match &mut self.input.stack[si] {
-                                Source::File { state, .. } => state,
-                                _ => unreachable!(),
-                            };
-                            *s2 = 2;
-                        }
-                        self.record_physical_token(si, token_start, t);
-                        return Some(t);
-                    }
-                }
-                2 => {
-                    // skip spaces
-                    let mut skipped = false;
-                    while let Some((character, width)) = self.file_line_peek_scalar(si) {
-                        let cat = self.eqtb.cat_code(character);
-                        if cat == CAT_SPACE {
-                            self.file_line_advance_by(si, width);
-                            skipped = true;
-                            continue;
-                        }
-                        break;
-                    }
-                    let _ = skipped;
-                    let (character, width) = match self.file_line_peek_scalar(si) {
-                        Some(character) => character,
-                        None => {
-                            // tex.web skip_blanks at line end: state <- new_line,
-                            // so the NEXT line is re-examined by the new-line logic
-                            // (an empty next line must still yield PAR_END — it
-                            // never did from here, swallowing blank-line \par
-                            // after every scan that ended in optional-space state)
-                            let s = match &mut self.input.stack[si] {
-                                Source::File { state, .. } => state,
-                                _ => unreachable!(),
-                            };
-                            *s = 0;
-                            self.file_line_clear(si);
-                            continue;
-                        }
-                    };
-                    let token_start = self.file_line_pos(si);
-                    self.file_line_advance_by(si, width);
-                    if let Some(t) = self.tokenize_char(character, si) {
-                        // A ^^-translated space is still skipped in state S.
-                        if t.is_char() && t.cc() == CAT_SPACE {
-                            continue;
-                        }
-                        // A control word (including one produced by ^^
-                        // translation) leaves TeX in skip-blanks state.
-                        // Ordinary characters leave it in mid-line state;
-                        // control symbols already selected that state in
-                        // tokenize_char.
-                        if !t.is_cs() {
-                            if let Some(Source::File { state, .. }) = self.input.stack.get_mut(si) {
-                                if *state == 2 {
-                                    *state = 1;
-                                }
-                            }
-                        }
-                        self.record_physical_token(si, token_start, t);
-                        return Some(t);
-                    }
-                }
-                _ => unreachable!(),
-            }
-        }
-    }
-
-    /// Load next line into the buffer; false at EOF.
+    /// Load next line into the buffer; false at EOF. tex.web §362: trailing
+    /// spaces are removed and `\endlinechar`, if it is in 0..=255, is
+    /// appended; scanning restarts in state new_line.
     fn file_load_line(&mut self, si: usize) -> bool {
-        let (chunk, start) = match &mut self.input.stack[si] {
-            Source::File {
-                name: _,
-                data,
-                pos,
-                line_no,
-                ..
-            } => {
-                if *pos >= data.len() {
-                    return false;
-                }
-                let start = *pos;
-                let (end, next) = physical_line_bounds(data, start);
-                let mut content_end = end;
-                // tex.web §31 input_ln: Trailing blanks are removed from the line;
-                // thus, either last=first or buffer[last-1]<>" ".
-                while content_end > start && data[content_end - 1] == b' ' {
-                    content_end -= 1;
-                }
-                let line = data[start..content_end].to_vec();
-                *pos = next;
-                *line_no += 1;
-                (line, start)
-            }
-            _ => return false,
-        };
-
-        if let Some(Source::File {
-            line_buf,
-            line_pos,
-            line_reload,
+        let end_line_char =
+            self.eqtb.int_params[crate::prim::IntParam::EndLineChar.idx() as usize];
+        let unicode = self.engine_kind != EngineKind::PdfTeX;
+        let mut buf = std::mem::take(&mut self.spare_line_buf);
+        let Source::File {
+            data,
+            pos,
+            line_no,
             line_start,
+            line_buf,
+            line_end_len,
+            line_pos,
+            state,
             ..
-        }) = self.input.stack.get_mut(si)
-        {
-            *line_buf = Some(chunk);
-            *line_pos = 0;
-            *line_reload = false;
-            *line_start = start;
+        } = &mut self.input.stack[si]
+        else {
+            return false;
+        };
+        if *pos >= data.len() {
+            self.spare_line_buf = buf;
+            return false;
         }
+        let start = *pos;
+        let (end, next) = physical_line_bounds(data, start);
+        let mut content_end = end;
+        while content_end > start && data[content_end - 1] == b' ' {
+            content_end -= 1;
+        }
+        buf.clear();
+        buf.extend_from_slice(&data[start..content_end]);
+        let before = buf.len();
+        if let Ok(character) = u8::try_from(end_line_char) {
+            if unicode && !character.is_ascii() {
+                let mut encoded = [0u8; 4];
+                buf.extend_from_slice(char::from(character).encode_utf8(&mut encoded).as_bytes());
+            } else {
+                buf.push(character);
+            }
+        }
+        *line_end_len = (buf.len() - before) as u8;
+        *line_buf = Some(buf);
+        *line_pos = 0;
+        *line_start = start;
+        *pos = next;
+        *line_no += 1;
+        *state = 0;
         true
-    }
-
-    fn append_control_sequence_character(&self, name: &mut Vec<u8>, character: u32) {
-        if self.engine_kind == EngineKind::PdfTeX {
-            name.push(character as u8);
-            return;
-        }
-        let mut encoded = [0u8; 4];
-        let character = char::from_u32(character).unwrap_or(char::REPLACEMENT_CHARACTER);
-        name.extend_from_slice(character.encode_utf8(&mut encoded).as_bytes());
     }
 
     fn source_character_token(&self, cat: u8, character: u32) -> Token {
@@ -474,128 +252,179 @@ impl Engine {
         }
     }
 
-    /// Tokenize a consumed character. None = rest of line consumed (comment);
-    /// caller should re-loop.
-    fn tokenize_char(&mut self, character: u32, si: usize) -> Option<Token> {
-        let cat = self.eqtb.cat_code(character);
-
-        match cat {
-            CAT_COMMENT => {
-                self.file_line_clear(si);
-                let s = match &mut self.input.stack[si] {
-                    Source::File { state, .. } => state,
-                    _ => unreachable!(),
-                };
-                // A comment discards this line, not the next line's
-                // paragraph boundary.
-                *s = 0;
-                None
-            }
-            CAT_ESCAPE => {
-                // Control-sequence names remain byte strings internally.
-                // Unicode engines encode source scalars as UTF-8; pdfTeX
-                // preserves its historic one-byte names.
-                let mut name: Vec<u8> = Vec::new();
-                let mut end_state = 1u8;
-                loop {
-                    let (next, width) = match self.file_line_peek_scalar(si) {
-                        Some(character) => character,
-                        None => {
-                            if name.is_empty() {
-                                // TeX appends endlinechar before scanning an
-                                // escape: a trailing backslash names that
-                                // character, not the null control sequence.
-                                let el = self.eqtb.int_params
-                                    [crate::prim::IntParam::EndLineChar.idx() as usize];
-                                if (0..=255).contains(&el) {
-                                    self.append_control_sequence_character(&mut name, el as u32);
-                                }
-                                self.file_line_clear(si);
-                                end_state = 0;
-                            }
-                            // Keep an exhausted control-word line so the next
-                            // line is re-examined in new-line state.
-                            break;
-                        }
-                    };
-                    if name.is_empty() {
-                        // ^^ notation is byte syntax. A decoded non-ASCII
-                        // scalar is already one source character.
-                        self.file_line_advance_by(si, width);
-                        let expanded = if width == 1 {
-                            u8::try_from(next)
-                                .map(|byte| u32::from(self.expand_sup(byte, si)))
-                                .unwrap_or(next)
-                        } else {
-                            next
-                        };
-                        let expanded_cat = self.eqtb.cat_code(expanded);
-                        self.append_control_sequence_character(&mut name, expanded);
-                        if expanded_cat == CAT_LETTER {
-                            end_state = 2;
-                            continue;
-                        }
-                        if expanded == u32::from(b' ') {
-                            end_state = 2;
-                        }
-                        break;
+    /// tex.web §347: act on a consumed character in scanner `state`. None
+    /// means the character produced no token; the caller keeps scanning.
+    fn tokenize_char(
+        &mut self,
+        mut character: u32,
+        si: usize,
+        state: u8,
+        start: usize,
+    ) -> Option<Token> {
+        loop {
+            let cat = self.eqtb.cat_code(character);
+            let token = match cat {
+                CAT_ESCAPE => return Some(self.scan_control_sequence(si)),
+                CAT_IGNORED => return None,
+                CAT_SPACE => {
+                    if state != 1 {
+                        return None;
                     }
-                    // A control word continues through every letter scalar;
-                    // the first non-letter remains for the next token.
-                    if self.eqtb.cat_code(next) == CAT_LETTER {
-                        self.file_line_advance_by(si, width);
-                        self.append_control_sequence_character(&mut name, next);
+                    self.set_file_state(si, 2);
+                    // tex.web §348: every spacer token has character code 32.
+                    return Some(Token::space());
+                }
+                CAT_EOL => {
+                    // `loc:=limit+1`: the rest of the line is discarded.
+                    self.file_line_clear(si);
+                    return match state {
+                        0 => Some(PAR_END),
+                        1 => Some(Token::space()),
+                        _ => None,
+                    };
+                }
+                CAT_COMMENT => {
+                    self.file_line_clear(si);
+                    return None;
+                }
+                CAT_INVALID => {
+                    self.invalid_character_error(si, character, start);
+                    return self.stopped_on_error.then_some(EOF_MARKER);
+                }
+                CAT_SUPER => {
+                    if let Some(expanded) = self.expand_sup(si, character) {
+                        // `goto reswitch` with the translated character.
+                        character = expanded;
                         continue;
                     }
-                    break;
+                    self.source_character_token(CAT_SUPER, character)
                 }
-                let s = match &mut self.input.stack[si] {
-                    Source::File { state, .. } => state,
-                    _ => unreachable!(),
-                };
-                *s = end_state;
-                let id = self.cs.intern(&name);
-                Some(Token::from_cs(id))
-            }
-            CAT_SUPER => {
-                let Ok(byte) = u8::try_from(character) else {
-                    return Some(Token::char(CAT_SUPER, character));
-                };
-                let before = self.file_line_pos(si);
-                let expanded = self.expand_sup(byte, si);
-                if self.file_line_pos(si) == before {
-                    // A lone superscript character is an ordinary catcode-7
-                    // token. Re-dispatch only when ^^ notation consumed input.
-                    Some(self.source_character_token(CAT_SUPER, character))
-                } else if self.eqtb.cat_code(u32::from(expanded)) == CAT_INVALID {
-                    self.invalid_character_error(si, u32::from(expanded), before.saturating_sub(1));
-                    if self.stopped_on_error {
-                        Some(EOF_MARKER)
-                    } else {
-                        None
-                    }
-                } else {
-                    self.tokenize_char(u32::from(expanded), si)
-                }
-            }
-            CAT_ACTIVE => Some(self.source_character_token(CAT_ACTIVE, character)),
-            CAT_SPACE => {
-                // tex.web §347: every spacer token has character code 32.
-                Some(Token::space())
-            }
-            CAT_IGNORED => None,
-            CAT_INVALID => {
-                let width = char::from_u32(character).map_or(1, char::len_utf8);
-                let column = self.file_line_pos(si).saturating_sub(width);
-                self.invalid_character_error(si, character, column);
-                if self.stopped_on_error {
-                    Some(EOF_MARKER)
-                } else {
-                    None
-                }
-            }
-            _ => Some(self.source_character_token(cat, character)),
+                _ => self.source_character_token(cat, character),
+            };
+            self.set_file_state(si, 1);
+            return Some(token);
         }
+    }
+
+    /// tex.web §354-§357: scan the name after an escape character. Expanded
+    /// `^^` codes inside the name are reduced in the buffer first.
+    fn scan_control_sequence(&mut self, si: usize) -> Token {
+        loop {
+            let Source::File {
+                line_buf: Some(buf),
+                line_pos,
+                ..
+            } = &self.input.stack[si]
+            else {
+                unreachable!()
+            };
+            let loc = *line_pos;
+            let Some((first, first_width)) = self.decode_scalar(buf, loc) else {
+                // The escape character ended the buffer: the null control
+                // sequence (the state is irrelevant; the line is finished).
+                return Token::from_cs(self.cs.intern(b""));
+            };
+            let first_cat = self.eqtb.cat_code(first);
+            let mut k = loc + first_width;
+            let mut end = loc + first_width;
+            let reduce_at = if first_cat == CAT_LETTER && k < buf.len() {
+                let (mut character, mut width, mut cat);
+                loop {
+                    (character, width) = self.decode_scalar(buf, k).expect("k is inside the buffer");
+                    cat = self.eqtb.cat_code(character);
+                    k += width;
+                    if cat != CAT_LETTER || k >= buf.len() {
+                        break;
+                    }
+                }
+                end = if cat == CAT_LETTER { k } else { k - width };
+                (cat == CAT_SUPER).then_some((k, character))
+            } else {
+                (first_cat == CAT_SUPER).then_some((k, first))
+            };
+            if let Some((k, character)) = reduce_at {
+                if self.reduce_expanded_code(si, k, character) {
+                    continue;
+                }
+            }
+            let state = if first_cat == CAT_LETTER || first_cat == CAT_SPACE {
+                2
+            } else {
+                1
+            };
+            if let Source::File {
+                line_pos,
+                state: file_state,
+                ..
+            } = &mut self.input.stack[si]
+            {
+                *line_pos = end;
+                *file_state = state;
+            }
+            let Source::File {
+                line_buf: Some(buf),
+                ..
+            } = &self.input.stack[si]
+            else {
+                unreachable!()
+            };
+            let id = if self.engine_kind == EngineKind::PdfTeX {
+                self.cs.intern(&buf[loc..end])
+            } else {
+                // Unicode engines spell names in UTF-8; a byte produced by
+                // `^^` reduction stands for the scalar of the same value.
+                let mut name = std::mem::take(&mut self.cs_name_scratch);
+                name.clear();
+                let mut index = loc;
+                while let Some((character, width)) =
+                    decode_scalar(&buf[..end], index, true)
+                {
+                    let character = char::from_u32(character).unwrap_or(char::REPLACEMENT_CHARACTER);
+                    name.extend_from_slice(character.encode_utf8(&mut [0u8; 4]).as_bytes());
+                    index += width;
+                }
+                let id = self.cs.intern(&name);
+                self.cs_name_scratch = name;
+                id
+            };
+            return Token::from_cs(id);
+        }
+    }
+
+    /// tex.web §355: when `buffer[k-1]` is a superscript character that
+    /// begins `^^` notation, replace the notation by the character it
+    /// denotes and close the gap. Returns false if no expanded code is there.
+    fn reduce_expanded_code(&mut self, si: usize, k: usize, sup: u32) -> bool {
+        let Some(Source::File {
+            line_buf: Some(buf),
+            ..
+        }) = self.input.stack.get_mut(si)
+        else {
+            return false;
+        };
+        let Some((value, width)) = sup_notation(buf, k, sup) else {
+            return false;
+        };
+        buf[k - 1] = value;
+        buf.drain(k..k + width);
+        true
+    }
+
+    /// tex.web §352: a superscript character at `loc - 1` followed by the
+    /// same character and a 7-bit code is `^^` notation. Consume it and
+    /// return the character it denotes.
+    fn expand_sup(&mut self, si: usize, sup: u32) -> Option<u32> {
+        let Some(Source::File {
+            line_buf: Some(buf),
+            line_pos,
+            ..
+        }) = self.input.stack.get_mut(si)
+        else {
+            return None;
+        };
+        let (value, width) = sup_notation(buf, *line_pos, sup)?;
+        *line_pos += width;
+        Some(u32::from(value))
     }
 
     fn invalid_character_error(&mut self, si: usize, character: u32, byte_column: usize) {
@@ -651,54 +480,49 @@ impl Engine {
             span,
         });
     }
+}
 
-    /// ^^-notation expansion with repetition (tex.web §377): the result
-    /// re-enters the loop if its catcode is superscript again. Hex pairs use
-    /// lowercase digits only (verified against pdfTeX: `^^4A` -> 't'+'A').
-    fn expand_sup(&mut self, first: u8, si: usize) -> u8 {
-        let mut c = first;
-        loop {
-            if self.eqtb.cat[c as usize] != CAT_SUPER {
-                return c;
-            }
-            let b2 = match self.file_line_peek(si) {
-                Some(b) => b,
-                None => return c,
-            };
-            if b2 != c {
-                return c;
-            }
-            self.file_line_advance(si); // consume second matching char
-            let b3 = match self.file_line_peek(si) {
-                Some(b) => b,
-                None => return c,
-            };
-            self.file_line_advance(si);
-            let is_hex = |x: u8| matches!(x, b'0'..=b'9' | b'a'..=b'f');
-            if is_hex(b3) {
-                let b4 = match self.file_line_peek(si) {
-                    Some(b) => b,
-                    None => {
-                        c = b3 ^ 64;
-                        continue;
-                    }
-                };
-                if is_hex(b4) {
-                    self.file_line_advance(si);
-                    let hv = |x: u8| -> u8 {
-                        if x <= b'9' {
-                            x - b'0'
-                        } else {
-                            x - b'a' + 10
-                        }
-                    };
-                    c = hv(b3) * 16 + hv(b4);
-                    continue;
-                }
-            }
-            c = b3 ^ 64;
-        }
+/// Decode one source character. pdfTeX reads bytes; Unicode engines decode
+/// UTF-8 and fall back to the byte value for malformed sequences.
+#[inline]
+fn decode_scalar(buf: &[u8], index: usize, unicode: bool) -> Option<(u32, usize)> {
+    let first = *buf.get(index)?;
+    if !unicode || first.is_ascii() {
+        return Some((u32::from(first), 1));
     }
+    let width = match first {
+        0xC2..=0xDF => 2,
+        0xE0..=0xEF => 3,
+        0xF0..=0xF4 => 4,
+        _ => return Some((u32::from(first), 1)),
+    };
+    let decoded = buf
+        .get(index..index + width)
+        .and_then(|bytes| std::str::from_utf8(bytes).ok())
+        .and_then(|text| text.chars().next());
+    Some(decoded.map_or((u32::from(first), 1), |character| (character as u32, width)))
+}
+
+/// tex.web §352/§355: `buf[k-1]` holds superscript character `sup`. If
+/// `buf[k..]` continues it as `^^` notation (the same character, then a
+/// 7-bit code), return the denoted character and the number of bytes from
+/// `k` that the notation spans. Two lowercase hex digits denote a code
+/// (pdfTeX: `^^4A` is `t` followed by `A`); any other code is toggled by 64.
+fn sup_notation(buf: &[u8], k: usize, sup: u32) -> Option<(u8, usize)> {
+    let sup = u8::try_from(sup).ok().filter(u8::is_ascii)?;
+    if buf.get(k) != Some(&sup) {
+        return None;
+    }
+    let c = *buf.get(k + 1).filter(|c| c.is_ascii())?;
+    let hex = |x: u8| match x {
+        b'0'..=b'9' => Some(x - b'0'),
+        b'a'..=b'f' => Some(x - b'a' + 10),
+        _ => None,
+    };
+    if let (Some(high), Some(low)) = (hex(c), buf.get(k + 2).copied().and_then(hex)) {
+        return Some((high * 16 + low, 3));
+    }
+    Some((c ^ 0x40, 2))
 }
 
 #[cfg(test)]

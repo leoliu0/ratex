@@ -488,6 +488,12 @@ pub struct Engine {
     pub(crate) math_diagnostic_depth: usize,
     pub(crate) reported_missing_math_atoms: crate::FxHashSet<(u64, u16, u8)>,
     pub(crate) token_vec_pool: Vec<Vec<crate::token::Token>>,
+    /// The previous line buffer of a file source, reused for the next line.
+    pub(crate) spare_line_buf: Vec<u8>,
+    /// Unicode engines spell control-sequence names here before interning.
+    pub(crate) cs_name_scratch: Vec<u8>,
+    /// `\pdfcreationdate`, fixed at its first use in the job.
+    pub(crate) pdf_creation_date: Option<String>,
     pub current_macro: crate::token::CsId,
     pub math_style_stack: Vec<crate::boxes::MathStyle>,
     /// tex.web §1181 (init_math): \\predisplaysize, \\displaywidth and
@@ -664,17 +670,6 @@ impl Engine {
         Self::append_transcript_bounded(&mut self.log, text);
     }
 
-    pub fn current_line_text(&self) -> String {
-        for s in self.input.stack.iter().rev() {
-            if let crate::input::Source::File { line_buf, .. } = s {
-                return line_buf
-                    .as_ref()
-                    .map(|b| String::from_utf8_lossy(b).into_owned())
-                    .unwrap_or_default();
-            }
-        }
-        String::new()
-    }
     fn rss_limit_bytes() -> u64 {
         if cfg!(test) {
             return match std::env::var("TEX_MEM_LIMIT_MIB") {
@@ -843,7 +838,7 @@ impl Engine {
             par_has_display: false,
             par_interrupted: false,
             pending_retokenize: false,
-            cur_tok: crate::token::EOF_TOKEN,
+            cur_tok: crate::input::EOF_MARKER,
             cur_cs: None,
             cur_prim: None,
             cur_chr: 0,
@@ -918,6 +913,9 @@ impl Engine {
             pending_if_depth: None,
             pushed: Vec::new(),
             token_vec_pool: Vec::with_capacity(512),
+            spare_line_buf: Vec::new(),
+            cs_name_scratch: Vec::new(),
+            pdf_creation_date: None,
             cur_fill_order: 0,
             def_prefix: Vec::new(),
             global_flag: false,

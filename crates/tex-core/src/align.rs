@@ -1432,8 +1432,11 @@ impl Engine {
         let to_setbox = self.setbox_target.is_some() && self.setbox_depth == self.box_kinds.len();
         // tex.web §800: `if nest[nest_ptr-1].mode_field=mmode then
         // o:=display_indent`; only the rows and the top-level \noalign rules
-        // are shifted (§810, §806), other \noalign material stays put
-        let o = if !valign && !to_setbox && self.mode == Mode::DisplayMath {
+        // are shifted (§810, §806), other \noalign material stays put.
+        // etex.ch §800 also marks those rows `set_box_lr(q)(dlist)` for
+        // ship_out.
+        let display = !valign && !to_setbox && self.mode == Mode::DisplayMath;
+        let o = if display {
             self.eqtb.dim_params[DimParam::DisplayIndent.idx() as usize]
         } else {
             0
@@ -1533,7 +1536,7 @@ impl Engine {
                 glue_sign: p_sign,
                 glue_order: p_order,
                 glue_set: p_set,
-                lr: 0,
+                lr: if display { crate::boxes::BOX_LR_DLIST } else { 0 },
             };
             if !valign {
                 // tex.web append_to_vlist at fin_row time

@@ -176,7 +176,7 @@ impl Engine {
     /// tex.web @<Scan an optional space@>: one expanding fetch; consume a
     /// space, otherwise back it up. After an alphabetic constant this is
     /// what drives expl3 f-expansion (`\romannumeral`^^@\foo` expands `\foo`).
-    fn scan_optional_space(&mut self) {
+    pub(crate) fn scan_optional_space(&mut self) {
         let t = self.get_x_raw_keep_cond();
         if !t.is_space() {
             self.push_token(t);

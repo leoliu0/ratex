@@ -86,6 +86,14 @@ function img.copy(i)
   return wrap(c)
 end
 
+local function num(obj, field)
+  local _, n = I.info(obj, field)
+  return n
+end
+
+local next_index = 0
+local indices = {}
+
 local function scan_into(d)
   local obj = I.scan(d)
   if not obj then
@@ -94,10 +102,10 @@ local function scan_into(d)
   d.objnum = nil
   d.filepath = I.info(obj, "path")
   d.imagetype = I.info(obj, "type")
-  d.width, d.height, d.depth = I.info(obj, "width"), I.info(obj, "height"), I.info(obj, "depth")
-  d.xsize, d.ysize = I.info(obj, "xsize"), I.info(obj, "ysize")
-  d.rotation = I.info(obj, "rotation")
-  d.pages = I.info(obj, "pages")
+  d.width, d.height, d.depth = num(obj, "width"), num(obj, "height"), num(obj, "depth")
+  d.xsize, d.ysize = num(obj, "xsize"), num(obj, "ysize")
+  d.rotation = num(obj, "rotation")
+  d.pages = num(obj, "pages")
   d.page = d.page or 1
   if d.imagetype == "pdf" then
     local _, a, b, c, e = I.info(obj, "bbox")
@@ -105,7 +113,7 @@ local function scan_into(d)
     d.colordepth = nil
   else
     d.bbox = { 0, 0, d.xsize, d.ysize }
-    d.colordepth = I.info(obj, "colordepth")
+    d.colordepth = num(obj, "colordepth")
   end
   d.visiblefilename = d.visiblefilename
   d.__obj = obj
@@ -138,7 +146,11 @@ end
 
 function img.write(i)
   local d = object_of(i)
-  d.index = d.__obj
+  if not indices[d.__obj] then
+    next_index = next_index + 1
+    indices[d.__obj] = next_index
+  end
+  d.index = indices[d.__obj]
   I.ref(d.__obj)
   return i
 end

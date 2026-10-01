@@ -30,7 +30,7 @@ pub(crate) struct LangParams {
 impl Default for LangParams {
     fn default() -> Self {
         // llanglib / language.c `new_language`: pre_hyphen_char = '-'
-        Self { pre_hyphen: None, post_hyphen: 0, pre_exhyphen: 0, post_exhyphen: 0, hyphenation_min: 0 }
+        Self { pre_hyphen: None, post_hyphen: 0, pre_exhyphen: 0, post_exhyphen: 0, hyphenation_min: -1 }
     }
 }
 

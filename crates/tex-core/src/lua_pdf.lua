@@ -64,6 +64,7 @@ for _, v in ipairs(variables) do
       return n
     end
     pdf["set" .. name] = function(n)
+      if type(n) ~= "number" then return end
       P.var_set(key, lua_int(n))
     end
   end

@@ -215,6 +215,30 @@ end
 
 tex.getlccode, tex.setlccode = code_funcs("lc", "lccode", "lccode")
 tex.getuccode, tex.setuccode = code_funcs("uc", "uccode", "uccode")
+do
+  -- tex.setlccode(c, lc [, uc]) and tex.setuccode(c, uc [, lc])
+  local setlc, setuc = tex.setlccode, tex.setuccode
+  function tex.setlccode(...)
+    local global, c, lc, uc = scoped(...)
+    setlc(global and "global" or c, global and c or lc, global and lc or nil)
+    if uc ~= nil then setuc(global and "global" or c, global and c or uc, global and uc or nil) end
+  end
+  function tex.setuccode(...)
+    local global, c, uc, lc = scoped(...)
+    setuc(global and "global" or c, global and c or uc, global and uc or nil)
+    if lc ~= nil then setlc(global and "global" or c, global and c or lc, global and lc or nil) end
+  end
+end
+do
+  local getcatcode = tex.getcatcode
+  function tex.getcatcode(a, b)
+    local c = b == nil and a or b
+    if type(c) ~= "number" or c < 0 or c > 0x10FFFF then
+      error("incorrect character value " .. tostring(c) .. " for tex.getcatcode()", 2)
+    end
+    return getcatcode(a, b)
+  end
+end
 tex.getsfcode, tex.setsfcode = code_funcs("sf", "sfcode", "sfcode")
 
 local function view(get, set)
@@ -308,6 +332,12 @@ local function is_kind(kind)
     end
     return false
   end
+end
+function tex.isbox(k)
+  local t = type(k)
+  if t == "number" then return k >= 0 and k <= 65535 end
+  if t == "string" then return (T.register_kind(k) or ""):match("^box ") ~= nil end
+  return false
 end
 tex.iscount, tex.isdimen, tex.isskip, tex.ismuskip = is_kind("count"), is_kind("dimen"), is_kind("skip"), is_kind("muskip")
 tex.istoks, tex.isattribute, tex.isglue, tex.ismuglue = is_kind("toks"), is_kind("attribute"), tex.isskip, tex.ismuskip

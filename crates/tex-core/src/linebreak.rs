@@ -1913,6 +1913,7 @@ impl Engine {
         // prune_page_top keeps marks/whatsits/inserts while removing
         // discardable nodes before the first box, then inserts splittopskip.
         let mut seen_box = false;
+        let mut snaps = 0;
         rest.retain(|n| {
             if seen_box {
                 return true;
@@ -1927,9 +1928,18 @@ impl Engine {
                 | Node::Penalty(_)
                 | Node::Kern(_)
                 | Node::ExplicitKern(_) => false,
+                Node::Whatsit(
+                    crate::boxes::WhatIt::PdfSnapY(_) | crate::boxes::WhatIt::PdfSnapYComp(_),
+                ) => {
+                    snaps += 1;
+                    false
+                }
                 _ => true,
             }
         });
+        for _ in 0..snaps {
+            self.report_discarded_snap();
+        }
         if let Some((i, height)) = rest.iter().enumerate().find_map(|(i, n)| match n {
             Node::Box { h, .. } | Node::Rule { height: h, .. } => Some((i, *h)),
             _ => None,

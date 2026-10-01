@@ -129,6 +129,14 @@ pub struct PdfFixedParams {
     pub draftmode: i32,
     /// `\pdfdecimaldigits` clamped to 0..4.
     pub decimal_digits: u32,
+    /// `fixed_gamma`, `fixed_image_gamma` (0..1000000),
+    /// `fixed_image_hicolor`, `fixed_image_apply_gamma` (0..1).
+    pub gamma: i32,
+    pub image_gamma: i32,
+    pub image_hicolor: bool,
+    pub image_apply_gamma: bool,
+    /// `fixed_inclusion_copy_font` (0..1).
+    pub inclusion_copy_font: bool,
 }
 
 pub struct Engine {
@@ -341,6 +349,21 @@ pub struct Engine {
     pub leader_stack: Vec<(u8, usize)>,
     pub insert_nums: Vec<u16>,
     pub pdf_images: crate::FxHashMap<i32, PdfImageInfo>,
+    /// pdfTeX `pdf_page_group_val`: the /Group object of the page (or form)
+    /// being shipped; left over between shipouts like pdfTeX's global.
+    pub pdf_page_group_val: i32,
+    /// writepng.c `transparent_page_group`: the shared page group of PNGs
+    /// with an alpha channel (0 = not allocated), and whether it is written.
+    pub transparent_page_group: i32,
+    pub transparent_page_group_written: bool,
+    /// pdfTeX `warn_pdfpagebox` cleared: the obsolete page-box option
+    /// warning was given.
+    pub pdf_warned_pagebox: bool,
+    /// \pdfxform objects whose /ProcSet is inserted when pdfTeX would write
+    /// them (it depends on \pdfomitprocset at that time).
+    pub pdf_form_procsets: crate::FxHashMap<i32, FormProcset>,
+    /// pdfTeX `pdf_snapx_refpos`/`pdf_snapy_refpos` (\pdfsnaprefpoint).
+    pub pdf_snap_refpos: (i64, i64),
     pub pdf_xforms: crate::FxHashMap<i32, (i32, i32, i32)>,
     /// pdfTeX color stacks (\pdfcolorstack, \pdfcolorstackinit)
     pub color_stacks: crate::pdfrender::ColorStacks,
@@ -890,6 +913,12 @@ impl Engine {
             prev_depth: -1000 * 65536,
             space_factor: 1000,
             pdf_images: crate::FxHashMap::default(),
+            pdf_page_group_val: 0,
+            transparent_page_group: 0,
+            transparent_page_group_written: false,
+            pdf_warned_pagebox: false,
+            pdf_form_procsets: crate::FxHashMap::default(),
+            pdf_snap_refpos: (0, 0),
             pdf_xforms: crate::FxHashMap::default(),
             color_stacks: crate::pdfrender::ColorStacks::default(),
             prev_graf: 0,
@@ -2109,18 +2138,62 @@ impl Engine {
     }
 }
 
+/// Where a `\\pdfxform`'s /ProcSet goes in its object and what it lists.
+#[derive(Clone, Copy, Debug)]
+pub struct FormProcset {
+    pub offset: usize,
+    pub text: bool,
+    pub images: u8,
+}
+
+/// Image file types pdfTeX distinguishes (`img_type`); SVG is rasterized.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ImageKind {
+    Pdf,
+    Png,
+    Jpeg,
+    Svg,
+}
+
+/// pdfTeX `IMAGE_COLOR_B`/`_C`/`_I`: the /ProcSet image procedures.
+pub const IMAGE_COLOR_B: u8 = 1;
+pub const IMAGE_COLOR_C: u8 = 2;
+pub const IMAGE_COLOR_I: u8 = 4;
+
+/// One `\pdfximage` object (pdfTeX `obj_ximage_*` plus `image_entry`).
 #[derive(Clone, Debug)]
 pub struct PdfImageInfo {
     pub path: String,
+    pub kind: ImageKind,
+    /// painted on some page or form
     pub used: bool,
+    /// written with the first page or form painting it (`is_obj_written`)
+    pub written: bool,
     pub width: i32,
     pub height: i32,
     pub depth: i32,
-    /// true when the file was imported as a PDF Form XObject during scan:
-    /// the image bytes are already embedded, so shipping must not re-read it.
-    pub embedded: bool,
+    /// `image_width`/`image_height`: pixels, or sp for PDF pages
+    pub image_width: i32,
+    pub image_height: i32,
+    /// `image_rotate` of PDF pages (multiples of 90 swap the axes)
+    pub rotate: i32,
+    /// `epdf_orig_x`/`epdf_orig_y` in sp
+    pub orig_x: i32,
+    pub orig_y: i32,
+    /// `img_color`: IMAGE_COLOR_* bits for /ProcSet
+    pub color: u8,
+    /// `img_group_ref`: 0 none, -1 PDF page group without an object yet,
+    /// else the page-group object
+    pub group_ref: i32,
+    /// `attr {...}` tokens, written first in the image dictionary
+    pub attr: Option<String>,
+    /// `colorspace <n>`: object number replacing the image's color space
+    pub colorspace: i32,
     /// Bundled raster bytes retained for deferred embedding without a disk file.
     pub resource_bytes: Option<std::sync::Arc<Vec<u8>>>,
+    /// The form XObject of an included PDF page, written on first use.
+    pub pdf_form: Option<std::sync::Arc<crate::pdf_images::PdfForm>>,
+    /// `\pdfximagebbox` values: the page box of PDF images, else zero.
     pub bbox: [i32; 4],
 }
 #[cfg(test)]

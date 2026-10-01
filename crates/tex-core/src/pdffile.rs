@@ -2302,14 +2302,13 @@ pub fn write_pdf(doc: &PdfDoc) -> Result<Vec<u8>, String> {
         };
         let (forms, images) = painted_xobjects(&page.content);
         let mut xobj_entries = Vec::new();
-        for (obj_num, bytes) in &doc.objects {
-            if bytes.starts_with(b"<< /Type /XObject") {
-                if forms.contains(obj_num) {
-                    xobj_entries.push(format!("/Fm{} {} 0 R", obj_num, obj_num));
-                }
-                if images.contains(obj_num) {
-                    xobj_entries.push(format!("/Im{} {} 0 R", obj_num, obj_num));
-                }
+        // image dictionaries may open with their `attr` entries
+        for (obj_num, _) in &doc.objects {
+            if forms.contains(obj_num) {
+                xobj_entries.push(format!("/Fm{} {} 0 R", obj_num, obj_num));
+            }
+            if images.contains(obj_num) {
+                xobj_entries.push(format!("/Im{} {} 0 R", obj_num, obj_num));
             }
         }
         let xobj_str = if xobj_entries.is_empty() {
@@ -2327,23 +2326,36 @@ pub fn write_pdf(doc: &PdfDoc) -> Result<Vec<u8>, String> {
             media_box.push_str(&mag_bp_sp(page.height_sp, (doc.mag, doc.decimal_digits)));
             media_box.push(']');
         }
+        // pdfTeX "Write out resources dictionary": additional resources,
+        // fonts (when used), XObjects, then the ProcSet
+        let mut resources = res_extra_str;
+        if !fonts_res.is_empty() {
+            resources.push_str(&format!(" /Font << {} >>", fonts_res));
+        }
+        resources.push_str(&xobj_str);
+        if page.procset {
+            resources.push_str(&procset_entry(!fonts_res.is_empty(), page.image_procset));
+        }
+        let group = if page.group > 0 {
+            format!(" /Group {} 0 R", page.group)
+        } else {
+            String::new()
+        };
         b.set(
             *page_obj,
             format!(
-                "<< /Type /Page /Parent {} 0 R{} /Contents {} 0 R /Resources << /Font << {} >>{}{}{} >>{}{} >>",
+                "<< /Type /Page /Parent {} 0 R{} /Contents {} 0 R /Resources <<{} >>{}{}{} >>",
                 pages_obj,
                 media_box,
                 content_obj,
-                fonts_res,
-                if page.procset { " /ProcSet [/PDF /Text]" } else { "" },
-                xobj_str,
-                res_extra_str,
-                annots,
+                resources,
                 if page_attr.trim().is_empty() {
                     String::new()
                 } else {
                     format!(" {}", page_attr)
-                }
+                },
+                group,
+                annots,
             ),
         );
     }
@@ -2616,6 +2628,25 @@ fn painted_xobjects(content: &[u8]) -> (BTreeSet<i32>, BTreeSet<i32>) {
         }
     }
     (forms, images)
+}
+
+/// pdfTeX "Generate ProcSet if desired": /Text with fonts, /ImageB, /ImageC
+/// and /ImageI for the image color types used (`pdf_image_procset`).
+pub(crate) fn procset_entry(text: bool, images: u8) -> String {
+    use crate::engine::{IMAGE_COLOR_B, IMAGE_COLOR_C, IMAGE_COLOR_I};
+    let mut entry = String::from(" /ProcSet [ /PDF");
+    for (used, name) in [
+        (text, " /Text"),
+        (images & IMAGE_COLOR_B != 0, " /ImageB"),
+        (images & IMAGE_COLOR_C != 0, " /ImageC"),
+        (images & IMAGE_COLOR_I != 0, " /ImageI"),
+    ] {
+        if used {
+            entry.push_str(name);
+        }
+    }
+    entry.push_str(" ]");
+    entry
 }
 
 /// `\pdffontattr` text as a font dictionary suffix (pdfTeX prints it after

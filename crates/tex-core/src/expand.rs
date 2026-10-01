@@ -1485,7 +1485,7 @@ impl Engine {
             Prim::Meaning => {
                 let t = self.raw_token();
                 let text = self.meaning_of(t);
-                self.exp_string(text.as_bytes());
+                self.exp_string(&crate::tex_bytes::text_to_bytes(&text));
                 None
             }
             Number => {
@@ -1506,8 +1506,8 @@ impl Engine {
             }
             Detokenize => {
                 let toks = self.scan_general_text();
-                let text = self.tokens_to_string(&toks);
-                self.exp_string(text.as_bytes());
+                let bytes = self.tokens_to_bytes(&toks);
+                self.exp_string(&bytes);
                 None
             }
             Expanded => {
@@ -1556,10 +1556,10 @@ impl Engine {
             ScanTokens => {
                 // \scantokens{...}: stringify and rescan
                 let toks = self.scan_general_text();
-                let text = self.tokens_to_string(&toks);
+                let text = self.tokens_to_bytes(&toks);
                 if self.ensure_input_stack_room(1) {
                     self.input
-                        .push_file("<scantokens>".to_string(), text.into_bytes());
+                        .push_file("<scantokens>".to_string(), text);
                 }
                 None
             }
@@ -3594,6 +3594,11 @@ impl Engine {
 
     pub fn tokens_to_string(&self, toks: &[Token]) -> String {
         String::from_utf8_lossy(&self.tokens_to_bytes(toks)).into_owned()
+    }
+
+    /// `tokens_to_string` that keeps every byte (see `tex_bytes`).
+    pub(crate) fn tokens_to_text(&self, toks: &[Token]) -> String {
+        crate::tex_bytes::bytes_to_text(&self.tokens_to_bytes(toks))
     }
 
     pub(crate) fn tokens_to_bytes(&self, toks: &[Token]) -> Vec<u8> {

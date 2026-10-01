@@ -2836,7 +2836,7 @@ impl<'a> RenderCtx<'a> {
                 }
             }
             Special(s) => {
-                self.handle_special(s, cur_h, cur_v);
+                self.handle_special(&crate::tex_bytes::text_to_display(s), cur_h, cur_v);
             }
             SavePos { .. } => {
                 // position is relative to the page edges, in sp

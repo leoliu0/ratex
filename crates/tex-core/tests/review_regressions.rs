@@ -49,7 +49,8 @@ fn selectors_forward_large_arguments_without_changing_expansion() {
 \message{{RESULT=\result}}
 \end"
     ));
-    assert!(e.term.contains(&format!("RESULT={argument}")), "{}", e.term);
+    let flat = e.term.replace('\n', ""); // TeX breaks terminal lines at 79 bytes
+    assert!(flat.contains(&format!("RESULT={argument}")), "{}", e.term);
 }
 
 #[test]
@@ -427,7 +428,8 @@ fn outer_macros_end_definitions_and_general_text() {
     assert!(e.term.contains("C=[macro:->x ]"), "{}", e.term);
     assert!(e.term.contains("T=[a ]"), "{}", e.term);
     assert!(e.term.contains("3:p  "), "{}", e.term);
-    assert!(e.term.contains("4:x [T]"), "{}", e.term);
+    // consecutive \message texts are separated by a space, as in TeX
+    assert!(e.term.contains("4:x  [T]"), "{}", e.term);
 }
 
 /// pdflatex: an \outer macro ends an alignment preamble (`\cr}` inserted)
@@ -1328,4 +1330,40 @@ fn incompatible_unbox_keeps_the_box() {
     for want in ["[AB]", "[BB]", "[CB]", "[DB]", "[EB]", "[FV]", "[GV]"] {
         assert!(values.contains(want), "{want} missing: {}", e.term);
     }
+}
+
+fn run_bytes(source: &[u8], tcx: Option<&str>) -> Engine {
+    let mut engine = Engine::new(true);
+    engine.init_primitives();
+    engine.add_nullfont();
+    engine.set_interaction_mode(tex_core::engine::InteractionMode::Nonstop);
+    if let Some(name) = tcx {
+        engine.set_tcx(tex_core::tex_bytes::Tcx::builtin(name).unwrap());
+    }
+    let mut text = b"\\catcode`\\{=1 \\catcode`\\}=2 \\catcode`\\#=6 \\catcode`\\^=7 \\catcode9=12\n".to_vec();
+    text.extend_from_slice(source);
+    engine.input.push_file("review.tex".into(), text);
+    engine.run();
+    engine
+}
+
+/// pdftex -ini -etex (TeX Live 2026) without a TCX file prints bytes
+/// 128-255 and control characters in `^^` notation, counts the printed bytes
+/// against `max_print_line` (79), and breaks lines inside a `^^xx` group;
+/// with cp227.tcx 128-255 and tab print as themselves.
+#[test]
+fn eight_bit_characters_print_and_wrap_like_pdftex() {
+    let mut source = b"\\immediate\\write16{".to_vec();
+    source.extend(std::iter::repeat(0xe9u8).take(40));
+    source.extend_from_slice(b"}\\message{A\xe9\x01\t\\string\\caf\xe9}\\end\n");
+    let e = run_bytes(&source, None);
+    let mut expected = "^^e9".repeat(19).into_bytes();
+    expected.extend_from_slice(b"^^e\n9");
+    expected.extend_from_slice("^^e9".repeat(19).as_bytes());
+    expected.extend_from_slice(b"^^\ne9\nA^^e9^^A^^I\\caf^^e9");
+    assert_eq!(e.term_bytes().as_ref(), &expected[..]);
+    assert_eq!(e.log_bytes().as_ref(), &expected[..]);
+
+    let e = run_bytes(b"\\message{A\xe9\x01\t\\string\\caf\xe9}\\end\n", Some("cp227.tcx"));
+    assert_eq!(e.term_bytes().as_ref(), b"A\xe9^^A\t\\caf\xe9" as &[u8]);
 }

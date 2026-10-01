@@ -1629,7 +1629,9 @@ fn usage(program: &str) {
   -cnf-line=STRING             set a texmf.cnf variable (VAR[.prog]=VALUE), overriding the environment
   -kpathsea-debug=NUMBER       nonzero: trace file lookups in the transcript
   -output-format=pdf           accepted; PDF is the only output format
-  -etex, -8bit                 accepted; e-TeX is always on and all characters print as-is
+  -etex                        accepted; e-TeX is always on
+  -8bit                        print every character as itself
+  -translate-file=TCXNAME      use the TCX file for character printability and translation
   -[no-]file-line-error        accepted; rich file/line diagnostics are always enabled
   -[no-]shell-escape           accepted; shell execution is always disabled
   -[no-]mktex=FMT              accepted; missing files are never generated
@@ -1637,7 +1639,7 @@ fn usage(program: &str) {
                                accepted; they affect only DVI output
   -h, --help                   show this help
   -v, --version                show version
-Not supported: -translate-file, -enc, -mltex, -ipc, -ipc-start, -output-format=dvi."
+Not supported: -enc, -mltex, -ipc, -ipc-start, -output-format=dvi."
     );
 }
 
@@ -1732,6 +1734,40 @@ fn first_line_format(file: &str) -> Option<String> {
         .collect();
     let name = String::from_utf8(name).ok()?;
     (!name.is_empty() && !name.starts_with('-')).then_some(name)
+}
+
+/// The `-translate-file=NAME` of a `%&-translate-file=NAME` first line
+/// (web2c parse_first_line), if any.
+fn first_line_translate_file(file: &str) -> Option<String> {
+    use std::io::{BufRead, Read};
+
+    let input = std::fs::File::open(file)
+        .or_else(|_| std::fs::File::open(format!("{file}.tex")))
+        .ok()?;
+    let mut line = Vec::new();
+    std::io::BufReader::new(input.take(4096))
+        .read_until(b'\n', &mut line)
+        .ok()?;
+    let rest = line.strip_prefix(b"%&")?;
+    String::from_utf8_lossy(rest)
+        .split_whitespace()
+        .find_map(|word| word.strip_prefix("-translate-file="))
+        .map(str::to_string)
+}
+
+/// web2c `-translate-file`: the TCX file `name` as a path, else one of
+/// TeX Live's built-in tables, else in the TeX Live `web2c` directories.
+fn load_tcx(name: &str) -> Option<tex_core::tex_bytes::Tcx> {
+    if let Ok(text) = std::fs::read(name) {
+        return tex_core::tex_bytes::Tcx::parse(&String::from_utf8_lossy(&text)).ok();
+    }
+    if let Some(tcx) = tex_core::tex_bytes::Tcx::builtin(name) {
+        return Some(tcx);
+    }
+    ["/usr/share/texmf-dist/web2c", "/usr/share/texlive/texmf-dist/web2c", "/usr/local/share/texmf-dist/web2c"]
+        .iter()
+        .find_map(|dir| std::fs::read(std::path::Path::new(dir).join(name)).ok())
+        .and_then(|text| tex_core::tex_bytes::Tcx::parse(&String::from_utf8_lossy(&text)).ok())
 }
 
 /// kpathsea `-cnf-line` (kpathsea_cnf_line_env_progname): a texmf.cnf line
@@ -1941,7 +1977,10 @@ fn configure_engine(
 
 fn emit_transcript(engine: &Engine) {
     if !engine.term.is_empty() {
-        print!("{}", engine.term);
+        use std::io::Write;
+        let mut stdout = std::io::stdout().lock();
+        let _ = stdout.write_all(&engine.term_bytes());
+        let _ = stdout.flush();
     }
     if !engine.diagnostic_output.is_empty() {
         eprint!("{}", engine.diagnostic_output);
@@ -1979,7 +2018,7 @@ fn format_boot_failure(engine: &Engine) -> Option<FormatBootFailure> {
 
 fn write_early_transcript(engine: &Engine, out_dir: &str, job: &str) -> Result<String, String> {
     let path = format!("{out_dir}{job}.log");
-    std::fs::write(&path, &engine.log)
+    std::fs::write(&path, engine.log_bytes())
         .map(|()| path.clone())
         .map_err(|error| format!("cannot write transcript {path}: {error}"))
 }
@@ -2037,7 +2076,7 @@ fn fail_after_transcript(engine: &mut Engine, log_path: &str, message: &str, hel
             eprint!("{}", diagnostic.render());
         }
     }
-    if let Err(error) = std::fs::write(log_path, &engine.log) {
+    if let Err(error) = std::fs::write(log_path, engine.log_bytes()) {
         emit_cli_message(
             engine.interaction_mode,
             format_args!("pdflatex: cannot update transcript {log_path}: {error}"),
@@ -2126,6 +2165,8 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
     // (`-parse-first-line`, on by default for pdfTeX), then `-progname`.
     let mut format_option: Option<String> = None;
     let mut parse_first_line = true;
+    let mut translate_file: Option<String> = None;
+    let mut eight_bit = false;
     let mut progname: Option<String> = None;
     let mut cnf_lines: Vec<String> = Vec::new();
     let mut kpathsea_debug = 0u32;
@@ -2206,9 +2247,10 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
             ini = true;
         } else if opt == "-plain" {
             plain = true;
-        } else if opt == "-etex" || opt == "-8bit" {
-            // e-TeX is always enabled, and terminal and transcript output
-            // print every character as-is, as `-8bit` requests.
+        } else if opt == "-etex" {
+            // e-TeX is always enabled.
+        } else if opt == "-8bit" {
+            eight_bit = true;
         } else if opt == "-no-file-line-error" {
             // Diagnostics always carry their file and line.
         } else if opt == "-parse-first-line" {
@@ -2271,11 +2313,11 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
                     ),
                 );
             }
-        } else if required_value(&args, &mut i, opt, "-translate-file").is_some() {
-            usage_error(
-                &program,
-                "-translate-file is not supported; Ratex has no TCX character translation and prints every character as-is (like -8bit)",
-            );
+        } else if let Some(name) = required_value(&args, &mut i, opt, "-translate-file") {
+            if name.is_empty() {
+                usage_error(&program, "-translate-file requires a file name");
+            }
+            translate_file = Some(name.to_string());
         } else if matches!(opt, "-enc" | "-mltex" | "-ipc" | "-ipc-start") {
             let feature = match opt {
                 "-enc" => "encTeX extensions (\\mubyte)",
@@ -2630,6 +2672,8 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
             // Match fmtutil's pdfLaTeX bootstrap: pdflatex.ini applies
             // pdftexconfig.tex (paper size and driver settings) before
             // latex.ltx builds and dumps the format.
+            // fmtutil builds pdflatex.fmt with -translate-file=cp227.tcx.
+            eng.xprn = tex_core::tex_bytes::cp227_xprn();
             eng.add_nullfont();
             let ini_file = match program.as_str() {
                 "lualatex" => "lualatex.ini",
@@ -2679,6 +2723,8 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
         tex_core::driver::prepare_latex_job(&mut eng);
         configure_engine(&mut eng, halt_on_error, interaction_mode, max_errors);
     } else if plain {
+        // TeX Live's pdftex format is built with -translate-file=cp227.tcx
+        eng.xprn = tex_core::tex_bytes::cp227_xprn();
         let _ = eng.hyphen_trie.load_hyphen_file(std::path::Path::new(
             "/usr/share/texmf-dist/tex/generic/hyphen/hyphen.tex",
         ));
@@ -2710,6 +2756,24 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
     } else {
         use_initex_parameters(&mut eng);
         eng.add_nullfont();
+    }
+    // web2c: -translate-file (or a `%&-translate-file=` first line) and
+    // -8bit replace the format's character tables.
+    let tcx_name = translate_file.clone().or_else(|| {
+        if parse_first_line {
+            first_line_translate_file(&file)
+        } else {
+            None
+        }
+    });
+    if let Some(name) = tcx_name {
+        match load_tcx(&name) {
+            Some(tcx) => eng.set_tcx(tcx),
+            None => eprintln!("warning: Could not open char translation file `{name}'."),
+        }
+    }
+    if eight_bit {
+        eng.set_eight_bit();
     }
     // pdfTeX applies -synctex and -draftmode after the format is loaded.
     eng.eqtb.int_params[IntParam::Synctex.idx() as usize] = synctex_option;
@@ -2792,7 +2856,7 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
     }
     emit_transcript(&eng);
     let log_path = format!("{}{}.log", aux_dir, job);
-    if let Err(error) = std::fs::write(&log_path, &eng.log) {
+    if let Err(error) = std::fs::write(&log_path, eng.log_bytes()) {
         eng.external_fatal_error(
             &format!("Cannot write transcript `{log_path}`: {error}"),
             Some("check that the auxiliary or transcript directory exists and is writable"),

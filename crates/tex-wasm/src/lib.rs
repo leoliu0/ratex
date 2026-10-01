@@ -63,7 +63,7 @@ mod bindings {
         }
         #[wasm_bindgen(getter)]
         pub fn log(&self) -> String {
-            self.0.log.clone()
+            self.0.log_text().into_owned()
         }
         #[wasm_bindgen(getter)]
         pub fn diagnostics(&self) -> String {

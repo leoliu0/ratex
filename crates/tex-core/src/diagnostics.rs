@@ -193,7 +193,7 @@ impl Diagnostic {
     }
 
     pub fn render_styled(&self, color: bool) -> String {
-        self.render_internal(color, false)
+        crate::tex_bytes::text_to_display(&self.render_internal(color, false)).into_owned()
     }
 
     pub(crate) fn render_transcript(&self) -> String {
@@ -1600,10 +1600,10 @@ impl Engine {
             return match active {
                 value if value == u32::from(b' ') => "␠".to_string(),
                 value if value == u32::from(b'\t') => "⇥".to_string(),
-                value if value < 0x20 || value == 0x7f => {
-                    let mut shown = Vec::with_capacity(3);
-                    crate::token::push_printable(&mut shown, &[value as u8]);
-                    String::from_utf8_lossy(&shown).into_owned()
+                value if value < 0x100 => {
+                    let mut shown = Vec::with_capacity(4);
+                    crate::tex_bytes::push_printable(&self.xprn, &mut shown, &[value as u8]);
+                    crate::tex_bytes::bytes_to_text(&shown)
                 }
                 value => char::from_u32(value)
                     .unwrap_or(char::REPLACEMENT_CHARACTER)
@@ -1613,8 +1613,8 @@ impl Engine {
         let shown = &name[..name.len().min(MAX_CONTROL_SEQUENCE_BYTES)];
         let mut bytes = Vec::with_capacity(shown.len() + 1);
         bytes.push(b'\\');
-        crate::token::push_printable(&mut bytes, shown);
-        let mut result = String::from_utf8_lossy(&bytes).into_owned();
+        crate::tex_bytes::push_printable(&self.xprn, &mut bytes, shown);
+        let mut result = crate::tex_bytes::bytes_to_text(&bytes);
         if shown.len() < name.len() {
             result.push('…');
         }
@@ -1688,8 +1688,8 @@ impl Engine {
             }
         }
         let mut printed = Vec::with_capacity(bytes.len());
-        crate::token::push_printable(&mut printed, &bytes);
-        let mut result = String::from_utf8_lossy(&printed).into_owned();
+        crate::tex_bytes::push_printable(&self.xprn, &mut printed, &bytes);
+        let mut result = crate::tex_bytes::bytes_to_text(&printed);
         if truncated {
             result.push('…');
         }

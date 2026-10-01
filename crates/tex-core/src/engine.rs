@@ -686,8 +686,23 @@ pub struct Engine {
     pub align_row_adjust: Vec<Vec<crate::boxes::Node>>,
     pub after_assignment: Option<Token>,
 
+    /// The transcript and terminal text. Bytes that are not valid UTF-8 are
+    /// carried as private-use escape characters (see `tex_bytes`);
+    /// [`Engine::log_bytes`] and [`Engine::term_bytes`] give the exact bytes
+    /// TeX wrote.
     pub log: String,
     pub term: String,
+    /// tex.web `xprn`: the bytes that print as themselves (`tex_bytes`).
+    pub xprn: crate::tex_bytes::Xprn,
+    /// web2c `xord`/`xchr` when a TCX file translates characters.
+    pub tcx: Option<Box<crate::tex_bytes::Tcx>>,
+    /// tex.web `term_offset` / `file_offset`: the columns of the open lines.
+    pub(crate) term_offset: usize,
+    pub(crate) file_offset: usize,
+    /// A file opened with `(name` whose separating space has not been
+    /// printed yet (TeX prints it only when more text follows on the line).
+    pub(crate) term_pad: bool,
+    pub(crate) log_pad: bool,
 }
 
 impl Engine {
@@ -757,18 +772,57 @@ impl Engine {
 
     pub(crate) fn append_term(&mut self, text: &str) {
         if self.interaction_mode != InteractionMode::Batch {
+            if self.term_pad && !text.is_empty() {
+                self.term_pad = false;
+                if !text.starts_with('\n') {
+                    Self::append_transcript_bounded(&mut self.term, " ");
+                    self.term_offset += 1;
+                }
+            }
             Self::append_transcript_bounded(&mut self.term, text);
+            self.term_offset = crate::tex_print::advance_offset(self.term_offset, text);
         }
     }
 
     pub(crate) fn append_diagnostic(&mut self, text: &str) {
         if self.interaction_mode != InteractionMode::Batch {
-            Self::append_transcript_bounded(&mut self.diagnostic_output, text);
+            Self::append_transcript_bounded(
+                &mut self.diagnostic_output,
+                &crate::tex_bytes::text_to_display(text),
+            );
         }
     }
 
     pub(crate) fn append_log(&mut self, text: &str) {
+        if self.log_pad && !text.is_empty() {
+            self.log_pad = false;
+            if !text.starts_with('\n') {
+                Self::append_transcript_bounded(&mut self.log, " ");
+                self.file_offset += 1;
+            }
+        }
         Self::append_transcript_bounded(&mut self.log, text);
+        self.file_offset = crate::tex_print::advance_offset(self.file_offset, text);
+    }
+
+    /// The exact bytes of the transcript (the `.log` file).
+    pub fn log_bytes(&self) -> std::borrow::Cow<'_, [u8]> {
+        self.external_bytes(&self.log)
+    }
+
+    /// The exact bytes TeX wrote to the terminal.
+    pub fn term_bytes(&self) -> std::borrow::Cow<'_, [u8]> {
+        self.external_bytes(&self.term)
+    }
+
+    fn external_bytes<'a>(&self, text: &'a str) -> std::borrow::Cow<'a, [u8]> {
+        let bytes = crate::tex_bytes::text_to_bytes(text);
+        match &self.tcx {
+            Some(tcx) => std::borrow::Cow::Owned(
+                bytes.iter().map(|&b| tcx.xchr[usize::from(b)]).collect(),
+            ),
+            None => bytes,
+        }
     }
 
     fn rss_limit_bytes() -> u64 {
@@ -1196,6 +1250,15 @@ impl Engine {
             marks: [Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new()],
             log: String::new(),
             term: String::new(),
+            xprn: match engine_kind {
+                EngineKind::PdfTeX => crate::tex_bytes::default_xprn(),
+                _ => crate::tex_bytes::cp227_xprn(),
+            },
+            tcx: None,
+            term_offset: 0,
+            file_offset: 0,
+            term_pad: false,
+            log_pad: false,
             last_named_cs: None,
             after_assignment: None,
             rng: crate::random::Randoms::from_clock(),

@@ -4,7 +4,7 @@
 use crate::boxes::Node;
 use crate::engine::Engine;
 use crate::eqtb::Equiv;
-use crate::prim::Prim;
+use crate::prim::{IntParam, Prim};
 use crate::token::{Token, CAT_LETTER};
 use tex_kpse::fs::PathExt;
 
@@ -335,6 +335,10 @@ impl Engine {
         name: &str,
         included_from: Option<crate::input::SourceMark>,
     ) -> bool {
+        // names keep the bytes TeX read (see `tex_bytes`); lookups use the
+        // UTF-8 view the search path code works with
+        let raw_name = name;
+        let name = &*crate::tex_bytes::text_to_display(raw_name);
         // Starting a file may also park pending lookahead below it. Reserve
         // both slots as one operation so recursive \input cannot trip the
         // low-level stack invariant after partially rearranging input.
@@ -351,16 +355,19 @@ impl Engine {
             );
             return false;
         }
-        let path = self.resolve_input_path(name);
+        let path = if raw_name == name {
+            self.resolve_input_path(name)
+        } else {
+            self.resolve_raw_input_path(raw_name)
+                .or_else(|| self.resolve_input_path(name))
+        };
         if let Some(bytes) = path.is_none().then(|| compatibility_input(name)).flatten() {
             let key = format!("<compat:{name}>");
             let data = self
                 .input
                 .cached_file(&key)
                 .unwrap_or_else(|| self.input.intern_file(key.clone(), bytes.to_vec()));
-            let opening = format!("({key} ");
-            self.append_term(&opening);
-            self.append_log(&opening);
+            self.print_file_open(key.as_bytes());
             if !self.pushed.is_empty() {
                 let mut rest = std::mem::take(&mut self.pushed);
                 rest.reverse();
@@ -403,9 +410,11 @@ impl Engine {
                 };
                 self.loaded_files.push(p.clone());
                 self.record_loaded_bytes(&p, &data);
-                let opening = format!("({} ", p.display());
-                self.append_term(&opening);
-                self.append_log(&opening);
+                #[cfg(unix)]
+                let shown = std::os::unix::ffi::OsStrExt::as_bytes(p.as_os_str()).to_vec();
+                #[cfg(not(unix))]
+                let shown = p.to_string_lossy().into_owned().into_bytes();
+                self.print_file_open(&shown);
                 // tex.web start_input: the file sits above the current
                 // token list. `pushed` is that token list, so leftovers
                 // must park below the file even during \\output — else
@@ -417,6 +426,7 @@ impl Engine {
                         return false;
                     }
                 }
+                let data = self.from_external(data);
                 self.input.push_file_from(key, data, included_from);
                 true
             }
@@ -451,9 +461,7 @@ impl Engine {
                     (key, data)
                 });
                 if let Some((key, data)) = found_data {
-                    let opening = format!("({key} ");
-                    self.append_term(&opening);
-                    self.append_log(&opening);
+                    self.print_file_open(key.as_bytes());
                     if !self.pushed.is_empty() {
                         let mut rest = std::mem::take(&mut self.pushed);
                         rest.reverse();
@@ -473,6 +481,28 @@ impl Engine {
                 false
             }
         }
+    }
+
+    /// A file whose name holds bytes that are not valid UTF-8 (TeX reads
+    /// 8-bit names): the exact name beside the job's files.
+    fn resolve_raw_input_path(&mut self, raw_name: &str) -> Option<std::path::PathBuf> {
+        let dirs = [
+            self.aux_dir.clone(),
+            (!self.out_dir.is_empty()).then(|| std::path::PathBuf::from(&self.out_dir)),
+            Some(self.main_dir.clone().unwrap_or_default()),
+        ];
+        let with_ext = format!("{raw_name}.tex");
+        for dir in dirs.into_iter().flatten() {
+            for candidate in [raw_name, with_ext.as_str()] {
+                let path = dir.join(crate::tex_bytes::text_to_path(candidate));
+                if path.tex_is_file() {
+                    let absolute = tex_kpse::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+                    self.loaded_files.push(absolute);
+                    return Some(path);
+                }
+            }
+        }
+        None
     }
 
     /// Resolve `name` for \input/\openin the way web2c's open_input does:
@@ -839,7 +869,8 @@ impl Engine {
         }
         self.write_stream_paths[idx] = None;
         if create_parent {
-            let parent = std::path::Path::new(full)
+            let parent = crate::tex_bytes::text_to_path(full);
+            let parent = parent
                 .parent()
                 .unwrap_or_else(|| std::path::Path::new(""));
             if !parent.as_os_str().is_empty() {
@@ -855,12 +886,14 @@ impl Engine {
                 }
             }
         }
-        match tex_kpse::fs::File::create(full) {
+        let path = crate::tex_bytes::text_to_path(full);
+        match tex_kpse::fs::File::create(&path) {
             Ok(f) => {
                 self.input.invalidate_disk_files();
                 self.write_streams[idx] = Some(f);
                 self.write_stream_paths[idx] = Some(full.to_string());
-                self.written_files.push(std::path::PathBuf::from(full));
+                self.written_files.push(path);
+                self.print_openout_note(stream, full);
             }
             // tex.web §1374: a stream that cannot be opened goes to
             // prompt_file_name, which is fatal without a terminal.
@@ -957,7 +990,7 @@ impl Engine {
         &mut self,
         toks: &[Token],
         source: Option<&crate::input::SourceContext>,
-    ) -> String {
+    ) -> Vec<u8> {
         let saved = std::mem::take(&mut self.pushed);
         let saved_input = std::mem::take(&mut self.input.stack);
         let saved_diagnostic_state = self.scanner_diagnostic_state();
@@ -1042,20 +1075,20 @@ impl Engine {
         self.diagnostic_source_override = saved_source;
         self.outer_scan = saved_outer_scan;
         self.pushed = saved;
-        self.print_tokens_to_string(&out)
+        self.token_list_bytes(&out)
     }
 
     pub fn write_tokens_to_string(&self, toks: &[Token]) -> String {
         String::from_utf8_lossy(&self.token_list_bytes(toks)).into_owned()
     }
 
-    /// The text TeX prints for a token list on the terminal, the log or a
-    /// \write file: unprintable bytes appear in `^^` notation (§59).
+    /// The text TeX prints for a token list as part of an error message:
+    /// unprintable bytes appear in `^^` notation (§59).
     pub(crate) fn print_tokens_to_string(&self, toks: &[Token]) -> String {
         let bytes = self.token_list_bytes(toks);
         let mut printed = Vec::with_capacity(bytes.len());
-        crate::token::push_printable(&mut printed, &bytes);
-        String::from_utf8_lossy(&printed).into_owned()
+        crate::tex_bytes::push_printable(&self.xprn, &mut printed, &bytes);
+        crate::tex_bytes::bytes_to_text(&printed)
     }
 
     /// The bytes TeX's `show_token_list` would produce for an expanded
@@ -1070,7 +1103,10 @@ impl Engine {
                 if let Some((bytes, len)) = Self::active_cs_source_bytes(name) {
                     out.extend_from_slice(&bytes[..len]);
                 } else {
-                    out.push(b'\\');
+                    let esc = self.eqtb.int_params[IntParam::EscapeChar.idx() as usize];
+                    if (0..256).contains(&esc) {
+                        out.push(esc as u8);
+                    }
                     out.extend_from_slice(name);
                     if name.len() > 1
                         || name
@@ -1091,45 +1127,61 @@ impl Engine {
         out
     }
 
-    pub fn write_out(&mut self, n: i32, text: &str, source: Option<&crate::input::SourceContext>) {
-        let line = format!("{}\n", text);
+    /// tex.web §1370 write_out for the characters `raw` of a `\write`.
+    pub fn write_out(&mut self, n: i32, raw: &[u8], source: Option<&crate::input::SourceContext>) {
         match n {
             -1 => {
-                self.append_log(&line);
+                self.tex_print_nl(false, true);
+                self.tex_print_chars(false, true, raw);
+                self.tex_print_ln(false, true);
             }
             -2 => {
-                self.append_term(&line);
+                self.tex_print_nl(true, false);
+                self.tex_print_chars(true, false, raw);
+                self.tex_print_ln(true, false);
             }
             16 | 17 | 18 => {
-                self.append_term(&line);
-                self.append_log(&line);
+                self.tex_print_nl(true, true);
+                self.tex_print_chars(true, true, raw);
+                self.tex_print_ln(true, true);
             }
             _ => {
                 let idx = (n as usize).min(self.write_streams.len() - 1);
-                match self.write_streams[idx].as_mut() {
-                    Some(file) => {
-                        use std::io::Write;
-                        let result = file.write_all(line.as_bytes());
-                        if let Err(error) = result {
-                            let destination = self.write_stream_paths[idx]
-                                .as_deref()
-                                .unwrap_or("<unknown>");
-                            self.error_at(
-                                &format!(
-                                    "Cannot write output stream {n} (`{destination}`): {error}"
-                                ),
-                                source.cloned(),
-                            );
+                if self.write_streams[idx].is_some() {
+                    // print(c) for a \write file: the new-line character
+                    // ends the line, unprintable bytes use `^^` notation
+                    let nl = self.new_line_char();
+                    let mut line = Vec::with_capacity(raw.len() + 1);
+                    for &byte in raw {
+                        if i32::from(byte) == nl {
+                            line.push(b'\n');
+                        } else {
+                            crate::tex_bytes::push_printable(&self.xprn, &mut line, &[byte]);
                         }
                     }
-                    None => {
-                        // tex.web §1382: a \write to a closed stream is
-                        // directed to the log and the terminal. \typeout
-                        // rides \write\@unused (stream 0, never opened), so
-                        // this arm is what makes it visible.
-                        self.append_term(&line);
-                        self.append_log(&line);
+                    line.push(b'\n');
+                    self.to_external(&mut line);
+                    use std::io::Write;
+                    let result = self.write_streams[idx]
+                        .as_mut()
+                        .map_or(Ok(()), |file| file.write_all(&line));
+                    if let Err(error) = result {
+                        let destination = self.write_stream_paths[idx]
+                            .as_deref()
+                            .unwrap_or("<unknown>");
+                        self.error_at(
+                            &format!("Cannot write output stream {n} (`{destination}`): {error}"),
+                            source.cloned(),
+                        );
                     }
+                } else {
+                    // tex.web §1382: a \write to a closed stream is
+                    // directed to the log and the terminal. \typeout
+                    // rides \write\@unused (stream 0, never opened), so
+                    // this arm is what makes it visible.
+                    self.tex_print_nl(true, true);
+                    self.tex_print_chars(true, true, raw);
+                    self.tex_print_ln(true, true);
                 }
             }
         }
@@ -1137,7 +1189,7 @@ impl Engine {
 
     pub fn do_special(&mut self) {
         let toks = self.scan_general_text_expanded();
-        let s = self.tokens_to_string(&toks);
+        let s = self.tokens_to_text(&toks);
         self.cur_list.push(crate::boxes::Node::Whatsit(crate::boxes::WhatIt::Special(s)));
     }
 
@@ -1183,15 +1235,15 @@ impl Engine {
                     .or(origin.as_ref())
                     .map(crate::input::SourceMark::to_context);
             }
-            self.append_term(&text);
-            self.append_log(&text);
+            let raw = self.token_list_bytes(&toks);
+            self.tex_message(&raw);
         }
     }
 
     pub fn do_openin(&mut self) {
         let n = self.scan_int();
         self.scan_optional_equals();
-        let name = self.scan_file_name();
+        let name = crate::tex_bytes::text_to_display(&self.scan_file_name()).into_owned();
         if !(0..=MAX_TEX_INPUT_STREAM).contains(&n) {
             self.error(&format!(
                 "Bad input stream number {n} for \\openin (expected 0..={MAX_TEX_INPUT_STREAM})"
@@ -1591,7 +1643,7 @@ impl Engine {
                     name.extend_from_slice(self.cs.name(t2.cs_id()));
                 }
             }
-            return String::from_utf8_lossy(&name).trim().to_string();
+            return crate::tex_bytes::bytes_to_text(&name).trim().to_string();
         }
         // standard TeX \input filename.tex (unquoted). Real TeX expands
         // macros while scanning a filename (TeXbook ch.8: \openin0=pre\foo.tex
@@ -1643,7 +1695,7 @@ impl Engine {
             }
             cur = self.get_x_raw();
         }
-        String::from_utf8_lossy(&name).trim().to_string()
+        crate::tex_bytes::bytes_to_text(&name).trim().to_string()
     }
 
     pub fn do_show(&mut self) {
@@ -1674,7 +1726,11 @@ impl Engine {
             .then(|| self.eqtb.resolve(token.cs_id()))
             .flatten()
         else {
-            return self.meaning_of(token);
+            let meaning = self.meaning_of(token);
+            let raw = crate::tex_bytes::text_to_bytes(&meaning);
+            let mut shown = Vec::with_capacity(raw.len());
+            crate::tex_bytes::push_printable(&self.xprn, &mut shown, &raw);
+            return crate::tex_bytes::bytes_to_text(&shown);
         };
 
         let mut text = String::with_capacity(256);

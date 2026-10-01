@@ -63,6 +63,7 @@ const ANON_PREFIX: &[u8] = b"\x00ratex-anon:";
 const CMD_RELAX: u8 = 0;
 const CMD_CHAR_GIVEN: u8 = 82;
 const CMD_MATH_GIVEN: u8 = 83;
+const CMD_XMATH_GIVEN: u8 = 84;
 const CMD_ASSIGN_TOKS: u8 = 87;
 const CMD_ASSIGN_INT: u8 = 88;
 const CMD_ASSIGN_ATTR: u8 = 89;
@@ -263,6 +264,7 @@ impl Engine {
             Some(Equiv::BoxReg(i)) => (CMD_CHAR_GIVEN, i64::from(*i)),
             Some(Equiv::CharDef(v)) => (CMD_CHAR_GIVEN, i64::from(*v)),
             Some(Equiv::MathCharDef(v)) => (CMD_MATH_GIVEN, i64::from(*v)),
+            Some(Equiv::UMathCharDef(v)) => (CMD_XMATH_GIVEN, i64::from(*v)),
             Some(Equiv::CharTok(v)) => {
                 let tok = Token(*v);
                 (tok.cc(), i64::from(tok.chr()))

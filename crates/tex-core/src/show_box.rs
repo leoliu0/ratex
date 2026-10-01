@@ -366,6 +366,7 @@ impl<'a> BoxDisplay<'a> {
                 glue_order,
                 glue_set,
                 lr,
+                ..
             } => {
                 self.print_esc(match *kind {
                     crate::boxes::HBOX => "h",

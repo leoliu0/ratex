@@ -504,12 +504,20 @@ impl Engine {
                     }
                     Some(Prim::MathCode) => {
                         let c = self.scan_profile_character_code("\\mathcode");
-                        v = i64::from(self.eqtb.math_code_for(c));
+                        v = if self.engine_kind == EngineKind::LuaTeX {
+                            i64::from(self.eqtb.lua_math_code_num(c))
+                        } else {
+                            i64::from(self.eqtb.math_code_for(c))
+                        };
                         break 'scan_loop;
                     }
                     Some(Prim::DelCode) => {
                         let c = self.scan_profile_character_code("\\delcode");
-                        v = self.eqtb.delimiter_code_for(c);
+                        v = if self.engine_kind == EngineKind::LuaTeX {
+                            i64::from(self.eqtb.lua_del_code_num(c))
+                        } else {
+                            self.eqtb.delimiter_code_for(c)
+                        };
                         break 'scan_loop;
                     }
                     Some(Prim::LcCodeP) => {
@@ -804,6 +812,16 @@ impl Engine {
                         Some(Equiv::Prim(Prim::IntP(p))) => {
                             v = self.fetch_int_param(p) as i64;
                             break 'scan_loop;
+                        }
+                        Some(Equiv::UMathCharDef(c)) => {
+                            v = c as i64;
+                            break 'scan_loop;
+                        }
+                        Some(Equiv::Prim(p @ (Prim::U(_) | Prim::UMath(_)))) => {
+                            if let Some(internal) = self.uprim_internal(p) {
+                                v = internal.as_int() as i64;
+                                break 'scan_loop;
+                            }
                         }
                         _ => {}
                     },
@@ -1399,17 +1417,30 @@ impl Engine {
                     frac_f = 0;
                     direct = Some(self.scan_pdf_ximage_bbox());
                 }
-                Some(
-                    p @ (Prim::Umathfractiondelsize
-                    | Prim::Umathstacknumup
-                    | Prim::Umathstackdenomdown
-                    | Prim::Umathstackvgap),
-                ) => {
-                    let style = self.scan_math_style();
-                    int_part = 1;
-                    frac_f = 0;
-                    direct = Some(self.eqtb.math_param(crate::luatex::umath_param_id(p), style));
-                }
+                Some(p @ (Prim::U(_) | Prim::UMath(_))) => match self.uprim_internal(p) {
+                    Some(crate::uprims::UInternal::Dimen(value)) => {
+                        int_part = 1;
+                        frac_f = 0;
+                        direct = Some(value);
+                    }
+                    Some(crate::uprims::UInternal::Glue(g)) => {
+                        int_part = 1;
+                        frac_f = 0;
+                        direct = Some(g.width);
+                    }
+                    Some(crate::uprims::UInternal::Int(n)) => {
+                        int_part = i64::from(n);
+                        frac_f = 0;
+                        direct = None;
+                    }
+                    None => {
+                        self.push_token(t);
+                        self.error("Missing number, treated as zero");
+                        int_part = 0;
+                        frac_f = 0;
+                        direct = None;
+                    }
+                },
                 Some(Prim::Count) => {
                     // internal integer coerced to dimen (sp), tex.web scan_something_internal
                     let i = self.scan_reg_num();
@@ -1464,6 +1495,11 @@ impl Engine {
                         // \@m/\@M constants (\mathchardef'd); \offinterlineskip
                         // computes \baselineskip-\@m\p@ through this path.
                         int_part = c as i64;
+                        frac_f = 0;
+                        direct = None;
+                    }
+                    Some(Equiv::UMathCharDef(c)) => {
+                        int_part = i64::from(c);
                         frac_f = 0;
                         direct = None;
                     }
@@ -2109,6 +2145,10 @@ impl Engine {
                 emit_the!(c.to_string().as_bytes());
                 return;
             }
+            Some(Equiv::UMathCharDef(c)) => {
+                emit_the!(c.to_string().as_bytes());
+                return;
+            }
             Some(Equiv::CountReg(i)) => {
                 emit_the!(self.eqtb.count[i as usize].to_string().as_bytes());
                 return;
@@ -2194,11 +2234,19 @@ impl Engine {
             }
             Some(Prim::MathCode) => {
                 let c = self.scan_profile_character_code("\\mathcode");
-                emit_the!(self.eqtb.math_code_for(c).to_string().as_bytes());
+                if self.engine_kind == EngineKind::LuaTeX {
+                    emit_the!(self.eqtb.lua_math_code_num(c).to_string().as_bytes());
+                } else {
+                    emit_the!(self.eqtb.math_code_for(c).to_string().as_bytes());
+                }
             }
             Some(Prim::DelCode) => {
                 let c = self.scan_profile_character_code("\\delcode");
-                emit_the!(self.eqtb.delimiter_code_for(c).to_string().as_bytes());
+                if self.engine_kind == EngineKind::LuaTeX {
+                    emit_the!(self.eqtb.lua_del_code_num(c).to_string().as_bytes());
+                } else {
+                    emit_the!(self.eqtb.delimiter_code_for(c).to_string().as_bytes());
+                }
             }
             Some(Prim::LcCodeP) => {
                 let c = self.scan_profile_character_code("\\lccode");
@@ -2251,17 +2299,18 @@ impl Engine {
                 let v = self.test_no_ligatures(f as u16);
                 emit_the!(v.to_string().as_bytes());
             }
-            Some(
-                p @ (Prim::Umathfractiondelsize
-                | Prim::Umathstacknumup
-                | Prim::Umathstackdenomdown
-                | Prim::Umathstackvgap),
-            ) => {
-                let style = self.scan_math_style();
-                let value = self.eqtb.math_param(crate::luatex::umath_param_id(p), style);
-                let s = self.scaled_to_string(value);
-                emit_the!(s.as_bytes());
-            }
+            Some(p @ (Prim::U(_) | Prim::UMath(_))) => match self.uprim_internal(p) {
+                Some(crate::uprims::UInternal::Int(n)) => emit_the!(n.to_string().as_bytes()),
+                Some(crate::uprims::UInternal::Dimen(value)) => {
+                    let s = self.scaled_to_string(value);
+                    emit_the!(s.as_bytes());
+                }
+                Some(crate::uprims::UInternal::Glue(g)) => {
+                    let s = self.mu_glue_to_string(&g);
+                    emit_the!(s.as_bytes());
+                }
+                None => self.error("You can't use `\\the' after that"),
+            },
             Some(
                 p @ (Prim::EfCode
                 | Prim::LpCode
@@ -2702,6 +2751,10 @@ impl Engine {
             Some(Equiv::MuSkipReg(i)) => format!("{}muskip{}", esc_str, i),
             Some(Equiv::ToksReg(i)) => format!("{}toks{}", esc_str, i),
             Some(Equiv::BoxReg(i)) => format!("{}box{}", esc_str, i),
+            Some(Equiv::UMathCharDef(v)) => {
+                let (class, family, slot) = crate::uprims::decode_umath_num(v);
+                format!("{}Umathchar\"{:X}\"{:02X}\"{:06X}", esc_str, class, family, slot)
+            }
             Some(Equiv::Alias(_)) => format!("{}{}", esc_str, name),
         }
     }

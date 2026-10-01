@@ -372,6 +372,15 @@ impl Engine {
                     self.eqtb.assign_cat_code(character.unwrap(), v as u8, g);
                 }
             }
+            MathCode if self.engine_kind == crate::engine::EngineKind::LuaTeX => {
+                self.assign_lua_math_code_command(crate::uprims::MathExt::Tex, "\\mathcode");
+            }
+            DelCode if self.engine_kind == crate::engine::EngineKind::LuaTeX => {
+                self.assign_lua_del_code_command(crate::uprims::MathExt::Tex, "\\delcode");
+            }
+            MathChar if self.engine_kind == crate::engine::EngineKind::LuaTeX => {
+                self.math_char_num_command(crate::uprims::MathExt::Tex, id);
+            }
             MathCode => {
                 let g = self.take_assignment_prefixes("\\mathcode");
                 let (c, character_source) = self.scan_int_with_source();
@@ -541,6 +550,7 @@ impl Engine {
                         glue_order: 0,
                         glue_set: 0.0,
                         lr: 0,
+                        dir: 0,
                     });
                     self.page_append(Node::Glue(crate::boxes::Glue::fil(
                         crate::boxes::GLUE_FILL,
@@ -1358,6 +1368,7 @@ impl Engine {
             Ustartmath | Ustopmath => {
                 self.push_token(Token::char(3, b'$' as u32));
             }
+            U(u) if !u.is_expandable() => self.uprim_command(u, id),
             // expanded by get_token (they must be storeable by \edef etc)
             IfChar | IfCat | IfOdd | IfNum | IfDim | IfVoid | IfHBox | IfVBox | IfHMode
             | IfVMode | IfInner | IfMMode | IfTrue | IfFalse | IfEOF | IfDef | IfCSName

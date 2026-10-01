@@ -641,6 +641,8 @@ pub enum Node {
         /// e-TeX `box_lr` (the hlist subtype): 0, [`BOX_LR_REVERSED`] once
         /// ship_out reversed the list, [`BOX_LR_DLIST`] for display math.
         lr: u8,
+        /// LuaTeX `box_dir` (`\boxdir`): 0 TLT, 1 TRT, 2 LTL, 3 RTT.
+        dir: u8,
     },
     Mark {
         class: i32,
@@ -1124,6 +1126,7 @@ pub fn hpack_add(
             glue_order: order,
             glue_set: set,
             lr: 0,
+            dir: 0,
         },
         badness: bad,
         delta,
@@ -1209,6 +1212,7 @@ pub fn vpack_add_md(
             glue_order: order,
             glue_set: set,
             lr: 0,
+            dir: 0,
         },
         badness: bad,
         delta,

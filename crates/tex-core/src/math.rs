@@ -2879,6 +2879,14 @@ impl Engine {
             match self.eqtb.resolve(t.cs_id()).cloned() {
                 // \mathchardef'd control sequences never reach main_dispatch
                 // (control.rs has no arm for the equiv), so materialize them here
+                Some(Equiv::MathCharDef(v)) if self.mode.is_m() && self.engine_kind == crate::engine::EngineKind::LuaTeX => {
+                    self.math_given_command(i32::from(v), false, t.cs_id());
+                    return;
+                }
+                Some(Equiv::UMathCharDef(v)) if self.mode.is_m() => {
+                    self.math_given_command(v, true, t.cs_id());
+                    return;
+                }
                 Some(Equiv::MathCharDef(v)) if self.mode.is_m() => {
                     self.append_mathchar(v);
                     return;
@@ -5047,6 +5055,7 @@ mod tests {
             glue_order: order,
             glue_set: set,
             lr: 0,
+            dir: 0,
         }
     }
 
@@ -5070,6 +5079,7 @@ mod tests {
                     glue_order: 0,
                     glue_set: 0.0,
                     lr: 0,
+                    dir: 0,
                 },
                 Node::Glue(Glue::spec(su(3.33333), su(1.66666), 0, su(1.11111), 0)),
                 Node::Rule {

@@ -1218,6 +1218,7 @@ impl Engine {
                 glue_order: 0,
                 glue_set: 0.0,
                 lr: 0,
+                dir: 0,
             };
             self.align_rows.push(vec![Cell {
                 packed: Some(node),
@@ -1442,6 +1443,7 @@ impl Engine {
             glue_order: 0,
             glue_set: 0.0,
             lr: 0,
+            dir: 0,
         };
         let mut preamble: NodeList = Vec::with_capacity(2 * ncols + 1);
         preamble.push(Node::Glue(t0));
@@ -1611,6 +1613,7 @@ impl Engine {
                 glue_order: p_order,
                 glue_set: p_set,
                 lr: if display { crate::boxes::BOX_LR_DLIST } else { 0 },
+                dir: 0,
             };
             if !valign {
                 // tex.web append_to_vlist at fin_row time

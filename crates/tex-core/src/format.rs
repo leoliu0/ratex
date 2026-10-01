@@ -62,6 +62,7 @@ const TAG_PRIM: u8 = 12;
 const TAG_MACRO: u8 = 13;
 const TAG_LUA_CALL: u8 = 14;
 const TAG_ATTRIBUTE_REG: u8 = 15;
+const TAG_UMATHCHAR_DEF: u8 = 16;
 /// Marks the trailing translation tables (xprn, xord, xchr).
 const TCX_TRAILER: u8 = 0xC7;
 
@@ -503,6 +504,10 @@ pub fn save_format_with_encoding(
                 w.u8(TAG_MATHCHAR_DEF);
                 w.u16(*v);
             }
+            Some(Equiv::UMathCharDef(v)) => {
+                w.u8(TAG_UMATHCHAR_DEF);
+                w.i32(*v);
+            }
             Some(Equiv::FontRef(v)) => {
                 w.u8(TAG_FONT_REF);
                 w.u16(*v);
@@ -687,6 +692,13 @@ pub fn save_format_with_encoding(
     write_code_map(&mut w, &q.unicode_sf_codes, |w, v| w.u16(v));
     write_code_map(&mut w, &q.attributes, |w, v| w.i32(v));
     write_code_map(&mut w, &q.math_params, |w, v| w.i32(v));
+    write_code_map(&mut w, &q.math_glue_params, |w, v| {
+        for x in v {
+            w.i32(x);
+        }
+    });
+    write_code_map(&mut w, &q.lua_math_codes, |w, v| w.u64(v));
+    write_code_map(&mut w, &q.lua_del_codes, |w, v| w.u64(v));
     w.i32(q.cat_table);
     let mut tables: Vec<_> = q.cat_tables.iter().collect();
     tables.sort_unstable_by_key(|(id, _)| **id);
@@ -1250,6 +1262,7 @@ fn load_state(r: &mut R, eng: &mut Engine) -> io::Result<()> {
             TAG_CHAR_DEF => Some(Equiv::CharDef(r.u32()?)),
             TAG_CHAR_TOK => Some(Equiv::CharTok(r.u32()?)),
             TAG_MATHCHAR_DEF => Some(Equiv::MathCharDef(r.u16()?)),
+            TAG_UMATHCHAR_DEF => Some(Equiv::UMathCharDef(r.i32()?)),
             TAG_FONT_REF => Some(Equiv::FontRef(r.u16()?)),
             TAG_ALIAS => Some(Equiv::Alias(r.u32()?)),
             TAG_PRIM => {
@@ -1436,6 +1449,15 @@ fn load_state(r: &mut R, eng: &mut Engine) -> io::Result<()> {
     q.unicode_sf_codes = read_code_map(r, |r| r.u16())?;
     q.attributes = read_code_map(r, |r| r.i32())?;
     q.math_params = read_code_map(r, |r| r.i32())?;
+    q.math_glue_params = read_code_map(r, |r| {
+        let mut v = [0i32; 6];
+        for x in &mut v {
+            *x = r.i32()?;
+        }
+        Ok(v)
+    })?;
+    q.lua_math_codes = read_code_map(r, |r| r.u64())?;
+    q.lua_del_codes = read_code_map(r, |r| r.u64())?;
     q.cat_table = r.i32()?;
     let n_tables = r.count()?;
     for _ in 0..n_tables {

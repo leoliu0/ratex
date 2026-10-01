@@ -98,6 +98,92 @@ pub enum MathStyle {
     CrampedScriptScript,
 }
 
+/// The accent characters of a luatex `accent_noad` (texnodes.h
+/// `top_accent_chr`, `bot_accent_chr`, `overlay_accent_chr`, `accentfraction`
+/// and the subtype). A missing accent is `None`; `subtype` is 0 (both
+/// stretchable), 1 (top fixed), 2 (bottom fixed) or 3 (both fixed).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct AccentSpec {
+    pub top: Option<(u8, u32)>,
+    pub bottom: Option<(u8, u32)>,
+    pub overlay: Option<(u8, u32)>,
+    pub subtype: u8,
+    pub fraction: i32,
+}
+
+/// The options of a luatex fence noad (`delimiterheight`, `delimiterdepth`,
+/// `delimiterclass`, `delimiteroptions`): `\Uleft height 10pt axis class 4 ...`.
+/// `class` is -1 unless a `class` keyword was given.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FenceOpts {
+    pub height: i32,
+    pub depth: i32,
+    pub class: i32,
+    pub options: u16,
+}
+
+impl FenceOpts {
+    pub const NONE: FenceOpts = FenceOpts { height: 0, depth: 0, class: -1, options: 0 };
+}
+
+impl Default for FenceOpts {
+    fn default() -> Self {
+        FenceOpts::NONE
+    }
+}
+
+/// A luatex delimiter field (texnodes.h `small_fam`/`small_char`/
+/// `large_fam`/`large_char`): the "small" and "large" starting characters of
+/// a variable-size delimiter. The characters are Unicode code points.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Delim {
+    pub small_fam: u8,
+    pub small_char: u32,
+    pub large_fam: u8,
+    pub large_char: u32,
+}
+
+impl Delim {
+    /// The delimiter of a tex.web 27-bit delimiter code (the class bits
+    /// above bit 23 are dropped).
+    pub fn from_code(code: i32) -> Delim {
+        let c = code as u32;
+        Delim {
+            small_fam: ((c >> 20) & 0xF) as u8,
+            small_char: (c >> 12) & 0xFF,
+            large_fam: ((c >> 8) & 0xF) as u8,
+            large_char: c & 0xFF,
+        }
+    }
+
+    /// `small_fam = small_char = large_fam = large_char = 0`
+    pub fn is_null(&self) -> bool {
+        self.small_fam == 0 && self.small_char == 0 && self.large_fam == 0 && self.large_char == 0
+    }
+}
+
+/// luatex `noad_option_*` bits (texnodes.h): every option carries the
+/// `SET` bit, and some options contain the bits of others (`LEFT` contains
+/// `EXACT`), so tests compare masked values as luatex does.
+pub mod noad_option {
+    pub const SET: u16 = 0x08;
+    pub const AXIS: u16 = 0x02 + 0x08;
+    pub const NO_AXIS: u16 = 0x04 + 0x08;
+    pub const EXACT: u16 = 0x10 + 0x08;
+    pub const LEFT: u16 = 0x11 + 0x08;
+    pub const MIDDLE: u16 = 0x12 + 0x08;
+    pub const RIGHT: u16 = 0x14 + 0x08;
+    pub const NO_SUB_SCRIPT: u16 = 0x21 + 0x08;
+    pub const NO_SUPER_SCRIPT: u16 = 0x22 + 0x08;
+    pub const NO_SCRIPT: u16 = 0x23 + 0x08;
+    pub const NO_RULE: u16 = 0x24 + 0x08;
+
+    /// `(options & bit) == bit`
+    pub fn has(options: u16, bit: u16) -> bool {
+        options & bit == bit
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Glue {
     pub width: i32,
@@ -699,14 +785,28 @@ pub enum Node {
         num: NodeList,
         den: NodeList,
         thickness: i32,
-        left: Option<i32>,
-        right: Option<i32>,
+        left: Option<Delim>,
+        right: Option<Delim>,
+        /// `\Uskewed` / `\Uskewedwithdelims`: the delimiter between the
+        /// numerator and the denominator (texmath.c `middle_delimiter`)
+        middle: Option<Delim>,
+        /// luatex `fractionoptions` (`noad_option_*`, see [`noad_option`])
+        options: u16,
         origin: MathDiagnosticOrigin,
     },
+    /// luatex `radical_noad`: `\radical` (`subtype` 0), `\Uradical` (1),
+    /// `\Uroot` (2), `\Uunderdelimiter` (3), `\Uoverdelimiter` (4),
+    /// `\Udelimiterunder` (5), `\Udelimiterover` (6), `\Uhextensible` (7).
     Radical {
         body: NodeList,
-        left_delim: Option<(u8, u8)>,
-        thickness: i32,
+        delim: Delim,
+        subtype: u8,
+        /// `radicalwidth` (`width=` keyword)
+        width: i32,
+        /// luatex `radicaloptions` (`noad_option_*`)
+        options: u16,
+        /// the root degree of `\Uroot`
+        degree: Option<NodeList>,
         origin: MathDiagnosticOrigin,
     },
     Scripts {
@@ -714,10 +814,15 @@ pub enum Node {
         sup: Option<NodeList>,
         sub: Option<NodeList>,
     },
+    /// A delimiter marker of a flat mlist: `size` 0 is a `\left` (open
+    /// boundary), 1 a `\right`, 2 a plain delimiter atom, 3 a `\middle`
+    /// and 4 luatex's `no_noad_side` fence (`\Uvextensible`).
     DelimBox {
-        small: (u8, u8),
-        large: (u8, u8),
+        small: (u8, u32),
+        large: (u8, u32),
         size: u8,
+        /// `\Uleft`/`\Umiddle`/`\Uright`/`\Uvextensible` options
+        fence: FenceOpts,
         origin: MathDiagnosticOrigin,
     },
     OpLimits {
@@ -728,9 +833,9 @@ pub enum Node {
     /// `\mkern` (kind 0, mlists only) or a math node (kind = e-TeX math
     /// subtype + 1, see [`MATH_ON`]..[`END_R`]); the i32 is the width.
     MathKern(i32, u8),
+    /// luatex `accent_noad`: `\mathaccent` and `\Umathaccent`.
     Accent {
-        fam: u8,
-        c: u8,
+        spec: AccentSpec,
         body: NodeList,
         origin: MathDiagnosticOrigin,
     },

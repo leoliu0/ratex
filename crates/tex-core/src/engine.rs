@@ -376,7 +376,7 @@ pub struct Engine {
     pub pdf_pages_attr_toks: Vec<Token>,
     pub pdf_page_resources: Vec<u8>,
     pub pdf_page_resources_toks: Vec<Token>,
-    pub right_delim: Option<i32>,
+    pub right_delim: Option<crate::boxes::Delim>,
     pub math_limits: Option<u8>,
     pub last_delim: Option<i32>,
     pub pending_the_string: Option<String>,

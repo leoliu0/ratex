@@ -5,7 +5,7 @@
 //! `math_lists`. This module puts them back.
 
 use super::items::{
-    code24, empty_noad, empty_noad_kind, scripts_allowed, set_op_subtype, view_list, Field,
+    empty_noad, empty_noad_kind, scripts_allowed, set_op_subtype, view_list, Field,
     FracItem, Item, NoadKind, Unset,
 };
 use crate::align::{AlignView, Cell, NOALIGN_SPAN};
@@ -402,8 +402,8 @@ impl Engine {
                             items: view_list(den),
                             incompleat: Some(Item::Frac(Box::new(FracItem {
                                 thickness: *thickness,
-                                left: left.map_or(0, code24),
-                                right: right.map_or(0, code24),
+                                left: left.unwrap_or_default(),
+                                right: right.unwrap_or_default(),
                                 num: Field::List(view_list(num)),
                                 den: Field::Empty,
                             }))),
@@ -450,8 +450,8 @@ impl Engine {
                             first.line = parent.line;
                             first.incompleat = Some(Item::Frac(Box::new(FracItem {
                                 thickness: p.thickness,
-                                left: if p.left > 0 { code24(p.left) } else { 0 },
-                                right: if p.right > 0 { code24(p.right) } else { 0 },
+                                left: p.left,
+                                right: p.right,
                                 num: Field::List(numerator),
                                 den: Field::Empty,
                             })));
@@ -527,8 +527,21 @@ fn pending_noad<'a>(kind: &ScanKind, parent: &[Item<'a>]) -> Option<Item<'a>> {
                 Some(empty_noad(0))
             }
         }
-        ScanKind::Accent { fam, c } => Some(empty_noad_kind(NoadKind::Accent(*fam, u32::from(*c)))),
-        ScanKind::Radical { delim } => Some(empty_noad_kind(NoadKind::Radical(code24(*delim)))),
+        ScanKind::Accent(spec) => Some(empty_noad_kind(NoadKind::Accent(*spec))),
+        ScanKind::Radical {
+            delim,
+            subtype,
+            width,
+            options,
+        } => Some(empty_noad_kind(NoadKind::Radical {
+            subtype: *subtype,
+            delim: *delim,
+            width: *width,
+            options: *options,
+        })),
+        // the radical noad is already in the parent; its degree is what
+        // this level is scanning
+        ScanKind::Degree { .. } => None,
         ScanKind::Class(class) => Some(empty_noad(*class)),
         ScanKind::Over => Some(empty_noad_kind(NoadKind::Over)),
         ScanKind::Under => Some(empty_noad_kind(NoadKind::Under)),

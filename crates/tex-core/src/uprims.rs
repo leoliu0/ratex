@@ -508,35 +508,15 @@ impl Engine {
                 }
             }
             UPrim::URadical => {
-                if !self.insert_dollar_unless_math(id) {
-                    let (_, family, character, _, _) = self.scan_delcode_lua(MathExt::U, false);
-                    if family > 15 || character > 255 {
-                        self.error("\\Uradical: delimiters beyond family 15 / character 255 need OpenType variants, which the engine's math layout does not implement");
-                    } else {
-                        let code = ((family << 20) | (character << 12)) ;
-                        self.do_radical(code);
-                    }
+                if !self.lua_insert_dollar(id) {
+                    let source = self.current_token_source_mark();
+                    self.math_radical_lua(1, source);
                 }
             }
             UPrim::UMathAccent => {
-                if !self.insert_dollar_unless_math(id) {
-                    let mut bottom_or_overlay = false;
-                    if self.scan_keyword(b"fixed") {
-                    } else if self.scan_keyword(b"both") || self.scan_keyword(b"bottom") || self.scan_keyword(b"overlay") {
-                        bottom_or_overlay = true;
-                    } else {
-                        self.scan_keyword(b"top");
-                        self.scan_keyword(b"fixed");
-                    }
-                    let (class, family, character) = self.scan_mathchar_lua(MathExt::U);
-                    if self.scan_keyword(b"fraction") {
-                        self.scan_int();
-                    }
-                    if bottom_or_overlay || family > 15 || character > 255 {
-                        self.error("\\Umathaccent: bottom/overlay accents and characters beyond family 15 / slot 255 are not supported by the engine's math layout");
-                    } else {
-                        self.do_math_accent(((class << 12) | (family << 8) | character) as u16);
-                    }
+                if !self.lua_insert_dollar(id) {
+                    let source = self.current_token_source_mark();
+                    self.math_ac_lua(1, false, source);
                 }
             }
             UPrim::CrampedDisplayStyle
@@ -599,23 +579,42 @@ impl Engine {
             | UPrim::LocalLeftBox
             | UPrim::LocalRightBox
             | UPrim::NoHRule
-            | UPrim::NoVRule
-            | UPrim::URoot
-            | UPrim::UDelimiterOver
-            | UPrim::UDelimiterUnder
-            | UPrim::UOverDelimiter
-            | UPrim::UUnderDelimiter
-            | UPrim::UHExtensible
-            | UPrim::UVExtensible
-            | UPrim::USkewed
-            | UPrim::USkewedWithDelims => {
+            | UPrim::NoVRule => {
                 let name = String::from_utf8_lossy(self.cs.name(id)).into_owned();
                 self.error(&format!("\\{name} is not supported: the engine's node model has no counterpart (see the LuaTeX-only primitive notes)"));
             }
-            UPrim::UStartDisplayMath | UPrim::UStopDisplayMath => {
-                self.push_token(Token::char(3, u32::from(b'$')));
-                self.push_token(Token::char(3, u32::from(b'$')));
+            UPrim::URoot
+            | UPrim::UUnderDelimiter
+            | UPrim::UOverDelimiter
+            | UPrim::UDelimiterUnder
+            | UPrim::UDelimiterOver
+            | UPrim::UHExtensible => {
+                if !self.lua_insert_dollar(id) {
+                    let source = self.current_token_source_mark();
+                    let chr = match u {
+                        UPrim::URoot => 2,
+                        UPrim::UUnderDelimiter => 3,
+                        UPrim::UOverDelimiter => 4,
+                        UPrim::UDelimiterUnder => 5,
+                        UPrim::UDelimiterOver => 6,
+                        _ => 7,
+                    };
+                    self.math_radical_lua(chr, source);
+                }
             }
+            UPrim::UVExtensible => {
+                if !self.lua_insert_dollar(id) {
+                    let source = self.current_token_source_mark();
+                    self.math_vextensible(source);
+                }
+            }
+            UPrim::USkewed | UPrim::USkewedWithDelims => {
+                if !self.lua_insert_dollar(id) {
+                    self.do_fraction_kind(crate::math::FracKind::Skewed, u == UPrim::USkewedWithDelims);
+                }
+            }
+            UPrim::UStartDisplayMath => self.math_shift_cs(0, id),
+            UPrim::UStopDisplayMath => self.math_shift_cs(1, id),
             UPrim::MathOption => self.error("LuaTeX error (mathoption: obsolete command)"),
             _ => {
                 let name = String::from_utf8_lossy(self.cs.name(id)).into_owned();

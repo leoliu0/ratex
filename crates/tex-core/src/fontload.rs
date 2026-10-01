@@ -1462,6 +1462,7 @@ impl Engine {
             enc_name: None,
             map_fontname: None,
             encoding: None,
+            lua: None,
         };
         self.eqtb.fonts.push(std::rc::Rc::new(nf));
         self.eqtb.font_params.push(Vec::new());
@@ -1697,6 +1698,7 @@ impl Engine {
                 enc_name: None,
                 map_fontname: Some(program.postscript_name.clone()),
                 encoding: None,
+                lua: None,
             };
 
             let native_font = crate::native_font::NativeFont {

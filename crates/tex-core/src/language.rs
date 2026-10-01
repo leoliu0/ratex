@@ -19,7 +19,7 @@ pub struct LangState {
 /// starting language state, and the enclosing paragraph's `clang`.
 pub(crate) struct ParLang {
     pub(crate) start: LangState,
-    outer_clang: u8,
+    pub(crate) outer_clang: u8,
 }
 
 /// tex.web `set_cur_lang` for a `\language` or `\setlanguage` value.

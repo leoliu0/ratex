@@ -776,7 +776,8 @@ impl Engine {
                         self.cur_list.push(Node::ExplicitKern(correction));
                     }
                 }
-                Mode::Math | Mode::DisplayMath => self.append_mlist_node(Node::MathKern(0, 0)),
+                // tex.web §1112: `mmode+ital_corr: tail_append(new_kern(0))`
+                Mode::Math | Mode::DisplayMath => self.append_mlist_node(Node::Kern(0)),
             },
             // math
             MathChar => {

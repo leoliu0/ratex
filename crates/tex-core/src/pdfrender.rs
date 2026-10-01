@@ -2851,6 +2851,7 @@ impl<'a> RenderCtx<'a> {
             OpenOut {
                 stream,
                 path,
+                shown: _,
                 create_parent,
                 source,
             } => {

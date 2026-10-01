@@ -169,6 +169,8 @@ pub struct Engine {
     /// One entry per open paragraph (tex.web new_graf's `prev_graf`
     /// language encoding and the enclosing `clang`).
     pub(crate) par_langs: Vec<crate::language::ParLang>,
+    /// `\showlists` bookkeeping for math and alignment levels
+    pub(crate) show: crate::show_state::ShowState,
     pub input: InputStack,
     pub ids: Ids,
 
@@ -939,6 +941,7 @@ impl Engine {
             pdf_retval: 0,
             clang: 0,
             par_langs: Vec::new(),
+            show: Default::default(),
             input: InputStack::new(),
             par_saves: 0,
             resume_after_display: false,

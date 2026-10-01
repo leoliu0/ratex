@@ -22,6 +22,7 @@ use crate::eqtb::Equiv;
 use crate::prim::{DimParam, GlueParam, IntParam, Prim};
 use crate::scaled::ONE;
 use crate::tfm::{Font, FontId, TAG_EXT, TAG_LIG, TAG_LIST};
+use crate::show_state::{PendingFrac, ScanKind};
 use crate::token::Token;
 
 // ---------- style ladder (tex.web §689) ----------
@@ -582,6 +583,7 @@ impl Engine {
         self.pending_display_formula = Some(formula);
         self.math_lists.push(crate::boxes::NodeList::new());
         self.eqno_leqno = Some(leqno);
+        self.show.eqno_line = self.nest_line();
     }
 
     fn run_everymath(&mut self) {
@@ -1055,6 +1057,7 @@ impl Engine {
                 self.mode = Mode::Horizontal;
                 self.cur_list = Vec::new();
                 self.space_factor = 1000;
+                self.begin_paragraph_language();
             } else {
                 self.cur_list.extend(page);
                 let outer = std::mem::take(&mut self.cur_list);
@@ -1070,6 +1073,7 @@ impl Engine {
                 self.mode = Mode::Horizontal;
                 self.cur_list = Vec::new();
                 self.space_factor = 1000;
+                self.begin_paragraph_language();
             }
             // tex.web finish_display does NOT run build_page: the display
             // nodes stay on the vlist (visible to \lastskip — LaTeX's
@@ -1322,6 +1326,20 @@ impl Engine {
     /// atom of the current math list (tex.web "scripts on the tail noad").
     pub fn append_script(&mut self, sup: bool, _c: u8) {
         let limits_req = self.math_limits.take();
+        if self.script_repeats(sup) {
+            // tex.web sub_sup: a second script of the same kind goes on a fresh noad
+            self.error(if sup {
+                "Double superscript"
+            } else {
+                "Double subscript"
+            });
+            self.append_mlist_node(Node::Scripts {
+                nucleus: Vec::new(),
+                sup: None,
+                sub: None,
+            });
+        }
+        self.show.scan_owner = Some(ScanKind::Script { sup, limits: limits_req });
         let group = self.scan_math_group_or_token();
         let cur_depth = self.math_lists.len();
         let group_boundary = self
@@ -1628,6 +1646,7 @@ impl Engine {
     pub fn scan_math_group_or_token(&mut self) -> NodeList {
         // a directive pending here (`\sum\limits\mathop{xy}`) belongs to the
         // tail of the CURRENT list, before any temp/group list is pushed
+        let owner = self.show.scan_owner.take();
         self.flush_math_limits();
         self.skip_spaces_relax();
         let t = self.get_token();
@@ -1636,18 +1655,18 @@ impl Engine {
             return Vec::new();
         }
         if t.is_char() && t.cc() == 1 {
-            return self.scan_math_group_braced();
+            return self.scan_math_group_braced(owner.unwrap_or(ScanKind::Brace));
         }
         // single token: run it into a temporary math list
-        self.math_lists.push(Vec::new());
+        self.begin_math_scan(owner.unwrap_or(ScanKind::Brace));
         self.run_math_token(t);
         self.flush_math_limits();
-        self.math_lists.pop().unwrap_or_default()
+        self.end_math_scan()
     }
 
     /// Execute tokens up to the matching `}` as a nested math list.
-    fn scan_math_group_braced(&mut self) -> NodeList {
-        self.math_lists.push(Vec::new());
+    fn scan_math_group_braced(&mut self, kind: ScanKind) -> NodeList {
+        self.begin_math_scan(kind);
         self.push_group_level(crate::eqtb::LevelType::MathGroup);
         let my_level = self.eqtb.cur_level;
         loop {
@@ -1690,7 +1709,7 @@ impl Engine {
                     // tex.web §1198 removes braces around one scriptless Ord
                     // noad; other groups remain raw until conversion so they
                     // acquire the style in force at their use site.
-                    let inner = self.scan_math_group_braced();
+                    let inner = self.scan_math_group_braced(ScanKind::Brace);
                     self.append_mlist_node(finish_math_group(inner));
                 } else {
                     self.begin_group(true);
@@ -1700,7 +1719,7 @@ impl Engine {
             self.run_math_token(t);
         }
         self.flush_math_limits();
-        self.math_lists.pop().unwrap_or_default()
+        self.end_math_scan()
     }
 
     pub fn do_math_accent(&mut self, mc: u16) {
@@ -1710,9 +1729,15 @@ impl Engine {
 
     pub(crate) fn do_math_accent_at(&mut self, mc: u16, source: Option<crate::input::SourceMark>) {
         let origin = self.math_diagnostic_origin_at(source);
-        let group = self.scan_math_group_or_token();
-        let fam = ((mc >> 8) & 0xF) as u8;
+        let mut fam = ((mc >> 8) & 0xF) as u8;
         let c = (mc & 0xFF) as u8;
+        // tex.web math_ac: a variable-family code takes \fam when it is in range
+        let cur_fam = self.eqtb.int_params[IntParam::CurFam.idx() as usize];
+        if mc >= 0x7000 && (0..16).contains(&cur_fam) {
+            fam = cur_fam as u8;
+        }
+        self.show.scan_owner = Some(ScanKind::Accent { fam, c });
+        let group = self.scan_math_group_or_token();
         self.append_mlist_node(Node::Accent {
             fam,
             c,
@@ -1728,6 +1753,7 @@ impl Engine {
 
     pub(crate) fn do_radical_at(&mut self, delim: i32, source: Option<crate::input::SourceMark>) {
         let origin = self.math_diagnostic_origin_at(source);
+        self.show.scan_owner = Some(ScanKind::Radical { delim });
         let group = self.scan_math_group_or_token();
         self.append_mlist_node(Node::Radical {
             body: group,
@@ -1737,6 +1763,7 @@ impl Engine {
         });
     }
     pub fn do_math_class(&mut self, class: u8) {
+        self.show.scan_owner = Some(ScanKind::Class(class));
         let field = self.scan_math_group_or_token();
         let node = if field.is_empty() {
             Node::MathChar {
@@ -1764,7 +1791,9 @@ impl Engine {
                             fam: 255,
                             c: 0,
                             class,
-                            origin: MathDiagnosticOrigin::default(),
+                            // a group around one non-ord noad (`\mathop{\sum}`): its
+                            // nucleus is a sub-mlist, not the noad's own character
+                            origin: MathDiagnosticOrigin { id: u64::MAX },
                         },
                         other,
                     ];
@@ -1805,6 +1834,7 @@ impl Engine {
     /// put a default-rule bar above (or below) with 3 default_rule_thickness
     /// clearance (tex.web make_over / make_under).
     pub fn do_overline(&mut self, under: bool) {
+        self.show.scan_owner = Some(if under { ScanKind::Under } else { ScanKind::Over });
         let group = self.scan_math_group_or_token();
         // tex.web make_over uses cramped_style; make_under keeps cur_style.
         let g = gstyle_of(self.cur_math_style()) | u8::from(!under);
@@ -1840,7 +1870,11 @@ impl Engine {
                 *d = (extent - body_h as i64) as i32;
             }
         }
-        self.append_mlist_node(vb);
+        self.append_mlist_node(Node::Overline {
+            body: group,
+            under,
+            packed: Box::new(vb),
+        });
     }
 
     /// tex.web scan_delimiter: a character token with a `\delcode` uses it;
@@ -1900,6 +1934,26 @@ impl Engine {
 
     pub fn do_fraction(&mut self, p: Prim) {
         let origin = self.math_diagnostic_origin();
+        if self.fraction_is_ambiguous() {
+            // tex.web §1181: the arguments are scanned, then the fraction is ignored
+            match p {
+                Prim::Above => {
+                    self.scan_dimen(false, false);
+                }
+                Prim::OverWithDelims | Prim::AtopWithDelims => {
+                    self.scan_delim_int();
+                    self.scan_delim_int();
+                }
+                Prim::AboveWithDelims => {
+                    self.scan_delim_int();
+                    self.scan_delim_int();
+                    self.scan_dimen(false, false);
+                }
+                _ => {}
+            }
+            self.error("Ambiguous; you need another { and }");
+            return;
+        }
         // numerator = everything accumulated in the current math list so far.
         // The list slot itself MUST stay: the Frac node is appended to it (at
         // the enclosing group/top level), so popping it here would strand the
@@ -1931,7 +1985,12 @@ impl Engine {
             None => Vec::new(),
         };
         // denominator is scanned into a temporary list on top
-        self.math_lists.push(Vec::new());
+        self.begin_math_scan(ScanKind::Denominator(PendingFrac {
+            num,
+            thickness: DEFAULT_CODE,
+            left: 0,
+            right: 0,
+        }));
         // tex.web: the lexically-following arguments (\above's dimen, the
         // withdelims delimiter pair) are scanned immediately...
         let mut thickness = DEFAULT_CODE;
@@ -1962,7 +2021,9 @@ impl Engine {
         }
         // ...and the denominator is the REST of the current math group (up
         // to the closing brace / end of formula), which stays unconsumed
+        self.set_pending_fraction(thickness, ld, rd);
         let den = self.scan_math_rest_of_group();
+        let num = self.take_pending_numerator();
         let left = if ld > 0 { Some(ld) } else { None };
         let right = if rd > 0 { Some(rd) } else { None };
         self.append_mlist_node(Node::Frac {
@@ -2112,6 +2173,7 @@ impl Engine {
     pub fn begin_mathchoice(&mut self) {
         self.append_mlist_node(Node::Choice);
         for _ in 0..4 {
+            self.show.scan_owner = Some(ScanKind::Choice);
             let body = self.scan_math_group_or_token();
             self.append_mlist_node(Node::ChoiceAlt { body });
         }
@@ -2157,7 +2219,7 @@ impl Engine {
                 1 | 3 => CL_CLOSE,
                 _ => CL_ORD,
             }),
-            Node::Box { .. } | Node::VCenter { .. } => Some(CL_ORD),
+            Node::Box { .. } | Node::VCenter { .. } | Node::Overline { .. } => Some(CL_ORD),
             Node::Choice => Some(CL_ORD),
             _ => None,
         }
@@ -2888,6 +2950,7 @@ impl Engine {
                 vec![b]
             }
             Node::Box { .. } => vec![n.clone()],
+            Node::Overline { packed, .. } => vec![(**packed).clone()],
             other => vec![other.clone()],
         }
     }

@@ -127,6 +127,18 @@ pub(crate) struct AlignSave {
     is_valign: bool,
 }
 
+/// A read-only view of one alignment's state (see [`Engine::align_view`]).
+pub(crate) struct AlignView<'a> {
+    pub(crate) is_valign: bool,
+    pub(crate) in_noalign: bool,
+    pub(crate) preamble: &'a [ColSpec],
+    pub(crate) loop_start: Option<usize>,
+    pub(crate) t0: Glue,
+    pub(crate) rows: &'a [Vec<Cell>],
+    pub(crate) row_adjust: &'a [Vec<Node>],
+    pub(crate) cur_row: &'a [Cell],
+}
+
 impl Engine {
     pub fn align_phase(&self) -> i32 {
         self.align_state & (PH_U | PH_CONTENT)
@@ -236,6 +248,7 @@ impl Engine {
     // ------------------------------------------------------------------
 
     pub fn begin_halign(&mut self) {
+        let show_line = self.nest_line();
         let origin = self.current_token_source_mark();
         if self.scanner_status == ScannerStatus::Aligning
             || self.box_kinds.iter().any(|&k| k == 7)
@@ -322,6 +335,11 @@ impl Engine {
         self.box_kinds.push(7);
         self.mode = Mode::InternalVertical;
         self.prev_graf = 0;
+        self.show.aligns.push(crate::show_state::AlignNest {
+            level: self.saved_lists.len(),
+            line: show_line,
+            row_line: 0,
+        });
         // tex.web §15350 / init_align: the alignment's internal vertical list inherits prev_depth
         // from the enclosing context (preserved from outer vertical mode / display math).
         self.align_rows.clear();
@@ -341,6 +359,7 @@ impl Engine {
         if self.mode.is_v() {
             self.start_paragraph(true);
         }
+        let show_line = self.nest_line();
         let origin = self.current_token_source_mark();
         if self.scanner_status == ScannerStatus::Aligning
             || self.box_kinds.iter().any(|&k| k == 7)
@@ -414,6 +433,11 @@ impl Engine {
         self.space_factor = 1000;
         self.prev_graf = 0;
         self.prev_depth = self.ignore_depth();
+        self.show.aligns.push(crate::show_state::AlignNest {
+            level: self.saved_lists.len(),
+            line: show_line,
+            row_line: 0,
+        });
         self.align_rows.clear();
         self.align_row_adjust.clear();
         self.align_adjust.clear();
@@ -1277,6 +1301,10 @@ impl Engine {
 
     fn align_start_row(&mut self, first: Option<crate::token::Token>) {
         self.align_cur_col = 0;
+        let line = self.nest_line();
+        if let Some(a) = self.show.aligns.last_mut() {
+            a.row_line = line;
+        }
         self.align_start_cell(first);
     }
     // ------------------------------------------------------------------
@@ -1580,6 +1608,7 @@ impl Engine {
         self.align_in_noalign = false;
         self.align_everycr_done = false;
         let nested = self.align_has_save();
+        self.show.aligns.pop();
         self.align_nested_restore();
         if !nested {
             self.scanner_status = ScannerStatus::Normal;
@@ -1645,6 +1674,38 @@ impl Engine {
                 self.append_box_node(Some(vbox));
             }
         }
+    }
+
+    /// What `\showlists` needs to rebuild tex.web's alignment, row and cell
+    /// levels: the alignment `depth` levels below the innermost one.
+    pub(crate) fn align_view(&self, depth: usize) -> Option<AlignView<'_>> {
+        if depth == 0 {
+            return Some(AlignView {
+                is_valign: self.align_is_valign,
+                in_noalign: self.align_in_noalign,
+                preamble: &self.align_preamble,
+                loop_start: self.align_loop_start,
+                t0: self.align_t0,
+                rows: &self.align_rows,
+                row_adjust: &self.align_row_adjust,
+                cur_row: &self.align_cur_row,
+            });
+        }
+        let sv = self
+            .align_stack
+            .len()
+            .checked_sub(depth)
+            .and_then(|i| self.align_stack.get(i))?;
+        Some(AlignView {
+            is_valign: sv.is_valign,
+            in_noalign: sv.in_noalign,
+            preamble: &sv.preamble,
+            loop_start: sv.loop_start,
+            t0: sv.t0,
+            rows: &sv.rows,
+            row_adjust: &sv.row_adjust,
+            cur_row: &sv.cur_row,
+        })
     }
 }
 

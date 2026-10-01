@@ -31,9 +31,6 @@ mod lua_vm;
 mod platform_time;
 mod stdlib;
 
-#[cfg(feature = "serde")]
-pub mod serde;
-
 // Re-export the derive macros so users can `use luars::LuaUserData;`
 pub use compiler::LuaLanguageLevel;
 pub use luars_derive::LuaUserData;

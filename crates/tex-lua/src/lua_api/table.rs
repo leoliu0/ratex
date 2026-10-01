@@ -144,58 +144,6 @@ impl LuaTable {
         self.inner.push_typed(value)
     }
 
-    /// Convert this table into a JSON value using the crate's existing `serde` bridge.
-    #[cfg(feature = "serde")]
-    pub fn to_json_value(&self) -> Result<serde_json::Value, String> {
-        crate::serde::lua_to_json(&self.value())
-    }
-
-    /// Convert this table into a JSON string using the crate's existing `serde` bridge.
-    #[cfg(feature = "serde")]
-    pub fn to_json_string(&self, pretty: bool) -> Result<String, String> {
-        crate::serde::lua_to_json_string(&self.value(), pretty)
-    }
-
-    /// Decode this Lua table into any serde-deserializable Rust value.
-    #[cfg(feature = "serde")]
-    pub fn to_serde<T: serde::de::DeserializeOwned>(&self) -> Result<T, String> {
-        let json = self.to_json_value()?;
-        serde_json::from_value(json).map_err(|err| format!("Failed to deserialize table: {}", err))
-    }
-
-    /// Construct a Lua table from a JSON value inside the provided Lua runtime.
-    #[cfg(feature = "serde")]
-    pub fn from_json_value(lua: &mut crate::Lua, json: &serde_json::Value) -> LuaResult<Self> {
-        let vm = lua.global_state_mut();
-        let value = vm
-            .deserialize_from_json(json)
-            .map_err(|msg| vm.error(msg))?;
-        LuaTable::from_lua(value, vm.main_state()).map_err(|msg| vm.error(msg))
-    }
-
-    /// Construct a Lua table from a JSON string inside the provided Lua runtime.
-    #[cfg(feature = "serde")]
-    pub fn from_json_str(lua: &mut crate::Lua, json: &str) -> LuaResult<Self> {
-        let vm = lua.global_state_mut();
-        let value = vm
-            .deserialize_from_json_string(json)
-            .map_err(|msg| vm.error(msg))?;
-        LuaTable::from_lua(value, vm.main_state()).map_err(|msg| vm.error(msg))
-    }
-
-    /// Construct a Lua table from any serde-serializable Rust value.
-    #[cfg(feature = "serde")]
-    pub fn from_serde<T: serde::Serialize>(lua: &mut crate::Lua, value: &T) -> LuaResult<Self> {
-        let json = match serde_json::to_value(value) {
-            Ok(json) => json,
-            Err(err) => {
-                let vm = lua.global_state_mut();
-                return Err(vm.error(err.to_string()));
-            }
-        };
-        Self::from_json_value(lua, &json)
-    }
-
     pub(crate) fn value(&self) -> luars::LuaValue {
         self.inner.to_value()
     }
@@ -204,19 +152,6 @@ impl LuaTable {
     /// The returned `LuaValue` must not be used after the `LuaTable` is dropped.
     pub unsafe fn to_value(&self) -> LuaValue {
         self.inner.to_value()
-    }
-}
-
-#[cfg(feature = "serde")]
-impl serde::Serialize for LuaTable {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        serde::Serialize::serialize(
-            &self.to_json_value().map_err(serde::ser::Error::custom)?,
-            serializer,
-        )
     }
 }
 

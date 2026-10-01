@@ -6,7 +6,7 @@ pub mod session;
 pub mod solver;
 pub mod types;
 
-pub use curves::{solve_path, KnotSpec};
+pub use curves::{solve_path, KnotSide, KnotSpec};
 pub use interp::Interpreter;
 pub use session::{MpConfig, MpResult, MpSession};
 pub use solver::{LinearExpr, LinearSolver};

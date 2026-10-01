@@ -60,7 +60,7 @@ impl Engine {
             EGroup => self.end_group(),
             NoBoundary => self.no_boundary(),
 
-            Par => self.par_primitive(),
+            Par => self.par_primitive(Token::from_cs(id)),
             Indent => self.start_paragraph(true),
             NoIndent => self.start_paragraph(false),
             // pdftex.web start_par chr 2: \indent in vertical mode, nothing
@@ -100,9 +100,7 @@ impl Engine {
                     // execute in math mode. Recover as if a closing math shift
                     // had been inserted, then reprocess the untouched skip.
                     Mode::Math | Mode::DisplayMath => {
-                        self.push_token(Token::from_cs(id));
-                        self.error("Missing $ inserted.");
-                        self.exit_math();
+                        self.insert_dollar_sign(Token::from_cs(id));
                     }
                     _ => {
                         let g = self.scan_vskip_kind(p);
@@ -155,9 +153,7 @@ impl Engine {
                     self.start_paragraph(true);
                 }
                 Mode::Math | Mode::DisplayMath => {
-                    self.push_token(Token::from_cs(id));
-                    self.error("Missing $ inserted.");
-                    self.exit_math();
+                    self.insert_dollar_sign(Token::from_cs(id));
                 }
                 Mode::Horizontal | Mode::RestrictedHorizontal => {
                     if self.eqtb.int_params[IntParam::TeXXeTEnabled.idx() as usize] > 0 {
@@ -281,6 +277,10 @@ impl Engine {
                     // then reprocess the vertical unbox in vertical mode.
                     self.push_token(Token::from_cs(id));
                     self.push_token(Token::from_cs(self.ids.par));
+                } else if self.mode == Mode::RestrictedHorizontal {
+                    // head_for_vmode closes an inner group before replaying
+                    // the unbox; its register number remains unscanned.
+                    self.off_save(Token::from_cs(id));
                 } else {
                     self.do_unbox(true, false);
                 }
@@ -298,6 +298,8 @@ impl Engine {
                 if self.mode == Mode::Horizontal {
                     self.push_token(Token::from_cs(id));
                     self.push_token(Token::from_cs(self.ids.par));
+                } else if self.mode == Mode::RestrictedHorizontal {
+                    self.off_save(Token::from_cs(id));
                 } else {
                     self.do_unbox(true, true);
                 }
@@ -501,7 +503,7 @@ impl Engine {
                     // vertical mode. Dropping it made ordinary `text\end`
                     // indistinguishable from an illegal raw EOF.
                     self.push_token(Token::from_cs(id));
-                    self.par_primitive();
+                    self.par_primitive(Token::from_cs(self.ids.par));
                     return;
                 }
                 if self.mode.is_v() {

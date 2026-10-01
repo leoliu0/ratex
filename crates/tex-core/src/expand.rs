@@ -1060,7 +1060,6 @@ impl Engine {
                 | PdfCreationDate
                 | PdfFileDump
                 | PdfStrCmp
-                | PdfElapsedTime
                 | PdfUniformDeviate
                 | PdfNormalDeviate
                 | PdfEscapeString
@@ -2132,18 +2131,20 @@ impl Engine {
                 self.exp_string(&hex);
                 None
             }
-            PdfElapsedTime => {
-                self.exp_string(b"0");
-                None
-            }
             PdfColorStackInit => {
                 let stack = self.pdf_colorstack_init();
                 self.exp_string(stack.to_string().as_bytes());
                 None
             }
-            PdfUniformDeviate | PdfNormalDeviate => {
-                let _ = self.scan_int();
-                self.exp_string(b"0");
+            PdfUniformDeviate => {
+                let x = self.scan_int();
+                let value = self.rng.unif_rand(x);
+                self.exp_string(value.to_string().as_bytes());
+                None
+            }
+            PdfNormalDeviate => {
+                let value = self.rng.norm_rand();
+                self.exp_string(value.to_string().as_bytes());
                 None
             }
             PdfEscapeString | PdfEscapeName | PdfEscapeHex => {

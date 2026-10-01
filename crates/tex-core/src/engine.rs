@@ -582,7 +582,11 @@ pub struct Engine {
     /// a packed vbox so finish_display_math can unbox them onto the page.
     pub display_halign: Option<(Vec<crate::boxes::Node>, i32)>,
     pub unless_next: bool,
-    pub random_seed: i32,
+    /// pdfTeX random number generator state (`\pdfrandomseed`).
+    pub rng: crate::random::Randoms,
+    /// web2c `epochseconds`/`microseconds` at job start or the last
+    /// `\pdfresettimer` (`\pdfelapsedtime` origin).
+    pub timer_start: (i64, i32),
     pub last_badness: i32,
     pub pdf_last_x: i32,
     pub pdf_last_y: i32,
@@ -1124,7 +1128,8 @@ impl Engine {
             term: String::new(),
             last_named_cs: None,
             after_assignment: None,
-            random_seed: 123456789,
+            rng: crate::random::Randoms::from_clock(),
+            timer_start: crate::clock::now_micros(),
         };
         e
     }

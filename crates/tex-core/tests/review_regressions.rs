@@ -652,3 +652,25 @@ fn quoted_font_names_end_at_the_end_of_the_line() {
     assert!(e.term.contains("[cmr10]"), "{}", e.term);
     assert_eq!(e.error_count, 0, "{}", e.term);
 }
+
+/// pdftex (TeX Live 2026) after `\pdfsetrandomseed 12345`:
+/// [12345][709][377][-201][0][-113033] [7][50][-27960] [timer]
+/// [macro:->\pdfelapsedtime ]; a negative seed is made positive,
+/// and `\pdfelapsedtime` is an unexpandable internal integer.
+#[test]
+fn pdf_random_deviates_follow_the_seeded_generator() {
+    let e = engine(
+        r"\pdfsetrandomseed 12345
+\message{[\the\pdfrandomseed][\pdfuniformdeviate 1000][\pdfuniformdeviate 1000][\pdfuniformdeviate -1000][\pdfuniformdeviate 0][\pdfnormaldeviate]}
+\pdfsetrandomseed -7 \message{[\the\pdfrandomseed][\pdfuniformdeviate 100][\pdfnormaldeviate]}
+\pdfresettimer \ifnum\pdfelapsedtime<65536 \message{[timer]}\fi
+\edef\x{\noexpand\pdfelapsedtime}\message{[\meaning\x]}
+\end",
+    );
+    let term: String = e.term.split_whitespace().collect();
+    assert!(
+        term.contains("[12345][709][377][-201][0][-113033][7][50][-27960][timer][macro:->\\pdfelapsedtime]"),
+        "{}",
+        e.term
+    );
+}

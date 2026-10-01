@@ -1160,8 +1160,11 @@ impl Engine {
             }
             Letterspacefont => self.do_letterspacefont(),
             PdfSetRandomSeed => {
-                self.random_seed = self.scan_int();
+                // pdftex.web: negative seeds are silently made positive.
+                let seed = self.scan_int().saturating_abs();
+                self.rng = crate::random::Randoms::new(seed);
             }
+            PdfResetTimer => self.timer_start = crate::clock::now_micros(),
             PdfTrailer => self.do_pdftrailer(),
             PdfIncludeChars => self.do_pdfincludechars(),
             PdfCopyFont => self.do_pdfcopyfont(),
@@ -1199,7 +1202,7 @@ impl Engine {
                 self.append_whatsit(Node::Whatsit(crate::boxes::WhatIt::PdfSnapYComp(ratio)));
             }
             PdfUncompress | PdfTolerance | PdfThread | PdfStartThread
-            | PdfEndThread | PdfResetTimer => {
+            | PdfEndThread => {
                 // consume the argument syntactically: most take balanced text
                 self.skip_spaces_relax();
                 let t = self.get_token();

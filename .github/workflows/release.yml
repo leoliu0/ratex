@@ -191,12 +191,25 @@ jobs:
 
       - name: Linux full independent-viewer font verification gate
         if: matrix.platform == 'linux'
+        # Ubuntu 22.04 ships TeX Live 2021, whose CJK package sets headings and
+        # bullets differently from current TeX Live. CI compares this case
+        # against the current reference; here it keeps every non-reference check.
         run: |
+          version_sensitive=issue_4_cjkutf8_latin
+          mapfile -t cases < <(python3 -c 'import json,sys; [print(c["name"]) for c in json.load(open("scripts/fixtures/fonts/manifest.json")) if c["name"] != sys.argv[1]]' "$version_sensitive")
           python3 scripts/test_fonts.py \
             --ratex target/release/ratex \
             --output /tmp/font-evidence-full \
             --require-isolation \
-            --require-pdfjs
+            --require-pdfjs \
+            "${cases[@]/#/--case=}"
+          python3 scripts/test_fonts.py \
+            --ratex target/release/ratex \
+            --output /tmp/font-evidence-version-sensitive \
+            --require-isolation \
+            --require-pdfjs \
+            --skip-reference \
+            --case "$version_sensitive"
 
       - name: Package distribution (unix)
         if: matrix.platform != 'windows'

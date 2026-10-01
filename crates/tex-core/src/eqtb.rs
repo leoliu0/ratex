@@ -665,7 +665,7 @@ impl Eqtb {
     // ---------- generic level-aware slots ----------
 
     #[inline]
-    fn slot<T: Clone>(
+    fn slot<T>(
         vals: &mut Vec<T>,
         levels: &mut [u16],
         idx: usize,
@@ -676,11 +676,11 @@ impl Eqtb {
         mk: impl Fn(T, u16) -> SaveItem,
     ) {
         if !global && levels[idx] < cur_level {
-            let old = vals[idx].clone();
-            let ol = levels[idx];
-            stack.push(mk(old, ol));
+            let old = std::mem::replace(&mut vals[idx], v);
+            stack.push(mk(old, levels[idx]));
+        } else {
+            vals[idx] = v;
         }
-        vals[idx] = v;
         levels[idx] = if global { LEVEL_ONE } else { cur_level };
     }
 

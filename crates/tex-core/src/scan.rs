@@ -947,9 +947,10 @@ impl Engine {
     }
 
     pub fn scan_reg_num(&mut self) -> u16 {
-        let (n, source) = self.scan_int_with_source();
+        let (n, origin) = self.scan_int_with_origin();
         let max = self.eqtb.count.len() as i32 - 1;
         if n < 0 || n > max {
+            let source = origin.and_then(|origin| self.numeric_origin_context(origin));
             self.error_at(
                 &format!(
                     "Register number {n} is out of range; expected a number from 0 through {max}"
@@ -964,21 +965,28 @@ impl Engine {
     /// Scan a character/integer operand and retain the first source token,
     /// before numeric lookahead advances to the following delimiter.
     pub(crate) fn scan_int_with_source(&mut self) -> (i32, Option<SourceContext>) {
-        self.skip_spaces();
-        let origin = self.numeric_origin();
-        let value = self.scan_int();
+        let (value, origin) = self.scan_int_with_origin();
         let source = origin.and_then(|origin| self.numeric_origin_context(origin));
         (value, source)
+    }
+
+    /// `scan_int_with_source` for callers that report a bad value at once:
+    /// the source excerpt is materialized only for the error.
+    fn scan_int_with_origin(&mut self) -> (i32, Option<NumericOrigin>) {
+        self.skip_spaces();
+        let origin = self.numeric_origin();
+        (self.scan_int(), origin)
     }
 
     /// Scan an operand used to index one of TeX's 256-entry character tables.
     /// Invalid input recovers with character zero instead of reaching an
     /// unchecked slice index.
     pub(crate) fn scan_character_code(&mut self, command: &str) -> u8 {
-        let (character, source) = self.scan_int_with_source();
+        let (character, origin) = self.scan_int_with_origin();
         if (0..=255).contains(&character) {
             character as u8
         } else {
+            let source = origin.and_then(|origin| self.numeric_origin_context(origin));
             self.error_at(
                 &format!(
                     "Character code {character} is out of range for {command}; expected 0 through 255 and used character 0"
@@ -990,7 +998,7 @@ impl Engine {
     }
 
     pub(crate) fn scan_unicode_character_code(&mut self, command: &str) -> u32 {
-        let (character, source) = self.scan_int_with_source();
+        let (character, origin) = self.scan_int_with_origin();
         if u32::try_from(character)
             .ok()
             .and_then(char::from_u32)
@@ -998,6 +1006,7 @@ impl Engine {
         {
             character as u32
         } else {
+            let source = origin.and_then(|origin| self.numeric_origin_context(origin));
             self.error_at(
                 &format!("Invalid Unicode scalar {character} for {command}; used character 0"),
                 source,
@@ -1024,10 +1033,11 @@ impl Engine {
     }
 
     pub(crate) fn scan_math_family(&mut self, command: &str) -> usize {
-        let (family, source) = self.scan_int_with_source();
+        let (family, origin) = self.scan_int_with_origin();
         if (0..=15).contains(&family) {
             family as usize
         } else {
+            let source = origin.and_then(|origin| self.numeric_origin_context(origin));
             self.error_at(
                 &format!(
                     "Font family {family} is out of range for {command}; expected 0 through 15 and used family 0"

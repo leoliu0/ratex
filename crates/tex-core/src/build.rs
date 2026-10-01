@@ -2168,7 +2168,13 @@ impl Engine {
         let n = self.scan_reg_num();
         self.scan_keyword(b"to");
         let target = self.scan_dimen(false, false);
-        let bx = self.eqtb.boxed.get(n as usize).cloned().flatten();
+        // The split rewrites the register (callers store the remainder),
+        // so a box moves out of it; anything else stays and is returned.
+        let bx = if matches!(self.eqtb.boxed.get(n as usize), Some(Some(Node::Box { .. }))) {
+            self.eqtb.take_box(n)
+        } else {
+            self.eqtb.boxed.get(n as usize).cloned().flatten()
+        };
         match bx {
             Some(b) => {
                 self.vsplat_remainder = None;

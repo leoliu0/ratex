@@ -13,48 +13,67 @@ pub const NOEXP_FLAG: u32 = 0xC000_0000;
 const UNEXPANDED_PARAMETER_FLAG: u32 = 0x1000_0000;
 const UNEXPANDED_CS_FLAG: u32 = 0xE000_0000;
 
-fn balanced_end_scalar(
+/// True when a token list token may be moved into balanced text as is: it
+/// is a brace, an ordinary character or a plain control sequence. Every
+/// other token (expansion guards, parameter references, sentinels, ignored
+/// characters and, in a short argument, \par) needs `raw_token`'s handling.
+#[inline(always)]
+fn plain_balanced_token(t: Token, long: bool, partoken: Token) -> bool {
+    let top = t.0 >> 24;
+    if top < 0x80 {
+        top <= 13 && top != 9
+    } else {
+        top < 0xC0 && (long || t != partoken)
+    }
+}
+
+fn balanced_prefix_scalar(
     tokens: &[Token],
     long: bool,
-    partoken: CsId,
+    partoken: Token,
     mut depth: i32,
-) -> Option<usize> {
+) -> (usize, i32) {
     for (index, &t) in tokens.iter().enumerate() {
-        if (NOEXP_FLAG..0xFFFF_0000).contains(&t.0)
-            || (UNEXPANDED_PARAMETER_FLAG..0x2000_0000).contains(&t.0)
-        {
-            return None;
+        if !plain_balanced_token(t, long, partoken) {
+            return (index, depth);
         }
         match t.0 >> 24 {
             1 => depth += 1,
             2 => {
                 depth -= 1;
                 if depth == 0 {
-                    return Some(index + 1);
+                    return (index + 1, 0);
                 }
             }
-            _ if !long && (t == PAR_END || (t.is_cs() && t.cs_id() == partoken)) => return None,
             _ => {}
         }
     }
-    None
+    (tokens.len(), depth)
 }
 
-fn balanced_end(tokens: &[Token], long: bool, partoken: CsId) -> Option<usize> {
+/// The longest prefix of `tokens` that balanced text at brace depth `depth`
+/// (> 0) can take without per-token handling, and the depth after it. A
+/// depth of zero means the prefix ends with the closing brace.
+fn balanced_prefix(tokens: &[Token], long: bool, partoken: CsId, depth: i32) -> (usize, i32) {
+    let partoken = Token::from_cs(partoken);
     #[cfg(target_arch = "x86_64")]
     if tokens.len() >= 16 && std::is_x86_feature_detected!("avx2") {
         // SAFETY: the processor supports AVX2; the callee bounds every load.
-        return unsafe { balanced_end_avx2(tokens, long, partoken) };
+        return unsafe { balanced_prefix_avx2(tokens, long, partoken, depth) };
     }
-    balanced_end_scalar(tokens, long, partoken, 1)
+    balanced_prefix_scalar(tokens, long, partoken, depth)
 }
 
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
-unsafe fn balanced_end_avx2(tokens: &[Token], long: bool, partoken: CsId) -> Option<usize> {
+unsafe fn balanced_prefix_avx2(
+    tokens: &[Token],
+    long: bool,
+    partoken: Token,
+    mut depth: i32,
+) -> (usize, i32) {
     use std::arch::x86_64::*;
     let mut position = 0;
-    let mut depth = 1;
     while tokens.len() - position >= 8 {
         // Token is repr(transparent) over u32 and eight initialized elements
         // remain. Unaligned loads support every token-slice starting offset.
@@ -77,28 +96,29 @@ unsafe fn balanced_end_avx2(tokens: &[Token], long: bool, partoken: CsId) -> Opt
             depths,
             _mm256_setzero_si256(),
         ))) as u32;
-        let frozen = _mm256_and_si256(
-            _mm256_cmpgt_epi32(values, _mm256_set1_epi32(0xbfff_ffffu32 as i32)),
-            _mm256_cmpgt_epi32(_mm256_set1_epi32(0xffff_0000u32 as i32), values),
+        // The negation of `plain_balanced_token`, on the top byte.
+        let ignored = _mm256_cmpeq_epi32(top, _mm256_set1_epi32(9));
+        let flagged_char = _mm256_and_si256(
+            _mm256_cmpgt_epi32(top, _mm256_set1_epi32(13)),
+            _mm256_cmpgt_epi32(_mm256_set1_epi32(0x80), top),
         );
-        let parameter = _mm256_cmpeq_epi32(_mm256_srli_epi32::<28>(values), _mm256_set1_epi32(1));
-        let mut guards = _mm256_or_si256(frozen, parameter);
+        let marked = _mm256_cmpgt_epi32(top, _mm256_set1_epi32(0xBF));
+        let mut guards = _mm256_or_si256(_mm256_or_si256(ignored, flagged_char), marked);
         if !long {
-            let paragraph = _mm256_or_si256(
-                _mm256_cmpeq_epi32(values, _mm256_set1_epi32(Token::from_cs(partoken).0 as i32)),
-                _mm256_cmpeq_epi32(values, _mm256_set1_epi32(PAR_END.0 as i32)),
+            guards = _mm256_or_si256(
+                guards,
+                _mm256_cmpeq_epi32(values, _mm256_set1_epi32(partoken.0 as i32)),
             );
-            guards = _mm256_or_si256(guards, paragraph);
         }
         let guards = _mm256_movemask_ps(_mm256_castsi256_ps(guards)) as u32;
         if ends | guards != 0 {
-            let first = (ends | guards).trailing_zeros();
-            return (guards & (1 << first) == 0).then_some(position + first as usize + 1);
+            break;
         }
         depth += _mm256_extract_epi32::<7>(prefix);
         position += 8;
     }
-    balanced_end_scalar(&tokens[position..], long, partoken, depth).map(|end| position + end)
+    let (length, depth) = balanced_prefix_scalar(&tokens[position..], long, partoken, depth);
+    (position + length, depth)
 }
 
 #[cfg(test)]
@@ -117,6 +137,9 @@ mod balanced_scan_tests {
             Token(NOEXP_FLAG | 42),
             Token(UNEXPANDED_CS_FLAG | 42),
             Token(UNEXPANDED_PARAMETER_FLAG | Token::char(6, 35).0),
+            Token(PAR_REF_FLAG | 1),
+            Token::char(9, 0),
+            Token::char(14, 37),
             PAR_END,
             EOF_MARKER,
         ];
@@ -131,16 +154,15 @@ mod balanced_scan_tests {
                     }
                 }
                 for long in [false, true] {
-                    let slice = &tokens[offset..];
-                    let expected = balanced_end_scalar(slice, long, 7, 1);
-                    assert_eq!(
-                        balanced_end(slice, long, 7),
-                        expected,
-                        "length={length} offset={offset} long={long}"
-                    );
-                    #[cfg(target_arch = "x86_64")]
-                    if std::is_x86_feature_detected!("avx2") {
-                        assert_eq!(unsafe { balanced_end_avx2(slice, long, 7) }, expected);
+                    for depth in [1, 3] {
+                        let slice = &tokens[offset..];
+                        let expected =
+                            balanced_prefix_scalar(slice, long, Token::from_cs(7), depth);
+                        assert_eq!(
+                            balanced_prefix(slice, long, 7, depth),
+                            expected,
+                            "length={length} offset={offset} long={long} depth={depth}"
+                        );
                     }
                 }
             }
@@ -149,9 +171,13 @@ mod balanced_scan_tests {
         let mut deep = vec![Token::char(1, 123); 64];
         deep.extend(vec![Token::char(2, 125); 65]);
         deep.push(Token(NOEXP_FLAG | 42));
-        assert_eq!(balanced_end(&deep, true, 7), Some(129));
+        assert_eq!(balanced_prefix(&deep, true, 7, 1), (129, 0));
         deep[127] = Token(NOEXP_FLAG | 42);
-        assert_eq!(balanced_end(&deep, true, 7), None);
+        assert_eq!(balanced_prefix(&deep, true, 7, 1), (127, 2));
+        // Only a short argument stops at \par.
+        let par = [Token::letter(b'a'), Token::from_cs(7), Token::char(2, 125)];
+        assert_eq!(balanced_prefix(&par, false, 7, 1), (1, 1));
+        assert_eq!(balanced_prefix(&par, true, 7, 1), (3, 0));
     }
 }
 
@@ -2340,33 +2366,8 @@ impl Engine {
         self.scanner_status = ScannerStatus::Skipping;
         let mut l = 0i32;
         let res = 'skip: loop {
-            if self.pushed.is_empty() {
-                if let Some(crate::input::Source::TokList {
-                    toks, pos, name, ..
-                }) = self.input.stack.last_mut()
-                {
-                    let is_peek = *name == crate::align::PEEK_SRC;
-                    let s = &toks[..];
-                    while *pos < s.len()
-                        && s[*pos].0 < 0x8000_0000
-                        && s[*pos].cc() != CAT_ACTIVE
-                    {
-                        let tok = s[*pos];
-                        if !is_peek && !tok.is_cs() {
-                            let cc = (tok.0 >> 24) as u8;
-                            if cc == 1 {
-                                self.align_brace_depth = self.align_brace_depth.saturating_add(1);
-                            } else if cc == 2 {
-                                self.align_brace_depth = self.align_brace_depth.saturating_sub(1);
-                            }
-                        }
-                        *pos += 1;
-                    }
-                    if *pos == s.len() {
-                        self.end_token_list();
-                        continue;
-                    }
-                }
+            if let Some(delimiter) = self.pass_text_run(&mut l) {
+                break 'skip Some(delimiter);
             }
             let t = self.raw_token();
             if t == EOF_MARKER {
@@ -2413,6 +2414,80 @@ impl Engine {
         };
         self.scanner_status = save_scanner;
         res
+    }
+
+    /// Skip the tokens at the front of the current token list that
+    /// `pass_text` would pass over one by one, counting nested conditionals
+    /// in `level`. Returns the \fi, \else or \or that ends the text at
+    /// level zero; stops early before any token that needs `raw_token` or
+    /// an active character's meaning.
+    fn pass_text_run(&mut self, level: &mut i32) -> Option<Prim> {
+        if !self.pushed.is_empty() || self.align_macro_arg {
+            return None;
+        }
+        let (segment, counts_braces, trace_depth) = match self.input.stack.last() {
+            Some(crate::input::Source::TokList {
+                toks,
+                pos,
+                name,
+                trace_depth,
+                ..
+            }) => (&toks[*pos..], *name != crate::align::PEEK_SRC, *trace_depth),
+            Some(crate::input::Source::MacroFrame(frame)) => {
+                (frame.segment(), true, frame.trace_depth)
+            }
+            _ => return None,
+        };
+        let mut braces = 0i32;
+        let mut found = None;
+        let mut length = 0;
+        for &t in segment {
+            let top = t.0 >> 24;
+            if top < 0x80 {
+                match top {
+                    1 => braces += 1,
+                    2 => braces -= 1,
+                    13 => break,
+                    _ => {}
+                }
+            } else if t.0 < NOEXP_FLAG {
+                match self.eqtb.resolve(t.cs_id()) {
+                    Some(Equiv::Prim(p)) if Self::is_if_test(*p) => *level += 1,
+                    Some(Equiv::Prim(
+                        p @ (Prim::Fi | Prim::Else | Prim::Or | Prim::ElIf | Prim::ElIfX),
+                    )) => {
+                        if *level == 0 {
+                            found = Some(*p);
+                            length += 1;
+                            break;
+                        }
+                        if *p == Prim::Fi {
+                            *level -= 1;
+                        }
+                    }
+                    Some(Equiv::Macro(m)) if m.outer => break,
+                    _ => {}
+                }
+            } else if t.0 >= 0xFFFF_0000 {
+                // \par and end-of-input markers.
+                break;
+            }
+            // A \noexpand-guarded token means \relax here (tex.web §358).
+            length += 1;
+        }
+        if length == 0 {
+            return None;
+        }
+        match self.input.stack.last_mut() {
+            Some(crate::input::Source::TokList { pos, .. }) => *pos += length,
+            Some(crate::input::Source::MacroFrame(frame)) => frame.skip(length),
+            _ => unreachable!(),
+        }
+        self.note_token_list_fetch(trace_depth);
+        if counts_braces {
+            self.align_brace_depth = self.align_brace_depth.saturating_add(braces);
+        }
+        found
     }
 
     /// tex.web §336: an \outer macro ends skipped conditional text. TeX
@@ -2975,42 +3050,22 @@ impl Engine {
         out: &mut Vec<Token>,
         origin: Option<&crate::input::SourceMark>,
     ) -> Result<(), Unbalanced> {
-        if self.pushed.is_empty() {
-            let partoken_id = self.partoken_id();
-            let fast = match self.input.stack.last() {
-                Some(crate::input::Source::TokList { toks, pos, .. }) => Some(&toks[*pos..]),
-                Some(crate::input::Source::MacroFrame(frame)) => Some(frame.segment()),
-                _ => None,
-            }
-            .and_then(|s| {
-                let end = balanced_end(s, long, partoken_id)?;
-                let text = &s[..end - 1];
-                // An \outer token needs the token-by-token path.
-                if self.eqtb.has_outer_macros() && text.iter().any(|&t| self.is_outer_token(t)) {
-                    return None;
-                }
-                if collect {
-                    out.extend_from_slice(text);
-                }
-                Some(end)
-            });
-            if let Some(end) = fast {
-                match self.input.stack.last_mut() {
-                    Some(crate::input::Source::TokList { pos, .. }) => *pos += end,
-                    Some(crate::input::Source::MacroFrame(frame)) => frame.skip(end),
-                    _ => unreachable!(),
-                }
-                // The opening brace was fetched by raw_token() and counted
-                // in align_brace_depth; the matching brace was taken from
-                // the list directly.
-                self.align_brace_depth = self.align_brace_depth.saturating_sub(1);
-                return Ok(());
-            }
-        }
-
         let mut depth = 1i32;
         let mut scanned = 0;
         loop {
+            if self.pushed.is_empty()
+                && (self.align_state == crate::align::PH_IDLE
+                    || (!self.align_macro_arg && self.align_brace_depth >= depth))
+            {
+                if let Some(closed) =
+                    self.take_balanced_run(long, collect, out, &mut depth, &mut scanned)
+                {
+                    if closed {
+                        return Ok(());
+                    }
+                    continue;
+                }
+            }
             let raw = self.raw_token();
             let mut stored = self.unfreeze_input_token(raw);
             let t = self.unfreeze_unexpanded_token(stored);
@@ -3059,6 +3114,64 @@ impl Engine {
         }
     }
 
+    /// Move the run of plain tokens at the front of the current token list
+    /// into balanced text at brace depth `depth` in one step, as the
+    /// token-by-token loop of `scan_balanced_raw_collect` would. Returns
+    /// whether the run closed the text, or `None` when no token qualifies
+    /// (input from a file, or a token that needs `raw_token`).
+    fn take_balanced_run(
+        &mut self,
+        long: bool,
+        collect: bool,
+        out: &mut Vec<Token>,
+        depth: &mut i32,
+        scanned: &mut usize,
+    ) -> Option<bool> {
+        let partoken = self.partoken_id();
+        let (segment, trace_depth) = match self.input.stack.last() {
+            Some(crate::input::Source::TokList {
+                toks,
+                pos,
+                trace_depth,
+                ..
+            }) => (&toks[*pos..], *trace_depth),
+            Some(crate::input::Source::MacroFrame(frame)) => (frame.segment(), frame.trace_depth),
+            _ => return None,
+        };
+        let (mut length, mut after) = balanced_prefix(segment, long, partoken, *depth);
+        // An \outer token needs the token-by-token path.
+        if self.eqtb.has_outer_macros() {
+            if let Some(outer) = segment[..length].iter().position(|&t| self.is_outer_token(t)) {
+                (length, after) = balanced_prefix(&segment[..outer], long, partoken, *depth);
+            }
+        }
+        let mut content = length - usize::from(after == 0);
+        // The token-by-token loop reports an overlong text before its first
+        // excess token.
+        let room = crate::input::MAX_TOKEN_LIST_TOKENS - *scanned;
+        if content > room {
+            (length, after) = balanced_prefix(&segment[..room], long, partoken, *depth);
+            content = length;
+        }
+        if length == 0 {
+            return None;
+        }
+        if collect {
+            out.extend_from_slice(&segment[..content]);
+        }
+        match self.input.stack.last_mut() {
+            Some(crate::input::Source::TokList { pos, .. }) => *pos += length,
+            Some(crate::input::Source::MacroFrame(frame)) => frame.skip(length),
+            _ => unreachable!(),
+        }
+        self.note_token_list_fetch(trace_depth);
+        // raw_token() counts every brace it fetches in align_brace_depth.
+        self.align_brace_depth = self.align_brace_depth.saturating_add(after - *depth);
+        *depth = after;
+        *scanned += content;
+        Some(after == 0)
+    }
+
     /// tex.web §392-§397: scan an argument ended by the token list `delim`,
     /// appending it to `out`.
     fn scan_delimited(
@@ -3072,6 +3185,12 @@ impl Engine {
         let start = out.len();
         let mut matched = smallvec::SmallVec::<[Token; 8]>::new();
         loop {
+            if matched.is_empty() {
+                let room = crate::input::MAX_TOKEN_LIST_TOKENS.saturating_sub(out.len() - start);
+                if self.take_delimited_run(delim[0], long, out, room) {
+                    continue;
+                }
+            }
             let raw = self.macro_arg_token();
             let stored = self.unfreeze_input_token(raw);
             let t = self.unfreeze_unexpanded_token(stored);
@@ -3168,6 +3287,62 @@ impl Engine {
                 out.push(Token::char(2, b'}' as u32));
             }
         }
+    }
+
+    /// Move the run of tokens at the front of the current token list that
+    /// can neither start the delimiter (whose first token is `first`) nor
+    /// end the argument into `out` (at most `room` tokens), as the
+    /// token-by-token loop of `scan_delimited` would. False when no token
+    /// qualifies.
+    fn take_delimited_run(
+        &mut self,
+        first: Token,
+        long: bool,
+        out: &mut Vec<Token>,
+        room: usize,
+    ) -> bool {
+        // Inside an alignment, raw_token() may end the cell at a delimiter.
+        if !self.pushed.is_empty() || self.align_state != crate::align::PH_IDLE {
+            return false;
+        }
+        let partoken = Token::from_cs(self.partoken_id());
+        let outer = self.eqtb.has_outer_macros();
+        let (segment, trace_depth) = match self.input.stack.last() {
+            Some(crate::input::Source::TokList {
+                toks,
+                pos,
+                trace_depth,
+                ..
+            }) => (&toks[*pos..], *trace_depth),
+            Some(crate::input::Source::MacroFrame(frame)) => (frame.segment(), frame.trace_depth),
+            _ => return false,
+        };
+        let limit = segment.len().min(room);
+        let mut length = 0;
+        while length < limit {
+            let t = segment[length];
+            if !plain_balanced_token(t, long, partoken)
+                || matches!(t.0 >> 24, 1 | 2)
+                // unfreeze_input_token() turns these into active characters.
+                || (t.is_cs() && self.cs.is_active(t.cs_id()))
+                || self.delim_eq(t, first)
+                || (outer && self.is_outer_macro_token(t))
+            {
+                break;
+            }
+            length += 1;
+        }
+        if length == 0 {
+            return false;
+        }
+        out.extend_from_slice(&segment[..length]);
+        match self.input.stack.last_mut() {
+            Some(crate::input::Source::TokList { pos, .. }) => *pos += length,
+            Some(crate::input::Source::MacroFrame(frame)) => frame.skip(length),
+            _ => unreachable!(),
+        }
+        self.note_token_list_fetch(trace_depth);
+        true
     }
 
     /// tex.web §400: a delimited argument that is exactly one group loses

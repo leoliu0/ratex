@@ -1,5 +1,5 @@
 use tex_core::engine::EngineKind;
-use tex_runtime::{CompileRequest, EngineChoice, PassPolicy, Session, Status};
+use tex_runtime::{CompileRequest, EngineChoice, Session, Status};
 
 fn session(source: &str) -> Session {
     let mut session = Session::new();
@@ -236,7 +236,7 @@ fn subdirectory_entry_and_local_package_override() {
 
 #[test]
 fn native_fontspec_selection_and_styles_in_memory_fs() {
-    let mut s = session(
+    let s = session(
         r"\documentclass{article}
 \usepackage{fontspec}
 \setmainfont{Latin Modern Roman}
@@ -269,7 +269,7 @@ Regular Roman text. \textbf{Bold Roman glyphs.} \textit{Italic Roman shapes.}
 
 #[test]
 fn native_font_missing_or_bad_selection_returns_explicit_error() {
-    let mut s = session(
+    let s = session(
         r"\documentclass{article}
 \usepackage{fontspec}
 \setmainfont{NonexistentPhantomFont12345}

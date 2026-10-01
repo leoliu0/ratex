@@ -440,7 +440,7 @@ impl Engine {
                     self.eqtb.int_params[IntParam::HangAfter.idx() as usize] as i64,
                 );
                 self.in_display_init = true;
-                self.par_primitive();
+                self.par_primitive(Token::from_cs(self.ids.par));
 
                 self.in_display_init = false;
                 lr_direction = self.display_direction_before(lr_key);
@@ -611,6 +611,23 @@ impl Engine {
             Some("Math formula deleted: Insufficient extension fonts")
         } else {
             None
+        }
+    }
+
+    /// tex.web §1047 insert_dollar_sign: let the inserted shift go through
+    /// ordinary dispatch; a nested group must close before the formula does.
+    pub(crate) fn insert_dollar_sign(&mut self, token: Token) {
+        self.push_token(token);
+        self.error("Missing $ inserted");
+        self.push_token(Token::char(3, b'$' as u32));
+    }
+
+    /// tex.web off_save: a math shift closes only a math-shift group.
+    pub(crate) fn close_math_shift(&mut self, token: Token) {
+        if self.eqtb.cur_group_type() == Some(crate::eqtb::LevelType::MathShift) {
+            self.exit_math();
+        } else {
+            self.off_save(token);
         }
     }
 

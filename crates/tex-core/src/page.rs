@@ -392,15 +392,11 @@ impl Engine {
         self.page_goal
     }
 
-    /// goal derived from `\vsize` alone (max_dimen when `\vsize <= 0`);
-    /// tex.web re-derives `page_goal := \vsize` at each page start
+    /// goal derived from `\vsize` alone; tex.web re-derives
+    /// `page_goal := \vsize` at each page start (a non-positive `\vsize`
+    /// gives a page that every box overfills)
     fn vsize_goal(&self) -> i64 {
-        let vs = self.eqtb.dim_params[DimParam::VSize.idx() as usize] as i64;
-        if vs <= 0 {
-            0x3FFF_FFFF // max_dimen: 16383.99998 pt
-        } else {
-            vs
-        }
+        self.eqtb.dim_params[DimParam::VSize.idx() as usize] as i64
     }
     fn max_depth(&self) -> i64 {
         self.eqtb.dim_params[DimParam::MaxDepth.idx() as usize] as i64

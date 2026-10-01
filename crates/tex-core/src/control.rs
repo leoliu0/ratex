@@ -256,7 +256,11 @@ impl Engine {
                     // for the \fnsymbol/\ast cases) without the replay.
                     Some(Equiv::MathCharDef(v)) => {
                         self.reject_assignment_prefixes(&format!("\\mathchar\"{v:X}"));
-                        self.append_mathchar(v as u16);
+                        if self.mode.is_m() {
+                            self.append_mathchar(v as u16);
+                        } else {
+                            self.insert_dollar_sign(Token::from_cs(id));
+                        }
                     }
                     Some(Equiv::CharTok(v)) => {
                         self.dispatch(Token(v));
@@ -319,7 +323,7 @@ impl Engine {
                 3 => {
                     // math shift
                     if self.mode.is_m() {
-                        self.exit_math();
+                        self.close_math_shift(t);
                     } else if self.mode.is_v() {
                         // tex.web §1090: math_shift in vertical mode starts a paragraph;
                         // the math_shift is put back on input so it executes AFTER \everypar.
@@ -334,7 +338,9 @@ impl Engine {
                 13 => self.active_char(scalar),
                 11 | 12 => self.text_character_token(t),
                 5 | 7 | 8 => {
-                    if cc == 7 {
+                    if (cc == 7 || cc == 8) && !self.mode.is_m() {
+                        self.insert_dollar_sign(t);
+                    } else if cc == 7 {
                         self.super_token(c);
                     } else if cc == 8 {
                         self.sub_token(c);
@@ -904,8 +910,6 @@ impl Engine {
                     if dp == DimParam::PageGoal {
                         self.page_goal = v as i64;
                         self.page_goal_set = true;
-                    } else if dp == DimParam::VSize && !self.page_box_seen {
-                        self.page_goal = if v <= 0 { 0x3FFF_FFFF } else { v as i64 };
                     }
                     self.eqtb.assign_dim_param(dp, v, g);
                 }
@@ -1020,8 +1024,6 @@ impl Engine {
                     if dp == DimParam::PageGoal {
                         self.page_goal = v as i64;
                         self.page_goal_set = true;
-                    } else if dp == DimParam::VSize && !self.page_box_seen {
-                        self.page_goal = if v <= 0 { 0x3FFF_FFFF } else { v as i64 };
                     }
                     self.eqtb.assign_dim_param(dp, v, g);
                 }
@@ -1894,6 +1896,50 @@ impl Engine {
         } else {
             self.off_save(self.cur_tok);
         }
+    }
+
+    /// tex.web §1046 `non_math(...)`: the commands that only make sense in
+    /// math mode (vertical and horizontal modes insert a `$` before them).
+    pub(crate) fn is_math_only(p: Prim) -> bool {
+        use Prim::*;
+        matches!(
+            p,
+            MathChar
+                | MathAccent
+                | Radical
+                | Overline
+                | Underline
+                | MathOrd
+                | MathOp
+                | MathBin
+                | MathRel
+                | MathOpen
+                | MathClose
+                | MathPunct
+                | MathInner
+                | Delimiter
+                | Above
+                | Over
+                | Atop
+                | OverWithDelims
+                | AtopWithDelims
+                | AboveWithDelims
+                | Left
+                | Right
+                | Middle
+                | NoLimits
+                | Limits
+                | DisplayLimits
+                | MathChoice
+                | DisplayStyle
+                | TextStyle
+                | ScriptStyle
+                | ScriptScriptStyle
+                | VCenter
+                | NonScript
+                | MSkip
+                | MKern
+        )
     }
 
     /// tex.web §1064 off_save: `token` closes a group that is not open (an

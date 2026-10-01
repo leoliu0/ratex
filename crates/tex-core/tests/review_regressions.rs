@@ -1574,3 +1574,73 @@ fn alignment_preamble_reads_pushback_from_before_halign() {
     );
     assert!(e.term.contains("[SAME]"), "{}", e.term);
 }
+
+#[test]
+fn vertical_unbox_closes_restricted_horizontal_groups_before_replaying() {
+    let e = run_lenient(&format!(
+        r"{PROBE_SETUP}
+\setbox0\vbox{{\hrule height1pt width2pt}}
+\setbox2\hbox{{\unvbox0}}
+\message{{[UNVBOX\the\wd2,\the\ht2,SOURCE\ifvoid0 V\else B\fi]}}
+\setbox0\vbox{{\hrule height1pt width2pt}}
+\setbox2\hbox{{\unvcopy0}}
+\message{{[UNVCOPY\the\wd2,\the\ht2,SOURCE\ifvoid0 V\else B\fi]}}
+\end"
+    ));
+    assert_eq!(e.error_count, 4, "{}", e.log);
+    let values = message_values(&e);
+    assert!(values.contains("[UNVBOX0.0pt,0.0pt,SOURCEV]"), "{}", e.term);
+    assert!(values.contains("[UNVCOPY0.0pt,0.0pt,SOURCEB]"), "{}", e.term);
+}
+
+#[test]
+fn paragraph_in_nested_math_recovers_the_group_before_the_formula() {
+    let cases = [
+        ("SCRIPT", r"aaa $x^{a\par b}$ ccc\par", "14.8789pt"),
+        ("BRACE", r"aaa $x{a\par b}$ ccc\par", "11.24998pt"),
+        ("SEMI", r"aaa $x\begingroup a\par b$ ccc\par", "11.24998pt"),
+        ("LEFT", r"aaa $x\left.a\par b$ ccc\par", "11.24998pt"),
+    ];
+    let mut source = format!(
+        r"{PROBE_SETUP}
+\count9=0 \delcode`.=0
+\def\endgroup{{\global\advance\count9 by1}}
+\def\right{{\global\advance\count9 by1}}
+"
+    );
+    for (marker, body, _) in cases {
+        source.push_str(&format!(
+            r"\setbox4\vbox{{{body}}}
+\message{{[{marker}\the\ht4,\the\dp4,GROUP\the\currentgrouplevel,CALLS\the\count9]}}
+"
+        ));
+    }
+    source.push_str("\\end");
+    let e = run_lenient(&source);
+    let values = message_values(&e);
+    for (marker, _, height) in cases {
+        assert!(
+            values.contains(&format!("[{marker}{height},0.0pt,GROUP0,CALLS0]")),
+            "{marker}: {}",
+            e.log
+        );
+    }
+}
+
+#[test]
+fn math_paragraph_recovery_replays_the_actual_primitive_alias() {
+    let e = run_lenient(&format!(
+        r"{PROBE_SETUP}
+\let\endgraf=\par
+\count9=0 \def\par{{\global\advance\count9 by1}}
+\setbox4\vbox{{aaa $x\endgraf}}
+\message{{[BOX\the\ht4,\the\dp4,GROUP\the\currentgrouplevel,CALLS\the\count9]}}
+\end"
+    ));
+    assert_eq!(e.error_count, 1, "{}", e.log);
+    assert!(
+        message_values(&e).contains("[BOX4.30554pt,0.0pt,GROUP0,CALLS0]"),
+        "{}",
+        e.term
+    );
+}

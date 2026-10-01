@@ -52,6 +52,10 @@ impl InspectionText {
 impl Engine {
     pub fn main_dispatch(&mut self, p: Prim, id: CsId) {
         use Prim::*;
+        if !self.mode.is_m() && Self::is_math_only(p) {
+            self.insert_dollar_sign(Token::from_cs(id));
+            return;
+        }
         match p {
             Relax | EndCsName => {}
             BeginGroup => self.begin_semi_simple(),
@@ -60,7 +64,7 @@ impl Engine {
             EGroup => self.end_group(),
             NoBoundary => self.no_boundary(),
 
-            Par => self.par_primitive(),
+            Par => self.par_primitive(Token::from_cs(id)),
             Indent => self.start_paragraph(true),
             NoIndent => self.start_paragraph(false),
             // pdftex.web start_par chr 2: \indent in vertical mode, nothing
@@ -100,10 +104,11 @@ impl Engine {
                     // execute in math mode. Recover as if a closing math shift
                     // had been inserted, then reprocess the untouched skip.
                     Mode::Math | Mode::DisplayMath => {
-                        self.push_token(Token::from_cs(id));
-                        self.error("Missing $ inserted.");
-                        self.exit_math();
+                        self.insert_dollar_sign(Token::from_cs(id));
                     }
+                    // tex.web head_for_vmode: restricted horizontal mode
+                    // cannot end a paragraph, so the group is closed
+                    Mode::RestrictedHorizontal => self.off_save(Token::from_cs(id)),
                     _ => {
                         let g = self.scan_vskip_kind(p);
                         self.append_v_glue(g);
@@ -113,18 +118,12 @@ impl Engine {
             NonScript => {
                 if self.mode.is_m() {
                     self.append_mlist_node(Node::NonScript);
-                } else {
-                    self.error("\\nonscript is only valid in math mode");
                 }
             }
             MSkip => {
                 let g = self.scan_glue(true);
                 if self.mode.is_m() {
                     self.append_mlist_node(Node::MuGlue(g));
-                } else {
-                    self.error(
-                        "\\mskip is only valid in math mode; use \\hskip or \\vskip for text spacing",
-                    );
                 }
             }
             Kern => {
@@ -142,8 +141,6 @@ impl Engine {
                 let d = self.scan_dimen(true, false);
                 if self.mode.is_m() {
                     self.append_mlist_node(Node::MathKern(d, 0));
-                } else {
-                    self.error("\\mkern is only valid in math mode; use \\kern for text spacing");
                 }
             }
             // etex.ch `hmode+valign` with cur_chr>0; vmode+valign starts a
@@ -155,9 +152,7 @@ impl Engine {
                     self.start_paragraph(true);
                 }
                 Mode::Math | Mode::DisplayMath => {
-                    self.push_token(Token::from_cs(id));
-                    self.error("Missing $ inserted.");
-                    self.exit_math();
+                    self.insert_dollar_sign(Token::from_cs(id));
                 }
                 Mode::Horizontal | Mode::RestrictedHorizontal => {
                     if self.eqtb.int_params[IntParam::TeXXeTEnabled.idx() as usize] > 0 {
@@ -201,6 +196,12 @@ impl Engine {
                 if self.mode == Mode::Horizontal {
                     self.push_token(Token::from_cs(id));
                     self.push_token(Token::from_cs(self.ids.par));
+                    return;
+                }
+                if self.mode == Mode::RestrictedHorizontal {
+                    // tex.web head_for_vmode: only leaders may hold a rule
+                    // in restricted horizontal mode
+                    self.error("You can't use `\\hrule' here except with leaders");
                     return;
                 }
                 self.make_rule(true);
@@ -281,6 +282,10 @@ impl Engine {
                     // then reprocess the vertical unbox in vertical mode.
                     self.push_token(Token::from_cs(id));
                     self.push_token(Token::from_cs(self.ids.par));
+                } else if self.mode == Mode::RestrictedHorizontal {
+                    // head_for_vmode closes an inner group before replaying
+                    // the unbox; its register number remains unscanned.
+                    self.off_save(Token::from_cs(id));
                 } else {
                     self.do_unbox(true, false);
                 }
@@ -298,6 +303,8 @@ impl Engine {
                 if self.mode == Mode::Horizontal {
                     self.push_token(Token::from_cs(id));
                     self.push_token(Token::from_cs(self.ids.par));
+                } else if self.mode == Mode::RestrictedHorizontal {
+                    self.off_save(Token::from_cs(id));
                 } else {
                     self.do_unbox(true, true);
                 }
@@ -492,7 +499,7 @@ impl Engine {
                     // vertical mode. Dropping it made ordinary `text\end`
                     // indistinguishable from an illegal raw EOF.
                     self.push_token(Token::from_cs(id));
-                    self.par_primitive();
+                    self.par_primitive(Token::from_cs(self.ids.par));
                     return;
                 }
                 if self.mode.is_v() {
@@ -793,8 +800,6 @@ impl Engine {
                 };
                 if self.mode.is_m() {
                     self.append_mathchar_at(v, command_source);
-                } else {
-                    self.error("You can't use `\\mathchar' here");
                 }
             }
             MathAccent => {
@@ -813,8 +818,6 @@ impl Engine {
                 };
                 if self.mode.is_m() {
                     self.do_math_accent_at(v, command_source);
-                } else {
-                    self.error("You can't use `\\mathaccent' here");
                 }
             }
             Radical => {
@@ -833,8 +836,6 @@ impl Engine {
                 };
                 if self.mode.is_m() {
                     self.do_radical_at(v, command_source);
-                } else {
-                    self.error("You can't use `\\radical' here");
                 }
             }
             EqNo | LeqNo => {
@@ -848,15 +849,11 @@ impl Engine {
             Overline => {
                 if self.mode.is_m() {
                     self.do_overline(false);
-                } else {
-                    self.error("You can't use `\\overline' here");
                 }
             }
             Underline => {
                 if self.mode.is_m() {
                     self.do_overline(true);
-                } else {
-                    self.error("You can't use `\\underline' here");
                 }
             }
             Delimiter => {
@@ -871,8 +868,6 @@ impl Engine {
             Above | Over | Atop | OverWithDelims | AtopWithDelims | AboveWithDelims => {
                 if self.mode.is_m() {
                     self.do_fraction(p);
-                } else {
-                    self.error("You can't use a fraction here");
                 }
             }
             TextFont | ScriptFont | ScriptScriptFont => {
@@ -901,8 +896,6 @@ impl Engine {
                     let command_source = self.current_token_source_mark();
                     let v = self.scan_delim_int();
                     self.push_math_group_at(v, command_source);
-                } else {
-                    self.error("Missing $ inserted (\\left)");
                 }
             }
             Right => {
@@ -912,8 +905,6 @@ impl Engine {
                     self.right_delim = Some(v);
                     // ends the \left...\right group
                     self.pop_math_group_delimited_at(v, command_source);
-                } else {
-                    self.error("Missing $ inserted (\\right)");
                 }
             }
             Middle => {
@@ -937,8 +928,6 @@ impl Engine {
                         Limits => Some(1),
                         _ => Some(2),
                     };
-                } else {
-                    self.error("You can't use \\limits here");
                 }
             }
             MathChoice => {
@@ -946,8 +935,6 @@ impl Engine {
                     // tex.web scans the four style groups immediately; each
                     // body is scanned as a math list and attached as ChoiceAlt
                     self.begin_mathchoice();
-                } else {
-                    self.error("You can't use \\mathchoice here");
                 }
             }
             DisplayStyle | TextStyle | ScriptStyle | ScriptScriptStyle => {
@@ -999,6 +986,10 @@ impl Engine {
                 if self.mode == Mode::Horizontal {
                     self.push_token(Token::from_cs(id));
                     self.push_token(Token::from_cs(self.ids.par));
+                    return;
+                }
+                if self.mode == Mode::RestrictedHorizontal {
+                    self.off_save(Token::from_cs(id));
                     return;
                 }
                 self.begin_halign();

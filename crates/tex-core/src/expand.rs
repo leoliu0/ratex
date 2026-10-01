@@ -1097,6 +1097,7 @@ impl Engine {
                 | LuaFunction
                 | LuaBytecode
                 | Input
+                | EndInput
                 | Expanded
                 | UnExpanded
                 | JobName
@@ -1155,6 +1156,7 @@ impl Engine {
                 | PdfFontName
                 | PdfFontObjNum
                 | PdfXFormName
+                | PdfXImageBBox
                 | LeftMarginKern
                 | RightMarginKern
                 | UcharCat
@@ -1628,6 +1630,10 @@ impl Engine {
                 self.do_input();
                 None
             }
+            EndInput => {
+                self.do_endinput();
+                None
+            }
             NumExpr => {
                 let v = self.scan_expr_num();
                 self.exp_string(v.to_string().as_bytes());
@@ -1700,8 +1706,15 @@ impl Engine {
                 }
                 None
             }
+            Prim::PdfXImageBBox => {
+                if let Some(value) = self.pdf_ximage_bbox() {
+                    let text = self.scaled_to_string(value);
+                    self.exp_string(text.as_bytes());
+                }
+                None
+            }
             Prim::PdfBanner => {
-                self.exp_string(b"This is pdfTeX, Version 3.141592653-2.6-1.40.29 (TeX Live 2026/Arch Linux) kpathsea version 6.4.2");
+                self.exp_string(crate::pdftex::PDFTEX_BANNER.as_bytes());
                 None
             }
             Prim::LeftMarginKern | Prim::RightMarginKern => {

@@ -33,6 +33,9 @@ impl Project {
         self.texmk_with(&[])
     }
 
+    /// FORCE_SOURCE_DATE=1 makes SOURCE_DATE_EPOCH fix `\time` as well;
+    /// otherwise the engine keys its dependency cache by the live minute and
+    /// a warm build that starts in the next minute cannot hit.
     fn texmk_with(&self, options: &[&str]) -> Output {
         let tool_dir = Path::new(env!("CARGO_BIN_EXE_pdflatex")).parent().unwrap();
         Command::new(env!("CARGO_BIN_EXE_texmk"))
@@ -44,6 +47,7 @@ impl Project {
             .env("TEXMK_LIB", tool_dir)
             .env("TEX_RS_CACHE_DIR", self.0.join("cache"))
             .env("SOURCE_DATE_EPOCH", "1700000000")
+            .env("FORCE_SOURCE_DATE", "1")
             .output()
             .unwrap()
     }

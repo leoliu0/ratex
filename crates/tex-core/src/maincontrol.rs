@@ -60,7 +60,7 @@ impl Engine {
             EGroup => self.end_group(),
             NoBoundary => self.no_boundary(),
 
-            Par => self.par_primitive(),
+            Par => self.par_primitive(Token::from_cs(id)),
             Indent => self.start_paragraph(true),
             NoIndent => self.start_paragraph(false),
             // pdftex.web start_par chr 2: \indent in vertical mode, nothing
@@ -100,9 +100,7 @@ impl Engine {
                     // execute in math mode. Recover as if a closing math shift
                     // had been inserted, then reprocess the untouched skip.
                     Mode::Math | Mode::DisplayMath => {
-                        self.push_token(Token::from_cs(id));
-                        self.error("Missing $ inserted.");
-                        self.exit_math();
+                        self.insert_dollar_sign(Token::from_cs(id));
                     }
                     _ => {
                         let g = self.scan_vskip_kind(p);
@@ -155,9 +153,7 @@ impl Engine {
                     self.start_paragraph(true);
                 }
                 Mode::Math | Mode::DisplayMath => {
-                    self.push_token(Token::from_cs(id));
-                    self.error("Missing $ inserted.");
-                    self.exit_math();
+                    self.insert_dollar_sign(Token::from_cs(id));
                 }
                 Mode::Horizontal | Mode::RestrictedHorizontal => {
                     if self.eqtb.int_params[IntParam::TeXXeTEnabled.idx() as usize] > 0 {
@@ -288,6 +284,10 @@ impl Engine {
                     // then reprocess the vertical unbox in vertical mode.
                     self.push_token(Token::from_cs(id));
                     self.push_token(Token::from_cs(self.ids.par));
+                } else if self.mode == Mode::RestrictedHorizontal {
+                    // head_for_vmode closes an inner group before replaying
+                    // the unbox; its register number remains unscanned.
+                    self.off_save(Token::from_cs(id));
                 } else {
                     self.do_unbox(true, false);
                 }
@@ -305,6 +305,8 @@ impl Engine {
                 if self.mode == Mode::Horizontal {
                     self.push_token(Token::from_cs(id));
                     self.push_token(Token::from_cs(self.ids.par));
+                } else if self.mode == Mode::RestrictedHorizontal {
+                    self.off_save(Token::from_cs(id));
                 } else {
                     self.do_unbox(true, true);
                 }
@@ -492,7 +494,6 @@ impl Engine {
                 self.push_tokens(toks);
             }
             Input => self.do_input(),
-            EndInput => self.do_endinput(),
             Patterns | Hyphenation => self.do_hyphenation_words(p == Patterns),
             ScanTokens => {
                 let _ = self.expand_prim(ScanTokens, id);
@@ -504,6 +505,15 @@ impl Engine {
                 } else {
                     match crate::format::check_dumpable(self) {
                         Ok(()) => {
+                            // tex.web §1328 `format_ident`
+                            let int = |p: crate::prim::IntParam| self.int_param_value(p);
+                            self.format_ident = format!(
+                                " (preloaded format={} {}.{}.{})",
+                                self.job_name,
+                                int(crate::prim::IntParam::Year),
+                                int(crate::prim::IntParam::Month),
+                                int(crate::prim::IntParam::Day)
+                            );
                             // dumpdata.c store_fmt_file: pre_dump runs first.
                             self.run_lua_callback("pre_dump");
                             self.format_done = true;
@@ -519,7 +529,7 @@ impl Engine {
                     // vertical mode. Dropping it made ordinary `text\end`
                     // indistinguishable from an illegal raw EOF.
                     self.push_token(Token::from_cs(id));
-                    self.par_primitive();
+                    self.par_primitive(Token::from_cs(self.ids.par));
                     return;
                 }
                 if self.mode.is_v() {
@@ -588,7 +598,7 @@ impl Engine {
                             // pdfTeX writes an \immediate form or image
                             // object at once
                             Prim::PdfXForm => {
-                                self.do_pdfxform();
+                                self.do_pdfxform(true);
                                 let form = self.pdf_last_xform;
                                 self.write_form_procset(form);
                                 return;
@@ -1147,14 +1157,11 @@ impl Engine {
                 ));
             }
             PdfObj => self.do_pdfobj(),
-            PdfXForm => self.do_pdfxform(),
+            PdfXForm => self.do_pdfxform(false),
             PdfMapFile => self.do_pdfmapfile(),
             PdfMapLine => self.do_pdfmapline(),
             PdfGlyphToUnicode => self.do_pdfglyphtounicode(),
             PdfXImage => self.do_pdfximage(),
-            PdfXImageBBox => {
-                let _ = self.scan_pdf_ximage_bbox();
-            }
             PdfLastObj | PdfLastXForm | PdfLastXImage | PdfLastXImagePages | PdfLastLink
             | PdfLastAnnot => {}
             // object references take an object number (typically
@@ -1225,6 +1232,7 @@ impl Engine {
             }
             PdfResetTimer => self.timer_start = crate::clock::now_micros(),
             PdfTrailer => self.do_pdftrailer(),
+            PdfTrailerId => self.do_pdftrailerid(),
             PdfIncludeChars => self.do_pdfincludechars(),
             PdfCopyFont => self.do_pdfcopyfont(),
             PdfSpaceFont => self.do_pdfspacefont(),
@@ -1732,7 +1740,7 @@ impl Engine {
 
     /// \pdfxform [attr{..}] [resources{..}] <box register number>: freeze a
     /// box register into an XForm XObject; \pdflastxform reports the number.
-    pub fn do_pdfxform(&mut self) {
+    pub fn do_pdfxform(&mut self, immediate: bool) {
         let mut attr = String::new();
         let mut resources = String::new();
         loop {
@@ -1747,14 +1755,32 @@ impl Engine {
         let box_reg = self.scan_reg_num();
         let obj = self.alloc_pdf_obj();
         self.pdf_last_xform = obj;
-        // \pdfxformname: forms are painted as `/Fm<object number> Do`
-        self.pdf_doc.form_names.insert(obj, obj);
+        // \pdfxformname: forms are painted as `/Fm<n> Do`, n = pdf_xform_count
+        self.pdf_xform_count += 1;
+        self.pdf_doc.form_names.insert(obj, self.pdf_xform_count);
         let b = self.eqtb.boxed.get(box_reg as usize).cloned().flatten();
-        let (w, h, d) = match &b {
+        let size = match &b {
             Some(Node::Box { w, h, d, .. }) => (*w, *h, *d),
             _ => (0, 0, 0),
         };
-        self.pdf_xforms.insert(obj, (w, h, d));
+        self.pdf_xforms.insert(obj, size);
+        self.pdf_pending_forms.insert(
+            obj,
+            crate::engine::PendingForm { node: b, size, attr, resources },
+        );
+        if immediate {
+            self.ship_pdf_form(obj);
+        }
+    }
+
+    /// pdftex.web `pdf_ship_out(obj_xform_box, false)`: write a declared
+    /// `\pdfxform`. A form that was already shipped is left alone.
+    pub(crate) fn ship_pdf_form(&mut self, obj: i32) {
+        let Some(crate::engine::PendingForm { node: b, size: (w, h, d), attr, resources }) =
+            self.pdf_pending_forms.remove(&obj)
+        else {
+            return;
+        };
         let w_bp = crate::pdfrender::sp_to_bp(w as i64);
         let h_bp = crate::pdfrender::sp_to_bp(h as i64);
         let d_bp = crate::pdfrender::sp_to_bp(d as i64);
@@ -1763,25 +1789,28 @@ impl Engine {
         } else {
             format!(" {}", attr.trim())
         };
-        let (content, fonts, image_procset, ximages) = match &b {
+        let (content, fonts, image_procset, xforms, ximages) = match &b {
             Some(node) => {
                 let form = self.render_form_box(node, w, h, d);
-                (form.content, form.fonts, form.image_procset, form.ximages)
+                (form.content, form.fonts, form.image_procset, form.xforms, form.ximages)
             }
-            None => (Vec::new(), Vec::new(), 0, Vec::new()),
+            None => (Vec::new(), Vec::new(), 0, Vec::new(), Vec::new()),
         };
         let text = !fonts.is_empty();
         let font_object = self.alloc_pdf_obj();
         self.pdf_doc.objects.push((font_object, b"<< >>".to_vec()));
         self.pdf_doc.form_fonts.push((font_object, fonts));
+        // pdftex.web "Generate XObject resources": the forms, then the
+        // images, this form painted
+        let prefix = &self.pdf_doc.resname_prefix;
         let mut xobj_entries = Vec::new();
-        for (obj_num, bytes) in &self.pdf_doc.objects {
-            if bytes.starts_with(b"<< /Type /XObject /Subtype /Form") {
-                xobj_entries.push(format!("/Fm{} {} 0 R", obj_num, obj_num));
-            }
+        for obj_num in &xforms {
+            let name = self.pdf_doc.form_names.get(obj_num).copied().unwrap_or(*obj_num);
+            xobj_entries.push(format!("/Fm{name}{prefix} {obj_num} 0 R"));
         }
         for obj_num in &ximages {
-            xobj_entries.push(format!("/Im{} {} 0 R", obj_num, obj_num));
+            let name = self.pdf_doc.image_names.get(obj_num).copied().unwrap_or(*obj_num);
+            xobj_entries.push(format!("/Im{name}{prefix} {obj_num} 0 R"));
         }
         let xobj_res = if xobj_entries.is_empty() || resources.contains("/XObject") {
             String::new()
@@ -1962,6 +1991,9 @@ impl Engine {
             || bytes.starts_with(b"%!")
             || bytes.starts_with(&[0xC5, 0xD0, 0xD3, 0xC6]);
         let obj = self.alloc_pdf_obj();
+        // \pdfximage: `/Im<n>` takes n = pdf_ximage_count
+        self.pdf_ximage_count += 1;
+        self.pdf_doc.image_names.insert(obj, self.pdf_ximage_count);
         self.pdf_backend.last_ximage_colordepth = crate::pdftex::image_color_depth(&bytes);
         let mut info = crate::engine::PdfImageInfo {
             path: path.to_string_lossy().into_owned(),
@@ -2016,17 +2048,29 @@ impl Engine {
                 ptex_underscore: int(self, IntParam::PdfPtexUseUnderscore) != 0,
             };
             let included = {
-                let font_loader = &mut self.font_loader;
-                let base14_fonts = &mut self.pdf_doc.imported_base14_fonts;
-                let next_object = &mut self.pdf_next_obj;
-                let mut resolve_type1 = |name: &str| font_loader.read_type1_dependency(name);
-                crate::pdf_images::include_pdf_page(
-                    pdf_bytes,
-                    &options,
-                    next_object,
-                    base14_fonts,
-                    &mut resolve_type1,
-                )
+                // pdftoepdf.cc find_add_document: one source per file
+                let doc = &mut self.pdf_doc;
+                let mut fonts = EngineFontLookup {
+                    loader: &mut self.font_loader,
+                    programs: &mut doc.imported_programs,
+                    replace: !fixed.inclusion_copy_font,
+                };
+                let mut host = crate::pdf_images::PdfImportHost {
+                    next_object: &mut self.pdf_next_obj,
+                    base14_fonts: &mut doc.imported_base14_fonts,
+                    fonts: &mut fonts,
+                    imported_fonts: &mut doc.imported_fonts,
+                    font_init_order: self.pdf_backend.initialized_fonts(),
+                };
+                let source = match doc.pdf_sources.entry(path.to_string_lossy().into_owned()) {
+                    std::collections::hash_map::Entry::Occupied(entry) => Ok(entry.into_mut()),
+                    std::collections::hash_map::Entry::Vacant(entry) => {
+                        crate::pdf_images::PdfSource::open(pdf_bytes).map(|source| entry.insert(source))
+                    }
+                };
+                source.and_then(|source| {
+                    crate::pdf_images::include_pdf_page(source, &options, &mut host)
+                })
             };
             let included = match included {
                 Ok(included) => included,
@@ -2454,6 +2498,47 @@ fn group_kind_name(kind: LevelType) -> &'static str {
 
 fn id_cs_is(e: &Engine, id: CsId, name: &[u8]) -> bool {
     e.cs.lookup(name) == Some(id)
+}
+
+/// The font map and font programs an included PDF's fonts are looked up
+/// in (`\pdfinclusioncopyfonts` = 0 replaces them by the map's programs).
+struct EngineFontLookup<'a> {
+    loader: &'a mut crate::fontload::FontLoader,
+    /// Parsed replacement programs by file name (None: file not found).
+    programs: &'a mut std::collections::HashMap<String, Option<std::rc::Rc<crate::pdffile::Type1Source>>>,
+    replace: bool,
+}
+
+impl crate::pdf_images::FontLookup for EngineFontLookup<'_> {
+    fn replacement(&mut self, ps_name: &str) -> Option<crate::pdf_images::FontReplacement> {
+        if !self.replace {
+            return None;
+        }
+        self.loader.ensure_map();
+        let entry = self.loader.map.replacement_for(ps_name)?;
+        let ff_name = entry.pfb.clone()?;
+        if !self.programs.contains_key(&ff_name) {
+            let program = self
+                .loader
+                .read_program_bytes(&ff_name)
+                .map(|bytes| std::rc::Rc::new(crate::pdffile::Type1Source::new(&bytes)));
+            self.programs.insert(ff_name.clone(), program);
+        }
+        // mapfile.c fm_valid_for_font_replacement: the font file must exist
+        let program = self.programs[&ff_name].clone()?;
+        Some(crate::pdf_images::FontReplacement {
+            slant: entry.slant_millis(),
+            extend: entry.extend_millis(),
+            base_font: entry.fontname,
+            subsettable: !entry.full_download,
+            ff_name,
+            program,
+        })
+    }
+
+    fn type1_program(&mut self, file: &str) -> Option<Vec<u8>> {
+        self.loader.read_type1_dependency(file)
+    }
 }
 
 #[cfg(test)]

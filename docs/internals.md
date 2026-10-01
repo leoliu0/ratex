@@ -23,6 +23,9 @@ Typesetting algorithms are documented in the module comments of
 | `format.rs` | `.fmt` dump/load wire format |
 | `node_arena.rs` | generation-checked node storage |
 | `pdffile.rs`, `pdf_fonts.rs` | PDF serialization, Type 1 parsing and embedding |
+| `pdftex.rs`, `pdfrender.rs` | pdfTeX backend state: resource names (`/F`, `/Fm`, `/Im` and the `\pdfuniqueresname` tag), form shipping on first paint, query primitives, Info/trailer inputs |
+| `writet1.rs` | writet1.c port: Type 1 FontFile cleartext/`/Encoding`/eexec/Subrs rewrite, `/Length1-3` |
+| `pdf_images.rs`, `pdf_encodings.rs` | pdftoepdf port: one shared `PdfSource` per included file; with `\pdfinclusioncopyfonts=0` Type 1/Type1C fonts the font map knows are replaced by the map's program (xpdf base-encoding tables) |
 | `diagnostics.rs` | structured diagnostics and their output bounds |
 
 ## Executables and dispatch
@@ -142,6 +145,25 @@ The embedded packages and their pinned versions are listed in
   parity, `--mode single-pass` is a diagnostic only.
 - `scripts/bench_cold.py`: fresh-process timing harness; see
   [PERFORMANCE.md](../PERFORMANCE.md).
+
+Tests that run the built binaries must stay correct when `cargo test` runs in
+parallel or several times at once, which share the temp directory and the
+user's `HOME`:
+
+- Name temp files and directories with the process id (plus a per-test serial
+  or nonce), never with a fixed name.
+- A test that expects an engine cache hit sets `SOURCE_DATE_EPOCH` together
+  with `FORCE_SOURCE_DATE=1` (without it the cache key holds the live minute
+  and a run that starts in the next minute misses), and gives the process a
+  private `TEX_RS_CACHE_DIR` and `HOME` (every record snapshots the unindexed
+  `~/.texlive/texmf-var` tree, which any TeX Live run extends through
+  `mktextfm`).
+- Executables that the test or texmk will run (fake engines, copied binaries)
+  are created with `install_executable`/`copy_executable` from
+  `crates/tex-cli/tests/support`, not with `std::fs::write` plus `chmod`. A
+  file this process holds open for writing is duplicated into children that
+  other test threads fork, and executing it before they `exec` fails with
+  ETXTBSY ("Text file busy").
 
 ## BibTeX (`crates/tex-bibtex`)
 

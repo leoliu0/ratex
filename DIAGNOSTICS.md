@@ -60,6 +60,10 @@ Recoverable math errors preserve the following input: an invalid delimiter
 becomes `.` and its offending token is read again; a display closed with only
 one `$` reports an error and resumes the paragraph. An incompatible unbox
 reports an error without consuming the box register.
+Nested math groups close before the formula does; recovery then replays the
+original command token, including aliases such as `\endgraf`. A vertical unbox
+in restricted horizontal mode closes the inner group before re-reading the
+command and its untouched register number.
 
 Inspection primitives such as `\show`, `\showthe`, `\showtokens`, `\showbox`,
 `\showlists`, `\showgroups`, and `\showifs` use the same structured, bounded

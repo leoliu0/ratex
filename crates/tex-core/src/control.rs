@@ -329,7 +329,7 @@ impl Engine {
                 3 => {
                     // math shift
                     if self.mode.is_m() {
-                        self.exit_math();
+                        self.close_math_shift(t);
                     } else if self.mode.is_v() {
                         // tex.web §1090: math_shift in vertical mode starts a paragraph;
                         // the math_shift is put back on input so it executes AFTER \everypar.
@@ -1939,23 +1939,54 @@ impl Engine {
         self.push_group_level(crate::eqtb::LevelType::SemiSimple);
     }
     pub fn end_semi_simple(&mut self) {
-        match self.eqtb.cur_group_type() {
-            Some(crate::eqtb::LevelType::SemiSimple) => {
-                self.ss_trace.pop();
-                let _ = self.pop_group();
+        if self.eqtb.cur_group_type() == Some(LevelType::SemiSimple) {
+            self.ss_trace.pop();
+            let _ = self.pop_group();
+        } else {
+            self.off_save(self.cur_tok);
+        }
+    }
+
+    /// tex.web §1064 off_save: replay the original token only after the
+    /// current group's closer. At bottom level, discard the extra token.
+    pub(crate) fn off_save(&mut self, token: Token) {
+        let Some(group) = self.eqtb.cur_group_type() else {
+            if token.is_cs()
+                && matches!(
+                    self.eqtb.resolve(token.cs_id()),
+                    Some(Equiv::Prim(crate::prim::Prim::EndGroup))
+                )
+            {
+                self.error("Extra \\endgroup");
+            } else {
+                let name = self.tokens_to_string(&[token]);
+                self.error(&format!("Extra {}", name.trim_end()));
             }
-            Some(crate::eqtb::LevelType::Simple) => {
-                self.error("Extra \\endgroup, or missing }");
+            return;
+        };
+        self.push_token(token);
+        let shown = match group {
+            LevelType::SemiSimple => {
+                let id = self.primitive_cs(b"endgroup").expect("endgroup primitive");
+                self.push_token(Token::from_cs(id));
+                "\\endgroup"
+            }
+            LevelType::MathShift => {
+                self.push_token(Token::char(3, u32::from(b'$')));
+                "$"
+            }
+            LevelType::MathLeft => {
+                self.push_token(Token::other(b'.'));
+                let id = self.primitive_cs(b"right").expect("right primitive");
+                self.push_token(Token::from_cs(id));
+                "\\right."
             }
             _ => {
-                if self.eqtb.save_stack.is_empty() {
-                    self.error("Too many \\endgroups");
-                } else {
-                    // mismatch: still pop to keep the save stack moving
-                    let _ = self.pop_group();
-                }
+                self.push_token(Token::char(2, u32::from(b'}')));
+                "}"
             }
-        }
+        };
+        self.error(&format!("Missing {shown} inserted"));
     }
 }
 

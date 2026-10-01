@@ -1299,7 +1299,7 @@ impl Engine {
                     _ => 11,
                 },
             );
-            self.par_primitive();
+            self.par_primitive(Token::from_cs(self.ids.par));
             self.lua_par_group = saved;
         }
         let target = self.box_targets.pop().flatten();
@@ -1557,7 +1557,9 @@ impl Engine {
         // (the box stays in place). Math mode never opens boxes.
         let compatible = match self.eqtb.boxed.get(n as usize) {
             Some(Some(crate::boxes::Node::Box { kind, .. })) => {
-                !self.mode.is_m() && (*kind != crate::boxes::HBOX) == want_v
+                !self.mode.is_m()
+                    && !(want_v && self.mode.is_h())
+                    && (*kind != crate::boxes::HBOX) == want_v
             }
             Some(Some(_)) => false,
             _ => return,
@@ -2566,7 +2568,7 @@ impl Engine {
     }
 
     // ---------- paragraphs ----------
-    pub fn par_primitive(&mut self) {
+    pub fn par_primitive(&mut self, token: Token) {
         // tex.web: between alignment rows (\cr .. next u part) a \par token
         // (e.g. from a blank line before \hline) must not disturb the align
         // state — the interrow phase is idle and the par is a no-op.
@@ -2586,14 +2588,9 @@ impl Engine {
             Mode::InternalVertical => {
                 self.resume_after_display = false;
             }
-            // tex.web §1047 insert_dollar_sign (mmode+par_end): back up the
-            // \par, report the missing $, and close the formula as if the
-            // $ had been typed; the \par is then read again.
-            Mode::Math | Mode::DisplayMath => {
-                self.push_token(Token::from_cs(self.ids.par));
-                self.error("Missing $ inserted");
-                self.exit_math();
-            }
+            // tex.web §1047: replay the actual par_end token after an inserted
+            // math shift has closed any intervening math groups.
+            Mode::Math | Mode::DisplayMath => self.insert_dollar_sign(token),
             // tex.web §21179 end_graf: `if mode = hmode` — in restricted hmode (-hmode),
             // \par does not end a paragraph; it is a no-op.
             Mode::RestrictedHorizontal => {}

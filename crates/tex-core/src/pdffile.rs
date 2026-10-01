@@ -47,591 +47,10 @@ fn set_font_usage(font: &mut EmbedFont, used_chars: [u64; 4]) {
     font.used_chars = used_chars;
 }
 
-fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    haystack
-        .windows(needle.len())
-        .position(|part| part == needle)
-}
-
-pub(crate) fn eexec_decrypt(cipher: &[u8]) -> Vec<u8> {
-    let mut state = 55_665_u16;
-    cipher
-        .iter()
-        .map(|&byte| {
-            let plain = byte ^ (state >> 8) as u8;
-            state = (byte as u16)
-                .wrapping_add(state)
-                .wrapping_mul(52_845)
-                .wrapping_add(22_719);
-            plain
-        })
-        .collect()
-}
-
-fn eexec_encrypt(plain: &[u8]) -> Vec<u8> {
-    let mut state = 55_665_u16;
-    plain
-        .iter()
-        .map(|&byte| {
-            let cipher = byte ^ (state >> 8) as u8;
-            state = (cipher as u16)
-                .wrapping_add(state)
-                .wrapping_mul(52_845)
-                .wrapping_add(22_719);
-            cipher
-        })
-        .collect()
-}
-
-fn skip_space(bytes: &[u8], mut at: usize) -> usize {
-    while at < bytes.len() && bytes[at].is_ascii_whitespace() {
-        at += 1;
-    }
-    at
-}
-
-fn token_end(bytes: &[u8], mut at: usize) -> usize {
-    while at < bytes.len() && !bytes[at].is_ascii_whitespace() {
-        at += 1;
-    }
-    at
-}
-
-fn ps_int_after(bytes: &[u8], key: &[u8]) -> Option<i32> {
-    let mut at = find_bytes(bytes, key)? + key.len();
-    at = skip_space(bytes, at);
-    let end = token_end(bytes, at);
-    std::str::from_utf8(&bytes[at..end]).ok()?.parse().ok()
-}
-
-fn charstring_decrypt(cipher: &[u8]) -> Vec<u8> {
-    let mut state = 4_330_u16;
-    cipher
-        .iter()
-        .map(|&byte| {
-            let plain = byte ^ (state >> 8) as u8;
-            state = (byte as u16)
-                .wrapping_add(state)
-                .wrapping_mul(52_845)
-                .wrapping_add(22_719);
-            plain
-        })
-        .collect()
-}
-
+/// `StandardEncoding`'s glyph name for `code` (writet1.c `standard_glyph_names`).
 pub(crate) fn standard_encoding_name(code: i32) -> Option<&'static str> {
-    const DIGITS: [&str; 10] = [
-        "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine",
-    ];
-    const UPPER: [&str; 26] = [
-        "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R",
-        "S", "T", "U", "V", "W", "X", "Y", "Z",
-    ];
-    const LOWER: [&str; 26] = [
-        "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p", "q", "r",
-        "s", "t", "u", "v", "w", "x", "y", "z",
-    ];
-    match code {
-        32 => Some("space"),
-        33 => Some("exclam"),
-        34 => Some("quotedbl"),
-        35 => Some("numbersign"),
-        36 => Some("dollar"),
-        37 => Some("percent"),
-        38 => Some("ampersand"),
-        39 => Some("quoteright"),
-        40 => Some("parenleft"),
-        41 => Some("parenright"),
-        42 => Some("asterisk"),
-        43 => Some("plus"),
-        44 => Some("comma"),
-        45 => Some("hyphen"),
-        46 => Some("period"),
-        47 => Some("slash"),
-        48..=57 => Some(DIGITS[(code - 48) as usize]),
-        58 => Some("colon"),
-        59 => Some("semicolon"),
-        60 => Some("less"),
-        61 => Some("equal"),
-        62 => Some("greater"),
-        63 => Some("question"),
-        64 => Some("at"),
-        65..=90 => Some(UPPER[(code - 65) as usize]),
-        91 => Some("bracketleft"),
-        92 => Some("backslash"),
-        93 => Some("bracketright"),
-        94 => Some("asciicircum"),
-        95 => Some("underscore"),
-        96 => Some("quoteleft"),
-        97..=122 => Some(LOWER[(code - 97) as usize]),
-        123 => Some("braceleft"),
-        124 => Some("bar"),
-        125 => Some("braceright"),
-        126 => Some("asciitilde"),
-        161 => Some("exclamdown"),
-        162 => Some("cent"),
-        163 => Some("sterling"),
-        164 => Some("fraction"),
-        165 => Some("yen"),
-        166 => Some("florin"),
-        167 => Some("section"),
-        168 => Some("currency"),
-        169 => Some("quotesingle"),
-        170 => Some("quotedblleft"),
-        171 => Some("guillemotleft"),
-        172 => Some("guilsinglleft"),
-        173 => Some("guilsinglright"),
-        174 => Some("fi"),
-        175 => Some("fl"),
-        177 => Some("endash"),
-        178 => Some("dagger"),
-        179 => Some("daggerdbl"),
-        180 => Some("periodcentered"),
-        182 => Some("paragraph"),
-        183 => Some("bullet"),
-        184 => Some("quotesinglbase"),
-        185 => Some("quotedblbase"),
-        186 => Some("quotedblright"),
-        187 => Some("guillemotright"),
-        188 => Some("ellipsis"),
-        189 => Some("perthousand"),
-        191 => Some("questiondown"),
-        193 => Some("grave"),
-        194 => Some("acute"),
-        195 => Some("circumflex"),
-        196 => Some("tilde"),
-        197 => Some("macron"),
-        198 => Some("breve"),
-        199 => Some("dotaccent"),
-        200 => Some("dieresis"),
-        202 => Some("ring"),
-        203 => Some("cedilla"),
-        205 => Some("hungarumlaut"),
-        206 => Some("ogonek"),
-        207 => Some("caron"),
-        208 => Some("emdash"),
-        225 => Some("AE"),
-        227 => Some("ordfeminine"),
-        232 => Some("Lslash"),
-        233 => Some("Oslash"),
-        234 => Some("OE"),
-        235 => Some("ordmasculine"),
-        241 => Some("ae"),
-        245 => Some("dotlessi"),
-        248 => Some("lslash"),
-        249 => Some("oslash"),
-        250 => Some("oe"),
-        251 => Some("germandbls"),
-        _ => None,
-    }
-}
-
-fn charstring_number(bytes: &[u8], at: &mut usize) -> Option<i32> {
-    let byte = *bytes.get(*at)?;
-    *at += 1;
-    match byte {
-        32..=246 => Some(byte as i32 - 139),
-        247..=250 => {
-            let next = *bytes.get(*at)? as i32;
-            *at += 1;
-            Some((byte as i32 - 247) * 256 + next + 108)
-        }
-        251..=254 => {
-            let next = *bytes.get(*at)? as i32;
-            *at += 1;
-            Some(-(byte as i32 - 251) * 256 - next - 108)
-        }
-        255 => {
-            let raw = bytes.get(*at..*at + 4)?;
-            *at += 4;
-            Some(i32::from_be_bytes([raw[0], raw[1], raw[2], raw[3]]))
-        }
-        _ => None,
-    }
-}
-
-fn charstring_plain(cipher: &[u8], len_iv: i32) -> Option<Vec<u8>> {
-    if len_iv == -1 {
-        return Some(cipher.to_vec());
-    }
-    let len_iv = usize::try_from(len_iv).ok()?;
-    let mut bytes = charstring_decrypt(cipher);
-    if len_iv > bytes.len() {
-        return None;
-    }
-    bytes.drain(..len_iv);
-    Some(bytes)
-}
-
-/// Dependency interpreter, not an outline rewriter. Subroutines share the
-/// caller's operand stack; in particular, hint replacement passes its target
-/// through OtherSubr 3 and `pop`. Scanning subroutines in isolation loses it.
-struct CharStringTrace<'a> {
-    subrs: &'a HashMap<usize, Vec<u8>>,
-    used_subrs: BTreeSet<usize>,
-    seac: BTreeSet<&'static str>,
-    stack: Vec<Option<f64>>,
-    other_results: Vec<Option<f64>>,
-    budget: usize,
-}
-
-impl<'a> CharStringTrace<'a> {
-    fn new(subrs: &'a HashMap<usize, Vec<u8>>) -> Self {
-        Self {
-            subrs,
-            used_subrs: BTreeSet::new(),
-            seac: BTreeSet::new(),
-            stack: Vec::new(),
-            other_results: Vec::new(),
-            budget: 2_000_000,
-        }
-    }
-
-    fn pop_index(&mut self) -> Option<usize> {
-        let value = self.stack.pop()??;
-        if value < 0.0 || value > i32::MAX as f64 || value.fract() != 0.0 {
-            return None;
-        }
-        Some(value as usize)
-    }
-
-    fn consume(&mut self, count: usize) -> Option<()> {
-        self.stack.truncate(self.stack.len().checked_sub(count)?);
-        Some(())
-    }
-
-    /// Returns true for endchar/seac, false for return. Bound both recursion
-    /// and total work so a malformed font falls back to full embedding.
-    fn execute(&mut self, bytes: &[u8], depth: usize) -> Option<bool> {
-        if depth > 32 {
-            return None;
-        }
-        let mut at = 0;
-        while at < bytes.len() {
-            self.budget = self.budget.checked_sub(1)?;
-            if bytes[at] >= 32 {
-                if self.stack.len() >= 96 {
-                    return None;
-                }
-                self.stack
-                    .push(Some(charstring_number(bytes, &mut at)? as f64));
-                continue;
-            }
-            let operator = bytes[at];
-            at += 1;
-            match operator {
-                10 => {
-                    let index = self.pop_index()?;
-                    self.used_subrs.insert(index);
-                    let subrs = self.subrs;
-                    if self.execute(subrs.get(&index)?, depth + 1)? {
-                        return Some(true);
-                    }
-                }
-                11 if depth > 0 => return Some(false),
-                14 => return Some(true),
-                1 | 3 | 5 | 13 | 21 => self.consume(2)?,
-                4 | 6 | 7 | 22 => self.consume(1)?,
-                8 => self.consume(6)?,
-                30 | 31 => self.consume(4)?,
-                9 => {} // closepath has no operands
-                12 => {
-                    let escaped = *bytes.get(at)?;
-                    at += 1;
-                    match escaped {
-                        0 => {} // dotsection
-                        1 | 2 => self.consume(6)?,
-                        6 => {
-                            let accent = self.pop_index()?;
-                            let base = self.pop_index()?;
-                            self.consume(3)?;
-                            self.seac.insert(standard_encoding_name(base as i32)?);
-                            self.seac.insert(standard_encoding_name(accent as i32)?);
-                            return Some(true);
-                        }
-                        7 => self.consume(4)?,
-                        12 => {
-                            let divisor = self.stack.pop()?;
-                            let dividend = self.stack.pop()?;
-                            let value = match (dividend, divisor) {
-                                (_, Some(0.0)) => return None,
-                                (Some(a), Some(b)) => {
-                                    let quotient = a / b;
-                                    if !quotient.is_finite() {
-                                        return None;
-                                    }
-                                    Some(quotient)
-                                }
-                                _ => None,
-                            };
-                            self.stack.push(value);
-                        }
-                        16 => {
-                            let other = self.pop_index()?;
-                            let count = self.pop_index()?;
-                            let start = self.stack.len().checked_sub(count)?;
-                            self.other_results.clear();
-                            match (other, count) {
-                                // Flex returns its final point. Its geometry
-                                // cannot affect dependency indices.
-                                (0, 3) => self.other_results.extend([None, None]),
-                                (1 | 2, 0) => {}
-                                (3, 1) => {
-                                    self.other_results.push(self.stack[start]);
-                                    // Old interpreters substitute the no-op
-                                    // Subr 3 when hint replacement is absent.
-                                    if self.subrs.get(&3)?.as_slice() != [11] {
-                                        return None;
-                                    }
-                                    self.used_subrs.insert(3);
-                                }
-                                // Custom PostScript OtherSubrs need a full
-                                // interpreter; never guess their results.
-                                _ => return None,
-                            }
-                            self.stack.truncate(start);
-                        }
-                        17 => self.stack.push(self.other_results.pop()?),
-                        33 => self.consume(2)?,
-                        _ => return None,
-                    }
-                }
-                _ => return None,
-            }
-        }
-        None
-    }
-}
-
-/// Remove unused glyphs and subroutines, following calls and StandardEncoding
-/// base/accent glyphs referenced by `seac` composites. The
-/// original charstrings and hint programs are copied byte-for-byte. Also
-/// returns the kept glyph names (`.notdef`, the request and its `seac`
-/// components).
-fn subset_type1(
-    data: &[u8],
-    length1: usize,
-    length2: usize,
-    length3: usize,
-    glyphs: &BTreeSet<String>,
-) -> Option<(Type1Program, BTreeSet<String>)> {
-    let encrypted_end = length1.checked_add(length2)?;
-    let program_end = encrypted_end.checked_add(length3)?;
-    if length2 == 0 || program_end > data.len() {
-        return None;
-    }
-    let plain = eexec_decrypt(&data[length1..encrypted_end]);
-    if plain.len() < 4 {
-        return None;
-    }
-    let chars = find_bytes(&plain[4..], b"/CharStrings")? + 4;
-    struct SubrEntry {
-        range: std::ops::Range<usize>,
-        data: std::ops::Range<usize>,
-        index: usize,
-    }
-    let mut subr_entries = Vec::new();
-    if let Some(relative) = find_bytes(&plain[4..chars], b"/Subrs") {
-        let mut subr_at = relative + 4 + b"/Subrs".len();
-        subr_at = skip_space(&plain, subr_at);
-        subr_at = token_end(&plain, subr_at); // declared array length
-        subr_at = skip_space(&plain, subr_at);
-        if &plain[subr_at..token_end(&plain, subr_at)] != b"array" {
-            return None;
-        }
-        subr_at = token_end(&plain, subr_at);
-        loop {
-            subr_at = skip_space(&plain, subr_at);
-            let dup_end = token_end(&plain, subr_at);
-            if &plain[subr_at..dup_end] != b"dup" {
-                break;
-            }
-            let entry_start = subr_at;
-            subr_at = skip_space(&plain, dup_end);
-            let index_end = token_end(&plain, subr_at);
-            let index: usize = std::str::from_utf8(&plain[subr_at..index_end])
-                .ok()?
-                .parse()
-                .ok()?;
-            subr_at = skip_space(&plain, index_end);
-            let length_end = token_end(&plain, subr_at);
-            let subr_len: usize = std::str::from_utf8(&plain[subr_at..length_end])
-                .ok()?
-                .parse()
-                .ok()?;
-            subr_at = skip_space(&plain, length_end);
-            let marker_end = token_end(&plain, subr_at);
-            if !matches!(&plain[subr_at..marker_end], b"RD" | b"-|") {
-                return None;
-            }
-            subr_at = marker_end;
-            if subr_at >= plain.len() || !plain[subr_at].is_ascii_whitespace() {
-                return None;
-            }
-            subr_at += 1;
-            let binary_start = subr_at;
-            let binary_end = binary_start.checked_add(subr_len)?;
-            if binary_end > chars {
-                return None;
-            }
-            subr_at = skip_space(&plain, binary_end);
-            let terminator_end = token_end(&plain, subr_at);
-            if !matches!(&plain[subr_at..terminator_end], b"NP" | b"|" | b"noaccess") {
-                return None;
-            }
-            let noaccess = &plain[subr_at..terminator_end] == b"noaccess";
-            subr_at = terminator_end;
-            if noaccess {
-                subr_at = skip_space(&plain, subr_at);
-                let end = token_end(&plain, subr_at);
-                if &plain[subr_at..end] != b"put" {
-                    return None;
-                }
-                subr_at = end;
-            }
-            subr_entries.push(SubrEntry {
-                range: entry_start..subr_at,
-                data: binary_start..binary_end,
-                index,
-            });
-        }
-    }
-    let begin = find_bytes(&plain[chars..], b"begin")? + chars + b"begin".len();
-    let mut at = begin;
-    struct CharStringEntry {
-        range: std::ops::Range<usize>,
-        data: std::ops::Range<usize>,
-        name: String,
-    }
-    let mut entries = Vec::new();
-    let mut parsed = 0usize;
-    loop {
-        at = skip_space(&plain, at);
-        if at >= plain.len() || plain[at..].starts_with(b"end") {
-            break;
-        }
-        if plain[at] != b'/' {
-            return None;
-        }
-        let entry_start = at;
-        let name_end = token_end(&plain, at + 1);
-        let name = std::str::from_utf8(&plain[at + 1..name_end]).ok()?;
-        at = skip_space(&plain, name_end);
-        let length_end = token_end(&plain, at);
-        let char_len: usize = std::str::from_utf8(&plain[at..length_end])
-            .ok()?
-            .parse()
-            .ok()?;
-        at = skip_space(&plain, length_end);
-        let marker_end = token_end(&plain, at);
-        if !matches!(&plain[at..marker_end], b"RD" | b"-|") {
-            return None;
-        }
-        at = marker_end;
-        if at >= plain.len() || !plain[at].is_ascii_whitespace() {
-            return None;
-        }
-        // `RD`/`-|` consumes one delimiter byte before the binary string.
-        at += 1;
-        let binary_start = at;
-        let binary_end = at.checked_add(char_len)?;
-        if binary_end > plain.len() {
-            return None;
-        }
-        at = skip_space(&plain, binary_end);
-        let terminator_end = token_end(&plain, at);
-        if !matches!(&plain[at..terminator_end], b"ND" | b"|-" | b"noaccess") {
-            return None;
-        }
-        let noaccess = &plain[at..terminator_end] == b"noaccess";
-        at = terminator_end;
-        if noaccess {
-            at = skip_space(&plain, at);
-            let end = token_end(&plain, at);
-            if &plain[at..end] != b"def" {
-                return None;
-            }
-            at = end;
-        }
-        parsed += 1;
-        entries.push(CharStringEntry {
-            range: entry_start..at,
-            data: binary_start..binary_end,
-            name: name.to_owned(),
-        });
-    }
-    if parsed == 0 {
-        return None;
-    }
-    let len_iv = ps_int_after(&plain[..chars], b"/lenIV").unwrap_or(4);
-    let subrs: HashMap<_, _> = subr_entries
-        .iter()
-        .map(|entry| {
-            Some((
-                entry.index,
-                charstring_plain(&plain[entry.data.clone()], len_iv)?,
-            ))
-        })
-        .collect::<Option<_>>()?;
-    if subrs.len() != subr_entries.len() {
-        return None;
-    }
-    let mut trace = CharStringTrace::new(&subrs);
-    let mut keep_glyphs = glyphs.clone();
-    keep_glyphs.insert(".notdef".to_owned());
-    let mut checked_glyphs = BTreeSet::new();
-    loop {
-        let mut processed = false;
-        for entry in &entries {
-            if !keep_glyphs.contains(&entry.name) || !checked_glyphs.insert(entry.name.clone()) {
-                continue;
-            }
-            processed = true;
-            trace.stack.clear();
-            trace.other_results.clear();
-            trace.execute(&charstring_plain(&plain[entry.data.clone()], len_iv)?, 0)?;
-            keep_glyphs.extend(trace.seac.iter().map(|name| (*name).to_owned()));
-        }
-        if !processed {
-            break;
-        }
-    }
-    // Missing dependencies or an unsupported program leave the original font
-    // intact, including glyphs that a custom OtherSubr could reference.
-    if !keep_glyphs.is_subset(&checked_glyphs) {
-        return None;
-    }
-    let mut removals: Vec<_> = entries
-        .iter()
-        .filter(|entry| !keep_glyphs.contains(&entry.name))
-        .map(|entry| entry.range.clone())
-        .collect();
-    removals.extend(
-        subr_entries
-            .iter()
-            .filter(|entry| !trace.used_subrs.contains(&entry.index))
-            .map(|entry| entry.range.clone()),
-    );
-    removals.sort_unstable_by_key(|range| range.start);
-    let mut compact = Vec::with_capacity(plain.len());
-    let mut copied = 0;
-    for range in removals {
-        compact.extend_from_slice(&plain[copied..range.start]);
-        copied = range.end;
-    }
-    compact.extend_from_slice(&plain[copied..]);
-    let encrypted = eexec_encrypt(&compact);
-    let mut subset = Vec::with_capacity(length1 + encrypted.len() + length3);
-    subset.extend_from_slice(&data[..length1]);
-    subset.extend_from_slice(&encrypted);
-    subset.extend_from_slice(&data[encrypted_end..program_end]);
-    let program = Type1Program {
-        data: subset,
-        length1,
-        length2: encrypted.len(),
-        length3,
-    };
-    Some((program, keep_glyphs))
+    let name = *crate::pdf_encodings::STANDARD.get(usize::try_from(code).ok()?)?;
+    (!name.is_empty()).then_some(name)
 }
 
 /// A Type 1 program decoded once and shared by every engine font (size,
@@ -650,16 +69,15 @@ pub struct Type1Source {
 impl Type1Source {
     pub fn new(pfb: &[u8]) -> Self {
         let program = parse_type1(pfb);
-        let cleartext = &program.data[..program.length1.min(program.data.len())];
-        let builtin_encoding = crate::pdf_fonts::builtin_encoding(cleartext).map(Into::into);
+        let scanned = crate::writet1::scan_type1(&program.data, program.length1);
         Type1Source {
-            keys: std::rc::Rc::new(Type1Keys::scan(&program)),
+            keys: std::rc::Rc::new(scanned.keys),
             content_hash: md5::compute(&program.data).0,
             font_file: std::rc::Rc::new(program.data),
             length1: program.length1,
             length2: program.length2,
             length3: program.length3,
-            builtin_encoding,
+            builtin_encoding: scanned.encoding.map(Into::into),
         }
     }
 }
@@ -1404,40 +822,151 @@ impl OutlineTree {
     }
 }
 
-type FontFileKey = (usize, usize, usize, [u8; 16]);
+use crate::writet1::T1Transform;
+
+/// The program, its lengths, and the map entry's slant and extension: one
+/// writefont.c `fd_entry` (`fm->ff_name`, `fm_slant`, `fm_extend`).
+type FontFileKey = (usize, usize, usize, [u8; 16], T1Transform);
 
 struct PreparedType1 {
     program: Type1Program,
     pdf_name: String,
-    charset: BTreeSet<String>,
+    /// The /CharSet of a subset.
+    charset: Option<BTreeSet<String>>,
+    /// The descriptor keys the writing pass left (`fd->font_dim`).
+    keys: Type1Keys,
 }
 
-fn font_file_key(font: &EmbedFont) -> FontFileKey {
-    (font.length1, font.length2, font.length3, font.content_hash)
+fn font_file_key(font: &EmbedFont, transform: T1Transform) -> FontFileKey {
+    (font.length1, font.length2, font.length3, font.content_hash, transform)
 }
 
+/// Merge a font's glyph demand into its program's: a subset's glyphs are
+/// unioned and any request for the whole program wins.
+fn merge_glyph_demand(
+    demand: &mut HashMap<FontFileKey, Option<BTreeSet<String>>>,
+    key: FontFileKey,
+    requested: Option<BTreeSet<String>>,
+) {
+    match demand.entry(key) {
+        std::collections::hash_map::Entry::Vacant(entry) => {
+            entry.insert(requested);
+        }
+        std::collections::hash_map::Entry::Occupied(mut entry) => match (entry.get_mut(), requested) {
+            (Some(current), Some(additional)) => current.extend(additional),
+            (slot, None) => *slot = None,
+            (None, Some(_)) => {}
+        },
+    }
+}
+
+/// writefont.c `fd->gl_tree` of one font: the glyph names of the used codes.
+/// A map encoding contributes no `.notdef` (`mark_reenc_glyphs`); the
+/// program's builtin encoding does (`t1_subset_ascii_part` takes over the
+/// `tx_tree` codes as they are).
 fn required_glyphs(font: &EmbedFont) -> Option<BTreeSet<String>> {
-    if font.used_chars == [0; 4] {
+    if font.used_chars == [0; 4] || !font.allow_subsetting {
         return None;
     }
     let encoding = font.encoding_diff.as_ref()?;
+    let builtin = font.pdftex.as_ref().is_some_and(|pdftex| pdftex.enc_file.is_none());
     let mut glyphs = BTreeSet::new();
     for code in 0..=u8::MAX {
         if char_is_used(&font.used_chars, code) {
-            let glyph = encoding.get(code as usize)?;
-            if glyph.is_empty() {
-                return None;
+            match encoding.get(code as usize).map(String::as_str) {
+                Some("" | ".notdef") | None => {
+                    if builtin {
+                        glyphs.insert(".notdef".to_owned());
+                    }
+                }
+                Some(glyph) => {
+                    glyphs.insert(glyph.to_owned());
+                }
             }
-            glyphs.insert(glyph.clone());
         }
     }
     Some(glyphs)
 }
 
 /// The descriptor's font name (writefont.c `fd->fontname`): the program's
-/// own `/FontName`, else the map's PostScript name.
-fn type1_font_name(font: &EmbedFont) -> &str {
-    font.t1_keys.font_name.as_deref().unwrap_or(&font.base_font)
+/// own `/FontName`, else the map's PostScript name, followed by
+/// `-Slant_n` and `-Extend_n` for a transformed map entry.
+fn type1_font_name(font: &EmbedFont, transform: T1Transform) -> String {
+    let mut name = font.t1_keys.font_name.clone().unwrap_or_else(|| font.base_font.clone());
+    if transform.slant != 0 {
+        name.push_str(&format!("-Slant_{}", transform.slant));
+    }
+    if transform.extend != 0 {
+        name.push_str(&format!("-Extend_{}", transform.extend));
+    }
+    name
+}
+
+/// writefont.c `fix_fontmetrics`, `write_fontmetrics` and the
+/// `/FontDescriptor` dictionary around them for a Type 1 program. A key
+/// that is unset is omitted; the bounding box needs all four numbers.
+fn type1_descriptor(
+    name: &str,
+    flags: i32,
+    mut dims: [Option<i32>; crate::pdf_fonts::INT_KEYS_NUM],
+    charset: Option<&BTreeSet<String>>,
+    file: Option<usize>,
+) -> String {
+    use crate::pdf_fonts::{ASCENT_CODE, CAPHEIGHT_CODE, DESCENT_CODE, FONTBBOX1_CODE};
+    let bbox = FONTBBOX1_CODE;
+    let has_bbox = dims[bbox..bbox + 4].iter().all(Option::is_some);
+    if has_bbox {
+        dims[ASCENT_CODE] = dims[ASCENT_CODE].or(dims[bbox + 3]);
+        dims[DESCENT_CODE] = dims[DESCENT_CODE].or(dims[bbox + 1]);
+        dims[CAPHEIGHT_CODE] = dims[CAPHEIGHT_CODE].or(dims[bbox + 3]);
+    }
+    let mut desc = format!("<< /Type /FontDescriptor /FontName /{name} /Flags {flags}");
+    if has_bbox {
+        desc.push_str(&format!(
+            " /FontBBox [{} {} {} {}]",
+            dims[bbox].unwrap_or(0),
+            dims[bbox + 1].unwrap_or(0),
+            dims[bbox + 2].unwrap_or(0),
+            dims[bbox + 3].unwrap_or(0),
+        ));
+    }
+    for (k, key) in ["Ascent", "CapHeight", "Descent", "ItalicAngle", "StemV", "XHeight"]
+        .into_iter()
+        .enumerate()
+    {
+        if let Some(value) = dims[k] {
+            desc.push_str(&format!(" /{key} {value}"));
+        }
+    }
+    if let Some(file) = file {
+        if let Some(charset) = charset {
+            desc.push_str(" /CharSet (");
+            for glyph in charset {
+                desc.push('/');
+                desc.push_str(glyph);
+            }
+            desc.push(')');
+        }
+        desc.push_str(&format!(" /FontFile {file} 0 R"));
+    }
+    desc.push_str(" >>");
+    desc
+}
+
+/// writefont.c `write_fontfile`: the written program, or the program as
+/// read when pdfTeX's pass could not process it.
+fn set_type1_font_file(b: &mut PdfBuilder, file: usize, prepared: Option<&PreparedType1>, font: &EmbedFont) {
+    let (data, length1, length2, length3) = match prepared {
+        Some(prepared) => (
+            &prepared.program.data[..],
+            prepared.program.length1,
+            prepared.program.length2,
+            prepared.program.length3,
+        ),
+        None => (&font.font_file[..], font.length1, font.length2, font.length3),
+    };
+    let dict = format!("/Length1 {length1} /Length2 {length2} /Length3 {length3}");
+    b.set_stream(file, &dict, data, true);
 }
 
 /// utils.c `make_subset_tag`: six letters from the MD5 of the sorted glyph
@@ -1459,27 +988,6 @@ fn pdftex_subset_tag(glyphs: &BTreeSet<String>, font_name: &str, round: i32) -> 
     a.iter().map(|&v| (b'A' + (v % 26) as u8) as char).collect()
 }
 
-fn rename_type1_font(program: &mut Type1Program, new_name: &str) -> bool {
-    let Some(font_name) = find_bytes(&program.data[..program.length1], b"/FontName") else {
-        return false;
-    };
-    let mut start = skip_space(&program.data, font_name + b"/FontName".len());
-    if program.data.get(start) != Some(&b'/') {
-        return false;
-    }
-    start += 1;
-    let end = token_end(&program.data, start);
-    let old_len = end - start;
-    program
-        .data
-        .splice(start..end, new_name.as_bytes().iter().copied());
-    if new_name.len() >= old_len {
-        program.length1 += new_name.len() - old_len;
-    } else {
-        program.length1 -= old_len - new_name.len();
-    }
-    true
-}
 fn make_subset_tag(content_hash: &[u8; 16], base_font: &str) -> String {
     let mut h = 0xcbf2_9ce4_8422_2325_u64;
     for &b in content_hash {
@@ -1704,35 +1212,49 @@ pub fn write_pdf(doc: &PdfDoc) -> Result<Vec<u8>, String> {
 
     let is_sfnt = |f: &EmbedFont| f.is_cid || f.subtype != EmbedFontSubtype::Type1;
 
-    let font_keys: Vec<_> = doc.fonts.iter().map(font_file_key).collect();
+    let font_keys: Vec<_> = doc
+        .fonts
+        .iter()
+        .map(|font| font_file_key(font, T1Transform::default()))
+        .collect();
+    // epdf.c `copyFont`: the map entries' programs that replaced the fonts
+    // of included PDF files go through the same writing pass.
+    let imported: Vec<EmbedFont> = doc
+        .imported_fonts
+        .iter()
+        .map(|f| make_embed_font(f.base_font.clone(), Some(&f.program), None, Vec::new(), [0; 4]))
+        .collect();
+    let imported_keys: Vec<FontFileKey> = doc
+        .imported_fonts
+        .iter()
+        .zip(&imported)
+        .map(|(f, font)| font_file_key(font, T1Transform { slant: f.slant, extend: f.extend }))
+        .collect();
 
     // 1. Prepare Type 1 subsets
     let mut glyphs_by_file: HashMap<FontFileKey, Option<BTreeSet<String>>> = HashMap::new();
+    let mut all_glyph_files: std::collections::HashSet<FontFileKey> = std::collections::HashSet::new();
     for (font, &key) in doc.fonts.iter().zip(&font_keys) {
         if font.font_file.is_empty() || is_sfnt(font) {
             continue;
         }
-        let requested = required_glyphs(font);
-        match glyphs_by_file.entry(key) {
-            std::collections::hash_map::Entry::Vacant(entry) => {
-                entry.insert(requested);
-            }
-            std::collections::hash_map::Entry::Occupied(mut entry) => {
-                match (entry.get_mut(), requested) {
-                    (Some(current), Some(additional)) => current.extend(additional),
-                    (slot, None) => *slot = None,
-                    (None, Some(_)) => {}
-                }
-            }
+        merge_glyph_demand(&mut glyphs_by_file, key, required_glyphs(font));
+    }
+    for (font, &key) in doc.imported_fonts.iter().zip(&imported_keys) {
+        if font.all_glyphs && font.subsettable {
+            all_glyph_files.insert(key);
         }
+        merge_glyph_demand(&mut glyphs_by_file, key, font.subsettable.then(|| font.glyphs.clone()));
     }
     let mut prepared_files: HashMap<FontFileKey, PreparedType1> = HashMap::new();
     let mut attempted_files = BTreeSet::new();
     struct Type1Job<'a> {
         data: &'a [u8],
         key: FontFileKey,
-        glyphs: &'a BTreeSet<String>,
-        pdf_name: String,
+        glyphs: Option<&'a BTreeSet<String>>,
+        font_name: String,
+        all_glyphs: bool,
+        tag: Option<String>,
     }
     // utils.c make_subset_tag keeps the document's tags distinct
     let mut subset_tags = BTreeSet::new();
@@ -1740,40 +1262,62 @@ pub fn write_pdf(doc: &PdfDoc) -> Result<Vec<u8>, String> {
         .fonts
         .iter()
         .zip(&font_keys)
+        .chain(imported.iter().zip(&imported_keys))
         .filter_map(|(font, &key)| {
-            if is_sfnt(font) || !attempted_files.insert(key) {
+            if is_sfnt(font) || font.font_file.is_empty() || !attempted_files.insert(key) {
                 return None;
             }
-            let glyphs = glyphs_by_file.get(&key)?.as_ref()?;
-            let font_name = type1_font_name(font);
-            let tag = (0..)
-                .map(|round| pdftex_subset_tag(glyphs, font_name, round))
-                .find(|tag| subset_tags.insert(tag.clone()))?;
+            let glyphs = glyphs_by_file.get(&key)?.as_ref();
+            let font_name = type1_font_name(font, key.4);
+            let tag = match glyphs {
+                Some(glyphs) => Some(
+                    (0..)
+                        .map(|round| pdftex_subset_tag(glyphs, &font_name, round))
+                        .find(|tag| subset_tags.insert(tag.clone()))?,
+                ),
+                None => None,
+            };
             Some(Type1Job {
                 data: &font.font_file,
                 key,
                 glyphs,
-                pdf_name: format!("{tag}+{font_name}"),
+                font_name,
+                all_glyphs: all_glyph_files.contains(&key),
+                tag,
             })
         })
         .collect();
     let prepare = |job: &Type1Job<'_>| {
         let key = job.key;
-        let (mut subset, mut charset) = subset_type1(job.data, key.0, key.1, key.2, job.glyphs)?;
-        // writefont.c /CharSet: the used glyphs plus `seac` components
-        if !job.glyphs.contains(".notdef") {
-            charset.remove(".notdef");
-        }
-        rename_type1_font(&mut subset, &job.pdf_name).then(|| {
-            (
-                key,
-                PreparedType1 {
-                    program: subset,
-                    pdf_name: job.pdf_name.clone(),
-                    charset,
+        let subset = job.glyphs.zip(job.tag.as_deref()).and_then(|(glyphs, tag)| {
+            let request = crate::writet1::T1Subset { glyphs, tag, all_glyphs: job.all_glyphs };
+            let written = crate::writet1::write_type1(job.data, key.0, key.1, key.4, Some(&request))?;
+            Some((written, format!("{tag}+{}", job.font_name)))
+        });
+        // pdfTeX gives up on a program it cannot subset; ratex embeds it whole
+        let (written, pdf_name, subsetted) = match subset {
+            Some((written, pdf_name)) => (written, pdf_name, true),
+            None => (
+                crate::writet1::write_type1(job.data, key.0, key.1, key.4, None)?,
+                job.font_name.clone(),
+                false,
+            ),
+        };
+        let charset = subsetted.then_some(written.charset);
+        Some((
+            key,
+            PreparedType1 {
+                program: Type1Program {
+                    length1: written.length1,
+                    length2: written.length2,
+                    length3: 0,
+                    data: written.data,
                 },
-            )
-        })
+                pdf_name,
+                charset,
+                keys: written.keys,
+            },
+        ))
     };
     if !cfg!(target_arch = "wasm32") && jobs.len() >= 4 && !crate::debug_flag("TEX_PDF_SERIAL") {
         let workers = std::thread::available_parallelism().map_or(1, |n| n.get().min(4));
@@ -1943,6 +1487,12 @@ pub fn write_pdf(doc: &PdfDoc) -> Result<Vec<u8>, String> {
     let mut pdftex_tounicode_cache: HashMap<std::rc::Rc<str>, usize> = HashMap::new();
     let mut desc_cache: HashMap<FontFileKey, usize> = HashMap::new();
     let mut encoding_cache: BTreeMap<&str, usize> = BTreeMap::new();
+    // epdf.c `epdf_create_fontdescriptor`: the descriptor an included font
+    // created is the one every font of that program, slant and extension
+    // uses
+    for (font, &key) in doc.imported_fonts.iter().zip(&imported_keys) {
+        desc_cache.entry(key).or_insert(font.desc_obj as usize);
+    }
 
     let font_objs: Vec<FontObjs> = doc
         .fonts
@@ -2032,12 +1582,17 @@ pub fn write_pdf(doc: &PdfDoc) -> Result<Vec<u8>, String> {
             }
         })
         .collect();
+    // epdf.c: a font file the document's own fonts do not write yet
+    for key in &imported_keys {
+        file_cache.entry(*key).or_insert_with(|| b.alloc());
+    }
     for (object, fonts) in &doc.form_fonts {
         let mut dict = String::from("<<");
-        for (index, number) in fonts {
-            if let Some(font) = font_objs.get(*index) {
-                dict.push_str(&format!(" /F{number} {} 0 R", font.font));
-            }
+        for entry in font_resource_entries(fonts, &doc.resname_prefix, |index| {
+            font_objs.get(index).map(|font| font.font)
+        }) {
+            dict.push(' ');
+            dict.push_str(&entry);
         }
         dict.push_str(" >>");
         b.set(*object as usize, dict);
@@ -2093,6 +1648,7 @@ pub fn write_pdf(doc: &PdfDoc) -> Result<Vec<u8>, String> {
     // pdfTeX walks font objects newest first: the most recently initialized
     // font of a program creates (and presets) the shared descriptor
     let mut descriptor_owner: HashMap<FontFileKey, usize> = HashMap::new();
+    let mut first_init: HashMap<FontFileKey, usize> = HashMap::new();
     for (index, (font, &key)) in doc.fonts.iter().zip(&font_keys).enumerate() {
         if is_sfnt(font) || font.font_file.is_empty() {
             continue;
@@ -2100,6 +1656,17 @@ pub fn write_pdf(doc: &PdfDoc) -> Result<Vec<u8>, String> {
         let owner = descriptor_owner.entry(key).or_insert(index);
         if font.init_order > doc.fonts[*owner].init_order {
             *owner = index;
+        }
+        let first = first_init.entry(key).or_insert(font.init_order);
+        *first = (*first).min(font.init_order);
+    }
+    // epdf.c created the descriptor of these programs before any document
+    // font was initialized: no font presets it from its TFM, and its /StemV
+    // is the included font's
+    let mut import_created: HashMap<FontFileKey, i32> = HashMap::new();
+    for (font, &key) in doc.imported_fonts.iter().zip(&imported_keys) {
+        if first_init.get(&key).is_some_and(|&first| font.init_order <= first) {
+            import_created.entry(key).or_insert(font.stem_v);
         }
     }
 
@@ -2209,7 +1776,8 @@ pub fn write_pdf(doc: &PdfDoc) -> Result<Vec<u8>, String> {
                 b.set_stream(enc_obj, "", enc_cmap.as_bytes(), true);
             }
 
-            if let Some(to) = fo.tounicode {
+            let to = fo.tounicode.filter(|_| !attr_defines_key(&f.font_attr, "ToUnicode"));
+            if let Some(to) = to {
                 if emitted_tounicode.insert(to) {
                     let to_cmap = if f.is_native {
                         to_unicode_cmap_2byte(&f.to_unicode_2byte)
@@ -2220,7 +1788,7 @@ pub fn write_pdf(doc: &PdfDoc) -> Result<Vec<u8>, String> {
                 }
             }
 
-            let to_ref = match fo.tounicode {
+            let to_ref = match to {
                 Some(o) => format!(" /ToUnicode {} 0 R", o),
                 None => String::new(),
             };
@@ -2234,7 +1802,8 @@ pub fn write_pdf(doc: &PdfDoc) -> Result<Vec<u8>, String> {
             );
         } else {
             let prepared = prepared_files.get(key);
-            let pdf_name = prepared.map_or(type1_font_name(f), |font| font.pdf_name.as_str());
+            let fallback_name = type1_font_name(f, T1Transform::default());
+            let pdf_name = prepared.map_or(fallback_name.as_str(), |font| font.pdf_name.as_str());
             if let Some(pdftex) = &f.pdftex {
                 // writefont.c write_fontdictionary
                 let widths_obj = fo.widths.expect("pdfTeX fonts own a /Widths object");
@@ -2258,7 +1827,7 @@ pub fn write_pdf(doc: &PdfDoc) -> Result<Vec<u8>, String> {
                 if let Some(encoding) = fo.encoding {
                     dict.push_str(&format!(" /Encoding {encoding} 0 R"));
                 }
-                if let Some(to) = fo.tounicode {
+                if let Some(to) = fo.tounicode.filter(|_| !attr_defines_key(&f.font_attr, "ToUnicode")) {
                     dict.push_str(&format!(" /ToUnicode {to} 0 R"));
                     if emitted_tounicode.insert(to) {
                         let cmap = pdftex.tounicode.as_deref().unwrap_or_default();
@@ -2292,7 +1861,8 @@ pub fn write_pdf(doc: &PdfDoc) -> Result<Vec<u8>, String> {
                     }
                     enc.push_str(" ] >>");
                 }
-                let tounicode_ref = match fo.tounicode {
+                let to = fo.tounicode.filter(|_| !attr_defines_key(&f.font_attr, "ToUnicode"));
+                let tounicode_ref = match to {
                     Some(o) => format!(" /ToUnicode {} 0 R", o),
                     None => String::new(),
                 };
@@ -2304,7 +1874,7 @@ pub fn write_pdf(doc: &PdfDoc) -> Result<Vec<u8>, String> {
                         font_attr_entry(&f.font_attr)
                     ),
                 );
-                if let Some(to) = fo.tounicode {
+                if let Some(to) = to {
                     if emitted_tounicode.insert(to) {
                         b.set_stream(to, "", to_unicode_cmap(&f.to_unicode).as_bytes(), true);
                     }
@@ -2315,59 +1885,61 @@ pub fn write_pdf(doc: &PdfDoc) -> Result<Vec<u8>, String> {
                 // newest-initialized font of this program, overridden by
                 // the program's own keys (write_fontmetrics order)
                 let owner = descriptor_owner.get(key).map_or(f, |&index| &doc.fonts[index]);
-                let dim = |k: usize| f.t1_keys.dims[k].unwrap_or(owner.t1_preset[k]);
-                let bbox = crate::pdf_fonts::FONTBBOX1_CODE;
-                let mut desc = format!(
-                    "<< /Type /FontDescriptor /FontName /{} /Flags {} /FontBBox [{} {} {} {}]",
-                    pdf_name,
-                    if fo.file.is_some() { 4 } else { f.flags },
-                    dim(bbox),
-                    dim(bbox + 1),
-                    dim(bbox + 2),
-                    dim(bbox + 3),
+                let dims = std::array::from_fn(|k| {
+                    f.t1_keys.dims[k].or_else(|| match import_created.get(key) {
+                        Some(&stem_v) => (k == crate::pdf_fonts::STEMV_CODE).then_some(stem_v),
+                        None => Some(owner.t1_preset[k]),
+                    })
+                });
+                let charset = match prepared {
+                    Some(font) => font.charset.as_ref(),
+                    None => glyphs_by_file.get(key).and_then(Option::as_ref),
+                };
+                b.set(
+                    fo.desc,
+                    type1_descriptor(
+                        pdf_name,
+                        if fo.file.is_some() { 4 } else { f.flags },
+                        dims,
+                        charset.filter(|_| !doc.omit_charset),
+                        fo.file,
+                    ),
                 );
-                for (k, key) in ["Ascent", "CapHeight", "Descent", "ItalicAngle", "StemV", "XHeight"]
-                    .into_iter()
-                    .enumerate()
-                {
-                    desc.push_str(&format!(" /{key} {}", dim(k)));
-                }
-                if let Some(file) = fo.file {
-                    let charset = prepared
-                        .map(|font| &font.charset)
-                        .or_else(|| glyphs_by_file.get(key).and_then(Option::as_ref));
-                    if let (false, Some(charset)) = (doc.omit_charset, charset) {
-                        desc.push_str(" /CharSet (");
-                        for glyph in charset {
-                            desc.push('/');
-                            desc.push_str(glyph);
-                        }
-                        desc.push(')');
-                    }
-                    desc.push_str(&format!(" /FontFile {file} 0 R"));
-                }
-                desc.push_str(" >>");
-                b.set(fo.desc, desc);
             }
             if let Some(file) = fo.file {
                 if emitted_files.insert(file) {
-                    let (font_data, length1, length2, length3) = prepared.map_or(
-                        (&f.font_file[..], f.length1, f.length2, f.length3),
-                        |font| {
-                            (
-                                &font.program.data[..],
-                                font.program.length1,
-                                font.program.length2,
-                                font.program.length3,
-                            )
-                        },
-                    );
-                    let dict = format!(
-                        "/Length1 {} /Length2 {} /Length3 {}",
-                        length1, length2, length3
-                    );
-                    b.set_stream(file, &dict, font_data, true);
+                    set_type1_font_file(&mut b, file, prepared, f);
                 }
+            }
+        }
+    }
+    // epdf.c `copyFont`: descriptor, program and tagged /BaseFont name of
+    // every font of an included PDF file that the map entry replaced
+    for ((replaced, font), &key) in doc.imported_fonts.iter().zip(&imported).zip(&imported_keys) {
+        let prepared = prepared_files.get(&key);
+        let pdf_name =
+            prepared.map_or_else(|| type1_font_name(font, key.4), |font| font.pdf_name.clone());
+        if replaced.name_obj != 0 {
+            b.set(replaced.name_obj as usize, format!("/{pdf_name}"));
+        }
+        let file = file_cache.get(&key).copied();
+        if emitted_descriptors.insert(replaced.desc_obj as usize) {
+            // create_fontdescriptor presets only /StemV, from the PDF
+            let keys = prepared.map_or(&*font.t1_keys, |font| &font.keys);
+            let mut dims = keys.dims;
+            dims[crate::pdf_fonts::STEMV_CODE].get_or_insert(replaced.stem_v);
+            let charset = match prepared {
+                Some(font) => font.charset.as_ref(),
+                None => glyphs_by_file.get(&key).and_then(Option::as_ref),
+            };
+            b.set(
+                replaced.desc_obj as usize,
+                type1_descriptor(&pdf_name, 4, dims, charset.filter(|_| !doc.omit_charset), file),
+            );
+        }
+        if let Some(file) = file {
+            if emitted_files.insert(file) {
+                set_type1_font_file(&mut b, file, prepared, font);
             }
         }
     }
@@ -2412,12 +1984,12 @@ pub fn write_pdf(doc: &PdfDoc) -> Result<Vec<u8>, String> {
         } else {
             b.set_stream(*content_obj, "", &page.content, true);
         }
-        let mut fonts_res = String::new();
-        for (fidx, fnum) in &page.fonts {
-            if let Some(fo) = font_objs.get(*fidx) {
-                fonts_res.push_str(&format!("/F{} {} 0 R ", fnum, fo.font));
-            }
-        }
+        let fonts_res: String = font_resource_entries(&page.fonts, &doc.resname_prefix, |index| {
+            font_objs.get(index).map(|fo| fo.font)
+        })
+        .iter()
+        .map(|entry| format!("{entry} "))
+        .collect();
         let mut annots_res = String::new();
         for (a, aobj) in page.annots.iter().zip(annot_objs) {
             emit_annot(&mut b, *aobj, a, (doc.mag, doc.decimal_digits));
@@ -2435,17 +2007,7 @@ pub fn write_pdf(doc: &PdfDoc) -> Result<Vec<u8>, String> {
         } else {
             format!(" {}", res_extra.trim())
         };
-        let (forms, images) = painted_xobjects(&page.content);
-        let mut xobj_entries = Vec::new();
-        // image dictionaries may open with their `attr` entries
-        for (obj_num, _) in &doc.objects {
-            if forms.contains(obj_num) {
-                xobj_entries.push(format!("/Fm{} {} 0 R", obj_num, obj_num));
-            }
-            if images.contains(obj_num) {
-                xobj_entries.push(format!("/Im{} {} 0 R", obj_num, obj_num));
-            }
-        }
+        let xobj_entries = xobject_resource_entries(doc, &page.xforms, &page.ximages);
         let xobj_str = if xobj_entries.is_empty() {
             String::new()
         } else {
@@ -2601,17 +2163,8 @@ pub fn write_pdf(doc: &PdfDoc) -> Result<Vec<u8>, String> {
     }
 
     // ---- emit info
-    let info_str = String::from_utf8_lossy(&doc.info);
-    let mut info_body = format!("<< {}", info_str);
-    if !info_str.contains("/Producer") {
-        info_body.push_str(" /Producer (tex-rs)");
-    }
-    if !info_str.contains("/Creator") {
-        info_body.push_str(" /Creator (tex-rs)");
-    }
-    info_body.push_str(" >>");
     if let Some(info_obj) = info_obj {
-        b.set(info_obj, info_body);
+        b.set(info_obj, info_dictionary(doc));
     }
     // ---- emit catalog
     let mut cat = format!("<< /Type /Catalog /Pages {} 0 R", pages_obj);
@@ -2687,7 +2240,7 @@ pub fn write_pdf(doc: &PdfDoc) -> Result<Vec<u8>, String> {
         b.set_bytes(enc_obj, dict_str.into_bytes());
         (Some(enc_obj), Some(fid))
     } else {
-        (None, None)
+        (None, trailer_id(doc))
     };
 
     // Raw extension objects can contain duplicate keys, uncompressed streams
@@ -2739,30 +2292,92 @@ pub fn write_pdf(doc: &PdfDoc) -> Result<Vec<u8>, String> {
     })
 }
 
-/// Object numbers a content stream paints as `/Fm<n> Do` (forms) and
-/// `/Im<n> Do` (images), found in one pass over the stream.
-fn painted_xobjects(content: &[u8]) -> (BTreeSet<i32>, BTreeSet<i32>) {
-    let mut forms = BTreeSet::new();
-    let mut images = BTreeSet::new();
-    let mut at = 0;
-    while let Some(offset) = content[at..].iter().position(|&byte| byte == b'/') {
-        at += offset + 1;
-        let set = match content.get(at..at + 2) {
-            Some(b"Fm") => &mut forms,
-            Some(b"Im") => &mut images,
-            _ => continue,
-        };
-        let digits = &content[at + 2..];
-        let len = digits.iter().take_while(|byte| byte.is_ascii_digit()).count();
-        // `/Fm<n> Do` names use the decimal object number without padding.
-        if len == 0 || (len > 1 && digits[0] == b'0') || !digits[len..].starts_with(b" Do") {
+/// pdfTeX "Generate font resources": `/F<ff><prefix> <obj> 0 R` per distinct
+/// resource name, in first-use order. Fonts sharing a name (one TFM at
+/// several sizes) share the dictionary, so only the first entry is kept.
+fn font_resource_entries(
+    fonts: &[(usize, u32)],
+    prefix: &str,
+    font_object: impl Fn(usize) -> Option<usize>,
+) -> Vec<String> {
+    let mut names: Vec<u32> = Vec::new();
+    let mut entries = Vec::new();
+    for &(index, number) in fonts {
+        if names.contains(&number) {
             continue;
         }
-        if let Some(number) = std::str::from_utf8(&digits[..len]).ok().and_then(|n| n.parse().ok()) {
-            set.insert(number);
+        if let Some(object) = font_object(index) {
+            names.push(number);
+            entries.push(format!("/F{number}{prefix} {object} 0 R"));
         }
     }
-    (forms, images)
+    entries
+}
+
+/// pdfTeX "Generate XObject resources": the forms painted (`/Fm<n>`), then
+/// the images (`/Im<n>`), each named by its creation count.
+fn xobject_resource_entries(doc: &PdfDoc, xforms: &[i32], ximages: &[i32]) -> Vec<String> {
+    let prefix = &doc.resname_prefix;
+    let forms = xforms.iter().map(|&object| {
+        let name = doc.form_names.get(&object).copied().unwrap_or(object);
+        format!("/Fm{name}{prefix} {object} 0 R")
+    });
+    let images = ximages.iter().map(|&object| {
+        let name = doc.image_names.get(&object).copied().unwrap_or(object);
+        format!("/Im{name}{prefix} {object} 0 R")
+    });
+    forms.chain(images).collect()
+}
+
+/// pdftex.web `pdf_print_info`: /Producer unless the user's `\pdfinfo` gives
+/// one, that text, then /Creator, /CreationDate, /ModDate and /Trapped
+/// (each only when not given), and /PTEX.Fullbanner.
+fn info_dictionary(doc: &PdfDoc) -> String {
+    let user = String::from_utf8_lossy(&doc.info);
+    let given = |key: &str| user.contains(key);
+    let mut dict = String::from("<<\n");
+    if !given("/Producer") {
+        dict.push_str(&format!("/Producer ({})\n", crate::pdftex::PDFTEX_PRODUCER));
+    }
+    if !user.is_empty() {
+        dict.push_str(&user);
+        dict.push('\n');
+    }
+    if !given("/Creator") {
+        dict.push_str("/Creator (TeX)\n");
+    }
+    if !doc.info_omit_date && !doc.start_time.is_empty() {
+        for key in ["CreationDate", "ModDate"] {
+            if !given(&format!("/{key}")) {
+                dict.push_str(&format!("/{key} ({})\n", doc.start_time));
+            }
+        }
+    }
+    if !given("/Trapped") {
+        dict.push_str("/Trapped /False\n");
+    }
+    if let Some(key) = doc.ptex_banner_key {
+        dict.push_str(&format!("/{key} ({})\n", escape_string(crate::pdftex::PDFTEX_BANNER)));
+    }
+    dict.push_str(">>");
+    dict
+}
+
+/// pdftex.web "Output the trailer": `print_ID_alt` (the MD5 of the
+/// `\pdftrailerid` text, nothing for empty text) or `print_ID` (the MD5 of the
+/// start time and the output file name).
+fn trailer_id(doc: &PdfDoc) -> Option<[u8; 16]> {
+    match &doc.trailer_id_text {
+        Some(text) if text.is_empty() => None,
+        Some(text) => Some(md5::compute(text).0),
+        None if doc.start_time.is_empty() => None,
+        None => {
+            let mut ctx = md5::Context::new();
+            ctx.consume(doc.start_time.as_bytes());
+            ctx.consume(doc.output_name.as_bytes());
+            Some(ctx.finalize().0)
+        }
+    }
 }
 
 /// pdfTeX "Generate ProcSet if desired": /Text with fonts, /ImageB, /ImageC
@@ -2793,6 +2408,127 @@ fn font_attr_entry(attr: &str) -> String {
     } else {
         format!(" {attr}")
     }
+}
+
+/// Whether a raw dictionary-entry text (`\pdffontattr`, `\pdfximage attr`)
+/// defines `key` at its top level. Such a user entry replaces the entry the
+/// writer would generate for that key: a dictionary must not repeat a key.
+pub(crate) fn attr_defines_key(attr: &str, key: &str) -> bool {
+    let bytes = attr.as_bytes();
+    let is_delimiter = |b: u8| b.is_ascii_whitespace() || b"()<>[]{}/%".contains(&b);
+    // Top-level objects of the text: (start, end) byte ranges.
+    let mut items: Vec<(usize, usize)> = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        let start = i;
+        match bytes[i] {
+            b if b.is_ascii_whitespace() => {
+                i += 1;
+                continue;
+            }
+            b'%' => {
+                while i < bytes.len() && !matches!(bytes[i], b'\n' | b'\r') {
+                    i += 1;
+                }
+                continue;
+            }
+            b'/' => {
+                i += 1;
+                while i < bytes.len() && !is_delimiter(bytes[i]) {
+                    i += 1;
+                }
+            }
+            b'(' => {
+                let mut depth = 0;
+                while i < bytes.len() {
+                    match bytes[i] {
+                        b'\\' => i += 1,
+                        b'(' => depth += 1,
+                        b')' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                    i += 1;
+                }
+                i += 1;
+            }
+            b'[' | b'<' if bytes[i] == b'[' || bytes.get(i + 1) == Some(&b'<') => {
+                // array or dictionary: skip to the matching closer
+                let mut depth = 0_i32;
+                while i < bytes.len() {
+                    match bytes[i] {
+                        b'(' => {
+                            let mut paren = 0;
+                            while i < bytes.len() {
+                                match bytes[i] {
+                                    b'\\' => i += 1,
+                                    b'(' => paren += 1,
+                                    b')' => {
+                                        paren -= 1;
+                                        if paren == 0 {
+                                            break;
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                                i += 1;
+                            }
+                        }
+                        b'[' => depth += 1,
+                        b'<' if bytes.get(i + 1) == Some(&b'<') => {
+                            depth += 1;
+                            i += 1;
+                        }
+                        b']' => depth -= 1,
+                        b'>' if bytes.get(i + 1) == Some(&b'>') => {
+                            depth -= 1;
+                            i += 1;
+                        }
+                        _ => {}
+                    }
+                    i += 1;
+                    if depth <= 0 {
+                        break;
+                    }
+                }
+            }
+            b'<' => {
+                while i < bytes.len() && bytes[i] != b'>' {
+                    i += 1;
+                }
+                i += 1;
+            }
+            _ => {
+                while i < bytes.len() && !is_delimiter(bytes[i]) {
+                    i += 1;
+                }
+                if i == start {
+                    i += 1;
+                }
+            }
+        }
+        items.push((start, i.min(bytes.len())));
+    }
+    let word = |item: usize| items.get(item).map(|&(s, e)| &bytes[s..e]);
+    let is_number = |item: usize| word(item).is_some_and(|w| !w.is_empty() && w.iter().all(u8::is_ascii_digit));
+    let wanted = key.as_bytes();
+    let mut at = 0;
+    while let Some(name) = word(at) {
+        if name.first() == Some(&b'/') && &name[1..] == wanted {
+            return true;
+        }
+        // key, then one value (an indirect reference is three objects)
+        at += if is_number(at + 1) && is_number(at + 2) && word(at + 3) == Some(b"R") {
+            4
+        } else {
+            2
+        };
+    }
+    false
 }
 
 fn emit_annot(b: &mut PdfBuilder, obj: usize, a: &Annot, scale: (i32, u32)) {
@@ -2885,27 +2621,14 @@ pub fn optimize_pdf_file(path: &str) {
 mod tests {
     use super::*;
 
-    fn charstring_encrypt(plain: &[u8]) -> Vec<u8> {
-        let mut state = 4_330_u16;
-        plain
-            .iter()
-            .map(|&byte| {
-                let cipher = byte ^ (state >> 8) as u8;
-                state = (cipher as u16)
-                    .wrapping_add(state)
-                    .wrapping_mul(52_845)
-                    .wrapping_add(22_719);
-                cipher
-            })
-            .collect()
-    }
-
-    fn encrypted_entry(prefix: &str, plain: &[u8], suffix: &str) -> Vec<u8> {
-        let encrypted = charstring_encrypt(plain);
-        let mut entry = format!("{prefix} {} RD ", encrypted.len()).into_bytes();
-        entry.extend_from_slice(&encrypted);
-        entry.extend_from_slice(suffix.as_bytes());
-        entry
+    #[test]
+    fn attr_keys_are_found_at_top_level_only() {
+        let attr = "/Group<</S/Transparency/K false>> /Other [ /ToUnicode ] /Mixed (a)/Ref 5 0 R /ToUnicode 7 0 R";
+        assert!(attr_defines_key(attr, "Group"));
+        assert!(attr_defines_key(attr, "Ref"));
+        assert!(attr_defines_key(attr, "ToUnicode"));
+        assert!(!attr_defines_key(attr, "S"));
+        assert!(!attr_defines_key("/Other [ /ToUnicode ] /X (/ToUnicode)", "ToUnicode"));
     }
 
     #[test]
@@ -2946,112 +2669,5 @@ mod tests {
         // the subsetter still resolves any code through the full vector
         let encoding = font.encoding_diff.as_ref().unwrap();
         assert_eq!((encoding.len(), encoding[65].as_str()), (256, "A"));
-    }
-
-    #[test]
-    fn type1_trace_preserves_caller_stack_and_hint_replacement() {
-        let subrs = HashMap::from([
-            (3, vec![11]),
-            (4, vec![140, 142, 12, 16, 12, 17, 10, 11]),
-            (7, vec![139, 159, 1, 11]),
-            (8, vec![139, 169, 3, 11]),
-            (9, vec![11]),
-        ]);
-        let mut trace = CharStringTrace::new(&subrs);
-        // Call the same wrapper with two different hint-subroutine indices.
-        assert_eq!(
-            trace.execute(&[146, 143, 10, 147, 143, 10, 14], 0),
-            Some(true)
-        );
-        assert_eq!(trace.used_subrs, BTreeSet::from([3, 4, 7, 8]));
-        assert!(trace.stack.is_empty());
-    }
-
-    #[test]
-    fn type1_trace_preserves_return_values_and_fractional_division() {
-        let subrs = HashMap::from([(0, vec![141, 11]), (2, vec![11])]);
-        let mut trace = CharStringTrace::new(&subrs);
-        assert_eq!(trace.execute(&[139, 10, 10, 14], 0), Some(true));
-        assert_eq!(trace.used_subrs, BTreeSet::from([0, 2]));
-        let mut trace = CharStringTrace::new(&subrs);
-        // (1 / 2) / (1 / 4) = Subr 2, with no integer truncation.
-        assert_eq!(
-            trace.execute(&[140, 141, 12, 12, 140, 143, 12, 12, 12, 12, 10, 14], 0),
-            Some(true)
-        );
-        assert_eq!(trace.used_subrs, BTreeSet::from([2]));
-    }
-
-    #[test]
-    fn type1_trace_handles_flex_and_extended_seac() {
-        let subrs = HashMap::from([(0, vec![142, 139, 12, 16, 12, 17, 12, 17, 12, 33, 11])]);
-        let mut trace = CharStringTrace::new(&subrs);
-        assert_eq!(trace.execute(&[189, 139, 139, 139, 10, 14], 0), Some(true));
-        assert!(trace.stack.is_empty());
-        // A composite using StandardEncoding AE (225) and acute (194).
-        assert_eq!(
-            trace.execute(&[139, 139, 139, 247, 117, 247, 86, 12, 6], 0),
-            Some(true)
-        );
-        assert_eq!(trace.seac, BTreeSet::from(["AE", "acute"]));
-    }
-
-    #[test]
-    fn type1_trace_rejects_unsupported_and_malformed_programs() {
-        let subrs = HashMap::from([(0, vec![139, 10, 11])]);
-        for program in [
-            vec![139, 10, 14],          // recursive subroutine
-            vec![140, 10, 14],          // missing subroutine
-            vec![139, 143, 12, 16, 14], // custom OtherSubr
-            vec![140, 139, 12, 12, 14], // division by zero
-            vec![255, 1],               // truncated operand
-            vec![12, 17, 10, 14],       // pop without OtherSubr results
-        ] {
-            assert_eq!(CharStringTrace::new(&subrs).execute(&program, 0), None);
-        }
-        let mut trace = CharStringTrace::new(&subrs);
-        trace.budget = 0;
-        assert_eq!(trace.execute(&[14], 0), None);
-        assert_eq!(
-            charstring_plain(&[139, 10, 14], -1),
-            Some(vec![139, 10, 14])
-        );
-        assert_eq!(charstring_plain(&[14], -2), None);
-        assert_eq!(charstring_plain(&[14], 4), None);
-    }
-
-    #[test]
-    fn type1_subset_keeps_used_charstrings_and_reachable_subrs() {
-        let mut private = vec![0, 0, 0, 0];
-        private.extend_from_slice(b"/lenIV 4 def\n/Subrs 2 array\n");
-        private.extend(encrypted_entry("dup 0", &[0, 0, 0, 0, 11], " NP\n"));
-        private.extend(encrypted_entry("dup 1", &[0, 0, 0, 0, 11], " NP\n"));
-        private.extend_from_slice(b"ND\n2 index /CharStrings 3 dict dup begin\n");
-        private.extend(encrypted_entry("/.notdef", &[0, 0, 0, 0, 14], " ND\n"));
-        private.extend(encrypted_entry("/A", &[0, 0, 0, 0, 139, 10, 14], " ND\n"));
-        private.extend(encrypted_entry("/B", &[0, 0, 0, 0, 140, 10, 14], " ND\n"));
-        private.extend_from_slice(b"end\n");
-
-        let clear = b"%!PS-AdobeFont-1.0: Test 1.0\ncurrentfile eexec\n";
-        let encrypted = eexec_encrypt(&private);
-        let trailer = b"cleartomark\n";
-        let mut program = clear.to_vec();
-        program.extend_from_slice(&encrypted);
-        program.extend_from_slice(trailer);
-        let (subset, glyphs) = subset_type1(
-            &program,
-            clear.len(),
-            encrypted.len(),
-            trailer.len(),
-            &["A".to_owned()].into_iter().collect(),
-        )
-        .expect("synthetic Type 1 program should be subset");
-        assert_eq!(glyphs.into_iter().collect::<Vec<_>>(), [".notdef", "A"]);
-        let decrypted =
-            eexec_decrypt(&subset.data[subset.length1..subset.length1 + subset.length2]);
-        assert!(find_bytes(&decrypted, b"/A ").is_some());
-        assert!(find_bytes(&decrypted, b"/B ").is_none());
-        assert!(find_bytes(&decrypted, b"dup 0 ").is_some());
-        assert!(find_bytes(&decrypted, b"dup 1 ").is_none());
     }
 }

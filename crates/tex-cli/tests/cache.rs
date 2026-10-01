@@ -18,13 +18,27 @@ impl Job {
     fn compile(&self) -> Output {
         self.compile_with(&[])
     }
+    /// The engine in the environment every test here shares. With
+    /// FORCE_SOURCE_DATE=1, SOURCE_DATE_EPOCH also fixes `\time`/`\day`;
+    /// otherwise the live minute is part of the cache key and a pass that
+    /// crosses a minute boundary cannot hit the record of the one before.
+    /// HOME leaves out the user's TEXMFVAR tree, whose unindexed directories
+    /// the cache snapshots and which concurrent TeX Live runs (mktextfm)
+    /// extend at any time.
+    fn pdflatex(&self) -> Command {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_pdflatex"));
+        command
+            .env("SOURCE_DATE_EPOCH", "1700000000")
+            .env("FORCE_SOURCE_DATE", "1")
+            .env("HOME", self.0.join("home"))
+            .env("TEX_RS_CACHE_DIR", self.0.join("cache"));
+        command
+    }
     fn compile_with(&self, args: &[&str]) -> Output {
-        Command::new(env!("CARGO_BIN_EXE_pdflatex"))
+        self.pdflatex()
             .args(args)
             .arg("main.tex")
             .current_dir(&self.0)
-            .env("SOURCE_DATE_EPOCH", "1700000000")
-            .env("TEX_RS_CACHE_DIR", self.0.join("cache"))
             .output()
             .unwrap()
     }
@@ -192,11 +206,9 @@ fn main_symlink_spelling_is_part_of_the_cache_identity() {
     symlink("../real/main.tex", job.0.join("a/main.tex")).unwrap();
     symlink("../real/main.tex", job.0.join("b/main.tex")).unwrap();
     let compile = |main: &str| {
-        Command::new(env!("CARGO_BIN_EXE_pdflatex"))
+        job.pdflatex()
             .arg(main)
             .current_dir(&job.0)
-            .env("SOURCE_DATE_EPOCH", "1700000000")
-            .env("TEX_RS_CACHE_DIR", job.0.join("cache"))
             .output()
             .unwrap()
     };
@@ -237,11 +249,9 @@ fn cache_paths_round_trip_control_and_non_utf8_bytes() {
     )
     .unwrap();
     let compile = || {
-        Command::new(env!("CARGO_BIN_EXE_pdflatex"))
+        job.pdflatex()
             .arg("main.tex")
             .current_dir(&cwd)
-            .env("SOURCE_DATE_EPOCH", "1700000000")
-            .env("TEX_RS_CACHE_DIR", job.0.join("cache"))
             .output()
             .unwrap()
     };
@@ -419,10 +429,10 @@ fn validated_cache_hit_marker_is_confined_to_the_requested_cache() {
 
     let cache = job.0.join("cache");
     let marker = cache.join("hit-marker");
-    let hit = Command::new(env!("CARGO_BIN_EXE_pdflatex"))
+    let hit = job
+        .pdflatex()
         .arg("main.tex")
         .current_dir(&job.0)
-        .env("SOURCE_DATE_EPOCH", "1700000000")
         .env("TEX_RS_CACHE_DIR", &cache)
         .env("TEX_RS_CACHE_HIT_MARKER", &marker)
         .output()
@@ -432,10 +442,10 @@ fn validated_cache_hit_marker_is_confined_to_the_requested_cache() {
     std::fs::remove_file(&marker).unwrap();
 
     let outside = job.0.join("outside-marker");
-    let rejected = Command::new(env!("CARGO_BIN_EXE_pdflatex"))
+    let rejected = job
+        .pdflatex()
         .arg("main.tex")
         .current_dir(&job.0)
-        .env("SOURCE_DATE_EPOCH", "1700000000")
         .env("TEX_RS_CACHE_DIR", &cache)
         .env("TEX_RS_CACHE_HIT_MARKER", &outside)
         .output()
@@ -485,11 +495,9 @@ fn replacing_terminal_probe_directory_with_casefold_file_invalidates() {
     )
     .unwrap();
     let compile = || {
-        Command::new(env!("CARGO_BIN_EXE_pdflatex"))
+        job.pdflatex()
             .arg("main.tex")
             .current_dir(&job.0)
-            .env("SOURCE_DATE_EPOCH", "1700000000")
-            .env("TEX_RS_CACHE_DIR", job.0.join("cache"))
             .env("TEXMFHOME", &lower)
             .output()
             .unwrap()
@@ -920,11 +928,9 @@ fn newly_appearing_texinputs_class_shadows_a_cached_lower_priority_class() {
     .unwrap();
 
     let compile = || {
-        Command::new(env!("CARGO_BIN_EXE_pdflatex"))
+        job.pdflatex()
             .arg("main.tex")
             .current_dir(&job.0)
-            .env("SOURCE_DATE_EPOCH", "1700000000")
-            .env("TEX_RS_CACHE_DIR", job.0.join("cache"))
             .env("TEXINPUTS", &overrides)
             .output()
             .unwrap()
@@ -975,11 +981,9 @@ fn newly_appearing_texmfhome_tree_invalidates_a_missing_root_probe() {
     .unwrap();
 
     let compile = || {
-        Command::new(env!("CARGO_BIN_EXE_pdflatex"))
+        job.pdflatex()
             .arg("main.tex")
             .current_dir(&job.0)
-            .env("SOURCE_DATE_EPOCH", "1700000000")
-            .env("TEX_RS_CACHE_DIR", job.0.join("cache"))
             .env("TEXMFHOME", &texmf_home)
             .output()
             .unwrap()
@@ -1029,11 +1033,9 @@ fn newly_appearing_file_inside_unindexed_texmfhome_invalidates_directory_snapsho
     .unwrap();
 
     let compile = || {
-        Command::new(env!("CARGO_BIN_EXE_pdflatex"))
+        job.pdflatex()
             .arg("main.tex")
             .current_dir(&job.0)
-            .env("SOURCE_DATE_EPOCH", "1700000000")
-            .env("TEX_RS_CACHE_DIR", job.0.join("cache"))
             .env("TEXMFHOME", &texmf_home)
             .output()
             .unwrap()
@@ -1085,11 +1087,9 @@ fn file_created_inside_unindexed_texmfhome_during_pass_cannot_seed_cache() {
     .unwrap();
 
     let compile = || {
-        Command::new(env!("CARGO_BIN_EXE_pdflatex"))
+        job.pdflatex()
             .arg("main.tex")
             .current_dir(&job.0)
-            .env("SOURCE_DATE_EPOCH", "1700000000")
-            .env("TEX_RS_CACHE_DIR", job.0.join("cache"))
             .env("TEXMFHOME", &texmf_home)
             .output()
             .unwrap()
@@ -1167,11 +1167,9 @@ fn index_rewritten_during_pass_cannot_seed_cache() {
     .unwrap();
 
     let compile = || {
-        Command::new(env!("CARGO_BIN_EXE_pdflatex"))
+        job.pdflatex()
             .arg("main.tex")
             .current_dir(&job.0)
-            .env("SOURCE_DATE_EPOCH", "1700000000")
-            .env("TEX_RS_CACHE_DIR", job.0.join("cache"))
             .env("TEXMFHOME", &texmf_home)
             .output()
             .unwrap()
@@ -1210,11 +1208,9 @@ fn home_is_part_of_the_cache_identity() {
     .unwrap();
 
     let compile = |home: &std::path::Path| {
-        Command::new(env!("CARGO_BIN_EXE_pdflatex"))
+        job.pdflatex()
             .arg("main.tex")
             .current_dir(&job.0)
-            .env("SOURCE_DATE_EPOCH", "1700000000")
-            .env("TEX_RS_CACHE_DIR", job.0.join("cache"))
             .env_remove("TEXMFHOME")
             .env("HOME", home)
             .output()
@@ -1466,11 +1462,9 @@ fn texinputs_pdffilesize_stays_a_size_only_dependency() {
     .unwrap();
 
     let compile = || {
-        Command::new(env!("CARGO_BIN_EXE_pdflatex"))
+        job.pdflatex()
             .arg("main.tex")
             .current_dir(&job.0)
-            .env("SOURCE_DATE_EPOCH", "1700000000")
-            .env("TEX_RS_CACHE_DIR", job.0.join("cache"))
             .env("TEXINPUTS", &inputs)
             .output()
             .unwrap()
@@ -1720,13 +1714,11 @@ fn canonical_working_directory_is_part_of_the_cache_identity() {
     )
     .unwrap();
     let run = |cwd: &std::path::Path| {
-        Command::new(env!("CARGO_BIN_EXE_pdflatex"))
+        job.pdflatex()
             .arg("-output-directory")
             .arg(&output_dir)
             .arg(job.0.join("main.tex"))
             .current_dir(cwd)
-            .env("SOURCE_DATE_EPOCH", "1700000000")
-            .env("TEX_RS_CACHE_DIR", job.0.join("cache"))
             .output()
             .unwrap()
     };

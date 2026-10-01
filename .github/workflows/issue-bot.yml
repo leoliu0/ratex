@@ -1,220 +1,266 @@
 name: Issue Assistant Bot
 
+# Security model: issue and comment bodies are untrusted.
+# - Untrusted text never reaches a `${{ }}` expression inside a script; it
+#   travels through files and environment variables only.
+# - The snippet compiles in a job whose token can only read the repository,
+#   as a separate unprivileged user with an empty environment, so a document
+#   that reads or writes arbitrary paths (\input, \openout) can neither reach
+#   the runner's credentials nor modify files used by later steps.
+# - Secrets and the issue-write token live in a second job that never runs
+#   untrusted code.
+
 on:
   issues:
     types: [opened]
   issue_comment:
     types: [created]
 
-permissions:
-  issues: write
-  contents: write
-  pull-requests: write
+permissions: {}
+
+concurrency:
+  group: issue-bot-${{ github.event.issue.number }}
+  cancel-in-progress: false
 
 jobs:
-  ai-triage-and-fix:
+  reproduce:
+    name: Reproduce snippet
     if: >
-      github.event_name == 'issues' ||
-      (github.event_name == 'issue_comment' &&
-       !contains(github.event.comment.user.login, '[bot]') &&
-       (contains(github.event.comment.body, '/fix') ||
-        contains(github.event.comment.body, '/reproduce') ||
-        contains(github.event.comment.body, '/test')))
+      !github.event.issue.pull_request &&
+      github.event.sender.type != 'Bot' &&
+      (github.event_name == 'issues' ||
+       contains(github.event.comment.body, '/fix') ||
+       contains(github.event.comment.body, '/reproduce') ||
+       contains(github.event.comment.body, '/test'))
     runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    outputs:
+      has_snippet: ${{ steps.extract.outputs.has_snippet }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
-      - name: Setup Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      # Extract code snippet from issue body and attempt reproduction with ratex
-      - name: Test TeX Reproduction Snippet
-        id: test-tex
+      - name: Extract TeX snippet
+        id: extract
         run: |
           python3 - << 'EOF'
-          import os, re, subprocess, json
+          import json, os, re
+          from pathlib import Path
 
-          event_path = os.environ.get("GITHUB_EVENT_PATH")
-          if not event_path or not os.path.exists(event_path):
-              exit(0)
-
-          with open(event_path) as f:
+          with open(os.environ["GITHUB_EVENT_PATH"], encoding="utf-8") as f:
               data = json.load(f)
-
-          body = ""
-          if "comment" in data:
-              body = data["comment"].get("body", "")
-          elif "issue" in data:
-              body = data["issue"].get("body", "")
+          source = data.get("comment") or data.get("issue") or {}
+          body = source.get("body") or ""
 
           snippets = re.findall(r'```(?:tex|latex)?\s*([\s\S]*?)```', body)
           if not snippets and "\\documentclass" in body:
               snippets = [body]
 
-          if snippets:
-              tex_code = snippets[0].strip()
-              os.makedirs("/tmp/reproduce", exist_ok=True)
-              with open("/tmp/reproduce/test.tex", "w") as f:
-                  f.write(tex_code)
-              with open(os.environ["GITHUB_OUTPUT"], "a") as out:
-                  out.write("has_snippet=true\n")
-          else:
-              with open(os.environ["GITHUB_OUTPUT"], "a") as out:
-                  out.write("has_snippet=false\n")
+          has_snippet = bool(snippets)
+          if has_snippet:
+              out = Path(os.environ["RUNNER_TEMP"], "reproduction")
+              out.mkdir(parents=True, exist_ok=True)
+              (out / "test.tex").write_text(snippets[0].strip() + "\n", encoding="utf-8")
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as f:
+              f.write(f"has_snippet={'true' if has_snippet else 'false'}\n")
           EOF
 
-      # If snippet was found, compile ratex and test reproduction
-      - name: Compile and Test Reproduction
-        if: steps.test-tex.outputs.has_snippet == 'true'
-        id: run-reproduce
-        run: |
-          cargo build --release --bin ratex
-          set +e
-          OUTPUT=$(/home/runner/work/ratex/ratex/target/release/ratex /tmp/reproduce/test.tex 2>&1)
-          EXIT_CODE=$?
-          echo "RATE_EXIT_CODE=$EXIT_CODE" >> $GITHUB_OUTPUT
-          
-          echo "LOG_OUTPUT<<EOF" >> $GITHUB_OUTPUT
-          echo "$OUTPUT" | head -n 40 >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
+      - name: Setup Rust toolchain
+        if: steps.extract.outputs.has_snippet == 'true'
+        uses: dtolnay/rust-toolchain@stable
 
-      # Call Gemini 3.8 Flash to analyze compilation failure or answer question
+      - name: Build ratex
+        if: steps.extract.outputs.has_snippet == 'true'
+        run: cargo build --release --locked --bin ratex
+
+      - name: Compile snippet as an unprivileged user
+        if: steps.extract.outputs.has_snippet == 'true'
+        run: |
+          out="$RUNNER_TEMP/reproduction"
+          sudo useradd --create-home --shell /usr/sbin/nologin texbot
+          sudo install -d -o texbot -g texbot /home/texbot/work
+          sudo install -m 0755 target/release/ratex /home/texbot/ratex
+          sudo install -m 0644 -o texbot -g texbot "$out/test.tex" /home/texbot/work/test.tex
+          set +e
+          # The redirect deliberately stays with the runner user: texbot cannot write there.
+          # shellcheck disable=SC2024
+          sudo -u texbot env -i -C /home/texbot/work \
+            HOME=/home/texbot PATH=/usr/bin:/bin LANG=C.UTF-8 \
+            timeout --kill-after=10 300 /home/texbot/ratex test.tex \
+            > "$out/output.txt" 2>&1
+          echo "$?" > "$out/exit_code"
+          set -e
+          head -n 40 "$out/output.txt" | head -c 20000 > "$out/log.txt"
+          rm "$out/output.txt"
+
+      - name: Upload reproduction result
+        if: steps.extract.outputs.has_snippet == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: reproduction
+          path: ${{ runner.temp }}/reproduction/
+          if-no-files-found: error
+          retention-days: 7
+
+  reply:
+    name: Reply on issue
+    needs: reproduce
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      issues: write
+    env:
+      HAS_SNIPPET: ${{ needs.reproduce.outputs.has_snippet }}
+      REPRO_DIR: ${{ github.workspace }}/reproduction
+    steps:
+      - name: Download reproduction result
+        if: needs.reproduce.outputs.has_snippet == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: reproduction
+          path: ${{ github.workspace }}/reproduction
+
+      # Ask Gemini to analyze a compilation failure.
       - name: AI Diagnosis with Gemini 3.8 Flash
-        if: steps.test-tex.outputs.has_snippet == 'true' && steps.run-reproduce.outputs.RATE_EXIT_CODE != '0'
-        id: gemini-ai
+        if: needs.reproduce.outputs.has_snippet == 'true'
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
           python3 - << 'EOF'
-          import os, json, urllib.request
+          import json, os, urllib.request
+          from pathlib import Path
 
           api_key = os.environ.get("GEMINI_API_KEY")
-          if not api_key:
-              exit(0)
+          repro = Path(os.environ["REPRO_DIR"])
+          if not api_key or (repro / "exit_code").read_text().strip() == "0":
+              raise SystemExit(0)
 
-          tex_snippet = ""
-          if os.path.exists("/tmp/reproduce/test.tex"):
-              with open("/tmp/reproduce/test.tex") as f:
-                  tex_snippet = f.read()
+          tex_snippet = (repro / "test.tex").read_text(encoding="utf-8", errors="replace")
+          logs = (repro / "log.txt").read_text(encoding="utf-8", errors="replace")
 
-          logs = """${{ steps.run-reproduce.outputs.LOG_OUTPUT }}"""
+          prompt = f"""You are the automated AI maintainer for 'ratex', a pure-Rust TeX engine.
+          A user reported a compilation failure on the following snippet:
 
-          prompt = f"""You are the automated AI maintainer for 'ratex', an ultra-fast, pure-Rust TeX engine.
-              A user reported a compilation failure on the following snippet:
-              
-              LaTeX Snippet:
-              ```latex
-              {tex_snippet}
-              ```
-              
-              Ratex Compiler Error:
-              ```text
-              {logs}
-              ```
-              
-              Please analyze:
-              1. What went wrong (root cause in TeX/LaTeX or missing package/macro behavior).
-              2. A suggested workaround for the user in their LaTeX document.
-              3. Keep your response concise, friendly, and formatted in clean markdown."""
+          LaTeX Snippet:
+          ```latex
+          {tex_snippet}
+          ```
 
-          url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key={api_key}"
+          Ratex Compiler Error:
+          ```text
+          {logs}
+          ```
+
+          Please analyze:
+          1. What went wrong (root cause in TeX/LaTeX or missing package/macro behavior).
+          2. A suggested workaround for the user in their LaTeX document.
+          3. Keep your response concise, friendly, and formatted in clean markdown."""
+
           req = urllib.request.Request(
-              url,
+              "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent",
               data=json.dumps({"contents": [{"parts": [{"text": prompt}]}]}).encode("utf-8"),
-              headers={"Content-Type": "application/json"}
+              headers={"Content-Type": "application/json", "x-goog-api-key": api_key},
           )
-
           try:
               with urllib.request.urlopen(req, timeout=30) as resp:
                   res = json.loads(resp.read().decode("utf-8"))
-                  candidates = res.get("candidates", [])
-                  if candidates:
-                      analysis = candidates[0]["content"]["parts"][0]["text"]
-                      with open("/tmp/gemini_analysis.md", "w") as f:
-                          f.write(analysis)
+              candidates = res.get("candidates", [])
+              if candidates:
+                  analysis = candidates[0]["content"]["parts"][0]["text"]
+                  (repro / "gemini_analysis.md").write_text(analysis, encoding="utf-8")
           except Exception as e:
-              print(f"Gemini API error: {e}")
+              print(f"Gemini API error: {type(e).__name__}")
           EOF
 
-      # Reply to Issue
-      - name: Reply to Issue
+      - name: Reply to issue
         uses: actions/github-script@v7
         with:
           script: |
             const fs = require('fs');
+            const path = require('path');
+            const repro = process.env.REPRO_DIR;
+            const hasSnippet = process.env.HAS_SNIPPET === 'true';
             const isComment = context.eventName === 'issue_comment';
-            const issueNumber = context.issue.number;
-            const hasSnippet = '${{ steps.test-tex.outputs.has_snippet }}' === 'true';
-            const exitCode = '${{ steps.run-reproduce.outputs.RATE_EXIT_CODE }}';
-            const logs = `${{ steps.run-reproduce.outputs.LOG_OUTPUT }}`;
-            const author = isComment ? context.payload.comment.user.login : context.payload.issue.user.login;
+            const author = context.payload.sender.login;
 
-            if (author.includes('[bot]') && !isComment) return;
-
-            let geminiAdvice = '';
-            if (fs.existsSync('/tmp/gemini_analysis.md')) {
-              geminiAdvice = '\n\n---\n\n### 🧠 Gemini 3.8 Flash AI Diagnosis\n\n' + fs.readFileSync('/tmp/gemini_analysis.md', 'utf8');
-            }
+            // A fence longer than any backtick run in the log keeps the log inside the code block.
+            const fenced = (text, lang) => {
+              const longest = Math.max(0, ...(text.match(/`+/g) || []).map((run) => run.length));
+              const fence = '`'.repeat(Math.max(3, longest + 1));
+              return `${fence}${lang}\n${text}\n${fence}`;
+            };
 
             let message = '';
             if (hasSnippet) {
+              const exitCode = fs.readFileSync(path.join(repro, 'exit_code'), 'utf8').trim();
+              const logs = fs.readFileSync(path.join(repro, 'log.txt'), 'utf8');
               if (exitCode === '0') {
-                message = `🤖 **Ratex Bot Reproduction Report**
-              
-              I ran your minimal reproduction snippet against the current \`main\` branch of \`ratex\`:
-              
-              ✅ **Compiled Successfully (Exit Code 0)**
-              
-              \`\`\`text
-              ${logs}
-              \`\`\`
-              
-              The document compiled without fatal errors. If you are experiencing visual bugs or unexpected layout differences compared to TeX Live, please provide a comparison screenshot or mention the specific output discrepancy.`;
-                            } else {
-                              message = `🤖 **Ratex Bot Reproduction Report**
-              
-              I reproduced the error against the current \`main\` branch of \`ratex\`:
-              
-              ❌ **Compilation Failed (Exit Code ${exitCode})**
-              
-              \`\`\`text
-              ${logs}
-              \`\`\`${geminiAdvice}
-              
-              This issue has been labeled as \`reproduced-bug\` and flagged for investigation.`;
-              
+                message = [
+                  '🤖 **Ratex Bot Reproduction Report**',
+                  '',
+                  'I ran your minimal reproduction snippet against the current `main` branch of `ratex`:',
+                  '',
+                  '✅ **Compiled Successfully (Exit Code 0)**',
+                  '',
+                  fenced(logs, 'text'),
+                  '',
+                  'The document compiled without fatal errors. If you are experiencing visual bugs or unexpected layout differences compared to TeX Live, please provide a comparison screenshot or mention the specific output discrepancy.',
+                ].join('\n');
+              } else {
+                const analysisPath = path.join(repro, 'gemini_analysis.md');
+                const advice = fs.existsSync(analysisPath)
+                  ? ['', '---', '', '### 🧠 Gemini 3.8 Flash AI Diagnosis', '', fs.readFileSync(analysisPath, 'utf8')]
+                  : [];
+                const status = exitCode === '124' ? 'Timed Out (300 s)' : `Compilation Failed (Exit Code ${exitCode})`;
+                message = [
+                  '🤖 **Ratex Bot Reproduction Report**',
+                  '',
+                  'I reproduced the error against the current `main` branch of `ratex`:',
+                  '',
+                  `❌ **${status}**`,
+                  '',
+                  fenced(logs, 'text'),
+                  ...advice,
+                  '',
+                  'This issue has been labeled as `reproduced` and flagged for investigation.',
+                ].join('\n');
                 try {
                   await github.rest.issues.addLabels({
                     owner: context.repo.owner,
                     repo: context.repo.repo,
-                    issue_number: issueNumber,
-                    labels: ['bug', 'reproduced']
+                    issue_number: context.issue.number,
+                    labels: ['bug', 'reproduced'],
                   });
-                } catch (e) {}
+                } catch (e) {
+                  core.warning(`Could not add labels: ${e.message}`);
+                }
               }
-            } else {
-              if (!isComment && author !== 'leoliu0') {
-                message = `Hi @${author}! 👋 Thanks for opening this issue.
-              
-              To help diagnose and fix this quickly, please provide a **minimal self-contained \`.tex\` reproduction snippet** wrapped in triple backticks:
-              
-              \`\`\`latex
-              \\documentclass{article}
-              \\begin{document}
-              % Your minimal snippet reproducing the error
-              \\end{document}
-              \`\`\`
-              
-              As soon as a code snippet is provided, I will automatically test and verify it against \`ratex\`.`;
-                            }
+            } else if (!isComment && author !== 'leoliu0') {
+              message = [
+                `Hi @${author}! 👋 Thanks for opening this issue.`,
+                '',
+                'To help diagnose and fix this quickly, please provide a **minimal self-contained `.tex` reproduction snippet** wrapped in triple backticks:',
+                '',
+                '```latex',
+                '\\documentclass{article}',
+                '\\begin{document}',
+                '% Your minimal snippet reproducing the error',
+                '\\end{document}',
+                '```',
+                '',
+                'As soon as a code snippet is provided, I will automatically test and verify it against `ratex`.',
+              ].join('\n');
             }
 
             if (message) {
               await github.rest.issues.createComment({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
-                issue_number: issueNumber,
-                body: message
+                issue_number: context.issue.number,
+                body: message.slice(0, 65000),
               });
             }

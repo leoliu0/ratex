@@ -312,9 +312,6 @@ pub struct GC {
     /// This ensures we don't re-scan the same objects
     sweepgc: SweepGc,
 
-    // === Statistics ===
-    pub stats: GcStats,
-
     pub tm_gc: LuaValue,
 
     pub tm_mode: LuaValue,
@@ -327,21 +324,6 @@ pub struct GC {
     finalizer_error: Option<String>,
 
     gc_memory_check: bool,
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct GcStats {
-    pub collection_count: usize,
-    pub minor_collections: usize,
-    pub major_collections: usize,
-    pub objects_collected: usize,
-    pub bytes_allocated: usize,
-    #[allow(unused)]
-    pub bytes_freed: usize,
-    pub threshold: usize,
-    pub young_gen_size: usize,
-    pub old_gen_size: usize,
-    pub promoted_objects: usize,
 }
 
 impl GC {
@@ -373,7 +355,6 @@ impl GC {
             unmarked_twups: Vec::new(),
             finobj: Vec::new(),
             sweepgc: SweepGc::AllGc(0),
-            stats: GcStats::default(),
             tm_gc: LuaValue::nil(),
             tm_mode: LuaValue::nil(),
             max_memory_limit: option.max_memory_limit,
@@ -555,7 +536,6 @@ impl GC {
         // New objects always have age G_NEW, so skip the age match on the hot path
         self.allgc.add(gc_object_owner);
         self.gc_debt -= size as isize;
-        self.stats.bytes_allocated += size;
 
         Ok(())
     }
@@ -716,11 +696,6 @@ impl GC {
                 MAX_LMEM
             }
         }
-    }
-
-    /// Get current GC statistics
-    pub fn stats(&self) -> &GcStats {
-        &self.stats
     }
 
     /// Check if a GcPtr represents a dead object (will be collected)
@@ -1272,8 +1247,6 @@ impl GC {
     }
 
     fn restart_collection(&mut self, l: &mut LuaState) {
-        self.stats.collection_count += 1;
-
         //  Reset sweep_index when starting a new cycle
         // This ensures the next sweep will scan all objects from the beginning
         self.sweepgc = SweepGc::Done;
@@ -3402,8 +3375,6 @@ impl GC {
     }
 
     fn young_collection(&mut self, l: &mut LuaState) {
-        self.stats.minor_collections += 1;
-
         //  Set gc_stopem to prevent recursive GC during collection
         // This matches Lua 5.5's behavior where GC steps check gc_stopem
         let old_stopem = self.gc_stopem;

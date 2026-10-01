@@ -7,6 +7,9 @@ use std::pin::Pin;
 use std::ptr;
 use std::slice;
 
+use crate::lua_value::block_userdata::{
+    BlockUnit, BlockUserdata, set_userdata_uservalue, userdata_uservalue,
+};
 use crate::lua_value::chunk53;
 use crate::lua_value::{LuaUserdata, LuaValue, LuaValueKind, UpvalueStore};
 use crate::lua_vm::{
@@ -362,35 +365,17 @@ unsafe fn wrapper_for(state: &mut LuaState) -> *mut lua_State {
     canonical_wrapper(root, state)
 }
 
-#[derive(Clone, Copy)]
-#[repr(align(16))]
-struct CUserdataUnit([u8; 16]);
-
-struct CUserdata {
-    storage: Box<[CUserdataUnit]>,
-    size: usize,
-    uservalue: LuaValue,
-}
-
-impl crate::lua_value::userdata_trait::UserDataTrait for CUserdata {
-    fn type_name(&self) -> &'static str {
-        "userdata"
+impl BlockUserdata {
+    /// A zeroed block of `size` bytes; `None` if the size overflows.
+    fn alloc(size: usize) -> Option<Self> {
+        let unit_count = (size.checked_add(15)? / 16).max(1);
+        Some(BlockUserdata {
+            storage: vec![BlockUnit([0; 16]); unit_count].into_boxed_slice(),
+            size,
+            uservalue: LuaValue::nil(),
+        })
     }
 
-    fn trace_lua_values(&self, visit: &mut crate::LuaValueVisitor<'_>) {
-        (visit.0)(self.uservalue);
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
-        self
-    }
-}
-
-impl CUserdata {
     fn as_mut_ptr(&mut self) -> *mut c_void {
         self.storage[0].0.as_mut_ptr().cast()
     }
@@ -1179,7 +1164,7 @@ pub unsafe extern "C" fn lua_rawlen(state: *mut lua_State, index: c_int) -> usiz
         table.len()
     } else if let Some(userdata) = value.as_userdata_mut() {
         userdata
-            .downcast_ref::<CUserdata>()
+            .downcast_ref::<BlockUserdata>()
             .map_or(0, |data| data.size)
     } else {
         0
@@ -1211,8 +1196,8 @@ pub unsafe extern "C" fn lua_touserdata(state: *mut lua_State, index: c_int) -> 
     }
     value
         .as_userdata_mut()
-        .and_then(|userdata| userdata.downcast_mut::<CUserdata>())
-        .map_or(ptr::null_mut(), CUserdata::as_mut_ptr)
+        .and_then(|userdata| userdata.downcast_mut::<BlockUserdata>())
+        .map_or(ptr::null_mut(), BlockUserdata::as_mut_ptr)
 }
 
 #[unsafe(no_mangle)]
@@ -1475,22 +1460,16 @@ pub unsafe extern "C" fn lua_newuserdata(state: *mut lua_State, size: usize) -> 
     let Some(state_vm) = vm(state) else {
         return ptr::null_mut();
     };
-    let Some(storage_bytes) = size.checked_add(15) else {
+    let Some(userdata) = BlockUserdata::alloc(size) else {
         return ptr::null_mut();
-    };
-    let unit_count = (storage_bytes / 16).max(1);
-    let userdata = CUserdata {
-        storage: vec![CUserdataUnit([0; 16]); unit_count].into_boxed_slice(),
-        size,
-        uservalue: LuaValue::nil(),
     };
     let Ok(value) = state_vm.create_userdata(LuaUserdata::new(userdata)) else {
         return ptr::null_mut();
     };
     let pointer = value
         .as_userdata_mut()
-        .and_then(|userdata| userdata.downcast_mut::<CUserdata>())
-        .map_or(ptr::null_mut(), CUserdata::as_mut_ptr);
+        .and_then(|userdata| userdata.downcast_mut::<BlockUserdata>())
+        .map_or(ptr::null_mut(), BlockUserdata::as_mut_ptr);
     let _ = state_vm.push_value(value);
     pointer
 }
@@ -1662,10 +1641,7 @@ pub unsafe extern "C" fn lua_getuservalue(state: *mut lua_State, index: c_int) -
         let _ = state_vm.push_value(LuaValue::nil());
         return LUA_TNIL;
     };
-    let value = target
-        .as_userdata_mut()
-        .and_then(|userdata| userdata.downcast_mut::<CUserdata>())
-        .map_or(LuaValue::nil(), |userdata| userdata.uservalue);
+    let value = userdata_uservalue(&target).unwrap_or(LuaValue::nil());
     let kind = value_type(Some(value));
     let _ = state_vm.push_value(value);
     kind
@@ -1685,32 +1661,6 @@ pub unsafe extern "C" fn lua_setuservalue(state: *mut lua_State, index: c_int) {
     set_userdata_uservalue(state_vm, &target, uservalue);
 }
 
-/// The user value of a userdata created by `lua_newuserdata`; `None` for
-/// other userdata, which have no user value slot.
-pub(crate) fn userdata_uservalue(target: &LuaValue) -> Option<LuaValue> {
-    target
-        .as_userdata_mut()
-        .and_then(|userdata| userdata.downcast_mut::<CUserdata>())
-        .map(|userdata| userdata.uservalue)
-}
-
-/// Set the user value of a userdata created by `lua_newuserdata`; returns
-/// false for other userdata.
-pub(crate) fn set_userdata_uservalue(state: &mut LuaState, target: &LuaValue, uservalue: LuaValue) -> bool {
-    let Some(userdata) = target
-        .as_userdata_mut()
-        .and_then(|userdata| userdata.downcast_mut::<CUserdata>())
-    else {
-        return false;
-    };
-    userdata.uservalue = uservalue;
-    if uservalue.is_collectable()
-        && let Some(owner) = target.as_gc_ptr()
-    {
-        state.gc_barrier_back(owner);
-    }
-    true
-}
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn tex_lua_callk_impl(

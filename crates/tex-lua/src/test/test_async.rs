@@ -511,7 +511,9 @@ async fn test_async_return_mixed_userdata_and_values() {
 async fn test_async_typed_userdata_ref_arg() {
     let mut vm = new_vm();
 
-    let counter = vm.create_any(AsyncCounter { count: 5 }).unwrap();
+    let counter = vm
+        .create_userdata(crate::LuaUserdata::new(crate::OpaqueUserData::new(AsyncCounter { count: 5 })))
+        .unwrap();
     vm.set_global("counter", counter).unwrap();
 
     vm.main_state()
@@ -767,4 +769,61 @@ async fn test_async_call_handle_no_args_no_returns() {
 
     let results = vm.main_state().execute("return x").unwrap();
     assert_eq!(results[0].as_integer(), Some(3));
+}
+
+// Values a future returns after an await (nested tables, strings, userdata)
+// are built by the VM and must survive full collections that run before the
+// script touches them.
+#[tokio::test]
+async fn async_results_survive_collections_after_the_await() {
+    let mut vm = new_vm();
+    vm.main_state()
+        .register_async("fetch", |_args| async move {
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+            let handle = LuaUserdata::new(OpaqueUserData::new(5i64));
+            Ok(vec![AsyncReturnValue::Table(vec![
+                (AsyncReturnValue::string("name"), AsyncReturnValue::string("alpha")),
+                (AsyncReturnValue::string("handle"), AsyncReturnValue::UserData(handle)),
+                (
+                    AsyncReturnValue::integer(1),
+                    AsyncReturnValue::Table(vec![(
+                        AsyncReturnValue::string("n"),
+                        AsyncReturnValue::string("seven"),
+                    )]),
+                ),
+            ])])
+        })
+        .unwrap();
+
+    let results = vm
+        .main_state()
+        .execute_async(
+            "local t = fetch() \
+             for i = 1, 3 do collectgarbage() local junk = {} for j = 1, 2000 do junk[j] = 'x' .. j end end \
+             return t.name .. ':' .. t[1].n .. ':' .. type(t.handle)",
+        )
+        .await
+        .unwrap();
+    assert_eq!(results[0].as_str(), Some("alpha:seven:userdata"));
+}
+
+// `tostring`/`string.format('%s')` take the text of a `__tostring` result; it
+// must stay intact while many later calls allocate and collect.
+#[test]
+fn tostring_results_survive_collections_between_calls() {
+    let mut vm = new_vm();
+    let results = vm
+        .main_state()
+        .execute(
+            "local o = setmetatable({}, {__tostring = function() return string.rep('x', 300) .. tostring(12) end}) \
+             local parts = {} \
+             for i = 1, 50 do \
+               parts[#parts + 1] = string.format('%s', o) .. tostring(o) \
+               if i % 10 == 0 then collectgarbage() end \
+             end \
+             return #table.concat(parts), parts[50]:sub(-4)",
+        )
+        .unwrap();
+    assert_eq!(results[0].as_integer(), Some(50 * 2 * 302));
+    assert_eq!(results[1].as_str(), Some("xx12"));
 }

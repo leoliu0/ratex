@@ -133,15 +133,28 @@ impl Glue {
     }
 }
 
+/// pdfTeX `pdf_colorstack_cmd`: set and push carry data, pop and current
+/// re-emit the stack's current value.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ColorStackCmd {
+    Set,
+    Push,
+    Pop,
+    Current,
+}
+
 #[derive(Clone, Debug)]
 pub enum WhatIt {
     PdfLiteral {
         origin: u8,
         data: String,
     },
-    PdfColorPush(String),
-    PdfColorPop,
-    PdfColorSet(String),
+    /// `\pdfcolorstack <stack> <cmd> [{data}]`, executed at shipout
+    PdfColorStack {
+        stack: i32,
+        cmd: ColorStackCmd,
+        data: String,
+    },
     PdfRefXImage {
         obj: i32,
         w: i32,

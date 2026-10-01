@@ -284,7 +284,6 @@ pub struct RenderCtx<'a> {
     page_mode: bool,
     matrix_stack: Vec<Matrix>,
     pos_stack: Vec<SavePoint>,
-    pub color_stack: Vec<String>,
     pub display_list: crate::boxes::DisplayList,
     cjk_text: Option<char>,
     /// Virtual font of each VF-backed engine font used on this page.
@@ -424,7 +423,6 @@ impl Engine {
             page_mode: true,
             matrix_stack: Vec::new(),
             pos_stack: Vec::new(),
-            color_stack: Vec::new(),
             display_list: crate::boxes::DisplayList::new(),
             cjk_text: None,
             vf_fonts: crate::FxHashMap::default(),
@@ -457,8 +455,21 @@ impl Engine {
     /// \pdfsavepos results (\pdflastxpos/\pdflastypos) from the last
     /// SavePos node on the page.
     pub fn render_page(&mut self, page_box: &Node) -> PdfPage {
-        let width_sp = self.eqtb.dim_params[DimParam::PdfPageWidth.idx() as usize];
-        let height_sp = self.eqtb.dim_params[DimParam::PdfPageHeight.idx() as usize];
+        // pdfTeX "Calculate page dimensions and margins": a zero
+        // \pdfpagewidth/\pdfpageheight means box size plus twice the offset
+        let dim = |p: DimParam| self.eqtb.dim_params[p.idx() as usize];
+        let (bw, bht) = match page_box {
+            Node::Box { w, h, d, .. } => (*w, h.saturating_add(*d)),
+            _ => (0, 0),
+        };
+        let mut width_sp = dim(DimParam::PdfPageWidth);
+        if width_sp == 0 {
+            width_sp = bw + 2 * (dim(DimParam::PdfHOrigin) + dim(DimParam::HOffset));
+        }
+        let mut height_sp = dim(DimParam::PdfPageHeight);
+        if height_sp == 0 {
+            height_sp = bht + 2 * (dim(DimParam::PdfVOrigin) + dim(DimParam::VOffset));
+        }
         let w_bp = sp_to_bp(width_sp as i64);
         let h_bp = sp_to_bp(height_sp as i64);
         if self.synctex_active() {
@@ -486,6 +497,9 @@ impl Engine {
             + ctx.eng.eqtb.dim_params[DimParam::HOffset.idx() as usize] as i64;
         let y0 = ctx.eng.eqtb.dim_params[DimParam::PdfVOrigin.idx() as usize] as i64
             + ctx.eng.eqtb.dim_params[DimParam::VOffset.idx() as usize] as i64;
+        // pdfTeX "Start stream of page/form contents": cur_h/cur_v are the
+        // offsets and the box height when the stacks re-emit their colors
+        ctx.colorstack_startpage(x0, y0 + ctx.box_h_sp);
         if let Node::Box {
             list,
             kind,
@@ -561,8 +575,10 @@ impl Engine {
         // Form coordinates are baseline-relative: the dictionary spans [-d, h].
         let mut ctx = self.new_ctx(h as i64);
         // pdfTeX `pdfshipoutbegin(false)` for forms: matrix/annotation
-        // tracking is page-shipout only.
+        // tracking is page-shipout only, and color stacks restart from
+        // their initial values (`colorstackpagestart`).
         ctx.page_mode = false;
+        ctx.eng.color_stacks.form_start();
         ctx.box_w_sp = w as i64;
         ctx.box_h_sp = h as i64;
         ctx.box_d_sp = d as i64;
@@ -614,7 +630,145 @@ impl GlueState {
     }
 }
 
+/// pdfTeX literal modes (`set_origin`, `direct_page`, `direct_always`)
+pub const LITERAL_SET_ORIGIN: u8 = 0;
+pub const LITERAL_DIRECT_PAGE: u8 = 1;
+pub const LITERAL_DIRECT_ALWAYS: u8 = 2;
+/// pdfTeX `MAX_COLORSTACKS`
+const MAX_COLORSTACKS: usize = 32768;
+
+/// One pdfTeX color stack (utils.c `colstack_type`). Page and form
+/// shipouts keep separate stacks; an empty string stands for pdfTeX's NULL
+/// (nothing is written for it). The state lives for the whole job.
+#[derive(Clone, Debug)]
+pub struct ColorStack {
+    page_stack: Vec<String>,
+    form_stack: Vec<String>,
+    page_current: String,
+    form_current: String,
+    form_init: String,
+    pub literal_mode: u8,
+    /// re-emit the current value at the start of every page
+    page_start: bool,
+}
+
+impl ColorStack {
+    fn new(init: String, literal_mode: u8, page_start: bool) -> Self {
+        ColorStack {
+            page_stack: Vec::new(),
+            form_stack: Vec::new(),
+            page_current: init.clone(),
+            form_current: init.clone(),
+            form_init: init,
+            literal_mode,
+            page_start,
+        }
+    }
+
+    fn current_mut(&mut self, page_mode: bool) -> &mut String {
+        if page_mode {
+            &mut self.page_current
+        } else {
+            &mut self.form_current
+        }
+    }
+
+    fn push(&mut self, page_mode: bool, value: String) {
+        let (stack, current) = if page_mode {
+            (&mut self.page_stack, &mut self.page_current)
+        } else {
+            (&mut self.form_stack, &mut self.form_current)
+        };
+        stack.push(std::mem::replace(current, value));
+    }
+
+    /// the restored current value, or None for an empty stack
+    fn pop(&mut self, page_mode: bool) -> Option<String> {
+        let (stack, current) = if page_mode {
+            (&mut self.page_stack, &mut self.page_current)
+        } else {
+            (&mut self.form_stack, &mut self.form_current)
+        };
+        *current = stack.pop()?;
+        Some(current.clone())
+    }
+}
+
+/// All color stacks of the job; stack 0 is pdfTeX's predefined one
+/// (`colstacks_first_init`: "0 g 0 G", direct, page start).
+#[derive(Clone, Debug)]
+pub struct ColorStacks(Vec<ColorStack>);
+
+impl Default for ColorStacks {
+    fn default() -> Self {
+        ColorStacks(vec![ColorStack::new(
+            "0 g 0 G".to_string(),
+            LITERAL_DIRECT_ALWAYS,
+            true,
+        )])
+    }
+}
+
+impl ColorStacks {
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    fn get_mut(&mut self, stack: usize) -> Option<&mut ColorStack> {
+        self.0.get_mut(stack)
+    }
+
+    /// pdfTeX `newcolorstack`: the new stack number, None when all
+    /// `MAX_COLORSTACKS` are in use
+    pub fn new_stack(&mut self, init: String, literal_mode: u8, page_start: bool) -> Option<i32> {
+        if self.0.len() == MAX_COLORSTACKS {
+            return None;
+        }
+        self.0.push(ColorStack::new(init, literal_mode, page_start));
+        Some(self.0.len() as i32 - 1)
+    }
+
+    /// pdfTeX `colorstackpagestart` for forms: every form starts from the
+    /// stacks' initial values
+    fn form_start(&mut self) {
+        for cs in &mut self.0 {
+            cs.form_stack.clear();
+            cs.form_current = cs.form_init.clone();
+        }
+    }
+}
+
 impl<'a> RenderCtx<'a> {
+    /// pdfTeX `literal(s, literal_mode, false)` for color stack data
+    fn colorstack_literal(&mut self, s: &str, mode: u8, cur_h: i64, cur_v: i64) {
+        match mode {
+            LITERAL_SET_ORIGIN => {
+                self.end_text();
+                self.set_origin(cur_h, cur_v);
+            }
+            LITERAL_DIRECT_PAGE => self.end_text(),
+            _ => self.end_string_nl(),
+        }
+        self.content.push_str(s);
+        self.content.push('\n');
+    }
+
+    /// pdfTeX `pdf_out_colorstack_startpage`: every page-start stack whose
+    /// current value is not the default "0 g 0 G" re-emits it, so color
+    /// carries across page breaks
+    fn colorstack_startpage(&mut self, cur_h: i64, cur_v: i64) {
+        for i in 0..self.eng.color_stacks.len() {
+            let Some(cs) = self.eng.color_stacks.get_mut(i) else {
+                continue;
+            };
+            if !cs.page_start || cs.page_current == "0 g 0 G" || cs.page_current.is_empty() {
+                continue;
+            }
+            let (s, mode) = (cs.page_current.clone(), cs.literal_mode);
+            self.colorstack_literal(&s, mode, cur_h, cur_v);
+        }
+    }
+
     fn y_pdf(&self, tex_y_bp: f64) -> f64 {
         self.page_height_bp - tex_y_bp
     }
@@ -2080,6 +2234,7 @@ impl<'a> RenderCtx<'a> {
     }
     fn emit_whatsit_sp(&mut self, w: &crate::boxes::WhatIt, cur_h: i64, cur_v: i64) {
         use crate::boxes::WhatIt::*;
+        use crate::boxes::ColorStackCmd;
         match w {
             PdfLiteral { data, origin } => {
                 // scan_pdf_origin: 0 = set_origin, 1 = direct (always),
@@ -2096,34 +2251,43 @@ impl<'a> RenderCtx<'a> {
                 self.content.push_str(data);
                 self.content.push('\n');
             }
-            PdfColorPush(color) => {
-                // colorstack default literal mode is direct_always: the
-                // string closes but the text object stays open
-                self.end_string_nl();
-                self.color_stack.push(color.clone());
-                self.content.push_str(color);
-                self.content.push('\n');
-            }
-            PdfColorSet(color) => {
-                self.end_string_nl();
-                if let Some(top) = self.color_stack.last_mut() {
-                    *top = color.clone();
-                } else {
-                    self.color_stack.push(color.clone());
+            PdfColorStack { stack, cmd, data } => {
+                // pdfTeX `pdf_out_colorstack`
+                let stack_no = *stack as usize;
+                let page_mode = self.page_mode;
+                let Some(cs) = self.eng.color_stacks.get_mut(stack_no) else {
+                    self.eng.warning_at(
+                        &format!("Color stack {stack} is not initialized for use!"),
+                        None,
+                    );
+                    return;
+                };
+                let mode = cs.literal_mode;
+                let out = match cmd {
+                    ColorStackCmd::Set => {
+                        *cs.current_mut(page_mode) = data.clone();
+                        data.clone()
+                    }
+                    ColorStackCmd::Push => {
+                        cs.push(page_mode, data.clone());
+                        data.clone()
+                    }
+                    ColorStackCmd::Pop => match cs.pop(page_mode) {
+                        Some(current) => current,
+                        None => {
+                            let kind = if page_mode { "page" } else { "form" };
+                            self.eng.warning_at(
+                                &format!("pop empty color {kind} stack {stack}"),
+                                None,
+                            );
+                            return;
+                        }
+                    },
+                    ColorStackCmd::Current => cs.current_mut(page_mode).clone(),
+                };
+                if !out.is_empty() {
+                    self.colorstack_literal(&out, mode, cur_h, cur_v);
                 }
-                self.content.push_str(color);
-                self.content.push('\n');
-            }
-            PdfColorPop => {
-                self.end_string_nl();
-                self.color_stack.pop();
-                let prev_color = self
-                    .color_stack
-                    .last()
-                    .map(|s| s.as_str())
-                    .unwrap_or("0 g 0 G");
-                self.content.push_str(prev_color);
-                self.content.push('\n');
             }
             PdfRefXImage { obj, w, h, d } => {
                 if let Some(image) = self.eng.pdf_images.get_mut(obj) {

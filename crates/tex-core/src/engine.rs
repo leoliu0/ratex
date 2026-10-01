@@ -342,7 +342,8 @@ pub struct Engine {
     pub insert_nums: Vec<u16>,
     pub pdf_images: crate::FxHashMap<i32, PdfImageInfo>,
     pub pdf_xforms: crate::FxHashMap<i32, (i32, i32, i32)>,
-    pub color_stacks: crate::FxHashMap<i32, Vec<String>>,
+    /// pdfTeX color stacks (\pdfcolorstack, \pdfcolorstackinit)
+    pub color_stacks: crate::pdfrender::ColorStacks,
     pub shipout_pending: bool,
     /// box_kinds depth of the \\shipout box (tex.web box_context);
     /// inner boxes must not consume the pending shipout.
@@ -887,7 +888,7 @@ impl Engine {
             space_factor: 1000,
             pdf_images: crate::FxHashMap::default(),
             pdf_xforms: crate::FxHashMap::default(),
-            color_stacks: crate::FxHashMap::default(),
+            color_stacks: crate::pdfrender::ColorStacks::default(),
             prev_graf: 0,
             after_token: false,
             definable_cs_recovery_count: 0,

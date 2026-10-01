@@ -9,7 +9,7 @@ const SRC: &str = r#"\catcode`\{=1 \catcode`\}=2 \catcode`\#=6 \catcode`\$=3 \ca
 \pdftrailerid{}
 \pdfsuppressptexinfo=15
 \chardef\pdfstack=\pdfcolorstackinit direct{0 g}
-\ifnum\pdfstack=0 \immediate\write15{STACKINIT-OK}\else\immediate\write15{STACKINIT-BAD}\fi
+\ifnum\pdfstack=1 \immediate\write15{STACKINIT-OK}\else\immediate\write15{STACKINIT-BAD}\fi
 \pdfhorigin=1in
 \pdfpagewidth=200pt
 \pdfpageheight 300pt
@@ -193,6 +193,43 @@ fn pdfrestore_keeps_following_image_in_the_restored_coordinate_system() {
         "{stream}"
     );
     std::fs::remove_dir_all(dir).unwrap();
+}
+
+/// pdfTeX color stacks outlive the page: a page-start stack re-emits its
+/// current value at the top of the next page, a pop restores the pushed-over
+/// value, and forms restart from the initial value. Content streams are the
+/// ones `pdftex -ini` writes for the same input.
+#[test]
+fn color_stacks_carry_across_pages_like_pdftex() {
+    let source = r#"\catcode`\{=1 \catcode`\}=2
+\count1=\pdfcolorstackinit page direct{0 g}
+\shipout\hbox{\pdfcolorstack0 push{1 0 0 rg}\pdfcolorstack\count1 set{0.5 g}}
+\shipout\hbox{\pdfcolorstack0 pop\pdfcolorstack0 current}
+\setbox2\hbox{\pdfcolorstack0 current}\pdfxform2
+\end"#;
+    let mut e = Engine::new(true);
+    e.init_primitives();
+    e.add_nullfont();
+    e.input.push_file("colorstack.tex".into(), source.as_bytes().to_vec());
+    e.run();
+    assert_eq!(e.error_count, 0, "{}", e.term);
+    assert_eq!(e.eqtb.count[1], 1);
+    let pages: Vec<String> = e
+        .pdf_doc
+        .pages
+        .iter()
+        .map(|p| String::from_utf8(p.content.clone()).unwrap())
+        .collect();
+    assert_eq!(pages, ["0 g\n1 0 0 rg\n0.5 g\n", "1 0 0 rg\n0.5 g\n0 g 0 G\n0 g 0 G\n"]);
+    let bytes = tex_core::pdffile::write_pdf(&e.pdf_doc).expect("valid PDF");
+    let pdf = lopdf::Document::load_mem(&bytes).unwrap();
+    let form = pdf
+        .objects
+        .values()
+        .filter_map(|o| o.as_stream().ok())
+        .find(|s| s.dict.get(b"Subtype").and_then(|v| v.as_name()).ok() == Some(b"Form"))
+        .expect("form xobject");
+    assert_eq!(form.decompressed_content().unwrap_or(form.content.clone()), b"0 g 0 G\n");
 }
 #[test]
 fn display_list_captures_rules_and_glyphs() {

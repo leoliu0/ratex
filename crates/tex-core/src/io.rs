@@ -206,49 +206,6 @@ fn compatibility_input(name: &str) -> Option<&'static [u8]> {
 \input latex.ltx
 \endinput
 ",
-        "lualatex.ini" => br"\input luatexconfig.tex
-\begingroup
-  \catcode`\{=1
-  \catcode`\}=2
-  \global\everyjob{\directlua{require('lualatexquotejobname.lua')}}
-\endgroup
-\input latex.ltx
-\endinput
-",
-        "luatexconfig.tex" => br"\begingroup
-  \catcode`\{=1
-  \catcode`\}=2
-  \catcode`\#=6
-  \globaldefs=1
-  \pdfoutput=1
-  \pdfpageheight=297 true mm
-  \pdfpagewidth=210 true mm
-  \pdfminorversion=7
-  \pdfobjcompresslevel=2
-  \pdfhorigin=1 true in
-  \pdfvorigin=1 true in
-  \pdfcompresslevel=9
-  \globaldefs=0
-\endgroup
-\endinput
-",
-        "lualatexquotejobname.lua" => br#"local jobname_cache = {}
-if callback and callback.register then
-    callback.register('process_jobname', function(jobname)
-        local cached = jobname_cache[jobname]
-        if cached ~= nil then return cached end
-        local clean, n_quotes = jobname:gsub([["]], [[]])
-        if n_quotes % 2 ~= 0 then
-            texio.write_nl('! Unbalanced quotes in jobname: ' .. jobname)
-        end
-        if jobname:find(' ') then
-            clean = '"' .. clean .. '"'
-        end
-        jobname_cache[jobname] = clean
-        return clean
-    end)
-end
-"#,
         "graphics.cfg" => br"\ProvidesFile{graphics.cfg}[2026/01/01 v1.0 Ratex graphics configuration]
 \ExecuteOptions{pdftex}
 \AtEndOfPackage{

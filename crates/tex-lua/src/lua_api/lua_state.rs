@@ -126,6 +126,15 @@ impl LuaApi for LuaState {
         Ok(LuaString::new(string))
     }
 
+    fn create_bytes(&mut self, bytes: &[u8]) -> LuaResult<LuaString> {
+        let value = LuaState::create_bytes(self, bytes)?;
+        let string = self
+            .global_state_mut()
+            .to_string_ref(value)
+            .ok_or_else(|| self.error("value is not a string".to_string()))?;
+        Ok(LuaString::new(string))
+    }
+
     fn create_table(&mut self) -> LuaResult<LuaTable> {
         self.create_table_with_capacity(0, 0)
     }

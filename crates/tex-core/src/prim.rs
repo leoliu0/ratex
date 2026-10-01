@@ -1001,6 +1001,17 @@ pub enum Prim {
     PdfSnapRefPoint,
     PdfSnapY,
     PdfSnapYComp,
+    // LuaTeX Lua calls (wire codes 780-799).
+    /// `\luafunction n`: expandable call of `lua.get_functions_table()[n]`.
+    LuaFunction,
+    /// `\luafunctioncall n`: the same call as a command.
+    LuaFunctionCall,
+    /// `\luadef\cs n`: `\cs` becomes a (protected: unexpandable) lua call.
+    LuaDef,
+    /// `\luabytecode n`: expandable run of bytecode register `n`.
+    LuaBytecode,
+    /// `\luabytecodecall n`: the same run as a command.
+    LuaBytecodeCall,
 }
 
 /// Stable wire codes for the format dump (`crate::format`). Unit variants
@@ -1443,6 +1454,11 @@ impl Prim {
             Prim::PdfSnapRefPoint => 514,
             Prim::PdfSnapY => 515,
             Prim::PdfSnapYComp => 516,
+            Prim::LuaFunction => 780,
+            Prim::LuaFunctionCall => 781,
+            Prim::LuaDef => 782,
+            Prim::LuaBytecode => 783,
+            Prim::LuaBytecodeCall => 784,
             Prim::ScriptScriptStyle => 284,
             Prim::Patterns => 287,
             Prim::Hyphenation => 288,
@@ -1874,6 +1890,11 @@ impl Prim {
             514 => Some(Prim::PdfSnapRefPoint),
             515 => Some(Prim::PdfSnapY),
             516 => Some(Prim::PdfSnapYComp),
+            780 => Some(Prim::LuaFunction),
+            781 => Some(Prim::LuaFunctionCall),
+            782 => Some(Prim::LuaDef),
+            783 => Some(Prim::LuaBytecode),
+            784 => Some(Prim::LuaBytecodeCall),
             0x1000..=0x1fff => {
                 let i = c & 0x0fff;
                 Some(Prim::IntP(IntParam::from_idx(i)?))

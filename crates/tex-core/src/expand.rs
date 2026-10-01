@@ -155,6 +155,20 @@ mod balanced_scan_tests {
     }
 }
 
+/// A macro call ended before its arguments were complete (tex.web §396 and
+/// §398 abort the call); diagnostics have already been issued.
+struct ArgAbort;
+
+/// Why balanced text ended without its closing brace.
+enum Unbalanced {
+    /// A forbidden paragraph token, not yet consumed.
+    Paragraph(Token),
+    /// An \outer macro inside a macro argument, not yet consumed.
+    Outer(Token),
+    /// A fatal error has already been reported.
+    Fatal,
+}
+
 impl Engine {
     pub(crate) fn freeze_unexpanded_toks(&mut self, mut toks: Vec<Token>) -> Vec<Token> {
         for t in &mut toks {
@@ -194,99 +208,49 @@ impl Engine {
         // adjusts the alignment brace depth. Tokens returned from the
         // pushback stack were counted at their original fetch (tex.web
         // compensates at back_input, @7028; skipping the pushed path is the
-        // equivalent here), and <align-peek> replays re-serve an already
+        // equivalent here). While an alignment is scanned, pushback below
+        // `align_pushed_base` predates the template and waits.
         let t = 'fetch: {
-            if self.scanner_status != ScannerStatus::Aligning {
+            if !self.pushed.is_empty()
+                && (self.scanner_status != ScannerStatus::Aligning
+                    || self.pushed.len() > self.align_pushed_base)
+            {
                 if let Some(t) = self.pushed.pop() {
-                    let keep_synthetic = t.is_cs()
-                        && self
-                            .diagnostic_synthetic_source
-                            .as_ref()
-                            .is_some_and(|(token, _, _)| *token == t.cs_id());
-                    if !keep_synthetic {
-                        self.diagnostic_synthetic_source = None;
-                    }
-                    let keep_physical =
-                        self.diagnostic_physical_source
-                            .as_ref()
-                            .is_some_and(|source| {
-                                source.token == t
-                                    || (t.is_cs() && source.semantic_cs == Some(t.cs_id()))
-                            });
-                    if !keep_physical {
-                        self.diagnostic_physical_source = None;
-                    }
+                    self.retain_diagnostic_sources_for(t);
                     break 'fetch t;
                 }
-            } else if self.pushed.len() > self.align_pushed_base {
-                let t = self.pushed.pop().unwrap();
-                if !t.is_cs()
-                    || self
-                        .diagnostic_synthetic_source
-                        .as_ref()
-                        .is_some_and(|(token, _, _)| *token != t.cs_id())
-                {
-                    self.diagnostic_synthetic_source = None;
-                }
-                if !self
-                    .diagnostic_physical_source
-                    .as_ref()
-                    .is_some_and(|source| {
-                        source.token == t || (t.is_cs() && source.semantic_cs == Some(t.cs_id()))
-                    })
-                {
-                    self.diagnostic_physical_source = None;
-                }
-                break 'fetch t;
             }
             loop {
-                let trace_depth = match self.input.stack.last() {
-                    Some(crate::input::Source::TokList { trace_depth, .. }) => {
-                        *trace_depth as usize
-                    }
-                    Some(crate::input::Source::MacroFrame(frame)) => frame.trace_depth as usize,
-                    _ => break,
-                };
-                if !self.align_macro_arg && self.diagnostic_trace_hold == 0 {
-                    self.diagnostic_macro_trace.truncate(trace_depth);
-                }
+                let traced = !self.align_macro_arg && self.diagnostic_trace_hold == 0;
                 match self.input.stack.last_mut() {
-                    Some(crate::input::Source::TokList { toks, pos, .. }) => {
-                        let s = &toks[..];
-                        if *pos < s.len() {
-                            let tok = s[*pos];
+                    Some(crate::input::Source::TokList {
+                        toks,
+                        pos,
+                        trace_depth,
+                        ..
+                    }) => {
+                        if traced {
+                            self.diagnostic_macro_trace.truncate(*trace_depth as usize);
+                        }
+                        if let Some(&tok) = toks.get(*pos) {
                             *pos += 1;
-                            self.diagnostic_token_from_file = false;
-                            self.diagnostic_synthetic_source = None;
-                            self.diagnostic_physical_source = None;
+                            self.note_token_list_fetch();
                             break 'fetch tok;
                         }
                     }
                     Some(crate::input::Source::MacroFrame(frame)) => {
+                        if traced {
+                            self.diagnostic_macro_trace.truncate(frame.trace_depth as usize);
+                        }
                         if let Some(tok) = frame.next_token() {
-                            self.diagnostic_token_from_file = false;
-                            self.diagnostic_synthetic_source = None;
-                            self.diagnostic_physical_source = None;
+                            self.note_token_list_fetch();
                             break 'fetch tok;
                         }
                     }
-                    _ => unreachable!(),
+                    _ => break 'fetch self.get_next_raw(),
                 }
-                if let Some(src) = self.input.stack.pop() {
-                    if let crate::input::Source::TokList { toks, name, .. } = src {
-                        if name == crate::align::U_PART_SRC {
-                            self.align_u_template_finished();
-                        }
-                        if let crate::input::TokTokens::Vec(mut v) = toks {
-                            v.clear();
-                            if self.token_vec_pool.len() < 512 {
-                                self.token_vec_pool.push(v);
-                            }
-                        }
-                    }
-                }
+                self.end_token_list();
             }
-            self.get_next_raw()
         };
         // tex.web's frozen \endtemplate is an outer control sequence. A
         // delimited macro argument cannot consume it after a top-level `&`
@@ -305,32 +269,14 @@ impl Engine {
         {
             self.error("Forbidden control sequence found while scanning a macro argument");
         }
-        if t.0 < 0x8000_0000 && !t.is_cs() {
-            let cc = (t.0 >> 24) as u8;
-            if cc == 1 {
-                self.align_brace_depth = self.align_brace_depth.saturating_add(1);
-            } else if cc == 2 {
-                self.align_brace_depth = self.align_brace_depth.saturating_sub(1);
-            }
-            if cc == 14 || cc == 9 || cc == 15 {
-                if cc == 14 {
-                    if let Some(si) = self.input.stack.len().checked_sub(1) {
-                        if let Some(crate::input::Source::File {
-                            line_buf,
-                            line_pos,
-                            state,
-                            ..
-                        }) = self.input.stack.get_mut(si)
-                        {
-                            *line_buf = None;
-                            *line_pos = 0;
-                            if *state == 1 {
-                                *state = 2;
-                            }
-                        }
-                    }
-                }
-                return self.raw_token();
+        if t.0 < 0x8000_0000 {
+            match t.0 >> 24 {
+                1 => self.align_brace_depth = self.align_brace_depth.saturating_add(1),
+                2 => self.align_brace_depth = self.align_brace_depth.saturating_sub(1),
+                // Ignored, comment and invalid characters never form tokens
+                // in TeX; drop any that a token list was built with.
+                9 | 14 | 15 => return self.raw_token(),
+                _ => {}
             }
         }
         if self.align_state != crate::align::PH_IDLE
@@ -352,6 +298,60 @@ impl Engine {
         }
 
         t
+    }
+
+    /// A token from a token list has no physical spelling of its own.
+    #[inline(always)]
+    fn note_token_list_fetch(&mut self) {
+        self.diagnostic_token_from_file = false;
+        self.diagnostic_synthetic_source = None;
+        self.diagnostic_physical_source = None;
+    }
+
+    /// A pushed-back token keeps the source locations recorded for it, and
+    /// only for it.
+    #[inline]
+    fn retain_diagnostic_sources_for(&mut self, t: Token) {
+        if self
+            .diagnostic_synthetic_source
+            .as_ref()
+            .is_some_and(|(token, _, _)| !t.is_cs() || *token != t.cs_id())
+        {
+            self.diagnostic_synthetic_source = None;
+        }
+        if self.diagnostic_physical_source.is_some_and(|source| {
+            source.token != t && !(t.is_cs() && source.semantic_cs == Some(t.cs_id()))
+        }) {
+            self.diagnostic_physical_source = None;
+        }
+    }
+
+    /// Pop the exhausted token list on top of the input stack (tex.web
+    /// end_token_list), recycling its buffer.
+    #[inline(never)]
+    fn end_token_list(&mut self) {
+        match self.input.stack.pop() {
+            Some(crate::input::Source::TokList { toks, name, .. }) => {
+                if name == crate::align::U_PART_SRC {
+                    self.align_u_template_finished();
+                }
+                if let crate::input::TokTokens::Vec(v) = toks {
+                    self.recycle_token_vec(v);
+                }
+            }
+            Some(crate::input::Source::MacroFrame(frame)) => {
+                self.recycle_token_vec(frame.into_arg_buffer());
+            }
+            _ => {}
+        }
+    }
+
+    #[inline]
+    pub(crate) fn recycle_token_vec(&mut self, mut v: Vec<Token>) {
+        if self.token_vec_pool.len() < 512 && v.capacity() != 0 {
+            v.clear();
+            self.token_vec_pool.push(v);
+        }
     }
     #[inline]
     fn macro_arg_token(&mut self) -> Token {
@@ -567,31 +567,48 @@ impl Engine {
         false
     }
 
+    /// tex.web macro_call "conserve stack space": drop finished lists before
+    /// a new one is pushed so tail calls do not deepen the input stack.
     fn pop_exhausted_token_lists(&mut self) {
-        while let Some(src) = self.input.stack.last() {
-            match src {
-                crate::input::Source::TokList {
-                    toks, pos, name, ..
-                } => {
-                    if *pos >= toks.len() {
-                        if *name == crate::align::U_PART_SRC {
-                            self.align_u_template_finished();
-                        }
-                        self.input.stack.pop();
-                    } else {
-                        break;
-                    }
-                }
-                crate::input::Source::MacroFrame(frame) => {
-                    if frame.is_exhausted() {
-                        self.input.stack.pop();
-                    } else {
-                        break;
-                    }
-                }
-                _ => break,
+        while let Some(source) = self.input.stack.last() {
+            let exhausted = match source {
+                crate::input::Source::TokList { toks, pos, .. } => *pos >= toks.len(),
+                crate::input::Source::MacroFrame(frame) => frame.is_exhausted(),
+                crate::input::Source::File { .. } => false,
+            };
+            if !exhausted {
+                break;
             }
+            self.end_token_list();
         }
+    }
+
+    /// Make room for one new token list of `len` tokens on top of the input
+    /// stack. Pending pushback is older than the new list, so it moves into
+    /// its own list underneath.
+    fn prepare_token_list_push(&mut self, len: usize) -> bool {
+        if !self.ensure_token_list_room(len) {
+            return false;
+        }
+        self.pop_exhausted_token_lists();
+        let cut = if self.scanner_status == ScannerStatus::Aligning {
+            self.align_pushed_base.min(self.pushed.len())
+        } else {
+            0
+        };
+        let pending = self.pushed.len() - cut;
+        if !self.ensure_token_list_room(pending)
+            || !self.ensure_input_stack_room(1 + usize::from(pending > 0))
+        {
+            return false;
+        }
+        if pending > 0 {
+            let mut rest = self.token_vec_pool.pop().unwrap_or_default();
+            rest.extend(self.pushed[cut..].iter().rev());
+            self.pushed.truncate(cut);
+            self.input.push_toks(rest, "<pushback>");
+        }
+        true
     }
 
     pub fn push_tokens_rc(&mut self, toks: std::rc::Rc<[Token]>, owner: CsId) {
@@ -602,56 +619,28 @@ impl Engine {
         if toks.is_empty() {
             return true;
         }
-        if !self.ensure_token_list_room(toks.len()) {
+        if !self.prepare_token_list_push(toks.len()) {
             return false;
         }
-        self.pop_exhausted_token_lists();
-        let cut = if self.scanner_status == ScannerStatus::Aligning {
-            self.align_pushed_base.min(self.pushed.len())
-        } else {
-            0
-        };
-        if !self.ensure_token_list_room(self.pushed.len().saturating_sub(cut)) {
-            return false;
-        }
-        if !self.ensure_input_stack_room(1 + usize::from(self.pushed.len() > cut)) {
-            return false;
-        }
-        if self.pushed.len() > cut {
-            let mut rest = self.pushed.split_off(cut);
-            rest.reverse();
-            self.input.push_toks(rest, "<pushback>");
-        }
-        self.input.push_toks_owned(
-            toks,
-            "<macro>",
-            Some(owner),
-            self.diagnostic_macro_trace.len().min(u8::MAX as usize) as u8,
-        );
+        let depth = self.trace_depth();
+        self.input.push_toks_owned(toks, "<macro>", Some(owner), depth);
         true
     }
+
     fn try_push_macro_frame(&mut self, frame: crate::input::MacroFrame) -> bool {
-        self.pop_exhausted_token_lists();
-        let cut = if self.scanner_status == ScannerStatus::Aligning {
-            self.align_pushed_base.min(self.pushed.len())
-        } else {
-            0
-        };
-        if !self.ensure_token_list_room(self.pushed.len().saturating_sub(cut)) {
+        if !self.prepare_token_list_push(0) {
+            self.recycle_token_vec(frame.into_arg_buffer());
             return false;
-        }
-        if !self.ensure_input_stack_room(1 + usize::from(self.pushed.len() > cut)) {
-            return false;
-        }
-        if self.pushed.len() > cut {
-            let mut rest = self.pushed.split_off(cut);
-            rest.reverse();
-            self.input.push_toks(rest, "<pushback>");
         }
         self.input
             .stack
             .push(crate::input::Source::MacroFrame(frame));
         true
+    }
+
+    #[inline]
+    fn trace_depth(&self) -> u8 {
+        self.diagnostic_macro_trace.len().min(u8::MAX as usize) as u8
     }
 
     fn begin_token_list(
@@ -662,39 +651,19 @@ impl Engine {
         owner: Option<CsId>,
     ) -> bool {
         if toks.is_empty() {
+            self.recycle_token_vec(toks);
             return true;
         }
-        if !self.ensure_token_list_room(toks.len()) {
+        if !self.prepare_token_list_push(toks.len()) {
             return false;
-        }
-        self.pop_exhausted_token_lists();
-        let cut = if self.scanner_status == ScannerStatus::Aligning {
-            self.align_pushed_base.min(self.pushed.len())
-        } else {
-            0
-        };
-        if !self.ensure_token_list_room(self.pushed.len().saturating_sub(cut)) {
-            return false;
-        }
-        if !self.ensure_input_stack_room(1 + usize::from(self.pushed.len() > cut)) {
-            return false;
-        }
-        if self.pushed.len() > cut {
-            let mut rest = self.pushed.split_off(cut);
-            rest.reverse();
-            self.input.push_toks(rest, "<pushback>");
         }
         let toks = if exp_not {
             self.freeze_unexpanded_toks(toks)
         } else {
             toks
         };
-        self.input.push_toks_owned(
-            toks,
-            name,
-            owner,
-            self.diagnostic_macro_trace.len().min(u8::MAX as usize) as u8,
-        );
+        let depth = self.trace_depth();
+        self.input.push_toks_owned(toks, name, owner, depth);
         true
     }
     fn set_cur_cs(&mut self, t: Token) {
@@ -1032,36 +1001,6 @@ impl Engine {
         self.eqtb
             .assign(id, Equiv::Macro(std::rc::Rc::new(m)), true);
         true
-    }
-
-    #[allow(dead_code)]
-    fn synth_legacy_removed(&mut self, _id: CsId) -> bool {
-        false
-    }
-
-    #[allow(dead_code)]
-    fn old_body(&mut self) {
-        let spec: Vec<u8> = Vec::new();
-        let k = spec.len();
-        let _ = k;
-        let (ex, noex, csw, cse) = (
-            self.cs.lookup(b"expanded"),
-            self.cs.lookup(b"noexpand"),
-            self.cs.lookup(b"csname"),
-            self.cs.lookup(b"endcsname"),
-        );
-        let _ = (ex, noex, csw, cse);
-        let mut body: Vec<Token> = Vec::new();
-        body.push(Token::char(1, b'{' as u32));
-        for (i, letter) in spec.iter().enumerate() {
-            let pref = crate::expand::PAR_REF_FLAG | (i as u32 + 1);
-            match letter {
-                b'N' => {}
-                b'n' => {}
-                _ => {}
-            }
-            body.push(Token(pref));
-        }
     }
 
     #[inline(always)]
@@ -1529,7 +1468,7 @@ impl Engine {
                     if let Some(Equiv::Prim(p)) = self.eqtb.resolve(t.cs_id()).cloned() {
                         if p == Prim::Expanded {
                             let mut toks = self.scan_general_text_expanded();
-                            Self::strip_outer_braces(&mut toks);
+                            Self::strip_outer_braces(&mut toks, 0);
                             if self.in_expanded_scan {
                                 self.push_tokens_exp_not(toks);
                             } else {
@@ -1801,7 +1740,7 @@ impl Engine {
                 if let Some(st) = self.if_stack.last_mut() {
                     if st.matched {
                         st.if_case = -1; // skip mode
-                        self.skip_case_skip();
+                        self.skip_to_fi();
                         return None;
                     }
                 }
@@ -1813,16 +1752,11 @@ impl Engine {
                     self.insert_relax(id);
                     return None;
                 }
-                let st = self.if_stack.last().cloned();
-                match st {
-                    Some(s) => {
-                        if s.matched {
-                            self.skip_to_fi();
-                        } else {
-                            let st2 = self.if_stack.last_mut().unwrap();
-                            st2.accepting = true;
-                            st2.matched = true;
-                        }
+                match self.if_stack.last_mut() {
+                    Some(st) if st.matched => self.skip_to_fi(),
+                    Some(st) => {
+                        st.accepting = true;
+                        st.matched = true;
                     }
                     None => self.error("Extra \\else"),
                 }
@@ -2106,9 +2040,12 @@ impl Engine {
                 None
             }
             PdfCreationDate => {
-                // Keep metadata-dependent package logic deterministic, matching
-                // the stable timestamp used by the file-date compatibility shim.
-                self.exp_string(b"D:20260101000000Z");
+                // pdfTeX fixes the date when the job starts.
+                let date = self
+                    .pdf_creation_date
+                    .get_or_insert_with(pdf_creation_date)
+                    .clone();
+                self.exp_string(date.as_bytes());
                 None
             }
             PdfFileDump => {
@@ -2369,28 +2306,6 @@ impl Engine {
         self.finish_if(save, b)
     }
 
-    /// Fetch an \\ifx operand: expandable prims (\\csname, \\expandafter)
-    /// expand; macros and everything else stay raw (tex.web if_x).
-    fn ifx_operand(&mut self) -> Token {
-        loop {
-            let t = self.raw_token();
-            if t.is_cs() {
-                if let Some(Equiv::Prim(p)) = self.eqtb.resolve(t.cs_id()).cloned() {
-                    if self.is_expandable(p) {
-                        match self.expand_prim(p, t.cs_id()) {
-                            Some(tok) => {
-                                self.push_token(tok);
-                                continue;
-                            }
-                            None => continue,
-                        }
-                    }
-                }
-            }
-            return t;
-        }
-    }
-
     fn is_if_test(p: Prim) -> bool {
         matches!(
             p,
@@ -2444,16 +2359,7 @@ impl Engine {
                         *pos += 1;
                     }
                     if *pos == s.len() {
-                        if let Some(crate::input::Source::TokList {
-                            toks: crate::input::TokTokens::Vec(mut v),
-                            ..
-                        }) = self.input.stack.pop()
-                        {
-                            v.clear();
-                            if self.token_vec_pool.len() < 512 {
-                                self.token_vec_pool.push(v);
-                            }
-                        }
+                        self.end_token_list();
                         continue;
                     }
                 }
@@ -2463,17 +2369,21 @@ impl Engine {
                 self.fatal_conditional_eof();
                 break 'skip None;
             }
-            if !t.is_cs() {
+            // A \noexpand-guarded token means \relax here (tex.web §358).
+            if !t.is_cs() || t.0 >= NOEXP_FLAG {
                 continue;
             }
             let is = match self.eqtb.resolve(t.cs_id()) {
                 Some(Equiv::Prim(p)) => *p,
+                Some(Equiv::Macro(m)) if m.outer => {
+                    self.incomplete_conditional(t);
+                    continue;
+                }
                 _ => continue,
             };
+            // \unless is not a test itself; the conditional after it is.
             if Self::is_if_test(is) {
                 l += 1;
-            } else if is == Prim::Unless {
-                self.skip_count_unless_target(&mut l);
             } else if matches!(
                 is,
                 Prim::Fi | Prim::Else | Prim::Or | Prim::ElIf | Prim::ElIfX
@@ -2490,7 +2400,28 @@ impl Engine {
         res
     }
 
-    /// tex.web 498: after a false test, keep skipping until the closer
+    /// tex.web §336: an \outer macro ends skipped conditional text. TeX
+    /// inserts \fi before it and reads the macro again afterwards.
+    fn incomplete_conditional(&mut self, outer: Token) {
+        let (opener, line) = self
+            .if_stack
+            .last()
+            .map_or((0, 0), |state| (state.loc_cs, state.loc_line));
+        let opener = if (opener as usize) < self.cs.len() && opener != 0 {
+            self.display_cs(opener).trim_end().to_string()
+        } else {
+            "\\if".to_string()
+        };
+        self.push_token(outer);
+        if let Some(fi) = self.cs.lookup(b"fi") {
+            self.push_token(Token::from_cs(fi));
+        }
+        self.error(&format!(
+            "Incomplete {opener}; all text was ignored after line {line}"
+        ));
+    }
+
+    /// tex.web §500: after a false test, keep skipping until the closer
     /// belongs to *this* \\if. A nested still-open true \\if from the test
     /// (`\\if T\\iftrue F\\fi T`) has its \\fi popped here; skip continues.
     fn skip_to_else_or_fi(&mut self, save: usize) {
@@ -2511,11 +2442,8 @@ impl Engine {
                         }
                         return;
                     }
-                    Prim::Or => {
-                        self.error("Extra \\or");
-                        return;
-                    }
-                    _ => return,
+                    // TeX reports the stray \or and keeps skipping.
+                    _ => self.error("Extra \\or"),
                 }
             } else if chr == Prim::Fi {
                 self.if_stack.pop();
@@ -2523,133 +2451,59 @@ impl Engine {
         }
     }
 
-    /// e-TeX `\\unless` during skip: the following *conditional* is one opener
-    /// together with `\\unless`. If the next token is not a conditional (the
-    /// expl3 `\\expandafter\\unless\\fi\\ifx` pattern while skipping), leave it.
-    fn skip_count_unless_target(&mut self, depth: &mut i32) {
-        let t2 = self.raw_token();
-        if t2 == EOF_MARKER || t2 == crate::input::PAR_END {
-            return;
-        }
-        if t2.is_cs() {
-            if let Some(Equiv::Prim(p)) = self.eqtb.resolve(t2.cs_id()) {
-                use Prim::*;
-                if matches!(p, Unless) {
-                    self.skip_count_unless_target(depth);
-                    return;
-                }
-                if matches!(
-                    p,
-                    IfChar
-                        | IfCat
-                        | IfOdd
-                        | IfNum
-                        | IfDim
-                        | IfVoid
-                        | IfHBox
-                        | IfVBox
-                        | IfHMode
-                        | IfVMode
-                        | IfInner
-                        | IfMMode
-                        | IfTrue
-                        | IfFalse
-                        | IfEOF
-                        | IfDef
-                        | IfCSName
-                        | IfInCsName
-                        | IfX
-                        | IfCase
-                        | IfFontChar
-                ) {
-                    *depth += 1;
-                    return;
-                }
-            }
-        }
-        self.push_token(t2);
-    }
-
     /// Skip to the branch delimiter belonging to `target`. Numeric operands
     /// can leave expanded nested conditionals open above an \ifcase frame.
     fn skip_branch(&mut self, if_case: bool, target: usize) {
-        let save = self.scanner_status;
-        self.scanner_status = ScannerStatus::Skipping;
-        self.skip_branch_inner(if_case, target);
-        self.scanner_status = save;
-    }
-
-    fn skip_branch_inner(&mut self, if_case: bool, target: usize) {
-        let mut depth = 0i32;
         loop {
-            let t = self.raw_token();
-            if !t.is_cs() {
+            let Some(delimiter) = self.pass_text() else {
+                return;
+            };
+            if self.if_stack.len() > target + 1 {
+                // This belongs to a conditional opened while scanning the
+                // target's numeric operand, not to the target itself.
+                if delimiter == Prim::Fi {
+                    self.if_stack.pop();
+                }
                 continue;
             }
-            let is = match self.eqtb.resolve(t.cs_id()) {
-                Some(Equiv::Prim(p)) => *p,
-                _ => continue,
-            };
-            if Self::is_if_test(is) {
-                depth += 1;
-            } else {
-                match is {
-                    Prim::Unless => self.skip_count_unless_target(&mut depth),
-                    Prim::Fi => {
-                        if depth > 0 {
-                            depth -= 1;
-                        } else if self.if_stack.len() > target + 1 {
-                            // This closes a conditional opened while scanning the
-                            // target's numeric operand, not the target itself.
-                            self.if_stack.pop();
-                        } else {
-                            self.if_stack.pop();
-                            return;
-                        }
-                    }
-                    Prim::Or => {
-                        if depth == 0 && self.if_stack.len() == target + 1 {
-                            if if_case {
-                                let st = self.if_stack.last_mut().unwrap();
-                                if st.matched {
-                                    self.skip_case_skip();
-                                    return;
-                                }
-                                st.if_case -= 1;
-                                if st.if_case == 0 {
-                                    st.accepting = true;
-                                    st.matched = true;
-                                    return;
-                                }
-                            }
-                        }
-                    }
-                    Prim::ElIf | Prim::ElIfX => {
-                        if depth == 0 && self.if_stack.len() == target + 1 {
-                            self.skip_branch(false, target);
-                            return;
-                        }
-                    }
-                    Prim::Else => {
-                        if depth == 0 && self.if_stack.len() == target + 1 {
-                            let st = self.if_stack.last().cloned();
-                            match st {
-                                Some(s) => {
-                                    if s.matched {
-                                        self.skip_to_fi();
-                                    } else {
-                                        let st2 = self.if_stack.last_mut().unwrap();
-                                        st2.accepting = true;
-                                        st2.matched = true;
-                                    }
-                                }
-                                None => {}
-                            }
-                            return;
-                        }
-                    }
-                    _ => {}
+            match delimiter {
+                Prim::Fi => {
+                    self.if_stack.pop();
+                    return;
                 }
+                Prim::Or => {
+                    if if_case {
+                        let Some(st) = self.if_stack.last_mut() else {
+                            return;
+                        };
+                        if st.matched {
+                            self.skip_to_fi();
+                            return;
+                        }
+                        st.if_case -= 1;
+                        if st.if_case == 0 {
+                            st.accepting = true;
+                            st.matched = true;
+                            return;
+                        }
+                    }
+                }
+                Prim::ElIf | Prim::ElIfX => {
+                    self.skip_branch(false, target);
+                    return;
+                }
+                Prim::Else => {
+                    if let Some(st) = self.if_stack.last_mut() {
+                        if st.matched {
+                            self.skip_to_fi();
+                        } else {
+                            st.accepting = true;
+                            st.matched = true;
+                        }
+                    }
+                    return;
+                }
+                _ => {}
             }
         }
     }
@@ -2683,76 +2537,13 @@ impl Engine {
         );
     }
 
-    /// skip until \fi (used after \else when branch matched)
+    /// Skip the rest of a conditional whose branch was already taken, up to
+    /// and including its \fi (tex.web §510).
     fn skip_to_fi(&mut self) {
-        let save = self.scanner_status;
-        self.scanner_status = ScannerStatus::Skipping;
-        self.skip_to_fi_inner();
-        self.scanner_status = save;
-    }
-
-    fn skip_to_fi_inner(&mut self) {
-        let mut depth = 0i32;
-        loop {
-            let t = self.raw_token();
-            if t == EOF_MARKER {
+        while let Some(delimiter) = self.pass_text() {
+            if delimiter == Prim::Fi {
+                self.if_stack.pop();
                 return;
-            }
-            if !t.is_cs() {
-                continue;
-            }
-            match self.eqtb.resolve(t.cs_id()) {
-                Some(Equiv::Prim(p)) => {
-                    if Self::is_if_test(*p) {
-                        depth += 1;
-                    } else if *p == Prim::Unless {
-                        self.skip_count_unless_target(&mut depth);
-                    } else if *p == Prim::Fi {
-                        if depth == 0 {
-                            self.if_stack.pop();
-                            return;
-                        }
-                        depth -= 1;
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-
-    /// skip to \fi within an ifcase that already matched
-    fn skip_case_skip(&mut self) {
-        let save = self.scanner_status;
-        self.scanner_status = ScannerStatus::Skipping;
-        self.skip_case_skip_inner();
-        self.scanner_status = save;
-    }
-
-    fn skip_case_skip_inner(&mut self) {
-        let mut depth = 0i32;
-        loop {
-            let t = self.raw_token();
-            if t == EOF_MARKER {
-                return;
-            }
-            if !t.is_cs() {
-                continue;
-            }
-            match self.eqtb.resolve(t.cs_id()) {
-                Some(Equiv::Prim(p)) => {
-                    if Self::is_if_test(*p) {
-                        depth += 1;
-                    } else if *p == Prim::Unless {
-                        self.skip_count_unless_target(&mut depth);
-                    } else if *p == Prim::Fi {
-                        if depth == 0 {
-                            self.if_stack.pop();
-                            return;
-                        }
-                        depth -= 1;
-                    }
-                }
-                _ => {}
             }
         }
     }
@@ -2835,7 +2626,7 @@ impl Engine {
                     return;
                 }
                 if !self.delim_eq(t, *p) {
-                    self.push_token(stored);
+                    // tex.web §398: the mismatching token is consumed.
                     self.error_at(
                         &format!(
                             "Use of {} doesn't match its definition",
@@ -2860,117 +2651,171 @@ impl Engine {
         } else {
             None
         };
-        let mut selected = smallvec::SmallVec::<[Token; 16]>::new();
-        let mut args: smallvec::SmallVec<[smallvec::SmallVec<[Token; 16]>; 9]> =
-            smallvec::SmallVec::new();
-        for (i, delim) in m.params.iter().enumerate() {
-            if i as u32 + 1 > m.num_params as u32 {
-                break;
-            }
+        let buffer = self.token_vec_pool.pop().unwrap_or_default();
+        let mut args = crate::input::MacroArgs::with_buffer(buffer);
+        for (i, delim) in m.params.iter().enumerate().take(m.num_params as usize) {
             let keep = selector.map_or(true, |selected| selected == i + 1);
-            let mut arg = smallvec::SmallVec::new();
-            if delim.is_empty() {
-                let saved_align_macro_arg = self.align_macro_arg;
-                self.align_macro_arg = true;
-                self.skip_raw_spaces();
-                self.align_macro_arg = saved_align_macro_arg;
-                let raw = self.macro_arg_token();
-                let stored = self.unfreeze_input_token(raw);
-                let t = self.unfreeze_unexpanded_token(stored);
-                if self.is_partoken(t) && !m.long {
-                    self.error_at(
-                        &format!(
-                            "Paragraph ended before {} was complete",
-                            self.display_cs(id)
-                        ),
-                        origin.map(crate::input::SourceMark::to_context),
-                    );
-                    return;
-                }
-                if t.is_char() && t.cc() == 2 {
-                    self.push_token(stored);
-                    self.error_at(
-                        &format!("Argument of {} has an extra }}", self.display_cs(id)),
-                        origin.map(crate::input::SourceMark::to_context),
-                    );
-                } else if t.is_char() && t.cc() == 1 {
-                    arg = self.scan_macro_balanced_arg(m.long, keep, origin);
-                } else {
-                    if keep {
-                        arg.push(stored);
-                    }
-                }
+            let start = args.open_start();
+            let scanned = if delim.is_empty() {
+                self.scan_undelimited_arg(id, m.long, keep, args.buffer(), origin)
             } else {
-                arg = smallvec::SmallVec::from_vec(self.scan_delimited(delim, m.long, origin));
-            }
-            if selector.is_none() {
-                args.push(arg);
-            } else if keep {
-                selected = arg;
-            }
-        }
-        if let Some(index) = selector {
-            // Invalid hand-built parameter references follow the generic
-            // replacement path; valid TeX definitions have 1..=num_params.
-            if index <= m.num_params as usize {
-                match selected.len() {
-                    0 => {}
-                    1 => self.push_token(selected[0]),
-                    _ if selected.spilled() => self.push_macro_tokens(selected.into_vec(), id),
-                    _ => {
-                        let mut body = self.token_vec_pool.pop().unwrap_or_default();
-                        body.clear();
-                        body.extend_from_slice(&selected);
-                        self.push_macro_tokens(body, id);
-                    }
-                }
-                return;
-            }
-        }
-        if m.has_param_refs {
-            // A selector/identity macro can hand an already allocated
-            // argument to the input stack instead of copying it again.
-            if let [token] = &m.body[..] {
-                if (PAR_REF_FLAG..0x8000_0000).contains(&token.0) {
-                    let index = (token.0 & 0x3FFF_FFFF).wrapping_sub(1) as usize;
-                    if let Some(arg) = args.get_mut(index) {
-                        if arg.spilled() {
-                            let body = std::mem::take(arg).into_vec();
-                            self.push_macro_tokens(body, id);
-                            return;
-                        }
-                    }
-                }
-            }
-            let Some(length) = m.replacement_length(&args, crate::input::MAX_TOKEN_LIST_TOKENS)
-            else {
-                self.fatal_error_at(
-                    &format!(
-                        "TeX capacity exceeded, sorry [macro expansion size={}]",
-                        crate::input::MAX_TOKEN_LIST_TOKENS
-                    ),
-                    origin.map(crate::input::SourceMark::to_context),
-                );
-                return;
+                self.scan_delimited(id, delim, m.long, args.buffer(), origin)
             };
-            if length == 0 {
+            if scanned.is_err() {
+                self.recycle_token_vec(args.into_buffer());
                 return;
             }
-            let references = m.ensure_replacement_plan();
-            self.try_push_macro_frame(crate::input::MacroFrame {
-                body: std::rc::Rc::clone(&m.body),
-                args,
-                references,
-                ref_idx: 0,
-                body_pos: 0,
-                arg_pos: 0,
-                name: "<macro>",
-                owner: Some(id),
-                trace_depth: self.diagnostic_macro_trace.len().min(255) as u8,
-                delivered_brace_balance: 0,
-            });
-        } else {
+            if !keep {
+                args.buffer().truncate(start);
+            }
+            args.finish_arg();
+        }
+        if selector.is_some_and(|index| index <= m.num_params as usize) {
+            // Only the selected argument was retained in the buffer.
+            let mut selected = args.into_buffer();
+            if selected.len() == 1 {
+                self.push_token(selected[0]);
+                selected.clear();
+            }
+            if selected.is_empty() {
+                self.recycle_token_vec(selected);
+            } else {
+                self.push_macro_tokens(selected, id);
+            }
+            return;
+        }
+        if !m.has_param_refs {
+            self.recycle_token_vec(args.into_buffer());
             self.push_tokens_rc(std::rc::Rc::clone(&m.body), id);
+            return;
+        }
+        let Some(length) = m.replacement_length(&args, crate::input::MAX_TOKEN_LIST_TOKENS) else {
+            self.recycle_token_vec(args.into_buffer());
+            self.fatal_error_at(
+                &format!(
+                    "TeX capacity exceeded, sorry [macro expansion size={}]",
+                    crate::input::MAX_TOKEN_LIST_TOKENS
+                ),
+                origin.map(crate::input::SourceMark::to_context),
+            );
+            return;
+        };
+        if length == 0 {
+            self.recycle_token_vec(args.into_buffer());
+            return;
+        }
+        let frame = crate::input::MacroFrame::new(
+            std::rc::Rc::clone(&m.body),
+            m.ensure_replacement_plan(),
+            args,
+            Some(id),
+            self.trace_depth(),
+        );
+        self.try_push_macro_frame(frame);
+    }
+
+    /// tex.web §393: an undelimited argument is the next nonblank token or
+    /// balanced group.
+    fn scan_undelimited_arg(
+        &mut self,
+        id: CsId,
+        long: bool,
+        collect: bool,
+        out: &mut Vec<Token>,
+        origin: Option<&crate::input::SourceMark>,
+    ) -> Result<(), ArgAbort> {
+        let saved_align_macro_arg = self.align_macro_arg;
+        self.align_macro_arg = true;
+        self.skip_raw_spaces();
+        self.align_macro_arg = saved_align_macro_arg;
+        let raw = self.macro_arg_token();
+        let stored = self.unfreeze_input_token(raw);
+        let t = self.unfreeze_unexpanded_token(stored);
+        if t == EOF_MARKER {
+            self.fatal_error_at(
+                &format!("File ended while scanning use of {}", self.display_cs(id)),
+                origin.map(crate::input::SourceMark::to_context),
+            );
+            return Err(ArgAbort);
+        }
+        if self.is_partoken(t) && !long {
+            return Err(self.abort_paragraph(id, stored, origin));
+        }
+        if self.is_outer_token(stored) {
+            return Err(self.abort_outer(id, stored, origin));
+        }
+        if t.is_char() && t.cc() == 2 {
+            return Err(self.abort_extra_brace(id, stored, origin));
+        }
+        if t.is_char() && t.cc() == 1 {
+            return self.scan_macro_balanced_arg(id, long, collect, out, origin);
+        }
+        out.push(stored);
+        Ok(())
+    }
+
+    /// tex.web §396: a forbidden \par ends the call; TeX reads it again.
+    fn abort_paragraph(
+        &mut self,
+        id: CsId,
+        par: Token,
+        origin: Option<&crate::input::SourceMark>,
+    ) -> ArgAbort {
+        self.push_token(par);
+        self.error_at(
+            &format!("Paragraph ended before {} was complete", self.display_cs(id)),
+            origin.map(crate::input::SourceMark::to_context),
+        );
+        ArgAbort
+    }
+
+    /// tex.web §395: the brace is read again after an inserted \par, which
+    /// ends the call even for a \long macro.
+    fn abort_extra_brace(
+        &mut self,
+        id: CsId,
+        brace: Token,
+        origin: Option<&crate::input::SourceMark>,
+    ) -> ArgAbort {
+        self.push_token(brace);
+        self.error_at(
+            &format!("Argument of {} has an extra }}", self.display_cs(id)),
+            origin.map(crate::input::SourceMark::to_context),
+        );
+        let par = Token::from_cs(self.partoken_id());
+        self.abort_paragraph(id, par, origin)
+    }
+
+    /// tex.web §336-§339: an \outer macro cannot occur in an argument. It is
+    /// read again after the inserted \par has silently ended the call.
+    fn abort_outer(
+        &mut self,
+        id: CsId,
+        outer: Token,
+        origin: Option<&crate::input::SourceMark>,
+    ) -> ArgAbort {
+        self.push_token(outer);
+        self.error_at(
+            &format!(
+                "Forbidden control sequence found while scanning use of {}",
+                self.display_cs(id)
+            ),
+            origin.map(crate::input::SourceMark::to_context),
+        );
+        ArgAbort
+    }
+
+    /// True for a control sequence whose meaning is an \outer macro, and for
+    /// the end-of-\write and end-of-output sentinels, which stand for TeX's
+    /// frozen outer `\endwrite`. Tokens guarded by \noexpand are exempt
+    /// (tex.web §358). Active characters are not checked: the lookup would
+    /// cost an allocation per argument token.
+    fn is_outer_token(&self, t: Token) -> bool {
+        if t.is_cs() {
+            t.0 < NOEXP_FLAG
+                && matches!(self.eqtb.resolve(t.cs_id()), Some(Equiv::Macro(m)) if m.outer)
+        } else {
+            t.0 >= crate::page::WRITE_END_TOKEN.0 && t != EOF_MARKER && t != PAR_END
         }
     }
     pub fn skip_raw_spaces(&mut self) {
@@ -2982,18 +2827,10 @@ impl Engine {
                 while *pos < s.len() && (s[*pos].0 >> 24) == 10 {
                     *pos += 1;
                 }
-                if *pos == s.len() {
-                    if let Some(crate::input::Source::TokList {
-                        toks: crate::input::TokTokens::Vec(mut v),
-                        ..
-                    }) = self.input.stack.pop()
-                    {
-                        v.clear();
-                        self.token_vec_pool.push(v);
-                    }
-                } else {
+                if *pos < s.len() {
                     return;
                 }
+                self.end_token_list();
             }
         }
         loop {
@@ -3010,54 +2847,84 @@ impl Engine {
     /// Returns tokens without the outer braces.
     pub fn scan_balanced_raw(&mut self, long: bool) -> smallvec::SmallVec<[Token; 16]> {
         let origin = self.current_token_source_mark();
-        self.scan_balanced_raw_collect(long, true, origin.as_ref())
+        let mut out = Vec::new();
+        if let Err(Unbalanced::Paragraph(par)) =
+            self.scan_balanced_raw_collect(long, false, true, &mut out, origin.as_ref())
+        {
+            self.push_token(par);
+            self.error_at(
+                "Runaway argument / missing }",
+                origin.as_ref().map(crate::input::SourceMark::to_context),
+            );
+        }
+        smallvec::SmallVec::from_vec(out)
     }
 
     fn scan_macro_balanced_arg(
         &mut self,
+        id: CsId,
         long: bool,
         collect: bool,
+        out: &mut Vec<Token>,
         origin: Option<&crate::input::SourceMark>,
-    ) -> smallvec::SmallVec<[Token; 16]> {
+    ) -> Result<(), ArgAbort> {
         self.diagnostic_trace_hold = self.diagnostic_trace_hold.saturating_add(1);
-        let result = self.scan_balanced_raw_collect(long, collect, origin);
+        let result = self.scan_balanced_raw_collect(long, true, collect, out, origin);
         self.diagnostic_trace_hold -= 1;
-        result
+        match result {
+            Ok(()) => Ok(()),
+            Err(Unbalanced::Paragraph(par)) => Err(self.abort_paragraph(id, par, origin)),
+            Err(Unbalanced::Outer(token)) => Err(self.abort_outer(id, token, origin)),
+            Err(Unbalanced::Fatal) => Err(ArgAbort),
+        }
     }
 
+    /// Append the balanced text after an already consumed `{` to `out`
+    /// (when `collect`), without the closing brace. A macro argument also
+    /// rejects \outer macros.
     fn scan_balanced_raw_collect(
         &mut self,
         long: bool,
+        macro_arg: bool,
         collect: bool,
+        out: &mut Vec<Token>,
         origin: Option<&crate::input::SourceMark>,
-    ) -> smallvec::SmallVec<[Token; 16]> {
-        let partoken_id = self.partoken_id();
+    ) -> Result<(), Unbalanced> {
         if self.pushed.is_empty() {
-            if let Some(crate::input::Source::TokList { toks, pos, .. }) =
-                self.input.stack.last_mut()
-            {
-                let s = &toks[..];
-                {
-                    let start = *pos;
-                    if let Some(end) = balanced_end(&s[start..], long, partoken_id) {
-                        let p = start + end;
-                        *pos = p;
-                        // The opening brace of this balanced group was fetched by raw_token()
-                        // and incremented align_brace_depth; the fast path consumes the matching
-                        // closing brace directly from the slice, so decrement align_brace_depth.
-                        self.align_brace_depth = self.align_brace_depth.saturating_sub(1);
-                        if !collect {
-                            return smallvec::SmallVec::new();
+            let partoken_id = self.partoken_id();
+            let fast = match self.input.stack.last_mut() {
+                Some(crate::input::Source::TokList { toks, pos, .. }) => {
+                    let s = &toks[*pos..];
+                    balanced_end(s, long, partoken_id).map(|end| {
+                        if collect {
+                            out.extend_from_slice(&s[..end - 1]);
                         }
-                        let slice = &s[start..p - 1];
-                        return smallvec::SmallVec::from_slice(slice);
-                    }
+                        *pos += end;
+                    })
                 }
+                Some(crate::input::Source::MacroFrame(frame)) => {
+                    let s = frame.segment();
+                    let end = balanced_end(s, long, partoken_id);
+                    if let Some(end) = end {
+                        if collect {
+                            out.extend_from_slice(&s[..end - 1]);
+                        }
+                        frame.skip(end);
+                    }
+                    end.map(drop)
+                }
+                _ => None,
+            };
+            if fast.is_some() {
+                // The opening brace was fetched by raw_token() and counted
+                // in align_brace_depth; the matching brace was taken from
+                // the list directly.
+                self.align_brace_depth = self.align_brace_depth.saturating_sub(1);
+                return Ok(());
             }
         }
 
         let mut depth = 1i32;
-        let mut out = smallvec::SmallVec::<[Token; 16]>::new();
         let mut scanned = 0;
         loop {
             let raw = self.raw_token();
@@ -3068,14 +2935,7 @@ impl Engine {
                     "Runaway argument / missing }",
                     origin.map(crate::input::SourceMark::to_context),
                 );
-                return out;
-            }
-            if self.is_partoken(t) && !long {
-                self.error_at(
-                    "Runaway argument / missing }",
-                    origin.map(crate::input::SourceMark::to_context),
-                );
-                return out;
+                return Err(Unbalanced::Fatal);
             }
             if t.is_char() {
                 let cc = t.cc();
@@ -3084,9 +2944,13 @@ impl Engine {
                 } else if cc == 2 {
                     depth -= 1;
                     if depth == 0 {
-                        return out;
+                        return Ok(());
                     }
                 }
+            } else if !long && self.is_partoken(t) {
+                return Err(Unbalanced::Paragraph(stored));
+            } else if macro_arg && self.is_outer_token(stored) {
+                return Err(Unbalanced::Outer(stored));
             }
             // Check after recognizing the outer closing brace: a list of
             // exactly MAX_TOKEN_LIST_TOKENS tokens remains legal, while a
@@ -3099,7 +2963,7 @@ impl Engine {
                     ),
                     origin.map(crate::input::SourceMark::to_context),
                 );
-                return out;
+                return Err(Unbalanced::Fatal);
             }
             scanned += 1;
             if collect {
@@ -3108,104 +2972,51 @@ impl Engine {
         }
     }
 
-    /// tex.web scan_toks delimited search: expand one non-matching
-    /// unprotected macro / expandable primitive in place. Returns true
-    /// when the token was expanded (loop must continue); false when the
-    /// token should be appended to the argument verbatim.
-    fn expand_if_expansive(&mut self, t: Token) -> bool {
-        if !t.is_cs() {
-            return false;
-        }
-        let mut id = t.cs_id();
-        for _ in 0..64 {
-            match self.eqtb.get(id) {
-                Some(Equiv::Alias(next)) => id = *next,
-                _ => break,
-            }
-        }
-        match self.eqtb.get(id).cloned() {
-            Some(Equiv::Macro(m)) => {
-                if m.protected || self.freeze_gts_in_edef(id) {
-                    self.set_cur_cs(t);
-                    return false;
-                }
-                self.expand_macro(id, &m, t.cs_id());
-                true
-            }
-            Some(Equiv::Prim(p)) => {
-                if !self.is_expandable(p) {
-                    self.set_cur_cs(t);
-                    return false;
-                }
-                match self.expand_prim(p, id) {
-                    Some(tok) => {
-                        if tok.0 >= NOEXP_FLAG && tok.0 < UNEXPANDED_CS_FLAG {
-                            self.push_token(Token::from_cs(tok.0 & 0x3FFF_FFFF));
-                        } else {
-                            self.push_token(tok);
-                        }
-                    }
-                    None => {}
-                }
-                true
-            }
-            _ => {
-                self.set_cur_cs(t);
-                false
-            }
-        }
-    }
-
+    /// tex.web §392-§397: scan an argument ended by the token list `delim`,
+    /// appending it to `out`.
     fn scan_delimited(
         &mut self,
+        id: CsId,
         delim: &[Token],
         long: bool,
+        out: &mut Vec<Token>,
         origin: Option<&crate::input::SourceMark>,
-    ) -> Vec<Token> {
-        let mut arg: Vec<Token> = Vec::with_capacity(8);
+    ) -> Result<(), ArgAbort> {
+        let start = out.len();
         let mut matched = smallvec::SmallVec::<[Token; 8]>::new();
         loop {
             let raw = self.macro_arg_token();
             let stored = self.unfreeze_input_token(raw);
-            let raw = self.unfreeze_unexpanded_token(stored);
-            if self.align_state & crate::align::PH_CLOSE != 0 && raw == self.crcr_token() {
-                self.error(&format!(
-                    "Forbidden control sequence found while scanning use of {}",
-                    self.display_cs(self.current_macro)
-                ));
-                self.push_token(raw);
-                return arg;
+            let t = self.unfreeze_unexpanded_token(stored);
+            if self.align_state & crate::align::PH_CLOSE != 0 && t == self.crcr_token() {
+                // The frozen end of the alignment cell is \outer.
+                return Err(self.abort_outer(id, t, origin));
             }
-            if raw == EOF_MARKER {
+            if t == EOF_MARKER {
                 self.fatal_error_at(
                     &format!(
                         "Runaway argument of {} (delim={})",
-                        self.display_cs(self.current_macro),
+                        self.display_cs(id),
                         self.diagnostic_tokens_to_string(delim, 512)
                     ),
                     origin.map(crate::input::SourceMark::to_context),
                 );
-                return arg;
+                return Err(ArgAbort);
             }
-            // The file scanner uses an internal sentinel for a blank line.
-            // Macro parameter matching sees the real \par token.
-            let t = if raw == PAR_END {
-                Token::from_cs(self.partoken_id())
-            } else {
-                raw
-            };
-            let stored = if raw == PAR_END { t } else { stored };
             matched.push(stored);
+            // Keep the longest suffix of the recent tokens that is still a
+            // prefix of the delimiter; the rest belongs to the argument.
             while !matched
                 .iter()
                 .enumerate()
                 .all(|(i, token)| self.delim_eq(token.unfreeze(), delim[i]))
             {
                 let rm = matched.remove(0);
-                if !self.scanned_token_list_has_room(arg.len(), 1, "macro parameter size", origin) {
-                    return arg;
+                if !self.scanned_token_list_has_room(out.len() - start, 1, "macro parameter size", origin)
+                {
+                    return Err(ArgAbort);
                 }
-                arg.push(rm);
+                out.push(rm);
             }
             if matched.len() == delim.len() {
                 if let Some(last) = delim.last() {
@@ -3217,66 +3028,68 @@ impl Engine {
                         self.align_brace_depth = self.align_brace_depth.saturating_sub(1);
                     }
                 }
-                Self::strip_outer_braces(&mut arg);
-                return arg;
+                Self::strip_outer_braces(out, start);
+                return Ok(());
             }
-
+            if !matched.is_empty() {
+                continue;
+            }
             // tex.web §392 matches the delimiter before §396 rejects an
             // illegal paragraph. A non-long #1\par parameter may therefore
             // use the paragraph token as its terminator.
-            if self.is_partoken(t) && !long {
-                self.error_at(
-                    &format!(
-                        "Paragraph ended before {} was complete (delim={}) collected={}",
-                        self.display_cs(self.current_macro),
-                        self.diagnostic_tokens_to_string(delim, 512),
-                        self.diagnostic_tokens_to_string(&arg, 1024)
-                    ),
-                    origin.map(crate::input::SourceMark::to_context),
-                );
-                return arg;
+            if !long && self.is_partoken(t) {
+                out.pop();
+                return Err(self.abort_paragraph(id, stored, origin));
             }
-
+            if self.is_outer_token(stored) {
+                out.pop();
+                return Err(self.abort_outer(id, stored, origin));
+            }
+            if t.is_char() && t.cc() == 2 {
+                out.pop();
+                return Err(self.abort_extra_brace(id, stored, origin));
+            }
             if t.is_char() && t.cc() == 1 {
                 // Delimiters cannot contain an unmatched opening brace other
-                // than the single-token #{ case, which returned above.
-                let inner = self.scan_macro_balanced_arg(long, true, origin);
-                if self.stopped_on_error {
-                    return arg;
-                }
+                // than the single-token #{ case, which returned above. The
+                // brace itself was already stored.
+                let before = out.len();
+                self.scan_macro_balanced_arg(id, long, true, out, origin)?;
+                let inner = out.len() - before;
                 if !self.scanned_token_list_has_room(
-                    arg.len() + matched.len(),
-                    inner.len().saturating_add(1),
+                    before - start,
+                    inner.saturating_add(1),
                     "macro parameter size",
                     origin,
                 ) {
-                    return arg;
+                    return Err(ArgAbort);
                 }
-                arg.extend(matched.drain(..));
-                arg.extend(inner);
-                arg.push(Token::char(2, b'}' as u32));
+                out.push(Token::char(2, b'}' as u32));
             }
         }
     }
-    fn strip_outer_braces(arg: &mut Vec<Token>) {
-        if arg.len() >= 2 && arg[0].is_char() && arg[0].cc() == 1 {
-            let mut depth = 0i32;
-            let mut ok = true;
-            for (i, x) in arg.iter().enumerate() {
-                if x.is_char() && x.cc() == 1 {
-                    depth += 1;
-                } else if x.is_char() && x.cc() == 2 {
-                    depth -= 1;
-                    if depth == 0 && i != arg.len() - 1 {
-                        ok = false;
-                        break;
-                    }
+
+    /// tex.web §400: a delimited argument that is exactly one group loses
+    /// its outer braces. `start` is where the argument begins in `tokens`.
+    fn strip_outer_braces(tokens: &mut Vec<Token>, start: usize) {
+        let arg = &tokens[start..];
+        if arg.len() < 2 || !arg[0].is_left_brace() {
+            return;
+        }
+        let mut depth = 0i32;
+        for (i, t) in arg.iter().enumerate() {
+            if t.is_left_brace() {
+                depth += 1;
+            } else if t.is_right_brace() {
+                depth -= 1;
+                if depth == 0 && i != arg.len() - 1 {
+                    return;
                 }
             }
-            if ok && depth == 0 {
-                arg.remove(arg.len() - 1);
-                arg.remove(0);
-            }
+        }
+        if depth == 0 {
+            tokens.pop();
+            tokens.remove(start);
         }
     }
 
@@ -3435,6 +3248,65 @@ impl Engine {
         }
         self.append_log(s);
     }
+}
+
+/// pdfTeX's `\pdfcreationdate`: `D:YYYYMMDDHHmmSS` followed by the UTC
+/// offset. SOURCE_DATE_EPOCH (or the sandbox epoch) selects that instant in
+/// UTC, written with `Z`; otherwise the local time is used.
+fn pdf_creation_date() -> String {
+    let epoch = tex_kpse::fs::epoch()
+        .and_then(|epoch| i64::try_from(epoch).ok())
+        .or_else(|| {
+            std::env::var("SOURCE_DATE_EPOCH")
+                .ok()
+                .and_then(|value| value.trim().parse().ok())
+        });
+    let (epoch, offset_minutes) = match epoch {
+        Some(epoch) => (epoch, 0),
+        None => local_epoch_and_offset(),
+    };
+    let local = epoch + offset_minutes * 60;
+    let (year, month, day, minutes) = crate::clock::utc(local);
+    let seconds = local.rem_euclid(60);
+    let zone = if offset_minutes == 0 {
+        "Z".to_string()
+    } else {
+        let sign = if offset_minutes < 0 { '-' } else { '+' };
+        let offset = offset_minutes.abs();
+        format!("{sign}{:02}'{:02}'", offset / 60, offset % 60)
+    };
+    format!(
+        "D:{year:04}{month:02}{day:02}{:02}{:02}{seconds:02}{zone}",
+        minutes / 60,
+        minutes % 60
+    )
+}
+
+/// The current time and the local UTC offset in minutes.
+#[cfg(unix)]
+fn local_epoch_and_offset() -> (i64, i64) {
+    let mut now: libc::time_t = 0;
+    // SAFETY: `time` and `localtime_r` write only to the provided locals.
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    unsafe {
+        libc::time(&mut now);
+        libc::localtime_r(&now, &mut tm);
+    }
+    (now as i64, tm.tm_gmtoff as i64 / 60)
+}
+
+#[cfg(all(not(unix), not(target_arch = "wasm32")))]
+fn local_epoch_and_offset() -> (i64, i64) {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_secs() as i64);
+    (now, 0)
+}
+
+/// The sandboxed web build has no clock; like `\time`, it uses the epoch.
+#[cfg(target_arch = "wasm32")]
+fn local_epoch_and_offset() -> (i64, i64) {
+    (0, 0)
 }
 
 fn posix_regex_error_detail(error: &posix_regex::compile::Error) -> String {

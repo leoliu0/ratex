@@ -6,8 +6,6 @@
 #[repr(transparent)]
 pub struct Token(pub u32);
 
-pub const EOF_TOKEN: Token = Token(0xFFFF_FFFF);
-
 impl Token {
     #[inline]
     pub fn is_cs(&self) -> bool {

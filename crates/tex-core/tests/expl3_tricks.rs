@@ -2276,12 +2276,22 @@ fn pdfcreationdate_expands_to_a_pdf_timestamp() {
         r#"
 \catcode`\{=1 \catcode`\}=2
 \edef\got{\pdfcreationdate}
-\edef\expected{\detokenize{D:20260101000000Z}}
-\ifx\got\expected \count0=1\fi
 "#,
     );
     assert_eq!(e.error_count, 0, "{}", e.term);
-    assert_eq!(e.eqtb.count[0], 1);
+    let id = e.cs.lookup(b"got").unwrap();
+    let Some(tex_core::eqtb::Equiv::Macro(m)) = e.eqtb.get(id) else {
+        panic!("\\got is not a macro");
+    };
+    // pdfTeX: D:YYYYMMDDHHmmSS followed by Z or a +HH'mm' offset.
+    let date = e.tokens_to_string(&m.body);
+    let digits = date.strip_prefix("D:").expect("D: prefix");
+    assert!(digits[..14].bytes().all(|b| b.is_ascii_digit()), "{date}");
+    let zone = &digits[14..];
+    assert!(
+        zone == "Z" || (zone.len() == 7 && zone.ends_with('\'') && zone.as_bytes()[3] == b'\''),
+        "{date}"
+    );
 }
 
 #[test]

@@ -225,3 +225,82 @@ fn input_rereads_a_file_rewritten_by_tex() {
     assert!(e.term.contains("RESULT=new"), "{}", e.term);
     std::fs::remove_file(path).unwrap();
 }
+
+fn run_lenient(source: &str) -> Engine {
+    let mut engine = Engine::new(true);
+    engine.init_primitives();
+    engine.add_nullfont();
+    engine.set_interaction_mode(tex_core::engine::InteractionMode::Nonstop);
+    let source = format!(
+        "\\catcode`\\{{=1 \\catcode`\\}}=2 \\catcode`\\#=6 \\catcode`\\^=7\n{source}"
+    );
+    engine
+        .input
+        .push_file("review.tex".into(), source.into_bytes());
+    engine.run();
+    engine
+}
+
+/// pdflatex: `[x\relax (EOL)y\relax (EOL)z]` — the end-of-line character is
+/// processed after a control word (skip-blanks state).
+#[test]
+fn end_of_line_character_follows_control_words_like_tex() {
+    let e = engine(
+        "\\catcode`\\^^M=13 \\def^^M{(EOL)}\\message{[x\\relax\ny\\relax  \nz]}%\n\\catcode`\\^^M=5 \\end",
+    );
+    assert!(e.term.contains("[x\\relax (EOL)y\\relax (EOL)z]"), "{}", e.term);
+}
+
+/// pdflatex: the end-of-line character is appended when a line is read, so
+/// changing \endlinechar affects only later lines (`a b`, then `cd`).
+#[test]
+fn endlinechar_changes_take_effect_on_the_next_line() {
+    let e = engine(
+        "\\endlinechar=-1 \\edef\\y{a\nb}\\message{[\\meaning\\y]}\n\\endlinechar=13 \\edef\\y{c\nd}\\message{[\\meaning\\y]}%\n\\end",
+    );
+    assert!(e.term.contains("[macro:->a b]"), "{}", e.term);
+    assert!(e.term.contains("[macro:->cd]"), "{}", e.term);
+}
+
+/// pdflatex: `^^` notation inside a control word is reduced first.
+#[test]
+fn sup_notation_inside_control_words() {
+    let e = engine("\\def\\foo{OK}\\message{[\\fo^^6f]}\\end");
+    assert!(e.term.contains("[OK]"), "{}", e.term);
+}
+
+/// pdflatex: a forbidden \par aborts the macro call and is read again; a
+/// prefix mismatch consumes the mismatching token.
+#[test]
+fn malformed_macro_calls_abort_like_tex() {
+    let e = run_lenient(
+        r"\def\a#1{[#1]}\def\b#1.{[#1]}\def\p.{X}
+\message{1:\a\par Y}
+\message{2:\b a\par b.Y}
+\message{3:[\p,b]}
+\end",
+    );
+    assert!(e.term.contains("1:\\par Y"), "{}", e.term);
+    assert!(e.term.contains("2:\\par b.Y"), "{}", e.term);
+    assert!(e.term.contains("3:[b]"), "{}", e.term);
+    assert_eq!(e.error_count, 3, "{}", e.term);
+}
+
+/// pdflatex: an \outer macro may not appear in an argument or in skipped
+/// conditional text; the call is aborted and the macro is read again.
+#[test]
+fn outer_macros_end_arguments_and_skipped_text() {
+    let e = run_lenient(
+        r"\def\c#1{[#1]}\outer\def\o{O}
+\message{1:\c\o}
+\iffalse \o \fi
+\end",
+    );
+    assert!(e.term.contains("1:O"), "{}", e.term);
+    assert!(e.diagnostics.iter().any(|d| d.message
+        == "Forbidden control sequence found while scanning use of \\c"));
+    assert!(e
+        .diagnostics
+        .iter()
+        .any(|d| d.message.starts_with("Incomplete \\iffalse")));
+}

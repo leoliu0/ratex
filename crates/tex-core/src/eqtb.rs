@@ -108,88 +108,24 @@ impl Macro {
         }
     }
 
+    /// Length of the replacement for `args`, or None beyond `limit`.
     pub(crate) fn replacement_length(
         &self,
-        args: &[smallvec::SmallVec<[Token; 16]>],
+        args: &crate::input::MacroArgs,
         limit: usize,
     ) -> Option<usize> {
         let references = self.ensure_replacement_plan();
         let mut length = self.body.len();
         for &(_, parameter) in references.iter() {
-            if let Some(arg) = args.get(parameter) {
-                let next = length.checked_sub(1)?.checked_add(arg.len())?;
-                if next > limit {
-                    return None;
-                }
-                length = next;
+            // A reference without a supplied argument contributes nothing.
+            let arg_len = args.get(parameter).map_or(0, <[Token]>::len);
+            let next = length.checked_sub(1)?.checked_add(arg_len)?;
+            if next > limit {
+                return None;
             }
+            length = next;
         }
-        if length > limit {
-            None
-        } else {
-            Some(length)
-        }
-    }
-
-    pub(crate) fn append_replacement(
-        &self,
-        args: &[smallvec::SmallVec<[Token; 16]>],
-        output: &mut Vec<Token>,
-        limit: usize,
-    ) -> bool {
-        let mut cached = self.replacement.borrow_mut();
-        if cached
-            .as_ref()
-            .is_none_or(|plan| !Rc::ptr_eq(&plan.body, &self.body))
-        {
-            let references: Rc<[(usize, usize)]> = self
-                .body
-                .iter()
-                .enumerate()
-                .filter_map(|(position, token)| {
-                    (0x4000_0001..0x8000_0000)
-                        .contains(&token.0)
-                        .then_some((position, (token.0 & 0x3FFF_FFFF).wrapping_sub(1) as usize))
-                })
-                .collect::<Vec<_>>()
-                .into();
-            *cached = Some(MacroReplacement {
-                body: self.body.clone(),
-                references,
-            });
-        }
-        let plan = cached.as_ref().unwrap();
-        let references = plan.references.clone();
-        drop(cached);
-        let mut length = self.body.len();
-        for &(_, parameter) in references.iter() {
-            if let Some(arg) = args.get(parameter) {
-                let Some(next) = length
-                    .checked_sub(1)
-                    .and_then(|length| length.checked_add(arg.len()))
-                else {
-                    return false;
-                };
-                if next > limit {
-                    return false;
-                }
-                length = next;
-            }
-        }
-        if length > limit {
-            return false;
-        }
-        output.reserve(length);
-        let mut start = 0;
-        for &(position, parameter) in references.iter() {
-            if let Some(arg) = args.get(parameter) {
-                output.extend_from_slice(&self.body[start..position]);
-                output.extend_from_slice(arg);
-                start = position + 1;
-            }
-        }
-        output.extend_from_slice(&self.body[start..]);
-        true
+        (length <= limit).then_some(length)
     }
 }
 
@@ -695,18 +631,6 @@ impl Eqtb {
         }
         self.entries[idx].equiv = Some(equiv);
         self.entries[idx].level = if global { LEVEL_ONE } else { cur_level };
-    }
-
-    /// Replace only the current meaning without recording a TeX assignment.
-    /// This is for tightly scoped engine internals such as write expansion;
-    /// the caller must restore the returned meaning before normal execution
-    /// resumes. The definition level and save stack remain untouched.
-    pub(crate) fn replace_equiv_temporarily(
-        &mut self,
-        id: CsId,
-        equiv: Option<Equiv>,
-    ) -> Option<Equiv> {
-        std::mem::replace(&mut self.ensure_entry(id).equiv, equiv)
     }
 
     pub fn undefine(&mut self, id: CsId, global: bool) {
@@ -1484,11 +1408,6 @@ impl Eqtb {
     pub(crate) fn clear_entries(&mut self) {
         self.entries.clear();
     }
-
-    /// Number of defined control sequences.
-    pub(crate) fn eq_count(&self) -> usize {
-        self.entries.iter().filter(|e| e.equiv.is_some()).count()
-    }
 }
 
 #[cfg(test)]
@@ -1548,6 +1467,16 @@ mod tests {
 
     #[test]
     fn replacement_plan_preserves_repeated_parameters_and_rebuilds_after_body_change() {
+        fn expand(m: &Macro, args: &crate::input::MacroArgs) -> Vec<Token> {
+            let mut frame = crate::input::MacroFrame::new(
+                m.body.clone(),
+                m.ensure_replacement_plan(),
+                args.clone(),
+                None,
+                0,
+            );
+            std::iter::from_fn(|| frame.next_token()).collect()
+        }
         let mut m = Macro {
             num_params: 2,
             has_param_refs: true,
@@ -1566,14 +1495,15 @@ mod tests {
             protected: false,
             replacement: Default::default(),
         };
-        let args = [
-            smallvec::smallvec![Token::letter(b'X')],
-            smallvec::smallvec![Token::letter(b'Y'), Token::letter(b'Z')],
-        ];
-        let mut output = Vec::new();
-        assert!(m.append_replacement(&args, &mut output, usize::MAX));
+        let mut args = crate::input::MacroArgs::with_buffer(Vec::new());
+        args.buffer().push(Token::letter(b'X'));
+        args.finish_arg();
+        args.buffer()
+            .extend([Token::letter(b'Y'), Token::letter(b'Z')]);
+        args.finish_arg();
+        // A reference without a supplied argument contributes nothing.
         assert_eq!(
-            output,
+            expand(&m, &args),
             vec![
                 Token::letter(b'A'),
                 Token::letter(b'Y'),
@@ -1581,25 +1511,17 @@ mod tests {
                 Token::letter(b'X'),
                 Token::letter(b'Y'),
                 Token::letter(b'Z'),
-                Token(0x4000_0009)
             ]
         );
+        assert_eq!(m.replacement_length(&args, usize::MAX), Some(6));
         Rc::make_mut(&mut m.body)[0] = Token::letter(b'B');
-        output.clear();
-        assert!(m.append_replacement(&args, &mut output, usize::MAX));
-        assert_eq!(output[0], Token::letter(b'B'));
+        assert_eq!(expand(&m, &args)[0], Token::letter(b'B'));
         m.body = vec![Token(0x4000_0001)].into();
-        output.clear();
-        assert!(m.append_replacement(&args, &mut output, usize::MAX));
-        assert_eq!(output, vec![Token::letter(b'X')]);
+        assert_eq!(expand(&m, &args), vec![Token::letter(b'X')]);
 
         m.body = vec![Token(0x4000_0002), Token(0x4000_0002)].into();
-        output.clear();
-        assert!(!m.append_replacement(&args, &mut output, 3));
-        assert!(
-            output.is_empty(),
-            "an oversized replacement is not allocated"
-        );
+        assert_eq!(m.replacement_length(&args, 3), None);
+        assert_eq!(m.replacement_length(&args, 4), Some(4));
     }
 
     fn prim_of(eq: &Eqtb, id: CsId) -> Option<Prim> {

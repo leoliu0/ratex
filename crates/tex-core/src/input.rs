@@ -89,12 +89,14 @@ pub enum Source {
         ending: bool,
         /// true when the source has returned EOF already
         done: bool,
-        /// pending ParEnd to deliver once
-        pending_par: bool,
-        at_eof: bool,
+        /// The current line as TeX's `buffer` sees it: the physical line
+        /// without trailing spaces, followed by `\endlinechar` (as of the time
+        /// the line was read) unless that parameter was inactive.
         line_buf: Option<Vec<u8>>,
+        /// Bytes at the end of `line_buf` that encode the end-of-line
+        /// character. Diagnostics hide them, as TeX's `show_context` does.
+        line_end_len: u8,
         line_pos: usize,
-        line_reload: bool,
     },
     TokList {
         toks: TokTokens,
@@ -106,68 +108,214 @@ pub enum Source {
     },
     MacroFrame(MacroFrame),
 }
+
+/// Arguments of one macro call stored contiguously: argument `i` occupies
+/// `toks[ends[i - 1]..ends[i]]` (with an implicit start of zero).
+#[derive(Clone, Debug, Default)]
+pub struct MacroArgs {
+    toks: Vec<Token>,
+    ends: [u32; 9],
+    count: u8,
+}
+
+impl MacroArgs {
+    /// Start collecting into a (cleared) recycled buffer.
+    pub(crate) fn with_buffer(mut toks: Vec<Token>) -> Self {
+        toks.clear();
+        MacroArgs {
+            toks,
+            ends: [0; 9],
+            count: 0,
+        }
+    }
+
+    #[inline]
+    fn start(&self, index: usize) -> usize {
+        if index == 0 {
+            0
+        } else {
+            self.ends[index - 1] as usize
+        }
+    }
+
+    /// Start of the argument currently being collected.
+    #[inline]
+    pub(crate) fn open_start(&self) -> usize {
+        self.start(self.count as usize)
+    }
+
+    /// The shared buffer; the open argument is its tail from `open_start`.
+    #[inline]
+    pub(crate) fn buffer(&mut self) -> &mut Vec<Token> {
+        &mut self.toks
+    }
+
+    /// Close the argument being collected. A macro has at most nine.
+    pub(crate) fn finish_arg(&mut self) {
+        self.ends[self.count as usize] = self.toks.len() as u32;
+        self.count += 1;
+    }
+
+    #[inline]
+    pub(crate) fn get(&self, index: usize) -> Option<&[Token]> {
+        (index < self.count as usize).then(|| &self.toks[self.start(index)..self.ends[index] as usize])
+    }
+
+    pub(crate) fn into_buffer(self) -> Vec<Token> {
+        self.toks
+    }
+}
+
+/// A macro replacement read lazily: body tokens interleaved with the
+/// arguments their parameter references name, without materializing the
+/// substituted list.
 #[derive(Clone, Debug)]
 pub struct MacroFrame {
-    pub body: std::rc::Rc<[Token]>,
-    pub args: smallvec::SmallVec<[smallvec::SmallVec<[Token; 16]>; 9]>,
-    pub references: std::rc::Rc<[(usize, usize)]>,
-    pub ref_idx: usize,
-    pub body_pos: usize,
-    pub arg_pos: usize,
-    pub name: &'static str,
+    body: Rc<[Token]>,
+    /// (body position, argument index) for every parameter reference.
+    references: Rc<[(usize, usize)]>,
+    args: MacroArgs,
+    /// Cursor into the current segment: `body` or, when `in_arg`, `args`.
+    pos: u32,
+    end: u32,
+    /// Body position after the reference whose argument is being read.
+    resume: u32,
+    next_ref: u32,
+    in_arg: bool,
     pub owner: Option<CsId>,
     pub trace_depth: u8,
-    pub delivered_brace_balance: i32,
 }
 
 impl MacroFrame {
+    pub(crate) fn new(
+        body: Rc<[Token]>,
+        references: Rc<[(usize, usize)]>,
+        args: MacroArgs,
+        owner: Option<CsId>,
+        trace_depth: u8,
+    ) -> Self {
+        let end = references.first().map_or(body.len(), |&(position, _)| position) as u32;
+        MacroFrame {
+            body,
+            references,
+            args,
+            pos: 0,
+            end,
+            resume: 0,
+            next_ref: 0,
+            in_arg: false,
+            owner,
+            trace_depth,
+        }
+    }
+
+    /// True once no body token remains. An argument still being delivered
+    /// keeps the frame alive, like the parameter list above a TeX macro.
     #[inline(always)]
     pub fn is_exhausted(&self) -> bool {
-        self.body_pos >= self.body.len()
+        !self.in_arg && self.pos >= self.end && self.next_ref as usize >= self.references.len()
     }
 
     #[inline(always)]
     pub fn next_token(&mut self) -> Option<Token> {
-        while self.ref_idx < self.references.len() {
-            let (param_pos, param_idx) = self.references[self.ref_idx];
-            if self.body_pos < param_pos {
-                let tok = self.body[self.body_pos];
-                self.body_pos += 1;
-                self.track_brace(tok);
-                return Some(tok);
+        loop {
+            if self.pos < self.end {
+                let index = self.pos as usize;
+                self.pos += 1;
+                return Some(if self.in_arg {
+                    self.args.toks[index]
+                } else {
+                    self.body[index]
+                });
             }
-            if let Some(arg) = self.args.get(param_idx) {
-                if self.arg_pos < arg.len() {
-                    let tok = arg[self.arg_pos];
-                    self.arg_pos += 1;
-                    self.track_brace(tok);
-                    return Some(tok);
-                }
+            if !self.next_segment() {
+                return None;
             }
-            self.body_pos += 1;
-            self.arg_pos = 0;
-            self.ref_idx += 1;
-        }
-        if self.body_pos < self.body.len() {
-            let tok = self.body[self.body_pos];
-            self.body_pos += 1;
-            self.track_brace(tok);
-            Some(tok)
-        } else {
-            None
         }
     }
 
-    #[inline(always)]
-    fn track_brace(&mut self, tok: Token) {
-        if tok.is_char() {
-            let cc = tok.cc();
-            if cc == 1 {
-                self.delivered_brace_balance += 1;
-            } else if cc == 2 {
-                self.delivered_brace_balance -= 1;
+    /// The undelivered rest of the current body or argument segment.
+    #[inline]
+    pub(crate) fn segment(&self) -> &[Token] {
+        let source = if self.in_arg {
+            &self.args.toks[..]
+        } else {
+            &self.body[..]
+        };
+        &source[self.pos as usize..self.end as usize]
+    }
+
+    /// Consume `count` tokens of `segment()`.
+    #[inline]
+    pub(crate) fn skip(&mut self, count: usize) {
+        debug_assert!(self.pos as usize + count <= self.end as usize);
+        self.pos += count as u32;
+    }
+
+    /// Move to the segment after the current one; false at the end.
+    fn next_segment(&mut self) -> bool {
+        let body_from = if self.in_arg {
+            self.in_arg = false;
+            self.resume as usize
+        } else if let Some(&(position, index)) = self.references.get(self.next_ref as usize) {
+            self.next_ref += 1;
+            self.resume = position as u32 + 1;
+            if index < self.args.count as usize {
+                self.in_arg = true;
+                self.pos = self.args.start(index) as u32;
+                self.end = self.args.ends[index];
+                return true;
+            }
+            // A reference beyond the supplied arguments contributes nothing.
+            position + 1
+        } else {
+            return false;
+        };
+        self.pos = body_from as u32;
+        self.end = self
+            .references
+            .get(self.next_ref as usize)
+            .map_or(self.body.len(), |&(position, _)| position) as u32;
+        true
+    }
+
+    /// Net brace depth of the tokens delivered so far (alignment scanning
+    /// needs the braces that real input sources have already produced).
+    pub fn delivered_brace_balance(&self) -> i32 {
+        fn balance(tokens: &[Token]) -> i32 {
+            tokens.iter().fold(0, |depth, t| {
+                if t.is_char() && t.cc() == 1 {
+                    depth + 1
+                } else if t.is_char() && t.cc() == 2 {
+                    depth - 1
+                } else {
+                    depth
+                }
+            })
+        }
+        // Parameter references are not braces, so the delivered body prefix
+        // can be counted whole.
+        let body_end = if self.in_arg {
+            self.resume as usize - 1
+        } else {
+            self.pos as usize
+        };
+        let mut depth = balance(&self.body[..body_end]);
+        let passed = self.next_ref as usize;
+        for (n, &(_, index)) in self.references[..passed].iter().enumerate() {
+            if let Some(arg) = self.args.get(index) {
+                if self.in_arg && n + 1 == passed {
+                    depth += balance(&self.args.toks[self.args.start(index)..self.pos as usize]);
+                } else {
+                    depth += balance(arg);
+                }
             }
         }
+        depth
+    }
+
+    pub(crate) fn into_arg_buffer(self) -> Vec<Token> {
+        self.args.into_buffer()
     }
 }
 
@@ -271,10 +419,6 @@ impl InputStack {
         (start, &data[start..end])
     }
 
-    fn raw_line(data: &[u8], line_no: u32) -> &[u8] {
-        Self::raw_line_at(data, line_no).1
-    }
-
     fn context_for_at(source: &Source, byte_column: Option<usize>) -> Option<SourceContext> {
         let Source::File {
             name,
@@ -284,20 +428,24 @@ impl InputStack {
             line_no,
             line_start,
             line_buf,
+            line_end_len,
             line_pos,
             ..
         } = source
         else {
             return None;
         };
-        let bytes = line_buf.as_deref().unwrap_or_else(|| {
-            if *line_no == 0 {
-                &[][..]
-            } else {
-                let (end, _) = physical_line_bounds(data, *line_start);
-                &data[(*line_start).min(end)..end]
-            }
-        });
+        let bytes = line_buf.as_deref().map_or_else(
+            || {
+                if *line_no == 0 {
+                    &[][..]
+                } else {
+                    let (end, _) = physical_line_bounds(data, *line_start);
+                    &data[(*line_start).min(end)..end]
+                }
+            },
+            |buf| &buf[..buf.len().saturating_sub(usize::from(*line_end_len))],
+        );
         let byte_column = byte_column
             .unwrap_or_else(|| {
                 if line_buf.is_some() {
@@ -607,11 +755,9 @@ impl InputStack {
             state: 0,
             ending: false,
             done: false,
-            pending_par: false,
-            at_eof: false,
             line_buf: None,
+            line_end_len: 0,
             line_pos: 0,
-            line_reload: true,
         });
     }
     pub fn push_toks(&mut self, toks: impl Into<TokTokens>, name: &'static str) {
@@ -727,11 +873,9 @@ mod tests {
             state: 1,
             ending: false,
             done: false,
-            pending_par: false,
-            at_eof: false,
             line_buf: Some(b"needle rest".to_vec()),
+            line_end_len: 0,
             line_pos: b"needle".len(),
-            line_reload: false,
         });
 
         let context = input

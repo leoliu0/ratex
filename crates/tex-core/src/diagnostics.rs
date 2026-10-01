@@ -1261,17 +1261,21 @@ impl Engine {
         None
     }
 
+    /// A warning at `source`. Without a source the warning has no location:
+    /// it must not borrow the last scanned token or macro trace, which
+    /// belong to unrelated input (notably for end-of-job checks).
     pub(crate) fn warning_at(&mut self, message: &str, source: Option<SourceContext>) {
-        self.warning_at_with_terminal_visibility(message, source, true);
+        self.warning_at_with_terminal_visibility(message, source, true, true);
     }
 
     /// Box-quality diagnostics follow TeX's `\tracingonline` policy: they are
     /// always recorded in the transcript, but only appear on the terminal
     /// when tracing is enabled. When visible, the CLI's diagnostic stream is
-    /// stderr, like every other structured warning.
+    /// stderr, like every other structured warning. Without a recorded
+    /// source they point at the current input position, if any remains.
     pub(crate) fn pack_warning_at(&mut self, message: &str, source: Option<SourceContext>) {
         let terminal_visible = self.eqtb.int_params[IntParam::TracingOnline.idx() as usize] > 0;
-        self.warning_at_with_terminal_visibility(message, source, terminal_visible);
+        self.warning_at_with_terminal_visibility(message, source, terminal_visible, false);
     }
 
     fn warning_at_with_terminal_visibility(
@@ -1279,11 +1283,17 @@ impl Engine {
         message: &str,
         source: Option<SourceContext>,
         terminal_visible: bool,
+        explicit_source: bool,
     ) {
         self.flush_diagnostic_repeats();
-        let saved = std::mem::replace(&mut self.diagnostic_source_override, source);
-        let (diagnostic, _) = self.make_diagnostic(message, DiagnosticSeverity::Warning);
-        self.diagnostic_source_override = saved;
+        let diagnostic = if source.is_none() && (explicit_source || self.input.stack.is_empty()) {
+            unlocated_diagnostic(DiagnosticSeverity::Warning, message, None)
+        } else {
+            let saved = std::mem::replace(&mut self.diagnostic_source_override, source);
+            let (diagnostic, _) = self.make_diagnostic(message, DiagnosticSeverity::Warning);
+            self.diagnostic_source_override = saved;
+            diagnostic
+        };
         self.emit_diagnostic(&diagnostic, terminal_visible);
         self.diagnostics.push(diagnostic);
     }
@@ -1410,21 +1420,7 @@ impl Engine {
     /// the scanner's last source location, which would blame unrelated TeX.
     pub fn external_fatal_error(&mut self, message: &str, help: Option<&str>) {
         self.flush_diagnostic_repeats();
-        let diagnostic = Diagnostic {
-            severity: DiagnosticSeverity::Error,
-            message: bounded_text(message, MAX_MESSAGE_BYTES),
-            original_message: None,
-            primary: None,
-            highlight_len: 1,
-            primary_label: None,
-            related: None,
-            expansion: Vec::new(),
-            included_from: Vec::new(),
-            help: help
-                .map(|text| bounded_text(text.trim(), MAX_HELP_BYTES))
-                .or_else(|| default_help(message)),
-            note: None,
-        };
+        let diagnostic = unlocated_diagnostic(DiagnosticSeverity::Error, message, help);
         self.emit_diagnostic(
             &diagnostic,
             self.interaction_mode != crate::engine::InteractionMode::Batch,
@@ -1690,6 +1686,29 @@ impl Engine {
             result.push('…');
         }
         result
+    }
+}
+
+/// A diagnostic with no source location or expansion context.
+fn unlocated_diagnostic(
+    severity: DiagnosticSeverity,
+    message: &str,
+    help: Option<&str>,
+) -> Diagnostic {
+    Diagnostic {
+        severity,
+        message: bounded_text(message, MAX_MESSAGE_BYTES),
+        original_message: None,
+        primary: None,
+        highlight_len: 1,
+        primary_label: None,
+        related: None,
+        expansion: Vec::new(),
+        included_from: Vec::new(),
+        help: help
+            .map(|text| bounded_text(text.trim(), MAX_HELP_BYTES))
+            .or_else(|| default_help(message)),
+        note: None,
     }
 }
 
@@ -2343,5 +2362,26 @@ mod tests {
         engine.finish_job_diagnostics();
         assert_eq!(engine.diagnostics, diagnostics);
         assert_eq!(engine.diagnostic_output, output);
+    }
+
+    #[test]
+    fn end_of_job_warnings_do_not_borrow_the_last_macro_call() {
+        let mut engine = Engine::new(true);
+        engine.init_primitives();
+        engine.set_interaction_mode(InteractionMode::Nonstop);
+        engine.input.push_file(
+            "main.tex".into(),
+            b"\\catcode`\\{=1 \\catcode`\\}=2 \\catcode`\\#=6\n\\def\\wrap#1{#1}\\wrap{\\end}\n"
+                .to_vec(),
+        );
+        engine.main_loop();
+        engine.warning_at(
+            "name{Hfootnote.1} has been referenced but does not exist, replaced by a fixed one",
+            None,
+        );
+        let warning = engine.diagnostics.last().unwrap();
+        assert!(warning.primary.is_none(), "{:?}", warning.primary);
+        assert!(warning.expansion.is_empty(), "{:?}", warning.expansion);
+        assert!(warning.included_from.is_empty());
     }
 }

@@ -338,6 +338,36 @@ impl IntParam {
     pub fn from_idx(i: u16) -> Option<Self> {
         Self::ALL.get(i as usize).copied()
     }
+
+    /// Whether tex.web keeps this parameter in `eqtb` (so `\tracingassigns`
+    /// and `\tracingrestores` report it). The rest are read-only quantities
+    /// or pseudo-parameters such as `\spacefactor` and `\interactionmode`.
+    pub fn in_eqtb(self) -> bool {
+        !matches!(
+            self,
+            IntParam::ErrorStopMode
+                | IntParam::ScrollMode
+                | IntParam::NonStopMode
+                | IntParam::BatchMode
+                | IntParam::InsertPenalties
+                | IntParam::PrevGraf
+                | IntParam::InputLineNo
+                | IntParam::Badness
+                | IntParam::DeadCycles
+                | IntParam::EtxVersion
+                | IntParam::PdfPageCount
+                | IntParam::PdfTexVersion
+                | IntParam::InteractionMode
+                | IntParam::CurrentGroupLevel
+                | IntParam::CurrentGroupType
+                | IntParam::CurrentIfLevel
+                | IntParam::CurrentIfType
+                | IntParam::CurrentIfBranch
+                | IntParam::LastNodeType
+                | IntParam::SpaceFactor
+                | IntParam::Penalty
+        )
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -457,6 +487,23 @@ impl DimParam {
 
     pub fn from_idx(i: u16) -> Option<Self> {
         Self::ALL.get(i as usize).copied()
+    }
+
+    /// Whether tex.web keeps this parameter in `eqtb`; the page-so-far
+    /// dimensions and `\prevdepth` are not traced as assignments.
+    pub fn in_eqtb(self) -> bool {
+        !matches!(
+            self,
+            DimParam::PageGoal
+                | DimParam::PageTotal
+                | DimParam::PageDepth
+                | DimParam::PageStretch
+                | DimParam::PageFilStretch
+                | DimParam::PageFillStretch
+                | DimParam::PageFilllStretch
+                | DimParam::PageShrink
+                | DimParam::PrevDepth
+        )
     }
 }
 

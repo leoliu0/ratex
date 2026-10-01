@@ -55,6 +55,16 @@ impl<'a> BoxDisplay<'a> {
         }
     }
 
+    /// A display with explicit `depth_threshold` and `breadth_max`, as
+    /// show_eqtb sets them for a box register.
+    pub(crate) fn with_limits(e: &'a Engine, depth_threshold: i64, breadth_max: i64) -> Self {
+        BoxDisplay {
+            depth_threshold,
+            breadth_max,
+            ..Self::new(e)
+        }
+    }
+
     pub(crate) fn print(&mut self, s: &str) {
         self.out.extend_from_slice(s.as_bytes());
     }
@@ -284,7 +294,7 @@ impl<'a> BoxDisplay<'a> {
         self.prefix.pop();
     }
 
-    fn show_node_list(&mut self, list: &[Node]) {
+    pub(crate) fn show_node_list(&mut self, list: &[Node]) {
         if self.prefix.len() as i64 > self.depth_threshold {
             if list.iter().any(|n| !invisible(n)) {
                 self.print(" []");
@@ -880,6 +890,7 @@ impl Engine {
     /// Append `text` to the transcript and, when `to_term`, to the terminal,
     /// starting it on a fresh line of each (tex.web `print_nl`).
     pub(crate) fn print_nl_diagnostic(&mut self, text: &str, to_term: bool) {
+        self.flush_trace_events();
         if !self.log.is_empty() && !self.log.ends_with('\n') {
             self.append_log("\n");
         }
@@ -1084,6 +1095,230 @@ impl Engine {
                     }
                 }
                 Mode::Math | Mode::DisplayMath => {}
+            }
+        }
+        d.out
+    }
+
+    /// e-TeX show_save_groups (`\showgroups`).
+    pub(crate) fn show_save_groups(&self) -> Vec<u8> {
+        use crate::eqtb::{
+            group_code as gc, group_description, BOX_FLAG, GLOBAL_BOX_FLAG, LEADER_FLAG,
+            SHIP_OUT_FLAG,
+        };
+        const VMODE: i32 = 1;
+        const HMODE: i32 = 102;
+        const MMODE: i32 = 203;
+        let mut d = BoxDisplay::new(self);
+        // print_nl(""); print_ln
+        d.print_ln();
+        let levels = self.nest_levels();
+        let mode_of = |index: usize| -> i32 {
+            match levels[index].mode {
+                Mode::Vertical => VMODE,
+                Mode::InternalVertical => -VMODE,
+                Mode::Horizontal => HMODE,
+                Mode::RestrictedHorizontal => -HMODE,
+                Mode::DisplayMath => MMODE,
+                Mode::Math => -MMODE,
+            }
+        };
+        let groups = &self.eqtb.groups;
+        let mut p = levels.len() - 1;
+        let mut a: i32 = 1;
+        let mut remaining = groups.len();
+        loop {
+            d.print_nl("### ");
+            if remaining == 0 {
+                d.print("bottom level");
+                break;
+            }
+            let group = groups[remaining - 1];
+            let meta = group.meta;
+            d.print(&group_description(meta.code, remaining as u16, group.line, true));
+            let mut m;
+            loop {
+                m = mode_of(p);
+                if p > 0 {
+                    p -= 1;
+                } else {
+                    m = VMODE;
+                }
+                if m != HMODE {
+                    break;
+                }
+            }
+            d.print(" (");
+            // where the arms below continue: the box context, `found1`
+            // (name and packaging), `found2` (the brace) and `found` (the
+            // closing parenthesis)
+            enum Next {
+                Context(&'static str),
+                Found1(&'static str),
+                Found2,
+                Found,
+            }
+            let next = match meta.code {
+                gc::SIMPLE => {
+                    p += 1;
+                    Next::Found2
+                }
+                gc::HBOX | gc::ADJUSTED_HBOX => Next::Context("hbox"),
+                gc::VBOX => Next::Context("vbox"),
+                gc::VTOP => Next::Context("vtop"),
+                gc::ALIGN => {
+                    if a == 0 {
+                        a = 1;
+                        Next::Found1(if m == -VMODE { "halign" } else { "valign" })
+                    } else {
+                        if a == 1 {
+                            d.print("align entry");
+                        } else {
+                            d.print_esc("cr");
+                        }
+                        if p >= a as usize {
+                            p -= a as usize;
+                        }
+                        a = 0;
+                        Next::Found
+                    }
+                }
+                gc::NO_ALIGN => {
+                    p += 1;
+                    a = -1;
+                    d.print_esc("noalign");
+                    Next::Found2
+                }
+                gc::OUTPUT => {
+                    d.print_esc("output");
+                    Next::Found
+                }
+                gc::MATH => Next::Found2,
+                gc::DISC | gc::MATH_CHOICE => {
+                    d.print_esc(if meta.code == gc::DISC {
+                        "discretionary"
+                    } else {
+                        "mathchoice"
+                    });
+                    for i in 1..=3 {
+                        if i <= meta.spec {
+                            d.print("{}");
+                        }
+                    }
+                    Next::Found2
+                }
+                gc::INSERT => {
+                    if meta.spec == 255 {
+                        d.print_esc("vadjust");
+                    } else {
+                        d.print_esc("insert");
+                        d.print_int(meta.spec as i64);
+                    }
+                    Next::Found2
+                }
+                gc::VCENTER => Next::Found1("vcenter"),
+                gc::SEMI_SIMPLE => {
+                    p += 1;
+                    d.print_esc("begingroup");
+                    Next::Found
+                }
+                gc::MATH_SHIFT => {
+                    if m == MMODE {
+                        d.print("$");
+                        d.print("$");
+                        Next::Found
+                    } else if mode_of(p) == MMODE {
+                        d.print_esc(if meta.spec == 1 { "leqno" } else { "eqno" });
+                        Next::Found
+                    } else {
+                        d.print("$");
+                        Next::Found
+                    }
+                }
+                _ => {
+                    d.print_esc("left");
+                    Next::Found
+                }
+            };
+            let (name, show_context) = match next {
+                Next::Context(name) => (Some(name), true),
+                Next::Found1(name) => (Some(name), false),
+                Next::Found2 => (None, false),
+                Next::Found => {
+                    d.print(")");
+                    remaining -= 1;
+                    continue;
+                }
+            };
+            if show_context && meta.context != 0 {
+                let i = meta.context;
+                if i < BOX_FLAG {
+                    let horizontal = mode_of(p).abs() == VMODE;
+                    d.print_esc(match (horizontal, i > 0) {
+                        (true, true) => "moveright",
+                        (true, false) => "moveleft",
+                        (false, true) => "lower",
+                        (false, false) => "raise",
+                    });
+                    d.print_scaled(i.abs());
+                    d.print("pt");
+                } else if i < SHIP_OUT_FLAG {
+                    let mut register = i;
+                    if i >= GLOBAL_BOX_FLAG {
+                        d.print_esc("global");
+                        register -= GLOBAL_BOX_FLAG - BOX_FLAG;
+                    }
+                    d.print_esc("setbox");
+                    d.print_int((register - BOX_FLAG) as i64);
+                    d.print("=");
+                } else {
+                    d.print_esc(match i - LEADER_FLAG {
+                        -1 => "shipout",
+                        0 => "leaders",
+                        1 => "cleaders",
+                        _ => "xleaders",
+                    });
+                }
+            }
+            if let Some(name) = name {
+                d.print_esc(name);
+                if meta.spec != 0 {
+                    d.print(" ");
+                    d.print(if meta.exactly { "to" } else { "spread" });
+                    d.print_scaled(meta.spec);
+                    d.print("pt");
+                }
+            }
+            d.print("{)");
+            remaining -= 1;
+        }
+        d.out
+    }
+
+    /// e-TeX's `\showifs` display.
+    pub(crate) fn show_ifs(&self) -> Vec<u8> {
+        let mut d = BoxDisplay::new(self);
+        // print_nl(""); print_ln
+        d.print_ln();
+        if self.if_stack.is_empty() {
+            d.print_nl("### ");
+            d.print("no active conditionals");
+        } else {
+            for (index, state) in self.if_stack.iter().enumerate().rev() {
+                d.print_nl("### level ");
+                d.print_int((index + 1) as i64);
+                d.print(": ");
+                if state.unless {
+                    d.print_esc("unless");
+                }
+                d.print_esc(crate::trace::if_name(state.kind));
+                if state.in_else {
+                    d.print_esc("else");
+                }
+                if state.loc_line != 0 {
+                    d.print(" entered on line ");
+                    d.print_int(state.loc_line as i64);
+                }
             }
         }
         d.out

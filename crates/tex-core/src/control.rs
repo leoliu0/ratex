@@ -640,9 +640,11 @@ impl Engine {
             }
             CharDef => {
                 let t = self.scan_definable_cs();
+                let g = self.take_global();
+                // tex.web §1224: the target is made \relax before the value is scanned
+                self.eqtb.assign(t, Equiv::Prim(Prim::Relax), g);
                 self.scan_optional_equals();
                 let (v, value_source) = self.scan_int_with_source();
-                let g = self.take_global();
                 if u32::try_from(v).ok().and_then(char::from_u32).is_none() {
                     self.error_at(
                         &format!("Invalid Unicode scalar {v} for \\chardef; used 0"),
@@ -657,9 +659,10 @@ impl Engine {
             }
             MathCharDef => {
                 let t = self.scan_definable_cs();
+                let g = self.take_global();
+                self.eqtb.assign(t, Equiv::Prim(Prim::Relax), g);
                 self.scan_optional_equals();
                 let (v, value_source) = self.scan_int_with_source();
-                let g = self.take_global();
                 if !(0..=32767).contains(&v) {
                     self.error_at(
                         &format!(
@@ -1720,9 +1723,11 @@ impl Engine {
         let id = self.cs.intern(&name);
         self.last_named_cs = Some(id);
         if self.eqtb.get(id).is_none() {
+            // tex.web §372: eq_define(cur_cs,relax,256) — local, so a group
+            // that coins the name makes it undefined again at its end
             let relax = self.cs.lookup(b"relax").unwrap();
             if let Some(r) = self.eqtb.get(relax).cloned() {
-                self.eqtb.assign(id, r, true);
+                self.eqtb.assign(id, r, false);
             }
         }
         id

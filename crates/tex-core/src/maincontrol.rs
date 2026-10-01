@@ -657,8 +657,10 @@ impl Engine {
             }
             ShowGroups => {
                 let source = self.current_token_source_mark();
-                let detail = self.show_groups_description();
-                self.report_inspection("\\showgroups", detail, source);
+                // e-TeX: begin_diagnostic; show_save_groups
+                let display = self.show_save_groups();
+                self.emit_box_diagnostic(display);
+                self.report_logged_inspection("\\showgroups", source);
             }
             ShowTokens => {
                 let source = self.current_token_source_mark();
@@ -681,8 +683,9 @@ impl Engine {
             }
             ShowIfs => {
                 let source = self.current_token_source_mark();
-                let detail = self.show_ifs_description();
-                self.report_inspection("\\showifs", detail, source);
+                let display = self.show_ifs();
+                self.emit_box_diagnostic(display);
+                self.report_logged_inspection("\\showifs", source);
             }
             Char | RatexLiteralChar => {
                 if p == RatexLiteralChar && self.mode.is_v() {
@@ -2257,129 +2260,7 @@ impl Engine {
             source.as_ref().map(crate::input::SourceMark::to_context),
         );
     }
-
-    fn show_groups_description(&self) -> String {
-        let total = self
-            .eqtb
-            .save_stack
-            .iter()
-            .filter(|item| matches!(item, SaveItem::Level(_, _)))
-            .count();
-        let mut out = InspectionText::new();
-        if total == 0 {
-            out.push(format_args!(
-                "no groups are open; current level is the bottom level"
-            ));
-            return out.finish();
-        }
-        out.push(format_args!("{total} group(s) open, innermost first:\n"));
-        for item in self
-            .eqtb
-            .save_stack
-            .iter()
-            .rev()
-            .filter(|item| matches!(item, SaveItem::Level(_, _)))
-            .take(MAX_INSPECTION_FRAMES)
-        {
-            let SaveItem::Level(level, kind) = item else {
-                continue;
-            };
-            out.push(format_args!("  level {level}: {}", group_kind_name(*kind)));
-            if let Some((_, mark)) = self
-                .diagnostic_group_openings
-                .iter()
-                .rev()
-                .find(|(opening_level, _)| opening_level == level)
-            {
-                let context = mark.to_context();
-                out.push(format_args!(
-                    " (opened at {}:{}:{})",
-                    context.name, context.line, context.column
-                ));
-            }
-            out.push(format_args!("\n"));
-        }
-        if total > MAX_INSPECTION_FRAMES {
-            out.push(format_args!(
-                "  … {} outer group(s) omitted\n",
-                total - MAX_INSPECTION_FRAMES
-            ));
-        }
-        out.push(format_args!("  bottom level"));
-        out.finish()
-    }
-
-    fn show_ifs_description(&self) -> String {
-        let total = self.if_stack.len();
-        let mut out = InspectionText::new();
-        if total == 0 {
-            out.push(format_args!("no conditionals are open"));
-            return out.finish();
-        }
-        out.push(format_args!(
-            "{total} conditional(s) open, innermost first:\n"
-        ));
-        for (index, state) in self
-            .if_stack
-            .iter()
-            .rev()
-            .take(MAX_INSPECTION_FRAMES)
-            .enumerate()
-        {
-            let command = if (state.loc_cs as usize) < self.cs.len() {
-                self.display_cs(state.loc_cs)
-            } else {
-                "\\if?".to_string()
-            };
-            let status = if state.if_case >= 0 {
-                format!("case {} remaining", state.if_case)
-            } else if state.accepting {
-                "taking current branch".to_string()
-            } else if state.matched {
-                "a previous branch matched".to_string()
-            } else {
-                "skipping current branch".to_string()
-            };
-            out.push(format_args!("  {}. {command}: {status}", index + 1));
-            if let Some(mark) = &state.loc {
-                let context = mark.to_context();
-                out.push(format_args!(
-                    " (opened at {}:{}:{})",
-                    context.name, context.line, context.column
-                ));
-            } else if !state.loc_file.is_empty() && state.loc_line != 0 {
-                out.push(format_args!(
-                    " (opened at {}:{})",
-                    state.loc_file, state.loc_line
-                ));
-            }
-            out.push(format_args!("\n"));
-        }
-        if total > MAX_INSPECTION_FRAMES {
-            out.push(format_args!(
-                "  … {} outer conditional(s) omitted",
-                total - MAX_INSPECTION_FRAMES
-            ));
-        }
-        out.finish()
-    }
 }
-
-fn group_kind_name(kind: LevelType) -> &'static str {
-    match kind {
-        LevelType::Group => "group",
-        LevelType::Simple => "brace group",
-        LevelType::SemiSimple => "\\begingroup group",
-        LevelType::Box => "box group",
-        LevelType::MacroCall => "macro-call group",
-        LevelType::NoLine => "no-line group",
-        LevelType::Balanced => "balanced-text group",
-        LevelType::MathShift => "math shift group",
-        LevelType::MathLeft => "math left group",
-        LevelType::MathGroup => "math group",
-    }
-}
-
 
 fn id_cs_is(e: &Engine, id: CsId, name: &[u8]) -> bool {
     e.cs.lookup(name) == Some(id)

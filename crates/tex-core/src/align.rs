@@ -316,7 +316,7 @@ impl Engine {
             self.prev_graf,
             self.nest_line(),
         ));
-        self.push_group_level(LevelType::Box);
+        self.push_align_group();
         self.box_targets.push(None);
         self.box_shifts.push(0);
         self.box_kinds.push(7);
@@ -406,7 +406,7 @@ impl Engine {
             self.prev_graf,
             self.nest_line(),
         ));
-        self.push_group_level(LevelType::Box);
+        self.push_align_group();
         self.box_targets.push(None);
         self.box_shifts.push(0);
         self.box_kinds.push(7);
@@ -628,10 +628,27 @@ impl Engine {
     // cells
     // ------------------------------------------------------------------
 
+    /// The alignment's own group (tex.web scan_spec(align_group,false)):
+    /// `\halign to <dimen>` shows its specification in `\showgroups`.
+    fn push_align_group(&mut self) {
+        let (spec, exactly) = match self.align_to {
+            Some((d, spread)) => (d, !spread),
+            None => (0, true),
+        };
+        self.push_group_level_coded(
+            LevelType::Box,
+            crate::eqtb::GroupMeta {
+                spec,
+                exactly,
+                ..crate::eqtb::GroupMeta::new(crate::eqtb::group_code::ALIGN)
+            },
+        );
+    }
+
     /// push the group context for a cell or \noalign group. The group is
     /// popped by finish_cell_typeset (a stray `}` mid-cell pops it via
     /// end_box instead, degrading gracefully without corrupting the stack).
-    fn align_push_cell_group(&mut self, mode: Mode) {
+    fn align_push_cell_group(&mut self, mode: Mode, code: u8) {
         self.saved_lists.push((
             self.mode,
             std::mem::take(&mut self.cur_list),
@@ -641,7 +658,7 @@ impl Engine {
             self.nest_line(),
         ));
         self.prev_graf = 0;
-        self.push_group_level(LevelType::Box);
+        self.push_group_level_coded(LevelType::Box, crate::eqtb::GroupMeta::new(code));
 
         self.box_targets.push(None);
         self.box_shifts.push(0);
@@ -686,7 +703,7 @@ impl Engine {
         } else {
             Mode::RestrictedHorizontal
         };
-        self.align_push_cell_group(cell_mode);
+        self.align_push_cell_group(cell_mode, crate::eqtb::group_code::ALIGN);
         if self.align_is_valign {
             self.prev_depth = self.ignore_depth();
         }
@@ -1038,10 +1055,10 @@ impl Engine {
         // internal vertical mode for \halign and restricted horizontal mode
         // for \valign
         if self.align_is_valign {
-            self.align_push_cell_group(Mode::RestrictedHorizontal);
+            self.align_push_cell_group(Mode::RestrictedHorizontal, crate::eqtb::group_code::NO_ALIGN);
             self.space_factor = 1000;
         } else {
-            self.align_push_cell_group(Mode::InternalVertical);
+            self.align_push_cell_group(Mode::InternalVertical, crate::eqtb::group_code::NO_ALIGN);
         }
         // tex.web §15514: \noalign runs in internal vertical mode inheriting the
         // preceding row's depth (or ignore_depth if at the alignment start).

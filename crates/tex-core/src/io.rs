@@ -366,6 +366,7 @@ impl Engine {
                 }
             }
             self.input.push_file_from(key, data, included_from);
+            self.mark_file_nesting();
             return true;
         }
         match path {
@@ -415,6 +416,7 @@ impl Engine {
                     }
                 }
                 self.input.push_file_from(key, data, included_from);
+                self.mark_file_nesting();
                 true
             }
             None => {
@@ -436,6 +438,7 @@ impl Engine {
                         }
                     }
                     self.input.push_file_from(key, data, included_from);
+                    self.mark_file_nesting();
                     return true;
                 }
                 // Fall back to embedded Virtual TDS package repository
@@ -459,6 +462,7 @@ impl Engine {
                         }
                     }
                     self.input.push_file_from(key, data, included_from);
+                    self.mark_file_nesting();
                     return true;
                 }
                 self.fatal_error_at(

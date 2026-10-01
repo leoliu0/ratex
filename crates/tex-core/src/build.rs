@@ -1052,6 +1052,31 @@ impl Engine {
         false
     }
 
+    /// tex.web `box_context` of the box about to open: a shift, `\setbox`,
+    /// `\shipout` or a leaders kind (see `eqtb::BOX_FLAG`).
+    fn group_box_context(&self, shift: i32) -> i32 {
+        use crate::eqtb::{BOX_FLAG, GLOBAL_BOX_FLAG, LEADER_FLAG, SHIP_OUT_FLAG};
+        let depth = self.box_kinds.len();
+        if self.shipout_depth == depth {
+            SHIP_OUT_FLAG
+        } else if let (Some(register), true) = (self.setbox_target, self.setbox_depth == depth) {
+            let flag = if self.setbox_global {
+                GLOBAL_BOX_FLAG
+            } else {
+                BOX_FLAG
+            };
+            flag + i32::from(register)
+        } else if let Some(&(kind, leader_depth)) = self.leader_stack.last() {
+            if leader_depth == depth {
+                LEADER_FLAG + i32::from(kind)
+            } else {
+                shift
+            }
+        } else {
+            shift
+        }
+    }
+
     /// \hbox to 10pt{...} etc: scan spec, push group context
     pub fn begin_box(&mut self, kind: u8) {
         self.flush_native_text();
@@ -1094,7 +1119,31 @@ impl Engine {
             self.nest_line(),
         ));
         self.prev_graf = 0;
-        self.push_group_level(LevelType::Box);
+        let context = self.group_box_context(shift);
+        let meta = {
+            use crate::eqtb::{group_code as gc, GroupMeta, BOX_FLAG};
+            let code = match kind {
+                0 if context < BOX_FLAG && self.saved_lists.last().is_some_and(|f| f.0.is_v()) => {
+                    gc::ADJUSTED_HBOX
+                }
+                1 => gc::VBOX,
+                2 => gc::VTOP,
+                3 => gc::VCENTER,
+                9 => gc::INSERT,
+                _ => gc::HBOX,
+            };
+            GroupMeta {
+                code,
+                context,
+                spec: match (kind, target) {
+                    (9, _) => 255,
+                    (_, Some((d, _))) => d,
+                    _ => 0,
+                },
+                exactly: target.map_or(true, |(_, spread)| !spread),
+            }
+        };
+        self.push_group_level_coded(LevelType::Box, meta);
 
         self.box_targets.push(target);
         self.box_shifts.push(shift);
@@ -2039,7 +2088,13 @@ impl Engine {
             self.prev_graf,
             self.nest_line(),
         ));
-        self.push_group_level(LevelType::Box);
+        self.push_group_level_coded(
+            LevelType::Box,
+            crate::eqtb::GroupMeta {
+                spec: part,
+                ..crate::eqtb::GroupMeta::new(crate::eqtb::group_code::DISC)
+            },
+        );
         self.box_targets.push(None);
         self.box_shifts.push(part);
         self.box_kinds.push(DISC_GROUP_KIND);
@@ -2253,7 +2308,14 @@ impl Engine {
             self.nest_line(),
         ));
         self.prev_graf = 0;
-        self.push_group_level(LevelType::Box);
+        self.push_group_level_coded(
+            LevelType::Box,
+            crate::eqtb::GroupMeta {
+                spec: i32::from(n),
+                exactly: target.map_or(true, |(_, spread)| !spread),
+                ..crate::eqtb::GroupMeta::new(crate::eqtb::group_code::INSERT)
+            },
+        );
 
         self.box_targets.push(target);
         self.box_shifts.push(0);
@@ -2482,13 +2544,22 @@ impl Engine {
     /// tex.web §1079: paragraph-shape controls are reset locally when a
     /// paragraph ends or an internal vertical-list context begins.
     fn normal_paragraph(&mut self) {
-        self.assign_par_shape(Vec::new(), false);
-        self.eqtb
-            .assign_int_param(crate::prim::IntParam::Looseness, 0, false);
-        self.eqtb
-            .assign_int_param(crate::prim::IntParam::HangAfter, 1, false);
-        self.eqtb
-            .assign_dim_param(crate::prim::DimParam::HangIndent, 0, false);
+        use crate::prim::{DimParam, IntParam};
+        if self.eqtb.int_params[IntParam::Looseness.idx() as usize] != 0 {
+            self.eqtb.assign_int_param(IntParam::Looseness, 0, false);
+        }
+        if self.eqtb.dim_params[DimParam::HangIndent.idx() as usize] != 0 {
+            self.eqtb.assign_dim_param(DimParam::HangIndent, 0, false);
+        }
+        if self.eqtb.int_params[IntParam::HangAfter.idx() as usize] != 1 {
+            self.eqtb.assign_int_param(IntParam::HangAfter, 1, false);
+        }
+        if !self.par_shape.is_empty() {
+            self.assign_par_shape(Vec::new(), false);
+        }
+        if !self.penalty_shapes[0].is_empty() {
+            self.assign_penalty_shape(Prim::InterLinePenalties, Vec::new(), false);
+        }
     }
 
     pub fn start_paragraph(&mut self, indent: bool) {

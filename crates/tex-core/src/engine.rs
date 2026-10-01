@@ -19,6 +19,13 @@ pub struct IfState {
     pub matched: bool,    // some branch was taken already
     pub if_case: i32,     // >=0: \ifcase with this many cases left
     pub evaluating: bool, // tex.web if_limit == if_code: condition still being evaluated
+    /// e-TeX `cur_if`: the conditional's `if_*_code` (0 for `\if` ...
+    /// 23 for `\ifpdfabsdim`)
+    pub kind: u8,
+    /// e-TeX `\unless` prefix
+    pub unless: bool,
+    /// tex.web `if_limit = fi_code`: the `\else` branch is running
+    pub in_else: bool,
     pub loc_file: std::rc::Rc<str>,
     pub loc_line: u32,
     pub loc_cs: u32,
@@ -638,6 +645,12 @@ pub struct Engine {
     /// a packed vbox so finish_display_math can unbox them onto the page.
     pub display_halign: Option<(Vec<crate::boxes::Node>, i32)>,
     pub unless_next: bool,
+    /// tex.web `shown_mode`: the mode last named by a `{mode: ...}` trace
+    /// line (`show_cur_cmd_chr`).
+    pub(crate) shown_mode: Option<Mode>,
+    /// e-TeX `grp_stack`/`if_stack`: the nesting recorded for each open
+    /// input file, innermost last.
+    pub(crate) file_nests: Vec<crate::trace::FileNest>,
     /// pdfTeX random number generator state (`\pdfrandomseed`).
     pub rng: crate::random::Randoms,
     /// web2c `epochseconds`/`microseconds` at job start or the last
@@ -755,19 +768,32 @@ impl Engine {
         Self::append_transcript_bounded(buffer, MARKER);
     }
 
+    /// Print queued `\tracingassigns`/`\tracingrestores`/`\tracinggroups`
+    /// lines; every transcript write calls this first, so they keep their
+    /// order relative to all other output.
+    #[inline]
+    pub(crate) fn flush_trace_events(&mut self) {
+        if !self.eqtb.trace_events.is_empty() {
+            self.print_trace_events();
+        }
+    }
+
     pub(crate) fn append_term(&mut self, text: &str) {
+        self.flush_trace_events();
         if self.interaction_mode != InteractionMode::Batch {
             Self::append_transcript_bounded(&mut self.term, text);
         }
     }
 
     pub(crate) fn append_diagnostic(&mut self, text: &str) {
+        self.flush_trace_events();
         if self.interaction_mode != InteractionMode::Batch {
             Self::append_transcript_bounded(&mut self.diagnostic_output, text);
         }
     }
 
     pub(crate) fn append_log(&mut self, text: &str) {
+        self.flush_trace_events();
         Self::append_transcript_bounded(&mut self.log, text);
     }
 
@@ -1190,6 +1216,8 @@ impl Engine {
             output_nest_mark: (0, 0),
             pack_begin_line: 0,
             unless_next: false,
+            shown_mode: None,
+            file_nests: Vec::new(),
             last_badness: 0,
             pdf_last_x: 0,
             pdf_last_y: 0,
@@ -1347,7 +1375,7 @@ impl Engine {
         d!(eng, b"multiply", Multiply);
         d!(eng, b"divide", Divide);
         // named int params
-        let intnames: &[(&[u8], IntParam)] = &[
+        let intnames: &[(&'static [u8], IntParam)] = &[
             (b"pretolerance", IntParam::Pretolerance),
             (b"tolerance", IntParam::Tolerance),
             (b"linepenalty", IntParam::LinePenalty),
@@ -1468,8 +1496,7 @@ impl Engine {
             (b"pdfptexuseunderscore", IntParam::PdfPtexUseUnderscore),
         ];
         for (n, p) in intnames {
-            let id = eng.cs.intern(n);
-            eng.eqtb.assign(id, Equiv::Prim(Prim::IntP(*p)), true);
+            def(n, Prim::IntP(*p), eng);
         }
         eng.eqtb.int_params[IntParam::PdfOutput.idx() as usize] = 1;
         eng.eqtb.int_params[IntParam::PdfTexVersion.idx() as usize] = 140;
@@ -1481,7 +1508,7 @@ impl Engine {
         eng.eqtb.int_params[IntParam::PdfGamma.idx() as usize] = 1000;
         eng.eqtb.int_params[IntParam::PdfImageGamma.idx() as usize] = 2200;
         eng.eqtb.int_params[IntParam::PdfImageHicolor.idx() as usize] = 1;
-        let dimnames: &[(&[u8], DimParam)] = &[
+        let dimnames: &[(&'static [u8], DimParam)] = &[
             (b"parindent", DimParam::ParIndent),
             (b"mathsurround", DimParam::MathSurround),
             (b"lineskiplimit", DimParam::LineSkipLimit),
@@ -1525,12 +1552,11 @@ impl Engine {
             (b"pdfpxdimen", DimParam::PdfPxDimen),
         ];
         for (n, p) in dimnames {
-            let id = eng.cs.intern(n);
-            eng.eqtb.assign(id, Equiv::Prim(Prim::DimP(*p)), true);
+            def(n, Prim::DimP(*p), eng);
         }
         // pdftex.web: pdf_px_dimen starts at one_bp
         eng.eqtb.dim_params[DimParam::PdfPxDimen.idx() as usize] = 65782;
-        let gluenames: &[(&[u8], GlueParam)] = &[
+        let gluenames: &[(&'static [u8], GlueParam)] = &[
             (b"lineskip", GlueParam::LineSkip),
             (b"baselineskip", GlueParam::BaselineSkip),
             (b"parskip", GlueParam::ParSkip),
@@ -1550,10 +1576,9 @@ impl Engine {
             (b"thickmuskip", GlueParam::ThickMuSkip),
         ];
         for (n, p) in gluenames {
-            let id = eng.cs.intern(n);
-            eng.eqtb.assign(id, Equiv::Prim(Prim::GlueP(*p)), true);
+            def(n, Prim::GlueP(*p), eng);
         }
-        let toksnames: &[(&[u8], ToksParam)] = &[
+        let toksnames: &[(&'static [u8], ToksParam)] = &[
             (b"everypar", ToksParam::EveryPar),
             (b"everymath", ToksParam::EveryMath),
             (b"everydisplay", ToksParam::EveryDisplay),
@@ -1568,8 +1593,7 @@ impl Engine {
             (b"pdfpkmode", ToksParam::PdfPkMode),
         ];
         for (n, p) in toksnames {
-            let id = eng.cs.intern(n);
-            eng.eqtb.assign(id, Equiv::Prim(Prim::ToksP(*p)), true);
+            def(n, Prim::ToksP(*p), eng);
         }
         d!(eng, b"font", Font);
         d!(eng, b"fontname", FontName);
@@ -1918,8 +1942,7 @@ impl Engine {
             (b"TeXXeTstate" as &[u8], IntParam::TeXXeTEnabled),
             (b"predisplaydirection", IntParam::PreDisplayDirection),
         ] {
-            let id = eng.cs.intern(n);
-            eng.eqtb.assign(id, Equiv::Prim(Prim::IntP(p)), true);
+            def(n, Prim::IntP(p), eng);
         }
         d!(eng, b"beginL", BeginL);
         d!(eng, b"endL", EndL);
@@ -2004,23 +2027,44 @@ impl Engine {
         let mut ag = Vec::new();
         let mut ps = None;
         let mut penalty_shapes = Vec::new();
+        let first_event = self.eqtb.trace_events.len();
+        // e-TeX group_warning needs the closing group's identity, which
+        // unsave is about to forget
+        let closing_boundary = self.eqtb.cur_boundary();
+        let closing = if self.file_nests.last().map_or(false, |n| n.boundary == closing_boundary) {
+            self.eqtb.groups.last().map(|group| {
+                (
+                    self.eqtb.outer_boundary(),
+                    (group.meta.code, closing_level - 1, group.line),
+                )
+            })
+        } else {
+            None
+        };
         let ty = self
             .eqtb
             .pop_level_full(&mut ag, &mut ps, &mut penalty_shapes);
         // Shape pointers are level-tracked like eqtb entries. A later global
         // assignment suppresses restoration from an older local save item.
         if let Some((old, old_lvl)) = ps {
-            if self.par_shape_level > crate::eqtb::LEVEL_ONE {
+            let restored = self.par_shape_level > crate::eqtb::LEVEL_ONE;
+            if restored {
                 self.par_shape = old;
                 self.par_shape_level = old_lvl;
             }
+            self.complete_shape_event(first_event, None, restored);
         }
         for (kind, old, old_lvl) in penalty_shapes {
             let kind = kind as usize;
-            if self.penalty_shape_levels[kind] > crate::eqtb::LEVEL_ONE {
+            let restored = self.penalty_shape_levels[kind] > crate::eqtb::LEVEL_ONE;
+            if restored {
                 self.penalty_shapes[kind] = old;
                 self.penalty_shape_levels[kind] = old_lvl;
             }
+            self.complete_shape_event(first_event, Some(kind), restored);
+        }
+        if let Some((outer, group)) = closing {
+            self.group_warning(closing_boundary, outer, group);
         }
         for t in ag {
             self.push_token(t);
@@ -2045,21 +2089,111 @@ impl Engine {
     /// paragraph clear is local too, so LaTeX's `{\@@par}` list wrapper rolls
     /// it back and the shape persists across items
     pub fn assign_par_shape(&mut self, new: Vec<(i32, i32)>, global: bool) {
+        let same = self.par_shape.is_empty() && new.is_empty();
+        if !self.begin_shape_assign(crate::eqtb::TraceSlot::ParShape, global, same) {
+            return;
+        }
+        let new_count = new.len() as i32;
         if global {
             self.par_shape = new;
             self.par_shape_level = crate::eqtb::LEVEL_ONE;
+        } else {
+            let lvl = self.eqtb.cur_level;
+            if self.par_shape_level < lvl {
+                let old = std::mem::replace(&mut self.par_shape, new);
+                let old_lvl = self.par_shape_level;
+                self.eqtb
+                    .save_stack
+                    .push(crate::eqtb::SaveItem::ParShape(old, old_lvl));
+                self.par_shape_level = lvl;
+            } else {
+                self.par_shape = new;
+            }
+        }
+        self.end_shape_assign(
+            crate::eqtb::TraceSlot::ParShape,
+            crate::eqtb::TraceValue::Shape(new_count, 0, 0),
+        );
+    }
+
+    /// The start of e-TeX's eq_define/geq_define for a shape: returns false
+    /// for a local reassignment of the value already held.
+    fn begin_shape_assign(
+        &mut self,
+        slot: crate::eqtb::TraceSlot,
+        global: bool,
+        same: bool,
+    ) -> bool {
+        let reassign = same && !global;
+        if self.eqtb.int_params[IntParam::TracingAssigns as usize] > 0 {
+            let verb = if reassign {
+                "reassigning"
+            } else if global {
+                "globally changing"
+            } else {
+                "changing"
+            };
+            let value = self.shape_trace_value(slot);
+            self.eqtb.trace_with(verb, slot, value);
+        }
+        !reassign
+    }
+
+    fn end_shape_assign(&mut self, slot: crate::eqtb::TraceSlot, value: crate::eqtb::TraceValue) {
+        if self.eqtb.int_params[IntParam::TracingAssigns as usize] > 0 {
+            let value = match (slot, value) {
+                (crate::eqtb::TraceSlot::PenaltyShape(_), _) => self.shape_trace_value(slot),
+                (_, value) => value,
+            };
+            self.eqtb.trace_with("into", slot, value);
+        }
+    }
+
+    /// The current value of an engine-side shape for show_eqtb: the entry
+    /// count and, for a penalty array, its first value.
+    fn shape_trace_value(&self, slot: crate::eqtb::TraceSlot) -> crate::eqtb::TraceValue {
+        use crate::eqtb::{TraceSlot, TraceValue};
+        match slot {
+            TraceSlot::PenaltyShape(kind) => {
+                let values = &self.penalty_shapes[kind as usize];
+                TraceValue::Shape(values.len() as i32, values.first().copied().unwrap_or(0), 0)
+            }
+            _ => TraceValue::Shape(self.par_shape.len() as i32, 0, 0),
+        }
+    }
+
+    /// Fill in the `{restoring ...}`/`{retaining ...}` line queued by
+    /// `Eqtb::pop_level_full` for a shape (its verb was left open).
+    fn complete_shape_event(&mut self, from: usize, kind: Option<usize>, restored: bool) {
+        use crate::eqtb::{TraceEvent, TraceSlot};
+        if self.eqtb.trace_events.len() <= from {
             return;
         }
-        let lvl = self.eqtb.cur_level;
-        if self.par_shape_level < lvl {
-            let old = std::mem::replace(&mut self.par_shape, new);
-            let old_lvl = self.par_shape_level;
-            self.eqtb
-                .save_stack
-                .push(crate::eqtb::SaveItem::ParShape(old, old_lvl));
-            self.par_shape_level = lvl;
-        } else {
-            self.par_shape = new;
+        let wanted = match kind {
+            Some(kind) => TraceSlot::PenaltyShape(kind as u8),
+            None => TraceSlot::ParShape,
+        };
+        let value = self.shape_trace_value(wanted);
+        for event in &mut self.eqtb.trace_events[from..] {
+            if let TraceEvent::Eqtb {
+                verb,
+                slot,
+                value: v,
+                ..
+            } = event
+            {
+                if verb.is_empty()
+                    && std::mem::discriminant(slot) == std::mem::discriminant(&wanted)
+                    && match (&*slot, &wanted) {
+                        (TraceSlot::PenaltyShape(a), TraceSlot::PenaltyShape(b)) => a == b,
+                        _ => true,
+                    }
+                {
+                    *verb = if restored { "restoring" } else { "retaining" };
+                    *v = value;
+                    return;
+                }
+            }
         }
     }
 
@@ -2067,25 +2201,31 @@ impl Engine {
         let kind = primitive
             .penalty_shape_index()
             .expect("penalty shape primitive");
+        let slot = crate::eqtb::TraceSlot::PenaltyShape(kind as u8);
+        let same = self.penalty_shapes[kind].is_empty() && values.is_empty();
+        if !self.begin_shape_assign(slot, global, same) {
+            return;
+        }
         let values = std::rc::Rc::<[i32]>::from(values);
         if global {
             self.penalty_shapes[kind] = values;
             self.penalty_shape_levels[kind] = crate::eqtb::LEVEL_ONE;
-            return;
-        }
-        let level = self.eqtb.cur_level;
-        if self.penalty_shape_levels[kind] < level {
-            let old = std::mem::replace(&mut self.penalty_shapes[kind], values);
-            let old_level = self.penalty_shape_levels[kind];
-            self.eqtb
-                .save_stack
-                .push(crate::eqtb::SaveItem::PenaltyShape(
-                    kind as u8, old, old_level,
-                ));
-            self.penalty_shape_levels[kind] = level;
         } else {
-            self.penalty_shapes[kind] = values;
+            let level = self.eqtb.cur_level;
+            if self.penalty_shape_levels[kind] < level {
+                let old = std::mem::replace(&mut self.penalty_shapes[kind], values);
+                let old_level = self.penalty_shape_levels[kind];
+                self.eqtb
+                    .save_stack
+                    .push(crate::eqtb::SaveItem::PenaltyShape(
+                        kind as u8, old, old_level,
+                    ));
+                self.penalty_shape_levels[kind] = level;
+            } else {
+                self.penalty_shapes[kind] = values;
+            }
         }
+        self.end_shape_assign(slot, crate::eqtb::TraceValue::Shape(0, 0, 0));
     }
 
     pub(crate) fn penalty_shape_value(&self, primitive: Prim, index: i32) -> i32 {

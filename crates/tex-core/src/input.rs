@@ -97,6 +97,10 @@ pub enum Source {
         /// character. Diagnostics hide them, as TeX's `show_context` does.
         line_end_len: u8,
         line_pos: usize,
+        /// True for a real input file (or `\scantokens` pseudo-file) whose
+        /// group and conditional nesting at open is on the engine's
+        /// `file_nests` stack (e-TeX's `grp_stack`/`if_stack`).
+        tracked: bool,
     },
     TokList {
         toks: TokTokens,
@@ -758,6 +762,7 @@ impl InputStack {
             line_buf: None,
             line_end_len: 0,
             line_pos: 0,
+            tracked: false,
         });
     }
     pub fn push_toks(&mut self, toks: impl Into<TokTokens>, name: &'static str) {
@@ -894,6 +899,7 @@ mod tests {
             line_buf: Some(b"needle rest".to_vec()),
             line_end_len: 0,
             line_pos: b"needle".len(),
+            tracked: false,
         });
 
         let context = input

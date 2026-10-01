@@ -1175,10 +1175,15 @@ impl Engine {
         // tex.web expand: cur_cs is the expanding control sequence, which a
         // general-text scan names in its errors (warning_index).
         self.cur_cs = Some(id);
+        if self.eqtb.int_params[crate::prim::IntParam::TracingIfs as usize] > 0
+            && Self::is_if_test(p)
+        {
+            self.show_if_start(p);
+        }
         if p == Prim::IfCase {
             // The case frame must exist while its numeric operand expands:
             // nested conditionals can remain open until after the first digit.
-            let save = self.push_if(id);
+            let save = self.push_if(id, false);
             let previous = self.pending_if_depth.replace(self.if_stack.len());
             let n = self.scan_int();
             self.pending_if_depth = previous;
@@ -1209,7 +1214,7 @@ impl Engine {
             // The outer conditional must exist before operand expansion:
             // an operand can leave a nested conditional open.
             let unless = std::mem::take(&mut self.unless_next);
-            let save = self.push_if(id);
+            let save = self.push_if(id, unless);
             let previous = self.pending_if_depth.replace(self.if_stack.len());
             let value = match p {
                 Prim::IfOdd => self.scan_int() % 2 != 0,
@@ -1554,12 +1559,21 @@ impl Engine {
                 None
             }
             ScanTokens => {
-                // \scantokens{...}: stringify and rescan
+                // \scantokens{...}: stringify and rescan (e-TeX pseudo_start;
+                // the string is split into lines at \newlinechar)
                 let toks = self.scan_general_text();
-                let text = self.tokens_to_string(&toks);
+                let mut text = self.tokens_to_bytes(&toks);
+                let newline = self.eqtb.int_params[crate::prim::IntParam::NewLineChar.idx() as usize];
+                if let Ok(newline) = u8::try_from(newline) {
+                    if newline != b'\n' {
+                        for byte in text.iter_mut().filter(|byte| **byte == newline) {
+                            *byte = b'\n';
+                        }
+                    }
+                }
                 if self.ensure_input_stack_room(1) {
-                    self.input
-                        .push_file("<scantokens>".to_string(), text.into_bytes());
+                    self.input.push_file("<scantokens>".to_string(), text);
+                    self.mark_scan_tokens_file();
                 }
                 None
             }
@@ -1666,12 +1680,30 @@ impl Engine {
                 None
             }
             Unless => {
-                // e-TeX \\unless prefixes the next conditional; the flag is
-                // consumed by do_if. Do not restore: a save/restore around
-                // expand_prim_of_next re-armed the flag after do_if cleared
-                // it and made \\ifx inside \\csname keep a leftover `=`.
-                self.unless_next = true;
-                self.expand_prim_of_next()
+                // etex.ch expand: \unless reads the next token unexpanded; only
+                // a conditional other than \ifcase may follow, the flag is then
+                // consumed by do_if.
+                let t = self.raw_token();
+                let target = if t.is_cs() {
+                    match self.eqtb.resolve(t.cs_id()) {
+                        Some(Equiv::Prim(p)) => Some(*p),
+                        _ => None,
+                    }
+                } else {
+                    None
+                };
+                self.push_token(t);
+                match target {
+                    Some(p) if Self::is_if_test(p) && p != IfCase => self.unless_next = true,
+                    _ => {
+                        let meaning = self.meaning_of(t);
+                        let name = meaning.split(':').next().unwrap_or("");
+                        self.error(&format!(
+                            "You can't use `\\unless' before `{name}'"
+                        ));
+                    }
+                }
+                None
             }
             IfTrue => self.do_if(true, id),
             IfFalse => self.do_if(false, id),
@@ -1680,7 +1712,7 @@ impl Engine {
                 // true conditional from the test sits on top (babel
                 // `\\if T\\ifeof1F\\fi T`).
                 let unless = std::mem::take(&mut self.unless_next);
-                let save = self.push_if(id);
+                let save = self.push_if(id, unless);
                 let a = self.character_test_operand();
                 let b = self.character_test_operand();
                 // tex.web: CS tokens have character code 256, so two
@@ -1699,7 +1731,7 @@ impl Engine {
             }
             IfCat => {
                 let unless = std::mem::take(&mut self.unless_next);
-                let save = self.push_if(id);
+                let save = self.push_if(id, unless);
                 let a = self.character_test_operand();
                 let b = self.character_test_operand();
                 // tex.web: CS tokens have category 16.
@@ -1859,6 +1891,7 @@ impl Engine {
                 self.do_if(eq, id)
             }
             Or => {
+                self.show_if_delimiter(Prim::Or);
                 if self.if_stack.last().is_some_and(|st| st.evaluating) {
                     self.insert_relax(id);
                     return None;
@@ -1875,6 +1908,7 @@ impl Engine {
                 None
             }
             Else => {
+                self.show_if_delimiter(Prim::Else);
                 if self.if_stack.last().is_some_and(|st| st.evaluating) {
                     self.insert_relax(id);
                     return None;
@@ -1884,6 +1918,7 @@ impl Engine {
                     Some(st) => {
                         st.accepting = true;
                         st.matched = true;
+                        st.in_else = true;
                     }
                     None => self.error("Extra \\else"),
                 }
@@ -1909,11 +1944,12 @@ impl Engine {
                 None
             }
             Fi => {
+                self.show_if_delimiter(Prim::Fi);
                 if self.if_stack.last().is_some_and(|st| st.evaluating) {
                     self.insert_relax(id);
                     return None;
                 }
-                if self.if_stack.pop().is_none() {
+                if !self.pop_cond() {
                     self.error("Extra \\fi");
                 }
                 None
@@ -2389,20 +2425,72 @@ impl Engine {
         self.push_token(Token::from_cs(cur_cs));
         self.push_token(Token::from_cs(relax_id));
     }
-    fn push_if(&mut self, id: CsId) -> usize {
+    /// e-TeX's `if_*_code` of a conditional primitive (cur_if).
+    pub(crate) fn if_code(p: Prim) -> u8 {
+        match p {
+            Prim::IfChar => 0,
+            Prim::IfCat => 1,
+            Prim::IfNum => 2,
+            Prim::IfDim => 3,
+            Prim::IfOdd => 4,
+            Prim::IfVMode => 5,
+            Prim::IfHMode => 6,
+            Prim::IfMMode => 7,
+            Prim::IfInner => 8,
+            Prim::IfVoid => 9,
+            Prim::IfHBox => 10,
+            Prim::IfVBox => 11,
+            Prim::IfX => 12,
+            Prim::IfEOF => 13,
+            Prim::IfTrue => 14,
+            Prim::IfFalse => 15,
+            Prim::IfCase => 16,
+            Prim::IfDef => 17,
+            Prim::IfCSName => 18,
+            Prim::IfFontChar => 19,
+            Prim::IfInCsName => 20,
+            Prim::IfPdfPrimitive => 21,
+            Prim::IfPdfAbsNum => 22,
+            Prim::IfPdfAbsDim => 23,
+            _ => 0,
+        }
+    }
+
+    /// tex.web "Push the condition stack" (the conditional's operands are
+    /// scanned with it already on top).
+    fn push_if(&mut self, id: CsId, unless: bool) -> usize {
         let loc = self.current_token_source_mark();
         let (loc_file, loc_line) = self.input.current_file_location();
+        let kind = match self.eqtb.resolve(id) {
+            Some(Equiv::Prim(p)) => Self::if_code(*p),
+            _ => 0,
+        };
         self.if_stack.push(crate::engine::IfState {
             accepting: false,
             matched: false,
             if_case: -1,
             evaluating: true,
+            kind,
+            unless,
+            in_else: false,
             loc_file,
             loc_line,
             loc_cs: id,
             loc,
         });
         self.if_stack.len() - 1
+    }
+
+    /// tex.web "Pop the condition stack"; false when it is empty.
+    fn pop_cond(&mut self) -> bool {
+        if self.if_stack.is_empty() {
+            return false;
+        }
+        // e-TeX: a conditional that began in another file than the one it
+        // ends in is recorded (and reported) by if_warning
+        self.if_warning();
+        self.if_stack.pop();
+        true
     }
 
     fn finish_if(&mut self, save: usize, b: bool) -> Option<Token> {
@@ -2421,11 +2509,11 @@ impl Engine {
     }
 
     fn do_if(&mut self, mut b: bool, id: CsId) -> Option<Token> {
-        if self.unless_next {
+        let unless = std::mem::take(&mut self.unless_next);
+        if unless {
             b = !b;
-            self.unless_next = false;
         }
-        let save = self.push_if(id);
+        let save = self.push_if(id, unless);
         self.finish_if(save, b)
     }
 
@@ -2511,6 +2599,11 @@ impl Engine {
                 }
             }
         };
+        if res.is_some() && self.eqtb.int_params[crate::prim::IntParam::TracingIfs as usize] > 0 {
+            if let Some(delimiter) = res {
+                self.show_if_delimiter(delimiter);
+            }
+        }
         self.scanner_status = save_scanner;
         res
     }
@@ -2616,13 +2709,14 @@ impl Engine {
             if self.if_stack.len().saturating_sub(1) == save {
                 match chr {
                     Prim::Fi => {
-                        self.if_stack.pop();
+                        self.pop_cond();
                         return;
                     }
                     Prim::Else | Prim::ElIf | Prim::ElIfX => {
                         if let Some(st) = self.if_stack.get_mut(save) {
                             st.accepting = true;
                             st.matched = true;
+                            st.in_else = true;
                         }
                         return;
                     }
@@ -2630,7 +2724,7 @@ impl Engine {
                     _ => self.error("Extra \\or"),
                 }
             } else if chr == Prim::Fi {
-                self.if_stack.pop();
+                self.pop_cond();
             }
         }
     }
@@ -2646,13 +2740,13 @@ impl Engine {
                 // This belongs to a conditional opened while scanning the
                 // target's numeric operand, not to the target itself.
                 if delimiter == Prim::Fi {
-                    self.if_stack.pop();
+                    self.pop_cond();
                 }
                 continue;
             }
             match delimiter {
                 Prim::Fi => {
-                    self.if_stack.pop();
+                    self.pop_cond();
                     return;
                 }
                 Prim::Or => {
@@ -2683,6 +2777,7 @@ impl Engine {
                         } else {
                             st.accepting = true;
                             st.matched = true;
+                            st.in_else = true;
                         }
                     }
                     return;
@@ -2726,7 +2821,7 @@ impl Engine {
     fn skip_to_fi(&mut self) {
         while let Some(delimiter) = self.pass_text() {
             if delimiter == Prim::Fi {
-                self.if_stack.pop();
+                self.pop_cond();
                 return;
             }
         }
@@ -3597,8 +3692,13 @@ impl Engine {
     }
 
     pub(crate) fn tokens_to_bytes(&self, toks: &[Token]) -> Vec<u8> {
-        let mut out: Vec<u8> = Vec::new();
         let esc = self.eqtb.int_params[crate::prim::IntParam::EscapeChar.idx() as usize];
+        self.tokens_to_bytes_esc(toks, esc)
+    }
+
+    /// `show_token_list` text with an explicit escape character.
+    pub(crate) fn tokens_to_bytes_esc(&self, toks: &[Token], esc: i32) -> Vec<u8> {
+        let mut out: Vec<u8> = Vec::new();
         for t in toks {
             if t.0 >= PAR_REF_FLAG && t.0 < 0xFFFF_0000 && !t.is_cs() {
                 out.push(b'#');
@@ -3719,6 +3819,7 @@ impl Engine {
     /// terminal is already at the start of a line. Without the reset, error
     /// text glues to unterminated "(file" output and log comparison breaks.
     pub fn term_print_nl(&mut self, s: &str) {
+        self.flush_trace_events();
         if !self.term.is_empty() && !self.term.ends_with('\n') {
             self.append_term("\n");
         }

@@ -830,39 +830,25 @@ impl Engine {
     pub fn int_param_value(&self, p: IntParam) -> i32 {
         match p {
             IntParam::CurrentGroupLevel => (self.eqtb.cur_level.saturating_sub(1)) as i32,
-            IntParam::CurrentGroupType => {
-                if self.scanner_status == crate::engine::ScannerStatus::Aligning {
-                    if self.align_in_noalign {
-                        return 7; // no_align_group
-                    }
-                    if self.align_phase() == crate::align::PH_IDLE {
-                        return 6; // align_group
-                    }
-                }
-                let ty = self.eqtb.cur_group_type();
-                let v = match ty {
-                    None => 0,
-                    Some(crate::eqtb::LevelType::Simple) => 1,
-                    Some(crate::eqtb::LevelType::SemiSimple) => 14,
-                    Some(crate::eqtb::LevelType::MathShift) => 15,
-                    Some(crate::eqtb::LevelType::MathLeft) => 16,
-                    Some(crate::eqtb::LevelType::MathGroup) => 9,
-                    Some(crate::eqtb::LevelType::Group) => 9,
-                    Some(crate::eqtb::LevelType::Box) => match self.box_kinds.last().copied() {
-                        Some(0) => 2,
-                        Some(1) => 4,
-                        Some(2) => 5,
-                        Some(3) => 12,
-                        Some(7) => 6,
-                        _ => 2,
-                    },
-                    _ => 1,
-                };
-                v
-            }
+            IntParam::CurrentGroupType => i32::from(self.eqtb.cur_group_code()),
             IntParam::CurrentIfLevel => self.if_stack.len() as i32,
-            IntParam::CurrentIfType => 0,
-            IntParam::CurrentIfBranch => 0,
+            // e-TeX: cur_if+1, negated for `\unless`
+            IntParam::CurrentIfType => self.if_stack.last().map_or(0, |state| {
+                let kind = i32::from(state.kind) + 1;
+                if state.unless {
+                    -kind
+                } else {
+                    kind
+                }
+            }),
+            // 1 in the first branch (if_limit is else_code or or_code), -1
+            // after \else (fi_code), 0 while the condition is evaluated
+            IntParam::CurrentIfBranch => match self.if_stack.last() {
+                Some(state) if state.in_else => -1,
+                Some(state) if state.evaluating => 0,
+                Some(_) => 1,
+                None => 0,
+            },
             IntParam::LastNodeType => self.last_node_type_value(),
             IntParam::Badness => self.last_badness,
             IntParam::InputLineNo => self.current_diagnostic_line() as i32,

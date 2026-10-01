@@ -689,10 +689,13 @@ impl Engine {
     pub fn render_form_box(&mut self, node: &Node, w: i32, h: i32, d: i32) -> RenderedForm {
         // pdf_ship_out initializes the PDF output on the first page or form.
         self.init_pdf_output();
-        // Form coordinates are baseline-relative: the dictionary spans [-d, h].
+        // pdf_ship_out for a form sets cur_page_height to height + depth:
+        // form coordinates start at the bottom of the box, so the baseline
+        // sits at y = depth and the dictionary spans [0, h + d]. out_form
+        // lowers the placement by the same depth.
         // pdf_ship_out resets the page group for forms too.
         self.pdf_page_group_val = 0;
-        let mut ctx = self.new_ctx(h as i64);
+        let mut ctx = self.new_ctx(h as i64 + d as i64);
         // pdfTeX `pdfshipoutbegin(false)` for forms: matrix/annotation
         // tracking is page-shipout only, and color stacks restart from
         // their initial values (`colorstackpagestart`).

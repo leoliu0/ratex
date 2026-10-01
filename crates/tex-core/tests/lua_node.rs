@@ -97,6 +97,13 @@ fn node_misc_functions() {
     check_case("misc");
 }
 
+/// Member lists of `node` and `node.direct` (all but `node.make_extensible`,
+/// see the doc of the library), types, subtypes, fields and values.
+#[test]
+fn node_member_lists_and_tables() {
+    check_case("members");
+}
+
 #[test]
 fn node_ligaturing_and_kerning() {
     check_case("ligkern");

@@ -6,7 +6,7 @@ use crate::boxes::{leader_dims, LeaderBody, Node, NodeList, HBOX};
 use crate::build::RULE_FILL;
 use crate::engine::Engine;
 use crate::pdfout::{Annot, PdfPage};
-use crate::prim::DimParam;
+use crate::prim::{DimParam, IntParam};
 
 /// TeX sp to PDF bp
 #[inline]
@@ -23,7 +23,7 @@ pub fn bp_to_sp(bp: f64) -> i32 {
 const ONE_HUNDRED_BP_SP: i64 = 6_578_176;
 
 /// scaled points per bp (`sp_per_bp`): 72.27 * 65536 / 72.
-const SP_PER_BP: f64 = 72.27 * 65536.0 / 72.0;
+pub(crate) const SP_PER_BP: f64 = 72.27 * 65536.0 / 72.0;
 /// pdfTeX's `divide_scaled`: return the rounded decimal value and the
 /// corresponding displacement on TeX's scaled-point raster.
 fn divide_scaled(mut s: i64, mut m: i64, decimal_digits: u32) -> (i64, i64) {
@@ -87,10 +87,22 @@ pub(crate) fn push_bp_sp(buf: &mut String, sp: i64, digits: u32) -> i64 {
     out
 }
 
+/// pdfTeX /Widths entry in tenths of a glyph-space unit: `divide_scaled(w,
+/// pdf_font_size[f], 4)` (writefont.c `create_charwidth_array`), where
+/// `pdf_font_size` is the at size snapped to 6 decimals of bp
+/// (`pdf_use_font`). Dividing by the raw at size rounds some widths off.
+pub(crate) fn pdf_width_tenths(width: i32, at_size: i32) -> i32 {
+    if at_size == 0 {
+        return 0;
+    }
+    let (_, pdf_font_size) = divide_scaled(at_size as i64, ONE_HUNDRED_BP_SP, 6);
+    divide_scaled(width as i64, pdf_font_size, 4).0 as i32
+}
+
 /// pdfTeX `round_xn_over_d` in i128-safe form: round `x * n / d` half-up on
 /// the magnitude, sign restored.
 #[inline]
-fn round_xn_over_d(x: i64, n: i64, d: i64) -> i64 {
+pub(crate) fn round_xn_over_d(x: i64, n: i64, d: i64) -> i64 {
     let neg = (x < 0) ^ (n < 0);
     let mut a = x as i128 * n as i128;
     if a < 0 {
@@ -213,21 +225,6 @@ fn matrix_transform_rect(m: &Matrix, llx: f64, lly: f64, urx: f64, ury: f64) -> 
     ]
 }
 
-/// An open \pdfstartlink .. \pdfendlink region accumulating its extent.
-/// Coordinates are raw page-space (x from the left edge, y measured
-/// downward from the top); an active `\pdfsetmatrix` CTM is applied once at
-/// closing time, mirroring pdfTeX's running-link `matrixrecalculate`
-/// (pdftex.web §36546).
-struct LinkFrame {
-    uri: Option<String>,
-    dest: Option<String>,
-    attr: String,
-    min_x: f64,
-    min_y: f64,
-    max_x: f64,
-    max_y: f64,
-}
-
 pub struct RenderCtx<'a> {
     pub eng: &'a mut Engine,
     pub content: String,
@@ -235,10 +232,14 @@ pub struct RenderCtx<'a> {
     pub page_height_bp: f64,
     pub cur_font: usize,
     pub cur_pdf_font: u16,
-    links: Vec<LinkFrame>,
     /// pdfTeX `fixed_decimal_digits` and the derived `min_bp_val`.
     decimal_digits: u32,
     min_bp_val: i64,
+    /// pdfTeX `cur_s`: box nesting depth during shipout (-1 outside the
+    /// shipped box); running links continue only into boxes at their level.
+    cur_s: i32,
+    /// baseline of the hlist being shipped (`base_line` in `hlist_out`)
+    base_line_sp: i64,
     pub annots: Vec<Annot>,
     pub dests: Vec<crate::pdfout::Dest>,
     pub page_fonts: Vec<(usize, u16)>, // (engine font/binding key, resource number)
@@ -346,6 +347,16 @@ mod text_encoding_tests {
         assert_eq!(operands[3].as_i64().unwrap(), 30);
         assert_eq!(operands[4].as_str().unwrap(), b"B");
     }
+
+    /// /Widths divide by pdfTeX's snapped `pdf_font_size`, not the raw at
+    /// size: cmmi10 `G` (515276sp at 10pt) is 786.3 in pdflatex output,
+    /// while 515276/655360 alone rounds to 786.2; SFTI1000 `M` likewise.
+    #[test]
+    fn widths_use_pdftex_snapped_font_size() {
+        assert_eq!(super::pdf_width_tenths(515_276, 655_360), 7863);
+        assert_eq!(super::pdf_width_tenths(327_680, 655_360), 5000);
+        assert_eq!(super::pdf_width_tenths(1, 0), 0);
+    }
 }
 /// pdfTeX `pdf_print_bp` for a bp value with `digits` decimals.
 fn push_pdfnum(buf: &mut String, v: f64, digits: u32) {
@@ -371,9 +382,10 @@ impl Engine {
             page_height_bp: sp_to_bp(page_height_sp),
             cur_font: 0,
             cur_pdf_font: 0,
-            links: Vec::new(),
             decimal_digits,
             min_bp_val: min_bp_val(decimal_digits),
+            cur_s: -1,
+            base_line_sp: 0,
             annots: Vec::new(),
             dests: Vec::new(),
             page_fonts: Vec::new(),
@@ -408,6 +420,28 @@ impl Engine {
         }
     }
 
+    /// tex.web `prepare_mag` (§288): the first use freezes \mag for the
+    /// job; a later different value is an error and reverts (globally) to
+    /// the frozen one, an out-of-range value is replaced by 1000.
+    pub fn prepare_mag(&mut self) -> i32 {
+        let mut mag = self.eqtb.int_params[IntParam::Mag.idx() as usize];
+        let mag_set = self.pdf_doc.mag;
+        if mag_set > 0 && mag != mag_set {
+            self.error(&format!(
+                "Incompatible magnification ({mag}); the previous value will be retained ({mag_set})"
+            ));
+            mag = mag_set;
+            self.eqtb.assign_int_param(IntParam::Mag, mag, true);
+        }
+        if !(1..=32768).contains(&mag) {
+            self.error(&format!("Illegal magnification has been changed to 1000 ({mag})"));
+            mag = 1000;
+            self.eqtb.assign_int_param(IntParam::Mag, mag, true);
+        }
+        self.pdf_doc.mag = mag;
+        mag
+    }
+
     /// Render a shipped page box into a PdfPage. Also records
     /// \pdfsavepos results (\pdflastxpos/\pdflastypos) from the last
     /// SavePos node on the page.
@@ -421,7 +455,16 @@ impl Engine {
             self.synctex
                 .record_page_size(page, width_sp as i64, height_sp as i64);
         }
+        let mag = self.prepare_mag();
         let mut ctx = self.new_ctx(height_sp as i64);
+        // pdfTeX "Adjust transformation matrix for the magnification ratio":
+        // the page stream opens with `m 0 0 m 0 0 cm`, m = mag/1000
+        if mag != 1000 {
+            push_decimal(&mut ctx.content, mag as i64, 3);
+            ctx.content.push_str(" 0 0 ");
+            push_decimal(&mut ctx.content, mag as i64, 3);
+            ctx.content.push_str(" 0 0 cm\n");
+        }
         // ship_out's this_box is the shipped box: running rule dimensions
         // at its top level take its width/height/depth (§624, §633)
         if let Node::Box { w, h, d, .. } = page_box {
@@ -450,9 +493,9 @@ impl Engine {
                 ctx.ship_vlist(list, x0, y0, *glue_sign, *glue_order, *glue_set);
             }
         }
-        // close any links left open at the end of the page
-        while let Some(fr) = ctx.links.pop() {
-            ctx.close_link(fr);
+        // pdfTeX's link stack outlives the page; annotation indices do not
+        for link in ctx.eng.pdf_doc.link_stack.iter_mut() {
+            link.annot = None;
         }
         // pdfTeX `pdfshipoutend` (utils.c §1367): a save left unmatched at
         // the end of the shipout is fatal (no output file).
@@ -559,24 +602,6 @@ impl<'a> RenderCtx<'a> {
         self.page_height_bp - tex_y_bp
     }
 
-    /// grow every open link region to include the point/extent at (x, y)
-    fn note_point(&mut self, x: f64, y: f64) {
-        for fr in self.links.iter_mut() {
-            if x < fr.min_x {
-                fr.min_x = x;
-            }
-            if x > fr.max_x {
-                fr.max_x = x;
-            }
-            if y < fr.min_y {
-                fr.min_y = y;
-            }
-            if y > fr.max_y {
-                fr.max_y = y;
-            }
-        }
-    }
-
     /// pdfTeX `matrixused` (utils.c §1290): a `\pdfsetmatrix` CTM is active
     /// for annotation geometry only during page shipout with a non-empty
     /// matrix stack.
@@ -621,42 +646,79 @@ impl<'a> RenderCtx<'a> {
         ]
     }
 
-    fn close_link(&mut self, fr: LinkFrame) {
-        // pdfTeX `end_link` on a running-width link: `matrixrecalculate`
-        // re-transforms the rect stored at `\pdfstartlink` time with the
-        // CTM active at closing time. The frame accumulates the raw pen
-        // extent; the transform happens once here.
-        if self.matrix_used().is_some() {
-            let [x0, y0, x1, y1] = self.page_rect(
-                (fr.min_x * SP_PER_BP).round() as i64,
-                (fr.min_y * SP_PER_BP).round() as i64,
-                (fr.max_x * SP_PER_BP).round() as i64,
-                (fr.max_y * SP_PER_BP).round() as i64,
-            );
-            self.annots.push(Annot {
-                rect: [x0, y0, x1, y1],
-                uri: fr.uri,
-                dest: fr.dest,
-                attr: fr.attr,
-                subtype: Some("/Link".to_string()),
-            });
-            return;
-        }
-        // Link frames accumulate top-down TeX page coordinates; convert the
-        // vertical bounds once when the PDF annotation is closed.
-        let y0 = self.y_pdf(fr.max_y);
-        let y1 = self.y_pdf(fr.min_y);
-        self.annots.push(Annot {
-            rect: [fr.min_x, y0, fr.max_x, y1],
-            uri: fr.uri,
-            dest: fr.dest,
-            attr: fr.attr,
-            subtype: Some("/Link".to_string()),
-        });
+    /// pdfTeX `set_rect_dimens`: the DVI-space rectangle (left, top, right,
+    /// bottom; y downward) of a link/annotation whatsit at (`cur_h`,
+    /// `cur_v`); running dimensions (`RULE_FILL`) reach to the enclosing
+    /// box's right edge, height and depth. Returns that raw rectangle and
+    /// the emitted one (CTM applied, then widened by `margin`).
+    fn set_rect_dimens(
+        &self,
+        cur_h: i64,
+        cur_v: i64,
+        (wd, ht, dp): (i32, i32, i32),
+        margin: i64,
+    ) -> ([i64; 4], [f64; 4]) {
+        let (x, y) = (self.left_edge_sp, self.base_line_sp);
+        let right = if wd == RULE_FILL { x + self.box_w_sp } else { cur_h + wd as i64 };
+        let top = if ht == RULE_FILL { y - self.box_h_sp } else { cur_v - ht as i64 };
+        let bottom = if dp == RULE_FILL { y + self.box_d_sp } else { cur_v + dp as i64 };
+        let raw = [cur_h, top, right, bottom];
+        (raw, self.margined_rect(raw, margin))
     }
 
-    /// ship a vertical list with its top edge at y
+    fn margined_rect(&self, [left, top, right, bottom]: [i64; 4], margin: i64) -> [f64; 4] {
+        let [llx, lly, urx, ury] = self.page_rect(left, top, right, bottom);
+        let m = sp_to_bp(margin);
+        [llx - m, lly - m, urx + m, ury + m]
+    }
+
+    fn link_margin(&self) -> i64 {
+        self.eng.eqtb.dim_params[DimParam::PdfLinkMargin.idx() as usize] as i64
+    }
+
+    /// pdfTeX `do_link` (\pdfstartlink) and `append_link` (a running link
+    /// continuing into a new box at its nesting level): one /Link
+    /// annotation per box, starting at `cur_h`. Records it on `link`.
+    fn start_link_annot(&mut self, link: &mut crate::pdfout::OpenLink, cur_h: i64, cur_v: i64) {
+        let (raw, rect) = self.set_rect_dimens(cur_h, cur_v, link.dims, self.link_margin());
+        self.annots.push(Annot {
+            rect,
+            uri: link.uri.clone(),
+            dest: link.dest.clone(),
+            attr: link.attr.clone(),
+            subtype: Some("/Link".to_string()),
+        });
+        link.annot = Some(self.annots.len() - 1);
+        link.raw = raw;
+    }
+
+    /// pdfTeX `end_link`: a running-width link ends at the current point
+    /// (re-transformed when a CTM is active, `matrixrecalculate`).
+    fn end_link(&mut self, cur_h: i64) {
+        let Some(link) = self.eng.pdf_doc.link_stack.pop() else {
+            self.eng.error("pdf_link_stack empty, \\pdfendlink used without \\pdfstartlink?");
+            return;
+        };
+        let (Some(index), true) = (link.annot, link.dims.0 == RULE_FILL) else {
+            return;
+        };
+        let margin = self.link_margin();
+        if self.matrix_used().is_some() {
+            let [left, top, _, bottom] = link.raw;
+            self.annots[index].rect = self.margined_rect([left, top, cur_h + margin, bottom], margin);
+        } else {
+            self.annots[index].rect[2] = sp_to_bp(cur_h + margin);
+        }
+    }
+
+    /// ship a vbox's vertical list with its top edge at y (`vlist_out`)
     pub fn ship_vlist(&mut self, list: &NodeList, x: i64, y: i64, sign: u8, order: u8, set: f64) {
+        self.cur_s += 1;
+        self.vlist_nodes(list, x, y, sign, order, set);
+        self.cur_s -= 1;
+    }
+
+    fn vlist_nodes(&mut self, list: &NodeList, x: i64, y: i64, sign: u8, order: u8, set: f64) {
         let mut cur_y = y;
         let mut glue_state = GlueState::default();
         for n in list {
@@ -784,7 +846,6 @@ impl<'a> RenderCtx<'a> {
                     cur_y += *d as i64;
                 }
                 Node::Whatsit(w) => {
-                    self.note_point(sp_to_bp(x), sp_to_bp(cur_y));
                     self.emit_whatsit_sp(w, x, cur_y);
                 }
                 Node::Ins { box_node, .. } => {
@@ -800,8 +861,28 @@ impl<'a> RenderCtx<'a> {
         }
     }
 
-    /// ship a horizontal list with baseline at y
+    /// ship an hbox's horizontal list with baseline at y (`hlist_out`): a
+    /// running link open at this box nesting level gets a new annotation
+    /// over this box (pdfTeX "Create link annotations for the current hbox").
     pub fn ship_hlist(&mut self, list: &NodeList, x: i64, y: i64, sign: u8, order: u8, set: f64) {
+        self.cur_s += 1;
+        let saved = (self.left_edge_sp, self.base_line_sp);
+        (self.left_edge_sp, self.base_line_sp) = (x, y);
+        if self.page_mode && self.eng.pdf_doc.gen_running_link {
+            let mut stack = std::mem::take(&mut self.eng.pdf_doc.link_stack);
+            for link in stack.iter_mut() {
+                if link.nesting == self.cur_s && link.dims.0 == RULE_FILL {
+                    self.start_link_annot(link, x, y);
+                }
+            }
+            self.eng.pdf_doc.link_stack = stack;
+        }
+        self.hlist_nodes(list, x, y, sign, order, set);
+        (self.left_edge_sp, self.base_line_sp) = saved;
+        self.cur_s -= 1;
+    }
+
+    fn hlist_nodes(&mut self, list: &NodeList, x: i64, y: i64, sign: u8, order: u8, set: f64) {
         let mut cur_x = x;
         let mut glue_state = GlueState::default();
         for n in list {
@@ -926,7 +1007,7 @@ impl<'a> RenderCtx<'a> {
                             other => {
                                 let single: NodeList = vec![other.clone()];
                                 let (w, _, _) = crate::boxes::hlist_dims(&single, &self.eng.eqtb);
-                                self.ship_hlist(&single, cur_x, y, sign, order, set);
+                                self.hlist_nodes(&single, cur_x, y, sign, order, set);
                                 cur_x += w as i64;
                             }
                         }
@@ -971,7 +1052,6 @@ impl<'a> RenderCtx<'a> {
                     cur_x += adv;
                 }
                 Node::Whatsit(w) => {
-                    self.note_point(sp_to_bp(cur_x), sp_to_bp(y));
                     self.emit_whatsit_sp(w, cur_x, y);
                     if let crate::boxes::WhatIt::PdfRefXImage { w, .. }
                     | crate::boxes::WhatIt::PdfRefXForm { w, .. } = w
@@ -1442,11 +1522,6 @@ impl<'a> RenderCtx<'a> {
             .get(f as usize)
             .map(|ff| ff.at_size as i64)
             .unwrap_or(0);
-        let size_bp = sp_to_bp(at_size_sp);
-        let x = sp_to_bp(x_sp);
-        let y = sp_to_bp(v_sp);
-        self.note_point(x, y - 0.75 * size_bp);
-        self.note_point(x + 0.5 * size_bp, y + 0.25 * size_bp);
         if at_size_sp <= 0 {
             return;
         }
@@ -1530,12 +1605,6 @@ impl<'a> RenderCtx<'a> {
             .get(f as usize)
             .map(|ff| ff.at_size as i64)
             .unwrap_or(0);
-        let size_bp = sp_to_bp(at_size_sp);
-        let x = sp_to_bp(x_sp);
-        let y = sp_to_bp(v_sp);
-        // approximate glyph extent feeds link rectangles
-        self.note_point(x, y - 0.75 * size_bp);
-        self.note_point(x + 0.5 * size_bp, y + 0.25 * size_bp);
         if at_size_sp <= 0 {
             return; // nullfont: nothing to draw
         }
@@ -1813,8 +1882,6 @@ impl<'a> RenderCtx<'a> {
         let ratio = self.font_ratio(fid);
         let x_bp = sp_to_bp(cur_x);
         let y_bp = self.y_pdf(sp_to_bp(y));
-        let size_bp = sp_to_bp(at_size_sp);
-        self.note_point(x_bp, sp_to_bp(y) - 0.75 * size_bp);
 
         self.display_list
             .push(crate::boxes::DisplayItem::NativeGlyphRun {
@@ -1902,8 +1969,6 @@ impl<'a> RenderCtx<'a> {
 
             idx = j;
         }
-
-        self.note_point(sp_to_bp(pen_x), sp_to_bp(y) + 0.25 * size_bp);
     }
 
     /// pdfTeX `pdf_set_rule`: close the text object, then draw inside a
@@ -1918,8 +1983,6 @@ impl<'a> RenderCtx<'a> {
         let y = self.y_pdf(y_down);
         let w = sp_to_bp(w_sp);
         let h = sp_to_bp(h_sp);
-        self.note_point(x, y_down - h);
-        self.note_point(x + w, y_down);
         self.display_list.push(crate::boxes::DisplayItem::Rule {
             x_bp: x,
             y_bp: y,
@@ -2189,19 +2252,9 @@ impl<'a> RenderCtx<'a> {
                 }
             }
             PdfAnnot { attr, wd, ht, dp } => {
-                // pdfTeX `do_annot` -> `set_rect_dimens` (pdftex.web §36430):
-                // left = cur_h, right = cur_h + width, top = cur_v - height,
-                // bottom = cur_v + depth (DVI y grows downward), then the
-                // rect goes through `matrixtransformrect` when a matrix is
-                // active and is emitted bottom-up.
-                let left = cur_h;
-                let base = cur_v;
-                let rect = self.page_rect(
-                    left,
-                    base - *ht as i64,
-                    left + *wd as i64,
-                    base + *dp as i64,
-                );
+                // pdfTeX `do_annot` -> `set_rect_dimens` (pdftex.web §36430)
+                // with running dimensions from the enclosing box, no margin
+                let (_, rect) = self.set_rect_dimens(cur_h, cur_v, (*wd, *ht, *dp), 0);
                 self.annots.push(Annot {
                     rect,
                     uri: None,
@@ -2210,38 +2263,25 @@ impl<'a> RenderCtx<'a> {
                     subtype: None,
                 });
             }
-            PdfStartLink { attr, uri, name } => {
-                let x = sp_to_bp(cur_h);
-                let y = sp_to_bp(cur_v);
-                self.links.push(LinkFrame {
-                    uri: uri.clone(),
-                    dest: name.clone(),
-                    attr: attr.clone(),
-                    min_x: x,
-                    min_y: y,
-                    max_x: x,
-                    max_y: y,
-                });
+            PdfStartLink { attr, uri, name, wd, ht, dp } => {
+                // pdfTeX `do_link`: links exist only on shipped pages
+                if self.page_mode {
+                    let mut link = crate::pdfout::OpenLink {
+                        nesting: self.cur_s,
+                        dims: (*wd, *ht, *dp),
+                        uri: uri.clone(),
+                        dest: name.clone(),
+                        attr: attr.clone(),
+                        annot: None,
+                        raw: [0; 4],
+                    };
+                    self.start_link_annot(&mut link, cur_h, cur_v);
+                    self.eng.pdf_doc.link_stack.push(link);
+                }
             }
             PdfEndLink => {
-                if let Some(fr) = self.links.pop() {
-                    // include the pen position at closing time
-                    let mut fr = fr;
-                    let x = sp_to_bp(cur_h);
-                    let y = sp_to_bp(cur_v);
-                    if x < fr.min_x {
-                        fr.min_x = x;
-                    }
-                    if x > fr.max_x {
-                        fr.max_x = x;
-                    }
-                    if y < fr.min_y {
-                        fr.min_y = y;
-                    }
-                    if y > fr.max_y {
-                        fr.max_y = y;
-                    }
-                    self.close_link(fr);
+                if self.page_mode {
+                    self.end_link(cur_h);
                 }
             }
             Special(s) => {

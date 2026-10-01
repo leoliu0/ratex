@@ -835,18 +835,44 @@ impl GlobalState {
         Ok(chunk)
     }
 
+    /// Read a chunk file with luaL_loadfilex's errors: "cannot open"/"cannot read" plus
+    /// strerror; 5.5 reports a directory (a read error with errno cleared) without it.
+    pub(crate) fn read_chunk_file(&self, path: &str) -> Result<Vec<u8>, String> {
+        use std::io::Read;
+        let reason = |error: &std::io::Error| crate::stdlib::io::file::error_message(error);
+        let mut file =
+            std::fs::File::open(path).map_err(|e| format!("cannot open {path}: {}", reason(&e)))?;
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes).map_err(|e| {
+            if self.version == LuaLanguageLevel::Lua55 {
+                format!("cannot read {path}")
+            } else {
+                format!("cannot read {path}: {}", reason(&e))
+            }
+        })?;
+        Ok(bytes)
+    }
+
     pub(crate) fn load_proto_from_file(&mut self, path: &str) -> Result<ProtoPtr, String> {
+        let file_bytes = self.read_chunk_file(path)?;
+        self.load_proto_from_file_bytes(path, file_bytes)
+    }
+
+    /// Load the contents `file_bytes` of the chunk file `path`.
+    pub(crate) fn load_proto_from_file_bytes(
+        &mut self,
+        path: &str,
+        file_bytes: Vec<u8>,
+    ) -> Result<ProtoPtr, String> {
         use crate::lua_value::chunk_serializer;
 
-        #[cfg(miri)]
+        // The shared cache identifies the file by its canonical path.
+        #[cfg(all(feature = "shared-proto", miri))]
         let resolved_path = std::path::PathBuf::from(path);
-
-        #[cfg(not(miri))]
+        #[cfg(all(feature = "shared-proto", not(miri)))]
         let resolved_path =
             std::fs::canonicalize(path).map_err(|e| format!("cannot open {}: {}", path, e))?;
 
-        let file_bytes =
-            std::fs::read(&resolved_path).map_err(|e| format!("cannot open {}: {}", path, e))?;
         let layout = inspect_file_chunk_layout(&file_bytes);
 
         if layout.is_binary && !self.safe_option.allow_load_bytecode {

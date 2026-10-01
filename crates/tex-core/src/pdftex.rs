@@ -196,13 +196,10 @@ impl Engine {
                             let mut to_unicode = Vec::new();
                             for &(code, base_char, ref text) in &binding.entries {
                                 used_chars[code as usize / 64] |= 1_u64 << (code as usize % 64);
-                                let width = font.char_width(base_char);
-                                if at_size != 0 {
-                                    widths[code as usize] = ((width as i64 * 10_000
-                                        + at_size as i64 / 2)
-                                        / at_size as i64)
-                                        as i32;
-                                }
+                                widths[code as usize] = crate::pdfrender::pdf_width_tenths(
+                                    font.char_width(base_char),
+                                    at_size,
+                                );
                                 let glyph_name = base_encoding
                                     .as_ref()
                                     .and_then(|encoding| encoding.get(base_char as usize))
@@ -257,13 +254,7 @@ impl Engine {
                         raw_group_index.insert(font.tfm_name.clone(), document_index);
                         let widths = (0..=255u8)
                             .map(|character| {
-                                let width = font.char_width(character);
-                                if at_size != 0 {
-                                    ((width as i64 * 10_000 + at_size as i64 / 2) / at_size as i64)
-                                        as i32
-                                } else {
-                                    0
-                                }
+                                crate::pdfrender::pdf_width_tenths(font.char_width(character), at_size)
                             })
                             .collect();
                         let mut embedded = crate::pdffile::make_embed_font(

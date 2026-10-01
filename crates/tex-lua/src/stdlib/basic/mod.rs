@@ -469,44 +469,26 @@ fn lua_next(l: &mut LuaState) -> LuaResult<usize> {
 
 /// pcall(f [, arg1, ...]) - Protected call
 fn lua_pcall(l: &mut LuaState) -> LuaResult<usize> {
-    // Arguments are already on stack from the call:
-    // stack: [pcall_func, target_func, arg1, arg2, ...]
-    // We need: [target_func, arg1, arg2, ...] and call it
-
     let arg_count = l.arg_count();
     if arg_count < 1 {
         return Err(l.error("bad argument #1 to 'pcall' (value expected)".to_string()));
     }
 
-    // Get current frame info
     let base = l
         .current_frame()
         .map(|f| f.base)
         .ok_or(LuaError::RuntimeError)?;
 
-    // func is at base+0, args are at base+1..base+arg_count-1
-    // We want to call func with arg_count-1 arguments
-    let func_idx = base;
-    let call_arg_count = arg_count - 1;
-
-    // Call using stack-based API (no Vec allocation!)
-    let (success, result_count) = l.pcall_stack_based(func_idx, call_arg_count)?;
-
-    // Results at stack[func_idx..func_idx+result_count], top = func_idx + result_count.
-    // Need to return [bool, result1, result2, ...] — shift results right by 1.
-    // Push a nil to ensure stack capacity for the extra boolean slot.
-    l.push_value(LuaValue::nil())?;
-
-    // In-place shift: move results right by 1, insert boolean at func_idx.
-    // Zero allocation, single O(n) copy.
-    {
-        let stack = l.stack_mut();
-        for i in (0..result_count).rev() {
-            stack[func_idx + 1 + i] = stack[func_idx + i];
-        }
-        stack[func_idx] = LuaValue::boolean(success);
+    // Like luaB_pcall (`lua_pushboolean(L, 1); lua_insert(L, 1);`), the first result
+    // goes below the function: [true, f, args...]. The `true` stays a temporary of
+    // this frame (debug.getlocal sees it) and the results land right above it.
+    l.push_value(LuaValue::boolean(true))?;
+    l.stack_mut()[base..=base + arg_count].rotate_right(1);
+    let func_idx = base + 1;
+    let (success, result_count) = l.pcall_stack_based(func_idx, arg_count - 1)?;
+    if !success {
+        l.stack_mut()[base] = LuaValue::boolean(false);
     }
-
     Ok(result_count + 1)
 }
 
@@ -1012,7 +994,10 @@ fn lua_load(l: &mut LuaState) -> LuaResult<usize> {
             l.push_value(chunk_val)?;
 
             let func_idx = l.get_top() - 1;
+            // generic_reader's lua_call runs without a continuation (luaD_callnoyield)
+            l.nny += 1;
             let call_result = l.pcall_stack_based(func_idx, 0);
+            l.nny -= 1;
 
             let result = match call_result {
                 Ok((true, result_count)) => {
@@ -1027,11 +1012,9 @@ fn lua_load(l: &mut LuaState) -> LuaResult<usize> {
                     let error_val = l.stack_get(func_idx).unwrap_or_default();
                     l.set_top(func_idx)?;
 
-                    // Return nil + error message
+                    // Return nil + the error object as raised (luaB_load)
                     l.push_value(LuaValue::nil())?;
-                    let err_msg =
-                        l.create_string(&format!("error in reader function: {}", error_val))?;
-                    l.push_value(err_msg)?;
+                    l.push_value(error_val)?;
                     return Ok(2);
                 }
                 Err(e) => {
@@ -1231,10 +1214,10 @@ fn lua_loadfile(l: &mut LuaState) -> LuaResult<usize> {
     let env_arg = l.get_arg(3);
 
     // Load from specified file as bytes (to handle both text and binary)
-    let file_bytes = match std::fs::read(&filename_str) {
+    let file_bytes = match l.global_state().read_chunk_file(&filename_str) {
         Ok(b) => b,
-        Err(e) => {
-            let err_msg = l.create_string(&format!("cannot open {}: {}", filename_str, e))?;
+        Err(message) => {
+            let err_msg = l.create_string(&message)?;
             l.push_value(LuaValue::nil())?;
             l.push_value(err_msg)?;
             return Ok(2);
@@ -1286,7 +1269,7 @@ fn lua_loadfile(l: &mut LuaState) -> LuaResult<usize> {
         return Ok(2);
     }
 
-    match l.load_proto_from_file(&filename_str) {
+    match l.load_proto_from_file_bytes(&filename_str, file_bytes) {
         Ok(proto) => {
             let upvalue_count = proto.as_ref().data.upvalue_count;
             let mut upvalues = Vec::with_capacity(upvalue_count);

@@ -74,6 +74,10 @@ pub(crate) fn insert_table_call_mm(
     let Some(mm) = get_metamethod_from_meta_ptr(lua_state, meta, TmKind::Call) else {
         return Ok(None);
     };
+    if !(mm.is_c_callable() || mm.is_lua_function()) && is_lua53(lua_state) {
+        // Lua 5.3 reports the called object itself: leave it to resolve_call_chain
+        return Ok(None);
+    }
     if ccmt_depth == 15 {
         return Err(lua_state.error("'__call' chain too long".to_string()));
     }
@@ -124,6 +128,10 @@ pub fn resolve_call_chain(
 
         // Try to get __call metamethod
         if let Some(mm) = get_metamethod_event(lua_state, &func, TmKind::Call) {
+            // Lua 5.3's tryfuncTM takes one '__call' step and requires a function there
+            if !(mm.is_c_callable() || mm.is_lua_function()) && is_lua53(lua_state) {
+                return Err(crate::stdlib::debug::typeerror(lua_state, &func, "call"));
+            }
             // Check chain depth (Lua 5.5 allows up to 15 __call layers)
             // We check BEFORE incrementing, so if we're already at 15, error
             if ccmt_depth == 15 {
@@ -139,11 +147,18 @@ pub fn resolve_call_chain(
             }
 
             // Continue loop to check if mm also needs __call resolution
-        } else {
+        } else if is_lua53(lua_state) {
             // No __call metamethod and not a function
             return Err(crate::stdlib::debug::typeerror(lua_state, &func, "call"));
+        } else {
+            // 5.5 luaD_tryfuncTM: luaG_callerror names the call ("for iterator", ...)
+            return Err(crate::stdlib::debug::callerror(lua_state, &func));
         }
     }
+}
+
+fn is_lua53(lua_state: &LuaState) -> bool {
+    lua_state.global_state().language() == crate::LuaLanguageLevel::Lua53
 }
 
 /// Call a C function and handle results.

@@ -2607,23 +2607,21 @@ fn font_attr_entry(attr: &str) -> String {
 
 fn emit_annot(b: &mut PdfBuilder, obj: usize, a: &Annot, mag: i32) {
     let [x0, y0, x1, y1] = a.rect;
-    // /Border comes from the annotation attributes when present (hyperref
-    // passes pdfborder explicitly); duplicating the key makes qpdf flag
-    // every link object
-    let border = if a.attr.contains("/Border") {
-        ""
-    } else {
-        " /Border [0 0 0]"
-    };
-    let mut body = format!(
-        "<< /Type /Annot /Subtype {} /Rect [{} {} {} {}]{}",
-        a.subtype.as_deref().unwrap_or("/Link"),
+    // pdfTeX writes only /Type /Annot (plus /Subtype /Link for links), the
+    // rectangle and the user's attributes: no default /Border, and a
+    // \pdfannot's own /Subtype is the only one.
+    let mut body = String::from("<< /Type /Annot");
+    if let Some(subtype) = &a.subtype {
+        body.push_str(" /Subtype ");
+        body.push_str(subtype);
+    }
+    body.push_str(&format!(
+        " /Rect [{} {} {} {}]",
         mag_bp(x0, mag),
         mag_bp(y0, mag),
         mag_bp(x1, mag),
-        mag_bp(y1, mag),
-        border
-    );
+        mag_bp(y1, mag)
+    ));
     if let Some(uri) = &a.uri {
         body.push_str(&format!(" /A << /S /URI /URI ({}) >>", escape_string(uri)));
     }

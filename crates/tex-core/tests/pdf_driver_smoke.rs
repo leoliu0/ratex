@@ -1324,3 +1324,59 @@ fn magnification_scales_page_geometry_like_pdftex() {
         }
     }
 }
+
+/// pdfTeX link rectangles: a running link spans the enclosing line's height
+/// and depth, continues as one annotation per line at its box nesting level
+/// (`append_link`), ends at \pdfendlink, and is widened by \pdflinkmargin;
+/// explicit height/depth override the box. No /Border is invented. Expected
+/// rectangles are /usr/bin/pdftex output for the same input.
+#[test]
+fn link_rectangles_follow_pdftex_running_links() {
+    let mut engine = Engine::new(true);
+    engine.init_primitives();
+    engine.add_nullfont();
+    engine.input.push_file(
+        "links.tex".into(),
+        br#"\catcode`\{=1 \catcode`\}=2 \pdfoutput=1
+\pdfpagewidth=300pt \pdfpageheight=200pt \pdfhorigin=10pt \pdfvorigin=10pt
+\font\f=cmr10 \f \hsize=100pt \parindent=0pt \baselineskip=12pt \pdflinkmargin=1pt
+\setbox0\vbox{AA \pdfstartlink attr{/Border [0 0 1]} user{/S /URI /URI (http://a.b)}BBB\hfil\penalty-10000 CCC\hfil\penalty-10000 DDD\pdfendlink{} GG
+\hbox{xx\pdfstartlink height 9pt depth 2pt user{/S /URI /URI (http://c.d)}yy\pdfendlink}\hfil\penalty-10000}
+\shipout\box0
+\end"#
+            .to_vec(),
+    );
+    engine.run();
+    assert_eq!(engine.error_count, 0, "{}", engine.term);
+    let bytes = tex_core::pdffile::write_pdf(&engine.pdf_doc).expect("PDF serialization");
+    let pdf = lopdf::Document::load_mem(&bytes).expect("valid PDF");
+    let page = pdf.get_dictionary(pdf.get_pages()[&1]).expect("page dictionary");
+    let (_, annotations) = pdf
+        .dereference(page.get(b"Annots").expect("page annotations"))
+        .expect("resolve page annotations");
+    let mut borders = 0;
+    let rects: Vec<String> = annotations
+        .as_array()
+        .expect("annotation array")
+        .iter()
+        .map(|annotation| {
+            let (_, annotation) = pdf.dereference(annotation).expect("resolve annotation");
+            let annotation = annotation.as_dict().expect("annotation dictionary");
+            borders += annotation.has(b"Border") as usize;
+            let rect = annotation.get(b"Rect").and_then(lopdf::Object::as_array).unwrap();
+            let rect: Vec<String> =
+                rect.iter().map(|n| n.as_float().unwrap().to_string()).collect();
+            rect.join(" ")
+        })
+        .collect();
+    assert_eq!(
+        rects,
+        [
+            "27.231 181.486 110.585 190.286",
+            "8.966 169.531 110.585 178.331",
+            "8.966 155.639 33.79 166.376",
+            "64.591 155.583 77.1 168.535",
+        ]
+    );
+    assert_eq!(borders, 3);
+}

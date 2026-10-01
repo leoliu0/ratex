@@ -207,6 +207,11 @@ impl Engine {
                 // non-primitive cs used as value: usually error
                 match self.eqtb.resolve(id).cloned() {
                     None => {
+                        // tex.web §358: a \noexpand-marked undefined control
+                        // sequence means \relax.
+                        if self.no_expand_tok == Some(t) {
+                            return;
+                        }
                         let name_bytes = self.cs.name(id).to_vec();
                         if name_bytes == b"@@italiccorr" || name_bytes == b"/" {
                             self.eqtb.assign(id, Equiv::Prim(Prim::Relax), true);

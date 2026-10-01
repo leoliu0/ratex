@@ -340,3 +340,93 @@ fn only_the_last_font_gains_fontdimen_parameters() {
     );
     assert!(e.term.contains("[2.0pt]"), "{}", e.term);
 }
+
+/// pdflatex: \noexpand marks an undefined control sequence too, so it is
+/// stored unexpanded (LaTeX's `\@nil` delimiter in \@onefilewithoptions)
+/// and means \relax in main control.
+#[test]
+fn noexpand_protects_undefined_control_sequences() {
+    let e = engine(
+        r"\def\ext{sty}
+\edef\c{\def\noexpand\c##1\detokenize\expandafter{\expanded{.\ext}}\noexpand\nil{[##1]}}\c
+\message{\expandafter\c\detokenize{xcolor.sty}\nil}
+\noexpand\undefined
+\end",
+    );
+    assert!(e.term.contains("[xcolor]"), "{}", e.term);
+}
+
+/// pdflatex: expanding an undefined control sequence is an error wherever
+/// it happens (tex.web §370); TeX drops the token and reads on.
+#[test]
+fn undefined_control_sequences_are_errors_wherever_expanded() {
+    let e = run_lenient(
+        r"\expandafter\relax\uC
+\count255=\uD 5 \message{D:\the\count255}
+\message{E:\uE}
+\edef\f{\expandafter\string\csname x\uF y\endcsname}\message{F:\f}
+\edef\g{G:\uG}\message{\meaning\g}
+\message{I:\number\uI 7}
+\if\uJ\relax\relax\message{J:T}\else\message{J:F}\fi
+\dimen0=1\uL pt \message{L:\the\dimen0}
+\message{M:\romannumeral\uM 5 }
+\noexpand\uB
+\end",
+    );
+    let messages: Vec<&str> = e.diagnostics.iter().map(|d| d.message.as_str()).collect();
+    let expected: Vec<String> = ["C", "D", "E", "F", "G", "I", "J", "L", "M"]
+        .iter()
+        .map(|name| format!("Undefined control sequence \\u{name}"))
+        .collect();
+    assert_eq!(messages, expected, "{}", e.term);
+    for text in ["D:5", "E:", "F:\\xy", "macro:->G:", "I:7", "J:T", "L:1.0pt", "M:v"] {
+        assert!(e.term.contains(text), "{text}: {}", e.term);
+    }
+}
+
+/// pdflatex: \font defines its identifier as \nullfont before scanning the
+/// file name and size, which may expand it; a font that cannot be loaded
+/// leaves it \nullfont.
+#[test]
+fn font_identifier_is_nullfont_while_its_size_is_scanned() {
+    let e = run_lenient(
+        r"\font\x=cmr10 \x \message{A:\fontname\font}
+\font\y=nonexistentfontzz \message{B:\fontname\y}
+\end",
+    );
+    assert!(e.term.contains("A:cmr10"), "{}", e.term);
+    assert!(e.term.contains("B:nullfont"), "{}", e.term);
+    assert_eq!(e.error_count, 1, "{}", e.term);
+}
+
+/// pdflatex: active characters are checked for \outer meanings in macro
+/// arguments and skipped conditional text, and an active character \let to
+/// \fi ends skipped text.
+#[test]
+fn outer_active_characters_and_active_fi_in_skipped_text() {
+    let e = run_lenient(
+        r"\catcode`\~=13 \catcode`\!=13
+\outer\def~{\message{T}}
+\def\a#1{\message{[#1]}}
+\message{1:}\a~
+\def\b#1.{\message{[#1]}}
+\message{2:}\b x~.
+\let!=\fi
+\iffalse x ! \message{3:after}
+\iffalse ~ \fi
+\end",
+    );
+    let messages: Vec<&str> = e.diagnostics.iter().map(|d| d.message.as_str()).collect();
+    assert_eq!(
+        messages,
+        [
+            "Forbidden control sequence found while scanning use of \\a",
+            "Forbidden control sequence found while scanning use of \\b",
+            "Incomplete \\iffalse; all text was ignored after line 10",
+            "Extra \\fi",
+        ],
+        "{}",
+        e.term
+    );
+    assert!(e.term.contains("3:after"), "{}", e.term);
+}

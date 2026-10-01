@@ -15,6 +15,7 @@ rustybuzz = { workspace = true }
 ttf-parser = { workspace = true }
 subsetter = "0.2.6"
 unicode-linebreak = "0.1"
+unicode-properties = { version = "0.1", default-features = false, features = ["general-category"] }
 unicode-segmentation = "1.12"
 smallvec = "1.16"
 lopdf = { version = "0.44.0", default-features = false }

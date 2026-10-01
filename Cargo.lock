@@ -902,6 +902,7 @@ dependencies = [
  "tex-ps",
  "ttf-parser",
  "unicode-linebreak",
+ "unicode-properties",
  "unicode-segmentation",
 ]
 

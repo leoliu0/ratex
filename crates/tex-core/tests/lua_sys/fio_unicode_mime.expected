@@ -1,0 +1,52 @@
+1 | 515 | 327678 | 6
+-3 | -896 | 16384 | 12
+16909060 | -50462977 | -2147467264 | 256
+513 | 16712707 | -514 | 33020 | 64 | 0
+{1,2,3,4} | {65534,65020} | {-128,0} | {4194304}
+128.0 | 16384.000015259 | 0.0
+3 | 4 | 255 | 254
+{255,254,253,252} | 128 | 0
+C
+line two
+last
+nil
+nil | nil | nil | nil
+nil | 52
+false
+false
+258 | nil
+{}
+false | attempt to use a closed file
+4 | ä€ | ÄBC | äbc | €äa | 228 | 8364
+aä€😀 | äää | 4 | wörld | äoü | 1
+ä|  €|"x\
+"
+g | ä
+g | b
+g | €
+äABC | true | true | 1
+2 | true
+7 | ä | 2 | 1
+false | bad argument #1 to '?' (invalid value)
+false | bad argument #1 to '?' (string expected, got no value)
+Ü | ünï | 日本語 | 4 | 6
+26085 | 26412 | 本語 | 本 | function
+aGVsbG8gd29y | hello wor | aGVsbG94 | x
+=C3=A4=3Db=0A | ä=b | a
+b
+c | a
+..b | 0.0
+
+abcd
+efgh | =
+abc=
+def=
+ghi=
+j | 3.0
+aGVs | hello | a
+b
+MDEyMzQ1
+Njc4OWFi
+Y2Rl
+hello world
+LTN12 1.0.3 | MIME 1.0.3 | 2048

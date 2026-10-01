@@ -21,6 +21,13 @@ use crate::token::{CsId, Token};
 
 thread_local! {
     static ACTIVE: Cell<*mut Engine> = const { Cell::new(std::ptr::null_mut()) };
+    /// Nesting depth of Lua entries from TeX (luatex `lua_active`).
+    static DEPTH: Cell<i64> = const { Cell::new(0) };
+}
+
+/// `lua.getcalllevel()`.
+pub(crate) fn lua_call_level() -> i64 {
+    DEPTH.with(Cell::get)
 }
 
 /// Restores the previously active engine when a Lua entry ends, also when
@@ -29,6 +36,7 @@ struct ActiveGuard(*mut Engine);
 
 impl Drop for ActiveGuard {
     fn drop(&mut self) {
+        DEPTH.with(|d| d.set(d.get() - 1));
         ACTIVE.with(|active| active.set(self.0));
     }
 }
@@ -115,6 +123,7 @@ impl Engine {
             self.lua = Some(Box::new(LuaEngine::new()?));
         }
         let lua: *mut LuaEngine = &mut **self.lua.as_mut().expect("Lua state exists");
+        DEPTH.with(|d| d.set(d.get() + 1));
         let _guard = ActiveGuard(ACTIVE.with(|active| active.replace(self as *mut Engine)));
         // SAFETY: the boxed Lua state lives in `self.lua` for the whole
         // call; Lua callbacks reach the engine only through the pointer
@@ -802,25 +811,6 @@ pub(crate) fn bytes_of(s: &LuaString) -> Vec<u8> {
     s.as_bytes().map(|b| b.to_vec()).unwrap_or_default()
 }
 
-/// kpathsea format names accepted by `kpse.find_file`.
-fn kpse_format(name: Option<&str>) -> Option<tex_kpse::Format> {
-    use tex_kpse::Format;
-    Some(match name.unwrap_or("tex") {
-        "tex" | "TeX" | ".tex" => Format::Tex,
-        "lua" | "texmfscripts" => Format::Lua,
-        "tfm" | ".tfm" => Format::Tfm,
-        "vf" | ".vf" | "ovf" => Format::Vf,
-        "type1 fonts" | ".pfb" | ".pfa" => Format::Type1,
-        "truetype fonts" | ".ttf" | ".ttc" => Format::Truetype,
-        "opentype fonts" | ".otf" => Format::Otf,
-        "enc files" | ".enc" => Format::Enc,
-        "map" | ".map" => Format::Map,
-        "bst" | ".bst" => Format::Bst,
-        "bib" | ".bib" => Format::Bib,
-        _ => return None,
-    })
-}
-
 impl Engine {
     /// `kpse.find_file(name, format)`: a disk path from the TeX search
     /// path, else the archive member name of an embedded file (readable by
@@ -1280,13 +1270,6 @@ pub(crate) fn install(lua: &mut Lua) -> Result<(), String> {
     });
 
     // ---- kpathsea ----
-    reg!(lua, b, "kpse_find", |name: String, format: Option<String>| -> Result<Option<String>, String> {
-        let Some(format) = kpse_format(format.as_deref()) else {
-            return Ok(None);
-        };
-        with_engine(|e| e.lua_kpse_find(&name, format))
-    });
-    reg!(lua, b, "read_found", |path: String| -> Option<LuaBytes> { read_found_file(&path).map(LuaBytes) });
     reg!(lua, b, "lua_module", |name: String| -> Result<Option<(LuaBytes, String)>, String> {
         with_engine(|e| {
             let alt = name.replace('.', "/");

@@ -55,42 +55,15 @@ impl LuaEngine {
     }
 
     fn init_modules(&mut self) -> Result<(), String> {
-        // 1. status table
-        let status = self
-            .lua
-            .create_table()
-            .map_err(|e| format!("status table creation failed: {e:?}"))?;
-        status.set("banner", "This is LuaTeX, Version 1.24.0").unwrap();
-        status.set("luatex_version", 124i64).unwrap();
-        status.set("luatex_revision", "0").unwrap();
-        status.set("luatex_date", 2026i64).unwrap();
-        status.set("development_id", 7724i64).unwrap();
-        status.set("output_active", false).unwrap();
-        status.set("shell_escape", 0i64).unwrap();
-        self.lua
-            .set_global("status", status)
-            .map_err(|e| format!("failed to set status table: {e:?}"))?;
-
-        // 2. lua table
+        // `status`, `kpse`, `lfs`, `os`/`io` additions and the rest of the
+        // system libraries are installed by `lua_sys` after the bridge.
         let lua_tbl = self
             .lua
             .create_table()
             .map_err(|e| format!("lua table creation failed: {e:?}"))?;
-        lua_tbl.set("id", 0i64).unwrap();
-        lua_tbl.set("version", "Lua 5.3").unwrap();
-        let bytecode_tbl = self.lua.create_table().unwrap();
-        lua_tbl.set("bytecode", bytecode_tbl).unwrap();
-        let name_tbl = self.lua.create_table().unwrap();
-        lua_tbl.set("name", name_tbl).unwrap();
-
         self.lua
             .set_global("lua", lua_tbl)
             .map_err(|e| format!("failed to set lua table: {e:?}"))?;
-        self.lua.execute(r#"
-            lua.newtable = function(narr, nrec) return {} end
-            unpack = table.unpack
-            loadstring = load
-        "#).unwrap();
 
         // 3. texio table (filled by `lua_bridge`)
         let texio_tbl = self
@@ -112,21 +85,6 @@ impl LuaEngine {
         self.lua
             .set_global("tex", tex_tbl)
             .map_err(|e| format!("failed to set tex table: {e:?}"))?;
-        self.lua.execute(r##"
-            if os then
-                os.type = "unix"
-                os.name = "linux"
-                os.uname = function()
-                    return {
-                        sysname = "Linux",
-                        nodename = "localhost",
-                        release = "6.0",
-                        version = "1",
-                        machine = "x86_64",
-                    }
-                end
-            end
-        "##).unwrap();
 
         // 8. node table and node.direct
         let node_tbl = self
@@ -267,9 +225,6 @@ impl LuaEngine {
             node.direct.getwhatsitfield = node.direct.getfield
             node.direct.write = function(n) end
             node.write = function(n) end
-            if os then
-                os.gettimeofday = function() return os.time() end
-            end
         "#).unwrap();
         // 9. font table
         self.lua.execute(r#"
@@ -377,66 +332,7 @@ impl LuaEngine {
             package.loaded["fontloader"] = fontloader
         "#).map_err(|e| format!("failed to initialize fontloader/luaharfbuzz: {e:?}"))?;
 
-        // 11. md5 table with authentic Rust md5 implementation
-        let md5_tbl = self.lua.create_table().unwrap();
-        let sumhexa_fn = self
-            .lua
-            .create_function(|s: String| -> LuaResult<String> {
-                let digest = md5::compute(s.as_bytes());
-                Ok(format!("{:x}", digest))
-            })
-            .unwrap();
-        md5_tbl.set("sumhexa", sumhexa_fn).unwrap();
-        let sum_fn = self
-            .lua
-            .create_function(|s: String| -> LuaResult<String> {
-                let digest = md5::compute(s.as_bytes());
-                Ok(String::from_utf8_lossy(&digest.0).into_owned())
-            })
-            .unwrap();
-        md5_tbl.set("sum", sum_fn).unwrap();
-        self.lua.set_global("md5", md5_tbl).unwrap();
-
-        // 12. Documented runtime modules: lfs, sha2, gzip, zlib, zip
         self.lua.execute(r#"
-            lfs = {
-                currentdir = function() return "." end,
-                attributes = function(filepath, aname)
-                    local attr = {
-                        mode = "file",
-                        size = 1024,
-                        modification = os.time(),
-                        access = os.time(),
-                        change = os.time(),
-                    }
-                    if aname then return attr[aname] else return attr end
-                end,
-                dir = function(path)
-                    local i = 0
-                    local entries = { ".", ".." }
-                    return function()
-                        i = i + 1
-                        return entries[i]
-                    end
-                end,
-                mkdir = function(p) return true end,
-                rmdir = function(p) return true end,
-                touch = function(p) return true end,
-            }
-
-            sha2 = {
-                digest256 = function(s) return "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" end,
-                digest512 = function(s) return "cf83e1357eefb8bdf1542850d66d8007d620e4050b5715dc83f4a921d36ce9ce47d0d13c5d85f2b0ff8318d2877eec2f63b931bd47417a81a538327af927da3e" end,
-            }
-
-            gzip = {
-                compress = function(s) return s end,
-                decompress = function(s) return s end,
-            }
-            zlib = gzip
-            zip = {
-                open = function() return nil end,
-            }
             lpeg = {}
             local pat_meta = {}
             pat_meta.__index = pat_meta
@@ -486,21 +382,9 @@ impl LuaEngine {
             lpeg.type = function(v) if getmetatable(v) == pat_meta then return "pattern" end return nil end
             lpeg.match = function(pat, s, ...) return {} end
             package.loaded["lpeg"] = lpeg
-            sio = {
-                readinteger1 = function(s, pos) return (string.unpack(">i1", s, pos or 1)) end,
-                readinteger2 = function(s, pos) return (string.unpack(">i2", s, pos or 1)) end,
-                readinteger3 = function(s, pos) return (string.unpack(">i3", s, pos or 1)) end,
-                readinteger4 = function(s, pos) return (string.unpack(">i4", s, pos or 1)) end,
-                readcardinal1 = function(s, pos) return (string.unpack(">I1", s, pos or 1)) end,
-                readcardinal2 = function(s, pos) return (string.unpack(">I2", s, pos or 1)) end,
-                readcardinal3 = function(s, pos) return (string.unpack(">I3", s, pos or 1)) end,
-                readcardinal4 = function(s, pos) return (string.unpack(">I4", s, pos or 1)) end,
-            }
-            fio = sio
-            package.loaded["sio"] = sio
-            package.loaded["fio"] = fio
         "#).map_err(|e| format!("failed to initialize runtime modules: {e:?}"))?;
         crate::lua_bridge::install(&mut self.lua)?;
+        crate::lua_sys::install(&mut self.lua)?;
         static PRELOAD_ZST: &[u8] = include_bytes!("../assets/lua_uni_data_preload.lua.zst");
         if let Ok(mut decoder) = ruzstd::decoding::StreamingDecoder::new(PRELOAD_ZST) {
             use std::io::Read;

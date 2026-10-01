@@ -1,0 +1,27 @@
+{a,b,,c} | {a,b,,c} | {a,b,c} | {a,b,c} | {} | {,a,}
+{a,b;c} | {a,,b} | {a,b}
+4 | 0
+{97,228,8364,128512} | {}
+aä€😀 | 
+v | 97
+v | 228
+v | 8364
+c | a
+c | ä
+c | €
+cp | a | b
+cp | c | 
+ch | a
+ch | b
+ch | c
+bp | 97 | 98
+bp | 99 | nil
+by | 97
+by | 98
+by | 99
+{97,98,99} | {}
+true | 
+false | bad argument #1 to 'string.explode' (string expected, got nil)
+true | 1
+1
+{}

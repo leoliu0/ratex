@@ -32,10 +32,15 @@ pub fn run_lua(code: &str) -> Vec<String> {
     let src = format!("\\directlua{{dofile(\"{}\")}}\n\\end\n", path.display());
     e.input.push_file("t.tex".to_string(), src.into_bytes());
     e.run();
-    let result = match std::fs::read_to_string(&out) {
-        Ok(text) => text.lines().map(str::to_owned).collect(),
-        Err(_) => vec![format!("NO OUTPUT: {:?} / {}", e.diagnostics, e.term)],
-    };
+    let mut result: Vec<String> = std::fs::read_to_string(&out)
+        .map(|text| text.lines().map(str::to_owned).collect())
+        .unwrap_or_default();
+    if e.error_count > 0 {
+        // the first line of the first error message
+        let text = format!("{:?}", e.diagnostics);
+        let msg = text.split("message: \"").nth(1).and_then(|m| m.split("\", original").next()).unwrap_or("?");
+        result.push(format!("! {}", msg.split("\\n").next().unwrap_or("")));
+    }
     let _ = std::fs::remove_dir_all(&dir);
     result
 }

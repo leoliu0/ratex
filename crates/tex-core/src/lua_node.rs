@@ -816,9 +816,21 @@ impl NodeStore {
                 return if has_attr_type(id, sub) { node_val(node.attr) } else { Val::Nil };
             }
             "subtype" => {
-                return if id == WHATSIT || has_subtype_type(id) { Val::Int(i64::from(sub)) } else { Val::Nil };
+                return if (id == WHATSIT || has_subtype_type(id)) && !matches!(id, 30..=32 | 35..=37 | TEMP) {
+                    Val::Int(i64::from(sub))
+                } else {
+                    Val::Nil
+                };
             }
             _ => {}
+        }
+        // node types without Lua-visible fields (`lua_nodelib_fast_getfield`
+        // falls through to nil for them)
+        if matches!(id, 30..=32 | 35..=37 | TEMP) {
+            return Val::Nil;
+        }
+        if id == UNSET && name == "span" {
+            return Val::Nil;
         }
         if id == GLYPH {
             match name {
@@ -840,7 +852,11 @@ impl NodeStore {
         let fv = node.f[f.slot];
         match f.kind {
             K::I => {
-                if id == WHATSIT && sub == ws::PDF_COLORSTACK && name == "cmd" {
+                if id == WHATSIT
+                    && ((sub == ws::PDF_COLORSTACK && name == "cmd")
+                        || (sub == ws::PDF_LINK_STATE && name == "value")
+                        || (sub == ws::LATE_LUA && name == "reg" && fv == 0))
+                {
                     return Val::Nil;
                 }
                 Val::Int(i64::from(fv))
@@ -865,7 +881,19 @@ impl NodeStore {
                 if id == MARK {
                     return Val::Toks;
                 }
-                Val::Bytes(self.ext_str(n, name))
+                let text = self.ext_str(n, name);
+                if text.is_empty() && id == WHATSIT {
+                    // fields LuaTeX keeps as numbers until a string is assigned
+                    match (sub, name) {
+                        (ws::PDF_DEST, "dest_id") | (ws::PDF_ACTION, "action_id") => return Val::Int(0),
+                        (ws::PDF_THREAD | ws::PDF_START_THREAD, "thread_id") => return Val::Int(0),
+                        (ws::PDF_ACTION, "struct_id") => return Val::Nil,
+                        // a new literal reads back as "data" (an unset reference)
+                        (ws::PDF_LITERAL | ws::PDF_LATE_LITERAL, "data") => return Val::Bytes(b"data".to_vec()),
+                        _ => {}
+                    }
+                }
+                Val::Bytes(text)
             }
             K::V => self.user_value(n),
         }

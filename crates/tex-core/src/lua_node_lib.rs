@@ -562,14 +562,14 @@ pub(crate) fn install(lua: &mut Lua) -> Result<LuaTable, String> {
             Some(i64::from(e.lua_nodes.tail_of(h)))
         })
     });
-    nat!(lua, n, "end_of_math", |h: Option<i64>| -> Result<Option<i64>, String> {
+    nat!(lua, n, "end_of_math", |h: Option<i64>| -> Result<Variadic<UdValue>, String> {
         with_engine(|e| {
             let h = handle32(h);
             if !e.lua_nodes.valid(h) {
-                return None;
+                return Variadic(vec![]);
             }
             let m = e.lua_nodes.end_of_math(h);
-            (m != 0).then_some(i64::from(m))
+            Variadic(if m != 0 { vec![UdValue::Integer(i64::from(m))] } else { vec![] })
         })
     });
     nat!(lua, n, "length", |h: Option<i64>, stop: Option<i64>| -> Result<i64, String> {
@@ -1014,7 +1014,7 @@ fn install_accessors(lua: &mut Lua, n: &LuaTable) -> Result<(), String> {
                 }
                 MARGIN_KERN => Variadic(vec![UdValue::Integer(i64::from(node.f[0]))]),
                 MATH => Variadic(vec![UdValue::Integer(i64::from(node.f[0]))]),
-                _ => Variadic(vec![UdValue::Nil]),
+                _ => Variadic(vec![]),
             }
         })
     });
@@ -1292,7 +1292,7 @@ fn install_accessors(lua: &mut Lua, n: &LuaTable) -> Result<(), String> {
                 GLUE | MATH => Variadic(vec![UdValue::Boolean(t.f[1] == 0 && t.f[2] == 0 && t.f[3] == 0)]),
                 GLUE_SPEC | INS => Variadic(vec![UdValue::Boolean(t.f[0] == 0 && t.f[1] == 0 && t.f[2] == 0)]),
                 HLIST | VLIST => Variadic(vec![UdValue::Boolean(t.fl == 0.0 && t.f[5] == 0 && t.f[6] == 0)]),
-                _ => Variadic(vec![]),
+                _ => Variadic(vec![UdValue::Nil]),
             }
         })
     });
@@ -1752,16 +1752,20 @@ fn install_lists(lua: &mut Lua, n: &LuaTable) -> Result<(), String> {
     nat!(lua, n, "check_discretionaries", |_h: Option<i64>| -> Result<(), String> { Ok(()) });
     nat!(lua, n, "usedlist", || -> Result<i64, String> {
         with_engine(|e| {
-            // the used nodes chained in allocation order (luatex lists varmem)
+            // copies of all nodes in use, chained (texnodes.c list_node_mem_usage)
             let ids: Vec<u32> = (1..e.lua_nodes.nodes.len() as u32).filter(|&i| e.lua_nodes.valid(i)).collect();
+            let mut head = 0;
             let mut prev = 0;
-            for &i in &ids {
-                if prev != 0 {
-                    e.lua_nodes.node_mut(prev).next = i;
+            for i in ids {
+                let c = e.lua_copy_node(i);
+                if prev == 0 {
+                    head = c;
+                } else {
+                    e.lua_nodes.couple(prev, c);
                 }
-                prev = i;
+                prev = c;
             }
-            i64::from(ids.first().copied().unwrap_or(0))
+            i64::from(head)
         })
     });
     nat!(lua, n, "tostring", |h: Option<i64>| -> Result<Option<String>, String> {
@@ -1782,8 +1786,11 @@ fn install_lists(lua: &mut Lua, n: &LuaTable) -> Result<(), String> {
             (h != 0).then_some(i64::from(h))
         }))
     });
-    nat!(lua, n, "is_node_ud", |v: Option<Value>| -> Result<bool, String> {
-        Ok(v.is_some_and(|v| node_of(&v) != 0))
+    nat!(lua, n, "is_node_ud", |v: Option<Value>| -> Result<Option<i64>, String> {
+        Ok(v.and_then(|v| {
+            let h = node_of(&v);
+            (h != 0).then_some(i64::from(h))
+        }))
     });
     nat!(lua, n, "is_protected", |h: Option<i64>| -> Result<bool, String> {
         with_engine(|e| {

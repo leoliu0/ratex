@@ -151,7 +151,7 @@ direct.write = N.write
 direct.set_synctex_fields = N.set_synctex_fields
 direct.get_synctex_fields = N.get_synctex_fields
 function direct.prepend_prevdepth(n, prevdepth) return N.prepend_prevdepth(n, prevdepth, false) end
-function direct.is_node(n) return type(n) == "number" and N.getid(n) ~= nil end
+function direct.is_node(n) if N.is_node_ud(n) then return n end return false end
 
 -- --------------------------------------------------------- traversal ----
 local getnext, getid, getsubtype = N.getnext, N.getid, N.getsubtype
@@ -284,6 +284,7 @@ local function wrap(f, rets)
 end
 
 local ud_specs = {
+  usedlist = "n",
   copy = "n", copy_list = "n", remove = "nn", insert_before = "nn", insert_after = "nn",
   slide = "n", tail = "n", end_of_math = "n", first_glyph = "n", has_glyph = "n",
   flatten_discretionaries = "nx", getboth = "nn", getnext = "n", getprev = "n", getlist = "n",
@@ -307,8 +308,13 @@ for name, f in pairs(direct) do
   end
 end
 
-node.is_node = N.is_node_ud
+function node.is_node(n) return N.is_node_ud(n) or false end
 node.tostring = N.tostring_node
+function node.is_zero_glue(n)
+  local r = N.is_zero_glue(todirect_ud(n))
+  if r == nil then error("glue (spec) or list expected", 0) end
+  return r
+end
 node.family_font = N.family_font
 node.last_node = function() return tonode(N.last_node()) end
 node.write = function(n) return N.write(todirect_ud(n)) end

@@ -7,6 +7,7 @@ pub mod debug;
 pub mod io;
 pub(crate) mod lauxlib;
 pub mod math;
+pub(crate) mod numfmt;
 pub mod os;
 pub mod package;
 mod sort_table;

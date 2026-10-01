@@ -532,7 +532,7 @@ pub fn current_func_name_with_kind(l: &LuaState) -> Option<(&'static str, String
 /// Search through loaded modules (package.loaded) to find the name of a function.
 /// Mirrors C Lua's pushglobalfuncname / findfield.
 /// Returns e.g. "table.sort", "string.sub", "math.sin", etc.
-fn find_global_func_name(l: &LuaState, target: &LuaValue) -> Option<String> {
+pub(crate) fn find_global_func_name(l: &LuaState, target: &LuaValue) -> Option<String> {
     // Get _LOADED from registry by iterating registry entries
     let vm = l.global_state();
     let registry_table = vm.registry.as_table()?;

@@ -12,6 +12,7 @@ pub struct SharedFileProtoEntry {
     pub len: u64,
     pub modified: Option<SystemTime>,
     pub version: LuaLanguageLevel,
+    pub chunk_name: String,
 }
 
 thread_local! {

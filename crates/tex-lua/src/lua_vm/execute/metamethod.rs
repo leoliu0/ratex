@@ -256,17 +256,19 @@ pub fn try_bin_tm(
 ///   return ttypetag(s2v(res));  /* return tag of the result */
 /// }
 /// ```
+/// The call goes at `L->top`. A Lua frame first gets `L->top = ci->top`
+/// (C Lua's `savestate`), so the call lands above the frame's registers; a C
+/// frame's top is the live end of what the C function pushed, which must be
+/// preserved.
 #[inline]
 fn prepare_tm_call(lua_state: &mut LuaState, slots: usize) -> LuaResult<usize> {
-    let func_pos = if lua_state.call_depth() == 0 {
-        lua_state.get_top()
-    } else {
-        let ci_top = unsafe { (*lua_state.current_ci_ptr()).top as usize };
-        if lua_state.get_top() != ci_top {
-            lua_state.set_top_raw(ci_top);
+    if lua_state.call_depth() > 0 {
+        let ci = unsafe { &*lua_state.current_ci_ptr() };
+        if ci.is_lua() {
+            lua_state.set_top_raw(ci.top as usize);
         }
-        ci_top
-    };
+    }
+    let func_pos = lua_state.get_top();
     lua_state.ensure_stack_capacity(slots)?;
     Ok(func_pos)
 }

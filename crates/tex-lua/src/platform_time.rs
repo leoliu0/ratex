@@ -1,4 +1,6 @@
-#[cfg(not(target_arch = "wasm32"))]
+// os.clock() on unix reads the process CPU clock; elsewhere it measures
+// elapsed time from VM creation.
+#[cfg(all(not(unix), not(target_arch = "wasm32")))]
 pub(crate) struct PlatformInstant {
     inner: std::time::Instant,
 }
@@ -8,6 +10,7 @@ pub(crate) struct PlatformInstant {
     start_ms: f64,
 }
 
+#[cfg(not(unix))]
 impl PlatformInstant {
     #[inline]
     pub(crate) fn now() -> Self {

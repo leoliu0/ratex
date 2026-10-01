@@ -10,8 +10,8 @@ use std::slice;
 use crate::lua_value::chunk53;
 use crate::lua_value::{LuaUserdata, LuaValue, LuaValueKind, UpvalueStore};
 use crate::lua_vm::{
-    CApiStackParking, CFunction, GlobalState, LuaError, LuaResult, LuaState, SafeOption,
-    get_metatable,
+    CApiStackParking, CFunction, GlobalState, LuaError, LuaResult, LuaState, ProtectedCallStatus,
+    SafeOption, get_metatable,
 };
 use crate::{LuaLanguageLevel, Stdlib};
 
@@ -719,6 +719,10 @@ fn adjust_results(state: &mut LuaState, function_index: usize, actual: usize, wa
     }
 }
 
+/// Save a continuation on the C frame `frame_index`. `function_index` is
+/// where the callee's results (`lua_callk`/`lua_pcallk`, adjusted to
+/// `nresults`) or the resume values (`lua_yieldk`) will be.
+#[allow(clippy::too_many_arguments)]
 fn save_c_continuation(
     state: &mut LuaState,
     wrapper: *mut lua_State,
@@ -727,6 +731,7 @@ fn save_c_continuation(
     status: c_int,
     frame_index: usize,
     function_index: usize,
+    nresults: c_int,
     error_function_index: Option<usize>,
 ) {
     let Some(continuation) = continuation else {
@@ -741,6 +746,7 @@ fn save_c_continuation(
     frame.c_k_status = status;
     frame.c_k_state = wrapper as usize;
     frame.c_k_func_index = u32::try_from(function_index).unwrap_or(u32::MAX);
+    frame.c_k_nresults = nresults;
     frame.c_k_error_func_index = error_function_index
         .and_then(|index| u32::try_from(index).ok())
         .unwrap_or(u32::MAX);
@@ -1777,6 +1783,7 @@ pub unsafe extern "C" fn tex_lua_callk_impl(
                 LUA_YIELD,
                 continuation_frame,
                 function_index,
+                nresults,
                 None,
             );
             LUA_YIELD
@@ -1811,19 +1818,23 @@ pub unsafe extern "C" fn tex_lua_pcallk_impl(
         state_vm.nny += 1;
     }
     let result = if let Some(handler_index) = handler_index {
-        state_vm.xpcall_stack_based(function_index, nargs, handler_index)
+        state_vm.xpcall_stack_based_status(function_index, nargs, handler_index)
     } else {
-        state_vm.pcall_stack_based(function_index, nargs)
+        state_vm.pcall_stack_based(function_index, nargs).map(|(ok, count)| {
+            let status = if ok { ProtectedCallStatus::Ok } else { ProtectedCallStatus::Error };
+            (status, count)
+        })
     };
     if nonyieldable {
         state_vm.nny -= 1;
     }
     match result {
-        Ok((true, actual)) => {
+        Ok((ProtectedCallStatus::Ok, actual)) => {
             adjust_results(state_vm, function_index, actual, nresults);
             LUA_OK
         }
-        Ok((false, _)) => LUA_ERRRUN,
+        Ok((ProtectedCallStatus::Error, _)) => LUA_ERRRUN,
+        Ok((ProtectedCallStatus::ErrorInHandler, _)) => LUA_ERRERR,
         Err(LuaError::Yield) => {
             save_c_continuation(
                 state_vm,
@@ -1833,6 +1844,7 @@ pub unsafe extern "C" fn tex_lua_pcallk_impl(
                 LUA_YIELD,
                 continuation_frame,
                 function_index,
+                nresults,
                 handler_index,
             );
             LUA_YIELD
@@ -2299,10 +2311,8 @@ pub unsafe extern "C" fn tex_lua_yieldk_impl(
     let values = (start..state_vm.get_top())
         .filter_map(|slot| state_vm.stack_get(slot))
         .collect();
-    let function_index = state_vm
-        .current_frame()
-        .map_or(0, |frame| frame.func_index());
     let continuation_frame = state_vm.call_depth().saturating_sub(1);
+    // The yielded values leave the stack; the resume values take their place.
     save_c_continuation(
         state_vm,
         state,
@@ -2310,7 +2320,8 @@ pub unsafe extern "C" fn tex_lua_yieldk_impl(
         context,
         LUA_YIELD,
         continuation_frame,
-        function_index,
+        start,
+        LUA_MULTRET,
         None,
     );
     state_vm.set_yield(values);

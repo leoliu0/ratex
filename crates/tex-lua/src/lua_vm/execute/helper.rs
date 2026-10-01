@@ -578,6 +578,9 @@ pub fn get_metatable(lua_state: &mut LuaState, value: &LuaValue) -> Option<LuaVa
         .get_basic_metatable(value.kind())
 }
 
+/// Port of `finishCcall` (ldo.c) for a C-API continuation: finish the
+/// interrupted `lua_callk`/`lua_pcallk` (`adjustresults`), run the
+/// continuation, then `luaD_poscall` the C frame.
 #[cfg(not(target_arch = "wasm32"))]
 fn finish_c_api_continuation(lua_state: &mut LuaState, ci: &mut CallInfo) -> LuaResult<()> {
     let function_pos = ci.func_index();
@@ -587,6 +590,18 @@ fn finish_c_api_continuation(lua_state: &mut LuaState, ci: &mut CallInfo) -> Lua
     let status = ci.c_k_status;
     let wrapper = ci.c_k_state;
     ci.c_k_function = 0;
+
+    // After a yield the callee's results are adjusted to what the call asked
+    // for; an error status leaves only the error object at the call position.
+    if ci.c_k_nresults >= 0 && status == crate::c_api::LUA_YIELD {
+        let wanted_top = ci.c_k_func_index as usize + ci.c_k_nresults as usize;
+        let top = lua_state.get_top();
+        if wanted_top > top {
+            lua_state.ensure_stack_capacity(wanted_top - top)?;
+            lua_state.stack_mut()[top..wanted_top].fill(LuaValue::nil());
+        }
+        lua_state.set_top_raw(wanted_top);
+    }
 
     let result_count = unsafe {
         crate::c_api::resume_c_continuation(lua_state, wrapper, function, status, context)?
@@ -658,7 +673,9 @@ fn finish_c_frame(lua_state: &mut LuaState, ci: &mut CallInfo) -> LuaResult<()> 
                 LuaValue::nil()
             };
 
-            // Error recovery completed (or continuing) after yield.
+            // Error recovery continuing after a __close yielded. The error
+            // already went through the message handler; errors from the
+            // remaining __close calls go through it as they are raised.
             let error_val = lua_state.take_error_object();
             lua_state.clear_error();
             let close_level = if ci.c_k_function != 0 {
@@ -668,33 +685,20 @@ fn finish_c_frame(lua_state: &mut LuaState, ci: &mut CallInfo) -> LuaResult<()> 
             };
 
             // Try to close remaining TBC entries
-            let close_result = lua_state.close_tbc_with_error(close_level, error_val);
+            let close_result = lua_state.close_tbc_with_handler(
+                close_level,
+                error_val,
+                is_xpcall.then_some(handler),
+            );
+            let close_result = match close_result {
+                Ok(()) => Ok(error_val),
+                Err(LuaError::Yield) => Err(LuaError::Yield),
+                Err(_) => Ok(lua_state.take_error_object()),
+            };
 
             match close_result {
-                Ok(()) => {
+                Ok(result_err) => {
                     // All TBC entries closed. Set up (false, error) result.
-                    let final_err = lua_state.take_error_object();
-                    let result_err = if !final_err.is_nil() {
-                        final_err
-                    } else {
-                        error_val
-                    };
-                    lua_state.clear_error();
-
-                    // If xpcall, call error handler to transform the error
-                    let result_err = if is_xpcall {
-                        lua_state.nny += 1;
-                        let handler_result = lua_state.pcall(handler, vec![result_err]);
-                        lua_state.nny -= 1;
-                        match handler_result {
-                            Ok((true, results)) => {
-                                results.into_iter().next().unwrap_or(LuaValue::nil())
-                            }
-                            _ => lua_state.create_string("error in error handling")?,
-                        }
-                    } else {
-                        result_err
-                    };
 
                     if ci.c_k_function != 0 {
                         let result_pos = ci.c_k_func_index as usize;
@@ -734,16 +738,12 @@ fn finish_c_frame(lua_state: &mut LuaState, ci: &mut CallInfo) -> LuaResult<()> 
 
                     Ok(())
                 }
-                Err(LuaError::Yield) => {
+                Err(yield_error) => {
                     // Another TBC close method yielded. Save cascaded error and yield.
                     let had_cascaded = lua_state.has_error_object();
                     let cascaded = lua_state.take_error_object();
                     lua_state.set_error_object(if had_cascaded { cascaded } else { error_val });
-                    Err(LuaError::Yield)
-                }
-                Err(e) => {
-                    // TBC close threw — propagate as error
-                    Err(e)
+                    Err(yield_error)
                 }
             }
         } else {

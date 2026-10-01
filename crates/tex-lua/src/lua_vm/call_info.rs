@@ -157,6 +157,9 @@ pub struct CallInfo {
     pub c_k_state: usize,
     pub c_k_func_index: u32,
     pub c_k_error_func_index: u32,
+    /// Results wanted by the `lua_callk`/`lua_pcallk` that yielded
+    /// (`LUA_MULTRET` for `lua_yieldk`); applied before the continuation runs.
+    pub c_k_nresults: i32,
 }
 
 #[derive(Clone, Copy)]
@@ -221,6 +224,7 @@ impl CallInfo {
             c_k_state: 0,
             c_k_func_index: 0,
             c_k_error_func_index: u32::MAX,
+            c_k_nresults: -1,
         }
     }
 
@@ -244,6 +248,7 @@ impl CallInfo {
             c_k_state: 0,
             c_k_func_index: 0,
             c_k_error_func_index: u32::MAX,
+            c_k_nresults: -1,
         }
     }
 
@@ -332,6 +337,7 @@ impl Default for CallInfo {
             c_k_state: 0,
             c_k_func_index: 0,
             c_k_error_func_index: u32::MAX,
+            c_k_nresults: -1,
         }
     }
 }

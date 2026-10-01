@@ -24,6 +24,8 @@ mod sandbox;
 mod shared_proto;
 #[cfg(test)]
 mod semantics_tests;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod c_frame_tests;
 pub(crate) mod stk_id;
 mod string_arth;
 mod tm_kind;
@@ -53,12 +55,14 @@ pub use crate::lua_vm::lua_ref::{
 pub(crate) use crate::lua_vm::stk_id::StkId;
 
 type ArithMetaFn = fn(&mut LuaState) -> LuaResult<usize>;
-pub(crate) use crate::lua_vm::lua_state::CApiStackParking;
+pub(crate) use crate::lua_vm::lua_state::{CApiStackParking, ProtectedCallStatus};
 pub use crate::lua_vm::lua_state::LuaState;
 pub use crate::lua_vm::safe_option::SafeOption;
 #[cfg(feature = "sandbox")]
 pub use crate::lua_vm::sandbox::SandboxConfig;
-use crate::platform_time::{PlatformInstant, unix_nanos};
+#[cfg(not(unix))]
+use crate::platform_time::PlatformInstant;
+use crate::platform_time::unix_nanos;
 use crate::stdlib::Stdlib;
 use crate::{LuaEnum, LuaRegistrable, OpaqueUserData, RustCallback, lib_registry};
 pub(crate) use execute::arith::{lua_shiftl, luai_numpow};
@@ -261,7 +265,8 @@ pub struct GlobalState {
     /// Random number generator — xoshiro256** matching C Lua exactly
     pub(crate) rng: LuaRng,
 
-    /// Start time for os.clock() measurements
+    /// Start time for os.clock() where the process CPU clock is unavailable
+    #[cfg(not(unix))]
     pub(crate) start_time: PlatformInstant,
 
     pub(crate) const_strings: ConstString,
@@ -317,7 +322,7 @@ impl GlobalState {
             closure_cache53: HashMap::new(),
             // Initialize RNG with a deterministic seed for reproducibility
             rng: LuaRng::from_seed_time(time),
-            // Record start time for os.clock()
+            #[cfg(not(unix))]
             start_time: PlatformInstant::now(),
             const_strings: cs,
             error_msg: ErrorMsg::None,
@@ -832,6 +837,10 @@ impl GlobalState {
             );
         }
 
+        // The chunk is named by the path as given ("@s/x.lua"), like
+        // luaL_loadfilex; the canonical path only identifies the file.
+        let chunk_name = format!("@{}", path);
+
         #[cfg(feature = "shared-proto")]
         {
             use crate::lua_vm::shared_proto::SHARED_FILE_PROTO_CACHE;
@@ -844,15 +853,16 @@ impl GlobalState {
             if let Some(proto) = SHARED_FILE_PROTO_CACHE.with(|cache| {
                 let cache = cache.borrow();
                 cache.get(&resolved_path).and_then(|entry| {
-                    (entry.len == len && entry.modified == modified && entry.version == version)
+                    (entry.len == len
+                        && entry.modified == modified
+                        && entry.version == version
+                        && entry.chunk_name == chunk_name)
                         .then_some(entry.proto)
                 })
             }) {
                 return Ok(proto);
             }
         }
-
-        let chunk_name = format!("@{}", resolved_path.display());
 
         let chunk = if layout.is_binary {
             let bytes = &file_bytes[layout.skip_offset..];
@@ -922,6 +932,7 @@ impl GlobalState {
                         len: metadata.len(),
                         modified: metadata.modified().ok(),
                         version: self.version,
+                        chunk_name,
                     },
                 );
             });

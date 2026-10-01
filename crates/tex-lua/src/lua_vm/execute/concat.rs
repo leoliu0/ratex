@@ -18,7 +18,10 @@ use crate::{
             metamethod::{TmKind, call_tm_res},
         },
     },
-    stdlib::{debug::typeerror, numfmt::tostring_float},
+    stdlib::{
+        debug::{objtypename, varinfo_for_reg},
+        numfmt::tostring_float,
+    },
 };
 
 /// Length of a string or integer piece; floats (whose text depends on the
@@ -273,12 +276,17 @@ fn tryconcattm(lua_state: &mut LuaState, top: usize) -> LuaResult<()> {
         lua_state.stack_mut()[top - 2] = result;
         Ok(())
     } else {
-        // No metamethod found — generate error
-        let bad = if p1.ttisstring() || cvt2str(&p1) {
-            &p2
-        } else {
-            &p1
+        // No metamethod found: luaG_concaterror blames the operand that is
+        // not a string, named by its own stack slot (varinfo).
+        let bad_slot = if p1.ttisstring() || cvt2str(&p1) { top - 1 } else { top - 2 };
+        let bad = lua_state.stack()[bad_slot];
+        let tname = objtypename(lua_state, &bad);
+        let info = match lua_state.current_frame() {
+            Some(ci) if ci.is_lua() && bad_slot >= ci.base => {
+                varinfo_for_reg(lua_state, (bad_slot - ci.base) as u32)
+            }
+            _ => String::new(),
         };
-        Err(typeerror(lua_state, bad, "concatenate"))
+        Err(lua_state.error(format!("attempt to concatenate a {} value{}", tname, info)))
     }
 }

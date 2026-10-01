@@ -1,7 +1,7 @@
 //! List building: characters, glue, kerns, penalties, rules, box groups,
 //! paragraphs, page-builder hook.
 
-use crate::boxes::{self, Glue, Node, NodeList};
+use crate::boxes::{self, glue_subtype, Glue, Node, NodeList};
 use crate::engine::{Engine, Mode};
 use crate::eqtb::LevelType;
 use crate::tfm::Font;
@@ -146,7 +146,6 @@ impl Engine {
         match self.mode {
             Mode::Horizontal | Mode::RestrictedHorizontal => {
                 let g = self.interword_glue();
-
                 self.cur_list.push(Node::Glue(g));
             }
             Mode::Vertical | Mode::InternalVertical => {
@@ -167,23 +166,27 @@ impl Engine {
         // copy. Font dimensions come through the mutable \fontdimen overlay.
         let sf = self.space_factor.max(1) as i64;
         let xs = &self.eqtb.glue_params[GlueParam::XSpaceSkip.idx() as usize];
-        if sf >= 2000 && (xs.width != 0 || xs.stretch != 0 || xs.shrink != 0) {
-            return xs.clone();
+        if sf >= 2000 && !xs.is_zero() {
+            return xs.param(glue_subtype::XSPACE_SKIP);
         }
 
         let fp = self.eqtb.font_params.get(f as usize);
         let fd = |i: usize| -> Option<i32> { fp.and_then(|v| v.get(i).copied()) };
         let ss = &self.eqtb.glue_params[GlueParam::SpaceSkip.idx() as usize];
-        let mut g = if ss.width != 0 || ss.stretch != 0 || ss.shrink != 0 {
-            ss.clone()
+        if !ss.is_zero() && sf == 1000 {
+            // tex.web §1041 append_normal_space: new_param_glue(space_skip_code)
+            return ss.param(glue_subtype::SPACE_SKIP);
+        }
+        let mut g = if !ss.is_zero() {
+            ss.fresh()
         } else if let Some(font) = self.eqtb.fonts.get(f as usize) {
-            Glue {
-                width: fd(1).unwrap_or_else(|| font.space()),
-                stretch: fd(2).unwrap_or_else(|| font.space_stretch()),
-                shrink: fd(3).unwrap_or_else(|| font.space_shrink()),
-                stretch_order: 0,
-                shrink_order: 0,
-            }
+            Glue::spec(
+                fd(1).unwrap_or_else(|| font.space()),
+                fd(2).unwrap_or_else(|| font.space_stretch()),
+                0,
+                fd(3).unwrap_or_else(|| font.space_shrink()),
+                0,
+            )
         } else {
             Glue::zero()
         };
@@ -206,21 +209,21 @@ impl Engine {
         self.end_char_chain();
         match self.mode {
             Mode::Horizontal | Mode::RestrictedHorizontal => {
-                let ss = self.eqtb.glue_params[GlueParam::SpaceSkip.idx() as usize].clone();
-                let g = if ss.width != 0 || ss.stretch != 0 || ss.shrink != 0 {
-                    ss
+                let ss = self.eqtb.glue_params[GlueParam::SpaceSkip.idx() as usize];
+                let g = if !ss.is_zero() {
+                    ss.param(glue_subtype::SPACE_SKIP)
                 } else {
                     let f = self.eqtb.cur_font_val;
                     let fp = self.eqtb.font_params.get(f as usize);
                     let fd = |i: usize| -> Option<i32> { fp.and_then(|v| v.get(i).copied()) };
                     match self.eqtb.fonts.get(f as usize) {
-                        Some(font) => Glue {
-                            width: fd(1).unwrap_or_else(|| font.space()),
-                            stretch: fd(2).unwrap_or_else(|| font.space_stretch()),
-                            shrink: fd(3).unwrap_or_else(|| font.space_shrink()),
-                            stretch_order: 0,
-                            shrink_order: 0,
-                        },
+                        Some(font) => Glue::spec(
+                            fd(1).unwrap_or_else(|| font.space()),
+                            fd(2).unwrap_or_else(|| font.space_stretch()),
+                            0,
+                            fd(3).unwrap_or_else(|| font.space_shrink()),
+                            0,
+                        ),
                         None => Glue::zero(),
                     }
                 };
@@ -231,13 +234,7 @@ impl Engine {
                 // space glue lands on the math list.
                 let f = self.eqtb.cur_font_val;
                 if let Some(font) = self.eqtb.fonts.get(f as usize) {
-                    let g = Glue {
-                        width: font.space(),
-                        stretch: font.space_stretch(),
-                        shrink: font.space_shrink(),
-                        stretch_order: 0,
-                        shrink_order: 0,
-                    };
+                    let g = Glue::spec(font.space(), font.space_stretch(), 0, font.space_shrink(), 0);
                     self.append_mlist_node(Node::Glue(g));
                 }
             }
@@ -353,20 +350,8 @@ impl Engine {
             Prim::HFil => Glue::fil(1, 0),
             Prim::HFill => Glue::fil(2, 0),
             Prim::HFilL => Glue::fil(3, 0),
-            Prim::HFilNeg => Glue {
-                width: 0,
-                stretch: -ONE,
-                shrink: 0,
-                stretch_order: 1,
-                shrink_order: 0,
-            },
-            Prim::HSS => Glue {
-                width: 0,
-                stretch: ONE,
-                shrink: ONE,
-                stretch_order: 1,
-                shrink_order: 1,
-            },
+            Prim::HFilNeg => Glue::spec(0, -ONE, 1, 0, 0),
+            Prim::HSS => Glue::spec(0, ONE, 1, ONE, 1),
             _ => Glue::zero(),
         }
     }
@@ -381,20 +366,8 @@ impl Engine {
             Prim::VFil => Glue::fil(1, 0),
             Prim::VFill => Glue::fil(2, 0),
             Prim::VFilL => Glue::fil(3, 0),
-            Prim::VFilNeg => Glue {
-                width: 0,
-                stretch: -ONE,
-                shrink: 0,
-                stretch_order: 1,
-                shrink_order: 0,
-            },
-            Prim::VSS => Glue {
-                width: 0,
-                stretch: ONE,
-                shrink: ONE,
-                stretch_order: 1,
-                shrink_order: 1,
-            },
+            Prim::VFilNeg => Glue::spec(0, -ONE, 1, 0, 0),
+            Prim::VSS => Glue::spec(0, ONE, 1, ONE, 1),
             _ => Glue::zero(),
         }
     }
@@ -435,7 +408,7 @@ impl Engine {
         self.flush_native_text();
         match self.mode {
             Mode::Horizontal | Mode::RestrictedHorizontal => {
-                self.cur_list.push(Node::Kern(d));
+                self.cur_list.push(Node::ExplicitKern(d));
             }
             _ => self.error("Bad \\kern context"),
         }
@@ -444,7 +417,7 @@ impl Engine {
     pub fn append_v_kern(&mut self, d: i32) {
         match self.mode {
             Mode::Vertical | Mode::InternalVertical => {
-                self.vlist_append(Node::Kern(d));
+                self.vlist_append(Node::ExplicitKern(d));
             }
             _ => self.error("Bad \\kern context"),
         }
@@ -524,11 +497,13 @@ impl Engine {
                             let lsl = self.eqtb.dim_params[DimParam::LineSkipLimit.idx() as usize];
                             let b = bs.width as i64 - self.prev_depth as i64 - *h as i64;
                             let glue = if b < lsl as i64 {
-                                ls
+                                ls.param(glue_subtype::LINE_SKIP)
                             } else {
+                                // new_skip_param: a fresh copy of \baselineskip
                                 Glue {
                                     width: b as i32,
-                                    ..bs
+                                    subtype: glue_subtype::BASELINE_SKIP,
+                                    ..bs.fresh()
                                 }
                             };
 
@@ -1116,6 +1091,7 @@ impl Engine {
             self.prev_depth,
             self.space_factor,
             self.prev_graf,
+            self.nest_line(),
         ));
         self.prev_graf = 0;
         self.push_group_level(LevelType::Box);
@@ -1178,13 +1154,14 @@ impl Engine {
         let target = self.box_targets.pop().flatten();
         let shift = self.box_shifts.pop().unwrap_or(0);
         let inner = std::mem::replace(&mut self.cur_list, Vec::new());
-        let (outer_mode, outer_list, pd, sf, pg) = self.saved_lists.pop().unwrap_or((
+        let (outer_mode, outer_list, pd, sf, pg, _) = self.saved_lists.pop().unwrap_or((
             // group desync (e.g. runaway end): stay in the current context
             self.mode,
             std::mem::take(&mut self.cur_list),
             self.prev_depth,
             self.space_factor,
             self.prev_graf,
+            0,
         ));
         self.prev_graf = pg;
         // tex.web @21193-21194 (insert_group): `q:=split_top_skip;
@@ -1382,11 +1359,12 @@ impl Engine {
                             let diff = bs.width as i64 - self.prev_depth as i64 - *h as i64;
 
                             let glue = if diff < lsl as i64 {
-                                ls
+                                ls.param(glue_subtype::LINE_SKIP)
                             } else {
                                 Glue {
                                     width: diff as i32,
-                                    ..bs
+                                    subtype: glue_subtype::BASELINE_SKIP,
+                                    ..bs.fresh()
                                 }
                             };
                             // tex.web append_to_vlist: the glue node is
@@ -1668,11 +1646,6 @@ impl Engine {
         };
         let obj = if hbox { "\\hbox" } else { "\\vbox" };
         let too = if hbox { "too wide" } else { "too high" };
-        let context = if self.in_output {
-            " while \\output is active"
-        } else {
-            ""
-        };
         let mut msg: Option<String> = None;
         if x > 0 && res.order == 0 {
             // underfull / loose (includes badness 10000 when nothing stretches)
@@ -1682,22 +1655,37 @@ impl Engine {
                 } else {
                     "Loose"
                 };
-                msg = Some(format!("{kw} {obj} (badness {}){context}", res.badness));
+                msg = Some(format!("{kw} {obj} (badness {}", res.badness));
             }
         } else if x < 0 && res.order == 0 {
             if -x > res.shrink[0] {
                 let excess = -x - res.shrink[0];
                 if excess > fuzz as i64 || bad_param < 100 {
-                    msg = Some(format!(
-                        "Overfull {obj} ({}pt {too}){context}",
-                        print_scaled(excess),
-                    ));
+                    msg = Some(format!("Overfull {obj} ({}pt {too}", print_scaled(excess)));
                 }
             } else if res.badness > bad_param {
-                msg = Some(format!("Tight {obj} (badness {}){context}", res.badness));
+                msg = Some(format!("Tight {obj} (badness {}", res.badness));
             }
         }
-        if let Some(m) = msg {
+        if let Some(mut m) = msg {
+            // tex.web §660/§675 "Finish issuing a diagnostic message"
+            if self.in_output {
+                m.push_str(") has occurred while \\output is active");
+            } else {
+                if self.pack_begin_line > 0 && hbox {
+                    m.push_str(") in paragraph at lines ");
+                } else if self.pack_begin_line != 0 {
+                    m.push_str(") in alignment at lines ");
+                } else {
+                    m.push_str(") detected at line ");
+                }
+                if self.pack_begin_line != 0 {
+                    m.push_str(&self.pack_begin_line.unsigned_abs().to_string());
+                    m.push_str("--");
+                }
+                m.push_str(&self.nest_line().to_string());
+            }
+            self.show_pack_report(&m, &res.node);
             self.pack_warning_at(&m, source.as_ref().map(|mark| mark.to_context()));
         }
         // etex.ch hpack exit: "Report LR problems" after the glue report
@@ -2049,6 +2037,7 @@ impl Engine {
             self.prev_depth,
             self.space_factor,
             self.prev_graf,
+            self.nest_line(),
         ));
         self.push_group_level(LevelType::Box);
         self.box_targets.push(None);
@@ -2131,17 +2120,22 @@ impl Engine {
         }
     }
 
+    /// `\lastskip`: the last glue node's spec (shared, so it keeps its
+    /// `zero_glue` identity), else TeX's `zero_glue`.
     pub fn last_skip_value(&mut self) -> Glue {
+        let zero_glue = Glue::zero().eqtb_value();
         if self.write_mode_zero {
-            return Glue::zero();
+            return zero_glue;
         }
-        match self.current_tail() {
-            Some(Node::Glue(g)) => g.clone(),
-            Some(Node::Leaders { glue, .. }) => glue.clone(),
-            None if self.mode == Mode::Vertical => {
-                self.last_page_glue.clone().unwrap_or_else(Glue::zero)
-            }
-            _ => Glue::zero(),
+        let g = match self.current_tail() {
+            Some(Node::Glue(g)) => *g,
+            Some(Node::Leaders { glue, .. }) => *glue,
+            None if self.mode == Mode::Vertical => self.last_page_glue.unwrap_or(zero_glue),
+            _ => zero_glue,
+        };
+        Glue {
+            subtype: glue_subtype::NORMAL,
+            ..g
         }
     }
 
@@ -2250,6 +2244,7 @@ impl Engine {
             self.prev_depth,
             self.space_factor,
             self.prev_graf,
+            self.nest_line(),
         ));
         self.prev_graf = 0;
         self.push_group_level(LevelType::Box);
@@ -2509,8 +2504,8 @@ impl Engine {
                 if !resume {
                     // tex.web new_graf (§1091): in outer vmode \parskip glue
                     // is appended unconditionally
-                    let ps = self.eqtb.glue_params[GlueParam::ParSkip.idx() as usize].clone();
-                    self.page_list.push(Node::Glue(ps));
+                    let ps = self.eqtb.glue_params[GlueParam::ParSkip.idx() as usize];
+                    self.page_list.push(Node::Glue(ps.param(glue_subtype::PAR_SKIP)));
                 }
                 // (tex.web: a paragraph is not a group; no eqtb level)
                 // In outer vmode, the global contribution list (page_list)
@@ -2522,6 +2517,7 @@ impl Engine {
                     self.prev_depth,
                     self.space_factor,
                     self.prev_graf,
+                    self.nest_line(),
                 ));
                 self.par_saves += 1;
                 self.par_page_lists.push(Vec::new());
@@ -2557,8 +2553,8 @@ impl Engine {
                 // (no skip at the start of an empty \vbox list)
                 let resume = std::mem::take(&mut self.resume_after_display);
                 if !resume && !self.cur_list.is_empty() {
-                    let ps = self.eqtb.glue_params[GlueParam::ParSkip.idx() as usize].clone();
-                    self.cur_list.push(Node::Glue(ps));
+                    let ps = self.eqtb.glue_params[GlueParam::ParSkip.idx() as usize];
+                    self.cur_list.push(Node::Glue(ps.param(glue_subtype::PAR_SKIP)));
                 }
                 let page = std::mem::take(&mut self.cur_list);
                 self.saved_lists.push((
@@ -2567,6 +2563,7 @@ impl Engine {
                     self.prev_depth,
                     self.space_factor,
                     self.prev_graf,
+                    self.nest_line(),
                 ));
                 self.par_page_lists.push(page);
                 self.mode = Mode::Horizontal;
@@ -2602,7 +2599,7 @@ impl Engine {
                 .iter()
                 .rev()
                 .find(|(mode, ..)| mode.is_v())
-                .map(|(_, _, _, _, pg)| *pg)
+                .map(|(_, _, _, _, pg, _)| *pg)
                 .unwrap_or(self.prev_graf)
         }
     }
@@ -2615,7 +2612,7 @@ impl Engine {
                 .iter_mut()
                 .rev()
                 .find(|(mode, ..)| mode.is_v())
-                .map(|(_, _, _, _, pg)| pg)
+                .map(|(_, _, _, _, pg, _)| pg)
                 .unwrap_or(&mut self.prev_graf)
         }
     }
@@ -2668,12 +2665,13 @@ impl Engine {
             // machinery starts-and-abandons an empty paragraph on every
             // \item; wiping here destroyed \list's \parshape before the
             // first real list paragraph broke.
-            let (saved_mode, saved_list, pd, sf, pg) = self.saved_lists.pop().unwrap_or((
+            let (saved_mode, saved_list, pd, sf, pg, _) = self.saved_lists.pop().unwrap_or((
                 Mode::Vertical,
                 Vec::new(),
                 self.prev_depth,
                 self.space_factor,
                 self.prev_graf,
+                0,
             ));
             self.prev_graf = pg;
             self.end_paragraph_language();
@@ -2691,7 +2689,8 @@ impl Engine {
         }
 
         self.end_char_chain();
-        let pfs = self.eqtb.glue_params[GlueParam::ParFillSkip.idx() as usize].clone();
+        let pfs = self.eqtb.glue_params[GlueParam::ParFillSkip.idx() as usize]
+            .param(glue_subtype::PAR_FILL_SKIP);
         // tex.web §16074: a trailing glue node is REPLACED by the infinite
         // penalty ("removing a space if it was there, since spaces usually
         // precede blank lines"); otherwise the penalty is appended. Without
@@ -2745,12 +2744,13 @@ impl Engine {
             self.normal_paragraph();
         }
         // restore vertical context
-        let (saved_mode, _, pd, _sf, pg) = self.saved_lists.pop().unwrap_or((
+        let (saved_mode, _, pd, _sf, pg, _) = self.saved_lists.pop().unwrap_or((
             Mode::Vertical,
             Vec::new(),
             self.prev_depth,
             self.space_factor,
             self.prev_graf,
+            0,
         ));
         self.prev_graf = pg;
         self.end_paragraph_language();
@@ -2862,16 +2862,17 @@ impl Engine {
                     if prev_depth > ignore_depth {
                         let b = bs.width as i64 - prev_depth as i64 - h as i64;
                         let glue = if b < lsl as i64 {
-                            ls.clone()
+                            ls.param(glue_subtype::LINE_SKIP)
                         } else {
                             Glue {
                                 width: b as i32,
-                                ..bs.clone()
+                                subtype: glue_subtype::BASELINE_SKIP,
+                                ..bs.fresh()
                             }
                         };
-                        if glue.width != 0 || glue.stretch != 0 || glue.shrink != 0 {
-                            out.push(Node::Glue(glue));
-                        }
+                        // tex.web append_to_vlist appends the glue node even
+                        // when it is zero
+                        out.push(Node::Glue(glue));
                     }
                     prev_depth = d;
                     held_placeholder = false;
@@ -2895,24 +2896,30 @@ impl Engine {
     }
 }
 
-/// tex.web print_scaled: `s` in sp printed as `<int>.<5 digits>`, the first
-/// fraction digit rounded half up via the +5 trick.
+/// tex.web §103 print_scaled: the shortest decimal that rounds back to `v`
+/// sp (`<int>.<digits>`, at least one fraction digit).
 pub fn print_scaled(v: i64) -> String {
-    let neg = v < 0;
-    let s = v.abs();
-    let int_part = s / 65536;
-    let mut frac = 10 * (s % 65536) + 5;
-    let mut digits = [b'0'; 5];
-    for d in digits.iter_mut() {
-        *d = b'0' + (frac / 65536) as u8;
-        frac = 10 * (frac % 65536);
+    let mut out = String::new();
+    if v < 0 {
+        out.push('-');
     }
-    format!(
-        "{}{}.{}",
-        if neg { "-" } else { "" },
-        int_part,
-        String::from_utf8_lossy(&digits)
-    )
+    let s = v.unsigned_abs() as i64;
+    out.push_str(&(s / 65536).to_string());
+    out.push('.');
+    let mut s = 10 * (s % 65536) + 5;
+    let mut delta = 10i64;
+    loop {
+        if delta > 65536 {
+            s += 0x8000 - 50000; // round the last digit
+        }
+        out.push(char::from(b'0' + (s / 65536) as u8));
+        s = 10 * (s % 65536);
+        delta *= 10;
+        if s <= delta {
+            break;
+        }
+    }
+    out
 }
 
 #[cfg(test)]

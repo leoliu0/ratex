@@ -93,6 +93,7 @@ impl Engine {
                 [crate::prim::IntParam::InsertPenalties.idx() as usize]
                 .max(0) as usize;
             self.output_tail = Some((n_carry, saved, saved_pg, saved_mode));
+            self.output_nest_mark = (self.saved_lists.len(), -self.nest_line());
         }
         if t == crate::input::EOF_MARKER {
             return;

@@ -1343,6 +1343,13 @@ impl Engine {
             }
         }
         loop {
+            if let Some(closed) = self.take_def_body_run(&mut out, &mut depth, expanded) {
+                if closed {
+                    self.in_expanded_scan = prev_expanded_scan;
+                    return out;
+                }
+                continue;
+            }
             let t = if expanded {
                 let raw = self.raw_token();
                 if raw.is_cs() && raw.0 < crate::expand::NOEXP_FLAG {
@@ -1773,15 +1780,8 @@ impl Engine {
 
     /// tex.web semi_simple_group: \\begingroup/\\endgroup save-stack only
     pub fn begin_semi_simple(&mut self) {
-        self.ss_trace.push(format!(
-            "{}:{}",
-            self.input
-                .current_file_name()
-                .split('/')
-                .last()
-                .unwrap_or("?"),
-            self.input.current_file_line()
-        ));
+        let location = self.input.current_file_location();
+        self.ss_trace.push(location);
         self.push_group_level(crate::eqtb::LevelType::SemiSimple);
     }
     pub fn end_semi_simple(&mut self) {

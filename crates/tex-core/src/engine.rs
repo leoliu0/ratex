@@ -19,7 +19,7 @@ pub struct IfState {
     pub matched: bool,    // some branch was taken already
     pub if_case: i32,     // >=0: \ifcase with this many cases left
     pub evaluating: bool, // tex.web if_limit == if_code: condition still being evaluated
-    pub loc_file: String,
+    pub loc_file: std::rc::Rc<str>,
     pub loc_line: u32,
     pub loc_cs: u32,
     pub(crate) loc: Option<crate::input::SourceMark>,
@@ -337,7 +337,8 @@ pub struct Engine {
     pub align_state: i32, // & nesting balance for runaway detection
     /// A macro parameter scanner is reading at alignment brace depth zero.
     pub align_macro_arg: bool,
-    pub ss_trace: Vec<String>,
+    /// File and line of each open \begingroup, for dump diagnostics.
+    pub ss_trace: Vec<(std::rc::Rc<str>, u32)>,
     pub format_done: bool,
     pub trace_ltx: u32,
     /// \pdfpageattr / \pdfpagesattr dict bodies (global in pdfTeX)

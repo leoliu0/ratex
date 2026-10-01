@@ -87,17 +87,17 @@ impl Macro {
             .as_ref()
             .is_none_or(|plan| !Rc::ptr_eq(&plan.body, &self.body))
         {
-            let references: Rc<[(usize, usize)]> = self
+            let is_reference = |token: &Token| (0x4000_0001..0x8000_0000).contains(&token.0);
+            let count = self.body.iter().filter(|token| is_reference(token)).count();
+            let mut found = self
                 .body
                 .iter()
                 .enumerate()
-                .filter_map(|(position, token)| {
-                    (0x4000_0001..0x8000_0000)
-                        .contains(&token.0)
-                        .then_some((position, (token.0 & 0x3FFF_FFFF).wrapping_sub(1) as usize))
-                })
-                .collect::<Vec<_>>()
-                .into();
+                .filter(|(_, token)| is_reference(token))
+                .map(|(position, token)| (position, (token.0 & 0x3FFF_FFFF).wrapping_sub(1) as usize));
+            // A counted (trusted-length) source fills the slice in place.
+            let references: Rc<[(usize, usize)]> =
+                (0..count).map(|_| found.next().expect("counted reference")).collect();
             *cached = Some(MacroReplacement {
                 body: self.body.clone(),
                 references: references.clone(),
@@ -108,15 +108,16 @@ impl Macro {
         }
     }
 
-    /// Length of the replacement for `args`, or None beyond `limit`.
+    /// Length of the replacement for `args` under this macro's replacement
+    /// plan `references`, or None beyond `limit`.
     pub(crate) fn replacement_length(
         &self,
+        references: &[(usize, usize)],
         args: &crate::input::MacroArgs,
         limit: usize,
     ) -> Option<usize> {
-        let references = self.ensure_replacement_plan();
         let mut length = self.body.len();
-        for &(_, parameter) in references.iter() {
+        for &(_, parameter) in references {
             // A reference without a supplied argument contributes nothing.
             let arg_len = args.get(parameter).map_or(0, <[Token]>::len);
             let next = length.checked_sub(1)?.checked_add(arg_len)?;
@@ -665,7 +666,7 @@ impl Eqtb {
     // ---------- generic level-aware slots ----------
 
     #[inline]
-    fn slot<T: Clone>(
+    fn slot<T>(
         vals: &mut Vec<T>,
         levels: &mut [u16],
         idx: usize,
@@ -676,11 +677,11 @@ impl Eqtb {
         mk: impl Fn(T, u16) -> SaveItem,
     ) {
         if !global && levels[idx] < cur_level {
-            let old = vals[idx].clone();
-            let ol = levels[idx];
-            stack.push(mk(old, ol));
+            let old = std::mem::replace(&mut vals[idx], v);
+            stack.push(mk(old, levels[idx]));
+        } else {
+            vals[idx] = v;
         }
-        vals[idx] = v;
         levels[idx] = if global { LEVEL_ONE } else { cur_level };
     }
 
@@ -1530,15 +1531,16 @@ mod tests {
                 Token::letter(b'Z'),
             ]
         );
-        assert_eq!(m.replacement_length(&args, usize::MAX), Some(6));
+        assert_eq!(m.replacement_length(&m.ensure_replacement_plan(), &args, usize::MAX), Some(6));
         Rc::make_mut(&mut m.body)[0] = Token::letter(b'B');
         assert_eq!(expand(&m, &args)[0], Token::letter(b'B'));
         m.body = vec![Token(0x4000_0001)].into();
         assert_eq!(expand(&m, &args), vec![Token::letter(b'X')]);
 
         m.body = vec![Token(0x4000_0002), Token(0x4000_0002)].into();
-        assert_eq!(m.replacement_length(&args, 3), None);
-        assert_eq!(m.replacement_length(&args, 4), Some(4));
+        let plan = m.ensure_replacement_plan();
+        assert_eq!(m.replacement_length(&plan, &args, 3), None);
+        assert_eq!(m.replacement_length(&plan, &args, 4), Some(4));
     }
 
     fn prim_of(eq: &Eqtb, id: CsId) -> Option<Prim> {

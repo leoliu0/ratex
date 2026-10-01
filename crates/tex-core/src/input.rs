@@ -821,6 +821,24 @@ impl InputStack {
             .as_ref()
             .map_or(0, |context| context.line)
     }
+
+    /// `current_file_name` and `current_file_line` in one pass, sharing the
+    /// name of an open file instead of copying it.
+    pub(crate) fn current_file_location(&self) -> (Rc<str>, u32) {
+        for s in self.stack.iter().rev() {
+            if let Source::File {
+                diagnostic_name,
+                line_no,
+                ..
+            } = s
+            {
+                return (diagnostic_name.clone(), *line_no);
+            }
+        }
+        self.last_finished_file
+            .as_ref()
+            .map_or_else(|| (Rc::from(""), 0), |context| (Rc::from(context.name.as_str()), context.line))
+    }
 }
 
 #[cfg(test)]

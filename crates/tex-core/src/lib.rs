@@ -25,6 +25,8 @@ pub mod hyphen;
 pub mod input;
 pub mod io;
 pub mod linebreak;
+mod lua_bridge;
+mod lua_cmds;
 pub mod maincontrol;
 pub mod math;
 pub mod native_font;

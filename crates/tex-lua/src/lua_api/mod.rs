@@ -13,7 +13,7 @@ mod value;
 pub use chunk::Chunk;
 pub use function::LuaFunction;
 pub use lua::Lua;
-pub use lua_string::LuaString;
+pub use lua_string::{LuaBytes, LuaString};
 pub use scope::{Scope, ScopedFunction};
 pub use table::LuaTable;
 pub use value::Value;
@@ -57,6 +57,7 @@ pub trait LuaApi {
         Self: Sized + chunk::ChunkHost;
     fn load_function(&mut self, source: &str) -> LuaResult<LuaFunction>;
     fn create_string(&mut self, value: &str) -> LuaResult<LuaString>;
+    fn create_bytes(&mut self, bytes: &[u8]) -> LuaResult<LuaString>;
     fn create_table(&mut self) -> LuaResult<LuaTable>;
     fn create_table_with_capacity(&mut self, narr: usize, nrec: usize) -> LuaResult<LuaTable>;
     fn create_userdata<T: UserDataTrait + 'static>(&mut self, data: T)

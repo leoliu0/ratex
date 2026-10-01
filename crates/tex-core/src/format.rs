@@ -32,7 +32,7 @@ use crate::tfm::{CharInfo, ExtRecipe, Font, LigStep};
 use crate::token::{CsTable, Token};
 
 const MAGIC: &[u8; 8] = b"RUSTEXFM";
-const VERSION: u16 = 18;
+const VERSION: u16 = 19;
 /// A production format is currently about 8 MiB decoded. Keep corrupt or
 /// unrelated external files from turning format probing into an unbounded
 /// allocation while leaving ample room for future format growth.
@@ -60,6 +60,7 @@ const TAG_FONT_REF: u8 = 10;
 const TAG_ALIAS: u8 = 11;
 const TAG_PRIM: u8 = 12;
 const TAG_MACRO: u8 = 13;
+const TAG_LUA_CALL: u8 = 14;
 
 // ---------------------------------------------------------------------------
 // writer / reader primitives
@@ -507,6 +508,11 @@ pub fn save_format_with_encoding(
                 w.u8(TAG_MACRO);
                 write_macro(&mut w, m);
             }
+            Some(Equiv::LuaCall { slot, protected }) => {
+                w.u8(TAG_LUA_CALL);
+                w.u32(*slot);
+                w.u8(u8::from(*protected));
+            }
         }
     }
     w.u16(eng.eqtb.cur_level);
@@ -632,6 +638,18 @@ pub fn save_format_with_encoding(
     for language in code_languages {
         w.u8(language);
         w.bytes(eng.hyphen_codes[&language].as_slice());
+    }
+    // LuaTeX bytecode registers and chunk names (llualib.c
+    // dump_luac_registers)
+    w.u32(eng.lua_bytecodes.len() as u32);
+    for (slot, code) in &eng.lua_bytecodes {
+        w.u32(*slot);
+        w.bytes(code);
+    }
+    w.u32(eng.lua_names.len() as u32);
+    for (slot, name) in &eng.lua_names {
+        w.u16(*slot);
+        w.bytes(name.as_bytes());
     }
 
     let payload = match encoding {
@@ -1133,6 +1151,15 @@ fn load_state(r: &mut R, eng: &mut Engine) -> io::Result<()> {
                 }
             }
             TAG_MACRO => Some(Equiv::Macro(Rc::new(read_macro(r)?))),
+            TAG_LUA_CALL => {
+                let slot = r.u32()?;
+                let protected = match r.u8()? {
+                    0 => false,
+                    1 => true,
+                    _ => return Err(bad("invalid lua call")),
+                };
+                Some(Equiv::LuaCall { slot, protected })
+            }
             _ => return Err(bad("has unknown equivalent tag")),
         };
         eng.eqtb.restore_eq(id, equiv, level);
@@ -1264,6 +1291,22 @@ fn load_state(r: &mut R, eng: &mut Engine) -> io::Result<()> {
             .map_err(|_| bad("invalid hyphenation code table"))?;
         if eng.hyphen_codes.insert(language, Box::new(codes)).is_some() {
             return Err(bad("duplicate hyphenation code language"));
+        }
+    }
+    let n_bytecodes = r.count()?;
+    for _ in 0..n_bytecodes {
+        let slot = r.u32()?;
+        let code = r.bytes()?;
+        if eng.lua_bytecodes.insert(slot, code).is_some() {
+            return Err(bad("duplicate lua bytecode register"));
+        }
+    }
+    let n_names = r.count()?;
+    for _ in 0..n_names {
+        let slot = r.u16()?;
+        let name = String::from_utf8(r.bytes()?).map_err(|_| bad("invalid lua chunk name"))?;
+        if eng.lua_names.insert(slot, name).is_some() {
+            return Err(bad("duplicate lua chunk name"));
         }
     }
     if r.p != r.b.len() {

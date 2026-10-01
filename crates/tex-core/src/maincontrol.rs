@@ -473,6 +473,8 @@ impl Engine {
                 } else {
                     match crate::format::check_dumpable(self) {
                         Ok(()) => {
+                            // dumpdata.c store_fmt_file: pre_dump runs first.
+                            self.run_lua_callback("pre_dump");
                             self.format_done = true;
                             self.end_occurred = true;
                         }
@@ -565,6 +567,17 @@ impl Engine {
             ErrMessage => self.do_message(true),
             DirectLua => {
                 let _ = self.expand_prim(DirectLua, id);
+            }
+            LuaFunctionCall => {
+                let slot = self.scan_int();
+                self.call_lua_function(slot);
+            }
+            LuaBytecodeCall => {
+                let slot = self.scan_int();
+                self.call_lua_bytecode(slot);
+            }
+            LuaFunction | LuaBytecode => {
+                let _ = self.expand_prim(p, id);
             }
             OpenIn => self.do_openin(),
             CloseIn => self.do_closein(),
@@ -1491,7 +1504,7 @@ impl Engine {
         }
         let toks = self.scan_general_text_expanded();
         let code = self.tokens_to_string(&toks);
-        if let Err(err) = self.execute_directlua(&code) {
+        if let Err(err) = self.execute_directlua(code.as_bytes()) {
             self.error(&format!("LuaTeX error: {err}"));
         }
     }

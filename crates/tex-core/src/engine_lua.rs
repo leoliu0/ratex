@@ -23,13 +23,6 @@ pub struct LuaOutputItem {
 pub struct LuaBridgeState {
     pub output_queue: Vec<LuaOutputItem>,
     pub term_log: String,
-    pub callbacks: HashMap<String, i64>,
-    pub function_table: HashMap<i64, i64>,
-    pub bytecode_table: HashMap<i64, Vec<u8>>,
-    pub saved_counts: HashMap<i32, i32>,
-    pub saved_dimens: HashMap<i32, i32>,
-    pub saved_toks: HashMap<i32, String>,
-    pub saved_named_counts: HashMap<String, i32>,
     pub requested_primitives: Vec<(String, Vec<String>)>,
 }
 
@@ -38,13 +31,6 @@ impl LuaBridgeState {
         Self {
             output_queue: Vec::new(),
             term_log: String::new(),
-            callbacks: HashMap::new(),
-            function_table: HashMap::new(),
-            bytecode_table: HashMap::new(),
-            saved_counts: HashMap::new(),
-            saved_dimens: HashMap::new(),
-            saved_toks: HashMap::new(),
-            saved_named_counts: HashMap::new(),
             requested_primitives: Vec::new(),
         }
     }
@@ -103,8 +89,6 @@ impl LuaEngine {
             .set_global("lua", lua_tbl)
             .map_err(|e| format!("failed to set lua table: {e:?}"))?;
         self.lua.execute(r#"
-            local __functions_table = {}
-            lua.get_functions_table = function() return __functions_table end
             lua.newtable = function(narr, nrec) return {} end
             unpack = table.unpack
             loadstring = load
@@ -243,95 +227,7 @@ impl LuaEngine {
         tex_tbl.set("luatexversion", 124i64).unwrap();
         tex_tbl.set("luatexrevision", "0").unwrap();
         tex_tbl.set("luatexbanner", "This is LuaTeX, Version 1.24.0").unwrap();
-        // tex.hashtokens defined in Lua below
-
-        // Register tables (count, dimen, toks)
-        let count_tbl = self.lua.create_table().unwrap();
-        let count_meta = self.lua.create_table().unwrap();
-        let c_clone = bridge.clone();
-        let count_index = self
-            .lua
-            .create_function(move |_tbl: LuaValue, key: LuaValue| -> LuaResult<i64> {
-                let b = c_clone.borrow();
-                if let Some(idx) = key.as_integer() {
-                    let val = b.saved_counts.get(&(idx as i32)).copied().unwrap_or(0);
-                    Ok(val as i64)
-                } else if let Some(s) = key.as_str() {
-                    let val = b.saved_named_counts.get(s).copied().unwrap_or(0);
-                    Ok(val as i64)
-                } else {
-                    Ok(0)
-                }
-            })
-            .unwrap();
-        count_meta.set("__index", count_index).unwrap();
-
-        let c_clone = bridge.clone();
-        let count_newindex = self
-            .lua
-            .create_function(move |_tbl: LuaValue, key: LuaValue, val: i64| -> LuaResult<()> {
-                let mut b = c_clone.borrow_mut();
-                if let Some(idx) = key.as_integer() {
-                    b.saved_counts.insert(idx as i32, val as i32);
-                } else if let Some(s) = key.as_str() {
-                    b.saved_named_counts.insert(s.to_string(), val as i32);
-                }
-                Ok(())
-            })
-            .unwrap();
-        count_meta.set("__newindex", count_newindex).unwrap();
-        count_tbl.set_metatable(Some(&count_meta)).unwrap();
-        tex_tbl.set("count", count_tbl).unwrap();
-
-        let dimen_tbl = self.lua.create_table().unwrap();
-        let dimen_meta = self.lua.create_table().unwrap();
-        let d_clone = bridge.clone();
-        let dimen_index = self
-            .lua
-            .create_function(move |_tbl: LuaValue, idx: i64| -> LuaResult<i64> {
-                let b = d_clone.borrow();
-                let val = b.saved_dimens.get(&(idx as i32)).copied().unwrap_or(0);
-                Ok(val as i64)
-            })
-            .unwrap();
-        dimen_meta.set("__index", dimen_index).unwrap();
-
-        let d_clone = bridge.clone();
-        let dimen_newindex = self
-            .lua
-            .create_function(move |_tbl: LuaValue, idx: i64, val: i64| -> LuaResult<()> {
-                d_clone.borrow_mut().saved_dimens.insert(idx as i32, val as i32);
-                Ok(())
-            })
-            .unwrap();
-        dimen_meta.set("__newindex", dimen_newindex).unwrap();
-        dimen_tbl.set_metatable(Some(&dimen_meta)).unwrap();
-        tex_tbl.set("dimen", dimen_tbl).unwrap();
-
-        let toks_tbl = self.lua.create_table().unwrap();
-        let toks_meta = self.lua.create_table().unwrap();
-        let t_clone = bridge.clone();
-        let toks_index = self
-            .lua
-            .create_function(move |_tbl: LuaValue, idx: i64| -> LuaResult<String> {
-                let b = t_clone.borrow();
-                let val = b.saved_toks.get(&(idx as i32)).cloned().unwrap_or_default();
-                Ok(val)
-            })
-            .unwrap();
-        toks_meta.set("__index", toks_index).unwrap();
-
-        let t_clone = bridge.clone();
-        let toks_newindex = self
-            .lua
-            .create_function(move |_tbl: LuaValue, idx: i64, val: String| -> LuaResult<()> {
-                t_clone.borrow_mut().saved_toks.insert(idx as i32, val);
-                Ok(())
-            })
-            .unwrap();
-        toks_meta.set("__newindex", toks_newindex).unwrap();
-        toks_tbl.set_metatable(Some(&toks_meta)).unwrap();
-        tex_tbl.set("toks", toks_tbl).unwrap();
+        // tex.count & co. are installed by `lua_bridge`.
 
         self.lua
             .set_global("tex", tex_tbl)
@@ -393,162 +289,7 @@ impl LuaEngine {
                     }
                 end
             end
-            tex.setcount = function(scope, name, val)
-                if val == nil then
-                    val = name
-                    name = scope
-                end
-                tex.count[name] = val
-            end
-            tex.getcount = function(name)
-                return tex.count[name] or 0
-            end
-            tex.inputlineno = 1
-            tex.hashtokens = function() return {} end
         "##).unwrap();
-        // 5. kpse table
-        let kpse_tbl = self
-            .lua
-            .create_table()
-            .map_err(|e| format!("kpse table creation failed: {e:?}"))?;
-        let find_file_fn = self
-            .lua
-            .create_function(|name: String, _fmt: Option<String>| -> LuaResult<Option<String>> {
-                let resolver = tex_kpse::Kpse::new();
-                if let Some(path) = resolver.find_any(&name) {
-                    Ok(Some(path.to_string_lossy().into_owned()))
-                } else {
-                    Ok(None)
-                }
-            })
-            .unwrap();
-        kpse_tbl.set("find_file", find_file_fn.clone()).unwrap();
-        kpse_tbl.set("lookup", find_file_fn).unwrap();
-        let version_fn = self
-            .lua
-            .create_function(|| -> LuaResult<String> {
-                Ok("kpathsea version 6.3.2".to_string())
-            })
-            .unwrap();
-        kpse_tbl.set("version", version_fn).unwrap();
-        self.lua
-            .set_global("kpse", kpse_tbl)
-            .map_err(|e| format!("failed to set kpse table: {e:?}"))?;
-        self.lua.execute(r#"
-            if package and package.searchers then
-                table.insert(package.searchers, 2, function(name)
-                    local filename = name:gsub("%.", "/") .. ".lua"
-                    local found = kpse.find_file(filename, "lua")
-                        or kpse.find_file(name .. ".lua", "lua")
-                        or kpse.find_file(name, "lua")
-                    if found then
-                        local chunk, err = loadfile(found, "t", _G)
-                        if chunk then
-                            return chunk
-                        else
-                            error("error loading module '" .. name .. "' from file '" .. found .. "':\n\t" .. tostring(err))
-                        end
-                    end
-                    return "\n\t[kpse] no file '" .. filename .. "' in kpathsea database"
-                end)
-            end
-        "#).map_err(|e| format!("failed to register kpse package searcher: {e:?}"))?;
-
-        // 6. token table
-        let token_tbl = self
-            .lua
-            .create_table()
-            .map_err(|e| format!("token table creation failed: {e:?}"))?;
-        let is_token_fn = self
-            .lua
-            .create_function(|val: LuaValue| -> LuaResult<bool> {
-                Ok(val.is_table() || val.is_userdata())
-            })
-            .unwrap();
-        token_tbl.set("is_token", is_token_fn).unwrap();
-        // token.create defined in Lua below
-        self.lua
-            .set_global("token", token_tbl)
-            .map_err(|e| format!("failed to set token table: {e:?}"))?;
-        self.lua.execute(r#"
-            local cmd_map = {
-                undefined_cs = 0,
-                char_given = 1,
-                math_given = 2,
-                get_font = 3,
-                letter = 11,
-                other_char = 12,
-                left_brace = 1,
-                right_brace = 2,
-                math_shift = 3,
-                spacer = 10,
-            }
-            local cmd_counter = 200
-            setmetatable(cmd_map, {
-                __index = function(t, k)
-                    cmd_counter = cmd_counter + 1
-                    t[k] = cmd_counter
-                    return cmd_counter
-                end
-            })
-            token.command_id = function(name)
-                return cmd_map[name] or 0
-            end
-            token.commands = function()
-                return cmd_map
-            end
-            token.create = function(val, cmd)
-                return {
-                    id = 0,
-                    tok = 0,
-                    mode = 0,
-                    cmdname = "undefined_cs",
-                    command = cmd or cmd_map.undefined_cs,
-                    index = 0,
-                }
-            end
-            token.new = token.create
-            token.set_lua = function(name, id, ...) end
-            token.setlua = token.set_lua
-            token.biggest_char = function() return 1114111 end
-            token.get_mode = function(tok) return (type(tok) == "table" and tok.mode) or 0 end
-            token.get_index = function(tok) return (type(tok) == "table" and tok.index) or 0 end
-            token.is_defined = function(s, b) return true end
-            token.set_char = function(s, n) end
-            token.put_next = function(...) end
-            token.putnext = token.put_next
-            token.scan_string = function() return "" end
-            token.scan_int = function() return 0 end
-            token.scan_csname = function() return "" end
-            token.scan_keyword = function() return false end
-            token.scan_argument = function() return "" end
-            token.get_next = function() return token.create("") end
-            token.get_macro = function(s) return "" end
-            token.set_macro = function(s, v) end
-            tex.chardef = token.set_char
-            tex.runtoks = function(fn) if type(fn) == "function" then fn() end end
-        "#).unwrap();
-        // 7. callback table
-        self.lua.execute(r#"
-            local __callbacks = {}
-            callback = {
-                register = function(name, func)
-                    if func == nil or func == false then
-                        __callbacks[name] = nil
-                    else
-                        __callbacks[name] = func
-                    end
-                end,
-                find = function(name)
-                    return __callbacks[name]
-                end,
-                list = function()
-                    local t = {}
-                    for k, v in pairs(__callbacks) do t[k] = true end
-                    return t
-                end,
-            }
-        "#).unwrap();
 
         // 8. node table and node.direct
         let node_tbl = self
@@ -797,24 +538,6 @@ impl LuaEngine {
             luaharfbuzz.Font = Font
             package.loaded["luaharfbuzz"] = luaharfbuzz
             package.loaded["fontloader"] = fontloader
-
-            luatexbase = {
-                add_to_callback = function(...) end,
-                remove_from_callback = function(...) end,
-                create_callback = function(...) end,
-                call_callback = function(...) end,
-                attributes = {},
-                registernumber = function(...) return 0 end,
-                new_attribute = function(...) return 0 end,
-                new_whatsit = function(...) return 0 end,
-                new_user_whatsit = function(...) return 0 end,
-                provides_module = function(...) end,
-            }
-            package.loaded["luatexbase"] = luatexbase
-            package.loaded["ltluatex"] = luatexbase
-            package.loaded["lualatexquotejobname"] = {}
-            package.loaded["lualatexquotejobname.lua"] = {}
-            package.loaded["l3backend-luatex"] = {}
         "#).map_err(|e| format!("failed to initialize fontloader/luaharfbuzz: {e:?}"))?;
 
         // 11. md5 table with authentic Rust md5 implementation
@@ -989,6 +712,7 @@ impl LuaEngine {
             package.loaded["sio"] = sio
             package.loaded["fio"] = fio
         "#).map_err(|e| format!("failed to initialize runtime modules: {e:?}"))?;
+        crate::lua_bridge::install(&mut self.lua)?;
         static PRELOAD_ZST: &[u8] = include_bytes!("../assets/lua_uni_data_preload.lua.zst");
         if let Ok(mut decoder) = ruzstd::decoding::StreamingDecoder::new(PRELOAD_ZST) {
             use std::io::Read;
@@ -1082,86 +806,62 @@ impl LuaEngine {
         Ok(())
     }
 
-    /// Execute Lua code string and return any emitted TeX tokens/text.
-    pub fn execute(&mut self, code: &str) -> Result<Vec<LuaOutputItem>, String> {
-        self.bridge.borrow_mut().output_queue.clear();
-        if let Err(e) = self.lua.execute(code) {
-            let full = self.lua.get_error_message(e);
-            return Err(format!("Lua error: {}", full.message()));
-        }
-        let output = self.bridge.borrow_mut().output_queue.drain(..).collect();
-        Ok(output)
+    /// Run Lua source `code` as a chunk named `name`.
+    pub fn execute(&mut self, code: &[u8], name: &str) -> Result<(), String> {
+        let result = match std::str::from_utf8(code) {
+            Ok(code) => self.lua.load(code).set_name(name).exec(),
+            Err(_) => {
+                let chunk = self.lua.create_bytes(code).map_err(|e| format!("{e:?}"))?;
+                self.lua
+                    .load("local code, name = ... return assert(load(code, name))()")
+                    .call::<_, ()>((chunk, name.to_string()))
+            }
+        };
+        result.map_err(|e| format!("Lua error: {}", self.lua.get_error_message(e).message()))
     }
+}
 
-    /// Sync register values from the TeX engine to the Lua environment.
-    pub fn sync_from_engine(&mut self, eng: &Engine) {
-        let mut b = self.bridge.borrow_mut();
-        for i in 0..1024 {
-            let val = eng.eqtb.count.get(i).copied().unwrap_or(0);
-            b.saved_counts.insert(i as i32, val);
-        }
-        for i in 0..1024 {
-            let val = eng.eqtb.dimen.get(i).copied().unwrap_or(0);
-            b.saved_dimens.insert(i as i32, val);
-        }
-        for id in eng.cs.all_ids() {
-            if let Some(crate::eqtb::Equiv::CountReg(idx)) = eng.eqtb.resolve(id) {
-                let name = String::from_utf8_lossy(eng.cs.name(id)).into_owned();
-                let val = eng.eqtb.count.get(*idx as usize).copied().unwrap_or(0);
-                b.saved_named_counts.insert(name, val);
-            }
-        }
-        let line = eng.input.current_file_line() as i64;
-        let _ = self.lua.execute(&format!("if tex then tex.inputlineno = {line} end"));
-    }
-
-    /// Sync changed register values back to the TeX engine.
-    pub fn sync_to_engine(&self, eng: &mut Engine) {
-        let mut b = self.bridge.borrow_mut();
-        for (&idx, &val) in &b.saved_counts {
-            if let Some(slot) = eng.eqtb.count.get_mut(idx as usize) {
-                *slot = val;
-            }
-        }
-        for (&idx, &val) in &b.saved_dimens {
-            if let Some(slot) = eng.eqtb.dimen.get_mut(idx as usize) {
-                *slot = val;
-            }
-        }
-        for (name, &val) in &b.saved_named_counts {
-            let id = eng.cs.intern(name.as_bytes());
-            let count_idx = match eng.eqtb.resolve(id) {
-                Some(crate::eqtb::Equiv::CountReg(idx)) => Some(*idx),
-                _ => None,
-            };
-            if let Some(idx) = count_idx {
-                if let Some(slot) = eng.eqtb.count.get_mut(idx as usize) {
-                    *slot = val;
-                }
-            }
-        }
-        let requested = std::mem::take(&mut b.requested_primitives);
+impl Engine {
+    /// Feed what Lua printed (tex.print & co.) back to TeX.
+    pub(crate) fn flush_lua_output(&mut self) {
+        let Some(lua) = self.lua.as_ref() else {
+            return;
+        };
+        let items: Vec<LuaOutputItem> = lua.bridge.borrow_mut().output_queue.drain(..).collect();
+        let requested = std::mem::take(&mut lua.bridge.borrow_mut().requested_primitives);
         for (prefix, prims) in requested {
             if prims.is_empty() {
-                for id in eng.cs.all_ids() {
-                    let name = eng.cs.name(id).to_vec();
-                    if let Some(equiv) = eng.eqtb.get(id).cloned() {
+                for id in self.cs.all_ids() {
+                    let name = self.cs.name(id).to_vec();
+                    if let Some(equiv) = self.eqtb.get(id).cloned() {
                         let mut new_name = prefix.as_bytes().to_vec();
                         new_name.extend_from_slice(&name);
-                        let new_id = eng.cs.intern(&new_name);
-                        eng.eqtb.assign(new_id, equiv, true);
+                        let new_id = self.cs.intern(&new_name);
+                        self.eqtb.assign(new_id, equiv, true);
                     }
                 }
             } else {
                 for prim_name in prims {
-                    let orig_id = eng.cs.lookup(prim_name.as_bytes()).unwrap_or_else(|| eng.cs.intern(prim_name.as_bytes()));
-                    if let Some(equiv) = eng.eqtb.get(orig_id).cloned() {
+                    let orig_id = self.cs.lookup(prim_name.as_bytes()).unwrap_or_else(|| self.cs.intern(prim_name.as_bytes()));
+                    if let Some(equiv) = self.eqtb.get(orig_id).cloned() {
                         let mut new_name = prefix.as_bytes().to_vec();
                         new_name.extend_from_slice(prim_name.as_bytes());
-                        let new_id = eng.cs.intern(&new_name);
-                        eng.eqtb.assign(new_id, equiv, true);
+                        let new_id = self.cs.intern(&new_name);
+                        self.eqtb.assign(new_id, equiv, true);
                     }
                 }
+            }
+        }
+        if !items.is_empty() {
+            let mut combined = String::new();
+            for item in items {
+                combined.push_str(&item.text);
+                if item.newline {
+                    combined.push('\n');
+                }
+            }
+            if self.ensure_input_stack_room(1) {
+                self.input.push_file("<directlua>".to_string(), combined.into_bytes());
             }
         }
     }
@@ -1183,6 +883,11 @@ impl Engine {
         def(b"luatexbanner", crate::prim::Prim::LuaTeXBanner, self);
         def(b"outputmode", crate::prim::Prim::OutputMode, self);
         def(b"directlua", crate::prim::Prim::DirectLua, self);
+        def(b"luafunction", crate::prim::Prim::LuaFunction, self);
+        def(b"luafunctioncall", crate::prim::Prim::LuaFunctionCall, self);
+        def(b"luadef", crate::prim::Prim::LuaDef, self);
+        def(b"luabytecode", crate::prim::Prim::LuaBytecode, self);
+        def(b"luabytecodecall", crate::prim::Prim::LuaBytecodeCall, self);
         def(b"tex_luatexversion:D", crate::prim::Prim::LuaTeXVersion, self);
         def(b"tex_directlua:D", crate::prim::Prim::DirectLua, self);
         def(b"catcodetable", crate::prim::Prim::CatCodeTable, self);

@@ -37,6 +37,10 @@ pub enum Equiv {
     Alias(CsId),
     Prim(Prim),
     Macro(Rc<Macro>),
+    /// LuaTeX `\luadef` / `token.set_lua`: calls Lua function `slot`;
+    /// expandable unless `protected` (luatex `lua_expandable_call` /
+    /// `lua_call`).
+    LuaCall { slot: u32, protected: bool },
 }
 
 impl Equiv {
@@ -55,6 +59,7 @@ impl Equiv {
             Equiv::Alias(_) => "Alias",
             Equiv::Prim(_) => "Prim",
             Equiv::Macro(_) => "Macro",
+            Equiv::LuaCall { .. } => "LuaCall",
         }
     }
 }

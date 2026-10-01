@@ -167,6 +167,10 @@ pub struct Engine {
     /// Semantic profile for this job. It is immutable after construction.
     pub engine_kind: EngineKind,
     pub(crate) lua: Option<Box<crate::engine_lua::LuaEngine>>,
+    /// LuaTeX bytecode registers (`lua.bytecode[n]`, dumped functions) and
+    /// chunk names (`lua.name[n]`); both are part of the format.
+    pub(crate) lua_bytecodes: std::collections::BTreeMap<u32, Vec<u8>>,
+    pub(crate) lua_names: std::collections::BTreeMap<u16, String>,
     pub ini_mode: bool, // -ini: format-building mode
     pub format_name: String,
     pub job_name: String,
@@ -631,33 +635,6 @@ pub struct Engine {
 }
 
 impl Engine {
-    pub fn execute_directlua(&mut self, code: &str) -> Result<(), String> {
-        if self.lua.is_none() {
-            let lua_engine = crate::engine_lua::LuaEngine::new()?;
-            self.lua = Some(Box::new(lua_engine));
-        }
-        let mut lua = self.lua.take().unwrap();
-        lua.sync_from_engine(self);
-        let result = lua.execute(code);
-        lua.sync_to_engine(self);
-        self.lua = Some(lua);
-
-        let output_items = result?;
-        if !output_items.is_empty() {
-            let mut combined = String::new();
-            for item in output_items {
-                combined.push_str(&item.text);
-                if item.newline {
-                    combined.push('\n');
-                }
-            }
-            if self.ensure_input_stack_room(1) {
-                self.input.push_file("<directlua>".to_string(), combined.into_bytes());
-            }
-        }
-        Ok(())
-    }
-
     pub(crate) fn append_transcript_bounded(buffer: &mut String, text: &str) {
         const MARKER: &str = "\n! Transcript truncated at the 32 MiB safety limit.\n";
         if text.is_empty() || (buffer.len() >= MAX_TERM_BYTES && buffer.ends_with(MARKER)) {
@@ -897,6 +874,8 @@ impl Engine {
             definable_cs_recovery_count: 0,
             engine_kind,
             lua: None,
+            lua_bytecodes: Default::default(),
+            lua_names: Default::default(),
             ini_mode,
             format_name: String::new(),
             job_name: String::new(),

@@ -309,6 +309,7 @@ impl Engine {
                     self.dispatch_cs(p, id);
                 }
             }
+            Some(crate::eqtb::Equiv::LuaCall { slot, .. }) => self.call_lua_function(slot as i32),
             None => {
                 let shown = char::from_u32(c).unwrap_or(char::REPLACEMENT_CHARACTER);
                 self.error(&format!("Undefined active character `{shown}'"));

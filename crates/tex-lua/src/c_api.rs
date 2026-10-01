@@ -808,13 +808,7 @@ pub unsafe extern "C" fn lua_newstate(
 ) -> *mut lua_State {
     let allocator = allocator.or(Some(tex_lua_default_alloc));
     let mut owner = GlobalState::new_with_language(SafeOption::default(), LuaLanguageLevel::Lua53);
-    let state = {
-        let global = owner.as_mut().get_mut();
-        let main_thread = LuaValue::thread(global.get_main_thread_ptr());
-        global.registry_seti(LUA_RIDX_MAINTHREAD, main_thread);
-        global.registry_seti(LUA_RIDX_GLOBALS, global.global);
-        global.main_state() as *mut LuaState
-    };
+    let state = owner.as_mut().get_mut().main_state() as *mut LuaState;
     let mut root = lua_State::borrowed(state, ptr::null_mut());
     root.owner = Some(owner);
     root.allocator = allocator;

@@ -1,6 +1,6 @@
 #![allow(non_camel_case_types, non_snake_case, unsafe_op_in_unsafe_fn)]
 
-use std::cell::Cell;
+use std::collections::{HashMap, HashSet};
 use std::ffi::{CStr, c_char, c_int, c_void};
 use std::io::Read as _;
 use std::pin::Pin;
@@ -167,36 +167,38 @@ pub const LUA_GCSETPAUSE: c_int = 6;
 pub const LUA_GCSETSTEPMUL: c_int = 7;
 pub const LUA_GCISRUNNING: c_int = 9;
 
-thread_local! {
-    static ACTIVE_ROOT: Cell<*mut lua_State> = const { Cell::new(ptr::null_mut()) };
-}
+/// Light-userdata registry keys of the C API's bookkeeping: slot 0 anchors the
+/// root wrapper of a state that was not created by `lua_newstate`, slot 1 holds
+/// the weak-keyed table that owns one wrapper per coroutine.
+static REGISTRY_KEYS: [u8; 2] = [0; 2];
 
-struct ActiveRootGuard(*mut lua_State);
-
-impl ActiveRootGuard {
-    fn enter(root: *mut lua_State) -> Self {
-        let previous = ACTIVE_ROOT.with(|active| active.replace(root));
-        Self(previous)
-    }
-}
-
-impl Drop for ActiveRootGuard {
-    fn drop(&mut self) {
-        ACTIVE_ROOT.with(|active| active.set(self.0));
-    }
+fn registry_key(slot: usize) -> LuaValue {
+    LuaValue::lightuserdata(ptr::from_ref(&REGISTRY_KEYS[slot]).cast_mut().cast())
 }
 
 /// Opaque state used by the Lua 5.3 C ABI. The actual VM state remains owned by
-/// `GlobalState`; coroutine wrappers only borrow a GC-owned `LuaState`.
+/// `GlobalState`; every other wrapper only borrows a GC-owned `LuaState` and is
+/// itself owned by a [`WrapperOwner`] userdata.
 #[repr(C)]
 pub struct lua_State {
     state: *mut LuaState,
     owner: Option<Pin<Box<GlobalState>>>,
     root: *mut lua_State,
-    children: Vec<*mut lua_State>,
-    c_strings: Vec<Box<[u8]>>,
+    /// The [`WrapperOwner`] userdata of a borrowed wrapper (nil for the root of
+    /// a `lua_newstate` state).
+    handle: LuaValue,
+    /// Root only: NUL-terminated copies of Lua strings handed to C, keyed by
+    /// the address of the string's bytes. A copy is replaced only once that
+    /// address holds other bytes, i.e. after its string was collected, so it
+    /// stays valid as long as the string does.
+    lua_strings: HashMap<usize, Box<[u8]>>,
+    /// Root only: interned NUL-terminated names and sources from the debug API.
+    c_names: HashSet<Box<[u8]>>,
     pending_error: Option<LuaValue>,
     suspended_stack: Option<CApiStackParking>,
+    /// The live stack of a coroutine while `suspended_stack` hides it from the
+    /// GC; traced through `handle`.
+    parked_roots: Vec<LuaValue>,
     allocator: lua_Alloc,
     allocator_ud: *mut c_void,
     panic_function: lua_CFunction,
@@ -232,12 +234,8 @@ unsafe fn allocate_wrapper(mut state: lua_State, source: Option<*mut lua_State>)
     &mut (*allocation).state
 }
 
-unsafe fn free_wrapper(state: *mut lua_State) {
-    if let Some(parking) = (*state).suspended_stack.take()
-        && let Some(state_vm) = (*state).state.as_mut()
-    {
-        let _ = state_vm.restore_stack_from_c_api(parking);
-    }
+/// Frees a wrapper without touching the VM, which may already be gone.
+unsafe fn release_wrapper(state: *mut lua_State) {
     let allocation = state
         .cast::<u8>()
         .sub(std::mem::offset_of!(LuaStateAllocation, state))
@@ -253,26 +251,115 @@ unsafe fn free_wrapper(state: *mut lua_State) {
     );
 }
 
-unsafe fn canonical_wrapper(root: *mut lua_State, state: *mut LuaState) -> *mut lua_State {
-    let Some(root_wrapper) = root.as_mut() else {
-        return ptr::null_mut();
-    };
-    if root_wrapper.state == state {
-        return root;
+/// GC-owned handle of a borrowed wrapper: frees it together with the VM
+/// object it describes and keeps a coroutine stack parked by `lua_resume`
+/// reachable while the coroutine is suspended.
+struct WrapperOwner(*mut lua_State);
+
+impl Drop for WrapperOwner {
+    fn drop(&mut self) {
+        unsafe { release_wrapper(self.0) }
     }
-    if let Some(wrapper) = root_wrapper.children.iter().copied().find(|wrapper| {
-        wrapper
-            .as_ref()
-            .is_some_and(|wrapper| wrapper.state == state)
-    }) {
-        return wrapper;
+}
+
+impl crate::lua_value::userdata_trait::UserDataTrait for WrapperOwner {
+    fn type_name(&self) -> &'static str {
+        "userdata"
+    }
+
+    fn trace_lua_values(&self, visit: &mut dyn FnMut(LuaValue)) {
+        for value in unsafe { &(*self.0).parked_roots } {
+            visit(*value);
+        }
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+}
+
+/// Hands `wrapper` to a [`WrapperOwner`] stored as `table[key]`.
+unsafe fn adopt_wrapper(
+    state: &mut LuaState,
+    table: LuaValue,
+    key: LuaValue,
+    wrapper: *mut lua_State,
+) -> bool {
+    // On failure the dropped owner releases the wrapper.
+    let Ok(handle) = state.create_userdata(LuaUserdata::new(WrapperOwner(wrapper))) else {
+        return false;
+    };
+    (*wrapper).handle = handle;
+    state.raw_set(&table, key, handle)
+}
+
+/// The weak-keyed registry table mapping each coroutine to its wrapper owner.
+fn thread_wrappers(state: &mut LuaState) -> Option<LuaValue> {
+    let registry = state.global_state().registry;
+    let key = registry_key(1);
+    if let Some(table) = state.raw_get(&registry, &key).filter(LuaValue::is_table) {
+        return Some(table);
+    }
+    let table = state.create_table(0, 0).ok()?;
+    let metatable = state.create_table(0, 1).ok()?;
+    let mode_key = state.create_string("__mode").ok()?;
+    let mode = state.create_string("k").ok()?;
+    state.raw_set(&metatable, mode_key, mode);
+    table.as_table_mut()?.set_metatable(Some(metatable));
+    state.raw_set(&registry, key, table);
+    Some(table)
+}
+
+/// The wrapper of `state`, a thread of the VM whose root wrapper is `root`.
+unsafe fn canonical_wrapper(root: *mut lua_State, state: *mut LuaState) -> *mut lua_State {
+    let existing = (*state).c_api_wrapper().cast::<lua_State>();
+    if !existing.is_null() || root.is_null() {
+        return existing;
     }
     let wrapper = allocate_wrapper(lua_State::borrowed(state, root), Some(root));
-    if !wrapper.is_null() {
-        (*state).set_c_api_wrapper(wrapper.cast());
-        root_wrapper.children.push(wrapper);
+    if wrapper.is_null() {
+        return wrapper;
     }
+    let state = &mut *state;
+    let Some(table) = thread_wrappers(state) else {
+        release_wrapper(wrapper);
+        return ptr::null_mut();
+    };
+    let key = LuaValue::thread(state.thread_ptr());
+    if !adopt_wrapper(state, table, key, wrapper) {
+        return ptr::null_mut();
+    }
+    state.set_c_api_wrapper(wrapper.cast());
     wrapper
+}
+
+/// The `lua_State` handed to C code running on `state`. A VM that was not
+/// created by `lua_newstate` (the embedding API, used by `package.loadlib`)
+/// gets a borrowed root wrapper on first use.
+unsafe fn wrapper_for(state: &mut LuaState) -> *mut lua_State {
+    let existing = state.c_api_wrapper().cast::<lua_State>();
+    if !existing.is_null() {
+        return existing;
+    }
+    let main = ptr::from_mut(state.global_state_mut().main_state());
+    let mut root = (*main).c_api_wrapper().cast::<lua_State>();
+    if root.is_null() {
+        root = allocate_wrapper(lua_State::borrowed(main, ptr::null_mut()), None);
+        if root.is_null() {
+            return root;
+        }
+        (*root).root = root;
+        let registry = state.global_state().registry;
+        if !adopt_wrapper(state, registry, registry_key(0), root) {
+            return ptr::null_mut();
+        }
+        (*main).set_c_api_wrapper(root.cast());
+    }
+    canonical_wrapper(root, state)
 }
 
 #[derive(Clone, Copy)]
@@ -315,10 +402,12 @@ impl lua_State {
             state,
             owner: None,
             root,
-            children: Vec::new(),
-            c_strings: Vec::new(),
+            handle: LuaValue::nil(),
+            lua_strings: HashMap::new(),
+            c_names: HashSet::new(),
             pending_error: None,
             suspended_stack: None,
+            parked_roots: Vec::new(),
             allocator: None,
             allocator_ud: ptr::null_mut(),
             panic_function: None,
@@ -339,22 +428,52 @@ unsafe fn vm<'a>(state: *mut lua_State) -> Option<&'a mut LuaState> {
     api(state)?.state.as_mut()
 }
 
-unsafe fn cache_c_bytes(state: *mut lua_State, bytes: &[u8]) -> *const c_char {
-    let Some(wrapper) = api(state) else {
+unsafe fn root_of<'a>(state: *mut lua_State) -> Option<&'a mut lua_State> {
+    let wrapper = api(state)?;
+    if wrapper.root.is_null() {
+        Some(wrapper)
+    } else {
+        wrapper.root.as_mut()
+    }
+}
+
+/// A NUL-terminated copy of a debug name or source, interned in the root.
+unsafe fn c_name(state: *mut lua_State, bytes: &[u8]) -> *const c_char {
+    let Some(root) = root_of(state) else {
         return ptr::null();
     };
-    let cache = if wrapper.root.is_null() {
-        wrapper
-    } else {
-        &mut *wrapper.root
-    };
-    let mut nul_terminated = Vec::with_capacity(bytes.len() + 1);
-    nul_terminated.extend_from_slice(bytes);
-    nul_terminated.push(0);
-    let boxed = nul_terminated.into_boxed_slice();
-    let pointer = boxed.as_ptr().cast::<c_char>();
-    cache.c_strings.push(boxed);
+    let name = nul_terminated(bytes);
+    if let Some(interned) = root.c_names.get(&name) {
+        return interned.as_ptr().cast();
+    }
+    let pointer = name.as_ptr().cast();
+    root.c_names.insert(name);
     pointer
+}
+
+/// A NUL-terminated copy of the bytes of the Lua string `string`, valid while
+/// the string is alive.
+unsafe fn c_string(state: *mut lua_State, string: &[u8]) -> *const c_char {
+    let Some(root) = root_of(state) else {
+        return ptr::null();
+    };
+    let copy = root
+        .lua_strings
+        .entry(string.as_ptr() as usize)
+        .and_modify(|copy| {
+            if copy[..copy.len() - 1] != *string {
+                *copy = nul_terminated(string);
+            }
+        })
+        .or_insert_with(|| nul_terminated(string));
+    copy.as_ptr().cast()
+}
+
+fn nul_terminated(bytes: &[u8]) -> Box<[u8]> {
+    let mut copy = Vec::with_capacity(bytes.len() + 1);
+    copy.extend_from_slice(bytes);
+    copy.push(0);
+    copy.into_boxed_slice()
 }
 
 #[inline]
@@ -469,12 +588,20 @@ fn status_for(error: LuaError) -> c_int {
     }
 }
 
+/// Pushes the value raised by `error` (the error object itself, not a
+/// rendering of it) and returns the matching status code.
 fn push_error(state: &mut LuaState, error: LuaError) -> c_int {
     let status = status_for(error);
-    let message = state.get_error_message(error);
-    if let Ok(value) = state.create_string(&message) {
-        let _ = state.push_value(value);
-    }
+    let value = if error.static_message().is_none()
+        && !matches!(error, LuaError::OutOfMemory)
+        && state.has_error_object()
+    {
+        state.take_error_object()
+    } else {
+        let message = state.get_error_message(error);
+        state.create_string(&message).unwrap_or_default()
+    };
+    let _ = state.push_value(value);
     status
 }
 
@@ -635,14 +762,9 @@ fn c_callback_trampoline(state: &mut LuaState) -> LuaResult<usize> {
         .ok_or_else(|| state.error("C callback pointer is missing".to_string()))?;
     let callback: unsafe extern "C" fn(*mut lua_State) -> c_int =
         unsafe { std::mem::transmute(callback_pointer) };
-    let root = ACTIVE_ROOT.with(Cell::get);
-    let wrapper = if root.is_null() {
-        state.c_api_wrapper().cast::<lua_State>()
-    } else {
-        unsafe { canonical_wrapper(root, state as *mut LuaState) }
-    };
+    let wrapper = unsafe { wrapper_for(state) };
     if wrapper.is_null() {
-        return Err(state.error("C callback has no canonical lua_State".to_string()));
+        return Err(state.error("not enough memory for the C API state".to_string()));
     }
     let mut count = 0;
     let invocation_status = unsafe { tex_lua_invoke_c(callback, wrapper, &mut count) };
@@ -720,24 +842,11 @@ pub unsafe extern "C" fn lua_newstate(
         global.registry_seti(LUA_RIDX_GLOBALS, global.global);
         global.main_state() as *mut LuaState
     };
-    let pointer = allocate_wrapper(
-        lua_State {
-            state,
-            owner: Some(owner),
-            root: ptr::null_mut(),
-            children: Vec::new(),
-            c_strings: Vec::new(),
-            pending_error: None,
-            suspended_stack: None,
-            allocator,
-            allocator_ud,
-            panic_function: None,
-            c_hook: None,
-            c_hook_mask: 0,
-            c_hook_count: 0,
-        },
-        None,
-    );
+    let mut root = lua_State::borrowed(state, ptr::null_mut());
+    root.owner = Some(owner);
+    root.allocator = allocator;
+    root.allocator_ud = allocator_ud;
+    let pointer = allocate_wrapper(root, None);
     if pointer.is_null() {
         return ptr::null_mut();
     }
@@ -748,29 +857,15 @@ pub unsafe extern "C" fn lua_newstate(
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lua_close(state: *mut lua_State) {
-    let Some(wrapper) = state.as_mut() else {
+    let Some(root) = root_of(state) else {
         return;
     };
-    let root = if wrapper.root.is_null() {
-        state
-    } else {
-        wrapper.root
-    };
-    let Some(root_wrapper) = root.as_mut() else {
+    let Some(owner) = root.owner.as_mut() else {
         return;
     };
-    if root_wrapper.owner.is_none() {
-        return;
-    }
-    let _active = ActiveRootGuard::enter(root);
-    if let Some(owner) = root_wrapper.owner.as_mut() {
-        owner.as_mut().get_mut().close();
-    }
-    let children = std::mem::take(&mut root_wrapper.children);
-    for child in children {
-        free_wrapper(child);
-    }
-    free_wrapper(root);
+    owner.as_mut().get_mut().close();
+    // Dropping the VM releases the coroutine wrappers it owns.
+    release_wrapper(root);
 }
 
 #[unsafe(no_mangle)]
@@ -778,15 +873,7 @@ pub unsafe extern "C" fn lua_atpanic(
     state: *mut lua_State,
     panic_function: lua_CFunction,
 ) -> lua_CFunction {
-    let Some(wrapper) = api(state) else {
-        return None;
-    };
-    let root = if wrapper.root.is_null() {
-        state
-    } else {
-        wrapper.root
-    };
-    let Some(root) = root.as_mut() else {
+    let Some(root) = root_of(state) else {
         return None;
     };
     std::mem::replace(&mut root.panic_function, panic_function)
@@ -794,27 +881,13 @@ pub unsafe extern "C" fn lua_atpanic(
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn tex_lua_getpanic(state: *mut lua_State) -> lua_CFunction {
-    let wrapper = api(state)?;
-    let root = if wrapper.root.is_null() {
-        state
-    } else {
-        wrapper.root
-    };
-    root.as_ref()?.panic_function
+    root_of(state)?.panic_function
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn luaL_openlibs(state: *mut lua_State) {
-    let Some(wrapper) = api(state) else { return };
-    let root = if wrapper.root.is_null() {
-        state
-    } else {
-        wrapper.root
-    };
-    if let Some(root) = root.as_mut()
-        && let Some(owner) = root.owner.as_mut()
-    {
-        let _ = owner.as_mut().get_mut().open_stdlib(Stdlib::All);
+    if let Some(state) = vm(state) {
+        let _ = state.global_state_mut().open_stdlib(Stdlib::All);
     }
 }
 
@@ -869,17 +942,17 @@ pub unsafe extern "C" fn lua_checkstack(state: *mut lua_State, size: c_int) -> c
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lua_pushvalue(state: *mut lua_State, index: c_int) {
     let Some(state) = vm(state) else { return };
-    if let Some(value) = value_at(state, index) {
-        let _ = state.push_value(value);
-    }
+    // An acceptable index without a value (above the top, or an upvalue the
+    // closure does not have) reads as nil, as in the reference implementation.
+    let value = value_at(state, index).unwrap_or_default();
+    let _ = state.push_value(value);
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lua_copy(state: *mut lua_State, from: c_int, to: c_int) {
     let Some(state) = vm(state) else { return };
-    if let Some(value) = value_at(state, from) {
-        let _ = set_value_at(state, to, value);
-    }
+    let value = value_at(state, from).unwrap_or_default();
+    let _ = set_value_at(state, to, value);
 }
 
 #[unsafe(no_mangle)]
@@ -1026,8 +1099,6 @@ pub unsafe extern "C" fn lua_tointegerx(
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn tex_lua_arith_impl(state: *mut lua_State, operation: c_int) -> c_int {
-    let root = api(state).map_or(ptr::null_mut(), |wrapper| wrapper.root);
-    let _active = ActiveRootGuard::enter(root);
     let Some(state_vm) = vm(state) else {
         return LUA_ERRRUN;
     };
@@ -1109,10 +1180,7 @@ pub unsafe extern "C" fn lua_tolstring(
     index: c_int,
     length: *mut usize,
 ) -> *const c_char {
-    let Some(wrapper) = api(state) else {
-        return ptr::null();
-    };
-    let Some(vm) = wrapper.state.as_mut() else {
+    let Some(vm) = vm(state) else {
         return ptr::null();
     };
     let Some(mut value) = value_at(vm, index) else {
@@ -1138,18 +1206,7 @@ pub unsafe extern "C" fn lua_tolstring(
     if let Some(length) = length.as_mut() {
         *length = bytes.len();
     }
-    let mut nul_terminated = Vec::with_capacity(bytes.len() + 1);
-    nul_terminated.extend_from_slice(bytes);
-    nul_terminated.push(0);
-    let boxed = nul_terminated.into_boxed_slice();
-    let pointer = boxed.as_ptr().cast::<c_char>();
-    let cache = if !wrapper.root.is_null() {
-        &mut *wrapper.root
-    } else {
-        wrapper
-    };
-    cache.c_strings.push(boxed);
-    pointer
+    c_string(state, bytes)
 }
 
 #[unsafe(no_mangle)]
@@ -1692,8 +1749,6 @@ pub unsafe extern "C" fn tex_lua_callk_impl(
     context: lua_KContext,
     continuation: lua_KFunction,
 ) -> c_int {
-    let root = api(state).map_or(ptr::null_mut(), |wrapper| wrapper.root);
-    let _active = ActiveRootGuard::enter(root);
     let Some(state_vm) = vm(state) else {
         return LUA_ERRRUN;
     };
@@ -1739,8 +1794,6 @@ pub unsafe extern "C" fn tex_lua_pcallk_impl(
     context: lua_KContext,
     continuation: lua_KFunction,
 ) -> c_int {
-    let root = api(state).map_or(ptr::null_mut(), |wrapper| wrapper.root);
-    let _active = ActiveRootGuard::enter(root);
     let Some(state_vm) = vm(state) else {
         return LUA_ERRRUN;
     };
@@ -2072,15 +2125,7 @@ pub unsafe extern "C" fn lua_getallocf(
     state: *mut lua_State,
     userdata: *mut *mut c_void,
 ) -> lua_Alloc {
-    let Some(wrapper) = api(state) else {
-        return None;
-    };
-    let root = if wrapper.root.is_null() {
-        state
-    } else {
-        wrapper.root
-    };
-    let Some(root) = root.as_mut() else {
+    let Some(root) = root_of(state) else {
         return None;
     };
     if let Some(slot) = userdata.as_mut() {
@@ -2095,13 +2140,7 @@ pub unsafe extern "C" fn lua_setallocf(
     allocator: lua_Alloc,
     userdata: *mut c_void,
 ) {
-    let Some(wrapper) = api(state) else { return };
-    let root = if wrapper.root.is_null() {
-        state
-    } else {
-        wrapper.root
-    };
-    let Some(root) = root.as_mut() else { return };
+    let Some(root) = root_of(state) else { return };
     root.allocator = allocator.or(Some(tex_lua_default_alloc));
     root.allocator_ud = userdata;
 }
@@ -2122,12 +2161,7 @@ pub unsafe extern "C" fn lua_newthread(state: *mut lua_State) -> *mut lua_State 
     };
     let child_state = thread as *mut LuaState;
     let _ = parent_vm.push_value(value);
-    let root = if parent.root.is_null() {
-        state
-    } else {
-        parent.root
-    };
-    canonical_wrapper(root, child_state)
+    canonical_wrapper(parent.root, child_state)
 }
 
 #[unsafe(no_mangle)]
@@ -2144,13 +2178,7 @@ pub unsafe extern "C" fn lua_tothread(state: *mut lua_State, index: c_int) -> *m
     let Some(thread) = thread_value.as_thread_mut() else {
         return ptr::null_mut();
     };
-    let thread_pointer = thread as *mut LuaState;
-    let root = if parent.root.is_null() {
-        state
-    } else {
-        parent.root
-    };
-    canonical_wrapper(root, thread_pointer)
+    canonical_wrapper(parent.root, thread as *mut LuaState)
 }
 
 #[unsafe(no_mangle)]
@@ -2181,13 +2209,12 @@ pub unsafe extern "C" fn lua_resume(
     let Some(wrapper) = api(state) else {
         return LUA_ERRRUN;
     };
-    let root = wrapper.root;
-    let _active = ActiveRootGuard::enter(root);
     let Some(state_vm) = wrapper.state.as_mut() else {
         return LUA_ERRRUN;
     };
     let count = nargs.max(0) as usize;
     let args = if let Some(parking) = wrapper.suspended_stack.take() {
+        wrapper.parked_roots.clear();
         let external = state_vm.restore_stack_from_c_api(parking);
         if count > external.len() {
             let error = state_vm.error("not enough arguments to resume".to_string());
@@ -2213,18 +2240,39 @@ pub unsafe extern "C" fn lua_resume(
             LUA_OK
         }
         Ok((false, results)) => {
-            wrapper.suspended_stack = Some(state_vm.park_stack_for_c_api(results));
+            park_stack(wrapper, state_vm, results);
             LUA_YIELD
         }
         Err(error) => {
             let status = push_error(state_vm, error);
-            let error_value = state_vm
-                .stack_get(state_vm.get_top().saturating_sub(1))
-                .unwrap_or_default();
-            wrapper.suspended_stack = Some(state_vm.park_stack_for_c_api(vec![error_value]));
+            let top = state_vm.get_top();
+            if let Some(error_value) = state_vm.stack_get(top.saturating_sub(1))
+                && wrapper.handle.is_userdata()
+            {
+                let _ = state_vm.set_top(top - 1);
+                park_stack(wrapper, state_vm, vec![error_value]);
+            }
             status
         }
     }
+}
+
+/// Shows the C caller of `lua_resume` only `exposed` on the coroutine's stack,
+/// keeping the hidden stack reachable for the GC until the next resume. The
+/// main thread (which has no handle) cannot be suspended.
+fn park_stack(wrapper: &mut lua_State, state: &mut LuaState, exposed: Vec<LuaValue>) {
+    let Some(handle) = wrapper.handle.as_gc_ptr() else {
+        for value in exposed {
+            let _ = state.push_value(value);
+        }
+        return;
+    };
+    wrapper.parked_roots.clear();
+    wrapper
+        .parked_roots
+        .extend_from_slice(&state.stack()[..state.get_top()]);
+    state.gc_barrier_back(handle);
+    wrapper.suspended_stack = Some(state.park_stack_for_c_api(exposed));
 }
 
 #[unsafe(no_mangle)]
@@ -2626,7 +2674,7 @@ pub unsafe extern "C" fn lua_getupvalue(
     if name.is_empty() {
         c"".as_ptr()
     } else {
-        cache_c_bytes(state, name.as_bytes())
+        c_name(state, name.as_bytes())
     }
 }
 
@@ -2680,7 +2728,7 @@ pub unsafe extern "C" fn lua_setupvalue(
     if name.is_empty() {
         c"".as_ptr()
     } else {
-        cache_c_bytes(state, name.as_bytes())
+        c_name(state, name.as_bytes())
     }
 }
 
@@ -2872,18 +2920,18 @@ pub unsafe extern "C" fn lua_getinfo(
             .name
             .as_deref()
             .filter(|name| !name.is_empty())
-            .map_or(ptr::null(), |name| cache_c_bytes(state, name.as_bytes()));
+            .map_or(ptr::null(), |name| c_name(state, name.as_bytes()));
         (*record).namewhat = info.namewhat.as_deref().map_or(c"".as_ptr(), |name| {
             if name.is_empty() {
                 c"".as_ptr()
             } else {
-                cache_c_bytes(state, name.as_bytes())
+                c_name(state, name.as_bytes())
             }
         });
     }
     if options.contains('S') {
         (*record).source = info.source.as_deref().map_or(c"=?".as_ptr(), |source| {
-            cache_c_bytes(state, source.as_bytes())
+            c_name(state, source.as_bytes())
         });
         (*record).what = match info.what {
             Some("Lua") => c"Lua".as_ptr(),
@@ -2955,7 +3003,7 @@ pub unsafe extern "C" fn lua_getlocal(
         let Some(local) = function.chunk().locals.get(local_index as usize - 1) else {
             return ptr::null();
         };
-        return cache_c_bytes(state, local.name.as_bytes());
+        return c_name(state, local.name.as_bytes());
     }
     let Some(level) = debug_level(record) else {
         return ptr::null();
@@ -2964,7 +3012,7 @@ pub unsafe extern "C" fn lua_getlocal(
         return ptr::null();
     };
     let _ = state_vm.push_value(value);
-    cache_c_bytes(state, name.as_bytes())
+    c_name(state, name.as_bytes())
 }
 
 #[unsafe(no_mangle)]
@@ -2991,7 +3039,7 @@ pub unsafe extern "C" fn lua_setlocal(
         return ptr::null();
     };
     let _ = state_vm.stack_set(slot, value);
-    cache_c_bytes(state, name.as_bytes())
+    c_name(state, name.as_bytes())
 }
 
 #[unsafe(no_mangle)]
@@ -3003,11 +3051,6 @@ pub unsafe extern "C" fn lua_sethook(
 ) {
     let Some(wrapper) = api(state) else { return };
     wrapper.c_hook = hook;
-    let root = if wrapper.root.is_null() {
-        state
-    } else {
-        wrapper.root
-    };
     let Some(state_vm) = wrapper.state.as_mut() else {
         return;
     };
@@ -3037,9 +3080,9 @@ pub unsafe extern "C" fn lua_sethook(
             .stack_get(base + 1)
             .and_then(|value| value.as_integer())
             .map_or(-1, |line| line as c_int);
-        let wrapper = unsafe { canonical_wrapper(root, state_vm as *mut LuaState) };
+        let wrapper = unsafe { wrapper_for(state_vm) };
         if wrapper.is_null() {
-            return Err(state_vm.error("debug hook has no canonical lua_State".to_string()));
+            return Err(state_vm.error("not enough memory for the C API state".to_string()));
         }
         let mut record = lua_Debug {
             event,
@@ -3383,6 +3426,7 @@ mod tests {
     #[allow(improper_ctypes)]
     unsafe extern "C" {
         fn lua_getfield(state: *mut lua_State, index: c_int, key: *const c_char) -> c_int;
+        fn lua_getglobal(state: *mut lua_State, name: *const c_char) -> c_int;
         fn lua_getmetatable(state: *mut lua_State, index: c_int) -> c_int;
         fn lua_setfield(state: *mut lua_State, index: c_int, key: *const c_char);
         fn lua_callk(
@@ -3392,6 +3436,113 @@ mod tests {
             context: lua_KContext,
             continuation: lua_KFunction,
         );
+        fn lua_setglobal(state: *mut lua_State, name: *const c_char);
+        fn lua_pcallk(
+            state: *mut lua_State,
+            nargs: c_int,
+            nresults: c_int,
+            error_function: c_int,
+            context: lua_KContext,
+            continuation: lua_KFunction,
+        ) -> c_int;
+    }
+
+    unsafe extern "C" fn add_integers(state: *mut lua_State) -> c_int {
+        let sum = lua_tointegerx(state, 1, ptr::null_mut()) + lua_tointegerx(state, 2, ptr::null_mut());
+        lua_pushinteger(state, sum);
+        1
+    }
+
+    unsafe extern "C" fn call_argument(state: *mut lua_State) -> c_int {
+        lua_callk(state, 0, 0, 0, None);
+        0
+    }
+
+    #[test]
+    fn error_raised_through_lua_callk_keeps_its_value() {
+        unsafe {
+            let state = luaL_newstate();
+            luaL_openlibs(state);
+            lua_pushcclosure(state, Some(call_argument), 0);
+            lua_setglobal(state, c"ccall".as_ptr());
+            let source = c"local ok, e = pcall(ccall, function() error({code = 7}) end)
+                assert(not ok and type(e) == 'table' and e.code == 7, tostring(e))";
+            assert_eq!(luaL_loadstring(state, source.as_ptr()), LUA_OK);
+            let status = lua_pcallk(state, 0, 0, 0, 0, None);
+            let message = lua_tolstring(state, -1, ptr::null_mut());
+            assert_eq!(status, LUA_OK, "{:?}", (!message.is_null()).then(|| CStr::from_ptr(message)));
+            lua_close(state);
+        }
+    }
+
+    #[test]
+    fn repeated_string_conversions_do_not_accumulate_copies() {
+        unsafe {
+            let state = luaL_newstate();
+            lua_createtable(state, 0, 0);
+            for _ in 0..1000 {
+                lua_pushstring(state, c"value".as_ptr());
+                assert!(!lua_tolstring(state, -1, ptr::null_mut()).is_null());
+                lua_setfield(state, 1, c"key".as_ptr());
+            }
+            assert!((*state).lua_strings.len() <= 2);
+            lua_close(state);
+        }
+    }
+
+    #[test]
+    fn native_c_function_runs_in_a_rust_created_state() {
+        use crate::LuaApi;
+        let mut lua = crate::Lua::new_with_language(SafeOption::default(), LuaLanguageLevel::Lua53);
+        lua.open_stdlib(Stdlib::All).unwrap();
+        let global = lua.global_state_mut();
+        let function = external_c_function(global.main_state(), add_integers as *mut c_void).unwrap();
+        global.set_global("cadd", function).unwrap();
+        lua.execute(
+            "assert(cadd(2, 3) == 5)
+             local co = coroutine.wrap(function() return cadd(4, 5) + cadd(1, 1) end)
+             assert(co() == 11)",
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn values_of_a_coroutine_suspended_by_lua_resume_survive_collection() {
+        unsafe {
+            let state = luaL_newstate();
+            luaL_openlibs(state);
+            let source = c"collected = false
+                return function()
+                    local guard = setmetatable({}, {__gc = function() collected = true end})
+                    coroutine.yield(1)
+                    return guard ~= nil
+                end";
+            assert_eq!(luaL_loadstring(state, source.as_ptr()), LUA_OK);
+            lua_callk(state, 0, 1, 0, None);
+            let thread = lua_newthread(state);
+            lua_pushvalue(state, 1);
+            lua_xmove(state, thread, 1);
+            assert_eq!(lua_resume(thread, state, 0), LUA_YIELD);
+            lua_gc(state, LUA_GCCOLLECT, 0);
+            lua_gc(state, LUA_GCCOLLECT, 0);
+            lua_getglobal(state, c"collected".as_ptr());
+            assert_eq!(lua_toboolean(state, -1), 0);
+            assert_eq!(lua_resume(thread, state, 0), LUA_OK);
+            assert_eq!(lua_toboolean(thread, -1), 1);
+            lua_close(state);
+        }
+    }
+
+    #[test]
+    fn pushing_an_absent_stack_slot_pushes_nil() {
+        unsafe {
+            let state = luaL_newstate();
+            lua_pushinteger(state, 1);
+            lua_pushvalue(state, 3);
+            assert_eq!(lua_gettop(state), 2);
+            assert_eq!(lua_type(state, 2), LUA_TNIL);
+            lua_close(state);
+        }
     }
 
     unsafe extern "C" fn fallback(state: *mut lua_State) -> c_int {

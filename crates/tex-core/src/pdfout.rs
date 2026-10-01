@@ -101,6 +101,12 @@ pub struct PdfPage {
     pub display_list: Option<crate::boxes::DisplayList>,
     /// pdfTeX "Generate ProcSet if desired" (`\pdfomitprocset` at shipout)
     pub procset: bool,
+    /// pdfTeX `pdf_image_procset`: IMAGE_COLOR_* bits of the page's images
+    pub image_procset: u8,
+    /// pdfTeX `pdf_ximage_list`: image objects painted, in first-use order
+    pub ximages: Vec<i32>,
+    /// pdfTeX `pdf_page_group_val`: the page's /Group object (0 = none)
+    pub group: i32,
 }
 
 pub struct PdfDoc {

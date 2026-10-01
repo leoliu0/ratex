@@ -55,15 +55,19 @@ fn x_over_n(x: i64, n: i64) -> i64 {
 }
 
 /// tex.web `prune_page_top` (§18869): after a split, leading discardables
-/// (glue/kern/penalty) are dropped, whatsits/marks/insertions stay, and a
-/// `split_top_skip` glue shrunk by the first box's height opens the list.
-/// Scanning stops at the first box/rule; everything after it is untouched.
-fn prune_page_top_list(list: NodeList, topskip: &Glue) -> NodeList {
+/// (glue/kern/penalty, and pdfTeX's snap nodes, counted in `snaps`) are
+/// dropped, whatsits/marks/insertions stay, and a `split_top_skip` glue
+/// shrunk by the first box's height opens the list. Scanning stops at the
+/// first box/rule; everything after it is untouched.
+fn prune_page_top_list(list: NodeList, topskip: &Glue, snaps: &mut usize) -> NodeList {
     let mut out: NodeList = Vec::new();
     let mut it = list.into_iter();
     loop {
         match it.next() {
             None => return out,
+            Some(Node::Whatsit(
+                crate::boxes::WhatIt::PdfSnapY(_) | crate::boxes::WhatIt::PdfSnapYComp(_),
+            )) => *snaps += 1,
             Some(n @ Node::Mark { .. })
             | Some(n @ Node::Ins { .. })
             | Some(n @ Node::Whatsit(_)) => out.push(n),
@@ -679,6 +683,19 @@ impl Engine {
                     // tex.web: mark nodes contribute without affecting page dimensions;
                     // first_mark and bot_mark are updated only at fire_up for the chosen break
                 }
+                // pdfTeX: snap nodes reaching an empty page are recycled
+                Node::Whatsit(
+                    crate::boxes::WhatIt::PdfSnapY(_) | crate::boxes::WhatIt::PdfSnapYComp(_),
+                ) if !st.box_seen => {
+                    self.report_discarded_snap();
+                    self.page_list.remove(idx);
+                    if let Some(spot) = st.best.as_mut() {
+                        if idx < spot.cut {
+                            spot.cut -= 1;
+                        }
+                    }
+                    advance = false;
+                }
                 Node::Adj(a) => {
                     let a = *a;
                     if st.goal_set {
@@ -1160,7 +1177,11 @@ impl Engine {
                             // tail with this node's LOCAL \splittopskip
                             let pos = (base + i).min(queue.len());
                             let rest: NodeList = queue.drain(pos..).collect();
-                            let pruned = prune_page_top_list(rest, &topskip);
+                            let mut snaps = 0;
+                            let pruned = prune_page_top_list(rest, &topskip, &mut snaps);
+                            for _ in 0..snaps {
+                                self.report_discarded_snap();
+                            }
                             if !pruned.is_empty() {
                                 remainder = Some(pruned);
                             }
@@ -1638,11 +1659,23 @@ impl Engine {
             minor_version,
             draftmode: int(self, IntParam::PdfDraftMode).clamp(0, 1),
             decimal_digits: int(self, IntParam::PdfDecimalDigits).clamp(0, 4) as u32,
+            gamma: int(self, IntParam::PdfGamma).clamp(0, 1_000_000),
+            image_gamma: int(self, IntParam::PdfImageGamma).clamp(0, 1_000_000),
+            image_hicolor: int(self, IntParam::PdfImageHicolor).clamp(0, 1) == 1,
+            image_apply_gamma: int(self, IntParam::PdfImageApplyGamma).clamp(0, 1) == 1,
+            inclusion_copy_font: int(self, IntParam::PdfInclusionCopyFonts).clamp(0, 1) == 1,
         };
         self.pdf_fixed = Some(fixed);
         self.pdf_doc.major_version = major_version;
         self.pdf_doc.minor_version = Some(minor_version);
         self.pdf_doc.decimal_digits = fixed.decimal_digits;
+    }
+
+    /// pdfTeX `print("snap node being discarded")` (build_page and
+    /// prune_page_top): no line break around the message.
+    pub(crate) fn report_discarded_snap(&mut self) {
+        self.append_term("snap node being discarded");
+        self.append_log("snap node being discarded");
     }
 
     /// `\pdfdraftmode` was positive when the output was fixed: no PDF file

@@ -179,17 +179,14 @@ fn pdfrestore_keeps_following_image_in_the_restored_coordinate_system() {
     let pdf = lopdf::Document::load_mem(&bytes).unwrap();
     let page = *pdf.get_pages().values().next().expect("one output page");
     let stream = String::from_utf8(pdf.get_page_content(page)).unwrap();
+    // pdfTeX out_image: the image cm (4 decimals of bp) precedes `/Im Do`
     let image_ops: Vec<&str> = stream
         .lines()
-        .filter(|line| line.trim_end().ends_with(" Do"))
+        .filter(|line| line.starts_with("9.9626 "))
         .collect();
-    assert_eq!(image_ops.len(), 2, "{stream}");
-    assert!(
-        image_ops[0].starts_with("9.963 0 0 9.963 0 0 cm "),
-        "{stream}"
-    );
-    assert!(
-        image_ops[1].starts_with("9.963 0 0 9.963 9.962 0 cm "),
+    assert_eq!(
+        image_ops,
+        ["9.9626 0 0 9.9626 0 0 cm", "9.9626 0 0 9.9626 9.962 0 cm"],
         "{stream}"
     );
     std::fs::remove_dir_all(dir).unwrap();

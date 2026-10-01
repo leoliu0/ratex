@@ -7,6 +7,7 @@ use crate::Stdlib;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SandboxConfig {
     pub basic: bool,
+    pub bit32: bool,
     pub math: bool,
     pub string: bool,
     pub table: bool,
@@ -32,6 +33,7 @@ impl Default for SandboxConfig {
         Self {
             basic: true,
             math: true,
+            bit32: false,
             string: true,
             table: true,
             utf8: true,
@@ -62,6 +64,7 @@ impl SandboxConfig {
     pub fn with_stdlib(mut self, lib: Stdlib) -> Self {
         match lib {
             Stdlib::Basic => self.basic = true,
+            Stdlib::Bit32 => self.bit32 = true,
             Stdlib::Math => self.math = true,
             Stdlib::String => self.string = true,
             Stdlib::Table => self.table = true,
@@ -73,6 +76,7 @@ impl SandboxConfig {
             Stdlib::Debug => self.debug = true,
             Stdlib::All => {
                 self.basic = true;
+                self.bit32 = true;
                 self.math = true;
                 self.string = true;
                 self.table = true;
@@ -188,6 +192,7 @@ pub const SANDBOX_SAFE_BASIC_GLOBALS: &[&str] = &[
 
 pub const SANDBOX_LIB_GLOBALS: &[(Stdlib, &str)] = &[
     (Stdlib::Math, "math"),
+    (Stdlib::Bit32, "bit32"),
     (Stdlib::String, "string"),
     (Stdlib::Table, "table"),
     (Stdlib::Utf8, "utf8"),

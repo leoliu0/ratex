@@ -709,6 +709,8 @@ pub fn save_format_with_encoding(
         w.buf.extend_from_slice(&t.cat);
         write_code_map(&mut w, &t.unicode, |w, v| w.u8(v));
     }
+    // tex.web `format_ident`: the job id of every run that loads this format
+    w.str(&eng.format_ident);
 
     // web2c dumps the TCX tables (xord, xchr, xprn) into the format. Older
     // dumps end before this trailer and were all built with cp227.tcx.
@@ -1194,6 +1196,7 @@ pub fn load_format_bytes_into(data: &[u8], eng: &mut Engine) -> Result<(), Strin
     eng.pdf_backend.glyph_unicode = scratch.pdf_backend.glyph_unicode;
     eng.xprn = scratch.xprn;
     eng.tcx = scratch.tcx;
+    eng.format_ident = scratch.format_ident;
     eng.hyphen_exceptions = scratch.hyphen_exceptions;
     eng.par_shape = scratch.par_shape;
     eng.penalty_shapes = scratch.penalty_shapes;
@@ -1482,6 +1485,7 @@ fn load_state(r: &mut R, eng: &mut Engine) -> io::Result<()> {
             return Err(bad("invalid catcode table"));
         }
     }
+    eng.format_ident = r.str()?;
     // translation tables: the trailer, or cp227 for dumps without one
     if r.p == r.b.len() {
         eng.xprn = crate::tex_bytes::cp227_xprn();

@@ -221,6 +221,11 @@ pub struct Engine {
     pub(crate) lua_bytecodes: std::collections::BTreeMap<u32, Vec<u8>>,
     pub(crate) lua_names: std::collections::BTreeMap<u16, String>,
     pub ini_mode: bool, // -ini: format-building mode
+    /// tex.web `format_ident`: ` (INITEX)` until a `\dump` builds a format,
+    /// ` (preloaded format=<job> <year>.<month>.<day>)` in a loaded one. It
+    /// seeds pdfTeX's job id and so the `\pdfuniqueresname` prefix.
+    pub format_ident: String,
+    /// LuaTeX `\formatname`: the stem of the loaded format file.
     pub format_name: String,
     pub job_name: String,
     pub halt_on_error: bool,
@@ -413,6 +418,8 @@ pub struct Engine {
     /// pdfTeX `pdf_snapx_refpos`/`pdf_snapy_refpos` (\pdfsnaprefpoint).
     pub pdf_snap_refpos: (i64, i64),
     pub pdf_xforms: crate::FxHashMap<i32, (i32, i32, i32)>,
+    /// `\pdfxform` boxes waiting to be shipped (see `PendingForm`).
+    pub(crate) pdf_pending_forms: crate::FxHashMap<i32, PendingForm>,
     /// pdfTeX color stacks (\pdfcolorstack, \pdfcolorstackinit)
     pub color_stacks: crate::pdfrender::ColorStacks,
     pub shipout_pending: bool,
@@ -675,11 +682,15 @@ pub struct Engine {
     pub pdf_last_obj: i32,
     pub pdf_last_xform: i32,
     pub pdf_last_ximage: i32,
+    /// pdfTeX `pdf_xform_count` / `pdf_ximage_count`: the `n` of the
+    /// `/Fm<n>` and `/Im<n>` resource names, counted per document.
+    pub(crate) pdf_xform_count: i32,
+    pub(crate) pdf_ximage_count: i32,
     pub pdf_last_ximage_pages: i32,
     pub pdf_last_link: i32,
     pub pdf_last_annot: i32,
-    /// next free object number for \pdfobj-style reservations (pdfTeX
-    /// reserves 1..4 for Catalog/Pages/Info/Outlines).
+    /// next free object number (pdfTeX numbers objects in creation order
+    /// from 1; the writer's own objects follow the last reserved number).
     pub pdf_next_obj: i32,
     /// Object numbers allocated specifically by `\pdfobj reserveobjnum` and
     /// still available for one `\pdfobj useobjnum` definition.
@@ -1020,6 +1031,7 @@ impl Engine {
             pdf_form_procsets: crate::FxHashMap::default(),
             pdf_snap_refpos: (0, 0),
             pdf_xforms: crate::FxHashMap::default(),
+            pdf_pending_forms: crate::FxHashMap::default(),
             color_stacks: crate::pdfrender::ColorStacks::default(),
             prev_graf: 0,
             after_token: false,
@@ -1030,6 +1042,7 @@ impl Engine {
             lua_bytecodes: Default::default(),
             lua_names: Default::default(),
             ini_mode,
+            format_ident: " (INITEX)".to_string(),
             format_name: String::new(),
             job_name: String::new(),
             halt_on_error: false,
@@ -1120,8 +1133,10 @@ impl Engine {
             pdf_last_obj: 0,
             pdf_last_xform: 0,
             pdf_last_ximage: 0,
+            pdf_xform_count: 0,
+            pdf_ximage_count: 0,
             pdf_last_ximage_pages: 0,
-            pdf_next_obj: 5,
+            pdf_next_obj: 1,
             pdf_reserved_objnums: crate::FxHashSet::default(),
             pdf_backend: Default::default(),
             pdf_last_link: 0,
@@ -1539,9 +1554,16 @@ impl Engine {
             let id = eng.cs.intern(n);
             eng.eqtb.assign(id, Equiv::Prim(Prim::IntP(*p)), true);
         }
+        // pdftex.web "Initialize table entries": `\pdfminorversion=4` and
+        // `\pdfcompresslevel=9` (pdfTeX's -ini values; pdftexconfig.tex then
+        // sets 7 and 9 in a format). pdfTeX also starts with `\pdfoutput=0`
+        // (DVI); this engine has no DVI writer and every shipout is a PDF
+        // page, so `\pdfoutput` stays 1 and packages that test it (ifpdf,
+        // iftex, graphics drivers) see the output mode that really happens.
         eng.eqtb.int_params[IntParam::PdfOutput.idx() as usize] = 1;
         eng.eqtb.int_params[IntParam::PdfTexVersion.idx() as usize] = 140;
-        eng.eqtb.int_params[IntParam::PdfMinorVersion.idx() as usize] = 7;
+        eng.eqtb.int_params[IntParam::PdfMinorVersion.idx() as usize] = 4;
+        eng.eqtb.int_params[IntParam::PdfCompressLevel.idx() as usize] = 9;
         eng.eqtb.int_params[IntParam::EtxVersion.idx() as usize] = 2;
         eng.eqtb.int_params[IntParam::PaperQuality.idx() as usize] = 1;
         // pdftex.web §[32a] "Initialize table entries": IniTeX defaults.
@@ -1632,7 +1654,6 @@ impl Engine {
             (b"everyeof", ToksParam::EveryEOF),
             (b"output", ToksParam::Output),
             (b"errhelp", ToksParam::ErrHelp),
-            (b"pdftrailerid", ToksParam::PdfTrailerId),
             (b"pdfpkmode", ToksParam::PdfPkMode),
         ];
         for (n, p) in toksnames {
@@ -1872,6 +1893,7 @@ impl Engine {
         d!(eng, b"pdfxformname", PdfXFormName);
         d!(eng, b"pdflastximagecolordepth", PdfLastXImageColorDepth);
         d!(eng, b"pdftrailer", PdfTrailer);
+        d!(eng, b"pdftrailerid", PdfTrailerId);
         d!(eng, b"pdfincludechars", PdfIncludeChars);
         d!(eng, b"pdfcopyfont", PdfCopyFont);
         d!(eng, b"pdfspacefont", PdfSpaceFont);
@@ -1965,9 +1987,6 @@ impl Engine {
         eng.eqtb.int_params[IntParam::DelimiterFactor.idx() as usize] = 901;
         eng.eqtb.int_params[IntParam::ShowBoxBreadth.idx() as usize] = 5;
         eng.eqtb.int_params[IntParam::ShowBoxDepth.idx() as usize] = 3;
-        eng.eqtb.int_params[IntParam::PdfOutput.idx() as usize] = 1;
-        eng.eqtb.int_params[IntParam::EtxVersion.idx() as usize] = 2;
-        eng.eqtb.int_params[IntParam::PdfMinorVersion.idx() as usize] = 7;
         eng.eqtb.int_params[IntParam::PartokenNameCs.idx() as usize] = eng.ids.par as i32;
         // eTeX extended-mode identity (pgf/pgfkeys probe \eTeXrevision).
         // NOTE: XeTeX primitives are deliberately NOT registered: packages
@@ -2286,6 +2305,16 @@ pub struct FormProcset {
     pub offset: usize,
     pub text: bool,
     pub images: u8,
+}
+
+/// A `\pdfxform` not shipped yet: pdfTeX keeps the box (`obj_xform_box`)
+/// and ships it when a shipped page or form first paints it, or at once
+/// under `\immediate`; a form nobody paints is never written.
+pub struct PendingForm {
+    pub node: Option<crate::boxes::Node>,
+    pub size: (i32, i32, i32),
+    pub attr: String,
+    pub resources: String,
 }
 
 /// Image file types pdfTeX distinguishes (`img_type`); SVG is rasterized.

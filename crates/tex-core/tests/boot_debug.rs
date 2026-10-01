@@ -50,22 +50,25 @@ fn test_preamble_format_fast_boot() {
     eng1.run();
     assert_eq!(tex_core::format::check_dumpable(&eng1), Ok(()));
 
-    let tmp = std::env::temp_dir().join(format!("preamble_fast_boot_{}.fmt", std::process::id()));
-    let fmt_path = tmp.as_path();
-    tex_core::format::save_format(&eng1, fmt_path).expect("save preamble");
+    // Private directory: concurrent test processes share the temp directory,
+    // and `b.aux` is read back at \begin{document}.
+    let dir = std::env::temp_dir().join(format!("preamble_fast_boot_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let fmt_path = dir.join("preamble.fmt");
+    tex_core::format::save_format(&eng1, &fmt_path).expect("save preamble");
 
     let mut eng2 = Engine::new(false);
-    tex_core::format::load_format_into(fmt_path, &mut eng2).expect("load preamble");
+    tex_core::format::load_format_into(&fmt_path, &mut eng2).expect("load preamble");
     // a real job always has a name; `\jobname.aux` must not be the dotfile `.aux`
     eng2.job_name = "b".to_string();
-    eng2.out_dir = std::env::temp_dir().to_string_lossy().into_owned();
+    eng2.out_dir = dir.to_string_lossy().into_owned();
     eng2.input.push_file(
         "b.tex".to_string(),
         br"\begin{document} Math: $\begin{pmatrix} a & b \\ c & d \end{pmatrix}$ \end{document}"
             .to_vec(),
     );
     eng2.run();
-    let _ = std::fs::remove_file(fmt_path);
+    let _ = std::fs::remove_dir_all(&dir);
     assert_eq!(eng2.error_count, 0, "{}", eng2.term);
     assert_eq!(eng2.pdf_doc.pages.len(), 1);
 }
@@ -81,7 +84,9 @@ fn shipped_format_has_pdftex_px_unit_and_etex_revision() {
     tex_core::format::load_format_bytes_into(fmt_bytes, &mut eng).unwrap();
     tex_core::driver::finalize_format_load(&mut eng);
     eng.job_name = "px".to_string();
-    eng.out_dir = std::env::temp_dir().to_string_lossy().into_owned();
+    let dir = std::env::temp_dir().join(format!("px_unit_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    eng.out_dir = dir.to_string_lossy().into_owned();
     eng.input.push_file(
         "px.tex".to_string(),
         br"\documentclass{article}\begin{document}
@@ -91,5 +96,6 @@ fn shipped_format_has_pdftex_px_unit_and_etex_revision() {
             .to_vec(),
     );
     eng.run();
+    let _ = std::fs::remove_dir_all(&dir);
     assert!(eng.term.contains("[2.0075pt|6.0pt|.6|3|600]"), "{}", eng.term);
 }

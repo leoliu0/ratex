@@ -257,12 +257,6 @@ pub fn insert_everyjob(eng: &mut Engine) {
 }
 
 pub fn finish_pdf(eng: &mut Engine, optimize_pdf_size: bool) -> Result<Vec<u8>, String> {
-    // forms no page painted are still written, with the final /ProcSet
-    let mut forms: Vec<i32> = eng.pdf_form_procsets.keys().copied().collect();
-    forms.sort_unstable();
-    for form in forms {
-        eng.write_form_procset(form);
-    }
     eng.embed_used_fonts()?;
     // embed image XObjects
     struct ImageJob<'a> {

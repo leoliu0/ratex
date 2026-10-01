@@ -967,6 +967,7 @@ impl GlobalState {
         for &(lib, global_name) in SANDBOX_LIB_GLOBALS {
             let enabled = match lib {
                 Stdlib::Math => config.math,
+                Stdlib::Bit32 => config.bit32,
                 Stdlib::String => config.string,
                 Stdlib::Table => config.table,
                 Stdlib::Utf8 => config.utf8,

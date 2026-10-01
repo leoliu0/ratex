@@ -231,7 +231,9 @@ fn included_pdf_page_is_written_like_pdftex_write_epdf() {
         )),
         "{form}"
     );
-    assert!(form.contains(&format!("/BBox [10 20 110.5 70.25] /Group {group} 0 R")), "{form}");
+    // the user's /Group replaces the copied one: a dictionary repeats no key
+    assert_eq!(form.matches("/Group").count(), 1, "{form}");
+    assert!(form.contains("/BBox [10 20 110.5 70.25] /Resources"), "{form}");
     assert!(!form.contains("/Matrix"), "{form}");
     let rotated = object_text(&e, "/PTEX.PageNumber 2");
     assert!(rotated.contains("/Matrix [0 -1 1 0 0 200] /BBox [0 0 200 100]"), "{rotated}");

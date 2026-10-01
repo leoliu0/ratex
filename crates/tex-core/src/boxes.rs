@@ -708,6 +708,9 @@ pub enum Node {
     /// never stretched by font expansion; unlike an explicit kern it is not
     /// a legal breakpoint and is not discarded at a line break.
     AccentKern(i32),
+    /// LuaTeX `italic_kern` (kern subtype 3): italic correction kerns
+    /// that math conversion inserts
+    ItalicKern(i32),
     /// pdfTeX `margin_kern_node`: a kern of width `-w` placed at the very
     /// start (or just before the trailing `\rightskip`) of a line box to let
     /// the marginal character `c` protrude `w` into the margin when
@@ -900,7 +903,7 @@ fn single_dims(n: &Node, eqtb: &crate::eqtb::Eqtb) -> (i32, i32, i32) {
             ..
         } => (*lig_width, *lig_height, *lig_depth),
         Node::Glue(g) => (g.width, 0, 0),
-        Node::Kern(k) | Node::ExplicitKern(k) | Node::AccentKern(k) => (*k, 0, 0),
+        Node::Kern(k) | Node::ExplicitKern(k) | Node::AccentKern(k) | Node::ItalicKern(k) => (*k, 0, 0),
         // tex.web math_node: width = \mathsurround (math-on 1 / math-off 2);
         // an unconverted \mkern (kind 0) has no width yet
         Node::MathKern(k, MATH_ON..) => (*k, 0, 0),
@@ -1021,7 +1024,7 @@ pub fn vlist_dims(list: &[Node], eqtb: &crate::eqtb::Eqtb) -> (i32, i32, i32) {
                 x += d + *width as i64;
                 d = 0;
             }
-            Node::Kern(k) | Node::ExplicitKern(k) | Node::AccentKern(k) => {
+            Node::Kern(k) | Node::ExplicitKern(k) | Node::AccentKern(k) | Node::ItalicKern(k) => {
                 x += d + *k as i64;
                 d = 0;
             }
@@ -1866,7 +1869,7 @@ pub fn split_vlist(list: &[Node], target: i64) -> (NodeList, NodeList) {
                 height += depth + w;
                 depth = 0;
             }
-            Node::Kern(k) | Node::ExplicitKern(k) | Node::AccentKern(k) => {
+            Node::Kern(k) | Node::ExplicitKern(k) | Node::AccentKern(k) | Node::ItalicKern(k) => {
                 let w = *k as i64;
                 if seen_box && height + depth + w > target {
                     split_at = Some(i);

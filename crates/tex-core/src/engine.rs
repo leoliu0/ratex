@@ -187,7 +187,10 @@ pub struct Engine {
     /// True when the active macro chain exceeded its storage cap. Rendering
     /// inserts an ellipsis so retained frames never appear falsely adjacent.
     pub(crate) diagnostic_macro_trace_truncated: bool,
-    pub(crate) diagnostic_token_from_file: bool,
+    /// True while `diagnostic_physical_source` or `diagnostic_synthetic_source`
+    /// may be set. Both describe the token just fetched; the next fetch from a
+    /// token list clears them, and this flag keeps that check to one load.
+    pub(crate) diagnostic_sources_live: bool,
     /// Suppress normal trace unwinding while a construct emitted by a macro
     /// scans physical input (for example a macro-generated definition).
     pub(crate) diagnostic_trace_hold: u16,
@@ -870,7 +873,7 @@ impl Engine {
             pending_terminal_error_source: None,
             diagnostic_macro_trace: Vec::with_capacity(20),
             diagnostic_macro_trace_truncated: false,
-            diagnostic_token_from_file: false,
+            diagnostic_sources_live: false,
             diagnostic_trace_hold: 0,
             diagnostic_source_cs: None,
             diagnostic_physical_source: None,

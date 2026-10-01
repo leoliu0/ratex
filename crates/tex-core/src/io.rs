@@ -14,7 +14,6 @@ const MAX_TEX_INPUT_STREAM: i32 = 15;
 struct ScannerDiagnosticState {
     macro_trace: Vec<crate::token::CsId>,
     macro_trace_truncated: bool,
-    token_from_file: bool,
     trace_hold: u16,
     source_cs: Option<crate::token::CsId>,
     physical_source: Option<crate::engine::PhysicalTokenSource>,
@@ -197,7 +196,6 @@ impl Engine {
         ScannerDiagnosticState {
             macro_trace: self.diagnostic_macro_trace.clone(),
             macro_trace_truncated: self.diagnostic_macro_trace_truncated,
-            token_from_file: self.diagnostic_token_from_file,
             trace_hold: self.diagnostic_trace_hold,
             source_cs: self.diagnostic_source_cs,
             physical_source: self.diagnostic_physical_source,
@@ -210,13 +208,14 @@ impl Engine {
     fn restore_scanner_diagnostic_state(&mut self, state: ScannerDiagnosticState) {
         self.diagnostic_macro_trace = state.macro_trace;
         self.diagnostic_macro_trace_truncated = state.macro_trace_truncated;
-        self.diagnostic_token_from_file = state.token_from_file;
         self.diagnostic_trace_hold = state.trace_hold;
         self.diagnostic_source_cs = state.source_cs;
         self.diagnostic_physical_source = state.physical_source;
         self.diagnostic_macro_call_site = state.macro_call_site;
         self.diagnostic_macro_call_span = state.macro_call_span;
         self.diagnostic_synthetic_source = state.synthetic_source;
+        self.diagnostic_sources_live = self.diagnostic_physical_source.is_some()
+            || self.diagnostic_synthetic_source.is_some();
     }
 
     pub fn do_input(&mut self) {

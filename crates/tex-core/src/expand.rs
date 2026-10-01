@@ -221,7 +221,6 @@ impl Engine {
                 }
             }
             loop {
-                let traced = !self.align_macro_arg && self.diagnostic_trace_hold == 0;
                 match self.input.stack.last_mut() {
                     Some(crate::input::Source::TokList {
                         toks,
@@ -229,23 +228,21 @@ impl Engine {
                         trace_depth,
                         ..
                     }) => {
-                        if traced {
-                            self.diagnostic_macro_trace.truncate(*trace_depth as usize);
-                        }
+                        let depth = *trace_depth;
                         if let Some(&tok) = toks.get(*pos) {
                             *pos += 1;
-                            self.note_token_list_fetch();
+                            self.note_token_list_fetch(depth);
                             break 'fetch tok;
                         }
+                        self.unwind_macro_trace(depth);
                     }
                     Some(crate::input::Source::MacroFrame(frame)) => {
-                        if traced {
-                            self.diagnostic_macro_trace.truncate(frame.trace_depth as usize);
-                        }
+                        let depth = frame.trace_depth;
                         if let Some(tok) = frame.next_token() {
-                            self.note_token_list_fetch();
+                            self.note_token_list_fetch(depth);
                             break 'fetch tok;
                         }
+                        self.unwind_macro_trace(depth);
                     }
                     _ => break 'fetch self.get_next_raw(),
                 }
@@ -300,18 +297,44 @@ impl Engine {
         t
     }
 
-    /// A token from a token list has no physical spelling of its own.
+    /// A token from a token list has no physical spelling of its own, and the
+    /// macro trace returns to the list's ancestry. In the steady state (no
+    /// recorded source, trace no deeper than the list) this only compares.
     #[inline(always)]
-    fn note_token_list_fetch(&mut self) {
-        self.diagnostic_token_from_file = false;
+    fn note_token_list_fetch(&mut self, depth: u8) {
+        if self.diagnostic_sources_live {
+            self.clear_diagnostic_sources();
+        }
+        self.unwind_macro_trace(depth);
+    }
+
+    /// Drop macro-trace entries that do not belong to a token list with
+    /// `depth` ancestry entries, unless a macro argument or a held
+    /// definition is being scanned.
+    #[inline(always)]
+    pub(crate) fn unwind_macro_trace(&mut self, depth: u8) {
+        if self.diagnostic_macro_trace.len() > usize::from(depth)
+            && !self.align_macro_arg
+            && self.diagnostic_trace_hold == 0
+        {
+            self.diagnostic_macro_trace.truncate(usize::from(depth));
+        }
+    }
+
+    #[inline(never)]
+    pub(crate) fn clear_diagnostic_sources(&mut self) {
         self.diagnostic_synthetic_source = None;
         self.diagnostic_physical_source = None;
+        self.diagnostic_sources_live = false;
     }
 
     /// A pushed-back token keeps the source locations recorded for it, and
     /// only for it.
     #[inline]
     fn retain_diagnostic_sources_for(&mut self, t: Token) {
+        if !self.diagnostic_sources_live {
+            return;
+        }
         if self
             .diagnostic_synthetic_source
             .as_ref()
@@ -951,14 +974,14 @@ impl Engine {
                                 return t;
                             }
                         }
-                        _ => {
+                        None => {
                             if self.synth_exp_args_if_match(id) {
                                 break 'expand;
                             }
-                            if self.eqtb.get(id).is_none() {
-                                self.undefined_cs_error(t);
-                                break 'expand;
-                            }
+                            self.undefined_cs_error(t);
+                            break 'expand;
+                        }
+                        _ => {
                             self.set_cur_cs(t);
                             return t;
                         }
@@ -1411,6 +1434,7 @@ impl Engine {
                 }
                 if let Some(mark) = csname_origin {
                     self.diagnostic_synthetic_source = Some((id, mark, csname_span.max(1)));
+                    self.diagnostic_sources_live = true;
                 }
                 Some(Token::from_cs(id))
             }
@@ -2851,21 +2875,25 @@ impl Engine {
     /// \outer macro, and for the end-of-\write and end-of-output sentinels,
     /// which stand for TeX's frozen outer `\endwrite`. Takes the token as
     /// fetched: tokens guarded by \noexpand are exempt (tex.web §358).
+    #[inline(always)]
     fn is_outer_token(&self, t: Token) -> bool {
-        let id = if t.is_cs() {
-            if t.0 >= NOEXP_FLAG {
-                return false;
-            }
-            t.cs_id()
-        } else if t.is_char() && t.cc() == CAT_ACTIVE {
-            match self.active_cs_lookup(t.chr()) {
-                Some(id) => id,
-                None => return false,
-            }
+        if t.is_cs() {
+            t.0 < NOEXP_FLAG && self.is_outer_cs(t.cs_id())
+        } else if t.0 < 0x8000_0000 {
+            t.cc() == CAT_ACTIVE && self.is_outer_active(t.chr())
         } else {
-            return t.0 >= crate::page::WRITE_END_TOKEN.0 && t != EOF_MARKER && t != PAR_END;
-        };
+            t.0 >= crate::page::WRITE_END_TOKEN.0 && t != EOF_MARKER && t != PAR_END
+        }
+    }
+
+    #[inline(always)]
+    fn is_outer_cs(&self, id: CsId) -> bool {
         matches!(self.eqtb.resolve(id), Some(Equiv::Macro(m)) if m.outer)
+    }
+
+    #[inline(never)]
+    fn is_outer_active(&self, c: u32) -> bool {
+        self.active_cs_lookup(c).is_some_and(|id| self.is_outer_cs(id))
     }
     pub fn skip_raw_spaces(&mut self) {
         if self.pushed.is_empty() {

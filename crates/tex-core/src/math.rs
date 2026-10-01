@@ -2399,14 +2399,18 @@ impl Engine {
         // while pass 2 (spacing) only follows style nodes
         let mut style: GStyle = start;
         let mut sp_style: GStyle = start;
-        // \left...\right buffering stack: (left delimiter code and origin,
-        // buffered raw nodes)
-        let mut lr_stack: Vec<(i32, MathDiagnosticOrigin, NodeList)> = Vec::new();
+        // the open \left...\right group of this list: (left delimiter code and
+        // origin, buffered raw nodes). A nested group stays raw in the buffer
+        // (`lr_nest` counts its open markers) so the recursive conversion of
+        // the body builds it as an Inner atom in the body's own style
+        // (tex.web: the nested group is an inner_noad of the outer sub_mlist).
+        let mut lr_open: Option<(i32, MathDiagnosticOrigin, NodeList)> = None;
+        let mut lr_nest = 0usize;
         let mut i = 0usize;
         while i < list.len() {
             let n = &list[i];
             if let Node::Style(s) = n {
-                if let Some((_, _, buf)) = lr_stack.last_mut() {
+                if let Some((_, _, buf)) = lr_open.as_mut() {
                     buf.push(n.clone());
                 } else {
                     style = gstyle_of(*s);
@@ -2424,8 +2428,13 @@ impl Engine {
                     origin,
                 } = n
                 {
-                    let code = delim_code_of(*small, *large);
-                    lr_stack.push((code, origin.clone(), Vec::new()));
+                    if let Some((_, _, buf)) = lr_open.as_mut() {
+                        buf.push(n.clone());
+                        lr_nest += 1;
+                    } else {
+                        let code = delim_code_of(*small, *large);
+                        lr_open = Some((code, origin.clone(), Vec::new()));
+                    }
                     i += 1;
                     continue;
                 }
@@ -2472,8 +2481,16 @@ impl Engine {
                     _ => None,
                 };
                 if let Some((small, large, scripts, limits, close_origin)) = close {
+                    if lr_nest > 0 {
+                        lr_nest -= 1;
+                        if let Some((_, _, buf)) = lr_open.as_mut() {
+                            buf.push(n.clone());
+                        }
+                        i += 1;
+                        continue;
+                    }
                     let code = delim_code_of(small, large);
-                    match lr_stack.pop() {
+                    match lr_open.take() {
                         Some((lopen, open_origin, buf)) => {
                             // tex.web §762: max_h/max_d come from the inner
                             // noads only; `\middle` delimiters are sized
@@ -2498,12 +2515,7 @@ impl Engine {
                                 }
                                 _ => vec![gb],
                             };
-                            match lr_stack.last_mut() {
-                                Some((_, _, pbuf)) => pbuf.extend(tail),
-                                None => {
-                                    self.emit_atom(&mut out, &mut prev, Some(CL_INNER), tail, sp_style)
-                                }
-                            }
+                            self.emit_atom(&mut out, &mut prev, Some(CL_INNER), tail, sp_style);
                         }
                         None => {
                             // A stray close is an ordinary close delimiter.
@@ -2516,7 +2528,7 @@ impl Engine {
                     continue;
                 }
                 // buffered \left...\right content (middles etc. keep going in)
-                if let Some((_, _, buf)) = lr_stack.last_mut() {
+                if let Some((_, _, buf)) = lr_open.as_mut() {
                     buf.push(n.clone());
                     i += 1;
                     continue;
@@ -2554,6 +2566,13 @@ impl Engine {
                 // tex.web §760: a \middle is spaced as a close noad before it
                 // and as an open noad after it (`r_type:=open_noad`)
                 prev = Some(if is_middle(n) { CL_OPEN } else { cls });
+                i += 1;
+                continue;
+            }
+            // A \left...\right body keeps its non-atoms raw: the recursive
+            // conversion applies \nonscript and mu units in the body's style.
+            if let Some((_, _, buf)) = lr_open.as_mut() {
+                buf.push(n.clone());
                 i += 1;
                 continue;
             }
@@ -2601,14 +2620,10 @@ impl Engine {
                 }
                 _ => n.clone(),
             };
-            if let Some((_, _, buf)) = lr_stack.last_mut() {
-                buf.push(converted);
-            } else {
-                out.push(converted);
-            }
+            out.push(converted);
             i += 1;
         }
-        while let Some((lopen, origin, buf)) = lr_stack.pop() {
+        if let Some((lopen, origin, buf)) = lr_open {
             let body = self.mlist_to_hlist_pen(&buf, style, false);
             let (_, bh, bd) = hlist_dims(&body, &self.eqtb);
             let needed = self.lr_delimiter_size(bh, bd, style);
@@ -4556,6 +4571,26 @@ mod tests {
         approx(pd, 11.60013, "parenleftbig depth");
         approx(-psh, 8.10007, "paren axis shift");
         let _ = pw;
+    }
+
+    /// oracle (pdftex -ini, this preamble): a `\left...\right` group nested
+    /// inside another is an Inner atom of the outer body (Ord-Inner gets
+    /// \thinmuskip), and mu glue in a body follows the body's own style.
+    #[test]
+    fn nested_left_right_group_is_inner_atom() {
+        let e = run_doc(concat!(
+            "\\delcode`[=\"05B302 \\delcode`]=\"05D303 \\thinmuskip=3mu\n",
+            "\\setbox0\\hbox{$\\left[a\\left(b\\right)\\right]$}\n",
+            "\\setbox1\\hbox{$\\left.a\\left(b\\right)\\right.$}\n",
+            "\\setbox2\\hbox{$\\left[\\left(b\\right)a\\right]$}\n",
+            "\\setbox3\\hbox{$\\left(\\scriptstyle a\\mskip18mu b\\right)$}\n",
+            "\\message{W=\\the\\wd0,\\the\\wd1,\\the\\wd2,\\the\\wd3}\n",
+        ));
+        assert!(
+            e.term.contains("W=24.57755pt,21.42197pt,24.57755pt,23.82654pt"),
+            "{}",
+            e.term
+        );
     }
 
     /// oracle: `\hbox{$\bar{x}$}` — accent vbox: zero-width accent shifted

@@ -1111,6 +1111,7 @@ impl<'a> RenderCtx<'a> {
                     list: inner,
                     kind,
                     lr,
+                    ..
                 } => {
                     let (bh, bd) = (*h as i64, *d as i64);
                     let sh = if rtl { -(*shift as i64) } else { *shift as i64 };
@@ -1389,6 +1390,7 @@ impl<'a> RenderCtx<'a> {
                     list: inner,
                     kind,
                     lr,
+                    ..
                 } => {
                     let (bw, bh, sh) = (*w as i64, *h as i64, *shift as i64);
 
@@ -1533,6 +1535,7 @@ impl<'a> RenderCtx<'a> {
             list: inner,
             kind,
             lr,
+            ..
         } = b
         else {
             return;

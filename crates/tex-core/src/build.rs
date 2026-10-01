@@ -260,6 +260,12 @@ impl Engine {
                 self.start_paragraph(true);
             }
             Mode::Math | Mode::DisplayMath => {
+                if self.engine_kind == crate::engine::EngineKind::LuaTeX {
+                    let (class, family, slot) = self.eqtb.lua_math_code(u32::from(c));
+                    let source = self.current_token_source_mark();
+                    self.set_math_char_lua(class, family, slot, u32::from(c), source);
+                    return;
+                }
                 let mc = self.eqtb.math_code[c as usize];
                 if mc & 0x8000 != 0 {
                     self.active_char(u32::from(c));

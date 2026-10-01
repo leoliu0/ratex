@@ -45,10 +45,6 @@ static LUATEX_ONLY: &[(&[u8], Prim)] = &[
     (b"attribute", Prim::Attribute),
     (b"attributedef", Prim::AttributeDef),
     (b"Ustack", Prim::Ustack),
-    (b"Umathfractiondelsize", Prim::Umathfractiondelsize),
-    (b"Umathstacknumup", Prim::Umathstacknumup),
-    (b"Umathstackdenomdown", Prim::Umathstackdenomdown),
-    (b"Umathstackvgap", Prim::Umathstackvgap),
     (b"Ustartmath", Prim::Ustartmath),
     (b"Ustopmath", Prim::Ustopmath),
     (b"pdfvariable", Prim::PdfVariable),
@@ -89,23 +85,80 @@ static LUATEX_ONLY: &[(&[u8], Prim)] = &[
     (b"exhyphenchar", Prim::IntP(IntParam::ExHyphenChar)),
     (b"firstvalidlanguage", Prim::IntP(IntParam::FirstValidLanguage)),
     (b"showstream", Prim::IntP(IntParam::ShowStream)),
+    (b"automatichyphenmode", Prim::IntP(IntParam::AutomaticHyphenMode)),
+    (b"automatichyphenpenalty", Prim::IntP(IntParam::AutomaticHyphenPenalty)),
+    (b"breakafterdirmode", Prim::IntP(IntParam::BreakAfterDirMode)),
+    (b"compoundhyphenmode", Prim::IntP(IntParam::CompoundHyphenMode)),
+    (b"discretionaryligaturemode", Prim::IntP(IntParam::DiscretionaryLigatureMode)),
+    (b"exceptionpenalty", Prim::IntP(IntParam::ExceptionPenalty)),
+    (b"explicithyphenpenalty", Prim::IntP(IntParam::ExplicitHyphenPenalty)),
+    (b"fixupboxesmode", Prim::IntP(IntParam::FixupBoxesMode)),
+    (b"glyphdimensionsmode", Prim::IntP(IntParam::GlyphDimensionsMode)),
+    (b"hyphenationbounds", Prim::IntP(IntParam::HyphenationBounds)),
+    (b"hyphenpenaltymode", Prim::IntP(IntParam::HyphenPenaltyMode)),
+    (b"localbrokenpenalty", Prim::IntP(IntParam::LocalBrokenPenalty)),
+    (b"localinterlinepenalty", Prim::IntP(IntParam::LocalInterLinePenalty)),
+    (b"luacopyinputnodes", Prim::IntP(IntParam::LuaCopyInputNodes)),
+    (b"mathdefaultsmode", Prim::IntP(IntParam::MathDefaultsMode)),
+    (b"mathdelimitersmode", Prim::IntP(IntParam::MathDelimitersMode)),
+    (b"mathdisplayskipmode", Prim::IntP(IntParam::MathDisplaySkipMode)),
+    (b"mathemptydisplaymode", Prim::IntP(IntParam::MathEmptyDisplayMode)),
+    (b"matheqdirmode", Prim::IntP(IntParam::MathEqDirMode)),
+    (b"matheqnogapstep", Prim::IntP(IntParam::MathEqnoGapStep)),
+    (b"mathflattenmode", Prim::IntP(IntParam::MathFlattenMode)),
+    (b"mathitalicsmode", Prim::IntP(IntParam::MathItalicsMode)),
+    (b"mathnolimitsmode", Prim::IntP(IntParam::MathNoLimitsMode)),
+    (b"mathpenaltiesmode", Prim::IntP(IntParam::MathPenaltiesMode)),
+    (b"mathrulesfam", Prim::IntP(IntParam::MathRulesFam)),
+    (b"mathrulesmode", Prim::IntP(IntParam::MathRulesMode)),
+    (b"mathrulethicknessmode", Prim::IntP(IntParam::MathRuleThicknessMode)),
+    (b"mathscriptboxmode", Prim::IntP(IntParam::MathScriptBoxMode)),
+    (b"mathscriptcharmode", Prim::IntP(IntParam::MathScriptCharMode)),
+    (b"mathscriptsmode", Prim::IntP(IntParam::MathScriptsMode)),
+    (b"mathsurroundmode", Prim::IntP(IntParam::MathSurroundMode)),
+    (b"nokerns", Prim::IntP(IntParam::NoKerns)),
+    (b"noligs", Prim::IntP(IntParam::NoLigs)),
+    (b"nospaces", Prim::IntP(IntParam::NoSpaces)),
+    (b"outputbox", Prim::IntP(IntParam::OutputBox)),
+    (b"prebinoppenalty", Prim::IntP(IntParam::PreBinOpPenalty)),
+    (b"predisplaygapfactor", Prim::IntP(IntParam::PreDisplayGapFactor)),
+    (b"prerelpenalty", Prim::IntP(IntParam::PreRelPenalty)),
+    (b"shapemode", Prim::IntP(IntParam::ShapeMode)),
+    (b"suppressfontnotfounderror", Prim::IntP(IntParam::SuppressFontNotFoundError)),
+    (b"suppressifcsnameerror", Prim::IntP(IntParam::SuppressIfCsnameError)),
+    (b"suppresslongerror", Prim::IntP(IntParam::SuppressLongError)),
+    (b"suppressmathparerror", Prim::IntP(IntParam::SuppressMathParError)),
+    (b"suppressoutererror", Prim::IntP(IntParam::SuppressOuterError)),
+    (b"suppressprimitiveerror", Prim::IntP(IntParam::SuppressPrimitiveError)),
+    (b"variablefam", Prim::IntP(IntParam::VariableFam)),
+    (b"textdirection", Prim::IntP(IntParam::TextDirection)),
+    (b"pardirection", Prim::IntP(IntParam::ParDirection)),
+    (b"bodydirection", Prim::IntP(IntParam::BodyDirection)),
+    (b"linedirection", Prim::IntP(IntParam::LineDirection)),
+    (b"mathdirection", Prim::IntP(IntParam::MathDirection)),
+    (b"pagedirection", Prim::IntP(IntParam::PageDirection)),
+    (b"pagetopoffset", Prim::DimP(DimParam::PageTopOffset)),
+    (b"pageleftoffset", Prim::DimP(DimParam::PageLeftOffset)),
+    (b"pagebottomoffset", Prim::DimP(DimParam::PageBottomOffset)),
+    (b"pagerightoffset", Prim::DimP(DimParam::PageRightOffset)),
+    (b"mathsurroundskip", Prim::GlueP(crate::prim::GlueParam::MathSurroundSkip)),
 ];
 
-/// LuaTeX `math_param_*` numbers (`set_math_param_cmd` chr values) of the
-/// `\Umath` parameters Ratex implements.
-pub(crate) const MATH_PARAM_STACK_VGAP: u32 = 15;
-pub(crate) const MATH_PARAM_STACK_NUM_UP: u32 = 16;
-pub(crate) const MATH_PARAM_STACK_DENOM_DOWN: u32 = 17;
-pub(crate) const MATH_PARAM_FRACTION_DEL_SIZE: u32 = 23;
+pub(crate) use crate::uprim::mp::*;
 
-pub(crate) fn umath_param_id(p: Prim) -> u32 {
-    match p {
-        Prim::Umathstackvgap => MATH_PARAM_STACK_VGAP,
-        Prim::Umathstacknumup => MATH_PARAM_STACK_NUM_UP,
-        Prim::Umathstackdenomdown => MATH_PARAM_STACK_DENOM_DOWN,
-        Prim::Umathfractiondelsize => MATH_PARAM_FRACTION_DEL_SIZE,
-        _ => unreachable!("not a \\Umath parameter primitive"),
+/// The meaning of a LuaTeX-only primitive name (everything not registered
+/// under a pdfTeX or e-TeX name).
+fn luatex_only(name: &[u8]) -> Option<Prim> {
+    if let Some(&(_, p)) = LUATEX_ONLY.iter().find(|(n, _)| *n == name) {
+        return Some(p);
     }
+    if let Some(&(_, u)) = crate::uprim::UPRIMS.iter().find(|(n, _)| *n == name) {
+        return Some(Prim::U(u));
+    }
+    crate::uprim::UMATH_NAMES
+        .iter()
+        .position(|n| *n == name)
+        .map(|id| Prim::UMath(id as u8))
 }
 
 /// LuaTeX names of primitives ratex registers under their pdfTeX or e-TeX
@@ -273,7 +326,12 @@ impl Engine {
         };
         let mut table = Vec::with_capacity(LUATEX_PRIMITIVES.len());
         for &(group, name) in LUATEX_PRIMITIVES {
-            let equiv = if let Some(&(_, p)) = LUATEX_ONLY.iter().find(|(n, _)| *n == name) {
+            let equiv = if name == b"alignmark" {
+                // chr '#' of `mac_param_cmd` (commands.c)
+                Some(Equiv::CharTok(Token::char(6, u32::from(b'#')).0))
+            } else if name == b"aligntab" {
+                Some(Equiv::CharTok(Token::char(4, u32::from(b'&')).0))
+            } else if let Some(p) = luatex_only(name) {
                 Some(Equiv::Prim(p))
             } else if let Some(&(_, target)) = ALIASES.iter().find(|(n, _)| *n == name) {
                 lookup(self, target)
@@ -338,6 +396,17 @@ impl Engine {
             (IntParam::ExHyphenChar, 45),
             (IntParam::FirstValidLanguage, 0),
             (IntParam::ShowStream, -1),
+            (IntParam::CompoundHyphenMode, 1),
+            (IntParam::MathDefaultsMode, 1),
+            (IntParam::MathEqnoGapStep, 1000),
+            (IntParam::MathFlattenMode, 1),
+            (IntParam::MathScriptBoxMode, 1),
+            (IntParam::MathScriptCharMode, 1),
+            (IntParam::OutputBox, 255),
+            (IntParam::PreBinOpPenalty, 10000),
+            (IntParam::PreRelPenalty, 10000),
+            (IntParam::PreDisplayGapFactor, 2000),
+            (IntParam::VariableFam, -1),
         ] {
             ints[p.idx() as usize] = v;
         }
@@ -345,6 +414,9 @@ impl Engine {
         dims[DimParam::PdfHOrigin.idx() as usize] = 0;
         dims[DimParam::PdfVOrigin.idx() as usize] = 0;
         dims[DimParam::PdfPxDimen.idx() as usize] = 65781;
+        for p in [DimParam::PageTopOffset, DimParam::PageLeftOffset, DimParam::PageBottomOffset, DimParam::PageRightOffset] {
+            dims[p.idx() as usize] = 4736287;
+        }
     }
 
     /// Store a resolved table: hidden backend control sequences get their

@@ -1251,3 +1251,32 @@ fn pdfgentounicode_gates_full_tounicode_cmaps() {
         }
     }
 }
+
+/// pdfTeX prints the MediaBox from the sp page size with `pdf_print_bp`
+/// (3 decimals) and omits it when \pdfpageattr has its own /MediaBox.
+/// Expected values are /usr/bin/pdftex output for the same input.
+#[test]
+fn mediabox_prints_page_size_like_pdftex() {
+    let mut engine = Engine::new(true);
+    engine.init_primitives();
+    engine.add_nullfont();
+    engine.input.push_file(
+        "mediabox.tex".into(),
+        br#"\catcode`\{=1 \catcode`\}=2
+\pdfpagewidth=210.3mm \pdfpageheight=280.13pt
+\shipout\hbox{}
+\pdfpageattr{/MediaBox [0 0 10 10]}
+\shipout\hbox{}
+\end"#
+            .to_vec(),
+    );
+    engine.run();
+    assert_eq!(engine.error_count, 0, "{}", engine.term);
+    let bytes = tex_core::pdffile::write_pdf(&engine.pdf_doc).expect("PDF serialization");
+    let text = String::from_utf8_lossy(&bytes);
+    let boxes: Vec<_> = text.match_indices("/MediaBox [").map(|(at, _)| {
+        let rest = &text[at..];
+        &rest[..rest.find(']').unwrap() + 1]
+    }).collect();
+    assert_eq!(boxes, ["/MediaBox [0 0 596.126 279.083]", "/MediaBox [0 0 10 10]"]);
+}

@@ -107,35 +107,6 @@ impl LuaEngine {
             .create_table()
             .map_err(|e| format!("tex table creation failed: {e:?}"))?;
 
-        // tex.sp
-        let sp_fn = self
-            .lua
-            .create_function(|dim_str: String| -> LuaResult<i64> {
-                let s = dim_str.trim();
-                let sp = if let Some(stripped) = s.strip_suffix("pt") {
-                    let pts: f64 = stripped.trim().parse().unwrap_or(0.0);
-                    (pts * 65536.0) as i64
-                } else if let Some(stripped) = s.strip_suffix("sp") {
-                    stripped.trim().parse().unwrap_or(0i64)
-                } else if let Some(stripped) = s.strip_suffix("in") {
-                    let inches: f64 = stripped.trim().parse().unwrap_or(0.0);
-                    (inches * 72.27 * 65536.0) as i64
-                } else if let Some(stripped) = s.strip_suffix("mm") {
-                    let mm: f64 = stripped.trim().parse().unwrap_or(0.0);
-                    (mm * (72.27 / 25.4) * 65536.0) as i64
-                } else if let Some(stripped) = s.strip_suffix("cm") {
-                    let cm: f64 = stripped.trim().parse().unwrap_or(0.0);
-                    (cm * (722.7 / 25.4) * 65536.0) as i64
-                } else {
-                    s.parse().unwrap_or(0i64)
-                };
-                Ok(sp)
-            })
-            .unwrap();
-        tex_tbl.set("sp", sp_fn).unwrap();
-        tex_tbl.set("luatexversion", 124i64).unwrap();
-        tex_tbl.set("luatexrevision", "0").unwrap();
-        tex_tbl.set("luatexbanner", "This is LuaTeX, Version 1.24.0").unwrap();
         // tex.count & co. are installed by `lua_bridge`.
 
         self.lua
@@ -426,57 +397,8 @@ impl LuaEngine {
         md5_tbl.set("sum", sum_fn).unwrap();
         self.lua.set_global("md5", md5_tbl).unwrap();
 
-        // 12. Documented runtime modules: img, pdf, lang, lfs, sha2, gzip, zlib, zip
+        // 12. Documented runtime modules: lfs, sha2, gzip, zlib, zip
         self.lua.execute(r#"
-            img = {}
-            function img.types()
-                return { "png", "jpg", "pdf" }
-            end
-            function img.new()
-                return { xsize = 0, ysize = 0, xres = 72, yres = 72 }
-            end
-            function img.scan(obj)
-                local file = type(obj) == "table" and (obj.filename or obj.file) or obj
-                return {
-                    filename = file,
-                    xsize = 100,
-                    ysize = 100,
-                    xres = 72,
-                    yres = 72,
-                    colordepth = 24,
-                }
-            end
-            function img.node(obj)
-                return node.new(8, 0)
-            end
-            function img.write(obj)
-            end
-
-            pdf = {
-                mapfile = function(s) end,
-                mapline = function(s) end,
-                setmatrix = function(m) end,
-                print = function(s) end,
-                immediateobj = function(s) return 1 end,
-                reserveobj = function() return 1 end,
-                obj = function(s) return 1 end,
-                getcreationdate = function() return "D:20260923000000Z" end,
-                setcreationdate = function(s) end,
-            }
-            if status then
-                status.getcreationdate = pdf.getcreationdate
-            end
-
-            lang = {
-                new = function(id)
-                    return { id = id or 0 }
-                end,
-                hyphenation = function(l, words) end,
-                patterns = function(l, pats) end,
-                clear_patterns = function(l) end,
-                clear_hyphenation = function(l) end,
-            }
-
             lfs = {
                 currentdir = function() return "." end,
                 attributes = function(filepath, aname)

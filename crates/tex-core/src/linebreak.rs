@@ -599,6 +599,8 @@ impl Engine {
             lh,
             rh,
             uc_hyph: self.eqtb.int_params[IntParam::UcHyph.idx() as usize] > 0,
+            min_len: self.lang_hyphenation_min(st.lang),
+            pre_hyphen: self.lua_tex.lang.get(&st.lang).and_then(|p| p.pre_hyphen),
         })
     }
 
@@ -660,7 +662,7 @@ impl Engine {
         };
         let ctx = ctx?;
         let ctx = &ctx;
-        let hyf_char = self.eqtb.hyphen_char.get(hf as usize).copied().unwrap_or(-1);
+        let hyf_char = ctx.pre_hyphen.unwrap_or_else(|| self.eqtb.hyphen_char.get(hf as usize).copied().unwrap_or(-1));
         let hyf_char = u8::try_from(hyf_char).ok()?;
         let font = self.eqtb.fonts.get(hf as usize)?.clone();
         // §897-898: the letters hu[1..=hn] (hc lowercased) of nodes ..=hb
@@ -722,7 +724,7 @@ impl Engine {
             s += 1;
         }
         // §899: the nodes after hb must permit hyphenation
-        if hn < ctx.lh + ctx.rh {
+        if hn < ctx.lh + ctx.rh || hn < ctx.min_len {
             return None;
         }
         loop {
@@ -926,7 +928,7 @@ impl Engine {
         // a word closed by an explicit hyphen gets no internal points
         let closed_by_hyphen = matches!(&list[end], Node::Char { c, .. } if *c == hyphen_c)
             || matches!(&list[end], Node::Disc(_));
-        if closed_by_hyphen || !prev_ok || word.len() < ctx.lh + ctx.rh {
+        if closed_by_hyphen || !prev_ok || word.len() < ctx.lh + ctx.rh || word.len() < ctx.min_len {
             return;
         }
         let hyphen_str = (hyphen_c as char).to_string();
@@ -2202,6 +2204,10 @@ struct HyphCtx<'a> {
     lh: usize,
     rh: usize,
     uc_hyph: bool,
+    /// `lang.hyphenationmin`: words shorter than this stay whole
+    min_len: usize,
+    /// `lang.prehyphenchar` when a Lua program set it for the language
+    pre_hyphen: Option<i32>,
 }
 
 impl HyphCtx<'_> {

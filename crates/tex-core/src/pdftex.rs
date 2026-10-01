@@ -30,7 +30,7 @@ impl Engine {
     /// `=` replaces and `-` deletes unless the font is already in use; an
     /// unprefixed item inserts like `+` but first drops the default map file
     /// if it has not been read yet.
-    fn process_map_item(&mut self, item: &str, is_file: bool) {
+    pub(crate) fn process_map_item(&mut self, item: &str, is_file: bool) {
         let item = item.strip_prefix(' ').unwrap_or(item);
         let (mode, rest, flush_default) = match item.as_bytes().first() {
             Some(b'+') => (MapMode::DupIgnore, &item[1..], false),

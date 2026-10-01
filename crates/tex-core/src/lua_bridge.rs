@@ -34,7 +34,7 @@ impl Drop for ActiveGuard {
 }
 
 /// Run `f` on the engine whose Lua call is in progress.
-fn with_engine<R>(f: impl FnOnce(&mut Engine) -> R) -> Result<R, String> {
+pub(crate) fn with_engine<R>(f: impl FnOnce(&mut Engine) -> R) -> Result<R, String> {
     let engine = ACTIVE.with(Cell::get);
     if engine.is_null() {
         return Err("the TeX engine is not available here".to_string());
@@ -194,6 +194,10 @@ impl Engine {
 
     /// The end marker of `tex.runtoks` local control (luatex
     /// `end_local_code`).
+    pub(crate) fn lua_end_local_control_token(&mut self) -> Token {
+        self.lua_end_local_control()
+    }
+
     fn lua_end_local_control(&mut self) -> Token {
         let end = self.cs.intern(&[ANON_PREFIX, b"end-local-control"].concat());
         if self.eqtb.get(end).is_none() {
@@ -205,7 +209,7 @@ impl Engine {
     /// ltexlib.c `runtoks` / maincontrol.c `local_control`: with the end
     /// marker below what Lua put into the input, execute commands in
     /// restricted horizontal mode until the marker is read.
-    fn lua_local_control(&mut self) {
+    pub(crate) fn lua_local_control(&mut self) {
         let sentinel = self.lua_end_local_control();
         let saved = self.save_scanner();
         let mode = std::mem::replace(&mut self.mode, crate::engine::Mode::RestrictedHorizontal);
@@ -222,7 +226,7 @@ impl Engine {
 
     /// LuaTeX command code and `mode` of what `t` means now
     /// (lnewtokenlib.c `get_command` / `get_mode`).
-    fn lua_cmd_mode(&self, t: Token) -> (u8, i64) {
+    pub(crate) fn lua_cmd_mode(&self, t: Token) -> (u8, i64) {
         let t = t.unfreeze();
         if t.is_char() && t.cc() != 13 {
             return (t.cc(), i64::from(t.chr()));
@@ -388,7 +392,7 @@ impl Engine {
     /// lnewtokenlib.c `set_macro`: tokenize `body` under catcode table
     /// `table`; a would-be control sequence must already exist, otherwise
     /// its escape character stays a character.
-    fn lua_string_to_macro_body(&mut self, table: Option<i32>, body: &[u8]) -> Vec<Token> {
+    pub(crate) fn lua_string_to_macro_body(&mut self, table: Option<i32>, body: &[u8]) -> Vec<Token> {
         let text = String::from_utf8_lossy(body);
         let chars: Vec<char> = text.chars().collect();
         let mut out = Vec::with_capacity(chars.len());
@@ -774,7 +778,7 @@ impl Engine {
 
     /// `tex.print`-style string to character tokens (`str_toks`: spaces
     /// are spacers, everything else other characters).
-    fn lua_str_toks(text: &[u8]) -> Vec<Token> {
+    pub(crate) fn lua_str_toks(text: &[u8]) -> Vec<Token> {
         String::from_utf8_lossy(text)
             .chars()
             .map(|c| {
@@ -794,7 +798,7 @@ fn token_arg(packed: i64) -> Result<Token, String> {
         .map_err(|_| "lua <token> expected".to_string())
 }
 
-fn bytes_of(s: &LuaString) -> Vec<u8> {
+pub(crate) fn bytes_of(s: &LuaString) -> Vec<u8> {
     s.as_bytes().map(|b| b.to_vec()).unwrap_or_default()
 }
 
@@ -1318,7 +1322,7 @@ pub(crate) fn install(lua: &mut Lua) -> Result<(), String> {
         .set_name("=[ratex bridge]")
         .exec()
         .map_err(|e| format!("bridge prelude: {}", lua.get_error_message(e).message()))?;
-    Ok(())
+    crate::lua_tex::install(lua)
 }
 
 fn register_number(idx: Option<i64>, what: &str) -> Result<u16, String> {

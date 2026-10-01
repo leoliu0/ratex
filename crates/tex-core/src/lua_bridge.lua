@@ -1,6 +1,5 @@
 -- LuaTeX library surface built on the engine bridge (crates/tex-core/src/lua_bridge.rs).
 local B = __ratex_bridge
-__ratex_bridge = nil
 
 local type, select, rawget, setmetatable, getmetatable, tostring, load =
       type, select, rawget, setmetatable, getmetatable, tostring, load

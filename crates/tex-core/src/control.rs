@@ -1341,13 +1341,12 @@ impl Engine {
             }
         }
         loop {
-            if !expanded {
-                if let Some(closed) = self.take_def_body_run(&mut out, &mut depth) {
-                    if closed {
-                        return out;
-                    }
-                    continue;
+            if let Some(closed) = self.take_def_body_run(&mut out, &mut depth, expanded) {
+                if closed {
+                    self.in_expanded_scan = prev_expanded_scan;
+                    return out;
                 }
+                continue;
             }
             let t = if expanded {
                 let raw = self.raw_token();

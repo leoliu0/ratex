@@ -132,8 +132,16 @@ impl Engine {
         {
             return t;
         }
-        self.push_token(t);
-        self.get_x_raw()
+        // Expanding the fetched token directly equals backing it up and
+        // fetching it again, except while an alignment holds back older
+        // pushback (raw_token() then reads the backed-up token only above
+        // `align_pushed_base`).
+        if self.scanner_status == crate::engine::ScannerStatus::Aligning {
+            self.push_token(t);
+            return self.get_x_raw();
+        }
+        self.unexpanded_parameter = false;
+        self.get_x_raw_from(t)
     }
 
     /// Glue parameter, `\\skip n`, or skipdef'd CS. Knuth copies these as a

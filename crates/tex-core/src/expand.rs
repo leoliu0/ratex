@@ -2986,27 +2986,22 @@ impl Engine {
         space
     }
     pub fn skip_raw_spaces(&mut self) {
-        if self.pushed.is_empty() {
-            if let Some(crate::input::Source::TokList { toks, pos, .. }) =
-                self.input.stack.last_mut()
-            {
-                let s = &toks[..];
-                while *pos < s.len() && (s[*pos].0 >> 24) == 10 {
-                    *pos += 1;
+        loop {
+            if let Some((segment, trace_depth)) = self.token_list_front() {
+                let spaces = segment.iter().take_while(|t| t.0 >> 24 == 10).count();
+                let rest = segment.len() - spaces;
+                if spaces > 0 {
+                    self.consume_token_list_front(spaces, trace_depth);
                 }
-                if *pos < s.len() {
+                if rest > 0 {
                     return;
                 }
-                self.end_token_list();
             }
-        }
-        loop {
             let t = self.raw_token();
-            if (t.0 >> 24) == 10 {
-                continue;
+            if (t.0 >> 24) != 10 {
+                self.push_token(t);
+                return;
             }
-            self.push_token(t);
-            return;
         }
     }
 
@@ -3167,11 +3162,18 @@ impl Engine {
 
     /// Move the run of tokens at the front of the current token list that a
     /// \def body stores as they are (no macro parameter, \outer macro or
-    /// token needing `raw_token`) into `out` at brace depth `depth`, as the
-    /// token loop of `collect_def_body` would. Returns whether the run ended
-    /// with the body's closing brace, or `None` when no token qualifies.
-    pub(crate) fn take_def_body_run(&mut self, out: &mut Vec<Token>, depth: &mut i32) -> Option<bool> {
+    /// token needing `raw_token`; for an `expanded` body only characters that
+    /// do not expand) into `out` at brace depth `depth`, as the token loop of
+    /// `collect_def_body` would. Returns whether the run ended with the
+    /// body's closing brace, or `None` when no token qualifies.
+    pub(crate) fn take_def_body_run(
+        &mut self,
+        out: &mut Vec<Token>,
+        depth: &mut i32,
+        expanded: bool,
+    ) -> Option<bool> {
         if !self.pushed.is_empty()
+            || (expanded && self.unexp_protect > 0)
             || !(self.align_state == crate::align::PH_IDLE
                 || (!self.align_macro_arg && self.align_brace_depth >= *depth))
         {
@@ -3186,6 +3188,7 @@ impl Engine {
         for &t in segment {
             if !plain_balanced_token(t, true, t)
                 || t.0 >> 24 == 6
+                || (expanded && (t.is_cs() || t.0 >> 24 == 13))
                 || (t.is_cs()
                     && (self.cs.is_active(t.cs_id())
                         || self.is_macro_param(t)
@@ -3213,7 +3216,14 @@ impl Engine {
             return None;
         }
         out.extend_from_slice(&segment[..length - usize::from(after == 0)]);
+        let last = segment[length - 1];
         self.consume_token_list_front(length, trace_depth);
+        if expanded {
+            // get_token_from() leaves the last character current.
+            self.no_expand_tok = None;
+            self.unexpanded_parameter = false;
+            self.set_cur_char(last);
+        }
         self.align_brace_depth = self.align_brace_depth.saturating_add(after - *depth);
         *depth = after;
         Some(after == 0)

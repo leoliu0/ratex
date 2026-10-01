@@ -348,7 +348,11 @@ pub fn check_dumpable(eng: &Engine) -> Result<(), String> {
                 n_ag,
                 n_other,
                 eng.eqtb.cur_level,
-                eng.ss_trace.join(" | "),
+                eng.ss_trace
+                    .iter()
+                    .map(|(file, line)| format!("{}:{line}", file.split('/').last().unwrap_or("?")))
+                    .collect::<Vec<_>>()
+                    .join(" | "),
                 types.join(",")
             ));
         }

@@ -1,11 +1,27 @@
 // Tests for the user-facing Ref API and related features
-use crate::lua_value::userdata_trait::LuaMethodProvider;
 use crate::lua_vm::SafeOption;
-use crate::{GlobalState, LuaUserData, LuaValue, Stdlib, UserDataRef};
+use crate::{GlobalState, LuaValue, Stdlib, UdValue, UserDataRef, UserDataTrait};
 
-#[derive(LuaUserData)]
 struct ApiCounter {
-    pub count: i64,
+    count: i64,
+}
+
+impl UserDataTrait for ApiCounter {
+    fn type_name(&self) -> &'static str {
+        "ApiCounter"
+    }
+
+    fn get_field(&self, key: &str) -> Option<UdValue> {
+        (key == "count").then_some(UdValue::Integer(self.count))
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
 }
 
 // ============================================================================

@@ -141,40 +141,6 @@ fn bitwise_error_names_the_operand_before_the_reason() {
     );
 }
 
-#[derive(crate::LuaUserData)]
-struct ScopedProbe {
-    pub count: i64,
-}
-
-#[crate::lua_methods]
-impl ScopedProbe {
-    pub fn get(&self) -> i64 {
-        self.count
-    }
-}
-
-#[test]
-fn arithmetic_on_expired_userdata_raises_instead_of_keeping_stale_register() {
-    use crate::{Lua, LuaApi};
-
-    let mut lua = Lua::new(SafeOption::default());
-    lua.open_stdlib(Stdlib::All).unwrap();
-    let mut probe = ScopedProbe { count: 1 };
-    lua.scope(|scope| {
-        let borrowed = scope.create_userdata_ref(&mut probe)?;
-        scope.globals().set("borrowed", &borrowed)?;
-        Ok(())
-    })
-    .unwrap();
-    assert_eq!(probe.count, 1);
-
-    let ok: bool = lua
-        .load("local r = 'stale'; return (pcall(function() r = borrowed + 1 end))")
-        .eval()
-        .unwrap();
-    assert!(!ok, "arithmetic on an expired userdata reference must raise");
-}
-
 #[test]
 fn gc_keeps_open_upvalues_of_threads_reached_late_in_atomic() {
     // Generational minor collections reach the main thread only through

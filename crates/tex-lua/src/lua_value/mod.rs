@@ -1,6 +1,5 @@
 // Lua 5.5 compatible value representation
 // 16 bytes, no pointer caching, all GC objects accessed via ID
-pub mod alive_ref;
 pub mod chunk53;
 pub mod chunk_serializer;
 pub mod lua_convert;
@@ -18,9 +17,7 @@ use std::sync::Arc;
 pub use lua_string::*;
 pub use userdata::LuaUserdata;
 pub use userdata_builder::UserDataBuilder;
-pub use userdata_trait::{
-    lua_value_to_udvalue, udvalue_to_lua_value, udvalue_to_lua_value_with_token,
-};
+pub use userdata_trait::{lua_value_to_udvalue, udvalue_to_lua_value};
 
 // Re-export the optimized LuaValue and type enum for pattern matching
 pub use lua_table::LuaRawTable;

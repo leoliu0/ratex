@@ -25,7 +25,7 @@ pub fn try_unary_tm(
         && operand.ttisfulluserdata()
         && let Some(ud) = operand.as_userdata_mut()
     {
-        let trait_obj = ud.get_trait()?;
+        let trait_obj = ud.get_trait();
         if let Some(udv) = trait_obj.lua_unm() {
             let result = udvalue_to_lua_value(lua_state, udv)?;
             let stack = lua_state.stack_mut();
@@ -38,7 +38,7 @@ pub fn try_unary_tm(
         && operand.ttisfulluserdata()
         && let Some(ud) = operand.as_userdata_mut()
     {
-        let trait_obj = ud.get_trait()?;
+        let trait_obj = ud.get_trait();
         if let Some(udv) = trait_obj.lua_bnot() {
             let result = udvalue_to_lua_value(lua_state, udv)?;
             let stack = lua_state.stack_mut();
@@ -134,7 +134,7 @@ pub fn try_bin_tm(
     // Try trait-based arithmetic for userdata
     if p1.ttisfulluserdata() || p2.ttisfulluserdata() {
         let trait_result = if let Some(ud) = p1.as_userdata_mut() {
-            let trait_obj = ud.get_trait()?;
+            let trait_obj = ud.get_trait();
             let other = lua_value_to_udvalue(&p2);
             Some(match tm_kind {
                 TmKind::Add => trait_obj.lua_add(&other),
@@ -159,7 +159,7 @@ pub fn try_bin_tm(
             return Ok(());
         }
         let trait_result2 = if let Some(ud) = p2.as_userdata_mut() {
-            let trait_obj = ud.get_trait()?;
+            let trait_obj = ud.get_trait();
             let other = lua_value_to_udvalue(&p1);
             Some(match tm_kind {
                 TmKind::Add => trait_obj.lua_add(&other),
@@ -549,8 +549,8 @@ pub fn try_comp_tm(
         && let Some(ud1) = p1.as_userdata_mut()
         && let Some(ud2) = p2.as_userdata_mut()
     {
-        let t1 = ud1.get_trait()?;
-        let t2 = ud2.get_trait()?;
+        let t1 = ud1.get_trait();
+        let t2 = ud2.get_trait();
         let result = match tm_kind {
             TmKind::Lt => t1.lua_lt(t2),
             TmKind::Le => t1.lua_le(t2),

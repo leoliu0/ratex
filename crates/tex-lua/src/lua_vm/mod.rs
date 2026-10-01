@@ -63,7 +63,7 @@ pub use crate::lua_vm::sandbox::SandboxConfig;
 use crate::platform_time::PlatformInstant;
 use crate::platform_time::unix_nanos;
 use crate::stdlib::Stdlib;
-use crate::{LuaEnum, LuaRegistrable, OpaqueUserData, RustCallback, lib_registry};
+use crate::{OpaqueUserData, RustCallback, lib_registry};
 pub(crate) use execute::arith::{lua_shiftl, luai_numpow};
 pub use execute::{get_metamethod_event, get_metatable};
 pub use lua_rng::LuaRng;
@@ -91,10 +91,7 @@ pub trait LuaTypedAsyncCallback<Args, R>: 'static {
 
 fn typed_callback_arg<T: FromLua>(state: &mut LuaState, index: usize) -> LuaResult<T> {
     let value = state.get_arg(index).unwrap_or_default();
-    match T::from_lua(value, state) {
-        Ok(value) => Ok(value),
-        Err(msg) => Err(state.error(msg)),
-    }
+    T::from_lua(value, state).map_err(|msg| crate::stdlib::lauxlib::argerror(state, index, &msg))
 }
 
 impl<Func, R> LuaTypedCallback<(), R> for Func
@@ -103,10 +100,7 @@ where
     R: IntoLua,
 {
     fn invoke_typed(&self, state: &mut LuaState) -> LuaResult<usize> {
-        match (self)().into_lua(state) {
-            Ok(count) => Ok(count),
-            Err(msg) => Err(state.error(msg)),
-        }
+        (self)().push_callback_result(state)
     }
 }
 
@@ -124,10 +118,7 @@ macro_rules! impl_lua_typed_callback {
                         let $value = typed_callback_arg::<$ty>(state, $index)?;
                     )+
 
-                    match (self)($($value),+).into_lua(state) {
-                        Ok(count) => Ok(count),
-                        Err(msg) => Err(state.error(msg)),
-                    }
+                    (self)($($value),+).push_callback_result(state)
                 }
             }
         )*
@@ -529,7 +520,7 @@ impl GlobalState {
     /// # Example
     ///
     /// ```ignore
-    /// use luars::Stdlib;
+    /// use tex_lua::Stdlib;
     /// vm.open_stdlibs(&[Stdlib::Math, Stdlib::String, Stdlib::Table])?;
     /// ```
     pub fn open_stdlibs(&mut self, libs: &[Stdlib]) -> LuaResult<()> {
@@ -537,42 +528,6 @@ impl GlobalState {
             self.open_stdlib(*lib)?;
         }
         Ok(())
-    }
-
-    /// Serialize a Lua value to JSON (requires 'serde' feature)
-    #[cfg(feature = "serde")]
-    pub fn serialize_to_json(&self, value: &LuaValue) -> Result<serde_json::Value, String> {
-        use crate::serde::lua_to_json;
-
-        lua_to_json(value)
-    }
-
-    /// Serialize a Lua value to a JSON string (requires 'serde' feature)
-    #[cfg(feature = "serde")]
-    pub fn serialize_to_json_string(
-        &self,
-        value: &LuaValue,
-        pretty: bool,
-    ) -> Result<String, String> {
-        use crate::serde::lua_to_json_string;
-
-        lua_to_json_string(value, pretty)
-    }
-
-    /// Deserialize a JSON value to Lua (requires 'serde' feature)
-    #[cfg(feature = "serde")]
-    pub fn deserialize_from_json(&mut self, json: &serde_json::Value) -> Result<LuaValue, String> {
-        use crate::serde::json_to_lua;
-
-        json_to_lua(json, self)
-    }
-
-    /// Deserialize a JSON string to Lua (requires 'serde' feature)
-    #[cfg(feature = "serde")]
-    pub fn deserialize_from_json_string(&mut self, json_str: &str) -> Result<LuaValue, String> {
-        use crate::serde::json_string_to_lua;
-
-        json_string_to_lua(json_str, self)
     }
 
     #[inline]
@@ -660,19 +615,6 @@ impl GlobalState {
 
         let closure_val = self.create_closure(wrapper)?;
         self.set_global(name, closure_val)
-    }
-
-    /// Register a UserData type as a Lua global with its static methods.
-    pub fn register_type_of<T: LuaRegistrable>(&mut self, name: &str) -> LuaResult<()> {
-        let static_methods = T::lua_static_methods();
-        let class_table = self.create_table(0, static_methods.len())?;
-
-        for &(method_name, func) in static_methods {
-            let key = self.create_string(method_name)?;
-            self.raw_set(&class_table, key, LuaValue::cfunction(func));
-        }
-
-        self.set_global(name, class_table)
     }
 
     /// Create a table and immediately wrap it in a managed `LuaTableRef`.
@@ -1194,55 +1136,6 @@ impl GlobalState {
         Ok(table.len())
     }
 
-    // ============ Async Support ============
-
-    /// Register an async function as a Lua global.
-    ///
-    /// The async function factory `f` receives the Lua arguments as `Vec<LuaValue>`
-    /// and returns a `Future` that produces `LuaResult<Vec<LuaValue>>`.
-    ///
-    /// From Lua code, the function looks and behaves like a normal synchronous
-    /// function. The async yield/resume is driven transparently by `AsyncThread`.
-    ///
-    /// **Important**: The function MUST be called from within an `AsyncThread`
-    /// (i.e., the coroutine must be yieldable). Use `create_async_thread()` or
-    /// `execute_async()` to run Lua code that calls async functions.
-    ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// vm.register_async("sleep", |args| async move {
-    ///     let secs = args[0].as_number().unwrap_or(1.0);
-    ///     tokio::time::sleep(Duration::from_secs_f64(secs)).await;
-    ///     Ok(vec![LuaValue::boolean(true)])
-    /// })?;
-    /// ```
-    /// Register a Rust enum as a Lua global table of integer constants.
-    ///
-    /// Each variant becomes a key in the table with its discriminant as value.
-    /// The enum must implement `LuaEnum` (auto-derived by `#[derive(LuaUserData)]`
-    /// on C-like enums).
-    ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// #[derive(LuaUserData)]
-    /// enum Color { Red, Green, Blue }
-    ///
-    /// vm.register_enum::<Color>("Color")?;
-    /// // Lua: Color.Red == 0, Color.Green == 1, Color.Blue == 2
-    /// ```
-    pub fn register_enum_of<T: LuaEnum>(&mut self, name: &str) -> LuaResult<()> {
-        let variants = T::variants();
-        let table = self.create_table(0, variants.len())?;
-        for &(vname, value) in variants {
-            let key = self.create_string(vname)?;
-            let val = LuaValue::integer(value);
-            self.raw_set(&table, key, val);
-        }
-        self.set_global(name, table)
-    }
-
     #[inline(always)]
     pub fn raw_set(&mut self, table_value: &LuaValue, key: LuaValue, value: LuaValue) -> bool {
         let Some(table) = table_value.as_table_mut() else {
@@ -1679,153 +1572,6 @@ mod tests {
         assert_eq!(results[0].as_integer(), Some(31));
         assert_eq!(results[1].as_integer(), Some(30));
         assert_eq!(results[2].as_bool(), Some(true));
-    }
-
-    #[cfg(feature = "serde")]
-    #[test]
-    fn test_json_serialization() {
-        let mut vm = GlobalState::new(SafeOption::default());
-
-        // Test 1: Simple values
-        let num = LuaValue::number(42.5);
-        let json = vm.serialize_to_json(&num).unwrap();
-        assert_eq!(json, serde_json::json!(42.5));
-
-        let bool_val = LuaValue::boolean(true);
-        let json = vm.serialize_to_json(&bool_val).unwrap();
-        assert_eq!(json, serde_json::json!(true));
-
-        let nil = LuaValue::nil();
-        let json = vm.serialize_to_json(&nil).unwrap();
-        assert_eq!(json, serde_json::json!(null));
-
-        // Test 2: String
-        let str_val = vm.create_string("hello world").unwrap();
-        let json = vm.serialize_to_json(&str_val).unwrap();
-        assert_eq!(json, serde_json::json!("hello world"));
-
-        // Test 3: Array-like table
-        let arr = vm.create_table(3, 0).unwrap();
-        vm.raw_set(&arr, LuaValue::number(1.0), LuaValue::number(10.0));
-        vm.raw_set(&arr, LuaValue::number(2.0), LuaValue::number(20.0));
-        vm.raw_set(&arr, LuaValue::number(3.0), LuaValue::number(30.0));
-
-        let json = vm.serialize_to_json(&arr).unwrap();
-        assert_eq!(json, serde_json::json!([10, 20, 30]));
-
-        // Test 4: Object-like table
-        let obj = vm.create_table(0, 2).unwrap();
-        let key1 = vm.create_string("name").unwrap();
-        let key2 = vm.create_string("age").unwrap();
-        let val1 = vm.create_string("Alice").unwrap();
-        vm.raw_set(&obj, key1, val1);
-        vm.raw_set(&obj, key2, LuaValue::number(30.0));
-
-        let json = vm.serialize_to_json(&obj).unwrap();
-        let expected = serde_json::json!({"name": "Alice", "age": 30});
-        assert_eq!(json, expected);
-
-        // Test 5: Nested structure
-        let root = vm.create_table(0, 2).unwrap();
-        let inner = vm.create_table(2, 0).unwrap();
-        vm.raw_set(&inner, LuaValue::number(1.0), LuaValue::number(1.0));
-        vm.raw_set(&inner, LuaValue::number(2.0), LuaValue::number(2.0));
-
-        let key = vm.create_string("data").unwrap();
-        vm.raw_set(&root, key, inner);
-        let key2 = vm.create_string("count").unwrap();
-        vm.raw_set(&root, key2, LuaValue::number(100.0));
-
-        let json = vm.serialize_to_json(&root).unwrap();
-        let expected = serde_json::json!({"data": [1, 2], "count": 100});
-        assert_eq!(json, expected);
-
-        println!("✓ JSON serialization test passed");
-    }
-
-    #[cfg(feature = "serde")]
-    #[test]
-    fn test_json_deserialization() {
-        let mut vm = GlobalState::new(SafeOption::default());
-
-        // Test 1: Simple values
-        let json = serde_json::json!(42);
-        let lua_val = vm.deserialize_from_json(&json).unwrap();
-        assert_eq!(lua_val.as_number(), Some(42.0));
-
-        let json = serde_json::json!(true);
-        let lua_val = vm.deserialize_from_json(&json).unwrap();
-        assert_eq!(lua_val.as_bool(), Some(true));
-
-        let json = serde_json::json!(null);
-        let lua_val = vm.deserialize_from_json(&json).unwrap();
-        assert!(lua_val.is_nil());
-
-        // Test 2: String
-        let json = serde_json::json!("hello");
-        let lua_val = vm.deserialize_from_json(&json).unwrap();
-        assert_eq!(lua_val.as_str(), Some("hello"));
-
-        // Test 3: Array
-        let json = serde_json::json!([1, 2, 3]);
-        let lua_val = vm.deserialize_from_json(&json).unwrap();
-        assert!(lua_val.is_table());
-
-        let val1 = vm.raw_get(&lua_val, &LuaValue::number(1.0)).unwrap();
-        assert_eq!(val1.as_number(), Some(1.0));
-
-        // Test 4: Object
-        let json = serde_json::json!({"name": "Bob", "age": 25});
-        let lua_val = vm.deserialize_from_json(&json).unwrap();
-        assert!(lua_val.is_table());
-
-        let key = vm.create_string("name").unwrap();
-        let name = vm.raw_get(&lua_val, &key).unwrap();
-        assert_eq!(name.as_str(), Some("Bob"));
-
-        println!("✓ JSON deserialization test passed");
-    }
-
-    #[cfg(feature = "serde")]
-    #[test]
-    fn test_json_roundtrip() {
-        let mut vm = GlobalState::new(SafeOption::default());
-
-        // Create a complex Lua structure
-        let root = vm.create_table(0, 3).unwrap();
-
-        let key1 = vm.create_string("name").unwrap();
-        let val1 = vm.create_string("Test").unwrap();
-        vm.raw_set(&root, key1, val1);
-
-        let key2 = vm.create_string("count").unwrap();
-        vm.raw_set(&root, key2, LuaValue::number(42.0));
-
-        let key3 = vm.create_string("items").unwrap();
-        let items = vm.create_table(3, 0).unwrap();
-        vm.raw_set(&items, LuaValue::number(1.0), LuaValue::number(10.0));
-        vm.raw_set(&items, LuaValue::number(2.0), LuaValue::number(20.0));
-        vm.raw_set(&items, LuaValue::number(3.0), LuaValue::number(30.0));
-        vm.raw_set(&root, key3, items);
-
-        // Serialize to JSON
-        let json = vm.serialize_to_json(&root).unwrap();
-
-        // Deserialize back to Lua
-        let reconstructed = vm.deserialize_from_json(&json).unwrap();
-
-        // Verify structure
-        assert!(reconstructed.is_table());
-
-        let key = vm.create_string("name").unwrap();
-        let name = vm.raw_get(&reconstructed, &key).unwrap();
-        assert_eq!(name.as_str(), Some("Test"));
-
-        let key = vm.create_string("count").unwrap();
-        let count = vm.raw_get(&reconstructed, &key).unwrap();
-        assert_eq!(count.as_number(), Some(42.0));
-
-        println!("✓ JSON roundtrip test passed");
     }
 
     #[cfg(feature = "shared-proto")]

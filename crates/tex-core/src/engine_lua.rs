@@ -670,7 +670,22 @@ impl Engine {
             .iter()
             .map(|&b| if i32::from(b) == newline { b'\n' } else { b })
             .collect();
-        let text = String::from_utf8_lossy(&text);
+        let log_text = String::from_utf8_lossy(&text).into_owned();
+        // texio.setescape: the terminal shows control characters as ^^ notation
+        let text = if self.lua_tex.texio_noescape {
+            log_text.clone()
+        } else {
+            let mut s = String::with_capacity(log_text.len());
+            for c in log_text.chars() {
+                if (c as u32) < 32 && c != '\t' && c != '\n' {
+                    s.push_str("^^");
+                    s.push(((c as u8) + 64) as char);
+                } else {
+                    s.push(c);
+                }
+            }
+            s
+        };
         if target != 1 {
             if nl && !self.term.is_empty() && !self.term.ends_with('\n') {
                 self.append_term("\n");
@@ -681,7 +696,7 @@ impl Engine {
             if nl && !self.log.is_empty() && !self.log.ends_with('\n') {
                 self.append_log("\n");
             }
-            self.append_log(&text);
+            self.append_log(&log_text);
         }
     }
 }

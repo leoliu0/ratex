@@ -400,6 +400,25 @@ function tex.definefont(...)
   T.define_font(name, lua_int(id), global)
 end
 
+function tex.get_synctex_mode() return T.synctex_get("mode") end
+function tex.get_synctex_tag() return T.synctex_get("tag") end
+function tex.get_synctex_line() return T.synctex_get("line") end
+function tex.set_synctex_mode(v) T.synctex_set("mode", lua_int(v)) end
+function tex.set_synctex_tag(v) T.synctex_set("tag", lua_int(v)) end
+function tex.set_synctex_line(v) T.synctex_set("line", lua_int(v)) end
+function tex.force_synctex_tag(v) T.synctex_set("tag", lua_int(v)) end
+function tex.force_synctex_line(v) T.synctex_set("line", lua_int(v)) end
+function tex.set_synctex_no_files() T.synctex_set("nofiles", 0) end
+
+tex.uniformdeviate = tex.uniform_rand
+function tex.getmodevalues() return { [0] = "unset", [1] = "vertical", [134] = "horizontal", [267] = "math" } end
+
+function texio.setescape(on)
+  if type(on) ~= "boolean" then error("boolean expected", 2) end
+  T.texio_setescape(on)
+end
+function texio.closeinput() T.texio_closeinput() end
+
 -- Dispatch for assignments to and reads of parameters: tex.hsize = ...
 setmetatable(tex, {
   __index = function(_, k)

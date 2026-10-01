@@ -63,6 +63,8 @@ pub(crate) struct TexState {
     pub synctex_tag: Option<i32>,
     pub synctex_line: Option<i32>,
     pub synctex_no_files: bool,
+    /// `texio.setescape(false)`: terminal output keeps control characters.
+    pub texio_noescape: bool,
     /// `lang.*` values per language.
     pub lang: crate::FxHashMap<u8, crate::lua_lang::LangParams>,
     /// `pdf.getmatrix`: the current page matrix during a late Lua call.
@@ -558,6 +560,39 @@ pub(crate) fn install(lua: &mut Lua) -> Result<(), String> {
             })
         })
     });
+
+    // ---- synctex ----
+    reg!(lua, t, "synctex_get", |which: String| -> Result<i64, String> {
+        with_engine(|e| match which.as_str() {
+            "mode" => i64::from(e.eqtb.int_params[crate::prim::IntParam::Synctex.idx() as usize]),
+            "tag" => match e.lua_tex.synctex_tag {
+                Some(t) => i64::from(t),
+                None => e
+                    .input
+                    .current_file_position()
+                    .filter(|(p, _)| !p.is_empty())
+                    .map_or(0, |(p, _)| i64::from(e.synctex.get_or_register_file(p))),
+            },
+            _ => match e.lua_tex.synctex_line {
+                Some(l) => i64::from(l),
+                None => e.input.current_file_position().map_or(0, |(_, l)| i64::from(l)),
+            },
+        })
+    });
+    reg!(lua, t, "synctex_set", |which: String, v: i64| -> Result<(), String> {
+        with_engine(|e| match which.as_str() {
+            "mode" => e.eqtb.assign_int_param(crate::prim::IntParam::Synctex, v as i32, true),
+            "tag" => e.lua_tex.synctex_tag = (v != 0).then_some(v as i32),
+            "line" => e.lua_tex.synctex_line = (v != 0).then_some(v as i32),
+            _ => e.lua_tex.synctex_no_files = true,
+        })
+    });
+
+    // ---- texio ----
+    reg!(lua, t, "texio_setescape", |on: bool| -> Result<(), String> {
+        with_engine(|e| e.lua_tex.texio_noescape = !on)
+    });
+    reg!(lua, t, "texio_closeinput", || -> Result<(), String> { with_engine(|e| e.do_endinput()) });
 
     // ---- marks ----
     reg!(lua, t, "mark_get", |which: i64, class: i64| -> Result<Option<LuaBytes>, String> {

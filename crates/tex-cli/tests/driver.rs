@@ -518,16 +518,16 @@ fn texstudio_absolute_command_builds_beside_a_spaced_unicode_source() {
     let latexmk = alias_bin.join("latexmk");
     std::os::unix::fs::symlink(&ratex, &latexmk).unwrap();
 
-    // A space in the file name itself needs a quoted \jobname (TeX Live
-    // behavior, pending in the engine); the directory keeps spaces.
-    let source = project.join("thèse-main.tex");
+    // A space in the file name itself exercises the quoted \jobname that
+    // TeX Live produces, on top of the spaced directory.
+    let source = project.join("thèse main.tex");
     std::fs::write(
         &source,
         "\\documentclass{article}\n\\begin{document}\nForward search target.\n\\end{document}\n",
     )
     .unwrap();
-    let pdf = project.join("thèse-main.pdf");
-    let synctex = project.join("thèse-main.synctex.gz");
+    let pdf = project.join("thèse main.pdf");
+    let synctex = project.join("thèse main.synctex.gz");
 
     for (personality, executable) in [("ratex", &ratex), ("latexmk", &latexmk)] {
         let _ = std::fs::remove_file(&pdf);

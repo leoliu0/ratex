@@ -276,6 +276,9 @@ pub enum WhatIt {
     OpenOut {
         stream: u16,
         path: String,
+        /// tex.web `print_file_name(open_name,open_area,open_ext)`: the
+        /// name as scanned (no `.tex` appended), quoted when it has spaces
+        shown: String,
         /// Managed auxiliary directories mirror nested `\\include` paths.
         /// Traditional and absolute `\\openout` paths do not create parents.
         create_parent: bool,
@@ -664,6 +667,9 @@ pub enum Node {
     Overline {
         body: NodeList,
         under: bool,
+        /// the already-packed bar-and-body box the conversion yields; `body`
+        /// is the original field, kept for `\showlists` (tex.web §692)
+        packed: Box<Node>,
     },
     VCenter {
         box_node: Box<Node>,
@@ -713,7 +719,8 @@ fn single_dims(n: &Node, eqtb: &crate::eqtb::Eqtb) -> (i32, i32, i32) {
             let (wd, hd, _) = hlist_dims(den, eqtb);
             (wn.max(wd), hn + hd, 0)
         }
-        Node::Radical { body, .. } | Node::Overline { body, .. } => hlist_dims(body, eqtb),
+        Node::Radical { body, .. } => hlist_dims(body, eqtb),
+        Node::Overline { packed, .. } => single_dims(packed, eqtb),
         Node::OpLimits { op, .. } => hlist_dims(op, eqtb),
         Node::VCenter { box_node } => single_dims(box_node, eqtb),
         Node::Whatsit(WhatIt::PdfRefXImage { w, h, d, .. })

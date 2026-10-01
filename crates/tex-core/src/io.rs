@@ -779,6 +779,13 @@ impl Engine {
         // tex.web §1374: `if cur_ext="" then cur_ext:=".tex"`. The
         // extension starts at the last dot of the final path component.
         let mut name = name;
+        // print_file_name (web2c): quotes are dropped and a name with a
+        // space is shown in quotes
+        let shown = if name.contains(' ') {
+            format!("\"{name}\"")
+        } else {
+            name.clone()
+        };
         if !name.rsplit('/').next().unwrap_or("").contains('.') {
             name.push_str(".tex");
         }
@@ -807,6 +814,7 @@ impl Engine {
             self.append_whatsit(Node::Whatsit(crate::boxes::WhatIt::OpenOut {
                 stream,
                 path: full,
+                shown,
                 create_parent,
                 source,
             }));

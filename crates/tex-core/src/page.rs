@@ -1574,6 +1574,7 @@ impl Engine {
             Node::Whatsit(crate::boxes::WhatIt::OpenOut {
                 stream,
                 path,
+                shown: _,
                 create_parent,
                 source,
             }) => {

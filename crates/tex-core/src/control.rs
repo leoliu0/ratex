@@ -284,6 +284,7 @@ impl Engine {
                             self.math_lists.last().map(|l| l.len()).unwrap_or(0),
                             saved_mode,
                         ));
+                        self.show.brace_lines.push(self.nest_line());
                         // tex.web §1197 / §21691 push_math: a subformula group in
                         // math mode enters -mmode (inner math mode, so \ifinner is true).
                         self.mode = Mode::Math;
@@ -293,6 +294,7 @@ impl Engine {
                 2 => {
                     if self.mode.is_m() {
                         if let Some((depth, start_mark, saved_mode)) = self.math_group_marks.pop() {
+                            self.show.brace_lines.pop();
                             self.mode = saved_mode;
                             if depth == self.math_lists.len() {
                                 if let Some(l) = self.math_lists.last_mut() {

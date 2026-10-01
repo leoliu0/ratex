@@ -243,6 +243,18 @@ impl<'a> FuncState<'a> {
         string
     }
 
+    /// String object for a name (a variable, field or method name). Bytes of
+    /// the chunk that are not valid UTF-8 reach the lexer as marker
+    /// characters (LuaTeX takes any byte >= 0x80 as a letter); the name is
+    /// made of the original bytes.
+    pub fn name_string(&mut self, name: &str) -> LuaValue {
+        if self.lexer.has_byte_markers() && name.contains(BYTE_SOURCE_MARKER) {
+            let bytes = crate::compiler::parse_literal::decode_byte_source_markers(name.as_bytes().to_vec());
+            return self.vm.create_bytes(&bytes).unwrap();
+        }
+        self.vm.create_string(name).unwrap()
+    }
+
     // Unified error generation function (port of luaX_syntaxerror from llex.c)
     // Always adds "near <token>" like C Lua's luaX_syntaxerror
     pub fn syntax_error(&self, msg: &str) -> String {

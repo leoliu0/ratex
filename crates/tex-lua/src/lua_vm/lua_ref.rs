@@ -27,22 +27,9 @@ pub const LUA_NOREF: RefId = -2; // Invalid reference
 
 /// A reference to a Lua value stored in the VM's registry.
 ///
-/// This is similar to Lua's C API luaL_ref mechanism:
-/// - For GC objects, stores them in the registry and keeps a reference ID
-/// - For simple values (numbers, booleans, nil), stores them directly
-/// - Must be manually released with vm.release_ref() or holds the value forever
-///
-/// # Examples
-/// ```ignore
-/// // Create a reference to a table
-/// let table_ref = vm.create_ref(table_value);
-///
-/// // Get the value back
-/// let value = vm.get_ref_value(&table_ref);
-///
-/// // Release the reference when done
-/// vm.release_ref(table_ref);
-/// ```
+/// This is similar to Lua's C API luaL_ref mechanism: the value lives in the
+/// registry under the reference ID, and the ID is released with
+/// `GlobalState::release_ref_id` (or the value stays forever).
 pub struct LuaRefValue {
     /// The actual storage
     ref_id: RefId,
@@ -57,22 +44,6 @@ impl LuaRefValue {
     /// Get the reference ID (if stored in registry)
     pub fn ref_id(&self) -> RefId {
         self.ref_id
-    }
-
-    /// Get the Lua value from this reference (requires VM access)
-    pub fn get(&self, global_state: &GlobalState) -> LuaValue {
-        if self.ref_id > 0 {
-            global_state
-                .registry_geti(self.ref_id as i64)
-                .unwrap_or_default()
-        } else {
-            LuaValue::nil() // Invalid reference, treat as nil
-        }
-    }
-
-    /// Check if this is a valid reference
-    pub fn is_valid(&self) -> bool {
-        self.ref_id > 0
     }
 }
 
@@ -1439,121 +1410,56 @@ mod tests {
     use crate::{GlobalState, LuaValue, lua_vm::SafeOption};
 
     #[test]
-    fn test_lua_ref_mechanism() {
+    fn references_hold_values_until_released() {
         let mut global_state = GlobalState::new(SafeOption::default());
+        let table = global_state.create_table(0, 1).unwrap();
+        let key = global_state.create_string("num").unwrap();
+        global_state.raw_set(&table, key, LuaValue::number(42.0));
 
-        // Create some test values
-        let table = global_state.create_table(0, 2).unwrap();
-        let num_key = global_state.create_string("num").unwrap();
-        let str_key = global_state.create_string("str").unwrap();
-        let str_val = global_state.create_string("hello").unwrap();
-        global_state.raw_set(&table, num_key, LuaValue::number(42.0));
-        global_state.raw_set(&table, str_key, str_val);
-
-        let number = LuaValue::number(123.456);
-        let nil_val = LuaValue::nil();
-
-        // Test 1: Create references
         let table_ref = global_state.create_ref(table);
-        let number_ref = global_state.create_ref(number);
-        let nil_ref = global_state.create_ref(nil_val);
+        let nil_ref = global_state.create_ref(LuaValue::nil());
+        assert!(table_ref.ref_id() > 0);
+        assert_eq!(nil_ref.ref_id(), super::LUA_REFNIL, "nil needs no registry slot");
 
-        // Test 2: Retrieve values through references
-        let retrieved_table = global_state.get_ref_value(&table_ref);
-        assert!(retrieved_table.is_table(), "Should retrieve table");
-
-        let retrieved_num = global_state.get_ref_value(&number_ref);
+        let held = global_state.registry_geti(table_ref.ref_id() as i64).unwrap();
         assert_eq!(
-            retrieved_num.as_number(),
-            Some(123.456),
-            "Should retrieve number"
+            global_state.raw_get(&held, &key).and_then(|v| v.as_number()),
+            Some(42.0)
         );
 
-        let retrieved_nil = global_state.get_ref_value(&nil_ref);
-        assert!(retrieved_nil.is_nil(), "Should retrieve nil");
-
-        // Test 3: Verify table contents
-        let num_key2 = global_state.create_string("num").unwrap();
-        let val = global_state.raw_get(&retrieved_table, &num_key2);
-        assert_eq!(
-            val.and_then(|v| v.as_number()),
-            Some(42.0),
-            "Table content should be preserved"
-        );
-
-        // Test 4: Get ref IDs
-        let table_ref_id = table_ref.ref_id();
-        assert!(table_ref_id > 0, "Ref ID should be positive");
-
-        let number_ref_id = number_ref.ref_id();
-        assert!(number_ref_id > 0, "Number ref should not have ID");
-
-        // Test 5: Release references
-        global_state.release_ref(table_ref);
-        global_state.release_ref(number_ref);
-        global_state.release_ref(nil_ref);
-
-        // Test 6: After release, ref should return nil
-        let after_release = global_state.get_ref_value_by_id(table_ref_id);
-        assert!(after_release.is_nil(), "Released ref should return nil");
-
-        println!("✓ Lua ref mechanism test passed");
+        global_state.release_ref_id(table_ref.ref_id());
+        let after = global_state.registry_geti(table_ref.ref_id() as i64);
+        assert!(!after.is_some_and(|value| value.is_table()), "the slot no longer holds the table");
     }
 
     #[test]
-    fn test_ref_id_reuse() {
+    fn released_reference_ids_are_reused() {
         let mut global_state = GlobalState::new(SafeOption::default());
+        let first = global_state.create_table(0, 0).unwrap();
+        let first_id = global_state.create_ref(first).ref_id();
+        global_state.release_ref_id(first_id);
 
-        // Create and release multiple refs to test ID reuse
-        let t1 = global_state.create_table(0, 0).unwrap();
-        let ref1 = global_state.create_ref(t1);
-        let id1 = ref1.ref_id();
-        global_state.release_ref(ref1);
-
-        // Create another ref - should reuse the ID
-        let t2 = global_state.create_table(0, 0).unwrap();
-        let ref2 = global_state.create_ref(t2);
-        let id2 = ref2.ref_id();
-
-        assert_eq!(id1, id2, "Ref IDs should be reused");
-
-        global_state.release_ref(ref2);
-
-        println!("✓ Ref ID reuse test passed");
+        let second = global_state.create_table(0, 0).unwrap();
+        let second_id = global_state.create_ref(second).ref_id();
+        assert_eq!(first_id, second_id);
     }
 
     #[test]
-    fn test_multiple_refs() {
+    fn many_references_keep_their_own_values() {
         let mut global_state = GlobalState::new(SafeOption::default());
-
-        // Create multiple refs and verify they don't interfere
-        let mut refs = Vec::new();
+        let key = global_state.create_string("value").unwrap();
+        let mut ids = Vec::new();
         for i in 0..10 {
             let table = global_state.create_table(0, 1).unwrap();
-            let key = global_state.create_string("value").unwrap();
-            let num_val = LuaValue::number(i as f64);
-            global_state.raw_set(&table, key, num_val);
-            refs.push(global_state.create_ref(table));
+            global_state.raw_set(&table, key, LuaValue::number(i as f64));
+            ids.push(global_state.create_ref(table).ref_id());
         }
-
-        // Verify all refs are still valid
-        for (i, lua_ref) in refs.iter().enumerate() {
-            let table = global_state.get_ref_value(lua_ref);
-            let key = global_state.create_string("value").unwrap();
-            let val = global_state.raw_get(&table, &key);
+        for (i, id) in ids.iter().enumerate() {
+            let table = global_state.registry_geti(*id as i64).unwrap();
             assert_eq!(
-                val.and_then(|v| v.as_number()),
-                Some(i as f64),
-                "Ref {} should have correct value",
-                i
+                global_state.raw_get(&table, &key).and_then(|v| v.as_number()),
+                Some(i as f64)
             );
         }
-
-        // Release all refs
-        for lua_ref in refs {
-            global_state.release_ref(lua_ref);
-        }
-
-        println!("✓ Multiple refs test passed");
     }
 }

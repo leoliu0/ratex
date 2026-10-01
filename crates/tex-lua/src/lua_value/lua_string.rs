@@ -217,11 +217,6 @@ impl LuaString {
     }
 
     #[inline(always)]
-    pub fn from_utf8(s: LuaStrRepr, hash: u64) -> Self {
-        Self::new(s, hash, Utf8State::Valid)
-    }
-
-    #[inline(always)]
     pub fn from_bytes(s: LuaStrRepr, hash: u64) -> Self {
         let utf8 = if std::str::from_utf8(s.as_bytes()).is_ok() {
             Utf8State::Valid
@@ -251,10 +246,6 @@ impl LuaString {
 
     pub fn is_short(&self) -> bool {
         self.str.len() <= StringInterner::SHORT_STRING_LIMIT
-    }
-
-    pub fn is_long(&self) -> bool {
-        self.str.len() > StringInterner::SHORT_STRING_LIMIT
     }
 
     #[cfg(feature = "shared-proto")]

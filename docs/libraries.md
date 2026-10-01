@@ -6,6 +6,9 @@ engine used by `ratex`. PDF serialization includes fonts and images. No TeX Live
 installation, subprocess, temporary document directory, or asset download is
 needed at runtime.
 
+The pass count reports work actually performed: automatic convergence does not
+force a redundant pass when no auxiliary state requires a rerun.
+
 ## Build
 
 Install Rust, a C compiler, and Python 3.11+. For WebAssembly, install Clang/LLD

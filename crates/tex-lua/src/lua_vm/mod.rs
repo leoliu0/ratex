@@ -1,9 +1,40 @@
 // Lua Virtual Machine
 // Executes compiled bytecode with register-based architecture
 use std::collections::HashMap;
+use std::hash::{BuildHasherDefault, Hasher};
 use std::ffi::c_void;
 use std::ptr::null_mut;
 use std::rc::Rc;
+
+/// Hasher for map keys that are addresses (or other single `u64`s): SipHash
+/// costs far more than the lookup it guards. The product's high half is
+/// folded down so the low bits (the bucket index) depend on the whole
+/// address, whose own low bits are zero by alignment.
+#[derive(Default)]
+pub(crate) struct PtrHasher(u64);
+
+impl Hasher for PtrHasher {
+    #[inline]
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    #[inline]
+    fn write(&mut self, bytes: &[u8]) {
+        for &byte in bytes {
+            self.write_u64(u64::from(byte));
+        }
+    }
+
+    #[inline]
+    fn write_u64(&mut self, value: u64) {
+        let product = (self.0 ^ value).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        self.0 = product ^ (product >> 32);
+    }
+}
+
+pub(crate) type PtrMap<K, V> = HashMap<K, V, BuildHasherDefault<PtrHasher>>;
+
 
 pub mod async_thread;
 pub mod call_info;
@@ -55,6 +86,7 @@ pub use crate::lua_vm::lua_ref::{
 pub(crate) use crate::lua_vm::stk_id::StkId;
 
 type ArithMetaFn = fn(&mut LuaState) -> LuaResult<usize>;
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) use crate::lua_vm::lua_state::{CApiStackParking, ProtectedCallStatus};
 pub use crate::lua_vm::lua_state::LuaState;
 pub use crate::lua_vm::safe_option::SafeOption;
@@ -64,7 +96,7 @@ pub use crate::lua_vm::sandbox::SandboxConfig;
 use crate::platform_time::PlatformInstant;
 use crate::platform_time::unix_nanos;
 use crate::stdlib::Stdlib;
-use crate::{OpaqueUserData, RustCallback, lib_registry};
+use crate::{RustCallback, lib_registry};
 pub(crate) use execute::arith::{lua_shiftl, luai_numpow};
 pub use execute::{get_metamethod_event, get_metatable};
 pub use lua_rng::LuaRng;
@@ -273,7 +305,7 @@ pub struct GlobalState {
     pub(crate) version: LuaLanguageLevel,
 
     /// Lua 5.3's weak per-prototype closure cache.
-    pub(crate) closure_cache53: HashMap<ProtoPtr, FunctionPtr>,
+    pub(crate) closure_cache53: PtrMap<ProtoPtr, FunctionPtr>,
 
     /// Random number generator — xoshiro256** matching C Lua exactly
     pub(crate) rng: LuaRng,
@@ -338,7 +370,7 @@ impl GlobalState {
             safe_option: option.clone(),
             n_ccalls: 0,
             version,
-            closure_cache53: HashMap::new(),
+            closure_cache53: PtrMap::default(),
             // Initialize RNG with a deterministic seed for reproducibility
             rng: LuaRng::from_seed_time(time),
             #[cfg(not(unix))]
@@ -431,20 +463,6 @@ impl GlobalState {
         self.extra_space
     }
 
-    /// Register a CFunction in package.preload\[name\].
-    /// When Lua code calls `require("name")`, the preload searcher will
-    /// find this function and call it as the module loader.
-    pub fn register_preload(&mut self, name: &str, loader: CFunction) -> LuaResult<()> {
-        let preload_val = self.registry_get("_PRELOAD")?;
-        if let Some(preload) = preload_val
-            && preload.is_table()
-        {
-            let key = self.create_string(name)?;
-            self.raw_set(&preload, key, LuaValue::cfunction(loader));
-        }
-        Ok(())
-    }
-
     /// Set a value in the registry by integer key
     pub fn registry_seti(&mut self, key: i64, value: LuaValue) {
         self.raw_seti(&self.registry.clone(), key, value);
@@ -514,33 +532,9 @@ impl GlobalState {
         self.raw_seti(&registry, 0, LuaValue::integer(ref_id as i64));
     }
 
-    /// Get the value from a reference
-    pub fn get_ref_value(&self, lua_ref: &LuaRefValue) -> LuaValue {
-        lua_ref.get(self)
-    }
-
-    /// Release a reference created by create_ref (like luaL_unref in C API)
-    ///
-    /// This frees the registry entry and allows the value to be garbage collected.
-    /// After calling this, the LuaRefValue should not be used.
-    pub fn release_ref(&mut self, lua_ref: LuaRefValue) {
-        self.registry_unref(lua_ref.ref_id());
-    }
-
     /// Release a reference by raw ID (for C API compatibility)
     pub fn release_ref_id(&mut self, ref_id: RefId) {
         self.registry_unref(ref_id);
-    }
-
-    /// Get value from registry by raw ref ID (for C API compatibility)
-    pub fn get_ref_value_by_id(&self, ref_id: RefId) -> LuaValue {
-        if ref_id == LUA_REFNIL {
-            return LuaValue::nil();
-        }
-        if ref_id <= 0 {
-            return LuaValue::nil();
-        }
-        self.registry_geti(ref_id as i64).unwrap_or_default()
     }
 
     pub const fn language(&self) -> LuaLanguageLevel {
@@ -549,21 +543,6 @@ impl GlobalState {
 
     pub fn open_stdlib(&mut self, lib: Stdlib) -> LuaResult<()> {
         lib_registry::create_standard_registry(lib).load_all(self)?;
-        Ok(())
-    }
-
-    /// Open multiple standard libraries at once.
-    ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// use tex_lua::Stdlib;
-    /// vm.open_stdlibs(&[Stdlib::Math, Stdlib::String, Stdlib::Table])?;
-    /// ```
-    pub fn open_stdlibs(&mut self, libs: &[Stdlib]) -> LuaResult<()> {
-        for lib in libs {
-            self.open_stdlib(*lib)?;
-        }
         Ok(())
     }
 
@@ -664,45 +643,10 @@ impl GlobalState {
         Ok(self.to_table_ref(table).unwrap())
     }
 
-    /// Get a global variable as a `LuaTableRef`.
-    /// Returns `Ok(None)` if the global doesn't exist or is not a table.
-    pub fn get_global_table(&mut self, name: &str) -> LuaResult<Option<LuaTableRef>> {
-        match self.get_global(name)? {
-            Some(val) if val.is_table() => Ok(self.to_table_ref(val)),
-            _ => Ok(None),
-        }
-    }
-
     /// Get a handle to the current global environment table.
     pub fn globals_table(&mut self) -> LuaTableRef {
         self.to_table_ref(self.global)
             .expect("global environment must be a table")
-    }
-
-    /// Get a global variable as a `LuaFunctionRef`.
-    /// Returns `Ok(None)` if the global doesn't exist or is not a function.
-    pub fn get_global_function(&mut self, name: &str) -> LuaResult<Option<LuaFunctionRef>> {
-        match self.get_global(name)? {
-            Some(val) if val.is_function() => Ok(self.to_function_ref(val)),
-            _ => Ok(None),
-        }
-    }
-
-    /// Create any `T: 'static` into Lua as opaque userdata.
-    ///
-    /// The value cannot be accessed from Lua code directly; it is an opaque
-    /// handle. From Rust callbacks, use `downcast_ref::<T>()` to retrieve it.
-    ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// let client = reqwest::Client::new();
-    /// let ud = vm.create_any(client)?;
-    /// vm.set_global("http_client", ud)?;
-    /// ```
-    pub fn create_any<T: 'static>(&mut self, value: T) -> LuaResult<LuaValue> {
-        let ud = LuaUserdata::new(OpaqueUserData::new(value));
-        self.create_userdata(ud)
     }
 
     pub fn to_ref(&mut self, value: LuaValue) -> LuaAnyRef {
@@ -1420,32 +1364,6 @@ impl GlobalState {
         }
     }
 
-    /// Get GC statistics
-    pub fn gc_stats(&self) -> String {
-        let stats = self.gc.stats();
-        format!(
-            "GC Stats:\n\
-            - Bytes allocated: {}\n\
-            - Threshold: {}\n\
-            - Total collections: {}\n\
-            - Minor collections: {}\n\
-            - Major collections: {}\n\
-            - Objects collected: {}\n\
-            - Young generation size: {}\n\
-            - Old generation size: {}\n\
-            - Promoted objects: {}",
-            stats.bytes_allocated,
-            stats.threshold,
-            stats.collection_count,
-            stats.minor_collections,
-            stats.major_collections,
-            stats.objects_collected,
-            stats.young_gen_size,
-            stats.old_gen_size,
-            stats.promoted_objects
-        )
-    }
-
     pub(crate) fn get_main_thread_ptr(&self) -> ThreadPtr {
         self.main_state
     }
@@ -1553,28 +1471,34 @@ impl GlobalStateHandle {
     pub(crate) fn change_gc_mode(self, state: *mut LuaState, kind: GcKind) {
         self.as_mut().gc.change_mode(unsafe { &mut *state }, kind);
     }
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     pub(crate) fn gc_total_bytes(self) -> isize {
         self.as_ref().gc.get_total_bytes()
     }
 
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     pub(crate) fn gc_is_running(self) -> bool {
         !self.as_ref().gc.gc_stopped
     }
 
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     pub(crate) fn gc_set_running(self, running: bool) {
         self.as_mut().gc.gc_stopped = !running;
     }
 
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     pub(crate) fn gc_parameter(self, index: usize) -> i32 {
         crate::gc::decode_param(self.as_ref().gc.gc_params[index])
     }
 
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     pub(crate) fn gc_set_parameter(self, index: usize, value: i32) -> i32 {
         let old = self.gc_parameter(index);
         self.as_mut().gc.gc_params[index] = crate::gc::code_param(value.max(0) as u32);
         old
     }
 
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     pub(crate) fn gc_step(self, state: *mut LuaState, kibibytes: i32) -> bool {
         let global = self.as_mut();
         global.gc.api_step(unsafe { &mut *state }, kibibytes)

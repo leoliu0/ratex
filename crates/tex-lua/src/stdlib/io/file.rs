@@ -33,6 +33,7 @@ enum Stream {
 pub(crate) enum CloseStatus {
     File,
     /// A `popen` stream: ("exit" | "signal", code).
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     Process(&'static str, i32),
 }
 
@@ -130,6 +131,28 @@ impl LuaFile {
 
     pub fn stderr() -> Self {
         Self::with_stream(Stream::Stderr, false, true, BufMode::No)
+    }
+
+    /// The operating-system file descriptor behind the stream (`fileno`):
+    /// 0, 1 and 2 for the standard streams, the pipe end of a `popen` stream.
+    /// `None` once the file is closed, and on platforms without descriptors.
+    pub fn raw_fd(&self) -> Option<i32> {
+        #[cfg(unix)]
+        {
+            use std::os::fd::AsRawFd;
+            Some(match self.stream.as_ref()? {
+                Stream::File(file) => file.as_raw_fd(),
+                Stream::Stdin => 0,
+                Stream::Stdout => 1,
+                Stream::Stderr => 2,
+                Stream::PipeRead(_, pipe) => pipe.as_raw_fd(),
+                Stream::PipeWrite(_, pipe) => pipe.as_raw_fd(),
+            })
+        }
+        #[cfg(not(unix))]
+        {
+            None
+        }
     }
 
     /// `fopen(path, mode)`; `mode` must satisfy [`valid_open_mode`].

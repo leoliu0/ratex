@@ -1930,6 +1930,8 @@ fn default_help(message: &str) -> Option<String> {
         Some("look before this location for an unmatched `{`, a missing delimiter, or an unfinished environment")
     } else if message.contains("Missing $ inserted") {
         Some("balance `$...$` or `\\(...\\)` math delimiters near this location")
+    } else if message.starts_with("Display math should end with $$") {
+        Some("the `$` here matches an earlier `$$`, so TeX assumed `$$` both times; close the display with `$$`")
     } else if message.starts_with("Missing control sequence") {
         Some("supply a command name such as `\\name` after the definition or assignment command")
     } else if message.starts_with("Missing { inserted") {

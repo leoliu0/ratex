@@ -45,7 +45,22 @@ impl Run {
     }
 }
 
+/// The tests run in parallel inside one process. The engine's resident-memory cap
+/// (default 512 MiB) is measured on the whole process, so the many parallel engines
+/// of this file would trip it and abort a job with "TeX capacity exceeded"; and two
+/// PDFs produced a clock tick apart would differ in their creation dates. Disable
+/// the cap and pin the clock before any engine starts.
+fn pin_environment() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        std::env::set_var("TEX_MEM_LIMIT_MIB", "0");
+        std::env::set_var("FORCE_SOURCE_DATE", "1");
+        std::env::set_var("SOURCE_DATE_EPOCH", "1700000000");
+    });
+}
+
 fn run(pdf: bool, body: &str) -> Run {
+    pin_environment();
     let mut e = Engine::new_with_kind(EngineKind::LuaTeX, true);
     e.init_primitives();
     e.add_nullfont();
